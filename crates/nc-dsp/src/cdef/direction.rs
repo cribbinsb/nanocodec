@@ -2,7 +2,10 @@
 //! vector per block row (or column). Same results as the scalar reference,
 //! libaom's `cdef_find_dir_c`; the vector formulation follows the idea of
 //! libaom's `cdef_find_dir` SIMD version (BSD-2-Clause, Alliance for Open
-//! Media).
+//! Media). NEON's mirrored-square reduction follows dav1d 1.5.4
+//! `src/arm/64/cdef_tmpl.S` (Copyright 2018 VideoLAN/dav1d authors and
+//! 2020 Martin Storsjo, BSD-2-Clause): `smull` plus `smlal` accumulates
+//! corresponding lanes directly, avoiding zip/dot/pairwise-add sequences.
 //!
 //! Each direction's partial sums along its lines are built in two vectors
 //! (`lo` holds line indices 0..8, `hi` 8..16) by adding every block row
@@ -62,12 +65,10 @@ impl<V: I16x8Shuffles> Partial<V> {
     #[inline(always)]
     fn cost(self, weights: &[[i32; 4]; 2]) -> V::Wide {
         let mirrored = self.hi.shuffle_bytes(&MIRROR_HI);
-        let first = self.lo.zip_lo(mirrored);
-        let second = self.lo.zip_hi(mirrored);
+        let [first, second] = self.lo.paired_squares(mirrored);
         first
-            .madd(first)
             .mul(V::Wide::load(&weights[0]))
-            .add(second.madd(second).mul(V::Wide::load(&weights[1])))
+            .add(second.mul(V::Wide::load(&weights[1])))
     }
 }
 

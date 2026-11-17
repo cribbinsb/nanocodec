@@ -851,3 +851,20 @@ fall at all twelve points (AV1 -0.77/-0.60%). Do not claim an AV1
 whole-encode speedup or hide the unfavorable codec timings. Full values,
 all kernel cases, sources and final conformance receipt:
 [handoff](../handoff/astra-kernels-20261117.md).
+
+
+### Updated AV1 Arm priority 1: shared CDEF arithmetic (2026-11-17)
+
+The NEON interior filter already uses sixteen byte lanes; only boundaries
+and high depth use eight word lanes. The follow-up retains the shared
+AV1/AV2 family and scalar oracle. Direction costs use dav1d's mirrored
+SMULL/SMLAL reduction without repeating the previously rejected one-pass
+layout. Rounded filter deltas fit signed bytes (weighted sum bounded by
+228), allowing signed saturating byte addition after range translation.
+Matched Orin medians: direction 82.73 -> 77.58 ns, picture-stride primary
+filter 83.06 -> 79.82 ns; both-strength filtering 203.35 -> 205.62 ns (mixed,
+unchanged off control 20.31 -> 20.90 ns). Whole Veryfast cycles -0.597%,
+Faster +0.212% (level), with instructions -0.129/-0.105%; all streams
+identical. The older full audit above remains its original frozen
+measurement. See the [follow-up receipt](../handoff/astra-kernels-20261117.md#updated-task-2-av1-arm-priority-1-cdef-2026-11-17)
+for five-round diagnosis comparisons, every loss and validation status.

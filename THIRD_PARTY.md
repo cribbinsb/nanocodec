@@ -503,6 +503,11 @@ The browser SIMD128 extensions to `av1_mc/high_mc.rs`,
 shared Rust algorithms with the existing WASM lane types; they introduce
 no further external implementation.
 
+NEON CDEF direction costs (`crates/nc-dsp/src/cdef/direction.rs` and
+`simd/neon.rs`) use the direct mirrored-square `smull`/`smlal` reduction
+from dav1d 1.5.4 `src/arm/64/cdef_tmpl.S`; the existing shared partial-sum
+graph and scalar direction/tie reference are retained.
+
 ## libyuv — BSD-3-Clause
 
 Copyright 2011 The LibYuv Project Authors. All rights reserved.

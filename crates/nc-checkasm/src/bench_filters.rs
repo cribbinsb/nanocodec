@@ -25,46 +25,7 @@ pub(crate) fn bench_filters(dsp: &Dsp, push: &mut impl FnMut(&'static str, Block
     let reference: [u8; AREA] = core::array::from_fn(|i| input[i].saturating_add((i % 5) as u8));
     let src = PlaneView::new(&input, SIDE, SIDE, SIDE).expect("plane");
     let rf = PlaneView::new(&reference, SIDE, SIDE, SIDE).expect("plane");
-    let block = BlockSize::new(8, 8).expect("block");
-    push(
-        "cdef_find_dir",
-        block,
-        time(|| u32::from(dsp.cdef_find_dir(&src, EDGE).0)),
-    );
-    let mut padded = CdefSource::new();
-    padded.fill_from(&src);
-    for side in [4, 8] {
-        let size = BlockSize::new(side, side).expect("block");
-        let mut output = input;
-        push(
-            "cdef_filter",
-            size,
-            time(|| {
-                let mut dst = PlaneViewMut::new(&mut output, SIDE, SIDE, SIDE).expect("plane");
-                dsp.cdef_filter(side, &padded, EDGE, (8, 2), 3, 4, &mut dst);
-                u32::from(output[EDGE.1 * SIDE + EDGE.0])
-            }),
-        );
-    }
-    for side in [4, 8] {
-        let size = BlockSize::new(side, side).expect("block");
-        for (name, strengths) in [
-            ("cdef_filter_u8", (8, 2)),
-            ("cdef_filter_u8_pri", (15, 0)),
-            ("cdef_filter_u8_sec", (0, 4)),
-        ] {
-            let mut output = input;
-            push(
-                name,
-                size,
-                time(|| {
-                    let mut dst = PlaneViewMut::new(&mut output, SIDE, SIDE, SIDE).expect("plane");
-                    dsp.cdef_filter_interior(side, &src, EDGE, strengths, 3, 4, &mut dst);
-                    u32::from(output[EDGE.1 * SIDE + EDGE.0])
-                }),
-            );
-        }
-    }
+    bench_cdef_blocks(dsp, &input, &src, push);
     let frame = BlockSize::new(SIDE, SIDE).expect("block");
     push(
         "sao_edge_stats",
@@ -108,6 +69,63 @@ pub(crate) fn bench_filters(dsp: &Dsp, push: &mut impl FnMut(&'static str, Block
     }
     bench_edges(dsp, &input, push);
     bench_av2_lines(dsp, push);
+}
+
+/// The full suite's CDEF fixtures, available independently for bounded tuning.
+pub(crate) fn bench_cdef(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSize, f64)) {
+    let input: [u8; AREA] =
+        core::array::from_fn(|i| 120 + u8::from(i % SIDE >= EDGE.0) * 4 + (i % 3) as u8);
+    let src = PlaneView::new(&input, SIDE, SIDE, SIDE).expect("plane");
+    bench_cdef_blocks(dsp, &input, &src, push);
+    bench_cdef_picture_stride(dsp, push);
+}
+
+fn bench_cdef_blocks(
+    dsp: &Dsp,
+    input: &[u8; AREA],
+    src: &PlaneView<'_>,
+    push: &mut impl FnMut(&'static str, BlockSize, f64),
+) {
+    let block = BlockSize::new(8, 8).expect("block");
+    push(
+        "cdef_find_dir",
+        block,
+        time(|| u32::from(dsp.cdef_find_dir(src, EDGE).0)),
+    );
+    let mut padded = CdefSource::new();
+    padded.fill_from(src);
+    for side in [4, 8] {
+        let size = BlockSize::new(side, side).expect("block");
+        let mut output = *input;
+        push(
+            "cdef_filter",
+            size,
+            time(|| {
+                let mut dst = PlaneViewMut::new(&mut output, SIDE, SIDE, SIDE).expect("plane");
+                dsp.cdef_filter(side, &padded, EDGE, (8, 2), 3, 4, &mut dst);
+                u32::from(output[EDGE.1 * SIDE + EDGE.0])
+            }),
+        );
+    }
+    for side in [4, 8] {
+        let size = BlockSize::new(side, side).expect("block");
+        for (name, strengths) in [
+            ("cdef_filter_u8", (8, 2)),
+            ("cdef_filter_u8_pri", (15, 0)),
+            ("cdef_filter_u8_sec", (0, 4)),
+        ] {
+            let mut output = *input;
+            push(
+                name,
+                size,
+                time(|| {
+                    let mut dst = PlaneViewMut::new(&mut output, SIDE, SIDE, SIDE).expect("plane");
+                    dsp.cdef_filter_interior(side, src, EDGE, strengths, 3, 4, &mut dst);
+                    u32::from(output[EDGE.1 * SIDE + EDGE.0])
+                }),
+            );
+        }
+    }
 }
 
 /// A whole H.264 luma macroblock, every edge filtered (bS 2; the

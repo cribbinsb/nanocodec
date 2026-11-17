@@ -1,5 +1,7 @@
-//! NEON CDEF kernels: the generic 16-bit filter on 8 lanes (one row of an 8x8
-//! luma block or two rows of a 4x4 chroma block per vector).
+//! NEON CDEF kernels. Interior 8-bit blocks use sixteen byte lanes: two
+//! luma rows or all four chroma rows per vector. Boundary and high-depth
+//! filters retain the shared eight-lane 16-bit graph; direction search
+//! shares the partial-sum graph with SIMD128.
 
 use super::{CdefArgs, CdefFns, HighCdefFns, direction, generic, narrow};
 use crate::simd::neon::I16x8;

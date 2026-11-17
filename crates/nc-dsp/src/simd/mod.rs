@@ -755,6 +755,20 @@ pub(crate) trait I16x8Shuffles: I16Lanes {
     /// `self[2k] * other[2k] + self[2k + 1] * other[2k + 1]` in 32-bit lane
     /// `k` (the products must not overflow their sum).
     fn madd(self, other: Self) -> Self::Wide;
+    /// Per-lane `self[i]^2 + other[i]^2`, split into low/high four lanes.
+    /// Products and their sum must fit i32. Native widening MACs can avoid
+    /// interleaving the inputs merely to use a pairwise dot product.
+    #[cfg(any(
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn paired_squares(self, other: Self) -> [Self::Wide; 2] {
+        let low = self.zip_lo(other);
+        let high = self.zip_hi(other);
+        [low.madd(low), high.madd(high)]
+    }
     /// Lane `k` of the result is the sum of the lanes of `x[k]` (wrapping).
     fn sum_lanes4(x: [Self::Wide; 4]) -> Self::Wide;
 }

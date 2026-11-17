@@ -1064,6 +1064,24 @@ impl I16x8Shuffles for I16x8 {
     }
 
     #[inline(always)]
+    fn paired_squares(self, other: Self) -> [I32x4; 2] {
+        // SAFETY: the ISA caller enables NEON. CDEF line sums are at most
+        // 8*128 in magnitude, so two squares fit i32 before weighting.
+        unsafe {
+            let a = vget_low_s16(self.0);
+            let b = vget_low_s16(other.0);
+            [
+                I32x4(vmlal_s16(vmull_s16(a, a), b, b)),
+                I32x4(vmlal_high_s16(
+                    vmull_high_s16(self.0, self.0),
+                    other.0,
+                    other.0,
+                )),
+            ]
+        }
+    }
+
+    #[inline(always)]
     fn sum_lanes4(x: [I32x4; 4]) -> I32x4 {
         // SAFETY: NEON kernels only (module docs).
         unsafe {

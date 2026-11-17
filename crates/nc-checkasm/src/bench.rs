@@ -72,6 +72,25 @@ pub fn bench_av1_inverse(isas: &[Isa]) -> Vec<BenchResult> {
     results
 }
 
+/// Time CDEF search and filters with the full suite's fixtures.
+#[must_use]
+pub fn bench_cdef(isas: &[Isa]) -> Vec<BenchResult> {
+    let mut results = Vec::new();
+    for &isa in isas {
+        if let Some(dsp) = Dsp::with_isa(isa) {
+            crate::bench_filters::bench_cdef(&dsp, &mut |kernel, size, ns_per_call| {
+                results.push(BenchResult {
+                    kernel,
+                    size: (size.width(), size.height()),
+                    isa,
+                    ns_per_call,
+                });
+            });
+        }
+    }
+    results
+}
+
 /// Time only the VP9 interpolation kernels, as the full suite does.
 #[must_use]
 pub fn bench_vp9_mc(isas: &[Isa]) -> Vec<BenchResult> {

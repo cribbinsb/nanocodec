@@ -10,9 +10,8 @@ use core::arch::aarch64::{
     int16x8_t, uint8x16_t, vabdq_u8, vaddq_s16, vaddq_u8, vcgtq_u8, vcltzq_s16, vcombine_u8,
     vcreate_u8, vdup_n_s8, vdupq_n_s8, vdupq_n_s16, vdupq_n_u8, veorq_u8, vget_high_u8,
     vget_low_s8, vget_low_u8, vgetq_lane_u32, vld1_u8, vmaxq_u8, vminq_u8, vmlal_high_s8, vmlal_s8,
-    vmovl_high_u8, vmovl_u8, vqmovun_high_s16, vqmovun_s16, vqsubq_u8, vreinterpretq_s8_u8,
-    vreinterpretq_s16_u16, vreinterpretq_u8_s8, vreinterpretq_u32_u8, vshlq_u8, vshrq_n_s16,
-    vst1_u8, vsubq_u8,
+    vqaddq_s8, vqsubq_u8, vreinterpretq_s8_u8, vreinterpretq_s16_u16, vreinterpretq_u8_s8,
+    vreinterpretq_u32_u8, vrshrn_high_n_s16, vrshrn_n_s16, vshlq_u8, vst1_u8, vsubq_u8,
 };
 
 use super::U8FilterLanes;
@@ -169,22 +168,17 @@ impl U8FilterLanes for U8x16 {
     fn add_rounded(self, acc: Sums) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe {
-            let x_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(self.0)));
-            let x_hi = vreinterpretq_s16_u16(vmovl_high_u8(self.0));
-            let lo = vaddq_s16(x_lo, rounded_sum(acc.0));
-            let hi = vaddq_s16(x_hi, rounded_sum(acc.1));
-            Self(vqmovun_high_s16(vqmovun_s16(lo), hi))
+            // Primary differences contribute at most 2 * 15 * (4 + 2),
+            // secondary ones 4 * 4 * (2 + 1): |sum| <= 228. The rounded
+            // delta fits i8. RSHRN supplies +8 after the negative correction.
+            let lo = vaddq_s16(acc.0, vreinterpretq_s16_u16(vcltzq_s16(acc.0)));
+            let hi = vaddq_s16(acc.1, vreinterpretq_s16_u16(vcltzq_s16(acc.1)));
+            let delta = vrshrn_high_n_s16::<4>(vrshrn_n_s16::<4>(lo), hi);
+            // XOR translates [0, 255] to [-128, 127], so signed saturating
+            // byte addition clamps the result to the sample range directly.
+            let bias = vdupq_n_u8(128);
+            let x = vreinterpretq_s8_u8(veorq_u8(self.0, bias));
+            Self(veorq_u8(vreinterpretq_u8_s8(vqaddq_s8(x, delta)), bias))
         }
-    }
-}
-
-/// `(8 + sum - (sum < 0)) >> 4` per lane.
-#[inline(always)]
-fn rounded_sum(sum: int16x8_t) -> int16x8_t {
-    // SAFETY: NEON kernels only (module docs). The comparison is -1 where the
-    // sum is negative.
-    unsafe {
-        let negative = vreinterpretq_s16_u16(vcltzq_s16(sum));
-        vshrq_n_s16::<4>(vaddq_s16(vaddq_s16(sum, vdupq_n_s16(8)), negative))
     }
 }
