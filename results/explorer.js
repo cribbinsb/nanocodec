@@ -15,8 +15,8 @@ import {
 
 const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1': 'triangle', openh264: 'triangle-down', libvpx: 'cross', libaom: 'plus' };
 // The speed machines, in the data's order (site.PLATFORMS): what one core is, and its short name.
-const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (Zen 5) core', graviton: 'AWS Graviton4 (Neoverse V2) core' };
-const PLATFORM_SHORT = { jetson: 'Jetson', x86: 'Zen 5', graviton: 'Graviton4' };
+const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (Zen 5) core', zen3: 'AMD EPYC 7R13 (Zen 3, no AVX-512) core', graviton: 'AWS Graviton4 (Neoverse V2) core' };
+const PLATFORM_SHORT = { jetson: 'Jetson', x86: 'Zen 5', zen3: 'Zen 3', graviton: 'Graviton4' };
 const PLATFORMS = Object.keys(PLATFORM_LABELS);
 // The fixed-QP chart's extra metric (the standards' weighted PSNR); the rest are common.js's.
 const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)' };
@@ -150,7 +150,7 @@ function viewNote(data, view) {
 }
 
 /** What the CBR charts' speed axis is on the selected machine: its timing record's platform,
- * and the build our encoders were timed at where one session timed them all (the Graviton). */
+ * and the build our encoders were timed at where one session timed them all (Zen 3, the Graviton). */
 function cbrSpeedNote(data) {
   const platform = data.platforms[state.platform];
   if (!platform) {
@@ -326,6 +326,7 @@ function controls(data, root) {
       state.metric, (v) => { state.metric = v; rerender(); }))),
     control('Speed on', withData('platform', segmented('Platform', [
       { value: 'jetson', label: 'Jetson (Arm)' }, { value: 'x86', label: 'x86 (Zen 5)' },
+      { value: 'zen3', label: 'x86 without AVX-512 (Zen 3)' },
       { value: 'graviton', label: 'Server Arm (Graviton4)' },
     ], state.platform, (v) => { state.platform = v; rerender(); }))),
     control('Pareto frontier', segmented('Pareto frontier', [
