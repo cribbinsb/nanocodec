@@ -745,6 +745,76 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
     meva_school 97k keys are bound by the physical buffer in both arms, and Faster's are
     larger only by overflowing it further (docs/handoff/rate-control.md "Key quality match").
 
+## Veryfast and Faster base-only re-mix (feature/av1-weighted, 2026-11-17)
+
+Goal: AV1 points ahead of SVT on the Fixed QP chart on Zen 5 in Weighted as well as J. Build e329c8b59.
+Lens = `nceval.ctc local` on the build box (Weighted / J against x264 medium); fps = c8a.large fixed-QP
+chart timing (`fixedqp_timing.py`, all 12 sequences x 6 quantizers, one instance per session, variants as
+the rung's lens command plus `--param` pairs; SVT M12/M13 in every session). CBR CPU = x86 callgrind,
+release build, the three chart clips at CBR 600 kbit/s, 90 f (geometric mean). Pool screens: draw
+2026-11-17, k 0.6. Work dir `~/nanocodec-data/work/av1-weighted/` (`v/*.params`, `t/rec*.json`). Every lens
+and timing row is in the lever ledger (base `veryfast` / `faster`, rate `lens`).
+
+"Base-only" = `effort.regular_fraction 0` + `effort.light_nonbase_only 1`: keys and base (T0) frames take
+the plain values, the other frames the `light.*` values.
+
+**Veryfast** (shipped Veryfast's lever values stay on non-base frames; the base frames take):
+
+| candidate | base frames take | Weighted / J | fps (Veryfast; M13, same session) | CBR |
+|---|---|---:|---|---|
+| Veryfast | - | +7.7 / -6.2 | 1087-1099 | |
+| vI | Faster's `planner.inter_min_log2` 4 | +7.5 / -6.7 | 1067.3 (1087.3; 986.4) | |
+| vM | + Faster's near count, integer probes, chroma skip | +6.1 / -8.5 | 1054.7 (1087.3; 986.4) | |
+| vMAB | vM + Fast's subpel biases and refinement | +5.0 / -8.9 | 1038.4 (1087.3; 986.4) | |
+| **vMC** | vM + Fast's pre-transform skip and skip bias | **+3.3 / -10.4** | 1044.3 / 1037.2 / 1024.9 / 1042.6 (1087.3 / 1082.4 / 1078.5 / 1090.9; M13 986.4 / 978.9 / 986.9 / 993.5) | x86 +4.9 %; L1 quality -3.29 %; L3 J **-1.27 % [-1.89, -0.68] BETTER** (quality -4.2 %), no guard; final-check quality J **-5.87 % [-6.32, -5.40]**, no guard |
+| vMCAB | vMC + vMAB's | +2.4 / -10.6 | 1022.2 / 1007.7 (1082.4 / 1078.5) | x86 +7.4 %; L3 J -0.46 % [-1.11, +0.15] BETTER |
+| vbo14 | Fast's 14 Faster base-only values only | +5.4 / -6.4 | 1018.4 (1088.5) | |
+| vboDE | Fast's depth removal and full forward only | +9.4 / -3.6 | | |
+| vboDEm | vboDE + Faster's inter_min_log2 | +6.0 / -7.0 | 990.3 (1088.5) | |
+| vbo14m | all 14 + the four levers | +1.2 / -10.9 | 948.7 (1088.5; 983.9) | L1 quality -5.89 % |
+
+- **Landed vMC** (2caf7d21d): AV1 Veryfast is ahead of M13 on both axes on the lens (+3.3 / -10.4 against
+  +4.1 / -4.8), 3.9-6.0 % faster than M13 in four sessions. Changed presets: AV1 Veryfast only (288/297
+  identical). Web speed hint 0.36 -> 0.38. Jetson not measured. Not yet on the site (needs the chart
+  refresh's lens row and timing).
+- On Veryfast's base frames, its own four levers and Fast's pre-transform skip carry the gain; Fast's depth
+  removal and full forward transform cost speed for little (vbo14m against vMCAB: -1.2 W for -7 % fps).
+
+**Faster** (target: ≥ M12's speed at ≤ -1.5 Weighted; M12 897-911 fps in these sessions):
+
+| candidate | change on Faster | Weighted / J | fps (Faster; M12, same session) | CBR |
+|---|---|---:|---|---|
+| Faster | - | -5.7 / -18.3 | 799-818 | |
+| fL | Veryfast's layer gates + `rate.key_level_mean` 1 | -5.8 / -16.9 | 843.9 (806.7; 903.0) | |
+| fLCM | fL + light chroma 7, depth scale 8, NEARMV 1, inter_min_log2 5 | -4.4 / -16.0 | 865.8 (806.7) | |
+| fLCMP | fLCM + light integer probes off | -3.9 / -15.7 | 879.4 / 882.1 | L1 quality +3.76 % |
+| fLCMPh | fLCMP + non-base HME trio | -3.4 / -15.3 | 895.5 / 890.2 / 894.2 | |
+| fLCMPw | fLCMP + non-base window 2x0 | -2.4 / -14.4 | 902.3 (806.9; 903.0) | |
+| fLCMPk5 | fLCMP + half the key superblocks variance-planned (`effort.key_regular_fraction` 0.5, light `planner.intra_plan` 1) | -1.9 / -14.1 | 903.0 / 893.0 (M12 903.0 / 897.3) | |
+| fLCMPi | fLCMP + `planner.intra_plan` 1 | +1.2 / -11.0 | 951.4 | |
+| fLCMPhk75 | fLCMPh + key fraction 0.75 | -3.0 / -14.7 | 900.8 / 884.0 / 905.9 (M12 897.3 / 903.5 / 908.5) | x86 -6.5 % |
+| fLCMPhn | fLCMPh, base frames without Fast's depth removal and full forward | -0.1 / -13.2 | 980.0 | |
+| **fhkD** | fLCMPhk75 + partial forward on base frames | **-4.2 / -16.2** | 925.3 / 934.0 (M12 908.5 / 910.7) | x86 -7.4 % (lowlight +4.7 %); L1 quality +5.12 %; **L3 J +2.31 % [+0.92, +3.80] WORSE** with that CPU, class quality guards and periodic-key pulse +1.08 dB |
+| fhkDnpc | fhkD + base NEARMV 1, probes off, chroma 7 | -3.6 / -15.0 | 952.6 / 945.2 (M12 910.7 / 910.5) | x86 -9.4 % |
+| fhkDk5 | fhkD with key fraction 0.5 | -3.7 / -15.6 | 949.9 (910.7) | |
+| fhkDk5npc | both | -2.5 / -14.4 | 963.9 (910.7) | |
+| fhkI | fLCMPhk75 + inter_min_log2 5 on every frame | +3.3 / -9.4 | 981.6 | |
+| **fD** | partial forward on base frames only | **-5.7 / -18.7** | 823.4 (811.9; 910.5) | x86 -0.6 %; L3 J **-0.29 % [-0.75, +0.17] BETTER**, no guard; final-check quality J **+0.42 % [+0.03, +0.83] WORSE** (no CPU credit), no guard |
+| fDL / fDLh / fDLhk75 | fD + fL / + HME / + key 0.75 | -6.0 / -5.4 / -4.8 | 860.2 / 872.0 / 884.9 (811.9) | L1 quality +0.98 / +1.85 / +2.02 %; fDL x86 lowlight +12.8 % |
+| fDh | fD + non-base HME trio | not on the lens | not timed | x86 -1.8 %; L1 quality -0.30 % |
+
+- Faster's speed can be bought on the fixed-QP chart (fhkD/fhkDnpc: ahead of M12 in Weighted and J at
+  +1.8 to +4.6 % of its speed), but in CBR the same levers lose: fhkD's pool L3 is WORSE with its CPU credit.
+  The losses are the non-base light levers (chroma, depth 8, NEARMV, inter_min_log2 5, probes) and the layer
+  gates (more lowlight instructions under CBR). Not landed.
+- **fD not landed:** lens -5.7 / -18.7 at +1.4 % fixed-QP speed and CBR L3 BETTER with its CPU, but the
+  long-window final-check is +0.42 % quality (about +0.06 % with -0.6 % CPU at k 0.6): level, and too small
+  to move the chart. AV1 Faster stays 9-10 % slower than M12 on the Fixed QP chart (-5.7 Weighted against
+  -1.5). Open: a Faster speed lever that holds in CBR; the light levers above do not.
+- Fast's full forward transform on Faster's base frames costs Weighted on the lens (fhkD -4.2 against
+  fLCMPhk75 -3.0) and on Veryfast (vbo14m against vMCAB, with depth) little for its time.
+- AWS: 8 on-demand c8a.large sessions (2.5-12.6 min), $0.16, all terminated and in the ledger; lens runs on the shared build box.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.
