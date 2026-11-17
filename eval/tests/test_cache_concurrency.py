@@ -155,3 +155,22 @@ def test_real_use_result_of_the_old_ms_ssim_protocol_is_remeasured_when_used(tmp
     bench.metric_set = "classic"  # no MS-SSIM: unaffected
     stored.write_text(json.dumps({"gate_level": "full"}))
     assert bench._reusable(point, stored) is not None
+
+
+def test_a_result_without_xpsnr_serves_j_and_is_remeasured_only_for_xpsnr(tmp_path):
+    """XPSNR is an addition: no point identity changes, a stored result without it
+    keeps serving every run that does not ask for it (cbr.Bench.xpsnr)."""
+    from nceval.gatepolicy import PointCheck
+    from nceval.metrics import REAL_MS_SSIM_REVISION, REAL_XPSNR_REVISION
+    bench = cbr.Bench(paths=None, frames=FRAMES, intra=300, work=tmp_path, measurement="m",
+                      metric_set="real")
+    point = SimpleNamespace(check=PointCheck.NONE)
+    stored = tmp_path / "point.json"
+    without = {"gate_level": "full", "ms_ssim": 0.9, "ms_ssim_revision": REAL_MS_SSIM_REVISION}
+    stored.write_text(json.dumps(without))
+    assert bench._reusable(point, stored) is not None
+    bench.xpsnr = True
+    assert bench._reusable(point, stored) is None
+    stored.write_text(json.dumps({**without, "xpsnr_yuv": 38.0,
+                                  "xpsnr_revision": REAL_XPSNR_REVISION}))
+    assert bench._reusable(point, stored) is not None

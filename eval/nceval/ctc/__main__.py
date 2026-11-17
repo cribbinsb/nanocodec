@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 from ..config import load_paths
+from ..metrics import vmafx_tool
 from . import plan as planner
 from .local import main_local
 from .report import report
@@ -72,7 +73,8 @@ def stage(args: argparse.Namespace) -> None:
         jobs = planner.shard(jobs, index, count)
     run_dir = Path(args.run_dir)
     planner.stage(run_dir, jobs, tool_paths(Path(args.references)),
-                  [WORKER, DAV2D_CROP, load_paths().anchors / VMAF_V1_MODEL])
+                  [WORKER, DAV2D_CROP, load_paths().anchors / VMAF_V1_MODEL],
+                  vmafx_tool(load_paths()))
     print(f"staged {len(jobs)} jobs, {len(planner.tools_of(jobs))} tools in {run_dir}")
 
 

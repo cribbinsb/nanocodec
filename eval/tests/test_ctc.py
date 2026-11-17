@@ -193,3 +193,41 @@ def test_compare_records_a_variant_against_its_base_in_the_lever_ledger(tmp_path
     assert row["level"] == "lens" and row["base"] == "faster" and row["commit"] == "abc"
     assert row["overrides"] == {"av1.cdef_local_search_period": 8.0} and row["n"] == 1
     assert row["weighted"] == pytest.approx(-50.0, abs=0.1)
+
+
+def test_xpsnr_points_report_xpsnr_beside_j(tmp_path):
+    seq = "FourPeople_480x270_60"
+    for i, q in enumerate((22, 27, 32, 37)):
+        psnr = 40.0 - 3 * i
+        for encoder, kbps in (("hm-ldp", 800 / 2 ** i), ("x264-medium", 400 / 2 ** i)):
+            record = _record(f"aom-ld/{seq}/{encoder}/q{q}", kbps, psnr)
+            record["xpsnr_per_frame"] = {"xpsnr_y": [psnr - 1] * 2, "xpsnr_cb": [psnr] * 2,
+                                         "xpsnr_cr": [psnr] * 2}
+            path = tmp_path / "aom-ld" / seq / encoder / f"q{q}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(record))
+    points = report.load_points([tmp_path])
+    assert points[0].quality["XPSNR-YUV"] == pytest.approx((6 * 39.0 + 40.0 + 40.0) / 8)
+    rows = {(r["anchor"], r["test"], r["metric"]): r
+            for r in report.report([tmp_path], tmp_path / "out")["rows"]}
+    assert rows[("hm-ldp", "x264-medium", "XPSNR-YUV")]["bd"] == pytest.approx(-50.0)
+    a, t = (report.Curves(points).get("aom-ld", seq, e) for e in ("hm-ldp", "x264-medium"))
+    figures = local.figures(a, t)
+    assert figures["XPSNR-YUV"] == pytest.approx(-50.0) and "XPSNR-YUV" not in local.J_METRICS
+
+
+def test_staging_with_the_xpsnr_scorer_keeps_its_library_layout(tmp_path, fake_paths):
+    build = tmp_path / "vmafx-build"
+    (build / "tools").mkdir(parents=True)
+    (build / "src").mkdir()
+    (build / "tools" / "vmaf").write_text("tool")
+    for name in plan.XPSNR_LIBRARIES:
+        (build / "src" / name).write_text(name)
+    tools = {p.name: p for p in (fake_paths.anchors / "bin").iterdir()} | {"vmaf": build / "tools" / "vmaf"}
+    jobs = [{"id": "a", "encode": ["bin/x264"], "decoders": [["bin/ffmpeg-decode"]],
+             "sequence": "FourPeople_480x270_60", "frames": 2, "source": "/mnt/ctc/x.yuv"}]
+    run = tmp_path / "run"
+    plan.stage(run, jobs, tools, [], build / "tools" / "vmaf")
+    assert (run / worker.XPSNR_SCORER).read_text() == "tool"
+    assert all((run / "vmafx" / "src" / name).read_text() == name for name in plan.XPSNR_LIBRARIES)
+    assert json.loads((run / "jobs.json").read_text())[0]["xpsnr"] is True

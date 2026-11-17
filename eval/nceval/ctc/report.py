@@ -17,6 +17,9 @@ the AOM CTC v8 §5.5 method). Metrics:
 - Our J for cross-reference (docs/PROCEDURES.md): per sequence the mean of
   the full-overlap and lower-half BD-rates, each the mean over PSNR-YUV
   (6:1:1 of the frame-averaged planes), VMAF v1 and MS-SSIM (dB).
+- XPSNR-YUV, reported beside J and never in it, where the run scored it
+  (worker.py `xpsnr`): 6:1:1 of each plane's sequence XPSNR
+  (nceval.metrics.xpsnr_measurement).
 
 A class figure is the equal-weight mean over its sequences, the overall
 figure the mean over all sequences (§5.1), both over sequences with a
@@ -37,6 +40,8 @@ from pathlib import Path
 from statistics import mean
 
 from ..bdrate import bd_rate
+from ..framepipe import PSNR_CAP_DB
+from ..metrics import xpsnr_measurement
 from .conditions import CONDITIONS, JVET_CTC_QPS, Condition, Scale
 from .sequences import HEADLINE_TIERS, Tier, by_name
 
@@ -50,6 +55,8 @@ AOM_METRICS = ("Y", "U", "V", "APSNR-YUV", "SSIM", "MS-SSIM", "VMAF", "VMAF-NEG"
                "PSNR-HVS")
 JVET_METRICS = ("Y-fa", "U-fa", "V-fa")
 J_METRICS = ("PSNR-YUV", "VMAF-v1", "MS-SSIM")
+#: Reported only (never in J or Weighted), where every point of both curves has it.
+REPORTED_METRICS = ("XPSNR-YUV",)
 MIN_CURVE_POINTS = 4
 
 
@@ -90,7 +97,18 @@ def quality_of(record: dict) -> dict[str, float]:
             **{figure: means[metric] for figure, metric in _POOLED.items() if metric in means},
             "Y-fa": yf, "U-fa": uf, "V-fa": vf,
             "PSNR-YUV": sum(w * p for w, p in zip(PSNR_YUV_WEIGHTS, (yf, uf, vf))),
-            "VMAF-v1": means["vmaf_v1"]}
+            "VMAF-v1": means["vmaf_v1"], **xpsnr_of(record)}
+
+
+def xpsnr_of(record: dict) -> dict[str, float]:
+    """XPSNR-YUV of a point the worker scored for XPSNR, else nothing."""
+    per_frame = record.get("xpsnr_per_frame")
+    if not per_frame:
+        return {}
+    frames = [{"xpsnr_y": y, "xpsnr_u": u, "xpsnr_v": v} for y, u, v in
+              zip(per_frame["xpsnr_y"], per_frame["xpsnr_cb"], per_frame["xpsnr_cr"])]
+    capped = [{k: min(PSNR_CAP_DB, x) for k, x in f.items()} for f in frames]
+    return {"XPSNR-YUV": xpsnr_measurement(capped)["xpsnr_yuv"]}
 
 
 def load_points(results: list[Path]) -> list[Point]:
@@ -184,6 +202,8 @@ def _sequence_rows(curves: Curves, condition: Condition, anchor: str, test: str,
                     for m in JVET_METRICS})
     results.update({m: bd(a, t, m) for m in JVET_METRICS})
     results["J"] = bd_j(a, t)
+    results.update({m: bd(a, t, m) for m in REPORTED_METRICS
+                    if all(m in p.quality for p in a + t)})
     rows = [{**base, "metric": m, "bd": r.value, "overlap": r.overlap, "reliable": int(r.reliable)}
             for m, r in results.items()]
     planes = [results[p] for p in BD_WEIGHTS]

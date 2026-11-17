@@ -342,8 +342,10 @@ def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
         extra_clips = [c for c in extra_clips if c in clips]
     if any(c.start_frame for c in clips):
         raise SystemExit("held-out clips are measured from frame 0")
+    # results scoring records XPSNR beside J (cbr.Bench.xpsnr)
     return Setup(families, clips, Runner(load_paths(), EVALUATION_GATE, workers,
-                                         over_budget=True, prebuilt=Path(args.streams)),
+                                         over_budget=True, prebuilt=Path(args.streams),
+                                         xpsnr=True),
                  extra_clips, extra_families(families) if args.extras else [],
                  getattr(args, "frames", None) or DEFAULT_FRAMES,
                  getattr(args, "key_seconds", None))
@@ -616,6 +618,8 @@ def score_cloud(args: argparse.Namespace) -> None:
             "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y ffmpeg python3-numpy "
             "python3-scipy python3-opencv python3-xxhash > /dev/null",
             "! ldd ~/nanocodec-data/anchors/x86_64/bin/* | grep 'not found'",
+            # the CPU backend scores XPSNR with ffmpeg's xpsnr filter (ffmpeg >= 7.1)
+            "ffmpeg -hide_banner -filters | grep -qw xpsnr",
             "~/nanocodec-data/anchors/x86_64/bin/vmaf --version",
             f"cd ~/repo && {METRICS_ENV} python3 -c 'import sys; sys.path.insert(0, \"eval\"); "
             "import nceval.chart, nceval.metrics as m; print(m.metrics_backend())'",

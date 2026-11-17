@@ -97,12 +97,13 @@ class Runner:
     """Benches per frame count, budgeted measurement, curves and comparisons."""
 
     def __init__(self, paths: Paths, policy: GatePolicy, workers: int, over_budget: bool,
-                 stored_ms_ssim: bool = False, prebuilt: Path | None = None):
+                 stored_ms_ssim: bool = False, prebuilt: Path | None = None,
+                 xpsnr: bool = False):
         """`stored_ms_ssim`: reuse stored results of an older MS-SSIM protocol
         (cbr.Bench.stored_ms_ssim); `prebuilt`: score streams encoded elsewhere
-        (cbr.Bench.prebuilt)."""
+        (cbr.Bench.prebuilt); `xpsnr`: also score XPSNR (cbr.Bench.xpsnr)."""
         self.paths, self.policy = paths, policy
-        self.stored_ms_ssim, self.prebuilt = stored_ms_ssim, prebuilt
+        self.stored_ms_ssim, self.prebuilt, self.xpsnr = stored_ms_ssim, prebuilt, xpsnr
         self.workers, self.over_budget = min(workers, DEFAULT_WORKERS), over_budget
         self._benches: dict[int, Bench] = {}
         #: Points that are not rate-valid (rate_valid: buffer broken, or average
@@ -119,7 +120,7 @@ class Runner:
             self._benches[(frames, intra)] = Bench(self.paths, frames, intra, work,
                                                    metric_set="real",
                                                    stored_ms_ssim=self.stored_ms_ssim,
-                                                   prebuilt=self.prebuilt)
+                                                   prebuilt=self.prebuilt, xpsnr=self.xpsnr)
         return self._benches[(frames, intra)]
 
     def points(self, families: list[Family], clips: list[Clip], frames: int,
@@ -317,6 +318,7 @@ def point_terms(result: dict, window_seconds: float) -> dict:
     """One CBR point as J_real sees it: achieved rate, sequence and temporal quality."""
     terms = {key: result[key] for key in ("kbps", "psnr_yuv", "vmaf_v1", "ms_ssim",
                                           "overruns", "max_fullness", "target_kbps")}
+    terms.update({m: result[m] for m in jreal.REPORTED_METRICS if m in result})
     terms["rate_valid"] = rate_valid(result, window_seconds)
     terms["window_seconds"] = window_seconds  # the ceiling guard judges long windows absolutely
     terms.update(jreal.temporal_stats(result["frame_psnr_y"], result["frame_vmaf_v1"],

@@ -44,11 +44,15 @@ COLUMNS = ("line", "test", "test_mode", "anchor", "anchor_mode", "bd_j", "bd_psn
 
 
 def clip_terms(anchor: list[dict], test: list[dict]) -> dict[str, float | None]:
-    """One clip's full and lower-half BD-rates per J metric, and their means."""
+    """One clip's full and lower-half BD-rates per J metric, and their means; the
+    reported metrics' (jreal.REPORTED_METRICS) BD-rates where both curves carry them."""
     row: dict[str, float | None] = {}
     for metric in jreal.HEADLINE_METRICS:
         row[metric] = jreal.curve_bd(anchor, test, metric)
         row[f"low_{metric}"] = jreal.curve_bd(anchor, test, metric, True)
+    for metric in jreal.REPORTED_METRICS:
+        row[metric] = (jreal.curve_bd(anchor, test, metric)
+                       if all(metric in p for p in anchor + test) else None)
     for name, prefix in (("full", ""), ("low", "low_")):
         values = [row[f"{prefix}{m}"] for m in jreal.HEADLINE_METRICS]
         row[name] = None if None in values else sum(values) / len(values)

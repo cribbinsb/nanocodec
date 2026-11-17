@@ -1,6 +1,7 @@
 """V1 preprocessing/model identity and legacy storage/report isolation."""
 import io
 import json
+import math
 import os
 import sqlite3
 import subprocess
@@ -380,3 +381,36 @@ def test_metrics_backend_defaults_to_vmafx_and_fails_loudly(tmp_path, monkeypatc
     monkeypatch.setenv(metrics.VMAFX_ENV, str(broken))
     with pytest.raises(RuntimeError, match='self-check'):
         metrics.real_metrics(metrics.StreamSpec(tmp_path / 'clip.yuv', YuvFormat(64, 64), 1, 30, paths))
+
+
+def test_sequence_xpsnr_is_the_square_mean_root_of_the_frames():
+    # ffmpeg's xpsnr filter pools so (its summary of these per-frame values; 2026-11-17)
+    assert metrics.sequence_xpsnr([30.0, 30.0]) == pytest.approx(30.0)
+    assert metrics.sequence_xpsnr([30.0, 40.0]) == pytest.approx(
+        20 * math.log10(2 / (10 ** -1.5 + 10 ** -2.0)))
+    assert metrics.sequence_xpsnr([30.0, 40.0]) < (30.0 + 40.0) / 2
+
+
+def test_vmafx_scores_xpsnr_in_the_same_gpu_pass_when_asked(tmp_path, monkeypatch):
+    paths, _ = model_paths(tmp_path)
+    fake_vmafx(tmp_path, monkeypatch)
+    spec = metrics.StreamSpec(tmp_path / 'clip.yuv', YuvFormat(640, 360), 2, 59.94, paths)
+    _, plain = metrics.real_metrics(spec)
+    psnr, gpu = metrics.real_metrics(spec, xpsnr=True)
+    processes = RecordingProcesses()
+    gpu.start(processes, tmp_path)
+    (cmd, _, _), = processes.calls
+    features = [cmd[i + 1] for i, a in enumerate(cmd) if a == '--feature']
+    assert features == ['float_ms_ssim', 'xpsnr=fps=59.94']
+    report = vmafx_report(2, backends=('adm_cuda', 'float_ms_ssim_cuda', 'xpsnr_cuda'))
+    for frame, (y, u, v) in zip(report['frames'], [(30.0, 40.0, 41.0), (32.0, 40.0, 41.0)]):
+        frame['metrics'].update(xpsnr_y=y, xpsnr_cb=u, xpsnr_cr=v)
+    measured = gpu._parse_report(report)
+    y = metrics.sequence_xpsnr([30.0, 32.0])
+    assert measured.summary['xpsnr_y'] == pytest.approx(y)
+    assert measured.summary['xpsnr_yuv'] == pytest.approx((6 * y + 40.0 + 41.0) / 8)
+    assert measured.per_frame[1]['xpsnr_u'] == 40.0
+    assert 'xpsnr_yuv' not in plain._parse_report(vmafx_report(2)).summary
+    # an XPSNR that did not run on the GPU fails the point
+    with pytest.raises(RuntimeError, match='did not score on CUDA'):
+        gpu._parse_report(vmafx_report(2))

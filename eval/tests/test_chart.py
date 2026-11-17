@@ -207,7 +207,7 @@ def test_chained_points_report_both_means_and_their_clips():
     assert "| -47.0%‡ | -44.0% |" in table and "‡ 1 clip chained" in table
     assert "| static_cam29 | nanocodec-av1 | -10.0% | -40.0% | -46.0% |" in chart.chained_table([p])
     assert chart.csv_text([p], front).splitlines()[1].endswith(
-        ",1,-44.00,static_cam29:nanocodec-av1:-46.00")
+        ",1,-44.00,static_cam29:nanocodec-av1:-46.00,")  # no XPSNR: empty last column
     assert chart.chart_label(p) == "nanocodec-av2"  # marked in the table only
 
 

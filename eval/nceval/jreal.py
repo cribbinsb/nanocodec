@@ -133,6 +133,10 @@ from .bdrate import BdResult, bd_rate
 #: (3d0h) needs no NEG variant: its ADM already caps the enhancement gain
 #: (adm_enhn_gain_limit 1.0) and it has no VIF.
 HEADLINE_METRICS = ("psnr_yuv", "vmaf_v1", "ms_ssim")
+#: Metrics measured on request (final checks, results) and reported as BD-rates
+#: beside J, never part of J, a guard or a decision (owner, 2026-11-17): XPSNR.
+#: A clip's term is None unless every point of both curves carries the metric.
+REPORTED_METRICS = ("xpsnr_yuv",)
 WORST_METRICS = ("worst_psnr_y", "worst_vmaf_v1")
 #: The per-frame worst-1% metrics, reported only.
 WORST_FRAME_METRICS = ("worst_frame_psnr_y", "worst_frame_vmaf_v1")
@@ -387,6 +391,12 @@ def compare_clip(anchor: list[dict], test: list[dict], min_points: int = BD_MIN_
     for metric in WORST_FRAME_METRICS:
         terms[f"bd_{metric}"] = (curve_bd(anchor, test, metric, min_points=min_points)
                                  if all(metric in p for p in anchor + test) else None)
+    for metric in REPORTED_METRICS:  # as a headline metric's terms, but outside J
+        measured = all(metric in p for p in anchor + test)
+        terms[f"bd_{metric}"] = (curve_bd(anchor, test, metric, min_points=min_points)
+                                 if measured else None)
+        terms[f"low_{metric}"] = curve_bd(anchor, test, metric, True, min_points) \
+            if measured else None
     terms["d_flicker_psnr_y"] = matched_delta(anchor, test, lambda p: p["flicker_psnr_y"])
     terms["d_flicker_guard_psnr_y"] = flicker_over_headroom(
         terms["d_flicker_psnr_y"], anchor, reference_flicker)
@@ -547,6 +557,7 @@ def compliance(per_clip: dict[str, dict]) -> dict:
 TERMS = ("quality", "quality_low",
          *(f"bd_{m}" for m in HEADLINE_METRICS), *(f"low_{m}" for m in HEADLINE_METRICS),
          *(f"bd_{m}" for m in WORST_METRICS + WORST_FRAME_METRICS),
+         *(f"{prefix}{m}" for m in REPORTED_METRICS for prefix in ("bd_", "low_")),
          "d_flicker_psnr_y", "d_flicker_guard_psnr_y", "d_flicker_frame_psnr_y",
          "d_first_pulse_psnr_y", *PULSE_TERMS, "base_quality")
 

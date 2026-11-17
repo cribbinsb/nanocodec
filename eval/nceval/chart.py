@@ -170,9 +170,10 @@ CHAIN_MARK = "‡"
 LINEAGES = (frozenset({Codec.H264}), frozenset({Codec.HEVC, Codec.VVC}),
             frozenset({Codec.VP9, Codec.AV1, Codec.AV2}))
 #: The per-metric BD terms composed through the intermediate: the inputs of
-#: BD-J (jreal.headline_quality) and of BD-PSNR-YUV.
+#: BD-J (jreal.headline_quality), of each metric's BD-rate, and of the reported
+#: metrics' (XPSNR; None unless both legs carry it).
 CHAINED_TERMS = tuple(f"{prefix}{metric}" for prefix in ("bd_", "low_")
-                      for metric in jreal.HEADLINE_METRICS)
+                      for metric in jreal.HEADLINE_METRICS + jreal.REPORTED_METRICS)
 OUTPUT_STEM = "bd-vs-speed"
 #: Direct comparisons shown under the chart: (ours, reference), each BD on the
 #: same real-use points, without the neutral anchor in between.
@@ -237,6 +238,9 @@ class ChartPoint:
     bd_msssim: float | None = None
     #: The fps is its default-tuned twin's (a metric-tuned point not yet timed itself).
     fps_borrowed: bool = False
+    #: BD-rate on XPSNR-YUV alone, the same (full + low) / 2; None unless every
+    #: scored clip's curves carry XPSNR (reported only, never part of BD-J).
+    bd_xpsnr: float | None = None
 
     @property
     def flagged(self) -> bool:
@@ -328,8 +332,9 @@ def measure(args: argparse.Namespace) -> None:
     if args.part:
         index, count = (int(x) for x in args.part.split("/"))
         clips = balanced_parts(clips, count)[index - 1]
+    # the measured families record XPSNR: a stored point without it is re-measured
     runner = Runner(load_paths(), EVALUATION_GATE, args.workers, args.over_budget,
-                    stored_ms_ssim=not args.rescore, prebuilt=args.prebuilt)
+                    stored_ms_ssim=not args.rescore, prebuilt=args.prebuilt, xpsnr=True)
     jobs = runner.points(families, clips, args.frames, args.rungs)
     minutes = estimate_minutes(runner.price(jobs))
     print(f"chart measure: {len(clips)} clips, {len(families)} families, {len(jobs)} points, "
@@ -408,6 +413,18 @@ def balanced_pair(per_clip: dict, full: str, low: str) -> float | None:
     """(CB(full) + CB(low)) / 2, CB = class-balanced mean (jreal.aggregate)."""
     values = [jreal.aggregate(per_clip, term)["balanced"] for term in (full, low)]
     return None if None in values else sum(values) / 2
+
+
+def reported_pair(per_clip: dict, metric: str) -> float | None:
+    """`balanced_pair` of a reported metric over the same clips as BD-J: None
+    (not measured) when any clip BD-J scores lacks it, so the figure is never
+    over a different clip set from its neighbours."""
+    scored = [row for row in per_clip.values() if row.get("j") is not None]
+    if not scored or any(row.get(f"bd_{metric}") is None or row.get(f"low_{metric}") is None
+                         for row in scored):
+        return None
+    return balanced_pair({clip: row for clip, row in per_clip.items() if row.get("j") is not None},
+                         f"bd_{metric}", f"low_{metric}")
 
 
 def interquartile(values: list[float]) -> tuple[float, float] | None:
@@ -517,6 +534,7 @@ def chart_point(test: Family, label: str, per_clip: dict[str, dict], clips: list
         bd_psnr=balanced_pair(rows, "bd_psnr_yuv", "low_psnr_yuv"),
         bd_vmaf=balanced_pair(rows, "bd_vmaf_v1", "low_vmaf_v1"),
         bd_msssim=balanced_pair(rows, "bd_ms_ssim", "low_ms_ssim"),
+        bd_xpsnr=reported_pair(rows, "xpsnr_yuv"),
         iqr=interquartile(scored), scored=len(scored), clips=len(clips),
         missing_classes=tuple(sorted({c.content_class for c in clips} - scored_classes)),
         rate_invalid=len(runner.unreachable.get(test.name, ())),
@@ -867,7 +885,7 @@ def csv_text(points: list[ChartPoint], front: list[ChartPoint],
     writer.writerow(["family", "label", "ours", "bd_j_pct", "bd_psnr_yuv_pct", "bd_vmaf_v1_pct", "iqr_low_pct",
                      "iqr_high_pct", "clips_scored", "clips", platform.column,
                      "speed_vs_anchor", "pareto", "flagged", "rate_invalid_points",
-                     "clips_chained", "bd_j_direct_pct", "chained"])
+                     "clips_chained", "bd_j_direct_pct", "chained", "bd_xpsnr_yuv_pct"])
     for p in points:
         num = (lambda v, d: "" if v is None else f"{v:.{d}f}")
         chained = ";".join(f"{c.clip}:{c.intermediate}:{c.j:.2f}" for c in p.chained)
@@ -875,7 +893,7 @@ def csv_text(points: list[ChartPoint], front: list[ChartPoint],
                          num(p.iqr and p.iqr[0], 2), num(p.iqr and p.iqr[1], 2), p.scored,
                          p.clips, num(p.fps, 2), num(p.speed, 3), int(p in front),
                          int(p.flagged), p.rate_invalid, len(p.chained),
-                         num(p.direct_bd_j, 2), chained])
+                         num(p.direct_bd_j, 2), chained, num(p.bd_xpsnr, 2)])
     return out.getvalue()
 
 

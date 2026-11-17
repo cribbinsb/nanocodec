@@ -436,7 +436,9 @@ def final_check(args: argparse.Namespace) -> dict:
                         param_args(preset_args(old_presets, codec, args.preset)), own=True, cqp=False)
         test = Family(f"nanocodec-{codec.value}@candidate", codec, new,
                       param_args(preset_args(new_presets, codec, args.preset)), own=True, cqp=False)
-        runner = Runner(paths, GatePolicy(EVALUATION_GATE.value), args.workers, args.over_budget)
+        # XPSNR is recorded (reported beside J, never part of the decision)
+        runner = Runner(paths, GatePolicy(EVALUATION_GATE.value), args.workers, args.over_budget,
+                        xpsnr=True)
         screen_args = argparse.Namespace(frames=args.frames, rotation=args.rotation,
                                          max_level=len(pool.LEVELS), dcpu=None,
                                          k=jreal.K_CPU, all_stages=False,

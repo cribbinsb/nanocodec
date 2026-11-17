@@ -66,8 +66,9 @@ FRAMES = 150
 WORKERS = 8
 OWN_PREFIX = "nanocodec-"
 OPENH264 = "openh264-baseline"
-#: The J terms and the per-metric BD-rates reported for each pair.
-TERMS = ("full", "low", "psnr_yuv", "vmaf_v1", "ms_ssim")
+#: The J terms and the per-metric BD-rates reported for each pair (XPSNR beside J,
+#: never in it; measured only by `gap --clipset`, the site's runs).
+TERMS = ("full", "low", "psnr_yuv", "vmaf_v1", "ms_ssim", "xpsnr_yuv")
 
 
 def default_rotation() -> str:
@@ -115,8 +116,9 @@ class Benches:
     """The bench for each clip: a clip shorter than the run is measured whole,
     as the screens do (realuse.Runner.points)."""
 
-    def __init__(self, paths: Paths, frames: int):
-        self.runner = Runner(paths, EVALUATION_GATE, WORKERS, over_budget=True)
+    def __init__(self, paths: Paths, frames: int, xpsnr: bool = False):
+        """`xpsnr`: also score XPSNR (cbr.Bench.xpsnr)."""
+        self.runner = Runner(paths, EVALUATION_GATE, WORKERS, over_budget=True, xpsnr=xpsnr)
         self.frames = frames
 
     def of(self, clip: Clip) -> Bench:
@@ -229,7 +231,7 @@ def summary(rows: dict[str, dict]) -> dict:
     stats = interval.interval(rows, None, 0.0)
     out = {"j": stats["mean"], "lo": stats["lo"], "hi": stats["hi"], "n": stats["n"]}
     for metric in TERMS[2:]:
-        values = [(r["class"], r[metric]) for r in rows.values() if r[metric] is not None]
+        values = [(r["class"], r[metric]) for r in rows.values() if r.get(metric) is not None]
         out[metric] = interval.balanced_mean(values) if values else None
     return out
 
@@ -239,7 +241,8 @@ def describe(label: str, result: dict) -> str:
         return "   n/a" if value is None else f"{value:+6.1f}"
     return (f"{label:52s} J {pct(result['j'])} [{pct(result['lo'])},{pct(result['hi'])}] "
             f"PSNR {pct(result['psnr_yuv'])} VMAF {pct(result['vmaf_v1'])} "
-            f"MS-SSIM {pct(result['ms_ssim'])}  n={result['n']}")
+            f"MS-SSIM {pct(result['ms_ssim'])} XPSNR {pct(result.get('xpsnr_yuv'))}  "
+            f"n={result['n']}")
 
 
 def gap(args: argparse.Namespace) -> dict:
@@ -254,7 +257,9 @@ def gap(args: argparse.Namespace) -> dict:
         clips = draw_clips(paths, args.rotation, args.level, args.clips, args.frames)
         print(f"draw {args.rotation} {args.level}: {len(clips)} clips; "
               f"{len(families)} families", flush=True)
-    curves = measure(Benches(paths, args.frames), families, clips, workers=args.workers)
+    # the site's runs (--clipset) record XPSNR; pool-draw gaps only rank ideas
+    curves = measure(Benches(paths, args.frames, xpsnr=bool(args.clipset)), families, clips,
+                     workers=args.workers)
     pairs = [tuple(p.split(":")) for p in args.pairs.split(",")] if args.pairs else []
     results = {}
     for anchor, test in pairs:
@@ -389,7 +394,7 @@ def site_record(args: argparse.Namespace) -> dict:
             row = value["summary"]
             families[test] = {"j": round(row["j"], 2), "lo": round(row["lo"], 2),
                               "hi": round(row["hi"], 2), "n": row["n"],
-                              **{m: None if row[m] is None else round(row[m], 2)
+                              **{m: None if row.get(m) is None else round(row[m], 2)
                                  for m in TERMS[2:]}}
     if len(anchors) != 1:
         raise SystemExit(f"one anchor expected, got {sorted(anchors)}")

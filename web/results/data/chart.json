@@ -935,6 +935,7 @@
      "psnr": 0.0,
      "vmaf": 0.0,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       0.0,
       0.0
@@ -956,6 +957,7 @@
      "psnr": 11.45,
      "vmaf": 27.55,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       8.14,
       16.46
@@ -977,6 +979,7 @@
      "psnr": -25.59,
      "vmaf": -18.54,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.7,
       -14.35
@@ -998,6 +1001,7 @@
      "psnr": -23.48,
      "vmaf": -18.0,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.41,
       -12.73
@@ -1019,6 +1023,7 @@
      "psnr": -14.73,
      "vmaf": -10.19,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -25.75,
       -0.27
@@ -1040,6 +1045,7 @@
      "psnr": -8.52,
      "vmaf": -0.36,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -22.44,
       14.06
@@ -1061,6 +1067,7 @@
      "psnr": -3.61,
      "vmaf": 5.01,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -18.53,
       19.65
@@ -1082,6 +1089,7 @@
      "psnr": -44.58,
      "vmaf": -43.31,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -53.12,
       -37.25
@@ -1103,6 +1111,7 @@
      "psnr": -43.01,
      "vmaf": -41.82,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -51.99,
       -35.79
@@ -1124,6 +1133,7 @@
      "psnr": -33.38,
      "vmaf": -29.88,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -41.91,
       -26.05
@@ -1145,6 +1155,7 @@
      "psnr": -25.11,
      "vmaf": -22.4,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.79,
       -17.14
@@ -1166,6 +1177,7 @@
      "psnr": -45.99,
      "vmaf": -39.52,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -52.2,
       -37.05
@@ -1187,6 +1199,7 @@
      "psnr": -45.16,
      "vmaf": -38.4,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -51.27,
       -36.27
@@ -1208,6 +1221,7 @@
      "psnr": -40.41,
      "vmaf": -33.12,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -46.01,
       -30.86
@@ -1229,6 +1243,7 @@
      "psnr": -36.07,
      "vmaf": -31.94,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -45.27,
       -27.38
@@ -1250,6 +1265,7 @@
      "psnr": -29.14,
      "vmaf": -25.43,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -41.34,
       -19.77
@@ -1271,6 +1287,7 @@
      "psnr": -42.87,
      "vmaf": -36.81,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -49.08,
       -33.36
@@ -1292,6 +1309,7 @@
      "psnr": -42.63,
      "vmaf": -36.38,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -48.24,
       -32.7
@@ -1313,6 +1331,7 @@
      "psnr": -33.66,
      "vmaf": -29.32,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -40.97,
       -23.34
@@ -1334,6 +1353,7 @@
      "psnr": -27.57,
      "vmaf": -25.58,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -39.17,
       -18.25
@@ -1355,6 +1375,7 @@
      "psnr": -20.14,
      "vmaf": -20.51,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.49,
       -11.08
@@ -1376,6 +1397,7 @@
      "psnr": -49.62,
      "vmaf": -44.76,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -54.43,
       -41.07
@@ -1397,6 +1419,7 @@
      "psnr": -48.51,
      "vmaf": -43.52,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -53.34,
       -39.28
@@ -1418,6 +1441,7 @@
      "psnr": -37.89,
      "vmaf": -33.67,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -43.61,
       -27.78
@@ -1439,6 +1463,7 @@
      "psnr": -47.83,
      "vmaf": -46.71,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -56.82,
       -40.57
@@ -1460,6 +1485,7 @@
      "psnr": -47.03,
      "vmaf": -45.88,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -56.76,
       -39.9
@@ -1481,6 +1507,7 @@
      "psnr": -36.51,
      "vmaf": -35.94,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -45.88,
       -28.64
@@ -1502,6 +1529,7 @@
      "psnr": 27.61,
      "vmaf": 41.79,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -2.36,
       63.53
@@ -1523,6 +1551,7 @@
      "psnr": 54.17,
      "vmaf": 36.17,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       22.68,
       68.04
@@ -1544,6 +1573,7 @@
      "psnr": 6.59,
      "vmaf": 27.42,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       2.42,
       21.47
@@ -1565,6 +1595,7 @@
      "psnr": -12.32,
      "vmaf": -10.39,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -22.08,
       -5.4
@@ -1586,6 +1617,7 @@
      "psnr": -19.71,
      "vmaf": -17.18,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -26.21,
       -14.46
@@ -1607,6 +1639,7 @@
      "psnr": -19.61,
      "vmaf": -14.17,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -29.05,
       -15.15
@@ -1628,6 +1661,7 @@
      "psnr": -36.74,
      "vmaf": -26.72,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -39.03,
       -26.02
@@ -1649,6 +1683,7 @@
      "psnr": -28.21,
      "vmaf": -20.86,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -32.31,
       -18.69
@@ -1670,6 +1705,7 @@
      "psnr": -20.11,
      "vmaf": -15.42,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -24.81,
       -8.77
@@ -1691,6 +1727,7 @@
      "psnr": -17.64,
      "vmaf": -13.55,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -24.3,
       -6.85
@@ -1712,6 +1749,7 @@
      "psnr": 19.03,
      "vmaf": 18.63,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       4.65,
       23.15
@@ -1733,6 +1771,7 @@
      "psnr": 18.3,
      "vmaf": 16.26,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       5.63,
       18.63
@@ -1754,6 +1793,7 @@
      "psnr": -14.76,
      "vmaf": -11.55,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -23.86,
       -9.85
@@ -1775,6 +1815,7 @@
      "psnr": -16.55,
      "vmaf": -9.58,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -23.52,
       -8.89
@@ -1796,6 +1837,7 @@
      "psnr": 5.5,
      "vmaf": 7.87,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -0.82,
       18.7
@@ -1817,6 +1859,7 @@
      "psnr": 8.76,
      "vmaf": 26.94,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       6.92,
       14.69
@@ -1838,6 +1881,7 @@
      "psnr": -14.44,
      "vmaf": -10.74,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -23.36,
       -6.11
@@ -1859,6 +1903,7 @@
      "psnr": -22.75,
      "vmaf": -18.18,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -28.76,
       -16.65
@@ -1880,6 +1925,7 @@
      "psnr": -26.53,
      "vmaf": -20.86,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -32.01,
       -18.4
@@ -1901,6 +1947,7 @@
      "psnr": 19.12,
      "vmaf": 23.7,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       4.2,
       20.79
@@ -1985,6 +2032,7 @@
      "psnr": 0.0,
      "vmaf": 0.0,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       0.0,
       0.0
@@ -2006,6 +2054,7 @@
      "psnr": 12.25,
      "vmaf": 25.11,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       7.45,
       16.27
@@ -2027,6 +2076,7 @@
      "psnr": -22.58,
      "vmaf": -14.49,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -34.83,
       -8.72
@@ -2048,6 +2098,7 @@
      "psnr": -20.32,
      "vmaf": -13.93,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -34.49,
       -7.59
@@ -2069,6 +2120,7 @@
      "psnr": -10.81,
      "vmaf": -5.3,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -24.58,
       2.23
@@ -2090,6 +2142,7 @@
      "psnr": -4.06,
      "vmaf": 4.88,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -20.06,
       18.15
@@ -2111,6 +2164,7 @@
      "psnr": 1.42,
      "vmaf": 11.96,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -16.65,
       23.47
@@ -2132,6 +2186,7 @@
      "psnr": -40.04,
      "vmaf": -38.51,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -51.97,
       -35.97
@@ -2153,6 +2208,7 @@
      "psnr": -38.62,
      "vmaf": -37.17,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -49.9,
       -34.29
@@ -2174,6 +2230,7 @@
      "psnr": -29.8,
      "vmaf": -24.61,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -39.18,
       -24.97
@@ -2195,6 +2252,7 @@
      "psnr": -22.27,
      "vmaf": -17.85,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -33.75,
       -16.45
@@ -2216,6 +2274,7 @@
      "psnr": -42.57,
      "vmaf": -34.78,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -50.22,
       -36.38
@@ -2237,6 +2296,7 @@
      "psnr": -41.69,
      "vmaf": -33.79,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -49.49,
       -35.64
@@ -2258,6 +2318,7 @@
      "psnr": -36.35,
      "vmaf": -27.5,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -43.75,
       -30.17
@@ -2279,6 +2340,7 @@
      "psnr": -30.85,
      "vmaf": -25.39,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -41.58,
       -25.94
@@ -2300,6 +2362,7 @@
      "psnr": -23.57,
      "vmaf": -20.15,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -39.16,
       -18.75
@@ -2321,6 +2384,7 @@
      "psnr": -40.27,
      "vmaf": -33.61,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -47.88,
       -32.94
@@ -2342,6 +2406,7 @@
      "psnr": -39.87,
      "vmaf": -32.92,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -47.59,
       -32.17
@@ -2363,6 +2428,7 @@
      "psnr": -29.47,
      "vmaf": -25.96,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -38.85,
       -23.25
@@ -2384,6 +2450,7 @@
      "psnr": -23.58,
      "vmaf": -21.69,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.83,
       -17.45
@@ -2405,6 +2472,7 @@
      "psnr": -15.0,
      "vmaf": -15.8,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -33.4,
       -8.97
@@ -2426,6 +2494,7 @@
      "psnr": -46.79,
      "vmaf": -40.74,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -53.47,
       -40.59
@@ -2447,6 +2516,7 @@
      "psnr": -45.43,
      "vmaf": -39.1,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -52.28,
       -38.47
@@ -2468,6 +2538,7 @@
      "psnr": -33.78,
      "vmaf": -27.54,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -42.0,
       -27.11
@@ -2489,6 +2560,7 @@
      "psnr": -44.65,
      "vmaf": -42.43,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -54.39,
       -40.29
@@ -2510,6 +2582,7 @@
      "psnr": -44.15,
      "vmaf": -41.6,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -53.63,
       -39.47
@@ -2531,6 +2604,7 @@
      "psnr": -31.84,
      "vmaf": -30.9,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -43.39,
       -27.89
@@ -2552,6 +2626,7 @@
      "psnr": 25.51,
      "vmaf": 42.18,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -4.75,
       69.02
@@ -2573,6 +2648,7 @@
      "psnr": 67.56,
      "vmaf": 43.97,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       33.19,
       77.09
@@ -2594,6 +2670,7 @@
      "psnr": 13.23,
      "vmaf": 32.4,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       5.23,
       25.38
@@ -2615,6 +2692,7 @@
      "psnr": -9.22,
      "vmaf": -4.31,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -22.2,
       -4.03
@@ -2636,6 +2714,7 @@
      "psnr": -15.93,
      "vmaf": -11.03,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -27.19,
       -13.48
@@ -2657,6 +2736,7 @@
      "psnr": -16.95,
      "vmaf": -8.65,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -29.0,
       -13.6
@@ -2678,6 +2758,7 @@
      "psnr": -31.84,
      "vmaf": -14.91,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -38.51,
       -25.22
@@ -2699,6 +2780,7 @@
      "psnr": -23.1,
      "vmaf": -9.95,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -31.31,
       -17.21
@@ -2720,6 +2802,7 @@
      "psnr": -12.06,
      "vmaf": -2.08,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -23.8,
       -8.54
@@ -2741,6 +2824,7 @@
      "psnr": -9.55,
      "vmaf": -0.11,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -22.61,
       -6.11
@@ -2762,6 +2846,7 @@
      "psnr": 20.7,
      "vmaf": 21.14,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       5.28,
       22.04
@@ -2783,6 +2868,7 @@
      "psnr": 20.1,
      "vmaf": 18.67,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       5.71,
       18.03
@@ -2804,6 +2890,7 @@
      "psnr": -11.95,
      "vmaf": -6.85,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -22.72,
       -9.64
@@ -2825,6 +2912,7 @@
      "psnr": -12.86,
      "vmaf": -4.14,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -21.51,
       -8.12
@@ -2846,6 +2934,7 @@
      "psnr": 11.42,
      "vmaf": 13.56,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       4.58,
       22.39
@@ -2867,6 +2956,7 @@
      "psnr": 8.84,
      "vmaf": 25.26,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       6.92,
       14.64
@@ -2888,6 +2978,7 @@
      "psnr": -11.22,
      "vmaf": -4.36,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -23.24,
       -5.76
@@ -2909,6 +3000,7 @@
      "psnr": -19.17,
      "vmaf": -11.96,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -28.81,
       -15.87
@@ -2930,6 +3022,7 @@
      "psnr": -23.59,
      "vmaf": -15.45,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -32.54,
       -18.07
@@ -2951,6 +3044,7 @@
      "psnr": 19.54,
      "vmaf": 25.34,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       4.54,
       19.62
@@ -2972,6 +3066,7 @@
      "psnr": 19.56,
      "vmaf": 18.03,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       5.03,
       16.34
@@ -3056,6 +3151,7 @@
      "psnr": 0.0,
      "vmaf": 0.0,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       0.0,
       0.0
@@ -3077,6 +3173,7 @@
      "psnr": 9.84,
      "vmaf": 27.08,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       7.95,
       12.44
@@ -3098,6 +3195,7 @@
      "psnr": -18.92,
      "vmaf": -15.86,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -36.09,
       -1.52
@@ -3119,6 +3217,7 @@
      "psnr": -17.09,
      "vmaf": -15.54,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.62,
       -0.11
@@ -3140,6 +3239,7 @@
      "psnr": -7.98,
      "vmaf": -8.98,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -30.27,
       9.02
@@ -3161,6 +3261,7 @@
      "psnr": -1.86,
      "vmaf": 0.64,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -27.1,
       16.41
@@ -3182,6 +3283,7 @@
      "psnr": 3.11,
      "vmaf": 4.76,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -24.22,
       20.18
@@ -3203,6 +3305,7 @@
      "psnr": -43.72,
      "vmaf": -45.01,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -52.37,
       -37.32
@@ -3224,6 +3327,7 @@
      "psnr": -42.39,
      "vmaf": -43.86,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -50.8,
       -36.46
@@ -3245,6 +3349,7 @@
      "psnr": -33.25,
      "vmaf": -33.25,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -41.74,
       -27.58
@@ -3266,6 +3371,7 @@
      "psnr": -25.59,
      "vmaf": -26.64,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -37.9,
       -19.01
@@ -3287,6 +3393,7 @@
      "psnr": -48.95,
      "vmaf": -45.61,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -55.46,
       -37.24
@@ -3308,6 +3415,7 @@
      "psnr": -48.63,
      "vmaf": -44.8,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -55.77,
       -37.54
@@ -3329,6 +3437,7 @@
      "psnr": -37.91,
      "vmaf": -38.67,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -42.92,
       -27.8
@@ -3350,6 +3459,7 @@
      "psnr": -30.64,
      "vmaf": -30.49,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -41.03,
       -21.97
@@ -3371,6 +3481,7 @@
      "psnr": -45.61,
      "vmaf": -38.26,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -51.94,
       -33.25
@@ -3392,6 +3503,7 @@
      "psnr": -44.81,
      "vmaf": -37.41,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -48.74,
       -32.42
@@ -3413,6 +3525,7 @@
      "psnr": -35.56,
      "vmaf": -31.99,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -40.45,
       -24.7
@@ -3434,6 +3547,7 @@
      "psnr": -27.54,
      "vmaf": -28.22,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -38.19,
       -16.42
@@ -3455,6 +3569,7 @@
      "psnr": -15.8,
      "vmaf": -22.65,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.63,
       -8.09
@@ -3476,6 +3591,7 @@
      "psnr": -51.88,
      "vmaf": -50.03,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -54.91,
       -43.51
@@ -3497,6 +3613,7 @@
      "psnr": -50.69,
      "vmaf": -48.79,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -54.01,
       -41.74
@@ -3518,6 +3635,7 @@
      "psnr": -39.57,
      "vmaf": -38.39,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -45.56,
       -29.34
@@ -3539,6 +3657,7 @@
      "psnr": -48.45,
      "vmaf": -49.66,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -55.81,
       -41.68
@@ -3560,6 +3679,7 @@
      "psnr": -47.95,
      "vmaf": -48.89,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -55.58,
       -41.34
@@ -3581,6 +3701,7 @@
      "psnr": -36.18,
      "vmaf": -39.54,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -46.3,
       -28.47
@@ -3602,6 +3723,7 @@
      "psnr": 39.84,
      "vmaf": 56.76,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -7.12,
       79.17
@@ -3623,6 +3745,7 @@
      "psnr": 62.14,
      "vmaf": 35.68,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       10.96,
       80.22
@@ -3644,6 +3767,7 @@
      "psnr": 11.07,
      "vmaf": 23.42,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -4.66,
       23.68
@@ -3665,6 +3789,7 @@
      "psnr": -22.97,
      "vmaf": -22.71,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -31.72,
       -16.83
@@ -3686,6 +3811,7 @@
      "psnr": -27.3,
      "vmaf": -26.16,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -33.28,
       -23.2
@@ -3707,6 +3833,7 @@
      "psnr": -30.09,
      "vmaf": -25.96,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -34.07,
       -26.03
@@ -3728,6 +3855,7 @@
      "psnr": -40.14,
      "vmaf": -28.02,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -39.01,
       -30.63
@@ -3749,6 +3877,7 @@
      "psnr": -33.64,
      "vmaf": -25.87,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -33.68,
       -25.16
@@ -3770,6 +3899,7 @@
      "psnr": -24.85,
      "vmaf": -21.85,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -34.82,
       -12.65
@@ -3791,6 +3921,7 @@
      "psnr": -23.08,
      "vmaf": -20.7,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.13,
       -11.73
@@ -3812,6 +3943,7 @@
      "psnr": 14.88,
      "vmaf": 20.5,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       3.62,
       18.65
@@ -3833,6 +3965,7 @@
      "psnr": 12.67,
      "vmaf": 16.14,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       5.4,
       14.75
@@ -3854,6 +3987,7 @@
      "psnr": -16.47,
      "vmaf": -10.69,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -20.41,
       -13.17
@@ -3875,6 +4009,7 @@
      "psnr": -19.27,
      "vmaf": -11.32,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -18.63,
       -12.35
@@ -3896,6 +4031,7 @@
      "psnr": 8.71,
      "vmaf": 25.33,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       7.28,
       14.62
@@ -3917,6 +4053,7 @@
      "psnr": -30.33,
      "vmaf": -27.12,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -35.4,
       -24.79
@@ -3938,6 +4075,7 @@
      "psnr": -36.38,
      "vmaf": -32.68,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       -39.31,
       -29.32
@@ -3959,6 +4097,7 @@
      "psnr": 12.29,
      "vmaf": 15.94,
      "ms_ssim": null,
+     "xpsnr": null,
      "iqr": [
       5.0,
       13.36
@@ -4087,6 +4226,7 @@
      "psnr": 7.8,
      "vmaf": 18.4,
      "ms_ssim": 2.1,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4106,6 +4246,7 @@
      "psnr": 3.3,
      "vmaf": 13.9,
      "ms_ssim": -3.8,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4125,6 +4266,7 @@
      "psnr": -48.3,
      "vmaf": -42.4,
      "ms_ssim": -48.9,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4144,6 +4286,7 @@
      "psnr": -23.9,
      "vmaf": -22.5,
      "ms_ssim": -22.7,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4163,6 +4306,7 @@
      "psnr": -15.7,
      "vmaf": -14.0,
      "ms_ssim": -15.9,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4182,6 +4326,7 @@
      "psnr": -15.7,
      "vmaf": -13.4,
      "ms_ssim": -15.0,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4201,6 +4346,7 @@
      "psnr": -26.7,
      "vmaf": -24.8,
      "ms_ssim": -24.6,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4220,6 +4366,7 @@
      "psnr": -6.6,
      "vmaf": -0.9,
      "ms_ssim": -11.6,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4239,6 +4386,7 @@
      "psnr": -32.4,
      "vmaf": -31.2,
      "ms_ssim": -29.0,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4258,6 +4406,7 @@
      "psnr": -13.8,
      "vmaf": -11.5,
      "ms_ssim": -15.7,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4277,6 +4426,7 @@
      "psnr": -34.6,
      "vmaf": -33.0,
      "ms_ssim": -31.3,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4296,6 +4446,7 @@
      "psnr": -5.1,
      "vmaf": -1.1,
      "ms_ssim": -2.1,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4315,6 +4466,7 @@
      "psnr": 16.6,
      "vmaf": 16.9,
      "ms_ssim": 21.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4334,6 +4486,7 @@
      "psnr": 29.6,
      "vmaf": 33.9,
      "ms_ssim": 41.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4353,6 +4506,7 @@
      "psnr": -9.8,
      "vmaf": -3.3,
      "ms_ssim": -5.1,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4372,6 +4526,7 @@
      "psnr": 38.3,
      "vmaf": 43.1,
      "ms_ssim": 56.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4391,6 +4546,7 @@
      "psnr": -22.9,
      "vmaf": -23.4,
      "ms_ssim": -23.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4410,6 +4566,7 @@
      "psnr": -7.7,
      "vmaf": -5.3,
      "ms_ssim": -10.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4429,6 +4586,7 @@
      "psnr": 11.8,
      "vmaf": 10.3,
      "ms_ssim": 8.6,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4448,6 +4606,7 @@
      "psnr": -28.1,
      "vmaf": -26.3,
      "ms_ssim": -27.8,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4467,6 +4626,7 @@
      "psnr": -24.1,
      "vmaf": -23.2,
      "ms_ssim": -21.7,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4486,6 +4646,7 @@
      "psnr": -6.8,
      "vmaf": -8.7,
      "ms_ssim": -7.5,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4505,6 +4666,7 @@
      "psnr": 7.1,
      "vmaf": -0.9,
      "ms_ssim": 4.8,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4524,6 +4686,7 @@
      "psnr": -25.7,
      "vmaf": -24.7,
      "ms_ssim": -23.3,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4543,6 +4706,7 @@
      "psnr": 20.1,
      "vmaf": 9.8,
      "ms_ssim": 25.6,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4562,6 +4726,7 @@
      "psnr": -28.1,
      "vmaf": -28.7,
      "ms_ssim": -30.2,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4581,6 +4746,7 @@
      "psnr": -7.8,
      "vmaf": -12.4,
      "ms_ssim": -13.6,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4600,6 +4766,7 @@
      "psnr": -30.1,
      "vmaf": -30.3,
      "ms_ssim": -31.3,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4619,6 +4786,7 @@
      "psnr": 52.6,
      "vmaf": 67.0,
      "ms_ssim": 49.0,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4638,6 +4806,7 @@
      "psnr": -17.0,
      "vmaf": -10.8,
      "ms_ssim": -20.2,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4657,6 +4826,7 @@
      "psnr": -5.7,
      "vmaf": -0.9,
      "ms_ssim": -10.1,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4676,6 +4846,7 @@
      "psnr": -0.5,
      "vmaf": 5.8,
      "ms_ssim": -3.9,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4695,6 +4866,7 @@
      "psnr": -32.0,
      "vmaf": -20.8,
      "ms_ssim": -33.6,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4714,6 +4886,7 @@
      "psnr": -19.2,
      "vmaf": -3.5,
      "ms_ssim": -22.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4733,6 +4906,7 @@
      "psnr": 27.2,
      "vmaf": 34.9,
      "ms_ssim": 19.8,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4752,6 +4926,7 @@
      "psnr": 50.5,
      "vmaf": 53.4,
      "ms_ssim": 36.8,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4771,6 +4946,7 @@
      "psnr": -48.5,
      "vmaf": -36.6,
      "ms_ssim": -49.8,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4790,6 +4966,7 @@
      "psnr": 0.0,
      "vmaf": 0.0,
      "ms_ssim": 0.0,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4809,6 +4986,7 @@
      "psnr": 157.6,
      "vmaf": 122.7,
      "ms_ssim": 145.2,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4828,6 +5006,7 @@
      "psnr": 16.6,
      "vmaf": 27.2,
      "ms_ssim": 16.1,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4847,6 +5026,7 @@
      "psnr": 0.3,
      "vmaf": 2.0,
      "ms_ssim": -0.8,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4866,6 +5046,7 @@
      "psnr": -19.0,
      "vmaf": -12.6,
      "ms_ssim": -23.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4885,6 +5066,7 @@
      "psnr": -24.6,
      "vmaf": -22.4,
      "ms_ssim": -29.2,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4904,6 +5086,7 @@
      "psnr": -9.7,
      "vmaf": -10.5,
      "ms_ssim": -16.4,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4923,6 +5106,7 @@
      "psnr": 20.5,
      "vmaf": 10.2,
      "ms_ssim": 11.1,
+     "xpsnr": null,
      "iqr": null,
      "clips_scored": 12,
      "clips": null,
@@ -4976,6 +5160,7 @@
      "psnr": 2.7,
      "vmaf": 17.27,
      "ms_ssim": -5.35,
+     "xpsnr": null,
      "iqr": [
       -2.56,
       16.55
@@ -4998,6 +5183,7 @@
      "psnr": 0.61,
      "vmaf": 15.52,
      "ms_ssim": -6.98,
+     "xpsnr": null,
      "iqr": [
       -0.99,
       12.22
@@ -5020,6 +5206,7 @@
      "psnr": 18.78,
      "vmaf": 24.32,
      "ms_ssim": 17.22,
+     "xpsnr": null,
      "iqr": [
       19.26,
       28.8
@@ -5042,6 +5229,7 @@
      "psnr": 26.29,
      "vmaf": 32.96,
      "ms_ssim": 21.9,
+     "xpsnr": null,
      "iqr": [
       25.56,
       38.14
@@ -5064,6 +5252,7 @@
      "psnr": -30.66,
      "vmaf": -21.97,
      "ms_ssim": -25.95,
+     "xpsnr": null,
      "iqr": [
       -32.0,
       -26.21
@@ -5086,6 +5275,7 @@
      "psnr": -24.65,
      "vmaf": -14.27,
      "ms_ssim": -22.05,
+     "xpsnr": null,
      "iqr": [
       -26.24,
       -20.57
@@ -5108,6 +5298,7 @@
      "psnr": -12.7,
      "vmaf": -6.51,
      "ms_ssim": -16.51,
+     "xpsnr": null,
      "iqr": [
       -20.7,
       -13.44
@@ -5130,6 +5321,7 @@
      "psnr": -31.27,
      "vmaf": -23.12,
      "ms_ssim": -26.16,
+     "xpsnr": null,
      "iqr": [
       -32.49,
       -26.73
@@ -5152,6 +5344,7 @@
      "psnr": -36.22,
      "vmaf": -28.77,
      "ms_ssim": -30.51,
+     "xpsnr": null,
      "iqr": [
       -37.85,
       -31.61
@@ -5174,6 +5367,7 @@
      "psnr": -20.7,
      "vmaf": -12.73,
      "ms_ssim": -19.93,
+     "xpsnr": null,
      "iqr": [
       -25.96,
       -19.51
@@ -5196,6 +5390,7 @@
      "psnr": -37.97,
      "vmaf": -30.6,
      "ms_ssim": -32.69,
+     "xpsnr": null,
      "iqr": [
       -39.53,
       -33.36
@@ -5218,6 +5413,7 @@
      "psnr": -7.78,
      "vmaf": -1.39,
      "ms_ssim": -6.4,
+     "xpsnr": null,
      "iqr": [
       -10.18,
       -2.98
@@ -5240,6 +5436,7 @@
      "psnr": 6.44,
      "vmaf": 7.25,
      "ms_ssim": 11.12,
+     "xpsnr": null,
      "iqr": [
       1.91,
       7.52
@@ -5262,6 +5459,7 @@
      "psnr": 19.07,
      "vmaf": 25.44,
      "ms_ssim": 25.93,
+     "xpsnr": null,
      "iqr": [
       15.62,
       22.34
@@ -5284,6 +5482,7 @@
      "psnr": -11.78,
      "vmaf": -2.76,
      "ms_ssim": -7.92,
+     "xpsnr": null,
      "iqr": [
       -12.44,
       -4.67
@@ -5306,6 +5505,7 @@
      "psnr": 25.23,
      "vmaf": 33.16,
      "ms_ssim": 31.58,
+     "xpsnr": null,
      "iqr": [
       21.04,
       28.54
@@ -5328,6 +5528,7 @@
      "psnr": -26.79,
      "vmaf": -26.0,
      "ms_ssim": -27.68,
+     "xpsnr": null,
      "iqr": [
       -32.05,
       -27.78
@@ -5350,6 +5551,7 @@
      "psnr": -18.16,
      "vmaf": -11.18,
      "ms_ssim": -23.51,
+     "xpsnr": null,
      "iqr": [
       -23.71,
       -18.26
@@ -5372,6 +5574,7 @@
      "psnr": -8.45,
      "vmaf": -0.67,
      "ms_ssim": -14.98,
+     "xpsnr": null,
      "iqr": [
       -15.0,
       -9.19
@@ -5394,6 +5597,7 @@
      "psnr": -28.79,
      "vmaf": -27.35,
      "ms_ssim": -30.74,
+     "xpsnr": null,
      "iqr": [
       -34.26,
       -28.89
@@ -5416,6 +5620,7 @@
      "psnr": -27.75,
      "vmaf": -20.02,
      "ms_ssim": -24.88,
+     "xpsnr": null,
      "iqr": [
       -30.01,
       -24.57
@@ -5438,6 +5643,7 @@
      "psnr": -15.94,
      "vmaf": -10.68,
      "ms_ssim": -17.35,
+     "xpsnr": null,
      "iqr": [
       -21.45,
       -16.14
@@ -5460,6 +5666,7 @@
      "psnr": -9.69,
      "vmaf": -7.17,
      "ms_ssim": -11.81,
+     "xpsnr": null,
      "iqr": [
       -17.05,
       -12.21
@@ -5482,6 +5689,7 @@
      "psnr": -27.91,
      "vmaf": -20.06,
      "ms_ssim": -24.14,
+     "xpsnr": null,
      "iqr": [
       -29.93,
       -23.97
@@ -5504,6 +5712,7 @@
      "psnr": 0.26,
      "vmaf": -0.05,
      "ms_ssim": -1.6,
+     "xpsnr": null,
      "iqr": [
       -8.4,
       -2.0
@@ -5526,6 +5735,7 @@
      "psnr": -34.0,
      "vmaf": -31.37,
      "ms_ssim": -35.23,
+     "xpsnr": null,
      "iqr": [
       -39.37,
       -33.86
@@ -5548,6 +5758,7 @@
      "psnr": -21.66,
      "vmaf": -20.49,
      "ms_ssim": -27.42,
+     "xpsnr": null,
      "iqr": [
       -28.8,
       -25.07
@@ -5570,6 +5781,7 @@
      "psnr": -35.11,
      "vmaf": -32.72,
      "ms_ssim": -35.91,
+     "xpsnr": null,
      "iqr": [
       -40.31,
       -34.21
@@ -5592,6 +5804,7 @@
      "psnr": 51.04,
      "vmaf": 59.01,
      "ms_ssim": 41.5,
+     "xpsnr": null,
      "iqr": [
       44.82,
       56.9
@@ -5614,6 +5827,7 @@
      "psnr": -16.53,
      "vmaf": -0.46,
      "ms_ssim": -19.56,
+     "xpsnr": null,
      "iqr": [
       -17.64,
       -13.15
@@ -5636,6 +5850,7 @@
      "psnr": -5.75,
      "vmaf": 8.61,
      "ms_ssim": -11.24,
+     "xpsnr": null,
      "iqr": [
       -10.51,
       -3.92
@@ -5658,6 +5873,7 @@
      "psnr": -0.53,
      "vmaf": 15.01,
      "ms_ssim": -6.09,
+     "xpsnr": null,
      "iqr": [
       -6.14,
       1.8
@@ -5680,6 +5896,7 @@
      "psnr": -26.78,
      "vmaf": -11.65,
      "ms_ssim": -30.49,
+     "xpsnr": null,
      "iqr": [
       -28.01,
       -23.1
@@ -5702,6 +5919,7 @@
      "psnr": 114.7,
      "vmaf": 74.69,
      "ms_ssim": 86.83,
+     "xpsnr": null,
      "iqr": [
       75.27,
       95.47
@@ -5724,6 +5942,7 @@
      "psnr": 16.88,
      "vmaf": 21.52,
      "ms_ssim": 17.92,
+     "xpsnr": null,
      "iqr": [
       12.04,
       24.19
@@ -5746,6 +5965,7 @@
      "psnr": -21.13,
      "vmaf": -14.73,
      "ms_ssim": -26.71,
+     "xpsnr": null,
      "iqr": [
       -25.58,
       -22.04
@@ -5768,6 +5988,7 @@
      "psnr": -12.86,
      "vmaf": -11.15,
      "ms_ssim": -23.56,
+     "xpsnr": null,
      "iqr": [
       -20.65,
       -17.87
@@ -5790,6 +6011,7 @@
      "psnr": -0.93,
      "vmaf": 0.7,
      "ms_ssim": -12.56,
+     "xpsnr": null,
      "iqr": [
       -12.56,
       -7.63
@@ -5811,6 +6033,7 @@
      "psnr": 0.0,
      "vmaf": 0.0,
      "ms_ssim": 0.0,
+     "xpsnr": null,
      "weighted": null,
      "iqr": null,
      "clips_scored": 12,

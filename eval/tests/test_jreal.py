@@ -302,3 +302,25 @@ def test_single_point_base_quality_prices_the_base_layer():
     point = two_layer(curve(scale=0.9), curve(scale=1.1))[1]
     assert jreal.point_base_quality(anchor, point) == pytest.approx(10.0, abs=0.5)
     assert jreal.point_base_quality(curve(), curve()[1]) is None
+
+
+def test_xpsnr_is_reported_beside_j_never_in_it():
+    def curve(scale, xpsnr):
+        points = []
+        for i, kbps in enumerate((300, 600, 1200, 2400)):
+            point = {"kbps": kbps * scale, "psnr_yuv": 30 + 2 * i, "vmaf_v1": 60 + 8 * i,
+                     "ms_ssim": 0.9 + 0.02 * i, "worst_psnr_y": 28 + 2 * i,
+                     "worst_vmaf_v1": 50 + 8 * i, "flicker_psnr_y": 0.1,
+                     "first_key_pulse_psnr_y": 1.0, "periodic_key_pulse_psnr_y": None}
+            if xpsnr:
+                point["xpsnr_yuv"] = 31 + 2 * i
+            points.append(point)
+        return points
+    anchor, test = curve(1.0, True), curve(0.9, True)
+    terms = jreal.compare_clip(anchor, test)
+    assert terms["bd_xpsnr_yuv"] == pytest.approx(-10.0, abs=0.01)
+    assert terms["low_xpsnr_yuv"] is not None
+    assert terms["quality"] == pytest.approx(
+        jreal.compare_clip(curve(1.0, False), curve(0.9, False))["quality"])
+    assert jreal.compare_clip(anchor, curve(0.9, False))["bd_xpsnr_yuv"] is None
+    assert "bd_xpsnr_yuv" in jreal.TERMS

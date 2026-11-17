@@ -24,7 +24,10 @@ ran in an earlier launch). Per job, without any decoded file:
 - for our streams: both standard decoders' per-frame hashes must equal the
   encoder's coded pictures (`--recon`); the metrics score the shown pictures
   (`--display-recon`, as all our evaluation does), which for fixed QP must
-  equal the coded ones.
+  equal the coded ones;
+- jobs staged with `xpsnr`: the same pictures also into our VMAFx build's
+  XPSNR extractor on the CPU (`vmafx/`, ext/vmafx-patches 0011; the GPU
+  scorer's exact twin), per frame and plane. Reported only, never in J.
 
 Each job writes out/results/<id>.json (or out/results/<id>.failed) and prints
 one line, `job k/n ok|FAILED <id>`; a rerun skips finished jobs.
@@ -63,6 +66,9 @@ LEAN_PSNR = "psnr=reduced_hbd_peak=true:enable_apsnr=true:min_sse=0.5"
 LEAN_MS_SSIM = "float_ms_ssim=enable_db=true:clip_db=true"
 MEAN_METRICS = ("psnr_y", "psnr_cb", "psnr_cr", "float_ssim", "float_ms_ssim", "ciede2000",
                 "psnr_hvs", "cambi", "vmaf", "vmaf_neg", "vmaf_v1")
+#: The XPSNR scorer staged beside the tools (plan.stage), and its per-plane features.
+XPSNR_SCORER = "vmafx/tools/vmaf"
+XPSNR_FEATURES = ("xpsnr_y", "xpsnr_cb", "xpsnr_cr")
 
 
 def say(line: str) -> None:
@@ -217,6 +223,41 @@ def vmaf_process(job: dict, source: str, report: Path) -> subprocess.Popen:
                             stderr=subprocess.DEVNULL)
 
 
+def xpsnr_process(job: dict, source: str, report: Path) -> subprocess.Popen | None:
+    """Our XPSNR extractor on the pictures written to its stdin, if the job asks;
+    the frame rate picks its temporal high-pass."""
+    if not job.get("xpsnr"):
+        return None
+    fps = job["fps"][0] / job["fps"][1]
+    return subprocess.Popen([XPSNR_SCORER, "-r", source, "-d", "/dev/stdin",
+                             "-w", str(job["width"]), "-h", str(job["height"]), "-p", "420",
+                             "-b", "8", "--no_prediction", "--feature", f"xpsnr=fps={fps:g}",
+                             "--backend", "cpu", "--precision", "max", "--json",
+                             "-o", str(report), "-q"], stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class Tee:
+    """Writes each frame to every scorer's stdin."""
+
+    def __init__(self, *streams):
+        self.streams = [s for s in streams if s is not None]
+
+    def write(self, data: bytes) -> None:
+        for stream in self.streams:
+            stream.write(data)
+
+    def close(self) -> None:
+        for stream in self.streams:
+            stream.close()
+
+
+def xpsnr_scored(report: Path) -> dict:
+    """Per-frame XPSNR per plane (the report pools them: report.quality_of)."""
+    frames = sorted(json.loads(report.read_text())["frames"], key=lambda f: f["frameNum"])
+    return {"xpsnr_per_frame": {m: [f["metrics"][m] for f in frames] for m in XPSNR_FEATURES}}
+
+
 def payload_bytes(bitstream: Path, container: str) -> tuple[int, int]:
     """(payload bytes, frames in the container; 0 when Annex-B)."""
     data = bitstream.read_bytes()
@@ -257,16 +298,19 @@ def run_job(job: dict, kbps: float | None) -> dict:
     report.parent.mkdir(parents=True, exist_ok=True)
     argv = fill(job["encode"], {"{KBPS}": str(round(kbps))} if kbps else {})
     vmaf = vmaf_process(job, source, report)
+    xpsnr_report = RESULTS / f"{job['id']}.xpsnr.json"
+    xpsnr = xpsnr_process(job, source, xpsnr_report)
+    scorers = Tee(vmaf.stdin, xpsnr and xpsnr.stdin)
     started = time.monotonic()
     record = {"id": job["id"], "target_kbps": round(kbps) if kbps else None}
     if job["own"]:
         process, reads = spawn_with_pipes(argv, ["{RECON}", "{DISPLAY}"])
         coded = FrameHasher(reads["{RECON}"], frame_bytes)
-        shown = FrameHasher(reads["{DISPLAY}"], frame_bytes, vmaf.stdin)
+        shown = FrameHasher(reads["{DISPLAY}"], frame_bytes, scorers)
         user, system = finish(process, "encoder")
         record["wall_s"] = time.monotonic() - started
         coded_hashes, shown_hashes = coded.join(), shown.join()
-        vmaf.stdin.close()
+        scorers.close()
         decodes = {Path(d[0] if d[0] != "python3" else d[3]).name:
                    decode_hashes(d, job["bitstream"], frame_bytes) for d in job["decoders"]}
         record["decoders_match"] = {name: hashes == coded_hashes for name, hashes in decodes.items()}
@@ -282,12 +326,17 @@ def run_job(job: dict, kbps: float | None) -> dict:
                                    stderr=subprocess.PIPE)
         user, system = finish(process, "encoder")
         record["wall_s"] = time.monotonic() - started
-        hashes = decode_hashes(job["decoders"][0], job["bitstream"], frame_bytes, vmaf.stdin)
-        vmaf.stdin.close()
+        hashes = decode_hashes(job["decoders"][0], job["bitstream"], frame_bytes, scorers)
+        scorers.close()
         if len(hashes) != frames:
             raise RuntimeError(f"decoded {len(hashes)} frames of {frames}")
     if vmaf.wait() != 0:
         raise RuntimeError(f"vmaf exit {vmaf.returncode}")
+    if xpsnr is not None:
+        if xpsnr.wait() != 0:
+            raise RuntimeError(f"xpsnr scorer exit {xpsnr.returncode}")
+        record.update(xpsnr_scored(xpsnr_report))
+        xpsnr_report.unlink()
     payload, container_frames = payload_bytes(Path(job["bitstream"]), job["container"])
     fps = job["fps"][0] / job["fps"][1]
     record.update({"user_s": user, "sys_s": system, "bytes": payload,

@@ -277,6 +277,8 @@ def chart_row(row: dict[str, str], fps: dict[str, float | None]) -> dict:
     return {
         "j": number(row["bd_j_pct"]), "psnr": number(row["bd_psnr_yuv_pct"]),
         "vmaf": number(row["bd_vmaf_v1_pct"]), "ms_ssim": None,
+        # charts measured before XPSNR was recorded have no column: not measured
+        "xpsnr": number(row.get("bd_xpsnr_yuv_pct")),
         "iqr": [number(row["iqr_low_pct"]), number(row["iqr_high_pct"])],
         "clips_scored": int(row["clips_scored"]), "clips": int(row["clips"]),
         "fps": fps,
@@ -323,7 +325,14 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
              "builds": builds["builds"], "base_build": builds["base"],
              "family_builds": {current_family_name(f): b for f, b in builds["families"].items()},
              "tools": builds["tools"],
-             "metrics": ["j", "psnr", "vmaf"], "values": values}, labels)
+             "metrics": with_xpsnr(["j", "psnr", "vmaf"], values), "values": values}, labels)
+
+
+def with_xpsnr(metrics: list[str], values: dict[str, dict]) -> list[str]:
+    """A view's selectable metrics: XPSNR joins them once any point of the view has
+    it (the page shows the others' as not measured)."""
+    measured = any(v.get("xpsnr") is not None for v in values.values())
+    return [*metrics, "xpsnr"] if measured else metrics
 
 
 def timing_records(files: dict[str, str]) -> dict[str, dict]:
@@ -388,7 +397,8 @@ def fixed_qp_view() -> dict | None:
             continue  # a reference encoder's rows are the same in every column
         values[family] = {
             "weighted": row["weighted"], "j": row["j"], "psnr": row["psnr_yuv"],
-            "vmaf": row["vmaf"], "ms_ssim": row["ms_ssim"], "iqr": None,
+            "vmaf": row["vmaf"], "ms_ssim": row["ms_ssim"], "xpsnr": row.get("xpsnr"),
+            "iqr": None,
             "clips_scored": row["n"], "clips": None, "flagged": False, "chained": 0,
             "rate_invalid_points": 0,
             # never the lens run's own fps: not a timing (other runs, shared load)
@@ -404,7 +414,8 @@ def fixed_qp_view() -> dict | None:
             "size_range": size_range([(q.width, q.height) for q in AOM_LD.sequences]),
             "lens_names": {row["test"]: LENS_FAMILIES.get(row["test"], row["test"])
                            for row in lens["rows"]},
-            "metrics": ["weighted", "j", "psnr", "vmaf", "ms_ssim"], "values": values}
+            "metrics": with_xpsnr(["weighted", "j", "psnr", "vmaf", "ms_ssim"], values),
+            "values": values}
 
 
 def fresh_qp_view() -> dict | None:
@@ -420,12 +431,15 @@ def fresh_qp_view() -> dict | None:
     for family, row in run["families"].items():
         values[family] = {
             "weighted": None, "j": row["j"], "psnr": row["psnr_yuv"], "vmaf": row["vmaf_v1"],
-            "ms_ssim": row["ms_ssim"], "iqr": [row["lo"], row["hi"]] if row["n"] > 1 else None,
+            "ms_ssim": row["ms_ssim"], "xpsnr": row.get("xpsnr_yuv"),
+            "iqr": [row["lo"], row["hi"]] if row["n"] > 1 else None,
             "clips_scored": row["n"], "clips": len(run["clips"]), "flagged": False,
             "chained": 0, "rate_invalid_points": 0,
             "fps": {platform: (timing[platform]["points"].get(family) or {}).get("fps")
                     if platform in timing else None for platform in PLATFORMS}}
+    xpsnr_measured = any(v["xpsnr"] is not None for v in values.values())
     values[run["anchor"]] = {**{k: 0.0 for k in ("j", "psnr", "vmaf", "ms_ssim")},
+                             "xpsnr": 0.0 if xpsnr_measured else None,
                              "weighted": None, "iqr": None, "clips_scored": len(run["clips"]),
                              "clips": len(run["clips"]), "flagged": False, "chained": 0,
                              "rate_invalid_points": 0,
@@ -439,7 +453,8 @@ def fresh_qp_view() -> dict | None:
                        *(f"docs/results/{FRESH_QP_TIMING_FILES[p]}" for p in timing)],
             "speed": speed_notes(timing),
             "size_range": size_range([(c["width"], c["height"]) for c in run["clips"]]),
-            "lens_names": {}, "metrics": ["j", "psnr", "vmaf", "ms_ssim"], "values": values}
+            "lens_names": {}, "metrics": with_xpsnr(["j", "psnr", "vmaf", "ms_ssim"], values),
+            "values": values}
 
 
 #: The chart views' clip sets: (site clip-set id, chart markdown that lists its

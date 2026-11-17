@@ -69,8 +69,8 @@ from .encoders.base import fps_fraction
 from .fingerprint import measurement_fingerprint
 from .framepipe import ProcessFailed
 from .framestats import coded_at_times, probe_frames, with_held_frames
-from .metrics import (REAL_METRICS_REVISION, REAL_MS_SSIM_REVISION, MetricSession, PsnrMetric, StreamSpec,
-                      gpu_slot_need, real_metrics, vmaf_v1_and_ms_ssim)
+from .metrics import (REAL_METRICS_REVISION, REAL_MS_SSIM_REVISION, REAL_XPSNR_REVISION, MetricSession,
+                      PsnrMetric, StreamSpec, gpu_slot_need, real_metrics, vmaf_v1_and_ms_ssim)
 from .point import coded_format, run_point
 from .slots import cpu_slots, gpu_slots, nvenc_slots
 from .stages import STAGES, decide
@@ -446,6 +446,11 @@ class Bench:
     #: standard decoder, and our decodes must equal the encoder's displayed
     #: pictures (their per-frame digests came with the stream).
     prebuilt: Path | None = None
+    #: Also score XPSNR (reported beside J, never part of it): final checks and
+    #: results scoring set it, screens and tuning do not. A cached result without
+    #: XPSNR of the current revision is re-measured when such a run uses it, and
+    #: serves every other run as it is (the point identity does not change).
+    xpsnr: bool = False
 
     def tool_hash(self, family: Family) -> str:
         with self.lock:
@@ -580,7 +585,8 @@ class Bench:
         return self._reusable(point, path) is not None
 
     def components(self, spec: StreamSpec) -> list:
-        return real_metrics(spec) if self.metric_set == "real" else metric_components(spec)
+        return (real_metrics(spec, self.xpsnr) if self.metric_set == "real"
+                else metric_components(spec, self.xpsnr))
 
     def measure(self, point: Point) -> dict:
         """Encode, gate, score and summarize one point (cached by identity).
@@ -616,6 +622,8 @@ class Bench:
             return None
         if self.metric_set == "real" and not self.stored_ms_ssim and \
                 cached.get("ms_ssim_revision", 1) != REAL_MS_SSIM_REVISION:
+            return None
+        if self.xpsnr and cached.get("xpsnr_revision") != REAL_XPSNR_REVISION:
             return None
         return cached
 
@@ -682,6 +690,8 @@ class Bench:
         keys = [f.frame_type == "I" for f in frames]
         if self.metric_set == "real":
             add_real_series(result, measured, keys)
+        if self.xpsnr:
+            add_xpsnr(result, measured)
         if base is not None:
             result["base"] = self._base_result(point, *base, keys)
         result["gate_level"] = gate.level
@@ -795,9 +805,16 @@ def overshoot(point: dict) -> float:
     return max(0.0, error)
 
 
-def metric_components(spec: StreamSpec) -> list:
-    """Per-frame PSNR and every-frame VMAF v1 (worst-1% needs every frame)."""
-    return [PsnrMetric(spec), *vmaf_v1_and_ms_ssim(spec)]
+def metric_components(spec: StreamSpec, xpsnr: bool = False) -> list:
+    """Per-frame PSNR and every-frame VMAF v1 (worst-1% needs every frame); XPSNR
+    when asked for."""
+    return [PsnrMetric(spec), *vmaf_v1_and_ms_ssim(spec, xpsnr=xpsnr)]
+
+
+def add_xpsnr(result: dict, measured) -> None:
+    """Sequence XPSNR (6:1:1 and luma) with its protocol revision (Bench.xpsnr)."""
+    result.update(xpsnr_yuv=measured.summary["xpsnr_yuv"], xpsnr_y=measured.summary["xpsnr_y"],
+                  xpsnr_revision=REAL_XPSNR_REVISION)
 
 
 def add_real_series(result: dict, measured, keys: list[bool]) -> None:

@@ -46,6 +46,8 @@ Row schema (absent values are null; percentages are candidate vs base):
     weighted    lens rows: the change in the AOM Weighted BD-rate against x264
                 medium (candidate minus base, BD points)
     psnr vmaf msssim  per-metric BD-rate (percent): PSNR-YUV, VMAF v1, MS-SSIM
+    xpsnr       BD-rate on XPSNR-YUV (percent), where the run measured it
+                (final-check, results); reported only, never part of j
     guards      guard messages, [] when none tripped, null if not measured
     x86_pct x86_how jetson_pct jetson_how   the CPU change and how it was measured
     k verdict   the CPU charge the run decided at and its decision
@@ -75,15 +77,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER = REPO_ROOT / "eval" / "results" / "levers.jsonl"
 SPOOL_ENV = "NC_LEVERS_SPOOL"
 FIELDS = ("id", "codec", "base", "base_params", "base_values", "rate", "overrides", "change",
-          "level", "draw", "n", "frames", "j", "lo", "hi", "psnr", "vmaf", "msssim", "weighted",
-          "guards",
+          "level", "draw", "n", "frames", "j", "lo", "hi", "psnr", "vmaf", "msssim", "xpsnr",
+          "weighted", "guards",
           "x86_pct", "x86_how", "jetson_pct", "jetson_how", "k", "verdict", "commit", "date",
           "source", "kind")
 KEY_FIELDS = ("codec", "base", "base_params", "rate", "overrides", "change", "level", "draw",
               "commit")
 MEDIUM = "medium"
 #: Percent values are kept to 1e-4 (a thousandth of the smallest decision margin).
-MEASURED = ("j", "lo", "hi", "psnr", "vmaf", "msssim", "weighted", "x86_pct", "jetson_pct")
+MEASURED = ("j", "lo", "hi", "psnr", "vmaf", "msssim", "xpsnr", "weighted", "x86_pct",
+            "jetson_pct")
 MEASURE_DECIMALS = 4
 LEVEL_NAMES = {"quick": "L1", "adopt": "L2", "final": "L3"}
 #: Evidence order when one change has several rows: the first level present wins.
@@ -298,7 +301,7 @@ def balanced(summary: dict, term: str) -> float | None:
 def metrics_of(summary: dict) -> dict:
     """Per-metric BD-rates of a real-mode stage summary (nceval.jreal.summarise)."""
     return {"psnr": balanced(summary, "bd_psnr_yuv"), "vmaf": balanced(summary, "bd_vmaf_v1"),
-            "msssim": balanced(summary, "bd_ms_ssim")}
+            "msssim": balanced(summary, "bd_ms_ssim"), "xpsnr": balanced(summary, "bd_xpsnr_yuv")}
 
 
 def screen_rows(result: dict, source: str, kind: str = "live", date: str | None = None) -> list[dict]:

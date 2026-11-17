@@ -180,6 +180,18 @@ def tools_of(jobs: list[dict]) -> set[str]:
     return names
 
 
+def stage_xpsnr_tool(run_dir: Path, tool: Path) -> None:
+    """The scorer as XPSNR_TOOL with its libraries beside it (symlinks; an upload
+    follows them, keeping the layout its RUNPATH needs)."""
+    real = tool.resolve()
+    (run_dir / XPSNR_TOOL).parent.mkdir(parents=True)
+    (run_dir / XPSNR_TOOL).symlink_to(real)
+    libraries = run_dir / XPSNR_TOOL.parent.parent / "src"
+    libraries.mkdir()
+    for name in XPSNR_LIBRARIES:
+        (libraries / name).symlink_to((real.parent.parent / "src" / name).resolve())
+
+
 def source_manifest(jobs: list[dict]) -> list[dict]:
     """What the worker downloads: each sequence once, with the most frames any job reads."""
     frames: dict[str, int] = {}
@@ -191,11 +203,21 @@ def source_manifest(jobs: list[dict]) -> list[dict]:
             for s in (by_name(name) for name in sorted(frames))]
 
 
+#: The XPSNR scorer's files in a run directory: our VMAFx build's tool and the two
+#: libraries its RUNPATH ($ORIGIN/../src) finds (worker.XPSNR_SCORER).
+XPSNR_TOOL = Path("vmafx/tools/vmaf")
+XPSNR_LIBRARIES = ("libvmaf.so.3", "libvmafx.so.1")
+
+
 def stage(run_dir: Path, jobs: list[dict], tool_paths: dict[str, Path],
-          files: list[Path]) -> None:
+          files: list[Path], xpsnr_tool: Path | None = None) -> None:
     """Write a run directory: jobs.json, sources.json, bin/ (symlinks), cfg/ and
-    `files` (the worker, the dav2d crop wrapper, the VMAF v1 model)."""
+    `files` (the worker, the dav2d crop wrapper, the VMAF v1 model). With
+    `xpsnr_tool` (a VMAFx build's tools/vmaf) every job also scores XPSNR."""
     (run_dir / "bin").mkdir(parents=True)
+    if xpsnr_tool is not None:
+        jobs = [{**job, "xpsnr": True} for job in jobs]
+        stage_xpsnr_tool(run_dir, xpsnr_tool)
     (run_dir / "cfg").mkdir()
     for name in sorted(tools_of(jobs)) + ["vmaf"]:
         (run_dir / "bin" / name).symlink_to(tool_paths[name].resolve())

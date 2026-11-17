@@ -58,7 +58,9 @@ from ..config import load_paths
 from ..cbr import BUFFER_MS
 from . import plan as planner
 from .conditions import CONDITIONS
-from .report import BD_WEIGHTS, J_METRICS, Curves, Point, bd, bd_j, load_points
+from .report import (BD_WEIGHTS, J_METRICS, REPORTED_METRICS, Curves, Point, bd, bd_j,
+                     load_points)
+from ..metrics import vmafx_tool
 
 DEFAULT_POINTS = Path(__file__).parents[3] / "docs/results/standards-ctc-2026-11-14/points.csv"
 WORKER = Path(__file__).with_name("worker.py")
@@ -69,7 +71,7 @@ X264_MODES = {"qp": (False, None), "cbr": (True, None), "psnr-qp": (False, "psnr
 X264 = "x264-medium"
 MS_PER_SECOND = 1000
 #: The figures `compare` prints, in order.
-FIGURES = ("Weighted", "J", *J_METRICS)
+FIGURES = ("Weighted", "J", *J_METRICS, *REPORTED_METRICS)
 #: Written by `local` beside the result records (not *.json: load_points reads those).
 VARIANTS_FILE = "variants.jsonl"
 
@@ -166,7 +168,8 @@ def local(args: argparse.Namespace) -> None:
     jobs = with_metrics(local_jobs(args, Path(args.source_dir).resolve()), args.metrics)
     tools = tool_paths()
     if not run_dir.exists():
-        planner.stage(run_dir, jobs, tools, [WORKER, load_paths().anchors / VMAF_V1_MODEL])
+        planner.stage(run_dir, jobs, tools, [WORKER, load_paths().anchors / VMAF_V1_MODEL],
+                      vmafx_tool(load_paths()))
     print(f"{len(jobs)} jobs in {run_dir}", flush=True)
     subprocess.run([sys.executable, "-I", WORKER.name, "run", "--workers", str(args.workers)],
                    cwd=run_dir, check=True)
@@ -251,6 +254,9 @@ def figures(anchor: list[Point], test: list[Point]) -> dict[str, float | None]:
     for metric in J_METRICS:
         r = bd(anchor, test, metric)
         values[metric] = r.value if r.reliable else None
+    for metric in REPORTED_METRICS:  # None where either curve was not scored for it
+        r = bd(anchor, test, metric) if all(metric in p.quality for p in anchor + test) else None
+        values[metric] = r.value if r is not None and r.reliable else None
     return values
 
 

@@ -17,8 +17,10 @@ so their results are never mixed):
                    METRICS_REVISION 5 (it keeps revision 4).
   legacy           the old v0.6.1/v0.6.1neg calls, never relabelled.
 
-XPSNR (ffmpeg's xpsnr filter) is opt-in for vmaf-v1 runs (shortlists);
-display and legacy runs keep it on by default, as before.
+XPSNR is opt-in for vmaf-v1 sweeps (shortlists); display and legacy runs
+keep it on by default, as before. The real-use set (cbr.Bench) adds it on
+request (`xpsnr`): final checks and results scoring record it, screens and
+tuning do not. It is reported, never part of J or any decision.
 
 PSNR is computed from exact per-plane squared-error sums, so its definition
 is under our control: per-frame PSNR per plane (MSE 0 is capped at
@@ -27,10 +29,13 @@ The sums come from the streamed frames (`PsnrMetric`) or, on our own
 encoder's ungated points, from the encoder itself (`EncoderPsnrMetric`,
 nceval.point), which then sends its reconstruction straight to VMAF: Python
 never touches the pixels. Both give identical numbers.
-XPSNR comes from ffmpeg's xpsnr filter. Native VMAF v1 and MS-SSIM come from
-VMAFx on CUDA, one run per point on a shared scoring server, by default, or (NC_METRICS_BACKEND=
-libvmaf-cpu) from libvmaf and nceval.msssim (libvmaf's float_ms_ssim,
-recomputed faster); display and legacy VMAF always from libvmaf.
+Native VMAF v1, MS-SSIM and XPSNR come from VMAFx on CUDA, one run per point
+on a shared scoring server, by default, or (NC_METRICS_BACKEND=libvmaf-cpu)
+from libvmaf, nceval.msssim (libvmaf's float_ms_ssim, recomputed faster) and
+ffmpeg's xpsnr filter; display and legacy VMAF always from libvmaf. VMAFx's
+XPSNR is our extractor (ext/vmafx-patches 0011, from the published
+definition); per frame it agrees with ffmpeg's filter to within 0.005 dB
+(docs/handoff/vmafx-gpu.md "XPSNR"), so both backends' values may be mixed.
 
 Every metric is a streaming component (`MetricSession`): the distorted
 frames arrive one at a time over a pipe (an encoder's reconstruction or a
@@ -109,14 +114,14 @@ VMAFX_CUDA_BACKEND = "vmafx-cuda"
 METRICS_BACKENDS = (LIBVMAF_CPU_BACKEND, VMAFX_CUDA_BACKEND)
 DEFAULT_METRICS_BACKEND = VMAFX_CUDA_BACKEND
 #: The VMAFx `vmaf` tool; default: our patched CUDA build under $NC_DATA_ROOT/ext,
-#: VMAFx 1068c699 plus ext/vmafx-patches 0001-0010 (frame-0 fix, MS-SSIM sums
+#: VMAFx 1068c699 plus ext/vmafx-patches 0001-0011 (frame-0 fix, MS-SSIM sums
 #: on the GPU, scoring servers with a bounded pool, direct reads, wider
 #: ADM/CAMBI launches, server inputs relayed with stall timeouts, one-way
-#: drains by server generation;
+#: drains by server generation, XPSNR;
 #: docs/handoff/vmafx-gpu.md). A frozen build directory: a new build goes
 #: into a new one and this default moves.
 VMAFX_ENV = "NC_VMAFX"
-VMAFX_DEFAULT = Path("ext/vmafx-serve5/build-cuda/tools/vmaf")
+VMAFX_DEFAULT = Path("ext/vmafx-serve6/build-cuda/tools/vmaf")
 #: "0" scores each point in its own VMAFx process instead of the server pool.
 VMAFX_SERVER_ENV = "NC_VMAFX_SERVER"
 _NO_GPU_HINT = (f"see docs/handoff/eval-throughput.md \"GPU VMAF\", or set "
@@ -137,13 +142,19 @@ class MetricFailed(RuntimeError):
     nceval.realuse records as a missing point), so it is not a ProcessFailed."""
 
 
+def vmafx_tool(paths: Paths) -> Path:
+    """The VMAFx `vmaf` tool (NC_VMAFX, else VMAFX_DEFAULT under the data root)."""
+    tool = Path(os.environ.get(VMAFX_ENV, paths.data_root / VMAFX_DEFAULT))
+    if not (tool.is_file() and os.access(tool, os.X_OK)):
+        raise FileNotFoundError(f"VMAFx tool not found at {tool} (set {VMAFX_ENV}); {_NO_GPU_HINT}")
+    return tool
+
+
 def vmafx_command(paths: Paths) -> list[str]:
     """How to start one VMAFx scoring run, once it has passed
     `_vmafx_self_check` in this process: the tool, by default as a client of
     a server of its pool (nceval.gpuserve)."""
-    tool = Path(os.environ.get(VMAFX_ENV, paths.data_root / VMAFX_DEFAULT))
-    if not (tool.is_file() and os.access(tool, os.X_OK)):
-        raise FileNotFoundError(f"VMAFx tool not found at {tool} (set {VMAFX_ENV}); {_NO_GPU_HINT}")
+    tool = vmafx_tool(paths)
     command = [str(tool)]
     if os.environ.get(VMAFX_SERVER_ENV, "1") != "0":
         if VMAFX_ENV not in os.environ:
@@ -204,12 +215,14 @@ def _vmafx_self_check(command: tuple[str, ...], model: Path) -> None:
         check_vmafx_report(json.loads(report.read_text()), _SELF_CHECK_FRAMES, ms_ssim=True)
 
 
-def check_vmafx_report(report: dict, frames: int, ms_ssim: bool) -> None:
-    """Every extractor ran on CUDA (and MS-SSIM's did); `frames` rows of finite scores."""
+def check_vmafx_report(report: dict, frames: int, ms_ssim: bool, xpsnr: bool = False) -> None:
+    """Every extractor ran on CUDA (and MS-SSIM's and XPSNR's did, when asked
+    for); `frames` rows of finite scores."""
     extractors = {entry["extractor"]: entry["backend"]
                   for entry in report.get("feature_backends", [])}
     if (not extractors or any(backend != "cuda" for backend in extractors.values())
-            or (ms_ssim and VMAFX_MS_SSIM_EXTRACTOR not in extractors)):
+            or (ms_ssim and VMAFX_MS_SSIM_EXTRACTOR not in extractors)
+            or (xpsnr and VMAFX_XPSNR_EXTRACTOR not in extractors)):
         raise RuntimeError(f"VMAFx did not score on CUDA (extractors: {extractors}); "
                            f"{_NO_GPU_HINT}")
     rows = report.get("frames", [])
@@ -286,6 +299,9 @@ NATIVE_VMAF_SLOT_WEIGHT = 1
 GPU_METRIC_SLOT_WEIGHT = 0
 # VMAFx's CUDA MS-SSIM extractor: its presence proves MS-SSIM ran on the GPU.
 VMAFX_MS_SSIM_EXTRACTOR = "float_ms_ssim_cuda"
+# VMAFx's CUDA XPSNR extractor (ext/vmafx-patches 0011) and its per-plane features.
+VMAFX_XPSNR_EXTRACTOR = "xpsnr_cuda"
+VMAFX_XPSNR_FEATURES = {"xpsnr_y": "xpsnr_y", "xpsnr_cb": "xpsnr_u", "xpsnr_cr": "xpsnr_v"}
 # Display protocol: two single-threaded upscalers plus a 2-thread libvmaf,
 # paced by the stream: measured ~2 busy cores per streamed 720p point.
 VMAF_V1_DISPLAY_SLOT_WEIGHT = 2
@@ -303,6 +319,21 @@ class Measurement:
 def weighted_yuv(y: float, u: float, v: float) -> float:
     """The JVET 6:1:1 luma/chroma weighting."""
     return (6.0 * y + u + v) / 8.0
+
+
+def sequence_xpsnr(frames: list[float]) -> float:
+    """A sequence's XPSNR from its frames' (dB): the square-mean-root of the
+    weighted SSEs, 20 log10(F / sum 10^(-x/20)) (Helmrich et al., ITU J. ICT
+    Discoveries 3(1), 2020, eq. (10)); as ffmpeg's xpsnr filter pools."""
+    return 20.0 * math.log10(len(frames) / sum(10.0 ** (-x / 20.0) for x in frames))
+
+
+def xpsnr_measurement(per_frame: list[dict[str, float]]) -> dict[str, float]:
+    """Sequence XPSNR per plane and 6:1:1 (of the plane values, as ffmpeg's
+    summary line is combined) from per-frame xpsnr_y/u/v."""
+    planes = {key: sequence_xpsnr([f[key] for f in per_frame])
+              for key in ("xpsnr_y", "xpsnr_u", "xpsnr_v")}
+    return {**planes, "xpsnr_yuv": weighted_yuv(*planes.values())}
 
 
 @dataclass(frozen=True)
@@ -425,7 +456,8 @@ class XpsnrMetric:
         if not match:
             raise RuntimeError("could not parse ffmpeg xpsnr output")
         y, u, v = (min(PSNR_CAP_DB, float(x)) for x in match.groups())
-        return Measurement({"xpsnr_y": y, "xpsnr_yuv": weighted_yuv(y, u, v)})
+        return Measurement({"xpsnr_y": y, "xpsnr_u": u, "xpsnr_v": v,
+                            "xpsnr_yuv": weighted_yuv(y, u, v)})
 
 
 class VmafV1DisplayMetric:
@@ -546,23 +578,28 @@ class VmafxMetric(NativeVmafMetric):
     uses_gpu = True
 
     def __init__(self, spec: StreamSpec, vmaf_v1: bool = True, ms_ssim: bool = False,
-                 vmaf_subsample: int = 1):
-        if not (vmaf_v1 or ms_ssim):
+                 vmaf_subsample: int = 1, xpsnr: bool = False):
+        if not (vmaf_v1 or ms_ssim or xpsnr):
             raise ValueError("VMAFx pass with no metric")
         if vmaf_subsample < 1:
             raise ValueError("VMAF subsample must be positive")
-        if ms_ssim and vmaf_subsample != 1:
-            raise ValueError("MS-SSIM is scored on every frame: no VMAF subsample beside it")
+        if (ms_ssim or xpsnr) and vmaf_subsample != 1:
+            raise ValueError("MS-SSIM and XPSNR are scored on every frame: no VMAF subsample "
+                             "beside them")
         self._vmaf_v1, self._ms_ssim, self._subsample = vmaf_v1, ms_ssim, vmaf_subsample
+        self._xpsnr = xpsnr
         arguments = (["--model", _vmaf_v1_model_argument(spec),
                       "--subsample", str(vmaf_subsample)] if vmaf_v1 else ["--no_prediction"])
         if ms_ssim:
             arguments += ["--feature", "float_ms_ssim"]
+        if xpsnr:  # the frame rate selects XPSNR's temporal high-pass
+            arguments += ["--feature", f"xpsnr=fps={spec.fps:g}"]
         super().__init__(spec, "vmafx", [*arguments, "--backend", "cuda", "--precision", "max"],
                          self._parse_report, vmafx_command(spec.paths))
 
     def _parse_report(self, report: dict) -> Measurement:
-        check_vmafx_report(report, -(-self._spec.frames // self._subsample), self._ms_ssim)
+        check_vmafx_report(report, -(-self._spec.frames // self._subsample), self._ms_ssim,
+                           self._xpsnr)
         frames = sorted(report["frames"], key=lambda f: f["frameNum"])
         summary: dict[str, float] = {}
         rows: list[dict[str, float]] = [{} for _ in frames]
@@ -575,6 +612,11 @@ class VmafxMetric(NativeVmafMetric):
             summary["ms_ssim"] = sum(scores) / len(scores)
             for row, score in zip(rows, scores):
                 row["ms_ssim"] = score
+        if self._xpsnr:
+            for row, frame in zip(rows, frames):
+                row.update({ours: min(PSNR_CAP_DB, float(frame["metrics"][theirs]))
+                            for theirs, ours in VMAFX_XPSNR_FEATURES.items()})
+            summary.update(xpsnr_measurement(rows))
         return Measurement(summary, rows)
 
 
@@ -584,12 +626,12 @@ def _libvmaf_printed(score: float) -> float:
 
 
 def vmaf_v1_and_ms_ssim(spec: StreamSpec, vmaf_v1: bool = True, ms_ssim: bool = False,
-                        vmaf_subsample: int = 1) -> list[MetricComponent]:
-    """The components scoring native VMAF v1 and/or MS-SSIM on `metrics_backend`."""
+                        vmaf_subsample: int = 1, xpsnr: bool = False) -> list[MetricComponent]:
+    """The components scoring native VMAF v1, MS-SSIM and/or XPSNR on `metrics_backend`."""
     if metrics_backend() == VMAFX_CUDA_BACKEND:
-        return [VmafxMetric(spec, vmaf_v1, ms_ssim, vmaf_subsample)]
+        return [VmafxMetric(spec, vmaf_v1, ms_ssim, vmaf_subsample, xpsnr)]
     return ([VmafV1Metric(spec, vmaf_subsample)] if vmaf_v1 else []) + \
-        ([MsSsimMetric(spec)] if ms_ssim else [])
+        ([MsSsimMetric(spec)] if ms_ssim else []) + ([XpsnrMetric(spec)] if xpsnr else [])
 
 
 def legacy_vmaf_metric(spec: StreamSpec) -> NativeVmafMetric:
@@ -650,11 +692,17 @@ REAL_METRICS_REVISION = 1
 #: another value is re-measured when it is next used (nceval.cbr), never in
 #: bulk (owner decision, 2026-11-11). 1 (absent): every 4th frame; 2: every frame.
 REAL_MS_SSIM_REVISION = 2
+#: The XPSNR protocol of a real-use result, stored in it like MS-SSIM's: XPSNR is an
+#: addition, so a result without it (or of another revision) keeps serving J and is
+#: re-measured only by a run that asks for XPSNR (cbr.Bench.xpsnr). 1: per-frame
+#: XPSNR (ext/vmafx-patches 0011 or ffmpeg's filter), pooled by `sequence_xpsnr`.
+REAL_XPSNR_REVISION = 1
 
 
-def real_metrics(spec: StreamSpec) -> list[MetricComponent]:
-    """PSNR (per plane), VMAF v1 and MS-SSIM, each on every frame."""
-    return [PsnrMetric(spec), *vmaf_v1_and_ms_ssim(spec, ms_ssim=True)]
+def real_metrics(spec: StreamSpec, xpsnr: bool = False) -> list[MetricComponent]:
+    """PSNR (per plane), VMAF v1 and MS-SSIM, each on every frame; `xpsnr`
+    adds XPSNR (reported only, never part of J)."""
+    return [PsnrMetric(spec), *vmaf_v1_and_ms_ssim(spec, ms_ssim=True, xpsnr=xpsnr)]
 
 
 def default_xpsnr(profile: str) -> bool:
