@@ -1737,7 +1737,7 @@ impl<B: CodecBackend> Encoder<B> {
         );
         self.layer.analyzer = analyzer;
         self.layer.input = own_input;
-        pool.finish(layer_plan.references.refresh, &self.dsp);
+        pool.finish(layer_plan.references.refresh);
         copy_layer_visible_recon(&self.dsp, padding.as_mut(), pool.last(), visible_out);
         self.layer.references = Some(pool);
         self.layer.padding = padding;

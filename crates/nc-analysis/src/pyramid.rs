@@ -151,15 +151,15 @@ impl Pyramid {
             self.half_border = false;
         }
         dsp.downscale_2x(&self.half.view(), &mut self.quarter.view_mut());
-        self.quarter.extend_borders_with(dsp);
+        self.quarter.extend_borders();
         self.built = Levels::Both;
     }
 
     /// Extend the half level's border, if this build has not yet: before a
     /// search reads the half level ([`Self::half`]).
-    pub fn ensure_half_border(&mut self, dsp: &Dsp) {
+    pub fn ensure_half_border(&mut self) {
         if !self.half_border {
-            self.half.extend_borders_with(dsp);
+            self.half.extend_borders();
             self.half_border = true;
         }
     }

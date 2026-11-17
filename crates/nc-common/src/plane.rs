@@ -40,34 +40,6 @@ const MAX_DIMENSION: usize = 1 << 16;
 /// 32-bit targets (wasm32).
 const MAX_AREA: usize = 1 << 28;
 
-/// How [`Plane::extend_borders_with`] stores the border samples. The
-/// samples are the same whatever the stores; only how they reach memory
-/// could differ (`nc_dsp::Dsp` uses ordinary stores: non-temporal ones lost
-/// on Zen 3 and Zen 5, 2026-11-17).
-pub trait BorderStores<T: Sample = u8> {
-    /// Set every sample of `dst` to `value`.
-    fn fill(&self, dst: &mut [T], value: T);
-    /// Copy `src` into `dst` (both the same length).
-    fn copy(&self, dst: &mut [T], src: &[T]);
-    /// Called once after the last store of an extension (e.g. to order
-    /// weakly ordered stores before the plane is shared).
-    fn finish(&self) {}
-}
-
-/// Ordinary stores, through the cache.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CachedStores;
-
-impl<T: Sample> BorderStores<T> for CachedStores {
-    fn fill(&self, dst: &mut [T], value: T) {
-        dst.fill(value);
-    }
-
-    fn copy(&self, dst: &mut [T], src: &[T]) {
-        dst.copy_from_slice(src);
-    }
-}
-
 /// An owned plane of samples. See the module documentation for layout.
 #[derive(Debug, Clone)]
 pub struct Plane<T: Sample = u8> {
@@ -267,12 +239,7 @@ impl<T: Sample> Plane<T> {
     /// Call after the visible area changes (e.g. after reconstructing a
     /// reference frame) and before motion compensation reads from it.
     pub fn extend_borders(&mut self) {
-        self.extend_borders_with(&CachedStores);
-    }
-
-    /// [`Self::extend_borders`], writing the border through `stores`.
-    pub fn extend_borders_with(&mut self, stores: &impl BorderStores<T>) {
-        self.extend_border_rows_with(0..self.height, stores);
+        self.extend_border_rows(0..self.height);
     }
 
     /// Replicate edge samples into the border beside the visible `rows`,
@@ -284,16 +251,12 @@ impl<T: Sample> Plane<T> {
     /// # Panics
     ///
     /// If `rows` reaches past the plane's height.
+    ///
+    /// Ordinary (cached) stores: non-temporal ones, used on x86 until
+    /// 2026-11-17, lost on both x86 machines we time (whole-encode CPU time
+    /// with ordinary stores, Faster preset, 720p, AVX2 tier: Zen 3 HEVC
+    /// -0.6 %, AV1 -0.6 %; Zen 5 HEVC -3.2 %, AV1 -4.0 %).
     pub fn extend_border_rows(&mut self, rows: core::ops::Range<usize>) {
-        self.extend_border_rows_with(rows, &CachedStores);
-    }
-
-    /// [`Self::extend_border_rows`], writing the border through `stores`.
-    pub fn extend_border_rows_with(
-        &mut self,
-        rows: core::ops::Range<usize>,
-        stores: &impl BorderStores<T>,
-    ) {
         assert!(rows.end <= self.height, "rows beyond the plane");
         if rows.is_empty() {
             return;
@@ -305,15 +268,15 @@ impl<T: Sample> Plane<T> {
         for y in pad_y + rows.start..pad_y + rows.end {
             let row = &mut data[y * stride..(y + 1) * stride];
             let (left_value, right_value) = (row[pad_x], row[pad_x + width - 1]);
-            stores.fill(&mut row[..pad_x], left_value);
-            stores.fill(&mut row[pad_x + width..], right_value);
+            row[..pad_x].fill(left_value);
+            row[pad_x + width..].fill(right_value);
         }
 
         if rows.start == 0 {
             let (above, rest) = data.split_at_mut(pad_y * stride);
             let first_row = &rest[..stride];
             for row in above.chunks_exact_mut(stride) {
-                stores.copy(row, first_row);
+                row.copy_from_slice(first_row);
             }
         }
 
@@ -322,10 +285,9 @@ impl<T: Sample> Plane<T> {
             let (upper, below) = data.split_at_mut(last_visible + stride);
             let last_row = &upper[last_visible..];
             for row in below.chunks_exact_mut(stride) {
-                stores.copy(row, last_row);
+                row.copy_from_slice(last_row);
             }
         }
-        stores.finish();
     }
 
     /// Sample offset of visible coordinate (`x`, `y`), if a `width` x `height`

@@ -1,6 +1,6 @@
-//! Cached copies, border stores and row statistics at cache-line and frame widths.
+//! Cached copies and row statistics at cache-line and frame widths.
 use crate::bench::{BenchResult, time};
-use nc_common::{BorderStores, PlaneView, PlaneViewMut};
+use nc_common::{PlaneView, PlaneViewMut};
 use nc_dsp::{BlockSize, Dsp, Filter, Moments};
 
 pub(crate) fn bench(dsp: &Dsp, results: &mut Vec<BenchResult>) {
@@ -60,22 +60,6 @@ fn rows(dsp: &Dsp, results: &mut Vec<BenchResult>, w: usize) {
             }),
         );
     }
-    push(
-        "border_fill",
-        time(|| {
-            dsp.fill(&mut output, 97);
-            dsp.finish();
-            u32::from(output[0])
-        }),
-    );
-    push(
-        "border_copy",
-        time(|| {
-            dsp.copy(&mut output, &input);
-            dsp.finish();
-            u32::from(output[0])
-        }),
-    );
 }
 fn prediction(dsp: &Dsp, results: &mut Vec<BenchResult>, w: usize) {
     let size = BlockSize::new(w, w).unwrap();

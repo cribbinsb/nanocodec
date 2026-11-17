@@ -493,9 +493,9 @@ impl<'a> Level<'a> {
     /// extension would hold it: coordinates clamped to the picture. For
     /// regions past the border: the levels keep a border of one block only,
     /// since borders as wide as the search reach (`FINE_LIMIT` plus an SB at
-    /// full resolution) were ~4% of HEVC Faster's x86 time (non-temporal
-    /// stores of ~1 MB per 720p frame) for vectors that rarely reach that
-    /// far.
+    /// full resolution) were ~4% of HEVC Faster's x86 time (~1 MB of
+    /// border stores per 720p frame, then non-temporal) for vectors that
+    /// rarely reach that far.
     fn gathered(&self, (x, y): (isize, isize), width: usize, out: &mut [u8]) {
         let (bx, by) = self.border;
         let visible_width = self.reference.width() as isize - 2 * bx;

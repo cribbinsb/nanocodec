@@ -866,7 +866,9 @@ sequences x 6 quantizers, 4 rotated rounds, `fixedqp_timing_remote.py`). Scripts
 
 **Landed (exact).** Both changes: `preset_identity` 297/297, lens stream sizes equal on c8a, ledger rows.
 - **c9e59feed: the AVX-512 tier writes picture borders with ordinary stores.** The AVX2 tier
-  keeps the non-temporal stores (HEVC Faster, Zen 3: -5.7 %).
+  keeps the non-temporal stores (HEVC Faster, Zen 3: -5.7 %). Since ffb012fdc (2026-11-17) every tier
+  uses ordinary stores: re-measured with the AVX2 tier, they are faster on Zen 3 (-0.3..-0.6 %) and Zen 5
+  (-3.2 % HEVC, -4.0 % AV1).
   - c8a A/B against the e329c8b59 code: 819.8 -> 847.6 fps (+3.4 %), M12 914.7.
   - Every sequence was faster: FourPeople -5.3 %, SnowMountain -6.9 %, Johnny -3.1 %,
     WestWindEasy -0.8 %.

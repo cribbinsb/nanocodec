@@ -33,6 +33,7 @@ import math
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -344,16 +345,21 @@ def speed_notes(timing: dict[str, dict]) -> dict[str, dict]:
             for platform, record in timing.items()}
 
 
-def timed_builds(record: dict) -> str:
-    """The build a timing record's encoders ran on: its own, and any later build some
-    re-timed encoders carry (fixedqp_timing.py merge), e.g. 'b11b2f83 (2860f897 for 7)'."""
-    later: dict[str, int] = {}
-    for point in record["points"].values():
-        if point.get("build", record["build"]) != record["build"]:
-            later[point["build"]] = later.get(point["build"], 0) + 1
+def timed_builds(record: dict) -> str | None:
+    """The builds a timing record's encoders of ours ran on: the most common (the record's
+    own where no point names one), and any other build some points carry (fixedqp_timing.py merge,
+    anchor_chart_timing.py merge --build-for, chart_refresh), e.g. 'b11b2f83 (2860f897 for 7)';
+    None for a record that names no build."""
+    counts = Counter(point.get("build", record.get("build"))
+                     for name, point in record["points"].items() if name.startswith(OWN_PREFIX))
+    counts.pop(None, None)
+    main = counts.most_common(1)[0][0] if counts else None
+    if main is None:
+        return None
+    later = sorted((b, n) for b, n in counts.items() if b != main)
     if not later:
-        return record["build"]
-    return f"{record['build']} ({', '.join(f'{b} for {n}' for b, n in sorted(later.items()))})"
+        return main
+    return f"{main} ({', '.join(f'{b} for {n}' for b, n in later)})"
 
 
 def size_range(sizes: list[tuple[int, int]]) -> str:
@@ -513,7 +519,7 @@ def chart_data() -> dict:
         "platforms": platforms, "points": points, "views": views,
         # a machine whose one session timed all our points at one build says which
         "timing_builds": {name: timed_builds(record) for name, record in cbr_timing().items()
-                          if "build" in record},
+                          if timed_builds(record)},
         "ladder_kbps": list(LADDER_KBPS), "low_ladder_kbps": list(LOW_LADDER_KBPS),
         "buffer_ms": BUFFER_MS, "frames": DEFAULT_FRAMES,
         "example": {"kbps": EXAMPLE_KBPS, "width": EXAMPLE_CLIP.width,

@@ -2,7 +2,7 @@
 //! or (`Picture<u16>`) deeper ones.
 
 use crate::error::{Error, Result};
-use crate::plane::{BorderStores, Plane};
+use crate::plane::Plane;
 use crate::sample::Sample;
 
 /// Chroma subsampling. Only 4:2:0 is supported (`docs/ARCHITECTURE.md` §1: 8-bit 4:2:0 only).
@@ -138,13 +138,6 @@ impl<T: Sample> Picture<T> {
     pub fn extend_borders(&mut self) {
         for plane in &mut self.planes {
             plane.extend_borders();
-        }
-    }
-
-    /// [`Self::extend_borders`], writing the borders through `stores`.
-    pub fn extend_borders_with(&mut self, stores: &impl BorderStores<T>) {
-        for plane in &mut self.planes {
-            plane.extend_borders_with(stores);
         }
     }
 

@@ -1,36 +1,12 @@
 //! Memory-kernel boundaries: every cache-line alignment and masked tail,
 //! untouched destination padding, and SSE totals crossing signed/u32 limits.
 use crate::check::CheckReport;
-use nc_common::{BorderStores, PlaneView, PlaneViewMut};
+use nc_common::{PlaneView, PlaneViewMut};
 use nc_dsp::{BlockSize, Dsp};
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
     check_sample_rows(candidate, reference, report);
     check_satd_quads(candidate, reference, report);
-    for offset in 0..64 {
-        for len in [0, 1, 31, 32, 63, 64, 65, 127, 128, 129, 255] {
-            let src: Vec<_> = (0..len).map(|i| (i * 37 + 17) as u8).collect();
-            for copy in [false, true] {
-                let run = |dsp: &Dsp| {
-                    let mut out = vec![0xa5; offset + len + 65];
-                    let span = &mut out[offset..offset + len];
-                    if copy {
-                        dsp.copy(span, &src);
-                    } else {
-                        dsp.fill(span, 91);
-                    }
-                    dsp.finish();
-                    out
-                };
-                record(
-                    report,
-                    candidate,
-                    run(candidate) == run(reference),
-                    "border alignment/tail",
-                );
-            }
-        }
-    }
     for w in 0..=129 {
         let (ss, ds, h) = (w + 3, w + 7, 3);
         let src: Vec<_> = (0..1 + (h - 1) * ss + w)

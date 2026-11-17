@@ -99,7 +99,6 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_cdef_interior::check(&candidate, &reference, &mut report);
     crate::check_hevc_put32::check(&candidate, &reference, &mut report);
     crate::check_display::check(&candidate, &reference, iterations, &mut rng, &mut report);
-    crate::check_border::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_vp9_inverse::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_vp9_inverse::check_add(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_av1_inverse::check(&candidate, &reference, iterations, &mut rng, &mut report);

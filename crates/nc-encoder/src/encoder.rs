@@ -1758,7 +1758,7 @@ impl<B: CodecBackend> Encoder<B> {
         }
         self.layer.analyzer = analyzer;
         self.layer.input = own_input;
-        pool.finish(references.refresh, &self.dsp);
+        pool.finish(references.refresh);
         if let Some(p) = padding.as_mut() {
             copy_visible(&self.dsp, pool.last(), &mut p.visible_recon);
         }

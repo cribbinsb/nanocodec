@@ -468,7 +468,7 @@ impl Analyzer {
             None => (&mut self.frames[self.next], None),
         };
         timed(timer, Stage::Ingest, || {
-            next.picture.extend_borders_with(dsp);
+            next.picture.extend_borders();
         });
         let downsample = next.pyramid.downsample();
         let half = builds_pyramid.then(|| (next.pyramid.half_to_fill(), downsample));
@@ -560,7 +560,7 @@ impl Analyzer {
                 timed(timer, Stage::Pyramid, || frame.build_pyramid(&dsp));
             }
             if self.search.hme_level1 {
-                self.frames[i].pyramid.ensure_half_border(&dsp);
+                self.frames[i].pyramid.ensure_half_border();
             }
         }
     }

@@ -8,7 +8,6 @@
 
 use nc_analysis::link::{MAX_REFERENCE_SLOTS, SlotMask};
 use nc_common::Picture;
-use nc_dsp::Dsp;
 
 use crate::source_scale::scale_picture;
 
@@ -88,8 +87,8 @@ impl ReferencePool {
     /// Finish the current picture: extend its borders for prediction, make
     /// it the reference of every slot in `refresh`, and pick a free picture
     /// for the next frame.
-    pub(crate) fn finish(&mut self, refresh: SlotMask, dsp: &Dsp) {
-        self.pictures[self.current].extend_borders_with(dsp);
+    pub(crate) fn finish(&mut self, refresh: SlotMask) {
+        self.pictures[self.current].extend_borders();
         for slot in 0..self.slot_count {
             if refresh.contains(slot) {
                 self.slots[slot] = self.current;
@@ -185,14 +184,14 @@ mod tests {
     fn non_reference_frames_keep_slots_and_become_last() {
         let mut pool = ReferencePool::new(16, 16, 0, 2).unwrap();
         mark(&mut pool, 0, 10);
-        pool.finish(SlotMask::ALL, &Dsp::new());
+        pool.finish(SlotMask::ALL);
         mark(&mut pool, 0, 20);
-        pool.finish(SlotMask::NONE, &Dsp::new());
+        pool.finish(SlotMask::NONE);
         assert_eq!(first_sample(pool.last()), 20);
         assert_eq!(first_sample(pool.frames(0, None).0), 10);
         assert_eq!(first_sample(pool.frames(1, None).0), 10);
         mark(&mut pool, 0, 30);
-        pool.finish(SlotMask::only(1), &Dsp::new());
+        pool.finish(SlotMask::only(1));
         assert_eq!(first_sample(pool.frames(0, None).0), 10);
         assert_eq!(first_sample(pool.frames(1, None).0), 30);
     }

@@ -6585,22 +6585,6 @@ impl Dsp {
     }
 }
 
-/// Border extension with ordinary stores, on every ISA. Non-temporal stores
-/// (x86, until 2026-11-17) lost on both x86 machines we time: whole-encode
-/// CPU time with ordinary stores, Faster preset, 720p CTC, 20 rotated rounds,
-/// AVX2 tier: Zen 3 (PC) HEVC -0.6 %, AV1 -0.6 %; Zen 5 (c8a) HEVC -3.2 %,
-/// AV1 -4.0 % (the AVX-512 tier had switched earlier that day, +3.4 % fps).
-/// The earlier Zen 3 gain for them (-5.7 %) did not reproduce.
-impl nc_common::BorderStores for Dsp {
-    fn fill(&self, dst: &mut [u8], value: u8) {
-        dst.fill(value);
-    }
-
-    fn copy(&self, dst: &mut [u8], src: &[u8]) {
-        dst.copy_from_slice(src);
-    }
-}
-
 impl Dsp {
     /// Copy the source's top-left rectangle covering the destination.
     ///

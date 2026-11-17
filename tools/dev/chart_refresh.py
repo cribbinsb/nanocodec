@@ -628,7 +628,7 @@ class Refresh:
         if not self.args.dry_run:
             merge_timing(REPO / TIMING_X86_FILE,
                          sorted(r for out in outs for r in (out / "repeat-1").glob("t-*.json")),
-                         rescale=True)
+                         rescale=True, build=self.commit)
             for out in outs:
                 shutil.rmtree(out)
 
@@ -663,7 +663,8 @@ class Refresh:
         if not self.args.dry_run:
             local.mkdir(parents=True, exist_ok=True)
             scp([f"{jetson()}:{JETSON_WORK}/timing/t-{f}.json" for f in self.timed], str(local))
-            merge_timing(REPO / TIMING_FILE, sorted(local.glob("t-*.json")), rescale=False)
+            merge_timing(REPO / TIMING_FILE, sorted(local.glob("t-*.json")), rescale=False,
+                         build=self.commit)
             shutil.rmtree(local)
             ssh(f"rm -rf {JETSON_WORK}/timing")
 
@@ -893,8 +894,9 @@ def scp(sources: list[str], destination: str) -> None:
     subprocess.run(["scp", "-q", *sources, destination], check=True, stdin=subprocess.DEVNULL)
 
 
-def merge_timing(stored_path: Path, records: list[Path], rescale: bool) -> None:
-    """Replace the timed points' entries in a stored timing file.
+def merge_timing(stored_path: Path, records: list[Path], rescale: bool, build: str) -> None:
+    """Replace the timed points' entries in a stored timing file, each naming the `build`
+    it was timed on (the site's captions say which builds a machine's speeds come from).
 
     `rescale` (x86) puts each per-clip time on the stored session's footing: the
     point's median per-round time ratio to the anchor times the stored anchor time.
@@ -906,7 +908,8 @@ def merge_timing(stored_path: Path, records: list[Path], rescale: bool) -> None:
         record = json.loads(path.read_text())
         clips = record["clips"]
         raw = {c: v["ms_per_frame"]["point"] for c, v in clips.items()}
-        entry = {"budget_fraction": {c: v["budget_fraction"] for c, v in clips.items()}}
+        entry = {"budget_fraction": {c: v["budget_fraction"] for c, v in clips.items()},
+                 "build": build}
         if rescale:
             entry.update(ms_per_frame={c: v["time_ratio"][ANCHOR] * reference[c]
                                        for c, v in clips.items()},
