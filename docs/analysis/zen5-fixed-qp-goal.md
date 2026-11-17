@@ -546,6 +546,24 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
     replayed (35 Ir), where SVT codes once (about 30). Removing the log needs CDEF decided before
     a superblock's symbols are coded, which changes streams. AV2 is not affected: its recording
     writer is a different structure (models re-adapted on replay).
+- **AV1 coefficient pricing against SVT M10** (`feature/av1-writer2`, same harness).
+  - **Why ours cost ~8x on Default:** call count first. On Default, `CoeffCdfs::cost` runs
+    266K times (260K from `residual_rd_cost`) at 2,245 Ir a call: 598.7M. M10's full walk
+    (`svt_av1_cost_coeffs_txb`) runs 74K times at 1,317 Ir: 97.4M; `txb_estimate_coeff_bits` adds
+    8.3M over 107K calls. On Fast and Faster, ours is 124M / 114M, about M10's total. Nearly all
+    of those calls come from the one key frame's planner.
+  - **SVT M10 prices exactly:** real time M10 runs `rate_est_level` 1, the full CDF walk. Only
+    M10 with one hierarchical level, and M11+, use the linear end-of-block model (level 0).
+    `coeff_rate_est_lvl` 2, linear below an end-of-block threshold, is used only in light PD0.
+    Our linear model is already ported (`av1.key_linear_rate_eob_share`, `coeff_rate_linear`).
+  - **Exact landing 3:** the magnitude walk runs over per-size scan tables (coefficient, map
+    index, `nz_map_ctx_offset` by scan index, SVT-style prepared contexts), with the DC step
+    peeled and the base costs summed in a local. Whole encode: Default 7662.4M → 7566.2M
+    (−1.26 %), Fast −0.60 %, Faster −0.69 %. `cost` 598.7M → 511.9M on Default. Writer path
+    990 → **959 Ir/byte** (Fast 1,017, Faster 973).
+  - Tried and dropped: one packed array of steps instead of three (+0.06 % on Default).
+  - Not shared with AV2: its contexts clip neighbours at 5 or 3 by region (AVM `clip_max5` /
+    `clip_max3`), so the saturate-at-3 map does not carry over.
 - **AV1 Fast re-point key pulse:** Default's key intra set doesn't fix it (worst clip +1.10 dB);
   key boost makes it worse (+4.56). Being tested: partial forward on keys only, and a coarser key
   QP.

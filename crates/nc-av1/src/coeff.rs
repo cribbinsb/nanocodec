@@ -224,14 +224,13 @@ fn context_byte(sum: u32, dc: i16) -> u8 {
     cul | (dc_category << DC_SIGN_SHIFT)
 }
 
-/// The magnitudes of one transform block with an end of block past the
-/// DC, and what their contexts need: [`Self::write`] codes their
-/// `coeff_base_eob`, `coeff_base` and `coeff_br` symbols.
+/// The magnitudes of one transform block, and what their contexts need:
+/// [`Self::write`] codes their `coeff_base_eob`, `coeff_base` and
+/// `coeff_br` symbols, [`Self::cost`] prices them.
 struct Magnitudes<'a> {
-    /// The scan up to the end of block.
-    scan: &'a [u16],
+    /// The scan's steps up to the end of block.
+    steps: ScanSteps<'a>,
     levels: &'a [i16],
-    nz_offsets: &'a [u8],
 }
 
 /// The `coeff_base_eob`, `coeff_base` and `coeff_br` CDFs of a transform
@@ -243,49 +242,50 @@ type MagnitudeCdfs<'a> = (
 );
 
 impl Magnitudes<'_> {
+    /// The level of the coefficient at `pos` and its magnitude.
+    fn level(&self, pos: usize) -> (i32, i32) {
+        let v = i32::from(self.levels[pos]);
+        (v, v.abs())
+    }
+
     /// Code the magnitudes in reverse scan order, in a level map sized to
     /// the block (`STRIDE` its side plus the context reach), so that a small
     /// block clears and touches only its own few bytes. The last one
     /// (`eob - 1`) is non-zero by definition and codes `coeff_base_eob`
-    /// instead of `coeff_base`.
+    /// instead of `coeff_base`; the DC's `coeff_base` context is 0.
     fn write<W: SymbolSink, const STRIDE: usize, const SIZE: usize>(
         &self,
         w: &mut W,
         (base_eob_cdfs, base_cdfs, range_cdfs): MagnitudeCdfs<'_>,
         map: &mut LevelMap<STRIDE, SIZE>,
     ) {
-        let n = STRIDE - CONTEXT_REACH;
-        let log2 = n.ilog2();
-        let last = self.scan.len() - 1;
-        let pos = usize::from(self.scan[last]);
-        let level = i32::from(self.levels[pos]).abs();
+        let last = self.steps.last();
+        let (pos, at, _) = self.steps.step(last);
+        let (_, level) = self.level(pos);
         w.write_symbol(
             (level.min(3) - 1) as usize,
-            &mut base_eob_cdfs[base_eob_context(last, n)],
+            &mut base_eob_cdfs[base_eob_context(last, STRIDE - CONTEXT_REACH)],
             BASE_EOB_SYMBOLS,
         );
-        map.code_level(
-            w,
-            range_cdfs,
-            self.levels,
-            pos,
-            LevelMap::<STRIDE, SIZE>::index(pos, log2),
-            level,
-        );
-        for c in (0..last).rev() {
-            let pos = usize::from(self.scan[c]);
-            let at = LevelMap::<STRIDE, SIZE>::index(pos, log2);
-            let level = i32::from(self.levels[pos]).abs();
-            let ctx = base_context(pos, map.base_sum(at), self.nz_offsets[pos]);
+        map.code_level(w, range_cdfs, self.levels, pos, at, level);
+        for (pos, at, offset) in self.steps.ac_before(last) {
+            let (_, level) = self.level(pos);
+            let ctx = ac_base_context(map.base_sum(at), offset);
             w.write_symbol(level.min(3) as usize, &mut base_cdfs[ctx], BASE_SYMBOLS);
             map.code_level(w, range_cdfs, self.levels, pos, at, level);
+        }
+        if last > 0 {
+            let (_, level) = self.level(0);
+            w.write_symbol(level.min(3) as usize, &mut base_cdfs[0], BASE_SYMBOLS);
+            map.code_level(w, range_cdfs, self.levels, 0, 0, level);
         }
     }
 
     /// The bits [`Self::write`] and the sign pass spend on these
     /// magnitudes, priced in one reverse pass: each nonzero level's sign
     /// (`dc_sign` for the DC) and Exp-Golomb remainder are counted where its
-    /// magnitude is.
+    /// magnitude is. The `coeff_base` costs add up in a local (integer
+    /// costs, so the order of the sum does not matter).
     fn cost<const STRIDE: usize, const SIZE: usize>(
         &self,
         counter: &mut BitCounter,
@@ -293,40 +293,145 @@ impl Magnitudes<'_> {
         dc_sign: &mut Cdf<2>,
         map: &mut LevelMap<STRIDE, SIZE>,
     ) {
-        let n = STRIDE - CONTEXT_REACH;
-        let log2 = n.ilog2();
-        let mut sign_and_remainder = |counter: &mut BitCounter, c: usize, v: i32| {
-            if c == 0 {
-                counter.add_q9(dc_sign.cost_q9(usize::from(v < 0)));
-            } else {
-                counter.add_bypass(1);
-            }
-            if v.abs() > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
-                counter.add_bypass(golomb_bits((v.abs() - MAX_BASE_BR_RANGE) as u32));
+        // A nonzero AC level's sign is one bypass bit; any level's remainder
+        // past the coded range is Exp-Golomb bypass bits (`write_golomb`).
+        let remainder = |counter: &mut BitCounter, level: i32| {
+            if level > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
+                counter.add_bypass(golomb_bits((level - MAX_BASE_BR_RANGE) as u32));
             }
         };
-        let last = self.scan.len() - 1;
-        let pos = usize::from(self.scan[last]);
-        let v = i32::from(self.levels[pos]);
-        let level = v.abs();
-        counter
-            .add_q9(base_eob_cdfs[base_eob_context(last, n)].cost_q9((level.min(3) - 1) as usize));
-        let at = LevelMap::<STRIDE, SIZE>::index(pos, log2);
+        let last = self.steps.last();
+        let (pos, at, _) = self.steps.step(last);
+        let (v, level) = self.level(pos);
+        counter.add_q9(
+            base_eob_cdfs[base_eob_context(last, STRIDE - CONTEXT_REACH)]
+                .cost_q9((level.min(3) - 1) as usize),
+        );
         map.code_level(counter, range_cdfs, self.levels, pos, at, level);
-        sign_and_remainder(counter, last, v);
-        for c in (0..last).rev() {
-            let pos = usize::from(self.scan[c]);
-            let at = LevelMap::<STRIDE, SIZE>::index(pos, log2);
-            let v = i32::from(self.levels[pos]);
-            let level = v.abs();
-            let ctx = base_context(pos, map.base_sum(at), self.nz_offsets[pos]);
-            counter.add_q9(base_cdfs[ctx].cost_q9(level.min(3) as usize));
+        if last == 0 {
+            counter.add_q9(dc_sign.cost_q9(usize::from(v < 0)));
+        } else {
+            counter.add_bypass(1);
+        }
+        remainder(counter, level);
+        let mut base_q9 = 0;
+        for (pos, at, offset) in self.steps.ac_before(last) {
+            let (_, level) = self.level(pos);
+            base_q9 +=
+                base_cdfs[ac_base_context(map.base_sum(at), offset)].cost_q9(level.min(3) as usize);
             // A zero level leaves the map as it was (zero).
             if level != 0 {
                 map.code_level(counter, range_cdfs, self.levels, pos, at, level);
-                sign_and_remainder(counter, c, v);
+                counter.add_bypass(1);
+                remainder(counter, level);
             }
         }
+        if last > 0 {
+            let (v, level) = self.level(0);
+            base_q9 += base_cdfs[0].cost_q9(level.min(3) as usize);
+            if level != 0 {
+                map.code_level(counter, range_cdfs, self.levels, 0, 0, level);
+                counter.add_q9(dc_sign.cost_q9(usize::from(v < 0)));
+                remainder(counter, level);
+            }
+        }
+        counter.add_q9(base_q9);
+    }
+}
+
+/// The steps of a transform size's scan, by scan index: the coefficient
+/// (libaom layout), its level-map index and its `coeff_base` context offset
+/// (libaom `nz_map_ctx_offset`). The magnitude walk runs over these three
+/// parallel arrays instead of deriving a map index and looking up the
+/// offset for every coefficient (SVT-AV1 likewise prepares contexts before
+/// its cost loop, `svt_av1_get_nz_map_contexts`). One array of packed steps
+/// measured 0.06 % more AV1 Default instructions.
+struct ScanWalk<const AREA: usize> {
+    pos: [u16; AREA],
+    at: [u16; AREA],
+    nz_offset: [u8; AREA],
+}
+
+impl<const AREA: usize> ScanWalk<AREA> {
+    /// The walk of a square transform with `scan` and `nz_map_ctx_offset`
+    /// table `offsets`, for the level map sized to it ([`map_stride`]).
+    const fn new(scan: &[u16; AREA], offsets: &[u8; AREA]) -> Self {
+        let log2 = AREA.ilog2() / 2;
+        let side = 1 << log2;
+        let mut walk = Self {
+            pos: [0; AREA],
+            at: [0; AREA],
+            nz_offset: [0; AREA],
+        };
+        let mut c = 0;
+        while c < AREA {
+            let pos = scan[c] as usize;
+            walk.pos[c] = scan[c];
+            // The column times the map stride plus the row.
+            walk.at[c] = (pos + (pos >> log2) * (map_stride(side) - side)) as u16;
+            walk.nz_offset[c] = offsets[pos];
+            c += 1;
+        }
+        walk
+    }
+
+    /// The first `eob` steps.
+    fn steps(&self, eob: usize) -> ScanSteps<'_> {
+        ScanSteps {
+            pos: &self.pos[..eob],
+            at: &self.at[..eob],
+            nz_offset: &self.nz_offset[..eob],
+        }
+    }
+}
+
+const WALK_4X4: ScanWalk<16> = ScanWalk::new(&DEFAULT_SCAN_4X4, &NZ_MAP_CTX_OFFSET_4X4);
+const WALK_8X8: ScanWalk<64> = ScanWalk::new(&DEFAULT_SCAN_8X8, &NZ_MAP_CTX_OFFSET_8X8);
+const WALK_16X16: ScanWalk<256> = ScanWalk::new(&DEFAULT_SCAN_16X16, &NZ_MAP_CTX_OFFSET_16X16);
+const WALK_32X32: ScanWalk<1024> = ScanWalk::new(&DEFAULT_SCAN_32X32, &NZ_MAP_CTX_OFFSET_32X32);
+
+/// The first `eob` (at least 1) steps of `tx`'s scan walk.
+fn scan_steps(tx: TxSize, eob: usize) -> ScanSteps<'static> {
+    match tx {
+        TxSize::Tx4x4 => WALK_4X4.steps(eob),
+        TxSize::Tx8x8 => WALK_8X8.steps(eob),
+        TxSize::Tx16x16 => WALK_16X16.steps(eob),
+        TxSize::Tx32x32 | TxSize::Tx64x64 => WALK_32X32.steps(eob),
+    }
+}
+
+/// The steps of a scan up to an end of block ([`ScanWalk::steps`]).
+struct ScanSteps<'a> {
+    pos: &'a [u16],
+    at: &'a [u16],
+    nz_offset: &'a [u8],
+}
+
+impl ScanSteps<'_> {
+    /// Scan index of the last coefficient (`eob - 1`).
+    fn last(&self) -> usize {
+        self.pos.len() - 1
+    }
+
+    /// Coefficient, map index and context offset of scan index `c`.
+    fn step(&self, c: usize) -> (usize, usize, u8) {
+        (
+            usize::from(self.pos[c]),
+            usize::from(self.at[c]),
+            self.nz_offset[c],
+        )
+    }
+
+    /// The AC steps before scan index `last` (scan indices `last - 1` down
+    /// to 1), in reverse scan order.
+    fn ac_before(&self, last: usize) -> impl Iterator<Item = (usize, usize, u8)> + '_ {
+        let ac = 1.min(last)..last;
+        self.pos[ac.clone()]
+            .iter()
+            .zip(&self.at[ac.clone()])
+            .zip(&self.nz_offset[ac])
+            .rev()
+            .map(|((&pos, &at), &offset)| (usize::from(pos), usize::from(at), offset))
     }
 }
 
@@ -449,9 +554,8 @@ impl CoeffCdfs {
             }
         } else {
             let magnitudes = Magnitudes {
-                scan,
+                steps: scan_steps(tx, eob),
                 levels,
-                nz_offsets: nz_map_ctx_offset(tx),
             };
             let cdfs = (base_eob_cdfs, base_cdfs, range_cdfs);
             match tx {
@@ -520,9 +624,8 @@ impl CoeffCdfs {
         self.write_eob(&mut counter, tx, pt, eob);
 
         let magnitudes = Magnitudes {
-            scan: &scan(tx)[..eob],
+            steps: scan_steps(tx, eob),
             levels,
-            nz_offsets: nz_map_ctx_offset(tx),
         };
         let cdfs = (
             &mut self.base_eob[txs][pt],
@@ -728,12 +831,6 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
         }
     }
 
-    /// Map index of coefficient `pos` (libaom layout) of a block of coded
-    /// side `1 << log2`: its column times the map stride plus its row.
-    fn index(pos: usize, log2: u32) -> usize {
-        pos + (pos >> log2) * (STRIDE - (1 << log2))
-    }
-
     /// Code the `coeff_br` symbols of coefficient `pos` (map index `at`)
     /// when its magnitude `level` exceeds the base levels (only those read
     /// the range sum), then record the magnitude. `levels` are the block's
@@ -809,6 +906,11 @@ fn base_context(pos: usize, base_sum: u32, nz_offset: u8) -> usize {
     if pos == 0 {
         return 0;
     }
+    ac_base_context(base_sum, nz_offset)
+}
+
+/// [`base_context`] of a coefficient other than the DC.
+fn ac_base_context(base_sum: u32, nz_offset: u8) -> usize {
     (((base_sum + 1) >> 1).min(4) as usize) + usize::from(nz_offset)
 }
 
