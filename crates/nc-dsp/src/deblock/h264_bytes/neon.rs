@@ -6,7 +6,7 @@
 //! sums widen to u16 (`uaddl`/`uaddw`) and narrow with rounding (`rshrn`).
 #![allow(clippy::inline_always)] // lane operations inline into the kernels
 
-use super::H264Bytes;
+use super::{H264Bytes, H264Math};
 use core::arch::aarch64::{
     uint8x8_t, uint8x16_t, uint32x4_t, vabdq_u8, vaddl_high_u8, vaddl_u8, vaddq_s16, vaddq_u16,
     vaddw_high_u8, vaddw_u8, vandq_u8, vbicq_u8, vbslq_u8, vcltq_u8, vcombine_s8, vcombine_u8,
@@ -26,88 +26,11 @@ pub(crate) struct B(uint8x16_t);
 // SAFETY (every intrinsic below): NEON is baseline on AArch64 and the
 // kernels using these lanes enable it; register-only intrinsics have no
 // further precondition. Memory accesses state theirs.
-impl H264Bytes for B {
+impl H264Math for B {
     #[inline(always)]
     fn splat(v: u8) -> Self {
         // SAFETY: register-only (see above).
         unsafe { Self(vdupq_n_u8(v)) }
-    }
-    #[inline(always)]
-    fn from_halves(lo: u64, hi: u64) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(vcombine_u8(vcreate_u8(lo), vcreate_u8(hi))) }
-    }
-    #[inline(always)]
-    unsafe fn load(p: *const u8) -> Self {
-        // SAFETY: the caller provides 16 readable bytes.
-        unsafe { Self(vld1q_u8(p)) }
-    }
-    #[inline(always)]
-    unsafe fn store(self, p: *mut u8) {
-        // SAFETY: the caller provides 16 writable bytes.
-        unsafe { vst1q_u8(p, self.0) }
-    }
-    #[inline(always)]
-    unsafe fn load_halves(lo: *const u8, hi: *const u8) -> Self {
-        // SAFETY: the caller provides 8 readable bytes at each pointer.
-        unsafe { Self(vcombine_u8(vld1_u8(lo), vld1_u8(hi))) }
-    }
-    #[inline(always)]
-    unsafe fn store_halves(self, lo: *mut u8, hi: *mut u8) {
-        // SAFETY: the caller provides 8 writable bytes at each pointer.
-        unsafe {
-            vst1_u8(lo, vget_low_u8(self.0));
-            vst1_u8(hi, vget_high_u8(self.0));
-        }
-    }
-    #[inline(always)]
-    unsafe fn load_rows_8(rows: [*const u8; 16]) -> [Self; 8] {
-        // Rows `i` and `i + 8` share a vector, so one pass of trn stages
-        // transposes two 8x8 tiles.
-        let mut pairs = [Self::splat(0); 8];
-        for (i, pair) in pairs.iter_mut().enumerate() {
-            // SAFETY: the caller provides 8 readable bytes at each row.
-            *pair = unsafe { Self::load_halves(rows[i], rows[i + 8]) };
-        }
-        transpose_8x8_pairs(pairs)
-    }
-    #[inline(always)]
-    unsafe fn store_rows_8(columns: [Self; 8], rows: [*mut u8; 16]) {
-        // The pair transpose is its own inverse.
-        for (i, pair) in transpose_8x8_pairs(columns).into_iter().enumerate() {
-            // SAFETY: the caller provides 8 writable bytes at each row.
-            unsafe { pair.store_halves(rows[i], rows[i + 8]) };
-        }
-    }
-    #[inline(always)]
-    unsafe fn load_rows_4(rows: [*const u8; 16]) -> [Self; 4] {
-        let mut quads = [Self::splat(0); 4];
-        for (k, quad) in quads.iter_mut().enumerate() {
-            // SAFETY: the caller provides 4 readable bytes at each row
-            // (`ld1` lane loads need no alignment).
-            unsafe {
-                let mut v = vreinterpretq_u32_u8(vdupq_n_u8(0));
-                v = vld1q_lane_u32::<0>(rows[4 * k].cast(), v);
-                v = vld1q_lane_u32::<1>(rows[4 * k + 1].cast(), v);
-                v = vld1q_lane_u32::<2>(rows[4 * k + 2].cast(), v);
-                v = vld1q_lane_u32::<3>(rows[4 * k + 3].cast(), v);
-                *quad = Self(vreinterpretq_u8_u32(v));
-            }
-        }
-        transpose_16x4(quads)
-    }
-    #[inline(always)]
-    unsafe fn store_rows_4(columns: [Self; 4], rows: [*mut u8; 16]) {
-        for (k, quad) in untranspose_16x4(columns).into_iter().enumerate() {
-            // SAFETY: the caller provides 4 writable bytes at each row.
-            unsafe {
-                let v = vreinterpretq_u32_u8(quad.0);
-                vst1q_lane_u32::<0>(rows[4 * k].cast(), v);
-                vst1q_lane_u32::<1>(rows[4 * k + 1].cast(), v);
-                vst1q_lane_u32::<2>(rows[4 * k + 2].cast(), v);
-                vst1q_lane_u32::<3>(rows[4 * k + 3].cast(), v);
-            }
-        }
     }
     #[inline(always)]
     fn abs_diff(self, b: Self) -> Self {
@@ -242,6 +165,86 @@ impl H264Bytes for B {
                 Self(vcombine_u8(low[1], high[1])),
                 Self(vcombine_u8(low[2], high[2])),
             ]
+        }
+    }
+}
+
+impl H264Bytes for B {
+    #[inline(always)]
+    fn from_halves(lo: u64, hi: u64) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(vcombine_u8(vcreate_u8(lo), vcreate_u8(hi))) }
+    }
+    #[inline(always)]
+    unsafe fn load(p: *const u8) -> Self {
+        // SAFETY: the caller provides 16 readable bytes.
+        unsafe { Self(vld1q_u8(p)) }
+    }
+    #[inline(always)]
+    unsafe fn store(self, p: *mut u8) {
+        // SAFETY: the caller provides 16 writable bytes.
+        unsafe { vst1q_u8(p, self.0) }
+    }
+    #[inline(always)]
+    unsafe fn load_halves(lo: *const u8, hi: *const u8) -> Self {
+        // SAFETY: the caller provides 8 readable bytes at each pointer.
+        unsafe { Self(vcombine_u8(vld1_u8(lo), vld1_u8(hi))) }
+    }
+    #[inline(always)]
+    unsafe fn store_halves(self, lo: *mut u8, hi: *mut u8) {
+        // SAFETY: the caller provides 8 writable bytes at each pointer.
+        unsafe {
+            vst1_u8(lo, vget_low_u8(self.0));
+            vst1_u8(hi, vget_high_u8(self.0));
+        }
+    }
+    #[inline(always)]
+    unsafe fn load_rows_8(rows: [*const u8; 16]) -> [Self; 8] {
+        // Rows `i` and `i + 8` share a vector, so one pass of trn stages
+        // transposes two 8x8 tiles.
+        let mut pairs = [Self::splat(0); 8];
+        for (i, pair) in pairs.iter_mut().enumerate() {
+            // SAFETY: the caller provides 8 readable bytes at each row.
+            *pair = unsafe { Self::load_halves(rows[i], rows[i + 8]) };
+        }
+        transpose_8x8_pairs(pairs)
+    }
+    #[inline(always)]
+    unsafe fn store_rows_8(columns: [Self; 8], rows: [*mut u8; 16]) {
+        // The pair transpose is its own inverse.
+        for (i, pair) in transpose_8x8_pairs(columns).into_iter().enumerate() {
+            // SAFETY: the caller provides 8 writable bytes at each row.
+            unsafe { pair.store_halves(rows[i], rows[i + 8]) };
+        }
+    }
+    #[inline(always)]
+    unsafe fn load_rows_4(rows: [*const u8; 16]) -> [Self; 4] {
+        let mut quads = [Self::splat(0); 4];
+        for (k, quad) in quads.iter_mut().enumerate() {
+            // SAFETY: the caller provides 4 readable bytes at each row
+            // (`ld1` lane loads need no alignment).
+            unsafe {
+                let mut v = vreinterpretq_u32_u8(vdupq_n_u8(0));
+                v = vld1q_lane_u32::<0>(rows[4 * k].cast(), v);
+                v = vld1q_lane_u32::<1>(rows[4 * k + 1].cast(), v);
+                v = vld1q_lane_u32::<2>(rows[4 * k + 2].cast(), v);
+                v = vld1q_lane_u32::<3>(rows[4 * k + 3].cast(), v);
+                *quad = Self(vreinterpretq_u8_u32(v));
+            }
+        }
+        transpose_16x4(quads)
+    }
+    #[inline(always)]
+    unsafe fn store_rows_4(columns: [Self; 4], rows: [*mut u8; 16]) {
+        for (k, quad) in untranspose_16x4(columns).into_iter().enumerate() {
+            // SAFETY: the caller provides 4 writable bytes at each row.
+            unsafe {
+                let v = vreinterpretq_u32_u8(quad.0);
+                vst1q_lane_u32::<0>(rows[4 * k].cast(), v);
+                vst1q_lane_u32::<1>(rows[4 * k + 1].cast(), v);
+                vst1q_lane_u32::<2>(rows[4 * k + 2].cast(), v);
+                vst1q_lane_u32::<3>(rows[4 * k + 3].cast(), v);
+            }
         }
     }
 }

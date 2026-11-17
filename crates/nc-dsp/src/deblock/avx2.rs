@@ -11,6 +11,8 @@ use crate::simd::avx2::I16x8;
 /// The CPU must support AVX2 (`Isa::Avx2.is_supported()`).
 pub(crate) unsafe fn deblock_fns() -> DeblockFns {
     DeblockFns {
+        luma_pair: super::h264_runs::pair_avx2,
+        h264_luma_runs: super::h264_runs::avx2,
         luma,
         chroma,
         chroma_pair,
@@ -23,6 +25,7 @@ pub(crate) unsafe fn deblock_fns() -> DeblockFns {
         av1_runs: super::runs::avx2::av1,
         hevc_luma_runs: super::runs::avx2::luma,
         hevc_chroma_runs: super::runs::avx2::chroma,
+        vvc_luma_runs: super::runs::avx2::vvc,
         av2_chunk,
     }
 }

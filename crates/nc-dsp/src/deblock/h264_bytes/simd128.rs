@@ -6,7 +6,7 @@
 //! ladder (here constant shuffles).
 #![allow(clippy::inline_always)] // lane operations inline into the kernels
 
-use super::H264Bytes;
+use super::{H264Bytes, H264Math};
 use core::arch::wasm32::{
     i8x16_max, i8x16_min, i8x16_narrow_i16x8, i8x16_neg, i8x16_shuffle, i16x8_add,
     i16x8_extend_high_u8x16, i16x8_extend_low_u8x16, i16x8_shl, i16x8_shr, i16x8_shuffle,
@@ -21,11 +21,133 @@ use core::arch::wasm32::{
 #[derive(Clone, Copy)]
 pub(crate) struct B(v128);
 
-impl H264Bytes for B {
+impl H264Math for B {
     #[inline(always)]
     fn splat(v: u8) -> Self {
         Self(u8x16_splat(v))
     }
+    #[inline(always)]
+    fn abs_diff(self, b: Self) -> Self {
+        Self(v128_or(
+            u8x16_sub_sat(self.0, b.0),
+            u8x16_sub_sat(b.0, self.0),
+        ))
+    }
+    #[inline(always)]
+    fn less(self, b: Self) -> Self {
+        Self(u8x16_lt(self.0, b.0))
+    }
+    #[inline(always)]
+    fn and(self, b: Self) -> Self {
+        Self(v128_and(self.0, b.0))
+    }
+    #[inline(always)]
+    fn and_not(self, b: Self) -> Self {
+        Self(v128_andnot(self.0, b.0))
+    }
+    #[inline(always)]
+    fn select(self, a: Self, b: Self) -> Self {
+        Self(v128_bitselect(a.0, b.0, self.0))
+    }
+    #[inline(always)]
+    fn sub(self, b: Self) -> Self {
+        Self(u8x16_sub(self.0, b.0))
+    }
+    #[inline(always)]
+    fn add_sat(self, b: Self) -> Self {
+        Self(u8x16_add_sat(self.0, b.0))
+    }
+    #[inline(always)]
+    fn sub_sat(self, b: Self) -> Self {
+        Self(u8x16_sub_sat(self.0, b.0))
+    }
+    #[inline(always)]
+    fn min(self, b: Self) -> Self {
+        Self(u8x16_min(self.0, b.0))
+    }
+    #[inline(always)]
+    fn max(self, b: Self) -> Self {
+        Self(u8x16_max(self.0, b.0))
+    }
+    #[inline(always)]
+    fn avg_round(self, b: Self) -> Self {
+        Self(u8x16_avgr(self.0, b.0))
+    }
+    #[inline(always)]
+    fn avg_floor(self, b: Self) -> Self {
+        // The rounding average exceeds the floor by one where the sum is odd.
+        let odd = v128_and(v128_xor(self.0, b.0), u8x16_splat(1));
+        Self(u8x16_sub(u8x16_avgr(self.0, b.0), odd))
+    }
+    #[inline(always)]
+    fn any(self) -> bool {
+        v128_any_true(self.0)
+    }
+    #[inline(always)]
+    fn normal_delta(p1: Self, p0: Self, q0: Self, q1: Self) -> Self {
+        // Words hold the exact differences (|x| ≤ 255; the sum fits i16);
+        // the narrow saturates to i8.
+        let half = |w: fn(v128) -> v128| {
+            let d = i16x8_shl(i16x8_sub(w(q0.0), w(p0.0)), 2);
+            let e = i16x8_sub(w(p1.0), w(q1.0));
+            i16x8_shr(i16x8_add(i16x8_add(d, e), i16x8_splat(4)), 3)
+        };
+        Self(i8x16_narrow_i16x8(
+            half(i16x8_extend_low_u8x16),
+            half(i16x8_extend_high_u8x16),
+        ))
+    }
+    #[inline(always)]
+    fn clip_signed(self, t: Self) -> Self {
+        Self(i8x16_min(i8x16_max(self.0, i8x16_neg(t.0)), t.0))
+    }
+    #[inline(always)]
+    fn add_signed(self, delta: Self) -> Self {
+        let zero = u8x16_splat(0);
+        let up = i8x16_max(delta.0, zero);
+        let down = i8x16_max(i8x16_neg(delta.0), zero);
+        Self(u8x16_sub_sat(u8x16_add_sat(self.0, up), down))
+    }
+    #[inline(always)]
+    fn sub_signed(self, delta: Self) -> Self {
+        // `delta > −128`, so its negation is exact.
+        self.add_signed(Self(i8x16_neg(delta.0)))
+    }
+    #[inline(always)]
+    fn strong_side(x3: Self, x2: Self, x1: Self, x0: Self, y0: Self, y1: Self) -> [Self; 3] {
+        // Sums are at most 8 · 255, inside u16; the narrow never saturates.
+        let half = |w: fn(v128) -> v128| {
+            let (x3, x2, x1, x0, y0, y1) = (w(x3.0), w(x2.0), w(x1.0), w(x0.0), w(y0.0), w(y1.0));
+            let s = i16x8_add(i16x8_add(x1, x0), y0);
+            let s2 = i16x8_add(s, x2);
+            [
+                // (2·x3 + 3·x2 + x1 + x0 + y0 + 4) >> 3
+                u16x8_shr(
+                    i16x8_add(
+                        i16x8_add(i16x8_shl(i16x8_add(x3, x2), 1), s2),
+                        i16x8_splat(4),
+                    ),
+                    3,
+                ),
+                // (x2 + x1 + x0 + y0 + 2) >> 2
+                u16x8_shr(i16x8_add(s2, i16x8_splat(2)), 2),
+                // (x2 + 2·x1 + 2·x0 + 2·y0 + y1 + 4) >> 3
+                u16x8_shr(
+                    i16x8_add(i16x8_add(i16x8_add(s, s2), y1), i16x8_splat(4)),
+                    3,
+                ),
+            ]
+        };
+        let (low, high) = (half(i16x8_extend_low_u8x16), half(i16x8_extend_high_u8x16));
+        [
+            Self(u8x16_narrow_i16x8(low[0], high[0])),
+            Self(u8x16_narrow_i16x8(low[1], high[1])),
+            Self(u8x16_narrow_i16x8(low[2], high[2])),
+        ]
+    }
+}
+
+impl H264Bytes for B {
     #[inline(always)]
     fn from_halves(lo: u64, hi: u64) -> Self {
         Self(u64x2(lo, hi))
@@ -160,125 +282,6 @@ impl H264Bytes for B {
                 v128_store32_lane::<3>(quad, rows[4 * k + 3].cast());
             }
         }
-    }
-    #[inline(always)]
-    fn abs_diff(self, b: Self) -> Self {
-        Self(v128_or(
-            u8x16_sub_sat(self.0, b.0),
-            u8x16_sub_sat(b.0, self.0),
-        ))
-    }
-    #[inline(always)]
-    fn less(self, b: Self) -> Self {
-        Self(u8x16_lt(self.0, b.0))
-    }
-    #[inline(always)]
-    fn and(self, b: Self) -> Self {
-        Self(v128_and(self.0, b.0))
-    }
-    #[inline(always)]
-    fn and_not(self, b: Self) -> Self {
-        Self(v128_andnot(self.0, b.0))
-    }
-    #[inline(always)]
-    fn select(self, a: Self, b: Self) -> Self {
-        Self(v128_bitselect(a.0, b.0, self.0))
-    }
-    #[inline(always)]
-    fn sub(self, b: Self) -> Self {
-        Self(u8x16_sub(self.0, b.0))
-    }
-    #[inline(always)]
-    fn add_sat(self, b: Self) -> Self {
-        Self(u8x16_add_sat(self.0, b.0))
-    }
-    #[inline(always)]
-    fn sub_sat(self, b: Self) -> Self {
-        Self(u8x16_sub_sat(self.0, b.0))
-    }
-    #[inline(always)]
-    fn min(self, b: Self) -> Self {
-        Self(u8x16_min(self.0, b.0))
-    }
-    #[inline(always)]
-    fn max(self, b: Self) -> Self {
-        Self(u8x16_max(self.0, b.0))
-    }
-    #[inline(always)]
-    fn avg_round(self, b: Self) -> Self {
-        Self(u8x16_avgr(self.0, b.0))
-    }
-    #[inline(always)]
-    fn avg_floor(self, b: Self) -> Self {
-        // The rounding average exceeds the floor by one where the sum is odd.
-        let odd = v128_and(v128_xor(self.0, b.0), u8x16_splat(1));
-        Self(u8x16_sub(u8x16_avgr(self.0, b.0), odd))
-    }
-    #[inline(always)]
-    fn any(self) -> bool {
-        v128_any_true(self.0)
-    }
-    #[inline(always)]
-    fn normal_delta(p1: Self, p0: Self, q0: Self, q1: Self) -> Self {
-        // Words hold the exact differences (|x| ≤ 255; the sum fits i16);
-        // the narrow saturates to i8.
-        let half = |w: fn(v128) -> v128| {
-            let d = i16x8_shl(i16x8_sub(w(q0.0), w(p0.0)), 2);
-            let e = i16x8_sub(w(p1.0), w(q1.0));
-            i16x8_shr(i16x8_add(i16x8_add(d, e), i16x8_splat(4)), 3)
-        };
-        Self(i8x16_narrow_i16x8(
-            half(i16x8_extend_low_u8x16),
-            half(i16x8_extend_high_u8x16),
-        ))
-    }
-    #[inline(always)]
-    fn clip_signed(self, t: Self) -> Self {
-        Self(i8x16_min(i8x16_max(self.0, i8x16_neg(t.0)), t.0))
-    }
-    #[inline(always)]
-    fn add_signed(self, delta: Self) -> Self {
-        let zero = u8x16_splat(0);
-        let up = i8x16_max(delta.0, zero);
-        let down = i8x16_max(i8x16_neg(delta.0), zero);
-        Self(u8x16_sub_sat(u8x16_add_sat(self.0, up), down))
-    }
-    #[inline(always)]
-    fn sub_signed(self, delta: Self) -> Self {
-        // `delta > −128`, so its negation is exact.
-        self.add_signed(Self(i8x16_neg(delta.0)))
-    }
-    #[inline(always)]
-    fn strong_side(x3: Self, x2: Self, x1: Self, x0: Self, y0: Self, y1: Self) -> [Self; 3] {
-        // Sums are at most 8 · 255, inside u16; the narrow never saturates.
-        let half = |w: fn(v128) -> v128| {
-            let (x3, x2, x1, x0, y0, y1) = (w(x3.0), w(x2.0), w(x1.0), w(x0.0), w(y0.0), w(y1.0));
-            let s = i16x8_add(i16x8_add(x1, x0), y0);
-            let s2 = i16x8_add(s, x2);
-            [
-                // (2·x3 + 3·x2 + x1 + x0 + y0 + 4) >> 3
-                u16x8_shr(
-                    i16x8_add(
-                        i16x8_add(i16x8_shl(i16x8_add(x3, x2), 1), s2),
-                        i16x8_splat(4),
-                    ),
-                    3,
-                ),
-                // (x2 + x1 + x0 + y0 + 2) >> 2
-                u16x8_shr(i16x8_add(s2, i16x8_splat(2)), 2),
-                // (x2 + 2·x1 + 2·x0 + 2·y0 + y1 + 4) >> 3
-                u16x8_shr(
-                    i16x8_add(i16x8_add(i16x8_add(s, s2), y1), i16x8_splat(4)),
-                    3,
-                ),
-            ]
-        };
-        let (low, high) = (half(i16x8_extend_low_u8x16), half(i16x8_extend_high_u8x16));
-        [
-            Self(u8x16_narrow_i16x8(low[0], high[0])),
-            Self(u8x16_narrow_i16x8(low[1], high[1])),
-            Self(u8x16_narrow_i16x8(low[2], high[2])),
-        ]
     }
 }
 

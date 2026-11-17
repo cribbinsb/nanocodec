@@ -84,6 +84,7 @@ pub(crate) fn apply(
     qp: &DeblockQp<'_>,
 ) {
     for horizontal in [false, true] {
+        let mut luma = LumaQueue::new(dsp, !horizontal);
         // Edges lie on TU boundaries, and TUs are at least 8 a side, so
         // only every second 4-sample column (vertical edges) or row
         // (horizontal edges) can hold one. Along each line of positions the
@@ -103,27 +104,75 @@ pub(crate) fn apply(
                 let affine = grid.affine_cu(x, y);
                 let inside = qp.inside((x, y));
                 if !horizontal {
-                    edge(dsp, picture, grid, qp, (x, y), horizontal);
+                    edge(dsp, picture, grid, qp, (x, y), horizontal, &mut luma);
                     if let Some(cu) = &affine {
                         for x in (x + MIN_CU..block_end).step_by(MIN_CU) {
-                            sub_block_edge(dsp, picture, grid, inside, cu, (x, y), horizontal);
+                            sub_block_edge(&mut luma, grid, inside, cu, (x, y), horizontal);
                         }
                     }
                 } else if y == tu.y {
                     for x in (x..block_end).step_by(MIN_CU) {
-                        edge(dsp, picture, grid, qp, (x, y), horizontal);
+                        edge(dsp, picture, grid, qp, (x, y), horizontal, &mut luma);
                     }
                 } else if let Some(cu) = &affine {
                     for x in (x..block_end).step_by(MIN_CU) {
-                        sub_block_edge(dsp, picture, grid, inside, cu, (x, y), horizontal);
+                        sub_block_edge(&mut luma, grid, inside, cu, (x, y), horizontal);
                     }
                 }
                 if let Some(split) = grid.narrow_sub_partitions(x, y) {
+                    luma.flush(picture);
                     sub_partition_edges(picture, inside, (&tu, split), y, horizontal);
                 }
                 x = tu.x + tu.width();
             }
         }
+        luma.flush(picture);
+    }
+}
+
+/// Sparse luma visits in their original order. Chroma is independent and
+/// may finish while these wait; direct ISP writes flush the queue first.
+struct LumaQueue<'a> {
+    dsp: &'a nc_dsp::Dsp,
+    vertical: bool,
+    runs: Vec<nc_dsp::EdgeRun<nc_dsp::VvcLumaFilter>>,
+}
+impl<'a> LumaQueue<'a> {
+    fn new(dsp: &'a nc_dsp::Dsp, vertical: bool) -> Self {
+        Self {
+            dsp,
+            vertical,
+            runs: Vec::new(),
+        }
+    }
+    fn push(
+        &mut self,
+        (x, y): (usize, usize),
+        lines: usize,
+        beta: i32,
+        tc: i32,
+        lengths: [usize; 2],
+    ) {
+        // H.266 tables bound beta <=88 and tC <=99; reaches are 1/2/3/5/7.
+        self.runs.push(nc_dsp::EdgeRun {
+            x,
+            y,
+            lines,
+            filter: nc_dsp::VvcLumaFilter {
+                beta: beta as u8,
+                tc: tc as u8,
+                lengths: lengths.map(|n| n as u8),
+            },
+        });
+    }
+    fn flush(&mut self, picture: &mut Picture) {
+        if self.runs.is_empty() {
+            return;
+        }
+        let mut view = picture.plane_mut(PlaneIndex::Y).view_mut();
+        self.dsp
+            .vvc_deblock_luma_runs(&mut view, self.vertical, &self.runs);
+        self.runs.clear();
     }
 }
 
@@ -137,8 +186,7 @@ fn tc(qp: u32, bs: u8) -> i32 {
 /// grid that are not transform edges), segment by segment where the
 /// vectors across it differ by half a sample or more.
 fn sub_block_edge(
-    dsp: &nc_dsp::Dsp,
-    picture: &mut Picture,
+    luma: &mut LumaQueue<'_>,
     grid: &MotionGrid,
     qp: u32,
     cu: &nc_encoder::Block,
@@ -168,7 +216,6 @@ fn sub_block_edge(
         SHORT_REACH
     };
     let beta = BETA[qp as usize];
-    let mut view = picture.plane_mut(PlaneIndex::Y).view_mut();
     for (segment, moved) in grid
         .segment_motion((x, y), horizontal)
         .into_iter()
@@ -182,7 +229,7 @@ fn sub_block_edge(
                 (x, y + along)
             };
             let tc = tc(qp, MOTION_STRENGTH);
-            dsp.vvc_deblock_luma_segment(&mut view, at, !horizontal, beta, tc, [reach; 2]);
+            luma.push(at, SEGMENT, beta, tc, [reach; 2]);
         }
     }
 }
@@ -197,6 +244,7 @@ fn edge(
     qp: &DeblockQp<'_>,
     (x, y): (usize, usize),
     horizontal: bool,
+    luma: &mut LumaQueue<'_>,
 ) {
     let Some(edge) = grid.deblocking_edge(x, y, horizontal) else {
         return;
@@ -208,7 +256,7 @@ fn edge(
     }
     let qp = qp.edge((x, y), horizontal);
     let boundary = horizontal && y.is_multiple_of(grid.ctu_size());
-    luma_edge(dsp, picture, qp[0], (x, y), horizontal, &edge, boundary);
+    luma_edge(luma, picture, qp[0], (x, y), horizontal, &edge, boundary);
     for plane in [PlaneIndex::U, PlaneIndex::V] {
         let bs = edge.chroma[plane as usize - 1];
         if bs == 0 {
@@ -241,7 +289,7 @@ fn edge(
 /// The luma of transform edge `edge` at `(x, y)`: per 4-line segment at its
 /// own strength, with the reaches its transform sizes and CUs allow.
 fn luma_edge(
-    dsp: &nc_dsp::Dsp,
+    luma: &mut LumaQueue<'_>,
     picture: &mut Picture,
     qp: u32,
     (x, y): (usize, usize),
@@ -256,6 +304,7 @@ fn luma_edge(
     let sizes = edge.sizes[0];
     if sizes.iter().any(|&s| s <= NARROW_BLOCK) {
         // Only beside intra sub-partitions: intra, one strength.
+        luma.flush(picture);
         narrow_luma_edge(picture, (x, y), horizontal, beta, tc(qp, edge.luma[0]));
         return;
     }
@@ -268,10 +317,9 @@ fn luma_edge(
         }
     };
     let lengths = [reach(0), reach(1)];
-    let mut view = picture.plane_mut(PlaneIndex::Y).view_mut();
     if edge.luma[0] == edge.luma[1] {
         let tc = tc(qp, edge.luma[0]);
-        dsp.vvc_deblock_luma_edge(&mut view, (x, y), !horizontal, beta, tc, lengths);
+        luma.push((x, y), EDGE_LINES, beta, tc, lengths);
         return;
     }
     for (segment, bs) in edge.luma.into_iter().enumerate() {
@@ -282,7 +330,7 @@ fn luma_edge(
             } else {
                 (x, y + along)
             };
-            dsp.vvc_deblock_luma_segment(&mut view, at, !horizontal, beta, tc(qp, bs), lengths);
+            luma.push(at, SEGMENT, beta, tc(qp, bs), lengths);
         }
     }
 }

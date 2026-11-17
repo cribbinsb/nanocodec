@@ -2,11 +2,18 @@
 //! consumed run; there is no dense map or preliminary picture-wide sweep.
 
 use super::av1::Av1EdgeFilter;
+use super::short_runs::Tiles;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+use super::short_runs::{hevc_luma_wide, vvc_luma_wide};
 use super::{HevcEdge, HevcEdgeFn};
 
 /// A contiguous run of lines along one deblocking edge. Runs are processed
 /// in supplied order; callers retain codec-specific pass scheduling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EdgeRun<F> {
     /// Horizontal coordinate of the first q0 sample.
     pub x: usize,
@@ -25,6 +32,17 @@ pub struct HevcLumaFilter {
     pub beta: u8,
     /// Clipping threshold tC; zero leaves the run unchanged.
     pub tc: u8,
+}
+
+/// VVC luma thresholds and P/Q maximum reaches for a sparse run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VvcLumaFilter {
+    /// Smoothness threshold beta at eight bits (0..=88).
+    pub beta: u8,
+    /// Clipping threshold tC at eight bits (0..=100).
+    pub tc: u8,
+    /// P/Q reaches: both 1 or 2, or each one of 3, 5, 7.
+    pub lengths: [u8; 2],
 }
 
 /// HEVC chroma threshold shared by every line in a run.
@@ -78,6 +96,8 @@ impl Plane {
 pub(crate) type Av1RunsFn = unsafe fn(&mut [u8], Plane, &[EdgeRun<Av1EdgeFilter>]);
 pub(crate) type HevcLumaRunsFn = unsafe fn(&mut [u8], Plane, &[EdgeRun<HevcLumaFilter>]);
 pub(crate) type HevcChromaRunsFn = unsafe fn(&mut [u8], Plane, &[EdgeRun<HevcChromaFilter>]);
+
+pub(crate) type VvcLumaRunsFn = unsafe fn(&mut [u8], Plane, &[EdgeRun<VvcLumaFilter>]);
 
 /// A sparse traversal whose iterator body contains only scalar validation.
 /// Keeping SIMD in the consuming loop preserves the caller's target features;
@@ -327,6 +347,44 @@ unsafe fn hevc_chroma(
     }
 }
 
+pub(super) fn vvc_reach(filter: VvcLumaFilter) -> usize {
+    assert!(
+        filter.beta <= 88 && filter.tc <= 100,
+        "VVC deblock thresholds"
+    );
+    assert!(
+        filter.lengths == [1, 1]
+            || filter.lengths == [2, 2]
+            || filter.lengths.iter().all(|n| matches!(n, 3 | 5 | 7)),
+        "VVC deblock reaches"
+    );
+    // The scalar reference gathers p7..q7, even for short filters.
+    8
+}
+
+pub(super) fn vvc_edge(
+    plane: Plane,
+    run: &EdgeRun<VvcLumaFilter>,
+) -> crate::vvc_deblock::VvcLumaEdge {
+    let (base, across, along) = plane.address(run);
+    crate::vvc_deblock::VvcLumaEdge {
+        base,
+        across,
+        along,
+        lines: run.lines,
+        beta: i32::from(run.filter.beta),
+        tc: i32::from(run.filter.tc),
+        lengths: run.filter.lengths.map(usize::from),
+    }
+}
+
+pub(crate) fn vvc_luma_scalar(data: &mut [u8], plane: Plane, runs: &[EdgeRun<VvcLumaFilter>]) {
+    let source = ValidatedRuns::new(plane, runs, false, 4, vvc_reach);
+    for run in Tiles::new(source, plane.vertical) {
+        crate::vvc_deblock::luma_edge_at(data, &vvc_edge(plane, &run), nc_common::BitDepth::EIGHT);
+    }
+}
+
 pub(crate) fn hevc_luma_scalar(data: &mut [u8], plane: Plane, runs: &[EdgeRun<HevcLumaFilter>]) {
     // SAFETY: scalar has no ISA requirement; traversal validates each run.
     unsafe {
@@ -350,7 +408,7 @@ pub(crate) fn hevc_chroma_scalar(
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
 macro_rules! isa_runs {
-    ($module:ident, $feature:literal, $bytes:path, $kernel:ty) => {
+    ($module:ident, $feature:literal, $bytes:path, $kernel:ty, $words:ty, $isa:path) => {
         pub(crate) mod $module {
             use super::*;
             #[target_feature(enable=$feature)]
@@ -377,7 +435,18 @@ macro_rules! isa_runs {
             ) {
                 // SAFETY: this wrapper enables the ISA; traversal validates each run.
                 unsafe {
-                    hevc_luma(data, plane, runs, true, super::super::$module::hevc_luma);
+                    hevc_luma_wide::<$words>(data, plane, runs, super::super::$module::hevc_luma);
+                }
+            }
+            #[target_feature(enable=$feature)]
+            pub(crate) unsafe fn vvc(
+                data: &mut [u8],
+                plane: Plane,
+                runs: &[EdgeRun<VvcLumaFilter>],
+            ) {
+                // SAFETY: this wrapper enables the ISA; traversal validates each run.
+                unsafe {
+                    vvc_luma_wide::<$words>(data, plane, runs, crate::vvc_deblock::kernels($isa));
                 }
             }
             #[target_feature(enable=$feature)]
@@ -399,21 +468,27 @@ isa_runs!(
     avx2,
     "avx2",
     crate::lpf_bytes::avx2::B,
-    WideKernel<crate::lpf_bytes::avx2_wide::B>
+    WideKernel<crate::lpf_bytes::avx2_wide::B>,
+    crate::simd::avx2::I16x16,
+    crate::Isa::Avx2
 );
 #[cfg(target_arch = "aarch64")]
 isa_runs!(
     neon,
     "neon",
     crate::lpf_bytes::neon::B,
-    WideKernel<crate::lpf_bytes::neon_wide::B>
+    WideKernel<crate::lpf_bytes::neon_wide::B>,
+    crate::simd::neon::I16x8,
+    crate::Isa::Neon
 );
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 isa_runs!(
     simd128,
     "simd128",
     crate::lpf_bytes::simd128::B,
-    WideKernel<crate::lpf_bytes::simd128_wide::B>
+    WideKernel<crate::lpf_bytes::simd128_wide::B>,
+    crate::simd::simd128::I16x8,
+    crate::Isa::Simd128
 );
 
 #[cfg(target_arch = "x86_64")]
@@ -426,6 +501,42 @@ pub(crate) unsafe fn avx512(data: &mut [u8], plane: Plane, runs: &[EdgeRun<Av1Ed
             plane,
             runs,
             super::avx512::av1_edge,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+pub(crate) unsafe fn hevc_luma_avx512(
+    data: &mut [u8],
+    plane: Plane,
+    runs: &[EdgeRun<HevcLumaFilter>],
+) {
+    // SAFETY: this entry enables the ISA, and traversal validates every run.
+    unsafe {
+        hevc_luma_wide::<crate::simd::avx512_i16::I16x32>(
+            data,
+            plane,
+            runs,
+            super::avx2::hevc_luma,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+pub(crate) unsafe fn vvc_luma_avx512(
+    data: &mut [u8],
+    plane: Plane,
+    runs: &[EdgeRun<VvcLumaFilter>],
+) {
+    // SAFETY: this wrapper enables the ISA; traversal validates each run.
+    unsafe {
+        vvc_luma_wide::<crate::simd::avx512_i16::I16x32>(
+            data,
+            plane,
+            runs,
+            crate::vvc_deblock::kernels(crate::Isa::Avx2),
         );
     }
 }

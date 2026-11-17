@@ -128,7 +128,7 @@ pub use convert::DisplayMatrix;
 pub use cpu::Isa;
 pub use deblock::av1::{AV1_EDGE_LINES, AV1_EDGE_REACH, Av1EdgeFilter, Av1FilterLength};
 pub use deblock::av2::{AV2_EDGE_LINES, Av2EdgeFilter};
-pub use deblock::runs::{EdgeRun, HevcChromaFilter, HevcLumaFilter};
+pub use deblock::runs::{EdgeRun, HevcChromaFilter, HevcLumaFilter, VvcLumaFilter};
 pub use deblock::{H264EdgeParams, H264MbEdges};
 pub use diff::{SUBPEL_VARIANCE_POSITIONS, Variance, VarianceEnergy};
 pub use dispatch::{

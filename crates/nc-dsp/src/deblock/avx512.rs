@@ -12,6 +12,10 @@ pub(crate) fn install(table: &mut super::DeblockFns) {
     table.av1_line = super::av1_line::avx512;
     table.av1_grid = super::av1_grid::avx512;
     table.av1_runs = super::runs::avx512;
+    table.luma_pair = super::h264_runs::pair_avx512;
+    table.h264_luma_runs = super::h264_runs::avx512;
+    table.hevc_luma_runs = super::runs::hevc_luma_avx512;
+    table.vvc_luma_runs = super::runs::vvc_luma_avx512;
     table.av2_chunk = av2_chunk;
 }
 

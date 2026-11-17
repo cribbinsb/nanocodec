@@ -664,6 +664,59 @@ pub(crate) trait I16FilterLanes: I16Lanes {
     }
 }
 
+/// Independent 8-word tiles in 128-bit lanes. The 16/32-word adapters
+/// transpose two/four deblocking tiles together without crossing tiles.
+pub(crate) trait I16x8Tiles: I16FilterLanes {
+    /// Repeat each value over one independent four-line decision segment.
+    fn splat_segments(values: &[i16; 8]) -> Self;
+    fn zip_tiles_lo(self, other: Self) -> Self;
+    fn zip_tiles_hi(self, other: Self) -> Self;
+    fn shuffle_tiles(self, pattern: &[u8; 16]) -> Self;
+    /// Eight bytes from each of the first `LANES / 8` rows, widened.
+    fn load_tiles8(rows: [&[u8]; 4]) -> Self;
+    /// Narrow each 8-word tile into the corresponding eight-byte row.
+    fn store_tiles8(self, rows: [&mut [u8]; 4]);
+}
+
+macro_rules! eight_word_tiles {
+    ($ty:ty) => {
+        #[allow(clippy::inline_always)]
+        impl I16x8Tiles for $ty {
+            #[inline(always)]
+            fn splat_segments(values: &[i16; 8]) -> Self {
+                const SELECT: [u8; 16] = [0, 1, 0, 1, 0, 1, 0, 1, 2, 3, 2, 3, 2, 3, 2, 3];
+                I16x8Shuffles::shuffle_bytes(Self::load(values), &SELECT)
+            }
+            #[inline(always)]
+            fn zip_tiles_lo(self, other: Self) -> Self {
+                I16x8Shuffles::zip_lo(self, other)
+            }
+            #[inline(always)]
+            fn zip_tiles_hi(self, other: Self) -> Self {
+                I16x8Shuffles::zip_hi(self, other)
+            }
+            #[inline(always)]
+            fn shuffle_tiles(self, pattern: &[u8; 16]) -> Self {
+                I16x8Shuffles::shuffle_bytes(self, pattern)
+            }
+            #[inline(always)]
+            fn load_tiles8(rows: [&[u8]; 4]) -> Self {
+                Self::load_u8(rows[0])
+            }
+            #[inline(always)]
+            fn store_tiles8(self, rows: [&mut [u8]; 4]) {
+                self.store_u8_sat(rows.into_iter().next().expect("first tile"));
+            }
+        }
+    };
+}
+#[cfg(target_arch = "x86_64")]
+eight_word_tiles!(avx2::I16x8);
+#[cfg(target_arch = "aarch64")]
+eight_word_tiles!(neon::I16x8);
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+eight_word_tiles!(simd128::I16x8);
+
 /// Byte-shuffle pattern entry that yields a zero byte (the CDEF direction
 /// search's patterns; AVX2 has its own search).
 #[cfg(any(

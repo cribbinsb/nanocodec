@@ -198,6 +198,9 @@ fn strength(p: &Cell, q: &Cell) -> u8 {
     u8::from(prediction_edge && differs)
 }
 
+/// Parallel edges on HEVC's eight-sample grid have disjoint p3..q3
+/// footprints. Preserve the cache-friendly raster walk while batching each
+/// row's active pieces; vertical-before-horizontal scheduling stays intact.
 fn filter_luma(
     dsp: &Dsp,
     recon: &mut Picture,
@@ -207,18 +210,27 @@ fn filter_luma(
 ) {
     let mut view = recon.plane_mut(PlaneIndex::Y).view_mut();
     let vertical = dir == Direction::Vertical;
-    // Each kernel call covers both 4-sample segments of one 8-sample piece,
-    // which lie in the same pair of 8x8 cells and so share bS and qPL.
+    let mut runs = Vec::new();
     for row in 0..bs.rows {
+        runs.clear();
         let range = row * bs.cols..(row + 1) * bs.cols;
         for (col, (&b, &qp)) in bs.bs[range.clone()].iter().zip(&bs.qp[range]).enumerate() {
             let qp = i32::from(qp);
             let tc = strength.tc(b, qp);
             if tc != 0 {
-                let at = (col * EDGE_SPACING, row * EDGE_SPACING);
-                let beta = strength.beta(qp);
-                dsp.hevc_deblock_luma_edge(&mut view, at, vertical, [tc, tc], beta);
+                runs.push(nc_dsp::EdgeRun {
+                    x: col * EDGE_SPACING,
+                    y: row * EDGE_SPACING,
+                    lines: EDGE_SPACING,
+                    filter: nc_dsp::HevcLumaFilter {
+                        beta: strength.beta(qp),
+                        tc,
+                    },
+                });
             }
+        }
+        if !runs.is_empty() {
+            dsp.hevc_deblock_luma_runs(&mut view, vertical, &runs);
         }
     }
 }

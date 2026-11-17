@@ -17,6 +17,7 @@ mod bench_av1_grid;
 mod bench_av1_intra;
 mod bench_av1_runs;
 mod bench_av2_intra;
+mod bench_deblock_batches;
 mod bench_encoder_wide;
 mod bench_extra;
 mod bench_filters;
@@ -78,7 +79,8 @@ mod check_vvc_tx64;
 pub mod rng;
 
 pub use bench::{
-    BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_encoder_wide, bench_vp9_mc,
+    BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_deblock_batches,
+    bench_encoder_wide, bench_vp9_mc,
 };
 pub use check::{CheckReport, check};
 

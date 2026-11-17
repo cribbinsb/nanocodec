@@ -655,3 +655,75 @@ impl I16Pairs for I16x32 {
         }
     }
 }
+
+impl super::I16x8Tiles for I16x32 {
+    #[inline(always)]
+    fn splat_segments(values: &[i16; 8]) -> Self {
+        use core::arch::x86_64::{_mm512_broadcast_i32x4, _mm512_shuffle_epi8};
+        const SELECT: [u8; 64] = [
+            0, 1, 0, 1, 0, 1, 0, 1, 2, 3, 2, 3, 2, 3, 2, 3, 4, 5, 4, 5, 4, 5, 4, 5, 6, 7, 6, 7, 6,
+            7, 6, 7, 8, 9, 8, 9, 8, 9, 8, 9, 10, 11, 10, 11, 10, 11, 10, 11, 12, 13, 12, 13, 12,
+            13, 12, 13, 14, 15, 14, 15, 14, 15, 14, 15,
+        ];
+        // SAFETY: enabled ISA; eight words and one complete shuffle vector.
+        unsafe {
+            Self(_mm512_shuffle_epi8(
+                _mm512_broadcast_i32x4(_mm_loadu_si128(values.as_ptr().cast())),
+                _mm512_loadu_si512(SELECT.as_ptr().cast()),
+            ))
+        }
+    }
+    #[inline(always)]
+    fn zip_tiles_lo(self, other: Self) -> Self {
+        // SAFETY: private lanes run only inside AVX-512F/BW entry points.
+        unsafe { Self(_mm512_unpacklo_epi16(self.0, other.0)) }
+    }
+    #[inline(always)]
+    fn zip_tiles_hi(self, other: Self) -> Self {
+        // SAFETY: as above; unpacks stay inside each 128-bit tile.
+        unsafe { Self(_mm512_unpackhi_epi16(self.0, other.0)) }
+    }
+    #[inline(always)]
+    fn shuffle_tiles(self, pattern: &[u8; 16]) -> Self {
+        use core::arch::x86_64::{_mm512_broadcast_i32x4, _mm512_shuffle_epi8};
+        // SAFETY: enabled ISA; the pattern is exactly sixteen readable bytes.
+        unsafe {
+            Self(_mm512_shuffle_epi8(
+                self.0,
+                _mm512_broadcast_i32x4(_mm_loadu_si128(pattern.as_ptr().cast())),
+            ))
+        }
+    }
+    #[inline(always)]
+    fn load_tiles8(rows: [&[u8]; 4]) -> Self {
+        let (a, b, c, d) = (&rows[0][..8], &rows[1][..8], &rows[2][..8], &rows[3][..8]);
+        // SAFETY: enabled ISA; each load reads eight checked bytes.
+        unsafe {
+            let lo = _mm_unpacklo_epi64(
+                _mm_loadl_epi64(a.as_ptr().cast()),
+                _mm_loadl_epi64(b.as_ptr().cast()),
+            );
+            let hi = _mm_unpacklo_epi64(
+                _mm_loadl_epi64(c.as_ptr().cast()),
+                _mm_loadl_epi64(d.as_ptr().cast()),
+            );
+            Self(_mm512_cvtepu8_epi16(_mm256_set_m128i(hi, lo)))
+        }
+    }
+    #[inline(always)]
+    fn store_tiles8(self, rows: [&mut [u8]; 4]) {
+        use core::arch::x86_64::_mm_srli_si128;
+        let [a, b, c, d] = rows;
+        let (a, b, c, d) = (&mut a[..8], &mut b[..8], &mut c[..8], &mut d[..8]);
+        // SAFETY: enabled ISA; each output has eight writable bytes.
+        unsafe {
+            let bytes = _mm512_cvtusepi16_epi8(_mm512_max_epi16(self.0, _mm512_setzero_si512()));
+            let lo = _mm256_castsi256_si128(bytes);
+            let hi = _mm256_extracti128_si256::<1>(bytes);
+            _mm_storel_epi64(a.as_mut_ptr().cast(), lo);
+            _mm_storel_epi64(b.as_mut_ptr().cast(), _mm_srli_si128::<8>(lo));
+            _mm_storel_epi64(c.as_mut_ptr().cast(), hi);
+            _mm_storel_epi64(d.as_mut_ptr().cast(), _mm_srli_si128::<8>(hi));
+        }
+    }
+}

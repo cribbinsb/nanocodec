@@ -97,6 +97,18 @@ pub fn bench_av1_runs(isas: &[Isa]) -> Vec<BenchResult> {
     results
 }
 
+/// Compare batches with the existing single-edge APIs using the full suite's timer.
+#[must_use]
+pub fn bench_deblock_batches(isas: &[Isa]) -> Vec<BenchResult> {
+    let mut out = Vec::new();
+    for &isa in isas {
+        if let Some(dsp) = Dsp::with_isa(isa) {
+            crate::bench_deblock_batches::bench(&dsp, &mut out);
+        }
+    }
+    out
+}
+
 /// Time the encoder forward-transform and intra families only, with the
 /// same samples and timing procedure used by the full suite.
 #[must_use]
@@ -195,6 +207,7 @@ pub fn bench(isas: &[Isa]) -> Vec<BenchResult> {
         bench_codec(&dsp, isa, &src, &rf, &mut results);
         bench_av1_wide(&dsp, &mut results);
         crate::bench_av1_runs::bench(&dsp, &mut results);
+        crate::bench_deblock_batches::bench(&dsp, &mut results);
         crate::check_vp9_inverse::bench(&dsp, &mut results);
         crate::check_av1_inverse::bench(&dsp, &mut results);
         crate::bench_rows::bench_rows(&dsp, &mut results);

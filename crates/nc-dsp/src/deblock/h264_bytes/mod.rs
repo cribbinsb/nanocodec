@@ -29,10 +29,14 @@
 //! H.264 Fast encodes −2.2% (crowd QP 39) and −3.4% (bodycam QP 45)
 //! cycles (jperf, 5 rounds), streams identical.
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod grouped;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 pub(crate) mod simd128;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod wide;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod x86;
 
@@ -53,28 +57,9 @@ const _: () = assert!(LUMA_LINES == LANES && 2 * PLANE_LANES == LANES);
 
 /// Sixteen unsigned byte lanes, with the few wider operations the filter
 /// needs. Masks are all-ones (true) or zero bytes.
-pub(crate) trait H264Bytes: Copy {
+pub(crate) trait H264Math: Copy {
     /// Every lane `v`.
     fn splat(v: u8) -> Self;
-    /// Bytes `0..8` from `lo`, `8..16` from `hi` (little-endian).
-    fn from_halves(lo: u64, hi: u64) -> Self;
-    /// Sixteen bytes at `p`.
-    unsafe fn load(p: *const u8) -> Self;
-    /// Store sixteen bytes at `p`.
-    unsafe fn store(self, p: *mut u8);
-    /// Bytes `0..8` from `lo`, `8..16` from `hi`.
-    unsafe fn load_halves(lo: *const u8, hi: *const u8) -> Self;
-    /// Inverse of [`Self::load_halves`].
-    unsafe fn store_halves(self, lo: *mut u8, hi: *mut u8);
-    /// Eight bytes of each of 16 rows, transposed: byte `j` of output `k`
-    /// is byte `k` of row `j`.
-    unsafe fn load_rows_8(rows: [*const u8; LANES]) -> [Self; 8];
-    /// Inverse of [`Self::load_rows_8`].
-    unsafe fn store_rows_8(columns: [Self; 8], rows: [*mut u8; LANES]);
-    /// As [`Self::load_rows_8`] for four bytes of each row.
-    unsafe fn load_rows_4(rows: [*const u8; LANES]) -> [Self; 4];
-    /// Inverse of [`Self::load_rows_4`].
-    unsafe fn store_rows_4(columns: [Self; 4], rows: [*mut u8; LANES]);
     /// `|a − b|`.
     fn abs_diff(self, b: Self) -> Self;
     /// Mask of `self < b`.
@@ -107,6 +92,61 @@ pub(crate) trait H264Bytes: Copy {
     /// The bS == 4 strong outputs `[x2', x1', x0']` of one side (§8.7.2.4,
     /// 8-475..8-477 for `x = p, y = q`).
     fn strong_side(x3: Self, x2: Self, x1: Self, x0: Self, y0: Self, y1: Self) -> [Self; 3];
+}
+
+/// The original sixteen-line IO contract, shared by all narrow tiers.
+pub(crate) trait H264Bytes: H264Math {
+    /// Bytes `0..8` from `lo`, `8..16` from `hi` (little-endian).
+    fn from_halves(lo: u64, hi: u64) -> Self;
+    /// Sixteen bytes at `p`.
+    unsafe fn load(p: *const u8) -> Self;
+    /// Store sixteen bytes at `p`.
+    unsafe fn store(self, p: *mut u8);
+    /// Bytes `0..8` from `lo`, `8..16` from `hi`.
+    unsafe fn load_halves(lo: *const u8, hi: *const u8) -> Self;
+    /// Inverse of [`Self::load_halves`].
+    unsafe fn store_halves(self, lo: *mut u8, hi: *mut u8);
+    /// Eight bytes of each of 16 rows, transposed: byte `j` of output `k`
+    /// is byte `k` of row `j`.
+    unsafe fn load_rows_8(rows: [*const u8; LANES]) -> [Self; 8];
+    /// Inverse of [`Self::load_rows_8`].
+    unsafe fn store_rows_8(columns: [Self; 8], rows: [*mut u8; LANES]);
+    /// As [`Self::load_rows_8`] for four bytes of each row.
+    unsafe fn load_rows_4(rows: [*const u8; LANES]) -> [Self; 4];
+    /// Inverse of [`Self::load_rows_4`].
+    unsafe fn store_rows_4(columns: [Self; 4], rows: [*mut u8; LANES]);
+}
+
+/// Lane thresholds, materialized only when their filter stage is needed.
+trait LumaParams<B: H264Math> {
+    fn bs(&self) -> B;
+    fn tc0(&self) -> B;
+    fn alpha(&self) -> B;
+    fn beta(&self) -> B;
+    fn alpha_quarter(&self) -> B;
+}
+#[allow(clippy::inline_always)]
+impl<B: H264Bytes> LumaParams<B> for Edge {
+    #[inline(always)]
+    fn bs(&self) -> B {
+        luma_lanes(self.bs.map(i16::from))
+    }
+    #[inline(always)]
+    fn tc0(&self) -> B {
+        luma_lanes(self.tc0)
+    }
+    #[inline(always)]
+    fn alpha(&self) -> B {
+        B::splat(self.alpha as u8)
+    }
+    #[inline(always)]
+    fn beta(&self) -> B {
+        B::splat(self.beta as u8)
+    }
+    #[inline(always)]
+    fn alpha_quarter(&self) -> B {
+        B::splat(((self.alpha >> 2) + 2) as u8)
+    }
 }
 
 /// Multiplier copying a byte into the low 4 bytes of a word.
@@ -158,7 +198,7 @@ fn filter_flag<B: H264Bytes>(e: &Edge, bs: B, [p1, p0, q0, q1]: [B; 4]) -> B {
 /// the module docs).
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn chroma_style<B: H264Bytes>(x1: B, x0: B, y1: B) -> B {
+fn chroma_style<B: H264Math>(x1: B, x0: B, y1: B) -> B {
     x0.avg_floor(y1).avg_round(x1)
 }
 
@@ -226,15 +266,21 @@ unsafe fn luma_edge<B: H264Bytes, const STRONG: bool>(plane: &mut [u8], e: &Edge
 #[allow(clippy::inline_always)]
 #[inline(always)]
 #[allow(clippy::similar_names)]
-fn luma_filter<B: H264Bytes, const STRONG: bool>(e: &Edge, positions: [B; 8]) -> Option<[B; 6]> {
+fn luma_filter<B: H264Math, const STRONG: bool>(
+    e: &impl LumaParams<B>,
+    positions: [B; 8],
+) -> Option<[B; 6]> {
     let [p3, p2, p1, p0, q0, q1, q2, q3] = positions;
-    let bs = luma_lanes::<B>(e.bs.map(i16::from));
-    let flag = filter_flag(e, bs, [p1, p0, q0, q1]);
+    let bs = e.bs();
+    let beta = e.beta();
+    let flag = B::splat(0)
+        .less(bs)
+        .and(p0.abs_diff(q0).less(e.alpha()))
+        .and(p1.abs_diff(p0).less(beta))
+        .and(q1.abs_diff(q0).less(beta));
     if !flag.any() {
         return None;
     }
-    let tc0 = luma_lanes::<B>(e.tc0);
-    let beta = B::splat(e.beta as u8);
     let ap = p2.abs_diff(p0).less(beta);
     let aq = q2.abs_diff(q0).less(beta);
     let four = if STRONG {
@@ -244,11 +290,53 @@ fn luma_filter<B: H264Bytes, const STRONG: bool>(e: &Edge, positions: [B; 8]) ->
     };
     let normal = flag.and_not(four);
 
+    let (mut new_p2, mut new_p1, mut new_p0) = (p2, p1, p0);
+    let (mut new_q0, mut new_q1, mut new_q2) = (q0, q1, q2);
+    // Exact inactive-mask skip: strong-only edges have no normal outputs.
+    // STRONG=false compiles away the mask test on ordinary inter edges.
+    if !STRONG || normal.any() {
+        [new_p1, new_p0, new_q0, new_q1] =
+            normal_luma([p2, p1, p0], [q0, q1, q2], e.tc0(), ap, aq, normal);
+    }
+
+    if STRONG && four.any() {
+        // bS == 4 (§8.7.2.4).
+        let alpha_quarter = e.alpha_quarter();
+        let strong = p0.abs_diff(q0).less(alpha_quarter).and(four);
+        let (strong_p, strong_q) = (ap.and(strong), aq.and(strong));
+        new_p0 = four.select(chroma_style(p1, p0, q1), new_p0);
+        new_q0 = four.select(chroma_style(q1, q0, p1), new_q0);
+        // No strong output can change without this mask.
+        if strong.any() {
+            let [sp2, sp1, sp0] = B::strong_side(p3, p2, p1, p0, q0, q1);
+            let [sq2, sq1, sq0] = B::strong_side(q3, q2, q1, q0, p0, p1);
+            new_p0 = strong_p.select(sp0, new_p0);
+            new_q0 = strong_q.select(sq0, new_q0);
+            new_p1 = strong_p.select(sp1, new_p1);
+            new_q1 = strong_q.select(sq1, new_q1);
+            new_p2 = strong_p.select(sp2, p2);
+            new_q2 = strong_q.select(sq2, q2);
+        }
+    }
+    Some([new_p2, new_p1, new_p0, new_q0, new_q1, new_q2])
+}
+
+/// The normal luma outputs [p1,p0,q0,q1], with per-line active masks.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn normal_luma<B: H264Math>(
+    [p2, p1, p0]: [B; 3],
+    [q0, q1, q2]: [B; 3],
+    tc0: B,
+    ap: B,
+    aq: B,
+    normal: B,
+) -> [B; 4] {
     // bS < 4 (§8.7.2.3): tC = tC0 + (ap < β) + (aq < β); the masks are −1.
     let tc = tc0.sub(ap).sub(aq);
     let delta = B::normal_delta(p1, p0, q0, q1).clip_signed(tc).and(normal);
-    let mut new_p0 = p0.add_signed(delta);
-    let mut new_q0 = q0.sub_signed(delta);
+    let new_p0 = p0.add_signed(delta);
+    let new_q0 = q0.sub_signed(delta);
     let average = p0.avg_round(q0);
     let weak_p1 = p2
         .avg_floor(average)
@@ -258,25 +346,9 @@ fn luma_filter<B: H264Bytes, const STRONG: bool>(e: &Edge, positions: [B; 8]) ->
         .avg_floor(average)
         .max(q1.sub_sat(tc0))
         .min(q1.add_sat(tc0));
-    let mut new_p1 = ap.and(normal).select(weak_p1, p1);
-    let mut new_q1 = aq.and(normal).select(weak_q1, q1);
-    let (mut new_p2, mut new_q2) = (p2, q2);
-
-    if STRONG {
-        // bS == 4 (§8.7.2.4).
-        let alpha_quarter = B::splat(((e.alpha >> 2) + 2) as u8);
-        let strong = p0.abs_diff(q0).less(alpha_quarter).and(four);
-        let (strong_p, strong_q) = (ap.and(strong), aq.and(strong));
-        let [sp2, sp1, sp0] = B::strong_side(p3, p2, p1, p0, q0, q1);
-        let [sq2, sq1, sq0] = B::strong_side(q3, q2, q1, q0, p0, p1);
-        new_p0 = strong_p.select(sp0, four.select(chroma_style(p1, p0, q1), new_p0));
-        new_q0 = strong_q.select(sq0, four.select(chroma_style(q1, q0, p1), new_q0));
-        new_p1 = strong_p.select(sp1, new_p1);
-        new_q1 = strong_q.select(sq1, new_q1);
-        new_p2 = strong_p.select(sp2, p2);
-        new_q2 = strong_q.select(sq2, q2);
-    }
-    Some([new_p2, new_p1, new_p0, new_q0, new_q1, new_q2])
+    let new_p1 = ap.and(normal).select(weak_p1, p1);
+    let new_q1 = aq.and(normal).select(weak_q1, q1);
+    [new_p1, new_p0, new_q0, new_q1]
 }
 
 /// Filter one H.264 4:2:0 chroma edge in both planes (8 lines each): `u`

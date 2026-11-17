@@ -9,6 +9,8 @@ use super::{CHROMA_LINES, DeblockFns, Edge, HEVC_LINES, HEVC_SEGMENT, HevcEdge, 
 /// The scalar table.
 pub(crate) fn deblock_fns() -> DeblockFns {
     DeblockFns {
+        luma_pair: super::h264_runs::pair_scalar,
+        h264_luma_runs: super::h264_runs::scalar,
         luma: luma_edge,
         chroma: chroma_edge,
         chroma_pair,
@@ -21,6 +23,7 @@ pub(crate) fn deblock_fns() -> DeblockFns {
         av1_runs: super::runs::av1_scalar,
         hevc_luma_runs: super::runs::hevc_luma_scalar,
         hevc_chroma_runs: super::runs::hevc_chroma_scalar,
+        vvc_luma_runs: super::runs::vvc_luma_scalar,
         av2_chunk: super::av2::filter_chunk,
     }
 }

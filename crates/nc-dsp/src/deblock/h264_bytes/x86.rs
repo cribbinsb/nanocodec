@@ -9,7 +9,7 @@
 //! unsigned saturation (one of them is zero). Rows transpose with the
 //! unpack ladder (bytes, words, doublewords, quadwords).
 
-use super::H264Bytes;
+use super::{H264Bytes, H264Math};
 use core::arch::x86_64::{
     __m128i, _mm_add_epi16, _mm_adds_epu8, _mm_and_si128, _mm_andnot_si128, _mm_avg_epu8,
     _mm_blendv_epi8, _mm_castpd_si128, _mm_castsi128_pd, _mm_cmpeq_epi8, _mm_cvtsi32_si128,
@@ -24,16 +24,144 @@ use core::arch::x86_64::{
 
 /// Sixteen byte lanes in one SSE register.
 #[derive(Clone, Copy)]
-pub(crate) struct B(__m128i);
+pub(crate) struct B(pub(super) __m128i);
 
 // Every intrinsic below is SSE4.1 or older, which the AVX2 kernels using
 // these lanes enable; register-only intrinsics have no other precondition.
-impl H264Bytes for B {
+impl H264Math for B {
     #[inline(always)]
     fn splat(v: u8) -> Self {
         // SAFETY: register-only (see above).
         unsafe { Self(_mm_set1_epi8(v as i8)) }
     }
+    #[inline(always)]
+    fn abs_diff(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe {
+            Self(_mm_or_si128(
+                _mm_subs_epu8(self.0, b.0),
+                _mm_subs_epu8(b.0, self.0),
+            ))
+        }
+    }
+    #[inline(always)]
+    fn less(self, b: Self) -> Self {
+        // SAFETY: register-only. `a < b` exactly when `max(a, b) != a`.
+        unsafe {
+            let not_less = _mm_cmpeq_epi8(_mm_max_epu8(self.0, b.0), self.0);
+            Self(_mm_xor_si128(not_less, _mm_set1_epi8(-1)))
+        }
+    }
+    #[inline(always)]
+    fn and(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_and_si128(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn and_not(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_andnot_si128(b.0, self.0)) }
+    }
+    #[inline(always)]
+    fn select(self, a: Self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_blendv_epi8(b.0, a.0, self.0)) }
+    }
+    #[inline(always)]
+    fn sub(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_sub_epi8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn add_sat(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_adds_epu8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn sub_sat(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_subs_epu8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn min(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_min_epu8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn max(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_max_epu8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn avg_round(self, b: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe { Self(_mm_avg_epu8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn avg_floor(self, b: Self) -> Self {
+        // SAFETY: register-only. The rounding average exceeds the floor by
+        // one exactly where the sum is odd.
+        unsafe {
+            let odd = _mm_and_si128(_mm_xor_si128(self.0, b.0), _mm_set1_epi8(1));
+            Self(_mm_sub_epi8(_mm_avg_epu8(self.0, b.0), odd))
+        }
+    }
+    #[inline(always)]
+    fn any(self) -> bool {
+        // SAFETY: register-only.
+        unsafe { _mm_movemask_epi8(self.0) != 0 }
+    }
+    #[inline(always)]
+    fn normal_delta(p1: Self, p0: Self, q0: Self, q1: Self) -> Self {
+        // SAFETY: register-only; `packs` saturates to i8.
+        unsafe {
+            Self(_mm_packs_epi16(
+                delta_half::<true>(p1.0, p0.0, q0.0, q1.0),
+                delta_half::<false>(p1.0, p0.0, q0.0, q1.0),
+            ))
+        }
+    }
+    #[inline(always)]
+    fn clip_signed(self, t: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe {
+            let negative = _mm_sub_epi8(_mm_setzero_si128(), t.0);
+            Self(_mm_min_epi8(_mm_max_epi8(self.0, negative), t.0))
+        }
+    }
+    #[inline(always)]
+    fn add_signed(self, delta: Self) -> Self {
+        // SAFETY: register-only.
+        unsafe {
+            let zero = _mm_setzero_si128();
+            let up = _mm_max_epi8(delta.0, zero);
+            let down = _mm_max_epi8(_mm_sub_epi8(zero, delta.0), zero);
+            Self(_mm_subs_epu8(_mm_adds_epu8(self.0, up), down))
+        }
+    }
+    #[inline(always)]
+    fn sub_signed(self, delta: Self) -> Self {
+        // SAFETY: register-only; `delta > −128`, so its negation is exact.
+        let negated = unsafe { Self(_mm_sub_epi8(_mm_setzero_si128(), delta.0)) };
+        self.add_signed(negated)
+    }
+    #[inline(always)]
+    fn strong_side(x3: Self, x2: Self, x1: Self, x0: Self, y0: Self, y1: Self) -> [Self; 3] {
+        let x = [x3.0, x2.0, x1.0, x0.0, y0.0, y1.0];
+        let (low, high) = (strong_half::<true>(x), strong_half::<false>(x));
+        // SAFETY: register-only; the sums are at most 2040, so `packus`
+        // never saturates.
+        unsafe {
+            [
+                Self(_mm_packus_epi16(low[0], high[0])),
+                Self(_mm_packus_epi16(low[1], high[1])),
+                Self(_mm_packus_epi16(low[2], high[2])),
+            ]
+        }
+    }
+}
+
+impl H264Bytes for B {
     #[inline(always)]
     fn from_halves(lo: u64, hi: u64) -> Self {
         // SAFETY: register-only.
@@ -188,131 +316,6 @@ impl H264Bytes for B {
                     .cast::<i32>()
                     .write_unaligned(_mm_extract_epi32::<3>(quad));
             }
-        }
-    }
-    #[inline(always)]
-    fn abs_diff(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe {
-            Self(_mm_or_si128(
-                _mm_subs_epu8(self.0, b.0),
-                _mm_subs_epu8(b.0, self.0),
-            ))
-        }
-    }
-    #[inline(always)]
-    fn less(self, b: Self) -> Self {
-        // SAFETY: register-only. `a < b` exactly when `max(a, b) != a`.
-        unsafe {
-            let not_less = _mm_cmpeq_epi8(_mm_max_epu8(self.0, b.0), self.0);
-            Self(_mm_xor_si128(not_less, _mm_set1_epi8(-1)))
-        }
-    }
-    #[inline(always)]
-    fn and(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_and_si128(self.0, b.0)) }
-    }
-    #[inline(always)]
-    fn and_not(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_andnot_si128(b.0, self.0)) }
-    }
-    #[inline(always)]
-    fn select(self, a: Self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_blendv_epi8(b.0, a.0, self.0)) }
-    }
-    #[inline(always)]
-    fn sub(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_sub_epi8(self.0, b.0)) }
-    }
-    #[inline(always)]
-    fn add_sat(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_adds_epu8(self.0, b.0)) }
-    }
-    #[inline(always)]
-    fn sub_sat(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_subs_epu8(self.0, b.0)) }
-    }
-    #[inline(always)]
-    fn min(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_min_epu8(self.0, b.0)) }
-    }
-    #[inline(always)]
-    fn max(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_max_epu8(self.0, b.0)) }
-    }
-    #[inline(always)]
-    fn avg_round(self, b: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe { Self(_mm_avg_epu8(self.0, b.0)) }
-    }
-    #[inline(always)]
-    fn avg_floor(self, b: Self) -> Self {
-        // SAFETY: register-only. The rounding average exceeds the floor by
-        // one exactly where the sum is odd.
-        unsafe {
-            let odd = _mm_and_si128(_mm_xor_si128(self.0, b.0), _mm_set1_epi8(1));
-            Self(_mm_sub_epi8(_mm_avg_epu8(self.0, b.0), odd))
-        }
-    }
-    #[inline(always)]
-    fn any(self) -> bool {
-        // SAFETY: register-only.
-        unsafe { _mm_movemask_epi8(self.0) != 0 }
-    }
-    #[inline(always)]
-    fn normal_delta(p1: Self, p0: Self, q0: Self, q1: Self) -> Self {
-        // SAFETY: register-only; `packs` saturates to i8.
-        unsafe {
-            Self(_mm_packs_epi16(
-                delta_half::<true>(p1.0, p0.0, q0.0, q1.0),
-                delta_half::<false>(p1.0, p0.0, q0.0, q1.0),
-            ))
-        }
-    }
-    #[inline(always)]
-    fn clip_signed(self, t: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe {
-            let negative = _mm_sub_epi8(_mm_setzero_si128(), t.0);
-            Self(_mm_min_epi8(_mm_max_epi8(self.0, negative), t.0))
-        }
-    }
-    #[inline(always)]
-    fn add_signed(self, delta: Self) -> Self {
-        // SAFETY: register-only.
-        unsafe {
-            let zero = _mm_setzero_si128();
-            let up = _mm_max_epi8(delta.0, zero);
-            let down = _mm_max_epi8(_mm_sub_epi8(zero, delta.0), zero);
-            Self(_mm_subs_epu8(_mm_adds_epu8(self.0, up), down))
-        }
-    }
-    #[inline(always)]
-    fn sub_signed(self, delta: Self) -> Self {
-        // SAFETY: register-only; `delta > −128`, so its negation is exact.
-        let negated = unsafe { Self(_mm_sub_epi8(_mm_setzero_si128(), delta.0)) };
-        self.add_signed(negated)
-    }
-    #[inline(always)]
-    fn strong_side(x3: Self, x2: Self, x1: Self, x0: Self, y0: Self, y1: Self) -> [Self; 3] {
-        let x = [x3.0, x2.0, x1.0, x0.0, y0.0, y1.0];
-        let (low, high) = (strong_half::<true>(x), strong_half::<false>(x));
-        // SAFETY: register-only; the sums are at most 2040, so `packus`
-        // never saturates.
-        unsafe {
-            [
-                Self(_mm_packus_epi16(low[0], high[0])),
-                Self(_mm_packus_epi16(low[1], high[1])),
-                Self(_mm_packus_epi16(low[2], high[2])),
-            ]
         }
     }
 }

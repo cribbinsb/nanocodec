@@ -9,6 +9,8 @@ use crate::simd::neon::I16x8;
 /// NEON is always present on `AArch64`.
 pub(crate) fn deblock_fns() -> DeblockFns {
     DeblockFns {
+        luma_pair: super::h264_runs::pair_neon,
+        h264_luma_runs: super::h264_runs::neon,
         luma,
         chroma,
         chroma_pair,
@@ -21,6 +23,7 @@ pub(crate) fn deblock_fns() -> DeblockFns {
         av1_runs: super::runs::neon::av1,
         hevc_luma_runs: super::runs::neon::luma,
         hevc_chroma_runs: super::runs::neon::chroma,
+        vvc_luma_runs: super::runs::neon::vvc,
         av2_chunk,
     }
 }

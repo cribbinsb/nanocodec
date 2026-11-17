@@ -9,6 +9,8 @@ use crate::simd::simd128::I16x8;
 /// The build enables `simd128`.
 pub(crate) fn deblock_fns() -> DeblockFns {
     DeblockFns {
+        luma_pair: super::h264_runs::pair_simd128,
+        h264_luma_runs: super::h264_runs::simd128,
         luma,
         chroma,
         chroma_pair,
@@ -21,6 +23,7 @@ pub(crate) fn deblock_fns() -> DeblockFns {
         av1_runs: super::runs::simd128::av1,
         hevc_luma_runs: super::runs::simd128::luma,
         hevc_chroma_runs: super::runs::simd128::chroma,
+        vvc_luma_runs: super::runs::simd128::vvc,
         av2_chunk,
     }
 }

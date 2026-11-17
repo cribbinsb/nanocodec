@@ -377,7 +377,8 @@ filters (`simd/gfni.rs`). The full dav1d notice is above and in
 [docs/licenses/dav1d/COPYING](docs/licenses/dav1d/COPYING).
 
 The shared four-group loop-filter lanes (`crates/nc-dsp/src/lpf_bytes/avx512.rs`,
-`deblock/avx512.rs` and `vp9_loop_filter/packed/avx512.rs`) use the grouped
+`deblock/avx512.rs`, `deblock/batch.rs` (HEVC/VVC short-luma word tiles),
+and `vp9_loop_filter/packed/avx512.rs`) use the grouped
 transpose/widen/filter layout of dav1d 1.5.4 `src/x86/loopfilter_avx512.asm`
 (8-bit) and `src/x86/loopfilter16_avx512.asm` (high bit depth) as design
 references, reimplemented with Rust intrinsics and our shared scalar equations.

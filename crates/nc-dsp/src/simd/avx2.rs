@@ -1979,3 +1979,55 @@ fn transpose_i32x4(rows: &[I32x4]) -> [I32x4; 4] {
         out.map(I32x4)
     }
 }
+
+impl super::I16x8Tiles for I16x16 {
+    #[inline(always)]
+    fn splat_segments(values: &[i16; 8]) -> Self {
+        const SELECT: [u8; 32] = [
+            0, 1, 0, 1, 0, 1, 0, 1, 2, 3, 2, 3, 2, 3, 2, 3, 4, 5, 4, 5, 4, 5, 4, 5, 6, 7, 6, 7, 6,
+            7, 6, 7,
+        ];
+        // SAFETY: enabled ISA; eight words and one complete shuffle vector.
+        unsafe {
+            let data = _mm_loadu_si128(values.as_ptr().cast());
+            Self(_mm256_shuffle_epi8(
+                _mm256_set_m128i(data, data),
+                _mm256_loadu_si256(SELECT.as_ptr().cast()),
+            ))
+        }
+    }
+    #[inline(always)]
+    fn zip_tiles_lo(self, other: Self) -> Self {
+        // SAFETY: private lanes run only inside an AVX2 entry point.
+        unsafe { Self(_mm256_unpacklo_epi16(self.0, other.0)) }
+    }
+    #[inline(always)]
+    fn zip_tiles_hi(self, other: Self) -> Self {
+        // SAFETY: as above; unpacks stay inside each 128-bit tile.
+        unsafe { Self(_mm256_unpackhi_epi16(self.0, other.0)) }
+    }
+    #[inline(always)]
+    fn shuffle_tiles(self, pattern: &[u8; 16]) -> Self {
+        // SAFETY: enabled ISA; the pattern is exactly sixteen readable bytes.
+        unsafe {
+            let p = _mm_loadu_si128(pattern.as_ptr().cast());
+            Self(_mm256_shuffle_epi8(self.0, _mm256_set_m128i(p, p)))
+        }
+    }
+    #[inline(always)]
+    fn load_tiles8(rows: [&[u8]; 4]) -> Self {
+        let (a, b) = (&rows[0][..8], &rows[1][..8]);
+        // SAFETY: enabled ISA; each load reads eight checked bytes.
+        unsafe {
+            Self(_mm256_cvtepu8_epi16(_mm_unpacklo_epi64(
+                _mm_loadl_epi64(a.as_ptr().cast()),
+                _mm_loadl_epi64(b.as_ptr().cast()),
+            )))
+        }
+    }
+    #[inline(always)]
+    fn store_tiles8(self, rows: [&mut [u8]; 4]) {
+        let [a, b, _, _] = rows;
+        self.store_u8_sat_halves(a, b);
+    }
+}

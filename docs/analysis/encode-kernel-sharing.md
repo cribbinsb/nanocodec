@@ -41,6 +41,25 @@ really differs, and the verdict. Merges update their row when they land.
 `diff` (variance, sub-pixel variance) and `pixel` (SAD, SATD) are already one
 implementation for all six codecs; they are the largest share everywhere.
 
+## Ordered deblock batches (Astra, 2026-11-17)
+
+H264 `deblock/h264_bytes/{grouped,wide}.rs` carries two/four independent
+sixteen-byte edges in AVX2/ICL, sharing one byte decision graph. ICL two-edge
+macroblocks use all 32 word lanes for widened equations. Dependency-overlapping
+edges stay ordered; SSE/NEON/SIMD128 keep their natural widths. HEVC/VVC short
+luma share `deblock/{batch,short_runs}.rs`: two/four independent eight-word
+tiles per AVX2/ICL register, with per-segment thresholds and a codec-specific
+strong clipping table. Their narrow tiers share the eight-lane graph. VVC
+long/narrow filters keep the existing kernels. Transpose layout attribution:
+dav1d BSD-2 loopfilter16_avx512; arithmetic remains codec-specific where required.
+
+Whole Default encode on three public 720p CTC sources, five paired rounds:
+Jetson cycles H264 -0.90%, HEVC level (+0.007%), VVC -0.42%; Zen5 CPU H264
++1.37%, HEVC -0.26%, VVC -0.52%. H264 x86 timing loss remains unresolved;
+a 15-round same-executable pair-width probe is level within 0.1%. No general
+H264 x86 speedup is claimed. ns/call per tier, losing trials, all-platform
+checkasm and 297/297 identity receipts: `docs/handoff/astra-kernels-20261117.md`.
+
 ## 1. Forward transforms
 
 | Variant | Module (lines) | Tiers | Technique, layout | Hot | Arithmetic vs family | Verdict |
@@ -376,9 +395,9 @@ the merges above; hot shares are section 0's.
 
 | Kernel | Lanes | Hot | Note |
 |---|---|---|---|
-| H.264 deblock (`deblock/h264_bytes/x86.rs`) | 128-bit bytes (SSE4.1) | H.264 2.8 / 3.7 | one lane per line of a 16-line edge |
+| H.264 deblock (`deblock/h264_bytes/{x86,wide,grouped}.rs`) | single-edge SSE; two-edge AVX2, four-edge ICL | H.264 2.8 / 3.7 | Ordered independent batches landed 3bcd6e7a0; actual two-edge ICL macroblocks use 32 word lanes for widened equations. Single-edge tails retain SSE. |
 | AV1/VP9 deblock (`lpf_bytes/avx2.rs`, `deblock/avx2.rs` `av1_edge`) | 128-bit (8 lines) | AV1 3.8, VP9 3.5 | Astra's AVX-512 work; the 16-line paired `*_wide` lanes exist (256-bit) for the decoder |
-| HEVC luma deblock, VVC deblock (`deblock/hevc.rs`, `vvc_deblock/`) | I16x8 | HEVC 1.7, VVC 2-3 | |
+| HEVC luma deblock, VVC short deblock (`deblock/{batch,short_runs}.rs`) | I16x8 single tile; I16x16 AVX2, I16x32 ICL batches | HEVC 1.7, VVC 2-3 | Ordered disjoint eight-line tiles landed 3bcd6e7a0; VVC long/narrow filters retain their previous kernels. |
 | HEVC/VVC/AV1/AV2 intra runs of 16 (`intra_runs` `step16`) | 128-bit | intra | 32-wide runs are 256-bit |
 | `constant_add` | 128-bit bytes | small | 32/64-wide blocks could take 256-bit |
 | H.264 inverse 8x8 add (`codec_txfm/avx2.rs` `I16x8`) | I16x8 | H.264 | |

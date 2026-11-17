@@ -2577,6 +2577,31 @@ impl Dsp {
         }
     }
 
+    /// Filter ordered VVC luma runs (multiples of four lines). Consecutive
+    /// independent short tiles may share a SIMD call. Long/narrow tiles keep
+    /// their original kernels and position in the sequence. Empty runs skip.
+    /// # Panics
+    /// Invalid thresholds, reaches, lengths or footprints panic when consumed;
+    /// earlier runs may already have modified the picture. The scalar reference
+    /// reads p7..q7, so every active run requires that complete footprint.
+    pub fn vvc_deblock_luma_runs(
+        &self,
+        dst: &mut PlaneViewMut<'_>,
+        vertical: bool,
+        runs: &[crate::EdgeRun<crate::VvcLumaFilter>],
+    ) {
+        let plane = deblock::runs::Plane {
+            width: dst.width(),
+            height: dst.height(),
+            stride: dst.stride(),
+            vertical,
+        };
+        // SAFETY: dispatch enabled this ISA; consumption validates each run.
+        unsafe {
+            (self.deblock.vvc_luma_runs)(dst.data_mut(), plane, runs);
+        }
+    }
+
     /// Filter sparse HEVC chroma runs whose lengths are multiples of two in supplied order.
     /// Empty runs are ignored. Adjacent equal filters may share a kernel call.
     /// The caller schedules codec-specific passes; no dense grid is allocated.
@@ -2797,6 +2822,30 @@ impl Dsp {
         unsafe { (self.deblock.luma)(dst.data_mut(), &edge) }
     }
 
+    /// Filter ordered H.264 luma edges, each with exactly sixteen lines.
+    /// Consecutive independent edges may share a SIMD call. Empty runs skip.
+    /// Vertical/horizontal pass scheduling belongs to the codec caller.
+    /// # Panics
+    /// Invalid lengths, bS or p3..q3 footprints panic when consumed; preceding
+    /// edges may already have modified the picture.
+    pub fn h264_deblock_luma_runs(
+        &self,
+        dst: &mut PlaneViewMut<'_>,
+        vertical: bool,
+        runs: &[crate::EdgeRun<crate::H264EdgeParams>],
+    ) {
+        let plane = deblock::runs::Plane {
+            width: dst.width(),
+            height: dst.height(),
+            stride: dst.stride(),
+            vertical,
+        };
+        // SAFETY: supported ISA dispatch; each footprint is checked before IO.
+        unsafe {
+            (self.deblock.h264_luma_runs)(dst.data_mut(), plane, runs);
+        }
+    }
+
     /// Filter every edge of one H.264 luma macroblock (16x16 at (`x`,
     /// `y`)) that `edges` marks, in the standard's order (§8.7): one call
     /// per macroblock instead of per edge.
@@ -2810,14 +2859,62 @@ impl Dsp {
         (x, y): (usize, usize),
         edges: &H264MbEdges,
     ) {
-        h264_mb::for_each_edge(edges, false, |vertical, offset, e| {
-            let pos = if vertical {
-                (x + offset, y)
-            } else {
-                (x, y + offset)
-            };
-            self.h264_deblock_luma_edge(plane, pos, vertical, e.bs, e.tc0, (e.alpha, e.beta));
-        });
+        let wide = matches!(self.isa, Isa::Avx2 | Isa::Avx512);
+        for (direction, row) in edges.edges.iter().enumerate() {
+            let vertical = direction == 0;
+            let mut mask = (edges.mask >> (4 * direction)) & 0b1111;
+            while mask != 0 {
+                let first = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                let at = if vertical {
+                    (x + 4 * first, y)
+                } else {
+                    (x, y + 4 * first)
+                };
+                let filter = row[first];
+                let a = deblock_edge(
+                    plane,
+                    at,
+                    vertical,
+                    4,
+                    16,
+                    filter.bs,
+                    filter.tc0,
+                    (filter.alpha, filter.beta),
+                );
+                // A gap of eight samples makes both full p3..q3 footprints
+                // disjoint. Do not skip across a dependent intervening edge.
+                if wide && mask != 0 && mask.trailing_zeros() as usize - first >= 2 {
+                    let second = mask.trailing_zeros() as usize;
+                    mask &= mask - 1;
+                    let at = if vertical {
+                        (x + 4 * second, y)
+                    } else {
+                        (x, y + 4 * second)
+                    };
+                    let filter = row[second];
+                    let b = deblock_edge(
+                        plane,
+                        at,
+                        vertical,
+                        4,
+                        16,
+                        filter.bs,
+                        filter.tc0,
+                        (filter.alpha, filter.beta),
+                    );
+                    // SAFETY: validated disjoint footprints; supported ISA table.
+                    unsafe {
+                        (self.deblock.luma_pair)(plane.data_mut(), &[a, b]);
+                    }
+                } else {
+                    // SAFETY: validated footprint and supported ISA table.
+                    unsafe {
+                        (self.deblock.luma)(plane.data_mut(), &a);
+                    }
+                }
+            }
+        }
     }
 
     /// Filter every edge of one H.264 4:2:0 chroma macroblock (8x8 at

@@ -50,6 +50,8 @@ pub(crate) mod av2_decide;
 #[allow(unsafe_code)]
 pub(crate) mod av2_ramp;
 #[allow(unsafe_code)]
+pub(crate) mod batch;
+#[allow(unsafe_code)]
 pub(crate) mod generic;
 #[cfg(any(
     target_arch = "x86_64",
@@ -59,6 +61,8 @@ pub(crate) mod generic;
 #[allow(unsafe_code)]
 pub(crate) mod h264_bytes;
 pub(crate) mod h264_mb;
+#[allow(unsafe_code)]
+mod h264_runs;
 #[allow(unsafe_code)]
 pub(crate) mod hevc;
 #[cfg(any(
@@ -80,6 +84,8 @@ pub(crate) mod runs;
 pub(crate) mod samples;
 pub(crate) mod scalar;
 pub(crate) mod short_luma;
+#[allow(unsafe_code)]
+mod short_runs;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
@@ -153,6 +159,9 @@ pub(crate) struct Edge {
 /// An edge kernel.
 pub(crate) type EdgeFn = unsafe fn(plane: &mut [u8], edge: &Edge);
 
+/// Two validated H.264 luma edges with disjoint footprints.
+pub(crate) type LumaPairFn = unsafe fn(&mut [u8], &[Edge; 2]);
+
 /// An H.264 chroma edge kernel for both 4:2:0 planes at once: `u` and `v`
 /// share the edge's geometry (stride) and parameters.
 pub(crate) type ChromaPairFn = unsafe fn(u: &mut [u8], v: &mut [u8], edge: &Edge);
@@ -190,6 +199,8 @@ pub(crate) type HevcEdgeFn = unsafe fn(plane: &mut [u8], edge: &HevcEdge);
 pub(crate) struct DeblockFns {
     /// H.264 luma.
     pub luma: EdgeFn,
+    pub luma_pair: LumaPairFn,
+    pub h264_luma_runs: h264_runs::RunsFn,
     /// H.264 chroma.
     pub chroma: EdgeFn,
     /// H.264 chroma, both planes.
@@ -209,6 +220,7 @@ pub(crate) struct DeblockFns {
     pub av1_runs: runs::Av1RunsFn,
     pub hevc_luma_runs: runs::HevcLumaRunsFn,
     pub hevc_chroma_runs: runs::HevcChromaRunsFn,
+    pub vvc_luma_runs: runs::VvcLumaRunsFn,
     /// AV2 decisions and ramps of a chunk of segments of one edge line.
     pub av2_chunk: av2::Av2ChunkFn,
 }
