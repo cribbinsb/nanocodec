@@ -1,9 +1,9 @@
 // Fixed QP on the standards lens (fixed-qp.html): every encoder at fixed quantizers on
 // the AOM low-delay common test conditions, against x264 medium, in the Strict,
 // Profile and CBR-settings columns (fixed-qp.html says what each is). Data: data/fixed-qp-lens.json (the fixed-QP lens run; rows
-// {test, column, anchor, weighted, j, psnr_yuv, vmaf, ms_ssim, n}), backed by a
+// {test, column, anchor, weighted, j, psnr_yuv, vmaf, ms_ssim, xpsnr?, n}), backed by a
 // docs/results CSV.
-import { control, el, fail, loadData, pct, segmented, sources, table } from './common.js';
+import { NOT_MEASURED, control, el, fail, loadData, pct, segmented, sources, table } from './common.js';
 
 const COLUMNS = { strict: 'Strict', profile: 'Profile', cbr_settings: 'CBR settings' };
 const METRICS = {
@@ -12,6 +12,7 @@ const METRICS = {
   psnr_yuv: 'PSNR-YUV',
   vmaf: 'VMAF v1',
   ms_ssim: 'MS-SSIM',
+  xpsnr: 'XPSNR-YUV (not part of J)',
 };
 const state = { metric: 'weighted' };
 
@@ -26,7 +27,7 @@ function render(data, names, root) {
   const tests = [...new Set(data.rows.map((r) => r.test))];
   const find = (test, column) => data.rows.find((r) => r.test === test && r.column === column);
   const ours = (t) => t.startsWith('nanocodec-');
-  const key = (t) => Object.keys(COLUMNS).map((c) => find(t, c)).find(Boolean)[state.metric];
+  const key = (t) => Object.keys(COLUMNS).map((c) => find(t, c)).find(Boolean)[state.metric] ?? Infinity;
   tests.sort((a, b) => (ours(b) - ours(a)) || (key(a) - key(b)));
   root.querySelector('.lens-table').replaceChildren(
     el('p', { class: 'note' }, `${METRICS[state.metric]}, BD-rate against ${data.rows[0].anchor}; negative is fewer bits. Sequences in brackets.`),
@@ -37,7 +38,8 @@ function render(data, names, root) {
         cell: (t) => {
           // a reference encoder has one setting: the same value in every column
           const r = find(t, column) || (ours(t) ? null : data.rows.find((x) => x.test === t));
-          return r && r[state.metric] != null ? `${pct(r[state.metric])} (${r.n})` : '';
+          if (!r) return '';
+          return r[state.metric] != null ? `${pct(r[state.metric])} (${r.n})` : NOT_MEASURED;
         },
       })),
     ], tests, (t) => (ours(t) ? 'ours' : '')),

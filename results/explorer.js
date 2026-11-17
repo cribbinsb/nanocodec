@@ -9,7 +9,7 @@ import { paretoFront, frontierLine } from './frontier.js';
 import { drawScatter, pinSwatch, swatch } from './chart.js';
 import { chartFamily, demoQuery, manifestEncoder, parseResultsQuery } from '../deep-link.js';
 import {
-  CODEC_NAMES, METRIC_NAMES, METRIC_SHORT, ZERO_NAMES, control, el, fail, fps, loadData, pct,
+  CODEC_NAMES, METRIC_NAMES, METRIC_SHORT, NOT_MEASURED, ZERO_NAMES, control, el, fail, fps, loadData, pct,
   segmented, sources, table,
 } from './common.js';
 
@@ -19,8 +19,9 @@ const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (
 const PLATFORM_SHORT = { jetson: 'Jetson', x86: 'Zen 5', zen3: 'Zen 3', graviton: 'Graviton4' };
 const PLATFORMS = Object.keys(PLATFORM_LABELS);
 // The fixed-QP chart's extra metric (the standards' weighted PSNR); the rest are common.js's.
-const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)' };
-const SHORT = { ...METRIC_SHORT, weighted: 'Weighted' };
+// XPSNR is recorded beside J (never part of it) where a view's points have it.
+const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)', xpsnr: 'BD-XPSNR-YUV (not part of J)' };
+const SHORT = { ...METRIC_SHORT, weighted: 'Weighted', xpsnr: 'XPSNR' };
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
 const PIN_NOTE = 'points beyond the axes are pinned to the edge (arrow)';
@@ -80,6 +81,11 @@ function describe(data, view, family, v) {
     el('div', { class: 'dim' }, 'Select the point for its command line'));
 }
 
+/** A metric's BD-rate, or why there is none in a view that records the metric. */
+function metricText(value) {
+  return value === null || value === undefined ? NOT_MEASURED : pct(value);
+}
+
 function detail(data, view, family) {
   const p = data.points[family];
   const v = view.values[family];
@@ -87,7 +93,7 @@ function detail(data, view, family) {
     ['Encoder', `${p.owner}${versionOf(data, view, family) ? `, ${versionOf(data, view, family)}` : ''}`],
     ['Codec', CODEC_NAMES[p.codec] || p.codec],
     ['Preset', p.preset + (p.tune ? `, --tune ${p.tune}` : '')],
-    ...view.metrics.map((m) => [NAMES[m], pct(v[m])]),
+    ...view.metrics.map((m) => [NAMES[m], metricText(v[m])]),
     v.iqr && v.iqr[0] !== null && family !== view.zero ? ['Per-clip spread (J)', `${pct(v.iqr[0])} to ${pct(v.iqr[1])} (interquartile)`] : null,
     v.clips_scored ? ['Clips scored', String(v.clips_scored)] : null,
     v.rate_invalid_points ? ['Rate-invalid points', `${v.rate_invalid_points} (kept on their curves)`] : null,
@@ -202,7 +208,9 @@ function render(data, root) {
       }
       if (name === 'metric') {
         b.disabled = !view.metrics.includes(b.dataset.value);
-        b.title = b.disabled ? 'Not in this run’s data (the held-out and development charts record J, PSNR-YUV and VMAF v1)' : '';
+        b.title = !b.disabled ? ''
+          : b.dataset.value === 'xpsnr' ? 'XPSNR is not measured for this view yet'
+            : 'Not in this run’s data (the held-out and development charts record J, PSNR-YUV and VMAF v1)';
       }
     }
   }
@@ -259,6 +267,12 @@ function render(data, root) {
   const untimed = Object.entries(view.values)
     .filter(([f, v]) => data.points[f] && !v.fps?.[state.platform] && v[state.metric] !== null)
     .map(([f, v]) => `${data.points[f].label} (${pct(v[state.metric])})`);
+  const unmeasured = Object.entries(view.values)
+    .filter(([f, v]) => data.points[f] && (v[state.metric] === null || v[state.metric] === undefined))
+    .map(([f]) => data.points[f].label);
+  if (state.metric === 'xpsnr' && unmeasured.length) {
+    chart.append(el('p', { class: 'note' }, `XPSNR ${NOT_MEASURED} yet, so not plotted: ${unmeasured.join('; ')}.`));
+  }
   if (untimed.length) {
     chart.append(el('p', { class: 'note off-scale' }, `Not yet timed, so not plotted: ${untimed.join('; ')}.`));
   }
@@ -274,7 +288,7 @@ function render(data, root) {
     .sort((a, b) => a.v[state.metric] - b.v[state.metric]);
   root.querySelector('.table-slot').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
-    ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => pct(r.v[m]) })),
+    ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => metricText(r.v[m]) })),
     { label: 'Clips', num: true, cell: (r) => (r.v.clips_scored ? String(r.v.clips_scored) : '–') },
     ...PLATFORMS.map((m) => ({ label: `fps ${PLATFORM_SHORT[m]}`, num: true, cell: (r) => fps(r.v.fps[m]) })),
   ], rows, (r) => (r.p.ours ? 'ours' : '') + (r.family === view.zero ? ' zero' : '')), sources(view.source));

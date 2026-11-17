@@ -98,6 +98,8 @@ export function fail(container, error) {
 export const CODEC_NAMES = { h264: 'H.264', hevc: 'HEVC', vvc: 'VVC', av1: 'AV1', vp9: 'VP9', av2: 'AV2' };
 export const METRIC_NAMES = { j: 'BD-J (PSNR-YUV, VMAF v1, MS-SSIM)', psnr: 'BD-PSNR-YUV', vmaf: 'BD-VMAF v1', ms_ssim: 'BD-MS-SSIM' };
 export const METRIC_SHORT = { j: 'J', psnr: 'PSNR-YUV', vmaf: 'VMAF v1', ms_ssim: 'MS-SSIM' };
+/** Shown where a view records a metric but this encoder's points do not have it yet. */
+export const NOT_MEASURED = 'not measured';
 export const ZERO_NAMES = {
   'x264-medium~psnr': 'x264 medium --tune zerolatency,psnr',
   'x264-medium': 'x264 medium, default tuning',
