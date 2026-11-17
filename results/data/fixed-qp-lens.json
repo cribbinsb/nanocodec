@@ -1,8 +1,8 @@
 {
  "source": [
-  "docs/results/fixed-qp-lens-2026-11-16.csv"
+  "docs/results/fixed-qp-lens-2026-11-17.csv"
  ],
- "build_commit": "b11b2f83",
+ "build_commit": "b11b2f83 (2860f897 for AV1 Faster and Veryfast)",
  "condition": "aom-ld",
  "rows": [
   {
@@ -178,24 +178,24 @@
    "column": "profile",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 162.973,
-   "weighted": 2.1,
-   "j": -13.5,
-   "psnr_yuv": -8.5,
-   "vmaf": -7.0,
-   "ms_ssim": -11.7
+   "fps": 222.552,
+   "weighted": -5.7,
+   "j": -18.3,
+   "psnr_yuv": -15.7,
+   "vmaf": -13.4,
+   "ms_ssim": -15.0
   },
   {
    "test": "nanocodec-av1@faster",
    "column": "cbr_settings",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 162.973,
-   "weighted": 2.1,
-   "j": -13.5,
-   "psnr_yuv": -8.5,
-   "vmaf": -7.0,
-   "ms_ssim": -11.7
+   "fps": 222.552,
+   "weighted": -5.7,
+   "j": -18.3,
+   "psnr_yuv": -15.7,
+   "vmaf": -13.4,
+   "ms_ssim": -15.0
   },
   {
    "test": "nanocodec-av1@slow",
@@ -208,6 +208,30 @@
    "psnr_yuv": -26.7,
    "vmaf": -24.8,
    "ms_ssim": -24.6
+  },
+  {
+   "test": "nanocodec-av1@veryfast",
+   "column": "profile",
+   "anchor": "x264-medium",
+   "n": 12,
+   "fps": 279.774,
+   "weighted": 7.8,
+   "j": -6.2,
+   "psnr_yuv": -2.8,
+   "vmaf": 3.7,
+   "ms_ssim": -7.5
+  },
+  {
+   "test": "nanocodec-av1@veryfast",
+   "column": "cbr_settings",
+   "anchor": "x264-medium",
+   "n": 12,
+   "fps": 279.774,
+   "weighted": 7.8,
+   "j": -6.2,
+   "psnr_yuv": -2.8,
+   "vmaf": 3.7,
+   "ms_ssim": -7.5
   },
   {
    "test": "nanocodec-av2",
