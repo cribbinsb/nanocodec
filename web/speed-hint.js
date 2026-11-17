@@ -34,11 +34,12 @@ import { RESOLUTIONS } from './view-settings.js';
  * 0.45 times its c8a chart-path time ratio, 1.094 (not measured in WASM yet). AV1 Veryfast
  * with base-only effort (2026-11-17) is the earlier 0.36 times its x86 instruction ratio, 1.049
  * (callgrind, chart clips, CBR 600 kbit/s; not measured in WASM yet). VP9 Fast with base-only
- * effort (2026-11-17) is the earlier 0.7 times its x86 instruction ratio, 1.038 (same method).
+ * effort (2026-11-17) is the earlier 0.7 times its x86 instruction ratio, 1.038 (same method);
+ * HEVC Fast with base-only effort (2026-11-17) the earlier 0.61 times 1.118 (same method).
  */
 export const PRESET_COST = {
   h264: { slow: 1.7, medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
-  hevc: { slow: 1.74, medium: 1, fast: 0.61, faster: 0.47 },
+  hevc: { slow: 1.74, medium: 1, fast: 0.68, faster: 0.47 },
   av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.49, veryfast: 0.38 },
   vvc: { slow: 1.22, medium: 1, fast: 0.55 },
   vp9: { slow: 1.16, medium: 1, fast: 0.73, faster: 0.5, veryfast: 0.45 },

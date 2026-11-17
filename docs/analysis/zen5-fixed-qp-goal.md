@@ -940,7 +940,7 @@ lens, callgrind and c8a row is in the lever ledger.
 | VP9 Veryfast | all (`bo`) / no analysis (`bt`) | +17.4 / +1.1; +18.1 / +1.7 | x1.101; x1.088 (Faster x1.093) | -10.17; -9.11 | | out: as dear as Faster, worse |
 | HEVC Faster | all 9 (Fast) | +17.4 / +4.8 -> +9.0 / -2.5 (+10.9 / -0.5) | x1.098 / x1.101 | -4.12 (-3.58) | L1 with dCPU 9.8: +1.76 % [+0.55, +2.60] WORSE | held: beyond the lens line, not the k 0.6 CBR bar |
 | HEVC Fast | all 16 (Default) | -3.1 / -11.9 -> -6.2 / -16.8 (-6.5 / -16.3) | x1.241 / x1.313 | -6.23 (-5.44) | | out: on the line |
-| HEVC Fast | without intra NxN and trellis (`bk`) | -6.0 / -15.5 (-3.9 / -12.9 at c8a) | x1.118 / x1.071 | -4.35 (-2.67) | not run (k 0.6 needs > 7 %) | held, as HEVC Faster |
+| HEVC Fast | without intra NxN and trellis (`bk`) | -3.1 / -11.9 -> **-6.0 / -15.5** (-3.9 / -12.9 at c8a) | x1.118 / x1.071 | -4.35 (-2.67) | quality alone (coordinator: the line decides) L3 -6.24 % [-6.68, -5.82], no guard; final-check -5.89 % [-6.82, -5.04], no guard | **landed** |
 | VP9 Faster | all 16 (Fast) / without intra mode search (`bk`) | +12.8 / -3.5 -> +10.7 / -6.5; +10.7 / -6.3 | x1.173 / x1.137; x1.128 | -3.18 (-2.68); -2.40 (-1.98) | | out: on or below the line |
 | H.264 Fast / Faster / Veryfast | all (`bo`) | +15.7 / +2.2; +30.9 / +15.5; +46.6 / +29.6 | x1.543; x1.165; x1.075 (richer rung x1.681; x1.186; x1.091) | -9.15; -10.36; -5.38 | | out: on the lens line, and as dear as the next rung |
 | H.264 | `nonbase_disposable_only 0` (`bo0`) | +41.7 / +20.4 etc. | | +1.9 to +5.8 %, class guards | | out |
@@ -957,9 +957,15 @@ lens, callgrind and c8a row is in the lever ledger.
   engine differences can be carried; that is on the line. Carrying `vvc.rd_candidates`,
   `inter_intra_dc_only`, `pre_transform_zero_scale`, `unit_zero_rd` and trellis needs a VVC
   `SUPERBLOCK_PARAMS` swap (not built).
-- **Held, open:** VP9 Veryfast `bk` (static class loses 2-12 % on the long window while the 150 f L3
-  gains: not explained yet); HEVC Faster and HEVC Fast `bk` (beyond the fixed-QP line and slightly
-  beyond the CBR line, but WORSE in the pool screen with the k 0.6 CPU charge).
+- **Held:** HEVC Faster (coordinator: HEVC's fastest rung, its CBR position against SVT M12/M13 rests
+  on its speed; +10 % CPU not worth it now). VP9 Veryfast `bk`: on pool_chad_3_086 (600 f, keys at 0 and
+  300, all four rungs; `work/base-only-all/trend-vp9-veryfast.txt`, `phase-vp9-veryfast.txt`) the loss
+  does not grow over the window: per 60 frames it is -0.0 to -0.4 dB Y at 150-300k and -0.3 to -0.8 dB
+  at 600k-1.2M from the first window on, VMAF -0.3 to -4.9. It is the same on base frames (every 4th,
+  which get 0-18 % more bits) and on the three non-base phases. So the base frames themselves code
+  worse with Faster's six per-block values on this static clip at the same or more bits, and the
+  frames predicted from them inherit it; it is not a drift or a rate-control effect. Which of the six
+  values does it is not measured.
 - Jetson not measured for any of these.
 
 ## Next decision points
