@@ -28,8 +28,33 @@ pub(crate) fn deblock_fns() -> DeblockFns {
     }
 }
 
+/// Sixteen independent lines share byte decisions; short tails keep the
+/// established eight-line graph. The grouped lane adapter is also VP9's.
 #[target_feature(enable = "neon")]
 pub(super) unsafe fn av1_edge(
+    plane: &mut [u8],
+    q0: usize,
+    across: usize,
+    along: usize,
+    lines: usize,
+    filter: super::av1::Av1EdgeFilter,
+) {
+    // SAFETY: dispatch validates the footprint and NEON is enabled here.
+    unsafe {
+        if lines < 16 {
+            av1_edge_narrow(plane, q0, across, along, lines, filter);
+        } else {
+            super::av1_packed::filter_wide::<
+                crate::lpf_bytes::neon_wide::B,
+                super::av1_tile::GroupedTile<crate::lpf_bytes::neon_wide::B>,
+                16,
+            >(plane, q0, across, along, lines, filter, av1_edge_narrow);
+        }
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn av1_edge_narrow(
     plane: &mut [u8],
     q0: usize,
     across: usize,

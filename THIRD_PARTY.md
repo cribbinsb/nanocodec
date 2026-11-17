@@ -70,6 +70,9 @@ Used in `crates/nc-dsp`:
 - `src/mc/mod.rs`: the regular `EIGHTTAP` interpolation filters
   (`av1/common/filter.h`); `src/diff/mod.rs`: the bilinear sub-pixel
   variance definition (`aom_dsp/variance.c`).
+- `src/diff/neon_sse.rs`: unsigned byte dot-product squared differences,
+  following `aom_dsp/arm/sse_neon_dotprod.c` (libaom v3.15.3); independent
+  cell reductions and exact-width paired-row tails.
 - `src/diff/neon_dotprod.rs`: exact two-row packing for eight-wide ordinary
   variance and vector combination before horizontal reduction, following
   `aom_dsp/arm/variance_neon_dotprod.c` (libaom v3.15.3).

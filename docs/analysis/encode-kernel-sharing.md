@@ -443,3 +443,411 @@ previous WASM functions. No codec-local copies or encoder/preset changes.
 See [the handoff](../handoff/ext-wasm10.md) for profile selection, exactness,
 coverage limits and before/after measurements. The coordinator merges this
 branch; this note does not claim it is landed.
+
+## Jetson NEON audit (Astra, 2026-11-17)
+
+Baseline runtime 3bcd6e7a0, native release/fat LTO on Cortex-A78AE, core 3.
+Each of six codecs' Default (`medium`) and Fast was sampled on public CTC
+FourPeople, KristenAndSara and Johnny, 1280x720, 96 frames each, fixed QP
+H264 43 / HEVC 46 / VVC 44 / AV1 214 / VP9 214 / AV2 176. The board's
+exclusive timing lock was held; separate uninstrumented jperf PMU runs
+record instructions and cycles. `pcsample.py` samples were grouped by
+function using the frozen binary's symbols and executable mappings.
+Library samples remain in the denominator, with no inference from the
+nearest glibc exported symbol's name. These are coarse rankings (333–1301
+samples/point), not precise cost estimates. Raw profiles and counters:
+`~/nanocodec-data/work/astra-kernels-20261117/task2-profile/`.
+
+| Codec/preset | Samples | Hottest own-binary self samples | Next two |
+|---|---:|---|---|
+| av1/fast | 538 | `nc_dsp::deblock::neon::av1_edge` 7.4% | `nc_dsp::pixel::neon_dotprod::sad_grid_best_x4::<2>` 4.5%; `nc_dsp::diff::neon_dotprod::variance::<64>` 4.1% |
+| av1/medium | 781 | `nc_dsp::diff::neon_dotprod::variance::<64>` 7.9% | `nc_dsp::deblock::neon::av1_edge` 5.1%; `nc_dsp::pixel::neon_dotprod::sad_grid_best_x4::<2>` 4.4% |
+| av2/fast | 753 | `nc_dsp::diff::neon_dotprod::variance::<32>` 7.3% | `<nc_common::view::PlaneViewMut>::copy_from` 6.9%; `nc_dsp::diff::neon_dotprod::variance::<64>` 6.1% |
+| av2/medium | 955 | `nc_dsp::diff::neon_dotprod::variance::<64>` 6.3% | `nc_dsp::deblock::neon::av2_chunk` 5.9%; `<nc_common::view::PlaneViewMut>::copy_from` 5.1% |
+| h264/fast | 333 | `nc_encoder::decision::choose_inter_mode::<nc_h264::backend::H264Backend>` 5.4% | `nc_dsp::diff::neon_dotprod::variance_energy::<16>` 4.8%; `nc_h264::backend::write_coded` 4.2% |
+| h264/medium | 526 | `nc_encoder::decision::choose_inter_mode::<nc_h264::backend::H264Backend>` 10.3% | `nc_dsp::pixel::neon_dotprod::sad_grid_best_x4::<2>` 7.0%; `nc_dsp::pixel::neon_dotprod::sad_scan_16x16_even_rows` 6.1% |
+| hevc/fast | 488 | `nc_dsp::diff::neon_dotprod::variance::<32>` 7.4% | `nc_dsp::pixel::neon_dotprod::sad_grid_best_x4::<2>` 5.7%; `<nc_encoder::encoder::Encoder<nc_hevc::backend::HevcBackend>>::code_picture` 4.1% |
+| hevc/medium | 879 | `nc_dsp::diff::neon_dotprod::subpel::<64>` 10.2% | `nc_dsp::diff::neon_dotprod::variance::<64>` 4.9%; `nc_dsp::pixel::neon_dotprod::sad_grid_best_x4::<2>` 4.0% |
+| vp9/fast | 833 | `nc_dsp::diff::neon_dotprod::subpel::<64>` 7.7% | `nc_dsp::txfm::neon_forward::narrow_columns::<32, 16>` 6.7%; `nc_dsp::vp9_loop_filter::packed::run_paired::<16>` 6.4% |
+| vp9/medium | 970 | `nc_dsp::diff::neon_dotprod::subpel::<64>` 10.5% | `nc_dsp::txfm::neon_forward::narrow_columns::<32, 32>` 9.8%; `nc_dsp::txfm::neon_forward::narrow_rows::<32, true, 32>` 6.1% |
+| vvc/fast | 772 | `nc_dsp::diff::neon_dotprod::variance::<64>` 5.4% | `nc_dsp::codec_txfm::neon::staged32_bounded` 5.1%; `nc_dsp::diff::neon_dotprod::variance::<32>` 4.7% |
+| vvc/medium | 1301 | `nc_dsp::mc::neon_dotprod::vertical_2d::<64, 8>` 5.6% | `nc_dsp::codec_txfm::neon::staged32_bounded` 5.2%; `nc_dsp::diff::neon_dotprod::variance::<64>` 3.8% |
+
+Priority and lane audit:
+
+- **Selected:** AV1 single-edge NEON processes eight byte lines although
+  the existing shared AV1/VP9 grouped adapter can process sixteen. This is
+  5.1% of Default / 7.4% of Fast samples. Reuse the sixteen-line graph,
+  retaining the narrow tail and scalar fallback. No new filter arithmetic.
+- **Selected:** shared `diff::sse_8x8_row` is 1.9–2.6% of samples in
+  AV1/HEVC/AV2/VP9. Its old NEON graph widens byte differences, multiplies
+  twice and pairwise-accumulates twice per sixteen samples; byte UDOT can
+  keep the two cell reductions independent. All six codecs call this family.
+- **Slower than scalar:** four-wide block sums: 4x4 16.99 vs13.33 ns,
+  4x8 36.03 vs22.60, 4x16 79.50 vs41.16. Four-wide statistics use I16x4
+  and eight-wide energy/sums I16x8, while byte row packing can fill sixteen
+  lanes. A libaom-style prototype remains outside the source branch; it
+  is not selected merely because it exists.
+- **Other slower cases:** VP9 intra d63 4x4 44.30 vs13.96 ns, d45 4x4
+  30.63 vs14.35; HEVC vertical luma MC 32x32 1921.89 vs1282.05;
+  deinterleave rows 1280x4 194.88 vs155.78; several AV2 angular intra
+  shapes. These are candidates, not all fixed by this pass. MC and inverse
+  ownership is respected; the full table preserves every measured result.
+- **Scalar on NEON:** the reversible WHT4, VP9 four-point inverse fallback
+  and VP9 codec-local small hybrid forward paths, VVC LFNST and 64-point
+  inverse glue retain scalar graphs. Small normative transforms and glue
+  need a workload benefit before adding an architecture-specific copy.
+- Wide variance/subpel are hottest in several points but already consume
+  sixteen byte samples per vector. No wider-NEON claim is made for them.
+
+The complete quiet checkasm pass compares **1,106 matched cases across
+325 named kernels**, scalar then NEON under one board lock; min of five
+20ms samples per case. Dotprod dispatch is part of the NEON tier on this
+CPU. Each row below shows the slowest NEON case for that kernel, both
+times for that same case, speedup range across all its measured cases,
+and count of cases more than 5% slower than scalar. The zero-based case
+number distinguishes repeated names/shapes with different fixed inputs.
+Complete per-case values: [CSV](data/neon-kernels-20261117.csv). Results
+are ns per API call, not a workload-weighted prediction. A speedup below
+1 means NEON was slower. This baseline table remains unchanged by later
+selected-kernel timings so losing cases cannot disappear from the record.
+
+| Kernel | Cases | Slowest NEON case | Scalar ns | NEON ns | Speedup range | NEON >5% slower |
+|---|---:|---|---:|---:|---:|---:|
+| `add_residual` | 5 | 64x64 #0 | 3469.01 | 776.87 | 1.05–4.51x | 0 |
+| `av1_coefficient_gain` | 4 | 32x32 #0 | 745.27 | 333.54 | 1.69–2.29x | 0 |
+| `av1_deblock14_h` | 3 | 8x16 #0 | 865.36 | 94.97 | 6.91–9.11x | 0 |
+| `av1_deblock14_v` | 3 | 8x16 #0 | 868.28 | 130.99 | 6.57–7.21x | 0 |
+| `av1_deblock4_h` | 3 | 8x16 #0 | 274.43 | 82.49 | 2.90–3.33x | 0 |
+| `av1_deblock4_v` | 3 | 8x16 #0 | 277.13 | 121.79 | 2.28–2.55x | 0 |
+| `av1_deblock6_h` | 3 | 8x16 #0 | 349.16 | 90.91 | 3.16–3.84x | 0 |
+| `av1_deblock6_v` | 3 | 8x16 #0 | 353.66 | 127.67 | 2.77–2.98x | 0 |
+| `av1_deblock8_h` | 3 | 8x16 #0 | 424.02 | 95.19 | 3.36–4.45x | 0 |
+| `av1_deblock8_v` | 3 | 8x16 #0 | 428.47 | 130.90 | 3.25–3.50x | 0 |
+| `av1_dequantize` | 4 | 32x32 #0 | 1172.62 | 849.23 | 1.38–1.67x | 0 |
+| `av1_edge_flat_h` | 8 | 14x64 #0 | 3474.80 | 951.71 | 1.64–3.65x | 0 |
+| `av1_edge_flat_v` | 8 | 14x64 #0 | 3487.16 | 1246.88 | 1.46–2.80x | 0 |
+| `av1_edge_narrow_h` | 8 | 14x64 #0 | 3481.63 | 433.86 | 1.64–8.02x | 0 |
+| `av1_edge_narrow_v` | 8 | 14x64 #0 | 3483.15 | 571.69 | 1.46–6.09x | 0 |
+| `av1_edges_equal_h` | 1 | 64x64 #0 | 109494.82 | 8099.86 | 13.52–13.52x | 0 |
+| `av1_edges_equal_v` | 1 | 64x64 #0 | 109941.95 | 9180.08 | 11.98–11.98x | 0 |
+| `av1_edges_masked_h` | 1 | 64x64 #0 | 73296.07 | 5492.60 | 13.34–13.34x | 0 |
+| `av1_edges_masked_v` | 1 | 64x64 #0 | 73574.53 | 6154.69 | 11.95–11.95x | 0 |
+| `av1_edges_mixed_h` | 1 | 64x64 #0 | 73763.93 | 7054.26 | 10.46–10.46x | 0 |
+| `av1_edges_mixed_v` | 1 | 64x64 #0 | 74127.97 | 9046.80 | 8.19–8.19x | 0 |
+| `av1_filter_intra` | 4 | 32x32 #0 | 19351.04 | 2404.69 | 3.61–8.10x | 0 |
+| `av1_forward_dct` | 4 | 32x32 #0 | 9290.39 | 2185.14 | 2.71–4.95x | 0 |
+| `av1_forward_dct_64` | 1 | 64x64 #0 | 33900.62 | 6606.73 | 5.13–5.13x | 0 |
+| `av1_forward_dct_raster` | 4 | 32x32 #0 | 7763.79 | 2293.78 | 1.99–3.69x | 0 |
+| `av1_grid_equal_h` | 1 | 64x64 #0 | 109778.15 | 3543.11 | 30.98–30.98x | 0 |
+| `av1_grid_equal_v` | 1 | 64x64 #0 | 109960.85 | 5110.64 | 21.52–21.52x | 0 |
+| `av1_grid_masked_h` | 1 | 64x64 #0 | 73770.63 | 2951.09 | 25.00–25.00x | 0 |
+| `av1_grid_masked_v` | 1 | 64x64 #0 | 73811.22 | 4259.41 | 17.33–17.33x | 0 |
+| `av1_grid_mixed_h` | 1 | 64x64 #0 | 73553.21 | 6721.78 | 10.94–10.94x | 0 |
+| `av1_grid_mixed_v` | 1 | 64x64 #0 | 73720.95 | 9352.94 | 7.88–7.88x | 0 |
+| `av1_intra_angle_z1_51` | 5 | 64x64 #0 | 697.91 | 720.77 | 0.87–4.29x | 1 |
+| `av1_intra_angle_z2_129` | 5 | 64x64 #0 | 3877.32 | 2116.74 | 1.00–1.83x | 0 |
+| `av1_intra_angle_z2_157` | 5 | 64x64 #0 | 3650.84 | 1963.33 | 0.97–1.86x | 0 |
+| `av1_intra_angle_z3_197` | 5 | 64x64 #0 | 3137.86 | 1325.69 | 1.03–3.13x | 0 |
+| `av1_intra_paeth` | 5 | 64x64 #0 | 2718.67 | 1837.71 | 1.42–1.68x | 0 |
+| `av1_intra_smooth` | 5 | 64x64 #0 | 2803.49 | 1518.61 | 0.98–1.85x | 0 |
+| `av1_intra_smooth_h` | 5 | 64x64 #0 | 1822.40 | 928.43 | 0.98–1.96x | 0 |
+| `av1_intra_smooth_v` | 5 | 64x64 #0 | 1858.84 | 783.05 | 0.98–2.37x | 0 |
+| `av1_inverse_adst_adst` | 9 | 16x16 #0 | 3624.55 | 759.47 | 1.93–4.77x | 0 |
+| `av1_inverse_dc` | 19 | 64x64 #0 | 1366.95 | 258.78 | 1.24–5.28x | 0 |
+| `av1_inverse_dc_full` | 19 | 64x64 #0 | 45012.34 | 7177.12 | 1.76–6.27x | 0 |
+| `av1_inverse_dct_add` | 4 | 32x32 #0 | 12241.58 | 2538.52 | 2.19–6.03x | 0 |
+| `av1_inverse_dct_add_64` | 1 | 64x64 #0 | 41564.48 | 6846.19 | 6.07–6.07x | 0 |
+| `av1_inverse_dct_dct` | 19 | 64x64 #0 | 45011.70 | 7177.44 | 1.75–6.32x | 0 |
+| `av1_inverse_eob10` | 19 | 64x64 #0 | 22938.95 | 3903.25 | 1.78–6.64x | 0 |
+| `av1_inverse_eob10_full` | 19 | 64x64 #0 | 45016.52 | 7178.45 | 1.77–6.27x | 0 |
+| `av1_inverse_full_low16` | 2 | 64x64 #0 | 41572.48 | 6844.55 | 4.82–6.07x | 0 |
+| `av1_inverse_full_low32` | 2 | 64x64 #0 | 41575.95 | 18132.25 | 2.16–2.29x | 0 |
+| `av1_inverse_full_low8` | 2 | 64x64 #0 | 41579.95 | 6843.72 | 4.81–6.08x | 0 |
+| `av1_inverse_i16_adst_adst` | 9 | 16x16 #0 | 2954.08 | 581.77 | 3.48–6.01x | 0 |
+| `av1_inverse_i16_dct_dct` | 19 | 64x64 #0 | 45075.41 | 6869.58 | 3.91–6.82x | 0 |
+| `av1_inverse_i16_eob10` | 19 | 64x64 #0 | 22741.51 | 5155.06 | 3.42–5.29x | 0 |
+| `av1_inverse_i16_idtx` | 14 | 32x32 #0 | 5998.95 | 403.40 | 4.66–14.87x | 0 |
+| `av1_inverse_idtx` | 14 | 32x32 #0 | 7350.99 | 1138.09 | 2.35–6.85x | 0 |
+| `av1_inverse_sparse_low16` | 2 | 64x64 #0 | 30713.33 | 5202.86 | 5.90–7.06x | 0 |
+| `av1_inverse_sparse_low32` | 2 | 64x64 #0 | 44843.52 | 18282.46 | 2.30–2.45x | 0 |
+| `av1_inverse_sparse_low8` | 2 | 64x64 #0 | 22767.30 | 3723.42 | 6.11–7.26x | 0 |
+| `av1_line_equal_h` | 1 | 4x64 #0 | 8769.58 | 521.23 | 16.82–16.82x | 0 |
+| `av1_line_equal_v` | 1 | 4x64 #0 | 8782.19 | 664.25 | 13.22–13.22x | 0 |
+| `av1_line_masked_h` | 1 | 4x64 #0 | 5607.72 | 492.44 | 11.39–11.39x | 0 |
+| `av1_line_masked_v` | 1 | 4x64 #0 | 5614.21 | 584.09 | 9.61–9.61x | 0 |
+| `av1_line_mixed_h` | 1 | 4x64 #0 | 5831.07 | 749.03 | 7.78–7.78x | 0 |
+| `av1_line_mixed_v` | 1 | 4x64 #0 | 5845.27 | 894.95 | 6.53–6.53x | 0 |
+| `av1_predict_2d` | 9 | 64x64 #0 | 142413.54 | 6898.05 | 17.10–23.20x | 0 |
+| `av1_predict_h` | 9 | 64x64 #0 | 142816.95 | 2677.06 | 42.87–69.71x | 0 |
+| `av1_quantize` | 4 | 32x32 #0 | 4259.80 | 1451.81 | 2.08–2.93x | 0 |
+| `av1_quantize_from` | 4 | 32x32 #0 | 3869.17 | 1364.90 | 2.11–2.83x | 0 |
+| `av1_run_flat_h` | 8 | 14x64 #0 | 3469.95 | 859.46 | 1.64–4.04x | 0 |
+| `av1_run_flat_v` | 8 | 14x64 #0 | 3489.06 | 1031.32 | 1.53–3.38x | 0 |
+| `av1_run_narrow_h` | 8 | 8x64 #0 | 1759.48 | 398.86 | 1.64–8.74x | 0 |
+| `av1_run_narrow_v` | 8 | 14x64 #0 | 3484.81 | 480.26 | 1.55–7.26x | 0 |
+| `av1_sharp_2d` | 9 | 64x64 #0 | 142151.12 | 7999.48 | 14.81–19.63x | 0 |
+| `av1_single_equal_h` | 1 | 4x64 #0 | 8691.23 | 892.09 | 9.74–9.74x | 0 |
+| `av1_single_equal_v` | 1 | 4x64 #0 | 8707.03 | 950.05 | 9.16–9.16x | 0 |
+| `av1_single_masked_h` | 1 | 4x64 #0 | 5548.58 | 669.90 | 8.28–8.28x | 0 |
+| `av1_single_masked_v` | 1 | 4x64 #0 | 5554.50 | 698.55 | 7.95–7.95x | 0 |
+| `av1_single_mixed_h` | 1 | 4x64 #0 | 5753.74 | 774.00 | 7.43–7.43x | 0 |
+| `av1_single_mixed_v` | 1 | 4x64 #0 | 5765.57 | 890.82 | 6.47–6.47x | 0 |
+| `av1_smooth_2d` | 9 | 64x64 #0 | 142316.39 | 6897.95 | 17.13–23.19x | 0 |
+| `av1_wide_2d` | 3 | 128x128 #0 | 269219.14 | 27715.60 | 7.79–9.71x | 0 |
+| `av1_wide_copy` | 3 | 128x128 #0 | 269485.09 | 977.02 | 32.27–275.82x | 0 |
+| `av1_wide_h` | 3 | 128x128 #0 | 269415.47 | 10839.00 | 17.13–25.23x | 0 |
+| `av1_wide_v` | 3 | 128x128 #0 | 269342.38 | 10071.84 | 12.29–26.74x | 0 |
+| `av2_deblock_line_h` | 1 | 32x32 #0 | 1527.69 | 363.33 | 4.20–4.20x | 0 |
+| `av2_deblock_line_v` | 1 | 32x32 #0 | 1499.20 | 334.58 | 4.48–4.48x | 0 |
+| `av2_deblock_rough_h` | 1 | 32x32 #0 | 454.25 | 151.59 | 3.00–3.00x | 0 |
+| `av2_deblock_rough_v` | 1 | 32x32 #0 | 422.23 | 236.68 | 1.78–1.78x | 0 |
+| `av2_forward_dct` | 5 | 64x64 #0 | 21526.42 | 14137.05 | 1.47–2.27x | 0 |
+| `av2_forward_typed` | 4 | 32x32 #0 | 6537.99 | 7084.38 | 0.92–1.52x | 1 |
+| `av2_intra_z1_51_chroma` | 5 | 64x64 #0 | 1182.41 | 1152.21 | 0.86–1.10x | 1 |
+| `av2_intra_z1_51_luma` | 5 | 64x64 #0 | 4615.26 | 4129.26 | 0.81–1.12x | 4 |
+| `av2_intra_z2_129_luma` | 5 | 64x64 #0 | 7424.22 | 7618.89 | 0.84–0.97x | 4 |
+| `av2_intra_z3_197_chroma` | 5 | 64x64 #0 | 5978.30 | 5992.53 | 0.86–1.00x | 2 |
+| `av2_intra_z3_197_luma` | 5 | 64x64 #0 | 8278.35 | 9309.42 | 0.72–0.93x | 5 |
+| `av2_inverse_dct` | 5 | 64x64 #0 | 13390.73 | 5035.13 | 2.03–2.93x | 0 |
+| `av2_inverse_typed` | 4 | 32x32 #0 | 19862.37 | 7366.54 | 1.35–3.50x | 0 |
+| `block_sums` | 13 | 64x64 #0 | 1112.02 | 220.27 | 0.52–10.95x | 3 |
+| `cdef8_strided_both` | 1 | 8x8 #0 | 2886.71 | 203.08 | 14.21–14.21x | 0 |
+| `cdef8_strided_off` | 1 | 8x8 #0 | 92.58 | 20.27 | 4.57–4.57x | 0 |
+| `cdef8_strided_pri` | 1 | 8x8 #0 | 1050.90 | 82.97 | 12.67–12.67x | 0 |
+| `cdef8_strided_sec` | 1 | 8x8 #0 | 1999.97 | 121.53 | 16.46–16.46x | 0 |
+| `cdef_filter` | 2 | 8x8 #0 | 2913.79 | 224.78 | 4.80–12.96x | 0 |
+| `cdef_filter_u8` | 2 | 8x8 #0 | 2880.74 | 202.51 | 10.65–14.23x | 0 |
+| `cdef_filter_u8_pri` | 2 | 8x8 #0 | 1049.46 | 82.19 | 7.88–12.77x | 0 |
+| `cdef_filter_u8_sec` | 2 | 8x8 #0 | 2011.67 | 119.49 | 11.38–16.84x | 0 |
+| `cdef_find_dir` | 1 | 8x8 #0 | 425.58 | 82.28 | 5.17–5.17x | 0 |
+| `compound_average` | 3 | 64x64 #0 | 3775.88 | 586.88 | 6.43–10.62x | 0 |
+| `copy_plane` | 3 | 1884x8 #0 | 639.19 | 656.15 | 0.97–0.99x | 0 |
+| `deinterleave_uv` | 1 | 64x32 #0 | 232.68 | 223.08 | 1.04–1.04x | 0 |
+| `deinterleave_uv_rows` | 3 | 1884x4 #0 | 314.97 | 388.57 | 0.80–0.87x | 3 |
+| `downscale_2x` | 1 | 32x32 #0 | 1657.19 | 308.31 | 5.38–5.38x | 0 |
+| `downscale_2x_rows` | 3 | 1884x4 #0 | 730.69 | 358.24 | 2.04–2.88x | 0 |
+| `fullpel_put` | 3 | 64x64 #0 | 143679.18 | 170.32 | 278.19–843.58x | 0 |
+| `gram_rows` | 1 | 64x4 #0 | 3627.84 | 1841.11 | 1.97–1.97x | 0 |
+| `h264_batch_strong_h` | 3 | 16x4 #0 | 1366.56 | 304.67 | 2.55–4.49x | 0 |
+| `h264_batch_strong_v` | 3 | 16x4 #0 | 1331.83 | 426.54 | 2.18–3.12x | 0 |
+| `h264_batch_weak_h` | 3 | 16x4 #0 | 1415.87 | 258.62 | 2.87–5.47x | 0 |
+| `h264_batch_weak_v` | 3 | 16x4 #0 | 1413.00 | 387.46 | 2.41–3.65x | 0 |
+| `h264_chroma` | 9 | 64x64 #0 | 4945.40 | 1439.27 | 1.59–7.41x | 0 |
+| `h264_deblock_chroma_h` | 1 | 8x8 #0 | 127.03 | 63.07 | 2.01–2.01x | 0 |
+| `h264_deblock_chroma_v` | 1 | 8x8 #0 | 127.81 | 88.74 | 1.44–1.44x | 0 |
+| `h264_deblock_luma_h` | 1 | 8x8 #0 | 367.24 | 70.79 | 5.19–5.19x | 0 |
+| `h264_deblock_luma_v` | 1 | 8x8 #0 | 366.09 | 99.07 | 3.70–3.70x | 0 |
+| `h264_deblock_mb_luma` | 1 | 16x16 #0 | 2625.79 | 373.84 | 7.02–7.02x | 0 |
+| `h264_deblock_mb_luma_intra` | 1 | 16x16 #0 | 2579.16 | 397.00 | 6.50–6.50x | 0 |
+| `h264_dequantize_4x4` | 1 | 16x16 #0 | 712.39 | 129.13 | 5.52–5.52x | 0 |
+| `h264_edges_dense_strong` | 1 | 16x8 #0 | 2529.87 | 526.77 | 4.80–4.80x | 0 |
+| `h264_edges_dense_weak` | 1 | 16x8 #0 | 2677.93 | 444.63 | 6.02–6.02x | 0 |
+| `h264_edges_pair_strong` | 1 | 16x4 #0 | 1322.62 | 316.20 | 4.18–4.18x | 0 |
+| `h264_edges_pair_weak` | 1 | 16x4 #0 | 1392.27 | 271.80 | 5.12–5.12x | 0 |
+| `h264_forward_4x4` | 1 | 16x16 #0 | 470.41 | 121.60 | 3.87–3.87x | 0 |
+| `h264_forward_8x8` | 1 | 8x8 #0 | 176.08 | 60.23 | 2.92–2.92x | 0 |
+| `h264_forward_quantize_mb` | 1 | 16x16 #0 | 1041.89 | 510.02 | 2.04–2.04x | 0 |
+| `h264_hadamard_4x4` | 1 | 4x4 #0 | 15.95 | 12.70 | 1.26–1.26x | 0 |
+| `h264_inverse_4x4` | 1 | 16x16 #0 | 305.22 | 203.84 | 1.50–1.50x | 0 |
+| `h264_inverse_8x8` | 1 | 8x8 #0 | 114.20 | 75.28 | 1.52–1.52x | 0 |
+| `h264_luma_f` | 9 | 64x64 #0 | 217081.83 | 4302.12 | 8.24–50.46x | 0 |
+| `h264_luma_j` | 9 | 64x64 #0 | 106247.02 | 4126.59 | 4.53–25.75x | 0 |
+| `h264_mb_dense_strong` | 1 | 16x8 #0 | 2540.12 | 515.59 | 4.93–4.93x | 0 |
+| `h264_mb_dense_weak` | 1 | 16x8 #0 | 2691.26 | 435.75 | 6.18–6.18x | 0 |
+| `h264_mb_pair_strong` | 1 | 16x4 #0 | 1336.36 | 316.16 | 4.23–4.23x | 0 |
+| `h264_mb_pair_weak` | 1 | 16x4 #0 | 1401.66 | 275.67 | 5.08–5.08x | 0 |
+| `h264_quantize_4x4` | 1 | 16x16 #0 | 406.74 | 288.03 | 1.41–1.41x | 0 |
+| `h264_quantize_8x8` | 1 | 8x8 #0 | 78.24 | 70.82 | 1.10–1.10x | 0 |
+| `h264_single_strong_h` | 3 | 16x4 #0 | 1332.79 | 287.58 | 2.64–4.63x | 0 |
+| `h264_single_strong_v` | 3 | 16x4 #0 | 1329.93 | 387.16 | 2.25–3.44x | 0 |
+| `h264_single_weak_h` | 3 | 16x4 #0 | 1410.92 | 237.98 | 2.93–5.93x | 0 |
+| `h264_single_weak_v` | 3 | 16x4 #0 | 1408.78 | 358.02 | 2.45–3.93x | 0 |
+| `hevc_add_dc_picture` | 2 | 32x32 #0 | 879.70 | 663.35 | 1.33–1.82x | 0 |
+| `hevc_add_full_picture` | 2 | 32x32 #0 | 14319.62 | 5261.95 | 2.46–2.72x | 0 |
+| `hevc_add_low4_picture` | 2 | 32x32 #0 | 2548.52 | 1227.04 | 2.08–2.72x | 0 |
+| `hevc_add_low8_picture` | 2 | 32x32 #0 | 3105.08 | 1570.53 | 1.98–2.66x | 0 |
+| `hevc_batch_strong_h` | 4 | 8x64 #0 | 2133.28 | 403.19 | 4.01–5.29x | 0 |
+| `hevc_batch_strong_v` | 4 | 8x64 #0 | 2135.46 | 550.30 | 3.15–3.88x | 0 |
+| `hevc_batch_weak_h` | 4 | 8x64 #0 | 1760.01 | 383.15 | 3.47–4.59x | 0 |
+| `hevc_batch_weak_v` | 4 | 8x64 #0 | 1764.09 | 530.09 | 2.72–3.33x | 0 |
+| `hevc_chroma_2d` | 9 | 64x64 #0 | 10127.26 | 4927.81 | 1.59–2.71x | 0 |
+| `hevc_deblock_chroma4_h` | 1 | 4x4 #0 | 80.83 | 61.40 | 1.32–1.32x | 0 |
+| `hevc_deblock_chroma4_v` | 1 | 4x4 #0 | 81.65 | 68.48 | 1.19–1.19x | 0 |
+| `hevc_deblock_chroma_h` | 1 | 8x8 #0 | 108.44 | 59.32 | 1.83–1.83x | 0 |
+| `hevc_deblock_chroma_v` | 1 | 8x8 #0 | 107.29 | 75.91 | 1.41–1.41x | 0 |
+| `hevc_deblock_luma_h` | 1 | 8x8 #0 | 258.81 | 109.96 | 2.35–2.35x | 0 |
+| `hevc_deblock_luma_v` | 1 | 8x8 #0 | 279.29 | 146.12 | 1.91–1.91x | 0 |
+| `hevc_dequantize` | 4 | 32x32 #0 | 3118.19 | 630.35 | 4.86–5.07x | 0 |
+| `hevc_forward_bounded` | 4 | 32x32 #0 | 11628.62 | 5284.85 | 2.20–3.27x | 0 |
+| `hevc_forward_dct` | 4 | 32x32 #0 | 8786.31 | 5068.57 | 1.72–2.51x | 0 |
+| `hevc_forward_dst` | 1 | 4x4 #0 | 60.99 | 35.83 | 1.70–1.70x | 0 |
+| `hevc_forward_staged_both` | 2 | 32x32 #0 | 14899.88 | 3332.51 | 3.96–4.47x | 0 |
+| `hevc_forward_staged_rows` | 2 | 32x32 #0 | 12490.20 | 4116.45 | 3.03–3.48x | 0 |
+| `hevc_intra_angular_m21` | 4 | 32x32 #0 | 1389.18 | 169.02 | 2.69–11.65x | 0 |
+| `hevc_intra_angular_p13` | 4 | 32x32 #0 | 1389.23 | 168.78 | 2.70–11.72x | 0 |
+| `hevc_intra_planar` | 4 | 32x32 #0 | 983.78 | 373.41 | 2.63–3.23x | 0 |
+| `hevc_inverse_add_dc` | 4 | 32x32 #0 | 878.36 | 663.57 | 1.32–2.05x | 0 |
+| `hevc_inverse_add_full` | 4 | 32x32 #0 | 14333.46 | 5263.28 | 1.88–2.72x | 0 |
+| `hevc_inverse_add_low4` | 4 | 32x32 #0 | 2548.00 | 1226.76 | 1.88–2.72x | 0 |
+| `hevc_inverse_add_low8` | 3 | 32x32 #0 | 3102.03 | 1569.59 | 1.98–2.65x | 0 |
+| `hevc_inverse_dct` | 4 | 32x32 #0 | 12552.52 | 5547.21 | 1.09–2.26x | 0 |
+| `hevc_inverse_dense` | 5 | 32x32 #0 | 12566.43 | 5542.32 | 1.09–2.27x | 0 |
+| `hevc_inverse_dst` | 1 | 4x4 #0 | 58.49 | 32.94 | 1.78–1.78x | 0 |
+| `hevc_inverse_split_dc` | 4 | 32x32 #0 | 12974.82 | 1900.84 | 1.28–6.83x | 0 |
+| `hevc_inverse_split_full` | 4 | 32x32 #0 | 12975.63 | 5964.49 | 1.08–2.18x | 0 |
+| `hevc_inverse_split_low4` | 4 | 32x32 #0 | 12977.31 | 1944.57 | 1.28–6.67x | 0 |
+| `hevc_inverse_split_low8` | 3 | 32x32 #0 | 12974.39 | 2311.86 | 1.28–5.61x | 0 |
+| `hevc_luma_2d` | 9 | 64x64 #0 | 18592.66 | 8280.53 | 1.65–2.50x | 0 |
+| `hevc_luma_h` | 9 | 64x64 #0 | 9694.43 | 2651.62 | 2.01–3.84x | 0 |
+| `hevc_luma_v` | 9 | 64x64 #0 | 9877.37 | 7441.78 | 0.67–1.42x | 5 |
+| `hevc_quantize` | 4 | 32x32 #0 | 1634.74 | 1165.50 | 1.40–1.51x | 0 |
+| `hevc_quantize_from` | 4 | 32x32 #0 | 1133.15 | 1062.24 | 1.07–1.26x | 0 |
+| `hevc_single_strong_h` | 4 | 8x64 #0 | 2123.45 | 724.13 | 2.86–3.00x | 0 |
+| `hevc_single_strong_v` | 4 | 8x64 #0 | 2125.67 | 813.84 | 2.49–2.62x | 0 |
+| `hevc_single_weak_h` | 4 | 8x64 #0 | 1760.22 | 605.47 | 2.91–3.11x | 0 |
+| `hevc_single_weak_v` | 4 | 8x64 #0 | 1762.15 | 682.62 | 2.37–2.59x | 0 |
+| `hevc_split_dc_picture` | 2 | 32x32 #0 | 12977.17 | 1910.24 | 2.29–6.79x | 0 |
+| `hevc_split_full_picture` | 2 | 32x32 #0 | 12982.57 | 5974.59 | 1.08–2.17x | 0 |
+| `hevc_split_low4_picture` | 2 | 32x32 #0 | 12982.72 | 1950.35 | 2.22–6.66x | 0 |
+| `hevc_split_low8_picture` | 2 | 32x32 #0 | 12982.97 | 2316.64 | 1.76–5.60x | 0 |
+| `moments` | 1 | 8x8 #0 | 45.40 | 11.74 | 3.87–3.87x | 0 |
+| `moments_row4` | 3 | 1884x8 #0 | 4329.62 | 481.82 | 8.73–8.99x | 0 |
+| `moments_row8` | 3 | 1884x8 #0 | 8660.10 | 782.07 | 10.48–11.20x | 0 |
+| `pair_mean_rows` | 3 | 1884x8 #0 | 713.95 | 706.32 | 1.01–7.76x | 0 |
+| `pair_pick_rows` | 3 | 1884x8 #0 | 3177.94 | 536.47 | 5.35–7.12x | 0 |
+| `plane_sse` | 3 | 1884x8 #0 | 6419.26 | 1970.17 | 2.10–3.30x | 0 |
+| `residual` | 9 | 64x64 #0 | 2608.10 | 233.15 | 1.69–19.79x | 0 |
+| `residual_sad` | 5 | 64x64 #0 | 3296.59 | 462.46 | 1.47–13.01x | 0 |
+| `sad` | 9 | 64x64 #0 | 351.06 | 195.57 | 1.68–5.47x | 0 |
+| `sad_4x4_macroblock` | 1 | 16x16 #0 | 617.71 | 52.15 | 11.84–11.84x | 0 |
+| `sad_grid_best` | 1 | 64x64 #0 | 3138.89 | 234.01 | 13.41–13.41x | 0 |
+| `sad_grid_best_even` | 2 | 64x64 #1 | 1966.77 | 160.00 | 12.28–12.29x | 0 |
+| `sad_grid_best_x4` | 1 | 64x64 #0 | 12636.33 | 855.18 | 14.78–14.78x | 0 |
+| `sad_grid_best_x4_even` | 1 | 64x64 #0 | 7654.93 | 564.27 | 13.57–13.57x | 0 |
+| `sad_grid_x4` | 1 | 64x64 #0 | 12701.98 | 857.57 | 14.81–14.81x | 0 |
+| `sad_grid_x4_even` | 1 | 64x64 #0 | 7664.80 | 568.54 | 13.48–13.48x | 0 |
+| `sad_quads` | 2 | 16x16 #0 | 239.32 | 19.77 | 9.47–12.11x | 0 |
+| `sad_scan_x33` | 1 | 16x16 #0 | 1712.85 | 172.42 | 9.93–9.93x | 0 |
+| `sad_x4` | 9 | 64x64 #0 | 1398.05 | 609.83 | 2.29–7.87x | 0 |
+| `sao_band_apply` | 1 | 32x32 #0 | 1768.37 | 889.28 | 1.99–1.99x | 0 |
+| `sao_band_masked` | 1 | 32x32 #0 | 1893.32 | 1024.57 | 1.85–1.85x | 0 |
+| `sao_edge_apply` | 1 | 32x32 #0 | 5595.08 | 1648.92 | 3.39–3.39x | 0 |
+| `sao_edge_stats` | 1 | 32x32 #0 | 4783.01 | 1687.48 | 2.83–2.83x | 0 |
+| `satd` | 9 | 64x64 #0 | 26177.51 | 1527.26 | 3.03–17.14x | 0 |
+| `satd_4x4_tiles` | 5 | 64x64 #0 | 8670.04 | 2296.69 | 2.97–3.80x | 0 |
+| `satd_8x8_quads` | 1 | 16x16 #0 | 1703.04 | 104.86 | 16.24–16.24x | 0 |
+| `satd_8x8_quads_split` | 1 | 16x16 #0 | 1715.18 | 160.37 | 10.70–10.70x | 0 |
+| `satd_quads_picture` | 1 | 16x16 #0 | 1703.66 | 107.52 | 15.85–15.85x | 0 |
+| `satd_quads_picture_split` | 1 | 16x16 #0 | 1717.59 | 163.22 | 10.52–10.52x | 0 |
+| `sse_8x8_row` | 1 | 8x8 #0 | 36.58 | 13.08 | 2.80–2.80x | 0 |
+| `sub_pixel_variance` | 9 | 64x64 #0 | 27767.28 | 2033.43 | 7.23–22.64x | 0 |
+| `variance` | 13 | 64x64 #0 | 2349.25 | 301.83 | 0.97–14.14x | 0 |
+| `variance_energy` | 13 | 64x64 #0 | 3738.54 | 380.64 | 0.96–13.61x | 0 |
+| `vp9_avg_strided_2d` | 5 | 64x64 #0 | 20884.07 | 5251.43 | 3.50–6.41x | 0 |
+| `vp9_avg_strided_copy` | 5 | 64x64 #0 | 410.46 | 437.88 | 0.94–2.45x | 1 |
+| `vp9_avg_strided_h` | 5 | 64x64 #0 | 8886.84 | 2408.02 | 1.97–5.13x | 0 |
+| `vp9_avg_strided_v` | 5 | 64x64 #0 | 14346.53 | 2408.38 | 4.47–12.97x | 0 |
+| `vp9_bilinear_2d` | 5 | 64x64 #0 | 18921.21 | 1434.12 | 6.75–18.90x | 0 |
+| `vp9_bilinear_copy` | 5 | 64x64 #0 | 362.84 | 242.22 | 1.50–2.89x | 0 |
+| `vp9_bilinear_h` | 5 | 64x64 #0 | 7957.70 | 708.98 | 2.88–12.08x | 0 |
+| `vp9_bilinear_v` | 5 | 64x64 #0 | 13517.29 | 674.21 | 6.89–33.23x | 0 |
+| `vp9_filter16_h_flat` | 1 | 8x16 #0 | 1509.75 | 146.62 | 10.30–10.30x | 0 |
+| `vp9_filter16_h_mixed` | 1 | 8x16 #0 | 819.27 | 146.83 | 5.58–5.58x | 0 |
+| `vp9_filter16_h_narrow` | 1 | 8x16 #0 | 302.20 | 77.62 | 3.89–3.89x | 0 |
+| `vp9_filter16_h_reject` | 1 | 8x16 #0 | 108.17 | 66.55 | 1.63–1.63x | 0 |
+| `vp9_filter16_v_flat` | 1 | 8x16 #0 | 1487.45 | 185.94 | 8.00–8.00x | 0 |
+| `vp9_filter16_v_mixed` | 1 | 8x16 #0 | 805.58 | 185.71 | 4.34–4.34x | 0 |
+| `vp9_filter16_v_narrow` | 1 | 8x16 #0 | 298.95 | 95.41 | 3.13–3.13x | 0 |
+| `vp9_filter16_v_reject` | 1 | 8x16 #0 | 108.10 | 70.16 | 1.54–1.54x | 0 |
+| `vp9_filter4_h_flat` | 1 | 8x4 #0 | 258.41 | 66.15 | 3.91–3.91x | 0 |
+| `vp9_filter4_h_mixed` | 1 | 8x4 #0 | 181.52 | 65.95 | 2.75–2.75x | 0 |
+| `vp9_filter4_h_narrow` | 1 | 8x4 #0 | 256.83 | 66.14 | 3.88–3.88x | 0 |
+| `vp9_filter4_h_reject` | 1 | 8x4 #0 | 108.30 | 61.26 | 1.77–1.77x | 0 |
+| `vp9_filter4_v_flat` | 1 | 8x4 #0 | 257.10 | 84.97 | 3.03–3.03x | 0 |
+| `vp9_filter4_v_mixed` | 1 | 8x4 #0 | 173.33 | 85.08 | 2.04–2.04x | 0 |
+| `vp9_filter4_v_narrow` | 1 | 8x4 #0 | 263.52 | 85.17 | 3.09–3.09x | 0 |
+| `vp9_filter4_v_reject` | 1 | 8x4 #0 | 108.00 | 66.15 | 1.63–1.63x | 0 |
+| `vp9_filter8_h_flat` | 1 | 8x8 #0 | 257.41 | 84.42 | 3.05–3.05x | 0 |
+| `vp9_filter8_h_mixed` | 1 | 8x8 #0 | 181.37 | 84.40 | 2.15–2.15x | 0 |
+| `vp9_filter8_h_narrow` | 1 | 8x8 #0 | 258.87 | 72.13 | 3.59–3.59x | 0 |
+| `vp9_filter8_h_reject` | 1 | 8x8 #0 | 108.12 | 63.17 | 1.71–1.71x | 0 |
+| `vp9_filter8_v_flat` | 1 | 8x8 #0 | 255.06 | 106.27 | 2.40–2.40x | 0 |
+| `vp9_filter8_v_mixed` | 1 | 8x8 #0 | 176.79 | 106.14 | 1.67–1.67x | 0 |
+| `vp9_filter8_v_narrow` | 1 | 8x8 #0 | 257.05 | 92.21 | 2.79–2.79x | 0 |
+| `vp9_filter8_v_reject` | 1 | 8x8 #0 | 107.84 | 68.17 | 1.58–1.58x | 0 |
+| `vp9_intra_d117` | 4 | 32x32 #0 | 1206.85 | 246.27 | 1.12–4.90x | 0 |
+| `vp9_intra_d153` | 4 | 32x32 #0 | 1302.99 | 254.72 | 1.31–5.12x | 0 |
+| `vp9_intra_d207` | 4 | 32x32 #0 | 1295.34 | 189.33 | 1.43–6.84x | 0 |
+| `vp9_intra_d45` | 4 | 32x32 #0 | 1316.88 | 142.49 | 0.47–9.24x | 1 |
+| `vp9_intra_d63` | 4 | 32x32 #0 | 2070.62 | 198.99 | 0.32–10.41x | 1 |
+| `vp9_intra_dc` | 4 | 32x32 #0 | 81.10 | 80.25 | 1.00–1.01x | 0 |
+| `vp9_intra_tm` | 4 | 32x32 #0 | 993.55 | 145.55 | 1.19–6.83x | 0 |
+| `vp9_inverse_aa` | 2 | 16x16 #0 | 1851.19 | 705.52 | 2.62–3.72x | 0 |
+| `vp9_inverse_ad` | 2 | 16x16 #0 | 1743.04 | 597.19 | 2.92–4.13x | 0 |
+| `vp9_inverse_da` | 2 | 16x16 #0 | 1730.50 | 593.64 | 2.92–4.19x | 0 |
+| `vp9_inverse_dd` | 3 | 32x32 #0 | 8377.32 | 2580.54 | 3.25–4.90x | 0 |
+| `vp9_line_equal_h` | 1 | 8x64 #0 | 2371.49 | 424.89 | 5.58–5.58x | 0 |
+| `vp9_line_equal_v` | 1 | 8x64 #0 | 2383.29 | 517.01 | 4.61–4.61x | 0 |
+| `vp9_line_flat_equal_h` | 1 | 8x64 #0 | 12067.55 | 894.16 | 13.50–13.50x | 0 |
+| `vp9_line_flat_equal_v` | 1 | 8x64 #0 | 11837.15 | 1078.91 | 10.97–10.97x | 0 |
+| `vp9_line_flat_masked_h` | 1 | 8x64 #0 | 7677.16 | 712.95 | 10.77–10.77x | 0 |
+| `vp9_line_flat_masked_v` | 1 | 8x64 #0 | 7544.43 | 855.30 | 8.82–8.82x | 0 |
+| `vp9_line_flat_mixed_h` | 1 | 8x64 #0 | 6979.53 | 790.48 | 8.83–8.83x | 0 |
+| `vp9_line_flat_mixed_v` | 1 | 8x64 #0 | 6856.46 | 1017.06 | 6.74–6.74x | 0 |
+| `vp9_line_masked_h` | 1 | 8x64 #0 | 1602.18 | 415.06 | 3.86–3.86x | 0 |
+| `vp9_line_masked_v` | 1 | 8x64 #0 | 1612.74 | 477.96 | 3.37–3.37x | 0 |
+| `vp9_line_mixed_h` | 1 | 8x64 #0 | 2227.10 | 519.62 | 4.29–4.29x | 0 |
+| `vp9_line_mixed_v` | 1 | 8x64 #0 | 2158.23 | 669.37 | 3.22–3.22x | 0 |
+| `vp9_mc_2d` | 5 | 64x64 #0 | 18921.55 | 5053.74 | 3.42–6.37x | 0 |
+| `vp9_mc_copy` | 5 | 64x64 #0 | 362.40 | 240.48 | 1.51–2.88x | 0 |
+| `vp9_mc_h` | 5 | 64x64 #0 | 7952.10 | 2407.11 | 1.89–4.61x | 0 |
+| `vp9_mc_v` | 5 | 64x64 #0 | 13516.32 | 2408.98 | 4.34–12.21x | 0 |
+| `vp9_put_strided` | 5 | 64x64 #0 | 20049.63 | 5173.63 | 3.43–6.39x | 0 |
+| `vp9_quantize` | 3 | 32x32 #0 | 3607.60 | 1391.32 | 2.35–2.59x | 0 |
+| `vp9_sharp_2d` | 5 | 64x64 #0 | 18899.79 | 5056.75 | 3.42–6.37x | 0 |
+| `vp9_sharp_copy` | 5 | 64x64 #0 | 362.72 | 241.88 | 1.50–2.89x | 0 |
+| `vp9_sharp_h` | 5 | 64x64 #0 | 7949.45 | 2407.08 | 1.89–4.64x | 0 |
+| `vp9_sharp_v` | 5 | 64x64 #0 | 13518.76 | 2414.72 | 4.36–12.22x | 0 |
+| `vp9_single_equal_h` | 1 | 8x64 #0 | 2410.12 | 563.97 | 4.27–4.27x | 0 |
+| `vp9_single_equal_v` | 1 | 8x64 #0 | 2415.56 | 714.30 | 3.38–3.38x | 0 |
+| `vp9_single_flat_equal_h` | 1 | 8x64 #0 | 11976.56 | 1090.28 | 10.98–10.98x | 0 |
+| `vp9_single_flat_equal_v` | 1 | 8x64 #0 | 11864.18 | 1410.44 | 8.41–8.41x | 0 |
+| `vp9_single_flat_masked_h` | 1 | 8x64 #0 | 7589.19 | 790.26 | 9.60–9.60x | 0 |
+| `vp9_single_flat_masked_v` | 1 | 8x64 #0 | 7523.18 | 986.46 | 7.63–7.63x | 0 |
+| `vp9_single_flat_mixed_h` | 1 | 8x64 #0 | 6975.18 | 786.01 | 8.87–8.87x | 0 |
+| `vp9_single_flat_mixed_v` | 1 | 8x64 #0 | 6900.65 | 1023.89 | 6.74–6.74x | 0 |
+| `vp9_single_masked_h` | 1 | 8x64 #0 | 1602.43 | 457.09 | 3.51–3.51x | 0 |
+| `vp9_single_masked_v` | 1 | 8x64 #0 | 1612.88 | 548.60 | 2.94–2.94x | 0 |
+| `vp9_single_mixed_h` | 1 | 8x64 #0 | 2211.30 | 519.27 | 4.26–4.26x | 0 |
+| `vp9_single_mixed_v` | 1 | 8x64 #0 | 2166.29 | 669.92 | 3.23–3.23x | 0 |
+| `vp9_smooth_2d` | 5 | 64x64 #0 | 18910.84 | 5050.44 | 3.47–6.40x | 0 |
+| `vp9_smooth_copy` | 5 | 64x64 #0 | 362.72 | 241.81 | 1.50–2.89x | 0 |
+| `vp9_smooth_h` | 5 | 64x64 #0 | 7952.24 | 2405.49 | 1.83–4.60x | 0 |
+| `vp9_smooth_v` | 5 | 64x64 #0 | 13518.45 | 2406.68 | 4.39–12.26x | 0 |
+| `vvc_alf_filter_block_row` | 1 | 64x4 #0 | 11601.23 | 703.20 | 16.50–16.50x | 0 |
+| `vvc_alf_gram` | 1 | 64x8 #0 | 25520.73 | 8287.82 | 3.08–3.08x | 0 |
+| `vvc_alf_laplacians` | 1 | 64x4 #0 | 597.75 | 347.73 | 1.72–1.72x | 0 |
+| `vvc_alf_samples` | 1 | 64x4 #0 | 1318.43 | 251.54 | 5.24–5.24x | 0 |
+| `vvc_batch_strong_h` | 3 | 8x4 #0 | 2307.86 | 329.13 | 3.81–7.01x | 0 |
+| `vvc_batch_strong_v` | 3 | 8x4 #0 | 2066.47 | 397.88 | 3.21–5.19x | 0 |
+| `vvc_batch_weak_h` | 3 | 8x4 #0 | 2137.49 | 318.29 | 3.67–6.72x | 0 |
+| `vvc_batch_weak_v` | 3 | 8x4 #0 | 1888.31 | 387.48 | 3.03–4.87x | 0 |
+| `vvc_forward64` | 1 | 64x64 #0 | 25728.42 | 6285.71 | 4.09–4.09x | 0 |
+| `vvc_forward_dct` | 5 | 32x16 #0 | 7149.99 | 2455.22 | 2.90–3.71x | 0 |
+| `vvc_single_strong_h` | 3 | 8x4 #0 | 2333.79 | 307.80 | 4.00–7.58x | 0 |
+| `vvc_single_strong_v` | 3 | 8x4 #0 | 2069.62 | 370.25 | 3.33–5.59x | 0 |
+| `vvc_single_weak_h` | 3 | 8x4 #0 | 2161.24 | 277.05 | 3.88–7.80x | 0 |
+| `vvc_single_weak_v` | 3 | 8x4 #0 | 1896.37 | 352.05 | 3.21–5.39x | 0 |
+
+Selected-pass result (runtime 255a54a64): NEON SSE one-cell API 13.08 ->
+11.31 ns; AV1 64-line horizontal edges 6.75–10.82% faster, vertical
+14.50–18.99% faster. Canonical ARM and x86 preset identity both 297/297;
+all native/SDE/SIMD128 checkasm and outlined-intrinsic guards pass.
+Five quiet paired rounds on every codec/preset give whole cycles: H264
+Default/Fast +0.86/-1.09%, HEVC -0.66/+0.08%, VVC -0.03/+0.75%, AV1
++0.03/+0.04% (level), VP9 -1.24/+0.03%, AV2 -0.64/-0.51%. Instructions
+fall at all twelve points (AV1 -0.77/-0.60%). Do not claim an AV1
+whole-encode speedup or hide the unfavorable codec timings. Full values,
+all kernel cases, sources and final conformance receipt:
+[handoff](../handoff/astra-kernels-20261117.md).

@@ -61,6 +61,10 @@ pub(crate) mod neon;
 #[allow(unsafe_code)]
 mod neon_dotprod;
 
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+mod neon_sse;
+
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]
 pub(crate) mod simd128;
