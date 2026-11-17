@@ -564,6 +564,22 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
   - Tried and dropped: one packed array of steps instead of three (+0.06 % on Default).
   - Not shared with AV2: its contexts clip neighbours at 5 or 3 by region (AVM `clip_max5` /
     `clip_max3`), so the saturate-at-3 map does not carry over.
+  - **Linear pricing of inter-frame residual trials (`av1.linear_rate_eob_share`, not landed;
+    branch `feature/av1-linear-inter` 9fccf8bb2):** the non-key counterpart of
+    `key_linear_rate_eob_share`, SVT `coeff_rate_est_lvl` 0.
+    - **Fast and Faster:** no effect, with identical callgrind counts. They run no inter-frame
+      residual trials; their pricing is the key frame's, already screened (+1.04 % J, above).
+    - **Default, share 1 against 0, CPU:** x86 callgrind −1.66 % (CBR 1500) and −2.07 % (fixed
+      qindex 185).
+    - **Pool levels with that CPU (2026-11-17 draw):** L1 −1.13 %, L2 −0.81 %, L3 J −0.29 %
+      [−0.55, −0.04] (n 78): BETTER.
+    - **Final-check (600 f, quality only):** J +0.49 % [+0.29, +0.68]; MS-SSIM is worse on 27 of 29
+      clips. The periodic-key pulse guard fails at +0.92 dB (meva_school_g336, dKeyN), against
+      +0.50. With the −1.7 % CPU at k 0.6 that is about −0.5 % J_real.
+    - **Not landed:** the gain is all CPU credit, quality is worse almost everywhere, the pulse
+      guard fails by 0.4 dB, and the Jetson is not measured. The trade, about 0.3 % quality per
+      1 % CPU, is cheaper than the preset levers' 1.3–4 %. If wanted, a Jetson count and a look at
+      meva_school's keys are the next step.
 - **AV1 Fast re-point key pulse:** Default's key intra set doesn't fix it (worst clip +1.10 dB);
   key boost makes it worse (+4.56). Being tested: partial forward on keys only, and a coarser key
   QP.
