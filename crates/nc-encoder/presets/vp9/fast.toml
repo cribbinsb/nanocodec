@@ -9,17 +9,17 @@
 # and the quarter-sample stage only after a half-sample move: with the
 # spread gate off, Jetson about -6%, x86 -7.3% CPU; quality vs Default
 # (proxy-4) +3.4% full / +2.5% low, pan worst.
-decision.codec_subpel_seed_lambdas = 0.05
-decision.subpel_move_bias = 1.1
-decision.subpel_move_bias_nonzero = 1.1
-decision.subpel_fractional_bias = 1.1
-decision.subpel_quarter_needs_half_move = 1
+light.decision.codec_subpel_seed_lambdas = 0.05
+light.decision.subpel_move_bias = 1.1
+light.decision.subpel_move_bias_nonzero = 1.1
+light.decision.subpel_fractional_bias = 1.1
+light.decision.subpel_quarter_needs_half_move = 1
 # 32x32 transforms code only their low 16x16 frequencies (encoder-side
 # forward approximation; NEON computes only those): crowd 720p q230 Jetson
 # -3.9%, x86 +1.6% (full forward then zeroed there), weighted -2.1%; J_real
 # TRAIN quality vs Default +0.2% full / +0.3% low (proxy-6, no guards),
 # J at Fast's k 0.6 about -1.0%.
-vp9.partial_forward = 1
+nonbase.vp9.partial_forward = 1
 # Inter blocks whose largest transform codes at most 4 levels skip the
 # smaller transform sizes: Jetson -9.4%, x86 -7.4% (weighted -8.7%); J_real
 # full TRAIN at k 0.6 BETTER, -4.9% (quality +0.6% full / +0.1% low, no
@@ -35,9 +35,9 @@ quant.trellis = 0
 # fine-quantizer small blocks are quality arms; Fast keeps the cheaper
 # engine values.
 quant.trellis_key = 0
-vp9.shave_gap = 8
-planner.depth_removal_min_quantizer = 0
-vp9.intra_mode_estimate = 0
+nonbase.vp9.shave_gap = 8
+light.planner.depth_removal_min_quantizer = 0
+nonbase.vp9.intra_mode_estimate = 0
 # Tuned jointly (eval/nceval/tune_pool.py, study vp9-vp9-fast-eq2-2026-11-11,
 # trial #92, equal x86 CPU at most): a speed/quality trade at the Fast weight
 # (k 0.6). Study L3 J_real -0.71% [-0.96, -0.45] with x86 -1.4%, Jetson
@@ -46,25 +46,25 @@ vp9.intra_mode_estimate = 0
 # no guard; x86 -1.7% at head, so J_real about -0.7%. Long-horizon guard (it
 # moves the QP cadence 1.4 -> 1.3 and AQ): 3-clip J -0.24%, all z < 1,
 # static key pulse -1.37 dB. (Earlier: QP cadence 1.4, J_real TRAIN -1.9%.)
-vp9.inter_tx_split_spread = 1.531264569929075
+nonbase.vp9.inter_tx_split_spread = 1.531264569929075
 vp9.inter_rounding_divisor = 4.501006167285609
 rate.aq_strength = 0.000301923024994135
-vp9.tx_search_min_levels = 5
-vp9.lambda_per_step_squared = 0.09828267012310973
-planner.lambda_scale = 1.972212232891943
-planner.depth_removal_qp_scale = 1.089173167562608
+nonbase.vp9.tx_search_min_levels = 5
+nonbase.vp9.lambda_per_step_squared = 0.09828267012310973
+light.planner.lambda_scale = 1.972212232891943
+light.planner.depth_removal_qp_scale = 1.089173167562608
 rate.cadence_scale = 1.3021137320565115
-planner.depth_removal_th_32_16 = 44.603320351213426
+light.planner.depth_removal_th_32_16 = 44.603320351213426
 vp9.keyframe_step_permille = 277.3997809563062
 vp9.chroma_delta_q = -6
-decision.intra_gate_variance = 49.0420171397338
+light.decision.intra_gate_variance = 49.0420171397338
 # The Default's error-gap chroma offset (2026-11-12) is not screened for this
 # preset.
 vp9.chroma_delta_gap_slope = 0
 # Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial #23).
 quant.trellis_lambda_scale = 1
 vp9.filter_level_scale = 1
-vp9.inter_intra_dc_only = 0
+nonbase.vp9.inter_intra_dc_only = 0
 # Pinned before VP9 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
 # Pinned before VP9 Default's key still boost (2026-11-14).
@@ -76,6 +76,32 @@ structure.inherited_depth = 0
 persist.reuse_level_price = 0
 # The engine's depth removal before 2026-11-15, pinned so this preset's
 # streams do not move with the engine default.
-planner.depth_removal_th_16_8 = 50
+light.planner.depth_removal_th_16_8 = 50
 # Pinned before the engine-default quiet second before keys (2026-11-16).
 rate.prekey_quiet = 0
+
+# Effort by frame role, "base-only" (2026-11-17, docs/analysis/zen5-fixed-qp-goal.md
+# "Base-only on the other codecs"): keys and base frames code with the
+# Default's per-block tools (below); non-base frames keep Fast's, the
+# `light.*` / `nonbase.*` values above (same values as before). Frame-level
+# settings (rounding, chroma offsets, loop filter, key step) stay Fast's.
+decision.codec_subpel_seed_lambdas = 0
+decision.intra_gate_variance = 6.857
+decision.subpel_fractional_bias = 1
+decision.subpel_move_bias = 1
+decision.subpel_move_bias_nonzero = 1
+decision.subpel_quarter_needs_half_move = 0
+planner.depth_removal_min_quantizer = 0.86
+planner.depth_removal_qp_scale = 2
+planner.depth_removal_th_16_8 = 0
+planner.depth_removal_th_32_16 = 0
+planner.lambda_scale = 2.379
+vp9.inter_intra_dc_only = 1
+vp9.inter_tx_split_spread = 1.047
+vp9.intra_mode_estimate = 1
+vp9.lambda_per_step_squared = 0.1006
+vp9.partial_forward = 0
+vp9.shave_gap = 0
+vp9.tx_search_min_levels = 4
+effort.regular_fraction = 0
+effort.light_nonbase_only = 1
