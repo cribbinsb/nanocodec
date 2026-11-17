@@ -14,7 +14,8 @@
 # "Shaking cameras flat" at the end.
 #
 # AV1 Faster's settings, pinned so this preset does not move with it (its
-# probe threshold is left out: the levers below make it inert).
+# probe threshold is left out: Veryfast's base frames probe at the engine's
+# threshold, as measured, and its other frames do not probe).
 decision.subpel_move_bias = 1.1
 decision.subpel_move_bias_nonzero = 1.1
 decision.subpel_fractional_bias = 1.1
@@ -22,8 +23,8 @@ decision.refine_cheap_vector = 0
 av1.inter_tx_split = 0
 av1.pre_tx_luma_dominant = 1
 av1.pre_tx_skip = 1
-av1.pre_tx_skip_model = 0
-av1.pre_tx_skip_rd = 100
+light.av1.pre_tx_skip_model = 0
+light.av1.pre_tx_skip_rd = 100
 av1.pre_tx_skip_score = 70
 av1.residual_rd_max_mv = 8
 av1.transform_rd_gain_scale = 1.25
@@ -51,13 +52,13 @@ av1.keyframe_intra_modes = 0
 decision.intra_directional = 0
 av1.inter_intra_search = 0
 av1.partial_forward = 2
-av1.pre_tx_skip_energy = 100
+light.av1.pre_tx_skip_energy = 100
 decision.codec_subpel_seed_lambdas = 0.1
 av1.cdef_search_row_step = 8
 av1.cdef_local_search_period = 4
 layers.count = 3
 av1.inter_rounding_q7 = 32
-av1.skip_bias_energy = 0.25
+light.av1.skip_bias_energy = 0.25
 decision.seed_refine_ratio = 0
 rate.period_ceiling = 0
 structure.unified = 0
@@ -76,16 +77,16 @@ av1.keyframe_cfl = 0
 # points against x264 medium, change from Faster):
 # Chroma skipped below 7/8 of the luma SAD threshold (Faster: the codec's 5):
 # -1.7% / -2.2% / +2.2% / +0.2, +0.2.
-av1.chroma_skip_sad_num = 7
+light.av1.chroma_skip_sad_num = 7
 # Inter blocks of 32x32 and up only: -8.7% / -4.1% / +2.7% / +1.6, +1.8.
-planner.inter_min_log2 = 5
+light.planner.inter_min_log2 = 5
 # Depth removal twice as eager as Faster's: -1.9% / -1.1% / +0.9% / +0.5,
 # +0.4.
 planner.depth_removal_qp_scale = 8
 # One NEARMV candidate: -0.8% / -1.6% / (not screened alone) / +0.2, +0.3.
-av1.near_count = 1
+light.av1.near_count = 1
 # No integer-neighbour probes: -3.0% / -2.0% / +2.6% / +1.4, +1.2.
-decision.codec_fullpel_probe = 0
+light.decision.codec_fullpel_probe = 0
 # Key frames planned by source variance (not the RD key planner): -5.4% /
 # -4.4% / +1.8% / +3.1, +2.9.
 planner.intra_plan = 1
@@ -120,3 +121,29 @@ rate.key_level_mean = 1
 layers.adaptive_max_camera_motion = 64
 layers.adaptive_max_compensable = 1
 layers.adaptive_max_camera_jitter = 8
+#
+# Effort by frame role, "base-only" (2026-11-17, docs/analysis/zen5-fixed-qp-goal.md
+# "Veryfast and Faster base-only re-mix"): keys and base frames (T0) code
+# with Faster's values of the four Veryfast per-block levers and Fast's
+# pre-transform skip and skip bias (below); the other frames keep the
+# Veryfast values, the `light.*` lines above. The base frames are what the
+# frames between them predict from. Against Veryfast (build e329c8b59):
+# fixed-QP lens Weighted / J against x264 medium +7.7 / -6.2 -> +3.3 / -10.4;
+# c8a.large fixed-QP chart timing 1087.3 -> 1044.3 and 1082.4 -> 1037.2 fps
+# (two sessions; SVT-AV1 M13 986.4 / 978.9 in the same sessions); x86
+# callgrind, CBR 600 kbit/s on the chart clips, +4.9 %; CBR pool L3 (draw
+# 2026-11-17, 78 clips, dCPU +4.9 % at k 0.6) J -1.27 % [-1.89, -0.68]
+# BETTER, quality -4.2 %, no guard. Fast's subpel and refinement values on
+# the base frames as well: +2.4 / -10.6 at 1022 fps, CBR L3 -0.46 %
+# [-1.11, +0.15] (dCPU +7.4 %); with Fast's depth removal and full forward
+# transform too: +1.2 / -10.9 at 949 fps, slower than M13.
+planner.inter_min_log2 = 4
+av1.near_count = 3
+decision.codec_fullpel_probe = 1
+av1.chroma_skip_sad_num = 5
+av1.pre_tx_skip_model = 1
+av1.pre_tx_skip_rd = 50
+av1.pre_tx_skip_energy = 15
+av1.skip_bias_energy = 0.0625
+effort.regular_fraction = 0
+effort.light_nonbase_only = 1
