@@ -31,12 +31,14 @@ import { RESOLUTIONS } from './view-settings.js';
  * is offered the rungs below it. AV1 Veryfast's cost is Faster's before base-only effort
  * (0.45) times its native Jetson cycle ratio to it (0.81, chart clips;
  * docs/handoff/av1-veryfast.md). AV1 Faster with base-only effort (2026-11-16) is that
- * 0.45 times its c8a chart-path time ratio, 1.094 (not measured in WASM yet).
+ * 0.45 times its c8a chart-path time ratio, 1.094 (not measured in WASM yet). AV1 Veryfast
+ * with base-only effort (2026-11-17) is the earlier 0.36 times its x86 instruction ratio, 1.049
+ * (callgrind, chart clips, CBR 600 kbit/s; not measured in WASM yet).
  */
 export const PRESET_COST = {
   h264: { slow: 1.7, medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
   hevc: { slow: 1.74, medium: 1, fast: 0.61, faster: 0.47 },
-  av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.49, veryfast: 0.36 },
+  av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.49, veryfast: 0.38 },
   vvc: { slow: 1.22, medium: 1, fast: 0.55 },
   vp9: { slow: 1.16, medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
   av2: { slow: 1.37, medium: 1 },
