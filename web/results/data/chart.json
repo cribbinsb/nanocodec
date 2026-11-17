@@ -23,6 +23,7 @@
  "platforms": {
   "jetson": "Jetson Orin Nano, Cortex-A78AE core 3 at 1.728 GHz, one thread",
   "x86": "AMD EPYC 9R45 (SIMD: avx2, avx512f, avx512ifma, avx512bw, avx512vl, avx512_bf16, avx512vbmi, avx512_vbmi2, avx512_vnni; nanocodec dispatches to its avx512 tier), one thread pinned to one physical core (AWS c8a.large, one pair at a time)",
+  "zen3": "AMD EPYC 7R13 Processor (SIMD: avx2; nanocodec dispatches to its avx2 tier), one thread pinned to vCPU 1, the SMT sibling of vCPU 0 (left to the system) (AWS c6a.large, Zen 3, one pair at a time)",
   "graviton": "Neoverse-V2 (SIMD: asimd, asimddp, sve, sve2, svei8mm, i8mm, bf16; nanocodec dispatches to its neon tier), one thread pinned to one physical core (AWS c8g.large, Graviton4, one pair at a time)"
  },
  "points": {
@@ -877,6 +878,7 @@
    "source": [
     "docs/results/bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr.csv",
     "docs/results/bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr-x86.csv",
+    "docs/results/bd-vs-speed-timing-zen3.json",
     "docs/results/bd-vs-speed-timing-graviton.json"
    ],
    "builds": {
@@ -942,6 +944,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -962,6 +965,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -982,6 +986,7 @@
      "fps": {
       "jetson": 45.73,
       "x86": 140.12,
+      "zen3": 93.77,
       "graviton": 101.75
      },
      "flagged": false,
@@ -1002,6 +1007,7 @@
      "fps": {
       "jetson": 71.87,
       "x86": 235.49,
+      "zen3": 150.0,
       "graviton": 159.03
      },
      "flagged": false,
@@ -1022,6 +1028,7 @@
      "fps": {
       "jetson": 113.34,
       "x86": 377.1,
+      "zen3": 226.31,
       "graviton": 252.28
      },
      "flagged": false,
@@ -1042,6 +1049,7 @@
      "fps": {
       "jetson": 135.36,
       "x86": 462.89,
+      "zen3": 291.56,
       "graviton": 309.41
      },
      "flagged": false,
@@ -1062,6 +1070,7 @@
      "fps": {
       "jetson": 153.25,
       "x86": 503.64,
+      "zen3": 339.48,
       "graviton": 356.69
      },
      "flagged": false,
@@ -1082,6 +1091,7 @@
      "fps": {
       "jetson": 28.91,
       "x86": 114.02,
+      "zen3": 68.61,
       "graviton": 67.49
      },
      "flagged": false,
@@ -1102,6 +1112,7 @@
      "fps": {
       "jetson": 46.57,
       "x86": 179.87,
+      "zen3": 110.88,
       "graviton": 109.84
      },
      "flagged": false,
@@ -1122,6 +1133,7 @@
      "fps": {
       "jetson": 78.0,
       "x86": 303.48,
+      "zen3": 197.98,
       "graviton": 183.58
      },
      "flagged": false,
@@ -1142,6 +1154,7 @@
      "fps": {
       "jetson": 98.9,
       "x86": 409.94,
+      "zen3": 231.53,
       "graviton": 232.32
      },
      "flagged": false,
@@ -1162,6 +1175,7 @@
      "fps": {
       "jetson": 27.25,
       "x86": 112.83,
+      "zen3": 65.12,
       "graviton": 67.0
      },
      "flagged": false,
@@ -1182,6 +1196,7 @@
      "fps": {
       "jetson": 40.87,
       "x86": 161.01,
+      "zen3": 100.93,
       "graviton": 101.75
      },
      "flagged": false,
@@ -1202,6 +1217,7 @@
      "fps": {
       "jetson": 59.59,
       "x86": 250.79,
+      "zen3": 138.44,
       "graviton": 145.13
      },
      "flagged": false,
@@ -1222,6 +1238,7 @@
      "fps": {
       "jetson": 70.17,
       "x86": 327.38,
+      "zen3": 179.47,
       "graviton": 173.62
      },
      "flagged": false,
@@ -1242,6 +1259,7 @@
      "fps": {
       "jetson": 87.66,
       "x86": 410.68,
+      "zen3": 232.88,
       "graviton": 221.48
      },
      "flagged": false,
@@ -1262,6 +1280,7 @@
      "fps": {
       "jetson": 34.53,
       "x86": 131.25,
+      "zen3": 77.32,
       "graviton": 82.43
      },
      "flagged": false,
@@ -1282,6 +1301,7 @@
      "fps": {
       "jetson": 40.7,
       "x86": 165.61,
+      "zen3": 94.15,
       "graviton": 97.61
      },
      "flagged": false,
@@ -1302,6 +1322,7 @@
      "fps": {
       "jetson": 54.15,
       "x86": 205.1,
+      "zen3": 125.24,
       "graviton": 128.73
      },
      "flagged": false,
@@ -1322,6 +1343,7 @@
      "fps": {
       "jetson": 86.48,
       "x86": 328.1,
+      "zen3": 197.53,
       "graviton": 201.68
      },
      "flagged": false,
@@ -1342,6 +1364,7 @@
      "fps": {
       "jetson": 96.46,
       "x86": 334.9,
+      "zen3": 207.78,
       "graviton": 222.51
      },
      "flagged": false,
@@ -1362,6 +1385,7 @@
      "fps": {
       "jetson": 19.3,
       "x86": 71.39,
+      "zen3": 42.84,
       "graviton": 45.07
      },
      "flagged": false,
@@ -1382,6 +1406,7 @@
      "fps": {
       "jetson": 32.51,
       "x86": 140.8,
+      "zen3": 82.93,
       "graviton": 82.93
      },
      "flagged": false,
@@ -1402,6 +1427,7 @@
      "fps": {
       "jetson": 44.64,
       "x86": 207.67,
+      "zen3": 117.75,
       "graviton": 114.45
      },
      "flagged": false,
@@ -1422,6 +1448,7 @@
      "fps": {
       "jetson": 23.34,
       "x86": 89.26,
+      "zen3": 52.99,
       "graviton": 56.88
      },
      "flagged": false,
@@ -1442,6 +1469,7 @@
      "fps": {
       "jetson": 27.04,
       "x86": 109.32,
+      "zen3": 67.2,
       "graviton": 65.91
      },
      "flagged": false,
@@ -1462,6 +1490,7 @@
      "fps": {
       "jetson": 49.43,
       "x86": 190.49,
+      "zen3": 114.81,
       "graviton": 117.83
      },
      "flagged": false,
@@ -1482,6 +1511,7 @@
      "fps": {
       "jetson": 111.47,
       "x86": 524.65,
+      "zen3": 311.39,
       "graviton": 262.54
      },
      "flagged": false,
@@ -1502,6 +1532,7 @@
      "fps": {
       "jetson": 190.53,
       "x86": 1016.98,
+      "zen3": 612.52,
       "graviton": 363.02
      },
      "flagged": false,
@@ -1522,6 +1553,7 @@
      "fps": {
       "jetson": 85.43,
       "x86": 363.31,
+      "zen3": 231.6,
       "graviton": 207.65
      },
      "flagged": false,
@@ -1542,6 +1574,7 @@
      "fps": {
       "jetson": 17.13,
       "x86": 85.13,
+      "zen3": 51.67,
       "graviton": 44.89
      },
      "flagged": false,
@@ -1562,6 +1595,7 @@
      "fps": {
       "jetson": 12.11,
       "x86": 57.92,
+      "zen3": 34.22,
       "graviton": 31.66
      },
      "flagged": false,
@@ -1582,6 +1616,7 @@
      "fps": {
       "jetson": 8.01,
       "x86": 37.96,
+      "zen3": 23.72,
       "graviton": 20.0
      },
      "flagged": false,
@@ -1602,6 +1637,7 @@
      "fps": {
       "jetson": 14.32,
       "x86": 80.8,
+      "zen3": 42.56,
       "graviton": 38.04
      },
      "flagged": false,
@@ -1622,6 +1658,7 @@
      "fps": {
       "jetson": 39.33,
       "x86": 228.89,
+      "zen3": 114.96,
       "graviton": 103.54
      },
      "flagged": false,
@@ -1642,6 +1679,7 @@
      "fps": {
       "jetson": 70.94,
       "x86": 408.65,
+      "zen3": 219.74,
       "graviton": 199.5
      },
      "flagged": false,
@@ -1662,6 +1700,7 @@
      "fps": {
       "jetson": 79.15,
       "x86": 445.37,
+      "zen3": 230.75,
       "graviton": 217.95
      },
      "flagged": false,
@@ -1682,6 +1721,7 @@
      "fps": {
       "jetson": 30.02,
       "x86": 122.7,
+      "zen3": 76.22,
       "graviton": 74.77
      },
      "flagged": false,
@@ -1702,6 +1742,7 @@
      "fps": {
       "jetson": 47.81,
       "x86": 204.4,
+      "zen3": 122.6,
       "graviton": 123.82
      },
      "flagged": false,
@@ -1722,6 +1763,7 @@
      "fps": {
       "jetson": 17.37,
       "x86": 68.76,
+      "zen3": 40.84,
       "graviton": 46.89
      },
      "flagged": false,
@@ -1742,6 +1784,7 @@
      "fps": {
       "jetson": 22.29,
       "x86": 90.47,
+      "zen3": 52.92,
       "graviton": 60.87
      },
      "flagged": false,
@@ -1762,6 +1805,7 @@
      "fps": {
       "jetson": 85.43,
       "x86": 363.31,
+      "zen3": 231.6,
       "graviton": 207.65
      },
      "flagged": false,
@@ -1782,6 +1826,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -1802,6 +1847,7 @@
      "fps": {
       "jetson": 17.13,
       "x86": 85.13,
+      "zen3": 51.67,
       "graviton": 44.89
      },
      "flagged": false,
@@ -1822,6 +1868,7 @@
      "fps": {
       "jetson": 12.11,
       "x86": 57.92,
+      "zen3": 34.22,
       "graviton": 31.66
      },
      "flagged": false,
@@ -1842,6 +1889,7 @@
      "fps": {
       "jetson": 8.01,
       "x86": 37.96,
+      "zen3": 23.72,
       "graviton": 20.0
      },
      "flagged": false,
@@ -1862,6 +1910,7 @@
      "fps": {
       "jetson": 30.02,
       "x86": 122.7,
+      "zen3": 76.22,
       "graviton": 74.77
      },
      "flagged": false,
@@ -1879,6 +1928,7 @@
    "source": [
     "docs/results/bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr.csv",
     "docs/results/bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr-x86.csv",
+    "docs/results/bd-vs-speed-timing-zen3.json",
     "docs/results/bd-vs-speed-timing-graviton.json"
    ],
    "builds": {
@@ -1944,6 +1994,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -1964,6 +2015,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -1984,6 +2036,7 @@
      "fps": {
       "jetson": 45.73,
       "x86": 140.12,
+      "zen3": 93.77,
       "graviton": 101.75
      },
      "flagged": false,
@@ -2004,6 +2057,7 @@
      "fps": {
       "jetson": 71.87,
       "x86": 235.49,
+      "zen3": 150.0,
       "graviton": 159.03
      },
      "flagged": false,
@@ -2024,6 +2078,7 @@
      "fps": {
       "jetson": 113.34,
       "x86": 377.1,
+      "zen3": 226.31,
       "graviton": 252.28
      },
      "flagged": false,
@@ -2044,6 +2099,7 @@
      "fps": {
       "jetson": 135.36,
       "x86": 462.89,
+      "zen3": 291.56,
       "graviton": 309.41
      },
      "flagged": false,
@@ -2064,6 +2120,7 @@
      "fps": {
       "jetson": 153.25,
       "x86": 503.64,
+      "zen3": 339.48,
       "graviton": 356.69
      },
      "flagged": false,
@@ -2084,6 +2141,7 @@
      "fps": {
       "jetson": 28.91,
       "x86": 114.02,
+      "zen3": 68.61,
       "graviton": 67.49
      },
      "flagged": false,
@@ -2104,6 +2162,7 @@
      "fps": {
       "jetson": 46.57,
       "x86": 179.87,
+      "zen3": 110.88,
       "graviton": 109.84
      },
      "flagged": false,
@@ -2124,6 +2183,7 @@
      "fps": {
       "jetson": 78.0,
       "x86": 303.48,
+      "zen3": 197.98,
       "graviton": 183.58
      },
      "flagged": false,
@@ -2144,6 +2204,7 @@
      "fps": {
       "jetson": 98.9,
       "x86": 409.94,
+      "zen3": 231.53,
       "graviton": 232.32
      },
      "flagged": false,
@@ -2164,6 +2225,7 @@
      "fps": {
       "jetson": 27.25,
       "x86": 112.83,
+      "zen3": 65.12,
       "graviton": 67.0
      },
      "flagged": false,
@@ -2184,6 +2246,7 @@
      "fps": {
       "jetson": 40.87,
       "x86": 161.01,
+      "zen3": 100.93,
       "graviton": 101.75
      },
      "flagged": false,
@@ -2204,6 +2267,7 @@
      "fps": {
       "jetson": 59.59,
       "x86": 250.79,
+      "zen3": 138.44,
       "graviton": 145.13
      },
      "flagged": false,
@@ -2224,6 +2288,7 @@
      "fps": {
       "jetson": 70.17,
       "x86": 327.38,
+      "zen3": 179.47,
       "graviton": 173.62
      },
      "flagged": false,
@@ -2244,6 +2309,7 @@
      "fps": {
       "jetson": 87.66,
       "x86": 410.68,
+      "zen3": 232.88,
       "graviton": 221.48
      },
      "flagged": false,
@@ -2264,6 +2330,7 @@
      "fps": {
       "jetson": 34.53,
       "x86": 131.25,
+      "zen3": 77.32,
       "graviton": 82.43
      },
      "flagged": false,
@@ -2284,6 +2351,7 @@
      "fps": {
       "jetson": 40.7,
       "x86": 165.61,
+      "zen3": 94.15,
       "graviton": 97.61
      },
      "flagged": false,
@@ -2304,6 +2372,7 @@
      "fps": {
       "jetson": 54.15,
       "x86": 205.1,
+      "zen3": 125.24,
       "graviton": 128.73
      },
      "flagged": false,
@@ -2324,6 +2393,7 @@
      "fps": {
       "jetson": 86.48,
       "x86": 328.1,
+      "zen3": 197.53,
       "graviton": 201.68
      },
      "flagged": false,
@@ -2344,6 +2414,7 @@
      "fps": {
       "jetson": 96.46,
       "x86": 334.9,
+      "zen3": 207.78,
       "graviton": 222.51
      },
      "flagged": false,
@@ -2364,6 +2435,7 @@
      "fps": {
       "jetson": 19.3,
       "x86": 71.39,
+      "zen3": 42.84,
       "graviton": 45.07
      },
      "flagged": false,
@@ -2384,6 +2456,7 @@
      "fps": {
       "jetson": 32.51,
       "x86": 140.8,
+      "zen3": 82.93,
       "graviton": 82.93
      },
      "flagged": false,
@@ -2404,6 +2477,7 @@
      "fps": {
       "jetson": 44.64,
       "x86": 207.67,
+      "zen3": 117.75,
       "graviton": 114.45
      },
      "flagged": false,
@@ -2424,6 +2498,7 @@
      "fps": {
       "jetson": 23.34,
       "x86": 89.26,
+      "zen3": 52.99,
       "graviton": 56.88
      },
      "flagged": false,
@@ -2444,6 +2519,7 @@
      "fps": {
       "jetson": 27.04,
       "x86": 109.32,
+      "zen3": 67.2,
       "graviton": 65.91
      },
      "flagged": false,
@@ -2464,6 +2540,7 @@
      "fps": {
       "jetson": 49.43,
       "x86": 190.49,
+      "zen3": 114.81,
       "graviton": 117.83
      },
      "flagged": false,
@@ -2484,6 +2561,7 @@
      "fps": {
       "jetson": 111.47,
       "x86": 524.65,
+      "zen3": 311.39,
       "graviton": 262.54
      },
      "flagged": false,
@@ -2504,6 +2582,7 @@
      "fps": {
       "jetson": 190.53,
       "x86": 1016.98,
+      "zen3": 612.52,
       "graviton": 363.02
      },
      "flagged": false,
@@ -2524,6 +2603,7 @@
      "fps": {
       "jetson": 85.43,
       "x86": 363.31,
+      "zen3": 231.6,
       "graviton": 207.65
      },
      "flagged": false,
@@ -2544,6 +2624,7 @@
      "fps": {
       "jetson": 17.13,
       "x86": 85.13,
+      "zen3": 51.67,
       "graviton": 44.89
      },
      "flagged": false,
@@ -2564,6 +2645,7 @@
      "fps": {
       "jetson": 12.11,
       "x86": 57.92,
+      "zen3": 34.22,
       "graviton": 31.66
      },
      "flagged": false,
@@ -2584,6 +2666,7 @@
      "fps": {
       "jetson": 8.01,
       "x86": 37.96,
+      "zen3": 23.72,
       "graviton": 20.0
      },
      "flagged": false,
@@ -2604,6 +2687,7 @@
      "fps": {
       "jetson": 14.32,
       "x86": 80.8,
+      "zen3": 42.56,
       "graviton": 38.04
      },
      "flagged": false,
@@ -2624,6 +2708,7 @@
      "fps": {
       "jetson": 39.33,
       "x86": 228.89,
+      "zen3": 114.96,
       "graviton": 103.54
      },
      "flagged": false,
@@ -2644,6 +2729,7 @@
      "fps": {
       "jetson": 70.94,
       "x86": 408.65,
+      "zen3": 219.74,
       "graviton": 199.5
      },
      "flagged": false,
@@ -2664,6 +2750,7 @@
      "fps": {
       "jetson": 79.15,
       "x86": 445.37,
+      "zen3": 230.75,
       "graviton": 217.95
      },
      "flagged": false,
@@ -2684,6 +2771,7 @@
      "fps": {
       "jetson": 30.02,
       "x86": 122.7,
+      "zen3": 76.22,
       "graviton": 74.77
      },
      "flagged": false,
@@ -2704,6 +2792,7 @@
      "fps": {
       "jetson": 47.81,
       "x86": 204.4,
+      "zen3": 122.6,
       "graviton": 123.82
      },
      "flagged": false,
@@ -2724,6 +2813,7 @@
      "fps": {
       "jetson": 17.37,
       "x86": 68.76,
+      "zen3": 40.84,
       "graviton": 46.89
      },
      "flagged": false,
@@ -2744,6 +2834,7 @@
      "fps": {
       "jetson": 22.29,
       "x86": 90.47,
+      "zen3": 52.92,
       "graviton": 60.87
      },
      "flagged": false,
@@ -2764,6 +2855,7 @@
      "fps": {
       "jetson": 85.43,
       "x86": 363.31,
+      "zen3": 231.6,
       "graviton": 207.65
      },
      "flagged": false,
@@ -2784,6 +2876,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -2804,6 +2897,7 @@
      "fps": {
       "jetson": 17.13,
       "x86": 85.13,
+      "zen3": 51.67,
       "graviton": 44.89
      },
      "flagged": false,
@@ -2824,6 +2918,7 @@
      "fps": {
       "jetson": 12.11,
       "x86": 57.92,
+      "zen3": 34.22,
       "graviton": 31.66
      },
      "flagged": false,
@@ -2844,6 +2939,7 @@
      "fps": {
       "jetson": 8.01,
       "x86": 37.96,
+      "zen3": 23.72,
       "graviton": 20.0
      },
      "flagged": false,
@@ -2864,6 +2960,7 @@
      "fps": {
       "jetson": 30.02,
       "x86": 122.7,
+      "zen3": 76.22,
       "graviton": 74.77
      },
      "flagged": false,
@@ -2884,6 +2981,7 @@
      "fps": {
       "jetson": 47.81,
       "x86": 204.4,
+      "zen3": 122.6,
       "graviton": 123.82
      },
      "flagged": false,
@@ -2901,6 +2999,7 @@
    "source": [
     "docs/results/bd-vs-speed-vs-x264-medium-psnr.csv",
     "docs/results/bd-vs-speed-vs-x264-medium-psnr-x86.csv",
+    "docs/results/bd-vs-speed-timing-zen3.json",
     "docs/results/bd-vs-speed-timing-graviton.json"
    ],
    "builds": {
@@ -2966,6 +3065,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -2986,6 +3086,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -3006,6 +3107,7 @@
      "fps": {
       "jetson": 44.51,
       "x86": 140.85,
+      "zen3": 93.77,
       "graviton": 101.75
      },
      "flagged": false,
@@ -3026,6 +3128,7 @@
      "fps": {
       "jetson": 69.38,
       "x86": 216.0,
+      "zen3": 150.0,
       "graviton": 159.03
      },
      "flagged": false,
@@ -3046,6 +3149,7 @@
      "fps": {
       "jetson": 112.6,
       "x86": 363.65,
+      "zen3": 226.31,
       "graviton": 252.28
      },
      "flagged": false,
@@ -3066,6 +3170,7 @@
      "fps": {
       "jetson": 133.45,
       "x86": 430.77,
+      "zen3": 291.56,
       "graviton": 309.41
      },
      "flagged": false,
@@ -3086,6 +3191,7 @@
      "fps": {
       "jetson": 154.27,
       "x86": 501.49,
+      "zen3": 339.48,
       "graviton": 356.69
      },
      "flagged": false,
@@ -3106,6 +3212,7 @@
      "fps": {
       "jetson": 28.17,
       "x86": 105.94,
+      "zen3": 68.61,
       "graviton": 67.49
      },
      "flagged": false,
@@ -3126,6 +3233,7 @@
      "fps": {
       "jetson": 46.23,
       "x86": 171.74,
+      "zen3": 110.88,
       "graviton": 109.84
      },
      "flagged": false,
@@ -3146,6 +3254,7 @@
      "fps": {
       "jetson": 77.12,
       "x86": 308.9,
+      "zen3": 197.98,
       "graviton": 183.58
      },
      "flagged": false,
@@ -3166,6 +3275,7 @@
      "fps": {
       "jetson": 97.19,
       "x86": 390.79,
+      "zen3": 231.53,
       "graviton": 232.32
      },
      "flagged": false,
@@ -3186,6 +3296,7 @@
      "fps": {
       "jetson": 26.8,
       "x86": 99.2,
+      "zen3": 65.12,
       "graviton": 67.0
      },
      "flagged": false,
@@ -3206,6 +3317,7 @@
      "fps": {
       "jetson": 41.92,
       "x86": 157.84,
+      "zen3": 100.93,
       "graviton": 101.75
      },
      "flagged": false,
@@ -3226,6 +3338,7 @@
      "fps": {
       "jetson": 66.86,
       "x86": 290.05,
+      "zen3": 138.44,
       "graviton": 145.13
      },
      "flagged": false,
@@ -3246,6 +3359,7 @@
      "fps": {
       "jetson": 80.51,
       "x86": 340.91,
+      "zen3": 179.47,
       "graviton": 173.62
      },
      "flagged": false,
@@ -3266,6 +3380,7 @@
      "fps": {
       "jetson": 32.49,
       "x86": 120.58,
+      "zen3": 77.32,
       "graviton": 82.43
      },
      "flagged": false,
@@ -3286,6 +3401,7 @@
      "fps": {
       "jetson": 38.31,
       "x86": 143.95,
+      "zen3": 94.15,
       "graviton": 97.61
      },
      "flagged": false,
@@ -3306,6 +3422,7 @@
      "fps": {
       "jetson": 49.8,
       "x86": 184.66,
+      "zen3": 125.24,
       "graviton": 128.73
      },
      "flagged": false,
@@ -3326,6 +3443,7 @@
      "fps": {
       "jetson": 81.14,
       "x86": 293.97,
+      "zen3": 197.53,
       "graviton": 201.68
      },
      "flagged": false,
@@ -3346,6 +3464,7 @@
      "fps": {
       "jetson": 91.11,
       "x86": 308.24,
+      "zen3": 207.78,
       "graviton": 222.51
      },
      "flagged": false,
@@ -3366,6 +3485,7 @@
      "fps": {
       "jetson": 19.04,
       "x86": 70.02,
+      "zen3": 42.84,
       "graviton": 45.07
      },
      "flagged": false,
@@ -3386,6 +3506,7 @@
      "fps": {
       "jetson": 31.86,
       "x86": 133.64,
+      "zen3": 82.93,
       "graviton": 82.93
      },
      "flagged": false,
@@ -3406,6 +3527,7 @@
      "fps": {
       "jetson": 43.88,
       "x86": 190.46,
+      "zen3": 117.75,
       "graviton": 114.45
      },
      "flagged": false,
@@ -3426,6 +3548,7 @@
      "fps": {
       "jetson": 22.71,
       "x86": 82.7,
+      "zen3": 52.99,
       "graviton": 56.88
      },
      "flagged": false,
@@ -3446,6 +3569,7 @@
      "fps": {
       "jetson": 27.6,
       "x86": 106.37,
+      "zen3": 67.2,
       "graviton": 65.91
      },
      "flagged": false,
@@ -3466,6 +3590,7 @@
      "fps": {
       "jetson": 48.07,
       "x86": 185.05,
+      "zen3": 114.81,
       "graviton": 117.83
      },
      "flagged": false,
@@ -3486,6 +3611,7 @@
      "fps": {
       "jetson": 111.47,
       "x86": 524.65,
+      "zen3": 311.39,
       "graviton": 262.54
      },
      "flagged": false,
@@ -3506,6 +3632,7 @@
      "fps": {
       "jetson": 190.53,
       "x86": 1016.98,
+      "zen3": 612.52,
       "graviton": 363.02
      },
      "flagged": false,
@@ -3526,6 +3653,7 @@
      "fps": {
       "jetson": 85.43,
       "x86": 363.31,
+      "zen3": 231.6,
       "graviton": 207.65
      },
      "flagged": false,
@@ -3546,6 +3674,7 @@
      "fps": {
       "jetson": 17.13,
       "x86": 85.13,
+      "zen3": 51.67,
       "graviton": 44.89
      },
      "flagged": false,
@@ -3566,6 +3695,7 @@
      "fps": {
       "jetson": 12.11,
       "x86": 57.92,
+      "zen3": 34.22,
       "graviton": 31.66
      },
      "flagged": false,
@@ -3586,6 +3716,7 @@
      "fps": {
       "jetson": 8.01,
       "x86": 37.96,
+      "zen3": 23.72,
       "graviton": 20.0
      },
      "flagged": false,
@@ -3606,6 +3737,7 @@
      "fps": {
       "jetson": 14.32,
       "x86": 80.8,
+      "zen3": 42.56,
       "graviton": 38.04
      },
      "flagged": false,
@@ -3626,6 +3758,7 @@
      "fps": {
       "jetson": 39.33,
       "x86": 228.89,
+      "zen3": 114.96,
       "graviton": 103.54
      },
      "flagged": false,
@@ -3646,6 +3779,7 @@
      "fps": {
       "jetson": 70.94,
       "x86": 408.65,
+      "zen3": 219.74,
       "graviton": 199.5
      },
      "flagged": false,
@@ -3666,6 +3800,7 @@
      "fps": {
       "jetson": 79.15,
       "x86": 445.37,
+      "zen3": 230.75,
       "graviton": 217.95
      },
      "flagged": false,
@@ -3686,6 +3821,7 @@
      "fps": {
       "jetson": 30.02,
       "x86": 122.7,
+      "zen3": 76.22,
       "graviton": 74.77
      },
      "flagged": false,
@@ -3706,6 +3842,7 @@
      "fps": {
       "jetson": 47.81,
       "x86": 204.4,
+      "zen3": 122.6,
       "graviton": 123.82
      },
      "flagged": false,
@@ -3726,6 +3863,7 @@
      "fps": {
       "jetson": 17.37,
       "x86": 68.76,
+      "zen3": 40.84,
       "graviton": 46.89
      },
      "flagged": false,
@@ -3746,6 +3884,7 @@
      "fps": {
       "jetson": 22.29,
       "x86": 90.47,
+      "zen3": 52.92,
       "graviton": 60.87
      },
      "flagged": false,
@@ -3766,6 +3905,7 @@
      "fps": {
       "jetson": 26.67,
       "x86": 112.77,
+      "zen3": 71.09,
       "graviton": 64.02
      },
      "flagged": false,
@@ -3786,6 +3926,7 @@
      "fps": {
       "jetson": 12.11,
       "x86": 57.92,
+      "zen3": 34.22,
       "graviton": 31.66
      },
      "flagged": false,
@@ -3806,6 +3947,7 @@
      "fps": {
       "jetson": 8.01,
       "x86": 37.96,
+      "zen3": 23.72,
       "graviton": 20.0
      },
      "flagged": false,
@@ -3826,6 +3968,7 @@
      "fps": {
       "jetson": 47.81,
       "x86": 204.4,
+      "zen3": 122.6,
       "graviton": 123.82
      },
      "flagged": false,
@@ -3847,6 +3990,7 @@
     "docs/results/fixed-qp-lens-2026-11-17.csv",
     "docs/results/fixed-qp-timing-jetson.json",
     "docs/results/fixed-qp-timing-x86.json",
+    "docs/results/fixed-qp-timing-zen3.json",
     "docs/results/fixed-qp-timing-graviton.json"
    ],
    "speed": {
@@ -3863,6 +4007,13 @@
      "frames": 130,
      "quantizers": 6,
      "build": "b11b2f83 (2860f897 for 6, d40f86b3 for 1)"
+    },
+    "zen3": {
+     "platform": "AMD EPYC 7R13 Processor, one thread pinned to vCPU 1, the SMT sibling of vCPU 0 (left to the system) (AWS c6a.large, Zen 3, one encode at a time)",
+     "sequences": 12,
+     "frames": 130,
+     "quantizers": 6,
+     "build": "2ec3255c"
     },
     "graviton": {
      "platform": "Neoverse-V2, one thread pinned to one physical core (AWS c8g.large, Graviton4, one encode at a time)",
@@ -3945,6 +4096,7 @@
      "fps": {
       "jetson": 57.2,
       "x86": 224.8,
+      "zen3": 130.1,
       "graviton": 144.4
      }
     },
@@ -3963,6 +4115,7 @@
      "fps": {
       "jetson": 41.2,
       "x86": 166.7,
+      "zen3": 98.3,
       "graviton": 108.1
      }
     },
@@ -3981,6 +4134,7 @@
      "fps": {
       "jetson": null,
       "x86": 0.7,
+      "zen3": 0.4,
       "graviton": null
      }
     },
@@ -3999,6 +4153,7 @@
      "fps": {
       "jetson": 90.7,
       "x86": 304.9,
+      "zen3": 192.8,
       "graviton": 214.5
      }
     },
@@ -4017,6 +4172,7 @@
      "fps": {
       "jetson": 143.7,
       "x86": 526.5,
+      "zen3": 316.1,
       "graviton": 333.6
      }
     },
@@ -4035,6 +4191,7 @@
      "fps": {
       "jetson": 203.4,
       "x86": 786.4,
+      "zen3": 460.2,
       "graviton": 469.9
      }
     },
@@ -4053,6 +4210,7 @@
      "fps": {
       "jetson": 56.8,
       "x86": 192.1,
+      "zen3": 118.6,
       "graviton": 130.0
      }
     },
@@ -4071,6 +4229,7 @@
      "fps": {
       "jetson": 244.9,
       "x86": 1055.0,
+      "zen3": 573.0,
       "graviton": 605.0
      }
     },
@@ -4089,6 +4248,7 @@
      "fps": {
       "jetson": 87.4,
       "x86": 305.7,
+      "zen3": 182.2,
       "graviton": 194.5
      }
     },
@@ -4107,6 +4267,7 @@
      "fps": {
       "jetson": 129.2,
       "x86": 480.9,
+      "zen3": 276.1,
       "graviton": 295.7
      }
     },
@@ -4125,6 +4286,7 @@
      "fps": {
       "jetson": 42.2,
       "x86": 120.1,
+      "zen3": 73.3,
       "graviton": 78.3
      }
     },
@@ -4143,6 +4305,7 @@
      "fps": {
       "jetson": 160.3,
       "x86": 455.7,
+      "zen3": 292.1,
       "graviton": 336.1
      }
     },
@@ -4161,6 +4324,7 @@
      "fps": {
       "jetson": 273.0,
       "x86": 811.8,
+      "zen3": 508.7,
       "graviton": 569.6
      }
     },
@@ -4179,6 +4343,7 @@
      "fps": {
       "jetson": 316.6,
       "x86": 929.7,
+      "zen3": 581.1,
       "graviton": 664.0
      }
     },
@@ -4197,6 +4362,7 @@
      "fps": {
       "jetson": 100.4,
       "x86": 283.6,
+      "zen3": 186.7,
       "graviton": 208.3
      }
     },
@@ -4215,6 +4381,7 @@
      "fps": {
       "jetson": 348.4,
       "x86": 1027.2,
+      "zen3": 639.4,
       "graviton": 728.4
      }
     },
@@ -4233,6 +4400,7 @@
      "fps": {
       "jetson": 78.2,
       "x86": 232.0,
+      "zen3": 150.6,
       "graviton": 159.2
      }
     },
@@ -4251,6 +4419,7 @@
      "fps": {
       "jetson": 147.4,
       "x86": 477.4,
+      "zen3": 303.8,
       "graviton": 320.8
      }
     },
@@ -4269,6 +4438,7 @@
      "fps": {
       "jetson": 182.2,
       "x86": 627.1,
+      "zen3": 391.5,
       "graviton": 398.5
      }
     },
@@ -4287,6 +4457,7 @@
      "fps": {
       "jetson": 36.6,
       "x86": 102.5,
+      "zen3": 67.5,
       "graviton": 69.2
      }
     },
@@ -4305,6 +4476,7 @@
      "fps": {
       "jetson": 83.5,
       "x86": 284.1,
+      "zen3": 169.5,
       "graviton": 186.5
      }
     },
@@ -4323,6 +4495,7 @@
      "fps": {
       "jetson": 132.7,
       "x86": 477.6,
+      "zen3": 275.3,
       "graviton": 300.4
      }
     },
@@ -4341,6 +4514,7 @@
      "fps": {
       "jetson": 195.8,
       "x86": 684.5,
+      "zen3": 396.2,
       "graviton": 428.2
      }
     },
@@ -4359,6 +4533,7 @@
      "fps": {
       "jetson": 73.5,
       "x86": 249.6,
+      "zen3": 149.0,
       "graviton": 163.4
      }
     },
@@ -4377,6 +4552,7 @@
      "fps": {
       "jetson": 223.1,
       "x86": 702.2,
+      "zen3": 428.7,
       "graviton": 480.9
      }
     },
@@ -4395,6 +4571,7 @@
      "fps": {
       "jetson": 47.5,
       "x86": 158.4,
+      "zen3": 98.3,
       "graviton": 104.9
      }
     },
@@ -4413,6 +4590,7 @@
      "fps": {
       "jetson": 88.4,
       "x86": 277.6,
+      "zen3": 177.1,
       "graviton": 192.5
      }
     },
@@ -4431,6 +4609,7 @@
      "fps": {
       "jetson": 41.0,
       "x86": 130.8,
+      "zen3": 83.7,
       "graviton": 91.8
      }
     },
@@ -4449,6 +4628,7 @@
      "fps": {
       "jetson": 258.9,
       "x86": 1049.2,
+      "zen3": 678.2,
       "graviton": 542.8
      }
     },
@@ -4467,6 +4647,7 @@
      "fps": {
       "jetson": 99.0,
       "x86": 518.9,
+      "zen3": 278.7,
       "graviton": 249.0
      }
     },
@@ -4485,6 +4666,7 @@
      "fps": {
       "jetson": 178.1,
       "x86": 899.0,
+      "zen3": 469.5,
       "graviton": 431.4
      }
     },
@@ -4503,6 +4685,7 @@
      "fps": {
       "jetson": 196.1,
       "x86": 984.1,
+      "zen3": 515.7,
       "graviton": 474.4
      }
     },
@@ -4521,6 +4704,7 @@
      "fps": {
       "jetson": null,
       "x86": 168.8,
+      "zen3": 89.6,
       "graviton": 80.1
      }
     },
@@ -4539,6 +4723,7 @@
      "fps": {
       "jetson": null,
       "x86": 24.3,
+      "zen3": 15.4,
       "graviton": 13.7
      }
     },
@@ -4557,6 +4742,7 @@
      "fps": {
       "jetson": 80.3,
       "x86": 310.9,
+      "zen3": 199.9,
       "graviton": 184.2
      }
     },
@@ -4575,6 +4761,7 @@
      "fps": {
       "jetson": 126.8,
       "x86": 494.8,
+      "zen3": 312.9,
       "graviton": 289.1
      }
     },
@@ -4593,6 +4780,7 @@
      "fps": {
       "jetson": null,
       "x86": 17.1,
+      "zen3": 10.2,
       "graviton": null
      }
     },
@@ -4611,6 +4799,7 @@
      "fps": {
       "jetson": 50.6,
       "x86": 186.0,
+      "zen3": 119.9,
       "graviton": 103.8
      }
     },
@@ -4629,6 +4818,7 @@
      "fps": {
       "jetson": 412.2,
       "x86": 1764.5,
+      "zen3": 1112.0,
       "graviton": 745.1
      }
     },
@@ -4647,6 +4837,7 @@
      "fps": {
       "jetson": 184.2,
       "x86": 674.5,
+      "zen3": 436.0,
       "graviton": 389.6
      }
     },
@@ -4665,6 +4856,7 @@
      "fps": {
       "jetson": null,
       "x86": 41.6,
+      "zen3": 26.5,
       "graviton": 24.5
      }
     },
@@ -4683,6 +4875,7 @@
      "fps": {
       "jetson": 17.3,
       "x86": 73.9,
+      "zen3": 45.9,
       "graviton": 40.2
      }
     },
@@ -4701,6 +4894,7 @@
      "fps": {
       "jetson": null,
       "x86": 24.9,
+      "zen3": 15.1,
       "graviton": 13.7
      }
     },
@@ -4719,6 +4913,7 @@
      "fps": {
       "jetson": 27.2,
       "x86": 118.7,
+      "zen3": 71.8,
       "graviton": 63.8
      }
     },
@@ -4737,6 +4932,7 @@
      "fps": {
       "jetson": 38.9,
       "x86": 182.2,
+      "zen3": 111.3,
       "graviton": 93.2
      }
     }
@@ -4792,6 +4988,7 @@
      "fps": {
       "jetson": null,
       "x86": 195.5,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4813,6 +5010,7 @@
      "fps": {
       "jetson": null,
       "x86": 142.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4834,6 +5032,7 @@
      "fps": {
       "jetson": null,
       "x86": 263.4,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4855,6 +5054,7 @@
      "fps": {
       "jetson": null,
       "x86": 437.2,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4876,6 +5076,7 @@
      "fps": {
       "jetson": null,
       "x86": 369.5,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4897,6 +5098,7 @@
      "fps": {
       "jetson": null,
       "x86": 585.1,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4918,6 +5120,7 @@
      "fps": {
       "jetson": null,
       "x86": 787.0,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4939,6 +5142,7 @@
      "fps": {
       "jetson": null,
       "x86": 242.1,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4960,6 +5164,7 @@
      "fps": {
       "jetson": null,
       "x86": 311.0,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -4981,6 +5186,7 @@
      "fps": {
       "jetson": null,
       "x86": 455.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5002,6 +5208,7 @@
      "fps": {
       "jetson": null,
       "x86": 147.0,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5023,6 +5230,7 @@
      "fps": {
       "jetson": null,
       "x86": 528.4,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5044,6 +5252,7 @@
      "fps": {
       "jetson": null,
       "x86": 885.1,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5065,6 +5274,7 @@
      "fps": {
       "jetson": null,
       "x86": 1100.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5086,6 +5296,7 @@
      "fps": {
       "jetson": null,
       "x86": 328.8,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5107,6 +5318,7 @@
      "fps": {
       "jetson": null,
       "x86": 1228.0,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5128,6 +5340,7 @@
      "fps": {
       "jetson": null,
       "x86": 378.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5149,6 +5362,7 @@
      "fps": {
       "jetson": null,
       "x86": 695.3,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5170,6 +5384,7 @@
      "fps": {
       "jetson": null,
       "x86": 914.8,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5191,6 +5406,7 @@
      "fps": {
       "jetson": null,
       "x86": 227.8,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5212,6 +5428,7 @@
      "fps": {
       "jetson": null,
       "x86": 345.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5233,6 +5450,7 @@
      "fps": {
       "jetson": null,
       "x86": 489.0,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5254,6 +5472,7 @@
      "fps": {
       "jetson": null,
       "x86": 735.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5275,6 +5494,7 @@
      "fps": {
       "jetson": null,
       "x86": 299.0,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5296,6 +5516,7 @@
      "fps": {
       "jetson": null,
       "x86": 751.9,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5317,6 +5538,7 @@
      "fps": {
       "jetson": null,
       "x86": 258.5,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5338,6 +5560,7 @@
      "fps": {
       "jetson": null,
       "x86": 451.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5359,6 +5582,7 @@
      "fps": {
       "jetson": null,
       "x86": 210.6,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5380,6 +5604,7 @@
      "fps": {
       "jetson": null,
       "x86": 1178.6,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5401,6 +5626,7 @@
      "fps": {
       "jetson": null,
       "x86": 537.1,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5422,6 +5648,7 @@
      "fps": {
       "jetson": null,
       "x86": 912.6,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5443,6 +5670,7 @@
      "fps": {
       "jetson": null,
       "x86": 1001.2,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5464,6 +5692,7 @@
      "fps": {
       "jetson": null,
       "x86": 174.1,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5485,6 +5714,7 @@
      "fps": {
       "jetson": null,
       "x86": 2101.3,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5506,6 +5736,7 @@
      "fps": {
       "jetson": null,
       "x86": 839.7,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5527,6 +5758,7 @@
      "fps": {
       "jetson": null,
       "x86": 99.3,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5548,6 +5780,7 @@
      "fps": {
       "jetson": null,
       "x86": 155.1,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5569,6 +5802,7 @@
      "fps": {
       "jetson": null,
       "x86": 222.2,
+      "zen3": null,
       "graviton": null
      }
     },
@@ -5587,6 +5821,7 @@
      "fps": {
       "jetson": null,
       "x86": 265.4,
+      "zen3": null,
       "graviton": null
      }
     }
@@ -5594,6 +5829,7 @@
   }
  ],
  "timing_builds": {
+  "zen3": "2ec3255c",
   "graviton": "2caf7d21 (2860f897 for 1)"
  },
  "ladder_kbps": [

@@ -26,16 +26,17 @@
 </div>
 <main>
   <h1>Speed</h1>
-  <p class="lede">Single-thread encode speed of every preset and reference on an embedded Arm core, an x86 core and a
-    server Arm core, the
+  <p class="lede">Single-thread encode speed of every preset and reference on an embedded Arm core, two x86 cores
+    (with and without AVX-512) and a server Arm core, the
     browser (WebAssembly) build, hardware encoders for scale, and how our decoders compare with the
     established ones.</p>
   <div id="speed">
     <h2 id="encode">Encode, one core</h2>
     <p class="prose">Encode CPU time per frame at 720p, one thread, at a fixed quantizer chosen for each encoder to
       land near the chart's middle rung on three development clips; real-time CBR costs our encoders slightly more.
-      The Jetson core's clock is locked; on x86 (a rented AMD EPYC 9R45, Zen 5) and on server Arm (a rented AWS
-      Graviton4, Neoverse V2) each run is paired with an x264 run in the same round, one pair at a time.</p>
+      The Jetson core's clock is locked; on x86 (a rented AMD EPYC 9R45, Zen 5, and a rented AMD EPYC 7R13, Zen 3,
+      which has no AVX-512, so every encoder runs its AVX2 code) and on server Arm (a rented AWS Graviton4, Neoverse
+      V2) each run is paired with an x264 run in the same round, one pair at a time.</p>
     <p class="note platforms"></p>
     <div class="encode"></div>
     <h2 id="browser">In the browser (WebAssembly)</h2>

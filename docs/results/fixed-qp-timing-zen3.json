@@ -1,0 +1,843 @@
+{
+ "platform": "AMD EPYC 7R13 Processor, one thread pinned to vCPU 1, the SMT sibling of vCPU 0 (left to the system) (AWS c6a.large, Zen 3, one encode at a time)",
+ "condition": "aom-ld",
+ "frames": 130,
+ "sequences": [
+  "BlueSky_360p25_v2",
+  "ControlledBurn_1280x720p30_420",
+  "FourPeople_480x270_60",
+  "Johnny_1280x720_60",
+  "KristenAndSara_1280x720_60",
+  "RedKayak_360_2997",
+  "SnowMountain_640x360_2997",
+  "SpeedBag_640x360_2997",
+  "Stockholm_640x360_5994",
+  "TouchdownPass_640x360_2997",
+  "Vertical_Bayshore_270x480_2997",
+  "WestWindEasy_1280x720p30_420"
+ ],
+ "quantizers_timed": {
+  "aom-rt-s10": 6,
+  "aom-rt-s8": 6,
+  "hm-ldp": 2,
+  "nanocodec-av1": 6,
+  "nanocodec-av1@fast": 6,
+  "nanocodec-av1@faster": 6,
+  "nanocodec-av1@slow": 6,
+  "nanocodec-av1@veryfast": 6,
+  "nanocodec-av2": 6,
+  "nanocodec-av2@fast": 6,
+  "nanocodec-av2@slow": 6,
+  "nanocodec-h264": 6,
+  "nanocodec-h264@fast": 6,
+  "nanocodec-h264@faster": 6,
+  "nanocodec-h264@slow": 6,
+  "nanocodec-h264@veryfast": 6,
+  "nanocodec-hevc": 6,
+  "nanocodec-hevc@fast": 6,
+  "nanocodec-hevc@faster": 6,
+  "nanocodec-hevc@slow": 6,
+  "nanocodec-vp9": 6,
+  "nanocodec-vp9@fast": 6,
+  "nanocodec-vp9@faster": 6,
+  "nanocodec-vp9@slow": 6,
+  "nanocodec-vp9@veryfast": 6,
+  "nanocodec-vvc": 6,
+  "nanocodec-vvc@fast": 6,
+  "nanocodec-vvc@slow": 6,
+  "openh264-baseline": 6,
+  "svtav1-m10": 6,
+  "svtav1-m12": 6,
+  "svtav1-m13": 6,
+  "svtav1-m8": 6,
+  "vpx-vp9-good-s2": 6,
+  "vpx-vp9-rt-s7": 6,
+  "vpx-vp9-rt-s9": 6,
+  "vvenc-faster-ld": 6,
+  "x264-medium": 6,
+  "x264-ultrafast": 6,
+  "x264-veryfast": 6,
+  "x264-veryslow": 6,
+  "x265-medium": 6,
+  "x265-slow": 6,
+  "x265-superfast": 6,
+  "x265-ultrafast": 6
+ },
+ "nanocodec_version": "nanocodec 0.2.0 2ec3255cb04c4fef49e19e4e21dbb2828fa1ce40",
+ "build": "2ec3255c",
+ "rounds": {
+  "per_encode": [
+   1,
+   3
+  ],
+  "repeat_max_estimate_s": 20.0
+ },
+ "note": "CPU time (user + system) of each encode, median of its rounds; ms_per_frame per sequence over all its quantizers; fps = 1000 / the geometric mean of ms_per_frame over the sequences",
+ "points": {
+  "aom-rt-s10": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 13.8877,
+    "KristenAndSara_1280x720_60": 14.0888,
+    "ControlledBurn_1280x720p30_420": 23.9579,
+    "WestWindEasy_1280x720p30_420": 31.3873,
+    "BlueSky_360p25_v2": 6.3174,
+    "Stockholm_640x360_5994": 5.9433,
+    "RedKayak_360_2997": 10.3618,
+    "SnowMountain_640x360_2997": 3.5349,
+    "SpeedBag_640x360_2997": 4.5608,
+    "TouchdownPass_640x360_2997": 5.1943,
+    "FourPeople_480x270_60": 2.52,
+    "Vertical_Bayshore_270x480_2997": 3.5197
+   },
+   "fps": 130.1
+  },
+  "aom-rt-s8": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 17.2687,
+    "KristenAndSara_1280x720_60": 17.8021,
+    "ControlledBurn_1280x720p30_420": 30.3099,
+    "WestWindEasy_1280x720p30_420": 36.4255,
+    "BlueSky_360p25_v2": 8.9237,
+    "Stockholm_640x360_5994": 8.4009,
+    "RedKayak_360_2997": 13.8406,
+    "SnowMountain_640x360_2997": 5.3344,
+    "SpeedBag_640x360_2997": 6.3454,
+    "TouchdownPass_640x360_2997": 7.3149,
+    "FourPeople_480x270_60": 3.284,
+    "Vertical_Bayshore_270x480_2997": 4.2703
+   },
+   "fps": 98.3
+  },
+  "hm-ldp": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 4921.2343,
+    "KristenAndSara_1280x720_60": 5136.7033,
+    "ControlledBurn_1280x720p30_420": 7697.6081,
+    "WestWindEasy_1280x720p30_420": 8929.4506,
+    "BlueSky_360p25_v2": 1756.1307,
+    "Stockholm_640x360_5994": 1417.6518,
+    "RedKayak_360_2997": 3032.7003,
+    "SnowMountain_640x360_2997": 1149.9213,
+    "SpeedBag_640x360_2997": 1570.2763,
+    "TouchdownPass_640x360_2997": 1529.7742,
+    "FourPeople_480x270_60": 737.2115,
+    "Vertical_Bayshore_270x480_2997": 990.9411
+   },
+   "fps": 0.4
+  },
+  "nanocodec-av1": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 7.1008,
+    "KristenAndSara_1280x720_60": 7.0492,
+    "ControlledBurn_1280x720p30_420": 15.359,
+    "WestWindEasy_1280x720p30_420": 21.5857,
+    "BlueSky_360p25_v2": 5.5417,
+    "Stockholm_640x360_5994": 4.6462,
+    "RedKayak_360_2997": 8.9714,
+    "SnowMountain_640x360_2997": 2.4224,
+    "SpeedBag_640x360_2997": 2.5872,
+    "TouchdownPass_640x360_2997": 3.7487,
+    "FourPeople_480x270_60": 1.5407,
+    "Vertical_Bayshore_270x480_2997": 2.7378
+   },
+   "fps": 192.8
+  },
+  "nanocodec-av1@fast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 4.7375,
+    "KristenAndSara_1280x720_60": 4.7405,
+    "ControlledBurn_1280x720p30_420": 9.8584,
+    "WestWindEasy_1280x720p30_420": 12.9758,
+    "BlueSky_360p25_v2": 3.1116,
+    "Stockholm_640x360_5994": 2.6671,
+    "RedKayak_360_2997": 5.0188,
+    "SnowMountain_640x360_2997": 1.2608,
+    "SpeedBag_640x360_2997": 1.8322,
+    "TouchdownPass_640x360_2997": 2.2447,
+    "FourPeople_480x270_60": 0.9712,
+    "Vertical_Bayshore_270x480_2997": 1.6698
+   },
+   "fps": 316.1
+  },
+  "nanocodec-av1@faster": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 3.1479,
+    "KristenAndSara_1280x720_60": 3.1903,
+    "ControlledBurn_1280x720p30_420": 6.7884,
+    "WestWindEasy_1280x720p30_420": 8.2822,
+    "BlueSky_360p25_v2": 1.9465,
+    "Stockholm_640x360_5994": 1.5208,
+    "RedKayak_360_2997": 3.3714,
+    "SnowMountain_640x360_2997": 0.8707,
+    "SpeedBag_640x360_2997": 1.453,
+    "TouchdownPass_640x360_2997": 1.592,
+    "FourPeople_480x270_60": 0.8413,
+    "Vertical_Bayshore_270x480_2997": 1.1621
+   },
+   "fps": 460.2
+  },
+  "nanocodec-av1@slow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 11.0149,
+    "KristenAndSara_1280x720_60": 10.6174,
+    "ControlledBurn_1280x720p30_420": 23.479,
+    "WestWindEasy_1280x720p30_420": 36.3924,
+    "BlueSky_360p25_v2": 9.8561,
+    "Stockholm_640x360_5994": 7.6122,
+    "RedKayak_360_2997": 17.9069,
+    "SnowMountain_640x360_2997": 3.8808,
+    "SpeedBag_640x360_2997": 3.9542,
+    "TouchdownPass_640x360_2997": 6.1045,
+    "FourPeople_480x270_60": 2.2787,
+    "Vertical_Bayshore_270x480_2997": 4.5228
+   },
+   "fps": 118.6
+  },
+  "nanocodec-av1@veryfast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 2.6104,
+    "KristenAndSara_1280x720_60": 2.676,
+    "ControlledBurn_1280x720p30_420": 5.3399,
+    "WestWindEasy_1280x720p30_420": 6.515,
+    "BlueSky_360p25_v2": 1.6604,
+    "Stockholm_640x360_5994": 1.2246,
+    "RedKayak_360_2997": 2.5159,
+    "SnowMountain_640x360_2997": 0.7208,
+    "SpeedBag_640x360_2997": 1.17,
+    "TouchdownPass_640x360_2997": 1.2369,
+    "FourPeople_480x270_60": 0.6204,
+    "Vertical_Bayshore_270x480_2997": 0.9925
+   },
+   "fps": 573.0
+  },
+  "nanocodec-av2": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 7.3216,
+    "KristenAndSara_1280x720_60": 7.1897,
+    "ControlledBurn_1280x720p30_420": 15.7693,
+    "WestWindEasy_1280x720p30_420": 24.0825,
+    "BlueSky_360p25_v2": 5.7161,
+    "Stockholm_640x360_5994": 4.3761,
+    "RedKayak_360_2997": 10.7351,
+    "SnowMountain_640x360_2997": 2.4619,
+    "SpeedBag_640x360_2997": 2.8086,
+    "TouchdownPass_640x360_2997": 3.9846,
+    "FourPeople_480x270_60": 1.6869,
+    "Vertical_Bayshore_270x480_2997": 3.0037
+   },
+   "fps": 182.2
+  },
+  "nanocodec-av2@fast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 5.1559,
+    "KristenAndSara_1280x720_60": 4.9946,
+    "ControlledBurn_1280x720p30_420": 10.1852,
+    "WestWindEasy_1280x720p30_420": 13.7616,
+    "BlueSky_360p25_v2": 3.6947,
+    "Stockholm_640x360_5994": 3.0603,
+    "RedKayak_360_2997": 5.8785,
+    "SnowMountain_640x360_2997": 1.744,
+    "SpeedBag_640x360_2997": 1.9521,
+    "TouchdownPass_640x360_2997": 2.6514,
+    "FourPeople_480x270_60": 1.1979,
+    "Vertical_Bayshore_270x480_2997": 1.9684
+   },
+   "fps": 276.1
+  },
+  "nanocodec-av2@slow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 15.6439,
+    "KristenAndSara_1280x720_60": 13.7752,
+    "ControlledBurn_1280x720p30_420": 32.0393,
+    "WestWindEasy_1280x720p30_420": 55.5937,
+    "BlueSky_360p25_v2": 18.8461,
+    "Stockholm_640x360_5994": 14.3854,
+    "RedKayak_360_2997": 30.3296,
+    "SnowMountain_640x360_2997": 7.3307,
+    "SpeedBag_640x360_2997": 4.8067,
+    "TouchdownPass_640x360_2997": 11.5309,
+    "FourPeople_480x270_60": 3.9701,
+    "Vertical_Bayshore_270x480_2997": 8.1934
+   },
+   "fps": 73.3
+  },
+  "nanocodec-h264": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 5.4161,
+    "KristenAndSara_1280x720_60": 5.3542,
+    "ControlledBurn_1280x720p30_420": 9.247,
+    "WestWindEasy_1280x720p30_420": 13.8028,
+    "BlueSky_360p25_v2": 2.8912,
+    "Stockholm_640x360_5994": 2.3298,
+    "RedKayak_360_2997": 8.5754,
+    "SnowMountain_640x360_2997": 1.4179,
+    "SpeedBag_640x360_2997": 1.8915,
+    "TouchdownPass_640x360_2997": 2.3918,
+    "FourPeople_480x270_60": 1.1401,
+    "Vertical_Bayshore_270x480_2997": 1.6593
+   },
+   "fps": 292.1
+  },
+  "nanocodec-h264@fast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 3.2444,
+    "KristenAndSara_1280x720_60": 3.1632,
+    "ControlledBurn_1280x720p30_420": 5.5,
+    "WestWindEasy_1280x720p30_420": 7.302,
+    "BlueSky_360p25_v2": 1.5912,
+    "Stockholm_640x360_5994": 1.2974,
+    "RedKayak_360_2997": 3.9162,
+    "SnowMountain_640x360_2997": 0.8245,
+    "SpeedBag_640x360_2997": 1.2329,
+    "TouchdownPass_640x360_2997": 1.3716,
+    "FourPeople_480x270_60": 0.7199,
+    "Vertical_Bayshore_270x480_2997": 0.9962
+   },
+   "fps": 508.7
+  },
+  "nanocodec-h264@faster": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 3.0643,
+    "KristenAndSara_1280x720_60": 2.6394,
+    "ControlledBurn_1280x720p30_420": 5.3334,
+    "WestWindEasy_1280x720p30_420": 6.113,
+    "BlueSky_360p25_v2": 1.4588,
+    "Stockholm_640x360_5994": 1.1307,
+    "RedKayak_360_2997": 3.118,
+    "SnowMountain_640x360_2997": 0.7244,
+    "SpeedBag_640x360_2997": 1.0324,
+    "TouchdownPass_640x360_2997": 1.2229,
+    "FourPeople_480x270_60": 0.6225,
+    "Vertical_Bayshore_270x480_2997": 0.874
+   },
+   "fps": 581.1
+  },
+  "nanocodec-h264@slow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 7.6116,
+    "KristenAndSara_1280x720_60": 7.658,
+    "ControlledBurn_1280x720p30_420": 14.8319,
+    "WestWindEasy_1280x720p30_420": 22.855,
+    "BlueSky_360p25_v2": 4.9009,
+    "Stockholm_640x360_5994": 3.6255,
+    "RedKayak_360_2997": 13.4297,
+    "SnowMountain_640x360_2997": 1.8769,
+    "SpeedBag_640x360_2997": 3.2169,
+    "TouchdownPass_640x360_2997": 4.1024,
+    "FourPeople_480x270_60": 1.8117,
+    "Vertical_Bayshore_270x480_2997": 2.639
+   },
+   "fps": 186.7
+  },
+  "nanocodec-h264@veryfast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 2.99,
+    "KristenAndSara_1280x720_60": 2.4181,
+    "ControlledBurn_1280x720p30_420": 4.6153,
+    "WestWindEasy_1280x720p30_420": 5.5319,
+    "BlueSky_360p25_v2": 1.3593,
+    "Stockholm_640x360_5994": 1.0462,
+    "RedKayak_360_2997": 2.773,
+    "SnowMountain_640x360_2997": 0.6765,
+    "SpeedBag_640x360_2997": 0.8955,
+    "TouchdownPass_640x360_2997": 1.1335,
+    "FourPeople_480x270_60": 0.5369,
+    "Vertical_Bayshore_270x480_2997": 0.7979
+   },
+   "fps": 639.4
+  },
+  "nanocodec-hevc": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 11.5954,
+    "KristenAndSara_1280x720_60": 11.1691,
+    "ControlledBurn_1280x720p30_420": 18.1124,
+    "WestWindEasy_1280x720p30_420": 25.2419,
+    "BlueSky_360p25_v2": 6.1335,
+    "Stockholm_640x360_5994": 5.7257,
+    "RedKayak_360_2997": 11.2408,
+    "SnowMountain_640x360_2997": 3.1204,
+    "SpeedBag_640x360_2997": 3.1175,
+    "TouchdownPass_640x360_2997": 4.9509,
+    "FourPeople_480x270_60": 1.9207,
+    "Vertical_Bayshore_270x480_2997": 3.3996
+   },
+   "fps": 150.6
+  },
+  "nanocodec-hevc@fast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 5.7348,
+    "KristenAndSara_1280x720_60": 5.7388,
+    "ControlledBurn_1280x720p30_420": 9.8128,
+    "WestWindEasy_1280x720p30_420": 12.0595,
+    "BlueSky_360p25_v2": 3.0597,
+    "Stockholm_640x360_5994": 2.6435,
+    "RedKayak_360_2997": 4.8831,
+    "SnowMountain_640x360_2997": 1.4494,
+    "SpeedBag_640x360_2997": 1.6903,
+    "TouchdownPass_640x360_2997": 2.4073,
+    "FourPeople_480x270_60": 1.0128,
+    "Vertical_Bayshore_270x480_2997": 1.7603
+   },
+   "fps": 303.8
+  },
+  "nanocodec-hevc@faster": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 4.2914,
+    "KristenAndSara_1280x720_60": 4.0767,
+    "ControlledBurn_1280x720p30_420": 7.1588,
+    "WestWindEasy_1280x720p30_420": 8.9266,
+    "BlueSky_360p25_v2": 2.5132,
+    "Stockholm_640x360_5994": 2.0794,
+    "RedKayak_360_2997": 4.0038,
+    "SnowMountain_640x360_2997": 1.133,
+    "SpeedBag_640x360_2997": 1.3336,
+    "TouchdownPass_640x360_2997": 1.902,
+    "FourPeople_480x270_60": 0.7954,
+    "Vertical_Bayshore_270x480_2997": 1.4432
+   },
+   "fps": 391.5
+  },
+  "nanocodec-hevc@slow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 22.4835,
+    "KristenAndSara_1280x720_60": 20.6545,
+    "ControlledBurn_1280x720p30_420": 41.4299,
+    "WestWindEasy_1280x720p30_420": 64.1346,
+    "BlueSky_360p25_v2": 15.7803,
+    "Stockholm_640x360_5994": 12.9451,
+    "RedKayak_360_2997": 33.2015,
+    "SnowMountain_640x360_2997": 6.9629,
+    "SpeedBag_640x360_2997": 5.8266,
+    "TouchdownPass_640x360_2997": 11.002,
+    "FourPeople_480x270_60": 3.8885,
+    "Vertical_Bayshore_270x480_2997": 7.6288
+   },
+   "fps": 67.5
+  },
+  "nanocodec-vp9": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 8.2385,
+    "KristenAndSara_1280x720_60": 8.0338,
+    "ControlledBurn_1280x720p30_420": 15.8813,
+    "WestWindEasy_1280x720p30_420": 23.9784,
+    "BlueSky_360p25_v2": 6.3535,
+    "Stockholm_640x360_5994": 5.0401,
+    "RedKayak_360_2997": 12.2391,
+    "SnowMountain_640x360_2997": 2.5221,
+    "SpeedBag_640x360_2997": 2.9016,
+    "TouchdownPass_640x360_2997": 4.3516,
+    "FourPeople_480x270_60": 1.7897,
+    "Vertical_Bayshore_270x480_2997": 3.1523
+   },
+   "fps": 169.5
+  },
+  "nanocodec-vp9@fast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 5.7748,
+    "KristenAndSara_1280x720_60": 5.8621,
+    "ControlledBurn_1280x720p30_420": 11.6331,
+    "WestWindEasy_1280x720p30_420": 14.6477,
+    "BlueSky_360p25_v2": 3.3201,
+    "Stockholm_640x360_5994": 2.5272,
+    "RedKayak_360_2997": 6.1744,
+    "SnowMountain_640x360_2997": 1.5318,
+    "SpeedBag_640x360_2997": 2.1614,
+    "TouchdownPass_640x360_2997": 2.5069,
+    "FourPeople_480x270_60": 1.1948,
+    "Vertical_Bayshore_270x480_2997": 1.7771
+   },
+   "fps": 275.3
+  },
+  "nanocodec-vp9@faster": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 4.1438,
+    "KristenAndSara_1280x720_60": 4.0557,
+    "ControlledBurn_1280x720p30_420": 6.8705,
+    "WestWindEasy_1280x720p30_420": 8.3055,
+    "BlueSky_360p25_v2": 2.4475,
+    "Stockholm_640x360_5994": 2.1821,
+    "RedKayak_360_2997": 3.1965,
+    "SnowMountain_640x360_2997": 1.2948,
+    "SpeedBag_640x360_2997": 1.4276,
+    "TouchdownPass_640x360_2997": 1.8898,
+    "FourPeople_480x270_60": 0.8791,
+    "Vertical_Bayshore_270x480_2997": 1.3286
+   },
+   "fps": 396.2
+  },
+  "nanocodec-vp9@slow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 10.0618,
+    "KristenAndSara_1280x720_60": 9.8526,
+    "ControlledBurn_1280x720p30_420": 17.8887,
+    "WestWindEasy_1280x720p30_420": 25.716,
+    "BlueSky_360p25_v2": 7.1096,
+    "Stockholm_640x360_5994": 5.6055,
+    "RedKayak_360_2997": 12.6975,
+    "SnowMountain_640x360_2997": 2.9376,
+    "SpeedBag_640x360_2997": 3.5002,
+    "TouchdownPass_640x360_2997": 4.8513,
+    "FourPeople_480x270_60": 2.01,
+    "Vertical_Bayshore_270x480_2997": 3.5975
+   },
+   "fps": 149.0
+  },
+  "nanocodec-vp9@veryfast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 3.4079,
+    "KristenAndSara_1280x720_60": 3.4291,
+    "ControlledBurn_1280x720p30_420": 6.5949,
+    "WestWindEasy_1280x720p30_420": 8.7639,
+    "BlueSky_360p25_v2": 2.4619,
+    "Stockholm_640x360_5994": 1.964,
+    "RedKayak_360_2997": 3.2699,
+    "SnowMountain_640x360_2997": 1.124,
+    "SpeedBag_640x360_2997": 1.3439,
+    "TouchdownPass_640x360_2997": 1.6487,
+    "FourPeople_480x270_60": 0.7811,
+    "Vertical_Bayshore_270x480_2997": 1.2503
+   },
+   "fps": 428.7
+  },
+  "nanocodec-vvc": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 15.6178,
+    "KristenAndSara_1280x720_60": 14.7291,
+    "ControlledBurn_1280x720p30_420": 29.3334,
+    "WestWindEasy_1280x720p30_420": 38.1579,
+    "BlueSky_360p25_v2": 9.264,
+    "Stockholm_640x360_5994": 8.8096,
+    "RedKayak_360_2997": 27.0336,
+    "SnowMountain_640x360_2997": 4.4161,
+    "SpeedBag_640x360_2997": 4.6303,
+    "TouchdownPass_640x360_2997": 7.4299,
+    "FourPeople_480x270_60": 3.0032,
+    "Vertical_Bayshore_270x480_2997": 4.7279
+   },
+   "fps": 98.3
+  },
+  "nanocodec-vvc@fast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 9.298,
+    "KristenAndSara_1280x720_60": 8.9282,
+    "ControlledBurn_1280x720p30_420": 16.8641,
+    "WestWindEasy_1280x720p30_420": 18.6904,
+    "BlueSky_360p25_v2": 4.9407,
+    "Stockholm_640x360_5994": 4.3732,
+    "RedKayak_360_2997": 18.5499,
+    "SnowMountain_640x360_2997": 2.5965,
+    "SpeedBag_640x360_2997": 2.5814,
+    "TouchdownPass_640x360_2997": 3.7198,
+    "FourPeople_480x270_60": 1.5941,
+    "Vertical_Bayshore_270x480_2997": 2.5243
+   },
+   "fps": 177.1
+  },
+  "nanocodec-vvc@slow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 18.0835,
+    "KristenAndSara_1280x720_60": 18.2578,
+    "ControlledBurn_1280x720p30_420": 35.2434,
+    "WestWindEasy_1280x720p30_420": 46.3686,
+    "BlueSky_360p25_v2": 11.3938,
+    "Stockholm_640x360_5994": 9.6267,
+    "RedKayak_360_2997": 29.9532,
+    "SnowMountain_640x360_2997": 4.9054,
+    "SpeedBag_640x360_2997": 5.7596,
+    "TouchdownPass_640x360_2997": 8.3723,
+    "FourPeople_480x270_60": 3.4414,
+    "Vertical_Bayshore_270x480_2997": 5.8414
+   },
+   "fps": 83.7
+  },
+  "openh264-baseline": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 2.0737,
+    "KristenAndSara_1280x720_60": 2.229,
+    "ControlledBurn_1280x720p30_420": 5.181,
+    "WestWindEasy_1280x720p30_420": 7.2008,
+    "BlueSky_360p25_v2": 1.5073,
+    "Stockholm_640x360_5994": 1.2135,
+    "RedKayak_360_2997": 2.6938,
+    "SnowMountain_640x360_2997": 0.4236,
+    "SpeedBag_640x360_2997": 1.0461,
+    "TouchdownPass_640x360_2997": 0.9662,
+    "FourPeople_480x270_60": 0.3612,
+    "Vertical_Bayshore_270x480_2997": 0.8043
+   },
+   "fps": 678.2
+  },
+  "svtav1-m10": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 5.6311,
+    "KristenAndSara_1280x720_60": 5.4603,
+    "ControlledBurn_1280x720p30_420": 11.1594,
+    "WestWindEasy_1280x720p30_420": 14.8824,
+    "BlueSky_360p25_v2": 3.3581,
+    "Stockholm_640x360_5994": 2.7076,
+    "RedKayak_360_2997": 6.0258,
+    "SnowMountain_640x360_2997": 1.3679,
+    "SpeedBag_640x360_2997": 2.1233,
+    "TouchdownPass_640x360_2997": 2.558,
+    "FourPeople_480x270_60": 1.1389,
+    "Vertical_Bayshore_270x480_2997": 1.9227
+   },
+   "fps": 278.7
+  },
+  "svtav1-m12": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 3.6032,
+    "KristenAndSara_1280x720_60": 3.3933,
+    "ControlledBurn_1280x720p30_420": 7.0176,
+    "WestWindEasy_1280x720p30_420": 8.7147,
+    "BlueSky_360p25_v2": 1.8235,
+    "Stockholm_640x360_5994": 1.4322,
+    "RedKayak_360_2997": 3.7074,
+    "SnowMountain_640x360_2997": 0.7612,
+    "SpeedBag_640x360_2997": 1.3708,
+    "TouchdownPass_640x360_2997": 1.5446,
+    "FourPeople_480x270_60": 0.6423,
+    "Vertical_Bayshore_270x480_2997": 1.1637
+   },
+   "fps": 469.5
+  },
+  "svtav1-m13": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 2.9832,
+    "KristenAndSara_1280x720_60": 2.8761,
+    "ControlledBurn_1280x720p30_420": 6.135,
+    "WestWindEasy_1280x720p30_420": 8.1152,
+    "BlueSky_360p25_v2": 1.737,
+    "Stockholm_640x360_5994": 1.3469,
+    "RedKayak_360_2997": 3.5019,
+    "SnowMountain_640x360_2997": 0.705,
+    "SpeedBag_640x360_2997": 1.2343,
+    "TouchdownPass_640x360_2997": 1.4142,
+    "FourPeople_480x270_60": 0.5988,
+    "Vertical_Bayshore_270x480_2997": 1.0966
+   },
+   "fps": 515.7
+  },
+  "svtav1-m8": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 14.9718,
+    "KristenAndSara_1280x720_60": 15.9879,
+    "ControlledBurn_1280x720p30_420": 23.8769,
+    "WestWindEasy_1280x720p30_420": 45.1833,
+    "BlueSky_360p25_v2": 14.4312,
+    "Stockholm_640x360_5994": 10.1849,
+    "RedKayak_360_2997": 22.7115,
+    "SnowMountain_640x360_2997": 3.644,
+    "SpeedBag_640x360_2997": 5.289,
+    "TouchdownPass_640x360_2997": 9.684,
+    "FourPeople_480x270_60": 3.4959,
+    "Vertical_Bayshore_270x480_2997": 6.6726
+   },
+   "fps": 89.6
+  },
+  "vpx-vp9-good-s2": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 100.2817,
+    "KristenAndSara_1280x720_60": 113.452,
+    "ControlledBurn_1280x720p30_420": 156.6972,
+    "WestWindEasy_1280x720p30_420": 183.0932,
+    "BlueSky_360p25_v2": 53.6201,
+    "Stockholm_640x360_5994": 64.5371,
+    "RedKayak_360_2997": 88.3118,
+    "SnowMountain_640x360_2997": 47.4601,
+    "SpeedBag_640x360_2997": 28.9235,
+    "TouchdownPass_640x360_2997": 44.6774,
+    "FourPeople_480x270_60": 30.3211,
+    "Vertical_Bayshore_270x480_2997": 30.3487
+   },
+   "fps": 15.4
+  },
+  "vpx-vp9-rt-s7": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 8.1357,
+    "KristenAndSara_1280x720_60": 8.3681,
+    "ControlledBurn_1280x720p30_420": 13.9266,
+    "WestWindEasy_1280x720p30_420": 19.2916,
+    "BlueSky_360p25_v2": 4.0131,
+    "Stockholm_640x360_5994": 4.156,
+    "RedKayak_360_2997": 7.8389,
+    "SnowMountain_640x360_2997": 2.2105,
+    "SpeedBag_640x360_2997": 2.7054,
+    "TouchdownPass_640x360_2997": 3.9438,
+    "FourPeople_480x270_60": 1.7216,
+    "Vertical_Bayshore_270x480_2997": 2.5229
+   },
+   "fps": 199.9
+  },
+  "vpx-vp9-rt-s9": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 5.3834,
+    "KristenAndSara_1280x720_60": 5.2425,
+    "ControlledBurn_1280x720p30_420": 9.4194,
+    "WestWindEasy_1280x720p30_420": 12.3175,
+    "BlueSky_360p25_v2": 2.7258,
+    "Stockholm_640x360_5994": 2.6104,
+    "RedKayak_360_2997": 4.53,
+    "SnowMountain_640x360_2997": 1.3579,
+    "SpeedBag_640x360_2997": 1.819,
+    "TouchdownPass_640x360_2997": 2.4086,
+    "FourPeople_480x270_60": 1.0733,
+    "Vertical_Bayshore_270x480_2997": 1.6876
+   },
+   "fps": 312.9
+  },
+  "vvenc-faster-ld": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 126.0891,
+    "KristenAndSara_1280x720_60": 136.9325,
+    "ControlledBurn_1280x720p30_420": 271.2024,
+    "WestWindEasy_1280x720p30_420": 419.2993,
+    "BlueSky_360p25_v2": 93.8476,
+    "Stockholm_640x360_5994": 57.997,
+    "RedKayak_360_2997": 222.4866,
+    "SnowMountain_640x360_2997": 37.5423,
+    "SpeedBag_640x360_2997": 63.0322,
+    "TouchdownPass_640x360_2997": 75.7351,
+    "FourPeople_480x270_60": 32.4585,
+    "Vertical_Bayshore_270x480_2997": 57.8767
+   },
+   "fps": 10.2
+  },
+  "x264-medium": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 12.421,
+    "KristenAndSara_1280x720_60": 12.5161,
+    "ControlledBurn_1280x720p30_420": 31.2302,
+    "WestWindEasy_1280x720p30_420": 44.3831,
+    "BlueSky_360p25_v2": 7.9095,
+    "Stockholm_640x360_5994": 6.6433,
+    "RedKayak_360_2997": 19.6008,
+    "SnowMountain_640x360_2997": 2.4932,
+    "SpeedBag_640x360_2997": 4.8972,
+    "TouchdownPass_640x360_2997": 5.7752,
+    "FourPeople_480x270_60": 1.7459,
+    "Vertical_Bayshore_270x480_2997": 4.1622
+   },
+   "fps": 119.9
+  },
+  "x264-ultrafast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 1.5853,
+    "KristenAndSara_1280x720_60": 1.5983,
+    "ControlledBurn_1280x720p30_420": 2.5124,
+    "WestWindEasy_1280x720p30_420": 3.0937,
+    "BlueSky_360p25_v2": 0.8202,
+    "Stockholm_640x360_5994": 0.7651,
+    "RedKayak_360_2997": 1.0737,
+    "SnowMountain_640x360_2997": 0.4693,
+    "SpeedBag_640x360_2997": 0.5581,
+    "TouchdownPass_640x360_2997": 0.6417,
+    "FourPeople_480x270_60": 0.3007,
+    "Vertical_Bayshore_270x480_2997": 0.4169
+   },
+   "fps": 1112.0
+  },
+  "x264-veryfast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 3.3771,
+    "KristenAndSara_1280x720_60": 3.4159,
+    "ControlledBurn_1280x720p30_420": 8.2458,
+    "WestWindEasy_1280x720p30_420": 10.8559,
+    "BlueSky_360p25_v2": 1.9857,
+    "Stockholm_640x360_5994": 1.6918,
+    "RedKayak_360_2997": 4.4427,
+    "SnowMountain_640x360_2997": 0.8854,
+    "SpeedBag_640x360_2997": 1.4554,
+    "TouchdownPass_640x360_2997": 1.4949,
+    "FourPeople_480x270_60": 0.5864,
+    "Vertical_Bayshore_270x480_2997": 1.2184
+   },
+   "fps": 436.0
+  },
+  "x264-veryslow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 47.0223,
+    "KristenAndSara_1280x720_60": 51.1356,
+    "ControlledBurn_1280x720p30_420": 174.7671,
+    "WestWindEasy_1280x720p30_420": 290.2276,
+    "BlueSky_360p25_v2": 37.3367,
+    "Stockholm_640x360_5994": 30.0337,
+    "RedKayak_360_2997": 127.2858,
+    "SnowMountain_640x360_2997": 7.9928,
+    "SpeedBag_640x360_2997": 21.3658,
+    "TouchdownPass_640x360_2997": 25.9573,
+    "FourPeople_480x270_60": 5.6203,
+    "Vertical_Bayshore_270x480_2997": 19.0279
+   },
+   "fps": 26.5
+  },
+  "x265-medium": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 32.5469,
+    "KristenAndSara_1280x720_60": 33.0638,
+    "ControlledBurn_1280x720p30_420": 89.2256,
+    "WestWindEasy_1280x720p30_420": 115.4405,
+    "BlueSky_360p25_v2": 20.5487,
+    "Stockholm_640x360_5994": 15.9132,
+    "RedKayak_360_2997": 48.1406,
+    "SnowMountain_640x360_2997": 7.8237,
+    "SpeedBag_640x360_2997": 11.6189,
+    "TouchdownPass_640x360_2997": 13.6324,
+    "FourPeople_480x270_60": 5.2165,
+    "Vertical_Bayshore_270x480_2997": 10.2088
+   },
+   "fps": 45.9
+  },
+  "x265-slow": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 101.8573,
+    "KristenAndSara_1280x720_60": 103.5717,
+    "ControlledBurn_1280x720p30_420": 280.686,
+    "WestWindEasy_1280x720p30_420": 374.1251,
+    "BlueSky_360p25_v2": 57.2631,
+    "Stockholm_640x360_5994": 42.6351,
+    "RedKayak_360_2997": 149.1093,
+    "SnowMountain_640x360_2997": 23.7764,
+    "SpeedBag_640x360_2997": 36.9199,
+    "TouchdownPass_640x360_2997": 40.3088,
+    "FourPeople_480x270_60": 15.6406,
+    "Vertical_Bayshore_270x480_2997": 31.3217
+   },
+   "fps": 15.1
+  },
+  "x265-superfast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 21.1248,
+    "KristenAndSara_1280x720_60": 22.0178,
+    "ControlledBurn_1280x720p30_420": 60.1871,
+    "WestWindEasy_1280x720p30_420": 81.5727,
+    "BlueSky_360p25_v2": 10.8642,
+    "Stockholm_640x360_5994": 9.2258,
+    "RedKayak_360_2997": 32.7966,
+    "SnowMountain_640x360_2997": 4.6188,
+    "SpeedBag_640x360_2997": 8.5921,
+    "TouchdownPass_640x360_2997": 8.1029,
+    "FourPeople_480x270_60": 3.2114,
+    "Vertical_Bayshore_270x480_2997": 6.8963
+   },
+   "fps": 71.8
+  },
+  "x265-ultrafast": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 15.071,
+    "KristenAndSara_1280x720_60": 15.4365,
+    "ControlledBurn_1280x720p30_420": 32.5506,
+    "WestWindEasy_1280x720p30_420": 41.2948,
+    "BlueSky_360p25_v2": 7.4907,
+    "Stockholm_640x360_5994": 6.4322,
+    "RedKayak_360_2997": 17.3149,
+    "SnowMountain_640x360_2997": 3.2085,
+    "SpeedBag_640x360_2997": 5.7872,
+    "TouchdownPass_640x360_2997": 5.6993,
+    "FourPeople_480x270_60": 2.2436,
+    "Vertical_Bayshore_270x480_2997": 4.4594
+   },
+   "fps": 111.3
+  }
+ }
+}

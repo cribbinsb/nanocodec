@@ -42,7 +42,7 @@ SVT-AV1 `--rtc --rc 0`, openh264 realtime, nanocodec `--qp` at its preset).
         time-host --plan plan.json --binary BIN --presets-dir DIR --points a,b --cpus 14,15 \
         --out-dir host/
     python3 tools/dev/anchor_chart_timing.py merge --out timing.json [--machine M] [--build C] \
-        t-*.json
+        [--build-for POINT=C ...] t-*.json
 """
 
 from __future__ import annotations
@@ -509,6 +509,8 @@ def time_cloud(args: argparse.Namespace) -> None:
     clips_dir = pathlib.Path(args.clips_dir).resolve()
     cpus = (physical_cpus(args.skip_cores) if args.cpus == "physical"
             else [int(c) for c in args.cpus.split(",")])
+    if not cpus:  # e.g. a single-core box: name its timed CPU with --cpus
+        raise SystemExit(f"no physical core left after skipping {args.skip_cores}")
     print(f"{len(names)} points x {len(CLIPS)} clips on {len(cpus)} CPUs: {cpus}", flush=True)
     work_dir = pathlib.Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -554,6 +556,10 @@ def merge(args: argparse.Namespace) -> None:
             "rung_kbps": RUNG_KBPS, "frames": FRAMES, "clips": list(CLIPS), "anchor": anchor}
     if args.build:  # one session timed every point of ours at one build
         meta["build"] = args.build
+    for point, build in (b.split("=", 1) for b in args.build_for):
+        if point not in points:  # a typo would leave the point on the record's build
+            raise SystemExit(f"--build-for {point}: not among the merged points")
+        points[point]["build"] = build  # timed on another build than the record's
     pathlib.Path(args.out).write_text(json.dumps({**meta, "points": points}, indent=1) + "\n")
 
 
@@ -602,6 +608,8 @@ def main(argv: list[str]) -> None:
     m.add_argument("--machine", help="appended to the platform, e.g. 'AWS c8g.large, one pair "
                    "at a time'")
     m.add_argument("--build", help="the commit (8 characters) our points were all timed at")
+    m.add_argument("--build-for", action="append", default=[], metavar="POINT=COMMIT",
+                   help="a point of ours timed on another build than --build's")
     m.add_argument("files", nargs="+")
     args = parser.parse_args(argv)
     {"scan": scan, "time": time_point, "time-host": time_host, "time-cloud": time_cloud,

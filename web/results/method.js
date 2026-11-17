@@ -22,6 +22,7 @@ function facts(chart, root) {
   root.querySelector('.machines').replaceChildren(...[
     el('li', {}, el('strong', {}, 'Arm: '), chart.platforms.jetson, ' (NVIDIA Jetson Orin Nano).'),
     el('li', {}, el('strong', {}, 'x86: '), chart.platforms.x86, ' (AMD).'),
+    chart.platforms.zen3 && el('li', {}, el('strong', {}, 'x86 without AVX-512: '), chart.platforms.zen3, ' (AMD Zen 3).'),
     chart.platforms.graviton && el('li', {}, el('strong', {}, 'Server Arm: '), chart.platforms.graviton, ' (AWS Graviton4).'),
   ].filter(Boolean));
   const chartViews = chart.views.filter((v) => v.tools);

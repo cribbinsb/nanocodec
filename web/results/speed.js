@@ -15,7 +15,7 @@ function encode(chart, root) {
     .filter(([family]) => !chart.points[family].tune || family === view.zero)
     .map(([family, v]) => ({ family, p: chart.points[family], v }))
     .sort((a, b) => b.v.fps.jetson - a.v.fps.jetson);
-  const machines = { jetson: 'Jetson', x86: 'x86', graviton: 'Server Arm' };
+  const machines = { jetson: 'Jetson', x86: 'x86', zen3: 'x86 without AVX-512', graviton: 'Server Arm' };
   root.querySelector('.platforms').textContent = Object.entries(machines).filter(([m]) => chart.platforms[m])
     .map(([m, name]) => `${name}: ${chart.platforms[m]}${chart.timing_builds?.[m] ? `; ours timed at build ${chart.timing_builds[m]}` : ''}.`).join(' ');
   root.querySelector('.encode').replaceChildren(table([
@@ -23,6 +23,7 @@ function encode(chart, root) {
     { label: 'Codec', cell: (r) => CODEC_NAMES[r.p.codec] },
     { label: 'fps, Jetson core', num: true, cell: (r) => fps(r.v.fps.jetson) },
     { label: 'fps, x86 core', num: true, cell: (r) => fps(r.v.fps.x86) },
+    { label: 'fps, Zen 3 core', num: true, cell: (r) => fps(r.v.fps.zen3) },
     { label: 'fps, Graviton4 core', num: true, cell: (r) => fps(r.v.fps.graviton) },
   ], rows, (r) => (r.p.ours ? 'ours' : '')), sources(view.source));
 }

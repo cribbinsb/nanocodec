@@ -2,11 +2,13 @@
 """Encode speed for the results site's Fixed QP charts, timed on the charts' own encodes.
 
     python3 tools/dev/fixedqp_timing.py plan --binary BIN --out PLAN.json
-        [--machine x86|graviton|jetson] [--expect-version LINE] [--encoders a,b]
+        [--machine x86|zen3|graviton|jetson] [--expect-version LINE] [--encoders a,b]
         [--sequences a,b] [--points 27,42] [--thin hm-ldp:27,42] [--rounds 1]
         [--shard-minutes 20]
     python3 tools/dev/fixedqp_timing.py plan-pool --binary BIN --gap GAP.json [--gap ...]
         --out PLAN.json
+    python3 tools/dev/fixedqp_timing.py plan-from --from TIMED.json --machine zen3 --out PLAN.json
+        [--encoders a,b] [--binary BIN]
     python3 tools/dev/fixedqp_timing.py run --plan PLAN.json --out DIR
         [--shards 0,3] [--parallel 6] [--dry-run]
     python3 tools/dev/fixedqp_timing.py run-jetson --plan PLAN.json --out DIR
@@ -22,11 +24,14 @@ the quality run's own command lines (nceval.ctc.plan, or the pool engine's
 cbr.Bench.command at the quantizers each curve used, so no flag is restated;
 our recon outputs are dropped, as in the CBR chart's timing), one encode at a
 time pinned to one core, on the x86 timing machine (aws_timing.TIMING_MACHINE,
-c8a.large: Zen 5, no SMT, its second core), on the server Arm one
+c8a.large: Zen 5, no SMT, its second core), on the x86 one without AVX-512
+(aws_timing.ZEN3_MACHINE, c6a.large: Zen 3, the same way), on the server Arm one
 (aws_timing.GRAVITON_MACHINE, c8g.large: Graviton4, the same way, with the Jetson's
 aarch64 builds of our encoder and the references) or on the Jetson's timing core
 (core 3, under the board's timing lock).
 
+- `plan-from` times another machine's plan again on this one: the same jobs
+  (command lines, quantizers, rounds), e.g. the c8a series' on Zen 3.
 - `plan` / `plan-pool` write the jobs (one encode each) and pack them into
   shards (an instance, or one turn of the Jetson's lock, each). Every encode's
   time is estimated from the lens's own fps (shared-load PC figures, only for
@@ -93,6 +98,9 @@ ZEN5_OVER_PC = 1.6
 #: A Graviton4 core's encode time over a Zen 5 core's (packing only; the pipe-cleaner of
 #: 2026-11-17 on Johnny: 1.8-1.9x for AV1 Faster, 2.3-2.7x for SVT-AV1 M12).
 GRAVITON_OVER_ZEN5 = 2.0
+#: A Zen 3 (c6a, EPYC Milan) core's encode time over a Zen 5 core's (packing only; an estimate:
+#: no AVX-512 and an older core).
+ZEN3_OVER_ZEN5 = 1.5
 #: Estimated minutes of timing per shard (the box boots and uploads in 2-4 more).
 SHARD_MINUTES = 20.0
 #: The instance's lifetime and its budget's guard, per shard.
@@ -100,11 +108,18 @@ LIFETIME_MINUTES = 75
 SHARD_BUDGET_USD = 0.5
 #: Per machine: the timed core, the time of an encode over its PC estimate (packing only;
 #: the chart's own timing: Jetson core about 4x a Zen 5 core's time; Graviton4 GRAVITON_OVER_ZEN5)
-#: and, for a rented one, its instance type (aws_timing.INSTANCES) and how the record names it.
+#: and, for a rented one, its instance type (aws_timing.INSTANCES), how the record names it and
+#: where the timed thread sits (aws_timing.pinning_command's wording).
+PHYSICAL_CORE = "one thread pinned to one physical core"
 MACHINES = {"x86": {"core": 1, "over_pc": 1 / ZEN5_OVER_PC, "instance": "c8a.large",
-                    "aws": "AWS c8a.large"},
+                    "aws": "AWS c8a.large", "pinning": PHYSICAL_CORE},
+            "zen3": {"core": 1, "over_pc": ZEN3_OVER_ZEN5 / ZEN5_OVER_PC, "instance": "c6a.large",
+                     "aws": "AWS c6a.large, Zen 3",
+                     "pinning": "one thread pinned to vCPU 1, the SMT sibling of vCPU 0 "
+                                "(left to the system)"},
             "graviton": {"core": 1, "over_pc": GRAVITON_OVER_ZEN5 / ZEN5_OVER_PC,
-                         "instance": "c8g.large", "aws": "AWS c8g.large, Graviton4"},
+                         "instance": "c8g.large", "aws": "AWS c8g.large, Graviton4",
+                         "pinning": PHYSICAL_CORE},
             "jetson": {"core": 3, "over_pc": 4 / ZEN5_OVER_PC}}
 #: The Jetson side (tools/dev/anchor_chart_timing.py's board setup): the reference
 #: tools built for it, the timing lock and the platform as the chart states it.
@@ -321,6 +336,34 @@ def plan_pool(args: argparse.Namespace) -> None:
         "condition": Path(clipset).stem, "machine": args.machine, "binary": str(binary),
         "nanocodec_version": version, "sources": sources, "refs_dir": str(DEFAULT_REFS),
         "core": machine["core"], "shards": pack(jobs, args.shard_minutes), "jobs": jobs})
+
+
+def plan_from(args: argparse.Namespace) -> None:
+    """Another machine's timed plan for this one: its jobs as they were (command lines,
+    quantizers, rounds), so both machines time the same encodes; the estimates are rescaled
+    for packing. `--binary` stands in for the plan's own build of ours (the same commit
+    rebuilt, its version line checked on the instance)."""
+    source = json.loads(Path(args.source).read_text())
+    if source["machine"] in ("graviton", "jetson") or args.machine in ("graviton", "jetson"):
+        raise SystemExit("plan-from moves a plan between x86 machines (same tool builds)")
+    encoders = set(args.encoders.split(",")) if args.encoders else None
+    scale = MACHINES[args.machine]["over_pc"] / MACHINES[source["machine"]]["over_pc"]
+    jobs = [{**j, "estimate_s": round(j["estimate_s"] * scale, 2)}
+            for j in source["jobs"] if not encoders or j["encoder"] in encoders]
+    missing = sorted((encoders or set()) - {j["encoder"] for j in jobs})
+    if missing:
+        raise SystemExit(f"not in {args.source}: {', '.join(missing)}")
+    binary = str(Path(args.binary).resolve()) if args.binary else source["binary"]
+    version = subprocess.run([binary, "--version"], capture_output=True, text=True,
+                             check=True).stdout.strip()
+    if not args.binary and version != source["nanocodec_version"]:
+        raise SystemExit(f"{binary} is now {version!r}, not the plan's build: pass --binary")
+    sequences = {j["sequence"] for j in jobs}
+    write_plan(Path(args.out), {
+        **source, "machine": args.machine, "binary": binary, "nanocodec_version": version,
+        "sources": {n: v for n, v in source["sources"].items() if n in sequences},
+        "core": MACHINES[args.machine]["core"],
+        "shards": pack(jobs, args.shard_minutes), "jobs": jobs})
 
 
 # --- run ------------------------------------------------------------------------------------
@@ -598,7 +641,7 @@ def record(args: argparse.Namespace) -> None:
     first = plans[0]
     Path(args.record).write_text(json.dumps({
         "platform": JETSON_PLATFORM if first["machine"] == "jetson" else
-        f"{' / '.join(sorted(platforms))}, one thread pinned to one physical core "
+        f"{' / '.join(sorted(platforms))}, {MACHINES[first['machine']]['pinning']} "
         f"({MACHINES[first['machine']]['aws']}, one encode at a time)",
         "condition": first["condition"], "frames": jobs[0]["frames"],
         "sequences": sorted({j["sequence"] for j in jobs}),
@@ -681,6 +724,14 @@ def main(argv: list[str]) -> None:
     q.add_argument("--machine", choices=("jetson", "x86"), default="x86")
     q.add_argument("--shard-minutes", type=float, default=SHARD_MINUTES)
     q.set_defaults(handler=plan_pool)
+    f = sub.add_parser("plan-from", help="another x86 machine's timed plan, for this one")
+    f.add_argument("--from", dest="source", required=True, help="the timed plan (`plan`)")
+    f.add_argument("--machine", choices=sorted(MACHINES), required=True)
+    f.add_argument("--out", required=True)
+    f.add_argument("--encoders", help="only these encoders' jobs, a,b")
+    f.add_argument("--binary", help="our build of the plan's commit (its own path is gone)")
+    f.add_argument("--shard-minutes", type=float, default=SHARD_MINUTES)
+    f.set_defaults(handler=plan_from)
     j = sub.add_parser("run-jetson", help="time a --machine jetson plan on the board")
     j.add_argument("--plan", required=True)
     j.add_argument("--out", required=True)

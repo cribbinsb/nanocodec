@@ -106,12 +106,15 @@ CLIPSETS = {
 }
 TIMING_PLAN = "bd-vs-speed-plan.json"
 #: The speed machines, in the site's order: the Jetson's Arm core, the x86 timing machine
-#: (AWS c8a.large, Zen 5) and the server Arm one (AWS c8g.large, Graviton4).
-PLATFORMS = ("jetson", "x86", "graviton")
-#: The CBR charts' timing per machine (tools/dev/anchor_chart_timing.py records). The Jetson's
-#: and x86's fps reach the site through nceval.chart's CSVs; the Graviton's, timed once at one
-#: build (tools/dev/aws_timing.py), straight from its record (cbr_fps).
+#: (AWS c8a.large, Zen 5), the x86 one without AVX-512 (AWS c6a.large, Zen 3) and the server
+#: Arm one (AWS c8g.large, Graviton4).
+PLATFORMS = ("jetson", "x86", "zen3", "graviton")
+#: The machines whose CBR fps reach the site through nceval.chart's CSVs; the others' (each
+#: timed in one go, tools/dev/aws_timing.py) come straight from their record (cbr_fps).
+CHART_CSV_PLATFORMS = ("jetson", "x86")
+#: The CBR charts' timing per machine (tools/dev/anchor_chart_timing.py records).
 TIMING_FILES = {"jetson": "bd-vs-speed-timing.json", "x86": "bd-vs-speed-timing-x86.json",
+                "zen3": "bd-vs-speed-timing-zen3.json",
                 "graviton": "bd-vs-speed-timing-graviton.json"}
 HARDWARE_CSV = "bd-vs-speed-hardware.csv"
 RC_COST_GLOB = "rc-cost-*.csv"
@@ -152,6 +155,7 @@ LENS_COLUMN = "profile"
 #: The Fixed QP chart's speed: every lens encoder timed on the lens's own encodes
 #: (tools/dev/fixedqp_timing.py), per machine; a machine without a record has no speed.
 LENS_TIMING_FILES = {"jetson": "fixed-qp-timing-jetson.json", "x86": "fixed-qp-timing-x86.json",
+                     "zen3": "fixed-qp-timing-zen3.json",
                      "graviton": "fixed-qp-timing-graviton.json"}
 #: The second Fixed QP view: our held-out clips (nceval.fixedqp gap --clipset, x264
 #: medium as the zero), quality and its own timing on the same encodes.
@@ -305,7 +309,8 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
     builds = json.loads((RESULTS / view.builds).read_text())
     values = {r["family"]: chart_row(r, {"jetson": number(r["fps_jetson"]),
                                          "x86": x86.get(r["family"]),
-                                         "graviton": cbr_fps("graviton", r["family"])})
+                                         **{p: cbr_fps(p, r["family"]) for p in PLATFORMS
+                                            if p not in CHART_CSV_PLATFORMS}})
               for r in jetson}
     labels = {r["family"]: r["label"] for r in jetson}
     clips = max(v["clips"] for v in values.values())
@@ -313,7 +318,7 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
              "clips": clips, "source": [f"docs/results/{view.stem}.csv",
                                         f"docs/results/{view.stem}-x86.csv",
                                         *(f"docs/results/{TIMING_FILES[p]}" for p in cbr_timing()
-                                          if p not in ("jetson", "x86"))],
+                                          if p not in CHART_CSV_PLATFORMS)],
              "builds": builds["builds"], "base_build": builds["base"],
              "family_builds": {current_family_name(f): b for f, b in builds["families"].items()},
              "tools": builds["tools"],

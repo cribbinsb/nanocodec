@@ -67,6 +67,7 @@ INSTANCES = {"c7i.metal-24xl": ("eu-north-1", "amd64"),  # Sapphire Rapids, AVX-
              "c8a.4xlarge": ("eu-west-1", "amd64"),  # Zen 5, 16 cores: the x86 timing machine
              "c8a.metal-24xl": ("eu-west-1", "amd64"),  # Zen 5, bare metal
              "c8g.large": ("eu-west-1", "arm64"),  # Graviton4, Neoverse V2, 2 cores (no SMT)
+             "c6a.large": ("eu-west-1", "amd64"),  # Zen 3 (Milan), AVX2 only: 1 core, 2 SMT threads
              "c8g.metal-24xl": ("eu-north-1", "arm64")}  # Graviton4, Neoverse V2, bare metal
 #: The x86 timing machine (2026-11-15 probe, 5 repeats of H.264 against x264 medium: the
 #: time ratio's largest deviation from the median was 0.2% on c8a.large, 0.7% on
@@ -78,6 +79,11 @@ TIMING_MACHINE = "c8a.large"
 #: The server Arm timing machine beside it (the site's third speed series, 2026-11-17):
 #: Graviton4 (Neoverse V2), the same 2-core size and method as TIMING_MACHINE.
 GRAVITON_MACHINE = "c8g.large"
+#: The x86 timing machine without AVX-512 (the site's fourth speed series, 2026-11-17): Zen 3
+#: (EPYC Milan), where our encoder and the references run their AVX2 paths. The same size and
+#: method as TIMING_MACHINE, except that its two vCPUs are the SMT threads of one core: the
+#: timed thread's sibling is the system's (the platform note says so, `pinning_command`).
+ZEN3_MACHINE = "c6a.large"
 #: Reference encoders for an arm64 instance: the Jetson's own builds
 #: (~/nanocodec-data/anchors/aarch64/bin on the board, copied here), so both Arm
 #: series time the same reference binaries.
@@ -87,6 +93,9 @@ AARCH64_TOOLS = DATA / "anchors/aarch64/bin"
 #: The first timed core is also the quiet core of the kernel benchmarks and profiles.
 SYSTEM_CORES = {"large": 1}
 DEFAULT_SYSTEM_CORES = 2
+#: The timed CPU where one physical core per pair cannot be had: ZEN3_MACHINE's two vCPUs
+#: are one core's SMT threads, so its pairs run on vCPU 1 and the system keeps vCPU 0.
+TIMED_CPUS = {ZEN3_MACHINE: "1"}
 #: The chart's reference points timed beside ours by default.
 DEFAULT_REFERENCES = ("svtav1-m13", "svtav1-m12", "x264-ultrafast", "x264-veryfast",
                       "x264-medium", "openh264-baseline")
@@ -105,6 +114,10 @@ REPEAT_TIMEOUT_MINUTES = 30
 PREPARE_MINUTES = 5
 CHECKASM_MINUTES = 20
 PERF_MINUTES = 10
+#: A repeat prints once per (point, clip) pair, after all its rounds: one pair of a slow
+#: reference takes longer than aws_session's default stall (x265 slow on c6a.large, Zen 3:
+#: over 5 min for one pair, 2026-11-17).
+REPEAT_STALL_MINUTES = 15
 #: Failed (point, clip) pairs a repeat may record before the session is stopped.
 MAX_FAILED_PAIRS = 2
 
@@ -292,10 +305,30 @@ def isa_command(arch: str = "amd64") -> str:
             "[ ! -x bin/x265 ] || bin/x265 --input out/blank.yuv --input-res 64x64 --fps 30 "
             "--frames 1 -o /dev/null 2>&1 | grep -i 'cpu capabilities' >> out/isa.txt; "
             "timeout 60 bin/SvtAv1EncApp -w 64 -h 64 -n 1 -i out/blank.yuv -b /dev/null 2>&1 "
-            "| grep -iE 'asm|cpu' >> out/isa.txt; "
+            "| grep -iE 'asm|cpu' >> out/isa.txt; " + (avx512_probe() if arch == "amd64" else "") +
             f"echo \"$({model} | cut -d: -f2 | xargs)"
             " (SIMD: $(paste -sd, out/flags.txt | sed 's/,/, /g'); nanocodec dispatches to "
             "its $tier tier)\" | tee out/platform.txt; rm -f out/blank.yuv")
+
+
+def avx512_probe() -> str:
+    """Remote shell asking each of our binaries for its AVX-512 tier (NC_DSP_ISA=avx512) on
+    one blank frame and recording the answer in isa.txt: a CPU without the tier refuses it
+    ("not supported by this CPU/build"), so the binary itself confirms it runs AVX2."""
+    encode = ("encode --codec h264 --input out/blank.yuv --width 64 --height 64 --fps 30 "
+              "--frames 1 --qp 30 --output /dev/null")
+    return ("for b in bin/nanocodec*; do echo \"$b NC_DSP_ISA=avx512: $(NC_DSP_ISA=avx512 "
+            f"\"$b\" {encode} 2>&1 >/dev/null | grep -o 'not supported by this CPU/build' "
+            "|| echo accepted)\" >> out/isa.txt; done; ")
+
+
+def pinning_command() -> str:
+    """Remote shell writing how the timed thread sits (out/pinning.txt), from lscpu: on a
+    2-vCPU box whose vCPUs are one core's two SMT threads (c6a.large), the timed thread
+    shares its core with the system's; elsewhere each timed thread has a physical core."""
+    return ("{ if [ \"$(nproc)$(lscpu | sed -n 's/^Thread(s) per core: *//p')\" = 22 ]; then "
+            "echo 'one thread pinned to vCPU 1, the SMT sibling of vCPU 0 (left to the system)'; "
+            "else echo 'one thread pinned to one physical core'; fi; } > out/pinning.txt")
 
 
 #: Shared libraries a reference build needs that a fresh Ubuntu image may lack, by package
@@ -313,7 +346,7 @@ def runtime_libraries() -> str:
 def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict[str, str],
                     plan: dict, checkasm: bool, perf_points: list[str],
                     system_cores: int = DEFAULT_SYSTEM_CORES,
-                    arch: str = "amd64") -> list[RemoteJob]:
+                    arch: str = "amd64", timed_cpus: str | None = None) -> list[RemoteJob]:
     """The remote stages, fail-fast first: readiness checks (minutes), a pipe-cleaner
     (one of our points, its AVX2-tier variant and the AVX2 M13, one round), the kernel
     benchmarks when asked for (before the timing, on a quiet machine), one job per
@@ -325,13 +358,14 @@ def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict
                + "".join(f"test \"$(bin/{name} --version)\" = {shlex.quote(version)} && "
                          for name, version in versions.items()) +
                "bin/x264 --version | head -1 && bin/SvtAv1EncApp --version | head -1 && "
-               "lscpu > out/lscpu.txt && " + isa_command(arch))
-    platform = '"$(cat out/platform.txt), one thread pinned to one physical core"'
+               "lscpu > out/lscpu.txt && " + pinning_command() + " && "
+               + isa_command(arch))
+    platform = '"$(cat out/platform.txt), $(cat out/pinning.txt)"'
 
     def timing(label: str, names: list[str], timed_rounds: int) -> str:
         return (cd + f"python3 anchor_chart_timing.py time-cloud --plan plan.json --bin-dir bin "
                 f"--clips-dir clips --points {','.join(names)} --rounds {timed_rounds} "
-                f"--skip-cores {system_cores} "
+                + (f"--cpus {timed_cpus} " if timed_cpus else f"--skip-cores {system_cores} ") +
                 f"--platform {platform} --work-dir scratch --out-dir out/{label} && "
                 f"test ! -e out/{label}/errors.json")
 
@@ -344,16 +378,18 @@ def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict
             RemoteJob("pipe-cleaner", timing("pipe-cleaner", cleaner, 1), PREPARE_MINUTES)]
     if checkasm:
         jobs.append(RemoteJob("checkasm", cd + " && ".join(
-            f"taskset -c {system_cores} bin/nc-checkasm --bench --isa {isa} "
+            f"taskset -c {timed_cpus or system_cores} bin/nc-checkasm --bench --isa {isa} "
             f"| tee out/checkasm-{isa}.txt" for isa in ("avx2", "avx512")), CHECKASM_MINUTES,
             stall_minutes=CHECKASM_MINUTES))
     for repeat in range(1, repeats + 1):
         # the pipe-cleaner proved every stage: a few failed pairs are recorded and
         # reported, more stop the session
         jobs.append(RemoteJob(f"repeat-{repeat}", timing(f"repeat-{repeat}", points, rounds),
-                              REPEAT_TIMEOUT_MINUTES, MAX_FAILED_PAIRS))
+                              REPEAT_TIMEOUT_MINUTES, MAX_FAILED_PAIRS,
+                              stall_minutes=REPEAT_STALL_MINUTES))
     if perf_points:  # last: a profiling problem never costs the timing
-        jobs.append(RemoteJob("perf", perf_command(plan, perf_points, system_cores),
+        jobs.append(RemoteJob("perf", perf_command(plan, perf_points,
+                                                   int(timed_cpus or system_cores)),
                               PERF_MINUTES))
     return jobs
 
@@ -519,7 +555,8 @@ def main(argv: list[str]) -> None:
                                bool(args.checkasm),
                                args.perf.split(",") if args.perf else [],
                                SYSTEM_CORES.get(args.instance_type.split(".")[1],
-                                                DEFAULT_SYSTEM_CORES), arch)
+                                                DEFAULT_SYSTEM_CORES), arch,
+                               TIMED_CPUS.get(args.instance_type))
         if args.dry_run:
             subprocess.run(["du", "-shL", str(stage_dir)], check=True)
             for job in jobs:
