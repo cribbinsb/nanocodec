@@ -160,6 +160,14 @@ pub(super) unsafe fn entry<K: RowKernel, const AVG: bool>(
     // SAFETY: Dsp validated dimensions, phases, source footprint and destination;
     // the ISA entry point enables K's instruction set.
     unsafe {
+        // Full-sample copies run here, in the ISA entry's small frame, not in
+        // `by_width`: there the filter graphs' register pressure spilled the
+        // copy loop's source pointer to the stack (VP9 copy 32x32 +22-27 % on
+        // Zen 3 and Zen 5 once those graphs inlined fully, 2026-11-17).
+        if phase == (0, 0) && is_vector_width(size) {
+            full_sample::<K, AVG>(src, stride, size, dst, dst_stride);
+            return;
+        }
         match layout_of(kind) {
             layout::ALTERNATING => {
                 by_width::<K, { layout::ALTERNATING }, AVG>(
@@ -197,7 +205,7 @@ unsafe fn by_width<K: RowKernel, const LAYOUT: u8, const AVG: bool>(
 ) {
     // SAFETY: as for `entry`; N divides the width in every SIMD case.
     unsafe {
-        if size.0 == 0 || size.1 == 0 || !size.0.is_multiple_of(4) {
+        if !is_vector_width(size) {
             // Non-codec widths retain the scalar oracle; four-wide chroma is vectorised.
             crate::vp9_mc::vp9_convolve_into(kind, src, stride, phase, size, dst, dst_stride, AVG);
         } else if K::LANES == 16 && size.0.is_multiple_of(16) {
@@ -277,6 +285,66 @@ unsafe fn horizontal_rows<K: RowKernel, const N: usize, const LAYOUT: u8, const 
     }
 }
 
+/// Whether the SIMD paths cover a block of this size (else the scalar
+/// oracle runs: non-codec widths).
+#[inline(always)]
+fn is_vector_width((w, h): (usize, usize)) -> bool {
+    w != 0 && h != 0 && w.is_multiple_of(4)
+}
+
+/// The full-sample copy (or average) of a `w`x`h` block, `w` a multiple of
+/// 4, on the widest vectors that divide `w`.
+#[inline(always)]
+unsafe fn full_sample<K: RowKernel, const AVG: bool>(
+    src: &[u8],
+    stride: usize,
+    (w, h): (usize, usize),
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    // SAFETY: Dsp validated the window (whose centre starts VP9_TAPS_BEFORE
+    // rows and columns in) and the destination; N divides w.
+    unsafe {
+        let centre = src.as_ptr().add(VP9_TAPS_BEFORE * stride + VP9_TAPS_BEFORE);
+        let rows = ((centre, stride), (dst.as_mut_ptr(), dst_stride), h);
+        if K::LANES == 16 && w.is_multiple_of(16) {
+            copy_rows::<K, 16, AVG>(rows, w);
+        } else if w.is_multiple_of(8) {
+            copy_rows::<K, 8, AVG>(rows, w);
+        } else {
+            copy_rows::<K, 4, AVG>(rows, w);
+        }
+    }
+}
+
+/// [`copy`] of `w / N` vectors per row, with a constant count for the
+/// common widths.
+#[inline(always)]
+unsafe fn copy_rows<K: RowKernel, const N: usize, const AVG: bool>(
+    rows: ((*const u8, usize), (*mut u8, usize), usize),
+    w: usize,
+) {
+    // SAFETY: as for `copy`; N divides w.
+    unsafe {
+        match w / N {
+            1 => copy::<K, N, 1, AVG>(rows),
+            2 => copy::<K, N, 2, AVG>(rows),
+            4 => copy::<K, N, 4, AVG>(rows),
+            _ => {
+                let ((src, stride), (dst, dst_stride), h) = rows;
+                for y in 0..h {
+                    for x in strided(w, N) {
+                        K::store::<N, AVG>(
+                            dst.add(y * dst_stride + x),
+                            K::load::<N>(src.add(y * stride + x)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The full-sample copy (or average) of `h` rows of `COUNT` N-byte vectors.
 /// A constant row width keeps each row as inline vector moves: with the
 /// width a runtime value, the row loop became a `memcpy` call per row
@@ -313,25 +381,11 @@ unsafe fn convolve<K: RowKernel, const N: usize, const LAYOUT: u8, const AVG: bo
     // SAFETY: all pointers below remain inside the window and output validated
     // by Dsp. Temporary rows include the full vertical support; N divides w.
     unsafe {
-        let centre = src.add(VP9_TAPS_BEFORE * stride + VP9_TAPS_BEFORE);
-        if fx == 0 && fy == 0 {
-            let rows = ((centre, stride), (dst, dst_stride), h);
-            match w / N {
-                1 => copy::<K, N, 1, AVG>(rows),
-                2 => copy::<K, N, 2, AVG>(rows),
-                4 => copy::<K, N, 4, AVG>(rows),
-                _ => {
-                    for y in 0..h {
-                        for x in strided(w, N) {
-                            K::store::<N, AVG>(
-                                dst.add(y * dst_stride + x),
-                                K::load::<N>(centre.add(y * stride + x)),
-                            );
-                        }
-                    }
-                }
-            }
-        } else if fy == 0 {
+        debug_assert!(
+            (fx, fy) != (0, 0),
+            "full-sample copies run in `full_sample`"
+        );
+        if fy == 0 {
             let filters = K::prepare::<LAYOUT>(&taps[fx]);
             let line = src.add(VP9_TAPS_BEFORE * stride);
             horizontal_rows::<K, N, LAYOUT, AVG>(

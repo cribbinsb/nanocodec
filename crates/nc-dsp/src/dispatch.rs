@@ -68,7 +68,6 @@ pub struct Dsp {
     end_of_block_wide: crate::end_of_block::WideEobFn,
     intra_estimate: crate::intra_estimate::StatsFn,
     analysis_stats: crate::analysis_stats::StatsFn,
-    border_store: crate::border_store::BorderStoreFns,
     copy_plane: crate::block_copy::CopyFn,
     cdef: CdefFns,
     sao: SaoFns,
@@ -208,7 +207,6 @@ impl Dsp {
             end_of_block_wide: crate::end_of_block::wide_kernel(isa),
             intra_estimate: crate::intra_estimate::kernel(isa),
             analysis_stats: crate::analysis_stats::kernel(isa),
-            border_store: crate::border_store::border_store_fns(isa),
             copy_plane: crate::block_copy::copy,
             cdef,
             sao,
@@ -251,7 +249,6 @@ impl Dsp {
     fn avx512() -> Option<Self> {
         let mut dsp = Self::with_isa(Isa::Avx2)?;
         dsp.isa = Isa::Avx512;
-        dsp.border_store = crate::border_store::border_store_fns(Isa::Avx512);
         deblock::avx512::install(&mut dsp.deblock);
         dsp.vp9_filter = crate::vp9_loop_filter::kernel(Isa::Avx512);
         dsp.vp9_line = crate::vp9_loop_filter::line_kernel(Isa::Avx512);
@@ -6588,23 +6585,19 @@ impl Dsp {
     }
 }
 
-/// Border extension through the ISA's border stores
-/// (`crate::border_store`: non-temporal on x86).
+/// Border extension with ordinary stores, on every ISA. Non-temporal stores
+/// (x86, until 2026-11-17) lost on both x86 machines we time: whole-encode
+/// CPU time with ordinary stores, Faster preset, 720p CTC, 20 rotated rounds,
+/// AVX2 tier: Zen 3 (PC) HEVC -0.6 %, AV1 -0.6 %; Zen 5 (c8a) HEVC -3.2 %,
+/// AV1 -4.0 % (the AVX-512 tier had switched earlier that day, +3.4 % fps).
+/// The earlier Zen 3 gain for them (-5.7 %) did not reproduce.
 impl nc_common::BorderStores for Dsp {
     fn fill(&self, dst: &mut [u8], value: u8) {
-        // SAFETY: the table matches a supported ISA (checked in `with_isa`).
-        unsafe { (self.border_store.fill)(dst, value) }
+        dst.fill(value);
     }
 
     fn copy(&self, dst: &mut [u8], src: &[u8]) {
-        assert_eq!(dst.len(), src.len(), "border copy lengths differ");
-        // SAFETY: the table matches a supported ISA (checked in `with_isa`).
-        unsafe { (self.border_store.copy)(dst, src) }
-    }
-
-    fn finish(&self) {
-        // SAFETY: the table matches a supported ISA (checked in `with_isa`).
-        unsafe { (self.border_store.fence)() }
+        dst.copy_from_slice(src);
     }
 }
 

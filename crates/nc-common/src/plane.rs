@@ -42,7 +42,8 @@ const MAX_AREA: usize = 1 << 28;
 
 /// How [`Plane::extend_borders_with`] stores the border samples. The
 /// samples are the same whatever the stores; only how they reach memory
-/// differs (`nc_dsp::Dsp` streams them past the cache where that pays).
+/// could differ (`nc_dsp::Dsp` uses ordinary stores: non-temporal ones lost
+/// on Zen 3 and Zen 5, 2026-11-17).
 pub trait BorderStores<T: Sample = u8> {
     /// Set every sample of `dst` to `value`.
     fn fill(&self, dst: &mut [T], value: T);
