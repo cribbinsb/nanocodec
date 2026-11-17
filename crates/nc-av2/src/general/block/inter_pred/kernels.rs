@@ -32,12 +32,24 @@ fn interp(filter: u8) -> InterpFilter {
 /// A translational prediction into 8-bit samples (dav2d `mc[filter]`),
 /// phases in sixteenths.
 pub(super) fn put(
+    copies: &nc_dsp::BlockCopy,
     filter: u8,
     (dst, dst_offset, dst_stride): (&mut [u8], usize, usize),
     (src, src_offset, src_stride): (&[u8], usize, usize),
     size: (usize, usize),
     phase: (i32, i32),
 ) {
+    if phase == (0, 0) {
+        copies.copy_rect(
+            &src[src_offset..],
+            src_stride,
+            &mut dst[dst_offset..],
+            dst_stride,
+            size,
+            false,
+        );
+        return;
+    }
     mc_8tap::put_8tap(
         dst,
         dst_offset,
@@ -54,12 +66,24 @@ pub(super) fn put(
 
 /// A translational prediction into an intermediate (dav2d `mct[filter]`).
 pub(super) fn prep(
+    copies: &nc_dsp::BlockCopy,
     filter: u8,
     (tmp, tmp_offset, tmp_stride): (&mut [i16], usize, usize),
     (src, src_offset, src_stride): (&[u8], usize, usize),
     size: (usize, usize),
     phase: (i32, i32),
 ) {
+    if phase == (0, 0) {
+        copies.prep_rect(
+            &src[src_offset..],
+            src_stride,
+            &mut tmp[tmp_offset..],
+            tmp_stride,
+            size,
+            (4, 0),
+        );
+        return;
+    }
     mc_8tap::prep_8tap(
         &mut tmp[tmp_offset..],
         tmp_stride,

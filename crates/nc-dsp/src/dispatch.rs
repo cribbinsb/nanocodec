@@ -68,7 +68,7 @@ pub struct Dsp {
     end_of_block_wide: crate::end_of_block::WideEobFn,
     intra_estimate: crate::intra_estimate::StatsFn,
     analysis_stats: crate::analysis_stats::StatsFn,
-    copy_plane: crate::block_copy::CopyFn,
+    copies: crate::BlockCopy,
     cdef: CdefFns,
     sao: SaoFns,
     deblock: DeblockFns,
@@ -207,7 +207,7 @@ impl Dsp {
             end_of_block_wide: crate::end_of_block::wide_kernel(isa),
             intra_estimate: crate::intra_estimate::kernel(isa),
             analysis_stats: crate::analysis_stats::kernel(isa),
-            copy_plane: crate::block_copy::copy,
+            copies: crate::BlockCopy::with_isa(isa).expect("supported copy ISA"),
             cdef,
             sao,
             deblock,
@@ -249,6 +249,7 @@ impl Dsp {
     fn avx512() -> Option<Self> {
         let mut dsp = Self::with_isa(Isa::Avx2)?;
         dsp.isa = Isa::Avx512;
+        dsp.copies = crate::BlockCopy::with_isa(Isa::Avx512)?;
         deblock::avx512::install(&mut dsp.deblock);
         dsp.vp9_filter = crate::vp9_loop_filter::kernel(Isa::Avx512);
         dsp.vp9_line = crate::vp9_loop_filter::line_kernel(Isa::Avx512);
@@ -1272,6 +1273,21 @@ impl Dsp {
         );
         check_covers(size, &dst.as_view(), "destination");
         let dst_stride = dst.stride();
+        if (frac_x, frac_y) == (0, 0) {
+            // SAFETY: the complete source/output footprints were checked
+            // above; the copy table has this instance's supported ISA.
+            unsafe {
+                (self.copies.whole_put[size.width_class()])(
+                    &window.data()[filter.before() * (window.stride() + 1)..],
+                    window.stride(),
+                    dst.data_mut(),
+                    dst_stride,
+                    w,
+                    h,
+                );
+            }
+            return;
+        }
         // SAFETY: the views cover the window and the block (checked above);
         // the table matches a supported ISA (checked in `with_isa`).
         unsafe {
@@ -1315,6 +1331,21 @@ impl Dsp {
             ),
             "AV1 prediction buffers do not cover the block, or offsets out of range"
         );
+        if (frac_x, frac_y) == (0, 0) {
+            // SAFETY: the complete source/output footprints were checked
+            // above; the copy table has this instance's supported ISA.
+            unsafe {
+                (self.copies.whole_put[size.width_class()])(
+                    &src[filter.before() * (src_stride + 1)..],
+                    src_stride,
+                    dst,
+                    dst_stride,
+                    size.width(),
+                    size.height(),
+                );
+            }
+            return;
+        }
         // SAFETY: the buffers cover the window and the block (checked
         // above); the table matches a supported ISA (checked in `with_isa`).
         unsafe {
@@ -1361,6 +1392,36 @@ impl Dsp {
             ),
             "AV1 prediction buffers do not cover the block, or offsets out of range"
         );
+        if (frac_x, frac_y) == (0, 0) {
+            let scale = match filter {
+                Filter::HevcLuma | Filter::HevcChroma => (6, 8192),
+                _ => (4, 0),
+            };
+            // SAFETY: the complete source/output footprints were checked
+            // above; the copy table has this instance's supported ISA.
+            unsafe {
+                if scale == (4, 0) {
+                    (self.copies.whole_prep[size.width_class()])(
+                        &src[filter.before() * (src_stride + 1)..],
+                        src_stride,
+                        dst,
+                        dst_stride,
+                        size.width(),
+                        size.height(),
+                    );
+                } else {
+                    (self.copies.prep)(
+                        &src[filter.before() * (src_stride + 1)..],
+                        src_stride,
+                        dst,
+                        dst_stride,
+                        (size.width(), size.height()),
+                        scale,
+                    );
+                }
+            }
+            return;
+        }
         // SAFETY: the buffers cover the window and the block (checked
         // above); the table matches a supported ISA (checked in `with_isa`).
         unsafe {
@@ -1465,6 +1526,36 @@ impl Dsp {
             "{filter:?} sub-sample offsets ({frac_x}, {frac_y}) out of range"
         );
         check_covers_i16(size, dst.len(), dst_stride, "compound prediction");
+        if (frac_x, frac_y) == (0, 0) {
+            let scale = match filter {
+                Filter::HevcLuma | Filter::HevcChroma => (6, 8192),
+                _ => (4, 0),
+            };
+            // SAFETY: the complete source/output footprints were checked
+            // above; the copy table has this instance's supported ISA.
+            unsafe {
+                if scale == (4, 0) {
+                    (self.copies.whole_prep[size.width_class()])(
+                        &window.data()[filter.before() * (window.stride() + 1)..],
+                        window.stride(),
+                        dst,
+                        dst_stride,
+                        w,
+                        h,
+                    );
+                } else {
+                    (self.copies.prep)(
+                        &window.data()[filter.before() * (window.stride() + 1)..],
+                        window.stride(),
+                        dst,
+                        dst_stride,
+                        (w, h),
+                        scale,
+                    );
+                }
+            }
+            return;
+        }
         // SAFETY: the window and destination cover the block (checked
         // above); the table matches a supported ISA (checked in `with_isa`).
         unsafe {
@@ -4846,10 +4937,9 @@ fn sample_buffers_cover(
     let (w, h) = (size.width(), size.height());
     let extra = filter.taps() - 1;
     let covers = |len: usize, stride: usize, (w, h): (usize, usize)| {
-        stride >= w
-            && (h - 1)
-                .checked_mul(stride)
-                .is_some_and(|rows| rows + w <= len)
+        // The product can fit usize while adding the final row wraps it.
+        // Validate the entire exclusive tail before entering raw kernels.
+        crate::block_copy::covers_rect(len, stride, w, h)
     };
     covers(src_len, src_stride, (w + extra, h + extra))
         && covers(dst_len, dst_stride, (w, h))
@@ -4860,7 +4950,7 @@ fn sample_buffers_cover(
 pub(crate) fn check_covers_i16(size: BlockSize, len: usize, stride: usize, what: &str) {
     let (w, h) = (size.width(), size.height());
     assert!(
-        stride >= w && len >= (h - 1) * stride + w,
+        crate::block_copy::covers_rect(len, stride, w, h),
         "{what} buffer of {len} values at stride {stride} does not cover {w}x{h}"
     );
 }
@@ -5149,6 +5239,38 @@ mod tests {
 
     use super::Dsp;
     use crate::{BlockSize, Isa};
+
+    #[test]
+    fn prediction_buffers_reject_overflowing_final_rows() {
+        let size = BlockSize::new(4, 4).unwrap();
+        assert!(!super::sample_buffers_cover(
+            crate::Filter::H264Chroma,
+            size,
+            (1, usize::MAX / 4),
+            (0, 0),
+            (16, 4)
+        ));
+        assert!(!super::sample_buffers_cover(
+            crate::Filter::H264Chroma,
+            size,
+            (25, 5),
+            (0, 0),
+            (3, usize::MAX / 3)
+        ));
+        assert!(super::sample_buffers_cover(
+            crate::Filter::H264Chroma,
+            size,
+            (25, 5),
+            (0, 0),
+            (16, 4)
+        ));
+        assert!(
+            std::panic::catch_unwind(|| {
+                super::check_covers_i16(size, 3, usize::MAX / 3, "compound");
+            })
+            .is_err()
+        );
+    }
 
     // Exercise only the checked resolver: invalid coordinates must never
     // reach an unsafe filter, even when release arithmetic would wrap.
@@ -6683,10 +6805,18 @@ impl Dsp {
 }
 
 impl Dsp {
+    /// Copy-family dispatch for a decoder-owned prediction workspace.
+    #[must_use]
+    #[inline]
+    pub const fn block_copies(&self) -> crate::BlockCopy {
+        self.copies
+    }
+
     /// Copy the source's top-left rectangle covering the destination.
     ///
     /// # Panics
     /// If the source is smaller than the destination.
+    #[inline]
     pub fn copy_plane(&self, src: &PlaneView<'_>, dst: &mut PlaneViewMut<'_>) {
         let (w, h, ds) = (dst.width(), dst.height(), dst.stride());
         assert!(
@@ -6695,7 +6825,7 @@ impl Dsp {
         );
         // SAFETY: both validated views cover the rectangle and the ISA was checked.
         unsafe {
-            (self.copy_plane)(src.data(), src.stride(), dst.data_mut(), ds, w, h);
+            (self.copies.copy)(src.data(), src.stride(), dst.data_mut(), ds, w, h);
         }
     }
 }

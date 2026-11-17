@@ -1433,7 +1433,7 @@ impl CodecBackend for HevcBackend {
                 zero_vector_residual_is_zero(&self.dsp, block, source, reference, limits)
             });
         if accepted {
-            copy_zero_vector_prediction(block, reference, recon);
+            copy_zero_vector_prediction(&self.dsp, block, reference, recon);
             self.still_skipped = Some((block.x, block.y));
         }
         accepted

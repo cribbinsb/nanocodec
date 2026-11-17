@@ -115,7 +115,7 @@ pub use av1_inverse::{
 pub use av2_txfm::Av2TxSize;
 pub use av2_txfm::typed::{Av2Kernel, Av2TxType};
 pub use block::BlockSize;
-pub use block_copy::{copy_square, copy_square_view};
+pub use block_copy::{BlockCopy, copy_square, copy_square_view};
 pub use cdef::band::{
     CDEF_MAX_SETS, CdefLines, CdefSets, CdefStrengths, CdefUnit, cdef_adjust_strength,
 };

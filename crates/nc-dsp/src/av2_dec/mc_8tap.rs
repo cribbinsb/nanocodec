@@ -234,9 +234,13 @@ fn put<T: Sample>(
             }
         }
         (None, None) => {
-            for (y, line) in rows.enumerate() {
-                line[..w].copy_from_slice(&src[src_offset + y * src_stride..][..w]);
-            }
+            crate::block_copy::copy_samples(
+                &src[src_offset..],
+                src_stride,
+                &mut dst[dst_offset..],
+                dst_stride,
+                (w, h),
+            );
         }
     }
 }

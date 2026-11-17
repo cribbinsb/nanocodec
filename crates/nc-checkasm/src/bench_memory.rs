@@ -3,6 +3,55 @@ use crate::bench::{BenchResult, time};
 use nc_common::{PlaneView, PlaneViewMut};
 use nc_dsp::{BlockSize, Dsp, Filter, Moments};
 
+/// Encoder-facing entry points: whole-pel mode-decision/reconstruction
+/// prediction and compound prep, plus the shared plane-copy operation.
+pub(crate) fn copies(dsp: &Dsp, results: &mut Vec<BenchResult>) {
+    for w in [4, 8, 16, 32, 64] {
+        let size = BlockSize::new(w, w).unwrap();
+        let ss = w + 7;
+        let input: Vec<u8> = (0..ss * ss).map(|i| (i * 37 + 11) as u8).collect();
+        let mut output = vec![0; w * w];
+        let mut words = vec![0_i16; w * w];
+        let mut push = |kernel, ns_per_call| {
+            results.push(BenchResult {
+                kernel,
+                size: (w, w),
+                isa: dsp.isa(),
+                ns_per_call,
+            });
+        };
+        push(
+            "fullpel_put_samples",
+            time(|| {
+                dsp.predict_samples(Filter::Av1, size, (&input, ss), (0, 0), (&mut output, w));
+                u32::from(output[0])
+            }),
+        );
+        push(
+            "fullpel_prep_samples",
+            time(|| {
+                dsp.predict_compound_samples(
+                    Filter::Av1,
+                    size,
+                    (&input, ss),
+                    (0, 0),
+                    (&mut words, w),
+                );
+                words[0] as u32
+            }),
+        );
+        let source = PlaneView::new(&input[3 * ss + 3..], ss, w, w).unwrap();
+        push(
+            "reconstruction_copy",
+            time(|| {
+                let mut dst = PlaneViewMut::new(&mut output, w, w, w).unwrap();
+                dsp.copy_plane(&source, &mut dst);
+                u32::from(output[0])
+            }),
+        );
+    }
+}
+
 pub(crate) fn bench(dsp: &Dsp, results: &mut Vec<BenchResult>) {
     for width in [64, 1280, 1884] {
         rows(dsp, results, width);

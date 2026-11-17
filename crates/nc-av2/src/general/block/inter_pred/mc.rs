@@ -195,6 +195,7 @@ impl Tile<'_, '_> {
             Target::Picture(offset) => {
                 let stride = self.planes.stride[plane.index()];
                 kernels::put(
+                    &self.inter_scratch.copies,
                     filter,
                     (&mut self.planes.data[plane.index()], offset, stride),
                     (src, src_offset, src_stride),
@@ -208,6 +209,7 @@ impl Tile<'_, '_> {
                 stride,
             } => {
                 kernels::prep(
+                    &self.inter_scratch.copies,
                     filter,
                     (&mut self.inter_scratch.compound[index], offset, stride),
                     (src, src_offset, src_stride),
@@ -226,6 +228,7 @@ impl Tile<'_, '_> {
                     w - REFINE_TAIL
                 };
                 kernels::put(
+                    &self.inter_scratch.copies,
                     filter,
                     (dst, 0, stride),
                     (src, src_offset, src_stride),
@@ -234,6 +237,7 @@ impl Tile<'_, '_> {
                 );
                 if head != w {
                     kernels::put(
+                        &self.inter_scratch.copies,
                         filter,
                         (dst, head, stride),
                         (src, src_offset + head, src_stride),

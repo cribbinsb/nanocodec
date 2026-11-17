@@ -2457,7 +2457,7 @@ impl Vp9Backend {
     /// as they are in `recon` and the level buffer.
     fn save_best_trial(&mut self, block: &Block, recon: &Picture, planes: TrialPlanes) {
         let scratch = &mut self.scratch;
-        copy_block_out(block, recon, &mut scratch.best_recon, planes);
+        copy_block_out(&self.dsp, block, recon, &mut scratch.best_recon, planes);
         let used = trial_levels(block, planes);
         scratch.best_levels[..used].copy_from_slice(&scratch.levels[..used]);
         scratch.best_coded.clone_from(&scratch.coded);
@@ -2468,7 +2468,7 @@ impl Vp9Backend {
     /// `planes` are the ones the save kept (the failed trial's).
     fn restore_best_trial(&mut self, block: &Block, recon: &mut Picture, planes: TrialPlanes) {
         let scratch = &mut self.scratch;
-        copy_block_in(block, &scratch.best_recon, recon, planes);
+        copy_block_in(&self.dsp, block, &scratch.best_recon, recon, planes);
         let used = trial_levels(block, planes);
         scratch.levels[..used].copy_from_slice(&scratch.best_levels[..used]);
         scratch.coded.clone_from(&scratch.best_coded);
@@ -2643,7 +2643,7 @@ impl Vp9Backend {
 
     /// Put the saved inter prediction of `planes` back into `recon`.
     fn restore_prediction(&self, block: &Block, recon: &mut Picture, planes: TrialPlanes) {
-        copy_block_in(block, &self.scratch.prediction, recon, planes);
+        copy_block_in(&self.dsp, block, &self.scratch.prediction, recon, planes);
     }
 
     /// Speed heuristic (`vp9.pre_tx_skip_energy`, AV1's light-PD1 energy
@@ -3166,7 +3166,13 @@ impl Vp9Backend {
             (mv, filter),
             luma_ready.then_some(&scratch.filter_best[..side * side]),
         );
-        copy_block_in(block, &scratch.prediction, recon, TrialPlanes::All);
+        copy_block_in(
+            &self.dsp,
+            block,
+            &scratch.prediction,
+            recon,
+            TrialPlanes::All,
+        );
         (mode, mv, refs, filter)
     }
 
@@ -3748,16 +3754,28 @@ fn to_engine_mv(mv: Mv) -> EngineMv {
 
 /// Copy the block's samples of every plane out of `picture`, packed plane
 /// after plane.
-fn copy_block_out(block: &Block, picture: &Picture, packed: &mut [u8], planes: TrialPlanes) {
+fn copy_block_out(
+    dsp: &nc_dsp::Dsp,
+    block: &Block,
+    picture: &Picture,
+    packed: &mut [u8],
+    planes: TrialPlanes,
+) {
     let mut offset = 0;
     for plane in PlaneIndex::ALL.into_iter().filter(|&p| planes.includes(p)) {
         let ss = usize::from(plane != PlaneIndex::Y);
         let (x, y, n) = (block.x >> ss, block.y >> ss, block.size() >> ss);
         let view = picture.plane(plane).view();
-        for dy in 0..n {
-            packed[offset..offset + n].copy_from_slice(&view.row(y + dy)[x..x + n]);
-            offset += n;
-        }
+        let from = view.sub_view(x, y, n, n).expect("block inside picture");
+        dsp.block_copies().copy_rect(
+            from.data(),
+            from.stride(),
+            &mut packed[offset..offset + n * n],
+            n,
+            (n, n),
+            false,
+        );
+        offset += n * n;
     }
 }
 
@@ -3808,7 +3826,13 @@ fn trial_levels(block: &Block, planes: TrialPlanes) -> usize {
 
 /// Write the `planes` samples packed by [`copy_block_out`] back into
 /// `picture`.
-fn copy_block_in(block: &Block, packed: &[u8], picture: &mut Picture, planes: TrialPlanes) {
+fn copy_block_in(
+    dsp: &nc_dsp::Dsp,
+    block: &Block,
+    packed: &[u8],
+    picture: &mut Picture,
+    planes: TrialPlanes,
+) {
     let mut offset = 0;
     for plane in PlaneIndex::ALL.into_iter().filter(|&p| planes.includes(p)) {
         let ss = usize::from(plane != PlaneIndex::Y);
@@ -3817,7 +3841,15 @@ fn copy_block_in(block: &Block, packed: &[u8], picture: &mut Picture, planes: Tr
         let mut dst = view
             .sub_view_mut(x, y, n, n)
             .expect("block inside the picture");
-        copy_square(&mut dst, &packed[offset..offset + n * n], n);
+        let ds = dst.stride();
+        dsp.block_copies().copy_rect(
+            &packed[offset..offset + n * n],
+            n,
+            dst.data_mut(),
+            ds,
+            (n, n),
+            false,
+        );
         offset += n * n;
     }
 }
@@ -3886,20 +3918,6 @@ impl QuadSads {
                     .sum::<u32>()
             })
             .sum()
-    }
-}
-
-/// One `n`x`n` packed block into `dst` through `nc_dsp::copy_square`: one
-/// range check, then a fixed-size move per row (HEVC's prediction copies;
-/// the per-row slice checks cost about as much as the copies).
-fn copy_square(dst: &mut nc_common::PlaneViewMut<'_>, packed: &[u8], n: usize) {
-    match n {
-        4 => nc_dsp::copy_square::<4>(dst, packed, n),
-        8 => nc_dsp::copy_square::<8>(dst, packed, n),
-        16 => nc_dsp::copy_square::<16>(dst, packed, n),
-        32 => nc_dsp::copy_square::<32>(dst, packed, n),
-        64 => nc_dsp::copy_square::<64>(dst, packed, n),
-        _ => unreachable!("VP9 plane blocks are 4 to 64 samples square"),
     }
 }
 

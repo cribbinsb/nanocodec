@@ -80,8 +80,8 @@ mod check_vvc_tx64;
 pub mod rng;
 
 pub use bench::{
-    BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_cdef, bench_deblock_batches,
-    bench_encoder_wide, bench_vp9_mc,
+    BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_cdef, bench_copies,
+    bench_deblock_batches, bench_encoder_wide, bench_vp9_mc,
 };
 pub use check::{CheckReport, check};
 

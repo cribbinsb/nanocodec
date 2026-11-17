@@ -201,7 +201,7 @@ AV1/VP9 outer-filter equation unification remains the sharing agent's work.
 | `diff::reconstruct` (`Dsp::add_residual`, `Dsp::reconstruct_i16`) | S A2 N W | all; VP9 reconstruction (was a scalar loop in `nc-vp9/src/recon.rs`); AV2 encoder and decoder | `constant_add` | **Merged** (2026-11-16): one width-class kernel, prediction in place or from a block, residual rows or a constant, 16-bit saturating add (`I16Lanes::add_sat`); the `reconstruct` module (8 lanes a step at every width) is gone, so AV2 gains 16/32-lane AVX2 rows |
 | `constant_add` (DC only), `Dsp::add_constant` | S A2 N W | AV1 inverse; VP9 and VVC DC-only blocks (2026-11-16) | | **Shared**: VP9's and VVC's scalar `add_constant` removed |
 | `block_sums` vs `sample::moments_8x8_row` | | encoder | same (sum, sum of squares) | merge |
-| `block_copy::avx512` | installed nowhere in `Dsp::avx512` | | | install or fix the module doc |
+| `block_copy` plain / rounded average / byte-to-word prep | S A2 A5 N W | all encoder prediction; reconstruction; AV1/VP9/AV2 encode and decode | removed private AV1/VP9/AV2 row copies | **Shared**: per-instance table, one exact-tail row schedule, width-specific entries. NEON moves 16 bytes / widens 16 samples; AVX2 moves32 / widens16; ICL moves64 / widens32; SIMD128 moves16 / widens16. Prep precision is `(sample << shift) - bias`; VP9 compound uses the rounded byte average. Native evidence and all-tier receipts: `docs/handoff/astra-shared-copies.md`. |
 
 Scalar add-and-clip and SSE loops written in codec crates (to move onto the
 shared kernels): `nc-hevc/src/backend.rs:2481` (`reconstruct<N>`),

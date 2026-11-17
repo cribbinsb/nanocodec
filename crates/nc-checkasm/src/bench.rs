@@ -91,6 +91,18 @@ pub fn bench_cdef(isas: &[Isa]) -> Vec<BenchResult> {
     results
 }
 
+/// Time whole-pel prediction, compound prep and reconstruction copies.
+#[must_use]
+pub fn bench_copies(isas: &[Isa]) -> Vec<BenchResult> {
+    let mut results = Vec::new();
+    for &isa in isas {
+        if let Some(dsp) = Dsp::with_isa(isa) {
+            crate::bench_memory::copies(&dsp, &mut results);
+        }
+    }
+    results
+}
+
 /// Time only the VP9 interpolation kernels, as the full suite does.
 #[must_use]
 pub fn bench_vp9_mc(isas: &[Isa]) -> Vec<BenchResult> {

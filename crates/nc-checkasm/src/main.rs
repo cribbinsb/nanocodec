@@ -18,8 +18,8 @@ mod replay_hevc_runs;
 use std::process::ExitCode;
 
 use nc_checkasm::{
-    BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_cdef, bench_deblock_batches,
-    bench_encoder_wide, bench_vp9_mc, check,
+    BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_cdef, bench_copies,
+    bench_deblock_batches, bench_encoder_wide, bench_vp9_mc, check,
 };
 use nc_dsp::Isa;
 
@@ -36,6 +36,7 @@ enum BenchSet {
     Av1Inverse,
     Av1Runs,
     Cdef,
+    Copies,
     DeblockBatches,
     Vp9Mc,
 }
@@ -55,7 +56,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("nc-checkasm: {message}");
             eprintln!(
-                "usage: nc-checkasm [--bench|--bench-encoder-wide|--bench-av1-inverse|--bench-av1-runs|--bench-deblock-batches|--bench-cdef|--bench-vp9-mc] [--isa ISA] [--seed N] [--iterations N]"
+                "usage: nc-checkasm [--bench|--bench-encoder-wide|--bench-av1-inverse|--bench-av1-runs|--bench-deblock-batches|--bench-cdef|--bench-copies|--bench-vp9-mc] [--isa ISA] [--seed N] [--iterations N]"
             );
             return ExitCode::from(2);
         }
@@ -80,6 +81,7 @@ fn main() -> ExitCode {
             BenchSet::Av1Inverse => bench_av1_inverse(isas),
             BenchSet::Av1Runs => bench_av1_runs(isas),
             BenchSet::Cdef => bench_cdef(isas),
+            BenchSet::Copies => bench_copies(isas),
             BenchSet::DeblockBatches => bench_deblock_batches(isas),
             BenchSet::Vp9Mc => bench_vp9_mc(isas),
         };
@@ -105,6 +107,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--bench-av1-inverse" => options.bench = Some(BenchSet::Av1Inverse),
             "--bench-av1-runs" => options.bench = Some(BenchSet::Av1Runs),
             "--bench-cdef" => options.bench = Some(BenchSet::Cdef),
+            "--bench-copies" => options.bench = Some(BenchSet::Copies),
             "--bench-deblock-batches" => options.bench = Some(BenchSet::DeblockBatches),
             "--bench-vp9-mc" => options.bench = Some(BenchSet::Vp9Mc),
             "--filter-runs" => {

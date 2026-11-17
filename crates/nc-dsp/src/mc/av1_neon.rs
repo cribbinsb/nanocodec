@@ -33,7 +33,7 @@ use core::arch::aarch64::{
     int16x8_t, int32x4_t, vcombine_s16, vdup_n_u32, vdupq_n_s16, vdupq_n_s32, vget_high_s16,
     vget_lane_u32, vget_low_s16, vld1_u8, vmlal_n_s16, vmlaq_n_s16, vmovl_u8, vqmovun_s16,
     vreinterpret_u8_u32, vreinterpret_u32_u8, vreinterpretq_s16_u16, vrshrn_n_s32, vrshrq_n_s16,
-    vshlq_n_s16, vst1_s16, vst1_u8, vst1q_s16,
+    vst1_s16, vst1_u8, vst1q_s16,
 };
 
 /// Lanes of one 16-bit vector.
@@ -69,8 +69,6 @@ trait Output {
     unsafe fn vertical(&mut self, row: usize, col: usize, sum: int16x8_t);
     /// The vertical accumulators (outputs 0..4, 4..8) of a 2-D filter.
     unsafe fn both(&mut self, row: usize, col: usize, low: int32x4_t, high: int32x4_t);
-    /// The samples of a whole-sample vector.
-    unsafe fn copy(&mut self, row: usize, col: usize, samples: int16x8_t);
 }
 
 /// Final 8-bit samples.
@@ -115,12 +113,6 @@ impl<const W: usize> Output for Put<'_, W> {
         let words = vcombine_s16(vrshrn_n_s32::<10>(low), vrshrn_n_s32::<10>(high));
         // SAFETY: forwarded from the caller.
         unsafe { self.store(row, col, words) };
-    }
-    #[inline]
-    #[target_feature(enable = "neon,dotprod")]
-    unsafe fn copy(&mut self, row: usize, col: usize, samples: int16x8_t) {
-        // SAFETY: forwarded from the caller.
-        unsafe { self.store(row, col, samples) };
     }
 }
 
@@ -167,12 +159,6 @@ impl<const W: usize> Output for Prep<'_, W> {
         // SAFETY: forwarded from the caller.
         unsafe { self.store(row, col, words) };
     }
-    #[inline]
-    #[target_feature(enable = "neon,dotprod")]
-    unsafe fn copy(&mut self, row: usize, col: usize, samples: int16x8_t) {
-        // SAFETY: forwarded from the caller.
-        unsafe { self.store(row, col, vshlq_n_s16::<4>(samples)) };
-    }
 }
 
 /// The mixed-family kernels (`mc::Av1MixedFn`) by width class (4 to 64).
@@ -192,16 +178,6 @@ pub(crate) fn mixed_fns() -> Av1MixedFns {
             prep_mixed::<32>,
             prep_mixed::<64>,
         ],
-    }
-}
-
-/// The `put` of a whole-sample block: rows of `W` samples copied from the
-/// window's centre (no widening to the filters' 16-bit lanes and back).
-#[inline]
-fn copy_rows<const W: usize>(src: &[u8], ss: usize, dst: &mut [u8], ds: usize, h: usize) {
-    for r in 0..h {
-        let from = (r + TAP_CENTRE) * ss + TAP_CENTRE;
-        dst[r * ds..r * ds + W].copy_from_slice(&src[from..from + W]);
     }
 }
 
@@ -231,7 +207,17 @@ unsafe fn put<F: Av1Family, const W: usize>(
     fy: usize,
 ) {
     if (fx, fy) == (0, 0) {
-        copy_rows::<W>(src, ss, dst, ds, h);
+        // SAFETY: Dsp validated the tap window and output; NEON is enabled.
+        unsafe {
+            crate::block_copy::neon::copy::<false>(
+                &src[TAP_CENTRE * (ss + 1)..],
+                ss,
+                dst,
+                ds,
+                W,
+                h,
+            );
+        };
         return;
     }
     let mut out = Put::<W> { dst, stride: ds };
@@ -250,6 +236,19 @@ unsafe fn prep<F: Av1Family, const W: usize>(
     fx: usize,
     fy: usize,
 ) {
+    if (fx, fy) == (0, 0) {
+        // SAFETY: the caller checked complete source/output footprints; NEON is enabled.
+        unsafe {
+            crate::block_copy::neon::prep_unbiased(
+                &src[TAP_CENTRE * (ss + 1)..],
+                ss,
+                dst,
+                ds,
+                (W, h),
+            );
+        };
+        return;
+    }
     let mut out = Prep::<W> { dst, stride: ds };
     let taps = || (F::taps(W, fx), F::taps(h, fy));
     // SAFETY: dotprod is enabled; the window contract is the caller's.
@@ -268,7 +267,17 @@ unsafe fn put_mixed<const W: usize>(
     taps: TapPair<'_>,
 ) {
     if fracs == (0, 0) {
-        copy_rows::<W>(src, ss, dst, ds, h);
+        // SAFETY: Dsp validated the tap window and output; NEON is enabled.
+        unsafe {
+            crate::block_copy::neon::copy::<false>(
+                &src[TAP_CENTRE * (ss + 1)..],
+                ss,
+                dst,
+                ds,
+                W,
+                h,
+            );
+        };
         return;
     }
     let mut out = Put::<W> { dst, stride: ds };
@@ -287,6 +296,19 @@ unsafe fn prep_mixed<const W: usize>(
     fracs: (usize, usize),
     taps: TapPair<'_>,
 ) {
+    if fracs == (0, 0) {
+        // SAFETY: the caller checked complete source/output footprints; NEON is enabled.
+        unsafe {
+            crate::block_copy::neon::prep_unbiased(
+                &src[TAP_CENTRE * (ss + 1)..],
+                ss,
+                dst,
+                ds,
+                (W, h),
+            );
+        };
+        return;
+    }
     let mut out = Prep::<W> { dst, stride: ds };
     // SAFETY: dotprod is enabled; the window contract is the caller's.
     unsafe { filter::<W, _, AnyTaps>(src, ss, h, fracs, || taps, &mut out) };
@@ -314,14 +336,7 @@ unsafe fn filter<'t, const W: usize, O: Output, Z: OuterTaps>(
     // window checked above; the outputs' slices are bounds-checked.
     unsafe {
         match (fx, fy) {
-            (0, 0) => {
-                for r in 0..h {
-                    for c in (0..W).step_by(step) {
-                        let row = &src[(r + TAP_CENTRE) * ss + TAP_CENTRE + c..];
-                        out.copy(r, c, pixels::<W>(row));
-                    }
-                }
-            }
+            (0, 0) => unreachable!("whole-pel predictions use block_copy"),
             (_, 0) => {
                 let taps = DotFilter::new::<W>(&halved(taps().0));
                 for r in 0..h {

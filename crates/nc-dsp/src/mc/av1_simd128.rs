@@ -24,22 +24,17 @@ use super::{
     TAP_CENTRE, TAPS, TapPair, slide,
 };
 use core::arch::wasm32::{
-    i8x16_shuffle, i16x8_add, i16x8_mul, i16x8_narrow_i32x4, i16x8_q15mulr_sat, i16x8_shl,
-    i16x8_splat, i32x4_add, i32x4_dot_i16x8, i32x4_shr, i32x4_splat, u8x16_narrow_i16x8,
-    u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, v128, v128_load, v128_load32_zero,
-    v128_load64_zero, v128_store, v128_store32_lane, v128_store64_lane,
+    i8x16_shuffle, i16x8_add, i16x8_mul, i16x8_narrow_i32x4, i16x8_q15mulr_sat, i16x8_splat,
+    i32x4_add, i32x4_dot_i16x8, i32x4_shr, i32x4_splat, u8x16_narrow_i16x8, u16x8_extend_low_u8x16,
+    u16x8_load_extend_u8x8, v128, v128_load32_zero, v128_store, v128_store32_lane,
+    v128_store64_lane,
 };
 
 /// Outputs of one vector (8 lanes of 16 bits).
 const LANES: usize = 8;
-/// Bytes of one vector.
-const VECTOR_BYTES: usize = 16;
 /// Taps of HEVC and VVC chroma filters, and the window column of their
 /// centre sample.
 const SHORT_TAPS: usize = 4;
-/// A whole-sample block at compound precision: each sample `<< 4`.
-const PREP_COPY_SHIFT: u32 = 4;
-
 /// The AV1 compound-precision kernels of filter family `F` by width class.
 pub(super) fn prep_family<F: Av1Family>() -> [PrepFn; 5] {
     [
@@ -234,36 +229,6 @@ impl<T> Raw<*mut T> {
     }
 }
 
-/// Copy `h` rows of `W` (4, 8 or a multiple of 16) bytes from `src` to `dst`
-/// with vector loads and stores.
-///
-/// # Safety
-///
-/// `src` and `dst` must cover `h` rows of `W` bytes at their strides.
-#[inline]
-pub(super) unsafe fn copy_block<const W: usize>(
-    (src, src_stride): (*const u8, usize),
-    (dst, dst_stride): (*mut u8, usize),
-    h: usize,
-) {
-    for r in 0..h {
-        // SAFETY: the caller provides h rows of W bytes on both sides;
-        // wasm loads and stores need no alignment.
-        unsafe {
-            let (from, to) = (src.add(r * src_stride), dst.add(r * dst_stride));
-            match W {
-                4 => v128_store32_lane::<0>(v128_load32_zero(from.cast()), to.cast()),
-                8 => v128_store64_lane::<0>(v128_load64_zero(from.cast()), to.cast()),
-                _ => {
-                    for c in (0..W).step_by(VECTOR_BYTES) {
-                        v128_store(to.add(c).cast(), v128_load(from.add(c).cast()));
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// The kernels of separable table `T` (`K` = `2P` taps) by width class
 /// (4 to 64): [`separable`].
 pub(super) fn separable_family<T: SeparableTaps<K>, const K: usize, const P: usize>()
@@ -325,9 +290,12 @@ unsafe fn separable<
     // for one direction) and writes the block.
     unsafe {
         if (frac_x, frac_y) == (0, 0) {
-            copy_block::<W>(
-                (window.at(K / 2 - 1, K / 2 - 1), src_stride),
-                (out.ptr, dst_stride),
+            crate::block_copy::simd128::copy::<false>(
+                &src[(K / 2 - 1) * (src_stride + 1)..],
+                src_stride,
+                dst,
+                dst_stride,
+                W,
                 h,
             );
         } else if K == TAPS {
@@ -421,9 +389,12 @@ unsafe fn put_with<'t, const W: usize, const N: usize, Z: OuterTaps>(
         // column TAP_CENTRE, W samples each, and the destination h rows of
         // W (checked above).
         unsafe {
-            copy_block::<W>(
-                (src[from..].as_ptr(), src_stride),
-                (dst.as_mut_ptr(), dst_stride),
+            crate::block_copy::simd128::copy::<false>(
+                &src[from..],
+                src_stride,
+                dst,
+                dst_stride,
+                W,
                 h,
             );
         }
@@ -517,12 +488,13 @@ unsafe fn prep_with<'t, const W: usize, const N: usize, Z: OuterTaps>(
     // from column 3 (W samples) of the window.
     unsafe {
         if (frac_x, frac_y) == (0, 0) {
-            for r in 0..h {
-                for c0 in (0..W).step_by(N) {
-                    let samples = pixels::<N>(window.at(r + TAP_CENTRE, c0 + TAP_CENTRE));
-                    out.store::<N>(r, c0, i16x8_shl(samples, PREP_COPY_SHIFT));
-                }
-            }
+            crate::block_copy::simd128::prep_unbiased(
+                &src[TAP_CENTRE * (src_stride + 1)..],
+                src_stride,
+                dst,
+                dst_stride,
+                (W, h),
+            );
         } else {
             filter::<W, N, _, Z>(window, out, h, (frac_x, frac_y), taps());
         }

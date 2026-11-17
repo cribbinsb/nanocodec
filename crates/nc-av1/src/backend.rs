@@ -1634,7 +1634,7 @@ impl CodecBackend for Av1Backend {
                 zero_vector_residual_is_zero(&self.dsp, block, source, reference, limits)
             });
         if accepted {
-            copy_zero_vector_prediction(block, reference, recon);
+            copy_zero_vector_prediction(&self.dsp, block, reference, recon);
             self.still_skipped = Some((block.x, block.y));
         }
         accepted
@@ -4265,11 +4265,11 @@ impl Av1Backend {
         if plane == PlaneIndex::Y && self.cached_luma_stats(block, prediction).is_some() {
             let cached = PlaneView::new(&self.scratch.luma_prediction[..n * n], n, n, n)
                 .expect("cached prediction is tightly packed");
-            recon
+            let mut dst = recon
                 .plane_mut(plane)
                 .region_mut(x as isize, y as isize, n, n)
-                .expect("block inside reconstruction")
-                .copy_from(&cached);
+                .expect("block inside reconstruction");
+            self.dsp.copy_plane(&cached, &mut dst);
             return;
         }
         match prediction {

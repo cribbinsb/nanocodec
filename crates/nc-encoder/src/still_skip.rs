@@ -100,11 +100,16 @@ pub fn zero_vector_residual_is_zero(
 /// Write the zero-vector prediction of `block` (the co-located `reference`
 /// samples, every plane) into `recon`: the reconstruction of a block coded
 /// with no residual.
-pub fn copy_zero_vector_prediction(block: &Block, reference: &Picture, recon: &mut Picture) {
+pub fn copy_zero_vector_prediction(
+    dsp: &Dsp,
+    block: &Block,
+    reference: &Picture,
+    recon: &mut Picture,
+) {
     for plane in PlaneIndex::ALL {
         let shift = usize::from(plane != PlaneIndex::Y);
         let n = block.size() >> shift;
-        recon
+        let mut dst = recon
             .plane_mut(plane)
             .region_mut(
                 (block.x >> shift) as isize,
@@ -112,8 +117,8 @@ pub fn copy_zero_vector_prediction(block: &Block, reference: &Picture, recon: &m
                 n,
                 n,
             )
-            .expect("block inside the reconstruction")
-            .copy_from(&co_located(reference, plane, block));
+            .expect("block inside the reconstruction");
+        dsp.copy_plane(&co_located(reference, plane, block), &mut dst);
     }
 }
 
@@ -153,17 +158,14 @@ mod tests {
 
     #[test]
     fn small_changes_pass_and_the_prediction_is_copied() {
+        let dsp = Dsp::new();
         let (source, reference) = (picture(101), picture(100));
         let block = Block::square(16, 16, 4);
         assert!(zero_vector_residual_is_zero(
-            &Dsp::new(),
-            &block,
-            &source,
-            &reference,
-            LIMITS
+            &dsp, &block, &source, &reference, LIMITS
         ));
         let mut recon = picture(0);
-        copy_zero_vector_prediction(&block, &reference, &mut recon);
+        copy_zero_vector_prediction(&dsp, &block, &reference, &mut recon);
         assert_eq!(recon.plane(PlaneIndex::Y).view().row(16)[16], 100);
         assert_eq!(recon.plane(PlaneIndex::U).view().row(8)[8], 100);
         assert_eq!(recon.plane(PlaneIndex::Y).view().row(15)[16], 0);

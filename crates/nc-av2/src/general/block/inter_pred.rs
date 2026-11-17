@@ -58,6 +58,8 @@ impl InterPrediction {
 /// `interintra`; `t->rmv`).
 #[derive(Debug, Clone)]
 pub struct InterScratch {
+    /// Copy dispatch is chosen once per decoder workspace.
+    pub(super) copies: nc_dsp::BlockCopy,
     /// The two predictions before blending.
     pub(super) compound: [Vec<i16>; 2],
     /// A difference or implicit mask, per luma piece and chroma.
@@ -103,6 +105,7 @@ const WINDOW_SIDE: usize = MAX_SIDE * 2 + 16;
 impl Default for InterScratch {
     fn default() -> Self {
         Self {
+            copies: nc_dsp::Dsp::new().block_copies(),
             compound: [vec![0; MAX_SIDE * MAX_SIDE], vec![0; MAX_SIDE * MAX_SIDE]],
             mask: vec![0; MAX_SIDE * MAX_SIDE],
             refine: [vec![0; REFINE_SIDE], vec![0; REFINE_SIDE]],

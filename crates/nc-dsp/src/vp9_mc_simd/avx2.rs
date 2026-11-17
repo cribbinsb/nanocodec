@@ -264,6 +264,7 @@ impl RowKernel for Avx2 {
     type Filters = [__m256i; 5];
     type Row = __m128i;
     const LANES: usize = 16;
+    const COPY_ISA: crate::Isa = crate::Isa::Avx2;
     /// Rows of 4 or 8 outputs fill half a vector: two rows share one, as
     /// libvpx's AVX2 convolution pairs rows (BSD-3-Clause).
     const PAIR_ROWS: bool = true;

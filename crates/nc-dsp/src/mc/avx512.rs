@@ -144,7 +144,7 @@ macro_rules! put {
                 let before = Filter::$filter.before();
                 // SAFETY: the validated filter window contains this whole-pel block.
                 unsafe {
-                    crate::block_copy::avx512::copy(
+                    crate::block_copy::avx512::copy::<false>(
                         &src[before * ss + before..],
                         ss,
                         dst,

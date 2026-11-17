@@ -316,12 +316,14 @@ pub(crate) fn prep_copy<T: Sample>(
     depth: BitDepth,
 ) {
     let precision = Precision::of(depth);
-    for (y, line) in tmp.chunks_mut(tmp_stride).take(h).enumerate() {
-        let row = &src[src_offset + y * src_stride..][..w];
-        for (out, sample) in line[..w].iter_mut().zip(row) {
-            *out = ((sample.to_i32() << precision.bits) - precision.bias) as i16;
-        }
-    }
+    crate::block_copy::prep_samples(
+        src.get(src_offset..).expect("prep source offset"),
+        src_stride,
+        tmp,
+        tmp_stride,
+        (w, h),
+        (precision.bits, precision.bias),
+    );
 }
 
 /// Scale a `w` x `h` prediction at `dst[offset..]` in place by `alpha`

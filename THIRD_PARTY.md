@@ -1095,8 +1095,9 @@ moments reduce four independent blocks in registers. No external code was copied
 The memory batch reviews SVT-AV1 v4.3.0
 `Source/Lib/ASM_AVX512/copy_wxh_avx512.c` (Copyright Meta Platforms 2024,
 BSD-2-Clause and AOM Patent License) for its narrow fixed-copy / wide-row
-split. `crates/nc-dsp/src/block_copy/avx512.rs` keeps the existing narrow
-copies and implements masked-tail plane copies independently in Rust.
+split. `crates/nc-dsp/src/block_copy/avx512.rs` keeps short copies narrow and
+uses exact-size tails in the shared copy/average/prep row schedule, implemented
+independently in Rust.
 
 The AV1 packed filter's four-line direct memory paths in
 `crates/nc-dsp/src/deblock/av1_packed.rs` and `lpf_bytes/` review dav1d

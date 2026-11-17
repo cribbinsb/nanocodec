@@ -48,6 +48,7 @@ pub(super) trait RowKernel {
     type Filters;
     type Row: Copy;
     const LANES: usize;
+    const COPY_ISA: crate::Isa;
     /// Whether the pass schedule should filter two rows per step (the
     /// `_pair` methods); kernels whose vectors hold two narrow rows set it.
     const PAIR_ROWS: bool = false;
@@ -292,75 +293,27 @@ fn is_vector_width((w, h): (usize, usize)) -> bool {
     w != 0 && h != 0 && w.is_multiple_of(4)
 }
 
-/// The full-sample copy (or average) of a `w`x`h` block, `w` a multiple of
-/// 4, on the widest vectors that divide `w`.
+/// Whole-pel VP9 uses the common copy/rounded-average family, selected
+/// statically from the row kernel's already-validated ISA.
 #[inline(always)]
 unsafe fn full_sample<K: RowKernel, const AVG: bool>(
     src: &[u8],
-    stride: usize,
+    ss: usize,
     (w, h): (usize, usize),
     dst: &mut [u8],
-    dst_stride: usize,
+    ds: usize,
 ) {
-    // SAFETY: Dsp validated the window (whose centre starts VP9_TAPS_BEFORE
-    // rows and columns in) and the destination; N divides w.
+    let src = &src[VP9_TAPS_BEFORE * (ss + 1)..];
+    // SAFETY: Dsp checked both rectangles; the entry enables K's ISA.
     unsafe {
-        let centre = src.as_ptr().add(VP9_TAPS_BEFORE * stride + VP9_TAPS_BEFORE);
-        let rows = ((centre, stride), (dst.as_mut_ptr(), dst_stride), h);
-        if K::LANES == 16 && w.is_multiple_of(16) {
-            copy_rows::<K, 16, AVG>(rows, w);
-        } else if w.is_multiple_of(8) {
-            copy_rows::<K, 8, AVG>(rows, w);
-        } else {
-            copy_rows::<K, 4, AVG>(rows, w);
-        }
-    }
-}
-
-/// [`copy`] of `w / N` vectors per row, with a constant count for the
-/// common widths.
-#[inline(always)]
-unsafe fn copy_rows<K: RowKernel, const N: usize, const AVG: bool>(
-    rows: ((*const u8, usize), (*mut u8, usize), usize),
-    w: usize,
-) {
-    // SAFETY: as for `copy`; N divides w.
-    unsafe {
-        match w / N {
-            1 => copy::<K, N, 1, AVG>(rows),
-            2 => copy::<K, N, 2, AVG>(rows),
-            4 => copy::<K, N, 4, AVG>(rows),
-            _ => {
-                let ((src, stride), (dst, dst_stride), h) = rows;
-                for y in 0..h {
-                    for x in strided(w, N) {
-                        K::store::<N, AVG>(
-                            dst.add(y * dst_stride + x),
-                            K::load::<N>(src.add(y * stride + x)),
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The full-sample copy (or average) of `h` rows of `COUNT` N-byte vectors.
-/// A constant row width keeps each row as inline vector moves: with the
-/// width a runtime value, the row loop became a `memcpy` call per row
-/// (2.6 % of a 720p decode, 2026-11-12).
-#[inline(always)]
-unsafe fn copy<K: RowKernel, const N: usize, const COUNT: usize, const AVG: bool>(
-    ((src, stride), (dst, dst_stride), h): ((*const u8, usize), (*mut u8, usize), usize),
-) {
-    // SAFETY: the caller provides h rows of N * COUNT readable source and
-    // writable (for AVG also readable) destination bytes.
-    unsafe {
-        for y in 0..h {
-            let (from, to) = (src.add(y * stride), dst.add(y * dst_stride));
-            for x in 0..COUNT {
-                K::store::<N, AVG>(to.add(x * N), K::load::<N>(from.add(x * N)));
-            }
+        match K::COPY_ISA {
+            #[cfg(target_arch = "x86_64")]
+            crate::Isa::Avx2 => crate::block_copy::avx2::copy::<AVG>(src, ss, dst, ds, w, h),
+            #[cfg(target_arch = "aarch64")]
+            crate::Isa::Neon => crate::block_copy::neon::copy::<AVG>(src, ss, dst, ds, w, h),
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            crate::Isa::Simd128 => crate::block_copy::simd128::copy::<AVG>(src, ss, dst, ds, w, h),
+            _ => unreachable!("compiled VP9 row ISA"),
         }
     }
 }

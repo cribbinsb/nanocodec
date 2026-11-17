@@ -110,13 +110,17 @@ fn av1_taps<V: I16Lanes, F: Av1Family, const N: usize>(
     // Whole-sample vectors (most blocks of static content) copy the window
     // centre; the filter set-up below would be wasted on them.
     if (frac_x, frac_y) == (0, 0) {
-        for r in 0..h {
-            let from = (r + TAP_CENTRE) * src_stride + TAP_CENTRE;
-            // SAFETY: both complete row spans were checked above; slices are disjoint.
-            unsafe {
-                core::ptr::copy_nonoverlapping(input.add(from), output.add(r * dst_stride), w);
-            }
-        }
+        // SAFETY: both rectangles were checked above.
+        unsafe {
+            crate::block_copy::scalar::copy::<false>(
+                &src[TAP_CENTRE * (src_stride + 1)..],
+                src_stride,
+                dst,
+                dst_stride,
+                w,
+                h,
+            );
+        };
         return;
     }
     let lead = (TAPS - N) / 2;
@@ -231,19 +235,16 @@ fn av1_prep_taps<V: I16Lanes, F: Av1Family, const N: usize>(
     let (input, output) = (src.as_ptr(), dst.as_mut_ptr());
 
     if (frac_x, frac_y) == (0, 0) {
-        for r in 0..h {
-            // SAFETY: the identity row lies inside the validated tap window.
-            let row = unsafe { input.add((r + TAP_CENTRE) * src_stride + TAP_CENTRE) };
-            for c0 in (0..w).step_by(V::LANES) {
-                // SAFETY: the checked source/output rows cover this complete vector.
-                unsafe {
-                    store_words(
-                        V::load_u8_at(row.add(c0)).mul(V::splat(COMPOUND_SCALE)),
-                        output.add(r * dst_stride + c0),
-                    );
-                }
-            }
-        }
+        // SAFETY: both rectangles were checked; byte samples <<4 fit i16.
+        unsafe {
+            crate::block_copy::scalar::prep_unbiased(
+                &src[TAP_CENTRE * (src_stride + 1)..],
+                src_stride,
+                dst,
+                dst_stride,
+                (w, h),
+            );
+        };
         return;
     }
     let lead = (TAPS - N) / 2;
@@ -305,11 +306,6 @@ fn av1_prep_taps<V: I16Lanes, F: Av1Family, const N: usize>(
         ),
     }
 }
-
-/// Scale of a whole-sample compound prediction (`1 << (14 - 8 - 2)`
-/// halved-tap bits: the sample in the compound domain).
-#[cfg(target_arch = "aarch64")]
-const COMPOUND_SCALE: i16 = 16;
 
 /// The rounded average of two compound predictions of a `w`x`h` block
 /// (AV1 §7.11.3.15 at equal weights: `Round2(p0 + p1, 5)`, clipped):
@@ -559,18 +555,16 @@ pub(crate) unsafe fn hevc_prep<V: I16Lanes, const N: usize>(
     let (input, output) = (src.as_ptr(), dst.as_mut_ptr());
     match (frac_x, frac_y) {
         (0, 0) => {
-            for r in 0..h {
-                for c in (0..w).step_by(V::LANES) {
-                    // SAFETY: the checked source and destination contain both vectors.
-                    unsafe {
-                        store_words(
-                            V::load_u8_at(input.add((r + centre) * src_stride + c + centre))
-                                .mul(V::splat(64))
-                                .sub(V::splat(super::HEVC_PREP_OFFSET)),
-                            output.add(r * dst_stride + c),
-                        );
-                    }
-                }
+            // SAFETY: complete source/output footprints were checked above.
+            unsafe {
+                crate::block_copy::scalar::prep(
+                    &src[centre * (src_stride + 1)..],
+                    src_stride,
+                    dst,
+                    dst_stride,
+                    (w, h),
+                    (6, super::HEVC_PREP_OFFSET),
+                );
             }
         }
         (_, 0) => {

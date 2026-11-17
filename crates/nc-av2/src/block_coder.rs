@@ -729,7 +729,7 @@ impl Quantizer {
         if zero {
             levels.fill(0);
             if let Output::Reconstruct(reconstructed) = output {
-                reconstructed.copy_from(prediction);
+                self.dsp.copy_plane(prediction, reconstructed);
             }
             return Ok(LevelStats::EMPTY);
         }
@@ -870,7 +870,7 @@ impl Quantizer {
         reconstructed: &mut PlaneViewMut<'_>,
     ) -> Result<()> {
         if stats.eob() == 0 {
-            reconstructed.copy_from(prediction);
+            self.dsp.copy_plane(prediction, reconstructed);
             return Ok(());
         }
         let side = tx.width();
@@ -1384,7 +1384,7 @@ impl BlockCoder {
             self.finish_intra_coding(coded, layout, (x, y), (luma, chroma), (source, recon))?;
         self.write_intra(&coded, layout, (x, y), modes, (luma, chroma))?;
         self.commit_delta_q(size, false);
-        store_block(recon, (x, y), size, &coded);
+        store_block(&self.quantizer.dsp, recon, (x, y), size, &coded);
         self.recycle(coded);
         self.state
             .edges
@@ -1888,6 +1888,10 @@ impl BlockCoder {
     /// error. Luma transforms take [`Self::intra_luma_type`] of `luma_type`,
     /// except that a DC-only result is recoded as `DCT_DCT`, which such
     /// blocks infer; chroma is DCT-only.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "explicit shared copy context lengthens the unchanged transform traversal"
+    )]
     fn code_intra_plane(
         &mut self,
         coded: &mut Coded,
@@ -1975,8 +1979,16 @@ impl BlockCoder {
                 coded.luma_types[i] = tx_type;
             }
             coded.stats[plane][i] = stats;
-            store(recon, index, position, tx.width(), reconstructed);
+            store(
+                &self.quantizer.dsp,
+                recon,
+                index,
+                position,
+                tx.width(),
+                reconstructed,
+            );
             copy_into_block(
+                &self.quantizer.dsp,
                 &mut coded.pixels[plane],
                 side,
                 (position.0 - origin.0, position.1 - origin.1),
@@ -2181,13 +2193,14 @@ impl BlockCoder {
         );
         match chosen {
             Some((coded, _)) => {
-                store_block(recon, (x, y), size, &coded);
+                store_block(&self.quantizer.dsp, recon, (x, y), size, &coded);
                 self.recycle(coded);
             }
             None => {
                 for (plane, index) in PlaneIndex::ALL.into_iter().enumerate() {
                     let side = size >> usize::from(plane != 0);
                     store(
+                        &self.quantizer.dsp,
                         recon,
                         index,
                         plane_origin(plane, (x, y)),
@@ -2784,6 +2797,10 @@ impl BlockCoder {
     /// choices, then the contexts are restored. Returns whether any type
     /// changed. Only the winning layout is searched, as for intra
     /// ([`Self::refine_intra_type`]).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "explicit shared copy context lengthens the unchanged transform traversal"
+    )]
     fn refine_inter_types(
         &mut self,
         coded: &mut Coded,
@@ -2829,7 +2846,14 @@ impl BlockCoder {
                 self.state.update_coeff_context(LUMA, position, tx, levels);
                 continue;
             }
-            copy_from_block(&coded.pixels[LUMA], side, offset, width, best_pixels);
+            copy_from_block(
+                &self.quantizer.dsp,
+                &coded.pixels[LUMA],
+                side,
+                offset,
+                width,
+                best_pixels,
+            );
             let dct_distortion = sse(
                 &self.quantizer.dsp,
                 source,
@@ -2845,7 +2869,14 @@ impl BlockCoder {
             );
             for &candidate in search.candidates.iter().filter(|t| allowed.contains(t)) {
                 let predicted = &mut self.tx_prediction[..area];
-                copy_from_block(&self.prediction[LUMA], side, offset, width, predicted);
+                copy_from_block(
+                    &self.quantizer.dsp,
+                    &self.prediction[LUMA],
+                    side,
+                    offset,
+                    width,
+                    predicted,
+                );
                 let reconstructed = &mut self.tx_reconstruction[..area];
                 let trial_stats = self.quantizer.code(
                     (source, PlaneIndex::Y, position),
@@ -2881,7 +2912,14 @@ impl BlockCoder {
                 changed = true;
                 coded.luma_types[i] = best.1;
                 coded.distortion = coded.distortion - dct_distortion + best.2;
-                copy_into_block(&mut coded.pixels[LUMA], side, offset, width, best_pixels);
+                copy_into_block(
+                    &self.quantizer.dsp,
+                    &mut coded.pixels[LUMA],
+                    side,
+                    offset,
+                    width,
+                    best_pixels,
+                );
             }
             let levels = &coded.levels[LUMA][i * len..(i + 1) * len];
             self.state.update_coeff_context(LUMA, position, tx, levels);
@@ -3880,6 +3918,7 @@ pub(crate) fn plane_origin(plane: usize, (x, y): (usize, usize)) -> (usize, usiz
 
 /// Copy a `side`×`side` raster `samples` into `plane` of `picture` at `(x, y)`.
 pub(crate) fn store(
+    dsp: &Dsp,
     picture: &mut Picture,
     plane: PlaneIndex,
     (x, y): (usize, usize),
@@ -3887,19 +3926,19 @@ pub(crate) fn store(
     samples: &[u8],
 ) {
     let samples = PlaneView::new(samples, side, side, side).expect("a side x side raster");
-    picture
-        .plane_mut(plane)
-        .view_mut()
+    let mut view = picture.plane_mut(plane).view_mut();
+    let mut dst = view
         .sub_view_mut(x, y, side, side)
-        .expect("stored blocks lie inside the plane")
-        .copy_from(&samples);
+        .expect("stored blocks lie inside the plane");
+    dsp.copy_plane(&samples, &mut dst);
 }
 
 /// Store every plane of a coded block.
-fn store_block(recon: &mut Picture, (x, y): (usize, usize), size: usize, coded: &Coded) {
+fn store_block(dsp: &Dsp, recon: &mut Picture, (x, y): (usize, usize), size: usize, coded: &Coded) {
     for (plane, index) in PlaneIndex::ALL.into_iter().enumerate() {
         let side = size >> usize::from(plane != 0);
         store(
+            dsp,
             recon,
             index,
             plane_origin(plane, (x, y)),
@@ -3911,16 +3950,21 @@ fn store_block(recon: &mut Picture, (x, y): (usize, usize), size: usize, coded: 
 
 /// Copy a `tx`×`tx` raster into a block raster of side `side` at `offset`.
 pub(crate) fn copy_into_block(
+    dsp: &Dsp,
     block: &mut [u8],
     side: usize,
     (ox, oy): (usize, usize),
     tx: usize,
     samples: &[u8],
 ) {
-    for (row, values) in samples.chunks_exact(tx).enumerate() {
-        let start = (oy + row) * side + ox;
-        nc_common::copy_row(&mut block[start..start + tx], values);
-    }
+    dsp.block_copies().copy_rect(
+        samples,
+        tx,
+        &mut block[oy * side + ox..],
+        side,
+        (tx, samples.len() / tx),
+        false,
+    );
 }
 
 /// A square raster (`samples.len()` a square) as a view.
@@ -3952,11 +3996,17 @@ fn block_window_mut(
 }
 
 /// Copy a `tx`×`tx` window at `offset` out of a block raster of side `side`.
-fn copy_from_block(block: &[u8], side: usize, (ox, oy): (usize, usize), tx: usize, out: &mut [u8]) {
-    for (row, values) in out.chunks_exact_mut(tx).enumerate() {
-        let start = (oy + row) * side + ox;
-        nc_common::copy_row(values, &block[start..start + tx]);
-    }
+fn copy_from_block(
+    dsp: &Dsp,
+    block: &[u8],
+    side: usize,
+    (ox, oy): (usize, usize),
+    tx: usize,
+    out: &mut [u8],
+) {
+    let h = out.len() / tx;
+    dsp.block_copies()
+        .copy_rect(&block[oy * side + ox..], side, out, tx, (tx, h), false);
 }
 
 /// Squared error of a `side`×`side` raster against `plane` of `source` at `(x, y)`.

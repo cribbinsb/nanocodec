@@ -644,6 +644,10 @@ impl TileDecoder<'_> {
     /// [`Self::residual`] for a block that crosses the picture edge
     /// (`CROSSING`) or lies inside it (compiled without the edge handling:
     /// that cost our own streams 0.9% of their decode instructions).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "explicit shared copy context lengthens the unchanged transform traversal"
+    )]
     fn residual_planes<const CROSSING: bool>(
         &mut self,
         reader: &mut Reader<'_>,
@@ -703,6 +707,7 @@ impl TileDecoder<'_> {
                 if coded {
                     if matches!(source, Source::Inter) {
                         load(
+                            &self.dsp,
                             &self.recon,
                             index,
                             position,
@@ -734,12 +739,20 @@ impl TileDecoder<'_> {
                         .reconstruct_i16(size, &prediction, output, &mut destination);
                     if crossing {
                         let whole = &self.crossing[..area];
-                        store_part(&mut self.recon, index, position, (side, visible), whole);
+                        store_part(
+                            &self.dsp,
+                            &mut self.recon,
+                            index,
+                            position,
+                            (side, visible),
+                            whole,
+                        );
                     }
                 } else if let Source::Intra { .. } = source {
                     // No coefficients: the reconstruction is the prediction
                     // (a zero residual added and clipped changes nothing).
                     store_part(
+                        &self.dsp,
                         &mut self.recon,
                         index,
                         position,
@@ -895,7 +908,14 @@ impl TileDecoder<'_> {
                 .ok_or(DecodeError::Malformed("AV2 block outside the picture"))?;
             let source = reference.plane(index);
             prediction::predict_into(&self.dsp, filter, source, origin, mv, subsample, &mut block)?;
-            store_part(&mut self.recon, index, origin, (side, visible), whole);
+            store_part(
+                &self.dsp,
+                &mut self.recon,
+                index,
+                origin,
+                (side, visible),
+                whole,
+            );
         }
         Ok(())
     }
@@ -986,6 +1006,7 @@ impl PictureEdge {
 /// `samples` at (`x`, `y`) of `plane` (all of it, or the part inside the
 /// picture of a transform crossing its edge).
 fn store_part(
+    dsp: &Dsp,
     picture: &mut Picture,
     plane: PlaneIndex,
     (x, y): (usize, usize),
@@ -993,15 +1014,14 @@ fn store_part(
     samples: &[u8],
 ) {
     if visible == (side, side) {
-        return store(picture, plane, (x, y), side, samples);
+        return store(dsp, picture, plane, (x, y), side, samples);
     }
+    let source = PlaneView::new(samples, side, visible.0, visible.1).expect("visible raster");
     let mut view = picture.plane_mut(plane).view_mut();
-    for (row, values) in samples.chunks_exact(side).take(visible.1).enumerate() {
-        nc_common::copy_row(
-            &mut view.row_mut(y + row)[x..x + visible.0],
-            &values[..visible.0],
-        );
-    }
+    let mut dst = view
+        .sub_view_mut(x, y, visible.0, visible.1)
+        .expect("visible rectangle");
+    dsp.copy_plane(&source, &mut dst);
 }
 
 /// Copy the top-left `visible` columns and rows of the block of `plane` of
@@ -1009,6 +1029,7 @@ fn store_part(
 /// of [`store_part`]; samples outside the picture keep their values).
 #[inline]
 fn load(
+    dsp: &Dsp,
     picture: &Picture,
     plane: PlaneIndex,
     (x, y): (usize, usize),
@@ -1016,10 +1037,9 @@ fn load(
     out: &mut [u8],
 ) {
     let view = picture.plane(plane).view();
-    for (row, values) in out.chunks_exact_mut(side).take(visible.1).enumerate() {
-        nc_common::copy_row(
-            &mut values[..visible.0],
-            &view.row(y + row)[x..x + visible.0],
-        );
-    }
+    let source = view
+        .sub_view(x, y, visible.0, visible.1)
+        .expect("visible rectangle");
+    dsp.block_copies()
+        .copy_rect(source.data(), source.stride(), out, side, visible, false);
 }

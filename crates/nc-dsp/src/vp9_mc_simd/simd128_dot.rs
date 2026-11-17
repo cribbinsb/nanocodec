@@ -125,6 +125,7 @@ impl RowKernel for Simd128Dot {
     type Filters = DotFilters;
     type Row = v128;
     const LANES: usize = 8;
+    const COPY_ISA: crate::Isa = crate::Isa::Simd128;
     #[inline(always)]
     unsafe fn prepare<const LAYOUT: u8>(taps: &[i16; VP9_TAPS]) -> DotFilters {
         let magnitude = |k: usize| taps[k].unsigned_abs();

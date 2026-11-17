@@ -53,11 +53,11 @@ use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_loadl_epi64, _mm_loadu_si128,
     _mm_or_si128, _mm_slli_si128, _mm_storel_epi64, _mm_storeu_si128, _mm_unpackhi_epi8,
     _mm_unpacklo_epi8, _mm256_add_epi16, _mm256_add_epi32, _mm256_castsi128_si256,
-    _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_extracti128_si256,
-    _mm256_inserti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16,
-    _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute2x128_si256,
-    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_shuffle_epi8, _mm256_slli_epi16, _mm256_sra_epi32,
-    _mm256_storeu_si256, _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
+    _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_inserti128_si256, _mm256_loadu_si256,
+    _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_mulhrs_epi16, _mm256_packs_epi32,
+    _mm256_packus_epi16, _mm256_permute2x128_si256, _mm256_set1_epi16, _mm256_set1_epi32,
+    _mm256_shuffle_epi8, _mm256_sra_epi32, _mm256_storeu_si256, _mm256_unpackhi_epi16,
+    _mm256_unpacklo_epi16,
 };
 
 /// Taps of HEVC and VVC chroma filters, and the window column of their
@@ -176,9 +176,6 @@ impl WidePasses for Avx2Wide {
         unsafe { both_wide::<W, P, S, R, C>(window, lead, out, h, taps) }
     }
 }
-
-/// `prep` scales whole samples by 16 (`<< 4`).
-const PREP_COPY_SHIFT: i32 = 4;
 
 /// The AV1 compound-precision kernels of filter family `F` by width class.
 pub(super) fn prep_family<F: Av1Family>() -> [PrepFn; 5] {
@@ -546,19 +543,17 @@ unsafe fn put_with<'t, const W: usize, Z: OuterTaps, X: WidePasses>(
         stride: dst_stride,
     };
     if (frac_x, frac_y) == (0, 0) {
-        for r in 0..h {
-            // SAFETY: row r + 3 of the window from column 3 (W samples) and
-            // row r of the destination (W samples) lie inside what was
-            // checked above; the two buffers do not overlap (`&` and
-            // `&mut`).
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    window.at(r + TAP_CENTRE, TAP_CENTRE),
-                    out.dst.add(r * dst_stride),
-                    W,
-                );
-            }
-        }
+        // SAFETY: source/output footprints were checked above; AVX2 is enabled.
+        unsafe {
+            crate::block_copy::avx2::copy::<false>(
+                &src[TAP_CENTRE * (src_stride + 1)..],
+                src_stride,
+                dst,
+                dst_stride,
+                W,
+                h,
+            );
+        };
         return;
     }
     // SAFETY: AVX2 is enabled; the window covers h + 7 rows of W + 7
@@ -644,13 +639,15 @@ pub(super) unsafe fn separable<
     // window (the centre ones for one direction) and writes the block.
     unsafe {
         if (frac_x, frac_y) == (0, 0) {
-            for r in 0..h {
-                core::ptr::copy_nonoverlapping(
-                    window.at(r + N / 2 - 1, N / 2 - 1),
-                    out.dst.add(r * dst_stride),
-                    W,
-                );
-            }
+            // SAFETY: checked footprint; the centre depends on the tap count.
+            crate::block_copy::avx2::copy::<false>(
+                &src[(N / 2 - 1) * (src_stride + 1)..],
+                src_stride,
+                dst,
+                dst_stride,
+                W,
+                h,
+            );
         } else if N == TAPS {
             put_taps::<X, W, 4, _, SeparableRounding, TAP_CENTRE>(
                 window,
@@ -745,7 +742,13 @@ unsafe fn prep_with<'t, const W: usize, Z: OuterTaps, X: WidePasses>(
     // SAFETY: as in `put_with`, with `i16` outputs.
     unsafe {
         if (frac_x, frac_y) == (0, 0) {
-            copy_scaled::<W>(window, out, h);
+            crate::block_copy::avx2::prep_unbiased(
+                &src[TAP_CENTRE * (src_stride + 1)..],
+                src_stride,
+                dst,
+                dst_stride,
+                (W, h),
+            );
         } else if Z::OUTER_ZERO {
             put_taps::<X, W, 3, _, Av1Rounding, TAP_CENTRE>(
                 window,
@@ -764,28 +767,6 @@ unsafe fn prep_with<'t, const W: usize, Z: OuterTaps, X: WidePasses>(
                 (frac_x, frac_y),
                 av1_taps(taps()),
             );
-        }
-    }
-}
-
-/// The `prep` of a whole-sample block: every sample `<< 4`.
-#[target_feature(enable = "avx2")]
-#[inline]
-unsafe fn copy_scaled<const W: usize>(window: Window, out: PrepOut, h: usize) {
-    for r in 0..h {
-        for c0 in (0..W).step_by(LANES) {
-            // SAFETY: row r + 3 from column c0 + 3 (`W.min(16)` samples) and
-            // its outputs lie inside what `prep` checked.
-            unsafe {
-                let samples = load_pixels::<W>(window.at(r + TAP_CENTRE, c0 + TAP_CENTRE));
-                let words = _mm256_slli_epi16::<PREP_COPY_SHIFT>(_mm256_cvtepu8_epi16(samples));
-                let at = out.dst.add(r * out.stride + c0);
-                match W {
-                    4 => _mm_storel_epi64(at.cast(), _mm256_castsi256_si128(words)),
-                    8 => _mm_storeu_si128(at.cast(), _mm256_castsi256_si128(words)),
-                    _ => _mm256_storeu_si256(at.cast(), words),
-                }
-            }
         }
     }
 }

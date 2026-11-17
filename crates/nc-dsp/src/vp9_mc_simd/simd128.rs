@@ -55,6 +55,7 @@ mod widening {
         type Filters = [v128; 8];
         type Row = v128;
         const LANES: usize = 8;
+        const COPY_ISA: crate::Isa = crate::Isa::Simd128;
         #[inline(always)]
         unsafe fn prepare<const LAYOUT: u8>(taps: &[i16; 8]) -> Self::Filters {
             // Magnitudes are <=127 for nonidentity phases.
