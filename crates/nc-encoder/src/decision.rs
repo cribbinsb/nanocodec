@@ -31,6 +31,7 @@ use crate::partition::Block;
 use crate::partition_plan::LeafStats;
 use crate::psy::{ac_energy, psy_penalty};
 use crate::refresh::RefreshWindow;
+use crate::threshold_control::{Band, BandEvidence, Tool};
 
 // The decision's tunable thresholds are `DecisionParams` (`params.rs`); the
 // notes below explain their hand-tuned defaults.
@@ -277,6 +278,9 @@ pub(crate) struct DecisionScratch {
     /// Bilinear distortions already known for ranking candidates (NEW, the
     /// refined cheap vector, the cheap vectors), for `ExactPrune`.
     bilinear: Vec<(Mv, f32)>,
+    /// What the gated tools achieved just inside their gates this frame
+    /// (`threshold_control.rs`), read by the encoder after the frame.
+    pub(crate) evidence: BandEvidence,
 }
 
 impl DecisionScratch {
@@ -296,7 +300,6 @@ impl DecisionScratch {
 /// the codec's skip-mode vector ([`CodecBackend::skip_vector`]), if any.
 /// `source_moments` is the frame's pre-analysis where its 8x8 moments
 /// cover the block's source samples exactly.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn choose_inter_mode<B: CodecBackend>(
     dsp: &Dsp,
     backend: &mut B,
@@ -311,11 +314,62 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
     params: &DecisionParams,
     refresh: Option<&RefreshWindow>,
 ) -> Choice {
+    // Two instances: while no controller gathers band evidence
+    // (`threshold_control.rs`) the decision compiles without it, so
+    // default encodes run exactly the code they ran before it existed.
+    if scratch.evidence.band().is_some() {
+        choose_inter_mode_with::<B, true>(
+            dsp,
+            backend,
+            block,
+            (source, reference),
+            search_mv,
+            planned,
+            scratch,
+            skip_vector,
+            source_moments,
+            params,
+            refresh,
+        )
+    } else {
+        choose_inter_mode_with::<B, false>(
+            dsp,
+            backend,
+            block,
+            (source, reference),
+            search_mv,
+            planned,
+            scratch,
+            skip_vector,
+            source_moments,
+            params,
+            refresh,
+        )
+    }
+}
+
+/// [`choose_inter_mode`]; with `GATHER` it also records the gated tools'
+/// band evidence in `scratch`.
+#[allow(clippy::too_many_lines)]
+fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
+    dsp: &Dsp,
+    backend: &mut B,
+    block: &Block,
+    (source, reference): (&Picture, &Picture),
+    search_mv: Mv,
+    planned: Option<&LeafStats>,
+    scratch: &mut DecisionScratch,
+    skip_vector: Option<Mv>,
+    source_moments: Option<&PreAnalysis>,
+    params: &DecisionParams,
+    refresh: Option<&RefreshWindow>,
+) -> Choice {
     let DecisionScratch {
         candidates,
         seeds,
         prediction,
         bilinear,
+        evidence,
         ..
     } = scratch;
     candidates.clear();
@@ -443,7 +497,8 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
         let seed_gate = SeedGate {
             ratio: params.seed_refine_ratio,
         };
-        let (_, new_distortion, new) = if seed_gate.refines(start.0, best_cheap.map(|(d, _)| d)) {
+        let seed_refined = seed_gate.refines(start.0, best_cheap.map(|(d, _)| d));
+        let (_, new_distortion, new) = if seed_refined {
             refine_codec_seed(
                 (start.0, start.1, search_mv),
                 lambda,
@@ -459,6 +514,17 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
         if let Some((mv, _)) = integer {
             candidates.push(mv);
         }
+        // What the gated tools found where their gates were close
+        // (`threshold_control.rs`), noted before the ranking while a
+        // controller gathers it: a refinement or probe wins when the vector
+        // only it found wins the ranking.
+        let gates = (GATHER && evidence.band().is_some()).then(|| {
+            GateOutcomes::of(
+                (seed_refined, new, search_mv, integer.map(|(mv, _)| mv)),
+                (start, lambda, area),
+                params,
+            )
+        });
         // The NEW seed is the motion-search vector; the cheap vectors are
         // otherwise ranked only where they stand. Refining the best of them
         // yields a NEW candidate with a small vector difference. Work: one
@@ -506,21 +572,20 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
             known_stats(mv).map_or_else(|| measurer.measure_with_energy(mv), |stats| (stats, None))
         };
         let new_rate_scale = params.new_rate_scale;
+        let rank_band = evidence.band().filter(|_| GATHER).map(RankBand::new);
         let prune = ExactPrune {
             margin: params.exact_rank_margin,
             known: bilinear,
+            band: rank_band.as_ref(),
         };
         let psy = Psy::of(params, &measurer);
         let ((inter_cost, inter_distortion, inter_mv), inter_stats) = if B::CACHE_EXACT_LUMA {
-            rank_cached_exact(
+            rank_cached_exact::<B, GATHER>(
                 backend,
                 block,
                 (&measurer, psy),
                 candidates,
-                cheap,
-                filter,
-                lambda,
-                new_rate_scale,
+                (cheap, filter, lambda, new_rate_scale),
                 &prune,
                 stats_and_energy,
             )
@@ -535,7 +600,8 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
                 // Integer prediction is identical under every codec filter. Reuse
                 // the planner's search/zero statistics instead of measuring those
                 // same samples again during exact candidate ranking.
-                let stats = if mv.is_full_pel() {
+                let exact = !mv.is_full_pel();
+                let stats = if !exact {
                     stats_of(mv)
                 } else if prune.skips(mv, rate, best_cost) {
                     return PRUNED;
@@ -544,12 +610,21 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
                 };
                 let distortion = n_variance::<B>(stats, block) as f32;
                 let cost = distortion + rate;
+                if exact {
+                    prune.observe(mv, rate, best_cost, cost);
+                }
                 if best_cost.is_none_or(|best| cost < best) {
                     best_cost = Some(cost);
                 }
                 (cost, distortion, stats)
             })
         };
+        if let Some(gates) = gates {
+            gates.record(inter_mv, evidence);
+        }
+        if let Some(rank_band) = &rank_band {
+            rank_band.report(inter_mv, evidence);
+        }
         let inter = InterChoice {
             cost: inter_cost,
             distortion: inter_distortion,
@@ -662,19 +737,18 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
     let psy = Psy::of(params, &measurer);
     let ((mut cost, _, mut mv), mut winner_stats) = match backend.luma_filter() {
         Some(filter) => {
+            // No pruning, so no margin evidence either.
             let prune = ExactPrune {
                 margin: 0.0,
                 known: &[],
+                band: None,
             };
-            rank_cached_exact(
+            rank_cached_exact::<B, false>(
                 backend,
                 block,
                 (&measurer, psy),
                 candidates,
-                cheap,
-                filter,
-                lambda,
-                params.new_rate_scale,
+                (cheap, filter, lambda, params.new_rate_scale),
                 &prune,
                 |mv| measurer.measure_with_energy(mv),
             )
@@ -879,17 +953,23 @@ fn refine_codec_seed(
     params: &DecisionParams,
     cost: impl RefineCost,
 ) -> (f32, f32, Mv) {
-    let gate = if area >= LARGE_BLOCK_AREA {
+    let gate = seed_gate_threshold(area, params);
+    if gate > 0.0 && start.1 < gate * lambda * area {
+        start
+    } else {
+        refine_codec_subpel(start, params, cost)
+    }
+}
+
+/// The seed gate of a block of `area` samples, in λ of residual per sample:
+/// large blocks may take a stricter one.
+fn seed_gate_threshold(area: f32, params: &DecisionParams) -> f32 {
+    if area >= LARGE_BLOCK_AREA {
         params
             .codec_subpel_seed_lambdas
             .max(params.codec_subpel_seed_lambdas_large)
     } else {
         params.codec_subpel_seed_lambdas
-    };
-    if gate > 0.0 && start.1 < gate * lambda * area {
-        start
-    } else {
-        refine_codec_subpel(start, params, cost)
     }
 }
 
@@ -1076,21 +1156,136 @@ fn rank_with_stats(
 /// (`decision.exact_rank_margin`; 0, off, by default; Fast presets set it). The bilinear distortion
 /// estimates the exact one closely, so a candidate far behind on it rarely
 /// wins; measured effect at the parameter.
+///
+/// While a controller gathers evidence (`threshold_control.rs`) it also
+/// notes the candidates just inside the margin in `band`.
 struct ExactPrune<'a> {
     margin: f32,
     /// Candidates' bilinear distortions, where already measured.
     known: &'a [(Mv, f32)],
+    band: Option<&'a RankBand>,
 }
 
 impl ExactPrune<'_> {
+    fn known_distortion(&self, mv: Mv) -> Option<f32> {
+        self.known
+            .iter()
+            .find(|(known, _)| *known == mv)
+            .map(|&(_, distortion)| distortion)
+    }
+
     fn skips(&self, mv: Mv, rate: f32, best_cost: Option<f32>) -> bool {
         self.margin > 0.0
             && best_cost.is_some_and(|best| {
-                self.known
-                    .iter()
-                    .find(|(known, _)| *known == mv)
-                    .is_some_and(|&(_, distortion)| distortion + rate > self.margin * best)
+                self.known_distortion(mv)
+                    .is_some_and(|distortion| distortion + rate > self.margin * best)
             })
+    }
+
+    /// Notes an exact prediction of `mv` that cost `cost` against the best
+    /// cost before it: a band run when its estimate's excess over that best
+    /// was just inside the margin's (which must exceed 1 to prune at all).
+    fn observe(&self, mv: Mv, rate: f32, best_cost: Option<f32>, cost: f32) {
+        let (Some(band), Some(best)) = (self.band, best_cost) else {
+            return;
+        };
+        let Some(distortion) = self.known_distortion(mv).filter(|_| best > 0.0) else {
+            return;
+        };
+        let excess = (distortion + rate) / best - 1.0;
+        if band.band.below(excess, self.margin - 1.0) {
+            band.runs.set(band.runs.get() + 1);
+            if cost < best {
+                band.leader.set(Some(mv));
+            }
+        }
+    }
+}
+
+/// One gated tool's outcome on a block (`threshold_control.rs`): its gate
+/// value and threshold, and the vector only it found, if any.
+#[derive(Debug, Clone, Copy)]
+struct GateOutcome {
+    value: f32,
+    threshold: f32,
+    found: Option<Mv>,
+}
+
+/// The decision's gated tools that ran on one block.
+#[derive(Debug, Clone, Copy)]
+struct GateOutcomes {
+    subpel: Option<GateOutcome>,
+    probe: Option<GateOutcome>,
+}
+
+impl GateOutcomes {
+    /// The gated tools' outcomes on a block of `area` samples at `lambda`
+    /// whose search seed cost `start` (whole-sample distortion, then the
+    /// refinement's): the refined seed `new` (when the seed was refined at
+    /// all) and the probed vector `probed`. Kept out of line: only a
+    /// controller asks for it.
+    #[cold]
+    #[inline(never)]
+    fn of(
+        (seed_refined, new, search_mv, probed): (bool, Mv, Mv, Option<Mv>),
+        (start, lambda, area): ((f32, f32), f32, f32),
+        params: &DecisionParams,
+    ) -> Self {
+        let lambda_area = lambda * area;
+        Self {
+            subpel: seed_refined.then(|| GateOutcome {
+                value: start.1 / lambda_area,
+                threshold: seed_gate_threshold(area, params),
+                found: (new != search_mv).then_some(new),
+            }),
+            probe: (params.codec_fullpel_probe >= 0.5).then(|| GateOutcome {
+                value: start.0 / lambda_area,
+                threshold: params.codec_fullpel_probe_min_lambdas,
+                found: probed,
+            }),
+        }
+    }
+
+    /// Records each tool that ran, won when its vector is `winner`.
+    #[cold]
+    #[inline(never)]
+    fn record(self, winner: Mv, evidence: &mut BandEvidence) {
+        for (tool, outcome) in [(Tool::Subpel, self.subpel), (Tool::Probe, self.probe)] {
+            if let Some(o) = outcome {
+                evidence.record_above(tool, o.value, o.threshold, o.found == Some(winner));
+            }
+        }
+    }
+}
+
+/// The exact-rank margin's band evidence of one block: the exact
+/// predictions whose estimate was just inside the margin, and the last of
+/// them that took the lead, which wins if it is still the winner.
+struct RankBand {
+    band: Band,
+    runs: Cell<u32>,
+    leader: Cell<Option<Mv>>,
+}
+
+impl RankBand {
+    fn new(band: Band) -> Self {
+        Self {
+            band,
+            runs: Cell::new(0),
+            leader: Cell::new(None),
+        }
+    }
+
+    /// Adds the block's band runs to `evidence`, with a win when `winner`
+    /// is the band candidate that last took the lead.
+    #[cold]
+    #[inline(never)]
+    fn report(&self, winner: Mv, evidence: &mut BandEvidence) {
+        let runs = self.runs.get();
+        if runs > 0 {
+            let won = self.leader.get() == Some(winner);
+            evidence.add(Tool::Rank, u64::from(runs), u64::from(won));
+        }
     }
 }
 
@@ -1145,15 +1340,13 @@ fn consider_exact<B: CodecBackend>(
 /// [`rank_with_stats`] by exact cost ([`consider_exact`]), caching the
 /// improving candidates' exact pixels in the backend in that same order. The
 /// first `cheap` candidates are the codec's cheap vectors (rate scale 1).
-fn rank_cached_exact<B: CodecBackend>(
+/// With `GATHER`, `prune` notes the margin's band evidence.
+fn rank_cached_exact<B: CodecBackend, const GATHER: bool>(
     backend: &mut B,
     block: &Block,
     (measurer, psy): (&Measurer<'_>, Option<Psy>),
     candidates: &[Mv],
-    cheap: usize,
-    filter: Filter,
-    lambda: f32,
-    new_rate_scale: f32,
+    (cheap, filter, lambda, new_rate_scale): (usize, Filter, f32, f32),
     prune: &ExactPrune<'_>,
     mut stats_and_energy: impl FnMut(Mv) -> (Variance, Option<u64>),
 ) -> ((f32, f32, Mv), Variance) {
@@ -1166,6 +1359,7 @@ fn rank_cached_exact<B: CodecBackend>(
         if exact && prune.skips(mv, rate, cached_best_cost) {
             return PRUNED;
         }
+        let best_before = cached_best_cost;
         let mut consider = |stats: Variance, pixels: Option<&[u8]>, energy: Option<u64>| {
             consider_exact(
                 backend,
@@ -1177,9 +1371,13 @@ fn rank_cached_exact<B: CodecBackend>(
             )
         };
         if exact {
-            measurer.with_exact_prediction(mv, filter, |stats, pixels, energy| {
+            let ranked = measurer.with_exact_prediction(mv, filter, |stats, pixels, energy| {
                 consider(stats, Some(pixels), energy)
-            })
+            });
+            if GATHER {
+                prune.observe(mv, rate, best_before, ranked.0);
+            }
+            ranked
         } else {
             let (stats, energy) = stats_and_energy(mv);
             consider(stats, None, energy)

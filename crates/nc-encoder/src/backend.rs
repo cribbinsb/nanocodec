@@ -429,6 +429,16 @@ pub trait CodecBackend {
         None
     }
 
+    /// Read after [`CodecBackend::end_frame`]: when the last frame searched
+    /// its per-block loop-filter choices (AV1: CDEF luma on/off per filter
+    /// block) with earlier choices it could have reused instead, how many
+    /// of them the search changed. The adaptive CDEF interval
+    /// (`threshold_control.rs`, `adapt.cdef`) spaces searches by it.
+    /// `None` where the frame did not search or the backend does not count.
+    fn filter_search_evidence(&self) -> Option<crate::SearchEvidence> {
+        None
+    }
+
     /// log2 of the top-level coding unit: AV1 superblock, HEVC CTU, H.264
     /// macroblock. The engine walks the frame in units of this size.
     fn superblock_log2(&self) -> u8;

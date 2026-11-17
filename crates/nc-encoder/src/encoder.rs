@@ -40,9 +40,10 @@ use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
 use crate::noise_skip::{NoiseMap, camera_is_still};
 use crate::params::RefParams;
 use crate::params::{
-    AnalysisParams, DebugParams, DecisionParams, EffortParams, FilterParams, LayerParams,
-    LtrParams, ParamOverrides, PersistParams, PlannerParams, RateParams, RefreshParams,
-    ResolutionParams, SceneParams, SpatialParams, StillParams, StructureParams, engine_specs,
+    AdaptParams, AnalysisParams, DebugParams, DecisionParams, EffortParams, FilterParams,
+    LayerParams, LtrParams, ParamOverrides, PersistParams, PlannerParams, RateParams,
+    RefreshParams, ResolutionParams, SceneParams, SpatialParams, StillParams, StructureParams,
+    engine_specs,
 };
 use crate::partition::{Block, should_split};
 use crate::partition_plan::{LeafStats, NoiseTest, Partition, Planner};
@@ -75,6 +76,7 @@ use crate::startup_lookahead::startup_scene_profile;
 use crate::still_plan::StillPlan;
 use crate::still_skip::StaticSkipTest;
 use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, TemporalStructure};
+use crate::threshold_control::ThresholdControl;
 use crate::timeline::{FrameTime, Timeline};
 use nc_analysis::link::{MAX_REFERENCE_SLOTS, SlotMask};
 
@@ -297,6 +299,9 @@ pub struct Encoder<B: CodecBackend> {
     /// Consecutive frames, up to the last, whose CDEF search the filter
     /// effort skipped.
     cdef_reused: u32,
+    /// Adaptive tool thresholds (`adapt.*`, `threshold_control.rs`);
+    /// `None` while every tool is off.
+    threshold_control: Option<ThresholdControl>,
     /// `debug.recode_identity`: every frame is coded twice (recode test).
     recode_identity: bool,
     /// `debug.random_decisions`: random legal decisions replace the normal
@@ -339,6 +344,7 @@ impl<B: CodecBackend> Encoder<B> {
         let decision_params = DecisionParams::from_overrides(&config.params);
         let effort_params = EffortParams::from_overrides(&config.params);
         let filter_params = FilterParams::from_overrides(&config.params);
+        let threshold_control = ThresholdControl::new(AdaptParams::from_overrides(&config.params));
         let mut backend = B::new(&config)?;
         check_temporal_layers(&config, &backend)?;
         let spatial_cfg =
@@ -489,6 +495,7 @@ impl<B: CodecBackend> Encoder<B> {
             filter_params,
             previous_skip_share: None,
             cdef_reused: 0,
+            threshold_control,
             random,
             spatial,
         };
@@ -1246,8 +1253,12 @@ impl<B: CodecBackend> Encoder<B> {
         };
         let light = overlay.params(role);
         let overrides = overlay.backend_overrides(role).clone();
-        let (decision, planner) =
-            self.adjusted_for_frame((light.decision, light.planner), index, references, analysis);
+        let (decision, planner) = self.adjusted_for_frame(
+            (light.decision, light.planner),
+            index,
+            references,
+            (role, analysis),
+        );
         self.frame_light = Some(FrameLight {
             params: LightParams { decision, planner },
             map,
@@ -1275,7 +1286,22 @@ impl<B: CodecBackend> Encoder<B> {
                     previous_skip_share: self.previous_skip_share,
                     cdef_reused: self.cdef_reused,
                 };
-                crate::filter_effort::decide(&self.filter_params, activity)
+                let mut effort = crate::filter_effort::decide(&self.filter_params, activity);
+                if let Some(reuse) = self
+                    .threshold_control
+                    .as_ref()
+                    .and_then(ThresholdControl::cdef_reuse_frames)
+                {
+                    // The adaptive interval (`adapt.cdef`): base frames search,
+                    // and a non-base frame reuses while the frames since the
+                    // last search are fewer than the controller allows.
+                    effort.cdef = if role == FrameRole::NonBase && self.cdef_reused < reuse {
+                        CdefEffort::Reuse
+                    } else {
+                        CdefEffort::Search
+                    };
+                }
+                effort
             }
             None => FilterEffort::FULL,
         };
@@ -1301,18 +1327,22 @@ impl<B: CodecBackend> Encoder<B> {
             }
             None => (self.decision_params, self.planner_params),
         };
-        self.adjusted_for_frame(params, index, references, analysis)
+        self.adjusted_for_frame(params, index, references, (role, analysis))
     }
 
     /// `decision_params` and `planner_params` with frame `index`'s
-    /// adjustments: the cadence base λ and the frame-level content gates.
+    /// adjustments: the cadence base λ, the frame-level content gates and
+    /// the thresholds adapted for its `role`.
     fn adjusted_for_frame(
         &self,
         (mut decision_params, mut planner_params): (DecisionParams, PlannerParams),
         index: u64,
         references: &FrameReferences,
-        analysis: Option<&FrameAnalysis>,
+        (role, analysis): (FrameRole, Option<&FrameAnalysis>),
     ) -> (DecisionParams, PlannerParams) {
+        if let Some(control) = &self.threshold_control {
+            control.apply(role, &mut decision_params);
+        }
         let noise_sigma = analysis.map(|a| a.noise_sigma);
         // A cadence base frame may get a lower decision/planner λ.
         if self.is_cadence_base(index, references.position) {
@@ -1743,6 +1773,13 @@ impl<B: CodecBackend> Encoder<B> {
         }
         self.backend.commit_frame();
         self.previous_skip_share = self.backend.coded_skip_share();
+        if let (Some(control), FrameType::Inter) = (self.threshold_control.as_mut(), frame_type) {
+            control.observe(
+                role,
+                &self.decision_scratch.evidence,
+                self.backend.filter_search_evidence(),
+            );
+        }
         self.finish_coded_frame_feedback(
             index,
             key,
@@ -1928,6 +1965,8 @@ impl<B: CodecBackend> Encoder<B> {
             recon,
         } = pictures;
         self.backend.begin_frame(plan);
+        let band = self.threshold_control.as_ref().map(ThresholdControl::band);
+        self.decision_scratch.evidence.clear(band);
         let sb_log2 = self.backend.superblock_log2();
         let sb = 1usize << sb_log2;
         let regular_decision = self.frame_decision_params;

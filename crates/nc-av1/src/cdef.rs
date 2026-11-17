@@ -26,6 +26,7 @@
 
 use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::{CDEF_PADDING, CdefBlock, CdefSource, Dsp, Moments};
+use nc_encoder::SearchEvidence;
 
 use crate::cdef_map::{self, CdefMap, CdefScratch};
 
@@ -229,6 +230,47 @@ fn sampled_sse(plane: &PlaneView<'_>, reference: &PlaneView<'_>, row_step: usize
         .sum()
 }
 
+/// The per-filter-block luma choice of [`choose_superblocks`]: whether
+/// each 64x64 filter block keeps the model's luma filter, and by how much
+/// (sampled squared error, unfiltered minus filtered: positive keeps it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LumaChoices {
+    /// Whether each filter block keeps the luma filter.
+    pub selected: Vec<bool>,
+    /// Each filter block's sampled error saving from the filter.
+    pub gains: Vec<i64>,
+}
+
+impl LumaChoices {
+    fn from_gains(gains: Vec<i64>) -> Self {
+        Self {
+            selected: gains.iter().map(|&gain| gain > 0).collect(),
+            gains,
+        }
+    }
+
+    /// What this search changed against the `cached` selection a frame
+    /// could have reused instead: the error the flipped blocks' choices
+    /// save, against the error every block's choice saves (`None` with
+    /// nothing comparable to reuse). Weighting by error, not counting
+    /// blocks, lets the many blocks where on and off are nearly equal
+    /// flip without counting as change.
+    #[must_use]
+    pub fn evidence_against(&self, cached: &[bool]) -> Option<SearchEvidence> {
+        (!cached.is_empty() && cached.len() == self.selected.len()).then(|| {
+            let mut evidence = SearchEvidence::default();
+            for ((&gain, &now), &before) in self.gains.iter().zip(&self.selected).zip(cached) {
+                let stake = gain.unsigned_abs();
+                evidence.total += stake;
+                if now != before {
+                    evidence.changed += stake;
+                }
+            }
+            evidence
+        })
+    }
+}
+
 /// Choose luma off/model independently in each 64x64 filter block and apply
 /// the result. Both strength sets share the modeled chroma strengths.
 /// `row_step` is the registered distortion-sampling stride (default4).
@@ -242,7 +284,7 @@ pub fn choose_superblocks(
     params: CdefParams,
     row_step: usize,
     storage: &mut CdefSource,
-) -> Vec<bool> {
+) -> LumaChoices {
     let unfiltered = recon.plane(PlaneIndex::Y).view();
     let (width, height) = (unfiltered.width(), unfiltered.height());
     let units = Units::of(
@@ -252,7 +294,8 @@ pub fn choose_superblocks(
         params.y_pri != 0 || params.uv_pri != 0,
     );
     if units.list.is_empty() {
-        return vec![false; width.div_ceil(FILTER_BLOCK_SIZE) * height.div_ceil(FILTER_BLOCK_SIZE)];
+        let blocks = width.div_ceil(FILTER_BLOCK_SIZE) * height.div_ceil(FILTER_BLOCK_SIZE);
+        return LumaChoices::from_gains(vec![0; blocks]);
     }
     // The luma is filtered with the model in place; `storage` keeps the
     // unfiltered samples, which the choice compares against and which are
@@ -262,15 +305,15 @@ pub fn choose_superblocks(
         let mut luma = recon.plane_mut(PlaneIndex::Y).view_mut();
         storage.fill_from(&luma.as_view());
         filter_plane(dsp, storage, &mut luma, &units.list, params, PlaneIndex::Y);
-        let selected = local_luma_choices(
+        let choices = LumaChoices::from_gains(local_luma_gains(
             &source.plane(PlaneIndex::Y).view(),
             &storage.view(),
             &luma.as_view(),
             &units.list,
             row_step,
-        );
-        restore_unselected(&storage.view(), &mut luma, &units.list, &selected);
-        selected
+        ));
+        restore_unselected(&storage.view(), &mut luma, &units.list, &choices.selected);
+        choices
     };
     // Chroma shares one modeled strength, and uses the same unfiltered-luma
     // directions irrespective of which luma option won in a filter block.
@@ -320,16 +363,18 @@ fn band_strengths(params: CdefParams) -> nc_dsp::CdefStrengths {
     }
 }
 
+/// Each 64x64 filter block's sampled squared error unfiltered minus
+/// filtered with the model (positive: the filter helps).
 /// Outside the active 8x8 filter units, model and off samples are identical.
 /// Their SSE terms cancel exactly. Accumulate only those units, retaining the
 /// original sampling phase relative to each 64x64 filter block.
-fn local_luma_choices(
+fn local_luma_gains(
     source: &PlaneView<'_>,
     unfiltered: &PlaneView<'_>,
     filtered: &PlaneView<'_>,
     units: &[Unit],
     row_step: usize,
-) -> Vec<bool> {
+) -> Vec<i64> {
     let (width, height) = (unfiltered.width(), unfiltered.height());
     let columns = width.div_ceil(FILTER_BLOCK_SIZE);
     let mut improvements = vec![0_i64; columns * height.div_ceil(FILTER_BLOCK_SIZE)];
@@ -354,7 +399,7 @@ fn local_luma_choices(
         improvements[unit.y / FILTER_BLOCK_SIZE * columns + unit.x / FILTER_BLOCK_SIZE] +=
             i64::from(gain);
     }
-    improvements.into_iter().map(|gain| gain > 0).collect()
+    improvements
 }
 
 /// Put the `unfiltered` samples back into the units of `luma` whose 64x64
@@ -770,6 +815,7 @@ mod tests {
             row_step,
             &mut CdefSource::new(),
         )
+        .selected
     }
 
     fn same_pixels(a: &Picture, b: &Picture) {
@@ -858,7 +904,8 @@ mod tests {
                 params,
                 3,
                 &mut reused,
-            );
+            )
+            .selected;
             let selected_fresh = choose_superblocks(
                 &Dsp::new(),
                 &source,
@@ -867,7 +914,8 @@ mod tests {
                 params,
                 3,
                 &mut CdefSource::new(),
-            );
+            )
+            .selected;
             assert_eq!(selected, selected_fresh);
             same_pixels(&actual, &expected);
             let mut actual = recon.clone();
@@ -1045,13 +1093,16 @@ mod tests {
         let units = Units::of(&Dsp::new(), &unfiltered, &map_of(&grid), true);
         let filtered_view = PlaneView::new(&filtered, width, width, height).unwrap();
         for row_step in 1..=8 {
-            let sparse = local_luma_choices(
+            let sparse: Vec<bool> = local_luma_gains(
                 &original,
                 &unfiltered,
                 &filtered_view,
                 &units.list,
                 row_step,
-            );
+            )
+            .into_iter()
+            .map(|gain| gain > 0)
+            .collect();
             let mut dense = Vec::new();
             for top in (0..height).step_by(FILTER_BLOCK_SIZE) {
                 for left in (0..width).step_by(FILTER_BLOCK_SIZE) {

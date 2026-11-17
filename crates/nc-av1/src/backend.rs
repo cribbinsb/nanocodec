@@ -22,8 +22,8 @@ use nc_encoder::{
     AngleDeltaSearch, Block, BlockDecision, CdefEffort, CodecBackend, ConfigError, EncoderConfig,
     FilterEffort, FramePlan, FrameReferences, FrameType, GateParams, IntraModeSet,
     MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams, ReferenceChoice,
-    RefreshWindow, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest, TrellisSettings,
-    WorkGate, ZeroLimits, copy_zero_vector_prediction, directions_by_orientation,
+    RefreshWindow, SearchEvidence, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest,
+    TrellisSettings, WorkGate, ZeroLimits, copy_zero_vector_prediction, directions_by_orientation,
     residual_quantises_to_zero, zero_vector_residual_is_zero,
 };
 
@@ -487,6 +487,9 @@ pub struct Av1Backend {
     /// A second strength and its deferred per-filter-block syntax slots.
     cdef_alternate: Option<CdefParams>,
     cdef_frame: CdefFrameChoice,
+    /// What this frame's per-superblock CDEF search changed against the
+    /// choices it could have reused (`filter_search_evidence`).
+    cdef_search_evidence: Option<SearchEvidence>,
     noise_sigma: f32,
     /// The engine chroma policy (`chroma.policy` 1): replaces
     /// `av1.chroma_delta_q` and its noise and key-frame adaptations.
@@ -1252,6 +1255,7 @@ impl CodecBackend for Av1Backend {
                 per_superblock: false,
                 search: true,
             },
+            cdef_search_evidence: None,
             noise_sigma: 0.0,
             chroma_policy: nc_encoder::chroma_policy::ChromaPolicy::from_params(&config.params),
             kind: FrameKind::Key,
@@ -1743,6 +1747,10 @@ impl CodecBackend for Av1Backend {
         Some(self.grids.mode_info.skip_share())
     }
 
+    fn filter_search_evidence(&self) -> Option<SearchEvidence> {
+        self.cdef_search_evidence
+    }
+
     fn use_light_params(&mut self, light: bool) {
         let Some(other) = self.alternate.as_mut().filter(|a| a.light_in_use != light) else {
             return;
@@ -1858,6 +1866,7 @@ impl CodecBackend for Av1Backend {
             }
         }
         self.cdef_frame = self.cdef_frame_choice(plan.index, previous_was_key);
+        self.cdef_search_evidence = None;
         self.cdef_alternate = None;
         self.grids.cdef_slots.fill(None);
         self.restoration.frame = self.restoration_frame(plan);
@@ -2731,7 +2740,7 @@ impl Av1Backend {
             (params.uv_pri, params.uv_sec) =
                 self.chroma_strength(source, recon, params, chroma, must_search);
             let selected = if must_search {
-                cdef::choose_superblocks(
+                let choices = cdef::choose_superblocks(
                     &self.dsp,
                     source,
                     recon,
@@ -2739,7 +2748,10 @@ impl Av1Backend {
                     params,
                     self.params.cdef_search_row_step.round() as usize,
                     &mut self.cdef_input,
-                )
+                );
+                self.cdef_search_evidence =
+                    choices.evidence_against(&self.grids.cdef_memory.cached_selection);
+                choices.selected
             } else {
                 cdef::apply_selected(
                     &self.dsp,

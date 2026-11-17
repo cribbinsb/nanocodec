@@ -100,6 +100,7 @@ mod still_refine;
 mod still_skip;
 mod structure;
 pub mod symbol_cost;
+mod threshold_control;
 mod timeline;
 mod trellis;
 mod work_gate;
@@ -162,6 +163,7 @@ pub use still_skip::{
     zero_vector_residual_is_zero,
 };
 pub use structure::{FrameReferences, MAX_TEMPORAL_LAYERS, reference_slots};
+pub use threshold_control::SearchEvidence;
 pub use timeline::MICROS_PER_SECOND;
 pub use trellis::{
     Candidates, CoeffRateModel, ForwardCoeffRateModel, ForwardTrellis, MAX_CANDIDATES, Trellis,

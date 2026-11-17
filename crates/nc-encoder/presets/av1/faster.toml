@@ -166,3 +166,17 @@ av1.skip_bias_energy = 0.0625
 decision.seed_refine_ratio = 1.1
 effort.regular_fraction = 0
 effort.light_nonbase_only = 1
+
+# Adaptive tool thresholds (2026-11-17, docs/handoff/light-pipeline.md
+# "Adaptive tool thresholds"): the sub-pel seed gate, the exact-rank margin
+# and the integer-probe gate each move per clip and frame role (x0.5 to x4
+# of the values above) towards the win rate their engine targets set, from
+# the blocks just inside each gate. Against Faster (draw 2026-11-17, dCPU
+# -2.0 % at k 0.6): L1 quality J -0.33 %; L2 J -1.58 % [-1.85, -1.34]; L3
+# (ladder, 78 clips) J -1.43 % [-1.59, -1.28] BETTER, quality J full -0.3 %,
+# no guards. x86 callgrind (gate build): chart clips CBR 600 x0.980, fixed QP
+# (3 CTC sequences x 2 QPs) x0.992. Fixed-QP lens Weighted / J -5.7 / -18.3
+# -> -6.1 / -18.4.
+adapt.subpel = 1
+adapt.rank = 1
+adapt.probe = 1

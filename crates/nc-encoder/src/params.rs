@@ -1074,6 +1074,47 @@ param_group! {
 }
 
 param_group! {
+    /// Adaptive tool thresholds (`threshold_control.rs`): per tool and frame
+    /// role, a multiplier on the preset's gate threshold, moved each cycle
+    /// by how often the blocks just inside the gate changed the decision.
+    /// Every tool defaults off, which leaves streams unchanged.
+    pub struct AdaptParams ("adapt") {
+        subpel: 0.0, [0.0, 1.0],
+            "1 adapts the sub-sample refinement seed gate (`decision.codec_subpel_seed_lambdas` and `_large`) per clip and frame role",
+        subpel_target: 0.15, [0.0, 1.0],
+            "share of refinements just above the seed gate whose moved vector must win the ranking for the gate to stay where it is: higher refines fewer blocks (faster)",
+        rank: 0.0, [0.0, 1.0],
+            "1 adapts the exact-filter ranking margin (`decision.exact_rank_margin`, when above 1) per clip and frame role",
+        rank_target: 0.1, [0.0, 1.0],
+            "share of exact predictions just inside the ranking margin that must win the ranking for the margin to stay where it is: higher prunes more (faster)",
+        probe: 0.0, [0.0, 1.0],
+            "1 adapts the integer-neighbour probe gate (`decision.codec_fullpel_probe_min_lambdas`, when above 0) per clip and frame role",
+        probe_target: 0.1, [0.0, 1.0],
+            "share of probes just above their gate whose vector must win the ranking for the gate to stay where it is: higher probes fewer blocks (faster)",
+        cdef: 0.0, [0.0, 1.0],
+            "1 adapts how many non-base frames reuse the CDEF choices between searches, from what each search changes (codecs that report it: AV1); base frames always search",
+        cdef_target: 0.05, [0.0, 1.0],
+            "share of filter blocks a CDEF search may flip against the reused choices while the interval between searches stays where it is: higher searches less often (faster)",
+        band: 2.0, [1.1, 16.0],
+            "the margin band: a block informs its tool's threshold when its gate value lies between the threshold and this multiple of it, on the side where the tool runs",
+        step: 1.25, [1.0, 4.0],
+            "factor a threshold multiplier moves by per cycle: higher adapts faster, in coarser steps",
+        hysteresis: 1.5, [1.0, 4.0],
+            "the multiplier holds while the band's win rate is within this factor of the tool's target: higher moves less often",
+        min_runs: 64.0, [1.0, 65_536.0],
+            "band runs a tool and frame role need before a cycle may move its multiplier (fewer carry over to the next cycle): higher waits for steadier evidence",
+        period: 4.0, [1.0, 64.0],
+            "coded inter frames per cycle (the controller updates at each cycle's end; 4 is the cadence's mini-GOP): lower reacts sooner",
+        min_scale: 0.5, [0.0625, 1.0],
+            "smallest multiplier (the most effort): below 1 lets a tool run on more blocks than the preset where it often wins",
+        max_scale: 4.0, [1.0, 64.0],
+            "largest multiplier on base and key frames (the least effort): higher lets a rarely winning tool skip more",
+        nonbase_max_scale: 4.0, [1.0, 64.0],
+            "largest multiplier on non-base frames (for CDEF, the longest interval between searches): higher lets weak tools nearly switch off on the frames nothing long-lived depends on",
+    }
+}
+
+param_group! {
     /// Per-superblock effort class (`effort_class.rs`): which inter
     /// superblocks are coded with the `light.*` settings.
     pub struct EffortParams ("effort") {
@@ -1248,6 +1289,7 @@ pub fn engine_specs() -> Vec<&'static [ParamSpec]> {
         QuantParams::SPECS,
         EffortParams::SPECS,
         FilterParams::SPECS,
+        AdaptParams::SPECS,
         crate::work_gate::GateParams::SPECS,
         ChromaParams::SPECS,
         ResolutionParams::SPECS,
