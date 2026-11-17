@@ -13,7 +13,7 @@
 # vector refinement (+0.5% for -6.0%) and AV1 Default's exact-rank margin
 # 1.1 (+0.1% for -2.5%).
 decision.refine_cheap_vector = 0
-decision.exact_rank_margin = 1.1
+light.decision.exact_rank_margin = 1.1
 # AV1 Fast's sub-pel gates (seed 0.1 lambdas, move biases 1.1) on non-base
 # frames only: on every frame they lost pan quality (proxy-6 vs AV1 Fast:
 # pan class +4.1% with them, +1.0% non-base only).
@@ -24,9 +24,9 @@ nonbase.decision.subpel_fractional_bias = 1.1
 # Pre-transform luma skip (SVT light-PD1; +1.1% for -5.0%), the texture
 # zero test at allowance 8 (+1.5% for -4.6%) and the skip estimate at 8
 # (+0.5% for -1.8%).
-av2.pre_tx_skip = 1
-av2.zero_test_texture_scale = 8
-av2.skip_estimate = 8
+nonbase.av2.pre_tx_skip = 1
+nonbase.av2.zero_test_texture_scale = 8
+nonbase.av2.skip_estimate = 8
 # Luma-only deblocking (av2-fast-speed, 2026-11-13): the chroma channels
 # cost 2.8% x86 instructions / 2.7% Jetson time for little: PSNR-YUV +2.0%
 # but VMAF v1 -1.4%, MS-SSIM 0.0% (L2). Pool levels, rotation 2026-11-13,
@@ -64,14 +64,14 @@ av2.chroma_delta_q_coarse = 0
 # The Default's luma give-back (P rounding 36/128, lambda 0.125 per squared
 # step) is a Default quality arm, not screened on Fast.
 av2.inter_rounding_q7 = 32
-av2.lambda_per_step_squared = 0.135
+nonbase.av2.lambda_per_step_squared = 0.135
 # The Default's QP cadence moved to the engine's full scale (2026-11-11,
 # nc-av2 RATE_MODEL); Fast keeps the old 0.7: at 1.0 vs 0.7 (k 0.6) proxy-6
 # -1.2% but VAL WORSE (static +4.5% / low +6.7%, worst-1% VMAF +2.3%).
 rate.cadence_scale = 0.7
 # The Default's jointly tuned planner lambda (2026-11-12) is not screened for
 # this preset: it keeps the previous value.
-planner.lambda_scale = 2
+light.planner.lambda_scale = 2
 # Pinned before AV2 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
 # Pinned before AV2 Default's key still boost (2026-11-14).
@@ -82,10 +82,27 @@ rate.fixed_qp_profile = 0
 structure.inherited_depth = 0
 # The Default's parity hiding and depth removal before 2026-11-15, pinned so
 # this preset's streams do not move with the Default.
-av2.parity_hiding = 0
-planner.depth_removal_th_32_16 = 25
-planner.depth_removal_th_16_8 = 50
+nonbase.av2.parity_hiding = 0
+light.planner.depth_removal_th_32_16 = 25
+light.planner.depth_removal_th_16_8 = 50
 # Pinned before AV2 Default's reference plan (2026-11-15).
 structure.unified = 0
 # Pinned before the engine-default quiet second before keys (2026-11-16).
 rate.prekey_quiet = 0
+
+# Effort by frame role, "base-only" (2026-11-17, docs/analysis/zen5-fixed-qp-goal.md
+# "Base-only on the other codecs"): keys and base frames code with the
+# Default's per-block tools (below); non-base frames keep Fast's, the
+# `light.*` / `nonbase.*` values above (same values as before). Frame-level
+# settings (rounding, chroma offsets, loop filter, key step) stay Fast's.
+av2.lambda_per_step_squared = 0.125
+av2.parity_hiding = 1
+av2.pre_tx_skip = 0
+av2.skip_estimate = 4
+av2.zero_test_texture_scale = 4
+decision.exact_rank_margin = 0
+planner.depth_removal_th_16_8 = 0
+planner.depth_removal_th_32_16 = 0
+planner.lambda_scale = 2.58125
+effort.regular_fraction = 0
+effort.light_nonbase_only = 1

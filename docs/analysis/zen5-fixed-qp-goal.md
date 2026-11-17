@@ -915,6 +915,53 @@ cycles). The coefficient writer and range coder have been optimised several time
 AWS: 5 on-demand c8a.large sessions (2.0-6.1 min each, about $0.03 in all), all terminated and
 in the ledger.
 
+## Base-only on the other codecs (base-only-all, 2026-11-17)
+
+Goal: port AV1's base-only effort (`effort.regular_fraction 0` + `effort.light_nonbase_only 1`) to the
+other codecs' presets. Build adfe4ebf0. Candidate = the rung plus, for every per-block parameter
+where it differs from the next-richer rung, the richer value on keys and base frames and the rung's
+own on non-base frames. Engine `decision.*` / `planner.*` go through `light.*`; codec parameters
+through `light.*` where the backend lists them (`SUPERBLOCK_PARAMS`: AV1, HEVC) and otherwise through
+`nonbase.*` (H.264, VP9 and AV2 re-read their whole group per frame, so at fraction 0 it is the same
+frame-role overlay: no backend code was needed). Frame-level settings (rounding, chroma offsets, loop
+filters, SAO, key step) stay the rung's, as on AV1. Lens = box `nceval.ctc local` (W / J against
+x264 medium); CPU = x86 callgrind, release, chart clips at CBR 600 kbit/s, 90 f (geomean); c8a =
+fixed-QP chart timing (`fixedqp_timing.py`, 12 sequences x 6 QPs, two sessions, $0.11); CBR = pool
+screen, draw 2026-11-17 (L1 quality alone, then L3 with the callgrind dCPU at k 0.6); the CBR line
+is the richer rung's own L1 against the rung on the same draw, scaled by CPU. Work dir
+`~/nanocodec-data/work/base-only-all/` (`gen.py`, `v/*.params`, `table-final.txt`, `logs/`). Every
+lens, callgrind and c8a row is in the lever ledger.
+
+| preset | variant | lens W / J (line) | CPU callgrind / c8a | CBR L1 quality (line) | L3 with CPU / final-check | decision |
+|---|---|---|---|---|---|---|
+| VP9 Fast | all 18 (Default) | +0.5 / -13.7 -> **-7.6 / -18.2** (-1.8 / -15.4) | x1.038 / x1.086 | -3.07 (-1.94) | -2.41 % [-2.94, -1.88]; -8.33 % [-9.29, -7.41], pulse +1.13 dB judged | **landed** fbbd31f22 |
+| AV2 Fast | all 9 (Default) | -11.7 / -20.6 -> **-16.1 / -24.7** (-13.3 / -22.3) | x1.047 / x1.069 | -5.23 (-2.06) | -2.16 % [-2.71, -1.64] BETTER; -6.51 % [-7.37, -5.61], no guard | **landed** (AV2 Fast commit beside this one) |
+| VP9 Veryfast | Faster's 6 non-key tools (`bk`) | +26.7 / +10.7 -> +21.2 / +5.5 | x0.988 / x0.972 (faster) | -6.61 | -6.56 % [-7.63, -5.50] BETTER; -3.70 % [-5.07, -2.34] but static class +4.23 % (13 of 14 static clips +2 to +12 %) | held |
+| VP9 Veryfast | all (`bo`) / no analysis (`bt`) | +17.4 / +1.1; +18.1 / +1.7 | x1.101; x1.088 (Faster x1.093) | -10.17; -9.11 | | out: as dear as Faster, worse |
+| HEVC Faster | all 9 (Fast) | +17.4 / +4.8 -> +9.0 / -2.5 (+10.9 / -0.5) | x1.098 / x1.101 | -4.12 (-3.58) | L1 with dCPU 9.8: +1.76 % [+0.55, +2.60] WORSE | held: beyond the lens line, not the k 0.6 CBR bar |
+| HEVC Fast | all 16 (Default) | -3.1 / -11.9 -> -6.2 / -16.8 (-6.5 / -16.3) | x1.241 / x1.313 | -6.23 (-5.44) | | out: on the line |
+| HEVC Fast | without intra NxN and trellis (`bk`) | -6.0 / -15.5 (-3.9 / -12.9 at c8a) | x1.118 / x1.071 | -4.35 (-2.67) | not run (k 0.6 needs > 7 %) | held, as HEVC Faster |
+| VP9 Faster | all 16 (Fast) / without intra mode search (`bk`) | +12.8 / -3.5 -> +10.7 / -6.5; +10.7 / -6.3 | x1.173 / x1.137; x1.128 | -3.18 (-2.68); -2.40 (-1.98) | | out: on or below the line |
+| H.264 Fast / Faster / Veryfast | all (`bo`) | +15.7 / +2.2; +30.9 / +15.5; +46.6 / +29.6 | x1.543; x1.165; x1.075 (richer rung x1.681; x1.186; x1.091) | -9.15; -10.36; -5.38 | | out: on the lens line, and as dear as the next rung |
+| H.264 | `nonbase_disposable_only 0` (`bo0`) | +41.7 / +20.4 etc. | | +1.9 to +5.8 %, class guards | | out |
+| VVC Fast | engine values only (5) | -6.9 / -16.5 -> -8.1 / -17.4 (-7.7 / -17.2) | x1.035 | -0.78 (-0.80) | | out: on the line |
+
+- **Why H.264 cannot use it:** its presets set `decision.nonbase_disposable_only 1`, so every referenced
+  frame (T0 and T1 under L1T3, every frame when the adaptive layers stay flat) is base: the candidate
+  costs 85-98 % of the next rung's CPU and lands on its lens point. With the flag off the existing
+  non-base levers reach T1 and quality falls (`bo0`).
+- **Keys:** the richer rung's key-frame tools (VP9 `planner.intra_plan`, intra transform depths; HEVC
+  intra NxN) make base-only nearly as dear as that rung, because keys are always base. Leaving them at
+  the rung's value (`bk`) keeps VP9 Veryfast 1-3 % *faster* than Veryfast.
+- **VVC:** its tool parameters are read once per stream (only `vvc.alf_*` per frame), so only the 5
+  engine differences can be carried; that is on the line. Carrying `vvc.rd_candidates`,
+  `inter_intra_dc_only`, `pre_transform_zero_scale`, `unit_zero_rd` and trellis needs a VVC
+  `SUPERBLOCK_PARAMS` swap (not built).
+- **Held, open:** VP9 Veryfast `bk` (static class loses 2-12 % on the long window while the 150 f L3
+  gains: not explained yet); HEVC Faster and HEVC Fast `bk` (beyond the fixed-QP line and slightly
+  beyond the CBR line, but WORSE in the pool screen with the k 0.6 CPU charge).
+- Jetson not measured for any of these.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.
