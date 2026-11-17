@@ -333,10 +333,14 @@ impl RowKernel for Avx2 {
             let sum = if LAYOUT == layout::BILINEAR {
                 _mm256_maddubs_epi16(pair(rows[3], rows[4]), f[4])
             } else {
-                add_pairs(
-                    [0, 1, 2, 3]
-                        .map(|j| _mm256_maddubs_epi16(pair(rows[2 * j], rows[2 * j + 1]), f[j])),
-                )
+                // An explicit array, not `[0, 1, 2, 3].map(..)`: `array::map`
+                // stayed out of line without AVX2 and called each intrinsic.
+                add_pairs([
+                    _mm256_maddubs_epi16(pair(rows[0], rows[1]), f[0]),
+                    _mm256_maddubs_epi16(pair(rows[2], rows[3]), f[1]),
+                    _mm256_maddubs_epi16(pair(rows[4], rows[5]), f[2]),
+                    _mm256_maddubs_epi16(pair(rows[6], rows[7]), f[3]),
+                ])
             };
             finish(sum)
         }
@@ -398,7 +402,13 @@ impl RowKernel for Avx2 {
             let sum = if LAYOUT == layout::BILINEAR {
                 _mm256_maddubs_epi16(tap_pair(3), f[4])
             } else {
-                add_pairs([0, 1, 2, 3].map(|j| _mm256_maddubs_epi16(tap_pair(2 * j), f[j])))
+                // Explicit, as in `vertical`.
+                add_pairs([
+                    _mm256_maddubs_epi16(tap_pair(0), f[0]),
+                    _mm256_maddubs_epi16(tap_pair(2), f[1]),
+                    _mm256_maddubs_epi16(tap_pair(4), f[2]),
+                    _mm256_maddubs_epi16(tap_pair(6), f[3]),
+                ])
             };
             let bytes = finish(sum);
             [bytes, bytes]

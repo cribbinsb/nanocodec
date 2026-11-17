@@ -440,15 +440,16 @@ unsafe fn load_lines<B: Bytes, const LINES: usize>(
     // SAFETY: caller checked the four-line tile. Horizontal edges load four
     // samples per position; vertical edges load eight positions in four rows.
     unsafe {
-        let rows = core::array::from_fn(|i| {
+        // A loop, not `array::from_fn`: that stayed out of line on x86,
+        // outside the ISA entry's `#[target_feature]` context.
+        let mut rows = [B::splat(0); LANES];
+        for (i, row) in rows.iter_mut().enumerate() {
             if along == 1 {
-                B::load4(data.add(edge - before * across + i * across))
+                *row = B::load4(data.add(edge - before * across + i * across));
             } else if i < LINES {
-                B::load(data.add(edge - before + i * along))
-            } else {
-                B::splat(0)
+                *row = B::load(data.add(edge - before + i * along));
             }
-        });
+        }
         if along == 1 { rows } else { B::transpose(rows) }
     }
 }

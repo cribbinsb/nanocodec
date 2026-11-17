@@ -372,7 +372,11 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
     let mut x = [V::splat(0); N];
     let mut y = [V::splat(0); N];
     let mut sums = [0; N];
-    if zero_limit.is_some_and(|limit| proven_zero::<V, N>(m, second, limit, kept, &mut sums)) {
+    // `if let`, not `Option::is_some_and`: that closure stayed out of line,
+    // outside the ISA entry's `#[target_feature]` context.
+    if let Some(limit) = zero_limit
+        && proven_zero::<V, N>(m, second, limit, kept, &mut sums)
+    {
         return false;
     }
     // Groups proven zero by the direct bound (`HevcForwardMode::

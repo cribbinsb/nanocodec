@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use nc_common::{PlaneView, PlaneViewMut};
 use nc_dsp::{
     Av1Quantizer, Av2Kernel, Av2TxSize, Av2TxType, BlockSize, DctSize, Dsp, Filter, GridBest,
-    GridRows, H264Quantizer, HevcQuantizer, HevcTransform, Isa, Moments, Vp9IntraEdges,
-    Vp9IntraMode, Vp9QuantStep,
+    GridRows, H264Quantizer, HevcForwardMode, HevcQuantizer, HevcTransform, Isa, Moments,
+    Vp9IntraEdges, Vp9IntraMode, Vp9QuantStep,
 };
 
 use crate::rng::Rng;
@@ -269,6 +269,7 @@ fn bench_codec(dsp: &Dsp, isa: Isa, src: &[u8], rf: &[u8], results: &mut Vec<Ben
     bench_vp9_intra(dsp, src, &mut push);
     bench_hevc_intra(dsp, src, &mut push);
     bench_hevc(dsp, src, &mut push);
+    bench_vvc_forward(dsp, src, rf, &mut push);
     bench_av2(dsp, src, &mut push);
     bench_vp9_quantize(dsp, src, &mut push);
     bench_h264(dsp, src, &mut push);
@@ -466,6 +467,44 @@ fn bench_vp9_quantize(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str,
             time(|| u32::from(dsp.vp9_quantize(&coefficients, &dc, &ac, &mut levels))),
         );
     }
+}
+
+/// VVC rectangular forward DCT-II sizes (four-lane and eight-lane AVX2
+/// paths) and the approximate 64x64 forward (2x2-mean residual, then 32x32).
+const VVC_FORWARD_SIZES: [(usize, usize); 5] = [(4, 16), (16, 4), (16, 8), (8, 32), (32, 16)];
+
+fn bench_vvc_forward(
+    dsp: &Dsp,
+    src: &[u8],
+    rf: &[u8],
+    push: &mut impl FnMut(&'static str, BlockSize, f64),
+) {
+    for (w, h) in VVC_FORWARD_SIZES {
+        let residual: Vec<i16> = (0..w * h)
+            .map(|i| i16::from(src[i]) - i16::from(rf[i]))
+            .collect();
+        let mut out = vec![0i16; w * h];
+        push(
+            "vvc_forward_dct",
+            BlockSize::new(w, h).expect("benchmark sizes are valid"),
+            time(|| {
+                dsp.vvc_forward_dct(w, h, &residual, &mut out);
+                out[0] as u32
+            }),
+        );
+    }
+    let side = 64;
+    let source = PlaneView::new(src, STRIDE, side, side).expect("plane covers block");
+    let prediction = PlaneView::new(rf, STRIDE, side, side).expect("plane covers block");
+    let mut out = vec![0i16; 32 * 32];
+    push(
+        "vvc_forward64",
+        BlockSize::new(side, side).expect("64x64 is valid"),
+        time(|| {
+            u32::from(dsp.vvc_forward64(&source, &prediction, 0, HevcForwardMode::EXACT, &mut out))
+                + out[0] as u32
+        }),
+    );
 }
 
 fn bench_hevc(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSize, f64)) {

@@ -64,6 +64,8 @@ cargo test "${selection[@]}" --profile gate-test --quiet
 if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then
     step "checkasm (host SIMD vs scalar)"
     cargo run --profile gate --quiet -p nc-checkasm
+    step "no SIMD code outside its #[target_feature] context (host checkasm)"
+    python3 tools/ci/check_outlined_simd.py "$target_dir"/gate/nc-checkasm
 fi
 
 step "crate layering, integration-test modules, encode paths"
@@ -98,6 +100,8 @@ if ! $quick; then
     RUSTFLAGS="-C target-feature=+simd128,+relaxed-simd" CARGO_TARGET_DIR="$target_dir/relaxed-simd" \
         cargo build --release --quiet -p nc-checkasm --target wasm32-wasip1
     node --no-warnings tools/ci/wasi-run.mjs "$target_dir"/relaxed-simd/wasm32-wasip1/release/nc-checkasm.wasm
+    python3 tools/ci/check_outlined_simd.py "$target_dir"/wasm32-wasip1/release/nc-checkasm.wasm \
+        "$target_dir"/relaxed-simd/wasm32-wasip1/release/nc-checkasm.wasm
 
     # The decoder analysis builds (`nanocodec stat`, the demo's analysis
     # module): off in every normal build, so only the full run keeps them

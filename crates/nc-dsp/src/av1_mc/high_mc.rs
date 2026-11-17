@@ -504,6 +504,22 @@ fn zeroed_prefix(buf: &mut [MaybeUninit<i16>], len: usize) -> &mut [i16] {
     unsafe { &mut *(core::ptr::from_mut::<[MaybeUninit<i16>]>(prefix) as *mut [i16]) }
 }
 
+/// Four horizontal 8-tap outputs: sample starts `st[..4]`, taps `tp[..4]`.
+/// A function, not a closure: closures do not inline into the caller's
+/// `#[target_feature]` context, and the outlined closure called its
+/// horizontal adds out of line.
+#[inline(always)]
+fn dot4<V8>(src_i16: &[i16], round0: u32, st: &[usize], tp: &[V8]) -> V8::Wide
+where
+    V8: I16x8Shuffles + I16Pairs<Pairs = <V8 as I16x8Shuffles>::Wide>,
+{
+    let p0 = V8::load(&src_i16[st[0]..]).madd(tp[0]);
+    let p1 = V8::load(&src_i16[st[1]..]).madd(tp[1]);
+    let p2 = V8::load(&src_i16[st[2]..]).madd(tp[2]);
+    let p3 = V8::load(&src_i16[st[3]..]).madd(tp[3]);
+    V8::sum_lanes4([p0, p1, p2, p3]).round_shift(round0)
+}
+
 #[inline(always)]
 fn scaled_h_pass<V8>(
     kernel_x: &Kernel,
@@ -533,13 +549,6 @@ fn scaled_h_pass<V8>(
             &*(core::ptr::from_ref::<[MaybeUninit<V8>]>(&taps_u[..w]) as *const [V8]),
         )
     };
-    let dot4 = |src_i16: &[i16], st: &[usize], tp: &[V8]| -> V8::Wide {
-        let p0 = V8::load(&src_i16[st[0]..]).madd(tp[0]);
-        let p1 = V8::load(&src_i16[st[1]..]).madd(tp[1]);
-        let p2 = V8::load(&src_i16[st[2]..]).madd(tp[2]);
-        let p3 = V8::load(&src_i16[st[3]..]).madd(tp[3]);
-        V8::sum_lanes4([p0, p1, p2, p3]).round_shift(round0)
-    };
     let w8 = w & !7;
     for (r, line) in inter.chunks_exact_mut(w).take(rows).enumerate() {
         let source = window.row(r);
@@ -548,13 +557,13 @@ fn scaled_h_pass<V8>(
             unsafe { core::slice::from_raw_parts(source.as_ptr().cast::<i16>(), source.len()) };
         let mut c0 = 0usize;
         while c0 < w8 {
-            let lo = dot4(src_i16, &starts[c0..], &taps_x[c0..]);
-            let hi = dot4(src_i16, &starts[c0 + 4..], &taps_x[c0 + 4..]);
+            let lo = dot4::<V8>(src_i16, round0, &starts[c0..], &taps_x[c0..]);
+            let hi = dot4::<V8>(src_i16, round0, &starts[c0 + 4..], &taps_x[c0 + 4..]);
             V8::narrow_pairs(lo, hi).store(&mut line[c0..]);
             c0 += 8;
         }
         if c0 + 4 <= w {
-            let lo = dot4(src_i16, &starts[c0..], &taps_x[c0..]);
+            let lo = dot4::<V8>(src_i16, round0, &starts[c0..], &taps_x[c0..]);
             let mut tmp = [0i16; 8];
             V8::narrow_pairs(lo, lo).store(&mut tmp);
             line[c0..c0 + 4].copy_from_slice(&tmp[..4]);

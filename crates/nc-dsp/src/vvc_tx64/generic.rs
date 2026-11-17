@@ -30,16 +30,25 @@ pub(super) unsafe fn halve<V: I16Pairs>(
     {
         let (s0, s1) = row_pair(src, src_stride, y);
         let (p0, p1) = row_pair(pred, pred_stride, y);
-        let means = |x: usize| {
-            V::load_u8(&s0[x..])
-                .add(V::load_u8(&s1[x..]))
-                .sub(V::load_u8(&p0[x..]))
-                .sub(V::load_u8(&p1[x..]))
-                .pair_dot(ones)
-                .round_shift(HALVE_SHIFT)
-        };
+        let rows = [s0, s1, p0, p1];
         for x in (0..BLOCK_SIDE).step_by(2 * V::LANES) {
-            V::narrow_pairs(means(x), means(x + V::LANES)).store(&mut line[x / 2..]);
+            V::narrow_pairs(means(rows, x, ones), means(rows, x + V::LANES, ones))
+                .store(&mut line[x / 2..]);
         }
     }
+}
+
+/// The rounded 2x2 means of the residual `(s0 + s1) - (p0 + p1)` from
+/// column `x`. A function, not a closure: closures do not inline into the
+/// caller's `#[target_feature]` context, and an outlined one called every
+/// AVX2 intrinsic out of line.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn means<V: I16Pairs>([s0, s1, p0, p1]: [&[u8]; 4], x: usize, ones: V) -> V::Pairs {
+    V::load_u8(&s0[x..])
+        .add(V::load_u8(&s1[x..]))
+        .sub(V::load_u8(&p0[x..]))
+        .sub(V::load_u8(&p1[x..]))
+        .pair_dot(ones)
+        .round_shift(HALVE_SHIFT)
 }

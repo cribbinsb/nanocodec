@@ -67,19 +67,10 @@ unsafe fn rectangular<V: I32Lanes>(width: usize, height: usize, input: &[i16], o
     // same pattern cost Jetson HEVC Default +0.5..+0.9 % cycles). Each
     // store therefore narrows two vectors: two rows when a row is one
     // vector, else two neighbouring column groups of a row.
-    let column = |c: usize, x: &mut [V; MAX_SIDE], y: &mut [V; MAX_SIDE]| {
-        for (r, v) in x[..height].iter_mut().enumerate() {
-            *v = V::load(&intermediate[r * width + c..]);
-        }
-        line(&x[..height], &mut y[..height]);
-        for v in &mut y[..height] {
-            *v = v.round_shift(height.ilog2() + 6);
-        }
-    };
     // At most 32640 (`vvc_forward` module docs): the saturating stores
     // never act.
     if width == lanes {
-        column(0, &mut x, &mut y);
+        column(intermediate, width, height, 0, &mut x, &mut y);
         for r in (0..height).step_by(2) {
             V::store_sat16_pair(y[r], y[r + 1], &mut out[r * width..]);
         }
@@ -87,11 +78,33 @@ unsafe fn rectangular<V: I32Lanes>(width: usize, height: usize, input: &[i16], o
     }
     let mut z = [V::splat(0); MAX_SIDE];
     for c in (0..width).step_by(2 * lanes) {
-        column(c, &mut x, &mut y);
-        column(c + lanes, &mut x, &mut z);
+        column(intermediate, width, height, c, &mut x, &mut y);
+        column(intermediate, width, height, c + lanes, &mut x, &mut z);
         for r in 0..height {
             V::store_sat16_pair(y[r], z[r], &mut out[r * width + c..]);
         }
+    }
+}
+
+/// The column transforms of columns `c..c + LANES` of the row-pass output
+/// `intermediate` into `y`. A function, not a closure: closures do not
+/// inline into the caller's `#[target_feature]` context, and the outlined
+/// closure called every AVX2 intrinsic out of line.
+#[inline(always)]
+fn column<V: I32Lanes>(
+    intermediate: &[i32],
+    width: usize,
+    height: usize,
+    c: usize,
+    x: &mut [V; MAX_SIDE],
+    y: &mut [V; MAX_SIDE],
+) {
+    for (r, v) in x[..height].iter_mut().enumerate() {
+        *v = V::load(&intermediate[r * width + c..]);
+    }
+    line(&x[..height], &mut y[..height]);
+    for v in &mut y[..height] {
+        *v = v.round_shift(height.ilog2() + 6);
     }
 }
 

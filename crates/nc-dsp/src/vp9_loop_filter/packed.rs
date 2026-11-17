@@ -40,7 +40,12 @@ fn masks<B: Bytes>(p: &[B; LANES], q: &[B; LANES], limits: Vp9FilterLimits) -> (
 /// 8 or 16, so every intermediate, including rounding, is <=4088 in i16.
 #[inline(always)]
 fn wide<B: Bytes, const N: usize, const SHIFT: i32>(input: &[B; N], output: &mut [B; N], mask: B) {
-    let taps = input.map(Bytes::widen);
+    // A loop, not `array::map`: the AVX-512 instance of that stayed out of
+    // line, outside the `#[target_feature]` context, calling each intrinsic.
+    let mut taps = [B::W::splat(0); N];
+    for (tap, &value) in taps.iter_mut().zip(input) {
+        *tap = value.widen();
+    }
     let radius = N / 2 - 1;
     let mut sum = B::W::splat(1 << (SHIFT - 1));
     // First written position is 1, with replicated endpoints.

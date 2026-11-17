@@ -322,7 +322,13 @@ fn corner_dct<V: Lanes, const N: usize, const K: usize>(input: &[V; N]) -> [V; N
         ),
         _ => unreachable!("validated VP9 transform size"),
     }
-    y.map(Sparse::get)
+    // A loop, not `array::map`: that stayed out of line, outside the ISA
+    // entry's `#[target_feature]` context.
+    let mut out = [V::splat(0); N];
+    for (lanes, &sparse) in out.iter_mut().zip(&y) {
+        *lanes = sparse.get();
+    }
+    out
 }
 
 /// A DC-only inverse DCT: every residual is the same constant, two

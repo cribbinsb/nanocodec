@@ -174,7 +174,11 @@ pub(super) unsafe fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
         let pick = |row: usize, at: usize| {
             _mm256_blend_epi16::<ODD_LANES>(load(rows[row], at), load(rows[row + 1], at))
         };
-        let [up, centre, down] = [0, 1, 2].map(|row| [x - 1, x, x + 1].map(|at| pick(row, at)));
+        // Explicit, not nested `array::map`: that stayed out of line, outside
+        // the `#[target_feature]` context.
+        let up = [pick(0, x - 1), pick(0, x), pick(0, x + 1)];
+        let centre = [pick(1, x - 1), pick(1, x), pick(1, x + 1)];
+        let down = [pick(2, x - 1), pick(2, x), pick(2, x + 1)];
         let twice = _mm256_add_epi16(centre[1], centre[1]);
         let laplacian = |a, b| _mm256_abs_epi16(_mm256_sub_epi16(twice, _mm256_add_epi16(a, b)));
         let vertical = laplacian(up[1], down[1]);

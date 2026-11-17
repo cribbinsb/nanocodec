@@ -117,7 +117,12 @@ fn inverse_level<V: I32Lanes, const H: usize>(
     live: usize,
     y: &mut [V],
 ) {
-    let odd_inputs: [V; H] = core::array::from_fn(|r| c[(2 * r + 1) * step]);
+    // A loop, not `array::from_fn`: that stayed out of line, outside the
+    // caller's `#[target_feature]` context.
+    let mut odd_inputs = [V::splat(0); H];
+    for (r, input) in odd_inputs.iter_mut().enumerate() {
+        *input = c[(2 * r + 1) * step];
+    }
     for (i, weights) in odd_transposed.iter().enumerate() {
         let odd = dot(&odd_inputs[..live], weights);
         let even = y[i];
