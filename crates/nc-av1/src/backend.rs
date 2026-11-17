@@ -2732,6 +2732,7 @@ impl Av1Backend {
                 self.chroma_strength(source, recon, params, chroma, must_search);
             let selected = if must_search {
                 cdef::choose_superblocks(
+                    &self.dsp,
                     source,
                     recon,
                     &self.grids.cdef_map,
@@ -2741,6 +2742,7 @@ impl Av1Backend {
                 )
             } else {
                 cdef::apply_selected(
+                    &self.dsp,
                     recon,
                     &mut self.grids.cdef_map,
                     params,
@@ -2760,6 +2762,7 @@ impl Av1Backend {
         if self.kind == FrameKind::Key || self.is_base_frame {
             let candidate = luma_model;
             let found = cdef::choose_luma(
+                &self.dsp,
                 source,
                 recon,
                 &self.grids.cdef_map,
@@ -2773,6 +2776,7 @@ impl Av1Backend {
             search = Some(found);
         }
         cdef::apply_with_source(
+            &self.dsp,
             recon,
             &self.grids.cdef_map,
             params,
@@ -2799,6 +2803,7 @@ impl Av1Backend {
         }
         if searched_frame || self.grids.cdef_memory.uv_choice.is_none() {
             self.grids.cdef_memory.uv_choice = Some(cdef::choose_chroma(
+                &self.dsp,
                 source,
                 recon,
                 &self.grids.cdef_map,

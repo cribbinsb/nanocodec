@@ -830,21 +830,21 @@
   },
   "nanocodec-av1@veryfast": {
    "ms_per_frame": {
-    "Johnny_1280x720_60": 1.3566,
-    "KristenAndSara_1280x720_60": 1.3863,
-    "ControlledBurn_1280x720p30_420": 2.7451,
-    "WestWindEasy_1280x720p30_420": 3.5889,
-    "BlueSky_360p25_v2": 0.9144,
-    "Stockholm_640x360_5994": 0.67,
-    "RedKayak_360_2997": 1.4203,
-    "SnowMountain_640x360_2997": 0.3966,
-    "SpeedBag_640x360_2997": 0.6192,
-    "TouchdownPass_640x360_2997": 0.6561,
-    "FourPeople_480x270_60": 0.3164,
-    "Vertical_Bayshore_270x480_2997": 0.4926
+    "Johnny_1280x720_60": 1.3651,
+    "KristenAndSara_1280x720_60": 1.437,
+    "ControlledBurn_1280x720p30_420": 2.7901,
+    "WestWindEasy_1280x720p30_420": 3.6295,
+    "BlueSky_360p25_v2": 0.9201,
+    "Stockholm_640x360_5994": 0.6778,
+    "RedKayak_360_2997": 1.4275,
+    "SnowMountain_640x360_2997": 0.4071,
+    "SpeedBag_640x360_2997": 0.6392,
+    "TouchdownPass_640x360_2997": 0.6881,
+    "FourPeople_480x270_60": 0.3284,
+    "Vertical_Bayshore_270x480_2997": 0.5058
    },
-   "fps": 1078.3,
-   "build": "2860f897"
+   "fps": 1055.0,
+   "build": "d40f86b3"
   }
  }
 }

@@ -251,6 +251,7 @@ impl Dsp {
     fn avx512() -> Option<Self> {
         let mut dsp = Self::with_isa(Isa::Avx2)?;
         dsp.isa = Isa::Avx512;
+        dsp.border_store = crate::border_store::border_store_fns(Isa::Avx512);
         deblock::avx512::install(&mut dsp.deblock);
         dsp.vp9_filter = crate::vp9_loop_filter::kernel(Isa::Avx512);
         dsp.vp9_line = crate::vp9_loop_filter::line_kernel(Isa::Avx512);

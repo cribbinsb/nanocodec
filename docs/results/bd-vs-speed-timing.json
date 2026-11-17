@@ -715,14 +715,14 @@
   },
   "nanocodec-av1@veryfast": {
    "budget_fraction": {
-    "lowlight_city_night": 0.9993286713286713,
-    "crowd_mot17_09": 1.0054,
-    "bodycam_bc1": 1.0032367632367631
+    "lowlight_city_night": 0.9917682317682318,
+    "crowd_mot17_09": 1.0017093333333333,
+    "bodycam_bc1": 1.0032181152181152
    },
    "ms_per_frame": {
-    "lowlight_city_night": 9.098833333333332,
-    "crowd_mot17_09": 10.765046666666661,
-    "bodycam_bc1": 13.287273333333331
+    "lowlight_city_night": 9.617853333333333,
+    "crowd_mot17_09": 11.402019999999998,
+    "bodycam_bc1": 13.539706666666689
    },
    "anchor_ms_per_frame": {
     "lowlight_city_night": 29.26032839506173,

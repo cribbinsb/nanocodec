@@ -16,8 +16,8 @@ nanocodec-av1@fast,cbr_settings,x264-medium,12,105.226,-11.0,-19.6,-15.7,-14.0,-
 nanocodec-av1@faster,profile,x264-medium,12,222.552,-5.7,-18.3,-15.7,-13.4,-15.0
 nanocodec-av1@faster,cbr_settings,x264-medium,12,222.552,-5.7,-18.3,-15.7,-13.4,-15.0
 nanocodec-av1@slow,profile,x264-medium,12,42.284,-21.4,-28.5,-26.7,-24.8,-24.6
-nanocodec-av1@veryfast,profile,x264-medium,12,279.774,7.8,-6.2,-2.8,3.7,-7.5
-nanocodec-av1@veryfast,cbr_settings,x264-medium,12,279.774,7.8,-6.2,-2.8,3.7,-7.5
+nanocodec-av1@veryfast,profile,x264-medium,12,442.58,3.2,-10.3,-6.6,-0.9,-11.6
+nanocodec-av1@veryfast,cbr_settings,x264-medium,12,442.58,3.2,-10.3,-6.6,-0.9,-11.6
 nanocodec-av2,strict,x264-medium,12,62.226,-25.2,-34.7,-32.4,-31.2,-29.0
 nanocodec-av2,profile,x264-medium,12,62.226,-25.2,-34.7,-32.4,-31.2,-29.0
 nanocodec-av2,cbr_settings,x264-medium,12,85.534,-24.4,-33.5,-30.4,-30.0,-27.6

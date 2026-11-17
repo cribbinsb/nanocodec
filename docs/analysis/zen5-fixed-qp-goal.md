@@ -87,6 +87,13 @@ with its source.
      346.7 → 327.4 fps; AV1 Veryfast -35.3 / -26.9 at 447.1 fps against M13 -27.5 / -18.2 at 445.4 (same session
      1.017x M13's time). All held-out: Faster -36.0 → -38.3 / -27.8 → -30.2; Veryfast -32.0 / -23.1 against M13
      -20.6 / -10.2.
+   - **AV1 Veryfast base-only** (2caf7d21d, re-measured at d40f86b3, same method; results doc "Update 2026-11-17
+     (2)"): lens +7.8 / -6.2 → +3.2 / -10.3 (unrounded +3.25 / -10.35); 1078.3 → 1055.0 fps on c8a (this
+     session's M13 1006.8, stored 984.1), 255.7 → 244.9 on the Jetson. **Ahead of M13 in Weighted and J on both
+     machines**; faster than M12 on both, level with it on J (-10.35 against -10.36), 4.8 Weighted points behind
+     it. CBR held-out: fresh -37.4 / -29.2 (vs x264 medium / tuned psnr), all -34.1 / -25.6, at 410.7 c8a
+     (M13 445.4, M12 408.7) and 87.7 Jetson (M13 79.2): ahead of M12 on both machines, and of M13 on the Jetson.
+     On c8a in CBR it is 7.8 % slower than M13.
 
 ## Ruled out (measured; do not repeat)
 

@@ -270,6 +270,7 @@ impl Av1Backend {
             .map(|_| random.rng.chance(CDEF_ALTERNATE_CHANCE))
             .collect();
         cdef::apply_selected(
+            &self.dsp,
             recon,
             &mut self.grids.cdef_map,
             params,

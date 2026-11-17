@@ -13,6 +13,14 @@
 //! cache put the border stores at about a third of the encoder's last-level
 //! write misses. Other ISAs use ordinary stores (no measured gain).
 //!
+//! The AVX-512 tier uses ordinary stores too: on Zen 5 (AWS c8a.large, the
+//! Fixed QP chart's x86 timing machine) the non-temporal stores cost time on
+//! every sequence. AV1 Faster on the chart's 12 AOM CTC sequences x 6
+//! quantizers, both builds in each of 4 rotated rounds: 819.8 -> 847.6 fps
+//! (+3.4 %); every sequence's time fell, by 0.8 % (a 720p one) to 6.9 % (a
+//! 360p one); streams unchanged. Why Zen 5 differs from the Zen 3
+//! measurement above is not known.
+//!
 //! # Kernel contract
 //!
 //! The kernels take slices and are `unsafe` only because the CPU must
@@ -42,7 +50,7 @@ pub(crate) struct BorderStoreFns {
 pub(crate) fn border_store_fns(isa: Isa) -> BorderStoreFns {
     match isa {
         #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 | Isa::Avx512 => BorderStoreFns {
+        Isa::Avx2 => BorderStoreFns {
             fill: avx2::fill,
             copy: avx2::copy,
             fence: avx2::fence,

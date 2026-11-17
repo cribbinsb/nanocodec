@@ -11,7 +11,7 @@
   "nanocodec-av1": "4a5b8dd1",
   "nanocodec-av1@fast": "4a5b8dd1",
   "nanocodec-av1@faster": "2860f897",
-  "nanocodec-av1@veryfast": "2860f897",
+  "nanocodec-av1@veryfast": "d40f86b3",
   "nanocodec-vp9": "bad14976",
   "nanocodec-vp9@fast": "8b492382",
   "nanocodec-vp9@faster": "8b492382",
@@ -32,7 +32,8 @@
   "bad14976": "bad14976",
   "1139f610": "1139f610",
   "4a5b8dd1": "4a5b8dd1",
-  "2860f897": "2860f897"
+  "2860f897": "2860f897",
+  "d40f86b3": "d40f86b3"
  },
  "tools": {
   "x264": "0.165",

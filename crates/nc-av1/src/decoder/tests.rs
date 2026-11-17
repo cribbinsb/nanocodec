@@ -706,6 +706,7 @@ fn mixed_cdef_indices_are_read_at_their_normative_block_position() {
     };
     encoder.finish_cdef_indices(filter, &[false, true]);
     cdef::apply_selected(
+        &nc_dsp::Dsp::new(),
         &mut expected,
         &mut encoder.grids.cdef_map,
         filter,

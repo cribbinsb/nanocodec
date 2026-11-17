@@ -190,3 +190,35 @@ Fast and Default, and VP9, VVC and HEVC Default, at 2860f897 (the verified head)
   on x86, against a 0.4-1.0 % faster session for the references; this run does not separate the kernels' effect from
   the session's.
 - **Cost.** c8a timing $0.06 (3 on-demand sessions, all terminated, in the ledger); lens: 7 runs on the shared build box, 13 min.
+
+## Update 2026-11-17 (2): AV1 Veryfast base-only (2caf7d21d, measured at d40f86b3)
+
+AV1 Veryfast now codes keys and base frames with Faster's values of its four per-block levers and Fast's
+pre-transform skip and skip bias. Only this point was re-measured, by the same method as the update above: the
+lens run on the build box, then c8a.large (one instance) and Jetson timing with SVT-AV1 M12 and M13 as the
+same-session check, merged with `fixedqp_timing.py merge`.
+
+- **Same-session check:** x86 M13 1006.8 (stored 984.1), M12 921.5 (899.0): this session reads 2.3-2.5 % faster than
+  the stored one. Jetson M13 196.5 (196.1), M12 178.5 (178.1). x86 round-to-round spread: median 0.33 %, 90th
+  percentile 0.70 % (58 encodes of 0.2 s or more).
+
+| AV1 Veryfast | Weighted | J | x86 fps | Jetson fps |
+|---|---:|---:|---:|---:|
+| 2860f897 | +7.8 | -6.2 | 1078.3 | 255.7 |
+| d40f86b3 | +3.2 | -10.3 | 1055.0 | 244.9 |
+
+Unrounded lens figures: +3.25 Weighted, -10.35 J. Against SVT M13 (+4.1 / -4.8, 984.1 x86, 196.1 Jetson), AV1
+Veryfast is now ahead in both Weighted and J on both machines. Against the same-session M13 time it is 4.8 % faster
+on x86. Against M12 (-1.5 / -10.4, 899.0 / 178.1) it is faster on both machines, and level on J (-10.35 against
+-10.36). It is 4.8 Weighted points behind M12.
+
+CBR held-out charts at d40f86b3 (AV1 Veryfast re-measured on both clip sets and re-timed on the chart clips; BD-J
+against x264 medium / against x264 medium --tune psnr):
+
+- Fresh: -35.3 → -37.4 / -26.9 → -29.2.
+- All held-out: -32.0 → -34.1 / -23.1 → -25.6.
+- Speed: 447.1 → 410.7 fps on c8a and 91.6 → 87.7 fps on the Jetson.
+- Against M13 (fresh -27.5 / -18.2, 445.4 c8a, 79.2 Jetson): ahead on the Jetson. On c8a it is 7.8 % slower.
+- Against M12 (fresh -29.5 / -20.4, 408.7 c8a, 70.9 Jetson): ahead on both machines.
+
+AWS for this update: $2.05 in 8 sessions, all terminated, in the ledger.
