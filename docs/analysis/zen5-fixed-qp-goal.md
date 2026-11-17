@@ -185,6 +185,11 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
 
 ## Progress (exact, streams identical)
 
+- 2026-11-17, `feature/av1-faster-exact`: the AVX-512 tier writes picture borders with ordinary
+  stores, not non-temporal ones (c9e59feed), and AV1 CDEF uses the backend's `Dsp` (4d317fa52).
+  AV1 Faster fixed-QP chart timing on c8a, 810.6 -> 845.2 fps (+4.3 %), M12 903.4 in the same
+  session. Section "AV1 Faster exact speed-ups" below.
+
 - 2026-11-16, `feature/av1-lowlight`: the AV1 key-frame CfL slope search (on in the Default
   since 79d53ba8b) runs on a shared nc-dsp CfL prediction-SSE kernel (`Dsp::cfl_sse`; AVX2,
   NEON, SIMD128 on the shared 16-bit lanes; checkasm on every tier). Lowlight Default key frame
@@ -821,6 +826,92 @@ the plain values, the other frames the `light.*` values.
 - Fast's full forward transform on Faster's base frames costs Weighted on the lens (fhkD -4.2 against
   fLCMPhk75 -3.0) and on Veryfast (vbo14m against vMCAB, with depth) little for its time.
 - AWS: 8 on-demand c8a.large sessions (2.5-12.6 min), $0.16, all terminated and in the ledger; lens runs on the shared build box.
+
+## AV1 Faster exact speed-ups (feature/av1-faster-exact, 2026-11-17)
+
+Goal: close AV1 Faster's ~10 % speed gap to M12 on the Fixed QP chart with stream-identical changes.
+Builds: `--profile profiling` (release code with debug info). Callgrind: x86 PC, `NC_DSP_ISA=avx2`,
+the lens's own commands (`av1-weighted/t/plan6.json`). Zen 5: c8a.large, `perf` cycles by symbol
+(`adaptive-diag/mix/remote_mix.py`), and A/B chart timing of two builds with M12 in each session (12
+sequences x 6 quantizers, 4 rotated rounds, `fixedqp_timing_remote.py`). Scripts and raw output:
+`~/nanocodec-data/work/av1-faster-exact/` (`cg.py`, `fnrank.py`, `zen5/ab.py`, `zen5/agg.py`).
+
+**Where the gap is.**
+- **By sequence.** In the chart record at e329c8b59 (`t/rec7.json`), Faster's ms/frame against
+  M12 runs from 0.91 (RedKayak) and 0.95 (WestWindEasy) to 1.20-1.22 (Stockholm, SpeedBag), 1.37
+  (SnowMountain) and 1.50 (FourPeople 480x270). Most of the gap is on the 270p and 360p sequences.
+- **Instructions (callgrind, AVX2).** On WestWindEasy, Johnny and SpeedBag at q135/q210, 130 f,
+  Faster runs 29.93 G instructions and M12 (qp 34/52) 32.39 G. On FourPeople, SnowMountain and
+  Stockholm, Faster runs 7.53 G and M12 6.78 G (869 M of M12's are `memset`).
+- **Zen 5 cycles.** Johnny and WestWindEasy: Faster 1126 / 3529 / 753 / 2210 M against M12
+  1076 / 3879 / 789 / 2328 M (q135/qp34, then q210/qp52). The three small sequences: Faster 2101 M,
+  M12 1658 M (+27 %).
+- **Zen 5 symbols, small sequences, share of cycles:**
+  - ours: `CoeffCdfs::write` 5.6 %, `code_block` 4.6 %, `CoeffCdfs::cost` 4.6 %,
+    `choose_inter_mode` 3.8 %, `code_plane` 3.6 %, `grid_x4` 3.4 %, `encode_run` 2.9 %, border
+    stores 3.5 % (`border_store::avx2::copy` 1.8 + `fill` 1.7), libc copies and fills 5.0 %;
+  - M12: `av1_write_coeffs_txb_1d` 4.2 %, `svt_aom_quantize_b_avx2` 4.1 %, `od_ec_encode_cdf_q15`
+    3.2 %, 8x8/16x16 SAD 3.0 %, libc 5.1 %.
+  - Coefficient coding is 13 % of our cycles there against about 8.5 % of M12's.
+  - `CoeffCdfs::cost` is the key frame's planner (`KeyPlanner::leaf_cost` -> `residual_rd_cost`):
+    its share is 2.7 points higher on the small sequences than on 720p.
+  - The border stores are 2.2 points higher on the small sequences than on 720p.
+- **Callgrind ranking, 720p/360p set** (self instructions): `CoeffCdfs::write` 5.5 %, CDEF
+  `block::<8>` 4.7 %, `code_block` 4.1 %, `sad_grid_best_64x64` 3.9 %, `code_plane` 3.5 %,
+  `variance_w32` 3.2 %, `quantize_levels` 2.7 %, `encode_run` 2.6 %, `sad_scan_16x16_even_rows`
+  2.6 %, `forward_16` 2.5 %. CDEF is 13 % inclusive; M12's CDEF kernels are about the same count.
+- Callgrind's `memcpy`/`memset` counts overstate cheap large copies (the 16 KiB CDF context
+  clone counts 58 K instructions); the copies callgrind ranks (CDF save, analyzer moves) are not
+  where Zen 5 time goes and were not changed.
+
+**Landed (exact).** Both changes: `preset_identity` 297/297, lens stream sizes equal on c8a, ledger rows.
+- **c9e59feed: the AVX-512 tier writes picture borders with ordinary stores.** The AVX2 tier
+  keeps the non-temporal stores (HEVC Faster, Zen 3: -5.7 %).
+  - c8a A/B against the e329c8b59 code: 819.8 -> 847.6 fps (+3.4 %), M12 914.7.
+  - Every sequence was faster: FourPeople -5.3 %, SnowMountain -6.9 %, Johnny -3.1 %,
+    WestWindEasy -0.8 %.
+  - Why Zen 5 differs from Zen 3 is not known.
+- **4d317fa52: AV1 CDEF uses the backend's `Dsp`.** CDEF built a new `Dsp` five times a frame.
+  Callgrind: Faster -0.03 %, Fast -0.03 %, Default -0.06 %.
+- **Final pair** (c8a, one session, 4 rounds): Faster d40f86b38 810.6 -> head 845.2 fps (+4.3 %),
+  M12 903.4. Faster is now 6.4 % slower than M12, from 10.3 %.
+
+| sequence | before | after | M12 (ms/frame) |
+|---|---:|---:|---:|
+| FourPeople 480x270 | 0.468 | 0.439 | 0.312 |
+| SnowMountain 360p | 0.506 | 0.470 | 0.371 |
+| SpeedBag 360p | 0.814 | 0.777 | 0.670 |
+| Stockholm 360p | 0.889 | 0.849 | 0.742 |
+| TouchdownPass 360p | 0.942 | 0.902 | 0.804 |
+| BlueSky 360p | 1.118 | 1.079 | 1.009 |
+| Vertical_Bayshore 270x480 | 0.626 | 0.594 | 0.627 |
+| RedKayak 360p | 2.040 | 1.981 | 2.265 |
+| Johnny 720p | 1.672 | 1.606 | 1.583 |
+| KristenAndSara 720p | 1.752 | 1.689 | 1.645 |
+| ControlledBurn 720p | 3.742 | 3.666 | 3.752 |
+| WestWindEasy 720p | 4.917 | 4.845 | 5.215 |
+
+**Zen 5 kernel tiers** (`nc-checkasm --bench`, c8a, `--isa avx2` against `--isa avx512`, one
+run each). The AVX-512 tier is slower than AVX2 on Zen 5 for:
+- AV1 decoder inverse transforms (`av1_inverse_*`): 1.2-2.25x slower, for example 32x64
+  `dct_dct` 448 -> 890 ns and 64x64 `i16_dct_dct` 1228 -> 1962 ns. This matters for decode
+  speed and was not changed here.
+- The encoder's sparse inverse DCT (`inverse_32_sparse` / `inverse_64_sparse`): low8 32x32
+  144 -> 234 ns, low16 149 -> 205 ns. These are about 0.3 % of Faster's Zen 5 cycles.
+- Narrow variance at height 8: 4x4 1.33x, 8x8 1.37x slower; 8x32 level.
+- The AVX2 narrow inverse with dense large 32x32 coefficients took 29.6 us against 0.33 us on
+  the AVX-512 tier (the bench's `low32` rows). That is the AVX2 tier's guarded fallback; how
+  often real streams hit it is not measured.
+- Everything else on Faster's path (SAD grids, sub-pixel variance at 32/64, forward transforms,
+  quantiser, CDEF) is 1.2-3.4x faster on AVX-512.
+
+**Open.** The remaining gap is on the small, easy sequences and spread over many functions:
+coefficient coding, block glue, and key-frame RD pricing (`CoeffCdfs::cost` 4.6 % of small-sequence
+cycles). The coefficient writer and range coder have been optimised several times
+(e677b1a0f, ce82237f3); no exact item left there was found in this pass.
+
+AWS: 5 on-demand c8a.large sessions (2.0-6.1 min each, about $0.03 in all), all terminated and
+in the ledger.
 
 ## Next decision points
 
