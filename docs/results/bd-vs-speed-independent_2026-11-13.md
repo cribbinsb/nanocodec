@@ -1,6 +1,6 @@
 # Bitrate vs encode speed, held-out clips (independent_2026-11-13)
 
-<sub>Updated 2026-11-16, build 8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753) (H.264, HEVC Fast, AV1, AV1 Fast, AV1 Faster, AV2, VVC: 4a5b8dd1; H.264 Veryfast, HEVC, VP9, H.264 Slow, HEVC Slow, AV1 Slow, VP9 Slow, AV2 Slow, VVC Slow: bad14976); AV2 Fast, H.264 Fast, H.264 Faster, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast, AV1 Slow, AV2 Slow, H.264 Slow, H.264 Veryfast, HEVC, HEVC Slow, VP9, VP9 Slow, VVC Slow timed on 1139f610 (same streams)</sub>
+<sub>Updated 2026-11-17, build 8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753) (AV1 Faster, AV1 Veryfast: 2860f897; H.264, HEVC Fast, AV1, AV1 Fast, AV2, VVC: 4a5b8dd1; H.264 Veryfast, HEVC, VP9, H.264 Slow, HEVC Slow, AV1 Slow, VP9 Slow, AV2 Slow, VVC Slow: bad14976); AV2 Fast, H.264 Fast, H.264 Faster, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast, AV1 Slow, AV2 Slow, H.264 Slow, H.264 Veryfast, HEVC, HEVC Slow, VP9, VP9 Slow, VVC Slow timed on 1139f610 (same streams)</sub>
 
 Quality on the 209 clips of `independent_2026-11-13`. Speed is the main chart's: timed on its three timing clips (lowlight_city_night, crowd_mot17_09, bodycam_bc1; tools/dev/anchor_chart_timing.py), not on these clips.
 
@@ -26,11 +26,12 @@ The same on x86 (one Ryzen 9 5950X core):
 | **AV1 Fast** | -41.7% | -45.4% | -42.4% | -50.7 … -36.2 | 59.6 | 2.23× | 250.8 | 2.22× | 207/207 | Pareto; Pareto x86 |
 | **AV2 Fast** | -40.6% | -43.2% | -42.3% | -49.1 … -33.4 | 44.6 | 1.67× | 207.7 | 1.84× | 207/207 |  |
 | **HEVC Fast** | -38.4% | -39.4% | -40.0% | -48.0 … -30.6 | 78.0 | 2.92× | 303.5 | 2.69× | 207/207 | Pareto; Pareto x86 |
+| **AV1 Faster** | -38.3% | -40.4% | -40.7% | -48.9 … -31.8 | 70.2 | 2.63× | 327.4 | 2.90× | 207/207 | Pareto x86 |
 | **VP9 Fast** | -38.1% | -39.1% | -41.2% | -45.7 … -30.7 | 54.2 | 2.03× | 205.1 | 1.82× | 207/207 | 1 rate-invalid pts |
 | SVT-AV1 M8 | -36.9% | -41.9% | -32.4% | -46.6 … -30.6 | 14.3 | 0.53× | 80.8 | 0.72× | 207/207 | 34 rate-invalid pts |
-| **AV1 Faster** | -36.0% | -36.6% | -39.0% | -46.8 … -29.0 | 74.6 | 2.80× | 346.7 | 3.07× | 207/207 | Pareto x86 |
-| **VP9 Faster** | -34.1% | -33.7% | -37.7% | -44.9 … -25.3 | 86.5 | 3.24× | 328.1 | 2.91× | 207/207 | Pareto; 1 rate-invalid pts |
+| **VP9 Faster** | -34.1% | -33.7% | -37.7% | -44.9 … -25.3 | 86.5 | 3.24× | 328.1 | 2.91× | 207/207 | Pareto; Pareto x86; 1 rate-invalid pts |
 | **HEVC Faster** | -32.5% | -32.3% | -34.6% | -41.6 … -23.6 | 98.9 | 3.71× | 409.9 | 3.64× | 207/207 | Pareto; Pareto x86 |
+| **AV1 Veryfast** | -32.0% | -31.4% | -33.5% | -44.7 … -22.7 | 91.6 | 3.43× | 447.1 | 3.97× | 207/207 | Pareto x86 |
 | x265 medium, metric-tuned (--tune psnr) | -31.3% | -33.6% | -32.4% | -42.6 … -25.6 | 8.0 | 0.30× | 38.0 | 0.34× | 207/207 | 35 rate-invalid pts; fps of the default-tuned run; re-timing pending |
 | SVT-AV1 M10 | -30.8% | -34.2% | -28.4% | -41.0 … -24.3 | 39.3 | 1.47× | 228.9 | 2.03× | 207/207 | 30 rate-invalid pts |
 | x265 superfast, metric-tuned (--tune psnr) | -28.6% | -29.9% | -29.7% | -39.3 … -22.9 | 12.1 | 0.45× | 57.9 | 0.51× | 207/207 | 33 rate-invalid pts; fps of the default-tuned run; re-timing pending |
@@ -44,7 +45,7 @@ The same on x86 (one Ryzen 9 5950X core):
 | SVT-AV1 M12 | -22.4% | -23.7% | -21.7% | -35.1 … -15.5 | 70.9 | 2.67× | 408.7 | 3.62× | 207/207 | 26 rate-invalid pts |
 | x265 ultrafast, metric-tuned (--tune psnr) | -22.0% | -22.6% | -23.6% | -34.9 … -12.4 | 17.1 | 0.64× | 85.1 | 0.75× | 207/207 | 33 rate-invalid pts; fps of the default-tuned run; re-timing pending |
 | x265 ultrafast | -21.7% | -20.8% | -23.7% | -34.0 … -11.8 | 17.1 | 0.64× | 85.1 | 0.75× | 207/207 | 33 rate-invalid pts |
-| SVT-AV1 M13 | -20.6% | -21.3% | -20.0% | -32.2 … -13.9 | 79.2 | 2.96× | 445.4 | 3.95× | 207/207 | Pareto x86; 26 rate-invalid pts |
+| SVT-AV1 M13 | -20.6% | -21.3% | -20.0% | -32.2 … -13.9 | 79.2 | 2.96× | 445.4 | 3.95× | 207/207 | 26 rate-invalid pts |
 | **H.264 Fast** | -18.7% | -21.6% | -24.4% | -32.1 … -8.7 | 113.3 | 4.25× | 377.1 | 3.34× | 207/207 | Pareto |
 | **H.264 Faster** | -11.5% | -15.2% | -16.3% | -27.5 … +5.1 | 135.4 | 5.08× | 462.9 | 4.10× | 207/207 | Pareto; Pareto x86 |
 | x264 medium, metric-tuned (--tune psnr) | -10.0% | -10.2% | -19.1% | -12.8 … -6.3 | 26.7 | 1.00× | 112.8 | 1.00× | 207/207 | 49 rate-invalid pts; fps of the default-tuned run; re-timing pending |
@@ -79,7 +80,8 @@ The chart's BD-J weights every content class equally (bodycam 22, crowd 57, dron
 | AV1 Slow | -46.6% | -49.0% |
 | AV1 | -45.9% | -48.3% |
 | AV1 Fast | -41.7% | -43.8% |
-| AV1 Faster | -36.0% | -38.2% |
+| AV1 Faster | -38.3% | -41.0% |
+| AV1 Veryfast | -32.0% | -34.0% |
 | VP9 Slow | -45.4% | -46.4% |
 | VP9 | -44.9% | -46.0% |
 | VP9 Fast | -38.1% | -38.7% |
@@ -161,11 +163,12 @@ The same points with x264 medium, metric-tuned (--tune psnr) as the zero line in
 | **AV1 Fast** | -33.8% | -36.1% | -27.2% | -38.1% | 206/207 |
 | **AV2 Fast** | -32.6% | -33.5% | -27.2% | -37.1% | 206/207 |
 | **HEVC Fast** | -30.1% | -29.5% | -24.3% | -36.4% | 206/207 |
+| **AV1 Faster** | -30.0% | -30.6% | -25.1% | -34.4% | 206/207 |
 | **VP9 Fast** | -29.8% | -29.2% | -25.7% | -34.6% | 206/207 |
 | SVT-AV1 M8 | -27.9% | -31.7% | -14.7% | -37.4% | 206/207 |
-| **AV1 Faster** | -27.6% | -26.6% | -23.2% | -33.0% | 206/207 |
 | **VP9 Faster** | -25.4% | -23.3% | -21.4% | -31.4% | 206/207 |
 | **HEVC Faster** | -23.6% | -22.0% | -17.6% | -31.1% | 206/207 |
+| **AV1 Veryfast** | -22.9% | -21.0% | -16.2% | -31.5% | 206/207 |
 | x265 medium, metric-tuned (--tune psnr) | -22.4% | -23.3% | -15.2% | -28.7% | 207/207 |
 | SVT-AV1 M10 | -21.0% | -22.8% | -9.6% | -30.5% | 206/207 |
 | x265 medium, metric-tuned (--tune ssim) | -20.2% | -20.1% | -10.0% | -30.6% | 207/207 |
@@ -228,11 +231,12 @@ Direct BD-J vs x264 medium on them, where it exists:
 | AV1 Fast | -53.1% | -57.9% |
 | AV2 Fast | -48.0% | -65.8% |
 | HEVC Fast | -39.5% | -54.2% |
+| AV1 Faster | -52.0% | -57.6% |
 | VP9 Fast | -42.1% | -58.2% |
 | SVT-AV1 M8 | n/a | -60.8% |
-| AV1 Faster | -51.6% | -58.0% |
 | VP9 Faster | -46.3% | -58.3% |
 | HEVC Faster | -31.4% | -50.8% |
+| AV1 Veryfast | -51.5% | -55.0% |
 | x265 medium, metric-tuned (--tune psnr) | n/a | n/a |
 | SVT-AV1 M10 | n/a | -56.2% |
 | x265 superfast, metric-tuned (--tune psnr) | n/a | n/a |
@@ -287,8 +291,10 @@ Direct BD-rate of our encoders against the reference encoders and against each o
 | AV1 Fast | SVT-AV1 M12 | -24.1% | -27.5% | -25.3% | -32.6 … -20.4 | 209/209 |
 | AV1 | libaom rt 8 | -26.1% | -32.0% | -27.2% | -37.2 … -20.8 | 209/209 |
 | AV1 Fast | AV1 | +10.1% | +11.9% | +11.9% | +5.9 … +14.0 | 209/209 |
-| AV1 Faster | SVT-AV1 M12 | -15.1% | -14.0% | -19.8% | -27.4 … -9.6 | 209/209 |
-| AV1 Faster | AV1 Fast | +12.6% | +20.4% | +7.4% | +6.8 … +16.8 | 209/209 |
+| AV1 Faster | SVT-AV1 M12 | -18.5% | -20.0% | -22.7% | -29.8 … -14.9 | 209/209 |
+| AV1 Faster | AV1 Fast | +6.9% | +10.4% | +3.3% | +1.3 … +9.6 | 209/209 |
+| AV1 Veryfast | SVT-AV1 M13 | -12.1% | -9.6% | -14.7% | -25.1 … -4.3 | 209/209 |
+| AV1 Veryfast | AV1 Faster | +13.6% | +20.0% | +15.8% | +9.0 … +24.0 | 209/209 |
 | HEVC Faster | SVT-AV1 M13 | -10.1% | -8.1% | -14.1% | -18.4 … -3.0 | 209/209 |
 | HEVC Faster | HEVC Fast | +12.8% | +15.6% | +11.4% | +8.0 … +18.8 | 209/209 |
 | VP9 | libvpx VP9 rt 7 | -43.1% | -47.6% | -41.7% | -51.2 … -37.1 | 209/209 |
@@ -311,7 +317,7 @@ Direct BD-rate of our encoders against the reference encoders and against each o
   --rc-lookahead 0 --no-scenecut --threads 1`, ABR with a 1 s VBV at each target.
   BD 0 % and speed 1× by definition.
 - **Points:** every encoder in its own real-time rate control at the same targets:
-  ours in CBR (`--bitrate`, 1 s buffer; build 8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753) (H.264, HEVC Fast, AV1, AV1 Fast, AV1 Faster, AV2, VVC: 4a5b8dd1; H.264 Veryfast, HEVC, VP9, H.264 Slow, HEVC Slow, AV1 Slow, VP9 Slow, AV2 Slow, VVC Slow: bad14976); AV2 Fast, H.264 Fast, H.264 Faster, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast, AV1 Slow, AV2 Slow, H.264 Slow, H.264 Veryfast, HEVC, HEVC Slow, VP9, VP9 Slow, VVC Slow timed on 1139f610 (same streams), its presets), openh264
+  ours in CBR (`--bitrate`, 1 s buffer; build 8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753) (AV1 Faster, AV1 Veryfast: 2860f897; H.264, HEVC Fast, AV1, AV1 Fast, AV2, VVC: 4a5b8dd1; H.264 Veryfast, HEVC, VP9, H.264 Slow, HEVC Slow, AV1 Slow, VP9 Slow, AV2 Slow, VVC Slow: bad14976); AV2 Fast, H.264 Fast, H.264 Faster, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast, AV1 Slow, AV2 Slow, H.264 Slow, H.264 Veryfast, HEVC, HEVC Slow, VP9, VP9 Slow, VVC Slow timed on 1139f610 (same streams), its presets), openh264
   realtime (medium complexity, CAVLC), SVT-AV1 v4.3.0 `--rtc --rc 2` (CBR, 1 s buffer),
   x264 / x265 4.2 as the anchor (zero latency, no B-frames, one thread / no pools),
   libvpx v1.16.0 VP9 and libaom v3.15.3 AV1 in realtime CBR (`--rt --end-usage=cbr

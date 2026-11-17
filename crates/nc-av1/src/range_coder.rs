@@ -12,8 +12,10 @@
 //! Frames whose syntax has gaps filled after reconstruction (CDEF indices,
 //! loop restoration units) record their symbols as frozen intervals in one
 //! flat log and code them in [`SymbolWriter::finish_frame`], run by run
-//! between the inserted spans. The log and the output keep their capacity
-//! from frame to frame.
+//! between the inserted spans. Every logged symbol, binary, literal or
+//! omitted, is one general interval, so the replay is a single branch-free
+//! step with the coder state in registers. The log and the output keep their
+//! capacity from frame to frame.
 //!
 //! CDFs are in libaom's inverse convention (`32768 - cdf`, last entry 0).
 //! Symbols coded with a [`Cdf`] adapt it afterwards unless the frame sets
@@ -32,12 +34,6 @@ const PROB_SHIFT: u32 = 6;
 const MIN_PROB: u32 = 4;
 /// Probability of a literal bit being 1, as used by `L(1)` (AV1 §8.2.3).
 const HALF: u32 = PROB_TOP / 2;
-/// Reserved `remaining` marking an omitted literal: real alphabets have at
-/// most sixteen symbols.
-const OMITTED_INTERVAL: u16 = u16::MAX;
-/// Reserved `remaining` marking a logged two-symbol code
-/// ([`Interval::binary`]).
-const BINARY_INTERVAL: u16 = u16::MAX - 1;
 /// `cnt` of a fresh encoder: it crosses zero once a byte plus a carry bit
 /// have accumulated in `low`.
 const CNT_START: i32 = -9;
@@ -131,17 +127,18 @@ impl SymbolSink for SpanWriter<'_> {
     }
 }
 
-/// One logged symbol, frozen before range normalization: an interval of a
-/// multi-symbol alphabet, or a two-symbol code (`remaining` is
-/// [`BINARY_INTERVAL`]), which the replay takes by the cheaper binary path.
+/// One logged symbol, frozen before range normalization: the interval of
+/// symbol `s` in an alphabet of `nsyms` (libaom `od_ec_encode_q15`'s
+/// arguments). A two-symbol code or literal bit is the same interval of a
+/// two-symbol alphabet, and an omitted literal the whole range of a
+/// one-symbol alphabet, which leaves the coder exactly as it was.
 #[derive(Debug, Clone, Copy)]
 struct Interval {
-    /// Upper edge of the interval (inverse CDF); for a two-symbol code,
-    /// the inverse CDF of symbol 0.
+    /// Upper edge (inverse CDF of symbol `s - 1`), [`PROB_TOP`] for `s` 0.
     fl: u16,
-    /// Lower edge; for a two-symbol code, the bit.
+    /// Lower edge (inverse CDF of symbol `s`).
     fh: u16,
-    /// Symbols above this one, or a marker.
+    /// Symbols above this one, `nsyms - 1 - s`.
     remaining: u16,
 }
 
@@ -163,15 +160,32 @@ impl Interval {
         }
     }
 
-    /// `bit` of a two-symbol alphabet whose inverse CDF starts at `f`.
+    /// `bit` of a two-symbol alphabet whose inverse CDF starts at `f`
+    /// ([`Self::symbol`] of `[f, 0]`).
     #[inline]
     fn binary(bit: bool, f: u16) -> Self {
-        Self {
-            fl: f,
-            fh: u16::from(bit),
-            remaining: BINARY_INTERVAL,
+        if bit {
+            Self {
+                fl: f,
+                fh: 0,
+                remaining: 0,
+            }
+        } else {
+            Self {
+                fl: PROB_TOP as u16,
+                fh: f,
+                remaining: 1,
+            }
         }
     }
+
+    /// The only symbol of a one-symbol alphabet: the whole range, so coding
+    /// it changes nothing (an omitted literal).
+    const NOTHING: Self = Self {
+        fl: PROB_TOP as u16,
+        fh: 0,
+        remaining: 0,
+    };
 
     /// An equiprobable bit, `L(1)`.
     #[inline]
@@ -424,7 +438,7 @@ impl SymbolWriter {
 
     /// Remove a reserved bit when the frame instead signals one global strength.
     pub fn omit_literal(&mut self, slot: LiteralSlot) {
-        self.intervals()[slot.0].remaining = OMITTED_INTERVAL;
+        self.intervals()[slot.0] = Interval::NOTHING;
     }
 
     /// Reserve a place for symbols chosen later ([`Self::span`]).
@@ -540,17 +554,41 @@ impl SymbolWriter {
 }
 
 impl RangeEncoder {
-    /// Code a run of logged symbols, skipping omitted literals.
+    /// Code a run of logged symbols: [`Self::encode`] with `low`, `rng` and
+    /// `cnt` held in locals, written back only around a flush, and the
+    /// symbol's lower edge chosen without a branch (an upper edge at the
+    /// top leaves `low` as it was): 35.3 instructions a symbol against 38.5
+    /// for a marker dispatch to `encode` / `encode_bool` (callgrind, AV1
+    /// Default, 3.56 M symbols). Out of line: called once per run, and kept one function so
+    /// that profiles show the replay apart (the writer-path figures in
+    /// `docs/analysis/zen5-fixed-qp-goal.md` count it).
+    #[inline(never)]
     fn encode_run(&mut self, intervals: &[Interval]) {
-        for &interval in intervals {
-            match interval.remaining {
-                OMITTED_INTERVAL => {}
-                BINARY_INTERVAL => {
-                    self.encode_bool(interval.fh != 0, u32::from(interval.fl));
-                }
-                _ => self.encode(interval),
+        let (mut low, mut rng, mut cnt) = (self.low, self.rng, self.cnt);
+        for iv in intervals {
+            let r_hi = rng >> 8;
+            let reserve = MIN_PROB * u32::from(iv.remaining);
+            let fl = u32::from(iv.fl);
+            let upper = if fl < PROB_TOP {
+                scale(r_hi, fl) + reserve + MIN_PROB
+            } else {
+                rng
+            };
+            low += u64::from(rng - upper);
+            let next = upper - (scale(r_hi, u32::from(iv.fh)) + reserve);
+            debug_assert!((1..=0xffff).contains(&next));
+            let d = next.leading_zeros() as i32 - 16;
+            if cnt + d >= FLUSH_BITS {
+                self.cnt = cnt;
+                self.flush(low, next, d);
+                (low, rng, cnt) = (self.low, self.rng, self.cnt);
+            } else {
+                low <<= d;
+                rng = next << d;
+                cnt += d;
             }
         }
+        (self.low, self.rng, self.cnt) = (low, rng, cnt);
     }
 }
 

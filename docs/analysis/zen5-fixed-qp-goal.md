@@ -62,6 +62,32 @@ with its source.
    - A second view on 12 held-out clips (J only) puts HEVC Faster ahead of M12 and AV1 Faster, HEVC Fast and AV1 Fast
      ahead of M10. Nothing of ours is ahead of M13 in any view on x86.
 
+8. **Chart refresh at 2860f897** (2026-11-17, [fixed-qp-speed-2026-11-16.md](../results/fixed-qp-speed-2026-11-16.md)
+   "Update 2026-11-17"). AV1 Fast, AV1, VP9, VVC and HEVC code the same lens streams as b11b2f83 and were only
+   re-timed; AV1 Faster (base-only) changed; AV1 Veryfast is new. Weighted / J, c8a fps, Jetson fps (SVT stored;
+   the same-session check read 0.4-1.0 % faster on x86):
+
+   | Point | Weighted | J | x86 fps | Jetson fps |
+   |---|---:|---:|---:|---:|
+   | SVT-AV1 M13 | +4.1 | -4.8 | 984.1 | 196.1 |
+   | AV1 Veryfast | +7.8 | -6.2 | 1078.3 | 255.7 |
+   | SVT-AV1 M12 | -1.5 | -10.4 | 899.0 | 178.1 |
+   | AV1 Faster | +2.1 → -5.7 | -13.5 → -18.3 | 900.8 → 786.4 | 222.0 → 203.4 |
+   | AV1 Fast | -11.0 | -19.6 | 523.6 → 526.5 | 142.8 → 143.7 |
+   | SVT-AV1 M10 | -14.2 | -19.5 | 518.9 | 99.0 |
+   | AV1 | -18.9 | -26.7 | 303.7 → 304.9 | 90.3 → 90.7 |
+
+   - **x86, J:** AV1 Veryfast is ahead of M13 (first point of ours ahead of M13 on Zen 5). AV1 Faster is 7.9 J
+     points ahead of M12 but 12.5 % slower, so no longer level with it on speed. AV1 Fast stays level with M10.
+   - **x86, Weighted:** still nothing of ours ahead of M10, M12 or M13. Veryfast is 3.7 points behind M13 at
+     +9.6 % speed; Faster is 4.2 points ahead of M12 at -12.5 % speed.
+   - **Jetson:** AV1 Faster is ahead of M12 and M13 in Weighted and J; Veryfast is ahead of M13 in J.
+   - **CBR held-out charts** (AV1 Faster and Veryfast re-measured on both clip sets; vs x264 medium / vs x264
+     medium --tune psnr; CBR chart timing, c8a): fresh, AV1 Faster -38.8 → -41.7 / -31.1 → -34.2 at
+     346.7 → 327.4 fps; AV1 Veryfast -35.3 / -26.9 at 447.1 fps against M13 -27.5 / -18.2 at 445.4 (same session
+     1.017x M13's time). All held-out: Faster -36.0 → -38.3 / -27.8 → -30.2; Veryfast -32.0 / -23.1 against M13
+     -20.6 / -10.2.
+
 ## Ruled out (measured; do not repeat)
 
 All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx512.md`.
@@ -503,6 +529,23 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
   about 1,050 Ir per byte (SVT M10 is about 760); whole AV1 Default encode −3.5 % (callgrind, 40 f
   CTC). The range coder is now a 64-bit window, with a flat symbol log and replay, sized level
   maps, an eob==1 shortcut, and unrolled CDF adaptation. AV2 got the same coder.
+- **AV1 writer landing 2** (exact; `feature/av1-writer2`). Callgrind, WestWindEasy 40 f, qindex 185,
+  `~/nanocodec-data/work/av1-writer2/` (`cg.sh`, `writer.py`). Writer path = `CoeffCdfs::write`
+  inclusive + the deferred frame's replay (`encode_run`, every symbol of the frame):
+  - Default 397.5M → 370.3M, **1,062 → 990 Ir/byte**; Fast 1,134 → 1,052; Faster 1,074 → 1,001.
+  - Whole encode: Default −1.81 % (7803.6M → 7662.4M), Fast −1.19 %, Faster −1.29 %. Most of it
+    is rate estimation (`CoeffCdfs::cost` 704.8M → 598.7M on Default), which shares the level map.
+  - The level map holds magnitudes saturated at 3, so the `coeff_base` sum is five plain bytes;
+    `coeff_br` reads levels above 2 back from the block. `cost` uses the sized maps too.
+  - The replay codes every logged symbol as one general interval (binary, literal and omitted
+    alike) with the coder state in registers: 38.5 → 35.3 Ir a symbol (3.56M symbols, Default).
+  - SVT M10 on the same content, same definition (`av1_write_coeffs_txb_1d`, `get_nz_map_contexts`,
+    `txb_init_levels`, `od_ec_encode_cdf_q15`, flush): 324.0M for 394,638 bytes, about 820 Ir/byte;
+    its binary symbols are coded inline in their callers and are not in that count.
+  - What is left is mostly the deferred frame itself: every symbol is logged (about 25 Ir) and
+    replayed (35 Ir), where SVT codes once (about 30). Removing the log needs CDEF decided before
+    a superblock's symbols are coded, which changes streams. AV2 is not affected: its recording
+    writer is a different structure (models re-adapted on replay).
 - **AV1 Fast re-point key pulse:** Default's key intra set doesn't fix it (worst clip +1.10 dB);
   key boost makes it worse (+4.56). Being tested: partial forward on keys only, and a coarser key
   QP.

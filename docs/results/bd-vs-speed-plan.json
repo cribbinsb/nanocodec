@@ -3031,8 +3031,8 @@
   },
   "nanocodec-av1@faster": {
    "lowlight_city_night": {
-    "qp": 183,
-    "bytes": 376480,
+    "qp": 186,
+    "bytes": 370546,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3056,16 +3056,16 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "183",
+     "186",
      "--preset",
      "faster"
     ],
     "fps": 29.97,
-    "key": "b72fc4cfe64af261"
+    "key": "731576bbe08a9a3e"
    },
    "crowd_mot17_09": {
-    "qp": 205,
-    "bytes": 376619,
+    "qp": 206,
+    "bytes": 372983,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -3089,16 +3089,16 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "205",
+     "206",
      "--preset",
      "faster"
     ],
     "fps": 30.0,
-    "key": "a9f7713425fe9cfc"
+    "key": "3e4591ceebe4fa05"
    },
    "bodycam_bc1": {
     "qp": 205,
-    "bytes": 376445,
+    "bytes": 371526,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3127,7 +3127,7 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "d0ca6a48208fe3d6"
+    "key": "4572d53790139b3d"
    }
   },
   "nanocodec-hevc@faster": {
@@ -4478,6 +4478,107 @@
     "fps": 29.97,
     "key": "e0e57e0fb6773a5a"
    }
+  },
+  "nanocodec-av1@veryfast": {
+   "lowlight_city_night": {
+    "qp": 164,
+    "bytes": 375123,
+    "target_bytes": 375375,
+    "argv": [
+     "{BIN}/nanocodec",
+     "encode",
+     "--codec",
+     "av1",
+     "--input",
+     "{INPUT}",
+     "--width",
+     "1280",
+     "--height",
+     "720",
+     "--fps",
+     "29970/1000",
+     "--frames",
+     "150",
+     "--intra-period",
+     "300",
+     "--temporal-layers",
+     "1",
+     "--output",
+     "{OUTPUT}",
+     "--qp",
+     "164",
+     "--preset",
+     "veryfast"
+    ],
+    "fps": 29.97,
+    "key": "a70456c7eec9bf03"
+   },
+   "crowd_mot17_09": {
+    "qp": 197,
+    "bytes": 377025,
+    "target_bytes": 375000,
+    "argv": [
+     "{BIN}/nanocodec",
+     "encode",
+     "--codec",
+     "av1",
+     "--input",
+     "{INPUT}",
+     "--width",
+     "1280",
+     "--height",
+     "720",
+     "--fps",
+     "30/1",
+     "--frames",
+     "150",
+     "--intra-period",
+     "300",
+     "--temporal-layers",
+     "1",
+     "--output",
+     "{OUTPUT}",
+     "--qp",
+     "197",
+     "--preset",
+     "veryfast"
+    ],
+    "fps": 30.0,
+    "key": "8037117db0eb5f2c"
+   },
+   "bodycam_bc1": {
+    "qp": 195,
+    "bytes": 376590,
+    "target_bytes": 375375,
+    "argv": [
+     "{BIN}/nanocodec",
+     "encode",
+     "--codec",
+     "av1",
+     "--input",
+     "{INPUT}",
+     "--width",
+     "1280",
+     "--height",
+     "720",
+     "--fps",
+     "29970/1000",
+     "--frames",
+     "150",
+     "--intra-period",
+     "300",
+     "--temporal-layers",
+     "1",
+     "--output",
+     "{OUTPUT}",
+     "--qp",
+     "195",
+     "--preset",
+     "veryfast"
+    ],
+    "fps": 29.97,
+    "key": "42c239d2c0ddbf8b"
+   }
   }
  },
  "anchor": "x264-medium",
@@ -4497,7 +4598,7 @@
   "nanocodec-vvc@fast": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
   "nanocodec-h264@fast": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
   "nanocodec-h264@faster": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
-  "nanocodec-av1@faster": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
+  "nanocodec-av1@faster": "6081ea9d947218cae29e6ba0a220e4a2744e32d5a83123091b569b2bcb5f6d65",
   "nanocodec-hevc@faster": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
   "nanocodec-h264@veryfast": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
   "nanocodec-vp9@faster": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
@@ -4507,6 +4608,7 @@
   "nanocodec-vvc@slow": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
   "nanocodec-av2@slow": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
   "nanocodec-h264@slow": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
-  "nanocodec-vp9@slow": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c"
+  "nanocodec-vp9@slow": "c5be83491fd7697c3a1abf0b8c1c238b7e8474abfe64fd6b832600dd5b9f491c",
+  "nanocodec-av1@veryfast": "6081ea9d947218cae29e6ba0a220e4a2744e32d5a83123091b569b2bcb5f6d65"
  }
 }

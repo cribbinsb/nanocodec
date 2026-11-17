@@ -61,7 +61,8 @@
 <line x1="435.6" x2="435.6" y1="681.1" y2="604.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="530.5" x2="530.5" y1="676.9" y2="598.8" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="618.9" x2="618.9" y1="655.0" y2="576.8" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="671.5" x2="671.5" y1="633.6" y2="537.6" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="657.2" x2="657.2" y1="645.3" y2="552.8" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="719.6" x2="719.6" y1="622.5" y2="503.5" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="491.0" x2="491.0" y1="669.6" y2="587.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="529.6" x2="529.6" y1="668.5" y2="585.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="596.5" x2="596.5" y1="627.9" y2="546.7" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
@@ -113,14 +114,14 @@
 <line x1="449.5" y1="647.6" x2="449.5" y2="705.6" stroke="#52514e" stroke-width="0.75"/>
 <text x="449.5" y="717.6" text-anchor="middle" fill="#0b0b0b" font-weight="600">HEVC Slow</text>
 <g><title>HEVC: BD-J -46.1%, BD-PSNR -47.5%, BD-VMAF v1 -50.1%, 46.6 fps, 1.75× x264 medium</title><circle cx="561.1" cy="630.2" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="561.1" y1="638.2" x2="593.1" y2="678.2" stroke="#52514e" stroke-width="0.75"/>
-<text x="593.1" y="690.2" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC</text>
+<line x1="561.1" y1="638.2" x2="577.1" y2="650.2" stroke="#52514e" stroke-width="0.75"/>
+<text x="577.1" y="662.2" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC</text>
 <g><title>HEVC Fast: BD-J -38.4%, BD-PSNR -39.4%, BD-VMAF v1 -40.0%, 78.0 fps, 2.92× x264 medium</title><circle cx="681.9" cy="588.2" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="681.9" y1="596.2" x2="713.9" y2="636.2" stroke="#52514e" stroke-width="0.75"/>
-<text x="713.9" y="648.2" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC Fast</text>
+<line x1="681.9" y1="596.2" x2="681.9" y2="654.2" stroke="#52514e" stroke-width="0.75"/>
+<text x="681.9" y="666.2" text-anchor="middle" fill="#0b0b0b" font-weight="600">HEVC Fast</text>
 <g><title>HEVC Faster: BD-J -32.5%, BD-PSNR -32.3%, BD-VMAF v1 -34.6%, 98.9 fps, 3.71× x264 medium</title><circle cx="737.6" cy="556.4" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="737.6" y1="564.4" x2="753.6" y2="576.4" stroke="#52514e" stroke-width="0.75"/>
-<text x="753.6" y="588.4" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC Faster</text>
+<line x1="737.6" y1="564.4" x2="769.6" y2="604.4" stroke="#52514e" stroke-width="0.75"/>
+<text x="769.6" y="616.4" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC Faster</text>
 <g><title>AV1 Slow: BD-J -46.6%, BD-PSNR -51.0%, BD-VMAF v1 -48.2%, 27.2 fps, 1.02× x264 medium</title><circle cx="435.6" cy="633.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="435.6" y1="625.0" x2="419.6" y2="612.0" stroke="#52514e" stroke-width="0.75"/>
 <text x="419.6" y="609.0" text-anchor="end" fill="#0b0b0b" font-weight="600">AV1 Slow</text>
@@ -128,11 +129,14 @@
 <line x1="530.5" y1="636.8" x2="530.5" y2="678.8" stroke="#52514e" stroke-width="0.75"/>
 <text x="530.5" y="690.8" text-anchor="middle" fill="#0b0b0b" font-weight="600">AV1</text>
 <g><title>AV1 Fast: BD-J -41.7%, BD-PSNR -45.4%, BD-VMAF v1 -42.4%, 59.6 fps, 2.23× x264 medium</title><circle cx="618.9" cy="606.4" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="618.9" y1="614.4" x2="618.9" y2="656.4" stroke="#52514e" stroke-width="0.75"/>
-<text x="618.9" y="668.4" text-anchor="middle" fill="#0b0b0b" font-weight="600">AV1 Fast</text>
-<g><title>AV1 Faster: BD-J -36.0%, BD-PSNR -36.6%, BD-VMAF v1 -39.0%, 74.6 fps, 2.80× x264 medium</title><circle cx="671.5" cy="575.4" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="671.5" y1="583.4" x2="671.5" y2="641.4" stroke="#52514e" stroke-width="0.75"/>
-<text x="671.5" y="653.4" text-anchor="middle" fill="#0b0b0b" font-weight="600">AV1 Faster</text>
+<line x1="618.9" y1="614.4" x2="618.9" y2="672.4" stroke="#52514e" stroke-width="0.75"/>
+<text x="618.9" y="684.4" text-anchor="middle" fill="#0b0b0b" font-weight="600">AV1 Fast</text>
+<g><title>AV1 Faster: BD-J -38.3%, BD-PSNR -40.4%, BD-VMAF v1 -40.7%, 70.2 fps, 2.63× x264 medium</title><circle cx="657.2" cy="587.6" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="657.2" y1="595.6" x2="689.2" y2="635.6" stroke="#52514e" stroke-width="0.75"/>
+<text x="689.2" y="647.6" text-anchor="start" fill="#0b0b0b" font-weight="600">AV1 Faster</text>
+<g><title>AV1 Veryfast: BD-J -32.0%, BD-PSNR -31.4%, BD-VMAF v1 -33.5%, 91.6 fps, 3.43× x264 medium</title><circle cx="719.6" cy="553.6" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="719.6" y1="561.6" x2="743.6" y2="587.6" stroke="#52514e" stroke-width="0.75"/>
+<text x="743.6" y="599.6" text-anchor="start" fill="#0b0b0b" font-weight="600">AV1 Veryfast</text>
 <g><title>VP9 Slow: BD-J -45.4%, BD-PSNR -48.8%, BD-VMAF v1 -47.4%, 34.5 fps, 1.29× x264 medium</title><circle cx="491.0" cy="626.2" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="491.0" y1="618.2" x2="467.0" y2="591.2" stroke="#52514e" stroke-width="0.75"/>
 <text x="467.0" y="588.2" text-anchor="end" fill="#0b0b0b" font-weight="600">VP9 Slow</text>
@@ -143,8 +147,7 @@
 <line x1="596.5" y1="578.8" x2="596.5" y2="519.8" stroke="#52514e" stroke-width="0.75"/>
 <text x="596.5" y="516.8" text-anchor="middle" fill="#0b0b0b" font-weight="600">VP9 Fast</text>
 <g><title>VP9 Faster: BD-J -34.1%, BD-PSNR -33.7%, BD-VMAF v1 -37.7%, 86.5 fps, 3.24× x264 medium</title><circle cx="706.1" cy="565.1" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="706.1" y1="573.1" x2="738.1" y2="613.1" stroke="#52514e" stroke-width="0.75"/>
-<text x="738.1" y="625.1" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Faster</text>
+<text x="716.1" y="569.1" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Faster</text>
 <g><title>VP9 Veryfast: BD-J -26.4%, BD-PSNR -25.4%, BD-VMAF v1 -33.1%, 96.5 fps, 3.62× x264 medium</title><circle cx="731.7" cy="523.3" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="731.7" y1="531.3" x2="755.7" y2="557.3" stroke="#52514e" stroke-width="0.75"/>
 <text x="755.7" y="569.3" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Veryfast</text>
@@ -234,7 +237,7 @@
 <polygon points="76,825 83,812 69,812" fill="#f7c4a8" stroke="#eb6834" stroke-width="2"/>
 <text x="88" y="822" fill="#0b0b0b">reference at its metric-oriented tuning (dashed: to its default)</text>
 <text x="70" y="844" fill="#52514e">Bars: interquartile range of per-clip BD. Every point is averaged over the same clips (see the table for excluded clips). Hollow: flagged.</text>
-<text x="1120" y="862" font-size="10" text-anchor="end" fill="#52514e">Updated 2026-11-16, build 8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753) (H.264, HEVC Fast, AV1, AV1 Fast, AV1 Faster, AV2, VVC: 4a5b8dd1; H.264 Veryfast, HEVC, VP9, H.264 Slow, HEVC Slow,</text>
-<text x="1120" y="874" font-size="10" text-anchor="end" fill="#52514e">AV1 Slow, VP9 Slow, AV2 Slow, VVC Slow: bad14976); AV2 Fast, H.264 Fast, H.264 Faster, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast, AV1 Slow, AV2 Slow, H.264 Slow, H.264 Veryfast, HEVC, HEVC Slow,</text>
-<text x="1120" y="886" font-size="10" text-anchor="end" fill="#52514e">VP9, VP9 Slow, VVC Slow timed on 1139f610 (same streams)</text>
+<text x="1120" y="862" font-size="10" text-anchor="end" fill="#52514e">Updated 2026-11-17, build 8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753) (AV1 Faster, AV1 Veryfast: 2860f897; H.264, HEVC Fast, AV1, AV1 Fast, AV2, VVC: 4a5b8dd1; H.264 Veryfast, HEVC,</text>
+<text x="1120" y="874" font-size="10" text-anchor="end" fill="#52514e">VP9, H.264 Slow, HEVC Slow, AV1 Slow, VP9 Slow, AV2 Slow, VVC Slow: bad14976); AV2 Fast, H.264 Fast, H.264 Faster, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast, AV1 Slow, AV2 Slow, H.264 Slow,</text>
+<text x="1120" y="886" font-size="10" text-anchor="end" fill="#52514e">H.264 Veryfast, HEVC, HEVC Slow, VP9, VP9 Slow, VVC Slow timed on 1139f610 (same streams)</text>
 </svg>

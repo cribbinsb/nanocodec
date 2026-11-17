@@ -11,6 +11,7 @@
     python3 tools/dev/fixedqp_timing.py run-jetson --plan PLAN.json --out DIR
     python3 tools/dev/fixedqp_timing.py record --plan PLAN.json --out DIR [--plan --out ...]
         --build COMMIT --record JSON
+    python3 tools/dev/fixedqp_timing.py merge --record SITE.json --from NEW.json --encoders a,b
 
 The site has two Fixed QP charts. Their quality comes from the fixed-QP lens
 (AOM CTC v8 low delay, 12 public sequences, 130 frames, six quantizers per
@@ -40,6 +41,8 @@ c8a.large: Zen 5, no SMT, its second core) or on the Jetson's timing core
   encode time, over their frames); the chart's fps is 1000 over their
   geometric mean across sequences, each sequence weighted equally as in the
   quality means.
+- `merge` puts the points of encoders re-timed later (a `record` of their own
+  plan, same machine and content) into the site's record, each with its build.
 
 Sources: lens sequences as raw I420 `<sequence>.yuv` files (--source-dir, as
 `nceval.ctc local`); held-out clips decoded by the harness's own command
@@ -569,6 +572,30 @@ def record(args: argparse.Namespace) -> None:
         print(f"{encoder:28s} {entry['fps']:8.1f} fps")
 
 
+def merge(args: argparse.Namespace) -> None:
+    """Some encoders' points of a newer timing record (`record` of a re-timed subset, same
+    machine and content) into the site's record; each merged point names its build, so
+    the record keeps one footing per encoder and says which build each was timed on."""
+    site_record = json.loads(Path(args.record).read_text())
+    newer = json.loads(Path(args.source).read_text())
+    for key in ("condition", "frames", "sequences"):
+        if newer[key] != site_record[key]:
+            raise SystemExit(f"the records differ in {key}")
+    if newer["platform"].split(",")[0] != site_record["platform"].split(",")[0]:
+        raise SystemExit("the records differ in machine")
+    encoders = args.encoders.split(",")
+    missing = [e for e in encoders if e not in newer["points"]]
+    if missing:
+        raise SystemExit(f"not in {args.source}: {', '.join(missing)}")
+    for encoder in encoders:
+        site_record["points"][encoder] = {**newer["points"][encoder], "build": newer["build"]}
+        site_record["quantizers_timed"][encoder] = newer["quantizers_timed"][encoder]
+    Path(args.record).write_text(json.dumps(site_record, indent=1) + "\n")
+    for encoder in encoders:
+        print(f"{encoder:28s} {site_record['points'][encoder]['fps']:8.1f} fps "
+              f"(build {newer['build']})")
+
+
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -620,6 +647,11 @@ def main(argv: list[str]) -> None:
     c.add_argument("--build", required=True,
                    help="the variance-integration commit our binary's code is (8 characters)")
     c.set_defaults(handler=record)
+    m = sub.add_parser("merge", help="re-timed encoders of a newer record into the site's")
+    m.add_argument("--record", required=True, help="the site's record, updated in place")
+    m.add_argument("--from", dest="source", required=True, help="the newer record (`record`)")
+    m.add_argument("--encoders", required=True, help="the encoders to take from it, a,b")
+    m.set_defaults(handler=merge)
     args = parser.parse_args(argv)
     args.handler(args)
 

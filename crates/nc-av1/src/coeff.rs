@@ -267,6 +267,7 @@ impl Magnitudes<'_> {
         map.code_level(
             w,
             range_cdfs,
+            self.levels,
             pos,
             LevelMap::<STRIDE, SIZE>::index(pos, log2),
             level,
@@ -277,7 +278,54 @@ impl Magnitudes<'_> {
             let level = i32::from(self.levels[pos]).abs();
             let ctx = base_context(pos, map.base_sum(at), self.nz_offsets[pos]);
             w.write_symbol(level.min(3) as usize, &mut base_cdfs[ctx], BASE_SYMBOLS);
-            map.code_level(w, range_cdfs, pos, at, level);
+            map.code_level(w, range_cdfs, self.levels, pos, at, level);
+        }
+    }
+
+    /// The bits [`Self::write`] and the sign pass spend on these
+    /// magnitudes, priced in one reverse pass: each nonzero level's sign
+    /// (`dc_sign` for the DC) and Exp-Golomb remainder are counted where its
+    /// magnitude is.
+    fn cost<const STRIDE: usize, const SIZE: usize>(
+        &self,
+        counter: &mut BitCounter,
+        (base_eob_cdfs, base_cdfs, range_cdfs): MagnitudeCdfs<'_>,
+        dc_sign: &mut Cdf<2>,
+        map: &mut LevelMap<STRIDE, SIZE>,
+    ) {
+        let n = STRIDE - CONTEXT_REACH;
+        let log2 = n.ilog2();
+        let mut sign_and_remainder = |counter: &mut BitCounter, c: usize, v: i32| {
+            if c == 0 {
+                counter.add_q9(dc_sign.cost_q9(usize::from(v < 0)));
+            } else {
+                counter.add_bypass(1);
+            }
+            if v.abs() > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
+                counter.add_bypass(golomb_bits((v.abs() - MAX_BASE_BR_RANGE) as u32));
+            }
+        };
+        let last = self.scan.len() - 1;
+        let pos = usize::from(self.scan[last]);
+        let v = i32::from(self.levels[pos]);
+        let level = v.abs();
+        counter
+            .add_q9(base_eob_cdfs[base_eob_context(last, n)].cost_q9((level.min(3) - 1) as usize));
+        let at = LevelMap::<STRIDE, SIZE>::index(pos, log2);
+        map.code_level(counter, range_cdfs, self.levels, pos, at, level);
+        sign_and_remainder(counter, last, v);
+        for c in (0..last).rev() {
+            let pos = usize::from(self.scan[c]);
+            let at = LevelMap::<STRIDE, SIZE>::index(pos, log2);
+            let v = i32::from(self.levels[pos]);
+            let level = v.abs();
+            let ctx = base_context(pos, map.base_sum(at), self.nz_offsets[pos]);
+            counter.add_q9(base_cdfs[ctx].cost_q9(level.min(3) as usize));
+            // A zero level leaves the map as it was (zero).
+            if level != 0 {
+                map.code_level(counter, range_cdfs, self.levels, pos, at, level);
+                sign_and_remainder(counter, c, v);
+            }
         }
     }
 }
@@ -471,51 +519,25 @@ impl CoeffCdfs {
         }
         self.write_eob(&mut counter, tx, pt, eob);
 
-        let scan = scan(tx);
-        let n = tx.coded_size();
-        let bhl = u32::from(tx.coded_log2());
-        let nz_offsets = nz_map_ctx_offset(tx);
-        let base_cdfs = &mut self.base[txs][pt];
-        let range_cdfs = &mut self.br[txs.min(3)][pt];
-        let mut map = FullLevelMap::new();
-        // A nonzero level's sign: `dc_sign` for the DC, else one bypass bit;
-        // its remainder past the coded range in bypass bits (`write_golomb`).
-        let mut sign_and_remainder = |counter: &mut BitCounter, c: usize, v: i32| {
-            if c == 0 {
-                counter.add_q9(self.dc_sign[pt][ctx.dc_sign].cost_q9(usize::from(v < 0)));
-            } else {
-                counter.add_bypass(1);
-            }
-            if v.abs() > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
-                counter.add_bypass(golomb_bits((v.abs() - MAX_BASE_BR_RANGE) as u32));
-            }
+        let magnitudes = Magnitudes {
+            scan: &scan(tx)[..eob],
+            levels,
+            nz_offsets: nz_map_ctx_offset(tx),
         };
-        let last = eob - 1;
-        let pos = usize::from(scan[last]);
-        let v = i32::from(levels[pos]);
-        let level = v.abs();
-        counter.add_q9(
-            self.base_eob[txs][pt][base_eob_context(last, n)].cost_q9((level.min(3) - 1) as usize),
+        let cdfs = (
+            &mut self.base_eob[txs][pt],
+            &mut self.base[txs][pt],
+            &mut self.br[txs.min(3)][pt],
         );
-        map.code_level(
-            &mut counter,
-            range_cdfs,
-            pos,
-            FullLevelMap::index(pos, bhl),
-            level,
-        );
-        sign_and_remainder(&mut counter, last, v);
-        for c in (0..last).rev() {
-            let pos = usize::from(scan[c]);
-            let at = FullLevelMap::index(pos, bhl);
-            let v = i32::from(levels[pos]);
-            let level = v.abs();
-            let ctx = base_context(pos, map.base_sum(at), nz_offsets[pos]);
-            counter.add_q9(base_cdfs[ctx].cost_q9(level.min(3) as usize));
-            // A zero level leaves the map as it was (zero).
-            if level != 0 {
-                map.code_level(&mut counter, range_cdfs, pos, at, level);
-                sign_and_remainder(&mut counter, c, v);
+        let dc_sign = &mut self.dc_sign[pt][ctx.dc_sign];
+        match tx {
+            TxSize::Tx4x4 => magnitudes.cost(&mut counter, cdfs, dc_sign, &mut LevelMap4::new()),
+            TxSize::Tx8x8 => magnitudes.cost(&mut counter, cdfs, dc_sign, &mut LevelMap8::new()),
+            TxSize::Tx16x16 => {
+                magnitudes.cost(&mut counter, cdfs, dc_sign, &mut LevelMap16::new());
+            }
+            TxSize::Tx32x32 | TxSize::Tx64x64 => {
+                magnitudes.cost(&mut counter, cdfs, dc_sign, &mut FullLevelMap::new());
             }
         }
         counter.bits()
@@ -667,12 +689,20 @@ type LevelMap4 = LevelMap<{ map_stride(4) }, { map_stride(4) * map_stride(4) }>;
 type LevelMap8 = LevelMap<{ map_stride(8) }, { map_stride(8) * map_stride(8) }>;
 type LevelMap16 = LevelMap<{ map_stride(16) }, { map_stride(16) * map_stride(16) }>;
 
-/// Coefficient magnitudes, saturated at `MAX_BASE_BR_RANGE`, in a layout
-/// padded with at least `CONTEXT_REACH` zero rows and columns so that context
-/// neighbours past the block edge need no bounds tests (libaom's padded
-/// `levels` buffer, `TX_PAD_HOR`). It is filled in reverse scan order as
-/// coefficients are coded: every context neighbour comes later in scan order,
-/// so it is already set, and coefficients from the EOB on stay zero.
+/// Coefficient magnitudes saturated at `BASE_CONTEXT_LEVEL_MAX` (what the
+/// `coeff_base` context sums), in a layout padded with at least
+/// `CONTEXT_REACH` zero rows and columns so that context neighbours past the
+/// block edge need no bounds tests (libaom's padded `levels` buffer,
+/// `TX_PAD_HOR`). It is filled in reverse scan order as coefficients are
+/// coded: every context neighbour comes later in scan order, so it is
+/// already set, and coefficients from the EOB on stay zero.
+///
+/// The `coeff_br` context sums magnitudes up to `MAX_BASE_BR_RANGE`; a
+/// neighbour whose saturated entry is below the cap is that magnitude, and
+/// one at the cap is a coded coefficient of the block, read back from the
+/// levels. So the base sum takes five plain bytes (no per-neighbour
+/// saturation, which libaom's `get_nz_mag` does with `clip_max3`), and only
+/// the rare coefficients above the base levels look further.
 ///
 /// `STRIDE` is the coded side of the blocks it serves plus the reach, and
 /// `SIZE` its square, so that neighbour offsets are constants.
@@ -706,7 +736,8 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
 
     /// Code the `coeff_br` symbols of coefficient `pos` (map index `at`)
     /// when its magnitude `level` exceeds the base levels (only those read
-    /// the range sum), then record the magnitude.
+    /// the range sum), then record the magnitude. `levels` are the block's
+    /// signed levels, in libaom layout.
     #[allow(
         clippy::inline_always,
         reason = "called per coefficient from two sites; as a call it cost +0.8..+1.0 % AV1 Faster instructions"
@@ -716,16 +747,17 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
         &mut self,
         w: &mut W,
         range_cdfs: &mut [Cdf<{ BR_CDF_SIZE as usize }>; LEVEL_CONTEXTS],
+        levels: &[i16],
         pos: usize,
         at: usize,
         level: i32,
     ) {
         if level > NUM_BASE_LEVELS {
             let (row, col) = (at % STRIDE, at / STRIDE);
-            let ctx = br_context(pos, row, col, self.range_sum(at));
+            let ctx = br_context(pos, row, col, self.range_sum(at, levels, pos));
             write_range(w, &mut range_cdfs[ctx], level);
         }
-        self.magnitudes[at] = level.unsigned_abs().min(MAX_BASE_BR_RANGE as u32) as u8;
+        self.magnitudes[at] = level.min(i32::from(BASE_CONTEXT_LEVEL_MAX)) as u8;
     }
 
     /// The context neighbourhood of the coefficient at map index `at`.
@@ -742,18 +774,30 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
         Self::SHARED_NEIGHBOURS
             .iter()
             .chain(&Self::FAR_BASE_NEIGHBOURS)
-            .map(|&i| u32::from(near[i].min(BASE_CONTEXT_LEVEL_MAX)))
+            .map(|&i| u32::from(near[i]))
             .sum()
     }
 
-    /// `coeff_br` magnitude sum of the context neighbours of the coefficient
-    /// at map index `at`.
-    #[inline]
-    fn range_sum(&self, at: usize) -> u32 {
+    /// `coeff_br` magnitude sum (each saturated at `MAX_BASE_BR_RANGE`) of
+    /// the context neighbours of coefficient `pos` at map index `at`. The
+    /// map's neighbour offsets are the same steps in libaom layout: one
+    /// row (+1) and one column (+`STRIDE` in the map, + the coded side in
+    /// `levels`).
+    fn range_sum(&self, at: usize, levels: &[i16], pos: usize) -> u32 {
         let near = self.near(at);
+        let side = STRIDE - CONTEXT_REACH;
+        let in_levels = [side, 1, side + 1];
         Self::SHARED_NEIGHBOURS
             .iter()
-            .map(|&i| u32::from(near[i]))
+            .zip(in_levels)
+            .map(|(&i, step)| {
+                let saturated = near[i];
+                if saturated < BASE_CONTEXT_LEVEL_MAX {
+                    u32::from(saturated)
+                } else {
+                    u32::from(levels[pos + step].unsigned_abs()).min(MAX_BASE_BR_RANGE as u32)
+                }
+            })
             .sum()
     }
 }

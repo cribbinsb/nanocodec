@@ -141,3 +141,52 @@ BD-rates are % against x264 medium at fixed QP; fps as above. "Ahead of" means f
   M12 899.0; AV1 303.7 against M10 518.9.
 - **What differs.** The two axes differ in content (sequences, resolutions and quantizers), not only in machine
   time. This run does not say which of those causes the difference.
+
+## Update 2026-11-17: AV1 Veryfast, AV1 Faster and the re-timed Defaults (build 2860f897)
+
+Since b11b2f83: AV1 Veryfast is new on the lens, AV1 Faster codes keys and base frames with Fast's tools (e097d830b),
+and exact AVX-512 forward transforms and VVC ALF kernels landed. The re-measured points are AV1 Veryfast, Faster,
+Fast and Default, and VP9, VVC and HEVC Default, at 2860f897 (the verified head).
+
+- **Identity.** The lens run at 2860f897 (`nceval.ctc local` on the build box, the same command as before) gives
+  per-frame hashes and byte counts equal to b11b2f83's on all 72 encodes of AV1 Fast, AV1 Default, VP9, VVC and HEVC.
+  They keep their BD-rates and are only re-timed. AV1 Faster's 72 encodes all differ; AV1 Veryfast is new.
+- **Quality.** The lens rows of AV1 Faster and Veryfast come from that run
+  ([fixed-qp-lens-2026-11-17.csv](fixed-qp-lens-2026-11-17.csv)); every other row is the 2026-11-16 lens.
+- **Speed.** The same tool and settings as above (`fixedqp_timing.py plan`, `run`, `run-jetson`, `record`) for the
+  seven points plus SVT-AV1 M10, M12 and M13 as a same-session check. `fixedqp_timing.py merge` puts only the seven
+  into the site's records, each point with its build; the references keep the 2026-11-16 times.
+  - x86: 720 encodes on 3 c8a.large instances. Round-to-round spread over encodes of 0.2 s or more: median 0.72 %,
+    90th percentile 2.1 % (386 encodes).
+  - Jetson: the 2nd and 5th quantizers, one round, as before (6.7 min under the lock).
+  - Same-session check against the stored references: x86 M13 988.4 (stored 984.1), M12 905.9 (899.0), M10 524.0
+    (518.9), so this session reads 0.4-1.0 % faster than the stored one; Jetson M13 196.7 (196.1), M12 178.6 (178.1),
+    M10 99.2 (99.0).
+
+| Point | Weighted | J | x86 fps | Jetson fps |
+|---|---:|---:|---:|---:|
+| AV1 Veryfast (new) | +7.8 | -6.2 | 1078.3 | 255.7 |
+| AV1 Faster | +2.1 → -5.7 | -13.5 → -18.3 | 900.8 → 786.4 | 222.0 → 203.4 |
+| AV1 Fast (same streams) | -11.0 | -19.6 | 523.6 → 526.5 | 142.8 → 143.7 |
+| AV1 (same streams) | -18.9 | -26.7 | 303.7 → 304.9 | 90.3 → 90.7 |
+| VP9 (same streams) | -18.3 | -27.1 | 281.2 → 284.1 | 83.7 → 83.5 |
+| HEVC (same streams) | -14.9 | -27.1 | 232.0 → 232.0 | 78.2 → 78.2 |
+| VVC (same streams) | -24.5 | -32.7 | 155.8 → 158.4 | 47.5 → 47.5 |
+| SVT-AV1 M13 (stored) | +4.1 | -4.8 | 984.1 | 196.1 |
+| SVT-AV1 M12 (stored) | -1.5 | -10.4 | 899.0 | 178.1 |
+| SVT-AV1 M10 (stored) | -14.2 | -19.5 | 518.9 | 99.0 |
+
+"Ahead of" means faster and fewer bits, both at once.
+
+- **x86, Weighted.** No point of ours is ahead of an SVT point. AV1 Veryfast is faster than M13 but 3.7 points
+  behind it; AV1 Faster is 4.2 points ahead of M12 but 12.5 % slower than it.
+- **x86, J.** AV1 Veryfast is ahead of M13: -6.2 at 1078.3 fps against -4.8 at 984.1 (988.4 in the same session).
+  AV1 Faster is 7.9 J points ahead of M12 at 786.4 against 899.0 fps, so it is no longer level with M12 on speed.
+  AV1 Fast stays level with M10 (526.5 against 518.9 fps, 524.0 same session; -19.6 against -19.5).
+- **Jetson.** AV1 Faster is ahead of M12 and M13 in both Weighted and J (-5.7 / -18.3 at 203.4 fps, against
+  -1.5 / -10.4 at 178.1 and +4.1 / -4.8 at 196.1). AV1 Veryfast is ahead of M13 in J only. AV1 Fast stays ahead of
+  M10 in J (-19.6 at 143.7 against -19.5 at 99.0).
+- **The transforms.** The exactly re-timed Defaults moved +0.4 % (AV1), +1.0 % (VP9), 0.0 % (HEVC) and +1.7 % (VVC)
+  on x86, against a 0.4-1.0 % faster session for the references; this run does not separate the kernels' effect from
+  the session's.
+- **Cost.** c8a timing $0.06 (3 on-demand sessions, all terminated, in the ledger); lens: 7 runs on the shared build box, 13 min.

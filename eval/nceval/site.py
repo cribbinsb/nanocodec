@@ -301,8 +301,20 @@ def speed_notes(timing: dict[str, dict]) -> dict[str, dict]:
     return {platform: {"platform": record["platform"], "sequences": len(record["sequences"]),
                        "frames": record["frames"],
                        "quantizers": max(record["quantizers_timed"].values()),
-                       "build": record["build"]}
+                       "build": timed_builds(record)}
             for platform, record in timing.items()}
+
+
+def timed_builds(record: dict) -> str:
+    """The build a timing record's encoders ran on: its own, and any later build some
+    re-timed encoders carry (fixedqp_timing.py merge), e.g. 'b11b2f83 (2860f897 for 7)'."""
+    later: dict[str, int] = {}
+    for point in record["points"].values():
+        if point.get("build", record["build"]) != record["build"]:
+            later[point["build"]] = later.get(point["build"], 0) + 1
+    if not later:
+        return record["build"]
+    return f"{record['build']} ({', '.join(f'{b} for {n}' for b, n in sorted(later.items()))})"
 
 
 def size_range(sizes: list[tuple[int, int]]) -> str:
