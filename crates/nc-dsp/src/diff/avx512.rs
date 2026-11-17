@@ -8,8 +8,11 @@
 //! vector was slower than AVX2 on Zen 5 and Sapphire Rapids (0.65–0.84x, docs/handoff/avx512.md). Every
 //! block height is a multiple of four, so packed rows never leave the block.
 //!
-//! Widths 4 and 8 use the shared packed-byte graph in `x86_narrow` (SVT
-//! byte-pair differences and ICL VNNI squares), including four-row tails.
+//! Widths 4 and 8 keep the AVX2 tier's packed-byte rows (`x86_narrow`):
+//! on Zen 5 (c8a, `nc-checkasm --bench`, 2026-11-17) eight rows per 512-bit
+//! step with VNNI squares were 1.2-1.5x slower than them from 4x4 to 8x8
+//! (variance 4x4 3.55 vs 2.66 ns) and no more than 4 % faster at 8x16 and
+//! 8x32.
 //!
 //! Sub-pixel variance at widths 32 and 64 runs the shared bilinear graph
 //! (`generic::sub_pixel_variance`) on 32 word lanes; width 16 packs two rows
@@ -17,7 +20,6 @@
 //! that use it.
 
 use super::generic::{self, covers};
-use super::x86_narrow::{self, IclRows};
 use super::{DiffFns, Variance, VarianceEnergy, bilinear_taps};
 use crate::simd::avx512_i16::I16x32;
 use core::arch::x86_64::{
@@ -31,40 +33,13 @@ use core::arch::x86_64::{
 const LANES: usize = 32;
 
 pub(crate) fn install(table: &mut DiffFns) {
-    table.variance[..2].copy_from_slice(&[narrow_variance::<4>, narrow_variance::<8>]);
     table.variance[2..].copy_from_slice(&[variance::<16>, variance::<32>, variance::<64>]);
-    table.variance_energy[..2].copy_from_slice(&[narrow_energy::<4>, narrow_energy::<8>]);
     table.variance_energy[2..].copy_from_slice(&[energy::<16>, energy::<32>, energy::<64>]);
-    table.block_sums[..2].copy_from_slice(&[block_sums::<4>, block_sums::<8>]);
     table.sub_pixel_variance[2..].copy_from_slice(&[
         sub_pixel_variance_w16,
         sub_pixel_variance_wide::<32>,
         sub_pixel_variance_wide::<64>,
     ]);
-}
-
-#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vnni,avx2")]
-unsafe fn narrow_variance<const W: usize>(
-    src: &[u8],
-    ss: usize,
-    pred: &[u8],
-    ps: usize,
-    h: usize,
-) -> Variance {
-    // SAFETY: the dispatcher forwards the validated block and ICL contracts.
-    unsafe { x86_narrow::variance::<IclRows, W>(src, ss, pred, ps, h) }
-}
-
-#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vnni,avx2")]
-unsafe fn narrow_energy<const W: usize>(
-    src: &[u8],
-    ss: usize,
-    pred: &[u8],
-    ps: usize,
-    h: usize,
-) -> VarianceEnergy {
-    // SAFETY: the dispatcher forwards the validated block and ICL contracts.
-    unsafe { x86_narrow::variance_energy::<IclRows, W>(src, ss, pred, ps, h) }
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -89,12 +64,6 @@ unsafe fn energy<const W: usize>(
 ) -> VarianceEnergy {
     // SAFETY: the dispatcher's validated block contract is forwarded.
     unsafe { accumulate::<W, true>(src, ss, pred, ps, h) }
-}
-
-#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vnni,avx2")]
-unsafe fn block_sums<const W: usize>(src: &[u8], ss: usize, h: usize) -> Variance {
-    // SAFETY: the dispatcher forwards the validated source and ICL contracts.
-    unsafe { x86_narrow::block_sums::<IclRows, W>(src, ss, h) }
 }
 
 /// Rows of a `W`-wide block packed into one vector (1 from width 32 up).

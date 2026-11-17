@@ -32,7 +32,7 @@ use core::arch::x86_64::{
 
 use super::generic::INVERSE_COS_BIT;
 use super::inverse_lanes::InverseLanes;
-use super::narrow_inverse::{self, GROUP, NarrowCoefficient, NarrowLanes};
+use super::narrow_inverse::{self, GROUP, Inverse, NarrowCoefficient, NarrowLanes};
 use crate::av1_inverse::Kernel1d;
 use crate::simd::avx2::I32x8;
 
@@ -217,6 +217,29 @@ impl NarrowLanes for Narrow {
             let sum = _mm_add_epi16(self.0, prediction);
             _mm_storel_epi64(pixels.as_mut_ptr().cast(), _mm_packus_epi16(sum, sum));
         }
+    }
+
+    #[inline(always)]
+    fn wide_rows<C: NarrowCoefficient, const W: usize, const H: usize>(
+        inverse: Inverse,
+        coeffs: &[C],
+        r0: usize,
+    ) -> [Self; W] {
+        // SAFETY: AVX2 entry points only.
+        unsafe { wide_rows::<Self, C, W, H>(inverse, coeffs, r0) }
+    }
+
+    #[inline(always)]
+    fn wide_columns<const W: usize, const H: usize>(
+        vertical: Kernel1d,
+        rows: &[i16],
+        live_rows: usize,
+        c0: usize,
+        dst: &mut [u8],
+        stride: usize,
+    ) {
+        // SAFETY: AVX2 entry points only.
+        unsafe { wide_columns::<Self, W, H>(vertical, rows, live_rows, c0, dst, stride) }
     }
 }
 
@@ -444,6 +467,29 @@ impl NarrowLanes for Narrow16 {
             _mm_storeu_si128(pixels.as_mut_ptr().cast(), _mm256_castsi256_si128(bytes));
         }
     }
+
+    #[inline(always)]
+    fn wide_rows<C: NarrowCoefficient, const W: usize, const H: usize>(
+        inverse: Inverse,
+        coeffs: &[C],
+        r0: usize,
+    ) -> [Self; W] {
+        // SAFETY: AVX2 entry points only.
+        unsafe { wide_rows::<Self, C, W, H>(inverse, coeffs, r0) }
+    }
+
+    #[inline(always)]
+    fn wide_columns<const W: usize, const H: usize>(
+        vertical: Kernel1d,
+        rows: &[i16],
+        live_rows: usize,
+        c0: usize,
+        dst: &mut [u8],
+        stride: usize,
+    ) {
+        // SAFETY: AVX2 entry points only.
+        unsafe { wide_columns::<Self, W, H>(vertical, rows, live_rows, c0, dst, stride) }
+    }
 }
 
 /// [`transpose8`] in each 128-bit half of eight 256-bit rows.
@@ -477,6 +523,40 @@ fn transpose8x2(rows: [__m256i; GROUP]) -> [__m256i; GROUP] {
             }
         })
     }
+}
+
+/// [`NarrowLanes::wide_rows`] compiled for AVX2, so the wide graph's
+/// intrinsics inline into it.
+///
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+unsafe fn wide_rows<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
+    inverse: Inverse,
+    coeffs: &[C],
+    r0: usize,
+) -> [V; W] {
+    narrow_inverse::wide_row_batch::<V, C, W, H>(inverse, coeffs, r0)
+}
+
+/// [`NarrowLanes::wide_columns`] compiled for AVX2; as [`wide_rows`].
+///
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+unsafe fn wide_columns<V: NarrowLanes, const W: usize, const H: usize>(
+    vertical: Kernel1d,
+    rows: &[i16],
+    live_rows: usize,
+    c0: usize,
+    dst: &mut [u8],
+    stride: usize,
+) {
+    narrow_inverse::wide_column_batch::<V, W, H>(vertical, rows, live_rows, c0, dst, stride);
 }
 
 #[target_feature(enable = "avx2")]

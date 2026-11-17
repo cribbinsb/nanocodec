@@ -1,15 +1,16 @@
-//! Packed-byte 4/8-wide statistics shared by all six codecs. The row layout,
-//! interleaved `pmaddubsw` difference and combined sum/SSE reduction follow
-//! SVT-AV1 v4.3.0 `ASM_AVX2/variance_avx2.c` (`variance8_kernel_avx2`) and
-//! `ASM_AVX512/variance_avx512.c` (`variance_kernel_avx512`), BSD-2-Clause
-//! with AOM patent licence; Copyright 2016 AOM, 2021 Intel. See `THIRD_PARTY.md`.
+//! Packed-byte 4/8-wide statistics shared by all six codecs, for the AVX2
+//! and AVX-512 tiers alike (an eight-row 512-bit form with VNNI squares was
+//! slower on Zen 5; see `diff::avx512`). The row layout, interleaved
+//! `pmaddubsw` difference and combined sum/SSE reduction follow SVT-AV1
+//! v4.3.0 `ASM_AVX2/variance_avx2.c` (`variance8_kernel_avx2`),
+//! BSD-2-Clause with AOM patent licence; Copyright 2016 AOM. See
+//! `THIRD_PARTY.md`.
 //!
-//! The low eight bytes of each 128-bit quarter hold one 8-pixel row or
-//! two 4-pixel rows. Interleaving source/prediction gives unsigned byte
-//! pairs; multiply-add by (1,-1) produces exact signed-word differences.
-//! Thus AVX2 handles two/four rows and ICL four/eight per step. Exact-size
-//! loads preserve the original plane contract; a four-row ICL tail is zero
-//! padded in registers. VNNI fuses the ICL squared-difference accumulation.
+//! The low eight bytes of each 128-bit half hold one 8-pixel row or two
+//! 4-pixel rows. Interleaving source/prediction gives unsigned byte pairs;
+//! multiply-add by (1,-1) produces exact signed-word differences. Thus each
+//! step handles two 8-wide or four 4-wide rows. Exact-size loads preserve
+//! the original plane contract.
 //!
 //! At most 32 rows visit an AVX2 word lane: |sum| <= 32*255 = 8160.
 //! The square sum of an entire 8x64 block is <= 512*255^2 = 33,292,800,
@@ -19,16 +20,12 @@
 use super::generic::covers;
 use super::{Variance, VarianceEnergy};
 use core::arch::x86_64::{
-    __m128i, __m256i, __m512i, _mm_add_epi32, _mm_cvtsi32_si128, _mm_cvtsi128_si32,
-    _mm_extract_epi32, _mm_insert_epi32, _mm_loadl_epi64, _mm_srli_si128, _mm256_add_epi16,
-    _mm256_add_epi32, _mm256_blend_epi32, _mm256_broadcastq_epi64, _mm256_castsi128_si256,
-    _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_inserti128_si256, _mm256_madd_epi16,
-    _mm256_maddubs_epi16, _mm256_set1_epi16, _mm256_setzero_si256, _mm256_unpackhi_epi32,
-    _mm256_unpacklo_epi8, _mm256_unpacklo_epi32, _mm512_add_epi16, _mm512_add_epi32,
-    _mm512_castsi256_si512, _mm512_castsi512_si256, _mm512_dpwssd_epi32, _mm512_extracti64x4_epi64,
-    _mm512_inserti64x4, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_set1_epi16,
-    _mm512_setzero_si512, _mm512_unpackhi_epi32, _mm512_unpacklo_epi8, _mm512_unpacklo_epi32,
-    _mm512_zextsi256_si512,
+    __m128i, __m256i, _mm_add_epi32, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_extract_epi32,
+    _mm_insert_epi32, _mm_loadl_epi64, _mm_srli_si128, _mm256_add_epi16, _mm256_add_epi32,
+    _mm256_blend_epi32, _mm256_broadcastq_epi64, _mm256_castsi128_si256, _mm256_castsi256_si128,
+    _mm256_extracti128_si256, _mm256_inserti128_si256, _mm256_madd_epi16, _mm256_maddubs_epi16,
+    _mm256_set1_epi16, _mm256_setzero_si256, _mm256_unpackhi_epi32, _mm256_unpacklo_epi8,
+    _mm256_unpacklo_epi32,
 };
 
 /// Unsigned source byte times 1, unsigned prediction byte times -1.
@@ -42,8 +39,8 @@ const MAX_HEIGHT: usize = 64;
 pub(super) trait PackedRows: Copy {
     const PIXELS: usize;
     fn zero() -> Self;
-    /// W is 4 or 8; `rows` is a full payload (or one half for an ICL
-    /// tail). Those complete rows of W bytes are readable; the ISA is enabled.
+    /// W is 4 or 8; `rows` is a full payload. Those complete rows of W
+    /// bytes are readable; the ISA is enabled.
     unsafe fn load<const W: usize>(base: *const u8, stride: usize, rows: usize) -> Self;
     fn difference(self, pred: Self) -> Self;
     fn widen(self) -> Self;
@@ -55,9 +52,6 @@ pub(super) trait PackedRows: Copy {
 /// SVT's two-row 8-wide layout; four rows for width four.
 #[derive(Clone, Copy)]
 pub(super) struct Avx2Rows(__m256i);
-/// Four independent 128-bit quarters with the same eight-byte payload.
-#[derive(Clone, Copy)]
-pub(super) struct IclRows(__m512i);
 
 /// The first two four-byte rows in the low eight bytes of an SSE register.
 #[inline(always)]
@@ -140,76 +134,10 @@ impl PackedRows for Avx2Rows {
     }
 }
 
-impl PackedRows for IclRows {
-    const PIXELS: usize = 32;
-    #[inline(always)]
-    fn zero() -> Self {
-        // SAFETY: the ICL statistics wrapper enables AVX512F/BW/DQ/VL/VNNI.
-        unsafe { Self(_mm512_setzero_si512()) }
-    }
-    #[inline(always)]
-    unsafe fn load<const W: usize>(base: *const u8, stride: usize, rows: usize) -> Self {
-        let half_rows = Avx2Rows::PIXELS / W;
-        debug_assert!(rows == half_rows || rows == 2 * half_rows);
-        // SAFETY: each half accesses only its validated rows. The short
-        // four-wide/four-row tail zeros the other two quarters in registers.
-        unsafe {
-            let low = Avx2Rows::load::<W>(base, stride, half_rows).0;
-            Self(if rows == half_rows {
-                _mm512_zextsi256_si512(low)
-            } else {
-                let high = Avx2Rows::load::<W>(base.add(half_rows * stride), stride, half_rows).0;
-                _mm512_inserti64x4::<1>(_mm512_castsi256_si512(low), high)
-            })
-        }
-    }
-    #[inline(always)]
-    fn difference(self, pred: Self) -> Self {
-        // SAFETY: register-only ICL, same bounded byte pair as the AVX2 graph.
-        unsafe {
-            Self(_mm512_maddubs_epi16(
-                _mm512_unpacklo_epi8(self.0, pred.0),
-                _mm512_set1_epi16(DIFFERENCE_WEIGHTS),
-            ))
-        }
-    }
-    #[inline(always)]
-    fn widen(self) -> Self {
-        // SAFETY: register-only ICL, zero-extend each low-eight-byte payload.
-        unsafe { Self(_mm512_unpacklo_epi8(self.0, _mm512_setzero_si512())) }
-    }
-    #[inline(always)]
-    fn add_words(self, other: Self) -> Self {
-        // SAFETY: register-only ICL; the narrow sum bound is smaller than AVX2's.
-        unsafe { Self(_mm512_add_epi16(self.0, other.0)) }
-    }
-    #[inline(always)]
-    fn add_squares(self, words: Self) -> Self {
-        // SAFETY: VNNI is part of the global ICL tier; full totals fit i32.
-        unsafe { Self(_mm512_dpwssd_epi32(self.0, words.0, words.0)) }
-    }
-    #[inline(always)]
-    fn reduce(sum: Self, squared: Self) -> Variance {
-        // SAFETY: register-only ICL. Interleaving lets one reduction sum both
-        // fields; no packed-word cross-field carries or narrow reductions.
-        unsafe {
-            let sum = _mm512_madd_epi16(sum.0, _mm512_set1_epi16(1));
-            let both = _mm512_add_epi32(
-                _mm512_unpacklo_epi32(squared.0, sum),
-                _mm512_unpackhi_epi32(squared.0, sum),
-            );
-            finish(_mm256_add_epi32(
-                _mm512_castsi512_si256(both),
-                _mm512_extracti64x4_epi64::<1>(both),
-            ))
-        }
-    }
-}
-
 /// Alternating squared/signed sums, already paired within each 128-bit lane.
 #[inline(always)]
 unsafe fn finish(both: __m256i) -> Variance {
-    // SAFETY: AVX2 is enabled by both wrappers. All block sums fit i32/u32.
+    // SAFETY: AVX2 is enabled by the wrappers. All block sums fit i32/u32.
     unsafe {
         let folded = _mm_add_epi32(
             _mm256_castsi256_si128(both),

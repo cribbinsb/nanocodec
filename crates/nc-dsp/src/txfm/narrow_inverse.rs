@@ -31,7 +31,8 @@
 //! Kernel contract: see the `txfm` module docs. The drivers have no
 //! `#[target_feature]` of their own: NEON and SIMD128 are on for the whole
 //! build, and the AVX2 entry points enable AVX2, into which the drivers
-//! inline (`inline(always)`; the rare wide fallbacks stay out of line).
+//! inline (`inline(always)`). The rare wide fallbacks stay out of line, in a
+//! function compiled for the lanes' ISA ([`NarrowLanes::outlined`]).
 
 #![allow(clippy::inline_always)]
 
@@ -134,6 +135,53 @@ pub(crate) trait NarrowLanes: InverseLanes {
     /// Add the residual `self` to the first `LANES` pixels with 8-bit
     /// clipping.
     fn add_to_pixels(self, pixels: &mut [u8]);
+    /// [`wide_row_batch`], out of line: the rare wide fallback stays out of
+    /// the hot graph's instruction cache. An ISA enabled only per function
+    /// (AVX2) overrides this with a function compiled for it: without that,
+    /// every intrinsic of the 32-bit graph was an out-of-line call (3,060 in
+    /// one 32x32 row fallback; a dense 32x32 inverse took 29.6 us instead of
+    /// 0.27 us on Zen 5).
+    fn wide_rows<C: NarrowCoefficient, const W: usize, const H: usize>(
+        inverse: Inverse,
+        coeffs: &[C],
+        r0: usize,
+    ) -> [Self; W] {
+        outlined_rows::<Self, C, W, H>(inverse, coeffs, r0)
+    }
+    /// [`wide_column_batch`], out of line; as [`Self::wide_rows`].
+    fn wide_columns<const W: usize, const H: usize>(
+        vertical: Kernel1d,
+        rows: &[i16],
+        live_rows: usize,
+        c0: usize,
+        dst: &mut [u8],
+        stride: usize,
+    ) {
+        outlined_columns::<Self, W, H>(vertical, rows, live_rows, c0, dst, stride);
+    }
+}
+
+/// [`NarrowLanes::wide_rows`] for ISAs enabled for the whole build.
+#[inline(never)]
+fn outlined_rows<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
+    inverse: Inverse,
+    coeffs: &[C],
+    r0: usize,
+) -> [V; W] {
+    wide_row_batch::<V, C, W, H>(inverse, coeffs, r0)
+}
+
+/// [`NarrowLanes::wide_columns`] for ISAs enabled for the whole build.
+#[inline(never)]
+fn outlined_columns<V: NarrowLanes, const W: usize, const H: usize>(
+    vertical: Kernel1d,
+    rows: &[i16],
+    live_rows: usize,
+    c0: usize,
+    dst: &mut [u8],
+    stride: usize,
+) {
+    wide_column_batch::<V, W, H>(vertical, rows, live_rows, c0, dst, stride);
 }
 
 /// The largest input L1 norm for which every node of `kind`'s `n`-point
@@ -243,7 +291,7 @@ fn transform<V: InverseLanes, const N: usize>(
 /// A 2-D inverse: the column (`vertical`) and row (`horizontal`) kernels and
 /// the nonzero extent of the coefficients.
 #[derive(Clone, Copy)]
-pub(super) struct Inverse {
+pub(crate) struct Inverse {
     pub vertical: Kernel1d,
     pub horizontal: Kernel1d,
     /// Coefficient rows from this one on are zero (at most the coded height).
@@ -332,7 +380,7 @@ fn row_batch<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usiz
         };
     }
     if !V::within_limit(norm, l1_limit(inverse.horizontal, W)) {
-        return wide_row_batch::<V, C, W, H>(inverse, coeffs, r0);
+        return V::wide_rows::<C, W, H>(inverse, coeffs, r0);
     }
     let mut y = [V::splat(0); W];
     transform(inverse.horizontal, &x, &mut y, inverse.columns);
@@ -351,8 +399,13 @@ fn row_batch<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usiz
 /// [`row_batch`] above the L1 limit: libaom's clamped 32-bit graph,
 /// `V::Wide::LANES` lanes at a time, then the row shift and libaom's 16-bit
 /// column input clamp, which the saturating narrow applies.
-#[inline(never)]
-fn wide_row_batch<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
+#[inline(always)]
+pub(super) fn wide_row_batch<
+    V: NarrowLanes,
+    C: NarrowCoefficient,
+    const W: usize,
+    const H: usize,
+>(
     inverse: Inverse,
     coeffs: &[C],
     r0: usize,
@@ -405,7 +458,7 @@ fn column_batch<V: NarrowLanes, const W: usize, const H: usize>(
         *lane = v;
     }
     if !V::within_limit(norm, l1_limit(vertical, H)) {
-        wide_column_batch::<V, W, H>(vertical, rows, live_rows, c0, dst, stride);
+        V::wide_columns::<W, H>(vertical, rows, live_rows, c0, dst, stride);
         return;
     }
     let mut y = [V::splat(0); H];
@@ -419,8 +472,8 @@ fn column_batch<V: NarrowLanes, const W: usize, const H: usize>(
 
 /// [`column_batch`] above the L1 limit: libaom's clamped 32-bit graph. The
 /// row outputs are already within 16 bits (libaom's column input clamp).
-#[inline(never)]
-fn wide_column_batch<V: NarrowLanes, const W: usize, const H: usize>(
+#[inline(always)]
+pub(super) fn wide_column_batch<V: NarrowLanes, const W: usize, const H: usize>(
     vertical: Kernel1d,
     rows: &[i16],
     live_rows: usize,

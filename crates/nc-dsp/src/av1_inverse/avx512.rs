@@ -1,31 +1,31 @@
-//! Sixteen-lane AV1 decoder inverses through the shared DCT/ADST/identity
-//! driver. Shapes with a side below 16 keep the inherited AVX2 entry.
+//! The AVX-512 tier's AV1 decoder inverses. Every size keeps the AVX2 tier's
+//! guarded 16-bit graphs (`txfm::avx2_inverse`), except 16x16 transforms
+//! with ADST (or flipped ADST) on both sides, which run the generic driver
+//! on sixteen 32-bit lanes. On Zen 5 (c8a, `nc-checkasm --bench`,
+//! 2026-11-17) the 32-bit lanes ran 16x16 `ADST_ADST` in 82.5 ns against
+//! 95.0 ns, but every DCT and identity shape from 16x16 to 64x64 1.1-1.8x
+//! slower than the 16-bit graphs. Mixed DCT/ADST pairs were not measured
+//! and keep the 16-bit graphs.
 use super::{Av1InverseFns, Kernel1d};
 use crate::simd::avx512::I32x16;
+use crate::txfm::avx2_inverse;
 use crate::txfm::narrow_inverse::NarrowCoefficient;
 
-/// The sixteen-lane entries of one coefficient type's table.
-macro_rules! install_sizes {
-    ($add:expr, $coefficient:ty) => {
-        $add[2] = add::<$coefficient, 16, 16>;
-        $add[3] = add::<$coefficient, 32, 32>;
-        $add[4] = add::<$coefficient, 64, 64>;
-        $add[9] = add::<$coefficient, 16, 32>;
-        $add[10] = add::<$coefficient, 32, 16>;
-        $add[11] = add::<$coefficient, 32, 64>;
-        $add[12] = add::<$coefficient, 64, 32>;
-        $add[17] = add::<$coefficient, 16, 64>;
-        $add[18] = add::<$coefficient, 64, 16>;
-    };
-}
+/// The 16x16 entry of `Av1TxSize::ALL`.
+const TX_16X16: usize = 2;
 
 pub(crate) fn install(table: &mut Av1InverseFns) {
-    install_sizes!(table.add, i32);
-    install_sizes!(table.add_i16, i16);
+    table.add[TX_16X16] = add_16x16::<i32>;
+    table.add_i16[TX_16X16] = add_16x16::<i16>;
+}
+
+/// ADST or flipped ADST: the kernels sixteen 32-bit lanes run faster.
+const fn is_adst(kernel: Kernel1d) -> bool {
+    matches!(kernel, Kernel1d::Adst | Kernel1d::FlipAdst)
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn add<C: NarrowCoefficient, const W: usize, const H: usize>(
+unsafe fn add_16x16<C: NarrowCoefficient>(
     vertical: Kernel1d,
     horizontal: Kernel1d,
     coeffs: &[C],
@@ -33,16 +33,26 @@ unsafe fn add<C: NarrowCoefficient, const W: usize, const H: usize>(
     dst: &mut [u8],
     stride: usize,
 ) {
-    // SAFETY: Dsp validates the buffers and ISA; sixteen lanes divide both
-    // dimensions of every table entry installed above.
+    // SAFETY: Dsp validates the buffers and ISA (which includes AVX2);
+    // sixteen lanes divide both sides.
     unsafe {
-        super::generic::inverse_add::<I32x16, C, W, H>(
-            vertical,
-            horizontal,
-            coeffs,
-            nonzero_rows,
-            dst,
-            stride,
-        );
+        if is_adst(vertical) && is_adst(horizontal) {
+            super::generic::inverse_add::<I32x16, C, 16, 16>(
+                vertical,
+                horizontal,
+                coeffs,
+                nonzero_rows,
+                dst,
+                stride,
+            );
+        } else {
+            avx2_inverse::av1_inverse_add::<C, 16, 16>(
+                (vertical, horizontal),
+                coeffs,
+                nonzero_rows,
+                dst,
+                stride,
+            );
+        }
     }
 }

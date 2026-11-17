@@ -29,6 +29,9 @@ const SIZES: [(usize, usize); 9] = [
     (64, 64),
     (8, 32),
 ];
+/// Narrow blocks outside [`SIZES`] whose variance kernels pick a lane
+/// layout by height (the AVX-512 tier's short/tall split).
+const NARROW_STATISTICS_SIZES: [(usize, usize); 4] = [(4, 8), (4, 16), (8, 4), (8, 16)];
 /// Output size of the downscale benchmark (input is twice this).
 const DOWNSCALE_OUT: usize = 32;
 /// Output block of the deinterleave benchmark: 64 Cb and 64 Cr samples
@@ -259,6 +262,7 @@ fn bench_codec(dsp: &Dsp, isa: Isa, src: &[u8], rf: &[u8], results: &mut Vec<Ben
             time(|| dsp.sub_pixel_variance(size, &window, 3, 5, &s).sse),
         );
     }
+    bench_narrow_statistics(dsp, src, rf, &mut push);
     bench_av1_transforms(dsp, src, &mut push);
     bench_av1_64(dsp, src, &mut push);
     bench_av1_sparse(dsp, src, &mut push);
@@ -816,6 +820,27 @@ fn calibrate(f: &mut impl FnMut() -> u32) -> u64 {
             return ((calls as f64 * scale) as u64).max(1);
         }
         calls *= 4;
+    }
+}
+
+/// Variance, prediction energy and block sums of [`NARROW_STATISTICS_SIZES`].
+fn bench_narrow_statistics(
+    dsp: &Dsp,
+    src: &[u8],
+    rf: &[u8],
+    push: &mut impl FnMut(&'static str, BlockSize, f64),
+) {
+    for (w, h) in NARROW_STATISTICS_SIZES {
+        let size = BlockSize::new(w, h).expect("benchmark sizes are valid");
+        let s = PlaneView::new(src, STRIDE, w, h).expect("plane covers block");
+        let p = PlaneView::new(rf, STRIDE, w, h).expect("plane covers block");
+        push("variance", size, time(|| dsp.variance(size, &s, &p).sse));
+        push("block_sums", size, time(|| dsp.block_sums(size, &s).sse));
+        push(
+            "variance_energy",
+            size,
+            time(|| dsp.variance_energy(size, &s, &p).residual.sse),
+        );
     }
 }
 
