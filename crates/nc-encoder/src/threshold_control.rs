@@ -37,7 +37,9 @@
 //! [`CodecBackend::filter_search_evidence`]: crate::CodecBackend::filter_search_evidence
 
 use crate::frame_role::FrameRole;
-use crate::params::{AdaptParams, DecisionParams};
+use nc_analysis::motion::SearchConfig;
+
+use crate::params::{AdaptParams, DecisionParams, PlannerParams};
 
 /// What one search of a codec's choices changed against the choices the
 /// frame would have reused without it, weighted by what each choice is
@@ -63,10 +65,30 @@ pub(crate) enum Tool {
     Probe,
     /// The interval between CDEF searches on non-base frames.
     Cdef,
+    /// The planner's depth removal (`planner.depth_removal_qp_scale`).
+    Depth,
+    /// The motion search's zero-vector exits (`analysis.static_sad_per_pixel`,
+    /// `one_position_sad_per_pixel`, `skip_hme_sad_per_pixel`, together).
+    Motion,
 }
 
-const TOOL_COUNT: usize = 4;
-const TOOLS: [Tool; TOOL_COUNT] = [Tool::Subpel, Tool::Rank, Tool::Probe, Tool::Cdef];
+const TOOL_COUNT: usize = 6;
+const TOOLS: [Tool; TOOL_COUNT] = [
+    Tool::Subpel,
+    Tool::Rank,
+    Tool::Probe,
+    Tool::Cdef,
+    Tool::Depth,
+    Tool::Motion,
+];
+/// The tools whose evidence the encoder gathers block by block.
+const BAND_TOOLS: [Tool; 5] = [
+    Tool::Subpel,
+    Tool::Rank,
+    Tool::Probe,
+    Tool::Depth,
+    Tool::Motion,
+];
 const ROLE_COUNT: usize = 2;
 
 /// The multiplier at which a tool runs as the preset sets it.
@@ -180,6 +202,8 @@ impl ThresholdControl {
             Tool::Rank => self.params.rank,
             Tool::Probe => self.params.probe,
             Tool::Cdef => self.params.cdef,
+            Tool::Depth => self.params.depth,
+            Tool::Motion => self.params.motion,
         };
         switch >= 0.5
     }
@@ -190,6 +214,8 @@ impl ThresholdControl {
             Tool::Rank => self.params.rank_target,
             Tool::Probe => self.params.probe_target,
             Tool::Cdef => self.params.cdef_target,
+            Tool::Depth => self.params.depth_target,
+            Tool::Motion => self.params.motion_target,
         }
     }
 
@@ -197,9 +223,17 @@ impl ThresholdControl {
         self.scales[role_index(role)][tool as usize]
     }
 
-    /// `decision` with this role's thresholds: each adapted gate moved by
-    /// its multiplier in the direction that skips more above 1.
-    pub fn apply(&self, role: FrameRole, decision: &mut DecisionParams) {
+    /// `decision` and `planner` with this role's thresholds: each adapted
+    /// gate moved by its multiplier in the direction that skips more above 1.
+    pub fn apply(
+        &self,
+        role: FrameRole,
+        decision: &mut DecisionParams,
+        planner: &mut PlannerParams,
+    ) {
+        if self.adapts(Tool::Depth) {
+            planner.depth_removal_qp_scale *= self.scale(role, Tool::Depth);
+        }
         if self.adapts(Tool::Subpel) {
             let scale = self.scale(role, Tool::Subpel);
             decision.codec_subpel_seed_lambdas *= scale;
@@ -214,6 +248,23 @@ impl ThresholdControl {
             let excess = decision.exact_rank_margin - 1.0;
             decision.exact_rank_margin = 1.0 + excess / self.scale(role, Tool::Rank);
         }
+    }
+
+    /// `search` with this role's zero-vector exits, when the controller
+    /// adapts them: all three move together, keeping their order.
+    pub fn apply_search(&self, role: FrameRole, search: &mut SearchConfig) {
+        if self.adapts(Tool::Motion) {
+            let scale = self.scale(role, Tool::Motion);
+            let gates = &mut search.gates;
+            gates.static_per_pixel *= scale;
+            gates.one_position_per_pixel *= scale;
+            gates.skip_hme_per_pixel *= scale;
+        }
+    }
+
+    /// Whether the controller adapts the motion search's exits.
+    pub fn adapts_motion(&self) -> bool {
+        self.adapts(Tool::Motion)
     }
 
     /// How many non-base frames after a CDEF search reuse its choices
@@ -231,7 +282,7 @@ impl ThresholdControl {
     /// share of the choices' value that reusing them would have lost.
     pub fn observe(&mut self, role: FrameRole, band: &BandEvidence, cdef: Option<SearchEvidence>) {
         let evidence = &mut self.evidence[role_index(role)];
-        for tool in [Tool::Subpel, Tool::Rank, Tool::Probe] {
+        for tool in BAND_TOOLS {
             evidence[tool as usize].add(band.tools[tool as usize]);
         }
         if let Some(search) = cdef {
@@ -352,7 +403,11 @@ mod tests {
             codec_subpel_seed_lambdas: 0.1,
             ..DecisionParams::default()
         };
-        control.apply(FrameRole::NonBase, &mut decision);
+        control.apply(
+            FrameRole::NonBase,
+            &mut decision,
+            &mut PlannerParams::default(),
+        );
         assert!((decision.codec_subpel_seed_lambdas - 0.08).abs() < 1e-6);
     }
 
@@ -415,7 +470,11 @@ mod tests {
             exact_rank_margin: 1.1,
             ..DecisionParams::default()
         };
-        control.apply(FrameRole::Base, &mut decision);
+        control.apply(
+            FrameRole::Base,
+            &mut decision,
+            &mut PlannerParams::default(),
+        );
         assert!((decision.exact_rank_margin - 1.05).abs() < 1e-6);
     }
 }

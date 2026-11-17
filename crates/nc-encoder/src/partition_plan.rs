@@ -148,6 +148,22 @@ pub(crate) enum Partition {
     Shaped(PartitionShape, Box<[Option<LeafStats>; MAX_SHAPE_PARTS]>),
 }
 
+impl Partition {
+    /// The log2 of the smallest leaf side of this partition of a node of
+    /// side `1 << log2`.
+    pub fn smallest_side_log2(&self, log2: u8) -> u8 {
+        match self {
+            Partition::Leaf(_) => log2,
+            Partition::Split(children) => children
+                .iter()
+                .map(|child| child.smallest_side_log2(log2 - 1))
+                .min()
+                .unwrap_or(log2),
+            Partition::Shaped(shape, _) => shape.log2_min_side(log2),
+        }
+    }
+}
+
 /// Residual statistics of a planned leaf at its whole-sample search vector
 /// and at the zero vector, reused by mode decision instead of measured
 /// again.
@@ -704,6 +720,32 @@ impl<B: CodecBackend> Planner<'_, B> {
 }
 
 impl<B: CodecBackend> Planner<'_, B> {
+    /// Depth removal's margin for superblock `sb` ([`removal_margin`]),
+    /// where removal was tested and did not fire: `None` elsewhere (removal
+    /// off, below its quantizer, forced by the absolute test, or the frame's
+    /// smallest block already 32x32).
+    pub fn depth_removal_margin(&self, sb: &Block) -> Option<f32> {
+        let coded_q = self.backend.relative_quantizer();
+        let qp = coded_q * SVT_QP_MAX;
+        let headroom = self.lambda_headroom.max(1.0);
+        let q = coded_q + QUANTIZER_PER_STEP_OCTAVE * 0.5 * headroom.log2();
+        let floor = self.params.inter_min_log2.round() as u8;
+        if q < self.params.depth_removal_min_quantizer || floor >= CAPPED_MAX_LOG2 {
+            return None;
+        }
+        let s = sb.size();
+        let stats = self
+            .motion?
+            .sb
+            .try_get((sb.x / s) as isize, (sb.y / s) as isize)
+            .copied()?;
+        if self.predicted_well_at_32(sb, stats.me_dist) {
+            return None;
+        }
+        removal_margin(stats.me_dist, stats.cost_variance_8x8, qp, self.params)
+            .filter(|&margin| margin >= 1.0)
+    }
+
     /// SVT's absolute depth removal (`planner.depth_removal_sad_per_step`):
     /// the motion search already predicts superblock `sb` well at 32x32,
     /// its best 32x32 SAD per visible sample under that many sample steps.
@@ -741,6 +783,39 @@ fn qp_weight(qp: f32) -> f32 {
 /// cost of the superblock by less than the scaled thresholds.
 /// `me_dist` is [8x8, 16x16, 32x32, 64x64].
 fn remove_below_32(me_dist: [u32; 4], spread: f32, qp: f32, params: &PlannerParams) -> bool {
+    removal_terms(me_dist, spread, qp, params).is_some_and(|t| {
+        t.improve_32 < params.depth_removal_th_32_16 * t.scale
+            && t.improve_16 < params.depth_removal_th_16_8 * t.scale
+    })
+}
+
+/// How far a superblock that keeps its small blocks is from removal
+/// (`threshold_control.rs`): the larger of its two improvements over
+/// their scaled thresholds (at least 1 where removal did not fire), `None`
+/// where removal is not tested or a threshold is 0.
+fn removal_margin(me_dist: [u32; 4], spread: f32, qp: f32, params: &PlannerParams) -> Option<f32> {
+    let (th_32, th_16) = (params.depth_removal_th_32_16, params.depth_removal_th_16_8);
+    if th_32 <= 0.0 || th_16 <= 0.0 {
+        return None;
+    }
+    removal_terms(me_dist, spread, qp, params)
+        .map(|t| (t.improve_32 / (th_32 * t.scale)).max(t.improve_16 / (th_16 * t.scale)))
+}
+
+/// The two relative improvements (‰) depth removal compares, and its
+/// threshold scale; `None` where the spread band never removes.
+struct RemovalTerms {
+    improve_32: f32,
+    improve_16: f32,
+    scale: f32,
+}
+
+fn removal_terms(
+    me_dist: [u32; 4],
+    spread: f32,
+    qp: f32,
+    params: &PlannerParams,
+) -> Option<RemovalTerms> {
     let headroom = (SVT_QP_MAX - qp - 10.0).max(1.0);
     let band = spread / headroom;
     let band_factor = if band < 25_000.0 {
@@ -748,7 +823,7 @@ fn remove_below_32(me_dist: [u32; 4], spread: f32, qp: f32, params: &PlannerPara
     } else if band < 50_000.0 {
         2.0
     } else {
-        return false;
+        return None;
     };
     let scale =
         band_factor * ((headroom as u32 >> 4).max(1) as f32) * params.depth_removal_qp_scale;
@@ -760,8 +835,11 @@ fn remove_below_32(me_dist: [u32; 4], spread: f32, qp: f32, params: &PlannerPara
         }
     };
     let [c8, c16, c32, _] = me_dist;
-    improvement(c32, c16) < params.depth_removal_th_32_16 * scale
-        && improvement(c16, c8) < params.depth_removal_th_16_8 * scale
+    Some(RemovalTerms {
+        improve_32: improvement(c32, c16),
+        improve_16: improvement(c16, c8),
+        scale,
+    })
 }
 
 #[cfg(test)]
@@ -928,6 +1006,42 @@ mod tests {
             30.0,
             &PlannerParams::default()
         ));
+    }
+
+    #[test]
+    fn removal_margin_is_at_least_one_exactly_where_removal_keeps_small_blocks() {
+        let fast = PlannerParams {
+            depth_removal_th_32_16: 25.0,
+            depth_removal_th_16_8: 50.0,
+            ..PlannerParams::default()
+        };
+        for me_dist in [
+            [1000, 1002, 1004, 1100],
+            [500, 600, 1500, 2000],
+            [900, 950, 1100, 1200],
+        ] {
+            let margin = removal_margin(me_dist, 100.0, 30.0, &fast).expect("removal is tested");
+            assert_eq!(margin >= 1.0, !remove_below_32(me_dist, 100.0, 30.0, &fast));
+        }
+        assert!(
+            removal_margin(
+                [1000, 1002, 1004, 1100],
+                100.0,
+                30.0,
+                &PlannerParams::default()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn smallest_side_of_a_plan() {
+        let leaf = || Partition::Leaf(None);
+        assert_eq!(leaf().smallest_side_log2(6), 6);
+        let quad = Partition::Split(Box::new([leaf(), leaf(), leaf(), leaf()]));
+        assert_eq!(quad.smallest_side_log2(6), 5);
+        let deeper = Partition::Split(Box::new([quad, leaf(), leaf(), leaf()]));
+        assert_eq!(deeper.smallest_side_log2(6), 4);
     }
 
     #[test]

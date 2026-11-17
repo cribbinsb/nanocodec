@@ -93,7 +93,7 @@ for codec in "${CODECS[@]}"; do
   ((x86)) || break
   for preset in default fast; do
     preset_args=()
-    [[ $preset == fast ]] && preset_args=(--preset "$codec-fast")
+    [[ $preset == fast ]] && preset_args=(--preset fast)
     for side in off on; do
       # shellcheck disable=SC2046
       nice -n 19 valgrind --tool=callgrind --callgrind-out-file="$work/$preset-$side.cg" \

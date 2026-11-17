@@ -10,6 +10,7 @@
 
 use std::cell::OnceCell;
 
+use nc_analysis::motion::{SbSearch, SearchConfig};
 use nc_analysis::preanalysis::PreAnalysis;
 use nc_analysis::still::StillMap;
 use nc_analysis::{Analyzer, FrameAnalysis, MotionAnalysis, NoTimer};
@@ -76,7 +77,7 @@ use crate::startup_lookahead::startup_scene_profile;
 use crate::still_plan::StillPlan;
 use crate::still_skip::StaticSkipTest;
 use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, TemporalStructure};
-use crate::threshold_control::ThresholdControl;
+use crate::threshold_control::{BandEvidence, ThresholdControl, Tool};
 use crate::timeline::{FrameTime, Timeline};
 use nc_analysis::link::{MAX_REFERENCE_SLOTS, SlotMask};
 
@@ -1178,7 +1179,8 @@ impl<B: CodecBackend> Encoder<B> {
     }
 
     /// Before analysing frame `index`, the motion search settings of its
-    /// role, when the effort overlay is on. A scene cut found by this
+    /// role, when the effort overlay or the adaptive exits (`adapt.motion`)
+    /// are on. A scene cut found by this
     /// analysis makes the frame a key frame after its search ran with the
     /// non-base settings; only the cut decision sees that search.
     fn apply_search_role(
@@ -1188,10 +1190,30 @@ impl<B: CodecBackend> Encoder<B> {
         planned: &FrameReferences,
         key: bool,
     ) {
-        if let Some(overlay) = &self.effort_overlay {
-            let role = self.frame_role(index, planned, key);
-            analyzer.set_search_config(overlay.params(role).search);
+        let role = self.frame_role(index, planned, key);
+        if let Some(search) = self.search_config(role) {
+            analyzer.set_search_config(search);
         }
+    }
+
+    /// The motion search settings of frames of `role` when they differ from
+    /// the stream's: the effort overlay's, with the adapted exits on top.
+    fn search_config(&self, role: FrameRole) -> Option<SearchConfig> {
+        let control = self
+            .threshold_control
+            .as_ref()
+            .filter(|control| control.adapts_motion());
+        if self.effort_overlay.is_none() && control.is_none() {
+            return None;
+        }
+        let mut search = match &self.effort_overlay {
+            Some(overlay) => overlay.params(role).search,
+            None => AnalysisParams::from_overrides(&self.config.params).search_config(),
+        };
+        if let Some(control) = control {
+            control.apply_search(role, &mut search);
+        }
+        Some(search)
     }
 
     /// Before coding frame `index`, the backend's settings of its `role`,
@@ -1341,7 +1363,7 @@ impl<B: CodecBackend> Encoder<B> {
         (role, analysis): (FrameRole, Option<&FrameAnalysis>),
     ) -> (DecisionParams, PlannerParams) {
         if let Some(control) = &self.threshold_control {
-            control.apply(role, &mut decision_params);
+            control.apply(role, &mut decision_params, &mut planner_params);
         }
         let noise_sigma = analysis.map(|a| a.noise_sigma);
         // A cadence base frame may get a lower decision/planner λ.
@@ -1773,6 +1795,12 @@ impl<B: CodecBackend> Encoder<B> {
         }
         self.backend.commit_frame();
         self.previous_skip_share = self.backend.coded_skip_share();
+        if frame_type == FrameType::Inter
+            && let (Some(motion), Some(search)) = (motion, self.search_config(role))
+            && self.decision_scratch.evidence.band().is_some()
+        {
+            record_motion_evidence(motion, &search, &mut self.decision_scratch.evidence);
+        }
         if let (Some(control), FrameType::Inter) = (self.threshold_control.as_mut(), frame_type) {
             control.observe(
                 role,
@@ -2025,7 +2053,17 @@ impl<B: CodecBackend> Encoder<B> {
                 let plan = match inter {
                     // Random decisions choose every split themselves.
                     _ if self.random.is_some() => None,
-                    Some(frame) if splittable => Some(planner(frame.motion, frame.pre).plan(sb)),
+                    Some(frame) if splittable => {
+                        let planner = planner(frame.motion, frame.pre);
+                        let partition = planner.plan(sb);
+                        record_depth_evidence(
+                            &planner,
+                            &sb,
+                            &partition,
+                            &mut self.decision_scratch.evidence,
+                        );
+                        Some(partition)
+                    }
                     None if splittable && key_mode != KeyPlanMode::Fixed => Some(
                         KeyPlanner {
                             dsp: &self.dsp,
@@ -3596,6 +3634,63 @@ fn configured_cadence<B: CodecBackend>(config: &EncoderConfig, backend: &B) -> Q
     let params = RateParams::from_overrides(&config.params);
     QpCadence::from_params(&params).scaled(cadence_scale(&params, &backend.rate_model()))
 }
+
+/// The motion search's band evidence (`threshold_control.rs`, `adapt.motion`):
+/// each superblock that searched past the one-position exit `search` set is a
+/// run when its zero-vector SAD per sample was just above that exit, and a win
+/// when its best 64x64 prediction saves at least [`MOTION_WIN_SHARE`] of the
+/// zero vector's SAD, which the exit would have kept.
+fn record_motion_evidence(
+    motion: &MotionAnalysis,
+    search: &SearchConfig,
+    evidence: &mut BandEvidence,
+) {
+    let samples = (nc_analysis::motion::SB * nc_analysis::motion::SB) as f32;
+    let threshold = search.gates.one_position_per_pixel;
+    for stats in motion.sb.cells() {
+        if matches!(stats.search, SbSearch::Static | SbSearch::OnePosition) {
+            continue;
+        }
+        let zero = stats.zz_sad as f32;
+        let best = stats.me_dist[ME_DIST_64X64] as f32;
+        evidence.record_above(
+            Tool::Motion,
+            zero / samples,
+            threshold,
+            best < zero * (1.0 - MOTION_WIN_SHARE),
+        );
+    }
+}
+
+/// Depth removal's band evidence (`threshold_control.rs`, `adapt.depth`):
+/// a superblock just above removal's thresholds is a run, and a win when
+/// `partition` still plans it below 32x32.
+fn record_depth_evidence<B: CodecBackend>(
+    planner: &Planner<'_, B>,
+    sb: &Block,
+    partition: &Partition,
+    evidence: &mut BandEvidence,
+) {
+    if evidence.band().is_none() {
+        return;
+    }
+    if let Some(margin) = planner.depth_removal_margin(sb) {
+        let small = partition.smallest_side_log2(sb.log2_size()) < DEPTH_REMOVAL_LOG2;
+        evidence.record_above(Tool::Depth, margin, DEPTH_MARGIN_THRESHOLD, small);
+    }
+}
+
+/// Depth removal keeps nothing below 32x32 (log2 5).
+const DEPTH_REMOVAL_LOG2: u8 = 5;
+/// Depth removal's margin at its thresholds ([`Planner::depth_removal_margin`]
+/// is the improvements over them: removal fires below 1).
+const DEPTH_MARGIN_THRESHOLD: f32 = 1.0;
+
+/// The share of the zero vector's SAD a searched superblock's best 64x64
+/// prediction must save to count as the search changing its prediction.
+const MOTION_WIN_SHARE: f32 = 0.125;
+/// Index of the 64x64 sum in [`nc_analysis::motion::SbStats::me_dist`].
+const ME_DIST_64X64: usize = 3;
 
 /// The source analyzer for `config`, keeping `slots` reference sources and
 /// detecting repeated inputs if the structure reads them; `None` when the

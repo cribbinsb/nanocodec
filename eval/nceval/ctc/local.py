@@ -163,13 +163,23 @@ def tool_paths() -> dict[str, Path]:
     return tools
 
 
+def xpsnr_tool() -> Path | None:
+    """The VMAFx tool that scores XPSNR, or None (said loudly) where this machine has
+    none, e.g. the build box: Weighted and J do not read XPSNR, so the lens still runs."""
+    try:
+        return vmafx_tool(load_paths())
+    except FileNotFoundError as missing:
+        print(f"lens: XPSNR not scored ({missing})", file=sys.stderr, flush=True)
+        return None
+
+
 def local(args: argparse.Namespace) -> None:
     run_dir = Path(args.run_dir)
     jobs = with_metrics(local_jobs(args, Path(args.source_dir).resolve()), args.metrics)
     tools = tool_paths()
     if not run_dir.exists():
         planner.stage(run_dir, jobs, tools, [WORKER, load_paths().anchors / VMAF_V1_MODEL],
-                      vmafx_tool(load_paths()))
+                      xpsnr_tool())
     print(f"{len(jobs)} jobs in {run_dir}", flush=True)
     subprocess.run([sys.executable, "-I", WORKER.name, "run", "--workers", str(args.workers)],
                    cwd=run_dir, check=True)
