@@ -40,7 +40,7 @@ NUMBER = re.compile(r"(?<![\w.])[−+-]?\d[\d,]*(?:\.\d+)?")
 # Product and format names whose digits are not figures.
 NAMES = re.compile(r"Ryzen 9 5950X|Cortex-A78AE|RTX 5090|H\.26[45]|x26[45]|AV[12]|VP9|"
                    r"4:2:0|\d+-bit|L\dT\d(?:_KEY)?|\d{3,4}p|ffmpeg\.wasm|dav[12]d|M\d+|rt \d+|"
-                   r"p[47]|libvpx v[\d.]+|v\d+\.\d+\.\d+|\b[0-9a-f]{8}\b|SIMD128|NEON|AVX2|"
+                   r"p[47]|libvpx v[\d.]+|v\d+\.\d+\.\d+|\b[0-9a-f]{8}\b|SIMD128|NEON|AVX(?:2|-512)|"
                    r"\d{4}-\d{2}-\d{2}|[\w-]+\.(?:csv|json|py|md)|svc\d?")
 
 

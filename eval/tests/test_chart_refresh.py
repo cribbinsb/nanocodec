@@ -41,9 +41,10 @@ def test_x86_merge_scales_the_per_round_ratio_to_the_stored_anchor(tmp_path, sto
                            {"a": 18.0, "b": 36.0},
                            {"a": {"x264-medium": 0.45, "svtav1-m13": 1.5},
                             "b": {"x264-medium": 0.55, "svtav1-m13": 0.9}})
-    chart_refresh.merge_timing(stored, [record], rescale=True)
+    chart_refresh.merge_timing(stored, [record], rescale=True, build="cccc3333")
     points = json.loads(stored.read_text())["points"]
     entry = points["nanocodec-h264"]
+    assert entry["build"] == "cccc3333"  # the site's caption names it
     assert entry["ms_per_frame"] == pytest.approx({"a": 9.0, "b": 22.0})
     assert entry["anchor_ms_per_frame"] == {"a": 20.0, "b": 40.0}
     assert entry["raw_ms_per_frame"] == {"a": 9.0, "b": 18.0}
@@ -54,7 +55,7 @@ def test_x86_merge_scales_the_per_round_ratio_to_the_stored_anchor(tmp_path, sto
 def test_jetson_merge_keeps_each_points_paired_anchor(tmp_path, stored):
     record = timing_record(tmp_path, "nanocodec-h264", {"a": 9.0, "b": 18.0},
                            {"a": 18.0, "b": 36.0})
-    chart_refresh.merge_timing(stored, [record], rescale=False)
+    chart_refresh.merge_timing(stored, [record], rescale=False, build="cccc3333")
     entry = json.loads(stored.read_text())["points"]["nanocodec-h264"]
     assert entry["ms_per_frame"] == {"a": 9.0, "b": 18.0}
     assert entry["anchor_ms_per_frame"] == {"a": 18.0, "b": 36.0}
