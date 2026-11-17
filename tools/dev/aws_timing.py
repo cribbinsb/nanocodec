@@ -25,8 +25,9 @@ The whole set is timed `--repeats` times in a row (the spread between
 repeats is the session's own noise). Results (the per-point records and a
 summary.json with fps and ratios beside the stored chart's x86 ratios) land
 in --out. Instances, costs and rules: tools/dev/aws_session.py; for Graviton
-(c8g.metal-24xl) pass aarch64 builds with --binary and --tools-dir (e.g. the
-Jetson's chart build and ~/nanocodec-data/anchors/aarch64/bin, copied here).
+(GRAVITON_MACHINE, the site's server Arm series, or c8g.metal-24xl) pass aarch64
+builds with --binary, --tools-dir and --expect-version (the Jetson's chart build
+and AARCH64_TOOLS, copied from the board).
 """
 
 from __future__ import annotations
@@ -65,7 +66,8 @@ INSTANCES = {"c7i.metal-24xl": ("eu-north-1", "amd64"),  # Sapphire Rapids, AVX-
              "c8a.large": ("eu-west-1", "amd64"),  # Zen 5, AVX-512 full width, 2 cores
              "c8a.4xlarge": ("eu-west-1", "amd64"),  # Zen 5, 16 cores: the x86 timing machine
              "c8a.metal-24xl": ("eu-west-1", "amd64"),  # Zen 5, bare metal
-             "c8g.metal-24xl": ("eu-north-1", "arm64")}  # Graviton4, Neoverse V2
+             "c8g.large": ("eu-west-1", "arm64"),  # Graviton4, Neoverse V2, 2 cores (no SMT)
+             "c8g.metal-24xl": ("eu-north-1", "arm64")}  # Graviton4, Neoverse V2, bare metal
 #: The x86 timing machine (2026-11-15 probe, 5 repeats of H.264 against x264 medium: the
 #: time ratio's largest deviation from the median was 0.2% on c8a.large, 0.7% on
 #: c7a.large, 0.9% on c7a.metal-48xl, 0.3% on c7i.metal-24xl): Zen 5, the newest x86
@@ -73,6 +75,13 @@ INSTANCES = {"c7i.metal-24xl": ("eu-north-1", "amd64"),  # Sapphire Rapids, AVX-
 #: Not a bigger VM with pairs side by side: on c8a.4xlarge (14 at once) two repeats of
 #: the chart differed by 1.5% at the median and up to 8.6%.
 TIMING_MACHINE = "c8a.large"
+#: The server Arm timing machine beside it (the site's third speed series, 2026-11-17):
+#: Graviton4 (Neoverse V2), the same 2-core size and method as TIMING_MACHINE.
+GRAVITON_MACHINE = "c8g.large"
+#: Reference encoders for an arm64 instance: the Jetson's own builds
+#: (~/nanocodec-data/anchors/aarch64/bin on the board, copied here), so both Arm
+#: series time the same reference binaries.
+AARCH64_TOOLS = DATA / "anchors/aarch64/bin"
 #: Cores left to the system before the timed ones: two on a big box (time-cloud's
 #: default), one on a 2-core .large (its other core times the pairs one after another).
 #: The first timed core is also the quiet core of the kernel benchmarks and profiles.
@@ -258,16 +267,25 @@ ISA_FLAGS = ("avx2", "avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512if
 OUR_AVX512_FLAGS = ("avx512f", "avx512bw", "avx512vl")
 
 
-def isa_command() -> str:
+#: The SIMD extensions the site records with an Arm timing machine (/proc/cpuinfo
+#: `Features` names); nc-dsp has one aarch64 tier, NEON (nc_dsp::cpu).
+ARM_ISA_FLAGS = ("asimd", "asimddp", "i8mm", "sve", "sve2", "svei8mm", "bf16")
+
+
+def isa_command(arch: str = "amd64") -> str:
     """Remote shell writing the platform note: the CPU model, its SIMD extensions
-    (ISA_FLAGS) and the tier our encoder dispatches to; isa.txt keeps x264's and
-    x265's and SVT-AV1's own capability lines (the references choose for themselves;
-    libaom, libvpx and openh264 print none)."""
-    flags = "|".join(ISA_FLAGS)
-    ours = " && ".join(f"grep -qw {f} out/flags.txt" for f in OUR_AVX512_FLAGS)
-    return ("tr ' ' '\\n' < <(grep -m1 '^flags' /proc/cpuinfo) | "
-            f"grep -xE '{flags}' > out/flags.txt; "
-            f"tier=$({ours} && echo avx512 || echo avx2); "
+    (ISA_FLAGS, ARM_ISA_FLAGS on Arm) and the tier our encoder dispatches to; isa.txt
+    keeps x264's and x265's and SVT-AV1's own capability lines (the references choose
+    for themselves; libaom, libvpx and openh264 print none)."""
+    if arch == "arm64":
+        flags, flag_line, model = "|".join(ARM_ISA_FLAGS), "^Features", "lscpu | grep -m1 'Model name'"
+        tier = "tier=neon; "
+    else:
+        flags, flag_line, model = "|".join(ISA_FLAGS), "^flags", "grep -m1 'model name' /proc/cpuinfo"
+        ours = " && ".join(f"grep -qw {f} out/flags.txt" for f in OUR_AVX512_FLAGS)
+        tier = f"tier=$({ours} && echo avx512 || echo avx2); "
+    return (f"tr ' ' '\\n' < <(grep -m1 '{flag_line}' /proc/cpuinfo) | "
+            f"grep -xE '{flags}' > out/flags.txt; " + tier +
             "head -c 6144 /dev/zero > out/blank.yuv; "  # one 64x64 I420 frame
             "bin/x264 --input-res 64x64 --frames 1 -o /dev/null out/blank.yuv 2>&1 "
             "| grep -i 'cpu capabilities' > out/isa.txt; "
@@ -275,14 +293,27 @@ def isa_command() -> str:
             "--frames 1 -o /dev/null 2>&1 | grep -i 'cpu capabilities' >> out/isa.txt; "
             "timeout 60 bin/SvtAv1EncApp -w 64 -h 64 -n 1 -i out/blank.yuv -b /dev/null 2>&1 "
             "| grep -iE 'asm|cpu' >> out/isa.txt; "
-            "echo \"$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
+            f"echo \"$({model} | cut -d: -f2 | xargs)"
             " (SIMD: $(paste -sd, out/flags.txt | sed 's/,/, /g'); nanocodec dispatches to "
             "its $tier tier)\" | tee out/platform.txt; rm -f out/blank.yuv")
 
 
+#: Shared libraries a reference build needs that a fresh Ubuntu image may lack, by package
+#: (the Jetson's aarch64 x265 links libnuma).
+RUNTIME_PACKAGES = {"libnuma.so.1": "libnuma1"}
+
+
+def runtime_libraries() -> str:
+    """Remote shell installing RUNTIME_PACKAGES whose library the image lacks."""
+    return "".join(f"{{ ldconfig -p | grep -q {lib} || {{ sudo apt-get -qq update && "
+                   f"sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y {package} "
+                   f"> /dev/null; }}; }} && " for lib, package in RUNTIME_PACKAGES.items())
+
+
 def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict[str, str],
                     plan: dict, checkasm: bool, perf_points: list[str],
-                    system_cores: int = DEFAULT_SYSTEM_CORES) -> list[RemoteJob]:
+                    system_cores: int = DEFAULT_SYSTEM_CORES,
+                    arch: str = "amd64") -> list[RemoteJob]:
     """The remote stages, fail-fast first: readiness checks (minutes), a pipe-cleaner
     (one of our points, its AVX2-tier variant and the AVX2 M13, one round), the kernel
     benchmarks when asked for (before the timing, on a quiet machine), one job per
@@ -290,11 +321,11 @@ def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict
     cd = f"cd ~/{REMOTE_DIR} && "
     prepare = (cd + "command -v zstd >/dev/null && "
                "for c in clips/*.zst; do zstd -d -q --rm \"$c\"; done && "
-               "ls -l clips && ! ldd bin/* | grep 'not found' && "
+               "ls -l clips && " + runtime_libraries() + "! ldd bin/* | grep 'not found' && "
                + "".join(f"test \"$(bin/{name} --version)\" = {shlex.quote(version)} && "
                          for name, version in versions.items()) +
                "bin/x264 --version | head -1 && bin/SvtAv1EncApp --version | head -1 && "
-               "lscpu > out/lscpu.txt && " + isa_command())
+               "lscpu > out/lscpu.txt && " + isa_command(arch))
     platform = '"$(cat out/platform.txt), one thread pinned to one physical core"'
 
     def timing(label: str, names: list[str], timed_rounds: int) -> str:
@@ -308,6 +339,7 @@ def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict
             not p.endswith(ISA_VARIANT_SUFFIX)][:1]
     cleaner = base + [p for p in points if p == AVX2_VARIANT or
                       (base and p == f"{base[0]}{ISA_VARIANT_SUFFIX}")]
+    cleaner = cleaner or points[:1]  # a session of references only
     jobs = [RemoteJob("prepare", prepare, PREPARE_MINUTES),
             RemoteJob("pipe-cleaner", timing("pipe-cleaner", cleaner, 1), PREPARE_MINUTES)]
     if checkasm:
@@ -487,7 +519,7 @@ def main(argv: list[str]) -> None:
                                bool(args.checkasm),
                                args.perf.split(",") if args.perf else [],
                                SYSTEM_CORES.get(args.instance_type.split(".")[1],
-                                                DEFAULT_SYSTEM_CORES))
+                                                DEFAULT_SYSTEM_CORES), arch)
         if args.dry_run:
             subprocess.run(["du", "-shL", str(stage_dir)], check=True)
             for job in jobs:

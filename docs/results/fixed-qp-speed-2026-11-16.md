@@ -222,3 +222,8 @@ against x264 medium / against x264 medium --tune psnr):
 - Against M12 (fresh -29.5 / -20.4, 408.7 c8a, 70.9 Jetson): ahead on both machines.
 
 AWS for this update: $2.05 in 8 sessions, all terminated, in the ledger.
+
+## Update 2026-11-17: a server Arm (Graviton4) series
+
+The lens is also timed on AWS c8g.large (Graviton4, Neoverse V2) at 2caf7d21, the site's third speed machine:
+[graviton-speed-2026-11-17.md](graviton-speed-2026-11-17.md).

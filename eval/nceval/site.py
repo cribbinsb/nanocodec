@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import json
+import math
 import re
 import subprocess
 import sys
@@ -103,7 +105,14 @@ CLIPSETS = {
     "dev": "Development: the clips we tune beside",
 }
 TIMING_PLAN = "bd-vs-speed-plan.json"
-TIMING_FILES = {"jetson": "bd-vs-speed-timing.json", "x86": "bd-vs-speed-timing-x86.json"}
+#: The speed machines, in the site's order: the Jetson's Arm core, the x86 timing machine
+#: (AWS c8a.large, Zen 5) and the server Arm one (AWS c8g.large, Graviton4).
+PLATFORMS = ("jetson", "x86", "graviton")
+#: The CBR charts' timing per machine (tools/dev/anchor_chart_timing.py records). The Jetson's
+#: and x86's fps reach the site through nceval.chart's CSVs; the Graviton's, timed once at one
+#: build (tools/dev/aws_timing.py), straight from its record (cbr_fps).
+TIMING_FILES = {"jetson": "bd-vs-speed-timing.json", "x86": "bd-vs-speed-timing-x86.json",
+                "graviton": "bd-vs-speed-timing-graviton.json"}
 HARDWARE_CSV = "bd-vs-speed-hardware.csv"
 RC_COST_GLOB = "rc-cost-*.csv"
 SVC_CSV = "svc-chart.csv"
@@ -142,7 +151,8 @@ LENS_DATA = "fixed-qp-lens.json"
 LENS_COLUMN = "profile"
 #: The Fixed QP chart's speed: every lens encoder timed on the lens's own encodes
 #: (tools/dev/fixedqp_timing.py), per machine; a machine without a record has no speed.
-LENS_TIMING_FILES = {"jetson": "fixed-qp-timing-jetson.json", "x86": "fixed-qp-timing-x86.json"}
+LENS_TIMING_FILES = {"jetson": "fixed-qp-timing-jetson.json", "x86": "fixed-qp-timing-x86.json",
+                     "graviton": "fixed-qp-timing-graviton.json"}
 #: The second Fixed QP view: our held-out clips (nceval.fixedqp gap --clipset, x264
 #: medium as the zero), quality and its own timing on the same encodes.
 FRESH_QP_DATA = "fixed-qp-fresh-2026-11-16.json"
@@ -258,28 +268,52 @@ def timing_commands(plan: dict) -> dict[str, dict]:
 
 # --- the chart explorer ---------------------------------------------------------------------
 
-def chart_row(row: dict[str, str], fps_x86: float | None) -> dict:
+def chart_row(row: dict[str, str], fps: dict[str, float | None]) -> dict:
     return {
         "j": number(row["bd_j_pct"]), "psnr": number(row["bd_psnr_yuv_pct"]),
         "vmaf": number(row["bd_vmaf_v1_pct"]), "ms_ssim": None,
         "iqr": [number(row["iqr_low_pct"]), number(row["iqr_high_pct"])],
         "clips_scored": int(row["clips_scored"]), "clips": int(row["clips"]),
-        "fps": {"jetson": number(row["fps_jetson"]), "x86": fps_x86},
+        "fps": fps,
         "flagged": row["flagged"] == "1", "chained": int(row["clips_chained"] or 0),
         "rate_invalid_points": int(row["rate_invalid_points"] or 0),
     }
+
+
+def cbr_fps(platform: str, family: str) -> float | None:
+    """A CBR chart family's fps on a machine whose timing record the site reads directly:
+    1000 over the geometric mean of its per-clip ms per frame (nceval.chart.with_speed's
+    fps); a metric-tuned twin without its own timing takes its default-tuned twin's, as
+    the chart does (with_twin_speed)."""
+    points = cbr_timing().get(platform, {}).get("points", {})
+    entry = points.get(family) or points.get(family.partition(TUNE_SEPARATOR)[0])
+    if not entry:
+        return None
+    ms = list(entry["ms_per_frame"].values())
+    return round(1000 / math.exp(sum(map(math.log, ms)) / len(ms)), 2)
+
+
+@functools.cache
+def cbr_timing() -> dict[str, dict]:
+    """The CBR charts' timing records that exist, by machine."""
+    return timing_records(TIMING_FILES)
 
 
 def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
     jetson = read_csv(RESULTS / f"{view.stem}.csv")
     x86 = {r["family"]: number(r["fps_x86"]) for r in read_csv(RESULTS / f"{view.stem}-x86.csv")}
     builds = json.loads((RESULTS / view.builds).read_text())
-    values = {r["family"]: chart_row(r, x86.get(r["family"])) for r in jetson}
+    values = {r["family"]: chart_row(r, {"jetson": number(r["fps_jetson"]),
+                                         "x86": x86.get(r["family"]),
+                                         "graviton": cbr_fps("graviton", r["family"])})
+              for r in jetson}
     labels = {r["family"]: r["label"] for r in jetson}
     clips = max(v["clips"] for v in values.values())
     return ({"id": view.id, "clipset": view.clipset, "zero": view.zero, "rate_mode": "cbr",
              "clips": clips, "source": [f"docs/results/{view.stem}.csv",
-                                        f"docs/results/{view.stem}-x86.csv"],
+                                        f"docs/results/{view.stem}-x86.csv",
+                                        *(f"docs/results/{TIMING_FILES[p]}" for p in cbr_timing()
+                                          if p not in ("jetson", "x86"))],
              "builds": builds["builds"], "base_build": builds["base"],
              "family_builds": {current_family_name(f): b for f, b in builds["families"].items()},
              "tools": builds["tools"],
@@ -348,7 +382,7 @@ def fixed_qp_view() -> dict | None:
             "rate_invalid_points": 0,
             # never the lens run's own fps: not a timing (other runs, shared load)
             "fps": {platform: (timing[platform]["points"].get(row["test"]) or {}).get("fps")
-                    if platform in timing else None for platform in LENS_TIMING_FILES}}
+                    if platform in timing else None for platform in PLATFORMS}}
     return {"id": "qp", "clipset": "ctc", "zero": lens["rows"][0]["anchor"], "rate_mode": "qp",
             "clips": max(v["clips_scored"] for v in values.values()),
             "build_commit": lens["build_commit"], "condition": lens["condition"],
@@ -379,14 +413,14 @@ def fresh_qp_view() -> dict | None:
             "clips_scored": row["n"], "clips": len(run["clips"]), "flagged": False,
             "chained": 0, "rate_invalid_points": 0,
             "fps": {platform: (timing[platform]["points"].get(family) or {}).get("fps")
-                    if platform in timing else None for platform in FRESH_QP_TIMING_FILES}}
+                    if platform in timing else None for platform in PLATFORMS}}
     values[run["anchor"]] = {**{k: 0.0 for k in ("j", "psnr", "vmaf", "ms_ssim")},
                              "weighted": None, "iqr": None, "clips_scored": len(run["clips"]),
                              "clips": len(run["clips"]), "flagged": False, "chained": 0,
                              "rate_invalid_points": 0,
                              "fps": {platform: (timing[platform]["points"].get(run["anchor"])
                                                 or {}).get("fps") if platform in timing
-                                     else None for platform in FRESH_QP_TIMING_FILES}}
+                                     else None for platform in PLATFORMS}}
     return {"id": "qp-fresh", "clipset": "fresh", "zero": run["anchor"], "rate_mode": "qp",
             "clips": len(run["clips"]), "frames": run["frames"], "points": run["points"],
             "build_commit": run["build_commit"], "condition": "held-out, fresh",
@@ -468,11 +502,13 @@ def chart_data() -> dict:
         info["timing"] = timing.get(family) or timing.get(family.partition(TUNE_SEPARATOR)[0])
         info["timing_is_twin"] = family not in timing and info["timing"] is not None
         points[family] = info
-    platforms = {name: json.loads((RESULTS / file).read_text()).get("platform", "")
-                 for name, file in TIMING_FILES.items()}
+    platforms = {name: record.get("platform", "") for name, record in cbr_timing().items()}
     return {
         "clipsets": CLIPSETS, "codecs": CODEC_NAMES, "codec_order": list(CODEC_ORDER),
         "platforms": platforms, "points": points, "views": views,
+        # a machine whose one session timed all our points at one build says which
+        "timing_builds": {name: timed_builds(record) for name, record in cbr_timing().items()
+                          if "build" in record},
         "ladder_kbps": list(LADDER_KBPS), "low_ladder_kbps": list(LOW_LADDER_KBPS),
         "buffer_ms": BUFFER_MS, "frames": DEFAULT_FRAMES,
         "example": {"kbps": EXAMPLE_KBPS, "width": EXAMPLE_CLIP.width,

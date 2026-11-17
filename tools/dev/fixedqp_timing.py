@@ -2,8 +2,9 @@
 """Encode speed for the results site's Fixed QP charts, timed on the charts' own encodes.
 
     python3 tools/dev/fixedqp_timing.py plan --binary BIN --out PLAN.json
-        [--machine x86|jetson] [--encoders a,b] [--sequences a,b] [--points 27,42]
-        [--thin hm-ldp:27,42] [--rounds 1] [--shard-minutes 20]
+        [--machine x86|graviton|jetson] [--expect-version LINE] [--encoders a,b]
+        [--sequences a,b] [--points 27,42] [--thin hm-ldp:27,42] [--rounds 1]
+        [--shard-minutes 20]
     python3 tools/dev/fixedqp_timing.py plan-pool --binary BIN --gap GAP.json [--gap ...]
         --out PLAN.json
     python3 tools/dev/fixedqp_timing.py run --plan PLAN.json --out DIR
@@ -21,7 +22,9 @@ the quality run's own command lines (nceval.ctc.plan, or the pool engine's
 cbr.Bench.command at the quantizers each curve used, so no flag is restated;
 our recon outputs are dropped, as in the CBR chart's timing), one encode at a
 time pinned to one core, on the x86 timing machine (aws_timing.TIMING_MACHINE,
-c8a.large: Zen 5, no SMT, its second core) or on the Jetson's timing core
+c8a.large: Zen 5, no SMT, its second core), on the server Arm one
+(aws_timing.GRAVITON_MACHINE, c8g.large: Graviton4, the same way, with the Jetson's
+aarch64 builds of our encoder and the references) or on the Jetson's timing core
 (core 3, under the board's timing lock).
 
 - `plan` / `plan-pool` write the jobs (one encode each) and pack them into
@@ -56,6 +59,7 @@ import argparse
 import datetime
 import json
 import math
+import shlex
 import statistics
 import subprocess
 import sys
@@ -69,6 +73,8 @@ sys.path.insert(1, str(Path(__file__).resolve().parent))
 DATA = Path.home() / "nanocodec-data"
 DEFAULT_SOURCES = DATA / "work/ctc-improve/src"
 ANCHOR_TOOLS = DATA / "anchors/x86_64/bin"
+#: The Jetson's aarch64 reference builds, copied here (aws_timing.AARCH64_TOOLS).
+AARCH64_TOOLS = DATA / "anchors/aarch64/bin"
 #: HM and VVenC as the lens ran them (built from source, BSD; nceval.ctc.reference_encoders).
 DEFAULT_REFS = DATA / "work/standards-eval/refs-bin"
 REMOTE_SCRIPT = Path(__file__).resolve().with_name("fixedqp_timing_remote.py")
@@ -84,14 +90,21 @@ REPEATED_ROUNDS = 3
 #: The lens's fps is PC CPU time under shared load; c8a's Zen 5 core is about this
 #: much faster (the chart's own timing: x264 medium 1.6x, SVT M10 1.95x). Packing only.
 ZEN5_OVER_PC = 1.6
+#: A Graviton4 core's encode time over a Zen 5 core's (packing only; the pipe-cleaner of
+#: 2026-11-17 on Johnny: 1.8-1.9x for AV1 Faster, 2.3-2.7x for SVT-AV1 M12).
+GRAVITON_OVER_ZEN5 = 2.0
 #: Estimated minutes of timing per shard (the box boots and uploads in 2-4 more).
 SHARD_MINUTES = 20.0
 #: The instance's lifetime and its budget's guard, per shard.
 LIFETIME_MINUTES = 75
 SHARD_BUDGET_USD = 0.5
-#: Per machine: the timed core and the time of an encode over its PC estimate (packing only;
-#: the chart's own timing: Jetson core about 4x a Zen 5 core's time).
-MACHINES = {"x86": {"core": 1, "over_pc": 1 / ZEN5_OVER_PC},
+#: Per machine: the timed core, the time of an encode over its PC estimate (packing only;
+#: the chart's own timing: Jetson core about 4x a Zen 5 core's time; Graviton4 GRAVITON_OVER_ZEN5)
+#: and, for a rented one, its instance type (aws_timing.INSTANCES) and how the record names it.
+MACHINES = {"x86": {"core": 1, "over_pc": 1 / ZEN5_OVER_PC, "instance": "c8a.large",
+                    "aws": "AWS c8a.large"},
+            "graviton": {"core": 1, "over_pc": GRAVITON_OVER_ZEN5 / ZEN5_OVER_PC,
+                         "instance": "c8g.large", "aws": "AWS c8g.large, Graviton4"},
             "jetson": {"core": 3, "over_pc": 4 / ZEN5_OVER_PC}}
 #: The Jetson side (tools/dev/anchor_chart_timing.py's board setup): the reference
 #: tools built for it, the timing lock and the platform as the chart states it.
@@ -229,6 +242,8 @@ def plan(args: argparse.Namespace) -> None:
     if args.machine == "jetson":  # the board's own build (nceval.jetson.ensure_build)
         binary = args.binary
         version = jetson(f"{binary} --version").strip()
+    elif args.expect_version:  # a build for another architecture: it cannot run here
+        binary, version = str(Path(args.binary).resolve()), args.expect_version
     else:
         binary = str(Path(args.binary).resolve())
         version = subprocess.run([binary, "--version"], capture_output=True, text=True,
@@ -311,10 +326,18 @@ def plan_pool(args: argparse.Namespace) -> None:
 # --- run ------------------------------------------------------------------------------------
 
 def tool_source(name: str, plan_data: dict) -> Path:
+    """A tool's local file: our binary, HM / VVenC from the refs (x86 builds only), or
+    the machine's reference builds; a missing one stops the run before any launch."""
     if name == "nanocodec":
         return Path(plan_data["binary"])
-    refs = Path(plan_data["refs_dir"]) / "bin" / name
-    return refs if refs.exists() else ANCHOR_TOOLS / name
+    if plan_data["machine"] == "graviton":
+        source = AARCH64_TOOLS / name
+    else:
+        refs = Path(plan_data["refs_dir"]) / "bin" / name
+        source = refs if refs.exists() else ANCHOR_TOOLS / name
+    if not source.is_file():
+        raise SystemExit(f"no {name} for the {plan_data['machine']} machine: {source}")
+    return source
 
 
 def sequence_archive(name: str, frames: int, frame_bytes: int, read, cache: Path) -> Path:
@@ -382,6 +405,28 @@ def unstage(stage_dir: Path) -> None:
     stage_dir.rmdir()
 
 
+#: Shared libraries a reference build needs that a fresh Ubuntu image may lack, by package
+#: (the Jetson's x265 links libnuma).
+RUNTIME_PACKAGES = {"libnuma.so.1": "libnuma1"}
+
+
+def prepare_command(plan_data: dict, jobs: list[dict]) -> str:
+    """The instance's readiness stage: missing runtime libraries installed, every tool
+    loadable, our binary the planned build, the sequences unpacked and the CPU's model
+    line in out/platform.txt (/proc/cpuinfo on x86, lscpu's on Arm, which has none)."""
+    installs = " && ".join(
+        f"{{ ldconfig -p | grep -q {lib} || {{ sudo apt-get -qq update && "
+        f"sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y {package} > /dev/null; }}; }}"
+        for lib, package in RUNTIME_PACKAGES.items())
+    ours = ""
+    if any(j["argv"][0] == "{BIN}/nanocodec" for j in jobs):
+        ours = f"test \"$(bin/nanocodec --version)\" = {shlex.quote(plan_data['nanocodec_version'])} && "
+    return (f"cd {REMOTE_DIR} && {installs} && ! ldd bin/* | grep 'not found' && {ours}"
+            "for c in clips/*.zst; do zstd -d -q --rm \"$c\"; done && mkdir -p out && "
+            "{ grep -m1 'model name' /proc/cpuinfo || lscpu | grep -m1 'Model name'; } "
+            "> out/platform.txt && echo ready")
+
+
 def check_shard(shard_out: Path, jobs: list[dict]) -> None:
     """Fail loudly unless every job of the shard was timed (a failed encode is reported
     by the remote side and leaves its job without times)."""
@@ -393,7 +438,7 @@ def check_shard(shard_out: Path, jobs: list[dict]) -> None:
 
 def run_shard(index: int, plan_data: dict, out: Path, dry_run: bool) -> str:
     from aws_session import Session, SessionSpec
-    from aws_timing import INSTANCES, TIMING_MACHINE
+    from aws_timing import INSTANCES
     ids = set(plan_data["shards"][index])
     jobs = [j for j in plan_data["jobs"] if j["id"] in ids]
     shard_out = out / f"shard-{index}"
@@ -407,19 +452,17 @@ def run_shard(index: int, plan_data: dict, out: Path, dry_run: bool) -> str:
     if dry_run:
         unstage(stage_dir)
         return f"shard {index}: staged {len(jobs)} encodes ({minutes:.0f} min), dry run"
-    region, arch = INSTANCES[TIMING_MACHINE]
-    spec = SessionSpec(region=region, instance_type=TIMING_MACHINE, arch=arch,
+    instance = MACHINES[plan_data["machine"]]["instance"]
+    region, arch = INSTANCES[instance]
+    spec = SessionSpec(region=region, instance_type=instance, arch=arch,
                        purpose=f"fixedqp-timing-{index}", lifetime_minutes=LIFETIME_MINUTES,
                        budget_usd=SHARD_BUDGET_USD, on_demand=True)
     try:
         with Session(spec) as session:
             session.upload(stage_dir, REMOTE_DIR)
             try:
-                session.run_detached(
-                    f"cd {REMOTE_DIR} && ! ldd bin/* | grep 'not found' && "
-                    "for c in clips/*.zst; do zstd -d -q --rm \"$c\"; done && "
-                    "mkdir -p out && grep -m1 'model name' /proc/cpuinfo > out/platform.txt && "
-                    "echo ready", f"{REMOTE_DIR}/prepare.log", 10)
+                session.run_detached(prepare_command(plan_data, jobs),
+                                     f"{REMOTE_DIR}/prepare.log", 10)
                 session.run_detached(f"cd {REMOTE_DIR} && python3 -I fixedqp_timing_remote.py",
                                      f"{REMOTE_DIR}/time.log",
                                      min(minutes * 3 + 10, LIFETIME_MINUTES - 10),
@@ -556,7 +599,7 @@ def record(args: argparse.Namespace) -> None:
     Path(args.record).write_text(json.dumps({
         "platform": JETSON_PLATFORM if first["machine"] == "jetson" else
         f"{' / '.join(sorted(platforms))}, one thread pinned to one physical core "
-        f"(AWS c8a.large, one encode at a time)",
+        f"({MACHINES[first['machine']]['aws']}, one encode at a time)",
         "condition": first["condition"], "frames": jobs[0]["frames"],
         "sequences": sorted({j["sequence"] for j in jobs}),
         # per encoder: the quantizers timed on each sequence (the most on any one)
@@ -603,6 +646,8 @@ def main(argv: list[str]) -> None:
     p.add_argument("--binary", required=True,
                    help="our encoder (on the Jetson: its path there, e.g. a chart build)")
     p.add_argument("--machine", choices=sorted(MACHINES), default="x86")
+    p.add_argument("--expect-version", help="our binary's `--version` line, for a build of "
+                   "another architecture than this PC's (graviton: the Jetson's chart build)")
     p.add_argument("--out", required=True)
     p.add_argument("--encoders")
     p.add_argument("--sequences")
@@ -632,7 +677,8 @@ def main(argv: list[str]) -> None:
     q.add_argument("--binary", required=True)
     q.add_argument("--gap", action="append", required=True, help="a gap result JSON")
     q.add_argument("--out", required=True)
-    q.add_argument("--machine", choices=sorted(MACHINES), default="x86")
+    # not the Graviton: only the public lens sequences and the chart clips go to it
+    q.add_argument("--machine", choices=("jetson", "x86"), default="x86")
     q.add_argument("--shard-minutes", type=float, default=SHARD_MINUTES)
     q.set_defaults(handler=plan_pool)
     j = sub.add_parser("run-jetson", help="time a --machine jetson plan on the board")

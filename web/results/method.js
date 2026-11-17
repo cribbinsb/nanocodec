@@ -19,9 +19,11 @@ function facts(chart, root) {
     el('li', {}, el('strong', {}, text.split(':')[0]), `: ${text.split(':').slice(1).join(':').trim()}; ${counts[id]}.`)));
   root.querySelector('.ladder').textContent = `Rates: CBR at ${chart.ladder_kbps.join(', ')} kbps for 720p at 30 fps, scaled to each clip's pixel rate, plus ${chart.low_ladder_kbps.join(' and ')} kbps on the clips where some curve has no reliable overlap with the zero line otherwise (for every encoder alike). ${chart.frames} frames per clip. A clip where some point still has no overlap is left out for every point.`;
   root.querySelector('.buffer').textContent = `a ${chart.buffer_ms} ms buffer`;
-  root.querySelector('.machines').replaceChildren(
+  root.querySelector('.machines').replaceChildren(...[
     el('li', {}, el('strong', {}, 'Arm: '), chart.platforms.jetson, ' (NVIDIA Jetson Orin Nano).'),
-    el('li', {}, el('strong', {}, 'x86: '), chart.platforms.x86, ' (AMD).'));
+    el('li', {}, el('strong', {}, 'x86: '), chart.platforms.x86, ' (AMD).'),
+    chart.platforms.graviton && el('li', {}, el('strong', {}, 'Server Arm: '), chart.platforms.graviton, ' (AWS Graviton4).'),
+  ].filter(Boolean));
   const chartViews = chart.views.filter((v) => v.tools);
   root.querySelector('.versions').replaceChildren(table([
     { label: 'Chart', cell: (v) => `${chart.clipsets[v.clipset].split(':')[0]}, zero line ${ZERO_NAMES[v.zero]}` },

@@ -14,7 +14,10 @@ import {
 } from './common.js';
 
 const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1': 'triangle', openh264: 'triangle-down', libvpx: 'cross', libaom: 'plus' };
-const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (Zen 5) core' };
+// The speed machines, in the data's order (site.PLATFORMS): what one core is, and its short name.
+const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (Zen 5) core', graviton: 'AWS Graviton4 (Neoverse V2) core' };
+const PLATFORM_SHORT = { jetson: 'Jetson', x86: 'Zen 5', graviton: 'Graviton4' };
+const PLATFORMS = Object.keys(PLATFORM_LABELS);
 // The fixed-QP chart's extra metric (the standards' weighted PSNR); the rest are common.js's.
 const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)' };
 const SHORT = { ...METRIC_SHORT, weighted: 'Weighted' };
@@ -72,7 +75,7 @@ function describe(data, view, family, v) {
     el('div', {}, el('span', { class: 'value' }, pct(v[state.metric])), ` ${SHORT[state.metric]} vs ${ZERO_NAMES[view.zero]}`),
     v.iqr && v.iqr[0] !== null && family !== view.zero
       ? el('div', { class: 'dim' }, `per-clip interquartile range ${pct(v.iqr[0])} to ${pct(v.iqr[1])}`) : null,
-    el('div', {}, `${fps(v.fps.jetson)} fps Jetson core · ${fps(v.fps.x86)} fps PC core`),
+    el('div', {}, PLATFORMS.filter((m) => v.fps[m]).map((m) => `${fps(v.fps[m])} fps ${PLATFORM_SHORT[m]} core`).join(' · ')),
     v.clips_scored ? el('div', { class: 'dim' }, `${v.clips_scored} clips with a reliable BD`) : null,
     el('div', { class: 'dim' }, 'Select the point for its command line'));
 }
@@ -89,7 +92,7 @@ function detail(data, view, family) {
     v.clips_scored ? ['Clips scored', String(v.clips_scored)] : null,
     v.rate_invalid_points ? ['Rate-invalid points', `${v.rate_invalid_points} (kept on their curves)`] : null,
     v.chained ? ['Chained clips', `${v.chained} (through one intermediate encoder)`] : null,
-    ['Encode speed', `${fps(v.fps.jetson)} fps on one ${PLATFORM_LABELS.jetson}, ${fps(v.fps.x86)} fps on one ${PLATFORM_LABELS.x86}`],
+    ['Encode speed', PLATFORMS.filter((m) => v.fps[m]).map((m) => `${fps(v.fps[m])} fps on one ${PLATFORM_LABELS[m]}`).join(', ') || 'not timed'],
   ].filter(Boolean);
   const commands = [];
   if (state.mode === 'cbr' && p.cbr_command) {
@@ -143,7 +146,18 @@ function viewNote(data, view) {
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
-  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. Speed: ${data.platforms[state.platform]}.`;
+  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. ${cbrSpeedNote(data)}`;
+}
+
+/** What the CBR charts' speed axis is on the selected machine: its timing record's platform,
+ * and the build our encoders were timed at where one session timed them all (the Graviton). */
+function cbrSpeedNote(data) {
+  const platform = data.platforms[state.platform];
+  if (!platform) {
+    return `Speed: not timed on the ${PLATFORM_LABELS[state.platform].replace(' core', '')} for this chart; choose another machine under Speed on.`;
+  }
+  const build = data.timing_builds?.[state.platform];
+  return `Speed: ${platform}${build ? `; ours timed at build ${build}` : ''}.`;
 }
 
 /** What the Fixed QP chart's speed axis is on the selected machine (view.speed, from the
@@ -262,8 +276,7 @@ function render(data, root) {
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
     ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => pct(r.v[m]) })),
     { label: 'Clips', num: true, cell: (r) => (r.v.clips_scored ? String(r.v.clips_scored) : '–') },
-    { label: 'fps Jetson', num: true, cell: (r) => fps(r.v.fps.jetson) },
-    { label: 'fps PC', num: true, cell: (r) => fps(r.v.fps.x86) },
+    ...PLATFORMS.map((m) => ({ label: `fps ${PLATFORM_SHORT[m]}`, num: true, cell: (r) => fps(r.v.fps[m]) })),
   ], rows, (r) => (r.p.ours ? 'ours' : '') + (r.family === view.zero ? ' zero' : '')), sources(view.source));
 }
 
@@ -313,6 +326,7 @@ function controls(data, root) {
       state.metric, (v) => { state.metric = v; rerender(); }))),
     control('Speed on', withData('platform', segmented('Platform', [
       { value: 'jetson', label: 'Jetson (Arm)' }, { value: 'x86', label: 'x86 (Zen 5)' },
+      { value: 'graviton', label: 'Server Arm (Graviton4)' },
     ], state.platform, (v) => { state.platform = v; rerender(); }))),
     control('Pareto frontier', segmented('Pareto frontier', [
       { value: 'on', label: 'On' }, { value: 'off', label: 'Off' },

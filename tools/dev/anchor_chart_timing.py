@@ -41,7 +41,8 @@ SVT-AV1 `--rtc --rc 0`, openh264 realtime, nanocodec `--qp` at its preset).
     PYTHONPATH=. ../tools/dev/host-timed.sh python3 ../tools/dev/anchor_chart_timing.py \
         time-host --plan plan.json --binary BIN --presets-dir DIR --points a,b --cpus 14,15 \
         --out-dir host/
-    python3 tools/dev/anchor_chart_timing.py merge --out timing.json t-*.json
+    python3 tools/dev/anchor_chart_timing.py merge --out timing.json [--machine M] [--build C] \
+        t-*.json
 """
 
 from __future__ import annotations
@@ -547,8 +548,12 @@ def merge(args: argparse.Namespace) -> None:
         platform = record.get("platform", JETSON_PLATFORM)
     points.setdefault(anchor, {"ms_per_frame": {c: statistics.mean(v)
                                                 for c, v in anchor_runs.items()}})
+    if args.machine:  # the rented machine the time-cloud records do not name
+        platform = f"{platform} ({args.machine})"
     meta = {"platform": platform,
             "rung_kbps": RUNG_KBPS, "frames": FRAMES, "clips": list(CLIPS), "anchor": anchor}
+    if args.build:  # one session timed every point of ours at one build
+        meta["build"] = args.build
     pathlib.Path(args.out).write_text(json.dumps({**meta, "points": points}, indent=1) + "\n")
 
 
@@ -594,6 +599,9 @@ def main(argv: list[str]) -> None:
     c.add_argument("--out-dir", required=True)
     m = sub.add_parser("merge")
     m.add_argument("--out", required=True)
+    m.add_argument("--machine", help="appended to the platform, e.g. 'AWS c8g.large, one pair "
+                   "at a time'")
+    m.add_argument("--build", help="the commit (8 characters) our points were all timed at")
     m.add_argument("files", nargs="+")
     args = parser.parse_args(argv)
     {"scan": scan, "time": time_point, "time-host": time_host, "time-cloud": time_cloud,

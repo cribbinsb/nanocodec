@@ -1,4 +1,4 @@
-// Speed (speed.html): encode fps per preset on both machines (data/chart.json),
+// Speed (speed.html): encode fps per preset on each machine (data/chart.json),
 // the browser build's decode and encode fps (data/wasm.json), our decoders against
 // the reference decoders per platform (data/decoders.json; the browser against
 // ffmpeg.wasm and its encode speed against quality: data/wasm-yardstick.json)
@@ -15,12 +15,15 @@ function encode(chart, root) {
     .filter(([family]) => !chart.points[family].tune || family === view.zero)
     .map(([family, v]) => ({ family, p: chart.points[family], v }))
     .sort((a, b) => b.v.fps.jetson - a.v.fps.jetson);
-  root.querySelector('.platforms').textContent = `Jetson: ${chart.platforms.jetson}. x86: ${chart.platforms.x86}.`;
+  const machines = { jetson: 'Jetson', x86: 'x86', graviton: 'Server Arm' };
+  root.querySelector('.platforms').textContent = Object.entries(machines).filter(([m]) => chart.platforms[m])
+    .map(([m, name]) => `${name}: ${chart.platforms[m]}${chart.timing_builds?.[m] ? `; ours timed at build ${chart.timing_builds[m]}` : ''}.`).join(' ');
   root.querySelector('.encode').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
     { label: 'Codec', cell: (r) => CODEC_NAMES[r.p.codec] },
     { label: 'fps, Jetson core', num: true, cell: (r) => fps(r.v.fps.jetson) },
     { label: 'fps, x86 core', num: true, cell: (r) => fps(r.v.fps.x86) },
+    { label: 'fps, Graviton4 core', num: true, cell: (r) => fps(r.v.fps.graviton) },
   ], rows, (r) => (r.p.ours ? 'ours' : '')), sources(view.source));
 }
 
