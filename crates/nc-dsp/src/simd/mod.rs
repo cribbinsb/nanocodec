@@ -56,9 +56,6 @@ pub(crate) mod simd128;
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon_dot;
-#[cfg(target_arch = "aarch64")]
-#[allow(unsafe_code)]
-pub(crate) mod neon_u8;
 
 /// A vector of `LANES` signed 32-bit lanes (transform arithmetic).
 pub(crate) trait I32Lanes: Copy {
@@ -822,64 +819,4 @@ pub(crate) fn saturate_i16(value: i32) -> i16 {
 #[inline(always)]
 pub(crate) fn packed_pair(first: i16, second: i16) -> i32 {
     (i32::from(second) << 16) | i32::from(first as u16)
-}
-
-/// Sixteen unsigned 8-bit lanes and two eight-lane 16-bit accumulators: the
-/// operations of the 8-bit CDEF kernel (`cdef::narrow`), which holds two
-/// 8-sample rows or four 4-sample rows of a block per vector.
-// Implemented by ISAs with an 8-bit CDEF kernel (NEON so far).
-#[cfg(target_arch = "aarch64")]
-#[allow(
-    unsafe_code,
-    reason = "the loads take pointers the kernel checked once per block"
-)]
-pub(crate) trait U8FilterLanes: Copy {
-    /// Sixteen 16-bit sums, one per byte lane.
-    type Acc: Copy;
-
-    /// Bytes `0..8` from `top`, bytes `8..16` from `bottom`.
-    ///
-    /// # Safety
-    ///
-    /// Both point to eight readable bytes; the ISA is enabled.
-    unsafe fn load_8x2(top: *const u8, bottom: *const u8) -> Self;
-    /// Bytes `4r..4r + 4` from `rows[r]`.
-    ///
-    /// # Safety
-    ///
-    /// Each points to four readable bytes; the ISA is enabled.
-    unsafe fn load_4x4(rows: [*const u8; 4]) -> Self;
-    /// Inverse of [`Self::load_8x2`].
-    fn store_8x2(self, top: &mut [u8], bottom: &mut [u8]);
-    /// Inverse of [`Self::load_4x4`], into rows `stride` apart in `dst`.
-    fn store_4x4(self, dst: &mut [u8], stride: usize);
-    /// Every lane `value`.
-    fn splat(value: u8) -> Self;
-    /// `|self - other|`.
-    fn abs_diff(self, other: Self) -> Self;
-    /// All bits set in the lanes where `self > other`, else 0.
-    fn gt(self, other: Self) -> Self;
-    /// The count [`U8FilterLanes::shr`] takes for a right shift by `shift`
-    /// (below 8), made once per block.
-    fn shift_count(shift: u32) -> Self;
-    /// Logical shift right by the shift `count` stands for.
-    fn shr(self, count: Self) -> Self;
-    /// `max(self - other, 0)`.
-    fn sub_sat(self, other: Self) -> Self;
-    /// Lane-wise minimum.
-    fn min(self, other: Self) -> Self;
-    /// Lane-wise maximum.
-    fn max(self, other: Self) -> Self;
-    /// Two's-complement negation of the lanes (as `i8`) where `mask` is all
-    /// ones; the others unchanged.
-    fn negate_where(self, mask: Self) -> Self;
-    /// Lane-wise wrapping sum.
-    fn add_wrapping(self, other: Self) -> Self;
-    /// All sums zero.
-    fn acc_zero() -> Self::Acc;
-    /// `acc + weight * self`, the lanes read as `i8`.
-    fn acc_mla(acc: Self::Acc, values: Self, weight: i8) -> Self::Acc;
-    /// `clamp(self + ((8 + sum - (sum < 0)) >> 4), 0, 255)` per lane: libaom's
-    /// rounding of the CDEF sum onto the centre sample.
-    fn add_rounded(self, acc: Self::Acc) -> Self;
 }

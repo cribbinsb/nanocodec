@@ -120,6 +120,7 @@ fn transpose<V: I16x8Shuffles>(rows: [V; N]) -> [V; N] {
 
 /// libaom `cdef_find_dir` on the 8x8 block of 8-bit samples at the start of
 /// `src` (row stride `stride`): the direction and the directional contrast.
+#[cfg(not(target_arch = "aarch64"))]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub(crate) unsafe fn find_dir<V: I16x8Shuffles>(src: &[u8], stride: usize) -> (u8, i32) {

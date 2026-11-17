@@ -1,11 +1,10 @@
-//! NEON CDEF kernels. Interior 8-bit blocks use sixteen byte lanes: two
-//! luma rows or all four chroma rows per vector. Boundary and high-depth
-//! filters retain the shared eight-lane 16-bit graph; direction search
-//! shares the partial-sum graph with SIMD128.
+//! NEON CDEF dispatch for the shared AV1/AV2 family. Eight-bit kernels
+//! use the full dav1d compact-padding/byte-accumulator/direction port.
+//! High-depth kernels retain the existing shared word-lane implementation.
 
-use super::{CdefArgs, CdefFns, HighCdefFns, direction, generic, narrow};
+use super::neon_padding::{CHROMA_SAMPLES, CHROMA_STRIDE, LUMA_SAMPLES, LUMA_STRIDE};
+use super::{CdefArgs, CdefFns, HighCdefFns, direction, generic, neon_direction, neon_filter};
 use crate::simd::neon::I16x8;
-use crate::simd::neon_u8::U8x16;
 
 /// The NEON 8-bit table (NEON is always present on `AArch64`).
 pub(crate) fn cdef_fns() -> CdefFns {
@@ -30,7 +29,7 @@ pub(crate) const HIGH_FNS: HighCdefFns = HighCdefFns {
 #[target_feature(enable = "neon")]
 unsafe fn find_dir(src: &[u8], stride: usize) -> (u8, i32) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
-    unsafe { direction::find_dir::<I16x8>(src, stride) }
+    unsafe { neon_direction::find_dir(src, stride) }
 }
 
 #[target_feature(enable = "neon")]
@@ -49,7 +48,11 @@ unsafe fn block8(
     dst_stride: usize,
 ) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
-    unsafe { generic::filter_any_dir::<I16x8, 1, 12>(src, stride, origin, args, dst, dst_stride) }
+    unsafe {
+        neon_filter::edge::<8, LUMA_STRIDE, LUMA_SAMPLES>(
+            src, stride, origin, args, dst, dst_stride,
+        );
+    }
 }
 
 #[target_feature(enable = "neon")]
@@ -62,7 +65,11 @@ unsafe fn block4(
     dst_stride: usize,
 ) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
-    unsafe { generic::filter_any_dir::<I16x8, 2, 8>(src, stride, origin, args, dst, dst_stride) }
+    unsafe {
+        neon_filter::edge::<4, CHROMA_STRIDE, CHROMA_SAMPLES>(
+            src, stride, origin, args, dst, dst_stride,
+        );
+    }
 }
 
 #[target_feature(enable = "neon")]
@@ -139,7 +146,9 @@ unsafe fn block8_interior(
     dst_stride: usize,
 ) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
-    unsafe { narrow::filter_any::<U8x16, 8, 12>(src, stride, origin, args, dst, dst_stride) }
+    unsafe {
+        neon_filter::interior::<8>(src, stride, origin, args, dst, dst_stride);
+    }
 }
 
 #[target_feature(enable = "neon")]
@@ -152,13 +161,15 @@ unsafe fn block4_interior(
     dst_stride: usize,
 ) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
-    unsafe { narrow::filter_any::<U8x16, 4, 8>(src, stride, origin, args, dst, dst_stride) }
+    unsafe {
+        neon_filter::interior::<4>(src, stride, origin, args, dst, dst_stride);
+    }
 }
 
 /// Two interior 4x4 blocks ([`super::CdefPairFn8`] contract), one after the
 /// other in one call, as SIMD128's `block4_pair`: a vector holds one 4x4
-/// block, so the lanes share nothing, but the call and the strength set-up
-/// are paid once per unit's U and V instead of twice.
+/// block, so the lanes share nothing. The outer pair call and resolved
+/// scalar strengths are shared; each block selects its direction.
 #[target_feature(enable = "neon")]
 unsafe fn block4_pair(
     src: [&[u8]; 2],
@@ -178,7 +189,7 @@ unsafe fn block4_pair(
         // SAFETY: NEON is enabled for this function; the kernel checks the
         // block's source window against `src[i]`.
         unsafe {
-            narrow::filter_any::<U8x16, N, 8>(src[i], stride, origins[i], &args, out, dst_stride);
+            neon_filter::interior::<N>(src[i], stride, origins[i], &args, out, dst_stride);
         }
     }
 }

@@ -2,8 +2,9 @@
 //! `cdef_filter_block_internal` for 8-bit video.
 //!
 //! Blocks at least [`CDEF_PADDING`] samples from every edge read an 8-bit
-//! copy of the unfiltered plane ([`CdefSource`]) with the `narrow` kernels:
-//! no tap is unavailable there. Blocks near an edge read a **padded 16-bit
+//! copy of the unfiltered plane ([`CdefSource`]); no tap is unavailable there.
+//! NEON filters these bytes with split byte accumulators. Blocks near an
+//! edge read a **padded 16-bit
 //! window** of it instead: every sample outside the frame holds
 //! [`CDEF_UNAVAILABLE`], `i16::MIN` (`0x8000`; libaom uses
 //! `CDEF_VERY_LARGE` and tests for it). Like dav1d's padding, that value
@@ -33,17 +34,20 @@
 //!
 //! Kernels are `unsafe fn`s called only from [`crate::Dsp`], which checks the
 //! CPU, that the padded source covers the block plus [`CDEF_PADDING`] on every
-//! side, and that the destination covers the block. Loads and stores index
-//! their slices, so a broken contract panics rather than reads out of bounds.
+//! side, and that the destination covers the block. The NEON entry checks
+//! complete footprints before pointer-based lane loads/stores. It borrows
+//! the caller's interior and sentinel-padded windows; uncommon edge pitches
+//! use compact scratch with every accessed payload initialized. Unused
+//! trailing scratch columns remain uninitialized. Other kernels index
+//! checked slices/windows.
 
 use nc_common::Sample;
 
 #[allow(unsafe_code)]
 pub(crate) mod band;
-// The 128-bit direction search (NEON, SIMD128); AVX2 has its own
-// (`direction_avx2`). A port of dav1d's NEON search (a horizontal add per
-// row, no transpose) measured +0.9 % decode instructions and +0.8 % cycles
-// on the Jetson against this one, so NEON keeps it.
+// Shared word-lane direction search: high-depth NEON and SIMD128.
+// Eight-bit NEON uses the full dav1d one-pass port in neon_direction;
+// x86 has direction_avx2.
 #[cfg(any(
     target_arch = "aarch64",
     all(target_arch = "wasm32", target_feature = "simd128")
@@ -52,10 +56,6 @@ pub(crate) mod band;
 pub(crate) mod direction;
 #[allow(unsafe_code)]
 pub(crate) mod generic;
-// The 8-bit interior filter over `U8FilterLanes`; ISAs with that lane type.
-#[cfg(target_arch = "aarch64")]
-#[allow(unsafe_code)]
-pub(crate) mod narrow;
 pub(crate) mod scalar;
 
 #[cfg(target_arch = "x86_64")]
@@ -68,6 +68,15 @@ pub(crate) mod direction_avx2;
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+mod neon_direction;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+mod neon_filter;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+mod neon_padding;
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]

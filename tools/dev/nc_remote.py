@@ -74,12 +74,13 @@ SLOTS = VCPUS // JOBS_PER_SLOT
 #: Conformance suites (~6 GB), anchors and up to ~20 agents' targets.
 ROOT_GB = 200
 LIFETIME_MINUTES = 12 * 60
-IDLE_MINUTES = 30
+IDLE_MINUTES = 10
 #: Room for an on-demand day (RECLAIM_WINDOW): ~$2.9/h for up to 12 h.
 DAILY_BUDGET_USD = 40.0
 #: Markets. Spot by default; after two spot reclaims within RECLAIM_WINDOW
 #: (2026-11-16: c6i.16xlarge was reclaimed at 12:04, 12:33 and 13:03 and agents
-#: kept losing jobs), on-demand for the rest of that UTC day.
+#: kept losing jobs), on-demand until RECLAIM_WINDOW after the later one
+#: (owner, 2026-11-17: never pay on-demand longer than needed).
 SPOT, ON_DEMAND = "spot", "on-demand"
 RECLAIM_WINDOW = datetime.timedelta(hours=2)
 SPOT_RECLAIM_CODE = "Server.SpotInstanceTermination"
@@ -488,12 +489,12 @@ def close_out(aws: Aws, box: Box, ended: datetime.datetime) -> None:
 
 
 def market_now() -> str:
-    """On-demand for the rest of a UTC day in which spot reclaimed two boxes
-    within RECLAIM_WINDOW of each other (the later one today); else spot."""
+    """On-demand while within RECLAIM_WINDOW of the later of two spot reclaims
+    that came within RECLAIM_WINDOW of each other; else spot."""
     reclaims = sorted(parse(b.ended) for b in history() if b.reclaimed and b.ended)
-    today = utc_now().date()
+    now = utc_now()
     for earlier, later in zip(reclaims, reclaims[1:]):
-        if later.date() == today and later - earlier <= RECLAIM_WINDOW:
+        if later - earlier <= RECLAIM_WINDOW and now - later <= RECLAIM_WINDOW:
             return ON_DEMAND
     return SPOT
 
@@ -690,10 +691,22 @@ def cmd_reap(_args) -> int:
         for box in unended():
             if utc_now() > parse(box.expected_end):
                 stop_box(aws, box)
+            elif box.market == ON_DEMAND and market_now() == SPOT and between_jobs(box):
+                # On-demand costs ~4x spot: once spot is allowed again, end the
+                # box between jobs; the next `run` relaunches it on spot.
+                say(f"{box.instance_id}: on-demand while spot is allowed and no job runs")
+                stop_box(aws, box)
             elif ssh(box, "sudo /usr/local/sbin/ncbox-idle",
                      capture_output=True).returncode != 0:
                 say(f"{box.instance_id}: idle check over SSH failed")
     return 0
+
+
+def between_jobs(box: Box) -> bool:
+    """No job slot is held and no job is waiting on the box."""
+    probe = ("for s in ncbox/slots/*; do flock -n \"$s\" true || exit 1; done; "
+             "! ls ncbox/jobs/*/waiting.json >/dev/null 2>&1")
+    return ssh(box, probe, capture_output=True).returncode == 0
 
 
 def prune_images(aws: Aws) -> None:

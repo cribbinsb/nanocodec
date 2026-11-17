@@ -508,6 +508,14 @@ NEON CDEF direction costs (`crates/nc-dsp/src/cdef/direction.rs` and
 from dav1d 1.5.4 `src/arm/64/cdef_tmpl.S`; the existing shared partial-sum
 graph and scalar direction/tie reference are retained.
 
+The full shared AV1/AV2 NEON CDEF implementation in
+`src/cdef/neon_direction.rs`, `neon_filter.rs` and `neon_padding.rs` ports
+dav1d 1.5.4 `src/arm/64/cdef.S` (Copyright 2018 VideoLAN/dav1d authors,
+2019 Martin Storsjo) and `cdef_tmpl.S` (2020 Martin Storsjo), BSD-2-Clause:
+compact 16/8-stride padding, the byte and unavailable-edge filters, split
+byte accumulators with halving rounding, and the one-pass direction sums.
+The existing scalar reference and AV1/AV2 shared dispatch are retained.
+
 ## libyuv — BSD-3-Clause
 
 Copyright 2011 The LibYuv Project Authors. All rights reserved.

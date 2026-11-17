@@ -279,6 +279,7 @@ unsafe fn filter<
 }
 
 /// 8-bit [`filter`] for the block's direction `args.dir`.
+#[cfg(not(target_arch = "aarch64"))]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub(crate) unsafe fn filter_any_dir<V: I16FilterLanes, const ROWS: usize, const S: usize>(

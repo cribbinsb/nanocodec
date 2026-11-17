@@ -868,3 +868,25 @@ Faster +0.212% (level), with instructions -0.129/-0.105%; all streams
 identical. The older full audit above remains its original frozen
 measurement. See the [follow-up receipt](../handoff/astra-kernels-20261117.md#updated-task-2-av1-arm-priority-1-cdef-2026-11-17)
 for five-round diagnosis comparisons, every loss and validation status.
+
+
+### Full dav1d NEON CDEF follow-up (2026-11-17)
+
+The shared AV1/AV2 eight-bit NEON path ports dav1d 1.5.4's byte
+constraints, split bounded byte accumulators, sentinel padding and
+one-pass direction graph, with BSD attribution. Assembly tuning borrows
+validated source windows, specializes directions, separates strength
+frames and packs direction reductions. High depth and every ISA stay.
+
+Against `07615e9b5` on the Jetson, direction is 77.65 → 74.07 ns; 8x8 both
+204.87 → 188.52 ns, primary 79.49 → 72.87 ns, secondary 120.36 → 113.88 ns.
+4x4 both is 69.14 → 67.45 ns, primary 34.97 → 35.40 ns, secondary
+46.72 → 47.38 ns; retain the small single-strength losses. Release
+callgrind 8x8 both is 941 → 858 Ir/call; 4x4 both is 340 → 368 despite
+its slightly better native time.
+
+Five quiet paired whole-encode rounds of shipped AV1 presets against
+`07615e9b5`: Veryfast cycles −0.264%, Faster −0.899%; instructions
+−0.318/−0.302%, all 48 streams identical. These modest gains leave further
+CDEF opportunity. See the [full receipt](../handoff/astra-kernels-20261117.md#full-neon-cdef-landing-candidate-0c6b1add8)
+for the matched dav1d comparison, retained 4x4 costs and validation.
