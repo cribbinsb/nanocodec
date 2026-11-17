@@ -94,3 +94,14 @@ structure.inherited_depth = 0
 # preset's streams do not move with the Default.
 decision.skip_no_refine_lambdas = 0.25
 decision.refine_cheap_min_lambdas = 0.05
+
+# Adaptive tool thresholds (2026-11-17, docs/handoff/light-pipeline.md
+# "Adaptive tool thresholds"): the sub-pel seed gate and the exact-rank
+# margin move per clip and frame role towards the engine's target win
+# rates; here they mostly loosen. Against HEVC Faster (draw 2026-11-17):
+# x86 callgrind x1.014 (chart clips, CBR 600); L1 (ladder) quality J
+# -1.21 %; L3 (78 clips, dCPU +1.4 % at k 0.6) J -0.99 % [-1.41, -0.61]
+# BETTER; fixed-QP lens Weighted / J +17.4 / +4.8 -> +16.2 / +3.4.
+adapt.subpel = 1
+adapt.rank = 1
+adapt.probe = 1

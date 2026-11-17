@@ -180,3 +180,9 @@ effort.light_nonbase_only = 1
 adapt.subpel = 1
 adapt.rank = 1
 adapt.probe = 1
+# The motion search's zero-vector exits adapt too (2026-11-17, same
+# handoff): against the Faster above, x86 callgrind x0.995 (chart clips, CBR
+# 600); L1 quality J -0.81 %; L3 (78 clips, dCPU -0.5 % at k 0.6) J -0.59 %
+# [-0.83, -0.36] BETTER; lens Weighted / J -6.1 / -18.4 -> -6.2 / -18.3.
+# Depth removal's adaptation (`adapt.depth`) was level at +1.1 % CPU.
+adapt.motion = 1

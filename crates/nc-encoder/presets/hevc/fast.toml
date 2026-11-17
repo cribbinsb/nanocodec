@@ -157,3 +157,15 @@ planner.lambda_scale = 2.58125
 planner.split_rate_factor = 2.2625
 effort.regular_fraction = 0
 effort.light_nonbase_only = 1
+
+# Adaptive tool thresholds (2026-11-17, docs/handoff/light-pipeline.md
+# "Adaptive tool thresholds"): the sub-pel seed gate and the exact-rank
+# margin (the light values above) move per clip and frame role towards
+# the engine's target win rates. Against HEVC Fast (draw 2026-11-17): x86
+# callgrind x0.980 (chart clips, CBR 600); L1 quality J +0.23 %; L3 (78
+# clips, dCPU -2.0 % at k 0.6) J -1.12 % [-1.39, -0.86] BETTER (the L1
+# drone-class guard clears at L3); fixed-QP lens Weighted / J -6.0 / -15.5
+# unchanged.
+adapt.subpel = 1
+adapt.rank = 1
+adapt.probe = 1
