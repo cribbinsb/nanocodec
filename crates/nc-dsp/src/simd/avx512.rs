@@ -23,7 +23,7 @@ use core::mem::MaybeUninit;
 
 /// Sixteen signed 32-bit transform lanes.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I32x16(__m512i);
+pub(crate) struct I32x16(pub(super) __m512i);
 
 impl WordPairLanes for I32x16 {
     type Pairs = WordPairs16;

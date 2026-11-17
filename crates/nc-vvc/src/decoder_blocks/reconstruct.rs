@@ -1,10 +1,38 @@
 //! General intra reconstruction into shared pictures with shared DSP prediction.
 use super::{
     Sequence, Unit, cclm,
-    references::{Availability, References},
+    inter_prediction::InterScratch,
+    references::{Availability, RefScratch, References},
 };
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::{DepthKernels, Pixel, VvcIntraMode};
+
+fn joint_residuals(transform: &super::Transform, joint_sign: bool) -> [Vec<i16>; 2] {
+    if transform.joint == 0 {
+        return [Vec::new(), Vec::new()];
+    }
+    let coded = &transform.residuals[if transform.joint == 1 { 2 } else { 1 }];
+    let mut cb = vec![0; coded.len()];
+    let mut cr = cb.clone();
+    nc_dsp::vvc_joint_chroma(coded, transform.joint, joint_sign, &mut cb, &mut cr);
+    [cb, cr]
+}
+
+fn channel_range(unit: &Unit) -> std::ops::Range<usize> {
+    if unit.combined {
+        0..3
+    } else if unit.channel == 0 {
+        0..1
+    } else {
+        1..3
+    }
+}
+
+#[derive(Default)]
+struct ReconScratch<T: Pixel> {
+    inter: Box<InterScratch<T>>,
+    refs: Box<RefScratch>,
+}
 
 /// Reconstruct the CUs `units` of one slice into `picture` (before the
 /// loop filters). Neighbours in other slices are unavailable, so each slice
@@ -26,34 +54,23 @@ pub(crate) fn reconstruct<T: Pixel>(
     let mut chroma_scale = reshape.filter(|(_, enabled)| *enabled).map(|(model, _)| {
         super::reshape::ChromaScale::new(model, units, dimensions, sequence.ctu_log2)
     });
+    let mut prediction_buf = vec![T::default(); 64 * 64];
+    let mut scaled_buf: Vec<i16> = Vec::new();
+    let mut scratch = ReconScratch::default();
     for unit in units {
         available.enter(unit);
         let mut isp = super::isp::Prediction::prepare(unit, picture, &available, dsp.depth());
         let ciip = super::ciip::prepare(unit, picture, &available, dsp);
         for (transform_index, transform) in unit.transforms.iter().enumerate() {
-            let mut mixed = [Vec::new(), Vec::new()];
-            if transform.joint != 0 {
-                let coded = &transform.residuals[if transform.joint == 1 { 2 } else { 1 }];
-                let mut cb = vec![0; coded.len()];
-                let mut cr = cb.clone();
-                nc_dsp::vvc_joint_chroma(coded, transform.joint, joint_sign, &mut cb, &mut cr);
-                mixed = [cb, cr];
-            }
-            for index in if unit.combined {
-                0..3
-            } else if unit.channel == 0 {
-                0..1
-            } else {
-                1..3
-            } {
+            let mixed = joint_residuals(transform, joint_sign);
+            for index in channel_range(unit) {
                 let plane = [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V][index];
-                let n = if index == 0 {
-                    transform.block
+                let Some(n) = (if index == 0 {
+                    Some(transform.block)
                 } else {
-                    let Some(block) = transform.chroma_block else {
-                        continue;
-                    };
-                    block
+                    transform.chroma_block
+                }) else {
+                    continue;
                 };
                 let shift = usize::from(index != 0);
                 let (x, y, width, height) = (
@@ -62,43 +79,56 @@ pub(crate) fn reconstruct<T: Pixel>(
                     n.width() >> shift,
                     n.height() >> shift,
                 );
-                // SBT's base entry already predicts the whole CU. Reuse it so
-                // narrow chroma residuals retain the CU's affine subblock grid.
+                let area = width * height;
                 let overlay = unit.sbt.is_some() && transform_index != 0;
-                let mut prediction = if overlay {
+                if area > prediction_buf.len() {
+                    prediction_buf.resize(area, T::default());
+                }
+                if overlay {
                     let view = picture.plane(plane).view();
-                    (y..y + height)
-                        .flat_map(|row| view.row(row)[x..x + width].iter().copied())
-                        .collect()
+                    for (dy, dst) in prediction_buf[..area].chunks_exact_mut(width).enumerate() {
+                        dst.copy_from_slice(&view.row(y + dy)[x..x + width]);
+                    }
                 } else if let Some(isp) = isp.as_mut().filter(|_| index == 0) {
-                    isp.predict(n, unit.luma_mode, picture, &available, dsp)
+                    let isp_pred = isp.predict(n, unit.luma_mode, picture, &available, dsp);
+                    prediction_buf[..area].copy_from_slice(&isp_pred[..area]);
                 } else {
-                    predict(
-                        unit, n, index, picture, &available, sequence, references, dsp,
-                    )
-                };
+                    predict_into(
+                        unit,
+                        n,
+                        index,
+                        picture,
+                        &available,
+                        sequence,
+                        references,
+                        dsp,
+                        &mut scratch,
+                        &mut prediction_buf[..area],
+                    );
+                }
+                let prediction = &mut prediction_buf[..area];
                 if !overlay
                     && index == 0
                     && unit.motion.is_some()
                     && let Some((model, _)) = reshape
                 {
-                    dsp.vvc_forward_lmcs(model, &mut prediction);
+                    dsp.vvc_forward_lmcs(model, prediction);
                 }
-                super::ciip::blend(unit, n, index, &ciip[index], &mut prediction, dsp);
+                super::ciip::blend(unit, n, index, &ciip[index], prediction, dsp);
                 let residual = if transform.joint != 0 && index != 0 {
                     &mixed[index - 1]
                 } else {
                     &transform.residuals[index]
                 };
-                let mut scaled;
                 let residual = if index != 0 && residual.len() > 4 {
                     if let Some(scale) = &mut chroma_scale {
-                        scaled = residual.clone();
+                        scaled_buf.clear();
+                        scaled_buf.extend_from_slice(residual);
                         dsp.vvc_scale_chroma_residual(
                             scale.get((n.x, n.y), picture, &available),
-                            &mut scaled,
+                            &mut scaled_buf,
                         );
-                        &scaled
+                        scaled_buf.as_slice()
                     } else {
                         residual
                     }
@@ -106,12 +136,11 @@ pub(crate) fn reconstruct<T: Pixel>(
                     residual
                 };
                 if !residual.is_empty() {
-                    dsp.vvc_add_residual((width, height), &mut prediction, residual);
+                    dsp.vvc_add_residual((width, height), prediction, residual);
                 }
                 let mut view = picture.plane_mut(plane).view_mut();
-                for dy in 0..height {
-                    view.row_mut(y + dy)[x..x + width]
-                        .copy_from_slice(&prediction[dy * width..(dy + 1) * width]);
+                for (dy, src) in prediction.chunks_exact(width).enumerate() {
+                    view.row_mut(y + dy)[x..x + width].copy_from_slice(src);
                 }
             }
             available.mark_transform(unit, transform);
@@ -119,7 +148,8 @@ pub(crate) fn reconstruct<T: Pixel>(
     }
 }
 
-fn predict<T: Pixel>(
+#[allow(clippy::too_many_arguments)]
+fn predict_into<T: Pixel>(
     unit: &Unit,
     block: nc_encoder::Block,
     index: usize,
@@ -128,34 +158,37 @@ fn predict<T: Pixel>(
     sequence: &Sequence,
     references: super::inter_prediction::Sources<'_, T>,
     dsp: DepthKernels<'_>,
-) -> Vec<T> {
+    scratch: &mut ReconScratch<T>,
+    prediction: &mut [T],
+) {
     let plane = [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V][index];
     let shift = usize::from(index != 0);
-    let node = block;
     let (x, y, width, height) = (
-        node.x >> shift,
-        node.y >> shift,
-        node.width() >> shift,
-        node.height() >> shift,
+        block.x >> shift,
+        block.y >> shift,
+        block.width() >> shift,
+        block.height() >> shift,
     );
     let direction = if index == 0 {
         unit.luma_mode
     } else {
         unit.chroma_mode
     };
-    let mut prediction = vec![T::default(); width * height];
     if unit.motion.is_some() {
-        super::inter_prediction::predict_unit(dsp, references, unit, plane, block, &mut prediction);
-    } else if let Some(vector) = unit.block_vector {
-        super::ibc::predict(
-            picture,
+        super::inter_prediction::predict_unit(
+            dsp,
+            references,
+            unit,
             plane,
-            vector,
-            (x, y, width, height),
-            &mut prediction,
+            block,
+            &mut scratch.inter,
+            prediction,
         );
+    } else if let Some(vector) = unit.block_vector {
+        super::ibc::predict(picture, plane, vector, (x, y, width, height), prediction);
     } else if index == 0 && unit.reference_line != 0 {
-        let refs = References::gather_mrl(
+        let refs = References::gather_mrl_into(
+            &mut scratch.refs,
             picture,
             available,
             (x, y, width, height),
@@ -165,10 +198,10 @@ fn predict<T: Pixel>(
             (width, height),
             direction,
             unit.reference_line,
-            &refs.top,
-            &refs.left,
+            refs.top,
+            refs.left,
             refs.corner,
-            &mut prediction,
+            prediction,
         );
     } else if unit.bdpcm[shift] != 0 || (index == 0 && unit.mip.is_some()) {
         predict_from_edges(
@@ -177,7 +210,8 @@ fn predict<T: Pixel>(
             (plane, shift),
             (x, y, width, height),
             dsp,
-            &mut prediction,
+            &mut scratch.refs,
+            prediction,
         );
     } else if direction >= 67 {
         cclm::predict(
@@ -187,11 +221,12 @@ fn predict<T: Pixel>(
             unit,
             block,
             (plane, dsp.depth()),
-            &mut prediction,
+            prediction,
         );
     } else {
         let smooth = index == 0 && nc_dsp::vvc_intra_filter_references((width, height), direction);
-        let refs = References::gather(
+        let refs = References::gather_into(
+            &mut scratch.refs,
             picture,
             available,
             (plane, dsp.depth()),
@@ -209,13 +244,12 @@ fn predict<T: Pixel>(
         dsp.vvc_intra_predict_rect(
             (width, height),
             mode,
-            &refs.top,
-            &refs.left,
+            refs.top,
+            refs.left,
             refs.corner,
-            &mut prediction,
+            prediction,
         );
     }
-    prediction
 }
 
 /// BDPCM (H.266 §8.4.5.2.12) or MIP (§8.4.5.2.2) prediction of `plane`
@@ -226,9 +260,11 @@ fn predict_from_edges<T: Pixel>(
     (plane, shift): (PlaneIndex, usize),
     (x, y, width, height): (usize, usize, usize, usize),
     dsp: DepthKernels<'_>,
+    ref_scratch: &mut RefScratch,
     prediction: &mut [T],
 ) {
-    let refs = References::gather(
+    let refs = References::gather_into(
+        ref_scratch,
         picture,
         available,
         (plane, dsp.depth()),
@@ -239,8 +275,8 @@ fn predict_from_edges<T: Pixel>(
         dsp.vvc_bdpcm_predict(
             (width, height),
             unit.bdpcm[shift] == 2,
-            &refs.top,
-            &refs.left,
+            refs.top,
+            refs.left,
             prediction,
         );
     } else if let Some((mode, transpose)) = unit.mip {
@@ -248,8 +284,8 @@ fn predict_from_edges<T: Pixel>(
             (width, height),
             mode,
             transpose,
-            &refs.top,
-            &refs.left,
+            refs.top,
+            refs.left,
             prediction,
         );
     }

@@ -26,6 +26,9 @@ pub(crate) mod reference;
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 mod avx2;
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx512;
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 mod neon;
@@ -34,6 +37,7 @@ mod neon;
 mod simd128;
 
 use crate::Isa;
+use crate::high_depth::Weight16Fn;
 
 /// Largest right shift: `log2WD + 1` with `log2WD = denominator + 6 <= 13`.
 pub(crate) const MAX_SHIFT: u32 = 14;
@@ -67,11 +71,28 @@ pub(crate) type WeightFn = unsafe fn(
 pub(crate) fn kernel(isa: Isa) -> WeightFn {
     match isa {
         #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 | Isa::Avx512 => avx2::WEIGHT,
+        Isa::Avx2 => avx2::WEIGHT,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::WEIGHT,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::WEIGHT,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         Isa::Simd128 => simd128::WEIGHT,
         _ => reference::weight as WeightFn,
+    }
+}
+
+/// The `u16` kernel for `isa` (the scalar reference where it has none).
+pub(crate) fn kernel_u16(isa: Isa) -> Weight16Fn {
+    match isa {
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx2 => avx2::WEIGHT_U16,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::WEIGHT_U16,
+        #[cfg(target_arch = "aarch64")]
+        Isa::Neon => neon::WEIGHT_U16,
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        Isa::Simd128 => simd128::WEIGHT_U16,
+        _ => reference::weight_at::<u16> as Weight16Fn,
     }
 }

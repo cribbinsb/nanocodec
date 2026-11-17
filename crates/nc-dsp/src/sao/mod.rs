@@ -19,6 +19,12 @@
 mod bytes;
 #[allow(unsafe_code)]
 pub(crate) mod generic;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) mod high_simd;
 mod restricted;
 pub(crate) mod scalar;
 pub use restricted::{SaoCtb, SaoLimits, sao_edge_restricted};

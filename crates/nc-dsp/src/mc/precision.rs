@@ -108,7 +108,18 @@ fn interpolate<S: Sample, T: SeparableTaps<N>, const N: usize>(
     let cx = T::TABLE[fx];
     let cy = T::TABLE[fy];
     let rows = if fy == 0 { h } else { h + N - 1 };
-    let mut horizontal = vec![0i32; rows * w];
+    let mut small = [0i32; 23 * 16];
+    let mut medium;
+    let mut heap;
+    let horizontal: &mut [i32] = if rows * w <= small.len() {
+        &mut small[..rows * w]
+    } else if rows * w <= 4096 {
+        medium = [0i32; 4096];
+        &mut medium[..rows * w]
+    } else {
+        heap = vec![0i32; rows * w];
+        &mut heap
+    };
     for (y, row) in horizontal.chunks_exact_mut(w).enumerate() {
         let input = source.row(y + if fy == 0 { before } else { 0 });
         for (x, out) in row.iter_mut().enumerate() {
@@ -140,7 +151,7 @@ fn interpolate<S: Sample, T: SeparableTaps<N>, const N: usize>(
 }
 
 /// H.266 alternate half-sample luma filter selected by AMVR half precision.
-struct HalfLumaTaps;
+pub(super) struct HalfLumaTaps;
 impl SeparableTaps<8> for HalfLumaTaps {
     const TABLE: &'static [[i16; 8]] = &{
         let mut taps = super::VVC_LUMA;

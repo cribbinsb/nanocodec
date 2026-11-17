@@ -89,6 +89,128 @@ pub(crate) fn add_clipped<T: Sample>(prediction: &mut [T], residual: &[i16], dep
     }
 }
 
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code, clippy::inline_always)]
+pub(crate) mod high_simd {
+    use nc_common::BitDepth;
+
+    use crate::simd::I16Lanes;
+
+    #[inline(always)]
+    fn add_row<W: I16Lanes, H: I16Lanes>(
+        prediction: &mut [u16],
+        residual: &[i16],
+        depth: BitDepth,
+    ) {
+        let len = prediction.len();
+        let residual = &residual[..len];
+        let max_w = W::splat(depth.max() as i16);
+        let max_h = H::splat(depth.max() as i16);
+        let zero_w = W::splat(0);
+        let zero_h = H::splat(0);
+        let mut x = 0;
+        while x + W::LANES <= len {
+            W::load_u16(&prediction[x..])
+                .add_sat(W::load(&residual[x..]))
+                .max(zero_w)
+                .min(max_w)
+                .store_u16(&mut prediction[x..]);
+            x += W::LANES;
+        }
+        while x + H::LANES <= len {
+            H::load_u16(&prediction[x..])
+                .add_sat(H::load(&residual[x..]))
+                .max(zero_h)
+                .min(max_h)
+                .store_u16(&mut prediction[x..]);
+            x += H::LANES;
+        }
+        while x < len {
+            prediction[x] = depth.clip_to(i32::from(prediction[x]) + i32::from(residual[x]));
+            x += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn add_strided<W: I16Lanes, H: I16Lanes>(
+        residual: &[i16],
+        n: usize,
+        dst: &mut [u16],
+        stride: usize,
+        depth: BitDepth,
+    ) {
+        for (row, line) in residual[..n * n].chunks_exact(n).enumerate() {
+            add_row::<W, H>(&mut dst[row * stride..row * stride + n], line, depth);
+        }
+    }
+
+    macro_rules! isa_add_residual {
+        ($mod_name:ident, $w:ty, $h:ty, $feature:literal) => {
+            pub(crate) mod $mod_name {
+                use nc_common::BitDepth;
+
+                use super::{add_row, add_strided};
+
+                #[target_feature(enable = $feature)]
+                pub(crate) unsafe fn add_clipped(
+                    prediction: &mut [u16],
+                    residual: &[i16],
+                    depth: BitDepth,
+                ) {
+                    add_row::<$w, $h>(prediction, residual, depth);
+                }
+
+                #[target_feature(enable = $feature)]
+                pub(crate) unsafe fn add_residual_strided(
+                    residual: &[i16],
+                    n: usize,
+                    dst: &mut [u16],
+                    stride: usize,
+                    depth: BitDepth,
+                ) {
+                    add_strided::<$w, $h>(residual, n, dst, stride, depth);
+                }
+            }
+        };
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    isa_add_residual!(
+        avx2,
+        crate::simd::avx2::I16x16,
+        crate::simd::avx2::I16x4,
+        "avx2"
+    );
+
+    #[cfg(target_arch = "x86_64")]
+    isa_add_residual!(
+        avx512,
+        crate::simd::avx512_i16::I16x32,
+        crate::simd::avx2::I16x4,
+        "avx512f,avx512bw,avx512vl"
+    );
+
+    #[cfg(target_arch = "aarch64")]
+    isa_add_residual!(
+        neon,
+        crate::simd::neon::I16x8,
+        crate::simd::neon::I16x4,
+        "neon"
+    );
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    isa_add_residual!(
+        simd128,
+        crate::simd::simd128::I16x8,
+        crate::simd::simd128::I16x4,
+        "simd128"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

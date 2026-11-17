@@ -1,7 +1,107 @@
 //! H.266 CCLM template selection and luma gathering; arithmetic uses shared DSP.
 use super::{Sequence, Unit, references::Availability};
-use nc_common::{BitDepth, Picture, PlaneIndex, Sample};
+use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView, Sample};
 use nc_dsp::{vvc_cclm_downsample, vvc_cclm_downsample_collocated, vvc_cclm_predict};
+
+const MAX_CHROMA_SIDE: usize = 32;
+
+#[inline]
+fn downsample_point<T: Sample>(
+    luma: &PlaneView<'_, T>,
+    (nx, ny): (usize, usize),
+    (left, above, collocated, ctu_log2): (bool, bool, bool, u8),
+    (cx, cy): (isize, isize),
+) -> T {
+    let (w_max, h_max) = (luma.width() as isize - 1, luma.height() as isize - 1);
+    let sample = |px: isize, py: isize| {
+        let sx = (nx as isize + px).clamp(0, w_max) as usize;
+        let sy = (ny as isize + py).clamp(0, h_max) as usize;
+        luma.row(sy)[sx]
+    };
+    let (px, mut py) = (2 * cx, 2 * cy);
+    let single_row = cy == -1 && ny.is_multiple_of(1 << ctu_log2);
+    if single_row {
+        py = -1;
+    }
+    let lx = if cx == 0 && !left { px } else { px - 1 };
+    if collocated && !single_row {
+        let uy = if cy == 0 && !above { py } else { py - 1 };
+        vvc_cclm_downsample_collocated([
+            sample(px, uy),
+            sample(lx, py),
+            sample(px, py),
+            sample(px + 1, py),
+            sample(px, py + 1),
+        ])
+    } else {
+        let dy = if single_row { py } else { py + 1 };
+        vvc_cclm_downsample([
+            sample(lx, py),
+            sample(px, py),
+            sample(px + 1, py),
+            sample(lx, dy),
+            sample(px, dy),
+            sample(px + 1, dy),
+        ])
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn downsample_block<T: Sample>(
+    luma: &PlaneView<'_, T>,
+    (nx, ny): (usize, usize),
+    (width, height): (usize, usize),
+    (left, above, collocated, ctu_log2): (bool, bool, bool, u8),
+    dst: &mut [T],
+) {
+    let interior_x = nx > 0 && nx + 2 * width < luma.width();
+    let interior_y = ny + 2 * height <= luma.height() && (!collocated || ny > 0);
+    if interior_x && interior_y {
+        for dy in 0..height {
+            let py = ny + 2 * dy;
+            let row0 = luma.row(py);
+            let out_row = &mut dst[dy * width..(dy + 1) * width];
+            if collocated {
+                let uy = if dy == 0 && !above { py } else { py - 1 };
+                let row_up = luma.row(uy);
+                let row_dn = luma.row((py + 1).min(luma.height() - 1));
+                for (dx, slot) in out_row.iter_mut().enumerate() {
+                    let px = nx + 2 * dx;
+                    let lx = if dx == 0 && !left { px } else { px - 1 };
+                    *slot = vvc_cclm_downsample_collocated([
+                        row_up[px],
+                        row0[lx],
+                        row0[px],
+                        row0[px + 1],
+                        row_dn[px],
+                    ]);
+                }
+            } else {
+                let row1 = luma.row(py + 1);
+                for (dx, slot) in out_row.iter_mut().enumerate() {
+                    let px = nx + 2 * dx;
+                    let lx = if dx == 0 && !left { px } else { px - 1 };
+                    *slot = vvc_cclm_downsample([
+                        row0[lx],
+                        row0[px],
+                        row0[px + 1],
+                        row1[lx],
+                        row1[px],
+                        row1[px + 1],
+                    ]);
+                }
+            }
+        }
+        return;
+    }
+    let flags = (left, above, collocated, ctu_log2);
+    for dy in 0..height {
+        for dx in 0..width {
+            dst[dy * width + dx] =
+                downsample_point(luma, (nx, ny), flags, (dx as isize, dy as isize));
+        }
+    }
+}
 
 /// CCLM prediction (H.266 §8.4.5.2.14) of chroma `plane` of `block` at
 /// `depth`.
@@ -21,41 +121,7 @@ pub(super) fn predict<T: Sample>(
     let luma = picture.plane(PlaneIndex::Y).view();
     let chroma = picture.plane(plane).view();
     let collocated = sequence.tools.chroma_collocated[1];
-    // Coordinates are relative to the luma block. Only unavailable left/top
-    // taps are replicated; templates themselves are selected by availability.
-    let sample = |px: isize, py: isize| {
-        let px = (n.x as isize + px).clamp(0, luma.width() as isize - 1) as usize;
-        let py = (n.y as isize + py).clamp(0, luma.height() as isize - 1) as usize;
-        luma.row(py)[px]
-    };
-    let downsample = |cx: isize, cy: isize| {
-        let (px, mut py) = (2 * cx, 2 * cy);
-        let single_row = cy == -1 && n.y.is_multiple_of(1 << sequence.ctu_log2);
-        if single_row {
-            py = -1;
-        }
-        let lx = if cx == 0 && !left { px } else { px - 1 };
-        if collocated && !single_row {
-            let uy = if cy == 0 && !above { py } else { py - 1 };
-            vvc_cclm_downsample_collocated([
-                sample(px, uy),
-                sample(lx, py),
-                sample(px, py),
-                sample(px + 1, py),
-                sample(px, py + 1),
-            ])
-        } else {
-            let dy = if single_row { py } else { py + 1 };
-            vvc_cclm_downsample([
-                sample(lx, py),
-                sample(px, py),
-                sample(px + 1, py),
-                sample(lx, dy),
-                sample(px, dy),
-                sample(px + 1, dy),
-            ])
-        }
-    };
+    let flags = (left, above, collocated, sequence.ctu_log2);
     let mut top_count = if above && unit.chroma_mode != 68 {
         width
     } else {
@@ -76,7 +142,8 @@ pub(super) fn predict<T: Sample>(
             .take_while(|&dy| available.has(1, x as isize - 1, (y + dy) as isize))
             .count();
     }
-    let mut pairs = Vec::with_capacity(4);
+    let mut pairs = [[T::default(); 2]; 4];
+    let mut pair_count = 0usize;
     for (top, count, other) in [
         (true, top_count, left_count),
         (false, left_count, top_count),
@@ -95,11 +162,12 @@ pub(super) fn predict<T: Sample>(
                 (-1, position as isize)
             };
             let value = chroma.row((y as isize + cy) as usize)[(x as isize + cx) as usize];
-            pairs.push([downsample(cx, cy), value]);
+            pairs[pair_count] = [downsample_point(&luma, (n.x, n.y), flags, (cx, cy)), value];
+            pair_count += 1;
         }
     }
-    let values: Vec<_> = (0..height)
-        .flat_map(|dy| (0..width).map(move |dx| downsample(dx as isize, dy as isize)))
-        .collect();
-    vvc_cclm_predict(&values, &pairs, out, depth);
+    let mut values = [T::default(); MAX_CHROMA_SIDE * MAX_CHROMA_SIDE];
+    let values = &mut values[..width * height];
+    downsample_block(&luma, (n.x, n.y), (width, height), flags, values);
+    vvc_cclm_predict(values, &pairs[..pair_count], out, depth);
 }

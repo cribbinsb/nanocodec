@@ -31,6 +31,12 @@
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 pub(crate) mod avx2;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) mod high;
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon;

@@ -50,12 +50,29 @@ mod simd128;
 
 mod clipped;
 mod cross;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code)]
+pub(crate) mod high_classify;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code)]
+pub(crate) mod high_simd;
 
 use nc_common::{BitDepth, Sample};
 
 use crate::Isa;
 
-pub(crate) use clipped::{check_chroma_row, check_clipped_row, chroma_row_at, clipped_row_at};
+pub(crate) use clipped::{
+    check_chroma_row, check_clipped_block_row, check_clipped_row, chroma_row_at,
+    clipped_block_row_at, clipped_row_at,
+};
 pub(crate) use cross::{check_cross_row, cross_row_at};
 
 /// The deepest samples the ALF kernels take: VVC Main 10. Up to here a
@@ -365,7 +382,7 @@ fn filter_row(rows: &[&[u8]; 7], coefficients: &[[i16; VVC_ALF_TAPS]], shift: u3
 /// identity at every depth: `AlfClip[0] = 2^BitDepth` exceeds every sample
 /// difference). `rows` and `coefficients` as for one row of
 /// [`FilterBlockRowFn`].
-fn filter_row_at<T: Sample>(
+pub(super) fn filter_row_at<T: Sample>(
     rows: &[&[T]; 7],
     coefficients: &[[i16; VVC_ALF_TAPS]],
     shift: u32,

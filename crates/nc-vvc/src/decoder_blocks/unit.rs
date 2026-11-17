@@ -102,15 +102,15 @@ impl Parser<'_> {
         }
         let node = unit.node;
         let index = self.units.len();
-        for y in (node.y..node.y + node.height).step_by(4) {
-            for x in (node.x..node.x + node.width).step_by(4) {
-                for channel in if unit.combined {
-                    0..2
-                } else {
-                    unit.channel..unit.channel + 1
-                } {
-                    self.grid[channel][y / 4 * self.stride + x / 4] = Some(index);
-                }
+        let cols = node.width.div_ceil(4);
+        for channel in if unit.combined {
+            0..2
+        } else {
+            unit.channel..unit.channel + 1
+        } {
+            for y in (node.y..node.y + node.height).step_by(4) {
+                let base = (y >> 2) * self.stride + (node.x >> 2);
+                self.grid[channel][base..base + cols].fill(Some(index));
             }
         }
         self.units.push(unit);

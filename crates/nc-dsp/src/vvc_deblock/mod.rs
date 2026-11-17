@@ -485,6 +485,12 @@ pub(crate) type LumaEdgeFn = unsafe fn(&mut [u8], &VvcLumaEdge);
 pub(crate) type LumaFn = unsafe fn(&mut [[u8; 16]; 4], i32, i32, [usize; 2]);
 pub(crate) type ChromaEdgeFn = unsafe fn(&mut [u8], &ChromaEdge);
 pub(crate) type ChromaFn = unsafe fn(&mut [[u8; 8]; 2], i32, i32, bool, bool);
+pub(crate) type Kernels16 = (
+    unsafe fn(&mut [u16], &VvcLumaEdge, BitDepth),
+    unsafe fn(&mut [[u16; 16]; 4], i32, i32, [usize; 2], BitDepth),
+    unsafe fn(&mut [u16], &ChromaEdge, BitDepth),
+    unsafe fn(&mut [[u16; 8]; 2], i32, i32, bool, bool, BitDepth),
+);
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
     pub luma: LumaFn,
@@ -506,10 +512,32 @@ pub(crate) fn kernels(isa: crate::Isa) -> Kernels {
         },
         #[cfg(target_arch = "x86_64")]
         crate::Isa::Avx2 => avx2::kernels(),
+        #[cfg(target_arch = "x86_64")]
+        crate::Isa::Avx512 => avx512::kernels(),
         #[cfg(target_arch = "aarch64")]
         crate::Isa::Neon => neon::kernels(),
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         crate::Isa::Simd128 => simd128::kernels(),
+        #[allow(unreachable_patterns)]
+        _ => unreachable!("unsupported ISA"),
+    }
+}
+pub(crate) fn kernels_u16(isa: crate::Isa) -> Kernels16 {
+    match isa {
+        crate::Isa::Scalar => (
+            luma_edge_at::<u16>,
+            luma_at::<u16>,
+            chroma_edge_at::<u16>,
+            chroma_at::<u16>,
+        ),
+        #[cfg(target_arch = "x86_64")]
+        crate::Isa::Avx2 => avx2::kernels_u16(),
+        #[cfg(target_arch = "x86_64")]
+        crate::Isa::Avx512 => avx512::kernels_u16(),
+        #[cfg(target_arch = "aarch64")]
+        crate::Isa::Neon => neon::kernels_u16(),
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        crate::Isa::Simd128 => simd128::kernels_u16(),
         #[allow(unreachable_patterns)]
         _ => unreachable!("unsupported ISA"),
     }
@@ -519,6 +547,16 @@ pub(crate) fn kernels(isa: crate::Isa) -> Kernels {
 mod avx2 {
     use crate::simd::avx2::{I16x8, I32x4};
     super::generic::kernels!(#[target_feature(enable = "avx2")]; I32x4, I16x8);
+}
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx512 {
+    use crate::simd::avx2::{I16x8, I32x4};
+    super::generic::kernels!(
+        #[target_feature(enable = "avx512f,avx512bw,avx512vl")];
+        I32x4,
+        I16x8
+    );
 }
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]

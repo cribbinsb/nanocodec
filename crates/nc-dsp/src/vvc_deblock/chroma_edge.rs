@@ -1,7 +1,7 @@
 //! H.266 §8.8.3.6.5 chroma deblocking in place, up to eight lines.
 //! Each adjacent pair independently chooses strong or weak filtering. Plane
 //! access shares HEVC's row loads/transposes; every arithmetic intermediate
-//! fits i16 (the largest weighted sum is 8 * 255 before rounding).
+//! fits i16 up to 10 bits (the largest weighted sum is `8 * 1023 + 4 = 8188`).
 #![allow(unsafe_code, clippy::inline_always)]
 
 use nc_common::{BitDepth, Sample};
@@ -62,16 +62,20 @@ fn clip<V: I16FilterLanes>(value: V, original: V, tc: V) -> V {
     value.max(original.sub(tc)).min(original.add(tc))
 }
 
+#[inline(always)]
+fn side_derivative<V: I16FilterLanes>(s: &[V; 4]) -> V {
+    s[2].sub(times(s[1], 2)).add(s[0]).abs()
+}
+
 /// One all-ones/zero decision mask repeated across each two-line segment.
 #[inline(always)]
 fn strong_mask<V: I16x8Shuffles + I16FilterLanes>(p: &[V; 4], q: &[V; 4], e: &ChromaEdge) -> V {
-    let derivative = |s: &[V; 4]| s[2].sub(times(s[1], 2)).add(s[0]).abs();
     let activity = (if e.boundary {
         p[1].sub(p[0]).abs()
     } else {
-        derivative(p)
+        side_derivative(p)
     })
-    .add(derivative(q));
+    .add(side_derivative(q));
     let spread = p[if e.boundary { 1 } else { 3 }]
         .sub(p[0])
         .abs()
@@ -150,13 +154,13 @@ fn strong<V: I16FilterLanes>(
     out
 }
 
-/// # Safety
-/// The caller enables V's ISA and validates all p3..q3 samples.
 #[inline(always)]
-pub(super) unsafe fn simd<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e: &ChromaEdge) {
-    let values = samples::load::<V>(plane, &e.samples);
-    let p: [V; 4] = std::array::from_fn(|i| values[3 - i]);
-    let q: [V; 4] = std::array::from_fn(|i| values[4 + i]);
+fn compute_chroma<V: I16x8Shuffles + I16FilterLanes>(
+    values: [V; POSITIONS],
+    e: &ChromaEdge,
+) -> ([V; POSITIONS], (usize, usize)) {
+    let p = [values[3], values[2], values[1], values[0]];
+    let q = [values[4], values[5], values[6], values[7]];
     let tc = V::splat(e.tc as i16);
     let delta = round(times(q[0].sub(p[0]), 4).add(p[1]).sub(q[1]))
         .max(V::splat(0).sub(tc))
@@ -177,5 +181,31 @@ pub(super) unsafe fn simd<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e
             range = (if e.boundary { 3 } else { 1 }, 7);
         }
     }
+    (out, range)
+}
+
+/// # Safety
+/// The caller enables V's ISA and validates all p3..q3 samples.
+#[inline(always)]
+pub(super) unsafe fn simd<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e: &ChromaEdge) {
+    let values = samples::load::<V>(plane, &e.samples);
+    let (out, range) = compute_chroma(values, e);
     samples::store(plane, &e.samples, out, range);
+}
+
+/// # Safety
+/// The caller enables V's ISA and validates all p3..q3 samples.
+#[inline(always)]
+pub(super) unsafe fn simd_u16<V: I16x8Shuffles + I16FilterLanes>(
+    plane: &mut [u16],
+    e: &ChromaEdge,
+    depth: BitDepth,
+) {
+    if depth.bits() > 10 {
+        scalar_at(plane, e, depth);
+        return;
+    }
+    let values = samples::load_u16::<V>(plane, &e.samples);
+    let (out, range) = compute_chroma(values, e);
+    samples::store_u16(plane, &e.samples, out, range, depth.max() as i16);
 }

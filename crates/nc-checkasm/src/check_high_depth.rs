@@ -1158,6 +1158,7 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
     check_vp9_mc((cand, refer), rng, report);
     check_vp9_deblock((cand, refer), rng, report);
     check_hevc_vvc_high((cand, refer), rng, report);
+    crate::check_vvc_high::check(candidate, reference, rng, report);
 }
 
 /// The HEVC and VVC Main 10 kernels.

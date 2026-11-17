@@ -17,8 +17,7 @@ macro_rules! vectorised {
     ($feature:literal) => {
         use nc_common::BitDepth;
 
-        use crate::hevc_weight::HevcWeights;
-        use crate::high_depth::{Bi16Fn, Convolve16Fn, Prep16Fn, Vp9Mc16Fn, Weight16Fn};
+        use crate::high_depth::{Bi16Fn, Convolve16Fn, Prep16Fn, Vp9Mc16Fn};
         use crate::mc::SeparableTaps;
         use crate::mc::scalar::{hevc_bi_at, hevc_prep_at, separable_at};
 
@@ -71,23 +70,6 @@ macro_rules! vectorised {
 
         /// # Safety
         /// As [`predict`].
-        #[allow(clippy::too_many_arguments)]
-        #[target_feature(enable = $feature)]
-        pub(crate) unsafe fn weight(
-            weights: &HevcWeights,
-            a: &[i16],
-            b: &[i16],
-            w: usize,
-            h: usize,
-            dst: &mut [u16],
-            ds: usize,
-            depth: BitDepth,
-        ) {
-            crate::hevc_weight::reference::weight_at(weights, a, b, w, h, dst, ds, depth);
-        }
-
-        /// # Safety
-        /// As [`predict`].
         #[target_feature(enable = $feature)]
         pub(crate) unsafe fn vp9_mc<const W: usize>(
             window: (&[u16], usize),
@@ -115,7 +97,6 @@ macro_rules! vectorised {
         }
 
         /// The kernels for [`super::super::HighFns`].
-        pub(crate) const WEIGHT: Weight16Fn = weight;
         pub(crate) const PREDICT: [[Convolve16Fn; 5]; 5] = crate::high_depth::families!(predict);
         pub(crate) const PREP: [[Prep16Fn; 5]; 5] = crate::high_depth::families!(prep);
         pub(crate) const BI: [[Bi16Fn; 5]; 5] = crate::high_depth::families!(bi);
@@ -126,6 +107,11 @@ macro_rules! vectorised {
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2 {
     vectorised!("avx2");
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avx512 {
+    vectorised!("avx512f,avx512bw,avx512vl");
 }
 
 #[cfg(target_arch = "aarch64")]

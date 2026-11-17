@@ -4,8 +4,8 @@
 use nc_common::{BitDepth, Sample};
 
 use super::{VvcIntraMode, angular::CUBIC};
-const MAX_SIDE: usize = 64;
-const ORIGIN: usize = MAX_SIDE;
+pub(super) const MAX_SIDE: usize = 64;
+pub(super) const ORIGIN: usize = MAX_SIDE;
 const ANGLES: [i32; 32] = [
     0, 1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 23, 26, 29, 32, 35, 39, 45, 51, 57, 64, 73, 86,
     102, 128, 171, 256, 341, 512, 1024,
@@ -148,17 +148,17 @@ fn smooth<T: Sample>(
     }
 }
 
-struct Projection {
-    vertical: bool,
-    angle: i32,
-    inverse: i32,
-    gaussian: bool,
-    main: [i32; 5 * MAX_SIDE + 8],
-    side: [i32; 2 * MAX_SIDE + 4],
+pub(super) struct Projection {
+    pub(super) vertical: bool,
+    pub(super) angle: i32,
+    pub(super) inverse: i32,
+    pub(super) gaussian: bool,
+    pub(super) main: [i32; 5 * MAX_SIDE + 8],
+    pub(super) side: [i32; 2 * MAX_SIDE + 4],
 }
 impl Projection {
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub(super) fn new(
         width: usize,
         height: usize,
         direction: u8,

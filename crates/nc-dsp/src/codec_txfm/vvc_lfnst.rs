@@ -2,7 +2,7 @@
 //! Normative tables and rearrangement follow BSD-Clear `VVdeC` (`THIRD_PARTY.md`).
 use nc_common::BitDepth;
 
-use super::vvc_primary::{self, VvcTransformKind};
+use super::vvc_primary::VvcTransformKind;
 use crate::Dsp;
 #[path = "vvc_lfnst_tables.rs"]
 mod tables;
@@ -127,12 +127,13 @@ impl Dsp {
         assert!(valid(transform.prediction_size.0) && valid(transform.prediction_size.1));
         let length = width * height;
         assert!(levels.len() >= length && out.len() >= length);
-        let mut scaled = [0; 4096];
         let scaling = super::vvc_inverse::scaling(size, qp, dependent, depth);
-        self.vvc_scale(&levels[..length], &scaling, &mut scaled[..length]);
-        inverse(size, transform, &mut scaled[..length]);
-        let kinds = [VvcTransformKind::Dct2; 2];
-        vvc_primary::inverse(size, kinds, &scaled[..length], out, depth);
+        crate::vvc_mts::with_scratch(length, |scaled| {
+            self.vvc_scale(&levels[..length], &scaling, &mut scaled[..length]);
+            inverse(size, transform, &mut scaled[..length]);
+            let kinds = [VvcTransformKind::Dct2; 2];
+            self.vvc_inverse_kinds_at(size, kinds, &scaled[..length], out, depth);
+        });
     }
 }
 

@@ -109,6 +109,94 @@ impl Fetch {
         }
         y.clamp(self.rows.0, self.rows.1) as usize
     }
+    /// Fill `dst` from `source` starting at column `x0`, using contiguous
+    /// slice copies and edge fills when wrap-around is inactive.
+    pub fn fill_row<T: Copy>(self, source: &[T], x0: i32, dst: &mut [T]) {
+        if self.wrap.is_some() {
+            for (i, pixel) in dst.iter_mut().enumerate() {
+                *pixel = source[self.column(x0 + i as i32)];
+            }
+            return;
+        }
+        let len = dst.len() as i32;
+        if len == 0 {
+            return;
+        }
+        let (min_x, max_x) = match self.bounds {
+            Some(b) => (
+                b.minimum.0.clamp(self.columns.0, self.columns.1),
+                b.maximum.0.clamp(self.columns.0, self.columns.1),
+            ),
+            None => self.columns,
+        };
+        let left_pad = (min_x - x0).clamp(0, len) as usize;
+        let right_start = (max_x + 1 - x0).clamp(left_pad as i32, len) as usize;
+        let mid_len = right_start - left_pad;
+        if left_pad > 0 {
+            dst[..left_pad].fill(source[min_x as usize]);
+        }
+        if mid_len > 0 {
+            let src_start = (x0 + left_pad as i32) as usize;
+            dst[left_pad..right_start].copy_from_slice(&source[src_start..src_start + mid_len]);
+        }
+        if right_start < dst.len() {
+            dst[right_start..].fill(source[max_x as usize]);
+        }
+    }
+    /// Fill an entire `(w, h)` window starting at `origin`, hoisting horizontal
+    /// and vertical clamp bounds out of the row loop.
+    pub fn fill_window<T: Sample>(
+        self,
+        view: &PlaneView<'_, T>,
+        origin: (i32, i32),
+        (w, _h): (usize, usize),
+        samples: &mut [T],
+    ) {
+        if self.wrap.is_some() || w == 0 {
+            for (y, row) in samples.chunks_exact_mut(w).enumerate() {
+                self.fill_row(view.row(self.row(origin.1 + y as i32)), origin.0, row);
+            }
+            return;
+        }
+        let ((min_x, max_x), (min_y, max_y)) = match self.bounds {
+            Some(b) => (
+                (
+                    b.minimum.0.clamp(self.columns.0, self.columns.1),
+                    b.maximum.0.clamp(self.columns.0, self.columns.1),
+                ),
+                (
+                    b.minimum.1.clamp(self.rows.0, self.rows.1),
+                    b.maximum.1.clamp(self.rows.0, self.rows.1),
+                ),
+            ),
+            None => (self.columns, self.rows),
+        };
+        let len = w as i32;
+        let left_pad = (min_x - origin.0).clamp(0, len) as usize;
+        let right_start = (max_x + 1 - origin.0).clamp(left_pad as i32, len) as usize;
+        let mid_len = right_start - left_pad;
+        let src_start = (origin.0 + left_pad as i32) as usize;
+        if left_pad == 0 && right_start == w {
+            for (y, row) in samples.chunks_exact_mut(w).enumerate() {
+                let ry = (origin.1 + y as i32).clamp(min_y, max_y) as usize;
+                row.copy_from_slice(&view.row(ry)[src_start..src_start + w]);
+            }
+            return;
+        }
+        let (min_xu, max_xu) = (min_x as usize, max_x as usize);
+        for (y, row) in samples.chunks_exact_mut(w).enumerate() {
+            let src = view.row((origin.1 + y as i32).clamp(min_y, max_y) as usize);
+            if left_pad > 0 {
+                row[..left_pad].fill(src[min_xu]);
+            }
+            if mid_len > 0 {
+                row[left_pad..right_start].copy_from_slice(&src[src_start..src_start + mid_len]);
+            }
+            if right_start < w {
+                row[right_start..].fill(src[max_xu]);
+            }
+        }
+    }
 }
 
 pub(crate) fn derive<T: Pixel>(
@@ -218,12 +306,7 @@ fn bilinear<T: Pixel>(
     let pixels = &mut scratch[..w * h];
     let view = reference.view();
     let fetch = Fetch::new(reference, None, edges);
-    for (y, row) in pixels.chunks_exact_mut(w).enumerate() {
-        let source = view.row(fetch.row(origin.1 + y as i32));
-        for (x, pixel) in row.iter_mut().enumerate() {
-            *pixel = source[fetch.column(origin.0 + x as i32)];
-        }
-    }
+    fetch.fill_window(&view, origin, (w, h), pixels);
     dsp.vvc_dmvr_bilinear(size, &PlaneView::new(pixels, w, w, h).unwrap(), phases, out);
 }
 
@@ -240,8 +323,13 @@ fn refined(mut motion: Motion, delta: Mv16) -> Motion {
     }
     motion
 }
-pub(super) fn temporal(unit: &Unit, x: usize, y: usize) -> Option<Motion> {
-    let motion = super::motion::at(unit, x, y)?;
+pub(super) fn temporal_with_fields(
+    unit: &Unit,
+    x: usize,
+    y: usize,
+    fields: [Option<crate::affine::Field>; 2],
+) -> Option<Motion> {
+    let motion = super::motion::at_with_fields(unit, x, y, fields)?;
     if unit.dmvr.is_empty() {
         return Some(motion);
     }
@@ -256,6 +344,7 @@ pub(super) fn predict<T: Pixel>(
     unit: &Unit,
     plane: PlaneIndex,
     block: nc_encoder::Block,
+    scratch: &mut super::inter_prediction::InterScratch<T>,
     out: &mut [T],
 ) {
     let chroma = usize::from(plane != PlaneIndex::Y);
@@ -263,11 +352,15 @@ pub(super) fn predict<T: Pixel>(
     let size = (block.width() >> chroma, block.height() >> chroma);
     let step = 16 >> chroma;
     let base = unit.motion.unwrap();
-    // The active rectangles vary at region boundaries, but never exceed 16².
-    // Keep both predictions, their optical-flow borders and output reusable.
-    let mut samples = [[0i16; REGION_SIDE * REGION_SIDE]; 2];
-    let mut padded = [[0i16; OPTICAL_SIDE * OPTICAL_SIDE]; 2];
-    let mut pixels = [T::default(); REGION_SIDE * REGION_SIDE];
+    let (s0, p0_rest) = scratch.s0.split_at_mut(REGION_SIDE * REGION_SIDE);
+    let (s1, p1_rest) = scratch.s1.split_at_mut(REGION_SIDE * REGION_SIDE);
+    let samples = [s0, s1];
+    let padded = [
+        &mut p0_rest[..OPTICAL_SIDE * OPTICAL_SIDE],
+        &mut p1_rest[..OPTICAL_SIDE * OPTICAL_SIDE],
+    ];
+    let pixels = &mut scratch.pixels;
+    let window_buf = &mut scratch.window[..23 * 23];
     for y in (0..size.1).step_by(step) {
         for x in (0..size.0).step_by(step) {
             let (width, height) = (step.min(size.0 - x), step.min(size.1 - y));
@@ -283,8 +376,6 @@ pub(super) fn predict<T: Pixel>(
                     references.pictures[list][usize::from(vector.reference)].plane(plane);
                 let at = (position.0 + x, position.1 + y);
                 let bits = 4 + chroma;
-                // Reference padding is needed only if refinement changes the
-                // integer origin; fractional-only refinement uses the normal window.
                 let bounds = region
                     .filter(|_| {
                         (original.x >> bits, original.y >> bits)
@@ -311,7 +402,8 @@ pub(super) fn predict<T: Pixel>(
                     vector.vector,
                     (chroma == 0, motion.half, false),
                     (bounds, references.edges(plane)),
-                    &mut samples[list],
+                    Some(window_buf),
+                    samples[list],
                 );
                 if bdof {
                     padding(
@@ -320,22 +412,21 @@ pub(super) fn predict<T: Pixel>(
                         (width, height),
                         vector.vector,
                         (bounds, references.edges(plane)),
-                        &samples[list],
+                        samples[list],
                         &mut padded[list][..(width + 2) * (height + 2)],
                     );
                 }
             }
             if bdof {
-                dsp.vvc_bdof((width, height), [&padded[0], &padded[1]], &mut pixels);
+                dsp.vvc_bdof((width, height), [padded[0], padded[1]], pixels);
             } else {
-                // A refined block has no signalled weights (`derive`).
                 super::inter_prediction::combine(
                     dsp,
                     (motion, None, plane),
-                    &samples[0],
-                    &samples[1],
+                    samples[0],
+                    samples[1],
                     (width, height),
-                    &mut pixels,
+                    pixels,
                 );
             }
             for row in 0..height {
@@ -368,14 +459,87 @@ pub(super) fn padding<T: Pixel>(
     let fetch = Fetch::new(reference, bounds, edges);
     let shift = PRECISION - BitDepth::of::<T>(depth).bits();
     assert_eq!(samples.len(), stride * (height + 2));
-    for (y, row) in samples.chunks_exact_mut(stride).enumerate() {
-        let source = view.row(fetch.row(origin.1 + y as i32 - 1));
-        for (x, value) in row.iter_mut().enumerate() {
-            if y > 0 && y <= height && x > 0 && x <= width {
-                *value = interior[(y - 1) * width + x - 1];
-            } else {
-                *value = (source[fetch.column(origin.0 + x as i32 - 1)].to_i32() << shift) as i16;
+    if fetch.wrap.is_none() {
+        let ((min_x, max_x), (min_y, max_y)) = match fetch.bounds {
+            Some(b) => (
+                (
+                    b.minimum.0.clamp(fetch.columns.0, fetch.columns.1),
+                    b.maximum.0.clamp(fetch.columns.0, fetch.columns.1),
+                ),
+                (
+                    b.minimum.1.clamp(fetch.rows.0, fetch.rows.1),
+                    b.maximum.1.clamp(fetch.rows.0, fetch.rows.1),
+                ),
+            ),
+            None => (fetch.columns, fetch.rows),
+        };
+        if origin.0 > min_x
+            && origin.0 + width as i32 <= max_x
+            && origin.1 > min_y
+            && origin.1 + height as i32 <= max_y
+        {
+            let x_l = (origin.0 - 1) as usize;
+            let y_t = (origin.1 - 1) as usize;
+            let ref_stride = view.stride();
+            let base = y_t * ref_stride + x_l;
+            let span = (height + 1) * ref_stride + stride;
+            let data = &view.data()[base..base + span];
+            for (d, &s) in samples[..stride].iter_mut().zip(&data[..stride]) {
+                *d = (s.to_i32() << shift) as i16;
             }
+            for ((row, int_row), src) in samples[stride..(height + 1) * stride]
+                .chunks_exact_mut(stride)
+                .zip(interior.chunks_exact(width))
+                .zip(data[ref_stride..].chunks(ref_stride))
+            {
+                row[0] = (src[0].to_i32() << shift) as i16;
+                row[1..=width].copy_from_slice(int_row);
+                row[width + 1] = (src[width + 1].to_i32() << shift) as i16;
+            }
+            let bot = &data[(height + 1) * ref_stride..][..stride];
+            for (d, &s) in samples[(height + 1) * stride..].iter_mut().zip(bot) {
+                *d = (s.to_i32() << shift) as i16;
+            }
+            return;
         }
+    }
+    let top_src = view.row(fetch.row(origin.1 - 1));
+    fill_scaled_row(fetch, top_src, origin.0 - 1, shift, &mut samples[..stride]);
+    for y in 1..=height {
+        let src = view.row(fetch.row(origin.1 + y as i32 - 1));
+        let row = &mut samples[y * stride..(y + 1) * stride];
+        row[0] = (src[fetch.column(origin.0 - 1)].to_i32() << shift) as i16;
+        row[1..=width].copy_from_slice(&interior[(y - 1) * width..y * width]);
+        row[width + 1] = (src[fetch.column(origin.0 + width as i32)].to_i32() << shift) as i16;
+    }
+    let bot_src = view.row(fetch.row(origin.1 + height as i32));
+    fill_scaled_row(
+        fetch,
+        bot_src,
+        origin.0 - 1,
+        shift,
+        &mut samples[(height + 1) * stride..],
+    );
+}
+
+fn fill_scaled_row<T: Sample>(fetch: Fetch, source: &[T], x0: i32, shift: u32, dst: &mut [i16]) {
+    if fetch.wrap.is_none() {
+        let (min_x, max_x) = match fetch.bounds {
+            Some(b) => (
+                b.minimum.0.clamp(fetch.columns.0, fetch.columns.1),
+                b.maximum.0.clamp(fetch.columns.0, fetch.columns.1),
+            ),
+            None => fetch.columns,
+        };
+        let len = dst.len() as i32;
+        if x0 >= min_x && x0 + len - 1 <= max_x {
+            for (out, &s) in dst.iter_mut().zip(&source[x0 as usize..]) {
+                *out = (s.to_i32() << shift) as i16;
+            }
+            return;
+        }
+    }
+    for (x, out) in dst.iter_mut().enumerate() {
+        *out = (source[fetch.column(x0 + x as i32)].to_i32() << shift) as i16;
     }
 }

@@ -86,15 +86,17 @@ pub(crate) fn apply<T: Pixel>(
             f
         })
         .collect();
-    let analysis = Analysis::new((dsp, depth), picture, ctu, |i| whole[i].alf[0].is_some());
-    let depth = depth.of::<T>();
-    filter_luma(&analysis, picture, &whole, (banks, depth))?;
+    let depth_t = depth.of::<T>();
+    if whole.iter().any(|f| f.alf[0].is_some()) {
+        let analysis = Analysis::new((dsp, depth), picture, ctu, |i| whole[i].alf[0].is_some());
+        filter_luma(&analysis, picture, &whole, (banks, depth_t))?;
+    }
     for (filter, analysis) in &regions {
         filter_luma(
             analysis,
             picture,
             std::slice::from_ref(filter),
-            (banks, depth),
+            (banks, depth_t),
         )?;
     }
     Ok(())
@@ -108,11 +110,13 @@ fn filter_luma<T: Pixel>(
     filters: &[CtuFilters],
     (banks, depth): (&[Option<Box<Adaptation>>; 8], BitDepth),
 ) -> Result<()> {
-    let fixed: Vec<_> = filters
-        .iter()
-        .map(|f| f.alf[0].filter(|&i| i < 16).map(CtbFilter::Fixed))
-        .collect();
-    analysis.apply(picture, &fixed, None);
+    if filters.iter().any(|f| matches!(f.alf[0], Some(0..16))) {
+        let fixed: Vec<_> = filters
+            .iter()
+            .map(|f| f.alf[0].filter(|&i| i < 16).map(CtbFilter::Fixed))
+            .collect();
+        analysis.apply(picture, &fixed, None);
+    }
     // Every bank sees the pre-ALF samples retained by the analysis.
     let mut ids: Vec<u8> = filters.iter().filter_map(|f| f.banks.luma).collect();
     ids.sort_unstable();

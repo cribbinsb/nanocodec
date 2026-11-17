@@ -26,31 +26,76 @@
 use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 use super::{DepthKernels, Pixel};
+use crate::simd::HIGH_LOOKUP_TABLE;
 use crate::vvc_intra::{self, VvcIntraMode, rectangular};
 use crate::vvc_recon::{add_clipped, check_add_residual};
-use crate::{VvcLfnst, VvcLmcs, VvcTransformKind};
+use crate::{Isa, VvcLfnst, VvcLmcs, VvcTransformKind};
 
 /// The square intra predictor at a depth (`crate::vvc_intra::PredictFn`
 /// with the depth).
 pub(crate) type VvcIntra16Fn =
     unsafe fn(usize, VvcIntraMode, &[i32], &[i32], i32, bool, &mut [u16], BitDepth) -> bool;
+/// The rectangular intra predictor at a depth.
+pub(crate) type VvcIntraRect16Fn =
+    unsafe fn(usize, usize, VvcIntraMode, &[i32], &[i32], i32, &mut [u16], BitDepth);
 /// Add a packed residual to a packed prediction, clipping to the depth.
 pub(crate) type VvcAddResidual16Fn = unsafe fn(&mut [u16], &[i16], BitDepth);
+/// Map `u16` luma samples in place through an LMCS table.
+pub(crate) type VvcLmcsMap16Fn = unsafe fn(&[i16; HIGH_LOOKUP_TABLE], &mut [u16]);
 
-/// The `u16` VVC reconstruction kernels of one ISA: the scalar references
-/// on every ISA until profiling shows a path worth a vector kernel.
+/// The `u16` VVC reconstruction kernels of one ISA.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VvcReconFns {
     pub intra: VvcIntra16Fn,
+    pub intra_rect: VvcIntraRect16Fn,
     pub add_residual: VvcAddResidual16Fn,
+    pub lmcs_map: VvcLmcsMap16Fn,
 }
 
 impl VvcReconFns {
     /// The scalar references at `u16`.
     pub(crate) const SCALAR: Self = Self {
         intra: vvc_intra::scalar_at::<u16>,
+        intra_rect: rectangular::predict::<u16>,
         add_residual: add_clipped::<u16>,
+        lmcs_map: crate::vvc_lmcs::map_u16_scalar,
     };
+
+    pub(crate) fn for_isa(isa: Isa) -> Self {
+        let mut fns = Self::SCALAR;
+        match isa {
+            #[cfg(target_arch = "x86_64")]
+            Isa::Avx2 => {
+                fns.intra = vvc_intra::high_simd::avx2::predict;
+                fns.intra_rect = vvc_intra::high_simd::avx2::predict_rect;
+                fns.add_residual = crate::vvc_recon::high_simd::avx2::add_clipped;
+                fns.lmcs_map = crate::vvc_lmcs::high_simd::map_avx2;
+            }
+            #[cfg(target_arch = "x86_64")]
+            Isa::Avx512 => {
+                fns.intra = vvc_intra::high_simd::avx512::predict;
+                fns.intra_rect = vvc_intra::high_simd::avx512::predict_rect;
+                fns.add_residual = crate::vvc_recon::high_simd::avx512::add_clipped;
+                fns.lmcs_map = crate::vvc_lmcs::high_simd::map_avx512;
+            }
+            #[cfg(target_arch = "aarch64")]
+            Isa::Neon => {
+                fns.intra = vvc_intra::high_simd::neon::predict;
+                fns.intra_rect = vvc_intra::high_simd::neon::predict_rect;
+                fns.add_residual = crate::vvc_recon::high_simd::neon::add_clipped;
+                fns.lmcs_map = crate::vvc_lmcs::high_simd::map_neon;
+            }
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            Isa::Simd128 => {
+                fns.intra = vvc_intra::high_simd::simd128::predict;
+                fns.intra_rect = vvc_intra::high_simd::simd128::predict_rect;
+                fns.add_residual = crate::vvc_recon::high_simd::simd128::add_clipped;
+                fns.lmcs_map = crate::vvc_lmcs::high_simd::map_simd128;
+            }
+            _ => {}
+        }
+        fns
+    }
 }
 
 /// The routing of the VVC kernels that have 8-bit SIMD tiers (a part of
@@ -80,6 +125,14 @@ pub trait VvcReconPixel: Sample {
         size: (usize, usize),
         prediction: &mut [Self],
         residual: &[i16],
+    );
+    #[doc(hidden)]
+    fn vvc_forward_lmcs(kernels: DepthKernels<'_>, model: &VvcLmcs<Self>, samples: &mut [Self]);
+    #[doc(hidden)]
+    fn vvc_inverse_lmcs(
+        kernels: DepthKernels<'_>,
+        model: &VvcLmcs<Self>,
+        plane: &mut PlaneViewMut<'_, Self>,
     );
 }
 
@@ -123,6 +176,18 @@ impl VvcReconPixel for u8 {
         residual: &[i16],
     ) {
         kernels.dsp.vvc_add_residual(size, prediction, residual);
+    }
+
+    fn vvc_forward_lmcs(_kernels: DepthKernels<'_>, model: &VvcLmcs<u8>, samples: &mut [u8]) {
+        model.forward_samples(samples);
+    }
+
+    fn vvc_inverse_lmcs(
+        _kernels: DepthKernels<'_>,
+        model: &VvcLmcs<u8>,
+        plane: &mut PlaneViewMut<'_, u8>,
+    ) {
+        model.inverse_plane(plane);
     }
 }
 
@@ -178,7 +243,20 @@ impl VvcReconPixel for u16 {
                 );
             }
         } else {
-            rectangular::predict(size.0, size.1, mode, top, left, corner, out, kernels.depth);
+            // SAFETY: `check_rect` validated dimensions, mode, and slice bounds;
+            // the table matches a supported ISA.
+            unsafe {
+                (kernels.dsp.high.vvc_recon.intra_rect)(
+                    size.0,
+                    size.1,
+                    mode,
+                    top,
+                    left,
+                    corner,
+                    out,
+                    kernels.depth,
+                );
+            }
         }
     }
 
@@ -197,6 +275,34 @@ impl VvcReconPixel for u16 {
                 &residual[..length],
                 kernels.depth,
             );
+        }
+    }
+
+    fn vvc_forward_lmcs(kernels: DepthKernels<'_>, model: &VvcLmcs<u16>, samples: &mut [u16]) {
+        if let Some(table) = model.forward_wide_table() {
+            // SAFETY: `table` has `HIGH_LOOKUP_TABLE` entries; table matches a supported ISA.
+            unsafe {
+                (kernels.dsp.high.vvc_recon.lmcs_map)(table, samples);
+            }
+        } else {
+            model.forward_samples(samples);
+        }
+    }
+
+    fn vvc_inverse_lmcs(
+        kernels: DepthKernels<'_>,
+        model: &VvcLmcs<u16>,
+        plane: &mut PlaneViewMut<'_, u16>,
+    ) {
+        if let Some(table) = model.inverse_wide_table() {
+            for y in 0..plane.height() {
+                // SAFETY: `table` has `HIGH_LOOKUP_TABLE` entries; table matches a supported ISA.
+                unsafe {
+                    (kernels.dsp.high.vvc_recon.lmcs_map)(table, plane.row_mut(y));
+                }
+            }
+        } else {
+            model.inverse_plane(plane);
         }
     }
 }
@@ -426,6 +532,7 @@ impl DepthKernels<'_> {
         out: &mut [i16],
     ) {
         crate::codec_txfm::vvc_inverse::inverse_with_matrix(
+            self.dsp,
             size,
             (kinds, lfnst),
             levels,
@@ -443,7 +550,7 @@ impl DepthKernels<'_> {
     /// If the model's depth is not this one.
     pub fn vvc_forward_lmcs<T: Pixel>(self, model: &VvcLmcs<T>, samples: &mut [T]) {
         assert_eq!(model.depth(), self.depth, "LMCS model of another depth");
-        model.forward_samples(samples);
+        T::vvc_forward_lmcs(self, model, samples);
     }
 
     /// [`crate::Dsp::vvc_inverse_lmcs`] with a model of this depth.
@@ -452,7 +559,7 @@ impl DepthKernels<'_> {
     /// If the model's depth is not this one.
     pub fn vvc_inverse_lmcs<T: Pixel>(self, model: &VvcLmcs<T>, plane: &mut PlaneViewMut<'_, T>) {
         assert_eq!(model.depth(), self.depth, "LMCS model of another depth");
-        model.inverse_plane(plane);
+        T::vvc_inverse_lmcs(self, model, plane);
     }
 
     /// [`crate::Dsp::vvc_scale_chroma_residual`] at this (chroma) depth: the

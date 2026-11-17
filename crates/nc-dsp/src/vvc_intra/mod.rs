@@ -17,6 +17,12 @@ mod angular_generic;
 mod cclm;
 pub use cclm::{vvc_cclm_downsample, vvc_cclm_downsample_collocated, vvc_cclm_predict};
 mod generic;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) mod high_simd;
 mod isp;
 mod mip;
 pub(crate) use mip::{bdpcm_predict, mip_predict};
@@ -54,6 +60,8 @@ pub(crate) fn kernel(isa: Isa) -> PredictFn {
         Isa::Scalar => scalar,
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => avx2::predict,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::predict,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::predict,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -204,12 +212,15 @@ pub(crate) fn square_kernel_fits((width, height): (usize, usize)) -> bool {
 /// intermediate widths (and the SIMD tiers' 16-bit lanes at 8 bits) rely
 /// on it.
 fn check_references(top: &[i32], left: &[i32], corner: i32, depth: BitDepth) {
-    assert!(
-        top.iter()
-            .chain(left)
-            .chain(std::iter::once(&corner))
-            .all(|&v| (0..=depth.max()).contains(&v))
-    );
+    let max = depth.max() as u32;
+    let mut bad = (corner as u32) > max;
+    for &v in top {
+        bad |= (v as u32) > max;
+    }
+    for &v in left {
+        bad |= (v as u32) > max;
+    }
+    assert!(!bad);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -217,6 +228,18 @@ fn check_references(top: &[i32], left: &[i32], corner: i32, depth: BitDepth) {
 mod avx2 {
     use crate::simd::avx2::{I16x4, I16x8, I16x16};
     super::generic::kernels!(#[target_feature(enable = "avx2")]; crate::intra_runs::avx2::Avx2Runs; I16x4, I16x8, I16x16);
+}
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx512 {
+    use crate::simd::avx2::{I16x4, I16x8, I16x16};
+    super::generic::kernels!(
+        #[target_feature(enable = "avx512f,avx512bw,avx512vl")];
+        crate::intra_runs::avx2::Avx2Runs;
+        I16x4,
+        I16x8,
+        I16x16
+    );
 }
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]

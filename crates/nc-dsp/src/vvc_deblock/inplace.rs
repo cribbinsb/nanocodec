@@ -2,16 +2,17 @@
 //! [`I16x8Shuffles`]: one lane per line across the edge, two 4-line
 //! segments per full call. Both segments share `β`, `tC` and filter lengths;
 //! each still decides its own filter from its lines 0 and 3 (§8.8.3.6.2:
-//! the per-line terms on lanes, then the scalar [`super::decide`]). Every value fits 16 bits: the largest
-//! intermediate is a long-filter blend, `64 * 255`.
+//! the per-line terms on lanes, then the scalar [`super::decide`]). Up to 10
+//! bits, every decision and short-filter value fits 16 bits, and the long
+//! filter's `middle * w + far * (64 - w)` blend uses 32-bit pairwise
+//! accumulation (`acc_mul_add2`) before rounding back to 16 bits.
 //!
-//! A horizontal edge's lines are contiguous columns: one 8-sample load per
-//! position across the edge. A vertical edge's lines are rows: each row's
-//! p7..p0 and q0..q7 are loaded as two vectors and transposed (twice 8x8).
-//! Short-only edges instead keep p3..q3 in the shared HEVC/VVC sample layout,
+//! Short-only edges keep p3..q3 in the shared HEVC/VVC sample layout,
 //! following the separate short/long arithmetic in VVenC/VVdeC `LoopFilterX86`
 //! (BSD-3-Clause-Clear; see `THIRD_PARTY.md`).
 #![allow(unsafe_code, clippy::inline_always)]
+
+use nc_common::BitDepth;
 
 use super::{EDGE_LINES, LUMA_REACH, LumaFilter, VvcLumaEdge};
 use crate::deblock::samples::transpose;
@@ -71,26 +72,43 @@ fn store<V: I16x8Shuffles>(plane: &mut [u8], e: &VvcLumaEdge, values: &[V; POSIT
     }
 }
 
-/// Index of position `k` (p7 = 0 … q7 = 15) of line `line`, from the
-/// first line's p7 (`origin`): plain arithmetic, the range was checked once
-/// by [`checked_origin`].
+#[inline(always)]
+fn load_u16<V: I16x8Shuffles>(plane: &[u16], e: &VvcLumaEdge) -> [V; POSITIONS] {
+    let mut out = [V::splat(0); POSITIONS];
+    for start in (LUMA_REACH - reach(e)..LUMA_REACH + reach(e)).step_by(LANES) {
+        out[start..start + LANES].copy_from_slice(&samples::load_u16::<V>(plane, &slab(e, start)));
+    }
+    out
+}
+
+#[inline(always)]
+fn store_u16<V: I16x8Shuffles>(
+    plane: &mut [u16],
+    e: &VvcLumaEdge,
+    values: &[V; POSITIONS],
+    max_val: i16,
+) {
+    for start in (LUMA_REACH - reach(e)..LUMA_REACH + reach(e)).step_by(LANES) {
+        let block = values[start..start + LANES]
+            .try_into()
+            .expect("eight positions");
+        samples::store_u16(plane, &slab(e, start), block, (0, LANES), max_val);
+    }
+}
+
 #[inline(always)]
 fn index(e: &VvcLumaEdge, origin: usize, line: usize, k: usize) -> usize {
     origin + line * e.along + k * e.across
 }
 
-/// The first line's p7, after one check that every sample a call touches
-/// (p7..q7 of all eight lines, and each 8-sample row load) lies in `plane`.
 #[inline(always)]
-fn checked_origin(plane: &[u8], e: &VvcLumaEdge) -> usize {
+fn checked_origin<T>(plane: &[T], e: &VvcLumaEdge) -> usize {
     let origin = e.base - LUMA_REACH * e.across;
     let last = origin + (EDGE_LINES - 1) * e.along + (POSITIONS - 1) * e.across;
     assert!(last < plane.len(), "deblocking sample inside the plane");
     origin
 }
 
-/// Positions p7..q7 of the 8 lines, one vector per position (index `k` is
-/// position `k − 8`); positions beyond [`reach`] stay zero.
 #[inline(always)]
 fn load_full<V: I16x8Shuffles>(plane: &[u8], e: &VvcLumaEdge, origin: usize) -> [V; POSITIONS] {
     let mut out = [V::splat(0); POSITIONS];
@@ -101,11 +119,7 @@ fn load_full<V: I16x8Shuffles>(plane: &[u8], e: &VvcLumaEdge, origin: usize) -> 
             out[k] = V::load_u8(&plane[index(e, origin, 0, k)..]);
         }
     } else {
-        // Transposed blocks of 8 positions, from the first position read.
         for start in (centre - reach..centre + reach).step_by(LANES) {
-            // Keep loads inside the ISA-enabled caller: array::from_fn
-            // outlined this closure on x86 and called the widening intrinsic
-            // separately for each row, losing the caller's target features.
             let mut rows = [V::splat(0); LANES];
             for (line, row) in rows.iter_mut().enumerate() {
                 *row = V::load_u8(&plane[index(e, origin, line, start)..]);
@@ -117,8 +131,6 @@ fn load_full<V: I16x8Shuffles>(plane: &[u8], e: &VvcLumaEdge, origin: usize) -> 
     out
 }
 
-/// Store positions p7..q7 (clamped to 8 bits) of the 8 lines, within
-/// [`reach`].
 #[inline(always)]
 fn store_full<V: I16x8Shuffles>(
     plane: &mut [u8],
@@ -146,19 +158,72 @@ fn store_full<V: I16x8Shuffles>(
     }
 }
 
-/// `|a − 2b + c|` per line.
+#[inline(always)]
+fn load_full_u16<V: I16x8Shuffles>(
+    plane: &[u16],
+    e: &VvcLumaEdge,
+    origin: usize,
+) -> [V; POSITIONS] {
+    let mut out = [V::splat(0); POSITIONS];
+    let reach = reach(e);
+    let centre = POSITIONS / 2;
+    if e.along == 1 {
+        for k in centre - reach..centre + reach {
+            out[k] = V::load_u16(&plane[index(e, origin, 0, k)..]);
+        }
+    } else {
+        for start in (centre - reach..centre + reach).step_by(LANES) {
+            let mut rows = [V::splat(0); LANES];
+            for (line, row) in rows.iter_mut().enumerate() {
+                *row = V::load_u16(&plane[index(e, origin, line, start)..]);
+            }
+            let block = transpose(rows);
+            out[start..start + LANES].copy_from_slice(&block);
+        }
+    }
+    out
+}
+
+#[inline(always)]
+fn store_full_u16<V: I16x8Shuffles>(
+    plane: &mut [u16],
+    e: &VvcLumaEdge,
+    origin: usize,
+    values: &[V; POSITIONS],
+    max_val: i16,
+) {
+    let reach = reach(e);
+    let centre = POSITIONS / 2;
+    let (zero, hi) = (V::splat(0), V::splat(max_val));
+    if e.along == 1 {
+        for k in centre - reach..centre + reach {
+            values[k]
+                .max(zero)
+                .min(hi)
+                .store_u16(&mut plane[index(e, origin, 0, k)..]);
+        }
+    } else {
+        for start in (centre - reach..centre + reach).step_by(LANES) {
+            let block = &values[start..start + LANES];
+            let rows = transpose::<V>(block.try_into().expect("8 positions"));
+            for (line, row) in rows.iter().enumerate() {
+                let at = index(e, origin, line, start);
+                row.max(zero).min(hi).store_u16(&mut plane[at..at + LANES]);
+            }
+        }
+    }
+}
+
 #[inline(always)]
 fn derivative<V: I16FilterLanes>(a: V, b: V, c: V) -> V {
     a.sub(times(b, 2)).add(c).abs()
 }
 
-/// `(a + b + 1) >> 1` per line.
 #[inline(always)]
 fn mean<V: I16FilterLanes>(a: V, b: V) -> V {
     round(a.add(b), 1)
 }
 
-/// A side's flatness (`|s3 − s0|`, out to s7 on a side longer than 3).
 #[inline(always)]
 fn spread<V: I16FilterLanes, const EXTENDED: bool>(side: &[V; 8], length: usize) -> V {
     let near = side[3].sub(side[0]).abs();
@@ -172,73 +237,85 @@ fn spread<V: I16FilterLanes, const EXTENDED: bool>(side: &[V; 8], length: usize)
     mean(near.add(far), side[3].sub(side[7]).abs())
 }
 
-/// Each segment's filter: [`super::LineTerms`] of every line on lanes,
-/// then the scalar [`super::decide`] on each segment's lines 0 and 3.
+#[inline(always)]
+fn long_derivative<V: I16FilterLanes>(side: &[V; 8], d: V, is_long: bool) -> V {
+    if is_long {
+        mean(d, derivative(side[3], side[4], side[5]))
+    } else {
+        d
+    }
+}
+
+#[inline(always)]
+fn store_lanes<V: I16x8Shuffles>(v: V) -> [i16; LANES] {
+    let mut lanes = [0i16; LANES];
+    v.store(&mut lanes);
+    lanes
+}
+
+#[inline(always)]
 fn decide<V: I16x8Shuffles + I16FilterLanes, const LINES: usize, const EXTENDED: bool>(
     p: &[V; 8],
     q: &[V; 8],
     e: &VvcLumaEdge,
 ) -> [LumaFilter; 2] {
-    let long = e.lengths.map(|n| n > 3);
-    let dp = derivative(p[0], p[1], p[2]);
-    let dq = derivative(q[0], q[1], q[2]);
-    let long_derivative = |side: &[V; 8], d: V, long: bool| {
-        if long {
-            mean(d, derivative(side[3], side[4], side[5]))
-        } else {
-            d
-        }
-    };
-    let terms = [
-        dp,
-        dq,
-        long_derivative(p, dp, long[0]).add(long_derivative(q, dq, long[1])),
-        p[0].sub(q[0]).abs(),
-        spread::<V, EXTENDED>(p, 3).add(spread::<V, EXTENDED>(q, 3)),
+    let dp_v = derivative(p[0], p[1], p[2]);
+    let dq_v = derivative(q[0], q[1], q[2]);
+    let dp = store_lanes(dp_v);
+    let dq = store_lanes(dq_v);
+    let long_activity = store_lanes(
+        long_derivative(p, dp_v, e.lengths[0] > 3).add(long_derivative(q, dq_v, e.lengths[1] > 3)),
+    );
+    let step = store_lanes(p[0].sub(q[0]).abs());
+    let near_spread = store_lanes(spread::<V, EXTENDED>(p, 3).add(spread::<V, EXTENDED>(q, 3)));
+    let long_spread = store_lanes(
         spread::<V, EXTENDED>(p, e.lengths[0]).add(spread::<V, EXTENDED>(q, e.lengths[1])),
-    ]
-    .map(|v| {
-        let mut lanes = [0i16; LANES];
-        v.store(&mut lanes);
-        lanes
-    });
-    let [dp, dq, long_activity, step, spread, long_spread] = terms;
-    std::array::from_fn(|segment| {
+    );
+    let mut out = [LumaFilter::None; 2];
+    for (segment, dst) in out.iter_mut().enumerate() {
         if segment * SEGMENT >= LINES {
-            return LumaFilter::None;
+            continue;
         }
-        let line = |offset: usize| {
-            let l = segment * SEGMENT + offset;
-            super::LineTerms {
-                dp: dp[l].into(),
-                dq: dq[l].into(),
-                long_activity: long_activity[l].into(),
-                step: step[l].into(),
-                spread: spread[l].into(),
-                long_spread: long_spread[l].into(),
-            }
-        };
-        super::decide(&[line(0), line(SEGMENT - 1)], e.beta, e.tc, e.lengths)
-    })
-}
-
-/// −1 in the lanes of the segments where `taken`, else 0.
-#[inline(always)]
-fn mask<V: I16x8Shuffles>(filters: &[LumaFilter; 2], taken: impl Fn(LumaFilter) -> bool) -> V {
-    let mut lanes = [0i16; LANES];
-    for (segment, &filter) in filters.iter().enumerate() {
-        lanes[segment * SEGMENT..(segment + 1) * SEGMENT].fill(-i16::from(taken(filter)));
+        let l0 = segment * SEGMENT;
+        let l3 = l0 + SEGMENT - 1;
+        *dst = super::decide(
+            &[
+                super::LineTerms {
+                    dp: dp[l0].into(),
+                    dq: dq[l0].into(),
+                    long_activity: long_activity[l0].into(),
+                    step: step[l0].into(),
+                    spread: near_spread[l0].into(),
+                    long_spread: long_spread[l0].into(),
+                },
+                super::LineTerms {
+                    dp: dp[l3].into(),
+                    dq: dq[l3].into(),
+                    long_activity: long_activity[l3].into(),
+                    step: step[l3].into(),
+                    spread: near_spread[l3].into(),
+                    long_spread: long_spread[l3].into(),
+                },
+            ],
+            e.beta,
+            e.tc,
+            e.lengths,
+        );
     }
-    V::load(&lanes)
+    out
 }
 
-/// `round_shift(value, bits)`.
+#[inline(always)]
+fn seg_mask<V: I16x8Shuffles>(seg0: bool, seg1: bool) -> V {
+    let (m0, m1) = (-i16::from(seg0), -i16::from(seg1));
+    V::load(&[m0, m0, m0, m0, m1, m1, m1, m1])
+}
+
 #[inline(always)]
 fn round<V: I16FilterLanes>(value: V, bits: u32) -> V {
     value.add(V::splat(1 << (bits - 1))).sra(bits)
 }
 
-/// `value` within `original ± limit`.
 #[inline(always)]
 fn clip<V: I16FilterLanes>(value: V, original: V, limit: i32) -> V {
     let limit = V::splat(limit as i16);
@@ -247,12 +324,116 @@ fn clip<V: I16FilterLanes>(value: V, original: V, limit: i32) -> V {
 
 #[inline(always)]
 fn sum<V: I16FilterLanes>(values: &[V]) -> V {
-    values.iter().fold(V::splat(0), |s, &v| s.add(v))
+    let mut s = V::splat(0);
+    for &v in values {
+        s = s.add(v);
+    }
+    s
 }
 
 #[inline(always)]
 fn times<V: I16FilterLanes>(v: V, k: i16) -> V {
     v.mul(V::splat(k))
+}
+
+#[inline(always)]
+fn blend_range<V: I16FilterLanes, const N: usize>(
+    out: &mut [V; N],
+    filtered: &[V; N],
+    taken: V,
+    reach: usize,
+) {
+    for k in N / 2 - reach..N / 2 + reach {
+        out[k] = taken.blend(filtered[k], out[k]);
+    }
+}
+
+#[inline(always)]
+fn compute_luma<V: I16x8Shuffles + I16FilterLanes, const LINES: usize, const EXTENDED: bool>(
+    values: &[V; POSITIONS],
+    e: &VvcLumaEdge,
+) -> Option<[V; POSITIONS]> {
+    let p = [
+        values[7], values[6], values[5], values[4], values[3], values[2], values[1], values[0],
+    ];
+    let q = [
+        values[8], values[9], values[10], values[11], values[12], values[13], values[14],
+        values[15],
+    ];
+    let filters = decide::<V, LINES, EXTENDED>(&p, &q, e);
+    if matches!(filters, [LumaFilter::None, LumaFilter::None]) {
+        return None;
+    }
+    Some(if LINES == SEGMENT || filters[0] == filters[1] {
+        uniform::<V, EXTENDED>(&p, &q, values, e, filters[0])
+    } else {
+        mixed::<V, EXTENDED>(&p, &q, values, e, &filters)
+    })
+}
+
+#[inline(always)]
+fn compute_short_edge<V: I16x8Shuffles + I16FilterLanes>(
+    values: [V; samples::POSITIONS],
+    e: &VvcLumaEdge,
+) -> Option<[V; samples::POSITIONS]> {
+    let [p3, p2, p1, p0, q0, q1, q2, q3] = values;
+    let (p, q) = ([p0, p1, p2, p3], [q0, q1, q2, q3]);
+    let dp = store_lanes(derivative(p0, p1, p2));
+    let dq = store_lanes(derivative(q0, q1, q2));
+    let step = store_lanes(p0.sub(q0).abs());
+    let spread = store_lanes(p3.sub(p0).abs().add(q3.sub(q0).abs()));
+    let mut filters = [LumaFilter::None; 2];
+    for (segment, filter) in filters.iter_mut().enumerate() {
+        let l0 = segment * SEGMENT;
+        let l3 = l0 + SEGMENT - 1;
+        *filter = super::decide(
+            &[
+                super::LineTerms {
+                    dp: dp[l0].into(),
+                    dq: dq[l0].into(),
+                    step: step[l0].into(),
+                    spread: spread[l0].into(),
+                    long_activity: 0,
+                    long_spread: 0,
+                },
+                super::LineTerms {
+                    dp: dp[l3].into(),
+                    dq: dq[l3].into(),
+                    step: step[l3].into(),
+                    spread: spread[l3].into(),
+                    long_activity: 0,
+                    long_spread: 0,
+                },
+            ],
+            e.beta,
+            e.tc,
+            [STRONG_REACH; 2],
+        );
+    }
+    if matches!(filters, [LumaFilter::None, LumaFilter::None]) {
+        return None;
+    }
+    Some(if filters[0] == filters[1] {
+        match filters[0] {
+            LumaFilter::Short { strong: true, .. } => strong(&p, &q, &values, e.tc),
+            LumaFilter::Short {
+                strong: false,
+                second,
+            } => weak(
+                &p,
+                &q,
+                &values,
+                e.tc,
+                [
+                    V::splat(-i16::from(second[0])),
+                    V::splat(-i16::from(second[1])),
+                ],
+            ),
+            _ => values,
+        }
+    } else {
+        short_filters(&p, &q, &values, e, &filters)
+    })
 }
 
 /// # Safety
@@ -267,7 +448,15 @@ pub(super) unsafe fn luma<
     e: &VvcLumaEdge,
 ) {
     if LINES == LANES && e.lengths == [STRONG_REACH; 2] {
-        short_edge::<V>(plane, e);
+        let edge = samples::Edge {
+            base: e.base,
+            across: e.across,
+            along: e.along,
+            lines: LANES,
+        };
+        if let Some(out) = compute_short_edge::<V>(samples::load::<V>(plane, &edge), e) {
+            samples::store(plane, &edge, out, (1, samples::POSITIONS - 1));
+        }
         return;
     }
     let values = if LINES == LANES {
@@ -275,94 +464,58 @@ pub(super) unsafe fn luma<
     } else {
         load::<V>(plane, e)
     };
-    let p: [V; 8] = std::array::from_fn(|i| values[7 - i]);
-    let q: [V; 8] = std::array::from_fn(|i| values[8 + i]);
-    let filters = decide::<V, LINES, EXTENDED>(&p, &q, e);
-    if filters.iter().all(|f| matches!(f, LumaFilter::None)) {
-        return;
-    }
-    let out = if LINES == SEGMENT || filters[0] == filters[1] {
-        uniform::<V, EXTENDED>(&p, &q, &values, e, filters[0])
-    } else {
-        mixed::<V, EXTENDED>(&p, &q, &values, e, &filters)
-    };
-    if LINES == LANES {
-        store_full(plane, e, checked_origin(plane, e), &out);
-    } else {
-        store(plane, e, &out);
-    }
-}
-
-/// Short-only edges never need the far samples or long decision terms.
-/// Keep both segments in eight lanes, using the same sample access as HEVC.
-#[inline(always)]
-fn short_edge<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e: &VvcLumaEdge) {
-    let edge = samples::Edge {
-        base: e.base,
-        across: e.across,
-        along: e.along,
-        lines: LANES,
-    };
-    let values = samples::load::<V>(plane, &edge);
-    let [p3, p2, p1, p0, q0, q1, q2, q3] = values;
-    let (p, q) = ([p0, p1, p2, p3], [q0, q1, q2, q3]);
-    let mut dp = [0i16; LANES];
-    let mut dq = [0i16; LANES];
-    let mut step = [0i16; LANES];
-    let mut spread = [0i16; LANES];
-    derivative(p0, p1, p2).store(&mut dp);
-    derivative(q0, q1, q2).store(&mut dq);
-    p0.sub(q0).abs().store(&mut step);
-    p3.sub(p0).abs().add(q3.sub(q0).abs()).store(&mut spread);
-    // A fixed loop keeps the paired decisions beside their live sample vectors.
-    let mut filters = [LumaFilter::None; 2];
-    for (segment, filter) in filters.iter_mut().enumerate() {
-        let line = |offset: usize| {
-            let lane = segment * SEGMENT + offset;
-            super::LineTerms {
-                dp: dp[lane].into(),
-                dq: dq[lane].into(),
-                step: step[lane].into(),
-                spread: spread[lane].into(),
-                // These terms are unused at the compile-time short reach.
-                long_activity: 0,
-                long_spread: 0,
-            }
-        };
-        *filter = super::decide(
-            &[line(0), line(SEGMENT - 1)],
-            e.beta,
-            e.tc,
-            [STRONG_REACH; 2],
-        );
-    }
-    if filters.iter().all(|f| matches!(f, LumaFilter::None)) {
-        return;
-    }
-    let out = if filters[0] == filters[1] {
-        match filters[0] {
-            LumaFilter::Short { strong: true, .. } => strong(&p, &q, &values, e.tc),
-            LumaFilter::Short {
-                strong: false,
-                second,
-            } => weak(
-                &p,
-                &q,
-                &values,
-                e.tc,
-                second.map(|s| V::splat(-i16::from(s))),
-            ),
-            // Long cannot be selected at [3,3], and both-off returned above.
-            _ => values,
+    if let Some(out) = compute_luma::<V, LINES, EXTENDED>(&values, e) {
+        if LINES == LANES {
+            store_full(plane, e, checked_origin(plane, e), &out);
+        } else {
+            store(plane, e, &out);
         }
-    } else {
-        short_filters(&p, &q, &values, e, &filters)
-    };
-    samples::store(plane, &edge, out, (1, samples::POSITIONS - 1));
+    }
 }
 
-/// Every line's filter is `filter`: its output as is, without lane masks
-/// (the segments of most edges agree).
+/// # Safety
+/// V's ISA is enabled (dispatch contract); every index is bounds checked.
+#[inline(always)]
+pub(super) unsafe fn luma_u16<
+    V: I16x8Shuffles + I16FilterLanes,
+    const LINES: usize,
+    const EXTENDED: bool,
+>(
+    plane: &mut [u16],
+    e: &VvcLumaEdge,
+    depth: BitDepth,
+) {
+    if depth.bits() > 10 {
+        super::luma_edge_at(plane, e, depth);
+        return;
+    }
+    let max_val = depth.max() as i16;
+    if LINES == LANES && e.lengths == [STRONG_REACH; 2] {
+        let edge = samples::Edge {
+            base: e.base,
+            across: e.across,
+            along: e.along,
+            lines: LANES,
+        };
+        if let Some(out) = compute_short_edge::<V>(samples::load_u16::<V>(plane, &edge), e) {
+            samples::store_u16(plane, &edge, out, (1, samples::POSITIONS - 1), max_val);
+        }
+        return;
+    }
+    let values = if LINES == LANES {
+        load_full_u16::<V>(plane, e, checked_origin(plane, e))
+    } else {
+        load_u16::<V>(plane, e)
+    };
+    if let Some(out) = compute_luma::<V, LINES, EXTENDED>(&values, e) {
+        if LINES == LANES {
+            store_full_u16(plane, e, checked_origin(plane, e), &out, max_val);
+        } else {
+            store_u16(plane, e, &out, max_val);
+        }
+    }
+}
+
 #[inline(always)]
 fn uniform<V: I16x8Shuffles + I16FilterLanes, const EXTENDED: bool>(
     p: &[V; 8],
@@ -378,12 +531,19 @@ fn uniform<V: I16x8Shuffles + I16FilterLanes, const EXTENDED: bool>(
         LumaFilter::Short {
             strong: false,
             second,
-        } => weak(p, q, values, e.tc, second.map(|s| V::splat(-i16::from(s)))),
+        } => weak(
+            p,
+            q,
+            values,
+            e.tc,
+            [
+                V::splat(-i16::from(second[0])),
+                V::splat(-i16::from(second[1])),
+            ],
+        ),
     }
 }
 
-/// The two segments' different filters: each filter's output in the lanes
-/// of the segments that take it, at the positions that filter changes.
 #[inline(always)]
 fn mixed<V: I16x8Shuffles + I16FilterLanes, const EXTENDED: bool>(
     p: &[V; 8],
@@ -393,23 +553,17 @@ fn mixed<V: I16x8Shuffles + I16FilterLanes, const EXTENDED: bool>(
     filters: &[LumaFilter; 2],
 ) -> [V; POSITIONS] {
     let mut out = *values;
-    let mut apply = |filtered: [V; POSITIONS], taken: V, reach: usize| {
-        let changed = POSITIONS / 2 - reach..POSITIONS / 2 + reach;
-        for k in changed {
-            out[k] = taken.blend(filtered[k], out[k]);
-        }
-    };
-    if filters.contains(&LumaFilter::Long) {
-        apply(
-            long::<V, EXTENDED>(p, q, values, e.tc, e.lengths),
-            mask(filters, |f| f == LumaFilter::Long),
-            LUMA_REACH,
+    if filters[0] == LumaFilter::Long || filters[1] == LumaFilter::Long {
+        let filtered = long::<V, EXTENDED>(p, q, values, e.tc, e.lengths);
+        let taken = seg_mask::<V>(
+            filters[0] == LumaFilter::Long,
+            filters[1] == LumaFilter::Long,
         );
+        blend_range(&mut out, &filtered, taken, LUMA_REACH);
     }
     short_filters(p, q, &out, e, filters)
 }
 
-/// The short filters share their arithmetic across compact and long footprints.
 #[inline(always)]
 fn short_filters<V: I16x8Shuffles + I16FilterLanes, const SIDE: usize, const N: usize>(
     p: &[V; SIDE],
@@ -419,40 +573,27 @@ fn short_filters<V: I16x8Shuffles + I16FilterLanes, const SIDE: usize, const N: 
     filters: &[LumaFilter; 2],
 ) -> [V; N] {
     let mut out = *values;
-    let mut apply = |filtered: [V; N], taken: V, reach: usize| {
-        for k in N / 2 - reach..N / 2 + reach {
-            out[k] = taken.blend(filtered[k], out[k]);
-        }
-    };
-    if filters
-        .iter()
-        .any(|f| matches!(f, LumaFilter::Short { strong: true, .. }))
-    {
-        apply(
-            strong(p, q, values, e.tc),
-            mask(filters, |f| {
-                matches!(f, LumaFilter::Short { strong: true, .. })
-            }),
-            STRONG_REACH,
-        );
+    let s0 = matches!(filters[0], LumaFilter::Short { strong: true, .. });
+    let s1 = matches!(filters[1], LumaFilter::Short { strong: true, .. });
+    if s0 || s1 {
+        let filtered = strong(p, q, values, e.tc);
+        blend_range(&mut out, &filtered, seg_mask::<V>(s0, s1), STRONG_REACH);
     }
-    if filters
-        .iter()
-        .any(|f| matches!(f, LumaFilter::Short { strong: false, .. }))
-    {
-        let side = |which: usize| {
-            mask::<V>(
-                filters,
-                |f| matches!(f, LumaFilter::Short { strong: false, second } if second[which]),
-            )
-        };
-        apply(
-            weak(p, q, values, e.tc, [side(0), side(1)]),
-            mask(filters, |f| {
-                matches!(f, LumaFilter::Short { strong: false, .. })
-            }),
-            WEAK_REACH,
-        );
+    let w0 = matches!(filters[0], LumaFilter::Short { strong: false, .. });
+    let w1 = matches!(filters[1], LumaFilter::Short { strong: false, .. });
+    if w0 || w1 {
+        let sec = [
+            seg_mask::<V>(
+                matches!(filters[0], LumaFilter::Short { strong: false, second } if second[0]),
+                matches!(filters[1], LumaFilter::Short { strong: false, second } if second[0]),
+            ),
+            seg_mask::<V>(
+                matches!(filters[0], LumaFilter::Short { strong: false, second } if second[1]),
+                matches!(filters[1], LumaFilter::Short { strong: false, second } if second[1]),
+            ),
+        ];
+        let filtered = weak(p, q, values, e.tc, sec);
+        blend_range(&mut out, &filtered, seg_mask::<V>(w0, w1), WEAK_REACH);
     }
     out
 }
@@ -518,10 +659,8 @@ fn long<V: I16FilterLanes, const EXTENDED: bool>(
             (&[53, 32, 11], &[6, 4, 2])
         };
         for i in 0..length {
-            let value = round(
-                times(middle, weights[i]).add(times(far, 64 - weights[i])),
-                6,
-            );
+            let acc = V::acc_mul_add2(V::acc_zero(), middle, weights[i], far, 64 - weights[i]);
+            let value = V::acc_round_shift_narrow(acc, 32, 6);
             out[if which == 0 { 7 - i } else { 8 + i }] =
                 clip(value, side[i], (tc * limits[i]) >> 1);
         }
@@ -529,8 +668,6 @@ fn long<V: I16FilterLanes, const EXTENDED: bool>(
     out
 }
 
-/// §8.8.3.6.6, strong: three samples per side ([`short_luma::strong_side`],
-/// shared with HEVC), clipped to `±3tC`, `±2tC`, `±tC` (x0, x1, x2).
 #[inline(always)]
 fn strong<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     p: &[V; SIDE],
@@ -539,7 +676,11 @@ fn strong<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     tc: i32,
 ) -> [V; N] {
     let mut out = *values;
-    let limits = [3, 2, 1].map(|k| V::splat((k * tc) as i16));
+    let limits = [
+        V::splat((3 * tc) as i16),
+        V::splat((2 * tc) as i16),
+        V::splat(tc as i16),
+    ];
     for (which, (near, far)) in [(p, q), (q, p)].into_iter().enumerate() {
         let filtered = short_luma::strong_side(
             [near[3], near[2], near[1], near[0]],
@@ -553,9 +694,6 @@ fn strong<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     out
 }
 
-/// §8.8.3.6.6, normal ([`short_luma::normal`], shared with HEVC): p0/q0 per
-/// line where `|Δ| < 10 tC`, and p1 / q1 in the lanes of `second`
-/// (per-segment masks).
 #[inline(always)]
 fn weak<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     p: &[V; SIDE],

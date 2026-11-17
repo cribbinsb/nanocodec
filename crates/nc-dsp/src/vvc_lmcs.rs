@@ -8,6 +8,7 @@
 //! the bin-width and pivot bounds derived from it, and the chroma
 //! residual clip (§8.7.5.3).
 use crate::Dsp;
+use crate::simd::HIGH_LOOKUP_TABLE;
 use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 /// Pieces of the mapping (H.266 §7.4.3.19: 16 equal input bins).
@@ -26,6 +27,8 @@ const PIVOT_ALIGNMENT_BITS: u32 = 5;
 pub struct VvcLmcs<T: Sample = u8> {
     forward: Box<[T]>,
     inverse: Box<[T]>,
+    forward_wide: Option<Box<[i16; HIGH_LOOKUP_TABLE]>>,
+    inverse_wide: Option<Box<[i16; HIGH_LOOKUP_TABLE]>>,
     chroma: Box<[i32]>,
     depth: BitDepth,
 }
@@ -166,15 +169,30 @@ impl<T: Sample> VvcLmcs<T> {
         let pieces = Pieces::new(bins, deltas, chroma_offset, depth)?;
         let samples = 0..=depth.max();
         let bins: Vec<usize> = samples.clone().map(|v| pieces.mapped_bin(v)).collect();
+        let forward: Box<[T]> = samples
+            .clone()
+            .map(|v| depth.clip_to(pieces.forward(v)))
+            .collect();
+        let inverse: Box<[T]> = samples
+            .zip(&bins)
+            .map(|(v, &bin)| depth.clip_to(pieces.inverse(v, bin)))
+            .collect();
+        let wide_table = |src: &[T]| -> Option<Box<[i16; HIGH_LOOKUP_TABLE]>> {
+            if T::MAX_BIT_DEPTH <= u8::MAX_BIT_DEPTH || src.len() > HIGH_LOOKUP_TABLE - 1 {
+                return None;
+            }
+            let mut tbl = Box::new([0i16; HIGH_LOOKUP_TABLE]);
+            let mask = src.len() - 1;
+            for (i, slot) in tbl.iter_mut().enumerate() {
+                *slot = src[i.min(mask)].to_i32() as i16;
+            }
+            Some(tbl)
+        };
         Some(Self {
-            forward: samples
-                .clone()
-                .map(|v| depth.clip_to(pieces.forward(v)))
-                .collect(),
-            inverse: samples
-                .zip(&bins)
-                .map(|(v, &bin)| depth.clip_to(pieces.inverse(v, bin)))
-                .collect(),
+            forward_wide: wide_table(&forward),
+            inverse_wide: wide_table(&inverse),
+            forward,
+            inverse,
             chroma: bins
                 .iter()
                 .map(|&bin| pieces.chroma_scale(bin, chroma_offset))
@@ -207,26 +225,36 @@ impl<T: Sample> VvcLmcs<T> {
     }
 
     /// Replace every sample by its entry in `table`, one of the mappings.
-    /// Slicing the table to [`Self::table_len`] first lets the 8-bit
-    /// instance index without bounds checks, as fixed 256-entry tables do.
-    fn map<'a>(&self, table: &[T], samples: impl IntoIterator<Item = &'a mut T>) {
-        let table = &table[..self.table_len()];
+    /// `table_len` is `1 << BitDepth` (a power of two), so masking by
+    /// `table.len() - 1` keeps every lookup statically in bounds.
+    pub(crate) fn map_slice(table: &[T], len: usize, samples: &mut [T]) {
+        let table = &table[..len];
+        let mask = len - 1;
         for value in samples {
-            *value = table[value.to_i32() as usize];
+            *value = table[(value.to_i32() as usize) & mask];
         }
+    }
+
+    pub(crate) fn forward_wide_table(&self) -> Option<&[i16; HIGH_LOOKUP_TABLE]> {
+        self.forward_wide.as_deref()
+    }
+
+    pub(crate) fn inverse_wide_table(&self) -> Option<&[i16; HIGH_LOOKUP_TABLE]> {
+        self.inverse_wide.as_deref()
     }
 
     /// Map an inter prediction into the LMCS reconstruction domain
     /// (`FwdMap`, H.266 §8.7.5.2).
     pub(crate) fn forward_samples(&self, samples: &mut [T]) {
-        self.map(&self.forward, samples);
+        Self::map_slice(&self.forward, self.table_len(), samples);
     }
 
     /// Return reconstructed luma to the original domain (`InvMap`, H.266
     /// §8.8.2.2).
     pub(crate) fn inverse_plane(&self, plane: &mut PlaneViewMut<'_, T>) {
+        let len = self.table_len();
         for y in 0..plane.height() {
-            self.map(&self.inverse, plane.row_mut(y));
+            Self::map_slice(&self.inverse, len, plane.row_mut(y));
         }
     }
 }
@@ -267,6 +295,72 @@ impl Dsp {
     /// Return reconstructed luma to the original domain before in-loop filtering.
     pub fn vvc_inverse_lmcs(&self, model: &VvcLmcs, plane: &mut PlaneViewMut<'_>) {
         model.inverse_plane(plane);
+    }
+}
+
+pub(crate) fn map_u16_scalar(table: &[i16; HIGH_LOOKUP_TABLE], samples: &mut [u16]) {
+    for s in samples {
+        *s = table[usize::from(*s).min(HIGH_LOOKUP_TABLE - 2)] as u16;
+    }
+}
+
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code, clippy::inline_always)]
+pub(crate) mod high_simd {
+    use crate::simd::HIGH_LOOKUP_TABLE;
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn map_lanes<W: crate::simd::I16Lanes, H: crate::simd::I16Lanes>(
+        table: &[i16; HIGH_LOOKUP_TABLE],
+        samples: &mut [u16],
+    ) {
+        let len = samples.len();
+        let mut x = 0;
+        while x + W::LANES <= len {
+            W::load_u16(&samples[x..])
+                .lookup_u12(table)
+                .store_u16(&mut samples[x..]);
+            x += W::LANES;
+        }
+        while x + H::LANES <= len {
+            H::load_u16(&samples[x..])
+                .lookup_u12(table)
+                .store_u16(&mut samples[x..]);
+            x += H::LANES;
+        }
+        while x < len {
+            samples[x] = table[usize::from(samples[x]).min(HIGH_LOOKUP_TABLE - 2)] as u16;
+            x += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    pub(crate) unsafe fn map_avx2(table: &[i16; HIGH_LOOKUP_TABLE], samples: &mut [u16]) {
+        map_lanes::<crate::simd::avx2::I16x16, crate::simd::avx2::I16x4>(table, samples);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+    pub(crate) unsafe fn map_avx512(table: &[i16; HIGH_LOOKUP_TABLE], samples: &mut [u16]) {
+        map_lanes::<crate::simd::avx512_i16::I16x32, crate::simd::avx2::I16x4>(table, samples);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn map_neon(table: &[i16; HIGH_LOOKUP_TABLE], samples: &mut [u16]) {
+        super::map_u16_scalar(table, samples);
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[target_feature(enable = "simd128")]
+    pub(crate) unsafe fn map_simd128(table: &[i16; HIGH_LOOKUP_TABLE], samples: &mut [u16]) {
+        super::map_u16_scalar(table, samples);
     }
 }
 

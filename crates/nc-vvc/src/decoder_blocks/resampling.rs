@@ -12,10 +12,10 @@
 //! off for such references (§8.5.1, §8.5.5.9, §8.5.6.3.2).
 use crate::decoder_headers::{PictureParameters, Sequence};
 use nc_common::{
-    BitDepth, Plane, Sample,
+    Plane,
     decode::{DecodeError, Result},
 };
-use nc_dsp::{VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock, vvc_predict_scaled};
+use nc_dsp::{DepthKernels, Pixel, VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock};
 
 /// Fractional bits of a scaling ratio (`scalingRatio`, §8.5.6.3.1: 1.0 is
 /// `1 << 14`).
@@ -167,12 +167,13 @@ pub(super) struct Region {
 /// luma filter, `affine` for the 6-tap affine luma filter; `area` is the
 /// subpicture treated as a picture the samples are clamped to, in samples
 /// of the plane, if any.
-pub(super) fn predict<T: Sample>(
+pub(super) fn predict<T: Pixel>(
+    dsp: DepthKernels<'_>,
     reference: &Plane<T>,
     (scaling, vector): (Scaling, crate::motion::Mv16),
     region: Region,
     (luma, half, affine): (bool, bool, bool),
-    (area, depth): (Option<[i32; 4]>, BitDepth),
+    area: Option<[i32; 4]>,
     out: &mut [i16],
 ) {
     let shift = u32::from(!luma);
@@ -207,14 +208,7 @@ pub(super) fn predict<T: Sample>(
         scaling.filter(0, half && luma && !affine),
         scaling.filter(1, half && luma && !affine),
     ];
-    vvc_predict_scaled(
-        &reference.view(),
-        &block,
-        filters,
-        (luma, affine),
-        depth,
-        out,
-    );
+    dsp.vvc_predict_scaled(&reference.view(), &block, filters, (luma, affine), out);
 }
 
 #[cfg(test)]

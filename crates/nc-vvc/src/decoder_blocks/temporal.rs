@@ -40,11 +40,35 @@ impl Field {
         let stride = dimensions[0].div_ceil(8);
         let mut cells = vec![None; stride * dimensions[1].div_ceil(8)];
         for unit in units.iter().filter(|u| u.channel == 0) {
+            let Some(base_motion) = unit.motion else {
+                continue;
+            };
             let n = unit.node;
+            if unit.dmvr.is_empty()
+                && unit.subblocks.is_empty()
+                && unit.geometric.is_none()
+                && unit.affine_models[0].is_none()
+                && unit.affine_models[1].is_none()
+            {
+                let (x0, x1) = (n.x.div_ceil(8), (n.x + n.width).div_ceil(8));
+                let (y0, y1) = (n.y.div_ceil(8), (n.y + n.height).div_ceil(8));
+                if x0 < x1 && y0 < y1 {
+                    let entry = Some((base_motion, unit.slice));
+                    for cy in y0..y1 {
+                        cells[cy * stride + x0..cy * stride + x1].fill(entry);
+                    }
+                }
+                continue;
+            }
+            let bidirectional = base_motion.lists.iter().all(Option::is_some);
+            let fields = unit.affine_models.map(|m| {
+                m.map(|model| model.field_for_prediction(n.width, n.height, bidirectional))
+            });
             for y in (n.y.div_ceil(8) * 8..n.y + n.height).step_by(8) {
                 for x in (n.x.div_ceil(8) * 8..n.x + n.width).step_by(8) {
                     cells[y / 8 * stride + x / 8] =
-                        super::refinement::temporal(unit, x, y).map(|m| (m, unit.slice));
+                        super::refinement::temporal_with_fields(unit, x, y, fields)
+                            .map(|m| (m, unit.slice));
                 }
             }
         }

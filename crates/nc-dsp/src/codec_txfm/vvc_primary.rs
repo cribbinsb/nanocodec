@@ -113,40 +113,38 @@ pub(crate) fn inverse(
         }
         return;
     }
-    let mut intermediate = [0i16; 4096];
     let [horizontal, vertical] = kinds;
     let horizontal_count = horizontal.frequencies(width);
     let vertical_count = vertical.frequencies(height);
-    let mut weights = [0; MAX_FREQUENCIES];
-    // Each output coordinate uses the same basis across every orthogonal
-    // line. Resolve the transform kind and size once per weight, rather than
-    // repeating that lookup for every multiply in every line.
-    for y in 0..height {
-        for (k, weight) in weights[..vertical_count].iter_mut().enumerate() {
-            *weight = vertical.basis(height, k, y);
-        }
-        for x in 0..horizontal_count {
-            let sum = weights[..vertical_count]
-                .iter()
-                .enumerate()
-                .map(|(k, &weight)| weight * i32::from(coefficients[k * width + x]))
-                .sum();
-            intermediate[y * width + x] = rounded(sum, FIRST_SHIFT);
-        }
-    }
-    for x in 0..width {
-        for (k, weight) in weights[..horizontal_count].iter_mut().enumerate() {
-            *weight = horizontal.basis(width, k, x);
-        }
+    crate::vvc_mts::with_scratch(height * horizontal_count, |intermediate: &mut [i16]| {
+        let mut weights = [0; MAX_FREQUENCIES];
         for y in 0..height {
-            let sum = weights[..horizontal_count]
-                .iter()
-                .zip(&intermediate[y * width..y * width + horizontal_count])
-                .map(|(&weight, &coefficient)| weight * i32::from(coefficient))
-                .sum();
-            out[y * width + x] = rounded(sum, second_shift);
+            for (k, weight) in weights[..vertical_count].iter_mut().enumerate() {
+                *weight = vertical.basis(height, k, y);
+            }
+            for x in 0..horizontal_count {
+                let sum = weights[..vertical_count]
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &weight)| weight * i32::from(coefficients[k * width + x]))
+                    .sum();
+                intermediate[y * horizontal_count + x] = rounded(sum, FIRST_SHIFT);
+            }
         }
-    }
+        for x in 0..width {
+            for (k, weight) in weights[..horizontal_count].iter_mut().enumerate() {
+                *weight = horizontal.basis(width, k, x);
+            }
+            for y in 0..height {
+                let sum = weights[..horizontal_count]
+                    .iter()
+                    .zip(&intermediate[y * horizontal_count..(y + 1) * horizontal_count])
+                    .map(|(&weight, &coefficient)| weight * i32::from(coefficient))
+                    .sum();
+                out[y * width + x] = rounded(sum, second_shift);
+            }
+        }
+    });
 }
 
 impl Dsp {
@@ -199,8 +197,8 @@ impl Dsp {
         let scaling = super::vvc_inverse::scaling(size, qp, dependent, depth);
         crate::vvc_mts::with_scratch(length, |scaled| {
             self.vvc_scale(&levels[..length], &scaling, &mut scaled[..length]);
-            if depth == BitDepth::EIGHT && (4..=32).contains(&width) && (4..=32).contains(&height) {
-                self.vvc_inverse_kinds(size, kinds, &scaled[..length], out);
+            if (4..=64).contains(&width) && (4..=64).contains(&height) {
+                self.vvc_inverse_kinds_at(size, kinds, &scaled[..length], out, depth);
             } else {
                 inverse(size, kinds, &scaled[..length], out, depth);
             }

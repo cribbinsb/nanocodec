@@ -8,7 +8,8 @@
 
 #![allow(clippy::inline_always)]
 
-use super::{HIGH_LOOKUP_TABLE, I16FilterLanes, I16Lanes};
+use super::avx512::I32x16;
+use super::{HIGH_LOOKUP_TABLE, I16FilterLanes, I16Lanes, I16Pairs, packed_pair};
 use core::arch::x86_64::{
     __m512i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm_storel_epi64,
     _mm_storeu_si128, _mm_unpackhi_epi64, _mm_unpacklo_epi64, _mm256_castsi256_si128,
@@ -21,10 +22,12 @@ use core::arch::x86_64::{
     _mm512_inserti64x4, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_mask_blend_epi16,
     _mm512_mask_sub_epi16, _mm512_maskz_set1_epi16, _mm512_max_epi16, _mm512_min_epi16,
     _mm512_min_epu16, _mm512_mulhrs_epi16, _mm512_mullo_epi16, _mm512_packs_epi32,
+    _mm512_permutex2var_epi16, _mm512_permutexvar_epi64, _mm512_set_epi16, _mm512_set_epi64,
     _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_slli_epi32,
     _mm512_sra_epi16, _mm512_sra_epi32, _mm512_srai_epi32, _mm512_srl_epi16, _mm512_srli_epi32,
     _mm512_storeu_si512, _mm512_sub_epi16, _mm512_subs_epu16, _mm512_test_epi16_mask,
-    _mm512_unpackhi_epi16, _mm512_unpacklo_epi16,
+    _mm512_unpackhi_epi16, _mm512_unpackhi_epi32, _mm512_unpackhi_epi64, _mm512_unpacklo_epi16,
+    _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
 };
 
 /// Thirty-two signed words, private to AVX-512 kernels.
@@ -178,10 +181,11 @@ impl I16Lanes for I16x32 {
             let hi_idx = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64::<1>(clamped));
             let low = _mm512_i32gather_epi32::<2>(lo_idx, base);
             let high = _mm512_i32gather_epi32::<2>(hi_idx, base);
-            let extend = |v: __m512i| _mm512_srai_epi32::<16>(_mm512_slli_epi32::<16>(v));
+            let low = _mm512_srai_epi32::<16>(_mm512_slli_epi32::<16>(low));
+            let high = _mm512_srai_epi32::<16>(_mm512_slli_epi32::<16>(high));
             Self(_mm512_inserti64x4::<1>(
-                _mm512_castsi256_si512(_mm512_cvtepi32_epi16(extend(low))),
-                _mm512_cvtepi32_epi16(extend(high)),
+                _mm512_castsi256_si512(_mm512_cvtepi32_epi16(low)),
+                _mm512_cvtepi32_epi16(high),
             ))
         }
     }
@@ -324,6 +328,18 @@ impl I16Lanes for I16x32 {
                     _mm512_unpackhi_epi16(a.0, b.0),
                     _mm512_unpackhi_epi16(wa.0, wb.0),
                 ),
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn acc_vec_fma2(acc: Self::Acc, a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        // SAFETY: these types run only inside AVX-512F/BW/VL kernels (module docs).
+        unsafe {
+            let prod = Self::acc_vec_mul_add2(a, wa, b, wb);
+            [
+                _mm512_add_epi32(acc[0], prod[0]),
+                _mm512_add_epi32(acc[1], prod[1]),
             ]
         }
     }
@@ -519,5 +535,123 @@ impl I16FilterLanes for I16x32 {
     fn any_nonzero(self) -> bool {
         // SAFETY: wrapper enables AVX-512F/BW/VL.
         unsafe { _mm512_test_epi16_mask(self.0, self.0) != 0 }
+    }
+
+    #[inline(always)]
+    fn load_u16_deinterleaved(src: &[u16]) -> (Self, Self) {
+        let src = &src[..64];
+        // SAFETY: wrapper enables AVX-512F/BW/VL; `src` holds 64 `u16` elements.
+        unsafe {
+            let v0 = _mm512_loadu_si512(src.as_ptr().cast());
+            let v1 = _mm512_loadu_si512(src.as_ptr().add(32).cast());
+            let even_idx = _mm512_set_epi16(
+                62, 60, 58, 56, 54, 52, 50, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22,
+                20, 18, 16, 14, 12, 10, 8, 6, 4, 2, 0,
+            );
+            let odd_idx = _mm512_add_epi16(even_idx, _mm512_set1_epi16(1));
+            (
+                Self(_mm512_permutex2var_epi16(v0, even_idx, v1)),
+                Self(_mm512_permutex2var_epi16(v0, odd_idx, v1)),
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
+        #[inline(always)]
+        unsafe fn pack_lo_512(b: &[[i16; 12]], i0: usize) -> __m512i {
+            // SAFETY: AVX-512F/BW/VL enabled by caller; indices in `0..8`.
+            unsafe {
+                let lo = _mm256_set_m128i(
+                    _mm_loadu_si128(b[i0 + 2].as_ptr().cast()),
+                    _mm_loadu_si128(b[i0].as_ptr().cast()),
+                );
+                let hi = _mm256_set_m128i(
+                    _mm_loadu_si128(b[i0 + 6].as_ptr().cast()),
+                    _mm_loadu_si128(b[i0 + 4].as_ptr().cast()),
+                );
+                _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
+            }
+        }
+        #[inline(always)]
+        unsafe fn pack_hi_512(b: &[[i16; 12]], i0: usize) -> __m512i {
+            // SAFETY: AVX-512F/BW/VL enabled by caller; indices in `0..8`.
+            unsafe {
+                let lo = _mm256_set_m128i(
+                    _mm_loadl_epi64(b[i0 + 2][8..].as_ptr().cast()),
+                    _mm_loadl_epi64(b[i0][8..].as_ptr().cast()),
+                );
+                let hi = _mm256_set_m128i(
+                    _mm_loadl_epi64(b[i0 + 6][8..].as_ptr().cast()),
+                    _mm_loadl_epi64(b[i0 + 4][8..].as_ptr().cast()),
+                );
+                _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
+            }
+        }
+        #[inline(always)]
+        unsafe fn expand_pairs_512(d_even: __m512i, d_odd: __m512i) -> [I16x32; 4] {
+            // SAFETY: AVX-512F/BW/VL enabled by caller.
+            unsafe {
+                let qe_lo = _mm512_unpacklo_epi32(d_even, d_even);
+                let qo_lo = _mm512_unpacklo_epi32(d_odd, d_odd);
+                let qe_hi = _mm512_unpackhi_epi32(d_even, d_even);
+                let qo_hi = _mm512_unpackhi_epi32(d_odd, d_odd);
+                [
+                    I16x32(_mm512_unpacklo_epi64(qe_lo, qo_lo)),
+                    I16x32(_mm512_unpackhi_epi64(qe_lo, qo_lo)),
+                    I16x32(_mm512_unpacklo_epi64(qe_hi, qo_hi)),
+                    I16x32(_mm512_unpackhi_epi64(qe_hi, qo_hi)),
+                ]
+            }
+        }
+        let b = &blocks[..8];
+        // SAFETY: wrapper enables AVX-512F/BW/VL; each block holds 12 `i16`s.
+        unsafe {
+            let (even0, odd0) = (pack_lo_512(b, 0), pack_lo_512(b, 1));
+            let (even1, odd1) = (pack_hi_512(b, 0), pack_hi_512(b, 1));
+            let [t0, t1, t2, t3] = expand_pairs_512(
+                _mm512_unpacklo_epi16(even0, even0),
+                _mm512_unpacklo_epi16(odd0, odd0),
+            );
+            let [t4, t5, t6, t7] = expand_pairs_512(
+                _mm512_unpackhi_epi16(even0, even0),
+                _mm512_unpackhi_epi16(odd0, odd0),
+            );
+            let [t8, t9, t10, t11] = expand_pairs_512(
+                _mm512_unpacklo_epi16(even1, even1),
+                _mm512_unpacklo_epi16(odd1, odd1),
+            );
+            [t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11]
+        }
+    }
+}
+
+impl I16Pairs for I16x32 {
+    type Pairs = I32x16;
+
+    #[inline(always)]
+    fn splat_pair(first: i16, second: i16) -> Self {
+        // SAFETY: wrapper enables AVX-512F/BW/VL.
+        unsafe { Self(_mm512_set1_epi32(packed_pair(first, second))) }
+    }
+
+    #[inline(always)]
+    fn pair_dot(self, other: Self) -> I32x16 {
+        // SAFETY: wrapper enables AVX-512F/BW/VL.
+        unsafe { I32x16(_mm512_madd_epi16(self.0, other.0)) }
+    }
+
+    #[inline(always)]
+    fn narrow_pairs(low: I32x16, high: I32x16) -> Self {
+        // `_mm512_packs_epi32` packs 128-bit lanes `[L0, H0, L1, H1, L2, H2, L3, H3]`;
+        // permuting qwords `[0, 2, 4, 6, 1, 3, 5, 7]` restores contiguous lane order.
+        // SAFETY: wrapper enables AVX-512F/BW/VL.
+        unsafe {
+            let idx = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
+            Self(_mm512_permutexvar_epi64(
+                idx,
+                _mm512_packs_epi32(low.0, high.0),
+            ))
+        }
     }
 }

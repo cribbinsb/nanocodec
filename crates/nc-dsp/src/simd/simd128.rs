@@ -20,7 +20,8 @@ use core::arch::wasm32::{
     i32x4_extmul_high_i16x8, i32x4_extmul_low_i16x8, i32x4_extract_lane, i32x4_gt, i32x4_max,
     i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub,
     i64x2_shuffle, u8x16_narrow_i16x8, u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, u16x8_min,
-    u16x8_sub_sat, u32x4_extend_low_u16x8, u32x4_shr, v128, v128_and, v128_load, v128_load32_zero,
+    u16x8_narrow_i32x4, u16x8_shr, u16x8_sub_sat, u32x4_extadd_pairwise_u16x8,
+    u32x4_extend_low_u16x8, u32x4_shr, v128, v128_and, v128_load, v128_load32_zero,
     v128_load64_zero, v128_or, v128_store, v128_store32_lane, v128_store64_lane, v128_xor,
 };
 
@@ -287,6 +288,18 @@ impl I32Lanes for I32x4 {
     }
 
     #[inline(always)]
+    fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
+        let dst = &mut dst[..4];
+        // SAFETY: `dst` holds 4 `u16` samples (8 bytes).
+        let packed = unsafe { v128_load64_zero(dst.as_ptr().cast()) };
+        let sum = i32x4_add(self.0, u32x4_extend_low_u16x8(packed));
+        let clamped = i32x4_min(i32x4_max(sum, i32x4_splat(0)), i32x4_splat(max_val));
+        let words = u16x8_narrow_i32x4(clamped, clamped);
+        // SAFETY: `dst` holds 4 `u16` samples (8 bytes).
+        unsafe { v128_store64_lane::<0>(words, dst.as_mut_ptr().cast()) }
+    }
+
+    #[inline(always)]
     fn load_i16_pair(src: &[i16]) -> (Self, Self) {
         let src = &src[..8];
         // SAFETY: `src` holds 8 values (16 bytes).
@@ -462,6 +475,26 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn srl(self, bits: u32) -> Self {
+        Self(u16x8_shr(self.0, bits))
+    }
+
+    #[inline(always)]
+    fn pair_avg_u16(pairs: &[u16]) -> Self {
+        let pairs = &pairs[..16];
+        // SAFETY: `pairs` holds 16 `u16` elements (32 bytes).
+        let (p0, p1) = unsafe {
+            (
+                v128_load(pairs.as_ptr().cast()),
+                v128_load(pairs.as_ptr().add(8).cast()),
+            )
+        };
+        let one = i32x4_splat(1);
+        let avg4 = |p: v128| u32x4_shr(i32x4_add(u32x4_extadd_pairwise_u16x8(p), one), 1);
+        Self(u16x8_narrow_i32x4(avg4(p0), avg4(p1)))
+    }
+
+    #[inline(always)]
     fn clamp_u8(self) -> Self {
         Self(i16x8_max(
             i16x8_min(self.0, i16x8_splat(255)),
@@ -486,6 +519,37 @@ impl I16Lanes for I16x8 {
             i32x4_add(acc[0], i32x4_extmul_low_i16x8(a.0, c)),
             i32x4_add(acc[1], i32x4_extmul_high_i16x8(a.0, c)),
         ]
+    }
+
+    #[inline(always)]
+    fn acc_mul_add2(acc: Self::Acc, a: Self, ca: i16, b: Self, cb: i16) -> Self::Acc {
+        let taps = i32x4_splat(packed_pair(ca, cb));
+        let lo = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(a.0, b.0);
+        let hi = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(a.0, b.0);
+        [
+            i32x4_add(acc[0], i32x4_dot_i16x8(lo, taps)),
+            i32x4_add(acc[1], i32x4_dot_i16x8(hi, taps)),
+        ]
+    }
+
+    #[inline(always)]
+    fn acc_vec_mul_add2(a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        [
+            i32x4_add(
+                i32x4_extmul_low_i16x8(a.0, wa.0),
+                i32x4_extmul_low_i16x8(b.0, wb.0),
+            ),
+            i32x4_add(
+                i32x4_extmul_high_i16x8(a.0, wa.0),
+                i32x4_extmul_high_i16x8(b.0, wb.0),
+            ),
+        ]
+    }
+
+    #[inline(always)]
+    fn acc_vec_fma2(acc: Self::Acc, a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        let prod = Self::acc_vec_mul_add2(a, wa, b, wb);
+        [i32x4_add(acc[0], prod[0]), i32x4_add(acc[1], prod[1])]
     }
 
     #[inline(always)]
@@ -611,6 +675,20 @@ impl I16Lanes for I16x4 {
     }
 
     #[inline(always)]
+    fn srl(self, bits: u32) -> Self {
+        Self(u16x8_shr(self.0, bits))
+    }
+
+    #[inline(always)]
+    fn pair_avg_u16(pairs: &[u16]) -> Self {
+        let pairs = &pairs[..8];
+        // SAFETY: `pairs` holds 8 `u16` elements (16 bytes).
+        let p = unsafe { v128_load(pairs.as_ptr().cast()) };
+        let avg = u32x4_shr(i32x4_add(u32x4_extadd_pairwise_u16x8(p), i32x4_splat(1)), 1);
+        Self(u16x8_narrow_i32x4(avg, i32x4_splat(0)))
+    }
+
+    #[inline(always)]
     fn clamp_u8(self) -> Self {
         Self(i16x8_max(
             i16x8_min(self.0, i16x8_splat(255)),
@@ -631,6 +709,19 @@ impl I16Lanes for I16x4 {
     #[inline(always)]
     fn acc_mul_add(acc: Self::Acc, a: Self, coeff: i16) -> Self::Acc {
         i32x4_add(acc, i32x4_extmul_low_i16x8(a.0, i16x8_splat(coeff)))
+    }
+
+    #[inline(always)]
+    fn acc_vec_mul_add2(a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        i32x4_add(
+            i32x4_extmul_low_i16x8(a.0, wa.0),
+            i32x4_extmul_low_i16x8(b.0, wb.0),
+        )
+    }
+
+    #[inline(always)]
+    fn acc_vec_fma2(acc: Self::Acc, a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        i32x4_add(acc, Self::acc_vec_mul_add2(a, wa, b, wb))
     }
 
     #[inline(always)]
@@ -714,6 +805,50 @@ impl I16FilterLanes for I16x8 {
     #[inline(always)]
     fn blend(self, if_set: Self, if_clear: Self) -> Self {
         Self(select_i16(self.0, if_set.0, if_clear.0))
+    }
+
+    #[inline(always)]
+    fn load_u16_deinterleaved(src: &[u16]) -> (Self, Self) {
+        let src = &src[..16];
+        // SAFETY: `src` holds 16 `u16` elements (32 bytes).
+        let (v0, v1) = unsafe {
+            (
+                v128_load(src.as_ptr().cast()),
+                v128_load(src.as_ptr().add(8).cast()),
+            )
+        };
+        (
+            Self(i16x8_shuffle::<0, 2, 4, 6, 8, 10, 12, 14>(v0, v1)),
+            Self(i16x8_shuffle::<1, 3, 5, 7, 9, 11, 13, 15>(v0, v1)),
+        )
+    }
+
+    #[inline(always)]
+    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
+        let b = &blocks[..2];
+        // SAFETY: each block holds 12 `i16`s (24 bytes).
+        let (c0_lo, c0_hi, c1_lo, c1_hi) = unsafe {
+            (
+                v128_load(b[0].as_ptr().cast()),
+                v128_load64_zero(b[0][8..].as_ptr().cast()),
+                v128_load(b[1].as_ptr().cast()),
+                v128_load64_zero(b[1][8..].as_ptr().cast()),
+            )
+        };
+        [
+            Self(i16x8_shuffle::<0, 0, 0, 0, 8, 8, 8, 8>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<1, 1, 1, 1, 9, 9, 9, 9>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<2, 2, 2, 2, 10, 10, 10, 10>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<3, 3, 3, 3, 11, 11, 11, 11>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<4, 4, 4, 4, 12, 12, 12, 12>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<5, 5, 5, 5, 13, 13, 13, 13>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<6, 6, 6, 6, 14, 14, 14, 14>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<7, 7, 7, 7, 15, 15, 15, 15>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<0, 0, 0, 0, 8, 8, 8, 8>(c0_hi, c1_hi)),
+            Self(i16x8_shuffle::<1, 1, 1, 1, 9, 9, 9, 9>(c0_hi, c1_hi)),
+            Self(i16x8_shuffle::<2, 2, 2, 2, 10, 10, 10, 10>(c0_hi, c1_hi)),
+            Self(i16x8_shuffle::<3, 3, 3, 3, 11, 11, 11, 11>(c0_hi, c1_hi)),
+        ]
     }
 }
 

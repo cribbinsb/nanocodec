@@ -178,6 +178,7 @@ impl Dsp {
         out: &mut [i16],
     ) {
         inverse_with_matrix(
+            self,
             size,
             (kinds, lfnst),
             levels,
@@ -255,7 +256,9 @@ const SKIP_SCALING_SHIFT: u32 = 10;
 ///
 /// # Panics
 /// As [`Dsp::vvc_inverse_with_matrix`], with the QP bound of `depth`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn inverse_with_matrix(
+    dsp: &Dsp,
     size: (usize, usize),
     (kinds, lfnst): ([crate::VvcTransformKind; 2], Option<crate::VvcLfnst>),
     levels: &[i32],
@@ -274,7 +277,11 @@ pub(crate) fn inverse_with_matrix(
         if let Some(transform) = lfnst {
             super::vvc_lfnst::inverse(size, transform, &mut scaled[..length]);
         }
-        super::vvc_primary::inverse(size, kinds, &scaled[..length], out, depth);
+        if (4..=64).contains(&width) && (4..=64).contains(&height) {
+            dsp.vvc_inverse_kinds_at(size, kinds, &scaled[..length], out, depth);
+        } else {
+            super::vvc_primary::inverse(size, kinds, &scaled[..length], out, depth);
+        }
     });
 }
 

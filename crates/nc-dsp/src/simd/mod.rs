@@ -246,6 +246,49 @@ pub(crate) trait I16Lanes: Copy {
     fn load(src: &[i16]) -> Self;
     /// Store into the first `LANES` values of `dst`.
     fn store(self, dst: &mut [i16]);
+    /// The first `LANES` unsigned 16-bit samples of `src` (reinterpreted as
+    /// `i16`; non-negative for 8..=12-bit samples).
+    #[inline(always)]
+    #[allow(unsafe_code, clippy::inline_always)]
+    fn load_u16(src: &[u16]) -> Self {
+        let src = &src[..Self::LANES];
+        // SAFETY: `u16` and `i16` have identical size, alignment, and bit validity.
+        Self::load(unsafe { core::slice::from_raw_parts(src.as_ptr().cast::<i16>(), Self::LANES) })
+    }
+    /// Store into the first `LANES` unsigned 16-bit samples of `dst`.
+    #[inline(always)]
+    #[allow(unsafe_code, clippy::inline_always)]
+    fn store_u16(self, dst: &mut [u16]) {
+        let dst = &mut dst[..Self::LANES];
+        // SAFETY: `u16` and `i16` have identical size, alignment, and bit validity.
+        self.store(unsafe {
+            core::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<i16>(), Self::LANES)
+        });
+    }
+    /// [`Self::load_u16`] from a pointer, for kernels whose window was
+    /// validated once at entry.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid for reading `LANES` `u16` elements.
+    #[inline(always)]
+    #[allow(unsafe_code, clippy::inline_always)]
+    unsafe fn load_u16_at(src: *const u16) -> Self {
+        // SAFETY: caller guarantees `LANES` readable `u16`s.
+        Self::load(unsafe { core::slice::from_raw_parts(src.cast::<i16>(), Self::LANES) })
+    }
+    /// [`Self::store_u16`] to a pointer, for kernels whose output slice was
+    /// validated once at entry.
+    ///
+    /// # Safety
+    ///
+    /// `dst` must be valid for writing `LANES` `u16` elements.
+    #[inline(always)]
+    #[allow(unsafe_code, clippy::inline_always)]
+    unsafe fn store_u16_at(self, dst: *mut u16) {
+        // SAFETY: caller guarantees `LANES` writable `u16`s.
+        self.store(unsafe { core::slice::from_raw_parts_mut(dst.cast::<i16>(), Self::LANES) });
+    }
     /// The first `LANES` values of `src`, sign-extended (8-bit film grain).
     /// The default builds the vector in memory; the grain kernels' ISAs
     /// override it with a widening load.
@@ -479,6 +522,34 @@ pub(crate) trait I16Lanes: Copy {
         }
         acc
     }
+    /// `acc + widen(a) * widen(wa) + widen(b) * widen(wb)` per lane in
+    /// [`Self::Acc`] layout, ready for [`Self::acc_round_shift_narrow`].
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn acc_vec_fma2(mut acc: Self::Acc, a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        let (mut ab, mut wab, mut bb, mut wbb) = (
+            [0i16; MAX_I16_LANES],
+            [0i16; MAX_I16_LANES],
+            [0i16; MAX_I16_LANES],
+            [0i16; MAX_I16_LANES],
+        );
+        a.store(&mut ab);
+        wa.store(&mut wab);
+        b.store(&mut bb);
+        wb.store(&mut wbb);
+        for i in 0..Self::LANES {
+            let mut unit = [0i16; MAX_I16_LANES];
+            unit[i] = 1;
+            let basis = Self::load(&unit);
+            let p = i32::from(ab[i]) * i32::from(wab[i]) + i32::from(bb[i]) * i32::from(wbb[i]);
+            let hi = (p >> 15) as i16;
+            let lo = (p - (i32::from(hi) << 15)) as i16;
+            acc = Self::acc_mul_add(acc, basis.mul(Self::splat(lo)), 1);
+            acc = Self::acc_mul_add(acc, basis, hi);
+            acc = Self::acc_mul_add(acc, basis.mul(Self::splat(hi)), i16::MAX);
+        }
+        acc
+    }
     /// `acc + widen(a)`; only the total ([`Self::acc_sum`]) is meaningful.
     fn acc_add(acc: Self::Acc, a: Self) -> Self::Acc;
     /// `acc + widen(a)^2`; only the total ([`Self::acc_sum`]) is meaningful.
@@ -560,6 +631,36 @@ pub(crate) trait I16FilterLanes: I16Lanes {
         let mut buf = [0i16; MAX_I16_LANES];
         self.store(&mut buf);
         buf[..Self::LANES].iter().any(|&v| v != 0)
+    }
+    /// Deinterleave the first `2 * LANES` `u16` samples of `src` into `(even,
+    /// odd)`, where lane `i` of `even` is `src[2 * i]` and lane `i` of `odd`
+    /// is `src[2 * i + 1]`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn load_u16_deinterleaved(src: &[u16]) -> (Self, Self) {
+        let pairs = &src[..2 * Self::LANES];
+        let mut even = [0i16; MAX_I16_LANES];
+        let mut odd = [0i16; MAX_I16_LANES];
+        for i in 0..Self::LANES {
+            even[i] = pairs[2 * i] as i16;
+            odd[i] = pairs[2 * i + 1] as i16;
+        }
+        (Self::load(&even), Self::load(&odd))
+    }
+    /// Expand `LANES / 4` blocks of 12 ALF values (`blocks[0..LANES / 4]`)
+    /// into twelve vectors, where lane `4 * b + j` (`j < 4`) of result `k`
+    /// holds `blocks[b][k]`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
+        let groups = &blocks[..Self::LANES / 4];
+        core::array::from_fn(|k| {
+            let mut lanes = [0i16; MAX_I16_LANES];
+            for (b, block) in groups.iter().enumerate() {
+                lanes[4 * b..4 * b + 4].fill(block[k]);
+            }
+            Self::load(&lanes)
+        })
     }
 }
 

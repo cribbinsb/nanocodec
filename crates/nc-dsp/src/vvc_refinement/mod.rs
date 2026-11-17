@@ -2,14 +2,16 @@
 //! Scalar references retain the BSD-Clear `VVdeC` arithmetic and captured fixtures.
 #![allow(unsafe_code)]
 use crate::Isa;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avx512;
 mod bdof;
 mod generic;
 #[cfg(target_arch = "aarch64")]
-mod neon;
+pub(crate) mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-mod wasm;
+pub(crate) mod wasm;
 #[cfg(target_arch = "x86_64")]
-mod x86;
+pub(crate) mod x86;
 
 type Bilinear = unsafe fn((usize, usize), &nc_common::PlaneView<'_>, (usize, usize), &mut [i16]);
 type Dmvr = unsafe fn((usize, usize), [&[i16]; 2]) -> ([i32; 2], bool);
@@ -26,6 +28,8 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
     match isa {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => x86::KERNELS,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::KERNELS,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::KERNELS,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]

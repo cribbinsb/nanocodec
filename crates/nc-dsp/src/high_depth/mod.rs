@@ -27,7 +27,6 @@
 pub(crate) mod av1;
 mod h264;
 mod inverse;
-// Vector u16 kernels exist for x86 and aarch64 only.
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -52,7 +51,7 @@ use crate::dispatch::{
 };
 use crate::hevc_intra::PlanarEdges;
 use crate::hevc_weight::HevcWeights;
-use crate::mc::{Filter, SubBlockMotion};
+use crate::mc::{Filter, SubBlockMotion, VvcRprFilter, VvcScaledBlock};
 use crate::sao::Rect;
 use crate::{Dsp, Isa, VvcGeometric};
 
@@ -138,6 +137,15 @@ pub(crate) type DmvrBilinear16Fn =
     unsafe fn((usize, usize), &PlaneView<'_, u16>, (usize, usize), &mut [i16], BitDepth);
 /// VVC BDOF (`Dsp::vvc_bdof` with the depth).
 pub(crate) type Bdof16Fn = unsafe fn((usize, usize), [&[i16]; 2], &mut [u16], BitDepth);
+/// VVC scaled reference prediction (`vvc_predict_scaled` at `u16`).
+pub(crate) type ScaledPredict16Fn = unsafe fn(
+    &PlaneView<'_, u16>,
+    &VvcScaledBlock,
+    [VvcRprFilter; 2],
+    (bool, bool),
+    BitDepth,
+    &mut [i16],
+);
 
 /// Kernels per width class (4, 8, 16, 32, 64).
 const WIDTH_CLASSES: usize = 5;
@@ -170,6 +178,7 @@ pub(crate) struct HighFns {
     pub vvc_geometric_blend: GeometricBlend16Fn,
     pub vvc_dmvr_bilinear: DmvrBilinear16Fn,
     pub vvc_bdof: Bdof16Fn,
+    pub vvc_predict_scaled: ScaledPredict16Fn,
     /// VVC deblocking and ALF (`vvc_filter`).
     pub vvc_filter: vvc_filter::VvcFilterFns,
     pub vvc_recon: vvc_recon::VvcReconFns,
@@ -237,7 +246,7 @@ macro_rules! families {
     };
 }
 pub(crate) use by_width;
-// The ISA tables (`vector`, x86 and aarch64 only) name this by path.
+// The ISA tables (`vector`) name this by path.
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -307,7 +316,26 @@ impl HighFns {
     /// (`Dsp::avx512` starts from the AVX2 table, as for every other table).
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn install_avx512(&mut self) {
+        self.predict = vector::avx512::PREDICT;
+        self.prep = vector::avx512::PREP;
+        self.bi = vector::avx512::BI;
+        self.hevc_weight = crate::hevc_weight::kernel_u16(Isa::Avx512);
+        self.hevc_angular = crate::hevc_intra::high_simd::avx512::angular;
+        self.hevc_planar = crate::hevc_intra::high_simd::avx512::planar;
+        self.hevc_inverse = inverse::kernels(Isa::Avx512);
+        self.add_residual = crate::vvc_recon::high_simd::avx512::add_residual_strided;
+        self.sao_apply = crate::sao::high_simd::avx512::apply;
+        self.sao_band = crate::sao::high_simd::avx512::band;
+        self.high_precision = crate::mc::precision_simd::avx512::high_precision;
+        self.vvc_geometric_blend = crate::vvc_geo::high_simd::avx512::blend;
+        self.vvc_dmvr_bilinear = crate::vvc_refinement::avx512::bilinear_u16;
+        self.vvc_bdof = crate::vvc_refinement::avx512::bdof_u16;
+        self.vvc_predict_scaled = crate::mc::rpr_simd::avx512::predict_scaled_u16;
+        self.vp9_mc = vector::avx512::VP9_MC;
+        self.vp9_filter = vector::avx512::vp9_filter;
         crate::cdef::avx512::install_high(&mut self.cdef);
+        self.vvc_filter = vvc_filter::VvcFilterFns::for_isa(Isa::Avx512);
+        self.vvc_recon = vvc_recon::VvcReconFns::for_isa(Isa::Avx512);
         self.av1_mc = crate::av1_mc::high_mc::HighAv1McFns::for_isa(Isa::Avx512);
         self.av1_inverse = crate::av1_inverse::high_simd::HighAv1InverseFns::for_isa(Isa::Avx512);
         self.av1_lr = crate::av1_restoration::high_lr::HighLrFns::for_isa(Isa::Avx512);
@@ -325,16 +353,13 @@ impl HighFns {
                 target_arch = "aarch64",
                 all(target_arch = "wasm32", target_feature = "simd128")
             )),
-            allow(
-                unused_mut,
-                reason = "only the x86 and aarch64 tables install vector kernels"
-            )
+            allow(unused_mut, reason = "only vector ISA builds install vector kernels")
         )]
         let mut table = Self {
             predict: families!(scalar::predict),
             prep: families!(scalar::prep),
             bi: families!(scalar::bi),
-            hevc_weight: crate::hevc_weight::reference::weight_at::<u16>,
+            hevc_weight: crate::hevc_weight::kernel_u16(isa),
             hevc_angular: crate::hevc_intra::reference::angular::<u16>,
             hevc_planar: crate::hevc_intra::reference::planar::<u16>,
             hevc_inverse: inverse::kernels(isa),
@@ -347,8 +372,9 @@ impl HighFns {
             vvc_geometric_blend: crate::vvc_geo::blend_at::<u16>,
             vvc_dmvr_bilinear: crate::vvc_dmvr::bilinear_at::<u16>,
             vvc_bdof: crate::vvc_bdof::scalar_at::<u16>,
-            vvc_filter: vvc_filter::VvcFilterFns::SCALAR,
-            vvc_recon: vvc_recon::VvcReconFns::SCALAR,
+            vvc_predict_scaled: crate::mc::vvc_predict_scaled::<u16>,
+            vvc_filter: vvc_filter::VvcFilterFns::for_isa(isa),
+            vvc_recon: vvc_recon::VvcReconFns::for_isa(isa),
             av1_mc: crate::av1_mc::high_mc::HighAv1McFns::for_isa(isa),
             av1_inverse: crate::av1_inverse::high_simd::HighAv1InverseFns::for_isa(isa),
             av1_lr: crate::av1_restoration::high_lr::HighLrFns::for_isa(isa),
@@ -362,38 +388,75 @@ impl HighFns {
         };
         match isa {
             #[cfg(target_arch = "x86_64")]
-            Isa::Avx2 => {
-                table.predict = vector::avx2::PREDICT;
-                table.prep = vector::avx2::PREP;
-                table.bi = vector::avx2::BI;
-                table.hevc_weight = vector::avx2::WEIGHT;
-                table.cdef = crate::cdef::avx2::HIGH_FNS;
-                table.vp9_mc = vector::avx2::VP9_MC;
-                table.vp9_filter = vector::avx2::vp9_filter;
-            }
+            Isa::Avx2 => table.install_avx2(),
+            #[cfg(target_arch = "x86_64")]
+            Isa::Avx512 => table.install_avx512(),
             #[cfg(target_arch = "aarch64")]
-            Isa::Neon => {
-                table.predict = vector::neon::PREDICT;
-                table.prep = vector::neon::PREP;
-                table.bi = vector::neon::BI;
-                table.hevc_weight = vector::neon::WEIGHT;
-                table.cdef = crate::cdef::neon::HIGH_FNS;
-                table.vp9_mc = vector::neon::VP9_MC;
-                table.vp9_filter = vector::neon::vp9_filter;
-            }
+            Isa::Neon => table.install_neon(),
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-            Isa::Simd128 => {
-                table.predict = vector::simd128::PREDICT;
-                table.prep = vector::simd128::PREP;
-                table.bi = vector::simd128::BI;
-                table.hevc_weight = vector::simd128::WEIGHT;
-                table.vp9_mc = vector::simd128::VP9_MC;
-                table.vp9_filter = vector::simd128::vp9_filter;
-                table.sao_apply = crate::sao::simd128::apply_high;
-            }
+            Isa::Simd128 => table.install_simd128(),
             _ => {}
         }
         table
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn install_avx2(&mut self) {
+        self.predict = vector::avx2::PREDICT;
+        self.prep = vector::avx2::PREP;
+        self.bi = vector::avx2::BI;
+        self.hevc_angular = crate::hevc_intra::high_simd::avx2::angular;
+        self.hevc_planar = crate::hevc_intra::high_simd::avx2::planar;
+        self.add_residual = crate::vvc_recon::high_simd::avx2::add_residual_strided;
+        self.sao_apply = crate::sao::high_simd::avx2::apply;
+        self.sao_band = crate::sao::high_simd::avx2::band;
+        self.high_precision = crate::mc::precision_simd::avx2::high_precision;
+        self.vvc_geometric_blend = crate::vvc_geo::high_simd::avx2::blend;
+        self.vvc_dmvr_bilinear = crate::vvc_refinement::x86::bilinear_u16;
+        self.vvc_bdof = crate::vvc_refinement::x86::bdof_u16;
+        self.vvc_predict_scaled = crate::mc::rpr_simd::avx2::predict_scaled_u16;
+        self.cdef = crate::cdef::avx2::HIGH_FNS;
+        self.vp9_mc = vector::avx2::VP9_MC;
+        self.vp9_filter = vector::avx2::vp9_filter;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn install_neon(&mut self) {
+        self.predict = vector::neon::PREDICT;
+        self.prep = vector::neon::PREP;
+        self.bi = vector::neon::BI;
+        self.hevc_angular = crate::hevc_intra::high_simd::neon::angular;
+        self.hevc_planar = crate::hevc_intra::high_simd::neon::planar;
+        self.add_residual = crate::vvc_recon::high_simd::neon::add_residual_strided;
+        self.sao_apply = crate::sao::high_simd::neon::apply;
+        self.sao_band = crate::sao::high_simd::neon::band;
+        self.high_precision = crate::mc::precision_simd::neon::high_precision;
+        self.vvc_geometric_blend = crate::vvc_geo::high_simd::neon::blend;
+        self.vvc_dmvr_bilinear = crate::vvc_refinement::neon::bilinear_u16;
+        self.vvc_bdof = crate::vvc_refinement::neon::bdof_u16;
+        self.vvc_predict_scaled = crate::mc::rpr_simd::neon::predict_scaled_u16;
+        self.cdef = crate::cdef::neon::HIGH_FNS;
+        self.vp9_mc = vector::neon::VP9_MC;
+        self.vp9_filter = vector::neon::vp9_filter;
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    fn install_simd128(&mut self) {
+        self.predict = vector::simd128::PREDICT;
+        self.prep = vector::simd128::PREP;
+        self.bi = vector::simd128::BI;
+        self.hevc_angular = crate::hevc_intra::high_simd::simd128::angular;
+        self.hevc_planar = crate::hevc_intra::high_simd::simd128::planar;
+        self.add_residual = crate::vvc_recon::high_simd::simd128::add_residual_strided;
+        self.sao_apply = crate::sao::high_simd::simd128::apply;
+        self.sao_band = crate::sao::high_simd::simd128::band;
+        self.high_precision = crate::mc::precision_simd::simd128::high_precision;
+        self.vvc_geometric_blend = crate::vvc_geo::high_simd::simd128::blend;
+        self.vvc_dmvr_bilinear = crate::vvc_refinement::wasm::bilinear_u16;
+        self.vvc_bdof = crate::vvc_refinement::wasm::bdof_u16;
+        self.vvc_predict_scaled = crate::mc::rpr_simd::simd128::predict_scaled_u16;
+        self.vp9_mc = vector::simd128::VP9_MC;
+        self.vp9_filter = vector::simd128::vp9_filter;
     }
 }
 
@@ -508,6 +571,15 @@ pub trait Pixel:
         size: (usize, usize),
         inputs: [&[i16]; 2],
         out: &mut [Self],
+    );
+    #[doc(hidden)]
+    fn vvc_predict_scaled(
+        kernels: DepthKernels<'_>,
+        reference: &PlaneView<'_, Self>,
+        block: &VvcScaledBlock,
+        filters: [VvcRprFilter; 2],
+        flags: (bool, bool),
+        out: &mut [i16],
     );
     #[doc(hidden)]
     fn hevc_weighted_prediction_centered(
@@ -755,6 +827,17 @@ impl Pixel for u8 {
         out: &mut [u8],
     ) {
         kernels.dsp.vvc_bdof(size, inputs, out);
+    }
+
+    fn vvc_predict_scaled(
+        kernels: DepthKernels<'_>,
+        reference: &PlaneView<'_, u8>,
+        block: &VvcScaledBlock,
+        filters: [VvcRprFilter; 2],
+        flags: (bool, bool),
+        out: &mut [i16],
+    ) {
+        crate::mc::vvc_predict_scaled(reference, block, filters, flags, kernels.depth, out);
     }
 
     fn hevc_weighted_prediction_centered(
@@ -1088,6 +1171,33 @@ impl Pixel for u16 {
         // SAFETY: dimensions and buffers checked; the table matches a
         // supported ISA.
         unsafe { (kernels.dsp.high.vvc_bdof)(size, inputs, out, kernels.depth) }
+    }
+
+    fn vvc_predict_scaled(
+        kernels: DepthKernels<'_>,
+        reference: &PlaneView<'_, u16>,
+        block: &VvcScaledBlock,
+        filters: [VvcRprFilter; 2],
+        flags: (bool, bool),
+        out: &mut [i16],
+    ) {
+        let (width, height) = block.size;
+        let [left, top, right, bottom] = block.bounds;
+        assert!(out.len() >= width * height);
+        assert!(left >= 0 && top >= 0 && right >= left && bottom >= top);
+        assert!((right as usize) < reference.width() && (bottom as usize) < reference.height());
+        // SAFETY: output and reference bounds checked above; the table matches
+        // a supported ISA.
+        unsafe {
+            (kernels.dsp.high.vvc_predict_scaled)(
+                reference,
+                block,
+                filters,
+                flags,
+                kernels.depth,
+                out,
+            );
+        }
     }
 
     fn hevc_weighted_prediction_centered(
@@ -1425,6 +1535,21 @@ impl DepthKernels<'_> {
     /// As [`Dsp::vvc_bdof`].
     pub fn vvc_bdof<T: Pixel>(self, size: (usize, usize), inputs: [&[i16]; 2], out: &mut [T]) {
         T::vvc_bdof(self, size, inputs, out);
+    }
+
+    /// [`crate::vvc_predict_scaled`] at this depth.
+    ///
+    /// # Panics
+    /// As [`crate::vvc_predict_scaled`].
+    pub fn vvc_predict_scaled<T: Pixel>(
+        self,
+        reference: &PlaneView<'_, T>,
+        block: &VvcScaledBlock,
+        filters: [VvcRprFilter; 2],
+        flags: (bool, bool),
+        out: &mut [i16],
+    ) {
+        T::vvc_predict_scaled(self, reference, block, filters, flags, out);
     }
 
     /// [`Dsp::vvc_dmvr`]: the search reads the 10-bit bilinear output of

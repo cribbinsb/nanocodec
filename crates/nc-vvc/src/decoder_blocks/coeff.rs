@@ -1,6 +1,8 @@
 //! H.266 §9.3 rectangular residuals and dependent-quantization state transitions.
 //! Shares the existing CABAC engine and ordinary coefficient context banks.
 //! Additional state contexts follow BSD-Clear `VVdeC` (`THIRD_PARTY.md`).
+use std::sync::OnceLock;
+
 use super::initialization::bank;
 use crate::{coeff_contexts::CoeffContexts, contexts::Context, decoder_cabac::Reader};
 use nc_common::decode::{DecodeError, Result};
@@ -116,6 +118,15 @@ impl Scan {
             rows,
         }
     }
+    pub(super) fn of(width: usize, height: usize) -> &'static Self {
+        static SCANS: OnceLock<[[Scan; 7]; 7]> = OnceLock::new();
+        let table = SCANS.get_or_init(|| {
+            std::array::from_fn(|w_log2| {
+                std::array::from_fn(|h_log2| Self::new(1 << w_log2, 1 << h_log2))
+            })
+        });
+        &table[width.ilog2() as usize][height.ilog2() as usize]
+    }
 }
 fn diagonal(width: usize, height: usize) -> Vec<usize> {
     let mut order = Vec::with_capacity(width * height);
@@ -128,7 +139,7 @@ fn diagonal(width: usize, height: usize) -> Vec<usize> {
 }
 /// Last occupied grouped-scan position for CU transform-tool constraints.
 pub(super) fn last_scan(levels: &[i32], width: usize, height: usize) -> Option<usize> {
-    Scan::new(width, height)
+    Scan::of(width, height)
         .positions
         .iter()
         .rposition(|&p| levels[p] != 0)
@@ -299,10 +310,11 @@ pub(super) fn read(
         return Err(DecodeError::Unsupported("VVC residual geometry"));
     }
     if !zero_out && !dependent && hiding && width == height && (4..=32).contains(&width) {
+        const ZEROS: [i32; 1024] = [0; 1024];
         return crate::coeff::code(
             r,
             &mut models.common,
-            &vec![0; width * height],
+            &ZEROS[..width * height],
             width,
             channel,
         );
@@ -321,12 +333,20 @@ fn read_general(
     hiding: bool,
     zero_out: bool,
 ) -> Result<Vec<i32>> {
-    let scan = Scan::new(width, height);
-    let last = last_position(r, models, width, height, channel, &scan, zero_out)?;
+    let scan = Scan::of(width, height);
+    let last = last_position(r, models, width, height, channel, scan, zero_out)?;
+    let mut small_flags = [0u8; 256];
+    let mut large_flags;
+    let max_scan_pos = (height.min(32) - 1) * width + (width.min(32) - 1);
+    let flags: &mut [u8] = if max_scan_pos < small_flags.len() {
+        &mut small_flags[..=max_scan_pos]
+    } else {
+        large_flags = [0u8; 2048];
+        &mut large_flags[..=max_scan_pos]
+    };
     let mut walk = Walk {
         values: vec![0; width * height],
-        adjustment: vec![0; width * height],
-        negative: vec![false; width * height],
+        flags,
         state: 0,
         // Context-coded bins: 7/4 per coefficient of the area left after
         // the zero-out (H.266 §7.3.11.11 `remCcbs` from `log2ZoTbWidth`,
@@ -338,7 +358,7 @@ fn read_general(
         dependent,
         hiding,
     };
-    let mut significant = vec![false; scan.columns * scan.rows];
+    let mut significant = [false; 64];
     for group in (0..=last / scan.group_size).rev() {
         let raster = scan.groups[group];
         if zero_out
@@ -356,30 +376,34 @@ fn read_general(
             continue;
         }
         significant[raster] = true;
-        walk.group(r, models, &scan, group, last)?;
+        walk.group(r, models, scan, group, last)?;
     }
-    for ((value, adjustment), negative) in walk
-        .values
-        .iter_mut()
-        .zip(walk.adjustment)
-        .zip(walk.negative)
-    {
-        if dependent {
-            *value = 2 * *value - i32::from(adjustment);
+    for &pos in &scan.positions[..=last] {
+        let v = walk.values[pos];
+        if v == 0 {
+            continue;
         }
-        if negative {
-            *value = -*value;
+        let f = walk.flags[pos];
+        let mut out = if dependent {
+            2 * v - i32::from(f & 1)
+        } else {
+            v
+        };
+        if f & 2 != 0 {
+            out = -out;
         }
-        if !(-32768..=32767).contains(value) {
+        if !(-32768..=32767).contains(&out) {
             return Err(DecodeError::Malformed("VVC coefficient dynamic range"));
         }
+        walk.values[pos] = out;
     }
     Ok(walk.values)
 }
-struct Walk {
+struct Walk<'a> {
     values: Vec<i32>,
-    adjustment: Vec<u8>,
-    negative: Vec<bool>,
+    /// Bit 0: dependent-quantization state adjustment (`0` or `1`).
+    /// Bit 1: negative sign (`0` or `2`).
+    flags: &'a mut [u8],
     state: u32,
     budget: usize,
     width: usize,
@@ -388,7 +412,7 @@ struct Walk {
     dependent: bool,
     hiding: bool,
 }
-impl Walk {
+impl Walk<'_> {
     fn advance(&mut self, parity: u32) {
         self.state = if self.dependent {
             (STATE_TRANSITIONS >> (4 * self.state + 2 * parity)) & 3
@@ -406,18 +430,22 @@ impl Walk {
     ) -> Result<()> {
         let first = group * scan.group_size;
         let end = (first + scan.group_size - 1).min(last);
-        let mut nonzero = Vec::with_capacity(scan.group_size);
-        let mut regular = Vec::with_capacity(scan.group_size);
-        let mut bypass = Vec::with_capacity(scan.group_size);
+        let mut nonzero = [(0usize, 0usize); 16];
+        let mut nonzero_len = 0usize;
+        let mut regular = [0usize; 16];
+        let mut regular_len = 0usize;
+        let mut bypass = [(0usize, 0usize); 16];
+        let mut bypass_len = 0usize;
         for index in (first..=end).rev() {
             let pos = scan.positions[index];
             if self.budget < 4 {
-                bypass.push((index, pos));
+                bypass[bypass_len] = (index, pos);
+                bypass_len += 1;
                 continue;
             }
             let (sig, mut level) =
                 context(&self.values, pos, self.width, self.height, self.channel);
-            let inferred = index == last || (index == first && group != 0 && nonzero.is_empty());
+            let inferred = index == last || (index == first && group != 0 && nonzero_len == 0);
             let present = if inferred {
                 true
             } else {
@@ -428,7 +456,7 @@ impl Walk {
                 if index == last {
                     level = 0;
                 }
-                self.adjustment[pos] = (self.state >> 1) as u8;
+                self.flags[pos] = (self.state >> 1) as u8;
                 self.budget -= 1;
                 self.values[pos] = if r.bin(&mut models.common.gt1[self.channel][level])? {
                     self.budget -= 2;
@@ -438,18 +466,20 @@ impl Walk {
                 } else {
                     1
                 };
-                regular.push(pos);
-                nonzero.push((index, pos));
+                regular[regular_len] = pos;
+                regular_len += 1;
+                nonzero[nonzero_len] = (index, pos);
+                nonzero_len += 1;
             }
             self.advance(self.values[pos] as u32 & 1);
         }
-        for pos in regular {
+        for &pos in &regular[..regular_len] {
             if self.values[pos] >= 4 {
                 let parameter = rice(&self.values, pos, self.width, self.height, 4);
                 self.values[pos] += 2 * remainder(r, parameter)? as i32;
             }
         }
-        for (index, pos) in bypass {
+        for &(index, pos) in &bypass[..bypass_len] {
             let parameter = rice(&self.values, pos, self.width, self.height, 0);
             let zero = (if self.state < 2 { 1 } else { 2 }) << parameter;
             let rem = remainder(r, parameter)?;
@@ -459,24 +489,29 @@ impl Walk {
                 std::cmp::Ordering::Greater => rem as i32,
             };
             if self.values[pos] != 0 {
-                self.adjustment[pos] = (self.state >> 1) as u8;
-                nonzero.push((index, pos));
+                self.flags[pos] = (self.state >> 1) as u8;
+                nonzero[nonzero_len] = (index, pos);
+                nonzero_len += 1;
             }
             self.advance(self.values[pos] as u32 & 1);
         }
+        let active = &nonzero[..nonzero_len];
         let hidden = self.hiding
             && !self.dependent
-            && nonzero
+            && active
                 .first()
-                .zip(nonzero.last())
+                .zip(active.last())
                 .is_some_and(|(a, b)| a.0 - b.0 > crate::coeff::SIGN_HIDING_THRESHOLD);
-        let sum = nonzero.iter().map(|&(_, p)| self.values[p]).sum::<i32>();
-        for (index, &(_, pos)) in nonzero.iter().enumerate() {
-            self.negative[pos] = if hidden && index + 1 == nonzero.len() {
+        let sum = active.iter().map(|&(_, p)| self.values[p]).sum::<i32>();
+        for (index, &(_, pos)) in active.iter().enumerate() {
+            let neg = if hidden && index + 1 == active.len() {
                 sum & 1 != 0
             } else {
                 r.bypass()?
             };
+            if neg {
+                self.flags[pos] |= 2;
+            }
         }
         Ok(())
     }

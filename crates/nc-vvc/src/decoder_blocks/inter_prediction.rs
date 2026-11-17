@@ -162,14 +162,41 @@ fn inter_prediction<T: Pixel>(
         );
     } else {
         let padded = (size.0.max(4), size.1.max(4));
-        let mut samples = vec![T::default(); padded.0 * padded.1];
-        let mut view = crate::inter::packed(&mut samples, padded);
+        let mut small = [T::default(); 4 * 64];
+        let mut heap;
+        let samples: &mut [T] = if padded.0 * padded.1 <= small.len() {
+            &mut small[..padded.0 * padded.1]
+        } else {
+            heap = vec![T::default(); padded.0 * padded.1];
+            &mut heap
+        };
+        let mut view = crate::inter::packed(samples, padded);
         predict(dsp, reference, position, padded, vector, &mut view);
         for (dest, source) in out
             .chunks_exact_mut(size.0)
             .zip(samples.chunks_exact(padded.0))
         {
             dest.copy_from_slice(&source[..size.0]);
+        }
+    }
+}
+
+/// Reusable slice-level scratch for high-precision inter prediction, avoiding
+/// per-block stack zeroing of prediction and bounded reference windows.
+pub(super) struct InterScratch<T: Sample = u8> {
+    pub s0: [i16; 64 * 64],
+    pub s1: [i16; 64 * 64],
+    pub window: [T; 71 * 71],
+    pub pixels: [T; 16 * 16],
+}
+
+impl<T: Sample> Default for InterScratch<T> {
+    fn default() -> Self {
+        Self {
+            s0: [0; 64 * 64],
+            s1: [0; 64 * 64],
+            window: [T::default(); 71 * 71],
+            pixels: [T::default(); 16 * 16],
         }
     }
 }
@@ -181,12 +208,10 @@ pub(super) fn predict<T: Pixel>(
     (plane, affine): (PlaneIndex, bool),
     (anchor, position): ((usize, usize), (usize, usize)),
     size: (usize, usize),
+    scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
     let luma = plane == PlaneIndex::Y;
-    // Explicit weights apply to the high-precision samples, also of one list;
-    // so do the wrapped and subpicture-clamped fetches and the scaled
-    // references, which the direct path does not have.
     let weighted = (references.weights.is_some() && motion.weight == 0)
         || references.edges != Edges::default()
         || references.scaled(motion);
@@ -197,11 +222,12 @@ pub(super) fn predict<T: Pixel>(
             .enumerate()
             .find_map(|(i, v)| v.map(|v| (i, v)))
             .unwrap();
+        let ref_plane = references.pictures[list][usize::from(vector.reference)].plane(plane);
         if affine && luma {
             crate::inter::predict_with(
                 dsp,
                 Filter::VvcAffineLuma,
-                references.pictures[list][usize::from(vector.reference)].plane(plane),
+                ref_plane,
                 position,
                 size,
                 vector.vector,
@@ -209,45 +235,37 @@ pub(super) fn predict<T: Pixel>(
             );
             return;
         }
-        inter_prediction(
-            dsp,
-            references.pictures[list][usize::from(vector.reference)].plane(plane),
-            position,
-            size,
-            vector.vector,
-            luma,
-            out,
-        );
+        inter_prediction(dsp, ref_plane, position, size, vector.vector, luma, out);
         return;
     }
-    let (w, h) = size;
-    let mut samples = [vec![0i16; w * h], vec![0i16; w * h]];
+    let len = size.0 * size.1;
     let region = Region {
         anchor,
         position,
         size,
     };
-    for (list, vector) in motion.lists.into_iter().enumerate() {
-        if let Some(vector) = vector {
-            high_precision(
-                dsp,
-                references,
-                (list, vector),
-                plane,
-                region,
-                (motion.half, affine),
-                &mut samples[list],
-            );
+    let flags = (motion.half, affine);
+    assert!(len <= scratch.s0.len());
+    let (s0, s1) = (&mut scratch.s0[..len], &mut scratch.s1[..len]);
+    match motion.lists {
+        [Some(v0), None] => {
+            high_precision(dsp, references, (0, v0), plane, region, flags, s0);
+            combine(dsp, (motion, references.weights, plane), s0, s0, size, out);
+        }
+        [None, Some(v1)] => {
+            high_precision(dsp, references, (1, v1), plane, region, flags, s1);
+            combine(dsp, (motion, references.weights, plane), s1, s1, size, out);
+        }
+        [Some(v0), Some(v1)] => {
+            high_precision(dsp, references, (0, v0), plane, region, flags, s0);
+            high_precision(dsp, references, (1, v1), plane, region, flags, s1);
+            combine(dsp, (motion, references.weights, plane), s0, s1, size, out);
+        }
+        [None, None] => {
+            s0.fill(0);
+            combine(dsp, (motion, references.weights, plane), s0, s0, size, out);
         }
     }
-    combine(
-        dsp,
-        (motion, references.weights, plane),
-        &samples[0],
-        &samples[1],
-        size,
-        out,
-    );
 }
 /// Combine the high-precision predictions of a block's lists: explicit
 /// weights when the slice has them and the block's BCW index is the default,
@@ -314,11 +332,12 @@ pub(super) fn high_precision<T: Pixel>(
     match references.scaling(list, vector.reference) {
         // Scaled references do not wrap around (§8.5.6.3.2).
         Some(scaling) => resampling::predict(
+            dsp,
             reference,
             (scaling, vector.vector),
             region,
             (luma, half, affine),
-            (edges.area, dsp.depth()),
+            edges.area,
             out,
         ),
         None => precision(
@@ -351,12 +370,14 @@ pub(super) fn precision<T: Pixel>(
         vector,
         (luma, half, affine),
         (None, edges),
+        None,
         out,
     );
 }
 
 /// A DMVR window replicates the original merge prediction's filter support.
 /// Ordinary inter prediction borrows the plane directly whenever possible.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn precision_window<T: Pixel>(
     dsp: DepthKernels<'_>,
     reference: &nc_common::Plane<T>,
@@ -364,6 +385,7 @@ pub(super) fn precision_window<T: Pixel>(
     vector: Mv16,
     (luma, half, affine): (bool, bool, bool),
     (bounds, edges): (Option<super::refinement::Bounds>, Edges),
+    window_buf: Option<&mut [T]>,
     out: &mut [i16],
 ) {
     let filter = if luma && affine {
@@ -392,14 +414,15 @@ pub(super) fn precision_window<T: Pixel>(
     } else {
         let view = reference.view();
         let fetch = super::refinement::Fetch::new(reference, bounds, edges);
-        let mut samples = vec![T::default(); w * h];
-        for (y, row) in samples.chunks_exact_mut(w).enumerate() {
-            let source = view.row(fetch.row(origin.1 + y as i32));
-            for (x, pixel) in row.iter_mut().enumerate() {
-                *pixel = source[fetch.column(origin.0 + x as i32)];
-            }
-        }
-        let window = PlaneView::new(&samples, w, w, h).unwrap();
+        let mut fallback;
+        let samples: &mut [T] = if let Some(buf) = window_buf {
+            &mut buf[..w * h]
+        } else {
+            fallback = [T::default(); 71 * 71];
+            &mut fallback[..w * h]
+        };
+        fetch.fill_window(&view, origin, (w, h), samples);
+        let window = PlaneView::new(samples, w, w, h).unwrap();
         dsp.predict_high_precision(filter, size, &window, phases, luma && half, out);
     }
 }
@@ -411,6 +434,7 @@ pub(super) fn predict_unit<T: Pixel>(
     unit: &super::Unit,
     plane: PlaneIndex,
     block: nc_encoder::Block,
+    scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
     let chroma = usize::from(plane != PlaneIndex::Y);
@@ -424,7 +448,15 @@ pub(super) fn predict_unit<T: Pixel>(
     }
     if let (Some(pair), Some(super::Inter::Geometric { split, .. })) = (unit.geometric, unit.inter)
     {
-        geometric(dsp, references, unit, (pair, split), (plane, block), out);
+        geometric(
+            dsp,
+            references,
+            unit,
+            (pair, split),
+            (plane, block),
+            scratch,
+            out,
+        );
         return;
     }
     if !unit.subblocks.is_empty() {
@@ -444,6 +476,7 @@ pub(super) fn predict_unit<T: Pixel>(
                     (plane, false),
                     (at, at),
                     (w, h),
+                    scratch,
                     &mut pixels[..w * h],
                 );
                 for dy in 0..h {
@@ -455,7 +488,7 @@ pub(super) fn predict_unit<T: Pixel>(
         return;
     }
     if !unit.dmvr.is_empty() || (unit.bdof && chroma == 0) {
-        super::refinement::predict(dsp, references, unit, plane, block, out);
+        super::refinement::predict(dsp, references, unit, plane, block, scratch, out);
         return;
     }
     if unit.affine_models.iter().all(Option::is_none) {
@@ -468,11 +501,12 @@ pub(super) fn predict_unit<T: Pixel>(
             (plane, false),
             (anchor, position),
             size,
+            scratch,
             out,
         );
         return;
     }
-    affine(dsp, references, unit, motion, (plane, block), out);
+    affine(dsp, references, unit, motion, (plane, block), scratch, out);
 }
 
 fn affine<T: Pixel>(
@@ -481,6 +515,7 @@ fn affine<T: Pixel>(
     unit: &super::Unit,
     motion: Motion,
     (plane, block): (PlaneIndex, nc_encoder::Block),
+    scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
     let chroma = usize::from(plane != PlaneIndex::Y);
@@ -538,6 +573,7 @@ fn affine<T: Pixel>(
                     (plane, true),
                     (at, at),
                     (4, 4),
+                    scratch,
                     &mut pixels,
                 );
             }
@@ -555,6 +591,7 @@ fn geometric<T: Pixel>(
     unit: &super::Unit,
     (pair, split): ([Motion; 2], u8),
     (plane, block): (PlaneIndex, nc_encoder::Block),
+    scratch: &mut InterScratch<T>,
     out: &mut [T],
 ) {
     let chroma = usize::from(plane != PlaneIndex::Y);
@@ -566,8 +603,9 @@ fn geometric<T: Pixel>(
         position,
         size,
     };
-    let mut samples = [vec![0i16; size.0 * size.1], vec![0i16; size.0 * size.1]];
-    for (motion, samples) in pair.into_iter().zip(&mut samples) {
+    let len = size.0 * size.1;
+    let (s0, s1) = (&mut scratch.s0[..len], &mut scratch.s1[..len]);
+    for (motion, dst) in [pair[0], pair[1]].into_iter().zip([&mut *s0, &mut *s1]) {
         let (list, vector) = motion
             .lists
             .into_iter()
@@ -581,7 +619,7 @@ fn geometric<T: Pixel>(
             plane,
             region,
             (false, false),
-            samples,
+            dst,
         );
     }
     let mask = nc_dsp::VvcGeometric::new((n.width, n.height), split);
@@ -590,7 +628,7 @@ fn geometric<T: Pixel>(
         (block.x - n.x, block.y - n.y),
         size,
         chroma != 0,
-        (&samples[0], &samples[1]),
+        (s0, s1),
         out,
     );
 }

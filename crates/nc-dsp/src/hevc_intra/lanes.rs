@@ -41,3 +41,45 @@ pub(crate) unsafe fn planar<V: I16Lanes>(edges: &PlanarEdges<'_>, n: usize, out:
         }
     }
 }
+
+/// [`planar`] for `u16` samples at any bit depth `8..=12`, accumulating in
+/// 32-bit lanes so `64 * 4095 + 32` never overflows.
+///
+/// # Safety
+///
+/// `V`'s ISA must be available; the edges hold `n` samples, `out` `n * n`,
+/// and `V::LANES` divides `n`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(crate) unsafe fn planar_u16<V: I16Lanes>(
+    edges: &PlanarEdges<'_, u16>,
+    n: usize,
+    out: &mut [u16],
+) {
+    let shift = n.trailing_zeros() + 1;
+    let side = n as i16;
+    let mut left_weight = [0i16; MAX_SIDE];
+    let mut right_weight = [0i16; MAX_SIDE];
+    for x in 0..n {
+        left_weight[x] = side - 1 - x as i16;
+        right_weight[x] = x as i16 + 1;
+    }
+    let top_right = edges.top_right as i16;
+    let bottom_left = i32::from(edges.bottom_left);
+    for (row, line) in out[..n * n].chunks_exact_mut(n).enumerate() {
+        let left = edges.left[row] as i16;
+        let above_weight = side - 1 - row as i16;
+        let constant = (row as i32 + 1) * bottom_left + n as i32;
+        for k in (0..n).step_by(V::LANES) {
+            let mut acc = V::acc_mul_add2(
+                V::acc_zero(),
+                V::load(&left_weight[k..]),
+                left,
+                V::load(&right_weight[k..]),
+                top_right,
+            );
+            acc = V::acc_mul_add(acc, V::load_u16(&edges.above[k..]), above_weight);
+            V::acc_round_shift_narrow(acc, constant, shift).store_u16(&mut line[k..]);
+        }
+    }
+}

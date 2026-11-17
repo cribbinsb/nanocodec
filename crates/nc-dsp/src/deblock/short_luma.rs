@@ -13,6 +13,12 @@
 
 use crate::simd::I16FilterLanes;
 
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn limit_side<V: I16FilterLanes>(v: V, orig: V, l: V) -> V {
+    v.max(orig.sub(l)).min(orig.add(l))
+}
+
 /// The strong filter's output of one side: (x0, x1, x2) for x = p (or q,
 /// with the sides swapped), each within `limits[i]` of its input.
 #[allow(clippy::inline_always)] // must inline into `#[target_feature]` kernels
@@ -23,9 +29,8 @@ pub(crate) fn strong_side<V: I16FilterLanes>(
     limits: [V; 3],
 ) -> [V; 3] {
     let (two, four) = (V::splat(2), V::splat(4));
-    let limit = |v: V, orig: V, l: V| v.max(orig.sub(l)).min(orig.add(l));
     [
-        limit(
+        limit_side(
             x2.add(x1.mul(two))
                 .add(x0.mul(two))
                 .add(y0.mul(two))
@@ -35,8 +40,8 @@ pub(crate) fn strong_side<V: I16FilterLanes>(
             x0,
             limits[0],
         ),
-        limit(x2.add(x1).add(x0).add(y0).add(two).sra(2), x1, limits[1]),
-        limit(
+        limit_side(x2.add(x1).add(x0).add(y0).add(two).sra(2), x1, limits[1]),
+        limit_side(
             x3.mul(two)
                 .add(x2.mul(V::splat(3)))
                 .add(x1)

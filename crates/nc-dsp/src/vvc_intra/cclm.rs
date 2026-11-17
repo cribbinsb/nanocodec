@@ -29,6 +29,11 @@ pub fn vvc_cclm_downsample_collocated<T: Sample>(samples: [T; 5]) -> T {
 pub fn vvc_cclm_predict<T: Sample>(luma: &[T], pairs: &[[T; 2]], out: &mut [T], depth: BitDepth) {
     assert!(matches!(pairs.len(), 0 | 2 | 4) && out.len() >= luma.len());
     let (a, b, shift) = model(pairs, depth);
+    let out = &mut out[..luma.len()];
+    if a == 0 {
+        out.fill(depth.clip_to(b));
+        return;
+    }
     for (&value, dst) in luma.iter().zip(out) {
         *dst = depth.clip_to(((a * value.to_i32()) >> shift) + b);
     }

@@ -86,24 +86,15 @@ fn chroma_table(filter: VvcRprFilter) -> &'static [[i16; 4]] {
 
 /// The taps of one phase, as eight with the first at offset −3 (chroma's
 /// four sit at −1..=2).
-fn taps(filter: VvcRprFilter, (luma, affine): (bool, bool), phase: usize) -> [i32; 8] {
+fn taps(filter: VvcRprFilter, (luma, affine): (bool, bool), phase: usize) -> [i16; 8] {
     if !luma {
         let c = chroma_table(filter)[phase];
-        return [
-            0,
-            0,
-            i32::from(c[0]),
-            i32::from(c[1]),
-            i32::from(c[2]),
-            i32::from(c[3]),
-            0,
-            0,
-        ];
+        return [0, 0, c[0], c[1], c[2], c[3], 0, 0];
     }
     if filter == VvcRprFilter::AlternativeHalf && phase == HALF_SAMPLE_PHASE && !affine {
-        return ALTERNATIVE_HALF.map(i32::from);
+        return ALTERNATIVE_HALF;
     }
-    table(filter, luma, affine)[phase].map(i32::from)
+    table(filter, luma, affine)[phase]
 }
 
 /// The integer sample and filter phase of scaled position `position`.
@@ -113,6 +104,77 @@ fn split(position: i32, phase_bits: u32) -> (i32, usize) {
         rounded >> VVC_RPR_POSITION_BITS,
         ((rounded >> (VVC_RPR_POSITION_BITS - phase_bits)) & ((1 << phase_bits) - 1)) as usize,
     )
+}
+
+#[inline(always)]
+#[allow(clippy::inline_always)]
+fn horiz_sample<T: Sample>(
+    line: &[T],
+    x: i32,
+    c: &[i16; 8],
+    luma: bool,
+    (left, right): (i32, i32),
+) -> i32 {
+    if luma {
+        if x >= left + 3 && x + 4 <= right {
+            let win = &line[(x - 3) as usize..][..8];
+            let mut sum = 0i32;
+            for k in 0..8 {
+                sum += i32::from(c[k]) * win[k].to_i32();
+            }
+            return sum;
+        }
+        let mut sum = 0i32;
+        for k in 0..8 {
+            sum += i32::from(c[k]) * line[(x + k as i32 - 3).clamp(left, right) as usize].to_i32();
+        }
+        sum
+    } else {
+        if x > left && x + 2 <= right {
+            let win = &line[(x - 1) as usize..][..4];
+            return i32::from(c[2]) * win[0].to_i32()
+                + i32::from(c[3]) * win[1].to_i32()
+                + i32::from(c[4]) * win[2].to_i32()
+                + i32::from(c[5]) * win[3].to_i32();
+        }
+        i32::from(c[2]) * line[(x - 1).clamp(left, right) as usize].to_i32()
+            + i32::from(c[3]) * line[x.clamp(left, right) as usize].to_i32()
+            + i32::from(c[4]) * line[(x + 1).clamp(left, right) as usize].to_i32()
+            + i32::from(c[5]) * line[(x + 2).clamp(left, right) as usize].to_i32()
+    }
+}
+
+fn horizontal_pass<T: Sample>(
+    reference: &PlaneView<'_, T>,
+    block: &VvcScaledBlock,
+    filter: VvcRprFilter,
+    (luma, affine): (bool, bool),
+    (phase_bits, first_shift): (u32, u32),
+    (first_row, span): (i32, usize),
+    filtered: &mut [i16],
+) {
+    let width = block.size.0;
+    let [left, top, right, bottom] = block.bounds;
+    let mut col_buf = [(0i32, [0i16; 8]); 128];
+    let mut col_vec;
+    let cols: &mut [(i32, [i16; 8])] = if width <= col_buf.len() {
+        &mut col_buf[..width]
+    } else {
+        col_vec = vec![(0i32, [0i16; 8]); width];
+        &mut col_vec
+    };
+    for (col, slot) in cols.iter_mut().enumerate() {
+        let (x, phase) = split(block.origin.0 + col as i32 * block.step.0, phase_bits);
+        *slot = (x, taps(filter, (luma, affine), phase));
+    }
+    for row in 0..span {
+        let y = (first_row + row as i32).clamp(top, bottom) as usize;
+        let line = reference.row(y);
+        let dst = &mut filtered[row * width..(row + 1) * width];
+        for (out, &(x, ref c)) in dst.iter_mut().zip(cols.iter()) {
+            *out = (horiz_sample(line, x, c, luma, (left, right)) >> first_shift) as i16;
+        }
+    }
 }
 
 /// Predict `block` of a luma (`luma`, with `affine` its 6-tap filter) or
@@ -138,46 +200,279 @@ pub fn vvc_predict_scaled<T: Sample>(
     assert!(out.len() >= width * height);
     assert!(left >= 0 && top >= 0 && right >= left && bottom >= top);
     assert!((right as usize) < reference.width() && (bottom as usize) < reference.height());
+    if width == 0 || height == 0 {
+        return;
+    }
     let phase_bits = if luma {
         LUMA_PHASE_BITS
     } else {
         CHROMA_PHASE_BITS
     };
-    // shift1 = Min(4, BitDepth − 8) (§8.5.6.3.2).
     let first_shift = (depth.bits() - 8).min(4);
-    let rows: Vec<(i32, usize)> = (0..height as i32)
-        .map(|r| split(block.origin.1 + r * block.step.1, phase_bits))
-        .collect();
-    let first_row = rows[0].0 - 3;
-    let span = (rows[rows.len() - 1].0 + 4 - first_row + 1) as usize;
-    // Horizontally filtered rows first_row.., one column per predicted column.
-    let mut filtered = vec![0i32; span * width];
-    for column in 0..width {
-        let (x, phase) = split(block.origin.0 + column as i32 * block.step.0, phase_bits);
-        let coefficients = taps(filters[0], (luma, affine), phase);
-        for row in 0..span {
-            let y = (first_row + row as i32).clamp(top, bottom) as usize;
-            let line = reference.row(y);
-            let sum: i32 = coefficients
-                .iter()
-                .enumerate()
-                .map(|(k, &c)| c * line[(x + k as i32 - 3).clamp(left, right) as usize].to_i32())
-                .sum();
-            filtered[row * width + column] = sum >> first_shift;
-        }
+    let mut row_buf = [(0i32, 0usize); 128];
+    let mut row_vec;
+    let rows: &mut [(i32, usize)] = if height <= row_buf.len() {
+        &mut row_buf[..height]
+    } else {
+        row_vec = vec![(0i32, 0usize); height];
+        &mut row_vec
+    };
+    for (r, slot) in rows.iter_mut().enumerate() {
+        *slot = split(block.origin.1 + r as i32 * block.step.1, phase_bits);
     }
+    let first_row = rows[0].0.min(rows[rows.len() - 1].0) - 3;
+    let last_row = rows[0].0.max(rows[rows.len() - 1].0) + 4;
+    let span = (last_row - first_row + 1) as usize;
+    let mut stack_filt = [0i16; 128 * 64];
+    let mut heap_filt;
+    let filtered: &mut [i16] = if span * width <= stack_filt.len() {
+        &mut stack_filt[..span * width]
+    } else {
+        heap_filt = vec![0i16; span * width];
+        &mut heap_filt
+    };
+    horizontal_pass(
+        reference,
+        block,
+        filters[0],
+        (luma, affine),
+        (phase_bits, first_shift),
+        (first_row, span),
+        filtered,
+    );
     for (r, &(y, phase)) in rows.iter().enumerate() {
-        let coefficients = taps(filters[1], (luma, affine), phase);
+        let c = taps(filters[1], (luma, affine), phase);
         let base = (y - 3 - first_row) as usize;
-        for column in 0..width {
-            let sum: i32 = coefficients
-                .iter()
-                .enumerate()
-                .map(|(k, &c)| c * filtered[(base + k) * width + column])
-                .sum();
-            out[r * width + column] = (sum >> SECOND_SHIFT) as i16;
+        let dst = &mut out[r * width..(r + 1) * width];
+        if luma {
+            for col in 0..width {
+                let mut sum = 0i32;
+                for k in 0..8 {
+                    sum += i32::from(c[k]) * i32::from(filtered[(base + k) * width + col]);
+                }
+                dst[col] = (sum >> SECOND_SHIFT) as i16;
+            }
+        } else {
+            for col in 0..width {
+                let sum = i32::from(c[2]) * i32::from(filtered[(base + 2) * width + col])
+                    + i32::from(c[3]) * i32::from(filtered[(base + 3) * width + col])
+                    + i32::from(c[4]) * i32::from(filtered[(base + 4) * width + col])
+                    + i32::from(c[5]) * i32::from(filtered[(base + 5) * width + col]);
+                dst[col] = (sum >> SECOND_SHIFT) as i16;
+            }
         }
     }
+}
+
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code, clippy::inline_always)]
+pub(crate) mod high_simd {
+    use nc_common::{BitDepth, PlaneView, Sample};
+
+    use crate::mc::precision_simd::vert_i16_vec;
+    use crate::simd::I16Lanes;
+
+    use super::{
+        CHROMA_PHASE_BITS, LUMA_PHASE_BITS, SECOND_SHIFT, VvcRprFilter, VvcScaledBlock,
+        horizontal_pass, split, taps,
+    };
+
+    #[inline(always)]
+    fn vert_row_luma<W: I16Lanes, V: I16Lanes, H: I16Lanes>(
+        h_rows: &[&[i16]; 8],
+        cy: &[i16; 8],
+        dst: &mut [i16],
+    ) {
+        let width = dst.len();
+        let mut x = 0;
+        while x + W::LANES <= width {
+            vert_i16_vec::<8, W>(h_rows, x, cy).store(&mut dst[x..]);
+            x += W::LANES;
+        }
+        while x + V::LANES <= width {
+            vert_i16_vec::<8, V>(h_rows, x, cy).store(&mut dst[x..]);
+            x += V::LANES;
+        }
+        if x + H::LANES <= width {
+            vert_i16_vec::<8, H>(h_rows, x, cy).store(&mut dst[x..]);
+            x += H::LANES;
+        }
+        while x < width {
+            let mut sum = 0i32;
+            for k in 0..8 {
+                sum += i32::from(cy[k]) * i32::from(h_rows[k][x]);
+            }
+            dst[x] = (sum >> SECOND_SHIFT) as i16;
+            x += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn vert_row_chroma<W: I16Lanes, V: I16Lanes, H: I16Lanes>(
+        h_rows: &[&[i16]; 4],
+        cy: &[i16; 4],
+        dst: &mut [i16],
+    ) {
+        let width = dst.len();
+        let mut x = 0;
+        while x + W::LANES <= width {
+            vert_i16_vec::<4, W>(h_rows, x, cy).store(&mut dst[x..]);
+            x += W::LANES;
+        }
+        while x + V::LANES <= width {
+            vert_i16_vec::<4, V>(h_rows, x, cy).store(&mut dst[x..]);
+            x += V::LANES;
+        }
+        if x + H::LANES <= width {
+            vert_i16_vec::<4, H>(h_rows, x, cy).store(&mut dst[x..]);
+            x += H::LANES;
+        }
+        while x < width {
+            let mut sum = 0i32;
+            for k in 0..4 {
+                sum += i32::from(cy[k]) * i32::from(h_rows[k][x]);
+            }
+            dst[x] = (sum >> SECOND_SHIFT) as i16;
+            x += 1;
+        }
+    }
+
+    #[inline(always)]
+    pub(super) unsafe fn predict_scaled_lanes<T: Sample, W: I16Lanes, V: I16Lanes, H: I16Lanes>(
+        reference: &PlaneView<'_, T>,
+        block: &VvcScaledBlock,
+        filters: [VvcRprFilter; 2],
+        (luma, affine): (bool, bool),
+        depth: BitDepth,
+        out: &mut [i16],
+    ) {
+        let depth = depth.of::<T>();
+        let (width, height) = block.size;
+        if width == 0 || height == 0 {
+            return;
+        }
+        let phase_bits = if luma {
+            LUMA_PHASE_BITS
+        } else {
+            CHROMA_PHASE_BITS
+        };
+        let first_shift = (depth.bits() - 8).min(4);
+        let mut row_buf = [(0i32, 0usize); 128];
+        let mut row_vec;
+        let rows: &mut [(i32, usize)] = if height <= row_buf.len() {
+            &mut row_buf[..height]
+        } else {
+            row_vec = vec![(0i32, 0usize); height];
+            &mut row_vec
+        };
+        for (r, slot) in rows.iter_mut().enumerate() {
+            *slot = split(block.origin.1 + r as i32 * block.step.1, phase_bits);
+        }
+        let first_row = rows[0].0.min(rows[rows.len() - 1].0) - 3;
+        let last_row = rows[0].0.max(rows[rows.len() - 1].0) + 4;
+        let span = (last_row - first_row + 1) as usize;
+        let mut stack_filt = [0i16; 128 * 64];
+        let mut heap_filt;
+        let filtered: &mut [i16] = if span * width <= stack_filt.len() {
+            &mut stack_filt[..span * width]
+        } else {
+            heap_filt = vec![0i16; span * width];
+            &mut heap_filt
+        };
+        horizontal_pass(
+            reference,
+            block,
+            filters[0],
+            (luma, affine),
+            (phase_bits, first_shift),
+            (first_row, span),
+            filtered,
+        );
+        for (r, &(y, phase)) in rows.iter().enumerate() {
+            let c = taps(filters[1], (luma, affine), phase);
+            let base = (y - 3 - first_row) as usize;
+            let dst = &mut out[r * width..(r + 1) * width];
+            if luma {
+                let h_rows: [&[i16]; 8] =
+                    core::array::from_fn(|k| &filtered[(base + k) * width..(base + k + 1) * width]);
+                vert_row_luma::<W, V, H>(&h_rows, &c, dst);
+            } else {
+                let cy = [c[2], c[3], c[4], c[5]];
+                let h_rows: [&[i16]; 4] = core::array::from_fn(|k| {
+                    &filtered[(base + 2 + k) * width..(base + 3 + k) * width]
+                });
+                vert_row_chroma::<W, V, H>(&h_rows, &cy, dst);
+            }
+        }
+    }
+
+    macro_rules! isa_rpr {
+        ($mod_name:ident, $w:ty, $v:ty, $h:ty, $feature:literal) => {
+            pub(crate) mod $mod_name {
+                use nc_common::{BitDepth, PlaneView};
+
+                use super::super::{VvcRprFilter, VvcScaledBlock};
+                use super::predict_scaled_lanes;
+
+                #[target_feature(enable = $feature)]
+                pub(crate) unsafe fn predict_scaled_u16(
+                    reference: &PlaneView<'_, u16>,
+                    block: &VvcScaledBlock,
+                    filters: [VvcRprFilter; 2],
+                    flags: (bool, bool),
+                    depth: BitDepth,
+                    out: &mut [i16],
+                ) {
+                    // SAFETY: caller enables `$feature` and validated `block` / `out`.
+                    unsafe {
+                        predict_scaled_lanes::<u16, $w, $v, $h>(
+                            reference, block, filters, flags, depth, out,
+                        );
+                    }
+                }
+            }
+        };
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    isa_rpr!(
+        avx2,
+        crate::simd::avx2::I16x16,
+        crate::simd::avx2::I16x8,
+        crate::simd::avx2::I16x4,
+        "avx2"
+    );
+
+    #[cfg(target_arch = "x86_64")]
+    isa_rpr!(
+        avx512,
+        crate::simd::avx512_i16::I16x32,
+        crate::simd::avx2::I16x8,
+        crate::simd::avx2::I16x4,
+        "avx512f,avx512bw,avx512vl"
+    );
+
+    #[cfg(target_arch = "aarch64")]
+    isa_rpr!(
+        neon,
+        crate::simd::neon::I16x8,
+        crate::simd::neon::I16x8,
+        crate::simd::neon::I16x4,
+        "neon"
+    );
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    isa_rpr!(
+        simd128,
+        crate::simd::simd128::I16x8,
+        crate::simd::simd128::I16x8,
+        crate::simd::simd128::I16x4,
+        "simd128"
+    );
 }
 
 /// Luma filter for scaling ratios above 1.25 (1.5x downsampling).

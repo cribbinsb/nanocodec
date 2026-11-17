@@ -57,23 +57,3 @@ unsafe fn band(
         );
     }
 }
-
-/// Shared HEVC/VVC u16 edge-offset application at the stream's depth.
-#[target_feature(enable = "simd128")]
-pub(crate) unsafe fn apply_high(
-    input: &[u16],
-    in_stride: usize,
-    out: &mut [u16],
-    out_stride: usize,
-    offs: (isize, isize),
-    offsets: [i16; 4],
-    rect: Rect,
-    depth: nc_common::BitDepth,
-) {
-    // SAFETY: the depth table checked views/halo and enabled SIMD128.
-    unsafe {
-        generic::apply_at::<I16x8, u16>(
-            input, in_stride, out, out_stride, offs, offsets, rect, depth,
-        );
-    }
-}

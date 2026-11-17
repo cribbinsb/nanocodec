@@ -975,11 +975,13 @@ Decoder BDOF and DMVR in `nc-dsp/src/vvc_bdof.rs`, `vvc_dmvr.rs` and
 references. The accompanying prepared prediction/search fixtures were captured
 from that pinned reference decoder; picture outputs are streamed into hashes.
 
-Shared AVX2/NEON/SIMD128 lane implementations in
-`nc-dsp/src/vvc_refinement/` independently implement the same BDOF, DMVR and
-PROF equations, with the existing scalar references and captured VVdeC
-fixtures. They use the project's existing SIMD lane framework. The same
-BSD-Clear VVdeC attribution above applies.
+Shared AVX2/AVX-512/NEON/SIMD128 lane implementations in
+`nc-dsp/src/vvc_refinement/`, `mc/precision_simd.rs`, `mc/rpr.rs`, `vvc_geo.rs`,
+`vvc_alf/`, `vvc_deblock/`, `vvc_intra/`, `vvc_lmcs.rs`, `sao/high_simd.rs` and
+`high_depth/vvc_recon.rs` independently implement the same H.266 and Main 10
+(`u16`) equations against the existing scalar references and captured VVdeC
+fixtures, over the project's shared SIMD lane framework (no VVdeC assembly or C++
+SIMD copied). The same BSD-Clear VVdeC attribution above applies.
 
 `nc-common/src/cabac.rs` (the CABAC decoding engine shared by the H.264 and HEVC
 decoders) follows the design of the pinned BSD-Clear VVdeC `BinDecoder`: the

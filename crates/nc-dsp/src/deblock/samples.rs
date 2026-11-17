@@ -24,7 +24,7 @@ pub(crate) struct Edge {
 /// (HEVC Faster x86, callgrind).
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn checked_origin(plane: &[u8], e: &Edge) -> usize {
+fn checked_origin<T>(plane: &[T], e: &Edge) -> usize {
     assert!((1..=LANES).contains(&e.lines), "1 to 8 lines per edge");
     assert!(e.along == 1 || e.across == 1, "lines are rows or columns");
     let origin = e
@@ -37,16 +37,14 @@ fn checked_origin(plane: &[u8], e: &Edge) -> usize {
 }
 
 /// The `len` samples of `plane` from `at`, within the range
-/// [`checked_origin`] checked: `at..at + len` is either one line's p3..q3
-/// (`len` = 8, `across` = 1) or one position of the edge's lines (`len` =
-/// lines, `along` = 1).
+/// [`checked_origin`] checked.
 ///
 /// # Safety
 ///
 /// `at..at + len` lies in the range checked by [`checked_origin`].
 #[allow(clippy::inline_always)]
 #[inline(always)]
-unsafe fn run(plane: &[u8], at: usize, len: usize) -> &[u8] {
+unsafe fn run<T>(plane: &[T], at: usize, len: usize) -> &[T] {
     // SAFETY: caller contract.
     unsafe { plane.get_unchecked(at..at + len) }
 }
@@ -58,7 +56,7 @@ unsafe fn run(plane: &[u8], at: usize, len: usize) -> &[u8] {
 /// As [`run`].
 #[allow(clippy::inline_always)]
 #[inline(always)]
-unsafe fn run_mut(plane: &mut [u8], at: usize, len: usize) -> &mut [u8] {
+unsafe fn run_mut<T>(plane: &mut [T], at: usize, len: usize) -> &mut [T] {
     // SAFETY: caller contract.
     unsafe { plane.get_unchecked_mut(at..at + len) }
 }
@@ -95,8 +93,6 @@ pub(crate) fn load<V: I16x8Shuffles>(plane: &[u8], e: &Edge) -> [V; POSITIONS] {
                 V::load_u8(unsafe { run(plane, at, LANES) })
             } else {
                 let mut bytes = [0u8; LANES];
-                // A four-line chroma batch can use a word load instead of a
-                // runtime memcpy when its copy size is constant.
                 let lines = if e.lines == HALF_LANES {
                     HALF_LANES
                 } else {
@@ -129,8 +125,6 @@ pub(crate) fn store<V: I16x8Shuffles>(
 ) {
     let origin = checked_origin(plane, e);
     if e.along == 1 {
-        // Slice the tap range once: a take/skip iterator retains an outlined
-        // nth call and iterator state in the SIMD128 horizontal store.
         for (offset, v) in values[from..to].iter().enumerate() {
             let at = origin + (from + offset) * e.across;
             if e.lines == LANES {
@@ -153,6 +147,82 @@ pub(crate) fn store<V: I16x8Shuffles>(
         for (line, v) in rows.iter().enumerate().take(e.lines) {
             // SAFETY: p3..q3 of one line (`across` is 1 for these edges).
             v.store_u8_sat(unsafe { run_mut(plane, origin + line * e.along, POSITIONS) });
+        }
+    }
+}
+
+/// [`load`] for `u16` samples (`0..=32767`).
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(crate) fn load_u16<V: I16x8Shuffles>(plane: &[u16], e: &Edge) -> [V; POSITIONS] {
+    let origin = checked_origin(plane, e);
+    let mut out = [V::splat(0); POSITIONS];
+    if e.along == 1 {
+        for (k, v) in out.iter_mut().enumerate() {
+            let at = origin + k * e.across;
+            *v = if e.lines == LANES {
+                // SAFETY: position k of the edge's 8 lines (`run`).
+                V::load_u16(unsafe { run(plane, at, LANES) })
+            } else {
+                let mut words = [0u16; LANES];
+                let lines = if e.lines == HALF_LANES {
+                    HALF_LANES
+                } else {
+                    e.lines
+                };
+                // SAFETY: position k of the edge's lines (`run`).
+                words[..lines].copy_from_slice(unsafe { run(plane, at, lines) });
+                V::load_u16(&words)
+            };
+        }
+    } else {
+        for (line, v) in out.iter_mut().enumerate().take(e.lines) {
+            // SAFETY: p3..q3 of one line (`across` is 1 for these edges).
+            *v = V::load_u16(unsafe { run(plane, origin + line * e.along, POSITIONS) });
+        }
+        out = transpose(out);
+    }
+    out
+}
+
+/// [`store`] for `u16` samples, clamped to `0..=max_val`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(crate) fn store_u16<V: I16x8Shuffles>(
+    plane: &mut [u16],
+    e: &Edge,
+    values: [V; POSITIONS],
+    (from, to): (usize, usize),
+    max_val: i16,
+) {
+    let origin = checked_origin(plane, e);
+    let (zero, hi) = (V::splat(0), V::splat(max_val));
+    if e.along == 1 {
+        for (offset, v) in values[from..to].iter().enumerate() {
+            let at = origin + (from + offset) * e.across;
+            let clamped = v.max(zero).min(hi);
+            if e.lines == LANES {
+                // SAFETY: tap `from + offset` of the checked eight-line footprint.
+                clamped.store_u16(unsafe { run_mut(plane, at, LANES) });
+            } else {
+                let mut words = [0u16; LANES];
+                clamped.store_u16(&mut words);
+                let lines = if e.lines == HALF_LANES {
+                    HALF_LANES
+                } else {
+                    e.lines
+                };
+                // SAFETY: tap `from + offset` of the checked short-line footprint.
+                unsafe { run_mut(plane, at, lines) }.copy_from_slice(&words[..lines]);
+            }
+        }
+    } else {
+        let rows = transpose(values);
+        for (line, v) in rows.iter().enumerate().take(e.lines) {
+            // SAFETY: p3..q3 of one line (`across` is 1 for these edges).
+            v.max(zero)
+                .min(hi)
+                .store_u16(unsafe { run_mut(plane, origin + line * e.along, POSITIONS) });
         }
     }
 }

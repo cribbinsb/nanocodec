@@ -10,12 +10,11 @@
 //! once the last CTU is covered, looking up each CU's or CTU's slice.
 use crate::{
     decoder_blocks::{self as blocks, CtuFilters, Geometry, Scaling, Unit},
-    decoder_dpb::References,
+    decoder_dpb::{REFERENCE_BORDER, References},
     decoder_headers::{Adaptation, PictureHeader, PictureParameters, Sequence, SliceHeader},
 };
 use nc_common::{
-    BitDepth, BitDepths, DecodedPicture, OutputPicture, Picture, PictureRecycler, PlaneIndex,
-    ShownPicture,
+    BitDepth, BitDepths, DecodedPicture, OutputPicture, Picture, PlaneIndex, ShownPicture,
     decode::{DecodeError, Result},
 };
 use nc_dsp::{DepthKernels, Dsp, Pixel};
@@ -81,9 +80,9 @@ pub(super) struct General<T: Pixel> {
     references: Option<Box<References<T>>>,
     /// A picture whose slices are still arriving.
     assembly: Option<Box<Assembly<T>>>,
-    /// The latest decoded picture (coded size) and its geometry, until the
-    /// next picture moves them into the DPB.
-    latest: Option<(Picture<T>, Geometry)>,
+    /// The latest decoded picture (coded size, borders extended) and its
+    /// geometry, shared with output order until moved into the DPB.
+    latest: Option<(Arc<Picture<T>>, Geometry)>,
     /// The visible window of `latest`: its origin and size.
     window: ((usize, usize), (usize, usize)),
     /// The depths of the sequence's pictures.
@@ -99,8 +98,6 @@ pub(super) struct General<T: Pixel> {
     /// recovery point's POC (`RpPicOrderCntVal`, §8.3.1). Pictures before
     /// it are not output and their missing references are generated.
     recovery: Option<i32>,
-    /// Output copies' buffers.
-    pictures: PictureRecycler<T>,
 }
 
 impl<T: Pixel> Default for General<T> {
@@ -114,7 +111,6 @@ impl<T: Pixel> Default for General<T> {
             sequence_start: true,
             skip_rasl: false,
             recovery: None,
-            pictures: PictureRecycler::default(),
         }
     }
 }
@@ -211,12 +207,16 @@ impl<T: Pixel> General<T> {
         let [width, height] = active.parameters.dimensions.map(|v| v as usize);
         let geometry = Geometry::of(active.sequence, active.parameters);
         let filler = if starting_gdr || self.recovery.is_some() {
-            Some(unavailable_picture(width, height, active.sequence.depth)?)
+            Some(Arc::new(unavailable_picture(
+                width,
+                height,
+                active.sequence.depth,
+            )?))
         } else {
             None
         };
         let references = self.references.get_or_insert_with(Default::default);
-        let (poc, _) = references.prepare(
+        let (poc, _) = references.prepare_shared(
             self.latest.take(),
             active.sequence,
             header,
@@ -232,8 +232,7 @@ impl<T: Pixel> General<T> {
             Some(point) if poc < point => references.withhold_output(),
             _ => self.recovery = None,
         }
-        let picture = Picture::new(width, height, 0)
-            .map_err(|_| DecodeError::Malformed("VVC picture dimensions"))?;
+        let picture = references.take_picture(width, height)?;
         let tiles = &active.parameters.partitioning.tiles;
         let ctus = (tiles.ctus(0) * tiles.ctus(1)) as usize;
         Ok(Assembly {
@@ -397,6 +396,7 @@ impl<T: Pixel> General<T> {
         )?;
         #[cfg(test)]
         blocks::compare_trace(&picture, "NC_FINAL ", poc);
+        picture.extend_borders();
         Ok(picture)
     }
 
@@ -412,7 +412,10 @@ impl<T: Pixel> General<T> {
             luma: depth,
             chroma: depth,
         };
-        self.latest = Some((picture, Geometry::of(active.sequence, active.parameters)));
+        self.latest = Some((
+            Arc::new(picture),
+            Geometry::of(active.sequence, active.parameters),
+        ));
     }
 
     /// Depths of the latest decoded picture, including monochrome output.
@@ -426,17 +429,24 @@ impl<T: Pixel> General<T> {
         ShownPicture::window(&self.latest.as_ref()?.0, origin, size)
     }
 
-    /// Queue a copy of the visible samples of the latest picture for output
-    /// in display order (the DPB's reorder rules, §C.5.2).
+    /// Queue a zero-copy view of the visible samples of the latest picture
+    /// for output in display order (the DPB's reorder rules, §C.5.2).
     pub fn queue_output(&mut self) -> Result<()> {
         let (origin, size) = self.window;
-        let shown = self
+        let picture = self
             .latest
             .as_ref()
-            .and_then(|(latest, _)| ShownPicture::window(latest, origin, size))
+            .and_then(|(latest, _)| {
+                ShownPicture::window(latest, origin, size)?;
+                Some(Arc::clone(latest))
+            })
             .ok_or(DecodeError::Malformed("missing VVC picture"))?;
-        let mut output = self.pictures.take(shown.width(), shown.height(), 0)?;
-        shown.copy_to(&mut output);
+        let output = OutputPicture {
+            origin,
+            size,
+            picture,
+            depths: self.depths,
+        };
         if let Some(references) = &mut self.references {
             references.queue_output(output);
         }
@@ -452,13 +462,7 @@ impl<T: Pixel> General<T> {
 
     /// The next picture in display order, if one is ready.
     pub fn next_output(&mut self) -> Option<OutputPicture<T>> {
-        let picture = self.references.as_mut()?.next_output()?;
-        Some(OutputPicture {
-            origin: (0, 0),
-            size: (picture.width(), picture.height()),
-            picture: Arc::new(picture),
-            depths: self.depths,
-        })
+        self.references.as_mut()?.next_output()
     }
 }
 
@@ -511,7 +515,7 @@ fn unavailable_picture<T: Pixel>(
     height: usize,
     depth: BitDepth,
 ) -> Result<Picture<T>> {
-    let mut picture = Picture::new(width, height, 0)
+    let mut picture = Picture::new(width, height, REFERENCE_BORDER)
         .map_err(|_| DecodeError::Malformed("VVC picture dimensions"))?;
     let mid = T::from_i32(depth.of::<T>().mid());
     for plane in PlaneIndex::ALL {

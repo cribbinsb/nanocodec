@@ -2,27 +2,36 @@
 //! of samples `T` (8-bit `u8`, deeper `u16`). Each picture keeps its
 //! geometry, from which a later picture's slices derive the scaling of
 //! their references (reference picture resampling, H.266 §8.3.2).
+use std::sync::Arc;
+
 use crate::{
     decoder_blocks::{Geometry, Scaling},
     decoder_headers::{ReferenceEntry, Sequence, SliceHeader},
 };
 use nc_common::{
-    Picture, Sample,
+    OutputPicture, Picture, PictureRecycler, Sample,
     decode::{DecodeError, Result},
 };
 
+/// Luma border allocated around decoded pictures so out-of-bounds motion
+/// vectors up to ±64 luma samples (±32 chroma) borrow the reference plane
+/// directly without copying a temporary window.
+pub(crate) const REFERENCE_BORDER: usize = 64;
+
 #[derive(Debug)]
 pub(crate) struct References<T: Sample = u8> {
-    /// The reference pictures: POC, samples and geometry.
-    pictures: Vec<(i32, Picture<T>, Geometry)>,
+    /// The reference pictures: POC, shared samples and geometry.
+    pictures: Vec<(i32, Arc<Picture<T>>, Geometry)>,
     current: Option<i32>,
     previous_tid0: Option<i32>,
-    pending_output: Vec<(i32, Picture<T>)>,
-    ready_output: std::collections::VecDeque<Picture<T>>,
+    pending_output: Vec<(i32, OutputPicture<T>)>,
+    ready_output: std::collections::VecDeque<OutputPicture<T>>,
     output_enabled: bool,
     reorder: usize,
     motion: Vec<crate::decoder_blocks::MotionField>,
+    recycler: PictureRecycler<T>,
 }
+
 impl<T: Sample> Default for References<T> {
     fn default() -> Self {
         Self {
@@ -34,10 +43,44 @@ impl<T: Sample> Default for References<T> {
             output_enabled: false,
             reorder: 0,
             motion: Vec::new(),
+            recycler: PictureRecycler::default(),
         }
     }
 }
+
 impl<T: Sample> References<T> {
+    /// Obtain a `width` x `height` picture with [`REFERENCE_BORDER`] luma
+    /// border from the DPB recycler, allocating only on DPB growth.
+    pub fn take_picture(&mut self, width: usize, height: usize) -> Result<Picture<T>> {
+        self.recycler
+            .take(width, height, REFERENCE_BORDER)
+            .map_err(|_| DecodeError::Malformed("VVC picture dimensions"))
+    }
+
+    fn clear_pictures(&mut self) {
+        for (_, arc_pic, _) in self.pictures.drain(..) {
+            if let Ok(pic) = Arc::try_unwrap(arc_pic) {
+                self.recycler.give(pic);
+            }
+        }
+    }
+
+    fn retain_pictures(&mut self, retained: &[Vec<i32>; 2]) {
+        let mut i = 0;
+        while i < self.pictures.len() {
+            let poc = self.pictures[i].0;
+            if retained.iter().any(|list| list.contains(&poc)) {
+                i += 1;
+            } else {
+                let (_, arc_pic, _) = self.pictures.swap_remove(i);
+                if let Ok(pic) = Arc::try_unwrap(arc_pic) {
+                    self.recycler.give(pic);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub fn prepare(
         &mut self,
         previous: Option<(Picture<T>, Geometry)>,
@@ -45,12 +88,32 @@ impl<T: Sample> References<T> {
         header: &SliceHeader,
         (kind, starts_sequence): (u8, bool),
         temporal_id: u8,
-        filler: Option<(&Picture<T>, Geometry)>,
+        filler: Option<(&Arc<Picture<T>>, Geometry)>,
     ) -> Result<(i32, [Vec<i32>; 2])> {
-        if let (Some(poc), Some((mut picture, geometry))) = (self.current, previous) {
-            // Plane regions include alignment padding even with a zero border.
-            // Shared interpolation requires those samples to replicate the edge.
+        let shared = previous.map(|(mut picture, geometry)| {
             picture.extend_borders();
+            (Arc::new(picture), geometry)
+        });
+        self.prepare_shared(
+            shared,
+            sequence,
+            header,
+            (kind, starts_sequence),
+            temporal_id,
+            filler,
+        )
+    }
+
+    pub fn prepare_shared(
+        &mut self,
+        previous: Option<(Arc<Picture<T>>, Geometry)>,
+        sequence: &Sequence,
+        header: &SliceHeader,
+        (kind, starts_sequence): (u8, bool),
+        temporal_id: u8,
+        filler: Option<(&Arc<Picture<T>>, Geometry)>,
+    ) -> Result<(i32, [Vec<i32>; 2])> {
+        if let (Some(poc), Some((picture, geometry))) = (self.current, previous) {
             self.pictures.push((poc, picture, geometry));
         }
         if matches!(kind, 7..=10) {
@@ -64,43 +127,21 @@ impl<T: Sample> References<T> {
         // (`NoOutputBeforeRecoveryFlag`), marks every reference unused
         // (H.266 §8.3.2) and restarts the POC (§8.3.1).
         if matches!(kind, 7 | 8) || starts_sequence {
-            self.pictures.clear();
+            self.clear_pictures();
             self.motion.clear();
             self.current = None;
             self.previous_tid0 = None;
         }
-        let lsb = header.picture.order.lsb as i32;
-        let range = 1i32 << sequence.poc_bits;
-        let poc = if let Some(cycle) = header.picture.order.msb_cycle {
-            i32::try_from(i64::from(cycle) * i64::from(range) + i64::from(lsb))
-                .map_err(|_| DecodeError::Unsupported("VVC POC range"))?
-        } else if let Some(previous) = self.previous_tid0 {
-            let previous_lsb = previous.rem_euclid(range);
-            let mut msb = previous - previous_lsb;
-            if lsb < previous_lsb && previous_lsb - lsb >= range / 2 {
-                msb = msb
-                    .checked_add(range)
-                    .ok_or(DecodeError::Malformed("VVC POC overflow"))?;
-            } else if lsb > previous_lsb && lsb - previous_lsb > range / 2 {
-                msb = msb
-                    .checked_sub(range)
-                    .ok_or(DecodeError::Malformed("VVC POC overflow"))?;
-            }
-            msb.checked_add(lsb)
-                .ok_or(DecodeError::Malformed("VVC POC overflow"))?
-        } else {
-            lsb
-        };
+        let poc = self.derive_poc(sequence, header)?;
         let retained = self.entries(poc, header, sequence.poc_bits)?;
         // The first slice's lists mark the other pictures unused (§8.3.3).
-        self.pictures
-            .retain(|(poc, ..)| retained.iter().any(|list| list.contains(poc)));
+        self.retain_pictures(&retained);
         // While recovering from a GDR picture that started the sequence,
         // listed pictures the DPB lacks are generated (§8.3.4).
         if let Some((filler, geometry)) = filler {
             for &listed in retained.iter().flatten() {
                 if !self.pictures.iter().any(|(stored, ..)| *stored == listed) {
-                    self.pictures.push((listed, filler.clone(), geometry));
+                    self.pictures.push((listed, Arc::clone(filler), geometry));
                 }
             }
         }
@@ -121,6 +162,32 @@ impl<T: Sample> References<T> {
         self.reorder = sequence.dpb.last().unwrap()[1] as usize;
         Ok((poc, retained))
     }
+
+    fn derive_poc(&self, sequence: &Sequence, header: &SliceHeader) -> Result<i32> {
+        let lsb = header.picture.order.lsb as i32;
+        let range = 1i32 << sequence.poc_bits;
+        if let Some(cycle) = header.picture.order.msb_cycle {
+            i32::try_from(i64::from(cycle) * i64::from(range) + i64::from(lsb))
+                .map_err(|_| DecodeError::Unsupported("VVC POC range"))
+        } else if let Some(previous) = self.previous_tid0 {
+            let previous_lsb = previous.rem_euclid(range);
+            let mut msb = previous - previous_lsb;
+            if lsb < previous_lsb && previous_lsb - lsb >= range / 2 {
+                msb = msb
+                    .checked_add(range)
+                    .ok_or(DecodeError::Malformed("VVC POC overflow"))?;
+            } else if lsb > previous_lsb && lsb - previous_lsb > range / 2 {
+                msb = msb
+                    .checked_sub(range)
+                    .ok_or(DecodeError::Malformed("VVC POC overflow"))?;
+            }
+            msb.checked_add(lsb)
+                .ok_or(DecodeError::Malformed("VVC POC overflow"))
+        } else {
+            Ok(lsb)
+        }
+    }
+
     /// The active reference POCs of a later slice `header` of picture `poc`
     /// (§8.3.2), each in the DPB.
     pub fn slice_lists(
@@ -132,12 +199,6 @@ impl<T: Sample> References<T> {
         self.active(self.entries(poc, header, poc_bits)?, header)
     }
 
-    /// The POCs of every entry of the two reference picture lists of slice
-    /// `header` of picture `poc` (H.266 §8.3.2): a short-term entry by its
-    /// POC delta; a long-term one the picture whose POC is
-    /// `PicOrderCntVal − DeltaPocMsbCycleLt · MaxPicOrderCntLsb −
-    /// (PicOrderCntVal & (MaxPicOrderCntLsb − 1)) + PocLsbLt` with its MSB
-    /// cycle, else the picture whose POC LSBs are `PocLsbLt`.
     fn entries(&self, poc: i32, header: &SliceHeader, poc_bits: u8) -> Result<[Vec<i32>; 2]> {
         let range = 1i64 << poc_bits;
         let mut lists: [Vec<i32>; 2] = [Vec::new(), Vec::new()];
@@ -193,14 +254,15 @@ impl<T: Sample> References<T> {
         self.output_enabled = false;
     }
 
-    pub fn queue_output(&mut self, picture: Picture<T>) {
+    pub fn queue_output(&mut self, output: OutputPicture<T>) {
         if self.output_enabled {
-            self.pending_output.push((self.current.unwrap(), picture));
+            self.pending_output.push((self.current.unwrap(), output));
         }
         while self.pending_output.len() > self.reorder {
             self.bump_output();
         }
     }
+
     fn bump_output(&mut self) {
         let index = self
             .pending_output
@@ -212,17 +274,21 @@ impl<T: Sample> References<T> {
         self.ready_output
             .push_back(self.pending_output.remove(index).1);
     }
-    pub fn next_output(&mut self) -> Option<Picture<T>> {
+
+    pub fn next_output(&mut self) -> Option<OutputPicture<T>> {
         self.ready_output.pop_front()
     }
+
     pub fn flush_output(&mut self) {
         while !self.pending_output.is_empty() {
             self.bump_output();
         }
     }
+
     pub fn record_motion(&mut self, field: crate::decoder_blocks::MotionField) {
         self.motion.push(field);
     }
+
     pub fn temporal<'a>(
         &'a self,
         poc: i32,
@@ -240,8 +306,9 @@ impl<T: Sample> References<T> {
             field, poc, lists, header, ctu_log2,
         ))
     }
+
     pub fn pictures(&self, pocs: &[i32]) -> Vec<&Picture<T>> {
-        pocs.iter().map(|&poc| &self.stored(poc).1).collect()
+        pocs.iter().map(|&poc| &*self.stored(poc).1).collect()
     }
 
     /// The scaling of each of the references `pocs` onto a picture of
@@ -264,7 +331,7 @@ impl<T: Sample> References<T> {
     }
 
     /// The stored reference picture `poc`.
-    fn stored(&self, poc: i32) -> &(i32, Picture<T>, Geometry) {
+    fn stored(&self, poc: i32) -> &(i32, Arc<Picture<T>>, Geometry) {
         self.pictures
             .iter()
             .find(|(stored, ..)| *stored == poc)
@@ -275,6 +342,8 @@ impl<T: Sample> References<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nc_common::BitDepths;
+
     #[test]
     fn streaming_b_pictures_are_bumped_in_display_order_and_flushed() {
         let mut references = References::<u8> {
@@ -289,9 +358,14 @@ mod tests {
                 .view_mut()
                 .fill(poc as u8);
             references.current = Some(poc);
-            references.queue_output(picture);
+            references.queue_output(OutputPicture {
+                origin: (0, 0),
+                size: (2, 2),
+                picture: Arc::new(picture),
+                depths: BitDepths::EIGHT,
+            });
         }
-        let value = |p: Picture| p.plane(nc_common::PlaneIndex::Y).view().row(0)[0];
+        let value = |p: OutputPicture| p.picture.plane(nc_common::PlaneIndex::Y).view().row(0)[0];
         assert_eq!(references.next_output().map(value), Some(0));
         assert_eq!(references.next_output().map(value), Some(1));
         assert!(references.next_output().is_none());

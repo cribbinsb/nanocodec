@@ -145,6 +145,179 @@ pub(crate) fn blend_at<T: nc_common::Sample>(
     }
 }
 
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code, clippy::inline_always)]
+pub(crate) mod high_simd {
+    use nc_common::BitDepth;
+
+    use crate::simd::I16Lanes;
+
+    use super::{BLEND_PRECISION, MIN_BLEND_SHIFT, VvcGeometric, WEIGHT_DENOMINATOR, blend_at};
+
+    const IOTA: [i16; 32] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31,
+    ];
+
+    #[inline(always)]
+    fn chunk<L: I16Lanes>(
+        (a, b): (&[i16], &[i16]),
+        out: &mut [u16],
+        base: i16,
+        dx: i16,
+        (offset, shift): (i32, u32),
+        max_val: L,
+    ) {
+        let zero = L::splat(0);
+        let eight = L::splat(WEIGHT_DENOMINATOR as i16);
+        let w = L::load(&IOTA)
+            .mul(L::splat(dx))
+            .add(L::splat(base))
+            .sra(3)
+            .max(zero)
+            .min(eight);
+        let acc = L::acc_vec_mul_add2(L::load(a), w, L::load(b), eight.sub(w));
+        L::acc_round_shift_narrow(acc, offset, shift)
+            .max(zero)
+            .min(max_val)
+            .store_u16(out);
+    }
+
+    #[inline(always)]
+    unsafe fn blend_lanes<W: I16Lanes, H: I16Lanes>(
+        mask: VvcGeometric,
+        origin: (usize, usize),
+        (width, height): (usize, usize),
+        chroma: bool,
+        sources: (&[i16], &[i16]),
+        out: &mut [u16],
+        depth: BitDepth,
+    ) {
+        let sub = usize::from(chroma);
+        let max_coord = origin
+            .0
+            .max(origin.1)
+            .saturating_add(width.max(height) << sub);
+        if max_coord > 512 {
+            blend_at(mask, origin, (width, height), chroma, sources, out, depth);
+            return;
+        }
+        let shift = BLEND_PRECISION
+            .saturating_sub(depth.bits())
+            .max(MIN_BLEND_SHIFT);
+        let offset = 1i32 << (shift - 1);
+        let count = width * height;
+        let (a, b) = (&sources.0[..count], &sources.1[..count]);
+        let out = &mut out[..count];
+        let sign = if mask.flip { -1 } else { 1 };
+        let dx = ((2 * mask.direction[0] * sign) << sub) as i16;
+        let max_w = W::splat(depth.max() as i16);
+        let max_h = H::splat(depth.max() as i16);
+        for ry in 0..height {
+            let y = origin.1 + (ry << sub);
+            let row_base = 36 + mask.distance(origin.0, y) * sign;
+            let row_off = ry * width;
+            let mut rx = 0;
+            while rx + W::LANES <= width {
+                let at = row_off + rx;
+                let base = (row_base + rx as i32 * i32::from(dx)) as i16;
+                chunk::<W>(
+                    (&a[at..], &b[at..]),
+                    &mut out[at..],
+                    base,
+                    dx,
+                    (offset, shift),
+                    max_w,
+                );
+                rx += W::LANES;
+            }
+            while rx + H::LANES <= width {
+                let at = row_off + rx;
+                let base = (row_base + rx as i32 * i32::from(dx)) as i16;
+                chunk::<H>(
+                    (&a[at..], &b[at..]),
+                    &mut out[at..],
+                    base,
+                    dx,
+                    (offset, shift),
+                    max_h,
+                );
+                rx += H::LANES;
+            }
+            while rx < width {
+                let at = row_off + rx;
+                let w = ((row_base + rx as i32 * i32::from(dx)) >> 3).clamp(0, WEIGHT_DENOMINATOR);
+                let sum = w * i32::from(a[at]) + (WEIGHT_DENOMINATOR - w) * i32::from(b[at]);
+                out[at] = depth.clip_to((sum + offset) >> shift);
+                rx += 1;
+            }
+        }
+    }
+
+    macro_rules! isa_geo {
+        ($mod_name:ident, $w:ty, $h:ty, $feature:literal) => {
+            pub(crate) mod $mod_name {
+                use nc_common::BitDepth;
+
+                use super::super::VvcGeometric;
+                use super::blend_lanes;
+
+                #[target_feature(enable = $feature)]
+                pub(crate) unsafe fn blend(
+                    mask: VvcGeometric,
+                    origin: (usize, usize),
+                    size: (usize, usize),
+                    chroma: bool,
+                    sources: (&[i16], &[i16]),
+                    out: &mut [u16],
+                    depth: BitDepth,
+                ) {
+                    // SAFETY: caller enables `$feature`; `blend_lanes` slices bounds on entry.
+                    unsafe {
+                        blend_lanes::<$w, $h>(mask, origin, size, chroma, sources, out, depth);
+                    }
+                }
+            }
+        };
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    isa_geo!(
+        avx2,
+        crate::simd::avx2::I16x16,
+        crate::simd::avx2::I16x4,
+        "avx2"
+    );
+
+    #[cfg(target_arch = "x86_64")]
+    isa_geo!(
+        avx512,
+        crate::simd::avx512_i16::I16x32,
+        crate::simd::avx2::I16x4,
+        "avx512f,avx512bw,avx512vl"
+    );
+
+    #[cfg(target_arch = "aarch64")]
+    isa_geo!(
+        neon,
+        crate::simd::neon::I16x8,
+        crate::simd::neon::I16x4,
+        "neon"
+    );
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    isa_geo!(
+        simd128,
+        crate::simd::simd128::I16x8,
+        crate::simd::simd128::I16x4,
+        "simd128"
+    );
+}
+
 #[cfg(test)]
 #[path = "vvc_geo_tests.rs"]
 mod tests;

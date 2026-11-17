@@ -26,12 +26,16 @@
 #[allow(unsafe_code)]
 mod generic;
 
-use crate::codec_txfm::vvc_primary::tables::{DST7_8, DST7_16, DST7_32};
+use nc_common::BitDepth;
+
+use crate::codec_txfm::vvc_primary::tables::{DCT64, DST7_8, DST7_16, DST7_32};
 use crate::codec_txfm::{DCT32, DST4};
 use crate::{Dsp, Isa, VvcTransformKind};
 
-/// Largest transform side of these kernels.
+/// Largest forward transform side of these kernels.
 const MAX_SIDE: usize = 32;
+/// Largest inverse transform side of these kernels (includes 64-point DCT-II).
+const MAX_INVERSE_SIDE: usize = 64;
 /// Every side's basis is stored in a `MAX_SIDE` square, row `k` holding
 /// frequency `k` (sample `n` at column `n`).
 type Basis = [[i16; MAX_SIDE]; MAX_SIDE];
@@ -143,6 +147,22 @@ static BASES: [[Basis; 4]; 3] = bases(false);
 static FREQUENCY_PAIRS: [[PairTable; 4]; 3] = pair_tables(false);
 static SAMPLE_PAIRS: [[PairTable; 4]; 3] = pair_tables(true);
 
+const fn interleave_dct64() -> [[i16; 2 * MAX_INVERSE_SIDE]; MAX_SIDE / 2] {
+    let mut out = [[0i16; 2 * MAX_INVERSE_SIDE]; MAX_SIDE / 2];
+    let mut row = 0;
+    while row < MAX_SIDE {
+        let mut column = 0;
+        while column < MAX_INVERSE_SIDE {
+            out[row / 2][2 * column + row % 2] = DCT64[row][column];
+            column += 1;
+        }
+        row += 1;
+    }
+    out
+}
+
+static DCT64_PAIRS: [[i16; 2 * MAX_INVERSE_SIDE]; MAX_SIDE / 2] = interleave_dct64();
+
 fn table_index(kind: VvcTransformKind, n: usize) -> (usize, usize) {
     let kind = match kind {
         VvcTransformKind::Dct2 => 0,
@@ -173,8 +193,8 @@ fn sample_pairs(kind: VvcTransformKind, n: usize) -> &'static PairTable {
 
 /// §8.7.4.1: the first inverse stage rounds by 7 bits and clips to 16.
 const INVERSE_FIRST_SHIFT: u32 = 7;
-/// §8.7.4.1 `bdShift` at 8-bit: 20 − `BitDepth`.
-const INVERSE_SECOND_SHIFT: u32 = 12;
+/// §8.7.2: `bdShift = RESIDUAL_BITS − BitDepth` (`12` at 8 bits, `10` at 10).
+const RESIDUAL_BITS: u32 = 20;
 /// The forward column pass shift beyond log2(height) (`VVenC` `TrQuant::xT`:
 /// `TRANSFORM_MATRIX_SHIFT`).
 const FORWARD_MATRIX_SHIFT: u32 = 6;
@@ -192,8 +212,9 @@ fn nonzero_extent(coefficients: &[i16], width: usize, rows: usize, cols: usize) 
     extent
 }
 
-/// `(size, kinds, coefficients, out)`: inverse of dequantised coefficients.
-pub(crate) type InverseFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i16]);
+/// `(size, kinds, coefficients, out, second_shift)`: inverse of dequantised coefficients.
+pub(crate) type InverseFn =
+    unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i16], u32);
 /// `(size, kinds, residual, out)`: forward of a residual.
 pub(crate) type ForwardFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i16]);
 
@@ -226,7 +247,7 @@ pub(crate) fn with_scratch<T: Copy + Default, R>(area: usize, f: impl FnOnce(&mu
 
 /// The scalar reference: the passes as plain sums.
 mod scalar {
-    use super::{FORWARD_MATRIX_SHIFT, INVERSE_FIRST_SHIFT, INVERSE_SECOND_SHIFT, basis};
+    use super::{DCT64, FORWARD_MATRIX_SHIFT, INVERSE_FIRST_SHIFT, MAX_INVERSE_SIDE, basis};
     use crate::VvcTransformKind;
 
     fn round(sum: i32, shift: u32) -> i32 {
@@ -237,32 +258,45 @@ mod scalar {
         value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
     }
 
+    fn basis_val(kind: VvcTransformKind, n: usize, k: usize, s: usize) -> i32 {
+        if n == MAX_INVERSE_SIDE {
+            i32::from(DCT64[k][s])
+        } else {
+            i32::from(basis(kind, n)[k][s])
+        }
+    }
+
     /// The inverse: columns (rounded by 7 bits, clipped to 16), then rows
-    /// (rounded by 12, clipped). Coefficients beyond each kind's
+    /// (rounded by `second_shift`, clipped). Coefficients beyond each kind's
     /// frequencies are ignored.
     pub(super) fn inverse(
         (width, height): (usize, usize),
         [horizontal, vertical]: [VvcTransformKind; 2],
         coefficients: &[i16],
         out: &mut [i16],
+        second_shift: u32,
     ) {
-        let (bh, bv) = (basis(horizontal, width), basis(vertical, height));
         let (fh, fv) = (horizontal.frequencies(width), vertical.frequencies(height));
-        super::with_scratch(width * height, |columns: &mut [i16]| {
+        super::with_scratch(fh * height, |columns: &mut [i16]| {
             for c in 0..fh {
                 for y in 0..height {
-                    let sum = (0..fv)
-                        .map(|k| i32::from(coefficients[k * width + c]) * i32::from(bv[k][y]))
+                    let sum: i32 = (0..fv)
+                        .map(|k| {
+                            i32::from(coefficients[k * width + c])
+                                * basis_val(vertical, height, k, y)
+                        })
                         .sum();
-                    columns[y * width + c] = clip16(round(sum, INVERSE_FIRST_SHIFT));
+                    columns[y * fh + c] = clip16(round(sum, INVERSE_FIRST_SHIFT));
                 }
             }
             for y in 0..height {
                 for x in 0..width {
-                    let sum = (0..fh)
-                        .map(|c| i32::from(columns[y * width + c]) * i32::from(bh[c][x]))
+                    let sum: i32 = (0..fh)
+                        .map(|c| {
+                            i32::from(columns[y * fh + c]) * basis_val(horizontal, width, c, x)
+                        })
                         .sum();
-                    out[y * width + x] = clip16(round(sum, INVERSE_SECOND_SHIFT));
+                    out[y * width + x] = clip16(round(sum, second_shift));
                 }
             }
         });
@@ -308,21 +342,34 @@ mod scalar {
 #[allow(unsafe_code)]
 mod avx2 {
     use crate::simd::avx2::{I16x8, I16x16};
-    super::generic::kernels!(#[target_feature(enable = "avx2")]; I16x8, I16x16);
+    super::generic::kernels!(#[target_feature(enable = "avx2")]; I16x8, I16x16, I16x16);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx512 {
+    use crate::simd::avx2::{I16x8, I16x16};
+    use crate::simd::avx512_i16::I16x32;
+    super::generic::kernels!(
+        #[target_feature(enable = "avx512f,avx512bw,avx512vl")];
+        I16x8,
+        I16x16,
+        I16x32
+    );
 }
 
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 mod neon {
     use crate::simd::neon::I16x8;
-    super::generic::kernels!(#[target_feature(enable = "neon")]; I16x8, I16x8);
+    super::generic::kernels!(#[target_feature(enable = "neon")]; I16x8, I16x8, I16x8);
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]
 mod simd128 {
     use crate::simd::simd128::I16x8;
-    super::generic::kernels!(#[target_feature(enable = "simd128")]; I16x8, I16x8);
+    super::generic::kernels!(#[target_feature(enable = "simd128")]; I16x8, I16x8, I16x8);
 }
 
 pub(crate) fn kernels(isa: Isa) -> Kernels {
@@ -330,6 +377,8 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
         Isa::Scalar => scalar::kernels(),
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => avx2::kernels(),
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::kernels(),
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::kernels(),
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -339,19 +388,23 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
     }
 }
 
-/// Whether `kinds` apply to a `width` x `height` block of these kernels.
+/// Whether `kinds` apply to a `width` x `height` forward block (`4..=32`).
 fn supported((width, height): (usize, usize), kinds: [VvcTransformKind; 2]) -> bool {
     let side = |n: usize| n.is_power_of_two() && (4..=MAX_SIDE).contains(&n);
     side(width) && side(height) && kinds[0].valid(width) && kinds[1].valid(height)
 }
 
+/// Whether `kinds` apply to a `width` x `height` inverse block (`4..=64`).
+fn supported_inverse((width, height): (usize, usize), kinds: [VvcTransformKind; 2]) -> bool {
+    let side = |n: usize| n.is_power_of_two() && (4..=MAX_INVERSE_SIDE).contains(&n);
+    side(width) && side(height) && kinds[0].valid(width) && kinds[1].valid(height)
+}
+
 #[allow(unsafe_code)]
 impl Dsp {
-    /// The inverse primary transform of dequantised 16-bit `coefficients` of a `width` x `height` block (row-major; `kinds`
-    /// horizontal then vertical) into the residual `out`, as §8.7.4.1.
-    /// # Panics
-    /// If a side is not 4 to 32, a kind does not apply to its side, or a
-    /// slice is shorter than the block.
+    /// The 8-bit inverse primary transform of dequantised 16-bit `coefficients`
+    /// of a `width` x `height` block (`4..=64`) into `out`.
+    #[cfg(test)]
     pub(crate) fn vvc_inverse_kinds(
         &self,
         size: (usize, usize),
@@ -359,11 +412,26 @@ impl Dsp {
         coefficients: &[i16],
         out: &mut [i16],
     ) {
-        assert!(supported(size, kinds));
+        self.vvc_inverse_kinds_at(size, kinds, coefficients, out, BitDepth::EIGHT);
+    }
+
+    /// [`Self::vvc_inverse_kinds`] at `depth` (`second_shift = 20 − BitDepth`).
+    pub(crate) fn vvc_inverse_kinds_at(
+        &self,
+        size: (usize, usize),
+        kinds: [VvcTransformKind; 2],
+        coefficients: &[i16],
+        out: &mut [i16],
+        depth: BitDepth,
+    ) {
+        assert!(supported_inverse(size, kinds));
         let area = size.0 * size.1;
         assert!(coefficients.len() >= area && out.len() >= area);
+        let second_shift = RESIDUAL_BITS - depth.bits();
         // SAFETY: the table matches this CPU; shape and lengths checked.
-        unsafe { (self.vvc_mts.inverse)(size, kinds, coefficients, out) }
+        unsafe {
+            (self.vvc_mts.inverse)(size, kinds, coefficients, out, second_shift);
+        }
     }
 
     /// VVC 8-bit forward primary transform of a `width` x `height` residual

@@ -29,12 +29,12 @@ use core::arch::x86_64::{
     _mm256_max_epi32, _mm256_min_epi16, _mm256_min_epi32, _mm256_min_epu16, _mm256_movemask_ps,
     _mm256_mulhrs_epi16, _mm256_mullo_epi16, _mm256_mullo_epi32, _mm256_or_si256,
     _mm256_packs_epi32, _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set_m128i,
-    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setzero_si256, _mm256_sign_epi16,
-    _mm256_sign_epi32, _mm256_sll_epi32, _mm256_slli_epi32, _mm256_sra_epi16, _mm256_sra_epi32,
-    _mm256_srai_epi32, _mm256_srl_epi16, _mm256_srl_epi32, _mm256_srli_epi32, _mm256_storeu_si256,
-    _mm256_sub_epi16, _mm256_sub_epi32, _mm256_subs_epu16, _mm256_testz_si256,
-    _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16,
-    _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
+    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setzero_si256,
+    _mm256_shuffle_epi8, _mm256_sign_epi16, _mm256_sign_epi32, _mm256_sll_epi32, _mm256_slli_epi32,
+    _mm256_sra_epi16, _mm256_sra_epi32, _mm256_srai_epi32, _mm256_srl_epi16, _mm256_srl_epi32,
+    _mm256_srli_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_subs_epu16,
+    _mm256_testz_si256, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64,
+    _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
 
 use core::mem::MaybeUninit;
@@ -857,9 +857,10 @@ impl I16Lanes for I16x16 {
             let hi_idx = _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(clamped));
             let low = _mm256_i32gather_epi32::<2>(base, lo_idx);
             let high = _mm256_i32gather_epi32::<2>(base, hi_idx);
-            let extend = |v: __m256i| _mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(v));
+            let low = _mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(low));
+            let high = _mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(high));
             Self(_mm256_permute4x64_epi64::<0b11_01_10_00>(
-                _mm256_packs_epi32(extend(low), extend(high)),
+                _mm256_packs_epi32(low, high),
             ))
         }
     }
@@ -1027,6 +1028,18 @@ impl I16Lanes for I16x16 {
                     _mm256_unpackhi_epi16(a.0, b.0),
                     _mm256_unpackhi_epi16(wa.0, wb.0),
                 ),
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn acc_vec_fma2(acc: Self::Acc, a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        // SAFETY: these types run only inside AVX2 kernels (module docs).
+        unsafe {
+            let prod = Self::acc_vec_mul_add2(a, wa, b, wb);
+            [
+                _mm256_add_epi32(acc[0], prod[0]),
+                _mm256_add_epi32(acc[1], prod[1]),
             ]
         }
     }
@@ -1280,6 +1293,18 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn acc_vec_fma2(acc: Self::Acc, a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        // SAFETY: these types run only inside AVX2 kernels (module docs).
+        unsafe {
+            let prod = Self::acc_vec_mul_add2(a, wa, b, wb);
+            [
+                _mm_add_epi32(acc[0], prod[0]),
+                _mm_add_epi32(acc[1], prod[1]),
+            ]
+        }
+    }
+
+    #[inline(always)]
     fn acc_add_sq(acc: Self::Acc, a: Self) -> Self::Acc {
         // SAFETY: these types run only inside AVX2 kernels (module docs);
         // slices are indexed before every load and store.
@@ -1487,6 +1512,12 @@ impl I16Lanes for I16x4 {
     }
 
     #[inline(always)]
+    fn acc_vec_fma2(acc: Self::Acc, a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        // SAFETY: these types run only inside AVX2 kernels (module docs).
+        unsafe { _mm_add_epi32(acc, Self::acc_vec_mul_add2(a, wa, b, wb)) }
+    }
+
+    #[inline(always)]
     fn acc_add(acc: Self::Acc, a: Self) -> Self::Acc {
         // SAFETY: these types run only inside AVX2 kernels (module docs);
         // slices are indexed before every load and store.
@@ -1649,6 +1680,78 @@ impl I16FilterLanes for I16x16 {
     fn any_nonzero(self) -> bool {
         // SAFETY: AVX2 kernels only (module docs).
         unsafe { _mm256_testz_si256(self.0, self.0) == 0 }
+    }
+
+    #[inline(always)]
+    fn load_u16_deinterleaved(src: &[u16]) -> (Self, Self) {
+        let src = &src[..32];
+        // SAFETY: AVX2 kernels only; `src` holds 32 `u16` elements (64 bytes).
+        unsafe {
+            let v0 = _mm256_loadu_si256(src.as_ptr().cast());
+            let v1 = _mm256_loadu_si256(src.as_ptr().add(16).cast());
+            let shuf = _mm256_setr_epi8(
+                0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15, 0, 1, 4, 5, 8, 9, 12, 13, 2,
+                3, 6, 7, 10, 11, 14, 15,
+            );
+            let s0 = _mm256_shuffle_epi8(v0, shuf);
+            let s1 = _mm256_shuffle_epi8(v1, shuf);
+            let even = _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_unpacklo_epi64(s0, s1));
+            let odd = _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_unpackhi_epi64(s0, s1));
+            (Self(even), Self(odd))
+        }
+    }
+
+    #[inline(always)]
+    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
+        #[inline(always)]
+        unsafe fn expand_pairs_256(d02: __m256i, d13: __m256i) -> [I16x16; 4] {
+            // SAFETY: AVX2 enabled by caller.
+            unsafe {
+                let q02_lo = _mm256_unpacklo_epi32(d02, d02);
+                let q13_lo = _mm256_unpacklo_epi32(d13, d13);
+                let q02_hi = _mm256_unpackhi_epi32(d02, d02);
+                let q13_hi = _mm256_unpackhi_epi32(d13, d13);
+                [
+                    I16x16(_mm256_unpacklo_epi64(q02_lo, q13_lo)),
+                    I16x16(_mm256_unpackhi_epi64(q02_lo, q13_lo)),
+                    I16x16(_mm256_unpacklo_epi64(q02_hi, q13_hi)),
+                    I16x16(_mm256_unpackhi_epi64(q02_hi, q13_hi)),
+                ]
+            }
+        }
+        let b = &blocks[..4];
+        // SAFETY: AVX2 kernels only; each block holds 12 `i16`s (24 bytes).
+        unsafe {
+            let v02_lo = _mm256_set_m128i(
+                _mm_loadu_si128(b[2].as_ptr().cast()),
+                _mm_loadu_si128(b[0].as_ptr().cast()),
+            );
+            let v13_lo = _mm256_set_m128i(
+                _mm_loadu_si128(b[3].as_ptr().cast()),
+                _mm_loadu_si128(b[1].as_ptr().cast()),
+            );
+            let v02_hi = _mm256_set_m128i(
+                _mm_loadl_epi64(b[2][8..].as_ptr().cast()),
+                _mm_loadl_epi64(b[0][8..].as_ptr().cast()),
+            );
+            let v13_hi = _mm256_set_m128i(
+                _mm_loadl_epi64(b[3][8..].as_ptr().cast()),
+                _mm_loadl_epi64(b[1][8..].as_ptr().cast()),
+            );
+            let [t0, t1, t2, t3] = expand_pairs_256(
+                _mm256_unpacklo_epi16(v02_lo, v02_lo),
+                _mm256_unpacklo_epi16(v13_lo, v13_lo),
+            );
+            let [t4, t5, t6, t7] = expand_pairs_256(
+                _mm256_unpackhi_epi16(v02_lo, v02_lo),
+                _mm256_unpackhi_epi16(v13_lo, v13_lo),
+            );
+            let [t8, t9, t10, t11] = expand_pairs_256(
+                _mm256_unpacklo_epi16(v02_hi, v02_hi),
+                _mm256_unpacklo_epi16(v13_hi, v13_hi),
+            );
+            [t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11]
+        }
     }
 }
 

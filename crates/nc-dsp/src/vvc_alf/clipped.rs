@@ -6,9 +6,9 @@ use nc_common::{BitDepth, Sample};
 use super::{VVC_ALF_BLOCK, VVC_ALF_REACH, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, clip_values};
 
 /// Taps of the chroma 5x5 diamond besides the centre.
-const CHROMA_TAPS: usize = 6;
+pub(super) const CHROMA_TAPS: usize = 6;
 /// `(dx, dy)` of the first sample of each chroma tap's pair (§8.8.5.4).
-const CHROMA_TAP_OFFSETS: [(isize, isize); CHROMA_TAPS] =
+pub(super) const CHROMA_TAP_OFFSETS: [(isize, isize); CHROMA_TAPS] =
     [(0, 2), (1, 1), (0, 1), (-1, 1), (2, 0), (1, 0)];
 /// `alfShiftY` / `alfShiftC` (§8.8.5.2, §8.8.5.4): 10 on the rows next to
 /// a virtual boundary, 7 elsewhere.
@@ -52,6 +52,30 @@ impl crate::Dsp {
     }
 }
 
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    clippy::needless_bitwise_bool,
+    reason = "inlined into ISA-enabled block-row kernels so LLVM vectorizes at full target width"
+)]
+pub(super) fn assert_coeffs_and_limits(
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    limits: &[[i16; VVC_ALF_TAPS]],
+    depth: BitDepth,
+) {
+    let mut coeff_bits = 0u16;
+    for &c in coefficients.as_flattened() {
+        coeff_bits |= c.wrapping_add(128) as u16;
+    }
+    assert!(coeff_bits < 256 && *COEFFICIENTS.start() == -128);
+    let [c0, c1, c2, c3] = clip_values(depth);
+    let mut limits_ok = true;
+    for &v in limits.as_flattened() {
+        limits_ok &= (v == c0) | (v == c1) | (v == c2) | (v == c3);
+    }
+    assert!(limits_ok);
+}
+
 /// The checks of the clipped luma row at `depth` (any sample type).
 pub(crate) fn check_clipped_row<T: Sample>(
     rows: &[&[T]; 7],
@@ -69,19 +93,47 @@ pub(crate) fn check_clipped_row<T: Sample>(
             .all(|r| r.len() >= out.len() + 2 * VVC_ALF_REACH)
     );
     assert!(coefficients.len() >= blocks && limits.len() >= blocks && SHIFTS.contains(&shift));
+    assert_coeffs_and_limits(&coefficients[..blocks], &limits[..blocks], depth);
+}
+
+/// The shape checks of a 4-row clipped luma block row at `depth`
+/// (coefficient and limit ranges are validated inside the dispatched kernel so
+/// SIMD targets check them at full vector width).
+pub(crate) fn check_clipped_block_row<T: Sample>(
+    rows: &[[&[T]; 7]; VVC_ALF_BLOCK],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    limits: &[[i16; VVC_ALF_TAPS]],
+    shifts: &[u32; VVC_ALF_BLOCK],
+    out: &[&mut [T]; VVC_ALF_BLOCK],
+    _depth: BitDepth,
+) {
+    let width = out[0].len();
+    assert!(out.iter().all(|r| r.len() == width));
+    assert!(shifts.iter().all(|s| SHIFTS.contains(s)));
     assert!(
-        coefficients[..blocks]
+        rows.as_flattened()
             .iter()
-            .flatten()
-            .all(|c| COEFFICIENTS.contains(c))
+            .all(|r| r.len() >= width + 2 * VVC_ALF_REACH)
     );
-    let clip_values = clip_values(depth);
-    assert!(
-        limits[..blocks]
-            .iter()
-            .flatten()
-            .all(|v| clip_values.contains(v))
-    );
+    let blocks = width.div_ceil(VVC_ALF_BLOCK);
+    assert!(coefficients.len() >= blocks && limits.len() >= blocks);
+}
+
+/// Scalar 4-row clipped luma block row at any sample type and depth.
+pub(crate) fn clipped_block_row_at<T: Sample>(
+    rows: &[[&[T]; 7]; VVC_ALF_BLOCK],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    limits: &[[i16; VVC_ALF_TAPS]],
+    shifts: &[u32; VVC_ALF_BLOCK],
+    out: &mut [&mut [T]; VVC_ALF_BLOCK],
+    depth: BitDepth,
+) {
+    let depth = depth.of::<T>();
+    let blocks = out[0].len().div_ceil(VVC_ALF_BLOCK);
+    assert_coeffs_and_limits(&coefficients[..blocks], &limits[..blocks], depth);
+    for ((row_set, &shift), dst) in rows.iter().zip(shifts).zip(out.iter_mut()) {
+        clipped_row_at(row_set, coefficients, limits, shift, dst, depth);
+    }
 }
 
 /// The checks of the chroma row at `depth` (any sample type).

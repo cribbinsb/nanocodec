@@ -267,6 +267,11 @@ impl Dsp {
         dsp.end_of_block = crate::end_of_block::kernel(Isa::Avx512);
         dsp.av1_lr = crate::av1_restoration::kernels::kernels(Isa::Avx512);
         crate::vvc_alf::install_avx512(&mut dsp.vvc_alf);
+        dsp.hevc_weight = crate::hevc_weight::kernel(Isa::Avx512);
+        dsp.vvc_intra = crate::vvc_intra::kernel(Isa::Avx512);
+        dsp.vvc_deblock = crate::vvc_deblock::kernels(Isa::Avx512);
+        dsp.vvc_refinement = crate::vvc_refinement::kernels(Isa::Avx512);
+        dsp.vvc_mts = crate::vvc_mts::kernels(Isa::Avx512);
         dsp.high.install_avx512();
         Some(dsp)
     }

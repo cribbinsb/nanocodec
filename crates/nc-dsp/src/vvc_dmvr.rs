@@ -3,10 +3,12 @@
 #![allow(unsafe_code)]
 use crate::Dsp;
 
-const SEARCH_RADIUS: usize = 2;
-const SEARCH_WIDTH: usize = 2 * SEARCH_RADIUS + 1;
+pub(crate) const SEARCH_RADIUS: usize = 2;
+pub(crate) const SEARCH_WIDTH: usize = 2 * SEARCH_RADIUS + 1;
 
-fn fractional(center: i32, left: i32, right: i32) -> i32 {
+#[inline(always)]
+#[allow(clippy::inline_always)]
+pub(crate) fn fractional(center: i32, left: i32, right: i32) -> i32 {
     let denominator = left + right - 2 * center;
     if denominator == 0 {
         0

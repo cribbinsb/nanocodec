@@ -59,7 +59,19 @@
 #[allow(unsafe_code)]
 pub(crate) mod generic;
 pub(crate) mod precision;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) mod precision_simd;
 mod rpr;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) use rpr::high_simd as rpr_simd;
 pub use rpr::{VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock, vvc_predict_scaled};
 pub(crate) mod scalar;
 

@@ -1,19 +1,12 @@
 //! The HEVC inverse transform at any bit depth (H.265 §8.6.4.2): the
 //! shared butterflies of `codec_txfm::generic` with the depth's second
 //! shift, `bdShift = 20 − BitDepth`.
-//!
-//! Width of the result: the first pass clamps to 16 bits (`coeffMin` /
-//! `coeffMax`); the second pass's sum reaches `32 · 90 · 2^15 ≈ 2^26.5`, so
-//! after `>> 12` (8-bit) it fits 16 bits but after `>> 10` (10-bit) it can
-//! reach `2^16.5` for a stream that drives every coefficient to the limit.
-//! The residual is therefore clamped to 16 bits as well, as HM stores it
-//! (`Pel` residuals, `TComTrQuant::xIT`); conforming streams never reach the
-//! clamp, and at 8 bits it is never active.
 
 use nc_common::BitDepth;
 
 use crate::codec_txfm::generic::{
     HevcIdct4, HevcIdct8, HevcIdct16, HevcIdct32, HevcIdst4, Line, Pass, columns_then_rows,
+    nonzero_extent,
 };
 use crate::cpu::Isa;
 
@@ -40,7 +33,9 @@ pub(crate) const SCALAR: [Inverse16Fn; 5] = [
 pub(crate) fn kernels(isa: Isa) -> [Inverse16Fn; 5] {
     match isa {
         #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 | Isa::Avx512 => avx2::KERNELS,
+        Isa::Avx2 => avx2::KERNELS,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::KERNELS,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::KERNELS,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -66,7 +61,8 @@ pub(super) fn passes(depth: BitDepth) -> (Pass, Pass) {
 /// The whole-block inverse `transform` of `coeffs` into `residual` at
 /// `depth` with this table's kernel ([`crate::Dsp::hevc_inverse`] at a
 /// depth): VVC's square DCT-II blocks, whose bases and stage clips are
-/// HEVC's (H.266 §8.7.4.1, second stage `20 − BitDepth`).
+/// HEVC's (H.266 §8.7.4.1, second stage `20 − BitDepth`), pruned to the
+/// nonzero coefficient extent just like the 8-bit path.
 ///
 /// # Panics
 /// If `coeffs` or `residual` is shorter than the block.
@@ -79,9 +75,15 @@ pub(crate) fn whole_block(
 ) {
     let n = transform.side();
     assert!(coeffs.len() >= n * n && residual.len() >= n * n);
-    // SAFETY: both slices cover the block (checked above); the extent is
-    // the whole block; the table matches a supported ISA.
-    unsafe { (dsp.high.hevc_inverse[transform as usize])(coeffs, residual, (n, n), depth) }
+    let extent = match n {
+        4 => nonzero_extent::<4>(coeffs),
+        8 => nonzero_extent::<8>(coeffs),
+        16 => nonzero_extent::<16>(coeffs),
+        _ => nonzero_extent::<32>(coeffs),
+    };
+    // SAFETY: both slices cover the block (checked above); `extent` covers
+    // every nonzero coefficient; the table matches a supported ISA.
+    unsafe { (dsp.high.hevc_inverse[transform as usize])(coeffs, residual, extent, depth) }
 }
 
 /// The `N`x`N` inverse transform `T` of `coeffs` into `residual` at
@@ -98,15 +100,15 @@ fn inverse<T: Line<i32>, const N: usize>(
     unsafe { columns_then_rows::<i32, T, N>(coeffs, first, second, residual) }
 }
 
-/// One ISA's bounded kernels: `$v4` lanes for the 4-point transforms, `$v`
-/// for the others.
+/// One ISA's bounded kernels: `$v4` lanes for the 4-point transforms, `$v8`
+/// for the 8-point one and `$v16` for the 16- and 32-point ones.
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
 macro_rules! bounded_kernels {
-    ($feature:literal, $v4:ty, $v:ty) => {
+    ($feature:literal, $v4:ty, $v8:ty, $v16:ty) => {
         use nc_common::BitDepth;
 
         use crate::codec_txfm::generic::{
@@ -118,9 +120,9 @@ macro_rules! bounded_kernels {
         pub(crate) const KERNELS: [Inverse16Fn; 5] = [
             bounded::<$v4, HevcIdst4, 4>,
             bounded::<$v4, HevcIdct4, 4>,
-            bounded::<$v, HevcIdct8, 8>,
-            bounded::<$v, HevcIdct16, 16>,
-            bounded::<$v, HevcIdct32, 32>,
+            bounded::<$v8, HevcIdct8, 8>,
+            bounded::<$v16, HevcIdct16, 16>,
+            bounded::<$v16, HevcIdct32, 32>,
         ];
 
         /// # Safety
@@ -143,19 +145,26 @@ macro_rules! bounded_kernels {
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
     use crate::simd::avx2::{I32x4, I32x8};
-    bounded_kernels!("avx2", I32x4, I32x8);
+    bounded_kernels!("avx2", I32x4, I32x8, I32x8);
+}
+
+#[cfg(target_arch = "x86_64")]
+mod avx512 {
+    use crate::simd::avx2::{I32x4, I32x8};
+    use crate::simd::avx512::I32x16;
+    bounded_kernels!("avx512f,avx512bw,avx512vl", I32x4, I32x8, I32x16);
 }
 
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use crate::simd::neon::I32x4;
-    bounded_kernels!("neon", I32x4, I32x4);
+    bounded_kernels!("neon", I32x4, I32x4, I32x4);
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod simd128 {
     use crate::simd::simd128::I32x4;
-    bounded_kernels!("simd128", I32x4, I32x4);
+    bounded_kernels!("simd128", I32x4, I32x4, I32x4);
 }
 
 #[cfg(test)]
@@ -163,7 +172,6 @@ mod tests {
     use super::*;
     use crate::{Dsp, HevcTransform, Isa};
 
-    /// At 8 bits the depth's passes are the 8-bit inverse's.
     #[test]
     fn eight_bit_depth_matches_the_eight_bit_inverse() {
         let dsp = Dsp::with_isa(Isa::Scalar).unwrap();
@@ -181,11 +189,9 @@ mod tests {
         }
     }
 
-    /// Every ISA's bounded kernel equals the scalar reference at 10 bits,
-    /// for every extent that covers the nonzero coefficients.
     #[test]
     fn bounded_kernels_match_the_reference() {
-        for isa in [Isa::Avx2, Isa::Avx512, Isa::Neon]
+        for isa in [Isa::Avx2, Isa::Avx512, Isa::Neon, Isa::Simd128]
             .into_iter()
             .filter(|i| i.is_supported())
         {

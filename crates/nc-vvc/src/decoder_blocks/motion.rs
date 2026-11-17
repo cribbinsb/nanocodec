@@ -122,14 +122,37 @@ pub(crate) fn derive(
             record(unit, motion, references, merge_log2, &mut history)?;
         }
         unit.motion = resolved;
-        for y in (n.y..n.y + n.height).step_by(4) {
-            for x in (n.x..n.x + n.width).step_by(4) {
-                grid[(y >> 2) * stride + (x >> 2)] = self::at(unit, x, y);
-            }
-        }
+        fill_motion_grid(&mut grid, stride, unit);
         claim(&mut owners, n, stride, unit_index);
     }
     Ok(())
+}
+
+fn fill_motion_grid(grid: &mut [Option<Motion>], stride: usize, unit: &Unit) {
+    let n = unit.node;
+    let cols = n.width.div_ceil(4);
+    if unit.motion.is_none()
+        || (unit.subblocks.is_empty()
+            && unit.geometric.is_none()
+            && unit.affine_models[0].is_none()
+            && unit.affine_models[1].is_none())
+    {
+        for y in (n.y..n.y + n.height).step_by(4) {
+            let base = (y >> 2) * stride + (n.x >> 2);
+            grid[base..base + cols].fill(unit.motion);
+        }
+        return;
+    }
+    let bidirectional = unit.motion.unwrap().lists.iter().all(Option::is_some);
+    let fields = unit
+        .affine_models
+        .map(|m| m.map(|model| model.field_for_prediction(n.width, n.height, bidirectional)));
+    for y in (n.y..n.y + n.height).step_by(4) {
+        let row_base = (y >> 2) * stride;
+        for x in (n.x..n.x + n.width).step_by(4) {
+            grid[row_base + (x >> 2)] = at_with_fields(unit, x, y, fields);
+        }
+    }
 }
 
 /// Resolve an IBC CU's block vector from the IBC CUs to its left (A1) and
@@ -199,10 +222,10 @@ fn record(
 
 /// Record a CU as the owner of its 4x4 cells.
 fn claim(owners: &mut [Option<usize>], n: super::Node, stride: usize, unit: usize) {
+    let cols = n.width.div_ceil(4);
     for y in (n.y..n.y + n.height).step_by(4) {
-        for x in (n.x..n.x + n.width).step_by(4) {
-            owners[(y >> 2) * stride + (x >> 2)] = Some(unit);
-        }
+        let base = (y >> 2) * stride + (n.x >> 2);
+        owners[base..base + cols].fill(Some(unit));
     }
 }
 
@@ -370,7 +393,31 @@ pub(super) fn wrap_component(value: i32) -> i32 {
 mod tests;
 
 /// Motion seen by a neighbouring CU or the deblocker at a luma position.
+#[inline]
 pub(super) fn at(unit: &Unit, x: usize, y: usize) -> Option<Motion> {
+    let motion = unit.motion?;
+    if unit.subblocks.is_empty()
+        && unit.geometric.is_none()
+        && unit.affine_models[0].is_none()
+        && unit.affine_models[1].is_none()
+    {
+        return Some(motion);
+    }
+    let n = unit.node;
+    let bidirectional = motion.lists.iter().all(Option::is_some);
+    let fields = unit
+        .affine_models
+        .map(|m| m.map(|model| model.field_for_prediction(n.width, n.height, bidirectional)));
+    at_with_fields(unit, x, y, fields)
+}
+
+#[inline]
+pub(super) fn at_with_fields(
+    unit: &Unit,
+    x: usize,
+    y: usize,
+    fields: [Option<crate::affine::Field>; 2],
+) -> Option<Motion> {
     let n = unit.node;
     let mut motion = unit.motion?;
     if !unit.subblocks.is_empty() {
@@ -387,12 +434,9 @@ pub(super) fn at(unit: &Unit, x: usize, y: usize) -> Option<Motion> {
             },
         };
     }
-    let bidirectional = motion.lists.iter().all(Option::is_some);
-    for (vector, model) in motion.lists.iter_mut().zip(unit.affine_models) {
-        if let (Some(vector), Some(model)) = (vector, model) {
-            vector.vector = model
-                .field_for_prediction(n.width, n.height, bidirectional)
-                .at((x - n.x) / 4, (y - n.y) / 4);
+    for (vector, field) in motion.lists.iter_mut().zip(fields) {
+        if let (Some(vector), Some(field)) = (vector, field) {
+            vector.vector = field.at((x - n.x) / 4, (y - n.y) / 4);
         }
     }
     Some(motion)

@@ -71,6 +71,7 @@ mod check_vvc_alf;
 mod check_vvc_angular;
 mod check_vvc_chroma_edge;
 mod check_vvc_deblock_edge;
+mod check_vvc_high;
 mod check_vvc_inverse;
 mod check_vvc_mts;
 mod check_vvc_refinement;

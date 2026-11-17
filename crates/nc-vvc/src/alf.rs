@@ -234,15 +234,10 @@ impl<'a, T: Pixel> Analysis<'a, T> {
         let view = picture.plane(PlaneIndex::Y).view();
         let (x0, y0, width, height) = region.rect;
         let stride = width + 2 * PAD;
-        let mut samples = Vec::with_capacity(stride * (height + 2 * PAD));
-        for y in -(PAD as isize)..(height + PAD) as isize {
-            for x in -(PAD as isize)..(width + PAD) as isize {
-                let (sx, sy) = region.source(
-                    (x0 as isize + x, y0 as isize + y),
-                    (view.width(), view.height()),
-                );
-                samples.push(view.row(sy)[sx]);
-            }
+        let mut samples = vec![T::default(); stride * (height + 2 * PAD)];
+        for (row_idx, out_row) in samples.chunks_exact_mut(stride).enumerate() {
+            let y = y0 as isize + row_idx as isize - PAD as isize;
+            region.fill_row(&view, x0 as isize - PAD as isize, y, out_row);
         }
         let mut analysis = Self {
             dsp,
@@ -410,15 +405,20 @@ impl<T: Pixel> Analysis<'_, T> {
         coefficients: &mut [[i16; TAPS]],
         output: &mut nc_common::PlaneViewMut<'_, T>,
     ) {
-        let coefficients = &mut coefficients[..w.div_ceil(BLOCK)];
+        let blocks = w.div_ceil(BLOCK);
+        let coefficients = &mut coefficients[..blocks];
         let stride = output.stride();
+        let x_blk = (x0 - self.origin.0) / BLOCK;
         // Picture heights are multiples of the minimum coding block (8), so
         // every block row is whole.
         for y in (y0..y0 + h).step_by(BLOCK) {
             // Blocks keep their classes for four rows.
-            for (block, c) in coefficients.iter_mut().enumerate() {
-                let class = self.class(x0 + block * BLOCK, y);
-                *c = set[usize::from(class.index)][usize::from(class.transpose)];
+            let row_base = (y - self.origin.1) / BLOCK * self.block_columns + x_blk;
+            for (c, &[cls, tr]) in coefficients
+                .iter_mut()
+                .zip(&self.classes[row_base..row_base + blocks])
+            {
+                *c = set[usize::from(cls)][usize::from(tr)];
             }
             let taps: [_; BLOCK] = std::array::from_fn(|r| self.tap_rows(y + r));
             let rows = taps.map(|(rows, _)| rows.map(|row| &row[self.column(x0, VVC_ALF_REACH)..]));
@@ -441,8 +441,11 @@ impl<T: Pixel> Analysis<'_, T> {
         decisions: &[CtbAlf],
         signalled: Option<&SignalledFilters>,
     ) {
+        if !decisions.iter().any(Option::is_some) {
+            return;
+        }
         let mut output = picture.plane_mut(PlaneIndex::Y).view_mut();
-        let sets: Vec<SetCoefficients> = (0..FIXED_SETS as u8).map(set_coefficients).collect();
+        let sets = fixed_sets();
         let signalled = signalled.map(|bank| class_coefficients(|class| bank.filter(class)));
         let mut coefficients = vec![[0; TAPS]; self.block_columns];
         for (run, decision) in self.runs(decisions) {
@@ -939,26 +942,75 @@ pub(crate) struct Region {
 }
 
 impl Region {
-    /// The sample read for position `(x, y)` of a plane of `size`.
-    pub(crate) fn source(&self, (x, y): (isize, isize), size: (usize, usize)) -> (usize, usize) {
+    /// Clamped vertical coordinate `sy` and horizontal clamping bounds
+    /// `(left, right)` for coordinate `y` on a plane of `size`.
+    fn row_bounds(&self, y: isize, size: (usize, usize)) -> (usize, isize, isize) {
         let (x0, y0, w, h) = self.rect;
         let [x0, y0] = [x0, y0].map(|v| v as isize);
         let (x1, y1) = (x0 + w as isize - 1, y0 + h as isize - 1);
         let [width, height] = [size.0, size.1].map(|v| v as isize - 1);
         let pick = |closed: bool, edge: isize, picture: isize| if closed { edge } else { picture };
-        let y = y.clamp(
+        let sy = y.clamp(
             pick(self.closed[1], y0, 0),
             pick(self.closed[3], y1, height),
         );
         let mut left = pick(self.closed[0], x0, 0);
         let mut right = pick(self.closed[2], x1, width);
-        if self.corners[0] && y < y0 {
+        if self.corners[0] && sy < y0 {
             left = left.max(x0);
         }
-        if self.corners[1] && y > y1 {
+        if self.corners[1] && sy > y1 {
             right = right.min(x1);
         }
-        (x.clamp(left, right) as usize, y as usize)
+        (sy as usize, left, right)
+    }
+
+    /// Populate `dst` with horizontal span `x_start..x_start + dst.len()` at
+    /// `y`, clamped to this region's bounds.
+    pub(crate) fn fill_row<T: nc_common::Sample>(
+        &self,
+        input: &PlaneView<'_, T>,
+        x_start: isize,
+        y: isize,
+        dst: &mut [T],
+    ) {
+        let len = dst.len();
+        let (sy, left, right) = self.row_bounds(y, (input.width(), input.height()));
+        let src = input.row(sy);
+        let left_pad = (left - x_start).clamp(0, len as isize) as usize;
+        dst[..left_pad].fill(src[left as usize]);
+        let rem = len - left_pad;
+        let x_mid = x_start + left_pad as isize;
+        let mid_len = if x_mid <= right {
+            (right - x_mid + 1).clamp(0, rem as isize) as usize
+        } else {
+            0
+        };
+        if mid_len > 0 {
+            let start = x_mid as usize;
+            dst[left_pad..left_pad + mid_len].copy_from_slice(&src[start..start + mid_len]);
+        }
+        dst[left_pad + mid_len..].fill(src[right as usize]);
+    }
+
+    /// Borrow `&input.row(sy)[x_start..x_start + scratch.len()]` directly when
+    /// no horizontal clamping is needed; otherwise populate `scratch` with
+    /// edge-replicated samples and return it.
+    pub(crate) fn row_span<'a, T: nc_common::Sample>(
+        &self,
+        input: &'a PlaneView<'_, T>,
+        x_start: isize,
+        y: isize,
+        scratch: &'a mut [T],
+    ) -> &'a [T] {
+        let len = scratch.len();
+        let (sy, left, right) = self.row_bounds(y, (input.width(), input.height()));
+        if len > 0 && x_start >= left && x_start + len as isize - 1 <= right {
+            let start = x_start as usize;
+            return &input.row(sy)[start..start + len];
+        }
+        self.fill_row(input, x_start, y, scratch);
+        scratch
     }
 
     /// The same region in a plane subsampled by two both ways (4:2:0
@@ -988,6 +1040,13 @@ fn set_coefficients(set: u8) -> SetCoefficients {
     class_coefficients(|class| {
         &FIXED_FILTERS[usize::from(CLASS_TO_FILTER[usize::from(set)][class])]
     })
+}
+
+/// Cached transposed coefficients of all 16 fixed filter sets.
+fn fixed_sets() -> &'static [SetCoefficients; FIXED_SETS] {
+    static SETS: std::sync::OnceLock<Box<[SetCoefficients; FIXED_SETS]>> =
+        std::sync::OnceLock::new();
+    SETS.get_or_init(|| Box::new(std::array::from_fn(|set| set_coefficients(set as u8))))
 }
 
 /// The CTB grid of a `width` x `height` luma plane with `ctu`-sample CTUs,
