@@ -2,7 +2,7 @@
  "source": [
   "docs/results/fixed-qp-lens-2026-11-17.csv"
  ],
- "build_commit": "b11b2f83 (2860f897 for AV1 Faster, d40f86b3 for AV1 Veryfast)",
+ "build_commit": "b11b2f83 (2860f897 for AV1 Faster, d40f86b3 for AV1 Veryfast); b33ba3bb for av1@faster, av2@fast, hevc@fast, hevc@faster, vp9@fast, vvc@fast",
  "condition": "aom-ld",
  "rows": [
   {
@@ -178,24 +178,24 @@
    "column": "profile",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 222.552,
-   "weighted": -5.7,
+   "fps": 266.09,
+   "weighted": -6.2,
    "j": -18.3,
-   "psnr_yuv": -15.7,
-   "vmaf": -13.4,
-   "ms_ssim": -15.0
+   "psnr_yuv": -15.9,
+   "vmaf": -13.0,
+   "ms_ssim": -15.5
   },
   {
    "test": "nanocodec-av1@faster",
    "column": "cbr_settings",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 222.552,
-   "weighted": -5.7,
+   "fps": 266.09,
+   "weighted": -6.2,
    "j": -18.3,
-   "psnr_yuv": -15.7,
-   "vmaf": -13.4,
-   "ms_ssim": -15.0
+   "psnr_yuv": -15.9,
+   "vmaf": -13.0,
+   "ms_ssim": -15.5
   },
   {
    "test": "nanocodec-av1@slow",
@@ -274,24 +274,24 @@
    "column": "profile",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 96.296,
-   "weighted": -11.7,
-   "j": -20.6,
-   "psnr_yuv": -13.8,
-   "vmaf": -11.5,
-   "ms_ssim": -15.7
+   "fps": 161.468,
+   "weighted": -16.1,
+   "j": -24.7,
+   "psnr_yuv": -18.1,
+   "vmaf": -16.8,
+   "ms_ssim": -19.7
   },
   {
    "test": "nanocodec-av2@fast",
    "column": "cbr_settings",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 96.296,
-   "weighted": -11.7,
-   "j": -20.6,
-   "psnr_yuv": -13.8,
-   "vmaf": -11.5,
-   "ms_ssim": -15.7
+   "fps": 161.468,
+   "weighted": -16.1,
+   "j": -24.7,
+   "psnr_yuv": -18.1,
+   "vmaf": -16.8,
+   "ms_ssim": -19.7
   },
   {
    "test": "nanocodec-av2@slow",
@@ -466,48 +466,48 @@
    "column": "profile",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 107.655,
-   "weighted": -3.1,
-   "j": -11.9,
-   "psnr_yuv": -7.7,
-   "vmaf": -5.3,
-   "ms_ssim": -10.4
+   "fps": 165.499,
+   "weighted": -6.0,
+   "j": -15.5,
+   "psnr_yuv": -11.1,
+   "vmaf": -9.4,
+   "ms_ssim": -13.4
   },
   {
    "test": "nanocodec-hevc@fast",
    "column": "cbr_settings",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 107.655,
-   "weighted": -3.1,
-   "j": -11.9,
-   "psnr_yuv": -7.7,
-   "vmaf": -5.3,
-   "ms_ssim": -10.4
+   "fps": 165.499,
+   "weighted": -6.0,
+   "j": -15.5,
+   "psnr_yuv": -11.1,
+   "vmaf": -9.4,
+   "ms_ssim": -13.4
   },
   {
    "test": "nanocodec-hevc@faster",
    "column": "profile",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 131.337,
-   "weighted": 17.4,
-   "j": 4.8,
-   "psnr_yuv": 11.8,
-   "vmaf": 10.3,
-   "ms_ssim": 8.6
+   "fps": 222.27,
+   "weighted": 16.2,
+   "j": 3.5,
+   "psnr_yuv": 10.7,
+   "vmaf": 9.1,
+   "ms_ssim": 7.4
   },
   {
    "test": "nanocodec-hevc@faster",
    "column": "cbr_settings",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 131.337,
-   "weighted": 17.4,
-   "j": 4.8,
-   "psnr_yuv": 11.8,
-   "vmaf": 10.3,
-   "ms_ssim": 8.6
+   "fps": 222.27,
+   "weighted": 16.2,
+   "j": 3.5,
+   "psnr_yuv": 10.7,
+   "vmaf": 9.1,
+   "ms_ssim": 7.4
   },
   {
    "test": "nanocodec-hevc@slow",
@@ -562,24 +562,24 @@
    "column": "profile",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 97.382,
-   "weighted": 0.5,
-   "j": -13.7,
-   "psnr_yuv": -6.8,
-   "vmaf": -8.7,
-   "ms_ssim": -7.5
+   "fps": 155.186,
+   "weighted": -7.6,
+   "j": -18.1,
+   "psnr_yuv": -13.7,
+   "vmaf": -11.2,
+   "ms_ssim": -13.0
   },
   {
    "test": "nanocodec-vp9@fast",
    "column": "cbr_settings",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 97.382,
-   "weighted": 0.5,
-   "j": -13.7,
-   "psnr_yuv": -6.8,
-   "vmaf": -8.7,
-   "ms_ssim": -7.5
+   "fps": 155.186,
+   "weighted": -7.6,
+   "j": -18.1,
+   "psnr_yuv": -13.7,
+   "vmaf": -11.2,
+   "ms_ssim": -13.0
   },
   {
    "test": "nanocodec-vp9@faster",
@@ -682,24 +682,24 @@
    "column": "profile",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 61.344,
-   "weighted": -6.9,
-   "j": -16.5,
-   "psnr_yuv": -7.8,
-   "vmaf": -12.4,
-   "ms_ssim": -13.6
+   "fps": 101.391,
+   "weighted": -6.7,
+   "j": -16.3,
+   "psnr_yuv": -7.7,
+   "vmaf": -12.2,
+   "ms_ssim": -13.5
   },
   {
    "test": "nanocodec-vvc@fast",
    "column": "cbr_settings",
    "anchor": "x264-medium",
    "n": 12,
-   "fps": 61.344,
-   "weighted": -6.9,
-   "j": -16.5,
-   "psnr_yuv": -7.8,
-   "vmaf": -12.4,
-   "ms_ssim": -13.6
+   "fps": 101.391,
+   "weighted": -6.7,
+   "j": -16.3,
+   "psnr_yuv": -7.7,
+   "vmaf": -12.2,
+   "ms_ssim": -13.5
   },
   {
    "test": "nanocodec-vvc@slow",
