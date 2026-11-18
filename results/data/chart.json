@@ -263,6 +263,22 @@
    },
    "timing_is_twin": false
   },
+  "nanocodec-av2@faster": {
+   "owner": "nanocodec",
+   "codec": "av2",
+   "preset": "Faster",
+   "tune": "",
+   "ours": true,
+   "version_key": "",
+   "label": "nanocodec AV2 Faster",
+   "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 163,
+    "command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 29970/1000 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --qp 163 --preset faster"
+   },
+   "timing_is_twin": false
+  },
   "nanocodec-av2@slow": {
    "owner": "nanocodec",
    "codec": "av2",
@@ -884,11 +900,10 @@
    "builds": {
     "8b492382": "8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753)",
     "bad14976": "bad14976",
-    "1139f610": "1139f610",
     "4a5b8dd1": "4a5b8dd1",
-    "2860f897": "2860f897",
     "d40f86b3": "d40f86b3",
-    "b33ba3bb": "b33ba3bb"
+    "b33ba3bb": "b33ba3bb",
+    "c9e4ced3": "c9e4ced3"
    },
    "base_build": "8b492382",
    "family_builds": {
@@ -916,7 +931,8 @@
     "nanocodec-av1@slow": "bad14976",
     "nanocodec-vp9@slow": "bad14976",
     "nanocodec-av2@slow": "bad14976",
-    "nanocodec-vvc@slow": "bad14976"
+    "nanocodec-vvc@slow": "bad14976",
+    "nanocodec-av2@faster": "c9e4ced3"
    },
    "tools": {
     "x264": "0.165",
@@ -1484,6 +1500,29 @@
      "chained": 0,
      "rate_invalid_points": 0
     },
+    "nanocodec-av2@faster": {
+     "j": -37.57,
+     "psnr": -38.33,
+     "vmaf": -35.2,
+     "ms_ssim": null,
+     "xpsnr": -47.91,
+     "xpsnr_clips": 134,
+     "iqr": [
+      -46.48,
+      -29.29
+     ],
+     "clips_scored": 136,
+     "clips": 136,
+     "fps": {
+      "jetson": 56.0,
+      "x86": 251.23,
+      "zen3": 152.31,
+      "graviton": 153.26
+     },
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0
+    },
     "nanocodec-vvc@slow": {
      "j": -47.52,
      "psnr": -47.83,
@@ -2013,7 +2052,8 @@
      "chained": 0,
      "rate_invalid_points": 124
     }
-   }
+   },
+   "not_measured": {}
   },
   {
    "id": "heldout-psnr",
@@ -2030,10 +2070,10 @@
    "builds": {
     "8b492382": "8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753)",
     "bad14976": "bad14976",
-    "1139f610": "1139f610",
     "4a5b8dd1": "4a5b8dd1",
     "d40f86b3": "d40f86b3",
-    "b33ba3bb": "b33ba3bb"
+    "b33ba3bb": "b33ba3bb",
+    "c9e4ced3": "c9e4ced3"
    },
    "base_build": "8b492382",
    "family_builds": {
@@ -2061,7 +2101,8 @@
     "nanocodec-av1@slow": "bad14976",
     "nanocodec-vp9@slow": "bad14976",
     "nanocodec-av2@slow": "bad14976",
-    "nanocodec-vvc@slow": "bad14976"
+    "nanocodec-vvc@slow": "bad14976",
+    "nanocodec-av2@faster": "c9e4ced3"
    },
    "tools": {
     "x264": "0.165",
@@ -2629,6 +2670,29 @@
      "chained": 0,
      "rate_invalid_points": 0
     },
+    "nanocodec-av2@faster": {
+     "j": -32.63,
+     "psnr": -32.83,
+     "vmaf": -28.21,
+     "ms_ssim": null,
+     "xpsnr": -43.76,
+     "xpsnr_clips": 203,
+     "iqr": [
+      -43.8,
+      -27.98
+     ],
+     "clips_scored": 206,
+     "clips": 206,
+     "fps": {
+      "jetson": 56.0,
+      "x86": 251.23,
+      "zen3": 152.31,
+      "graviton": 153.26
+     },
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0
+    },
     "nanocodec-vvc@slow": {
      "j": -44.73,
      "psnr": -44.65,
@@ -3181,7 +3245,8 @@
      "chained": 0,
      "rate_invalid_points": 221
     }
-   }
+   },
+   "not_measured": {}
   },
   {
    "id": "dev-psnr",
@@ -3200,8 +3265,8 @@
     "478e8249": "478e8249",
     "77e93089": "77e93089",
     "bad14976": "bad14976",
-    "1139f610": "1139f610",
-    "b33ba3bb": "b33ba3bb"
+    "b33ba3bb": "b33ba3bb",
+    "c9e4ced3": "c9e4ced3"
    },
    "base_build": "730e4e16",
    "family_builds": {
@@ -3229,7 +3294,8 @@
     "nanocodec-vvc@slow": "77e93089",
     "nanocodec-h264@slow": "bad14976",
     "nanocodec-vp9@slow": "bad14976",
-    "nanocodec-av2@slow": "bad14976"
+    "nanocodec-av2@slow": "bad14976",
+    "nanocodec-av2@faster": "c9e4ced3"
    },
    "tools": {
     "x264": "0.165",
@@ -3797,6 +3863,29 @@
      "chained": 0,
      "rate_invalid_points": 0
     },
+    "nanocodec-av2@faster": {
+     "j": -39.41,
+     "psnr": -39.07,
+     "vmaf": -39.16,
+     "ms_ssim": null,
+     "xpsnr": -50.3,
+     "xpsnr_clips": 11,
+     "iqr": [
+      -46.55,
+      -30.25
+     ],
+     "clips_scored": 11,
+     "clips": 11,
+     "fps": {
+      "jetson": 56.0,
+      "x86": 251.23,
+      "zen3": 152.31,
+      "graviton": 153.26
+     },
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0
+    },
     "nanocodec-vvc@slow": {
      "j": -49.41,
      "psnr": -48.45,
@@ -4280,7 +4369,8 @@
      "chained": 0,
      "rate_invalid_points": 17
     }
-   }
+   },
+   "not_measured": {}
   },
   {
    "id": "qp",
@@ -4288,7 +4378,7 @@
    "zero": "x264-medium",
    "rate_mode": "qp",
    "clips": 12,
-   "build_commit": "b11b2f83 (2860f897 for AV1 Faster, d40f86b3 for AV1 Veryfast); b33ba3bb for av1@faster, av2@fast, hevc@fast, hevc@faster, vp9@fast, vvc@fast",
+   "build_commit": "b11b2f83 (2860f897 for AV1 Faster, d40f86b3 for AV1 Veryfast); b33ba3bb for av1@faster, av2@fast, hevc@fast, hevc@faster, vp9@fast, vvc@fast; c9e4ced3 for av2@faster",
    "condition": "aom-ld",
    "column": "profile",
    "source": [
@@ -4304,28 +4394,28 @@
      "sequences": 12,
      "frames": 130,
      "quantizers": 6,
-     "build": "release 0.3.0, PGO build (b33ba3bb)"
+     "build": "release 0.3.0, PGO build (b33ba3bb) (c9e4ced3 for 1)"
     },
     "x86": {
      "platform": "AMD EPYC 9R45, one thread pinned to one physical core (AWS c8a.large, one encode at a time)",
      "sequences": 12,
      "frames": 130,
      "quantizers": 6,
-     "build": "release 0.3.0, PGO build (b33ba3bb)"
+     "build": "release 0.3.0, PGO build (b33ba3bb) (c9e4ced3 for 1)"
     },
     "zen3": {
      "platform": "AMD EPYC 7R13 Processor, one thread pinned to vCPU 1, the SMT sibling of vCPU 0 (left to the system) (AWS c6a.large, Zen 3, one encode at a time)",
      "sequences": 12,
      "frames": 130,
      "quantizers": 6,
-     "build": "release 0.3.0, PGO build (b33ba3bb)"
+     "build": "release 0.3.0, PGO build (b33ba3bb) (c9e4ced3 for 1)"
     },
     "graviton": {
      "platform": "Neoverse-V2, one thread pinned to one physical core (AWS c8g.large, Graviton4, one encode at a time)",
      "sequences": 12,
      "frames": 130,
      "quantizers": 6,
-     "build": "release 0.3.0, PGO build (b33ba3bb)"
+     "build": "release 0.3.0, PGO build (b33ba3bb) (c9e4ced3 for 1)"
     }
    },
    "frames": 130,
@@ -4342,6 +4432,7 @@
     "nanocodec-av1@veryfast": "nanocodec-av1@veryfast",
     "nanocodec-av2": "nanocodec-av2",
     "nanocodec-av2@fast": "nanocodec-av2@fast",
+    "nanocodec-av2@faster": "nanocodec-av2@faster",
     "nanocodec-av2@slow": "nanocodec-av2@slow",
     "nanocodec-h264": "nanocodec-h264",
     "nanocodec-h264@fast": "nanocodec-h264@fast",
@@ -4584,6 +4675,26 @@
       "x86": 506.5,
       "zen3": 296.4,
       "graviton": 309.5
+     }
+    },
+    "nanocodec-av2@faster": {
+     "weighted": -12.8,
+     "j": -21.7,
+     "psnr": -19.3,
+     "vmaf": -11.2,
+     "ms_ssim": -19.6,
+     "xpsnr": null,
+     "iqr": null,
+     "clips_scored": 12,
+     "clips": null,
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0,
+     "fps": {
+      "jetson": 175.2,
+      "x86": 751.8,
+      "zen3": 414.8,
+      "graviton": 434.9
      }
     },
     "nanocodec-av2@slow": {
@@ -5286,7 +5397,8 @@
       "graviton": 93.2
      }
     }
-   }
+   },
+   "not_measured": {}
   },
   {
    "id": "qp-fresh",
@@ -5296,7 +5408,7 @@
    "clips": 12,
    "frames": 150,
    "points": 4,
-   "build_commit": "b11b2f83",
+   "build_commit": "b11b2f83 (c9e4ced3 for AV1 Veryfast and AV2 Faster)",
    "condition": "held-out, fresh",
    "source": [
     "docs/results/fixed-qp-fresh-2026-11-16.json",
@@ -5308,7 +5420,7 @@
      "sequences": 12,
      "frames": 150,
      "quantizers": 4,
-     "build": "b11b2f83"
+     "build": "b11b2f83 (c9e4ced3 for 2)"
     }
    },
    "size_range": "1280×720 to 424×240",
@@ -5317,7 +5429,8 @@
     "j",
     "psnr",
     "vmaf",
-    "ms_ssim"
+    "ms_ssim",
+    "xpsnr"
    ],
    "values": {
     "libaom-av1-cpu10": {
@@ -5504,6 +5617,29 @@
       "graviton": null
      }
     },
+    "nanocodec-av1@veryfast": {
+     "weighted": null,
+     "j": -12.76,
+     "psnr": -7.49,
+     "vmaf": 0.25,
+     "ms_ssim": -14.55,
+     "xpsnr": -20.19,
+     "iqr": [
+      -16.2,
+      -9.32
+     ],
+     "clips_scored": 12,
+     "clips": 12,
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0,
+     "fps": {
+      "jetson": null,
+      "x86": 965.5,
+      "zen3": null,
+      "graviton": null
+     }
+    },
     "nanocodec-av2": {
      "weighted": null,
      "j": -34.71,
@@ -5546,6 +5682,29 @@
      "fps": {
       "jetson": null,
       "x86": 455.7,
+      "zen3": null,
+      "graviton": null
+     }
+    },
+    "nanocodec-av2@faster": {
+     "weighted": null,
+     "j": -23.66,
+     "psnr": -21.55,
+     "vmaf": -13.39,
+     "ms_ssim": -21.32,
+     "xpsnr": -29.71,
+     "iqr": [
+      -27.72,
+      -19.6
+     ],
+     "clips_scored": 12,
+     "clips": 12,
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0,
+     "fps": {
+      "jetson": null,
+      "x86": 591.9,
       "zen3": null,
       "graviton": null
      }
@@ -6199,7 +6358,7 @@
      "psnr": 0.0,
      "vmaf": 0.0,
      "ms_ssim": 0.0,
-     "xpsnr": null,
+     "xpsnr": 0.0,
      "weighted": null,
      "iqr": null,
      "clips_scored": 12,
@@ -6214,14 +6373,15 @@
       "graviton": null
      }
     }
-   }
+   },
+   "not_measured": {}
   }
  ],
  "timing_builds": {
-  "jetson": "release 0.3.0, PGO build (b33ba3bb)",
-  "x86": "release 0.3.0, PGO build (b33ba3bb) (d40f86b3 for 1)",
-  "zen3": "release 0.3.0, PGO build (b33ba3bb) (2ec3255c for 1)",
-  "graviton": "release 0.3.0, PGO build (b33ba3bb) (2860f897 for 1)"
+  "jetson": "release 0.3.0, PGO build (b33ba3bb) (c9e4ced3 for 1)",
+  "x86": "release 0.3.0, PGO build (b33ba3bb) (c9e4ced3 for 1, d40f86b3 for 1)",
+  "zen3": "release 0.3.0, PGO build (b33ba3bb) (2ec3255c for 1, c9e4ced3 for 1)",
+  "graviton": "release 0.3.0, PGO build (b33ba3bb) (2860f897 for 1, c9e4ced3 for 1)"
  },
  "ladder_kbps": [
   150,

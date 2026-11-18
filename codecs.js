@@ -22,7 +22,7 @@ export const CODECS = {
   av1: { label: 'AV1', quantizer: { name: 'qindex', min: 1, max: 255, initial: 180 }, presets: ['medium', 'slow', 'fast', 'faster', 'veryfast'], spatialLayers: [2, 3], ivf: 'AV01' },
   vvc: { label: 'VVC', quantizer: { name: 'QP', min: 0, max: 63, initial: 32 }, presets: ['medium', 'slow', 'fast'], spatialLayers: [], annexB: 'vvc' },
   vp9: { label: 'VP9', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, presets: ['medium', 'slow', 'fast', 'faster', 'veryfast'], spatialLayers: [2, 3], ivf: 'VP90' },
-  av2: { label: 'AV2', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, presets: ['medium', 'slow'], spatialLayers: [], ivf: 'AV02' },
+  av2: { label: 'AV2', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, presets: ['medium', 'slow', 'fast', 'faster'], spatialLayers: [], ivf: 'AV02' },
 };
 
 /** The download's file extension for `codec`. */
