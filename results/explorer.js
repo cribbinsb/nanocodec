@@ -77,13 +77,27 @@ function describe(data, view, family, v) {
     v.iqr && v.iqr[0] !== null && family !== view.zero
       ? el('div', { class: 'dim' }, `per-clip interquartile range ${pct(v.iqr[0])} to ${pct(v.iqr[1])}`) : null,
     el('div', {}, PLATFORMS.filter((m) => v.fps[m]).map((m) => `${fps(v.fps[m])} fps ${PLATFORM_SHORT[m]} core`).join(' · ')),
-    v.clips_scored ? el('div', { class: 'dim' }, `${v.clips_scored} clips with a reliable BD`) : null,
+    v.clips_scored ? el('div', { class: 'dim' }, `${v.clips_scored} clips with a reliable BD`
+      + (state.metric === 'xpsnr' && xpsnrClips(v) ? ` (XPSNR ${xpsnrClips(v)})` : '')) : null,
     el('div', { class: 'dim' }, 'Select the point for its command line'));
 }
 
 /** A metric's BD-rate, or why there is none in a view that records the metric. */
 function metricText(value) {
   return value === null || value === undefined ? NOT_MEASURED : pct(value);
+}
+
+/** XPSNR may average fewer clips than J (where its curves overlap the zero line's):
+ * 'over 135/138 clips' then, so it is never silently another clip set. */
+function xpsnrClips(v) {
+  return v.xpsnr_clips && v.clips_scored && v.xpsnr_clips !== v.clips_scored
+    ? `over ${v.xpsnr_clips}/${v.clips_scored} clips` : '';
+}
+
+/** metricText, with XPSNR's clip count when it is not J's. */
+function metricCell(v, m) {
+  const text = metricText(v[m]);
+  return m === 'xpsnr' && v[m] !== null && v[m] !== undefined && xpsnrClips(v) ? `${text} (${xpsnrClips(v)})` : text;
 }
 
 function detail(data, view, family) {
@@ -93,7 +107,7 @@ function detail(data, view, family) {
     ['Encoder', `${p.owner}${versionOf(data, view, family) ? `, ${versionOf(data, view, family)}` : ''}`],
     ['Codec', CODEC_NAMES[p.codec] || p.codec],
     ['Preset', p.preset + (p.tune ? `, --tune ${p.tune}` : '')],
-    ...view.metrics.map((m) => [NAMES[m], metricText(v[m])]),
+    ...view.metrics.map((m) => [NAMES[m], metricCell(v, m)]),
     v.iqr && v.iqr[0] !== null && family !== view.zero ? ['Per-clip spread (J)', `${pct(v.iqr[0])} to ${pct(v.iqr[1])} (interquartile)`] : null,
     v.clips_scored ? ['Clips scored', String(v.clips_scored)] : null,
     v.rate_invalid_points ? ['Rate-invalid points', `${v.rate_invalid_points} (kept on their curves)`] : null,
@@ -288,7 +302,7 @@ function render(data, root) {
     .sort((a, b) => a.v[state.metric] - b.v[state.metric]);
   root.querySelector('.table-slot').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
-    ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => metricText(r.v[m]) })),
+    ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => metricCell(r.v, m) })),
     { label: 'Clips', num: true, cell: (r) => (r.v.clips_scored ? String(r.v.clips_scored) : '–') },
     ...PLATFORMS.map((m) => ({ label: `fps ${PLATFORM_SHORT[m]}`, num: true, cell: (r) => fps(r.v.fps[m]) })),
   ], rows, (r) => (r.p.ours ? 'ours' : '') + (r.family === view.zero ? ' zero' : '')), sources(view.source));
