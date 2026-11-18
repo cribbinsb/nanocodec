@@ -17,8 +17,7 @@ function views(data) {
     { title: 'Held-out, fresh', view: byId[`fresh-${zid}`] },
     { title: 'Held-out, all', view: byId[`heldout-${zid}`] },
     { title: 'Development', view: byId[`dev-${zid}`] },
-    { title: 'VC-1K', view: byId[`vc1k-${zid}`] },
-  ].filter((c) => c.view);
+  ];
 }
 
 function cellOf(view, family) {

@@ -8,19 +8,13 @@ const SETS = {
   dev: 'Development',
   ctc: 'AOM CTC low delay (Fixed QP)',
   'qp-fresh': 'Held-out, fresh: the Fixed QP sample',
-  vc1k: 'VC-1K (phone video calls)',
-  'qp-vc1k': 'VC-1K: the Fixed QP sample',
 };
-// Sets from an outside dataset, by their chart's clip-set id (data.datasets: credit, licence).
-const DATASET_OF = { vc1k: 'vc1k', 'qp-vc1k': 'vc1k' };
 const state = { set: new URLSearchParams(window.location.search).get('set') || 'fresh' };
 
 function render(data, root) {
   const clips = data.sets[state.set] || [];
   const n = data.counts[state.set];
-  const dataset = data.datasets?.[DATASET_OF[state.set]];
-  const credit = dataset ? ` Data: ${dataset.credit}, ${dataset.url}; ${dataset.note}.` : '';
-  root.querySelector('.summary').textContent = `${SETS[state.set]}: ${n.clips} clips, ${n.scored} scored${n.left_out ? `, ${n.left_out} left out for every encoder (no reliable rate overlap with the zero line)` : ''}.${credit}`;
+  root.querySelector('.summary').textContent = `${SETS[state.set]}: ${n.clips} clips, ${n.scored} scored${n.left_out ? `, ${n.left_out} left out for every encoder (no reliable rate overlap with the zero line)` : ''}.`;
   root.querySelector('.clip-table').replaceChildren(table([
     { label: 'Clip', cell: (c) => c.name },
     { label: 'Source collection', cell: (c) => c.dataset },
