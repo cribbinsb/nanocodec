@@ -14,6 +14,8 @@ function facts(chart, root) {
     fresh: `${views['fresh-psnr'].clips} clips scored against x264 --tune psnr`,
     heldout: `${views['heldout-psnr'].clips} clips scored against x264 --tune psnr`,
     dev: `${views['dev-psnr'].clips} clips scored against x264 --tune psnr`,
+    ...Object.fromEntries(Object.entries(chart.datasets).map(([id, d]) => [id,
+      `${views[`${id}-psnr`].clips} clips scored against x264 --tune psnr; data ${d.credit}, ${d.url}, ${d.note}`])),
   };
   root.querySelector('.clipsets').replaceChildren(...Object.entries(chart.clipsets).map(([id, text]) =>
     el('li', {}, el('strong', {}, text.split(':')[0]), `: ${text.split(':').slice(1).join(':').trim()}; ${counts[id]}.`)));
