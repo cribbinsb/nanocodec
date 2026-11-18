@@ -2,7 +2,7 @@
  "source": [
   "docs/results/fixed-qp-lens-2026-11-17.csv"
  ],
- "build_commit": "b11b2f83 (2860f897 for AV1 Faster, d40f86b3 for AV1 Veryfast); b33ba3bb for av1@faster, av2@fast, hevc@fast, hevc@faster, vp9@fast, vvc@fast",
+ "build_commit": "b11b2f83 (2860f897 for AV1 Faster, d40f86b3 for AV1 Veryfast); b33ba3bb for av1@faster, av2@fast, hevc@fast, hevc@faster, vp9@fast, vvc@fast; c9e4ced3 for av2@faster",
  "condition": "aom-ld",
  "rows": [
   {
@@ -292,6 +292,30 @@
    "psnr_yuv": -18.1,
    "vmaf": -16.8,
    "ms_ssim": -19.7
+  },
+  {
+   "test": "nanocodec-av2@faster",
+   "column": "profile",
+   "anchor": "x264-medium",
+   "n": 12,
+   "fps": 235.771,
+   "weighted": -12.8,
+   "j": -21.7,
+   "psnr_yuv": -19.3,
+   "vmaf": -11.2,
+   "ms_ssim": -19.6
+  },
+  {
+   "test": "nanocodec-av2@faster",
+   "column": "cbr_settings",
+   "anchor": "x264-medium",
+   "n": 12,
+   "fps": 235.771,
+   "weighted": -12.8,
+   "j": -21.7,
+   "psnr_yuv": -19.3,
+   "vmaf": -11.2,
+   "ms_ssim": -19.6
   },
   {
    "test": "nanocodec-av2@slow",

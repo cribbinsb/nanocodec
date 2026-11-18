@@ -1,6 +1,6 @@
 """Fixed-QP coding efficiency on the graded pool: the gap map and paired ablations.
 
-    python3 -m nceval.fixedqp gap --binary BIN --families nanocodec-av1,svtav1-m12,... \\
+    python3 -m nceval.fixedqp gap --binary BIN [--families nanocodec-av1,svtav1-m12,...] \\
         [--pairs nanocodec-av1:svtav1-m12,...] [--rotation KEY] [--level quick] [--clips N]
     python3 -m nceval.fixedqp ab --codec av1 --binary BIN [--preset fast] \\
         --param a.b=1 [--anchor-param ...] [--rotation KEY] [--level quick] [--clips N]
@@ -18,7 +18,7 @@ not spend the clips that later judge them. Nothing here picks clips by name.
 For the results site, `gap --clipset` instead takes --clips clips of a chart
 clip set (the CBR chart's held-out set) by a fixed rule (held_out_clips), and
 `site` turns such runs into the site's held-out Fixed QP data
-(nceval.site.FRESH_QP_DATA; its speed: tools/dev/fixedqp_timing.py plan-pool).
+(nceval.site.SAMPLE_QP_VIEWS; its speed: tools/dev/fixedqp_timing.py plan-pool).
 
 Every family is coded at fixed QP (our `--qp`, one key frame; anchors in their
 fixed-quantiser modes, AQ off) at CURVE_POINTS quantizers per clip spanning the
@@ -47,7 +47,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import buildinfo, interval, levers, pool
+from . import buildinfo, interval, levers, plotted, pool
 from .cbr import CQP_SPAN_MARGIN, Bench, Family, clip_targets, curve_points, preset_anchor
 from .clips import Clip
 from .codecs import Codec
@@ -101,11 +101,13 @@ def held_out_clips(spec: str, count: int, frames: int = FRAMES) -> list[Clip]:
     return [replace(c, frames=min(c.frames, frames)) for c in chosen]
 
 
-def family_of(name: str, binary: Path, paths: Paths) -> Family:
+def family_of(name: str, binary: Path, paths: Paths, presets: Path = PRESETS_DIR) -> Family:
     """`nanocodec-<codec>[@preset]` (ours), openh264 (the lens's settings at fixed QP) or
-    an anchor family name (cbr.preset_anchor)."""
+    an anchor family name (cbr.preset_anchor). Ours take their preset values from
+    `presets`: a frozen build (a release's) must be given its own commit's directory, or
+    it is run with the tree's newer presets (2026-11-18: AV2 Fast's later layers)."""
     if name.startswith(OWN_PREFIX):
-        return own_family(name, binary)
+        return own_family(name, binary, presets)
     if name == OPENH264:
         return Family(name, Codec.H264, find_tool("openh264-harness", paths), cqp=True,
                       kind="openh264")
@@ -247,8 +249,8 @@ def describe(label: str, result: dict) -> str:
 
 def gap(args: argparse.Namespace) -> dict:
     paths, binary = load_paths(), Path(args.binary)
-    names = args.families.split(",")
-    families = [family_of(n, binary, paths) for n in names]
+    names = args.families.split(",") if args.families else plotted.plotted_names()
+    families = [family_of(n, binary, paths, Path(args.presets_dir)) for n in names]
     if args.clipset:
         clips = held_out_clips(args.clipset, args.clips, args.frames)
         print(f"clip set {args.clipset}: {len(clips)} clips; {len(families)} families",
@@ -377,7 +379,7 @@ def record_levers(args: argparse.Namespace, result: dict) -> None:
 
 
 def site_record(args: argparse.Namespace) -> dict:
-    """The results site's second Fixed QP view (nceval.site FRESH_QP_DATA) from `gap
+    """A results site Fixed QP view on a clip-set sample (nceval.site SAMPLE_QP_VIEWS) from `gap
     --clipset` results sharing one clip set and anchor: each family's BD-rates against
     the anchor, its interval and clip count, and the clips."""
     from .chart import chart_clips
@@ -423,9 +425,12 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--frames", type=int, default=FRAMES,
                        help="frames per clip (fewer only to pipe-clean a run)")
     g = sub.choices["gap"]
-    g.add_argument("--families", required=True,
-                   help="nanocodec-<codec>[@preset] and anchor family names (cbr)")
+    g.add_argument("--families",
+                   help="nanocodec-<codec>[@preset] and anchor family names (cbr); default: "
+                        "every plotted family (nceval.plotted: each shipped preset and reference)")
     g.add_argument("--pairs", help="anchor:test,... to report")
+    g.add_argument("--presets-dir", default=str(PRESETS_DIR),
+                   help="our presets for --binary (a frozen build: its own commit's presets/)")
     g.add_argument("--clipset", help="a chart clip set (JSON spec) instead of the pool draw: "
                    "--clips of its clips, by held_out_clips' rule")
     for name in ("ab", "cost"):

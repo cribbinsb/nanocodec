@@ -241,19 +241,23 @@ impl Grain for i16 {
     }
 }
 
+/// Largest template area (`LUMA_TEMPLATE`: `73 * 82 = 5986` samples),
+/// stack-allocated so synthesis allocates no per-frame template or AR vectors.
+const MAX_TEMPLATE_SAMPLES: usize = LUMA_TEMPLATE.0 * LUMA_TEMPLATE.1;
+const MAX_AR_ABOVE: usize = 24;
+const MAX_AR_LEFT: usize = AR_PADDING;
+const MAX_SHAPED_COLS: usize = LUMA_TEMPLATE.1 - 2 * AR_PADDING;
+const CHROMA_SHAPED_ROWS: usize = CHROMA_TEMPLATE.0 - AR_PADDING;
+const CHROMA_SHAPED_COLS: usize = CHROMA_TEMPLATE.1 - 2 * AR_PADDING;
+
 /// A grain template: `rows` x `columns` grain values. The white noise is
 /// within `round2(±1752, 12 − BitDepth)` (the extremes of
 /// [`GAUSSIAN_SEQUENCE`] at the smallest shift) and the auto-regressive
 /// filter clamps to `GrainMin..=GrainMax`, so `G` of the depth is exact.
 struct Template<G> {
+    rows: usize,
     columns: usize,
-    values: Vec<G>,
-}
-
-impl<G: Grain> Template<G> {
-    fn at(&self, row: usize, column: usize) -> i32 {
-        self.values[row * self.columns + column].into()
-    }
+    values: [G; MAX_TEMPLATE_SAMPLES],
 }
 
 /// White Gaussian grain (AV1 §7.18.3.3), or zeros when the plane has no
@@ -264,19 +268,19 @@ fn white_noise<G: Grain>(
     shift: u32,
     enabled: bool,
 ) -> Template<G> {
-    let values = (0..rows * columns)
-        .map(|_| {
-            if enabled {
-                G::from_i32(round2(
-                    i32::from(GAUSSIAN_SEQUENCE[random.next(GAUSSIAN_BITS)]),
-                    shift,
-                ))
-            } else {
-                G::default()
-            }
-        })
-        .collect();
-    Template { columns, values }
+    let mut values = [G::default(); MAX_TEMPLATE_SAMPLES];
+    if enabled {
+        let round = if shift == 0 { 0 } else { 1 << (shift - 1) };
+        for out in &mut values[..rows * columns] {
+            let g = i32::from(GAUSSIAN_SEQUENCE[random.next(GAUSSIAN_BITS)]);
+            *out = G::from_i32((g + round) >> shift);
+        }
+    }
+    Template {
+        rows,
+        columns,
+        values,
+    }
 }
 
 /// The auto-regressive neighbourhood of lag `lag`: every (row, column)
@@ -302,40 +306,48 @@ fn auto_regress<G: Grain>(
     (shift, (min, max)): (u32, (i32, i32)),
     extra: impl Fn(usize, &mut [i32]),
 ) {
-    let columns = template.columns;
-    let rows = template.values.len() / columns;
-    let mut above = Vec::new();
-    let mut left = Vec::new();
+    let (rows, columns) = (template.rows, template.columns);
+    let mut above = [(0isize, 0isize, 0i32); MAX_AR_ABOVE];
+    let mut above_len = 0;
+    let mut left = [(0isize, 0i32); MAX_AR_LEFT];
+    let mut left_len = 0;
     for ((row, column), &value) in ar_positions(lag).zip(coefficients) {
         let coefficient = i32::from(value) - 128;
         if coefficient == 0 {
             continue;
         }
         if row < 0 {
-            above.push((row, column, coefficient));
+            above[above_len] = (row, column, coefficient);
+            above_len += 1;
         } else {
-            left.push((column, coefficient));
+            left[left_len] = (column, coefficient);
+            left_len += 1;
         }
     }
+    let above = &above[..above_len];
+    let left = &left[..left_len];
     let (first, last) = (AR_PADDING, columns - AR_PADDING);
-    let mut sums = vec![0i32; last - first];
+    let shaped = last - first;
+    let round = if shift == 0 { 0 } else { 1 << (shift - 1) };
+    let mut sums_buf = [0i32; MAX_SHAPED_COLS];
+    let sums = &mut sums_buf[..shaped];
     for y in AR_PADDING..rows {
         sums.fill(0);
-        for &(row, column, coefficient) in &above {
+        for &(row, column, coefficient) in above {
             let start = (y as isize + row) as usize * columns + (first as isize + column) as usize;
-            let source = &template.values[start..start + sums.len()];
+            let source = &template.values[start..start + shaped];
             for (sum, &value) in sums.iter_mut().zip(source) {
                 *sum += coefficient * value.into();
             }
         }
-        extra(y, &mut sums);
+        extra(y, sums);
         let row = &mut template.values[y * columns..(y + 1) * columns];
-        for (x, &partial) in (first..last).zip(&sums) {
+        for (x, &partial) in (first..last).zip(sums.iter()) {
             let mut sum = partial;
-            for &(column, coefficient) in &left {
+            for &(column, coefficient) in left {
                 sum += coefficient * row[(x as isize + column) as usize].into();
             }
-            row[x] = G::from_i32((row[x].into() + round2(sum, shift)).clamp(min, max));
+            row[x] = G::from_i32((row[x].into() + ((sum + round) >> shift)).clamp(min, max));
         }
     }
 }
@@ -351,7 +363,7 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
     let shift = GAUSSIAN_PRECISION - depth.bits() + u32::from(p.grain_scale_shift);
     let ar = (u32::from(p.ar_coeff_shift_minus_6) + 6, grain_range(depth));
     let lag = usize::from(p.ar_coeff_lag);
-    let mut luma = white_noise(
+    let mut luma = white_noise::<G>(
         &mut Random(p.grain_seed),
         LUMA_TEMPLATE,
         shift,
@@ -360,8 +372,26 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
     if p.y_points.count > 0 {
         auto_regress(&mut luma, lag, &p.ar_coeffs_y_plus_128, ar, |_, _| {});
     }
-    let chroma = |seed_xor: u16, enabled: bool, coefficients: &[u8; 25]| {
-        let mut grain = white_noise(
+    let cb_enabled = p.cb_points.count > 0 || p.chroma_scaling_from_luma;
+    let cr_enabled = p.cr_points.count > 0 || p.chroma_scaling_from_luma;
+    let with_luma = p.y_points.count > 0 && (cb_enabled || cr_enabled);
+    let mut luma_sub = [[0i32; CHROMA_SHAPED_COLS]; CHROMA_SHAPED_ROWS];
+    if with_luma {
+        let lcols = luma.columns;
+        for (cy, dst_row) in luma_sub.iter_mut().enumerate() {
+            let ly = (cy << 1) + AR_PADDING;
+            let r0 = &luma.values[ly * lcols + AR_PADDING..][..2 * CHROMA_SHAPED_COLS];
+            let r1 = &luma.values[(ly + 1) * lcols + AR_PADDING..][..2 * CHROMA_SHAPED_COLS];
+            for (col, avg) in dst_row.iter_mut().enumerate() {
+                let (tl, tr): (i32, i32) = (r0[2 * col].into(), r0[2 * col + 1].into());
+                let (bl, br): (i32, i32) = (r1[2 * col].into(), r1[2 * col + 1].into());
+                *avg = (tl + tr + bl + br + 2) >> 2;
+            }
+        }
+    }
+    let luma_coeff_idx = ar_positions(lag).count();
+    let chroma = |seed_xor: u16, enabled: bool, coefficients: &[u8; 25]| -> Template<G> {
+        let mut grain = white_noise::<G>(
             &mut Random(p.grain_seed ^ seed_xor),
             CHROMA_TEMPLATE,
             shift,
@@ -370,27 +400,18 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
         if !enabled {
             return grain;
         }
-        let luma_coefficient = i32::from(coefficients[ar_positions(lag).count()]) - 128;
-        let with_luma = p.y_points.count > 0;
+        let luma_coefficient = i32::from(coefficients[luma_coeff_idx]) - 128;
+        let use_luma = with_luma && luma_coefficient != 0;
         auto_regress(&mut grain, lag, coefficients, ar, |y, sums| {
-            if !with_luma {
+            if !use_luma {
                 return;
             }
-            // The co-located 2x2 luma grain, averaged.
-            let ly = ((y - AR_PADDING) << 1) + AR_PADDING;
-            for (i, sum) in sums.iter_mut().enumerate() {
-                let lx = (i << 1) + AR_PADDING;
-                let luma_sum = luma.at(ly, lx)
-                    + luma.at(ly, lx + 1)
-                    + luma.at(ly + 1, lx)
-                    + luma.at(ly + 1, lx + 1);
-                *sum += luma_coefficient * round2(luma_sum, 2);
+            for (sum, &avg) in sums.iter_mut().zip(&luma_sub[y - AR_PADDING]) {
+                *sum += luma_coefficient * avg;
             }
         });
         grain
     };
-    let cb_enabled = p.cb_points.count > 0 || p.chroma_scaling_from_luma;
-    let cr_enabled = p.cr_points.count > 0 || p.chroma_scaling_from_luma;
     let cb = chroma(CB_SEED_XOR, cb_enabled, &p.ar_coeffs_cb_plus_128);
     let cr = chroma(CR_SEED_XOR, cr_enabled, &p.ar_coeffs_cr_plus_128);
     [luma, cb, cr]
@@ -403,13 +424,16 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
 #[must_use]
 pub fn av1_grain_template_rms(p: &Av1FilmGrainParams) -> [f64; 3] {
     templates(p).map(|t| {
-        let rows = t.values.len() / t.columns;
-        let shaped: Vec<i32> = (AR_PADDING..rows)
-            .flat_map(|y| (AR_PADDING..t.columns - AR_PADDING).map(move |x| (y, x)))
-            .map(|(y, x)| t.at(y, x))
-            .collect();
-        let energy: f64 = shaped.iter().map(|&v| f64::from(v * v)).sum();
-        (energy / shaped.len() as f64).sqrt()
+        let cols = t.columns - 2 * AR_PADDING;
+        let count = (t.rows - AR_PADDING) * cols;
+        let mut energy = 0.0f64;
+        for y in AR_PADDING..t.rows {
+            for &v in &t.values[y * t.columns + AR_PADDING..][..cols] {
+                let v = f64::from(i32::from(v));
+                energy += v * v;
+            }
+        }
+        (energy / count as f64).sqrt()
     })
 }
 

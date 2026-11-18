@@ -331,13 +331,14 @@ The AV1 symbol decoder (`crates/nc-av1/src/decoder_range.rs`: a 64-bit
 window, renormalisation by one shift, refills of whole bytes) and its
 symbol kernels (`crates/nc-dsp/src/av1_symbol`: every interval bound and
 the CDF adaptation in 16-bit lanes, the decoded symbol counted from the
-comparison mask, the interval read back from the stored bounds) follow
+comparison mask, the interval read back from the bounds) follow
 the design of dav1d 1.5.4 `src/msac.c` and `src/x86/msac.asm`, and are
-reimplemented in Rust. The fused NEON symbol step (`av1_symbol/neon_step.rs`)
-uses the shared CDF load, comparison-mask adaptation, SQDMULH interval scaling
-and table interval selection design of dav1d 1.5.4
+reimplemented in Rust. The fused symbol steps (`av1_symbol/sse2_step.rs`,
+`av1_symbol/simd128_step.rs`, and `av1_symbol/neon_step.rs`) use the shared
+CDF load, comparison-mask signed adaptation, interval scaling and branchless
+interval selection design of dav1d 1.5.4 `src/x86/msac.asm` and
 `src/arm/64/msac.S` (`decode_update`), Copyright © 2019 VideoLAN and dav1d
-authors and Martin Storsjo, BSD-2-Clause. Its biased signed adaptation also
+authors and Martin Storsjo, BSD-2-Clause. Their biased signed adaptation also
 preserves zero-probability entries allowed by our broader kernel contract.
 
 CDEF (`crates/nc-dsp/src/cdef/band.rs`, `cdef/direction_avx2.rs`) is

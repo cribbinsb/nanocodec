@@ -58,6 +58,8 @@ PIXELS_720P = 1280 * 720
 MIN_SECONDS = 4.0  # ~120 frames at 30 fps: short pristine excerpts with a cut keep their first shot
 SCENE_CUT_THRESHOLD = 12  # as extract.py
 CUT_MARGIN_SECONDS = 0.2
+#: Selection fields copied onto the clip set's entry (grade.py adds `dataset` to others).
+CARRIED_FIELDS = ("dataset", "stratum")
 _SCDET_TIME = re.compile(r"lavfi\.scd\.time:\s*([\d.]+)")
 
 
@@ -87,7 +89,10 @@ def main() -> int:
 
     with ThreadPoolExecutor(PARALLEL_ENCODES) as pool:
         entries = [e for e in pool.map(build, jobs) if e is not None]
-    set_path.write_text(json.dumps({"name": selection["name"], "clips": entries}, indent=1) + "\n")
+    # the selection's own notes (strata, licence, samples) travel with the clip set
+    notes = {k: v for k, v in selection.items() if k not in ("name", "clips")}
+    set_path.write_text(json.dumps({"name": selection["name"], **notes, "clips": entries},
+                                   indent=1) + "\n")
     size = sum((clips_root.parent / e["yuv"]).stat().st_size for e in entries)
     print(f"wrote {set_path}: {len(entries)} clips, {size / 2**30:.2f} GiB")
     return 0
@@ -107,11 +112,17 @@ def forms(spec: dict) -> list[dict]:
 
 def probe(path: str) -> dict:
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                          "stream=width,height,r_frame_rate", "-of", "json", path],
+                          "stream=width,height,r_frame_rate:stream_side_data=rotation", "-of", "json",
+                          path],
                          capture_output=True, text=True, check=True).stdout
     stream = json.loads(out)["streams"][0]
     num, den = (int(x) for x in stream["r_frame_rate"].split("/"))
-    return {"width": stream["width"], "height": stream["height"], "fps": num / den}
+    rotation = next((int(d["rotation"]) for d in stream.get("side_data_list", [])
+                     if "rotation" in d), 0)
+    # ffmpeg applies a phone's display rotation before the scale filter: size it as shown
+    width, height = ((stream["height"], stream["width"]) if rotation % 180
+                     else (stream["width"], stream["height"]))
+    return {"width": width, "height": height, "fps": num / den}
 
 
 def output_size(width: int, height: int, max_height: int) -> tuple[int, int]:
@@ -171,7 +182,8 @@ def encode(job: dict, out: Path, inventory: dict, data_root: Path,
              "content_class": job["content_class"], "split": "train",
              "family": job.get("family") or job["source"], "form": job["form"],
              "source": job["source"], "start": job.get("start", 0.0),
-             "sha256": sha256(out), "cut_checked": True, "job": job}
+             "sha256": sha256(out), "cut_checked": True,
+             **{k: job[k] for k in CARRIED_FIELDS if k in job}, "job": job}
     print(f"{job['name']}: {width}x{height} {frames} frames, {stored_kbps:.0f} kbps stored, "
           f"source {source_kbps:.0f} kbps", flush=True)
     return entry

@@ -201,7 +201,6 @@ trait Av1Kernel<B: crate::lpf_bytes::Bytes> {
         along: usize,
         lines: usize,
         filter: Av1EdgeFilter,
-        tail: super::Av1EdgeFn,
     );
 }
 #[cfg(any(
@@ -227,12 +226,50 @@ impl<B: crate::lpf_bytes::Bytes, W: crate::lpf_bytes::GroupedBytes, const LINES:
         along: usize,
         lines: usize,
         filter: Av1EdgeFilter,
-        tail: super::Av1EdgeFn,
     ) {
         // SAFETY: caller validates the footprint and enables both lane types' ISA.
         unsafe {
-            super::av1_packed::filter_wide::<W, super::av1_tile::GroupedTile<W>, LINES>(
-                data, base, across, along, lines, filter, tail,
+            super::av1_packed::filter_wide_inline::<W, super::av1_tile::GroupedTile<W>, B, LINES>(
+                data, base, across, along, lines, filter,
+            );
+        }
+    }
+}
+
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+unsafe fn av1_packed_dir<B: crate::lpf_bytes::Bytes, K: Av1Kernel<B>, const VERTICAL: bool>(
+    data: &mut [u8],
+    plane: Plane,
+    runs: &[EdgeRun<Av1EdgeFilter>],
+) {
+    let (across, along) = if VERTICAL {
+        (1, plane.stride)
+    } else {
+        (plane.stride, 1)
+    };
+    for run in ValidatedRuns::new(plane, runs, true, 1, |f: Av1EdgeFilter| f.length.reach()) {
+        let (base, _, _) = plane.address(&run);
+        let packed = run.lines / 4 * 4;
+        if packed != 0 {
+            // SAFETY: the iterator validated the complete run and caller enables B's ISA.
+            unsafe {
+                K::filter(data, base, across, along, packed, run.filter);
+            }
+        }
+        if packed != run.lines {
+            super::av1::filter_edge(
+                data,
+                base + packed * along,
+                across,
+                along,
+                run.lines - packed,
+                run.filter,
             );
         }
     }
@@ -249,26 +286,14 @@ unsafe fn av1_packed<B: crate::lpf_bytes::Bytes, K: Av1Kernel<B>>(
     data: &mut [u8],
     plane: Plane,
     runs: &[EdgeRun<Av1EdgeFilter>],
-    tail: super::Av1EdgeFn,
 ) {
-    for run in ValidatedRuns::new(plane, runs, true, 1, |f: Av1EdgeFilter| f.length.reach()) {
-        let (base, across, along) = plane.address(&run);
-        let packed = run.lines / 4 * 4;
-        if packed != 0 {
-            // SAFETY: the iterator validated the complete run and caller enables B's ISA.
-            unsafe {
-                K::filter(data, base, across, along, packed, run.filter, tail);
-            }
-        }
-        if packed != run.lines {
-            super::av1::filter_edge(
-                data,
-                base + packed * along,
-                across,
-                along,
-                run.lines - packed,
-                run.filter,
-            );
+    // SAFETY: forwarded from the ISA entry point, specialized by edge axis so
+    // `along == 1` constant-folds across tile loads, transposes and stores.
+    unsafe {
+        if plane.vertical {
+            av1_packed_dir::<B, K, true>(data, plane, runs);
+        } else {
+            av1_packed_dir::<B, K, false>(data, plane, runs);
         }
     }
 }
@@ -419,12 +444,7 @@ macro_rules! isa_runs {
             ) {
                 // SAFETY: this wrapper enables the ISA; traversal validates each run.
                 unsafe {
-                    av1_packed::<$bytes, $kernel>(
-                        data,
-                        plane,
-                        runs,
-                        super::super::$module::av1_edge,
-                    );
+                    av1_packed::<$bytes, $kernel>(data, plane, runs);
                 }
             }
             #[target_feature(enable=$feature)]
@@ -497,10 +517,7 @@ pub(crate) unsafe fn avx512(data: &mut [u8], plane: Plane, runs: &[EdgeRun<Av1Ed
     // SAFETY: traversal validates every run; this entry enables both lane ISAs.
     unsafe {
         av1_packed::<crate::lpf_bytes::gfni::Narrow, WideKernel<crate::lpf_bytes::avx512::B, 32>>(
-            data,
-            plane,
-            runs,
-            super::avx512::av1_edge,
+            data, plane, runs,
         );
     }
 }

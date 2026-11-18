@@ -9,6 +9,8 @@ of re-running it (owner, 2026-11-15):
     python3 -m nceval.levers coverage
     python3 -m nceval.levers sync          # spool rows into the repo ledger
     python3 -m nceval.levers backfill      # nceval.levers_backfill: old results
+    python3 -m nceval.levers ideas search TEXT   # what was tried, how it ended
+                                                 # (nceval.levers_ideas; `ideas add`)
 
 Storage. The ledger is `eval/results/levers.jsonl` in the repo (append-only,
 merge=union). Measurements run in many worktrees, most never landed, so the
@@ -102,6 +104,8 @@ ADOPT_UPPER_PCT = 0.3
 CPU_NOISE_PCT = 0.05
 #: Values closer than this are the same setting (float round trips in JSON/TOML).
 VALUE_TOLERANCE = 1e-9
+#: The kind of an idea record (nceval.levers_ideas), kept in the same files.
+IDEA_KIND = "idea"
 CALLGRIND_P = "x86 callgrind instructions per P frame (tune.instruction_cost)"
 CALLGRIND_TUNE = "x86 callgrind instructions, key + P frames amortised (tune_pool.cpu_cost)"
 
@@ -145,13 +149,15 @@ def compact(row: dict) -> dict:
 
 
 def read_rows(path: Path) -> list[dict]:
+    """The measurement rows of one ledger file (idea records are nceval.levers_ideas')."""
     if not path.is_file():
         return []
     rows = []
     for line in path.read_text().splitlines():
         if line.strip():
             stored = json.loads(line)
-            rows.append({f: stored.get(f) for f in FIELDS})
+            if stored.get("kind") != IDEA_KIND:
+                rows.append({f: stored.get(f) for f in FIELDS})
     return rows
 
 
@@ -789,6 +795,7 @@ def table(args: argparse.Namespace) -> None:
 
 
 def coverage(_: argparse.Namespace) -> None:
+    from . import levers_ideas
     rows = resolved(load())
     print(f"{len(rows)} rows ({LEDGER} + {spool_path()})")
     codecs = sorted({r["codec"] for r in rows})
@@ -807,6 +814,7 @@ def coverage(_: argparse.Namespace) -> None:
     for row in rows:
         levels[row["level"].split(":")[0]] = levels.get(row["level"].split(":")[0], 0) + 1
     print("levels: " + ", ".join(f"{k} {v}" for k, v in sorted(levels.items(), key=lambda x: -x[1])))
+    print(f"ideas: {len(levers_ideas.load_ideas())} (python3 -m nceval.levers ideas)")
 
 
 def param_file(path: str) -> dict[str, float]:
@@ -826,13 +834,16 @@ def record_timing(args: argparse.Namespace) -> None:
 
 
 def sync(_: argparse.Namespace) -> None:
+    from .levers_ideas import read_ideas
     added = append(read_rows(spool_path()), LEDGER)
-    print(f"{added} new row(s) from {spool_path()} into {LEDGER}")
+    ideas = append(read_ideas(spool_path()), LEDGER)
+    print(f"{added} new row(s) and {ideas} idea record(s) from {spool_path()} into {LEDGER}")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python3 -m nceval.levers",
                                      description=__doc__.splitlines()[0])
+    from . import levers_ideas
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("replay", "table"):
         p = sub.add_parser(name)
@@ -863,12 +874,16 @@ def main(argv: list[str] | None = None) -> None:
     cost.add_argument("--rate", default="lens", choices=("cbr", "cqp", "lens"),
                       help="the rows' rate mode (CPU joins across modes on read)")
     cost.add_argument("--commit", help="the timed build's commit")
+    levers_ideas.register(sub)
     backfill = sub.add_parser("backfill", help="nceval.levers_backfill: every old result")
     backfill.add_argument("--doc-rows", help="JSONL of rows extracted from docs (kind doc)")
     backfill.add_argument("--into", default=str(LEDGER), help="ledger to append to")
     backfill.add_argument("--docs-only", action="store_true",
                           help="append only --doc-rows (no rescan of the result files)")
     args = parser.parse_args(argv)
+    if args.command == "ideas":
+        levers_ideas.run(args)
+        return
     if args.command == "backfill":
         from . import levers_backfill
         levers_backfill.run(Path(args.into), args.doc_rows, args.docs_only)

@@ -2,13 +2,16 @@
 
 Shared by nceval.scoreboard (fixed-QP board) and nceval.realuse (J_real
 board); kept apart so neither board imports the other (tests/test_imports.py).
+The rows follow from the shipped presets (nceval.plotted), never a list here.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from . import plotted
 from .codecs import Codec
+from .encoders.nanocodec import LADDER
 
 
 @dataclass(frozen=True)
@@ -19,22 +22,8 @@ class Row:
     anchor: str
 
 
-ROWS = (Row(Codec.H264, "Medium", "nanocodec-h264", "openh264-baseline"),
-        Row(Codec.H264, "Fast", "nanocodec-h264@fast", "openh264-baseline"),
-        Row(Codec.H264, "Faster", "nanocodec-h264@faster", "openh264-baseline"),
-        Row(Codec.H264, "Veryfast", "nanocodec-h264@veryfast", "openh264-baseline"),
-        Row(Codec.HEVC, "Medium", "nanocodec-hevc", "svtav1-m12"),
-        Row(Codec.HEVC, "Fast", "nanocodec-hevc@fast", "svtav1-m12"),
-        Row(Codec.HEVC, "Faster", "nanocodec-hevc@faster", "svtav1-m12"),
-        Row(Codec.AV1, "Medium", "nanocodec-av1", "svtav1-m12"),
-        Row(Codec.AV1, "Fast", "nanocodec-av1@fast", "svtav1-m12"),
-        Row(Codec.AV1, "Faster", "nanocodec-av1@faster", "svtav1-m12"),
-        Row(Codec.AV1, "Veryfast", "nanocodec-av1@veryfast", "svtav1-m12"),
-        Row(Codec.VP9, "Medium", "nanocodec-vp9", "nanocodec-hevc"),
-        Row(Codec.VP9, "Fast", "nanocodec-vp9@fast", "nanocodec-hevc@fast"),
-        Row(Codec.VP9, "Faster", "nanocodec-vp9@faster", "nanocodec-hevc@faster"),
-        Row(Codec.VP9, "Veryfast", "nanocodec-vp9@veryfast", "nanocodec-hevc@faster"),
-        Row(Codec.AV2, "Medium", "nanocodec-av2", "nanocodec-av1"),
-        Row(Codec.AV2, "Fast", "nanocodec-av2@fast", "nanocodec-av1@fast"),
-        Row(Codec.VVC, "Medium", "nanocodec-vvc", "nanocodec-hevc"),
-        Row(Codec.VVC, "Fast", "nanocodec-vvc@fast", "nanocodec-hevc@fast"))
+#: One row per shipped speed-ladder preset (nceval.plotted: the preset registry),
+#: barred by its codec's bar (plotted.BARS). Slow is a quality rung, not a
+#: real-time one: the boards leave it out.
+ROWS = tuple(Row(f.codec, f.rung.capitalize(), f.name, plotted.bar(f))
+             for f in plotted.own_families() if f.rung in LADDER)

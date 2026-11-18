@@ -25,6 +25,7 @@ CREDITS = {
     "gmdcsa24": "GMDCSA-24",
     "aboda": "ABODA",
     "chirla": "CHIRLA",
+    "vc1k": "VC-1K (Meta, CC BY-NC 4.0)",
 }
 #: Xiph.org hosts several owners' clips: Netflix's (El Fuente, Chimera) are credited to it.
 XIPH, NETFLIX_FOLDER = "xiph", "netflix"

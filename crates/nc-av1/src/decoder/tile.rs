@@ -338,7 +338,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             .start_frame(mi_cols, mi_rows, &header.loop_filter);
         maps.cdef.start_frame(mi_cols, mi_rows);
         if header.kind == FrameKind::Inter || header.allow_intrabc {
-            maps.motion.start_frame(mi_cols, mi_rows);
+            maps.motion.start_frame(mi_cols, mi_rows, sb_mi);
         }
         let mv_frame = MvFrame {
             mi_cols,

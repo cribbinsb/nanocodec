@@ -38,6 +38,7 @@ nc_encoder::param_group! {
         p_intra_tx_split: 0.0, [0.0, 2.0], "as av2.p_tx_split, for the intra blocks of P frames only; default 0 (one layout, as AV1's P-frame intra) with p_intra_type_retry 0 and p_intra_chroma_candidates 1: P instructions -3.8% at CBR 600, J_real proxy-6 vs (1, 1, 7) -2.3% with the x86 dCPU (quality full +0.0% / low -0.1%, no guards); Jetson -5.5%",
         p_intra_type_retry: 0.0, [0.0, 1.0], "intra blocks of P frames retry their winning coding with ADST_ADST where the transform set allows it (1), or keep DCT (0, as AV1's P-frame intra)",
         estimate_adaptation: 0.0, [0.0, 1.0], "rate estimates in RD trials adapt a scratch copy of the tile's CDFs symbol by symbol (1) or price with the live CDFs frozen for the trial (0, default): P instructions -3.4% x86 / Jetson -1.4% at CBR 600; J_real proxy-6 vs 1 -1.0% (quality full +0.2% / low +0.3%, weighted dCPU -2.1%), no guards",
+        coeff_rate_model: 0.0, [0.0, 1.0], "with frozen estimates (estimate_adaptation 0), RD trials price coefficient levels with a linear model fitted to the exact walk (counts of zero / one / two / larger levels per frequency region, low-range increments, signs and remainders; coeff::rate_model) instead of walking their contexts (1), or walk (0); the final write always walks",
         lambda_per_step_squared: 0.135, [0.01, 4.0], "Lagrange multiplier per squared quantizer step (SSE per bit)",
         deblock: 1.0, [0.0, 1.0], "apply the deblocking filter with AVM's qindex-derived strength (1) or leave it off (0)",
         deblock_chroma: 1.0, [0.0, 1.0], "with av2.deblock, also deblock the chroma planes (1) or luma only (0; apply_deblocking_filter_u/v off). AV2 Fast takes 0: the chroma channels' edge walk and filters are 2.8% of its x86 instructions (bodycam / lowlight / crowd 720p CBR 600) and 2.7% of its Jetson time, for PSNR-YUV +2.0% but VMAF v1 -1.4%, MS-SSIM 0.0% (pool L2); J_real k 0.6 L2+L3 -1.14% BETTER, no guard",
@@ -1102,7 +1103,7 @@ impl CodecBackend for Av2Backend {
         mv: Mv,
         filter: nc_dsp::Filter,
         prediction: &[u8],
-        _stats: nc_dsp::Variance,
+        stats: nc_dsp::Variance,
     ) {
         // Only a fixed frame filter predicts every block with this kernel;
         // switchable blocks choose theirs while coding.
@@ -1118,6 +1119,7 @@ impl CodecBackend for Av2Backend {
             to_av2(mv),
             frame_filter,
             prediction,
+            stats.sse,
         );
     }
 
@@ -1289,6 +1291,8 @@ impl CodecBackend for Av2Backend {
             intra_type_retry,
             estimates: if self.params.estimate_adaptation >= 0.5 {
                 EstimateModels::Adapting
+            } else if self.params.coeff_rate_model >= 0.5 {
+                EstimateModels::Modelled
             } else {
                 EstimateModels::Frozen
             },

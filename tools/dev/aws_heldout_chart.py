@@ -80,6 +80,8 @@ sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))
 from aws_session import say  # noqa: E402
 from nceval.cbr import Bench, Point  # noqa: E402
 from nceval.cbr import Family  # noqa: E402
+from nceval.encoders.nanocodec import MEDIUM  # noqa: E402
+from nceval.plotted import own_families  # noqa: E402
 from nceval.chart import (ANCHOR, OURS, REFERENCES, chart_families, low_ladder,  # noqa: E402
                           low_rung_clips, quality_points)
 from nceval.clipframes import decode_command  # noqa: E402
@@ -167,8 +169,8 @@ DECODE_CHECKS = 2
 STRICT_PARAMS = ("rate.recode_overflow=1", "rate.recode_overflow_inter=1",
                  "rate.key_cap_buffer=1", "rate.key_repay_seconds=1")
 EXTRA_VARIANTS = {"strict": STRICT_PARAMS, "nohold": ("hold.enable=0",)}
-OWN_DEFAULTS = ("nanocodec-h264", "nanocodec-hevc", "nanocodec-av1", "nanocodec-vp9",
-                "nanocodec-av2", "nanocodec-vvc")
+#: Our Default (medium) of every codec (nceval.plotted).
+OWN_DEFAULTS = tuple(f.name for f in own_families() if f.rung == MEDIUM)
 #: The anchors in other settings than the chart's: (family, cbr.ANCHOR_PROFILES name),
 #: each a family `<family>~<profile>`.
 ANCHOR_VARIANTS = (("x264-medium", "lookahead"), ("x264-medium", "threads4"),
@@ -628,7 +630,9 @@ def score_cloud(args: argparse.Namespace) -> None:
     stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"  # sessions run side by side
     stage_dir = DATA / "work/heldout-chart" / f"score-stage-{stamp}"
     try:
-        stage_score(stage_dir, args, run.clips, run.families)
+        # the judges too: they decide the low rungs, so their builds and tools go up
+        judged = run.families + [f for f in run.judges or [] if f not in run.families]
+        stage_score(stage_dir, args, run.clips, judged)
     except BaseException:
         unstage_score(stage_dir)
         raise

@@ -4,40 +4,37 @@ use super::scalar::{SECOND_PASS_SHIFT, interpolation_shifts};
 use super::{
     HevcChromaTaps, HevcLumaTaps, SeparableTaps, VvcAffineLumaTaps, VvcChromaTaps, VvcLumaTaps,
 };
-use crate::{Dsp, Filter};
+use crate::Filter;
 use nc_common::{BitDepth, PlaneView, Sample};
 
 /// Smallest and largest block side of a high-precision prediction.
 const SIDES: std::ops::RangeInclusive<usize> = 2..=64;
 
-impl Dsp {
-    /// Interpolate a rectangle into signed samples with six fractional bits.
-    /// The source starts at the filter window's upper-left, as for `predict`
-    /// ([`crate::DepthKernels::predict_high_precision`] for deeper samples).
-    ///
-    /// # Panics
-    /// If the filter is not HEVC/VVC, dimensions are outside 2..=64, phases
-    /// are invalid, the alternate half filter is selected outside VVC luma,
-    /// or either buffer is too small.
-    pub fn predict_high_precision(
-        &self,
-        filter: Filter,
-        size: (usize, usize),
-        window: &PlaneView<'_>,
-        phases: (usize, usize),
-        alternate_half: bool,
-        out: &mut [i16],
-    ) {
-        check_high_precision(filter, size, window, phases, alternate_half);
-        high_precision_at(
-            filter,
-            size,
-            window,
-            phases,
-            alternate_half,
-            out,
-            BitDepth::EIGHT,
-        );
+/// 8-bit [`crate::Dsp::predict_high_precision`] kernel after argument validation.
+pub(crate) type HighPrecision8Fn = unsafe fn(
+    Filter,
+    (usize, usize),
+    &PlaneView<'_, u8>,
+    (usize, usize),
+    bool,
+    &mut [i16],
+    BitDepth,
+);
+
+/// Select the 8-bit [`HighPrecision8Fn`] for `isa`.
+pub(crate) fn kernel(isa: crate::Isa) -> HighPrecision8Fn {
+    match isa {
+        crate::Isa::Scalar => high_precision_at::<u8>,
+        #[cfg(target_arch = "x86_64")]
+        crate::Isa::Avx2 => super::precision_simd::avx2::high_precision::<u8>,
+        #[cfg(target_arch = "x86_64")]
+        crate::Isa::Avx512 => super::precision_simd::avx512::high_precision::<u8>,
+        #[cfg(target_arch = "aarch64")]
+        crate::Isa::Neon => super::precision_simd::neon::high_precision::<u8>,
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        crate::Isa::Simd128 => super::precision_simd::simd128::high_precision::<u8>,
+        #[allow(unreachable_patterns)]
+        _ => unreachable!("unsupported ISA"),
     }
 }
 

@@ -61,7 +61,7 @@ fn check_size<const N: usize>(rng: &mut Rng, report: &mut CheckReport) {
                  {fast:?} != {slow:?}"
             ));
         }
-        if (5..=8).contains(&N) {
+        if (3..=16).contains(&N) {
             for rate in [None, Some(4), Some(5), Some(6), Some(7)] {
                 let window = (u64::from(value) << 48) | 0x0000_a53c_019e_7fff;
                 let (mut a, mut b) = (icdf, icdf);

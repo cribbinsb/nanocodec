@@ -21,10 +21,12 @@ test('nothing fits: the lightest preset and the smallest size', () => {
   assert.deepEqual(options.map(o => o.change), [{ preset: 'veryfast' }, { width: 384, height: 216 }]);
 });
 
-test('only presets the page offers for the codec, and none for AV2 or the smallest size', () => {
+test('only presets the page offers for the codec, and no size below the smallest', () => {
   const vvc = lighterChoices(view('vvc', 'medium', 640, 360, 30), 60);
   assert.deepEqual(vvc[0].change, { preset: 'fast' });
-  assert.deepEqual(lighterChoices(view('av2', 'medium', 384, 216, 30), 100), []);
+  // AV2 offers Fast and Faster since 2026-11-18 (d6bd02130); at the smallest size only a preset is left.
+  assert.deepEqual(lighterChoices(view('av2', 'medium', 384, 216, 30), 100).map(o => o.change),
+                   [{ preset: 'faster' }]);
   assert.deepEqual(lighterChoices(view('h264', 'veryfast', 384, 216, 30), 100), []);
 });
 

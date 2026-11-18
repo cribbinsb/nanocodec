@@ -147,6 +147,10 @@ pub struct Decoder {
     invisible: bool,
     /// The wedge and inter-intra masks, built at the first general frame.
     masks: std::cell::OnceCell<InterMasks>,
+    /// Cached diagonal transform scan tables, built at the first general frame.
+    scans: std::cell::OnceCell<Rc<block::Scans>>,
+    /// Cached default CDF tables per AVM quantizer category (`0..4`).
+    default_cdfs: [std::cell::OnceCell<Rc<Cdfs>>; 4],
 }
 
 /// A block-trace sink ([`Decoder::trace_blocks`]).
@@ -462,6 +466,21 @@ impl Decoder {
 
     /// Decode a frame's tiles, queue it if shown now, and refresh its slots.
     fn decode_frame(&mut self, header: FrameHeader, tiles: &[u8]) -> Result<()> {
+        let sequence = self
+            .state
+            .sequence
+            .as_ref()
+            .ok_or(DecodeError::MissingKey)?;
+        let crop = sequence.crop.unwrap_or_default();
+        if header.width > sequence.max_width
+            || header.height > sequence.max_height
+            || u64::from(crop.left) + u64::from(crop.right) >= u64::from(header.width)
+            || u64::from(crop.top) + u64::from(crop.bottom) >= u64::from(header.height)
+        {
+            return Err(DecodeError::Malformed(
+                "AV2 frame size outside sequence or conformance window",
+            ));
+        }
         let subset_sequence = self
             .state
             .subset_sequence
@@ -478,9 +497,9 @@ impl Decoder {
             // tile: no averaging). A TIP frame reads no symbols and passes
             // on the models it started from as they are (dav2d `in_cdf`).
             if header.tip.mode != TIP_FRAME_MODE {
-                models.restart_adaptation();
+                Rc::make_mut(&mut models).restart_adaptation();
             }
-            let context = FrameContext::General(Rc::from(models));
+            let context = FrameContext::General(models);
             return self.finish_frame(header, picture, Some(context), extras);
         };
         let size = (header.width as usize, header.height as usize);
@@ -600,12 +619,25 @@ impl Decoder {
         &mut self,
         header: &FrameHeader,
         tiles: &[u8],
-    ) -> Result<(Picture, Box<Cdfs>, SlotExtras)> {
+    ) -> Result<(Picture, Rc<Cdfs>, SlotExtras)> {
         let sequence = self.state.sequence.clone().ok_or(DecodeError::MissingKey)?;
+        let (width, height) = (header.width as usize, header.height as usize);
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+            return Err(DecodeError::Unsupported(
+                "AV2 4:2:0 frame of odd width or height",
+            ));
+        }
+        let (coded_w, coded_h) = if self.unfiltered {
+            (width, height)
+        } else {
+            (width.next_multiple_of(8), height.next_multiple_of(8))
+        };
+        let filtered = self.workspace.pictures.take(coded_w, coded_h, 0)?;
         let cdfs = self.initial_models(header, &sequence)?;
         let reused = self.reused_ccso_flags(header)?;
         let motion = self.reference_motion(header);
         let previous_segments = self.previous_segments(header);
+        let copies = self.workspace.filter_parts().0.block_copies();
         let trace = self.block_trace.0.as_mut().map(|sink| {
             let sink: BlockTrace<'_> = &mut **sink;
             sink
@@ -622,10 +654,13 @@ impl Decoder {
                 .flatten()
         });
         let masks = self.masks.get_or_init(InterMasks::new);
+        let scans = self.scans.get_or_init(|| Rc::new(block::Scans::new()));
         let inputs = block::FrameInputs {
             reused_ccso,
             references,
             masks,
+            scans,
+            copies,
             motion: &motion,
             previous_segments: previous_segments.as_deref(),
         };
@@ -643,64 +678,72 @@ impl Decoder {
                 previous_segments.filter(|previous| previous.same_size(&maps.luma))
             }
         });
-        if !self.unfiltered {
-            let (dsp, ..) = self.workspace.filter_parts();
-            filters::deblock::filter(
-                &mut decoded.planes,
-                &mut decoded.filters,
-                header,
-                &sequence,
-                dsp,
-            );
-        }
-        let (width, height) = (header.width as usize, header.height as usize);
-        let mut picture = self.workspace.pictures.take(width, height, 0)?;
-        for (index, plane) in picture.planes_mut().iter_mut().enumerate() {
-            let (w, h) = (plane.width(), plane.height());
-            let stride = decoded.planes.stride[index];
-            let mut view = plane.view_mut();
-            for (y, row) in decoded.planes.data[index]
-                .chunks(stride)
-                .take(h)
-                .enumerate()
-            {
-                view.row_mut(y)[..w].copy_from_slice(&row[..w]);
-            }
-        }
-        if !self.unfiltered {
-            // Restoration and GDF read deblocked rows next to their
-            // stripes.
-            let restored = header.gdf.mode != 0
-                || header
-                    .restoration
-                    .planes
-                    .iter()
-                    .any(|plane| plane.kind != kind::NONE);
-            let deblocked = restored.then(|| picture.clone());
-            let (dsp, cdef_scratch, ccso_source) = self.workspace.filter_parts();
-            filters::cdef_and_ccso(
-                &mut picture,
-                &decoded.filters,
-                (header, sequence.single_picture),
-                dsp,
-                (cdef_scratch, ccso_source),
-            )?;
-            if let Some(deblocked) = &deblocked {
-                let downsample = sequence.intra.cfl_downsample_filter;
-                self.restore(
-                    &mut picture,
-                    deblocked,
-                    &decoded.filters,
-                    (header, downsample),
-                );
-            }
-        }
+        let picture = self.filter_decoded_planes(&mut decoded, filtered, (header, &sequence))?;
         let extras = SlotExtras {
             ccso_flags,
             motion_field: decoded.motion_field.map(Rc::new),
             segments,
         };
         Ok((picture, decoded.cdfs, extras))
+    }
+
+    /// Run general-path loop filters on the 8x8-aligned coded surface
+    /// (`f->bw * 4` x `f->bh * 4` in dav2d) and return the `header.width` x
+    /// `header.height` frame picture.
+    fn filter_decoded_planes(
+        &mut self,
+        decoded: &mut block::DecodedTile,
+        mut filtered: Picture,
+        (header, sequence): (&FrameHeader, &SequenceHeader),
+    ) -> Result<Picture> {
+        if !self.unfiltered {
+            let (dsp, ..) = self.workspace.filter_parts();
+            filters::deblock::filter(
+                &mut decoded.planes,
+                &mut decoded.filters,
+                header,
+                sequence,
+                dsp,
+            );
+        }
+        copy_tile_planes(&decoded.planes, &mut filtered);
+        if self.unfiltered {
+            return Ok(filtered);
+        }
+        // Restoration and GDF read deblocked rows next to their stripes.
+        let restored = header.gdf.mode != 0
+            || header
+                .restoration
+                .planes
+                .iter()
+                .any(|plane| plane.kind != kind::NONE);
+        let deblocked = restored.then(|| filtered.clone());
+        let (dsp, cdef_scratch, ccso_source) = self.workspace.filter_parts();
+        filters::cdef_and_ccso(
+            &mut filtered,
+            &decoded.filters,
+            (header, sequence.single_picture),
+            dsp,
+            (cdef_scratch, ccso_source),
+        )?;
+        if let Some(deblocked) = &deblocked {
+            self.restore(
+                &mut filtered,
+                deblocked,
+                &decoded.filters,
+                (header, sequence.intra.cfl_downsample_filter),
+            );
+        }
+        let (width, height) = (header.width as usize, header.height as usize);
+        if (filtered.width(), filtered.height()) == (width, height) {
+            return Ok(filtered);
+        }
+        let mut picture = self.workspace.pictures.take(width, height, 0)?;
+        ShownPicture::window(&filtered, (0, 0), (width, height))
+            .expect("coded surface covers visible frame")
+            .copy_to(&mut picture);
+        self.workspace.pictures.give(filtered);
+        Ok(picture)
     }
 
     /// Loop restoration, then GDF, of the picture after CDEF and CCSO
@@ -740,12 +783,20 @@ impl Decoder {
     /// The models a general frame starts from (dav2d
     /// `dav2d_decode_frame_init`'s entropy setup): the defaults at its
     /// quantizer, or its primary reference's final models.
-    fn initial_models(&self, header: &FrameHeader, sequence: &SequenceHeader) -> Result<Box<Cdfs>> {
+    fn initial_models(&self, header: &FrameHeader, sequence: &SequenceHeader) -> Result<Rc<Cdfs>> {
         let Some(rank) = header
             .primary_reference
             .filter(|_| !header.no_cross_frame_context)
         else {
-            return Ok(Box::new(Cdfs::new(header.quantizer.base)));
+            let qindex = header.quantizer.base;
+            let cat = match qindex {
+                0..=90 => 0,
+                91..=140 => 1,
+                141..=190 => 2,
+                _ => 3,
+            };
+            let defaults = self.default_cdfs[cat].get_or_init(|| Rc::new(Cdfs::new(qindex)));
+            return Ok(Rc::clone(defaults));
         };
         // dav2d `use_pri_sec_cdf`: the primary's models with the
         // secondary's weighed in at one eighth.
@@ -754,25 +805,26 @@ impl Decoder {
             && sequence.transform.average_cdf
             && !sequence.transform.average_cdf_type
             && header.tip.mode != TIP_FRAME_MODE;
-        let mut models = self.general_models(header, rank)?;
+        let mut models = Rc::clone(self.general_models_rc(header, rank)?);
         if averaged {
             let secondary = header
                 .secondary_reference
                 .ok_or(DecodeError::Malformed("AV2 secondary reference"))?;
-            models.average_with(&*self.general_models(header, secondary)?);
+            let secondary_cdfs = &**self.general_models_rc(header, secondary)?;
+            Rc::make_mut(&mut models).average_with(secondary_cdfs);
         }
         Ok(models)
     }
 
     /// The final models of the frame at reference rank `rank`, which the
     /// general block layer decoded.
-    fn general_models(&self, header: &FrameHeader, rank: u8) -> Result<Box<Cdfs>> {
+    fn general_models_rc(&self, header: &FrameHeader, rank: u8) -> Result<&Rc<Cdfs>> {
         let slot = usize::from(header.references[usize::from(rank)]);
         let data = self.state.data[slot]
             .as_ref()
             .ok_or(DecodeError::MissingKey)?;
         match &data.context {
-            Some(FrameContext::General(models)) => Ok(Box::new((**models).clone())),
+            Some(FrameContext::General(models)) => Ok(models),
             Some(FrameContext::Subset(_)) => Err(DecodeError::Unsupported(
                 "AV2 general frames inheriting a subset frame's CDFs",
             )),
@@ -911,6 +963,18 @@ impl Decoder {
     }
 }
 
+/// Copy reconstructed superblock-padded tile planes into `picture`.
+fn copy_tile_planes(planes: &block::pixels::Planes, picture: &mut Picture) {
+    for (index, plane) in picture.planes_mut().iter_mut().enumerate() {
+        let (w, h) = (plane.width(), plane.height());
+        let stride = planes.stride[index];
+        let mut view = plane.view_mut();
+        for (y, row) in planes.data[index].chunks(stride).take(h).enumerate() {
+            view.row_mut(y)[..w].copy_from_slice(&row[..w]);
+        }
+    }
+}
+
 /// The temporal layer of one temporal unit: its frame OBU's `temporal_id`
 /// (key frames are layer 0). Dropping the units above a layer keeps a
 /// conforming stream: frames reference only their own and lower layers.
@@ -926,4 +990,31 @@ pub fn temporal_unit_layer(temporal_unit: &[u8]) -> Result<u8> {
         remaining = rest;
     }
     Err(DecodeError::Malformed("AV2 temporal unit without a frame"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for fuzz crash `db26671c5964ffcd`: a general-path AV2 frame
+    /// whose even dimensions are not a multiple of 8 (`width % 8 != 0` or
+    /// `height % 8 != 0`) must run CDEF/CCSO/restoration on the 8x8-aligned
+    /// coded surface and crop back to `(width, height)` without panicking.
+    #[test]
+    fn non_multiple_of_eight_general_frame_filters_without_panicking() {
+        let mut unit = vec![
+            0x01, 0x08, // OBU_TEMPORAL_DELIMITER
+            0x14, 0x04, 0x81, 0xf5, 0x6b, 0x00, 0xbf, 0xfe, 0x02, 0x00, 0x00, 0x76, 0x00, 0x00,
+            0x00, 0x01, 0x48, 0xbe, 0xfb, 0xd0, 0x82, // OBU_SEQUENCE_HEADER
+            0x40, // OBU_CLOSED_LOOP_KEY_FRAME (64-byte payload)
+            0x10, 0xf0, 0x01, 0x01, 0xf0, 0xf0, 0x12, 0x28, 0xd6, 0xa0, 0xd1, 0xde, 0xa3, 0xa8,
+            0x3d, 0x18, 0x9d, 0x23, 0x1a, 0x28, 0x65, 0xf6, 0xf9, 0x70, 0xfb, 0x12, 0x57, 0x13,
+            0x9b, 0xdd, 0x16, 0xd8, 0x3e, 0x22, 0x91, 0xff, 0x32, 0xd8, 0xa4, 0x95,
+        ];
+        unit.resize(23 + 1 + 64, 0);
+        let mut decoder = Decoder::default();
+        if decoder.decode_unit(&unit).is_ok() && decoder.next_output() {
+            assert!(decoder.shown().is_some());
+        }
+    }
 }

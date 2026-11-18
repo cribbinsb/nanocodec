@@ -416,6 +416,18 @@ impl I16FilterLanes for I16x32 {
     }
 
     #[inline(always)]
+    fn load_u8_halves(lo: &[u8], hi: &[u8]) -> Self {
+        let (lo, hi) = (&lo[..16], &hi[..16]);
+        // SAFETY: each slice contains 16 bytes; the wrapper enables F/BW/VL.
+        unsafe {
+            Self(_mm512_cvtepu8_epi16(_mm256_set_m128i(
+                _mm_loadu_si128(hi.as_ptr().cast()),
+                _mm_loadu_si128(lo.as_ptr().cast()),
+            )))
+        }
+    }
+
+    #[inline(always)]
     fn store_u8_sat_halves(self, lo: &mut [u8], hi: &mut [u8]) {
         let (lo, hi) = (&mut lo[..16], &mut hi[..16]);
         // SAFETY: each output has exactly 16 writable bytes; F/BW/VL and
@@ -502,6 +514,23 @@ impl I16FilterLanes for I16x32 {
     }
 
     #[inline(always)]
+    fn load_u8_quarters(rows: [&[u8]; 4]) -> Self {
+        let (r0, r1, r2, r3) = (&rows[0][..8], &rows[1][..8], &rows[2][..8], &rows[3][..8]);
+        // SAFETY: each slice holds 8 bytes; AVX-512F/BW/VL enabled.
+        unsafe {
+            let lo = _mm_unpacklo_epi64(
+                _mm_loadl_epi64(r0.as_ptr().cast()),
+                _mm_loadl_epi64(r1.as_ptr().cast()),
+            );
+            let hi = _mm_unpacklo_epi64(
+                _mm_loadl_epi64(r2.as_ptr().cast()),
+                _mm_loadl_epi64(r3.as_ptr().cast()),
+            );
+            Self(_mm512_cvtepu8_epi16(_mm256_set_m128i(hi, lo)))
+        }
+    }
+
+    #[inline(always)]
     fn store_quarters(self, rows: [&mut [i16]; 4]) {
         let [r0, r1, r2, r3] = rows;
         let (r0, r1) = (&mut r0[..8], &mut r1[..8]);
@@ -581,6 +610,17 @@ impl I16FilterLanes for I16x32 {
     fn any_nonzero(self) -> bool {
         // SAFETY: wrapper enables AVX-512F/BW/VL.
         unsafe { _mm512_test_epi16_mask(self.0, self.0) != 0 }
+    }
+
+    #[inline(always)]
+    fn load_u8_deinterleaved(src: &[u8]) -> (Self, Self) {
+        let src = &src[..64];
+        // SAFETY: wrapper enables AVX-512F/BW/VL; `src` holds 64 bytes and
+        // `_mm512_loadu_si512` accepts 1-byte alignment.
+        unsafe {
+            let raw = Self(_mm512_loadu_si512(src.as_ptr().cast()));
+            (raw.and(Self::splat(0x00ff)), raw.srl(8))
+        }
     }
 
     #[inline(always)]

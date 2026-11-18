@@ -16,7 +16,7 @@
 //! far beyond it (a truncated or corrupt tile), checked once per tile
 //! instead of per symbol.
 use crate::cdf::{ResetCounters, adaptation_rate, advance_counter};
-use nc_dsp::av1_symbol::{av1_adapt_cdf, av1_find_symbol};
+use nc_dsp::av1_symbol::{av1_adapt_cdf, av1_decode_symbol_step};
 
 /// Bits dropped from a probability before the interval split
 /// (`EC_PROB_SHIFT`).
@@ -171,6 +171,17 @@ impl<'a> SymbolReader<'a> {
     /// past the end of the data, with the padding's ones.
     #[inline(never)]
     fn refill(&mut self) {
+        if (-16..0).contains(&self.bits)
+            && let Some(&chunk) = self.data.first_chunk::<8>()
+        {
+            let num_bytes = ((VALUE_SHIFT as i32 - self.bits) as usize) >> 3;
+            let raw = !u64::from_be_bytes(chunk);
+            let masked = raw & (!0u64 << (64 - num_bytes * 8));
+            self.window |= masked >> ((VALUE_BITS as i32 + self.bits) as u32);
+            self.data = &self.data[num_bytes..];
+            self.bits += (num_bytes * 8) as i32;
+            return;
+        }
         // The bit position of the next byte's least significant bit.
         let mut shift = VALUE_SHIFT as i32 - 8 - self.bits;
         loop {
@@ -213,12 +224,6 @@ impl<'a> SymbolReader<'a> {
         }
     }
 
-    /// `SymbolValue`.
-    #[inline]
-    fn value(&self) -> u32 {
-        (self.window >> VALUE_SHIFT) as u32
-    }
-
     /// The bound of the interval above symbol `symbol` in an `n`-symbol
     /// alphabet: symbols up to `symbol` lie at or above it (`cur` of
     /// §8.2.6 `read_symbol`).
@@ -226,19 +231,6 @@ impl<'a> SymbolReader<'a> {
     fn bound(&self, icdf: u16, symbol: usize, n: usize) -> u32 {
         (((self.range >> 8) * (u32::from(icdf) >> PROBABILITY_SHIFT)) >> (7 - PROBABILITY_SHIFT))
             + MIN_PROBABILITY * (n - 1 - symbol) as u32
-    }
-
-    /// `read_symbol` (§8.2.6) with inverse CDF `icdf` of a
-    /// `symbols`-symbol alphabet, without adaptation: the interval search
-    /// is nc-dsp's, over all bounds at once.
-    #[inline]
-    fn decode<const N: usize>(&mut self, icdf: &[u16; N], symbols: usize) -> usize {
-        let interval = av1_find_symbol(icdf, symbols, self.range, self.value());
-        self.renormalize(
-            self.window - (u64::from(interval.lower) << VALUE_SHIFT),
-            interval.upper - interval.lower,
-        );
-        interval.symbol
     }
 
     /// A two-symbol `read_symbol` whose symbol 0 has inverse CDF `icdf0`:
@@ -256,35 +248,40 @@ impl<'a> SymbolReader<'a> {
         one
     }
 
+    #[inline]
+    fn symbol_step<const N: usize>(&mut self, cdf: &mut Cdf<N>, symbols: usize) -> usize {
+        let rate = self.adapt.then(|| adaptation_rate(cdf.count, symbols));
+        let step = av1_decode_symbol_step(&mut cdf.icdf, symbols, self.window, self.range, rate);
+        self.window = step.window;
+        self.range = step.range;
+        self.bits -= step.shift as i32;
+        if self.bits < 0 {
+            self.refill();
+        }
+        if self.adapt {
+            advance_counter(&mut cdf.count);
+        }
+        step.symbol
+    }
+
+    // Outlined for wide syntax alphabets (N >= 5, called ~80 times across mode
+    // and partition code): sharing one helper per capacity keeps `inter_modes`,
+    // `inter_block` and `leaf` inside the 32 KB L1 instruction cache (as
+    // dav1d's out-of-line `msac_decode_symbol_adapt8/16`), while N <= 4 stays
+    // inlined for the hot coefficient token loop.
+    #[inline(never)]
+    fn symbol_wide<const N: usize>(&mut self, cdf: &mut Cdf<N>, symbols: usize) -> usize {
+        self.symbol_step(cdf, symbols)
+    }
+
     /// `read_symbol` with an adaptive CDF of a `symbols`-symbol alphabet.
     #[inline]
     pub(crate) fn symbol<const N: usize>(&mut self, cdf: &mut Cdf<N>, symbols: usize) -> usize {
-        #[cfg(all(target_arch = "aarch64", not(miri)))]
-        if (5..=8).contains(&N) {
-            let rate = self.adapt.then(|| adaptation_rate(cdf.count, symbols));
-            let step = nc_dsp::av1_symbol::av1_decode_symbol_step(
-                &mut cdf.icdf,
-                symbols,
-                self.window,
-                self.range,
-                rate,
-            );
-            self.window = step.window;
-            self.range = step.range;
-            self.bits -= step.shift as i32;
-            if self.bits < 0 {
-                self.refill();
-            }
-            if self.adapt {
-                advance_counter(&mut cdf.count);
-            }
-            return step.symbol;
+        if N <= 4 {
+            self.symbol_step(cdf, symbols)
+        } else {
+            self.symbol_wide(cdf, symbols)
         }
-        let symbol = self.decode(&cdf.icdf, symbols);
-        if self.adapt {
-            cdf.adapt(symbol, symbols);
-        }
-        symbol
     }
     /// A binary symbol: [`Self::symbol`] with the two-symbol interval
     /// split computed directly (the most frequent symbol kind).
@@ -301,6 +298,11 @@ impl<'a> SymbolReader<'a> {
     #[inline]
     pub(crate) fn fixed_boolean(&mut self, icdf0: u16) -> bool {
         self.decode_bool(icdf0)
+    }
+    /// One equiprobable bit (`read_literal(1)`).
+    #[inline]
+    pub(crate) fn bit(&mut self) -> bool {
+        self.decode_bool(HALF)
     }
     /// `read_literal(bits)` (§8.2.5): equiprobable bits, most significant
     /// first.

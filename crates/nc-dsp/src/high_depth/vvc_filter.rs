@@ -370,15 +370,9 @@ impl VvcFilterPixel for u8 {
         shifts: &[u32; VVC_ALF_BLOCK],
         out: &mut [&mut [u8]; VVC_ALF_BLOCK],
     ) {
-        for r in 0..VVC_ALF_BLOCK {
-            kernels.dsp.vvc_alf_filter_clipped_row(
-                &rows[r],
-                coefficients,
-                limits,
-                shifts[r],
-                out[r],
-            );
-        }
+        kernels
+            .dsp
+            .vvc_alf_filter_clipped_block_row(rows, coefficients, limits, shifts, out);
     }
 
     fn vvc_alf_filter_clipped_row(

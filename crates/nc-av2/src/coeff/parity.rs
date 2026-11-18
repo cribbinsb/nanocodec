@@ -99,16 +99,33 @@ pub(super) fn code_hidden_high_range<C: SymbolCoder>(
     Ok(coded + 2 * coder.code_high_range(remainder, average >> 1)?)
 }
 
-/// Approximate bits of a level of magnitude `level`, for choosing a
-/// parity fix: a nonzero level pays its significance and sign, then about
-/// a bit per unit of magnitude.
-fn level_bits(level: u32) -> f64 {
-    /// Significance and sign of a nonzero level.
-    const NONZERO_BITS: f64 = 2.5;
-    if level == 0 {
-        0.0
+/// The rate change of a one-level move under the parity adjustment's
+/// model. A nonzero level pays 2.5 bits for significance and sign plus
+/// one bit per unit. A move between two nonzero levels changes only its
+/// magnitude rate.
+fn move_bits(level: u32, direction: f64) -> f64 {
+    const CROSS_ZERO_BITS: f64 = 3.5;
+    if level == 0 || (level == 1 && direction < 0.0) {
+        direction * CROSS_ZERO_BITS
     } else {
-        NONZERO_BITS + f64::from(level)
+        direction
+    }
+}
+
+/// Count and sum a dense block's AC levels in raster order. Levels after
+/// the scan's end are zero. The 20-bit levels are clipped to six and the
+/// block contains at most 1024 of them, so both accumulators fit u32.
+fn raster_tally(levels: &[i32]) -> Tally {
+    let mut nonzero = 0_u32;
+    let mut sum = 0;
+    for &level in &levels[1..] {
+        let level = level.unsigned_abs();
+        nonzero += u32::from(level != 0);
+        sum += level.min(SUM_CAP);
+    }
+    Tally {
+        nonzero: nonzero as usize,
+        sum,
     }
 }
 
@@ -117,7 +134,7 @@ fn level_bits(level: u32) -> f64 {
 /// end of block after it. Where the block hides its DC parity and the DC
 /// level disagrees, one level within the end of block moves by one, the
 /// move of least added squared error plus `lambda` (sample SSE per bit)
-/// times its approximate rate ([`level_bits`]; AVM's
+/// times its approximate rate ([`move_bits`]; AVM's
 /// `parity_hiding_trellis_off` moves toward the coefficient by least
 /// error, which spends rate on raising levels): a DC move fixes the DC
 /// parity, any other move the hidden parity, since every sum term below
@@ -138,10 +155,17 @@ pub(crate) fn conform(
     // Every luma region saturates at or above the sum's cap, so a level's
     // capped partial value is its capped magnitude.
     let positions = &levels::scan_positions(tx)[..eob];
-    let mut tally = Tally::default();
-    for at in &positions[1..] {
-        tally.add(levels[at.pos()].unsigned_abs());
-    }
+    // At half the coded area or more, the contiguous pass can process
+    // several levels per vector. Sparse blocks visit only their scan prefix.
+    let tally = if eob >= levels.len() / 2 {
+        raster_tally(levels)
+    } else {
+        let mut tally = Tally::default();
+        for at in &positions[1..] {
+            tally.add(levels[at.pos()].unsigned_abs());
+        }
+        tally
+    };
     if !tally.hides() || levels[0].unsigned_abs() & 1 == tally.parity() {
         return eob;
     }
@@ -153,6 +177,11 @@ pub(crate) fn conform(
         let pos = at.pos();
         let (magnitude, level) = (coefficients[pos].unsigned_abs(), levels[pos].unsigned_abs());
         let is_ac = usize::from(index != 0);
+        // An AC level above the cap cannot flip the parity with either
+        // move. Skip its dequantization and distortion calculation.
+        if is_ac == 1 && level > SUM_CAP {
+            continue;
+        }
         // Speed: a zero level whose coefficient is under half the first
         // level's reconstruction gains nothing by rising (more error and
         // more rate), and zeros are most positions; skipping them only
@@ -176,7 +205,7 @@ pub(crate) fn conform(
                 continue;
             }
             let added = (step * step - 2.0 * direction * step * error) * error_scale
-                + lambda * (level_bits(moved) - level_bits(level));
+                + lambda * move_bits(level, direction);
             if best.is_none_or(|(least, ..)| added < least) {
                 best = Some((added, pos, moved));
             }

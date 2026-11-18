@@ -40,6 +40,7 @@ fn sample_row(rng: &mut Rng, depth: BitDepth, pattern: usize, len: usize) -> Vec
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     check_dmvr_and_bdof_u8(candidate, reference, rng, report);
+    check_high_precision_u8(candidate, reference, rng, report);
     for depth in [
         BitDepth::EIGHT,
         BitDepth::new(9).expect("9b"),
@@ -311,6 +312,83 @@ fn check_dmvr_and_bdof_u8(
     }
 }
 
+fn check_high_precision_u8(
+    candidate: &Dsp,
+    reference: &Dsp,
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    let filters = [
+        (Filter::HevcLuma, false, 4, 8),
+        (Filter::HevcChroma, false, 8, 4),
+        (Filter::VvcLuma, false, 16, 8),
+        (Filter::VvcLuma, true, 16, 8),
+        (Filter::VvcAffineLuma, false, 16, 8),
+        (Filter::VvcChroma, false, 32, 4),
+    ];
+    for &(filter, alt_half, positions, taps) in &filters {
+        for &(w, h) in &[
+            (2, 4),
+            (4, 2),
+            (4, 4),
+            (4, 7),
+            (6, 8),
+            (8, 7),
+            (8, 8),
+            (12, 16),
+            (16, 16),
+            (24, 8),
+            (32, 16),
+            (64, 8),
+        ] {
+            // Odd stride exercises 1-byte row alignments (`p.add(stride)`).
+            let stride = w + taps + 2;
+            let rows = h + taps - 1;
+            let half = positions / 2;
+            let phase_list = [
+                (0, 0),
+                (half, 0),
+                (0, half),
+                (half, half),
+                (rng.below(positions), rng.below(positions)),
+            ];
+            for pat in [0, 1, 2, 4, 5] {
+                let buf: Vec<u8> = sample_row(rng, BitDepth::EIGHT, pat, stride * rows + 1)
+                    .into_iter()
+                    .map(|v| v as u8)
+                    .collect();
+                let win = PlaneView::new(&buf[1..], stride, w + taps - 1, rows).expect("window");
+                for &phases in &phase_list {
+                    let mut out = [vec![0i16; w * h], vec![0i16; w * h]];
+                    candidate.predict_high_precision(
+                        filter,
+                        (w, h),
+                        &win,
+                        phases,
+                        alt_half,
+                        &mut out[0],
+                    );
+                    reference.predict_high_precision(
+                        filter,
+                        (w, h),
+                        &win,
+                        phases,
+                        alt_half,
+                        &mut out[1],
+                    );
+                    report.cases += 1;
+                    if out[0] != out[1] {
+                        report.failures.push(format!(
+                            "{} u8 predict_high_precision {filter:?} alt={alt_half} {w}x{h} phases={phases:?} pat={pat}",
+                            candidate.isa()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn check_high_precision(
     depth: BitDepth,
     (cand, refer): (DepthKernels<'_>, DepthKernels<'_>),
@@ -330,7 +408,9 @@ fn check_high_precision(
             (2, 4),
             (4, 2),
             (4, 4),
+            (4, 7),
             (6, 8),
+            (8, 7),
             (8, 8),
             (12, 16),
             (16, 16),

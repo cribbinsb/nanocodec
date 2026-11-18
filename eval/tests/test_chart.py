@@ -207,7 +207,7 @@ def test_chained_points_report_both_means_and_their_clips():
     assert "| -47.0%‡ | -44.0% |" in table and "‡ 1 clip chained" in table
     assert "| static_cam29 | nanocodec-av1 | -10.0% | -40.0% | -46.0% |" in chart.chained_table([p])
     assert chart.csv_text([p], front).splitlines()[1].endswith(
-        ",1,-44.00,static_cam29:nanocodec-av1:-46.00,")  # no XPSNR: empty last column
+        ",1,-44.00,static_cam29:nanocodec-av1:-46.00,,")  # no XPSNR: its two columns empty
     assert chart.chart_label(p) == "nanocodec-av2"  # marked in the table only
 
 
@@ -314,3 +314,14 @@ def test_hardware_points_sit_at_their_fps_or_past_the_axis_when_faster():
     on_axis_only = chart.svg_chart(timed, front, "", hardware=gpu[1:])
     assert "off scale" not in on_axis_only
     assert f'width="{frame.left + frame.width + 30}"' in on_axis_only
+
+
+def test_reported_pair_averages_the_clips_it_can_and_counts_them():
+    # XPSNR (reported only) averages the clips where its BD exists, with their count;
+    # a clip BD-J does not score never counts
+    rows = {"a": {"class": "c", "j": -10.0, "bd_xpsnr_yuv": -20.0, "low_xpsnr_yuv": -20.0},
+            "b": {"class": "c", "j": -12.0, "bd_xpsnr_yuv": None, "low_xpsnr_yuv": None},
+            "c": {"class": "c", "j": None, "bd_xpsnr_yuv": -50.0, "low_xpsnr_yuv": -50.0}}
+    value, clips = chart.reported_pair(rows, "xpsnr_yuv")
+    assert clips == 1 and abs(value - -20.0) < 1e-9
+    assert chart.reported_pair({"b": rows["b"]}, "xpsnr_yuv") == (None, 0)

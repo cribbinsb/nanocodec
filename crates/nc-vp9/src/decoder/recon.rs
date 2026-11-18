@@ -608,12 +608,15 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         plane: usize,
     ) -> bool {
         let ss = usize::from(plane > 0);
+        let (max_w, max_h) = position.plane_limits_4x4(ss);
+        if max_w == 0 || max_h == 0 {
+            return false;
+        }
         let tx = Self::plane_tx(info, plane);
         let step = tx.units();
         let lossless = self.inputs.header.quantizer.lossless();
         let ty = tx_type(PLANES[plane], None, tx, lossless);
         let (bx, by) = position.plane_4x4(ss);
-        let (max_w, max_h) = position.plane_limits_4x4(ss);
         let left_mask = (16 >> ss) - 1;
         let steps = self.steps(info.segment_id, plane);
         let model = Model::of(PLANES[plane], tx, ty, true);
@@ -954,8 +957,10 @@ fn block_samples<T: Sample>(
 
 /// `get_entropy_context`: whether any of a transform block's 1, 2, 4 or 8
 /// coefficient contexts is set, read as one word as libvpx does.
+#[inline]
 fn any_set(contexts: &[u8]) -> bool {
     match contexts.len() {
+        1 => contexts[0] != 0,
         2 => u16::from_ne_bytes(contexts.try_into().expect("two contexts")) != 0,
         4 => u32::from_ne_bytes(contexts.try_into().expect("four contexts")) != 0,
         8 => u64::from_ne_bytes(contexts.try_into().expect("eight contexts")) != 0,
@@ -965,10 +970,12 @@ fn any_set(contexts: &[u8]) -> bool {
 
 /// `dec_set_contexts`: set a transform block's contexts to `value`, those
 /// from `inside` on (beyond the frame edge) to zero.
+#[inline]
 fn set_contexts(contexts: &mut [u8], value: u8, inside: usize) {
     if inside >= contexts.len() {
         // Fixed sizes: whole-word stores instead of a `memset` call.
         match contexts.len() {
+            1 => contexts[0] = value,
             2 => set_all::<2>(contexts, value),
             4 => set_all::<4>(contexts, value),
             8 => set_all::<8>(contexts, value),

@@ -1612,6 +1612,18 @@ impl I16FilterLanes for I16x16 {
     }
 
     #[inline(always)]
+    fn load_u8_halves(lo: &[u8], hi: &[u8]) -> Self {
+        let (lo, hi) = (&lo[..8], &hi[..8]);
+        // SAFETY: AVX2 kernels only (module docs); `lo` and `hi` hold 8 bytes each.
+        unsafe {
+            Self(_mm256_cvtepu8_epi16(_mm_unpacklo_epi64(
+                _mm_loadl_epi64(lo.as_ptr().cast()),
+                _mm_loadl_epi64(hi.as_ptr().cast()),
+            )))
+        }
+    }
+
+    #[inline(always)]
     fn store_u8_sat_halves(self, lo: &mut [u8], hi: &mut [u8]) {
         let (lo, hi) = (&mut lo[..8], &mut hi[..8]);
         // SAFETY: AVX2 kernels only (module docs); `lo` and `hi` hold 8
@@ -1704,6 +1716,16 @@ impl I16FilterLanes for I16x16 {
     }
 
     #[inline(always)]
+    fn load_u8_quarters(rows: [&[u8]; 4]) -> Self {
+        let r0 = i32::from_le_bytes(rows[0][..4].try_into().unwrap());
+        let r1 = i32::from_le_bytes(rows[1][..4].try_into().unwrap());
+        let r2 = i32::from_le_bytes(rows[2][..4].try_into().unwrap());
+        let r3 = i32::from_le_bytes(rows[3][..4].try_into().unwrap());
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm256_cvtepu8_epi16(_mm_setr_epi32(r0, r1, r2, r3))) }
+    }
+
+    #[inline(always)]
     fn store_quarters(self, rows: [&mut [i16]; 4]) {
         let [r0, r1, r2, r3] = rows;
         let (r0, r1) = (&mut r0[..4], &mut r1[..4]);
@@ -1760,6 +1782,17 @@ impl I16FilterLanes for I16x16 {
     fn any_nonzero(self) -> bool {
         // SAFETY: AVX2 kernels only (module docs).
         unsafe { _mm256_testz_si256(self.0, self.0) == 0 }
+    }
+
+    #[inline(always)]
+    fn load_u8_deinterleaved(src: &[u8]) -> (Self, Self) {
+        let src = &src[..32];
+        // SAFETY: AVX2 kernels only; `src` holds 32 bytes and `_mm256_loadu_si256`
+        // accepts 1-byte alignment.
+        unsafe {
+            let raw = Self(_mm256_loadu_si256(src.as_ptr().cast()));
+            (raw.and(Self::splat(0x00ff)), raw.srl(8))
+        }
     }
 
     #[inline(always)]
@@ -1950,6 +1983,14 @@ impl I16FilterLanes for I16x8 {
                 _mm_loadl_epi64(hi.as_ptr().cast()),
             ))
         }
+    }
+
+    #[inline(always)]
+    fn load_u8_halves(lo: &[u8], hi: &[u8]) -> Self {
+        let lo = i32::from_le_bytes(lo[..4].try_into().unwrap());
+        let hi = i32::from_le_bytes(hi[..4].try_into().unwrap());
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm_cvtepu8_epi16(_mm_setr_epi32(lo, hi, 0, 0))) }
     }
 
     #[inline(always)]

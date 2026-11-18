@@ -258,10 +258,48 @@ pub const VVC_ALF_DOT_LANES: usize = 96;
 pub(crate) type DotFn =
     unsafe fn(a: &[i32; VVC_ALF_DOT_LANES], b: &[i32; VVC_ALF_DOT_LANES]) -> i64;
 
+/// Four-row 8-bit clipped luma ALF block row.
+pub(crate) type ClippedBlockRowFn = unsafe fn(
+    rows: &[[&[u8]; 7]; VVC_ALF_BLOCK],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    limits: &[[i16; VVC_ALF_TAPS]],
+    shifts: &[u32; VVC_ALF_BLOCK],
+    out: &mut [&mut [u8]; VVC_ALF_BLOCK],
+    depth: BitDepth,
+);
+
+/// Single 8-bit clipped luma ALF row.
+pub(crate) type ClippedRowFn = unsafe fn(
+    rows: &[&[u8]; 7],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    limits: &[[i16; VVC_ALF_TAPS]],
+    shift: u32,
+    out: &mut [u8],
+    depth: BitDepth,
+);
+
+/// Single 8-bit chroma 5x5 ALF row.
+pub(crate) type ChromaRowFn = unsafe fn(
+    rows: &[&[u8]; 7],
+    coefficients: [i16; 6],
+    limits: [i16; 6],
+    shift: u32,
+    out: &mut [u8],
+    depth: BitDepth,
+);
+
+/// Single 8-bit CC-ALF chroma row from four luma rows.
+pub(crate) type CrossRowFn =
+    unsafe fn(rows: &[&[u8]; 4], coefficients: [i16; 7], out: &mut [u8], depth: BitDepth);
+
 /// The ALF kernels of one ISA.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
     pub filter_block_row: FilterBlockRowFn,
+    pub clipped_block_row: ClippedBlockRowFn,
+    pub clipped_row: ClippedRowFn,
+    pub chroma_row: ChromaRowFn,
+    pub cross_row: CrossRowFn,
     pub laplacians: LaplacianFn,
     pub classify: ClassifyFn,
     pub samples: SamplesFn,
@@ -269,55 +307,96 @@ pub(crate) struct Kernels {
     pub dot: DotFn,
 }
 
-/// Override only the wide linear row; other ALF operations inherit AVX2.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn install_avx512(kernels: &mut Kernels) {
-    kernels.filter_block_row = avx512::filter_block_row;
-}
+const SCALAR: Kernels = Kernels {
+    filter_block_row,
+    clipped_block_row: clipped_block_row_at,
+    clipped_row: clipped_row_at,
+    chroma_row: chroma_row_at,
+    cross_row: cross_row_at,
+    laplacians,
+    classify,
+    samples,
+    gram,
+    dot,
+};
 
-pub(crate) fn kernels(isa: Isa) -> Kernels {
+#[cfg(target_arch = "x86_64")]
+const AVX2: Kernels = Kernels {
+    filter_block_row: avx2::filter_block_row,
+    clipped_block_row: high_simd::avx2::clipped_block_row,
+    clipped_row: high_simd::avx2::clipped_row,
+    chroma_row: high_simd::avx2::chroma_row,
+    cross_row: high_simd::avx2::cross_row,
+    laplacians: avx2::laplacians,
+    classify: avx2::classify,
+    samples: avx2::samples,
+    gram: avx2::gram,
+    dot: avx2::dot,
+};
+
+/// AVX-512 ALF kernel table: wide linear, nonlinear, chroma, and CC-ALF row
+/// kernels, with the remaining encoder/classifier operations inherited from AVX2.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const AVX512: Kernels = Kernels {
+    filter_block_row: avx512::filter_block_row,
+    clipped_block_row: high_simd::avx512::clipped_block_row,
+    clipped_row: high_simd::avx512::clipped_row,
+    chroma_row: high_simd::avx512::chroma_row,
+    cross_row: high_simd::avx512::cross_row,
+    ..AVX2
+};
+
+#[cfg(target_arch = "aarch64")]
+const NEON: Kernels = Kernels {
+    filter_block_row: neon::filter_block_row,
+    clipped_block_row: high_simd::neon::clipped_block_row,
+    clipped_row: high_simd::neon::clipped_row,
+    chroma_row: high_simd::neon::chroma_row,
+    cross_row: high_simd::neon::cross_row,
+    laplacians: neon::laplacians,
+    classify: neon::classify,
+    samples: neon::samples,
+    gram: neon::gram,
+    dot: neon::dot,
+};
+
+#[cfg(target_arch = "aarch64")]
+const NEON_DOTPROD: Kernels = Kernels {
+    filter_block_row: neon_dotprod::filter_block_row,
+    ..NEON
+};
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+const SIMD128: Kernels = Kernels {
+    filter_block_row: simd128::filter_block_row,
+    clipped_block_row: high_simd::simd128::clipped_block_row,
+    clipped_row: high_simd::simd128::clipped_row,
+    chroma_row: high_simd::simd128::chroma_row,
+    cross_row: high_simd::simd128::cross_row,
+    laplacians: simd128::laplacians,
+    classify: simd128::classify,
+    samples: simd128::samples,
+    gram: simd128::gram,
+    dot: simd128::dot,
+};
+
+pub(crate) fn kernels(isa: Isa) -> &'static Kernels {
     match isa {
-        Isa::Scalar => Kernels {
-            filter_block_row,
-            laplacians,
-            classify,
-            samples,
-            gram,
-            dot,
-        },
+        Isa::Scalar => &SCALAR,
         #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 => Kernels {
-            filter_block_row: avx2::filter_block_row,
-            laplacians: avx2::laplacians,
-            classify: avx2::classify,
-            samples: avx2::samples,
-            gram: avx2::gram,
-            dot: avx2::dot,
-        },
+        Isa::Avx2 => &AVX2,
         #[cfg(target_arch = "aarch64")]
-        Isa::Neon => Kernels {
+        Isa::Neon => {
             // The dot-product extension (Armv8.2, e.g. the Cortex-A78) is
             // optional in the architecture, so it is detected at run time.
-            filter_block_row: if std::arch::is_aarch64_feature_detected!("dotprod") {
-                neon_dotprod::filter_block_row
+            if std::arch::is_aarch64_feature_detected!("dotprod") {
+                &NEON_DOTPROD
             } else {
-                neon::filter_block_row
-            },
-            laplacians: neon::laplacians,
-            classify: neon::classify,
-            samples: neon::samples,
-            gram: neon::gram,
-            dot: neon::dot,
-        },
+                &NEON
+            }
+        }
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-        Isa::Simd128 => Kernels {
-            filter_block_row: simd128::filter_block_row,
-            laplacians: simd128::laplacians,
-            classify: simd128::classify,
-            samples: simd128::samples,
-            gram: simd128::gram,
-            dot: simd128::dot,
-        },
+        Isa::Simd128 => &SIMD128,
         #[allow(unreachable_patterns)]
         _ => unreachable!("unsupported ISA"),
     }

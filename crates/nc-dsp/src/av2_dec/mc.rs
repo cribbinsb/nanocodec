@@ -64,12 +64,14 @@ impl Precision {
 }
 
 /// `value` rounded down by `shift` bits (half up; `shift` may be 0).
+#[inline]
 pub(crate) fn round_shift(value: i32, shift: u32) -> i32 {
     (value + ((1 << shift) >> 1)) >> shift
 }
 
 /// One bilinear tap pair at sub-sample `phase` (1/16 samples):
 /// `16 a + phase (b - a)`.
+#[inline]
 fn bilinear(a: i32, b: i32, phase: i32) -> i32 {
     BILINEAR_ONE * a + phase * (b - a)
 }
@@ -88,27 +90,25 @@ pub(crate) fn assert_compound_size(w: usize, h: usize) {
     }
 }
 
-/// The horizontal bilinear pass of `rows` rows of `w` samples, kept at
-/// `16 << intermediate bits` scale (shift `4 - bits`, 0 below 12 bits).
-fn horizontal_pass<T: Sample>(
-    src: &[T],
-    (src_offset, src_stride): (usize, usize),
-    (w, rows): (usize, usize),
-    mx: i32,
-    shift: u32,
-) -> [[i16; MAX_SIDE]; MAX_SIDE + 1] {
-    let mut mid = [[0_i16; MAX_SIDE]; MAX_SIDE + 1];
-    for (y, line) in mid.iter_mut().take(rows).enumerate() {
-        let row = &src[src_offset + y * src_stride..][..=w];
-        for (x, value) in line[..w].iter_mut().enumerate() {
-            let sum = bilinear(row[x].to_i32(), row[x + 1].to_i32(), mx);
-            *value = round_shift(sum, shift) as i16;
+/// Fill `out` (`w` columns) with one horizontal bilinear row at `mx`, kept
+/// at `16 << intermediate bits` scale (shift `4 - bits`, 0 below 12 bits).
+#[inline]
+fn horizontal_row<T: Sample>(row: &[T], out: &mut [i16], mx: i32, shift: u32) {
+    let w = out.len();
+    let row = &row[..=w];
+    if shift == 0 {
+        for (value, (&a, &b)) in out.iter_mut().zip(row[..w].iter().zip(&row[1..])) {
+            *value = bilinear(a.to_i32(), b.to_i32(), mx) as i16;
+        }
+    } else {
+        for (value, (&a, &b)) in out.iter_mut().zip(row[..w].iter().zip(&row[1..])) {
+            *value = round_shift(bilinear(a.to_i32(), b.to_i32(), mx), shift) as i16;
         }
     }
-    mid
 }
 
 /// Write `values` to `line` clipped to samples of `depth`.
+#[inline]
 pub(crate) fn store_pixels<T: Sample>(
     line: &mut [T],
     values: impl Iterator<Item = i32>,
@@ -121,6 +121,7 @@ pub(crate) fn store_pixels<T: Sample>(
 
 /// Write `values` to `line` as compound values (minus the bias; they fit
 /// `i16` by dav2d's range analysis of every filter).
+#[inline]
 pub(crate) fn store_compound(
     line: &mut [i16],
     values: impl Iterator<Item = i32>,
@@ -183,15 +184,18 @@ pub fn put_bilinear_at<T: Sample>(
     let first_shift = BILINEAR_BITS - precision.bits.min(BILINEAR_BITS);
     match (mx != 0, my != 0) {
         (true, true) => {
-            // The horizontal pass of h + 1 rows at intermediate precision,
+            // Sliding two-row horizontal pass at intermediate precision,
             // then the vertical pass with one rounding.
-            let mid = horizontal_pass(src, (src_offset, src_stride), (w, h + 1), mx, first_shift);
+            let mut ring = [[0_i16; MAX_SIDE]; 2];
+            horizontal_row(source(0), &mut ring[0][..w], mx, first_shift);
+            let v_shift = BILINEAR_BITS + precision.bits;
             for (y, line) in rows.take(h).enumerate() {
+                horizontal_row(source(y + 1), &mut ring[(y + 1) & 1][..w], mx, first_shift);
+                let (top, bot) = (&ring[y & 1][..w], &ring[(y + 1) & 1][..w]);
                 store_pixels(
                     &mut line[..w],
-                    (0..w).map(|x| {
-                        let sum = bilinear(i32::from(mid[y][x]), i32::from(mid[y + 1][x]), my);
-                        round_shift(sum, BILINEAR_BITS + precision.bits)
+                    top.iter().zip(bot).map(|(&a, &b)| {
+                        round_shift(bilinear(i32::from(a), i32::from(b), my), v_shift)
                     }),
                     depth,
                 );
@@ -202,8 +206,8 @@ pub fn put_bilinear_at<T: Sample>(
                 let row = source(y);
                 store_pixels(
                     &mut line[..w],
-                    (0..w).map(|x| {
-                        let sum = bilinear(row[x].to_i32(), row[x + 1].to_i32(), mx);
+                    row[..w].iter().zip(&row[1..]).map(|(&a, &b)| {
+                        let sum = bilinear(a.to_i32(), b.to_i32(), mx);
                         round_shift(round_shift(sum, first_shift), precision.bits)
                     }),
                     depth,
@@ -215,9 +219,8 @@ pub fn put_bilinear_at<T: Sample>(
                 let (row, below) = (source(y), source(y + 1));
                 store_pixels(
                     &mut line[..w],
-                    (0..w).map(|x| {
-                        let sum = bilinear(row[x].to_i32(), below[x].to_i32(), my);
-                        round_shift(sum, BILINEAR_BITS)
+                    row[..w].iter().zip(&below[..w]).map(|(&a, &b)| {
+                        round_shift(bilinear(a.to_i32(), b.to_i32(), my), BILINEAR_BITS)
                     }),
                     depth,
                 );
@@ -256,13 +259,15 @@ pub fn prep_bilinear<T: Sample>(
     let rows = tmp.chunks_mut(tmp_stride);
     match (mx != 0, my != 0) {
         (true, true) => {
-            let mid = horizontal_pass(src, (src_offset, src_stride), (w, h + 1), mx, first_shift);
+            let mut ring = [[0_i16; MAX_SIDE]; 2];
+            horizontal_row(source(0), &mut ring[0][..w], mx, first_shift);
             for (y, line) in rows.take(h).enumerate() {
+                horizontal_row(source(y + 1), &mut ring[(y + 1) & 1][..w], mx, first_shift);
+                let (top, bot) = (&ring[y & 1][..w], &ring[(y + 1) & 1][..w]);
                 store_compound(
                     &mut line[..w],
-                    (0..w).map(|x| {
-                        let sum = bilinear(i32::from(mid[y][x]), i32::from(mid[y + 1][x]), my);
-                        round_shift(sum, BILINEAR_BITS)
+                    top.iter().zip(bot).map(|(&a, &b)| {
+                        round_shift(bilinear(i32::from(a), i32::from(b), my), BILINEAR_BITS)
                     }),
                     precision,
                 );
@@ -273,9 +278,8 @@ pub fn prep_bilinear<T: Sample>(
                 let row = source(y);
                 store_compound(
                     &mut line[..w],
-                    (0..w).map(|x| {
-                        let sum = bilinear(row[x].to_i32(), row[x + 1].to_i32(), mx);
-                        round_shift(sum, first_shift)
+                    row[..w].iter().zip(&row[1..]).map(|(&a, &b)| {
+                        round_shift(bilinear(a.to_i32(), b.to_i32(), mx), first_shift)
                     }),
                     precision,
                 );
@@ -286,9 +290,8 @@ pub fn prep_bilinear<T: Sample>(
                 let (row, below) = (source(y), source(y + 1));
                 store_compound(
                     &mut line[..w],
-                    (0..w).map(|x| {
-                        let sum = bilinear(row[x].to_i32(), below[x].to_i32(), my);
-                        round_shift(sum, first_shift)
+                    row[..w].iter().zip(&below[..w]).map(|(&a, &b)| {
+                        round_shift(bilinear(a.to_i32(), b.to_i32(), my), first_shift)
                     }),
                     precision,
                 );

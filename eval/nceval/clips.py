@@ -35,7 +35,7 @@ from pathlib import Path
 MAX_FRACTION_OF_SOURCE_BITRATE = 0.5
 
 CONTENT_CLASSES = ("static", "pan", "bodycam", "drone", "crowd", "lowlight", "texture",
-                   "synthetic_noise")
+                   "synthetic_noise", "videocall")
 SPLITS = ("train", "val", "test")
 
 

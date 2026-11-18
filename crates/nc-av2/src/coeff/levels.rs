@@ -186,9 +186,22 @@ pub(super) struct ScanPosition {
     diagonal: u8,
     /// Row in the coded region.
     row: u8,
+    /// Luma base-context offset and cap, resolved from the scan's geometry.
+    luma_base_offset: u8,
+    luma_base_cap: u8,
 }
 
 impl ScanPosition {
+    /// The first scan position for every coded square.
+    pub(super) const DC: Self = Self {
+        pos: 0,
+        map: 0,
+        diagonal: 0,
+        row: 0,
+        luma_base_offset: 0,
+        luma_base_cap: LF_DC_MAX as u8,
+    };
+
     /// Raster position in the coded region.
     pub(super) fn pos(self) -> usize {
         usize::from(self.pos)
@@ -213,21 +226,19 @@ impl ScanPosition {
 /// [`ScanPosition`]s of `scan` (the scan of `tx`).
 const fn scan_positions_of<const N: usize>(scan: &[u16; N], tx: TxSize) -> [ScanPosition; N] {
     let log2 = tx.coded_log2();
-    let mut positions = [ScanPosition {
-        pos: 0,
-        map: 0,
-        diagonal: 0,
-        row: 0,
-    }; N];
+    let mut positions = [ScanPosition::DC; N];
     let mut i = 0;
     while i < N {
         let pos = scan[i] as usize;
         let (row, col) = (pos >> log2, pos & ((1 << log2) - 1));
+        let (offset, cap) = luma_base_layout(pos, row + col);
         positions[i] = ScanPosition {
             pos: pos as u16,
             map: (row * MAP_STRIDE + col) as u16,
             diagonal: (row + col) as u8,
             row: row as u8,
+            luma_base_offset: offset as u8,
+            luma_base_cap: cap as u8,
         };
         i += 1;
     }
@@ -449,7 +460,7 @@ pub(super) fn base_context(
                 + usize::from(plane == PLANE_V) * CHROMA_V_OFFSET
         }
         Region::LumaLow | Region::LumaDefault => {
-            luma_base_magnitude(neighbours, at, region) + luma_base_offset(at, region)
+            luma_base_magnitude(neighbours, at, region) + luma_base_offset(at)
         }
     }
 }
@@ -464,37 +475,43 @@ pub(super) fn luma_base_magnitude(
     at: ScanPosition,
     region: Region,
 ) -> usize {
-    let diagonal = usize::from(at.diagonal);
-    match region {
-        Region::LumaLow => {
-            let magnitude = magnitude(neighbours, LUMA_TEMPLATE, LOW_FREQUENCY_CLIP);
-            if at.pos == 0 {
-                magnitude.min(LF_DC_MAX)
-            } else if diagonal < LF_NEAR_DIAGONALS {
-                magnitude.min(LF_NEAR_MAX)
-            } else {
-                magnitude.min(LF_FAR_MAX)
-            }
-        }
-        _ => magnitude(neighbours, LUMA_TEMPLATE, DEFAULT_CLIP).min(DEFAULT_MAX),
-    }
+    let clip = if region == Region::LumaLow {
+        LOW_FREQUENCY_CLIP
+    } else {
+        DEFAULT_CLIP
+    };
+    magnitude(neighbours, LUMA_TEMPLATE, clip).min(usize::from(at.luma_base_cap))
 }
 
 /// Largest [`luma_base_magnitude`] (the DC's cap).
 pub(super) const MAX_LUMA_BASE_MAGNITUDE: usize = LF_DC_MAX;
 
-/// The luma base context of `at` in `region` at magnitude zero.
-pub(super) fn luma_base_offset(at: ScanPosition, region: Region) -> usize {
-    let diagonal = usize::from(at.diagonal);
-    match region {
-        Region::LumaLow if at.pos == 0 => 0,
-        Region::LumaLow if diagonal < LF_NEAR_DIAGONALS => LF_NEAR_OFFSET,
-        Region::LumaLow => LF_FAR_OFFSET,
-        _ => DEFAULT_BANDS
-            .iter()
-            .find(|&&(limit, _)| diagonal < limit)
-            .map_or(DEFAULT_LAST_BAND_OFFSET, |&(_, offset)| offset),
+/// The luma base context of `at` at magnitude zero.
+pub(super) fn luma_base_offset(at: ScanPosition) -> usize {
+    usize::from(at.luma_base_offset)
+}
+
+/// Context groups depend only on the scan position. Resolve them once
+/// when laying out each scan, as AV1 does for its base-context offsets.
+const fn luma_base_layout(pos: usize, diagonal: usize) -> (usize, usize) {
+    if pos == 0 {
+        return (0, LF_DC_MAX);
     }
+    if diagonal < LF_NEAR_DIAGONALS {
+        return (LF_NEAR_OFFSET, LF_NEAR_MAX);
+    }
+    if diagonal < LUMA_LOW_FREQUENCY_DIAGONALS {
+        return (LF_FAR_OFFSET, LF_FAR_MAX);
+    }
+    let mut band = 0;
+    while band < DEFAULT_BANDS.len() {
+        let (limit, offset) = DEFAULT_BANDS[band];
+        if diagonal < limit {
+            return (offset, DEFAULT_MAX);
+        }
+        band += 1;
+    }
+    (DEFAULT_LAST_BAND_OFFSET, DEFAULT_MAX)
 }
 
 /// Low-range context of the coefficient at `at` in its `region`, from its

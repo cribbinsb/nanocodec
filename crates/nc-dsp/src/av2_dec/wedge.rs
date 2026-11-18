@@ -131,20 +131,23 @@ const CODEBOOK: [(Direction, u8, u8); WEDGE_TYPES] = {
 /// Wedge directions.
 const DIRECTIONS: usize = COS.len();
 
-/// The 128x128 master mask of direction `direction` (its index) with edge
-/// slope `slope` (dav2d `gen_master`).
-fn master(direction: usize, slope: i32) -> Vec<u8> {
+/// The 128x128 master masks of all 20 directions with edge slope `slope`
+/// (dav2d `gen_master`).
+fn master_set(slope: i32) -> Vec<u8> {
     let max_distance = (EDGE_WEIGHT.len() - 1) as i32;
-    let s = i32::from(SIN[direction]) * slope;
-    let c = i32::from(COS[direction]) * slope;
     let centre = MASTER as i32 - 1;
-    let mut out = vec![0_u8; MASTER * MASTER];
-    for (y, row) in out.as_chunks_mut::<MASTER>().0.iter_mut().enumerate() {
-        let dy = (2 * y as i32 - centre) * s;
-        for (x, weight) in row.iter_mut().enumerate() {
-            let d = ((2 * x as i32 - centre) * c + dy).clamp(-max_distance, max_distance);
-            let far = EDGE_WEIGHT[d.unsigned_abs() as usize];
-            *weight = EDGE_SCALE * if d >= 0 { EDGE_HALF - far } else { far };
+    let plane = MASTER * MASTER;
+    let mut out = vec![0_u8; DIRECTIONS * plane];
+    for (direction, master) in out.chunks_exact_mut(plane).enumerate() {
+        let s = i32::from(SIN[direction]) * slope;
+        let c = i32::from(COS[direction]) * slope;
+        for (y, row) in master.as_chunks_mut::<MASTER>().0.iter_mut().enumerate() {
+            let dy = (2 * y as i32 - centre) * s;
+            for (x, weight) in row.iter_mut().enumerate() {
+                let d = ((2 * x as i32 - centre) * c + dy).clamp(-max_distance, max_distance);
+                let far = EDGE_WEIGHT[d.unsigned_abs() as usize];
+                *weight = EDGE_SCALE * if d >= 0 { EDGE_HALF - far } else { far };
+            }
         }
     }
     out
@@ -181,15 +184,41 @@ impl Default for InterMasks {
 }
 
 impl InterMasks {
+    /// Total 4:4:4 sample count across every wedge block size and shape.
+    const WEDGE_FULL_LEN: usize = {
+        let mut side_sum = 0;
+        let mut i = 0;
+        while i < WEDGE_SIDES {
+            side_sum += WEDGE_MIN_SIDE << i;
+            i += 1;
+        }
+        WEDGE_TYPES * side_sum * side_sum
+    };
+
+    /// Total sample count across every inter-intra block size and mode.
+    const II_FULL_LEN: usize = {
+        let mut side_sum = 0;
+        let mut i = 0;
+        while i < II_SIDES {
+            side_sum += II_MIN_SIDE << i;
+            i += 1;
+        }
+        II_MODES * side_sum * side_sum
+    };
+
     /// Generate every mask.
     #[must_use]
     pub fn new() -> Self {
         let mut masks = Self {
-            wedge: [Vec::new(), Vec::new(), Vec::new()],
+            wedge: [
+                Vec::with_capacity(Self::WEDGE_FULL_LEN),
+                Vec::with_capacity(Self::WEDGE_FULL_LEN / 2),
+                Vec::with_capacity(Self::WEDGE_FULL_LEN / 4),
+            ],
             wedge_offsets: [0; WEDGE_SIDES * WEDGE_SIDES],
-            tmvp: Vec::new(),
+            tmvp: Vec::with_capacity(Self::WEDGE_FULL_LEN / (TMVP_CELL * TMVP_CELL)),
             tmvp_offsets: [0; WEDGE_SIDES * WEDGE_SIDES],
-            interintra: Vec::new(),
+            interintra: Vec::with_capacity(Self::II_FULL_LEN),
             interintra_offsets: [0; II_SIDES * II_SIDES],
         };
         masks.build_wedges();
@@ -214,8 +243,9 @@ impl InterMasks {
     }
 
     fn build_wedges(&mut self) {
-        let sharp: Vec<Vec<u8>> = (0..DIRECTIONS).map(|d| master(d, SHARP_SLOPE)).collect();
-        let soft: Vec<Vec<u8>> = (0..DIRECTIONS).map(|d| master(d, SOFT_SLOPE)).collect();
+        let sharp = master_set(SHARP_SLOPE);
+        let soft = master_set(SOFT_SLOPE);
+        let plane = MASTER * MASTER;
         for (index, (w, h)) in Self::wedge_sizes().enumerate() {
             self.wedge_offsets[index] = self.wedge[0].len();
             self.tmvp_offsets[index] = self.tmvp.len();
@@ -225,15 +255,14 @@ impl InterMasks {
                 &soft
             };
             for &(direction, x_offset, y_offset) in &CODEBOOK {
-                let full = crop(
-                    &masters[direction as usize],
-                    (w, h),
-                    (x_offset.into(), y_offset.into()),
-                );
-                self.wedge[1].extend(subsample(&full, (w, h), (true, false)));
-                self.wedge[2].extend(subsample(&full, (w, h), (true, true)));
-                self.tmvp.extend(tmvp_summary(&full, (w, h)));
-                self.wedge[0].extend(full);
+                let [w444, w422, w420] = &mut self.wedge;
+                let start = w444.len();
+                let dir_master = &masters[direction as usize * plane..][..plane];
+                append_crop(dir_master, (w, h), (x_offset.into(), y_offset.into()), w444);
+                let full = &w444[start..];
+                append_subsample_422(full, w, w422);
+                append_subsample_420(full, w, w420);
+                append_tmvp_summary(full, (w, h), &mut self.tmvp);
             }
         }
     }
@@ -313,42 +342,43 @@ impl InterMasks {
     }
 }
 
-/// The `w` x `h` window of a master mask whose edge sits at
+/// Append the `w` x `h` window of a master mask whose edge sits at
 /// (`x_offset`, `y_offset`) eighths of the block (dav2d `copy2d`).
-fn crop(master: &[u8], (w, h): (usize, usize), (x_offset, y_offset): (usize, usize)) -> Vec<u8> {
+fn append_crop(
+    master: &[u8],
+    (w, h): (usize, usize),
+    (x_offset, y_offset): (usize, usize),
+    out: &mut Vec<u8>,
+) {
     let left = MASTER / 2 - x_offset * w / WEDGE_MIN_SIDE;
     let top = MASTER / 2 - y_offset * h / WEDGE_MIN_SIDE;
-    (0..h)
-        .flat_map(|y| &master[(top + y) * MASTER + left..][..w])
-        .copied()
-        .collect()
+    for y in 0..h {
+        out.extend_from_slice(&master[(top + y) * MASTER + left..][..w]);
+    }
 }
 
-/// A 4:4:4 mask averaged over horizontal pairs, and over vertical pairs
-/// too with `sub_y` (dav2d `subsample_422`, `subsample_420`).
-fn subsample(
-    full: &[u8],
-    (w, h): (usize, usize),
-    (sub_x, sub_y): (bool, bool),
-) -> impl Iterator<Item = u8> + '_ {
-    debug_assert!(sub_x, "every subsampled layout halves the width");
-    let rows = if sub_y { h / 2 } else { h };
-    (0..rows).flat_map(move |y| {
-        let row = if sub_y { 2 * y } else { y };
-        (0..w / 2).map(move |x| {
-            let at = |dy: usize, dx: usize| u16::from(full[(row + dy) * w + 2 * x + dx]);
-            if sub_y {
-                ((at(0, 0) + at(0, 1) + at(1, 0) + at(1, 1) + 2) >> 2) as u8
-            } else {
-                ((at(0, 0) + at(0, 1) + 1) >> 1) as u8
-            }
-        })
-    })
+/// Append a 4:4:4 mask averaged over horizontal pairs (dav2d `subsample_422`).
+fn append_subsample_422(full: &[u8], w: usize, out: &mut Vec<u8>) {
+    for row in full.chunks_exact(w) {
+        for &[a, b] in row.as_chunks::<2>().0 {
+            out.push(((u16::from(a) + u16::from(b) + 1) >> 1) as u8);
+        }
+    }
 }
 
-/// The per-8x8 summary of a 4:4:4 mask (dav2d `fill_tmvp`).
-fn tmvp_summary(full: &[u8], (w, h): (usize, usize)) -> Vec<u8> {
-    let mut out = Vec::with_capacity((w / TMVP_CELL) * (h / TMVP_CELL));
+/// Append a 4:4:4 mask averaged over 2x2 pairs (dav2d `subsample_420`).
+fn append_subsample_420(full: &[u8], w: usize, out: &mut Vec<u8>) {
+    for pair in full.chunks_exact(2 * w) {
+        let (r0, r1) = pair.split_at(w);
+        for (&[a0, b0], &[a1, b1]) in r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0) {
+            let sum = u16::from(a0) + u16::from(b0) + u16::from(a1) + u16::from(b1);
+            out.push(((sum + 2) >> 2) as u8);
+        }
+    }
+}
+
+/// Append the per-8x8 summary of a 4:4:4 mask (dav2d `fill_tmvp`).
+fn append_tmvp_summary(full: &[u8], (w, h): (usize, usize), out: &mut Vec<u8>) {
     for cy in 0..h / TMVP_CELL {
         for cx in 0..w / TMVP_CELL {
             let (mut low, mut high) = (0_u32, 0_u32);
@@ -367,7 +397,6 @@ fn tmvp_summary(full: &[u8], (w, h): (usize, usize)) -> Vec<u8> {
             });
         }
     }
-    out
 }
 
 #[cfg(test)]

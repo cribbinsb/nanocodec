@@ -788,6 +788,14 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
+    fn load_u8_halves(lo: &[u8], hi: &[u8]) -> Self {
+        let lo = u64::from(u32::from_le_bytes(lo[..4].try_into().unwrap()));
+        let hi = u64::from(u32::from_le_bytes(hi[..4].try_into().unwrap()));
+        let packed = (lo | (hi << 32)) as i64;
+        Self(u16x8_extend_low_u8x16(i64x2(packed, 0)))
+    }
+
+    #[inline(always)]
     fn store_u8_sat_halves(self, lo: &mut [u8], hi: &mut [u8]) {
         let packed = u8x16_narrow_i16x8(self.0, self.0);
         lo[..4].copy_from_slice(&i32x4_extract_lane::<0>(packed).to_le_bytes());
@@ -842,6 +850,17 @@ impl I16FilterLanes for I16x8 {
     #[inline(always)]
     fn blend(self, if_set: Self, if_clear: Self) -> Self {
         Self(select_i16(self.0, if_set.0, if_clear.0))
+    }
+
+    #[inline(always)]
+    fn load_u8_deinterleaved(src: &[u8]) -> (Self, Self) {
+        let src = &src[..16];
+        // SAFETY: `src` holds 16 bytes; `v128_load` accepts 1-byte alignment.
+        let raw = unsafe { v128_load(src.as_ptr().cast()) };
+        (
+            Self(v128_and(raw, i16x8_splat(0x00ff))),
+            Self(u16x8_shr(raw, 8)),
+        )
     }
 
     #[inline(always)]

@@ -30,6 +30,7 @@ const FILTER_CENTRE: i32 = 3 * 64;
 
 /// The taps at position `position` (1/65536 sample, relative to the
 /// sample being filtered).
+#[inline]
 fn taps(position: i32) -> &'static [i8; TAPS] {
     let index = FILTER_CENTRE + round_shift(position, PHASE_SHIFT);
     &WARP_FILTER[index as usize]
@@ -42,6 +43,7 @@ pub type Shear = [i16; 4];
 
 /// The horizontal pass: 15 rows from 3 above the block, each column at
 /// its own phase, rounded to intermediate precision.
+#[inline]
 fn horizontal_pass<T: Sample>(
     (src, src_offset, src_stride): (&[T], usize, usize),
     shear: Shear,
@@ -68,6 +70,7 @@ fn horizontal_pass<T: Sample>(
 }
 
 /// The vertical pass of output row `y`: each column at its own phase.
+#[inline]
 fn vertical_row(
     mid: &[[i16; SIDE]; MID_ROWS],
     shear: Shear,

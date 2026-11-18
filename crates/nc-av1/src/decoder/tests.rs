@@ -1155,3 +1155,21 @@ fn flat_second_reference_round_trips_and_changes_the_stream() {
     let with = overlay_packets(&second, 12);
     assert_ne!(with, overlay_packets(&[("structure.unified", 0.0)], 12));
 }
+
+#[test]
+fn odd_upscaled_superres_width_is_rejected() {
+    // Regression for fuzz crash: superres can downscale an odd `upscaled_width`
+    // into an even coded `width`, which `ShownPicture::window` cannot represent.
+    let seq_and_frame_0: &[u8] = &[8, 28, 75, 48, 178, 78, 15, 0, 0, 0, 0, 0, 0, 0, 63];
+    let frame_1: &[u8] = &[
+        48, 178, 3, 0, 67, 27, 78, 0, 6, 0, 0, 38, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 39, 0, 0, 0, 236, 61, 95, 255, 61, 238,
+    ];
+    let mut decoder = Decoder::new();
+    for packet in [seq_and_frame_0, frame_1] {
+        if decoder.decode_shown(packet).is_ok() {
+            let _ = decoder.shown();
+        }
+    }
+}

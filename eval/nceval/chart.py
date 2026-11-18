@@ -60,7 +60,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import buildinfo, jreal
+from . import buildinfo, jreal, plotted
 from .budget import MAX_MINUTES, estimate_minutes
 from .cbr import METRIC_TUNES, PROFILE_SEPARATOR, Family, anchor_families, clip_targets
 from .clips import Clip
@@ -75,30 +75,10 @@ from .stages import balanced_parts
 
 #: The neutral anchor every point is compared with (BD 0, speed 1).
 ANCHOR = "x264-medium"
-#: Our points: (family, chart label).
-OURS = (("nanocodec-h264@slow", "H.264 Slow"), ("nanocodec-h264", "H.264"), ("nanocodec-h264@fast", "H.264 Fast"),
-        ("nanocodec-h264@faster", "H.264 Faster"),
-        ("nanocodec-h264@veryfast", "H.264 Veryfast"), ("nanocodec-hevc@slow", "HEVC Slow"),
-        ("nanocodec-hevc", "HEVC"),
-        ("nanocodec-hevc@fast", "HEVC Fast"), ("nanocodec-hevc@faster", "HEVC Faster"),
-        ("nanocodec-av1@slow", "AV1 Slow"), ("nanocodec-av1", "AV1"),
-        ("nanocodec-av1@fast", "AV1 Fast"), ("nanocodec-av1@faster", "AV1 Faster"),
-        ("nanocodec-av1@veryfast", "AV1 Veryfast"),
-        ("nanocodec-vp9@slow", "VP9 Slow"), ("nanocodec-vp9", "VP9"),
-        ("nanocodec-vp9@fast", "VP9 Fast"), ("nanocodec-vp9@faster", "VP9 Faster"),
-        ("nanocodec-vp9@veryfast", "VP9 Veryfast"), ("nanocodec-av2@slow", "AV2 Slow"), ("nanocodec-av2", "AV2"),
-        ("nanocodec-av2@fast", "AV2 Fast"), ("nanocodec-vvc@slow", "VVC Slow"), ("nanocodec-vvc", "VVC"),
-        ("nanocodec-vvc@fast", "VVC Fast"))
-#: Reference encoders: (family, chart label). Families are cbr.anchor_families.
-REFERENCES = (("openh264-baseline", "openh264"),
-              ("x264-ultrafast", "x264 ultrafast"), ("x264-veryfast", "x264 veryfast"),
-              ("x264-medium", "x264 medium"),
-              ("x265-ultrafast", "x265 ultrafast"), ("x265-superfast", "x265 superfast"),
-              ("x265-medium", "x265 medium"),
-              ("svtav1-m8", "SVT-AV1 M8"), ("svtav1-m10", "SVT-AV1 M10"),
-              ("svtav1-m12", "SVT-AV1 M12"), ("svtav1-m13", "SVT-AV1 M13"),
-              ("libvpx-vp9-cpu7", "libvpx VP9 rt 7"), ("libvpx-vp9-cpu9", "libvpx VP9 rt 9"),
-              ("libaom-av1-cpu8", "libaom rt 8"), ("libaom-av1-cpu10", "libaom rt 10"))
+#: Our points and the reference encoders: (family, chart label), both from
+#: nceval.plotted (ours: the shipped preset registry; references: its explicit list).
+OURS = tuple((f.name, f.label) for f in plotted.own_families())
+REFERENCES = tuple((r.family, r.label) for r in plotted.REFERENCES)
 #: Reference encoders only the fixed-QP lens runs (the site's Fixed QP chart).
 LENS_REFERENCES = (("x264-veryslow", "x264 veryslow"), ("x265-slow", "x265 slow"),
                    ("libvpx-vp9-cpu2~good", "libvpx VP9 good 2"),
@@ -176,32 +156,8 @@ CHAINED_TERMS = tuple(f"{prefix}{metric}" for prefix in ("bd_", "low_")
                       for metric in jreal.HEADLINE_METRICS + jreal.REPORTED_METRICS)
 OUTPUT_STEM = "bd-vs-speed"
 #: Direct comparisons shown under the chart: (ours, reference), each BD on the
-#: same real-use points, without the neutral anchor in between.
-SELECTED_PAIRS = (
-    ("nanocodec-h264", "openh264-baseline"), ("nanocodec-h264", "x264-veryfast"),
-    ("nanocodec-h264", "x264-medium"), ("nanocodec-h264@fast", "x264-veryfast"),
-    ("nanocodec-h264@fast", "openh264-baseline"), ("nanocodec-h264@fast", "nanocodec-h264"),
-    ("nanocodec-h264@faster", "x264-ultrafast"), ("nanocodec-h264@faster", "nanocodec-h264@fast"),
-    ("nanocodec-h264@veryfast", "x264-ultrafast"),
-    ("nanocodec-h264@veryfast", "nanocodec-h264@faster"),
-    ("nanocodec-hevc", "x265-medium"), ("nanocodec-hevc@fast", "x265-superfast"),
-    ("nanocodec-hevc", "svtav1-m12"), ("nanocodec-hevc@fast", "nanocodec-hevc"),
-    ("nanocodec-av1", "openh264-baseline"), ("nanocodec-av1@fast", "openh264-baseline"),
-    ("nanocodec-av1", "svtav1-m8"), ("nanocodec-av1", "svtav1-m12"),
-    ("nanocodec-av1@fast", "svtav1-m12"), ("nanocodec-av1", "libaom-av1-cpu8"),
-    ("nanocodec-av1@fast", "nanocodec-av1"),
-    ("nanocodec-av1@faster", "svtav1-m12"), ("nanocodec-av1@faster", "nanocodec-av1@fast"),
-    ("nanocodec-av1@veryfast", "svtav1-m13"), ("nanocodec-av1@veryfast", "nanocodec-av1@faster"),
-    ("nanocodec-hevc@faster", "svtav1-m13"), ("nanocodec-hevc@faster", "nanocodec-hevc@fast"),
-    ("nanocodec-vp9", "libvpx-vp9-cpu7"), ("nanocodec-vp9@fast", "libvpx-vp9-cpu9"),
-    ("nanocodec-vp9@fast", "nanocodec-vp9"),
-    ("nanocodec-vp9@faster", "libvpx-vp9-cpu9"), ("nanocodec-vp9@faster", "nanocodec-vp9@fast"),
-    ("nanocodec-vp9@veryfast", "libvpx-vp9-cpu9"),
-    ("nanocodec-vp9@veryfast", "nanocodec-vp9@faster"),
-    ("nanocodec-av2", "svtav1-m8"), ("nanocodec-av2", "nanocodec-av1"),
-    ("nanocodec-av2@fast", "nanocodec-av2"),
-    ("nanocodec-vvc", "x265-medium"), ("nanocodec-vvc", "nanocodec-hevc"),
-    ("nanocodec-vvc@fast", "nanocodec-vvc"))
+#: same real-use points, without the neutral anchor in between (nceval.plotted.pairs).
+SELECTED_PAIRS = tuple(plotted.pairs())
 
 
 @dataclass(frozen=True)
@@ -238,9 +194,10 @@ class ChartPoint:
     bd_msssim: float | None = None
     #: The fps is its default-tuned twin's (a metric-tuned point not yet timed itself).
     fps_borrowed: bool = False
-    #: BD-rate on XPSNR-YUV alone, the same (full + low) / 2; None unless every
-    #: scored clip's curves carry XPSNR (reported only, never part of BD-J).
+    #: BD-rate on XPSNR-YUV alone, the same (full + low) / 2, over the `xpsnr_clips`
+    #: of BD-J's clips where it can be computed (reported_pair; never part of BD-J).
     bd_xpsnr: float | None = None
+    xpsnr_clips: int = 0
 
     @property
     def flagged(self) -> bool:
@@ -419,16 +376,17 @@ def balanced_pair(per_clip: dict, full: str, low: str) -> float | None:
     return None if None in values else sum(values) / 2
 
 
-def reported_pair(per_clip: dict, metric: str) -> float | None:
-    """`balanced_pair` of a reported metric over the same clips as BD-J: None
-    (not measured) when any clip BD-J scores lacks it, so the figure is never
-    over a different clip set from its neighbours."""
-    scored = [row for row in per_clip.values() if row.get("j") is not None]
-    if not scored or any(row.get(f"bd_{metric}") is None or row.get(f"low_{metric}") is None
-                         for row in scored):
-        return None
-    return balanced_pair({clip: row for clip, row in per_clip.items() if row.get("j") is not None},
-                         f"bd_{metric}", f"low_{metric}")
+def reported_pair(per_clip: dict, metric: str) -> tuple[float | None, int]:
+    """`balanced_pair` of a reported metric over the clips BD-J scores on which the
+    metric's BD can be computed, and how many those are (owner, 2026-11-18: on a few
+    clips a strong encoder's XPSNR curve does not overlap the zero line's at all; the
+    figure is shown with its clip count, so it is never silently another clip set).
+    BD-J itself stays over all its clips."""
+    usable = {clip: row for clip, row in per_clip.items() if row.get("j") is not None
+              and row.get(f"bd_{metric}") is not None and row.get(f"low_{metric}") is not None}
+    if not usable:
+        return None, 0
+    return balanced_pair(usable, f"bd_{metric}", f"low_{metric}"), len(usable)
 
 
 def interquartile(values: list[float]) -> tuple[float, float] | None:
@@ -530,6 +488,7 @@ def chart_point(test: Family, label: str, per_clip: dict[str, dict], clips: list
     """One chart point from its direct per-clip rows and any chained clips' rows."""
     chained = chained or {}
     rows = {clip: chained[clip][1] if clip in chained else row for clip, row in per_clip.items()}
+    bd_xpsnr, xpsnr_clips = reported_pair(rows, "xpsnr_yuv")
     scored = [row["j"] for row in rows.values() if row["j"] is not None]
     scored_classes = {row["class"] for row in rows.values() if row["j"] is not None}
     return ChartPoint(
@@ -538,7 +497,7 @@ def chart_point(test: Family, label: str, per_clip: dict[str, dict], clips: list
         bd_psnr=balanced_pair(rows, "bd_psnr_yuv", "low_psnr_yuv"),
         bd_vmaf=balanced_pair(rows, "bd_vmaf_v1", "low_vmaf_v1"),
         bd_msssim=balanced_pair(rows, "bd_ms_ssim", "low_ms_ssim"),
-        bd_xpsnr=reported_pair(rows, "xpsnr_yuv"),
+        bd_xpsnr=bd_xpsnr, xpsnr_clips=xpsnr_clips,
         iqr=interquartile(scored), scored=len(scored), clips=len(clips),
         missing_classes=tuple(sorted({c.content_class for c in clips} - scored_classes)),
         rate_invalid=len(runner.unreachable.get(test.name, ())),
@@ -889,7 +848,8 @@ def csv_text(points: list[ChartPoint], front: list[ChartPoint],
     writer.writerow(["family", "label", "ours", "bd_j_pct", "bd_psnr_yuv_pct", "bd_vmaf_v1_pct", "iqr_low_pct",
                      "iqr_high_pct", "clips_scored", "clips", platform.column,
                      "speed_vs_anchor", "pareto", "flagged", "rate_invalid_points",
-                     "clips_chained", "bd_j_direct_pct", "chained", "bd_xpsnr_yuv_pct"])
+                     "clips_chained", "bd_j_direct_pct", "chained", "bd_xpsnr_yuv_pct",
+                     "xpsnr_clips"])
     for p in points:
         num = (lambda v, d: "" if v is None else f"{v:.{d}f}")
         chained = ";".join(f"{c.clip}:{c.intermediate}:{c.j:.2f}" for c in p.chained)
@@ -897,7 +857,8 @@ def csv_text(points: list[ChartPoint], front: list[ChartPoint],
                          num(p.iqr and p.iqr[0], 2), num(p.iqr and p.iqr[1], 2), p.scored,
                          p.clips, num(p.fps, 2), num(p.speed, 3), int(p in front),
                          int(p.flagged), p.rate_invalid, len(p.chained),
-                         num(p.direct_bd_j, 2), chained, num(p.bd_xpsnr, 2)])
+                         num(p.direct_bd_j, 2), chained, num(p.bd_xpsnr, 2),
+                         p.xpsnr_clips if p.bd_xpsnr is not None else ""])
     return out.getvalue()
 
 
@@ -1689,11 +1650,13 @@ def render(args: argparse.Namespace) -> None:
                     stored_xpsnr=True)
     quality = quality_points(runner, families, clips, args.frames, args.rungs, judge)
     points, pairs, excluded = quality.points, quality.pairs, quality.excluded
+    tuned_names = [n for n in (args.tuned.split(",") if args.tuned else [name for name, _ in TUNED])
+                   if n != zero]
+    # `--tuned ZERO` leaves none: a clip set whose twins were never coded (VC-1K)
     tuned_families = chart_families(
-        Path(args.binary).resolve(), Path(args.presets_dir),
-        [n for n in (args.tuned.split(",") if args.tuned else [name for name, _ in TUNED])
-         if n != zero],
-        binary_overrides(args.binary_for), binary_overrides(args.presets_for))[1:]
+        Path(args.binary).resolve(), Path(args.presets_dir), tuned_names,
+        binary_overrides(args.binary_for), binary_overrides(args.presets_for))[1:] \
+        if tuned_names else []
     tuned, side_curves = side_points(runner, quality, families, tuned_families, clips,
                                      args.frames, dict(TUNED), args.rungs)
     gains = tune_gains(side_curves, tuned, quality)

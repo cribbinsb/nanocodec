@@ -654,16 +654,13 @@ impl<'a> Scan<'a, '_> {
             0
         };
         let grid = self.grid;
-        let start = grid.index(
-            mi_row + row_offset,
-            (self.block.mi_col as i32 + col_offset) as usize,
-        );
-        let stride = grid.stride();
+        let col = (self.block.mi_col as i32 + col_offset) as usize;
+        let base_row = mi_row + row_offset;
         let use_step_16 = self.h4 >= MI_64X64;
         let mut matched = 0;
         let mut i = 0;
         while i < self.col_span {
-            let cand = grid.cell(start + i as usize * stride);
+            let cand = grid.at(base_row + i as usize, col);
             let (cand_w4, cand_h4) = (cand.width_mi() as i32, cand.height_mi() as i32);
             let mut len = self.h4.min(cand_h4);
             if use_step_16 {

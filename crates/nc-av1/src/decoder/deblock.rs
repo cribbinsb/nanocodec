@@ -183,6 +183,9 @@ pub(super) struct EdgeMap {
     luma: PlaneSides,
     /// U and V share their areas (and sizes).
     chroma: PlaneSides,
+    /// Scratch pending-run slots reused across every plane/direction pass
+    /// (every pass drains its active slots back to `None`).
+    pending: Vec<Option<Run>>,
 }
 
 /// A block's chroma plane size and transform size (log2 samples).
@@ -386,16 +389,24 @@ pub(super) fn apply<T: Pixel>(
         }
         let ss = usize::from(plane != PlaneIndex::Y);
         let areas = parts[ss].clone();
+        if areas.is_empty() {
+            continue;
+        }
         let mut view = recon.plane_mut(plane).view_mut();
         let size = ((width + ss) >> ss, (height + ss) >> ss);
+        let sides = if plane == PlaneIndex::Y {
+            &map.luma
+        } else {
+            &map.chroma
+        };
         runs.clear();
-        PlanePass::<T, true>::new(map, plane, &limits, size, runs).filter(
+        PlanePass::<T, true>::new(sides, &mut map.pending, plane, &limits, size, runs).filter(
             kernels,
             &mut view,
             areas.clone(),
         );
         runs.clear();
-        PlanePass::<T, false>::new(map, plane, &limits, size, runs)
+        PlanePass::<T, false>::new(sides, &mut map.pending, plane, &limits, size, runs)
             .filter(kernels, &mut view, areas);
     }
     map.luma.filtered = ends[0];
@@ -425,13 +436,16 @@ struct Run {
 /// which stays inlined (shared by both instances it was not: +2.8 % 8-bit
 /// decode instructions, callgrind, crowd 720p of ours).
 struct PlanePass<'a, T, const VERTICAL: bool> {
-    map: &'a EdgeMap,
+    sides: &'a PlaneSides,
     plane: PlaneIndex,
     limits: &'a Limits,
     /// The plane's part of the frame, in samples.
     size: (usize, usize),
-    /// The pending run of each edge line (unit across the edges).
-    pending: Vec<Option<Run>>,
+    /// The pending run of each edge line (unit across the edges), borrowed
+    /// from [`EdgeMap`] so passes never reallocate.
+    pending: &'a mut [Option<Run>],
+    min_across: usize,
+    max_across: usize,
     /// The pass's finished runs, in order, for one filter call.
     runs: &'a mut Vec<EdgeRun<Av1EdgeFilter>>,
     samples: core::marker::PhantomData<T>,
@@ -439,24 +453,25 @@ struct PlanePass<'a, T, const VERTICAL: bool> {
 
 impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
     fn new(
-        map: &'a EdgeMap,
+        sides: &'a PlaneSides,
+        pending_buf: &'a mut Vec<Option<Run>>,
         plane: PlaneIndex,
         limits: &'a Limits,
         size: (usize, usize),
         runs: &'a mut Vec<EdgeRun<Av1EdgeFilter>>,
     ) -> Self {
-        let sides = if plane == PlaneIndex::Y {
-            &map.luma
-        } else {
-            &map.chroma
-        };
         let lines = if VERTICAL { sides.columns } else { sides.rows };
+        if pending_buf.len() < lines {
+            pending_buf.resize(lines, None);
+        }
         Self {
-            map,
+            sides,
             plane,
             limits,
             size,
-            pending: vec![None; lines],
+            pending: &mut pending_buf[..lines],
+            min_across: lines,
+            max_across: 0,
             runs,
             samples: core::marker::PhantomData,
         }
@@ -467,11 +482,7 @@ impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
     }
 
     fn sides(&self) -> &'a PlaneSides {
-        if self.luma() {
-            &self.map.luma
-        } else {
-            &self.map.chroma
-        }
+        self.sides
     }
 
     /// Which of an area's two levels this pass reads: luma's vertical or
@@ -526,21 +537,30 @@ impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
                 self.edge((across, start, end), tx_side, level);
             }
             // The inner edges have this area's transforms on both sides.
-            let mut edge = first + (1 << tx_side);
-            while edge < last && level != 0 {
-                if filtered(edge) {
+            if level != 0 {
+                let step = 1 << tx_side;
+                let mut edge = first + step;
+                if edge < last {
                     let length = filter_length(self.luma(), tx_side);
-                    self.run(edge >> UNIT_LOG2, start..end, (level, length));
+                    while edge < last {
+                        if filtered(edge) {
+                            self.run(edge >> UNIT_LOG2, start..end, (level, length));
+                        }
+                        edge += step;
+                    }
                 }
-                edge += 1 << tx_side;
             }
         }
-        for across in 0..self.pending.len() {
-            if let Some(run) = self.pending[across].take() {
-                self.finish(across, run);
+        if self.min_across <= self.max_across {
+            for across in self.min_across..=self.max_across {
+                if let Some(run) = self.pending[across].take() {
+                    self.finish(across, run);
+                }
             }
         }
-        kernels.av1_loop_filter_runs(view, VERTICAL, self.runs);
+        if !self.runs.is_empty() {
+            kernels.av1_loop_filter_runs(view, VERTICAL, self.runs);
+        }
     }
 
     /// The edge at unit `across` from sample `start` to `end` along it, of
@@ -586,6 +606,8 @@ impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
         if level == 0 {
             return;
         }
+        self.min_across = self.min_across.min(across);
+        self.max_across = self.max_across.max(across);
         let filter = Av1EdgeFilter {
             length,
             ..self.limits[usize::from(level)]

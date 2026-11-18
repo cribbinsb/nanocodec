@@ -638,7 +638,7 @@ pub(crate) fn read_prepared<C: Av1Coefficient>(
     // The token loop works on a local copy of the reader, written back once
     // (libvpx `decode_coefs` keeps `value`, `count` and `range` in locals):
     // through the reference, every read reloaded and stored its state.
-    let mut local = reader.clone();
+    let mut local = *reader;
     let extent = read_tokens(&mut local, coefficients, cache, setup, coder, initial);
     *reader = local;
     extent
@@ -657,6 +657,19 @@ fn read_tokens<C: Av1Coefficient>(
     coder: &mut Coder<'_>,
     initial: usize,
 ) -> Extent {
+    // Most non-skip inter transform blocks have eob == 0 (`BANDS_*[0] == 0`):
+    // check the DC EOB branch before materialising scan/cache state.
+    let first_prob = coder.probs[0][initial][0];
+    let first_counts = &mut coder.counts[0][initial];
+    first_counts.eob_branch += 1;
+    if !reader.read(first_prob) {
+        first_counts.tokens[EOB_MODEL_TOKEN] += 1;
+        return Extent {
+            eob: 0,
+            rows: 0,
+            columns: 0,
+        };
+    }
     let ReadSetup {
         order,
         bands,
@@ -666,7 +679,7 @@ fn read_tokens<C: Av1Coefficient>(
     } = setup;
     let (mut rows, mut columns) = (0, 0);
     let cache = &mut cache.0;
-    let mut needs_eob = true;
+    let mut needs_eob = false;
     let mut step = dequantizer.dc;
     let mut ctx = initial;
     let positions = order
@@ -710,7 +723,7 @@ fn read_tokens<C: Av1Coefficient>(
             // §8.6.2 makes a valid stream's dequantized value fit 8 +
             // `BitDepth` bits (libvpx's 8-bit `dqcoeff` is `int16_t`); a
             // corrupt one wraps, as every inverse treated it.
-            let negative = reader.read(128);
+            let negative = reader.read_bit();
             coefficients[position] = dequantize(magnitude, step, dequantizer.shift, negative);
             cache[position] = energy(magnitude);
             rows = rows.max((position >> *row_shift) + 1);

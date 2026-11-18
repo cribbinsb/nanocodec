@@ -3,10 +3,11 @@
 //! contract extrema; extreme samples and coefficients (output saturation);
 //! and statistics at their documented value bounds.
 use crate::{check::CheckReport, rng::Rng};
+use nc_common::BitDepth;
 use nc_dsp::{
     Dsp, VVC_ALF_BLOCK, VVC_ALF_DOT_LANES, VVC_ALF_GRAM_ALIGN, VVC_ALF_GRAM_MAX_MAGNITUDE,
     VVC_ALF_GRAM_MAX_SAMPLES, VVC_ALF_MAX_GROUP_SUM, VVC_ALF_REACH, VVC_ALF_SAMPLE_LANES,
-    VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES, VVC_ALF_TAPS,
+    VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES, VVC_ALF_TAPS, vvc_alf_clip_value,
 };
 
 /// Widths up to two CTBs, including both sides of the 16/32-lane boundaries.
@@ -35,11 +36,121 @@ fn row(rng: &mut Rng, pattern: usize, len: usize) -> Vec<u8> {
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     filter(candidate, reference, rng, report);
+    clipped_and_cross(candidate, reference, rng, report);
     laplacians(candidate, reference, rng, report);
     classify(candidate, reference, rng, report);
     samples(candidate, reference, rng, report);
     gram(candidate, reference, rng, report);
     dot(candidate, reference, rng, report);
+}
+
+#[allow(clippy::too_many_lines)]
+fn clipped_and_cross(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
+    let clips: [i16; 4] = std::array::from_fn(|i| vvc_alf_clip_value(i, BitDepth::EIGHT));
+    for width in WIDTHS {
+        for pattern in 0..6 {
+            let slack = if pattern >= 3 { 16 } else { 0 };
+            let data: Vec<Vec<u8>> = (0..10)
+                .map(|_| row(rng, pattern, width + 2 * VVC_ALF_REACH + slack))
+                .collect();
+            let block_rows: [[&[u8]; 7]; VVC_ALF_BLOCK] = std::array::from_fn(|r| {
+                std::array::from_fn(|i| {
+                    let dy = i as isize - 3;
+                    let dy = if pattern % 2 == 0 {
+                        dy
+                    } else {
+                        dy.clamp(-(r as isize), r as isize)
+                    };
+                    data[(r as isize + 3 + dy) as usize].as_slice()
+                })
+            });
+            let blocks = width.div_ceil(VVC_ALF_BLOCK);
+            let coefficients: Vec<[i16; VVC_ALF_TAPS]> = (0..blocks)
+                .map(|_| std::array::from_fn(|_| rng.below(256) as i16 - 128))
+                .collect();
+            let limits: Vec<[i16; VVC_ALF_TAPS]> = (0..blocks)
+                .map(|_| std::array::from_fn(|_| clips[rng.below(4)]))
+                .collect();
+            for shifts in [[7; VVC_ALF_BLOCK], [10, 7, 7, 10]] {
+                let run = |dsp: &Dsp| {
+                    let mut out: [Vec<u8>; VVC_ALF_BLOCK] = std::array::from_fn(|_| vec![0; width]);
+                    dsp.vvc_alf_filter_clipped_block_row(
+                        &block_rows,
+                        &coefficients,
+                        &limits,
+                        &shifts,
+                        &mut out.each_mut().map(Vec::as_mut_slice),
+                    );
+                    out
+                };
+                report.cases += 1;
+                if run(candidate) != run(reference) {
+                    report.failures.push(format!(
+                        "{} u8 vvc_alf_filter_clipped_block_row width={width} pattern={pattern} shifts={shifts:?}",
+                        candidate.isa()
+                    ));
+                }
+            }
+            let single = block_rows[0];
+            let chroma_c: [i16; 6] = std::array::from_fn(|_| rng.below(256) as i16 - 128);
+            let chroma_l: [i16; 6] = std::array::from_fn(|_| clips[rng.below(4)]);
+            for shift in [7, 10] {
+                let mut clipped = [vec![0u8; width], vec![0u8; width]];
+                let mut chroma = [vec![0u8; width], vec![0u8; width]];
+                for (k, dsp) in [candidate, reference].into_iter().enumerate() {
+                    dsp.vvc_alf_filter_clipped_row(
+                        &single,
+                        &coefficients,
+                        &limits,
+                        shift,
+                        &mut clipped[k],
+                    );
+                    dsp.vvc_alf_filter_chroma_row(
+                        &single,
+                        chroma_c,
+                        chroma_l,
+                        shift,
+                        &mut chroma[k],
+                    );
+                }
+                report.cases += 2;
+                if clipped[0] != clipped[1] {
+                    report.failures.push(format!(
+                        "{} u8 vvc_alf_filter_clipped_row width={width} pattern={pattern} shift={shift}",
+                        candidate.isa()
+                    ));
+                }
+                if chroma[0] != chroma[1] {
+                    report.failures.push(format!(
+                        "{} u8 vvc_alf_filter_chroma_row width={width} pattern={pattern} shift={shift}",
+                        candidate.isa()
+                    ));
+                }
+            }
+            // Exercise both even and odd byte alignments of luma rows (`misalign` 0 or 1).
+            let misalign = pattern & 1;
+            let luma_data: Vec<Vec<u8>> = (0..4)
+                .map(|_| row(rng, pattern, 2 * width + 2 + slack + misalign))
+                .collect();
+            let cross_rows: [&[u8]; 4] = std::array::from_fn(|r| &luma_data[r][misalign..]);
+            let cross_c: [i16; 7] = std::array::from_fn(|k| match pattern {
+                2 if k % 2 == 0 => -64,
+                1 | 2 => 64,
+                _ => rng.below(129) as i16 - 64,
+            });
+            let base = row(rng, (pattern + 2) % 6, width);
+            let mut cross_out = [base.clone(), base];
+            candidate.vvc_alf_cross_row(&cross_rows, cross_c, &mut cross_out[0]);
+            reference.vvc_alf_cross_row(&cross_rows, cross_c, &mut cross_out[1]);
+            report.cases += 1;
+            if cross_out[0] != cross_out[1] {
+                report.failures.push(format!(
+                    "{} u8 vvc_alf_cross_row width={width} pattern={pattern}",
+                    candidate.isa()
+                ));
+            }
+        }
+    }
 }
 
 fn dot(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {

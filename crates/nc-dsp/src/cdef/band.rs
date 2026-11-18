@@ -196,6 +196,72 @@ impl CdefSets {
     }
 }
 
+/// Validate `picture` against `lines` and copy only the unfiltered luma/chroma
+/// rows spanned by `units` (plus [`CDEF_PADDING`] halo rows). Returns `false`
+/// when nothing in `rows` needs filtering.
+fn prepare_band_lines<T: Sample>(
+    lines: &mut CdefLines<T>,
+    picture: &Picture<T>,
+    rows: &Range<usize>,
+    units: &[CdefUnit],
+    sets: &CdefSets,
+) -> bool {
+    let filters_chroma = sets.sets().iter().any(|set| set.filters_chroma());
+    let [luma_lines, u_lines, v_lines] = &mut lines.planes;
+    let luma_view = picture.plane(PlaneIndex::Y).view();
+    let u_view = picture.plane(PlaneIndex::U).view();
+    let v_view = picture.plane(PlaneIndex::V).view();
+    assert_eq!(
+        (luma_view.width(), luma_view.height()),
+        (luma_lines.width(), luma_lines.height()),
+        "CDEF source and plane sizes differ"
+    );
+    assert!(
+        u_lines.width() == v_lines.width()
+            && u_view.stride() == v_view.stride()
+            && u_view.width() >= u_lines.width()
+            && v_view.width() >= v_lines.width()
+            && u_view.height() >= u_lines.height()
+            && v_view.height() >= v_lines.height(),
+        "CDEF chroma planes differ"
+    );
+    if units.is_empty() || !sets.filters() {
+        luma_lines.drop_rows_before(rows.start.saturating_sub(CDEF_PADDING));
+        if filters_chroma {
+            let c_drop = (rows.start / 2).saturating_sub(CDEF_PADDING);
+            u_lines.drop_rows_before(c_drop);
+            v_lines.drop_rows_before(c_drop);
+        }
+        return false;
+    }
+    let (first_y, last_y) = units.iter().fold((usize::MAX, 0usize), |(lo, hi), u| {
+        (lo.min(u.y), hi.max(u.y))
+    });
+    assert!(
+        rows.contains(&first_y) && rows.contains(&last_y),
+        "CDEF unit outside the band being filtered"
+    );
+    let band_fill_end = |last_end: usize, band_end: usize| {
+        let needed = last_end + CDEF_PADDING;
+        if needed > band_end {
+            needed.max(band_end + CDEF_PADDING)
+        } else {
+            needed
+        }
+    };
+    luma_lines.drop_rows_before(first_y.saturating_sub(CDEF_PADDING));
+    luma_lines.fill_rows_to(&luma_view, band_fill_end(last_y + LUMA_SIZE, rows.end));
+    if filters_chroma {
+        let c_drop = (first_y / 2).saturating_sub(CDEF_PADDING);
+        let c_end = band_fill_end(last_y / 2 + CHROMA_SIZE, rows.end.div_ceil(2));
+        for (source, view) in [(&mut *u_lines, &u_view), (&mut *v_lines, &v_view)] {
+            source.drop_rows_before(c_drop);
+            source.fill_rows_to(view, c_end);
+        }
+    }
+    true
+}
+
 impl Dsp {
     /// CDEF of the luma rows `rows` of `picture`, in place: every unit of
     /// `units` (in raster order, each with its top row in `rows`) with its
@@ -215,34 +281,13 @@ impl Dsp {
         units: &[CdefUnit],
         sets: &CdefSets,
     ) {
-        let filters_chroma = sets.sets().iter().any(|set| set.filters_chroma());
+        if !prepare_band_lines(lines, picture, &rows, units, sets) {
+            return;
+        }
         let [luma_plane, u_plane, v_plane] = picture.planes_mut();
-        let [luma_lines, u_lines, v_lines] = &mut lines.planes;
-        // Directions read the luma lines too, so they are copied whenever a
-        // set filters anything.
-        if sets.filters() {
-            luma_lines.drop_rows_before(rows.start.saturating_sub(CDEF_PADDING));
-            luma_lines.fill_rows_to(&luma_plane.view(), rows.end + CDEF_PADDING);
-        }
-        if filters_chroma {
-            let chroma_rows = (rows.start / 2, rows.end.div_ceil(2));
-            for (source, plane) in [(&mut *u_lines, &*u_plane), (&mut *v_lines, &*v_plane)] {
-                source.drop_rows_before(chroma_rows.0.saturating_sub(CDEF_PADDING));
-                source.fill_rows_to(&plane.view(), chroma_rows.1 + CDEF_PADDING);
-            }
-        }
+        let [luma_lines, u_lines, v_lines] = &lines.planes;
         let mut luma = luma_plane.view_mut();
         let mut chroma = [u_plane.view_mut(), v_plane.view_mut()];
-        // The U and V blocks of a unit go through one kernel call with one
-        // stride for both line buffers and one for both planes.
-        assert!(
-            u_lines.width() == v_lines.width()
-                && chroma[0].stride() == chroma[1].stride()
-                && chroma
-                    .iter()
-                    .all(|p| p.width() >= u_lines.width() && p.height() >= u_lines.height()),
-            "CDEF chroma planes differ"
-        );
         let (width, height) = (luma_lines.width(), luma_lines.height());
         for unit in units {
             assert!(
@@ -372,33 +417,13 @@ impl Dsp {
     ) {
         let bits = depth.above_eight();
         let fns = &self.high.cdef;
-        let filters_chroma = sets.sets().iter().any(|set| set.filters_chroma());
-        let [luma_plane, u_plane, v_plane] = picture.planes_mut();
-        let [luma_lines, u_lines, v_lines] = &mut lines.planes;
-        if sets.filters() {
-            luma_lines.drop_rows_before(rows.start.saturating_sub(CDEF_PADDING));
-            luma_lines.fill_rows_to(&luma_plane.view(), rows.end + CDEF_PADDING);
-        }
-        if filters_chroma {
-            let chroma_rows = (rows.start / 2, rows.end.div_ceil(2));
-            for (source, plane) in [(&mut *u_lines, &*u_plane), (&mut *v_lines, &*v_plane)] {
-                source.drop_rows_before(chroma_rows.0.saturating_sub(CDEF_PADDING));
-                source.fill_rows_to(&plane.view(), chroma_rows.1 + CDEF_PADDING);
-            }
-        }
-        let mut luma = luma_plane.view_mut();
-        let mut chroma = [u_plane.view_mut(), v_plane.view_mut()];
-        assert!(
-            u_lines.width() == v_lines.width()
-                && chroma[0].stride() == chroma[1].stride()
-                && chroma
-                    .iter()
-                    .all(|p| p.width() >= u_lines.width() && p.height() >= u_lines.height()),
-            "CDEF chroma planes differ"
-        );
-        if units.is_empty() {
+        if !prepare_band_lines(lines, picture, &rows, units, sets) {
             return;
         }
+        let [luma_plane, u_plane, v_plane] = picture.planes_mut();
+        let [luma_lines, u_lines, v_lines] = &lines.planes;
+        let mut luma = luma_plane.view_mut();
+        let mut chroma = [u_plane.view_mut(), v_plane.view_mut()];
         let (luma_args, chroma_args) = resolve_band_args_u16(sets, bits);
         let (width, height) = (luma_lines.width(), luma_lines.height());
         for unit in units {

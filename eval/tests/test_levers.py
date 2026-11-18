@@ -104,3 +104,25 @@ def test_binary_final_checks_are_named_by_build_and_path():
     [row_b] = levers.final_check_rows(dict(report, new="/w/run/b/nanocodec"), "b.json")
     assert row_a["change"].startswith("build cb6a3b5fa@") and "cb6a3b5fa-dirty@" in row_a["change"]
     assert row_a["id"] != row_b["id"]
+
+
+def test_ideas_live_beside_rows_and_revisions_carry_fields_over(tmp_path, monkeypatch, capsys):
+    from nceval import levers_ideas
+    spool = tmp_path / "spool.jsonl"
+    monkeypatch.setenv(levers.SPOOL_ENV, str(spool))
+    monkeypatch.setattr(levers, "LEDGER", tmp_path / "ledger.jsonl")
+    [row] = levers.screen_rows(adopt_result(), "x.json")
+    levers.append([row], spool)
+    levers.main(["ideas", "add", "--name", "Inter rounding 100", "--what", "causal TPL try",
+                 "--outcome", "held", "--codec", "hevc", "--link", "inter_rounding"])
+    levers.main(["ideas", "add", "--idea", "inter-rounding-100", "--outcome", "rejected",
+                 "--reason", "L3 J +0.4"])
+    assert [r["id"] for r in levers.read_rows(spool)] == [row["id"]]
+    [idea] = levers_ideas.load_ideas()
+    assert idea["outcome"] == "rejected" and idea["what"] == "causal TPL try"
+    assert idea["rows"] == [row["id"]] and idea["codecs"] == ["hevc"]
+    capsys.readouterr()
+    levers.main(["ideas", "search", "tpl", "--outcome", "rejected"])
+    assert "inter-rounding-100" in capsys.readouterr().out
+    levers.main(["ideas", "search", "tpl", "--outcome", "adopted"])
+    assert "inter-rounding-100" not in capsys.readouterr().out

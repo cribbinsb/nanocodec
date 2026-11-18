@@ -786,7 +786,12 @@ class Release:
         return self.charts_real()
 
     def our_families(self, tree: Path) -> list[str]:
-        return sorted(json.loads((tree / BUILDS_RECORD).read_text())["families"])
+        """Every shipped single-layer preset of `tree` (nceval.plotted), so a preset
+        the chart record does not have yet is measured, not left out."""
+        sys.path.insert(0, str(REPO / "eval"))
+        from nceval.encoders.nanocodec import presets_in
+        from nceval.plotted import own_names
+        return own_names(presets_in(tree))
 
     def chart_commands(self, tree: Path) -> list[tuple[str, list[str]]]:
         """(log name, command) of a release's whole chart refresh, run in `tree`."""
@@ -1059,11 +1064,11 @@ class Release:
                 f"streams.")
 
     def public_tag_commit(self) -> str:
-        """The public commit the tag names: the release tree minus the internal docs,
-        parented on the public head (reachable from the tag only)."""
+        """The public commit the tag names: the release tree minus the internal docs and
+        held-back results, parented on the public head (reachable from the tag only)."""
         publish = load_module("publish_public", PUBLISH_PUBLIC)  # its git runs in REPO (main)
         tree = publish.public_tree(self.commit)
-        publish.assert_clean(tree)
+        publish.assert_clean(tree, publish.excluded_paths(self.commit))
         parent = git("rev-parse", PUBLIC_REF)
         message = (f"nanocodec {self.version}\n\nRelease commit {self.commit[:9]}, "
                    f"published tree.\n\n{publish.TRAILER}\n")

@@ -262,28 +262,18 @@ pub struct Candidates {
     pub max_drl_bits: u8,
     /// AV2 single-inter-mode and DRL context, in 0..=4.
     pub mode_context: u8,
-    /// Approximate bits of each inter mode symbol and of each DRL index in
-    /// this context, priced once per list: the engine asks for every
-    /// candidate vector of a block ([`mode_bits`]).
-    mode_symbol_bits: [f32; InterMode::ALL.len()],
-    drl_index_bits: [f32; MAX_STACK],
+    /// Fixed signalling rates for this context and DRL limit.
+    rates: &'static ModeRates,
 }
 
 impl Candidates {
     fn new(vectors: [Vector; MAX_STACK], count: usize, max_drl_bits: u8, mode_context: u8) -> Self {
-        let context = usize::from(mode_context);
-        let drl_index_bits = std::array::from_fn(|index| {
-            drl_symbols(max_drl_bits, index)
-                .map(|(kind, symbol)| symbol_bits(&[DRL[kind][context], 0], symbol))
-                .sum()
-        });
         Self {
             vectors,
             count: count as u8,
             max_drl_bits,
             mode_context,
-            mode_symbol_bits: InterMode::ALL.map(|mode| symbol_bits(&MODE[context], mode.symbol())),
-            drl_index_bits,
+            rates: &MODE_RATES[usize::from(max_drl_bits)][usize::from(mode_context)],
         }
     }
 
@@ -934,9 +924,65 @@ const DRL: [[u16; 5]; DRL_MODEL_TYPES] = [
 /// decision, ending with a 0 unless the index is the last entry
 /// (AVM `read_drl_idx`).
 fn drl_symbols(max_drl_bits: u8, index: usize) -> impl Iterator<Item = (usize, usize)> {
-    (0..usize::from(max_drl_bits).min(index + 1))
-        .map(move |step| (step.min(DRL_MODEL_TYPES - 1), usize::from(index > step)))
+    (0..drl_steps(max_drl_bits, index)).map(move |step| drl_symbol(step, index))
 }
+
+/// Number of DRL decisions, ending at the selected entry or the list limit.
+const fn drl_steps(max_drl_bits: u8, index: usize) -> usize {
+    let limit = max_drl_bits as usize;
+    if index < limit { index + 1 } else { limit }
+}
+
+/// The fixed alphabet family and decision at one DRL step.
+const fn drl_symbol(step: usize, index: usize) -> (usize, usize) {
+    let last = DRL_MODEL_TYPES - 1;
+    let kind = if step < last { step } else { last };
+    (kind, (index > step) as usize)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ModeRates {
+    mode: [f32; InterMode::ALL.len()],
+    drl: [f32; MAX_STACK],
+}
+
+/// Mode decision uses the fixed syntax CDFs. Build the rates once with
+/// the shared probability estimator, including the same DRL symbols and
+/// addition order as coding. The adaptive writer uses its own live models.
+static MODE_RATES: [[ModeRates; MODE.len()]; MAX_STACK] = {
+    let empty = ModeRates {
+        mode: [0.0; InterMode::ALL.len()],
+        drl: [0.0; MAX_STACK],
+    };
+    let mut rates = [[empty; MODE.len()]; MAX_STACK];
+    let mut limit = 0;
+    while limit < MAX_STACK {
+        let mut context = 0;
+        while context < MODE.len() {
+            let row = &mut rates[limit][context];
+            let mut symbol = 0;
+            while symbol < row.mode.len() {
+                row.mode[symbol] = symbol_bits(&MODE[context], symbol);
+                symbol += 1;
+            }
+            let mut index = 0;
+            while index < MAX_STACK {
+                let mut step = 0;
+                let mut sum = -0.0;
+                while step < drl_steps(limit as u8, index) {
+                    let (kind, bit) = drl_symbol(step, index);
+                    sum += symbol_bits(&[DRL[kind][context], 0], bit);
+                    step += 1;
+                }
+                row.drl[index] = sum;
+                index += 1;
+            }
+            context += 1;
+        }
+        limit += 1;
+    }
+    rates
+};
 
 /// Bits of the cheapest way to signal an existing vector under the
 /// writer's current probabilities: `GLOBALMV`, or `NEARMV` with DRL index 0
@@ -985,11 +1031,11 @@ pub fn read_inter_mode(reader: &mut Reader<'_>, context: u8) -> Result<InterMode
 #[must_use]
 pub fn mode_bits(candidates: Candidates, mode: InterMode, index: usize) -> f32 {
     let drl = if mode.has_drl() {
-        candidates.drl_index_bits[index]
+        candidates.rates.drl[index]
     } else {
         0.0
     };
-    candidates.mode_symbol_bits[mode.symbol()] + drl
+    candidates.rates.mode[mode.symbol()] + drl
 }
 
 /// Write DRL index `index` (`max_drl_bits` decisions at most).
@@ -1148,6 +1194,28 @@ mod tests {
                 .collect()
         });
         assert_eq!(full, FULL_LIST_HASHES);
+    }
+
+    #[test]
+    fn fixed_mode_rate_cache_matches_the_symbol_walk() {
+        for limit in DRL_BITS {
+            for (context, mode_cdf) in MODE.iter().enumerate() {
+                let list = Candidates::new([(0, 0); MAX_STACK], 1, limit, context as u8);
+                for index in 0..=usize::from(limit) {
+                    for mode in InterMode::ALL {
+                        let drl = if mode.has_drl() {
+                            drl_symbols(limit, index)
+                                .map(|(kind, symbol)| symbol_bits(&[DRL[kind][context], 0], symbol))
+                                .sum()
+                        } else {
+                            0.0
+                        };
+                        let expected = symbol_bits(mode_cdf, mode.symbol()) + drl;
+                        assert_eq!(mode_bits(list, mode, index).to_bits(), expected.to_bits());
+                    }
+                }
+            }
+        }
     }
 
     #[test]

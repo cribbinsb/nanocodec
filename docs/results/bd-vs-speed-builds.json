@@ -25,15 +25,16 @@
   "nanocodec-vvc@slow": "77e93089",
   "nanocodec-h264@slow": "bad14976",
   "nanocodec-vp9@slow": "bad14976",
-  "nanocodec-av2@slow": "bad14976"
+  "nanocodec-av2@slow": "bad14976",
+  "nanocodec-av2@faster": "c9e4ced3"
  },
  "builds": {
   "730e4e16": "730e4e16",
   "478e8249": "478e8249",
   "77e93089": "77e93089",
   "bad14976": "bad14976",
-  "1139f610": "1139f610",
-  "b33ba3bb": "b33ba3bb"
+  "b33ba3bb": "b33ba3bb",
+  "c9e4ced3": "c9e4ced3"
  },
  "tools": {
   "x264": "0.165",

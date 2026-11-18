@@ -83,13 +83,7 @@ unsafe fn group<B: Bytes, T: Tile<B>, const LINES: usize, const WIDTH: usize>(
     }
     let (old_p, old_q) = (p, q);
     narrow(&mut p, &mut q, mask, hev);
-    let mut result = core::array::from_fn(|i| {
-        if i < INNER {
-            p[INNER - 1 - i]
-        } else {
-            q[i - INNER]
-        }
-    });
+    let mut result = [p[3], p[2], p[1], p[0], q[0], q[1], q[2], q[3]];
     let mut written = 2;
     if WIDTH != 4 && flat.any() {
         written = 3;
@@ -110,8 +104,10 @@ unsafe fn group<B: Bytes, T: Tile<B>, const LINES: usize, const WIDTH: usize>(
             }
             let flat2 = within(outer_flat, 1).and(flat);
             if flat2.any() {
-                let all =
-                    core::array::from_fn(|i| if i < LANES { left[i] } else { right[i - LANES] });
+                let all = [
+                    left[0], left[1], left[2], left[3], left[4], left[5], left[6], left[7],
+                    right[0], right[1], right[2], right[3], right[4], right[5], right[6], right[7],
+                ];
                 let mut out = all;
                 out[INNER..INNER + LANES].copy_from_slice(&result);
                 wide::<B, 16, 4>(&all, &mut out, flat2);
@@ -196,10 +192,17 @@ unsafe fn run_body<B: Bytes, const WIDTH: usize>(
         return;
     }
     let full = lines / LANES * LANES;
-    for first in (0..full).step_by(LANES) {
-        // SAFETY: dispatch validated every group and the ISA entry point enables B.
-        unsafe {
-            group::<B, BasicTile, LANES, WIDTH>(data, edge + first * along, step, along, limits);
+    // SAFETY: dispatch validated every group and the ISA entry point enables B.
+    unsafe {
+        if along == 1 {
+            for first in (0..full).step_by(LANES) {
+                group::<B, BasicTile, LANES, WIDTH>(data, edge + first, step, 1, limits);
+            }
+        } else {
+            let stride = along.max(2);
+            for first in (0..full).step_by(LANES) {
+                group::<B, BasicTile, LANES, WIDTH>(data, edge + first * stride, 1, stride, limits);
+            }
         }
     }
     if full != lines {
@@ -215,14 +218,16 @@ unsafe fn run_body<B: Bytes, const WIDTH: usize>(
     }
 }
 
-/// Match the existing NEON dual layout: sixteen independent lines share the byte
-/// masks, with two sets of eight widened lanes for flat smoothing. Tails keep
-/// the existing eight-line entry and oracle behavior.
+/// Sixteen independent lines share the byte masks (`avx2_wide`, `neon_wide`,
+/// `simd128_wide`), with two sets of eight widened lanes for flat smoothing.
+/// Tails keep the eight-line entry and oracle behavior.
 #[cfg(any(
+    target_arch = "x86_64",
     target_arch = "aarch64",
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
 #[inline(never)]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
 #[cfg_attr(target_arch = "aarch64", target_feature(enable = "neon"))]
 #[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
 unsafe fn run_paired<const WIDTH: usize>(
@@ -235,6 +240,8 @@ unsafe fn run_paired<const WIDTH: usize>(
     limits: Vp9FilterLimits,
 ) {
     use crate::deblock::av1_tile::GroupedTile;
+    #[cfg(target_arch = "x86_64")]
+    use crate::lpf_bytes::{avx2::B, avx2_wide::B as Wide};
     #[cfg(target_arch = "aarch64")]
     use crate::lpf_bytes::{neon::B, neon_wide::B as Wide};
     #[cfg(target_arch = "wasm32")]
@@ -247,16 +254,29 @@ unsafe fn run_paired<const WIDTH: usize>(
         return;
     }
     let full = lines / PAIRED_LINES * PAIRED_LINES;
-    for first in (0..full).step_by(PAIRED_LINES) {
-        // SAFETY: caller validates both complete eight-line tiles; the lane ISA is enabled.
-        unsafe {
-            group::<Wide, GroupedTile<Wide>, PAIRED_LINES, WIDTH>(
-                data,
-                edge + first * along,
-                step,
-                along,
-                limits,
-            );
+    // SAFETY: caller validates both complete eight-line tiles; the lane ISA is enabled.
+    unsafe {
+        if along == 1 {
+            for first in (0..full).step_by(PAIRED_LINES) {
+                group::<Wide, GroupedTile<Wide>, PAIRED_LINES, WIDTH>(
+                    data,
+                    edge + first,
+                    step,
+                    1,
+                    limits,
+                );
+            }
+        } else {
+            let stride = along.max(2);
+            for first in (0..full).step_by(PAIRED_LINES) {
+                group::<Wide, GroupedTile<Wide>, PAIRED_LINES, WIDTH>(
+                    data,
+                    edge + first * stride,
+                    1,
+                    stride,
+                    limits,
+                );
+            }
         }
     }
     if full != lines {
@@ -301,14 +321,27 @@ unsafe fn run_wide<const WIDTH: usize>(
     let full = lines / GROUP_LINES * GROUP_LINES;
     // SAFETY: dispatch validates every group and this entry enables its ISA.
     unsafe {
-        for first in (0..full).step_by(GROUP_LINES) {
-            group::<Wide, GroupedTile<Wide>, GROUP_LINES, WIDTH>(
-                data,
-                edge + first * along,
-                step,
-                along,
-                limits,
-            );
+        if along == 1 {
+            for first in (0..full).step_by(GROUP_LINES) {
+                group::<Wide, GroupedTile<Wide>, GROUP_LINES, WIDTH>(
+                    data,
+                    edge + first,
+                    step,
+                    1,
+                    limits,
+                );
+            }
+        } else {
+            let stride = along.max(2);
+            for first in (0..full).step_by(GROUP_LINES) {
+                group::<Wide, GroupedTile<Wide>, GROUP_LINES, WIDTH>(
+                    data,
+                    edge + first * stride,
+                    1,
+                    stride,
+                    limits,
+                );
+            }
         }
         if full != lines {
             run_gfni::<WIDTH>(

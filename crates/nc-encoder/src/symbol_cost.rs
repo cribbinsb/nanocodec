@@ -35,7 +35,7 @@ const MANTISSA_COST: [f32; 1 << MANTISSA_BITS] = mantissa_cost_table();
 /// table (libaom `av1_cost_symbol`). Mode decision calls this per candidate,
 /// where a floating-point `log2` showed up in profiles.
 #[must_use]
-pub fn probability_bits(p: u32) -> f32 {
+pub const fn probability_bits(p: u32) -> f32 {
     let (shift, index) = bucket(p);
     shift as f32 + MANTISSA_COST[index]
 }
@@ -44,8 +44,12 @@ pub fn probability_bits(p: u32) -> f32 {
 /// to `1..PROB_TOP`): the normalising shift to [2^14, 2^15) and the top
 /// [`MANTISSA_BITS`] bits below the leading one.
 #[inline]
-fn bucket(p: u32) -> (usize, usize) {
-    let p = p.clamp(1, PROB_TOP - 1);
+const fn bucket(p: u32) -> (usize, usize) {
+    let p = match p {
+        0 => 1,
+        p if p >= PROB_TOP => PROB_TOP - 1,
+        p => p,
+    };
     let shift = p.leading_zeros() - (u32::BITS - (NORMALISED_BITS + 1));
     let normalised = p << shift;
     let index = (normalised >> (NORMALISED_BITS - MANTISSA_BITS)) as usize - MANTISSA_COST.len();
@@ -74,22 +78,18 @@ const COST_Q9: [[u16; 1 << MANTISSA_BITS]; NORMALISED_BITS as usize + 1] = {
 
 /// Cost in bits of symbol `s` under inverse CDF `icdf`.
 #[must_use]
-pub fn symbol_bits(icdf: &[u16], s: usize) -> f32 {
-    let high = if s == 0 {
-        PROB_TOP
-    } else {
-        u32::from(icdf[s - 1])
-    };
-    probability_bits(high - u32::from(icdf[s]))
+pub const fn symbol_bits(icdf: &[u16], s: usize) -> f32 {
+    let high = if s == 0 { PROB_TOP } else { icdf[s - 1] as u32 };
+    probability_bits(high - icdf[s] as u32)
 }
 
 /// [`probability_bits`] in 1/512 bit ([`COST_UNITS_PER_BIT`]), rounded.
 // Inlined: rate estimates call it for every priced symbol.
 #[inline]
 #[must_use]
-pub fn probability_cost_q9(p: u32) -> u32 {
+pub const fn probability_cost_q9(p: u32) -> u32 {
     let (shift, index) = bucket(p);
-    u32::from(COST_Q9[shift][index])
+    COST_Q9[shift][index] as u32
 }
 
 /// [`symbol_bits`] in 1/512 bit ([`COST_UNITS_PER_BIT`]), rounded: read

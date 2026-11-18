@@ -360,6 +360,12 @@ pub fn diagonal_scan(w: usize, h: usize) -> Vec<u16> {
 #[derive(Debug, Clone)]
 pub struct Scans([[Vec<u16>; 4]; 4]);
 
+impl Default for Scans {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scans {
     /// Build every scan.
     #[must_use]

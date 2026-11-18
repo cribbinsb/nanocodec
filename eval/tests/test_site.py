@@ -99,3 +99,35 @@ def test_speed_captions_name_the_release_build(tmp_path, monkeypatch):
                          "nanocodec-vp9": {"build": "0f0f0f0f"}}}
     assert site.timed_builds(record) == ("release 0.3.0, PGO build (1a2b3c4d) "
                                          "(0f0f0f0f for 1)")
+
+
+def test_outside_datasets_carry_their_credit_and_licence():
+    """A view on a published outside dataset (site.DATASETS) names it with its licence
+    wherever its numbers are: the chart and clips data both carry the credit."""
+    chart = json.loads((site.SITE_DATA / "chart.json").read_text())
+    clips = json.loads((site.SITE_DATA / "clips.json").read_text())
+    for clipset, dataset in site.DATASETS.items():
+        if not dataset.published:
+            continue
+        assert any(v["clipset"] == clipset for v in chart["views"])
+        for data in (chart, clips):
+            facts = data["datasets"][clipset]
+            assert facts["credit"] == dataset.credit and dataset.licence in facts["credit"]
+            assert facts["url"].startswith("https://")
+
+
+def test_unpublished_datasets_are_nowhere_on_the_site():
+    """A held-back dataset (Dataset.published False) has no view, clip table or caption in
+    the site data, and no page names it (the pages take dataset wording from the data)."""
+    held_back = [(clipset, d) for clipset, d in site.DATASETS.items() if not d.published]
+    chart = json.loads((site.SITE_DATA / "chart.json").read_text())
+    clips = json.loads((site.SITE_DATA / "clips.json").read_text())
+    pages = [p.read_text() for p in site.SITE_DATA.parent.glob("*.*") if p.suffix in (".html", ".js")]
+    for clipset, dataset in held_back:
+        assert not any(v["clipset"] == clipset for v in chart["views"])
+        assert clipset not in chart["clipsets"] and clipset not in chart["datasets"]
+        assert clipset not in clips["datasets"]
+        assert not any(clipset in name for name in clips["sets"])
+        for text in (json.dumps(chart), json.dumps(clips), *pages):
+            assert dataset.short not in text and dataset.url not in text
+    assert site.unpublished_paths() == [p for _, d in held_back for p in d.files]

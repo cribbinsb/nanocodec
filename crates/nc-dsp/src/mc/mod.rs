@@ -134,6 +134,14 @@ pub(crate) mod simd128;
 #[allow(unsafe_code)]
 mod av1_simd128;
 
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    target_feature = "relaxed-simd"
+))]
+#[allow(unsafe_code)]
+mod av1_simd128_dot;
+
 /// Taps of the AV1 filter.
 pub(crate) const TAPS: usize = 8;
 /// Taps before the centre sample of the AV1 filter.

@@ -4579,6 +4579,107 @@
     "fps": 29.97,
     "key": "f79f49c1514556ba"
    }
+  },
+  "nanocodec-av2@faster": {
+   "lowlight_city_night": {
+    "qp": 155,
+    "bytes": 377165,
+    "target_bytes": 375375,
+    "argv": [
+     "{BIN}/nanocodec",
+     "encode",
+     "--codec",
+     "av2",
+     "--input",
+     "{INPUT}",
+     "--width",
+     "1280",
+     "--height",
+     "720",
+     "--fps",
+     "29970/1000",
+     "--frames",
+     "150",
+     "--intra-period",
+     "300",
+     "--temporal-layers",
+     "1",
+     "--output",
+     "{OUTPUT}",
+     "--qp",
+     "155",
+     "--preset",
+     "faster"
+    ],
+    "fps": 29.97,
+    "key": "cc0c09780a4665aa"
+   },
+   "crowd_mot17_09": {
+    "qp": 166,
+    "bytes": 379597,
+    "target_bytes": 375000,
+    "argv": [
+     "{BIN}/nanocodec",
+     "encode",
+     "--codec",
+     "av2",
+     "--input",
+     "{INPUT}",
+     "--width",
+     "1280",
+     "--height",
+     "720",
+     "--fps",
+     "30/1",
+     "--frames",
+     "150",
+     "--intra-period",
+     "300",
+     "--temporal-layers",
+     "1",
+     "--output",
+     "{OUTPUT}",
+     "--qp",
+     "166",
+     "--preset",
+     "faster"
+    ],
+    "fps": 30.0,
+    "key": "20fac9780c38c548"
+   },
+   "bodycam_bc1": {
+    "qp": 163,
+    "bytes": 373642,
+    "target_bytes": 375375,
+    "argv": [
+     "{BIN}/nanocodec",
+     "encode",
+     "--codec",
+     "av2",
+     "--input",
+     "{INPUT}",
+     "--width",
+     "1280",
+     "--height",
+     "720",
+     "--fps",
+     "29970/1000",
+     "--frames",
+     "150",
+     "--intra-period",
+     "300",
+     "--temporal-layers",
+     "1",
+     "--output",
+     "{OUTPUT}",
+     "--qp",
+     "163",
+     "--preset",
+     "faster"
+    ],
+    "fps": 29.97,
+    "key": "09bd58a6c39fb89f"
+   }
   }
  },
  "anchor": "x264-medium",
@@ -4609,6 +4710,7 @@
   "nanocodec-av2@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
   "nanocodec-h264@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
   "nanocodec-vp9@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av1@veryfast": "814dccbf103b850169a512c56d986babebb69128e4d15e6b4fe398c3952fe32c"
+  "nanocodec-av1@veryfast": "814dccbf103b850169a512c56d986babebb69128e4d15e6b4fe398c3952fe32c",
+  "nanocodec-av2@faster": "fb947c9193cc8fc685ad063df2fc1efd5395e0ae20fc79f44459035412540f60"
  }
 }

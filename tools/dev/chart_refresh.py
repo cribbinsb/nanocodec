@@ -201,13 +201,15 @@ JETSON_ATTEMPTS = 6
 #: more workers than the slot share fits keep that share busy through each
 #: point's unslotted setup and summary (nceval.realuse caps workers at 8).
 DEFAULT_WORKERS = 8
+#: `--families all`: every shipped preset (nceval.plotted).
+ALL_FAMILIES = "all"
 
 
 class Refresh:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.commit = git("rev-parse", "--short=8", f"{args.commit}^{{commit}}")
-        self.families = args.families.split(",") if args.families else []
+        self.families = family_list(args.families)
         self.builds_file = REPO / builds_file(args.clipset)
         if self.builds_file.exists():
             self.record = json.loads(self.builds_file.read_text())
@@ -215,15 +217,19 @@ class Refresh:
             self.record = seed_record(self.commit)
         else:
             raise SystemExit(f"no build record {self.builds_file}: start one with --seed")
-        unknown = [f for f in self.families if f not in self.record["families"]]
+        shipped = shipped_families()
+        unknown = [f for f in self.families if f not in self.record["families"] and f not in shipped]
         if unknown:
             raise SystemExit(f"not chart families: {', '.join(unknown)}")
         recorded = self.record["families"]
+        #: Shipped presets the chart has never measured (nceval.plotted): built and
+        #: measured on COMMIT, then recorded on it like any refreshed family.
+        self.new = [f for f in self.families if f not in recorded]
         #: Families still on an older build whose sources differ: built and
         #: their old points deleted. One whose sources did not change keeps its
         #: build and cached points (a later step never touches it).
-        self.stale = [f for f in self.families
-                      if recorded[f] != self.commit and not sources_equal(recorded[f], self.commit)]
+        self.stale = [f for f in self.families if f in self.new or (
+            recorded[f] != self.commit and not sources_equal(recorded[f], self.commit))]
         for family in sorted(set(self.families) - set(self.stale)):
             if recorded[family] != self.commit:
                 print(f"{family}: sources unchanged since {recorded[family]}: keeps that build")
@@ -345,7 +351,9 @@ class Refresh:
         with build_tree_lock(tree):
             if not tree.exists():
                 self.run(["git", "worktree", "add", "--detach", str(tree), self.commit], log)
-            self.run(["git", "checkout", "-q", "--detach", self.commit], log, tree)
+            # forced: the tree is this tool's own, and a build may leave Cargo.lock
+            # rewritten (an older commit's stale lockfile), which blocks a plain checkout
+            self.run(["git", "checkout", "-q", "--force", "--detach", self.commit], log, tree)
             built = target / profile / "nanocodec"
             self.run(["cargo", "build", "--profile", profile, "-j8", "--bin", "nanocodec"], log,
                      tree, env=env)
@@ -454,6 +462,10 @@ class Refresh:
         runner = Runner(load_paths(), EVALUATION_GATE, 1, over_budget=True)
         clips = chart_clips(self.args.clipset)
         for family in self.stale:
+            if family in self.new:
+                print(f"  {family}: new chart family: no old points")
+                self.record["families"][family] = self.commit
+                continue
             old = self.build_dir(self.record["families"][family])
             if not (old / SCORING_BINARY).is_file():
                 print(f"  {family}: old build {old} is gone; nothing to delete")
@@ -514,8 +526,9 @@ class Refresh:
                                                (new / SCORING_BINARY, new / "presets"),
                                                REPO / PLAN_FILE))
         # Side by side: one at a time the checks of 18 families took 10 min.
+        recorded = [f for f in self.stale if f not in self.new]  # a new family has no old build
         with ThreadPoolExecutor(STREAM_CHECK_WORKERS) as pool:
-            same = dict(zip(self.stale, pool.map(unchanged, self.stale)))
+            same = dict(zip(recorded, pool.map(unchanged, recorded)))
         timed_on = self.record.get("timed_on", {})
         for family in [f for f, equal in same.items() if equal]:
             self.stale.remove(family)
@@ -847,6 +860,19 @@ def other_records_builds(own: Path) -> set[str]:
     return used
 
 
+def shipped_families() -> list[str]:
+    """Our chart families: every shipped single-layer preset (nceval.plotted)."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.plotted import own_names
+
+    return own_names()
+
+
+def family_list(text: str) -> list[str]:
+    """A `--families` value: comma-separated names, or `all` (shipped_families)."""
+    return shipped_families() if text == ALL_FAMILIES else [f for f in text.split(",") if f]
+
+
 def seed_record(commit: str) -> dict:
     """A new chart's build record: every family of ours on `commit`'s build, the
     reference tools' versions as the main chart records them."""
@@ -970,7 +996,7 @@ def refresh_heldout(args: argparse.Namespace) -> None:
     """Each held-out chart refreshed for the main refresh's families (a family whose
     streams did not change keeps its points: Refresh.retime_unchanged), then rendered
     against HELDOUT_TUNED_ANCHOR too."""
-    families = ",".join(f for f in (args.families, args.retime) if f)
+    families = ",".join([*family_list(args.families), *family_list(args.retime)])
     for clipset in HELDOUT_CLIPSETS:
         common = [sys.executable, str(Path(__file__).resolve()), args.commit,
                   "--clipset", str(clipset), "--cloud-budget", str(args.cloud_budget),
@@ -986,7 +1012,8 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("commit", help="the commit to build (e.g. the landed change)")
     p.add_argument("--families", default="",
-                   help="comma-separated chart families it changes, e.g. nanocodec-h264")
+                   help="comma-separated chart families it changes, e.g. nanocodec-h264; "
+                        "`all`: every shipped preset (nceval.plotted), new ones included")
     p.add_argument("--retime", default="",
                    help="comma-separated chart families only re-timed on COMMIT's build: their "
                         "streams must equal their recorded build's (checked), so their quality "

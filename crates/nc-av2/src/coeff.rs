@@ -12,7 +12,9 @@
 //!
 //! The coefficient walk is written once over `SymbolCoder`: the writer
 //! derives every symbol from the source block, the reader decodes it, and both
-//! rebuild identical level maps, so contexts cannot drift apart.
+//! rebuild identical level maps, so contexts cannot drift apart. Like
+//! AV1's DC-only shortcut, a sole DC level needs no level map. The AV2 walk
+//! retains its luma/chroma sign models and adaptive Rice remainder syntax.
 //!
 //! Reimplemented from AVM v1.0.0 `av2/encoder/encodetxb.c`
 //! (`av2_write_coeffs_txb`, `code_eob`), `av2/decoder/decodetxb.c`
@@ -23,6 +25,7 @@ mod context;
 mod levels;
 mod models;
 pub(crate) mod parity;
+mod rate_model;
 mod symbols;
 pub(crate) mod tcq;
 pub(crate) mod trellis;
@@ -220,8 +223,13 @@ pub(crate) fn write_typed_with_stats(
     // pass and adds the total, instead of dispatching symbol by symbol
     // through the writer: the same rate, about a third fewer instructions
     // per coded position.
+    let modelled = w.models_coefficient_levels();
     let mut pricer = FrozenPricer::new(w.live_models());
-    let context = write_with(&mut pricer, coefficients, stats, tx, ctx, qindex, kind)?;
+    let context = if modelled {
+        write_modelled(&mut pricer, coefficients, stats, tx, ctx, qindex, kind)?
+    } else {
+        write_with(&mut pricer, coefficients, stats, tx, ctx, qindex, kind)?
+    };
     let q9 = pricer.total_q9();
     w.add_estimate_q9(q9);
     Ok(context)
@@ -253,6 +261,40 @@ fn write_with<C: SymbolCoder>(
             context.add(pos, value);
         },
     )?;
+    Ok(context.value())
+}
+
+/// [`write_with`] under a frozen estimate whose levels are modelled
+/// ([`rate_model`]): the block-level symbols priced exactly, the level walk
+/// replaced by the model (TCQ levels keep the walk).
+fn write_modelled(
+    pricer: &mut FrozenPricer<'_>,
+    coefficients: &[i32],
+    stats: LevelStats,
+    tx: TxSize,
+    ctx: Context,
+    qindex: u8,
+    kind: Kind,
+) -> Result<u8> {
+    validate(tx, ctx, qindex, coefficients.len())?;
+    let block = Block::new(tx, ctx, qindex, (kind.set, kind.levels));
+    let source = Source {
+        levels: coefficients,
+        eob: stats.eob(),
+        tx_type: kind.tx_type,
+    };
+    let mut context = EntropyContext::default();
+    let Some((eob, _)) = code_block_symbols(pricer, block, source)? else {
+        return Ok(context.value());
+    };
+    if block.tcq() {
+        code_levels::<_, TCQ_WALK>(pricer, block, (source.levels, eob), |pos, value| {
+            context.add(pos, value);
+        })?;
+        return Ok(context.value());
+    }
+    let features = rate_model::features(block, source.levels, eob, &mut context);
+    pricer.add_q9(rate_model::levels_q9(block, &features));
     Ok(context.value())
 }
 
@@ -413,11 +455,9 @@ fn code<C: SymbolCoder>(
     source: Source<'_>,
     store: impl FnMut(usize, i32),
 ) -> Result<TxType> {
-    if models::all_zero(coder, usize::from(source.eob == 0), block)? != 0 {
+    let Some((eob, tx_type)) = code_block_symbols(coder, block, source)? else {
         return Ok(TxType::DctDct);
-    }
-    let eob = code_eob(coder, source.eob, block)?;
-    let tx_type = code_tx_type(coder, eob, block, source.tx_type)?;
+    };
     // One walk per level coding, so the plain walk (most blocks of every
     // frame) carries neither the parity tally nor the TCQ state.
     if parity::applies(block, tx_type, eob) {
@@ -428,6 +468,21 @@ fn code<C: SymbolCoder>(
         code_levels::<C, PLAIN_WALK>(coder, block, (source.levels, eob), store)?;
     }
     Ok(tx_type)
+}
+
+/// Code the all-zero flag and, for a block with levels, its end of block
+/// and transform type, returning those two (`None`: all zero).
+fn code_block_symbols<C: SymbolCoder>(
+    coder: &mut C,
+    block: Block,
+    source: Source<'_>,
+) -> Result<Option<(usize, TxType)>> {
+    if models::all_zero(coder, usize::from(source.eob == 0), block)? != 0 {
+        return Ok(None);
+    }
+    let eob = code_eob(coder, source.eob, block)?;
+    let tx_type = code_tx_type(coder, eob, block, source.tx_type)?;
+    Ok(Some((eob, tx_type)))
 }
 
 /// The level walks of [`code_levels`]: plain levels, a block that may hide
@@ -447,6 +502,15 @@ fn code_levels<C: SymbolCoder, const WALK: u8>(
 ) -> Result<()> {
     let (tx, ctx) = (block.tx, block.ctx);
     let (hides, tcq) = (WALK == HIDING_WALK, WALK == TCQ_WALK);
+    if WALK == PLAIN_WALK && eob == 1 {
+        let at = ScanPosition::DC;
+        let level = code_last_level(coder, block, (at, 0), source, false)?;
+        let mut average = 0;
+        let value =
+            code_signed_level::<C, WALK>(coder, block, at, level, source[0], false, &mut average)?;
+        store(0, value);
+        return Ok(());
+    }
     let positions = &levels::scan_positions(tx)[..eob];
     // AVM sums the base and low-range levels after DC (`num_nz`,
     // `sum_abs1` in `av2_read_coeffs_txb`) as they are coded.
@@ -512,37 +576,64 @@ fn code_levels<C: SymbolCoder, const WALK: u8>(
         if coded == 0 {
             continue;
         }
-        let negative = source[pos] < 0;
-        // AVM codes only the luma DC sign with a model; U and V DC signs and
-        // every AC sign are bypass bits.
-        let sign = if pos == 0 && ctx.plane == PLANE_Y {
-            models::dc_sign(coder, usize::from(negative), block, hidden)? != 0
-        } else {
-            coder.code_literal(u32::from(negative), 1)? != 0
-        };
-        let target = source[pos].unsigned_abs();
-        let saturation = at.region(ctx.plane).saturation();
-        let level = if hidden && pos == 0 {
-            parity::code_hidden_high_range(coder, coded, target, average)?
-        } else if tcq && tcq::has_remainder(coded, saturation) {
-            // TCQ remainders count pairs, keeping the coded parity.
-            let high = coder.code_high_range(target.saturating_sub(coded) / 2, average)?;
-            average = u32::midpoint(average, high);
-            coded + 2 * high
-        } else if coded == saturation {
-            let high = coder.code_high_range(target.saturating_sub(coded), average)?;
-            average = u32::midpoint(average, high);
-            coded + high
-        } else {
-            coded
-        };
-        if level > MAX_LEVEL {
-            return Err(DecodeError::Malformed("AV2 coefficient exceeds 20 bits"));
-        }
-        let magnitude = level as i32;
-        store(pos, if sign { -magnitude } else { magnitude });
+        let value = code_signed_level::<C, WALK>(
+            coder,
+            block,
+            at,
+            coded,
+            source[pos],
+            hidden,
+            &mut average,
+        )?;
+        store(pos, value);
     }
     Ok(())
+}
+
+/// Complete a nonzero level with its sign and any high-range remainder.
+/// The DC shortcut uses the same syntax and context update as the full walk.
+#[inline]
+fn code_signed_level<C: SymbolCoder, const WALK: u8>(
+    coder: &mut C,
+    block: Block,
+    at: ScanPosition,
+    coded: u32,
+    value: i32,
+    hidden: bool,
+    average: &mut u32,
+) -> Result<i32> {
+    let pos = at.pos();
+    let ctx = block.ctx;
+    let tcq = WALK == TCQ_WALK;
+    let negative = value < 0;
+    // AVM codes only the luma DC sign with a model; U and V DC signs and
+    // every AC sign are bypass bits.
+    let sign = if pos == 0 && ctx.plane == PLANE_Y {
+        models::dc_sign(coder, usize::from(negative), block, hidden)? != 0
+    } else {
+        coder.code_literal(u32::from(negative), 1)? != 0
+    };
+    let target = value.unsigned_abs();
+    let saturation = at.region(ctx.plane).saturation();
+    let level = if hidden && pos == 0 {
+        parity::code_hidden_high_range(coder, coded, target, *average)?
+    } else if tcq && tcq::has_remainder(coded, saturation) {
+        // TCQ remainders count pairs, keeping the coded parity.
+        let high = coder.code_high_range(target.saturating_sub(coded) / 2, *average)?;
+        *average = u32::midpoint(*average, high);
+        coded + 2 * high
+    } else if coded == saturation {
+        let high = coder.code_high_range(target.saturating_sub(coded), *average)?;
+        *average = u32::midpoint(*average, high);
+        coded + high
+    } else {
+        coded
+    };
+    if level > MAX_LEVEL {
+        return Err(DecodeError::Malformed("AV2 coefficient exceeds 20 bits"));
+    }
+    let magnitude = level as i32;
+    Ok(if sign { -magnitude } else { magnitude })
 }
 
 /// The template neighbours of the last coefficient: nothing is coded yet.

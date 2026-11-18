@@ -42,6 +42,12 @@ pub use step::{Av1SymbolStep, av1_decode_symbol_step};
 #[cfg(all(target_arch = "aarch64", not(miri)))]
 #[allow(unsafe_code)]
 mod neon_step;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[allow(unsafe_code)]
+mod simd128_step;
+#[cfg(all(target_arch = "x86_64", not(miri)))]
+#[allow(unsafe_code)]
+mod sse2_step;
 
 /// Bits dropped from a probability before the interval split
 /// (`EC_PROB_SHIFT`).
@@ -122,12 +128,8 @@ fn find_small_symbol<const N: usize>(
     };
     let (b0, b1, b2) = (bound(0), bound(1), bound(2));
     let symbol = usize::from(value < b0) + usize::from(value < b1) + usize::from(value < b2);
-    let (lower, upper) = match symbol {
-        0 => (b0, range),
-        1 => (b1, b0),
-        2 => (b2, b1),
-        _ => (0, b2),
-    };
+    let lo = u64::from(b0 as u16) | (u64::from(b1 as u16) << 16) | (u64::from(b2 as u16) << 32);
+    let (lower, upper) = step::interval_4(range, lo, symbol);
     Av1SymbolInterval {
         symbol,
         lower,
@@ -146,6 +148,30 @@ pub fn av1_adapt_cdf<const N: usize>(
     rate: u32,
 ) {
     debug_assert!(check_contract(icdf, symbols) && symbol < symbols);
+    if N == 2 {
+        let p = u32::from(icdf[0]);
+        icdf[0] = (if symbol != 0 {
+            p + ((u32::from(PROB_TOP) - p) >> rate)
+        } else {
+            p - (p >> rate)
+        }) as u16;
+        return;
+    }
+    if N == 3 {
+        let adapt1 = |p: u16, towards_top: bool| -> u16 {
+            let p = u32::from(p);
+            (if towards_top {
+                p + ((u32::from(PROB_TOP) - p) >> rate)
+            } else {
+                p - (p >> rate)
+            }) as u16
+        };
+        icdf[0] = adapt1(icdf[0], symbol > 0);
+        if symbols > 2 {
+            icdf[1] = adapt1(icdf[1], symbol > 1);
+        }
+        return;
+    }
     #[cfg(all(target_arch = "x86_64", not(miri)))]
     return sse2::adapt_cdf(icdf, symbol, rate);
     #[cfg(all(target_arch = "aarch64", not(miri)))]

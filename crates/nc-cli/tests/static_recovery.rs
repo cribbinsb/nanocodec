@@ -11,7 +11,7 @@
 //! that the static half returns to the quality of an undisturbed stream
 //! (and that without the term it does not). H.264 runs flat and with the
 //! Default's adaptive layers and the H.264 Fast / H.264 Faster / H.264 Veryfast presets (and AV1
-//! Faster / Veryfast): in a
+//! Faster / Veryfast, AV2 Fast / Faster): in a
 //! layered stream the static half recovers at the next base-layer frame,
 //! where the reuse term refines (`nc-encoder` `on_reuse_chain`). Every
 //! shipped preset of every codec runs too: a preset's speed shortcut can
@@ -637,10 +637,22 @@ fn vvc_presets_recover() {
 fn av2_presets_recover() {
     for preset in [
         ParamOverrides::default(),
-        shipped(Codec::Av2, 1, "fast"),
         // The slow rung: the shared bundle, then AV2's levers (nc_encoder::presets).
         shipped(Codec::Av2, 1, "slow"),
     ] {
         check_preset::<nc_av2::Av2Backend>(Codec::Av2, &preset, &FLAT_RECOVERY);
+    }
+}
+
+#[test]
+fn av2_layered_streams_recover_at_the_next_base_frame() {
+    // Fast layers where AV1 Faster's gates open; Faster every stream whose
+    // camera does not shake and whose scene is not mostly static.
+    for name in ["fast", "faster"] {
+        check_preset::<nc_av2::Av2Backend>(
+            Codec::Av2,
+            &shipped(Codec::Av2, 1, name),
+            &LAYERED_RECOVERY,
+        );
     }
 }

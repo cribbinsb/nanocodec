@@ -6,6 +6,7 @@ web/docs/examples/, so a page shows the compiled and tested code itself.
     python3 -m nceval.site            # write web/results/data/*.json and the README block
     python3 -m nceval.site --check    # exit 1 (listing the files) if any is out of date
     python3 -m nceval.site --changed-since REF   # write only if an input changed since REF
+    python3 -m nceval.site --unpublished-paths   # held-back datasets' files (publish_public.py)
 
 Every figure the results pages (web/results/*.html) and the README's headline
 block show comes from here, and everything here comes from the checked-in
@@ -43,6 +44,7 @@ from .clips import Clip
 from .codecs import Codec
 from .config import load_paths
 from .encoders.nanocodec import current_family_name, preset_cli_args
+from .plotted import own_names
 from .publicnames import credit
 from .realuse import DEFAULT_FRAMES, LADDER_KBPS
 
@@ -99,12 +101,73 @@ CHART_VIEWS = (
               "bd-vs-speed-independent_2026-11-13-builds.json"),
     ChartView("dev-psnr", "dev", TUNED_ZERO, "bd-vs-speed-vs-x264-medium-psnr",
               "bd-vs-speed-builds.json"),
+    ChartView("vc1k-psnr", "vc1k", TUNED_ZERO, "bd-vs-speed-vc1k_2026-11-18-vs-x264-medium-psnr",
+              "bd-vs-speed-vc1k_2026-11-18-builds.json"),
 )
 CLIPSETS = {
     "fresh": "Held-out, fresh: videos none of our tuning used",
     "heldout": "Held-out, all: the fresh clips plus an earlier held-out check",
     "dev": "Development: the clips we tune beside",
+    "vc1k": "VC-1K (phone video calls): phone recordings from Meta's VC-1K dataset, none of "
+            "our tuning used, stratified by motion, lighting and environment",
 }
+
+
+@dataclass(frozen=True)
+class Dataset:
+    """A clip set from an outside dataset: its credit and licence (shown wherever its
+    numbers are), the selection file whose strata and mix the captions quote, and the
+    pages' wording for it (the pages carry no dataset text of their own).
+
+    `published` False holds the dataset back: no site output (chart and Fixed QP views,
+    clip tables, captions) carries it, and the public mirror
+    (~/nanocodec-data/work/overnight/publish_public.py, through `--unpublished-paths`)
+    leaves out its result files (`files`, git pathspec globs). The measurements stay in
+    this repository; setting it True publishes them with the next site and mirror run."""
+    name: str
+    short: str
+    credit: str
+    url: str
+    licence: str
+    note: str
+    about: str
+    sample_rule: str
+    selection: str
+    published: bool
+    files: tuple[str, ...]
+
+
+#: Outside datasets by site clip-set id. VC-1K is non-commercial and shows participants'
+#: faces: the site carries its numbers and clip names only, never a frame or stream. It is
+#: held back until the owner publishes it (owner, 2026-11-18).
+DATASETS = {
+    "vc1k": Dataset(name="VC-1K (phone video calls)", short="VC-1K",
+                    credit="VC-1K (Meta, CC BY-NC 4.0)",
+                    url="https://github.com/facebookresearch/VC-1K",
+                    licence="CC BY-NC 4.0",
+                    note="numbers only: no frames, thumbnails or streams of these clips are "
+                         "published (most show participants' faces)",
+                    about="(Meta, CC BY-NC 4.0), drawn by a fixed stratified rule and used by "
+                          "none of our tuning; we publish its numbers and clip names only, "
+                          "never its frames or streams.",
+                    sample_rule="the VC-1K set (one clip per motion × lighting cell, the "
+                                "environment alternating, each the first of its stratum in the "
+                                "selection’s fixed order)",
+                    selection="eval/clipset/vc1k.json",
+                    published=False,
+                    files=("docs/results/*vc1k*", "eval/clipset/vc1k.json",
+                           "eval/clipset/vc1k_excluded.json")),
+}
+
+
+def shown(clipset: str) -> bool:
+    """Whether the site carries a clip set: ours always, an outside dataset's once published."""
+    return clipset not in DATASETS or DATASETS[clipset].published
+
+
+def unpublished_paths() -> list[str]:
+    """The result files (git pathspec globs) of the datasets held back from publication."""
+    return [path for d in DATASETS.values() if not d.published for path in d.files]
 TIMING_PLAN = "bd-vs-speed-plan.json"
 #: The speed machines, in the site's order: the Jetson's Arm core, the x86 timing machine
 #: (AWS c8a.large, Zen 5), the x86 one without AVX-512 (AWS c6a.large, Zen 3) and the server
@@ -158,11 +221,28 @@ LENS_COLUMN = "profile"
 LENS_TIMING_FILES = {"jetson": "fixed-qp-timing-jetson.json", "x86": "fixed-qp-timing-x86.json",
                      "zen3": "fixed-qp-timing-zen3.json",
                      "graviton": "fixed-qp-timing-graviton.json"}
-#: The second Fixed QP view: our held-out clips (nceval.fixedqp gap --clipset, x264
-#: medium as the zero), quality and its own timing on the same encodes.
-FRESH_QP_DATA = "fixed-qp-fresh-2026-11-16.json"
-FRESH_QP_TIMING_FILES = {"jetson": "fixed-qp-fresh-timing-jetson.json",
-                         "x86": "fixed-qp-fresh-timing-x86.json"}
+
+
+@dataclass(frozen=True)
+class SampleQpView:
+    """A Fixed QP view on a sample of a CBR chart's clip set (nceval.fixedqp gap
+    --clipset, x264 medium as the zero): its quality and its own timing on the same
+    encodes (tools/dev/fixedqp_timing.py plan-pool), per machine."""
+    id: str
+    clipset: str
+    data: str
+    timing: dict[str, str]
+    condition: str
+
+
+#: The Fixed QP views on our clip sets, beside the standards lens.
+SAMPLE_QP_VIEWS = (
+    SampleQpView("qp-fresh", "fresh", "fixed-qp-fresh-2026-11-16.json",
+                 {"jetson": "fixed-qp-fresh-timing-jetson.json",
+                  "x86": "fixed-qp-fresh-timing-x86.json"}, "held-out, fresh"),
+    SampleQpView("qp-vc1k", "vc1k", "fixed-qp-vc1k-2026-11-18.json",
+                 {"x86": "fixed-qp-vc1k-timing-x86.json"}, "VC-1K"),
+)
 #: Lens test names that are chart families under another name (the chart's timing
 #: is theirs); the rest are timed only by the lens run.
 LENS_FAMILIES = {"aom-rt-s10": "libaom-av1-cpu10", "aom-rt-s8": "libaom-av1-cpu8",
@@ -176,6 +256,10 @@ OWN_PREFIX = "nanocodec-"
 #: (tools/release/release.py writes it at a release's chart stage): {"version",
 #: "commit" (8 characters), "build": "PGO"}. Speed captions name it.
 RELEASE_FILE = RESULTS / "release.json"
+#: Shipped presets a view has not measured yet, said explicitly: {view id: {family:
+#: reason}}. `--check` fails on a shipped preset (nceval.plotted) that a view has
+#: neither measured nor listed here, and on an entry the view has since measured.
+NOT_MEASURED_FILE = RESULTS / "not-measured.json"
 TUNE_SEPARATOR = "~"
 #: Each codec's Default is the ladder's medium (no preset file): its preset
 #: name, and what its unsuffixed chart label ("H.264") gains on the site.
@@ -283,6 +367,8 @@ def chart_row(row: dict[str, str], fps: dict[str, float | None]) -> dict:
         "vmaf": number(row["bd_vmaf_v1_pct"]), "ms_ssim": None,
         # charts measured before XPSNR was recorded have no column: not measured
         "xpsnr": number(row.get("bd_xpsnr_yuv_pct")),
+        # the clips the XPSNR figure averages (chart.reported_pair): may be fewer than J's
+        "xpsnr_clips": int(row["xpsnr_clips"]) if row.get("xpsnr_clips") else None,
         "iqr": [number(row["iqr_low_pct"]), number(row["iqr_high_pct"])],
         "clips_scored": int(row["clips_scored"]), "clips": int(row["clips"]),
         "fps": fps,
@@ -386,8 +472,11 @@ def timed_builds(record: dict) -> str | None:
 
 
 def size_range(sizes: list[tuple[int, int]]) -> str:
-    """'1280×720 to 480×270': the largest and smallest frame by pixel count."""
+    """'1280×720 to 480×270': the largest and smallest frame by pixel count; frames of one
+    pixel count (portrait and landscape 720p) as '720×1280 or 1280×720'."""
     big, small = max(sizes, key=lambda s: s[0] * s[1]), min(sizes, key=lambda s: s[0] * s[1])
+    if big[0] * big[1] == small[0] * small[1]:
+        return " or ".join(f"{w}×{h}" for w, h in sorted(set(sizes)))
     return f"{big[0]}×{big[1]} to {small[0]}×{small[1]}"
 
 
@@ -432,15 +521,14 @@ def fixed_qp_view() -> dict | None:
             "values": values}
 
 
-def fresh_qp_view() -> dict | None:
-    """The second Fixed QP chart: every encoder at fixed QP on held-out clips
-    (FRESH_QP_DATA) against x264 medium, at its speed on the same encodes
-    (FRESH_QP_TIMING_FILES)."""
-    path = RESULTS / FRESH_QP_DATA
+def sample_qp_view(qp: SampleQpView) -> dict | None:
+    """A Fixed QP chart on a clip-set sample: every encoder at fixed QP against x264
+    medium (qp.data), at its speed on the same encodes (qp.timing)."""
+    path = RESULTS / qp.data
     if not path.is_file():
         return None
     run = json.loads(path.read_text())
-    timing = timing_records(FRESH_QP_TIMING_FILES)
+    timing = timing_records(qp.timing)
     values = {}
     for family, row in run["families"].items():
         values[family] = {
@@ -460,11 +548,11 @@ def fresh_qp_view() -> dict | None:
                              "fps": {platform: (timing[platform]["points"].get(run["anchor"])
                                                 or {}).get("fps") if platform in timing
                                      else None for platform in PLATFORMS}}
-    return {"id": "qp-fresh", "clipset": "fresh", "zero": run["anchor"], "rate_mode": "qp",
+    return {"id": qp.id, "clipset": qp.clipset, "zero": run["anchor"], "rate_mode": "qp",
             "clips": len(run["clips"]), "frames": run["frames"], "points": run["points"],
-            "build_commit": run["build_commit"], "condition": "held-out, fresh",
-            "source": [f"docs/results/{FRESH_QP_DATA}",
-                       *(f"docs/results/{FRESH_QP_TIMING_FILES[p]}" for p in timing)],
+            "build_commit": run["build_commit"], "condition": qp.condition,
+            "source": [f"docs/results/{qp.data}",
+                       *(f"docs/results/{qp.timing[p]}" for p in timing)],
             "speed": speed_notes(timing),
             "size_range": size_range([(c["width"], c["height"]) for c in run["clips"]]),
             "lens_names": {}, "metrics": with_xpsnr(["j", "psnr", "vmaf", "ms_ssim"], values),
@@ -477,7 +565,8 @@ CLIP_TABLES = (("fresh", "bd-vs-speed-independent_fresh_2026-11-13-vs-x264-mediu
                 "independent_fresh_2026-11-13.json"),
                ("heldout", "bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr",
                 "independent_2026-11-13.json"),
-               ("dev", "bd-vs-speed-vs-x264-medium-psnr", None))
+               ("dev", "bd-vs-speed-vs-x264-medium-psnr", None),
+               ("vc1k", "bd-vs-speed-vc1k_2026-11-18-vs-x264-medium-psnr", "vc1k_2026-11-18.json"))
 EXCLUDED_CLIP = re.compile(r"^- \*\*([^*]+)\*\* \([^)]*\): (.*?)\.?$")
 
 
@@ -487,7 +576,7 @@ def clips_data() -> dict:
     from .chart import chart_clips
     from .ctc.conditions import AOM_LD
     sets = {}
-    for clipset, stem, file in CLIP_TABLES:
+    for clipset, stem, file in shown_clip_tables():
         excluded = {}
         markdown = RESULTS / f"{stem}.md"
         if markdown.is_file():
@@ -500,18 +589,40 @@ def clips_data() -> dict:
                           "class": c.content_class, "scored": c.name not in excluded,
                           "left_out_reason": excluded.get(c.name)}
                          for c in chart_clips(spec)]
-    fresh = RESULTS / FRESH_QP_DATA
-    if fresh.is_file():
-        sets["qp-fresh"] = [c for c in sets["fresh"] if c["name"] in {
-            clip["clip"] for clip in json.loads(fresh.read_text())["clips"]}]
+    for qp in filter(lambda q: shown(q.clipset), SAMPLE_QP_VIEWS):
+        sample = RESULTS / qp.data
+        if sample.is_file():
+            sets[qp.id] = [c for c in sets[qp.clipset] if c["name"] in {
+                clip["clip"] for clip in json.loads(sample.read_text())["clips"]}]
     sets["ctc"] = [{"name": q.name, "dataset": f"AOM CTC v8, class {q.sequence_class}",
                     "width": q.width, "height": q.height, "fps": round(q.fps_num / q.fps_den, 3),
                     "start_frame": 0, "frames": AOM_LD.frames, "class": q.sequence_class,
                     "scored": True, "left_out_reason": None} for q in AOM_LD.sequences]
-    return {"source": [*(f"docs/results/{stem}.md" for _, stem, _ in CLIP_TABLES),
-                       "eval/nceval/ctc/sequences.py"], "sets": sets,
+    return {"source": [*(f"docs/results/{stem}.md" for _, stem, _ in shown_clip_tables()),
+                       "eval/nceval/ctc/sequences.py"], "sets": sets, "datasets": datasets_data(),
             "counts": {k: {"clips": len(v), "scored": sum(c["scored"] for c in v),
                            "left_out": sum(not c["scored"] for c in v)} for k, v in sets.items()}}
+
+
+def shown_clip_tables() -> list[tuple[str, str, str | None]]:
+    return [table for table in CLIP_TABLES if shown(table[0])]
+
+
+def datasets_data() -> dict:
+    """Each published outside dataset's wording, credit, licence note and selection facts
+    (stratum count, clips chosen, the mix) for the pages."""
+    out = {}
+    for clipset, d in DATASETS.items():
+        if not d.published:
+            continue
+        selection = json.loads((REPO / d.selection).read_text())
+        out[clipset] = {"name": d.name, "short": d.short, "about": d.about,
+                        "sample_rule": d.sample_rule,
+                        "credit": d.credit, "url": d.url, "licence": d.licence, "note": d.note,
+                        "strata": len(selection["strata"]), "clips": selection["count"],
+                        "candidates": selection["candidates"], "mix": selection["mix"],
+                        "stratified_by": ["motion", "lighting", "environment"]}
+    return out
 
 
 def latest_rc_cost() -> Path:
@@ -520,12 +631,13 @@ def latest_rc_cost() -> Path:
 
 def chart_data() -> dict:
     views, labels = [], {}
-    for view in CHART_VIEWS:
+    for view in filter(lambda v: shown(v.clipset), CHART_VIEWS):
         data, names = chart_view(view)
         views.append(data)
         labels.update({k: v for k, v in names.items() if k not in labels})
     cbr_families = {f for v in views for f in v["values"]}
-    views += [v for v in (fixed_qp_view(), fresh_qp_view()) if v]
+    sample_views = [qp for qp in SAMPLE_QP_VIEWS if shown(qp.clipset)]
+    views += [v for v in (fixed_qp_view(), *map(sample_qp_view, sample_views)) if v]
     plan = json.loads((RESULTS / TIMING_PLAN).read_text())
     timing = timing_commands(plan)
     families = sorted({f for v in views for f in v["values"]})
@@ -542,9 +654,13 @@ def chart_data() -> dict:
         info["timing"] = timing.get(family) or timing.get(family.partition(TUNE_SEPARATOR)[0])
         info["timing_is_twin"] = family not in timing and info["timing"] is not None
         points[family] = info
+    not_measured = not_measured_marks()
+    for view in views:
+        view["not_measured"] = not_measured.get(view["id"], {})
     platforms = {name: record.get("platform", "") for name, record in cbr_timing().items()}
     return {
-        "clipsets": CLIPSETS, "codecs": CODEC_NAMES, "codec_order": list(CODEC_ORDER),
+        "clipsets": {k: v for k, v in CLIPSETS.items() if shown(k)}, "datasets": datasets_data(),
+        "codecs": CODEC_NAMES, "codec_order": list(CODEC_ORDER),
         "platforms": platforms, "points": points, "views": views,
         # a machine whose one session timed all our points at one build says which
         "timing_builds": {name: timed_builds(record) for name, record in cbr_timing().items()
@@ -916,6 +1032,29 @@ def with_readme_block(text: str, block: str) -> str:
     return pattern.sub(lambda _: block, text)
 
 
+# --- coverage: every view has every shipped preset ---------------------------------------
+
+def not_measured_marks() -> dict[str, dict[str, str]]:
+    return json.loads(NOT_MEASURED_FILE.read_text()) if NOT_MEASURED_FILE.is_file() else {}
+
+
+def coverage_problems(chart: dict) -> list[str]:
+    """Each view's shipped presets (plotted.own_names) that it neither measured nor
+    marks as not measured, and each mark the view no longer needs."""
+    shipped = own_names()
+    problems = []
+    for view in chart["views"]:
+        values, marked = view["values"], view.get("not_measured", {})
+        problems += [f"view {view['id']}: shipped preset {f} is missing (measure it, or say why "
+                     f"in {NOT_MEASURED_FILE.relative_to(REPO)})"
+                     for f in shipped if f not in values and f not in marked]
+        problems += [f"view {view['id']}: {f} is marked not measured but "
+                     + ("is measured" if f in values else "is not a shipped preset")
+                     + f": remove it from {NOT_MEASURED_FILE.relative_to(REPO)}"
+                     for f in marked if f in values or f not in shipped]
+    return problems
+
+
 # --- writing and checking ------------------------------------------------------------------
 
 def outputs() -> dict[Path, str]:
@@ -956,9 +1095,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true",
                         help="exit 1 if a generated file is out of date; write nothing")
+    parser.add_argument("--unpublished-paths", action="store_true",
+                        help="print the held-back datasets' result files (git pathspec globs), "
+                             "one per line, for the public mirror; write nothing")
     parser.add_argument("--changed-since", metavar="REF",
                         help="do nothing unless an input (INPUTS) changed since REF")
     args = parser.parse_args(argv)
+    if args.unpublished_paths:
+        print("\n".join(unpublished_paths()))
+        return
     if args.changed_since and not inputs_changed(args.changed_since):
         return
     files = outputs()
@@ -966,7 +1111,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.check:
         for path in out_of_date:
             print(f"out of date: {path.relative_to(REPO)} (run python3 -m nceval.site)")
-        sys.exit(1 if out_of_date else 0)
+        coverage = coverage_problems(json.loads(files[SITE_DATA / "chart.json"]))
+        for problem in coverage:
+            print(problem)
+        sys.exit(1 if out_of_date or coverage else 0)
     for path in out_of_date:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(files[path])

@@ -159,7 +159,10 @@ fn segment_quantizers(h: &FrameHeader) -> Result<Option<SegmentQuantizers>, Deco
 
 /// Prediction and coefficient tools.
 fn check_coding_tools(h: &FrameHeader) -> Result<(), DecodeError> {
-    if !h.size.width.is_multiple_of(2) || !h.size.height.is_multiple_of(2) {
+    if !h.size.width.is_multiple_of(2)
+        || !h.size.upscaled_width.is_multiple_of(2)
+        || !h.size.height.is_multiple_of(2)
+    {
         unsupported("AV1 odd frame size")?;
     }
     if h.delta.lf_present {

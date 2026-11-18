@@ -186,3 +186,12 @@ adapt.probe = 1
 # [-0.83, -0.36] BETTER; lens Weighted / J -6.1 / -18.4 -> -6.2 / -18.3.
 # Depth removal's adaptation (`adapt.depth`) was level at +1.1 % CPU.
 adapt.motion = 1
+# Layer propagation (`layer_propagation.rs`, docs/handoff/block-aq.md "Layer propagation retry"):
+# on layered mini-GOPs, T0 blocks the last period reused little go towards the top layer's
+# quantizer, rounded to a 3-QP grid, stopping in the run-up to a scheduled key (`prekey`; without
+# it the key was planned from the lowered level: long-window pulse +0.40 dB). Pool 2026-11-18:
+# L3 J -1.32 % [-1.93, -0.77]; final-check J -0.88 % [-0.99, +0.21], no guard (PSNR-YUV +0.9 %,
+# VMAF v1 -0.7 %, MS-SSIM -2.6 %; pan -3.1 %, lowlight +0.7 %); fixed-QP lens neutral.
+layers.propagation = 1
+layers.propagation_grid = 3
+layers.propagation_prekey = 1

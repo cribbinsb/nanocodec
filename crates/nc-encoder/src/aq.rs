@@ -13,6 +13,11 @@
 //!   reconstruction fell below their long-run quality are refined, at the
 //!   step their reuse warrants. Its offsets follow from λ and are not
 //!   clamped by `rate.aq_max_offset`, which bounds the two heuristic terms.
+//! - **Layer propagation** (`layers.propagation`, `layer_propagation.rs`):
+//!   on base frames of a layered structure, blocks the last period's frames
+//!   reused little go towards the top layer's quantizer. Its offsets are
+//!   pooled, rounded to `layers.propagation_grid` and not clamped (they are
+//!   bounded by the ladder).
 //!
 //! The analysis already has every 8x8 block's sum of squared deviations
 //! and motion error, so no pixel pass is added. Cell offsets are pooled per
@@ -27,7 +32,8 @@
 use nc_analysis::MotionAnalysis;
 use nc_analysis::preanalysis::{BlockStats, PreAnalysis};
 
-use crate::params::{ParamOverrides, PersistParams, RateParams};
+use crate::layer_propagation::{LayerFrame, LayerPropagation};
+use crate::params::{LayerParams, ParamOverrides, PersistParams, RateParams};
 use crate::partition::Block;
 use crate::persistence::PersistenceTracker;
 use crate::qp_cadence::{nearest_quantizer, step_ratio};
@@ -57,12 +63,18 @@ pub(crate) struct BlockAq {
     /// (`CodecBackend::BLOCK_QP_OFFSETS`), else `None`.
     offset_step: Option<f64>,
     persistence: Option<PersistenceTracker>,
+    /// The layer propagation term (`layers.propagation`), if on.
+    propagation: Option<LayerPropagation>,
+    /// Grid (QP units) the propagation term is rounded to, 0 for none.
+    propagation_grid: f64,
     cols: usize,
     /// Offset of every cell of the current frame in QP units, pooled per
     /// quantizer square (the heuristic terms clamped).
     offset: Vec<f64>,
     /// The reuse term's share of `offset`, before pooling (scratch).
     reuse_offset: Vec<f64>,
+    /// The propagation term's share of `offset`, before pooling (scratch).
+    layer_offset: Vec<f64>,
     /// The cells of `offset` that are not zero.
     nonzero: Vec<usize>,
     /// Whether any cell of the planned frame has a non-zero offset.
@@ -84,20 +96,39 @@ impl BlockAq {
         let persist = PersistParams::from_overrides(overrides);
         let persistence = PersistenceTracker::new(&persist);
         let reuse = persist.reuse >= 0.5;
-        (params.aq_strength > 0. || persistence.is_some() || reuse).then(|| Self {
+        let layers = LayerParams::from_overrides(overrides);
+        let propagation = LayerPropagation::new(&layers);
+        let any = params.aq_strength > 0. || persistence.is_some() || propagation.is_some();
+        (any || reuse).then(|| Self {
             strength: f64::from(params.aq_strength),
             max_offset: f64::from(params.aq_max_offset),
             unit_log2,
             offset_step: heuristic_offset_step(params.aq_max_offset, max_offsets),
             persistence,
+            propagation,
+            propagation_grid: f64::from(layers.propagation_grid),
             cols: 0,
             offset: Vec::new(),
             reuse_offset: Vec::new(),
+            layer_offset: Vec::new(),
             nonzero: Vec::new(),
             active: false,
             total_weight: 0.,
             bit_weight: Vec::new(),
         })
+    }
+
+    /// Whether the layer propagation term is on.
+    pub fn propagates(&self) -> bool {
+        self.propagation.is_some()
+    }
+
+    /// Fold the frame being planned into the layer propagation term, if on
+    /// (before [`Self::plan`]).
+    pub fn plan_layer(&mut self, frame: &LayerFrame<'_>) {
+        if let Some(propagation) = self.propagation.as_mut() {
+            propagation.plan(frame);
+        }
     }
 
     /// Measure the frame from its analysis: `motion` is `None` on frames
@@ -111,16 +142,20 @@ impl BlockAq {
     ) {
         self.cols = pre.blocks.cols();
         let reuse = reuse.filter(|r| r.iter().any(|&offset| offset != 0.));
-        if self.strength == 0. && self.persistence.is_none() && reuse.is_none() {
+        let cells = pre.blocks.cells().len();
+        let layer = self
+            .propagation
+            .as_ref()
+            .and_then(LayerPropagation::offsets)
+            .filter(|l| l.len() == cells && l.iter().any(|&offset| offset != 0.));
+        let heuristic = self.strength > 0. || self.persistence.is_some() || layer.is_some();
+        if !heuristic && reuse.is_none() {
             // Nothing to plan (most frames with only the reuse term on):
             // the frame codes as without block AQ.
             self.active = false;
             return;
         }
-        if self.strength == 0.
-            && self.persistence.is_none()
-            && let Some(reuse) = reuse.filter(|r| r.len() == pre.blocks.cells().len())
-        {
+        if !heuristic && let Some(reuse) = reuse.filter(|r| r.len() == cells) {
             self.plan_reuse_only(pre, reuse);
             return;
         }
@@ -169,17 +204,34 @@ impl BlockAq {
                 pool_units(values, self.cols, self.unit_log2);
             }
         };
+        self.layer_offset.clear();
+        match layer {
+            Some(layer) => self.layer_offset.extend_from_slice(layer),
+            None => self.layer_offset.resize(self.offset.len(), 0.),
+        }
         if self.unit_log2 > CELL_LOG2 {
             pool(&mut self.offset);
             pool(&mut self.reuse_offset);
+            pool(&mut self.layer_offset);
+        }
+        let grid = self.propagation_grid;
+        if grid > 0. {
+            for offset in &mut self.layer_offset {
+                *offset = (*offset / grid).round() * grid;
+            }
         }
         let max = self.max_offset;
-        for (offset, reuse) in self.offset.iter_mut().zip(&self.reuse_offset) {
+        for ((offset, reuse), layer) in self
+            .offset
+            .iter_mut()
+            .zip(&self.reuse_offset)
+            .zip(&self.layer_offset)
+        {
             let clamped = offset.clamp(-max, max);
             let coded = self
                 .offset_step
                 .map_or(clamped, |step| (clamped / step).round() * step);
-            *offset = coded + reuse;
+            *offset = coded + reuse + layer;
         }
         self.nonzero.clear();
         self.nonzero

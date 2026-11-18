@@ -43,7 +43,7 @@ const WINDOW_SPARE: i32 = 64 - FLUSH_BITS;
 const BYPASS_CHUNK_BITS: u32 = 16;
 
 fn validate_cdf(cdf: &[u16]) -> Result<()> {
-    if !(2..=16).contains(&cdf.len())
+    if !(2..=MAX_ALPHABET).contains(&cdf.len())
         || cdf.last() != Some(&0)
         || u32::from(cdf[0]) >= TOP
         || cdf.windows(2).any(|p| p[0] < p[1])
@@ -55,17 +55,68 @@ fn validate_cdf(cdf: &[u16]) -> Result<()> {
 
 /// Low bits of a 15-bit CDF edge that the coder drops.
 const EDGE_DROPPED_BITS: u32 = 7;
+/// Bits of a CDF edge that survive the coder's rounding.
+const EDGE_KEPT_BITS: u32 = TOP.trailing_zeros() - EDGE_DROPPED_BITS;
 /// Bits of a coded edge: the kept 8 bits scaled up to 12.
 const EDGE_BITS: u32 = 12;
 /// The minimum-probability increments are in 1/16 of an edge step.
 const INCREMENT_STEPS: usize = 16;
 
+/// AVM models have at most this many symbols.
+const MAX_ALPHABET: usize = 16;
+
+/// AVM's minimum-probability increments by alphabet size and symbol.
+const EDGE_INCREMENTS: [[u8; MAX_ALPHABET]; MAX_ALPHABET + 1] = {
+    let mut table = [[0; MAX_ALPHABET]; MAX_ALPHABET + 1];
+    let mut count = 2;
+    while count <= MAX_ALPHABET {
+        let mut symbol = 0;
+        while symbol < count {
+            table[count][symbol] = (INCREMENT_STEPS * (count - 1 - symbol) / count) as u8;
+            symbol += 1;
+        }
+        count += 1;
+    }
+    table
+};
+
+/// The change in minimum increment between the two edges of a symbol.
+/// The top edge of symbol zero has no increment.
+const WIDTH_INCREMENTS: [[i8; MAX_ALPHABET]; MAX_ALPHABET + 1] = {
+    let mut table = [[0; MAX_ALPHABET]; MAX_ALPHABET + 1];
+    let mut count = 2;
+    while count <= MAX_ALPHABET {
+        let mut previous = 0;
+        let mut symbol = 0;
+        while symbol < count {
+            let next = EDGE_INCREMENTS[count][symbol] as i8;
+            table[count][symbol] = previous - next;
+            previous = next;
+            symbol += 1;
+        }
+        count += 1;
+    }
+    table
+};
+
+/// A priced interval has only 12 bits of precision. Tabulate the shared
+/// Q9 cost at each possible width rather than normalizing it per symbol.
+static EDGE_COSTS_Q9: [u16; (1 << EDGE_BITS) + 1] = {
+    let mut table = [0; (1 << EDGE_BITS) + 1];
+    let mut width = 0;
+    while width < table.len() {
+        table[width] = probability_cost_q9((width as u32) << (15 - EDGE_BITS)) as u16;
+        width += 1;
+    }
+    table
+};
+
 /// The 12-bit edge the coder uses for inverse CDF value `probability` at
 /// `symbol` of `count`: its top 8 bits plus AVM's minimum-probability
 /// increment (`av2_prob_inc_tbl[n-2][s]`, `floor(16*(n-1-s)/n)`).
 fn coded_edge(probability: u16, symbol: usize, count: usize) -> u32 {
-    let increment = (INCREMENT_STEPS * (count - 1 - symbol) / count) as u32;
-    ((u32::from(probability) >> EDGE_DROPPED_BITS) << (EDGE_BITS - 8)) + increment
+    let increment = u32::from(EDGE_INCREMENTS[count][symbol]);
+    ((u32::from(probability) >> EDGE_DROPPED_BITS) << (EDGE_BITS - EDGE_KEPT_BITS)) + increment
 }
 
 fn scaled(probability: u16, range: u32, symbol: usize, count: usize) -> u32 {
@@ -80,14 +131,15 @@ fn scaled(probability: u16, range: u32, symbol: usize, count: usize) -> u32 {
 /// `Cdf<N>` is a constant in its divisions.
 #[inline]
 fn coded_cost_q9(cdf: &[u16], symbol: usize) -> u32 {
-    let count = cdf.len();
-    let upper = if symbol == 0 {
-        1 << EDGE_BITS
+    let current = u32::from(cdf[symbol]) >> EDGE_DROPPED_BITS;
+    let previous = if symbol == 0 {
+        1 << EDGE_KEPT_BITS
     } else {
-        coded_edge(cdf[symbol - 1], symbol - 1, count)
+        u32::from(cdf[symbol - 1]) >> EDGE_DROPPED_BITS
     };
-    let width = upper - coded_edge(cdf[symbol], symbol, count);
-    probability_cost_q9(width << (15 - EDGE_BITS))
+    let width = ((previous - current) << (EDGE_BITS - EDGE_KEPT_BITS)) as i32
+        + i32::from(WIDTH_INCREMENTS[cdf.len()][symbol]);
+    u32::from(EDGE_COSTS_Q9[width as usize])
 }
 
 /// Rate of `symbol` under the fixed (non-adapting) inverse CDF `cdf`, in
@@ -230,6 +282,9 @@ pub struct Writer {
     /// Price estimates with the live models, frozen for the trial, instead
     /// of adapting a scratch copy ([`Self::freeze_estimates`]).
     frozen_estimates: bool,
+    /// Frozen estimates price coefficient levels with the fitted model
+    /// instead of the context walk ([`Self::model_coefficient_levels`]).
+    modelled_levels: bool,
     /// Number of the current (or last) estimate; scratch models carrying
     /// another number are stale.
     estimate_id: u32,
@@ -256,6 +311,7 @@ impl Writer {
             scratch: None,
             estimate_id: 0,
             frozen_estimates: false,
+            modelled_levels: false,
         }
     }
 
@@ -285,6 +341,19 @@ impl Writer {
             // Live models carry estimate 0, so every copied model is stale.
             self.scratch = Some(Box::new(models.clone()));
         }
+    }
+
+    /// Price the coefficient levels of frozen estimates with the fitted
+    /// model (`av2.coeff_rate_model`, `coeff::rate_model`) instead of the
+    /// context walk.
+    pub(crate) fn model_coefficient_levels(&mut self) {
+        self.modelled_levels = true;
+    }
+
+    /// Whether a frozen estimate runs whose coefficient levels are
+    /// modelled ([`Self::model_coefficient_levels`]).
+    pub(crate) fn models_coefficient_levels(&self) -> bool {
+        self.modelled_levels && self.estimates_frozen_now()
     }
 
     /// Whether a frozen estimate runs ([`Self::freeze_estimates`]): a

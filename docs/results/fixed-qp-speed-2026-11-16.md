@@ -191,6 +191,36 @@ Fast and Default, and VP9, VVC and HEVC Default, at 2860f897 (the verified head)
   the session's.
 - **Cost.** c8a timing $0.06 (3 on-demand sessions, all terminated, in the ledger); lens: 7 runs on the shared build box, 13 min.
 
+## Update 2026-11-18: AV2 Faster on both Fixed QP views, AV1 Veryfast on the held-out one (c9e4ced3)
+
+AV2 Faster (shipped 2026-11-18) and AV1 Veryfast (on the held-out view) were missing from these views
+(`docs/results/not-measured.json`). Both measured at c9e4ced3, every other point unchanged.
+
+- **Lens.** `nceval.ctc local` on the build box ([fixed-qp-lens-2026-11-17.csv](fixed-qp-lens-2026-11-17.csv)):
+  AV2 Faster -12.8 Weighted / -21.7 J against x264 medium.
+- **Lens speed.** `fixedqp_timing.py plan/run|run-jetson/record`, then `merge`, all six quantizers on every machine
+  (as the AV1-scale encoders always had; `--points 27,42` only thins the x264-scale ones), SVT-AV1 M12 and M13 as the
+  same-session check. Plain release builds (the other points are 0.3.0's PGO builds, 1.4-3.2 % faster on x86).
+
+| fps | AV2 Faster | M12 stored (same session) | M13 stored (same session) | AV1 Faster |
+|---|---:|---:|---:|---:|
+| c8a | 751.8 | 899.0 (912.9) | 984.1 (996.5) | 851.3 |
+| c6a | 414.8 | 469.5 (462.0) | 515.7 (512.2) | 484.9 |
+| c8g | 434.9 | 431.4 (441.7) | 474.4 (487.6) | 496.4 |
+| Jetson | 175.2 | 178.1 (178.6) | 196.1 (196.7) | 212.1 |
+
+  AV2 Faster has fewer bits than M12 (-1.5 / -10.4), M13 (+4.1 / -4.8) and AV1 Faster (-6.2 / -18.3) in both
+  Weighted and J. It is slower than all three on c8a and c6a; on c8g it is level with M12 (434.9 against 431.4
+  stored, 441.7 this session) and on the Jetson 1.6 % slower than M12.
+- **Held-out Fixed QP view.** `nceval.fixedqp gap --clipset ... --clips 12` with the two families and x264 medium,
+  merged into [fixed-qp-fresh-2026-11-16.json](fixed-qp-fresh-2026-11-16.json) (same 12 clips, 150 frames, 4
+  quantizers); timed on c8a by `plan-pool` (x264 medium 268.6 fps this session, 265.4 stored), merged into
+  [fixed-qp-fresh-timing-x86.json](fixed-qp-fresh-timing-x86.json):
+  - AV2 Faster: J -23.7 [-27.7, -19.6] at 591.9 fps;
+  - AV1 Veryfast: J -12.8 [-16.2, -9.3] at 965.5 fps;
+  - stored: M12 -7.3 at 912.6, M13 -2.3 at 1001.2, AV1 Faster -17.0 at 787.0.
+- **AWS:** about $0.4 for everything in this update (CBR charts included), all sessions terminated and in the ledger.
+
 ## Update 2026-11-17 (2): AV1 Veryfast base-only (2caf7d21d, measured at d40f86b3)
 
 AV1 Veryfast now codes keys and base frames with Faster's values of its four per-block levers and Fast's

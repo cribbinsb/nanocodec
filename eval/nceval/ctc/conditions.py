@@ -28,8 +28,9 @@ from ..codecs import Codec
 from ..encoders.anchors import (X264, X265, Kvazaar, LibaomRealtime, LibvpxGood, LibvpxRealtime,
                                SvtAv1)
 from ..encoders.base import EncoderAdapter
-from ..encoders.nanocodec import nanocodec_encoders, nanocodec_with_preset
+from ..encoders.nanocodec import MEDIUM, nanocodec_encoders, nanocodec_with_preset
 from ..encoders.openh264 import BASELINE, Openh264
+from ..plotted import own_rungs
 from . import sequences
 from .reference_encoders import HmLowDelayP, LibaomGoodLowDelay, VtmLowDelayP, VvencLowDelay
 
@@ -76,27 +77,21 @@ class CtcEncoder:
 
 
 _QINDEX_CODECS = (Codec.AV1, Codec.VP9, Codec.AV2)
-#: Our presets per codec beside Medium (the Default, the engine defaults): every codec
-#: has these ...
-_RUNGS = ("fast", "slow")
-#: ... and these where its ladder has them (the CBR chart's faster points).
-_OPTIONAL_RUNGS = ("veryfast", "faster")
 
 
 def _ours() -> list[CtcEncoder]:
+    """Every shipped single-layer preset of every codec (nceval.plotted), Medium first."""
     encoders = []
     for default in nanocodec_encoders():
         scale = Scale.QINDEX if default.codec in _QINDEX_CODECS else Scale.QP
         encoders.append(CtcEncoder(default, Group.OURS, scale))
-        for rung in _RUNGS:
+        for rung in own_rungs(default.codec):
+            if rung == MEDIUM:
+                continue
             encoder = nanocodec_with_preset(f"{default.name}@{rung}")
             if encoder is None:
                 raise RuntimeError(f"preset {default.codec.value}/{rung} missing")
             encoders.append(CtcEncoder(encoder, Group.OURS, scale))
-        for rung in _OPTIONAL_RUNGS:
-            encoder = nanocodec_with_preset(f"{default.name}@{rung}")
-            if encoder is not None:
-                encoders.append(CtcEncoder(encoder, Group.OURS, scale))
     return encoders
 
 

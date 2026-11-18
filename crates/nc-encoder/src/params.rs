@@ -660,6 +660,18 @@ param_group! {
         // applies only while this is not set (`Encoder::new`).
         count: 1.0, [1.0, crate::structure::MAX_TEMPORAL_LAYERS as f32],
             "temporal layers when set (a preset or --param): 1 flat, 2 L1T2, 3 L1T3; it takes precedence over --temporal-layers",
+        // Layer propagation (`layer_propagation.rs`, 2026-11-18; screened
+        // in docs/handoff/block-aq.md "Layer propagation retry").
+        propagation: 0.0, [0.0, 1.0],
+            "layered streams: how far towards the top layer's quantizer a T0 block goes when the last period's frames reused none of it (MB-tree propagation one period late, `layer_propagation.rs`; 0 = off): higher codes unreferenced base blocks coarser",
+        propagation_memory: 0.5, [0.0, 0.95],
+            "layer propagation: weight of the carried history in each base block's reuse forecast, per period: higher reacts slower",
+        propagation_grid: 1.0, [0.0, 8.0],
+            "layer propagation: QP-unit grid its pooled offsets are rounded to (0 = none): coarser makes neighbouring quantizer squares share a delta, cheaper to signal",
+        propagation_prekey: 0.0, [0.0, 1.0],
+            "layer propagation: 1 plans no offsets in the last `rate.prekey_quiet` seconds before a scheduled periodic key, so the inter level the key is planned from is the ladder's own (with them the key was planned finer: long-window key pulse +0.40 dB on AV1 Faster); 0 keeps them to the key",
+        propagation_gate: 0.0, [0.0, 8.0],
+            "layer propagation: forecast error (QP units, moving average of the offsets planned against those the measured propagation implies) at which the offsets fade to 0 (0 = no gate): lower falls back to the static ladder sooner on unpredictable content",
     }
 }
 

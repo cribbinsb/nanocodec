@@ -36,6 +36,7 @@ use crate::input::write_raw;
 use crate::key_clock::KeyClock;
 use crate::key_plan::{KeyPlanMode, KeyPlanner};
 use crate::layer::LayerPosition;
+use crate::layer_propagation::LayerFrame;
 use crate::ltr::{LongTermReference, LtrAction, long_term_slot};
 use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
 use crate::noise_skip::{NoiseMap, camera_is_still};
@@ -776,6 +777,17 @@ impl<B: CodecBackend> Encoder<B> {
 
     /// Frames from `index` to the next scheduled key frame (`None` when no
     /// later key is scheduled).
+    /// The run-up to a scheduled key (`rate.prekey_quiet`) in frames, when
+    /// the layer propagation term reads it (0 otherwise: the parameters
+    /// are not looked up on every frame).
+    fn prekey_window(&self) -> f64 {
+        if !self.layer.aq.as_ref().is_some_and(BlockAq::propagates) {
+            return 0.;
+        }
+        let fps = f64::from(self.config.frame_rate.num) / f64::from(self.config.frame_rate.den);
+        f64::from(RateParams::from_overrides(&self.config.params).prekey_quiet) * fps
+    }
+
     fn frames_to_next_key(&self, index: u64) -> Option<u64> {
         let period = self.key_period();
         (period != u64::MAX && period > 0).then(|| {
@@ -1687,7 +1699,28 @@ impl<B: CodecBackend> Encoder<B> {
                 .as_ref()
                 .filter(|_| reuse_frame)
                 .map(ReuseTerm::offsets);
+            let window = self.prekey_window();
+            let before_key = window > 0.
+                && self
+                    .frames_to_next_key(index)
+                    .is_some_and(|frames| frames as f64 <= window);
             if let Some(aq) = self.layer.aq.as_mut() {
+                let ladder = if self.layer.rate_control.is_some() {
+                    self.layer.rate_control_ladder
+                } else {
+                    self.layer.ladder
+                };
+                aq.plan_layer(&LayerFrame {
+                    index,
+                    reference: index.saturating_sub(u64::from(references.reference.distance)),
+                    key,
+                    layered: !references.position.is_flat(),
+                    layer: references.position.layer,
+                    top_offset: ladder.top_offset(),
+                    before_key,
+                    pre: &analysis.pre,
+                    motion,
+                });
                 aq.plan(&analysis.pre, motion, offsets);
             } else if key {
                 // Without block quantizers a key carries the reuse term as

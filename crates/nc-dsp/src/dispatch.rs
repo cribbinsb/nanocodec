@@ -88,9 +88,10 @@ pub struct Dsp {
     h264_intra_8x8: crate::h264_intra::PredictFn,
     hevc_intra: crate::hevc_intra::HevcIntraFns,
     hevc_weight: crate::hevc_weight::WeightFn,
+    high_precision: crate::mc::precision::HighPrecision8Fn,
     vvc_intra: crate::vvc_intra::PredictFn,
     vvc_deblock: crate::vvc_deblock::Kernels,
-    vvc_alf: crate::vvc_alf::Kernels,
+    vvc_alf: &'static crate::vvc_alf::Kernels,
     gram_rows: crate::gram::GramRowsFn,
     vvc_refinement: crate::vvc_refinement::Kernels,
     av1_grain: crate::av1_film_grain::kernels::Kernels,
@@ -227,6 +228,7 @@ impl Dsp {
             h264_intra_8x8: crate::h264_intra::kernel(isa),
             hevc_intra: crate::hevc_intra::kernels(isa),
             hevc_weight: crate::hevc_weight::kernel(isa),
+            high_precision: crate::mc::precision::kernel(isa),
             vvc_intra: crate::vvc_intra::kernel(isa),
             vvc_deblock: crate::vvc_deblock::kernels(isa),
             vvc_alf: crate::vvc_alf::kernels(isa),
@@ -265,8 +267,9 @@ impl Dsp {
         av2_txfm::avx512::install(&mut dsp.av2_txfm);
         dsp.end_of_block = crate::end_of_block::kernel(Isa::Avx512);
         dsp.av1_lr = crate::av1_restoration::kernels::kernels(Isa::Avx512);
-        crate::vvc_alf::install_avx512(&mut dsp.vvc_alf);
+        dsp.vvc_alf = &crate::vvc_alf::AVX512;
         dsp.hevc_weight = crate::hevc_weight::kernel(Isa::Avx512);
+        dsp.high_precision = crate::mc::precision::kernel(Isa::Avx512);
         dsp.vvc_intra = crate::vvc_intra::kernel(Isa::Avx512);
         dsp.vvc_deblock = crate::vvc_deblock::kernels(Isa::Avx512);
         dsp.vvc_refinement = crate::vvc_refinement::kernels(Isa::Avx512);
@@ -6469,6 +6472,129 @@ impl Dsp {
         crate::vvc_alf::check_filter_block_row(rows, coefficients, shifts, out);
         // SAFETY: the table matches this CPU; the lengths are checked above.
         unsafe { (self.vvc_alf.filter_block_row)(rows, coefficients, shifts, out) }
+    }
+
+    /// Four-row block row of [`Self::vvc_alf_filter_clipped_row`], sharing
+    /// each 4x4 block's expanded coefficients and `AlfClip` limits across its
+    /// four rows.
+    ///
+    /// # Panics
+    /// As [`Self::vvc_alf_filter_clipped_row`].
+    pub fn vvc_alf_filter_clipped_block_row(
+        &self,
+        rows: &[[&[u8]; 7]; crate::VVC_ALF_BLOCK],
+        coefficients: &[[i16; crate::VVC_ALF_TAPS]],
+        limits: &[[i16; crate::VVC_ALF_TAPS]],
+        shifts: &[u32; crate::VVC_ALF_BLOCK],
+        out: &mut [&mut [u8]; crate::VVC_ALF_BLOCK],
+    ) {
+        crate::vvc_alf::check_clipped_block_row(
+            rows,
+            coefficients,
+            limits,
+            shifts,
+            out,
+            BitDepth::EIGHT,
+        );
+        // SAFETY: the table matches this CPU; shape checks ran above and the
+        // kernel validates coefficients and limits.
+        unsafe {
+            (self.vvc_alf.clipped_block_row)(
+                rows,
+                coefficients,
+                limits,
+                shifts,
+                out,
+                BitDepth::EIGHT,
+            );
+        }
+    }
+
+    /// Filter an 8-bit luma row with individually clipped tap differences.
+    /// Rows are prepared by the shared ALF boundary/edge-extension controller;
+    /// each block of four samples selects twelve coefficients and clip limits
+    /// (`AlfClip` at 8 bits, [`crate::vvc_alf_clip_value`]).
+    ///
+    /// # Panics
+    /// If rows/tables are short, limits are invalid, or shift is not seven/ten.
+    pub fn vvc_alf_filter_clipped_row(
+        &self,
+        rows: &[&[u8]; 7],
+        coefficients: &[[i16; crate::VVC_ALF_TAPS]],
+        limits: &[[i16; crate::VVC_ALF_TAPS]],
+        shift: u32,
+        out: &mut [u8],
+    ) {
+        crate::vvc_alf::check_clipped_row(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
+        // SAFETY: the table matches this CPU; lengths and ranges are checked above.
+        unsafe {
+            (self.vvc_alf.clipped_row)(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
+        }
+    }
+
+    /// Filter an 8-bit chroma row with the six symmetric 5x5 ALF taps.
+    /// Rows use the luma kernel's three-sample padding and boundary preparation.
+    ///
+    /// # Panics
+    /// If rows are short, coefficients/limits are invalid, or shift is not 7/10.
+    pub fn vvc_alf_filter_chroma_row(
+        &self,
+        rows: &[&[u8]; 7],
+        coefficients: [i16; 6],
+        limits: [i16; 6],
+        shift: u32,
+        out: &mut [u8],
+    ) {
+        crate::vvc_alf::check_chroma_row(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
+        // SAFETY: the table matches this CPU; lengths and ranges are checked above.
+        unsafe {
+            (self.vvc_alf.chroma_row)(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
+        }
+    }
+
+    /// Apply seven luma differences to a chroma row, with 8-bit correction clipping.
+    /// Rows are ordered y−1, y, y+1, y+2 and have one horizontal padding sample.
+    /// The codec prepares virtual-boundary row substitutions before this call.
+    ///
+    /// # Panics
+    /// If rows are short or coefficients exceed the normative ±64 range.
+    pub fn vvc_alf_cross_row(&self, rows: &[&[u8]; 4], coefficients: [i16; 7], out: &mut [u8]) {
+        crate::vvc_alf::check_cross_row(rows, coefficients, out);
+        // SAFETY: the table matches this CPU; lengths and ranges are checked above.
+        unsafe { (self.vvc_alf.cross_row)(rows, coefficients, out, BitDepth::EIGHT) }
+    }
+
+    /// Interpolate an 8-bit rectangle into signed samples with six fractional bits.
+    /// The source starts at the filter window's upper-left, as for `predict`
+    /// ([`crate::DepthKernels::predict_high_precision`] for deeper samples).
+    ///
+    /// # Panics
+    /// If the filter is not HEVC/VVC, dimensions are outside 2..=64, phases
+    /// are invalid, the alternate half filter is selected outside VVC luma,
+    /// or either buffer is too small.
+    pub fn predict_high_precision(
+        &self,
+        filter: Filter,
+        size: (usize, usize),
+        window: &PlaneView<'_>,
+        phases: (usize, usize),
+        alternate_half: bool,
+        out: &mut [i16],
+    ) {
+        crate::mc::precision::check_high_precision(filter, size, window, phases, alternate_half);
+        // SAFETY: the table matches this CPU; `check_high_precision` validated
+        // `filter`, `size`, `window`, and `phases`, and the kernel slices `out`.
+        unsafe {
+            (self.high_precision)(
+                filter,
+                size,
+                window,
+                phases,
+                alternate_half,
+                out,
+                BitDepth::EIGHT,
+            );
+        }
     }
 
     /// The Laplacian sums of one ALF classification grid row (`vvc_alf`

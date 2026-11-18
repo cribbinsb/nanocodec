@@ -711,6 +711,24 @@ impl SbSearchContext<'_, '_> {
         }
     }
 
+    /// Fold extra positions in the same order as the window, using its
+    /// four-position kernel where possible.
+    fn evaluate_positions(
+        &self,
+        src: &PlaneView<'_>,
+        mvs: &[Mv],
+        visible: &[u16; 64],
+        best: &mut SbBest,
+    ) {
+        let (groups, tail) = mvs.as_chunks::<4>();
+        for &group in groups {
+            self.evaluate_x4(src, group, visible, best);
+        }
+        for &mv in tail {
+            self.evaluate(src, mv, visible, best);
+        }
+    }
+
     /// [`Self::evaluate`] for a vector reaching past the reference's border.
     #[cold]
     fn evaluate_gathered(
@@ -1033,9 +1051,9 @@ impl SbSearchContext<'_, '_> {
             }
             tried[count] = mv;
             count += 1;
-            self.evaluate(src, mv, &visible, &mut best);
-            positions += 1;
         }
+        self.evaluate_positions(src, &tried[..count], &visible, &mut best);
+        positions += count as u32;
         // Mixed motion (the SB's blocks match much better on their own than
         // with one vector, e.g. a crowd): one position per further vector
         // that blocks of this area had recently. Static and uniformly moving
@@ -1059,9 +1077,9 @@ impl SbSearchContext<'_, '_> {
                 }
                 more[extra] = mv;
                 extra += 1;
-                self.evaluate(src, mv, &visible, &mut best);
-                positions += 1;
             }
+            self.evaluate_positions(src, &more[..extra], &visible, &mut best);
+            positions += extra as u32;
         }
         effort.full_pel.add_block(positions);
         best

@@ -237,9 +237,22 @@ pub(super) unsafe fn column_rows<
     h: usize,
     filters: &K::Filters,
 ) {
-    // SAFETY: the caller provides h + 7 readable rows of N bytes and h
-    // writable rows of N bytes.
+    // SAFETY: the caller provides h + 7 readable rows of N bytes (or rows
+    // 3..=h + 3 for BILINEAR) and h writable rows of N bytes.
     unsafe {
+        if LAYOUT == layout::BILINEAR {
+            let mut prev = K::load::<N>(src.add(VP9_TAPS_BEFORE * stride));
+            for y in 0..h {
+                let next = K::load::<N>(src.add((y + VP9_TAPS_BEFORE + 1) * stride));
+                let rows = [prev, prev, prev, prev, next, prev, prev, prev];
+                prev = next;
+                K::store::<N, AVG>(
+                    dst.add(y * dst_stride),
+                    K::vertical::<N, LAYOUT>(&rows, filters),
+                );
+            }
+            return;
+        }
         for y in strided(h, if K::PAIR_ROWS { 2 } else { 1 }) {
             let top = src.add(y * stride);
             let out = dst.add(y * dst_stride);
@@ -359,12 +372,21 @@ unsafe fn convolve<K: RowKernel, const N: usize, const LAYOUT: u8, const AVG: bo
             let temp = temp.as_mut_ptr().cast::<u8>();
             let horizontal = K::prepare::<LAYOUT>(&taps[fx]);
             let vertical = K::prepare::<LAYOUT>(&taps[fy]);
-            horizontal_rows::<K, N, LAYOUT, false>(
-                (src, stride),
-                (temp, w),
-                (w, h + VP9_TAPS - 1),
-                &horizontal,
-            );
+            if LAYOUT == layout::BILINEAR {
+                horizontal_rows::<K, N, LAYOUT, false>(
+                    (src.add(VP9_TAPS_BEFORE * stride), stride),
+                    (temp.add(VP9_TAPS_BEFORE * w), w),
+                    (w, h + 1),
+                    &horizontal,
+                );
+            } else {
+                horizontal_rows::<K, N, LAYOUT, false>(
+                    (src, stride),
+                    (temp, w),
+                    (w, h + VP9_TAPS - 1),
+                    &horizontal,
+                );
+            }
             for x in strided(w, N) {
                 K::column::<N, LAYOUT, AVG>(temp.add(x), w, (dst.add(x), dst_stride), h, &vertical);
             }

@@ -121,6 +121,122 @@ fn finish<const LAYOUT: u8>(f: &DotFilters, dot: impl Fn(usize) -> v128) -> v128
     u8x16_narrow_i16x8(sums, u16x8_splat(0))
 }
 
+#[inline(always)]
+fn sign_interleave(a: v128, b: v128) -> v128 {
+    let interleaved = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(a, b);
+    v128_xor(interleaved, u8x16_splat(SIGN_FLIP))
+}
+
+#[inline(always)]
+fn finish_four(f: &DotFilters, p0: v128, p1: v128, n0: v128, n1: v128) -> v128 {
+    let pos = i16x8_add(
+        f.positive_bias,
+        i16x8_add(
+            i16x8_relaxed_dot_i8x16_i7x16(p0, f.pairs[0]),
+            i16x8_relaxed_dot_i8x16_i7x16(p1, f.pairs[1]),
+        ),
+    );
+    let neg = i16x8_add(
+        f.negative_bias,
+        i16x8_add(
+            i16x8_relaxed_dot_i8x16_i7x16(n0, f.pairs[2]),
+            i16x8_relaxed_dot_i8x16_i7x16(n1, f.pairs[3]),
+        ),
+    );
+    let sums = u16x8_shr(u16x8_sub_sat(pos, neg), SHIFT);
+    u8x16_narrow_i16x8(sums, u16x8_splat(0))
+}
+
+/// Sliding vertical pass for [`layout::ALTERNATING`] (pairs at row distance 2),
+/// producing two rows per step from scalar vector variables so V8 keeps the
+/// window in XMM registers.
+#[inline(always)]
+unsafe fn column_alternating<const N: usize, const AVG: bool>(
+    src: *const u8,
+    stride: usize,
+    (dst, dst_stride): (*mut u8, usize),
+    h: usize,
+    f: &DotFilters,
+) {
+    // SAFETY: caller provides h + 7 readable rows and h writable rows of N bytes.
+    unsafe {
+        let row = |k: usize| load_row::<N>(src.add(k * stride));
+        let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+        let (r4, mut prev_even, mut prev_odd) = (row(4), row(5), row(6));
+        let mut s0 = sign_interleave(r0, r2);
+        let mut s1 = sign_interleave(r1, r3);
+        let mut s2 = sign_interleave(r2, r4);
+        let mut s3 = sign_interleave(r3, prev_even);
+        let mut s4 = sign_interleave(r4, prev_odd);
+        let mut y = 0;
+        while y + 1 < h {
+            let (r7, r8) = (row(y + 7), row(y + 8));
+            let s5 = sign_interleave(prev_even, r7);
+            let s6 = sign_interleave(prev_odd, r8);
+            (prev_even, prev_odd) = (r7, r8);
+            let out = dst.add(y * dst_stride);
+            store_row::<N, AVG>(out, finish_four(f, s1, s4, s0, s5));
+            store_row::<N, AVG>(out.add(dst_stride), finish_four(f, s2, s5, s1, s6));
+            (s0, s1, s2, s3, s4) = (s2, s3, s4, s5, s6);
+            y += 2;
+        }
+        if y < h {
+            super::driver::column_rows::<Simd128Dot, N, { layout::ALTERNATING }, AVG>(
+                src.add(y * stride),
+                stride,
+                (dst.add(y * dst_stride), dst_stride),
+                h - y,
+                f,
+            );
+        }
+    }
+}
+
+/// Sliding vertical pass for [`layout::OUTER`] (pairs at row distance 1),
+/// producing two rows per step from scalar vector variables.
+#[inline(always)]
+unsafe fn column_outer<const N: usize, const AVG: bool>(
+    src: *const u8,
+    stride: usize,
+    (dst, dst_stride): (*mut u8, usize),
+    h: usize,
+    f: &DotFilters,
+) {
+    // SAFETY: caller provides h + 7 readable rows and h writable rows of N bytes.
+    unsafe {
+        let row = |k: usize| load_row::<N>(src.add(k * stride));
+        let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+        let (r4, r5, mut prev) = (row(4), row(5), row(6));
+        let mut q0 = sign_interleave(r0, r1);
+        let mut q1 = sign_interleave(r1, r2);
+        let mut q2 = sign_interleave(r2, r3);
+        let mut q3 = sign_interleave(r3, r4);
+        let mut q4 = sign_interleave(r4, r5);
+        let mut q5 = sign_interleave(r5, prev);
+        let mut y = 0;
+        while y + 1 < h {
+            let (r7, r8) = (row(y + 7), row(y + 8));
+            let q6 = sign_interleave(prev, r7);
+            let q7 = sign_interleave(r7, r8);
+            prev = r8;
+            let out = dst.add(y * dst_stride);
+            store_row::<N, AVG>(out, finish_four(f, q2, q4, q0, q6));
+            store_row::<N, AVG>(out.add(dst_stride), finish_four(f, q3, q5, q1, q7));
+            (q0, q1, q2, q3, q4, q5) = (q2, q3, q4, q5, q6, q7);
+            y += 2;
+        }
+        if y < h {
+            super::driver::column_rows::<Simd128Dot, N, { layout::OUTER }, AVG>(
+                src.add(y * stride),
+                stride,
+                (dst.add(y * dst_stride), dst_stride),
+                h - y,
+                f,
+            );
+        }
+    }
+}
+
 impl RowKernel for Simd128Dot {
     type Filters = DotFilters;
     type Row = v128;
@@ -190,11 +306,24 @@ impl RowKernel for Simd128Dot {
         let p = pairs(LAYOUT);
         finish::<LAYOUT>(f, |index| {
             let (k1, k2) = p[index].expect("finish asks only for present pairs");
-            let interleaved = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(
-                rows[k1], rows[k2],
-            );
-            let signed = v128_xor(interleaved, u8x16_splat(SIGN_FLIP));
-            i16x8_relaxed_dot_i8x16_i7x16(signed, f.pairs[index])
+            i16x8_relaxed_dot_i8x16_i7x16(sign_interleave(rows[k1], rows[k2]), f.pairs[index])
         })
+    }
+    #[inline(always)]
+    unsafe fn column<const N: usize, const LAYOUT: u8, const AVG: bool>(
+        src: *const u8,
+        stride: usize,
+        dst: (*mut u8, usize),
+        h: usize,
+        f: &DotFilters,
+    ) {
+        // SAFETY: as for `RowKernel::column`.
+        unsafe {
+            match LAYOUT {
+                layout::ALTERNATING => column_alternating::<N, AVG>(src, stride, dst, h, f),
+                layout::OUTER => column_outer::<N, AVG>(src, stride, dst, h, f),
+                _ => super::driver::column_rows::<Self, N, LAYOUT, AVG>(src, stride, dst, h, f),
+            }
+        }
     }
 }

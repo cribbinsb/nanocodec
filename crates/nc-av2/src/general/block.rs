@@ -59,7 +59,8 @@ use super::frame_header::{FrameHeader, FrameType, TIP_FRAME_MODE};
 use super::references::MAX_REFERENCES;
 use super::sequence::{MAX_SEGMENTS, SequenceHeader};
 use crate::entropy::{Cdf, Reader};
-use coefficients::{LEVELS, Scans};
+use coefficients::LEVELS;
+pub(super) use coefficients::Scans;
 use context::{AboveCache, Contexts};
 use frame_refs::FrameReferences;
 use inter_pred::{InterPrediction, InterScratch};
@@ -123,7 +124,7 @@ struct Tile<'a, 't> {
     frame: &'a FrameHeader,
     sequence: &'a SequenceHeader,
     reader: Reader<'a>,
-    cdfs: Box<Cdfs>,
+    cdfs: Rc<Cdfs>,
     /// The models adapt (`disable_cdf_update` 0).
     adapt: bool,
     contexts: Contexts,
@@ -219,7 +220,7 @@ pub struct DecodedTile {
     /// The loop filters' maps.
     pub filters: FilterMaps,
     /// The models after the tile.
-    pub cdfs: Box<Cdfs>,
+    pub cdfs: Rc<Cdfs>,
     /// The frame's temporal motion field, kept with the picture for later
     /// frames (inter frames of sequences with motion fields).
     pub motion_field: Option<TemporalField>,
@@ -235,6 +236,10 @@ pub struct FrameInputs<'a> {
     pub references: [Option<&'a Picture>; MAX_REFERENCES],
     /// The wedge and inter-intra masks.
     pub masks: &'a InterMasks,
+    /// Cached diagonal transform scan tables.
+    pub scans: &'a Rc<Scans>,
+    /// Pre-dispatched SIMD block-copy kernels.
+    pub copies: nc_dsp::BlockCopy,
     /// The references' motion: display orders and temporal fields.
     pub motion: &'a [ReferenceMotion; REFERENCES],
     /// The primary reference's segment map, where the frame predicts
@@ -249,13 +254,16 @@ pub struct FrameInputs<'a> {
 pub fn decode_tile(
     sequence: &SequenceHeader,
     frame: &FrameHeader,
-    cdfs: Box<Cdfs>,
+    mut cdfs: Rc<Cdfs>,
     data: &[u8],
     inputs: FrameInputs<'_>,
     trace: Option<BlockTrace<'_>>,
 ) -> Result<DecodedTile> {
     if frame.tiles.columns() * frame.tiles.rows() != 1 {
         return Err(DecodeError::Unsupported("AV2 multiple tiles"));
+    }
+    if frame.tip.mode != TIP_FRAME_MODE {
+        Rc::make_mut(&mut cdfs);
     }
     let units = |size: u32| ((size + 7) >> 3) << 1;
     let root = BlockSize::superblock(frame.superblock_log2);
@@ -309,7 +317,7 @@ pub fn decode_tile(
         luma_coefficients: vec![0; COEFFICIENTS],
         chroma_residuals: ChromaResiduals::default(),
         levels: vec![0; LEVELS],
-        scans: Rc::new(Scans::new()),
+        scans: Rc::clone(inputs.scans),
         u_has_coefficients: false,
         planes: Planes::new(geometry.columns, geometry.rows, geometry.superblock_units),
         palette_map: Vec::with_capacity(palette::MAX_SIDE * palette::MAX_SIDE),
@@ -335,7 +343,7 @@ pub fn decode_tile(
         reference_pictures: inputs.references,
         masks: inputs.masks,
         inter_prediction: None,
-        inter_scratch: InterScratch::default(),
+        inter_scratch: InterScratch::new(inputs.copies),
         sub_pu_level: super::filters::edges::NO_SUB_PU,
         above_cache: AboveCache::default(),
         trace,
@@ -439,7 +447,7 @@ impl Tile<'_, '_> {
         &mut self,
         select: impl FnOnce(&mut Cdfs) -> &mut Cdf<N>,
     ) -> Result<usize> {
-        let cdf = select(&mut self.cdfs);
+        let cdf = select(Rc::make_mut(&mut self.cdfs));
         if self.adapt {
             self.reader.symbol(cdf)
         } else {

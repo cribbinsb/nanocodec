@@ -1,6 +1,6 @@
-//! AVX2 entry of the VP9 edge-filter schedule.
+//! AVX2 entry of the VP9 edge-filter schedule (paired 16-line groups on
+//! `avx2_wide::B`, falling back to 8-line `avx2::B` for short tails).
 
-use crate::lpf_bytes::avx2::B;
 use crate::{Vp9FilterLimits, Vp9FilterWidth};
 
 #[target_feature(enable = "avx2")]
@@ -13,17 +13,17 @@ pub(crate) unsafe fn filter(
     width: Vp9FilterWidth,
     limits: Vp9FilterLimits,
 ) {
-    // SAFETY: dispatch validated the full footprint and this function enables the ISA.
+    // SAFETY: dispatch validated the full footprint and this function enables AVX2.
     unsafe {
         match width {
             Vp9FilterWidth::Four => {
-                super::run::<B, 4>(data, edge, step, along, lines, width, limits);
+                super::run_paired::<4>(data, edge, step, along, lines, width, limits);
             }
             Vp9FilterWidth::Eight => {
-                super::run::<B, 8>(data, edge, step, along, lines, width, limits);
+                super::run_paired::<8>(data, edge, step, along, lines, width, limits);
             }
             Vp9FilterWidth::Sixteen => {
-                super::run::<B, 16>(data, edge, step, along, lines, width, limits);
+                super::run_paired::<16>(data, edge, step, along, lines, width, limits);
             }
         }
     }

@@ -447,3 +447,66 @@ fn full_set_rejects_types_outside_the_subset() {
         .unwrap();
     }
 }
+
+#[test]
+fn modelled_estimate_keeps_the_entropy_context_and_the_all_zero_rate() {
+    let mut rng = Lcg(0x5eed_0002);
+    let mut writer = Writer::new();
+    writer.enable_adaptation(QINDICES[3]);
+    for tx in [
+        TxSize::Tx4,
+        TxSize::Tx8,
+        TxSize::Tx16,
+        TxSize::Tx32,
+        TxSize::Tx64,
+    ] {
+        for plane in [PLANE_Y, PLANE_U, PLANE_V] {
+            if plane != PLANE_Y && tx == TxSize::Tx64 {
+                continue;
+            }
+            for _ in 0..20 {
+                let block: Vec<i32> = random_block(&mut rng, tx)
+                    .into_iter()
+                    .map(|l| l.clamp(-200, 200))
+                    .collect();
+                let ctx = contexts(&mut rng, plane, true);
+                let stats = LevelStats::of(&nc_dsp::Dsp::new(), &block, tx).unwrap();
+                let mut price = |model: bool| {
+                    let mut pricer = FrozenPricer::new(writer.live_models());
+                    let context = if model {
+                        write_modelled(
+                            &mut pricer,
+                            &block,
+                            stats,
+                            tx,
+                            ctx,
+                            QINDICES[3],
+                            Kind::DCT_ONLY,
+                        )
+                    } else {
+                        write_with(
+                            &mut pricer,
+                            &block,
+                            stats,
+                            tx,
+                            ctx,
+                            QINDICES[3],
+                            Kind::DCT_ONLY,
+                        )
+                    }
+                    .unwrap();
+                    (context, pricer.total_q9())
+                };
+                let (exact_context, exact_q9) = price(false);
+                let (modelled_context, modelled_q9) = price(true);
+                assert_eq!(modelled_context, exact_context);
+                assert_eq!(modelled_context, entropy_context(&block));
+                if stats.eob() == 0 {
+                    assert_eq!(modelled_q9, exact_q9);
+                } else {
+                    assert!(modelled_q9 > 0);
+                }
+            }
+        }
+    }
+}

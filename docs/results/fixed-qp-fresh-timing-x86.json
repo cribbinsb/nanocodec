@@ -55,7 +55,9 @@
   "x264-veryfast": 4,
   "x265-medium": 4,
   "x265-superfast": 4,
-  "x265-ultrafast": 4
+  "x265-ultrafast": 4,
+  "nanocodec-av1@veryfast": 4,
+  "nanocodec-av2@faster": 4
  },
  "nanocodec_version": "nanocodec 0.1.0 67ed090b37745a339888ba56d1c695df819a4af8",
  "build": "b11b2f83",
@@ -729,6 +731,42 @@
     "ind_personpath22_uid_vid_00177": 4.8362
    },
    "fps": 222.2
+  },
+  "nanocodec-av1@veryfast": {
+   "ms_per_frame": {
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.6255,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.8255,
+    "ind_bwc_videotext_video317": 0.3533,
+    "ind_cctv_uid_vid_00054": 1.2511,
+    "ind_jaad_video_0151": 1.2803,
+    "ind_jaad_video_0318": 1.2955,
+    "ind_mot_mot17_05": 0.9688,
+    "ind_mp4_london": 1.6178,
+    "ind_otw_homes_00310": 0.5364,
+    "ind_personpath22_uid_vid_00026": 1.3916,
+    "ind_personpath22_uid_vid_00090": 1.3032,
+    "ind_personpath22_uid_vid_00177": 1.1934
+   },
+   "fps": 965.5,
+   "build": "c9e4ced3"
+  },
+  "nanocodec-av2@faster": {
+   "ms_per_frame": {
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.965,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 3.4968,
+    "ind_bwc_videotext_video317": 0.5458,
+    "ind_cctv_uid_vid_00054": 2.279,
+    "ind_jaad_video_0151": 1.9973,
+    "ind_jaad_video_0318": 1.8155,
+    "ind_mot_mot17_05": 1.5095,
+    "ind_mp4_london": 2.7995,
+    "ind_otw_homes_00310": 0.9063,
+    "ind_personpath22_uid_vid_00026": 2.3004,
+    "ind_personpath22_uid_vid_00090": 2.0962,
+    "ind_personpath22_uid_vid_00177": 1.9254
+   },
+   "fps": 591.9,
+   "build": "c9e4ced3"
   }
  }
 }

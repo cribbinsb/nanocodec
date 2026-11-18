@@ -317,7 +317,7 @@ def plan_pool(args: argparse.Namespace) -> None:
         clip = clips[clip_name]
         if clip.start_frame:
             raise SystemExit(f"{clip_name}: a rotated start is not supported here")
-        family = family_of(name, binary, paths)
+        family = family_of(name, binary, paths, Path(args.presets_dir))
         estimate_rate_ = estimate_rate(lens_name.get(name, name), rates)
         for q in quantizers:
             argv = benches.of(clip).command(Point(family, replace(clip, yuv=Path("/IN.yuv")),
@@ -723,6 +723,8 @@ def main(argv: list[str]) -> None:
     q.add_argument("--binary", required=True)
     q.add_argument("--gap", action="append", required=True, help="a gap result JSON")
     q.add_argument("--out", required=True)
+    q.add_argument("--presets-dir", default=str(REPO / "crates/nc-encoder/presets"),
+                   help="our presets for --binary, as the gap run used (nceval.fixedqp gap)")
     # not the Graviton: only the public lens sequences and the chart clips go to it
     q.add_argument("--machine", choices=("jetson", "x86"), default="x86")
     q.add_argument("--shard-minutes", type=float, default=SHARD_MINUTES)

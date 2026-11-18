@@ -20,7 +20,7 @@ use nc_common::{BitDepth, Sample};
 
 use super::mc::{
     MAX_SIDE, Precision, assert_compound_size, prep_bilinear, prep_copy, put_bilinear_at,
-    round_shift, store_compound, store_pixels,
+    store_compound, store_pixels,
 };
 use super::mc_tables::EXT_WARP_FILTER;
 use crate::mc::{REGULAR_4, REGULAR_8, SHARP_8, SMOOTH_4, SMOOTH_8, TAP_CENTRE, TAPS};
@@ -131,67 +131,105 @@ impl Filters {
     }
 }
 
-/// `sum(taps[k] * window[k * step])`: one 8-tap filter whose first tap
-/// reads `window[0]`.
-fn filter8<S: Copy + Into<i32>>(window: &[S], step: usize, taps: [i8; TAPS]) -> i32 {
-    taps.iter()
-        .enumerate()
-        .map(|(k, &tap)| i32::from(tap) * window[k * step].into())
-        .sum()
-}
-
-/// The horizontal pass of a two-pass filter: `h + 7` rows from three
-/// above the block, rounded by `shift` (`mid` in dav2d).
-fn horizontal_pass<T: Sample>(
-    src: &[T],
-    (src_offset, src_stride): (usize, usize),
-    (w, h): (usize, usize),
+/// Fill `out[..w]` with one horizontal 8-tap row rounded by `shift`.
+#[inline]
+fn horizontal_row<T: Sample, const CAP: usize>(
+    src_row: &[T],
+    out: &mut [i16; CAP],
+    w: usize,
     taps: [i8; TAPS],
     shift: u32,
-) -> [[i16; MAX_SIDE]; MAX_SIDE + EXTRA] {
-    let mut mid = [[0_i16; MAX_SIDE]; MAX_SIDE + EXTRA];
-    let top = src_offset - TAP_CENTRE * src_stride - TAP_CENTRE;
-    for (y, line) in mid.iter_mut().take(h + EXTRA).enumerate() {
-        let row = &src[top + y * src_stride..][..w + EXTRA];
-        for (x, value) in line[..w].iter_mut().enumerate() {
-            *value = round_shift(filter8(&row[x..], 1, taps), shift) as i16;
+) {
+    let src_row = &src_row[..w + EXTRA];
+    let mut sums = [(1_i32 << shift) >> 1; CAP];
+    for (k, &tap) in taps.iter().enumerate() {
+        if tap != 0 {
+            let tap = i32::from(tap);
+            for (sum, &s) in sums[..w].iter_mut().zip(&src_row[k..k + w]) {
+                *sum += tap * s.to_i32();
+            }
         }
     }
-    mid
+    for (dst_m, &sum) in out[..w].iter_mut().zip(&sums[..w]) {
+        *dst_m = (sum >> shift) as i16;
+    }
 }
 
-/// The vertical pass over `mid` for output row `y`, column `x`.
-fn vertical_of_mid(
-    mid: &[[i16; MAX_SIDE]; MAX_SIDE + EXTRA],
-    (x, y): (usize, usize),
+/// Accumulate one vertical 8-tap output row from the circular buffer `ring`.
+#[inline]
+fn vertical_row<const CAP: usize>(
+    ring: &[[i16; CAP]; TAPS],
+    y: usize,
+    w: usize,
     taps: [i8; TAPS],
-) -> i32 {
-    taps.iter()
-        .enumerate()
-        .map(|(k, &tap)| i32::from(tap) * i32::from(mid[y + k][x]))
-        .sum()
+    rounding: i32,
+) -> [i32; CAP] {
+    let mut sums = [rounding; CAP];
+    for (k, &tap) in taps.iter().enumerate() {
+        if tap != 0 {
+            let tap = i32::from(tap);
+            for (sum, &m) in sums[..w].iter_mut().zip(&ring[(y + k) & (TAPS - 1)][..w]) {
+                *sum += tap * i32::from(m);
+            }
+        }
+    }
+    sums
 }
 
-/// One row of a single-direction filter over `src` at row `y`: horizontal
-/// taps along the row, or vertical taps down the column.
-fn one_pass_row<T: Sample>(
+/// Accumulate one row of a single-direction filter over `src` at row `y` plus
+/// `rounding`: horizontal taps along the row, or vertical taps down the column.
+#[inline]
+fn one_pass_row<T: Sample, const CAP: usize>(
     src: &[T],
     (src_offset, src_stride): (usize, usize),
     (w, y): (usize, usize),
     taps: [i8; TAPS],
     vertical: bool,
-) -> impl Iterator<Item = i32> + '_ {
+    rounding: i32,
+) -> [i32; CAP] {
+    let mut sums = [rounding; CAP];
     let row = src_offset + y * src_stride;
-    let (start, step) = if vertical {
-        (row - TAP_CENTRE * src_stride, src_stride)
+    if vertical {
+        let base = row - TAP_CENTRE * src_stride;
+        let _ = &src[base + EXTRA * src_stride..][..w];
+        for (k, &tap) in taps.iter().enumerate() {
+            if tap != 0 {
+                let tap = i32::from(tap);
+                for (sum, &s) in sums[..w].iter_mut().zip(&src[base + k * src_stride..][..w]) {
+                    *sum += tap * s.to_i32();
+                }
+            }
+        }
     } else {
-        (row - TAP_CENTRE, 1)
-    };
-    (0..w).map(move |x| filter8(&src[start + x..], step, taps))
+        let src_row = &src[row - TAP_CENTRE..][..w + EXTRA];
+        for (k, &tap) in taps.iter().enumerate() {
+            if tap != 0 {
+                let tap = i32::from(tap);
+                for (sum, &s) in sums[..w].iter_mut().zip(&src_row[k..k + w]) {
+                    *sum += tap * s.to_i32();
+                }
+            }
+        }
+    }
+    sums
 }
 
 /// The final-precision prediction of dav2d `put_8tap_c` with `filters`.
 fn put<T: Sample>(
+    dst: (&mut [T], usize, usize),
+    src: (&[T], usize, usize),
+    (w, h): (usize, usize),
+    filters: Filters,
+    depth: BitDepth,
+) {
+    if w <= 8 {
+        put_sized::<T, 8>(dst, src, (w, h), filters, depth);
+    } else {
+        put_sized::<T, MAX_SIDE>(dst, src, (w, h), filters, depth);
+    }
+}
+
+fn put_sized<T: Sample, const CAP: usize>(
     (dst, dst_offset, dst_stride): (&mut [T], usize, usize),
     (src, src_offset, src_stride): (&[T], usize, usize),
     (w, h): (usize, usize),
@@ -200,37 +238,61 @@ fn put<T: Sample>(
 ) {
     let precision = Precision::of(depth);
     let bits = filters.bits;
+    let first_shift = bits - precision.bits;
     let rows = dst[dst_offset..].chunks_mut(dst_stride).take(h);
     match (filters.horizontal, filters.vertical) {
         (Some(fh), Some(fv)) => {
-            let mid = horizontal_pass(
-                src,
-                (src_offset, src_stride),
-                (w, h),
-                fh,
-                bits - precision.bits,
-            );
+            let mut ring = [[0_i16; CAP]; TAPS];
+            let top = src_offset - TAP_CENTRE * src_stride - TAP_CENTRE;
+            for (r, slot) in ring[..EXTRA].iter_mut().enumerate() {
+                horizontal_row(&src[top + r * src_stride..], slot, w, fh, first_shift);
+            }
+            let out_shift = bits + precision.bits;
+            let out_round = (1_i32 << out_shift) >> 1;
             for (y, line) in rows.enumerate() {
-                let values = (0..w)
-                    .map(|x| round_shift(vertical_of_mid(&mid, (x, y), fv), bits + precision.bits));
-                store_pixels(&mut line[..w], values, depth);
+                horizontal_row(
+                    &src[top + (y + EXTRA) * src_stride..],
+                    &mut ring[(y + EXTRA) & (TAPS - 1)],
+                    w,
+                    fh,
+                    first_shift,
+                );
+                let sums = vertical_row(&ring, y, w, fv, out_round);
+                store_pixels(
+                    &mut line[..w],
+                    sums[..w].iter().map(|&s| s >> out_shift),
+                    depth,
+                );
             }
         }
         (Some(fh), None) => {
             // Both roundings in one: to intermediate precision, then to
             // samples (dav2d `intermediate_rnd`).
-            let rounding = ((1 << bits) >> 1) + ((1 << (bits - precision.bits)) >> 1);
+            let rounding = ((1 << bits) >> 1) + ((1 << first_shift) >> 1);
             for (y, line) in rows.enumerate() {
-                let values = one_pass_row(src, (src_offset, src_stride), (w, y), fh, false)
-                    .map(|sum| (sum + rounding) >> bits);
-                store_pixels(&mut line[..w], values, depth);
+                let sums = one_pass_row::<T, CAP>(
+                    src,
+                    (src_offset, src_stride),
+                    (w, y),
+                    fh,
+                    false,
+                    rounding,
+                );
+                store_pixels(&mut line[..w], sums[..w].iter().map(|&s| s >> bits), depth);
             }
         }
         (None, Some(fv)) => {
+            let rounding = (1_i32 << bits) >> 1;
             for (y, line) in rows.enumerate() {
-                let values = one_pass_row(src, (src_offset, src_stride), (w, y), fv, true)
-                    .map(|sum| round_shift(sum, bits));
-                store_pixels(&mut line[..w], values, depth);
+                let sums = one_pass_row::<T, CAP>(
+                    src,
+                    (src_offset, src_stride),
+                    (w, y),
+                    fv,
+                    true,
+                    rounding,
+                );
+                store_pixels(&mut line[..w], sums[..w].iter().map(|&s| s >> bits), depth);
             }
         }
         (None, None) => {
@@ -248,6 +310,20 @@ fn put<T: Sample>(
 /// The compound-precision prediction of dav2d `prep_8tap_c` with
 /// `filters`.
 fn prep<T: Sample>(
+    tmp: (&mut [i16], usize),
+    src: (&[T], usize, usize),
+    (w, h): (usize, usize),
+    filters: Filters,
+    depth: BitDepth,
+) {
+    if w <= 8 {
+        prep_sized::<T, 8>(tmp, src, (w, h), filters, depth);
+    } else {
+        prep_sized::<T, MAX_SIDE>(tmp, src, (w, h), filters, depth);
+    }
+}
+
+fn prep_sized<T: Sample, const CAP: usize>(
     (tmp, tmp_stride): (&mut [i16], usize),
     (src, src_offset, src_stride): (&[T], usize, usize),
     (w, h): (usize, usize),
@@ -260,18 +336,45 @@ fn prep<T: Sample>(
     let rows = tmp.chunks_mut(tmp_stride).take(h);
     match (filters.horizontal, filters.vertical) {
         (Some(fh), Some(fv)) => {
-            let mid = horizontal_pass(src, (src_offset, src_stride), (w, h), fh, first_shift);
+            let mut ring = [[0_i16; CAP]; TAPS];
+            let top = src_offset - TAP_CENTRE * src_stride - TAP_CENTRE;
+            for (r, slot) in ring[..EXTRA].iter_mut().enumerate() {
+                horizontal_row(&src[top + r * src_stride..], slot, w, fh, first_shift);
+            }
+            let out_round = (1_i32 << bits) >> 1;
             for (y, line) in rows.enumerate() {
-                let values = (0..w).map(|x| round_shift(vertical_of_mid(&mid, (x, y), fv), bits));
-                store_compound(&mut line[..w], values, precision);
+                horizontal_row(
+                    &src[top + (y + EXTRA) * src_stride..],
+                    &mut ring[(y + EXTRA) & (TAPS - 1)],
+                    w,
+                    fh,
+                    first_shift,
+                );
+                let sums = vertical_row(&ring, y, w, fv, out_round);
+                store_compound(
+                    &mut line[..w],
+                    sums[..w].iter().map(|&s| s >> bits),
+                    precision,
+                );
             }
         }
         (Some(taps), None) | (None, Some(taps)) => {
             let vertical = filters.horizontal.is_none();
+            let rounding = (1_i32 << first_shift) >> 1;
             for (y, line) in rows.enumerate() {
-                let values = one_pass_row(src, (src_offset, src_stride), (w, y), taps, vertical)
-                    .map(|sum| round_shift(sum, first_shift));
-                store_compound(&mut line[..w], values, precision);
+                let sums = one_pass_row::<T, CAP>(
+                    src,
+                    (src_offset, src_stride),
+                    (w, y),
+                    taps,
+                    vertical,
+                    rounding,
+                );
+                store_compound(
+                    &mut line[..w],
+                    sums[..w].iter().map(|&s| s >> first_shift),
+                    precision,
+                );
             }
         }
         (None, None) => prep_copy(

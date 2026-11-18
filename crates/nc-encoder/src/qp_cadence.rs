@@ -251,6 +251,11 @@ impl LayerLadder {
     pub fn offset(&self, position: LayerPosition) -> f64 {
         self.offsets[usize::from(position.layer)]
     }
+
+    /// Offset of the top layer (the coarsest; 0 for a flat structure).
+    pub fn top_offset(&self) -> f64 {
+        self.offsets[self.offsets.len() - 1]
+    }
 }
 
 /// Strength (0..1) the motion gate gives a frame: 1 below

@@ -353,11 +353,60 @@ pub(crate) unsafe fn filter_edge<B: Bytes>(
 }
 
 /// Grouped independent lines share the same arithmetic as the ordinary
+/// eight-line kernel, with remainders below `WIDE_LINES` handled inline via
+/// [`filter_edge`] on `N` (`8`-lane narrow bytes) so 4/8/12-line tails pay no
+/// indirect function-pointer call.
+///
+/// # Safety
+/// Both lane implementations' ISA must be enabled; normative footprints must
+/// be valid, and `lines` must be a multiple of four.
+#[inline(always)]
+pub(crate) unsafe fn filter_wide_inline<B: Bytes, T: Tile<B>, N: Bytes, const WIDE_LINES: usize>(
+    plane: &mut [u8],
+    q0: usize,
+    across: usize,
+    along: usize,
+    lines: usize,
+    filter: Av1EdgeFilter,
+) {
+    let reach = tile_reach(filter.length);
+    let fits = q0 >= reach * across
+        && lines
+            .checked_sub(1)
+            .is_some_and(|last| q0 + last * along + (reach - 1) * across < plane.len());
+    if !fits || (across != 1 && along != 1) || filter.blimit > MAX_EXACT_BLIMIT {
+        super::av1::filter_edge(plane, q0, across, along, lines, filter);
+        return;
+    }
+    let full = lines / WIDE_LINES * WIDE_LINES;
+    for first in (0..full).step_by(WIDE_LINES) {
+        // SAFETY: fits covers the complete wide group; caller enables the ISA.
+        unsafe {
+            by_length::<B, T, WIDE_LINES>(plane, q0 + first * along, across, along, filter);
+        }
+    }
+    if full < lines {
+        // SAFETY: the validated remainder is a multiple of four; caller enables N's ISA.
+        unsafe {
+            filter_edge::<N>(
+                plane,
+                q0 + full * along,
+                across,
+                along,
+                lines - full,
+                filter,
+            );
+        }
+    }
+}
+
+/// Grouped independent lines share the same arithmetic as the ordinary
 /// eight-line kernel. Short remainders retain the established narrow path.
 ///
 /// # Safety
 /// Both lane implementations' ISA must be enabled; normative footprints must
 /// be valid, and `lines` must be a multiple of four.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline(always)]
 pub(crate) unsafe fn filter_wide<B: Bytes, T: Tile<B>, const WIDE_LINES: usize>(
     plane: &mut [u8],

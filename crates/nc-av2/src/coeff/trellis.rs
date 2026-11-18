@@ -430,7 +430,7 @@ impl<'a> RateModel<'a> {
             last: false,
             upper,
         };
-        let context = key + levels::luma_base_offset(at, region);
+        let context = key + levels::luma_base_offset(at);
         for (i, out) in bits[..symbols.count].iter_mut().enumerate() {
             let q9 =
                 self.base_cost(family, context, usize::from(symbols.base[i])) + symbols.extra_q9[i];

@@ -11,18 +11,6 @@ const COEFFICIENTS: std::ops::RangeInclusive<i16> = -64..=64;
 /// rounded by 7 bits).
 const SUM_SHIFT: u32 = 7;
 
-impl crate::Dsp {
-    /// Apply seven luma differences to a chroma row, with 8-bit correction clipping.
-    /// Rows are ordered y−1, y, y+1, y+2 and have one horizontal padding sample.
-    /// The codec prepares virtual-boundary row substitutions before this call.
-    /// # Panics
-    /// If rows are short or coefficients exceed the normative ±64 range.
-    pub fn vvc_alf_cross_row(&self, rows: &[&[u8]; 4], coefficients: [i16; 7], out: &mut [u8]) {
-        check_cross_row(rows, coefficients, out);
-        cross_row_at(rows, coefficients, out, BitDepth::EIGHT);
-    }
-}
-
 /// The checks of the CC-ALF row (any sample type).
 pub(crate) fn check_cross_row<T: Sample>(
     rows: &[&[T]; 4],

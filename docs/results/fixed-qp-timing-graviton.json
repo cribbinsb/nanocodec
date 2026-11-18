@@ -59,7 +59,8 @@
   "x265-medium": 6,
   "x265-slow": 6,
   "x265-superfast": 6,
-  "x265-ultrafast": 6
+  "x265-ultrafast": 6,
+  "nanocodec-av2@faster": 6
  },
  "nanocodec_version": "nanocodec 0.2.0 d40f86b3838f43709fb2f72eafffd6ffb13b7767",
  "build": "2caf7d21",
@@ -827,6 +828,24 @@
     "Vertical_Bayshore_270x480_2997": 5.4603
    },
    "fps": 93.2
+  },
+  "nanocodec-av2@faster": {
+   "ms_per_frame": {
+    "Johnny_1280x720_60": 3.6271,
+    "KristenAndSara_1280x720_60": 3.7502,
+    "ControlledBurn_1280x720p30_420": 6.8196,
+    "WestWindEasy_1280x720p30_420": 8.9659,
+    "BlueSky_360p25_v2": 1.9756,
+    "Stockholm_640x360_5994": 1.588,
+    "RedKayak_360_2997": 3.3855,
+    "SnowMountain_640x360_2997": 1.0381,
+    "SpeedBag_640x360_2997": 1.4481,
+    "TouchdownPass_640x360_2997": 1.7218,
+    "FourPeople_480x270_60": 0.8452,
+    "Vertical_Bayshore_270x480_2997": 1.1296
+   },
+   "fps": 434.9,
+   "build": "c9e4ced3"
   }
  }
 }

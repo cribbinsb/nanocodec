@@ -765,6 +765,24 @@
     "bodycam_bc1": 20.1694638661076
    },
    "build": "2860f897"
+  },
+  "nanocodec-av2@faster": {
+   "ms_per_frame": {
+    "lowlight_city_night": 5.804966666666667,
+    "crowd_mot17_09": 6.414786666666666,
+    "bodycam_bc1": 7.460313333333334
+   },
+   "budget_fraction": {
+    "lowlight_city_night": 1.0047685647685647,
+    "crowd_mot17_09": 1.0122586666666666,
+    "bodycam_bc1": 0.9953832833832834
+   },
+   "anchor_ms_per_frame": {
+    "lowlight_city_night": 12.165164060663274,
+    "crowd_mot17_09": 16.181593298272993,
+    "bodycam_bc1": 19.944344362537862
+   },
+   "build": "c9e4ced3"
   }
  }
 }

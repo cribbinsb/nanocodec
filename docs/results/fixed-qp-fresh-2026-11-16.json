@@ -3,7 +3,7 @@
  "anchor": "x264-medium",
  "frames": 150,
  "points": 4,
- "build_commit": "b11b2f83",
+ "build_commit": "b11b2f83 (c9e4ced3 for AV1 Veryfast and AV2 Faster)",
  "clips": [
   {
    "clip": "ind_jaad_video_0318",
@@ -163,6 +163,16 @@
    "vmaf_v1": -23.12,
    "ms_ssim": -26.16
   },
+  "nanocodec-av1@veryfast": {
+   "j": -12.76,
+   "lo": -16.2,
+   "hi": -9.32,
+   "n": 12,
+   "psnr_yuv": -7.49,
+   "vmaf_v1": 0.25,
+   "ms_ssim": -14.55,
+   "xpsnr_yuv": -20.19
+  },
   "nanocodec-av2": {
    "j": -34.71,
    "lo": -37.85,
@@ -180,6 +190,16 @@
    "psnr_yuv": -20.7,
    "vmaf_v1": -12.73,
    "ms_ssim": -19.93
+  },
+  "nanocodec-av2@faster": {
+   "j": -23.66,
+   "lo": -27.72,
+   "hi": -19.6,
+   "n": 12,
+   "psnr_yuv": -21.55,
+   "vmaf_v1": -13.39,
+   "ms_ssim": -21.32,
+   "xpsnr_yuv": -29.71
   },
   "nanocodec-av2@slow": {
    "j": -36.42,

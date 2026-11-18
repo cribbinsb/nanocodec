@@ -602,6 +602,17 @@ pub(crate) trait I16FilterLanes: I16Lanes {
     /// Lanes `0..LANES / 2` from the start of `lo`, the others from the
     /// start of `hi`.
     fn load_halves(lo: &[i16], hi: &[i16]) -> Self;
+    /// Lanes `0..LANES / 2` zero-extended from `lo`, and `LANES / 2..LANES`
+    /// zero-extended from `hi`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn load_u8_halves(lo: &[u8], hi: &[u8]) -> Self {
+        let half = Self::LANES / 2;
+        let mut buf = [0u8; MAX_I16_LANES];
+        buf[..half].copy_from_slice(&lo[..half]);
+        buf[half..Self::LANES].copy_from_slice(&hi[..half]);
+        Self::load_u8(&buf)
+    }
     /// Store `clamp(lane, 0, 255)` of lanes `0..LANES / 2` into the start of
     /// `lo`, and of the others into the start of `hi`.
     fn store_u8_sat_halves(self, lo: &mut [u8], hi: &mut [u8]);
@@ -670,6 +681,18 @@ pub(crate) trait I16FilterLanes: I16Lanes {
         }
         Self::load(&buf)
     }
+    /// Quarter-vector `u8` row load (`LANES / 4` bytes zero-extended from each
+    /// of four rows).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn load_u8_quarters(rows: [&[u8]; 4]) -> Self {
+        let q = Self::LANES / 4;
+        let mut buf = [0u8; MAX_I16_LANES];
+        for (i, row) in rows.into_iter().enumerate() {
+            buf[i * q..(i + 1) * q].copy_from_slice(&row[..q]);
+        }
+        Self::load_u8(&buf)
+    }
     /// Quarter-vector row store (`LANES / 4` lanes into each of four rows).
     #[inline(always)]
     #[allow(clippy::inline_always)]
@@ -710,6 +733,20 @@ pub(crate) trait I16FilterLanes: I16Lanes {
         let mut buf = [0i16; MAX_I16_LANES];
         self.store(&mut buf);
         buf[..Self::LANES].iter().any(|&v| v != 0)
+    }
+    /// Deinterleave the first `2 * LANES` `u8` samples of `src` into `(even,
+    /// odd)`, zero-extended to `i16`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn load_u8_deinterleaved(src: &[u8]) -> (Self, Self) {
+        let pairs = &src[..2 * Self::LANES];
+        let mut even = [0i16; MAX_I16_LANES];
+        let mut odd = [0i16; MAX_I16_LANES];
+        for i in 0..Self::LANES {
+            even[i] = i16::from(pairs[2 * i]);
+            odd[i] = i16::from(pairs[2 * i + 1]);
+        }
+        (Self::load(&even), Self::load(&odd))
     }
     /// Deinterleave the first `2 * LANES` `u16` samples of `src` into `(even,
     /// odd)`, where lane `i` of `even` is `src[2 * i]` and lane `i` of `odd`
@@ -1018,4 +1055,177 @@ pub(crate) fn saturate_i16(value: i32) -> i16 {
 #[inline(always)]
 pub(crate) fn packed_pair(first: i16, second: i16) -> i32 {
     (i32::from(second) << 16) | i32::from(first as u16)
+}
+
+/// Sample load/store adapter so `i16`-lane SIMD kernels (`vvc_alf::high_simd`,
+/// `mc::precision_simd`) instantiate once at `u8` and once at `u16` with zero
+/// runtime overhead on either path.
+#[allow(unsafe_code)]
+#[cfg_attr(
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )),
+    allow(dead_code, reason = "SIMD sample adapters target vector builds")
+)]
+pub(crate) trait SimdSample: nc_common::Sample {
+    /// Load `V::LANES` samples from `src`, zero-extended to `i16` lanes.
+    fn load_slice<V: I16Lanes>(src: &[Self]) -> V;
+    /// Load `V::LANES` samples from a validated pointer, zero-extended.
+    ///
+    /// # Safety
+    /// `src` must be valid for reading `V::LANES` elements of `Self`.
+    unsafe fn load_lanes<V: I16Lanes>(src: *const Self) -> V;
+    /// Clamp `v` to `0..=max_val` (`0..=255` for `u8`) and store `V::LANES`
+    /// samples into `dst`.
+    fn store_clamped_slice<V: I16Lanes>(v: V, zero: V, max_val: V, dst: &mut [Self]);
+    /// Clamp `v` to `0..=max_val` (`0..=255` for `u8`) and store `V::LANES`
+    /// samples at `dst`.
+    ///
+    /// # Safety
+    /// `dst` must be valid for writing `V::LANES` elements of `Self`.
+    unsafe fn store_clamped<V: I16Lanes>(v: V, zero: V, max_val: V, dst: *mut Self);
+    /// Deinterleave `2 * V::LANES` samples of `src` into `(even, odd)`.
+    fn load_deinterleaved<V: I16FilterLanes>(src: &[Self]) -> (V, V);
+    /// Load `V::LANES / 2` samples at `x` from each of `p0` and `p1`.
+    ///
+    /// # Safety
+    /// `p0.add(x)` and `p1.add(x)` must each cover `V::LANES / 2` readable elements.
+    unsafe fn load_2rows<V: I16FilterLanes>(p0: *const Self, p1: *const Self, x: usize) -> V;
+    /// Load `V::LANES / 4` samples at `x` from each of `p[0..4]`.
+    ///
+    /// # Safety
+    /// Each `p[k].add(x)` must cover `V::LANES / 4` readable elements.
+    unsafe fn load_4rows<V: I16FilterLanes>(p: [*const Self; 4], x: usize) -> V;
+    /// Load two adjacent samples at `k` from each of four rows (`8` lanes).
+    fn load_w2x4<V: I16Lanes>(rows: [&[Self]; 4], k: usize) -> V;
+}
+
+#[allow(unsafe_code, clippy::inline_always)]
+impl SimdSample for u8 {
+    #[inline(always)]
+    fn load_slice<V: I16Lanes>(src: &[u8]) -> V {
+        V::load_u8(src)
+    }
+    #[inline(always)]
+    unsafe fn load_lanes<V: I16Lanes>(src: *const u8) -> V {
+        // SAFETY: caller guarantees `V::LANES` readable bytes at `src`.
+        unsafe { V::load_u8_at(src) }
+    }
+    #[inline(always)]
+    fn store_clamped_slice<V: I16Lanes>(v: V, _zero: V, _max_val: V, dst: &mut [u8]) {
+        v.store_u8_sat(dst);
+    }
+    #[inline(always)]
+    unsafe fn store_clamped<V: I16Lanes>(v: V, _zero: V, _max_val: V, dst: *mut u8) {
+        // SAFETY: caller guarantees `V::LANES` writable bytes at `dst`.
+        unsafe { v.store_u8_sat_at(dst) };
+    }
+    #[inline(always)]
+    fn load_deinterleaved<V: I16FilterLanes>(src: &[u8]) -> (V, V) {
+        V::load_u8_deinterleaved(src)
+    }
+    #[inline(always)]
+    unsafe fn load_2rows<V: I16FilterLanes>(p0: *const u8, p1: *const u8, x: usize) -> V {
+        let half = V::LANES / 2;
+        // SAFETY: caller validated `p0.add(x)` and `p1.add(x)` for `half` bytes.
+        unsafe {
+            V::load_u8_halves(
+                core::slice::from_raw_parts(p0.add(x), half),
+                core::slice::from_raw_parts(p1.add(x), half),
+            )
+        }
+    }
+    #[inline(always)]
+    unsafe fn load_4rows<V: I16FilterLanes>(p: [*const u8; 4], x: usize) -> V {
+        let q = V::LANES / 4;
+        // SAFETY: caller validated each `p[k].add(x)` for `q` bytes.
+        unsafe {
+            V::load_u8_quarters([
+                core::slice::from_raw_parts(p[0].add(x), q),
+                core::slice::from_raw_parts(p[1].add(x), q),
+                core::slice::from_raw_parts(p[2].add(x), q),
+                core::slice::from_raw_parts(p[3].add(x), q),
+            ])
+        }
+    }
+    #[inline(always)]
+    fn load_w2x4<V: I16Lanes>(rows: [&[u8]; 4], k: usize) -> V {
+        let lanes = [
+            i16::from(rows[0][k]),
+            i16::from(rows[0][k + 1]),
+            i16::from(rows[1][k]),
+            i16::from(rows[1][k + 1]),
+            i16::from(rows[2][k]),
+            i16::from(rows[2][k + 1]),
+            i16::from(rows[3][k]),
+            i16::from(rows[3][k + 1]),
+        ];
+        V::load(&lanes)
+    }
+}
+
+#[allow(unsafe_code, clippy::inline_always)]
+impl SimdSample for u16 {
+    #[inline(always)]
+    fn load_slice<V: I16Lanes>(src: &[u16]) -> V {
+        V::load_u16(src)
+    }
+    #[inline(always)]
+    unsafe fn load_lanes<V: I16Lanes>(src: *const u16) -> V {
+        // SAFETY: caller guarantees `V::LANES` readable `u16`s at `src`.
+        unsafe { V::load_u16_at(src) }
+    }
+    #[inline(always)]
+    fn store_clamped_slice<V: I16Lanes>(v: V, zero: V, max_val: V, dst: &mut [u16]) {
+        v.max(zero).min(max_val).store_u16(dst);
+    }
+    #[inline(always)]
+    unsafe fn store_clamped<V: I16Lanes>(v: V, zero: V, max_val: V, dst: *mut u16) {
+        // SAFETY: caller guarantees `V::LANES` writable `u16`s at `dst`.
+        unsafe { v.max(zero).min(max_val).store_u16_at(dst) };
+    }
+    #[inline(always)]
+    fn load_deinterleaved<V: I16FilterLanes>(src: &[u16]) -> (V, V) {
+        V::load_u16_deinterleaved(src)
+    }
+    #[inline(always)]
+    unsafe fn load_2rows<V: I16FilterLanes>(p0: *const u16, p1: *const u16, x: usize) -> V {
+        let half = V::LANES / 2;
+        // SAFETY: caller validated `p0.add(x)` and `p1.add(x)` for `half` aligned `u16`s.
+        unsafe {
+            V::load_halves(
+                core::slice::from_raw_parts(p0.add(x).cast::<i16>(), half),
+                core::slice::from_raw_parts(p1.add(x).cast::<i16>(), half),
+            )
+        }
+    }
+    #[inline(always)]
+    unsafe fn load_4rows<V: I16FilterLanes>(p: [*const u16; 4], x: usize) -> V {
+        let q = V::LANES / 4;
+        // SAFETY: caller validated each `p[k].add(x)` for `q` aligned `u16`s.
+        unsafe {
+            V::load_quarters([
+                core::slice::from_raw_parts(p[0].add(x).cast::<i16>(), q),
+                core::slice::from_raw_parts(p[1].add(x).cast::<i16>(), q),
+                core::slice::from_raw_parts(p[2].add(x).cast::<i16>(), q),
+                core::slice::from_raw_parts(p[3].add(x).cast::<i16>(), q),
+            ])
+        }
+    }
+    #[inline(always)]
+    fn load_w2x4<V: I16Lanes>(rows: [&[u16]; 4], k: usize) -> V {
+        let lanes = [
+            rows[0][k] as i16,
+            rows[0][k + 1] as i16,
+            rows[1][k] as i16,
+            rows[1][k + 1] as i16,
+            rows[2][k] as i16,
+            rows[2][k + 1] as i16,
+            rows[3][k] as i16,
+            rows[3][k + 1] as i16,
+        ];
+        V::load(&lanes)
+    }
 }

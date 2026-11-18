@@ -9,12 +9,24 @@ const SETS = {
   ctc: 'AOM CTC low delay (Fixed QP)',
   'qp-fresh': 'Held-out, fresh: the Fixed QP sample',
 };
+// Sets from a published outside dataset (data.datasets: name, credit, licence), by clip-set
+// id: its CBR set and its Fixed QP sample (`qp-<id>`), where the data has them.
+const DATASET_OF = {};
+function addDatasets(data) {
+  for (const [id, d] of Object.entries(data.datasets)) {
+    for (const [set, label] of [[id, d.name], [`qp-${id}`, `${d.short}: the Fixed QP sample`]]) {
+      if (data.sets[set]) { SETS[set] = label; DATASET_OF[set] = id; }
+    }
+  }
+}
 const state = { set: new URLSearchParams(window.location.search).get('set') || 'fresh' };
 
 function render(data, root) {
   const clips = data.sets[state.set] || [];
   const n = data.counts[state.set];
-  root.querySelector('.summary').textContent = `${SETS[state.set]}: ${n.clips} clips, ${n.scored} scored${n.left_out ? `, ${n.left_out} left out for every encoder (no reliable rate overlap with the zero line)` : ''}.`;
+  const dataset = data.datasets?.[DATASET_OF[state.set]];
+  const credit = dataset ? ` Data: ${dataset.credit}, ${dataset.url}; ${dataset.note}.` : '';
+  root.querySelector('.summary').textContent = `${SETS[state.set]}: ${n.clips} clips, ${n.scored} scored${n.left_out ? `, ${n.left_out} left out for every encoder (no reliable rate overlap with the zero line)` : ''}.${credit}`;
   root.querySelector('.clip-table').replaceChildren(table([
     { label: 'Clip', cell: (c) => c.name },
     { label: 'Source collection', cell: (c) => c.dataset },
@@ -31,6 +43,7 @@ async function main() {
   const root = document.getElementById('clips');
   try {
     const data = await loadData('clips');
+    addDatasets(data);
     if (!data.sets[state.set]) state.set = 'fresh';
     root.querySelector('.controls').append(control('Clip set', segmented('Clip set',
       Object.entries(SETS).map(([value, label]) => ({ value, label })), state.set,

@@ -291,7 +291,9 @@ pub(crate) fn splat_slice<T: Copy>(cells: &mut [T], value: T) {
         0 => {}
         1 => fixed::<T, 1>(cells, value),
         2 => fixed::<T, 2>(cells, value),
+        3 => fixed::<T, 3>(cells, value),
         4 => fixed::<T, 4>(cells, value),
+        5 => fixed::<T, 5>(cells, value),
         8 => fixed::<T, 8>(cells, value),
         16 => fixed::<T, 16>(cells, value),
         32 => fixed::<T, 32>(cells, value),

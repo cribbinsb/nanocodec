@@ -373,7 +373,7 @@ fn read_signs<C: Av1Coefficient>(
     }
     let mut rc = tokens.first;
     while rc != 0 {
-        let negative = r.literal(1) != 0;
+        let negative = r.bit();
         let entry = coefficients[rc & (MAX_CODED - 1)].to_i32();
         let tok = (entry >> TOKEN_SHIFT) as u32;
         let (value, level) = coefficient(r, tok, negative, (steps.ac, steps.max), shift)?;

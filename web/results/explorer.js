@@ -29,18 +29,23 @@ const PIN_NOTE = 'points beyond the axes are pinned to the edge (arrow)';
 const MANIFEST_URL = '../streams-ref/manifest.json';
 let manifest = null;
 
-// The Fixed QP chart's clip sets (CTC: the standards lens; fresh: our held-out sample) and
-// the CBR chart's: one Clip set control, each mode offering its own.
-const QP_CLIPSETS = { ctc: 'qp', fresh: 'qp-fresh' };
-const CBR_CLIPSETS = ['fresh', 'heldout', 'dev'];
+// The Clip set control offers each mode its own sets, as data/chart.json has views for them:
+// the Fixed QP chart's (CTC: the standards lens; the others samples of those CBR sets) and the
+// CBR chart's.
+const qpViewOf = (data, clipset) => data.views.find((v) => v.rate_mode === 'qp' && v.clipset === clipset)?.id;
+const hasCbrView = (data, clipset) => data.views.some((v) => v.rate_mode === 'cbr' && v.clipset === clipset);
+// How each Fixed QP sample was drawn from its clip set (an outside dataset's: data.datasets).
+const QP_SAMPLE_RULES = {
+  fresh: 'the held-out, fresh set (videos none of our tuning used; the clips are picked by a fixed rule, content classes in turn and within a class by a hash of the name)',
+};
 const state = {
   clipset: 'fresh', qpClipset: 'ctc', zero: TUNED_ZERO, mode: 'cbr', metric: 'j', platform: 'jetson', frontier: true,
   preset: ALL, codecs: new Set(Object.keys(CODEC_NAMES)), hiddenOwners: new Set(), tuned: false,
   selected: null,
 };
 
-function viewId() {
-  if (state.mode === 'qp') return QP_CLIPSETS[state.qpClipset];
+function viewId(data) {
+  if (state.mode === 'qp') return qpViewOf(data, state.qpClipset);
   const zid = state.zero === TUNED_ZERO ? 'psnr' : 'default';
   return `${state.clipset}-${zid}`;
 }
@@ -77,13 +82,27 @@ function describe(data, view, family, v) {
     v.iqr && v.iqr[0] !== null && family !== view.zero
       ? el('div', { class: 'dim' }, `per-clip interquartile range ${pct(v.iqr[0])} to ${pct(v.iqr[1])}`) : null,
     el('div', {}, PLATFORMS.filter((m) => v.fps[m]).map((m) => `${fps(v.fps[m])} fps ${PLATFORM_SHORT[m]} core`).join(' · ')),
-    v.clips_scored ? el('div', { class: 'dim' }, `${v.clips_scored} clips with a reliable BD`) : null,
+    v.clips_scored ? el('div', { class: 'dim' }, `${v.clips_scored} clips with a reliable BD`
+      + (state.metric === 'xpsnr' && xpsnrClips(v) ? ` (XPSNR ${xpsnrClips(v)})` : '')) : null,
     el('div', { class: 'dim' }, 'Select the point for its command line'));
 }
 
 /** A metric's BD-rate, or why there is none in a view that records the metric. */
 function metricText(value) {
   return value === null || value === undefined ? NOT_MEASURED : pct(value);
+}
+
+/** XPSNR may average fewer clips than J (where its curves overlap the zero line's):
+ * 'over 135/138 clips' then, so it is never silently another clip set. */
+function xpsnrClips(v) {
+  return v.xpsnr_clips && v.clips_scored && v.xpsnr_clips !== v.clips_scored
+    ? `over ${v.xpsnr_clips}/${v.clips_scored} clips` : '';
+}
+
+/** metricText, with XPSNR's clip count when it is not J's. */
+function metricCell(v, m) {
+  const text = metricText(v[m]);
+  return m === 'xpsnr' && v[m] !== null && v[m] !== undefined && xpsnrClips(v) ? `${text} (${xpsnrClips(v)})` : text;
 }
 
 function detail(data, view, family) {
@@ -93,7 +112,7 @@ function detail(data, view, family) {
     ['Encoder', `${p.owner}${versionOf(data, view, family) ? `, ${versionOf(data, view, family)}` : ''}`],
     ['Codec', CODEC_NAMES[p.codec] || p.codec],
     ['Preset', p.preset + (p.tune ? `, --tune ${p.tune}` : '')],
-    ...view.metrics.map((m) => [NAMES[m], metricText(v[m])]),
+    ...view.metrics.map((m) => [NAMES[m], metricCell(v, m)]),
     v.iqr && v.iqr[0] !== null && family !== view.zero ? ['Per-clip spread (J)', `${pct(v.iqr[0])} to ${pct(v.iqr[1])} (interquartile)`] : null,
     v.clips_scored ? ['Clips scored', String(v.clips_scored)] : null,
     v.rate_invalid_points ? ['Rate-invalid points', `${v.rate_invalid_points} (kept on their curves)`] : null,
@@ -148,11 +167,18 @@ function viewNote(data, view) {
     return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), build ${view.build_commit}. ${qpSpeedNote(view)}`;
   }
   if (view.rate_mode === 'qp') {
-    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of the held-out, fresh set (videos none of our tuning used; the clips are picked by a fixed rule, content classes in turn and within a class by a hash of the name), ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. Ours at build ${view.build_commit}. ${qpSpeedNote(view)}`;
+    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of ${QP_SAMPLE_RULES[view.clipset] || data.datasets[view.clipset].sample_rule}, ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. Ours at build ${view.build_commit}. ${qpSpeedNote(view)}${datasetNote(data, view)}`;
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
-  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. ${cbrSpeedNote(data)}`;
+  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. ${cbrSpeedNote(data)}${datasetNote(data, view)}`;
+}
+
+/** An outside dataset's selection, credit and licence note (data.datasets), for its views. */
+function datasetNote(data, view) {
+  const d = data.datasets?.[view.clipset];
+  if (!d) return '';
+  return ` Clips: ${d.clips} of ${d.candidates}, stratified by ${d.stratified_by.join(' × ')} (${d.strata} strata, each filled evenly). Data: ${d.credit}, ${d.url}; ${d.note}.`;
 }
 
 /** What the CBR charts' speed axis is on the selected machine: its timing record's platform,
@@ -175,7 +201,7 @@ function qpSpeedNote(view) {
   }
   const what = view.clipset === 'ctc' ? 'sequences' : 'clips';
   const quantizers = speed.quantizers === view.points ? 'the same fixed quantizers' : `${speed.quantizers} of the same fixed quantizers`;
-  return `Speed: single-thread encode fps on the same ${speed.sequences} ${what} at ${quantizers} (each encoder's own encodes of the quality run, ${speed.frames} frames each): CPU time on one pinned core of ${speed.platform}, ours at build ${speed.build}; fps is 1000 over the geometric mean of the ${what}' milliseconds per frame (they run from ${view.size_range}, so the fps is not a 720p figure).`;
+  return `Speed: single-thread encode fps on the same ${speed.sequences} ${what} at ${quantizers} (each encoder's own encodes of the quality run, ${speed.frames} frames each): CPU time on one pinned core of ${speed.platform}, ours at build ${speed.build}; fps is 1000 over the geometric mean of the ${what}' milliseconds per frame (${view.size_range.includes(' to ') ? `they run from ${view.size_range}, so the fps is not a 720p figure` : `all ${view.size_range}`}).`;
 }
 
 /** Which build each of our families on a view was measured at, grouped by build (a
@@ -192,7 +218,7 @@ function oursBuilds(data, view) {
 }
 
 function render(data, root) {
-  const view = data.views.find((v) => v.id === viewId());
+  const view = data.views.find((v) => v.id === viewId(data));
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
   for (const b of root.querySelectorAll('[data-control="platform"] button')) {
     b.setAttribute('aria-pressed', String(b.dataset.value === state.platform));
@@ -203,8 +229,8 @@ function render(data, root) {
       b.setAttribute('aria-pressed', String(b.dataset.value === value));
       if (name === 'clipset') {
         b.disabled = state.mode === 'qp'
-          ? !data.views.some((v) => v.id === QP_CLIPSETS[b.dataset.value])
-          : !CBR_CLIPSETS.includes(b.dataset.value);
+          ? !qpViewOf(data, b.dataset.value)
+          : !hasCbrView(data, b.dataset.value);
       }
       if (name === 'metric') {
         b.disabled = !view.metrics.includes(b.dataset.value);
@@ -216,7 +242,7 @@ function render(data, root) {
   }
   const note = root.querySelector('.view-note');
   note.textContent = `${viewNote(data, view)} `;
-  note.append(el('a', { href: `clips.html?set=${view.rate_mode === 'qp' && view.clipset !== 'ctc' ? 'qp-fresh' : view.clipset}` }, 'The clips.'));
+  note.append(el('a', { href: `clips.html?set=${view.rate_mode === 'qp' && view.clipset !== 'ctc' ? view.id : view.clipset}` }, 'The clips.'));
 
   const entries = visible(data, view);
   const points = entries.map(([family, v]) => {
@@ -237,7 +263,7 @@ function render(data, root) {
   const zero = view.rate_mode === 'qp' ? 'x264 medium at fixed QP' : ZERO_NAMES[view.zero];
   title.textContent = `${NAMES[state.metric]} vs ${zero}, against single-thread encode speed`;
   root.querySelector('.chart-sub').textContent = view.rate_mode === 'qp'
-    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} held-out, fresh clips`}, build ${view.build_commit} · lower is fewer bits, right is faster`
+    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} clips of ${data.clipsets[view.clipset].split(':')[0]}`}, build ${view.build_commit} · lower is fewer bits, right is faster`
     : `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
   let pinned = [];
   if (!points.length) {
@@ -252,7 +278,7 @@ function render(data, root) {
     pinned = drawScatter(chart, points, {
       frontiers,
       xLabel: view.rate_mode === 'qp'
-        ? `encode fps, ${view.clipset === 'ctc' ? 'AOM CTC sequences' : 'held-out clips'} (geometric mean), one ${PLATFORM_LABELS[state.platform]} (log scale)`
+        ? `encode fps, ${view.clipset === 'ctc' ? 'AOM CTC sequences' : `${data.clipsets[view.clipset].split(':')[0]} clips`} (geometric mean), one ${PLATFORM_LABELS[state.platform]} (log scale)`
         : `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
       yLabel: `${SHORT[state.metric]} BD-rate (lower is better)`,
       ariaLabel: title.textContent,
@@ -288,7 +314,7 @@ function render(data, root) {
     .sort((a, b) => a.v[state.metric] - b.v[state.metric]);
   root.querySelector('.table-slot').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
-    ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => metricText(r.v[m]) })),
+    ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => metricCell(r.v, m) })),
     { label: 'Clips', num: true, cell: (r) => (r.v.clips_scored ? String(r.v.clips_scored) : '–') },
     ...PLATFORMS.map((m) => ({ label: `fps ${PLATFORM_SHORT[m]}`, num: true, cell: (r) => fps(r.v.fps[m]) })),
   ], rows, (r) => (r.p.ours ? 'ours' : '') + (r.family === view.zero ? ' zero' : '')), sources(view.source));
@@ -330,6 +356,7 @@ function controls(data, root) {
   root.querySelector('.controls').replaceChildren(
     control('Clip set', withData('clipset', segmented('Clip set', [
       { value: 'fresh', label: 'Held-out, fresh' }, { value: 'heldout', label: 'Held-out, all' }, { value: 'dev', label: 'Development' },
+      ...Object.entries(data.datasets).map(([value, d]) => ({ value, label: d.name })),
       { value: 'ctc', label: 'AOM CTC (Fixed QP)' },
     ], state.clipset, (v) => { if (state.mode === 'qp') state.qpClipset = v; else state.clipset = v; rerender(); }))),
     // Fixed QP: the standards lens at the chart's build, on the same axes.
@@ -351,6 +378,12 @@ function controls(data, root) {
   );
 }
 
+/** The page's note on each published outside dataset (data.datasets), after its clip sets. */
+function datasetsNote(data) {
+  document.querySelector('.datasets-note').replaceChildren(...Object.values(data.datasets).map((d) =>
+    el('span', {}, ` ${d.name} is a sample of `, el('a', { href: d.url }, d.short), ` ${d.about}`)));
+}
+
 /** A demo link (deep-link.js `resultsQuery`): filter to that codec and preset and select its point. */
 function applyLink(data) {
   const link = parseResultsQuery(location.search);
@@ -367,6 +400,7 @@ async function main() {
   const root = document.getElementById('explorer');
   try {
     const data = await loadData('chart');
+    datasetsNote(data);
     applyLink(data);
     const owners = [...new Set(Object.values(data.points).map((p) => p.owner))].filter((o) => SHAPES[o]);
     owners.sort((a, b) => (a === 'nanocodec' ? -1 : b === 'nanocodec' ? 1 : a.localeCompare(b)));

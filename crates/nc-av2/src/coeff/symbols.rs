@@ -172,6 +172,11 @@ impl<'a> FrozenPricer<'a> {
     pub(super) fn total_q9(&self) -> u32 {
         self.q9
     }
+
+    /// Add `q9` (1/512 bit) priced outside the symbol interface.
+    pub(super) fn add_q9(&mut self, q9: u32) {
+        self.q9 += q9;
+    }
 }
 
 impl SymbolCoder for FrozenPricer<'_> {

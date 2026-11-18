@@ -17,41 +17,6 @@ const SHIFTS: [u32; 2] = [7, 10];
 /// `AlfCoeffC`: −2^7..=2^7 − 1).
 const COEFFICIENTS: std::ops::RangeInclusive<i16> = -128..=127;
 
-impl crate::Dsp {
-    /// Filter an 8-bit luma row with individually clipped tap differences.
-    /// Rows are prepared by the shared ALF boundary/edge-extension controller;
-    /// each block of four samples selects twelve coefficients and clip limits
-    /// (`AlfClip` at 8 bits, [`crate::vvc_alf_clip_value`]).
-    /// # Panics
-    /// If rows/tables are short, limits are invalid, or shift is not seven/ten.
-    pub fn vvc_alf_filter_clipped_row(
-        &self,
-        rows: &[&[u8]; 7],
-        coefficients: &[[i16; VVC_ALF_TAPS]],
-        limits: &[[i16; VVC_ALF_TAPS]],
-        shift: u32,
-        out: &mut [u8],
-    ) {
-        check_clipped_row(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
-        clipped_row_at(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
-    }
-    /// Filter a chroma row with the six symmetric 5×5 ALF taps.
-    /// Rows use the luma kernel's three-sample padding and boundary preparation.
-    /// # Panics
-    /// If rows are short, coefficients/limits are invalid, or shift is not 7/10.
-    pub fn vvc_alf_filter_chroma_row(
-        &self,
-        rows: &[&[u8]; 7],
-        coefficients: [i16; 6],
-        limits: [i16; 6],
-        shift: u32,
-        out: &mut [u8],
-    ) {
-        check_chroma_row(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
-        chroma_row_at(rows, coefficients, limits, shift, out, BitDepth::EIGHT);
-    }
-}
-
 #[inline(always)]
 #[allow(
     clippy::inline_always,

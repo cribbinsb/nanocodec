@@ -123,12 +123,12 @@ unsafe fn horizontal<const N: usize, const T: usize>(src: *const u8, taps: &[i16
 
 /// `(x + 2^(k-1)) >> k` for `m = 2^(15 - k)`.
 #[inline]
-fn round(x: v128, m: i16) -> v128 {
+pub(super) fn round(x: v128, m: i16) -> v128 {
     i16x8_q15mulr_sat(x, i16x8_splat(m))
 }
 
 /// Where a kernel's rounded 16-bit outputs go, and at which precision.
-trait Sink: Copy {
+pub(super) trait Sink: Copy {
     /// Compound precision (`prep`) rather than pixels (`put`).
     const PREP: bool;
 
@@ -202,7 +202,7 @@ fn vertical<const P: usize>(
 
 /// A raw window or destination: its first sample and row stride.
 #[derive(Clone, Copy)]
-struct Raw<T> {
+pub(super) struct Raw<T> {
     ptr: T,
     stride: usize,
 }
@@ -212,7 +212,7 @@ impl Raw<*const u8> {
     ///
     /// The sample must lie inside the window the caller checked.
     #[inline]
-    unsafe fn at(self, row: usize, col: usize) -> *const u8 {
+    pub(super) unsafe fn at(self, row: usize, col: usize) -> *const u8 {
         // SAFETY: forwarded from the caller.
         unsafe { self.ptr.add(row * self.stride + col) }
     }
@@ -541,6 +541,40 @@ unsafe fn filter<const W: usize, const N: usize, S: Sink, Z: OuterTaps>(
     }
 }
 
+/// Vertical second pass of a 2-D filter over `rows[0..h + T - 1]` for one
+/// `N`-wide column strip `c0`.
+#[inline]
+unsafe fn vertical_strip<const N: usize, const P: usize, const T: usize, S: Sink>(
+    rows: &[v128],
+    v_taps: &[v128; P],
+    last: (i32, u32),
+    out: S,
+    c0: usize,
+    h: usize,
+) {
+    let zero = i16x8_splat(0);
+    let mut even = [(zero, zero); P];
+    let mut odd = even;
+    for j in 0..P - 1 {
+        even[j] = interleave(rows[2 * j], rows[2 * j + 1]);
+        odd[j] = interleave(rows[2 * j + 1], rows[2 * j + 2]);
+    }
+    let mut previous = rows[T - 2];
+    // SAFETY: caller checked destination `0..h` at `c0..c0 + N` and `rows` length `h + T - 1`.
+    unsafe {
+        for r in (0..h).step_by(2) {
+            let (a, b) = (rows[r + T - 1], rows[r + T]);
+            even[P - 1] = interleave(previous, a);
+            odd[P - 1] = interleave(a, b);
+            previous = b;
+            out.store::<N>(r, c0, vertical(&even, v_taps, last));
+            out.store::<N>(r + 1, c0, vertical(&odd, v_taps, last));
+            slide(&mut even, 1, P - 1);
+            slide(&mut odd, 1, P - 1);
+        }
+    }
+}
+
 /// [`filter`] with `P` tap pairs (`T = 2P` taps), the first tap `lead`
 /// samples into the window, rounded by `R`; `C` is the window row and
 /// column of the block's first sample.
@@ -567,30 +601,48 @@ unsafe fn put_taps<
         (ROUND_6, (R::LAST_ROUND, R::LAST_SHIFT))
     };
     let last = (last.0, last.1.cast_unsigned());
-    // SAFETY: each path keeps to the window and destination the caller
-    // checked.
+    // SAFETY: each path keeps to the window and destination the caller checked.
     unsafe {
         match (frac_x, frac_y) {
             (_, 0) => {
                 let taps = taps_of::<R, T>(h_taps, lead);
-                for r in 0..h {
-                    for c0 in (0..W).step_by(N) {
-                        let sum = horizontal::<N, T>(window.at(r + C, c0 + lead), &taps);
-                        let t = first::<R>(sum);
-                        out.store::<N>(
-                            r,
-                            c0,
-                            if S::PREP {
+                #[cfg(target_feature = "relaxed-simd")]
+                if N == LANES && W * h >= 64 {
+                    let dot = super::av1_simd128_dot::DotFilter::<P>::new::<T>(&taps);
+                    for r in 0..h {
+                        for c0 in (0..W).step_by(LANES) {
+                            let t = first::<R>(dot.horizontal8::<T>(window.at(r + C, c0 + lead)));
+                            let v = if S::PREP {
                                 t
                             } else {
                                 round(t, R::HORIZONTAL_PUT)
-                            },
-                        );
+                            };
+                            out.store::<LANES>(r, c0, v);
+                        }
+                    }
+                    return;
+                }
+                for r in 0..h {
+                    for c0 in (0..W).step_by(N) {
+                        let t = first::<R>(horizontal::<N, T>(window.at(r + C, c0 + lead), &taps));
+                        let v = if S::PREP {
+                            t
+                        } else {
+                            round(t, R::HORIZONTAL_PUT)
+                        };
+                        out.store::<N>(r, c0, v);
                     }
                 }
             }
             (0, _) => {
                 let taps = taps_of::<R, T>(v_taps, lead);
+                #[cfg(target_feature = "relaxed-simd")]
+                if N == LANES && W * h >= 64 {
+                    super::av1_simd128_dot::vertical_only8::<W, P, T, S, C>(
+                        window, lead, out, h, &taps, v_round,
+                    );
+                    return;
+                }
                 for c0 in (0..W).step_by(N) {
                     let mut rows = [i16x8_splat(0); 8];
                     for (k, row) in rows.iter_mut().enumerate().take(T - 1) {
@@ -607,43 +659,55 @@ unsafe fn put_taps<
                     }
                 }
             }
-            _ => {
-                let h_taps = taps_of::<R, T>(h_taps, lead);
-                let v_row = taps_of::<R, T>(v_taps, lead);
-                let v_taps: [v128; P] = core::array::from_fn(|j| {
-                    let (lo, hi) = (v_row[2 * j] as u16, v_row[2 * j + 1] as u16);
-                    i32x4_splat((u32::from(lo) | u32::from(hi) << 16) as i32)
-                });
-                for c0 in (0..W).step_by(N) {
-                    let row = |k: usize| {
-                        first::<R>(horizontal::<N, T>(window.at(lead + k, c0 + lead), &h_taps))
-                    };
-                    // Even pairs (0,1), (2,3), ...; odd pairs (1,2), (3,4),
-                    // ...; the last of each made in the loop.
-                    let zero = i16x8_splat(0);
-                    let mut rows = [zero; 8];
-                    for (k, slot) in rows.iter_mut().enumerate().take(T - 1) {
-                        *slot = row(k);
-                    }
-                    let mut even = [(zero, zero); P];
-                    let mut odd = even;
-                    for j in 0..P - 1 {
-                        even[j] = interleave(rows[2 * j], rows[2 * j + 1]);
-                        odd[j] = interleave(rows[2 * j + 1], rows[2 * j + 2]);
-                    }
-                    let mut previous = rows[T - 2];
-                    for r in (0..h).step_by(2) {
-                        let (a, b) = (row(r + T - 1), row(r + T));
-                        even[P - 1] = interleave(previous, a);
-                        odd[P - 1] = interleave(a, b);
-                        previous = b;
-                        out.store::<N>(r, c0, vertical(&even, &v_taps, last));
-                        out.store::<N>(r + 1, c0, vertical(&odd, &v_taps, last));
-                        slide(&mut even, 1, P - 1);
-                        slide(&mut odd, 1, P - 1);
-                    }
+            _ => put_taps_2d::<W, N, P, T, S, R>(window, lead, out, h, last, (h_taps, v_taps)),
+        }
+    }
+}
+
+/// 2-D `(frac_x != 0, frac_y != 0)` separable filter: horizontal pass into a
+/// per-strip L1 buffer, then [`vertical_strip`] so both passes stay in XMM registers.
+#[inline]
+unsafe fn put_taps_2d<
+    const W: usize,
+    const N: usize,
+    const P: usize,
+    const T: usize,
+    S: Sink,
+    R: Rounding,
+>(
+    window: Raw<*const u8>,
+    lead: usize,
+    out: S,
+    h: usize,
+    last: (i32, u32),
+    (h_taps, v_taps): (&[i16], &[i16]),
+) {
+    let h_taps = taps_of::<R, T>(h_taps, lead);
+    let v_row = taps_of::<R, T>(v_taps, lead);
+    let v_taps: [v128; P] = core::array::from_fn(|j| {
+        let (lo, hi) = (v_row[2 * j] as u16, v_row[2 * j + 1] as u16);
+        i32x4_splat((u32::from(lo) | u32::from(hi) << 16) as i32)
+    });
+    let total_rows = h + T - 1;
+    let mut strip = [i16x8_splat(0); 64 + TAPS - 1];
+    // SAFETY: forwarded from `put_taps`.
+    unsafe {
+        #[cfg(target_feature = "relaxed-simd")]
+        if N == LANES && W * h >= 64 {
+            let h_dot = super::av1_simd128_dot::DotFilter::<P>::new::<T>(&h_taps);
+            for c0 in (0..W).step_by(LANES) {
+                for (k, slot) in strip[..total_rows].iter_mut().enumerate() {
+                    *slot = first::<R>(h_dot.horizontal8::<T>(window.at(lead + k, c0 + lead)));
                 }
+                vertical_strip::<LANES, P, T, S>(&strip[..total_rows], &v_taps, last, out, c0, h);
             }
+            return;
+        }
+        for c0 in (0..W).step_by(N) {
+            for (k, slot) in strip[..total_rows].iter_mut().enumerate() {
+                *slot = first::<R>(horizontal::<N, T>(window.at(lead + k, c0 + lead), &h_taps));
+            }
+            vertical_strip::<N, P, T, S>(&strip[..total_rows], &v_taps, last, out, c0, h);
         }
     }
 }

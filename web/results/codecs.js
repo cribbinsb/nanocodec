@@ -17,7 +17,8 @@ function views(data) {
     { title: 'Held-out, fresh', view: byId[`fresh-${zid}`] },
     { title: 'Held-out, all', view: byId[`heldout-${zid}`] },
     { title: 'Development', view: byId[`dev-${zid}`] },
-  ];
+    ...Object.entries(data.datasets).map(([id, d]) => ({ title: d.short, view: byId[`${id}-${zid}`] })),
+  ].filter((c) => c.view);
 }
 
 function cellOf(view, family) {
@@ -57,6 +58,9 @@ async function main() {
   const root = document.getElementById('codecs');
   try {
     const data = await loadData('chart');
+    // the lede names each published outside dataset (data.datasets) after our clip sets
+    document.querySelector('.datasets-note').textContent = Object.values(data.datasets)
+      .map((d) => `, and on ${d.name}, ${d.credit}, numbers only`).join('');
     root.querySelector('.controls').append(
       control('Metric', segmented('Metric', ['j', 'psnr', 'vmaf'].map((m) => ({ value: m, label: METRIC_SHORT[m] })),
         state.metric, (v) => { state.metric = v; render(data, root); })),

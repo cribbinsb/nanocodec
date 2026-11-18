@@ -95,6 +95,8 @@ pub(super) struct BlockScratch<T: Pixel> {
     pub blocks: Vec<BlockInfo>,
     pub grid: Vec<u32>,
     pub mvs: Vec<MvRef>,
+    pub above_nonzero: [Vec<u8>; 3],
+    pub above_partition: Vec<u8>,
     pub filter_masks: Masks,
     /// Dequantized coefficients of one transform block (16-bit at 8 bits,
     /// §8.6.2), zero between blocks (and so between frames).
@@ -124,6 +126,8 @@ impl<T: Pixel> BlockScratch<T> {
             blocks: Vec::new(),
             grid: Vec::new(),
             mvs: Vec::new(),
+            above_nonzero: Default::default(),
+            above_partition: Vec::new(),
             filter_masks: Masks::default(),
             coefficients: [T::Vp9Coefficient::default(); 32 * 32],
             token_cache: TokenCache::new(),
@@ -195,6 +199,14 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             // Intra frames store no vectors ([`Self::store_block`]).
             mvs.fill(MvRef::default());
         }
+        let mut above_nonzero = std::mem::take(&mut scratch.above_nonzero);
+        for (plane, len) in above_nonzero.iter_mut().zip([units, units / 2, units / 2]) {
+            plane.clear();
+            plane.resize(len, 0);
+        }
+        let mut above_partition = std::mem::take(&mut scratch.above_partition);
+        above_partition.clear();
+        above_partition.resize(sb_cols * SB_MI, 0);
         Ok(Self {
             inputs,
             mi_cols,
@@ -208,8 +220,8 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 high_precision: header.allow_hp,
                 ..Counts::default()
             },
-            above_nonzero: [vec![0; units], vec![0; units / 2], vec![0; units / 2]],
-            above_partition: vec![0; sb_cols * SB_MI],
+            above_nonzero,
+            above_partition,
             scratch,
             steps: segment_steps(header, depth),
             filter_levels: Levels::new(&header.loop_filter, &header.segmentation),
@@ -222,6 +234,8 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
     pub(super) fn finish(self) -> (FrameOutput<T>, Box<BlockScratch<T>>) {
         let mut scratch = self.scratch;
         (scratch.blocks, scratch.grid) = (self.blocks, self.grid);
+        (scratch.above_nonzero, scratch.above_partition) =
+            (self.above_nonzero, self.above_partition);
         scratch.filter_masks = self.filter_masks;
         let output = FrameOutput {
             recon: self.recon,

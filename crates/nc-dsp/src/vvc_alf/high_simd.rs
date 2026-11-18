@@ -1,4 +1,4 @@
-//! High-bit-depth (`u16`) VVC ALF and CC-ALF row kernels over [`I16FilterLanes`].
+//! Shared (`u8` and `u16`) VVC ALF and CC-ALF row kernels over [`I16FilterLanes`].
 //!
 //! At up to [`super::VVC_ALF_MAX_BIT_DEPTH`] (10 bits), samples lie in
 //! `0..=1023`, symmetric tap differences (`a + b - 2c` or clipped sums) lie in
@@ -12,7 +12,7 @@
 
 use nc_common::BitDepth;
 
-use crate::simd::I16FilterLanes;
+use crate::simd::{I16FilterLanes, SimdSample};
 
 use super::clipped::{
     CHROMA_TAP_OFFSETS, CHROMA_TAPS, assert_coeffs_and_limits, chroma_row_at, clipped_row_at,
@@ -22,8 +22,8 @@ use super::{VVC_ALF_BLOCK, VVC_ALF_REACH, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, fil
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn load_luma_tap_ptr<V: I16FilterLanes>(
-    ptrs: &[*const u16; 7],
+unsafe fn load_luma_tap_ptr<S: SimdSample, V: I16FilterLanes>(
+    ptrs: &[*const S; 7],
     x: usize,
     tap: usize,
 ) -> (V, V) {
@@ -33,8 +33,8 @@ unsafe fn load_luma_tap_ptr<V: I16FilterLanes>(
     // SAFETY: caller validated every row slice covers `whole + 2 * VVC_ALF_REACH`.
     unsafe {
         (
-            V::load_u16_at(ptrs[(3 + dy) as usize].add(ax)),
-            V::load_u16_at(ptrs[(3 - dy) as usize].add(bx)),
+            S::load_lanes::<V>(ptrs[(3 + dy) as usize].add(ax)),
+            S::load_lanes::<V>(ptrs[(3 - dy) as usize].add(bx)),
         )
     }
 }
@@ -48,14 +48,14 @@ unsafe fn linear_diff_ptr<V: I16FilterLanes>(
     twice: V,
 ) -> V {
     // SAFETY: forwarded from `filter_block_row_lanes` after bounds validation.
-    let (a, b) = unsafe { load_luma_tap_ptr::<V>(ptrs, x, tap) };
+    let (a, b) = unsafe { load_luma_tap_ptr::<u16, V>(ptrs, x, tap) };
     a.add(b).sub(twice)
 }
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn load_chroma_tap_ptr<V: I16FilterLanes>(
-    ptrs: &[*const u16; 7],
+unsafe fn load_chroma_tap_ptr<S: SimdSample, V: I16FilterLanes>(
+    ptrs: &[*const S; 7],
     x: usize,
     tap: usize,
 ) -> (V, V) {
@@ -65,16 +65,16 @@ unsafe fn load_chroma_tap_ptr<V: I16FilterLanes>(
     // SAFETY: caller validated every row slice covers `whole + 2 * VVC_ALF_REACH`.
     unsafe {
         (
-            V::load_u16_at(ptrs[(3 + dy) as usize].add(ax)),
-            V::load_u16_at(ptrs[(3 - dy) as usize].add(bx)),
+            S::load_lanes::<V>(ptrs[(3 + dy) as usize].add(ax)),
+            S::load_lanes::<V>(ptrs[(3 - dy) as usize].add(bx)),
         )
     }
 }
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-fn row_ptrs(rows: &[&[u16]; 7], min_len: usize) -> [*const u16; 7] {
-    let mut ptrs = [core::ptr::null::<u16>(); 7];
+fn row_ptrs<S>(rows: &[&[S]; 7], min_len: usize) -> [*const S; 7] {
+    let mut ptrs = [core::ptr::null::<S>(); 7];
     for k in 0..7 {
         assert!(rows[k].len() >= min_len);
         ptrs[k] = rows[k].as_ptr();
@@ -84,14 +84,15 @@ fn row_ptrs(rows: &[&[u16]; 7], min_len: usize) -> [*const u16; 7] {
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn clipped_row_lanes<V: I16FilterLanes>(
-    rows: &[&[u16]; 7],
+unsafe fn clipped_row_lanes<S: SimdSample, V: I16FilterLanes>(
+    rows: &[&[S]; 7],
     coefficients: &[[i16; VVC_ALF_TAPS]],
     limits: &[[i16; VVC_ALF_TAPS]],
     shift: u32,
-    out: &mut [u16],
+    out: &mut [S],
     depth: BitDepth,
 ) {
+    let depth = depth.of::<S>();
     let zero = V::splat(0);
     let max_val = V::splat(depth.max() as i16);
     let round = 1i32 << (shift - 1);
@@ -108,19 +109,15 @@ unsafe fn clipped_row_lanes<V: I16FilterLanes>(
         let l_params = V::expand_alf_params(&limits[b0..]);
         // SAFETY: `ptrs` and `dst` were bounds-checked once before the loop.
         unsafe {
-            let centre = V::load_u16_at(ptrs[3].add(x + VVC_ALF_REACH));
+            let centre = S::load_lanes::<V>(ptrs[3].add(x + VVC_ALF_REACH));
             let mut acc = V::acc_zero();
             for p in 0..VVC_ALF_TAPS / 2 {
-                let s0 = load_luma_tap_ptr::<V>(&ptrs, x, 2 * p);
-                let s1 = load_luma_tap_ptr::<V>(&ptrs, x, 2 * p + 1);
+                let s0 = load_luma_tap_ptr::<S, V>(&ptrs, x, 2 * p);
+                let s1 = load_luma_tap_ptr::<S, V>(&ptrs, x, 2 * p + 1);
                 acc = V::acc_alf_clipped_pair(acc, s0, s1, centre, l_params[p], w_params[p]);
             }
             let offset = V::acc_round_shift_narrow(acc, round, shift);
-            centre
-                .add_sat(offset)
-                .max(zero)
-                .min(max_val)
-                .store_u16_at(dst.add(x));
+            S::store_clamped(centre.add_sat(offset), zero, max_val, dst.add(x));
         }
     }
     if whole < out.len() {
@@ -146,14 +143,15 @@ unsafe fn clipped_row_lanes<V: I16FilterLanes>(
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn clipped_block_row_lanes<V: I16FilterLanes>(
-    rows: &[[&[u16]; 7]; VVC_ALF_BLOCK],
+unsafe fn clipped_block_row_lanes<S: SimdSample, V: I16FilterLanes>(
+    rows: &[[&[S]; 7]; VVC_ALF_BLOCK],
     coefficients: &[[i16; VVC_ALF_TAPS]],
     limits: &[[i16; VVC_ALF_TAPS]],
     shifts: &[u32; VVC_ALF_BLOCK],
-    out: &mut [&mut [u16]; VVC_ALF_BLOCK],
+    out: &mut [&mut [S]; VVC_ALF_BLOCK],
     depth: BitDepth,
 ) {
+    let depth = depth.of::<S>();
     let (zero, max_val) = (V::splat(0), V::splat(depth.max() as i16));
     let blocks_per_vec = V::LANES / VVC_ALF_BLOCK;
     let width = out[0].len();
@@ -170,8 +168,8 @@ unsafe fn clipped_block_row_lanes<V: I16FilterLanes>(
     let coeff_vec = &coefficients[..vec_blocks];
     let lim_vec = &limits[..vec_blocks];
     let shifts = *shifts;
-    let mut ptrs = [[core::ptr::null::<u16>(); 7]; VVC_ALF_BLOCK];
-    let mut dsts = [core::ptr::null_mut::<u16>(); VVC_ALF_BLOCK];
+    let mut ptrs = [[core::ptr::null::<S>(); 7]; VVC_ALF_BLOCK];
+    let mut dsts = [core::ptr::null_mut::<S>(); VVC_ALF_BLOCK];
     for r in 0..VVC_ALF_BLOCK {
         assert!(out[r].len() >= whole);
         ptrs[r] = row_ptrs(&rows[r], min_in);
@@ -185,11 +183,11 @@ unsafe fn clipped_block_row_lanes<V: I16FilterLanes>(
         // SAFETY: `ptrs` and `dsts` were bounds-checked once before the loop.
         unsafe {
             for r in 0..VVC_ALF_BLOCK {
-                let centre = V::load_u16_at(ptrs[r][3].add(x + VVC_ALF_REACH));
+                let centre = S::load_lanes::<V>(ptrs[r][3].add(x + VVC_ALF_REACH));
                 let mut acc = V::acc_zero();
                 for p in 0..VVC_ALF_TAPS / 2 {
-                    let s0 = load_luma_tap_ptr::<V>(&ptrs[r], x, 2 * p);
-                    let s1 = load_luma_tap_ptr::<V>(&ptrs[r], x, 2 * p + 1);
+                    let s0 = load_luma_tap_ptr::<S, V>(&ptrs[r], x, 2 * p);
+                    let s1 = load_luma_tap_ptr::<S, V>(&ptrs[r], x, 2 * p + 1);
                     acc = V::acc_alf_clipped_pair(acc, s0, s1, centre, l_params[p], w_params[p]);
                 }
                 let shift = shifts[r];
@@ -198,11 +196,7 @@ unsafe fn clipped_block_row_lanes<V: I16FilterLanes>(
                 } else {
                     V::acc_round_shift_narrow(acc, 1i32 << (shift - 1), shift)
                 };
-                centre
-                    .add_sat(offset)
-                    .max(zero)
-                    .min(max_val)
-                    .store_u16_at(dsts[r].add(x));
+                S::store_clamped(centre.add_sat(offset), zero, max_val, dsts[r].add(x));
             }
         }
     }
@@ -307,14 +301,15 @@ unsafe fn filter_block_row_lanes<V: I16FilterLanes>(
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn chroma_row_lanes<V: I16FilterLanes>(
-    rows: &[&[u16]; 7],
+unsafe fn chroma_row_lanes<S: SimdSample, V: I16FilterLanes>(
+    rows: &[&[S]; 7],
     coefficients: [i16; CHROMA_TAPS],
     limits: [i16; CHROMA_TAPS],
     shift: u32,
-    out: &mut [u16],
+    out: &mut [S],
     depth: BitDepth,
 ) {
+    let depth = depth.of::<S>();
     let zero = V::splat(0);
     let max_val = V::splat(depth.max() as i16);
     let round = 1i32 << (shift - 1);
@@ -336,19 +331,15 @@ unsafe fn chroma_row_lanes<V: I16FilterLanes>(
         let x = step * V::LANES;
         // SAFETY: `ptrs` and `dst` were bounds-checked once before the loop.
         unsafe {
-            let centre = V::load_u16_at(ptrs[3].add(x + VVC_ALF_REACH));
+            let centre = S::load_lanes::<V>(ptrs[3].add(x + VVC_ALF_REACH));
             let mut acc = V::acc_zero();
             for p in 0..CHROMA_TAPS / 2 {
-                let s0 = load_chroma_tap_ptr::<V>(&ptrs, x, 2 * p);
-                let s1 = load_chroma_tap_ptr::<V>(&ptrs, x, 2 * p + 1);
+                let s0 = load_chroma_tap_ptr::<S, V>(&ptrs, x, 2 * p);
+                let s1 = load_chroma_tap_ptr::<S, V>(&ptrs, x, 2 * p + 1);
                 acc = V::acc_alf_clipped_pair(acc, s0, s1, centre, l_params[p], w_params[p]);
             }
             let offset = V::acc_round_shift_narrow(acc, round, shift);
-            centre
-                .add_sat(offset)
-                .max(zero)
-                .min(max_val)
-                .store_u16_at(dst.add(x));
+            S::store_clamped(centre.add_sat(offset), zero, max_val, dst.add(x));
         }
     }
     if whole < out.len() {
@@ -374,12 +365,13 @@ unsafe fn chroma_row_lanes<V: I16FilterLanes>(
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn cross_row_lanes<V: I16FilterLanes>(
-    rows: &[&[u16]; 4],
+unsafe fn cross_row_lanes<S: SimdSample, V: I16FilterLanes>(
+    rows: &[&[S]; 4],
     c: [i16; 7],
-    out: &mut [u16],
+    out: &mut [S],
     depth: BitDepth,
 ) {
+    let depth = depth.of::<S>();
     let zero = V::splat(0);
     let max_val = V::splat(depth.max() as i16);
     let half = depth.mid() as i16;
@@ -389,12 +381,12 @@ unsafe fn cross_row_lanes<V: I16FilterLanes>(
     for step in 0..steps {
         let x = step * V::LANES;
         let lx = 2 * x;
-        let (_, r0_odd) = V::load_u16_deinterleaved(&rows[0][lx..]);
-        let (r1_even, centre) = V::load_u16_deinterleaved(&rows[1][lx..]);
-        let (r1_even_next, _) = V::load_u16_deinterleaved(&rows[1][lx + 2..]);
-        let (r2_even, r2_odd) = V::load_u16_deinterleaved(&rows[2][lx..]);
-        let (r2_even_next, _) = V::load_u16_deinterleaved(&rows[2][lx + 2..]);
-        let (_, r3_odd) = V::load_u16_deinterleaved(&rows[3][lx..]);
+        let (_, r0_odd) = S::load_deinterleaved::<V>(&rows[0][lx..]);
+        let (r1_even, centre) = S::load_deinterleaved::<V>(&rows[1][lx..]);
+        let (r1_even_next, _) = S::load_deinterleaved::<V>(&rows[1][lx + 2..]);
+        let (r2_even, r2_odd) = S::load_deinterleaved::<V>(&rows[2][lx..]);
+        let (r2_even_next, _) = S::load_deinterleaved::<V>(&rows[2][lx + 2..]);
+        let (_, r3_odd) = S::load_deinterleaved::<V>(&rows[3][lx..]);
         let mut acc = V::acc_zero();
         acc = V::acc_mul_add2(acc, r0_odd.sub(centre), c[0], r1_even.sub(centre), c[1]);
         acc = V::acc_mul_add2(
@@ -415,11 +407,8 @@ unsafe fn cross_row_lanes<V: I16FilterLanes>(
         let corr = V::acc_round_shift_narrow(acc, 64, 7)
             .max(min_corr)
             .min(max_corr);
-        let cur = V::load_u16(&out[x..]);
-        cur.add_sat(corr)
-            .max(zero)
-            .min(max_val)
-            .store_u16(&mut out[x..]);
+        let cur = S::load_slice::<V>(&out[x..]);
+        S::store_clamped_slice(cur.add_sat(corr), zero, max_val, &mut out[x..]);
     }
     if whole < out.len() {
         let tail_rows = [
@@ -437,6 +426,8 @@ macro_rules! isa_alf_simd {
         pub(crate) mod $mod_name {
             use nc_common::BitDepth;
 
+            use crate::simd::SimdSample;
+
             use super::super::{VVC_ALF_BLOCK, VVC_ALF_TAPS};
             use super::{
                 chroma_row_lanes, clipped_block_row_lanes, clipped_row_lanes, cross_row_lanes,
@@ -444,17 +435,17 @@ macro_rules! isa_alf_simd {
             };
 
             #[target_feature(enable = $feature)]
-            pub(crate) unsafe fn clipped_block_row(
-                rows: &[[&[u16]; 7]; VVC_ALF_BLOCK],
+            pub(crate) unsafe fn clipped_block_row<S: SimdSample>(
+                rows: &[[&[S]; 7]; VVC_ALF_BLOCK],
                 coefficients: &[[i16; VVC_ALF_TAPS]],
                 limits: &[[i16; VVC_ALF_TAPS]],
                 shifts: &[u32; VVC_ALF_BLOCK],
-                out: &mut [&mut [u16]; VVC_ALF_BLOCK],
+                out: &mut [&mut [S]; VVC_ALF_BLOCK],
                 depth: BitDepth,
             ) {
                 // SAFETY: caller enables `$feature` and checked slice lengths.
                 unsafe {
-                    clipped_block_row_lanes::<$lanes>(
+                    clipped_block_row_lanes::<S, $lanes>(
                         rows,
                         coefficients,
                         limits,
@@ -466,17 +457,17 @@ macro_rules! isa_alf_simd {
             }
 
             #[target_feature(enable = $feature)]
-            pub(crate) unsafe fn clipped_row(
-                rows: &[&[u16]; 7],
+            pub(crate) unsafe fn clipped_row<S: SimdSample>(
+                rows: &[&[S]; 7],
                 coefficients: &[[i16; VVC_ALF_TAPS]],
                 limits: &[[i16; VVC_ALF_TAPS]],
                 shift: u32,
-                out: &mut [u16],
+                out: &mut [S],
                 depth: BitDepth,
             ) {
                 // SAFETY: caller enables `$feature` and checked slice lengths.
                 unsafe {
-                    clipped_row_lanes::<$lanes>(rows, coefficients, limits, shift, out, depth);
+                    clipped_row_lanes::<S, $lanes>(rows, coefficients, limits, shift, out, depth);
                 }
             }
 
@@ -495,30 +486,30 @@ macro_rules! isa_alf_simd {
             }
 
             #[target_feature(enable = $feature)]
-            pub(crate) unsafe fn chroma_row(
-                rows: &[&[u16]; 7],
+            pub(crate) unsafe fn chroma_row<S: SimdSample>(
+                rows: &[&[S]; 7],
                 coefficients: [i16; 6],
                 limits: [i16; 6],
                 shift: u32,
-                out: &mut [u16],
+                out: &mut [S],
                 depth: BitDepth,
             ) {
                 // SAFETY: caller enables `$feature` and checked slice lengths.
                 unsafe {
-                    chroma_row_lanes::<$lanes>(rows, coefficients, limits, shift, out, depth);
+                    chroma_row_lanes::<S, $lanes>(rows, coefficients, limits, shift, out, depth);
                 }
             }
 
             #[target_feature(enable = $feature)]
-            pub(crate) unsafe fn cross_row(
-                rows: &[&[u16]; 4],
+            pub(crate) unsafe fn cross_row<S: SimdSample>(
+                rows: &[&[S]; 4],
                 coefficients: [i16; 7],
-                out: &mut [u16],
+                out: &mut [S],
                 depth: BitDepth,
             ) {
                 // SAFETY: caller enables `$feature` and checked slice lengths.
                 unsafe {
-                    cross_row_lanes::<$lanes>(rows, coefficients, out, depth);
+                    cross_row_lanes::<S, $lanes>(rows, coefficients, out, depth);
                 }
             }
         }

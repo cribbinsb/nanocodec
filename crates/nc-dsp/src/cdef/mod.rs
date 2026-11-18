@@ -371,16 +371,26 @@ impl<T: Sample> CdefSource<T> {
             "CDEF source and plane sizes differ"
         );
         let end = end.min(self.height).max(self.end_row);
-        self.data.reserve_exact((end - self.end_row) * self.width);
-        for y in self.end_row..end {
-            self.data.extend_from_slice(plane.row(y));
+        let (start, rows) = (self.end_row, end - self.end_row);
+        if plane.stride() == self.width {
+            // Contiguous rows: one copy for the whole run.
+            let first = start * self.width;
+            self.data
+                .extend_from_slice(&plane.data()[first..first + rows * self.width]);
+        } else {
+            self.data.reserve_exact(rows * self.width);
+            for y in start..end {
+                self.data.extend_from_slice(plane.row(y));
+            }
         }
         self.end_row = end;
     }
 
     /// Forget the rows above plane row `row` (no later block reads them),
-    /// keeping the copied rows from `row` on. Uncopied rows before `row`
-    /// are skipped, so a gap between filtered bands needs no source copy.
+    /// keeping the copied rows from `row` on, slid to the start of the
+    /// buffer so band filtering reuses one compact, cache-resident line
+    /// buffer. Uncopied rows before `row` are skipped, so a gap between
+    /// filtered bands needs no source copy.
     pub fn drop_rows_before(&mut self, row: usize) {
         let first = self.first_row.max(row.min(self.height));
         let discarded = (first.min(self.end_row) - self.first_row) * self.width;
@@ -430,13 +440,9 @@ impl<T: Sample> CdefSource<T> {
     /// [`Self::fill_from`]).
     #[must_use]
     pub fn view(&self) -> nc_common::PlaneView<'_, T> {
-        nc_common::PlaneView::new(
-            &self.data,
-            self.width,
-            self.width,
-            self.filled_rows() - self.first_row,
-        )
-        .expect("whole rows of the plane's width")
+        let held_rows = self.filled_rows() - self.first_row;
+        nc_common::PlaneView::new(&self.data, self.width, self.width, held_rows)
+            .expect("whole rows of the plane's width")
     }
 
     /// Backing buffer (stride = width); plane sample (`x`, `y`) is at

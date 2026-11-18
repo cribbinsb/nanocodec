@@ -171,6 +171,9 @@ pub(crate) enum EstimateModels {
     Adapting,
     /// Price with the live models as they stand (cheaper).
     Frozen,
+    /// As `Frozen`, with coefficient levels priced by the fitted model
+    /// (`av2.coeff_rate_model`, `coeff::rate_model`) instead of the walk.
+    Modelled,
 }
 
 /// Frame-level choices of the block coder.
@@ -345,10 +348,34 @@ enum MotionSyntax {
 enum Output<'a, 'b> {
     /// Reconstruct its samples (prediction plus dequantized residual).
     Reconstruct(&'a mut PlaneViewMut<'b>),
+    /// Add exact reconstruction error to a trial's distortion. With no
+    /// coded residual, the prediction's error supplies the same value.
+    Measure(&'a mut PlaneViewMut<'b>, &'a mut u64),
     /// Leave the samples and add the change in squared error the levels buy
     /// over the prediction, estimated from the coefficients (Parseval,
     /// [`transform::coefficient_error_change`]; `av2.trial_distortion`).
     Estimate(&'a mut f64),
+}
+
+impl Output<'_, '_> {
+    fn without_residual(
+        self,
+        dsp: &Dsp,
+        block: BlockSize,
+        source: &PlaneView<'_>,
+        prediction: &PlaneView<'_>,
+        prediction_sse: Option<u32>,
+    ) {
+        match self {
+            Self::Reconstruct(reconstructed) => dsp.copy_plane(prediction, reconstructed),
+            Self::Measure(_, distortion) => {
+                let sse =
+                    prediction_sse.unwrap_or_else(|| dsp.variance(block, source, prediction).sse);
+                *distortion += u64::from(sse);
+            }
+            Self::Estimate(_) => {}
+        }
+    }
 }
 
 /// What the trellis prices one transform's levels with: the tile's writer
@@ -694,14 +721,15 @@ impl Quantizer {
             .as_ref()
             .map(|slot| *slot.state)
             .filter(|state| state.tx_type() == Some(tx_type));
+        let mut prediction_sse = None;
         let zero = match known {
             Some(state) => state == Forward::Zero(tx_type),
-            None => {
-                self.zero_test
-                    && tx_type == TxType::DctDct
-                    && qindex.ac != 0
-                    && self.settles_zero(tx, (qindex, rounding), &source, prediction)
+            None if self.zero_test && tx_type == TxType::DctDct && qindex.ac != 0 => {
+                let sse = self.dsp.variance(block, &source, prediction).sse;
+                prediction_sse = Some(sse);
+                self.settles_zero(tx, (qindex, rounding), (&source, prediction), sse)
             }
+            None => false,
         };
         let (state, coefficients) = match forward {
             Some(slot) => (Some(slot.state), slot.coefficients),
@@ -728,9 +756,7 @@ impl Quantizer {
         }
         if zero {
             levels.fill(0);
-            if let Output::Reconstruct(reconstructed) = output {
-                self.dsp.copy_plane(prediction, reconstructed);
-            }
+            output.without_residual(&self.dsp, block, &source, prediction, prediction_sse);
             return Ok(LevelStats::EMPTY);
         }
         let nonzero = transform::quantize(&self.dsp, tx, coefficients, (qindex, rounding), levels);
@@ -817,6 +843,10 @@ impl Quantizer {
             )
         };
         let stats = LevelStats::quantized(levels, tx, eob);
+        if stats.eob() == 0 {
+            output.without_residual(&self.dsp, block, &source, prediction, prediction_sse);
+            return Ok(stats);
+        }
         match output {
             Output::Reconstruct(reconstructed) => {
                 self.reconstruct(
@@ -827,7 +857,21 @@ impl Quantizer {
                     reconstructed,
                 )?;
             }
-            Output::Estimate(change) if stats.eob() != 0 => {
+            Output::Measure(reconstructed, distortion) => {
+                self.reconstruct(
+                    (plane, dequantizer),
+                    (tx, tx_type),
+                    (levels, stats),
+                    prediction,
+                    reconstructed,
+                )?;
+                *distortion += u64::from(
+                    self.dsp
+                        .variance(block, &source, &reconstructed.as_view())
+                        .sse,
+                );
+            }
+            Output::Estimate(change) => {
                 *change += match dequantizer {
                     Dequantizer::Plain => {
                         transform::estimated_error_change(tx, levels, qindex, coefficients)
@@ -838,7 +882,6 @@ impl Quantizer {
                     ),
                 };
             }
-            Output::Estimate(_) => {}
         }
         Ok(stats)
     }
@@ -913,12 +956,10 @@ impl Quantizer {
         &self,
         tx: TxSize,
         (qindex, rounding): (Qindices, transform::Rounding),
-        source: &PlaneView<'_>,
-        prediction: &PlaneView<'_>,
+        (source, prediction): (&PlaneView<'_>, &PlaneView<'_>),
+        sse: u32,
     ) -> bool {
         let side = tx.width();
-        let block = BlockSize::new(side, side).expect("square transform sizes are block sizes");
-        let sse = self.dsp.variance(block, source, prediction).sse;
         if transform::dct_quantizes_to_zero(tx, qindex, rounding, u64::from(sse)) {
             return true;
         }
@@ -971,7 +1012,7 @@ pub(crate) struct BlockCoder {
     compound: crate::prediction::CompoundScratch,
     /// The engine's exact luma prediction of the block it is about to code
     /// ([`Self::cache_luma`]), reused instead of predicting it again.
-    cached_luma: Option<CachedLuma>,
+    cached_luma: Option<(CachedLuma, u32)>,
     /// The reference rank the engine is deciding for, and the next inter
     /// block predicts from ([`Self::select_reference`]).
     reference: u8,
@@ -993,8 +1034,6 @@ pub(crate) struct BlockCoder {
     tx_reconstruction: Vec<u8>,
     /// Levels of one ranked intra candidate's transform.
     rank_levels: Vec<i32>,
-    /// Nonzero luma levels of the most recent inter coding (split gate).
-    last_luma_nonzero: usize,
     /// Reusable codings, so trials do not allocate ([`Self::take_coded`]).
     pool: Vec<Coded>,
     /// Test-only random syntax choices (`debug.random_decisions`).
@@ -1048,8 +1087,13 @@ impl BlockCoder {
             {
                 models.tcq();
             }
-            if options.estimates == EstimateModels::Frozen {
-                writer.freeze_estimates();
+            match options.estimates {
+                EstimateModels::Adapting => {}
+                EstimateModels::Frozen => writer.freeze_estimates(),
+                EstimateModels::Modelled => {
+                    writer.freeze_estimates();
+                    writer.model_coefficient_levels();
+                }
             }
         }
         // Strength indices and CCSO flags are chosen after reconstruction:
@@ -1092,7 +1136,6 @@ impl BlockCoder {
             edges: Av2IntraEdges::new(),
             tx_reconstruction: vec![0; MAX_PLANE_AREA],
             rank_levels: Vec::new(),
-            last_luma_nonzero: 0,
             pool: Vec::new(),
             random,
             cdef_indices: StrengthIndices::new(width, height),
@@ -1427,7 +1470,6 @@ impl BlockCoder {
             Layout::lossy(block_log2, false)
         };
         let lossless = self.lossless();
-        let mut coded = self.take_coded(layout);
         self.writer.start_estimate();
         let no_neighbours = ModeContext {
             above: None,
@@ -1453,7 +1495,7 @@ impl BlockCoder {
             let tx = layout.tx(plane);
             let side = tx.width();
             let area = side * side;
-            for (i, position) in layout.positions(plane, (x, y)).enumerate() {
+            for position in layout.positions(plane, (x, y)) {
                 let source_plane = source.plane(index);
                 let dc = nc_dsp::intra_prediction::dc_value(
                     source_plane,
@@ -1466,7 +1508,12 @@ impl BlockCoder {
                 let kind = self.coding_kind(TxType::DctDct);
                 let predicted = &mut self.tx_prediction[..area];
                 predicted.fill(dc);
-                let levels = &mut coded.levels[plane][i * tx.coded_len()..(i + 1) * tx.coded_len()];
+                // The planner only prices this transform's levels. Reuse
+                // the intra trial scratch without taking a whole block coding.
+                if self.rank_levels.len() < tx.coded_len() {
+                    self.rank_levels.resize(tx.coded_len(), 0);
+                }
+                let levels = &mut self.rank_levels[..tx.coded_len()];
                 let reconstructed = &mut self.tx_reconstruction[..area];
                 let mut view = square_view_mut(reconstructed);
                 result = self
@@ -1475,7 +1522,7 @@ impl BlockCoder {
                         (source, index, position),
                         (tx, TxType::DctDct),
                         &square_view(predicted),
-                        (levels, Output::Reconstruct(&mut view)),
+                        (levels, Output::Measure(&mut view, &mut distortion)),
                         None,
                         None,
                     )
@@ -1503,18 +1550,9 @@ impl BlockCoder {
                 if result.is_err() {
                     break;
                 }
-                distortion += sse(
-                    &self.quantizer.dsp,
-                    source,
-                    index,
-                    position,
-                    side,
-                    reconstructed,
-                );
             }
         }
         let bits = self.writer.finish_estimate();
-        self.recycle(coded);
         result?;
         Ok(distortion as f64 + self.lambda() * bits)
     }
@@ -2455,6 +2493,7 @@ impl BlockCoder {
             (x, y),
             size,
             &self.skip_prediction,
+            None,
         ))
     }
 
@@ -2513,9 +2552,10 @@ impl BlockCoder {
         let first = layouts[0].expect("at least one layout");
         let chroma = self.code_inter_chroma(first, (x, y), (source, plane_sse))?;
         let mut best: Option<(f64, Coded, Layout)> = None;
+        let mut try_split = layouts[1].is_some() && !luma_skipped;
         for (i, layout) in layouts.into_iter().enumerate() {
             let Some(layout) = layout else { continue };
-            if i > 0 && (luma_skipped || self.split_pointless()) {
+            if i > 0 && !try_split {
                 break;
             }
             let mut coded = self.take_coded(layout);
@@ -2524,15 +2564,18 @@ impl BlockCoder {
             } else {
                 self.code_inter(&mut coded, layout, (x, y), (source, luma_sse), &chroma)?;
             }
-            // Counted in u32 lanes: a usize count vectorizes two lanes wide
-            // on aarch64, which perf showed hot on the Jetson. Most P luma
-            // is all zero, which its end-of-block stats say without a count.
-            let nonzero: u32 = if coded.plane_is_zero(LUMA) {
-                0
-            } else {
-                coded.levels[LUMA].iter().map(|&l| u32::from(l != 0)).sum()
-            };
-            self.last_luma_nonzero = nonzero as usize;
+            // Only the split gate reads the count. A single-layout block
+            // and the last trial have no later split decision. The
+            // av2.inter_split_min_nonzero threshold and tie rule are unchanged.
+            let min_nonzero = self.options.inter_split_min_nonzero;
+            if i == 0 && try_split && self.random.is_none() && min_nonzero != 0 {
+                try_split = !coded.plane_is_zero(LUMA)
+                    && coded.levels[LUMA]
+                        .iter()
+                        .map(|&l| u32::from(l != 0))
+                        .sum::<u32>() as usize
+                        >= min_nonzero;
+            }
             if coded.is_zero() && !keep_zero {
                 self.recycle(coded);
                 continue;
@@ -2543,10 +2586,7 @@ impl BlockCoder {
         // coding needs the chroma samples and forward transforms.
         let mut chroma = chroma;
         if let Some((_, coded, _)) = &mut best {
-            for plane in CHROMA {
-                self.reconstruct_estimated(&mut chroma, first, plane, (x, y))?;
-            }
-            copy_chroma_reconstruction(coded, &chroma);
+            transfer_chroma_reconstruction(coded, &mut chroma);
         }
         self.recycle(chroma);
         // A skipped luma has no transform whose type could change.
@@ -2672,14 +2712,6 @@ impl BlockCoder {
         !self.trellises(plane, Quantisation::Final)
             || coded.plane_is_zero(plane)
             || self.searches_tcq(plane)
-    }
-
-    /// Whether the split luma layout is not worth a trial after the unsplit
-    /// one: its luma residual was (nearly) empty, so smaller transforms would
-    /// mostly add syntax. Skips a quantization, reconstruction and trial
-    /// write per inter block; see `av2.inter_split_min_nonzero`.
-    fn split_pointless(&self) -> bool {
-        self.random.is_none() && self.last_luma_nonzero < self.options.inter_split_min_nonzero
     }
 
     /// Whether the current inter prediction's luma at `(x, y)` (prediction
@@ -3384,7 +3416,12 @@ impl BlockCoder {
             filter,
             reference: self.reference,
         };
-        if self.cached_luma.take() == Some(key) {
+        let known_luma_sse = self
+            .cached_luma
+            .take()
+            .filter(|(cached, _)| *cached == key)
+            .map(|(_, sse)| u64::from(sse));
+        if known_luma_sse.is_some() {
             // The cache becomes the luma prediction (no copy); the old
             // prediction buffer takes the next block's cache.
             std::mem::swap(&mut self.prediction[LUMA], &mut self.cached_luma_samples);
@@ -3400,8 +3437,14 @@ impl BlockCoder {
         } else {
             self.predict(reference, filter, (x, y), size, mv, &PlaneIndex::ALL)?;
         }
-        let plane_sse =
-            prediction_distortion(&self.quantizer.dsp, source, (x, y), size, &self.prediction);
+        let plane_sse = prediction_distortion(
+            &self.quantizer.dsp,
+            source,
+            (x, y),
+            size,
+            &self.prediction,
+            known_luma_sse,
+        );
         Ok((filter, plane_sse))
     }
 
@@ -3418,16 +3461,20 @@ impl BlockCoder {
         mv: (i32, i32),
         filter: InterpFilter,
         samples: &[u8],
+        sse: u32,
     ) {
         self.cached_luma_samples.clear();
         self.cached_luma_samples.extend_from_slice(samples);
-        self.cached_luma = Some(CachedLuma {
-            position: (x, y),
-            size,
-            mv,
-            filter,
-            reference: self.reference,
-        });
+        self.cached_luma = Some((
+            CachedLuma {
+                position: (x, y),
+                size,
+                mv,
+                filter,
+                reference: self.reference,
+            },
+            sse,
+        ));
     }
 
     /// The switchable filter of an inter block coding its filter in
@@ -3436,6 +3483,10 @@ impl BlockCoder {
     /// every plane predicts alike with every filter, so it takes the
     /// cheapest symbol; one that is whole-sample in luma only keeps regular
     /// (only its chroma could differ: not worth a search).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the candidate search uses the same source window and prediction scratch"
+    )]
     fn choose_filter(
         &mut self,
         reference: &Picture,
@@ -3453,8 +3504,14 @@ impl BlockCoder {
             mv,
             &PlaneIndex::ALL,
         )?;
-        let mut plane_sse =
-            prediction_distortion(&self.quantizer.dsp, source, (x, y), size, &self.prediction);
+        let mut plane_sse = prediction_distortion(
+            &self.quantizer.dsp,
+            source,
+            (x, y),
+            size,
+            &self.prediction,
+            None,
+        );
         let bits = self.filter_symbols.bits(&self.writer, context);
         let symbol_cost = |filter: InterpFilter| {
             let symbol = InterpFilter::SWITCHABLE
@@ -3537,9 +3594,14 @@ impl BlockCoder {
         let (filter, luma_sse, _) = best;
         if filter != InterpFilter::Regular {
             self.predict(reference, filter, (x, y), size, mv, &CHROMA_PLANES)?;
-            plane_sse =
-                prediction_distortion(&self.quantizer.dsp, source, (x, y), size, &self.prediction);
-            debug_assert_eq!(plane_sse[LUMA], luma_sse);
+            plane_sse = prediction_distortion(
+                &self.quantizer.dsp,
+                source,
+                (x, y),
+                size,
+                &self.prediction,
+                Some(luma_sse),
+            );
         }
         Ok((filter, plane_sse))
     }
@@ -4035,8 +4097,14 @@ fn prediction_distortion(
     (x, y): (usize, usize),
     size: usize,
     prediction: &[Vec<u8>; 3],
+    known_luma_sse: Option<u64>,
 ) -> [u64; 3] {
     std::array::from_fn(|plane| {
+        if plane == LUMA
+            && let Some(sse) = known_luma_sse
+        {
+            return sse;
+        }
         sse(
             dsp,
             source,
@@ -4057,13 +4125,16 @@ fn copy_chroma_levels(coded: &mut Coded, chroma: &Coded) {
     }
 }
 
-/// Copy the chroma samples and forward transforms of `chroma` into
-/// `coded`, which [`copy_chroma_levels`] gave its levels: the rest of a
-/// coding that is kept.
-fn copy_chroma_reconstruction(coded: &mut Coded, chroma: &Coded) {
+/// Give the chosen layout its chroma scratch. If the trial only estimated
+/// distortion, final coding reconstructs the chroma after the skip decision.
+fn transfer_chroma_reconstruction(coded: &mut Coded, chroma: &mut Coded) {
     for plane in CHROMA {
-        coded.pixels[plane].clone_from(&chroma.pixels[plane]);
-        coded.forward[plane].clone_from(&chroma.forward[plane]);
-        coded.coefficients[plane].clone_from(&chroma.coefficients[plane]);
+        std::mem::swap(&mut coded.pixels[plane], &mut chroma.pixels[plane]);
+        std::mem::swap(&mut coded.forward[plane], &mut chroma.forward[plane]);
+        std::mem::swap(
+            &mut coded.coefficients[plane],
+            &mut chroma.coefficients[plane],
+        );
+        coded.estimated[plane] = chroma.estimated[plane].take();
     }
 }

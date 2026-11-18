@@ -145,7 +145,7 @@ const ACTIVE_BITS: i32 = 8;
 /// of the partition the window fills with zero bits; whether a read needed
 /// one of them (the specification's failure) is reported once, by
 /// [`BoolReader::finish`], so that reads need no error path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BoolReader<'a> {
     data: &'a [u8],
     /// The next unread byte of `data`.
@@ -185,6 +185,7 @@ impl<'a> BoolReader<'a> {
     /// The reader with its window topped up with whole bytes (zero bytes
     /// past the end). By value, so that a reader copied into locals for a
     /// hot loop (`coeff::read`) stays in registers across this rare call.
+    #[cold]
     #[inline(never)]
     #[must_use]
     fn refilled(mut self) -> Self {
@@ -218,16 +219,30 @@ impl<'a> BoolReader<'a> {
     #[inline]
     pub fn read(&mut self, probability: u8) -> bool {
         if self.buffered < 0 {
-            *self = self.clone().refilled();
+            *self = self.refilled();
         }
         let split = 1 + (((self.range - 1) * u32::from(probability)) >> 8);
+        self.decode_split(split)
+    }
+
+    /// Decode an equiprobable (`probability == 128`) bit without the
+    /// probability multiply.
+    #[inline]
+    pub fn read_bit(&mut self) -> bool {
+        if self.buffered < 0 {
+            *self = self.refilled();
+        }
+        self.decode_split((self.range + 1) >> 1)
+    }
+
+    #[inline]
+    fn decode_split(&mut self, split: u32) -> bool {
         let big_split = u64::from(split) << (WINDOW_BITS - ACTIVE_BITS);
         let bit = self.value >= big_split;
-        let (range, value) = if bit {
-            (self.range - split, self.value - big_split)
-        } else {
-            (split, self.value)
-        };
+        // Independent integer selects lower to branchless cmov/csel/select
+        // instead of mispredicting branches on unpredictable bits.
+        let range = if bit { self.range - split } else { split };
+        let value = self.value - if bit { big_split } else { 0 };
         // `range` is 1..=255: shift its top bit to bit 7.
         let shift = range.leading_zeros() - (u32::BITS - ACTIVE_BITS as u32);
         self.range = range << shift;
@@ -239,7 +254,7 @@ impl<'a> BoolReader<'a> {
     /// Decode an unsigned `bits`-bit literal, most significant bit first.
     #[inline]
     pub fn read_literal(&mut self, bits: u32) -> u32 {
-        (0..bits).fold(0, |value, _| (value << 1) | u32::from(self.read(128)))
+        (0..bits).fold(0, |value, _| (value << 1) | u32::from(self.read_bit()))
     }
 
     /// Bits consumed so far (analysis: differences give what a block cost).

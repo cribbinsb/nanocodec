@@ -25,7 +25,7 @@ import { RESOLUTIONS } from './view-settings.js';
  * Node, 60 frames of mot17-mall-walk at 640x360 and at 1280x720, CBR at 300 kbps
  * per 640x360 area, two rounds each (2026-11-14; the machine was loaded, so the
  * ratios are good to about 15%). Spatially layered (SVC) streams are not estimated.
- * A preset without a cost (AV2 Fast, not measured yet) is never offered as lighter.
+ * A preset without a cost is never offered as lighter.
  * Slow's cost is the native Jetson cycle ratio (docs/handoff/presets.md "Slow
  * presets"; not measured in WASM yet), so a view coded at Slow that falls behind
  * is offered the rungs below it. AV1 Veryfast's cost is Faster's before base-only effort
@@ -36,6 +36,10 @@ import { RESOLUTIONS } from './view-settings.js';
  * (callgrind, chart clips, CBR 600 kbit/s; not measured in WASM yet). VP9 Fast with base-only
  * effort (2026-11-17) is the earlier 0.7 times its x86 instruction ratio, 1.038 (same method);
  * HEVC Fast with base-only effort (2026-11-17) the earlier 0.61 times 1.118 (same method).
+ * AV2 Fast is the native Default / Fast ratio (Jetson 1.45-1.58x, docs/handoff/av2.md "AV2
+ * Fast (`presets/av2/fast.toml`)", 0.66) times its base-only x86 instruction ratio, 1.047; AV2 Faster (2026-11-18) is
+ * that 0.69 times its x86 instruction ratio to Fast, 0.786 (callgrind, chart clips, CBR
+ * 600 kbit/s; neither measured in WASM yet).
  */
 export const PRESET_COST = {
   h264: { slow: 1.7, medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
@@ -43,7 +47,7 @@ export const PRESET_COST = {
   av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.49, veryfast: 0.38 },
   vvc: { slow: 1.22, medium: 1, fast: 0.55 },
   vp9: { slow: 1.16, medium: 1, fast: 0.73, faster: 0.5, veryfast: 0.45 },
-  av2: { slow: 1.37, medium: 1 },
+  av2: { slow: 1.37, medium: 1, fast: 0.69, faster: 0.54 },
 };
 /**
  * Encode time scales with picture area to this power. Less than linear: the
