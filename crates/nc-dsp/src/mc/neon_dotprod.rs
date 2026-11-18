@@ -1,45 +1,44 @@
-//! Optional 8-tap HEVC/VVC luma horizontal filtering with signed NEON dot
-//! products (any [`SeparableTaps`] 8-tap table: HEVC `fL`, VVC `fL` and
-//! affine), and the dot-product row filter ([`DotFilter`]) the AV1 kernels
-//! (`av1_neon`) share.
-//!
-//! AV1 regular taps are halved; HEVC and VVC taps are used directly. All
-//! fit signed bytes and sum to 64.
-//! Flipping the source high bit makes bytes signed; adding 8192 to the dot
-//! product restores the unsigned sum exactly. The existing two-stage AV1
-//! rounding and widening vertical pass are retained. HEVC uses unrounded
-//! horizontal sums and its six/twelve-bit final shifts. Native five-pair
-//! 300-frame tests save 2.04%/1.51% HEVC CPU on bodycam/crowd with identical
-//! streams; AV1 has no measured regression. No load extends beyond
-//! the documented `w + 7` reference window, including width 4 and final rows.
-//!
-//! Installed only after runtime dot-product detection. Paired Orin timings:
-//! AV1 CPU -0.79% bodycam / -0.44% crowd, with identical streams (five runs).
+//! Signed-byte NEON dot-product row helpers for the shared AV1/HEVC/VVC
+//! eight-tap MC family (`av1_neon`). Coefficients sum to 64; flipping pixel high bits
+//! with 128 is undone by the 8192 accumulator bias. Exact 11/15-byte
+//! windows preserve the final-row contract without dav1d's padded reads.
+//! The by-element SDOT structure follows dav1d 1.5.4 `mc_dotprod.S`, BSD-2;
+//! see `THIRD_PARTY.md` and `docs/licenses/dav1d/COPYING`.
 
+use super::{ConvolveFn, SeparableTaps};
 use core::arch::aarch64::{
-    int8x16_t, int16x8_t, int32x4_t, uint8x16_t, vaddq_s16, vcombine_s16, vcombine_u8, vdup_n_s16,
-    vdupq_lane_s32, vdupq_n_s16, vdupq_n_s32, vdupq_n_u8, veorq_u8, vget_high_s16, vget_lane_u32,
-    vget_low_s16, vld1_s8, vld1_u8, vld1q_u8, vmlal_n_s16, vmovn_s32, vqmovun_s16, vqtbl1q_s8,
-    vreinterpret_s32_s8, vreinterpret_u32_u8, vreinterpretq_s8_s32, vreinterpretq_s8_u8,
-    vrshrn_n_s32, vshrq_n_s16, vst1_u8,
+    int8x8_t, int8x16_t, int16x8_t, int32x4_t, uint8x16_t, vcombine_u8, vdupq_n_s32, vdupq_n_u8,
+    veorq_u8, vext_u8, vld1_u8, vld1q_s16, vld1q_u8, vmovn_s16, vqtbl1q_s8, vreinterpretq_s8_u8,
+    vreinterpretq_s16_s32, vshrq_n_s16, vuzp1q_s16,
 };
 
-use super::{ConvolveFn, SeparableTaps, TAP_CENTRE, generic};
-use crate::simd::neon::{I16x4, I16x8};
+/// Unsigned-to-signed pixel compensation: coefficients sum to 64.
+pub(super) const DOT_PIXEL_BIAS: i32 = 128 * 64;
 
-/// Rust's signed-dot intrinsic postdates our Rust1.90 minimum. Keep the
-/// single instruction here until that intrinsic is available at the MSRV.
+/// Contiguous four-pixel dot groups, shared with the H-only schedule.
+pub(super) const GATHER: [[u8; 16]; 3] = [
+    [0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4, 5, 3, 4, 5, 6],
+    [4, 5, 6, 7, 5, 6, 7, 8, 6, 7, 8, 9, 7, 8, 9, 10],
+    [8, 9, 10, 11, 9, 10, 11, 12, 10, 11, 12, 13, 11, 12, 13, 14],
+];
+
+/// By-element SDOT, retaining dav1d's single packed coefficient register.
+/// The intrinsic postdates our Rust 1.90 MSRV, so isolate its register-only
+/// instruction here until the minimum compiler supports the intrinsic.
 #[inline]
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn dot(mut sum: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
-    // SAFETY: dotprod is enabled; register-only signed byte products accumulate
-    // into four i32 lanes. No memory, stack or condition flags are accessed.
+pub(super) unsafe fn dot_lane<const LANE: usize>(
+    mut sum: int32x4_t,
+    a: int8x16_t,
+    b: core::arch::aarch64::int8x8_t,
+) -> int32x4_t {
+    // SAFETY: dotprod is enabled; the literal lane is zero or one. This
+    // register-only instruction has no memory, stack or flag effects.
     unsafe {
         core::arch::asm!(
-            "sdot {sum:v}.4s, {a:v}.16b, {b:v}.16b",
-            sum = inout(vreg) sum,
-            a = in(vreg) a,
-            b = in(vreg) b,
+            "sdot {sum:v}.4s, {a:v}.16b, {b:v}.4b[{lane}]",
+            sum = inout(vreg) sum, a = in(vreg) a,
+            b = in(vreg_low16) b, lane = const LANE,
             options(pure, nomem, nostack, preserves_flags),
         );
     }
@@ -50,18 +49,17 @@ unsafe fn dot(mut sum: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
 /// eight-tap luma coefficients fit signed bytes and sum to 64).
 pub(crate) fn separable_fns<T: SeparableTaps<8>>() -> [ConvolveFn; 5] {
     [
-        predict::<T, 4>,
-        predict::<T, 8>,
-        predict::<T, 16>,
-        predict::<T, 32>,
-        predict::<T, 64>,
+        super::av1_neon::separable::<T, 4>,
+        super::av1_neon::separable::<T, 8>,
+        super::av1_neon::separable::<T, 16>,
+        super::av1_neon::separable::<T, 32>,
+        super::av1_neon::separable::<T, 64>,
     ]
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DotFilter {
-    lo: int8x16_t,
-    hi: int8x16_t,
+    coefficients: int8x8_t,
     gather0: uint8x16_t,
     gather4: uint8x16_t,
     gather8: uint8x16_t,
@@ -69,181 +67,139 @@ pub(super) struct DotFilter {
 
 impl DotFilter {
     #[target_feature(enable = "neon,dotprod")]
-    pub(super) unsafe fn new<const W: usize>(taps: &[i16; 8]) -> Self {
-        let bytes = taps.map(|tap| tap as i8);
-        // SAFETY: exactly eight coefficient bytes are readable.
-        let coefficients = vreinterpret_s32_s8(unsafe { vld1_s8(bytes.as_ptr()) });
-        let gather0 = [0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4, 5, 3, 4, 5, 6];
-        // Two overlapping eight-byte loads cover exactly 11 or 15 bytes.
-        // Width 4 duplicates source 3..7; wider blocks duplicate source 7.
-        let gather4 = if W == 4 {
-            [4, 5, 6, 7, 5, 6, 7, 13, 6, 7, 13, 14, 7, 13, 14, 15]
-        } else {
-            [4, 5, 6, 7, 5, 6, 7, 9, 6, 7, 9, 10, 7, 9, 10, 11]
-        };
-        let gather8 = [
-            9, 10, 11, 12, 10, 11, 12, 13, 11, 12, 13, 14, 12, 13, 14, 15,
-        ];
-        // SAFETY: each shuffle mask has exactly sixteen initialized bytes.
-        let (gather0, gather4, gather8) = unsafe {
-            (
-                vld1q_u8(gather0.as_ptr()),
-                vld1q_u8(gather4.as_ptr()),
-                vld1q_u8(gather8.as_ptr()),
-            )
-        };
-        Self {
-            lo: vreinterpretq_s8_s32(vdupq_lane_s32::<0>(coefficients)),
-            hi: vreinterpretq_s8_s32(vdupq_lane_s32::<1>(coefficients)),
-            gather0,
-            gather4,
-            gather8,
+    pub(super) unsafe fn new(taps: &[i16; 8]) -> Self {
+        // SAFETY: the table contains eight coefficients and each mask sixteen bytes.
+        unsafe {
+            Self {
+                coefficients: vmovn_s16(vld1q_s16(taps.as_ptr())),
+                gather0: vld1q_u8(GATHER[0].as_ptr()),
+                gather4: vld1q_u8(GATHER[1].as_ptr()),
+                gather8: vld1q_u8(GATHER[2].as_ptr()),
+            }
         }
     }
 
-    /// First-stage AV1 `(unsigned halved-tap sum +2)>>2`, or the unrounded
-    /// HEVC sum. HEVC positive coefficient sums are at most 88, so even
-    /// the largest 8-bit result (22440) fits signed 16-bit lanes without saturation.
+    /// Only the final allocation row needs exact 11/15-byte loads. Other
+    /// rows have a complete stride after them, covering unused vector lanes.
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
-    pub(super) unsafe fn row<const W: usize, const AV1: bool>(self, row: &[u8]) -> int16x8_t {
-        let tail = if W == 4 { 3 } else { 7 };
-        let row = &row[..tail + 8];
-        // SAFETY: both eight-byte loads lie in the checked 11/15-byte window.
-        let packed = unsafe { vcombine_u8(vld1_u8(row.as_ptr()), vld1_u8(row.as_ptr().add(tail))) };
-        let signed = vreinterpretq_s8_u8(veorq_u8(packed, vdupq_n_u8(128)));
-        let first = vqtbl1q_s8(signed, self.gather0);
-        let middle = vqtbl1q_s8(signed, self.gather4);
-        let initial = vdupq_n_s32(128 * 64);
-        // SAFETY: this function enables dotprod, and all inputs are vector registers.
-        let lo = unsafe { dot(dot(initial, first, self.lo), middle, self.hi) };
-        let low = if AV1 {
-            vrshrn_n_s32::<2>(lo)
-        } else {
-            vmovn_s32(lo)
-        };
-        if W == 4 {
-            vcombine_s16(low, vdup_n_s16(0))
-        } else {
-            let last = vqtbl1q_s8(signed, self.gather8);
-            // SAFETY: this function enables dotprod, as for the lower outputs.
-            let hi = unsafe { dot(dot(initial, middle, self.lo), last, self.hi) };
-            vcombine_s16(
-                low,
-                if AV1 {
-                    vrshrn_n_s32::<2>(hi)
+    unsafe fn load<const W: usize, const PADDED: bool>(row: *const u8) -> uint8x16_t {
+        // SAFETY: PADDED promises sixteen readable bytes. Otherwise the
+        // caller supplies exactly W+7 bytes (W=4 or 8); overlapping D loads
+        // form continuous bytes 0..10/14, with only unused tail lanes rotated.
+        unsafe {
+            if PADDED {
+                vld1q_u8(row)
+            } else {
+                let tail = vld1_u8(row.add(if W == 4 { 3 } else { 7 }));
+                let upper = if W == 4 {
+                    vext_u8::<5>(tail, tail)
                 } else {
-                    vmovn_s32(hi)
-                },
+                    vext_u8::<1>(tail, tail)
+                };
+                vcombine_u8(vld1_u8(row), upper)
+            }
+        }
+    }
+
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn sum(self, a: int8x16_t, b: int8x16_t, av1: bool) -> int32x4_t {
+        // SAFETY: dotprod is enabled; coefficients sum to 64. Folding the
+        // AV1 +2 bias permits one word-level nonrounding shift after UZP.
+        unsafe {
+            dot_lane::<1>(
+                dot_lane::<0>(
+                    vdupq_n_s32(DOT_PIXEL_BIAS + if av1 { 2 } else { 0 }),
+                    a,
+                    self.coefficients,
+                ),
+                b,
+                self.coefficients,
             )
         }
     }
-}
 
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn store<const W: usize>(value: int16x8_t, dst: &mut [u8]) {
-    let bytes = vqmovun_s16(value);
-    if W == 4 {
-        let word = vget_lane_u32::<0>(vreinterpret_u32_u8(bytes));
-        dst[..4].copy_from_slice(&word.to_ne_bytes());
-    } else {
-        let dst = &mut dst[..8];
-        // SAFETY: the checked destination has eight writable bytes.
-        unsafe { vst1_u8(dst.as_mut_ptr(), bytes) };
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn words<const AV1: bool>(a: int32x4_t, b: int32x4_t) -> int16x8_t {
+        let words = vuzp1q_s16(vreinterpretq_s16_s32(a), vreinterpretq_s16_s32(b));
+        if AV1 { vshrq_n_s16::<2>(words) } else { words }
     }
-}
 
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn predict<T: SeparableTaps<8>, const W: usize>(
-    src: &[u8],
-    ss: usize,
-    dst: &mut [u8],
-    ds: usize,
-    h: usize,
-    fx: usize,
-    fy: usize,
-) {
-    if fx == 0 {
-        // SAFETY: NEON is enabled, and the caller supplies the module contract.
+    /// One four/eight-output horizontal row for the rolling HV window.
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    pub(super) unsafe fn row<const W: usize, const AV1: bool, const PADDED: bool>(
+        self,
+        row: *const u8,
+    ) -> int16x8_t {
+        // SAFETY: the parent checks the complete source window. PADDED is
+        // used only before its final row, or with a trimmed six-tap window.
         unsafe {
-            if W == 4 {
-                generic::hevc::<I16x4, 8>(
-                    src,
-                    ss,
-                    dst,
-                    ds,
-                    W,
-                    h,
-                    &T::TABLE[fx],
-                    &T::TABLE[fy],
-                    (fx, fy),
-                );
+            let a = vreinterpretq_s8_u8(veorq_u8(Self::load::<W, PADDED>(row), vdupq_n_u8(128)));
+            let first = vqtbl1q_s8(a, self.gather0);
+            let middle = vqtbl1q_s8(a, self.gather4);
+            let lo = self.sum(first, middle, AV1);
+            let hi = if W == 4 {
+                lo
             } else {
-                generic::hevc::<I16x8, 8>(
-                    src,
-                    ss,
-                    dst,
-                    ds,
-                    W,
-                    h,
-                    &T::TABLE[fx],
-                    &T::TABLE[fy],
-                    (fx, fy),
-                );
-            }
+                self.sum(middle, vqtbl1q_s8(a, self.gather8), AV1)
+            };
+            Self::words::<AV1>(lo, hi)
         }
-        return;
     }
-    // SAFETY: dotprod is enabled and the HEVC/VVC taps fit signed bytes.
-    let filter = unsafe { DotFilter::new::<W>(&T::TABLE[fx]) };
-    let step = if W == 4 { 4 } else { 8 };
-    if fy == 0 {
-        for y in 0..h {
-            for x in (0..W).step_by(step) {
-                // SAFETY: the validated source includes the full 8-tap window.
-                let first = unsafe { filter.row::<W, false>(&src[(y + TAP_CENTRE) * ss + x..]) };
-                let out = vshrq_n_s16::<6>(vaddq_s16(first, vdupq_n_s16(32)));
-                // SAFETY: four/eight pixels fit this destination row.
-                unsafe { store::<W>(out, &mut dst[y * ds + x..]) };
+    /// Sixteen outputs share five shuffles; exact tails use two narrow rows.
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn pair<const AV1: bool, const PADDED: bool>(self, row: *const u8) -> [int16x8_t; 2] {
+        // SAFETY: either two exact 15-byte windows in 23 readable bytes, or
+        // the caller promises a following stride covering unused Q lanes.
+        unsafe {
+            if !PADDED {
+                return [
+                    self.row::<8, AV1, false>(row),
+                    self.row::<8, AV1, false>(row.add(8)),
+                ];
             }
+            let sign = vdupq_n_u8(128);
+            let a = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(row), sign));
+            let b = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(row.add(12)), sign));
+            let first = vqtbl1q_s8(a, self.gather0);
+            let middle = vqtbl1q_s8(a, self.gather4);
+            let last = vqtbl1q_s8(a, self.gather8);
+            let next = vqtbl1q_s8(b, self.gather0);
+            let end = vqtbl1q_s8(b, self.gather4);
+            [
+                Self::words::<AV1>(self.sum(first, middle, AV1), self.sum(middle, last, AV1)),
+                Self::words::<AV1>(self.sum(last, next, AV1), self.sum(next, end, AV1)),
+            ]
         }
-        return;
     }
-    // SAFETY: HEVC/VVC use their complete unchanged eight-tap vertical filter.
-    unsafe { vertical_2d::<W, 8>(src, ss, dst, ds, h, filter, &T::TABLE[fy]) };
-}
 
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn vertical_2d<const W: usize, const N: usize>(
-    src: &[u8],
-    ss: usize,
-    dst: &mut [u8],
-    ds: usize,
-    h: usize,
-    filter: DotFilter,
-    vertical: &[i16; N],
-) {
-    let step = if W == 4 { 4 } else { 8 };
-    for x in (0..W).step_by(step) {
-        let mut window = [vdupq_n_s16(0); N];
-        for (t, row) in window.iter_mut().enumerate().take(N - 1) {
-            // SAFETY: the prologue is inside the validated source window.
-            *row = unsafe { filter.row::<W, false>(&src[t * ss + x..]) };
-        }
-        for y in 0..h {
-            // SAFETY: the trimmed/full window contains the final filter row.
-            window[N - 1] = unsafe { filter.row::<W, false>(&src[(y + N - 1) * ss + x..]) };
-            let (mut lo, mut hi) = (vdupq_n_s32(0), vdupq_n_s32(0));
-            for (&row, &tap) in window.iter().zip(vertical) {
-                lo = vmlal_n_s16(lo, vget_low_s16(row), tap);
-                if W != 4 {
-                    hi = vmlal_n_s16(hi, vget_high_s16(row), tap);
-                }
+    /// One or two vectors of horizontal intermediates for an HV strip.
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    pub(super) unsafe fn rows<
+        const W: usize,
+        const G: usize,
+        const AV1: bool,
+        const PADDED: bool,
+    >(
+        self,
+        row: *const u8,
+    ) -> [int16x8_t; G] {
+        assert!(G == 1 || G == 2);
+        // SAFETY: the parent validates W+7 samples and the tail policy.
+        unsafe {
+            if G == 2 {
+                let pair = self.pair::<AV1, PADDED>(row);
+                let mut result = [pair[0]; G];
+                result[1] = pair[1];
+                result
+            } else {
+                [self.row::<W, AV1, PADDED>(row); G]
             }
-            let out = vcombine_s16(vrshrn_n_s32::<12>(lo), vrshrn_n_s32::<12>(hi));
-            // SAFETY: four/eight pixels fit this destination row.
-            unsafe { store::<W>(out, &mut dst[y * ds + x..]) };
-            window.copy_within(1.., 0);
         }
     }
 }
@@ -291,7 +247,7 @@ mod tests {
             ),
         ] {
             for (index, width) in [4, 8, 16, 32, 64].into_iter().enumerate() {
-                for height in [4, 8, 16, 64] {
+                for height in [1, 2, 3, 4, 8, 16, 64] {
                     let ss = width + 12;
                     let source_len = (height + 6) * ss + width + 7;
                     let source: Vec<u8> = (0..=source_len)
@@ -302,6 +258,76 @@ mod tests {
                     for fx in 0..phases {
                         for fy in 0..phases {
                             let mut expected = vec![0xa5; length + 2];
+                            let mut actual = expected.clone();
+                            // SAFETY: feature detection above, exact input/output windows,
+                            // supported sizes and every valid phase; guard bytes excluded.
+                            unsafe {
+                                (reference[index])(
+                                    &source[1..],
+                                    ss,
+                                    &mut expected[1..=length],
+                                    ds,
+                                    height,
+                                    fx,
+                                    fy,
+                                );
+                                (candidate[index])(
+                                    &source[1..],
+                                    ss,
+                                    &mut actual[1..=length],
+                                    ds,
+                                    height,
+                                    fx,
+                                    fy,
+                                );
+                            }
+                            assert_eq!(actual, expected, "{width}x{height} phase({fx},{fy})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn compound_phases_match_scalar_with_minimal_unaligned_windows() {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            return;
+        }
+        let scalar = super::super::scalar::mc_fns();
+        for (reference, candidate, phases) in [
+            (
+                scalar.compound.prep[0],
+                super::super::av1_neon::prep_fns::<super::super::Regular>(),
+                16,
+            ),
+            (
+                scalar.compound.prep[1],
+                super::super::av1_neon::prep_fns::<super::super::Smooth>(),
+                16,
+            ),
+            (
+                scalar.compound.prep[2],
+                super::super::av1_neon::prep_fns::<super::super::Sharp>(),
+                16,
+            ),
+            (
+                scalar.compound.hevc_prep[0],
+                super::super::av1_neon::separable_prep_fns::<super::super::HevcLumaTaps>(),
+                4,
+            ),
+        ] {
+            for (index, width) in [4, 8, 16, 32, 64].into_iter().enumerate() {
+                for height in [1, 2, 3, 4, 8, 16, 64] {
+                    let ss = width + 12;
+                    let source_len = (height + 6) * ss + width + 7;
+                    let source: Vec<u8> = (0..=source_len)
+                        .map(|i| (i * 17 + (i / ss) * 29) as u8)
+                        .collect();
+                    let ds = width + 11;
+                    let length = (height - 1) * ds + width;
+                    for fx in 0..phases {
+                        for fy in 0..phases {
+                            let mut expected = vec![0x5a5ai16; length + 2];
                             let mut actual = expected.clone();
                             // SAFETY: feature detection above, exact input/output windows,
                             // supported sizes and every valid phase; guard bytes excluded.

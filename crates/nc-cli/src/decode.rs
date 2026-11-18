@@ -15,7 +15,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nc_common::{
-    DecodedPicture, Picture, PlaneIndex, ShownFrame, ShownPicture, decode::DecodeError,
+    DecodedPicture, OutputPicture, Picture, PlaneIndex, PlaneView, Sample, ShownFrame,
+    ShownPicture, decode::DecodeError,
 };
 use nc_encoder::Codec;
 
@@ -207,10 +208,13 @@ enum Samples<'a> {
     },
     /// The visible window the decoder shows until its next call (no copy).
     View(ShownPicture<'a>),
-    /// A picture of more than 8 bits, packed as raw 16-bit little-endian
-    /// planes (one copy per frame: written and hashed as bytes, the way
-    /// HM and ffmpeg write `yuv420p10le`).
-    Packed(Vec<u8>),
+    /// Borrowed `u16` plane views of a deep picture shown in decoding order;
+    /// converted row-by-row to 16-bit little-endian bytes only when written or
+    /// hashed, so `--discard 1` performs no copy or allocation.
+    HighViews([PlaneView<'a, u16>; 3]),
+    /// Shared `u16` picture in output order; converted row-by-row only when
+    /// written or hashed.
+    HighShared(OutputPicture<u16>),
 }
 
 impl<'a> Shown<'a> {
@@ -234,18 +238,13 @@ impl<'a> Shown<'a> {
         }
     }
 
-    /// A frame of either depth a decoder shows: 8-bit written straight from
-    /// the decoder's picture, deeper packed.
+    /// A frame of either depth a decoder shows, borrowed without copying.
     fn frame(shown: ShownFrame<'a>) -> Self {
         let (width, height) = shown.size();
         let samples = match shown {
             ShownFrame::Eight(view) => Samples::View(view),
-            ShownFrame::High(..) => {
-                let mut bytes = Vec::new();
-                shown
-                    .write_yuv(&mut bytes, 3)
-                    .expect("writing to memory cannot fail");
-                Samples::Packed(bytes)
+            ShownFrame::High(view, _) => {
+                Samples::HighViews(PlaneIndex::ALL.map(|plane| view.plane(plane)))
             }
         };
         Self {
@@ -256,8 +255,7 @@ impl<'a> Shown<'a> {
         }
     }
 
-    /// A VP9 frame of either depth, of any parity: 8-bit written straight
-    /// from the decoder's picture, deeper packed.
+    /// A VP9 frame of either depth, of any parity, borrowed without copying.
     fn vp9(shown: nc_vp9::ShownVp9Frame<'a>) -> Self {
         let (samples, (width, height)) = match shown {
             nc_vp9::ShownVp9Frame::Eight(picture, size) => (Samples::Borrowed(picture), size),
@@ -270,10 +268,7 @@ impl<'a> Shown<'a> {
                         .sub_view(0, 0, (width + ss) >> ss, (height + ss) >> ss)
                         .expect("the visible size lies inside the picture")
                 });
-                let mut bytes = Vec::new();
-                nc_common::yuv::write_planes(&mut bytes, planes)
-                    .expect("writing to memory cannot fail");
-                (Samples::Packed(bytes), (width, height))
+                (Samples::HighViews(planes), (width, height))
             }
         };
         Self {
@@ -289,8 +284,9 @@ impl<'a> Shown<'a> {
         Self::decoded(frame, 3)
     }
 
-    /// A picture in output order, its first `planes` planes: an 8-bit one
-    /// shown from the decoder's own picture, a deeper one packed.
+    /// A picture in output order, its first `planes` planes, shared with the
+    /// decoder without copying.
+    #[allow(clippy::unnecessary_wraps, reason = "uniform signature at call sites")]
     fn decoded(frame: DecodedPicture, planes: usize) -> Result<Self, String> {
         let (width, height) = frame.size();
         let samples = match frame {
@@ -298,13 +294,7 @@ impl<'a> Shown<'a> {
                 picture: frame.picture,
                 origin: frame.origin,
             },
-            DecodedPicture::High(_) => {
-                let mut bytes = Vec::new();
-                frame
-                    .write_yuv(&mut bytes, planes)
-                    .map_err(|error| error.to_string())?;
-                Samples::Packed(bytes)
-            }
+            DecodedPicture::High(frame) => Samples::HighShared(frame),
         };
         Ok(Self {
             planes,
@@ -322,7 +312,8 @@ impl<'a> Shown<'a> {
             Samples::Borrowed(_)
             | Samples::Shared { .. }
             | Samples::View(_)
-            | Samples::Packed(_) => None,
+            | Samples::HighViews(_)
+            | Samples::HighShared(_) => None,
         }
     }
 
@@ -332,7 +323,9 @@ impl<'a> Shown<'a> {
     pub(crate) fn to_picture(&self) -> Result<Cow<'_, Picture>, String> {
         match &self.samples {
             Samples::Owned(picture) => return Ok(Cow::Borrowed(picture)),
-            Samples::Packed(_) => return Err("8-bit copy of a picture of more than 8 bits".into()),
+            Samples::HighViews(_) | Samples::HighShared(_) => {
+                return Err("8-bit copy of a picture of more than 8 bits".into());
+            }
             _ => {}
         }
         let mut copy = Picture::new(self.width, self.height, 0).map_err(|e| e.to_string())?;
@@ -348,21 +341,38 @@ impl<'a> Shown<'a> {
     }
 
     /// Every visible row, planes in order (raw I420 or monochrome luma);
-    /// a packed picture as one slice of all its bytes.
-    fn visit_rows<'s, E>(
-        &'s self,
-        mut visit: impl FnMut(&'s [u8]) -> Result<(), E>,
-    ) -> Result<(), E> {
-        if let Samples::Packed(bytes) = &self.samples {
-            return visit(bytes);
+    /// deep pictures convert one row at a time into a reusable scratch buffer.
+    fn visit_rows<E>(&self, mut visit: impl FnMut(&[u8]) -> Result<(), E>) -> Result<(), E> {
+        match &self.samples {
+            Samples::HighViews(planes) => {
+                let mut scratch = Vec::new();
+                for plane in &planes[..self.planes] {
+                    for row in plane.rows() {
+                        visit(u16::le_bytes(row, &mut scratch))?;
+                    }
+                }
+                Ok(())
+            }
+            Samples::HighShared(frame) => {
+                let view = frame.view();
+                let mut scratch = Vec::new();
+                for plane in PlaneIndex::ALL.into_iter().take(self.planes) {
+                    for row in view.plane(plane).rows() {
+                        visit(u16::le_bytes(row, &mut scratch))?;
+                    }
+                }
+                Ok(())
+            }
+            _ => {
+                for plane in PlaneIndex::ALL.into_iter().take(self.planes) {
+                    self.plane_rows(plane, |_, row| visit(row))?;
+                }
+                Ok(())
+            }
         }
-        for plane in PlaneIndex::ALL.into_iter().take(self.planes) {
-            self.plane_rows(plane, |_, row| visit(row))?;
-        }
-        Ok(())
     }
 
-    /// Every visible row of `plane` with its index, top to bottom.
+    /// Every visible row of an 8-bit `plane` with its index, top to bottom.
     fn plane_rows<'s, E>(
         &'s self,
         plane: PlaneIndex,
@@ -378,7 +388,9 @@ impl<'a> Shown<'a> {
                 let view = shown.plane(plane);
                 return (0..view.height()).try_for_each(|y| visit(y, view.row(y)));
             }
-            Samples::Packed(_) => unreachable!("packed pictures are visited whole"),
+            Samples::HighViews(_) | Samples::HighShared(_) => {
+                unreachable!("deep pictures are visited in visit_rows / write_rows")
+            }
         };
         let view = picture.plane(plane).view();
         for y in 0..h {
@@ -388,16 +400,39 @@ impl<'a> Shown<'a> {
         Ok(())
     }
 
-    /// Write every visible row, planes in order, as one vectored write
-    /// sequence: a buffered writer hands a frame larger than its buffer
-    /// straight to the file (no copy into the buffer).
+    /// Write every visible row, planes in order: 8-bit pictures as one vectored
+    /// write sequence (no copy into a buffered writer), deep pictures through
+    /// [`nc_common::yuv::write_planes`] with a single reusable row buffer.
     fn write_rows(&self, out: &mut impl Write) -> std::io::Result<()> {
+        match &self.samples {
+            Samples::HighViews(planes) => {
+                return nc_common::yuv::write_planes(out, planes[..self.planes].iter().copied())
+                    .map_err(|err| match err {
+                        nc_common::Error::Io(io) => io,
+                        other => std::io::Error::other(other.to_string()),
+                    });
+            }
+            Samples::HighShared(frame) => {
+                let view = frame.view();
+                let planes = PlaneIndex::ALL
+                    .into_iter()
+                    .take(self.planes)
+                    .map(|p| view.plane(p));
+                return nc_common::yuv::write_planes(out, planes).map_err(|err| match err {
+                    nc_common::Error::Io(io) => io,
+                    other => std::io::Error::other(other.to_string()),
+                });
+            }
+            _ => {}
+        }
         let mut rows = Vec::new();
-        self.visit_rows::<()>(|row| {
-            rows.push(IoSlice::new(row));
-            Ok(())
-        })
-        .expect("collecting rows cannot fail");
+        for plane in PlaneIndex::ALL.into_iter().take(self.planes) {
+            self.plane_rows::<()>(plane, |_, row| {
+                rows.push(IoSlice::new(row));
+                Ok(())
+            })
+            .expect("collecting rows cannot fail");
+        }
         let mut rows = &mut rows[..];
         while !rows.is_empty() {
             let written = out.write_vectored(rows)?;

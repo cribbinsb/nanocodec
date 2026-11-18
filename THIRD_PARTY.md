@@ -346,6 +346,20 @@ the two halves of a 256-bit register, mirrored line pairs squared by one
 `pmaddwd`, the best direction by `phminposuw`). Copyright © 2018 VideoLAN
 and dav1d authors; Copyright © 2018 Two Orioles, LLC.
 
+The shared eight-tap NEON motion-compensation family
+(`crates/nc-dsp/src/mc/av1_neon.rs`, `av1_neon/horizontal_dot.rs`,
+`av1_neon/vertical_dot.rs`, `neon_dotprod.rs`) reimplements dav1d 1.5.4
+`src/arm/64/mc_dotprod.S` and `src/arm/64/mc.S`: packed signed-byte
+horizontal dot products with shared shuffles and folded rounding, transposed
+four-row vertical dot products with rolling table updates, and horizontal
+i16 rows accumulated vertically. The same passes serve AV1, HEVC and VVC
+with their own coefficients and rounding. Exact-size tail loads replace
+upstream's padded-read assumptions. Copyright © 2018, 2024 VideoLAN and
+dav1d authors, Janne Grunau and Martin Storsjo; Copyright © 2024 Arm Limited.
+BSD-2-Clause; the retained source notices are in
+[docs/licenses/dav1d/MC.txt](docs/licenses/dav1d/MC.txt), with the project notice
+above and in [docs/licenses/dav1d/COPYING](docs/licenses/dav1d/COPYING).
+
 The scalar model of dav1d's arm64 inverse transforms
 (`crates/nc-dsp/src/av1_inverse/dav1d_model.rs`) reimplements in Rust the
 arithmetic, coefficient tables (`idct_coeffs`, `idct64_coeffs`,
@@ -380,7 +394,8 @@ filters (`simd/gfni.rs`). The full dav1d notice is above and in
 [docs/licenses/dav1d/COPYING](docs/licenses/dav1d/COPYING).
 
 The shared four-group loop-filter lanes (`crates/nc-dsp/src/lpf_bytes/avx512.rs`,
-`deblock/avx512.rs`, `deblock/batch.rs` (HEVC/VVC short-luma word tiles),
+`deblock/avx512.rs`, `deblock/batch.rs` and `deblock/hevc_high.rs` (HEVC/VVC
+short-luma word tiles for `u8` and `u16`),
 and `vp9_loop_filter/packed/avx512.rs`) use the grouped
 transpose/widen/filter layout of dav1d 1.5.4 `src/x86/loopfilter_avx512.asm`
 (8-bit) and `src/x86/loopfilter16_avx512.asm` (high bit depth) as design
@@ -440,13 +455,14 @@ multiply-add per pair.
 
 Ideas only, no code: `crates/nc-dsp/src/txfm/narrow_inverse.rs` (with its
 AVX2, NEON and SIMD128 lanes; the AVX2 lanes follow the `pmaddwd` /
-`pmulhrsw` choices of `src/x86/itx_avx2.asm`) keeps 8-bit
-AV1 inverse-transform intermediates in 16-bit lanes, as dav1d's
-`itx` assembly does. nanocodec adds a proved L1 guard with an exact 32-bit
-fallback instead of relying on the conformance range.
+`pmulhrsw` choices of `src/x86/itx_avx2.asm` and `src/x86/itx16_avx2.asm`)
+keeps 8-bit (`ROW_BITS = 16`) and guarded 10-bit (`ROW_BITS = 18`) AV1
+inverse-transform intermediates in 16-bit lanes, as dav1d's `itx` and `itx16`
+assembly does. nanocodec adds proved L1 row/column bounds (`narrow_row_limit_10`)
+with exact 18-bit/32-bit fallbacks instead of relying on the conformance range.
 
 Ideas only, no code: `crates/nc-dsp/src/av1_inverse/` uses the DCT DC-only
-shortcut and EOB-bounded row-pass design described in dav1d 1.5.4
+shortcut and EOB-bounded row/column sub-band pruning described in dav1d 1.5.4
 `src/itx_tmpl.c`. The Rust implementation retains nanocodec's Q12 constants,
 rounding, shared lane types and coefficient layout.
 
@@ -471,22 +487,25 @@ Storsjo, Janne Grunau):
   `u16` direction search (`src/cdef_tmpl.c`, `src/x86/cdef16_avx2.asm`,
   `src/x86/cdef16_avx512.asm`, `src/arm/64/cdef16.S`).
 - `src/av1_mc/high_mc.rs` and `src/av1_mc/high_blend.rs`: `u16` unscaled and
-  scaled 8-tap / bilinear interpolation, 8x8 affine warp, saturating `adds_i16`
-  compound average, and shared `u8`/`u16` distance, difference-weighted mask,
-  wedge/mask, inter-intra and OBMC blends (`src/mc_tmpl.c`,
-  `src/x86/mc16_avx2.asm`, `src/x86/mc16_avx512.asm`, `src/arm/64/mc16.S`).
+  scaled 8-tap / bilinear interpolation (including direct memory-offset
+  even/odd `pmaddwd` tap-pair horizontal convolution and 2-rows-per-vector
+  narrow blocks), 8x8 affine warp, saturating `adds_i16` compound average, and
+  shared `u8`/`u16` distance, difference-weighted mask, wedge/mask, inter-intra
+  and OBMC blends (`src/mc_tmpl.c`, `src/x86/mc16_avx2.asm`,
+  `src/x86/mc16_avx512.asm`, `src/arm/64/mc16.S`).
 - `src/av1_inverse/high_simd.rs` and `src/av1_inverse/generic.rs`: 10- and
-  12-bit SIMD inverse transforms (`I32Lanes`), DC-only `eob == 1` fast paths
-  and EOB-bounded row/column sub-band pruning (`src/itx_tmpl.c`,
-  `src/x86/itx16_avx2.asm`, `src/x86/itx16_avx512.asm`, `src/arm/64/itx16.S`).
+  12-bit SIMD inverse transforms (`I32Lanes` and guarded 10-bit `NarrowPixel`),
+  DC-only `eob == 1` fast paths and EOB-bounded row/column sub-band pruning
+  (`src/itx_tmpl.c`, `src/x86/itx16_avx2.asm`, `src/x86/itx16_avx512.asm`,
+  `src/arm/64/itx16.S`).
 - `src/av1_restoration/high_lr.rs` and `src/av1_restoration/sgr_lanes.rs`:
-  10- and 12-bit 5/7-tap Wiener stripe convolution and shared 8-/16-lane
-  self-guided restoration (`src/looprestoration_tmpl.c`,
+  register-sliding 10- and 12-bit 5/7-tap Wiener stripe convolution and shared
+  8-/16-lane self-guided restoration (`src/looprestoration_tmpl.c`,
   `src/x86/looprestoration16_avx2.asm`,
   `src/x86/looprestoration16_avx512.asm`, `src/arm/64/looprestoration16.S`).
 - `src/deblock/av1_high.rs`: batched 4/6/8/14-tap `u16` loop filter with
-  8x8 vertical-edge register transpose and modular `u16` 14-tap smoothing
-  (`src/lpf_tmpl.c`, `src/x86/loopfilter16_avx2.asm`,
+  8x8 and wide 16-/32-row vertical-edge register transpose and modular `u16`
+  14-tap smoothing (`src/lpf_tmpl.c`, `src/x86/loopfilter16_avx2.asm`,
   `src/x86/loopfilter16_avx512.asm`, `src/arm/64/loopfilter16.S`).
 - `src/av1_intra/high.rs`: `u16` directional/transpose/filter-intra patches
   and shared `u8`/`u16` Paeth, 1-pass `pmaddwd` smooth and one-pass `CfL`
@@ -498,10 +517,10 @@ Storsjo, Janne Grunau):
   `src/x86/filmgrain16_avx2.asm`, `src/x86/filmgrain16_avx512.asm`,
   `src/arm/64/filmgrain16.S`).
 
-The browser SIMD128 extensions to `av1_mc/high_mc.rs`,
-`av1_mc/high_blend.rs` and `av1_inverse/high_simd.rs` instantiate these same
-shared Rust algorithms with the existing WASM lane types; they introduce
-no further external implementation.
+The browser SIMD128 extensions to `av1_mc/high_mc.rs`, `av1_mc/high_blend.rs`,
+`av1_inverse/high_simd.rs`, `av1_restoration/high_lr.rs`, `deblock/av1_high.rs`
+and `cdef/simd128.rs` instantiate these same shared Rust algorithms with the
+existing WASM lane types; they introduce no further external implementation.
 
 NEON CDEF direction costs (`crates/nc-dsp/src/cdef/direction.rs` and
 `simd/neon.rs`) use the direct mirrored-square `smull`/`smlal` reduction
@@ -593,7 +612,13 @@ transform + add (`vp9_inverse/`) follows the eob-class structure of
 `_38`/`_34`/`_135` partial transforms, doubled-cosine `mulhrs` rotations);
 `txfm/sparse_lanes.rs` derives those partial graphs. The AVX2 VP9 vertical
 interpolation (`vp9_mc_simd/avx2.rs`) follows
-`vpx_dsp/x86/vpx_subpixel_8t_intrin_avx2.c` (`vpx_filter_block1d*_v8_avx2`).
+`vpx_dsp/x86/vpx_subpixel_8t_intrin_avx2.c` (`vpx_filter_block1d*_v8_avx2`), and
+the 4-tier high-bit-depth (`u16`, 10- and 12-bit) VP9 kernels in
+`nc-dsp/src/deblock/vp9_high.rs`, `nc-dsp/src/vp9_mc_high.rs` and
+`nc-dsp/src/vp9_inverse/high_simd.rs` follow the transposed vertical-edge
+loop filter, zero-phase/1-D/paired-tap `madd` convolution and EOB-corner
+inverse-transform structure of `vpx_dsp/x86/highbd_loopfilter_sse2.c`,
+`vpx_dsp/x86/highbd_convolve_avx2.c` and `vpx_dsp/x86/highbd_idct*_avx2.c`.
 The encoder's real-time shortcuts in `crates/nc-vp9/src/backend.rs`
 (`vp9.nonrd_skip_scale`, `vp9.residual_bits_per_level`) reimplement the
 transform-block skip thresholds of `model_rd_for_sb_y`, the DC-only path of
@@ -993,19 +1018,27 @@ references. The accompanying prepared prediction/search fixtures were captured
 from that pinned reference decoder; picture outputs are streamed into hashes.
 
 Shared AVX2/AVX-512/NEON/SIMD128 lane implementations in
-`nc-dsp/src/vvc_refinement/`, `mc/precision_simd.rs`, `mc/rpr.rs`, `vvc_geo.rs`,
+`nc-dsp/src/vvc_refinement/`, `mc/precision_simd.rs`, `mc/separable_u16_simd.rs`,
+`hevc_weight/lanes.rs`, `deblock/hevc_high.rs`, `codec_txfm/inverse_add.rs`,
+`mc/rpr.rs`, `vvc_geo.rs`,
 `vvc_alf/`, `vvc_deblock/`, `vvc_intra/`, `vvc_lmcs.rs`, `sao/high_simd.rs` and
-`high_depth/vvc_recon.rs` independently implement the same H.266 and Main 10
+`high_depth/vvc_recon.rs` independently implement the same H.265/H.266 and Main 10
 (`u16`) equations against the existing scalar references and captured VVdeC
 fixtures, over the project's shared SIMD lane framework (no VVdeC assembly or C++
 SIMD copied). The same BSD-Clear VVdeC attribution above applies.
 
-`nc-common/src/cabac.rs` (the CABAC decoding engine shared by the H.264 and HEVC
-decoders) follows the design of the pinned BSD-Clear VVdeC `BinDecoder`: the
-branch-free decision selecting range and offset by mask, and several bypass bins
-read together (`decodeBinsEP`, here as one division). `nc-hevc/src/dec/residual.rs`
-tabulates the significance contexts by scan index as VVdeC's `CABACReader` does.
-Independent Rust implementations; the BSD-Clear VVdeC attribution above applies.
+`nc-common/src/cabac.rs` (the CABAC decoding engine shared by the H.264, HEVC
+and H.266 decoders) and `nc-vvc/src/decoder_cabac.rs` follow the design of the
+pinned BSD-Clear VVdeC `BinDecoder`: the branch-free decision selecting range
+and offset by mask, bulk byte-buffer refill, and several bypass bins read
+together (`decodeBinsEP`, here as exact power-of-two shifts when `range == 256`
+else one division). `nc-vvc/src/contexts.rs` keeps the dual-window probability
+estimator in shifted `u16` state (`p0 << 5`, `p1 << 1`) and
+`nc-vvc/src/decoder_blocks/coeff.rs` structures subblock residual decoding as a
+three-pass padded-grid walk (`CABACReader::residual_coding_subblock`), while
+`nc-hevc/src/dec/residual.rs` tabulates the significance contexts by scan index
+as VVdeC's `CABACReader` does. Independent Rust implementations; the BSD-Clear
+VVdeC attribution above applies.
 
 ## VMAFx — EUPL-1.2 (external tool only, not vendored)
 
@@ -1057,7 +1090,11 @@ weighted-prediction selection in `decoder_blocks/inter_prediction.rs`
 (`InterPrediction::xPredInterBi`) and intra block copy in
 `decoder_blocks/ibc.rs` (`CABACReader::cu_skip_flag` and `pred_mode`,
 `PU::getIBCMergeCandidates`, `PU::fillIBCMvpCand`, the IBC branch of
-`DeblockingFilter::xGetBoundaryStrengthSingle`). The VTM decoder is the reference of the
+`DeblockingFilter::xGetBoundaryStrengthSingle`), and picture-timing SEI
+`pt_display_elemental_periods_minus1` / `pt_pic_struct` parsing plus
+complementary top/bottom field-pair output interleaving (`sps_field_seq_flag`) in
+`decoder_metadata.rs` and `decoder_dpb.rs` (`SEIPictureTiming` and VTM's
+field-sequence output pairing). The VTM decoder is the reference of the
 foreign-stream corpus (`tools/dev/vvc_foreign_corpus.py`); it is run, not
 linked.
 

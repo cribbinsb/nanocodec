@@ -370,7 +370,19 @@ pub(super) fn read<C: Av1Coefficient, const CLASS: u8>(
         }
         return Tokens { dc, first: 0 };
     }
-    levels.levels[..walk.clear].fill(0);
+    match walk.clear {
+        24 => levels.levels[..24].copy_from_slice(&[0; 24]),
+        40 => levels.levels[..40].copy_from_slice(&[0; 40]),
+        48 => levels.levels[..48].copy_from_slice(&[0; 48]),
+        72 => levels.levels[..72].copy_from_slice(&[0; 72]),
+        80 => levels.levels[..80].copy_from_slice(&[0; 80]),
+        96 => levels.levels[..96].copy_from_slice(&[0; 96]),
+        136 => levels.levels[..136].copy_from_slice(&[0; 136]),
+        144 => levels.levels[..144].copy_from_slice(&[0; 144]),
+        160 => levels.levels[..160].copy_from_slice(&[0; 160]),
+        288 => levels.levels[..288].copy_from_slice(&[0; 288]),
+        n => levels.levels[..n].fill(0),
+    }
 
     // The last coefficient: its context depends on the scan index alone.
     let eob_ctx = 1

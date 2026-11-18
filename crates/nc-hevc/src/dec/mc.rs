@@ -21,7 +21,7 @@
 )]
 
 use nc_common::{BitDepth, BitDepths, Picture, Plane, PlaneIndex};
-use nc_dsp::{BlockSize, DepthKernels, Dsp, HevcWeights, Pixel};
+use nc_dsp::{DepthKernels, Dsp, HevcWeights, Pixel};
 use nc_encoder::Mv;
 
 use super::slice::Weight;
@@ -81,32 +81,22 @@ pub(super) fn predict<T: Pixel>(
         {
             continue;
         }
-        if sources.len() == 2 && !explicit && BlockSize::new(pw, ph).is_some() {
-            // Default bi-prediction of a kernel-sized block: the second
-            // list's prediction goes straight into the average.
-            let first = &mut buffers.preds[0];
-            crate::inter::predict_samples(
+        if sources.len() == 2
+            && !explicit
+            && fast_bi(
                 kernels,
-                sources[0].picture.plane(plane),
+                [
+                    sources[0].picture.plane(plane),
+                    sources[1].picture.plane(plane),
+                ],
+                [sources[0].mv, sources[1].mv],
+                &mut buffers.preds[0],
+                dst.plane_mut(plane),
                 (px, py),
                 (pw, ph),
-                sources[0].mv,
                 c > 0,
-                first,
-            );
-            let mut view = dst
-                .plane_mut(plane)
-                .region_mut(px as isize, py as isize, pw, ph)
-                .expect("prediction block inside the picture");
-            crate::inter::predict_bi_into(
-                kernels,
-                sources[1].picture.plane(plane),
-                (px, py),
-                sources[1].mv,
-                c > 0,
-                &first[..pw * ph],
-                &mut view,
-            );
+            )
+        {
             continue;
         }
         for (pred, source) in buffers.preds.iter_mut().zip(sources) {
@@ -189,6 +179,16 @@ fn combination<T: Pixel>(
     }
 }
 
+/// Split a block dimension into one or two power-of-two kernel sides (`>= 4`),
+/// covering square, rectangular, and AMP (`12, 24, 48`) partitions.
+fn block_pieces(n: usize) -> Option<[usize; 2]> {
+    match n {
+        4 | 8 | 16 | 32 | 64 => Some([n, 0]),
+        12 | 24 | 48 => Some([n * 2 / 3, n / 3]),
+        _ => None,
+    }
+}
+
 /// Default uni-prediction through the nc-dsp kernels, when both sides
 /// split into power-of-two pieces of at least 4 samples (interpolation is
 /// separable per sample, so pieces predict exactly as the whole block).
@@ -202,14 +202,7 @@ fn fast_uni<T: Pixel>(
     mv: Mv,
     chroma: bool,
 ) -> bool {
-    let pieces = |n: usize| -> Option<[usize; 2]> {
-        match n {
-            4 | 8 | 16 | 32 | 64 => Some([n, 0]),
-            12 | 24 | 48 => Some([n * 2 / 3, n / 3]),
-            _ => None,
-        }
-    };
-    let (Some(ws), Some(hs)) = (pieces(w), pieces(h)) else {
+    let (Some(ws), Some(hs)) = (block_pieces(w), block_pieces(h)) else {
         return false;
     };
     if ws[1] == 0 && hs[1] == 0 {
@@ -229,6 +222,71 @@ fn fast_uni<T: Pixel>(
                 .region_mut(bx as isize, by as isize, pw, ph)
                 .expect("prediction block inside the picture");
             crate::inter::predict_into(kernels, reference, (bx, by), mv, chroma, &mut view);
+            ox += pw;
+        }
+        oy += ph;
+    }
+    true
+}
+
+/// Default bi-prediction through [`DepthKernels::predict_compound`] +
+/// [`DepthKernels::hevc_predict_bi`] for power-of-two and AMP partitions.
+#[allow(clippy::too_many_arguments)]
+fn fast_bi<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    refs: [&Plane<T>; 2],
+    mvs: [Mv; 2],
+    first: &mut Vec<i16>,
+    dst: &mut Plane<T>,
+    (x, y): (usize, usize),
+    (w, h): (usize, usize),
+    chroma: bool,
+) -> bool {
+    let (Some(ws), Some(hs)) = (block_pieces(w), block_pieces(h)) else {
+        return false;
+    };
+    if ws[1] == 0 && hs[1] == 0 {
+        crate::inter::predict_samples(kernels, refs[0], (x, y), (w, h), mvs[0], chroma, first);
+        let mut view = dst
+            .region_mut(x as isize, y as isize, w, h)
+            .expect("prediction block inside the picture");
+        crate::inter::predict_bi_into(
+            kernels,
+            refs[1],
+            (x, y),
+            mvs[1],
+            chroma,
+            &first[..w * h],
+            &mut view,
+        );
+        return true;
+    }
+    let mut oy = 0;
+    for ph in hs.into_iter().filter(|&n| n > 0) {
+        let mut ox = 0;
+        for pw in ws.into_iter().filter(|&n| n > 0) {
+            let (bx, by) = (x + ox, y + oy);
+            crate::inter::predict_samples(
+                kernels,
+                refs[0],
+                (bx, by),
+                (pw, ph),
+                mvs[0],
+                chroma,
+                first,
+            );
+            let mut view = dst
+                .region_mut(bx as isize, by as isize, pw, ph)
+                .expect("prediction block inside the picture");
+            crate::inter::predict_bi_into(
+                kernels,
+                refs[1],
+                (bx, by),
+                mvs[1],
+                chroma,
+                &first[..pw * ph],
+                &mut view,
+            );
             ox += pw;
         }
         oy += ph;

@@ -3,8 +3,66 @@
 use super::{Sequence, SliceHeader, Unit};
 use nc_dsp::{DepthKernels, VvcLfnst, VvcTransformKind};
 
+/// Inverse-scale and inverse-transform one non-zero plane of `transform` from
+/// its sparse `(pos, level)` entries into `residual_out[..size.0 * size.1]`,
+/// restoring `level_buf` to all zeros upon return.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn decode_plane_residual(
+    dsp: DepthKernels<'_>,
+    unit: &Unit,
+    transform: &super::Transform,
+    (plane, size, kinds): (usize, (usize, usize), [VvcTransformKind; 2]),
+    (sequence, header, lists): (
+        &Sequence,
+        &SliceHeader,
+        Option<&crate::decoder_headers::ScalingLists>,
+    ),
+    coeffs: &[(u16, i16)],
+    factors: &mut Vec<u8>,
+    level_buf: &mut [i32; 64 * 64],
+    residual_out: &mut [i16],
+) {
+    let area = size.0 * size.1;
+    for &(pos, val) in coeffs {
+        level_buf[usize::from(pos)] = i32::from(val);
+    }
+    let levels = &level_buf[..area];
+    let residual = &mut residual_out[..area];
+    let channel = usize::from(plane != 0);
+    let qp_val = qp(unit.quant(), transform.joint, plane, sequence, header);
+    if transform.skip[plane] {
+        dsp.vvc_inverse_skip(
+            size,
+            levels,
+            qp_val.max(4 + 6 * sequence.tools.min_qp_ts),
+            unit.bdpcm[channel],
+            residual,
+        );
+    } else {
+        let scaling = Scaling {
+            qp: qp_val,
+            dependent: header.dependent_quant,
+            lists,
+            factors,
+        };
+        inverse_transform(
+            dsp,
+            unit,
+            sequence,
+            (plane, size, kinds),
+            scaling,
+            levels,
+            residual,
+        );
+    }
+    for &(pos, _) in coeffs {
+        level_buf[usize::from(pos)] = 0;
+    }
+}
+
 /// Each coded plane's levels to its residual, at the kernels' depth (the
 /// transforms' QP is `Qp′`, H.266 §8.7.3).
+#[cfg(test)]
 pub(crate) fn inverse_residuals(
     units: &mut [Unit],
     sequence: &Sequence,
@@ -14,6 +72,13 @@ pub(crate) fn inverse_residuals(
 ) {
     let mut factors = Vec::new();
     for unit in units {
+        if unit
+            .transforms
+            .iter()
+            .all(|t| t.levels.iter().all(Vec::is_empty))
+        {
+            continue;
+        }
         let quant = unit.quant();
         // Before the transforms are taken: the kinds depend on the first.
         let kinds = primary_kinds(unit, sequence);
@@ -163,7 +228,7 @@ pub(super) fn qp(
 /// The largest QP (`QpY`, chroma QPs) at every depth (H.266 §7.4.3.4).
 const MAX_QP: i32 = 63;
 
-fn primary_kinds(unit: &Unit, sequence: &Sequence) -> [VvcTransformKind; 2] {
+pub(super) fn primary_kinds(unit: &Unit, sequence: &Sequence) -> [VvcTransformKind; 2] {
     use VvcTransformKind::{Dct2, Dct8, Dst7};
     let mts = sequence.transforms.mts;
     if !mts[0] || (unit.isp.is_some() && unit.lfnst != 0) {

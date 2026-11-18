@@ -9,32 +9,34 @@
 
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_abs_epi16, _mm_abs_epi32, _mm_add_epi16, _mm_add_epi32, _mm_adds_epi16,
-    _mm_and_si128, _mm_blendv_epi8, _mm_castsi128_ps, _mm_cmpeq_epi16, _mm_cmpeq_epi32,
-    _mm_cmpgt_epi16, _mm_cmpgt_epi32, _mm_cvtepi16_epi32, _mm_cvtepu8_epi16, _mm_cvtepu8_epi32,
-    _mm_cvtepu16_epi32, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_extract_epi32, _mm_hadd_epi32,
-    _mm_loadl_epi64, _mm_loadu_si128, _mm_madd_epi16, _mm_maddubs_epi16, _mm_max_epi16,
-    _mm_max_epi32, _mm_min_epi16, _mm_min_epi32, _mm_min_epu16, _mm_movemask_ps, _mm_mulhrs_epi16,
-    _mm_mullo_epi16, _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
-    _mm_packus_epi32, _mm_set1_epi16, _mm_set1_epi32, _mm_setzero_si128, _mm_shuffle_epi8,
-    _mm_sign_epi16, _mm_sign_epi32, _mm_sll_epi32, _mm_sra_epi16, _mm_sra_epi32, _mm_srl_epi16,
+    _mm_alignr_epi8, _mm_and_si128, _mm_blend_epi16, _mm_blendv_epi8, _mm_castsi128_ps,
+    _mm_cmpeq_epi16, _mm_cmpeq_epi32, _mm_cmpgt_epi16, _mm_cmpgt_epi32, _mm_cvtepi16_epi32,
+    _mm_cvtepu8_epi16, _mm_cvtepu8_epi32, _mm_cvtepu16_epi32, _mm_cvtsi32_si128, _mm_cvtsi128_si32,
+    _mm_extract_epi32, _mm_hadd_epi32, _mm_loadl_epi64, _mm_loadu_si128, _mm_madd_epi16,
+    _mm_maddubs_epi16, _mm_max_epi16, _mm_max_epi32, _mm_min_epi16, _mm_min_epi32, _mm_min_epu16,
+    _mm_movemask_ps, _mm_mulhrs_epi16, _mm_mullo_epi16, _mm_mullo_epi32, _mm_or_si128,
+    _mm_packs_epi32, _mm_packus_epi16, _mm_packus_epi32, _mm_set1_epi16, _mm_set1_epi32,
+    _mm_setr_epi32, _mm_setzero_si128, _mm_shuffle_epi8, _mm_shuffle_epi32, _mm_sign_epi16,
+    _mm_sign_epi32, _mm_sll_epi32, _mm_slli_epi32, _mm_sra_epi16, _mm_sra_epi32, _mm_srl_epi16,
     _mm_srl_epi32, _mm_srli_si128, _mm_storel_epi64, _mm_storeu_si128, _mm_sub_epi16,
     _mm_sub_epi32, _mm_subs_epu16, _mm_testz_si128, _mm_unpackhi_epi8, _mm_unpackhi_epi16,
     _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi8, _mm_unpacklo_epi16,
     _mm_unpacklo_epi32, _mm_unpacklo_epi64, _mm256_abs_epi16, _mm256_abs_epi32, _mm256_add_epi16,
-    _mm256_add_epi32, _mm256_adds_epi16, _mm256_and_si256, _mm256_blend_epi16, _mm256_blendv_epi8,
-    _mm256_castsi256_ps, _mm256_castsi256_si128, _mm256_cmpeq_epi16, _mm256_cmpeq_epi32,
-    _mm256_cmpgt_epi16, _mm256_cmpgt_epi32, _mm256_cvtepi16_epi32, _mm256_cvtepu8_epi16,
-    _mm256_cvtepu8_epi32, _mm256_cvtepu16_epi32, _mm256_extracti128_si256, _mm256_i32gather_epi32,
-    _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_max_epi16,
-    _mm256_max_epi32, _mm256_min_epi16, _mm256_min_epi32, _mm256_min_epu16, _mm256_movemask_ps,
-    _mm256_mulhrs_epi16, _mm256_mullo_epi16, _mm256_mullo_epi32, _mm256_or_si256,
-    _mm256_packs_epi32, _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set_m128i,
-    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setzero_si256,
-    _mm256_shuffle_epi8, _mm256_sign_epi16, _mm256_sign_epi32, _mm256_sll_epi32, _mm256_slli_epi32,
-    _mm256_sra_epi16, _mm256_sra_epi32, _mm256_srai_epi32, _mm256_srl_epi16, _mm256_srl_epi32,
-    _mm256_srli_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_subs_epu16,
-    _mm256_testz_si256, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64,
-    _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
+    _mm256_add_epi32, _mm256_adds_epi16, _mm256_alignr_epi8, _mm256_and_si256, _mm256_blend_epi16,
+    _mm256_blendv_epi8, _mm256_castsi256_ps, _mm256_castsi256_si128, _mm256_cmpeq_epi16,
+    _mm256_cmpeq_epi32, _mm256_cmpgt_epi16, _mm256_cmpgt_epi32, _mm256_cvtepi16_epi32,
+    _mm256_cvtepu8_epi16, _mm256_cvtepu8_epi32, _mm256_cvtepu16_epi32, _mm256_cvtepu32_epi64,
+    _mm256_extracti128_si256, _mm256_i32gather_epi32, _mm256_loadu_si256, _mm256_madd_epi16,
+    _mm256_maddubs_epi16, _mm256_max_epi16, _mm256_max_epi32, _mm256_min_epi16, _mm256_min_epi32,
+    _mm256_min_epu16, _mm256_movemask_ps, _mm256_mulhrs_epi16, _mm256_mullo_epi16,
+    _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32, _mm256_permute2x128_si256,
+    _mm256_permute4x64_epi64, _mm256_set_m128i, _mm256_set1_epi16, _mm256_set1_epi32,
+    _mm256_setr_epi8, _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_shuffle_epi32,
+    _mm256_sign_epi16, _mm256_sign_epi32, _mm256_sll_epi32, _mm256_slli_epi32, _mm256_sra_epi16,
+    _mm256_sra_epi32, _mm256_srai_epi32, _mm256_srl_epi16, _mm256_srl_epi32, _mm256_srli_epi32,
+    _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_subs_epu16, _mm256_testz_si256,
+    _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16,
+    _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
 
 use core::mem::MaybeUninit;
@@ -399,6 +401,23 @@ impl I32Lanes for I32x8 {
     }
 
     #[inline(always)]
+    fn add_transposed_u16(rows: &[Self], dst: &mut [u16], dst_stride: usize, max_val: i32) {
+        let needed = dst_stride
+            .checked_mul(Self::LANES - 1)
+            .and_then(|n| n.checked_add(Self::LANES))
+            .expect("transpose tile extent");
+        let dst = &mut dst[..needed];
+        for (r, value) in transpose_i32x8(rows).into_iter().enumerate() {
+            // SAFETY: r < LANES and the checked span covers the last row's
+            // full vector; each temporary row borrow ends in this iteration.
+            let row = unsafe {
+                core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
+            };
+            value.add_to_u16(row, max_val);
+        }
+    }
+
+    #[inline(always)]
     fn gt(self, other: Self) -> Self {
         // SAFETY: these types run only inside AVX2 kernels (module docs).
         unsafe { Self(_mm256_cmpgt_epi32(self.0, other.0)) }
@@ -681,6 +700,23 @@ impl I32Lanes for I32x4 {
                 core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
             };
             value.add_to_u8(row);
+        }
+    }
+
+    #[inline(always)]
+    fn add_transposed_u16(rows: &[Self], dst: &mut [u16], dst_stride: usize, max_val: i32) {
+        let needed = dst_stride
+            .checked_mul(Self::LANES - 1)
+            .and_then(|n| n.checked_add(Self::LANES))
+            .expect("transpose tile extent");
+        let dst = &mut dst[..needed];
+        for (r, value) in transpose_i32x4(rows).into_iter().enumerate() {
+            // SAFETY: r < LANES and the checked span covers the last row's
+            // full vector; each temporary row borrow ends in this iteration.
+            let row = unsafe {
+                core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
+            };
+            value.add_to_u16(row, max_val);
         }
     }
 
@@ -1604,6 +1640,50 @@ impl I16FilterLanes for I16x16 {
     }
 
     #[inline(always)]
+    fn combine_hi_lo(self, next: Self) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm256_permute2x128_si256::<0x21>(self.0, next.0)) }
+    }
+
+    #[inline(always)]
+    fn transpose_groups8(rows: [Self; 8]) -> [Self; 8] {
+        // SAFETY: AVX2 kernels only; in-lane unpacks transpose both 128-bit 8x8 tiles.
+        unsafe {
+            let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
+            let (p0, p1) = (
+                _mm256_unpacklo_epi16(r0.0, r1.0),
+                _mm256_unpackhi_epi16(r0.0, r1.0),
+            );
+            let (p2, p3) = (
+                _mm256_unpacklo_epi16(r2.0, r3.0),
+                _mm256_unpackhi_epi16(r2.0, r3.0),
+            );
+            let (p4, p5) = (
+                _mm256_unpacklo_epi16(r4.0, r5.0),
+                _mm256_unpackhi_epi16(r4.0, r5.0),
+            );
+            let (p6, p7) = (
+                _mm256_unpacklo_epi16(r6.0, r7.0),
+                _mm256_unpackhi_epi16(r6.0, r7.0),
+            );
+            let (q0, q1) = (_mm256_unpacklo_epi32(p0, p2), _mm256_unpackhi_epi32(p0, p2));
+            let (q2, q3) = (_mm256_unpacklo_epi32(p1, p3), _mm256_unpackhi_epi32(p1, p3));
+            let (q4, q5) = (_mm256_unpacklo_epi32(p4, p6), _mm256_unpackhi_epi32(p4, p6));
+            let (q6, q7) = (_mm256_unpacklo_epi32(p5, p7), _mm256_unpackhi_epi32(p5, p7));
+            [
+                Self(_mm256_unpacklo_epi64(q0, q4)),
+                Self(_mm256_unpackhi_epi64(q0, q4)),
+                Self(_mm256_unpacklo_epi64(q1, q5)),
+                Self(_mm256_unpackhi_epi64(q1, q5)),
+                Self(_mm256_unpacklo_epi64(q2, q6)),
+                Self(_mm256_unpackhi_epi64(q2, q6)),
+                Self(_mm256_unpacklo_epi64(q3, q7)),
+                Self(_mm256_unpackhi_epi64(q3, q7)),
+            ]
+        }
+    }
+
+    #[inline(always)]
     fn load_quarters(rows: [&[i16]; 4]) -> Self {
         let r0 = &rows[0][..4];
         let r1 = &rows[1][..4];
@@ -1702,55 +1782,158 @@ impl I16FilterLanes for I16x16 {
     }
 
     #[inline(always)]
-    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
-        #[inline(always)]
-        unsafe fn expand_pairs_256(d02: __m256i, d13: __m256i) -> [I16x16; 4] {
-            // SAFETY: AVX2 enabled by caller.
-            unsafe {
-                let q02_lo = _mm256_unpacklo_epi32(d02, d02);
-                let q13_lo = _mm256_unpacklo_epi32(d13, d13);
-                let q02_hi = _mm256_unpackhi_epi32(d02, d02);
-                let q13_hi = _mm256_unpackhi_epi32(d13, d13);
-                [
-                    I16x16(_mm256_unpacklo_epi64(q02_lo, q13_lo)),
-                    I16x16(_mm256_unpackhi_epi64(q02_lo, q13_lo)),
-                    I16x16(_mm256_unpacklo_epi64(q02_hi, q13_hi)),
-                    I16x16(_mm256_unpackhi_epi64(q02_hi, q13_hi)),
-                ]
-            }
-        }
-        let b = &blocks[..4];
-        // SAFETY: AVX2 kernels only; each block holds 12 `i16`s (24 bytes).
+    fn combine_mid_halves(self, next: Self) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm256_permute2x128_si256::<0x21>(self.0, next.0)) }
+    }
+
+    #[inline(always)]
+    fn shift_quarter(self, next: Self) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
         unsafe {
-            let v02_lo = _mm256_set_m128i(
+            let mid = _mm256_permute2x128_si256::<0x21>(self.0, next.0);
+            Self(_mm256_alignr_epi8::<8>(mid, self.0))
+        }
+    }
+
+    #[inline(always)]
+    fn expand_alf_params(blocks: &[[i16; 12]]) -> [[Self; 2]; 6] {
+        let b = &blocks[..4];
+        // `_mm256_unpacklo_epi16` places block 0 in lane 0 and block 2 in lane 1;
+        // `_mm256_unpackhi_epi16` places block 1 in lane 0 and block 3 in lane 1
+        // (matching VVdeC `simdFilter7x7Blk<AVX2>`).
+        // SAFETY: AVX2 kernels only; each block has 12 `i16` elements (24 bytes).
+        unsafe {
+            let lo0 = _mm256_set_m128i(
                 _mm_loadu_si128(b[2].as_ptr().cast()),
                 _mm_loadu_si128(b[0].as_ptr().cast()),
             );
-            let v13_lo = _mm256_set_m128i(
+            let hi0 = _mm256_set_m128i(
+                _mm_loadl_epi64(b[2].as_ptr().add(8).cast()),
+                _mm_loadl_epi64(b[0].as_ptr().add(8).cast()),
+            );
+            let lo1 = _mm256_set_m128i(
                 _mm_loadu_si128(b[3].as_ptr().cast()),
                 _mm_loadu_si128(b[1].as_ptr().cast()),
             );
-            let v02_hi = _mm256_set_m128i(
-                _mm_loadl_epi64(b[2][8..].as_ptr().cast()),
-                _mm_loadl_epi64(b[0][8..].as_ptr().cast()),
+            let hi1 = _mm256_set_m128i(
+                _mm_loadl_epi64(b[3].as_ptr().add(8).cast()),
+                _mm_loadl_epi64(b[1].as_ptr().add(8).cast()),
             );
-            let v13_hi = _mm256_set_m128i(
-                _mm_loadl_epi64(b[3][8..].as_ptr().cast()),
-                _mm_loadl_epi64(b[1][8..].as_ptr().cast()),
+            [
+                [
+                    Self(_mm256_shuffle_epi32::<0x00>(lo0)),
+                    Self(_mm256_shuffle_epi32::<0x00>(lo1)),
+                ],
+                [
+                    Self(_mm256_shuffle_epi32::<0x55>(lo0)),
+                    Self(_mm256_shuffle_epi32::<0x55>(lo1)),
+                ],
+                [
+                    Self(_mm256_shuffle_epi32::<0xAA>(lo0)),
+                    Self(_mm256_shuffle_epi32::<0xAA>(lo1)),
+                ],
+                [
+                    Self(_mm256_shuffle_epi32::<0xFF>(lo0)),
+                    Self(_mm256_shuffle_epi32::<0xFF>(lo1)),
+                ],
+                [
+                    Self(_mm256_shuffle_epi32::<0x00>(hi0)),
+                    Self(_mm256_shuffle_epi32::<0x00>(hi1)),
+                ],
+                [
+                    Self(_mm256_shuffle_epi32::<0x55>(hi0)),
+                    Self(_mm256_shuffle_epi32::<0x55>(hi1)),
+                ],
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn splat_alf_pair(t0: i16, t1: i16) -> [Self; 2] {
+        // SAFETY: AVX2 kernels only (module docs).
+        let v = unsafe { Self(_mm256_set1_epi32(packed_pair(t0, t1))) };
+        [v, v]
+    }
+
+    #[inline(always)]
+    fn acc_alf_clipped_pair(
+        acc: Self::Acc,
+        (a0, b0): (Self, Self),
+        (a1, b1): (Self, Self),
+        centre: Self,
+        lim: [Self; 2],
+        coeff: [Self; 2],
+    ) -> Self::Acc {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe {
+            let v00 = _mm256_sub_epi16(a0.0, centre.0);
+            let v10 = _mm256_sub_epi16(a1.0, centre.0);
+            let v01 = _mm256_sub_epi16(b0.0, centre.0);
+            let v11 = _mm256_sub_epi16(b1.0, centre.0);
+            let (mut u0, mut u1) = (
+                _mm256_unpacklo_epi16(v00, v10),
+                _mm256_unpackhi_epi16(v00, v10),
             );
-            let [t0, t1, t2, t3] = expand_pairs_256(
-                _mm256_unpacklo_epi16(v02_lo, v02_lo),
-                _mm256_unpacklo_epi16(v13_lo, v13_lo),
+            let (mut u2, mut u3) = (
+                _mm256_unpacklo_epi16(v01, v11),
+                _mm256_unpackhi_epi16(v01, v11),
             );
-            let [t4, t5, t6, t7] = expand_pairs_256(
-                _mm256_unpackhi_epi16(v02_lo, v02_lo),
-                _mm256_unpackhi_epi16(v13_lo, v13_lo),
+            let zero = _mm256_setzero_si256();
+            let (neg0, neg1) = (
+                _mm256_sub_epi16(zero, lim[0].0),
+                _mm256_sub_epi16(zero, lim[1].0),
             );
-            let [t8, t9, t10, t11] = expand_pairs_256(
-                _mm256_unpacklo_epi16(v02_hi, v02_hi),
-                _mm256_unpacklo_epi16(v13_hi, v13_hi),
+            u0 = _mm256_max_epi16(_mm256_min_epi16(u0, lim[0].0), neg0);
+            u1 = _mm256_max_epi16(_mm256_min_epi16(u1, lim[1].0), neg1);
+            u2 = _mm256_max_epi16(_mm256_min_epi16(u2, lim[0].0), neg0);
+            u3 = _mm256_max_epi16(_mm256_min_epi16(u3, lim[1].0), neg1);
+            let sum_lo = _mm256_add_epi16(u0, u2);
+            let sum_hi = _mm256_add_epi16(u1, u3);
+            [
+                _mm256_add_epi32(acc[0], _mm256_madd_epi16(sum_lo, coeff[0].0)),
+                _mm256_add_epi32(acc[1], _mm256_madd_epi16(sum_hi, coeff[1].0)),
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn acc_alf_linear_pair(acc: Self::Acc, d0: Self, d1: Self, coeff: [Self; 2]) -> Self::Acc {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe {
+            let lo = _mm256_unpacklo_epi16(d0.0, d1.0);
+            let hi = _mm256_unpackhi_epi16(d0.0, d1.0);
+            [
+                _mm256_add_epi32(acc[0], _mm256_madd_epi16(lo, coeff[0].0)),
+                _mm256_add_epi32(acc[1], _mm256_madd_epi16(hi, coeff[1].0)),
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn expand_alf_pair(blocks: &[[i16; 12]], p: usize) -> [Self; 2] {
+        let b = &blocks[..4];
+        let t = 2 * p;
+        assert!(t + 1 < 12);
+        // SAFETY: AVX2 kernels only; `t + 1 < 12` checked above so reading 4 bytes at `t` is in-bounds.
+        unsafe {
+            let p0 = b[0].as_ptr().add(t).cast::<i32>().read_unaligned();
+            let p1 = b[1].as_ptr().add(t).cast::<i32>().read_unaligned();
+            let p2 = b[2].as_ptr().add(t).cast::<i32>().read_unaligned();
+            let p3 = b[3].as_ptr().add(t).cast::<i32>().read_unaligned();
+            let wide = _mm256_cvtepu32_epi64(_mm_setr_epi32(p0, p1, p2, p3));
+            let shuf0 = _mm256_setr_epi8(
+                0, 1, 0, 1, 0, 1, 0, 1, 8, 9, 8, 9, 8, 9, 8, 9, 0, 1, 0, 1, 0, 1, 0, 1, 8, 9, 8, 9,
+                8, 9, 8, 9,
             );
-            [t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11]
+            let shuf1 = _mm256_setr_epi8(
+                2, 3, 2, 3, 2, 3, 2, 3, 10, 11, 10, 11, 10, 11, 10, 11, 2, 3, 2, 3, 2, 3, 2, 3, 10,
+                11, 10, 11, 10, 11, 10, 11,
+            );
+            [
+                Self(_mm256_shuffle_epi8(wide, shuf0)),
+                Self(_mm256_shuffle_epi8(wide, shuf1)),
+            ]
         }
     }
 }
@@ -1778,6 +1961,22 @@ impl I16FilterLanes for I16x8 {
         };
         lo[..4].copy_from_slice(&lo_bytes.to_le_bytes());
         hi[..4].copy_from_slice(&hi_bytes.to_le_bytes());
+    }
+
+    #[inline(always)]
+    fn store_halves(self, lo: &mut [i16], hi: &mut [i16]) {
+        let (lo, hi) = (&mut lo[..4], &mut hi[..4]);
+        // SAFETY: AVX2 kernels only; `lo` and `hi` hold 4 words (8 bytes) each.
+        unsafe {
+            _mm_storel_epi64(lo.as_mut_ptr().cast(), self.0);
+            _mm_storel_epi64(hi.as_mut_ptr().cast(), _mm_unpackhi_epi64(self.0, self.0));
+        }
+    }
+
+    #[inline(always)]
+    fn combine_hi_lo(self, next: Self) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm_alignr_epi8::<8>(next.0, self.0)) }
     }
 
     #[inline(always)]
@@ -1818,6 +2017,108 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
+    fn combine_mid_halves(self, next: Self) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm_alignr_epi8::<8>(next.0, self.0)) }
+    }
+
+    #[inline(always)]
+    fn shift_quarter(self, next: Self) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm_alignr_epi8::<4>(next.0, self.0)) }
+    }
+
+    #[inline(always)]
+    fn expand_alf_params(blocks: &[[i16; 12]]) -> [[Self; 2]; 6] {
+        let b = &blocks[..2];
+        // SAFETY: AVX2 kernels only; each block has 12 `i16` elements (24 bytes).
+        unsafe {
+            let lo0 = _mm_loadu_si128(b[0].as_ptr().cast());
+            let hi0 = _mm_loadl_epi64(b[0].as_ptr().add(8).cast());
+            let lo1 = _mm_loadu_si128(b[1].as_ptr().cast());
+            let hi1 = _mm_loadl_epi64(b[1].as_ptr().add(8).cast());
+            [
+                [
+                    Self(_mm_shuffle_epi32::<0x00>(lo0)),
+                    Self(_mm_shuffle_epi32::<0x00>(lo1)),
+                ],
+                [
+                    Self(_mm_shuffle_epi32::<0x55>(lo0)),
+                    Self(_mm_shuffle_epi32::<0x55>(lo1)),
+                ],
+                [
+                    Self(_mm_shuffle_epi32::<0xAA>(lo0)),
+                    Self(_mm_shuffle_epi32::<0xAA>(lo1)),
+                ],
+                [
+                    Self(_mm_shuffle_epi32::<0xFF>(lo0)),
+                    Self(_mm_shuffle_epi32::<0xFF>(lo1)),
+                ],
+                [
+                    Self(_mm_shuffle_epi32::<0x00>(hi0)),
+                    Self(_mm_shuffle_epi32::<0x00>(hi1)),
+                ],
+                [
+                    Self(_mm_shuffle_epi32::<0x55>(hi0)),
+                    Self(_mm_shuffle_epi32::<0x55>(hi1)),
+                ],
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn splat_alf_pair(t0: i16, t1: i16) -> [Self; 2] {
+        // SAFETY: AVX2 kernels only (module docs).
+        let v = unsafe { Self(_mm_set1_epi32(packed_pair(t0, t1))) };
+        [v, v]
+    }
+
+    #[inline(always)]
+    fn acc_alf_clipped_pair(
+        acc: Self::Acc,
+        (a0, b0): (Self, Self),
+        (a1, b1): (Self, Self),
+        centre: Self,
+        lim: [Self; 2],
+        coeff: [Self; 2],
+    ) -> Self::Acc {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe {
+            let v00 = _mm_sub_epi16(a0.0, centre.0);
+            let v10 = _mm_sub_epi16(a1.0, centre.0);
+            let v01 = _mm_sub_epi16(b0.0, centre.0);
+            let v11 = _mm_sub_epi16(b1.0, centre.0);
+            let (mut u0, mut u1) = (_mm_unpacklo_epi16(v00, v10), _mm_unpackhi_epi16(v00, v10));
+            let (mut u2, mut u3) = (_mm_unpacklo_epi16(v01, v11), _mm_unpackhi_epi16(v01, v11));
+            let zero = _mm_setzero_si128();
+            let (neg0, neg1) = (_mm_sub_epi16(zero, lim[0].0), _mm_sub_epi16(zero, lim[1].0));
+            u0 = _mm_max_epi16(_mm_min_epi16(u0, lim[0].0), neg0);
+            u1 = _mm_max_epi16(_mm_min_epi16(u1, lim[1].0), neg1);
+            u2 = _mm_max_epi16(_mm_min_epi16(u2, lim[0].0), neg0);
+            u3 = _mm_max_epi16(_mm_min_epi16(u3, lim[1].0), neg1);
+            let sum_lo = _mm_add_epi16(u0, u2);
+            let sum_hi = _mm_add_epi16(u1, u3);
+            [
+                _mm_add_epi32(acc[0], _mm_madd_epi16(sum_lo, coeff[0].0)),
+                _mm_add_epi32(acc[1], _mm_madd_epi16(sum_hi, coeff[1].0)),
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn acc_alf_linear_pair(acc: Self::Acc, d0: Self, d1: Self, coeff: [Self; 2]) -> Self::Acc {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe {
+            let lo = _mm_unpacklo_epi16(d0.0, d1.0);
+            let hi = _mm_unpackhi_epi16(d0.0, d1.0);
+            [
+                _mm_add_epi32(acc[0], _mm_madd_epi16(lo, coeff[0].0)),
+                _mm_add_epi32(acc[1], _mm_madd_epi16(hi, coeff[1].0)),
+            ]
+        }
+    }
+
+    #[inline(always)]
     fn any_nonzero(self) -> bool {
         // SAFETY: AVX2 kernels only (module docs).
         unsafe { _mm_testz_si128(self.0, self.0) == 0 }
@@ -1850,6 +2151,17 @@ impl I16Pairs for I16x16 {
             ))
         }
     }
+
+    #[inline(always)]
+    fn interleave_pairs(even: I32x8, odd: I32x8) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe {
+            Self(_mm256_blend_epi16::<0xAA>(
+                even.0,
+                _mm256_slli_epi32::<16>(odd.0),
+            ))
+        }
+    }
 }
 
 impl I16Pairs for I16x8 {
@@ -1871,6 +2183,12 @@ impl I16Pairs for I16x8 {
     fn narrow_pairs(low: I32x4, high: I32x4) -> Self {
         // SAFETY: AVX2 kernels only (module docs).
         unsafe { Self(_mm_packs_epi32(low.0, high.0)) }
+    }
+
+    #[inline(always)]
+    fn interleave_pairs(even: I32x4, odd: I32x4) -> Self {
+        // SAFETY: AVX2 kernels only (module docs).
+        unsafe { Self(_mm_blend_epi16::<0xAA>(even.0, _mm_slli_epi32::<16>(odd.0))) }
     }
 }
 
@@ -2029,5 +2347,30 @@ impl super::I16x8Tiles for I16x16 {
     fn store_tiles8(self, rows: [&mut [u8]; 4]) {
         let [a, b, _, _] = rows;
         self.store_u8_sat_halves(a, b);
+    }
+    #[inline(always)]
+    fn load_u16_tiles8(rows: [&[u16]; 4]) -> Self {
+        let (a, b) = (&rows[0][..8], &rows[1][..8]);
+        // SAFETY: enabled ISA; each load reads eight checked `u16` samples.
+        unsafe {
+            Self(_mm256_set_m128i(
+                _mm_loadu_si128(b.as_ptr().cast()),
+                _mm_loadu_si128(a.as_ptr().cast()),
+            ))
+        }
+    }
+    #[inline(always)]
+    fn store_u16_tiles8(self, rows: [&mut [u16]; 4], max_val: i16) {
+        let [a, b, _, _] = rows;
+        let (a, b) = (&mut a[..8], &mut b[..8]);
+        let clamped = self.max(Self::splat(0)).min(Self::splat(max_val)).0;
+        // SAFETY: enabled ISA; each destination has eight writable `u16` samples.
+        unsafe {
+            _mm_storeu_si128(a.as_mut_ptr().cast(), _mm256_castsi256_si128(clamped));
+            _mm_storeu_si128(
+                b.as_mut_ptr().cast(),
+                _mm256_extracti128_si256::<1>(clamped),
+            );
+        }
     }
 }

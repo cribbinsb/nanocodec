@@ -16,7 +16,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "nanocodec"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-av1",
  "nanocodec-av2",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-analysis"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-av1"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-av2"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-capi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-av1",
  "nanocodec-common",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-av1",
  "nanocodec-av2",
@@ -83,18 +83,18 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-common"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "nanocodec-dsp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
 ]
 
 [[package]]
 name = "nanocodec-encoder"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-analysis",
  "nanocodec-common",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-h264"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-hevc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-vp9"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-vvc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodec-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-av1",
  "nanocodec-av2",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "nc-checkasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanocodec-av1",
  "nanocodec-common",

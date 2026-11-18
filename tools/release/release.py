@@ -89,6 +89,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -117,6 +118,26 @@ PUBLIC_REF = "refs/heads/public"
 #: The demo site and results pages are published from this worktree (PROCEDURES "Publishing").
 
 STAGES = ("commit", "pgo", "charts", "crates", "github", "publish")
+#: A real release's expected wall time per stage, minutes, from 0.3.0 (2026-11-18): the
+#: commit with its landing; both PGO builds side by side (x86 23.5 on the build box,
+#: aarch64 30.7 on the Jetson) and their identity checks; the crates' dry run (2.2 cold);
+#: the GitHub files; the mirror and site. The charts stage is its slowest chain
+#: (CHART_CHAIN_MINUTES); a dry run's pipe-clean took 4.4.
+STAGE_MINUTES = {"commit": 2, "pgo": 34, "crates": 3, "github": 1, "publish": 10}
+#: Each chart chain's minutes at 0.3.0, without the one-off XPSNR backfill of the
+#: zero lines (15 min of scoring per held-out chart): main (zero line 0.6, refresh 16.2
+#: with the c8a and Jetson CBR timing), fresh held out (coding 8.2, refresh 18.0, psnr
+#: render 2.5), all held out (8.6, 31.3, 3.7), CBR c6a 24.9 and c8g 18.8, lens c8a 18.4,
+#: c6a 29.0, c8g 24.2, and the Jetson's lens at two of six points (a third of its 2.3 h
+#: at six) after the main chain's Jetson CBR timing on the same lock (15.4).
+CHART_CHAIN_MINUTES = {"main": 17, "heldout-independent_fresh_2026-11-13": 29,
+                       "heldout-independent_2026-11-13": 44, "cbr-zen3": 25,
+                       "cbr-graviton": 19, "lens-x86": 19, "lens-zen3": 29,
+                       "lens-graviton": 25, "lens-jetson": 61}
+DRY_CHARTS_MINUTES = 5
+#: A release refuses to start when its stages are expected to take longer (owner,
+#: 2026-11-18), unless --over-budget.
+MAX_RELEASE_MINUTES = 90
 SHORT = 8
 
 # --- the release commit -------------------------------------------------------------------
@@ -192,12 +213,23 @@ JETSON_CHART_BUILDS = "nanocodec-data/charts/builds"
 PGO_TIMED_BINARY = "nanocodec-timed-pgo"
 JETSON_PGO_BINARY = "nanocodec-pgo"
 ZERO_LINES = ("x264-medium", "x264-medium~psnr")
+#: The held-out charts are also rendered against this zero line (chart_refresh.py).
+HELDOUT_TUNED_ANCHOR = "x264-medium~psnr"
+#: Each held-out chart's prebuilt streams (chart_refresh.CLIPSET_STREAMS).
+HELDOUT_STREAMS = DATA / "work" / "heldout-chart" / "streams-{stem}"
+#: A held-out zero-line session's spending cap, USD, and hard lifetime, minutes (the
+#: cap prices the whole lifetime; coding or scoring two families takes ~5-15 min)
+ZERO_LINE_BUDGET = 2.0
+ZERO_LINE_LIFETIME = 40
 HELDOUT_CLIPSETS = (DATA / "clips" / "independent_fresh_2026-11-13.json",
                     DATA / "clips" / "independent_2026-11-13.json")
 #: Fixed QP lens: per machine its timing record and how our build is named there.
 LENS_MACHINES = {"x86": "fixed-qp-timing-x86.json", "zen3": "fixed-qp-timing-zen3.json",
                  "graviton": "fixed-qp-timing-graviton.json",
                  "jetson": "fixed-qp-timing-jetson.json"}
+#: The Jetson times the lens at two of its six quantizer points, as its series always
+#: has: all six on its one timing core took 2.3 h at 0.3.0 (2,016 encodes)
+JETSON_LENS_POINTS = "27,42"
 #: SVT-AV1's lens rungs timed beside ours as the same-session check (PROCEDURES).
 LENS_CHECK = ("svtav1-m10", "svtav1-m12", "svtav1-m13")
 #: The rented CBR series beyond chart_refresh's c8a: instance, record, machine wording.
@@ -364,6 +396,14 @@ def bump_files(tree: Path, old: str, new: str) -> None:
     readme.write_text(text)
 
 
+def check_lockfile(tree: Path) -> None:
+    """The lockfile is exactly what cargo would write: a `--locked` build of the tag
+    works (no network: the dependencies are unchanged). Without --no-deps, so every
+    package's entry is checked, the workspace members' versions too."""
+    run([str(CARGO), "metadata", "--locked", "--offline", "--format-version", "1"],
+        cwd=tree, capture=True)
+
+
 def changelog_draft(version: str, since: str, since_version: str, base: str) -> str:
     """A CHANGELOG section for a human to rewrite: the speed note, then the commit
     subjects since the last release grouped by their area prefix (internal areas
@@ -438,15 +478,48 @@ class Release:
         return self.commit[:SHORT]
 
     @property
+    def binary_commit(self) -> str:
+        """The commit the shipped and charted binaries are built from: the release
+        commit, or an earlier one whose builds exist and from which it differs only in
+        files no binary is built from (BINARY_NEUTRAL; reuse_binaries)."""
+        return self.state.get("binary_commit") or self.commit
+
+    @property
+    def binary_short(self) -> str:
+        return self.binary_commit[:SHORT]
+
+    @property
     def build_key(self) -> str:
-        """A build's cache key: the commit, and whether it is a pipe-clean's."""
-        return self.short + ("-pipeclean" if self.pipe_clean else "")
+        """A build's cache key: the binaries' commit, and whether it is a pipe-clean's."""
+        return self.binary_short + ("-pipeclean" if self.pipe_clean else "")
 
     def builds(self, arch: str) -> Path:
         return BUILDS / self.build_key / arch
 
     def version_line(self) -> str:
-        return f"nanocodec {self.version} {self.commit}"
+        return f"nanocodec {self.version} {self.binary_commit}"
+
+    def reuse_binaries(self) -> None:
+        """Never rebuild for a change no binary is built from: an earlier release commit
+        of this version with complete builds of both architectures, differing from the
+        release commit only in BINARY_NEUTRAL files, provides the binaries (0.3.0: the
+        lockfile fixed after its builds were timed for the charts)."""
+        if self.state.get("binary_commit") or not BUILDS.is_dir():
+            return
+        for build in sorted(BUILDS.iterdir()):
+            commit = full_commit(build.name)
+            if (not commit or commit == self.commit or build.name.endswith("-pipeclean")
+                    or not all((build / arch / a).is_file() for arch in ARCHES
+                               for a in ARTIFACTS)):
+                continue
+            changed = git("diff", "--name-only", commit, self.commit).split()
+            if (git("rev-parse", f"{commit}~1") == git("rev-parse", f"{self.commit}~1")
+                    and all(binary_neutral(path) for path in changed)):
+                say(f"binaries of {commit[:9]} reused: it differs from {self.short} only in "
+                    f"{', '.join(changed)}")
+                self.state["binary_commit"] = commit
+                self.save()
+                return
 
     # --- stage 1: commit ----------------------------------------------------------------
 
@@ -472,6 +545,7 @@ class Release:
                 run(["git", "checkout", "-q", "--detach", base], cwd=self.tree)
             release = self.make_release_commit(base, current, since, since_version)
         self.check_release_diff(base, release)
+        check_lockfile(self.tree)
         if self.real:
             self.tag_and_land(release)
         return {"base_commit": base, "release_commit": release, "previous": since_version}
@@ -486,9 +560,10 @@ class Release:
         if self.real and DRAFT_MARKER in changelog.read_text():
             sys.exit(f"edit the drafted section of {changelog} (and delete its marker line), "
                      f"then run this again")
-        # the lockfile must be what cargo would write (no network: the deps are unchanged)
-        run([str(CARGO), "metadata", "--locked", "--offline", "--format-version", "1",
-             "--no-deps"], cwd=self.tree, capture=True)
+        # every workspace member's lockfile entry at the new version (bump_files moves only
+        # the nanocodec-* packages; 0.3.0 shipped nc-checkasm at 0.2.0 in its first cut)
+        run([str(CARGO), "update", "--workspace", "--offline"], cwd=self.tree, capture=True)
+        check_lockfile(self.tree)
         run(["git", "add", "--", *RELEASE_FILES], cwd=self.tree)
         run(["git", "commit", "-q", "-m",
              f"release {self.version}: workspace version, lockfile, crate README, CHANGELOG"],
@@ -697,11 +772,11 @@ class Release:
 
     def place_chart_builds(self) -> None:
         """--real: the PGO builds where chart_refresh --pgo times them."""
-        target = CHART_BUILDS / self.short
+        target = CHART_BUILDS / self.binary_short
         target.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self.builds("x86_64") / "nanocodec", target / PGO_TIMED_BINARY)
-        jetson(f"mkdir -p ~/{JETSON_CHART_BUILDS}/{self.short} && cp ~/{JETSON_ROOT}/{self.build_key}"
-               f"/pgo/nanocodec ~/{JETSON_CHART_BUILDS}/{self.short}/{JETSON_PGO_BINARY}")
+        jetson(f"mkdir -p ~/{JETSON_CHART_BUILDS}/{self.binary_short} && cp ~/{JETSON_ROOT}/{self.build_key}"
+               f"/pgo/nanocodec ~/{JETSON_CHART_BUILDS}/{self.binary_short}/{JETSON_PGO_BINARY}")
 
     # --- stage 3: charts ------------------------------------------------------------------
 
@@ -717,18 +792,40 @@ class Release:
         """(log name, command) of a release's whole chart refresh, run in `tree`."""
         families = ",".join(self.our_families(tree))
         ours = [f for f in self.lens_encoders() if f.startswith("nanocodec-")]
-        commands = [("chart-refresh", ["python3", "tools/dev/chart_refresh.py", self.short,
-                                       "--families", families, "--pgo", "--heldout"])]
+        refresh = ["python3", "tools/dev/chart_refresh.py", self.binary_short]
         record = json.loads((tree / BUILDS_RECORD).read_text())
         base = CHART_BUILDS / record["base"]
-        commands.append(("zero-line-xpsnr", [
-            "bash", "-c", f"cd eval && python3 -m nceval.chart measure --binary {base}/nanocodec "
-            f"--presets-dir {base}/presets --points {','.join(ZERO_LINES)} --workers 8 "
-            f"--over-budget"]))
+        # the zero lines first, with XPSNR (a cached point lacking it is scored again), so
+        # every chart renders once, with them. Main chart: every family on its recorded
+        # build, as chart_refresh's measure gives them (low rungs are judged on every point)
+        builds = "".join(f" --binary-for {f}={CHART_BUILDS / b}/nanocodec --presets-for "
+                         f"{f}={CHART_BUILDS / b}/presets"
+                         for f, b in sorted(record["families"].items()))
+        commands = [
+            ("zero-line-xpsnr", [
+                "bash", "-c", f"cd eval && python3 -m nceval.chart measure --binary "
+                f"{base}/nanocodec --presets-dir {base}/presets{builds} --points "
+                f"{','.join(ZERO_LINES)} --workers 8 --over-budget"]),
+            ("chart-refresh", [*refresh, "--families", families, "--pgo"])]
+        # each held-out chart: its zero lines coded where missing and scored on rented
+        # machines, then the refresh as chart_refresh --heldout runs it (refresh_heldout),
+        # one command each so that a resumed stage does not redo a finished one
+        heldout_tool = ["python3", "tools/dev/aws_heldout_chart.py"]
+        session = ["--budget", str(ZERO_LINE_BUDGET), "--lifetime", str(ZERO_LINE_LIFETIME)]
         for clipset in HELDOUT_CLIPSETS:
-            commands.append((f"zero-line-xpsnr-{clipset.stem}", [
-                "python3", "tools/dev/aws_heldout_chart.py", "run", "--clipset", str(clipset),
-                "--families", ",".join(ZERO_LINES), "--purpose", "release-zero-line"]))
+            zero = ["--clipset", str(clipset), "--families", ",".join(ZERO_LINES),
+                    "--build", str(CHART_BUILDS / self.binary_short),
+                    "--streams", str(HELDOUT_STREAMS).format(stem=clipset.stem), *session]
+            held_out = [*refresh, "--clipset", str(clipset), "--families", families]
+            name = f"heldout-{clipset.stem}"
+            commands += [
+                (f"{name}-zero-line", [*heldout_tool, "run", *zero,
+                                       "--purpose", "release-zero-line"]),
+                (f"{name}-zero-line-score", [*heldout_tool, "score-cloud", *zero,
+                                             "--purpose", "release-zero-line-score"]),
+                (name, [*held_out, "--metrics-only"]),
+                (f"{name}-psnr", [*held_out, "--from", "render",
+                                  "--anchor", HELDOUT_TUNED_ANCHOR])]
         x86 = self.builds("x86_64") / "nanocodec"
         arm = self.builds("aarch64") / "nanocodec"
         for machine, (instance, record_file, wording) in CBR_SERIES.items():
@@ -742,7 +839,7 @@ class Release:
                 "--out", str(out)]))
             commands.append((f"cbr-{machine}-merge", [
                 "bash", "-c", f"python3 tools/dev/anchor_chart_timing.py merge --machine "
-                f"{shlex.quote(wording)} --build {self.short} --record {RESULTS}/{record_file} "
+                f"{shlex.quote(wording)} --build {self.binary_short} --update --out {RESULTS}/{record_file} "
                 f"{out}/repeat-1/t-*.json"]))
         for machine, record_file in LENS_MACHINES.items():
             commands += self.lens_commands(machine, [*ours, *LENS_CHECK], ours,
@@ -767,7 +864,8 @@ class Release:
         tool = ["python3", "tools/dev/fixedqp_timing.py"]
         plan, out = self.root / f"lens-{machine}.json", self.root / f"lens-{machine}"
         if machine == "jetson":
-            binary = ["--binary", f"~/{JETSON_ROOT}/{self.build_key}/pgo/nanocodec", "--rounds", "1"]
+            binary = ["--binary", f"~/{JETSON_ROOT}/{self.build_key}/pgo/nanocodec", "--rounds", "1",
+                      "--points", JETSON_LENS_POINTS]
         elif machine == "graviton":
             binary = ["--binary", str(self.builds("aarch64") / "nanocodec"),
                       "--expect-version", self.version_line()]
@@ -782,7 +880,7 @@ class Release:
                                       "--out", str(plan)]),
             (f"lens-{machine}-run", [*tool, *runner, "--plan", str(plan), "--out", str(out)]),
             (f"lens-{machine}-record", [*tool, "record", "--plan", str(plan), "--out", str(out),
-                                        "--build", self.short, "--record", scratch])]
+                                        "--build", self.binary_short, "--record", scratch])]
         if merged:
             commands.append((f"lens-{machine}-merge", [*tool, "merge", "--record", record,
                                                        "--from", scratch,
@@ -794,7 +892,7 @@ class Release:
         release's directory."""
         results: dict[str, object] = {}
         began = time.monotonic()
-        run(["python3", "tools/dev/chart_refresh.py", self.short, "--families",
+        run(["python3", "tools/dev/chart_refresh.py", self.binary_short, "--families",
              ",".join(self.our_families(REPO)), "--pgo", "--dry-run"],
             log=self.log("charts-refresh-dry-run"))
         for machine, (instance, _, _) in CBR_SERIES.items():
@@ -816,7 +914,7 @@ class Release:
                     results[name] = job.result()
         finally:
             if not self.real:  # the dry run leaves no chart build behind on the board
-                placed = f"~/{JETSON_CHART_BUILDS}/{self.short}"
+                placed = f"~/{JETSON_CHART_BUILDS}/{self.binary_short}"
                 jetson(f"rm -f -- {placed}/{JETSON_PGO_BINARY} && rmdir --ignore-fail-on-non-empty "
                        f"-- {placed}")
         return results
@@ -834,15 +932,15 @@ class Release:
     def stage_jetson_pgo_for_charts(self) -> None:
         """The dry run's Jetson CBR pipe-clean times the PGO build where chart_refresh
         --pgo looks for it (no COMMIT marker: no tool takes it for a chart build)."""
-        jetson(f"mkdir -p ~/{JETSON_CHART_BUILDS}/{self.short} && cp ~/{JETSON_ROOT}/{self.build_key}"
-               f"/pgo/nanocodec ~/{JETSON_CHART_BUILDS}/{self.short}/{JETSON_PGO_BINARY}")
+        jetson(f"mkdir -p ~/{JETSON_CHART_BUILDS}/{self.binary_short} && cp ~/{JETSON_ROOT}/{self.build_key}"
+               f"/pgo/nanocodec ~/{JETSON_CHART_BUILDS}/{self.binary_short}/{JETSON_PGO_BINARY}")
 
     def cbr_jetson_pipe_clean(self) -> dict:
         """chart_refresh's own Jetson timing of one family on the PGO build (its stream
         check included), kept in this release's directory instead of merged."""
         began = time.monotonic()
         refresh_tool = load_module("chart_refresh", REPO / "tools/dev/chart_refresh.py")
-        args = argparse.Namespace(commit=self.short, families=PIPE_CLEAN_FAMILY, retime="",
+        args = argparse.Namespace(commit=self.binary_short, families=PIPE_CLEAN_FAMILY, retime="",
                                   time_anchors="", clipset=None, seed=False, pgo=True,
                                   dry_run=False, metrics_only=False)
         refresh = refresh_tool.Refresh(args)
@@ -861,17 +959,38 @@ class Release:
         if not (tree / ".git").exists():
             run(["git", "worktree", "add", "-b", branch, str(tree), INTEGRATION])
         (tree / RELEASE_RECORD).write_text(json.dumps(
-            {"version": self.version, "commit": self.short, "build": "PGO"}, indent=1) + "\n")
-        timings = {}
+            {"version": self.version, "commit": self.binary_short, "build": "PGO"}, indent=1) + "\n")
+        # a resumed stage skips the commands it finished (each one re-times or rents
+        # machines); the list is cleared when the stage is done
+        timings = self.state.setdefault("charts_progress", {})
+        saving = threading.Lock()
+        chains: dict[str, list[tuple[str, list[str]]]] = {}
         for name, command in self.chart_commands(tree):
-            began = time.monotonic()
-            run(command, cwd=tree, log=self.log(f"charts-{name}"), env=self.lens_env())
-            timings[name] = round((time.monotonic() - began) / 60, 1)
+            chains.setdefault(chart_chain(name), []).append((name, command))
+
+        def run_chain(commands: list[tuple[str, list[str]]]) -> None:
+            for name, command in commands:
+                if name in timings:
+                    say(f"charts: {name} done earlier ({timings[name]} min): skipped")
+                    continue
+                began = time.monotonic()
+                run(command, cwd=tree, log=self.log(f"charts-{name}"), env=self.lens_env())
+                with saving:
+                    timings[name] = round((time.monotonic() - began) / 60, 1)
+                    self.save()
+
+        # each machine's timing is its own rented session (or the Jetson's lock), and the
+        # quality refresh runs on this PC and its own sessions: the stage takes as long
+        # as its slowest chain (0.3.0 ran them one after another: ~2.5 h of timing)
+        with ThreadPoolExecutor(len(chains)) as pool:
+            for job in [pool.submit(run_chain, c) for c in chains.values()]:
+                job.result()
         run(["python3", "-m", "nceval.site"], cwd=tree / "eval", log=self.log("charts-site"))
         run(["git", "add", "--", RESULTS, "web/results/data", "README.md"], cwd=tree)
         run(["git", "commit", "-q", "-m", f"charts: release {self.version} (PGO builds of "
-             f"{self.short}) on every chart machine"], cwd=tree)
+             f"{self.binary_short}) on every chart machine"], cwd=tree)
         run(["tools/dev/land.sh"], cwd=tree, log=self.log("charts-land"))
+        del self.state["charts_progress"]
         return {"minutes": timings}
 
     # --- stage 4: crates ------------------------------------------------------------------
@@ -913,7 +1032,7 @@ class Release:
         sums.write_text("".join(f"{sha256(f)}  {f.name}\n" for f in files))
         notes = out / "notes.md"
         section = changelog_section((self.tree / "CHANGELOG.md").read_text(), self.version)
-        notes.write_text(section + "\n" + build_notes(self.version) + "\n")
+        notes.write_text(section + "\n" + build_notes(self.version) + self.binary_note() + "\n")
         public = self.public_tag_commit()
         tag = f"v{self.version}"
         commands = [["git", "push", "origin", f"{public}:refs/tags/{tag}"],
@@ -928,6 +1047,16 @@ class Release:
                 run(command, log=self.log("github"))
         return {"files": [f.name for f in files], "public_commit": public,
                 "uploaded": self.publish, "script": str(script)}
+
+    def binary_note(self) -> str:
+        """Where the binaries come from when not built from the tagged commit."""
+        if self.binary_commit == self.commit:
+            return ""
+        changed = ", ".join(git("diff", "--name-only", self.binary_commit, self.commit).split())
+        return (f" The binaries were built from {self.binary_short} (`nanocodec --version` "
+                f"names it), which differs from the tagged commit {self.short} only in "
+                f"{changed}: no source change, and every shipped preset codes identical "
+                f"streams.")
 
     def public_tag_commit(self) -> str:
         """The public commit the tag names: the release tree minus the internal docs,
@@ -957,16 +1086,48 @@ class Release:
 
     # --- driver ---------------------------------------------------------------------------
 
+    def stage_estimate(self, stage: str) -> float:
+        """Expected wall minutes of `stage` in this mode (charts: its slowest chain still
+        to run)."""
+        if stage != "charts":
+            return STAGE_MINUTES[stage]
+        if self.pipe_clean or not self.real:
+            return DRY_CHARTS_MINUTES
+        # a chain with a finished command counts as done: a conservative resume estimate
+        # would need each command's minutes, and a resume is rare
+        started = {chart_chain(name) for name in self.state.get("charts_progress", {})}
+        left = [m for chain, m in CHART_CHAIN_MINUTES.items() if chain not in started]
+        return max(left, default=0)
+
+    def plan(self, stages: list[str]) -> list[str]:
+        """The stages to run, printed with their expected wall time; refused when the
+        total passes MAX_RELEASE_MINUTES (unless --over-budget)."""
+        todo = [s for s in stages if not (self.state["stages"].get(s) and not self.args.start
+                                          and not self.args.only)]
+        estimates = {s: self.stage_estimate(s) for s in todo}
+        for stage in stages:
+            say(f"plan: {stage:8s} " + (f"~{estimates[stage]:g} min" if stage in estimates
+                                         else "done earlier"))
+        total = sum(estimates.values())
+        say(f"plan: ~{total:g} min in all (limit {MAX_RELEASE_MINUTES})")
+        if total > MAX_RELEASE_MINUTES and not self.args.over_budget:
+            sys.exit(f"expected ~{total:g} min, over the {MAX_RELEASE_MINUTES}-minute limit: "
+                     f"cut the work, or pass --over-budget")
+        return todo
+
     def execute(self) -> None:
         start = STAGES.index(self.args.start) if self.args.start else 0
-        stages = [self.args.only] if self.args.only else STAGES[start:]
+        stages = [self.args.only] if self.args.only else list(STAGES[start:])
+        todo = self.plan(stages)
         for stage in stages:
-            done = self.state["stages"].get(stage)
-            if done and not self.args.start and not self.args.only:
-                say(f"== {stage}: done earlier ({done['minutes']} min): skipped")
+            if stage not in todo:
+                say(f"== {stage}: done earlier ({self.state['stages'][stage]['minutes']} min): "
+                    f"skipped")
                 continue
             if stage != "commit" and "release_commit" not in self.state:
                 sys.exit("no release commit yet: run the commit stage first")
+            if stage != "commit":
+                self.reuse_binaries()
             say(f"== {stage}")
             began = time.monotonic()
             result = getattr(self, f"stage_{stage}")()
@@ -979,6 +1140,30 @@ class Release:
             say(f"== {stage} done in {minutes} min")
         say(f"state: {self.state_file}")
         print(json.dumps(self.state, indent=1))
+
+
+#: Files no shipped binary is built from: a release commit differing from built ones only
+#: in these reuses their binaries (Release.reuse_binaries).
+BINARY_NEUTRAL_FILES = ("Cargo.lock",)
+
+
+def binary_neutral(path: str) -> bool:
+    """Cargo.lock (the binaries were built with the dependencies it pins; a workspace
+    member's version line in it is not compiled in) or documentation."""
+    return path in BINARY_NEUTRAL_FILES or path.endswith(".md")
+
+
+def chart_chain(name: str) -> str:
+    """The chain a chart command runs in, in order within it: one per timing machine
+    and series (CBR or the Fixed QP lens), one per held-out chart, and the main chart."""
+    for series in ("cbr", "lens"):
+        for machine in (*CBR_SERIES, *LENS_MACHINES):
+            if name.startswith(f"{series}-{machine}"):
+                return f"{series}-{machine}"
+    for clipset in HELDOUT_CLIPSETS:
+        if name.startswith(f"heldout-{clipset.stem}"):
+            return f"heldout-{clipset.stem}"
+    return "main"
 
 
 def build_notes(version: str) -> str:
@@ -1042,6 +1227,8 @@ def main() -> None:
                         help="PGO trained on one codec; stage 3 only its pipe-clean")
     parser.add_argument("--real", action="store_true",
                         help="make the release: tag, landings, charts, mirror (no uploads)")
+    parser.add_argument("--over-budget", action="store_true",
+                        help=f"run although the plan expects over {MAX_RELEASE_MINUTES} min")
     parser.add_argument("--yes-publish", action="store_true",
                         help="with --real: upload to crates.io and GitHub (owner's word only)")
     args = parser.parse_args()

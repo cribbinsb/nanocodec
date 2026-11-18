@@ -41,7 +41,7 @@ const MAX_BUFFER: usize = AV1_MAX_CODED_SIDE * 64;
 /// Largest `|x|` for which `x * INV_SQRT2 + 2048` fits signed `i32`, while
 /// exceeding the 20-bit (12-bit video) stage clamp after `>> 12`:
 /// `(741_533 * 2896 + 2048) >> 12 == 524_336 > 524_287`.
-const PRESCALE_I32_CAP: i32 = 741_533;
+pub(crate) const PRESCALE_I32_CAP: i32 = 741_533;
 
 #[inline(always)]
 fn fixed<V, const M: usize>(x: &[V]) -> &[V; M] {
@@ -62,7 +62,7 @@ const fn sides<const W: usize, const H: usize>() -> Av1TxSize {
 
 /// Clamp every lane of `v` to signed `BITS` bits (`[-2^(BITS-1), 2^(BITS-1)-1]`).
 #[inline(always)]
-pub(super) fn clamp_bits<V: I32Lanes, const BITS: u32>(v: V) -> V {
+pub(crate) fn clamp_bits<V: I32Lanes, const BITS: u32>(v: V) -> V {
     if BITS == 16 {
         v.clamp16()
     } else {
@@ -77,7 +77,7 @@ pub(super) fn clamp_bits<V: I32Lanes, const BITS: u32>(v: V) -> V {
 /// `20` at 12-bit row).
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct Clamped<V, const BITS: u32>(V);
+pub(crate) struct Clamped<V, const BITS: u32>(V);
 
 impl<V: I32Lanes, const BITS: u32> InverseLanes for Clamped<V, BITS> {
     #[inline]
@@ -107,13 +107,13 @@ impl<V: I32Lanes, const BITS: u32> InverseLanes for Clamped<V, BITS> {
 }
 
 #[inline(always)]
-fn as_clamped<V, const BITS: u32, const N: usize>(x: &[V; N]) -> &[Clamped<V, BITS>; N] {
+pub(crate) fn as_clamped<V, const BITS: u32, const N: usize>(x: &[V; N]) -> &[Clamped<V, BITS>; N] {
     // SAFETY: `Clamped<V, BITS>` is `#[repr(transparent)]` over `V`.
     unsafe { &*x.as_ptr().cast::<[Clamped<V, BITS>; N]>() }
 }
 
 #[inline(always)]
-fn as_clamped_mut<V, const BITS: u32, const N: usize>(
+pub(crate) fn as_clamped_mut<V, const BITS: u32, const N: usize>(
     y: &mut [V; N],
 ) -> &mut [Clamped<V, BITS>; N] {
     // SAFETY: `Clamped<V, BITS>` is `#[repr(transparent)]` over `V`.

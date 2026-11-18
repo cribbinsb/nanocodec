@@ -10,7 +10,7 @@
 use crate::Vp9Pass;
 use crate::txfm::{dct, inverse_lanes::InverseLanes, sparse_lanes::Sparse};
 
-mod adst;
+pub(super) mod adst;
 #[cfg(target_arch = "x86_64")]
 pub(super) mod avx2;
 #[cfg(target_arch = "aarch64")]
@@ -19,8 +19,8 @@ pub(super) mod neon;
 pub(super) mod simd128;
 
 const LANES: usize = 8;
-const COS_BITS: u32 = 14;
-const COSINE: [i32; 64] = {
+pub(super) const COS_BITS: u32 = 14;
+pub(super) const COSINE: [i32; 64] = {
     let mut values = [0; 64];
     let mut i = 0;
     while i < 32 {
@@ -47,18 +47,23 @@ const fn doubled_weight(w: i32) -> Option<i16> {
 /// Wide products may wrap modulo 2^32: after rounding by 14 and truncating
 /// to i16, the discarded multiple is 2^18, itself a multiple of 2^16.
 /// This is exact for the ADST's four-product rotations even at extremes.
-trait Products: Copy {
-    type Narrow: Lanes<Wide = Self>;
+pub(super) trait Products: Copy {
+    type Narrow: WideLanes<Wide = Self>;
     fn add(self, other: Self) -> Self;
     fn sub(self, other: Self) -> Self;
     fn narrow(self) -> Self::Narrow;
     fn round14(self) -> Self::Narrow;
 }
 
-trait Lanes: InverseLanes {
+/// Shared 1-D butterfly and rotation interface across 8-bit packed `i16`
+/// lanes and high-bit-depth `i32` lanes.
+pub(super) trait WideLanes: InverseLanes {
     type Wide: Products<Narrow = Self>;
     fn wide(self, weight: i32) -> Self::Wide;
     fn products(w0: i32, a: Self, w1: i32, b: Self) -> Self::Wide;
+}
+
+trait Lanes: WideLanes {
     fn load_i16(src: &[i16]) -> Self;
     fn store_i16(self, dst: &mut [i16]);
     /// `(x + 2^(shift - 1)) >> shift` per lane, exact over the whole i16
@@ -89,7 +94,11 @@ fn transpose<V: Lanes>(mut rows: [V; LANES]) -> [V; LANES] {
 }
 
 #[inline(always)]
-fn line<V: Lanes, const N: usize>(kind: Vp9Pass, input: &[V; N], output: &mut [V; N]) {
+pub(super) fn line<V: WideLanes, const N: usize>(
+    kind: Vp9Pass,
+    input: &[V; N],
+    output: &mut [V; N],
+) {
     match (kind, N) {
         (Vp9Pass::Dct, 8) => dct::idct8(
             input.first_chunk().unwrap(),
@@ -165,7 +174,7 @@ fn column_pass<V: Lanes, const N: usize>(columns: Vp9Pass, temp: &[i16], col: us
 }
 
 /// Final rounding shift of the inverse transforms (`ROUND_POWER_OF_TWO`).
-const fn output_shift(n: usize) -> u32 {
+pub(super) const fn output_shift(n: usize) -> u32 {
     if n == 8 { 5 } else { 6 }
 }
 
@@ -295,7 +304,7 @@ fn dct_add<V: Lanes, const N: usize, const K: usize, const G: usize>(
 /// kept apart from the loads so that they unroll and every discriminant is
 /// a compile-time constant.
 #[inline(always)]
-fn corner_dct<V: Lanes, const N: usize, const K: usize>(input: &[V; N]) -> [V; N] {
+pub(super) fn corner_dct<V: WideLanes, const N: usize, const K: usize>(input: &[V; N]) -> [V; N] {
     let mut x = [Sparse::Zero; N];
     for (sparse, &lanes) in x.iter_mut().zip(input).take(K) {
         *sparse = Sparse::Lanes(lanes);

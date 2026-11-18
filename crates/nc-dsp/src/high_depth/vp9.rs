@@ -258,7 +258,7 @@ impl Vp9Pixel for u16 {
         log2: u8,
         passes: Vp9Passes,
         coefficients: &[i32],
-        _nonzero: (usize, usize),
+        nonzero: (usize, usize),
         (dst, dst_stride): (&mut [u16], usize),
     ) {
         assert!((2..=5).contains(&log2), "VP9 transform size outside 4..=32");
@@ -268,13 +268,21 @@ impl Vp9Pixel for u16 {
         );
         let side = 1_usize << log2;
         assert!(dst_stride >= side && dst.len() > (side - 1) * dst_stride + side - 1);
-        crate::vp9_txfm::vp9_inverse_add_high(
-            log2,
-            passes,
-            &coefficients[..side * side],
-            (dst, dst_stride),
-            kernels.depth,
-        );
+        // SAFETY: the table matches a supported ISA; `coefficients` and `dst`
+        // were checked above to cover `side * side` and `side` strided rows.
+        unsafe {
+            (kernels.dsp.high.vp9_inverse)(
+                log2,
+                passes.0,
+                passes.1,
+                &coefficients[..side * side],
+                nonzero,
+                dst,
+                dst_stride,
+                kernels.depth,
+                kernels.dsp.high.av1_inverse.dc,
+            );
+        }
     }
 
     fn vp9_filter_edge(

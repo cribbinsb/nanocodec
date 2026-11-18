@@ -56,13 +56,13 @@ impl Models {
         }
     }
 }
-struct Walk {
+struct Walk<'a> {
     width: usize,
-    values: Vec<i32>,
+    values: &'a mut [i32],
     budget: usize,
     bdpcm: bool,
 }
-impl Walk {
+impl Walk<'_> {
     fn neighbours(&self, position: usize) -> [i32; 2] {
         [
             if position.is_multiple_of(self.width) {
@@ -203,37 +203,50 @@ impl Walk {
     }
 }
 
-pub(super) fn read(
+pub(super) fn read_into(
     reader: &mut Reader<'_>,
     models: &mut Models,
+    arena: &mut super::CoeffArena,
     size: (usize, usize),
     bdpcm: bool,
-) -> Result<Vec<i32>> {
+) -> Result<(u32, u16)> {
     let (width, height) = size;
-    let scan = Scan::new(width, height);
+    let start = u32::try_from(arena.entries.len())
+        .map_err(|_| DecodeError::Malformed("VVC coeff arena"))?;
+    let scan = Scan::of(width, height);
+    let area = width * height;
+    let values = &mut arena.skip_vals[..area];
+    values.fill(0);
     let mut walk = Walk {
         width,
-        values: vec![0; width * height],
-        budget: width * height * 7 / 4,
+        values,
+        budget: area * 7 / 4,
         bdpcm,
     };
-    let mut groups = vec![false; scan.groups.len()];
+    let mut groups = 0u64;
     let mut any = false;
     for (index, &raster) in scan.groups.iter().enumerate() {
-        let left = raster % scan.columns != 0 && groups[raster - 1];
-        let above = raster >= scan.columns && groups[raster - scan.columns];
-        let significant = (index + 1 == groups.len() && !any)
+        let left = raster % scan.columns != 0 && (groups >> (raster - 1)) & 1 != 0;
+        let above = raster >= scan.columns && (groups >> (raster - scan.columns)) & 1 != 0;
+        let significant = (index + 1 == scan.groups.len() && !any)
             || reader.bin(&mut models.group[usize::from(left) + usize::from(above)])?;
         if significant {
-            groups[raster] = true;
+            groups |= 1u64 << raster;
             any = true;
-            let start = index * scan.group_size;
+            let g_start = index * scan.group_size;
             walk.group(
                 reader,
                 models,
-                &scan.positions[start..start + scan.group_size],
+                &scan.positions[g_start..g_start + scan.group_size],
             )?;
         }
     }
-    Ok(walk.values)
+    for (pos, &val) in walk.values.iter().enumerate() {
+        if val != 0 {
+            arena.entries.push((pos as u16, val as i16));
+        }
+    }
+    let count = u16::try_from(arena.entries.len() - start as usize)
+        .map_err(|_| DecodeError::Malformed("VVC coeff count"))?;
+    Ok((start, count))
 }

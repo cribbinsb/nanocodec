@@ -19,8 +19,8 @@ use core::arch::wasm32::{
     i32x4_dot_i16x8, i32x4_eq, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8, i32x4_max,
     i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_splat, i32x4_sub, i32x4_trunc_sat_f32x4,
     i64x2_extract_lane, u8x16_narrow_i16x8, u16x8_extend_high_u8x16, u16x8_extend_low_u8x16,
-    u32x4_extend_high_u16x8, u32x4_extend_low_u16x8, u32x4_shr, u64x2_splat, v128, v128_load,
-    v128_store,
+    u16x8_narrow_i32x4, u32x4_extend_high_u16x8, u32x4_extend_low_u16x8, u32x4_shr, u64x2_splat,
+    v128, v128_load, v128_store,
 };
 
 use super::kernels::{Kernels, WIENER_ROWS};
@@ -166,7 +166,7 @@ fn wiener_v(rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8]) {
 
 /// Eight `i32` lanes for the self-guided kernels.
 #[derive(Clone, Copy)]
-struct Lanes(v128, v128);
+pub(super) struct Lanes(v128, v128);
 
 impl Lanes {
     /// `f` on both halves.
@@ -225,6 +225,16 @@ impl SgrLanes for Lanes {
         )
     }
     #[inline(always)]
+    fn load_u16(src: &[u16]) -> Self {
+        let src = &src[..8];
+        // SAFETY: the load covers `src`.
+        let words = unsafe { v128_load(src.as_ptr().cast()) };
+        Self(
+            u32x4_extend_low_u16x8(words),
+            u32x4_extend_high_u16x8(words),
+        )
+    }
+    #[inline(always)]
     fn store(self, dst: &mut [i32]) {
         let dst = &mut dst[..8];
         // SAFETY: both stores cover `dst`.
@@ -244,6 +254,18 @@ impl SgrLanes for Lanes {
         let words = i16x8_narrow_i32x4(self.0, self.1);
         let bytes = i64x2_extract_lane::<0>(u8x16_narrow_i16x8(words, words));
         dst[..8].copy_from_slice(&bytes.to_le_bytes());
+    }
+    #[inline(always)]
+    fn store_u16_clip(self, max_val: i32, dst: &mut [u16]) {
+        let dst = &mut dst[..8];
+        let clamped = self.max(Self::splat(0)).min(Self::splat(max_val));
+        // SAFETY: the store covers `dst`.
+        unsafe {
+            v128_store(
+                dst.as_mut_ptr().cast(),
+                u16x8_narrow_i32x4(clamped.0, clamped.1),
+            );
+        }
     }
     #[inline(always)]
     fn add(self, other: Self) -> Self {

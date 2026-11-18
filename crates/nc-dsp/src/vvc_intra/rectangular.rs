@@ -487,6 +487,29 @@ impl crate::Dsp {
     }
 }
 
+/// Validate inputs of [`crate::Dsp::vvc_mrl_predict`].
+pub(crate) fn check_mrl(
+    (width, height): (usize, usize),
+    direction: u8,
+    reference_line: u8,
+    (top, left): (&[i32], &[i32]),
+    out_len: usize,
+) {
+    let valid = |n: usize| n.is_power_of_two() && (4..=64).contains(&n);
+    let line = usize::from(reference_line);
+    assert!(
+        valid(width)
+            && valid(height)
+            && (1..=66).contains(&direction)
+            && matches!(reference_line, 1 | 2)
+    );
+    assert!(
+        top.len() >= 2 * width + line
+            && left.len() >= 2 * height + line
+            && out_len >= width * height
+    );
+}
+
 /// [`crate::Dsp::vvc_mrl_predict`] at `depth`: the DC average and the
 /// angular samples clip to it (H.266 §8.4.5.2.12, §8.4.5.2.13).
 ///
@@ -502,19 +525,14 @@ pub(crate) fn mrl_predict<T: Sample>(
 ) {
     // Folds to the constant 8 in the 8-bit instance.
     let depth = depth.of::<T>();
-    let valid = |n: usize| n.is_power_of_two() && (4..=64).contains(&n);
+    check_mrl(
+        (width, height),
+        direction,
+        reference_line,
+        (top, left),
+        out.len(),
+    );
     let line = usize::from(reference_line);
-    assert!(
-        valid(width)
-            && valid(height)
-            && (1..=66).contains(&direction)
-            && matches!(reference_line, 1 | 2)
-    );
-    assert!(
-        top.len() >= 2 * width + line
-            && left.len() >= 2 * height + line
-            && out.len() >= width * height
-    );
     if direction == 1 {
         let top = &top[line..line + width];
         let left = &left[line..line + height];
@@ -542,6 +560,20 @@ pub(crate) fn mrl_predict<T: Sample>(
     }
 }
 
+/// Validate inputs of [`crate::Dsp::vvc_intra_predict_isp`].
+pub(crate) fn check_isp(
+    prediction_size: (usize, usize),
+    (width, height): (usize, usize),
+    direction: u8,
+    (top, left): (&[i32], &[i32]),
+    out_len: usize,
+) {
+    let valid = |n: usize| n.is_power_of_two() && n <= 64;
+    assert!(valid(width) && valid(height) && width >= 4 && width * height >= 16);
+    assert!(valid(prediction_size.0) && valid(prediction_size.1) && direction <= 66);
+    assert!(top.len() > width && left.len() > height && out_len >= width * height);
+}
+
 /// [`crate::Dsp::vvc_intra_predict_isp`] at `depth`: the angular samples
 /// clip to it (H.266 §8.4.5.2.13); planar and DC need no clip.
 ///
@@ -558,10 +590,7 @@ pub(crate) fn isp_predict<T: Sample>(
     // Folds to the constant 8 in the 8-bit instance.
     let depth = depth.of::<T>();
     let (width, height) = size;
-    let valid = |n: usize| n.is_power_of_two() && n <= 64;
-    assert!(valid(width) && valid(height) && width >= 4 && width * height >= 16);
-    assert!(valid(prediction_size.0) && valid(prediction_size.1) && direction <= 66);
-    assert!(top.len() > width && left.len() > height && out.len() >= width * height);
+    check_isp(prediction_size, size, direction, (top, left), out.len());
     if direction <= 1 {
         if height >= 4 {
             super::isp::smooth(size, direction == 0, top, left, out);

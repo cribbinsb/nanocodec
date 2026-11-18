@@ -16,14 +16,15 @@ impl std::ops::Deref for RefBuf {
     }
 }
 
+#[derive(Debug, Default)]
 pub(super) struct Availability {
     dimensions: [usize; 2],
     stride: usize,
-    completed: [Vec<bool>; 2],
-    /// Tile index of each completed cell, and of the current CU: another
-    /// tile's samples are unavailable.
-    tiles: [Vec<u16>; 2],
-    tile: u16,
+    /// `0` when incomplete, else `epoch_base + tile + 1`: another tile's or
+    /// earlier slice's samples are unavailable without clearing between slices.
+    cells: [Vec<u16>; 2],
+    epoch_base: u16,
+    tag: u16,
     /// CTU size (log2) when the wavefront rule applies.
     wavefront: Option<u8>,
     /// First luma column that the current CU may not refer to.
@@ -33,22 +34,41 @@ impl Availability {
     /// `wavefront`: the CTU size (log2) of a sequence with entropy
     /// synchronisation, where a CU sees nothing in CTU columns to the right
     /// of its own (H.266 §6.4.4).
+    #[cfg(test)]
     pub fn new(dimensions: [usize; 2], wavefront: Option<u8>) -> Self {
+        let mut avail = Self::default();
+        avail.reset(dimensions, wavefront, 0);
+        avail
+    }
+    /// Prepare for a new slice of `dimensions` whose largest tile index is
+    /// `max_tile`, clearing the grid only on geometry change or `u16` wrap.
+    pub fn reset(&mut self, dimensions: [usize; 2], wavefront: Option<u8>, max_tile: u16) {
         let stride = dimensions[0].div_ceil(4);
         let count = stride * dimensions[1].div_ceil(4);
-        Self {
-            dimensions,
-            stride,
-            completed: [vec![false; count], vec![false; count]],
-            tiles: [vec![0; count], vec![0; count]],
-            tile: 0,
-            wavefront,
-            right_limit: usize::MAX,
+        let need_clear = self.dimensions != dimensions
+            || self.cells[0].len() != count
+            || u32::from(self.epoch_base) + u32::from(max_tile) + 2 > u32::from(u16::MAX);
+        self.dimensions = dimensions;
+        self.stride = stride;
+        self.wavefront = wavefront;
+        self.right_limit = usize::MAX;
+        if need_clear {
+            for grid in &mut self.cells {
+                grid.clear();
+                grid.resize(count, 0);
+            }
+            self.epoch_base = 0;
         }
+        self.tag = self.epoch_base + 1;
+    }
+    /// Advance `epoch_base` past `max_tile` after a slice completes.
+    pub fn finish_slice(&mut self, max_tile: u16) {
+        self.epoch_base = self.epoch_base.saturating_add(max_tile.saturating_add(1));
     }
     /// Set the CU whose neighbours the following queries are about.
+    #[inline]
     pub fn enter(&mut self, unit: &super::Unit) {
-        self.tile = unit.tile;
+        self.tag = self.epoch_base + unit.tile + 1;
         if let Some(ctu_log2) = self.wavefront {
             self.right_limit = ((unit.node.x >> ctu_log2) + 1) << ctu_log2;
         }
@@ -64,9 +84,11 @@ impl Availability {
             return false;
         }
         let cell = ((y as usize) << channel >> 2) * self.stride + ((x as usize) << channel >> 2);
-        self.completed[channel][cell] && self.tiles[channel][cell] == self.tile
+        self.cells[channel][cell] == self.tag
     }
+    #[inline]
     pub fn mark_transform(&mut self, unit: &super::Unit, transform: &super::Transform) {
+        let tag = self.epoch_base + unit.tile + 1;
         for channel in if unit.combined {
             0..2
         } else {
@@ -81,10 +103,10 @@ impl Availability {
                 block
             };
             let cols = n.width().div_ceil(4);
+            let grid = &mut self.cells[channel];
             for y in (n.y..n.y + n.height()).step_by(4) {
                 let base = (y >> 2) * self.stride + (n.x >> 2);
-                self.completed[channel][base..base + cols].fill(true);
-                self.tiles[channel][base..base + cols].fill(unit.tile);
+                grid[base..base + cols].fill(tag);
             }
         }
     }
@@ -97,6 +119,7 @@ pub(super) struct References {
 }
 
 /// Slice-reusable reference gathering buffers (zero per-block initialization).
+#[derive(Debug)]
 pub(super) struct RefScratch {
     raw: [i32; 520],
     top: [i32; 260],
@@ -198,31 +221,81 @@ impl References {
         let (left_len, top_len) = (2 * height, 2 * width);
         let total = left_len + 1 + top_len;
         let raw = &mut scratch.raw[..total];
-        raw.fill(UNSET);
-        let lx = x as isize - 1;
-        if lx >= 0 {
-            let ux = lx as usize;
-            for (idx, dy) in (0..left_len).rev().enumerate() {
-                let py = (y + dy) as isize;
-                if available.has(channel, lx, py) {
-                    raw[idx] = view.row(y + dy)[ux].to_i32();
+        let tag = available.tag;
+        let cells = &available.cells[channel];
+        let cell_stride = available.stride;
+        let x_limit = (available.dimensions[0] >> channel).min(available.right_limit >> channel);
+        let y_limit = available.dimensions[1] >> channel;
+        let cell_step = 4 >> channel;
+        let mut any_unset = false;
+        if x > 0 && x - 1 < x_limit {
+            let ux = x - 1;
+            let cell_x = (ux << channel) >> 2;
+            let valid_rows = left_len.min(y_limit.saturating_sub(y));
+            if valid_rows < left_len {
+                any_unset = true;
+                raw[..left_len - valid_rows].fill(UNSET);
+            }
+            let data = view.data();
+            let p_stride = view.stride();
+            let mut dy = 0;
+            while dy < valid_rows {
+                let ry = y + dy;
+                let run = (cell_step - (ry & (cell_step - 1))).min(valid_rows - dy);
+                let idx_end = left_len - dy;
+                if cells[((ry << channel) >> 2) * cell_stride + cell_x] == tag {
+                    for k in 0..run {
+                        raw[idx_end - 1 - k] = data[(ry + k) * p_stride + ux].to_i32();
+                    }
+                } else {
+                    any_unset = true;
+                    raw[idx_end - run..idx_end].fill(UNSET);
                 }
+                dy += run;
             }
-            if available.has(channel, lx, y as isize - 1) {
-                raw[left_len] = view.row(y - 1)[ux].to_i32();
+            if y > 0
+                && y - 1 < y_limit
+                && cells[(((y - 1) << channel) >> 2) * cell_stride + cell_x] == tag
+            {
+                raw[left_len] = data[(y - 1) * p_stride + ux].to_i32();
+            } else {
+                any_unset = true;
+                raw[left_len] = UNSET;
             }
+        } else {
+            any_unset = true;
+            raw[..=left_len].fill(UNSET);
         }
-        if y > 0 {
+        if y > 0 && y - 1 < y_limit && x < x_limit {
             let top_row = view.row(y - 1);
-            let py = y as isize - 1;
-            for dx in 0..top_len {
-                let px = (x + dx) as isize;
-                if available.has(channel, px, py) {
-                    raw[left_len + 1 + dx] = top_row[x + dx].to_i32();
+            let row_cells = &cells[(((y - 1) << channel) >> 2) * cell_stride..];
+            let valid_cols = top_len.min(x_limit - x);
+            let mut dx = 0;
+            while dx < valid_cols {
+                let rx = x + dx;
+                let run = (cell_step - (rx & (cell_step - 1))).min(valid_cols - dx);
+                let out_base = left_len + 1 + dx;
+                if row_cells[(rx << channel) >> 2] == tag {
+                    for k in 0..run {
+                        raw[out_base + k] = top_row[rx + k].to_i32();
+                    }
+                } else {
+                    any_unset = true;
+                    raw[out_base..out_base + run].fill(UNSET);
                 }
+                dx += run;
             }
+            if valid_cols < top_len {
+                any_unset = true;
+                raw[left_len + 1 + valid_cols..total].fill(UNSET);
+            }
+        } else {
+            any_unset = true;
+            raw[left_len + 1..total].fill(UNSET);
         }
-        substitute_chain(raw, depth.mid());
+        if any_unset {
+            substitute_chain(raw, depth.mid());
+        }
         if smooth {
             let mut prev = raw[0];
             for i in 1..total - 1 {

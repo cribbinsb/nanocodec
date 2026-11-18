@@ -76,6 +76,8 @@ mod vp9_inverse;
 #[allow(unsafe_code)]
 mod vp9_loop_filter;
 mod vp9_mc;
+#[allow(unsafe_code)]
+mod vp9_mc_high;
 mod vp9_mc_scaled;
 #[allow(unsafe_code)]
 mod vp9_mc_simd;
@@ -128,6 +130,7 @@ pub use convert::DisplayMatrix;
 pub use cpu::Isa;
 pub use deblock::av1::{AV1_EDGE_LINES, AV1_EDGE_REACH, Av1EdgeFilter, Av1FilterLength};
 pub use deblock::av2::{AV2_EDGE_LINES, Av2EdgeFilter};
+pub use deblock::hevc_high::{HevcLumaPiece, MAX_BATCH_PIECES as HEVC_DEBLOCK_BATCH_PIECES};
 pub use deblock::runs::{EdgeRun, HevcChromaFilter, HevcLumaFilter, VvcLumaFilter};
 pub use deblock::{H264EdgeParams, H264MbEdges};
 pub use diff::{SUBPEL_VARIANCE_POSITIONS, Variance, VarianceEnergy};

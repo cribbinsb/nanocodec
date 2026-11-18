@@ -7,11 +7,16 @@ pub(super) struct Transform {
     pub block: Block,
     pub chroma_block: Option<Block>,
     pub joint: u8,
+    pub coded: [bool; 3],
     pub skip: [bool; 3],
+    pub stats: [coeff::CoeffStats; 3],
+    pub spans: [(u32, u16); 3],
+    #[cfg(test)]
     pub levels: [Vec<i32>; 3],
     /// The inverse of each coded plane's `levels` (`inverse_residuals`):
     /// 16 bits, as the transforms clip (§8.7.4.1) and scaling clamps
     /// (§8.7.3).
+    #[cfg(test)]
     pub residuals: [Vec<i16>; 3],
 }
 impl Transform {
@@ -20,8 +25,13 @@ impl Transform {
             block,
             chroma_block: Some(block),
             joint: 0,
+            coded: [false; 3],
             skip: [false; 3],
+            stats: [coeff::CoeffStats::default(); 3],
+            spans: [(0, 0); 3],
+            #[cfg(test)]
             levels: std::array::from_fn(|_| Vec::new()),
+            #[cfg(test)]
             residuals: std::array::from_fn(|_| Vec::new()),
         }
     }
@@ -64,16 +74,22 @@ pub(super) fn isp_units(node: Node, split: crate::isp::Split) -> Vec<Transform> 
 /// Preserve CU geometry for contexts while tiling coefficient storage separately.
 /// Up to 64x64 uses the same transform partitioner as our encoder/subset decoder.
 pub(super) fn empty_units(node: Node, _channel: usize, max_log2: u8) -> Result<Vec<Transform>> {
+    if ![5, 6].contains(&max_log2) {
+        return Err(DecodeError::Unsupported("VVC general transform size"));
+    }
     let block = Block::rect(
         node.x,
         node.y,
         node.width.ilog2() as u8,
         node.height.ilog2() as u8,
     );
-    if ![5, 6].contains(&max_log2) {
-        return Err(DecodeError::Unsupported("VVC general transform size"));
+    let max_size = 1usize << max_log2;
+    if node.width <= max_size && node.height <= max_size {
+        return Ok(vec![Transform::empty(block)]);
     }
-    let mut units = Vec::new();
+    let cols = node.width.div_ceil(max_size);
+    let rows = node.height.div_ceil(max_size);
+    let mut units = Vec::with_capacity(cols * rows);
     let region_log2 = max_log2 + 1;
     let region_size = 1 << region_log2;
     for y in (node.y..node.y + node.height).step_by(region_size) {
@@ -94,15 +110,17 @@ impl Parser<'_> {
     pub(super) fn residuals(&mut self, reader: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
         let mut transforms = std::mem::take(&mut unit.transforms);
         let split = transforms.len() != 1;
-        let mut earlier = Vec::new();
+        let mut earlier = [false; 4];
         let count = transforms.len();
         for (index, transform) in transforms.iter_mut().enumerate() {
             if unit.sbt.is_some() && index == 0 {
                 continue;
             }
-            let isp = unit.isp.map(|_| (index, count, earlier.as_slice()));
+            let isp = unit.isp.map(|_| (index, count, &earlier[..index]));
             self.residual_unit(reader, unit, transform, split, isp)?;
-            earlier.push(!transform.levels[0].is_empty());
+            if index < earlier.len() {
+                earlier[index] = transform.coded[0];
+            }
         }
         unit.transforms = transforms;
         Ok(())
@@ -146,6 +164,7 @@ impl Parser<'_> {
         }
         for (plane, present) in cbf.into_iter().enumerate() {
             if present && !(plane == 2 && transform.joint == 3) {
+                transform.coded[plane] = true;
                 self.transform_skip(reader, unit, transform, plane)?;
                 let channel = usize::from(plane != 0);
                 let block = if plane == 0 {
@@ -153,18 +172,23 @@ impl Parser<'_> {
                 } else {
                     transform.chroma_block.unwrap()
                 };
-                transform.levels[plane] =
+                (transform.spans[plane], transform.stats[plane]) =
                     if transform.skip[plane] && !self.header.ts_residual_disabled {
-                        super::skip_coeff::read(
-                            reader,
-                            &mut self.skip_coefficients,
-                            (block.width() >> channel, block.height() >> channel),
-                            unit.bdpcm[channel] != 0,
-                        )?
+                        (
+                            super::skip_coeff::read_into(
+                                reader,
+                                &mut self.skip_coefficients,
+                                self.arena,
+                                (block.width() >> channel, block.height() >> channel),
+                                unit.bdpcm[channel] != 0,
+                            )?,
+                            coeff::CoeffStats::default(),
+                        )
                     } else {
-                        coeff::read(
+                        coeff::read_into(
                             reader,
                             &mut self.coefficients,
+                            self.arena,
                             block.width() >> channel,
                             block.height() >> channel,
                             channel,

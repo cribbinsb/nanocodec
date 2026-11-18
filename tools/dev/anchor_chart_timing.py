@@ -560,7 +560,18 @@ def merge(args: argparse.Namespace) -> None:
         if point not in points:  # a typo would leave the point on the record's build
             raise SystemExit(f"--build-for {point}: not among the merged points")
         points[point]["build"] = build  # timed on another build than the record's
-    pathlib.Path(args.out).write_text(json.dumps({**meta, "points": points}, indent=1) + "\n")
+    out = pathlib.Path(args.out)
+    if args.update:  # these points re-timed into an existing record; the rest stay as timed
+        record = json.loads(out.read_text())
+        for point, entry in points.items():
+            if point == anchor:  # the record's anchor keeps its own session's time
+                continue
+            ours = point.startswith("nanocodec-")  # a reference tool has no build of ours
+            record["points"][point] = ({**entry, "build": entry.get("build", args.build)}
+                                       if ours and args.build else entry)
+        out.write_text(json.dumps(record, indent=1) + "\n")
+        return
+    out.write_text(json.dumps({**meta, "points": points}, indent=1) + "\n")
 
 
 def main(argv: list[str]) -> None:
@@ -610,6 +621,9 @@ def main(argv: list[str]) -> None:
     m.add_argument("--build", help="the commit (8 characters) our points were all timed at")
     m.add_argument("--build-for", action="append", default=[], metavar="POINT=COMMIT",
                    help="a point of ours timed on another build than --build's")
+    m.add_argument("--update", action="store_true",
+                   help="replace these points (each on --build) in the existing --out record, "
+                        "keeping its other points, anchor and description")
     m.add_argument("files", nargs="+")
     args = parser.parse_args(argv)
     {"scan": scan, "time": time_point, "time-host": time_host, "time-cloud": time_cloud,

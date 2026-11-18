@@ -38,6 +38,7 @@ fn official_general_inter_syntax() {
                 let h = SliceHeader::parse(&rbsp, kind, s, p, None).unwrap();
                 let counts = filter_counts(&banks, &h).unwrap();
                 let mut filters = vec![CtuFilters::default(); h.ctus.len()];
+                let mut arena = CoeffArena::default();
                 let units = parse_filtered(
                     &rbsp,
                     s,
@@ -46,6 +47,7 @@ fn official_general_inter_syntax() {
                     counts,
                     (0, no_backward_prediction(&h)),
                     &mut filters,
+                    &mut arena,
                 )
                 .unwrap_or_else(|e| {
                     panic!(

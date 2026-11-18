@@ -13,7 +13,11 @@
 )]
 #![allow(unsafe_code, clippy::inline_always)]
 #![cfg_attr(
-    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )),
     allow(dead_code, unused_imports)
 )]
 
@@ -116,6 +120,8 @@ impl HighLrFns {
             Isa::Avx512 => x86_avx512::FNS,
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => neon_high::FNS,
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            Isa::Simd128 => simd128_high::FNS,
             _ => Self::SCALAR,
         }
     }
@@ -265,38 +271,89 @@ unsafe fn load_u16_as_i16<V: I16Lanes>(ptr: *const u16) -> V {
 }
 
 #[inline(always)]
-unsafe fn wiener_h_ptr<V: I16Lanes, const FIVE: bool, const ROUND0: u32, const BIAS: i16>(
-    src: *const u16,
+unsafe fn load_i16_at<V: I16Lanes>(ptr: *const i16) -> V {
+    // SAFETY: caller validated `V::LANES` readable `i16` values.
+    V::load(unsafe { core::slice::from_raw_parts(ptr, V::LANES) })
+}
+
+#[inline(always)]
+unsafe fn wiener_h_vec<V: I16Lanes, const FIVE: bool, const ROUND0: u32, const BIAS: i16>(
+    at: *const u16,
     [c0, c1, c2, c3]: WienerTaps,
-    out: *mut i16,
-    blocks: usize,
-) {
+) -> V {
     let centre = c3 + 128;
     let round = 1_i32 << (ROUND0 - 1);
     let low = V::splat(H_CLAMP_MIN);
     let high = V::splat(H_CLAMP_MAX);
     let bias = V::splat(BIAS);
+    // SAFETY: caller checked `V::LANES + 6` readable `u16`s starting at `at`.
+    unsafe {
+        let s1 = load_u16_as_i16::<V>(at.add(1)).add(load_u16_as_i16::<V>(at.add(5)));
+        let s2 = load_u16_as_i16::<V>(at.add(2)).add(load_u16_as_i16::<V>(at.add(4)));
+        let s3 = load_u16_as_i16::<V>(at.add(3));
+        let acc = if FIVE {
+            let a = V::acc_mul_add2(V::acc_zero(), s1, c1, s2, c2);
+            V::acc_mul_add(a, s3, centre)
+        } else {
+            let s0 = load_u16_as_i16::<V>(at).add(load_u16_as_i16::<V>(at.add(6)));
+            let a = V::acc_mul_add2(V::acc_zero(), s0, c0, s1, c1);
+            V::acc_mul_add2(a, s2, c2, s3, centre)
+        };
+        V::acc_round_shift_narrow(acc, round, ROUND0)
+            .max(low)
+            .min(high)
+            .add(bias)
+    }
+}
+
+#[inline(always)]
+fn wiener_v5_vec<V: I16Lanes, const ROUND1: u32>(
+    [r1, r2, r3, r4, r5]: [V; 5],
+    [_c0, c1, c2, c3]: WienerTaps,
+    zero: V,
+    cap: V,
+) -> V {
+    let mut acc = V::acc_mul_add2(V::acc_zero(), r1, c1, r5, c1);
+    acc = V::acc_mul_add2(acc, r2, c2, r4, c2);
+    acc = V::acc_mul_add(acc, r3, c3);
+    V::acc_round_shift_narrow(acc, 0, ROUND1).max(zero).min(cap)
+}
+
+#[inline(always)]
+fn wiener_v7_vec<V: I16Lanes, const ROUND1: u32>(
+    [r0, r1, r2, r3, r4, r5, r6]: [V; 7],
+    [c0, c1, c2, c3]: WienerTaps,
+    zero: V,
+    cap: V,
+) -> V {
+    let mut acc = V::acc_mul_add2(V::acc_zero(), r0, c0, r6, c0);
+    acc = V::acc_mul_add2(acc, r1, c1, r5, c1);
+    acc = V::acc_mul_add2(acc, r2, c2, r4, c2);
+    acc = V::acc_mul_add(acc, r3, c3);
+    V::acc_round_shift_narrow(acc, 0, ROUND1).max(zero).min(cap)
+}
+
+#[inline(always)]
+unsafe fn store_tail_u16<V: I16Lanes>(v: V, dst: *mut u16, rem: usize) {
+    let mut tail = [0i16; 32];
+    v.store(&mut tail[..V::LANES]);
+    // SAFETY: caller checked `rem < V::LANES` writable `u16`s at `dst`.
+    unsafe { core::ptr::copy_nonoverlapping(tail.as_ptr().cast::<u16>(), dst, rem) };
+}
+
+#[inline(always)]
+unsafe fn wiener_h_ptr<V: I16Lanes, const FIVE: bool, const ROUND0: u32, const BIAS: i16>(
+    src: *const u16,
+    taps: WienerTaps,
+    out: *mut i16,
+    blocks: usize,
+) {
     // SAFETY: caller checked `blocks * V::LANES + 6` readable `u16`s and
     // `blocks * V::LANES` writable `i16`s.
     unsafe {
         for block in 0..blocks {
             let j = block * V::LANES;
-            let at = src.add(j);
-            let s1 = load_u16_as_i16::<V>(at.add(1)).add(load_u16_as_i16::<V>(at.add(5)));
-            let s2 = load_u16_as_i16::<V>(at.add(2)).add(load_u16_as_i16::<V>(at.add(4)));
-            let s3 = load_u16_as_i16::<V>(at.add(3));
-            let acc = if FIVE {
-                let a = V::acc_mul_add2(V::acc_zero(), s1, c1, s2, c2);
-                V::acc_mul_add(a, s3, centre)
-            } else {
-                let s0 = load_u16_as_i16::<V>(at).add(load_u16_as_i16::<V>(at.add(6)));
-                let a = V::acc_mul_add2(V::acc_zero(), s0, c0, s1, c1);
-                V::acc_mul_add2(a, s2, c2, s3, centre)
-            };
-            let v = V::acc_round_shift_narrow(acc, round, ROUND0)
-                .max(low)
-                .min(high)
-                .add(bias);
+            let v = wiener_h_vec::<V, FIVE, ROUND0, BIAS>(src.add(j), taps);
             v.store(core::slice::from_raw_parts_mut(out.add(j), V::LANES));
         }
     }
@@ -305,39 +362,66 @@ unsafe fn wiener_h_ptr<V: I16Lanes, const FIVE: bool, const ROUND0: u32, const B
 #[inline(always)]
 unsafe fn wiener_v_ptr<V: I16Lanes, const FIVE: bool, const ROUND1: u32>(
     rows: &[*const i16; WIENER_ROWS],
-    [c0, c1, c2, c3]: WienerTaps,
+    taps: WienerTaps,
     dst: *mut u16,
     n: usize,
     max_val: i16,
 ) {
     let zero = V::splat(0);
     let cap = V::splat(max_val);
-    let blocks = n.div_ceil(V::LANES);
-    // SAFETY: caller checked `blocks * V::LANES` readable `i16`s per row and `n`
-    // writable `u16`s in `dst`. Rows are not pre-summed in `i16` (`2 * 24583 > i16::MAX`).
+    let full = n / V::LANES;
+    // SAFETY: caller checked `n.div_ceil(V::LANES) * V::LANES` readable `i16`s
+    // per row and `n` writable `u16`s in `dst`.
     unsafe {
-        for block in 0..blocks {
+        for block in 0..full {
             let j = block * V::LANES;
-            let row = |k: usize| V::load(core::slice::from_raw_parts(rows[k].add(j), V::LANES));
-            let mut acc = if FIVE {
-                V::acc_zero()
+            let v = if FIVE {
+                let r = [
+                    load_i16_at::<V>(rows[1].add(j)),
+                    load_i16_at::<V>(rows[2].add(j)),
+                    load_i16_at::<V>(rows[3].add(j)),
+                    load_i16_at::<V>(rows[4].add(j)),
+                    load_i16_at::<V>(rows[5].add(j)),
+                ];
+                wiener_v5_vec::<V, ROUND1>(r, taps, zero, cap)
             } else {
-                V::acc_mul_add2(V::acc_zero(), row(0), c0, row(6), c0)
+                let r = [
+                    load_i16_at::<V>(rows[0].add(j)),
+                    load_i16_at::<V>(rows[1].add(j)),
+                    load_i16_at::<V>(rows[2].add(j)),
+                    load_i16_at::<V>(rows[3].add(j)),
+                    load_i16_at::<V>(rows[4].add(j)),
+                    load_i16_at::<V>(rows[5].add(j)),
+                    load_i16_at::<V>(rows[6].add(j)),
+                ];
+                wiener_v7_vec::<V, ROUND1>(r, taps, zero, cap)
             };
-            acc = V::acc_mul_add2(acc, row(1), c1, row(5), c1);
-            acc = V::acc_mul_add2(acc, row(2), c2, row(4), c2);
-            acc = V::acc_mul_add(acc, row(3), c3);
-            let v = V::acc_round_shift_narrow(acc, 0, ROUND1).max(zero).min(cap);
-            if j + V::LANES <= n {
-                v.store(core::slice::from_raw_parts_mut(
-                    dst.add(j).cast::<i16>(),
-                    V::LANES,
-                ));
+            v.store_u16_at(dst.add(j));
+        }
+        let j = full * V::LANES;
+        if j < n {
+            let v = if FIVE {
+                let r = [
+                    load_i16_at::<V>(rows[1].add(j)),
+                    load_i16_at::<V>(rows[2].add(j)),
+                    load_i16_at::<V>(rows[3].add(j)),
+                    load_i16_at::<V>(rows[4].add(j)),
+                    load_i16_at::<V>(rows[5].add(j)),
+                ];
+                wiener_v5_vec::<V, ROUND1>(r, taps, zero, cap)
             } else {
-                let mut tail = [0i16; 32];
-                v.store(&mut tail[..V::LANES]);
-                core::ptr::copy_nonoverlapping(tail.as_ptr().cast::<u16>(), dst.add(j), n - j);
-            }
+                let r = [
+                    load_i16_at::<V>(rows[0].add(j)),
+                    load_i16_at::<V>(rows[1].add(j)),
+                    load_i16_at::<V>(rows[2].add(j)),
+                    load_i16_at::<V>(rows[3].add(j)),
+                    load_i16_at::<V>(rows[4].add(j)),
+                    load_i16_at::<V>(rows[5].add(j)),
+                    load_i16_at::<V>(rows[6].add(j)),
+                ];
+                wiener_v7_vec::<V, ROUND1>(r, taps, zero, cap)
+            };
+            store_tail_u16(v, dst.add(j), n - j);
         }
     }
 }
@@ -386,6 +470,69 @@ unsafe fn wiener_v_lanes<V: I16Lanes>(
 
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
+unsafe fn wiener_strip_col<
+    V: I16Lanes,
+    const H5: bool,
+    const V5: bool,
+    const ROUND0: u32,
+    const ROUND1: u32,
+    const BIAS: i16,
+    const TAIL: bool,
+>(
+    horizontal: WienerTaps,
+    vertical: WienerTaps,
+    win_col: *const u16,
+    stride: usize,
+    out_col: *mut u16,
+    dst_stride: usize,
+    h: usize,
+    rem: usize,
+    (zero, cap): (V, V),
+) {
+    // SAFETY: `wiener_stripe_lanes` validated `(h + 6)` window rows with
+    // `V::LANES + 6` readable `u16`s per strip and `h` output rows.
+    unsafe {
+        if V5 {
+            let mut r1 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(stride), horizontal);
+            let mut r2 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(2 * stride), horizontal);
+            let mut r3 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(3 * stride), horizontal);
+            let mut r4 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(4 * stride), horizontal);
+            for r in 0..h {
+                let r5 =
+                    wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add((r + 5) * stride), horizontal);
+                let v = wiener_v5_vec::<V, ROUND1>([r1, r2, r3, r4, r5], vertical, zero, cap);
+                if TAIL {
+                    store_tail_u16(v, out_col.add(r * dst_stride), rem);
+                } else {
+                    v.store_u16_at(out_col.add(r * dst_stride));
+                }
+                (r1, r2, r3, r4) = (r2, r3, r4, r5);
+            }
+        } else {
+            let mut r0 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col, horizontal);
+            let mut r1 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(stride), horizontal);
+            let mut r2 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(2 * stride), horizontal);
+            let mut r3 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(3 * stride), horizontal);
+            let mut r4 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(4 * stride), horizontal);
+            let mut r5 = wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add(5 * stride), horizontal);
+            for r in 0..h {
+                let r6 =
+                    wiener_h_vec::<V, H5, ROUND0, BIAS>(win_col.add((r + 6) * stride), horizontal);
+                let v =
+                    wiener_v7_vec::<V, ROUND1>([r0, r1, r2, r3, r4, r5, r6], vertical, zero, cap);
+                if TAIL {
+                    store_tail_u16(v, out_col.add(r * dst_stride), rem);
+                } else {
+                    v.store_u16_at(out_col.add(r * dst_stride));
+                }
+                (r0, r1, r2, r3, r4, r5) = (r1, r2, r3, r4, r5, r6);
+            }
+        }
+    }
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
 unsafe fn wiener_stripe_depth<
     V: I16Lanes,
     const H5: bool,
@@ -398,37 +545,44 @@ unsafe fn wiener_stripe_depth<
     vertical: WienerTaps,
     (window, stride): (&[u16], usize),
     (w, h): (usize, usize),
-    ring: &mut [i16],
+    _ring: &mut [i16],
     (dst, x, y): (&mut PlaneViewMut<'_, u16>, usize, usize),
     max_val: i16,
 ) {
-    let row_len = w + AV1_LR_OVERREAD;
-    let blocks = w.div_ceil(V::LANES);
+    let full = w / V::LANES;
     let dst_stride = dst.stride();
-    // SAFETY: `wiener_stripe_lanes` validated all window, ring, and destination extents.
+    let bounds = (V::splat(0), V::splat(max_val));
+    // SAFETY: `wiener_stripe_lanes` validated all window and destination extents.
     unsafe {
-        let start = ring.as_mut_ptr();
-        let mut rows: [*const i16; WIENER_ROWS] =
-            core::array::from_fn(|k| start.add(k * row_len).cast_const());
-        for (k, &row) in rows[..WIENER_ROWS - 1].iter().enumerate() {
-            wiener_h_ptr::<V, H5, ROUND0, BIAS>(
-                window.as_ptr().add(k * stride),
+        let win_base = window.as_ptr();
+        let out_base = dst.data_mut().as_mut_ptr().add(y * dst_stride + x);
+        for block in 0..full {
+            let j = block * V::LANES;
+            wiener_strip_col::<V, H5, V5, ROUND0, ROUND1, BIAS, false>(
                 horizontal,
-                row.cast_mut(),
-                blocks,
+                vertical,
+                win_base.add(j),
+                stride,
+                out_base.add(j),
+                dst_stride,
+                h,
+                V::LANES,
+                bounds,
             );
         }
-        let output = dst.data_mut().as_mut_ptr().add(y * dst_stride + x);
-        for r in 0..h {
-            wiener_h_ptr::<V, H5, ROUND0, BIAS>(
-                window.as_ptr().add((r + WIENER_ROWS - 1) * stride),
+        let j = full * V::LANES;
+        if j < w {
+            wiener_strip_col::<V, H5, V5, ROUND0, ROUND1, BIAS, true>(
                 horizontal,
-                rows[WIENER_ROWS - 1].cast_mut(),
-                blocks,
+                vertical,
+                win_base.add(j),
+                stride,
+                out_base.add(j),
+                dst_stride,
+                h,
+                w - j,
+                bounds,
             );
-            wiener_v_ptr::<V, V5, ROUND1>(&rows, vertical, output.add(r * dst_stride), w, max_val);
-            let [a, b, c, d, e, f, g] = rows;
-            rows = [b, c, d, e, f, g, a];
         }
     }
 }
@@ -575,7 +729,11 @@ unsafe fn box_ab_u16<V: SgrLanes, const N: usize>(
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 macro_rules! high_lr_isa {
     ($mod_name:ident, $(#[$feature:meta])*, $w_lanes:ty, $sgr_lanes:ty) => {
         mod $mod_name {
@@ -748,6 +906,14 @@ high_lr_isa!(
     #[target_feature(enable = "neon")],
     crate::simd::neon::I16x8,
     super::super::neon::Lanes
+);
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+high_lr_isa!(
+    simd128_high,
+    #[target_feature(enable = "simd128")],
+    crate::simd::simd128::I16x8,
+    super::super::simd128::Lanes
 );
 
 // ----------------------------------------- 16-lane AVX-512 SGR ----

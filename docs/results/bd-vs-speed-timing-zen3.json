@@ -46,9 +46,9 @@
   },
   "nanocodec-h264": {
    "ms_per_frame": {
-    "lowlight_city_night": 6.236766666666667,
-    "crowd_mot17_09": 6.153593333333333,
-    "bodycam_bc1": 7.720906666666666
+    "lowlight_city_night": 5.898153333333333,
+    "crowd_mot17_09": 5.94058,
+    "bodycam_bc1": 7.5382333333333325
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9944348984348984,
@@ -56,16 +56,17 @@
     "bodycam_bc1": 1.041134865134865
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.04120980704201,
-    "crowd_mot17_09": 14.474811667546117,
-    "bodycam_bc1": 16.96296438682802
-   }
+    "lowlight_city_night": 10.710236481679706,
+    "crowd_mot17_09": 14.4330867384294,
+    "bodycam_bc1": 17.33422353756077
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-hevc": {
    "ms_per_frame": {
-    "lowlight_city_night": 8.583526666666666,
-    "crowd_mot17_09": 8.529226666666666,
-    "bodycam_bc1": 10.019893333333334
+    "lowlight_city_night": 7.908179999999999,
+    "crowd_mot17_09": 8.141073333333333,
+    "bodycam_bc1": 9.744246666666667
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9910915750915751,
@@ -73,16 +74,17 @@
     "bodycam_bc1": 0.9507932067932068
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.431634784342382,
-    "crowd_mot17_09": 14.831429855855609,
-    "bodycam_bc1": 17.559156460995467
-   }
+    "lowlight_city_night": 10.607902571598341,
+    "crowd_mot17_09": 14.2331727263559,
+    "bodycam_bc1": 17.275855901381163
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-vp9@slow": {
    "ms_per_frame": {
-    "lowlight_city_night": 11.829366666666665,
-    "crowd_mot17_09": 12.395833333333336,
-    "bodycam_bc1": 14.755646666666667
+    "lowlight_city_night": 11.020019999999999,
+    "crowd_mot17_09": 11.625333333333334,
+    "bodycam_bc1": 13.464513333333331
    },
    "budget_fraction": {
     "lowlight_city_night": 1.0065081585081586,
@@ -90,10 +92,11 @@
     "bodycam_bc1": 1.0087352647352648
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.925818644437813,
-    "crowd_mot17_09": 14.36927426764863,
-    "bodycam_bc1": 18.811937449518602
-   }
+    "lowlight_city_night": 10.736812750865015,
+    "crowd_mot17_09": 14.34060118090131,
+    "bodycam_bc1": 17.44915578667592
+   },
+   "build": "b33ba3bb"
   },
   "svtav1-m12": {
    "ms_per_frame": {
@@ -148,9 +151,9 @@
   },
   "nanocodec-av2@slow": {
    "ms_per_frame": {
-    "lowlight_city_night": 27.982819999999997,
-    "crowd_mot17_09": 19.794173333333333,
-    "bodycam_bc1": 22.958000000000002
+    "lowlight_city_night": 25.22126666666667,
+    "crowd_mot17_09": 17.701953333333336,
+    "bodycam_bc1": 20.46272
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9987026307026307,
@@ -158,50 +161,53 @@
     "bodycam_bc1": 0.9915844155844156
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.049389937411824,
-    "crowd_mot17_09": 14.868703314455967,
-    "bodycam_bc1": 19.698395450668155
-   }
+    "lowlight_city_night": 10.537737461264713,
+    "crowd_mot17_09": 14.340833344555529,
+    "bodycam_bc1": 17.42793881547845
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-hevc@faster": {
    "ms_per_frame": {
-    "lowlight_city_night": 3.401573333333334,
-    "crowd_mot17_09": 4.27712,
-    "bodycam_bc1": 5.537579999999999
+    "lowlight_city_night": 3.219966666666666,
+    "crowd_mot17_09": 4.004486666666666,
+    "bodycam_bc1": 4.9316933333333335
    },
    "budget_fraction": {
-    "lowlight_city_night": 1.0197269397269397,
-    "crowd_mot17_09": 0.9393573333333334,
-    "bodycam_bc1": 0.9795804195804195
+    "lowlight_city_night": 1.0287472527472528,
+    "crowd_mot17_09": 1.05896,
+    "bodycam_bc1": 0.9722757242757243
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.539308547349695,
-    "crowd_mot17_09": 15.891357053523258,
-    "bodycam_bc1": 19.768346616098047
-   }
+    "lowlight_city_night": 10.731549192688615,
+    "crowd_mot17_09": 14.634668107655962,
+    "bodycam_bc1": 17.64595787030306
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-vvc@fast": {
    "ms_per_frame": {
-    "lowlight_city_night": 7.986886666666666,
-    "crowd_mot17_09": 8.456769999999999,
-    "bodycam_bc1": 9.783053333333333
+    "lowlight_city_night": 6.9900199999999995,
+    "crowd_mot17_09": 7.24366,
+    "bodycam_bc1": 8.638580000000001
    },
    "budget_fraction": {
-    "lowlight_city_night": 1.010091242091242,
-    "crowd_mot17_09": 1.026712,
-    "bodycam_bc1": 0.9485474525474525
+    "lowlight_city_night": 1.0135278055278056,
+    "crowd_mot17_09": 1.025544,
+    "bodycam_bc1": 0.9451561771561772
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.32842076288786,
-    "crowd_mot17_09": 15.261878515461913,
-    "bodycam_bc1": 18.54490599221541
-   }
+    "lowlight_city_night": 10.697688534955606,
+    "crowd_mot17_09": 14.329161844484098,
+    "bodycam_bc1": 17.35820793978399
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-vvc@slow": {
    "ms_per_frame": {
-    "lowlight_city_night": 18.397460000000002,
-    "crowd_mot17_09": 17.779093333333332,
-    "bodycam_bc1": 20.549500000000002
+    "lowlight_city_night": 16.64173333333333,
+    "crowd_mot17_09": 16.464893333333332,
+    "bodycam_bc1": 19.374726666666664
    },
    "budget_fraction": {
     "lowlight_city_night": 1.0183283383283384,
@@ -209,10 +215,11 @@
     "bodycam_bc1": 1.06595004995005
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.659846438366968,
-    "crowd_mot17_09": 15.47178942172034,
-    "bodycam_bc1": 18.3122999589596
-   }
+    "lowlight_city_night": 10.714701106918616,
+    "crowd_mot17_09": 14.381145397243495,
+    "bodycam_bc1": 17.377202580006237
+   },
+   "build": "b33ba3bb"
   },
   "svtav1-m10": {
    "ms_per_frame": {
@@ -250,26 +257,27 @@
   },
   "nanocodec-av1@faster": {
    "ms_per_frame": {
-    "lowlight_city_night": 4.794653333333333,
-    "crowd_mot17_09": 5.5271,
-    "bodycam_bc1": 6.527353333333333
+    "lowlight_city_night": 4.587739999999999,
+    "crowd_mot17_09": 5.26862,
+    "bodycam_bc1": 6.07074
    },
    "budget_fraction": {
-    "lowlight_city_night": 0.9871355311355311,
-    "crowd_mot17_09": 0.9946213333333334,
-    "bodycam_bc1": 0.9897462537462538
+    "lowlight_city_night": 0.9984388944388944,
+    "crowd_mot17_09": 0.9928986666666667,
+    "bodycam_bc1": 0.987974691974692
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.810001130103508,
-    "crowd_mot17_09": 14.318265008149277,
-    "bodycam_bc1": 18.17815505693755
-   }
+    "lowlight_city_night": 10.720082155232882,
+    "crowd_mot17_09": 14.345223348199038,
+    "bodycam_bc1": 17.26115916540347
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-av1@slow": {
    "ms_per_frame": {
-    "lowlight_city_night": 14.025929999999999,
-    "crowd_mot17_09": 14.710186666666665,
-    "bodycam_bc1": 17.548733333333335
+    "lowlight_city_night": 13.414233333333332,
+    "crowd_mot17_09": 14.514706666666667,
+    "bodycam_bc1": 17.19732666666667
    },
    "budget_fraction": {
     "lowlight_city_night": 1.000964368964369,
@@ -277,10 +285,11 @@
     "bodycam_bc1": 1.011985347985348
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.840461490025715,
-    "crowd_mot17_09": 14.362256510974499,
-    "bodycam_bc1": 18.442240950646944
-   }
+    "lowlight_city_night": 10.697488801721235,
+    "crowd_mot17_09": 14.359934081562132,
+    "bodycam_bc1": 17.336110422351055
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-av1@veryfast": {
    "ms_per_frame": {
@@ -301,9 +310,9 @@
   },
   "nanocodec-av2": {
    "ms_per_frame": {
-    "lowlight_city_night": 11.690473333333333,
-    "crowd_mot17_09": 11.731773333333333,
-    "bodycam_bc1": 12.782366666666666
+    "lowlight_city_night": 10.512493333333332,
+    "crowd_mot17_09": 10.566566666666667,
+    "bodycam_bc1": 11.824266666666666
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9815597735597735,
@@ -311,27 +320,29 @@
     "bodycam_bc1": 0.975954711954712
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.884770701792664,
-    "crowd_mot17_09": 14.793849391901071,
-    "bodycam_bc1": 18.02879552127213
-   }
+    "lowlight_city_night": 10.669866870308915,
+    "crowd_mot17_09": 14.289440753825067,
+    "bodycam_bc1": 17.2674487813711
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-vp9@fast": {
    "ms_per_frame": {
-    "lowlight_city_night": 6.768153333333333,
-    "crowd_mot17_09": 8.360566666666667,
-    "bodycam_bc1": 8.99688
+    "lowlight_city_night": 6.855853333333333,
+    "crowd_mot17_09": 8.151453333333334,
+    "bodycam_bc1": 9.18332
    },
    "budget_fraction": {
-    "lowlight_city_night": 1.0138261738261738,
-    "crowd_mot17_09": 1.0075173333333334,
-    "bodycam_bc1": 1.0038841158841159
+    "lowlight_city_night": 1.0048964368964368,
+    "crowd_mot17_09": 0.993344,
+    "bodycam_bc1": 0.992058608058608
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.080148596225566,
-    "crowd_mot17_09": 14.537548322998376,
-    "bodycam_bc1": 17.997897914911498
-   }
+    "lowlight_city_night": 10.722690436293512,
+    "crowd_mot17_09": 14.459658923944659,
+    "bodycam_bc1": 17.352316666160984
+   },
+   "build": "b33ba3bb"
   },
   "x265-medium": {
    "ms_per_frame": {
@@ -352,9 +363,9 @@
   },
   "nanocodec-av1": {
    "ms_per_frame": {
-    "lowlight_city_night": 9.403366666666667,
-    "crowd_mot17_09": 9.529066666666667,
-    "bodycam_bc1": 10.855856666666668
+    "lowlight_city_night": 9.207279999999999,
+    "crowd_mot17_09": 9.339173333333333,
+    "bodycam_bc1": 10.738946666666665
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9946373626373627,
@@ -362,33 +373,35 @@
     "bodycam_bc1": 0.999086247086247
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.600079323165716,
-    "crowd_mot17_09": 14.419655123627686,
-    "bodycam_bc1": 17.507060308749686
-   }
+    "lowlight_city_night": 10.701307231201882,
+    "crowd_mot17_09": 14.349528928695552,
+    "bodycam_bc1": 17.424710145948403
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-av2@fast": {
    "ms_per_frame": {
-    "lowlight_city_night": 7.924886666666667,
-    "crowd_mot17_09": 8.220273333333335,
-    "bodycam_bc1": 9.403046666666667
+    "lowlight_city_night": 7.498906666666667,
+    "crowd_mot17_09": 7.92018,
+    "bodycam_bc1": 9.14996
    },
    "budget_fraction": {
-    "lowlight_city_night": 1.0206247086247087,
-    "crowd_mot17_09": 0.9921333333333333,
-    "bodycam_bc1": 1.0085221445221446
+    "lowlight_city_night": 0.9843436563436564,
+    "crowd_mot17_09": 0.9991786666666667,
+    "bodycam_bc1": 0.9926340326340326
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.67029874935985,
-    "crowd_mot17_09": 14.103085128319936,
-    "bodycam_bc1": 17.384343179117952
-   }
+    "lowlight_city_night": 10.71171685741682,
+    "crowd_mot17_09": 14.229141521087099,
+    "bodycam_bc1": 17.330009494862452
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-h264@faster": {
    "ms_per_frame": {
-    "lowlight_city_night": 2.9785333333333335,
-    "crowd_mot17_09": 3.2093933333333333,
-    "bodycam_bc1": 4.220619999999999
+    "lowlight_city_night": 2.91188,
+    "crowd_mot17_09": 3.187513333333333,
+    "bodycam_bc1": 4.010413333333332
    },
    "budget_fraction": {
     "lowlight_city_night": 1.0527605727605727,
@@ -396,16 +409,17 @@
     "bodycam_bc1": 0.972091908091908
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.53564157615357,
-    "crowd_mot17_09": 14.32075456581543,
-    "bodycam_bc1": 17.307150991315094
-   }
+    "lowlight_city_night": 10.908700822563103,
+    "crowd_mot17_09": 14.335873484669841,
+    "bodycam_bc1": 17.203944625484596
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-vp9@veryfast": {
    "ms_per_frame": {
-    "lowlight_city_night": 4.0853866666666665,
-    "crowd_mot17_09": 4.8490866666666665,
-    "bodycam_bc1": 5.6270999999999995
+    "lowlight_city_night": 3.646953333333333,
+    "crowd_mot17_09": 4.371426666666666,
+    "bodycam_bc1": 4.976966666666667
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9938381618381619,
@@ -413,10 +427,11 @@
     "bodycam_bc1": 1.009137529137529
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.756371166859433,
-    "crowd_mot17_09": 14.892441374830016,
-    "bodycam_bc1": 18.23855167776748
-   }
+    "lowlight_city_night": 10.741841328765682,
+    "crowd_mot17_09": 14.339398151056693,
+    "bodycam_bc1": 17.299987061310304
+   },
+   "build": "b33ba3bb"
   },
   "x264-veryslow": {
    "ms_per_frame": {
@@ -437,9 +452,9 @@
   },
   "nanocodec-h264@veryfast": {
    "ms_per_frame": {
-    "lowlight_city_night": 2.5209533333333334,
-    "crowd_mot17_09": 2.7237333333333336,
-    "bodycam_bc1": 3.72228
+    "lowlight_city_night": 2.407853333333333,
+    "crowd_mot17_09": 2.679913333333333,
+    "bodycam_bc1": 3.5440466666666666
    },
    "budget_fraction": {
     "lowlight_city_night": 1.03202664002664,
@@ -447,33 +462,35 @@
     "bodycam_bc1": 0.9424255744255744
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.82116773371591,
-    "crowd_mot17_09": 14.156253687542748,
-    "bodycam_bc1": 17.749154864424824
-   }
+    "lowlight_city_night": 10.67068930127398,
+    "crowd_mot17_09": 14.280280842376596,
+    "bodycam_bc1": 17.26136881926905
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-hevc@fast": {
    "ms_per_frame": {
-    "lowlight_city_night": 4.295986666666667,
-    "crowd_mot17_09": 4.7126399999999995,
-    "bodycam_bc1": 6.365033333333333
+    "lowlight_city_night": 4.370326666666666,
+    "crowd_mot17_09": 5.072253333333332,
+    "bodycam_bc1": 6.506406666666667
    },
    "budget_fraction": {
-    "lowlight_city_night": 0.9787945387945388,
-    "crowd_mot17_09": 0.9484933333333333,
-    "bodycam_bc1": 1.021940725940726
+    "lowlight_city_night": 0.9758934398934399,
+    "crowd_mot17_09": 0.9490986666666666,
+    "bodycam_bc1": 1.0075044955044956
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.841488288012034,
-    "crowd_mot17_09": 14.004861521452353,
-    "bodycam_bc1": 17.56692944537301
-   }
+    "lowlight_city_night": 10.669279419619588,
+    "crowd_mot17_09": 14.355607395278868,
+    "bodycam_bc1": 17.32420208278568
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-hevc@slow": {
    "ms_per_frame": {
-    "lowlight_city_night": 13.365426666666664,
-    "crowd_mot17_09": 13.967013333333334,
-    "bodycam_bc1": 16.58605
+    "lowlight_city_night": 12.52182,
+    "crowd_mot17_09": 13.34594,
+    "bodycam_bc1": 16.050919999999998
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9644115884115884,
@@ -481,16 +498,17 @@
     "bodycam_bc1": 0.9444608724608725
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 11.014000342565518,
-    "crowd_mot17_09": 14.183356884770944,
-    "bodycam_bc1": 17.488878384012576
-   }
+    "lowlight_city_night": 10.741112889910914,
+    "crowd_mot17_09": 14.409469363058808,
+    "bodycam_bc1": 17.457206495114487
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-vp9": {
    "ms_per_frame": {
-    "lowlight_city_night": 9.921233333333333,
-    "crowd_mot17_09": 10.318546666666666,
-    "bodycam_bc1": 11.703153333333333
+    "lowlight_city_night": 9.2811,
+    "crowd_mot17_09": 9.714,
+    "bodycam_bc1": 11.123286666666667
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9846233766233766,
@@ -498,10 +516,11 @@
     "bodycam_bc1": 0.9907425907425907
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.924826189177647,
-    "crowd_mot17_09": 14.126470623622325,
-    "bodycam_bc1": 18.02110455008731
-   }
+    "lowlight_city_night": 10.723959329782463,
+    "crowd_mot17_09": 14.436505875882517,
+    "bodycam_bc1": 17.45494223336614
+   },
+   "build": "b33ba3bb"
   },
   "svtav1-m8": {
    "ms_per_frame": {
@@ -573,9 +592,9 @@
   },
   "nanocodec-av1@fast": {
    "ms_per_frame": {
-    "lowlight_city_night": 6.359573333333333,
-    "crowd_mot17_09": 7.002566666666667,
-    "bodycam_bc1": 8.462973333333334
+    "lowlight_city_night": 5.660379999999999,
+    "crowd_mot17_09": 6.301826666666667,
+    "bodycam_bc1": 7.590713333333333
    },
    "budget_fraction": {
     "lowlight_city_night": 1.0044035964035964,
@@ -583,16 +602,17 @@
     "bodycam_bc1": 1.008868464868465
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.498170578432696,
-    "crowd_mot17_09": 13.916567211568328,
-    "bodycam_bc1": 18.078244795833417
-   }
+    "lowlight_city_night": 10.719753182846858,
+    "crowd_mot17_09": 14.310947550520897,
+    "bodycam_bc1": 17.233107478187836
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-h264@fast": {
    "ms_per_frame": {
-    "lowlight_city_night": 3.878006666666667,
-    "crowd_mot17_09": 4.067496666666667,
-    "bodycam_bc1": 5.4696
+    "lowlight_city_night": 3.47016,
+    "crowd_mot17_09": 3.7575666666666665,
+    "bodycam_bc1": 4.947633333333333
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9577302697302698,
@@ -600,16 +620,17 @@
     "bodycam_bc1": 0.9415597735597736
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.546092499719983,
-    "crowd_mot17_09": 14.17365426796215,
-    "bodycam_bc1": 17.02067372246023
-   }
+    "lowlight_city_night": 10.980628284964725,
+    "crowd_mot17_09": 14.62979267091726,
+    "bodycam_bc1": 17.745019321793226
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-h264@slow": {
    "ms_per_frame": {
-    "lowlight_city_night": 10.440633333333333,
-    "crowd_mot17_09": 9.424853333333333,
-    "bodycam_bc1": 12.325233333333331
+    "lowlight_city_night": 10.134553333333333,
+    "crowd_mot17_09": 9.239706666666667,
+    "bodycam_bc1": 11.868153333333332
    },
    "budget_fraction": {
     "lowlight_city_night": 0.9466133866133866,
@@ -617,16 +638,17 @@
     "bodycam_bc1": 1.0277216117216117
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.316908087502444,
-    "crowd_mot17_09": 13.784970798279263,
-    "bodycam_bc1": 17.12443211156174
-   }
+    "lowlight_city_night": 10.677644717435651,
+    "crowd_mot17_09": 14.235979795993332,
+    "bodycam_bc1": 17.41198415630723
+   },
+   "build": "b33ba3bb"
   },
   "nanocodec-vvc": {
    "ms_per_frame": {
-    "lowlight_city_night": 14.884520000000002,
-    "crowd_mot17_09": 13.6252,
-    "bodycam_bc1": 16.247926666666665
+    "lowlight_city_night": 14.196826666666666,
+    "crowd_mot17_09": 13.122386666666666,
+    "bodycam_bc1": 15.7293
    },
    "budget_fraction": {
     "lowlight_city_night": 1.0064788544788545,
@@ -634,10 +656,11 @@
     "bodycam_bc1": 1.0164768564768565
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.319710787373921,
-    "crowd_mot17_09": 13.978421318218025,
-    "bodycam_bc1": 16.875895017139516
-   }
+    "lowlight_city_night": 10.736436782423842,
+    "crowd_mot17_09": 14.453031706905904,
+    "bodycam_bc1": 17.59991788142001
+   },
+   "build": "b33ba3bb"
   },
   "openh264-baseline": {
    "ms_per_frame": {
@@ -675,9 +698,9 @@
   },
   "nanocodec-vp9@faster": {
    "ms_per_frame": {
-    "lowlight_city_night": 4.47382,
-    "crowd_mot17_09": 4.983633333333333,
-    "bodycam_bc1": 5.819380000000001
+    "lowlight_city_night": 4.199113333333333,
+    "crowd_mot17_09": 4.656173333333333,
+    "bodycam_bc1": 5.502353333333333
    },
    "budget_fraction": {
     "lowlight_city_night": 1.0013106893106893,
@@ -685,10 +708,11 @@
     "bodycam_bc1": 1.0067132867132866
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.726645070276806,
-    "crowd_mot17_09": 14.3345788053312,
-    "bodycam_bc1": 17.26532093999236
-   }
+    "lowlight_city_night": 10.62446868103746,
+    "crowd_mot17_09": 14.315675246752361,
+    "bodycam_bc1": 17.34116308051172
+   },
+   "build": "b33ba3bb"
   },
   "svtav1-m13": {
    "ms_per_frame": {
@@ -709,9 +733,9 @@
   },
   "svtav1-m13@asm-avx2": {
    "ms_per_frame": {
-    "lowlight_city_night": 3.1365733333333328,
-    "crowd_mot17_09": 4.613686666666666,
-    "bodycam_bc1": 5.752493333333334
+    "lowlight_city_night": 3.006673333333333,
+    "crowd_mot17_09": 4.546153333333334,
+    "bodycam_bc1": 5.710626666666666
    },
    "budget_fraction": {
     "lowlight_city_night": 1.035079587079587,
@@ -719,9 +743,9 @@
     "bodycam_bc1": 0.9581751581751582
    },
    "anchor_ms_per_frame": {
-    "lowlight_city_night": 10.739518179409467,
-    "crowd_mot17_09": 14.274783561292601,
-    "bodycam_bc1": 17.308917084021633
+    "lowlight_city_night": 10.577966084470063,
+    "crowd_mot17_09": 14.337540841822902,
+    "bodycam_bc1": 17.81630163609303
    }
   },
   "x265-slow": {

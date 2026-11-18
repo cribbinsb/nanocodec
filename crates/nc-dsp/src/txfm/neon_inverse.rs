@@ -9,10 +9,10 @@
 
 use core::arch::aarch64::{
     int16x8_t, uint16x8_t, vabsq_s16, vaddq_s16, vaddw_u8, vdupq_n_s16, vdupq_n_u16, vget_low_s16,
-    vld1_u8, vld1q_s16, vld1q_s32, vmaxvq_u16, vmlal_high_n_s16, vmlal_n_s16, vmull_high_n_s16,
-    vmull_n_s16, vqaddq_u16, vqmovn_high_s32, vqmovn_s32, vqmovun_s16, vqrdmulhq_n_s16,
-    vreinterpretq_s16_u16, vreinterpretq_u16_s16, vrshrn_high_n_s32, vrshrn_n_s32, vrshrq_n_s16,
-    vst1_u8, vst1q_s16, vsubq_s16,
+    vld1_u8, vld1q_s16, vld1q_s32, vld1q_u16, vmaxq_s16, vmaxvq_u16, vminq_s16, vmlal_high_n_s16,
+    vmlal_n_s16, vmull_high_n_s16, vmull_n_s16, vqaddq_u16, vqmovn_high_s32, vqmovn_s32,
+    vqmovun_s16, vqrdmulhq_n_s16, vreinterpretq_s16_u16, vreinterpretq_u16_s16, vrshrn_high_n_s32,
+    vrshrn_n_s32, vrshrq_n_s16, vst1_u8, vst1q_s16, vst1q_u16, vsubq_s16,
 };
 
 use super::generic::INVERSE_COS_BIT;
@@ -198,6 +198,18 @@ impl NarrowLanes for Narrow {
             vst1_u8(pixels.as_mut_ptr(), vqmovun_s16(vreinterpretq_s16_u16(sum)));
         }
     }
+
+    #[inline(always)]
+    fn add_to_u16(self, pixels: &mut [u16], max_val: i32) {
+        let pixels = &mut pixels[..GROUP];
+        // SAFETY: NEON kernels only; 8 `u16`s (`0..=max_val`).
+        unsafe {
+            let pred = vreinterpretq_s16_u16(vld1q_u16(pixels.as_ptr()));
+            let sum = vaddq_s16(self.0, pred);
+            let clipped = vminq_s16(vmaxq_s16(sum, vdupq_n_s16(0)), vdupq_n_s16(max_val as i16));
+            vst1q_u16(pixels.as_mut_ptr(), vreinterpretq_u16_s16(clipped));
+        }
+    }
 }
 
 #[target_feature(enable = "neon")]
@@ -269,6 +281,30 @@ pub(crate) unsafe fn av1_inverse_add<C: NarrowCoefficient, const W: usize, const
     stride: usize,
 ) {
     narrow_inverse::inverse_lanes::<Narrow, C, W, H>(kernels, coeffs, nonzero_rows, dst, stride);
+}
+
+/// 10-bit `u16` counterpart of [`av1_inverse_add`] (`W >= 8 && H >= 8`).
+///
+/// # Safety
+///
+/// None beyond the slice contract (NEON is always present on `AArch64`).
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn av1_inverse_add_u16<C: NarrowCoefficient, const W: usize, const H: usize>(
+    kernels: (Kernel1d, Kernel1d),
+    coeffs: &[C],
+    nonzero_rows: usize,
+    dst: &mut [u16],
+    stride: usize,
+    max_val: i32,
+) {
+    narrow_inverse::inverse_lanes_u16::<Narrow, C, W, H>(
+        kernels,
+        coeffs,
+        nonzero_rows,
+        dst,
+        stride,
+        max_val,
+    );
 }
 
 #[cfg(test)]

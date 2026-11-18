@@ -191,26 +191,33 @@ impl<'a> CabacReader<'a> {
 
     /// The current range (`ivlCurrRange`), for models that derive the LPS
     /// range themselves.
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "hot per-bin CABAC accessor; must fold into context models"
+    )]
     #[must_use]
     pub fn range(&self) -> u32 {
         self.range
     }
 
     /// Load the next whole bytes below the valid bits (`lookahead` must be
-    /// at least `-OFFSET_BITS`).
-    #[inline]
+    /// at least `-OFFSET_BITS`). Kept out of line so the hot bin decoders
+    /// inline without spilling `range`, `window` and `lookahead`.
+    #[cold]
+    #[inline(never)]
     fn refill(&mut self) {
-        let mut word = [0u8; REFILL_BYTES];
-        if let Some(bytes) = self.data.get(self.next..self.next + REFILL_BYTES) {
-            word.copy_from_slice(bytes);
+        let word = if let Some(bytes) = self.data.get(self.next..self.next + REFILL_BYTES) {
+            u64::from_be_bytes(bytes.try_into().unwrap())
         } else {
+            let mut buf = [0u8; REFILL_BYTES];
             let rest = self.data.get(self.next..).unwrap_or(&[]);
-            word[..rest.len()].copy_from_slice(rest);
-        }
+            buf[..rest.len()].copy_from_slice(rest);
+            u64::from_be_bytes(buf)
+        };
         // The first new bit goes just below the valid ones.
         let shift = (OFFSET_BITS as i32 + self.lookahead) as u32;
-        self.window |= u64::from_be_bytes(word) >> shift;
+        self.window |= word >> shift;
         let bytes = (OFFSET_SHIFT as i32 - self.lookahead) as usize / 8;
         self.next += bytes;
         self.lookahead += 8 * bytes as i32;
@@ -218,7 +225,11 @@ impl<'a> CabacReader<'a> {
 
     /// The decision with LPS range `lps` (`rangeTabLps` or the caller's own
     /// model): returns whether the LPS was decoded, with renormalisation.
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "per-bin CABAC decision; refill is cold out-of-line"
+    )]
     pub fn decide_lps(&mut self, lps: u32) -> bool {
         let mps_range = self.range - lps;
         let scaled = u64::from(mps_range) << OFFSET_SHIFT;
@@ -239,7 +250,11 @@ impl<'a> CabacReader<'a> {
 
     /// `DecodeDecision` with a 64-state context byte (H.264 §9.3.3.2.1,
     /// H.265 §9.3.4.3.2), updating the context.
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "per-bin CABAC context update; refill is cold out-of-line"
+    )]
     pub fn decision(&mut self, ctx: &mut u8) -> bool {
         let state = *ctx;
         let lps = u32::from(LPS_RANGE[usize::from(state)][((self.range >> 6) & 3) as usize]);
@@ -251,7 +266,11 @@ impl<'a> CabacReader<'a> {
     /// `DecodeBypass` (H.264 §9.3.3.2.3, H.265 §9.3.4.3.4): the offset
     /// doubled with the next bit is compared with the range, i.e. the
     /// window against the range one bit lower.
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "single-bin CABAC bypass; refill is cold out-of-line"
+    )]
     pub fn bypass(&mut self) -> bool {
         if self.lookahead <= 0 {
             self.refill();
@@ -269,9 +288,16 @@ impl<'a> CabacReader<'a> {
     /// data bits, divided by the range, gives the bins as quotient and the
     /// new offset as remainder (the quotient fits `count` bits because the
     /// offset is below the range).
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "batched CABAC bypass bins; refill is cold out-of-line"
+    )]
     pub fn bypass_bits(&mut self, count: u32) -> u32 {
         debug_assert!(count <= MAX_BYPASS_BITS);
+        if count == 0 {
+            return 0;
+        }
         if self.lookahead < count as i32 {
             self.refill();
         }
@@ -289,7 +315,11 @@ impl<'a> CabacReader<'a> {
     /// A unary run of 1-valued bypass bins ended by a 0, of at most `max`
     /// ones (the 0 is then not read): the prefixes of Rice / Exp-Golomb
     /// binarisations.
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "Rice/Exp-Golomb bypass unary prefix in residual coding"
+    )]
     pub fn bypass_unary(&mut self, max: u32) -> u32 {
         let mut ones = 0;
         while ones < max && self.bypass() {
@@ -302,7 +332,11 @@ impl<'a> CabacReader<'a> {
     /// decoders call it after every macroblock / CTU (`end_of_slice_flag`),
     /// where an out-of-line call cost H.264 1.2 % of its decode
     /// instructions.
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "per-CTU/MB slice termination check; refill is cold out-of-line"
+    )]
     pub fn terminate(&mut self) -> bool {
         self.range -= 2;
         if self.window >= u64::from(self.range) << OFFSET_SHIFT {

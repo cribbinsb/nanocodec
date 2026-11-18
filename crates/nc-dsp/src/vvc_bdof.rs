@@ -45,6 +45,26 @@ impl Dsp {
             (self.vvc_refinement_kernels().bdof)(size, inputs, out);
         }
     }
+
+    /// Assemble the `(width + 2) x (height + 2)` 14-bit BDOF/PROF window from
+    /// 8-bit nearest-integer `window` borders (`sample << 6`) and `interior`
+    /// (`width x height` high-precision predictions).
+    ///
+    /// # Panics
+    /// If `size` is not in `{4, 8, 12, 16}^2`, or `window`/`interior`/`out` is short.
+    pub fn vvc_bdof_pad(
+        &self,
+        size: (usize, usize),
+        window: &nc_common::PlaneView<'_>,
+        interior: &[i16],
+        out: &mut [i16],
+    ) {
+        check_pad(size, window, interior, out);
+        // SAFETY: dimensions and all buffers checked; instance ISA is supported.
+        unsafe {
+            (self.vvc_refinement_kernels().bdof_pad)(size, window, interior, out);
+        }
+    }
 }
 
 /// The checks of [`Dsp::vvc_bdof`] (`out_len` samples of any type).
@@ -53,6 +73,64 @@ pub(crate) fn check((width, height): (usize, usize), inputs: [&[i16]; 2], out_le
     let stride = width + 2;
     let count = stride * (height + 2);
     assert!(inputs.iter().all(|p| p.len() >= count) && out_len >= width * height);
+}
+
+/// Precision of high-precision BDOF/PROF border samples (H.266 §8.5.6.3.1).
+const PAD_PRECISION: u32 = 14;
+/// Minimum left shift of integer border samples (`Max(2, 14 - BitDepth)`).
+const MIN_PAD_SHIFT: u32 = 2;
+
+/// The checks of [`Dsp::vvc_bdof_pad`].
+pub(crate) fn check_pad<T: nc_common::Sample>(
+    (width, height): (usize, usize),
+    window: &nc_common::PlaneView<'_, T>,
+    interior: &[i16],
+    out: &[i16],
+) {
+    assert!([4, 8, 12, 16].contains(&width) && [4, 8, 12, 16].contains(&height));
+    let (pw, ph) = (width + 2, height + 2);
+    assert!(window.width() >= pw && window.height() >= ph);
+    assert!(interior.len() >= width * height && out.len() >= pw * ph);
+}
+
+/// Scalar 8-bit [`Dsp::vvc_bdof_pad`].
+pub(crate) fn pad_scalar(
+    size: (usize, usize),
+    window: &nc_common::PlaneView<'_>,
+    interior: &[i16],
+    out: &mut [i16],
+) {
+    pad_scalar_at(size, window, interior, out, nc_common::BitDepth::EIGHT);
+}
+
+/// Scalar [`Dsp::vvc_bdof_pad`] at `depth`.
+pub(crate) fn pad_scalar_at<T: nc_common::Sample>(
+    (width, height): (usize, usize),
+    window: &nc_common::PlaneView<'_, T>,
+    interior: &[i16],
+    out: &mut [i16],
+    depth: nc_common::BitDepth,
+) {
+    let shift = PAD_PRECISION
+        .saturating_sub(depth.bits())
+        .max(MIN_PAD_SHIFT);
+    let stride = width + 2;
+    let top = window.row(0);
+    for x in 0..stride {
+        out[x] = (top[x].to_i32() << shift) as i16;
+    }
+    for y in 0..height {
+        let src = window.row(y + 1);
+        let dst = &mut out[(y + 1) * stride..(y + 2) * stride];
+        dst[0] = (src[0].to_i32() << shift) as i16;
+        dst[1..=width].copy_from_slice(&interior[y * width..(y + 1) * width]);
+        dst[width + 1] = (src[width + 1].to_i32() << shift) as i16;
+    }
+    let bot = window.row(height + 1);
+    let bot_dst = &mut out[(height + 1) * stride..(height + 2) * stride];
+    for x in 0..stride {
+        bot_dst[x] = (bot[x].to_i32() << shift) as i16;
+    }
 }
 
 /// Fewest bits the final sum drops (H.266 §8.5.6.5: `shift4 = Max(3, 15 −

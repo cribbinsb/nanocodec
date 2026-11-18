@@ -72,6 +72,8 @@ pub(crate) mod hevc;
 ))]
 #[allow(unsafe_code)]
 pub(crate) mod hevc_chroma;
+#[allow(unsafe_code)]
+pub(crate) mod hevc_high;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -86,6 +88,8 @@ pub(crate) mod scalar;
 pub(crate) mod short_luma;
 #[allow(unsafe_code)]
 mod short_runs;
+#[allow(unsafe_code)]
+pub(crate) mod vp9_high;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]

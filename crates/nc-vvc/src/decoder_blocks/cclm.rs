@@ -5,6 +5,36 @@ use nc_dsp::{vvc_cclm_downsample, vvc_cclm_downsample_collocated, vvc_cclm_predi
 
 const MAX_CHROMA_SIDE: usize = 32;
 
+#[derive(Debug)]
+pub(super) struct CclmScratch<T: Sample> {
+    luma: Box<[T; MAX_CHROMA_SIDE * MAX_CHROMA_SIDE]>,
+    key: (u16, u16, u8, u8),
+    pair_count: u8,
+    coords: [(isize, isize); 4],
+    pair_luma: [T; 4],
+    valid: bool,
+}
+
+impl<T: Sample> Default for CclmScratch<T> {
+    fn default() -> Self {
+        Self {
+            luma: Box::new([T::default(); MAX_CHROMA_SIDE * MAX_CHROMA_SIDE]),
+            key: (0, 0, 0, 0),
+            pair_count: 0,
+            coords: [(0, 0); 4],
+            pair_luma: [T::default(); 4],
+            valid: false,
+        }
+    }
+}
+
+impl<T: Sample> CclmScratch<T> {
+    #[inline]
+    pub(super) fn invalidate(&mut self) {
+        self.valid = false;
+    }
+}
+
 #[inline]
 fn downsample_point<T: Sample>(
     luma: &PlaneView<'_, T>,
@@ -104,8 +134,10 @@ fn downsample_block<T: Sample>(
 }
 
 /// CCLM prediction (H.266 §8.4.5.2.14) of chroma `plane` of `block` at
-/// `depth`.
-pub(super) fn predict<T: Sample>(
+/// `depth`, reusing the downsampled luma block and template points across
+/// `Cb` and `Cr` of the same transform unit.
+pub(super) fn predict_cached<T: Sample>(
+    cache: &mut CclmScratch<T>,
     picture: &Picture<T>,
     available: &Availability,
     sequence: &Sequence,
@@ -116,58 +148,79 @@ pub(super) fn predict<T: Sample>(
 ) {
     let n = block;
     let (x, y, width, height) = (n.x / 2, n.y / 2, n.width() / 2, n.height() / 2);
-    let left = available.has(1, x as isize - 1, y as isize);
-    let above = available.has(1, x as isize, y as isize - 1);
-    let luma = picture.plane(PlaneIndex::Y).view();
+    let key = (n.x as u16, n.y as u16, width as u8, height as u8);
     let chroma = picture.plane(plane).view();
-    let collocated = sequence.tools.chroma_collocated[1];
-    let flags = (left, above, collocated, sequence.ctu_log2);
-    let mut top_count = if above && unit.chroma_mode != 68 {
-        width
-    } else {
-        0
-    };
-    let mut left_count = if left && unit.chroma_mode != 69 {
-        height
-    } else {
-        0
-    };
-    if top_count > 0 && unit.chroma_mode == 69 {
-        top_count += (width..width + width.min(height))
-            .take_while(|&dx| available.has(1, (x + dx) as isize, y as isize - 1))
-            .count();
+    if !(cache.valid && cache.key == key) {
+        let left = available.has(1, x as isize - 1, y as isize);
+        let above = available.has(1, x as isize, y as isize - 1);
+        let luma = picture.plane(PlaneIndex::Y).view();
+        let collocated = sequence.tools.chroma_collocated[1];
+        let flags = (left, above, collocated, sequence.ctu_log2);
+        let mut top_count = if above && unit.chroma_mode != 68 {
+            width
+        } else {
+            0
+        };
+        let mut left_count = if left && unit.chroma_mode != 69 {
+            height
+        } else {
+            0
+        };
+        if top_count > 0 && unit.chroma_mode == 69 {
+            top_count += (width..width + width.min(height))
+                .take_while(|&dx| available.has(1, (x + dx) as isize, y as isize - 1))
+                .count();
+        }
+        if left_count > 0 && unit.chroma_mode == 68 {
+            left_count += (height..height + width.min(height))
+                .take_while(|&dy| available.has(1, x as isize - 1, (y + dy) as isize))
+                .count();
+        }
+        let mut pair_count = 0usize;
+        for (top, count, other) in [
+            (true, top_count, left_count),
+            (false, left_count, top_count),
+        ] {
+            if count == 0 {
+                continue;
+            }
+            let single = usize::from(other == 0);
+            let start = count >> (2 + single);
+            let step = (count >> (1 + single)).max(1);
+            for i in 0..count.min(2 << single) {
+                let position = start + i * step;
+                let coord = if top {
+                    (position as isize, -1)
+                } else {
+                    (-1, position as isize)
+                };
+                cache.coords[pair_count] = coord;
+                cache.pair_luma[pair_count] = downsample_point(&luma, (n.x, n.y), flags, coord);
+                pair_count += 1;
+            }
+        }
+        downsample_block(
+            &luma,
+            (n.x, n.y),
+            (width, height),
+            flags,
+            &mut cache.luma[..width * height],
+        );
+        cache.key = key;
+        cache.pair_count = pair_count as u8;
+        cache.valid = true;
     }
-    if left_count > 0 && unit.chroma_mode == 68 {
-        left_count += (height..height + width.min(height))
-            .take_while(|&dy| available.has(1, x as isize - 1, (y + dy) as isize))
-            .count();
-    }
+    let pair_count = usize::from(cache.pair_count);
     let mut pairs = [[T::default(); 2]; 4];
-    let mut pair_count = 0usize;
-    for (top, count, other) in [
-        (true, top_count, left_count),
-        (false, left_count, top_count),
-    ] {
-        if count == 0 {
-            continue;
-        }
-        let single = usize::from(other == 0);
-        let start = count >> (2 + single);
-        let step = (count >> (1 + single)).max(1);
-        for i in 0..count.min(2 << single) {
-            let position = start + i * step;
-            let (cx, cy) = if top {
-                (position as isize, -1)
-            } else {
-                (-1, position as isize)
-            };
-            let value = chroma.row((y as isize + cy) as usize)[(x as isize + cx) as usize];
-            pairs[pair_count] = [downsample_point(&luma, (n.x, n.y), flags, (cx, cy)), value];
-            pair_count += 1;
-        }
+    for (i, slot) in pairs[..pair_count].iter_mut().enumerate() {
+        let (cx, cy) = cache.coords[i];
+        let value = chroma.row((y as isize + cy) as usize)[(x as isize + cx) as usize];
+        *slot = [cache.pair_luma[i], value];
     }
-    let mut values = [T::default(); MAX_CHROMA_SIDE * MAX_CHROMA_SIDE];
-    let values = &mut values[..width * height];
-    downsample_block(&luma, (n.x, n.y), (width, height), flags, values);
-    vvc_cclm_predict(values, &pairs[..pair_count], out, depth);
+    vvc_cclm_predict(
+        &cache.luma[..width * height],
+        &pairs[..pair_count],
+        out,
+        depth,
+    );
 }

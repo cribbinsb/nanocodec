@@ -12,6 +12,7 @@ use crate::{
     decoder_blocks::{self as blocks, CtuFilters, Geometry, Scaling, Unit},
     decoder_dpb::{REFERENCE_BORDER, References},
     decoder_headers::{Adaptation, PictureHeader, PictureParameters, Sequence, SliceHeader},
+    decoder_metadata::FieldParity,
 };
 use nc_common::{
     BitDepth, BitDepths, DecodedPicture, OutputPicture, Picture, PlaneIndex, ShownPicture,
@@ -39,6 +40,7 @@ pub(super) struct Active<'a> {
     pub picture_header: Option<&'a PictureHeader>,
     /// The ALF, LMCS and scaling-list APSs, by kind and id.
     pub adaptation: &'a [[Option<Box<Adaptation>>; 8]; 3],
+    pub field: Option<FieldParity>,
     pub dsp: &'a Dsp,
     /// Where analysis records go, when they are collected.
     #[cfg(feature = "analysis")]
@@ -56,10 +58,13 @@ impl Active<'_> {
 #[derive(Debug)]
 struct Assembly<T: Pixel> {
     poc: i32,
+    field: Option<FieldParity>,
     /// The reconstruction so far, before the loop filters.
     picture: Picture<T>,
     /// Every decoded slice's CUs, slice after slice.
     units: Vec<Unit>,
+    /// Reusable compact storage for the current slice's non-zero coefficients.
+    coeff_arena: blocks::CoeffArena,
     /// The SAO/ALF syntax of each CTU, by CTU address.
     filters: Vec<CtuFilters>,
     /// The slice headers, by slice index (decoding order).
@@ -72,6 +77,18 @@ struct Assembly<T: Pixel> {
     remaining: usize,
 }
 
+/// Decoded CUs and reference lists of `latest`, held until the next picture's
+/// RPL decides whether `poc` stays in the DPB (skipping `MotionField::new` on
+/// unreferenced leaf B-pictures).
+#[derive(Debug)]
+struct PendingMotion {
+    poc: i32,
+    dimensions: [usize; 2],
+    units: Vec<Unit>,
+    lists: Vec<[Vec<i32>; 2]>,
+    headers: Vec<SliceHeader>,
+}
+
 /// The general decoding process of one coded video sequence at samples
 /// `T`: its DPB, the picture being assembled and the latest picture.
 #[derive(Debug)]
@@ -80,13 +97,25 @@ pub(super) struct General<T: Pixel> {
     references: Option<Box<References<T>>>,
     /// A picture whose slices are still arriving.
     assembly: Option<Box<Assembly<T>>>,
-    /// The latest decoded picture (coded size, borders extended) and its
-    /// geometry, shared with output order until moved into the DPB.
+    /// The latest decoded picture (coded size, borders extended when it may be
+    /// referenced) and its geometry, shared with output order until moved into
+    /// the DPB.
     latest: Option<(Arc<Picture<T>>, Geometry)>,
+    /// Deferred collocated-motion inputs of `latest`.
+    pending_motion: Option<PendingMotion>,
+    /// Whether `latest` has `ph_non_ref_pic_flag` set (never enters the DPB).
+    latest_non_reference: bool,
+    /// Field parity of `latest` when `sps_field_seq_flag` is set.
+    latest_field: Option<FieldParity>,
     /// The visible window of `latest`: its origin and size.
     window: ((usize, usize), (usize, usize)),
     /// The depths of the sequence's pictures.
     depths: BitDepths,
+    /// Persistent scratch allocations reused across slices and pictures.
+    scratch: blocks::DecodeScratch<T>,
+    spare_units: Vec<Unit>,
+    spare_slice_units: Vec<Unit>,
+    spare_arena: blocks::CoeffArena,
     /// The next IRAP picture starts the coded video sequence: the first
     /// picture, or the first after an end of sequence NAL unit
     /// (`NoOutputBeforeRecoveryFlag`, H.266 §8.1.1).
@@ -106,8 +135,15 @@ impl<T: Pixel> Default for General<T> {
             references: None,
             assembly: None,
             latest: None,
+            pending_motion: None,
+            latest_non_reference: false,
+            latest_field: None,
             window: ((0, 0), (0, 0)),
             depths: BitDepths::EIGHT,
+            scratch: blocks::DecodeScratch::default(),
+            spare_units: Vec::new(),
+            spare_slice_units: Vec::new(),
+            spare_arena: blocks::CoeffArena::default(),
             sequence_start: true,
             skip_rasl: false,
             recovery: None,
@@ -170,8 +206,10 @@ impl<T: Pixel> General<T> {
             self.assembly = Some(Box::new(assembly));
             return Ok(false);
         }
+        let field = assembly.field;
+        let non_reference = assembly.headers[0].picture.non_reference;
         let picture = self.finish(active, assembly)?;
-        self.show(active, picture);
+        self.show(active, picture, field, non_reference);
         Ok(true)
     }
 
@@ -216,14 +254,29 @@ impl<T: Pixel> General<T> {
             None
         };
         let references = self.references.get_or_insert_with(Default::default);
+        let pending_motion = self.pending_motion.take();
+        let prev_non_ref = self.latest_non_reference;
+        let previous = match self.latest.take() {
+            Some((pic, _)) if prev_non_ref => {
+                references.recycle_arc(pic);
+                None
+            }
+            other => other,
+        };
         let (poc, _) = references.prepare_shared(
-            self.latest.take(),
+            previous,
             active.sequence,
             header,
             (kind, starts_sequence),
             temporal_id,
             filler.as_ref().map(|filler| (filler, geometry)),
         )?;
+        Self::commit_pending_motion(
+            references,
+            pending_motion,
+            prev_non_ref,
+            &mut self.spare_units,
+        );
         if starting_gdr {
             let distance = header.picture.order.recovery.unwrap_or(0);
             self.recovery = Some(poc.saturating_add_unsigned(distance));
@@ -235,10 +288,18 @@ impl<T: Pixel> General<T> {
         let picture = references.take_picture(width, height)?;
         let tiles = &active.parameters.partitioning.tiles;
         let ctus = (tiles.ctus(0) * tiles.ctus(1)) as usize;
+        let mut units = std::mem::take(&mut self.spare_units);
+        units.clear();
         Ok(Assembly {
             poc,
+            field: active
+                .sequence
+                .field_pictures
+                .then_some(active.field)
+                .flatten(),
             picture,
-            units: Vec::new(),
+            units,
+            coeff_arena: std::mem::take(&mut self.spare_arena),
             filters: vec![CtuFilters::default(); ctus],
             headers: Vec::new(),
             lists: Vec::new(),
@@ -247,9 +308,29 @@ impl<T: Pixel> General<T> {
         })
     }
 
+    fn commit_pending_motion(
+        references: &mut References<T>,
+        pending_motion: Option<PendingMotion>,
+        prev_non_ref: bool,
+        spare_units: &mut Vec<Unit>,
+    ) {
+        if let Some(mut pm) = pending_motion {
+            if !prev_non_ref && references.has_picture(pm.poc) {
+                references.record_motion(blocks::MotionField::new(
+                    &pm.units,
+                    pm.dimensions,
+                    pm.poc,
+                    (pm.lists, &pm.headers),
+                ));
+            }
+            pm.units.clear();
+            *spare_units = pm.units;
+        }
+    }
+
     /// Parse, predict and reconstruct slice `header` into `assembly`.
     fn decode_into(
-        &self,
+        &mut self,
         active: &mut Active<'_>,
         assembly: &mut Assembly<T>,
         rbsp: &[u8],
@@ -260,8 +341,7 @@ impl<T: Pixel> General<T> {
         let slice = u16::try_from(assembly.headers.len())
             .map_err(|_| DecodeError::Malformed("VVC slice count"))?;
         for &address in &header.ctus {
-            let owner = &mut assembly.owners[address as usize];
-            if owner.replace(slice).is_some() {
+            if assembly.owners[address as usize].replace(slice).is_some() {
                 return Err(DecodeError::Malformed("VVC slice repeats CTUs"));
             }
         }
@@ -279,20 +359,21 @@ impl<T: Pixel> General<T> {
         let edges = reference_edges(sequence, parameters, header.subpicture);
         let reshape = blocks::reshape_model::<T>(sequence, &header, &active.adaptation[1])?;
         let filter_counts = blocks::filter_counts(&active.adaptation[0], &header)?;
-        let mut units = blocks::parse_filtered(
+        let forward_only = pocs.iter().flatten().all(|&reference| reference <= poc);
+        blocks::parse_filtered_into(
             rbsp,
             sequence,
             parameters,
             &header,
             filter_counts,
-            (
-                slice,
-                pocs.iter().flatten().all(|&reference| reference <= poc),
-            ),
+            (slice, forward_only),
             &mut assembly.filters,
+            &mut assembly.coeff_arena,
+            &mut self.scratch.parser_grid,
+            &mut self.spare_slice_units,
         )?;
-        blocks::derive_motion(
-            &mut units,
+        blocks::derive_motion_with_scratch(
+            &mut self.spare_slice_units,
             dimensions,
             sequence,
             &header,
@@ -301,10 +382,9 @@ impl<T: Pixel> General<T> {
                 .temporal(poc, [&pocs[0], &pocs[1]], &header, sequence.ctu_log2)
                 .map(|temporal| temporal.within(edges.area))
                 .as_ref(),
+            &mut self.scratch.motion,
         )?;
         let pictures = pocs.each_ref().map(|list| references.pictures(list));
-        // Borrows only the DSP and the SPS, so the analysis build can still
-        // record into `active.stats` below.
         let kernels = active.dsp.at(active.sequence.depth.of::<T>());
         let sources = blocks::InterSources::new(
             [&pictures[0], &pictures[1]],
@@ -313,71 +393,71 @@ impl<T: Pixel> General<T> {
             [&scalings[0], &scalings[1]],
         );
         blocks::derive_refinement(
-            &mut units,
+            &mut self.spare_slice_units,
             &header,
             poc,
             [&pocs[0], &pocs[1]],
             sources,
             kernels,
+            &mut self.scratch.refinement,
         );
         #[cfg(feature = "analysis")]
         if let Some(s) = active.stats.as_deref_mut() {
-            blocks::record_analysis(s, &units, &header, rbsp.len());
+            blocks::record_analysis(s, &self.spare_slice_units, &header, rbsp.len());
         }
         let lists = blocks::scaling_lists(&header, &active.adaptation[2])?;
-        blocks::inverse_residuals(&mut units, sequence, &header, lists, kernels);
         blocks::reconstruct(
             &mut assembly.picture,
-            &units,
+            &self.spare_slice_units,
             sequence,
             dimensions,
-            header.picture.joint_sign,
+            blocks::ResidualContext {
+                arena: &assembly.coeff_arena,
+                header: &header,
+                lists,
+            },
             sources,
             kernels,
             reshape.as_ref().map(|m| (m, header.picture.chroma_scale)),
+            &mut self.scratch.recon,
         );
         assembly.remaining -= header.ctus.len();
-        assembly.units.append(&mut units);
+        assembly.units.append(&mut self.spare_slice_units);
         assembly.headers.push(header);
         assembly.lists.push(pocs);
         Ok(())
     }
 
-    /// The picture-level stages of a complete picture: its motion kept for
-    /// later pictures, inverse luma mapping, then the loop filters.
+    /// The picture-level stages of a complete picture: inverse luma mapping,
+    /// the loop filters, and deferred collocated-motion retention.
     fn finish(&mut self, active: &Active<'_>, assembly: Assembly<T>) -> Result<Picture<T>> {
         let Assembly {
             poc,
             mut picture,
-            units,
+            mut units,
+            coeff_arena,
             filters,
             headers,
             lists,
             owners,
             ..
         } = assembly;
+        self.spare_arena = coeff_arena;
         let (sequence, parameters) = (active.sequence, active.parameters);
         let dimensions = parameters.dimensions.map(|v| v as usize);
         let kernels = active.kernels::<T>();
         #[cfg(test)]
         blocks::compare_trace(&picture, "NC_RECO ", poc);
+        let non_reference = headers[0].picture.non_reference;
         inverse_mapping(active, &mut picture, &headers, &owners)?;
-        self.references
-            .as_deref_mut()
-            .unwrap()
-            .record_motion(blocks::MotionField::new(
-                &units,
-                dimensions,
-                poc,
-                (lists, &headers),
-            ));
-        blocks::deblock(
+        blocks::deblock_with_scratch(
             &mut picture,
             &units,
             sequence,
             parameters,
             &headers,
             kernels,
+            &mut self.scratch.deblock_grid,
         );
         #[cfg(test)]
         blocks::compare_trace(&picture, "NC_DBF ", poc);
@@ -387,22 +467,41 @@ impl<T: Pixel> General<T> {
             &owners,
             (picture.width(), picture.height()),
         );
-        blocks::apply_filters(
+        blocks::apply_filters_with_scratch(
             &mut picture,
             &filters,
             (sequence, &closures),
             &active.adaptation[0],
             (active.dsp, sequence.depth),
+            &mut self.scratch.filters,
         )?;
         #[cfg(test)]
         blocks::compare_trace(&picture, "NC_FINAL ", poc);
-        picture.extend_borders();
+        if non_reference {
+            units.clear();
+            self.spare_units = units;
+        } else {
+            picture.extend_borders();
+            self.pending_motion = Some(PendingMotion {
+                poc,
+                dimensions,
+                units,
+                lists,
+                headers,
+            });
+        }
         Ok(picture)
     }
 
     /// Keep the decoded `picture` as the latest, with its visible window
     /// (the PPS conformance window, §7.4.3.5) and depths.
-    fn show(&mut self, active: &Active<'_>, picture: Picture<T>) {
+    fn show(
+        &mut self,
+        active: &Active<'_>,
+        picture: Picture<T>,
+        field: Option<FieldParity>,
+        non_reference: bool,
+    ) {
         let crop_unit = if active.sequence.chroma { 2 } else { 1 };
         let [left, right, top, bottom] = active.parameters.crop.map(|v| crop_unit * v as usize);
         let [width, height] = active.parameters.dimensions.map(|v| v as usize);
@@ -412,6 +511,8 @@ impl<T: Pixel> General<T> {
             luma: depth,
             chroma: depth,
         };
+        self.latest_non_reference = non_reference;
+        self.latest_field = field;
         self.latest = Some((
             Arc::new(picture),
             Geometry::of(active.sequence, active.parameters),
@@ -447,8 +548,9 @@ impl<T: Pixel> General<T> {
             picture,
             depths: self.depths,
         };
+        let field = self.latest_field.take();
         if let Some(references) = &mut self.references {
-            references.queue_output(output);
+            references.queue_output(output, field);
         }
         Ok(())
     }

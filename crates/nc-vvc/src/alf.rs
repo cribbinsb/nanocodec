@@ -192,17 +192,39 @@ impl<'a, T: Pixel> Analysis<'a, T> {
         ctu: usize,
         wanted: impl Fn(usize) -> bool,
     ) -> Self {
+        Self::new_with_scratch((dsp, depth), picture, ctu, wanted, Vec::new(), Vec::new())
+    }
+
+    /// [`Self::new`] reusing caller-owned `samples` and `classes` allocations.
+    pub(crate) fn new_with_scratch(
+        (dsp, depth): (&'a Dsp, BitDepth),
+        picture: &Picture<T>,
+        ctu: usize,
+        wanted: impl Fn(usize) -> bool,
+        mut samples: Vec<T>,
+        mut classes: Vec<[u8; 2]>,
+    ) -> Self {
         let view = picture.plane(PlaneIndex::Y).view();
         let (width, height) = (view.width(), view.height());
         let stride = width + 2 * PAD;
-        // Built row by row: every sample is written, so none is zeroed first.
-        let mut samples = Vec::with_capacity(stride * (height + 2 * PAD));
-        for y in 0..height + 2 * PAD {
-            let source = view.row(y.saturating_sub(PAD).min(height - 1));
-            let (first, last) = (source[0], source[width - 1]);
-            samples.extend_from_slice(&[first; PAD]);
-            samples.extend_from_slice(source);
-            samples.extend_from_slice(&[last; PAD]);
+        let total = stride * (height + 2 * PAD);
+        if samples.len() == total {
+            for (y, dst) in samples.chunks_exact_mut(stride).enumerate() {
+                let source = view.row(y.saturating_sub(PAD).min(height - 1));
+                dst[..PAD].fill(source[0]);
+                dst[PAD..PAD + width].copy_from_slice(source);
+                dst[PAD + width..].fill(source[width - 1]);
+            }
+        } else {
+            samples.clear();
+            samples.reserve(total);
+            for y in 0..height + 2 * PAD {
+                let source = view.row(y.saturating_sub(PAD).min(height - 1));
+                let (first, last) = (source[0], source[width - 1]);
+                samples.extend_from_slice(&[first; PAD]);
+                samples.extend_from_slice(source);
+                samples.extend_from_slice(&[last; PAD]);
+            }
         }
         let block_columns = width.div_ceil(BLOCK);
         let mut analysis = Self {
@@ -218,8 +240,14 @@ impl<'a, T: Pixel> Analysis<'a, T> {
             block_columns,
             classes: Vec::new(),
         };
-        analysis.classes = analysis.classify(wanted);
+        analysis.classify_into(&mut classes, wanted);
+        analysis.classes = classes;
         analysis
+    }
+
+    /// Reclaim the `samples` and `classes` allocations for the next picture.
+    pub(crate) fn into_scratch(self) -> (Vec<T>, Vec<[u8; 2]>) {
+        (self.samples, self.classes)
     }
 
     /// Analyse one region of the luma of `picture`, every sample around it
@@ -306,8 +334,15 @@ impl<'a, T: Pixel> Analysis<'a, T> {
     /// group q of a row sums the points at x = 4q − 2 and 4q, and the block
     /// at (x, y) sums groups x/4 and x/4 + 1 of grid rows y/2 .. y/2 + 4.
     fn classify(&self, needed: impl Fn(usize) -> bool) -> Vec<[u8; 2]> {
+        let mut classes = Vec::new();
+        self.classify_into(&mut classes, needed);
+        classes
+    }
+
+    fn classify_into(&self, classes: &mut Vec<[u8; 2]>, needed: impl Fn(usize) -> bool) {
         let block_rows = self.height.div_ceil(BLOCK);
-        let mut classes = vec![[0; 2]; block_rows * self.block_columns];
+        classes.clear();
+        classes.resize(block_rows * self.block_columns, [0; 2]);
         let ctb_columns = self.width.div_ceil(self.ctu);
         let ctb_blocks = self.ctu / BLOCK;
         let mut grid = Vec::new();
@@ -366,7 +401,6 @@ impl<'a, T: Pixel> Analysis<'a, T> {
                 }
             }
         }
-        classes
     }
 }
 
@@ -944,6 +978,7 @@ pub(crate) struct Region {
 impl Region {
     /// Clamped vertical coordinate `sy` and horizontal clamping bounds
     /// `(left, right)` for coordinate `y` on a plane of `size`.
+    #[inline]
     fn row_bounds(&self, y: isize, size: (usize, usize)) -> (usize, isize, isize) {
         let (x0, y0, w, h) = self.rect;
         let [x0, y0] = [x0, y0].map(|v| v as isize);
@@ -963,6 +998,33 @@ impl Region {
             right = right.min(x1);
         }
         (sy as usize, left, right)
+    }
+
+    /// Vertical clamp bounds `[y_min, y_max]` for this region on a plane of
+    /// height `height`, plus `Some(x_start as usize)` when `[x_start..x_start + len)`
+    /// needs no horizontal clamping or corner clipping on any row.
+    #[inline]
+    pub(crate) fn direct_span_bounds(
+        &self,
+        size: (usize, usize),
+        x_start: isize,
+        len: usize,
+    ) -> (isize, isize, Option<usize>) {
+        let (x0, y0, w, h) = self.rect;
+        let [x0, y0] = [x0, y0].map(|v| v as isize);
+        let (x1, y1) = (x0 + w as isize - 1, y0 + h as isize - 1);
+        let [width, height] = [size.0, size.1].map(|v| v as isize - 1);
+        let y_min = if self.closed[1] { y0 } else { 0 };
+        let y_max = if self.closed[3] { y1 } else { height };
+        let left = if self.closed[0] { x0 } else { 0 };
+        let right = if self.closed[2] { x1 } else { width };
+        let direct_x = (!self.corners[0]
+            && !self.corners[1]
+            && len > 0
+            && x_start >= left
+            && x_start + len as isize - 1 <= right)
+            .then_some(x_start as usize);
+        (y_min, y_max, direct_x)
     }
 
     /// Populate `dst` with horizontal span `x_start..x_start + dst.len()` at
@@ -996,6 +1058,7 @@ impl Region {
     /// Borrow `&input.row(sy)[x_start..x_start + scratch.len()]` directly when
     /// no horizontal clamping is needed; otherwise populate `scratch` with
     /// edge-replicated samples and return it.
+    #[inline]
     pub(crate) fn row_span<'a, T: nc_common::Sample>(
         &self,
         input: &'a PlaneView<'_, T>,

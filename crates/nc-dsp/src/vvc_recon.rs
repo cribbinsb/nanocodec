@@ -60,6 +60,27 @@ impl Dsp {
             add_clipped(&mut prediction[..length], residual, BitDepth::EIGHT);
         }
     }
+
+    /// Add an inverse VVC residual directly into a strided picture window.
+    /// # Panics
+    /// As [`Self::vvc_add_residual`].
+    pub fn vvc_add_residual_into(&self, dst: &mut PlaneViewMut<'_, u8>, residual: &[i16]) {
+        let (width, height) = (dst.width(), dst.height());
+        let length = check_add_residual((width, height), width * height, residual.len());
+        let residual = &residual[..length];
+        let dispatched = BlockSize::new(width, height).filter(|_| {
+            residual
+                .iter()
+                .all(|r| (-ADD_RESIDUAL_LIMIT..=ADD_RESIDUAL_LIMIT).contains(r))
+        });
+        if let Some(size) = dispatched {
+            self.add_residual(size, dst, residual, width);
+        } else {
+            for (y, row_res) in residual.chunks_exact(width).enumerate() {
+                add_clipped(dst.row_mut(y), row_res, BitDepth::EIGHT);
+            }
+        }
+    }
 }
 
 /// Check the inputs of [`Dsp::vvc_add_residual`] and return the block's

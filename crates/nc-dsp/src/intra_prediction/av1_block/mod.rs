@@ -86,12 +86,6 @@ pub enum IntraKind {
     },
 }
 
-/// Smallest side of a square directional block with the edge filter that
-/// takes the square kernels: below it, preparing the edges a second time in
-/// the square layout costs more than the per-sample zones (x86 callgrind,
-/// SVT p8 720p: from side 4 +0.09%, from side 16 -0.03%; libaom 720p -1.1%
-/// and -1.3%).
-const PREPARED_SQUARE_MIN: usize = 16;
 /// Largest coded side of an intra transform block.
 const MAX_SIDE: usize = MAX_INTRA_SIZE;
 /// Longest edge that is upsampled (§7.11.2.10 allows `w + h <= 16`).
@@ -130,6 +124,7 @@ impl<T: Sample> BlockEdges<T> {
     ///
     /// If a side is not 4, 8, 16, 32 or 64, the aspect ratio exceeds 4:1,
     /// or the block's origin lies outside `plane`.
+    #[inline]
     #[must_use]
     pub fn read(
         plane: &Plane<T>,
@@ -155,8 +150,8 @@ impl<T: Sample> BlockEdges<T> {
         let span = width + height;
         let (base, above_default, left_default) = no_neighbour_values::<T>(depth);
         let mut square = IntraEdges {
-            above: [above_default; EDGE_LEN],
-            left: [left_default; EDGE_LEN],
+            above: [T::default(); EDGE_LEN],
+            left: [T::default(); EDGE_LEN],
             corner: base,
             dc: base,
             size: width,
@@ -176,6 +171,8 @@ impl<T: Sample> BlockEdges<T> {
             square.above[inside..span].fill(row[limit]);
         } else if avail.have_left {
             square.above[..span].fill(view.row(y)[x - 1]);
+        } else {
+            square.above[..span].fill(above_default);
         }
         if avail.have_left {
             let reach = if avail.have_below_left {
@@ -187,15 +184,17 @@ impl<T: Sample> BlockEdges<T> {
             // Rows y..=limit of column x - 1, then the last repeated; the
             // column is walked by stride, not row by row.
             let inside = (limit + 1 - y).min(span);
-            let column = view.data()[y * view.stride() + x - 1..]
-                .iter()
-                .step_by(view.stride());
-            for (sample, &value) in square.left[..inside].iter_mut().zip(column) {
-                *sample = value;
+            let stride = view.stride();
+            let first = y * stride + (x - 1);
+            let col_slice = &view.data()[first..=(first + (inside - 1) * stride)];
+            for (r, sample) in square.left[..inside].iter_mut().enumerate() {
+                *sample = col_slice[r * stride];
             }
             square.left[inside..span].fill(view.row(limit)[x - 1]);
         } else if avail.have_above {
             square.left[..span].fill(view.row(y - 1)[x]);
+        } else {
+            square.left[..span].fill(left_default);
         }
         square.corner = match (avail.have_above, avail.have_left) {
             (true, true) => view.row(y - 1)[x - 1],
@@ -203,7 +202,7 @@ impl<T: Sample> BlockEdges<T> {
             (false, true) => view.row(y)[x - 1],
             (false, false) => base,
         };
-        let mut edges = Self {
+        Self {
             square,
             depth,
             width,
@@ -211,21 +210,13 @@ impl<T: Sample> BlockEdges<T> {
             avail,
             above_inside: width.min(max_x + 1 - x),
             left_inside: height.min(max_y + 1 - y),
-        };
-        if width == height {
-            edges.square.dc = edges.dc();
         }
-        edges
     }
 
     /// The block's DC prediction value (§7.11.2.5).
     #[must_use]
     pub fn dc_value(&self) -> T {
-        if self.width == self.height {
-            self.square.dc
-        } else {
-            self.dc()
-        }
+        self.dc()
     }
 
     pub(crate) const fn shape(&self) -> (usize, usize) {
@@ -300,6 +291,7 @@ impl<T: Sample> BlockEdges<T> {
         );
         if w == h {
             match kind {
+                IntraKind::Dc => return dst.fill(self.dc()),
                 IntraKind::Directional {
                     angle,
                     edge_filter: None,
@@ -307,17 +299,20 @@ impl<T: Sample> BlockEdges<T> {
                 IntraKind::Directional {
                     angle,
                     edge_filter: Some(ctx),
-                } if w >= PREPARED_SQUARE_MIN => {
-                    if let Some(prepared) = directional::prepared_square(self, angle, ctx) {
+                } => match directional::prepared_square(self, angle, ctx) {
+                    directional::PreparedSquare::Unchanged => {
+                        return square(&self.square, Square::Angle(angle), dst);
+                    }
+                    directional::PreparedSquare::Filtered(prepared) => {
                         return square(&prepared, Square::Angle(angle), dst);
                     }
-                }
-                IntraKind::Directional { .. } => {}
+                    directional::PreparedSquare::Upsampled => {}
+                },
                 _ => return square(&self.square, Square::Mode(square_mode(kind)), dst),
             }
         }
         match kind {
-            IntraKind::Dc => dst.fill(self.dc_value()),
+            IntraKind::Dc => dst.fill(self.dc()),
             IntraKind::Paeth => rect_paeth(self, dst),
             IntraKind::Smooth | IntraKind::SmoothVertical | IntraKind::SmoothHorizontal => {
                 rect_smooth(self, kind, dst);
@@ -363,7 +358,11 @@ impl<T: Sample> BlockEdges<T> {
             (true, true) => {
                 let span = w + h;
                 let total = sum(&self.square.above[..w]) + sum(&self.square.left[..h]);
-                (total + span / 2) / span
+                if span.is_power_of_two() {
+                    (total + span / 2) >> span.trailing_zeros()
+                } else {
+                    (total + span / 2) / span
+                }
             }
             (true, false) => (sum(&self.square.above[..w]) + w / 2) >> w.trailing_zeros(),
             (false, true) => (sum(&self.square.left[..h]) + h / 2) >> h.trailing_zeros(),

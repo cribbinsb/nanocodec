@@ -2,6 +2,8 @@
 
 use crate::{Isa, Vp9Pass};
 
+pub(crate) mod high_simd;
+
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",

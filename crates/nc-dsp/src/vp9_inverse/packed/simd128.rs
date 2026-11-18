@@ -1,7 +1,7 @@
 //! SIMD128 VP9 inverse lanes with paired signed dot products and wrapping
 //! low-word narrows. Both separable passes keep eight transforms in vectors.
 
-use super::{COS_BITS, Lanes, Products};
+use super::{COS_BITS, Lanes, Products, WideLanes};
 use crate::Vp9Pass;
 use crate::txfm::inverse_lanes::InverseLanes;
 use core::arch::wasm32::{
@@ -95,7 +95,7 @@ impl InverseLanes for Narrow {
     }
 }
 
-impl Lanes for Narrow {
+impl WideLanes for Narrow {
     type Wide = Wide;
     #[inline(always)]
     fn wide(self, weight: i32) -> Wide {
@@ -113,6 +113,9 @@ impl Lanes for Narrow {
         let hi = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(a.0, b.0);
         Wide([i32x4_dot_i16x8(lo, weights), i32x4_dot_i16x8(hi, weights)])
     }
+}
+
+impl Lanes for Narrow {
     #[inline(always)]
     fn load_i16(src: &[i16]) -> Self {
         let src = &src[..super::LANES];

@@ -11,20 +11,20 @@ use core::arch::aarch64::{
     int16x4_t, int16x8_t, int32x4_t, vabs_s16, vabsq_s16, vabsq_s32, vadd_s16, vaddlvq_s32,
     vaddq_s16, vaddq_s32, vaddvq_u32, vaddw_s16, vandq_s16, vbsl_s16, vbslq_s16, vbslq_s32,
     vceqq_s16, vceqq_s32, vceqzq_s32, vcgtq_s16, vcgtq_s32, vcltz_s16, vcltzq_s16, vcombine_s16,
-    vcombine_s32, vcreate_u8, vdup_lane_s16, vdup_laneq_s16, vdup_n_s16, vdup_n_u8, vdupq_n_s16,
-    vdupq_n_s32, veorq_s32, vextq_s16, vget_high_s16, vget_high_s32, vget_lane_u32, vget_low_s16,
-    vget_low_s32, vget_low_u16, vld1_s16, vld1_u8, vld1_u16, vld1q_s16, vld1q_s32, vld1q_u8,
-    vld2q_u16, vmax_s16, vmaxq_s16, vmaxq_s32, vmaxvq_u16, vmin_s16, vminq_s16, vminq_s32,
-    vminq_u16, vmlal_high_n_s16, vmlal_high_s16, vmlal_n_s16, vmlal_s16, vmlal_u8, vmlaq_laneq_s32,
-    vmlaq_n_s32, vmovl_high_s16, vmovl_s16, vmovl_u8, vmovl_u16, vmul_s16, vmull_high_s16,
-    vmull_s16, vmull_u8, vmulq_n_s32, vmulq_s16, vmulq_s32, vneg_s16, vnegq_s16, vorrq_s32,
-    vpadalq_s16, vpaddq_s32, vqadd_s16, vqaddq_s16, vqmovn_high_s32, vqmovn_s32, vqmovn_u16,
-    vqmovun_s16, vqmovun_s32, vqrdmulh_s16, vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8,
-    vreinterpret_s16_u16, vreinterpret_u16_s16, vreinterpret_u32_u8, vreinterpretq_s16_s32,
-    vreinterpretq_s16_u8, vreinterpretq_s16_u16, vreinterpretq_s32_u32, vreinterpretq_u8_s16,
-    vreinterpretq_u16_s16, vreinterpretq_u32_s32, vrshlq_s32, vshl_s16, vshl_u16, vshlq_s16,
-    vshlq_s32, vshlq_u16, vshlq_u32, vshrq_n_s32, vshrq_n_u32, vst1_s16, vst1_u8, vst1_u16,
-    vst1q_s16, vst1q_s32, vsub_s16, vsubq_s16, vsubq_s32, vtrnq_s32, vzip1q_s16, vzip2q_s16,
+    vcombine_s32, vcreate_u8, vdup_n_s16, vdup_n_u8, vdupq_n_s16, vdupq_n_s32, veorq_s32,
+    vextq_s16, vget_high_s16, vget_high_s32, vget_lane_u32, vget_low_s16, vget_low_s32,
+    vget_low_u16, vld1_s16, vld1_u8, vld1_u16, vld1q_s16, vld1q_s32, vld1q_u8, vld2q_u16, vmax_s16,
+    vmaxq_s16, vmaxq_s32, vmaxvq_u16, vmin_s16, vminq_s16, vminq_s32, vminq_u16, vmlal_high_n_s16,
+    vmlal_high_s16, vmlal_n_s16, vmlal_s16, vmlal_u8, vmlaq_laneq_s32, vmlaq_n_s32, vmovl_high_s16,
+    vmovl_s16, vmovl_u8, vmovl_u16, vmul_s16, vmull_high_s16, vmull_s16, vmull_u8, vmulq_n_s32,
+    vmulq_s16, vmulq_s32, vneg_s16, vnegq_s16, vorrq_s32, vpadalq_s16, vpaddq_s32, vqadd_s16,
+    vqaddq_s16, vqmovn_high_s32, vqmovn_s32, vqmovn_u16, vqmovun_s16, vqmovun_s32, vqrdmulh_s16,
+    vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8, vreinterpret_s16_u16, vreinterpret_u16_s16,
+    vreinterpret_u32_u8, vreinterpretq_s16_s32, vreinterpretq_s16_u8, vreinterpretq_s16_u16,
+    vreinterpretq_s32_u32, vreinterpretq_u8_s16, vreinterpretq_u16_s16, vreinterpretq_u32_s32,
+    vrshlq_s32, vshl_s16, vshl_u16, vshlq_s16, vshlq_s32, vshlq_u16, vshlq_u32, vshrq_n_s32,
+    vshrq_n_u32, vst1_s16, vst1_u8, vst1_u16, vst1q_s16, vst1q_s32, vsub_s16, vsubq_s16, vsubq_s32,
+    vtrn1q_s16, vtrnq_s32, vzip1q_s16, vzip2q_s16,
 };
 
 use core::mem::MaybeUninit;
@@ -290,6 +290,23 @@ impl I32Lanes for I32x4 {
                 core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
             };
             value.add_to_u8(row);
+        }
+    }
+
+    #[inline(always)]
+    fn add_transposed_u16(rows: &[Self], dst: &mut [u16], dst_stride: usize, max_val: i32) {
+        let needed = dst_stride
+            .checked_mul(Self::LANES - 1)
+            .and_then(|n| n.checked_add(Self::LANES))
+            .expect("transpose tile extent");
+        let dst = &mut dst[..needed];
+        for (r, value) in transpose_i32x4(rows).into_iter().enumerate() {
+            // SAFETY: r < LANES and the checked span covers the last row's
+            // full vector; each temporary row borrow ends in this iteration.
+            let row = unsafe {
+                core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
+            };
+            value.add_to_u16(row, max_val);
         }
     }
 
@@ -819,6 +836,12 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
+    fn combine_hi_lo(self, next: Self) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { Self(vextq_s16::<4>(self.0, next.0)) }
+    }
+
+    #[inline(always)]
     fn min_u16(self, other: Self) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe {
@@ -890,62 +913,28 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
-    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
+    fn combine_mid_halves(self, next: Self) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { Self(vextq_s16::<4>(self.0, next.0)) }
+    }
+
+    #[inline(always)]
+    fn shift_quarter(self, next: Self) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { Self(vextq_s16::<2>(self.0, next.0)) }
+    }
+
+    #[inline(always)]
+    fn expand_alf_pair(blocks: &[[i16; 12]], p: usize) -> [Self; 2] {
         let b = &blocks[..2];
-        // SAFETY: NEON kernels only; each block holds 12 `i16`s.
+        let t = 2 * p;
+        // SAFETY: NEON kernels only (module docs).
         unsafe {
-            let c0_lo = vld1q_s16(b[0].as_ptr());
-            let c0_hi = vld1_s16(b[0][8..].as_ptr());
-            let c1_lo = vld1q_s16(b[1].as_ptr());
-            let c1_hi = vld1_s16(b[1][8..].as_ptr());
             [
+                Self(vcombine_s16(vdup_n_s16(b[0][t]), vdup_n_s16(b[1][t]))),
                 Self(vcombine_s16(
-                    vdup_laneq_s16::<0>(c0_lo),
-                    vdup_laneq_s16::<0>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_laneq_s16::<1>(c0_lo),
-                    vdup_laneq_s16::<1>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_laneq_s16::<2>(c0_lo),
-                    vdup_laneq_s16::<2>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_laneq_s16::<3>(c0_lo),
-                    vdup_laneq_s16::<3>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_laneq_s16::<4>(c0_lo),
-                    vdup_laneq_s16::<4>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_laneq_s16::<5>(c0_lo),
-                    vdup_laneq_s16::<5>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_laneq_s16::<6>(c0_lo),
-                    vdup_laneq_s16::<6>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_laneq_s16::<7>(c0_lo),
-                    vdup_laneq_s16::<7>(c1_lo),
-                )),
-                Self(vcombine_s16(
-                    vdup_lane_s16::<0>(c0_hi),
-                    vdup_lane_s16::<0>(c1_hi),
-                )),
-                Self(vcombine_s16(
-                    vdup_lane_s16::<1>(c0_hi),
-                    vdup_lane_s16::<1>(c1_hi),
-                )),
-                Self(vcombine_s16(
-                    vdup_lane_s16::<2>(c0_hi),
-                    vdup_lane_s16::<2>(c1_hi),
-                )),
-                Self(vcombine_s16(
-                    vdup_lane_s16::<3>(c0_hi),
-                    vdup_lane_s16::<3>(c1_hi),
+                    vdup_n_s16(b[0][t + 1]),
+                    vdup_n_s16(b[1][t + 1]),
                 )),
             ]
         }
@@ -953,6 +942,7 @@ impl I16FilterLanes for I16x8 {
 }
 
 impl I16Pairs for I16x8 {
+    const FAST_PAIR_DOT: bool = false;
     type Pairs = I32x4;
 
     #[inline(always)]
@@ -980,6 +970,17 @@ impl I16Pairs for I16x8 {
     fn narrow_pairs(low: I32x4, high: I32x4) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe { Self(vcombine_s16(vqmovn_s32(low.0), vqmovn_s32(high.0))) }
+    }
+
+    #[inline(always)]
+    fn interleave_pairs(even: I32x4, odd: I32x4) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe {
+            Self(vtrn1q_s16(
+                vreinterpretq_s16_s32(even.0),
+                vreinterpretq_s16_s32(odd.0),
+            ))
+        }
     }
 }
 

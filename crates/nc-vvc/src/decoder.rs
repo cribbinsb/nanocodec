@@ -109,6 +109,8 @@ pub struct Decoder {
     general_picture: Option<Box<crate::decoder_headers::PictureParameters>>,
     /// The general decoding process of the current sequence.
     instance: Instance,
+    /// Field parity from the current access unit's `frame_field_info` SEI.
+    pending_field: Option<crate::decoder_metadata::FieldParity>,
     /// General pictures output before the sequence changed sample type,
     /// ahead of the current instance's.
     earlier: VecDeque<DecodedPicture>,
@@ -189,8 +191,12 @@ impl Decoder {
                 | super::decoder_metadata::SUFFIX_SEI
                 | super::decoder_metadata::FILLER
         ) {
-            return super::decoder_metadata::validate(kind, &unescape_rbsp(&nal[2..])?)
-                .map(|()| Pushed::Nothing);
+            if let Some(parity) =
+                super::decoder_metadata::validate(kind, &unescape_rbsp(&nal[2..])?)?
+            {
+                self.pending_field = Some(parity);
+            }
+            return Ok(Pushed::Nothing);
         }
         if matches!(kind, EOS_NUT | EOB_NUT) {
             self.end_sequence();
@@ -607,14 +613,18 @@ impl Decoder {
     /// A general slice NAL (activating its PPS when it starts a picture);
     /// `true` when it completes its picture.
     fn general_slice(&mut self, rbsp: &[u8], kind: u8, temporal_id: u8) -> Result<bool> {
-        if !self.assembling() {
+        let field = if self.assembling() {
+            None
+        } else {
             self.activate(self.slice_pps_id(rbsp)?)?;
-        }
+            self.pending_field.take()
+        };
         let mut active = general::Active {
             sequence: self.general_sequence.as_deref().unwrap(),
             parameters: self.general_picture.as_deref().unwrap(),
             picture_header: self.picture_header.as_deref(),
             adaptation: &self.adaptation,
+            field,
             dsp: &self.dsp,
             #[cfg(feature = "analysis")]
             stats: self.stats.as_mut(),
@@ -627,6 +637,7 @@ impl Decoder {
 
     /// An end of sequence (or bitstream) NAL unit (H.266 §7.4.3.10).
     fn end_sequence(&mut self) {
+        self.pending_field = None;
         with_general!(&mut self.instance, general => general.end_sequence());
     }
 
@@ -660,7 +671,9 @@ impl Decoder {
                 | super::decoder_metadata::PREFIX_SEI
                 | super::decoder_metadata::SUFFIX_SEI
                 | super::decoder_metadata::FILLER) => {
-                    super::decoder_metadata::validate(kind, &rbsp)?;
+                    if let Some(parity) = super::decoder_metadata::validate(kind, &rbsp)? {
+                        self.pending_field = Some(parity);
+                    }
                 }
                 EOS_NUT | EOB_NUT => self.end_sequence(),
                 // Single-layer streams need nothing from a VPS (§7.4.3.3).

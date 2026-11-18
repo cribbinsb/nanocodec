@@ -307,7 +307,9 @@ VMAFX_XPSNR_FEATURES = {"xpsnr_y": "xpsnr_y", "xpsnr_cb": "xpsnr_u", "xpsnr_cr":
 VMAF_V1_DISPLAY_SLOT_WEIGHT = 2
 METRIC_TIMEOUT_SECONDS = 1800
 
-_XPSNR_LINE = re.compile(r"XPSNR\s+y:\s*([\d.inf]+)\s+u:\s*([\d.inf]+)\s+v:\s*([\d.inf]+)")
+#: ffmpeg's sequence XPSNR line; a plane can be negative on a badly distorted stream
+#: (-0.50 dB luma at a held-out low rung, 2026-11-18)
+_XPSNR_LINE = re.compile(r"XPSNR\s+y:\s*(-?[\d.]+|inf)\s+u:\s*(-?[\d.]+|inf)\s+v:\s*(-?[\d.]+|inf)")
 
 
 @dataclass
@@ -452,9 +454,10 @@ class XpsnrMetric:
         return [ProcessSink(self._process)]
 
     def measurement(self, processes: ProcessSet) -> Measurement:
-        match = _XPSNR_LINE.search(processes.stderr_text(self._process))
+        stderr = processes.stderr_text(self._process)
+        match = _XPSNR_LINE.search(stderr)
         if not match:
-            raise RuntimeError("could not parse ffmpeg xpsnr output")
+            raise RuntimeError(f"could not parse ffmpeg xpsnr output: {stderr[-600:]!r}")
         y, u, v = (min(PSNR_CAP_DB, float(x)) for x in match.groups())
         return Measurement({"xpsnr_y": y, "xpsnr_u": u, "xpsnr_v": v,
                             "xpsnr_yuv": weighted_yuv(y, u, v)})

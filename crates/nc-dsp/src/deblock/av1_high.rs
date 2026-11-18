@@ -17,7 +17,11 @@
 
 #![allow(clippy::inline_always)]
 #![cfg_attr(
-    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )),
     allow(dead_code, unused_imports)
 )]
 
@@ -41,34 +45,35 @@ pub(crate) fn av1_runs(isa: Isa) -> Av1Runs16Fn {
         Isa::Avx512 => x86_avx512::runs,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon_high::runs,
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        Isa::Simd128 => simd128_high::runs,
         _ => av1_scalar_at::<u16>,
     }
 }
 
 #[inline(always)]
-fn abs_diff<V: I16Lanes>(a: V, b: V) -> V {
+pub(super) fn abs_diff<V: I16Lanes>(a: V, b: V) -> V {
     a.sub(b).abs()
 }
 
 #[inline(always)]
-fn le_mask<V: I16FilterLanes>(x: V, limit_plus_one: V) -> V {
+pub(super) fn le_mask<V: I16FilterLanes>(x: V, limit_plus_one: V) -> V {
     limit_plus_one.gt_mask(x)
 }
 
 /// Compute `(mask, hev, flat)` for `TAPS` (`2`, `3`, or `4`) decision samples
-/// per side at `shift = BitDepth - 8` (`2` or `4`).
+/// per side at `SHIFT = BitDepth - 8` (`2` or `4`).
 #[inline(always)]
-fn masks<V: I16FilterLanes, const TAPS: usize>(
+fn masks<V: I16FilterLanes, const TAPS: usize, const SHIFT: u32>(
     p: &[V; 4],
     q: &[V; 4],
     filter: Av1EdgeFilter,
-    shift: u32,
     active: V,
 ) -> (V, V, V) {
-    let limit_p1 = (i16::from(filter.limit) << shift) + 1;
-    let blimit_p1 = (i16::from(filter.blimit) << shift) + 1;
-    let thresh = i16::from(filter.thresh) << shift;
-    let flat_p1 = (1_i16 << shift) + 1;
+    let limit_p1 = (i16::from(filter.limit) << SHIFT) + 1;
+    let blimit_p1 = (i16::from(filter.blimit) << SHIFT) + 1;
+    let thresh = i16::from(filter.thresh) << SHIFT;
+    let flat_p1 = (1_i16 << SHIFT) + 1;
 
     let mut adj = abs_diff(p[1], p[0]).max(abs_diff(q[1], q[0]));
     let hev = adj.gt_mask(V::splat(thresh));
@@ -92,13 +97,12 @@ fn masks<V: I16FilterLanes, const TAPS: usize>(
 
 /// Narrow 4-tap filter (`[np1, np0, nq0, nq1]`) in signed range `[-offset, offset - 1]`.
 #[inline(always)]
-fn narrow_lanes<V: I16FilterLanes>(
+pub(super) fn narrow_lanes<V: I16FilterLanes, const SHIFT: u32>(
     (p1, p0, q0, q1): (V, V, V, V),
     mask: V,
     hev: V,
-    shift: u32,
 ) -> [V; 4] {
-    let off = 128_i16 << shift;
+    let off = 128_i16 << SHIFT;
     let (lo, hi) = (V::splat(-off), V::splat(off - 1));
     let offset = V::splat(off);
     let (ps1, ps0, qs0, qs1) = (
@@ -121,10 +125,10 @@ fn narrow_lanes<V: I16FilterLanes>(
     [np1, np0, nq0, nq1]
 }
 
-/// Sliding-box wide filter (`6`, `8`, or `14` taps) using modular 16-bit sums
-/// and unsigned `srl(SHIFT)` (`<= 65528` at 12-bit 14-tap).
+/// Sliding-box wide filter (`6`, `8`, `14`, or `16` taps) using modular 16-bit
+/// sums and unsigned `srl(SHIFT)` (`<= 65528` at 12-bit 14-/15-tap).
 #[inline(always)]
-fn smooth_lanes<
+pub(super) fn smooth_lanes<
     V: I16FilterLanes,
     const N: usize,
     const OUTER: usize,
@@ -152,13 +156,12 @@ fn smooth_lanes<
 }
 
 #[inline(always)]
-fn flat2_mask<V: I16FilterLanes>(
+fn flat2_mask<V: I16FilterLanes, const SHIFT: u32>(
     (p6, p5, p4, p0): (V, V, V, V),
     (q0, q4, q5, q6): (V, V, V, V),
     flat: V,
-    shift: u32,
 ) -> V {
-    let flat_p1 = V::splat((1_i16 << shift) + 1);
+    let flat_p1 = V::splat((1_i16 << SHIFT) + 1);
     let spread = abs_diff(p4, p0)
         .max(abs_diff(q4, q0))
         .max(abs_diff(p5, p0))
@@ -171,7 +174,7 @@ fn flat2_mask<V: I16FilterLanes>(
 // ----------------------------------------- horizontal edges (along == 1) ----
 
 #[inline(always)]
-unsafe fn load_h<V: I16FilterLanes, const LINES: usize>(
+pub(super) unsafe fn load_h<V: I16FilterLanes, const LINES: usize>(
     data: *const u16,
     edge: usize,
     across: usize,
@@ -190,7 +193,7 @@ unsafe fn load_h<V: I16FilterLanes, const LINES: usize>(
 }
 
 #[inline(always)]
-unsafe fn store_h<V: I16FilterLanes, const LINES: usize>(
+pub(super) unsafe fn store_h<V: I16FilterLanes, const LINES: usize>(
     v: V,
     data: *mut u16,
     edge: usize,
@@ -212,13 +215,12 @@ unsafe fn store_h<V: I16FilterLanes, const LINES: usize>(
 
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-unsafe fn h_eight_or_fourteen<V: I16FilterLanes, const LINES: usize>(
+unsafe fn h_eight_or_fourteen<V: I16FilterLanes, const LINES: usize, const SHIFT: u32>(
     ptr: *const u16,
     mptr: *mut u16,
     edge: usize,
     across: usize,
     filter: Av1EdgeFilter,
-    shift: u32,
     active: V,
     (p1, p0, q0, q1): (V, V, V, V),
 ) {
@@ -229,11 +231,11 @@ unsafe fn h_eight_or_fourteen<V: I16FilterLanes, const LINES: usize>(
         let q2 = load_h::<V, LINES>(ptr, edge, across, 2);
         let q3 = load_h::<V, LINES>(ptr, edge, across, 3);
         let (mask, hev, flat) =
-            masks::<V, 4>(&[p0, p1, p2, p3], &[q0, q1, q2, q3], filter, shift, active);
+            masks::<V, 4, SHIFT>(&[p0, p1, p2, p3], &[q0, q1, q2, q3], filter, active);
         if !mask.any_nonzero() {
             return;
         }
-        let [np1, np0, nq0, nq1] = narrow_lanes((p1, p0, q0, q1), mask, hev, shift);
+        let [np1, np0, nq0, nq1] = narrow_lanes::<V, SHIFT>((p1, p0, q0, q1), mask, hev);
         if !flat.any_nonzero() {
             store_h::<V, LINES>(np1, mptr, edge, across, -2);
             store_h::<V, LINES>(np0, mptr, edge, across, -1);
@@ -250,7 +252,7 @@ unsafe fn h_eight_or_fourteen<V: I16FilterLanes, const LINES: usize>(
             let q4 = load_h::<V, LINES>(ptr, edge, across, 4);
             let q5 = load_h::<V, LINES>(ptr, edge, across, 5);
             let q6 = load_h::<V, LINES>(ptr, edge, across, 6);
-            let all = flat2_mask((p6, p5, p4, p0), (q0, q4, q5, q6), flat, shift);
+            let all = flat2_mask::<V, SHIFT>((p6, p5, p4, p0), (q0, q4, q5, q6), flat);
             if all.any_nonzero() {
                 let line14 = [p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6];
                 let mut out14 = [
@@ -271,12 +273,11 @@ unsafe fn h_eight_or_fourteen<V: I16FilterLanes, const LINES: usize>(
 }
 
 #[inline(always)]
-unsafe fn h_group<V: I16FilterLanes, const LINES: usize>(
+unsafe fn h_group<V: I16FilterLanes, const LINES: usize, const SHIFT: u32>(
     data: &mut [u16],
     edge: usize,
     across: usize,
     filter: Av1EdgeFilter,
-    shift: u32,
 ) {
     let active = if LINES == 4 {
         V::load_halves(&[-1; 4], &[0; 4])
@@ -295,11 +296,11 @@ unsafe fn h_group<V: I16FilterLanes, const LINES: usize>(
             Av1FilterLength::Four => {
                 let z = V::splat(0);
                 let (mask, hev, _) =
-                    masks::<V, 2>(&[p0, p1, z, z], &[q0, q1, z, z], filter, shift, active);
+                    masks::<V, 2, SHIFT>(&[p0, p1, z, z], &[q0, q1, z, z], filter, active);
                 if !mask.any_nonzero() {
                     return;
                 }
-                let [np1, np0, nq0, nq1] = narrow_lanes((p1, p0, q0, q1), mask, hev, shift);
+                let [np1, np0, nq0, nq1] = narrow_lanes::<V, SHIFT>((p1, p0, q0, q1), mask, hev);
                 store_h::<V, LINES>(np1, mptr, edge, across, -2);
                 store_h::<V, LINES>(np0, mptr, edge, across, -1);
                 store_h::<V, LINES>(nq0, mptr, edge, across, 0);
@@ -310,11 +311,11 @@ unsafe fn h_group<V: I16FilterLanes, const LINES: usize>(
                 let q2 = load_h::<V, LINES>(ptr, edge, across, 2);
                 let z = V::splat(0);
                 let (mask, hev, flat) =
-                    masks::<V, 3>(&[p0, p1, p2, z], &[q0, q1, q2, z], filter, shift, active);
+                    masks::<V, 3, SHIFT>(&[p0, p1, p2, z], &[q0, q1, q2, z], filter, active);
                 if !mask.any_nonzero() {
                     return;
                 }
-                let [np1, np0, nq0, nq1] = narrow_lanes((p1, p0, q0, q1), mask, hev, shift);
+                let [np1, np0, nq0, nq1] = narrow_lanes::<V, SHIFT>((p1, p0, q0, q1), mask, hev);
                 let mut out = [p2, np1, np0, nq0, nq1, q2];
                 if flat.any_nonzero() {
                     let line = [p2, p1, p0, q0, q1, q2];
@@ -325,13 +326,12 @@ unsafe fn h_group<V: I16FilterLanes, const LINES: usize>(
                 }
             }
             Av1FilterLength::Eight | Av1FilterLength::Fourteen => {
-                h_eight_or_fourteen::<V, LINES>(
+                h_eight_or_fourteen::<V, LINES, SHIFT>(
                     ptr,
                     mptr,
                     edge,
                     across,
                     filter,
-                    shift,
                     active,
                     (p1, p0, q0, q1),
                 );
@@ -343,7 +343,7 @@ unsafe fn h_group<V: I16FilterLanes, const LINES: usize>(
 // ------------------------------------------ vertical edges (across == 1) ----
 
 #[inline(always)]
-unsafe fn load_v_tile<V: I16x8Shuffles, const LINES: usize>(
+pub(super) unsafe fn load_v_tile<V: I16x8Shuffles, const LINES: usize>(
     data: *const u16,
     origin: usize,
     along: usize,
@@ -359,7 +359,7 @@ unsafe fn load_v_tile<V: I16x8Shuffles, const LINES: usize>(
 }
 
 #[inline(always)]
-unsafe fn store_v_tile<V: I16x8Shuffles, const LINES: usize>(
+pub(super) unsafe fn store_v_tile<V: I16x8Shuffles, const LINES: usize>(
     positions: [V; 8],
     data: *mut u16,
     origin: usize,
@@ -375,12 +375,67 @@ unsafe fn store_v_tile<V: I16x8Shuffles, const LINES: usize>(
 }
 
 #[inline(always)]
-unsafe fn v_fourteen<V: I16x8Shuffles + I16FilterLanes, const LINES: usize>(
+unsafe fn load_v_wide<V: I16FilterLanes>(data: *const u16, origin: usize, along: usize) -> [V; 8] {
+    let mut rows = [V::splat(0); 8];
+    for (i, row) in rows.iter_mut().enumerate() {
+        let base = origin + i * along;
+        // SAFETY: caller checked `V::LANES` rows of 8 `u16`s starting at `origin`.
+        *row = unsafe {
+            if V::LANES == 16 {
+                V::load_halves(
+                    core::slice::from_raw_parts(data.add(base).cast::<i16>(), 8),
+                    core::slice::from_raw_parts(data.add(base + 8 * along).cast::<i16>(), 8),
+                )
+            } else {
+                debug_assert_eq!(V::LANES, 32);
+                V::load_quarters([
+                    core::slice::from_raw_parts(data.add(base).cast::<i16>(), 8),
+                    core::slice::from_raw_parts(data.add(base + 8 * along).cast::<i16>(), 8),
+                    core::slice::from_raw_parts(data.add(base + 16 * along).cast::<i16>(), 8),
+                    core::slice::from_raw_parts(data.add(base + 24 * along).cast::<i16>(), 8),
+                ])
+            }
+        };
+    }
+    V::transpose_groups8(rows)
+}
+
+#[inline(always)]
+unsafe fn store_v_wide<V: I16FilterLanes>(
+    positions: [V; 8],
+    data: *mut u16,
+    origin: usize,
+    along: usize,
+) {
+    let rows = V::transpose_groups8(positions);
+    for (i, row) in rows.into_iter().enumerate() {
+        let base = origin + i * along;
+        // SAFETY: caller checked `V::LANES` disjoint rows (`along >= 8`) of 8 writable `u16`s.
+        unsafe {
+            if V::LANES == 16 {
+                row.store_halves(
+                    core::slice::from_raw_parts_mut(data.add(base).cast::<i16>(), 8),
+                    core::slice::from_raw_parts_mut(data.add(base + 8 * along).cast::<i16>(), 8),
+                );
+            } else {
+                debug_assert_eq!(V::LANES, 32);
+                row.store_quarters([
+                    core::slice::from_raw_parts_mut(data.add(base).cast::<i16>(), 8),
+                    core::slice::from_raw_parts_mut(data.add(base + 8 * along).cast::<i16>(), 8),
+                    core::slice::from_raw_parts_mut(data.add(base + 16 * along).cast::<i16>(), 8),
+                    core::slice::from_raw_parts_mut(data.add(base + 24 * along).cast::<i16>(), 8),
+                ]);
+            }
+        }
+    }
+}
+
+#[inline(always)]
+unsafe fn v_fourteen<V: I16x8Shuffles + I16FilterLanes, const LINES: usize, const SHIFT: u32>(
     data: &mut [u16],
     edge: usize,
     along: usize,
     flat: V,
-    shift: u32,
     (old_p0, old_q0): (V, V),
     inner_out: &[V; 8],
 ) -> bool {
@@ -391,11 +446,10 @@ unsafe fn v_fourteen<V: I16x8Shuffles + I16FilterLanes, const LINES: usize>(
             load_v_tile::<V, LINES>(data.as_ptr(), edge, along),
         )
     };
-    let all = flat2_mask(
+    let all = flat2_mask::<V, SHIFT>(
         (left[1], left[2], left[3], old_p0),
         (old_q0, right[4], right[5], right[6]),
         flat,
-        shift,
     );
     if !all.any_nonzero() {
         return false;
@@ -418,12 +472,52 @@ unsafe fn v_fourteen<V: I16x8Shuffles + I16FilterLanes, const LINES: usize>(
 }
 
 #[inline(always)]
-unsafe fn v_group<V: I16x8Shuffles + I16FilterLanes, const LINES: usize>(
+unsafe fn v_fourteen_wide<V: I16FilterLanes, const SHIFT: u32>(
+    data: &mut [u16],
+    edge: usize,
+    along: usize,
+    flat: V,
+    (old_p0, old_q0): (V, V),
+    inner_out: &[V; 8],
+) -> bool {
+    // SAFETY: caller checked `edge >= 8` and `edge + (V::LANES - 1) * along + 7 < data.len()`.
+    let (mut left, mut right) = unsafe {
+        (
+            load_v_wide::<V>(data.as_ptr(), edge - 8, along),
+            load_v_wide::<V>(data.as_ptr(), edge, along),
+        )
+    };
+    let all = flat2_mask::<V, SHIFT>(
+        (left[1], left[2], left[3], old_p0),
+        (old_q0, right[4], right[5], right[6]),
+        flat,
+    );
+    if !all.any_nonzero() {
+        return false;
+    }
+    let mut line = [V::splat(0); 14];
+    line[..7].copy_from_slice(&left[1..8]);
+    line[7..14].copy_from_slice(&right[..7]);
+    let mut out = line;
+    out[3..7].copy_from_slice(&inner_out[..4]);
+    out[7..11].copy_from_slice(&inner_out[4..8]);
+    smooth_lanes::<V, 14, 6, 1, 4>(&line, &mut out, all);
+    left[2..8].copy_from_slice(&out[1..7]);
+    right[..6].copy_from_slice(&out[7..13]);
+    // SAFETY: same checked 16-sample footprint as the loads above.
+    unsafe {
+        store_v_wide::<V>(left, data.as_mut_ptr(), edge - 8, along);
+        store_v_wide::<V>(right, data.as_mut_ptr(), edge, along);
+    }
+    true
+}
+
+#[inline(always)]
+unsafe fn v_group<V: I16x8Shuffles + I16FilterLanes, const LINES: usize, const SHIFT: u32>(
     data: &mut [u16],
     edge: usize,
     along: usize,
     filter: Av1EdgeFilter,
-    shift: u32,
 ) {
     let active = if LINES == 4 {
         V::load_halves(&[-1; 4], &[0; 4])
@@ -435,16 +529,16 @@ unsafe fn v_group<V: I16x8Shuffles + I16FilterLanes, const LINES: usize>(
     let p = [inner[3], inner[2], inner[1], inner[0]];
     let q = [inner[4], inner[5], inner[6], inner[7]];
     let (mask, hev, flat) = match filter.length {
-        Av1FilterLength::Four => masks::<V, 2>(&p, &q, filter, shift, active),
-        Av1FilterLength::Six => masks::<V, 3>(&p, &q, filter, shift, active),
+        Av1FilterLength::Four => masks::<V, 2, SHIFT>(&p, &q, filter, active),
+        Av1FilterLength::Six => masks::<V, 3, SHIFT>(&p, &q, filter, active),
         Av1FilterLength::Eight | Av1FilterLength::Fourteen => {
-            masks::<V, 4>(&p, &q, filter, shift, active)
+            masks::<V, 4, SHIFT>(&p, &q, filter, active)
         }
     };
     if !mask.any_nonzero() {
         return;
     }
-    let [np1, np0, nq0, nq1] = narrow_lanes((p[1], p[0], q[0], q[1]), mask, hev, shift);
+    let [np1, np0, nq0, nq1] = narrow_lanes::<V, SHIFT>((p[1], p[0], q[0], q[1]), mask, hev);
     let mut result = [inner[0], inner[1], np1, np0, nq0, nq1, inner[6], inner[7]];
     if filter.length == Av1FilterLength::Six && flat.any_nonzero() {
         let line: [V; 6] = [inner[1], inner[2], inner[3], inner[4], inner[5], inner[6]];
@@ -462,7 +556,7 @@ unsafe fn v_group<V: I16x8Shuffles + I16FilterLanes, const LINES: usize>(
         if filter.length == Av1FilterLength::Fourteen {
             // SAFETY: caller checked `tile_reach == 8` for `Fourteen`.
             if unsafe {
-                v_fourteen::<V, LINES>(data, edge, along, flat, shift, (p[0], q[0]), &result)
+                v_fourteen::<V, LINES, SHIFT>(data, edge, along, flat, (p[0], q[0]), &result)
             } {
                 return;
             }
@@ -472,10 +566,64 @@ unsafe fn v_group<V: I16x8Shuffles + I16FilterLanes, const LINES: usize>(
     unsafe { store_v_tile::<V, LINES>(result, data.as_mut_ptr(), edge - 4, along) };
 }
 
+#[inline(always)]
+unsafe fn v_group_wide<V: I16FilterLanes, const SHIFT: u32>(
+    data: &mut [u16],
+    edge: usize,
+    along: usize,
+    filter: Av1EdgeFilter,
+) {
+    let active = V::splat(-1);
+    // SAFETY: caller validated `p3..q3` across `V::LANES` rows.
+    let inner = unsafe { load_v_wide::<V>(data.as_ptr(), edge - 4, along) };
+    let p = [inner[3], inner[2], inner[1], inner[0]];
+    let q = [inner[4], inner[5], inner[6], inner[7]];
+    let (mask, hev, flat) = match filter.length {
+        Av1FilterLength::Four => masks::<V, 2, SHIFT>(&p, &q, filter, active),
+        Av1FilterLength::Six => masks::<V, 3, SHIFT>(&p, &q, filter, active),
+        Av1FilterLength::Eight | Av1FilterLength::Fourteen => {
+            masks::<V, 4, SHIFT>(&p, &q, filter, active)
+        }
+    };
+    if !mask.any_nonzero() {
+        return;
+    }
+    let [np1, np0, nq0, nq1] = narrow_lanes::<V, SHIFT>((p[1], p[0], q[0], q[1]), mask, hev);
+    let mut result = [inner[0], inner[1], np1, np0, nq0, nq1, inner[6], inner[7]];
+    if filter.length == Av1FilterLength::Six && flat.any_nonzero() {
+        let line: [V; 6] = [inner[1], inner[2], inner[3], inner[4], inner[5], inner[6]];
+        let mut out: [V; 6] = [
+            result[1], result[2], result[3], result[4], result[5], result[6],
+        ];
+        smooth_lanes::<V, 6, 2, 1, 3>(&line, &mut out, flat);
+        result[1..7].copy_from_slice(&out);
+    } else if matches!(
+        filter.length,
+        Av1FilterLength::Eight | Av1FilterLength::Fourteen
+    ) && flat.any_nonzero()
+    {
+        smooth_lanes::<V, 8, 3, 0, 3>(&inner, &mut result, flat);
+        if filter.length == Av1FilterLength::Fourteen {
+            // SAFETY: caller checked `tile_reach == 8` for `Fourteen`.
+            if unsafe {
+                v_fourteen_wide::<V, SHIFT>(data, edge, along, flat, (p[0], q[0]), &result)
+            } {
+                return;
+            }
+        }
+    }
+    // SAFETY: same checked `p3..q3` footprint as the load above.
+    unsafe { store_v_wide::<V>(result, data.as_mut_ptr(), edge - 4, along) };
+}
+
 // ------------------------------------------------ run dispatcher ----
 
 #[inline(always)]
-unsafe fn filter_edge_lanes<V8: I16x8Shuffles + I16FilterLanes, VWide: I16FilterLanes>(
+unsafe fn filter_edge_lanes<
+    V8: I16x8Shuffles + I16FilterLanes,
+    VWide: I16FilterLanes,
+    const SHIFT: u32,
+>(
     data: &mut [u16],
     q0: usize,
     across: usize,
@@ -485,7 +633,6 @@ unsafe fn filter_edge_lanes<V8: I16x8Shuffles + I16FilterLanes, VWide: I16Filter
     depth: BitDepth,
 ) {
     debug_assert_eq!(V8::LANES, 8);
-    let shift = depth.above_eight();
     if along == 1 {
         let r = filter.length.reach();
         let fits = q0 >= r * across
@@ -499,17 +646,17 @@ unsafe fn filter_edge_lanes<V8: I16x8Shuffles + I16FilterLanes, VWide: I16Filter
         let mut done = 0;
         while done + VWide::LANES <= lines {
             // SAFETY: `fits` covers `q0 + done .. q0 + done + VWide::LANES`.
-            unsafe { h_group::<VWide, 0>(data, q0 + done, across, filter, shift) };
+            unsafe { h_group::<VWide, 0, SHIFT>(data, q0 + done, across, filter) };
             done += VWide::LANES;
         }
         while V8::LANES < VWide::LANES && done + 8 <= lines {
             // SAFETY: `fits` covers `q0 + done .. q0 + done + 8`.
-            unsafe { h_group::<V8, 0>(data, q0 + done, across, filter, shift) };
+            unsafe { h_group::<V8, 0, SHIFT>(data, q0 + done, across, filter) };
             done += 8;
         }
         if done + 4 <= lines {
             // SAFETY: `fits` covers `q0 + done .. q0 + done + 4`.
-            unsafe { h_group::<V8, 4>(data, q0 + done, across, filter, shift) };
+            unsafe { h_group::<V8, 4, SHIFT>(data, q0 + done, across, filter) };
             done += 4;
         }
         if done < lines {
@@ -532,14 +679,19 @@ unsafe fn filter_edge_lanes<V8: I16x8Shuffles + I16FilterLanes, VWide: I16Filter
         return;
     }
     let mut done = 0;
+    while VWide::LANES > 8 && done + VWide::LANES <= lines {
+        // SAFETY: `fits` covers `VWide::LANES` vertical rows starting at `q0 + done * along`.
+        unsafe { v_group_wide::<VWide, SHIFT>(data, q0 + done * along, along, filter) };
+        done += VWide::LANES;
+    }
     while done + 8 <= lines {
         // SAFETY: `fits` covers 8 vertical rows starting at `q0 + done * along`.
-        unsafe { v_group::<V8, 8>(data, q0 + done * along, along, filter, shift) };
+        unsafe { v_group::<V8, 8, SHIFT>(data, q0 + done * along, along, filter) };
         done += 8;
     }
     if done + 4 <= lines {
         // SAFETY: `fits` covers 4 vertical rows starting at `q0 + done * along`.
-        unsafe { v_group::<V8, 4>(data, q0 + done * along, along, filter, shift) };
+        unsafe { v_group::<V8, 4, SHIFT>(data, q0 + done * along, along, filter) };
         done += 4;
     }
     if done < lines {
@@ -562,21 +714,40 @@ unsafe fn av1_runs_lanes<V8: I16x8Shuffles + I16FilterLanes, VWide: I16FilterLan
     runs: &[EdgeRun<Av1EdgeFilter>],
     depth: BitDepth,
 ) {
-    let bits = depth.bits();
-    if bits != 10 && bits != 12 {
-        av1_scalar_at(data, plane, runs, depth);
-        return;
-    }
-    for run in ValidatedRuns::new(plane, runs, true, 1, |f: Av1EdgeFilter| f.length.reach()) {
-        let (base, across, along) = plane.address(&run);
-        // SAFETY: `ValidatedRuns` checked the run footprint; caller enabled ISA.
-        unsafe {
-            filter_edge_lanes::<V8, VWide>(data, base, across, along, run.lines, run.filter, depth);
+    match depth.bits() {
+        10 => {
+            for run in ValidatedRuns::new(plane, runs, true, 1, |f: Av1EdgeFilter| f.length.reach())
+            {
+                let (base, across, along) = plane.address(&run);
+                // SAFETY: `ValidatedRuns` checked the run footprint; caller enabled ISA.
+                unsafe {
+                    filter_edge_lanes::<V8, VWide, 2>(
+                        data, base, across, along, run.lines, run.filter, depth,
+                    );
+                }
+            }
         }
+        12 => {
+            for run in ValidatedRuns::new(plane, runs, true, 1, |f: Av1EdgeFilter| f.length.reach())
+            {
+                let (base, across, along) = plane.address(&run);
+                // SAFETY: `ValidatedRuns` checked the run footprint; caller enabled ISA.
+                unsafe {
+                    filter_edge_lanes::<V8, VWide, 4>(
+                        data, base, across, along, run.lines, run.filter, depth,
+                    );
+                }
+            }
+        }
+        _ => av1_scalar_at(data, plane, runs, depth),
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 macro_rules! high_deblock_isa {
     ($mod_name:ident, $(#[$feature:meta])*, $v8:ty, $vwide:ty) => {
         mod $mod_name {
@@ -622,4 +793,12 @@ high_deblock_isa!(
     #[target_feature(enable = "neon")],
     crate::simd::neon::I16x8,
     crate::simd::neon::I16x8
+);
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+high_deblock_isa!(
+    simd128_high,
+    #[target_feature(enable = "simd128")],
+    crate::simd::simd128::I16x8,
+    crate::simd::simd128::I16x8
 );

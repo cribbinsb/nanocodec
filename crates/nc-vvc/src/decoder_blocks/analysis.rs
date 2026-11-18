@@ -39,8 +39,8 @@ fn coding_unit(s: &mut StreamStats, unit: &Unit, qp: u32) {
     let coded = unit
         .transforms
         .iter()
-        .flat_map(|t| &t.levels)
-        .any(|levels| levels.iter().any(|&v| v != 0));
+        .flat_map(|t| &t.spans)
+        .any(|&(_, count)| count != 0);
     let (pred, mode) = match unit.inter {
         None => (Pred::Intra, unit.luma_mode),
         Some(Inter::Amvp { lists, .. }) => (
@@ -88,7 +88,7 @@ fn coding_unit(s: &mut StreamStats, unit: &Unit, qp: u32) {
     let kind = if intra { Pred::Intra } else { Pred::Inter };
     for transform in &unit.transforms {
         let block = transform.block;
-        let luma_coded = transform.levels[0].iter().any(|&v| v != 0);
+        let luma_coded = transform.spans[0].1 != 0;
         s.push(BlockRecord {
             kind: RecordKind::Transform,
             pred: kind,

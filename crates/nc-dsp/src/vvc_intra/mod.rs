@@ -211,7 +211,7 @@ pub(crate) fn square_kernel_fits((width, height): (usize, usize)) -> bool {
 /// Every reference sample lies in `0..=(1 << BitDepth) − 1`: the kernels'
 /// intermediate widths (and the SIMD tiers' 16-bit lanes at 8 bits) rely
 /// on it.
-fn check_references(top: &[i32], left: &[i32], corner: i32, depth: BitDepth) {
+pub(super) fn references_fit(top: &[i32], left: &[i32], corner: i32, depth: BitDepth) -> bool {
     let max = depth.max() as u32;
     let mut bad = (corner as u32) > max;
     for &v in top {
@@ -220,7 +220,11 @@ fn check_references(top: &[i32], left: &[i32], corner: i32, depth: BitDepth) {
     for &v in left {
         bad |= (v as u32) > max;
     }
-    assert!(!bad);
+    !bad
+}
+
+fn check_references(top: &[i32], left: &[i32], corner: i32, depth: BitDepth) {
+    assert!(references_fit(top, left, corner, depth));
 }
 
 #[cfg(target_arch = "x86_64")]

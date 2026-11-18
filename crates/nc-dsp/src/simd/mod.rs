@@ -151,8 +151,12 @@ pub(crate) trait I32Lanes: Copy {
     /// `u16` samples (`0 <= max_val <= 65535`).
     #[inline]
     #[cfg_attr(
-        not(any(target_arch = "x86_64", target_arch = "aarch64")),
-        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        )),
+        allow(dead_code, reason = "u16 SIMD kernels target vector builds")
     )]
     fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
         const MAX_LANES: usize = 16;
@@ -206,6 +210,32 @@ pub(crate) trait I32Lanes: Copy {
         };
         for row in 0..Self::LANES {
             Self::load(&tile[row * Self::LANES..]).add_to_u8(&mut dst[row * dst_stride..]);
+        }
+    }
+    /// Transpose a square lane tile and add its rows to a `u16` picture,
+    /// clipping each sample to `0..=max_val`.
+    #[inline]
+    #[allow(unsafe_code)]
+    #[cfg_attr(
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        )),
+        allow(dead_code, reason = "u16 SIMD kernels target vector ISAs")
+    )]
+    fn add_transposed_u16(rows: &[Self], dst: &mut [u16], dst_stride: usize, max_val: i32) {
+        const MAX_LANES: usize = 16;
+        assert!(Self::LANES <= MAX_LANES);
+        let mut tile = [MaybeUninit::<i32>::uninit(); MAX_LANES * MAX_LANES];
+        Self::store_transposed(rows, &mut tile, Self::LANES);
+        // SAFETY: store_transposed wrote every cell of this complete tile.
+        let tile = unsafe {
+            core::slice::from_raw_parts(tile.as_ptr().cast::<i32>(), Self::LANES * Self::LANES)
+        };
+        for row in 0..Self::LANES {
+            Self::load(&tile[row * Self::LANES..])
+                .add_to_u16(&mut dst[row * dst_stride..], max_val);
         }
     }
     /// All ones in the lanes where `self > other` (signed), zero elsewhere.
@@ -328,8 +358,12 @@ pub(crate) trait I16Lanes: Copy {
     #[inline(always)]
     #[allow(clippy::inline_always)]
     #[cfg_attr(
-        not(any(target_arch = "x86_64", target_arch = "aarch64")),
-        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        )),
+        allow(dead_code, reason = "u16 SIMD kernels target vector builds")
     )]
     fn srl(self, bits: u32) -> Self {
         let mut lanes = [0i16; MAX_I16_LANES];
@@ -581,6 +615,50 @@ pub(crate) trait I16FilterLanes: I16Lanes {
         lo[..half].copy_from_slice(&buf[..half]);
         hi[..half].copy_from_slice(&buf[half..Self::LANES]);
     }
+    /// Lanes `0..LANES / 2` from the high half of `self` (`LANES / 2..LANES`)
+    /// and lanes `LANES / 2..LANES` from the low half of `next` (`0..LANES / 2`).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn combine_hi_lo(self, next: Self) -> Self {
+        let half = Self::LANES / 2;
+        let mut a = [0i16; MAX_I16_LANES];
+        let mut b = [0i16; MAX_I16_LANES];
+        self.store(&mut a);
+        next.store(&mut b);
+        a.copy_within(half..Self::LANES, 0);
+        a[half..Self::LANES].copy_from_slice(&b[..half]);
+        Self::load(&a)
+    }
+    /// Transpose each 8-lane (128-bit) group of `rows` independently (`LANES`
+    /// must be a multiple of 8).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn transpose_groups8(rows: [Self; 8]) -> [Self; 8] {
+        let mut src = [[0i16; MAX_I16_LANES]; 8];
+        for (r, v) in rows.into_iter().enumerate() {
+            v.store(&mut src[r]);
+        }
+        let mut dst = [[0i16; MAX_I16_LANES]; 8];
+        let groups = Self::LANES / 8;
+        for g in 0..groups {
+            let base = 8 * g;
+            for r in 0..8 {
+                for c in 0..8 {
+                    dst[c][base + r] = src[r][base + c];
+                }
+            }
+        }
+        [
+            Self::load(&dst[0]),
+            Self::load(&dst[1]),
+            Self::load(&dst[2]),
+            Self::load(&dst[3]),
+            Self::load(&dst[4]),
+            Self::load(&dst[5]),
+            Self::load(&dst[6]),
+            Self::load(&dst[7]),
+        ]
+    }
     /// Quarter-vector row load (`LANES / 4` lanes from each of four rows).
     #[inline(always)]
     #[allow(clippy::inline_always)]
@@ -621,8 +699,12 @@ pub(crate) trait I16FilterLanes: I16Lanes {
     #[inline(always)]
     #[allow(clippy::inline_always)]
     #[cfg_attr(
-        not(any(target_arch = "x86_64", target_arch = "aarch64")),
-        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        )),
+        allow(dead_code, reason = "u16 SIMD kernels target vector builds")
     )]
     fn any_nonzero(self) -> bool {
         let mut buf = [0i16; MAX_I16_LANES];
@@ -644,20 +726,102 @@ pub(crate) trait I16FilterLanes: I16Lanes {
         }
         (Self::load(&even), Self::load(&odd))
     }
-    /// Expand `LANES / 4` blocks of 12 ALF values (`blocks[0..LANES / 4]`)
-    /// into twelve vectors, where lane `4 * b + j` (`j < 4`) of result `k`
-    /// holds `blocks[b][k]`.
+    /// Combine the upper `LANES / 2` lanes of `self` with the lower `LANES / 2`
+    /// lanes of `next`: `[self[LANES/2..], next[..LANES/2]]`.
     #[inline(always)]
     #[allow(clippy::inline_always)]
-    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
+    fn combine_mid_halves(self, next: Self) -> Self {
+        let half = Self::LANES / 2;
+        let (mut a, mut b) = ([0i16; MAX_I16_LANES], [0i16; MAX_I16_LANES]);
+        self.store(&mut a);
+        next.store(&mut b);
+        let mut out = [0i16; MAX_I16_LANES];
+        out[..half].copy_from_slice(&a[half..Self::LANES]);
+        out[half..Self::LANES].copy_from_slice(&b[..half]);
+        Self::load(&out)
+    }
+    /// Shift by one quarter (`LANES / 4` lanes): `[self[q..LANES], next[..q]]`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn shift_quarter(self, next: Self) -> Self {
+        let q = Self::LANES / 4;
+        let rem = Self::LANES - q;
+        let (mut a, mut b) = ([0i16; MAX_I16_LANES], [0i16; MAX_I16_LANES]);
+        self.store(&mut a);
+        next.store(&mut b);
+        let mut out = [0i16; MAX_I16_LANES];
+        out[..rem].copy_from_slice(&a[q..Self::LANES]);
+        out[rem..Self::LANES].copy_from_slice(&b[..q]);
+        Self::load(&out)
+    }
+    /// Pre-expand all 6 ALF tap pairs across `LANES / 4` 4-wide blocks in the
+    /// ISA's native pair layout (interleaved `[t_{2p}, t_{2p+1}]` on dot-product
+    /// ISAs, block-replicated `[t_{2p}, t_{2p+1}]` on widening-MLA ISAs).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn expand_alf_params(blocks: &[[i16; 12]]) -> [[Self; 2]; 6] {
+        [
+            Self::expand_alf_pair(blocks, 0),
+            Self::expand_alf_pair(blocks, 1),
+            Self::expand_alf_pair(blocks, 2),
+            Self::expand_alf_pair(blocks, 3),
+            Self::expand_alf_pair(blocks, 4),
+            Self::expand_alf_pair(blocks, 5),
+        ]
+    }
+    /// Broadcast a uniform ALF tap pair `(t0, t1)` across all lanes in the
+    /// ISA's native [`Self::acc_alf_clipped_pair`] layout (chroma 5x5 ALF).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn splat_alf_pair(t0: i16, t1: i16) -> [Self; 2] {
+        [Self::splat(t0), Self::splat(t1)]
+    }
+    /// Accumulate one symmetric ALF tap pair `(2p, 2p + 1)` with clipping:
+    /// `acc + c0 * (clip(a0 - c, lim0) + clip(b0 - c, lim0)) + c1 * (clip(a1 - c, lim1) + clip(b1 - c, lim1))`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn acc_alf_clipped_pair(
+        acc: Self::Acc,
+        (a0, b0): (Self, Self),
+        (a1, b1): (Self, Self),
+        centre: Self,
+        lim: [Self; 2],
+        coeff: [Self; 2],
+    ) -> Self::Acc {
+        let zero = Self::splat(0);
+        let (neg0, neg1) = (zero.sub(lim[0]), zero.sub(lim[1]));
+        let d0 = a0
+            .sub(centre)
+            .max(neg0)
+            .min(lim[0])
+            .add(b0.sub(centre).max(neg0).min(lim[0]));
+        let d1 = a1
+            .sub(centre)
+            .max(neg1)
+            .min(lim[1])
+            .add(b1.sub(centre).max(neg1).min(lim[1]));
+        Self::acc_vec_fma2(acc, d0, coeff[0], d1, coeff[1])
+    }
+    /// Accumulate one linear ALF tap pair `(2p, 2p + 1)` (`d0 * c0 + d1 * c1`)
+    /// using [`Self::expand_alf_params`] weights.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn acc_alf_linear_pair(acc: Self::Acc, d0: Self, d1: Self, coeff: [Self; 2]) -> Self::Acc {
+        Self::acc_vec_fma2(acc, d0, coeff[0], d1, coeff[1])
+    }
+    /// Expand tap pair `(2 * p, 2 * p + 1)` across `LANES / 4` 4-wide ALF
+    /// blocks (`blocks[0..LANES / 4]`) into two vectors, keeping live register
+    /// pressure bounded inside the tap loop.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn expand_alf_pair(blocks: &[[i16; 12]], p: usize) -> [Self; 2] {
         let groups = &blocks[..Self::LANES / 4];
-        core::array::from_fn(|k| {
-            let mut lanes = [0i16; MAX_I16_LANES];
-            for (b, block) in groups.iter().enumerate() {
-                lanes[4 * b..4 * b + 4].fill(block[k]);
-            }
-            Self::load(&lanes)
-        })
+        let (mut l0, mut l1) = ([0i16; MAX_I16_LANES], [0i16; MAX_I16_LANES]);
+        for (b, block) in groups.iter().enumerate() {
+            l0[4 * b..4 * b + 4].fill(block[2 * p]);
+            l1[4 * b..4 * b + 4].fill(block[2 * p + 1]);
+        }
+        [Self::load(&l0), Self::load(&l1)]
     }
 }
 
@@ -673,6 +837,24 @@ pub(crate) trait I16x8Tiles: I16FilterLanes {
     fn load_tiles8(rows: [&[u8]; 4]) -> Self;
     /// Narrow each 8-word tile into the corresponding eight-byte row.
     fn store_tiles8(self, rows: [&mut [u8]; 4]);
+    /// Eight `u16` samples (`0..=32767`) from each of the first `LANES / 8` rows.
+    #[cfg_attr(
+        not(target_arch = "x86_64"),
+        allow(
+            dead_code,
+            reason = "multi-piece u16 tile batching requires >= 16-lane vectors"
+        )
+    )]
+    fn load_u16_tiles8(rows: [&[u16]; 4]) -> Self;
+    /// Clamp each 8-word tile to `0..=max_val` and store into the corresponding row.
+    #[cfg_attr(
+        not(target_arch = "x86_64"),
+        allow(
+            dead_code,
+            reason = "multi-piece u16 tile batching requires >= 16-lane vectors"
+        )
+    )]
+    fn store_u16_tiles8(self, rows: [&mut [u16]; 4], max_val: i16);
 }
 
 macro_rules! eight_word_tiles {
@@ -703,6 +885,16 @@ macro_rules! eight_word_tiles {
             #[inline(always)]
             fn store_tiles8(self, rows: [&mut [u8]; 4]) {
                 self.store_u8_sat(rows.into_iter().next().expect("first tile"));
+            }
+            #[inline(always)]
+            fn load_u16_tiles8(rows: [&[u16]; 4]) -> Self {
+                Self::load_u16(rows[0])
+            }
+            #[inline(always)]
+            fn store_u16_tiles8(self, rows: [&mut [u16]; 4], max_val: i16) {
+                self.max(Self::splat(0))
+                    .min(Self::splat(max_val))
+                    .store_u16(rows.into_iter().next().expect("first tile"));
             }
         }
     };
@@ -792,6 +984,9 @@ pub(crate) trait WordPairLanes: I32Lanes {
 /// Signed 16-bit lanes taken as pairs, with one 32-bit lane per pair: the
 /// pairwise multiply-add of matrix products on 16-bit operands (`vvc_mts`).
 pub(crate) trait I16Pairs: I16Lanes {
+    /// Whether [`Self::pair_dot`] executes as a single native dot-product
+    /// instruction (`vpmaddwd`, `i32x4.dot_i16x8_s`).
+    const FAST_PAIR_DOT: bool = true;
     /// One 32-bit lane per pair of 16-bit lanes.
     type Pairs: I32Lanes;
 
@@ -804,6 +999,10 @@ pub(crate) trait I16Pairs: I16Lanes {
     /// The lanes of `low` then those of `high`, each saturated to 16 bits:
     /// the inverse of taking a vector as pairs.
     fn narrow_pairs(low: Self::Pairs, high: Self::Pairs) -> Self;
+    /// Interleave the low 16 bits of `even` and `odd`:
+    /// `[even[0], odd[0], even[1], odd[1], ...]` (exact when every lane of
+    /// `even` and `odd` fits signed `i16`).
+    fn interleave_pairs(even: Self::Pairs, odd: Self::Pairs) -> Self;
 }
 
 /// `value` saturated to the signed 16-bit range (one lane of
