@@ -25,7 +25,7 @@
 )]
 
 use nc_common::{BitDepths, Picture, PlaneViewMut};
-use nc_dsp::{DepthKernels, Dsp, HEVC_DEBLOCK_BATCH_PIECES, HevcLumaPiece, Pixel};
+use nc_dsp::{DepthKernels, Dsp, Pixel};
 
 use super::params::qp_bd_offset;
 use super::picture::{
@@ -356,7 +356,6 @@ fn filter_pieces<T: Pixel>(
     let [luma, cb, cr] = samples.planes_mut();
     let mut luma = luma.view_mut();
     let mut chroma = [cb.view_mut(), cr.view_mut()];
-    let mut luma_batch = LumaBatch::new();
     let mut pending: Option<ChromaRun> = None;
     for &piece in pieces {
         let q0 = piece as usize;
@@ -388,31 +387,14 @@ fn filter_pieces<T: Pixel>(
                 t.tc[usize::from(v) - 1][qp]
             }
         });
-        let beta = t.beta[qp];
-        if tc != [0, 0] && beta != 0 {
-            if exempt_sides.contains(&true) {
-                luma_batch.flush(luma_kernels, &mut luma, vertical);
-                filter_luma(
-                    luma_kernels,
-                    &mut luma,
-                    (x, y),
-                    vertical,
-                    (tc, beta),
-                    exempt_sides,
-                );
-            } else {
-                luma_batch.push(
-                    luma_kernels,
-                    &mut luma,
-                    vertical,
-                    HevcLumaPiece {
-                        at: (x, y),
-                        tc,
-                        beta,
-                    },
-                );
-            }
-        }
+        filter_luma(
+            luma_kernels,
+            &mut luma,
+            (x, y),
+            vertical,
+            (tc, t.beta[qp]),
+            exempt_sides,
+        );
         let across_position = if vertical { x } else { y };
         if across_position.is_multiple_of(CHROMA_GRID_LUMA) && s.contains(&CHROMA_BS) {
             // Only intra (bS 2) segments filter chroma (§8.7.2.5.5).
@@ -436,57 +418,8 @@ fn filter_pieces<T: Pixel>(
             }
         }
     }
-    luma_batch.flush(luma_kernels, &mut luma, vertical);
     if let Some(run) = pending {
         run.filter(chroma_kernels, &mut chroma, vertical);
-    }
-}
-
-/// Disjoint non-exempt 8-line luma pieces queued for batched filtering.
-struct LumaBatch {
-    pieces: [HevcLumaPiece; HEVC_DEBLOCK_BATCH_PIECES],
-    len: usize,
-}
-
-impl LumaBatch {
-    const fn new() -> Self {
-        Self {
-            pieces: [HevcLumaPiece {
-                at: (0, 0),
-                tc: [0, 0],
-                beta: 0,
-            }; HEVC_DEBLOCK_BATCH_PIECES],
-            len: 0,
-        }
-    }
-
-    #[inline]
-    fn push<T: Pixel>(
-        &mut self,
-        kernels: DepthKernels<'_>,
-        view: &mut PlaneViewMut<'_, T>,
-        vertical: bool,
-        piece: HevcLumaPiece,
-    ) {
-        self.pieces[self.len] = piece;
-        self.len += 1;
-        if self.len == HEVC_DEBLOCK_BATCH_PIECES {
-            kernels.hevc_deblock_luma_pieces(view, vertical, &self.pieces);
-            self.len = 0;
-        }
-    }
-
-    #[inline]
-    fn flush<T: Pixel>(
-        &mut self,
-        kernels: DepthKernels<'_>,
-        view: &mut PlaneViewMut<'_, T>,
-        vertical: bool,
-    ) {
-        if self.len > 0 {
-            kernels.hevc_deblock_luma_pieces(view, vertical, &self.pieces[..self.len]);
-            self.len = 0;
-        }
     }
 }
 

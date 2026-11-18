@@ -286,40 +286,6 @@ impl I32Lanes for I32x16 {
     }
 
     #[inline(always)]
-    fn add_transposed_u8(rows: &[Self], dst: &mut [u8], dst_stride: usize) {
-        let needed = dst_stride
-            .checked_mul(Self::LANES - 1)
-            .and_then(|n| n.checked_add(Self::LANES))
-            .expect("transpose tile extent");
-        let dst = &mut dst[..needed];
-        for (r, value) in transpose_i32x16(rows).into_iter().enumerate() {
-            // SAFETY: r < LANES and the checked span covers the last row's
-            // full vector; each temporary row borrow ends in this iteration.
-            let row = unsafe {
-                core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
-            };
-            Self(value).add_to_u8(row);
-        }
-    }
-
-    #[inline(always)]
-    fn add_transposed_u16(rows: &[Self], dst: &mut [u16], dst_stride: usize, max_val: i32) {
-        let needed = dst_stride
-            .checked_mul(Self::LANES - 1)
-            .and_then(|n| n.checked_add(Self::LANES))
-            .expect("transpose tile extent");
-        let dst = &mut dst[..needed];
-        for (r, value) in transpose_i32x16(rows).into_iter().enumerate() {
-            // SAFETY: r < LANES and the checked span covers the last row's
-            // full vector; each temporary row borrow ends in this iteration.
-            let row = unsafe {
-                core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
-            };
-            Self(value).add_to_u16(row, max_val);
-        }
-    }
-
-    #[inline(always)]
     fn gt(self, other: Self) -> Self {
         // SAFETY: these private lane values exist only inside AVX-512 kernels.
         unsafe {

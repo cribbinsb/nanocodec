@@ -5,7 +5,7 @@ use core::mem::MaybeUninit;
 
 use nc_common::{BitDepth, Sample};
 
-use crate::simd::{I16FilterLanes, I16Lanes, I32Lanes};
+use crate::simd::{I16Lanes, I32Lanes};
 use crate::vvc_bdof::flow;
 
 #[inline(always)]
@@ -126,93 +126,8 @@ unsafe fn prepare_terms<G: I16Lanes, W4: I16Lanes>(
     row_sums[height + 1][..nbx].copy_from_slice(&last[..nbx]);
 }
 
-type GradGrid = [[MaybeUninit<i16>; 16]; 16];
-
 #[inline(always)]
-unsafe fn apply_subblock_u16<G: I16FilterLanes>(
-    (in0, in1): (&[i16], &[i16]),
-    (dx_buf, dy_buf): (&GradGrid, &GradGrid),
-    (x0, y0, width, stride): (usize, usize, usize, usize),
-    vector: [i32; 2],
-    (offset4, shift4, max_val): (i32, u32, i16),
-    out: &mut [u16],
-) {
-    let (vx, vy) = (vector[0] as i16, vector[1] as i16);
-    let zero = G::splat(0);
-    let max_vec = G::splat(max_val);
-    let at0 = (y0 + 1) * stride + x0 + 1;
-    // SAFETY: `prepare_terms` initialized `dx_buf`/`dy_buf` for `0..height` x `0..width`,
-    // `in0`/`in1` cover `(height + 2) * stride`, and `out` covers `width * height`.
-    unsafe {
-        if G::LANES == 16 {
-            let s0 = G::load_quarters([
-                &in0[at0..],
-                &in0[at0 + stride..],
-                &in0[at0 + 2 * stride..],
-                &in0[at0 + 3 * stride..],
-            ]);
-            let s1 = G::load_quarters([
-                &in1[at0..],
-                &in1[at0 + stride..],
-                &in1[at0 + 2 * stride..],
-                &in1[at0 + 3 * stride..],
-            ]);
-            let dx = G::load_quarters([
-                core::slice::from_raw_parts(dx_buf[y0].as_ptr().cast::<i16>().add(x0), 4),
-                core::slice::from_raw_parts(dx_buf[y0 + 1].as_ptr().cast::<i16>().add(x0), 4),
-                core::slice::from_raw_parts(dx_buf[y0 + 2].as_ptr().cast::<i16>().add(x0), 4),
-                core::slice::from_raw_parts(dx_buf[y0 + 3].as_ptr().cast::<i16>().add(x0), 4),
-            ]);
-            let dy = G::load_quarters([
-                core::slice::from_raw_parts(dy_buf[y0].as_ptr().cast::<i16>().add(x0), 4),
-                core::slice::from_raw_parts(dy_buf[y0 + 1].as_ptr().cast::<i16>().add(x0), 4),
-                core::slice::from_raw_parts(dy_buf[y0 + 2].as_ptr().cast::<i16>().add(x0), 4),
-                core::slice::from_raw_parts(dy_buf[y0 + 3].as_ptr().cast::<i16>().add(x0), 4),
-            ]);
-            let mut acc = G::acc_mul_add2(G::acc_zero(), s0, 1, s1, 1);
-            acc = G::acc_mul_add2(acc, dx, vx, dy, vy);
-            let res = G::acc_round_shift_narrow(acc, offset4, shift4)
-                .max(zero)
-                .min(max_vec);
-            let dst_ptr = out.as_mut_ptr().cast::<i16>();
-            res.store_quarters([
-                core::slice::from_raw_parts_mut(dst_ptr.add(y0 * width + x0), 4),
-                core::slice::from_raw_parts_mut(dst_ptr.add((y0 + 1) * width + x0), 4),
-                core::slice::from_raw_parts_mut(dst_ptr.add((y0 + 2) * width + x0), 4),
-                core::slice::from_raw_parts_mut(dst_ptr.add((y0 + 3) * width + x0), 4),
-            ]);
-        } else {
-            debug_assert_eq!(G::LANES, 8);
-            for pair in [0, 2] {
-                let y = y0 + pair;
-                let at = (y + 1) * stride + x0 + 1;
-                let s0 = G::load_halves(&in0[at..], &in0[at + stride..]);
-                let s1 = G::load_halves(&in1[at..], &in1[at + stride..]);
-                let dx = G::load_halves(
-                    core::slice::from_raw_parts(dx_buf[y].as_ptr().cast::<i16>().add(x0), 4),
-                    core::slice::from_raw_parts(dx_buf[y + 1].as_ptr().cast::<i16>().add(x0), 4),
-                );
-                let dy = G::load_halves(
-                    core::slice::from_raw_parts(dy_buf[y].as_ptr().cast::<i16>().add(x0), 4),
-                    core::slice::from_raw_parts(dy_buf[y + 1].as_ptr().cast::<i16>().add(x0), 4),
-                );
-                let mut acc = G::acc_mul_add2(G::acc_zero(), s0, 1, s1, 1);
-                acc = G::acc_mul_add2(acc, dx, vx, dy, vy);
-                let res = G::acc_round_shift_narrow(acc, offset4, shift4)
-                    .max(zero)
-                    .min(max_vec);
-                let dst_ptr = out.as_mut_ptr().cast::<i16>();
-                res.store_halves(
-                    core::slice::from_raw_parts_mut(dst_ptr.add(y * width + x0), 4),
-                    core::slice::from_raw_parts_mut(dst_ptr.add((y + 1) * width + x0), 4),
-                );
-            }
-        }
-    }
-}
-
-#[inline(always)]
-pub(super) unsafe fn bdof_at<T: Sample, V4: I32Lanes, G: I16FilterLanes, W4: I16Lanes>(
+pub(super) unsafe fn bdof_at<T: Sample, V4: I32Lanes, G: I16Lanes, W4: I16Lanes>(
     size: (usize, usize),
     inputs: [&[i16]; 2],
     out: &mut [T],
@@ -256,20 +171,6 @@ pub(super) unsafe fn bdof_at<T: Sample, V4: I32Lanes, G: I16FilterLanes, W4: I16
                 }
             }
             let vector = flow(sums);
-            if core::mem::size_of::<T>() == 2 {
-                // SAFETY: `Sample` is `u8` or `u16`, so `size_of::<T>() == 2` is `u16`.
-                unsafe {
-                    apply_subblock_u16::<G>(
-                        (in0, in1),
-                        (&dx_buf, &dy_buf),
-                        (x0, y0, width, stride),
-                        vector,
-                        (offset4, shift4, max_val as i16),
-                        core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u16>(), out.len()),
-                    );
-                }
-                continue;
-            }
             for y in y0..y0 + 4 {
                 let at = (y + 1) * stride + x0 + 1;
                 // SAFETY: `prepare_terms` initialized `dx_buf[y][0..width]` and `dy_buf[y][0..width]`.
@@ -294,19 +195,27 @@ pub(super) unsafe fn bdof_at<T: Sample, V4: I32Lanes, G: I16FilterLanes, W4: I16
                     .max(V4::splat(0))
                     .min(V4::splat(max_val));
                 let dst = &mut out[y * width + x0..][..4];
-                let mut tmp = [0i16; 4];
-                value.store_sat16(&mut tmp);
-                // SAFETY: `size_of::<T>() == 1` means `T` is `u8`.
-                W4::load(&tmp).store_u8_sat(unsafe {
-                    core::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<u8>(), 4)
-                });
+                if core::mem::size_of::<T>() == 2 {
+                    // SAFETY: `Sample` is `u8` or `u16`, so `size == 2` is `u16`;
+                    // `value` lies in `0..=max_val` (`<= 4095`), exact in `i16`.
+                    value.store_sat16(unsafe {
+                        core::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<i16>(), 4)
+                    });
+                } else {
+                    let mut tmp = [0i16; 4];
+                    value.store_sat16(&mut tmp);
+                    // SAFETY: `size_of::<T>() == 1` means `T` is `u8`.
+                    W4::load(&tmp).store_u8_sat(unsafe {
+                        core::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<u8>(), 4)
+                    });
+                }
             }
         }
     }
 }
 
 #[inline(always)]
-pub(super) unsafe fn bdof<V4: I32Lanes, G: I16FilterLanes, W4: I16Lanes>(
+pub(super) unsafe fn bdof<V4: I32Lanes, G: I16Lanes, W4: I16Lanes>(
     size: (usize, usize),
     inputs: [&[i16]; 2],
     out: &mut [u8],

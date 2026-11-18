@@ -297,22 +297,20 @@ unsafe fn rect_smooth<V: I16Lanes>(
         };
         out.fill(dc as u16);
     }
-    if width >= 4 && height >= 4 {
-        let mode = if planar {
-            VvcIntraMode::Planar
-        } else {
-            VvcIntraMode::Dc
-        };
-        pdpc_u16::<V>(
-            (width, height),
-            mode,
-            &above[..width],
-            &side[..height],
-            0,
-            out,
-            max_val,
-        );
-    }
+    let mode = if planar {
+        VvcIntraMode::Planar
+    } else {
+        VvcIntraMode::Dc
+    };
+    pdpc_u16::<V>(
+        (width, height),
+        mode,
+        &above[..width],
+        &side[..height],
+        0,
+        out,
+        max_val,
+    );
 }
 
 #[inline(always)]
@@ -324,9 +322,6 @@ fn rect_pdpc_setup(
     weights: &mut [i16; RECT_MAX],
     side_offs: &mut [usize; RECT_MAX],
 ) -> usize {
-    if width < 4 || height < 4 {
-        return 0;
-    }
     let axis_scale = (width.ilog2() + height.ilog2() - 2) >> 2;
     if p.angle == 0 {
         let reach = (3usize << axis_scale).min(columns);
@@ -351,72 +346,16 @@ fn rect_pdpc_setup(
 }
 
 #[inline(always)]
-fn rect_angular_pdpc<V: I16Lanes>(
-    line: &mut [u16],
-    p: &Projection,
-    (y, corner): (usize, i32),
-    (pdpc_cols, pdpc_span): (usize, usize),
-    weights: &[i16; RECT_MAX],
-    side_offs: &[usize; RECT_MAX],
-    (zero, hi): (V, V),
-) {
-    if pdpc_span == 0 {
-        return;
-    }
-    if p.angle == 0 {
-        let diff = V::splat((p.side[y + 1] - corner) as i16);
-        for x in (0..pdpc_span).step_by(V::LANES) {
-            let value = V::load_u16(&line[x..]);
-            let acc = V::acc_vec_mul_add2(diff, V::load(&weights[x..]), zero, zero);
-            let corr = V::acc_round_shift_narrow(acc, PDPC_ROUND, PDPC_SHIFT);
-            value
-                .add_sat(corr)
-                .max(zero)
-                .min(hi)
-                .store_u16(&mut line[x..]);
-        }
-    } else {
-        let mut side = [0i16; RECT_MAX];
-        for x in 0..pdpc_cols {
-            side[x] = p.side[y + 1 + side_offs[x]] as i16;
-        }
-        for x in (0..pdpc_span).step_by(V::LANES) {
-            let value = V::load_u16(&line[x..]);
-            value
-                .add_sat(
-                    V::load(&side[x..])
-                        .sub(value)
-                        .mul_q15_round(V::load(&weights[x..])),
-                )
-                .max(zero)
-                .min(hi)
-                .store_u16(&mut line[x..]);
-        }
-    }
-}
-
-#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 unsafe fn rect_angular<V: I16Lanes>(
     (width, height): (usize, usize),
     direction: u8,
     luma: bool,
     (top, left, corner): (&[i32], &[i32], i32),
-    (reference_line, prediction_size): (u8, Option<(usize, usize)>),
     out: &mut [u16],
     max_val: i16,
 ) {
-    let p = Projection::new(
-        width,
-        height,
-        direction,
-        luma,
-        top,
-        left,
-        corner,
-        reference_line,
-        prediction_size,
-    );
+    let p = Projection::new(width, height, direction, luma, top, left, corner, 0, None);
     let mut main = [0u16; 5 * RECT_MAX + 8];
     for (dst, &v) in main.iter_mut().zip(&p.main) {
         *dst = v as u16;
@@ -428,25 +367,20 @@ unsafe fn rect_angular<V: I16Lanes>(
     };
     let mut weights = [0i16; RECT_MAX];
     let mut side_offs = [0usize; RECT_MAX];
-    let pdpc_cols = if reference_line == 0 {
-        rect_pdpc_setup(
-            (width, height),
-            columns,
-            rows,
-            &p,
-            &mut weights,
-            &mut side_offs,
-        )
-    } else {
-        0
-    };
+    let pdpc_cols = rect_pdpc_setup(
+        (width, height),
+        columns,
+        rows,
+        &p,
+        &mut weights,
+        &mut side_offs,
+    );
     let pdpc_span = (pdpc_cols.div_ceil(V::LANES) * V::LANES).min(columns);
-    let bounds = (V::splat(0), V::splat(max_val));
-    let ref_line = i32::from(reference_line);
+    let (zero, hi) = (V::splat(0), V::splat(max_val));
     let mut predicted = [0u16; RECT_MAX];
     for y in 0..rows {
-        let delta = (y as i32 + 1 + ref_line) * p.angle;
-        let start = (ORIGIN as i32 + ref_line + (delta >> 5)) as usize;
+        let delta = (y as i32 + 1) * p.angle;
+        let start = (ORIGIN as i32 + (delta >> 5)) as usize;
         let phase = delta & 31;
         let line = if p.vertical {
             &mut out[y * width..(y + 1) * width]
@@ -474,42 +408,40 @@ unsafe fn rect_angular<V: I16Lanes>(
                 run2_u16::<V>(&main[start + 1..=start + 1 + columns], phase as usize, line);
             }
         }
-        rect_angular_pdpc(
-            line,
-            &p,
-            (y, corner),
-            (pdpc_cols, pdpc_span),
-            &weights,
-            &side_offs,
-            bounds,
-        );
+        if p.angle == 0 {
+            let diff = V::splat((p.side[y + 1] - corner) as i16);
+            for x in (0..pdpc_span).step_by(V::LANES) {
+                let value = V::load_u16(&line[x..]);
+                let acc = V::acc_vec_mul_add2(diff, V::load(&weights[x..]), zero, zero);
+                let corr = V::acc_round_shift_narrow(acc, PDPC_ROUND, PDPC_SHIFT);
+                value
+                    .add_sat(corr)
+                    .max(zero)
+                    .min(hi)
+                    .store_u16(&mut line[x..]);
+            }
+        } else if pdpc_span > 0 {
+            let mut side = [0i16; RECT_MAX];
+            for x in 0..pdpc_cols {
+                side[x] = p.side[y + 1 + side_offs[x]] as i16;
+            }
+            for x in (0..pdpc_span).step_by(V::LANES) {
+                let value = V::load_u16(&line[x..]);
+                value
+                    .add_sat(
+                        V::load(&side[x..])
+                            .sub(value)
+                            .mul_q15_round(V::load(&weights[x..])),
+                    )
+                    .max(zero)
+                    .min(hi)
+                    .store_u16(&mut line[x..]);
+            }
+        }
         if !p.vertical {
             for (x, &v) in predicted[..columns].iter().enumerate() {
                 out[x * width + y] = v;
             }
-        }
-    }
-}
-
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-unsafe fn dispatch_rect_angular<A4: I16Lanes, A8: I16Lanes, A16: I16Lanes, A32: I16Lanes>(
-    cols: usize,
-    size: (usize, usize),
-    direction: u8,
-    luma: bool,
-    edges: (&[i32], &[i32], i32),
-    options: (u8, Option<(usize, usize)>),
-    out: &mut [u16],
-    max_val: i16,
-) {
-    // SAFETY: caller enabled lane ISAs and verified `cols >= 4` power of two.
-    unsafe {
-        match cols {
-            4 => rect_angular::<A4>(size, direction, luma, edges, options, out, max_val),
-            8 => rect_angular::<A8>(size, direction, luma, edges, options, out, max_val),
-            16 => rect_angular::<A16>(size, direction, luma, edges, options, out, max_val),
-            _ => rect_angular::<A32>(size, direction, luma, edges, options, out, max_val),
         }
     }
 }
@@ -608,7 +540,7 @@ unsafe fn predict_rect_lanes<A4: I16Lanes, A8: I16Lanes, A16: I16Lanes, A32: I16
     out: &mut [u16],
     depth: BitDepth,
 ) {
-    if width < 2 || height < 2 || width * height < 8 || depth.bits() > 10 {
+    if width < 4 || height < 4 || depth.bits() > 10 {
         rectangular::predict(width, height, mode, top, left, corner, out, depth);
         return;
     }
@@ -619,30 +551,46 @@ unsafe fn predict_rect_lanes<A4: I16Lanes, A8: I16Lanes, A16: I16Lanes, A32: I16
         VvcIntraMode::Angular { direction, luma } => Some((direction, luma)),
         _ => None,
     };
-    // SAFETY: caller enables lane ISAs; `cols >= 4` / `width >= 4` checked below.
+    // SAFETY: caller enables lane ISAs; `width` and `height` are powers of two >= 4.
     unsafe {
         if let Some((direction, luma)) = dir {
             let proj_mode = rectangular::wide_angle(width, height, direction);
             let cols = if proj_mode >= 34 { width } else { height };
-            if cols < 4 {
-                rectangular::predict(width, height, mode, top, left, corner, out, depth);
-                return;
+            match cols {
+                4 => rect_angular::<A4>(
+                    (width, height),
+                    direction,
+                    luma,
+                    (top, left, corner),
+                    out,
+                    max_val,
+                ),
+                8 => rect_angular::<A8>(
+                    (width, height),
+                    direction,
+                    luma,
+                    (top, left, corner),
+                    out,
+                    max_val,
+                ),
+                16 => rect_angular::<A16>(
+                    (width, height),
+                    direction,
+                    luma,
+                    (top, left, corner),
+                    out,
+                    max_val,
+                ),
+                _ => rect_angular::<A32>(
+                    (width, height),
+                    direction,
+                    luma,
+                    (top, left, corner),
+                    out,
+                    max_val,
+                ),
             }
-            dispatch_rect_angular::<A4, A8, A16, A32>(
-                cols,
-                (width, height),
-                direction,
-                luma,
-                (top, left, corner),
-                (0, None),
-                out,
-                max_val,
-            );
         } else {
-            if width < 4 {
-                rectangular::predict(width, height, mode, top, left, corner, out, depth);
-                return;
-            }
             let planar = mode == VvcIntraMode::Planar;
             match width {
                 4 => rect_smooth::<A4>((width, height), planar, top, left, out, max_val),
@@ -654,106 +602,13 @@ unsafe fn predict_rect_lanes<A4: I16Lanes, A8: I16Lanes, A16: I16Lanes, A32: I16
     }
 }
 
-#[inline(always)]
-unsafe fn predict_mrl_lanes<A4: I16Lanes, A8: I16Lanes, A16: I16Lanes, A32: I16Lanes>(
-    size: (usize, usize),
-    direction: u8,
-    reference_line: u8,
-    edges: (&[i32], &[i32], i32),
-    out: &mut [u16],
-    depth: BitDepth,
-) {
-    let (width, height) = size;
-    let line = usize::from(reference_line);
-    let (top, left, corner) = (
-        &edges.0[..2 * width + line],
-        &edges.1[..2 * height + line],
-        edges.2,
-    );
-    if direction == 1 || depth.bits() > 10 || !super::references_fit(top, left, corner, depth) {
-        rectangular::mrl_predict(size, direction, reference_line, edges, out, depth);
-        return;
-    }
-    let proj_mode = rectangular::wide_angle(width, height, direction);
-    let cols = if proj_mode >= 34 { width } else { height };
-    // SAFETY: caller enables lane ISAs; `check_mrl` guarantees `cols >= 4` power of two.
-    unsafe {
-        dispatch_rect_angular::<A4, A8, A16, A32>(
-            cols,
-            size,
-            direction,
-            true,
-            (top, left, corner),
-            (reference_line, None),
-            out,
-            depth.max() as i16,
-        );
-    }
-}
-
-#[inline(always)]
-unsafe fn predict_isp_lanes<A4: I16Lanes, A8: I16Lanes, A16: I16Lanes, A32: I16Lanes>(
-    prediction_size: (usize, usize),
-    size: (usize, usize),
-    direction: u8,
-    edges: (&[i32], &[i32], i32),
-    out: &mut [u16],
-    depth: BitDepth,
-) {
-    let (width, height) = size;
-    let (top, left, corner) = edges;
-    if depth.bits() > 10
-        || top.len() > 2 * RECT_MAX + 3
-        || left.len() > 2 * RECT_MAX + 3
-        || !super::references_fit(top, left, corner, depth)
-    {
-        rectangular::isp_predict(prediction_size, size, direction, edges, out, depth);
-        return;
-    }
-    let max_val = depth.max() as i16;
-    if direction <= 1 {
-        let planar = direction == 0;
-        // SAFETY: caller enables lane ISAs; `check_isp` guarantees `width >= 4` power of two.
-        unsafe {
-            match width {
-                4 => rect_smooth::<A4>(size, planar, top, left, out, max_val),
-                8 => rect_smooth::<A8>(size, planar, top, left, out, max_val),
-                16 => rect_smooth::<A16>(size, planar, top, left, out, max_val),
-                _ => rect_smooth::<A32>(size, planar, top, left, out, max_val),
-            }
-        }
-        return;
-    }
-    let proj_mode = rectangular::wide_angle(prediction_size.0, prediction_size.1, direction);
-    let cols = if proj_mode >= 34 { width } else { height };
-    if cols < 4 {
-        rectangular::isp_predict(prediction_size, size, direction, edges, out, depth);
-        return;
-    }
-    // SAFETY: caller enables lane ISAs; `cols >= 4` power of two checked above.
-    unsafe {
-        dispatch_rect_angular::<A4, A8, A16, A32>(
-            cols,
-            size,
-            direction,
-            true,
-            edges,
-            (0, Some(prediction_size)),
-            out,
-            max_val,
-        );
-    }
-}
-
 macro_rules! isa_vvc_intra_u16 {
     ($mod_name:ident, $a4:ty, $a8:ty, $a16:ty, $a32:ty, $feature:literal) => {
         pub(crate) mod $mod_name {
             use nc_common::BitDepth;
 
             use super::super::VvcIntraMode;
-            use super::{
-                predict_isp_lanes, predict_mrl_lanes, predict_rect_lanes, predict_square_lanes,
-            };
+            use super::{predict_rect_lanes, predict_square_lanes};
 
             #[target_feature(enable = $feature)]
             #[allow(clippy::too_many_arguments)]
@@ -798,50 +653,6 @@ macro_rules! isa_vvc_intra_u16 {
                 unsafe {
                     predict_rect_lanes::<$a4, $a8, $a16, $a32>(
                         width, height, mode, top, left, corner, out, depth,
-                    );
-                }
-            }
-
-            #[target_feature(enable = $feature)]
-            pub(crate) unsafe fn predict_mrl(
-                size: (usize, usize),
-                direction: u8,
-                reference_line: u8,
-                edges: (&[i32], &[i32], i32),
-                out: &mut [u16],
-                depth: BitDepth,
-            ) {
-                // SAFETY: `$feature` enabled; caller validated MRL inputs.
-                unsafe {
-                    predict_mrl_lanes::<$a4, $a8, $a16, $a32>(
-                        size,
-                        direction,
-                        reference_line,
-                        edges,
-                        out,
-                        depth,
-                    );
-                }
-            }
-
-            #[target_feature(enable = $feature)]
-            pub(crate) unsafe fn predict_isp(
-                prediction_size: (usize, usize),
-                size: (usize, usize),
-                direction: u8,
-                edges: (&[i32], &[i32], i32),
-                out: &mut [u16],
-                depth: BitDepth,
-            ) {
-                // SAFETY: `$feature` enabled; caller validated ISP inputs.
-                unsafe {
-                    predict_isp_lanes::<$a4, $a8, $a16, $a32>(
-                        prediction_size,
-                        size,
-                        direction,
-                        edges,
-                        out,
-                        depth,
                     );
                 }
             }

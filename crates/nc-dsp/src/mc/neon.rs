@@ -76,7 +76,6 @@ pub(crate) fn mc_fns() -> McFns {
             super::av1_neon::prep_fns::<Smooth>(),
             super::av1_neon::prep_fns::<Sharp>(),
         ];
-        functions.compound.hevc_prep[0] = super::av1_neon::separable_prep_fns::<HevcLumaTaps>();
         functions.hevc_luma = super::neon_dotprod::separable_fns::<HevcLumaTaps>();
         functions.vvc_luma = super::neon_dotprod::separable_fns::<VvcLumaTaps>();
         functions.vvc_affine_luma = super::neon_dotprod::separable_fns::<VvcAffineLumaTaps>();

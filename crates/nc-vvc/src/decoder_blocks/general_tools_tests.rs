@@ -3,10 +3,6 @@ use super::*;
 use nc_common::{FNV1A_OFFSET, fnv1a_step};
 #[test]
 #[ignore = "requires official corpus; optional NC_VVC_GENERAL_RECO_TRACE"]
-#[allow(
-    clippy::too_many_lines,
-    reason = "end-to-end NAL/slice/filter integration test"
-)]
 fn official_general_intra_reconstruction() {
     let name = std::env::var("NC_VVC_GENERAL_STREAM").unwrap_or_else(|_| "8b400_A_2".into());
     let path = format!(
@@ -45,20 +41,9 @@ fn official_general_intra_reconstruction() {
                 let reshape = reshape_model(s, &header, &reshape_banks).unwrap();
                 let counts = filter_counts(&banks, &header).unwrap();
                 let mut filters = vec![CtuFilters::default(); header.ctus.len()];
-                let mut arena = CoeffArena::default();
                 let order = (0, no_backward_prediction(&header));
-                let mut units = parse_filtered(
-                    &rbsp,
-                    s,
-                    p,
-                    &header,
-                    counts,
-                    order,
-                    &mut filters,
-                    &mut arena,
-                )
-                .unwrap();
-                populate_test_levels(&mut units, &arena);
+                let mut units =
+                    parse_filtered(&rbsp, s, p, &header, counts, order, &mut filters).unwrap();
                 eprintln!(
                     "{name}: {} CUs, {} CTUs, ISP={}, MTS={}, LFNST={}",
                     units.len(),

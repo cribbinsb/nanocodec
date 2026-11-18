@@ -1,20 +1,20 @@
 //! Affine PROF reference padding; interpolation and refinement use shared DSP.
 use super::{
-    inter_prediction::{combine, combine_into, high_precision},
+    inter_prediction::{combine, high_precision},
     motion::Motion,
     resampling::Region,
 };
-use nc_common::{PlaneIndex, PlaneViewMut};
+use nc_common::PlaneIndex;
 use nc_dsp::{DepthKernels, Pixel};
 
-fn prepare_prof_samples<T: Pixel>(
+pub(super) fn predict<T: Pixel>(
     dsp: DepthKernels<'_>,
     references: super::inter_prediction::Sources<'_, T>,
     motion: Motion,
     fields: [Option<crate::affine::Field>; 2],
     position: (usize, usize),
-    window_buf: &mut [T],
-) -> [[i16; 16]; 2] {
+    out: &mut [T; 16],
+) {
     let mut samples = [[0i16; 16]; 2];
     for list in 0..2 {
         let Some(vector) = motion.lists[list] else {
@@ -31,7 +31,6 @@ fn prepare_prof_samples<T: Pixel>(
                 size: (4, 4),
             },
             (false, true),
-            window_buf,
             &mut samples[list],
         );
         // PROF is off for a list whose reference is scaled (§8.5.5.9
@@ -46,7 +45,7 @@ fn prepare_prof_samples<T: Pixel>(
             references.pictures[list][usize::from(vector.reference)].plane(PlaneIndex::Y);
         let mut padded = [0; 36];
         super::refinement::padding(
-            (reference, dsp),
+            (reference, dsp.depth()),
             position,
             (4, 4),
             vector.vector,
@@ -56,19 +55,6 @@ fn prepare_prof_samples<T: Pixel>(
         );
         dsp.vvc_prof_refine(&padded, &corrections, &mut samples[list]);
     }
-    samples
-}
-
-pub(super) fn predict<T: Pixel>(
-    dsp: DepthKernels<'_>,
-    references: super::inter_prediction::Sources<'_, T>,
-    motion: Motion,
-    fields: [Option<crate::affine::Field>; 2],
-    position: (usize, usize),
-    window_buf: &mut [T],
-    out: &mut [T; 16],
-) {
-    let samples = prepare_prof_samples(dsp, references, motion, fields, position, window_buf);
     combine(
         dsp,
         (motion, references.weights, PlaneIndex::Y),
@@ -76,24 +62,5 @@ pub(super) fn predict<T: Pixel>(
         &samples[1],
         (4, 4),
         out,
-    );
-}
-
-pub(super) fn predict_direct<T: Pixel>(
-    dsp: DepthKernels<'_>,
-    references: super::inter_prediction::Sources<'_, T>,
-    motion: Motion,
-    fields: [Option<crate::affine::Field>; 2],
-    position: (usize, usize),
-    window_buf: &mut [T],
-    dst: &mut PlaneViewMut<'_, T>,
-) {
-    let samples = prepare_prof_samples(dsp, references, motion, fields, position, window_buf);
-    combine_into(
-        dsp,
-        (motion, references.weights, PlaneIndex::Y),
-        &samples[0],
-        &samples[1],
-        dst,
     );
 }

@@ -27,7 +27,7 @@ pub(crate) const HIGH_FNS: HighCdefFns = HighCdefFns {
     find_dir: super::direction_avx2::find_dir_u16,
     edge: [block4_edge_u16, block8_edge_u16],
     interior: [block4_interior_u16, block8_interior_u16],
-    interior_pair4: Some(block4_pair_u16),
+    interior_pair4: None,
 };
 
 #[target_feature(enable = "avx2")]
@@ -100,9 +100,7 @@ pub(crate) unsafe fn block8_interior_u16(
     // identical bit patterns as positive `i16` values.
     unsafe {
         let src_i16 = core::slice::from_raw_parts(src.as_ptr().cast::<i16>(), src.len());
-        generic::filter_any_dir_u16::<I16x16, 2, 12>(
-            src_i16, stride, origin, args, dst, dst_stride,
-        );
+        block8_edge_u16(src_i16, stride, origin, args, dst, dst_stride);
     }
 }
 
@@ -119,21 +117,6 @@ pub(crate) unsafe fn block4_interior_u16(
     // positive `i16`.
     unsafe {
         let src_i16 = core::slice::from_raw_parts(src.as_ptr().cast::<i16>(), src.len());
-        generic::filter_any_dir_u16::<I16x16, 4, 8>(src_i16, stride, origin, args, dst, dst_stride);
-    }
-}
-
-#[target_feature(enable = "avx2")]
-unsafe fn block4_pair_u16(
-    src: [&[u16]; 2],
-    stride: usize,
-    origins: [usize; 2],
-    args: &CdefArgs,
-    dst: [*mut u16; 2],
-    dst_stride: usize,
-) {
-    // SAFETY: AVX2 is enabled; `filter_pair4_any_dir_u16` validates both windows.
-    unsafe {
-        generic::filter_pair4_any_dir_u16::<I16x16, 4>(src, stride, origins, args, dst, dst_stride);
+        block4_edge_u16(src_i16, stride, origin, args, dst, dst_stride);
     }
 }

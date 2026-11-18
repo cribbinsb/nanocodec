@@ -275,30 +275,6 @@ impl BlockContexts {
     }
 }
 
-/// Fill `cells` with `value` using inline fixed-size stores for power-of-two
-/// block widths (`1..=32`), avoiding dynamic `memset` calls on short slices.
-#[allow(
-    clippy::inline_always,
-    reason = "used across hot per-block context updates to avoid PLT memset calls"
-)]
-#[inline(always)]
-pub(crate) fn splat_slice<T: Copy>(cells: &mut [T], value: T) {
-    fn fixed<T: Copy, const N: usize>(cells: &mut [T], value: T) {
-        let run: &mut [T; N] = cells.try_into().expect("slice of length N");
-        *run = [value; N];
-    }
-    match cells.len() {
-        0 => {}
-        1 => fixed::<T, 1>(cells, value),
-        2 => fixed::<T, 2>(cells, value),
-        4 => fixed::<T, 4>(cells, value),
-        8 => fixed::<T, 8>(cells, value),
-        16 => fixed::<T, 16>(cells, value),
-        32 => fixed::<T, 32>(cells, value),
-        _ => cells.fill(value),
-    }
-}
-
 /// Write `info` into the first `1 << count_log2` cells as fixed-size
 /// stores: blocks are mostly a few cells wide, where a general fill spends
 /// more on its set-up than on the stores (dav1d's `case_set` does the same).
@@ -618,12 +594,9 @@ impl ChromaSmooth {
         (w4, h4): (usize, usize),
         smooth: bool,
     ) {
-        splat_slice(&mut self.above[mi_col..mi_col + w4], smooth);
+        self.above[mi_col..mi_col + w4].fill(smooth);
         let row = mi_row % MAX_SUPERBLOCK_MI;
-        splat_slice(
-            &mut self.left[row..(row + h4).min(MAX_SUPERBLOCK_MI)],
-            smooth,
-        );
+        self.left[row..(row + h4).min(MAX_SUPERBLOCK_MI)].fill(smooth);
     }
     pub(crate) fn above(&self, mi_col: usize) -> bool {
         self.above[mi_col]
@@ -675,12 +648,9 @@ impl TxContexts {
         (w4, h4): (usize, usize),
         (width, height): (u8, u8),
     ) {
-        splat_slice(&mut self.above[mi_col..mi_col + w4], width);
+        self.above[mi_col..mi_col + w4].fill(width);
         let row = mi_row % MAX_SUPERBLOCK_MI;
-        splat_slice(
-            &mut self.left[row..(row + h4).min(MAX_SUPERBLOCK_MI)],
-            height,
-        );
+        self.left[row..(row + h4).min(MAX_SUPERBLOCK_MI)].fill(height);
     }
     /// The transform width above unit column `mi_col`.
     pub(crate) fn above(&self, mi_col: usize) -> u8 {

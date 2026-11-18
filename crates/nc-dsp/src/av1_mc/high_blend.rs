@@ -25,7 +25,7 @@ use super::blend::{
 };
 use super::mask::av1_difference_weight_mask_at;
 use super::{av1_compound_bias, inter_post_round, round2};
-use crate::simd::{I16FilterLanes, I16Lanes};
+use crate::simd::I16Lanes;
 
 const MAX_BLOCK: usize = 128;
 const DISTANCE_BITS: u32 = 4;
@@ -218,198 +218,20 @@ impl BlendSample for u16 {
 }
 
 #[inline(always)]
-unsafe fn avg_vec<V: I16Lanes, const SHIFT: u32>(
-    p0: *const i16,
-    p1: *const i16,
-    rnd: V,
-    zero: V,
-) -> V {
-    // SAFETY: caller validated `V::LANES` readable `i16`s at `p0` and `p1`.
-    unsafe {
-        let a = V::load(core::slice::from_raw_parts(p0, V::LANES));
-        let b = V::load(core::slice::from_raw_parts(p1, V::LANES));
-        a.add_sat(b).add_sat(rnd).max(zero).sra(SHIFT)
-    }
-}
-
-#[inline(always)]
-unsafe fn avg_step<V: I16Lanes, const SHIFT: u32>(
+unsafe fn avg_step<V: I16Lanes>(
     p0: *const i16,
     p1: *const i16,
     dst: *mut u16,
     rnd: V,
     zero: V,
+    shift: u32,
 ) {
     // SAFETY: caller validated `V::LANES` readable `i16`s and writable `u16`s.
     unsafe {
-        avg_vec::<V, SHIFT>(p0, p1, rnd, zero).store_u16_at(dst);
-    }
-}
-
-#[inline(always)]
-unsafe fn avg_packed_wide<V: I16Lanes, const SHIFT: u32, const VECS: usize>(
-    mut r0: *const i16,
-    mut r1: *const i16,
-    mut out: *mut u16,
-    ds: usize,
-    h: usize,
-) {
-    let w = VECS * V::LANES;
-    let rnd = V::splat((16384 + (1_i32 << (SHIFT - 1))) as i16);
-    let zero = V::splat(0);
-    // SAFETY: caller validated `w * h` contiguous words in `r0`/`r1` and `h`
-    // rows of `w` words at stride `ds` in `out`.
-    unsafe {
-        for _ in 0..h {
-            for k in 0..VECS {
-                let c0 = k * V::LANES;
-                avg_step::<V, SHIFT>(r0.add(c0), r1.add(c0), out.add(c0), rnd, zero);
-            }
-            r0 = r0.add(w);
-            r1 = r1.add(w);
-            out = out.add(ds);
-        }
-    }
-}
-
-#[inline(always)]
-unsafe fn avg_packed_halves<V: I16FilterLanes, const SHIFT: u32>(
-    mut r0: *const i16,
-    mut r1: *const i16,
-    mut out: *mut u16,
-    ds: usize,
-    h: usize,
-) {
-    let half = V::LANES / 2;
-    let rnd = V::splat((16384 + (1_i32 << (SHIFT - 1))) as i16);
-    let zero = V::splat(0);
-    // SAFETY: caller validated `h` even, `p0.stride == p1.stride == half`, and `out`.
-    unsafe {
-        for _ in (0..h).step_by(2) {
-            let v = avg_vec::<V, SHIFT>(r0, r1, rnd, zero);
-            let d0 = core::slice::from_raw_parts_mut(out.cast::<i16>(), half);
-            let d1 = core::slice::from_raw_parts_mut(out.add(ds).cast::<i16>(), half);
-            v.store_halves(d0, d1);
-            r0 = r0.add(V::LANES);
-            r1 = r1.add(V::LANES);
-            out = out.add(2 * ds);
-        }
-    }
-}
-
-#[inline(always)]
-unsafe fn avg_packed_quarters<V: I16FilterLanes, const SHIFT: u32>(
-    mut r0: *const i16,
-    mut r1: *const i16,
-    mut out: *mut u16,
-    ds: usize,
-    h: usize,
-) {
-    let q = V::LANES / 4;
-    let rnd = V::splat((16384 + (1_i32 << (SHIFT - 1))) as i16);
-    let zero = V::splat(0);
-    // SAFETY: caller validated `h % 4 == 0`, `p0.stride == p1.stride == q`, and `out`.
-    unsafe {
-        for _ in (0..h).step_by(4) {
-            let v = avg_vec::<V, SHIFT>(r0, r1, rnd, zero);
-            let rows = [
-                core::slice::from_raw_parts_mut(out.cast::<i16>(), q),
-                core::slice::from_raw_parts_mut(out.add(ds).cast::<i16>(), q),
-                core::slice::from_raw_parts_mut(out.add(2 * ds).cast::<i16>(), q),
-                core::slice::from_raw_parts_mut(out.add(3 * ds).cast::<i16>(), q),
-            ];
-            v.store_quarters(rows);
-            r0 = r0.add(V::LANES);
-            r1 = r1.add(V::LANES);
-            out = out.add(4 * ds);
-        }
-    }
-}
-
-#[inline(always)]
-unsafe fn average_u16_shift<V4: I16Lanes, V8: I16Lanes, VWide: I16FilterLanes, const SHIFT: u32>(
-    p0: Av1CompoundPred<'_>,
-    p1: Av1CompoundPred<'_>,
-    (w, h): (usize, usize),
-    dst: &mut PlaneViewMut<'_, u16>,
-    depth: BitDepth,
-) {
-    let ds = dst.stride();
-    let (p0_base, p1_base, dst_base) = (
-        p0.data.as_ptr(),
-        p1.data.as_ptr(),
-        dst.data_mut().as_mut_ptr(),
-    );
-    // Fast packed width-specialized paths (all standard AV1 compound blocks).
-    if p0.stride == w && p1.stride == w {
-        // SAFETY: caller validated `p0`, `p1`, and `dst` spans for `(w, h)`.
-        unsafe {
-            if w == VWide::LANES {
-                avg_packed_wide::<VWide, SHIFT, 1>(p0_base, p1_base, dst_base, ds, h);
-                return;
-            }
-            if w == 2 * VWide::LANES {
-                avg_packed_wide::<VWide, SHIFT, 2>(p0_base, p1_base, dst_base, ds, h);
-                return;
-            }
-            if w == 4 * VWide::LANES {
-                avg_packed_wide::<VWide, SHIFT, 4>(p0_base, p1_base, dst_base, ds, h);
-                return;
-            }
-            if w == 8 * VWide::LANES {
-                avg_packed_wide::<VWide, SHIFT, 8>(p0_base, p1_base, dst_base, ds, h);
-                return;
-            }
-            if w == 16 * VWide::LANES {
-                avg_packed_wide::<VWide, SHIFT, 16>(p0_base, p1_base, dst_base, ds, h);
-                return;
-            }
-            if w * 2 == VWide::LANES && h.is_multiple_of(2) {
-                avg_packed_halves::<VWide, SHIFT>(p0_base, p1_base, dst_base, ds, h);
-                return;
-            }
-            if w * 4 == VWide::LANES && h.is_multiple_of(4) {
-                avg_packed_quarters::<VWide, SHIFT>(p0_base, p1_base, dst_base, ds, h);
-                return;
-            }
-        }
-    }
-    let rnd_scalar = (16384 + (1_i32 << (SHIFT - 1))) as i16;
-    let (rnd_w, zero_w) = (VWide::splat(rnd_scalar), VWide::splat(0));
-    let (rnd_8, zero_8) = (V8::splat(rnd_scalar), V8::splat(0));
-    let (rnd_4, zero_4) = (V4::splat(rnd_scalar), V4::splat(0));
-    for r in 0..h {
-        // SAFETY: caller validated `(h - 1) * stride + w` spans.
-        let (r0, r1, out) = unsafe {
-            (
-                p0_base.add(r * p0.stride),
-                p1_base.add(r * p1.stride),
-                dst_base.add(r * ds),
-            )
-        };
-        let mut c0 = 0usize;
-        while c0 + VWide::LANES <= w {
-            // SAFETY: `c0 + VWide::LANES <= w`.
-            unsafe { avg_step::<VWide, SHIFT>(r0.add(c0), r1.add(c0), out.add(c0), rnd_w, zero_w) };
-            c0 += VWide::LANES;
-        }
-        while V8::LANES < VWide::LANES && c0 + V8::LANES <= w {
-            // SAFETY: `c0 + V8::LANES <= w`.
-            unsafe { avg_step::<V8, SHIFT>(r0.add(c0), r1.add(c0), out.add(c0), rnd_8, zero_8) };
-            c0 += V8::LANES;
-        }
-        if c0 + V4::LANES <= w {
-            // SAFETY: `c0 + V4::LANES <= w`.
-            unsafe { avg_step::<V4, SHIFT>(r0.add(c0), r1.add(c0), out.add(c0), rnd_4, zero_4) };
-            c0 += V4::LANES;
-        }
-        for c in c0..w {
-            // SAFETY: `c < w`.
-            unsafe {
-                let sum = i32::from(*r0.add(c)) + i32::from(*r1.add(c)) + 16384;
-                *out.add(c) = depth.clip_to(round2(sum, SHIFT));
-            }
-        }
+        let a = V::load(core::slice::from_raw_parts(p0, V::LANES));
+        let b = V::load(core::slice::from_raw_parts(p1, V::LANES));
+        let out = a.add_sat(b).add_sat(rnd).max(zero).sra(shift);
+        out.store(core::slice::from_raw_parts_mut(dst.cast::<i16>(), V::LANES));
     }
 }
 
@@ -418,13 +240,21 @@ unsafe fn average_u16_shift<V4: I16Lanes, V8: I16Lanes, VWide: I16FilterLanes, c
 /// (`shift = 3`), so two `add_sat` + `max(0)` + `sra(shift)` is exact across
 /// every `i16` input pair without widening to 32 bits.
 #[inline(always)]
-unsafe fn average_u16_lanes<V4: I16Lanes, V8: I16Lanes, VWide: I16FilterLanes>(
+unsafe fn average_u16_lanes<V4: I16Lanes, V8: I16Lanes, VWide: I16Lanes>(
     p0: Av1CompoundPred<'_>,
     p1: Av1CompoundPred<'_>,
     (w, h): (usize, usize),
     dst: &mut PlaneViewMut<'_, u16>,
     depth: BitDepth,
 ) {
+    let shift = 1 + inter_post_round(depth);
+    if depth.bits() != 10 && depth.bits() != 12 {
+        // SAFETY: forwarded ISA contract.
+        unsafe {
+            blend_weighted_lanes::<u16, V4, V8, VWide>(p0, p1, (1, 1), shift, (w, h), dst, depth);
+        }
+        return;
+    }
     assert!(
         dst.width() >= w && dst.height() >= h,
         "AV1 blend destination {}x{} is smaller than {w}x{h}",
@@ -438,22 +268,46 @@ unsafe fn average_u16_lanes<V4: I16Lanes, V8: I16Lanes, VWide: I16FilterLanes>(
         p0.data.len() >= (h - 1) * p0.stride + w && p1.data.len() >= (h - 1) * p1.stride + w,
         "AV1 compound predictions smaller than {w}x{h}"
     );
-    // SAFETY: forwarded ISA contract; spans validated above.
-    unsafe {
-        match depth.bits() {
-            10 => average_u16_shift::<V4, V8, VWide, 5>(p0, p1, (w, h), dst, depth),
-            12 => average_u16_shift::<V4, V8, VWide, 3>(p0, p1, (w, h), dst, depth),
-            _ => {
-                let shift = 1 + inter_post_round(depth);
-                blend_weighted_lanes::<u16, V4, V8, VWide>(
-                    p0,
-                    p1,
-                    (1, 1),
-                    shift,
-                    (w, h),
-                    dst,
-                    depth,
-                );
+    let rnd_scalar = (16384 + (1_i32 << (shift - 1))) as i16;
+    let (rnd_w, zero_w) = (VWide::splat(rnd_scalar), VWide::splat(0));
+    let (rnd_8, zero_8) = (V8::splat(rnd_scalar), V8::splat(0));
+    let (rnd_4, zero_4) = (V4::splat(rnd_scalar), V4::splat(0));
+    let ds = dst.stride();
+    let (p0_base, p1_base, dst_base) = (
+        p0.data.as_ptr(),
+        p1.data.as_ptr(),
+        dst.data_mut().as_mut_ptr(),
+    );
+    for r in 0..h {
+        // SAFETY: validated `(h - 1) * stride + w` spans above.
+        let (r0, r1, out) = unsafe {
+            (
+                p0_base.add(r * p0.stride),
+                p1_base.add(r * p1.stride),
+                dst_base.add(r * ds),
+            )
+        };
+        let mut c0 = 0usize;
+        while c0 + VWide::LANES <= w {
+            // SAFETY: `c0 + VWide::LANES <= w`.
+            unsafe { avg_step(r0.add(c0), r1.add(c0), out.add(c0), rnd_w, zero_w, shift) };
+            c0 += VWide::LANES;
+        }
+        while V8::LANES < VWide::LANES && c0 + V8::LANES <= w {
+            // SAFETY: `c0 + V8::LANES <= w`.
+            unsafe { avg_step(r0.add(c0), r1.add(c0), out.add(c0), rnd_8, zero_8, shift) };
+            c0 += V8::LANES;
+        }
+        if c0 + V4::LANES <= w {
+            // SAFETY: `c0 + V4::LANES <= w`.
+            unsafe { avg_step(r0.add(c0), r1.add(c0), out.add(c0), rnd_4, zero_4, shift) };
+            c0 += V4::LANES;
+        }
+        for c in c0..w {
+            // SAFETY: `c < w`.
+            unsafe {
+                let sum = i32::from(*r0.add(c)) + i32::from(*r1.add(c)) + 16384;
+                *out.add(c) = depth.clip_to(round2(sum, shift));
             }
         }
     }

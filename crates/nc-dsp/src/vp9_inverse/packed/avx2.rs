@@ -3,7 +3,7 @@
 //! Rotations follow libvpx's SSE2/AVX2 inverse transforms (BSD-3-Clause;
 //! `THIRD_PARTY.md`): interleave the two inputs, then one `pmaddwd`.
 
-use super::{COS_BITS, Lanes, Products, WideLanes};
+use super::{COS_BITS, Lanes, Products};
 use crate::Vp9Pass;
 use crate::txfm::inverse_lanes::InverseLanes;
 use core::arch::x86_64::{
@@ -106,7 +106,7 @@ impl InverseLanes for Narrow {
     }
 }
 
-impl WideLanes for Narrow {
+impl Lanes for Narrow {
     type Wide = Wide;
     #[inline(always)]
     fn wide(self, weight: i32) -> Wide {
@@ -126,9 +126,6 @@ impl WideLanes for Narrow {
             Wide(_mm256_madd_epi16(pairs, _mm256_set1_epi32(packed)))
         }
     }
-}
-
-impl Lanes for Narrow {
     #[inline(always)]
     fn load_i16(src: &[i16]) -> Self {
         let src = &src[..super::LANES];

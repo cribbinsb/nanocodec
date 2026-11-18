@@ -7,17 +7,16 @@ use std::sync::Arc;
 use crate::{
     decoder_blocks::{Geometry, Scaling},
     decoder_headers::{ReferenceEntry, Sequence, SliceHeader},
-    decoder_metadata::FieldParity,
 };
 use nc_common::{
-    OutputPicture, Picture, PictureRecycler, PlaneIndex, Sample, ShownPicture,
+    OutputPicture, Picture, PictureRecycler, Sample,
     decode::{DecodeError, Result},
 };
 
 /// Luma border allocated around decoded pictures so out-of-bounds motion
-/// vectors up to ±80 luma samples (±40 chroma) borrow the reference plane
+/// vectors up to ±64 luma samples (±32 chroma) borrow the reference plane
 /// directly without copying a temporary window.
-pub(crate) const REFERENCE_BORDER: usize = 80;
+pub(crate) const REFERENCE_BORDER: usize = 64;
 
 #[derive(Debug)]
 pub(crate) struct References<T: Sample = u8> {
@@ -25,10 +24,8 @@ pub(crate) struct References<T: Sample = u8> {
     pictures: Vec<(i32, Arc<Picture<T>>, Geometry)>,
     current: Option<i32>,
     previous_tid0: Option<i32>,
-    pending_output: Vec<(i32, OutputPicture<T>, Option<FieldParity>)>,
-    pending_field: Option<(FieldParity, OutputPicture<T>)>,
+    pending_output: Vec<(i32, OutputPicture<T>)>,
     ready_output: std::collections::VecDeque<OutputPicture<T>>,
-    in_flight: Vec<Arc<Picture<T>>>,
     output_enabled: bool,
     reorder: usize,
     motion: Vec<crate::decoder_blocks::MotionField>,
@@ -42,9 +39,7 @@ impl<T: Sample> Default for References<T> {
             current: None,
             previous_tid0: None,
             pending_output: Vec::new(),
-            pending_field: None,
             ready_output: std::collections::VecDeque::new(),
-            in_flight: Vec::new(),
             output_enabled: false,
             reorder: 0,
             motion: Vec::new(),
@@ -54,42 +49,19 @@ impl<T: Sample> Default for References<T> {
 }
 
 impl<T: Sample> References<T> {
-    /// Return a released `Arc<Picture<T>>` to the recycler immediately, or hold
-    /// it until display-order output drops its remaining clone.
-    pub fn recycle_arc(&mut self, arc_pic: Arc<Picture<T>>) {
-        match Arc::try_unwrap(arc_pic) {
-            Ok(pic) => self.recycler.give(pic),
-            Err(shared) => {
-                if self.in_flight.len() < 32 {
-                    self.in_flight.push(shared);
-                }
-            }
-        }
-    }
-
     /// Obtain a `width` x `height` picture with [`REFERENCE_BORDER`] luma
     /// border from the DPB recycler, allocating only on DPB growth.
     pub fn take_picture(&mut self, width: usize, height: usize) -> Result<Picture<T>> {
-        let mut i = 0;
-        while i < self.in_flight.len() {
-            if Arc::strong_count(&self.in_flight[i]) == 1 {
-                let arc = self.in_flight.swap_remove(i);
-                if let Ok(pic) = Arc::try_unwrap(arc) {
-                    self.recycler.give(pic);
-                }
-            } else {
-                i += 1;
-            }
-        }
         self.recycler
             .take(width, height, REFERENCE_BORDER)
             .map_err(|_| DecodeError::Malformed("VVC picture dimensions"))
     }
 
     fn clear_pictures(&mut self) {
-        let drained: Vec<_> = self.pictures.drain(..).map(|(_, arc, _)| arc).collect();
-        for arc_pic in drained {
-            self.recycle_arc(arc_pic);
+        for (_, arc_pic, _) in self.pictures.drain(..) {
+            if let Ok(pic) = Arc::try_unwrap(arc_pic) {
+                self.recycler.give(pic);
+            }
         }
     }
 
@@ -101,7 +73,9 @@ impl<T: Sample> References<T> {
                 i += 1;
             } else {
                 let (_, arc_pic, _) = self.pictures.swap_remove(i);
-                self.recycle_arc(arc_pic);
+                if let Ok(pic) = Arc::try_unwrap(arc_pic) {
+                    self.recycler.give(pic);
+                }
             }
         }
     }
@@ -145,7 +119,6 @@ impl<T: Sample> References<T> {
         if matches!(kind, 7..=10) {
             if header.no_prior_output {
                 self.pending_output.clear();
-                self.pending_field = None;
             } else {
                 self.flush_output();
             }
@@ -281,10 +254,9 @@ impl<T: Sample> References<T> {
         self.output_enabled = false;
     }
 
-    pub fn queue_output(&mut self, output: OutputPicture<T>, field: Option<FieldParity>) {
+    pub fn queue_output(&mut self, output: OutputPicture<T>) {
         if self.output_enabled {
-            self.pending_output
-                .push((self.current.unwrap(), output, field));
+            self.pending_output.push((self.current.unwrap(), output));
         }
         while self.pending_output.len() > self.reorder {
             self.bump_output();
@@ -296,33 +268,11 @@ impl<T: Sample> References<T> {
             .pending_output
             .iter()
             .enumerate()
-            .min_by_key(|(i, (poc, ..))| (*poc, *i))
+            .min_by_key(|(i, (poc, _))| (*poc, *i))
             .unwrap()
             .0;
-        let (_, output, field) = self.pending_output.remove(index);
-        let Some(parity) = field else {
-            self.pending_field = None;
-            self.ready_output.push_back(output);
-            return;
-        };
-        match self.pending_field.take() {
-            Some((prev_parity, prev_pic))
-                if prev_parity != parity
-                    && prev_pic.size == output.size
-                    && prev_pic.depths == output.depths =>
-            {
-                let (top, bottom) = match parity {
-                    FieldParity::Bottom => (&prev_pic, &output),
-                    FieldParity::Top => (&output, &prev_pic),
-                };
-                if let Some(interleaved) = interleave_fields(top, bottom) {
-                    self.ready_output.push_back(interleaved);
-                }
-            }
-            _ => {
-                self.pending_field = Some((parity, output));
-            }
-        }
+        self.ready_output
+            .push_back(self.pending_output.remove(index).1);
     }
 
     pub fn next_output(&mut self) -> Option<OutputPicture<T>> {
@@ -337,11 +287,6 @@ impl<T: Sample> References<T> {
 
     pub fn record_motion(&mut self, field: crate::decoder_blocks::MotionField) {
         self.motion.push(field);
-    }
-
-    /// Whether `poc` was kept in the DPB by the latest `prepare_shared`.
-    pub fn has_picture(&self, poc: i32) -> bool {
-        self.pictures.iter().any(|(stored, ..)| *stored == poc)
     }
 
     pub fn temporal<'a>(
@@ -394,33 +339,6 @@ impl<T: Sample> References<T> {
     }
 }
 
-fn interleave_fields<T: Sample>(
-    top: &OutputPicture<T>,
-    bottom: &OutputPicture<T>,
-) -> Option<OutputPicture<T>> {
-    let (w, h) = top.size;
-    let full_h = h.checked_mul(2)?;
-    let top_view = ShownPicture::window(&top.picture, top.origin, top.size)?;
-    let bot_view = ShownPicture::window(&bottom.picture, bottom.origin, bottom.size)?;
-    let mut frame = Picture::new(w, full_h, 0).ok()?;
-    for plane in PlaneIndex::ALL {
-        let t_plane = top_view.plane(plane);
-        let b_plane = bot_view.plane(plane);
-        let (pw, ph) = (t_plane.width(), t_plane.height());
-        let mut dst = frame.plane_mut(plane).view_mut();
-        for y in 0..ph {
-            dst.row_mut(2 * y)[..pw].copy_from_slice(t_plane.row(y));
-            dst.row_mut(2 * y + 1)[..pw].copy_from_slice(b_plane.row(y));
-        }
-    }
-    Some(OutputPicture {
-        picture: Arc::new(frame),
-        origin: (0, 0),
-        size: (w, full_h),
-        depths: top.depths,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,15 +358,12 @@ mod tests {
                 .view_mut()
                 .fill(poc as u8);
             references.current = Some(poc);
-            references.queue_output(
-                OutputPicture {
-                    origin: (0, 0),
-                    size: (2, 2),
-                    picture: Arc::new(picture),
-                    depths: BitDepths::EIGHT,
-                },
-                None,
-            );
+            references.queue_output(OutputPicture {
+                origin: (0, 0),
+                size: (2, 2),
+                picture: Arc::new(picture),
+                depths: BitDepths::EIGHT,
+            });
         }
         let value = |p: OutputPicture| p.picture.plane(nc_common::PlaneIndex::Y).view().row(0)[0];
         assert_eq!(references.next_output().map(value), Some(0));

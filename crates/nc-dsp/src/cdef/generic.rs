@@ -295,11 +295,7 @@ pub(crate) unsafe fn filter_any_dir<V: I16FilterLanes, const ROWS: usize, const 
 }
 
 /// High-bit-depth (`u16`) [`filter`] for the block's direction `args.dir`.
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub(crate) unsafe fn filter_any_dir_u16<V: I16FilterLanes, const ROWS: usize, const S: usize>(
@@ -312,129 +308,6 @@ pub(crate) unsafe fn filter_any_dir_u16<V: I16FilterLanes, const ROWS: usize, co
 ) {
     // SAFETY: forwards the caller's slice and SIMD contracts.
     unsafe { filter_any_dir_sink::<V, u16, ROWS, S>(src, stride, origin, args, dst, dst_stride) }
-}
-
-/// Filter both U and V 4x4 interior `u16` blocks of one 8x8 unit back-to-back
-/// under one `(pri, sec, dir)` dispatch.
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
-#[allow(clippy::inline_always)]
-#[inline(always)]
-pub(crate) unsafe fn filter_pair4_any_dir_u16<V: I16FilterLanes, const ROWS: usize>(
-    src: [&[u16]; 2],
-    stride: usize,
-    origins: [usize; 2],
-    args: &CdefArgs,
-    dst: [*mut u16; 2],
-    dst_stride: usize,
-) {
-    const N: usize = 4;
-    const S: usize = N + 2 * CDEF_PADDING;
-    // SAFETY: valid 10/12-bit `u16` samples (`0..=4095`) fit positive `i16`, and
-    // the caller guarantees two disjoint writable 4x4 destinations (`CdefPair16Fn`).
-    let (s0, s1, d0, d1) = unsafe {
-        (
-            core::slice::from_raw_parts(src[0].as_ptr().cast::<i16>(), src[0].len()),
-            core::slice::from_raw_parts(src[1].as_ptr().cast::<i16>(), src[1].len()),
-            core::slice::from_raw_parts_mut(dst[0], (N - 1) * dst_stride + N),
-            core::slice::from_raw_parts_mut(dst[1], (N - 1) * dst_stride + N),
-        )
-    };
-    // SAFETY: forwards the caller's SIMD contract; `filter` validates both windows.
-    unsafe {
-        match (args.pri != 0, args.sec != 0) {
-            (true, true) => {
-                filter_pair_dirs::<V, ROWS, S, true, true>(
-                    [s0, s1],
-                    stride,
-                    origins,
-                    args,
-                    [d0, d1],
-                    dst_stride,
-                );
-            }
-            (true, false) => {
-                filter_pair_dirs::<V, ROWS, S, true, false>(
-                    [s0, s1],
-                    stride,
-                    origins,
-                    args,
-                    [d0, d1],
-                    dst_stride,
-                );
-            }
-            (false, true) => {
-                filter_pair_dirs::<V, ROWS, S, false, true>(
-                    [s0, s1],
-                    stride,
-                    origins,
-                    args,
-                    [d0, d1],
-                    dst_stride,
-                );
-            }
-            (false, false) => {
-                filter_pair_dirs::<V, ROWS, S, false, false>(
-                    [s0, s1],
-                    stride,
-                    origins,
-                    args,
-                    [d0, d1],
-                    dst_stride,
-                );
-            }
-        }
-    }
-}
-
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
-#[allow(clippy::inline_always)]
-#[inline(always)]
-unsafe fn filter_pair_dirs<
-    V: I16FilterLanes,
-    const ROWS: usize,
-    const S: usize,
-    const USE_PRI: bool,
-    const USE_SEC: bool,
->(
-    src: [&[i16]; 2],
-    stride: usize,
-    origins: [usize; 2],
-    args: &CdefArgs,
-    dst: [&mut [u16]; 2],
-    dst_stride: usize,
-) {
-    let [d0, d1] = dst;
-    macro_rules! both {
-        ($dir:literal) => {{
-            filter::<V, u16, ROWS, S, $dir, USE_PRI, USE_SEC>(
-                src[0], stride, origins[0], args, d0, dst_stride,
-            );
-            filter::<V, u16, ROWS, S, $dir, USE_PRI, USE_SEC>(
-                src[1], stride, origins[1], args, d1, dst_stride,
-            );
-        }};
-    }
-    // SAFETY: forwards caller contract to both planes under one branch.
-    unsafe {
-        match args.dir {
-            0 => both!(0),
-            1 => both!(1),
-            2 => both!(2),
-            3 => both!(3),
-            4 => both!(4),
-            5 => both!(5),
-            6 => both!(6),
-            _ => both!(7),
-        }
-    }
 }
 
 #[allow(clippy::inline_always)]

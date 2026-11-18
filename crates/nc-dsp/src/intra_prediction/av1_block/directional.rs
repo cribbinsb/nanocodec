@@ -97,157 +97,68 @@ pub(crate) fn predict_with_run<T: Sample>(
 ) {
     assert!(angle > 0 && angle < MAX_ANGLE, "directional angle {angle}");
     let (w, h) = (edges.width, edges.height);
-    if angle == VERTICAL {
-        for r in 0..h {
-            dst.row_mut(r)[..w].copy_from_slice(&edges.square.above[..w]);
-        }
-        return;
+    let mut above = line(&edges.square.above, edges.square.corner, w + h);
+    let mut left = line(&edges.square.left, edges.square.corner, w + h);
+    if let Some(ctx) = edge_filter {
+        prepare_edges(edges, angle, ctx.smooth(), &mut above, &mut left);
     }
-    if angle == HORIZONTAL {
-        for r in 0..h {
-            dst.row_mut(r)[..w].fill(edges.square.left[r]);
-        }
-        return;
-    }
-    let span = w + h;
-    if angle < VERTICAL {
-        let mut above = line(&edges.square.above, edges.square.corner, span);
-        if let Some(ctx) = edge_filter {
-            let smooth = ctx.smooth();
-            let delta = i32::from(angle) - i32::from(VERTICAL);
-            if edges.avail.have_above {
-                let strength = edge::filter_strength(span, delta, smooth);
-                edge::filter(&mut above.samples, edges.above_inside + h + 1, strength);
-            }
-            if edge::use_upsample(span, delta, smooth) {
-                edge::upsample(&mut above.samples, span, edges.depth);
-                above.upsample = 1;
-            }
-        }
-        zone1(&above, DERIVATIVE[usize::from(angle)], w, h, dst, &run_fn);
-        return;
-    }
-    if angle > HORIZONTAL {
-        let mut left = line(&edges.square.left, edges.square.corner, span);
-        if let Some(ctx) = edge_filter {
-            let smooth = ctx.smooth();
-            let delta = i32::from(angle) - i32::from(HORIZONTAL);
-            if edges.avail.have_left {
-                let strength = edge::filter_strength(span, delta, smooth);
-                edge::filter(&mut left.samples, edges.left_inside + w + 1, strength);
-            }
-            if edge::use_upsample(span, delta, smooth) {
-                edge::upsample(&mut left.samples, span, edges.depth);
-                left.upsample = 1;
-            }
-        }
-        zone3(
+    match angle {
+        VERTICAL => (0..h).for_each(|r| {
+            dst.row_mut(r)[..w].copy_from_slice(&above.samples[LINE_ORIGIN..LINE_ORIGIN + w]);
+        }),
+        HORIZONTAL => (0..h).for_each(|r| dst.row_mut(r)[..w].fill(left.samples[LINE_ORIGIN + r])),
+        a if a < VERTICAL => zone1(&above, DERIVATIVE[usize::from(a)], w, h, dst, &run_fn),
+        a if a < HORIZONTAL => zone2(
+            &above,
             &left,
-            DERIVATIVE[usize::from(MAX_ANGLE - angle)],
+            DERIVATIVE[usize::from(HORIZONTAL - a)],
+            DERIVATIVE[usize::from(a - VERTICAL)],
+            dst,
+            &run_fn,
+        ),
+        a => zone3(
+            &left,
+            DERIVATIVE[usize::from(MAX_ANGLE - a)],
             w,
             h,
             dst,
             &run_fn,
-        );
-        return;
+        ),
     }
-    let mut above = line(&edges.square.above, edges.square.corner, span);
-    let mut left = line(&edges.square.left, edges.square.corner, span);
-    if let Some(ctx) = edge_filter {
-        prepare_edges(edges, angle, ctx.smooth(), &mut above, &mut left);
-    }
-    zone2(
-        &above,
-        &left,
-        DERIVATIVE[usize::from(HORIZONTAL - angle)],
-        DERIVATIVE[usize::from(angle - VERTICAL)],
-        dst,
-        &run_fn,
-    );
 }
 
-/// Outcome of preparing a square block's edges for the square directional kernels.
-pub(super) enum PreparedSquare<T: Sample> {
-    /// Edge filtering and upsampling are both inactive; borrow `edges.square` directly.
-    Unchanged,
-    /// Filtered without upsampling into a square `IntraEdges`.
-    Filtered(IntraEdges<T>),
-    /// At least one active edge upsamples (`w + h <= 16`); use `predict_with_run`.
-    Upsampled,
-}
-
-/// Prepare a square block's edges (§7.11.2.4) for `angle` without constructing
-/// temporary `Line` buffers when filtering or upsampling is inactive.
+/// A square block's edges after the edge preparation of §7.11.2.4 for
+/// `angle` (filtered corner and edges), in the square kernels' layout, or
+/// `None` when it upsamples an edge (the square kernels interpolate at the
+/// edges' own resolution only). The square kernels then predict exactly as
+/// [`predict`]: every zone reads `AboveRow` / `LeftCol` up to index
+/// `2n - 1` and repeats that sample beyond it, and filtering leaves the
+/// corner the same in both lines.
 pub(super) fn prepared_square<T: Sample>(
     edges: &BlockEdges<T>,
     angle: u16,
     ctx: EdgeFilterCtx,
-) -> PreparedSquare<T> {
+) -> Option<IntraEdges<T>> {
     let n = edges.width;
     debug_assert_eq!(n, edges.height);
-    if angle == VERTICAL || angle == HORIZONTAL {
-        return PreparedSquare::Unchanged;
+    let mut above = line(&edges.square.above, edges.square.corner, 2 * n);
+    let mut left = line(&edges.square.left, edges.square.corner, 2 * n);
+    prepare_edges(edges, angle, ctx.smooth(), &mut above, &mut left);
+    if above.upsample != 0 || left.upsample != 0 {
+        return None;
     }
-    let block_wh = 2 * n;
-    let smooth = ctx.smooth();
-    let (ang, vert, horz) = (i32::from(angle), i32::from(VERTICAL), i32::from(HORIZONTAL));
-    let (need_above, need_left) = (angle < HORIZONTAL, angle > VERTICAL);
-    if (need_above && edge::use_upsample(block_wh, ang - vert, smooth))
-        || (need_left && edge::use_upsample(block_wh, ang - horz, smooth))
-    {
-        return PreparedSquare::Upsampled;
-    }
-    let corner_f = need_above && need_left && block_wh >= CORNER_FILTER_MIN_WH;
-    let above_s = if need_above && edges.avail.have_above {
-        edge::filter_strength(block_wh, ang - vert, smooth)
-    } else {
-        0
-    };
-    let left_s = if need_left && edges.avail.have_left {
-        edge::filter_strength(block_wh, ang - horz, smooth)
-    } else {
-        0
-    };
-    if !corner_f && above_s == 0 && left_s == 0 {
-        return PreparedSquare::Unchanged;
-    }
-    let corner = if corner_f {
-        edge::filtered_corner(
-            edges.square.left[0],
-            edges.square.corner,
-            edges.square.above[0],
-        )
-    } else {
-        edges.square.corner
-    };
+    let corner = above.samples[LINE_ORIGIN - 1];
+    debug_assert_eq!(corner, left.samples[LINE_ORIGIN - 1]);
     let mut square = IntraEdges {
-        above: [T::default(); super::EDGE_LEN],
-        left: [T::default(); super::EDGE_LEN],
+        above: edges.square.above,
+        left: edges.square.left,
         corner,
         dc: edges.square.dc,
         size: n,
     };
-    if need_above {
-        square.above[..2 * n].copy_from_slice(&edges.square.above[..2 * n]);
-        if above_s != 0 {
-            let num_px = edges.above_inside + if angle < VERTICAL { n } else { 0 } + 1;
-            edge::filter_edge(
-                corner,
-                &edges.square.above,
-                &mut square.above,
-                num_px,
-                above_s,
-            );
-        }
-    }
-    if need_left {
-        square.left[..2 * n].copy_from_slice(&edges.square.left[..2 * n]);
-        if left_s != 0 {
-            let num_px = edges.left_inside + if angle > HORIZONTAL { n } else { 0 } + 1;
-            edge::filter_edge(corner, &edges.square.left, &mut square.left, num_px, left_s);
-        }
-    }
-    PreparedSquare::Filtered(square)
+    square.above[..2 * n].copy_from_slice(&above.samples[LINE_ORIGIN..][..2 * n]);
+    square.left[..2 * n].copy_from_slice(&left.samples[LINE_ORIGIN..][..2 * n]);
+    Some(square)
 }
 
 /// An edge line: the corner at index -1, then `len` edge samples.

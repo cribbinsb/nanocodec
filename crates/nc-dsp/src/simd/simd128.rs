@@ -18,10 +18,10 @@ use core::arch::wasm32::{
     i16x8_shuffle, i16x8_splat, i16x8_sub, i32x4_abs, i32x4_add, i32x4_bitmask, i32x4_dot_i16x8,
     i32x4_eq, i32x4_extadd_pairwise_i16x8, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8,
     i32x4_extmul_high_i16x8, i32x4_extmul_low_i16x8, i32x4_extract_lane, i32x4_gt, i32x4_max,
-    i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub, i64x2,
+    i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub,
     i64x2_shuffle, u8x16_narrow_i16x8, u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, u16x8_min,
     u16x8_narrow_i32x4, u16x8_shr, u16x8_sub_sat, u32x4_extadd_pairwise_u16x8,
-    u32x4_extend_low_u16x8, u32x4_shr, v128, v128_and, v128_any_true, v128_load, v128_load32_zero,
+    u32x4_extend_low_u16x8, u32x4_shr, v128, v128_and, v128_load, v128_load32_zero,
     v128_load64_zero, v128_or, v128_store, v128_store32_lane, v128_store64_lane, v128_xor,
 };
 
@@ -333,23 +333,6 @@ impl I32Lanes for I32x4 {
             // SAFETY: `dst` holds 4 values (indexed above); uninitialised
             // memory may be written.
             unsafe { v128_store(dst.as_mut_ptr().cast(), row) };
-        }
-    }
-
-    #[inline(always)]
-    fn add_transposed_u16(rows: &[Self], dst: &mut [u16], dst_stride: usize, max_val: i32) {
-        let needed = dst_stride
-            .checked_mul(Self::LANES - 1)
-            .and_then(|n| n.checked_add(Self::LANES))
-            .expect("transpose tile extent");
-        let dst = &mut dst[..needed];
-        for (r, &value) in transpose_i32x4(rows).iter().enumerate() {
-            // SAFETY: r < LANES and the checked span covers the last row's
-            // full vector; each temporary row borrow ends in this iteration.
-            let row = unsafe {
-                core::slice::from_raw_parts_mut(dst.as_mut_ptr().add(r * dst_stride), Self::LANES)
-            };
-            Self(value).add_to_u16(row, max_val);
         }
     }
 
@@ -795,21 +778,6 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
-    fn store_halves(self, lo: &mut [i16], hi: &mut [i16]) {
-        let (lo, hi) = (&mut lo[..4], &mut hi[..4]);
-        // SAFETY: `lo` and `hi` hold 4 values (8 bytes) each.
-        unsafe {
-            v128_store64_lane::<0>(self.0, lo.as_mut_ptr().cast());
-            v128_store64_lane::<1>(self.0, hi.as_mut_ptr().cast());
-        }
-    }
-
-    #[inline(always)]
-    fn combine_hi_lo(self, next: Self) -> Self {
-        Self(i64x2_shuffle::<1, 2>(self.0, next.0))
-    }
-
-    #[inline(always)]
     fn min_u16(self, other: Self) -> Self {
         Self(u16x8_min(self.0, other.0))
     }
@@ -835,11 +803,6 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
-    fn any_nonzero(self) -> bool {
-        v128_any_true(self.0)
-    }
-
-    #[inline(always)]
     fn blend(self, if_set: Self, if_clear: Self) -> Self {
         Self(select_i16(self.0, if_set.0, if_clear.0))
     }
@@ -861,88 +824,30 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
-    fn combine_mid_halves(self, next: Self) -> Self {
-        Self(i64x2_shuffle::<1, 2>(self.0, next.0))
-    }
-
-    #[inline(always)]
-    fn shift_quarter(self, next: Self) -> Self {
-        Self(i32x4_shuffle::<1, 2, 3, 4>(self.0, next.0))
-    }
-
-    #[inline(always)]
-    fn expand_alf_params(blocks: &[[i16; 12]]) -> [[Self; 2]; 6] {
+    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
         let b = &blocks[..2];
-        let pair =
-            |blk: &[i16; 12], p: usize| Self(i32x4_splat(packed_pair(blk[2 * p], blk[2 * p + 1])));
+        // SAFETY: each block holds 12 `i16`s (24 bytes).
+        let (c0_lo, c0_hi, c1_lo, c1_hi) = unsafe {
+            (
+                v128_load(b[0].as_ptr().cast()),
+                v128_load64_zero(b[0][8..].as_ptr().cast()),
+                v128_load(b[1].as_ptr().cast()),
+                v128_load64_zero(b[1][8..].as_ptr().cast()),
+            )
+        };
         [
-            [pair(&b[0], 0), pair(&b[1], 0)],
-            [pair(&b[0], 1), pair(&b[1], 1)],
-            [pair(&b[0], 2), pair(&b[1], 2)],
-            [pair(&b[0], 3), pair(&b[1], 3)],
-            [pair(&b[0], 4), pair(&b[1], 4)],
-            [pair(&b[0], 5), pair(&b[1], 5)],
-        ]
-    }
-
-    #[inline(always)]
-    fn splat_alf_pair(t0: i16, t1: i16) -> [Self; 2] {
-        let v = Self(i32x4_splat(packed_pair(t0, t1)));
-        [v, v]
-    }
-
-    #[inline(always)]
-    fn acc_alf_clipped_pair(
-        acc: Self::Acc,
-        (a0, b0): (Self, Self),
-        (a1, b1): (Self, Self),
-        centre: Self,
-        lim: [Self; 2],
-        coeff: [Self; 2],
-    ) -> Self::Acc {
-        let v00 = i16x8_sub(a0.0, centre.0);
-        let v10 = i16x8_sub(a1.0, centre.0);
-        let v01 = i16x8_sub(b0.0, centre.0);
-        let v11 = i16x8_sub(b1.0, centre.0);
-        let mut u0 = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(v00, v10);
-        let mut u1 = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(v00, v10);
-        let mut u2 = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(v01, v11);
-        let mut u3 = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(v01, v11);
-        let (neg0, neg1) = (i16x8_neg(lim[0].0), i16x8_neg(lim[1].0));
-        u0 = i16x8_max(i16x8_min(u0, lim[0].0), neg0);
-        u1 = i16x8_max(i16x8_min(u1, lim[1].0), neg1);
-        u2 = i16x8_max(i16x8_min(u2, lim[0].0), neg0);
-        u3 = i16x8_max(i16x8_min(u3, lim[1].0), neg1);
-        let sum_lo = i16x8_add(u0, u2);
-        let sum_hi = i16x8_add(u1, u3);
-        [
-            i32x4_add(acc[0], i32x4_dot_i16x8(sum_lo, coeff[0].0)),
-            i32x4_add(acc[1], i32x4_dot_i16x8(sum_hi, coeff[1].0)),
-        ]
-    }
-
-    #[inline(always)]
-    fn acc_alf_linear_pair(acc: Self::Acc, d0: Self, d1: Self, coeff: [Self; 2]) -> Self::Acc {
-        let lo = i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(d0.0, d1.0);
-        let hi = i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(d0.0, d1.0);
-        [
-            i32x4_add(acc[0], i32x4_dot_i16x8(lo, coeff[0].0)),
-            i32x4_add(acc[1], i32x4_dot_i16x8(hi, coeff[1].0)),
-        ]
-    }
-
-    #[inline(always)]
-    fn expand_alf_pair(blocks: &[[i16; 12]], p: usize) -> [Self; 2] {
-        #[inline(always)]
-        fn splat4(v: i16) -> i64 {
-            const MUL: u64 = 0x0001_0001_0001_0001;
-            (u64::from(v as u16) * MUL) as i64
-        }
-        let b = &blocks[..2];
-        let t = 2 * p;
-        [
-            Self(i64x2(splat4(b[0][t]), splat4(b[1][t]))),
-            Self(i64x2(splat4(b[0][t + 1]), splat4(b[1][t + 1]))),
+            Self(i16x8_shuffle::<0, 0, 0, 0, 8, 8, 8, 8>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<1, 1, 1, 1, 9, 9, 9, 9>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<2, 2, 2, 2, 10, 10, 10, 10>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<3, 3, 3, 3, 11, 11, 11, 11>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<4, 4, 4, 4, 12, 12, 12, 12>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<5, 5, 5, 5, 13, 13, 13, 13>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<6, 6, 6, 6, 14, 14, 14, 14>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<7, 7, 7, 7, 15, 15, 15, 15>(c0_lo, c1_lo)),
+            Self(i16x8_shuffle::<0, 0, 0, 0, 8, 8, 8, 8>(c0_hi, c1_hi)),
+            Self(i16x8_shuffle::<1, 1, 1, 1, 9, 9, 9, 9>(c0_hi, c1_hi)),
+            Self(i16x8_shuffle::<2, 2, 2, 2, 10, 10, 10, 10>(c0_hi, c1_hi)),
+            Self(i16x8_shuffle::<3, 3, 3, 3, 11, 11, 11, 11>(c0_hi, c1_hi)),
         ]
     }
 }
@@ -989,11 +894,6 @@ impl I16Pairs for I16x8 {
     #[inline(always)]
     fn narrow_pairs(low: I32x4, high: I32x4) -> Self {
         Self(i16x8_narrow_i32x4(low.0, high.0))
-    }
-
-    #[inline(always)]
-    fn interleave_pairs(even: I32x4, odd: I32x4) -> Self {
-        Self(i16x8_shuffle::<0, 8, 2, 10, 4, 12, 6, 14>(even.0, odd.0))
     }
 }
 

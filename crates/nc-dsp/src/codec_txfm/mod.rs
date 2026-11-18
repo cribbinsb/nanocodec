@@ -62,7 +62,7 @@ pub(crate) mod generic;
 #[allow(unsafe_code)]
 pub(crate) mod h264_inverse8;
 #[allow(unsafe_code)]
-pub(crate) mod inverse_add;
+mod inverse_add;
 #[allow(unsafe_code)]
 pub(crate) mod scalar;
 mod scaling_matrix;

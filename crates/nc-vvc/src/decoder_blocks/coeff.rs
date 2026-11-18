@@ -8,29 +8,7 @@ use crate::{coeff_contexts::CoeffContexts, contexts::Context, decoder_cabac::Rea
 use nc_common::decode::{DecodeError, Result};
 
 const GROUP_START: [usize; 10] = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
-const LAST_GROUP_LIMIT: [usize; 6] = [0, 1, 3, 5, 7, 9];
 const STATE_TRANSITIONS: u32 = 32_040;
-const MAX_CODED_SIDE: usize = 32;
-const PAD: usize = 2;
-const BUDGET_NUM: usize = 7;
-const BUDGET_DEN: usize = 4;
-const MIN_REGULAR_BUDGET: usize = 4;
-const MAX_GROUP_SIZE: usize = 16;
-const MAX_CG_COUNT: usize = 64;
-const FIRST_RICE_BASE: u32 = 4;
-const COEFF_MIN: i32 = -32_768;
-const COEFF_MAX: i32 = 32_767;
-const MTS_REGION_LIMIT: usize = 16;
-const ZERO_OUT_GROUP_LIMIT: usize = 4;
-const ESCAPE_SUFFIX_MAX: u32 = 15;
-
-pub(super) const PADDED_AREA: usize = (MAX_CODED_SIDE + PAD) * (MAX_CODED_SIDE + PAD);
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(super) struct CoeffStats {
-    pub last_scan: Option<u16>,
-    pub outside_16: bool,
-}
 
 #[derive(Clone)]
 pub(super) struct Models {
@@ -98,25 +76,13 @@ impl Models {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ScanEntry {
-    pub pos: u16,
-    pub pad_pos: u16,
-    pub sig_base: [u8; 2],
-    pub level_base: [u8; 2],
-    pub outside_16: bool,
-}
-
 #[derive(Debug)]
 pub(super) struct Scan {
     pub(super) positions: Vec<usize>,
-    pub(super) entries: Vec<ScanEntry>,
-    pub(super) inverse: Vec<u16>,
     pub(super) groups: Vec<usize>,
     pub(super) group_size: usize,
     pub(super) columns: usize,
     pub(super) rows: usize,
-    pub(super) coded_width: usize,
 }
 impl Scan {
     pub(super) fn new(width: usize, height: usize) -> Self {
@@ -130,14 +96,11 @@ impl Scan {
             (_, 2) => (8, 2),
             _ => (4, 4),
         };
-        let coded_width = width.min(MAX_CODED_SIDE);
-        let coded_height = height.min(MAX_CODED_SIDE);
-        let pad_stride = coded_width + PAD;
-        let columns = coded_width / gw;
-        let rows = coded_height / gh;
+        let columns = width.min(32) / gw;
+        let rows = height.min(32) / gh;
         let groups = diagonal(columns, rows);
         let local = diagonal(gw, gh);
-        let positions: Vec<usize> = groups
+        let positions = groups
             .iter()
             .flat_map(|&group| {
                 local.iter().map(move |&position| {
@@ -147,31 +110,12 @@ impl Scan {
                 })
             })
             .collect();
-        let mut entries = Vec::with_capacity(positions.len());
-        let mut inverse = vec![0u16; coded_width * coded_height];
-        for (scan_idx, &pos) in positions.iter().enumerate() {
-            let (x, y) = (pos % width, pos / width);
-            let diag = (x + y).min(crate::coeff::DIAGONAL_CLASSES - 1);
-            let (s0, l0) = crate::coeff::DIAGONAL_OFFSETS[0][diag];
-            let (s1, l1) = crate::coeff::DIAGONAL_OFFSETS[1][diag];
-            entries.push(ScanEntry {
-                pos: pos as u16,
-                pad_pos: (y * pad_stride + x) as u16,
-                sig_base: [s0, s1],
-                level_base: [l0 + 1, l1 + 1],
-                outside_16: x >= MTS_REGION_LIMIT || y >= MTS_REGION_LIMIT,
-            });
-            inverse[y * coded_width + x] = scan_idx as u16;
-        }
         Self {
             positions,
-            entries,
-            inverse,
             groups,
             group_size: gw * gh,
             columns,
             rows,
-            coded_width,
         }
     }
     pub(super) fn of(width: usize, height: usize) -> &'static Self {
@@ -193,6 +137,13 @@ fn diagonal(width: usize, height: usize) -> Vec<usize> {
     }
     order
 }
+/// Last occupied grouped-scan position for CU transform-tool constraints.
+pub(super) fn last_scan(levels: &[i32], width: usize, height: usize) -> Option<usize> {
+    Scan::of(width, height)
+        .positions
+        .iter()
+        .rposition(|&p| levels[p] != 0)
+}
 fn last_prefix(
     r: &mut Reader<'_>,
     models: &mut [Context],
@@ -211,7 +162,10 @@ fn last_prefix(
     } else {
         (side >> 3).min(2)
     };
-    let limit = LAST_GROUP_LIMIT[limit_side.min(MAX_CODED_SIDE).ilog2() as usize];
+    let limit = GROUP_START
+        .iter()
+        .rposition(|&v| v < limit_side.min(32))
+        .unwrap();
     let mut group = 0;
     while group < limit && r.bin(&mut models[offset + (group >> shift)])? {
         group += 1;
@@ -229,11 +183,7 @@ fn last_suffix(r: &mut Reader<'_>, group: usize) -> Result<usize> {
 /// A side of the coefficients a block may code: at most 32, and 16 of 32
 /// when the MTS or SBT zero-out applies (H.266 §7.3.11.11).
 fn zero_out_side(side: usize, zero_out: bool) -> usize {
-    if zero_out {
-        side.min(MTS_REGION_LIMIT)
-    } else {
-        side.min(MAX_CODED_SIDE)
-    }
+    if zero_out { side.min(16) } else { side.min(32) }
 }
 
 fn last_position(
@@ -245,149 +195,134 @@ fn last_position(
     scan: &Scan,
     zero_out: bool,
 ) -> Result<usize> {
-    let limit_w = zero_out_side(width, zero_out);
-    let limit_h = zero_out_side(height, zero_out);
     let gx = last_prefix(
         r,
         &mut models.common.last_x[channel],
         width,
         channel,
-        limit_w,
+        zero_out_side(width, zero_out),
     )?;
     let gy = last_prefix(
         r,
         &mut models.common.last_y[channel],
         height,
         channel,
-        limit_h,
+        zero_out_side(height, zero_out),
     )?;
     let x = last_suffix(r, gx)?;
     let y = last_suffix(r, gy)?;
-    if x >= limit_w || y >= limit_h {
-        return Err(DecodeError::Malformed("VVC last coefficient position"));
-    }
-    Ok(usize::from(scan.inverse[y * scan.coded_width + x]))
+    scan.positions
+        .iter()
+        .position(|&p| p == y * width + x)
+        .ok_or(DecodeError::Malformed("VVC last coefficient position"))
 }
-
-#[inline(always)]
-#[allow(clippy::inline_always, reason = "per-coefficient CABAC context lookup")]
-fn grid_context(pass1: &[u8], pad_stride: usize, entry: ScanEntry, ch: usize) -> (usize, usize) {
-    let p = usize::from(entry.pad_pos);
-    let win = &pass1[p..=p + 2 * pad_stride];
-    let packed = u32::from(win[1])
-        + u32::from(win[2])
-        + u32::from(win[pad_stride])
-        + u32::from(win[pad_stride + 1])
-        + u32::from(win[2 * pad_stride]);
-    let sum = packed & 0x1f;
-    let count = packed >> 5;
-    let sig = (((sum + 1) >> 1).min(3) as usize) + usize::from(entry.sig_base[ch]);
-    let level = ((sum - count).min(4) as usize) + usize::from(entry.level_base[ch]);
+fn neighbours(
+    values: &[i32],
+    pos: usize,
+    width: usize,
+    height: usize,
+) -> impl Iterator<Item = u32> + '_ {
+    let (x, y) = (pos % width, pos / width);
+    [(1, 0), (2, 0), (0, 1), (1, 1), (0, 2)]
+        .into_iter()
+        .filter(move |&(dx, dy)| x + dx < width && y + dy < height)
+        .map(move |(dx, dy)| values[pos + dy * width + dx].unsigned_abs())
+}
+fn context(
+    values: &[i32],
+    pos: usize,
+    width: usize,
+    height: usize,
+    channel: usize,
+) -> (usize, usize) {
+    let (mut sum, mut count) = (0, 0);
+    for value in neighbours(values, pos, width, height) {
+        sum += value.min(4 + (value & 1));
+        count += u32::from(value != 0);
+    }
+    let diagonal = pos % width + pos / width;
+    let sig = ((sum + 1) >> 1).min(3) as usize
+        + usize::from(diagonal < 2) * 4
+        + usize::from(channel == 0 && diagonal < 5) * 4;
+    let level = (sum - count).min(4) as usize
+        + 1
+        + if diagonal == 0 {
+            if channel == 0 { 15 } else { 5 }
+        } else if channel == 0 {
+            if diagonal < 3 {
+                10
+            } else if diagonal < 10 {
+                5
+            } else {
+                0
+            }
+        } else {
+            0
+        };
     (sig, level)
 }
-
-#[inline(always)]
-#[allow(clippy::inline_always, reason = "per-coefficient Golomb-Rice lookup")]
-fn grid_rice(grid: &[u32], pad_stride: usize, pad_pos: u16, base: u32) -> u32 {
-    let p = usize::from(pad_pos);
-    let win = &grid[p..=p + 2 * pad_stride];
-    let sum = win[1] + win[2] + win[pad_stride] + win[pad_stride + 1] + win[2 * pad_stride];
-    crate::coeff::rice_parameter(sum, base)
+fn rice(values: &[i32], pos: usize, width: usize, height: usize, base: u32) -> u32 {
+    match neighbours(values, pos, width, height)
+        .sum::<u32>()
+        .saturating_sub(5 * base)
+        .min(31)
+    {
+        0..=6 => 0,
+        7..=13 => 1,
+        14..=27 => 2,
+        _ => 3,
+    }
 }
-
 pub(super) fn remainder(r: &mut Reader<'_>, rice: u32) -> Result<u32> {
     const CUTOFF: u32 = 5;
     const MAX_ESCAPE: u32 = 12;
-    let prefix = r.bypass_unary(CUTOFF + MAX_ESCAPE);
+    let mut prefix = 0;
+    while prefix < CUTOFF + MAX_ESCAPE && r.bypass()? {
+        prefix += 1;
+    }
     if prefix < CUTOFF {
-        return Ok(if rice == 0 {
-            prefix
-        } else {
-            (prefix << rice) + r.bypass_bits(rice)?
-        });
+        return Ok((prefix << rice) + r.bypass_bits(rice)?);
     }
     let escape = prefix - CUTOFF;
     let base = (CUTOFF + (1 << escape) - 1) << rice;
     Ok(base
         + r.bypass_bits(if escape == MAX_ESCAPE {
-            ESCAPE_SUFFIX_MAX
+            15
         } else {
             escape + rice
         })?)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn read_into(
+pub(super) fn read(
     r: &mut Reader<'_>,
     models: &mut Models,
-    arena: &mut super::CoeffArena,
     width: usize,
     height: usize,
     channel: usize,
     dependent: bool,
     hiding: bool,
     zero_out: bool,
-) -> Result<((u32, u16), CoeffStats)> {
+) -> Result<Vec<i32>> {
     if ![1, 2, 4, 8, 16, 32, 64].contains(&width)
         || ![1, 2, 4, 8, 16, 32, 64].contains(&height)
         || channel > 1
     {
         return Err(DecodeError::Unsupported("VVC residual geometry"));
     }
-    let start = u32::try_from(arena.entries.len())
-        .map_err(|_| DecodeError::Malformed("VVC coeff arena"))?;
-    let scan = Scan::of(width, height);
-    let last = last_position(r, models, width, height, channel, scan, zero_out)?;
-    let stats = {
-        let mut walk = Walk {
-            arena: &mut arena.entries,
-            grid: &mut arena.grid[..],
-            pass1: &mut arena.pass1[..],
-            max_pad: 0,
-            pad_stride: scan.coded_width + PAD,
-            state: 0,
-            // Context-coded bins: 7/4 per coefficient of the area left after
-            // the zero-out (H.266 §7.3.11.11 `remCcbs` from `log2ZoTbWidth`,
-            // `log2ZoTbHeight`; SBT and MTS keep 16 of 32).
-            budget: zero_out_side(width, zero_out) * zero_out_side(height, zero_out) * BUDGET_NUM
-                / BUDGET_DEN,
+    if !zero_out && !dependent && hiding && width == height && (4..=32).contains(&width) {
+        const ZEROS: [i32; 1024] = [0; 1024];
+        return crate::coeff::code(
+            r,
+            &mut models.common,
+            &ZEROS[..width * height],
+            width,
             channel,
-            dependent,
-            hiding,
-            stats: CoeffStats::default(),
-        };
-        let _ = MAX_CG_COUNT;
-        let mut significant = 0u64;
-        let last_group = last / scan.group_size;
-        for group in (0..=last_group).rev() {
-            let raster = scan.groups[group];
-            let (gx, gy) = (raster % scan.columns, raster / scan.columns);
-            if zero_out
-                && ((width == MAX_CODED_SIDE && gx >= ZERO_OUT_GROUP_LIMIT)
-                    || (height == MAX_CODED_SIDE && gy >= ZERO_OUT_GROUP_LIMIT))
-            {
-                continue;
-            }
-            let adjacent = (gx + 1 < scan.columns && (significant >> (raster + 1)) & 1 != 0)
-                || (gy + 1 < scan.rows && (significant >> (raster + scan.columns)) & 1 != 0);
-            if group != 0
-                && group != last_group
-                && !r.bin(&mut models.common.group[channel][usize::from(adjacent)])?
-            {
-                continue;
-            }
-            significant |= 1u64 << raster;
-            walk.group(r, models, scan, group, last)?;
-        }
-        walk.stats
-    };
-    let count = u16::try_from(arena.entries.len() - start as usize)
-        .map_err(|_| DecodeError::Malformed("VVC coeff count"))?;
-    Ok(((start, count), stats))
+        );
+    }
+    read_general(
+        r, models, width, height, channel, dependent, hiding, zero_out,
+    )
 }
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 fn read_general(
     r: &mut Reader<'_>,
     models: &mut Models,
@@ -397,50 +332,87 @@ fn read_general(
     dependent: bool,
     hiding: bool,
     zero_out: bool,
-) -> Result<(Vec<i32>, CoeffStats)> {
-    let mut arena = super::CoeffArena::default();
-    let (_, stats) = read_into(
-        r, models, &mut arena, width, height, channel, dependent, hiding, zero_out,
-    )?;
-    let mut out = vec![0i32; width * height];
-    for &(pos, val) in &arena.entries {
-        out[usize::from(pos)] = i32::from(val);
+) -> Result<Vec<i32>> {
+    let scan = Scan::of(width, height);
+    let last = last_position(r, models, width, height, channel, scan, zero_out)?;
+    let mut small_flags = [0u8; 256];
+    let mut large_flags;
+    let max_scan_pos = (height.min(32) - 1) * width + (width.min(32) - 1);
+    let flags: &mut [u8] = if max_scan_pos < small_flags.len() {
+        &mut small_flags[..=max_scan_pos]
+    } else {
+        large_flags = [0u8; 2048];
+        &mut large_flags[..=max_scan_pos]
+    };
+    let mut walk = Walk {
+        values: vec![0; width * height],
+        flags,
+        state: 0,
+        // Context-coded bins: 7/4 per coefficient of the area left after
+        // the zero-out (H.266 §7.3.11.11 `remCcbs` from `log2ZoTbWidth`,
+        // `log2ZoTbHeight`; SBT and MTS keep 16 of 32).
+        budget: zero_out_side(width, zero_out) * zero_out_side(height, zero_out) * 28 / 16,
+        width,
+        height,
+        channel,
+        dependent,
+        hiding,
+    };
+    let mut significant = [false; 64];
+    for group in (0..=last / scan.group_size).rev() {
+        let raster = scan.groups[group];
+        if zero_out
+            && ((width == 32 && raster % scan.columns >= 4)
+                || (height == 32 && raster / scan.columns >= 4))
+        {
+            continue;
+        }
+        let adjacent = (raster % scan.columns + 1 < scan.columns && significant[raster + 1])
+            || (raster / scan.columns + 1 < scan.rows && significant[raster + scan.columns]);
+        if group != 0
+            && group != last / scan.group_size
+            && !r.bin(&mut models.common.group[channel][usize::from(adjacent)])?
+        {
+            continue;
+        }
+        significant[raster] = true;
+        walk.group(r, models, scan, group, last)?;
     }
-    Ok((out, stats))
+    for &pos in &scan.positions[..=last] {
+        let v = walk.values[pos];
+        if v == 0 {
+            continue;
+        }
+        let f = walk.flags[pos];
+        let mut out = if dependent {
+            2 * v - i32::from(f & 1)
+        } else {
+            v
+        };
+        if f & 2 != 0 {
+            out = -out;
+        }
+        if !(-32768..=32767).contains(&out) {
+            return Err(DecodeError::Malformed("VVC coefficient dynamic range"));
+        }
+        walk.values[pos] = out;
+    }
+    Ok(walk.values)
 }
-
-#[derive(Clone, Copy, Default)]
-struct ActiveCoeff {
-    scan_idx: u16,
-    pos: u16,
-    pad_pos: u16,
-    dep_adj: u8,
-    outside_16: bool,
-}
-
 struct Walk<'a> {
-    arena: &'a mut Vec<(u16, i16)>,
-    grid: &'a mut [u32],
-    pass1: &'a mut [u8],
-    max_pad: usize,
-    pad_stride: usize,
+    values: Vec<i32>,
+    /// Bit 0: dependent-quantization state adjustment (`0` or `1`).
+    /// Bit 1: negative sign (`0` or `2`).
+    flags: &'a mut [u8],
     state: u32,
     budget: usize,
+    width: usize,
+    height: usize,
     channel: usize,
     dependent: bool,
     hiding: bool,
-    stats: CoeffStats,
-}
-
-impl Drop for Walk<'_> {
-    fn drop(&mut self) {
-        self.grid[..self.max_pad].fill(0);
-        self.pass1[..self.max_pad].fill(0);
-    }
 }
 impl Walk<'_> {
-    #[inline(always)]
-    #[allow(clippy::inline_always, reason = "per-coefficient state transition")]
     fn advance(&mut self, parity: u32) {
         self.state = if self.dependent {
             (STATE_TRANSITIONS >> (4 * self.state + 2 * parity)) & 3
@@ -448,7 +420,6 @@ impl Walk<'_> {
             0
         };
     }
-
     fn group(
         &mut self,
         r: &mut Reader<'_>,
@@ -459,20 +430,21 @@ impl Walk<'_> {
     ) -> Result<()> {
         let first = group * scan.group_size;
         let end = (first + scan.group_size - 1).min(last);
-        let mut nonzero = [ActiveCoeff::default(); MAX_GROUP_SIZE];
+        let mut nonzero = [(0usize, 0usize); 16];
         let mut nonzero_len = 0usize;
-        let mut regular = [0u16; MAX_GROUP_SIZE];
+        let mut regular = [0usize; 16];
         let mut regular_len = 0usize;
-        let mut bypass = [0u16; MAX_GROUP_SIZE];
+        let mut bypass = [(0usize, 0usize); 16];
         let mut bypass_len = 0usize;
         for index in (first..=end).rev() {
-            let entry = scan.entries[index];
-            if self.budget < MIN_REGULAR_BUDGET {
-                bypass[bypass_len] = index as u16;
+            let pos = scan.positions[index];
+            if self.budget < 4 {
+                bypass[bypass_len] = (index, pos);
                 bypass_len += 1;
                 continue;
             }
-            let (sig, mut level) = grid_context(self.pass1, self.pad_stride, entry, self.channel);
+            let (sig, mut level) =
+                context(&self.values, pos, self.width, self.height, self.channel);
             let inferred = index == last || (index == first && group != 0 && nonzero_len == 0);
             let present = if inferred {
                 true
@@ -480,113 +452,66 @@ impl Walk<'_> {
                 self.budget -= 1;
                 r.bin(models.significance(self.channel, self.state, sig))?
             };
-            let mut val = 0u32;
             if present {
                 if index == last {
                     level = 0;
                 }
-                let dep_adj = (self.state >> 1) as u8;
+                self.flags[pos] = (self.state >> 1) as u8;
                 self.budget -= 1;
-                val = if r.bin(&mut models.common.gt1[self.channel][level])? {
+                self.values[pos] = if r.bin(&mut models.common.gt1[self.channel][level])? {
                     self.budget -= 2;
                     let parity = r.bin(&mut models.common.parity[self.channel][level])?;
                     let greater = r.bin(&mut models.common.gt2[self.channel][level])?;
-                    2 + u32::from(parity) + 2 * u32::from(greater)
+                    2 + i32::from(parity) + 2 * i32::from(greater)
                 } else {
                     1
                 };
-                let p = usize::from(entry.pad_pos);
-                self.grid[p] = val;
-                self.pass1[p] = (val.min(4 + (val & 1)) as u8) | 0x20;
-                self.max_pad = self.max_pad.max(p + 1);
-                if val >= FIRST_RICE_BASE {
-                    regular[regular_len] = entry.pad_pos;
-                    regular_len += 1;
-                }
-                nonzero[nonzero_len] = ActiveCoeff {
-                    scan_idx: index as u16,
-                    pos: entry.pos,
-                    pad_pos: entry.pad_pos,
-                    dep_adj,
-                    outside_16: entry.outside_16,
-                };
+                regular[regular_len] = pos;
+                regular_len += 1;
+                nonzero[nonzero_len] = (index, pos);
                 nonzero_len += 1;
             }
-            self.advance(val & 1);
+            self.advance(self.values[pos] as u32 & 1);
         }
-        for &pad_pos in &regular[..regular_len] {
-            let parameter = grid_rice(self.grid, self.pad_stride, pad_pos, FIRST_RICE_BASE);
-            self.grid[usize::from(pad_pos)] += 2 * remainder(r, parameter)?;
+        for &pos in &regular[..regular_len] {
+            if self.values[pos] >= 4 {
+                let parameter = rice(&self.values, pos, self.width, self.height, 4);
+                self.values[pos] += 2 * remainder(r, parameter)? as i32;
+            }
         }
-        for &scan_idx in &bypass[..bypass_len] {
-            let entry = scan.entries[usize::from(scan_idx)];
-            let parameter = grid_rice(self.grid, self.pad_stride, entry.pad_pos, 0);
+        for &(index, pos) in &bypass[..bypass_len] {
+            let parameter = rice(&self.values, pos, self.width, self.height, 0);
             let zero = (if self.state < 2 { 1 } else { 2 }) << parameter;
             let rem = remainder(r, parameter)?;
-            let val = match rem.cmp(&zero) {
+            self.values[pos] = match rem.cmp(&zero) {
                 std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Less => rem + 1,
-                std::cmp::Ordering::Greater => rem,
+                std::cmp::Ordering::Less => rem as i32 + 1,
+                std::cmp::Ordering::Greater => rem as i32,
             };
-            if val != 0 {
-                let p = usize::from(entry.pad_pos);
-                self.grid[p] = val;
-                self.pass1[p] = (val.min(4 + (val & 1)) as u8) | 0x20;
-                self.max_pad = self.max_pad.max(p + 1);
-                nonzero[nonzero_len] = ActiveCoeff {
-                    scan_idx,
-                    pos: entry.pos,
-                    pad_pos: entry.pad_pos,
-                    dep_adj: (self.state >> 1) as u8,
-                    outside_16: entry.outside_16,
-                };
+            if self.values[pos] != 0 {
+                self.flags[pos] = (self.state >> 1) as u8;
+                nonzero[nonzero_len] = (index, pos);
                 nonzero_len += 1;
             }
-            self.advance(val & 1);
+            self.advance(self.values[pos] as u32 & 1);
         }
-        self.finish_group_signs(r, &nonzero[..nonzero_len])
-    }
-
-    fn finish_group_signs(&mut self, r: &mut Reader<'_>, active: &[ActiveCoeff]) -> Result<()> {
-        if active.is_empty() {
-            return Ok(());
-        }
+        let active = &nonzero[..nonzero_len];
         let hidden = self.hiding
             && !self.dependent
-            && usize::from(active[0].scan_idx - active[active.len() - 1].scan_idx)
-                > crate::coeff::SIGN_HIDING_THRESHOLD;
-        let sign_count = active.len() - usize::from(hidden);
-        let signs = r.bypass_bits(sign_count as u32)?;
-        let mut sum_parity = 0u32;
-        if hidden {
-            for item in active {
-                sum_parity ^= self.grid[usize::from(item.pad_pos)];
-            }
-        }
-        for (i, item) in active.iter().enumerate() {
-            let v = self.grid[usize::from(item.pad_pos)] as i32;
-            let neg = if hidden && i + 1 == active.len() {
-                sum_parity & 1 != 0
+            && active
+                .first()
+                .zip(active.last())
+                .is_some_and(|(a, b)| a.0 - b.0 > crate::coeff::SIGN_HIDING_THRESHOLD);
+        let sum = active.iter().map(|&(_, p)| self.values[p]).sum::<i32>();
+        for (index, &(_, pos)) in active.iter().enumerate() {
+            let neg = if hidden && index + 1 == active.len() {
+                sum & 1 != 0
             } else {
-                (signs >> (sign_count - 1 - i)) & 1 != 0
-            };
-            let mut out = if self.dependent {
-                2 * v - i32::from(item.dep_adj)
-            } else {
-                v
+                r.bypass()?
             };
             if neg {
-                out = -out;
+                self.flags[pos] |= 2;
             }
-            if !(COEFF_MIN..=COEFF_MAX).contains(&out) {
-                return Err(DecodeError::Malformed("VVC coefficient dynamic range"));
-            }
-            self.arena.push((item.pos, out as i16));
-            self.stats.outside_16 |= item.outside_16;
-            self.stats.last_scan = Some(match self.stats.last_scan {
-                Some(prev) => prev.max(item.scan_idx),
-                None => item.scan_idx,
-            });
         }
         Ok(())
     }
@@ -670,8 +595,8 @@ mod tests {
                         bits.trailing_bits();
                         let bytes = bits.into_bytes();
                         let mut reader = Reader::new(&bytes).unwrap();
-                        // Deliberately test `read_general` directly.
-                        let (actual, _) = read_general(
+                        // Deliberately bypass the square fast-path delegation.
+                        let actual = read_general(
                             &mut reader,
                             &mut Models::new(37, if inter { 1 } else { 2 }),
                             side,

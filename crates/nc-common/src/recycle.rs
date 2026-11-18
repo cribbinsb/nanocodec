@@ -12,9 +12,9 @@ use crate::picture::{Picture, PlaneIndex};
 use crate::plane::ROW_ALIGNMENT;
 use crate::sample::Sample;
 
-/// Most pictures kept: up to a full 16-picture DPB/reorder window in flight
-/// without re-zeroing frame allocations across GOP boundaries.
-const MAX_SPARE_PICTURES: usize = 16;
+/// Most pictures kept: a reconstruction, an output and two returned by the
+/// caller cover one frame in flight; more would only hold memory.
+const MAX_SPARE_PICTURES: usize = 4;
 
 /// Released pictures kept for reuse by later frames.
 #[derive(Debug)]

@@ -325,7 +325,7 @@ pub struct CdefSource<T: Sample = u8> {
     data: Vec<T>,
     width: usize,
     height: usize,
-    /// Plane row of the first row still held (earlier rows are logically dropped).
+    /// Plane row of the first row `data` holds.
     first_row: usize,
     /// Plane row after the last one `data` holds (kept, not divided out of
     /// the length: the drivers ask for it per block).
@@ -381,7 +381,11 @@ impl<T: Sample> CdefSource<T> {
     /// keeping the copied rows from `row` on. Rows not copied yet stay
     /// uncopied.
     pub fn drop_rows_before(&mut self, row: usize) {
-        self.first_row = self.first_row.max(row.min(self.end_row));
+        let row = row.min(self.filled_rows());
+        if row > self.first_row {
+            self.data.drain(..(row - self.first_row) * self.width);
+            self.first_row = row;
+        }
     }
 
     /// The plane row after the last one copied (the plane's height after
@@ -417,7 +421,7 @@ impl<T: Sample> CdefSource<T> {
             x < self.width && y < self.height,
             "sample outside the plane"
         );
-        self.samples()[self.index(x, y)]
+        self.data[self.index(x, y)]
     }
 
     /// The rows held, as a plane view (all of the plane after
@@ -425,7 +429,7 @@ impl<T: Sample> CdefSource<T> {
     #[must_use]
     pub fn view(&self) -> nc_common::PlaneView<'_, T> {
         nc_common::PlaneView::new(
-            &self.data[self.first_row * self.width..],
+            &self.data,
             self.width,
             self.width,
             self.filled_rows() - self.first_row,
@@ -433,9 +437,8 @@ impl<T: Sample> CdefSource<T> {
         .expect("whole rows of the plane's width")
     }
 
-    /// Backing buffer (stride = width); plane sample (`x`, `y`) is at
-    /// [`Self::index`].
-    #[inline]
+    /// The rows held, row after row (stride = width); plane sample (`x`,
+    /// `y`) is at [`Self::index`].
     pub(crate) fn samples(&self) -> &[T] {
         &self.data
     }
@@ -445,10 +448,11 @@ impl<T: Sample> CdefSource<T> {
     /// # Panics
     ///
     /// If row `y` was dropped.
-    #[inline]
     pub(crate) fn index(&self, x: usize, y: usize) -> usize {
-        assert!(y >= self.first_row, "CDEF source row dropped");
-        y * self.width + x
+        let row = y
+            .checked_sub(self.first_row)
+            .expect("CDEF source row dropped");
+        row * self.width + x
     }
 
     /// The `size`-square block at (`x`, `y`) plus [`CDEF_PADDING`] samples
@@ -463,7 +467,6 @@ impl<T: Sample> CdefSource<T> {
         // within the plane; the same for every row.
         let inside =
             CDEF_PADDING.saturating_sub(x)..side.min((self.width + CDEF_PADDING).saturating_sub(x));
-        let held = self.samples();
         for (r, out) in window[..side * side].chunks_exact_mut(side).enumerate() {
             let Some(row) = (y + r)
                 .checked_sub(CDEF_PADDING)
@@ -475,7 +478,7 @@ impl<T: Sample> CdefSource<T> {
                 continue;
             }
             let first = self.index(x + inside.start - CDEF_PADDING, row);
-            let line = &held[first..first + inside.len()];
+            let line = &self.data[first..first + inside.len()];
             for (value, &sample) in out[inside.clone()].iter_mut().zip(line) {
                 *value = sample.to_i32() as i16;
             }

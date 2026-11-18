@@ -13,7 +13,6 @@ pub(super) struct Reader<'a> {
     engine: CabacReader<'a>,
 }
 #[allow(
-    clippy::inline_always,
     clippy::unnecessary_wraps,
     reason = "the syntax readers' `?` call form, shared with the header parsers; \
               infallible bins inline to no check, overrun is checked at `terminate`"
@@ -24,9 +23,12 @@ impl<'a> Reader<'a> {
             engine: CabacReader::new(bytes, 0)?,
         })
     }
-    #[inline(always)]
+    #[inline]
     pub fn bin(&mut self, ctx: &mut Context) -> Result<bool, DecodeError> {
-        Ok(ctx.decode_bin(&mut self.engine))
+        let lps = ctx.lps(self.engine.range());
+        let value = ctx.mps() != self.engine.decide_lps(lps);
+        ctx.update(value);
+        Ok(value)
     }
     /// Start the next substream, which follows the byte alignment after a
     /// terminating bin (H.266 §9.3.2.5: a tile or wavefront row ended).
@@ -34,20 +36,16 @@ impl<'a> Reader<'a> {
         self.engine = CabacReader::new(self.engine.data(), self.engine.next_byte())?;
         Ok(())
     }
-    #[inline(always)]
+    #[inline]
     pub fn bypass(&mut self) -> Result<bool, DecodeError> {
         Ok(self.engine.bypass())
     }
-    #[inline(always)]
+    #[inline]
     pub fn bypass_bits(&mut self, count: u32) -> Result<u32, DecodeError> {
         if count >= MAX_BYPASS_BITS {
             return Err(DecodeError::Malformed("CABAC bypass width"));
         }
         Ok(self.engine.bypass_bits(count))
-    }
-    #[inline(always)]
-    pub(super) fn bypass_unary(&mut self, max: u32) -> u32 {
-        self.engine.bypass_unary(max)
     }
     /// `end_of_slice_segment_flag` and the like; a slice whose bins ran
     /// past its data is rejected here.

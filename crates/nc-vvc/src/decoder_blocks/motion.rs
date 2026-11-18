@@ -19,65 +19,7 @@ pub(super) struct Motion {
 
 /// Entries of the motion history list (`MaxNumMergeCand - 1` at most).
 const HISTORY: usize = 5;
-const NONE_OWNER: u32 = u32::MAX;
-const SUBBLOCK_FLAG: u32 = 1 << 31;
 
-#[derive(Debug, Default)]
-pub(crate) struct MotionScratch {
-    owners: Vec<u32>,
-    subblock_motions: Vec<(u32, Option<Motion>)>,
-}
-
-struct MotionGrid<'a> {
-    owners: &'a mut Vec<u32>,
-    subblock_motions: &'a mut Vec<(u32, Option<Motion>)>,
-    stride: usize,
-    dimensions: [usize; 2],
-}
-
-impl<'a> MotionGrid<'a> {
-    fn from_scratch(scratch: &'a mut MotionScratch, dimensions: [usize; 2]) -> Self {
-        let stride = dimensions[0].div_ceil(4);
-        let cells = stride * dimensions[1].div_ceil(4);
-        scratch.owners.clear();
-        scratch.owners.resize(cells, NONE_OWNER);
-        scratch.subblock_motions.clear();
-        Self {
-            owners: &mut scratch.owners,
-            subblock_motions: &mut scratch.subblock_motions,
-            stride,
-            dimensions,
-        }
-    }
-
-    #[inline]
-    fn lookup(
-        &self,
-        previous: &[Unit],
-        (x, y): (usize, usize),
-        x_limit: usize,
-        tile: u16,
-    ) -> Option<(usize, Motion)> {
-        if x >= x_limit || y >= self.dimensions[1] {
-            return None;
-        }
-        let raw = self.owners[(y >> 2) * self.stride + (x >> 2)];
-        if raw == NONE_OWNER {
-            return None;
-        }
-        let (owner_idx, motion) = if raw & SUBBLOCK_FLAG != 0 {
-            let (u_idx, m) = self.subblock_motions[(raw & !SUBBLOCK_FLAG) as usize];
-            (u_idx as usize, m?)
-        } else {
-            let u_idx = raw as usize;
-            (u_idx, previous[u_idx].motion?)
-        };
-        // Motion of another tile is unavailable (H.266 §6.4.4).
-        (previous[owner_idx].tile == tile).then_some((owner_idx, motion))
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn derive(
     units: &mut [Unit],
     dimensions: [usize; 2],
@@ -86,35 +28,15 @@ pub(crate) fn derive(
     (references, poc): ([&[i32]; 2], i32),
     temporal: Option<&super::Temporal<'_>>,
 ) -> Result<()> {
-    let mut scratch = MotionScratch::default();
-    derive_with_scratch(
-        units,
-        dimensions,
-        sequence,
-        header,
-        (references, poc),
-        temporal,
-        &mut scratch,
-    )
-}
-
-pub(crate) fn derive_with_scratch(
-    units: &mut [Unit],
-    dimensions: [usize; 2],
-    sequence: &Sequence,
-    header: &SliceHeader,
-    (references, poc): ([&[i32]; 2], i32),
-    temporal: Option<&super::Temporal<'_>>,
-    scratch: &mut MotionScratch,
-) -> Result<()> {
-    if units.iter().all(|u| u.inter.is_none()) {
-        return Ok(());
-    }
     let ctu_log2 = sequence.ctu_log2;
     let merge_log2 = sequence.tools.parallel_merge_log2;
-    let mut grid = MotionGrid::from_scratch(scratch, dimensions);
+    let stride = dimensions[0].div_ceil(4);
+    let mut grid = vec![None; stride * dimensions[1].div_ceil(4)];
+    let mut owners = vec![None; grid.len()];
     let mut history = Vec::with_capacity(HISTORY);
     let mut vectors = super::ibc::History::default();
+    // The CTU row and tile of the latest CU: both lists restart at each CTU
+    // row of a tile.
     let mut row = (usize::MAX, 0);
     for unit_index in 0..units.len() {
         let (previous, remaining) = units.split_at_mut(unit_index);
@@ -122,42 +44,45 @@ pub(crate) fn derive_with_scratch(
         if unit.channel != 0 {
             continue;
         }
-        let (n, tile) = (unit.node, unit.tile);
+        let n = unit.node;
+        let tile = unit.tile;
         if (n.y >> ctu_log2, tile) != row {
             row = (n.y >> ctu_log2, tile);
             history.clear();
             vectors.clear();
         }
-        if unit.inter.is_none() {
-            continue;
-        }
         if let Some(Inter::Ibc(signalled)) = unit.inter {
+            let cells = (owners.as_slice(), dimensions);
             let maximum = sequence.tools.max_ibc_merge;
-            unit.block_vector = Some(block_vector(
-                unit,
-                signalled,
-                previous,
-                (grid.owners.as_slice(), dimensions),
-                &mut vectors,
-                maximum,
-            )?);
-            claim(grid.owners, n, grid.stride, unit_index as u32);
+            let vector = block_vector(unit, signalled, previous, cells, &mut vectors, maximum)?;
+            unit.block_vector = Some(vector);
+            claim(&mut owners, n, stride, unit_index);
             continue;
         }
         // With entropy synchronisation nothing in a CTU column to the right
         // of the CU's own is available (H.266 §6.4.4).
-        let x_limit = dimensions[0].min(if sequence.entropy_sync {
+        let right_limit = if sequence.entropy_sync {
             ((n.x >> ctu_log2) + 1) << ctu_log2
         } else {
             usize::MAX
-        });
+        };
+        let at = |x: usize, y: usize| {
+            if x < dimensions[0].min(right_limit) && y < dimensions[1] {
+                let index = (y >> 2) * stride + (x >> 2);
+                // Motion of another tile is unavailable (H.266 §6.4.4).
+                grid[index].filter(|_| owners[index].is_some_and(|o| previous[o].tile == tile))
+            } else {
+                None
+            }
+        };
         let neighbours = |x: usize, y: usize| {
-            let (owner, motion) = grid.lookup(previous, (x, y), x_limit, tile)?;
-            let prev = &previous[owner];
+            let motion = at(x, y)?;
+            let owner: usize = owners[(y >> 2) * stride + (x >> 2)]?;
+            let previous: &Unit = &previous[owner];
             Some(super::affine_motion::Neighbour {
-                node: prev.node,
+                node: previous.node,
                 motion,
-                models: prev.affine_models,
+                models: previous.affine_models,
             })
         };
         let positions = [
@@ -167,7 +92,7 @@ pub(crate) fn derive_with_scratch(
             (n.x.wrapping_sub(1), n.y + n.height),
             (n.x.wrapping_sub(1), n.y.wrapping_sub(1)),
         ];
-        let spatial = positions.map(|p| grid.lookup(previous, p, x_limit, tile).map(|(_, m)| m));
+        let spatial = positions.map(|(x, y)| at(x, y));
         let eligible = std::array::from_fn(|i| {
             let (x, y) = positions[i];
             spatial[i].filter(|_| {
@@ -192,42 +117,40 @@ pub(crate) fn derive_with_scratch(
             poc,
         }
         .resolve(unit)?;
-        restrict_biprediction(n, &mut resolved);
+        restrict_biprediction(unit.node, &mut resolved);
         if let Some(motion) = resolved {
             record(unit, motion, references, merge_log2, &mut history)?;
-            if unit.affine_models.iter().any(Option::is_some) {
-                let bidir = motion.lists.iter().all(Option::is_some);
-                unit.affine_fields = unit
-                    .affine_models
-                    .map(|m| m.map(|model| model.field_for_prediction(n.width, n.height, bidir)));
-            }
         }
         unit.motion = resolved;
-        fill_motion_owners(&mut grid, unit, unit_index as u32);
+        fill_motion_grid(&mut grid, stride, unit);
+        claim(&mut owners, n, stride, unit_index);
     }
     Ok(())
 }
 
-fn fill_motion_owners(grid: &mut MotionGrid<'_>, unit: &Unit, unit_index: u32) {
-    if unit.motion.is_none() {
-        return;
-    }
+fn fill_motion_grid(grid: &mut [Option<Motion>], stride: usize, unit: &Unit) {
     let n = unit.node;
-    if unit.subblocks.is_empty()
-        && unit.geometric.is_none()
-        && unit.affine_fields[0].is_none()
-        && unit.affine_fields[1].is_none()
+    let cols = n.width.div_ceil(4);
+    if unit.motion.is_none()
+        || (unit.subblocks.is_empty()
+            && unit.geometric.is_none()
+            && unit.affine_models[0].is_none()
+            && unit.affine_models[1].is_none())
     {
-        claim(grid.owners, n, grid.stride, unit_index);
+        for y in (n.y..n.y + n.height).step_by(4) {
+            let base = (y >> 2) * stride + (n.x >> 2);
+            grid[base..base + cols].fill(unit.motion);
+        }
         return;
     }
+    let bidirectional = unit.motion.unwrap().lists.iter().all(Option::is_some);
+    let fields = unit
+        .affine_models
+        .map(|m| m.map(|model| model.field_for_prediction(n.width, n.height, bidirectional)));
     for y in (n.y..n.y + n.height).step_by(4) {
-        let row_base = (y >> 2) * grid.stride;
+        let row_base = (y >> 2) * stride;
         for x in (n.x..n.x + n.width).step_by(4) {
-            let sub_idx = grid.subblock_motions.len() as u32;
-            grid.subblock_motions
-                .push((unit_index, at_with_fields(unit, x, y, &unit.affine_fields)));
-            grid.owners[row_base + (x >> 2)] = SUBBLOCK_FLAG | sub_idx;
+            grid[row_base + (x >> 2)] = at_with_fields(unit, x, y, fields);
         }
     }
 }
@@ -238,21 +161,16 @@ fn block_vector(
     unit: &Unit,
     signalled: super::ibc::BlockVector,
     previous: &[Unit],
-    (owners, dimensions): (&[u32], [usize; 2]),
+    (owners, dimensions): (&[Option<usize>], [usize; 2]),
     vectors: &mut super::ibc::History,
     maximum: u8,
 ) -> Result<Mv16> {
     let n = unit.node;
     let stride = dimensions[0].div_ceil(4);
     let neighbour = |x: usize, y: usize| {
-        if x >= dimensions[0] || y >= dimensions[1] {
-            return None;
-        }
-        let raw = owners[(y >> 2) * stride + (x >> 2)];
-        if raw == NONE_OWNER || raw & SUBBLOCK_FLAG != 0 {
-            return None;
-        }
-        let owner = raw as usize;
+        let owner: usize = (x < dimensions[0] && y < dimensions[1])
+            .then(|| owners[(y >> 2) * stride + (x >> 2)])
+            .flatten()?;
         previous[owner]
             .block_vector
             .filter(|_| previous[owner].tile == unit.tile)
@@ -303,11 +221,11 @@ fn record(
 }
 
 /// Record a CU as the owner of its 4x4 cells.
-fn claim(owners: &mut [u32], n: super::Node, stride: usize, unit: u32) {
+fn claim(owners: &mut [Option<usize>], n: super::Node, stride: usize, unit: usize) {
     let cols = n.width.div_ceil(4);
     for y in (n.y..n.y + n.height).step_by(4) {
         let base = (y >> 2) * stride + (n.x >> 2);
-        owners[base..base + cols].fill(unit);
+        owners[base..base + cols].fill(Some(unit));
     }
 }
 
@@ -480,12 +398,17 @@ pub(super) fn at(unit: &Unit, x: usize, y: usize) -> Option<Motion> {
     let motion = unit.motion?;
     if unit.subblocks.is_empty()
         && unit.geometric.is_none()
-        && unit.affine_fields[0].is_none()
-        && unit.affine_fields[1].is_none()
+        && unit.affine_models[0].is_none()
+        && unit.affine_models[1].is_none()
     {
         return Some(motion);
     }
-    at_with_fields(unit, x, y, &unit.affine_fields)
+    let n = unit.node;
+    let bidirectional = motion.lists.iter().all(Option::is_some);
+    let fields = unit
+        .affine_models
+        .map(|m| m.map(|model| model.field_for_prediction(n.width, n.height, bidirectional)));
+    at_with_fields(unit, x, y, fields)
 }
 
 #[inline]
@@ -493,7 +416,7 @@ pub(super) fn at_with_fields(
     unit: &Unit,
     x: usize,
     y: usize,
-    fields: &[Option<crate::affine::Field>; 2],
+    fields: [Option<crate::affine::Field>; 2],
 ) -> Option<Motion> {
     let n = unit.node;
     let mut motion = unit.motion?;

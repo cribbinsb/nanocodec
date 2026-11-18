@@ -11,25 +11,23 @@
 use super::avx512::I32x16;
 use super::{HIGH_LOOKUP_TABLE, I16FilterLanes, I16Lanes, I16Pairs, packed_pair};
 use core::arch::x86_64::{
-    __m512i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm_setr_epi8, _mm_storel_epi64,
+    __m512i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm_storel_epi64,
     _mm_storeu_si128, _mm_unpackhi_epi64, _mm_unpacklo_epi64, _mm256_castsi256_si128,
-    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_set_m128i, _mm256_setr_epi32,
-    _mm256_storeu_si256, _mm512_abs_epi16, _mm512_add_epi16, _mm512_add_epi32, _mm512_adds_epi16,
-    _mm512_alignr_epi64, _mm512_and_si512, _mm512_broadcast_i32x4, _mm512_castsi256_si512,
-    _mm512_castsi512_si128, _mm512_castsi512_si256, _mm512_cmpeq_epi16_mask,
-    _mm512_cmpgt_epi16_mask, _mm512_cmplt_epi16_mask, _mm512_cvtepi32_epi16, _mm512_cvtepu8_epi16,
-    _mm512_cvtepu16_epi32, _mm512_cvtepu32_epi64, _mm512_cvtusepi16_epi8,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_set_m128i, _mm256_storeu_si256,
+    _mm512_abs_epi16, _mm512_add_epi16, _mm512_add_epi32, _mm512_adds_epi16, _mm512_and_si512,
+    _mm512_castsi256_si512, _mm512_castsi512_si128, _mm512_castsi512_si256,
+    _mm512_cmpeq_epi16_mask, _mm512_cmpgt_epi16_mask, _mm512_cmplt_epi16_mask,
+    _mm512_cvtepi32_epi16, _mm512_cvtepu8_epi16, _mm512_cvtepu16_epi32, _mm512_cvtusepi16_epi8,
     _mm512_extracti32x4_epi32, _mm512_extracti64x4_epi64, _mm512_i32gather_epi32,
     _mm512_inserti64x4, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_mask_blend_epi16,
     _mm512_mask_sub_epi16, _mm512_maskz_set1_epi16, _mm512_max_epi16, _mm512_min_epi16,
     _mm512_min_epu16, _mm512_mulhrs_epi16, _mm512_mullo_epi16, _mm512_packs_epi32,
     _mm512_permutex2var_epi16, _mm512_permutexvar_epi64, _mm512_set_epi16, _mm512_set_epi64,
-    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_shuffle_epi8,
-    _mm512_shuffle_epi32, _mm512_shuffle_i64x2, _mm512_slli_epi32, _mm512_sra_epi16,
-    _mm512_sra_epi32, _mm512_srai_epi32, _mm512_srl_epi16, _mm512_srli_epi32, _mm512_storeu_si512,
-    _mm512_sub_epi16, _mm512_subs_epu16, _mm512_test_epi16_mask, _mm512_unpackhi_epi16,
-    _mm512_unpackhi_epi32, _mm512_unpackhi_epi64, _mm512_unpacklo_epi16, _mm512_unpacklo_epi32,
-    _mm512_unpacklo_epi64,
+    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_slli_epi32,
+    _mm512_sra_epi16, _mm512_sra_epi32, _mm512_srai_epi32, _mm512_srl_epi16, _mm512_srli_epi32,
+    _mm512_storeu_si512, _mm512_sub_epi16, _mm512_subs_epu16, _mm512_test_epi16_mask,
+    _mm512_unpackhi_epi16, _mm512_unpackhi_epi32, _mm512_unpackhi_epi64, _mm512_unpacklo_epi16,
+    _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
 };
 
 /// Thirty-two signed words, private to AVX-512 kernels.
@@ -441,50 +439,6 @@ impl I16FilterLanes for I16x32 {
     }
 
     #[inline(always)]
-    fn combine_hi_lo(self, next: Self) -> Self {
-        // SAFETY: wrapper enables AVX-512F/BW/VL.
-        unsafe { Self(_mm512_shuffle_i64x2::<0b01_00_11_10>(self.0, next.0)) }
-    }
-
-    #[inline(always)]
-    fn transpose_groups8(rows: [Self; 8]) -> [Self; 8] {
-        // SAFETY: wrapper enables AVX-512F/BW/VL; in-lane unpacks transpose all four 8x8 tiles.
-        unsafe {
-            let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
-            let (p0, p1) = (
-                _mm512_unpacklo_epi16(r0.0, r1.0),
-                _mm512_unpackhi_epi16(r0.0, r1.0),
-            );
-            let (p2, p3) = (
-                _mm512_unpacklo_epi16(r2.0, r3.0),
-                _mm512_unpackhi_epi16(r2.0, r3.0),
-            );
-            let (p4, p5) = (
-                _mm512_unpacklo_epi16(r4.0, r5.0),
-                _mm512_unpackhi_epi16(r4.0, r5.0),
-            );
-            let (p6, p7) = (
-                _mm512_unpacklo_epi16(r6.0, r7.0),
-                _mm512_unpackhi_epi16(r6.0, r7.0),
-            );
-            let (q0, q1) = (_mm512_unpacklo_epi32(p0, p2), _mm512_unpackhi_epi32(p0, p2));
-            let (q2, q3) = (_mm512_unpacklo_epi32(p1, p3), _mm512_unpackhi_epi32(p1, p3));
-            let (q4, q5) = (_mm512_unpacklo_epi32(p4, p6), _mm512_unpackhi_epi32(p4, p6));
-            let (q6, q7) = (_mm512_unpacklo_epi32(p5, p7), _mm512_unpackhi_epi32(p5, p7));
-            [
-                Self(_mm512_unpacklo_epi64(q0, q4)),
-                Self(_mm512_unpackhi_epi64(q0, q4)),
-                Self(_mm512_unpacklo_epi64(q1, q5)),
-                Self(_mm512_unpackhi_epi64(q1, q5)),
-                Self(_mm512_unpacklo_epi64(q2, q6)),
-                Self(_mm512_unpackhi_epi64(q2, q6)),
-                Self(_mm512_unpacklo_epi64(q3, q7)),
-                Self(_mm512_unpackhi_epi64(q3, q7)),
-            ]
-        }
-    }
-
-    #[inline(always)]
     fn load_quarters(rows: [&[i16]; 4]) -> Self {
         let (r0, r1, r2, r3) = (&rows[0][..8], &rows[1][..8], &rows[2][..8], &rows[3][..8]);
         // SAFETY: each slice holds 8 words (16 bytes); AVX-512F/BW/VL enabled.
@@ -603,180 +557,71 @@ impl I16FilterLanes for I16x32 {
     }
 
     #[inline(always)]
-    fn combine_mid_halves(self, next: Self) -> Self {
-        // SAFETY: wrapper enables AVX-512F/BW/VL.
-        unsafe { Self(_mm512_alignr_epi64::<4>(next.0, self.0)) }
-    }
-
-    #[inline(always)]
-    fn shift_quarter(self, next: Self) -> Self {
-        // SAFETY: wrapper enables AVX-512F/BW/VL.
-        unsafe { Self(_mm512_alignr_epi64::<2>(next.0, self.0)) }
-    }
-
-    #[inline(always)]
-    fn expand_alf_params(blocks: &[[i16; 12]]) -> [[Self; 2]; 6] {
+    fn expand_alf_blocks(blocks: &[[i16; 12]]) -> [Self; 12] {
+        #[inline(always)]
+        unsafe fn pack_lo_512(b: &[[i16; 12]], i0: usize) -> __m512i {
+            // SAFETY: AVX-512F/BW/VL enabled by caller; indices in `0..8`.
+            unsafe {
+                let lo = _mm256_set_m128i(
+                    _mm_loadu_si128(b[i0 + 2].as_ptr().cast()),
+                    _mm_loadu_si128(b[i0].as_ptr().cast()),
+                );
+                let hi = _mm256_set_m128i(
+                    _mm_loadu_si128(b[i0 + 6].as_ptr().cast()),
+                    _mm_loadu_si128(b[i0 + 4].as_ptr().cast()),
+                );
+                _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
+            }
+        }
+        #[inline(always)]
+        unsafe fn pack_hi_512(b: &[[i16; 12]], i0: usize) -> __m512i {
+            // SAFETY: AVX-512F/BW/VL enabled by caller; indices in `0..8`.
+            unsafe {
+                let lo = _mm256_set_m128i(
+                    _mm_loadl_epi64(b[i0 + 2][8..].as_ptr().cast()),
+                    _mm_loadl_epi64(b[i0][8..].as_ptr().cast()),
+                );
+                let hi = _mm256_set_m128i(
+                    _mm_loadl_epi64(b[i0 + 6][8..].as_ptr().cast()),
+                    _mm_loadl_epi64(b[i0 + 4][8..].as_ptr().cast()),
+                );
+                _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
+            }
+        }
+        #[inline(always)]
+        unsafe fn expand_pairs_512(d_even: __m512i, d_odd: __m512i) -> [I16x32; 4] {
+            // SAFETY: AVX-512F/BW/VL enabled by caller.
+            unsafe {
+                let qe_lo = _mm512_unpacklo_epi32(d_even, d_even);
+                let qo_lo = _mm512_unpacklo_epi32(d_odd, d_odd);
+                let qe_hi = _mm512_unpackhi_epi32(d_even, d_even);
+                let qo_hi = _mm512_unpackhi_epi32(d_odd, d_odd);
+                [
+                    I16x32(_mm512_unpacklo_epi64(qe_lo, qo_lo)),
+                    I16x32(_mm512_unpackhi_epi64(qe_lo, qo_lo)),
+                    I16x32(_mm512_unpacklo_epi64(qe_hi, qo_hi)),
+                    I16x32(_mm512_unpackhi_epi64(qe_hi, qo_hi)),
+                ]
+            }
+        }
         let b = &blocks[..8];
-        // `_mm512_unpacklo_epi16` places blocks 0, 2, 4, 6 in the four 128-bit lanes;
-        // `_mm512_unpackhi_epi16` places blocks 1, 3, 5, 7 in the four 128-bit lanes.
-        // SAFETY: wrapper enables AVX-512F/BW/VL; each block has 12 `i16`s (24 bytes).
+        // SAFETY: wrapper enables AVX-512F/BW/VL; each block holds 12 `i16`s.
         unsafe {
-            let lo0 = _mm512_inserti64x4::<1>(
-                _mm512_castsi256_si512(_mm256_set_m128i(
-                    _mm_loadu_si128(b[2].as_ptr().cast()),
-                    _mm_loadu_si128(b[0].as_ptr().cast()),
-                )),
-                _mm256_set_m128i(
-                    _mm_loadu_si128(b[6].as_ptr().cast()),
-                    _mm_loadu_si128(b[4].as_ptr().cast()),
-                ),
+            let (even0, odd0) = (pack_lo_512(b, 0), pack_lo_512(b, 1));
+            let (even1, odd1) = (pack_hi_512(b, 0), pack_hi_512(b, 1));
+            let [t0, t1, t2, t3] = expand_pairs_512(
+                _mm512_unpacklo_epi16(even0, even0),
+                _mm512_unpacklo_epi16(odd0, odd0),
             );
-            let hi0 = _mm512_inserti64x4::<1>(
-                _mm512_castsi256_si512(_mm256_set_m128i(
-                    _mm_loadl_epi64(b[2].as_ptr().add(8).cast()),
-                    _mm_loadl_epi64(b[0].as_ptr().add(8).cast()),
-                )),
-                _mm256_set_m128i(
-                    _mm_loadl_epi64(b[6].as_ptr().add(8).cast()),
-                    _mm_loadl_epi64(b[4].as_ptr().add(8).cast()),
-                ),
+            let [t4, t5, t6, t7] = expand_pairs_512(
+                _mm512_unpackhi_epi16(even0, even0),
+                _mm512_unpackhi_epi16(odd0, odd0),
             );
-            let lo1 = _mm512_inserti64x4::<1>(
-                _mm512_castsi256_si512(_mm256_set_m128i(
-                    _mm_loadu_si128(b[3].as_ptr().cast()),
-                    _mm_loadu_si128(b[1].as_ptr().cast()),
-                )),
-                _mm256_set_m128i(
-                    _mm_loadu_si128(b[7].as_ptr().cast()),
-                    _mm_loadu_si128(b[5].as_ptr().cast()),
-                ),
+            let [t8, t9, t10, t11] = expand_pairs_512(
+                _mm512_unpacklo_epi16(even1, even1),
+                _mm512_unpacklo_epi16(odd1, odd1),
             );
-            let hi1 = _mm512_inserti64x4::<1>(
-                _mm512_castsi256_si512(_mm256_set_m128i(
-                    _mm_loadl_epi64(b[3].as_ptr().add(8).cast()),
-                    _mm_loadl_epi64(b[1].as_ptr().add(8).cast()),
-                )),
-                _mm256_set_m128i(
-                    _mm_loadl_epi64(b[7].as_ptr().add(8).cast()),
-                    _mm_loadl_epi64(b[5].as_ptr().add(8).cast()),
-                ),
-            );
-            [
-                [
-                    Self(_mm512_shuffle_epi32::<0b00_00_00_00>(lo0)),
-                    Self(_mm512_shuffle_epi32::<0b00_00_00_00>(lo1)),
-                ],
-                [
-                    Self(_mm512_shuffle_epi32::<0b01_01_01_01>(lo0)),
-                    Self(_mm512_shuffle_epi32::<0b01_01_01_01>(lo1)),
-                ],
-                [
-                    Self(_mm512_shuffle_epi32::<0b10_10_10_10>(lo0)),
-                    Self(_mm512_shuffle_epi32::<0b10_10_10_10>(lo1)),
-                ],
-                [
-                    Self(_mm512_shuffle_epi32::<0b11_11_11_11>(lo0)),
-                    Self(_mm512_shuffle_epi32::<0b11_11_11_11>(lo1)),
-                ],
-                [
-                    Self(_mm512_shuffle_epi32::<0b00_00_00_00>(hi0)),
-                    Self(_mm512_shuffle_epi32::<0b00_00_00_00>(hi1)),
-                ],
-                [
-                    Self(_mm512_shuffle_epi32::<0b01_01_01_01>(hi0)),
-                    Self(_mm512_shuffle_epi32::<0b01_01_01_01>(hi1)),
-                ],
-            ]
-        }
-    }
-
-    #[inline(always)]
-    fn splat_alf_pair(t0: i16, t1: i16) -> [Self; 2] {
-        // SAFETY: wrapper enables AVX-512F/BW/VL.
-        let v = unsafe { Self(_mm512_set1_epi32(packed_pair(t0, t1))) };
-        [v, v]
-    }
-
-    #[inline(always)]
-    fn acc_alf_clipped_pair(
-        acc: Self::Acc,
-        (a0, b0): (Self, Self),
-        (a1, b1): (Self, Self),
-        centre: Self,
-        lim: [Self; 2],
-        coeff: [Self; 2],
-    ) -> Self::Acc {
-        // SAFETY: wrapper enables AVX-512F/BW/VL.
-        unsafe {
-            let v00 = _mm512_sub_epi16(a0.0, centre.0);
-            let v10 = _mm512_sub_epi16(a1.0, centre.0);
-            let v01 = _mm512_sub_epi16(b0.0, centre.0);
-            let v11 = _mm512_sub_epi16(b1.0, centre.0);
-            let (mut u0, mut u1) = (
-                _mm512_unpacklo_epi16(v00, v10),
-                _mm512_unpackhi_epi16(v00, v10),
-            );
-            let (mut u2, mut u3) = (
-                _mm512_unpacklo_epi16(v01, v11),
-                _mm512_unpackhi_epi16(v01, v11),
-            );
-            let zero = _mm512_setzero_si512();
-            let (neg0, neg1) = (
-                _mm512_sub_epi16(zero, lim[0].0),
-                _mm512_sub_epi16(zero, lim[1].0),
-            );
-            u0 = _mm512_max_epi16(_mm512_min_epi16(u0, lim[0].0), neg0);
-            u1 = _mm512_max_epi16(_mm512_min_epi16(u1, lim[1].0), neg1);
-            u2 = _mm512_max_epi16(_mm512_min_epi16(u2, lim[0].0), neg0);
-            u3 = _mm512_max_epi16(_mm512_min_epi16(u3, lim[1].0), neg1);
-            let sum_lo = _mm512_add_epi16(u0, u2);
-            let sum_hi = _mm512_add_epi16(u1, u3);
-            [
-                _mm512_add_epi32(acc[0], _mm512_madd_epi16(sum_lo, coeff[0].0)),
-                _mm512_add_epi32(acc[1], _mm512_madd_epi16(sum_hi, coeff[1].0)),
-            ]
-        }
-    }
-
-    #[inline(always)]
-    fn acc_alf_linear_pair(acc: Self::Acc, d0: Self, d1: Self, coeff: [Self; 2]) -> Self::Acc {
-        // SAFETY: wrapper enables AVX-512F/BW/VL.
-        unsafe {
-            let lo = _mm512_unpacklo_epi16(d0.0, d1.0);
-            let hi = _mm512_unpackhi_epi16(d0.0, d1.0);
-            [
-                _mm512_add_epi32(acc[0], _mm512_madd_epi16(lo, coeff[0].0)),
-                _mm512_add_epi32(acc[1], _mm512_madd_epi16(hi, coeff[1].0)),
-            ]
-        }
-    }
-
-    #[inline(always)]
-    fn expand_alf_pair(blocks: &[[i16; 12]], p: usize) -> [Self; 2] {
-        let b = &blocks[..8];
-        let t = 2 * p;
-        assert!(t + 1 < 12);
-        // SAFETY: wrapper enables AVX-512F/BW/VL; `t + 1 < 12` checked above.
-        unsafe {
-            let pairs = _mm256_setr_epi32(
-                b[0].as_ptr().add(t).cast::<i32>().read_unaligned(),
-                b[1].as_ptr().add(t).cast::<i32>().read_unaligned(),
-                b[2].as_ptr().add(t).cast::<i32>().read_unaligned(),
-                b[3].as_ptr().add(t).cast::<i32>().read_unaligned(),
-                b[4].as_ptr().add(t).cast::<i32>().read_unaligned(),
-                b[5].as_ptr().add(t).cast::<i32>().read_unaligned(),
-                b[6].as_ptr().add(t).cast::<i32>().read_unaligned(),
-                b[7].as_ptr().add(t).cast::<i32>().read_unaligned(),
-            );
-            let wide = _mm512_cvtepu32_epi64(pairs);
-            let lane0 = _mm_setr_epi8(0, 1, 0, 1, 0, 1, 0, 1, 8, 9, 8, 9, 8, 9, 8, 9);
-            let lane1 = _mm_setr_epi8(2, 3, 2, 3, 2, 3, 2, 3, 10, 11, 10, 11, 10, 11, 10, 11);
-            let shuf0 = _mm512_broadcast_i32x4(lane0);
-            let shuf1 = _mm512_broadcast_i32x4(lane1);
-            [
-                Self(_mm512_shuffle_epi8(wide, shuf0)),
-                Self(_mm512_shuffle_epi8(wide, shuf1)),
-            ]
+            [t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11]
         }
     }
 }
@@ -806,18 +651,6 @@ impl I16Pairs for I16x32 {
             Self(_mm512_permutexvar_epi64(
                 idx,
                 _mm512_packs_epi32(low.0, high.0),
-            ))
-        }
-    }
-
-    #[inline(always)]
-    fn interleave_pairs(even: I32x16, odd: I32x16) -> Self {
-        // SAFETY: wrapper enables AVX-512F/BW/VL.
-        unsafe {
-            Self(_mm512_mask_blend_epi16(
-                0xAAAA_AAAA,
-                even.0,
-                _mm512_slli_epi32::<16>(odd.0),
             ))
         }
     }
@@ -891,37 +724,6 @@ impl super::I16x8Tiles for I16x32 {
             _mm_storel_epi64(b.as_mut_ptr().cast(), _mm_srli_si128::<8>(lo));
             _mm_storel_epi64(c.as_mut_ptr().cast(), hi);
             _mm_storel_epi64(d.as_mut_ptr().cast(), _mm_srli_si128::<8>(hi));
-        }
-    }
-    #[inline(always)]
-    fn load_u16_tiles8(rows: [&[u16]; 4]) -> Self {
-        let (a, b, c, d) = (&rows[0][..8], &rows[1][..8], &rows[2][..8], &rows[3][..8]);
-        // SAFETY: enabled ISA; each load reads eight checked `u16` samples.
-        unsafe {
-            let lo = _mm256_set_m128i(
-                _mm_loadu_si128(b.as_ptr().cast()),
-                _mm_loadu_si128(a.as_ptr().cast()),
-            );
-            let hi = _mm256_set_m128i(
-                _mm_loadu_si128(d.as_ptr().cast()),
-                _mm_loadu_si128(c.as_ptr().cast()),
-            );
-            Self(_mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi))
-        }
-    }
-    #[inline(always)]
-    fn store_u16_tiles8(self, rows: [&mut [u16]; 4], max_val: i16) {
-        let [a, b, c, d] = rows;
-        let (a, b, c, d) = (&mut a[..8], &mut b[..8], &mut c[..8], &mut d[..8]);
-        let clamped = self.max(Self::splat(0)).min(Self::splat(max_val)).0;
-        // SAFETY: enabled ISA; each destination has eight writable `u16` samples.
-        unsafe {
-            let lo = _mm512_castsi512_si256(clamped);
-            let hi = _mm512_extracti64x4_epi64::<1>(clamped);
-            _mm_storeu_si128(a.as_mut_ptr().cast(), _mm256_castsi256_si128(lo));
-            _mm_storeu_si128(b.as_mut_ptr().cast(), _mm256_extracti128_si256::<1>(lo));
-            _mm_storeu_si128(c.as_mut_ptr().cast(), _mm256_castsi256_si128(hi));
-            _mm_storeu_si128(d.as_mut_ptr().cast(), _mm256_extracti128_si256::<1>(hi));
         }
     }
 }

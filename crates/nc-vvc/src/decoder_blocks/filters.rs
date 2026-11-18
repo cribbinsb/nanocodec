@@ -11,42 +11,14 @@ use nc_common::{
 };
 use nc_dsp::{Dsp, Pixel, vvc_alf_clip_value};
 
-#[derive(Debug, Default)]
-pub(crate) struct FilterScratch<T> {
-    alf_samples: Vec<T>,
-    alf_classes: Vec<[u8; 2]>,
-    chroma_buf: Vec<T>,
-}
-
 /// SAO, then ALF, of a decoded picture: each CTB as its syntax says, not
 /// reading across what `closures` closes.
-#[cfg(test)]
 pub(crate) fn apply<T: Pixel>(
     picture: &mut Picture<T>,
     filters: &[CtuFilters],
     (sequence, closures): (&Sequence, &Closures),
     banks: &[Option<Box<Adaptation>>; 8],
     (dsp, depth): (&Dsp, BitDepth),
-) -> Result<()> {
-    let mut scratch = FilterScratch::default();
-    apply_with_scratch(
-        picture,
-        filters,
-        (sequence, closures),
-        banks,
-        (dsp, depth),
-        &mut scratch,
-    )
-}
-
-/// [`apply`] reusing `scratch` buffers across decoded pictures.
-pub(crate) fn apply_with_scratch<T: Pixel>(
-    picture: &mut Picture<T>,
-    filters: &[CtuFilters],
-    (sequence, closures): (&Sequence, &Closures),
-    banks: &[Option<Box<Adaptation>>; 8],
-    (dsp, depth): (&Dsp, BitDepth),
-    scratch: &mut FilterScratch<T>,
 ) -> Result<()> {
     let kernels = dsp.at(depth.of::<T>());
     let ctu = 1 << sequence.ctu_log2;
@@ -86,14 +58,7 @@ pub(crate) fn apply_with_scratch<T: Pixel>(
         .iter()
         .any(|f| f.alf[1..].iter().any(Option::is_some) || f.cross != [0; 2])
     {
-        super::chroma_alf::apply(
-            picture,
-            filters,
-            (ctu, closures),
-            banks,
-            kernels,
-            &mut scratch.chroma_buf,
-        )?;
+        super::chroma_alf::apply(picture, filters, (ctu, closures), banks, kernels)?;
     }
     if !filters.iter().any(|f| f.alf[0].is_some()) {
         return Ok(());
@@ -123,20 +88,8 @@ pub(crate) fn apply_with_scratch<T: Pixel>(
         .collect();
     let depth_t = depth.of::<T>();
     if whole.iter().any(|f| f.alf[0].is_some()) {
-        let samples = std::mem::take(&mut scratch.alf_samples);
-        let classes = std::mem::take(&mut scratch.alf_classes);
-        let analysis = Analysis::new_with_scratch(
-            (dsp, depth),
-            picture,
-            ctu,
-            |i| whole[i].alf[0].is_some(),
-            samples,
-            classes,
-        );
+        let analysis = Analysis::new((dsp, depth), picture, ctu, |i| whole[i].alf[0].is_some());
         filter_luma(&analysis, picture, &whole, (banks, depth_t))?;
-        let (samples, classes) = analysis.into_scratch();
-        scratch.alf_samples = samples;
-        scratch.alf_classes = classes;
     }
     for (filter, analysis) in &regions {
         filter_luma(

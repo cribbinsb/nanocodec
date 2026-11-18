@@ -9,15 +9,18 @@ use nc_common::{
 };
 use nc_dsp::{DepthKernels, Pixel, vvc_alf_clip_value};
 
-/// Whole-CTB fallback region when `closures` does not split CTB `index`.
-fn whole_region(index: usize, ctu: usize, size: (usize, usize)) -> Region {
-    let columns = size.0.div_ceil(ctu);
-    let (x, y) = (index % columns * ctu, index / columns * ctu);
-    Region {
-        rect: (x, y, ctu.min(size.0 - x), ctu.min(size.1 - y)),
-        closed: [false; 4],
-        corners: [false; 2],
-    }
+/// The luma regions CTB `index` is filtered in: the parts `closures` names,
+/// or the whole CTB.
+fn regions(closures: &Closures, index: usize, ctu: usize, size: (usize, usize)) -> Vec<Region> {
+    closures.alf_regions(index).unwrap_or_else(|| {
+        let columns = size.0.div_ceil(ctu);
+        let (x, y) = (index % columns * ctu, index / columns * ctu);
+        vec![Region {
+            rect: (x, y, ctu.min(size.0 - x), ctu.min(size.1 - y)),
+            closed: [false; 4],
+            corners: [false; 2],
+        }]
+    })
 }
 
 pub(super) fn apply<T: Pixel>(
@@ -26,7 +29,6 @@ pub(super) fn apply<T: Pixel>(
     (ctu, closures): (usize, &Closures),
     banks: &[Option<Box<Adaptation>>; 8],
     dsp: DepthKernels<'_>,
-    chroma_buf: &mut Vec<T>,
 ) -> Result<()> {
     let size = (picture.width(), picture.height());
     let side = ctu / 2;
@@ -37,20 +39,8 @@ pub(super) fn apply<T: Pixel>(
         {
             continue;
         }
-        let (cw, ch) = {
-            let view = picture.plane(PlaneIndex::ALL[plane]).view();
-            let (cw, ch) = (view.width(), view.height());
-            let total = cw * ch;
-            if chroma_buf.len() < total {
-                chroma_buf.resize(total, T::default());
-            }
-            for (dst_row, y) in chroma_buf[..total].chunks_exact_mut(cw).zip(0..ch) {
-                dst_row.copy_from_slice(view.row(y));
-            }
-            (cw, ch)
-        };
-        let input = nc_common::PlaneView::new(&chroma_buf[..cw * ch], cw, cw, ch)
-            .expect("copied chroma plane");
+        let source = picture.plane(PlaneIndex::ALL[plane]).clone();
+        let input = source.view();
         let mut output = picture.plane_mut(PlaneIndex::ALL[plane]).view_mut();
         let mut padded: [Vec<T>; 5] = std::array::from_fn(|_| vec![T::default(); side + 6]);
         for (index, filter) in filters.iter().enumerate() {
@@ -64,108 +54,58 @@ pub(super) fn apply<T: Pixel>(
             let limits = selected
                 .clip
                 .map(|c| vvc_alf_clip_value(usize::from(c), dsp.depth()));
-            let sub;
-            let single;
-            let list: &[Region] = if let Some(parts) = closures.alf_regions(index) {
-                sub = parts;
-                &sub
-            } else {
-                single = [whole_region(index, ctu, size)];
-                &single
-            };
-            for &region in list {
-                apply_chroma_region(
-                    &input,
-                    &mut output,
-                    region.halved(),
-                    side,
-                    (&selected.coefficients, limits),
-                    &mut padded,
-                    dsp,
-                );
+            for region in regions(closures, index, ctu, size) {
+                let region = region.halved();
+                let (x0, y0, width, height) = region.rect;
+                let pad_len = width + 6;
+                let x_start = x0 as isize - 3;
+                for y in y0..y0 + height {
+                    let position = y % side;
+                    let boundary = side - 2;
+                    let distance = if position < boundary {
+                        boundary - 1 - position
+                    } else {
+                        position - boundary
+                    };
+                    let reach = distance.min(2) as isize;
+                    let [p0, p1, p2, p3, p4] = &mut padded;
+                    let r_m2 = region.row_span(
+                        &input,
+                        x_start,
+                        y as isize + (-2isize).clamp(-reach, reach),
+                        &mut p0[..pad_len],
+                    );
+                    let r_m1 = region.row_span(
+                        &input,
+                        x_start,
+                        y as isize + (-1isize).clamp(-reach, reach),
+                        &mut p1[..pad_len],
+                    );
+                    let r_0 = region.row_span(&input, x_start, y as isize, &mut p2[..pad_len]);
+                    let r_p1 = region.row_span(
+                        &input,
+                        x_start,
+                        y as isize + (1isize).clamp(-reach, reach),
+                        &mut p3[..pad_len],
+                    );
+                    let r_p2 = region.row_span(
+                        &input,
+                        x_start,
+                        y as isize + (2isize).clamp(-reach, reach),
+                        &mut p4[..pad_len],
+                    );
+                    dsp.vvc_alf_filter_chroma_row(
+                        &[r_m2, r_m2, r_m1, r_0, r_p1, r_p2, r_p2],
+                        selected.coefficients,
+                        limits,
+                        if distance == 0 { 10 } else { 7 },
+                        &mut output.row_mut(y)[x0..x0 + width],
+                    );
+                }
             }
         }
     }
     cross(picture, filters, (ctu, closures), banks, dsp)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_chroma_region<T: Pixel>(
-    input: &nc_common::PlaneView<'_, T>,
-    output: &mut nc_common::PlaneViewMut<'_, T>,
-    region: Region,
-    side: usize,
-    (coefficients, limits): (&[i16; 6], [i16; 6]),
-    padded: &mut [Vec<T>; 5],
-    dsp: DepthKernels<'_>,
-) {
-    let (x0, y0, width, height) = region.rect;
-    let pad_len = width + 6;
-    let x_start = x0 as isize - 3;
-    let (y_min, y_max, direct_x) =
-        region.direct_span_bounds((input.width(), input.height()), x_start, pad_len);
-    let (in_data, in_stride) = (input.data(), input.stride());
-    for y in y0..y0 + height {
-        let position = y % side;
-        let boundary = side - 2;
-        let distance = if position < boundary {
-            boundary - 1 - position
-        } else {
-            position - boundary
-        };
-        let reach = distance.min(2) as isize;
-        let shift = if distance == 0 { 10 } else { 7 };
-        let yi = y as isize;
-        if let Some(ux) = direct_x {
-            let row_at = |dy: isize| {
-                let sy = (yi + dy.clamp(-reach, reach)).clamp(y_min, y_max) as usize;
-                &in_data[sy * in_stride + ux..][..pad_len]
-            };
-            let (r_m2, r_m1, r_0, r_p1, r_p2) =
-                (row_at(-2), row_at(-1), row_at(0), row_at(1), row_at(2));
-            dsp.vvc_alf_filter_chroma_row(
-                &[r_m2, r_m2, r_m1, r_0, r_p1, r_p2, r_p2],
-                *coefficients,
-                limits,
-                shift,
-                &mut output.row_mut(y)[x0..x0 + width],
-            );
-            continue;
-        }
-        let [p0, p1, p2, p3, p4] = padded;
-        let r_m2 = region.row_span(
-            input,
-            x_start,
-            yi + (-2isize).clamp(-reach, reach),
-            &mut p0[..pad_len],
-        );
-        let r_m1 = region.row_span(
-            input,
-            x_start,
-            yi + (-1isize).clamp(-reach, reach),
-            &mut p1[..pad_len],
-        );
-        let r_0 = region.row_span(input, x_start, yi, &mut p2[..pad_len]);
-        let r_p1 = region.row_span(
-            input,
-            x_start,
-            yi + (1isize).clamp(-reach, reach),
-            &mut p3[..pad_len],
-        );
-        let r_p2 = region.row_span(
-            input,
-            x_start,
-            yi + (2isize).clamp(-reach, reach),
-            &mut p4[..pad_len],
-        );
-        dsp.vvc_alf_filter_chroma_row(
-            &[r_m2, r_m2, r_m1, r_0, r_p1, r_p2, r_p2],
-            *coefficients,
-            limits,
-            shift,
-            &mut output.row_mut(y)[x0..x0 + width],
-        );
-    }
 }
 
 fn cross<T: Pixel>(
@@ -195,72 +135,55 @@ fn cross<T: Pixel>(
                 .get(usize::from(selection - 1))
                 .ok_or(DecodeError::Malformed("VVC cross-component ALF filter"))?;
             // The luma regions, read around each chroma sample's luma.
-            let sub;
-            let single;
-            let list: &[Region] = if let Some(parts) = closures.alf_regions(index) {
-                sub = parts;
-                &sub
-            } else {
-                single = [whole_region(index, ctu, size)];
-                &single
-            };
-            for &region in list {
-                apply_cross_region(
-                    &input,
-                    &mut output,
-                    region,
-                    ctu,
-                    coefficients,
-                    &mut padded,
-                    dsp,
-                );
+            for region in regions(closures, index, ctu, size) {
+                let (x0, y0, width, height) = region.halved().rect;
+                let pad_len = 2 * width + 2;
+                let x_start = 2 * x0 as isize - 1;
+                for y in y0..y0 + height {
+                    let position = (2 * y) % ctu;
+                    let boundary = ctu - 4;
+                    let offsets = if position == boundary {
+                        [0, 0, 0, 0]
+                    } else if position == boundary - 2 {
+                        [-1, 0, 1, 1]
+                    } else {
+                        [-1, 0, 1, 2]
+                    };
+                    let [p0, p1, p2, p3] = &mut padded;
+                    let rows = [
+                        region.row_span(
+                            &input,
+                            x_start,
+                            2 * y as isize + offsets[0],
+                            &mut p0[..pad_len],
+                        ),
+                        region.row_span(
+                            &input,
+                            x_start,
+                            2 * y as isize + offsets[1],
+                            &mut p1[..pad_len],
+                        ),
+                        region.row_span(
+                            &input,
+                            x_start,
+                            2 * y as isize + offsets[2],
+                            &mut p2[..pad_len],
+                        ),
+                        region.row_span(
+                            &input,
+                            x_start,
+                            2 * y as isize + offsets[3],
+                            &mut p3[..pad_len],
+                        ),
+                    ];
+                    dsp.vvc_alf_cross_row(
+                        &rows,
+                        coefficients,
+                        &mut output.row_mut(y)[x0..x0 + width],
+                    );
+                }
             }
         }
     }
     Ok(())
-}
-
-fn apply_cross_region<T: Pixel>(
-    input: &nc_common::PlaneView<'_, T>,
-    output: &mut nc_common::PlaneViewMut<'_, T>,
-    region: Region,
-    ctu: usize,
-    coefficients: [i16; 7],
-    padded: &mut [Vec<T>; 4],
-    dsp: DepthKernels<'_>,
-) {
-    let size = (input.width(), input.height());
-    let (x0, y0, width, height) = region.halved().rect;
-    let pad_len = 2 * width + 2;
-    let x_start = 2 * x0 as isize - 1;
-    let (y_min, y_max, direct_x) = region.direct_span_bounds(size, x_start, pad_len);
-    let (in_data, in_stride) = (input.data(), input.stride());
-    for y in y0..y0 + height {
-        let position = (2 * y) % ctu;
-        let boundary = ctu - 4;
-        let offsets = if position == boundary {
-            [0, 0, 0, 0]
-        } else if position == boundary - 2 {
-            [-1, 0, 1, 1]
-        } else {
-            [-1, 0, 1, 2]
-        };
-        let base_y = 2 * y as isize;
-        if let Some(ux) = direct_x {
-            let rows = offsets.map(|dy| {
-                let sy = (base_y + dy).clamp(y_min, y_max) as usize;
-                &in_data[sy * in_stride + ux..][..pad_len]
-            });
-            dsp.vvc_alf_cross_row(&rows, coefficients, &mut output.row_mut(y)[x0..x0 + width]);
-            continue;
-        }
-        let [p0, p1, p2, p3] = padded;
-        let rows = [
-            region.row_span(input, x_start, base_y + offsets[0], &mut p0[..pad_len]),
-            region.row_span(input, x_start, base_y + offsets[1], &mut p1[..pad_len]),
-            region.row_span(input, x_start, base_y + offsets[2], &mut p2[..pad_len]),
-            region.row_span(input, x_start, base_y + offsets[3], &mut p3[..pad_len]),
-        ];
-        dsp.vvc_alf_cross_row(&rows, coefficients, &mut output.row_mut(y)[x0..x0 + width]);
-    }
 }

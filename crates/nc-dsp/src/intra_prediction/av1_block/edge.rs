@@ -57,39 +57,6 @@ pub(super) fn use_upsample(block_wh: usize, delta: i32, smooth: bool) -> bool {
     block_wh <= if smooth { 8 } else { 16 }
 }
 
-/// Filter edge indices `0..num_px - 1` directly from `(corner, src)` into `dst` (§7.11.2.12).
-pub(super) fn filter_edge<T: Sample>(
-    corner: T,
-    src: &[T],
-    dst: &mut [T],
-    num_px: usize,
-    strength: usize,
-) {
-    let count = num_px.saturating_sub(1);
-    if strength == 0 || count == 0 {
-        return;
-    }
-    let kernel = &KERNELS[strength - 1];
-    let src = &src[..count];
-    let corner_u16 = corner.to_i32() as u16;
-    let sample_at = |idx: usize| -> u16 {
-        if idx == 0 {
-            corner_u16
-        } else {
-            src[idx - 1].to_i32() as u16
-        }
-    };
-    for (m, out) in dst[..count].iter_mut().enumerate() {
-        let i = m + 1;
-        let sum: u16 = kernel
-            .iter()
-            .enumerate()
-            .map(|(j, &tap)| tap * sample_at((i + j).saturating_sub(2).min(count)))
-            .sum();
-        *out = T::from_i32(i32::from((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS));
-    }
-}
-
 /// Filter edge indices `0..num_px - 1` of `line` (§7.11.2.12): sample
 /// `i - 1` becomes the `strength` kernel over indices `i - 3 ..= i + 1`,
 /// clamped to `-1 ..= num_px - 2`, of the unfiltered line.
@@ -97,32 +64,28 @@ pub(super) fn filter<T: Sample>(line: &mut [T; LINE_LEN], num_px: usize, strengt
     if strength == 0 {
         return;
     }
+    let kernel = &KERNELS[strength - 1];
     let start = LINE_ORIGIN - 1;
     let mut edge = [T::default(); LINE_LEN];
     edge[..num_px].copy_from_slice(&line[start..start + num_px]);
-    filter_edge(
-        edge[0],
-        &edge[1..num_px],
-        &mut line[LINE_ORIGIN..LINE_ORIGIN + num_px - 1],
-        num_px,
-        strength,
-    );
-}
-
-/// Filtered corner value from `(left0, corner, above0)` (§7.11.2.4).
-#[inline]
-pub(super) fn filtered_corner<T: Sample>(left0: T, corner: T, above0: T) -> T {
-    let sample = |s: T| s.to_i32() as u16;
-    let sum = CORNER_TAPS[0] * sample(left0)
-        + CORNER_TAPS[1] * sample(corner)
-        + CORNER_TAPS[2] * sample(above0);
-    T::from_i32(i32::from((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS))
+    for i in 1..num_px {
+        let sum: u16 = kernel
+            .iter()
+            .enumerate()
+            .map(|(j, &tap)| tap * edge[(i + j).saturating_sub(2).min(num_px - 1)].to_i32() as u16)
+            .sum();
+        line[start + i] = T::from_i32(i32::from((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS));
+    }
 }
 
 /// The filtered corner shared by both lines (§7.11.2.4).
 pub(super) fn filter_corner<T: Sample>(above: &mut [T; LINE_LEN], left: &mut [T; LINE_LEN]) {
     let corner = LINE_ORIGIN - 1;
-    let value = filtered_corner(left[LINE_ORIGIN], above[corner], above[LINE_ORIGIN]);
+    let sample = |s: T| s.to_i32() as u16;
+    let sum = CORNER_TAPS[0] * sample(left[LINE_ORIGIN])
+        + CORNER_TAPS[1] * sample(above[corner])
+        + CORNER_TAPS[2] * sample(above[LINE_ORIGIN]);
+    let value = T::from_i32(i32::from((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS));
     above[corner] = value;
     left[corner] = value;
 }

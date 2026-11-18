@@ -48,19 +48,6 @@ const OBMC_MAX_OVERLAP: usize = 32;
 const VERTICAL_ANGLE: u16 = 90;
 const HORIZONTAL_ANGLE: u16 = 180;
 
-/// Largest compound block (`128x128` samples).
-const MAX_COMPOUND_SAMPLES: usize = 128 * 128;
-
-fn alloc_compound_buffers() -> [Box<[i16; MAX_COMPOUND_SAMPLES]>; 2] {
-    let one = || {
-        vec![0i16; MAX_COMPOUND_SAMPLES]
-            .into_boxed_slice()
-            .try_into()
-            .expect("compound buffer size")
-    };
-    [one(), one()]
-}
-
 /// Scratch the inter predictions reuse across blocks (`T`: the samples).
 #[derive(Debug, Default)]
 pub(in super::super) struct PredictionScratch<T> {
@@ -70,9 +57,8 @@ pub(in super::super) struct PredictionScratch<T> {
     block: Vec<T>,
     /// Smooth inter-intra masks and difference-weighted compound masks.
     mask: Vec<u8>,
-    /// The two predictions of a compound block, at compound precision,
-    /// allocated once on first compound block.
-    compound: Option<[Box<[i16; MAX_COMPOUND_SAMPLES]>; 2]>,
+    /// The two predictions of a compound block, at compound precision.
+    compound: [Vec<i16>; 2],
     /// The wedge masks, built on first use.
     wedges: Option<Box<Av1WedgeMasks>>,
 }
@@ -524,30 +510,20 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 || self.global_warp_list(block.size, modes, 1))
             || self.scaled(modes.refs[0])
             || self.scaled(modes.refs[1]);
-        let pictures = [
-            self.references[modes.refs[0] as usize]
-                .ok_or(DecodeError::Malformed("AV1 missing reference"))?,
-            self.references[modes.refs[1] as usize]
-                .ok_or(DecodeError::Malformed("AV1 missing reference"))?,
-        ];
-        if self.maps.prediction.compound.is_none() {
-            self.maps.prediction.compound = Some(alloc_compound_buffers());
-        }
+        let pictures = [0, 1].map(|list| self.references[modes.refs[list] as usize]);
         let kernels = self.kernels();
         for plane in PlaneIndex::ALL {
             let (origin, size) = Self::plane_block(block, plane);
             let sub = plane != PlaneIndex::Y;
-            let samples = size.0 * size.1;
             if general {
                 for list in 0..2 {
                     self.predict_one_of_two(block, modes, list, plane, (origin, size))?;
                 }
             } else {
-                self.translate_both(pictures, modes, plane, (origin, size));
+                self.translate_both(pictures, modes, plane, (origin, size))?;
             }
             let scratch = &mut self.maps.prediction;
-            let [buf0, buf1] = scratch.compound.as_ref().expect("allocated above");
-            let (first, second) = (&buf0[..samples], &buf1[..samples]);
+            let [first, second] = &scratch.compound;
             let p0 = Av1CompoundPred {
                 data: first,
                 stride: size.0,
@@ -613,47 +589,43 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
     /// Predict both lists of a compound block's plane block at `origin` into
     /// the compound scratch, by translation from the unscaled reference
     /// `pictures`.
-    #[inline]
     fn translate_both(
         &mut self,
-        pictures: [&'a Picture<T>; 2],
+        pictures: [Option<&'a Picture<T>>; 2],
         modes: &InterModes,
         plane: PlaneIndex,
         (origin, size): ((usize, usize), (usize, usize)),
-    ) {
-        let sub = plane != PlaneIndex::Y;
-        let ss = usize::from(sub);
-        let plane_size = (
-            (self.header.size.width + ss) >> ss,
-            (self.header.size.height + ss) >> ss,
-        );
+    ) -> Result<(), DecodeError> {
+        let ss = usize::from(plane != PlaneIndex::Y);
+        let (width, height) = (self.header.size.width, self.header.size.height);
         let kernels = self.kernels();
         let scratch = &mut self.maps.prediction;
-        let compound = scratch.compound.as_mut().expect("allocated by caller");
         let samples = size.0 * size.1;
-        let span = (size.0 + AV1_FILTER_TAPS - 1, size.1 + AV1_FILTER_TAPS - 1);
-        for (buf, (picture, mv)) in compound.iter_mut().zip(pictures.into_iter().zip(modes.mv)) {
-            let source = picture.plane(plane);
-            let ((x0, y0), fracs) = unscaled_window(origin, mv, (sub, sub));
-            let dst = (&mut buf[..samples], size.0);
+        for (list, picture) in pictures.into_iter().enumerate() {
+            let picture = picture.ok_or(DecodeError::Malformed("AV1 missing reference"))?;
+            let reference = PlaneReference {
+                plane: picture.plane(plane),
+                size: ((width + ss) >> ss, (height + ss) >> ss),
+                scale: None,
+            };
+            // Grown, never cleared: the prediction writes every sample it uses.
+            if scratch.compound[list].len() < samples {
+                scratch.compound[list].resize(samples, 0);
+            }
+            let ((x0, y0), fracs) = unscaled_window(origin, modes.mv[list], (ss == 1, ss == 1));
+            let span = (size.0 + AV1_FILTER_TAPS - 1, size.1 + AV1_FILTER_TAPS - 1);
+            let dst = (&mut scratch.compound[list][..samples], size.0);
+            let source = reference.plane;
             if let Some(src) = source.samples_at(x0, y0, span.0, span.1) {
-                kernels.av1_prep_samples(modes.filters, (src, source.stride()), size, fracs, dst);
+                let src = (src, source.stride());
+                kernels.av1_prep_samples(modes.filters, src, size, fracs, dst);
             } else {
-                let reference = PlaneReference {
-                    plane: source,
-                    size: plane_size,
-                    scale: None,
-                };
                 let view = gather(reference, &mut scratch.window, (x0, y0), span);
-                kernels.av1_prep_samples(
-                    modes.filters,
-                    (view.data(), view.stride()),
-                    size,
-                    fracs,
-                    dst,
-                );
+                let src = (view.data(), view.stride());
+                kernels.av1_prep_samples(modes.filters, src, size, fracs, dst);
             }
         }
+        Ok(())
     }
 
     /// Predict list `list` of a compound block's plane block at `origin`
@@ -677,9 +649,12 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         .flatten();
         let kernels = self.kernels();
         let scratch = &mut self.maps.prediction;
+        // Grown, never cleared: the prediction writes every sample it uses.
         let samples = size.0 * size.1;
-        let compound = scratch.compound.as_mut().expect("allocated by caller");
-        let dst = &mut compound[list][..samples];
+        if scratch.compound[list].len() < samples {
+            scratch.compound[list].resize(samples, 0);
+        }
+        let dst = &mut scratch.compound[list][..samples];
         match warp {
             Some(warp) => {
                 let view = reference

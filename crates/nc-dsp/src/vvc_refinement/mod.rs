@@ -16,14 +16,12 @@ pub(crate) mod x86;
 type Bilinear = unsafe fn((usize, usize), &nc_common::PlaneView<'_>, (usize, usize), &mut [i16]);
 type Dmvr = unsafe fn((usize, usize), [&[i16]; 2]) -> ([i32; 2], bool);
 type Bdof = unsafe fn((usize, usize), [&[i16]; 2], &mut [u8]);
-type BdofPad = unsafe fn((usize, usize), &nc_common::PlaneView<'_>, &[i16], &mut [i16]);
 type Prof = unsafe fn(&[i16; 36], &[[i8; 2]; 16], &mut [i16; 16]);
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
     pub bilinear: Bilinear,
     pub dmvr: Dmvr,
     pub bdof: Bdof,
-    pub bdof_pad: BdofPad,
     pub prof: Prof,
 }
 pub(crate) fn kernels(isa: Isa) -> Kernels {
@@ -40,7 +38,6 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
             bilinear: crate::vvc_dmvr::bilinear,
             dmvr: crate::vvc_dmvr::scalar,
             bdof: crate::vvc_bdof::scalar,
-            bdof_pad: crate::vvc_bdof::pad_scalar,
             prof: crate::vvc_optical_flow::scalar,
         },
     }

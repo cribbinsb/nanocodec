@@ -16,7 +16,7 @@ const FIRST: [u8; 16] = [0, 1, 0, 1, 0, 1, 0, 1, 8, 9, 8, 9, 8, 9, 8, 9];
 const LAST: [u8; 16] = [6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15];
 
 #[derive(Clone, Copy)]
-pub(crate) struct Geometry {
+pub(super) struct Geometry {
     pub base: usize,
     pub across: usize,
     pub along: usize,
@@ -122,7 +122,7 @@ pub(super) unsafe fn short<V: I16x8Tiles, const VVC: bool>(
 /// HEVC clips strong outputs by [2,2,2] tC, VVC by [3,2,1].
 #[inline(always)]
 #[allow(clippy::similar_names)]
-pub(crate) fn filter<V: I16x8Tiles, const VVC: bool>(
+fn filter<V: I16x8Tiles, const VVC: bool>(
     values: [V; POSITIONS],
     beta: V,
     tc: V,
@@ -187,7 +187,7 @@ pub(crate) fn filter<V: I16x8Tiles, const VVC: bool>(
     clippy::needless_range_loop,
     reason = "fixed tap indices avoid outlining an iterator over SIMD values"
 )]
-pub(crate) unsafe fn short_tiles<V: I16x8Tiles, const VVC: bool>(
+pub(super) unsafe fn short_tiles<V: I16x8Tiles, const VVC: bool>(
     data: &mut [u8],
     tiles: &[Geometry; 4],
     beta: &[i16; 8],
@@ -239,78 +239,5 @@ pub(crate) unsafe fn short_tiles<V: I16x8Tiles, const VVC: bool>(
             *destination = unsafe { core::slice::from_raw_parts_mut(ptr.add(at), TILE) };
         }
         out[k].store_tiles8(destinations);
-    }
-}
-
-/// [`short_tiles`] for `u16` samples up to 11 bits (`0..=max_val`).
-///
-/// # Safety
-/// `V`'s ISA is enabled, each of the first `V::LANES / 8` tiles lies inside
-/// `data`, and no two of those 8x8 tile footprints overlap.
-#[inline(always)]
-#[allow(
-    clippy::needless_range_loop,
-    reason = "fixed tap indices avoid outlining an iterator over SIMD values"
-)]
-#[cfg_attr(
-    not(target_arch = "x86_64"),
-    allow(
-        dead_code,
-        reason = "multi-piece u16 tile batching requires >= 16-lane vectors"
-    )
-)]
-pub(crate) unsafe fn short_tiles_u16<V: I16x8Tiles, const VVC: bool>(
-    data: &mut [u16],
-    tiles: &[Geometry; 4],
-    beta: &[i16; 8],
-    tc: &[i16; 8],
-    max_val: i16,
-) {
-    let groups = V::LANES / TILE;
-    let horizontal = tiles[0].along == 1;
-    let mut origins = [0; 4];
-    for (g, e) in tiles.iter().take(groups).enumerate() {
-        let origin = e.base.checked_sub(REACH * e.across).expect("edge reach");
-        let last = origin + (TILE - 1) * (e.along + e.across);
-        assert!(last < data.len(), "complete deblocking tile");
-        origins[g] = origin;
-    }
-    let mut values = [V::splat(0); POSITIONS];
-    for (k, value) in values.iter_mut().enumerate() {
-        let mut sources: [&[u16]; 4] = [&[]; 4];
-        for (g, source) in sources.iter_mut().enumerate().take(groups) {
-            let e = tiles[g];
-            let at = origins[g] + k * if horizontal { e.across } else { e.along };
-            // SAFETY: the exact tile bounds were checked above.
-            *source = unsafe { data.get_unchecked(at..at + TILE) };
-        }
-        *value = V::load_u16_tiles8(sources);
-    }
-    if !horizontal {
-        values = transpose(values);
-    }
-    let Some(mut out) = filter::<V, VVC>(values, V::splat_segments(beta), V::splat_segments(tc))
-    else {
-        return;
-    };
-    if !horizontal {
-        out = transpose(out);
-    }
-    let ptr = data.as_mut_ptr();
-    let changed = if horizontal {
-        1..POSITIONS - 1
-    } else {
-        0..POSITIONS
-    };
-    for k in changed {
-        let mut destinations: [&mut [u16]; 4] = [&mut [], &mut [], &mut [], &mut []];
-        for (g, destination) in destinations.iter_mut().enumerate().take(groups) {
-            let e = tiles[g];
-            let at = origins[g] + k * if horizontal { e.across } else { e.along };
-            // SAFETY: exact bounds checked above, and the driver establishes
-            // that different tiles are disjoint. Within a tile rows are disjoint.
-            *destination = unsafe { core::slice::from_raw_parts_mut(ptr.add(at), TILE) };
-        }
-        out[k].store_u16_tiles8(destinations, max_val);
     }
 }

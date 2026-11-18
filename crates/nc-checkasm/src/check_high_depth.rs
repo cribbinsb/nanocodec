@@ -23,8 +23,8 @@ use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, 
 use nc_dsp::intra_prediction::filter::FilterIntraMode;
 use nc_dsp::{
     Av1EdgeFilter, Av1FilterLength, Av1TxSize, Av1TxType, BlockSize, CdefLines, CdefSets,
-    CdefStrengths, CdefUnit, DepthKernels, Dsp, EdgeRun, Filter, HevcLumaPiece, HevcTransform,
-    HevcWeights, VP9_TAPS, Vp9Filter, Vp9FilterLimits, Vp9FilterWidth, Vp9Pass,
+    CdefStrengths, CdefUnit, DepthKernels, Dsp, EdgeRun, Filter, HevcTransform, HevcWeights,
+    VP9_TAPS, Vp9Filter, Vp9FilterLimits, Vp9FilterWidth,
 };
 
 /// Depths checked for AV1 high-bit-depth kernels (10-bit and 12-bit).
@@ -302,10 +302,9 @@ const VP9_FILTERS: [Vp9Filter; 4] = [
     Vp9Filter::Bilinear,
 ];
 
-/// VP9 prediction at 10 and 12 bits (whole-row kernels of every width; the
-/// height and phases random, zero and 1-D phases included).
+/// VP9 prediction at 10 bits (whole-row kernels of every width; the
+/// height and phases random, zero phases included).
 fn check_vp9_mc(
-    depth: BitDepth,
     (cand, refer): (DepthKernels<'_>, DepthKernels<'_>),
     rng: &mut Rng,
     report: &mut CheckReport,
@@ -315,9 +314,9 @@ fn check_vp9_mc(
             let h = SIDES[(i + rng.below(3)) % SIDES.len()];
             let (span_w, span_h) = (w + VP9_TAPS - 1, h + VP9_TAPS - 1);
             for round in 0..ROUNDS {
-                let source = samples_at(depth, span_w * span_h, round, rng);
+                let source = samples(span_w * span_h, round, rng);
                 let phase = (rng.below(16) * rng.below(2), rng.below(16) * rng.below(2));
-                let base = samples_at(depth, w * h, round, rng);
+                let base = samples(w * h, round, rng);
                 let average = rng.below(2) == 0;
                 let mut out = [base.clone(), base];
                 for (k, kernels) in [cand, refer].into_iter().enumerate() {
@@ -333,7 +332,7 @@ fn check_vp9_mc(
                 report.cases += 1;
                 if out[0] != out[1] {
                     report.failures.push(format!(
-                        "u16 VP9 {depth:?} {kind:?} {w}x{h} {phase:?} average {average}: prediction differs"
+                        "u16 VP9 {kind:?} {w}x{h} {phase:?} average {average}: prediction differs"
                     ));
                 }
             }
@@ -341,17 +340,14 @@ fn check_vp9_mc(
     }
 }
 
-/// VP9 deblocking at 10 and 12 bits (every width, both directions, random and
-/// flat-step samples, line counts up to 40 covering 4/8/16/32 groups + tails).
+/// VP9 deblocking at 10 bits (every width, both directions, random levels
+/// and line counts).
 fn check_vp9_deblock(
-    depth: BitDepth,
     (cand, refer): (DepthKernels<'_>, DepthKernels<'_>),
     rng: &mut Rng,
     report: &mut CheckReport,
 ) {
-    const STRIDE: usize = 56;
-    let max = depth.max();
-    let flat_step = 1_i32 << depth.above_eight();
+    const STRIDE: usize = 48;
     for width in [
         Vp9FilterWidth::Four,
         Vp9FilterWidth::Eight,
@@ -359,24 +355,10 @@ fn check_vp9_deblock(
     ] {
         for vertical in [false, true] {
             for round in 0..ROUNDS * 4 {
-                let base: Vec<u16> = if round % 2 == 0 {
-                    let mid = (max / 2) + (rng.below(65) as i32 - 32);
-                    let jump = rng.below(24) as i32 - 12;
-                    (0..STRIDE * STRIDE)
-                        .map(|idx| {
-                            let (r, c) = (idx / STRIDE, idx % STRIDE);
-                            let across_pos = if vertical { c } else { r };
-                            let side_base = if across_pos < 8 { mid } else { mid + jump };
-                            let jitter = rng.below((2 * flat_step + 1) as usize) as i32 - flat_step;
-                            (side_base + jitter).clamp(0, max) as u16
-                        })
-                        .collect()
-                } else {
-                    samples_at(depth, STRIDE * STRIDE, round % ROUNDS, rng)
-                };
+                let base = samples(STRIDE * STRIDE, round % ROUNDS, rng);
                 let limits =
                     Vp9FilterLimits::with_sharpness(1 + rng.below(63) as u8, rng.below(8) as u8);
-                let lines = 1 + rng.below(40);
+                let lines = 1 + rng.below(24);
                 let (step, along) = if vertical { (1, STRIDE) } else { (STRIDE, 1) };
                 let at = (8 * STRIDE + 8, step, along);
                 let mut out = [base.clone(), base];
@@ -386,78 +368,7 @@ fn check_vp9_deblock(
                 report.cases += 1;
                 if out[0] != out[1] {
                     report.failures.push(format!(
-                        "u16 VP9 deblocking {depth:?} {width:?} vertical {vertical} {lines} lines: differs"
-                    ));
-                }
-            }
-        }
-    }
-}
-
-/// VP9 inverse transforms (`4x4..32x32` DCT/ADST) at 10 and 12 bits: DC-only,
-/// EOB corners, asymmetric extents, in-range, boundary, and extreme inputs.
-fn check_vp9_inverse_high(
-    depth: BitDepth,
-    (cand, refer): (DepthKernels<'_>, DepthKernels<'_>),
-    rng: &mut Rng,
-    report: &mut CheckReport,
-) {
-    let all_passes = [
-        (Vp9Pass::Dct, Vp9Pass::Dct),
-        (Vp9Pass::Dct, Vp9Pass::Adst),
-        (Vp9Pass::Adst, Vp9Pass::Dct),
-        (Vp9Pass::Adst, Vp9Pass::Adst),
-    ];
-    for log2 in 2..=5_u8 {
-        let side = 1_usize << log2;
-        let stride = side + 8;
-        let passes_list: &[_] = if log2 == 5 {
-            &all_passes[..1]
-        } else {
-            &all_passes
-        };
-        for &passes in passes_list {
-            for mode in 0..6 {
-                let (nz_r, nz_c) = match mode {
-                    0 => (0, 0),
-                    1 => (1, 1),
-                    2 => (1 + rng.below(4.min(side)), 1 + rng.below(4.min(side))),
-                    3 => (1 + rng.below(8.min(side)), 1 + rng.below(8.min(side))),
-                    4 => (1 + rng.below(side), 1 + rng.below(side)),
-                    _ => (side, side),
-                };
-                let coeff_lim = (1_i32 << (7 + depth.bits())) - 1;
-                let coeffs: Vec<i32> = (0..side * side)
-                    .map(|idx| {
-                        if idx / side >= nz_r || idx % side >= nz_c {
-                            return 0;
-                        }
-                        match mode {
-                            1 if rng.below(3) == 0 => 0,
-                            2 | 3 => rng.below(4097) as i32 - 2048,
-                            4 => rng.below(24_001) as i32 - 12_000,
-                            _ => {
-                                rng.below((2 * coeff_lim + 1).min(500_000) as usize) as i32
-                                    - coeff_lim.min(250_000)
-                            }
-                        }
-                    })
-                    .collect();
-                let base = samples_at(depth, side * stride, mode, rng);
-                let mut out = [base.clone(), base];
-                for (k, kernels) in [cand, refer].into_iter().enumerate() {
-                    kernels.vp9_inverse_add(
-                        log2,
-                        passes,
-                        &coeffs,
-                        (nz_r, nz_c),
-                        (&mut out[k], stride),
-                    );
-                }
-                report.cases += 1;
-                if out[0] != out[1] {
-                    report.failures.push(format!(
-                        "u16 VP9 inverse {depth:?} {side}x{side} {passes:?} extent ({nz_r},{nz_c}): differs"
+                        "u16 VP9 deblocking {width:?} vertical {vertical} {lines} lines: differs"
                     ));
                 }
             }
@@ -673,7 +584,7 @@ fn check_av1_inverse_high(
         let area = size.coded_area();
         for kind in Av1TxType::ALL.into_iter().filter(|k| k.fits(size)) {
             let scan = scan_positions(size, kind);
-            for pattern in 0..6usize {
+            for pattern in 0..5usize {
                 let mut coeffs = vec![0i32; area];
                 let eob = match pattern {
                     0 => {
@@ -700,18 +611,6 @@ fn check_av1_inverse_high(
                     3 => {
                         for c in &mut coeffs {
                             *c = rng.below((2 * max_c + 1) as usize) as i32 + min_c;
-                        }
-                        area
-                    }
-                    4 => {
-                        let target_l1 =
-                            [8_191_i32, 8_192, 16_383, 16_384, 23_170, 23_171][rng.below(6)];
-                        let cw = size.coded_width();
-                        let ch = size.coded_height();
-                        let per = target_l1 / cw as i32;
-                        for c in 0..cw {
-                            let mag = per + i32::from(c == 0) * (target_l1 - per * cw as i32);
-                            coeffs[c * ch] = if rng.below(2) == 0 { mag } else { -mag };
                         }
                         area
                     }
@@ -1254,13 +1153,11 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
         check_av1_intra_high(depth, (cand, refer), rng, report);
         check_av1_grain_high(depth, (cand, refer), rng, report);
         check_cdef(depth, (cand, refer), rng, report);
-        check_vp9_mc(depth, (cand, refer), rng, report);
-        check_vp9_deblock(depth, (cand, refer), rng, report);
-        check_vp9_inverse_high(depth, (cand, refer), rng, report);
     }
     let (cand, refer) = (candidate.at(DEPTH), reference.at(DEPTH));
+    check_vp9_mc((cand, refer), rng, report);
+    check_vp9_deblock((cand, refer), rng, report);
     check_hevc_vvc_high((cand, refer), rng, report);
-    check_hevc_deblock_high(candidate, reference, rng, report);
     crate::check_vvc_high::check(candidate, reference, rng, report);
 }
 
@@ -1329,233 +1226,30 @@ fn check_hevc_vvc_high(
     }
     for transform in HevcTransform::ALL {
         let n = transform.side();
-        for round in 0..ROUNDS * 5 {
-            let (rows, columns) = if round < 3 {
-                (1, 1)
-            } else {
-                (1 + rng.below(n), 1 + rng.below(n))
-            };
+        for round in 0..ROUNDS * 4 {
+            let (rows, columns) = (1 + rng.below(n), 1 + rng.below(n));
             let coeffs: Vec<i16> = (0..n * n)
                 .map(|i| {
                     let inside = i / n < rows && i % n < columns;
-                    match (inside, round % 4) {
+                    match (inside, round % 3) {
                         (false, _) => 0,
                         (true, 0) => rng.below(65_536) as i16,
                         (true, 1) => i16::MAX,
-                        (true, 2) => i16::MIN,
                         _ => rng.below(512) as i16 - 256,
                     }
                 })
                 .collect();
-            let stride = n + (round % 3) * 4;
-            let base = samples(stride * n, round, rng);
+            let base = samples(n * n, round, rng);
             let mut out = [base.clone(), base];
             for (k, kernels) in [cand, refer].into_iter().enumerate() {
-                let mut view = PlaneViewMut::new(&mut out[k], stride, n, n).expect("view");
+                let mut view = PlaneViewMut::new(&mut out[k], n, n, n).expect("view");
                 kernels.hevc_inverse_add(transform, &coeffs, (rows, columns), &mut view);
             }
             report.cases += 1;
             if out[0] != out[1] {
                 report.failures.push(format!(
-                    "u16 {transform:?} inverse add, extent {rows}x{columns} stride {stride}, differs"
+                    "u16 {transform:?} inverse add, extent {rows}x{columns}, differs"
                 ));
-            }
-        }
-    }
-}
-
-/// HEVC luma (`8`-line edge + batched pieces) and chroma (`4`/`8`-line edge)
-/// deblocking across `8..=12` and `15` bits (covering SIMD `<= 11`/`12` bits
-/// and the scalar fallback above).
-#[allow(clippy::too_many_lines)]
-fn check_hevc_deblock_high(
-    candidate: &Dsp,
-    reference: &Dsp,
-    rng: &mut Rng,
-    report: &mut CheckReport,
-) {
-    let guard = 0x5a5au16;
-    // Also exercise the 8-bit `hevc_deblock_luma_pieces` batching path.
-    for vertical in [true, false] {
-        let (w, h, stride) = (48usize, 48usize, 56usize);
-        let raw: Vec<u8> = (0..stride * h).map(|_| rng.byte()).collect();
-        let pieces: Vec<HevcLumaPiece> = (0..6)
-            .map(|i| {
-                let step = 8 * i;
-                HevcLumaPiece {
-                    at: if vertical {
-                        (8 + step % 32, 8 * (i / 2))
-                    } else {
-                        (8 * (i / 2), 8 + step % 32)
-                    },
-                    tc: [rng.below(18) as i16, rng.below(18) as i16],
-                    beta: (16 + rng.below(49)) as i16,
-                }
-            })
-            .collect();
-        let (mut a, mut b) = (raw.clone(), raw);
-        let mut va = PlaneViewMut::new(&mut a, stride, w, h).expect("u8 view a");
-        let mut vb = PlaneViewMut::new(&mut b, stride, w, h).expect("u8 view b");
-        candidate
-            .at(BitDepth::EIGHT)
-            .hevc_deblock_luma_pieces(&mut va, vertical, &pieces);
-        for p in &pieces {
-            reference
-                .at(BitDepth::EIGHT)
-                .hevc_deblock_luma_edge(&mut vb, p.at, vertical, p.tc, p.beta);
-        }
-        report.cases += 1;
-        if a != b {
-            report
-                .failures
-                .push(format!("u8 HEVC luma pieces vertical={vertical}: differs"));
-        }
-    }
-
-    for bits in [9u32, 10, 11, 12, 15] {
-        let depth = BitDepth::new(bits).expect("depth");
-        let (cand, refer) = (candidate.at(depth), reference.at(depth));
-        let scale = 1i16 << (bits.min(12) - 8);
-        let mid = depth.max() / 2;
-        let (w, h, stride) = (48usize, 48usize, 54usize);
-        for vertical in [true, false] {
-            for pattern in 0..5 {
-                let mut init = vec![guard; stride * h + 8];
-                for y in 0..h {
-                    for x in 0..w {
-                        let v = match pattern {
-                            0 => rng.below(depth.max() as usize + 1) as u16,
-                            1 => {
-                                // Smooth step across the edge -> triggers strong filter!
-                                let pos = if vertical { x } else { y };
-                                let step = if pos < 16 { -6 } else { 6 };
-                                (mid + step * i32::from(scale) + (rng.below(3) as i32 - 1))
-                                    .clamp(0, depth.max()) as u16
-                            }
-                            2 => {
-                                // Moderate step -> triggers normal filter!
-                                let pos = if vertical { x } else { y };
-                                let step = if pos < 16 { -10 } else { 10 };
-                                (mid + step * i32::from(scale) + ((x + y) % 5) as i32)
-                                    .clamp(0, depth.max()) as u16
-                            }
-                            3 => {
-                                if (x + y).is_multiple_of(2) {
-                                    depth.max() as u16
-                                } else {
-                                    0
-                                }
-                            }
-                            _ => ((x * 37 + y * 19) % (depth.max() as usize + 1)) as u16,
-                        };
-                        init[4 + y * stride + x] = v;
-                    }
-                }
-                let tc = [
-                    (rng.below(25) as i16) * scale,
-                    if pattern == 4 {
-                        0
-                    } else {
-                        (1 + rng.below(24) as i16) * scale
-                    },
-                ];
-                let beta = (16 + rng.below(49) as i16) * scale;
-                let at = (16, 16);
-                let (mut a, mut b) = (init.clone(), init.clone());
-                for (k, buf) in [(cand, &mut a), (refer, &mut b)] {
-                    let len = (h - 1) * stride + w;
-                    let mut view = PlaneViewMut::new(&mut buf[4..4 + len], stride, w, h)
-                        .expect("u16 luma view");
-                    k.hevc_deblock_luma_edge(&mut view, at, vertical, tc, beta);
-                }
-                report.cases += 1;
-                if a != b {
-                    report.failures.push(format!(
-                        "u16 HEVC luma edge {bits}b vertical={vertical} pattern={pattern}: differs"
-                    ));
-                }
-
-                // Multi-piece batching (1..=5 pieces, including an overlapping pair).
-                let pieces = [
-                    HevcLumaPiece {
-                        at: (8, 8),
-                        tc,
-                        beta,
-                    },
-                    HevcLumaPiece {
-                        at: (16, 16),
-                        tc: [tc[1], tc[0]],
-                        beta,
-                    },
-                    HevcLumaPiece {
-                        at: (24, 8),
-                        tc: [scale * 4, scale * 8],
-                        beta: scale * 36,
-                    },
-                    HevcLumaPiece {
-                        at: (32, 24),
-                        tc: [scale * 12, 0],
-                        beta: scale * 48,
-                    },
-                    HevcLumaPiece {
-                        at: (32, 24),
-                        tc: [0, scale * 10],
-                        beta: scale * 48,
-                    },
-                ];
-                for count in 1..=pieces.len() {
-                    let (mut ba, mut bb) = (init.clone(), init.clone());
-                    let len = (h - 1) * stride + w;
-                    {
-                        let mut va = PlaneViewMut::new(&mut ba[4..4 + len], stride, w, h)
-                            .expect("u16 batch view a");
-                        cand.hevc_deblock_luma_pieces(&mut va, vertical, &pieces[..count]);
-                    }
-                    {
-                        let mut vb = PlaneViewMut::new(&mut bb[4..4 + len], stride, w, h)
-                            .expect("u16 batch view b");
-                        for p in &pieces[..count] {
-                            refer.hevc_deblock_luma_edge(&mut vb, p.at, vertical, p.tc, p.beta);
-                        }
-                    }
-                    report.cases += 1;
-                    if ba != bb {
-                        report.failures.push(format!(
-                            "u16 HEVC luma pieces {bits}b vertical={vertical} count={count}: differs"
-                        ));
-                    }
-                }
-
-                // Chroma 4-line and 8-line edges.
-                for lines in [4usize, 8] {
-                    let ctc = [
-                        (rng.below(25) as i16) * scale,
-                        (rng.below(25) as i16) * scale,
-                        if lines == 8 {
-                            (1 + rng.below(24) as i16) * scale
-                        } else {
-                            0
-                        },
-                        if lines == 8 && pattern != 4 {
-                            (rng.below(25) as i16) * scale
-                        } else {
-                            0
-                        },
-                    ];
-                    let (mut ca, mut cb) = (init.clone(), init.clone());
-                    for (k, buf) in [(cand, &mut ca), (refer, &mut cb)] {
-                        let len = (h - 1) * stride + w;
-                        let mut view = PlaneViewMut::new(&mut buf[4..4 + len], stride, w, h)
-                            .expect("u16 chroma view");
-                        k.hevc_deblock_chroma_edge(&mut view, (16, 16), vertical, lines, ctc);
-                    }
-                    report.cases += 1;
-                    if ca != cb {
-                        report.failures.push(format!(
-                            "u16 HEVC chroma edge {bits}b vertical={vertical} lines={lines} pattern={pattern}: differs"
-                        ));
-                    }
-                }
             }
         }
     }

@@ -75,8 +75,6 @@ pub(crate) type Planar16Fn = unsafe fn(&PlanarEdges<'_, u16>, usize, &mut [u16])
 /// HEVC inverse transform to the residual at a depth (`20 − BitDepth`);
 /// the extent (rows, columns) covers every nonzero coefficient.
 pub(crate) type Inverse16Fn = unsafe fn(&[i16], &mut [i16], (usize, usize), BitDepth);
-/// Fused HEVC inverse transform and clipped `u16` reconstruction at a stride.
-pub(crate) type InverseAdd16Fn = unsafe fn(&[i16], (usize, usize), &mut [u16], usize, BitDepth);
 /// Add an `n`x`n` residual to the samples at a stride, clipping to the depth.
 pub(crate) type AddResidual16Fn = unsafe fn(&[i16], usize, &mut [u16], usize, BitDepth);
 /// HEVC deblocking of one edge (`crate::deblock::HevcEdgeFn` with the depth).
@@ -139,9 +137,6 @@ pub(crate) type DmvrBilinear16Fn =
     unsafe fn((usize, usize), &PlaneView<'_, u16>, (usize, usize), &mut [i16], BitDepth);
 /// VVC BDOF (`Dsp::vvc_bdof` with the depth).
 pub(crate) type Bdof16Fn = unsafe fn((usize, usize), [&[i16]; 2], &mut [u16], BitDepth);
-/// VVC BDOF border assembly (`Dsp::vvc_bdof_pad` with the depth).
-pub(crate) type BdofPad16Fn =
-    unsafe fn((usize, usize), &PlaneView<'_, u16>, &[i16], &mut [i16], BitDepth);
 /// VVC scaled reference prediction (`vvc_predict_scaled` at `u16`).
 pub(crate) type ScaledPredict16Fn = unsafe fn(
     &PlaneView<'_, u16>,
@@ -174,7 +169,6 @@ pub(crate) struct HighFns {
     pub hevc_planar: Planar16Fn,
     /// By [`HevcTransform`].
     pub hevc_inverse: [Inverse16Fn; 5],
-    pub hevc_inverse_add: [InverseAdd16Fn; 5],
     pub add_residual: AddResidual16Fn,
     pub hevc_deblock_luma: Edge16Fn,
     pub hevc_deblock_chroma: Edge16Fn,
@@ -184,7 +178,6 @@ pub(crate) struct HighFns {
     pub vvc_geometric_blend: GeometricBlend16Fn,
     pub vvc_dmvr_bilinear: DmvrBilinear16Fn,
     pub vvc_bdof: Bdof16Fn,
-    pub vvc_bdof_pad: BdofPad16Fn,
     pub vvc_predict_scaled: ScaledPredict16Fn,
     /// VVC deblocking and ALF (`vvc_filter`).
     pub vvc_filter: vvc_filter::VvcFilterFns,
@@ -209,8 +202,6 @@ pub(crate) struct HighFns {
     pub vp9_mc: [Vp9Mc16Fn; WIDTH_CLASSES],
     /// VP9 deblocking of the lines of one edge.
     pub vp9_filter: Vp9Filter16Fn,
-    /// VP9 inverse transform + clipped sample add.
-    pub vp9_inverse: crate::vp9_inverse::high_simd::Vp9InverseAdd16Fn,
 }
 
 /// One kernel per width class (4, 8, 16, 32, 64) of `$kernel` generic over
@@ -270,6 +261,17 @@ mod scalar {
     use crate::mc::SeparableTaps;
     use crate::mc::scalar::{hevc_bi_at, hevc_prep_at, separable_at};
 
+    pub(super) fn vp9_mc<const W: usize>(
+        window: (&[u16], usize),
+        dst: (&mut [u16], usize),
+        h: usize,
+        taps: (&[i16; 8], &[i16; 8]),
+        average: bool,
+        depth: BitDepth,
+    ) {
+        crate::vp9_mc::rows_at::<u16, W>(window, dst, h, taps, average, depth);
+    }
+
     pub(super) fn predict<T: SeparableTaps<N>, const N: usize, const W: usize>(
         src: &[u16],
         ss: usize,
@@ -321,21 +323,16 @@ impl HighFns {
         self.hevc_angular = crate::hevc_intra::high_simd::avx512::angular;
         self.hevc_planar = crate::hevc_intra::high_simd::avx512::planar;
         self.hevc_inverse = inverse::kernels(Isa::Avx512);
-        self.hevc_inverse_add = inverse::add_kernels(Isa::Avx512);
         self.add_residual = crate::vvc_recon::high_simd::avx512::add_residual_strided;
-        self.hevc_deblock_luma = crate::deblock::hevc_high::luma_kernel(Isa::Avx512);
-        self.hevc_deblock_chroma = crate::deblock::hevc_high::chroma_kernel(Isa::Avx512);
         self.sao_apply = crate::sao::high_simd::avx512::apply;
         self.sao_band = crate::sao::high_simd::avx512::band;
         self.high_precision = crate::mc::precision_simd::avx512::high_precision;
         self.vvc_geometric_blend = crate::vvc_geo::high_simd::avx512::blend;
         self.vvc_dmvr_bilinear = crate::vvc_refinement::avx512::bilinear_u16;
         self.vvc_bdof = crate::vvc_refinement::avx512::bdof_u16;
-        self.vvc_bdof_pad = crate::vvc_refinement::avx512::bdof_pad_u16;
         self.vvc_predict_scaled = crate::mc::rpr_simd::avx512::predict_scaled_u16;
-        self.vp9_mc = crate::vp9_mc_high::kernels(Isa::Avx512);
-        self.vp9_filter = crate::deblock::vp9_high::vp9_filter(Isa::Avx512);
-        self.vp9_inverse = crate::vp9_inverse::high_simd::add_kernel(Isa::Avx512);
+        self.vp9_mc = vector::avx512::VP9_MC;
+        self.vp9_filter = vector::avx512::vp9_filter;
         crate::cdef::avx512::install_high(&mut self.cdef);
         self.vvc_filter = vvc_filter::VvcFilterFns::for_isa(Isa::Avx512);
         self.vvc_recon = vvc_recon::VvcReconFns::for_isa(Isa::Avx512);
@@ -366,17 +363,15 @@ impl HighFns {
             hevc_angular: crate::hevc_intra::reference::angular::<u16>,
             hevc_planar: crate::hevc_intra::reference::planar::<u16>,
             hevc_inverse: inverse::kernels(isa),
-            hevc_inverse_add: inverse::add_kernels(isa),
             add_residual: add_residual::<u16>,
-            hevc_deblock_luma: crate::deblock::hevc_high::luma_kernel(isa),
-            hevc_deblock_chroma: crate::deblock::hevc_high::chroma_kernel(isa),
+            hevc_deblock_luma: crate::deblock::scalar::hevc_luma_edge_at::<u16>,
+            hevc_deblock_chroma: crate::deblock::scalar::hevc_chroma_edge_at::<u16>,
             sao_apply: crate::sao::scalar::apply_at::<u16>,
             sao_band: crate::sao::scalar::band_at::<u16>,
             high_precision: crate::mc::precision::high_precision_at::<u16>,
             vvc_geometric_blend: crate::vvc_geo::blend_at::<u16>,
             vvc_dmvr_bilinear: crate::vvc_dmvr::bilinear_at::<u16>,
             vvc_bdof: crate::vvc_bdof::scalar_at::<u16>,
-            vvc_bdof_pad: crate::vvc_bdof::pad_scalar_at::<u16>,
             vvc_predict_scaled: crate::mc::vvc_predict_scaled::<u16>,
             vvc_filter: vvc_filter::VvcFilterFns::for_isa(isa),
             vvc_recon: vvc_recon::VvcReconFns::for_isa(isa),
@@ -386,9 +381,8 @@ impl HighFns {
             av1_deblock_runs: crate::deblock::av1_high::av1_runs(isa),
             av1_intra: crate::av1_intra::high::HighAv1IntraFns::for_isa(isa),
             av1_grain: crate::av1_film_grain::high_simd::HighAv1GrainFns::for_isa(isa),
-            vp9_mc: crate::vp9_mc_high::kernels(isa),
-            vp9_filter: crate::deblock::vp9_high::vp9_filter(isa),
-            vp9_inverse: crate::vp9_inverse::high_simd::add_kernel(isa),
+            vp9_mc: av1_widths!(scalar::vp9_mc),
+            vp9_filter: crate::vp9_deblock::filter_lines_at::<u16>,
             cdef: crate::cdef::HighCdefFns::SCALAR,
             h264: h264::H264Fns::SCALAR,
         };
@@ -420,9 +414,10 @@ impl HighFns {
         self.vvc_geometric_blend = crate::vvc_geo::high_simd::avx2::blend;
         self.vvc_dmvr_bilinear = crate::vvc_refinement::x86::bilinear_u16;
         self.vvc_bdof = crate::vvc_refinement::x86::bdof_u16;
-        self.vvc_bdof_pad = crate::vvc_refinement::x86::bdof_pad_u16;
         self.vvc_predict_scaled = crate::mc::rpr_simd::avx2::predict_scaled_u16;
         self.cdef = crate::cdef::avx2::HIGH_FNS;
+        self.vp9_mc = vector::avx2::VP9_MC;
+        self.vp9_filter = vector::avx2::vp9_filter;
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -439,9 +434,10 @@ impl HighFns {
         self.vvc_geometric_blend = crate::vvc_geo::high_simd::neon::blend;
         self.vvc_dmvr_bilinear = crate::vvc_refinement::neon::bilinear_u16;
         self.vvc_bdof = crate::vvc_refinement::neon::bdof_u16;
-        self.vvc_bdof_pad = crate::vvc_refinement::neon::bdof_pad_u16;
         self.vvc_predict_scaled = crate::mc::rpr_simd::neon::predict_scaled_u16;
         self.cdef = crate::cdef::neon::HIGH_FNS;
+        self.vp9_mc = vector::neon::VP9_MC;
+        self.vp9_filter = vector::neon::vp9_filter;
     }
 
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -458,9 +454,9 @@ impl HighFns {
         self.vvc_geometric_blend = crate::vvc_geo::high_simd::simd128::blend;
         self.vvc_dmvr_bilinear = crate::vvc_refinement::wasm::bilinear_u16;
         self.vvc_bdof = crate::vvc_refinement::wasm::bdof_u16;
-        self.vvc_bdof_pad = crate::vvc_refinement::wasm::bdof_pad_u16;
         self.vvc_predict_scaled = crate::mc::rpr_simd::simd128::predict_scaled_u16;
-        self.cdef = crate::cdef::simd128::HIGH_FNS;
+        self.vp9_mc = vector::simd128::VP9_MC;
+        self.vp9_filter = vector::simd128::vp9_filter;
     }
 }
 
@@ -577,14 +573,6 @@ pub trait Pixel:
         out: &mut [Self],
     );
     #[doc(hidden)]
-    fn vvc_bdof_pad(
-        kernels: DepthKernels<'_>,
-        size: (usize, usize),
-        window: &PlaneView<'_, Self>,
-        interior: &[i16],
-        out: &mut [i16],
-    );
-    #[doc(hidden)]
     fn vvc_predict_scaled(
         kernels: DepthKernels<'_>,
         reference: &PlaneView<'_, Self>,
@@ -632,13 +620,6 @@ pub trait Pixel:
         vertical: bool,
         tc: [i16; 2],
         beta: i16,
-    );
-    #[doc(hidden)]
-    fn hevc_deblock_luma_pieces(
-        kernels: DepthKernels<'_>,
-        dst: &mut PlaneViewMut<'_, Self>,
-        vertical: bool,
-        pieces: &[crate::HevcLumaPiece],
     );
     #[doc(hidden)]
     fn hevc_deblock_chroma_edge(
@@ -848,16 +829,6 @@ impl Pixel for u8 {
         kernels.dsp.vvc_bdof(size, inputs, out);
     }
 
-    fn vvc_bdof_pad(
-        kernels: DepthKernels<'_>,
-        size: (usize, usize),
-        window: &PlaneView<'_, u8>,
-        interior: &[i16],
-        out: &mut [i16],
-    ) {
-        kernels.dsp.vvc_bdof_pad(size, window, interior, out);
-    }
-
     fn vvc_predict_scaled(
         kernels: DepthKernels<'_>,
         reference: &PlaneView<'_, u8>,
@@ -921,15 +892,6 @@ impl Pixel for u8 {
         kernels
             .dsp
             .hevc_deblock_luma_edge_i16(dst, at, vertical, tc, beta);
-    }
-
-    fn hevc_deblock_luma_pieces(
-        kernels: DepthKernels<'_>,
-        dst: &mut PlaneViewMut<'_, u8>,
-        vertical: bool,
-        pieces: &[crate::HevcLumaPiece],
-    ) {
-        crate::deblock::hevc_high::filter_luma_pieces_u8(kernels.dsp, dst, vertical, pieces);
     }
 
     fn hevc_deblock_chroma_edge(
@@ -1211,19 +1173,6 @@ impl Pixel for u16 {
         unsafe { (kernels.dsp.high.vvc_bdof)(size, inputs, out, kernels.depth) }
     }
 
-    fn vvc_bdof_pad(
-        kernels: DepthKernels<'_>,
-        size: (usize, usize),
-        window: &PlaneView<'_, u16>,
-        interior: &[i16],
-        out: &mut [i16],
-    ) {
-        crate::vvc_bdof::check_pad(size, window, interior, out);
-        // SAFETY: dimensions and buffers checked; the table matches a
-        // supported ISA.
-        unsafe { (kernels.dsp.high.vvc_bdof_pad)(size, window, interior, out, kernels.depth) }
-    }
-
     fn vvc_predict_scaled(
         kernels: DepthKernels<'_>,
         reference: &PlaneView<'_, u16>,
@@ -1319,17 +1268,20 @@ impl Pixel for u16 {
         if rows == 0 || columns == 0 {
             return;
         }
+        let mut residual = [0i16; inverse::MAX_AREA];
+        let residual = &mut residual[..n * n];
         let stride = dst.stride();
-        // SAFETY: the coefficients cover `n * n` and `dst` covers `n` rows of
-        // `n` at `stride` (checked above); the table matches a supported ISA.
+        // SAFETY: the coefficients and residual cover the block, the
+        // destination view covers `n` rows of `n` (checked above); the table
+        // matches a supported ISA.
         unsafe {
-            (kernels.dsp.high.hevc_inverse_add[transform as usize])(
+            (kernels.dsp.high.hevc_inverse[transform as usize])(
                 coeffs,
+                residual,
                 (rows, columns),
-                dst.data_mut(),
-                stride,
                 kernels.depth,
             );
+            (kernels.dsp.high.add_residual)(residual, n, dst.data_mut(), stride, kernels.depth);
         }
     }
 
@@ -1345,21 +1297,6 @@ impl Pixel for u16 {
         // SAFETY: `hevc_edge_at` checked that every sample the lines read
         // lies inside `dst`; the table matches a supported ISA.
         unsafe { (kernels.dsp.high.hevc_deblock_luma)(dst.data_mut(), &edge, kernels.depth) }
-    }
-
-    fn hevc_deblock_luma_pieces(
-        kernels: DepthKernels<'_>,
-        dst: &mut PlaneViewMut<'_, u16>,
-        vertical: bool,
-        pieces: &[crate::HevcLumaPiece],
-    ) {
-        crate::deblock::hevc_high::filter_luma_pieces_u16(
-            kernels.dsp,
-            kernels.depth,
-            dst,
-            vertical,
-            pieces,
-        );
     }
 
     fn hevc_deblock_chroma_edge(
@@ -1600,20 +1537,6 @@ impl DepthKernels<'_> {
         T::vvc_bdof(self, size, inputs, out);
     }
 
-    /// [`Dsp::vvc_bdof_pad`] at this depth (`shift3 = Max(2, 14 - BitDepth)`).
-    ///
-    /// # Panics
-    /// As [`Dsp::vvc_bdof_pad`].
-    pub fn vvc_bdof_pad<T: Pixel>(
-        self,
-        size: (usize, usize),
-        window: &PlaneView<'_, T>,
-        interior: &[i16],
-        out: &mut [i16],
-    ) {
-        T::vvc_bdof_pad(self, size, window, interior, out);
-    }
-
     /// [`crate::vvc_predict_scaled`] at this depth.
     ///
     /// # Panics
@@ -1715,20 +1638,6 @@ impl DepthKernels<'_> {
         beta: i16,
     ) {
         T::hevc_deblock_luma_edge(self, dst, at, vertical, tc, beta);
-    }
-
-    /// Filter non-exempt 8-line HEVC luma pieces in `dst`, batching disjoint
-    /// 8x8 footprints on wide ISAs (`16` lines on AVX2, `32` on AVX-512).
-    ///
-    /// # Panics
-    /// As [`Self::hevc_deblock_luma_edge`] on any piece.
-    pub fn hevc_deblock_luma_pieces<T: Pixel>(
-        self,
-        dst: &mut PlaneViewMut<'_, T>,
-        vertical: bool,
-        pieces: &[crate::HevcLumaPiece],
-    ) {
-        T::hevc_deblock_luma_pieces(self, dst, vertical, pieces);
     }
 
     /// [`Dsp::hevc_deblock_chroma_edge`] at this depth, `tc` scaled to it.

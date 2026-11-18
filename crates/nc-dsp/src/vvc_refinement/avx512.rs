@@ -10,7 +10,6 @@ pub(super) const KERNELS: Kernels = Kernels {
     bilinear,
     dmvr,
     bdof,
-    bdof_pad,
     prof,
 };
 
@@ -87,33 +86,6 @@ pub(crate) unsafe fn bdof_u16(
         } else {
             bdof_lanes::bdof_at::<u16, I32x4, I16x8, I16x4>(size, inputs, out, depth);
         }
-    }
-}
-
-#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn bdof_pad(
-    size: (usize, usize),
-    window: &PlaneView<'_>,
-    interior: &[i16],
-    out: &mut [i16],
-) {
-    // SAFETY: this wrapper enables AVX-512F/BW/VL; public API checks buffers.
-    unsafe {
-        generic::bdof_pad::<I16x16, I16x8, I16x4>(size, window, interior, out);
-    }
-}
-
-#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-pub(crate) unsafe fn bdof_pad_u16(
-    size: (usize, usize),
-    window: &PlaneView<'_, u16>,
-    interior: &[i16],
-    out: &mut [i16],
-    depth: BitDepth,
-) {
-    // SAFETY: this wrapper enables AVX-512F/BW/VL; public API checks buffers.
-    unsafe {
-        generic::bdof_pad_u16::<I16x16, I16x8, I16x4>(size, window, interior, out, depth);
     }
 }
 

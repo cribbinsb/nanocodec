@@ -8,11 +8,11 @@
     clippy::many_single_char_names,
     clippy::inline_always
 )]
-use super::{Products, WideLanes};
+use super::{Lanes, Products};
 use crate::vp9_txfm::VP9_COSPI_64 as C;
 
 #[inline(always)]
-pub(crate) fn iadst8<V: WideLanes>(input: &[V; 8], output: &mut [V; 8]) {
+pub(super) fn iadst8<V: Lanes>(input: &[V; 8], output: &mut [V; 8]) {
     let mut s0: V::Wide;
     let mut s1: V::Wide;
     let mut s2: V::Wide;
@@ -80,7 +80,7 @@ pub(crate) fn iadst8<V: WideLanes>(input: &[V; 8], output: &mut [V; 8]) {
 }
 
 #[inline(always)]
-pub(crate) fn iadst16<V: WideLanes>(input: &[V; 16], output: &mut [V; 16]) {
+pub(super) fn iadst16<V: Lanes>(input: &[V; 16], output: &mut [V; 16]) {
     let mut s0: V::Wide;
     let mut s1: V::Wide;
     let mut s2: V::Wide;

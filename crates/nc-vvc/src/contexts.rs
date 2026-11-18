@@ -1,16 +1,9 @@
 //! H.266 §9.3.2 context initialization and dual-window adaptation.
 //!
-//! I/P-slice initialization/window tables and pre-shifted dual-window update
-//! from `VVenC` / `VVdeC` Contexts.h / Contexts.cpp (BSD-3-Clause-Clear, see
-//! `THIRD_PARTY.md`). Only used contexts are retained.
+//! I/P-slice initialization/window tables from `VVenC` Contexts.cpp
+//! (BSD-3-Clause-Clear, see `THIRD_PARTY.md`). Only used contexts are retained.
 const MASK_FAST: u16 = 0x7fe0;
 const MASK_SLOW: u16 = 0x7ffe;
-const FAST_ALIGN_BITS: u8 = 5;
-const SLOW_ALIGN_BITS: u8 = 1;
-const MAX_STATE: u32 = 0x7fff;
-const MPS_THRESHOLD: u32 = 128;
-const PROB_BYTE_MASK: u32 = 255;
-const LPS_BASE: u32 = 4;
 
 /// Probability states of [`Context::probability`].
 const PROBABILITY_STATES: usize = 256;
@@ -64,10 +57,6 @@ pub(crate) struct Context {
     state: [u16; 2],
     rate: [u8; 2],
 }
-#[allow(
-    clippy::inline_always,
-    reason = "per-bin CABAC probability/update methods must inline into syntax loops"
-)]
 impl Context {
     /// Filler for the unused tail of a fixed-size context array.
     pub(crate) const UNUSED: Self = Self {
@@ -79,13 +68,11 @@ impl Context {
         let offset = i32::from(init & 7) * 18 + 1;
         let p = ((((slope * (qp as i32 - 16)) >> 1) + offset).clamp(1, 127) as u16) << 8;
         let fast = 2 + ((window >> 2) & 3);
-        let slow = 3 + fast + (window & 3);
         Self {
             state: [p & MASK_FAST, p & MASK_SLOW],
-            rate: [fast + FAST_ALIGN_BITS, slow + SLOW_ALIGN_BITS],
+            rate: [fast, 3 + fast + (window & 3)],
         }
     }
-    #[inline(always)]
     fn probability(self) -> u8 {
         // Two 15-bit estimates sum below 0x10000: the shifted sum is a byte,
         // so it indexes [`BITS`] without a bounds check.
@@ -94,52 +81,35 @@ impl Context {
     /// Estimated signalling cost from the current dual-window probability:
     /// −log2 of the bin's probability, (`p` + 0.5) / 256 for a one (`p`
     /// from [`Self::probability`], 0..=255) and its complement for a zero.
-    #[inline(always)]
     pub(crate) fn bits(self, bin: bool) -> f32 {
         let p = self.probability();
         BITS[usize::from(if bin { p } else { u8::MAX - p })]
     }
-    #[inline(always)]
     pub(crate) fn mps(self) -> bool {
-        u32::from(self.probability()) >= MPS_THRESHOLD
+        self.probability() >= 128
     }
-    #[inline(always)]
     pub(crate) fn lps(self, range: u32) -> u32 {
         let p = u32::from(self.probability());
-        let q = if p >= MPS_THRESHOLD {
-            p ^ PROB_BYTE_MASK
-        } else {
-            p
-        };
-        (((q >> 2) * (range >> 5)) >> 1) + LPS_BASE
+        let q = if p >= 128 { p ^ 255 } else { p };
+        (((q >> 2) * (range >> 5)) >> 1) + 4
     }
-    #[inline(always)]
     pub(crate) fn update(&mut self, bin: bool) {
-        let (s0, s1) = (u32::from(self.state[0]), u32::from(self.state[1]));
-        self.update_from(bin, s0, s1);
-    }
-    #[inline(always)]
-    fn update_from(&mut self, bin: bool, s0: u32, s1: u32) {
-        let [m0, m1] = self.rate;
-        let target = 0u32.wrapping_sub(u32::from(bin)) & MAX_STATE;
-        self.state[0] =
-            s0.wrapping_add((target >> m0).wrapping_sub(s0 >> m0) << FAST_ALIGN_BITS) as u16;
-        self.state[1] =
-            s1.wrapping_add((target >> m1).wrapping_sub(s1 >> m1) << SLOW_ALIGN_BITS) as u16;
-    }
-    /// Decode one context-coded bin on `engine` and adapt both windows
-    /// without reloading `self.state` across `decide_lps` (`VVdeC`
-    /// `BinProbModel::lpsmps` + `update`).
-    #[inline(always)]
-    pub(crate) fn decode_bin(&mut self, engine: &mut nc_common::cabac::CabacReader<'_>) -> bool {
-        let (s0, s1) = (u32::from(self.state[0]), u32::from(self.state[1]));
-        let p = (s0 + s1) >> 8;
-        let mps = p >= MPS_THRESHOLD;
-        let q = if mps { p ^ PROB_BYTE_MASK } else { p };
-        let lps = (((q >> 2) * (engine.range() >> 5)) >> 1) + LPS_BASE;
-        let bin = mps != engine.decide_lps(lps);
-        self.update_from(bin, s0, s1);
-        bin
+        for ((state, rate), mask) in self
+            .state
+            .iter_mut()
+            .zip(self.rate)
+            .zip([MASK_FAST, MASK_SLOW])
+        {
+            // In 32 bits: a shift by the window (at most 11) needs no
+            // 16-bit count masking, and every value stays below 0x8000.
+            let (rate, mask) = (u32::from(rate), u32::from(mask));
+            let mut value = u32::from(*state);
+            value -= (value >> rate) & mask;
+            if bin {
+                value += (0x7fff >> rate) & mask;
+            }
+            *state = value as u16;
+        }
     }
 }
 

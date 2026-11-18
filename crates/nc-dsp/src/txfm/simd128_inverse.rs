@@ -9,11 +9,11 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::wasm32::{
-    i16x8_abs, i16x8_add, i16x8_max, i16x8_min, i16x8_narrow_i32x4, i16x8_shr, i16x8_shuffle,
-    i16x8_splat, i16x8_sub, i32x4_add, i32x4_dot_i16x8, i32x4_extmul_high_i16x8,
-    i32x4_extmul_low_i16x8, i32x4_shr, i32x4_shuffle, i32x4_splat, i64x2_shuffle,
-    u8x16_narrow_i16x8, u16x8_add_sat, u16x8_extend_low_u8x16, u16x8_gt, u16x8_splat, v128,
-    v128_and, v128_any_true, v128_load, v128_load64_zero, v128_store, v128_store64_lane,
+    i16x8_abs, i16x8_add, i16x8_narrow_i32x4, i16x8_shr, i16x8_shuffle, i16x8_splat, i16x8_sub,
+    i32x4_add, i32x4_dot_i16x8, i32x4_extmul_high_i16x8, i32x4_extmul_low_i16x8, i32x4_shr,
+    i32x4_shuffle, i32x4_splat, i64x2_shuffle, u8x16_narrow_i16x8, u16x8_add_sat,
+    u16x8_extend_low_u8x16, u16x8_gt, u16x8_splat, v128, v128_and, v128_any_true, v128_load,
+    v128_load64_zero, v128_store, v128_store64_lane,
 };
 
 use super::generic::INVERSE_COS_BIT;
@@ -185,18 +185,6 @@ impl NarrowLanes for Narrow {
             v128_store64_lane::<0>(u8x16_narrow_i16x8(sum, sum), pixels.as_mut_ptr().cast());
         }
     }
-
-    #[inline(always)]
-    fn add_to_u16(self, pixels: &mut [u16], max_val: i32) {
-        let pixels = &mut pixels[..GROUP];
-        // SAFETY: 16-byte load/store of 8 `u16`s (`0..=max_val`).
-        unsafe {
-            let prediction = v128_load(pixels.as_ptr().cast());
-            let sum = i16x8_add(self.0, prediction);
-            let clipped = i16x8_min(i16x8_max(sum, i16x8_splat(0)), i16x8_splat(max_val as i16));
-            v128_store(pixels.as_mut_ptr().cast(), clipped);
-        }
-    }
 }
 
 pub(super) unsafe fn inverse_8(coeffs: &[i16], dst: &mut [u8], stride: usize) {
@@ -293,29 +281,6 @@ pub(crate) unsafe fn av1_inverse_add<C: NarrowCoefficient, const W: usize, const
     stride: usize,
 ) {
     narrow_inverse::inverse_lanes::<Narrow, C, W, H>(kernels, coeffs, nonzero_rows, dst, stride);
-}
-
-/// 10-bit `u16` counterpart of [`av1_inverse_add`] (`W >= 8 && H >= 8`).
-///
-/// # Safety
-///
-/// None beyond the slice contract (the build enables SIMD128).
-pub(crate) unsafe fn av1_inverse_add_u16<C: NarrowCoefficient, const W: usize, const H: usize>(
-    kernels: (Kernel1d, Kernel1d),
-    coeffs: &[C],
-    nonzero_rows: usize,
-    dst: &mut [u16],
-    stride: usize,
-    max_val: i32,
-) {
-    narrow_inverse::inverse_lanes_u16::<Narrow, C, W, H>(
-        kernels,
-        coeffs,
-        nonzero_rows,
-        dst,
-        stride,
-        max_val,
-    );
 }
 
 #[cfg(test)]

@@ -43,9 +43,6 @@ use super::inverse_lanes::InverseLanes;
 #[cfg(test)]
 use super::inverse_lanes::NARROW_INVERSE_L1_LIMIT;
 use super::{COSPI_12, dct};
-use crate::av1_inverse::generic::{
-    Clamped, PRESCALE_I32_CAP, as_clamped, as_clamped_mut, clamp_bits,
-};
 use crate::av1_inverse::one_d::{iadst8, iadst16, identity};
 use crate::av1_inverse::{Av1TxSize, Kernel1d};
 use crate::simd::I32Lanes;
@@ -103,43 +100,6 @@ impl NarrowCoefficient for i16 {
     }
 }
 
-/// Destination sample type of [`inverse_for_pixel`]: 8-bit `u8` (`ROW_BITS =
-/// 16`) or 10-bit `u16` (`ROW_BITS = 18`, `COL_BITS = 16`, clipped to
-/// `0..=max_val`).
-pub(crate) trait NarrowPixel: Copy {
-    const ROW_BITS: u32;
-    fn add_narrow<V: NarrowLanes>(residual: V, dst: &mut [Self], max_val: i32);
-    fn add_wide<W: I32Lanes>(residual: W, dst: &mut [Self], max_val: i32);
-}
-
-impl NarrowPixel for u8 {
-    const ROW_BITS: u32 = 16;
-
-    #[inline(always)]
-    fn add_narrow<V: NarrowLanes>(residual: V, dst: &mut [u8], _max_val: i32) {
-        residual.add_to_pixels(dst);
-    }
-
-    #[inline(always)]
-    fn add_wide<W: I32Lanes>(residual: W, dst: &mut [u8], _max_val: i32) {
-        residual.add_to_u8(dst);
-    }
-}
-
-impl NarrowPixel for u16 {
-    const ROW_BITS: u32 = 18;
-
-    #[inline(always)]
-    fn add_narrow<V: NarrowLanes>(residual: V, dst: &mut [u16], max_val: i32) {
-        residual.add_to_u16(dst, max_val);
-    }
-
-    #[inline(always)]
-    fn add_wide<W: I32Lanes>(residual: W, dst: &mut [u16], max_val: i32) {
-        residual.add_to_u16(dst, max_val);
-    }
-}
-
 /// [`Self::LANES`] 16-bit lanes (one transform each) of an inverse pass,
 /// exact only inside the L1 limit (the [`InverseLanes`] arithmetic wraps),
 /// plus the loads, stores and shuffles the pass drivers need. Lanes come in
@@ -175,64 +135,53 @@ pub(crate) trait NarrowLanes: InverseLanes {
     /// Add the residual `self` to the first `LANES` pixels with 8-bit
     /// clipping.
     fn add_to_pixels(self, pixels: &mut [u8]);
-    /// Add the residual `self` (within `[-2048, 2048]`) to the first `LANES`
-    /// `u16` samples (`0..=max_val`), clipped to `0..=max_val`.
-    fn add_to_u16(self, pixels: &mut [u16], max_val: i32);
     /// [`wide_row_batch`], out of line: the rare wide fallback stays out of
     /// the hot graph's instruction cache. An ISA enabled only per function
     /// (AVX2) overrides this with a function compiled for it: without that,
     /// every intrinsic of the 32-bit graph was an out-of-line call (3,060 in
     /// one 32x32 row fallback; a dense 32x32 inverse took 29.6 us instead of
     /// 0.27 us on Zen 5).
-    fn wide_rows<C: NarrowCoefficient, S: NarrowPixel, const W: usize, const H: usize>(
+    fn wide_rows<C: NarrowCoefficient, const W: usize, const H: usize>(
         inverse: Inverse,
         coeffs: &[C],
         r0: usize,
     ) -> [Self; W] {
-        outlined_rows::<Self, C, S, W, H>(inverse, coeffs, r0)
+        outlined_rows::<Self, C, W, H>(inverse, coeffs, r0)
     }
     /// [`wide_column_batch`], out of line; as [`Self::wide_rows`].
-    fn wide_columns<S: NarrowPixel, const W: usize, const H: usize>(
+    fn wide_columns<const W: usize, const H: usize>(
         vertical: Kernel1d,
         rows: &[i16],
         live_rows: usize,
         c0: usize,
-        dst: &mut [S],
+        dst: &mut [u8],
         stride: usize,
-        max_val: i32,
     ) {
-        outlined_columns::<Self, S, W, H>(vertical, rows, live_rows, c0, dst, stride, max_val);
+        outlined_columns::<Self, W, H>(vertical, rows, live_rows, c0, dst, stride);
     }
 }
 
 /// [`NarrowLanes::wide_rows`] for ISAs enabled for the whole build.
 #[inline(never)]
-fn outlined_rows<
-    V: NarrowLanes,
-    C: NarrowCoefficient,
-    S: NarrowPixel,
-    const W: usize,
-    const H: usize,
->(
+fn outlined_rows<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
     inverse: Inverse,
     coeffs: &[C],
     r0: usize,
 ) -> [V; W] {
-    wide_row_batch::<V, C, S, W, H>(inverse, coeffs, r0)
+    wide_row_batch::<V, C, W, H>(inverse, coeffs, r0)
 }
 
 /// [`NarrowLanes::wide_columns`] for ISAs enabled for the whole build.
 #[inline(never)]
-fn outlined_columns<V: NarrowLanes, S: NarrowPixel, const W: usize, const H: usize>(
+fn outlined_columns<V: NarrowLanes, const W: usize, const H: usize>(
     vertical: Kernel1d,
     rows: &[i16],
     live_rows: usize,
     c0: usize,
-    dst: &mut [S],
+    dst: &mut [u8],
     stride: usize,
-    max_val: i32,
 ) {
-    wide_column_batch::<V, S, W, H>(vertical, rows, live_rows, c0, dst, stride, max_val);
+    wide_column_batch::<V, W, H>(vertical, rows, live_rows, c0, dst, stride);
 }
 
 /// The largest input L1 norm for which every node of `kind`'s `n`-point
@@ -353,20 +302,17 @@ pub(crate) struct Inverse {
 }
 
 /// Inverse `W`x`H` transform of the column-major coefficients
-/// (`coeffs[c * coded_h + r]`), added to `dst` (`u8` or 10-bit `u16`).
+/// (`coeffs[c * coded_h + r]`), added to `dst` with 8-bit clipping.
+///
+/// # Panics
+///
+/// If a buffer is too short or the extent exceeds the coded area.
 #[inline(always)]
-fn inverse_for_pixel<
-    V: NarrowLanes,
-    C: NarrowCoefficient,
-    S: NarrowPixel,
-    const W: usize,
-    const H: usize,
->(
+pub(super) fn inverse<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
     inverse: Inverse,
     coeffs: &[C],
-    dst: &mut [S],
+    dst: &mut [u8],
     stride: usize,
-    max_val: i32,
 ) {
     let coded_h = H.min(CODED_MAX);
     assert!(V::LANES <= W && V::LANES <= H && V::LANES <= MAX_LANES);
@@ -379,7 +325,7 @@ fn inverse_for_pixel<
     let mut rows = [MaybeUninit::<i16>::uninit(); ROWS_CAPACITY];
     assert!(live_rows * W <= ROWS_CAPACITY && live_rows <= coded_h);
     for r0 in (0..live_rows).step_by(V::LANES) {
-        let output = row_batch::<V, C, S, W, H>(inverse, coeffs, r0);
+        let output = row_batch::<V, C, W, H>(inverse, coeffs, r0);
         for k0 in (0..W).step_by(GROUP) {
             let mut tile = [V::splat(0); GROUP];
             tile.copy_from_slice(&output[k0..k0 + GROUP]);
@@ -397,24 +343,8 @@ fn inverse_for_pixel<
     // stores all W columns of its LANES rows); only those are viewed.
     let rows = unsafe { core::slice::from_raw_parts(rows.as_ptr().cast::<i16>(), live_rows * W) };
     for c0 in (0..W).step_by(V::LANES) {
-        column_batch::<V, S, W, H>(inverse.vertical, rows, live_rows, c0, dst, stride, max_val);
+        column_batch::<V, W, H>(inverse.vertical, rows, live_rows, c0, dst, stride);
     }
-}
-
-/// Inverse `W`x`H` transform of the column-major coefficients
-/// (`coeffs[c * coded_h + r]`), added to `dst` with 8-bit clipping.
-///
-/// # Panics
-///
-/// If a buffer is too short or the extent exceeds the coded area.
-#[inline(always)]
-pub(super) fn inverse<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
-    inverse: Inverse,
-    coeffs: &[C],
-    dst: &mut [u8],
-    stride: usize,
-) {
-    inverse_for_pixel::<V, C, u8, W, H>(inverse, coeffs, dst, stride, 255);
 }
 
 /// The size with these sides.
@@ -427,16 +357,9 @@ const fn size<const W: usize, const H: usize>() -> Av1TxSize {
 
 /// Row transforms of rows `r0..r0 + LANES` (one per lane), shifted by the
 /// size's row shift. Coefficients are clamped to 16 bits on load (libaom's
-/// input clamp; inside the L1 limit `|coeff| <= 23_170`, so 18-bit 10-bit
-/// inputs are lossless too) and prescaled for 2:1 rectangles.
+/// input clamp) and prescaled for 2:1 rectangles.
 #[inline(always)]
-fn row_batch<
-    V: NarrowLanes,
-    C: NarrowCoefficient,
-    S: NarrowPixel,
-    const W: usize,
-    const H: usize,
->(
+fn row_batch<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
     inverse: Inverse,
     coeffs: &[C],
     r0: usize,
@@ -457,7 +380,7 @@ fn row_batch<
         };
     }
     if !V::within_limit(norm, l1_limit(inverse.horizontal, W)) {
-        return V::wide_rows::<C, S, W, H>(inverse, coeffs, r0);
+        return V::wide_rows::<C, W, H>(inverse, coeffs, r0);
     }
     let mut y = [V::splat(0); W];
     transform(inverse.horizontal, &x, &mut y, inverse.columns);
@@ -473,15 +396,13 @@ fn row_batch<
     y
 }
 
-/// [`row_batch`] above the L1 limit: libaom's clamped 32-bit graph (`S::ROW_BITS`
-/// = 16 at 8-bit, 18 at 10-bit), `V::Wide::LANES` lanes at a time, then the
-/// row shift and libaom's 16-bit column input clamp (shared by 8-bit and
-/// 10-bit), which the saturating narrow applies.
+/// [`row_batch`] above the L1 limit: libaom's clamped 32-bit graph,
+/// `V::Wide::LANES` lanes at a time, then the row shift and libaom's 16-bit
+/// column input clamp, which the saturating narrow applies.
 #[inline(always)]
 pub(super) fn wide_row_batch<
     V: NarrowLanes,
     C: NarrowCoefficient,
-    S: NarrowPixel,
     const W: usize,
     const H: usize,
 >(
@@ -491,36 +412,19 @@ pub(super) fn wide_row_batch<
 ) -> [V; W] {
     let coded_h = H.min(CODED_MAX);
     let size = size::<W, H>();
-    let two_to_one = size.is_two_to_one();
     let mut wide = [[0_i32; MAX_LANES]; W];
     let mut x = [<V::Wide as I32Lanes>::splat(0); W];
     let mut out = x;
     for part in (0..V::LANES).step_by(V::Wide::LANES) {
         for (c, lane) in x[..inverse.columns].iter_mut().enumerate() {
-            let raw = C::wide::<V::Wide>(&coeffs[c * coded_h + r0 + part..]);
-            *lane = if S::ROW_BITS == 16 {
-                let v = I32Lanes::clamp16(raw);
-                if two_to_one {
-                    v.mul_scalar(INV_SQRT2).round_shift(INVERSE_COS_BIT)
-                } else {
-                    v
-                }
-            } else if two_to_one {
-                let capped = raw
-                    .max(<V::Wide as I32Lanes>::splat(-PRESCALE_I32_CAP))
-                    .min(<V::Wide as I32Lanes>::splat(PRESCALE_I32_CAP));
-                clamp_bits::<V::Wide, 18>(capped.mul_scalar(INV_SQRT2).round_shift(INVERSE_COS_BIT))
+            let v = I32Lanes::clamp16(C::wide::<V::Wide>(&coeffs[c * coded_h + r0 + part..]));
+            *lane = if size.is_two_to_one() {
+                v.mul_scalar(INV_SQRT2).round_shift(INVERSE_COS_BIT)
             } else {
-                clamp_bits::<V::Wide, 18>(raw)
+                v
             };
         }
-        if S::ROW_BITS == 16 {
-            transform(inverse.horizontal, &x, &mut out, inverse.columns);
-        } else {
-            let xc = as_clamped::<V::Wide, 18, W>(&x);
-            let yc = as_clamped_mut::<V::Wide, 18, W>(&mut out);
-            transform::<Clamped<V::Wide, 18>, W>(inverse.horizontal, xc, yc, inverse.columns);
-        }
+        transform(inverse.horizontal, &x, &mut out, inverse.columns);
         for (k, value) in out.iter().enumerate() {
             value
                 .round_shift(size.row_shift())
@@ -535,16 +439,16 @@ pub(super) fn wide_row_batch<
 }
 
 /// Column transforms of columns `c0..c0 + LANES` (one per lane), rounded and
-/// added to the prediction. Rows from `live_rows` on are zero.
+/// added to the prediction with 8-bit clipping. Rows from `live_rows` on are
+/// zero.
 #[inline(always)]
-fn column_batch<V: NarrowLanes, S: NarrowPixel, const W: usize, const H: usize>(
+fn column_batch<V: NarrowLanes, const W: usize, const H: usize>(
     vertical: Kernel1d,
     rows: &[i16],
     live_rows: usize,
     c0: usize,
-    dst: &mut [S],
+    dst: &mut [u8],
     stride: usize,
-    max_val: i32,
 ) {
     let mut x = [V::splat(0); H];
     let mut norm = V::norm_zero();
@@ -554,32 +458,28 @@ fn column_batch<V: NarrowLanes, S: NarrowPixel, const W: usize, const H: usize>(
         *lane = v;
     }
     if !V::within_limit(norm, l1_limit(vertical, H)) {
-        V::wide_columns::<S, W, H>(vertical, rows, live_rows, c0, dst, stride, max_val);
+        V::wide_columns::<W, H>(vertical, rows, live_rows, c0, dst, stride);
         return;
     }
     let mut y = [V::splat(0); H];
     transform(vertical, &x, &mut y, live_rows);
     for (r, value) in y.iter().enumerate() {
-        S::add_narrow(
-            value.round_shift::<COLUMN_SHIFT>(),
-            &mut dst[r * stride + c0..][..V::LANES],
-            max_val,
-        );
+        value
+            .round_shift::<COLUMN_SHIFT>()
+            .add_to_pixels(&mut dst[r * stride + c0..][..V::LANES]);
     }
 }
 
-/// [`column_batch`] above the L1 limit: libaom's 16-bit-clamped 32-bit graph
-/// (normative for both 8-bit and 10-bit column passes). The row outputs are
-/// already within 16 bits (libaom's column input clamp).
+/// [`column_batch`] above the L1 limit: libaom's clamped 32-bit graph. The
+/// row outputs are already within 16 bits (libaom's column input clamp).
 #[inline(always)]
-pub(super) fn wide_column_batch<V: NarrowLanes, S: NarrowPixel, const W: usize, const H: usize>(
+pub(super) fn wide_column_batch<V: NarrowLanes, const W: usize, const H: usize>(
     vertical: Kernel1d,
     rows: &[i16],
     live_rows: usize,
     c0: usize,
-    dst: &mut [S],
+    dst: &mut [u8],
     stride: usize,
-    max_val: i32,
 ) {
     let mut x = [<V::Wide as I32Lanes>::splat(0); H];
     let mut out = x;
@@ -589,11 +489,9 @@ pub(super) fn wide_column_batch<V: NarrowLanes, S: NarrowPixel, const W: usize, 
         }
         transform(vertical, &x, &mut out, live_rows);
         for (r, value) in out.iter().enumerate() {
-            S::add_wide(
-                value.round_shift(INVERSE_COLUMN_SHIFT),
-                &mut dst[r * stride + c0 + part..],
-                max_val,
-            );
+            value
+                .round_shift(INVERSE_COLUMN_SHIFT)
+                .add_to_u8(&mut dst[r * stride + c0 + part..]);
         }
     }
 }
@@ -622,12 +520,11 @@ impl Inverse {
 /// The square `DCT_DCT` of side `N` whose nonzero coefficients lie in the
 /// top-left `limit` square (8, 16 or 32; at most the coded side).
 #[inline(always)]
-fn inverse_dct_for_pixel<V: NarrowLanes, C: NarrowCoefficient, S: NarrowPixel, const N: usize>(
+pub(super) fn inverse_dct<V: NarrowLanes, C: NarrowCoefficient, const N: usize>(
     coeffs: &[C],
-    dst: &mut [S],
+    dst: &mut [u8],
     stride: usize,
     limit: usize,
-    max_val: i32,
 ) {
     let extent = Inverse {
         vertical: Kernel1d::Dct,
@@ -635,42 +532,7 @@ fn inverse_dct_for_pixel<V: NarrowLanes, C: NarrowCoefficient, S: NarrowPixel, c
         rows: limit,
         columns: limit,
     };
-    inverse_for_pixel::<V, C, S, N, N>(extent, coeffs, dst, stride, max_val);
-}
-
-/// The square `DCT_DCT` of side `N` whose nonzero coefficients lie in the
-/// top-left `limit` square (8, 16 or 32; at most the coded side).
-#[inline(always)]
-pub(super) fn inverse_dct<V: NarrowLanes, C: NarrowCoefficient, const N: usize>(
-    coeffs: &[C],
-    dst: &mut [u8],
-    stride: usize,
-    limit: usize,
-) {
-    inverse_dct_for_pixel::<V, C, u8, N>(coeffs, dst, stride, limit, 255);
-}
-
-#[inline(always)]
-fn inverse_dct_square_for_pixel<
-    V: NarrowLanes,
-    C: NarrowCoefficient,
-    S: NarrowPixel,
-    const N: usize,
->(
-    coeffs: &[C],
-    dst: &mut [S],
-    stride: usize,
-    limit: usize,
-    max_val: i32,
-) {
-    let coded = N.min(CODED_MAX);
-    if limit <= LOW_SQUARE_8 {
-        inverse_dct_for_pixel::<V, C, S, N>(coeffs, dst, stride, LOW_SQUARE_8, max_val);
-    } else if limit <= LOW_SQUARE_16 && LOW_SQUARE_16 < coded {
-        inverse_dct_for_pixel::<V, C, S, N>(coeffs, dst, stride, LOW_SQUARE_16, max_val);
-    } else {
-        inverse_dct_for_pixel::<V, C, S, N>(coeffs, dst, stride, coded, max_val);
-    }
+    inverse::<V, C, N, N>(extent, coeffs, dst, stride);
 }
 
 /// The `av1_inverse` table entry for `W`x`H` (both sides at least 8) on `V`
@@ -702,34 +564,6 @@ pub(super) fn inverse_lanes<
     }
 }
 
-/// 10-bit `u16` counterpart of [`inverse_lanes`] (`ROW_BITS = 18`, `COL_BITS = 16`).
-#[inline(always)]
-pub(super) fn inverse_lanes_u16<
-    V: NarrowLanes,
-    C: NarrowCoefficient,
-    const W: usize,
-    const H: usize,
->(
-    kernels: (Kernel1d, Kernel1d),
-    coeffs: &[C],
-    nonzero_rows: usize,
-    dst: &mut [u16],
-    stride: usize,
-    max_val: i32,
-) {
-    if W == H && kernels == (Kernel1d::Dct, Kernel1d::Dct) {
-        inverse_dct_square_for_pixel::<V, C, u16, W>(coeffs, dst, stride, nonzero_rows, max_val);
-    } else {
-        inverse_for_pixel::<V, C, u16, W, H>(
-            Inverse::of::<W, H>(kernels, nonzero_rows),
-            coeffs,
-            dst,
-            stride,
-            max_val,
-        );
-    }
-}
-
 /// [`inverse_dct`] of an `N`x`N` whose nonzero coefficients lie in the low
 /// `limit` square, rounded up to 8, 16 or the coded side. Each case passes a
 /// constant limit, so the driver's loops unroll for it as in the full-size
@@ -742,7 +576,14 @@ pub(super) fn inverse_dct_square<V: NarrowLanes, C: NarrowCoefficient, const N: 
     stride: usize,
     limit: usize,
 ) {
-    inverse_dct_square_for_pixel::<V, C, u8, N>(coeffs, dst, stride, limit, 255);
+    let coded = N.min(CODED_MAX);
+    if limit <= LOW_SQUARE_8 {
+        inverse_dct::<V, C, N>(coeffs, dst, stride, LOW_SQUARE_8);
+    } else if limit <= LOW_SQUARE_16 && LOW_SQUARE_16 < coded {
+        inverse_dct::<V, C, N>(coeffs, dst, stride, LOW_SQUARE_16);
+    } else {
+        inverse_dct::<V, C, N>(coeffs, dst, stride, coded);
+    }
 }
 
 /// The low squares of [`inverse_dct_square`].

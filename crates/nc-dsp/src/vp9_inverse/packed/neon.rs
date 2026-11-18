@@ -1,7 +1,7 @@
 //! NEON VP9 inverse lanes: wrapping butterflies, widening rotations and
 //! non-saturating narrows, matching libvpx's full-range inverse semantics.
 
-use super::{COS_BITS, Lanes, Products, WideLanes};
+use super::{COS_BITS, Lanes, Products};
 use crate::Vp9Pass;
 use crate::txfm::inverse_lanes::InverseLanes;
 use core::arch::aarch64::{
@@ -107,7 +107,7 @@ impl InverseLanes for Narrow {
     }
 }
 
-impl WideLanes for Narrow {
+impl Lanes for Narrow {
     type Wide = Wide;
     #[inline(always)]
     fn wide(self, weight: i32) -> Wide {
@@ -135,9 +135,6 @@ impl WideLanes for Narrow {
             ])
         }
     }
-}
-
-impl Lanes for Narrow {
     #[inline(always)]
     fn load_i16(src: &[i16]) -> Self {
         let src = &src[..super::LANES];

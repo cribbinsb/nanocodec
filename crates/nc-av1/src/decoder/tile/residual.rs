@@ -3,7 +3,7 @@
 //! block's transform blocks in 64x64 chunks, clipped to the frame, the
 //! coefficient contexts of each (§8.3.2), and reconstruction.
 use super::super::availability::PlaneTransform;
-use super::super::block_info::{BlockInfo, Neighbours, splat_slice};
+use super::super::block_info::{BlockInfo, Neighbours};
 use super::super::block_size::BlockSize;
 use super::super::coefficients::{self, Coded, Request, TxTypeSource, TxbNeighbours};
 use super::super::transform::{TxSet, TxSize, chroma_block, intra_mode_tx_type};
@@ -229,15 +229,14 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             let columns = span(block.mi_col, w4);
             let rows = span(block.mi_row, h4);
             let first = rows.start % (self.superblock.height_mi() >> ss);
-            splat_slice(&mut self.above[index][columns], 0);
-            splat_slice(&mut self.left[index][first..first + rows.len()], 0);
+            self.above[index][columns].fill(0);
+            self.left[index][first..first + rows.len()].fill(0);
         }
     }
 
     /// Set the coefficient contexts a transform block leaves over `w4` x
     /// `h4` units from plane unit (`x4`, `y4`); units outside the frame
     /// hold 0 (libaom `av1_set_entropy_contexts`).
-    #[inline]
     fn set_contexts(
         &mut self,
         plane: PlaneIndex,
@@ -252,15 +251,15 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             (self.header.height / 4) >> ss,
         );
         let above = &mut self.above[index][x4..x4 + w4];
-        splat_slice(above, value);
+        above.fill(value);
         if x4 + w4 > columns {
-            splat_slice(&mut above[columns.saturating_sub(x4)..], 0);
+            above[columns.saturating_sub(x4)..].fill(0);
         }
         let row = y4 % (self.superblock.height_mi() >> ss);
         let left = &mut self.left[index][row..row + h4];
-        splat_slice(left, value);
+        left.fill(value);
         if y4 + h4 > rows {
-            splat_slice(&mut left[rows.saturating_sub(y4)..], 0);
+            left[rows.saturating_sub(y4)..].fill(0);
         }
     }
 

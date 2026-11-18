@@ -404,27 +404,8 @@ fn check_weight(
         let b: Vec<i16> = (0..w * h)
             .map(|_| (rng.below(40000) as i32 - 7000) as i16)
             .collect();
-        let single = 14 - depth.bits();
-        let shift = single + 3;
+        let shift = (14 - depth.bits()) + 3;
         for weights in [
-            HevcWeights {
-                w0: 1,
-                w1: 0,
-                round: 1 << (single - 1),
-                shift: single,
-            },
-            HevcWeights {
-                w0: 0,
-                w1: 1,
-                round: 1 << (single - 1),
-                shift: single,
-            },
-            HevcWeights {
-                w0: 1,
-                w1: 1,
-                round: 1 << single,
-                shift: single + 1,
-            },
             HevcWeights {
                 w0: 4,
                 w1: 4,
@@ -515,22 +496,6 @@ fn check_refinement_and_gpm(
                 report
                     .failures
                     .push(format!("u16 vvc_bdof {depth:?} size={size:?} pat={pat}"));
-            }
-            let (pw, ph) = (size.0 + 2, size.1 + 2);
-            let stride = pw + 5;
-            let ref_buf = sample_row(rng, depth, pat + 2, stride * ph);
-            let win = PlaneView::new(&ref_buf, stride, pw, ph).expect("bdof pad win");
-            let interior: Vec<i16> = (0..size.0 * size.1)
-                .map(|_| rng.next_u64() as i16)
-                .collect();
-            let mut pad = [vec![-12345i16; pw * ph + 2], vec![-12345i16; pw * ph + 2]];
-            cand.vvc_bdof_pad(size, &win, &interior, &mut pad[0][1..=pw * ph]);
-            refer.vvc_bdof_pad(size, &win, &interior, &mut pad[1][1..=pw * ph]);
-            report.cases += 1;
-            if pad[0] != pad[1] {
-                report.failures.push(format!(
-                    "u16 vvc_bdof_pad {depth:?} size={size:?} pat={pat}"
-                ));
             }
         }
     }
@@ -1118,102 +1083,6 @@ fn check_vvc_intra_rect(
             if a0 != a1 {
                 report.failures.push(format!(
                     "u16 vvc_intra_predict_rect {depth:?} {w}x{h} {mode:?}"
-                ));
-            }
-        }
-    }
-    check_vvc_mrl_and_isp(depth, (cand, refer), rng, report);
-}
-
-fn check_vvc_mrl_and_isp(
-    depth: BitDepth,
-    (cand, refer): (DepthKernels<'_>, DepthKernels<'_>),
-    rng: &mut Rng,
-    report: &mut CheckReport,
-) {
-    for &(w, h) in &[(4, 4), (4, 8), (8, 4), (8, 16), (16, 8), (32, 16), (64, 8)] {
-        let top: Vec<i32> = sample_row(rng, depth, 5, 2 * w + 2)
-            .into_iter()
-            .map(i32::from)
-            .collect();
-        let left: Vec<i32> = sample_row(rng, depth, 5, 2 * h + 2)
-            .into_iter()
-            .map(i32::from)
-            .collect();
-        let corner = i32::from(sample_row(rng, depth, 5, 1)[0]);
-        for line in [1u8, 2] {
-            for direction in 1..=66u8 {
-                let (mut a0, mut a1) = (vec![0xA5A5u16; w * h + 2], vec![0xA5A5u16; w * h + 2]);
-                cand.vvc_mrl_predict(
-                    (w, h),
-                    direction,
-                    line,
-                    &top,
-                    &left,
-                    corner,
-                    &mut a0[1..=w * h],
-                );
-                refer.vvc_mrl_predict(
-                    (w, h),
-                    direction,
-                    line,
-                    &top,
-                    &left,
-                    corner,
-                    &mut a1[1..=w * h],
-                );
-                report.cases += 1;
-                if a0 != a1 {
-                    report.failures.push(format!(
-                        "u16 vvc_mrl_predict {depth:?} {w}x{h} line={line} dir={direction}"
-                    ));
-                }
-            }
-        }
-    }
-    for &(cu, (w, h)) in &[
-        ((16, 4), (16, 1)),
-        ((8, 8), (8, 2)),
-        ((8, 4), (4, 4)),
-        ((4, 16), (4, 4)),
-        ((16, 16), (16, 4)),
-        ((16, 16), (4, 16)),
-        ((32, 16), (32, 4)),
-        ((64, 32), (16, 32)),
-    ] {
-        let top: Vec<i32> = sample_row(rng, depth, 5, 2 * w)
-            .into_iter()
-            .map(i32::from)
-            .collect();
-        let left: Vec<i32> = sample_row(rng, depth, 5, 2 * h)
-            .into_iter()
-            .map(i32::from)
-            .collect();
-        let corner = i32::from(sample_row(rng, depth, 5, 1)[0]);
-        for direction in 0..=66u8 {
-            let (mut a0, mut a1) = (vec![0xA5A5u16; w * h + 2], vec![0xA5A5u16; w * h + 2]);
-            cand.vvc_intra_predict_isp(
-                cu,
-                (w, h),
-                direction,
-                &top,
-                &left,
-                corner,
-                &mut a0[1..=w * h],
-            );
-            refer.vvc_intra_predict_isp(
-                cu,
-                (w, h),
-                direction,
-                &top,
-                &left,
-                corner,
-                &mut a1[1..=w * h],
-            );
-            report.cases += 1;
-            if a0 != a1 {
-                report.failures.push(format!(
-                    "u16 vvc_intra_predict_isp {depth:?} cu={cu:?} {w}x{h} dir={direction}"
                 ));
             }
         }

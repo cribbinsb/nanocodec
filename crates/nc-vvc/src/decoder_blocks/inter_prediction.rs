@@ -146,13 +146,20 @@ fn inter_prediction<T: Pixel>(
     luma: bool,
     out: &mut [T],
 ) {
+    let predict = if luma {
+        crate::inter::predict_luma
+    } else {
+        crate::inter::predict_chroma
+    };
     if size.0 >= 4 && size.1 >= 4 {
-        let mut dst = crate::inter::packed(out, size);
-        if luma {
-            crate::inter::predict_luma(dsp, reference, position, size, vector, &mut dst);
-        } else {
-            crate::inter::predict_chroma(dsp, reference, position, size, vector, &mut dst);
-        }
+        predict(
+            dsp,
+            reference,
+            position,
+            size,
+            vector,
+            &mut crate::inter::packed(out, size),
+        );
     } else {
         let padded = (size.0.max(4), size.1.max(4));
         let mut small = [T::default(); 4 * 64];
@@ -164,23 +171,18 @@ fn inter_prediction<T: Pixel>(
             &mut heap
         };
         let mut view = crate::inter::packed(samples, padded);
-        if luma {
-            crate::inter::predict_luma(dsp, reference, position, padded, vector, &mut view);
-        } else {
-            crate::inter::predict_chroma(dsp, reference, position, padded, vector, &mut view);
-        }
+        predict(dsp, reference, position, padded, vector, &mut view);
         for (dest, source) in out
             .chunks_exact_mut(size.0)
             .zip(samples.chunks_exact(padded.0))
         {
-            nc_common::copy_row(dest, &source[..size.0]);
+            dest.copy_from_slice(&source[..size.0]);
         }
     }
 }
 
 /// Reusable slice-level scratch for high-precision inter prediction, avoiding
 /// per-block stack zeroing of prediction and bounded reference windows.
-#[derive(Debug)]
 pub(super) struct InterScratch<T: Sample = u8> {
     pub s0: [i16; 64 * 64],
     pub s1: [i16; 64 * 64],
@@ -245,19 +247,18 @@ pub(super) fn predict<T: Pixel>(
     let flags = (motion.half, affine);
     assert!(len <= scratch.s0.len());
     let (s0, s1) = (&mut scratch.s0[..len], &mut scratch.s1[..len]);
-    let win = &mut scratch.window[..];
     match motion.lists {
         [Some(v0), None] => {
-            high_precision(dsp, references, (0, v0), plane, region, flags, win, s0);
+            high_precision(dsp, references, (0, v0), plane, region, flags, s0);
             combine(dsp, (motion, references.weights, plane), s0, s0, size, out);
         }
         [None, Some(v1)] => {
-            high_precision(dsp, references, (1, v1), plane, region, flags, win, s1);
+            high_precision(dsp, references, (1, v1), plane, region, flags, s1);
             combine(dsp, (motion, references.weights, plane), s1, s1, size, out);
         }
         [Some(v0), Some(v1)] => {
-            high_precision(dsp, references, (0, v0), plane, region, flags, win, s0);
-            high_precision(dsp, references, (1, v1), plane, region, flags, win, s1);
+            high_precision(dsp, references, (0, v0), plane, region, flags, s0);
+            high_precision(dsp, references, (1, v1), plane, region, flags, s1);
             combine(dsp, (motion, references.weights, plane), s0, s1, size, out);
         }
         [None, None] => {
@@ -266,14 +267,21 @@ pub(super) fn predict<T: Pixel>(
         }
     }
 }
-/// Combine the high-precision predictions of a block's lists into `destination`.
-pub(super) fn combine_into<T: Pixel>(
+/// Combine the high-precision predictions of a block's lists: explicit
+/// weights when the slice has them and the block's BCW index is the default,
+/// else the default or BCW average.
+/// (H.266 §8.5.6.6.2: one list `shift1 = 14 − BitDepth`; BCW `shift3 =
+/// 17 − BitDepth` with weights summing to 8, the default average as BCW's
+/// equal weights.)
+pub(super) fn combine<T: Pixel>(
     dsp: DepthKernels<'_>,
     (motion, explicit_weights, plane): (Motion, Option<&Weights>, PlaneIndex),
     first: &[i16],
     second: &[i16],
-    destination: &mut PlaneViewMut<'_, T>,
+    size: (usize, usize),
+    out: &mut [T],
 ) {
+    let (w, h) = size;
     let depth = BitDepth::of::<T>(dsp.depth());
     let single = precision_bits(depth);
     let pair = single + BCW_BITS;
@@ -293,12 +301,6 @@ pub(super) fn combine_into<T: Pixel>(
             round: 1 << (single - 1),
             shift: single,
         },
-        _ if motion.weight == 0 => HevcWeights {
-            w0: 1,
-            w1: 1,
-            round: 1 << single,
-            shift: single + 1,
-        },
         _ => {
             let second = BCW_WEIGHTS[usize::from(motion.weight)];
             HevcWeights {
@@ -309,37 +311,12 @@ pub(super) fn combine_into<T: Pixel>(
             }
         }
     };
-    dsp.hevc_weighted_prediction(weights, first, second, destination);
-}
-
-/// Combine the high-precision predictions of a block's lists: explicit
-/// weights when the slice has them and the block's BCW index is the default,
-/// else the default or BCW average.
-/// (H.266 §8.5.6.6.2: one list `shift1 = 14 − BitDepth`; BCW `shift3 =
-/// 17 − BitDepth` with weights summing to 8, the default average as BCW's
-/// equal weights.)
-pub(super) fn combine<T: Pixel>(
-    dsp: DepthKernels<'_>,
-    (motion, explicit_weights, plane): (Motion, Option<&Weights>, PlaneIndex),
-    first: &[i16],
-    second: &[i16],
-    size: (usize, usize),
-    out: &mut [T],
-) {
-    let (w, h) = size;
     let mut destination = PlaneViewMut::new(out, w, w, h).unwrap();
-    combine_into(
-        dsp,
-        (motion, explicit_weights, plane),
-        first,
-        second,
-        &mut destination,
-    );
+    dsp.hevc_weighted_prediction(weights, first, second, &mut destination);
 }
 /// The high-precision prediction of `region` of `plane` from `vector` of
 /// `list`: through the scaled positions when that reference is scaled
 /// (§8.5.6.3.1), else the unscaled interpolation.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn high_precision<T: Pixel>(
     dsp: DepthKernels<'_>,
     references: Sources<'_, T>,
@@ -347,7 +324,6 @@ pub(super) fn high_precision<T: Pixel>(
     plane: PlaneIndex,
     region: Region,
     (half, affine): (bool, bool),
-    window_buf: &mut [T],
     out: &mut [i16],
 ) {
     let reference = references.pictures[list][usize::from(vector.reference)].plane(plane);
@@ -364,17 +340,39 @@ pub(super) fn high_precision<T: Pixel>(
             edges.area,
             out,
         ),
-        None => precision_window(
+        None => precision(
             dsp,
             reference,
-            (region.position, region.size),
+            region.position,
+            region.size,
             vector.vector,
             (luma, half, affine),
-            (None, edges),
-            window_buf,
+            edges,
             out,
         ),
     }
+}
+
+pub(super) fn precision<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    reference: &nc_common::Plane<T>,
+    (x, y): (usize, usize),
+    size: (usize, usize),
+    vector: Mv16,
+    (luma, half, affine): (bool, bool, bool),
+    edges: Edges,
+    out: &mut [i16],
+) {
+    precision_window(
+        dsp,
+        reference,
+        ((x, y), size),
+        vector,
+        (luma, half, affine),
+        (None, edges),
+        None,
+        out,
+    );
 }
 
 /// A DMVR window replicates the original merge prediction's filter support.
@@ -387,7 +385,7 @@ pub(super) fn precision_window<T: Pixel>(
     vector: Mv16,
     (luma, half, affine): (bool, bool, bool),
     (bounds, edges): (Option<super::refinement::Bounds>, Edges),
-    window_buf: &mut [T],
+    window_buf: Option<&mut [T]>,
     out: &mut [i16],
 ) {
     let filter = if luma && affine {
@@ -402,20 +400,12 @@ pub(super) fn precision_window<T: Pixel>(
         (vector.x & ((1 << bits) - 1)) as usize,
         (vector.y & ((1 << bits) - 1)) as usize,
     );
-    let before = filter.before();
     let origin = (
-        x as i32 + (vector.x >> bits) - before as i32,
-        y as i32 + (vector.y >> bits) - before as i32,
+        x as i32 + (vector.x >> bits) - filter.before() as i32,
+        y as i32 + (vector.y >> bits) - filter.before() as i32,
     );
     let (w, h) = (size.0 + filter.taps() - 1, size.1 + filter.taps() - 1);
-    let bounds_inactive = bounds.is_none_or(|b| {
-        let rx0 = origin.0 + if phases.0 == 0 { before as i32 } else { 0 };
-        let rx1 = rx0 + (if phases.0 == 0 { size.0 } else { w }) as i32 - 1;
-        let ry0 = origin.1 + if phases.1 == 0 { before as i32 } else { 0 };
-        let ry1 = ry0 + (if phases.1 == 0 { size.1 } else { h }) as i32 - 1;
-        rx0 >= b.minimum.0 && rx1 <= b.maximum.0 && ry0 >= b.minimum.1 && ry1 <= b.maximum.1
-    });
-    let direct = bounds_inactive && edges.direct(reference, origin, (w, h));
+    let direct = bounds.is_none() && edges.direct(reference, origin, (w, h));
     if let Some(window) = direct
         .then(|| reference.region(origin.0 as isize, origin.1 as isize, w, h))
         .flatten()
@@ -424,249 +414,17 @@ pub(super) fn precision_window<T: Pixel>(
     } else {
         let view = reference.view();
         let fetch = super::refinement::Fetch::new(reference, bounds, edges);
-        let samples = &mut window_buf[..w * h];
-        if phases.1 == 0 {
-            fetch.fill_window(
-                &view,
-                (origin.0, origin.1 + before as i32),
-                (w, size.1),
-                &mut samples[before * w..(before + size.1) * w],
-            );
+        let mut fallback;
+        let samples: &mut [T] = if let Some(buf) = window_buf {
+            &mut buf[..w * h]
         } else {
-            fetch.fill_window(&view, origin, (w, h), samples);
-        }
+            fallback = [T::default(); 71 * 71];
+            &mut fallback[..w * h]
+        };
+        fetch.fill_window(&view, origin, (w, h), samples);
         let window = PlaneView::new(samples, w, w, h).unwrap();
         dsp.predict_high_precision(filter, size, &window, phases, luma && half, out);
     }
-}
-
-/// Predict a single motion region directly into `dst` (handles narrow `2xN` /
-/// `Nx2` chroma blocks, affine `4x4` subblocks, and general blocks).
-#[allow(clippy::too_many_arguments)]
-fn predict_region_direct<T: Pixel>(
-    dsp: DepthKernels<'_>,
-    references: Sources<'_, T>,
-    motion: Motion,
-    (plane, affine): (PlaneIndex, bool),
-    (anchor, position): ((usize, usize), (usize, usize)),
-    size: (usize, usize),
-    scratch: &mut InterScratch<T>,
-    dst: &mut PlaneViewMut<'_, T>,
-) {
-    let luma = plane == PlaneIndex::Y;
-    let weighted = (references.weights.is_some() && motion.weight == 0)
-        || references.edges != Edges::default()
-        || references.scaled(motion);
-    if motion.lists.iter().flatten().count() == 1 && !(motion.half && luma) && !weighted {
-        let (list, vector) = motion
-            .lists
-            .iter()
-            .enumerate()
-            .find_map(|(i, v)| v.map(|v| (i, v)))
-            .unwrap();
-        let ref_plane = references.pictures[list][usize::from(vector.reference)].plane(plane);
-        if affine && luma {
-            crate::inter::predict_with(
-                dsp,
-                Filter::VvcAffineLuma,
-                ref_plane,
-                position,
-                size,
-                vector.vector,
-                dst,
-            );
-            return;
-        }
-        if size.0 >= 4 && size.1 >= 4 {
-            if luma {
-                crate::inter::predict_luma(dsp, ref_plane, position, size, vector.vector, dst);
-            } else {
-                crate::inter::predict_chroma(dsp, ref_plane, position, size, vector.vector, dst);
-            }
-            return;
-        }
-        let padded = (size.0.max(4), size.1.max(4));
-        let mut small = [T::default(); 4 * 64];
-        let samples = &mut small[..padded.0 * padded.1];
-        let mut view = crate::inter::packed(samples, padded);
-        if luma {
-            crate::inter::predict_luma(dsp, ref_plane, position, padded, vector.vector, &mut view);
-        } else {
-            crate::inter::predict_chroma(
-                dsp,
-                ref_plane,
-                position,
-                padded,
-                vector.vector,
-                &mut view,
-            );
-        }
-        for (dy, source) in samples.chunks_exact(padded.0).take(size.1).enumerate() {
-            nc_common::copy_row(dst.row_mut(dy), &source[..size.0]);
-        }
-        return;
-    }
-    let len = size.0 * size.1;
-    let region = Region {
-        anchor,
-        position,
-        size,
-    };
-    let flags = (motion.half, affine);
-    let (s0, s1) = (&mut scratch.s0[..len], &mut scratch.s1[..len]);
-    let win = &mut scratch.window[..];
-    match motion.lists {
-        [Some(v0), None] => {
-            high_precision(dsp, references, (0, v0), plane, region, flags, win, s0);
-            combine_into(dsp, (motion, references.weights, plane), s0, s0, dst);
-        }
-        [None, Some(v1)] => {
-            high_precision(dsp, references, (1, v1), plane, region, flags, win, s1);
-            combine_into(dsp, (motion, references.weights, plane), s1, s1, dst);
-        }
-        [Some(v0), Some(v1)] => {
-            high_precision(dsp, references, (0, v0), plane, region, flags, win, s0);
-            high_precision(dsp, references, (1, v1), plane, region, flags, win, s1);
-            combine_into(dsp, (motion, references.weights, plane), s0, s1, dst);
-        }
-        [None, None] => {
-            s0.fill(0);
-            combine_into(dsp, (motion, references.weights, plane), s0, s0, dst);
-        }
-    }
-}
-
-fn affine_direct<T: Pixel>(
-    dsp: DepthKernels<'_>,
-    references: Sources<'_, T>,
-    unit: &super::Unit,
-    motion: Motion,
-    (plane, block): (PlaneIndex, nc_encoder::Block),
-    scratch: &mut InterScratch<T>,
-    dst: &mut PlaneViewMut<'_, T>,
-) {
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
-    let n = unit.node;
-    let fields = unit.affine_fields;
-    for y in (0..size.1).step_by(4) {
-        for x in (0..size.0).step_by(4) {
-            let (col, row) = (
-                (block.x - n.x + (x << chroma)) / 4,
-                (block.y - n.y + (y << chroma)) / 4,
-            );
-            let mut local = motion;
-            for (vector, field) in local.lists.iter_mut().zip(fields) {
-                if let (Some(vector), Some(field)) = (vector, field) {
-                    let first = field.at(col, row);
-                    vector.vector = if chroma == 0 {
-                        first
-                    } else {
-                        let last = field.at(col + 1, row + 1);
-                        Mv16 {
-                            x: crate::affine::round_shift(
-                                i64::from(first.x) + i64::from(last.x),
-                                1,
-                            ),
-                            y: crate::affine::round_shift(
-                                i64::from(first.y) + i64::from(last.y),
-                                1,
-                            ),
-                        }
-                    };
-                }
-            }
-            let mut sub_dst = dst.sub_view_mut(x, y, 4, 4).unwrap();
-            let at = (position.0 + x, position.1 + y);
-            if unit.prof && chroma == 0 {
-                super::prof::predict_direct(
-                    dsp,
-                    references,
-                    local,
-                    fields,
-                    at,
-                    &mut scratch.window,
-                    &mut sub_dst,
-                );
-            } else {
-                predict_region_direct(
-                    dsp,
-                    references,
-                    local,
-                    (plane, true),
-                    (at, at),
-                    (4, 4),
-                    scratch,
-                    &mut sub_dst,
-                );
-            }
-        }
-    }
-}
-
-/// Predict a non-CIIP, non-GPM inter block directly into `dst`; returns `false`
-/// only for geometric partitioning (`GPM`) so it falls back to `prediction_buf`.
-pub(super) fn try_predict_direct<T: Pixel>(
-    dsp: DepthKernels<'_>,
-    references: Sources<'_, T>,
-    unit: &super::Unit,
-    plane: PlaneIndex,
-    block: nc_encoder::Block,
-    scratch: &mut InterScratch<T>,
-    dst: &mut PlaneViewMut<'_, T>,
-) -> bool {
-    if unit.geometric.is_some() {
-        return false;
-    }
-    let chroma = usize::from(plane != PlaneIndex::Y);
-    let position = (block.x >> chroma, block.y >> chroma);
-    let size = (block.width() >> chroma, block.height() >> chroma);
-    if !unit.subblocks.is_empty() {
-        let step = 8 >> chroma;
-        for y in (0..size.1).step_by(step) {
-            for x in (0..size.0).step_by(step) {
-                let motion =
-                    super::motion::at(unit, block.x + (x << chroma), block.y + (y << chroma))
-                        .unwrap();
-                let (w, h) = (step.min(size.0 - x), step.min(size.1 - y));
-                let at = (position.0 + x, position.1 + y);
-                let mut sub_dst = dst.sub_view_mut(x, y, w, h).unwrap();
-                predict_region_direct(
-                    dsp,
-                    references,
-                    motion,
-                    (plane, false),
-                    (at, at),
-                    (w, h),
-                    scratch,
-                    &mut sub_dst,
-                );
-            }
-        }
-        return true;
-    }
-    if !unit.dmvr.is_empty() || (unit.bdof && chroma == 0) {
-        super::refinement::predict_direct(dsp, references, unit, plane, block, scratch, dst);
-        return true;
-    }
-    let motion = unit.motion.unwrap();
-    if unit.affine_fields.iter().any(Option::is_some) {
-        affine_direct(dsp, references, unit, motion, (plane, block), scratch, dst);
-        return true;
-    }
-    let anchor = (unit.node.x >> chroma, unit.node.y >> chroma);
-    predict_region_direct(
-        dsp,
-        references,
-        motion,
-        (plane, false),
-        (anchor, position),
-        size,
-        scratch,
-        dst,
-    );
-    true
 }
 
 /// Affine uses the existing model's sub-block vectors and chroma diagonal mean.
@@ -722,10 +480,8 @@ pub(super) fn predict_unit<T: Pixel>(
                     &mut pixels[..w * h],
                 );
                 for dy in 0..h {
-                    nc_common::copy_row(
-                        &mut out[(y + dy) * size.0 + x..(y + dy) * size.0 + x + w],
-                        &pixels[dy * w..dy * w + w],
-                    );
+                    out[(y + dy) * size.0 + x..(y + dy) * size.0 + x + w]
+                        .copy_from_slice(&pixels[dy * w..dy * w + w]);
                 }
             }
         }
@@ -735,7 +491,7 @@ pub(super) fn predict_unit<T: Pixel>(
         super::refinement::predict(dsp, references, unit, plane, block, scratch, out);
         return;
     }
-    if unit.affine_fields.iter().all(Option::is_none) {
+    if unit.affine_models.iter().all(Option::is_none) {
         // The whole CU shares its scaled sample positions (§8.5.6.3.1).
         let anchor = (unit.node.x >> chroma, unit.node.y >> chroma);
         predict(
@@ -766,7 +522,11 @@ fn affine<T: Pixel>(
     let position = (block.x >> chroma, block.y >> chroma);
     let size = (block.width() >> chroma, block.height() >> chroma);
     let n = unit.node;
-    let fields = unit.affine_fields;
+    let fields = unit.affine_models.map(|m| {
+        m.map(|m| {
+            m.field_for_prediction(n.width, n.height, motion.lists.iter().all(Option::is_some))
+        })
+    });
     for y in (0..size.1).step_by(4) {
         for x in (0..size.0).step_by(4) {
             let (col, row) = (
@@ -802,7 +562,6 @@ fn affine<T: Pixel>(
                     local,
                     fields,
                     (position.0 + x, position.1 + y),
-                    &mut scratch.window,
                     &mut pixels,
                 );
             } else {
@@ -846,7 +605,6 @@ fn geometric<T: Pixel>(
     };
     let len = size.0 * size.1;
     let (s0, s1) = (&mut scratch.s0[..len], &mut scratch.s1[..len]);
-    let win = &mut scratch.window[..];
     for (motion, dst) in [pair[0], pair[1]].into_iter().zip([&mut *s0, &mut *s1]) {
         let (list, vector) = motion
             .lists
@@ -861,7 +619,6 @@ fn geometric<T: Pixel>(
             plane,
             region,
             (false, false),
-            win,
             dst,
         );
     }

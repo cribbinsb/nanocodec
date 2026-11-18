@@ -38,12 +38,6 @@ pub(crate) type VvcIntra16Fn =
 /// The rectangular intra predictor at a depth.
 pub(crate) type VvcIntraRect16Fn =
     unsafe fn(usize, usize, VvcIntraMode, &[i32], &[i32], i32, &mut [u16], BitDepth);
-/// Multi-reference-line intra predictor at a depth.
-pub(crate) type VvcMrl16Fn =
-    unsafe fn((usize, usize), u8, u8, (&[i32], &[i32], i32), &mut [u16], BitDepth);
-/// Intra sub-partition predictor at a depth.
-pub(crate) type VvcIsp16Fn =
-    unsafe fn((usize, usize), (usize, usize), u8, (&[i32], &[i32], i32), &mut [u16], BitDepth);
 /// Add a packed residual to a packed prediction, clipping to the depth.
 pub(crate) type VvcAddResidual16Fn = unsafe fn(&mut [u16], &[i16], BitDepth);
 /// Map `u16` luma samples in place through an LMCS table.
@@ -54,8 +48,6 @@ pub(crate) type VvcLmcsMap16Fn = unsafe fn(&[i16; HIGH_LOOKUP_TABLE], &mut [u16]
 pub(crate) struct VvcReconFns {
     pub intra: VvcIntra16Fn,
     pub intra_rect: VvcIntraRect16Fn,
-    pub intra_mrl: VvcMrl16Fn,
-    pub intra_isp: VvcIsp16Fn,
     pub add_residual: VvcAddResidual16Fn,
     pub lmcs_map: VvcLmcsMap16Fn,
 }
@@ -65,8 +57,6 @@ impl VvcReconFns {
     pub(crate) const SCALAR: Self = Self {
         intra: vvc_intra::scalar_at::<u16>,
         intra_rect: rectangular::predict::<u16>,
-        intra_mrl: rectangular::mrl_predict::<u16>,
-        intra_isp: rectangular::isp_predict::<u16>,
         add_residual: add_clipped::<u16>,
         lmcs_map: crate::vvc_lmcs::map_u16_scalar,
     };
@@ -78,8 +68,6 @@ impl VvcReconFns {
             Isa::Avx2 => {
                 fns.intra = vvc_intra::high_simd::avx2::predict;
                 fns.intra_rect = vvc_intra::high_simd::avx2::predict_rect;
-                fns.intra_mrl = vvc_intra::high_simd::avx2::predict_mrl;
-                fns.intra_isp = vvc_intra::high_simd::avx2::predict_isp;
                 fns.add_residual = crate::vvc_recon::high_simd::avx2::add_clipped;
                 fns.lmcs_map = crate::vvc_lmcs::high_simd::map_avx2;
             }
@@ -87,8 +75,6 @@ impl VvcReconFns {
             Isa::Avx512 => {
                 fns.intra = vvc_intra::high_simd::avx512::predict;
                 fns.intra_rect = vvc_intra::high_simd::avx512::predict_rect;
-                fns.intra_mrl = vvc_intra::high_simd::avx512::predict_mrl;
-                fns.intra_isp = vvc_intra::high_simd::avx512::predict_isp;
                 fns.add_residual = crate::vvc_recon::high_simd::avx512::add_clipped;
                 fns.lmcs_map = crate::vvc_lmcs::high_simd::map_avx512;
             }
@@ -96,8 +82,6 @@ impl VvcReconFns {
             Isa::Neon => {
                 fns.intra = vvc_intra::high_simd::neon::predict;
                 fns.intra_rect = vvc_intra::high_simd::neon::predict_rect;
-                fns.intra_mrl = vvc_intra::high_simd::neon::predict_mrl;
-                fns.intra_isp = vvc_intra::high_simd::neon::predict_isp;
                 fns.add_residual = crate::vvc_recon::high_simd::neon::add_clipped;
                 fns.lmcs_map = crate::vvc_lmcs::high_simd::map_neon;
             }
@@ -105,8 +89,6 @@ impl VvcReconFns {
             Isa::Simd128 => {
                 fns.intra = vvc_intra::high_simd::simd128::predict;
                 fns.intra_rect = vvc_intra::high_simd::simd128::predict_rect;
-                fns.intra_mrl = vvc_intra::high_simd::simd128::predict_mrl;
-                fns.intra_isp = vvc_intra::high_simd::simd128::predict_isp;
                 fns.add_residual = crate::vvc_recon::high_simd::simd128::add_clipped;
                 fns.lmcs_map = crate::vvc_lmcs::high_simd::map_simd128;
             }
@@ -138,24 +120,6 @@ pub trait VvcReconPixel: Sample {
         out: &mut [Self],
     );
     #[doc(hidden)]
-    fn vvc_mrl_predict(
-        kernels: DepthKernels<'_>,
-        size: (usize, usize),
-        direction: u8,
-        reference_line: u8,
-        edges: (&[i32], &[i32], i32),
-        out: &mut [Self],
-    );
-    #[doc(hidden)]
-    fn vvc_intra_predict_isp(
-        kernels: DepthKernels<'_>,
-        prediction_size: (usize, usize),
-        size: (usize, usize),
-        direction: u8,
-        edges: (&[i32], &[i32], i32),
-        out: &mut [Self],
-    );
-    #[doc(hidden)]
     fn vvc_add_residual(
         kernels: DepthKernels<'_>,
         size: (usize, usize),
@@ -163,19 +127,7 @@ pub trait VvcReconPixel: Sample {
         residual: &[i16],
     );
     #[doc(hidden)]
-    fn vvc_add_residual_into(
-        kernels: DepthKernels<'_>,
-        dst: &mut PlaneViewMut<'_, Self>,
-        residual: &[i16],
-    );
-    #[doc(hidden)]
     fn vvc_forward_lmcs(kernels: DepthKernels<'_>, model: &VvcLmcs<Self>, samples: &mut [Self]);
-    #[doc(hidden)]
-    fn vvc_forward_lmcs_into(
-        kernels: DepthKernels<'_>,
-        model: &VvcLmcs<Self>,
-        plane: &mut PlaneViewMut<'_, Self>,
-    );
     #[doc(hidden)]
     fn vvc_inverse_lmcs(
         kernels: DepthKernels<'_>,
@@ -217,32 +169,6 @@ impl VvcReconPixel for u8 {
             .vvc_intra_predict_rect(size, mode, top, left, corner, out);
     }
 
-    fn vvc_mrl_predict(
-        kernels: DepthKernels<'_>,
-        size: (usize, usize),
-        direction: u8,
-        reference_line: u8,
-        (top, left, corner): (&[i32], &[i32], i32),
-        out: &mut [u8],
-    ) {
-        kernels
-            .dsp
-            .vvc_mrl_predict(size, direction, reference_line, top, left, corner, out);
-    }
-
-    fn vvc_intra_predict_isp(
-        kernels: DepthKernels<'_>,
-        prediction_size: (usize, usize),
-        size: (usize, usize),
-        direction: u8,
-        (top, left, corner): (&[i32], &[i32], i32),
-        out: &mut [u8],
-    ) {
-        kernels
-            .dsp
-            .vvc_intra_predict_isp(prediction_size, size, direction, top, left, corner, out);
-    }
-
     fn vvc_add_residual(
         kernels: DepthKernels<'_>,
         size: (usize, usize),
@@ -252,26 +178,8 @@ impl VvcReconPixel for u8 {
         kernels.dsp.vvc_add_residual(size, prediction, residual);
     }
 
-    fn vvc_add_residual_into(
-        kernels: DepthKernels<'_>,
-        dst: &mut PlaneViewMut<'_, u8>,
-        residual: &[i16],
-    ) {
-        kernels.dsp.vvc_add_residual_into(dst, residual);
-    }
-
     fn vvc_forward_lmcs(_kernels: DepthKernels<'_>, model: &VvcLmcs<u8>, samples: &mut [u8]) {
         model.forward_samples(samples);
-    }
-
-    fn vvc_forward_lmcs_into(
-        _kernels: DepthKernels<'_>,
-        model: &VvcLmcs<u8>,
-        plane: &mut PlaneViewMut<'_, u8>,
-    ) {
-        for y in 0..plane.height() {
-            model.forward_samples(plane.row_mut(y));
-        }
     }
 
     fn vvc_inverse_lmcs(
@@ -352,64 +260,6 @@ impl VvcReconPixel for u16 {
         }
     }
 
-    fn vvc_mrl_predict(
-        kernels: DepthKernels<'_>,
-        size: (usize, usize),
-        direction: u8,
-        reference_line: u8,
-        edges: (&[i32], &[i32], i32),
-        out: &mut [u16],
-    ) {
-        rectangular::check_mrl(
-            size,
-            direction,
-            reference_line,
-            (edges.0, edges.1),
-            out.len(),
-        );
-        // SAFETY: `check_mrl` validated dimensions, direction, line, and slice bounds;
-        // the table matches a supported ISA.
-        unsafe {
-            (kernels.dsp.high.vvc_recon.intra_mrl)(
-                size,
-                direction,
-                reference_line,
-                edges,
-                out,
-                kernels.depth,
-            );
-        }
-    }
-
-    fn vvc_intra_predict_isp(
-        kernels: DepthKernels<'_>,
-        prediction_size: (usize, usize),
-        size: (usize, usize),
-        direction: u8,
-        edges: (&[i32], &[i32], i32),
-        out: &mut [u16],
-    ) {
-        rectangular::check_isp(
-            prediction_size,
-            size,
-            direction,
-            (edges.0, edges.1),
-            out.len(),
-        );
-        // SAFETY: `check_isp` validated dimensions, direction, and slice bounds;
-        // the table matches a supported ISA.
-        unsafe {
-            (kernels.dsp.high.vvc_recon.intra_isp)(
-                prediction_size,
-                size,
-                direction,
-                edges,
-                out,
-                kernels.depth,
-            );
-        }
-    }
-
     fn vvc_add_residual(
         kernels: DepthKernels<'_>,
         size: (usize, usize),
@@ -428,23 +278,6 @@ impl VvcReconPixel for u16 {
         }
     }
 
-    fn vvc_add_residual_into(
-        kernels: DepthKernels<'_>,
-        dst: &mut PlaneViewMut<'_, u16>,
-        residual: &[i16],
-    ) {
-        let (width, height) = (dst.width(), dst.height());
-        let length = check_add_residual((width, height), width * height, residual.len());
-        let add_fn = kernels.dsp.high.vvc_recon.add_residual;
-        for (y, row_res) in residual[..length].chunks_exact(width).enumerate() {
-            // SAFETY: `dst.row_mut(y)` and `row_res` both hold `width` elements;
-            // the table matches a supported ISA.
-            unsafe {
-                add_fn(dst.row_mut(y), row_res, kernels.depth);
-            }
-        }
-    }
-
     fn vvc_forward_lmcs(kernels: DepthKernels<'_>, model: &VvcLmcs<u16>, samples: &mut [u16]) {
         if let Some(table) = model.forward_wide_table() {
             // SAFETY: `table` has `HIGH_LOOKUP_TABLE` entries; table matches a supported ISA.
@@ -453,26 +286,6 @@ impl VvcReconPixel for u16 {
             }
         } else {
             model.forward_samples(samples);
-        }
-    }
-
-    fn vvc_forward_lmcs_into(
-        kernels: DepthKernels<'_>,
-        model: &VvcLmcs<u16>,
-        plane: &mut PlaneViewMut<'_, u16>,
-    ) {
-        if let Some(table) = model.forward_wide_table() {
-            let map_fn = kernels.dsp.high.vvc_recon.lmcs_map;
-            for y in 0..plane.height() {
-                // SAFETY: `table` has `HIGH_LOOKUP_TABLE` entries; table matches a supported ISA.
-                unsafe {
-                    map_fn(table, plane.row_mut(y));
-                }
-            }
-        } else {
-            for y in 0..plane.height() {
-                model.forward_samples(plane.row_mut(y));
-            }
         }
     }
 
@@ -562,13 +375,13 @@ impl DepthKernels<'_> {
         corner: i32,
         out: &mut [T],
     ) {
-        T::vvc_intra_predict_isp(
-            self,
+        rectangular::isp_predict(
             prediction_size,
             size,
             direction,
             (top, left, corner),
             out,
+            self.depth,
         );
     }
 
@@ -587,13 +400,13 @@ impl DepthKernels<'_> {
         corner: i32,
         out: &mut [T],
     ) {
-        T::vvc_mrl_predict(
-            self,
+        rectangular::mrl_predict(
             size,
             direction,
             reference_line,
             (top, left, corner),
             out,
+            self.depth,
         );
     }
 
@@ -641,23 +454,6 @@ impl DepthKernels<'_> {
         residual: &[i16],
     ) {
         T::vvc_add_residual(self, size, prediction, residual);
-    }
-
-    /// [`crate::Dsp::vvc_add_residual_into`] at this depth (`Clip1` to it).
-    ///
-    /// # Panics
-    /// As [`crate::Dsp::vvc_add_residual`].
-    pub fn vvc_add_residual_into<T: Pixel>(self, dst: &mut PlaneViewMut<'_, T>, residual: &[i16]) {
-        T::vvc_add_residual_into(self, dst, residual);
-    }
-
-    /// Apply forward LMCS mapping in place across all rows of `plane`.
-    pub fn vvc_forward_lmcs_into<T: Pixel>(
-        self,
-        model: &VvcLmcs<T>,
-        plane: &mut PlaneViewMut<'_, T>,
-    ) {
-        T::vvc_forward_lmcs_into(self, model, plane);
     }
 
     /// [`crate::Dsp::vvc_inverse_primary`] at this depth: `qp` is `Qp′` (up to

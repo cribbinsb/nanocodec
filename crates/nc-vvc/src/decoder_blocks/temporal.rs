@@ -47,8 +47,8 @@ impl Field {
             if unit.dmvr.is_empty()
                 && unit.subblocks.is_empty()
                 && unit.geometric.is_none()
-                && unit.affine_fields[0].is_none()
-                && unit.affine_fields[1].is_none()
+                && unit.affine_models[0].is_none()
+                && unit.affine_models[1].is_none()
             {
                 let (x0, x1) = (n.x.div_ceil(8), (n.x + n.width).div_ceil(8));
                 let (y0, y1) = (n.y.div_ceil(8), (n.y + n.height).div_ceil(8));
@@ -60,10 +60,14 @@ impl Field {
                 }
                 continue;
             }
+            let bidirectional = base_motion.lists.iter().all(Option::is_some);
+            let fields = unit.affine_models.map(|m| {
+                m.map(|model| model.field_for_prediction(n.width, n.height, bidirectional))
+            });
             for y in (n.y.div_ceil(8) * 8..n.y + n.height).step_by(8) {
                 for x in (n.x.div_ceil(8) * 8..n.x + n.width).step_by(8) {
                     cells[y / 8 * stride + x / 8] =
-                        super::refinement::temporal_with_fields(unit, x, y, &unit.affine_fields)
+                        super::refinement::temporal_with_fields(unit, x, y, fields)
                             .map(|m| (m, unit.slice));
                 }
             }

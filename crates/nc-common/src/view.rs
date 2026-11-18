@@ -24,24 +24,17 @@ use crate::sample::Sample;
     reason = "called per block row from other crates; out of line it cost ~37 instructions per call, more than the memcpy it replaces (callgrind)"
 )]
 #[inline(always)]
-pub fn copy_row<T: Copy>(dst: &mut [T], src: &[T]) {
-    fn fixed<T: Copy, const N: usize>(dst: &mut [T], src: &[T]) {
+pub fn copy_row<T: Sample>(dst: &mut [T], src: &[T]) {
+    fn fixed<T: Sample, const N: usize>(dst: &mut [T], src: &[T]) {
         let src: &[T; N] = src.try_into().expect("copy_row: source length");
         let dst: &mut [T; N] = dst.try_into().expect("copy_row: lengths differ");
         *dst = *src;
     }
     match src.len() {
-        2 => fixed::<T, 2>(dst, src),
         4 => fixed::<T, 4>(dst, src),
         8 => fixed::<T, 8>(dst, src),
-        11 => fixed::<T, 11>(dst, src),
-        12 => fixed::<T, 12>(dst, src),
         16 => fixed::<T, 16>(dst, src),
-        20 => fixed::<T, 20>(dst, src),
-        23 => fixed::<T, 23>(dst, src),
-        24 => fixed::<T, 24>(dst, src),
         32 => fixed::<T, 32>(dst, src),
-        48 => fixed::<T, 48>(dst, src),
         64 => fixed::<T, 64>(dst, src),
         _ => dst.copy_from_slice(src),
     }

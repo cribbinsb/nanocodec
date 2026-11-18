@@ -10,7 +10,7 @@ use crate::codec_txfm::generic::{
 };
 use crate::cpu::Isa;
 
-use super::{Inverse16Fn, InverseAdd16Fn, add_residual};
+use super::Inverse16Fn;
 
 /// Coefficients of the largest HEVC transform (32x32).
 pub(crate) const MAX_AREA: usize = 32 * 32;
@@ -28,15 +28,6 @@ pub(crate) const SCALAR: [Inverse16Fn; 5] = [
     inverse::<HevcIdct32, 32>,
 ];
 
-/// The scalar fused inverse-and-add table by [`crate::HevcTransform`].
-pub(crate) const SCALAR_ADD: [InverseAdd16Fn; 5] = [
-    inverse_add_scalar::<HevcIdst4, 4>,
-    inverse_add_scalar::<HevcIdct4, 4>,
-    inverse_add_scalar::<HevcIdct8, 8>,
-    inverse_add_scalar::<HevcIdct16, 16>,
-    inverse_add_scalar::<HevcIdct32, 32>,
-];
-
 /// The table for `isa`: the shared butterflies on its vector lanes, the
 /// passes bounded by the coefficients' extent (the 8-bit tiers' scheme).
 pub(crate) fn kernels(isa: Isa) -> [Inverse16Fn; 5] {
@@ -50,21 +41,6 @@ pub(crate) fn kernels(isa: Isa) -> [Inverse16Fn; 5] {
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         Isa::Simd128 => simd128::KERNELS,
         _ => SCALAR,
-    }
-}
-
-/// Fused inverse-transform-and-add table for `isa`.
-pub(crate) fn add_kernels(isa: Isa) -> [InverseAdd16Fn; 5] {
-    match isa {
-        #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 => avx2::ADD_KERNELS,
-        #[cfg(target_arch = "x86_64")]
-        Isa::Avx512 => avx512::ADD_KERNELS,
-        #[cfg(target_arch = "aarch64")]
-        Isa::Neon => neon::ADD_KERNELS,
-        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-        Isa::Simd128 => simd128::ADD_KERNELS,
-        _ => SCALAR_ADD,
     }
 }
 
@@ -124,21 +100,6 @@ fn inverse<T: Line<i32>, const N: usize>(
     unsafe { columns_then_rows::<i32, T, N>(coeffs, first, second, residual) }
 }
 
-fn inverse_add_scalar<T: Line<i32>, const N: usize>(
-    coeffs: &[i16],
-    extent: (usize, usize),
-    dst: &mut [u16],
-    stride: usize,
-    depth: BitDepth,
-) {
-    if extent.0 == 0 || extent.1 == 0 {
-        return;
-    }
-    let mut residual = [0i16; MAX_AREA];
-    inverse::<T, N>(coeffs, &mut residual[..N * N], extent, depth);
-    add_residual(&residual[..N * N], N, dst, stride, depth);
-}
-
 /// One ISA's bounded kernels: `$v4` lanes for the 4-point transforms, `$v8`
 /// for the 8-point one and `$v16` for the 16- and 32-point ones.
 #[cfg(any(
@@ -154,8 +115,7 @@ macro_rules! bounded_kernels {
             BoundedLine, HevcIdct4, HevcIdct8, HevcIdct16, HevcIdct32, HevcIdst4,
             hevc_inverse_extent_passes,
         };
-        use crate::codec_txfm::inverse_add::inverse_add_u16;
-        use crate::high_depth::{Inverse16Fn, InverseAdd16Fn};
+        use crate::high_depth::Inverse16Fn;
 
         pub(crate) const KERNELS: [Inverse16Fn; 5] = [
             bounded::<$v4, HevcIdst4, 4>,
@@ -163,14 +123,6 @@ macro_rules! bounded_kernels {
             bounded::<$v8, HevcIdct8, 8>,
             bounded::<$v16, HevcIdct16, 16>,
             bounded::<$v16, HevcIdct32, 32>,
-        ];
-
-        pub(crate) const ADD_KERNELS: [InverseAdd16Fn; 5] = [
-            bounded_add::<$v4, HevcIdst4, 4, false>,
-            bounded_add::<$v4, HevcIdct4, 4, true>,
-            bounded_add::<$v8, HevcIdct8, 8, true>,
-            bounded_add::<$v16, HevcIdct16, 16, true>,
-            bounded_add::<$v16, HevcIdct32, 32, true>,
         ];
 
         /// # Safety
@@ -186,26 +138,6 @@ macro_rules! bounded_kernels {
             let passes = super::passes(depth);
             // SAFETY: forwarded contract.
             unsafe { hevc_inverse_extent_passes::<V, T, N>(coeffs, residual, extent, passes) }
-        }
-
-        /// # Safety
-        /// The ISA must be available; `coeffs` covers `N * N`, `dst` covers
-        /// `N` rows of `N` at `stride`, and `extent` covers nonzero coefficients.
-        #[target_feature(enable = $feature)]
-        unsafe fn bounded_add<
-            V: crate::simd::I32Lanes,
-            T: BoundedLine,
-            const N: usize,
-            const DCT: bool,
-        >(
-            coeffs: &[i16],
-            extent: (usize, usize),
-            dst: &mut [u16],
-            stride: usize,
-            depth: BitDepth,
-        ) {
-            // SAFETY: forwarded contract.
-            unsafe { inverse_add_u16::<V, T, N>(coeffs, extent, dst, stride, DCT, depth) }
         }
     };
 }

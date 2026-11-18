@@ -1,6 +1,6 @@
 //! H.266 CU-level MTS/LFNST selection through the shared CABAC reader.
 //! Context initialization and coefficient constraints follow BSD-Clear `VVdeC`.
-use super::{Context, Parser, Reader, Result, Unit, initialization::bank};
+use super::{Context, Parser, Reader, Result, Unit, coeff, initialization::bank};
 
 #[derive(Clone)]
 pub(super) struct Models {
@@ -41,17 +41,16 @@ impl Constraints {
     fn collect(unit: &Unit) -> Self {
         let mut result = Self::default();
         for transform in &unit.transforms {
-            for plane in 0..3 {
-                if !transform.coded[plane] {
-                    continue;
-                }
+            for (plane, levels) in transform
+                .levels
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| !v.is_empty())
+            {
                 if transform.skip[plane] {
                     result.skip = true;
                     continue;
                 }
-                let Some(last) = transform.stats[plane].last_scan else {
-                    continue;
-                };
                 let channel = usize::from(plane != 0);
                 let block = if plane == 0 {
                     transform.block
@@ -59,8 +58,11 @@ impl Constraints {
                     transform.chroma_block.unwrap()
                 };
                 let (width, height) = (block.width() >> channel, block.height() >> channel);
+                let Some(last) = coeff::last_scan(levels, width, height) else {
+                    continue;
+                };
                 if width >= 4 && height >= 4 {
-                    let limit = if width == height && (width == 4 || width == 8) {
+                    let limit = if width == height && [4, 8].contains(&width) {
                         7
                     } else {
                         15
@@ -70,7 +72,10 @@ impl Constraints {
                 }
                 if plane == 0 {
                     result.mts_ac |= last >= 1;
-                    result.mts_outside |= transform.stats[0].outside_16;
+                    result.mts_outside |= levels
+                        .iter()
+                        .enumerate()
+                        .any(|(p, &v)| v != 0 && (p % width >= 16 || p / width >= 16));
                 }
             }
         }

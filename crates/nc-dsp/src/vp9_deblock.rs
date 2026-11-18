@@ -50,7 +50,7 @@ impl Vp9FilterLimits {
 impl Vp9FilterLimits {
     /// The thresholds scaled to samples of `depth` (`limit16`, `blimit16`,
     /// `thresh16` of libvpx's high-bit-depth masks).
-    pub(crate) fn at(self, depth: BitDepth) -> Self {
+    fn at(self, depth: BitDepth) -> Self {
         let shift = depth.above_eight();
         Self {
             inside: self.inside << shift,

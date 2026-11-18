@@ -19,7 +19,6 @@ impl Parser<'_> {
             inter: None,
             motion: None,
             affine_models: [None; 2],
-            affine_fields: [None; 2],
             geometric: None,
             block_vector: None,
             subblocks: Vec::new(),
@@ -42,7 +41,11 @@ impl Parser<'_> {
             chroma_offsets: [0; 3],
             tile: self.ctu.tile,
             slice: self.slice,
-            transforms: Vec::new(),
+            transforms: super::transform_units::empty_units(
+                node,
+                channel,
+                self.sequence.max_transform_log2,
+            )?,
         };
         let luma_qp = self.begin_unit_qp(&mut unit);
         let intra = self.prediction(r, &mut unit, constraint)?;
@@ -52,11 +55,6 @@ impl Parser<'_> {
                 Some(Inter::Amvp { .. } | Inter::Ibc(super::ibc::BlockVector::Predicted { .. }))
             ) && !r.bin(&mut self.contexts.root_cbf)?)
         {
-            unit.transforms = super::transform_units::empty_units(
-                node,
-                channel,
-                self.sequence.max_transform_log2,
-            )?;
             self.end_unit_qp(&mut unit, luma_qp);
             self.finish_unit(unit);
             return Ok(());
@@ -68,13 +66,6 @@ impl Parser<'_> {
             self.chroma_prediction(r, &mut unit)?;
         }
         self.sbt_mode(r, &mut unit)?;
-        if unit.transforms.is_empty() {
-            unit.transforms = super::transform_units::empty_units(
-                node,
-                channel,
-                self.sequence.max_transform_log2,
-            )?;
-        }
         self.residuals(r, &mut unit)?;
         self.end_unit_qp(&mut unit, luma_qp);
         self.transform_selection(r, &mut unit)?;
@@ -110,7 +101,7 @@ impl Parser<'_> {
             );
         }
         let node = unit.node;
-        let index = self.units.len() as u32;
+        let index = self.units.len();
         let cols = node.width.div_ceil(4);
         for channel in if unit.combined {
             0..2
@@ -119,7 +110,7 @@ impl Parser<'_> {
         } {
             for y in (node.y..node.y + node.height).step_by(4) {
                 let base = (y >> 2) * self.stride + (node.x >> 2);
-                self.grid[channel][base..base + cols].fill(index);
+                self.grid[channel][base..base + cols].fill(Some(index));
             }
         }
         self.units.push(unit);

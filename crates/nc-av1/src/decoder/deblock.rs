@@ -20,7 +20,6 @@
 //! one. Within a pass edges never interact (a filter's reach on each side
 //! stays within the smaller transform side across the edge), so areas are
 //! visited in decoding order.
-use super::block_info::splat_slice;
 use super::block_size::BlockSize;
 use super::frame_header::{INTRA_FRAME, LoopFilter, TOTAL_REFS};
 use super::transform::{TxSize, chroma_block};
@@ -153,18 +152,14 @@ impl PlaneSides {
         let right = x4 + w4 - 1;
         if right < columns && y4 < rows {
             let first = right * rows;
-            splat_slice(
-                &mut self.right[first + y4..first + (y4 + h4).min(rows)],
-                Side::new(tx.0, size.1, levels[0]),
-            );
+            self.right[first + y4..first + (y4 + h4).min(rows)]
+                .fill(Side::new(tx.0, size.1, levels[0]));
         }
         let bottom = y4 + h4 - 1;
         if bottom < rows && x4 < columns {
             let first = bottom * columns;
-            splat_slice(
-                &mut self.bottom[first + x4..first + (x4 + w4).min(columns)],
-                Side::new(tx.1, size.0, levels[1]),
-            );
+            self.bottom[first + x4..first + (x4 + w4).min(columns)]
+                .fill(Side::new(tx.1, size.0, levels[1]));
         }
     }
 }

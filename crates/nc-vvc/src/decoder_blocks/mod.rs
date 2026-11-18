@@ -13,16 +13,12 @@ mod filter_syntax;
 mod filters;
 mod ibc;
 pub(crate) use filter_syntax::{CtuFilters, counts as filter_counts};
-#[cfg(test)]
 pub(crate) use filters::apply as apply_filters;
-pub(crate) use filters::{FilterScratch, apply_with_scratch as apply_filters_with_scratch};
 mod sbt;
 mod scaling_lists;
 pub(crate) use scaling_lists::of_slice as scaling_lists;
 mod skip_coeff;
-#[cfg(test)]
 pub(super) use deblock::apply as deblock;
-pub(crate) use deblock::apply_with_scratch as deblock_with_scratch;
 mod reconstruct;
 mod reshape;
 pub(crate) use reshape::model as reshape_model;
@@ -31,7 +27,6 @@ pub(super) use inter_prediction::Sources as InterSources;
 pub(super) use reconstruct::reconstruct;
 #[cfg(test)]
 use reconstruct::reconstructed;
-pub(crate) use reconstruct::{ReconScratch, ResidualContext};
 mod affine_motion;
 mod boundaries;
 pub(crate) use boundaries::Closures;
@@ -43,7 +38,7 @@ mod prof;
 mod quant_groups;
 mod refinement;
 mod resampling;
-pub(crate) use refinement::{Edges, RefinementScratch, derive as derive_refinement};
+pub(crate) use refinement::{Edges, derive as derive_refinement};
 pub(crate) use resampling::{Geometry, Scaling};
 mod inter_syntax;
 mod intra_syntax;
@@ -54,9 +49,7 @@ mod motion;
 mod motion_candidates;
 mod motion_refine;
 mod temporal;
-#[cfg(test)]
 pub(super) use motion::derive as derive_motion;
-pub(crate) use motion::{MotionScratch, derive_with_scratch as derive_motion_with_scratch};
 pub(crate) use temporal::{Field as MotionField, Temporal};
 mod transform;
 mod transform_syntax;
@@ -80,52 +73,8 @@ use crate::{
     intra,
 };
 use nc_common::decode::{DecodeError, Result};
-#[cfg(test)]
 pub(super) use transform::inverse_residuals;
 use tree::{Node, Split};
-
-/// Persistent scratch buffers reused across slices and pictures of a general
-/// decoding instance (`General<T>`), avoiding per-slice and per-picture heap
-/// allocation, zeroing, and deallocation.
-#[derive(Debug, Default)]
-pub(crate) struct DecodeScratch<T: nc_dsp::Pixel> {
-    pub(crate) parser_grid: [Vec<u32>; 2],
-    pub(crate) motion: MotionScratch,
-    pub(crate) refinement: RefinementScratch<T>,
-    pub(crate) recon: ReconScratch<T>,
-    pub(crate) deblock_grid: [Vec<u32>; 2],
-    pub(crate) filters: FilterScratch<T>,
-}
-
-/// Slice-reusable compact storage of non-zero `(pos, level)` pairs and
-/// coefficient-parsing grids across all transform units, avoiding per-TU
-/// `Vec` allocations and stack `memset`s.
-#[derive(Debug)]
-pub(crate) struct CoeffArena {
-    pub(super) entries: Vec<(u16, i16)>,
-    pub(super) grid: Box<[u32; coeff::PADDED_AREA]>,
-    pub(super) pass1: Box<[u8; coeff::PADDED_AREA]>,
-    pub(super) skip_vals: Box<[i32; 64 * 64]>,
-}
-
-impl Default for CoeffArena {
-    fn default() -> Self {
-        Self {
-            entries: Vec::new(),
-            grid: Box::new([0; coeff::PADDED_AREA]),
-            pass1: Box::new([0; coeff::PADDED_AREA]),
-            skip_vals: Box::new([0; 64 * 64]),
-        }
-    }
-}
-
-impl CoeffArena {
-    #[inline]
-    pub(super) fn slice(&self, (start, len): (u32, u16)) -> &[(u16, i16)] {
-        let s = start as usize;
-        &self.entries[s..s + usize::from(len)]
-    }
-}
 
 #[derive(Debug)]
 #[allow(
@@ -139,7 +88,6 @@ pub(super) struct Unit {
     inter: Option<Inter>,
     motion: Option<motion::Motion>,
     affine_models: [Option<crate::affine::Model>; 2],
-    affine_fields: [Option<crate::affine::Field>; 2],
     geometric: Option<[motion::Motion; 2]>,
     /// The resolved block vector of an IBC CU (whole samples, 1/16 units).
     block_vector: Option<crate::motion::Mv16>,
@@ -182,16 +130,13 @@ impl Unit {
         matches!(self.inter, Some(Inter::Ibc(_)))
     }
 }
-const EMPTY_CELL: u32 = u32::MAX;
-
 struct Parser<'a> {
     sequence: &'a Sequence,
     header: &'a SliceHeader,
-    arena: &'a mut CoeffArena,
     dimensions: [usize; 2],
     stride: usize,
-    grid: &'a mut [Vec<u32>; 2],
-    units: &'a mut Vec<Unit>,
+    grid: [Vec<Option<usize>>; 2],
+    units: Vec<Unit>,
     contexts: Contexts,
     trees: tree::Models,
     coefficients: coeff::Models,
@@ -226,8 +171,7 @@ pub(super) fn parse(
     h: &SliceHeader,
 ) -> Result<Vec<Unit>> {
     let mut filters = vec![filter_syntax::CtuFilters::default(); h.ctus.len()];
-    let mut arena = CoeffArena::default();
-    let mut units = parse_filtered(
+    parse_filtered(
         bytes,
         s,
         p,
@@ -235,35 +179,7 @@ pub(super) fn parse(
         filter_syntax::Counts::default(),
         (0, no_backward_prediction(h)),
         &mut filters,
-        &mut arena,
-    )?;
-    populate_test_levels(&mut units, &arena);
-    Ok(units)
-}
-
-#[cfg(test)]
-pub(super) fn populate_test_levels(units: &mut [Unit], arena: &CoeffArena) {
-    for unit in units {
-        for transform in &mut unit.transforms {
-            for plane in 0..3 {
-                if !transform.coded[plane] {
-                    continue;
-                }
-                let shift = usize::from(plane != 0);
-                let block = if plane == 0 {
-                    transform.block
-                } else {
-                    transform.chroma_block.unwrap()
-                };
-                let area = (block.width() >> shift) * (block.height() >> shift);
-                let mut full = vec![0i32; area];
-                for &(pos, val) in arena.slice(transform.spans[plane]) {
-                    full[usize::from(pos)] = i32::from(val);
-                }
-                transform.levels[plane] = full;
-            }
-        }
-    }
+    )
 }
 
 /// `NoBackwardPredFlag` of a slice whose references are all short-term
@@ -278,8 +194,6 @@ fn no_backward_prediction(h: &SliceHeader) -> bool {
     })
 }
 
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn parse_filtered(
     bytes: &[u8],
     s: &Sequence,
@@ -288,47 +202,12 @@ pub(super) fn parse_filtered(
     filter_counts: filter_syntax::Counts,
     (slice, no_backward): (u16, bool),
     filters: &mut [filter_syntax::CtuFilters],
-    arena: &mut CoeffArena,
 ) -> Result<Vec<Unit>> {
-    let mut grid = [Vec::new(), Vec::new()];
-    let mut units = Vec::new();
-    parse_filtered_into(
-        bytes,
-        s,
-        p,
-        h,
-        filter_counts,
-        (slice, no_backward),
-        filters,
-        arena,
-        &mut grid,
-        &mut units,
-    )?;
-    Ok(units)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn parse_filtered_into(
-    bytes: &[u8],
-    s: &Sequence,
-    p: &PictureParameters,
-    h: &SliceHeader,
-    filter_counts: filter_syntax::Counts,
-    (slice, no_backward): (u16, bool),
-    filters: &mut [filter_syntax::CtuFilters],
-    arena: &mut CoeffArena,
-    grid_scratch: &mut [Vec<u32>; 2],
-    units_out: &mut Vec<Unit>,
-) -> Result<()> {
     validate_tools(s)?;
-    arena.entries.clear();
-    if arena.entries.capacity() < 16_384 {
-        arena.entries.reserve(16_384 - arena.entries.capacity());
-    }
     let dimensions = p.dimensions.map(|v| v as usize);
     let inter = h.kind != 2;
     let scan = layout::scan(&h.ctus, &p.partitioning.tiles, s.ctu_log2);
-    let mut parser = Parser::new(s, p, h, scan[0], arena, grid_scratch, units_out);
+    let mut parser = Parser::new(s, p, h, scan[0]);
     parser.slice = slice;
     parser.no_backward_prediction = no_backward;
     let (qp, init_kind) = parser.initialization();
@@ -339,14 +218,19 @@ pub(crate) fn parse_filtered_into(
     )?;
     let ctu = 1 << s.ctu_log2;
     let columns = dimensions[0].div_ceil(ctu);
+    // CTUs of other slices are unavailable (§6.4.4), as are other tiles'.
     let mut in_slice = vec![false; filters.len()];
     for position in &scan {
         in_slice[position.address] = true;
     }
     let mut filter_models = filter_syntax::Models::new(qp, init_kind);
     let initial = parser.save_contexts(&filter_models);
+    // Wavefront: the context variables after the first CTU of the row above.
     let mut row_start = None;
     for (index, &position) in scan.iter().enumerate() {
+        // A tile, and with entropy synchronisation each CTU row of a tile,
+        // is a CABAC substream: a terminating bin and byte alignment end the
+        // one before (H.266 §7.3.11.1).
         let saved = if position.starts_tile() {
             Some(&initial)
         } else {
@@ -360,6 +244,8 @@ pub(crate) fn parse_filtered_into(
             parser.start_row(saved, &mut filter_models);
         }
         parser.ctu = position;
+        // The CTUs to the left and above, when they are in the same tile
+        // and slice.
         let neighbours = [
             (position.x > position.tile_origin.0).then(|| position.address - 1),
             (position.y > position.tile_origin.1).then(|| position.address - columns),
@@ -390,26 +276,13 @@ pub(crate) fn parse_filtered_into(
     if !reader.terminate()? {
         return Err(DecodeError::Malformed("VVC slice CABAC termination"));
     }
-    Ok(())
+    Ok(parser.units)
 }
 impl<'a> Parser<'a> {
-    fn new(
-        s: &'a Sequence,
-        p: &PictureParameters,
-        h: &'a SliceHeader,
-        first: layout::Ctu,
-        arena: &'a mut CoeffArena,
-        grid: &'a mut [Vec<u32>; 2],
-        units: &'a mut Vec<Unit>,
-    ) -> Self {
+    fn new(s: &'a Sequence, p: &PictureParameters, h: &'a SliceHeader, first: layout::Ctu) -> Self {
         let dimensions = p.dimensions.map(|v| v as usize);
         let stride = dimensions[0].div_ceil(4);
         let cells = stride * dimensions[1].div_ceil(4);
-        for g in grid.iter_mut() {
-            g.clear();
-            g.resize(cells, EMPTY_CELL);
-        }
-        units.clear();
         let inter = h.kind != 2;
         let (qp, init_kind) = initialization_of(h);
         Self {
@@ -418,11 +291,10 @@ impl<'a> Parser<'a> {
             no_backward_prediction: false,
             sequence: s,
             header: h,
-            arena,
             dimensions,
             stride,
-            grid,
-            units,
+            grid: [vec![None; cells], vec![None; cells]],
+            units: Vec::new(),
             contexts: initialization::contexts(qp, init_kind),
             inter_models: inter_models::Models::new(qp, init_kind),
             trees: tree::Models::new(qp, init_kind),
@@ -521,9 +393,8 @@ impl Parser<'_> {
             return None;
         }
         // Another tile's CUs are unavailable (H.266 §6.4.4).
-        let cell = self.grid[channel][y / 4 * self.stride + x / 4];
-        (cell != EMPTY_CELL)
-            .then(|| &self.units[cell as usize])
+        self.grid[channel][y / 4 * self.stride + x / 4]
+            .map(|index| &self.units[index])
             .filter(|unit| unit.tile == self.ctu.tile)
     }
     fn tree(

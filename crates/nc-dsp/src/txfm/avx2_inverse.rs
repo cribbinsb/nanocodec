@@ -17,23 +17,22 @@
 
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_abs_epi16, _mm_add_epi16, _mm_add_epi32, _mm_adds_epu16,
-    _mm_cvtepu8_epi16, _mm_loadl_epi64, _mm_loadu_si128, _mm_madd_epi16, _mm_max_epi16,
-    _mm_min_epi16, _mm_mulhrs_epi16, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16,
-    _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_storel_epi64, _mm_storeu_si128,
-    _mm_sub_epi16, _mm_subs_epu16, _mm_testz_si128, _mm_unpackhi_epi16, _mm_unpackhi_epi32,
-    _mm_unpackhi_epi64, _mm_unpacklo_epi16, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
-    _mm256_abs_epi16, _mm256_add_epi16, _mm256_add_epi32, _mm256_adds_epu16,
-    _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_extracti128_si256, _mm256_loadu_si256,
-    _mm256_madd_epi16, _mm256_max_epi16, _mm256_min_epi16, _mm256_mulhrs_epi16, _mm256_packs_epi32,
-    _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
-    _mm256_setzero_si256, _mm256_srai_epi32, _mm256_storeu_si256, _mm256_sub_epi16,
+    _mm_cvtepu8_epi16, _mm_loadl_epi64, _mm_loadu_si128, _mm_madd_epi16, _mm_mulhrs_epi16,
+    _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_setzero_si128,
+    _mm_srai_epi32, _mm_storel_epi64, _mm_storeu_si128, _mm_sub_epi16, _mm_subs_epu16,
+    _mm_testz_si128, _mm_unpackhi_epi16, _mm_unpackhi_epi32, _mm_unpackhi_epi64,
+    _mm_unpacklo_epi16, _mm_unpacklo_epi32, _mm_unpacklo_epi64, _mm256_abs_epi16, _mm256_add_epi16,
+    _mm256_add_epi32, _mm256_adds_epu16, _mm256_castsi256_si128, _mm256_cvtepu8_epi16,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_mulhrs_epi16,
+    _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16,
+    _mm256_set1_epi32, _mm256_setzero_si256, _mm256_srai_epi32, _mm256_sub_epi16,
     _mm256_subs_epu16, _mm256_testz_si256, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32,
     _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
 
 use super::generic::INVERSE_COS_BIT;
 use super::inverse_lanes::InverseLanes;
-use super::narrow_inverse::{self, GROUP, Inverse, NarrowCoefficient, NarrowLanes, NarrowPixel};
+use super::narrow_inverse::{self, GROUP, Inverse, NarrowCoefficient, NarrowLanes};
 use crate::av1_inverse::Kernel1d;
 use crate::simd::avx2::I32x8;
 
@@ -221,44 +220,26 @@ impl NarrowLanes for Narrow {
     }
 
     #[inline(always)]
-    fn add_to_u16(self, pixels: &mut [u16], max_val: i32) {
-        let pixels = &mut pixels[..GROUP];
-        // SAFETY: AVX2 entry points only; 16-byte load/store of 8 `u16`s (`0..=max_val`).
-        unsafe {
-            let prediction = _mm_loadu_si128(pixels.as_ptr().cast());
-            let sum = _mm_add_epi16(self.0, prediction);
-            let clipped = _mm_min_epi16(
-                _mm_max_epi16(sum, _mm_setzero_si128()),
-                _mm_set1_epi16(max_val as i16),
-            );
-            _mm_storeu_si128(pixels.as_mut_ptr().cast(), clipped);
-        }
-    }
-
-    #[inline(always)]
-    fn wide_rows<C: NarrowCoefficient, S: NarrowPixel, const W: usize, const H: usize>(
+    fn wide_rows<C: NarrowCoefficient, const W: usize, const H: usize>(
         inverse: Inverse,
         coeffs: &[C],
         r0: usize,
     ) -> [Self; W] {
         // SAFETY: AVX2 entry points only.
-        unsafe { wide_rows::<Self, C, S, W, H>(inverse, coeffs, r0) }
+        unsafe { wide_rows::<Self, C, W, H>(inverse, coeffs, r0) }
     }
 
     #[inline(always)]
-    fn wide_columns<S: NarrowPixel, const W: usize, const H: usize>(
+    fn wide_columns<const W: usize, const H: usize>(
         vertical: Kernel1d,
         rows: &[i16],
         live_rows: usize,
         c0: usize,
-        dst: &mut [S],
+        dst: &mut [u8],
         stride: usize,
-        max_val: i32,
     ) {
         // SAFETY: AVX2 entry points only.
-        unsafe {
-            wide_columns::<Self, S, W, H>(vertical, rows, live_rows, c0, dst, stride, max_val);
-        }
+        unsafe { wide_columns::<Self, W, H>(vertical, rows, live_rows, c0, dst, stride) }
     }
 }
 
@@ -488,44 +469,26 @@ impl NarrowLanes for Narrow16 {
     }
 
     #[inline(always)]
-    fn add_to_u16(self, pixels: &mut [u16], max_val: i32) {
-        let pixels = &mut pixels[..2 * GROUP];
-        // SAFETY: AVX2 entry points only; 32-byte load/store of 16 `u16`s (`0..=max_val`).
-        unsafe {
-            let prediction = _mm256_loadu_si256(pixels.as_ptr().cast());
-            let sum = _mm256_add_epi16(self.0, prediction);
-            let clipped = _mm256_min_epi16(
-                _mm256_max_epi16(sum, _mm256_setzero_si256()),
-                _mm256_set1_epi16(max_val as i16),
-            );
-            _mm256_storeu_si256(pixels.as_mut_ptr().cast(), clipped);
-        }
-    }
-
-    #[inline(always)]
-    fn wide_rows<C: NarrowCoefficient, S: NarrowPixel, const W: usize, const H: usize>(
+    fn wide_rows<C: NarrowCoefficient, const W: usize, const H: usize>(
         inverse: Inverse,
         coeffs: &[C],
         r0: usize,
     ) -> [Self; W] {
         // SAFETY: AVX2 entry points only.
-        unsafe { wide_rows::<Self, C, S, W, H>(inverse, coeffs, r0) }
+        unsafe { wide_rows::<Self, C, W, H>(inverse, coeffs, r0) }
     }
 
     #[inline(always)]
-    fn wide_columns<S: NarrowPixel, const W: usize, const H: usize>(
+    fn wide_columns<const W: usize, const H: usize>(
         vertical: Kernel1d,
         rows: &[i16],
         live_rows: usize,
         c0: usize,
-        dst: &mut [S],
+        dst: &mut [u8],
         stride: usize,
-        max_val: i32,
     ) {
         // SAFETY: AVX2 entry points only.
-        unsafe {
-            wide_columns::<Self, S, W, H>(vertical, rows, live_rows, c0, dst, stride, max_val);
-        }
+        unsafe { wide_columns::<Self, W, H>(vertical, rows, live_rows, c0, dst, stride) }
     }
 }
 
@@ -570,18 +533,12 @@ fn transpose8x2(rows: [__m256i; GROUP]) -> [__m256i; GROUP] {
 /// The CPU must support AVX2.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-unsafe fn wide_rows<
-    V: NarrowLanes,
-    C: NarrowCoefficient,
-    S: NarrowPixel,
-    const W: usize,
-    const H: usize,
->(
+unsafe fn wide_rows<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
     inverse: Inverse,
     coeffs: &[C],
     r0: usize,
 ) -> [V; W] {
-    narrow_inverse::wide_row_batch::<V, C, S, W, H>(inverse, coeffs, r0)
+    narrow_inverse::wide_row_batch::<V, C, W, H>(inverse, coeffs, r0)
 }
 
 /// [`NarrowLanes::wide_columns`] compiled for AVX2; as [`wide_rows`].
@@ -591,18 +548,15 @@ unsafe fn wide_rows<
 /// The CPU must support AVX2.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-unsafe fn wide_columns<V: NarrowLanes, S: NarrowPixel, const W: usize, const H: usize>(
+unsafe fn wide_columns<V: NarrowLanes, const W: usize, const H: usize>(
     vertical: Kernel1d,
     rows: &[i16],
     live_rows: usize,
     c0: usize,
-    dst: &mut [S],
+    dst: &mut [u8],
     stride: usize,
-    max_val: i32,
 ) {
-    narrow_inverse::wide_column_batch::<V, S, W, H>(
-        vertical, rows, live_rows, c0, dst, stride, max_val,
-    );
+    narrow_inverse::wide_column_batch::<V, W, H>(vertical, rows, live_rows, c0, dst, stride);
 }
 
 #[target_feature(enable = "avx2")]
@@ -689,41 +643,6 @@ pub(crate) unsafe fn av1_inverse_add<C: NarrowCoefficient, const W: usize, const
             nonzero_rows,
             dst,
             stride,
-        );
-    }
-}
-
-/// 10-bit `u16` counterpart of [`av1_inverse_add`] (`W >= 8 && H >= 8`).
-///
-/// # Safety
-///
-/// The CPU must support AVX2.
-#[target_feature(enable = "avx2")]
-pub(crate) unsafe fn av1_inverse_add_u16<C: NarrowCoefficient, const W: usize, const H: usize>(
-    kernels: (Kernel1d, Kernel1d),
-    coeffs: &[C],
-    nonzero_rows: usize,
-    dst: &mut [u16],
-    stride: usize,
-    max_val: i32,
-) {
-    if W >= 2 * GROUP && H >= 2 * GROUP {
-        narrow_inverse::inverse_lanes_u16::<Narrow16, C, W, H>(
-            kernels,
-            coeffs,
-            nonzero_rows,
-            dst,
-            stride,
-            max_val,
-        );
-    } else {
-        narrow_inverse::inverse_lanes_u16::<Narrow, C, W, H>(
-            kernels,
-            coeffs,
-            nonzero_rows,
-            dst,
-            stride,
-            max_val,
         );
     }
 }

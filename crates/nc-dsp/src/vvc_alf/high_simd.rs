@@ -22,21 +22,28 @@ use super::{VVC_ALF_BLOCK, VVC_ALF_REACH, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, fil
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn load_luma_tap_ptr<V: I16FilterLanes>(
+unsafe fn clipped_diff_ptr<V: I16FilterLanes>(
     ptrs: &[*const u16; 7],
     x: usize,
     tap: usize,
-) -> (V, V) {
+    centre: V,
+    lim: V,
+    neg_lim: V,
+) -> V {
     let (dx, dy) = VVC_ALF_TAP_OFFSETS[tap];
     let ax = (x as isize + VVC_ALF_REACH as isize + dx) as usize;
     let bx = (x as isize + VVC_ALF_REACH as isize - dx) as usize;
     // SAFETY: caller validated every row slice covers `whole + 2 * VVC_ALF_REACH`.
-    unsafe {
+    let (a, b) = unsafe {
         (
             V::load_u16_at(ptrs[(3 + dy) as usize].add(ax)),
             V::load_u16_at(ptrs[(3 - dy) as usize].add(bx)),
         )
-    }
+    };
+    a.sub(centre)
+        .max(neg_lim)
+        .min(lim)
+        .add(b.sub(centre).max(neg_lim).min(lim))
 }
 
 #[inline(always)]
@@ -47,28 +54,43 @@ unsafe fn linear_diff_ptr<V: I16FilterLanes>(
     tap: usize,
     twice: V,
 ) -> V {
-    // SAFETY: forwarded from `filter_block_row_lanes` after bounds validation.
-    let (a, b) = unsafe { load_luma_tap_ptr::<V>(ptrs, x, tap) };
+    let (dx, dy) = VVC_ALF_TAP_OFFSETS[tap];
+    let ax = (x as isize + VVC_ALF_REACH as isize + dx) as usize;
+    let bx = (x as isize + VVC_ALF_REACH as isize - dx) as usize;
+    // SAFETY: caller validated every row slice covers `whole + 2 * VVC_ALF_REACH`.
+    let (a, b) = unsafe {
+        (
+            V::load_u16_at(ptrs[(3 + dy) as usize].add(ax)),
+            V::load_u16_at(ptrs[(3 - dy) as usize].add(bx)),
+        )
+    };
     a.add(b).sub(twice)
 }
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn load_chroma_tap_ptr<V: I16FilterLanes>(
+unsafe fn chroma_diff_ptr<V: I16FilterLanes>(
     ptrs: &[*const u16; 7],
     x: usize,
     tap: usize,
-) -> (V, V) {
+    centre: V,
+    lim: V,
+    neg_lim: V,
+) -> V {
     let (dx, dy) = CHROMA_TAP_OFFSETS[tap];
     let ax = (x as isize + VVC_ALF_REACH as isize + dx) as usize;
     let bx = (x as isize + VVC_ALF_REACH as isize - dx) as usize;
     // SAFETY: caller validated every row slice covers `whole + 2 * VVC_ALF_REACH`.
-    unsafe {
+    let (a, b) = unsafe {
         (
             V::load_u16_at(ptrs[(3 + dy) as usize].add(ax)),
             V::load_u16_at(ptrs[(3 - dy) as usize].add(bx)),
         )
-    }
+    };
+    a.sub(centre)
+        .max(neg_lim)
+        .min(lim)
+        .add(b.sub(centre).max(neg_lim).min(lim))
 }
 
 #[inline(always)]
@@ -104,16 +126,17 @@ unsafe fn clipped_row_lanes<V: I16FilterLanes>(
     for step in 0..steps {
         let x = step * V::LANES;
         let b0 = step * blocks_per_vec;
-        let w_params = V::expand_alf_params(&coefficients[b0..]);
-        let l_params = V::expand_alf_params(&limits[b0..]);
+        let coeffs = V::expand_alf_blocks(&coefficients[b0..]);
+        let lims = V::expand_alf_blocks(&limits[b0..]);
         // SAFETY: `ptrs` and `dst` were bounds-checked once before the loop.
         unsafe {
             let centre = V::load_u16_at(ptrs[3].add(x + VVC_ALF_REACH));
             let mut acc = V::acc_zero();
             for p in 0..VVC_ALF_TAPS / 2 {
-                let s0 = load_luma_tap_ptr::<V>(&ptrs, x, 2 * p);
-                let s1 = load_luma_tap_ptr::<V>(&ptrs, x, 2 * p + 1);
-                acc = V::acc_alf_clipped_pair(acc, s0, s1, centre, l_params[p], w_params[p]);
+                let (lim0, lim1) = (lims[2 * p], lims[2 * p + 1]);
+                let d0 = clipped_diff_ptr::<V>(&ptrs, x, 2 * p, centre, lim0, zero.sub(lim0));
+                let d1 = clipped_diff_ptr::<V>(&ptrs, x, 2 * p + 1, centre, lim1, zero.sub(lim1));
+                acc = V::acc_vec_fma2(acc, d0, coeffs[2 * p], d1, coeffs[2 * p + 1]);
             }
             let offset = V::acc_round_shift_narrow(acc, round, shift);
             centre
@@ -154,7 +177,8 @@ unsafe fn clipped_block_row_lanes<V: I16FilterLanes>(
     out: &mut [&mut [u16]; VVC_ALF_BLOCK],
     depth: BitDepth,
 ) {
-    let (zero, max_val) = (V::splat(0), V::splat(depth.max() as i16));
+    let zero = V::splat(0);
+    let max_val = V::splat(depth.max() as i16);
     let blocks_per_vec = V::LANES / VVC_ALF_BLOCK;
     let width = out[0].len();
     let total_blocks = width.div_ceil(VVC_ALF_BLOCK);
@@ -166,43 +190,43 @@ unsafe fn clipped_block_row_lanes<V: I16FilterLanes>(
     let steps = width / V::LANES;
     let whole = steps * V::LANES;
     let min_in = whole + 2 * VVC_ALF_REACH;
-    let vec_blocks = steps * blocks_per_vec;
-    let coeff_vec = &coefficients[..vec_blocks];
-    let lim_vec = &limits[..vec_blocks];
-    let shifts = *shifts;
     let mut ptrs = [[core::ptr::null::<u16>(); 7]; VVC_ALF_BLOCK];
-    let mut dsts = [core::ptr::null_mut::<u16>(); VVC_ALF_BLOCK];
     for r in 0..VVC_ALF_BLOCK {
         assert!(out[r].len() >= whole);
         ptrs[r] = row_ptrs(&rows[r], min_in);
-        dsts[r] = out[r].as_mut_ptr();
     }
     for step in 0..steps {
         let x = step * V::LANES;
         let b0 = step * blocks_per_vec;
-        let w_params = V::expand_alf_params(&coeff_vec[b0..b0 + blocks_per_vec]);
-        let l_params = V::expand_alf_params(&lim_vec[b0..b0 + blocks_per_vec]);
-        // SAFETY: `ptrs` and `dsts` were bounds-checked once before the loop.
+        let coeffs = V::expand_alf_blocks(&coefficients[b0..]);
+        let lims = V::expand_alf_blocks(&limits[b0..]);
+        // SAFETY: `ptrs` and `out[r]` were bounds-checked once before the loop.
         unsafe {
-            for r in 0..VVC_ALF_BLOCK {
-                let centre = V::load_u16_at(ptrs[r][3].add(x + VVC_ALF_REACH));
-                let mut acc = V::acc_zero();
+            for r_base in [0, 2] {
+                let c0 = V::load_u16_at(ptrs[r_base][3].add(x + VVC_ALF_REACH));
+                let c1 = V::load_u16_at(ptrs[r_base + 1][3].add(x + VVC_ALF_REACH));
+                let (mut acc0, mut acc1) = (V::acc_zero(), V::acc_zero());
                 for p in 0..VVC_ALF_TAPS / 2 {
-                    let s0 = load_luma_tap_ptr::<V>(&ptrs[r], x, 2 * p);
-                    let s1 = load_luma_tap_ptr::<V>(&ptrs[r], x, 2 * p + 1);
-                    acc = V::acc_alf_clipped_pair(acc, s0, s1, centre, l_params[p], w_params[p]);
+                    let (lim0, lim1) = (lims[2 * p], lims[2 * p + 1]);
+                    let (neg0, neg1) = (zero.sub(lim0), zero.sub(lim1));
+                    let (w0, w1) = (coeffs[2 * p], coeffs[2 * p + 1]);
+                    let d0_0 = clipped_diff_ptr::<V>(&ptrs[r_base], x, 2 * p, c0, lim0, neg0);
+                    let d1_0 = clipped_diff_ptr::<V>(&ptrs[r_base], x, 2 * p + 1, c0, lim1, neg1);
+                    acc0 = V::acc_vec_fma2(acc0, d0_0, w0, d1_0, w1);
+                    let d0_1 = clipped_diff_ptr::<V>(&ptrs[r_base + 1], x, 2 * p, c1, lim0, neg0);
+                    let d1_1 =
+                        clipped_diff_ptr::<V>(&ptrs[r_base + 1], x, 2 * p + 1, c1, lim1, neg1);
+                    acc1 = V::acc_vec_fma2(acc1, d0_1, w0, d1_1, w1);
                 }
-                let shift = shifts[r];
-                let offset = if shift == 7 {
-                    V::acc_round_shift_narrow(acc, 64, 7)
-                } else {
-                    V::acc_round_shift_narrow(acc, 1i32 << (shift - 1), shift)
-                };
-                centre
-                    .add_sat(offset)
-                    .max(zero)
-                    .min(max_val)
-                    .store_u16_at(dsts[r].add(x));
+                for (dr, c, acc) in [(0, c0, acc0), (1, c1, acc1)] {
+                    let r = r_base + dr;
+                    let shift = shifts[r];
+                    let offset = V::acc_round_shift_narrow(acc, 1i32 << (shift - 1), shift);
+                    c.add_sat(offset)
+                        .max(zero)
+                        .min(max_val)
+                        .store_u16_at(out[r].as_mut_ptr().add(x));
+                }
             }
         }
     }
@@ -244,42 +268,42 @@ unsafe fn filter_block_row_lanes<V: I16FilterLanes>(
     let width = out[0].len();
     let steps = width / V::LANES;
     let whole = steps * V::LANES;
-    let vec_blocks = steps * blocks_per_vec;
-    let coeff_vec = &coefficients[..vec_blocks];
-    let shifts = *shifts;
+    assert!(coefficients.len() >= steps * blocks_per_vec);
     let min_in = whole + 2 * VVC_ALF_REACH;
     let mut ptrs = [[core::ptr::null::<u16>(); 7]; VVC_ALF_BLOCK];
-    let mut dsts = [core::ptr::null_mut::<u16>(); VVC_ALF_BLOCK];
     for r in 0..VVC_ALF_BLOCK {
         assert!(out[r].len() >= whole);
         ptrs[r] = row_ptrs(&rows[r], min_in);
-        dsts[r] = out[r].as_mut_ptr();
     }
     for step in 0..steps {
         let x = step * V::LANES;
         let b0 = step * blocks_per_vec;
-        let w_params = V::expand_alf_params(&coeff_vec[b0..b0 + blocks_per_vec]);
-        // SAFETY: `ptrs` and `dsts` were bounds-checked once before the loop.
+        let coeffs = V::expand_alf_blocks(&coefficients[b0..]);
+        // SAFETY: `ptrs` and `out[r]` were bounds-checked once before the loop.
         unsafe {
-            for r in 0..VVC_ALF_BLOCK {
-                let c = V::load_u16_at(ptrs[r][3].add(x + VVC_ALF_REACH));
-                let twice = c.add(c);
-                let mut acc = V::acc_zero();
-                for (p, &wp) in w_params.iter().enumerate() {
-                    let d0 = linear_diff_ptr::<V>(&ptrs[r], x, 2 * p, twice);
-                    let d1 = linear_diff_ptr::<V>(&ptrs[r], x, 2 * p + 1, twice);
-                    acc = V::acc_alf_linear_pair(acc, d0, d1, wp);
+            for r_base in [0, 2] {
+                let c0 = V::load_u16_at(ptrs[r_base][3].add(x + VVC_ALF_REACH));
+                let c1 = V::load_u16_at(ptrs[r_base + 1][3].add(x + VVC_ALF_REACH));
+                let (t0, t1) = (c0.add(c0), c1.add(c1));
+                let (mut acc0, mut acc1) = (V::acc_zero(), V::acc_zero());
+                for p in 0..VVC_ALF_TAPS / 2 {
+                    let (w0, w1) = (coeffs[2 * p], coeffs[2 * p + 1]);
+                    let d0_0 = linear_diff_ptr::<V>(&ptrs[r_base], x, 2 * p, t0);
+                    let d1_0 = linear_diff_ptr::<V>(&ptrs[r_base], x, 2 * p + 1, t0);
+                    acc0 = V::acc_vec_fma2(acc0, d0_0, w0, d1_0, w1);
+                    let d0_1 = linear_diff_ptr::<V>(&ptrs[r_base + 1], x, 2 * p, t1);
+                    let d1_1 = linear_diff_ptr::<V>(&ptrs[r_base + 1], x, 2 * p + 1, t1);
+                    acc1 = V::acc_vec_fma2(acc1, d0_1, w0, d1_1, w1);
                 }
-                let shift = shifts[r];
-                let offset = if shift == 7 {
-                    V::acc_round_shift_narrow(acc, 64, 7)
-                } else {
-                    V::acc_round_shift_narrow(acc, 1i32 << (shift - 1), shift)
-                };
-                c.add_sat(offset)
-                    .max(zero)
-                    .min(max_val)
-                    .store_u16_at(dsts[r].add(x));
+                for (dr, c, acc) in [(0, c0, acc0), (1, c1, acc1)] {
+                    let r = r_base + dr;
+                    let shift = shifts[r];
+                    let offset = V::acc_round_shift_narrow(acc, 1i32 << (shift - 1), shift);
+                    c.add_sat(offset)
+                        .max(zero)
+                        .min(max_val)
+                        .store_u16_at(out[r].as_mut_ptr().add(x));
+                }
             }
         }
     }
@@ -318,15 +342,21 @@ unsafe fn chroma_row_lanes<V: I16FilterLanes>(
     let zero = V::splat(0);
     let max_val = V::splat(depth.max() as i16);
     let round = 1i32 << (shift - 1);
-    let w_params = [
-        V::splat_alf_pair(coefficients[0], coefficients[1]),
-        V::splat_alf_pair(coefficients[2], coefficients[3]),
-        V::splat_alf_pair(coefficients[4], coefficients[5]),
+    let lims = [
+        V::splat(limits[0]),
+        V::splat(limits[1]),
+        V::splat(limits[2]),
+        V::splat(limits[3]),
+        V::splat(limits[4]),
+        V::splat(limits[5]),
     ];
-    let l_params = [
-        V::splat_alf_pair(limits[0], limits[1]),
-        V::splat_alf_pair(limits[2], limits[3]),
-        V::splat_alf_pair(limits[4], limits[5]),
+    let neg_lims = [
+        zero.sub(lims[0]),
+        zero.sub(lims[1]),
+        zero.sub(lims[2]),
+        zero.sub(lims[3]),
+        zero.sub(lims[4]),
+        zero.sub(lims[5]),
     ];
     let steps = out.len() / V::LANES;
     let whole = steps * V::LANES;
@@ -337,12 +367,16 @@ unsafe fn chroma_row_lanes<V: I16FilterLanes>(
         // SAFETY: `ptrs` and `dst` were bounds-checked once before the loop.
         unsafe {
             let centre = V::load_u16_at(ptrs[3].add(x + VVC_ALF_REACH));
+            let d0 = chroma_diff_ptr::<V>(&ptrs, x, 0, centre, lims[0], neg_lims[0]);
+            let d1 = chroma_diff_ptr::<V>(&ptrs, x, 1, centre, lims[1], neg_lims[1]);
+            let d2 = chroma_diff_ptr::<V>(&ptrs, x, 2, centre, lims[2], neg_lims[2]);
+            let d3 = chroma_diff_ptr::<V>(&ptrs, x, 3, centre, lims[3], neg_lims[3]);
+            let d4 = chroma_diff_ptr::<V>(&ptrs, x, 4, centre, lims[4], neg_lims[4]);
+            let d5 = chroma_diff_ptr::<V>(&ptrs, x, 5, centre, lims[5], neg_lims[5]);
             let mut acc = V::acc_zero();
-            for p in 0..CHROMA_TAPS / 2 {
-                let s0 = load_chroma_tap_ptr::<V>(&ptrs, x, 2 * p);
-                let s1 = load_chroma_tap_ptr::<V>(&ptrs, x, 2 * p + 1);
-                acc = V::acc_alf_clipped_pair(acc, s0, s1, centre, l_params[p], w_params[p]);
-            }
+            acc = V::acc_mul_add2(acc, d0, coefficients[0], d1, coefficients[1]);
+            acc = V::acc_mul_add2(acc, d2, coefficients[2], d3, coefficients[3]);
+            acc = V::acc_mul_add2(acc, d4, coefficients[4], d5, coefficients[5]);
             let offset = V::acc_round_shift_narrow(acc, round, shift);
             centre
                 .add_sat(offset)

@@ -264,11 +264,7 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
     that build's own presets directory (tools/dev/chart_refresh.py keeps
     every family on its own build)."""
     paths = load_paths()
-    # every point by default: with per-family builds (a chart's record), only the families
-    # recorded on it, so a family newer than the chart (AV1 Veryfast on the main chart)
-    # is not looked up on its base build, which has no preset for it
-    wanted = names or [name for name, _ in OURS + REFERENCES
-                       if not binaries or name in binaries or name not in dict(OURS)]
+    wanted = names or [name for name, _ in OURS + REFERENCES]
     # any other requested reference is a preset anchor by name (cbr.preset_anchor),
     # e.g. the independent test's x264-faster
     own_names = {n for n, _ in OURS}
@@ -283,7 +279,7 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
         anchors[name] = replace(anchors[base], name=name, profile=profile)
     binaries, presets_for = binaries or {}, presets_for or {}
     ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets))
-            for name, _ in OURS if name in wanted}
+            for name, _ in OURS}
     unknown = [n for n in wanted if n not in anchors and n not in ours]
     if unknown:
         raise SystemExit(f"unknown points: {', '.join(unknown)}")

@@ -380,12 +380,12 @@ fn contexts(values: &impl LevelValues, pos: usize, log2: u32, ch: usize) -> (usi
 }
 
 /// Anti-diagonals past which a position's context offsets no longer change.
-pub(crate) const DIAGONAL_CLASSES: usize = 11;
+const DIAGONAL_CLASSES: usize = 11;
 /// The `sig_coeff_flag` and greater-than/parity context offsets of a
 /// position by its anti-diagonal (to [`DIAGONAL_CLASSES`]), luma then
 /// chroma (§9.3.4.2.8: luma `d < 2`, `d < 5`; `d == 0`, `d < 3`, `d < 10`).
 #[rustfmt::skip]
-pub(crate) const DIAGONAL_OFFSETS: [[(u8, u8); DIAGONAL_CLASSES]; 2] = [
+const DIAGONAL_OFFSETS: [[(u8, u8); DIAGONAL_CLASSES]; 2] = [
     [(8, 15), (8, 10), (4, 10), (4, 5), (4, 5), (0, 5), (0, 5), (0, 5), (0, 5), (0, 5), (0, 0)],
     [(4, 5), (4, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)],
 ];
@@ -547,7 +547,6 @@ fn signs(
 /// Read the levels of a `side`-square block of channel `ch` (§7.3.11.11)
 /// into the result (`source` is unused by a reader); writers and pricers
 /// code through [`emit`].
-#[cfg(test)]
 pub(crate) fn code(
     io: &mut impl Bins,
     c: &mut CoeffContexts,

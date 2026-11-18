@@ -7,7 +7,6 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
     bilinear(candidate, reference, rng, report);
     dmvr(candidate, reference, rng, report);
     optical(candidate, reference, rng, report);
-    bdof_pad(candidate, reference, rng, report);
 }
 fn compare<T: PartialEq>(actual: &T, expected: &T, kind: &str, report: &mut CheckReport) {
     report.cases += 1;
@@ -196,37 +195,5 @@ fn optical(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckRe
             "PROF gradient/correction saturation",
             report,
         );
-    }
-}
-
-fn bdof_pad(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
-    for w in [4, 8, 12, 16] {
-        for h in [4, 8, 12, 16] {
-            let (pw, ph) = (w + 2, h + 2);
-            let stride = pw + 5;
-            for pat in 0..4 {
-                let bytes: Vec<u8> = (0..stride * ph)
-                    .map(|i| match pat {
-                        0 => 0,
-                        1 => 255,
-                        2 => ((i * 73) & 255) as u8,
-                        _ => rng.byte(),
-                    })
-                    .collect();
-                let interior: Vec<i16> = (0..w * h)
-                    .map(|_| match pat {
-                        0 => i16::MIN,
-                        1 => i16::MAX,
-                        _ => rng.next_u64() as i16,
-                    })
-                    .collect();
-                let win = PlaneView::new(&bytes, stride, pw, ph).expect("bdof pad win");
-                let mut expected = vec![-23456i16; pw * ph + 2];
-                let mut actual = expected.clone();
-                reference.vvc_bdof_pad((w, h), &win, &interior, &mut expected[1..=pw * ph]);
-                candidate.vvc_bdof_pad((w, h), &win, &interior, &mut actual[1..=pw * ph]);
-                compare(&actual, &expected, "BDOF border pad", report);
-            }
-        }
     }
 }

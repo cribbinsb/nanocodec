@@ -433,15 +433,15 @@ fn add_clipped<T: Sample>(
 }
 
 /// `cospi_8_64`, `cospi_16_64`, `cospi_24_64` and `sinpi_k_9` (14 bits).
-pub(crate) const COS8: i32 = 15137;
-pub(crate) const COS16: i32 = 11585;
-pub(crate) const COS24: i32 = 6270;
-pub(crate) const SIN1: i32 = 5283;
-pub(crate) const SIN2: i32 = 9929;
-pub(crate) const SIN3: i32 = 13377;
-pub(crate) const SIN4: i32 = 15212;
+const COS8: i32 = 15137;
+const COS16: i32 = 11585;
+const COS24: i32 = 6270;
+const SIN1: i32 = 5283;
+const SIN2: i32 = 9929;
+const SIN3: i32 = 13377;
+const SIN4: i32 = 15212;
 /// The 4x4 inverse's final rounding shift.
-pub(crate) const SHIFT4: u32 = 4;
+const SHIFT4: u32 = 4;
 
 /// `dct_const_round_shift`.
 fn round14(value: i64) -> i64 {

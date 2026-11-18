@@ -57,35 +57,29 @@ const fn sides<const W: usize, const H: usize>() -> Av1TxSize {
     }
 }
 
-macro_rules! all_sizes_split {
-    ($small_fn:ident, $wide_fn:ident $(, $small:ty $(, $wide:ty)?)?) => {
-        [
-            $small_fn::<$($small, )? 4, 4>,
-            $wide_fn::<$($($wide, )?)? 8, 8>,
-            $wide_fn::<$($($wide, )?)? 16, 16>,
-            $wide_fn::<$($($wide, )?)? 32, 32>,
-            $wide_fn::<$($($wide, )?)? 64, 64>,
-            $small_fn::<$($small, )? 4, 8>,
-            $small_fn::<$($small, )? 8, 4>,
-            $wide_fn::<$($($wide, )?)? 8, 16>,
-            $wide_fn::<$($($wide, )?)? 16, 8>,
-            $wide_fn::<$($($wide, )?)? 16, 32>,
-            $wide_fn::<$($($wide, )?)? 32, 16>,
-            $wide_fn::<$($($wide, )?)? 32, 64>,
-            $wide_fn::<$($($wide, )?)? 64, 32>,
-            $small_fn::<$($small, )? 4, 16>,
-            $small_fn::<$($small, )? 16, 4>,
-            $wide_fn::<$($($wide, )?)? 8, 32>,
-            $wide_fn::<$($($wide, )?)? 32, 8>,
-            $wide_fn::<$($($wide, )?)? 16, 64>,
-            $wide_fn::<$($($wide, )?)? 64, 16>,
-        ]
-    };
-}
-
 macro_rules! all_sizes {
     ($f:ident $(, $small:ty, $wide:ty)?) => {
-        all_sizes_split!($f, $f $(, $small, $wide)?)
+        [
+            $f::<$($small, )? 4, 4>,
+            $f::<$($wide, )? 8, 8>,
+            $f::<$($wide, )? 16, 16>,
+            $f::<$($wide, )? 32, 32>,
+            $f::<$($wide, )? 64, 64>,
+            $f::<$($small, )? 4, 8>,
+            $f::<$($small, )? 8, 4>,
+            $f::<$($wide, )? 8, 16>,
+            $f::<$($wide, )? 16, 8>,
+            $f::<$($wide, )? 16, 32>,
+            $f::<$($wide, )? 32, 16>,
+            $f::<$($wide, )? 32, 64>,
+            $f::<$($wide, )? 64, 32>,
+            $f::<$($small, )? 4, 16>,
+            $f::<$($small, )? 16, 4>,
+            $f::<$($wide, )? 8, 32>,
+            $f::<$($wide, )? 32, 8>,
+            $f::<$($wide, )? 16, 64>,
+            $f::<$($wide, )? 64, 16>,
+        ]
     };
 }
 
@@ -279,16 +273,15 @@ unsafe fn constant_add_u16_lanes<V4: I16Lanes, V8: I16Lanes, VWide: I16Lanes>(
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
 macro_rules! isa_high_inverse {
-    ($mod_name:ident, $fn_name:ident, $feat:literal, $narrow_mod:path, $small:ty, $wide:ty, $v4:ty, $v8:ty, $vw:ty) => {
+    ($mod_name:ident, $fn_name:ident, $feat:literal, $small:ty, $wide:ty, $v4:ty, $v8:ty, $vw:ty) => {
         mod $mod_name {
             use super::super::{
                 BitDepth, HighAv1InverseFns, Kernel1d, constant_add_u16_lanes, inverse_add_lanes,
                 simd_add_12,
             };
-            use $narrow_mod as narrow_isa;
 
             #[target_feature(enable = $feat)]
-            pub(super) unsafe fn add_10_small<
+            pub(super) unsafe fn add_10<
                 V: crate::simd::I32Lanes,
                 const W: usize,
                 const H: usize,
@@ -306,29 +299,6 @@ macro_rules! isa_high_inverse {
                     inverse_add_lanes::<V, i32, u16, 18, 16, W, H>(
                         vertical,
                         horizontal,
-                        coeffs,
-                        nonzero_rows,
-                        dst,
-                        dst_stride,
-                        depth.max(),
-                    );
-                }
-            }
-
-            #[target_feature(enable = $feat)]
-            pub(super) unsafe fn add_10_narrow<const W: usize, const H: usize>(
-                vertical: Kernel1d,
-                horizontal: Kernel1d,
-                coeffs: &[i32],
-                nonzero_rows: usize,
-                dst: &mut [u16],
-                dst_stride: usize,
-                depth: BitDepth,
-            ) {
-                // SAFETY: target feature enabled by this wrapper; `W >= 8 && H >= 8`.
-                unsafe {
-                    narrow_isa::av1_inverse_add_u16::<i32, W, H>(
-                        (vertical, horizontal),
                         coeffs,
                         nonzero_rows,
                         dst,
@@ -385,7 +355,7 @@ macro_rules! isa_high_inverse {
 
             pub(crate) fn $fn_name() -> HighAv1InverseFns {
                 HighAv1InverseFns {
-                    add_10: all_sizes_split!(add_10_small, add_10_narrow, $small),
+                    add_10: all_sizes!(add_10, $small, $wide),
                     add_12: all_sizes!(add_12, $small, $wide),
                     dc,
                 }
@@ -401,13 +371,11 @@ mod x86 {
         simd_add_12,
     };
     use crate::simd::avx512::I32x16;
-    use crate::txfm::avx2_inverse;
 
     isa_high_inverse!(
         avx2_impl,
         avx2_fns,
         "avx2",
-        crate::txfm::avx2_inverse,
         crate::simd::avx2::I32x4,
         crate::simd::avx2::I32x8,
         crate::simd::avx2::I16x4,
@@ -416,12 +384,8 @@ mod x86 {
     );
     pub(super) use avx2_impl::avx2_fns;
 
-    const fn is_adst(kernel: Kernel1d) -> bool {
-        matches!(kernel, Kernel1d::Adst | Kernel1d::FlipAdst)
-    }
-
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-    unsafe fn add_10_16x16_512(
+    unsafe fn add_10_512<const W: usize, const H: usize>(
         vertical: Kernel1d,
         horizontal: Kernel1d,
         coeffs: &[i32],
@@ -430,28 +394,17 @@ mod x86 {
         dst_stride: usize,
         depth: BitDepth,
     ) {
-        // SAFETY: AVX-512F/BW/VL (and AVX2) enabled; 16 lanes divide 16x16.
+        // SAFETY: AVX-512F/BW/VL enabled; 16 lanes divide every installed `W >= 16, H >= 16`.
         unsafe {
-            if is_adst(vertical) && is_adst(horizontal) {
-                inverse_add_lanes::<I32x16, i32, u16, 18, 16, 16, 16>(
-                    vertical,
-                    horizontal,
-                    coeffs,
-                    nonzero_rows,
-                    dst,
-                    dst_stride,
-                    depth.max(),
-                );
-            } else {
-                avx2_inverse::av1_inverse_add_u16::<i32, 16, 16>(
-                    (vertical, horizontal),
-                    coeffs,
-                    nonzero_rows,
-                    dst,
-                    dst_stride,
-                    depth.max(),
-                );
-            }
+            inverse_add_lanes::<I32x16, i32, u16, 18, 16, W, H>(
+                vertical,
+                horizontal,
+                coeffs,
+                nonzero_rows,
+                dst,
+                dst_stride,
+                depth.max(),
+            );
         }
     }
 
@@ -513,7 +466,7 @@ mod x86 {
                 $arr[18] = $f::<64, 16>;
             };
         }
-        table.add_10[2] = add_10_16x16_512;
+        install_16!(table.add_10, add_10_512);
         install_16!(table.add_12, add_12_512);
         table.dc = dc_512;
         table
@@ -526,7 +479,6 @@ mod neon {
         neon_impl,
         neon_fns,
         "neon",
-        crate::txfm::neon_inverse,
         crate::simd::neon::I32x4,
         crate::simd::neon::I32x4,
         crate::simd::neon::I16x4,
@@ -542,7 +494,6 @@ mod simd128 {
         simd128_impl,
         simd128_fns,
         "simd128",
-        crate::txfm::simd128_inverse,
         crate::simd::simd128::I32x4,
         crate::simd::simd128::I32x4,
         crate::simd::simd128::I16x4,

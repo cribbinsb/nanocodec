@@ -14,17 +14,7 @@ pub(super) const PREFIX_SEI: u8 = 23;
 pub(super) const SUFFIX_SEI: u8 = 24;
 pub(super) const FILLER: u8 = 25;
 
-/// `frame_field_info` SEI payload type (ITU-T H.274 §8.2 / H.266 Annex D).
-const FRAME_FIELD_INFO: usize = 168;
-
-/// Field parity signalled by a `frame_field_info` prefix SEI (`ffi_field_pic_flag = 1`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FieldParity {
-    Top,
-    Bottom,
-}
-
-pub(super) fn validate(kind: u8, bytes: &[u8]) -> Result<Option<FieldParity>> {
+pub(super) fn validate(kind: u8, bytes: &[u8]) -> Result<()> {
     match kind {
         AUD => {
             let mut reader = BitReader::new(bytes);
@@ -36,69 +26,38 @@ pub(super) fn validate(kind: u8, bytes: &[u8]) -> Result<Option<FieldParity>> {
             if reader.remaining_bits() != 0 {
                 return Err(DecodeError::Malformed("VVC AUD trailing bytes"));
             }
-            Ok(None)
+            Ok(())
         }
         FILLER => {
             let (&last, body) = bytes.split_last().ok_or(DecodeError::Truncated)?;
             if last != 0x80 || body.iter().any(|&byte| byte != 0xff) {
                 return Err(DecodeError::Malformed("VVC filler data"));
             }
-            Ok(None)
+            Ok(())
         }
-        PREFIX_SEI => sei(bytes, true),
-        SUFFIX_SEI => sei(bytes, false),
+        PREFIX_SEI | SUFFIX_SEI => sei(bytes),
         OPI | DCI => match bytes.last() {
-            Some(&last) if last != 0 => Ok(None),
+            Some(&last) if last != 0 => Ok(()),
             _ => Err(DecodeError::Malformed("VVC OPI/DCI RBSP")),
         },
         _ => Err(DecodeError::Unsupported("VVC metadata NAL type")),
     }
 }
 
-fn sei(mut bytes: &[u8], prefix: bool) -> Result<Option<FieldParity>> {
+fn sei(mut bytes: &[u8]) -> Result<()> {
     // SEI payload headers are byte-aligned. At least one message precedes
     // rbsp_trailing_bits; the terminating 0x80 cannot be mistaken for a header.
-    let mut field = None;
     loop {
-        let payload_type = extended_value(&mut bytes)?;
+        extended_value(&mut bytes)?; // payloadType, unknown types are ignored
         let size = extended_value(&mut bytes)?;
-        let payload = bytes.get(..size).ok_or(DecodeError::Truncated)?;
-        bytes = &bytes[size..];
-        if prefix && payload_type == FRAME_FIELD_INFO {
-            field = parse_frame_field_info(payload)?;
-        }
+        bytes = bytes.get(size..).ok_or(DecodeError::Truncated)?;
         if bytes == [0x80] {
-            return Ok(field);
+            return Ok(());
         }
         if bytes.is_empty() {
             return Err(DecodeError::Truncated);
         }
     }
-}
-
-fn parse_frame_field_info(payload: &[u8]) -> Result<Option<FieldParity>> {
-    let mut r = BitReader::new(payload);
-    let field_pic = r.read_bit()?;
-    let parity = if field_pic {
-        let bottom = r.read_bit()?;
-        if r.read_bit()? {
-            r.read_bit()?; // ffi_paired_with_next_field_flag
-        }
-        Some(if bottom {
-            FieldParity::Bottom
-        } else {
-            FieldParity::Top
-        })
-    } else {
-        if r.read_bit()? {
-            r.read_bit()?; // ffi_top_field_first_flag
-        }
-        r.read_bits(8)?; // ffi_display_elemental_periods_minus1
-        None
-    };
-    r.read_bits(2)?; // ffi_source_scan_type
-    r.read_bit()?; // ffi_duplicate_flag
-    Ok(parity)
 }
 
 fn extended_value(bytes: &mut &[u8]) -> Result<usize> {

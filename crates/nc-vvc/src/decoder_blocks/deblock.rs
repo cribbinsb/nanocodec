@@ -3,19 +3,11 @@ use super::{PictureParameters, Sequence, SliceHeader, Transform, Unit, transform
 use nc_common::{Picture, PlaneIndex, Sample};
 use nc_dsp::{DepthKernels, Pixel, vvc_deblock_beta, vvc_deblock_tc};
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "cached per-TU flags avoid repeated Unit/Transform pointer chases in edge scan"
-)]
 struct EdgeBlock<'a> {
     unit: &'a Unit,
     transform: &'a Transform,
-    luma_bounds: [u16; 4],
-    chroma_bounds: [u16; 4],
-    slice: u16,
-    tile: u16,
-    qp_y: i8,
-    coded_y: bool,
+    luma_bounds: (usize, usize, usize, usize),
+    chroma_bounds: (usize, usize, usize, usize),
     has_subblocks: bool,
     uniform_motion: bool,
 }
@@ -23,78 +15,45 @@ struct EdgeBlock<'a> {
 impl EdgeBlock<'_> {
     #[inline]
     fn bounds(&self, channel: usize) -> (usize, usize, usize, usize) {
-        let [x, y, w, h] = if channel == 0 {
+        if channel == 0 {
             self.luma_bounds
         } else {
             self.chroma_bounds
-        };
-        (
-            usize::from(x),
-            usize::from(y),
-            usize::from(w),
-            usize::from(h),
-        )
+        }
     }
 
     #[inline]
     fn size_perp(&self, channel: usize, horizontal: bool) -> usize {
-        let [_, _, w, h] = if channel == 0 {
-            self.luma_bounds
-        } else {
-            self.chroma_bounds
-        };
-        usize::from(if horizontal { h } else { w })
+        let (_, _, w, h) = self.bounds(channel);
+        if horizontal { h } else { w }
     }
 }
 
-fn edge_blocks<'a>(
-    units: &'a [Unit],
-    sequence: &Sequence,
-    headers: &[SliceHeader],
-) -> Vec<EdgeBlock<'a>> {
+fn edge_blocks(units: &[Unit]) -> Vec<EdgeBlock<'_>> {
     let total: usize = units.iter().map(|u| u.transforms.len()).sum();
     let mut out = Vec::with_capacity(total);
     for unit in units {
         let has_subblocks =
             unit.affine_models.iter().any(Option::is_some) || !unit.subblocks.is_empty();
-        let uniform_motion = unit.motion.is_some()
-            && !has_subblocks
-            && unit.geometric.is_none()
-            && unit.affine_fields[0].is_none()
-            && unit.affine_fields[1].is_none();
-        let header = &headers[usize::from(unit.slice)];
-        let qp_y = transform::qp(unit.quant(), 0, 0, sequence, header) as i8;
-        for tf in &unit.transforms {
-            let (lb, cb) = if let Some(selection) = unit.sbt
-                && std::ptr::eq(tf, unit.transforms.as_ptr())
+        let uniform_motion = !has_subblocks && unit.geometric.is_none();
+        for transform in &unit.transforms {
+            let (luma_bounds, chroma_bounds) = if let Some(selection) = unit.sbt
+                && std::ptr::eq(transform, unit.transforms.as_ptr())
             {
-                let (x, y, w, h) = selection.uncoded(unit.node);
-                let rect = [x as u16, y as u16, w as u16, h as u16];
-                (rect, rect)
+                let b = selection.uncoded(unit.node);
+                (b, b)
             } else {
-                let lb = tf.block;
-                let cb = tf.chroma_block.map_or([0; 4], |c| {
-                    [c.x as u16, c.y as u16, c.width() as u16, c.height() as u16]
-                });
-                (
-                    [
-                        lb.x as u16,
-                        lb.y as u16,
-                        lb.width() as u16,
-                        lb.height() as u16,
-                    ],
-                    cb,
-                )
+                let lb = transform.block;
+                let cb = transform
+                    .chroma_block
+                    .map_or((0, 0, 0, 0), |c| (c.x, c.y, c.width(), c.height()));
+                ((lb.x, lb.y, lb.width(), lb.height()), cb)
             };
             out.push(EdgeBlock {
                 unit,
-                transform: tf,
-                luma_bounds: lb,
-                chroma_bounds: cb,
-                slice: unit.slice,
-                tile: unit.tile,
-                qp_y,
-                coded_y: tf.coded[0],
+                transform,
+                luma_bounds,
+                chroma_bounds,
                 has_subblocks,
                 uniform_motion,
             });
@@ -113,7 +72,6 @@ const SUBBLOCK_EDGE_GRID: usize = 8;
 /// Samples along an edge segment whose ends set the LADF luma level.
 const LADF_SEGMENT: usize = 4;
 
-#[cfg(test)]
 pub(crate) fn apply<T: Pixel>(
     picture: &mut Picture<T>,
     units: &[Unit],
@@ -122,29 +80,14 @@ pub(crate) fn apply<T: Pixel>(
     headers: &[SliceHeader],
     dsp: DepthKernels<'_>,
 ) {
-    let mut grid = [Vec::new(), Vec::new()];
-    apply_with_scratch(
-        picture, units, sequence, parameters, headers, dsp, &mut grid,
-    );
-}
-
-pub(crate) fn apply_with_scratch<T: Pixel>(
-    picture: &mut Picture<T>,
-    units: &[Unit],
-    sequence: &Sequence,
-    parameters: &PictureParameters,
-    headers: &[SliceHeader],
-    dsp: DepthKernels<'_>,
-    grid: &mut [Vec<u32>; 2],
-) {
     if headers.iter().all(|h| h.deblock.disabled) {
         return;
     }
     let stride = picture.width().div_ceil(4);
     // Every slice of a picture has its picture header.
     let virtual_boundaries = &headers[0].picture.boundaries;
-    let blocks = edge_blocks(units, sequence, headers);
-    fill_edge_grid(&blocks, stride, picture.height(), sequence.chroma, grid);
+    let blocks = edge_blocks(units);
+    let grid = edge_grid(&blocks, stride, picture.height());
     for horizontal in [false, true] {
         apply_luma(
             picture,
@@ -171,251 +114,11 @@ pub(crate) fn apply_with_scratch<T: Pixel>(
     }
 }
 
-#[inline]
-fn same_pair_run(
-    grid: &[u32],
-    (at, along, along_limit): (usize, usize, usize),
-    (p_off, along_step): (usize, usize),
-    (p_raw, q_raw): (u32, u32),
-) -> usize {
-    let mut skip = 1usize;
-    while along + 4 * skip < along_limit
-        && grid[at + skip * along_step] == q_raw
-        && grid[at + skip * along_step - p_off] == p_raw
-    {
-        skip += 1;
-    }
-    skip
-}
-
-#[inline]
-fn luma_thresholds_fast(
-    (qp_p, qp_q): (i8, i8),
-    strength: i32,
-    ladf: i32,
-    bd_offset: i32,
-    depth: nc_common::BitDepth,
-    q_header: &SliceHeader,
-) -> (i32, i32) {
-    let qp = ((i32::from(qp_p) + i32::from(qp_q) + 1) >> 1) - bd_offset + ladf;
-    let [beta_offset, tc_offset] = q_header.deblock.offsets[0].map(i32::from);
-    let beta = vvc_deblock_beta(
-        crate::filter::BETA[(qp + 2 * beta_offset).clamp(0, 63) as usize],
-        depth,
-    );
-    let tc = vvc_deblock_tc(
-        crate::filter::TC[(qp + 2 * (strength - 1) + 2 * tc_offset).clamp(0, 65) as usize],
-        depth,
-    );
-    (beta, tc)
-}
-
-#[inline]
-fn filter_luma_single_fast<T: Pixel>(
-    y_view: &mut nc_common::PlaneViewMut<'_, T>,
-    (vw, vh): (usize, usize),
-    at: (usize, usize),
-    horizontal: bool,
-    (beta, tc): (i32, i32),
-    lengths: [usize; 2],
-    dsp: DepthKernels<'_>,
-) {
-    let inside = if horizontal {
-        at.1 >= 8 && at.1 + 8 <= vh && at.0 + 4 <= vw
-    } else {
-        at.0 >= 8 && at.0 + 8 <= vw && at.1 + 4 <= vh
-    };
-    if inside {
-        dsp.vvc_deblock_luma_segment(y_view, at, !horizontal, beta, tc, lengths);
-    } else {
-        filter_luma_border_view(y_view, dsp, at, horizontal, beta, tc, lengths);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
-fn filter_luma_run_fast<T: Pixel>(
-    y_view: &mut nc_common::PlaneViewMut<'_, T>,
-    (vw, vh): (usize, usize),
-    (along, perp, along_limit): (usize, usize, usize),
-    run: usize,
-    horizontal: bool,
-    interior_perp: bool,
-    (beta, tc): (i32, i32),
-    lengths: [usize; 2],
-    dsp: DepthKernels<'_>,
-) {
-    let mut k = 0;
-    while interior_perp && k + 2 <= run && along + 4 * k + 8 <= along_limit {
-        let pos = along + 4 * k;
-        let at = if horizontal { (pos, perp) } else { (perp, pos) };
-        dsp.vvc_deblock_luma_edge(y_view, at, !horizontal, beta, tc, lengths);
-        k += 2;
-    }
-    while k < run {
-        let pos = along + 4 * k;
-        let at = if horizontal { (pos, perp) } else { (perp, pos) };
-        filter_luma_single_fast(y_view, (vw, vh), at, horizontal, (beta, tc), lengths, dsp);
-        k += 1;
-    }
-}
-
-#[inline]
-fn unit_luma_motion(block: &EdgeBlock<'_>, x: usize, y: usize) -> Option<super::motion::Motion> {
-    if block.uniform_motion {
-        block.unit.motion
-    } else {
-        super::motion::at(block.unit, x, y)
-    }
-}
-
-#[inline]
-fn subblock_motion_bs(
-    p: &EdgeBlock<'_>,
-    q: &EdgeBlock<'_>,
-    (x, y): (usize, usize),
-    horizontal: bool,
-    sides: (&SliceHeader, &SliceHeader),
-) -> i32 {
-    let px = x - usize::from(!horizontal);
-    let py = y - usize::from(horizontal);
-    match (unit_luma_motion(p, px, py), unit_luma_motion(q, x, y)) {
-        (Some(pm), Some(qm)) => motion_strength(pm, qm, sides),
-        _ => 0,
-    }
-}
-
-#[inline]
-fn bs_invariant_along_run(
-    p: &EdgeBlock<'_>,
-    q: &EdgeBlock<'_>,
-    bs: i32,
-    perp: usize,
-    horizontal: bool,
-) -> bool {
-    if std::ptr::eq(p, q) {
-        return false;
-    }
-    if bs == 2
-        || p.unit.inter.is_none()
-        || q.unit.inter.is_none()
-        || p.coded_y
-        || q.coded_y
-        || p.unit.block_vector.is_some()
-        || q.unit.block_vector.is_some()
-    {
-        return true;
-    }
-    if std::ptr::eq(p.unit, q.unit) {
-        let origin = if horizontal {
-            q.unit.node.y
-        } else {
-            q.unit.node.x
-        };
-        return !q.has_subblocks || !(perp - origin).is_multiple_of(SUBBLOCK_EDGE_GRID);
-    }
-    p.uniform_motion && q.uniform_motion
-}
-
-#[allow(clippy::too_many_arguments)]
-fn filter_luma_subblock_run<T: Pixel>(
-    y_view: &mut nc_common::PlaneViewMut<'_, T>,
-    (vw, vh): (usize, usize),
-    (p, q): (&EdgeBlock<'_>, &EdgeBlock<'_>),
-    (along, perp, along_limit): (usize, usize, usize),
-    (run, first_bs): (usize, i32),
-    (horizontal, interior_perp, boundary): (bool, bool, bool),
-    (bd_offset, depth): (i32, nc_common::BitDepth),
-    sides: (&SliceHeader, &SliceHeader),
-    dsp: DepthKernels<'_>,
-) {
-    let mut cached: Option<(i32, (i32, i32), [usize; 2])> = None;
-    let mut k = 0usize;
-    while k < run {
-        let pos = along + 4 * k;
-        let at = if horizontal { (pos, perp) } else { (perp, pos) };
-        let bs = if k == 0 {
-            first_bs
-        } else {
-            subblock_motion_bs(p, q, at, horizontal, sides)
-        };
-        if bs == 0 {
-            k += 1;
-            continue;
-        }
-        let (thresholds, lengths) = match cached {
-            Some((prev_bs, th, len)) if prev_bs == bs => (th, len),
-            _ => {
-                let th = luma_thresholds_fast((p.qp_y, q.qp_y), bs, 0, bd_offset, depth, sides.1);
-                let len = luma_lengths(p, q, perp, horizontal, boundary);
-                cached = Some((bs, th, len));
-                (th, len)
-            }
-        };
-        if interior_perp && k + 2 <= run && pos + 8 <= along_limit {
-            let next_at = if horizontal {
-                (pos + 4, perp)
-            } else {
-                (perp, pos + 4)
-            };
-            let next_bs = subblock_motion_bs(p, q, next_at, horizontal, sides);
-            if next_bs == bs {
-                dsp.vvc_deblock_luma_edge(
-                    y_view,
-                    at,
-                    !horizontal,
-                    thresholds.0,
-                    thresholds.1,
-                    lengths,
-                );
-                k += 2;
-                continue;
-            }
-            if next_bs == 0 {
-                filter_luma_single_fast(y_view, (vw, vh), at, horizontal, thresholds, lengths, dsp);
-                k += 2;
-                continue;
-            }
-        }
-        filter_luma_single_fast(y_view, (vw, vh), at, horizontal, thresholds, lengths, dsp);
-        k += 1;
-    }
-}
-
-fn filter_luma_border_view<T: Pixel>(
-    view: &mut nc_common::PlaneViewMut<'_, T>,
-    dsp: DepthKernels<'_>,
-    origin: (usize, usize),
-    horizontal: bool,
-    beta: i32,
-    tc: i32,
-    lengths: [usize; 2],
-) {
-    let (vw, vh) = (view.width(), view.height());
-    let mut edge = [[T::default(); 16]; 4];
-    for (line, values) in edge.iter_mut().enumerate() {
-        for (tap, slot) in values.iter_mut().enumerate() {
-            let (x, y) = position(origin, horizontal, line, tap, 16);
-            let row = y.clamp(0, vh as isize - 1) as usize;
-            let col = x.clamp(0, vw as isize - 1) as usize;
-            *slot = view.row_mut(row)[col];
-        }
-    }
-    dsp.vvc_deblock_luma(&mut edge, beta, tc, lengths);
-    for (line, values) in edge.iter().enumerate() {
-        for (tap, &value) in values.iter().enumerate() {
-            let (x, y) = position(origin, horizontal, line, tap, 16);
-            if x >= 0 && y >= 0 && (x as usize) < vw && (y as usize) < vh {
-                view.row_mut(y as usize)[x as usize] = value;
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_luma_no_ladf<T: Pixel>(
+fn apply_luma<T: Pixel>(
     picture: &mut Picture<T>,
     blocks: &[EdgeBlock<'_>],
-    grid: &[u32],
+    grid: &[usize],
     stride: usize,
     horizontal: bool,
     closed_positions: &[u32],
@@ -428,17 +131,13 @@ fn apply_luma_no_ladf<T: Pixel>(
     } else {
         (width, height)
     };
-    let step = if horizontal { (stride, 1) } else { (1, stride) };
-    let depth = nc_common::BitDepth::of::<T>(dsp.depth());
-    let bd_offset = crate::decoder_headers::qp_bd_offset(depth);
-    let ctu_size = 1usize << sequence.ctu_log2;
-    let mut y_view = picture.plane_mut(PlaneIndex::Y).view_mut();
+    let (p_off, along_step) = if horizontal { (stride, 1) } else { (1, stride) };
+    let no_ladf = sequence.tools.ladf.is_empty();
     for perp in (4..perp_limit).step_by(4) {
         if closed_positions.contains(&(perp as u32)) {
             continue;
         }
         let interior_perp = perp >= 8 && perp + 8 <= perp_limit;
-        let boundary = horizontal && perp.is_multiple_of(ctu_size);
         let mut along = 0;
         while along < along_limit {
             let (x, y) = if horizontal {
@@ -447,158 +146,62 @@ fn apply_luma_no_ladf<T: Pixel>(
                 (perp, along)
             };
             let at = (y >> 2) * stride + (x >> 2);
-            let pair = (grid[at - step.0], grid[at]);
-            let q = &blocks[pair.1 as usize];
-            if pair.0 == pair.1 {
-                let origin = if horizontal {
+            let (p_idx, q_idx) = (grid[at - p_off], grid[at]);
+            let q = &blocks[q_idx];
+            if p_idx == q_idx {
+                let cu_origin = if horizontal {
                     q.unit.node.y
                 } else {
                     q.unit.node.x
                 };
-                if !q.has_subblocks || !(perp - origin).is_multiple_of(SUBBLOCK_EDGE_GRID) {
-                    along += 4 * same_pair_run(grid, (at, along, along_limit), step, pair);
+                if !q.has_subblocks || !(perp - cu_origin).is_multiple_of(SUBBLOCK_EDGE_GRID) {
+                    let mut skip = 1usize;
+                    while along + 4 * skip < along_limit
+                        && grid[at + skip * along_step] == q_idx
+                        && grid[at + skip * along_step - p_off] == p_idx
+                    {
+                        skip += 1;
+                    }
+                    along += 4 * skip;
                     continue;
                 }
             }
-            let p = &blocks[pair.0 as usize];
-            let header = &headers[usize::from(q.slice)];
+            let p = &blocks[p_idx];
+            let header = &headers[usize::from(q.unit.slice)];
             if header.deblock.disabled
-                || (p.slice != q.slice || p.tile != q.tile)
-                    && !open_edge(p.unit, q.unit, (sequence, parameters), headers)
+                || !open_edge(p.unit, q.unit, (sequence, parameters), headers)
             {
-                along += 4 * same_pair_run(grid, (at, along, along_limit), step, pair);
+                along += 4;
                 continue;
             }
-            let sides = (&headers[usize::from(p.slice)], header);
+            let sides = (&headers[usize::from(p.unit.slice)], header);
             let bs = strength(p, q, 0, (x, y), horizontal, sides);
-            let inv = bs_invariant_along_run(p, q, bs, perp, horizontal);
-            let run = same_pair_run(grid, (at, along, along_limit), step, pair);
-            if inv {
-                if bs > 0 {
-                    let thresholds =
-                        luma_thresholds_fast((p.qp_y, q.qp_y), bs, 0, bd_offset, depth, header);
-                    let lengths = luma_lengths(p, q, perp, horizontal, boundary);
-                    filter_luma_run_fast(
-                        &mut y_view,
-                        (width, height),
-                        (along, perp, along_limit),
-                        run,
-                        horizontal,
-                        interior_perp,
-                        thresholds,
-                        lengths,
-                        dsp,
-                    );
-                }
-            } else {
-                filter_luma_subblock_run(
-                    &mut y_view,
-                    (width, height),
-                    (p, q),
-                    (along, perp, along_limit),
-                    (run, bs),
-                    (horizontal, interior_perp, boundary),
-                    (bd_offset, depth),
-                    sides,
-                    dsp,
-                );
-            }
-            along += 4 * run;
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_luma<T: Pixel>(
-    picture: &mut Picture<T>,
-    blocks: &[EdgeBlock<'_>],
-    grid: &[u32],
-    stride: usize,
-    horizontal: bool,
-    closed_positions: &[u32],
-    (sequence, parameters, headers): (&Sequence, &PictureParameters, &[SliceHeader]),
-    dsp: DepthKernels<'_>,
-) {
-    if sequence.tools.ladf.is_empty() {
-        apply_luma_no_ladf(
-            picture,
-            blocks,
-            grid,
-            stride,
-            horizontal,
-            closed_positions,
-            (sequence, parameters, headers),
-            dsp,
-        );
-        return;
-    }
-    let (width, height) = (picture.width(), picture.height());
-    let (perp_limit, along_limit) = if horizontal {
-        (height, width)
-    } else {
-        (width, height)
-    };
-    let step = if horizontal { (stride, 1) } else { (1, stride) };
-    let depth = nc_common::BitDepth::of::<T>(dsp.depth());
-    let bd_offset = crate::decoder_headers::qp_bd_offset(depth);
-    for perp in (4..perp_limit).step_by(4) {
-        if closed_positions.contains(&(perp as u32)) {
-            continue;
-        }
-        let mut along = 0;
-        while along < along_limit {
-            let (x, y) = if horizontal {
-                (along, perp)
-            } else {
-                (perp, along)
-            };
-            let at = (y >> 2) * stride + (x >> 2);
-            let pair = (grid[at - step.0], grid[at]);
-            let q = &blocks[pair.1 as usize];
-            if pair.0 == pair.1 {
-                let origin = if horizontal {
-                    q.unit.node.y
-                } else {
-                    q.unit.node.x
-                };
-                if !q.has_subblocks || !(perp - origin).is_multiple_of(SUBBLOCK_EDGE_GRID) {
-                    along += 4 * same_pair_run(grid, (at, along, along_limit), step, pair);
-                    continue;
-                }
-            }
-            let p = &blocks[pair.0 as usize];
-            let header = &headers[usize::from(q.slice)];
-            if header.deblock.disabled
-                || (p.slice != q.slice || p.tile != q.tile)
-                    && !open_edge(p.unit, q.unit, (sequence, parameters), headers)
-            {
-                along += 4 * same_pair_run(grid, (at, along, along_limit), step, pair);
-                continue;
-            }
-            let sides = (&headers[usize::from(p.slice)], header);
-            let bs = strength(p, q, 0, (x, y), horizontal, sides);
-            let inv = bs_invariant_along_run(p, q, bs, perp, horizontal);
             if bs == 0 {
-                along += 4 * if inv {
-                    same_pair_run(grid, (at, along, along_limit), step, pair)
-                } else {
-                    1
-                };
+                along += 4;
                 continue;
             }
+            let can_batch8 = interior_perp
+                && no_ladf
+                && p_idx != q_idx
+                && along + 8 <= along_limit
+                && grid[at + along_step - p_off] == p_idx
+                && grid[at + along_step] == q_idx
+                && (bs == 2
+                    || !p.transform.levels[0].is_empty()
+                    || !q.transform.levels[0].is_empty()
+                    || (p.uniform_motion && q.uniform_motion));
             filter_luma_edge(
                 picture,
                 (p, q),
                 (x, y),
                 horizontal,
                 bs,
-                false,
-                (depth, bd_offset),
+                can_batch8,
                 sequence,
                 sides,
                 dsp,
             );
-            along += 4;
+            along += if can_batch8 { 8 } else { 4 };
         }
     }
 }
@@ -607,7 +210,7 @@ fn apply_luma<T: Pixel>(
 fn apply_chroma<T: Pixel>(
     picture: &mut Picture<T>,
     blocks: &[EdgeBlock<'_>],
-    grid: &[u32],
+    grid: &[usize],
     stride: usize,
     horizontal: bool,
     closed_positions: &[u32],
@@ -636,20 +239,20 @@ fn apply_chroma<T: Pixel>(
                 (perp, along)
             };
             let at = (y >> 2) * stride + (x >> 2);
-            let (p_raw, q_raw) = (grid[at - p_off], grid[at]);
+            let (p_idx, q_idx) = (grid[at - p_off], grid[at]);
             let mut run = 1usize;
             while run < 4
                 && along + 4 * run < along_limit
-                && grid[at + run * along_step - p_off] == p_raw
-                && grid[at + run * along_step] == q_raw
+                && grid[at + run * along_step - p_off] == p_idx
+                && grid[at + run * along_step] == q_idx
             {
                 run += 1;
             }
-            if p_raw == q_raw {
+            if p_idx == q_idx {
                 along += 4 * run;
                 continue;
             }
-            let (p, q) = (&blocks[p_raw as usize], &blocks[q_raw as usize]);
+            let (p, q) = (&blocks[p_idx], &blocks[q_idx]);
             let header = &headers[usize::from(q.unit.slice)];
             if header.deblock.disabled
                 || !open_edge(p.unit, q.unit, (sequence, parameters), headers)
@@ -736,13 +339,14 @@ fn filter_luma_edge<T: Pixel>(
     horizontal: bool,
     strength: i32,
     eight_lines: bool,
-    (depth, bd_offset): (nc_common::BitDepth, i32),
     sequence: &Sequence,
     sides: (&SliceHeader, &SliceHeader),
     dsp: DepthKernels<'_>,
 ) {
     let perpendicular = if horizontal { y } else { x };
     let boundary = horizontal && y.is_multiple_of(1 << sequence.ctu_log2);
+    let depth = nc_common::BitDepth::of::<T>(dsp.depth());
+    let bd_offset = crate::decoder_headers::qp_bd_offset(depth);
     let ladf = ladf_offset(picture, &sequence.tools.ladf, (x, y), horizontal);
     let (beta, tc) = edge_thresholds((p, q), 0, strength, ladf, bd_offset, depth, sequence, sides);
     let lengths = luma_lengths(p, q, perpendicular, horizontal, boundary);
@@ -972,8 +576,8 @@ fn chroma_strength(p: &EdgeBlock<'_>, q: &EdgeBlock<'_>, plane: usize) -> i32 {
         return 2;
     }
     i32::from(
-        p.transform.coded[plane]
-            || q.transform.coded[plane]
+        !p.transform.levels[plane].is_empty()
+            || !q.transform.levels[plane].is_empty()
             || p.transform.joint != 0
             || q.transform.joint != 0,
     )
@@ -1002,8 +606,8 @@ fn strength(
         return 2;
     }
     if !std::ptr::eq(p, q)
-        && (p.transform.coded[plane]
-            || q.transform.coded[plane]
+        && (!p.transform.levels[plane].is_empty()
+            || !q.transform.levels[plane].is_empty()
             || (plane != 0 && (p.transform.joint != 0 || q.transform.joint != 0)))
     {
         return 1;
@@ -1028,35 +632,32 @@ fn strength(
             (None, None) => {}
             _ => return 1,
         }
-        return subblock_motion_bs(p, q, (x, y), horizontal, headers);
+        if let (Some(p), Some(q)) = (
+            super::motion::at(
+                p.unit,
+                x - usize::from(!horizontal),
+                y - usize::from(horizontal),
+            ),
+            super::motion::at(q.unit, x, y),
+        ) {
+            return motion_strength(p, q, headers);
+        }
     }
     0
 }
 
-fn fill_edge_grid(
-    blocks: &[EdgeBlock<'_>],
-    stride: usize,
-    height: usize,
-    chroma: bool,
-    grid: &mut [Vec<u32>; 2],
-) {
-    let cells = stride * height.div_ceil(4);
-    if grid[0].len() != cells {
-        grid[0].resize(cells, 0);
-    }
-    if chroma && grid[1].len() != cells {
-        grid[1].resize(cells, 0);
-    }
-    let ch_end = 1 + usize::from(chroma);
+fn edge_grid(blocks: &[EdgeBlock<'_>], stride: usize, height: usize) -> [Vec<usize>; 2] {
+    let mut grid = [
+        vec![0; stride * height.div_ceil(4)],
+        vec![0; stride * height.div_ceil(4)],
+    ];
     for (index, block) in blocks.iter().enumerate() {
-        let idx = index as u32;
         let unit = block.unit;
-        let range = if unit.combined {
-            0..ch_end
+        for channel in if unit.combined {
+            0..2
         } else {
-            unit.channel..(unit.channel + 1).min(ch_end)
-        };
-        for channel in range {
+            unit.channel..unit.channel + 1
+        } {
             let n = if channel == 0 {
                 block.transform.block
             } else {
@@ -1066,13 +667,13 @@ fn fill_edge_grid(
                 n
             };
             let cols = n.width().div_ceil(4);
-            let x4 = n.x >> 2;
-            for ry in (n.y..n.y + n.height()).step_by(4) {
-                let base = (ry >> 2) * stride + x4;
-                grid[channel][base..base + cols].fill(idx);
+            for y in (n.y..n.y + n.height()).step_by(4) {
+                let base = (y >> 2) * stride + (n.x >> 2);
+                grid[channel][base..base + cols].fill(index);
             }
         }
     }
+    grid
 }
 
 fn motion_strength(

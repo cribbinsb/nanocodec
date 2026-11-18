@@ -1,12 +1,11 @@
-//! Shared NEON (dot-product) AV1 and HEVC/VVC eight-tap prediction, at final
+//! NEON (dot-product) AV1 prediction of every filter family, at final
 //! 8-bit precision (`put`) and at compound precision (`prep`), in the
 //! structure of dav1d's `put_8tap` / `prep_8tap` (`src/arm/64/mc.S` and
-//! `mc_dotprod.S`, BSD-2-Clause, Copyright (c) 2018/2024, `VideoLAN`, dav1d
-//! authors, Janne Grunau, Martin Storsjo and Arm Limited; see `THIRD_PARTY.md`),
-//! reimplemented: the horizontal pass is
-//! signed dot products of bias-flipped pixels ([`DotFilter`]); V-only uses
-//! transposed bytes and SDOT, while HV accumulates horizontal i16 rows into
-//! i32 vertical sums. Rounding biases are folded into H-only accumulators.
+//! `mc_dotprod.S`, BSD-2-Clause, Copyright (c) 2018, `VideoLAN` and dav1d
+//! authors; see `THIRD_PARTY.md`), reimplemented: the horizontal pass is
+//! signed dot products of bias-flipped pixels ([`DotFilter`]), the vertical
+//! pass widening multiply-accumulates of 16-bit rows, and every rounding a
+//! rounding shift.
 //!
 //! Halved taps (module `mc` docs). With `t = (sum + 2) >> 2` the
 //! horizontal-pass rounding, the outputs are:
@@ -23,23 +22,18 @@
 //! included), so they read the same window. Installed only after runtime
 //! dot-product detection.
 //!
-//! HEVC/VVC use full signed-byte taps, unrounded horizontal intermediates,
-//! and six/twelve-bit output shifts in these same loops.
-//!
 //! Kernel contract: see the `mc` module docs.
 
-mod horizontal_dot;
-mod vertical_dot;
-
-use super::neon_dotprod::{DOT_PIXEL_BIAS, DotFilter};
+use super::neon_dotprod::DotFilter;
 use super::{
-    AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, SeparableTaps, TAP_CENTRE,
-    TAPS, TapPair, halved, slide,
+    AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, TAP_CENTRE, TAPS, TapPair,
+    halved, slide,
 };
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, vcombine_s16, vdupq_n_s16, vdupq_n_s32, vget_high_s16, vget_lane_u32,
-    vget_low_s16, vmlal_n_s16, vqmovun_s16, vreinterpret_u32_u8, vrshrn_n_s32, vrshrq_n_s16,
-    vshrn_n_s32, vshrq_n_s16, vst1_s16, vst1_u8, vst1q_s16, vsubq_s16,
+    int16x8_t, int32x4_t, vcombine_s16, vdup_n_u32, vdupq_n_s16, vdupq_n_s32, vget_high_s16,
+    vget_lane_u32, vget_low_s16, vld1_u8, vmlal_n_s16, vmlaq_n_s16, vmovl_u8, vqmovun_s16,
+    vreinterpret_u8_u32, vreinterpret_u32_u8, vreinterpretq_s16_u16, vrshrn_n_s32, vrshrq_n_s16,
+    vst1_s16, vst1_u8, vst1q_s16,
 };
 
 /// Lanes of one 16-bit vector.
@@ -69,11 +63,7 @@ pub(crate) fn prep_fns<F: Av1Family>() -> [PrepFn; 5] {
 
 /// Where one pass's vectors of up to 8 outputs go.
 trait Output {
-    /// Pixel sign bias and the complete H-only rounding, as in dav1d.
-    const HORIZONTAL_BIAS: i32;
-    /// Validate the complete output once before pointer-based row stores.
-    fn check(&self, width: usize, height: usize);
-    /// The horizontal dot sum including its pixel and rounding biases.
+    /// `t` of a horizontal-only filter.
     unsafe fn horizontal(&mut self, row: usize, col: usize, t: int16x8_t);
     /// The unrounded sum of a vertical-only filter.
     unsafe fn vertical(&mut self, row: usize, col: usize, sum: int16x8_t);
@@ -82,44 +72,34 @@ trait Output {
 }
 
 /// Final 8-bit samples.
-struct Put<'a, const W: usize, const AV1: bool = true> {
+struct Put<'a, const W: usize> {
     dst: &'a mut [u8],
     stride: usize,
 }
 
-impl<const W: usize, const AV1: bool> Put<'_, W, AV1> {
+impl<const W: usize> Put<'_, W> {
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn store(&mut self, row: usize, col: usize, words: int16x8_t) {
         let bytes = vqmovun_s16(words);
-        // SAFETY: Output::check validated every row and its W samples.
-        unsafe {
-            let out = self.dst.as_mut_ptr().add(row * self.stride + col);
-            if W == 4 {
-                out.cast::<u32>()
-                    .write_unaligned(vget_lane_u32::<0>(vreinterpret_u32_u8(bytes)));
-            } else {
-                vst1_u8(out, bytes);
-            }
+        let at = row * self.stride + col;
+        if W == 4 {
+            let packed = vget_lane_u32::<0>(vreinterpret_u32_u8(bytes));
+            self.dst[at..at + 4].copy_from_slice(&packed.to_ne_bytes());
+        } else {
+            let out = &mut self.dst[at..at + LANES];
+            // SAFETY: `out` is 8 writable bytes.
+            unsafe { vst1_u8(out.as_mut_ptr(), bytes) };
         }
     }
 }
 
-impl<const W: usize, const AV1: bool> Output for Put<'_, W, AV1> {
-    const HORIZONTAL_BIAS: i32 = DOT_PIXEL_BIAS + if AV1 { 34 } else { 32 };
-    #[inline]
-    fn check(&self, width: usize, height: usize) {
-        assert!(
-            crate::block_copy::covers_rect(self.dst.len(), self.stride, width, height),
-            "prediction output too small"
-        );
-    }
-
+impl<const W: usize> Output for Put<'_, W> {
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn horizontal(&mut self, row: usize, col: usize, t: int16x8_t) {
         // SAFETY: forwarded from the caller.
-        unsafe { self.store(row, col, vshrq_n_s16::<6>(t)) };
+        unsafe { self.store(row, col, vrshrq_n_s16::<4>(t)) };
     }
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
@@ -130,81 +110,52 @@ impl<const W: usize, const AV1: bool> Output for Put<'_, W, AV1> {
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn both(&mut self, row: usize, col: usize, low: int32x4_t, high: int32x4_t) {
-        let words = if AV1 {
-            vcombine_s16(vrshrn_n_s32::<10>(low), vrshrn_n_s32::<10>(high))
-        } else {
-            vcombine_s16(vrshrn_n_s32::<12>(low), vrshrn_n_s32::<12>(high))
-        };
+        let words = vcombine_s16(vrshrn_n_s32::<10>(low), vrshrn_n_s32::<10>(high));
         // SAFETY: forwarded from the caller.
         unsafe { self.store(row, col, words) };
     }
 }
 
 /// Compound-precision samples.
-struct Prep<'a, const W: usize, const AV1: bool = true> {
+struct Prep<'a, const W: usize> {
     dst: &'a mut [i16],
     stride: usize,
 }
 
-impl<const W: usize, const AV1: bool> Prep<'_, W, AV1> {
+impl<const W: usize> Prep<'_, W> {
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn store(&mut self, row: usize, col: usize, words: int16x8_t) {
-        // SAFETY: Output::check validated every row and its W words.
-        unsafe {
-            let out = self.dst.as_mut_ptr().add(row * self.stride + col);
-            if W == 4 {
-                vst1_s16(out, vget_low_s16(words));
-            } else {
-                vst1q_s16(out, words);
-            }
+        let at = row * self.stride + col;
+        if W == 4 {
+            let out = &mut self.dst[at..at + 4];
+            // SAFETY: `out` is 4 writable `i16`s.
+            unsafe { vst1_s16(out.as_mut_ptr(), vget_low_s16(words)) };
+        } else {
+            let out = &mut self.dst[at..at + LANES];
+            // SAFETY: `out` is 8 writable `i16`s.
+            unsafe { vst1q_s16(out.as_mut_ptr(), words) };
         }
     }
 }
 
-impl<const W: usize, const AV1: bool> Output for Prep<'_, W, AV1> {
-    const HORIZONTAL_BIAS: i32 = if AV1 { DOT_PIXEL_BIAS + 2 } else { 0 };
-    #[inline]
-    fn check(&self, width: usize, height: usize) {
-        assert!(
-            crate::block_copy::covers_rect(self.dst.len(), self.stride, width, height),
-            "prediction output too small"
-        );
-    }
-
+impl<const W: usize> Output for Prep<'_, W> {
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn horizontal(&mut self, row: usize, col: usize, t: int16x8_t) {
         // SAFETY: forwarded from the caller.
-        unsafe { self.store(row, col, if AV1 { vshrq_n_s16::<2>(t) } else { t }) };
+        unsafe { self.store(row, col, t) };
     }
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn vertical(&mut self, row: usize, col: usize, sum: int16x8_t) {
         // SAFETY: forwarded from the caller.
-        unsafe {
-            self.store(
-                row,
-                col,
-                if AV1 {
-                    vrshrq_n_s16::<2>(sum)
-                } else {
-                    vsubq_s16(sum, vdupq_n_s16(super::HEVC_PREP_OFFSET))
-                },
-            );
-        };
+        unsafe { self.store(row, col, vrshrq_n_s16::<2>(sum)) };
     }
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn both(&mut self, row: usize, col: usize, low: int32x4_t, high: int32x4_t) {
-        let words = if AV1 {
-            vcombine_s16(vrshrn_n_s32::<6>(low), vrshrn_n_s32::<6>(high))
-        } else {
-            vsubq_s16(
-                vcombine_s16(vshrn_n_s32::<6>(low), vshrn_n_s32::<6>(high)),
-                vdupq_n_s16(super::HEVC_PREP_OFFSET),
-            )
-        };
+        let words = vcombine_s16(vrshrn_n_s32::<6>(low), vrshrn_n_s32::<6>(high));
         // SAFETY: forwarded from the caller.
         unsafe { self.store(row, col, words) };
     }
@@ -228,6 +179,21 @@ pub(crate) fn mixed_fns() -> Av1MixedFns {
             prep_mixed::<64>,
         ],
     }
+}
+
+/// `N` (4 or 8) pixels of `row`, widened to 16 bits.
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn pixels<const W: usize>(row: &[u8]) -> int16x8_t {
+    let bytes = if W == 4 {
+        let word = u32::from_le_bytes(row[..4].try_into().expect("4 samples"));
+        vreinterpret_u8_u32(vdup_n_u32(word))
+    } else {
+        let row = &row[..LANES];
+        // SAFETY: `row` is 8 readable bytes.
+        unsafe { vld1_u8(row.as_ptr()) }
+    };
+    vreinterpretq_s16_u16(vmovl_u8(bytes))
 }
 
 #[target_feature(enable = "neon,dotprod")]
@@ -257,7 +223,7 @@ unsafe fn put<F: Av1Family, const W: usize>(
     let mut out = Put::<W> { dst, stride: ds };
     let taps = || (F::taps(W, fx), F::taps(h, fy));
     // SAFETY: dotprod is enabled; the window contract is the caller's.
-    unsafe { filter::<W, _, F, true>(src, ss, h, (fx, fy), taps, &mut out) };
+    unsafe { filter::<W, _, F>(src, ss, h, (fx, fy), taps, &mut out) };
 }
 
 #[target_feature(enable = "neon,dotprod")]
@@ -286,7 +252,7 @@ unsafe fn prep<F: Av1Family, const W: usize>(
     let mut out = Prep::<W> { dst, stride: ds };
     let taps = || (F::taps(W, fx), F::taps(h, fy));
     // SAFETY: dotprod is enabled; the window contract is the caller's.
-    unsafe { filter::<W, _, F, true>(src, ss, h, (fx, fy), taps, &mut out) };
+    unsafe { filter::<W, _, F>(src, ss, h, (fx, fy), taps, &mut out) };
 }
 
 /// [`put`] with the caller's taps per direction.
@@ -316,7 +282,7 @@ unsafe fn put_mixed<const W: usize>(
     }
     let mut out = Put::<W> { dst, stride: ds };
     // SAFETY: dotprod is enabled; the window contract is the caller's.
-    unsafe { filter::<W, _, AnyTaps, true>(src, ss, h, fracs, || taps, &mut out) };
+    unsafe { filter::<W, _, AnyTaps>(src, ss, h, fracs, || taps, &mut out) };
 }
 
 /// [`prep`] with the caller's taps per direction.
@@ -345,101 +311,7 @@ unsafe fn prep_mixed<const W: usize>(
     }
     let mut out = Prep::<W> { dst, stride: ds };
     // SAFETY: dotprod is enabled; the window contract is the caller's.
-    unsafe { filter::<W, _, AnyTaps, true>(src, ss, h, fracs, || taps, &mut out) };
-}
-
-/// Eight-tap HEVC/VVC luma on the same passes as AV1.
-#[target_feature(enable = "neon,dotprod")]
-pub(super) unsafe fn separable<T: SeparableTaps<8>, const W: usize>(
-    src: &[u8],
-    ss: usize,
-    dst: &mut [u8],
-    ds: usize,
-    h: usize,
-    fx: usize,
-    fy: usize,
-) {
-    if (fx, fy) == (0, 0) {
-        // SAFETY: the caller validated both complete footprints; NEON is enabled.
-        unsafe {
-            crate::block_copy::neon::copy::<false>(
-                &src[TAP_CENTRE * (ss + 1)..],
-                ss,
-                dst,
-                ds,
-                W,
-                h,
-            );
-        }
-        return;
-    }
-    let mut out = Put::<W, false> { dst, stride: ds };
-    // SAFETY: dotprod is enabled and the caller supplies complete windows.
-    unsafe {
-        filter::<W, _, AnyTaps, false>(
-            src,
-            ss,
-            h,
-            (fx, fy),
-            || (&T::TABLE[fx], &T::TABLE[fy]),
-            &mut out,
-        );
-    };
-}
-
-/// HEVC luma compound preparation on the shared eight-tap passes.
-pub(crate) fn separable_prep_fns<T: SeparableTaps<8>>() -> [PrepFn; 5] {
-    [
-        separable_prep::<T, 4>,
-        separable_prep::<T, 8>,
-        separable_prep::<T, 16>,
-        separable_prep::<T, 32>,
-        separable_prep::<T, 64>,
-    ]
-}
-
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn separable_prep<T: SeparableTaps<8>, const W: usize>(
-    src: &[u8],
-    ss: usize,
-    dst: &mut [i16],
-    ds: usize,
-    h: usize,
-    fx: usize,
-    fy: usize,
-) {
-    if (fx, fy) == (0, 0) {
-        // SAFETY: the caller validated both footprints; NEON is enabled.
-        unsafe {
-            crate::block_copy::neon::prep(
-                &src[TAP_CENTRE * (ss + 1)..],
-                ss,
-                dst,
-                ds,
-                (W, h),
-                (6, super::HEVC_PREP_OFFSET),
-            );
-        }
-        return;
-    }
-    let mut out = Prep::<W, false> { dst, stride: ds };
-    // SAFETY: dotprod is enabled and complete source/output windows are supplied.
-    unsafe {
-        filter::<W, _, AnyTaps, false>(
-            src,
-            ss,
-            h,
-            (fx, fy),
-            || (&T::TABLE[fx], &T::TABLE[fy]),
-            &mut out,
-        );
-    }
-}
-
-/// AV1 halves even coefficients; HEVC/VVC retain full signed-byte taps.
-#[inline]
-fn coefficients<const AV1: bool>(taps: &[i16; TAPS]) -> [i16; TAPS] {
-    if AV1 { halved(taps) } else { *taps }
+    unsafe { filter::<W, _, AnyTaps>(src, ss, h, fracs, || taps, &mut out) };
 }
 
 /// The four passes of a `W`x`h` block (module table) with the taps `taps`
@@ -447,7 +319,7 @@ fn coefficients<const AV1: bool>(taps: &[i16; TAPS]) -> [i16; TAPS] {
 /// outer ones are zero.
 #[inline]
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn filter<'t, const W: usize, O: Output, Z: OuterTaps, const AV1: bool>(
+unsafe fn filter<'t, const W: usize, O: Output, Z: OuterTaps>(
     src: &[u8],
     ss: usize,
     h: usize,
@@ -455,51 +327,74 @@ unsafe fn filter<'t, const W: usize, O: Output, Z: OuterTaps, const AV1: bool>(
     taps: impl FnOnce() -> TapPair<'t>,
     out: &mut O,
 ) {
-    if h == 0 {
-        return;
-    }
     assert!(
-        crate::block_copy::covers_rect(src.len(), ss, W + TAPS - 1, h + TAPS - 1),
+        src.len() >= (h + TAPS - 2) * ss + W + TAPS - 1,
         "AV1 prediction window too small"
     );
-    out.check(W, h);
+    let step = W.min(LANES);
     // SAFETY: every row and column read lies inside the
     // window checked above; the outputs' slices are bounds-checked.
     unsafe {
         match (fx, fy) {
             (0, 0) => unreachable!("whole-pel predictions use block_copy"),
             (_, 0) => {
-                horizontal_dot::filter::<W, O>(
-                    src.as_ptr(),
-                    ss,
-                    h,
-                    &coefficients::<AV1>(taps().0),
-                    out,
-                );
+                let taps = DotFilter::new::<W>(&halved(taps().0));
+                for r in 0..h {
+                    for c in (0..W).step_by(step) {
+                        let t = taps.row::<W, true>(&src[(r + TAP_CENTRE) * ss + c..]);
+                        out.horizontal(r, c, t);
+                    }
+                }
             }
             (0, _) => {
-                let taps = coefficients::<AV1>(taps().1);
-                vertical_dot::filter::<W, O>(src.as_ptr(), ss, h, &taps, out);
+                let taps = halved(taps().1);
+                if Z::OUTER_ZERO {
+                    vertical::<W, 6, O>(&src[ss..], ss, h, six_taps(&taps), out);
+                } else {
+                    vertical::<W, TAPS, O>(src, ss, h, &taps, out);
+                }
             }
             _ => {
                 let (h_taps, v_taps) = taps();
-                let h_taps = DotFilter::new(&coefficients::<AV1>(h_taps));
-                let v_taps = coefficients::<AV1>(v_taps);
+                let h_taps = DotFilter::new::<W>(&halved(h_taps));
+                let v_taps = halved(v_taps);
                 if Z::OUTER_ZERO {
-                    both_rows::<W, 6, O, AV1>(
-                        src.as_ptr().add(ss),
-                        ss,
-                        h,
-                        h_taps,
-                        six_taps(&v_taps),
-                        out,
-                    );
-                } else if W >= 16 {
-                    both::<W, TAPS, O, AV1, 2>(src.as_ptr(), ss, h, h_taps, &v_taps, out);
+                    both::<W, 6, O>(&src[ss..], ss, h, h_taps, six_taps(&v_taps), out);
                 } else {
-                    both::<W, TAPS, O, AV1, 1>(src.as_ptr(), ss, h, h_taps, &v_taps, out);
+                    both::<W, TAPS, O>(src, ss, h, h_taps, &v_taps, out);
                 }
             }
+        }
+    }
+}
+
+/// Vertical only: `N` taps of widened pixel rows from window row 0 of `src`.
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn vertical<const W: usize, const N: usize, O: Output>(
+    src: &[u8],
+    ss: usize,
+    h: usize,
+    taps: &[i16; N],
+    out: &mut O,
+) {
+    for c in (0..W).step_by(W.min(LANES)) {
+        // SAFETY: row 0 of the window from column c + 3, inside it.
+        let mut rows = [unsafe { pixels::<W>(&src[TAP_CENTRE + c..]) }; N];
+        for (k, row) in rows.iter_mut().enumerate().take(N - 1) {
+            // SAFETY: row k of the window, inside it.
+            *row = unsafe { pixels::<W>(&src[k * ss + TAP_CENTRE + c..]) };
+        }
+        for r in 0..h {
+            // SAFETY: the last tap's row, inside the window.
+            rows[N - 1] = unsafe { pixels::<W>(&src[(r + N - 1) * ss + TAP_CENTRE + c..]) };
+            let mut sum = vdupq_n_s16(0);
+            for (row, &tap) in rows.iter().zip(taps) {
+                sum = vmlaq_n_s16(sum, *row, tap);
+            }
+            // SAFETY: output row r, columns c..c + 8.
+            unsafe { out.vertical(r, c, sum) };
+            slide(&mut rows, 1, N - 1);
         }
     }
 }
@@ -507,54 +402,8 @@ unsafe fn filter<'t, const W: usize, O: Output, Z: OuterTaps, const AV1: bool>(
 /// Both directions: `N` vertical taps of rounded horizontal rows.
 #[inline]
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn both<const W: usize, const N: usize, O: Output, const AV1: bool, const G: usize>(
-    src: *const u8,
-    ss: usize,
-    h: usize,
-    h_taps: DotFilter,
-    v_taps: &[i16; N],
-    out: &mut O,
-) {
-    for c in (0..W).step_by(W.min(LANES * G)) {
-        let row = |k: usize| {
-            // SAFETY: row k of the window from column c, inside it.
-            unsafe {
-                if k + 1 < h + N - 1 {
-                    h_taps.rows::<W, G, AV1, true>(src.add(k * ss + c))
-                } else {
-                    h_taps.rows::<W, G, AV1, false>(src.add(k * ss + c))
-                }
-            }
-        };
-        let mut rows = [row(0); N];
-        for (k, slot) in rows.iter_mut().enumerate().take(N - 1).skip(1) {
-            *slot = row(k);
-        }
-        for r in 0..h {
-            rows[N - 1] = row(r + N - 1);
-            for g in 0..G {
-                let (mut low, mut high) = (vdupq_n_s32(0), vdupq_n_s32(0));
-                for (row, &tap) in rows.iter().zip(v_taps) {
-                    low = vmlal_n_s16(low, vget_low_s16(row[g]), tap);
-                    if W != 4 {
-                        high = vmlal_n_s16(high, vget_high_s16(row[g]), tap);
-                    }
-                }
-                // SAFETY: this group's four/eight outputs fit the footprint.
-                unsafe { out.both(r, c + g * LANES, low, high) };
-            }
-            slide(&mut rows, 1, N - 1);
-        }
-    }
-}
-
-/// Six-tap 2-D filtering, two output rows per iteration. Only N-1 row
-/// vectors move after the pair, rather than after each output. Wider
-/// eight-tap passes use the measured paired-column schedule.
-#[inline]
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn both_rows<const W: usize, const N: usize, O: Output, const AV1: bool>(
-    src: *const u8,
+unsafe fn both<const W: usize, const N: usize, O: Output>(
+    src: &[u8],
     ss: usize,
     h: usize,
     h_taps: DotFilter,
@@ -562,54 +411,28 @@ unsafe fn both_rows<const W: usize, const N: usize, O: Output, const AV1: bool>(
     out: &mut O,
 ) {
     for c in (0..W).step_by(W.min(LANES)) {
-        let row = |r: usize| {
-            // SAFETY: the complete source footprint covers this filter row.
-            unsafe { h_taps.row::<W, AV1, true>(src.add(r * ss + c)) }
+        let row = |k: usize| {
+            // SAFETY: row k of the window from column c, inside it.
+            unsafe { h_taps.row::<W, true>(&src[k * ss + c..]) }
         };
-        let mut rows = [row(0); TAPS + 1];
-        for (r, value) in rows.iter_mut().enumerate().take(N - 1).skip(1) {
-            *value = row(r);
+        let mut rows = [row(0); N];
+        for (k, slot) in rows.iter_mut().enumerate().take(N - 1).skip(1) {
+            *slot = row(k);
         }
-        for r in (0..h.saturating_sub(1)).step_by(2) {
+        for r in 0..h {
             rows[N - 1] = row(r + N - 1);
-            rows[N] = row(r + N);
-            // SAFETY: both accumulations use N initialized vectors, within
-            // the nine-vector array; the output rows are inside the footprint.
-            unsafe {
-                let (lo0, hi0) = row_sum::<W, N, 0>(&rows, v_taps);
-                let (lo1, hi1) = row_sum::<W, N, 1>(&rows, v_taps);
-                out.both(r, c, lo0, hi0);
-                out.both(r + 1, c, lo1, hi1);
+            let (mut low, mut high) = (vdupq_n_s32(0), vdupq_n_s32(0));
+            for (&t, &tap) in rows.iter().zip(v_taps) {
+                low = vmlal_n_s16(low, vget_low_s16(t), tap);
+                if W != 4 {
+                    high = vmlal_n_s16(high, vget_high_s16(t), tap);
+                }
             }
-            slide(&mut rows, 2, N - 1);
-        }
-        if !h.is_multiple_of(2) {
-            rows[N - 1] = row(h + N - 2);
-            // SAFETY: the remaining row and its N taps fit the same footprint.
-            unsafe {
-                let (lo, hi) = row_sum::<W, N, 0>(&rows, v_taps);
-                out.both(h - 1, c, lo, hi);
-            }
+            // SAFETY: output row r, columns c..c + 8.
+            unsafe { out.both(r, c, low, high) };
+            slide(&mut rows, 1, N - 1);
         }
     }
-}
-
-/// One vertical accumulator of a paired-row window, without runtime slices.
-#[inline]
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn row_sum<const W: usize, const N: usize, const START: usize>(
-    rows: &[int16x8_t; TAPS + 1],
-    taps: &[i16; N],
-) -> (int32x4_t, int32x4_t) {
-    let (mut low, mut high) = (vdupq_n_s32(0), vdupq_n_s32(0));
-    for (k, &tap) in taps.iter().enumerate() {
-        let t = rows[k + START];
-        low = vmlal_n_s16(low, vget_low_s16(t), tap);
-        if W != 4 {
-            high = vmlal_n_s16(high, vget_high_s16(t), tap);
-        }
-    }
-    (low, high)
 }
 
 /// The six inner taps of a family whose outer taps are zero, as an array.

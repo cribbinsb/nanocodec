@@ -396,10 +396,19 @@ impl Dsp {
                     .all(|p| p.width() >= u_lines.width() && p.height() >= u_lines.height()),
             "CDEF chroma planes differ"
         );
-        if units.is_empty() {
-            return;
+        let scale = |strength: u8| u16::from(strength) << bits;
+        let unused = CdefArgs::new(0, 0, 0, sets.damping);
+        let mut chroma_args = [unused; CDEF_MAX_SETS];
+        if filters_chroma {
+            for (out, set) in chroma_args.iter_mut().zip(sets.sets()) {
+                *out = CdefArgs::scaled(
+                    scale(set.chroma_primary),
+                    scale(set.chroma_secondary),
+                    0,
+                    (sets.damping.saturating_sub(1), bits),
+                );
+            }
         }
-        let (luma_args, chroma_args) = resolve_band_args_u16(sets, bits);
         let (width, height) = (luma_lines.width(), luma_lines.height());
         for unit in units {
             assert!(
@@ -422,22 +431,29 @@ impl Dsp {
             } else {
                 (0, 0)
             };
-            let slot = if set.luma_primary == 0 {
-                0
-            } else {
-                contrast_slot(var)
-            };
-            if let Some(base_args) = luma_args[index][slot] {
-                let dir = if set.luma_primary == 0 { 0 } else { dir };
-                let args = base_args.with_dir(dir);
-                filter_block_u16(
-                    fns,
-                    LUMA_SIZE,
-                    luma_lines,
-                    (unit.x, unit.y),
-                    &args,
-                    &mut luma,
-                );
+            if set.filters_luma() {
+                let primary = if set.luma_primary == 0 {
+                    0
+                } else {
+                    cdef_adjust_strength_wide(scale(set.luma_primary), var)
+                };
+                if primary | u16::from(set.luma_secondary) != 0 {
+                    let dir = if set.luma_primary == 0 { 0 } else { dir };
+                    let args = CdefArgs::scaled(
+                        primary,
+                        scale(set.luma_secondary),
+                        dir,
+                        (sets.damping, bits),
+                    );
+                    filter_block_u16(
+                        fns,
+                        LUMA_SIZE,
+                        luma_lines,
+                        (unit.x, unit.y),
+                        &args,
+                        &mut luma,
+                    );
+                }
             }
             if set.filters_chroma() {
                 let dir = if set.chroma_primary == 0 { 0 } else { dir };
@@ -453,56 +469,15 @@ impl Dsp {
     }
 }
 
-/// Contrast below `1 << VAR_SHIFT` is the lowest non-zero class.
-const VAR_SHIFT: u32 = 6;
-/// Highest contrast class (`0..=12`, plus `var == 0`).
-const MAX_CLASS: u32 = 12;
-/// Scale of the lowest non-zero class, in sixteenths.
-const BASE_SCALE: u32 = 4;
-
-const fn contrast_slots() -> usize {
-    MAX_CLASS as usize + 2
-}
-
-fn resolve_band_args_u16(
-    sets: &CdefSets,
-    bits: u32,
-) -> (
-    [[Option<CdefArgs>; contrast_slots()]; CDEF_MAX_SETS],
-    [CdefArgs; CDEF_MAX_SETS],
-) {
-    let scale = |strength: u8| u16::from(strength) << bits;
-    let unused = CdefArgs::new(0, 0, 0, sets.damping);
-    let mut luma_args = [[None; contrast_slots()]; CDEF_MAX_SETS];
-    let mut chroma_args = [unused; CDEF_MAX_SETS];
-    for (i, set) in sets.sets().iter().enumerate() {
-        if set.filters_luma() {
-            let sec = scale(set.luma_secondary);
-            for (slot, entry) in luma_args[i].iter_mut().enumerate() {
-                let pri = if set.luma_primary == 0 || slot == 0 {
-                    0
-                } else {
-                    adjusted_from_class(scale(set.luma_primary), (slot - 1) as u32)
-                };
-                if pri | sec != 0 {
-                    *entry = Some(CdefArgs::scaled(pri, sec, 0, (sets.damping, bits)));
-                }
-            }
-        }
-        if set.filters_chroma() {
-            chroma_args[i] = CdefArgs::scaled(
-                scale(set.chroma_primary),
-                scale(set.chroma_secondary),
-                0,
-                (sets.damping.saturating_sub(1), bits),
-            );
-        }
-    }
-    (luma_args, chroma_args)
-}
-
-#[inline]
-fn contrast_slot(var: i32) -> usize {
+/// [`cdef_adjust_strength`] of a strength scaled to the depth (up to
+/// `15 << 4`).
+fn cdef_adjust_strength_wide(strength: u16, var: i32) -> u16 {
+    /// Contrast below `1 << VAR_SHIFT` is the lowest class.
+    const VAR_SHIFT: u32 = 6;
+    /// Highest contrast class.
+    const MAX_CLASS: u32 = 12;
+    /// Scale of the lowest class, in sixteenths.
+    const BASE_SCALE: u32 = 4;
     if var == 0 {
         return 0;
     }
@@ -510,25 +485,9 @@ fn contrast_slot(var: i32) -> usize {
         0 => 0,
         high => high.ilog2().min(MAX_CLASS),
     };
-    1 + class as usize
-}
-
-#[inline]
-fn adjusted_from_class(strength: u16, class: u32) -> u16 {
     ((u32::from(strength) * (BASE_SCALE + class) + 8) >> 4) as u16
 }
 
-/// [`cdef_adjust_strength`] of a strength scaled to the depth (up to
-/// `15 << 4`).
-fn cdef_adjust_strength_wide(strength: u16, var: i32) -> u16 {
-    match contrast_slot(var) {
-        0 => 0,
-        slot => adjusted_from_class(strength, (slot - 1) as u32),
-    }
-}
-
-#[allow(clippy::inline_always)]
-#[inline(always)]
 fn filter_chroma_u16(
     fns: &super::HighCdefFns,
     args: &CdefArgs,
@@ -572,8 +531,6 @@ fn filter_chroma_u16(
     }
 }
 
-#[allow(clippy::inline_always)]
-#[inline(always)]
 fn filter_block_u16(
     fns: &super::HighCdefFns,
     size: usize,
