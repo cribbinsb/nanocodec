@@ -580,10 +580,12 @@ fn filter_plane_in_place(
     storage.start(plane_view.width(), plane_view.height());
     let mut rest = blocks.as_slice();
     while let Some(first) = rest.first() {
-        let band_end = (first.y / band + 1) * band;
+        let band_start = first.y / band * band;
+        let band_end = band_start + band;
         let (now, later) = rest.split_at(rest.partition_point(|block| block.y < band_end));
         // The band's blocks read up to CDEF_PADDING rows below it; rows
         // above it were copied, still unfiltered, with the previous band.
+        storage.drop_rows_before(band_start.saturating_sub(CDEF_PADDING));
         storage.fill_rows_to(&plane_view.as_view(), band_end + CDEF_PADDING);
         dsp.cdef_filter_blocks(
             filter.size,

@@ -38,6 +38,7 @@ use crate::entropy::{Reader, Writer};
 use levels::{LevelMap, Neighbours, ScanPosition};
 use models::BaseFamily;
 use nc_common::decode::{DecodeError, Result};
+use nc_common::eob::{GROUP_START as EOB_GROUP_START, group as eob_group};
 use nc_dsp::Dsp;
 use symbols::{FrozenPricer, SymbolCoder};
 
@@ -47,9 +48,6 @@ const MAX_LEVEL: u32 = (1 << 20) - 1;
 const PLANE_Y: u8 = 0;
 const PLANE_U: u8 = 1;
 const PLANE_V: u8 = 2;
-/// Start of each end-of-block class (AVM `av2_eob_group_start`); class `c`
-/// covers `EOB_GROUP_START[c]..EOB_GROUP_START[c + 1]`.
-const EOB_GROUP_START: [usize; 12] = [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
 /// Classes below this one carry no offset bits (AVM `av2_eob_offset_bits`).
 const FIRST_EOB_CLASS_WITH_OFFSET: usize = 3;
 /// Last symbol of the capped EOB class models (`EOB_PT_INDEX_COUNT - 1`).
@@ -628,10 +626,7 @@ fn code_level<C: SymbolCoder>(
 /// Code the end of block (AVM `code_eob` / `decode_eob`) and return it.
 /// Sizes from TX16 cap the class model and code the overflow as bypass bits.
 fn code_eob<C: SymbolCoder>(coder: &mut C, source_eob: usize, block: Block) -> Result<usize> {
-    let source_class = EOB_GROUP_START
-        .iter()
-        .rposition(|&start| start <= source_eob)
-        .unwrap_or_default();
+    let source_class = eob_group(source_eob);
     let source_symbol = source_class.saturating_sub(1);
     let class = match eob_overflow_bits(block.tx) {
         0 => models::eob_class(coder, source_symbol, block)? + 1,
@@ -645,7 +640,7 @@ fn code_eob<C: SymbolCoder>(coder: &mut C, source_eob: usize, block: Block) -> R
             capped + overflow as usize + 1
         }
     };
-    let mut eob = EOB_GROUP_START[class];
+    let mut eob = usize::from(EOB_GROUP_START[class]);
     if class >= FIRST_EOB_CLASS_WITH_OFFSET {
         let bits = (class - FIRST_EOB_CLASS_WITH_OFFSET + 1) as u32;
         let offset = source_eob.saturating_sub(eob) as u32;

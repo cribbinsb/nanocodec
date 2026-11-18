@@ -1682,9 +1682,11 @@ def render(args: argparse.Namespace) -> None:
                                     binary_overrides(args.presets_for))[1:], *families]
     zero_label = labels.get(zero, zero)
     clips = chart_clips(args.clipset)
+    # untouched families keep their stored numbers; a point measured here (a low rung
+    # the measuring session did not know a clip needed) records XPSNR like the rest
     runner = Runner(load_paths(), EVALUATION_GATE, args.workers, args.over_budget,
-                    stored_ms_ssim=True,  # untouched families keep their stored numbers
-                    prebuilt=args.prebuilt)
+                    stored_ms_ssim=True, prebuilt=args.prebuilt, xpsnr=True,
+                    stored_xpsnr=True)
     quality = quality_points(runner, families, clips, args.frames, args.rungs, judge)
     points, pairs, excluded = quality.points, quality.pairs, quality.excluded
     tuned_families = chart_families(

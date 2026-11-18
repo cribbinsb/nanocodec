@@ -9,6 +9,9 @@ Copyright (c) 2016, Alliance for Open Media. All rights reserved.
 Source: https://aomedia.googlesource.com/aom (pinned v3.15.3, see
 `tools/anchors/versions.env`).
 
+`crates/nc-common/src/eob.rs` shares libaom/AVM end-of-block group
+boundaries between AV1 and AV2.
+
 Used in `crates/nc-av1`:
 - `src/tables/generated.rs`: default CDFs, quantiser lookup tables, scan
   orders and coefficient context offsets. Extracted mechanically by
@@ -234,7 +237,8 @@ Used as an algorithm guide and reimplemented in:
   the 64-bit-window range-coder flush with backward carry propagation and
   the binary-symbol shortcut (`Source/Lib/Codec/bitstream_unit.c`,
   `aom_write_symbol`); `crates/nc-av1/src/coeff.rs`: the end-of-block-1
-  shortcut of `av1_write_coeffs_txb_1d` (`entropy_coding.c`).
+  shortcut of `av1_write_coeffs_txb_1d` (`entropy_coding.c`) and
+  `av1_cost_coeffs_txb_loop_cost_one_eob` (`rd_cost.c`).
 - `crates/nc-av1/src/restoration.rs`: the real-time Wiener restrictions of
   `WnFilterCtrls` (`enc_mode_config.c`: fewer taps, luma only, no
   refinement, restoration only on frames other frames reference).
@@ -653,6 +657,9 @@ not a linked nanocodec dependency. `tools/dev/av2_obu_smoke.py` compiles the
 original OBU parser, bit-buffer reader and integer/LEB128 helpers in temporary
 storage as an external differential oracle; no compiled reference code is shipped
 in the Rust implementation.
+
+`crates/nc-common/src/eob.rs` shares AVM/libaom end-of-block group
+boundaries between AV2 and AV1.
 
 Additional native AV2 modules reference the same pinned release:
 - `src/sequence.rs` and `src/frame_header.rs`: final sequence tool groups and

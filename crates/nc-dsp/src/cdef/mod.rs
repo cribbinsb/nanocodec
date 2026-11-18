@@ -325,7 +325,7 @@ pub struct CdefSource<T: Sample = u8> {
     data: Vec<T>,
     width: usize,
     height: usize,
-    /// Plane row of the first row still held (earlier rows are logically dropped).
+    /// Plane row of `data`'s first row; discarded rows take no storage.
     first_row: usize,
     /// Plane row after the last one `data` holds (kept, not divided out of
     /// the length: the drivers ask for it per block).
@@ -354,7 +354,6 @@ impl<T: Sample> CdefSource<T> {
     /// Begin a `width` x `height` plane with no rows copied yet.
     pub fn start(&mut self, width: usize, height: usize) {
         self.data.clear();
-        self.data.reserve(width * height);
         (self.width, self.height, self.first_row, self.end_row) = (width, height, 0, 0);
     }
 
@@ -371,17 +370,24 @@ impl<T: Sample> CdefSource<T> {
             (self.width, self.height),
             "CDEF source and plane sizes differ"
         );
-        for y in self.end_row..end.min(self.height) {
+        let end = end.min(self.height).max(self.end_row);
+        self.data.reserve_exact((end - self.end_row) * self.width);
+        for y in self.end_row..end {
             self.data.extend_from_slice(plane.row(y));
         }
-        self.end_row = self.end_row.max(end.min(self.height));
+        self.end_row = end;
     }
 
     /// Forget the rows above plane row `row` (no later block reads them),
-    /// keeping the copied rows from `row` on. Rows not copied yet stay
-    /// uncopied.
+    /// keeping the copied rows from `row` on. Uncopied rows before `row`
+    /// are skipped, so a gap between filtered bands needs no source copy.
     pub fn drop_rows_before(&mut self, row: usize) {
-        self.first_row = self.first_row.max(row.min(self.end_row));
+        let first = self.first_row.max(row.min(self.height));
+        let discarded = (first.min(self.end_row) - self.first_row) * self.width;
+        self.data.copy_within(discarded.., 0);
+        self.data.truncate(self.data.len() - discarded);
+        self.first_row = first;
+        self.end_row = self.end_row.max(first);
     }
 
     /// The plane row after the last one copied (the plane's height after
@@ -425,7 +431,7 @@ impl<T: Sample> CdefSource<T> {
     #[must_use]
     pub fn view(&self) -> nc_common::PlaneView<'_, T> {
         nc_common::PlaneView::new(
-            &self.data[self.first_row * self.width..],
+            &self.data,
             self.width,
             self.width,
             self.filled_rows() - self.first_row,
@@ -448,7 +454,7 @@ impl<T: Sample> CdefSource<T> {
     #[inline]
     pub(crate) fn index(&self, x: usize, y: usize) -> usize {
         assert!(y >= self.first_row, "CDEF source row dropped");
-        y * self.width + x
+        (y - self.first_row) * self.width + x
     }
 
     /// The `size`-square block at (`x`, `y`) plus [`CDEF_PADDING`] samples
@@ -488,6 +494,63 @@ impl<T: Sample> CdefSource<T> {
 mod tests {
     use super::*;
     use nc_common::PlaneView;
+
+    fn rolling_source<T: Sample>() {
+        let (width, height, band) = (17, 192, 16);
+        let mask = (1 << T::MAX_BIT_DEPTH.min(12)) - 1;
+        let initial: Vec<T> = (0..width * height)
+            .map(|i| T::from_i32(((i as u32 * 37 + 11) & mask) as i32))
+            .collect();
+        let mut full = CdefSource::new();
+        full.fill_from(&PlaneView::new(&initial, width, width, height).unwrap());
+        for first in [0, 48] {
+            let mut pixels = initial.clone();
+            let mut source = CdefSource::new();
+            source.start(width, height);
+            assert_eq!(source.data.capacity(), 0, "no full-plane reservation");
+            for top in [first, first + band, 112, 128, 176] {
+                let end = (top + band).min(height);
+                source.drop_rows_before(top.saturating_sub(CDEF_PADDING));
+                source.fill_rows_to(
+                    &PlaneView::new(&pixels, width, width, height).unwrap(),
+                    end + CDEF_PADDING,
+                );
+                assert_eq!(source.first_row(), top.saturating_sub(CDEF_PADDING));
+                assert!(source.data.len() <= (band + 2 * CDEF_PADDING) * width);
+                for y in source.first_row()..source.filled_rows() {
+                    assert_eq!(
+                        source.view().row(y - source.first_row()),
+                        &initial[y * width..(y + 1) * width]
+                    );
+                }
+                for size in [4, 8] {
+                    for x in [0, 4, width - size] {
+                        for y in [top, end - size] {
+                            assert_eq!(
+                                source.padded_window(x, y, size),
+                                full.padded_window(x, y, size)
+                            );
+                        }
+                    }
+                }
+                // Simulate the in-place filter overwriting this band. The
+                // next band must still see its original two-row top halo.
+                pixels[top * width..end * width].fill(T::default());
+            }
+            source.fill_from(&PlaneView::new(&initial, width, width, height).unwrap());
+            assert_eq!(source.view().data(), initial);
+        }
+    }
+
+    #[test]
+    fn rolling_u8_source_keeps_original_halos_and_skips_gaps() {
+        rolling_source::<u8>();
+    }
+
+    #[test]
+    fn rolling_u16_source_keeps_original_halos_and_skips_gaps() {
+        rolling_source::<u16>();
+    }
 
     #[test]
     fn padded_windows_mark_samples_outside_the_plane() {

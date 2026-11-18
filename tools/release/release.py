@@ -123,17 +123,17 @@ STAGES = ("commit", "pgo", "charts", "crates", "github", "publish")
 #: aarch64 30.7 on the Jetson) and their identity checks; the crates' dry run (2.2 cold);
 #: the GitHub files; the mirror and site. The charts stage is its slowest chain
 #: (CHART_CHAIN_MINUTES); a dry run's pipe-clean took 4.4.
-STAGE_MINUTES = {"commit": 2, "pgo": 34, "crates": 3, "github": 1, "publish": 10}
+STAGE_MINUTES = {"commit": 2, "pgo": 34, "crates": 3, "github": 1, "publish": 6}
 #: Each chart chain's minutes at 0.3.0, without the one-off XPSNR backfill of the
 #: zero lines (15 min of scoring per held-out chart): main (zero line 0.6, refresh 16.2
 #: with the c8a and Jetson CBR timing), fresh held out (coding 8.2, refresh 18.0, psnr
 #: render 2.5), all held out (8.6, 31.3, 3.7), CBR c6a 24.9 and c8g 18.8, lens c8a 18.4,
-#: c6a 29.0, c8g 24.2, and the Jetson's lens at two of six points (a third of its 2.3 h
+#: c6a 29.0, c8g 24.2, and the Jetson's lens at two of six points (a third of its 92 min
 #: at six) after the main chain's Jetson CBR timing on the same lock (15.4).
 CHART_CHAIN_MINUTES = {"main": 17, "heldout-independent_fresh_2026-11-13": 29,
                        "heldout-independent_2026-11-13": 44, "cbr-zen3": 25,
                        "cbr-graviton": 19, "lens-x86": 19, "lens-zen3": 29,
-                       "lens-graviton": 25, "lens-jetson": 61}
+                       "lens-graviton": 25, "lens-jetson": 46}
 DRY_CHARTS_MINUTES = 5
 #: A release refuses to start when its stages are expected to take longer (owner,
 #: 2026-11-18), unless --over-budget.
@@ -228,7 +228,7 @@ LENS_MACHINES = {"x86": "fixed-qp-timing-x86.json", "zen3": "fixed-qp-timing-zen
                  "graviton": "fixed-qp-timing-graviton.json",
                  "jetson": "fixed-qp-timing-jetson.json"}
 #: The Jetson times the lens at two of its six quantizer points, as its series always
-#: has: all six on its one timing core took 2.3 h at 0.3.0 (2,016 encodes)
+#: has: all six on its one timing core took 92 min at 0.3.0 (2,016 encodes)
 JETSON_LENS_POINTS = "27,42"
 #: SVT-AV1's lens rungs timed beside ours as the same-session check (PROCEDURES).
 LENS_CHECK = ("svtav1-m10", "svtav1-m12", "svtav1-m13")

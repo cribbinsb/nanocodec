@@ -433,15 +433,7 @@ impl<'a> Shown<'a> {
             })
             .expect("collecting rows cannot fail");
         }
-        let mut rows = &mut rows[..];
-        while !rows.is_empty() {
-            let written = out.write_vectored(rows)?;
-            if written == 0 {
-                return Err(std::io::ErrorKind::WriteZero.into());
-            }
-            IoSlice::advance_slices(&mut rows, written);
-        }
-        Ok(())
+        nc_common::yuv::write_vectored_all(out, &mut rows)
     }
 
     pub(crate) fn md5(&self) -> String {

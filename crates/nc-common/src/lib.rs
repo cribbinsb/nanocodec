@@ -43,6 +43,7 @@ pub mod cabac;
 pub mod cabac_encoder;
 pub mod colour;
 pub mod decode;
+pub mod eob;
 mod error;
 mod fnv;
 pub mod nal;

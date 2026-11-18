@@ -41,6 +41,13 @@ tuning or chart decision has used.
 (e.g. 3 families x 2 clips x 2 rungs on a small instance) with the same code
 path as the full run.
 
+`--record FILE` (a chart's build record) scores every family on its recorded build in one
+session, and judges which clips need low rungs on all of the chart's families, as the
+chart's render does (a session of a few families judged on those alone left the other
+clips' low rungs to the render, which scores without XPSNR). With `--session I/N` only
+those clips' streams and seed results go up; `--region` runs a session in a second
+region's spot quota.
+
 The independent test (docs/results/independent-*.md) runs the same stages with
 `--build DIR` (a scoring build of the commit under test instead of the
 chart's), `--references` (more reference families by name, e.g. x264-faster)
@@ -298,6 +305,17 @@ class Setup:
     #: The window: frames per point and the key period (None: one key, the chart's).
     frames: int = DEFAULT_FRAMES
     key_seconds: float | None = None
+    #: The families whose curves decide which clips get low rungs (nceval.chart's rule:
+    #: the chart's own points, never a tuned twin); None: `families`.
+    judges: list[Family] | None = None
+
+    def low_rung_clips(self, curves: dict) -> list[Clip]:
+        return low_rung_clips(curves, self.judges or self.families, self.clips)
+
+    def judge_ladder(self, rungs: tuple[int, ...] | None) -> dict:
+        """The judges' cached ladder curves on the run's clips."""
+        return self.runner.measure("held-out ladder", self.judges or self.families, self.clips,
+                                   self.frames, rungs, self.key_seconds, budgeted=False)
 
     def points(self, families: list[Family], clips: list[Clip], rungs=None,
                ladder=None) -> list:
@@ -322,12 +340,32 @@ class Setup:
                            ladder=low_ladder)
 
 
+def record_builds(record_file: str) -> tuple[Path, dict[str, Path], dict[str, Path]]:
+    """A chart's build record (--record) as nceval.chart's build arguments: the base
+    build, and each family's binary and presets on its recorded build."""
+    record = json.loads(Path(record_file).read_text())
+    dirs = {family: BUILDS_ROOT / build for family, build in record["families"].items()}
+    return (BUILDS_ROOT / record["base"], {f: d / SCORING_BINARY for f, d in dirs.items()},
+            {f: d / "presets" for f, d in dirs.items()})
+
+
 def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
-    build = chart_build(args.build)
     names = args.families.split(",") if args.families else None
     if args.references:
         names = (names or [n for n, _ in OURS + REFERENCES]) + args.references.split(",")
-    families = chart_families(build / SCORING_BINARY, build / "presets", names)
+    judges = None
+    if getattr(args, "record", None):
+        # every family on its recorded build; the low rungs judged on the whole chart
+        build, binaries, presets = record_builds(args.record)
+        judges = chart_families(build / SCORING_BINARY, build / "presets", None, binaries,
+                                presets)
+        names = names or [f.name for f in judges] + \
+            (args.references.split(",") if args.references else [])
+        families = chart_families(build / SCORING_BINARY, build / "presets", names, binaries,
+                                  presets)
+    else:
+        build = chart_build(args.build)
+        families = chart_families(build / SCORING_BINARY, build / "presets", names)
     all_clips = clipset_clips(args.clipset, load_paths())
     clips = all_clips[:args.clips]
     extra_clips = extras_subset(clips, args.extras) if args.extras else []
@@ -348,7 +386,7 @@ def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
                                          xpsnr=True),
                  extra_clips, extra_families(families) if args.extras else [],
                  getattr(args, "frames", None) or DEFAULT_FRAMES,
-                 getattr(args, "key_seconds", None))
+                 getattr(args, "key_seconds", None), judges)
 
 
 def remote_job(bench: Bench, point: Point) -> dict:
@@ -537,9 +575,7 @@ def score(args: argparse.Namespace) -> None:
         elif uncached(run.ladder(args.rungs)):
             break  # which clips need low rungs is judged on the whole ladder
         else:
-            curves = run.runner.measure("held-out ladder", run.families, run.clips,
-                                        run.frames, args.rungs, run.key_seconds, budgeted=False)
-            low = low_rung_clips(curves, run.families, run.clips)
+            low = run.low_rung_clips(run.judge_ladder(args.rungs))
             say(f"low rungs on {len(low)} of {len(run.clips)} clips")
             todo = uncached(run.low_rungs(low))
         if not score_points(run.runner, todo, phase, args.workers, deadline):
@@ -575,17 +611,17 @@ def score_cloud(args: argparse.Namespace) -> None:
     from aws_session import Session, SessionSpec  # boto3: only where sessions start
 
     region, cores = INSTANCES[args.instance_type]
+    region = args.region or region
     CLOUD_RESULTS.mkdir(parents=True, exist_ok=True)  # the seed (none on a first session)
     run = setup(args)
     pending = [j for j in run.ladder(args.rungs) + run.extras() if not j[0].cached(j[1])]
     if not pending:  # the ladder is all here: are its low rungs too? (score's rule)
-        curves = run.runner.measure("held-out ladder", run.families, run.clips, run.frames,
-                                    args.rungs, run.key_seconds, budgeted=False)
-        low = low_rung_clips(curves, run.families, run.clips)
+        low = run.low_rung_clips(run.judge_ladder(args.rungs))
         pending = [j for j in run.low_rungs(low) if not j[0].cached(j[1])]
     if not pending:  # every point scored here already: no instance (76259 re-scored once)
         say("every point is scored here: no scoring session")
         return
+    say(f"{len(pending)} points to score on {len(run.clips)} clips")
     if subprocess.run(["git", "-C", str(REPO), "status", "--porcelain", "--", "eval", "tools"],
                       capture_output=True, text=True, check=True).stdout.strip():
         raise SystemExit("commit eval/ and tools/ first: the remote runs this repository's HEAD")
@@ -614,6 +650,8 @@ def score_cloud(args: argparse.Namespace) -> None:
             # results an earlier, stopped session brought back: those points are cached
             f"mkdir -p {REMOTE_WORK}/{RESULTS_REL}",
             f"cp -r ~/nanocodec-data/{SEED_REL}/. {REMOTE_WORK}/{RESULTS_REL}/",
+            # the seed is here already: the first checkpoint brings back only new results
+            f"touch {REMOTE_WORK}/{RESULTS_REL}/{CHECKPOINT_MARKER}",
             "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update",
             "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y ffmpeg python3-numpy "
             "python3-scipy python3-opencv python3-xxhash > /dev/null",
@@ -690,6 +728,8 @@ def score_rounds(session, command: str, minutes: float, results: Path, frames: i
 def remote_options(args: argparse.Namespace) -> str:
     """The run's own options for the remote `score` (the build at its remote path)."""
     options = ""
+    if args.record:  # the repository's copy (the remote runs this repository's HEAD)
+        options += f" --record ~/repo/{Path(args.record).resolve().relative_to(REPO)}"
     if args.build:
         options += f" --build ~/nanocodec-data/charts/builds/{chart_build(args.build).name}"
     if args.references:
@@ -713,22 +753,32 @@ def stage_score(stage_dir: Path, args: argparse.Namespace, clips: list[Clip],
                 families: list[Family]) -> None:
     """The remote home: repo.tar (this repository at HEAD: eval code, this tool, the
     chart's records, the anchors' pinned versions) and, as symlinks, ~/nanocodec-data
-    (clip set, stored clips, anchor tools, chart build, streams)."""
+    (clip set, stored clips, anchor tools, the families' builds, and the streams and
+    seed results of this session's clips only)."""
     data = stage_dir / "nanocodec-data"
     stage_dir.mkdir(parents=True)
     subprocess.run(["git", "-C", str(REPO), "archive", "-o", str(stage_dir / REPO_ARCHIVE),
                     "HEAD"], check=True)
     links = {data / "clips" / Path(args.clipset).name: Path(args.clipset),
-             data / "anchors/x86_64/share/vmaf": DATA / "anchors/x86_64/share/vmaf",
-             data / "charts/builds" / chart_build(args.build).name: chart_build(args.build),
-             data / STREAMS_REL: Path(args.streams),
-             data / SEED_REL: CLOUD_RESULTS}
+             data / "anchors/x86_64/share/vmaf": DATA / "anchors/x86_64/share/vmaf"}
+    streams = Path(args.streams)
+    links.update({data / STREAMS_REL / p.name: p for p in streams.iterdir() if p.is_file()})
+    (data / SEED_REL).mkdir(parents=True)  # the seed may hold none of these clips
     for clip in clips:
         links[data / clip.yuv.relative_to(DATA)] = clip.yuv
+        if (streams / clip.name).is_dir():
+            links[data / STREAMS_REL / clip.name] = streams / clip.name
+        # the seed's results by window, then clip (cbr.Bench.point_dir)
+        for window in CLOUD_RESULTS.iterdir():
+            if (window / clip.name).is_dir():
+                links[data / SEED_REL / window.name / clip.name] = window / clip.name
+    for build in {family.tool.parent for family in families if family.own}:
+        # each family's build (`--build` or the record's) where the remote looks for it
+        for part in (SCORING_BINARY, "presets"):
+            links[data / "charts/builds" / build.name / part] = build / part
     # every family's tool where the families expect it (openh264's lives in the work dir)
     for family in families:
-        if family.tool.is_relative_to(DATA) and \
-                not family.tool.is_relative_to(chart_build(args.build)):
+        if family.tool.is_relative_to(DATA) and not family.own:
             links[data / family.tool.relative_to(DATA)] = family.tool
     for tool in (DATA / "anchors/x86_64/bin").iterdir():
         if tool.name not in UNNEEDED_TOOLS:
@@ -902,6 +952,9 @@ def main(argv: list[str]) -> None:
         p.add_argument("--build", help="the scoring build directory (nanocodec, presets/; "
                        "default: the published chart's build)")
         p.add_argument("--references", help="more reference families by name (preset anchors)")
+        p.add_argument("--record", help="a chart's build record (docs/results/bd-vs-speed-"
+                       "SET-builds.json): every family on its recorded build, the low rungs "
+                       "judged on all of its families (instead of --build)")
         p.add_argument("--extras", type=int, default=0,
                        help="the audit's extras on this many clips (0: none)")
         p.add_argument("--frames", type=int, default=DEFAULT_FRAMES,
@@ -928,6 +981,8 @@ def main(argv: list[str]) -> None:
     c.add_argument("--instance-type", default="c7a.metal-48xl", choices=sorted(INSTANCES))
     c.add_argument("--budget", type=float, default=15.0)
     c.add_argument("--lifetime", type=int, default=90, help="hard instance lifetime, min")
+    c.add_argument("--region", help="another region than the instance type's own (a "
+                   "second region's spot quota lets more sessions run side by side)")
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--purpose", help="the session's Purpose tag (default heldout-score)")
     c.add_argument("--session", help="I/N[,J/N]: this session scores every Nth clip from the "

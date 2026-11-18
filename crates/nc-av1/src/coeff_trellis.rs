@@ -21,7 +21,7 @@ use nc_encoder::{Candidates, CoeffRateModel, Trellis};
 use super::{
     BASE_EOB_SYMBOLS, BR_CDF_SIZE, COEFF_BASE_RANGE, CoeffCdfs, EOB_GROUP_START, EOB_OFFSET_BITS,
     MAP_STRIDE, MAX_BASE_BR_RANGE, NUM_BASE_LEVELS, PlaneType, TxbContext, base_context,
-    base_eob_context, br_context, nz_map_ctx_offset, scan,
+    base_eob_context, br_context, eob_group, nz_map_ctx_offset, scan,
 };
 use crate::transform::TxSize;
 
@@ -252,10 +252,7 @@ impl CoeffRateModel for RateModel<'_> {
     /// `CoeffCdfs::write_eob` codes them).
     fn eob_rate(&mut self, scan_pos: usize) -> f32 {
         let eob = scan_pos + 1;
-        let eob_pt = EOB_GROUP_START
-            .iter()
-            .rposition(|&s| s <= eob)
-            .expect("eob >= 1");
+        let eob_pt = eob_group(eob);
         let pt = self.plane as usize;
         let symbol = eob_pt - 1;
         // `eob_multi_ctx` is 0 for transform class 2D.
@@ -267,7 +264,7 @@ impl CoeffRateModel for RateModel<'_> {
         };
         let bits = EOB_OFFSET_BITS[eob_pt];
         if bits > 0 {
-            let top = ((eob - EOB_GROUP_START[eob_pt]) >> (bits - 1)) & 1;
+            let top = ((eob - usize::from(EOB_GROUP_START[eob_pt])) >> (bits - 1)) & 1;
             cost += self.cdfs.eob_extra[self.tx.index()][pt][eob_pt - 3].cost_q9(top);
             cost += (bits - 1) * COST_UNITS_PER_BIT;
         }

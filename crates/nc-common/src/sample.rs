@@ -41,6 +41,12 @@ pub trait Sample:
     /// `yuv420p10le` and friends for `u16`): the samples themselves for
     /// `u8` (no copy), else converted into `scratch`.
     fn le_bytes<'a>(samples: &'a [Self], scratch: &'a mut Vec<u8>) -> &'a [u8];
+
+    /// Borrow little-endian bytes when the sample representation needs no
+    /// conversion. Wider samples use [`Self::le_bytes`] instead.
+    fn borrowed_le_bytes(_samples: &[Self]) -> Option<&[u8]> {
+        None
+    }
 }
 
 mod sealed {
@@ -64,6 +70,10 @@ impl Sample for u8 {
 
     fn le_bytes<'a>(samples: &'a [Self], _scratch: &'a mut Vec<u8>) -> &'a [u8] {
         samples
+    }
+
+    fn borrowed_le_bytes(samples: &[Self]) -> Option<&[u8]> {
+        Some(samples)
     }
 }
 

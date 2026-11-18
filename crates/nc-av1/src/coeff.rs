@@ -7,6 +7,10 @@
 //! decoder's partial view because every context only looks at coefficients
 //! later in scan order, which the decoder has already decoded.
 //!
+//! The DC-only writer and rate shortcut follows SVT-AV1 4.3.0
+//! `entropy_coding.c` / `rd_cost.c` (BSD-3-Clause-Clear; `THIRD_PARTY.md`).
+//! AV2 uses different base contexts, parity and Rice remainder syntax.
+//!
 //! Only `DCT_DCT` (transform class 2D) and square sizes are supported;
 //! 64x64 transforms code their top-left 32x32 as a 32x32 block.
 
@@ -20,6 +24,7 @@ use crate::tables::{
     NZ_MAP_CTX_OFFSET_32X32, TXB_SKIP_CDF,
 };
 use crate::transform::TxSize;
+use nc_common::eob::{GROUP_START as EOB_GROUP_START, group as eob_group};
 use nc_encoder::symbol_cost::BitCounter;
 
 /// SVT's linear coefficient-rate estimate ([`CoeffCdfs::eob_linear_bits`]):
@@ -44,8 +49,6 @@ const MAX_BASE_BR_RANGE: i32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
 const CUL_LEVEL_MASK: u8 = 7;
 /// Shift of the DC-sign category within an entropy context byte.
 const DC_SIGN_SHIFT: u32 = 3;
-/// Start of each `eob_pt` group (libaom `av1_eob_group_start`).
-const EOB_GROUP_START: [usize; 12] = [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
 /// Extra bits after each `eob_pt` (libaom `av1_eob_offset_bits`).
 const EOB_OFFSET_BITS: [u32; 12] = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 /// `DCT_DCT`'s symbol in both intra transform sets (libaom `av1_ext_tx_ind`).
@@ -536,35 +539,25 @@ impl CoeffCdfs {
         }
         self.write_eob(w, tx, pt, eob);
 
-        let scan = &scan(tx)[..eob];
-        let base_eob_cdfs = &mut self.base_eob[txs][pt];
-        let base_cdfs = &mut self.base[txs][pt];
-        let range_cdfs = &mut self.br[txs.min(3)][pt];
         if eob == 1 {
-            // The DC alone (SVT-AV1 `av1_write_coeffs_txb_1d`): both its
-            // contexts are 0 and no neighbour is read.
-            let level = i32::from(levels[0]).abs();
-            w.write_symbol(
-                (level.min(3) - 1) as usize,
-                &mut base_eob_cdfs[0],
-                BASE_EOB_SYMBOLS,
-            );
-            if level > NUM_BASE_LEVELS {
-                write_range(w, &mut range_cdfs[0], level);
-            }
-        } else {
-            let magnitudes = Magnitudes {
-                steps: scan_steps(tx, eob),
-                levels,
-            };
-            let cdfs = (base_eob_cdfs, base_cdfs, range_cdfs);
-            match tx {
-                TxSize::Tx4x4 => magnitudes.write(w, cdfs, &mut LevelMap4::new()),
-                TxSize::Tx8x8 => magnitudes.write(w, cdfs, &mut LevelMap8::new()),
-                TxSize::Tx16x16 => magnitudes.write(w, cdfs, &mut LevelMap16::new()),
-                TxSize::Tx32x32 | TxSize::Tx64x64 => {
-                    magnitudes.write(w, cdfs, &mut FullLevelMap::new());
-                }
+            return self.write_dc(w, tx, pt, ctx.dc_sign, levels[0]);
+        }
+        let scan = &scan(tx)[..eob];
+        let magnitudes = Magnitudes {
+            steps: scan_steps(tx, eob),
+            levels,
+        };
+        let cdfs = (
+            &mut self.base_eob[txs][pt],
+            &mut self.base[txs][pt],
+            &mut self.br[txs.min(3)][pt],
+        );
+        match tx {
+            TxSize::Tx4x4 => magnitudes.write(w, cdfs, &mut LevelMap4::new()),
+            TxSize::Tx8x8 => magnitudes.write(w, cdfs, &mut LevelMap8::new()),
+            TxSize::Tx16x16 => magnitudes.write(w, cdfs, &mut LevelMap16::new()),
+            TxSize::Tx32x32 | TxSize::Tx64x64 => {
+                magnitudes.write(w, cdfs, &mut FullLevelMap::new());
             }
         }
 
@@ -623,6 +616,11 @@ impl CoeffCdfs {
         }
         self.write_eob(&mut counter, tx, pt, eob);
 
+        if eob == 1 {
+            self.write_dc(&mut counter, tx, pt, ctx.dc_sign, levels[0]);
+            return counter.bits();
+        }
+
         let magnitudes = Magnitudes {
             steps: scan_steps(tx, eob),
             levels,
@@ -644,6 +642,34 @@ impl CoeffCdfs {
             }
         }
         counter.bits()
+    }
+
+    /// SVT-AV1's DC-only writer/rate path: `av1_write_coeffs_txb_1d` and
+    /// `av1_cost_coeffs_txb_loop_cost_one_eob`. With no AC coefficient both
+    /// magnitude contexts are zero; neither a scan nor a level map is needed.
+    #[inline]
+    fn write_dc<W: SymbolSink>(
+        &mut self,
+        w: &mut W,
+        tx: TxSize,
+        pt: usize,
+        dc_sign_ctx: usize,
+        value: i16,
+    ) -> u8 {
+        let level = i32::from(value).abs();
+        w.write_symbol(
+            (level.min(3) - 1) as usize,
+            &mut self.base_eob[tx.index()][pt][0],
+            BASE_EOB_SYMBOLS,
+        );
+        if level > NUM_BASE_LEVELS {
+            write_range(w, &mut self.br[tx.index().min(3)][pt][0], level);
+        }
+        w.write_bool(value < 0, &mut self.dc_sign[pt][dc_sign_ctx]);
+        if level > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
+            write_golomb(w, (level - MAX_BASE_BR_RANGE) as u32);
+        }
+        context_byte(level as u32, value)
     }
 
     /// SVT-AV1's linear coefficient-rate estimate (`coeff_rate_est_lvl` 0,
@@ -679,11 +705,8 @@ impl CoeffCdfs {
 
     /// `eob_pt_*` and `eob_extra` (AV1 §5.11.39).
     fn write_eob<W: SymbolSink>(&mut self, w: &mut W, tx: TxSize, pt: usize, eob: usize) {
-        let eob_pt = EOB_GROUP_START
-            .iter()
-            .rposition(|&s| s <= eob)
-            .expect("eob >= 1");
-        let extra = eob - EOB_GROUP_START[eob_pt];
+        let eob_pt = eob_group(eob);
+        let extra = eob - usize::from(EOB_GROUP_START[eob_pt]);
         let symbol = eob_pt - 1;
         // `eob_multi_ctx` is 0 for transform class 2D.
         match tx {
@@ -1017,6 +1040,109 @@ mod tests {
                 "{tx:?} round {round}"
             );
             cdfs.write(&mut writer, tx, plane, is_inter, mode, ctx, &levels, eob);
+        }
+    }
+
+    /// The DC shortcut must match the general context walk even at signed
+    /// extremes and range/Golomb boundaries, with CDFs adapted beforehand.
+    #[test]
+    fn dc_shortcut_matches_general_coefficient_walk() {
+        let mut cdfs = CoeffCdfs::new(2);
+        let mut adaptation = crate::range_coder::SymbolWriter::new();
+        for tx in [
+            TxSize::Tx4x4,
+            TxSize::Tx8x8,
+            TxSize::Tx16x16,
+            TxSize::Tx32x32,
+            TxSize::Tx64x64,
+        ] {
+            for plane in [PlaneType::Luma, PlaneType::Chroma] {
+                for is_inter in [false, true] {
+                    for value in [
+                        i16::MIN,
+                        -32767,
+                        -15,
+                        -14,
+                        -13,
+                        -6,
+                        -5,
+                        -4,
+                        -3,
+                        -2,
+                        -1,
+                        1,
+                        2,
+                        3,
+                        4,
+                        5,
+                        6,
+                        13,
+                        14,
+                        15,
+                        i16::MAX,
+                    ] {
+                        for dc_sign in 0..DC_SIGN_CONTEXTS {
+                            let ctx = TxbContext { skip: 0, dc_sign };
+                            let mut levels = vec![0; tx.coded_size().pow(2)];
+                            levels[0] = value;
+                            let mut reference = cdfs.clone();
+                            let mut counter = BitCounter::default();
+                            let (txs, pt) = (tx.index(), plane as usize);
+                            counter.add_q9(reference.txb_skip[txs][ctx.skip].cost_q9(0));
+                            if plane == PlaneType::Luma {
+                                if is_inter {
+                                    reference.write_inter_tx_type_dct(&mut counter, tx);
+                                } else {
+                                    reference.write_intra_tx_type_dct(&mut counter, tx, 0);
+                                }
+                            }
+                            reference.write_eob(&mut counter, tx, pt, 1);
+                            let magnitudes = Magnitudes {
+                                steps: scan_steps(tx, 1),
+                                levels: &levels,
+                            };
+                            let contexts = (
+                                &mut reference.base_eob[txs][pt],
+                                &mut reference.base[txs][pt],
+                                &mut reference.br[txs.min(3)][pt],
+                            );
+                            let sign = &mut reference.dc_sign[pt][dc_sign];
+                            match tx {
+                                TxSize::Tx4x4 => magnitudes.cost(
+                                    &mut counter,
+                                    contexts,
+                                    sign,
+                                    &mut LevelMap4::new(),
+                                ),
+                                TxSize::Tx8x8 => magnitudes.cost(
+                                    &mut counter,
+                                    contexts,
+                                    sign,
+                                    &mut LevelMap8::new(),
+                                ),
+                                TxSize::Tx16x16 => magnitudes.cost(
+                                    &mut counter,
+                                    contexts,
+                                    sign,
+                                    &mut LevelMap16::new(),
+                                ),
+                                TxSize::Tx32x32 | TxSize::Tx64x64 => magnitudes.cost(
+                                    &mut counter,
+                                    contexts,
+                                    sign,
+                                    &mut FullLevelMap::new(),
+                                ),
+                            }
+                            assert_eq!(
+                                cdfs.cost(tx, plane, is_inter, 0, ctx, &levels, 1).to_bits(),
+                                counter.bits().to_bits(),
+                                "{tx:?} {plane:?} inter={is_inter} dc={value} sign_ctx={dc_sign}",
+                            );
+                            cdfs.write(&mut adaptation, tx, plane, is_inter, 0, ctx, &levels, 1);
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -451,6 +451,9 @@ class Bench:
     #: XPSNR of the current revision is re-measured when such a run uses it, and
     #: serves every other run as it is (the point identity does not change).
     xpsnr: bool = False
+    #: With `xpsnr`: reuse a stored result without it (score XPSNR only on the points
+    #: this run measures anyway: a chart render, whose missing points must not lack it).
+    stored_xpsnr: bool = False
 
     def tool_hash(self, family: Family) -> str:
         with self.lock:
@@ -623,7 +626,8 @@ class Bench:
         if self.metric_set == "real" and not self.stored_ms_ssim and \
                 cached.get("ms_ssim_revision", 1) != REAL_MS_SSIM_REVISION:
             return None
-        if self.xpsnr and cached.get("xpsnr_revision") != REAL_XPSNR_REVISION:
+        if self.xpsnr and not self.stored_xpsnr and \
+                cached.get("xpsnr_revision") != REAL_XPSNR_REVISION:
             return None
         return cached
 

@@ -9,7 +9,7 @@
 //! evaluation harness streams decoded clips through one): the look-ahead
 //! frame is read ahead and replayed, never fetched by seeking.
 
-use std::io::{Cursor, ErrorKind, Read};
+use std::io::{Cursor, ErrorKind, IoSliceMut, Read};
 
 use nc_common::{RawFrame, chroma_len, yuv};
 use nc_encoder::{CodecBackend, EncodedFrame, Encoder};
@@ -148,6 +148,13 @@ impl<R: Read> Read for Replayed<R> {
             read => Ok(read),
         }
     }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> std::io::Result<usize> {
+        match self.replay.read_vectored(bufs)? {
+            0 => self.input.read_vectored(bufs),
+            read => Ok(read),
+        }
+    }
 }
 
 /// The buffer one packed `width` x `height` frame of `format` is read into
@@ -172,8 +179,23 @@ fn packed_yv12(data: &[u8], width: usize, height: usize) -> nc_common::Result<Ra
 
 #[cfg(test)]
 mod tests {
-    use super::{InputFormat, packed_yv12};
+    use super::{InputFormat, Replayed, packed_yv12};
     use nc_common::RawFrame;
+
+    #[test]
+    fn vectored_frame_read_replays_prefix_then_forwards_the_input() {
+        let data: Vec<u8> = (0..36).map(|n| n * 7).collect();
+        let mut reader = Replayed {
+            replay: std::io::Cursor::new(data[..5].to_vec()),
+            input: std::io::Cursor::new(data[5..].to_vec()),
+        };
+        let mut picture = nc_common::Picture::new(6, 4, 8).unwrap();
+        assert!(nc_common::yuv::read_frame(&mut reader, &mut picture).unwrap());
+        assert!(!nc_common::yuv::read_frame(&mut reader, &mut picture).unwrap());
+        let mut output = Vec::new();
+        nc_common::yuv::write_frame(&mut output, &picture).unwrap();
+        assert_eq!(output, data);
+    }
 
     #[test]
     fn parses_formats() {

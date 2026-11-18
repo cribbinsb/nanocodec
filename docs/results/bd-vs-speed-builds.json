@@ -15,6 +15,7 @@
   "nanocodec-vvc": "b33ba3bb",
   "nanocodec-vvc@fast": "b33ba3bb",
   "nanocodec-av1@faster": "b33ba3bb",
+  "nanocodec-av1@veryfast": "b33ba3bb",
   "nanocodec-hevc@faster": "b33ba3bb",
   "nanocodec-h264@veryfast": "478e8249",
   "nanocodec-vp9@faster": "478e8249",

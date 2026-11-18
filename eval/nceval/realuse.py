@@ -98,12 +98,14 @@ class Runner:
 
     def __init__(self, paths: Paths, policy: GatePolicy, workers: int, over_budget: bool,
                  stored_ms_ssim: bool = False, prebuilt: Path | None = None,
-                 xpsnr: bool = False):
+                 xpsnr: bool = False, stored_xpsnr: bool = False):
         """`stored_ms_ssim`: reuse stored results of an older MS-SSIM protocol
         (cbr.Bench.stored_ms_ssim); `prebuilt`: score streams encoded elsewhere
-        (cbr.Bench.prebuilt); `xpsnr`: also score XPSNR (cbr.Bench.xpsnr)."""
+        (cbr.Bench.prebuilt); `xpsnr`: also score XPSNR (cbr.Bench.xpsnr), and with
+        `stored_xpsnr` reuse stored results without it (cbr.Bench.stored_xpsnr)."""
         self.paths, self.policy = paths, policy
         self.stored_ms_ssim, self.prebuilt, self.xpsnr = stored_ms_ssim, prebuilt, xpsnr
+        self.stored_xpsnr = stored_xpsnr
         self.workers, self.over_budget = min(workers, DEFAULT_WORKERS), over_budget
         self._benches: dict[int, Bench] = {}
         #: Points that are not rate-valid (rate_valid: buffer broken, or average
@@ -120,7 +122,8 @@ class Runner:
             self._benches[(frames, intra)] = Bench(self.paths, frames, intra, work,
                                                    metric_set="real",
                                                    stored_ms_ssim=self.stored_ms_ssim,
-                                                   prebuilt=self.prebuilt, xpsnr=self.xpsnr)
+                                                   prebuilt=self.prebuilt, xpsnr=self.xpsnr,
+                                                   stored_xpsnr=self.stored_xpsnr)
         return self._benches[(frames, intra)]
 
     def points(self, families: list[Family], clips: list[Clip], frames: int,

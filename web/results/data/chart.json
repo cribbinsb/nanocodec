@@ -835,6 +835,22 @@
    },
    "timing_is_twin": true
   },
+  "x265-superfast~ssim": {
+   "owner": "x265",
+   "codec": "hevc",
+   "preset": "superfast",
+   "tune": "ssim",
+   "ours": false,
+   "version_key": "x265",
+   "label": "x265 superfast, metric-tuned (--tune ssim)",
+   "cbr_command": "x265 --preset superfast --tune ssim --no-cutree --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 600 --vbv-maxrate 600 --vbv-bufsize 600 --input-res 1280x720 --fps 30/1 --frames 150 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input input.yuv --output out.bin",
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 42,
+    "command": "x265 --preset superfast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --qp 42 --input-res 1280x720 --fps 29970/1000 --frames 150 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input input.yuv --output out.bin"
+   },
+   "timing_is_twin": true
+  },
   "x265-ultrafast": {
    "owner": "x265",
    "codec": "hevc",
@@ -860,6 +876,22 @@
    "version_key": "x265",
    "label": "x265 ultrafast, metric-tuned (--tune psnr)",
    "cbr_command": "x265 --preset ultrafast --tune psnr --no-cutree --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 600 --vbv-maxrate 600 --vbv-bufsize 600 --input-res 1280x720 --fps 30/1 --frames 150 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input input.yuv --output out.bin",
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 42,
+    "command": "x265 --preset ultrafast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --qp 42 --input-res 1280x720 --fps 29970/1000 --frames 150 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input input.yuv --output out.bin"
+   },
+   "timing_is_twin": true
+  },
+  "x265-ultrafast~ssim": {
+   "owner": "x265",
+   "codec": "hevc",
+   "preset": "ultrafast",
+   "tune": "ssim",
+   "ours": false,
+   "version_key": "x265",
+   "label": "x265 ultrafast, metric-tuned (--tune ssim)",
+   "cbr_command": "x265 --preset ultrafast --tune ssim --no-cutree --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 600 --vbv-maxrate 600 --vbv-bufsize 600 --input-res 1280x720 --fps 30/1 --frames 150 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input input.yuv --output out.bin",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 42,
@@ -928,7 +960,8 @@
    "metrics": [
     "j",
     "psnr",
-    "vmaf"
+    "vmaf",
+    "xpsnr"
    ],
    "values": {
     "x264-medium~psnr": {
@@ -936,7 +969,7 @@
      "psnr": 0.0,
      "vmaf": 0.0,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 0.0,
      "iqr": [
       0.0,
       0.0
@@ -958,7 +991,7 @@
      "psnr": 11.45,
      "vmaf": 27.55,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -8.8,
      "iqr": [
       8.14,
       16.46
@@ -980,7 +1013,7 @@
      "psnr": -25.59,
      "vmaf": -18.54,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -31.52,
      "iqr": [
       -35.7,
       -14.35
@@ -1002,7 +1035,7 @@
      "psnr": -23.48,
      "vmaf": -18.0,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -30.48,
      "iqr": [
       -35.41,
       -12.73
@@ -1024,7 +1057,7 @@
      "psnr": -14.73,
      "vmaf": -10.19,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -19.57,
      "iqr": [
       -25.75,
       -0.27
@@ -1046,7 +1079,7 @@
      "psnr": -8.52,
      "vmaf": -0.36,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -16.38,
      "iqr": [
       -22.44,
       14.06
@@ -1068,7 +1101,7 @@
      "psnr": -3.61,
      "vmaf": 5.01,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -11.25,
      "iqr": [
       -18.53,
       19.65
@@ -1156,7 +1189,7 @@
      "psnr": -26.17,
      "vmaf": -23.46,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -33.06,
      "iqr": [
       -36.17,
       -18.38
@@ -1264,7 +1297,7 @@
     "nanocodec-av1@veryfast": {
      "j": -29.18,
      "psnr": -29.14,
-     "vmaf": -25.43,
+     "vmaf": -25.44,
      "ms_ssim": null,
      "xpsnr": null,
      "iqr": [
@@ -1354,7 +1387,7 @@
      "psnr": -27.57,
      "vmaf": -25.58,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -35.57,
      "iqr": [
       -39.17,
       -18.25
@@ -1376,7 +1409,7 @@
      "psnr": -20.14,
      "vmaf": -20.51,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -22.29,
      "iqr": [
       -35.49,
       -11.08
@@ -1508,7 +1541,7 @@
      "psnr": -36.41,
      "vmaf": -35.87,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -43.68,
      "iqr": [
       -46.13,
       -28.52
@@ -1530,7 +1563,7 @@
      "psnr": 27.61,
      "vmaf": 41.79,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 17.1,
      "iqr": [
       -2.36,
       63.53
@@ -1574,7 +1607,7 @@
      "psnr": 6.59,
      "vmaf": 27.42,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -7.46,
      "iqr": [
       2.42,
       21.47
@@ -1596,7 +1629,7 @@
      "psnr": -12.32,
      "vmaf": -10.39,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -25.56,
      "iqr": [
       -22.08,
       -5.4
@@ -1618,7 +1651,7 @@
      "psnr": -19.71,
      "vmaf": -17.18,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -31.02,
      "iqr": [
       -26.21,
       -14.46
@@ -1640,7 +1673,7 @@
      "psnr": -19.61,
      "vmaf": -14.17,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -35.47,
      "iqr": [
       -29.05,
       -15.15
@@ -1706,7 +1739,7 @@
      "psnr": -20.11,
      "vmaf": -15.42,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -31.71,
      "iqr": [
       -24.81,
       -8.77
@@ -1728,7 +1761,7 @@
      "psnr": -17.64,
      "vmaf": -13.55,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -29.37,
      "iqr": [
       -24.3,
       -6.85
@@ -1750,7 +1783,7 @@
      "psnr": 19.03,
      "vmaf": 18.63,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 11.69,
      "iqr": [
       4.65,
       23.15
@@ -1772,7 +1805,7 @@
      "psnr": 18.3,
      "vmaf": 16.26,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 8.3,
      "iqr": [
       5.63,
       18.63
@@ -1794,7 +1827,7 @@
      "psnr": -14.76,
      "vmaf": -11.55,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -24.1,
      "iqr": [
       -23.86,
       -9.85
@@ -1816,7 +1849,7 @@
      "psnr": -16.55,
      "vmaf": -9.58,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -24.92,
      "iqr": [
       -23.52,
       -8.89
@@ -1838,7 +1871,7 @@
      "psnr": 5.5,
      "vmaf": 7.87,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 18.44,
      "iqr": [
       -0.82,
       18.7
@@ -1860,7 +1893,7 @@
      "psnr": 8.76,
      "vmaf": 26.94,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -9.97,
      "iqr": [
       6.92,
       14.69
@@ -1877,7 +1910,7 @@
      "chained": 0,
      "rate_invalid_points": 35
     },
-    "x265-ultrafast~psnr": {
+    "x265-ultrafast~ssim": {
      "j": -16.03,
      "psnr": -14.44,
      "vmaf": -10.74,
@@ -1899,7 +1932,7 @@
      "chained": 0,
      "rate_invalid_points": 27
     },
-    "x265-superfast~psnr": {
+    "x265-superfast~ssim": {
      "j": -23.46,
      "psnr": -22.75,
      "vmaf": -18.18,
@@ -1926,7 +1959,7 @@
      "psnr": -26.53,
      "vmaf": -20.86,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -36.46,
      "iqr": [
       -32.01,
       -18.4
@@ -1948,7 +1981,7 @@
      "psnr": 19.12,
      "vmaf": 23.7,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 3.3,
      "iqr": [
       4.2,
       20.79
@@ -3122,6 +3155,7 @@
     "nanocodec-vvc": "b33ba3bb",
     "nanocodec-vvc@fast": "b33ba3bb",
     "nanocodec-av1@faster": "b33ba3bb",
+    "nanocodec-av1@veryfast": "b33ba3bb",
     "nanocodec-hevc@faster": "b33ba3bb",
     "nanocodec-h264@veryfast": "478e8249",
     "nanocodec-vp9@faster": "478e8249",
@@ -3196,7 +3230,7 @@
      "psnr": -18.92,
      "vmaf": -15.86,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -26.26,
      "iqr": [
       -36.09,
       -1.52
@@ -3240,7 +3274,7 @@
      "psnr": -7.98,
      "vmaf": -8.98,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -14.59,
      "iqr": [
       -30.27,
       9.02
@@ -3262,7 +3296,7 @@
      "psnr": -1.86,
      "vmaf": 0.64,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -10.99,
      "iqr": [
       -27.1,
       16.41
@@ -3284,7 +3318,7 @@
      "psnr": 3.11,
      "vmaf": 4.76,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -6.26,
      "iqr": [
       -24.22,
       20.18
@@ -3306,7 +3340,7 @@
      "psnr": -43.72,
      "vmaf": -45.01,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -54.78,
      "iqr": [
       -52.37,
       -37.32
@@ -3328,7 +3362,7 @@
      "psnr": -42.39,
      "vmaf": -43.86,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -53.64,
      "iqr": [
       -50.8,
       -36.46
@@ -3394,7 +3428,7 @@
      "psnr": -48.95,
      "vmaf": -45.61,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -56.09,
      "iqr": [
       -55.46,
       -37.24
@@ -3477,12 +3511,34 @@
      "chained": 0,
      "rate_invalid_points": 0
     },
+    "nanocodec-av1@veryfast": {
+     "j": -32.85,
+     "psnr": -31.56,
+     "vmaf": -32.4,
+     "ms_ssim": null,
+     "xpsnr": -44.04,
+     "iqr": [
+      -41.93,
+      -21.08
+     ],
+     "clips_scored": 11,
+     "clips": 11,
+     "fps": {
+      "jetson": 87.66,
+      "x86": 410.68,
+      "zen3": 232.88,
+      "graviton": 221.48
+     },
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0
+    },
     "nanocodec-vp9@slow": {
      "j": -42.62,
      "psnr": -45.61,
      "vmaf": -38.26,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -56.57,
      "iqr": [
       -51.94,
       -33.25
@@ -3504,7 +3560,7 @@
      "psnr": -44.81,
      "vmaf": -37.41,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -55.79,
      "iqr": [
       -48.74,
       -32.42
@@ -3548,7 +3604,7 @@
      "psnr": -27.54,
      "vmaf": -28.22,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -35.77,
      "iqr": [
       -38.19,
       -16.42
@@ -3570,7 +3626,7 @@
      "psnr": -15.8,
      "vmaf": -22.65,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -18.47,
      "iqr": [
       -35.63,
       -8.09
@@ -3658,7 +3714,7 @@
      "psnr": -48.45,
      "vmaf": -49.66,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -57.03,
      "iqr": [
       -55.81,
       -41.68
@@ -3722,9 +3778,9 @@
     "openh264-baseline": {
      "j": 42.83,
      "psnr": 39.84,
-     "vmaf": 56.76,
+     "vmaf": 56.75,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 25.79,
      "iqr": [
       -7.12,
       79.17
@@ -3746,7 +3802,7 @@
      "psnr": 62.14,
      "vmaf": 35.68,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 67.69,
      "iqr": [
       10.96,
       80.22
@@ -3764,14 +3820,14 @@
      "rate_invalid_points": 0
     },
     "x264-veryfast": {
-     "j": 14.64,
+     "j": 14.63,
      "psnr": 11.07,
-     "vmaf": 23.42,
+     "vmaf": 23.39,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -2.31,
      "iqr": [
       -4.66,
-      23.68
+      23.67
      ],
      "clips_scored": 11,
      "clips": 11,
@@ -3790,7 +3846,7 @@
      "psnr": -22.97,
      "vmaf": -22.71,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -34.56,
      "iqr": [
       -31.72,
       -16.83
@@ -3812,10 +3868,10 @@
      "psnr": -27.3,
      "vmaf": -26.16,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -38.19,
      "iqr": [
-      -33.28,
-      -23.2
+      -33.27,
+      -23.21
      ],
      "clips_scored": 11,
      "clips": 11,
@@ -3834,10 +3890,10 @@
      "psnr": -30.09,
      "vmaf": -25.96,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -44.28,
      "iqr": [
       -34.07,
-      -26.03
+      -26.02
      ],
      "clips_scored": 11,
      "clips": 11,
@@ -3852,11 +3908,11 @@
      "rate_invalid_points": 0
     },
     "svtav1-m8": {
-     "j": -37.05,
+     "j": -37.04,
      "psnr": -40.14,
-     "vmaf": -28.02,
+     "vmaf": -28.0,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -50.59,
      "iqr": [
       -39.01,
       -30.63
@@ -3876,12 +3932,12 @@
     "svtav1-m10": {
      "j": -32.15,
      "psnr": -33.64,
-     "vmaf": -25.87,
+     "vmaf": -25.86,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -46.23,
      "iqr": [
       -33.68,
-      -25.16
+      -25.14
      ],
      "clips_scored": 11,
      "clips": 11,
@@ -3900,7 +3956,7 @@
      "psnr": -24.85,
      "vmaf": -21.85,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -36.17,
      "iqr": [
       -34.82,
       -12.65
@@ -3922,7 +3978,7 @@
      "psnr": -23.08,
      "vmaf": -20.7,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -34.15,
      "iqr": [
       -35.13,
       -11.73
@@ -3940,14 +3996,14 @@
      "rate_invalid_points": 1
     },
     "libvpx-vp9-cpu7": {
-     "j": 12.7,
+     "j": 12.71,
      "psnr": 14.88,
-     "vmaf": 20.5,
+     "vmaf": 20.53,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 6.39,
      "iqr": [
-      3.62,
-      18.65
+      3.64,
+      18.67
      ],
      "clips_scored": 11,
      "clips": 11,
@@ -3964,12 +4020,12 @@
     "libvpx-vp9-cpu9": {
      "j": 8.54,
      "psnr": 12.67,
-     "vmaf": 16.14,
+     "vmaf": 16.13,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 2.96,
      "iqr": [
       5.4,
-      14.75
+      14.74
      ],
      "clips_scored": 11,
      "clips": 11,
@@ -3988,7 +4044,7 @@
      "psnr": -16.47,
      "vmaf": -10.69,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -25.55,
      "iqr": [
       -20.41,
       -13.17
@@ -4010,7 +4066,7 @@
      "psnr": -19.27,
      "vmaf": -11.32,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -28.47,
      "iqr": [
       -18.63,
       -12.35
@@ -4032,7 +4088,7 @@
      "psnr": 8.71,
      "vmaf": 25.33,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -8.68,
      "iqr": [
       7.28,
       14.62
@@ -4054,7 +4110,7 @@
      "psnr": -30.33,
      "vmaf": -27.12,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -40.89,
      "iqr": [
       -35.4,
       -24.79
@@ -4076,7 +4132,7 @@
      "psnr": -36.38,
      "vmaf": -32.68,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": -45.4,
      "iqr": [
       -39.31,
       -29.32
@@ -4098,7 +4154,7 @@
      "psnr": 12.29,
      "vmaf": 15.94,
      "ms_ssim": null,
-     "xpsnr": null,
+     "xpsnr": 0.95,
      "iqr": [
       5.0,
       13.36
