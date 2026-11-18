@@ -29,10 +29,15 @@ const PIN_NOTE = 'points beyond the axes are pinned to the edge (arrow)';
 const MANIFEST_URL = '../streams-ref/manifest.json';
 let manifest = null;
 
-// The Fixed QP chart's clip sets (CTC: the standards lens; fresh: our held-out sample) and
-// the CBR chart's: one Clip set control, each mode offering its own.
-const QP_CLIPSETS = { ctc: 'qp', fresh: 'qp-fresh' };
-const CBR_CLIPSETS = ['fresh', 'heldout', 'dev'];
+// The Fixed QP chart's clip sets (CTC: the standards lens; fresh and VC-1K: samples of those
+// CBR sets) and the CBR chart's: one Clip set control, each mode offering its own.
+const QP_CLIPSETS = { ctc: 'qp', fresh: 'qp-fresh', vc1k: 'qp-vc1k' };
+const CBR_CLIPSETS = ['fresh', 'heldout', 'dev', 'vc1k'];
+// How each Fixed QP sample was drawn from its clip set.
+const QP_SAMPLE_RULES = {
+  fresh: 'the held-out, fresh set (videos none of our tuning used; the clips are picked by a fixed rule, content classes in turn and within a class by a hash of the name)',
+  vc1k: 'the VC-1K set (one clip per motion × lighting cell, the environment alternating, each the first of its stratum in the selection’s fixed order)',
+};
 const state = {
   clipset: 'fresh', qpClipset: 'ctc', zero: TUNED_ZERO, mode: 'cbr', metric: 'j', platform: 'jetson', frontier: true,
   preset: ALL, codecs: new Set(Object.keys(CODEC_NAMES)), hiddenOwners: new Set(), tuned: false,
@@ -162,11 +167,18 @@ function viewNote(data, view) {
     return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), build ${view.build_commit}. ${qpSpeedNote(view)}`;
   }
   if (view.rate_mode === 'qp') {
-    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of the held-out, fresh set (videos none of our tuning used; the clips are picked by a fixed rule, content classes in turn and within a class by a hash of the name), ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. Ours at build ${view.build_commit}. ${qpSpeedNote(view)}`;
+    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of ${QP_SAMPLE_RULES[view.clipset]}, ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. Ours at build ${view.build_commit}. ${qpSpeedNote(view)}${datasetNote(data, view)}`;
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
-  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. ${cbrSpeedNote(data)}`;
+  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. ${cbrSpeedNote(data)}${datasetNote(data, view)}`;
+}
+
+/** An outside dataset's selection, credit and licence note (data.datasets), for its views. */
+function datasetNote(data, view) {
+  const d = data.datasets?.[view.clipset];
+  if (!d) return '';
+  return ` Clips: ${d.clips} of ${d.candidates}, stratified by ${d.stratified_by.join(' × ')} (${d.strata} strata, each filled evenly). Data: ${d.credit}, ${d.url}; ${d.note}.`;
 }
 
 /** What the CBR charts' speed axis is on the selected machine: its timing record's platform,
@@ -189,7 +201,7 @@ function qpSpeedNote(view) {
   }
   const what = view.clipset === 'ctc' ? 'sequences' : 'clips';
   const quantizers = speed.quantizers === view.points ? 'the same fixed quantizers' : `${speed.quantizers} of the same fixed quantizers`;
-  return `Speed: single-thread encode fps on the same ${speed.sequences} ${what} at ${quantizers} (each encoder's own encodes of the quality run, ${speed.frames} frames each): CPU time on one pinned core of ${speed.platform}, ours at build ${speed.build}; fps is 1000 over the geometric mean of the ${what}' milliseconds per frame (they run from ${view.size_range}, so the fps is not a 720p figure).`;
+  return `Speed: single-thread encode fps on the same ${speed.sequences} ${what} at ${quantizers} (each encoder's own encodes of the quality run, ${speed.frames} frames each): CPU time on one pinned core of ${speed.platform}, ours at build ${speed.build}; fps is 1000 over the geometric mean of the ${what}' milliseconds per frame (${view.size_range.includes(' to ') ? `they run from ${view.size_range}, so the fps is not a 720p figure` : `all ${view.size_range}`}).`;
 }
 
 /** Which build each of our families on a view was measured at, grouped by build (a
@@ -230,7 +242,7 @@ function render(data, root) {
   }
   const note = root.querySelector('.view-note');
   note.textContent = `${viewNote(data, view)} `;
-  note.append(el('a', { href: `clips.html?set=${view.rate_mode === 'qp' && view.clipset !== 'ctc' ? 'qp-fresh' : view.clipset}` }, 'The clips.'));
+  note.append(el('a', { href: `clips.html?set=${view.rate_mode === 'qp' && view.clipset !== 'ctc' ? view.id : view.clipset}` }, 'The clips.'));
 
   const entries = visible(data, view);
   const points = entries.map(([family, v]) => {
@@ -251,7 +263,7 @@ function render(data, root) {
   const zero = view.rate_mode === 'qp' ? 'x264 medium at fixed QP' : ZERO_NAMES[view.zero];
   title.textContent = `${NAMES[state.metric]} vs ${zero}, against single-thread encode speed`;
   root.querySelector('.chart-sub').textContent = view.rate_mode === 'qp'
-    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} held-out, fresh clips`}, build ${view.build_commit} · lower is fewer bits, right is faster`
+    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} clips of ${data.clipsets[view.clipset].split(':')[0]}`}, build ${view.build_commit} · lower is fewer bits, right is faster`
     : `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
   let pinned = [];
   if (!points.length) {
@@ -266,7 +278,7 @@ function render(data, root) {
     pinned = drawScatter(chart, points, {
       frontiers,
       xLabel: view.rate_mode === 'qp'
-        ? `encode fps, ${view.clipset === 'ctc' ? 'AOM CTC sequences' : 'held-out clips'} (geometric mean), one ${PLATFORM_LABELS[state.platform]} (log scale)`
+        ? `encode fps, ${view.clipset === 'ctc' ? 'AOM CTC sequences' : `${data.clipsets[view.clipset].split(':')[0]} clips`} (geometric mean), one ${PLATFORM_LABELS[state.platform]} (log scale)`
         : `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
       yLabel: `${SHORT[state.metric]} BD-rate (lower is better)`,
       ariaLabel: title.textContent,
@@ -344,7 +356,7 @@ function controls(data, root) {
   root.querySelector('.controls').replaceChildren(
     control('Clip set', withData('clipset', segmented('Clip set', [
       { value: 'fresh', label: 'Held-out, fresh' }, { value: 'heldout', label: 'Held-out, all' }, { value: 'dev', label: 'Development' },
-      { value: 'ctc', label: 'AOM CTC (Fixed QP)' },
+      { value: 'vc1k', label: 'VC-1K (phone video calls)' }, { value: 'ctc', label: 'AOM CTC (Fixed QP)' },
     ], state.clipset, (v) => { if (state.mode === 'qp') state.qpClipset = v; else state.clipset = v; rerender(); }))),
     // Fixed QP: the standards lens at the chart's build, on the same axes.
     control('Rate mode', segmented('Rate mode', [
