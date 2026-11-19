@@ -1,15 +1,15 @@
 {
  "source": [
-  "docs/results/wasm-yardstick-2026-11-12/wasm.json"
+  "docs/results/wasm-yardstick-2026-11-19/wasm.json"
  ],
- "build": "bcbc5601",
+ "build": "c9cff89f",
  "measured": {
-  "date": "2026-11-12",
+  "date": "2026-11-19",
   "builds": [
-   "development build bcbc5601, plain (crate version 0.1.0) for our browser module (relaxed SIMD)"
+   "release 0.4.0, plain build (c9cff89f) for our browser module (relaxed SIMD)"
   ],
   "reference_only": null,
-  "caption": "Measured 2026-11-12 on nanocodec development build bcbc5601, plain (crate version 0.1.0) for our browser module (relaxed SIMD). One core (15) of a shared AMD Ryzen 9 5950X under node 22, both modules in the same rounds. References: ffmpeg.wasm (@ffmpeg/core 0.12.10: x264 and FFmpeg's decoders, one thread, no SIMD)."
+  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, plain build (c9cff89f) for our browser module (relaxed SIMD). One core (15, tools/dev/host-timed.sh) of a shared AMD Ryzen 9 5950X at 1-minute load 40-44, node v22.21.1, both modules in the same 2 interleaved rounds (tools/web/ffmpeg_wasm_yardstick.py); the Axis 720p camera stream is a 150-frame cut (901 frames on 2026-11-12). References: ffmpeg.wasm (@ffmpeg/core 0.12.10: x264 and FFmpeg's decoders, one thread, no SIMD; its times include module start-up)."
  },
  "quality_view": "fresh-psnr",
  "encode": [
@@ -18,44 +18,35 @@
    "family": "nanocodec-h264@fast",
    "label": "nanocodec H.264 Fast",
    "module": "ours-wasm",
-   "ms": 11.01,
-   "fps": 90.8,
+   "ms": 10.99,
+   "fps": 91.0,
    "j": -11.65
-  },
-  {
-   "name": "h264",
-   "family": "nanocodec-h264",
-   "label": "nanocodec H.264 Medium (default)",
-   "module": "ours-wasm",
-   "ms": 11.59,
-   "fps": 86.3,
-   "j": -23.21
   },
   {
    "name": "hevc-fast",
    "family": "nanocodec-hevc@fast",
    "label": "nanocodec HEVC Fast",
    "module": "ours-wasm",
-   "ms": 18.29,
-   "fps": 54.7,
+   "ms": 15.82,
+   "fps": 63.2,
    "j": -37.04
   },
   {
-   "name": "x264 ultrafast",
-   "family": "x264-ultrafast",
-   "label": "x264 ultrafast",
-   "module": "ffmpeg.wasm",
-   "ms": 18.57,
-   "fps": 53.9,
-   "j": 46.37
+   "name": "h264",
+   "family": "nanocodec-h264",
+   "label": "nanocodec H.264 Medium (default)",
+   "module": "ours-wasm",
+   "ms": 19.67,
+   "fps": 50.8,
+   "j": -23.21
   },
   {
    "name": "av1-fast",
    "family": "nanocodec-av1@fast",
    "label": "nanocodec AV1 Fast",
    "module": "ours-wasm",
-   "ms": 22.62,
-   "fps": 44.2,
+   "ms": 19.71,
+   "fps": 50.7,
    "j": -37.2
   },
   {
@@ -63,17 +54,26 @@
    "family": "nanocodec-vp9",
    "label": "nanocodec VP9 Medium (default)",
    "module": "ours-wasm",
-   "ms": 25.83,
-   "fps": 38.7,
+   "ms": 24.34,
+   "fps": 41.1,
    "j": -39.94
+  },
+  {
+   "name": "x264 ultrafast",
+   "family": "x264-ultrafast",
+   "label": "x264 ultrafast",
+   "module": "ffmpeg.wasm",
+   "ms": 26.99,
+   "fps": 37.0,
+   "j": 46.37
   },
   {
    "name": "x264 veryfast",
    "family": "x264-veryfast",
    "label": "x264 veryfast",
    "module": "ffmpeg.wasm",
-   "ms": 46.52,
-   "fps": 21.5,
+   "ms": 57.35,
+   "fps": 17.4,
    "j": 12.26
   }
  ],
@@ -81,44 +81,44 @@
   {
    "codec": "h264",
    "stream": "ours 720p crowd 600k",
-   "ours_ms": 2.57,
-   "ref_ms": 3.65,
-   "ratio": 0.7
+   "ours_ms": 3.24,
+   "ref_ms": 6.54,
+   "ratio": 0.5
   },
   {
    "codec": "h264",
    "stream": "x264 CABAC 1080p 3M",
-   "ours_ms": 9.4,
-   "ref_ms": 11.11,
-   "ratio": 0.85
+   "ours_ms": 12.43,
+   "ref_ms": 14.9,
+   "ratio": 0.83
   },
   {
    "codec": "hevc",
    "stream": "Axis 720p camera",
-   "ours_ms": 2.35,
-   "ref_ms": 2.67,
-   "ratio": 0.88
+   "ours_ms": 3.51,
+   "ref_ms": 6.77,
+   "ratio": 0.52
   },
   {
    "codec": "hevc",
    "stream": "ours 1080p 3M",
-   "ours_ms": 14.13,
-   "ref_ms": 18.49,
-   "ratio": 0.76
+   "ours_ms": 13.25,
+   "ref_ms": 23.96,
+   "ratio": 0.55
   },
   {
    "codec": "hevc",
    "stream": "ours 720p crowd 600k",
-   "ours_ms": 3.66,
-   "ref_ms": 5.1,
-   "ratio": 0.72
+   "ours_ms": 3.59,
+   "ref_ms": 8.03,
+   "ratio": 0.45
   },
   {
    "codec": "vp9",
    "stream": "vpxenc 1080p 3M",
-   "ours_ms": 14.85,
-   "ref_ms": 21.21,
-   "ratio": 0.7
+   "ours_ms": 16.18,
+   "ref_ms": 28.03,
+   "ratio": 0.58
   }
  ]
 }

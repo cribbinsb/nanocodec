@@ -35,7 +35,7 @@ function wasm(data, root) {
   const cell = (direction, codec, preset, res) => {
     const r = byKey.get(`${direction}|${codec}|${preset}|${res}`);
     if (!r) return '–';
-    return `${fps(r.wasm_fps)} (${ratio(r.native_fps / r.wasm_fps)})${r.seed_caveat ? ' *' : ''}`;
+    return `${fps(r.wasm_fps)} (${ratio(r.native_fps / r.wasm_fps)})`;
   };
   const codecs = [...new Set(data.rows.map((r) => r.codec))].sort((a, b) => Object.keys(CODEC_NAMES).indexOf(a) - Object.keys(CODEC_NAMES).indexOf(b));
   const columns = [{ label: 'Codec', cell: (c) => CODEC_NAMES[c] }];
@@ -48,9 +48,6 @@ function wasm(data, root) {
   root.querySelector('.wasm').replaceChildren(table(columns, codecs),
     el('p', { class: 'note' }, `The "${data.module}" module; frame-weighted over ${Math.max(...data.rows.map((r) => r.clips))} clips per row.`),
     measuredNote(data.measured.caption), sources(data.source));
-  if (data.rows.some((r) => r.seed_caveat)) {
-    root.querySelector('.wasm-caveat').textContent = '* Measured with a different first-key quantizer than the demo uses (fixed in the bench afterwards): the WebAssembly side coded a larger first key frame and costlier frames after it, so these rows understate its speed.';
-  }
 }
 
 const DECODE_PLATFORMS = { x86: 'PC (x86)', jetson: 'Jetson (Arm)', wasm: 'Browser (WebAssembly)' };

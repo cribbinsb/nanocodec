@@ -3,13 +3,12 @@
   "docs/results/wasm-speed.csv"
  ],
  "measured": {
-  "date": "2026-11-10",
+  "date": "2026-11-19",
   "builds": [
-   "development build f2f7a221, plain (crate version 0.1.0) for H.264, HEVC, AV1, VP9 and AV2",
-   "development build bcbc5601, plain (crate version 0.1.0) for VVC"
+   "release 0.4.0, plain build (c9cff89f)"
   ],
   "reference_only": null,
-  "caption": "Measured 2026-11-10 on nanocodec development build f2f7a221, plain (crate version 0.1.0) for H.264, HEVC, AV1, VP9 and AV2; development build bcbc5601, plain (crate version 0.1.0) for VVC. The browser module under node v22.21.1 (V8) and the native build, one core (15) of a shared AMD Ryzen 9 5950X, best of 3 interleaved rounds."
+  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, plain build (c9cff89f). The browser module (relaxed SIMD, plain web build) under node v22.21.1 (V8) and the native plain build, one core (15, tools/dev/host-timed.sh) of a shared AMD Ryzen 9 5950X at 1-minute load 24-55, best of 3 interleaved rounds."
  },
  "module": "relaxed",
  "rows": [
@@ -20,11 +19,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 726.6,
-   "native_fps": 1117.2,
-   "seed_caveat": false
+   "wasm_fps": 1021.8,
+   "native_fps": 1622.1
   },
   {
    "direction": "decode",
@@ -33,11 +31,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 275.6,
-   "native_fps": 411.7,
-   "seed_caveat": false
+   "wasm_fps": 322.6,
+   "native_fps": 595.3
   },
   {
    "direction": "decode",
@@ -46,11 +43,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 677.4,
-   "native_fps": 1110.6,
-   "seed_caveat": false
+   "wasm_fps": 750.2,
+   "native_fps": 1190.2
   },
   {
    "direction": "decode",
@@ -59,11 +55,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 223.8,
-   "native_fps": 399.2,
-   "seed_caveat": false
+   "wasm_fps": 257.1,
+   "native_fps": 424.7
   },
   {
    "direction": "decode",
@@ -72,11 +67,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 1774.1,
-   "native_fps": 2416.3,
-   "seed_caveat": false
+   "wasm_fps": 1909.6,
+   "native_fps": 2716.1
   },
   {
    "direction": "decode",
@@ -85,11 +79,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 650.2,
-   "native_fps": 878.6,
-   "seed_caveat": false
+   "wasm_fps": 430.6,
+   "native_fps": 945.0
   },
   {
    "direction": "decode",
@@ -98,11 +91,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 1177.4,
-   "native_fps": 1597.5,
-   "seed_caveat": false
+   "wasm_fps": 1490.3,
+   "native_fps": 2118.5
   },
   {
    "direction": "decode",
@@ -111,11 +103,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 428.4,
-   "native_fps": 588.6,
-   "seed_caveat": false
+   "wasm_fps": 462.4,
+   "native_fps": 851.0
   },
   {
    "direction": "decode",
@@ -124,11 +115,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 942.2,
-   "native_fps": 1350.6,
-   "seed_caveat": false
+   "wasm_fps": 1606.0,
+   "native_fps": 2281.4
   },
   {
    "direction": "decode",
@@ -137,11 +127,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 335.9,
-   "native_fps": 478.8,
-   "seed_caveat": false
+   "wasm_fps": 467.4,
+   "native_fps": 865.2
   },
   {
    "direction": "decode",
@@ -150,11 +139,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "bcbc5601"
+    "c9cff89f"
    ],
-   "wasm_fps": 585.4,
-   "native_fps": 773.6,
-   "seed_caveat": false
+   "wasm_fps": 860.8,
+   "native_fps": 1226.7
   },
   {
    "direction": "decode",
@@ -163,11 +151,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "bcbc5601"
+    "c9cff89f"
    ],
-   "wasm_fps": 214.3,
-   "native_fps": 251.1,
-   "seed_caveat": false
+   "wasm_fps": 242.4,
+   "native_fps": 427.2
   },
   {
    "direction": "encode",
@@ -176,11 +163,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 74.9,
-   "native_fps": 174.2,
-   "seed_caveat": true
+   "wasm_fps": 137.1,
+   "native_fps": 221.9
   },
   {
    "direction": "encode",
@@ -189,11 +175,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 26.1,
-   "native_fps": 61.7,
-   "seed_caveat": true
+   "wasm_fps": 34.7,
+   "native_fps": 70.5
   },
   {
    "direction": "encode",
@@ -202,11 +187,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 160.3,
-   "native_fps": 433.8,
-   "seed_caveat": true
+   "wasm_fps": 224.3,
+   "native_fps": 389.8
   },
   {
    "direction": "encode",
@@ -215,11 +199,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 46.2,
-   "native_fps": 137.0,
-   "seed_caveat": true
+   "wasm_fps": 48.7,
+   "native_fps": 110.6
   },
   {
    "direction": "encode",
@@ -228,11 +211,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 55.9,
-   "native_fps": 138.1,
-   "seed_caveat": true
+   "wasm_fps": 105.8,
+   "native_fps": 174.0
   },
   {
    "direction": "encode",
@@ -241,11 +223,34 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 18.3,
-   "native_fps": 50.3,
-   "seed_caveat": true
+   "wasm_fps": 28.7,
+   "native_fps": 57.1
+  },
+  {
+   "direction": "encode",
+   "codec": "av2",
+   "preset": "fast",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "c9cff89f"
+   ],
+   "wasm_fps": 162.5,
+   "native_fps": 297.5
+  },
+  {
+   "direction": "encode",
+   "codec": "av2",
+   "preset": "fast",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "c9cff89f"
+   ],
+   "wasm_fps": 40.2,
+   "native_fps": 89.0
   },
   {
    "direction": "encode",
@@ -254,11 +259,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 283.1,
-   "native_fps": 538.8,
-   "seed_caveat": false
+   "wasm_fps": 190.3,
+   "native_fps": 314.0
   },
   {
    "direction": "encode",
@@ -267,11 +271,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 89.1,
-   "native_fps": 179.5,
-   "seed_caveat": false
+   "wasm_fps": 48.4,
+   "native_fps": 101.9
   },
   {
    "direction": "encode",
@@ -280,11 +283,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 333.3,
-   "native_fps": 688.3,
-   "seed_caveat": false
+   "wasm_fps": 385.8,
+   "native_fps": 619.0
   },
   {
    "direction": "encode",
@@ -293,11 +295,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 96.3,
-   "native_fps": 224.3,
-   "seed_caveat": false
+   "wasm_fps": 78.8,
+   "native_fps": 170.2
   },
   {
    "direction": "encode",
@@ -306,11 +307,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 149.7,
-   "native_fps": 254.2,
-   "seed_caveat": false
+   "wasm_fps": 161.4,
+   "native_fps": 246.6
   },
   {
    "direction": "encode",
@@ -319,11 +319,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 46.9,
-   "native_fps": 85.9,
-   "seed_caveat": false
+   "wasm_fps": 40.6,
+   "native_fps": 84.9
   },
   {
    "direction": "encode",
@@ -332,11 +331,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 260.1,
-   "native_fps": 507.4,
-   "seed_caveat": false
+   "wasm_fps": 245.8,
+   "native_fps": 416.1
   },
   {
    "direction": "encode",
@@ -345,11 +343,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 71.9,
-   "native_fps": 155.4,
-   "seed_caveat": false
+   "wasm_fps": 60.6,
+   "native_fps": 126.0
   },
   {
    "direction": "encode",
@@ -358,11 +355,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 70.2,
-   "native_fps": 172.9,
-   "seed_caveat": true
+   "wasm_fps": 116.4,
+   "native_fps": 193.8
   },
   {
    "direction": "encode",
@@ -371,11 +367,34 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "f2f7a221"
+    "c9cff89f"
    ],
-   "wasm_fps": 24.4,
-   "native_fps": 63.2,
-   "seed_caveat": true
+   "wasm_fps": 34.8,
+   "native_fps": 65.6
+  },
+  {
+   "direction": "encode",
+   "codec": "vp9",
+   "preset": "fast",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "c9cff89f"
+   ],
+   "wasm_fps": 187.4,
+   "native_fps": 316.5
+  },
+  {
+   "direction": "encode",
+   "codec": "vp9",
+   "preset": "fast",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "c9cff89f"
+   ],
+   "wasm_fps": 45.8,
+   "native_fps": 95.5
   },
   {
    "direction": "encode",
@@ -384,11 +403,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "bcbc5601"
+    "c9cff89f"
    ],
-   "wasm_fps": 111.8,
-   "native_fps": 190.9,
-   "seed_caveat": false
+   "wasm_fps": 96.4,
+   "native_fps": 162.8
   },
   {
    "direction": "encode",
@@ -397,11 +415,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "bcbc5601"
+    "c9cff89f"
    ],
-   "wasm_fps": 35.4,
-   "native_fps": 67.5,
-   "seed_caveat": false
+   "wasm_fps": 25.5,
+   "native_fps": 49.7
   },
   {
    "direction": "encode",
@@ -410,11 +427,10 @@
    "res": "360p",
    "clips": 3,
    "builds": [
-    "bcbc5601"
+    "c9cff89f"
    ],
-   "wasm_fps": 169.6,
-   "native_fps": 298.7,
-   "seed_caveat": false
+   "wasm_fps": 194.8,
+   "native_fps": 304.4
   },
   {
    "direction": "encode",
@@ -423,11 +439,10 @@
    "res": "720p",
    "clips": 3,
    "builds": [
-    "bcbc5601"
+    "c9cff89f"
    ],
-   "wasm_fps": 49.8,
-   "native_fps": 104.1,
-   "seed_caveat": false
+   "wasm_fps": 42.8,
+   "native_fps": 88.6
   }
  ]
 }
