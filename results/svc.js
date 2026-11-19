@@ -15,7 +15,8 @@ function shapeOf(row) {
 
 function render(data, root) {
   const chart = root.querySelector('.chart');
-  drawScatter(chart, data.rows.map((r) => ({
+  // a point not timed on this machine has no place on the speed axis (the table lists it)
+  drawScatter(chart, data.rows.filter((r) => r.fps[state.platform] != null).map((r) => ({
     id: r.family, x: r.fps[state.platform], y: r.j, iqr: r.ours || r.j !== 0 ? r.iqr : null,
     kind: r.ours ? 'ours' : 'ref', shape: shapeOf(r), label: r.label, flagged: false, twin: null,
     priority: r.ours ? 2 : 1, aria: `${r.label}: ${pct(r.j)}, ${fps(r.fps[state.platform])} fps`,
