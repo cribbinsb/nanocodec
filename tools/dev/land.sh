@@ -300,6 +300,8 @@ sync_integration_tree() {
 # Each success also appends `PART HEAD DATE` to run/verified-history, never
 # pruned: a release picks its commit from it (tools/release/release.py), long
 # after the check logs are gone.
+# Both parts copy the binaries they built for the head (the gate CLI, nc-checkasm)
+# into ~/nanocodec-data/charts/builds/<commit>/ (cache_binaries): tools/dev/binary_for.sh.
 # A part already running elsewhere is skipped (the next call covers its heads).
 verify_target() {
     local status=0
@@ -327,8 +329,10 @@ verify_streams() {
     log=$logs/verify-streams-${head:0:9}.log
     scope=$(cd "$tree" && python3 tools/dev/land_scope.py "$base") || return 1
     printf '== verifying streams %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
-    (cd "$tree" && CARGO_TARGET_DIR=${NC_VERIFY_STREAMS_TARGET_DIR:-$data_root/targets/verifier-streams} \
-        timed "streams" conformance_check_plan "$scope") >"$log" 2>&1 || status=$?
+    local target_dir=${NC_VERIFY_STREAMS_TARGET_DIR:-$data_root/targets/verifier-streams}
+    (cd "$tree" && CARGO_TARGET_DIR=$target_dir timed "streams" conformance_check_plan "$scope") \
+        >"$log" 2>&1 || status=$?
+    cache_binaries "$tree" "$head" "$target_dir"
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         record_verified streams "$head"
@@ -359,10 +363,13 @@ verify_tests() {
     scope=$(sed 's/^conformance .*/conformance 0/' <<<"$scope")
     printf '== verifying tests %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
     printf '== live: tail -f %s.parts/{python,rust}\n' "$log"
+    local target_dir=${NC_VERIFY_TARGET_DIR:-$data_root/targets/verifier} began_at
+    began_at=$(date +%s)
     # NC_WEB_TESTS_SINCE: the page tests run only where these changes reach (tools/ci/web_tests.py).
-    (cd "$tree" && CARGO_TARGET_DIR=${NC_VERIFY_TARGET_DIR:-$data_root/targets/verifier} \
+    (cd "$tree" && CARGO_TARGET_DIR=$target_dir \
         NC_CHECK_PARTS=$log.parts NC_WEB_TESTS_SINCE=$base run_checks "$scope") \
         >"$log" 2>&1 || status=$?
+    cache_binaries "$tree" "$head" "$target_dir" --since "$began_at"
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         record_verified tests "$head"
@@ -373,6 +380,15 @@ verify_tests() {
         report_failure "TESTS FAILED (fix forward; listed in $list)" "$head" "$base" "$log"
     fi
     return "$status"
+}
+
+# `cache_binaries TREE HEAD TARGET_DIR [--since EPOCH]`: the binaries the verifier
+# has just built for HEAD, copied into the landed-commit cache (charts/builds/<commit>/,
+# tools/dev/build_cache.py), so measuring HEAD later needs no compile. Whatever the
+# checks' outcome; a binary that is not HEAD's is refused there. Only a note on failure.
+cache_binaries() {
+    (cd "$1" && python3 tools/dev/build_cache.py store "$2" "$3/gate" "${@:4}") ||
+        printf '== note: build_cache.py store failed for %s\n' "${2:0:9}"
 }
 
 # `record_verified PART HEAD`: the durable record of one verified head.

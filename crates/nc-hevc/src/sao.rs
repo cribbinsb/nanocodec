@@ -1,205 +1,34 @@
-//! Sample adaptive offset (HEVC §7.3.8.3, §8.7.3). The encoder decides edge
-//! offsets only; band offsets are coded and applied for the syntax stress
-//! test (`backend/stress.rs`) and decoded.
+//! Sample adaptive offset (HEVC §7.3.8.3, §8.7.3): the encoder's decision
+//! (the engine's shared `nc_encoder::sao`, priced with HEVC's two SAO
+//! contexts), applying it, and its syntax.
 //!
-//! Per CTB and component, SAO classifies every deblocked sample by its two
-//! neighbours along one of four directions (the edge-offset class) into
-//! "local minimum, concave edge, convex edge, local maximum" (categories 1
-//! to 4) and adds a per-category offset — positive for 1 and 2, negative
-//! for 3 and 4. Cb and Cr share their class; each has its own offsets.
-//!
-//! The encoder's choice follows SVT-AV1's cheap CDEF strength reuse
-//! (`docs/reference/svt-av1-m12-rtc.md` §4): on *search* frames (key frames
-//! and every [`SEARCH_INTERVAL`]-th frame) every class is evaluated; other
-//! frames reuse the class chosen for the co-located CTB on the last search
-//! frame and only derive its offsets. Offsets are the rounded mean
-//! difference to the source per category; a CTB uses SAO, merges with its
-//! left or upper neighbour's parameters, or turns SAO off, whichever costs
-//! least in squared error plus λ times the signalling bits.
+//! Per CTB and component, SAO either classifies every deblocked sample by
+//! its two neighbours along one of four directions (edge offset: local
+//! minimum, concave edge, convex edge, local maximum, each with an offset)
+//! or by its value into 32 bands (band offset: four consecutive bands from
+//! a position, each with an offset). Cb and Cr share the type and edge
+//! class; each has its own offsets and band position. A CTB may copy its
+//! left or upper neighbour's parameters (merge).
 
 use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::Dsp;
+pub use nc_encoder::sao::{
+    BANDS, Candidates, ComponentSao, CtbSao, CtbTypes, MAX_OFFSET, PictureSao, SaoKind, Signal,
+    types,
+};
+use nc_encoder::sao::{SaoContexts, Settings, class_rect};
 
-use crate::cabac::CabacWriter;
-use crate::contexts::Contexts;
+use crate::cabac::{BinSink, Context};
+use crate::contexts::{Contexts, SliceKind};
 use crate::headers::LOG2_CTB;
 
-/// Number of edge-offset classes.
-const CLASSES: usize = 4;
-/// Categories with an offset (1..4; 0 means no change).
+/// Offsets per component and plane (edge categories 1..4, or four bands).
 const CATEGORIES: usize = 4;
-/// Largest `sao_offset_abs` for 8-bit video: `(1 << (8 − 5)) − 1`.
-pub const MAX_OFFSET: i32 = 7;
-/// Search all classes every this many frames (and on key frames).
-pub const SEARCH_INTERVAL: u64 = 4;
-
 /// Bits of `sao_band_position` (fixed length, bypass).
 const BAND_POSITION_BITS: u32 = 5;
-/// `bandShift` for 8-bit video (`bitDepth − 5`, §8.7.3.2): 32 bands.
-const BAND_SHIFT: u32 = 3;
-/// Number of bands.
-pub const BANDS: u8 = 32;
-
-/// How a component's samples are classified (`sao_type_idx`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SaoKind {
-    /// Edge offset with this `sao_eo_class` (shared by Cb and Cr).
-    Edge(u8),
-    /// Band offset with each plane's `sao_band_position` (Y, or Cb and Cr).
-    Band([u8; 2]),
-}
-
-/// SAO parameters of one component (luma), or of chroma (shared type).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ComponentSao {
-    /// Edge or band offset.
-    pub kind: SaoKind,
-    /// Offsets of categories (edge) or of the four bands from the band
-    /// position (band) per plane (Y, or Cb and Cr), signed as applied. Edge
-    /// categories 1 and 2 are ≥ 0, 3 and 4 are ≤ 0.
-    pub offsets: [[i8; CATEGORIES]; 2],
-}
-
-impl ComponentSao {
-    /// The edge-offset class, `None` for a band offset.
-    #[must_use]
-    pub fn edge_class(self) -> Option<u8> {
-        match self.kind {
-            SaoKind::Edge(class) => Some(class),
-            SaoKind::Band(_) => None,
-        }
-    }
-}
-
-/// SAO parameters of one CTB.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CtbSao {
-    /// Luma parameters, `None` for off.
-    pub luma: Option<ComponentSao>,
-    /// Chroma parameters (Cb and Cr), `None` for off.
-    pub chroma: Option<ComponentSao>,
-}
-
-/// How a CTB's parameters are signalled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Signal {
-    /// `sao_merge_left_flag`: copy the left CTB.
-    MergeLeft,
-    /// `sao_merge_up_flag`: copy the CTB above.
-    MergeUp,
-    /// Coded explicitly.
-    Explicit,
-}
-
-/// The SAO decision of a picture.
-#[derive(Debug, Clone, Default)]
-pub struct PictureSao {
-    /// Per CTB in raster order: parameters and how they are signalled.
-    pub ctbs: Vec<(CtbSao, Signal)>,
-    /// CTB columns.
-    pub cols: usize,
-}
-
-/// Sum of (source − deblocked) and sample count per category, per class.
-#[derive(Debug, Clone, Copy, Default)]
-struct ClassStats {
-    sum: [i64; CATEGORIES],
-    count: [i64; CATEGORIES],
-}
-
-impl ClassStats {
-    /// Best offsets and the squared-error change they give.
-    fn best_offsets(&self) -> ([i8; CATEGORIES], i64) {
-        let mut offsets = [0i8; CATEGORIES];
-        let mut delta = 0;
-        for (cat, offset) in offsets.iter_mut().enumerate() {
-            let n = self.count[cat];
-            if n == 0 {
-                continue;
-            }
-            let mean = (self.sum[cat] as f64 / n as f64).round() as i32;
-            // Categories 1, 2 only brighten; 3, 4 only darken (§7.4.9.3).
-            let o = if cat < 2 {
-                mean.clamp(0, MAX_OFFSET)
-            } else {
-                mean.clamp(-MAX_OFFSET, 0)
-            };
-            *offset = o as i8;
-            delta += self.delta(cat, o);
-        }
-        (offsets, delta)
-    }
-
-    /// Squared-error change of applying offset `o` to category `cat`.
-    fn delta(&self, cat: usize, o: i32) -> i64 {
-        let o = i64::from(o);
-        self.count[cat] * o * o - 2 * o * self.sum[cat]
-    }
-
-    fn delta_of(&self, offsets: [i8; CATEGORIES]) -> i64 {
-        (0..CATEGORIES)
-            .map(|c| self.delta(c, i32::from(offsets[c])))
-            .sum()
-    }
-}
-
-/// The samples of the CTB `(cx, cy)` (in plane samples, side `ctb`) of a
-/// `width` x `height` plane that have both neighbours of `class` inside the
-/// picture, as `(x0, y0, x1, y1)` (possibly empty).
-fn class_rect(
-    class: usize,
-    (width, height): (usize, usize),
-    (cx, cy, ctb): (usize, usize, usize),
-) -> (usize, usize, usize, usize) {
-    let [(ax, ay), (bx, by)] = nc_dsp::SAO_EO_NEIGHBOURS[class];
-    let (left, right) = (usize::from(ax < 0 || bx < 0), usize::from(ax > 0 || bx > 0));
-    let (top, bottom) = (usize::from(ay < 0 || by < 0), usize::from(ay > 0 || by > 0));
-    (
-        cx.max(left),
-        cy.max(top),
-        (cx + ctb).min(width.saturating_sub(right)),
-        (cy + ctb).min(height.saturating_sub(bottom)),
-    )
-}
-
-/// Edge-offset statistics of one CTB of one plane for `class`.
-///
-/// A row step above one approximates parameter selection by sampling rows;
-/// the selected normative filter still runs on every pixel. Step two saves
-/// 3.26% GOP300 instructions, costing 0.34% PSNR / 0.50% VMAF-NEG BD-rate
-/// on supported VAL. Noise best PSNR loses up to 0.033dB on VAL (0.198dB
-/// on TRAIN): this optional tradeoff does not pass the strict no-loss guard.
-fn stats(
-    dsp: &Dsp,
-    source: &nc_common::Plane,
-    deblocked: &nc_common::Plane,
-    (cx, cy, ctb): (usize, usize, usize),
-    class: usize,
-    row_step: usize,
-) -> ClassStats {
-    let rec = deblocked.view();
-    let rect = class_rect(class, (rec.width(), rec.height()), (cx, cy, ctb));
-    let s = dsp.sao_edge_stats_sampled(class as u8, &source.view(), &rec, rect, row_step);
-    ClassStats {
-        sum: s.sum,
-        count: s.count,
-    }
-}
-
-/// Approximate bits of explicit edge-offset parameters for one component
-/// (type, class, four truncated-unary offsets).
-fn edge_bits(offsets: &[[i8; CATEGORIES]], with_class: bool) -> f64 {
-    let type_and_class = 2.0 + if with_class { 2.0 } else { 0.0 };
-    let offset_bits: f64 = offsets
-        .iter()
-        .flatten()
-        .map(|&o| f64::from(i32::from(o).abs().min(MAX_OFFSET - 1) + 1))
-        .sum();
-    type_and_class + offset_bits
-}
 
 /// Which components SAO is applied to (`slice_sao_luma_flag`,
-/// `slice_sao_chroma_flag`) and the λ multiple for the luma decision.
+/// `slice_sao_chroma_flag`) and how the encoder decides it (`hevc.sao_*`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Components {
     /// Luma SAO is on.
@@ -213,222 +42,85 @@ pub struct Components {
     /// CTBs whose CUs are all skipped get SAO off without statistics
     /// (`hevc.sao_skip_unchanged`).
     pub skip_unchanged: bool,
+    /// Which types are searched, and on which pictures.
+    pub search: TypeSearch,
+}
+
+/// The SAO types the encoder searches (`hevc.sao_band`,
+/// `hevc.sao_search_interval`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeSearch {
+    /// Band offset is evaluated beside the four edge classes.
+    pub band: bool,
+    /// Types are searched on key pictures and every this many pictures,
+    /// reused in between (1: every picture).
+    pub interval: u64,
+}
+
+/// HEVC's SAO context models (§9.3.2.2, Table 9-5..9-6) for the shared
+/// decision's rate estimates.
+#[derive(Debug, Clone, Copy)]
+pub struct SaoModels {
+    merge: Context,
+    sao_type: Context,
+}
+
+impl SaoModels {
+    /// The models at the start of a slice of `slice` kind at `qp`, as the
+    /// slice data writer initialises them.
+    #[must_use]
+    pub fn for_slice(slice: SliceKind, qp: i32) -> Self {
+        let contexts = Contexts::for_slice(slice, qp);
+        Self {
+            merge: contexts.sao_merge_flag,
+            sao_type: contexts.sao_type_idx,
+        }
+    }
+}
+
+impl SaoContexts for SaoModels {
+    fn merge_bits(&self, bin: bool) -> f32 {
+        self.merge.bits(bin)
+    }
+    fn type_bits(&self, bin: bool) -> f32 {
+        self.sao_type.bits(bin)
+    }
+    fn code_merge(&mut self, bin: bool) {
+        self.merge.update(bin);
+    }
+    fn code_type(&mut self, bin: bool) {
+        self.sao_type.update(bin);
+    }
 }
 
 /// Decide the SAO parameters of a picture from the deblocked
-/// reconstruction. `reuse` is the per-CTB classes of the last search frame
-/// (`None` on a search frame). CTBs marked in `skipped` (all CUs skipped)
-/// get SAO off, merged from a neighbour where it is off too.
+/// reconstruction (`nc_encoder::sao::decide`). `lambdas` are luma's (before
+/// the luma scale) and chroma's; `models` are the slice's initial SAO
+/// contexts. CTBs marked in `skipped` (all CUs skipped) get SAO off.
+#[must_use]
 pub fn decide(
-    source: &Picture,
-    deblocked: &Picture,
-    lambda: f64,
+    (source, deblocked): (&Picture, &Picture),
+    lambdas: [f64; 2],
     components: Components,
-    reuse: Option<&[(Option<u8>, Option<u8>)]>,
+    candidates: Candidates<'_>,
     skipped: Option<&[bool]>,
+    models: SaoModels,
 ) -> PictureSao {
-    let dsp = Dsp::new();
-    let ctb = 1usize << LOG2_CTB;
-    let (w, h) = (deblocked.width(), deblocked.height());
-    let cols = w.div_ceil(ctb);
-    let rows = h.div_ceil(ctb);
-    let mut ctbs: Vec<(CtbSao, Signal)> = Vec::with_capacity(cols * rows);
-    for ry in 0..rows {
-        for rx in 0..cols {
-            let index = ry * cols + rx;
-            if skipped.is_some_and(|s| s[index]) {
-                ctbs.push(unfiltered(&ctbs, index, cols));
-                continue;
-            }
-            let (reuse_luma, reuse_chroma) = reuse.map_or((None, None), |r| r[index]);
-            let luma_component = Component {
-                dsp: &dsp,
-                stats_row_step: components.stats_row_step,
-                source,
-                deblocked,
-                planes: &[PlaneIndex::Y],
-                rect: (rx * ctb, ry * ctb, ctb),
-            };
-            let chroma_component = Component {
-                dsp: &dsp,
-                stats_row_step: components.stats_row_step,
-                source,
-                deblocked,
-                planes: &[PlaneIndex::U, PlaneIndex::V],
-                rect: (rx * ctb / 2, ry * ctb / 2, ctb / 2),
-            };
-            let classes = |on: bool, reused: Option<u8>| match (on, reuse) {
-                (false, _) => Classes::Off,
-                (true, None) => Classes::Search,
-                (true, Some(_)) => Classes::reuse(reused),
-            };
-            let (luma, mut luma_stats) = decide_component(
-                &luma_component,
-                lambda * components.luma_lambda_scale,
-                classes(components.luma, reuse_luma),
-            );
-            let (chroma, mut chroma_stats) = decide_component(
-                &chroma_component,
-                lambda,
-                classes(components.chroma, reuse_chroma),
-            );
-            let own = CtbSao { luma, chroma };
-            // Cost of the CTB's own parameters vs copying a neighbour's.
-            let mut cost_of = |p: &CtbSao| -> f64 {
-                cost_with(p.luma, &mut luma_stats, &luma_component)
-                    + cost_with(p.chroma, &mut chroma_stats, &chroma_component)
-            };
-            let own_bits = edge_bits_of(&own, components);
-            let own_cost = cost_of(&own)
-                + lambda * (own_bits + f64::from(u8::from(rx > 0)) + f64::from(u8::from(ry > 0)));
-            let mut choice = (own, Signal::Explicit, own_cost);
-            if rx > 0 {
-                let left = ctbs[index - 1].0;
-                let c = cost_of(&left) + lambda;
-                if c < choice.2 {
-                    choice = (left, Signal::MergeLeft, c);
-                }
-            }
-            if ry > 0 {
-                let up = ctbs[index - cols].0;
-                let c = cost_of(&up) + lambda * f64::from(1 + u8::from(rx > 0));
-                if c < choice.2 {
-                    choice = (up, Signal::MergeUp, c);
-                }
-            }
-            ctbs.push((choice.0, choice.1));
-        }
-    }
-    PictureSao { ctbs, cols }
-}
-
-/// SAO off for the CTB at `index` (`ctbs` holds the CTBs before it):
-/// merged from the left or above neighbour when that is off too (one bin),
-/// else signalled. A skipped CTB copies already filtered samples, so it
-/// gets no further filtering and needs no statistics.
-fn unfiltered(ctbs: &[(CtbSao, Signal)], index: usize, cols: usize) -> (CtbSao, Signal) {
-    let off = CtbSao {
-        luma: None,
-        chroma: None,
+    let settings = Settings {
+        channels: [components.luma, components.chroma],
+        lambdas: [lambdas[0] * components.luma_lambda_scale, lambdas[1]],
+        ctb: 1 << LOG2_CTB,
+        row_step: components.stats_row_step,
+        band: components.search.band,
     };
-    let is_off = |i: usize| ctbs[i].0 == off;
-    let signal = if !index.is_multiple_of(cols) && is_off(index - 1) {
-        Signal::MergeLeft
-    } else if index >= cols && is_off(index - cols) {
-        Signal::MergeUp
-    } else {
-        Signal::Explicit
-    };
-    (off, signal)
-}
-
-/// Which edge-offset classes to evaluate for a component of a CTB.
-#[derive(Debug, Clone, Copy)]
-enum Classes {
-    /// All four (a search frame).
-    Search,
-    /// Only the class reused from the last search frame.
-    Only(u8),
-    /// None: SAO was off there on the last search frame.
-    Off,
-}
-
-impl Classes {
-    fn reuse(class: Option<u8>) -> Self {
-        class.map_or(Classes::Off, Classes::Only)
-    }
-}
-
-/// Per-class statistics of a component's planes (one or two); `None` for
-/// a class not evaluated (a reuse frame evaluates only the reused class).
-type ComponentStats = [Option<[ClassStats; 2]>; CLASSES];
-
-/// One component of one CTB: the planes and their CTB rectangle.
-struct Component<'a> {
-    dsp: &'a Dsp,
-    stats_row_step: usize,
-    source: &'a Picture,
-    deblocked: &'a Picture,
-    planes: &'a [PlaneIndex],
-    rect: (usize, usize, usize),
-}
-
-impl Component<'_> {
-    fn stats(&self, class: usize) -> [ClassStats; 2] {
-        let (cx, cy, ctb) = self.rect;
-        let mut out = [ClassStats::default(); 2];
-        for (o, &plane) in out.iter_mut().zip(self.planes) {
-            *o = stats(
-                self.dsp,
-                self.source.plane(plane),
-                self.deblocked.plane(plane),
-                (cx, cy, ctb),
-                class,
-                self.stats_row_step,
-            );
-        }
-        out
-    }
-}
-
-/// Squared-error change of applying `p` (a neighbour's parameters when
-/// costing a merge); statistics of a class not yet evaluated are gathered
-/// here, so a merge is never costed against missing statistics.
-fn cost_with(p: Option<ComponentSao>, stats: &mut ComponentStats, component: &Component) -> f64 {
-    p.map_or(0.0, |e| {
-        let class = usize::from(
-            e.edge_class()
-                .expect("the encoder's decisions use edge offsets only"),
-        );
-        let s = *stats[class].get_or_insert_with(|| component.stats(class));
-        (s[0].delta_of(e.offsets[0]) + s[1].delta_of(e.offsets[1])) as f64
-    })
-}
-
-fn edge_bits_of(p: &CtbSao, components: Components) -> f64 {
-    let luma = p.luma.map_or(1.0, |e| edge_bits(&e.offsets[..1], true));
-    let chroma = p.chroma.map_or(1.0, |e| edge_bits(&e.offsets, true));
-    f64::from(u8::from(components.luma)) * luma + f64::from(u8::from(components.chroma)) * chroma
-}
-
-/// The best edge offset (or off) for one component of one CTB, and the
-/// statistics of every class computed (for merge costing).
-fn decide_component(
-    component: &Component,
-    lambda: f64,
-    classes: Classes,
-) -> (Option<ComponentSao>, ComponentStats) {
-    let mut all = ComponentStats::default();
-    let classes: Vec<usize> = match classes {
-        Classes::Search => (0..CLASSES).collect(),
-        Classes::Only(c) => vec![usize::from(c)],
-        Classes::Off => vec![],
-    };
-    // Off costs the one-bin type.
-    let mut best: (Option<ComponentSao>, f64) = (None, lambda);
-    for class in classes {
-        let mut offsets = [[0i8; CATEGORIES]; 2];
-        let mut delta = 0;
-        let s = component.stats(class);
-        for (i, s) in s.iter().enumerate().take(component.planes.len()) {
-            let (o, d) = s.best_offsets();
-            offsets[i] = o;
-            delta += d;
-        }
-        all[class] = Some(s);
-        let bits = edge_bits(&offsets[..component.planes.len()], true);
-        let cost = delta as f64 + lambda * bits;
-        if cost < best.1 {
-            best = (
-                Some(ComponentSao {
-                    kind: SaoKind::Edge(class as u8),
-                    offsets,
-                }),
-                cost,
-            );
-        }
-    }
-    (best.0, all)
+    nc_encoder::sao::decide(
+        &Dsp::new(),
+        (source, deblocked),
+        &settings,
+        candidates,
+        skipped,
+        models,
+    )
 }
 
 /// Apply `sao` to `recon` (deblocked on entry, SAO output on return).
@@ -465,7 +157,7 @@ pub fn apply(recon: &mut Picture, sao: &PictureSao) {
                     .expect("the CTB row of the plane");
                 for (col, (params, _)) in ctbs.iter().enumerate() {
                     if let Some((positions, offsets)) = band_params(params, plane) {
-                        apply_band(positions, offsets, &mut out, (col * side, 0, side));
+                        apply_band(&dsp, positions, offsets, &mut out, (col * side, 0, side));
                     }
                 }
                 continue;
@@ -496,12 +188,11 @@ pub fn apply(recon: &mut Picture, sao: &PictureSao) {
                 let origin = (col * side, y0 - top, side);
                 match e.kind {
                     SaoKind::Edge(class) => {
-                        let rect =
-                            class_rect(usize::from(class), (input.width(), input.height()), origin);
+                        let rect = class_rect(class, (input.width(), input.height()), origin);
                         dsp.sao_edge_apply(class, offsets, &input, &mut out, rect);
                     }
                     SaoKind::Band(positions) => {
-                        apply_band(positions[cr], offsets, &mut out, origin);
+                        apply_band(&dsp, positions[cr], offsets, &mut out, origin);
                     }
                 }
             }
@@ -540,43 +231,25 @@ fn band_params(params: &CtbSao, plane: PlaneIndex) -> Option<(u8, [i8; CATEGORIE
 /// (§8.7.3.2): samples in the four bands from `position` (modulo 32) move by
 /// that band's offset. Only the sample itself is read, so it runs in place.
 fn apply_band(
+    dsp: &Dsp,
     position: u8,
     offsets: [i8; CATEGORIES],
     plane: &mut PlaneViewMut<'_>,
-    origin: (usize, usize, usize),
+    (x, y, side): (usize, usize, usize),
 ) {
-    let (x, y, side) = origin;
-    let mut band_offset = [0i32; BANDS as usize];
-    for (k, &offset) in offsets.iter().enumerate() {
-        band_offset[(usize::from(position) + k) % usize::from(BANDS)] = i32::from(offset);
-    }
-    let x_end = (x + side).min(plane.width());
-    for row in y..(y + side).min(plane.height()) {
-        for sample in &mut plane.row_mut(row)[x..x_end] {
-            let shifted = i32::from(*sample) + band_offset[usize::from(*sample >> BAND_SHIFT)];
-            *sample = shifted.clamp(0, i32::from(u8::MAX)) as u8;
-        }
-    }
-}
-
-/// The per-CTB edge classes `(luma, chroma)` of a decision, for reuse.
-#[must_use]
-pub fn classes(sao: &PictureSao) -> Vec<(Option<u8>, Option<u8>)> {
-    sao.ctbs
-        .iter()
-        .map(|(p, _)| {
-            (
-                p.luma.and_then(ComponentSao::edge_class),
-                p.chroma.and_then(ComponentSao::edge_class),
-            )
-        })
-        .collect()
+    let bounds = (
+        x,
+        y,
+        (x + side).min(plane.width()),
+        (y + side).min(plane.height()),
+    );
+    dsp.sao_band_apply(position, offsets, plane, bounds);
 }
 
 /// `sao()` syntax of the CTB at CTB position `(rx, ry)` (§7.3.8.3) for the
 /// components switched on in the slice header.
 pub fn write(
-    w: &mut CabacWriter,
+    w: &mut impl BinSink,
     ctx: &mut Contexts,
     sao: &PictureSao,
     components: Components,
@@ -606,7 +279,7 @@ pub fn write(
 /// Type, offsets and class or band position of luma (`planes` 1) or chroma
 /// (Cb then Cr; Cr inherits the type and edge class).
 fn write_component(
-    w: &mut CabacWriter,
+    w: &mut impl BinSink,
     ctx: &mut Contexts,
     params: Option<ComponentSao>,
     planes: usize,
@@ -654,7 +327,7 @@ mod tests {
         // Bands are 8 samples wide; position 30 covers bands 30, 31, 0, 1.
         let mut samples = [240u8, 255, 3, 15, 16, 100];
         let mut plane = PlaneViewMut::new(&mut samples, 6, 6, 1).expect("plane");
-        apply_band(30, [-2, 3, 4, -5], &mut plane, (0, 0, 64));
+        apply_band(&Dsp::new(), 30, [-2, 3, 4, -5], &mut plane, (0, 0, 64));
         assert_eq!(samples, [238, 255, 7, 10, 16, 100]);
     }
 
@@ -675,5 +348,62 @@ mod tests {
         assert_eq!(category(10, 10, 10), None); // flat
         assert_eq!(category(20, 20, 10), Some(3)); // convex edge
         assert_eq!(category(20, 10, 10), Some(4)); // local maximum
+    }
+
+    /// The shared decision prices a CTB's SAO syntax in exactly the bits
+    /// HEVC's writer codes (bypass bins and the two adapting contexts).
+    #[test]
+    fn shared_rates_match_the_writer() {
+        use crate::rate::{BinCosts, BitEstimator};
+        let band = ComponentSao {
+            kind: SaoKind::Band([30, 4]),
+            offsets: [[3, 0, -7, 1], [-1, 2, 0, 7]],
+        };
+        let edge = ComponentSao {
+            kind: SaoKind::Edge(2),
+            offsets: [[7, 1, 0, -2], [0, 0, -1, -7]],
+        };
+        let all = [None, Some(band), Some(edge)];
+        let costs = BinCosts::new();
+        for (luma, chroma) in all.iter().flat_map(|&l| all.iter().map(move |&c| (l, c))) {
+            for signal in [Signal::Explicit, Signal::MergeLeft, Signal::MergeUp] {
+                for channels in [[true, true], [true, false], [false, true]] {
+                    let params = CtbSao { luma, chroma };
+                    let sao = PictureSao {
+                        ctbs: vec![(params, signal); 4],
+                        cols: 2,
+                    };
+                    let components = Components {
+                        luma: channels[0],
+                        chroma: channels[1],
+                        luma_lambda_scale: 1.0,
+                        stats_row_step: 1,
+                        skip_unchanged: false,
+                        search: TypeSearch {
+                            band: true,
+                            interval: 1,
+                        },
+                    };
+                    let mut ctx = Contexts::for_slice(SliceKind::Predicted, 30);
+                    let mut models = SaoModels::for_slice(SliceKind::Predicted, 30);
+                    let mut estimate = BitEstimator::new(&costs);
+                    write(&mut estimate, &mut ctx, &sao, components, (1, 1));
+                    let shared = nc_encoder::sao::rate::commit(
+                        &mut models,
+                        &params,
+                        signal,
+                        (true, true),
+                        channels,
+                    );
+                    assert!(
+                        (shared - f64::from(estimate.bits)).abs() < 1e-3,
+                        "{params:?} {signal:?} {channels:?}: {shared} vs {}",
+                        estimate.bits
+                    );
+                    assert_eq!(models.merge, ctx.sao_merge_flag);
+                    assert_eq!(models.sao_type, ctx.sao_type_idx);
+                }
+            }
+        }
     }
 }

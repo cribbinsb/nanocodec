@@ -110,6 +110,16 @@ fn chroma_dc_8x8(edges: &Edges<8>) -> [u8; 4] {
     out
 }
 
+/// The squared error of the `Intra_16x16` DC prediction (§8.3.3.3) from
+/// `edges` against a source block of sample sum `sum` and sum of squares
+/// `sum_squares`, in closed form (`Σs² - 2·dc·Σs + 256·dc²`): no prediction
+/// is formed.
+pub fn dc_16x16_sse(edges: &Edges<16>, sum: u32, sum_squares: u64) -> u64 {
+    let dc = i64::from(luma_dc_16x16(edges));
+    let q = i64::try_from(sum_squares).expect("16x16 squares fit");
+    (q - 2 * dc * i64::from(sum) + 256 * dc * dc) as u64
+}
+
 /// `Intra16x16PredMode` (H.264 Table 8-4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intra16x16Mode {
@@ -276,6 +286,25 @@ mod tests {
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .map(|(x, y)| f(x, y))
             .collect()
+    }
+
+    #[test]
+    fn dc_16x16_sse_matches_predicting() {
+        let recon = plane(32, 32, |x, y| ((x * 37 + y * 11) % 251) as u8);
+        let source = plane(16, 16, |x, y| ((x * 7 + y * 29 + x * y) % 253) as u8);
+        let sum = source.iter().map(|&s| u32::from(s)).sum();
+        let sum_squares = source.iter().map(|&s| u64::from(s) * u64::from(s)).sum();
+        let view = PlaneView::new(&recon, 32, 32, 32).unwrap();
+        for (x, y) in [(0, 0), (16, 0), (0, 16), (16, 16)] {
+            let edges = Edges::gather(&view, x, y);
+            let pred = luma_16x16(&edges, Intra16x16Mode::Dc);
+            let direct: u64 = source
+                .iter()
+                .zip(pred)
+                .map(|(&s, p)| (i64::from(s) - i64::from(p)).pow(2) as u64)
+                .sum();
+            assert_eq!(dc_16x16_sse(&edges, sum, sum_squares), direct, "({x}, {y})");
+        }
     }
 
     #[test]

@@ -36,8 +36,8 @@
 //! sampled rows of 8×8 units, and [`nc_encoder::select_strength_sets`]
 //! picks the frame's sets and each filter block's index by distortion and
 //! index bits. The
-//! fallback ([`choose_and_filter`]) codes the model's single set, each plane
-//! kept only if it lowers the sampled error.
+//! probe ([`choose_and_filter`]) codes one set: per plane type the best of
+//! off, the model's strength and a short shared ladder on sparser rows.
 
 use nc_common::decode::{BitReader, DecodeError, Result};
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView, PlaneViewMut};
@@ -783,14 +783,42 @@ fn sampled_units(units: &[Unit], period: usize) -> Vec<Unit> {
         .collect()
 }
 
-/// The single-set fallback: the quantiser model's luma and chroma
-/// strengths, each kept only where it lowers the squared error against
-/// `source` on every `check_row_period`-th row of units; then filter
-/// `picture` (deblocked, it becomes the reference) with them.
+/// Fewest units the probe measures when the picture has that many: on
+/// static content few units code a residual (only those are filtered), and
+/// every 16th row of them left a handful or none, so the probe chose off
+/// or a strong set on noise (pool clip `otw_natural_noise`, 960x540 at
+/// 100-180 kbps: AV2 Fast lost 0.08 dB at +0.5% bytes against the old
+/// model, where the search, on twice the rows, did not). 64 holds that clip
+/// (+0.23 dB at 100 kbps, +0.21 dB at 1000) at +3.8% c8a time on the lens
+/// for the probe against the old model; 256 cost +6.1%, as the search.
+const MIN_PROBE_UNITS: usize = 64;
+
+/// The units on every `period`-th row of units, the period halved until
+/// at least [`MIN_PROBE_UNITS`] are kept (or every unit): the sample costs
+/// little where the coded units are sparse.
+fn probe_units(units: &[Unit], period: usize) -> Vec<Unit> {
+    let mut period = period.max(1);
+    loop {
+        let sampled = sampled_units(units, period);
+        if period == 1 || sampled.len() >= MIN_PROBE_UNITS {
+            return sampled;
+        }
+        period /= 2;
+    }
+}
+
+/// The single-set probe: for luma and for chroma, the strength among off,
+/// the quantiser model's and the shared probe ladder
+/// ([`nc_encoder::cdef_probe_candidates`]; for luma then the grid's
+/// stronger neighbours of the best, [`nc_encoder::cdef_probe_luma_refinement`])
+/// with the least squared error against `source` on every
+/// `check_row_period`-th row of units (more where few units are coded,
+/// [`probe_units`]); then filter `picture` (deblocked, it becomes the
+/// reference) with them.
 ///
 /// `step` is the frame's AC quantiser step on AV1's `ac_qlookup` scale.
-/// Skipping the check on the other rows saves most of the trial filtering
-/// (three quarters at the default period 4); whole rows of units keep the
+/// Skipping the probe on the other rows saves most of the trial filtering
+/// (fifteen sixteenths at Fast's period 16); whole rows of units keep the
 /// sample representative of the picture's content.
 pub(crate) fn choose_and_filter(
     source: &Picture,
@@ -802,43 +830,63 @@ pub(crate) fn choose_and_filter(
 ) -> CdefParams {
     let (model, damping) = model_strengths(step, intra);
     scratch.unfiltered.start();
-    if model.is_off() {
-        return CdefParams::OFF;
-    }
     let units = filtered_units(
         dsp,
         &picture.plane(PlaneIndex::Y).view(),
         state,
         indices,
-        model.luma.primary != 0 || model.chroma.primary != 0,
+        true,
     );
-    let sampled = sampled_units(&units, check_row_period);
-    let mut keep = |planes: &[PlaneIndex], strength: Strength| {
-        if strength.is_off() {
-            return false;
-        }
+    let sampled = probe_units(&units, check_row_period);
+    // The least sampled error among `candidates` (the first on ties).
+    let mut best = |planes: &[PlaneIndex], candidates: &[(u8, u8)]| {
+        let strengths: Vec<Strength> = candidates
+            .iter()
+            .map(|&(primary, secondary)| Strength { primary, secondary })
+            .collect();
         let errors = unit_errors(
             (source, &*picture),
             &sampled,
             damping,
-            &[Strength::OFF, strength],
+            &strengths,
             planes,
             (1, |_: &Unit| 0),
             dsp,
             scratch,
         );
-        errors[1] < errors[0]
+        let mut chosen = 0;
+        for (index, &error) in errors.iter().enumerate() {
+            if error < errors[chosen] {
+                chosen = index;
+            }
+        }
+        (candidates[chosen], errors[chosen])
     };
+    let luma_first = nc_encoder::cdef_probe_candidates(
+        (model.luma.primary, model.luma.secondary),
+        &nc_encoder::CDEF_PROBE_LUMA,
+    );
+    let (mut luma, least) = best(&[PlaneIndex::Y], &luma_first);
+    let refinement = nc_encoder::cdef_probe_luma_refinement(luma, &luma_first);
+    if !refinement.is_empty() {
+        let (refined, error) = best(&[PlaneIndex::Y], &refinement);
+        if error < least {
+            luma = refined;
+        }
+    }
+    let chroma_candidates = nc_encoder::cdef_probe_candidates(
+        (model.chroma.primary, model.chroma.secondary),
+        &nc_encoder::CDEF_PROBE_CHROMA,
+    );
+    let (chroma, _) = best(&[PlaneIndex::U, PlaneIndex::V], &chroma_candidates);
     let set = StrengthSet {
-        luma: if keep(&[PlaneIndex::Y], model.luma) {
-            model.luma
-        } else {
-            Strength::OFF
+        luma: Strength {
+            primary: luma.0,
+            secondary: luma.1,
         },
-        chroma: if keep(&[PlaneIndex::U, PlaneIndex::V], model.chroma) {
-            model.chroma
-        } else {
-            Strength::OFF
+        chroma: Strength {
+            primary: chroma.0,
+            secondary: chroma.1,
         },
     };
     if set.is_off() {

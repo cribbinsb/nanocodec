@@ -38,6 +38,7 @@ use crate::key_plan::{KeyPlanMode, KeyPlanner};
 use crate::layer::LayerPosition;
 use crate::layer_propagation::LayerFrame;
 use crate::ltr::{LongTermReference, LtrAction, long_term_slot};
+use crate::moving_camera::MovingCamera;
 use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
 use crate::noise_skip::{NoiseMap, camera_is_still};
 use crate::params::RefParams;
@@ -247,6 +248,8 @@ pub struct Encoder<B: CodecBackend> {
     /// The second source frame, handed over before the first is coded
     /// ([`Encoder::look_ahead`]); consumed by the first frame.
     lookahead: Option<Picture>,
+    /// The fixed-QP structure under camera motion (`moving_camera.rs`).
+    moving_camera: MovingCamera,
     /// The frame being coded, when it is on the reuse term's chain
     /// ([`on_reuse_chain`]): the term sees only those frames.
     reuse_frame: Option<u64>,
@@ -374,6 +377,10 @@ impl<B: CodecBackend> Encoder<B> {
             ReuseTerm::new(B::SUPPORTS_BLOCK_QP).level_priced(persist.reuse_level_price >= 0.5)
         });
         let cadence_fixed_qp = RateParams::from_overrides(&config.params).cadence_fixed_qp >= 0.5;
+        let moving_camera = MovingCamera::new(
+            &RateParams::from_overrides(&config.params),
+            config.key_qp_offset.is_some(),
+        );
         let scene = SceneDetector::new(&SceneParams::from_overrides(&config.params));
         let use_aq = aq.is_some();
         let still = StillPlan::new(
@@ -475,6 +482,7 @@ impl<B: CodecBackend> Encoder<B> {
             rate_steps,
             cadence_fixed_qp,
             lookahead: None,
+            moving_camera,
             reuse_frame: None,
             block_offsets: Vec::new(),
             still,
@@ -688,18 +696,28 @@ impl<B: CodecBackend> Encoder<B> {
                 quantizer = controller.force(forced);
             }
             quantizer
-        } else if frame_type == FrameType::Key || self.config.quantizer < self.quantizer_bounds().0
-        {
-            // Keys keep the configured (T0) quantizer; backends apply their
-            // own key boost relative to it. A quantizer below the lossy range
-            // (qindex 0: lossless in VP9 and AV2) is never offset.
+        } else if self.config.quantizer < self.quantizer_bounds().0 {
+            // A quantizer below the lossy range (qindex 0: lossless in VP9
+            // and AV2) is never offset.
             self.config.quantizer
+        } else if frame_type == FrameType::Key {
+            // Keys keep the configured (T0) quantizer, coarser under camera
+            // motion (`MovingCamera`); backends apply their own key boost
+            // relative to it.
+            match self.moving_camera.key_offset() {
+                offset if offset > 0. => {
+                    let step =
+                        self.quantizer_steps[self.config.quantizer as usize] * step_ratio(offset);
+                    nearest_quantizer(&self.quantizer_steps, self.quantizer_bounds(), step)
+                }
+                _ => self.config.quantizer,
+            }
         } else if !references.position.is_flat() {
             let step = self.quantizer_steps[self.config.quantizer as usize]
                 * step_ratio(self.layer.ladder.offset(references.position));
             nearest_quantizer(&self.quantizer_steps, self.quantizer_bounds(), step)
         } else if self.cadence_fixed_qp && !self.layer.cadence.is_flat() {
-            let strength = self.layer.cadence.strength(
+            let strength = self.own_cadence_strength(
                 pre.map_or(0., |p| f64::from(p.static_fraction)),
                 cadence_motion,
             );
@@ -1397,6 +1415,7 @@ impl<B: CodecBackend> Encoder<B> {
                 .is_some_and(|m| m.mean_me_dist() <= skip_limit)
         {
             decision_params.intra_gate_variance = f32::INFINITY;
+            decision_params.intra_gate_lambdas = f32::INFINITY;
         }
         (decision_params, planner_params)
     }
@@ -1482,8 +1501,9 @@ impl<B: CodecBackend> Encoder<B> {
     /// Before the first frame: hand over the second source frame, which the
     /// caller still encodes in turn. Rate control then sizes the stream's
     /// first key for the camera motion between the two
-    /// (`rate.first_key_lookahead`; ignored when that is off, without rate
-    /// control, or after the first frame). The caller waits one frame
+    /// (`rate.first_key_lookahead`), and a fixed-QP stream offsets it
+    /// (`rate.fixed_qp_moving_key`); ignored when the one in force is off,
+    /// or after the first frame. The caller waits one frame
     /// longer before the first; the encoder spends one extra source
     /// analysis.
     ///
@@ -1507,19 +1527,19 @@ impl<B: CodecBackend> Encoder<B> {
     }
 
     /// Whether [`Encoder::look_ahead`] would be used: before the first
-    /// frame, with rate control and `rate.first_key_lookahead` on. A capture
-    /// loop holds the first frame back only then.
+    /// frame, with rate control and `rate.first_key_lookahead` on, or at
+    /// fixed QP with `rate.fixed_qp_moving_key`. A capture loop holds the
+    /// first frame back only then.
     #[must_use]
     pub fn wants_look_ahead(&self) -> bool {
         if let Some(spatial) = self.spatial.as_ref() {
             return spatial.wants_look_ahead(&self.layer);
         }
         self.next_index == 0
-            && self
-                .layer
-                .rate_control
-                .as_ref()
-                .is_some_and(RateController::wants_startup_motion)
+            && self.layer.rate_control.as_ref().map_or_else(
+                || self.moving_camera.enabled(),
+                RateController::wants_startup_motion,
+            )
     }
 
     /// Encode the frame written into [`Encoder::source_mut`].
@@ -1609,6 +1629,16 @@ impl<B: CodecBackend> Encoder<B> {
         let references = self.structure.next(index, key || recovery);
         let ltr_action = if key { LtrAction::None } else { ltr_action };
         let references = self.with_ltr(ltr_action, index, references);
+        // The motion was measured against the planned reference.
+        if let Some(a) = analyzer.as_ref().and_then(Analyzer::analysis)
+            && let Some(hint) = a
+                .motion
+                .as_ref()
+                .and_then(|m| cadence_motion_hint(m, planned.reference.distance, self.layer.width))
+        {
+            self.moving_camera
+                .observe(hint.camera_motion, f64::from(a.pre.static_fraction));
+        }
         let depth = analyzer
             .as_ref()
             .and_then(Analyzer::analysis)
@@ -1646,8 +1676,7 @@ impl<B: CodecBackend> Encoder<B> {
                 .as_ref()
                 .expect("an input buffer without an analyzer"),
         };
-        if let (Some(next), Some(controller)) =
-            (self.lookahead.take(), self.layer.rate_control.as_mut())
+        if let Some(next) = self.lookahead.take()
             && let Some((peak, still)) = startup_scene_profile(
                 &self.config,
                 (self.layer.width, self.layer.height),
@@ -1655,8 +1684,11 @@ impl<B: CodecBackend> Encoder<B> {
                 &next,
             )
         {
-            controller.observe_startup_motion(peak);
-            controller.observe_startup_still(f64::from(still));
+            self.moving_camera.observe_startup(peak, f64::from(still));
+            if let Some(controller) = self.layer.rate_control.as_mut() {
+                controller.observe_startup_motion(peak);
+                controller.observe_startup_still(f64::from(still));
+            }
         }
         let motion = analysis.and_then(|a| a.motion.as_ref());
         // Static detection compares with the reference's source frame, so it
@@ -2196,11 +2228,20 @@ impl<B: CodecBackend> Encoder<B> {
             .motion
             .as_ref()
             .and_then(|m| cadence_motion_hint(m, references.reference.distance, self.layer.width));
-        let own = self
-            .layer
-            .cadence
-            .strength(f64::from(analysis.pre.static_fraction), motion);
+        let own = self.own_cadence_strength(f64::from(analysis.pre.static_fraction), motion);
         self.inherited_depth().map_or(own, |depth| own.max(depth))
+    }
+
+    /// The cadence's own strength for a frame's still-block share and
+    /// motion: at fixed QP under camera motion it follows the scene
+    /// (`MovingCamera`), whatever the fixed-QP profile's scaling.
+    fn own_cadence_strength(&self, static_fraction: f64, motion: Option<MotionHint>) -> f64 {
+        let cadence = &self.layer.cadence;
+        if self.layer.rate_control.is_none() && self.moving_camera.cadence_follows_scene() {
+            cadence.scene_strength(static_fraction, motion)
+        } else {
+            cadence.strength(static_fraction, motion)
+        }
     }
 
     /// The least cadence strength the measured inheritance asks for
@@ -2598,8 +2639,7 @@ impl<B: CodecBackend> Encoder<B> {
                 &self.dsp,
                 &mut self.backend,
                 node,
-                source,
-                reference,
+                (source, reference, Some(&*recon)),
                 search_mv,
                 planned,
                 &mut self.decision_scratch,
@@ -2832,8 +2872,7 @@ impl<B: CodecBackend> Encoder<B> {
             &self.dsp,
             &mut self.backend,
             node,
-            source,
-            secondary,
+            (source, secondary, None),
             seed,
             None,
             &mut self.decision_scratch,

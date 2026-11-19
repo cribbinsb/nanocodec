@@ -542,7 +542,7 @@ pub fn transform_macroblock(
 ) {
     debug_assert!(!kind.is_intra_nxn(), "see intra_nxn_residual");
     out.reset(kind);
-    let (luma_q, chroma_q) = quantizers.for_kind(kind);
+    let (_, chroma_q) = quantizers.for_kind(kind);
     let min_level = quantizers.planned_min_level(kind);
     out.cbp_chroma = transform_chroma(
         dsp,
@@ -557,11 +557,46 @@ pub fn transform_macroblock(
     if zero.luma {
         return;
     }
+    transform_luma(
+        dsp,
+        source,
+        &pred.luma,
+        (x, y),
+        kind,
+        quantizers,
+        zero.luma_quadrants,
+        out,
+    );
+}
+
+/// The luma half of [`transform_macroblock`]: the residual of `luma`
+/// transformed and quantised into `out` (whose kind and patterns the caller
+/// reset), the quadrants in `zero_quadrants` (8x8 kind) left uncoded.
+// Always inlined: `transform_macroblock` ran this code inline before the
+// split; as a call it cost the macroblock coder 0.2 % more instructions.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: a call costs the macroblock coder more"
+)]
+pub fn transform_luma(
+    dsp: &Dsp,
+    source: &Picture,
+    luma: &[u8; MB * MB],
+    (x, y): (usize, usize),
+    kind: ResidualKind,
+    quantizers: &MbQuantizers,
+    zero_quadrants: u8,
+    out: &mut Residual,
+) {
+    let (luma_q, _) = quantizers.for_kind(kind);
+    let min_level = quantizers.planned_min_level(kind);
     residual_into(
         dsp,
         source.plane(PlaneIndex::Y),
         (x, y),
-        &pred.luma,
+        luma,
         MB,
         &mut out.samples,
     );
@@ -572,7 +607,7 @@ pub fn transform_macroblock(
         let mut nonzero = dsp.h264_forward_quantize_mb(
             luma_residual,
             MB,
-            zero.luma_quadrants,
+            zero_quadrants,
             luma_q,
             &mut out.luma_8x8,
         );
@@ -996,18 +1031,75 @@ pub fn reconstruct_macroblock(
     for (c, plane) in [PlaneIndex::U, PlaneIndex::V].into_iter().enumerate() {
         let mut dst = block_mut(recon.plane_mut(plane), (x / 2, y / 2), MB_CHROMA);
         copy_square::<MB_CHROMA>(&mut dst, &pred.chroma[c], MB_CHROMA);
-        if res.cbp_chroma == CBP_CHROMA_NONE {
-            continue;
-        }
-        // AC levels are only meaningful when the pattern says AC is coded.
-        let ac = if res.cbp_chroma == CBP_CHROMA_AC {
-            &res.chroma_ac[c]
-        } else {
-            &NO_CHROMA_AC
-        };
-        let dc = dsp.h264_dequantize_chroma_dc(&res.chroma_dc[c], chroma_q);
-        dsp.h264_add_inverse_4x4(ac, Some(&dc), chroma_q, MB_CHROMA / 4, &mut dst);
+        add_chroma_residual(dsp, &mut dst, res, c, chroma_q);
     }
+}
+
+/// The chroma reconstruction (prediction plus coded residual) of `res`
+/// into `out` (two 8x8 raster blocks): the final decision stage's trial,
+/// which must leave the picture alone.
+pub fn reconstruct_chroma_into(
+    dsp: &Dsp,
+    out: &mut [[u8; MB_CHROMA * MB_CHROMA]; 2],
+    pred: &[[u8; MB_CHROMA * MB_CHROMA]; 2],
+    res: &Residual,
+    quantizers: &MbQuantizers,
+) {
+    let (_, chroma_q) = quantizers.for_kind(res.kind);
+    *out = *pred;
+    for (c, block) in out.iter_mut().enumerate() {
+        let mut dst = PlaneViewMut::new(block, MB_CHROMA, MB_CHROMA, MB_CHROMA)
+            .expect("the buffer holds a chroma block");
+        add_chroma_residual(dsp, &mut dst, res, c, chroma_q);
+    }
+}
+
+/// Add the coded residual of chroma component `c` of `res` to its
+/// prediction in `dst`.
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "inline in reconstruct_macroblock before the split; kept so"
+)]
+fn add_chroma_residual(
+    dsp: &Dsp,
+    dst: &mut PlaneViewMut<'_>,
+    res: &Residual,
+    c: usize,
+    chroma_q: &H264Quantizer,
+) {
+    if res.cbp_chroma == CBP_CHROMA_NONE {
+        return;
+    }
+    // AC levels are only meaningful when the pattern says AC is coded.
+    let ac = if res.cbp_chroma == CBP_CHROMA_AC {
+        &res.chroma_ac[c]
+    } else {
+        &NO_CHROMA_AC
+    };
+    let dc = dsp.h264_dequantize_chroma_dc(&res.chroma_dc[c], chroma_q);
+    dsp.h264_add_inverse_4x4(ac, Some(&dc), chroma_q, MB_CHROMA / 4, dst);
+}
+
+/// The luma reconstruction of a macroblock (not `I_NxN`) predicted by
+/// `pred` with the coded residual `res`, into `out` (16x16 raster): the
+/// final decision stage's trial reconstruction, which must leave the
+/// picture alone.
+pub fn reconstruct_luma_into(
+    dsp: &Dsp,
+    out: &mut [u8; MB * MB],
+    pred: &[u8; MB * MB],
+    res: &Residual,
+    quantizers: &MbQuantizers,
+) {
+    debug_assert!(
+        !res.kind.is_intra_nxn(),
+        "I_NxN luma is reconstructed block by block"
+    );
+    *out = *pred;
+    let (luma_q, _) = quantizers.for_kind(res.kind);
+    let mut dst = PlaneViewMut::new(out, MB, MB, MB).expect("the buffer holds a macroblock");
+    add_luma_residual(dsp, &mut dst, res, luma_q);
 }
 
 /// The AC levels of a chroma component whose AC is not coded.
@@ -1015,6 +1107,11 @@ const NO_CHROMA_AC: [[i16; 16]; 4] = [[0; 16]; 4];
 
 /// Add the coded luma residual of `res` (not `I_NxN`) to the prediction in
 /// the macroblock `dst`.
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "inline in reconstruct_macroblock before the split; kept so"
+)]
 fn add_luma_residual(dsp: &Dsp, dst: &mut PlaneViewMut<'_>, res: &Residual, q: &H264Quantizer) {
     if res.cbp_luma == 0 && res.kind != ResidualKind::Intra16x16 {
         return; // no luma levels

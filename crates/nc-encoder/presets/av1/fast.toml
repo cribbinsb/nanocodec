@@ -129,3 +129,6 @@ structure.inherited_depth = 0
 decision.exact_rank_margin = 1.1
 av1.cdef_search_row_step = 4
 av1.keyframe_cfl = 0
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

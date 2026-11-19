@@ -33,12 +33,16 @@ nonbase.av2.skip_estimate = 8
 # k 0.6, dCPU -2.7: L2 J -1.49%, L2+L3 pooled -1.14% [-1.49, -0.81]
 # BETTER, no guard.
 av2.deblock_chroma = 0
-# CDEF's model strengths checked on every 16th row of 8x8 units, not every
-# 4th (av2-fast-speed): x86 -1.4%, Jetson -1.6%; L2 quality 0.0%, L2+L3
-# J -0.95% [-1.16, -0.76] BETTER at k 0.6, no guard.
+# CDEF's single-set probe measured on every 16th row of 8x8 units, not
+# every 4th (av2-fast-speed, then the model's off-or-model check): x86
+# -1.4%, Jetson -1.6%; L2 quality 0.0%, L2+L3 J -0.95% [-1.16, -0.76]
+# BETTER at k 0.6, no guard.
 av2.cdef_check_row_period = 16
-# Trellis quantisation is a Default quality arm (+2.9% for -9.7%); CDEF uses
-# the quantiser model's strengths instead of the search (+2.2% for -6.2%).
+# Trellis quantisation is a Default quality arm (+2.9% for -9.7%). CDEF
+# codes one set chosen by the shared probe (off, the quantiser model and a
+# short strength ladder; nc-encoder cdef_model.rs), not the search's sets.
+# Probe vs the model alone (cdef-model-fix, 2026-11-18): VC-1K fixed QP J
+# -14.0%, lens J -1.0, CBR L1 -3.4%, c8a +3.8% (search: -14.1%, ~+6%).
 quant.trellis = 0
 av2.cdef = 1
 # Kept from the Default because they cost more than they save: deblocking
@@ -132,3 +136,6 @@ effort.light_nonbase_only = 1
 # quality +0.74 % [+0.45, +0.89], pulse balanced +0.01 dB, worst clip +0.75 dB.
 # Long single-key run: within 0.11 dB, no drift.
 av2.coeff_rate_model = 1
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

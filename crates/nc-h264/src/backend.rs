@@ -48,6 +48,7 @@ use crate::residual::trellis::TrellisQuantizer;
 use crate::residual_rd::{choose_quadrants, luma_gains, luma_sse, prunable_quadrants};
 use crate::syntax::{CodedMb, ref_idx_ctx, ref_idx_first_inc, write_macroblock};
 
+mod final_cost;
 mod stress;
 use stress::RandomSyntax;
 
@@ -56,6 +57,10 @@ const MB_LOG2: u8 = 4;
 const MB_SIZE: usize = 1 << MB_LOG2;
 /// The directional intra estimate's sub-block in P macroblocks (`Intra_8x8`).
 const INTRA_ESTIMATE_LOG2: u8 = 3;
+/// The QP whose √λ the fixed `I_NxN` gates are scaled from
+/// (`h264.intra_nxn_gate_lambda`): the middle of the ladder's P-frame QPs,
+/// where the fixed gates were tuned.
+const INTRA_NXN_GATE_QP: u8 = 36;
 /// QP range (8-bit video: 0..=51).
 const QP_MAX: u32 = 51;
 
@@ -208,6 +213,16 @@ nc_encoder::param_group! {
             "Intra_8x8 macroblocks (8x8 transform; rounded): 0 never, 1 in key frames, 2 in every frame; higher is slower, better intra",
         intra8x8_gate_satd: 24.314_306, [0.0, 64.0],
             "with intra8x8, Intra_8x8 tried only above this Intra_16x16 SATD/sample: higher is faster",
+        /// The fixed `I_NxN` gates (`intra4x4_gate_satd`,
+        /// `intra8x8_gate_satd`) admit the same macroblocks at every QP and
+        /// contrast: on dark or low-contrast video no `Intra_16x16`
+        /// prediction reaches them, so P-frame intra stays 16x16 where x264
+        /// codes a third of it `Intra_8x8` (docs/handoff/rd-depth.md).
+        /// Positive values replace each gate with this multiple of its
+        /// value over √λ at QP 36 (the QP the fixed gates were tuned
+        /// around), so both keep their ratio and follow the quantiser.
+        intra_nxn_gate_lambda: 0.0, [0.0, 4.0],
+            "if > 0, the Intra_4x4 and Intra_8x8 gates scale with sqrt(lambda) (this multiple of their QP 36 values; replaces the fixed gates): lower tries I_NxN more",
         intra8x8_all_modes: 0.0, [0.0, 1.0],
             "1 evaluates all nine Intra_8x8 modes per block instead of the 5-7 mode shortlist: slower, better intra prediction",
         /// A speed lever (H.264 Faster): `disable_deblocking_filter_idc` 1 in P
@@ -243,6 +258,12 @@ nc_encoder::param_group! {
         /// gate 17/16 -2.8% at +172%; cross, 1 step, gate 1.0 -1.5% at +51%.
         /// Off: k* about 0.03 at best, below medium's k. A slow-rung
         /// candidate (docs/handoff/h264.md, "RD refinement").
+        /// The engine's final decision stage (`final_cost.rs`) prices its
+        /// candidates' chroma too: chroma predicted (inter) or DC
+        /// (`Intra_16x16`), transformed, reconstructed into scratch, its
+        /// error and bits added.
+        final_chroma: 0.0, [0.0, 1.0],
+            "1 prices chroma (error and bits) in the final decision stage's coded costs, 0 luma only: 1 is slower",
         rd_refine: 0.0, [0.0, 2.0],
             "rate-distortion inter refinement (rounded): 0 off, 1 quarter-sample RD on the final vectors, 2 also 16x16 vs best split by RD; higher is slower, better compression",
         rd_refine_steps: 2.0, [1.0, 3.0],
@@ -375,6 +396,11 @@ pub struct H264Backend {
     mb_pred: Option<Box<Prediction>>,
     /// Trial predictions of `h264.rd_refine`, reused across macroblocks.
     rd_pred: Option<Box<Prediction>>,
+    /// The final decision stage's trial prediction, reused
+    /// (`final_cost.rs`).
+    final_pred: Option<Box<Prediction>>,
+    /// The `Intra_16x16` prediction of the last final-stage intra screen.
+    screened_intra: Option<final_cost::ScreenedIntra>,
     /// The exact 16x16 luma prediction of the engine's winning fractional
     /// candidate (`h264.exact_ranking`), taken when that macroblock is coded.
     exact_luma: Cell<Option<ExactLuma>>,
@@ -580,7 +606,8 @@ impl H264Backend {
             .refresh
             .as_ref()
             .is_some_and(|w| w.on_dirty_edge(&block));
-        let above = |gate: f32| modes.luma_satd as f32 >= gate * 256.0;
+        let gate_scale = self.intra_nxn_gate_scale();
+        let above = |gate: f32| modes.luma_satd as f32 >= gate * gate_scale * 256.0;
         let try_4x4 = above(self.tuning.intra4x4_gate_satd);
         let try_8x8 = self.intra_8x8_covers(self.slice) && above(self.tuning.intra8x8_gate_satd);
         if refresh_edge || !(try_4x4 || try_8x8) {
@@ -745,6 +772,18 @@ impl H264Backend {
         let size = BlockSize::new(MB_SIZE, MB_SIZE).expect("16x16 is a kernel size");
         self.dsp.satd(size, &src, &pred) as f32
             + self.satd_lambda * self.mode_bits(block, &PredictionMode::Inter(mv))
+    }
+
+    /// The factor on the fixed `I_NxN` SATD gates: 1, or with
+    /// `h264.intra_nxn_gate_lambda` that multiple of √λ relative to √λ at
+    /// [`INTRA_NXN_GATE_QP`].
+    fn intra_nxn_gate_scale(&self) -> f32 {
+        let multiple = self.tuning.intra_nxn_gate_lambda;
+        if multiple > 0.0 {
+            multiple * self.satd_lambda / self.weights_at(INTRA_NXN_GATE_QP).1
+        } else {
+            1.0
+        }
     }
 
     /// Whether `Intra_8x8` is tried in a `slice` (`h264.intra8x8`: 1 in key
@@ -2163,6 +2202,35 @@ impl CodecBackend for H264Backend {
         ("analysis.one_position_sad_per_pixel", 0.0),
         ("analysis.skip_hme_sad_per_pixel", 0.0),
         ("decision.intra_gate_variance", 16.0),
+        // The ranking's winner walked over its quarter-sample neighbours (two
+        // cross moves, only where its residual is at least 0.25 λ per sample;
+        // never the skip vector or a static block): our vectors were 59 %
+        // whole-sample on VC-1K phone calls against x264's 14 %
+        // (docs/handoff/rd-depth.md). Pool L3 (2026-11-18 draw, ladder,
+        // n=108): J -0.33 % [-0.50, -0.18] BETTER (videocall -0.9, pan -2.1,
+        // static -0.3; fit_static_otw283 +6.9 the worst clip). final-check
+        // (600 f, keys every 10 s, n=33): J -1.89 % [-1.99, -1.36], 2 clips
+        // worse; its pulse guard (meva_admin +0.80) comes from better P frames
+        // (quality -0.45). x86 instructions +1 %. The λ intra gate
+        // (`decision.intra_gate_lambdas`) stays off: VC-1K dark clips gain
+        // 12-22 %, but L3 loses on still cameras (otw283 +8.9, meva_admin
+        // +3.6). H.264 Fast, Faster and Veryfast pin the walk off.
+        ("decision.winner_walk_steps", 2.0),
+        ("decision.winner_walk_min_lambdas", 0.25),
+        // The final decision stage (nc_encoder `final_stage.rs`,
+        // docs/handoff/rd-mode-decision.md): the ranking's winner, the skip
+        // vector and Intra_16x16 decided by coded luma cost where they
+        // screen within 0.03 λ per sample, on blocks whose winner's error is
+        // at most 1 λ per sample. Against the landed Default (58ee4154d):
+        // VC-1K worst six, fixed QP, J -9.8 % (PSNR -12.5, VMAF -3.4,
+        // MS-SSIM -13.5); pool L1 -3.80 % [-5.86, -1.99], L2 -2.26 %
+        // [-2.95, -1.65] (2026-11-19 draw); +5.4 / +6.9 / +7.5 / +10.2 %
+        // instructions on ControlledBurn / Johnny / KristenAndSara /
+        // WestWindEasy 720p (margin 0.02: J -8.6 %, +5.0 / +6.5 / +6.9 /
+        // +9.3 %). Fast, Faster and Veryfast pin it off.
+        ("decision.final_stage", 1.0),
+        ("decision.final_margin_lambdas", 0.03),
+        ("decision.final_max_winner_lambdas", 1.0),
         ("quant.trellis_lambda_scale", 1.3),
         ("h264.split_gate_lambda", 0.8),
         // Split search without the uniform-vector exit: whole-sample
@@ -2330,6 +2398,8 @@ impl CodecBackend for H264Backend {
             static_pred: Box::new(Prediction::ZERO),
             mb_pred: None,
             rd_pred: None,
+            final_pred: None,
+            screened_intra: None,
             exact_luma: Cell::new(None),
             cabac_init_idc: 0,
             deblock: DeblockControl::DEFAULT,
@@ -2563,6 +2633,27 @@ impl CodecBackend for H264Backend {
                     + mvd_bits(i32::from(mv.y) - i32::from(mvp.y))
             }
         }
+    }
+
+    fn final_intra_screen(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+        block: &Block,
+    ) -> Option<(f32, f32)> {
+        Some(self.screen_intra(source, recon, block))
+    }
+
+    fn final_coded_cost(
+        &mut self,
+        source: &Picture,
+        reference: &Picture,
+        block: &Block,
+        candidate: nc_encoder::FinalCandidate,
+    ) -> Option<f32> {
+        (self.cabac.is_some() && self.random.is_none())
+            .then(|| self.price_final(source, reference, block, candidate))
+            .flatten()
     }
 
     fn set_rate_control_enabled(&mut self, enabled: bool) {

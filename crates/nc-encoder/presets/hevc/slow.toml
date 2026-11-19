@@ -17,3 +17,6 @@ hevc.intra_nxn_min_cost = 0
 hevc.intra_tu_split_min_cost = 0
 hevc.intra_tu_split_spread = 1
 hevc.merge_candidates = 5
+# Slow was not screened with the coarser key under camera motion (HEVC fixed-QP
+# profile, 2026-11-18).
+rate.fixed_qp_moving_key = 0

@@ -2407,6 +2407,40 @@ impl Dsp {
         out
     }
 
+    /// SAO band-offset statistics (`sao::band_stats`): per band, the sum of
+    /// `src − rec` and the count over `x0..x1` x `y0..y1`, from every
+    /// `row_step`-th row weighted back to the full count (as
+    /// [`Self::sao_edge_stats_sampled`]). One scalar kernel serves every ISA:
+    /// the statistics are a histogram, which does not vectorise (the
+    /// module's docs).
+    ///
+    /// # Panics
+    ///
+    /// If the views differ in size, the rectangle lies outside them, it
+    /// covers more than [`crate::MAX_BAND_SAMPLES`] samples, or `row_step`
+    /// is outside 1..=4.
+    #[must_use]
+    pub fn sao_band_stats_sampled(
+        &self,
+        src: &PlaneView<'_>,
+        rec: &PlaneView<'_>,
+        (x0, y0, x1, y1): (usize, usize, usize, usize),
+        row_step: usize,
+    ) -> crate::SaoBandStats {
+        assert!((1..=4).contains(&row_step));
+        assert!(
+            src.width() == rec.width() && src.height() == rec.height(),
+            "SAO planes differ in size"
+        );
+        assert!(x1 <= rec.width() && y1 <= rec.height());
+        sao::band_stats(
+            (src.data(), src.stride()),
+            (rec.data(), rec.stride()),
+            (x0, y0, x1.max(x0), y1.max(y0)),
+            row_step,
+        )
+    }
+
     /// Apply four signed SAO band offsets over an exclusive-end rectangle.
     /// Shared 8-bit HEVC/VVC arithmetic with a wrapping five-bit band index.
     /// # Panics

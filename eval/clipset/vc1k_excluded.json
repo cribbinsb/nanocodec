@@ -1,0 +1,7 @@
+{
+ "vc1k_android_outdoor_fastmotion_mediumlight_720x1280_30_3685120543": "the build's scene-cut check (build_pool.py, scdet threshold 12) fired at 0.0 s: dropped",
+ "vc1k_android_outdoor_mediummotion_goodlight_720x1280_30_3685067934": "the build's scene-cut check (build_pool.py, scdet threshold 12) fired at 0.0 s: dropped",
+ "vc1k_android_outdoor_mediummotion_mediumlight_720x1280_30_3683570024": "the build's scene-cut check (build_pool.py, scdet threshold 12) fired at 0.1 s: dropped",
+ "vc1k_android_indoor_fastmotion_lowlight_720x1280_30_3685145451": "only 83 frames in the 5.5 s excerpt (uneven source timestamps), under the 150 measured: dropped",
+ "vc1k_android_indoor_fastmotion_mediumlight_720x1280_30_3686179198": "only 147 frames in the 5.5 s excerpt (uneven source timestamps), under the 150 measured: dropped"
+}

@@ -84,3 +84,10 @@ rate.key_still_boost = 0
 # The Default's split search without the uniform-vector exit (2026-11-15),
 # pinned so this preset's streams do not move with the Default.
 h264.split_uniform_qpel = 4
+# Pinned before the Default's winner walk (2026-11-18, docs/handoff/rd-depth.md).
+decision.winner_walk_steps = 0
+# Screened on the Default only (2026-11-18): pinned so this preset's streams do not move.
+rate.still_level_damping = 0
+# Pinned before the Default's final decision stage (2026-11-18,
+# docs/handoff/rd-mode-decision.md).
+decision.final_stage = 0

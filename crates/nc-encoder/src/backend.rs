@@ -129,6 +129,16 @@ impl ReferenceChoice {
     }
 }
 
+/// A candidate of the final decision stage (`final_stage.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalCandidate {
+    /// Inter prediction from the primary reference at this vector.
+    Inter(Mv),
+    /// The intra prediction of the block's last
+    /// [`CodecBackend::final_intra_screen`].
+    Intra,
+}
+
 /// Everything the engine decided about one leaf block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockDecision {
@@ -760,6 +770,40 @@ pub trait CodecBackend {
         mv: Mv,
     ) -> Option<f32> {
         let _ = (source, reference, block, mv);
+        None
+    }
+
+    /// The final decision stage's intra screen of inter-frame `block`
+    /// (`final_stage.rs`): the luma squared error of the codec's best
+    /// whole-block intra prediction from the reconstruction `recon` (no
+    /// residual) and its mode bits, as `(sse, bits)`. A later
+    /// [`CodecBackend::final_coded_cost`] of [`FinalCandidate::Intra`] for
+    /// the same block prices that prediction. `None` (the default) leaves
+    /// intra to the ranking's own test.
+    fn final_intra_screen(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+        block: &Block,
+    ) -> Option<(f32, f32)> {
+        let _ = (source, recon, block);
+        None
+    }
+
+    /// The final decision stage's coded cost of `candidate` for inter-frame
+    /// `block`: luma squared error after the codec's transform,
+    /// quantisation and reconstruction plus [`CodecBackend::lambda`] times
+    /// its macroblock bits (mode, vector and luma coefficients, chroma
+    /// uncoded), with the entropy state as it stands. It must not change
+    /// coded state. `None` (the default) without such a pricing.
+    fn final_coded_cost(
+        &mut self,
+        source: &Picture,
+        reference: &Picture,
+        block: &Block,
+        candidate: FinalCandidate,
+    ) -> Option<f32> {
+        let _ = (source, reference, block, candidate);
         None
     }
 

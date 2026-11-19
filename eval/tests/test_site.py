@@ -130,4 +130,7 @@ def test_unpublished_datasets_are_nowhere_on_the_site():
         assert not any(clipset in name for name in clips["sets"])
         for text in (json.dumps(chart), json.dumps(clips), *pages):
             assert dataset.short not in text and dataset.url not in text
-    assert site.unpublished_paths() == [p for _, d in held_back for p in d.files]
+    assert site.unpublished_paths() == [*(p for _, d in held_back for p in d.files),
+                                        *site.DEV_ONLY_FILES]
+    for name in clips["sets"]:
+        assert "vc1k_dev" not in name  # development clips are never on the site

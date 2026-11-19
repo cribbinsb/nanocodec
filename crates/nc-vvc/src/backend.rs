@@ -105,7 +105,10 @@ nc_encoder::param_group! {
         sao_stats_row_step: 4.0, [1.0, 4.0],
             "sample every Nth row for SAO statistics; higher trades decision precision for speed",
         sao_search_interval: 1.0, [1.0, 8.0],
-            "SAO classes are searched on key pictures and every Nth P picture (by POC) and reused in between, offsets re-derived (HEVC's search interval 4; with vvc.sao_skip_unchanged, all-skip CTUs keep their last classes): higher gathers a quarter of the statistics more often, coarser SAO",
+            "SAO types are searched on key pictures and every Nth P picture (by POC) and reused in between, offsets re-derived (HEVC's hevc.sao_search_interval; with vvc.sao_skip_unchanged, all-skip CTUs keep their last types): higher gathers fewer statistics, coarser SAO",
+        // Off, as HEVC's hevc.sao_band (no measured gain for its statistics).
+        sao_band: 0.0, [0.0, 1.0],
+            "1 evaluates SAO band offset (position search, H.266 §8.8.4.3) beside the four edge classes on searched pictures (HEVC's hevc.sao_band)",
         sao_skip_unchanged: 0.0, [0.0, 1.0],
             "1 switches SAO off without statistics in P-frame CTUs whose CUs are all skipped (they copy already filtered samples; HEVC's hevc.sao_skip_unchanged): faster",
         // On everywhere it tripped the worst-1% NEG guard (proxy-6 +3.6,
@@ -265,13 +268,15 @@ struct SaoSearch {
     skip_unchanged: bool,
     /// `vvc.sao_luma_lambda_scale`.
     luma_lambda_scale: f32,
-    /// `vvc.sao_search_interval`: classes searched every Nth P picture.
+    /// `vvc.sao_search_interval`: types searched every Nth P picture.
     interval: u8,
-    /// The classes of the last searched picture, and those of the picture
+    /// `vvc.sao_band`: band offset is evaluated.
+    band: bool,
+    /// The types of the last searched picture, and those of the picture
     /// being coded once it is a search picture (committed in
     /// `commit_frame`, so a recode never sees them).
-    classes: Vec<crate::sao::Classes>,
-    pending: Option<Vec<crate::sao::Classes>>,
+    classes: Vec<crate::sao::CtbTypes>,
+    pending: Option<Vec<crate::sao::CtbTypes>>,
 }
 impl SaoSearch {
     fn new(params: &VvcParams) -> Self {
@@ -280,6 +285,7 @@ impl SaoSearch {
             skip_unchanged: params.sao_skip_unchanged >= 0.5,
             luma_lambda_scale: params.sao_luma_lambda_scale,
             interval: params.sao_search_interval.round() as u8,
+            band: params.sao_band >= 0.5,
             classes: Vec::new(),
             pending: None,
         }
@@ -374,7 +380,7 @@ pub struct VvcBackend {
     dsp: Dsp,
     motion: MotionGrid,
     items: Vec<syntax::Item>,
-    sao: Vec<crate::sao::CtuSao>,
+    sao: nc_encoder::sao::PictureSao,
     /// The SPS's optional tools (`vvc.alf`).
     tools: headers::Tools,
     /// This picture's luma ALF decision.
@@ -599,6 +605,9 @@ impl CodecBackend for VvcBackend {
         // and crowd points 4.9 -> 6.7 per 1000 frames.
         // Inert within one key period. The other VVC presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
+        // only (2026-11-18); pinned off here until this codec is screened.
+        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool levels,
         // draw 2026-11-14: L1 -1.67% [-2.18, -0.39]; L2 -2.78% [-3.62, -1.89];
@@ -892,7 +901,7 @@ impl CodecBackend for VvcBackend {
             quant_scratch: Box::default(),
             planning_scratch: std::cell::RefCell::default(),
             items: Vec::new(),
-            sao: Vec::new(),
+            sao: nc_encoder::sao::PictureSao::default(),
             tools,
             alf: crate::alf::Decision::default(),
             alf_search: AlfSearch::new(&AlfSearchParams::from_overrides(&config.params)),
@@ -1131,7 +1140,7 @@ impl CodecBackend for VvcBackend {
             plan.quantizer
         };
         self.items.clear();
-        self.sao.clear();
+        self.sao = nc_encoder::sao::PictureSao::default();
         self.sao_search.pending = None;
         self.alf_search.begin_picture();
         self.alf = crate::alf::Decision::default();
@@ -1329,7 +1338,8 @@ impl CodecBackend for VvcBackend {
     fn filter_frame(&mut self, source: &Picture, recon: &mut Picture) {
         self.loop_filter_frame(recon);
         self.decide_sao(source, recon);
-        crate::sao::apply(&self.dsp, recon, &self.sao, self.geometry.ctu_size());
+        let params: Vec<crate::sao::CtbSao> = self.sao.ctbs.iter().map(|(p, _)| *p).collect();
+        crate::sao::apply(&self.dsp, recon, &params, self.geometry.ctu_size());
         self.alf = crate::alf::Decision::default();
         if self.tools.alf {
             let ctu = self.geometry.ctu_size();
@@ -1386,13 +1396,18 @@ impl CodecBackend for VvcBackend {
                     let ctu = self.geometry.ctu_size();
                     let columns = self.geometry.coded_width.div_ceil(ctu);
                     let index = y / ctu * columns + x / ctu;
-                    let params = |i: usize| self.sao.get(i).copied().unwrap_or_default();
+                    let params = |i: usize| {
+                        self.sao.ctbs.get(i).copied().unwrap_or((
+                            crate::sao::CtbSao::default(),
+                            crate::sao::Signal::Explicit,
+                        ))
+                    };
                     crate::sao::code(
                         &mut cabac,
                         &mut contexts,
                         params(index),
-                        (*x > 0).then(|| params(index - 1)),
-                        (*y > 0).then(|| params(index - columns)),
+                        (*x > 0).then(|| params(index - 1).0),
+                        (*y > 0).then(|| params(index - columns).0),
                     )
                     .expect("valid SAO");
                     if alf_enabled {
@@ -1992,26 +2007,33 @@ impl VvcBackend {
             || self.sao_search.classes.is_empty();
         let skipped =
             (self.sao_search.skip_unchanged && self.inter).then(|| self.motion.skipped_ctus());
-        let search = crate::sao::Search {
-            row_step: self.sao_search.row_step,
-            skipped: skipped.as_deref(),
-            classes: (!searched).then_some(self.sao_search.classes.as_slice()),
+        let candidates = if searched {
+            nc_encoder::sao::Candidates::Search
+        } else {
+            nc_encoder::sao::Candidates::Reuse(&self.sao_search.classes)
         };
-        self.sao = crate::sao::decide(
-            &self.dsp,
-            source,
-            recon,
-            [
-                self.lambda * self.sao_search.luma_lambda_scale,
-                self.quantizers().chroma_lambda(self.lambda),
+        let settings = nc_encoder::sao::Settings {
+            channels: [true, true],
+            lambdas: [
+                f64::from(self.lambda * self.sao_search.luma_lambda_scale),
+                f64::from(self.quantizers().chroma_lambda(self.lambda)),
             ],
-            self.geometry.ctu_size(),
-            &search,
+            ctb: self.geometry.ctu_size(),
+            row_step: self.sao_search.row_step,
+            band: self.sao_search.band,
+        };
+        self.sao = nc_encoder::sao::decide(
+            &self.dsp,
+            (source, recon),
+            &settings,
+            candidates,
+            skipped.as_deref(),
+            crate::sao::SaoModels::of(&Contexts::new(self.qp, self.inter)),
         );
         if searched && self.sao_search.interval > 1 {
             // A skipped CTU's "off" says nothing about its classes: it keeps
             // the last search's until it is coded again.
-            let mut classes = crate::sao::classes(&self.sao);
+            let mut classes = nc_encoder::sao::types(&self.sao);
             if let Some(skipped) = &skipped
                 && classes.len() == self.sao_search.classes.len()
             {

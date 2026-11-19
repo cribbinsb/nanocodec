@@ -186,11 +186,18 @@ impl ForcedFrame {
             for x in (0..64).step_by(32) {
                 self.grid.begin_ctu(x);
                 // Every CTU's SAO is off, so each merges with a neighbour.
-                let neighbour = crate::sao::CtuSao::default();
+                let neighbour = crate::sao::CtbSao::default();
+                let signal = if x > 0 {
+                    crate::sao::Signal::MergeLeft
+                } else if y > 0 {
+                    crate::sao::Signal::MergeUp
+                } else {
+                    crate::sao::Signal::Explicit
+                };
                 crate::sao::code(
                     &mut self.writer,
                     &mut self.contexts,
-                    neighbour,
+                    (neighbour, signal),
                     (x > 0).then_some(neighbour),
                     (y > 0).then_some(neighbour),
                 )

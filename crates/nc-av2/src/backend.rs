@@ -38,13 +38,13 @@ nc_encoder::param_group! {
         p_intra_tx_split: 0.0, [0.0, 2.0], "as av2.p_tx_split, for the intra blocks of P frames only; default 0 (one layout, as AV1's P-frame intra) with p_intra_type_retry 0 and p_intra_chroma_candidates 1: P instructions -3.8% at CBR 600, J_real proxy-6 vs (1, 1, 7) -2.3% with the x86 dCPU (quality full +0.0% / low -0.1%, no guards); Jetson -5.5%",
         p_intra_type_retry: 0.0, [0.0, 1.0], "intra blocks of P frames retry their winning coding with ADST_ADST where the transform set allows it (1), or keep DCT (0, as AV1's P-frame intra)",
         estimate_adaptation: 0.0, [0.0, 1.0], "rate estimates in RD trials adapt a scratch copy of the tile's CDFs symbol by symbol (1) or price with the live CDFs frozen for the trial (0, default): P instructions -3.4% x86 / Jetson -1.4% at CBR 600; J_real proxy-6 vs 1 -1.0% (quality full +0.2% / low +0.3%, weighted dCPU -2.1%), no guards",
-        coeff_rate_model: 0.0, [0.0, 1.0], "with frozen estimates (estimate_adaptation 0), RD trials price coefficient levels with a linear model fitted to the exact walk (counts of zero / one / two / larger levels per frequency region, low-range increments, signs and remainders; coeff::rate_model) instead of walking their contexts (1), or walk (0); the final write always walks",
+        coeff_rate_model: 1.0, [0.0, 1.0], "with frozen estimates (estimate_adaptation 0), RD trials price coefficient levels with a linear model fitted to the exact walk (counts of zero / one / two / larger levels per frequency region, low-range increments, signs and remainders; coeff::rate_model) instead of walking their contexts (1), or walk (0); the final write always walks. Default 1 (2026-11-18): c8a fixed-QP lens 332.9 -> 358.5 fps at W +0.3 / J +0.3, CBR x86 instructions -4.9 %, pool L3 J -2.33 % [-2.70, -1.96] BETTER at k 0.6, final-check quality +0.11 % [-0.07, +0.27]; Slow pins 0 (no time saved under TCQ)",
         lambda_per_step_squared: 0.135, [0.01, 4.0], "Lagrange multiplier per squared quantizer step (SSE per bit)",
         deblock: 1.0, [0.0, 1.0], "apply the deblocking filter with AVM's qindex-derived strength (1) or leave it off (0)",
         deblock_chroma: 1.0, [0.0, 1.0], "with av2.deblock, also deblock the chroma planes (1) or luma only (0; apply_deblocking_filter_u/v off). AV2 Fast takes 0: the chroma channels' edge walk and filters are 2.8% of its x86 instructions (bodycam / lowlight / crowd 720p CBR 600) and 2.7% of its Jetson time, for PSNR-YUV +2.0% but VMAF v1 -1.4%, MS-SSIM 0.0% (pool L2); J_real k 0.6 L2+L3 -1.14% BETTER, no guard",
         ccso: 0.0, [0.0, 1.0], "the sequence enables CCSO, the cross-component sample offset filter after CDEF (enable_ccso): 1 lets lossy frames filter each plane by offsets looked up from the deblocked luma around each sample, chosen from class statistics (crate::ccso_search); 0 off. Default 0: proxy-4 (60 f) J_real +0.5% (PSNR-YUV -0.2%, VMAF v1 +0.5%, MS-SSIM +1.0%); the AVM oracle puts CCSO at -0.6% PSNR-Y BD (docs/handoff/av2.md, \"In-loop luma filters\")",
-        cdef: 2.0, [0.0, 2.0], "CDEF: off (0), the quantiser model's single strength set, each plane kept where a sampled error check favours it (1), or a strength search with up to cdef_max_sets sets chosen per 64x64 block (2)",
-        cdef_check_row_period: 4.0, [1.0, 16.0], "the quantiser model's CDEF strengths (cdef=1) are kept per plane type where they lower the error measured on every n-th row of 8x8 units: higher checks faster on a smaller sample; rounded. AV2 Fast takes 16: x86 instructions -1.0% at 8 and -1.4% at 16 (bodycam / lowlight / crowd 720p CBR 600; crowd and bodycam streams identical, the check reaches the same verdicts), Jetson time -1.6%; pool L2 quality 0.0%, J_real k 0.6 L2+L3 -0.95% BETTER, no guard",
+        cdef: 2.0, [0.0, 2.0], "CDEF: off (0), one strength set probed per plane type among off, the quantiser model's and a short shared ladder on sampled rows (1), or a strength search with up to cdef_max_sets sets chosen per 64x64 block (2)",
+        cdef_check_row_period: 4.0, [1.0, 16.0], "the CDEF probe (cdef=1) measures its candidates on every n-th row of 8x8 units: higher checks faster on a smaller sample; rounded. AV2 Fast takes 16: x86 instructions -1.0% at 8 and -1.4% at 16 (bodycam / lowlight / crowd 720p CBR 600; crowd and bodycam streams identical, the check reaches the same verdicts), Jetson time -1.6%; pool L2 quality 0.0%, J_real k 0.6 L2+L3 -0.95% BETTER, no guard",
         cdef_max_sets: 4.0, [1.0, 8.0], "most CDEF strength sets a searched frame may code (cdef=2); more sets cost index bits per 64x64 block; rounded",
         cdef_search_row_period: 8.0, [1.0, 8.0], "CDEF search measures candidates on every n-th row of 8x8 units (cdef=2): higher searches faster on a smaller sample; rounded. Proxy-4 vs single-set: 4 -4.00%/-1.48%, 8 -4.36%/-1.75% PSNR-YUV/VMAF BD at +5.5%/+3.7% instructions",
         key_rounding_q7: 48.0, [16.0, 64.0], "key-frame coefficient rounding offset in 1/128 step (64 rounds to nearest; lower is an encoder-side deadzone)",
@@ -854,6 +854,17 @@ impl CodecBackend for Av2Backend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 5.0),
         ("rate.cadence_motion_gate", 1.0),
+        // A fixed-QP key planned up to 6 QP units coarser under camera motion
+        // (`rate.fixed_qp_moving_key`, engine `moving_camera.rs`: the offset ramps from 1 luma
+        // sample per frame to the cadence gate's limit and fades on a fixed camera; fixed QP only,
+        // so CBR streams are unchanged): a moving camera replaces the picture before later frames
+        // inherit a fine key. Found on VC-1K phone calls (docs/handoff/rd-depth.md). Fixed QP,
+        // matched QP: worst six VC-1K clips of the Fixed QP sample (against SVT-AV1 M8), with the
+        // plain 1-sample threshold, J -4.6 % [-5.7, -3.5]. Pool draw fixedqp-2026-11-19, adopt
+        // level: J -1.5 % [-2.1, -0.9] (n 48); one clip worse (pool_bodycam_bc1 +1.3), 19 changed,
+        // static clips unchanged. HEVC Default takes the same value; it becomes the engine default
+        // once H.264 and VVC are screened. The other presets pin it off.
+        ("rate.fixed_qp_moving_key", 6.0),
         // The target as a ceiling over every key period (`rate.period_ceiling`,
         // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still scenes).
         // 600-frame long-window L3 (keys every 10 s, 31 points, draw 2026-11-14):
@@ -862,6 +873,9 @@ impl CodecBackend for Av2Backend {
         // on the 22 static and crowd points 13.0 -> 17.2 per 1000 frames.
         // Inert within one key period. The other AV2 presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
+        // only (2026-11-18); pinned off here until this codec is screened.
+        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool levels,
         // draw 2026-11-14: L1 -1.46% [-2.07, -0.31]; L2 -1.69% [-2.36, -1.03];

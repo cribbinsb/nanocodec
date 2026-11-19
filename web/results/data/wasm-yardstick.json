@@ -21,7 +21,7 @@
    "module": "ours-wasm",
    "ms": 11.59,
    "fps": 86.3,
-   "j": -20.66
+   "j": -23.21
   },
   {
    "name": "hevc-fast",
@@ -30,7 +30,7 @@
    "module": "ours-wasm",
    "ms": 18.29,
    "fps": 54.7,
-   "j": -37.0
+   "j": -37.04
   },
   {
    "name": "x264 ultrafast",

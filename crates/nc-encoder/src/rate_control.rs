@@ -477,7 +477,7 @@ const RESIDUAL_SIGMA_SMOOTHING: f64 = 0.25;
 /// ([`RateController::observe_startup_motion`]). At frame 1 of the TRAIN and
 /// VAL clips, still cameras (static, crowd) read at most 0.5 samples and
 /// panning, driving or handheld cameras 1.3-12; a stopped car reads 0.
-const STARTUP_CAMERA_MOTION: f64 = 1.0;
+pub(crate) const STARTUP_CAMERA_MOTION: f64 = 1.0;
 /// Range of the debt correction of a frame budget (`budget`): a buffer of
 /// debt quarters it, a buffer of credit doubles it at most.
 const MIN_BUDGET_CORRECTION: f64 = 0.25;
@@ -721,6 +721,8 @@ pub(crate) struct RateController {
     last_budget: f64,
     /// `rate.level_step_scale`.
     level_step_scale: f64,
+    /// `rate.still_level_damping`.
+    still_level_damping: f64,
     /// The complexity hint inter levels are planned from (`rate.level_hint_weight`).
     level_hint: LevelHint,
     last_peak: f64,
@@ -850,6 +852,7 @@ impl RateController {
             last_inter_hint: None,
             last_budget: 1.,
             level_step_scale: f64::from(params.level_step_scale),
+            still_level_damping: f64::from(params.still_level_damping),
             level_hint: LevelHint::new(f64::from(params.level_hint_weight)),
             last_peak: 1.,
             last_key: false,
@@ -1869,8 +1872,21 @@ impl RateController {
     /// with 2). On the CBR flicker set (3 lowlight, bodycam, crowd, pan; 150
     /// f) 0.5 gave AV1 `J_real` -0.1%, mean |dPSNR| -0.04 dB (bodycam -0.10)
     /// and bodycam worst-1% -31%; 0.25 reacted too slowly (`J_real` +1.1%).
+    ///
+    /// The limit is scaled down by `rate.still_level_damping` times
+    /// the running unchanged-block share. On a still picture an inter
+    /// frame's bits barely respond to its level until the level passes the
+    /// quality the picture holds, then jump 100-500x (a refinement: H.264
+    /// `fit_static_otw283` 150 kbps, 35-byte frames at QP 45-65, then 12-26
+    /// kB at QP 32-35). The level, solved from a budget those frames
+    /// cannot spend, descends at its full step limit and overshoots that
+    /// cliff by however far the last step carried it, so a near-no-op
+    /// decision change (0.25 -> 0.26 lambdas of the winner walk) moved the
+    /// 150-frame bytes by -6.7 %. Descending slower makes each crossing
+    /// shallower and its refinement smaller and more regular.
     fn level_step(&self) -> u32 {
-        ((f64::from(self.settings.step) * self.level_step_scale).round() as u32).max(1)
+        let damped = 1. - self.still_level_damping * self.still_share;
+        ((f64::from(self.settings.step) * self.level_step_scale * damped).round() as u32).max(1)
     }
 
     /// `level`, raised to `floor`, within the bounds `share` sets the frame

@@ -42,3 +42,6 @@ vp9.inter_intra_dc_only = 2
 # -> -0.2%; L2T1_KEY 720p +3.9% -> +2.5% [+4.1% -> +2.4%], 360p +1.0% -> +0.2%.
 structure.inherited_depth = 1
 persist.reuse_level_price = 1
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

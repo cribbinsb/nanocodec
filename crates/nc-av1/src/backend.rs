@@ -1094,6 +1094,9 @@ impl CodecBackend for Av1Backend {
         // per 1000 frames. Inert within one key period (150-frame levels and
         // single-key streams unchanged). The other AV1 presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
+        // only (2026-11-18); pinned off here until this codec is screened.
+        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool
         // levels, draw 2026-11-14: L1 -0.57% [-1.24, -0.03]; L2 -1.87%
@@ -1147,6 +1150,17 @@ impl CodecBackend for Av1Backend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 4.0),
         ("rate.cadence_motion_gate", 1.0),
+        // A fixed-QP key planned up to 6 QP units coarser under camera motion
+        // (`rate.fixed_qp_moving_key`, engine `moving_camera.rs`: the offset ramps from 1 luma
+        // sample per frame to the cadence gate's limit and fades on a fixed camera; fixed QP only,
+        // so CBR streams are unchanged): a moving camera replaces the picture before later frames
+        // inherit a fine key. Found on VC-1K phone calls (docs/handoff/rd-depth.md). Fixed QP,
+        // matched QP: worst six VC-1K clips of the Fixed QP sample (against SVT-AV1 M8), with the
+        // plain 1-sample threshold, J -4.4 % [-5.2, -3.6]. Pool draw fixedqp-2026-11-19, adopt
+        // level: J -1.5 % [-2.3, -0.9] (n 47), no clip worse (19 changed; static clips unchanged).
+        // HEVC Default takes the same value; it becomes the engine default once H.264 and VVC are
+        // screened. The other presets pin it off.
+        ("rate.fixed_qp_moving_key", 6.0),
         ("decision.intra_test_dc", 0.0),
         ("planner.depth_removal_min_quantizer", 0.8),
         ("quant.trellis_key", 0.0),

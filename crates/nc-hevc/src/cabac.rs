@@ -112,6 +112,15 @@ impl Context {
         BITS[self.state()][usize::from(bin == self.mps())]
     }
 
+    /// Adapt to a coded `bin` (the state transition of §9.3.4.3.2.2).
+    pub(crate) fn update(&mut self, bin: bool) {
+        self.0 = if bin == self.mps() {
+            NEXT_STATE_MPS[usize::from(self.0)]
+        } else {
+            NEXT_STATE_LPS[usize::from(self.0)]
+        };
+    }
+
     pub(crate) fn state(self) -> usize {
         usize::from(self.0 >> 1)
     }
@@ -160,11 +169,7 @@ impl CabacWriter {
     pub fn encode_bin(&mut self, ctx: &mut Context, bin: bool) {
         let lps = u32::from(RANGE_TAB_LPS[ctx.state()][((self.0.range() >> 6) & 3) as usize]);
         let mps = bin == ctx.mps();
-        ctx.0 = if mps {
-            NEXT_STATE_MPS[usize::from(ctx.0)]
-        } else {
-            NEXT_STATE_LPS[usize::from(ctx.0)]
-        };
+        ctx.update(bin);
         self.0.encode_decision(lps, mps);
     }
 

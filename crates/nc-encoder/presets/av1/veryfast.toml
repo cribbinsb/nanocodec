@@ -147,3 +147,6 @@ av1.pre_tx_skip_energy = 15
 av1.skip_bias_energy = 0.0625
 effort.regular_fraction = 0
 effort.light_nonbase_only = 1
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

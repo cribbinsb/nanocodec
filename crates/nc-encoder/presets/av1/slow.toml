@@ -17,3 +17,6 @@ av1.inter_tx_split_energy = 0
 av1.inter_intra_search = 2
 av1.inter_intra_rd_candidates = 4
 av1.keyframe_intra_rd_candidates = 6
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

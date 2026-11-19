@@ -24,6 +24,7 @@ from pathlib import Path
 from ..config import load_paths
 from ..metrics import vmafx_tool
 from . import plan as planner
+from .lensrows import main_lens_rows
 from .local import main_local
 from .report import report
 from .tables import page_tables
@@ -103,6 +104,7 @@ def main(argv: list[str]) -> None:
     r.add_argument("--out", required=True)
     r.set_defaults(handler=report_command)
     main_local(sub)
+    main_lens_rows(sub)
     args = parser.parse_args(argv)
     args.handler(args)
 

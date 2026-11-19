@@ -19,7 +19,8 @@
 //!   candidates with sub-pel refinement, intra from a shortlist, still-block
 //!   skips;
 //! - shared quantisation and filter tools (`aq`, `trellis`, CDEF strength
-//!   model and search) and the quality-capped rate control.
+//!   model and search, the HEVC/VVC SAO decision `sao`) and the
+//!   quality-capped rate control.
 //!
 //! - [`EncoderConfig`]: what to encode.
 //! - [`CodecBackend`]: what a codec implements.
@@ -48,6 +49,7 @@ mod effort_class;
 mod encoder;
 mod feedback;
 mod filter_effort;
+mod final_stage;
 mod frame_role;
 mod held_slots;
 mod hold;
@@ -62,6 +64,7 @@ mod layer;
 mod layer_propagation;
 mod level_shave;
 mod ltr;
+mod moving_camera;
 mod mv;
 mod noise_skip;
 // Public so `param_group!` (which names `$crate::params::…`) works in backend crates.
@@ -86,6 +89,7 @@ mod refresh;
 mod resolution;
 mod resolution_evidence;
 mod reuse;
+pub mod sao;
 mod scene;
 mod second_reference;
 pub mod segment_quantizers;
@@ -108,11 +112,14 @@ mod work_gate;
 mod zero_residual;
 
 pub use backend::{
-    BlockDecision, CodecBackend, DEFAULT_LOOP_FILTER_REACH, FramePlan, FrameType, PredictionMode,
-    ReferenceChoice, SpatialLayerFrame,
+    BlockDecision, CodecBackend, DEFAULT_LOOP_FILTER_REACH, FinalCandidate, FramePlan, FrameType,
+    PredictionMode, ReferenceChoice, SpatialLayerFrame,
 };
 pub use block_error::{block_sse, quadrant_sse};
-pub use cdef_model::{CDEF_MODEL_MAX_Q, cdef_strengths_from_q};
+pub use cdef_model::{
+    CDEF_MODEL_MAX_Q, CDEF_PROBE_CHROMA, CDEF_PROBE_LUMA, cdef_probe_candidates,
+    cdef_probe_luma_refinement, cdef_strengths_from_q,
+};
 pub use cdef_search::{StrengthSelection, select_strength_sets};
 pub use chroma_offset::{
     adaptive_error_weight, coarse_chroma_extra, error_gap_offset, noise_attenuated_chroma_offset,

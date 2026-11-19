@@ -367,6 +367,15 @@ param_group! {
             "1 tries the frame's second reference (and compound) for each inter leaf; 0 predicts from the primary reference only: 0 saves a mode decision per leaf",
         intra_gate_variance: 64.0, [0.0, 1024.0],
             "residual variance/sample above which DC intra is tried: lower tries intra more (slower)",
+        /// A fixed variance gate admits the same blocks at every QP and
+        /// every contrast: on dark or low-contrast video (VC-1K phone calls)
+        /// no inter residual reaches 16/sample even where the coding noise
+        /// at the clip's QP is a fifth of that, so intra never competes
+        /// (docs/handoff/rd-depth.md). Positive values replace
+        /// `intra_gate_variance` with this multiple of λ per sample: the
+        /// gate follows the quantiser, not the content's brightness.
+        intra_gate_lambdas: 0.0, [0.0, 4.0],
+            "if > 0, DC intra is tried above this many lambda of inter residual variance/sample (replaces the fixed variance gate): lower tries intra more (slower)",
         // Default 1: 6 TRAIN clips x 4 QPs, 150f, PSNR-YUV/VMAF v1 BD vs 0:
         // H.264 -5.96%/-3.07% (+4.6% instructions), HEVC Fast -3.94%/-3.19%
         // (+0.7%), AV1 Fast -1.99%/-0.50% (-0.5%); antare -14% PSNR on HEVC.
@@ -381,6 +390,41 @@ param_group! {
             "bits charged per sub-block direction in the directional intra estimate: higher sends fewer blocks to intra",
         skip_no_refine_lambdas: 0.25, [0.0, 1.0],
             "skip-vector residual (λ/sample) below which sub-pel refinement is skipped: higher is faster",
+        /// The ranking's winner walked over its quarter-sample neighbours
+        /// by exact distortion + λ · bits (`decision::walk_winner`, which
+        /// explains why it pays); only winners whose residual is at least
+        /// `winner_walk_min_lambdas` λ per sample, where a better position
+        /// can repay its vector bits.
+        winner_walk_steps: 0.0, [0.0, 3.0],
+            "exact-filter codecs: quarter-sample moves (rounded; 0 off) walking the ranking's winner by exact distortion + lambda bits: higher is slower, better vectors",
+        winner_walk_square: 0.0, [0.0, 1.0],
+            "with the winner walk on, 1 tries all eight quarter-sample neighbours per move, 0 the four in its row and column: 0 is faster",
+        winner_walk_min_lambdas: 0.0, [0.0, 4.0],
+            "with the winner walk on, only winners whose residual variance/sample is at least this many lambda are walked: higher is faster",
+        /// The final decision stage (`final_stage.rs`): the ranking's winner,
+        /// the codec's skip vector and the codec's best intra prediction are
+        /// screened by uncoded luma error + λ · mode bits, and those within
+        /// `final_margin_lambdas` λ per sample of the best are priced by the
+        /// codec's coded luma cost (`CodecBackend::final_coded_cost`).
+        final_stage: 0.0, [0.0, 1.0],
+            "1 decides between the ranking's winner, the skip vector and intra by screened then coded luma cost (replaces the DC intra test): slower, better modes on flat video",
+        final_margin_lambdas: 0.1, [0.0, 4.0],
+            "with the final stage on, candidates whose screen cost is within this many lambda per sample of the best are priced by coded cost: higher is slower",
+        final_intra_energy_ratio: 4.0, [0.0, 64.0],
+            "with the final stage on, intra is screened only where the source block's AC energy is below this multiple of the winner's screen cost (0: always): higher is slower",
+        final_price_min_lambdas: 0.0, [0.0, 4.0],
+            "with the final stage on, a close candidate whose uncoded luma error is below this many lambda per sample keeps its screen cost instead of being priced: higher is faster",
+        final_max_winner_lambdas: 0.0, [0.0, 64.0],
+            "with the final stage on, blocks whose winner's prediction error exceeds this many lambda per sample keep the ranking's own decision (0: no limit): lower is faster",
+        /// The final stage's own intra gate, λ-relative for the reason
+        /// `intra_gate_lambdas` gives (a fixed variance gate shuts intra out
+        /// of dark, low-contrast video), independent of the ranking's gate.
+        final_intra_gate_lambdas: 0.03, [0.0, 4.0],
+            "with the final stage on, intra is screened only where the winner's residual (with its DC error) exceeds this many lambda per sample (0: the ranking's intra gate): lower screens intra more (slower)",
+        final_skip_candidate: 1.0, [0.0, 1.0],
+            "with the final stage on, 1 lets the codec's skip vector compete with the ranking's winner, 0 leaves it out: 0 is faster",
+        final_intra_candidate: 1.0, [0.0, 1.0],
+            "with the final stage on, 1 lets intra compete with the ranking's winner, 0 leaves it out (and DC intra with it): 0 is faster",
         // Engine motion defaults (2026-11-09): the measured quality point
         // AV1 and AV2 had each copied into their own `DEFAULT_PARAMS`
         // (measurements in `nc_av1`'s `DEFAULT_PARAMS`). A codec overrides
@@ -944,6 +988,16 @@ param_group! {
             "rate control: weight of each inter frame's complexity hint in the running (geometric) mean the inter level is planned from; the frame's own size is still predicted from its own hint (1 = plan from the frame's own hint): lower keeps the level steady through frame-to-frame complexity noise, which the buffer absorbs as fixed QP would",
         level_step_scale: 0.5, [0.05, 2.0],
             "rate control: the per-frame limit on inter-level changes is the codec's step limit times this: lower smooths frame-to-frame quality, higher reacts faster",
+        // Still-picture perturbation test (8 still / still-ish clips x 3
+        // rates, 150 f, single key; 5 near-no-op perturbations each): H.264
+        // byte spread 6.0 -> 3.1 % on the still clips, PSNR-Y BD-rate -2.3 %;
+        // AV1 byte spread 2.0 -> 1.4 %, PSNR spread 0.047 -> 0.010 dB, BD-rate
+        // -2.6 %; the two VC-1K clips (moving people) unchanged. H.264
+        // Default final-check (600 f, keys every 10 s, n 33): J -0.24 %
+        // [-0.37, +0.08], no guard. Pinned 0 in every other preset until
+        // screened (docs/handoff/rate-control.md "Still-picture chaos").
+        still_level_damping: 0.5, [0.0, 1.0],
+            "rate control: the per-frame inter-level limit is scaled by 1 - this x the running unchanged-block share: on a still picture frame bits respond to the level only by refining past the quality the picture holds, a cliff the level otherwise crosses at full speed, so the refinement's size (and the stream's trajectory) jumps with tiny perturbations (0 = off)",
         cadence_scale: 0.0, [0.0, 2.0],
             "QP cadence offsets multiplied by this (0 = the backend's own scale): lower gives a gentler cadence",
         cadence_static_scaling: 1.0, [0.0, 1.0],
@@ -958,6 +1012,10 @@ param_group! {
             "1 also applies the cadence at fixed QP; 0 keeps fixed-QP frames flat (the cadence then only shapes rate control)",
         fixed_qp_profile: 0.0, [0.0, 1.0],
             "1 applies the codec's fixed-QP profile (`CodecBackend::FIXED_QP_PARAMS`: its static frame-level pattern for coding without rate control) beneath the caller's settings; the CLI sets it for --qp without --bitrate, a preset may pin 0",
+        fixed_qp_moving_key: 0.0, [0.0, 18.0],
+            "fixed QP: QP units coarser a key frame is coded under camera motion (growing from 1 luma sample per frame to `rate.cadence_max_camera_motion`, less as the still-block share passes 0.8: the start-up lookahead's for the first key, the running values of the inter frames for later ones; 0 = off): a moving camera replaces the picture before later frames inherit a fine key",
+        fixed_qp_moving_cadence: 0.0, [0.0, 1.0],
+            "fixed QP: 1 scales the QP cadence by the still-block share under camera motion (as `rate.fixed_qp_moving_key` measures it) whatever `rate.cadence_static_scaling` says: a fixed-QP profile's full cadence then holds for still cameras only",
         key_still_boost: 0.0, [0.0, 18.0],
             "QP units finer a key frame is coded on a fixed camera (scaled by how still the scene is: the running unchanged-block share, or the start-up lookahead's for the first key, from 0.8 to 1), its loan repaid on schedule by the frames after it (0 = off): higher invests more in the picture a still scene's later frames inherit",
         key_hold_still: 0.0, [0.0, 4.0],

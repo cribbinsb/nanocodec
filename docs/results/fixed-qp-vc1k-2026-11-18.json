@@ -1,0 +1,495 @@
+{
+ "clipset": "vc1k_qp_2026-11-18.json",
+ "anchor": "x264-medium",
+ "frames": 150,
+ "points": 4,
+ "build_commit": "c9cff89f",
+ "clips": [
+  {
+   "clip": "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  },
+  {
+   "clip": "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 1280,
+   "height": 720
+  },
+  {
+   "clip": "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046",
+   "start_frame": 0,
+   "class": "videocall",
+   "width": 720,
+   "height": 1280
+  }
+ ],
+ "families": {
+  "libaom-av1-cpu10": {
+   "j": -28.94,
+   "lo": -32.18,
+   "hi": -25.47,
+   "n": 9,
+   "psnr_yuv": -31.81,
+   "vmaf_v1": -11.1,
+   "ms_ssim": -34.78,
+   "xpsnr_yuv": -37.13
+  },
+  "libaom-av1-cpu8": {
+   "j": -31.66,
+   "lo": -35.74,
+   "hi": -28.01,
+   "n": 9,
+   "psnr_yuv": -33.71,
+   "vmaf_v1": -13.62,
+   "ms_ssim": -38.78,
+   "xpsnr_yuv": -38.8
+  },
+  "libvpx-vp9-cpu7": {
+   "j": -8.28,
+   "lo": -11.09,
+   "hi": -5.22,
+   "n": 10,
+   "psnr_yuv": -11.3,
+   "vmaf_v1": 4.03,
+   "ms_ssim": -13.05,
+   "xpsnr_yuv": -14.42
+  },
+  "libvpx-vp9-cpu9": {
+   "j": 1.96,
+   "lo": -3.11,
+   "hi": 7.55,
+   "n": 10,
+   "psnr_yuv": 1.14,
+   "vmaf_v1": 12.88,
+   "ms_ssim": -2.8,
+   "xpsnr_yuv": -0.31
+  },
+  "nanocodec-av1": {
+   "j": -48.38,
+   "lo": -50.99,
+   "hi": -45.91,
+   "n": 12,
+   "psnr_yuv": -46.5,
+   "vmaf_v1": -41.33,
+   "ms_ssim": -45.43,
+   "xpsnr_yuv": -50.33
+  },
+  "nanocodec-av1@fast": {
+   "j": -44.04,
+   "lo": -47.15,
+   "hi": -40.78,
+   "n": 12,
+   "psnr_yuv": -41.83,
+   "vmaf_v1": -35.46,
+   "ms_ssim": -42.25,
+   "xpsnr_yuv": -45.74
+  },
+  "nanocodec-av1@faster": {
+   "j": -38.84,
+   "lo": -41.93,
+   "hi": -35.57,
+   "n": 12,
+   "psnr_yuv": -32.85,
+   "vmaf_v1": -33.0,
+   "ms_ssim": -34.58,
+   "xpsnr_yuv": -39.31
+  },
+  "nanocodec-av1@slow": {
+   "j": -45.36,
+   "lo": -48.21,
+   "hi": -42.48,
+   "n": 12,
+   "psnr_yuv": -43.28,
+   "vmaf_v1": -38.24,
+   "ms_ssim": -42.19,
+   "xpsnr_yuv": -46.06
+  },
+  "nanocodec-av1@veryfast": {
+   "j": -30.89,
+   "lo": -34.44,
+   "hi": -27.25,
+   "n": 12,
+   "psnr_yuv": -23.8,
+   "vmaf_v1": -20.29,
+   "ms_ssim": -28.29,
+   "xpsnr_yuv": -32.17
+  },
+  "nanocodec-av2": {
+   "j": -49.34,
+   "lo": -52.68,
+   "hi": -45.91,
+   "n": 12,
+   "psnr_yuv": -47.6,
+   "vmaf_v1": -44.65,
+   "ms_ssim": -44.25,
+   "xpsnr_yuv": -52.04
+  },
+  "nanocodec-av2@fast": {
+   "j": -44.43,
+   "lo": -48.03,
+   "hi": -40.78,
+   "n": 12,
+   "psnr_yuv": -40.62,
+   "vmaf_v1": -37.77,
+   "ms_ssim": -41.0,
+   "xpsnr_yuv": -44.78
+  },
+  "nanocodec-av2@faster": {
+   "j": -35.97,
+   "lo": -39.46,
+   "hi": -32.33,
+   "n": 12,
+   "psnr_yuv": -27.84,
+   "vmaf_v1": -27.9,
+   "ms_ssim": -31.85,
+   "xpsnr_yuv": -33.08
+  },
+  "nanocodec-av2@slow": {
+   "j": -50.83,
+   "lo": -53.01,
+   "hi": -48.59,
+   "n": 12,
+   "psnr_yuv": -49.88,
+   "vmaf_v1": -44.96,
+   "ms_ssim": -46.62,
+   "xpsnr_yuv": -54.66
+  },
+  "nanocodec-h264": {
+   "j": 7.51,
+   "lo": 3.97,
+   "hi": 11.06,
+   "n": 12,
+   "psnr_yuv": 1.59,
+   "vmaf_v1": 16.06,
+   "ms_ssim": 6.02,
+   "xpsnr_yuv": -1.53
+  },
+  "nanocodec-h264@fast": {
+   "j": 31.39,
+   "lo": 24.96,
+   "hi": 38.44,
+   "n": 12,
+   "psnr_yuv": 34.47,
+   "vmaf_v1": 27.01,
+   "ms_ssim": 47.15,
+   "xpsnr_yuv": 35.66
+  },
+  "nanocodec-h264@faster": {
+   "j": 39.99,
+   "lo": 32.3,
+   "hi": 49.38,
+   "n": 12,
+   "psnr_yuv": 41.84,
+   "vmaf_v1": 44.29,
+   "ms_ssim": 58.12,
+   "xpsnr_yuv": 36.05
+  },
+  "nanocodec-h264@slow": {
+   "j": 6.35,
+   "lo": 2.9,
+   "hi": 9.87,
+   "n": 12,
+   "psnr_yuv": 0.28,
+   "vmaf_v1": 14.58,
+   "ms_ssim": 5.28,
+   "xpsnr_yuv": -2.31
+  },
+  "nanocodec-h264@veryfast": {
+   "j": 53.87,
+   "lo": 41.72,
+   "hi": 69.1,
+   "n": 12,
+   "psnr_yuv": 60.34,
+   "vmaf_v1": 59.55,
+   "ms_ssim": 73.29,
+   "xpsnr_yuv": 54.72
+  },
+  "nanocodec-hevc": {
+   "j": -41.24,
+   "lo": -43.82,
+   "hi": -38.65,
+   "n": 12,
+   "psnr_yuv": -40.09,
+   "vmaf_v1": -30.57,
+   "ms_ssim": -40.55,
+   "xpsnr_yuv": -49.15
+  },
+  "nanocodec-hevc@fast": {
+   "j": -34.22,
+   "lo": -37.11,
+   "hi": -31.26,
+   "n": 12,
+   "psnr_yuv": -30.77,
+   "vmaf_v1": -21.61,
+   "ms_ssim": -35.03,
+   "xpsnr_yuv": -40.0
+  },
+  "nanocodec-hevc@faster": {
+   "j": -26.22,
+   "lo": -29.32,
+   "hi": -23.13,
+   "n": 12,
+   "psnr_yuv": -19.85,
+   "vmaf_v1": -13.82,
+   "ms_ssim": -30.03,
+   "xpsnr_yuv": -26.7
+  },
+  "nanocodec-hevc@slow": {
+   "j": -39.7,
+   "lo": -42.46,
+   "hi": -36.93,
+   "n": 12,
+   "psnr_yuv": -38.41,
+   "vmaf_v1": -28.42,
+   "ms_ssim": -39.47,
+   "xpsnr_yuv": -47.56
+  },
+  "nanocodec-vp9": {
+   "j": -44.06,
+   "lo": -46.65,
+   "hi": -41.5,
+   "n": 12,
+   "psnr_yuv": -48.47,
+   "vmaf_v1": -29.37,
+   "ms_ssim": -42.37,
+   "xpsnr_yuv": -56.16
+  },
+  "nanocodec-vp9@fast": {
+   "j": -38.36,
+   "lo": -41.72,
+   "hi": -34.88,
+   "n": 12,
+   "psnr_yuv": -40.79,
+   "vmaf_v1": -23.94,
+   "ms_ssim": -35.68,
+   "xpsnr_yuv": -49.72
+  },
+  "nanocodec-vp9@faster": {
+   "j": -22.92,
+   "lo": -25.29,
+   "hi": -20.65,
+   "n": 12,
+   "psnr_yuv": -17.11,
+   "vmaf_v1": -17.48,
+   "ms_ssim": -15.49,
+   "xpsnr_yuv": -21.77
+  },
+  "nanocodec-vp9@slow": {
+   "j": -42.27,
+   "lo": -44.87,
+   "hi": -39.57,
+   "n": 12,
+   "psnr_yuv": -47.03,
+   "vmaf_v1": -26.21,
+   "ms_ssim": -41.62,
+   "xpsnr_yuv": -55.26
+  },
+  "nanocodec-vp9@veryfast": {
+   "j": -4.09,
+   "lo": -12.55,
+   "hi": 5.36,
+   "n": 12,
+   "psnr_yuv": 0.29,
+   "vmaf_v1": -2.22,
+   "ms_ssim": 15.09,
+   "xpsnr_yuv": -2.97
+  },
+  "nanocodec-vvc": {
+   "j": -48.51,
+   "lo": -51.16,
+   "hi": -45.65,
+   "n": 12,
+   "psnr_yuv": -45.69,
+   "vmaf_v1": -39.09,
+   "ms_ssim": -48.17,
+   "xpsnr_yuv": -51.92
+  },
+  "nanocodec-vvc@fast": {
+   "j": -39.12,
+   "lo": -42.3,
+   "hi": -35.6,
+   "n": 12,
+   "psnr_yuv": -32.34,
+   "vmaf_v1": -35.39,
+   "ms_ssim": -36.77,
+   "xpsnr_yuv": -37.37
+  },
+  "nanocodec-vvc@slow": {
+   "j": -47.63,
+   "lo": -50.43,
+   "hi": -44.65,
+   "n": 12,
+   "psnr_yuv": -44.37,
+   "vmaf_v1": -38.3,
+   "ms_ssim": -46.91,
+   "xpsnr_yuv": -50.66
+  },
+  "openh264-baseline": {
+   "j": 71.34,
+   "lo": 67.02,
+   "hi": 75.16,
+   "n": 12,
+   "psnr_yuv": 62.59,
+   "vmaf_v1": 100.48,
+   "ms_ssim": 44.71,
+   "xpsnr_yuv": 48.78
+  },
+  "svtav1-m10": {
+   "j": -44.52,
+   "lo": -47.32,
+   "hi": -41.61,
+   "n": 12,
+   "psnr_yuv": -44.46,
+   "vmaf_v1": -32.9,
+   "ms_ssim": -45.16,
+   "xpsnr_yuv": -51.31
+  },
+  "svtav1-m12": {
+   "j": -36.72,
+   "lo": -40.04,
+   "hi": -33.01,
+   "n": 12,
+   "psnr_yuv": -32.25,
+   "vmaf_v1": -28.18,
+   "ms_ssim": -35.12,
+   "xpsnr_yuv": -37.69
+  },
+  "svtav1-m13": {
+   "j": -30.95,
+   "lo": -34.47,
+   "hi": -27.25,
+   "n": 12,
+   "psnr_yuv": -26.82,
+   "vmaf_v1": -22.67,
+   "ms_ssim": -27.31,
+   "xpsnr_yuv": -32.42
+  },
+  "svtav1-m8": {
+   "j": -49.16,
+   "lo": -51.75,
+   "hi": -46.4,
+   "n": 12,
+   "psnr_yuv": -49.16,
+   "vmaf_v1": -37.07,
+   "ms_ssim": -51.23,
+   "xpsnr_yuv": -54.64
+  },
+  "x264-ultrafast": {
+   "j": 93.17,
+   "lo": 85.41,
+   "hi": 101.67,
+   "n": 12,
+   "psnr_yuv": 107.45,
+   "vmaf_v1": 84.84,
+   "ms_ssim": 104.14,
+   "xpsnr_yuv": 106.86
+  },
+  "x264-veryfast": {
+   "j": 31.02,
+   "lo": 27.43,
+   "hi": 35.0,
+   "n": 12,
+   "psnr_yuv": 32.26,
+   "vmaf_v1": 26.09,
+   "ms_ssim": 33.13,
+   "xpsnr_yuv": 43.16
+  },
+  "x265-medium": {
+   "j": -48.5,
+   "lo": -50.43,
+   "hi": -46.57,
+   "n": 12,
+   "psnr_yuv": -45.0,
+   "vmaf_v1": -41.57,
+   "ms_ssim": -49.27,
+   "xpsnr_yuv": -51.07
+  },
+  "x265-superfast": {
+   "j": -42.04,
+   "lo": -44.85,
+   "hi": -39.19,
+   "n": 12,
+   "psnr_yuv": -39.9,
+   "vmaf_v1": -30.09,
+   "ms_ssim": -44.03,
+   "xpsnr_yuv": -47.76
+  },
+  "x265-ultrafast": {
+   "j": -39.49,
+   "lo": -42.64,
+   "hi": -36.14,
+   "n": 12,
+   "psnr_yuv": -37.23,
+   "vmaf_v1": -25.73,
+   "ms_ssim": -41.9,
+   "xpsnr_yuv": -45.9
+  }
+ }
+}

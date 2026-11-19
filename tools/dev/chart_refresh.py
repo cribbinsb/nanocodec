@@ -70,7 +70,8 @@ independent_fresh_2026-11-13.json) the same steps refresh a chart on that clip s
 whose families and builds are recorded apart (docs/results/bd-vs-speed-<set>-builds.json;
 `--seed` starts the record with every family on COMMIT's build). Its points are too many
 for this PC: measure encodes and scores them on rented machines (tools/dev/
-aws_heldout_chart.py `run`, then `score-cloud`, checkpointed; `--cloud-budget`), and
+aws_heldout_chart.py `run`, then `score-cloud`, checkpointed; `--cloud-regions`,
+`--cloud-budget`), and
 render reads them from those streams. The speed axis stays the main chart's: timed on
 its timing clips, said so under the chart. A build that any record still uses is never
 removed.
@@ -159,15 +160,22 @@ CLIPSET_BUILDS = RESULTS + "/bd-vs-speed-{stem}-builds.json"
 #: The held-out chart's rented sessions: streams (bitstreams, logs) under the data root,
 #: scoring sessions side by side and each one's limit (aws_heldout_chart.py).
 CLIPSET_STREAMS = DATA / "work" / "heldout-chart" / "streams-{stem}"
-#: The held-out charts the README's headline facts come from (nceval.site), refreshed
-#: after the main chart with --heldout, each also rendered against the PSNR-tuned
-#: x264 zero line the README quotes.
-HELDOUT_CLIPSETS = (DATA / "clips" / "independent_fresh_2026-11-13.json",
-                    DATA / "clips" / "independent_2026-11-13.json")
+#: The charts on other clip sets than the main chart's are the results site's chart
+#: views (nceval.site.CHART_VIEWS: `clipset_views`, `clipset_chains`), refreshed after
+#: the main chart with --heldout, each also rendered against the PSNR-tuned x264 zero
+#: line the site and the README quote.
 HELDOUT_TUNED_ANCHOR = "x264-medium~psnr"
 #: Families whose streams are compared at once (each check encodes on one CPU).
 STREAM_CHECK_WORKERS = 3
-CLOUD_SESSIONS = 2
+#: A clip-set refresh's scoring sessions side by side, one per region listed
+#: (--cloud-regions): each region's spot quota (512 vCPU) holds two c7a.metal-48xl,
+#: and both regions have launched them (2026-11-18; eu-west-1 had no capacity that day).
+CLOUD_REGIONS = ("eu-north-1", "eu-central-1")
+#: The USD cap of each rented session (the encode and each scoring session). A session
+#: refuses to start unless its worst case (1.5x the spot price over its 90-minute
+#: lifetime) fits: eu-central-1's c7a.metal-48xl was $3.01/h on 2026-11-18, a $6.77
+#: worst case (eu-north-1 $1.05/h). Spend is the time used, not the cap.
+CLOUD_SESSION_BUDGET = 8.0
 CLOUD_SCORE_MINUTES = 120
 PLAN_FILE = f"{RESULTS}/bd-vs-speed-plan.json"
 TIMING_FILE = f"{RESULTS}/bd-vs-speed-timing.json"
@@ -249,7 +257,10 @@ class Refresh:
         self.anchors = [a for a in getattr(args, "time_anchors", "").split(",") if a]
         self.timed = self.targets + self.retimed + self.anchors
         self.print_lock = threading.Lock()
-        WORK.mkdir(parents=True, exist_ok=True)
+        #: Logs and render metadata, one directory per chart: the clip-set refreshes of a
+        #: release run side by side (their meta.json once crossed over the shared one).
+        self.work = WORK / Path(args.clipset).stem if args.clipset else WORK
+        self.work.mkdir(parents=True, exist_ok=True)
 
     # --- helpers ---------------------------------------------------------------------
 
@@ -260,16 +271,16 @@ class Refresh:
     def run(self, cmd: list[str], log: str, cwd: Path = REPO, scope: bool = False,
             env: dict[str, str] | None = None) -> None:
         cmd = (MEMORY_SCOPE + cmd) if scope else cmd
-        self.say(f"  $ {shlex.join(cmd)}  [{WORK / 'logs' / log}]")
+        self.say(f"  $ {shlex.join(cmd)}  [{self.work / 'logs' / log}]")
         if self.args.dry_run:
             return
-        (WORK / "logs").mkdir(exist_ok=True)
-        with (WORK / "logs" / log).open("a") as out:
+        (self.work / "logs").mkdir(exist_ok=True)
+        with (self.work / "logs" / log).open("a") as out:
             status = subprocess.run(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL,
                                     env={**os.environ, **(env or {})}).returncode
         if status:
-            raise SystemExit(f"failed ({status}); see {WORK / 'logs' / log}")
+            raise SystemExit(f"failed ({status}); see {self.work / 'logs' / log}")
 
     def build_dir(self, build: str) -> Path:
         return Path.home() / BUILDS_ROOT / build
@@ -301,8 +312,8 @@ class Refresh:
         `build_jetson`)."""
         if not self.needs_build():
             return
-        if ((self.build_dir(self.commit) / COMPLETE_MARKER).is_file()
-                or self.commit in self.record["builds"]):
+        complete = (self.build_dir(self.commit) / COMPLETE_MARKER).is_file()
+        if complete or self.commit in self.record["builds"]:
             self.say(f"  build {self.commit} exists: kept")
         elif (donor := self.binary_donor()) is not None:
             self.say(f"  build {self.commit}: binary sources equal build {donor}'s: its binaries "
@@ -318,7 +329,10 @@ class Refresh:
         else:
             self.cargo_build(SCORING_TREE, SCORING_TARGET, SCORING_PROFILE,
                              self.build_dir(self.commit) / SCORING_BINARY)
-        if not self.args.dry_run:
+        # a complete build is never re-extracted: chains of one release share it and
+        # read its presets meanwhile (2026-11-19: three chains extracting at once failed
+        # one with tar's "File exists")
+        if not self.args.dry_run and not complete:
             self.install_presets()
         self.record["builds"].setdefault(self.commit, self.commit)
         self.save_record()
@@ -366,20 +380,27 @@ class Refresh:
                 or self.commit in self.record["families"].values())
 
     def install_presets(self) -> None:
-        """COMMIT's presets into its build directory, then the marker."""
+        """COMMIT's presets into its build directory, then the marker. One refresh at a
+        time (the others find the marker and keep its presets); extracted beside and
+        renamed into place, so no reader sees a half-written directory."""
         target = self.build_dir(self.commit)
-        presets = target / "presets"
-        shutil.rmtree(presets, ignore_errors=True)
-        presets.mkdir(parents=True)
-        moved = subprocess.run(["git", "-C", str(REPO), "cat-file", "-e",
-                                f"{self.commit}:{PRESETS_PATH}"], capture_output=True)
-        source = PRESETS_PATH if moved.returncode == 0 else OLD_PRESETS_PATH
-        archive = subprocess.run(["git", "-C", str(REPO), "archive", self.commit, source],
-                                 check=True, capture_output=True).stdout
-        subprocess.run(["tar", "-x", f"--strip-components={source.count('/') + 1}", "-C",
-                        str(presets)], input=archive,
-                       check=True)
-        (target / COMPLETE_MARKER).write_text(self.commit + "\n")
+        target.mkdir(parents=True, exist_ok=True)
+        with build_tree_lock(target):
+            if (target / COMPLETE_MARKER).is_file():
+                return
+            presets, staging = target / "presets", target / "presets.partial"
+            shutil.rmtree(staging, ignore_errors=True)
+            staging.mkdir()
+            moved = subprocess.run(["git", "-C", str(REPO), "cat-file", "-e",
+                                    f"{self.commit}:{PRESETS_PATH}"], capture_output=True)
+            source = PRESETS_PATH if moved.returncode == 0 else OLD_PRESETS_PATH
+            archive = subprocess.run(["git", "-C", str(REPO), "archive", self.commit, source],
+                                     check=True, capture_output=True).stdout
+            subprocess.run(["tar", "-x", f"--strip-components={source.count('/') + 1}", "-C",
+                            str(staging)], input=archive, check=True)
+            shutil.rmtree(presets, ignore_errors=True)
+            staging.rename(presets)
+            (target / COMPLETE_MARKER).write_text(self.commit + "\n")
 
     def gate_donor(self) -> Path | None:
         """A landing script's gate build that is exactly COMMIT (clean), if any."""
@@ -600,25 +621,30 @@ class Refresh:
 
     def cloud_measure(self) -> None:
         """The refreshed families on --clipset: encoded on one rented machine, scored on
-        CLOUD_SESSIONS more side by side (aws_heldout_chart.py), every point's result
-        brought back into this PC's point cache."""
+        one more per --cloud-regions region side by side (aws_heldout_chart.py), every
+        point's result
+        brought back into this PC's point cache. The sessions judge the low rungs on the
+        refreshed families (`--build`, not `--record`: the remote reads a record from the
+        repository's HEAD, and this refresh's record is not committed yet); a clip that
+        the whole chart puts on low rungs beyond those is scored by the render here."""
         if self.args.rescore:
             raise SystemExit("--rescore on --clipset: give the families instead")
-        build = self.build_dir(self.commit)
         common = ["--clipset", str(Path(self.args.clipset).resolve()), "--streams",
-                  str(self.streams()), "--build", str(build),
+                  str(self.streams()), "--build", str(self.build_dir(self.commit)),
                   "--families", ",".join(self.targets)]
-        budget = self.args.cloud_budget / (CLOUD_SESSIONS + 1)
+        regions = self.args.cloud_regions.split(",")
+        budget = self.args.cloud_budget
         self.run(["python3", "tools/dev/aws_heldout_chart.py", "run", *common,
                   "--budget", f"{budget:.2f}", "--purpose", "chart-refresh-encode"],
                  "cloud-encode.log")
-        sessions = [f"{index}/{CLOUD_SESSIONS}" for index in range(1, CLOUD_SESSIONS + 1)]
-        with ThreadPoolExecutor(CLOUD_SESSIONS) as pool:
+        with ThreadPoolExecutor(len(regions)) as pool:
             jobs = [pool.submit(self.run, [
                 "python3", "tools/dev/aws_heldout_chart.py", "score-cloud", *common,
-                "--session", session, "--minutes", str(CLOUD_SCORE_MINUTES),
-                "--budget", f"{budget:.2f}", "--purpose", "chart-refresh-score"],
-                f"cloud-score-{session.replace('/', '-')}.log") for session in sessions]
+                "--session", f"{index}/{len(regions)}", "--region", region,
+                "--minutes", str(CLOUD_SCORE_MINUTES), "--budget", f"{budget:.2f}",
+                "--purpose", "chart-refresh-score"],
+                f"cloud-score-{index}-{len(regions)}.log")
+                for index, region in enumerate(regions, 1)]
             for job in jobs:
                 job.result()
 
@@ -725,7 +751,7 @@ class Refresh:
         if self.retimed and not self.args.metrics_only:
             self.record.setdefault("timed_on", {}).update({f: self.commit for f in self.retimed})
             self.save_record()
-        meta = WORK / "meta.json"
+        meta = self.work / "meta.json"
         if not self.args.dry_run:
             meta.write_text(json.dumps(self.meta(), indent=1) + "\n")
         clipset = (["--clipset", str(Path(self.args.clipset).resolve()),
@@ -735,11 +761,13 @@ class Refresh:
         # site's Development + tuned-x264 view fell back to an older Defaults-only run.
         anchors = ([self.args.anchor] if getattr(self.args, "anchor", None) else
                    [None] if self.args.clipset else [None, HELDOUT_TUNED_ANCHOR])
+        view = clipset_view(self.args.clipset) if self.args.clipset else None
         for zero in anchors:
             anchor = ["--anchor", zero] if zero else []
-            if self.args.clipset:
-                title = f"Bitrate vs encode speed, held-out clips ({Path(self.args.clipset).stem})"
+            if view:
+                title = f"Bitrate vs encode speed, {view.heading} ({Path(self.args.clipset).stem})"
                 anchor += ["--title", title + (f", zero line {zero}" if zero else "")]
+                anchor += ["--tuned", view.tuned] if view.tuned else []
             self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(), *clipset,
                       *anchor, "--timing", str(REPO / TIMING_FILE),
                       "--timing-x86", str(REPO / TIMING_X86_FILE),
@@ -844,6 +872,46 @@ class Refresh:
                 "x86_timing_note": self.record.get("x86_timing_note", "")}
 
 
+def clipset_views() -> list:
+    """The results site's chart views on clip sets of their own (nceval.site.CHART_VIEWS),
+    one per clip set: every chart a release refreshes besides the main one."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.site import CHART_VIEWS
+    return list({view.clips: view for view in CHART_VIEWS if view.clips}.values())
+
+
+def clipset_path(view) -> Path:
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.config import load_paths
+    return load_paths().clips / view.clips
+
+
+def clipset_view(clipset: str):
+    """The site's chart view of the clip set file `clipset`."""
+    view = next((v for v in clipset_views() if v.clips == Path(clipset).name), None)
+    if view is None:
+        raise SystemExit(f"{clipset} is no chart view's clip set (nceval.site.CHART_VIEWS)")
+    return view
+
+
+def clipset_chains(views: list | None = None) -> list[list[Path]]:
+    """The clip-set charts' files in groups that share clips, the largest first in each:
+    a group is refreshed in that order, so a smaller set finds its shared clips' points
+    already cached (one point cache: cbr.Bench.identity has no clip-set part). The
+    all-held-out set holds the 138 fresh ones: run side by side, both scored those
+    clips (0.3.0)."""
+    clips = {clipset_path(v): {c["name"] for c in json.loads(clipset_path(v).read_text())["clips"]}
+             for v in (clipset_views() if views is None else views)}
+    groups: list[list[Path]] = []
+    for path in sorted(clips, key=lambda p: -len(clips[p])):
+        group = next((g for g in groups if any(clips[path] & clips[other] for other in g)), None)
+        if group is None:
+            groups.append([path])
+        else:
+            group.append(path)
+    return groups
+
+
 def builds_file(clipset: str | None) -> str:
     """The build record of the chart on `clipset` (the main chart's without one)."""
     return CLIPSET_BUILDS.format(stem=Path(clipset).stem) if clipset else BUILDS_FILE
@@ -906,7 +974,8 @@ def git(*args: str) -> str:
 
 @contextmanager
 def build_tree_lock(tree: Path):
-    """One refresh at a time checks out and builds in a shared build tree."""
+    """One refresh at a time works in a shared tree: checks out and builds in a build
+    tree, or installs a build directory's presets."""
     WORK.mkdir(parents=True, exist_ok=True)
     with (WORK / f"{tree.name}.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -993,13 +1062,14 @@ def merge_timing(stored_path: Path, records: list[Path], rescale: bool, build: s
 
 
 def refresh_heldout(args: argparse.Namespace) -> None:
-    """Each held-out chart refreshed for the main refresh's families (a family whose
-    streams did not change keeps its points: Refresh.retime_unchanged), then rendered
-    against HELDOUT_TUNED_ANCHOR too."""
+    """Each clip-set chart (clipset_chains, in order) refreshed for the main refresh's
+    families (a family whose streams did not change keeps its points:
+    Refresh.retime_unchanged), then rendered against HELDOUT_TUNED_ANCHOR too."""
     families = ",".join([*family_list(args.families), *family_list(args.retime)])
-    for clipset in HELDOUT_CLIPSETS:
+    for clipset in [path for chain in clipset_chains() for path in chain]:
         common = [sys.executable, str(Path(__file__).resolve()), args.commit,
                   "--clipset", str(clipset), "--cloud-budget", str(args.cloud_budget),
+                  "--cloud-regions", args.cloud_regions,
                   *(["--dry-run"] if args.dry_run else [])]
         print(f"== held-out chart {clipset.stem}", flush=True)
         subprocess.run([*common, "--families", families, "--metrics-only"], check=True)
@@ -1041,10 +1111,13 @@ def main() -> None:
                    "instead of the main one; its points are measured on rented machines")
     p.add_argument("--seed", action="store_true",
                    help="with --clipset: start its build record (every family on COMMIT)")
-    p.add_argument("--cloud-budget", type=float, default=8.0,
-                   help="with --clipset: USD cap over all rented sessions")
+    p.add_argument("--cloud-budget", type=float, default=CLOUD_SESSION_BUDGET,
+                   help="with --clipset: USD cap of each rented session")
+    p.add_argument("--cloud-regions", default=",".join(CLOUD_REGIONS),
+                   help="with --clipset: one scoring session side by side in each region "
+                        "listed (a region may repeat)")
     p.add_argument("--heldout", action="store_true",
-                   help="after the main chart, refresh the held-out charts (HELDOUT_CLIPSETS) "
+                   help="after the main chart, refresh the clip-set charts (clipset_chains) "
                         "for the same families, incrementally, so the README's headline "
                         "facts follow")
     p.add_argument("--pgo", action="store_true",

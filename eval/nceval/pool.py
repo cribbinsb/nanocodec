@@ -44,13 +44,17 @@ from .config import Paths
 from .ctc.sequences import SEALED_FAMILIES as CTC_SEALED_FAMILIES
 
 #: Clip sets the pool takes its clips from (hires: 1080p/5MP copies of TRAIN
-#: sources; quick/smoke: duplicates).
-POOL_SETS = ("main", "broad_independent_v1", "layergate_fit", "layergate_fit2", "long", "pool")
+#: sources; quick/smoke: duplicates). vc1k_dev: VC-1K phone video calls
+#: (eval/clipset/select_vc1k.py --dev; owner, 2026-11-18), internal only.
+POOL_SETS = ("main", "broad_independent_v1", "layergate_fit", "layergate_fit2", "long", "pool",
+             "vc1k_dev")
 #: Sealed: neither these clips nor their source families enter the pool, so no
 #: screen or tuning study draws them. adv12 is kept for milestones; `independent`
 #: (eval/clipset/select_independent.py: 150 never-used sources, 2026-11-13) is the
-#: independent test's fresh set and the candidate main chart.
-SEALED_SETS = ("adv12", "independent")
+#: independent test's fresh set and the candidate main chart; vc1k_2026-11-18 is
+#: the VC-1K measurement set (its dev clips are disjoint by selection, and this
+#: keeps any later copy of one of its sources out of the pool too).
+SEALED_SETS = ("adv12", "independent", "vc1k_2026-11-18")
 #: The standards lens's sequences (nceval.ctc.sequences, 2026-11-14) are
 #: sealed by family: they are downloaded on rented machines only, so there is
 #: no clip set file here, but a copy of the same source in the pool (the
@@ -65,9 +69,10 @@ SEALED_SPLIT = "test"
 #: bits per stored pixel left, C poor never.
 BPP_FLOOR = 0.15
 MIN_POOR_DOWNSCALE = 2.0
-#: Draw strata: the five camera classes and everything else.
+#: Draw strata: the five camera classes, phone video calls and everything else.
 STRATA = {"crowd": ("crowd",), "lowlight": ("lowlight",), "pan": ("pan",),
-          "static": ("static",), "bodycam": ("bodycam",), "other": ("texture", "drone")}
+          "static": ("static",), "bodycam": ("bodycam",), "videocall": ("videocall",),
+          "other": ("texture", "drone")}
 QUICK, ADOPT, FINAL = "quick", "adopt", "final"
 LEVELS = (QUICK, ADOPT, FINAL)
 #: Families per level (None: the rest of the pool). Measured 2026-11-11 on a

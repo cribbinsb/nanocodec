@@ -122,3 +122,48 @@ def test_a_resumed_refresh_with_nothing_changed_launches_no_instance(tmp_path):
         assert refresh.targets == ["nanocodec-h264"]  # stale until its streams are checked
         refresh.execute("measure")
     assert refresh.targets == [] and refresh.retimed == ["nanocodec-h264"]
+
+
+def test_every_site_chart_view_on_a_clip_set_is_refreshed():
+    """The release refreshes the site's chart views from their own list, published or
+    not (2026-11-18: chart_refresh's own list missed VC-1K's view)."""
+    from nceval.site import CHART_VIEWS
+    refreshed = {view.clips for view in chart_refresh.clipset_views()}
+    assert refreshed == {view.clips for view in CHART_VIEWS if view.clips}
+    assert "vc1k_2026-11-18.json" in refreshed
+    assert chart_refresh.clipset_view("/any/dir/vc1k_2026-11-18.json").heading
+
+
+def test_clip_sets_that_share_clips_chain_largest_first(tmp_path):
+    """A smaller set after the larger one that holds its clips finds them cached."""
+    sets = {"small": ["a", "b"], "big": ["a", "b", "c"], "other": ["x"]}
+    for name, clips in sets.items():
+        (tmp_path / f"{name}.json").write_text(json.dumps({"clips": [{"name": c} for c in clips]}))
+    views = [argparse.Namespace(clips=f"{name}.json") for name in sets]
+    with patch.object(chart_refresh, "clipset_path", lambda view: tmp_path / view.clips):
+        chains = chart_refresh.clipset_chains(views)
+    assert chains == [[tmp_path / "big.json", tmp_path / "small.json"], [tmp_path / "other.json"]]
+
+
+def test_a_complete_build_keeps_its_presets_and_a_new_one_gets_them_whole(tmp_path):
+    """Chains of one release share COMMIT's build: one that finds it complete leaves its
+    presets alone (2026-11-19: concurrent re-extraction failed a chain), and a fresh
+    install leaves no staging directory behind."""
+    refresh = chart_refresh.Refresh.__new__(chart_refresh.Refresh)
+    refresh.commit = chart_refresh.git("rev-parse", "--short=8", "HEAD")
+    refresh.args = argparse.Namespace(dry_run=False)
+    refresh.record = {"builds": {}, "families": {}}
+    refresh.stale, refresh.retimed = ["nanocodec-h264"], []
+    refresh.say = lambda _line: None
+    refresh.save_record = lambda: None
+    build = tmp_path / refresh.commit
+    with patch.object(chart_refresh.Refresh, "build_dir", lambda _self, b: tmp_path / b), \
+         patch.object(chart_refresh, "WORK", tmp_path / "work"):
+        refresh.install_presets()
+        assert (build / "presets" / "h264" / "fast.toml").is_file()
+        assert not (build / "presets.partial").exists()
+        assert (build / chart_refresh.COMPLETE_MARKER).read_text() == refresh.commit + "\n"
+        with patch.object(chart_refresh.Refresh, "install_presets",
+                          side_effect=AssertionError("re-extracted")):
+            refresh.build()
+    assert refresh.record["builds"] == {refresh.commit: refresh.commit}

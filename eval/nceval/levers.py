@@ -456,6 +456,10 @@ def fixedqp_ab_rows(result: dict, source: str, kind: str = "live",
     codec = result["codec"]
     anchor = pairs_to_dict(result.get("anchor_param"))
     base = result.get("preset") or MEDIUM
+    # a chosen clip set (`ab --clipset`) ranks ideas on that content, not the pool draw
+    clipset = result.get("clipset")
+    level, draw = (("fixedqp-clipset", Path(clipset).stem) if clipset
+                   else ("fixedqp", result.get("rotation")))
     rows = []
     for candidate in result.get("candidates") or []:
         if candidate.get("refused") or "summary" not in candidate:
@@ -464,7 +468,7 @@ def fixedqp_ab_rows(result: dict, source: str, kind: str = "live",
         overrides = diff(pairs_to_dict(candidate.get("param")), anchor)
         rows.append(make_row(
             codec=codec, base=base, base_params=anchor, rate="cqp", overrides=overrides,
-            change=candidate.get("label"), level="fixedqp", draw=result.get("rotation"),
+            change=candidate.get("label"), level=level, draw=draw,
             n=summary.get("n"), frames=result.get("frames"), j=summary.get("j"),
             lo=summary.get("lo"), hi=summary.get("hi"), psnr=summary.get("psnr_yuv"),
             vmaf=summary.get("vmaf_v1"), msssim=summary.get("ms_ssim"),

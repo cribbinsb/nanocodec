@@ -287,6 +287,9 @@ mod tests {
         // Fast keeps its keys' budget sizing when the Default adopted the
         // key still boost (2026-11-14).
         expected.set("rate.key_still_boost", 0.0);
+        // Fast keeps its fixed-QP key when the Default adopted the coarser
+        // key under camera motion (2026-11-19).
+        expected.set("rate.fixed_qp_moving_key", 0.0);
         // Fast keeps the static-scaled cadence when the Default adopted the
         // inherited cadence depth (2026-11-15).
         expected.set("structure.inherited_depth", 0.0);

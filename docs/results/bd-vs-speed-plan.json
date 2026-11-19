@@ -113,7 +113,7 @@
   "nanocodec-h264": {
    "lowlight_city_night": {
     "qp": 38,
-    "bytes": 373286,
+    "bytes": 355784,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -140,11 +140,11 @@
      "38"
     ],
     "fps": 29.97,
-    "key": "3055b2f9c31f8338"
+    "key": "5c14f73bf8fad5c3"
    },
    "crowd_mot17_09": {
-    "qp": 43,
-    "bytes": 358806,
+    "qp": 42,
+    "bytes": 381897,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -168,14 +168,14 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "43"
+     "42"
     ],
     "fps": 30.0,
-    "key": "5dc7c1f851bc2ad0"
+    "key": "3c24752d9ba048ea"
    },
    "bodycam_bc1": {
     "qp": 45,
-    "bytes": 390816,
+    "bytes": 368433,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -202,13 +202,13 @@
      "45"
     ],
     "fps": 29.97,
-    "key": "fb6249e0acb19455"
+    "key": "245221b56a07c2be"
    }
   },
   "nanocodec-hevc": {
    "lowlight_city_night": {
     "qp": 41,
-    "bytes": 372031,
+    "bytes": 373324,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -235,11 +235,11 @@
      "41"
     ],
     "fps": 29.97,
-    "key": "3055b2f9c31f8338"
+    "key": "5c14f73bf8fad5c3"
    },
    "crowd_mot17_09": {
     "qp": 46,
-    "bytes": 363023,
+    "bytes": 363122,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -266,11 +266,11 @@
      "46"
     ],
     "fps": 30.0,
-    "key": "5dc7c1f851bc2ad0"
+    "key": "3c24752d9ba048ea"
    },
    "bodycam_bc1": {
     "qp": 46,
-    "bytes": 356904,
+    "bytes": 357482,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -297,13 +297,13 @@
      "46"
     ],
     "fps": 29.97,
-    "key": "fb6249e0acb19455"
+    "key": "245221b56a07c2be"
    }
   },
   "nanocodec-hevc@fast": {
    "lowlight_city_night": {
     "qp": 41,
-    "bytes": 366326,
+    "bytes": 365236,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -332,11 +332,11 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "845f07271c378e78"
+    "key": "f8b1d6fa515aaf1f"
    },
    "crowd_mot17_09": {
     "qp": 45,
-    "bytes": 355912,
+    "bytes": 354697,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -365,11 +365,11 @@
      "fast"
     ],
     "fps": 30.0,
-    "key": "66e93e7ced7bb33d"
+    "key": "4cbf9ca87f515e5e"
    },
    "bodycam_bc1": {
     "qp": 44,
-    "bytes": 378192,
+    "bytes": 377929,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -398,7 +398,7 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "3873b0619bbda687"
+    "key": "1744fdb91c2e292a"
    }
   },
   "nanocodec-av1": {
@@ -431,7 +431,7 @@
      "188"
     ],
     "fps": 29.97,
-    "key": "0125cdd2ed0990f1"
+    "key": "eb4176552d90b374"
    },
    "crowd_mot17_09": {
     "qp": 214,
@@ -462,7 +462,7 @@
      "214"
     ],
     "fps": 30.0,
-    "key": "8ae9bd217ac8279b"
+    "key": "70eff2d2185bcd61"
    },
    "bodycam_bc1": {
     "qp": 206,
@@ -493,7 +493,7 @@
      "206"
     ],
     "fps": 29.97,
-    "key": "eb14f43049dd7b92"
+    "key": "49f9f418085e1388"
    }
   },
   "nanocodec-av1@fast": {
@@ -528,7 +528,7 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "6e93044bab3deae0"
+    "key": "c5043ba802d1ac2c"
    },
    "crowd_mot17_09": {
     "qp": 215,
@@ -561,7 +561,7 @@
      "fast"
     ],
     "fps": 30.0,
-    "key": "d47e3809dcdddb48"
+    "key": "40fdc9855c7d0ccf"
    },
    "bodycam_bc1": {
     "qp": 206,
@@ -594,7 +594,7 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "f4f3e1f1f4dc63e0"
+    "key": "4dd3b8dc53df0d83"
    }
   },
   "nanocodec-vp9": {
@@ -627,7 +627,7 @@
      "186"
     ],
     "fps": 29.97,
-    "key": "0125cdd2ed0990f1"
+    "key": "eb4176552d90b374"
    },
    "crowd_mot17_09": {
     "qp": 214,
@@ -658,7 +658,7 @@
      "214"
     ],
     "fps": 30.0,
-    "key": "8ae9bd217ac8279b"
+    "key": "70eff2d2185bcd61"
    },
    "bodycam_bc1": {
     "qp": 206,
@@ -689,13 +689,13 @@
      "206"
     ],
     "fps": 29.97,
-    "key": "eb14f43049dd7b92"
+    "key": "49f9f418085e1388"
    }
   },
   "nanocodec-av2": {
    "lowlight_city_night": {
     "qp": 157,
-    "bytes": 368453,
+    "bytes": 367730,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -722,11 +722,11 @@
      "157"
     ],
     "fps": 29.97,
-    "key": "0125cdd2ed0990f1"
+    "key": "eb4176552d90b374"
    },
    "crowd_mot17_09": {
     "qp": 176,
-    "bytes": 380114,
+    "bytes": 382182,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -753,11 +753,11 @@
      "176"
     ],
     "fps": 30.0,
-    "key": "8ae9bd217ac8279b"
+    "key": "70eff2d2185bcd61"
    },
    "bodycam_bc1": {
     "qp": 177,
-    "bytes": 366349,
+    "bytes": 366976,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -784,7 +784,7 @@
      "177"
     ],
     "fps": 29.97,
-    "key": "eb14f43049dd7b92"
+    "key": "49f9f418085e1388"
    }
   },
   "openh264-baseline": {
@@ -2432,7 +2432,7 @@
   "nanocodec-vvc": {
    "lowlight_city_night": {
     "qp": 39,
-    "bytes": 377807,
+    "bytes": 376909,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -2459,11 +2459,11 @@
      "39"
     ],
     "fps": 29.97,
-    "key": "0bdeecfd3277906c"
+    "key": "bdace9d48e9e28f7"
    },
    "crowd_mot17_09": {
     "qp": 44,
-    "bytes": 378386,
+    "bytes": 376661,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -2490,11 +2490,11 @@
      "44"
     ],
     "fps": 30.0,
-    "key": "bb92bcbbab1f8a88"
+    "key": "9a1d64eee6e97cce"
    },
    "bodycam_bc1": {
     "qp": 44,
-    "bytes": 381560,
+    "bytes": 380660,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -2521,7 +2521,7 @@
      "44"
     ],
     "fps": 29.97,
-    "key": "c974c48a8b0f6d4f"
+    "key": "3c25256c78ec371e"
    }
   },
   "nanocodec-vp9@fast": {
@@ -2556,7 +2556,7 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "6e93044bab3deae0"
+    "key": "c5043ba802d1ac2c"
    },
    "crowd_mot17_09": {
     "qp": 215,
@@ -2589,7 +2589,7 @@
      "fast"
     ],
     "fps": 30.0,
-    "key": "d47e3809dcdddb48"
+    "key": "40fdc9855c7d0ccf"
    },
    "bodycam_bc1": {
     "qp": 207,
@@ -2622,13 +2622,13 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "f4f3e1f1f4dc63e0"
+    "key": "4dd3b8dc53df0d83"
    }
   },
   "nanocodec-av2@fast": {
    "lowlight_city_night": {
-    "qp": 155,
-    "bytes": 369498,
+    "qp": 154,
+    "bytes": 382311,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -2652,16 +2652,16 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "155",
+     "154",
      "--preset",
      "fast"
     ],
     "fps": 29.97,
-    "key": "6e93044bab3deae0"
+    "key": "c5043ba802d1ac2c"
    },
    "crowd_mot17_09": {
-    "qp": 172,
-    "bytes": 374692,
+    "qp": 167,
+    "bytes": 375552,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -2685,16 +2685,16 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "172",
+     "167",
      "--preset",
      "fast"
     ],
     "fps": 30.0,
-    "key": "d47e3809dcdddb48"
+    "key": "40fdc9855c7d0ccf"
    },
    "bodycam_bc1": {
     "qp": 169,
-    "bytes": 372610,
+    "bytes": 371582,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -2723,13 +2723,13 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "f4f3e1f1f4dc63e0"
+    "key": "4dd3b8dc53df0d83"
    }
   },
   "nanocodec-vvc@fast": {
    "lowlight_city_night": {
     "qp": 40,
-    "bytes": 380453,
+    "bytes": 377313,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -2758,11 +2758,11 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "566aa25f69445e44"
+    "key": "4abda7659f27e9fe"
    },
    "crowd_mot17_09": {
     "qp": 44,
-    "bytes": 384579,
+    "bytes": 381559,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -2791,11 +2791,11 @@
      "fast"
     ],
     "fps": 30.0,
-    "key": "c0df8896a39706b6"
+    "key": "9a0edb5afcaf1274"
    },
    "bodycam_bc1": {
     "qp": 44,
-    "bytes": 354788,
+    "bytes": 354276,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -2824,7 +2824,7 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "3944797a3ea68c88"
+    "key": "9ba5e8f11e3a16c4"
    }
   },
   "nanocodec-h264@fast": {
@@ -2859,7 +2859,7 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "845f07271c378e78"
+    "key": "f8b1d6fa515aaf1f"
    },
    "crowd_mot17_09": {
     "qp": 43,
@@ -2892,7 +2892,7 @@
      "fast"
     ],
     "fps": 30.0,
-    "key": "66e93e7ced7bb33d"
+    "key": "4cbf9ca87f515e5e"
    },
    "bodycam_bc1": {
     "qp": 46,
@@ -2925,7 +2925,7 @@
      "fast"
     ],
     "fps": 29.97,
-    "key": "3873b0619bbda687"
+    "key": "1744fdb91c2e292a"
    }
   },
   "nanocodec-h264@faster": {
@@ -2960,7 +2960,7 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "dd8923d6e432d5b6"
+    "key": "fbb6275c0c65d4eb"
    },
    "crowd_mot17_09": {
     "qp": 43,
@@ -2993,7 +2993,7 @@
      "faster"
     ],
     "fps": 30.0,
-    "key": "f1c87ee5cd7bf628"
+    "key": "de4abf7d62fc67bf"
    },
    "bodycam_bc1": {
     "qp": 45,
@@ -3026,7 +3026,7 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "073c9b9290cb9b86"
+    "key": "89af88f5d5e5559f"
    }
   },
   "nanocodec-av1@faster": {
@@ -3061,11 +3061,11 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "e2dd14df3d955250"
+    "key": "abc2f3019ed5bba3"
    },
    "crowd_mot17_09": {
-    "qp": 206,
-    "bytes": 372337,
+    "qp": 204,
+    "bytes": 375704,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -3089,12 +3089,12 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "206",
+     "204",
      "--preset",
      "faster"
     ],
     "fps": 30.0,
-    "key": "64ce01c7de33e9dd"
+    "key": "0f0013d617969295"
    },
    "bodycam_bc1": {
     "qp": 205,
@@ -3127,13 +3127,13 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "0998fb598cd6053f"
+    "key": "4c1c39eebbc8cd13"
    }
   },
   "nanocodec-hevc@faster": {
    "lowlight_city_night": {
     "qp": 41,
-    "bytes": 386166,
+    "bytes": 384734,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3162,11 +3162,11 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "dd8923d6e432d5b6"
+    "key": "fbb6275c0c65d4eb"
    },
    "crowd_mot17_09": {
     "qp": 44,
-    "bytes": 397110,
+    "bytes": 396183,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -3195,11 +3195,11 @@
      "faster"
     ],
     "fps": 30.0,
-    "key": "f1c87ee5cd7bf628"
+    "key": "de4abf7d62fc67bf"
    },
    "bodycam_bc1": {
     "qp": 44,
-    "bytes": 364968,
+    "bytes": 363630,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3228,7 +3228,7 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "073c9b9290cb9b86"
+    "key": "89af88f5d5e5559f"
    }
   },
   "nanocodec-h264@veryfast": {
@@ -3263,7 +3263,7 @@
      "veryfast"
     ],
     "fps": 29.97,
-    "key": "3588ef3e9676d966"
+    "key": "eac43fcc9e58627a"
    },
    "crowd_mot17_09": {
     "qp": 43,
@@ -3296,7 +3296,7 @@
      "veryfast"
     ],
     "fps": 30.0,
-    "key": "853e45953a94e433"
+    "key": "1eb5058b1445141a"
    },
    "bodycam_bc1": {
     "qp": 44,
@@ -3329,7 +3329,7 @@
      "veryfast"
     ],
     "fps": 29.97,
-    "key": "14227f5bc9cfa866"
+    "key": "4039b9ce8666f794"
    }
   },
   "nanocodec-vp9@faster": {
@@ -3364,7 +3364,7 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "e2dd14df3d955250"
+    "key": "abc2f3019ed5bba3"
    },
    "crowd_mot17_09": {
     "qp": 218,
@@ -3397,7 +3397,7 @@
      "faster"
     ],
     "fps": 30.0,
-    "key": "64ce01c7de33e9dd"
+    "key": "0f0013d617969295"
    },
    "bodycam_bc1": {
     "qp": 213,
@@ -3430,13 +3430,13 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "0998fb598cd6053f"
+    "key": "4c1c39eebbc8cd13"
    }
   },
   "nanocodec-vp9@veryfast": {
    "lowlight_city_night": {
-    "qp": 200,
-    "bytes": 373062,
+    "qp": 197,
+    "bytes": 371402,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3460,16 +3460,16 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "200",
+     "197",
      "--preset",
      "veryfast"
     ],
     "fps": 29.97,
-    "key": "5436e739449d36b0"
+    "key": "2ad3fafd6b8b4484"
    },
    "crowd_mot17_09": {
-    "qp": 224,
-    "bytes": 377535,
+    "qp": 219,
+    "bytes": 372521,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -3493,16 +3493,16 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "224",
+     "219",
      "--preset",
      "veryfast"
     ],
     "fps": 30.0,
-    "key": "4c60cffa1a5c5794"
+    "key": "8610c19f38bc7b7d"
    },
    "bodycam_bc1": {
-    "qp": 219,
-    "bytes": 378805,
+    "qp": 215,
+    "bytes": 370256,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3526,12 +3526,12 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "219",
+     "215",
      "--preset",
      "veryfast"
     ],
     "fps": 29.97,
-    "key": "5b7f9214b5fde741"
+    "key": "105dca820c955697"
    }
   },
   "nanocodec-av1@slow": {
@@ -3566,7 +3566,7 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "2f307da9b3695340"
+    "key": "d319f9214974fd85"
    },
    "crowd_mot17_09": {
     "qp": 214,
@@ -3599,7 +3599,7 @@
      "slow"
     ],
     "fps": 30.0,
-    "key": "2cc5858ed2566c21"
+    "key": "7c95e7a896bb502e"
    },
    "bodycam_bc1": {
     "qp": 205,
@@ -3632,13 +3632,13 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "5e36ef93fd6e2095"
+    "key": "a29d05113dc13744"
    }
   },
   "nanocodec-hevc@slow": {
    "lowlight_city_night": {
     "qp": 41,
-    "bytes": 362016,
+    "bytes": 362035,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3667,11 +3667,11 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "4a3b7abdcf77982d"
+    "key": "467aeaea94e71ff7"
    },
    "crowd_mot17_09": {
     "qp": 46,
-    "bytes": 352124,
+    "bytes": 351628,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -3700,11 +3700,11 @@
      "slow"
     ],
     "fps": 30.0,
-    "key": "9d3086fde6f5e5a0"
+    "key": "b5a04650f944bcec"
    },
    "bodycam_bc1": {
     "qp": 46,
-    "bytes": 354527,
+    "bytes": 353921,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3733,13 +3733,13 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "c37c6f86ed8eab9c"
+    "key": "f033a836cdf27281"
    }
   },
   "nanocodec-vvc@slow": {
    "lowlight_city_night": {
     "qp": 39,
-    "bytes": 382255,
+    "bytes": 382590,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3768,11 +3768,11 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "672331bd4dea112e"
+    "key": "8cbd16ae3418d685"
    },
    "crowd_mot17_09": {
     "qp": 44,
-    "bytes": 382836,
+    "bytes": 382149,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -3801,11 +3801,11 @@
      "slow"
     ],
     "fps": 30.0,
-    "key": "da14248cdea69aa1"
+    "key": "5dbe6324e5a2efdf"
    },
    "bodycam_bc1": {
     "qp": 44,
-    "bytes": 400131,
+    "bytes": 398696,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3834,7 +3834,7 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "0acfd0e687a754c4"
+    "key": "ee732497da4c1d4d"
    }
   },
   "nanocodec-av2@slow": {
@@ -3869,7 +3869,7 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "2f307da9b3695340"
+    "key": "d319f9214974fd85"
    },
    "crowd_mot17_09": {
     "qp": 176,
@@ -3902,7 +3902,7 @@
      "slow"
     ],
     "fps": 30.0,
-    "key": "2cc5858ed2566c21"
+    "key": "7c95e7a896bb502e"
    },
    "bodycam_bc1": {
     "qp": 177,
@@ -3935,13 +3935,13 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "5e36ef93fd6e2095"
+    "key": "a29d05113dc13744"
    }
   },
   "nanocodec-h264@slow": {
    "lowlight_city_night": {
     "qp": 38,
-    "bytes": 355335,
+    "bytes": 348959,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -3970,11 +3970,11 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "4a3b7abdcf77982d"
+    "key": "467aeaea94e71ff7"
    },
    "crowd_mot17_09": {
-    "qp": 43,
-    "bytes": 356792,
+    "qp": 42,
+    "bytes": 384346,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -3998,16 +3998,16 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "43",
+     "42",
      "--preset",
      "slow"
     ],
     "fps": 30.0,
-    "key": "9d3086fde6f5e5a0"
+    "key": "b5a04650f944bcec"
    },
    "bodycam_bc1": {
     "qp": 45,
-    "bytes": 385781,
+    "bytes": 364541,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -4036,7 +4036,7 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "c37c6f86ed8eab9c"
+    "key": "f033a836cdf27281"
    }
   },
   "nanocodec-vp9@slow": {
@@ -4071,7 +4071,7 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "2f307da9b3695340"
+    "key": "d319f9214974fd85"
    },
    "crowd_mot17_09": {
     "qp": 215,
@@ -4104,7 +4104,7 @@
      "slow"
     ],
     "fps": 30.0,
-    "key": "2cc5858ed2566c21"
+    "key": "7c95e7a896bb502e"
    },
    "bodycam_bc1": {
     "qp": 206,
@@ -4137,7 +4137,7 @@
      "slow"
     ],
     "fps": 29.97,
-    "key": "5e36ef93fd6e2095"
+    "key": "a29d05113dc13744"
    }
   },
   "x264-veryslow": {
@@ -4511,7 +4511,7 @@
      "veryfast"
     ],
     "fps": 29.97,
-    "key": "6cc453a8a1fc0ade"
+    "key": "2ad3fafd6b8b4484"
    },
    "crowd_mot17_09": {
     "qp": 198,
@@ -4544,7 +4544,7 @@
      "veryfast"
     ],
     "fps": 30.0,
-    "key": "a060b489fdc26ce0"
+    "key": "8610c19f38bc7b7d"
    },
    "bodycam_bc1": {
     "qp": 195,
@@ -4577,13 +4577,13 @@
      "veryfast"
     ],
     "fps": 29.97,
-    "key": "f79f49c1514556ba"
+    "key": "105dca820c955697"
    }
   },
   "nanocodec-av2@faster": {
    "lowlight_city_night": {
     "qp": 155,
-    "bytes": 377165,
+    "bytes": 369733,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -4612,11 +4612,11 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "cc0c09780a4665aa"
+    "key": "abc2f3019ed5bba3"
    },
    "crowd_mot17_09": {
     "qp": 166,
-    "bytes": 379597,
+    "bytes": 373920,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -4645,11 +4645,11 @@
      "faster"
     ],
     "fps": 30.0,
-    "key": "20fac9780c38c548"
+    "key": "0f0013d617969295"
    },
    "bodycam_bc1": {
     "qp": 163,
-    "bytes": 373642,
+    "bytes": 372483,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -4678,7 +4678,7 @@
      "faster"
     ],
     "fps": 29.97,
-    "key": "09bd58a6c39fb89f"
+    "key": "4c1c39eebbc8cd13"
    }
   }
  },
@@ -4686,31 +4686,31 @@
  "rung_kbps": 600,
  "frames": 150,
  "nanocodec_sha256": {
-  "nanocodec-h264": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-hevc": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-hevc@fast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av1": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av1@fast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vp9": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av2": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vvc": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vp9@fast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av2@fast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vvc@fast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-h264@fast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-h264@faster": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av1@faster": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-hevc@faster": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-h264@veryfast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vp9@faster": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vp9@veryfast": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av1@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-hevc@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vvc@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av2@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-h264@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-vp9@slow": "e9c12675758850f4bffe63457b7255583b6e0675017ce628a3751bdee9fc9211",
-  "nanocodec-av1@veryfast": "814dccbf103b850169a512c56d986babebb69128e4d15e6b4fe398c3952fe32c",
-  "nanocodec-av2@faster": "fb947c9193cc8fc685ad063df2fc1efd5395e0ae20fc79f44459035412540f60"
+  "nanocodec-h264": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-hevc": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-hevc@fast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av1": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av1@fast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vp9": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av2": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vvc": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vp9@fast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av2@fast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vvc@fast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-h264@fast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-h264@faster": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av1@faster": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-hevc@faster": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-h264@veryfast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vp9@faster": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vp9@veryfast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av1@slow": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-hevc@slow": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vvc@slow": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av2@slow": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-h264@slow": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-vp9@slow": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av1@veryfast": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90",
+  "nanocodec-av2@faster": "d7e9718beac5828d7d6e59c5785cc74dbd8fea1cec0997c9912b82a05fbced90"
  }
 }

@@ -90,3 +90,6 @@ planner.intra_min_log2 = 4
 # periodic-key pulse balanced +0.01 dB, worst clip +0.88 dB (meva_admin static,
 # its first key -0.10 dB). Long single-key run: no drift (within 0.08 dB).
 av2.coeff_rate_model = 1
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

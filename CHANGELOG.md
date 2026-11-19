@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.4.0 (2026-11-19)
+
+- **Speed figures.** The results site's speeds are measured on this release's profile-guided (PGO)
+  builds of the command-line tool and C API (x86_64 and aarch64, attached to the GitHub release).
+  crates.io carries source: a crate built by cargo is a plain release build, which took 1.4-3.2 % more
+  CPU on x86 than PGO (AV1, HEVC and H.264 Faster, 2026-11-11). The browser (WASM) module is a plain
+  build.
+
+### New results set
+- **VC-1K phone video calls.** A CBR chart (100 clips) and a Fixed QP view from Meta's VC-1K dataset
+  (CC BY-NC 4.0; numbers only). A further 30 VC-1K clips, disjoint from the measurement set, joined the
+  development pool as a "videocall" class. Most changes below came from fixing what this set exposed.
+
+### Encoders
+- **RD final decision (H.264 Default and Slow).** A shared engine stage weighs the ranking's winner, the
+  skip vector and the best 16x16 intra prediction by luma coded cost (CABAC bits) where the cheap ranking
+  cannot separate them. VC-1K six worst clips J -9.8 % (fixed QP); CBR pool J -2.5 % (108 clips),
+  600-frame final-check -2.7 %; about +7-11 % instructions on Default, ~0 on presets with it off.
+- **Winner walk (H.264 Default).** The ranking's winning vector is refined over its quarter-sample
+  neighbours (never the skip vector or a static block): pool J -0.3 %, final-check -1.9 %, +1 % CPU.
+- **Moving-camera keys at fixed QP (HEVC, AV1, VP9, AV2 Default).** Under camera motion a fixed-QP key is
+  coded up to 6 QP coarser, ramping with motion; a fixed camera keeps its fine key. Fixed-QP pool J
+  -0.8 % (HEVC), -1.5 % (AV1, AV2), -1.9 % (VP9); about -4 % on each codec's worst VC-1K clips. CBR is
+  unchanged.
+- **AV2 Fast and Faster CDEF.** A measured probe (off, the old curve and a short strength ladder on
+  sampled rows) replaces the quantiser-only strength model, which was far too weak on dark and flat
+  video: VC-1K J -14.0 % / -15.7 %, CBR final-check -5.5 % / -6.3 %, +4 % time.
+- **AV2 coefficient rate model.** Mode-decision trials price coefficients with a fitted model in AV2
+  Default, Fast and Faster; Default codes 7.7 % faster at the same quality.
+- **Shared SAO for HEVC and VVC** (HM's encoder structure, exact context rates, band offset available):
+  VVC CBR J -0.3 to -0.5 %, HEVC level.
+- **VP9 Veryfast** takes 16x16 inter transforms and a lower pre-transform skip threshold: CBR pool J
+  -6.2 % (CPU-credited), +3 % instructions.
+- **AV1 Faster** uses causal layer propagation (an MB-tree within the layer period) on base blocks.
+- **Rate control (H.264 Default).** On still pictures the level's per-frame step is damped by the share of
+  unchanged blocks, so tiny decision changes no longer swing a still clip's bitrate by up to 14 %.
+
+### Decoders
+- AV1 10-bit decode closer to dav1d (1.64x -> 1.21x its time); VVC Main 10 CABAC and kernel speed-ups;
+  VP9 10-bit deblock, MC and inverse transforms in SIMD on every tier.
+
 ## 0.3.0 (2026-11-18)
 
 - **Speed figures.** The results site's speeds are measured on this release's profile-guided (PGO)

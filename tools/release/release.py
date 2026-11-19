@@ -6,9 +6,11 @@
 
 Day-to-day builds stay plain release builds; only a published version gets
 profile-guided (PGO) builds, and the published charts change only at a
-release (docs/PROCEDURES.md "Release"). The stages, in order, each resumable
-(a finished stage is recorded in the release's state file and skipped; `--from`
-redoes one and those after it) and idempotent:
+release (docs/PROCEDURES.md "Release"). The stages, each resumable (a finished
+stage is recorded in the release's state file and skipped; `--from` redoes one
+and those after it) and idempotent; independent ones run side by side
+(STAGE_NEEDS: the charts' quality-only chains beside the PGO builds, crates and
+github beside the charts):
 
   commit   The release commit: the newest commit of the integration branch that
            passed both parts of `land.sh --verify` (run/verified-history, the
@@ -79,6 +81,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import functools
 import hashlib
 import importlib.util
 import json
@@ -118,22 +121,65 @@ PUBLIC_REF = "refs/heads/public"
 #: The demo site and results pages are published from this worktree (PROCEDURES "Publishing").
 
 STAGES = ("commit", "pgo", "charts", "crates", "github", "publish")
+#: The stages each stage waits for; the others run side by side (owner, 2026-11-18:
+#: independent stages in parallel). The charts stage starts with the commit: its
+#: clip-set charts' chains measure quality only, on the commit's scoring build, so they
+#: run beside the PGO builds, and only its timing chains wait for them (Release.wait_for;
+#: a dry run's pipe-clean times them too). crates and github need the PGO builds checked
+#: (and github the binaries), never the charts.
+STAGE_NEEDS = {"commit": (), "pgo": ("commit",), "charts": ("commit",), "crates": ("pgo",),
+               "github": ("pgo",), "publish": ("charts", "crates", "github")}
 #: A real release's expected wall time per stage, minutes, from 0.3.0 (2026-11-18): the
 #: commit with its landing; both PGO builds side by side (x86 23.5 on the build box,
-#: aarch64 30.7 on the Jetson) and their identity checks; the crates' dry run (2.2 cold);
-#: the GitHub files; the mirror and site. The charts stage is its slowest chain
-#: (CHART_CHAIN_MINUTES); a dry run's pipe-clean took 4.4.
+#: aarch64 30.7 on the Jetson) and their identity checks; the crates' dry run (2.2 cold;
+#: the upload, --yes-publish, took 11.1); the GitHub files; the mirror and site. The charts
+#: stage is its slowest chain (CHART_CHAIN_MINUTES), then the site, commit and landing; a
+#: dry run's pipe-clean took 4.4.
 STAGE_MINUTES = {"commit": 2, "pgo": 34, "crates": 3, "github": 1, "publish": 6}
-#: Each chart chain's minutes at 0.3.0, without the one-off XPSNR backfill of the
-#: zero lines (15 min of scoring per held-out chart): main (zero line 0.6, refresh 16.2
-#: with the c8a and Jetson CBR timing), fresh held out (coding 8.2, refresh 18.0, psnr
-#: render 2.5), all held out (8.6, 31.3, 3.7), CBR c6a 24.9 and c8g 18.8, lens c8a 18.4,
-#: c6a 29.0, c8g 24.2, and the Jetson's lens at two of six points (a third of its 92 min
-#: at six) after the main chain's Jetson CBR timing on the same lock (15.4).
-CHART_CHAIN_MINUTES = {"main": 17, "heldout-independent_fresh_2026-11-13": 29,
-                       "heldout-independent_2026-11-13": 44, "cbr-zen3": 25,
+CRATES_UPLOAD_MINUTES = 11
+#: The charts stage's site data, commit and landing after its chains (0.3.0: 35 s).
+CHARTS_LAND_MINUTES = 1
+#: Each chart chain's minutes, from 0.3.0 unless said: main (zero line 0.6, refresh 16.2
+#: with the c8a and Jetson CBR timing), CBR c6a 24.9 and c8g 18.8, lens c8a 18.4, c6a
+#: 29.0, c8g 24.2, and the Jetson's lens at two of six points (a third of its 92 min at
+#: six) after the main chain's Jetson CBR timing on the same lock (15.4). The clip-set
+#: chains depend on N, the families whose streams changed since their recorded builds
+#: (chart_refresh's verify; 0.3.0: 6), and are priced at N = 14 (0.4.0's commit subjects:
+#: H.264 Default, HEVC and VVC (shared SAO), AV2, AV1 Faster), with the scoring sessions
+#: of CLIPSET_CLOUD_REGIONS:
+#: - all held out, then fresh (its clips cached): coding ~8, scoring 11 of session
+#:   overhead + 1.7 c7a.metal-min per family on 1 session (0.3.0: 3,232 points of
+#:   ~0.3 Mpx in 6 min), renders ~8, the fresh refresh and renders ~9: 38 + 1.7 N;
+#: - VC-1K (0.92 Mpx): coding ~13, scoring 11 + 5.1 metal-min per family (437 points at
+#:   85/min, 2026-11-18) over 3 sessions, renders ~8: 32 + 1.7 N.
+CHART_CHAIN_MINUTES = {"main": 17, "heldout-independent_2026-11-13": 62,
+                       "heldout-vc1k_2026-11-18": 56, "cbr-zen3": 25,
                        "cbr-graviton": 19, "lens-x86": 19, "lens-zen3": 29,
-                       "lens-graviton": 25, "lens-jetson": 46}
+                       "lens-graviton": 25, "lens-jetson": 46, "qp-vc1k": 36,
+                       "qp-fresh": 26, "lens-quality": 20}
+#: Our presets in a tree (the release commit's: its PGO build's own).
+PRESETS = "crates/nc-encoder/presets"
+#: The Fixed QP sample views' chains (qp_commands) start with the PGO builds: our 26
+#: families' gap on this PC, then their c8a timing. 2026-11-18's VC-1K runs (one
+#: 8-worker gap, this PC at load 50-67): 2.5-2.8 min a family (5 min for two, 2.8 for
+#: one), so 26 in 3 parts ~22 min; held-out fresh at 0.42 of VC-1K's pixels ~12 in 2;
+#: the c8a timing 8-12 min on 16 instances (VC-1K), a plan and a record in seconds.
+QP_PARTS = {"qp-vc1k": 3}
+QP_DEFAULT_PARTS = 2
+QP_WORKERS = 8
+QP_TIMING_PARALLEL = 16
+#: The Fixed QP lens's quality chain (lens_quality_commands): every lens row of ours
+#: (0.4.0: 49 variants of 26 presets) on the build box, LENS_BOX_JOBS slots side by side
+#: with 8 workers each. 0.3.0: 110 s a variant on one slot once built (492 s with the
+#: build); here 7 variants a slot: ~14 min, plus the syncs, compare and rows: ~20.
+LENS_QUALITY_CHAIN = "lens-quality"
+LENS_SITE_DATA = "web/results/data/fixed-qp-lens.json"
+LENS_BOX_JOBS = 7
+LENS_BOX_WORKERS = 8
+#: The lens's public sequences on the box, under its home (PROCEDURES "Remote build box").
+LENS_BOX_SOURCES = "nanocodec-data/ctc-sources"
+#: Chains that need no PGO build (the clip-set charts: quality only).
+QUALITY_CHAIN_PREFIX = "heldout-"
 DRY_CHARTS_MINUTES = 5
 #: A release refuses to start when its stages are expected to take longer (owner,
 #: 2026-11-18), unless --over-budget.
@@ -204,7 +250,9 @@ CAPI_HEADER = "crates/nc-capi/include/nanocodec.h"
 
 # --- charts -------------------------------------------------------------------------------
 
-CHART_TREE = WORKTREES / "release-charts"
+#: The charts stage's worktree, one per version: a tree left by an earlier release would
+#: otherwise be reused at that release's branch and code (0.3.0's was still there).
+CHART_TREE = WORKTREES / "release-charts-v{version}"
 RESULTS = "docs/results"
 RELEASE_RECORD = f"{RESULTS}/release.json"
 BUILDS_RECORD = f"{RESULTS}/bd-vs-speed-builds.json"
@@ -221,15 +269,23 @@ HELDOUT_STREAMS = DATA / "work" / "heldout-chart" / "streams-{stem}"
 #: cap prices the whole lifetime; coding or scoring two families takes ~5-15 min)
 ZERO_LINE_BUDGET = 2.0
 ZERO_LINE_LIFETIME = 40
-HELDOUT_CLIPSETS = (DATA / "clips" / "independent_fresh_2026-11-13.json",
-                    DATA / "clips" / "independent_2026-11-13.json")
+#: Each clip-set chart's scoring sessions, one per region listed (chart_refresh
+#: --cloud-regions). Both chains score at once, and each region's spot quota holds two
+#: c7a.metal-48xl, each chain's encode session and then one scoring session at a time in
+#: eu-north-1: VC-1K (0.92 Mpx, ~5.1 metal-min a family) gets three, the held-out sets
+#: (~0.3 Mpx, ~1.7) one, so both chains take ~32-38 + 1.7 N min (two each: VC-1K
+#: 32 + 2.6 N, the release's longest chain past N = 18).
+CLIPSET_CLOUD_REGIONS = {"vc1k_2026-11-18": "eu-central-1,eu-north-1,eu-central-1"}
+HELDOUT_CLOUD_REGIONS = "eu-north-1"
 #: Fixed QP lens: per machine its timing record and how our build is named there.
 LENS_MACHINES = {"x86": "fixed-qp-timing-x86.json", "zen3": "fixed-qp-timing-zen3.json",
                  "graviton": "fixed-qp-timing-graviton.json",
                  "jetson": "fixed-qp-timing-jetson.json"}
-#: The Jetson times the lens at two of its six quantizer points, as its series always
-#: has: all six on its one timing core took 92 min at 0.3.0 (2,016 encodes)
-JETSON_LENS_POINTS = "27,42"
+#: The Jetson times the lens at two of the six quantizer points of each encoder's scale
+#: (nceval.ctc.conditions.POINTS: QP 27/42, qindex 135/210, Q63 34/52): all six on its
+#: one timing core took 92 min at 0.3.0 (2,016 encodes). Positions, not QP values: the
+#: AV1/VP9/AV2 and SVT-AV1 scales have no QP 27 or 42 (2026-11-19: "27,42" planned none).
+JETSON_LENS_POINT_POSITIONS = (1, 4)
 #: SVT-AV1's lens rungs timed beside ours as the same-session check (PROCEDURES).
 LENS_CHECK = ("svtav1-m10", "svtav1-m12", "svtav1-m13")
 #: The rented CBR series beyond chart_refresh's c8a: instance, record, machine wording.
@@ -462,9 +518,15 @@ class Release:
         self.root.mkdir(parents=True, exist_ok=True)
         self.state = (json.loads(self.state_file.read_text()) if self.state_file.is_file()
                       else {"version": self.version, "stages": {}})
+        #: Stages run side by side (STAGE_NEEDS): the state and its file are shared.
+        self.state_lock = threading.RLock()
+        #: This run's stages: each one's event is set when it ends, done or failed.
+        self.running: dict[str, threading.Event] = {}
+        self.failed: set[str] = set()
 
     def save(self) -> None:
-        self.state_file.write_text(json.dumps(self.state, indent=1) + "\n")
+        with self.state_lock:
+            self.state_file.write_text(json.dumps(self.state, indent=1) + "\n")
 
     def log(self, name: str) -> Path:
         return self.root / "logs" / f"{name}.log"
@@ -812,16 +874,19 @@ class Release:
                 f"{base}/nanocodec --presets-dir {base}/presets{builds} --points "
                 f"{','.join(ZERO_LINES)} --workers 8 --over-budget"]),
             ("chart-refresh", [*refresh, "--families", families, "--pgo"])]
-        # each held-out chart: its zero lines coded where missing and scored on rented
-        # machines, then the refresh as chart_refresh --heldout runs it (refresh_heldout),
+        # each clip-set chart (every site chart view's, chart_refresh.clipset_chains): its
+        # zero lines coded where missing and scored on rented machines (cached: no
+        # machine), then the refresh as chart_refresh --heldout runs it (refresh_heldout),
         # one command each so that a resumed stage does not redo a finished one
         heldout_tool = ["python3", "tools/dev/aws_heldout_chart.py"]
         session = ["--budget", str(ZERO_LINE_BUDGET), "--lifetime", str(ZERO_LINE_LIFETIME)]
-        for clipset in HELDOUT_CLIPSETS:
+        for clipset in [path for chain in clip_chains() for path in chain]:
             zero = ["--clipset", str(clipset), "--families", ",".join(ZERO_LINES),
                     "--build", str(CHART_BUILDS / self.binary_short),
                     "--streams", str(HELDOUT_STREAMS).format(stem=clipset.stem), *session]
-            held_out = [*refresh, "--clipset", str(clipset), "--families", families]
+            held_out = [*refresh, "--clipset", str(clipset), "--families", families,
+                        "--cloud-regions",
+                        CLIPSET_CLOUD_REGIONS.get(clipset.stem, HELDOUT_CLOUD_REGIONS)]
             name = f"heldout-{clipset.stem}"
             commands += [
                 (f"{name}-zero-line", [*heldout_tool, "run", *zero,
@@ -849,7 +914,100 @@ class Release:
         for machine, record_file in LENS_MACHINES.items():
             commands += self.lens_commands(machine, [*ours, *LENS_CHECK], ours,
                                            f"{RESULTS}/{record_file}")
+        for view in qp_views():
+            commands += self.qp_commands(tree, view, self.our_families(tree))
+        commands += self.lens_quality_commands(tree, self.our_families(tree))
         return commands
+
+    def lens_quality_commands(self, tree: Path, ours: list[str]) -> list[tuple[str, list[str]]]:
+        """The Fixed QP lens's quality (the overview's headline chart) of every row of ours
+        on the release's x86 PGO build: each (encoder, column) variant coded by `nceval.ctc
+        local` on the build box, LENS_BOX_JOBS jobs side by side (one slot each, 8 workers),
+        then compared here and written into the lens data and its CSV (nceval.ctc
+        lens-rows). Every row of ours, not only changed ones: the rows were on five builds."""
+        sys.path.insert(0, str(REPO / "eval"))
+        from nceval.ctc.lensrows import variants
+        data = tree / LENS_SITE_DATA
+        runs = variants(json.loads(data.read_text()), ours)
+        binaries = self.builds("x86_64")
+        on_box = f"$HOME/{binaries.relative_to(Path.home())}"
+        results = []
+        jobs = []
+        for index in range(LENS_BOX_JOBS):
+            mine = runs[index::LENS_BOX_JOBS]
+            if not mine:
+                continue
+            steps, fetch = [], []
+            for run_spec in mine:
+                run_dir = (f"remote-out/lens-rel/{run_spec['encoder'].removeprefix('nanocodec-')}"
+                           f"-{run_spec['label']}").replace("@", "-")
+                results.append(self.tree / run_dir / "out/results")
+                fetch += ["--fetch", f"{run_dir}/out/results"]
+                # paths in the box's home: $HOME left unquoted, to expand there
+                steps.append(f"(cd eval && NC_NANOCODEC_BIN={on_box} python3 -m nceval.ctc "
+                             f"local --source-dir $HOME/{LENS_BOX_SOURCES} " + shlex.join([
+                    "--run-dir", f"../{run_dir}", "--encoder", run_spec["encoder"],
+                    "--label", run_spec["label"],
+                    *(a for param in run_spec["params"] for a in ("--param", param)),
+                    "--workers", str(LENS_BOX_WORKERS)]) + ")")
+            jobs.append(shlex.join([str(NC_REMOTE), "run", "--worktree", str(self.tree),
+                                    "--name", f"release-lens-{index + 1}",
+                                    "--sync", str(binaries), *fetch, "--",
+                                    " && ".join(steps)]))
+        compare = self.root / "lens-compare.json"
+        return [
+            ("lens-quality-box", ["bash", "-c", all_of(jobs)]),
+            ("lens-quality-compare", ["bash", "-c", "cd eval && " + shlex.join([
+                "python3", "-m", "nceval.ctc", "compare", "--results",
+                ",".join(map(str, results)), "--json", str(compare)])]),
+            ("lens-quality-rows", ["bash", "-c", "cd eval && " + shlex.join([
+                "python3", "-m", "nceval.ctc", "lens-rows", "--data", f"../{LENS_SITE_DATA}",
+                "--compare", str(compare), "--build", self.binary_short])])]
+
+    def qp_commands(self, tree: Path, view, ours: list[str]) -> list[tuple[str, list[str]]]:
+        """A Fixed QP sample view (nceval.site.SAMPLE_QP_VIEWS) on the release's x86 PGO
+        build: our families' quality by `nceval.fixedqp gap` on this PC, in parts side by
+        side (the references' rows are kept: their points are cached and their code is
+        unchanged), then their speed on those encodes on c8a (fixedqp_timing.py plan-pool,
+        x264 medium beside them as the same-session check), merged into the view's record."""
+        record = json.loads((tree / RESULTS / view.data).read_text())
+        sys.path.insert(0, str(REPO / "eval"))
+        from nceval.config import load_paths
+        clipset = load_paths().clips / record["clipset"]
+        binary, presets = self.builds("x86_64") / "nanocodec", self.tree / PRESETS
+        anchor = record["anchor"]
+        parts = [ours[i::QP_PARTS.get(view.id, QP_DEFAULT_PARTS)]
+                 for i in range(QP_PARTS.get(view.id, QP_DEFAULT_PARTS))]
+        gaps = [self.root / f"{view.id}-gap-{i + 1}.json" for i in range(len(parts))]
+        tool = ["python3", "tools/dev/fixedqp_timing.py"]
+        plan, out = self.root / f"{view.id}-timing-plan.json", self.root / f"{view.id}-timing"
+        scratch = self.root / f"{view.id}-timing-record.json"
+        gap = [shlex.join(["python3", "-m", "nceval.fixedqp", "gap", "--binary", str(binary),
+                           "--presets-dir", str(presets), "--clipset", str(clipset),
+                           "--clips", str(len(record["clips"])),
+                           "--families", ",".join([anchor, *part]),
+                           "--pairs", ",".join(f"{anchor}:{f}" for f in part),
+                           "--workers", str(QP_WORKERS), "--json", str(json_path)])
+               for part, json_path in zip(parts, gaps)]
+        timing = view.timing["x86"]
+        return [
+            (f"{view.id}-gap", ["bash", "-c", all_of(gap, cwd="eval")]),
+            (f"{view.id}-site", ["bash", "-c", "cd eval && " + shlex.join([
+                "python3", "-m", "nceval.fixedqp", "site",
+                *(a for g in gaps for a in ("--gap", str(g))), "--build", self.binary_short,
+                "--keep-references", str(tree / RESULTS / view.data),
+                "--json", str(tree / RESULTS / view.data)])]),
+            (f"{view.id}-timing-plan", [*tool, "plan-pool", "--binary", str(binary),
+                                        "--presets-dir", str(presets),
+                                        *(a for g in gaps for a in ("--gap", str(g))),
+                                        "--out", str(plan)]),
+            (f"{view.id}-timing-run", [*tool, "run", "--plan", str(plan), "--out", str(out),
+                                       "--parallel", str(QP_TIMING_PARALLEL)]),
+            (f"{view.id}-timing-record", [*tool, "record", "--plan", str(plan), "--out",
+                                          str(out), "--build", self.binary_short,
+                                          "--record", str(scratch)]),
+            (f"{view.id}-timing-merge", [*tool, "merge", "--record", f"{RESULTS}/{timing}",
+                                         "--from", str(scratch), "--encoders", ",".join(ours)])]
 
     def lens_env(self) -> dict[str, str]:
         """The lens planner resolves our tool by NC_NANOCODEC_BIN: the x86 PGO build (an
@@ -870,7 +1028,7 @@ class Release:
         plan, out = self.root / f"lens-{machine}.json", self.root / f"lens-{machine}"
         if machine == "jetson":
             binary = ["--binary", f"~/{JETSON_ROOT}/{self.build_key}/pgo/nanocodec", "--rounds", "1",
-                      "--points", JETSON_LENS_POINTS]
+                      "--points", jetson_lens_points()]
         elif machine == "graviton":
             binary = ["--binary", str(self.builds("aarch64") / "nanocodec"),
                       "--expect-version", self.version_line()]
@@ -895,6 +1053,7 @@ class Release:
     def charts_dry(self) -> dict:
         """The full refresh printed; the pipe-clean run on every machine into this
         release's directory."""
+        self.wait_for("pgo")  # the pipe-clean times the PGO builds
         results: dict[str, object] = {}
         began = time.monotonic()
         run(["python3", "tools/dev/chart_refresh.py", self.binary_short, "--families",
@@ -959,28 +1118,32 @@ class Release:
 
     def charts_real(self) -> dict:
         """--real: the whole refresh in a worktree of the integration head, landed."""
-        tree = CHART_TREE
+        tree = Path(str(CHART_TREE).format(version=self.version))
         branch = f"release-charts/v{self.version}"
         if not (tree / ".git").exists():
             run(["git", "worktree", "add", "-b", branch, str(tree), INTEGRATION])
+        elif git("branch", "--show-current", cwd=tree) != branch:
+            sys.exit(f"{tree} is not on {branch}: remove it or check it out")
         (tree / RELEASE_RECORD).write_text(json.dumps(
             {"version": self.version, "commit": self.binary_short, "build": "PGO"}, indent=1) + "\n")
         # a resumed stage skips the commands it finished (each one re-times or rents
         # machines); the list is cleared when the stage is done
-        timings = self.state.setdefault("charts_progress", {})
-        saving = threading.Lock()
+        with self.state_lock:
+            timings = self.state.setdefault("charts_progress", {})
         chains: dict[str, list[tuple[str, list[str]]]] = {}
         for name, command in self.chart_commands(tree):
             chains.setdefault(chart_chain(name), []).append((name, command))
 
-        def run_chain(commands: list[tuple[str, list[str]]]) -> None:
+        def run_chain(chain: str, commands: list[tuple[str, list[str]]]) -> None:
+            if not chain.startswith(QUALITY_CHAIN_PREFIX):
+                self.wait_for("pgo")  # it times the PGO builds
             for name, command in commands:
                 if name in timings:
                     say(f"charts: {name} done earlier ({timings[name]} min): skipped")
                     continue
                 began = time.monotonic()
                 run(command, cwd=tree, log=self.log(f"charts-{name}"), env=self.lens_env())
-                with saving:
+                with self.state_lock:
                     timings[name] = round((time.monotonic() - began) / 60, 1)
                     self.save()
 
@@ -988,7 +1151,7 @@ class Release:
         # quality refresh runs on this PC and its own sessions: the stage takes as long
         # as its slowest chain (0.3.0 ran them one after another: ~2.5 h of timing)
         with ThreadPoolExecutor(len(chains)) as pool:
-            for job in [pool.submit(run_chain, c) for c in chains.values()]:
+            for job in [pool.submit(run_chain, *c) for c in chains.items()]:
                 job.result()
         run(["python3", "-m", "nceval.site"], cwd=tree / "eval", log=self.log("charts-site"))
         run(["git", "add", "--", RESULTS, "web/results/data", "README.md"], cwd=tree)
@@ -1092,33 +1255,85 @@ class Release:
     # --- driver ---------------------------------------------------------------------------
 
     def stage_estimate(self, stage: str) -> float:
-        """Expected wall minutes of `stage` in this mode (charts: its slowest chain still
-        to run)."""
-        if stage != "charts":
-            return STAGE_MINUTES[stage]
+        """Expected wall minutes of `stage` in this mode, once the stages it needs are
+        done (charts: its own estimate, chart_finish)."""
+        if stage == "crates" and self.publish:
+            return CRATES_UPLOAD_MINUTES
+        return STAGE_MINUTES[stage]
+
+    def chart_finish(self, commit_done: float, pgo_done: float) -> float:
+        """When the charts stage ends, given when the commit and pgo stages end: its
+        quality chains start with the commit, its timing chains with the PGO builds;
+        then the site, commit and landing."""
         if self.pipe_clean or not self.real:
-            return DRY_CHARTS_MINUTES
+            return pgo_done + DRY_CHARTS_MINUTES
         # a chain with a finished command counts as done: a conservative resume estimate
         # would need each command's minutes, and a resume is rare
         started = {chart_chain(name) for name in self.state.get("charts_progress", {})}
-        left = [m for chain, m in CHART_CHAIN_MINUTES.items() if chain not in started]
-        return max(left, default=0)
+        ends = [(commit_done if chain.startswith(QUALITY_CHAIN_PREFIX) else pgo_done) + minutes
+                for chain, minutes in chain_minutes().items() if chain not in started]
+        return max(ends, default=pgo_done) + CHARTS_LAND_MINUTES
 
     def plan(self, stages: list[str]) -> list[str]:
-        """The stages to run, printed with their expected wall time; refused when the
-        total passes MAX_RELEASE_MINUTES (unless --over-budget)."""
+        """The stages to run, printed with when each is expected to end (independent
+        stages side by side, STAGE_NEEDS); refused when the whole run passes
+        MAX_RELEASE_MINUTES (unless --over-budget)."""
         todo = [s for s in stages if not (self.state["stages"].get(s) and not self.args.start
                                           and not self.args.only)]
-        estimates = {s: self.stage_estimate(s) for s in todo}
+        ends: dict[str, float] = {}
+        for stage in STAGES:  # in order: every stage's needs come before it
+            if stage not in todo:
+                ends[stage] = 0.0
+            elif stage == "charts":
+                ends[stage] = self.chart_finish(ends["commit"], ends["pgo"])
+            else:
+                ends[stage] = (max((ends[need] for need in STAGE_NEEDS[stage]), default=0.0)
+                               + self.stage_estimate(stage))
         for stage in stages:
-            say(f"plan: {stage:8s} " + (f"~{estimates[stage]:g} min" if stage in estimates
+            say(f"plan: {stage:8s} " + (f"ends at ~{ends[stage]:g} min" if stage in todo
                                          else "done earlier"))
-        total = sum(estimates.values())
+        total = max(ends.values())
         say(f"plan: ~{total:g} min in all (limit {MAX_RELEASE_MINUTES})")
         if total > MAX_RELEASE_MINUTES and not self.args.over_budget:
             sys.exit(f"expected ~{total:g} min, over the {MAX_RELEASE_MINUTES}-minute limit: "
                      f"cut the work, or pass --over-budget")
         return todo
+
+    def wait_for(self, stage: str) -> None:
+        """Block until `stage` is done: in this run, or recorded by an earlier one."""
+        if stage in self.running:
+            self.running[stage].wait()
+            if stage in self.failed:
+                sys.exit(f"{stage} failed")
+        elif stage not in self.state["stages"]:
+            sys.exit(f"{stage} has not run: run it first")
+
+    def run_stage(self, stage: str) -> None:
+        """One stage, once the stages it needs are done; its event set however it ends."""
+        try:
+            for need in STAGE_NEEDS[stage]:
+                self.wait_for(need)
+            if stage != "commit" and "release_commit" not in self.state:
+                sys.exit("no release commit yet: run the commit stage first")
+            if stage != "commit":
+                with self.state_lock:
+                    self.reuse_binaries()
+            say(f"== {stage}")
+            began = time.monotonic()
+            result = getattr(self, f"stage_{stage}")()
+            minutes = round((time.monotonic() - began) / 60, 1)
+            with self.state_lock:
+                if stage == "commit":
+                    self.state.update(base_commit=result["base_commit"],
+                                      release_commit=result["release_commit"])
+                self.state["stages"][stage] = {"minutes": minutes, **result}
+                self.save()
+            say(f"== {stage} done in {minutes} min")
+        except BaseException:
+            self.failed.add(stage)
+            raise
+        finally:
+            self.running[stage].set()
 
     def execute(self) -> None:
         start = STAGES.index(self.args.start) if self.args.start else 0
@@ -1128,21 +1343,15 @@ class Release:
             if stage not in todo:
                 say(f"== {stage}: done earlier ({self.state['stages'][stage]['minutes']} min): "
                     f"skipped")
-                continue
-            if stage != "commit" and "release_commit" not in self.state:
-                sys.exit("no release commit yet: run the commit stage first")
-            if stage != "commit":
-                self.reuse_binaries()
-            say(f"== {stage}")
-            began = time.monotonic()
-            result = getattr(self, f"stage_{stage}")()
-            minutes = round((time.monotonic() - began) / 60, 1)
-            if stage == "commit":
-                self.state.update(base_commit=result["base_commit"],
-                                  release_commit=result["release_commit"])
-            self.state["stages"][stage] = {"minutes": minutes, **result}
-            self.save()
-            say(f"== {stage} done in {minutes} min")
+        self.running = {stage: threading.Event() for stage in todo}
+        with ThreadPoolExecutor(max(len(todo), 1)) as pool:
+            jobs = {stage: pool.submit(self.run_stage, stage) for stage in todo}
+        errors = {stage: job.exception() for stage, job in jobs.items() if job.exception()}
+        for stage, error in errors.items():
+            say(f"== {stage} failed: {error}")
+        if errors:
+            first = min(errors, key=STAGES.index)
+            sys.exit(f"resume with --from {first} (stages done are kept)")
         say(f"state: {self.state_file}")
         print(json.dumps(self.state, indent=1))
 
@@ -1160,15 +1369,73 @@ def binary_neutral(path: str) -> bool:
 
 def chart_chain(name: str) -> str:
     """The chain a chart command runs in, in order within it: one per timing machine
-    and series (CBR or the Fixed QP lens), one per held-out chart, and the main chart."""
+    and series (CBR or the Fixed QP lens), one per group of clip-set charts that share
+    clips (named after its first), one per Fixed QP sample view, and the main chart."""
+    if name.startswith(LENS_QUALITY_CHAIN):
+        return LENS_QUALITY_CHAIN
+    for view in qp_views():
+        if name == view.id or name.startswith(f"{view.id}-"):
+            return view.id
     for series in ("cbr", "lens"):
         for machine in (*CBR_SERIES, *LENS_MACHINES):
             if name.startswith(f"{series}-{machine}"):
                 return f"{series}-{machine}"
-    for clipset in HELDOUT_CLIPSETS:
-        if name.startswith(f"heldout-{clipset.stem}"):
-            return f"heldout-{clipset.stem}"
+    for chain in clip_chains():
+        for clipset in chain:
+            if name == f"{QUALITY_CHAIN_PREFIX}{clipset.stem}" or name.startswith(
+                    f"{QUALITY_CHAIN_PREFIX}{clipset.stem}-"):
+                return f"{QUALITY_CHAIN_PREFIX}{chain[0].stem}"
     return "main"
+
+
+def all_of(commands: list[str], cwd: str | None = None) -> str:
+    """A shell line running `commands` side by side, each in `cwd` if given: it waits for
+    every one and fails if any did. The `cd` is its own statement: prefixed as
+    `cd DIR && ...` it joined the first command's background job, and the others ran
+    outside DIR (2026-11-19: parts 2 and 3 of the qp gaps found no `nceval`)."""
+    enter = f"cd {shlex.quote(cwd)} || exit 1; " if cwd else ""
+    return (enter + "".join(f"{command} & p{i}=$!; " for i, command in enumerate(commands))
+            + "status=0; " + "".join(f"wait $p{i} || status=1; " for i in range(len(commands)))
+            + "exit $status")
+
+
+def jetson_lens_points() -> str:
+    """`fixedqp_timing.py plan --points` for the Jetson: JETSON_LENS_POINT_POSITIONS of
+    every scale (the scales' points are disjoint, so each encoder keeps its own two)."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.ctc.conditions import POINTS
+    return ",".join(str(points[i]) for points in POINTS.values()
+                    for i in JETSON_LENS_POINT_POSITIONS)
+
+
+def qp_views() -> tuple:
+    """The Fixed QP views on clip-set samples a release re-measures: every one the
+    results site has (nceval.site.SAMPLE_QP_VIEWS), published or not."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.site import SAMPLE_QP_VIEWS
+    return SAMPLE_QP_VIEWS
+
+
+@functools.cache
+def clip_chains() -> tuple[tuple[Path, ...], ...]:
+    """The clip-set charts a release refreshes, in chains (chart_refresh.clipset_chains:
+    the results site's chart views, grouped by shared clips)."""
+    refresh = load_module("chart_refresh", REPO / "tools/dev/chart_refresh.py")
+    return tuple(tuple(chain) for chain in refresh.clipset_chains())
+
+
+def chain_minutes() -> dict[str, float]:
+    """Every chart chain's expected minutes; a chain without an estimate stops the plan
+    (a new chart view must be priced before a release runs it)."""
+    chains = ["main", *(f"{series}-{machine}" for series, machines in
+                        (("cbr", CBR_SERIES), ("lens", LENS_MACHINES)) for machine in machines),
+              *(f"{QUALITY_CHAIN_PREFIX}{chain[0].stem}" for chain in clip_chains()),
+              *(view.id for view in qp_views()), LENS_QUALITY_CHAIN]
+    unpriced = [chain for chain in chains if chain not in CHART_CHAIN_MINUTES]
+    if unpriced:
+        sys.exit(f"no time estimate for chart chain(s) {', '.join(unpriced)}: add them to "
+                 f"CHART_CHAIN_MINUTES")
+    return {chain: CHART_CHAIN_MINUTES[chain] for chain in chains}
 
 
 def build_notes(version: str) -> str:
