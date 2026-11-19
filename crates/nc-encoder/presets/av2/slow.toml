@@ -13,3 +13,10 @@ av2.tcq = 2
 # engine default moved to 0 for VVC/AV2 Default (L3 screened), and this
 # preset has not been screened with 0.
 decision.exact_rank_margin = 1.1
+# Pinned before AV2 Default's modelled trial coefficient rate (2026-11-18):
+# on Slow it buys no time (c8a lens 126.0 -> 126.4 fps, CBR 600 x86
+# instructions -0.1 %; TCQ and trellis pricing dominate) for lens W +0.2.
+av2.coeff_rate_model = 0
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

@@ -24,12 +24,14 @@ use nc_dsp::{BlockSize, Dsp, Filter, SUBPEL_VARIANCE_POSITIONS, Variance, Window
 use std::cell::{Cell, RefCell};
 
 use crate::backend::{CodecBackend, PredictionMode};
+use crate::final_stage::{self, Finalists, InterFinalist};
 use crate::intra_estimate;
 use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
 use crate::params::DecisionParams;
 use crate::partition::Block;
 use crate::partition_plan::LeafStats;
 use crate::psy::{ac_energy, psy_penalty};
+use crate::rd_refine::{RdWalk, rd_refine_vector};
 use crate::refresh::RefreshWindow;
 use crate::threshold_control::{Band, BandEvidence, Tool};
 
@@ -304,8 +306,7 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
     dsp: &Dsp,
     backend: &mut B,
     block: &Block,
-    source: &Picture,
-    reference: &Picture,
+    (source, reference, recon): (&Picture, &Picture, Option<&Picture>),
     search_mv: Mv,
     planned: Option<&LeafStats>,
     scratch: &mut DecisionScratch,
@@ -322,7 +323,7 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
             dsp,
             backend,
             block,
-            (source, reference),
+            (source, reference, recon),
             search_mv,
             planned,
             scratch,
@@ -336,7 +337,7 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
             dsp,
             backend,
             block,
-            (source, reference),
+            (source, reference, recon),
             search_mv,
             planned,
             scratch,
@@ -355,7 +356,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     dsp: &Dsp,
     backend: &mut B,
     block: &Block,
-    (source, reference): (&Picture, &Picture),
+    (source, reference, recon): (&Picture, &Picture, Option<&Picture>),
     search_mv: Mv,
     planned: Option<&LeafStats>,
     scratch: &mut DecisionScratch,
@@ -375,6 +376,9 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     candidates.clear();
     seeds.clear();
     bilinear.clear();
+    // Unchanged since the previous source frame (noise-aware pre-analysis):
+    // its true motion is zero, so a sub-sample walk only fits noise.
+    let static_block = source_moments.is_some_and(|pre| is_static::<B>(pre, block));
     candidates.push(Mv::ZERO);
     backend.mv_candidates(block, candidates);
     backend.mv_seeds(block, seeds);
@@ -619,6 +623,27 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
                 (cost, distortion, stats)
             })
         };
+        // Neither the codec's skip vector nor a static block is walked: on a
+        // still camera, moving them to a sub-sample neighbour blurs the scene
+        // over the GOP (skip vector: pool_chad_3_086, fixed QP, J +7.2 %
+        // walked, -0.3 % kept; static blocks: the long windows of
+        // final-check, docs/handoff/rd-depth.md).
+        let walk = winner_walk(params).filter(|_| {
+            Some(inter_mv) != skip_vector
+                && !static_block
+                && inter_distortion
+                    >= params.winner_walk_min_lambdas * lambda * leaf_area::<B>(block) as f32
+        });
+        let ((inter_cost, inter_distortion, inter_mv), inter_stats) = match walk {
+            Some(walk) => walk_winner(
+                backend,
+                block,
+                (&measurer, filter),
+                (lambda * new_rate_scale, walk),
+                ((inter_cost, inter_distortion, inter_mv), inter_stats),
+            ),
+            None => ((inter_cost, inter_distortion, inter_mv), inter_stats),
+        };
         if let Some(gates) = gates {
             gates.record(inter_mv, evidence);
         }
@@ -631,7 +656,16 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
             dc: dc_error::<B>(params, inter_stats, block),
             mv: inter_mv,
         };
-        return intra_or_inter(backend, (&measurer, source), block, lambda, params, inter);
+        if params.final_stage < 0.5 {
+            return intra_or_inter(backend, (&measurer, source), block, lambda, params, inter);
+        }
+        let finish = Finish {
+            pictures: (source, reference, recon),
+            skip_vector,
+            filter: Some(filter),
+            winner_sse: inter_stats.sse as f32,
+        };
+        return finish.decide(backend, &measurer, block, lambda, params, inter);
     }
 
     let cost = |mv: Mv, stats: Variance| -> (f32, f32) {
@@ -685,7 +719,95 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
         dc,
         mv: inter_mv,
     };
-    intra_or_inter(backend, (&measurer, source), block, lambda, params, inter)
+    if params.final_stage < 0.5 {
+        return intra_or_inter(backend, (&measurer, source), block, lambda, params, inter);
+    }
+    // The final stage needs the winner's prediction error (the planner's
+    // vectors are cached).
+    let finish = Finish {
+        pictures: (source, reference, recon),
+        skip_vector,
+        filter: None,
+        winner_sse: stats_of(inter_mv).sse as f32,
+    };
+    finish.decide(backend, &measurer, block, lambda, params, inter)
+}
+
+/// What the end of the inter decision needs besides the ranking's winner:
+/// the pictures, the codec's skip vector, the exact filter (if the codec
+/// ranks with one) and the winner's prediction error.
+struct Finish<'p> {
+    pictures: (&'p Picture, &'p Picture, Option<&'p Picture>),
+    skip_vector: Option<Mv>,
+    filter: Option<Filter>,
+    winner_sse: f32,
+}
+
+impl Finish<'_> {
+    /// The leaf's choice under `decision.final_stage`: the final stage
+    /// (`final_stage.rs`), or the ranking's winner or DC intra
+    /// ([`intra_or_inter`]) where the winner's error is past
+    /// `decision.final_max_winner_lambdas`. Out of line, so the decision
+    /// with the stage off runs the code it ran before the stage existed.
+    #[inline(never)]
+    fn decide<B: CodecBackend>(
+        self,
+        backend: &mut B,
+        measurer: &Measurer<'_>,
+        block: &Block,
+        lambda: f32,
+        params: &DecisionParams,
+        inter: InterChoice,
+    ) -> Choice {
+        let (source, reference, recon) = self.pictures;
+        // The stage settles near-ties of flat, well-predicted blocks; where
+        // the winner's error is large the residual dominates whatever is
+        // chosen, and pricing it (many coefficients) costs most.
+        let max_winner =
+            params.final_max_winner_lambdas * backend.lambda() * leaf_area::<B>(block) as f32;
+        if max_winner > 0.0 && self.winner_sse > max_winner {
+            return intra_or_inter(backend, (measurer, source), block, lambda, params, inter);
+        }
+        let skip = self
+            .skip_vector
+            .filter(|&mv| {
+                params.final_skip_candidate >= 0.5 && mv != inter.mv && measurer.allows(mv)
+            })
+            .map(|mv| {
+                let stats = match self.filter {
+                    Some(filter) if !mv.is_full_pel() => measurer.measure_exact(mv, filter),
+                    _ => measurer.measure(mv),
+                };
+                let bits = backend.mode_bits(block, &PredictionMode::Inter(mv));
+                InterFinalist {
+                    mv,
+                    sse: stats.sse as f32,
+                    rank_cost: n_variance::<B>(stats, block) as f32 + lambda * bits,
+                }
+            });
+        let finalists = Finalists {
+            winner: InterFinalist {
+                mv: inter.mv,
+                sse: self.winner_sse,
+                rank_cost: inter.cost,
+            },
+            skip,
+            source_energy: measurer.source_energy() as f32,
+            intra_rank_cost: inter.cost + inter.dc,
+            // Below the gate the inter residual is too small for intra to
+            // pay (and the screen to be worth its predictions).
+            intra_gate_open: params.final_intra_candidate >= 0.5
+                && inter.distortion + inter.dc
+                    > final_intra_gate(params, lambda) * leaf_area::<B>(block) as f32,
+        };
+        final_stage::decide(
+            backend,
+            (source, reference, recon),
+            block,
+            params,
+            finalists,
+        )
+    }
 }
 
 /// The best inter mode of `block` predicted from a second reference
@@ -1385,6 +1507,80 @@ fn rank_cached_exact<B: CodecBackend, const GATHER: bool>(
     })
 }
 
+/// The walk of `decision.winner_walk_steps` (`None` when 0).
+fn winner_walk(params: &DecisionParams) -> Option<RdWalk> {
+    let steps = params.winner_walk_steps.round() as usize;
+    (steps > 0).then_some(RdWalk {
+        square: params.winner_walk_square >= 0.5,
+        steps,
+    })
+}
+
+/// The ranking's winner `start` (with its statistics) walked to the best of
+/// its quarter-sample neighbours by distortion + `rate_lambda` · bits on the
+/// codec's exact prediction (`decision.winner_walk_*`).
+///
+/// Why: the seeds (the search vector and the best cheap vector) are refined
+/// before the ranking, on bilinear distortion alone, under the seed gates and
+/// move biases; the vector that wins the exact ranking, often a cheap
+/// (neighbour) vector, is never refined. On VC-1K phone calls our H.264 coded
+/// 59 % whole-sample vectors where x264 codes 14 %; walking the winner's
+/// neighbours recovered as much as an x264-style coded-cost walk did
+/// (docs/handoff/rd-depth.md). The walk leaves the psy term out, as the seed
+/// refinement does: with it, the smoother sub-sample predictions lose to the
+/// whole-sample copy and the walk recovers about a third of the gain (VC-1K
+/// worst six, fixed QP: J -0.4 % against -1.5 %). The returned cost keeps the
+/// start's psy penalty, so intra is weighed against the same scale as before.
+fn walk_winner<B: CodecBackend>(
+    backend: &mut B,
+    block: &Block,
+    (measurer, filter): (&Measurer<'_>, Filter),
+    (rate_lambda, walk): (f32, RdWalk),
+    (start, start_stats): ((f32, f32, Mv), Variance),
+) -> ((f32, f32, Mv), Variance) {
+    let start_rate = rate_lambda * backend.mode_bits(block, &PredictionMode::Inter(start.2));
+    let start_walk_cost = start.1 + start_rate;
+    // The start's psy penalty (0 without the term).
+    let psy_penalty = start.0 - start_walk_cost;
+    let mut best = ((start_walk_cost, start.1, start.2), start_stats);
+    let mut cached_best_cost = Some(start_walk_cost);
+    rd_refine_vector(start.2, start_walk_cost, walk, |mv| {
+        if !measurer.allows(mv) {
+            return None;
+        }
+        let rate = rate_lambda * backend.mode_bits(block, &PredictionMode::Inter(mv));
+        let (cost, distortion, stats) = if B::CACHE_EXACT_LUMA {
+            let mut consider = |stats: Variance, pixels: Option<&[u8]>| {
+                consider_exact(
+                    backend,
+                    (block, mv, filter),
+                    (measurer, None),
+                    rate,
+                    &mut cached_best_cost,
+                    (stats, pixels, None),
+                )
+            };
+            if mv.is_full_pel() {
+                consider(measurer.measure(mv), None)
+            } else {
+                measurer.with_exact_prediction(mv, filter, |stats, pixels, _| {
+                    consider(stats, Some(pixels))
+                })
+            }
+        } else {
+            let stats = measurer.measure_exact(mv, filter);
+            let distortion = n_variance::<B>(stats, block) as f32;
+            (distortion + rate, distortion, stats)
+        };
+        if cost < best.0.0 {
+            best = ((cost, distortion, mv), stats);
+        }
+        Some(cost)
+    });
+    let ((cost, distortion, mv), stats) = best;
+    ((cost + psy_penalty, distortion, mv), stats)
+}
+
 /// The psychovisual term of the inter ranking for one block
 /// (`decision.psy_strength`, [`crate::psy`]).
 #[derive(Debug, Clone, Copy)]
@@ -1452,7 +1648,7 @@ fn intra_or_inter<B: CodecBackend>(
 ) -> Choice {
     let area = leaf_area::<B>(block) as f32;
     // Rectangular leaves are inter only (`CodecBackend::partition_shapes`).
-    if is_square_leaf::<B>(block) && inter.distortion + inter.dc > params.intra_gate_variance * area
+    if is_square_leaf::<B>(block) && inter.distortion + inter.dc > intra_gate(params, lambda) * area
     {
         // The DC prediction's residual is the source about its mean: its
         // distortion is the source's AC energy.
@@ -1491,6 +1687,28 @@ fn intra_or_inter<B: CodecBackend>(
     Choice {
         mode: DecidedMode::inter(inter.mv),
         cost: inter.cost,
+    }
+}
+
+/// The inter residual variance per luma sample above which DC intra is
+/// tried: `decision.intra_gate_lambdas` times λ where set, else the fixed
+/// `decision.intra_gate_variance`.
+fn intra_gate(params: &DecisionParams, lambda: f32) -> f32 {
+    if params.intra_gate_lambdas > 0.0 {
+        params.intra_gate_lambdas * lambda
+    } else {
+        params.intra_gate_variance
+    }
+}
+
+/// The final stage's intra gate per luma sample:
+/// `decision.final_intra_gate_lambdas` times λ where set, else the
+/// ranking's [`intra_gate`].
+fn final_intra_gate(params: &DecisionParams, lambda: f32) -> f32 {
+    if params.final_intra_gate_lambdas > 0.0 {
+        params.final_intra_gate_lambdas * lambda
+    } else {
+        intra_gate(params, lambda)
     }
 }
 
@@ -2499,8 +2717,7 @@ mod tests {
             &dsp,
             &mut backend,
             &block,
-            &source,
-            &reference,
+            (&source, &reference, None),
             Mv { x: 4, y: 0 },
             None,
             &mut DecisionScratch::default(),

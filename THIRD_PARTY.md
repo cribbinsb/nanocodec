@@ -1081,7 +1081,10 @@ encoder practices used here, reimplemented in Rust, not copied: the
 λ = 0.85 · 2^((QP − 12) / 3) mode-decision multiplier (JM, HM), HM's
 dead-zone quantiser rounding offsets (171/512 intra, 85/512 inter, in
 `crates/nc-dsp/src/codec_txfm/mod.rs`), HM's sign-data-hiding decision
-(`crates/nc-vvc/src/recon.rs`), and VTM's default chroma QP mapping table.
+(`crates/nc-vvc/src/recon.rs`), VTM's default chroma QP mapping table, and
+the structure of HM's SAO encoder (`TEncSampleAdaptiveOffset`: per-CTB
+statistics, `deriveOffsets` / `estIterOffset` offset estimation, band
+position search, merge and per-component RD choice) in `crates/nc-encoder/src/sao/`.
 HM and VTM are distributed under the BSD-3-Clause licence (copyright the
 ITU-T/ISO/IEC and their contributors); JM under the copyright notice in its own
 distribution. Sources: https://vcgit.hhi.fraunhofer.de/jvet/HM,

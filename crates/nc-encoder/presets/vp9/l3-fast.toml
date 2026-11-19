@@ -58,3 +58,6 @@ persist.reuse_level_price = 0
 planner.depth_removal_th_16_8 = 50
 # Pinned before the engine-default quiet second before keys (2026-11-16).
 rate.prekey_quiet = 0
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

@@ -499,8 +499,14 @@ def run(args: argparse.Namespace) -> None:
     region, workers = INSTANCES[args.instance_type]
     run_setup = setup(args)
     clips = run_setup.clips
-    # every clip's low rungs too: which clips need them is only known once scored here
-    jobs = run_setup.ladder(args.rungs) + run_setup.low_rungs() + run_setup.extras()
+    # every clip's low rungs too: which clips need them is only known once scored here;
+    # once the whole ladder is scored, only the clips that need them (score-cloud's rule:
+    # 2026-11-18, VC-1K's scored zero lines would have rented a machine for 162 low-rung
+    # encodes no score uses)
+    ladder = run_setup.ladder(args.rungs)
+    low = (run_setup.low_rungs(run_setup.low_rung_clips(run_setup.judge_ladder(args.rungs)))
+           if all(bench.cached(point) for bench, point in ladder) else run_setup.low_rungs())
+    jobs = ladder + low + run_setup.extras()
     streams = Path(args.streams)
     # a rerun encodes only what an earlier, stopped session did not bring back
     # neither a point already scored here nor one whose encode came back is encoded again

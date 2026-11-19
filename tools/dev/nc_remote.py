@@ -668,12 +668,22 @@ def cmd_status(_args) -> int:
     return 0
 
 
-def cmd_stop(_args) -> int:
+def cmd_stop(args) -> int:
+    """Terminate the box, but only between jobs: the box is shared, and on
+    2026-11-18 one agent's "stop after my batch" killed three other agents'
+    jobs. `--force` terminates regardless (owner or coordinator only)."""
     aws = Aws()
     with Locked():
         live_box(aws)
-        if not unended():
+        boxes = unended()
+        if not boxes:
             say("no box running")
+        busy = [box for box in boxes if not args.force and not between_jobs(box)]
+        if busy:
+            for box in busy:
+                say(f"{box.instance_id}: other jobs are running; left up (the idle check "
+                    f"stops it when they finish; --force terminates now)")
+            return 0
         stop_all(aws)
     return 0
 
@@ -698,8 +708,33 @@ def cmd_reap(_args) -> int:
                 stop_box(aws, box)
             elif ssh(box, "sudo /usr/local/sbin/ncbox-idle",
                      capture_output=True).returncode != 0:
-                say(f"{box.instance_id}: idle check over SSH failed")
+                note_unreachable(aws, box)
+            else:
+                unreachable_marker(box).unlink(missing_ok=True)
     return 0
+
+
+#: A box whose SSH fails this many reaps in a row is hung (2026-11-19: one sat
+#: unreachable for 20 min, its jobs lost and every `run` blocked behind it).
+UNREACHABLE_REAPS = 3
+
+
+def unreachable_marker(box: Box) -> Path:
+    return STATE_DIR / f"unreachable-{box.instance_id}"
+
+
+def note_unreachable(aws: Aws, box: Box) -> None:
+    """Count consecutive failed reaps; terminate the box at UNREACHABLE_REAPS.
+    Nothing can reach its jobs, so ending it costs nothing that is not lost."""
+    marker = unreachable_marker(box)
+    count = int(marker.read_text()) + 1 if marker.exists() else 1
+    if count >= UNREACHABLE_REAPS:
+        say(f"{box.instance_id}: unreachable over SSH for {count} reaps; terminating")
+        marker.unlink(missing_ok=True)
+        stop_box(aws, box)
+    else:
+        marker.write_text(str(count))
+        say(f"{box.instance_id}: idle check over SSH failed ({count}/{UNREACHABLE_REAPS})")
 
 
 def between_jobs(box: Box) -> bool:
@@ -775,8 +810,10 @@ def main() -> int:
     run.add_argument("--jobs", type=int, default=JOBS_PER_SLOT, help="CARGO_BUILD_JOBS")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(handler=cmd_run)
+    stop = commands.add_parser("stop", help="terminate the box when no job runs on it")
+    stop.add_argument("--force", action="store_true", help="terminate even with jobs running")
+    stop.set_defaults(handler=cmd_stop)
     for name, handler, text in (("status", cmd_status, "box, jobs and cost"),
-                                ("stop", cmd_stop, "terminate the box"),
                                 ("reap", cmd_reap, "the PC's periodic check (cron)"),
                                 ("bake", cmd_bake, "image the box for fast restarts")):
         commands.add_parser(name, help=text).set_defaults(handler=handler)

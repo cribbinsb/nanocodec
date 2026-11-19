@@ -1,5 +1,7 @@
 //! HEVC sample adaptive offset, edge offset (HEVC §8.7.3): the per-category
-//! statistics an encoder needs to choose offsets, and applying them.
+//! statistics an encoder needs to choose offsets, and applying them; band
+//! offset (§8.7.3.2): applying it and its per-band statistics
+//! (`band_stats`).
 //!
 //! Each sample `c` is classified against its two neighbours `a`, `b` along
 //! the class direction: `edgeIdx = 2 + Sign(c − a) + Sign(c − b)` gives the
@@ -15,6 +17,7 @@
 //! lie inside the planes. Apply kernels use raw vector accesses only after
 //! these checks; scalar tails and statistics retain slice-based access.
 
+mod band_stats;
 #[allow(unsafe_code)]
 mod bytes;
 #[allow(unsafe_code)]
@@ -27,6 +30,8 @@ pub(crate) mod generic;
 pub(crate) mod high_simd;
 mod restricted;
 pub(crate) mod scalar;
+pub(crate) use band_stats::band_stats;
+pub use band_stats::{MAX_BAND_SAMPLES, SAO_BANDS, SaoBandStats};
 pub use restricted::{SaoCtb, SaoLimits, sao_edge_restricted};
 
 #[cfg(target_arch = "x86_64")]

@@ -1,19 +1,48 @@
-//! H.266 §8.8 edge-offset SAO using the existing shared DSP statistics/kernels.
-//! Syntax follows `VVenC` (BSD-3-Clause-Clear; `THIRD_PARTY.md`). Four EO classes,
-//! independent luma/chroma choices, CTU merges left/up (§7.3.11.3); band
-//! offsets are not emitted.
-use crate::{coeff::Bins, contexts::Contexts};
-use nc_common::{
-    BitDepth, Picture, PlaneIndex, PlaneView, Sample,
-    decode::{DecodeError, Result},
-};
-use nc_dsp::{DepthKernels, Dsp, Pixel, SaoStats};
+//! H.266 §8.8.4 sample adaptive offset: the encoder's decision (the
+//! engine's shared `nc_encoder::sao`, priced with VVC's two SAO contexts),
+//! applying it, and its syntax (§7.3.11.3), which follows HEVC's. Syntax
+//! follows `VVenC` (BSD-3-Clause-Clear; `THIRD_PARTY.md`).
+use crate::{coeff::Bins, contexts::Context, contexts::Contexts};
+use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView, Sample, decode::Result};
+use nc_dsp::{DepthKernels, Dsp, Pixel};
+use nc_encoder::sao::{ComponentSao, MAX_OFFSET, SaoContexts, SaoKind};
+pub(crate) use nc_encoder::sao::{CtbSao, CtbTypes, Signal};
 
+/// Edge-offset parameters as applied: each channel's class (`None`: no
+/// edge offset) and each plane's offsets. The general decoder's form, and
+/// the edge part of a [`CtbSao`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CtuSao {
     pub classes: [Option<u8>; 2],
     pub offsets: [[i8; 4]; 3],
 }
+
+impl CtuSao {
+    /// The edge-offset part of `params`.
+    fn edges_of(params: &CtbSao) -> Self {
+        let mut edge = Self::default();
+        for (channel, component) in [params.luma, params.chroma].into_iter().enumerate() {
+            let Some(component) = component else { continue };
+            if let SaoKind::Edge(class) = component.kind {
+                edge.classes[channel] = Some(class);
+                for (i, &plane) in channel_planes(channel).iter().enumerate() {
+                    edge.offsets[plane as usize] = component.offsets[i];
+                }
+            }
+        }
+        edge
+    }
+}
+
+/// The planes of channel 0 (luma) and channel 1 (chroma).
+fn channel_planes(channel: usize) -> &'static [PlaneIndex] {
+    if channel == 0 {
+        &[PlaneIndex::Y]
+    } else {
+        &[PlaneIndex::U, PlaneIndex::V]
+    }
+}
+
 /// The samples of the CTB at luma `(x, y)` (`ctu` luma samples square,
 /// clipped to the `width` x `height` plane, subsampled by `shift`) whose
 /// `class` neighbours lie in the plane.
@@ -39,238 +68,86 @@ fn plane_size<T: Sample>(picture: &Picture<T>, plane: PlaneIndex) -> (usize, usi
     (plane.width(), plane.height())
 }
 
-/// Largest edge-offset magnitude (`sao_offset_abs`, 8-bit).
-const MAX_OFFSET: i32 = 7;
-
-/// Each category's offset of least `error + lambda * bits` over magnitudes
-/// 0..=7 (signs fixed by category), and the summed cost.
-///
-/// Only magnitudes up to the ceiling of the error's unconstrained minimum
-/// (`sum / count` towards the category's sign) are priced: above it the
-/// error grows strictly with the magnitude and the bits never fall, so no
-/// larger magnitude costs less, and the first of equal costs is kept as in
-/// a full scan.
-fn offsets(stats: SaoStats, lambda: f32) -> ([i8; 4], f32) {
-    let mut chosen = [0; 4];
-    let mut cost = 0.;
-    for (i, offset) in chosen.iter_mut().enumerate() {
-        let sign: i32 = if i < 2 { 1 } else { -1 };
-        let (count, toward) = (stats.count[i], i64::from(sign) * stats.sum[i]);
-        let largest = if count <= 0 || toward <= 0 {
-            0
-        } else {
-            (toward as u64)
-                .div_ceil(count as u64)
-                .min(MAX_OFFSET as u64) as i32
-        };
-        let (value, rd) = (0..=largest)
-            .map(|abs| {
-                let value = abs * sign;
-                let error =
-                    stats.count[i] * i64::from(value * value) - 2 * stats.sum[i] * i64::from(value);
-                (
-                    value,
-                    error as f32 + lambda * ((abs + 1).min(MAX_OFFSET) as f32),
-                )
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap();
-        *offset = value as i8;
-        cost += rd;
-    }
-    (chosen, cost)
-}
-/// Edge-offset classes (§8.8.4.2: horizontal, vertical, 135°, 45°).
-const CLASSES: usize = 4;
-/// Bits of a CTU's own parameters beyond its offsets, per enabled channel:
-/// the type (edge offset) and the two class bits.
-const CLASS_BITS: f32 = 3.;
-/// Approximate bits of `sao_merge_left_flag` = 1, and of
-/// `sao_merge_left_flag` = 0 then `sao_merge_up_flag` = 1.
-const MERGE_LEFT_BITS: f32 = 1.;
-const MERGE_UP_BITS: f32 = 2.;
-
-/// One CTU's edge statistics: every plane (Y, U, V) under every class.
-type CtuStats = [[SaoStats; CLASSES]; 3];
-
-/// Each CTU's luma and chroma edge-offset class (None: off).
-pub(crate) type Classes = [Option<u8>; 2];
-
-/// How [`decide`] searches.
+/// VVC's SAO context models (§9.3.2.2) for the shared decision's rate
+/// estimates.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Search<'a> {
-    /// Statistics read every `row_step`-th row (1..=4, weighted back to the
-    /// full count: HEVC's `hevc.sao_stats_row_step`), which leaves the
-    /// classification unchanged.
-    pub row_step: usize,
-    /// CTUs whose CUs are all skip CUs (`vvc.sao_skip_unchanged`): they
-    /// copy already filtered reference samples, so SAO stays off there,
-    /// without statistics (HEVC's `hevc.sao_skip_unchanged`).
-    pub skipped: Option<&'a [bool]>,
-    /// Each CTU's classes from the last searched picture
-    /// (`vvc.sao_search_interval`): only their statistics are gathered and
-    /// their offsets re-derived, a quarter of the work (HEVC's class reuse).
-    pub classes: Option<&'a [Classes]>,
+pub(crate) struct SaoModels {
+    merge: Context,
+    sao_type: Context,
 }
 
-/// Choose each CTU's edge-offset classes and offsets: its own best, or its
-/// left or upper neighbour's parameters where merging them (§7.3.11.3,
-/// coded by [`code`] whenever they are equal) costs less.
-/// `lambdas` are the luma and chroma channels' (`Quantizers::chroma_lambda`);
-/// CTUs are `ctu` luma samples square, in raster order.
-pub(crate) fn decide(
-    dsp: &Dsp,
-    source: &Picture,
-    recon: &Picture,
-    lambdas: [f32; 2],
-    ctu: usize,
-    search: &Search,
-) -> Vec<CtuSao> {
-    let columns = recon.width().div_ceil(ctu);
-    let mut all: Vec<CtuSao> = Vec::new();
-    for y in (0..recon.height()).step_by(ctu) {
-        for x in (0..recon.width()).step_by(ctu) {
-            let index = all.len();
-            if search.skipped.is_some_and(|s| s[index]) {
-                all.push(CtuSao::default());
+impl SaoModels {
+    /// The models of a slice's freshly initialised contexts.
+    pub(crate) fn of(contexts: &Contexts) -> Self {
+        Self {
+            merge: contexts.sao_merge,
+            sao_type: contexts.sao_type,
+        }
+    }
+}
+
+impl SaoContexts for SaoModels {
+    fn merge_bits(&self, bin: bool) -> f32 {
+        self.merge.bits(bin)
+    }
+    fn type_bits(&self, bin: bool) -> f32 {
+        self.sao_type.bits(bin)
+    }
+    fn code_merge(&mut self, bin: bool) {
+        self.merge.update(bin);
+    }
+    fn code_type(&mut self, bin: bool) {
+        self.sao_type.update(bin);
+    }
+}
+
+/// Apply `params`, one per `ctu`-sample CTU in raster order: edge offsets
+/// (classified from the deblocked samples), then band offsets, which read
+/// only the sample itself and run in place.
+pub(crate) fn apply(dsp: &Dsp, picture: &mut Picture, params: &[CtbSao], ctu: usize) {
+    let kernels = dsp.at(BitDepth::EIGHT);
+    let edges: Vec<CtuSao> = params.iter().map(CtuSao::edges_of).collect();
+    if edges.iter().any(|e| e.classes.iter().any(Option::is_some)) {
+        apply_limited(kernels, picture, &edges, ctu, &Limits::default());
+    }
+    for (index, ctb) in params.iter().enumerate() {
+        for (channel, component) in [ctb.luma, ctb.chroma].into_iter().enumerate() {
+            let Some(ComponentSao {
+                kind: SaoKind::Band(positions),
+                offsets,
+            }) = component
+            else {
                 continue;
-            }
-            let allowed = search.classes.map(|c| c[index]);
-            let stats = ctu_statistics(dsp, source, recon, (x, y), ctu, search.row_step, allowed);
-            let (mut chosen, mut best) = own_parameters(&stats, lambdas, allowed);
-            let neighbours = [
-                (x > 0).then(|| (all[index - 1], MERGE_LEFT_BITS)),
-                (y > 0).then(|| (all[index - columns], MERGE_UP_BITS)),
-            ];
-            for (neighbour, bits) in neighbours.into_iter().flatten() {
-                // Reused classes leave the other classes without statistics.
-                if allowed.is_some_and(|a| !within(&neighbour, a)) {
-                    continue;
-                }
-                let cost = change(&stats, &neighbour) + lambdas[0] * bits;
-                if cost < best {
-                    (chosen, best) = (neighbour, cost);
-                }
-            }
-            all.push(chosen);
-        }
-    }
-    all
-}
-
-/// The classes `params` chose, for reuse by later pictures.
-pub(crate) fn classes(params: &[CtuSao]) -> Vec<Classes> {
-    params.iter().map(|p| p.classes).collect()
-}
-
-/// Whether every channel `params` turns on uses the class in `allowed`.
-fn within(params: &CtuSao, allowed: Classes) -> bool {
-    params
-        .classes
-        .iter()
-        .zip(allowed)
-        .all(|(class, allowed)| class.is_none() || *class == allowed)
-}
-
-/// The classes a channel may take: all four, or only the reused one.
-fn candidate_classes(allowed: Option<Classes>, channel: usize) -> Vec<u8> {
-    match allowed {
-        None => (0..CLASSES as u8).collect(),
-        Some(classes) => classes[channel].into_iter().collect(),
-    }
-}
-
-/// The planes of channel 0 (luma) and channel 1 (chroma).
-fn channel_planes(channel: usize) -> &'static [PlaneIndex] {
-    if channel == 0 {
-        &[PlaneIndex::Y]
-    } else {
-        &[PlaneIndex::U, PlaneIndex::V]
-    }
-}
-
-/// The edge statistics of the `ctu`-sample CTU at luma `position`, of the
-/// `allowed` classes only when given.
-fn ctu_statistics(
-    dsp: &Dsp,
-    source: &Picture,
-    recon: &Picture,
-    position: (usize, usize),
-    ctu: usize,
-    row_step: usize,
-    allowed: Option<Classes>,
-) -> CtuStats {
-    let mut stats = CtuStats::default();
-    for channel in 0..2 {
-        for class in candidate_classes(allowed, channel) {
-            for &plane in channel_planes(channel) {
-                stats[plane as usize][usize::from(class)] = dsp.sao_edge_stats_sampled(
-                    class,
-                    &source.plane(plane).view(),
-                    &recon.plane(plane).view(),
-                    bounds(plane_size(recon, plane), channel, position, ctu, class),
-                    row_step,
-                );
+            };
+            for (i, &plane) in channel_planes(channel).iter().enumerate() {
+                let offsets = offsets[i].map(i16::from);
+                apply_band(kernels, picture, (plane, index, ctu), positions[i], offsets);
             }
         }
     }
-    stats
 }
 
-/// A CTU's best own parameters (each channel off or its cheapest class
-/// among the `allowed` ones) and their cost: the squared-error change plus
-/// λ times their bits.
-fn own_parameters(stats: &CtuStats, lambdas: [f32; 2], allowed: Option<Classes>) -> (CtuSao, f32) {
-    let mut ctu = CtuSao::default();
-    let mut total = 0.;
-    for (channel, lambda) in lambdas.into_iter().enumerate() {
-        let planes = channel_planes(channel);
-        let mut best = 0.;
-        for class in candidate_classes(allowed, channel) {
-            let mut cost = lambda * CLASS_BITS;
-            let mut values = [[0; 4]; 3];
-            for &plane in planes {
-                let (offsets, rd) = offsets(stats[plane as usize][usize::from(class)], lambda);
-                values[plane as usize] = offsets;
-                cost += rd;
-            }
-            if cost < best {
-                best = cost;
-                ctu.classes[channel] = Some(class);
-                for &plane in planes {
-                    ctu.offsets[plane as usize] = values[plane as usize];
-                }
-            }
-        }
-        total += best;
-    }
-    (ctu, total)
-}
-
-/// The squared-error change of applying `params` to a CTU with `stats`.
-fn change(stats: &CtuStats, params: &CtuSao) -> f32 {
-    let mut error = 0;
-    for plane in PlaneIndex::ALL {
-        let Some(class) = params.classes[usize::from(plane != PlaneIndex::Y)] else {
-            continue;
-        };
-        let stats = stats[plane as usize][usize::from(class)];
-        for (i, &value) in params.offsets[plane as usize].iter().enumerate() {
-            let value = i64::from(value);
-            error += stats.count[i] * value * value - 2 * stats.sum[i] * value;
-        }
-    }
-    error as f32
-}
-/// Apply `params`, one per `ctu`-sample CTU in raster order.
-pub(crate) fn apply(dsp: &Dsp, picture: &mut Picture, params: &[CtuSao], ctu: usize) {
-    apply_limited(
-        dsp.at(BitDepth::EIGHT),
-        picture,
-        params,
-        ctu,
-        &Limits::default(),
+/// Band offset (§8.8.4.3) of `plane` in the CTB at raster `index` of
+/// `ctu`-sample CTUs: the four bands from `position` move by `offsets`.
+pub(crate) fn apply_band<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    picture: &mut Picture<T>,
+    (plane, index, ctu): (PlaneIndex, usize, usize),
+    position: u8,
+    offsets: [i16; 4],
+) {
+    let columns = picture.width().div_ceil(ctu);
+    let shift = usize::from(plane != PlaneIndex::Y);
+    let mut view = picture.plane_mut(plane).view_mut();
+    let x = (index % columns * ctu) >> shift;
+    let y = (index / columns * ctu) >> shift;
+    let area = (
+        x,
+        y,
+        (x + (ctu >> shift)).min(view.width()),
+        (y + (ctu >> shift)).min(view.height()),
     );
+    kernels.sao_band_apply_masked(position, offsets, &mut view, area, &[]);
 }
 
 /// What a decoded picture's edge offsets may not compare across (H.266
@@ -412,48 +289,174 @@ fn apply_plane<T: Pixel>(
         }
     }
 }
-/// One CTU's SAO syntax (§7.3.11.3). `left` and `up` are the neighbours'
-/// parameters where they exist; `source` merges with the first that equals
-/// it. Returns the parameters as coded.
+/// One CTU's SAO syntax (§7.3.11.3), both channels on in the slice.
+/// Writing codes `source` as `signal` says (a merge copies `left` or `up`,
+/// which must then equal it); reading ignores both and returns what the
+/// stream says (merged parameters copied from `left` or `up`).
 pub(crate) fn code(
     io: &mut impl Bins,
     c: &mut Contexts,
-    source: CtuSao,
-    left: Option<CtuSao>,
-    up: Option<CtuSao>,
-) -> Result<CtuSao> {
-    for neighbour in [left, up].into_iter().flatten() {
-        if io.bin(&mut c.sao_merge, source == neighbour)? {
+    (source, signal): (CtbSao, Signal),
+    left: Option<CtbSao>,
+    up: Option<CtbSao>,
+) -> Result<CtbSao> {
+    for (neighbour, merge) in [(left, Signal::MergeLeft), (up, Signal::MergeUp)] {
+        let Some(neighbour) = neighbour else { continue };
+        if io.bin(&mut c.sao_merge, signal == merge)? {
             return Ok(neighbour);
         }
     }
-    let mut decoded = CtuSao::default();
-    for plane in 0..3 {
-        let channel = usize::from(plane != 0);
-        let enabled = if plane == 2 {
-            decoded.classes[1].is_some()
-        } else {
-            io.bin(&mut c.sao_type, source.classes[channel].is_some())?
-        };
-        if !enabled {
+    let mut decoded = CtbSao::default();
+    for channel in 0..2 {
+        let wanted = source.channel(channel);
+        if !io.bin(&mut c.sao_type, wanted.is_some())? {
             continue;
         }
-        if plane != 2 && io.bypass(1, 1)? == 0 {
-            return Err(DecodeError::Unsupported("VVC SAO band offset"));
-        }
-        for i in 0..4 {
-            let mut abs = 0;
-            while abs < 7
-                && io.bypass(u32::from(source.offsets[plane][i].unsigned_abs() > abs), 1)? != 0
-            {
-                abs += 1;
+        let edge = wanted.is_none_or(|w| matches!(w.kind, SaoKind::Edge(_)));
+        // sao_type_idx second bin: 1 edge, 0 band.
+        let edge = io.bypass(u32::from(edge), 1)? != 0;
+        let mut component = ComponentSao {
+            kind: if edge {
+                SaoKind::Edge(0)
+            } else {
+                SaoKind::Band([0; 2])
+            },
+            offsets: [[0; 4]; 2],
+        };
+        for i in 0..channel_planes(channel).len() {
+            let want = wanted.map_or([0; 4], |w| w.offsets[i]);
+            let mut magnitudes = [0i8; 4];
+            for (k, magnitude) in magnitudes.iter_mut().enumerate() {
+                // sao_offset_abs: truncated unary, cMax 7, bypass.
+                let target = want[k].unsigned_abs();
+                let mut abs = 0;
+                while abs < MAX_OFFSET as u8 && io.bypass(u32::from(target > abs), 1)? != 0 {
+                    abs += 1;
+                }
+                *magnitude = abs as i8;
             }
-            decoded.offsets[plane][i] = abs as i8 * if i < 2 { 1 } else { -1 };
+            if edge {
+                // Categories 1 and 2 add, 3 and 4 subtract (§7.4.10.3).
+                for (k, &m) in magnitudes.iter().enumerate() {
+                    component.offsets[i][k] = if k < 2 { m } else { -m };
+                }
+                if i == 0 {
+                    let class = wanted.and_then(ComponentSao::edge_class).unwrap_or(0);
+                    component.kind = SaoKind::Edge(io.bypass(u32::from(class), 2)? as u8);
+                }
+            } else {
+                for (k, &m) in magnitudes.iter().enumerate() {
+                    let negative = m != 0 && io.bypass(u32::from(want[k] < 0), 1)? != 0;
+                    component.offsets[i][k] = if negative { -m } else { m };
+                }
+                let position = match wanted.map(|w| w.kind) {
+                    Some(SaoKind::Band(positions)) => positions[i],
+                    _ => 0,
+                };
+                let position = io.bypass(u32::from(position), BAND_POSITION_BITS)? as u8;
+                if let SaoKind::Band(positions) = &mut component.kind {
+                    positions[i] = position;
+                }
+            }
         }
-        if plane != 2 {
-            decoded.classes[channel] =
-                Some(io.bypass(u32::from(source.classes[channel].unwrap_or(0)), 2)? as u8);
+        if channel == 0 {
+            decoded.luma = Some(component);
+        } else {
+            decoded.chroma = Some(component);
         }
     }
     Ok(decoded)
+}
+
+/// Bits of `sao_band_position` (fixed length, bypass).
+const BAND_POSITION_BITS: u32 = 5;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cabac::CabacWriter;
+    use crate::coeff::BitCost;
+    use crate::decoder_cabac::Reader;
+
+    fn samples() -> [Option<ComponentSao>; 3] {
+        [
+            None,
+            Some(ComponentSao {
+                kind: SaoKind::Band([30, 4]),
+                offsets: [[3, 0, -7, 1], [-1, 2, 0, 7]],
+            }),
+            Some(ComponentSao {
+                kind: SaoKind::Edge(2),
+                offsets: [[7, 1, 0, -2], [0, 0, -1, -7]],
+            }),
+        ]
+    }
+
+    /// Band and edge parameters survive writing and reading (§7.3.11.3),
+    /// and the shared decision prices them in the bits the writer codes.
+    #[test]
+    fn parameters_round_trip_and_shared_rates_match() {
+        for luma in samples() {
+            for chroma in samples() {
+                for signal in [Signal::Explicit, Signal::MergeLeft, Signal::MergeUp] {
+                    // Luma has one plane: its second entries are not coded.
+                    let luma = luma.map(|mut l| {
+                        l.offsets[1] = [0; 4];
+                        if let SaoKind::Band(positions) = &mut l.kind {
+                            positions[1] = 0;
+                        }
+                        l
+                    });
+                    let params = CtbSao { luma, chroma };
+                    let mut writer = CabacWriter::new();
+                    let mut contexts = Contexts::new(32, true);
+                    let mut models = SaoModels::of(&contexts);
+                    let mut price = BitCost::default();
+                    code(
+                        &mut price,
+                        &mut contexts.clone(),
+                        (params, signal),
+                        Some(params),
+                        Some(params),
+                    )
+                    .unwrap();
+                    let shared = nc_encoder::sao::rate::commit(
+                        &mut models,
+                        &params,
+                        signal,
+                        (true, true),
+                        [true, true],
+                    );
+                    assert!(
+                        (shared - f64::from(price.0)).abs() < 1e-3,
+                        "{params:?} {signal:?}"
+                    );
+                    code(
+                        &mut writer,
+                        &mut contexts,
+                        (params, signal),
+                        Some(params),
+                        Some(params),
+                    )
+                    .unwrap();
+                    writer.encode_terminate(true);
+                    let mut bits = writer.finish();
+                    bits.trailing_bits();
+                    let bytes = bits.into_bytes();
+                    let mut reader = Reader::new(&bytes).unwrap();
+                    let mut contexts = Contexts::new(32, true);
+                    let neighbour = Some(params);
+                    let decoded = code(
+                        &mut reader,
+                        &mut contexts,
+                        (CtbSao::default(), Signal::Explicit),
+                        neighbour,
+                        neighbour,
+                    )
+                    .unwrap();
+                    assert_eq!(decoded, params, "{signal:?}");
+                }
+            }
+        }
+    }
 }

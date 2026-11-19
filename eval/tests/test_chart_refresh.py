@@ -122,3 +122,24 @@ def test_a_resumed_refresh_with_nothing_changed_launches_no_instance(tmp_path):
         assert refresh.targets == ["nanocodec-h264"]  # stale until its streams are checked
         refresh.execute("measure")
     assert refresh.targets == [] and refresh.retimed == ["nanocodec-h264"]
+
+
+def test_every_site_chart_view_on_a_clip_set_is_refreshed():
+    """The release refreshes the site's chart views from their own list, published or
+    not (2026-11-18: chart_refresh's own list missed VC-1K's view)."""
+    from nceval.site import CHART_VIEWS
+    refreshed = {view.clips for view in chart_refresh.clipset_views()}
+    assert refreshed == {view.clips for view in CHART_VIEWS if view.clips}
+    assert "vc1k_2026-11-18.json" in refreshed
+    assert chart_refresh.clipset_view("/any/dir/vc1k_2026-11-18.json").heading
+
+
+def test_clip_sets_that_share_clips_chain_largest_first(tmp_path):
+    """A smaller set after the larger one that holds its clips finds them cached."""
+    sets = {"small": ["a", "b"], "big": ["a", "b", "c"], "other": ["x"]}
+    for name, clips in sets.items():
+        (tmp_path / f"{name}.json").write_text(json.dumps({"clips": [{"name": c} for c in clips]}))
+    views = [argparse.Namespace(clips=f"{name}.json") for name in sets]
+    with patch.object(chart_refresh, "clipset_path", lambda view: tmp_path / view.clips):
+        chains = chart_refresh.clipset_chains(views)
+    assert chains == [[tmp_path / "big.json", tmp_path / "small.json"], [tmp_path / "other.json"]]

@@ -682,6 +682,8 @@ impl<B: CodecBackend> Encoder<B> {
             && has_gate_reference;
         if apply_gate {
             params.intra_test_dc = 0.0;
+            // The layer's fixed floor, never the λ-relative gate.
+            params.intra_gate_lambdas = 0.0;
             params.intra_gate_variance = params
                 .intra_gate_variance
                 .max(crate::DecisionParams::default().intra_gate_variance);

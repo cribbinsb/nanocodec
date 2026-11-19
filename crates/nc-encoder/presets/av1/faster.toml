@@ -195,3 +195,6 @@ adapt.motion = 1
 layers.propagation = 1
 layers.propagation_grid = 3
 layers.propagation_prekey = 1
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

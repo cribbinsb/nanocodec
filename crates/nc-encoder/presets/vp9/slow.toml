@@ -11,3 +11,6 @@ vp9.inter_tx_split_spread = 1
 vp9.tx_search_min_levels = 0
 analysis.one_position_sad_per_pixel = 1
 analysis.skip_hme_sad_per_pixel = 1
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

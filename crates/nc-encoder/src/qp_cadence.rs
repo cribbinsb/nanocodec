@@ -185,7 +185,23 @@ impl QpCadence {
     /// only where later frames inherit it; under camera motion every frame
     /// re-codes the picture.
     pub fn strength(&self, static_fraction: f64, motion: Option<MotionHint>) -> f64 {
-        let still = static_strength(self.static_scaling, static_fraction);
+        self.strength_scaled(self.static_scaling, static_fraction, motion)
+    }
+
+    /// [`QpCadence::strength`] scaled by the still-block share whatever
+    /// `rate.cadence_static_scaling` says: the strength of a scene whose
+    /// frames are not known to inherit (`moving_camera.rs`).
+    pub fn scene_strength(&self, static_fraction: f64, motion: Option<MotionHint>) -> f64 {
+        self.strength_scaled(1., static_fraction, motion)
+    }
+
+    fn strength_scaled(
+        &self,
+        static_scaling: f64,
+        static_fraction: f64,
+        motion: Option<MotionHint>,
+    ) -> f64 {
+        let still = static_strength(static_scaling, static_fraction);
         match (self.motion_limits, motion) {
             (Some(limits), Some(motion)) => still.max(low_motion_strength(motion, limits)),
             _ => still,

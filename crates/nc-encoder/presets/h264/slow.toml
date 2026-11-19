@@ -21,3 +21,8 @@ h264.transform_size_rd = 1
 h264.residual_rd_lambda = 0.315
 # Pinned before the Default's five Intra_4x4 RD candidates (2026-11-16).
 h264.intra_rd_candidates = 9
+# Pinned before the Default's winner walk (2026-11-18, docs/handoff/rd-depth.md): not screened
+# beside slow's RD refinement yet.
+decision.winner_walk_steps = 0
+# Screened on the Default only (2026-11-18): pinned so this preset's streams do not move.
+rate.still_level_damping = 0

@@ -999,7 +999,7 @@ fn decode_slice(
             sao.push(crate::sao::code(
                 slice.reader,
                 slice.contexts,
-                crate::sao::CtuSao::default(),
+                (crate::sao::CtbSao::default(), crate::sao::Signal::Explicit),
                 left,
                 up,
             )?);

@@ -9,7 +9,7 @@
 //! per-state costs are a table built once per encoder ([`BinCosts`]), since
 //! a trial prices hundreds of bins.
 
-use crate::cabac::{BinSink, Context, NEXT_STATE_LPS, NEXT_STATE_MPS};
+use crate::cabac::{BinSink, Context};
 
 /// Context variables: `(pStateIdx << 1) | valMps` for 64 states.
 const CONTEXT_VALUES: usize = 128;
@@ -65,11 +65,7 @@ impl<'a> BitEstimator<'a> {
 impl BinSink for BitEstimator<'_> {
     fn encode_bin(&mut self, ctx: &mut Context, bin: bool) {
         self.bits += self.costs.bin(*ctx, bin);
-        ctx.0 = if bin == ctx.mps() {
-            NEXT_STATE_MPS[usize::from(ctx.0)]
-        } else {
-            NEXT_STATE_LPS[usize::from(ctx.0)]
-        };
+        ctx.update(bin);
     }
 
     fn encode_bypass(&mut self, _value: u32, count: u32) {

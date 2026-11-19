@@ -5,7 +5,8 @@
     python3 -m nceval.fixedqp ab --codec av1 --binary BIN [--preset fast] \\
         --param a.b=1 [--anchor-param ...] [--rotation KEY] [--level quick] [--clips N]
     python3 -m nceval.fixedqp gap ... --clipset CHART_CLIPSET.json --clips 12
-    python3 -m nceval.fixedqp site --gap A.json [--gap B.json] [--build COMMIT] --json OUT
+    python3 -m nceval.fixedqp site --gap A.json [--gap B.json] [--build COMMIT]
+        [--keep-references OLD.json] --json OUT
 
 Rate control costs our encoders 10-22 % BD-J against their own fixed QP
 (nceval.rc_cost); this module measures the other half, each codec's pure coding
@@ -63,6 +64,8 @@ ROTATION_PREFIX = "fixedqp-"
 #: Quantizers per curve (the BD-rate minimum is three; four as the chart).
 CURVE_POINTS = 4
 FRAMES = 150
+#: `--clips` unset with `ab --clipset`: every clip of the set.
+ALL_CLIPS = 10_000
 WORKERS = 8
 OWN_PREFIX = "nanocodec-"
 OPENH264 = "openh264-baseline"
@@ -307,9 +310,13 @@ def ab(args: argparse.Namespace) -> dict:
     sets = candidate_sets(args)
     tests = [replace(base, name=f"{name}+{index}", extra=anchor.extra + param_args(pairs))
              for index, (_, pairs) in enumerate(sets)]
-    clips = draw_clips(paths, args.rotation, args.level, args.clips, args.frames)
-    print(f"draw {args.rotation} {args.level}: {len(clips)} clips; "
-          f"{len(sets)} candidates", flush=True)
+    if args.clipset:  # ranks ideas on a chosen content class: never adoption evidence
+        clips = held_out_clips(args.clipset, args.clips or ALL_CLIPS, args.frames)
+        print(f"clip set {args.clipset}: {len(clips)} clips; {len(sets)} candidates", flush=True)
+    else:
+        clips = draw_clips(paths, args.rotation, args.level, args.clips, args.frames)
+        print(f"draw {args.rotation} {args.level}: {len(clips)} clips; "
+              f"{len(sets)} candidates", flush=True)
     benches = Benches(paths, args.frames)
     chooser = Quantizers(benches)
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
@@ -329,7 +336,8 @@ def ab(args: argparse.Namespace) -> dict:
         print(describe(f"{codec.value}{'@' + args.preset if args.preset else ''} {label}",
                        results[-1]["summary"]), flush=True)
     return {"codec": codec.value, "preset": args.preset, "anchor_param": args.anchor_param,
-            "rotation": args.rotation, "level": args.level, "candidates": results,
+            "rotation": None if args.clipset else args.rotation, "clipset": args.clipset,
+            "level": None if args.clipset else args.level, "candidates": results,
             "binary_commit": buildinfo.info_of(Path(args.binary)).get("commit")}
 
 
@@ -401,11 +409,31 @@ def site_record(args: argparse.Namespace) -> dict:
     if len(anchors) != 1:
         raise SystemExit(f"one anchor expected, got {sorted(anchors)}")
     commits = {r["binary_commit"] for r in results} - {None}
-    return {"clipset": Path(clipset).name, "anchor": anchors.pop(), "frames": results[0]["frames"],
-            "points": CURVE_POINTS, "build_commit": args.build or ",".join(sorted(commits)),
-            "clips": [{**c, "width": sizes[c["clip"]][0], "height": sizes[c["clip"]][1]}
-                      for c in results[0]["clips"]],
-            "families": dict(sorted(families.items()))}
+    record = {"clipset": Path(clipset).name, "anchor": anchors.pop(),
+              "frames": results[0]["frames"], "points": CURVE_POINTS,
+              "build_commit": args.build or ",".join(sorted(commits)),
+              "clips": [{**c, "width": sizes[c["clip"]][0], "height": sizes[c["clip"]][1]}
+                        for c in results[0]["clips"]],
+              "families": families}
+    if args.keep_references:
+        keep_references(record, json.loads(Path(args.keep_references).read_text()))
+    record["families"] = dict(sorted(record["families"].items()))
+    return record
+
+
+def keep_references(record: dict, old: dict) -> None:
+    """The reference encoders' rows of an earlier record of the same view, where `record`
+    re-measured only ours (a release: the references' code did not change, and their
+    points are the same cached ones); our rows are never carried over, so none stays on
+    an older build."""
+    for key in ("clipset", "anchor", "frames", "points"):
+        if old[key] != record[key]:
+            raise SystemExit(f"--keep-references: the records differ in {key}")
+    if [c["clip"] for c in old["clips"]] != [c["clip"] for c in record["clips"]]:
+        raise SystemExit("--keep-references: the records' clips differ")
+    for family, row in old["families"].items():
+        if not family.startswith(OWN_PREFIX):
+            record["families"].setdefault(family, row)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -431,8 +459,10 @@ def main(argv: list[str] | None = None) -> None:
     g.add_argument("--pairs", help="anchor:test,... to report")
     g.add_argument("--presets-dir", default=str(PRESETS_DIR),
                    help="our presets for --binary (a frozen build: its own commit's presets/)")
-    g.add_argument("--clipset", help="a chart clip set (JSON spec) instead of the pool draw: "
-                   "--clips of its clips, by held_out_clips' rule")
+    for name in ("gap", "ab"):
+        sub.choices[name].add_argument(
+            "--clipset", help="a chart clip set (JSON spec) instead of the pool draw: --clips "
+            "of its clips, by held_out_clips' rule (ab: ranks ideas on that content only)")
     for name in ("ab", "cost"):
         a = sub.choices[name]
         a.add_argument("--codec", required=True, choices=[c.value for c in Codec])
@@ -445,6 +475,8 @@ def main(argv: list[str] | None = None) -> None:
     r = sub.add_parser("site", help="the site's held-out Fixed QP data from gap --clipset runs")
     r.add_argument("--gap", action="append", required=True)
     r.add_argument("--build", help="the commit our binary's code is (default: its stamp)")
+    r.add_argument("--keep-references", help="an earlier record of the view: its reference "
+                   "encoders' rows are kept where the gap runs measured only ours")
     r.add_argument("--json", required=True)
     args = parser.parse_args(argv)
     result = {"gap": gap, "ab": ab, "cost": cost, "site": site_record}[args.command](args)

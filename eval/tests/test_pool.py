@@ -21,7 +21,8 @@ def clip(name, cls, family=None, frames=300):
 
 def fake_pool():
     clips = []
-    for cls in ("crowd", "lowlight", "pan", "static", "bodycam", "texture", "drone"):
+    for cls in ("crowd", "lowlight", "pan", "static", "bodycam", "videocall", "texture",
+                "drone"):
         for i in range(20):
             clips.append(clip(f"{cls}{i}", cls))
     # two forms of one source: never in one draw or two levels together
@@ -75,8 +76,12 @@ def test_sealed_families_and_test_split_stay_out(tmp_path):
              "source_bpp": 0.4}
     write("pool", [entry("adv_camera", source="/src/adv.y4m"), entry("new", source="/src/n"),
                    poor, small, {**entry("bad", source="/src/b"), "grade": "C"}])
+    # the VC-1K measurement set is sealed: a dev clip of one of its sources stays out
+    call = lambda name, source: {**entry(name, source=source), "content_class": "videocall"}
+    write("vc1k_2026-11-18", [call("held", "/vc1k/m.mp4")])
+    write("vc1k_dev", [call("dev_copy", "/vc1k/m.mp4"), call("dev_call", "/vc1k/d.mp4")])
     paths = Paths(data_root=tmp_path, anchors=tmp_path, nanocodec_bin=tmp_path)
-    assert [c.name for c in pool.load_pool(paths)] == ["a", "new", "small"]
+    assert [c.name for c in pool.load_pool(paths)] == ["a", "dev_call", "new", "small"]
 
 
 def rows(values):

@@ -867,6 +867,17 @@ impl CodecBackend for Vp9Backend {
     /// 720p 20 f CBR 400, callgrind): +1.7%, +0.1%, +0.8%. VP9 Fast keeps
     /// the engine values.
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // A fixed-QP key planned up to 6 QP units coarser under camera motion
+        // (`rate.fixed_qp_moving_key`, engine `moving_camera.rs`: the offset ramps from 1 luma
+        // sample per frame to the cadence gate's limit and fades on a fixed camera; fixed QP only,
+        // so CBR streams are unchanged): a moving camera replaces the picture before later frames
+        // inherit a fine key. Found on VC-1K phone calls (docs/handoff/rd-depth.md). Fixed QP,
+        // matched QP: worst six VC-1K clips of the Fixed QP sample (against x265 medium), with the
+        // plain 1-sample threshold, J -4.3 % [-5.8, -3.1]. Pool draw fixedqp-2026-11-19, adopt
+        // level: J -1.9 % [-3.5, -0.8] (n 47), no clip worse (19 changed; static clips unchanged).
+        // HEVC Default takes the same value; it becomes the engine default once H.264 and VVC are
+        // screened. The other presets pin it off.
+        ("rate.fixed_qp_moving_key", 6.0),
         // Tuned jointly (eval/nceval/tune_pool.py, study
         // vp9-default-eq2-2026-11-11, equal x86 CPU): planner lambda 2 ->
         // 3.16 (fewer splits). Study clips J -1.97%, L3 of the study's draw
@@ -896,6 +907,9 @@ impl CodecBackend for Vp9Backend {
         // on the 22 static and crowd points 5.5 -> 10.8 per 1000 frames.
         // Inert within one key period. The other VP9 presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
+        // only (2026-11-18); pinned off here until this codec is screened.
+        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool levels,
         // draw 2026-11-14: L1 -0.16% [-0.62, +0.10]; L2 -1.69% [-2.20, -1.16];

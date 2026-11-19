@@ -84,25 +84,41 @@ DEFAULT_ZERO = "x264-medium"
 
 @dataclass(frozen=True)
 class ChartView:
+    """One CBR chart on the site. This list is also what a release re-measures
+    (tools/dev/chart_refresh.py `clipset_views`): a view added here is refreshed
+    with the rest, so no published chart is left on an older build."""
     id: str
     clipset: str
     zero: str
     stem: str
     builds: str
+    #: The clip set file the chart measured (in the clips directory); None: the
+    #: development clips (chart_refresh's main chart).
+    clips: str | None = None
+    #: The chart's title after "Bitrate vs encode speed, " (chart_refresh's render).
+    heading: str = ""
+    #: The metric-tuned references coded on this clip set (nceval.chart render --tuned);
+    #: None: every one (cbr TUNED).
+    tuned: str | None = None
 
 
 #: One zero line on the site (owner, 2026-11-15): x264 medium --tune psnr.
 CHART_VIEWS = (
     ChartView("fresh-psnr", "fresh", TUNED_ZERO,
               "bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr",
-              "bd-vs-speed-independent_fresh_2026-11-13-builds.json"),
+              "bd-vs-speed-independent_fresh_2026-11-13-builds.json",
+              "independent_fresh_2026-11-13.json", "held-out clips"),
     ChartView("heldout-psnr", "heldout", TUNED_ZERO,
               "bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr",
-              "bd-vs-speed-independent_2026-11-13-builds.json"),
+              "bd-vs-speed-independent_2026-11-13-builds.json",
+              "independent_2026-11-13.json", "held-out clips"),
     ChartView("dev-psnr", "dev", TUNED_ZERO, "bd-vs-speed-vs-x264-medium-psnr",
               "bd-vs-speed-builds.json"),
+    # VC-1K's metric-tuned twins were never coded (only the tuned zero line): its
+    # render shows none but that one
     ChartView("vc1k-psnr", "vc1k", TUNED_ZERO, "bd-vs-speed-vc1k_2026-11-18-vs-x264-medium-psnr",
-              "bd-vs-speed-vc1k_2026-11-18-builds.json"),
+              "bd-vs-speed-vc1k_2026-11-18-builds.json", "vc1k_2026-11-18.json",
+              "VC-1K phone video calls", tuned=TUNED_ZERO),
 )
 CLIPSETS = {
     "fresh": "Held-out, fresh: videos none of our tuning used",
@@ -165,9 +181,16 @@ def shown(clipset: str) -> bool:
     return clipset not in DATASETS or DATASETS[clipset].published
 
 
+#: Outside datasets' development clips (screening pool only): never published, whatever
+#: their dataset's `published` says. VC-1K's dev set (eval/clipset/select_vc1k.py --dev).
+DEV_ONLY_FILES = ("eval/clipset/vc1k_dev*.json",)
+
+
 def unpublished_paths() -> list[str]:
-    """The result files (git pathspec globs) of the datasets held back from publication."""
-    return [path for d in DATASETS.values() if not d.published for path in d.files]
+    """The files (git pathspec globs) the public mirror leaves out: the held-back
+    datasets' results and every development clip selection."""
+    return [*(path for d in DATASETS.values() if not d.published for path in d.files),
+            *DEV_ONLY_FILES]
 TIMING_PLAN = "bd-vs-speed-plan.json"
 #: The speed machines, in the site's order: the Jetson's Arm core, the x86 timing machine
 #: (AWS c8a.large, Zen 5), the x86 one without AVX-512 (AWS c6a.large, Zen 3) and the server
@@ -561,12 +584,7 @@ def sample_qp_view(qp: SampleQpView) -> dict | None:
 
 #: The chart views' clip sets: (site clip-set id, chart markdown that lists its
 #: excluded clips, the clip set the chart measured; None: the development clips).
-CLIP_TABLES = (("fresh", "bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr",
-                "independent_fresh_2026-11-13.json"),
-               ("heldout", "bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr",
-                "independent_2026-11-13.json"),
-               ("dev", "bd-vs-speed-vs-x264-medium-psnr", None),
-               ("vc1k", "bd-vs-speed-vc1k_2026-11-18-vs-x264-medium-psnr", "vc1k_2026-11-18.json"))
+CLIP_TABLES = tuple((view.clipset, view.stem, view.clips) for view in CHART_VIEWS)
 EXCLUDED_CLIP = re.compile(r"^- \*\*([^*]+)\*\* \([^)]*\): (.*?)\.?$")
 
 

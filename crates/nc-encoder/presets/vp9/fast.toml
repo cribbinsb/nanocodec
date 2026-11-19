@@ -105,3 +105,6 @@ vp9.shave_gap = 0
 vp9.tx_search_min_levels = 4
 effort.regular_fraction = 0
 effort.light_nonbase_only = 1
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

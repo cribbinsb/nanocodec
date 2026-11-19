@@ -23,3 +23,6 @@ av1.compound = 1
 # (structure.inherited_depth 1): 11-clip [8] BD-J L3T1 720p +41.1% -> +39.2%
 # [+40.5% -> +38.0%], 180p +6.2% -> +5.5%; L3T1_KEY 720p +7.7% -> +6.3%
 # [+7.9% -> +5.7%], 360p +3.5% -> +2.5%, 180p +6.2% -> +5.7%.
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

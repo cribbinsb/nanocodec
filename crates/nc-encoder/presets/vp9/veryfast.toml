@@ -83,10 +83,17 @@ nonbase.vp9.filter_level_scale = 0
 #
 # The Fastest levers (quality / Jetson time, alone vs vp9-fast where
 # measured):
-# Luma energy pre-transform skip (AV1's light-PD1 test) at 15 (+3.1 / -3.4%).
-vp9.pre_tx_skip_energy = 15
-# Inter transforms at most 8x8 (vp9-faster: 16x16).
-vp9.inter_max_tx_log2 = 3
+# Luma energy pre-transform skip (AV1's light-PD1 test) at 8 and inter
+# transforms at most 16x16 (as vp9-faster). Re-tuned 2026-11-18 from 15 and
+# 8x8, which cost most of Veryfast's BD on phone video calls (VC-1K, dark
+# clips worst): pool L1 (2026-11-18 draw, n 24) quality J -8.34%, x86
+# instructions +3.2% (callgrind, 60 f CBR 300/800 on three 720p CTC clips),
+# J at k 0.6 -6.42%; L2 -5.22%, L3 -6.23% [-7.35, -5.06] (n 108);
+# final-check quality -3.94% [-5.43, -2.76]. Energy 5: -9.54% for +5.8%;
+# 0: -10.40% for +9.0%; the 16x16 cap alone: -2.52% for -2.2% but static
+# class +4.45%.
+vp9.pre_tx_skip_energy = 8
+vp9.inter_max_tx_log2 = 4
 # Intra blocks code their largest transform only.
 vp9.intra_tx_depth = 0
 # P-frame intra tried only on blocks of variance >= 256 (Fast: 64;
@@ -130,3 +137,6 @@ planner.depth_removal_th_32_16 = 25
 planner.depth_removal_th_16_8 = 50
 # Pinned before the engine-default quiet second before keys (2026-11-16).
 rate.prekey_quiet = 0
+# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
+# docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0

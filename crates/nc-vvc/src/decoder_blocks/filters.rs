@@ -63,22 +63,12 @@ pub(crate) fn apply_with_scratch<T: Pixel>(
         };
         crate::sao::apply_limited(kernels, picture, &edge, ctu, &limits);
     }
-    let columns = picture.width().div_ceil(ctu);
     for (index, filter) in filters.iter().enumerate() {
         for (plane, band) in filter.bands.iter().enumerate() {
             if let Some(band) = band {
-                let shift = usize::from(plane != 0);
-                let mut view = picture.plane_mut(PlaneIndex::ALL[plane]).view_mut();
-                let x = (index % columns * ctu) >> shift;
-                let y = (index / columns * ctu) >> shift;
-                let area = (
-                    x,
-                    y,
-                    (x + (ctu >> shift)).min(view.width()),
-                    (y + (ctu >> shift)).min(view.height()),
-                );
                 let offsets = filter.edge.offsets[plane].map(i16::from);
-                kernels.sao_band_apply_masked(*band, offsets, &mut view, area, &[]);
+                let at = (PlaneIndex::ALL[plane], index, ctu);
+                crate::sao::apply_band(kernels, picture, at, *band, offsets);
             }
         }
     }

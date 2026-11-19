@@ -63,7 +63,7 @@ use crate::quant::{
 };
 use crate::rate::BinCosts;
 use crate::residual_trellis::{BlockQuantizer, RateModel, TrellisQuantizer};
-use crate::sao::{self, PictureSao, SEARCH_INTERVAL};
+use crate::sao::{self, Candidates, CtbTypes, PictureSao};
 use crate::scan::{Scan, ScanKind, Scans, coded_sub_blocks};
 use crate::syntax::{
     CuKind, CuRecord, Item, LevelStore, MAX_TUS, MVD_EG_ORDER, PlaneResidual, TransformSyntax,
@@ -279,6 +279,10 @@ fn sao_components_of(params: &HevcParams) -> sao::Components {
         luma_lambda_scale: f64::from(params.sao_luma_lambda_scale),
         stats_row_step: params.sao_stats_row_step.round() as usize,
         skip_unchanged: params.sao_skip_unchanged >= 0.5,
+        search: sao::TypeSearch {
+            band: params.sao_band >= 0.5,
+            interval: params.sao_search_interval.round().max(1.0) as u64,
+        },
     }
 }
 
@@ -405,12 +409,12 @@ pub struct HevcBackend {
     items: Vec<Item>,
     /// SAO decision of the current picture (made in `filter_frame`).
     sao: Option<PictureSao>,
-    /// Per-CTB SAO classes of the last committed SAO search frame, for reuse.
-    sao_classes: Vec<(Option<u8>, Option<u8>)>,
-    /// This picture's searched classes, which become `sao_classes` in
+    /// Per-CTB SAO types of the last committed SAO search frame, for reuse.
+    sao_classes: Vec<CtbTypes>,
+    /// This picture's searched types, which become `sao_classes` in
     /// `commit_frame` (the recode contract: a re-coded or discarded coding
     /// must not change what later pictures reuse).
-    pending_sao_classes: Option<Vec<(Option<u8>, Option<u8>)>>,
+    pending_sao_classes: Option<Vec<CtbTypes>>,
     grid: Grid,
     /// Each reference slot's motion: the collocated motion for TMVP.
     motion: MotionStore,
@@ -729,9 +733,9 @@ nc_encoder::param_group! {
         merge_candidates: DEFAULT_MERGE_CANDIDATES as f32, [1.0, MAX_MERGE_CANDIDATES as f32],
             "merge candidates per P slice (MaxNumMergeCand, HEVC §7.4.7.1): more cheap vectors for skip and merge, a slightly longer merge_idx",
         sao_luma: 1.0, [0.0, 1.0],
-            "luma SAO edge offset on (1) or off (0)",
+            "luma SAO on (1) or off (0)",
         sao_chroma: 1.0, [0.0, 1.0],
-            "chroma SAO edge offset on (1) or off (0)",
+            "chroma SAO on (1) or off (0)",
         // Default 4 (as Fast): TRAIN proxy-6 (150f) PSNR-YUV / VMAF v1 BD
         // +0.51% / +0.75% vs 2 for -2.7% instructions (crowd09 / city): J = -1.0.
         sao_stats_row_step: 4.0, [1.0, 4.0],
@@ -741,6 +745,14 @@ nc_encoder::param_group! {
         // QP 47 -2.5%, crowd09 QP 47 -2.8%; bytes at the same QP within 0.04%.
         sao_skip_unchanged: 0.0, [0.0, 1.0],
             "1 switches SAO off without statistics in P-frame CTBs whose CUs are all skipped (they copy already filtered samples): faster",
+        // Off: VC-1K 6 (fixed QP, 150 f) J -0.0 [-0.3, +0.3] for +2.6%
+        // instructions (band statistics; KristenAndSara 720p QP 38).
+        sao_band: 0.0, [0.0, 1.0],
+            "1 evaluates SAO band offset (position search, §8.7.3.2) beside the four edge classes on searched pictures",
+        // 4: searching every picture (1) gained VC-1K 6 J -0.6 [-1.0, -0.1]
+        // for +4.7% instructions (edge statistics of all four classes).
+        sao_search_interval: 4.0, [1.0, 8.0],
+            "SAO types are searched on key pictures and every Nth picture (by POC), reused with re-derived offsets in between: higher is faster, coarser SAO",
         sao_luma_lambda_scale: 1.0, [0.25, 16.0],
             "λ multiple for luma SAO decisions: higher applies fewer luma offsets (less smoothing)",
         deblock_beta_offset: 0.0, [-6.0, 6.0],
@@ -976,9 +988,25 @@ impl CodecBackend for HevcBackend {
     // reference (at full cadence strength every high-quality frame already
     // carries it): two draws of 15-16 clips J -1.3% [-2.1, -0.6] and -1.7%
     // [-3.0, -0.5]. The other HEVC presets pin the plan and the profile off.
+    //
+    // Under camera motion the key is 6 QP coarser (`rate.fixed_qp_moving_key`,
+    // engine `moving_camera.rs`): the profile's key, 15 QP finer than the P
+    // frames at a 10 s period, is inherited by a fixed camera's frames, not
+    // by a handheld or driving one's. Fixed QP, matched QP (nceval.fixedqp):
+    // the six worst VC-1K phone-call clips J -3.9 [-5.2, -2.7]; pool draw
+    // fixedqp-2026-11-18 quick (24 clips) -1.3 [-2.1, -0.6], adopt (45)
+    // -0.8 [-1.4, -0.4], one clip worse (+1.1 %) of the 23 that change;
+    // final (107) -0.8 [-1.0, -0.5]: pan -1.9, video call -1.9, bodycam
+    // -1.3, static +0.3 (`static_meva_hospital` +9.1 %, the worst of five
+    // clips worse). A long single key (450 f from a moving start): rate
+    // -6.0 %, P-frame PSNR unchanged. CBR is untouched. 12 coarser (x265's
+    // key offset): VC-1K -4.7, pool quick -1.2. HEVC Slow pins 0 (not
+    // screened); Fast and Faster pin the profile off.
+    // docs/handoff/hevc.md "VC-1K phone video calls".
     const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
         ("rate.cadence_static_scaling", 0.0),
         ("refs.second_full", 1.0),
+        ("rate.fixed_qp_moving_key", 6.0),
     ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
@@ -1006,6 +1034,9 @@ impl CodecBackend for HevcBackend {
         // achieved/target max 1.008 -> 1.000.)
         // Inert within one key period. The other HEVC presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
+        // only (2026-11-18); pinned off here until this codec is screened.
+        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool levels,
         // draw 2026-11-14: L1 -1.64% [-1.88, -0.28]; L2 -1.02% [-1.57, -0.52];
@@ -1634,26 +1665,32 @@ impl CodecBackend for HevcBackend {
         if !(self.sao_components.luma || self.sao_components.chroma) {
             return;
         }
-        // SAO classes are searched on key frames and every SEARCH_INTERVAL-th
-        // frame, and reused (offsets re-derived) in between.
-        let search =
-            self.slice == SliceKind::Intra || u64::from(self.poc).is_multiple_of(SEARCH_INTERVAL);
-        let reuse =
-            (!search && !self.sao_classes.is_empty()).then_some(self.sao_classes.as_slice());
+        // SAO types are searched on key frames and every
+        // `hevc.sao_search_interval`-th frame, and reused (offsets
+        // re-derived) in between.
+        let search = self.slice == SliceKind::Intra
+            || u64::from(self.poc).is_multiple_of(self.sao_components.search.interval)
+            || self.sao_classes.is_empty();
+        let candidates = if search {
+            Candidates::Search
+        } else {
+            Candidates::Reuse(&self.sao_classes)
+        };
         let skipped = (self.sao_components.skip_unchanged && self.slice == SliceKind::Predicted)
             .then(|| self.grid.skipped_ctbs());
+        let lambda = f64::from(self.lambda());
         let decision = sao::decide(
-            source,
-            recon,
-            f64::from(self.lambda()),
+            (source, recon),
+            [lambda, lambda * self.chroma_lambda_ratio()],
             self.sao_components,
-            reuse,
+            candidates,
             skipped.as_deref(),
+            sao::SaoModels::for_slice(self.slice, self.qp),
         );
-        if search {
-            // A skipped CTB's "off" says nothing about its classes: keep the
+        if search && self.sao_components.search.interval > 1 {
+            // A skipped CTB's "off" says nothing about its types: keep the
             // last search's until the CTB is coded again.
-            let mut classes = sao::classes(&decision);
+            let mut classes = sao::types(&decision);
             if let Some(skipped) = &skipped
                 && self.sao_classes.len() == classes.len()
             {
@@ -2470,6 +2507,14 @@ impl HevcBackend {
             Some(policy) => policy_chroma_offset(policy, self.qp),
             None => self.info.chroma_qp_offset,
         }
+    }
+
+    /// Chroma's λ over luma's for SAO decisions: the squared chroma step's
+    /// share, `2^((QpC − QpY) / 3)` (HM's chroma weight, as VVC's
+    /// `chroma_lambda`), so chroma offsets are priced at chroma's own step.
+    fn chroma_lambda_ratio(&self) -> f64 {
+        let chroma = chroma_qp(self.qp + self.chroma_offset());
+        2f64.powf(f64::from(chroma - self.qp) / 3.0)
     }
 
     /// The trellis settings for a transform block of `plane` in this

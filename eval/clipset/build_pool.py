@@ -58,8 +58,9 @@ PIXELS_720P = 1280 * 720
 MIN_SECONDS = 4.0  # ~120 frames at 30 fps: short pristine excerpts with a cut keep their first shot
 SCENE_CUT_THRESHOLD = 12  # as extract.py
 CUT_MARGIN_SECONDS = 0.2
-#: Selection fields copied onto the clip set's entry (grade.py adds `dataset` to others).
-CARRIED_FIELDS = ("dataset", "stratum")
+#: Selection fields copied onto the clip set's entry (grade.py adds `dataset` to others; a
+#: selection's `split` overrides the default TRAIN).
+CARRIED_FIELDS = ("dataset", "stratum", "split")
 _SCDET_TIME = re.compile(r"lavfi\.scd\.time:\s*([\d.]+)")
 
 
