@@ -220,8 +220,13 @@ function oursBuilds(data, view) {
 function render(data, root) {
   const view = data.views.find((v) => v.id === viewId(data));
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
+  // A Fixed QP sample view is timed on fewer machines than the CTC lens (VC-1K and
+  // fresh: x86 only): show it on a machine it has, and disable the others.
+  const timed = view.rate_mode === 'qp' ? Object.keys(view.speed || {}) : null;
+  if (timed?.length && !timed.includes(state.platform)) state.platform = timed[0];
   for (const b of root.querySelectorAll('[data-control="platform"] button')) {
     b.setAttribute('aria-pressed', String(b.dataset.value === state.platform));
+    b.disabled = Boolean(timed?.length) && !timed.includes(b.dataset.value);
   }
   const clipset = state.mode === 'qp' ? state.qpClipset : state.clipset;
   for (const [name, value] of [['clipset', clipset], ['metric', state.metric]]) {
