@@ -211,10 +211,11 @@ function oursBuilds(data, view) {
   for (const [family, build] of Object.entries(view.family_builds)) {
     if (!family.startsWith('nanocodec-')) continue;
     const label = (data.points[family]?.label || family).replace(/^nanocodec /, '');
-    byBuild.set(build, [...(byBuild.get(build) || []), label]);
+    const at = view.measured.family_labels[family] || view.builds[build] || build;
+    byBuild.set(at, [...(byBuild.get(at) || []), label]);
   }
   return [...byBuild.entries()].sort((a, b) => b[1].length - a[1].length)
-    .map(([build, labels]) => `${labels.join(', ')} at ${view.measured.labels[build] || view.builds[build] || build}`).join('; ');
+    .map(([at, labels]) => `${labels.join(', ')} at ${at}`).join('; ');
 }
 
 function render(data, root) {

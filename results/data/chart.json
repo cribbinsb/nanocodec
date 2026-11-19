@@ -980,6 +980,20 @@
     "nanocodec-vvc@slow": "c9cff89f",
     "nanocodec-av2@faster": "c9cff89f"
    },
+   "family_timed_on": {
+    "nanocodec-h264@fast": "c9cff89f",
+    "nanocodec-h264@faster": "c9cff89f",
+    "nanocodec-vp9@faster": "c9cff89f",
+    "nanocodec-av1@slow": "c9cff89f",
+    "nanocodec-av2@slow": "c9cff89f",
+    "nanocodec-h264@veryfast": "c9cff89f",
+    "nanocodec-vp9": "c9cff89f",
+    "nanocodec-vp9@slow": "c9cff89f",
+    "nanocodec-av1": "c9cff89f",
+    "nanocodec-av1@fast": "c9cff89f",
+    "nanocodec-av1@veryfast": "c9cff89f",
+    "nanocodec-vp9@fast": "c9cff89f"
+   },
    "tools": {
     "x264": "0.165",
     "x265": "4.2",
@@ -2102,25 +2116,43 @@
    "not_measured": {},
    "measured": {
     "labels": {
-     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
-     "8b492382": "development build 8b492382 (crate version 0.1.0)",
-     "bad14976": "development build bad14976 (crate version 0.1.0)",
-     "4a5b8dd1": "development build 4a5b8dd1 (crate version 0.1.0)",
-     "d40f86b3": "development build d40f86b3 (crate version 0.2.0)",
-     "b33ba3bb": "release 0.3.0 (b33ba3bb)"
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
+    },
+    "family_labels": {
+     "nanocodec-h264": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@faster": "release 0.4.0, PGO build (c9cff89f)"
     },
     "builds": [
-     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
-     "development build bad14976 (crate version 0.1.0) for 5 presets",
-     "development build 8b492382 (crate version 0.1.0) for 3 presets",
-     "development build 4a5b8dd1 (crate version 0.1.0) for 2 presets",
-     "development build d40f86b3 (crate version 0.2.0) for 1 preset",
-     "release 0.3.0 (b33ba3bb) for 1 preset"
+     "release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 4a5b8dd1, 8b492382, b33ba3bb, bad14976, d40f86b3: streams checked by hash)"
     ],
-    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset.",
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 4a5b8dd1, 8b492382, b33ba3bb, bad14976, d40f86b3: streams checked by hash).",
     "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
     "dated": "Release 0.4.0's points were measured 2026-11-19.",
-    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 4a5b8dd1, 8b492382, b33ba3bb, bad14976, d40f86b3: streams checked by hash). Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
    }
   },
   {
@@ -2172,6 +2204,20 @@
     "nanocodec-av2@slow": "bad14976",
     "nanocodec-vvc@slow": "c9cff89f",
     "nanocodec-av2@faster": "c9cff89f"
+   },
+   "family_timed_on": {
+    "nanocodec-h264@fast": "c9cff89f",
+    "nanocodec-h264@faster": "c9cff89f",
+    "nanocodec-vp9@faster": "c9cff89f",
+    "nanocodec-av1@slow": "c9cff89f",
+    "nanocodec-av2@slow": "c9cff89f",
+    "nanocodec-h264@veryfast": "c9cff89f",
+    "nanocodec-vp9": "c9cff89f",
+    "nanocodec-vp9@slow": "c9cff89f",
+    "nanocodec-av1": "c9cff89f",
+    "nanocodec-av1@fast": "c9cff89f",
+    "nanocodec-av1@veryfast": "c9cff89f",
+    "nanocodec-vp9@fast": "c9cff89f"
    },
    "tools": {
     "x264": "0.165",
@@ -3318,25 +3364,43 @@
    "not_measured": {},
    "measured": {
     "labels": {
-     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
-     "8b492382": "development build 8b492382 (crate version 0.1.0)",
-     "bad14976": "development build bad14976 (crate version 0.1.0)",
-     "4a5b8dd1": "development build 4a5b8dd1 (crate version 0.1.0)",
-     "d40f86b3": "development build d40f86b3 (crate version 0.2.0)",
-     "b33ba3bb": "release 0.3.0 (b33ba3bb)"
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
+    },
+    "family_labels": {
+     "nanocodec-h264": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@faster": "release 0.4.0, PGO build (c9cff89f)"
     },
     "builds": [
-     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
-     "development build bad14976 (crate version 0.1.0) for 5 presets",
-     "development build 8b492382 (crate version 0.1.0) for 3 presets",
-     "development build 4a5b8dd1 (crate version 0.1.0) for 2 presets",
-     "development build d40f86b3 (crate version 0.2.0) for 1 preset",
-     "release 0.3.0 (b33ba3bb) for 1 preset"
+     "release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 4a5b8dd1, 8b492382, b33ba3bb, bad14976, d40f86b3: streams checked by hash)"
     ],
-    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset.",
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 4a5b8dd1, 8b492382, b33ba3bb, bad14976, d40f86b3: streams checked by hash).",
     "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
     "dated": "Release 0.4.0's points were measured 2026-11-19.",
-    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 4a5b8dd1, 8b492382, b33ba3bb, bad14976, d40f86b3: streams checked by hash). Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
    }
   },
   {
@@ -3388,6 +3452,20 @@
     "nanocodec-vp9@slow": "bad14976",
     "nanocodec-av2@slow": "bad14976",
     "nanocodec-av2@faster": "c9cff89f"
+   },
+   "family_timed_on": {
+    "nanocodec-h264@fast": "c9cff89f",
+    "nanocodec-h264@faster": "c9cff89f",
+    "nanocodec-h264@veryfast": "c9cff89f",
+    "nanocodec-vp9@faster": "c9cff89f",
+    "nanocodec-av1@slow": "c9cff89f",
+    "nanocodec-vp9": "c9cff89f",
+    "nanocodec-av2@slow": "c9cff89f",
+    "nanocodec-vp9@slow": "c9cff89f",
+    "nanocodec-av1": "c9cff89f",
+    "nanocodec-av1@fast": "c9cff89f",
+    "nanocodec-av1@veryfast": "c9cff89f",
+    "nanocodec-vp9@fast": "c9cff89f"
    },
    "tools": {
     "x264": "0.165",
@@ -4465,23 +4543,43 @@
    "not_measured": {},
    "measured": {
     "labels": {
-     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
-     "478e8249": "development build 478e8249 (crate version 0.1.0)",
-     "b33ba3bb": "release 0.3.0 (b33ba3bb)",
-     "77e93089": "development build 77e93089 (crate version 0.1.0)",
-     "bad14976": "development build bad14976 (crate version 0.1.0)"
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
+    },
+    "family_labels": {
+     "nanocodec-h264": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@faster": "release 0.4.0, PGO build (c9cff89f)"
     },
     "builds": [
-     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
-     "development build 478e8249 (crate version 0.1.0) for 4 presets",
-     "release 0.3.0 (b33ba3bb) for 4 presets",
-     "development build 77e93089 (crate version 0.1.0) for 2 presets",
-     "development build bad14976 (crate version 0.1.0) for 2 presets"
+     "release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 478e8249, 77e93089, b33ba3bb, bad14976: streams checked by hash)"
     ],
-    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets.",
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 478e8249, 77e93089, b33ba3bb, bad14976: streams checked by hash).",
     "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
     "dated": "Release 0.4.0's points were measured 2026-11-19.",
-    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 478e8249, 77e93089, b33ba3bb, bad14976: streams checked by hash). Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
    }
   },
   {
@@ -4532,6 +4630,20 @@
     "nanocodec-vp9@slow": "bad14976",
     "nanocodec-av2@slow": "bad14976",
     "nanocodec-av2@faster": "c9cff89f"
+   },
+   "family_timed_on": {
+    "nanocodec-h264@fast": "c9cff89f",
+    "nanocodec-h264@faster": "c9cff89f",
+    "nanocodec-h264@veryfast": "c9cff89f",
+    "nanocodec-vp9@faster": "c9cff89f",
+    "nanocodec-av1@slow": "c9cff89f",
+    "nanocodec-vp9": "c9cff89f",
+    "nanocodec-av2@slow": "c9cff89f",
+    "nanocodec-vp9@slow": "c9cff89f",
+    "nanocodec-av1": "c9cff89f",
+    "nanocodec-av1@fast": "c9cff89f",
+    "nanocodec-av1@veryfast": "c9cff89f",
+    "nanocodec-vp9@fast": "c9cff89f"
    },
    "tools": {
     "x264": "0.165",
@@ -5517,23 +5629,43 @@
    "not_measured": {},
    "measured": {
     "labels": {
-     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
-     "478e8249": "development build 478e8249 (crate version 0.1.0)",
-     "b33ba3bb": "release 0.3.0 (b33ba3bb)",
-     "77e93089": "development build 77e93089 (crate version 0.1.0)",
-     "bad14976": "development build bad14976 (crate version 0.1.0)"
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
+    },
+    "family_labels": {
+     "nanocodec-h264": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@fast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@faster": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@veryfast": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-hevc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av1@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vvc@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-h264@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-vp9@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@slow": "release 0.4.0, PGO build (c9cff89f)",
+     "nanocodec-av2@faster": "release 0.4.0, PGO build (c9cff89f)"
     },
     "builds": [
-     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
-     "development build 478e8249 (crate version 0.1.0) for 4 presets",
-     "release 0.3.0 (b33ba3bb) for 4 presets",
-     "development build 77e93089 (crate version 0.1.0) for 2 presets",
-     "development build bad14976 (crate version 0.1.0) for 2 presets"
+     "release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 478e8249, 77e93089, b33ba3bb, bad14976: streams checked by hash)"
     ],
-    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets.",
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 478e8249, 77e93089, b33ba3bb, bad14976: streams checked by hash).",
     "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
     "dated": "Release 0.4.0's points were measured 2026-11-19.",
-    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 26 presets (12 of them coded by it byte-identically to the build that first coded and scored them, 478e8249, 77e93089, b33ba3bb, bad14976: streams checked by hash). Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
    }
   },
   {
@@ -6614,6 +6746,7 @@
     "labels": {
      "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
     },
+    "family_labels": {},
     "builds": [
      "release 0.4.0, PGO build (c9cff89f) for every preset"
     ],
@@ -7602,6 +7735,7 @@
     "labels": {
      "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
     },
+    "family_labels": {},
     "builds": [
      "release 0.4.0, PGO build (c9cff89f) for every preset"
     ],
@@ -8590,6 +8724,7 @@
     "labels": {
      "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
     },
+    "family_labels": {},
     "builds": [
      "release 0.4.0, PGO build (c9cff89f) for every preset"
     ],
