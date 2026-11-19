@@ -50,7 +50,7 @@ function wasm(data, root) {
     measuredNote(data.measured.caption), sources(data.source));
 }
 
-const DECODE_PLATFORMS = { x86: 'PC (x86)', jetson: 'Jetson (Arm)', wasm: 'Browser (WebAssembly)' };
+const DECODE_PLATFORMS = { x86: 'x86', jetson: 'Jetson (Arm)', wasm: 'Browser (WebAssembly)' };
 const decodeState = { platform: 'x86' };
 
 /** Per stream on the chosen platform: ours and the reference in ms per frame and their ratio
@@ -76,7 +76,7 @@ function decoders(native, browser, root) {
   const rows = decodeRows(native, browser);
   const ms = (v) => (v === null ? 'no data' : `${v.toFixed(2)} ms`);
   root.querySelector('.decoder-note').textContent = decodeState.platform === 'wasm'
-    ? `Browser: our module and ffmpeg.wasm, one PC core, same session. ffmpeg.wasm has no SIMD and no AV1, VVC or AV2 decoder; streams it was not run on show no data. ${browser.measured.caption}`
+    ? `Browser: our module and ffmpeg.wasm, one x86 core, same session. ffmpeg.wasm has no SIMD and no AV1, VVC or AV2 decoder; streams it was not run on show no data. ${browser.measured.caption}`
     : `${DECODE_PLATFORMS[decodeState.platform]}, every decoder single-threaded. ${native.measured_by_platform[decodeState.platform].caption}`;
   drawRatioBars(root.querySelector('.ratio-chart'), rows.map((x) => ({
     label: `${CODEC_NAMES[x.r.codec]} · ${x.r.stream}`, ratio: x.ratio,
@@ -100,7 +100,7 @@ function wasmEncode(data, root) {
     label: ours(r) ? r.label.replace(/^nanocodec /, '') : `${r.label} (ffmpeg.wasm)`, flagged: false, twin: null,
     priority: ours(r) ? 2 : 1, aria: `${r.label}: ${fps(r.fps)} fps`,
   })), {
-    xLabel: 'browser encode fps, 720p, one PC core (log scale)', yLabel: 'BD-J of the same encoder (lower is better)',
+    xLabel: 'browser encode fps, 720p, one x86 core (log scale)', yLabel: 'BD-J of the same encoder (lower is better)',
     ariaLabel: 'Browser encode speed against quality', selected: null, onSelect: () => {},
     describe: (p) => {
       const r = data.encode.find((e) => e.name === p.id);

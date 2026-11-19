@@ -8,7 +8,7 @@
    "release 0.4.0, plain build (c9cff89f)"
   ],
   "reference_only": null,
-  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, plain build (c9cff89f). The browser module (relaxed SIMD, plain web build) under node v22.21.1 (V8) and the native plain build, one core (15, tools/dev/host-timed.sh) of a shared AMD Ryzen 9 5950X at 1-minute load 24-55, best of 3 interleaved rounds."
+  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, plain build (c9cff89f). The browser module (plain web build) under node v22.21.1 (V8) and the native plain build on aWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core, quiet (1-minute load under 2), ours and the references in the same session, best of 3 interleaved rounds."
  },
  "module": "relaxed",
  "rows": [
@@ -21,8 +21,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 1021.8,
-   "native_fps": 1622.1
+   "wasm_fps": 1524.4,
+   "native_fps": 2622.8
   },
   {
    "direction": "decode",
@@ -33,8 +33,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 322.6,
-   "native_fps": 595.3
+   "wasm_fps": 580.0,
+   "native_fps": 998.6
   },
   {
    "direction": "decode",
@@ -45,8 +45,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 750.2,
-   "native_fps": 1190.2
+   "wasm_fps": 1129.5,
+   "native_fps": 1788.3
   },
   {
    "direction": "decode",
@@ -57,8 +57,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 257.1,
-   "native_fps": 424.7
+   "wasm_fps": 430.4,
+   "native_fps": 671.1
   },
   {
    "direction": "decode",
@@ -69,8 +69,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 1909.6,
-   "native_fps": 2716.1
+   "wasm_fps": 2579.5,
+   "native_fps": 4248.7
   },
   {
    "direction": "decode",
@@ -81,8 +81,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 430.6,
-   "native_fps": 945.0
+   "wasm_fps": 995.0,
+   "native_fps": 1627.1
   },
   {
    "direction": "decode",
@@ -93,8 +93,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 1490.3,
-   "native_fps": 2118.5
+   "wasm_fps": 2215.7,
+   "native_fps": 3278.2
   },
   {
    "direction": "decode",
@@ -105,8 +105,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 462.4,
-   "native_fps": 851.0
+   "wasm_fps": 863.3,
+   "native_fps": 1352.6
   },
   {
    "direction": "decode",
@@ -117,8 +117,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 1606.0,
-   "native_fps": 2281.4
+   "wasm_fps": 2398.1,
+   "native_fps": 3557.0
   },
   {
    "direction": "decode",
@@ -129,8 +129,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 467.4,
-   "native_fps": 865.2
+   "wasm_fps": 911.6,
+   "native_fps": 1416.5
   },
   {
    "direction": "decode",
@@ -141,8 +141,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 860.8,
-   "native_fps": 1226.7
+   "wasm_fps": 1226.5,
+   "native_fps": 1874.2
   },
   {
    "direction": "decode",
@@ -153,8 +153,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 242.4,
-   "native_fps": 427.2
+   "wasm_fps": 421.3,
+   "native_fps": 700.3
   },
   {
    "direction": "encode",
@@ -165,8 +165,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 137.1,
-   "native_fps": 221.9
+   "wasm_fps": 203.9,
+   "native_fps": 349.6
   },
   {
    "direction": "encode",
@@ -177,8 +177,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 34.7,
-   "native_fps": 70.5
+   "wasm_fps": 63.8,
+   "native_fps": 130.1
   },
   {
    "direction": "encode",
@@ -189,8 +189,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 224.3,
-   "native_fps": 389.8
+   "wasm_fps": 339.7,
+   "native_fps": 648.4
   },
   {
    "direction": "encode",
@@ -201,8 +201,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 48.7,
-   "native_fps": 110.6
+   "wasm_fps": 96.3,
+   "native_fps": 220.5
   },
   {
    "direction": "encode",
@@ -213,8 +213,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 105.8,
-   "native_fps": 174.0
+   "wasm_fps": 160.6,
+   "native_fps": 269.8
   },
   {
    "direction": "encode",
@@ -225,8 +225,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 28.7,
-   "native_fps": 57.1
+   "wasm_fps": 51.9,
+   "native_fps": 108.0
   },
   {
    "direction": "encode",
@@ -237,8 +237,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 162.5,
-   "native_fps": 297.5
+   "wasm_fps": 245.3,
+   "native_fps": 476.6
   },
   {
    "direction": "encode",
@@ -249,8 +249,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 40.2,
-   "native_fps": 89.0
+   "wasm_fps": 77.6,
+   "native_fps": 179.9
   },
   {
    "direction": "encode",
@@ -261,8 +261,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 190.3,
-   "native_fps": 314.0
+   "wasm_fps": 281.6,
+   "native_fps": 472.6
   },
   {
    "direction": "encode",
@@ -273,8 +273,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 48.4,
-   "native_fps": 101.9
+   "wasm_fps": 84.5,
+   "native_fps": 172.2
   },
   {
    "direction": "encode",
@@ -285,8 +285,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 385.8,
-   "native_fps": 619.0
+   "wasm_fps": 584.6,
+   "native_fps": 1003.3
   },
   {
    "direction": "encode",
@@ -297,8 +297,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 78.8,
-   "native_fps": 170.2
+   "wasm_fps": 162.9,
+   "native_fps": 347.6
   },
   {
    "direction": "encode",
@@ -309,8 +309,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 161.4,
-   "native_fps": 246.6
+   "wasm_fps": 238.6,
+   "native_fps": 376.6
   },
   {
    "direction": "encode",
@@ -321,8 +321,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 40.6,
-   "native_fps": 84.9
+   "wasm_fps": 72.6,
+   "native_fps": 145.6
   },
   {
    "direction": "encode",
@@ -333,8 +333,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 245.8,
-   "native_fps": 416.1
+   "wasm_fps": 364.7,
+   "native_fps": 658.5
   },
   {
    "direction": "encode",
@@ -345,8 +345,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 60.6,
-   "native_fps": 126.0
+   "wasm_fps": 107.6,
+   "native_fps": 240.8
   },
   {
    "direction": "encode",
@@ -357,8 +357,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 116.4,
-   "native_fps": 193.8
+   "wasm_fps": 174.2,
+   "native_fps": 300.5
   },
   {
    "direction": "encode",
@@ -369,8 +369,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 34.8,
-   "native_fps": 65.6
+   "wasm_fps": 59.7,
+   "native_fps": 117.2
   },
   {
    "direction": "encode",
@@ -381,8 +381,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 187.4,
-   "native_fps": 316.5
+   "wasm_fps": 281.4,
+   "native_fps": 514.3
   },
   {
    "direction": "encode",
@@ -393,8 +393,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 45.8,
-   "native_fps": 95.5
+   "wasm_fps": 83.1,
+   "native_fps": 184.1
   },
   {
    "direction": "encode",
@@ -405,8 +405,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 96.4,
-   "native_fps": 162.8
+   "wasm_fps": 141.9,
+   "native_fps": 250.2
   },
   {
    "direction": "encode",
@@ -417,8 +417,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 25.5,
-   "native_fps": 49.7
+   "wasm_fps": 47.0,
+   "native_fps": 98.1
   },
   {
    "direction": "encode",
@@ -429,8 +429,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 194.8,
-   "native_fps": 304.4
+   "wasm_fps": 283.9,
+   "native_fps": 475.4
   },
   {
    "direction": "encode",
@@ -441,8 +441,8 @@
    "builds": [
     "c9cff89f"
    ],
-   "wasm_fps": 42.8,
-   "native_fps": 88.6
+   "wasm_fps": 82.8,
+   "native_fps": 176.2
   }
  ]
 }
