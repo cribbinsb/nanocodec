@@ -2,6 +2,14 @@
  "source": [
   "docs/results/rc-cost-2026-11-15.csv"
  ],
+ "measured": {
+  "date": "2026-11-15",
+  "builds": [
+   "development build c323b045 (crate version 0.1.0)"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-15 on nanocodec development build c323b045 (crate version 0.1.0). Quality only (BD-rate on the 11 development clips, 150 frames, one key frame): no timing. References: x264 medium (0.165), default and --tune psnr."
+ },
  "build_commit": "c323b045",
  "ladder_kbps": "150/300/600/1200",
  "frames": 150,

@@ -58,7 +58,7 @@ async function main() {
   const root = document.getElementById('rc');
   try {
     const data = await loadData('rc-cost');
-    root.querySelector('.run').textContent = `Build ${data.build_commit}; ladder ${data.ladder_kbps} kbps at 720p30, ${data.frames} frames, one key frame.`;
+    root.querySelector('.run').textContent = `${data.measured.caption} Ladder ${data.ladder_kbps} kbps at 720p30, ${data.frames} frames, one key frame.`;
     root.querySelector('.controls').append(control('Metric', segmented('Metric',
       Object.keys(METRIC_SHORT).map((key) => ({ value: key, label: METRIC_SHORT[key] })), state.metric,
       (v) => { state.metric = v; render(data, root); })));

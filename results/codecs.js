@@ -2,7 +2,7 @@
 // encoders of that format, on the fresh and all held-out clips and the development
 // clips, for the chosen zero line and metric. Data: data/chart.json.
 import {
-  CODEC_NAMES, METRIC_NAMES, METRIC_SHORT, ZERO_NAMES, control, el, fail, fps, loadData, pct,
+  CODEC_NAMES, METRIC_NAMES, METRIC_SHORT, ZERO_NAMES, control, el, fail, fps, loadData, measuredNote, pct,
   segmented, sources, table,
 } from './common.js';
 
@@ -51,7 +51,8 @@ function render(data, root) {
   });
   root.querySelector('.codec-tables').replaceChildren(
     el('p', { class: 'note' }, `${METRIC_NAMES[state.metric]} against ${ZERO_NAMES[state.zero]}; in brackets, the clips with a reliable BD. Clip counts per set: ${columns.filter((c) => c.view.clips).map((c) => `${c.title} ${c.view.clips}`).join(', ')}.`),
-    ...out, sources([...new Set(columns.flatMap((c) => c.view.source))]));
+    ...out, ...columns.map((c) => measuredNote(`${c.title}: ${c.view.measured.caption}`)),
+    sources([...new Set(columns.flatMap((c) => c.view.source))]));
 }
 
 async function main() {

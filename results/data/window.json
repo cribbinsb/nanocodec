@@ -1322,5 +1322,13 @@
   "libaom-av1-cpu8": "libaom",
   "libvpx-vp9-cpu9": "libvpx",
   "x264-medium": "x264"
+ },
+ "measured": {
+  "date": "2026-11-13",
+  "builds": [
+   "development build 8b492382 (crate version 0.1.0) for our six Defaults"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-13 on nanocodec development build 8b492382 (crate version 0.1.0) for our six Defaults. Quality only: coded on rented AWS machines and scored with VMAF v1, MS-SSIM and PSNR on every frame; no timing. References: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0."
  }
 }

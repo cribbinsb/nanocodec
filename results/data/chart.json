@@ -2099,7 +2099,29 @@
      "rate_invalid_points": 124
     }
    },
-   "not_measured": {}
+   "not_measured": {},
+   "measured": {
+    "labels": {
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
+     "8b492382": "development build 8b492382 (crate version 0.1.0)",
+     "bad14976": "development build bad14976 (crate version 0.1.0)",
+     "4a5b8dd1": "development build 4a5b8dd1 (crate version 0.1.0)",
+     "d40f86b3": "development build d40f86b3 (crate version 0.2.0)",
+     "b33ba3bb": "release 0.3.0 (b33ba3bb)"
+    },
+    "builds": [
+     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
+     "development build bad14976 (crate version 0.1.0) for 5 presets",
+     "development build 8b492382 (crate version 0.1.0) for 3 presets",
+     "development build 4a5b8dd1 (crate version 0.1.0) for 2 presets",
+     "development build d40f86b3 (crate version 0.2.0) for 1 preset",
+     "release 0.3.0 (b33ba3bb) for 1 preset"
+    ],
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset.",
+    "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
+    "dated": "Release 0.4.0's points were measured 2026-11-19.",
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+   }
   },
   {
    "id": "heldout-psnr",
@@ -3293,7 +3315,29 @@
      "rate_invalid_points": 221
     }
    },
-   "not_measured": {}
+   "not_measured": {},
+   "measured": {
+    "labels": {
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
+     "8b492382": "development build 8b492382 (crate version 0.1.0)",
+     "bad14976": "development build bad14976 (crate version 0.1.0)",
+     "4a5b8dd1": "development build 4a5b8dd1 (crate version 0.1.0)",
+     "d40f86b3": "development build d40f86b3 (crate version 0.2.0)",
+     "b33ba3bb": "release 0.3.0 (b33ba3bb)"
+    },
+    "builds": [
+     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
+     "development build bad14976 (crate version 0.1.0) for 5 presets",
+     "development build 8b492382 (crate version 0.1.0) for 3 presets",
+     "development build 4a5b8dd1 (crate version 0.1.0) for 2 presets",
+     "development build d40f86b3 (crate version 0.2.0) for 1 preset",
+     "release 0.3.0 (b33ba3bb) for 1 preset"
+    ],
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset.",
+    "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
+    "dated": "Release 0.4.0's points were measured 2026-11-19.",
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build bad14976 (crate version 0.1.0) for 5 presets; development build 8b492382 (crate version 0.1.0) for 3 presets; development build 4a5b8dd1 (crate version 0.1.0) for 2 presets; development build d40f86b3 (crate version 0.2.0) for 1 preset; release 0.3.0 (b33ba3bb) for 1 preset. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+   }
   },
   {
    "id": "dev-psnr",
@@ -4418,7 +4462,27 @@
      "rate_invalid_points": 17
     }
    },
-   "not_measured": {}
+   "not_measured": {},
+   "measured": {
+    "labels": {
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
+     "478e8249": "development build 478e8249 (crate version 0.1.0)",
+     "b33ba3bb": "release 0.3.0 (b33ba3bb)",
+     "77e93089": "development build 77e93089 (crate version 0.1.0)",
+     "bad14976": "development build bad14976 (crate version 0.1.0)"
+    },
+    "builds": [
+     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
+     "development build 478e8249 (crate version 0.1.0) for 4 presets",
+     "release 0.3.0 (b33ba3bb) for 4 presets",
+     "development build 77e93089 (crate version 0.1.0) for 2 presets",
+     "development build bad14976 (crate version 0.1.0) for 2 presets"
+    ],
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets.",
+    "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
+    "dated": "Release 0.4.0's points were measured 2026-11-19.",
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+   }
   },
   {
    "id": "vc1k-psnr",
@@ -5450,7 +5514,27 @@
      "rate_invalid_points": 28
     }
    },
-   "not_measured": {}
+   "not_measured": {},
+   "measured": {
+    "labels": {
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)",
+     "478e8249": "development build 478e8249 (crate version 0.1.0)",
+     "b33ba3bb": "release 0.3.0 (b33ba3bb)",
+     "77e93089": "development build 77e93089 (crate version 0.1.0)",
+     "bad14976": "development build bad14976 (crate version 0.1.0)"
+    },
+    "builds": [
+     "release 0.4.0, PGO build (c9cff89f) for 14 presets",
+     "development build 478e8249 (crate version 0.1.0) for 4 presets",
+     "release 0.3.0 (b33ba3bb) for 4 presets",
+     "development build 77e93089 (crate version 0.1.0) for 2 presets",
+     "development build bad14976 (crate version 0.1.0) for 2 presets"
+    ],
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets.",
+    "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
+    "dated": "Release 0.4.0's points were measured 2026-11-19.",
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for 14 presets; development build 478e8249 (crate version 0.1.0) for 4 presets; release 0.3.0 (b33ba3bb) for 4 presets; development build 77e93089 (crate version 0.1.0) for 2 presets; development build bad14976 (crate version 0.1.0) for 2 presets. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+   }
   },
   {
    "id": "qp",
@@ -6525,7 +6609,19 @@
      }
     }
    },
-   "not_measured": {}
+   "not_measured": {},
+   "measured": {
+    "labels": {
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
+    },
+    "builds": [
+     "release 0.4.0, PGO build (c9cff89f) for every preset"
+    ],
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for every preset.",
+    "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4).",
+    "dated": "Release 0.4.0's points were measured 2026-11-19.",
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for every preset. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on Jetson, x86 (Zen 5), x86 without AVX-512 (Zen 3), server Arm (Graviton4). Release 0.4.0's points were measured 2026-11-19."
+   }
   },
   {
    "id": "qp-fresh",
@@ -7501,7 +7597,19 @@
      }
     }
    },
-   "not_measured": {}
+   "not_measured": {},
+   "measured": {
+    "labels": {
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
+    },
+    "builds": [
+     "release 0.4.0, PGO build (c9cff89f) for every preset"
+    ],
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for every preset.",
+    "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on x86 (Zen 5).",
+    "dated": "Release 0.4.0's points were measured 2026-11-19.",
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for every preset. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on x86 (Zen 5). Release 0.4.0's points were measured 2026-11-19."
+   }
   },
   {
    "id": "qp-vc1k",
@@ -8477,7 +8585,19 @@
      }
     }
    },
-   "not_measured": {}
+   "not_measured": {},
+   "measured": {
+    "labels": {
+     "c9cff89f": "release 0.4.0, PGO build (c9cff89f)"
+    },
+    "builds": [
+     "release 0.4.0, PGO build (c9cff89f) for every preset"
+    ],
+    "quality": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for every preset.",
+    "speed": "Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on x86 (Zen 5).",
+    "dated": "Release 0.4.0's points were measured 2026-11-19.",
+    "caption": "Quality: ours measured at release 0.4.0, PGO build (c9cff89f) for every preset. Speed: ours timed at release 0.4.0, PGO build (c9cff89f) on x86 (Zen 5). Release 0.4.0's points were measured 2026-11-19."
+   }
   }
  ],
  "timing_builds": {

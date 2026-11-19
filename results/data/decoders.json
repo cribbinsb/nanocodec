@@ -1,11 +1,35 @@
 {
  "source": [
-  "docs/results/decoder-speed-2026-11-13/xdec-final.json",
-  "docs/results/decoder-speed-2026-11-13/xdec-final2.json",
-  "docs/results/decoder-speed-2026-11-13/jdec-final.json",
-  "docs/results/decoder-speed-2026-11-13/frames.tsv"
+  "docs/results/decoder-speed-2026-11-19/x86.json",
+  "docs/results/decoder-speed-2026-11-19/jetson.json",
+  "docs/results/decoder-speed-2026-11-19/streams.tsv"
  ],
- "build": "d007869b",
+ "measured": {
+  "date": "2026-11-19",
+  "builds": [
+   "release 0.4.0, PGO build (c9cff89f)"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, PGO build (c9cff89f). x86: AMD Ryzen 9 5950X (Zen 3, AVX2), timing core 14 (tools/dev/host-timed.sh), best of 7 interleaved rounds, the other cores busy with other jobs (1-minute load about 45). Jetson: Orin Nano, one Cortex-A78AE core (core 3, jetson-timed.sh), board otherwise idle, best of 5 interleaved rounds. References: FFmpeg n8.0.1, dav1d 1.5.4, vpxdec (libvpx v1.16.0), VVdeC 3.3.0-dev (d261469), avmdec (AVM v1.0.0), each with one thread."
+ },
+ "measured_by_platform": {
+  "x86": {
+   "date": "2026-11-19",
+   "builds": [
+    "release 0.4.0, PGO build (c9cff89f)"
+   ],
+   "reference_only": null,
+   "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, PGO build (c9cff89f). AMD Ryzen 9 5950X (Zen 3, AVX2), timing core 14 (tools/dev/host-timed.sh), best of 7 interleaved rounds, the other cores busy with other jobs (1-minute load about 45). References: FFmpeg n8.0.1, dav1d 1.5.4, vpxdec (libvpx v1.16.0), VVdeC 3.3.0-dev (d261469), avmdec (AVM v1.0.0), each with one thread."
+  },
+  "jetson": {
+   "date": "2026-11-19",
+   "builds": [
+    "release 0.4.0, PGO build (c9cff89f)"
+   ],
+   "reference_only": null,
+   "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, PGO build (c9cff89f). Jetson Orin Nano, one Cortex-A78AE core (core 3, jetson-timed.sh), board otherwise idle, best of 5 interleaved rounds. References: FFmpeg n8.0.1, dav1d 1.5.4, vpxdec (libvpx v1.16.0), VVdeC 3.3.0-dev (d261469), avmdec (AVM v1.0.0), each with one thread."
+  }
+ },
  "rows": [
   {
    "codec": "h264",
@@ -13,22 +37,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 3.43,
-    "ref_ms": 3.62,
-    "ratio": 0.95,
+    "ours_ms": 4.05,
+    "ref_ms": 4.22,
+    "ratio": 0.96,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 6.95,
-    "ref_ms": 8.47,
-    "ratio": 0.82,
+    "ours_ms": 6.83,
+    "ref_ms": 8.38,
+    "ratio": 0.81,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 7.31,
-    "ratio": 2.13
    }
   },
   {
@@ -37,22 +57,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 3.12,
-    "ref_ms": 3.47,
-    "ratio": 0.9,
+    "ours_ms": 5.15,
+    "ref_ms": 5.44,
+    "ratio": 0.95,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 6.71,
-    "ref_ms": 8.6,
-    "ratio": 0.78,
+    "ours_ms": 6.54,
+    "ref_ms": 8.5,
+    "ratio": 0.77,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 6.23,
-    "ratio": 2.0
    }
   },
   {
@@ -61,22 +77,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 0.95,
-    "ref_ms": 1.08,
-    "ratio": 0.88,
+    "ours_ms": 0.97,
+    "ref_ms": 1.14,
+    "ratio": 0.85,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 2.06,
-    "ref_ms": 2.69,
-    "ratio": 0.77,
+    "ours_ms": 2.03,
+    "ref_ms": 2.67,
+    "ratio": 0.76,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 1.66,
-    "ratio": 1.75
    }
   },
   {
@@ -86,21 +98,17 @@
    "second_reference": null,
    "x86": {
     "ours_ms": 4.4,
-    "ref_ms": 4.38,
-    "ratio": 1.0,
+    "ref_ms": 4.43,
+    "ratio": 0.99,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 7.71,
-    "ref_ms": 9.11,
-    "ratio": 0.85,
+    "ours_ms": 7.51,
+    "ref_ms": 9.08,
+    "ratio": 0.83,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 8.97,
-    "ratio": 2.04
    }
   },
   {
@@ -109,22 +117,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 3.5,
-    "ref_ms": 5.3,
-    "ratio": 0.66,
+    "ours_ms": 3.79,
+    "ref_ms": 6.6,
+    "ratio": 0.57,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 5.87,
-    "ref_ms": 7.8,
-    "ratio": 0.75,
+    "ours_ms": 5.26,
+    "ref_ms": 7.76,
+    "ratio": 0.68,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 5.53,
-    "ratio": 1.58
    }
   },
   {
@@ -132,15 +136,20 @@
    "stream": "Axis 5MP camera",
    "reference": "FFmpeg",
    "second_reference": null,
-   "x86": null,
-   "jetson": {
-    "ours_ms": 13.19,
-    "ref_ms": 16.52,
-    "ratio": 0.8,
+   "x86": {
+    "ours_ms": 10.53,
+    "ref_ms": 24.91,
+    "ratio": 0.42,
     "second_ms": null,
     "second_ratio": null
    },
-   "wasm": null
+   "jetson": {
+    "ours_ms": 11.56,
+    "ref_ms": 16.57,
+    "ratio": 0.7,
+    "second_ms": null,
+    "second_ratio": null
+   }
   },
   {
    "codec": "hevc",
@@ -148,22 +157,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 1.16,
-    "ref_ms": 1.66,
-    "ratio": 0.7,
+    "ours_ms": 1.1,
+    "ref_ms": 1.8,
+    "ratio": 0.61,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 2.53,
-    "ref_ms": 3.37,
-    "ratio": 0.75,
+    "ours_ms": 2.28,
+    "ref_ms": 3.35,
+    "ratio": 0.68,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 1.85,
-    "ratio": 1.6
    }
   },
   {
@@ -171,15 +176,20 @@
    "stream": "Hanwha 4K camera",
    "reference": "FFmpeg",
    "second_reference": null,
-   "x86": null,
-   "jetson": {
-    "ours_ms": 21.83,
-    "ref_ms": 28.07,
-    "ratio": 0.78,
+   "x86": {
+    "ours_ms": 22.89,
+    "ref_ms": 34.65,
+    "ratio": 0.66,
     "second_ms": null,
     "second_ratio": null
    },
-   "wasm": null
+   "jetson": {
+    "ours_ms": 20.1,
+    "ref_ms": 27.95,
+    "ratio": 0.72,
+    "second_ms": null,
+    "second_ratio": null
+   }
   },
   {
    "codec": "hevc",
@@ -187,22 +197,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 9.89,
-    "ref_ms": 13.37,
-    "ratio": 0.74,
+    "ours_ms": 11.94,
+    "ref_ms": 19.58,
+    "ratio": 0.61,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 17.68,
-    "ref_ms": 21.33,
-    "ratio": 0.83,
+    "ours_ms": 16.95,
+    "ref_ms": 21.1,
+    "ratio": 0.8,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 14.35,
-    "ratio": 1.45
    }
   },
   {
@@ -211,46 +217,38 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 5.19,
-    "ref_ms": 7.1,
-    "ratio": 0.73,
+    "ours_ms": 4.5,
+    "ref_ms": 8.8,
+    "ratio": 0.51,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 12.45,
-    "ref_ms": 14.7,
-    "ratio": 0.85,
+    "ours_ms": 11.28,
+    "ref_ms": 14.62,
+    "ratio": 0.77,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 9.27,
-    "ratio": 1.79
    }
   },
   {
    "codec": "hevc",
-   "stream": "ours 720p 600k",
+   "stream": "ours 720p crowd 600k",
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 1.31,
-    "ref_ms": 1.67,
-    "ratio": 0.78,
+    "ours_ms": 1.18,
+    "ref_ms": 1.72,
+    "ratio": 0.69,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 3.0,
-    "ref_ms": 4.18,
-    "ratio": 0.72,
+    "ours_ms": 2.83,
+    "ref_ms": 4.14,
+    "ratio": 0.68,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 2.08,
-    "ratio": 1.59
    }
   },
   {
@@ -259,22 +257,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 7.02,
-    "ref_ms": 7.47,
-    "ratio": 0.94,
+    "ours_ms": 8.55,
+    "ref_ms": 12.01,
+    "ratio": 0.71,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 15.63,
-    "ref_ms": 16.99,
-    "ratio": 0.92,
+    "ours_ms": 15.12,
+    "ref_ms": 16.85,
+    "ratio": 0.9,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 11.36,
-    "ratio": 1.62
    }
   },
   {
@@ -283,22 +277,18 @@
    "reference": "FFmpeg",
    "second_reference": null,
    "x86": {
-    "ours_ms": 15.61,
-    "ref_ms": 27.39,
-    "ratio": 0.57,
+    "ours_ms": 26.12,
+    "ref_ms": 50.0,
+    "ratio": 0.52,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 23.16,
-    "ref_ms": 30.17,
-    "ratio": 0.77,
+    "ours_ms": 22.89,
+    "ref_ms": 30.46,
+    "ratio": 0.75,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 18.84,
-    "ratio": 1.21
    }
   },
   {
@@ -307,22 +297,18 @@
    "reference": "VVdeC",
    "second_reference": null,
    "x86": {
-    "ours_ms": 10.17,
-    "ref_ms": 21.63,
-    "ratio": 0.47,
+    "ours_ms": 8.21,
+    "ref_ms": 36.68,
+    "ratio": 0.22,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 22.65,
-    "ref_ms": 32.52,
-    "ratio": 0.7,
+    "ours_ms": 18.83,
+    "ref_ms": 32.27,
+    "ratio": 0.58,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 17.16,
-    "ratio": 1.69
    }
   },
   {
@@ -331,22 +317,18 @@
    "reference": "VVdeC",
    "second_reference": null,
    "x86": {
-    "ours_ms": 2.73,
-    "ref_ms": 7.01,
-    "ratio": 0.39,
+    "ours_ms": 1.88,
+    "ref_ms": 9.61,
+    "ratio": 0.2,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 5.16,
-    "ref_ms": 8.14,
-    "ratio": 0.63,
+    "ours_ms": 4.15,
+    "ref_ms": 8.06,
+    "ratio": 0.51,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 4.64,
-    "ratio": 1.7
    }
   },
   {
@@ -355,22 +337,18 @@
    "reference": "dav1d",
    "second_reference": null,
    "x86": {
-    "ours_ms": 5.33,
-    "ref_ms": 3.39,
-    "ratio": 1.57,
+    "ours_ms": 5.74,
+    "ref_ms": 4.46,
+    "ratio": 1.29,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 13.02,
-    "ref_ms": 9.83,
-    "ratio": 1.32,
+    "ours_ms": 10.34,
+    "ref_ms": 9.78,
+    "ratio": 1.06,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 8.28,
-    "ratio": 1.55
    }
   },
   {
@@ -379,22 +357,18 @@
    "reference": "dav1d",
    "second_reference": null,
    "x86": {
-    "ours_ms": 2.78,
-    "ref_ms": 1.83,
-    "ratio": 1.52,
+    "ours_ms": 2.65,
+    "ref_ms": 1.97,
+    "ratio": 1.35,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 7.21,
-    "ref_ms": 5.29,
-    "ratio": 1.36,
+    "ours_ms": 6.0,
+    "ref_ms": 5.25,
+    "ratio": 1.14,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 4.44,
-    "ratio": 1.6
    }
   },
   {
@@ -403,22 +377,18 @@
    "reference": "dav1d",
    "second_reference": null,
    "x86": {
-    "ours_ms": 4.8,
-    "ref_ms": 3.04,
-    "ratio": 1.58,
+    "ours_ms": 5.02,
+    "ref_ms": 3.23,
+    "ratio": 1.55,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 11.33,
-    "ref_ms": 7.91,
-    "ratio": 1.43,
+    "ours_ms": 9.83,
+    "ref_ms": 7.8,
+    "ratio": 1.26,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 7.96,
-    "ratio": 1.66
    }
   },
   {
@@ -427,22 +397,18 @@
    "reference": "dav1d",
    "second_reference": null,
    "x86": {
-    "ours_ms": 6.74,
-    "ref_ms": 5.33,
-    "ratio": 1.27,
+    "ours_ms": 6.05,
+    "ref_ms": 5.4,
+    "ratio": 1.12,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 17.4,
+    "ours_ms": 14.95,
     "ref_ms": 14.54,
-    "ratio": 1.2,
+    "ratio": 1.03,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 13.32,
-    "ratio": 1.98
    }
   },
   {
@@ -451,22 +417,18 @@
    "reference": "dav1d",
    "second_reference": null,
    "x86": {
-    "ours_ms": 1.82,
-    "ref_ms": 1.62,
-    "ratio": 1.13,
+    "ours_ms": 1.79,
+    "ref_ms": 1.68,
+    "ratio": 1.06,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 5.17,
-    "ref_ms": 4.75,
-    "ratio": 1.09,
+    "ours_ms": 4.54,
+    "ref_ms": 4.74,
+    "ratio": 0.96,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 3.38,
-    "ratio": 1.85
    }
   },
   {
@@ -475,22 +437,18 @@
    "reference": "vpxdec",
    "second_reference": "FFmpeg",
    "x86": {
-    "ours_ms": 5.08,
-    "ref_ms": 3.83,
-    "ratio": 1.32,
-    "second_ms": 5.2,
-    "second_ratio": 0.98
+    "ours_ms": 4.45,
+    "ref_ms": 3.96,
+    "ratio": 1.13,
+    "second_ms": 5.41,
+    "second_ratio": 0.82
    },
    "jetson": {
-    "ours_ms": 12.58,
-    "ref_ms": 10.62,
-    "ratio": 1.18,
-    "second_ms": 11.47,
-    "second_ratio": 1.1
-   },
-   "wasm": {
-    "ms": 9.55,
-    "ratio": 1.88
+    "ours_ms": 10.79,
+    "ref_ms": 10.61,
+    "ratio": 1.02,
+    "second_ms": 11.43,
+    "second_ratio": 0.94
    }
   },
   {
@@ -499,22 +457,18 @@
    "reference": "vpxdec",
    "second_reference": "FFmpeg",
    "x86": {
-    "ours_ms": 1.43,
-    "ref_ms": 1.05,
-    "ratio": 1.36,
+    "ours_ms": 1.13,
+    "ref_ms": 1.04,
+    "ratio": 1.09,
     "second_ms": 1.36,
-    "second_ratio": 1.05
+    "second_ratio": 0.83
    },
    "jetson": {
-    "ours_ms": 3.4,
-    "ref_ms": 2.74,
-    "ratio": 1.24,
-    "second_ms": 3.19,
-    "second_ratio": 1.07
-   },
-   "wasm": {
-    "ms": 2.35,
-    "ratio": 1.65
+    "ours_ms": 2.85,
+    "ref_ms": 2.73,
+    "ratio": 1.04,
+    "second_ms": 3.18,
+    "second_ratio": 0.89
    }
   },
   {
@@ -523,22 +477,18 @@
    "reference": "vpxdec",
    "second_reference": "FFmpeg",
    "x86": {
-    "ours_ms": 5.98,
-    "ref_ms": 4.24,
-    "ratio": 1.41,
-    "second_ms": 6.11,
-    "second_ratio": 0.98
+    "ours_ms": 6.39,
+    "ref_ms": 5.12,
+    "ratio": 1.25,
+    "second_ms": 7.38,
+    "second_ratio": 0.87
    },
    "jetson": {
-    "ours_ms": 13.36,
-    "ref_ms": 11.73,
-    "ratio": 1.14,
-    "second_ms": 12.48,
-    "second_ratio": 1.07
-   },
-   "wasm": {
-    "ms": 12.25,
-    "ratio": 2.05
+    "ours_ms": 11.98,
+    "ref_ms": 11.66,
+    "ratio": 1.03,
+    "second_ms": 12.46,
+    "second_ratio": 0.96
    }
   },
   {
@@ -547,22 +497,18 @@
    "reference": "avmdec",
    "second_reference": null,
    "x86": {
-    "ours_ms": 7.81,
-    "ref_ms": 23.55,
-    "ratio": 0.33,
+    "ours_ms": 7.25,
+    "ref_ms": 29.48,
+    "ratio": 0.25,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 19.83,
-    "ref_ms": 62.31,
-    "ratio": 0.32,
+    "ours_ms": 17.62,
+    "ref_ms": 62.03,
+    "ratio": 0.28,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 14.71,
-    "ratio": 1.88
    }
   },
   {
@@ -571,22 +517,18 @@
    "reference": "avmdec",
    "second_reference": null,
    "x86": {
-    "ours_ms": 2.44,
-    "ref_ms": 6.28,
-    "ratio": 0.39,
+    "ours_ms": 2.36,
+    "ref_ms": 6.89,
+    "ratio": 0.34,
     "second_ms": null,
     "second_ratio": null
    },
    "jetson": {
-    "ours_ms": 6.2,
-    "ref_ms": 19.88,
-    "ratio": 0.31,
+    "ours_ms": 5.72,
+    "ref_ms": 19.78,
+    "ratio": 0.29,
     "second_ms": null,
     "second_ratio": null
-   },
-   "wasm": {
-    "ms": 4.13,
-    "ratio": 1.69
    }
   }
  ]

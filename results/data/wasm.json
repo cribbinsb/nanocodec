@@ -2,6 +2,15 @@
  "source": [
   "docs/results/wasm-speed.csv"
  ],
+ "measured": {
+  "date": "2026-11-10",
+  "builds": [
+   "development build f2f7a221, plain (crate version 0.1.0) for H.264, HEVC, AV1, VP9 and AV2",
+   "development build bcbc5601, plain (crate version 0.1.0) for VVC"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-10 on nanocodec development build f2f7a221, plain (crate version 0.1.0) for H.264, HEVC, AV1, VP9 and AV2; development build bcbc5601, plain (crate version 0.1.0) for VVC. The browser module under node v22.21.1 (V8) and the native build, one core (15) of a shared AMD Ryzen 9 5950X, best of 3 interleaved rounds."
+ },
  "module": "relaxed",
  "rows": [
   {

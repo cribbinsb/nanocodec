@@ -3,6 +3,14 @@
   "docs/results/wasm-yardstick-2026-11-12/wasm.json"
  ],
  "build": "bcbc5601",
+ "measured": {
+  "date": "2026-11-12",
+  "builds": [
+   "development build bcbc5601, plain (crate version 0.1.0) for our browser module (relaxed SIMD)"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-12 on nanocodec development build bcbc5601, plain (crate version 0.1.0) for our browser module (relaxed SIMD). One core (15) of a shared AMD Ryzen 9 5950X under node 22, both modules in the same rounds. References: ffmpeg.wasm (@ffmpeg/core 0.12.10: x264 and FFmpeg's decoders, one thread, no SIMD)."
+ },
  "quality_view": "fresh-psnr",
  "encode": [
   {

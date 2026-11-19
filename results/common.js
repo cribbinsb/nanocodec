@@ -87,6 +87,13 @@ export function sources(paths) {
   ]));
 }
 
+/** The "Measured on" line of a table or chart: the date, our builds with their released
+ * crate versions, the machines and the references (nceval.site writes the caption from
+ * docs/results/provenance.json and the charts' build records). */
+export function measuredNote(caption) {
+  return el('p', { class: 'note measured' }, caption);
+}
+
 /** Report a page that could not load its data, instead of failing silently. */
 export function fail(container, error) {
   container.replaceChildren(el('p', { class: 'disclaimer', role: 'alert' },

@@ -2,6 +2,16 @@
  "source": [
   "docs/results/svc-chart.csv"
  ],
+ "measured": {
+  "date": "2026-11-13",
+  "builds": [
+   "development build 52903ab1, plain (crate version 0.1.0) for the single-layer and two-layer AV1 points",
+   "development build 53890097, plain (crate version 0.1.0) for the VP9 points",
+   "development build 4594ae65, plain (crate version 0.1.0) for the three-layer AV1 points"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-13 on nanocodec development build 52903ab1, plain (crate version 0.1.0) for the single-layer and two-layer AV1 points; development build 53890097, plain (crate version 0.1.0) for the VP9 points; development build 4594ae65, plain (crate version 0.1.0) for the three-layer AV1 points. x86 speed: CPU time on a reserved core of a shared AMD Ryzen 9 5950X, each point paired with x264 medium in the same rounds. Jetson speed: Orin Nano core 3 at 1.728 GHz, paired with x264 medium. References: libaom svc_encoder_rtc v3.15.3, libvpx vp9_spatial_svc_encoder v1.16.0, x264 medium (0.165)."
+ },
  "rows": [
   {
    "family": "x264-medium",

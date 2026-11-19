@@ -53,7 +53,7 @@ function viewId(data) {
 function versionOf(data, view, family) {
   const point = data.points[family];
   if (point.ours) {
-    if (view.build_commit) return `build ${view.build_commit}`;
+    if (view.build_commit) return `build ${view.measured.labels[view.build_commit.split(' ')[0]]}`;
     const build = view.family_builds?.[family];
     return build ? `build ${view.builds[build] || build}` : '';
   }
@@ -164,14 +164,14 @@ function fillDemoLink(data, family, root) {
 
 function viewNote(data, view) {
   if (view.rate_mode === 'qp' && view.clipset === 'ctc') {
-    return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), build ${view.build_commit}. ${qpSpeedNote(view)}`;
+    return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), ${view.measured.quality} ${qpSpeedNote(view)} ${view.measured.dated}`;
   }
   if (view.rate_mode === 'qp') {
-    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of ${QP_SAMPLE_RULES[view.clipset] || data.datasets[view.clipset].sample_rule}, ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. Ours at build ${view.build_commit}. ${qpSpeedNote(view)}${datasetNote(data, view)}`;
+    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of ${QP_SAMPLE_RULES[view.clipset] || data.datasets[view.clipset].sample_rule}, ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. ${view.measured.quality} ${qpSpeedNote(view)} ${view.measured.dated}${datasetNote(data, view)}`;
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
-  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. ${cbrSpeedNote(data)}${datasetNote(data, view)}`;
+  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. ${cbrSpeedNote(data)} ${view.measured.dated}${datasetNote(data, view)}`;
 }
 
 /** An outside dataset's selection, credit and licence note (data.datasets), for its views. */
@@ -214,7 +214,7 @@ function oursBuilds(data, view) {
     byBuild.set(build, [...(byBuild.get(build) || []), label]);
   }
   return [...byBuild.entries()].sort((a, b) => b[1].length - a[1].length)
-    .map(([build, labels]) => `${labels.join(', ')} at ${view.builds[build] || build}`).join('; ');
+    .map(([build, labels]) => `${labels.join(', ')} at ${view.measured.labels[build] || view.builds[build] || build}`).join('; ');
 }
 
 function render(data, root) {
@@ -268,7 +268,7 @@ function render(data, root) {
   const zero = view.rate_mode === 'qp' ? 'x264 medium at fixed QP' : ZERO_NAMES[view.zero];
   title.textContent = `${NAMES[state.metric]} vs ${zero}, against single-thread encode speed`;
   root.querySelector('.chart-sub').textContent = view.rate_mode === 'qp'
-    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} clips of ${data.clipsets[view.clipset].split(':')[0]}`}, build ${view.build_commit} · lower is fewer bits, right is faster`
+    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} clips of ${data.clipsets[view.clipset].split(':')[0]}`}, build ${view.build_commit.split(' ')[0]} · lower is fewer bits, right is faster`
     : `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
   let pinned = [];
   if (!points.length) {
