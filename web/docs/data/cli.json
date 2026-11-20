@@ -89,7 +89,8 @@
    {"title": "Options", "options": [
     {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format."},
     {"flag": "--input", "value": "PATH", "help": "The stream."},
-    {"flag": "--json", "value": "FILE", "help": "Write the statistics as JSON."}]}]},
+    {"flag": "--json", "value": "FILE", "help": "Write the statistics as JSON."},
+    {"flag": "--records", "value": "FILE", "help": "HEVC: also write every picture's block records (packed, little-endian)."}]}]},
   {"name": "help", "about": "Print this help.", "groups": []}
  ],
  "presets": {

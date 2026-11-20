@@ -79,6 +79,8 @@ pub(super) struct FrameMaps<T: Pixel> {
     segment_predicted: SegmentMap,
     /// Inter prediction scratch.
     prediction: inter_pred::PredictionScratch<T>,
+    /// The edges of the intra block being predicted, filled in place.
+    intra_edges: nc_dsp::intra_prediction::av1_block::BlockEdges<T>,
     /// Where analysis records go, when they are being collected.
     #[cfg(feature = "analysis")]
     pub(super) stats: Option<nc_common::stream_stats::StreamStats>,
@@ -100,6 +102,9 @@ impl<T: Pixel> FrameMaps<T> {
             segments: SegmentMap::default(),
             segment_predicted: SegmentMap::default(),
             prediction: inter_pred::PredictionScratch::default(),
+            intra_edges: nc_dsp::intra_prediction::av1_block::BlockEdges::empty(
+                nc_common::BitDepth::EIGHT,
+            ),
             #[cfg(feature = "analysis")]
             stats: None,
             #[cfg(feature = "analysis")]
@@ -338,7 +343,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             .start_frame(mi_cols, mi_rows, &header.loop_filter);
         maps.cdef.start_frame(mi_cols, mi_rows);
         if header.kind == FrameKind::Inter || header.allow_intrabc {
-            maps.motion.start_frame(mi_cols, mi_rows, sb_mi);
+            maps.motion.start_frame(mi_cols, sb_mi);
         }
         let mv_frame = MvFrame {
             mi_cols,
@@ -711,9 +716,9 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
     /// `read_skip_mode()` (§5.11.10) in a frame with `skip_mode_present`:
     /// blocks of 8x8 and up code it; skip-mode blocks are skipped compound
     /// blocks.
-    // Out of line: our own streams never code skip mode.
-    #[cold]
-    #[inline(never)]
+    // Inline: libaom streams read it in most blocks of their compound
+    // frames (our own streams never code skip mode, so never reach it).
+    #[inline]
     fn read_skip_mode(
         &mut self,
         r: &mut SymbolReader<'_>,
@@ -992,12 +997,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         self.maps.motion.fill::<T>(at, cell);
         if let (Some(saved), Some(sides)) = (&mut self.saved_motion, &self.inter_tools.saved_sides)
         {
-            let (mi_cols, mi_rows) = (self.header.width / MI_SIZE, self.header.height / MI_SIZE);
-            let units = (
-                block.size.width_mi().min(mi_cols - block.mi_col),
-                block.size.height_mi().min(mi_rows - block.mi_row),
-            );
-            saved.record(at, units, &cell, *sides);
+            saved.record(at, &cell, *sides);
         }
     }
     /// `read_cdef()` (§5.11.56) of a non-skipped block of `w4` x `h4`

@@ -179,7 +179,13 @@ impl BitDepth {
         reason = "per-sample clip inside kernels; must fold into the caller"
     )]
     pub fn clip(self, value: i32) -> i32 {
-        value.clamp(0, self.max())
+        // `max(0)` then `min(max)`, not `clamp`: the same value (`max` is
+        // positive), but vectorised loops compile it to saturating packs at
+        // 8 bits (two instructions for eight samples on x86), while `clamp`
+        // stays a compare-and-select sequence even at a constant depth
+        // (rustc 1.99; -14.5M instructions in the AV1 warp store alone on a
+        // libaom 720p stream, 2026-11-19).
+        value.max(0).min(self.max())
     }
 
     /// `Clip1(value)` stored as a sample of type `T`.

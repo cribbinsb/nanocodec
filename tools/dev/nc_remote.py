@@ -21,7 +21,8 @@ directory name.
 
 Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
 - One persistent box from an instant EC2 Fleet over INSTANCE_TYPES x every zone of
-  REGION (spot, price-capacity-optimized; on-demand after repeated reclaims),
+  REGION (spot, price-capacity-optimized, without the types spot reclaimed
+  lately; on-demand only after reclaims of several types or no spot capacity),
   from the newest baked AMI (`nc-remote bake`) or plain Ubuntu, provisioned
   by nc_remote_provision.sh on first boot.
 - Its user-data (nc_remote_box.sh) sets the hard lifetime and an idle
@@ -30,6 +31,13 @@ Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
   PC and at the start of every command) runs the same idle check over SSH and
   writes the ledger row of a box that has gone (idle, lifetime or spot
   reclaim). `run` restarts a lost box and retries the command once.
+- Replacement, make before break: when the current box should give way (it is
+  on-demand while the rule says spot again, or it is within REPLACE_BEFORE_END
+  of its hard lifetime) and jobs are on it, `reap` launches a new box and makes
+  it current once it is ready; every later `run` goes there. The old box
+  drains: no new jobs, its running ones (and their --fetch) finish as before,
+  and `reap` ends it once no `run` uses it and no slot is held. A box with no
+  job is simply ended (the next `run` launches its successor).
 - Budget: the day's estimate (instance hours x price + volume + IPv4,
   per UTC day) must stay under DAILY_BUDGET_USD: no start once it is passed,
   and a running box is stopped.
@@ -42,9 +50,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime
 import fcntl
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -58,6 +68,7 @@ from aws_session import (  # noqa: E402
     GP3_USD_PER_GB_MONTH, HOURS_PER_MONTH, PROJECT_TAG, PUBLIC_IPV4_USD_PER_HOUR, OWNER_TAG,
     WORK_DIR, AMI_PARAMETER, UBUNTU_RELEASE, SessionSpec, iso, ledger_row, public_ip, say,
     utc_now)
+from build_stamp import diff_identity  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REGION = "eu-north-1"
@@ -75,14 +86,26 @@ SLOTS = VCPUS // JOBS_PER_SLOT
 ROOT_GB = 200
 LIFETIME_MINUTES = 12 * 60
 IDLE_MINUTES = 10
+#: A busy box this close to its hard lifetime is replaced (make before break),
+#: so jobs started from then on do not die with it at the hard end; the jobs
+#: already on it have this long to finish.
+REPLACE_BEFORE_END = datetime.timedelta(hours=1)
 #: Room for an on-demand day (RECLAIM_WINDOW): ~$2.9/h for up to 12 h.
 DAILY_BUDGET_USD = 40.0
-#: Markets. Spot by default; after two spot reclaims within RECLAIM_WINDOW
-#: (2026-11-16: c6i.16xlarge was reclaimed at 12:04, 12:33 and 13:03 and agents
-#: kept losing jobs), on-demand until RECLAIM_WINDOW after the later one
+#: Markets. Spot by default. A type that spot reclaimed within RECLAIM_WINDOW is
+#: left out of the next spot fleets, so the box moves to another type's pools
+#: (owner, 2026-11-20: reclaims come in runs per type -- c6i at 12:04, 12:33 and
+#: 13:03 on 2026-11-16, c7a in two zones at 07:51 and 09:36 on 2026-11-20 --
+#: while other types' spot stayed cheap; the old "two reclaims of any type"
+#: rule then paid on-demand at ~5x the spot price). The whole type is left
+#: out, not one zone: the 2026-11-20 pair hit c7a in eu-north-1b and 1c.
+#: On-demand only when RECLAIMED_TYPES_FOR_ON_DEMAND distinct types were
+#: reclaimed within the window, or when no remaining spot pool has capacity
 #: (owner, 2026-11-17: never pay on-demand longer than needed).
 SPOT, ON_DEMAND = "spot", "on-demand"
 RECLAIM_WINDOW = datetime.timedelta(hours=2)
+RECLAIMED_TYPES_FOR_ON_DEMAND = 3
+WINDOW_TEXT = f"{RECLAIM_WINDOW.total_seconds() / 3600:g} h"
 SPOT_RECLAIM_CODE = "Server.SpotInstanceTermination"
 #: The Price List API is served from us-east-1 (prices are still REGION's).
 PRICING_API_REGION = "us-east-1"
@@ -97,6 +120,10 @@ STATE_DIR = WORK_DIR / "buildbox"
 STATE = STATE_DIR / "state.json"
 HISTORY = STATE_DIR / "history.json"
 LOCK = STATE_DIR / "lock"
+#: Held (flock) while a replacement box starts; holds that box's instance id.
+REPLACING = STATE_DIR / "replacing"
+#: One flock'd file per `run` and the box it uses (BoxUse).
+USERS_DIR = STATE_DIR / "users"
 KEY = STATE_DIR / "key.pem"
 SSH_USER = "ubuntu"
 BOX_HOME = f"/home/{SSH_USER}"
@@ -135,6 +162,18 @@ class Box:
 
     def spec(self) -> SessionSpec:
         return SessionSpec(region=REGION, instance_type=self.instance_type, purpose=PURPOSE)
+
+
+@dataclass(frozen=True)
+class MarketPlan:
+    """The next launch: its market, the instance types its fleet offers, and why."""
+    market: str
+    types: tuple[str, ...]
+    reason: str
+
+
+class NoCapacity(RuntimeError):
+    """A fleet request launched nothing: no capacity in any pool it offered."""
 
 
 def parse(stamp: str) -> datetime.datetime:
@@ -186,6 +225,85 @@ class Locked:
 
     def __exit__(self, *exc):
         self.handle.close()
+
+
+def flock_held(path: Path) -> bool:
+    """Whether another open file holds an exclusive flock on `path`."""
+    with open(path, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+class BoxUse:
+    """Held by a `run` from the moment it is given its box (under Locked) until
+    its --fetch has come back, so a draining box is never ended under a
+    caller: not while its job runs, and not between the job and the fetch."""
+
+    def __init__(self, box: Box):
+        self.box = box
+        USERS_DIR.mkdir(parents=True, exist_ok=True)
+        self.path = USERS_DIR / f"{box.instance_id}.{os.getpid()}"
+        self.handle = open(self.path, "w")
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+
+    def __enter__(self) -> Box:
+        return self.box
+
+    def __exit__(self, *exc):
+        self.path.unlink(missing_ok=True)
+        self.handle.close()
+
+
+def box_in_use(box: Box) -> bool:
+    """Whether a `run` on this PC still uses `box`; files of runs that have gone
+    (their flock died with them) are removed."""
+    in_use = False
+    for path in USERS_DIR.glob(f"{box.instance_id}.*"):
+        if flock_held(path):
+            in_use = True
+        else:
+            path.unlink(missing_ok=True)
+    return in_use
+
+
+class Replacing:
+    """Held while a replacement box starts (one at a time, never blocking: a
+    second reap finds it held and leaves the replacement to the first). The
+    file names the new box once it is launched, so reap does not take that box
+    for a draining one."""
+
+    def __enter__(self) -> Replacing | None:
+        """Self, or None when another replacement holds the lock."""
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self.handle = open(REPLACING, "a+")
+        try:
+            fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.handle.close()
+            self.handle = None
+            return None
+        self.name("")
+        return self
+
+    def name(self, instance_id: str) -> None:
+        self.handle.truncate(0)
+        self.handle.write(instance_id)
+        self.handle.flush()
+
+    def __exit__(self, *exc):
+        if self.handle:
+            self.name("")
+            self.handle.close()
+
+
+def starting_id() -> str:
+    """The instance id of a replacement box that is still starting, else ""."""
+    if not REPLACING.exists() or not flock_held(REPLACING):
+        return ""
+    return REPLACING.read_text().strip()
 
 
 # --- AWS ---------------------------------------------------------------------------------
@@ -290,10 +408,12 @@ class Aws:
                     return float(dimension["pricePerUnit"]["USD"])
         raise RuntimeError(f"no on-demand price for {instance_type} in {REGION}")
 
-    def launch(self, market: str) -> Box:
-        """One instance from an instant EC2 Fleet over every INSTANCE_TYPES x zone:
-        spot with the price-capacity-optimized strategy (the pools least likely
-        to be reclaimed, among the cheap ones), or on-demand at the lowest price."""
+    def launch(self, plan: MarketPlan, on_demand_fallback: bool = True) -> Box:
+        """One instance from an instant EC2 Fleet over the plan's types x every
+        zone: spot with the price-capacity-optimized strategy (the pools least
+        likely to be reclaimed, among the cheap ones), or on-demand at the
+        lowest price. A spot fleet with no capacity in any of its pools falls
+        back to on-demand when `on_demand_fallback`, else raises NoCapacity."""
         expected_end = iso(utc_now() + datetime.timedelta(minutes=LIFETIME_MINUTES + 15))
         key, group = self.key_pair(expected_end), self.security_group(expected_end)
         image_id, root_device = self.image()
@@ -314,7 +434,8 @@ class Aws:
                 "TagSpecifications": [*self.tags("instance", expected_end),
                                       *self.tags("volume", expected_end)]})["LaunchTemplate"]
         try:
-            instance_id = self.create_fleet(template["LaunchTemplateId"], market, expected_end)
+            instance_id, market = self.fleet_instance(template["LaunchTemplateId"], plan,
+                                                      expected_end, on_demand_fallback)
         finally:  # the instance keeps its settings; the template is not needed again
             self.ec2.delete_launch_template(LaunchTemplateId=template["LaunchTemplateId"])
         self.ec2.get_waiter("instance_running").wait(
@@ -329,11 +450,27 @@ class Aws:
                    price=price, launched=iso(described["LaunchTime"]),
                    expected_end=expected_end, host=described["PublicIpAddress"], market=market)
 
-    def create_fleet(self, template_id: str, market: str, expected_end: str) -> str:
+    def fleet_instance(self, template_id: str, plan: MarketPlan, expected_end: str,
+                       on_demand_fallback: bool = True) -> tuple[str, str]:
+        """(instance id, market) from the plan's fleet, or from an on-demand
+        fleet over every type when no spot pool in the plan has capacity (and
+        `on_demand_fallback`)."""
+        try:
+            return self.create_fleet(template_id, plan.market, plan.types, expected_end), \
+                plan.market
+        except NoCapacity as missing:
+            if plan.market != SPOT or not on_demand_fallback:
+                raise
+            say(f"{missing}: on-demand instead")
+            return self.create_fleet(template_id, ON_DEMAND, INSTANCE_TYPES, expected_end), \
+                ON_DEMAND
+
+    def create_fleet(self, template_id: str, market: str, types: tuple[str, ...],
+                     expected_end: str) -> str:
         subnets = self.ec2.describe_subnets(Filters=[
             {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
         overrides = [{"InstanceType": t, "SubnetId": subnet["SubnetId"]}
-                     for t in INSTANCE_TYPES for subnet in subnets]
+                     for t in types for subnet in subnets]
         reply = self.ec2.create_fleet(
             Type="instant",
             SpotOptions={"AllocationStrategy": "price-capacity-optimized",
@@ -348,8 +485,8 @@ class Aws:
         launched = [i for group in reply.get("Instances", []) for i in group["InstanceIds"]]
         if not launched:
             errors = {e.get("ErrorCode") for e in reply.get("Errors", [])}
-            raise RuntimeError(f"no {market} capacity for any of {INSTANCE_TYPES} in {REGION}: "
-                               f"{sorted(c for c in errors if c)}")
+            raise NoCapacity(f"no {market} capacity for any of {', '.join(types)} in {REGION} "
+                             f"({', '.join(sorted(c for c in errors if c)) or 'no error code'})")
         return launched[0]
 
     def describe(self, instance_id: str) -> dict | None:
@@ -488,15 +625,28 @@ def close_out(aws: Aws, box: Box, ended: datetime.datetime) -> None:
     say(f"{box.instance_id} ended {box.ended}: ${cost:.2f}")
 
 
-def market_now() -> str:
-    """On-demand while within RECLAIM_WINDOW of the later of two spot reclaims
-    that came within RECLAIM_WINDOW of each other; else spot."""
-    reclaims = sorted(parse(b.ended) for b in history() if b.reclaimed and b.ended)
-    now = utc_now()
-    for earlier, later in zip(reclaims, reclaims[1:]):
-        if later - earlier <= RECLAIM_WINDOW and now - later <= RECLAIM_WINDOW:
-            return ON_DEMAND
-    return SPOT
+def reclaimed_types(boxes: list[Box], now: datetime.datetime) -> set[str]:
+    """The instance types spot reclaimed within RECLAIM_WINDOW before `now`."""
+    return {b.instance_type for b in boxes
+            if b.reclaimed and b.ended and now - parse(b.ended) <= RECLAIM_WINDOW}
+
+
+def plan_market(boxes: list[Box], now: datetime.datetime) -> MarketPlan:
+    """The next launch's market and fleet types, given the box history."""
+    excluded = reclaimed_types(boxes, now)
+    if len(excluded) >= RECLAIMED_TYPES_FOR_ON_DEMAND:
+        return MarketPlan(ON_DEMAND, INSTANCE_TYPES,
+                          f"on-demand: spot reclaimed {len(excluded)} types within "
+                          f"{WINDOW_TEXT} ({', '.join(sorted(excluded))})")
+    types = tuple(t for t in INSTANCE_TYPES if t not in excluded)
+    reason = "spot"
+    if excluded:
+        reason += f" without {', '.join(sorted(excluded))} (reclaimed within {WINDOW_TEXT})"
+    return MarketPlan(SPOT, types, reason)
+
+
+def market_now() -> MarketPlan:
+    return plan_market(history(), utc_now())
 
 
 def check_budget() -> None:
@@ -508,8 +658,20 @@ def check_budget() -> None:
 
 
 def unended() -> list[Box]:
-    """Boxes not yet recorded as gone: the current one and any still draining."""
+    """Boxes not yet recorded as gone: the current one, a replacement that is
+    starting, and any still draining."""
     return [b for b in history() if not b.ended]
+
+
+#: What `status` adds after each role.
+ROLE_NOTES = {"current": "", "starting": " (replacement, current once ready)",
+              "draining": " (no new jobs; reap ends it when its jobs and fetches are done)"}
+
+
+def role(box: Box, current: Box | None) -> str:
+    if current and current.instance_id == box.instance_id:
+        return "current"
+    return "starting" if box.instance_id == starting_id() else "draining"
 
 
 def live_box(aws: Aws) -> Box | None:
@@ -523,40 +685,110 @@ def live_box(aws: Aws) -> Box | None:
 
 def drain_if_outdated(box: Box | None) -> Box | None:
     """A running box of a type no longer in INSTANCE_TYPES gets no new jobs: it
-    finishes the ones it has and stops itself when idle (closed out by reap)."""
+    finishes the ones it has and is ended by reap once drained."""
     if box is None or box.instance_type in INSTANCE_TYPES:
         return box
     say(f"{box.instance_type} {box.instance_id} is no longer a build box type: draining it "
-        "(its jobs finish, then its idle watchdog stops it); starting a new box")
+        "(its jobs finish, then reap ends it); starting a new box")
     save_state(None)
     return None
 
 
-def ensure_box(aws: Aws) -> Box:
+def start_box(aws: Aws, plan: MarketPlan, guard, on_demand_fallback: bool = True,
+              on_launch=None) -> Box:
+    """Launch a box, record it (history, ledger), wait for SSH and provision it.
+    Writes to the PC records happen inside `guard()` (Locked, unless the caller
+    already holds it). A box that launched but never became ready is ended."""
+    started = time.monotonic()
+    say(f"launching {plan.reason}")
+    box = aws.launch(plan, on_demand_fallback)
+    with guard():
+        record(box)
+    if on_launch:
+        on_launch(box)
+    ledger_row(f"{box.instance_id}, {NAME} key pair + security group", "started",
+               box.launched, "—", f"{box.market} ${box.price:.4f}/h, "
+               f"12 h at that price ${box.price * LIFETIME_MINUTES / 60:.2f}", box.spec())
+    try:
+        wait_for_ssh(box)
+        provision(box)
+    except BaseException:
+        with guard():
+            stop_box(aws, box)
+        raise
+    say(f"box ready in {(time.monotonic() - started) / 60:.1f} min")
+    return box
+
+
+def ensure_box(aws: Aws) -> BoxUse:
+    """The current box (started if there is none), held for one `run`."""
     with Locked():
         box = drain_if_outdated(live_box(aws))
         if box is None:
             check_budget()
-            started = time.monotonic()
-            market = market_now()
-            if market == ON_DEMAND:
-                say("two spot reclaims within 2 h today: on-demand until the end of the UTC day")
-            box = aws.launch(market)
+            box = start_box(aws, market_now(), contextlib.nullcontext)
             save_state(box)
-            record(box)
-            ledger_row(f"{box.instance_id}, {NAME} key pair + security group", "started",
-                       box.launched, "—", f"{box.market} ${box.price:.4f}/h, "
-                       f"12 h at that price ${box.price * LIFETIME_MINUTES / 60:.2f}",
-                       box.spec())
-            wait_for_ssh(box)
-            provision(box)
-            say(f"box ready in {(time.monotonic() - started) / 60:.1f} min")
         elif day_cost() >= DAILY_BUDGET_USD:
             stop_all(aws)
             check_budget()
         else:
             provision(box)  # a no-op unless the PC's toolchains changed
-        return box
+        return BoxUse(box)
+
+
+def ends_soon(box: Box, now: datetime.datetime) -> bool:
+    """Whether the box is within REPLACE_BEFORE_END of its hard lifetime."""
+    hard_end = parse(box.launched) + datetime.timedelta(minutes=LIFETIME_MINUTES)
+    return now >= hard_end - REPLACE_BEFORE_END
+
+
+def replacement_reason(box: Box, plan: MarketPlan, now: datetime.datetime) -> str:
+    """Why the current box should give way to a new one, or "" if it should not."""
+    if ends_soon(box, now):
+        return f"within {REPLACE_BEFORE_END.total_seconds() / 3600:g} h of its hard lifetime"
+    if box.market == ON_DEMAND and plan.market == SPOT:
+        return "on-demand while spot is allowed"
+    return ""
+
+
+def unused(box: Box) -> bool:
+    """No `run` on this PC uses the box and none of its slots is held or waited
+    for: ending it now loses nothing."""
+    return not box_in_use(box) and between_jobs(box)
+
+
+def replace(aws: Aws, old: Box, reason: str) -> None:
+    """Make before break: start a new box and make it current once it is ready;
+    `old` then drains (reap ends it once it is unused). Runs given `old` before
+    the switch keep it to the end of their fetch. Leaving on-demand only ever
+    lands on spot (no spot capacity: the old box stays current); a box near its
+    hard end is replaced on whatever market the rule gives."""
+    with Replacing() as replacing:
+        if replacing is None:
+            say("a replacement box is already starting")
+            return
+        if day_cost() >= DAILY_BUDGET_USD:
+            say(f"{old.instance_id}: {reason}, but today's budget is spent: not replaced")
+            return
+        plan = market_now()
+        if not replacement_reason(old, plan, utc_now()):
+            return  # the rule changed meanwhile
+        say(f"{old.instance_id}: {reason} and jobs are on it: starting its replacement "
+            "(make before break)")
+        try:
+            new = start_box(aws, plan, Locked, on_demand_fallback=ends_soon(old, utc_now()),
+                            on_launch=lambda box: replacing.name(box.instance_id))
+        except NoCapacity as missing:
+            say(f"{missing}: {old.instance_id} stays the current box")
+            return
+        with Locked():
+            live_box(aws)
+            save_state(new)
+            say(f"{new.instance_id} is now the current box; {old.instance_id} drains (no new "
+                "jobs, its running jobs finish; reap ends it once none is left)")
+            if old.instance_id in {b.instance_id for b in unended()} and unused(old):
+                say(f"{old.instance_id}: drained")
+                stop_box(aws, old)
 
 
 def stop_all(aws: Aws) -> None:
@@ -612,12 +844,21 @@ def job_command(command: list[str]) -> str:
     return command[0] if len(command) == 1 else shlex.join(command)
 
 
-def run_once(aws: Aws, args, worktree: Path, name: str, commit: str) -> int:
-    box = ensure_box(aws)
+def run_once(aws: Aws, args, worktree: Path, name: str, commit: str,
+             dirty: str) -> tuple[int, Box]:
+    """Run the job on the current box (it stays this job's box to the end of
+    its fetch, even if a replacement becomes current meanwhile)."""
+    with ensure_box(aws) as box:
+        return run_on(box, args, worktree, name, commit, dirty), box
+
+
+def run_on(box: Box, args, worktree: Path, name: str, commit: str, dirty: str) -> int:
     sync(box, worktree, name, [checked_sync_path(p) for p in args.sync])
     job = (HERE / "nc_remote_job.py").read_text()
+    # NC_BUILD_DIRTY stamps a build of local changes as such (build_stamp.py);
+    # always set, so an empty value marks a clean tree.
     argv = ["python3", "-c", job, name, commit, str(args.jobs), job_command(args.command),
-            *args.env]
+            f"NC_BUILD_DIRTY={dirty}", *args.env]
     started = time.monotonic()
     # stdin stays open (and unused) for the job's life: its EOF tells the box
     # that this caller has gone (nc_remote_job.py kills the job then).
@@ -637,12 +878,14 @@ def cmd_run(args) -> int:
     name = args.name or worktree.name
     commit = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"],
                             capture_output=True, text=True).stdout.strip() or "unknown"
+    dirty = diff_identity(worktree) if commit != "unknown" else ""
+    if dirty:
+        say(f"local changes: builds are stamped {commit[:12]}-dirty.{dirty}")
     aws = Aws()
-    status = run_once(aws, args, worktree, name, commit)
-    box = load_state()
-    if status == 255 and box and aws.state(box.instance_id) not in ("pending", "running"):
+    status, box = run_once(aws, args, worktree, name, commit, dirty)
+    if status == 255 and aws.state(box.instance_id) not in ("pending", "running"):
         say("the box went away during the job (spot reclaim or limit): restarting, retrying once")
-        status = run_once(aws, args, worktree, name, commit)
+        status, _ = run_once(aws, args, worktree, name, commit, dirty)
     return status
 
 
@@ -651,17 +894,17 @@ def cmd_status(_args) -> int:
     with Locked():
         current = live_box(aws)
     say(f"cost: today (UTC) ${day_cost():.2f} of ${DAILY_BUDGET_USD:.2f}/day; "
-        f"all build boxes ${total_cost():.2f}; next launch: {market_now()}")
+        f"all build boxes ${total_cost():.2f}; next launch: {market_now().reason}")
     for image in aws.ec2.describe_images(Owners=["self"], Filters=aws.ours())["Images"]:
         say(f"image {image['ImageId']} {image['State']} (baked {image['CreationDate']})")
     if not unended():
         say("no box running")
     job = (HERE / "nc_remote_job.py").read_text()
     for box in unended():
-        role = "current" if current and current.instance_id == box.instance_id else "draining"
         hours = box.hours(parse(box.launched), utc_now())
-        say(f"{role}: {box.instance_type} {box.instance_id} at {box.host}, up {hours * 60:.0f} "
-            f"min, {box.market} ${box.price:.4f}/h, hard end {box.expected_end}")
+        say(f"{role(box, current)}: {box.instance_type} {box.instance_id} at {box.host}, "
+            f"up {hours * 60:.0f} min, {box.market} ${box.price:.4f}/h, "
+            f"hard end {box.expected_end}{ROLE_NOTES[role(box, current)]}")
         ssh(box, shlex.join(["python3", "-c", job, "--status"]))
         ssh(box, "echo \"  idle for $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) s\"; "
                  "df -h --output=avail,size / | tail -1 | sed 's/^/  disk free, size: /'")
@@ -678,7 +921,7 @@ def cmd_stop(args) -> int:
         boxes = unended()
         if not boxes:
             say("no box running")
-        busy = [box for box in boxes if not args.force and not between_jobs(box)]
+        busy = [box for box in boxes if not args.force and not unused(box)]
         if busy:
             for box in busy:
                 say(f"{box.instance_id}: other jobs are running; left up (the idle check "
@@ -690,27 +933,41 @@ def cmd_stop(args) -> int:
 
 def cmd_reap(_args) -> int:
     """The PC's check: close out gone boxes, enforce the budget and the hard end,
-    run the idle check on every live box (the current one and draining ones)."""
+    end drained boxes, replace the current box when it should give way (make
+    before break), and run the idle check on every live box."""
     aws = Aws()
+    replacement = None
     with Locked():
-        live_box(aws)
+        current = live_box(aws)
         prune_images(aws)
         if day_cost() >= DAILY_BUDGET_USD:
             stop_all(aws)
             return 0
         for box in unended():
+            reason = ""
+            if role(box, current) == "starting":
+                continue  # its replacement run waits for it and handles its failure
             if utc_now() > parse(box.expected_end):
                 stop_box(aws, box)
-            elif box.market == ON_DEMAND and market_now() == SPOT and between_jobs(box):
-                # On-demand costs ~4x spot: once spot is allowed again, end the
-                # box between jobs; the next `run` relaunches it on spot.
-                say(f"{box.instance_id}: on-demand while spot is allowed and no job runs")
+                continue
+            if role(box, current) == "draining" and unused(box):
+                say(f"{box.instance_id}: drained")
                 stop_box(aws, box)
-            elif ssh(box, "sudo /usr/local/sbin/ncbox-idle",
-                     capture_output=True).returncode != 0:
+                continue
+            if role(box, current) == "current":
+                reason = replacement_reason(box, market_now(), utc_now())
+            if reason and unused(box):
+                say(f"{box.instance_id}: {reason} and no job runs: ending it")
+                stop_box(aws, box)
+                continue
+            if reason:
+                replacement = (box, reason)
+            if ssh(box, "sudo /usr/local/sbin/ncbox-idle", capture_output=True).returncode != 0:
                 note_unreachable(aws, box)
             else:
                 unreachable_marker(box).unlink(missing_ok=True)
+    if replacement:
+        replace(aws, *replacement)
     return 0
 
 
@@ -737,10 +994,18 @@ def note_unreachable(aws: Aws, box: Box) -> None:
         say(f"{box.instance_id}: idle check over SSH failed ({count}/{UNREACHABLE_REAPS})")
 
 
+#: A box counts as between jobs only this long after its last job ended: the
+#: caller's --fetch follows the job's end, and a caller that holds no BoxUse
+#: file (a `run` started by an older nc-remote) is covered by this alone.
+QUIET_SECONDS = 120
+
+
 def between_jobs(box: Box) -> bool:
-    """No job slot is held and no job is waiting on the box."""
+    """No job slot is held, no job is waiting on the box, and none has ended in
+    the last QUIET_SECONDS."""
     probe = ("for s in ncbox/slots/*; do flock -n \"$s\" true || exit 1; done; "
-             "! ls ncbox/jobs/*/waiting.json >/dev/null 2>&1")
+             "! ls ncbox/jobs/*/waiting.json >/dev/null 2>&1 && "
+             f"[ $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) -ge {QUIET_SECONDS} ]")
     return ssh(box, probe, capture_output=True).returncode == 0
 
 

@@ -1,22 +1,31 @@
 # AV1 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first) plus AV1's levers: four trellis survivors, the sub-sample
-# refinement without its early exits, the luma residual RD check on every
-# vector, every transform-split trial, the inter-frame intra search for every block with more candidates, and
-# more key intra candidates. Screened as one bundle: L3 J -2.07%
-# [-2.63, -1.55] at x1.6 Jetson cycles (docs/handoff/presets.md "Slow
-# presets"); docs/analysis/lever-gradients-2026-11-15.md lists the levers
-# a re-built bundle takes. The rank margin 0, CDEF on every row and key CfL
-# moved into the Default (2026-11-16).
-quant.trellis_states = 4
-decision.seed_refine_ratio = 0
-decision.codec_subpel_seed_lambdas = 0
-decision.skip_no_refine_lambdas = 0
-decision.refine_cheap_min_lambdas = 0
-av1.residual_rd_max_mv = 64
-av1.inter_tx_split_energy = 0
+# applied first: the second reference with the full decision) plus AV1's
+# levers. Re-picked 2026-11-19 (docs/handoff/presets.md "Slow presets"):
+# everything heavy on at once, then cut back by component cost. Alone on the
+# Default (fixed QP J, 23 clips / x86 callgrind P instructions): the winner
+# walk -1.5% / +16%, the pre-transform skip off -1.5% / +8%, the inter-frame
+# intra search widened -0.8% / +5%, key-frame trellis -0.9% / 0%, the biased
+# skip off -0.4% / +1%, four trellis survivors -0.3% / +20%. Left out: the
+# final stage (+2.4%, worse), chroma trellis (+2.5%), 8x8 inter blocks (the
+# planner set, +2.4%), the luma residual check on every vector (+0.9%), loop
+# restoration (+0.3% at +142%), the sub-sample refinement gates (no gain in
+# the bundle at +11%), the square winner walk and every transform-split
+# trial (-0.1 J each for +12..+29 points).
+#
+# The winner walk: three quarter-sample moves along the row and column.
+decision.winner_walk_steps = 3
+decision.winner_walk_square = 0
+# Inter-frame intra: every block searched, all seven candidates costed, the
+# DC intra gate lower; key frames cost more candidates and every angle delta.
 av1.inter_intra_search = 2
-av1.inter_intra_rd_candidates = 4
-av1.keyframe_intra_rd_candidates = 6
-# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
-# docs/handoff/rd-depth.md): not screened for this preset.
-rate.fixed_qp_moving_key = 0
+av1.inter_intra_rd_candidates = 7
+av1.keyframe_intra_rd_candidates = 8
+av1.keyframe_angle_deltas = 2
+decision.intra_gate_variance = 16
+# Every residual reaches the transform: no pre-transform skip, no biased skip.
+av1.pre_tx_skip = 0
+av1.skip_bias_pct = 100
+av1.skip_bias_pct_base = 100
+# Trellis on key frames too, with four survivors.
+quant.trellis_key = 1
+quant.trellis_states = 4

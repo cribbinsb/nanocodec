@@ -1,6 +1,12 @@
 //! Directional prediction of any block shape with the intra edge filter and
 //! upsampling (AV1 §7.11.2.4; libaom `build_directional_and_filter_intra_
 //! predictors` and `av1_dr_prediction_z{1,2,3}_c`).
+//!
+//! After the edges are prepared, a block goes whole to a [`ZoneBlock`]
+//! kernel where the ISA has one and the block fits (up to 16x16, as dav1d's
+//! `ipred_z{1,2,3}` predict small blocks); otherwise upsampled lines are
+//! predicted sample by sample ([`ZoneBlock::predict`]) and full-resolution
+//! ones by runs along rows or columns (`zone1`, `zone2`, `zone3`).
 
 use nc_common::{PlaneViewMut, Sample};
 
@@ -12,9 +18,9 @@ use crate::intra_prediction::directional::DERIVATIVE;
 use crate::intra_prediction::directional::interpolate_run;
 
 /// Angle of pure vertical prediction (degrees).
-const VERTICAL: u16 = 90;
+pub(super) const VERTICAL: u16 = 90;
 /// Angle of pure horizontal prediction (degrees).
-const HORIZONTAL: u16 = 180;
+pub(super) const HORIZONTAL: u16 = 180;
 /// Directional angles lie strictly between zero and this.
 const MAX_ANGLE: u16 = 270;
 /// The corner is filtered only for blocks with at least this `w + h`.
@@ -66,14 +72,168 @@ impl<T: Sample> Line<T> {
         }
     }
 
-    /// The interpolation between samples `base` and `base + 1` at the 1/64
-    /// position `position` (already scaled to the line's resolution).
-    fn interpolate(&self, base: i32, position: i32) -> T {
-        let shift = ((position << self.upsample) & POSITION_MASK) >> 1;
-        let sum = self.at(base) * ((1 << WEIGHT_BITS) - shift) + self.at(base + 1) * shift;
-        T::from_i32((sum + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS)
+    /// The line from edge index `-margin` on, for a [`ZoneBlock`].
+    fn from(&self, margin: usize) -> &[T] {
+        &self.samples[LINE_ORIGIN - margin..]
+    }
+
+    /// Repeat sample `max_base` once past it, so that an interpolation at
+    /// `max_base` (any weight) yields that sample: the whole-block kernels
+    /// then clamp the index instead of selecting per sample.
+    fn pad_after(&mut self, max_base: i32) {
+        let last = LINE_ORIGIN + max_base as usize;
+        self.samples[last + 1] = self.samples[last];
     }
 }
+
+/// Samples a whole-block kernel holds of each edge line (one 32-byte
+/// table: two `pshufb` halves).
+pub(crate) const ZONE_TABLE: usize = 32;
+/// Widest and tallest block a whole-block kernel predicts (sixteen 16-bit
+/// lanes: one row of 16, two of 8 or four of 4 per vector).
+pub(crate) const ZONE_MAX_SIDE: usize = 16;
+/// Zone-2 lines start this many samples before edge index 0: the corner
+/// at -1 and, upsampled, -2 (`minBaseX`, `minBaseY` of §7.11.2.4).
+pub(crate) const ZONE2_MARGIN: usize = 2;
+
+/// Where a directional prediction reads its edges (§7.11.2.4 steps 7–9),
+/// with the derivative and resolution of each line it reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Zone {
+    /// Angles below 90: the above row; positions from `max_base` on
+    /// repeat that sample.
+    Above {
+        /// `dx` of the angle.
+        dx: i32,
+        /// log2 of the line's resolution factor (`upsampleAbove`).
+        upsample: u32,
+        /// `maxBaseX`.
+        max_base: i32,
+    },
+    /// Angles between 90 and 180: the above row where the projection lands
+    /// on it, else the left column.
+    Both {
+        /// `dx` of the angle.
+        dx: i32,
+        /// `dy` of the angle.
+        dy: i32,
+        /// `upsampleAbove`.
+        upsample_above: u32,
+        /// `upsampleLeft`.
+        upsample_left: u32,
+    },
+    /// Angles above 180: the left column (zone 1 transposed).
+    Left {
+        /// `dy` of the angle.
+        dy: i32,
+        /// `upsampleLeft`.
+        upsample: u32,
+        /// `maxBaseY`.
+        max_base: i32,
+    },
+}
+
+/// One block's directional prediction from its prepared (filtered,
+/// upsampled) edge lines, for the whole-block kernels: `above[k]` is
+/// `AboveRow[k - margin]` and `left[k]` is `LeftCol[k - margin]`, with
+/// `margin` [`ZONE2_MARGIN`] in zone 2 and 0 in zones 1 and 3 (which read
+/// no index below 0). A zone 1 or 3 line repeats its `max_base` sample once
+/// past it ([`Line::pad_after`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ZoneBlock<'a, T: Sample> {
+    /// Geometry of the prediction.
+    pub zone: Zone,
+    /// `AboveRow` from `-margin` (unused in zone 3).
+    pub above: &'a [T],
+    /// `LeftCol` from `-margin` (unused in zone 1).
+    pub left: &'a [T],
+}
+
+impl<T: Sample> ZoneBlock<'_, T> {
+    /// Whether a whole-block kernel predicts this zone on a `w`x`h` block:
+    /// every sample it reads, and the repeated one, lies in the first
+    /// [`ZONE_TABLE`] of its line, and a row fits a vector. Zone 2 reads at
+    /// most `2w - 1` above (upsampled, `w <= 12`) or `w` samples, and as
+    /// many left.
+    pub(crate) fn fits(&self, (w, h): (usize, usize)) -> bool {
+        let lines = match self.zone {
+            Zone::Above { max_base, .. } | Zone::Left { max_base, .. } => {
+                (max_base as usize) + 1 < ZONE_TABLE
+            }
+            Zone::Both { .. } => true,
+        };
+        lines && w <= ZONE_MAX_SIDE && h <= ZONE_MAX_SIDE
+    }
+
+    /// The prediction sample by sample: the scalar reference of the
+    /// whole-block kernels, at any size and resolution.
+    pub(crate) fn predict(&self, dst: &mut PlaneViewMut<'_, T>) {
+        let (w, h) = (dst.width(), dst.height());
+        for r in 0..h {
+            for (c, pixel) in dst.row_mut(r)[..w].iter_mut().enumerate() {
+                *pixel = self.sample(r as i32, c as i32);
+            }
+        }
+    }
+
+    /// Sample `(r, c)` (§7.11.2.4 steps 7–9).
+    fn sample(&self, r: i32, c: i32) -> T {
+        match self.zone {
+            Zone::Above {
+                dx,
+                upsample,
+                max_base,
+            } => along(self.above, (r + 1) * dx, c, upsample, max_base),
+            Zone::Left {
+                dy,
+                upsample,
+                max_base,
+            } => along(self.left, (c + 1) * dy, r, upsample, max_base),
+            Zone::Both {
+                dx,
+                dy,
+                upsample_above,
+                upsample_left,
+            } => {
+                let margin = ZONE2_MARGIN as i32;
+                let x = (c << POSITION_BITS) - (r + 1) * dx;
+                let base_x = x >> (POSITION_BITS - upsample_above);
+                if base_x >= -(1 << upsample_above) {
+                    interpolate(self.above, base_x + margin, x, upsample_above)
+                } else {
+                    let y = (r << POSITION_BITS) - (c + 1) * dy;
+                    let base_y = y >> (POSITION_BITS - upsample_left);
+                    interpolate(self.left, base_y + margin, y, upsample_left)
+                }
+            }
+        }
+    }
+}
+
+/// Zone 1 or 3 sample `step` along the line at `position`: interpolated
+/// below `max_base`, that sample from there on.
+fn along<T: Sample>(line: &[T], position: i32, step: i32, upsample: u32, max_base: i32) -> T {
+    let base = (position >> (POSITION_BITS - upsample)) + (step << upsample);
+    if base < max_base {
+        interpolate(line, base, position, upsample)
+    } else {
+        line[max_base as usize]
+    }
+}
+
+/// The interpolation between `line[index]` and `line[index + 1]` at the
+/// 1/64 position `position` (on a line of resolution `1 << upsample`).
+fn interpolate<T: Sample>(line: &[T], index: i32, position: i32, upsample: u32) -> T {
+    let shift = ((position << upsample) & POSITION_MASK) >> 1;
+    let index = index as usize;
+    let sum =
+        line[index].to_i32() * ((1 << WEIGHT_BITS) - shift) + line[index + 1].to_i32() * shift;
+    T::from_i32((sum + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS)
+}
+
+/// A whole-block directional kernel ([`ZoneBlock::predict`]'s contract,
+/// for blocks that [`ZoneBlock::fits`]).
+pub(crate) type ZoneKernel<'k, T> = &'k dyn Fn(&ZoneBlock<'_, T>, &mut PlaneViewMut<'_, T>);
 
 /// Predict `dst` from `edges` at `angle` degrees, filtering and upsampling
 /// the edges first when `edge_filter` is set.
@@ -84,16 +244,20 @@ pub(super) fn predict<T: Sample>(
     edge_filter: Option<EdgeFilterCtx>,
     dst: &mut PlaneViewMut<'_, T>,
 ) {
-    predict_with_run(edges, angle, edge_filter, dst, interpolate_run);
+    predict_with_run(edges, angle, edge_filter, dst, interpolate_run, None);
 }
 
-/// Predict `dst` from `edges` at `angle` degrees with caller-supplied `run_fn`.
+/// Predict `dst` from `edges` at `angle` degrees with caller-supplied
+/// kernels: `zones` for the blocks it [fits](ZoneBlock::fits), else
+/// [`ZoneBlock::predict`] for upsampled lines and runs of `run_fn` for
+/// full-resolution ones.
 pub(crate) fn predict_with_run<T: Sample>(
     edges: &BlockEdges<T>,
     angle: u16,
     edge_filter: Option<EdgeFilterCtx>,
     dst: &mut PlaneViewMut<'_, T>,
     run_fn: impl Fn(&[T], usize, &mut [T]),
+    zones: Option<ZoneKernel<'_, T>>,
 ) {
     assert!(angle > 0 && angle < MAX_ANGLE, "directional angle {angle}");
     let (w, h) = (edges.width, edges.height);
@@ -124,7 +288,21 @@ pub(crate) fn predict_with_run<T: Sample>(
                 above.upsample = 1;
             }
         }
-        zone1(&above, DERIVATIVE[usize::from(angle)], w, h, dst, &run_fn);
+        let dx = DERIVATIVE[usize::from(angle)];
+        let max_base = ((span as i32) - 1) << above.upsample;
+        above.pad_after(max_base);
+        let block = ZoneBlock {
+            zone: Zone::Above {
+                dx,
+                upsample: above.upsample,
+                max_base,
+            },
+            above: above.from(0),
+            left: &[],
+        };
+        if !whole_block(&block, above.upsample != 0, zones, dst) {
+            zone1(&above, dx, w, h, dst, &run_fn);
+        }
         return;
     }
     if angle > HORIZONTAL {
@@ -141,14 +319,21 @@ pub(crate) fn predict_with_run<T: Sample>(
                 left.upsample = 1;
             }
         }
-        zone3(
-            &left,
-            DERIVATIVE[usize::from(MAX_ANGLE - angle)],
-            w,
-            h,
-            dst,
-            &run_fn,
-        );
+        let dy = DERIVATIVE[usize::from(MAX_ANGLE - angle)];
+        let max_base = ((span as i32) - 1) << left.upsample;
+        left.pad_after(max_base);
+        let block = ZoneBlock {
+            zone: Zone::Left {
+                dy,
+                upsample: left.upsample,
+                max_base,
+            },
+            above: &[],
+            left: left.from(0),
+        };
+        if !whole_block(&block, left.upsample != 0, zones, dst) {
+            zone3(&left, dy, w, h, dst, &run_fn);
+        }
         return;
     }
     let mut above = line(&edges.square.above, edges.square.corner, span);
@@ -156,14 +341,41 @@ pub(crate) fn predict_with_run<T: Sample>(
     if let Some(ctx) = edge_filter {
         prepare_edges(edges, angle, ctx.smooth(), &mut above, &mut left);
     }
-    zone2(
-        &above,
-        &left,
+    let (dx, dy) = (
         DERIVATIVE[usize::from(HORIZONTAL - angle)],
         DERIVATIVE[usize::from(angle - VERTICAL)],
-        dst,
-        &run_fn,
     );
+    let block = ZoneBlock {
+        zone: Zone::Both {
+            dx,
+            dy,
+            upsample_above: above.upsample,
+            upsample_left: left.upsample,
+        },
+        above: above.from(ZONE2_MARGIN),
+        left: left.from(ZONE2_MARGIN),
+    };
+    let upsampled = above.upsample != 0 || left.upsample != 0;
+    if !whole_block(&block, upsampled, zones, dst) {
+        zone2(&above, &left, dx, dy, dst, &run_fn);
+    }
+}
+
+/// Predict `block` whole: with `kernel` where it fits, else sample by
+/// sample if a line is `upsampled` (the runs serve full-resolution lines
+/// only). False if neither applies and the caller is to run the zone.
+fn whole_block<T: Sample>(
+    block: &ZoneBlock<'_, T>,
+    upsampled: bool,
+    kernel: Option<ZoneKernel<'_, T>>,
+    dst: &mut PlaneViewMut<'_, T>,
+) -> bool {
+    match kernel {
+        Some(kernel) if block.fits((dst.width(), dst.height())) => kernel(block, dst),
+        _ if upsampled => block.predict(dst),
+        _ => return false,
+    }
+    true
 }
 
 /// Outcome of preparing a square block's edges for the square directional kernels.
@@ -321,9 +533,6 @@ fn zone1<T: Sample>(
     dst: &mut PlaneViewMut<'_, T>,
     run_fn: &impl Fn(&[T], usize, &mut [T]),
 ) {
-    if above.upsample != 0 {
-        return zone1_samples(above, dx, w, h, dst);
-    }
     let max_base = ((w + h) as i32) - 1;
     for r in 0..h {
         let position = (r as i32 + 1) * dx;
@@ -334,30 +543,6 @@ fn zone1<T: Sample>(
             &mut dst.row_mut(r)[..w],
             run_fn,
         );
-    }
-}
-
-/// [`zone1`] sample by sample, at any resolution.
-fn zone1_samples<T: Sample>(
-    above: &Line<T>,
-    dx: i32,
-    w: usize,
-    h: usize,
-    dst: &mut PlaneViewMut<'_, T>,
-) {
-    let max_base = (((w + h) as i32) - 1) << above.upsample;
-    let frac_bits = POSITION_BITS - above.upsample;
-    for r in 0..h {
-        let position = (r as i32 + 1) * dx;
-        let row = &mut dst.row_mut(r)[..w];
-        for (c, pixel) in row.iter_mut().enumerate() {
-            let base = (position >> frac_bits) + ((c as i32) << above.upsample);
-            *pixel = if base < max_base {
-                above.interpolate(base, position)
-            } else {
-                T::from_i32(above.at(max_base))
-            };
-        }
     }
 }
 
@@ -374,62 +559,41 @@ fn zone2<T: Sample>(
     dst: &mut PlaneViewMut<'_, T>,
     run_fn: &impl Fn(&[T], usize, &mut [T]),
 ) {
-    if above.upsample != 0 {
-        return zone2_samples(above, left, dx, dy, dst);
-    }
+    debug_assert!(above.upsample == 0 && left.upsample == 0);
     let (w, h) = (dst.width(), dst.height());
     let unit = 1 << POSITION_BITS;
-    for r in 0..h {
+    // Row `r`'s first `splits[r]` samples project left of the corner and
+    // come from the left column, the rest from the above row; the split
+    // grows down the block.
+    let mut splits = [0usize; super::MAX_SIDE];
+    for (r, split) in splits[..h].iter_mut().enumerate() {
         let reach = (r as i32 + 1) * dx - unit;
-        let split = if reach <= 0 {
-            0
-        } else {
-            ((reach + unit - 1) >> POSITION_BITS).min(w as i32) as usize
-        };
-        let row = &mut dst.row_mut(r)[..w];
-        for (c, pixel) in row[..split].iter_mut().enumerate() {
-            *pixel = zone2_sample(above, left, dx, dy, (r, c));
+        if reach > 0 {
+            *split = ((reach + unit - 1) >> POSITION_BITS).min(w as i32) as usize;
         }
+    }
+    for (r, &split) in splits[..h].iter().enumerate() {
         if split < w {
             let x = ((split as i32) << POSITION_BITS) - (r as i32 + 1) * dx;
-            above.run(x >> POSITION_BITS, i32::MAX, x, &mut row[split..], run_fn);
+            let row = &mut dst.row_mut(r)[split..w];
+            above.run(x >> POSITION_BITS, i32::MAX, x, row, run_fn);
         }
     }
-}
-
-/// [`zone2`] sample by sample, at any resolution.
-fn zone2_samples<T: Sample>(
-    above: &Line<T>,
-    left: &Line<T>,
-    dx: i32,
-    dy: i32,
-    dst: &mut PlaneViewMut<'_, T>,
-) {
-    let (w, h) = (dst.width(), dst.height());
-    for r in 0..h {
-        for (c, pixel) in dst.row_mut(r)[..w].iter_mut().enumerate() {
-            *pixel = zone2_sample(above, left, dx, dy, (r, c));
+    // The left part of column `c` (rows from the first whose split passes
+    // it) is one run along the left column at one weight, as in zone 3,
+    // written down the column; sample by sample it was a branch and a
+    // gather per sample.
+    let stride = dst.stride();
+    let data = dst.data_mut();
+    let mut column = [T::default(); super::MAX_SIDE];
+    for c in 0..splits[h - 1] {
+        let first = splits[..h].partition_point(|&split| split <= c);
+        let y = ((first as i32) << POSITION_BITS) - (c as i32 + 1) * dy;
+        let column = &mut column[..h - first];
+        left.run(y >> POSITION_BITS, i32::MAX, y, column, run_fn);
+        for (r, &sample) in column.iter().enumerate() {
+            data[(first + r) * stride + c] = sample;
         }
-    }
-}
-
-/// Zone-2 sample `(r, c)`: from the above row where its projection lands
-/// on it (or on the corner), else from the left column.
-fn zone2_sample<T: Sample>(
-    above: &Line<T>,
-    left: &Line<T>,
-    dx: i32,
-    dy: i32,
-    (r, c): (usize, usize),
-) -> T {
-    let min_base_above = -(1 << above.upsample);
-    let x = ((c as i32) << POSITION_BITS) - (r as i32 + 1) * dx;
-    let base_x = x >> (POSITION_BITS - above.upsample);
-    if base_x >= min_base_above {
-        above.interpolate(base_x, x)
-    } else {
-        let y = ((r as i32) << POSITION_BITS) - (c as i32 + 1) * dy;
-        left.interpolate(y >> (POSITION_BITS - left.upsample), y)
     }
 }
 
@@ -444,9 +608,6 @@ fn zone3<T: Sample>(
     dst: &mut PlaneViewMut<'_, T>,
     run_fn: &impl Fn(&[T], usize, &mut [T]),
 ) {
-    if left.upsample != 0 {
-        return zone3_samples(left, dy, w, h, dst);
-    }
     let max_base = ((w + h) as i32) - 1;
     let stride = dst.stride();
     let data = dst.data_mut();
@@ -466,29 +627,6 @@ fn zone3<T: Sample>(
     }
 }
 
-/// [`zone3`] sample by sample, at any resolution.
-fn zone3_samples<T: Sample>(
-    left: &Line<T>,
-    dy: i32,
-    w: usize,
-    h: usize,
-    dst: &mut PlaneViewMut<'_, T>,
-) {
-    let max_base = (((w + h) as i32) - 1) << left.upsample;
-    let frac_bits = POSITION_BITS - left.upsample;
-    for c in 0..w {
-        let position = (c as i32 + 1) * dy;
-        for r in 0..h {
-            let base = (position >> frac_bits) + ((r as i32) << left.upsample);
-            dst.row_mut(r)[c] = if base < max_base {
-                left.interpolate(base, position)
-            } else {
-                T::from_i32(left.at(max_base))
-            };
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,8 +635,22 @@ mod tests {
     use nc_common::BitDepth;
     use nc_common::Plane;
 
+    /// The scalar whole-block prediction of `zone` from full lines.
+    fn reference<'a>(zone: Zone, above: &'a Line<u8>, left: &'a Line<u8>) -> ZoneBlock<'a, u8> {
+        let margin = if matches!(zone, Zone::Both { .. }) {
+            ZONE2_MARGIN
+        } else {
+            0
+        };
+        ZoneBlock {
+            zone,
+            above: above.from(margin),
+            left: left.from(margin),
+        }
+    }
+
     /// The full-resolution runs of every zone equal the zones sample by
-    /// sample, for every block shape and reachable angle, on random lines.
+    /// sample ([`ZoneBlock::predict`]), for every block shape and reachable angle, on random lines.
     #[test]
     fn zone_runs_match_the_zones_sample_by_sample() {
         let shapes = [
@@ -543,7 +695,13 @@ mod tests {
                     a if a < VERTICAL => {
                         let dx = DERIVATIVE[usize::from(a)];
                         zone1(&above, dx, w, h, &mut runs.view_mut(), &interpolate_run);
-                        zone1_samples(&above, dx, w, h, &mut samples.view_mut());
+                        let max_base = (w + h) as i32 - 1;
+                        let zone = Zone::Above {
+                            dx,
+                            upsample: 0,
+                            max_base,
+                        };
+                        reference(zone, &above, &left).predict(&mut samples.view_mut());
                     }
                     a if a < HORIZONTAL => {
                         let dx = DERIVATIVE[usize::from(HORIZONTAL - a)];
@@ -556,12 +714,24 @@ mod tests {
                             &mut runs.view_mut(),
                             &interpolate_run,
                         );
-                        zone2_samples(&above, &left, dx, dy, &mut samples.view_mut());
+                        let zone = Zone::Both {
+                            dx,
+                            dy,
+                            upsample_above: 0,
+                            upsample_left: 0,
+                        };
+                        reference(zone, &above, &left).predict(&mut samples.view_mut());
                     }
                     a => {
                         let dy = DERIVATIVE[usize::from(MAX_ANGLE - a)];
                         zone3(&left, dy, w, h, &mut runs.view_mut(), &interpolate_run);
-                        zone3_samples(&left, dy, w, h, &mut samples.view_mut());
+                        let max_base = (w + h) as i32 - 1;
+                        let zone = Zone::Left {
+                            dy,
+                            upsample: 0,
+                            max_base,
+                        };
+                        reference(zone, &above, &left).predict(&mut samples.view_mut());
                     }
                 }
                 for y in 0..h {

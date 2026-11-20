@@ -45,3 +45,8 @@ persist.reuse_level_price = 1
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# Not screened with the Default's coded-cost key intra modes (2026-11-19).
+vp9.intra_rd_candidates = 1
+# The key-period ledger's saving for the next period's key was dropped from the
+# engine (2026-11-20, docs/handoff/rate-control.md): not screened for this preset.
+rate.period_key_saving = 1

@@ -160,10 +160,11 @@ impl EdgeGrid {
 struct PlaneBlock {
     tx: usize,
     origin: usize,
-    /// The block's AC qindex in this plane.
-    qindex: u8,
-    block: BlockEdges,
+    thresholds: (u16, u16),
+    skipped_inter: bool,
 }
+
+static UNADJUSTED_THRESHOLDS: ThresholdTable = ThresholdTable::new(0);
 
 /// Filter `picture` (the complete reconstruction) in place; `map` is kept
 /// from picture to picture (clear between uses), so its picture-sized
@@ -179,8 +180,27 @@ pub(crate) fn filter_picture(
         for vertical in [true, false] {
             let channel = FilterChannel::of(plane, vertical);
             if let Some(delta) = params.delta(channel) {
-                let thresholds = ThresholdTable::new(i32::from(delta) * DELTA_SCALE);
-                filter_direction(picture, grid, plane, vertical, &thresholds, dsp, map);
+                let adjusted;
+                let thresholds = if delta == 0 {
+                    &UNADJUSTED_THRESHOLDS
+                } else {
+                    adjusted = ThresholdTable::new(i32::from(delta) * DELTA_SCALE);
+                    &adjusted
+                };
+                // An edge needs at least one side with both thresholds
+                // nonzero. When every block fails that test the whole pass
+                // is a no-op, even with block quantizer offsets.
+                let luma = plane == PlaneIndex::Y;
+                if grid.blocks().any(|block| {
+                    let qindex = if luma {
+                        block.luma_qindex
+                    } else {
+                        block.chroma_qindex
+                    };
+                    enabled(thresholds.get(qindex))
+                }) {
+                    filter_direction(picture, grid, plane, vertical, thresholds, dsp, map);
+                }
             }
         }
     }
@@ -294,7 +314,7 @@ impl EdgeLines<'_> {
     }
 
     /// This plane's view of `block`.
-    fn plane_block(&self, block: BlockEdges) -> PlaneBlock {
+    fn plane_block(&self, block: BlockEdges, thresholds: &ThresholdTable) -> PlaneBlock {
         let origin = usize::from(if self.vertical { block.x } else { block.y }) >> self.shift;
         let (tx, qindex) = if self.luma {
             (block.luma_tx, block.luma_qindex)
@@ -304,8 +324,8 @@ impl EdgeLines<'_> {
         PlaneBlock {
             tx: tx.width(),
             origin,
-            qindex,
-            block,
+            thresholds: thresholds.get(qindex),
+            skipped_inter: block.skipped_inter,
         }
     }
 
@@ -357,13 +377,25 @@ impl EdgeLines<'_> {
         if segments.is_empty() {
             return;
         }
-        let current = self.plane_block(block);
-        let end = self.across_end(block).min(self.across_extent);
-        // Transform edges lie every `tx` samples from the block's origin;
-        // only those on the EDGE_STEP grid start a line, and the picture
-        // border (coordinate 0) is not filtered.
-        let edges = (current.origin..end).step_by(current.tx);
-        for coordinate in edges.filter(|&c| c != 0 && c.is_multiple_of(EDGE_STEP)) {
+        let current = self.plane_block(block, thresholds);
+        // Every transform step is a multiple of EDGE_STEP, so a block off
+        // the grid has no edge line. The picture border is never filtered.
+        if current.origin >= self.across_extent || !current.origin.is_multiple_of(EDGE_STEP) {
+            return;
+        }
+        let first = if current.origin == 0 {
+            current.tx
+        } else {
+            current.origin
+        };
+        let end = if current.skipped_inter || !enabled(current.thresholds) {
+            // The boundary can still have an enabled neighbour on the p
+            // side. Internal edges have this same block on both sides.
+            current.origin + 1
+        } else {
+            self.across_end(block).min(self.across_extent)
+        };
+        for coordinate in (first..end).step_by(current.tx) {
             let position = EdgePosition {
                 coordinate,
                 extent: self.across_extent,
@@ -374,7 +406,7 @@ impl EdgeLines<'_> {
             let line = coordinate / EDGE_STEP;
             if coordinate != current.origin {
                 // Inside the block both sides are the block itself.
-                let filter = edge_filter(current, current, position, thresholds);
+                let filter = edge_filter(current, current, position);
                 map.set(line, segments.clone(), filter);
                 continue;
             }
@@ -385,7 +417,7 @@ impl EdgeLines<'_> {
             while segment < segments.end {
                 let previous = self.block_at(coordinate - 1, segment * EDGE_STEP);
                 let run_end = self.segments(previous).end.min(segments.end);
-                let filter = edge_filter(current, self.plane_block(previous), position, thresholds);
+                let filter = edge_filter(current, self.plane_block(previous, thresholds), position);
                 map.set(line, segment..run_end, filter);
                 segment = run_end;
             }
@@ -411,13 +443,13 @@ fn edge_filter(
     current: PlaneBlock,
     previous: PlaneBlock,
     position: EdgePosition,
-    thresholds: &ThresholdTable,
 ) -> Option<Av2EdgeFilter> {
-    let (current_q, current_side) = thresholds.get(current.qindex);
-    let (previous_q, previous_side) = thresholds.get(previous.qindex);
-    let enabled = (current_q != 0 && current_side != 0) || (previous_q != 0 && previous_side != 0);
+    let (current_q, current_side) = current.thresholds;
+    let (previous_q, previous_side) = previous.thresholds;
     let block_edge = position.coordinate == current.origin;
-    if !enabled || (current.block.skipped_inter && !block_edge) {
+    if !(enabled(current.thresholds) || enabled(previous.thresholds))
+        || (current.skipped_inter && !block_edge)
+    {
         return None;
     }
     let clip = if position.luma {
@@ -437,6 +469,10 @@ fn edge_filter(
         q_threshold: mean(current_q, previous_q),
         side_threshold: mean(current_side, previous_side),
     })
+}
+
+fn enabled((quantizer, side): (u16, u16)) -> bool {
+    quantizer != 0 && side != 0
 }
 
 /// Maximum filter lengths for the smaller transform side `tx`.
@@ -517,11 +553,11 @@ mod tests {
         segment: usize,
     ) -> Option<Av2EdgeFilter> {
         let along = segment * EDGE_STEP;
-        let current = lines.plane_block(lines.block_at(coordinate, along));
+        let current = lines.plane_block(lines.block_at(coordinate, along), thresholds);
         if !(coordinate - current.origin).is_multiple_of(current.tx) {
             return None;
         }
-        let previous = lines.plane_block(lines.block_at(coordinate - 1, along));
+        let previous = lines.plane_block(lines.block_at(coordinate - 1, along), thresholds);
         let position = EdgePosition {
             coordinate,
             extent: lines.across_extent,
@@ -529,7 +565,7 @@ mod tests {
             superblock_row: !lines.vertical
                 && (coordinate << lines.shift).is_multiple_of(SUPERBLOCK_ROW),
         };
-        edge_filter(current, previous, position, thresholds)
+        edge_filter(current, previous, position)
     }
 
     #[test]

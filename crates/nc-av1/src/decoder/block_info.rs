@@ -301,6 +301,39 @@ pub(crate) fn splat_slice<T: Copy>(cells: &mut [T], value: T) {
     }
 }
 
+/// Fill a run of byte contexts with `value` by whole-word stores for the
+/// power-of-two lengths blocks have (`1..=32`, dav1d's `case_set`).
+///
+/// [`splat_slice`] on bytes does not stay a set of fixed stores: the
+/// optimiser folds its cases back into one `memset` call of the run's
+/// length, and the calls cost ~0.14M instructions a frame on
+/// `aom720_good4_1000k`. A byte splat made by a multiplication is not a
+/// constant `memset` can be formed from, so the stores stay inline.
+#[allow(
+    clippy::inline_always,
+    reason = "several times per block and transform block; a call would cost what it saves"
+)]
+#[inline(always)]
+pub(crate) fn splat_bytes(cells: &mut [u8], value: u8) {
+    const BYTES_8: u64 = 0x0101_0101_0101_0101;
+    let word = u64::from(value) * BYTES_8;
+    let quad = u128::from(word) | u128::from(word) << u64::BITS;
+    match cells.len() {
+        0 => {}
+        1 => cells[0] = value,
+        2 => cells.copy_from_slice(&(word as u16).to_ne_bytes()),
+        4 => cells.copy_from_slice(&(word as u32).to_ne_bytes()),
+        8 => cells.copy_from_slice(&word.to_ne_bytes()),
+        16 => cells.copy_from_slice(&quad.to_ne_bytes()),
+        32 => {
+            let (low, high) = cells.split_at_mut(16);
+            low.copy_from_slice(&quad.to_ne_bytes());
+            high.copy_from_slice(&quad.to_ne_bytes());
+        }
+        _ => cells.fill(value),
+    }
+}
+
 /// Write `info` into the first `1 << count_log2` cells as fixed-size
 /// stores: blocks are mostly a few cells wide, where a general fill spends
 /// more on its set-up than on the stores (dav1d's `case_set` does the same).
@@ -601,15 +634,15 @@ impl ReferenceCounts {
 /// sub-8x8 block reads the block carrying the chroma above or left of it.
 #[derive(Debug)]
 pub(crate) struct ChromaSmooth {
-    above: Vec<bool>,
-    left: [bool; MAX_SUPERBLOCK_MI],
+    above: Vec<u8>,
+    left: [u8; MAX_SUPERBLOCK_MI],
 }
 
 impl ChromaSmooth {
     pub(crate) fn new(mi_cols: usize) -> Self {
         Self {
-            above: vec![false; mi_cols + MAX_SUPERBLOCK_MI],
-            left: [false; MAX_SUPERBLOCK_MI],
+            above: vec![0; mi_cols + MAX_SUPERBLOCK_MI],
+            left: [0; MAX_SUPERBLOCK_MI],
         }
     }
     /// Record a block's chroma over luma units `w4` x `h4` from
@@ -620,18 +653,19 @@ impl ChromaSmooth {
         (w4, h4): (usize, usize),
         smooth: bool,
     ) {
-        splat_slice(&mut self.above[mi_col..mi_col + w4], smooth);
+        let smooth = u8::from(smooth);
+        splat_bytes(&mut self.above[mi_col..mi_col + w4], smooth);
         let row = mi_row % MAX_SUPERBLOCK_MI;
-        splat_slice(
+        splat_bytes(
             &mut self.left[row..(row + h4).min(MAX_SUPERBLOCK_MI)],
             smooth,
         );
     }
     pub(crate) fn above(&self, mi_col: usize) -> bool {
-        self.above[mi_col]
+        self.above[mi_col] != 0
     }
     pub(crate) fn left(&self, mi_row: usize) -> bool {
-        self.left[mi_row % MAX_SUPERBLOCK_MI]
+        self.left[mi_row % MAX_SUPERBLOCK_MI] != 0
     }
 }
 
@@ -677,9 +711,9 @@ impl TxContexts {
         (w4, h4): (usize, usize),
         (width, height): (u8, u8),
     ) {
-        splat_slice(&mut self.above[mi_col..mi_col + w4], width);
+        splat_bytes(&mut self.above[mi_col..mi_col + w4], width);
         let row = mi_row % MAX_SUPERBLOCK_MI;
-        splat_slice(
+        splat_bytes(
             &mut self.left[row..(row + h4).min(MAX_SUPERBLOCK_MI)],
             height,
         );
@@ -714,6 +748,19 @@ impl TxContexts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splat_bytes_fills_every_length() {
+        for len in 0..=40 {
+            let mut cells = [7u8; 48];
+            splat_bytes(&mut cells[3..3 + len], 0xa5);
+            assert!(cells[3..3 + len].iter().all(|&c| c == 0xa5), "{len}");
+            assert!(
+                cells[..3].iter().chain(&cells[3 + len..]).all(|&c| c == 7),
+                "{len}"
+            );
+        }
+    }
 
     #[test]
     fn cells_pack_into_four_bytes() {

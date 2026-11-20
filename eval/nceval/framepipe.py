@@ -34,7 +34,14 @@ import numpy as np
 from .slots import low_priority
 from .yuv import YuvFormat, frame_digest, frame_format_at
 
-PSNR_CAP_DB = 100.0
+#: Every per-plane, per-frame PSNR (and XPSNR) is capped here: libvmaf's 8-bit PSNR cap,
+#: 6 x 8 bits + 12 = 60 dB (its psnr feature, `psnr_max`). Owner decision, 2026-11-20, from
+#: 100 dB: on a grayscale clip (external_cevo_indoor_night_720p, U = V = 128 throughout) a
+#: DC-only chroma plane scored 100 dB while an invisible +-1 chroma error scored 84 dB, so
+#: PSNR-YUV swung 4 dB and the clip's J 14 % on nothing visible. Above 60 dB (MSE < 0.065)
+#: no 8-bit difference is visible. Part of the measurement fingerprint (nceval.fingerprint),
+#: so results under another cap are never mixed with these.
+PSNR_CAP_DB = 60.0
 _PEAK_SQUARED = 255.0 ** 2
 
 
@@ -119,12 +126,13 @@ class PsnrSink:
         self._reference.close()
 
     def per_plane_psnr(self) -> np.ndarray:
-        """(frames, 3) PSNR in dB, MSE 0 capped at PSNR_CAP_DB."""
+        """(frames, 3) PSNR in dB, each value capped at PSNR_CAP_DB."""
         return psnr_from_mse(self.mse)
 
 
 def psnr_from_mse(mse: list[tuple[float, float, float]]) -> np.ndarray:
-    """(frames, 3) PSNR in dB of per-frame, per-plane MSE; MSE 0 is capped at PSNR_CAP_DB."""
+    """(frames, 3) PSNR in dB of per-frame, per-plane MSE, each capped at PSNR_CAP_DB
+    (MSE 0 included)."""
     mse = np.array(mse, dtype=np.float64).reshape(-1, 3)
     with np.errstate(divide="ignore"):
         return np.minimum(PSNR_CAP_DB, 10.0 * np.log10(_PEAK_SQUARED / mse))

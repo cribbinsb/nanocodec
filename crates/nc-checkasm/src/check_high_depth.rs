@@ -926,7 +926,12 @@ fn check_av1_deblock_high(
                     for (k, kernels) in [cand, refer].into_iter().enumerate() {
                         let mut view =
                             PlaneViewMut::new(&mut planes[k], stride, side, side).expect("plane");
-                        kernels.av1_loop_filter_runs(&mut view, vertical, &runs);
+                        kernels.av1_loop_filter_runs(
+                            &mut view,
+                            vertical,
+                            &runs,
+                            &mut nc_dsp::LoopFilterLanes::default(),
+                        );
                     }
                     report.cases += 1;
                     if planes[0] != planes[1] {

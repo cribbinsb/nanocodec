@@ -1,22 +1,33 @@
 # AV2 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first) plus trellis-coded quantisation on inter frames (AV2 TCQ,
-# `enable_tcq`, `av2.tcq` 2): the joint study's best point
-# (slow-av2-2026-11-15: TCQ alone J -4.08% at x86 x1.50; TCQ with path
-# pruning, -3.34% at x1.35, or with the other replay candidates, -3.97% at
-# x1.49, scored no better at k 0.025). The second reference passed L3 on its
-# own (J -1.46% at +11.9% Jetson cycles). L3 (600 f, n=27): J -4.25%
-# [-4.75, -3.76] at x1.37 Jetson cycles; the periodic-key pulse guard read
-# +0.27 dB against +0.25 (TCQ codes the P frames finer, the keys unchanged;
-# judged acceptable at this gain, as HEVC Default's +0.26/+0.27).
+# applied first: the second reference with the full decision) plus AV2's
+# levers. Re-picked 2026-11-20 (docs/handoff/presets.md "Slow presets"):
+# everything heavy on at once, then cut back by component cost. Alone on the
+# Default (fixed QP J, 24 clips / x86 callgrind P instructions): TCQ on inter
+# frames -2.7% / +63%, the winner walk -1.9% / +17%, the MV bank, a full DRL
+# and skip mode -1.9% / +31%, the sub-sample gates off -0.7% / +7%, the
+# second reference -0.4% / +18%, the exact coefficient walk -0.3% / +3%.
+# Left out: CDEF searched on every row with eight sets (-1.1% alone at +46%:
+# past the 2.5x budget on top of the bundle), CCSO (-0.8% at +539%),
+# switchable filters (-0.2% alone, +0.4% worse inside the bundle), and,
+# worse alone: every transform type and split (+5.4%), the widened intra
+# search (+0.5%), 8x8 inter blocks with shape RD (+0.2%). Whole-CU pricing
+# leaves AV2 streams unchanged.
+#
+# Trellis-coded quantisation of inter luma (enable_tcq, tcq_mode).
 av2.tcq = 2
-# The exact-rank margin stays at the old engine default 1.1 here: the
-# engine default moved to 0 for VVC/AV2 Default (L3 screened), and this
-# preset has not been screened with 0.
-decision.exact_rank_margin = 1.1
-# Pinned before AV2 Default's modelled trial coefficient rate (2026-11-18):
-# on Slow it buys no time (c8a lens 126.0 -> 126.4 fps, CBR 600 x86
-# instructions -0.1 %; TCQ and trellis pricing dominate) for lens W +0.2.
+# RD trials price coefficients with the exact walk, not the fitted model.
 av2.coeff_rate_model = 0
-# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
-# docs/handoff/rd-depth.md): not screened for this preset.
-rate.fixed_qp_moving_key = 0
+# The winner walk: three quarter-sample moves along the row and column.
+decision.winner_walk_steps = 3
+decision.winner_walk_square = 0
+# The sub-sample search: no seed gates, the coordinate walk.
+decision.codec_subpel_seed_lambdas = 0
+decision.skip_no_refine_lambdas = 0
+decision.refine_cheap_min_lambdas = 0
+decision.subpel_walk = 1
+# More predicted vectors: the reference MV bank, the largest DRL and skip
+# mode with its whole list ranked.
+av2.ref_mv_bank = 1
+av2.max_drl_bits = 5
+av2.skip_mode = 1
+av2.skip_mode_candidates = 6

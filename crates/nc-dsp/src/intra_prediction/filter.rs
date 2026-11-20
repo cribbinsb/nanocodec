@@ -152,6 +152,36 @@ pub(crate) const FILTER_TAP_COLUMNS: [[[i16; PATCH_SAMPLES]; TAPS]; 5] = {
     columns
 };
 
+/// Input pairs of a patch for byte-pair multiply-adds (`pmaddubsw`):
+/// inputs (corner, above 0), (above 1, 2), (above 3, left 0), (left 1,
+/// none).
+#[cfg(target_arch = "x86_64")]
+pub(crate) const TAP_PAIRS: usize = TAPS.div_ceil(2);
+
+/// [`FILTER_TAPS`] as signed bytes per mode and input pair, each output's
+/// two taps adjacent (dav1d's `filter_intra_taps` layout): pair `k`, output
+/// `o` holds the taps of inputs `2k` and `2k + 1` at bytes `2o`, `2o + 1`.
+/// Every tap fits `i8` (|tap| ≤ 16).
+#[cfg(target_arch = "x86_64")]
+pub(crate) const FILTER_TAP_PAIRS: [[[i8; 2 * PATCH_SAMPLES]; TAP_PAIRS]; 5] = {
+    let mut pairs = [[[0; 2 * PATCH_SAMPLES]; TAP_PAIRS]; 5];
+    let mut mode = 0;
+    while mode < 5 {
+        let mut input = 0;
+        while input < TAPS {
+            let mut output = 0;
+            while output < PATCH_SAMPLES {
+                pairs[mode][input / 2][2 * output + input % 2] =
+                    FILTER_TAPS[mode][output][input] as i8;
+                output += 1;
+            }
+            input += 1;
+        }
+        mode += 1;
+    }
+    pairs
+};
+
 /// The inputs of the patch whose top-left output is `grid[r][c]`: the
 /// corner, four above and two to the left.
 pub(crate) fn patch_inputs<T: Sample>(grid: &FilterGrid<T>, r: usize, c: usize) -> [T; TAPS] {
@@ -260,9 +290,9 @@ impl<T: Sample> IntraEdges<T> {
             grid[r + 1][0] = sample;
         }
         patches(&mut grid, width, height, mode);
-        for (r, row) in grid[1..=height].iter().enumerate() {
-            dst.row_mut(r)[..width].copy_from_slice(&row[1..=width]);
-        }
+        // The block is the grid from row 1, column 1.
+        let stride = FILTER_INTRA_MAX_SIZE + 1;
+        dst.copy_from_rows(&grid.as_flattened()[stride + 1..], stride);
     }
 }
 

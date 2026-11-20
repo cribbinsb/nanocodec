@@ -1,22 +1,27 @@
 //! NEON transforms; staged HEVC rows reuse eight narrow AV1 butterfly lanes,
-//! HEVC dequantisation runs four independent vectors per step, the H.264
+//! HEVC dequantisation runs four independent vectors per step, HEVC/VVC
+//! quantisation runs on eight 16-bit lanes, the H.264
 //! 8x8 forward runs its row pass in eight 16-bit lanes, and the H.264 4x4
 //! forward runs entirely in 16-bit lanes, two blocks per vector.
 
 #![allow(clippy::inline_always)]
 
 use core::arch::aarch64::{
-    int16x4_t, int16x8_t, int32x4_t, uint16x8_t, vaddl_s16, vaddq_s16, vaddq_s32, vaddv_u8,
-    vandq_u8, vcombine_s16, vcombine_u8, vdupq_n_s32, vget_high_s16, vget_high_u8, vget_low_s16,
-    vget_low_u8, vld1q_s16, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_n_s16, vmlaq_n_s16, vmovn_u16,
-    vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_s32, vqshlq_s32, vreinterpretq_s16_s32,
-    vreinterpretq_s16_s64, vreinterpretq_s32_s16, vreinterpretq_s64_s16, vrshlq_s32, vrshrq_n_s32,
-    vshlq_n_s16, vshlq_n_s32, vst1q_s16, vsubl_s16, vsubq_s16, vsubq_s32, vtrn1q_s16, vtrn1q_s32,
-    vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64, vzip2q_s64,
+    int16x4_t, int16x8_t, int32x4_t, uint16x8_t, uint32x4_t, vabsq_s16, vaddl_s16, vaddlvq_u16,
+    vaddq_s16, vaddq_s32, vaddq_u16, vaddv_u8, vandq_u8, vceqzq_s16, vcombine_s16, vcombine_u8,
+    vdupq_n_s16, vdupq_n_s32, vdupq_n_u16, vdupq_n_u32, veorq_s16, vget_high_s16, vget_high_u8,
+    vget_low_s16, vget_low_u8, vget_low_u16, vld1q_s16, vld1q_u8, vmaxq_s32, vmaxvq_u16, vminq_s32,
+    vminq_u16, vmlal_high_n_u16, vmlal_n_s16, vmlal_n_u16, vmlaq_n_s16, vmovl_high_s16, vmovl_s16,
+    vmovn_u16, vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_high_u32, vqmovn_s32, vqmovn_u32,
+    vqshlq_s32, vreinterpretq_s16_s32, vreinterpretq_s16_s64, vreinterpretq_s16_u16,
+    vreinterpretq_s32_s16, vreinterpretq_s64_s16, vreinterpretq_u16_s16, vrshlq_s32, vrshrq_n_s32,
+    vshlq_n_s16, vshlq_n_s32, vshlq_u32, vshrq_n_s16, vst1q_s16, vst1q_s32, vsubl_s16, vsubq_s16,
+    vsubq_s32, vsubq_u16, vtrn1q_s16, vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64,
+    vzip2q_s64,
 };
 
-use super::generic::{H264Forward8x8, HEVC_DEQUANT_LEVEL_LIMIT};
-use super::{H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer};
+use super::generic::{Element, H264Forward8x8, HEVC_DEQUANT_LEVEL_LIMIT};
+use super::{H264Quantizer, HEVC_MAX_LEVEL, HevcForwardMode, HevcForwardStaging, HevcQuantizer};
 use crate::simd::neon::I32x4;
 use crate::txfm::neon::Lanes;
 use crate::txfm::neon_forward::transpose;
@@ -39,6 +44,8 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.hevc_forward_bounded[3] = staged32_bounded;
     table.hevc_dequantize = hevc_dequantize;
     table.vvc_dequantize = vvc_dequantize;
+    table.hevc_quantize_from = hevc_quantize_from;
+    table.vvc_quantize_from = vvc_quantize_from;
     table.h264_forward_8x8 = h264_forward_8x8;
     table.h264_forward_4x4 = h264_forward_4x4;
     table.h264_forward_quantize_mb = h264_forward_quantize_mb;
@@ -371,6 +378,123 @@ unsafe fn dequantize_levels<L: Lanes + super::generic::Element>(
             &mut out[done..n],
         );
     }
+}
+
+/// Coefficients per step of [`quantize_from`]: one vector of 16-bit lanes.
+const QUANT_STEP: usize = 8;
+
+/// HEVC quantisation, `generic::hevc_quantize_from` on eight 16-bit lanes
+/// ([`quantize_from`]).
+#[target_feature(enable = "neon")]
+unsafe fn hevc_quantize_from(coeffs: &[i16], q: &HevcQuantizer, out: &mut [i16]) -> u32 {
+    // SAFETY: the caller's contract is forwarded.
+    unsafe { quantize_from(coeffs, q, out) }
+}
+
+/// [`hevc_quantize_from`] into VVC's 32-bit levels.
+#[target_feature(enable = "neon")]
+unsafe fn vvc_quantize_from(coeffs: &[i16], q: &HevcQuantizer, out: &mut [i32]) -> u32 {
+    // SAFETY: the caller's contract is forwarded.
+    unsafe { quantize_from(coeffs, q, out) }
+}
+
+/// Levels stored from eight 16-bit lanes.
+trait LevelStore: Element {
+    /// Store `levels` at `dst`.
+    ///
+    /// # Safety
+    ///
+    /// NEON kernels only; `dst` holds eight values.
+    unsafe fn store8(dst: &mut [Self; QUANT_STEP], levels: int16x8_t);
+}
+
+impl LevelStore for i16 {
+    #[inline(always)]
+    unsafe fn store8(dst: &mut [Self; QUANT_STEP], levels: int16x8_t) {
+        // SAFETY: caller contract.
+        unsafe { vst1q_s16(dst.as_mut_ptr(), levels) }
+    }
+}
+
+impl LevelStore for i32 {
+    #[inline(always)]
+    unsafe fn store8(dst: &mut [Self; QUANT_STEP], levels: int16x8_t) {
+        // SAFETY: caller contract.
+        unsafe {
+            vst1q_s32(dst.as_mut_ptr(), vmovl_s16(vget_low_s16(levels)));
+            vst1q_s32(dst.as_mut_ptr().add(4), vmovl_high_s16(levels));
+        }
+    }
+}
+
+/// `generic::hevc_quantize_from` with the levels in eight 16-bit lanes:
+/// `min((|c| · scale + offset) >> qbits, HEVC_MAX_LEVEL)`, signed like `c`.
+/// The generic kernel widens each coefficient to 32 bits first, four lanes
+/// per vector; here one unsigned widening multiply-add (`umlal`) per half
+/// forms the 32-bit numerator straight from the 16-bit magnitude, and the
+/// saturating narrow brings the level back to 16 bits.
+///
+/// Exact: `|c|` as `u16` is exact for every `i16` (`|−32768| = 0x8000`);
+/// the scale fits `u16` (quantiser scales are at most 26214) and the offset
+/// is below `2^31`, so the numerator, below `2^15 · 2^16 + 2^31 = 2^32`,
+/// never wraps; the generic kernel's wrapping 32-bit arithmetic and logical
+/// shift give the same value. Narrowing saturates at `u16::MAX` before the
+/// `HEVC_MAX_LEVEL` (32767) minimum, so the minimum is unchanged, and a
+/// level of at most 32767 negates within `i16`. A quantiser outside these
+/// ranges (or with a zero scale), and the ragged tail, take the generic
+/// kernel. Jetson `nc-checkasm --bench`, ns per call against the generic
+/// kernel: 4x4 18.3 -> 13.7, 8x8 68.1 -> 45.2, 16x16 267 -> 173, 32x32
+/// 1068 -> 683 (before the all-zero skip, whose gain depends on the data).
+#[target_feature(enable = "neon")]
+unsafe fn quantize_from<L: LevelStore>(coeffs: &[i16], q: &HevcQuantizer, out: &mut [L]) -> u32 {
+    let n = coeffs.len();
+    let (Ok(scale @ 1..), Ok(offset)) = (u16::try_from(q.scale), u32::try_from(q.offset)) else {
+        // SAFETY: the caller's contract is forwarded.
+        return unsafe { super::generic::hevc_quantize_from::<I32x4, L>(coeffs, q, out) };
+    };
+    let out = &mut out[..n];
+    let (src, _) = coeffs.as_chunks::<QUANT_STEP>();
+    let (dst, _) = out.as_chunks_mut::<QUANT_STEP>();
+    // SAFETY: NEON is enabled for this function; every load and store is a
+    // whole eight-value chunk.
+    let vector_nonzero = unsafe {
+        let offset = vdupq_n_u32(offset);
+        let shift = vdupq_n_s32(-(q.qbits as i32));
+        let maximum = vdupq_n_u16(HEVC_MAX_LEVEL as u16);
+        // Zero levels per lane (at most n / 8 each, far below 2^16).
+        let mut zeros = vdupq_n_u16(0);
+        let zero_limit = u16::try_from(q.largest_zero_coefficient()).unwrap_or(u16::MAX);
+        for (c, l) in src.iter().zip(dst) {
+            let raw = vld1q_s16(c.as_ptr());
+            let magnitude = vreinterpretq_u16_s16(vabsq_s16(raw));
+            // Eight coefficients at most the largest one that quantises to
+            // zero: store zero levels without the products. Exact (the
+            // quantiser's own bound); most vectors of coded blocks are zero.
+            // Against this kernel without the skip, Jetson HEVC Faster
+            // cycles -0.65 / -1.29 / -0.79% (crowd / bodycam / static).
+            if vmaxvq_u16(magnitude) <= zero_limit {
+                L::store8(l, vdupq_n_s16(0));
+                zeros = vaddq_u16(zeros, vdupq_n_u16(1));
+                continue;
+            }
+            let low: uint32x4_t = vmlal_n_u16(offset, vget_low_u16(magnitude), scale);
+            let high = vmlal_high_n_u16(offset, magnitude, scale);
+            let narrowed =
+                vqmovn_high_u32(vqmovn_u32(vshlq_u32(low, shift)), vshlq_u32(high, shift));
+            let level = vreinterpretq_s16_u16(vminq_u16(narrowed, maximum));
+            let sign = vshrq_n_s16::<15>(raw);
+            let level = vsubq_s16(veorq_s16(level, sign), sign);
+            L::store8(l, level);
+            zeros = vsubq_u16(zeros, vceqzq_s16(level));
+        }
+        (src.len() * QUANT_STEP) as u32 - vaddlvq_u16(zeros)
+    };
+    let done = src.len() * QUANT_STEP;
+    // SAFETY: NEON is enabled for this function.
+    vector_nonzero
+        + unsafe {
+            super::generic::hevc_quantize_from::<I32x4, L>(&coeffs[done..], q, &mut out[done..])
+        }
 }
 
 /// The HEVC scaling constants as lanes.

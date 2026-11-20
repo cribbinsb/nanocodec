@@ -209,6 +209,22 @@ pub trait Av1Pixel: Sample {
         dst: &mut PlaneViewMut<'_, Self>,
         vertical: bool,
         runs: &[EdgeRun<Av1EdgeFilter>],
+        lanes: &mut crate::LoopFilterLanes,
+    );
+    #[doc(hidden)]
+    fn av1_lane_pass(
+        kernels: DepthKernels<'_>,
+        dst: &PlaneViewMut<'_, Self>,
+        vertical: bool,
+        chroma: bool,
+        lanes: &mut crate::LoopFilterLanes,
+    ) -> bool;
+    #[doc(hidden)]
+    fn av1_loop_filter_lanes(
+        kernels: DepthKernels<'_>,
+        dst: &mut PlaneViewMut<'_, Self>,
+        vertical: bool,
+        lanes: &mut crate::LoopFilterLanes,
     );
     #[doc(hidden)]
     fn cdef_filter_band(
@@ -523,10 +539,25 @@ impl Av1Pixel for u8 {
         size: (usize, usize),
         dst: &mut PlaneViewMut<'_, u8>,
     ) {
-        match BlockSize::new(size.0, size.1) {
-            Some(kernel_size) => kernels
-                .dsp
-                .average_compound(kernel_size, (p0, p1), size.0, dst),
+        let (w, h) = size;
+        // The average kernels take edges up to 64: a 128-sample edge
+        // (128x128, 128x64 and 64x128 blocks) is averaged as 64-sample
+        // tiles read at the block's stride. Scalar, those blocks were 4 % of
+        // a libaom "good" 720p decode (2026-11-19).
+        match BlockSize::new(w.min(KERNEL_EDGE), h.min(KERNEL_EDGE)) {
+            Some(tile) => {
+                for y in (0..h).step_by(tile.height()) {
+                    for x in (0..w).step_by(tile.width()) {
+                        let at = y * w + x;
+                        let mut window = dst
+                            .sub_view_mut(x, y, tile.width(), tile.height())
+                            .expect("AV1 compound destination covers the block");
+                        kernels
+                            .dsp
+                            .average_compound(tile, (&p0[at..], &p1[at..]), w, &mut window);
+                    }
+                }
+            }
             None => crate::av1_mc::blend::av1_blend_average(
                 Av1CompoundPred {
                     data: p0,
@@ -641,8 +672,28 @@ impl Av1Pixel for u8 {
         dst: &mut PlaneViewMut<'_, u8>,
         vertical: bool,
         runs: &[EdgeRun<Av1EdgeFilter>],
+        lanes: &mut crate::LoopFilterLanes,
     ) {
-        kernels.dsp.av1_loop_filter_runs(dst, vertical, runs);
+        kernels.dsp.av1_loop_filter_runs(dst, vertical, runs, lanes);
+    }
+
+    fn av1_lane_pass(
+        kernels: DepthKernels<'_>,
+        dst: &PlaneViewMut<'_, u8>,
+        vertical: bool,
+        chroma: bool,
+        lanes: &mut crate::LoopFilterLanes,
+    ) -> bool {
+        kernels.dsp.av1_lane_pass(dst, vertical, chroma, lanes)
+    }
+
+    fn av1_loop_filter_lanes(
+        kernels: DepthKernels<'_>,
+        dst: &mut PlaneViewMut<'_, u8>,
+        vertical: bool,
+        lanes: &mut crate::LoopFilterLanes,
+    ) {
+        kernels.dsp.av1_loop_filter_lanes(dst, vertical, lanes);
     }
 
     fn cdef_filter_band(
@@ -824,6 +875,7 @@ impl Av1Pixel for u16 {
             |e, k, dst| unsafe { (intra.smooth_u16)(e, k, dst) },
             // SAFETY: `high` matches this CPU.
             |win, weight, out| unsafe { (intra.run_u16)(win, weight, out) },
+            None,
             kind,
             dst,
         );
@@ -1185,11 +1237,32 @@ impl Av1Pixel for u16 {
         );
     }
 
+    /// High depth has no lane kernels: its passes take run lists.
+    fn av1_lane_pass(
+        _kernels: DepthKernels<'_>,
+        _dst: &PlaneViewMut<'_, u16>,
+        _vertical: bool,
+        _chroma: bool,
+        _lanes: &mut crate::LoopFilterLanes,
+    ) -> bool {
+        false
+    }
+
+    fn av1_loop_filter_lanes(
+        _kernels: DepthKernels<'_>,
+        _dst: &mut PlaneViewMut<'_, u16>,
+        _vertical: bool,
+        _lanes: &mut crate::LoopFilterLanes,
+    ) {
+        unreachable!("high-depth passes never begin a lane pass");
+    }
+
     fn av1_loop_filter_runs(
         kernels: DepthKernels<'_>,
         dst: &mut PlaneViewMut<'_, u16>,
         vertical: bool,
         runs: &[EdgeRun<Av1EdgeFilter>],
+        _lanes: &mut crate::LoopFilterLanes,
     ) {
         let plane = RunPlane {
             width: dst.width(),
@@ -1456,8 +1529,33 @@ impl DepthKernels<'_> {
         dst: &mut PlaneViewMut<'_, T>,
         vertical: bool,
         runs: &[EdgeRun<Av1EdgeFilter>],
+        lanes: &mut crate::LoopFilterLanes,
     ) {
-        T::av1_loop_filter_runs(self, dst, vertical, runs);
+        T::av1_loop_filter_runs(self, dst, vertical, runs, lanes);
+    }
+
+    /// [`Dsp::av1_lane_pass`](crate::Dsp::av1_lane_pass) at this depth
+    /// (`false` above 8 bits: no lane kernels).
+    #[must_use]
+    pub fn av1_lane_pass<T: Av1Pixel>(
+        self,
+        dst: &PlaneViewMut<'_, T>,
+        vertical: bool,
+        chroma: bool,
+        lanes: &mut crate::LoopFilterLanes,
+    ) -> bool {
+        T::av1_lane_pass(self, dst, vertical, chroma, lanes)
+    }
+
+    /// [`Dsp::av1_loop_filter_lanes`](crate::Dsp::av1_loop_filter_lanes)
+    /// at this depth, after [`DepthKernels::av1_lane_pass`].
+    pub fn av1_loop_filter_lanes<T: Av1Pixel>(
+        self,
+        dst: &mut PlaneViewMut<'_, T>,
+        vertical: bool,
+        lanes: &mut crate::LoopFilterLanes,
+    ) {
+        T::av1_loop_filter_lanes(self, dst, vertical, lanes);
     }
 
     /// [`Dsp::cdef_filter_band`](crate::Dsp::cdef_filter_band) at this

@@ -25,10 +25,11 @@ use core::arch::x86_64::{
     _mm256_abs_epi16, _mm256_add_epi16, _mm256_add_epi32, _mm256_adds_epu16,
     _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_extracti128_si256, _mm256_loadu_si256,
     _mm256_madd_epi16, _mm256_max_epi16, _mm256_min_epi16, _mm256_mulhrs_epi16, _mm256_packs_epi32,
-    _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
-    _mm256_setzero_si256, _mm256_srai_epi32, _mm256_storeu_si256, _mm256_sub_epi16,
-    _mm256_subs_epu16, _mm256_testz_si256, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32,
-    _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
+    _mm256_packus_epi16, _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set1_epi16,
+    _mm256_set1_epi32, _mm256_setzero_si256, _mm256_srai_epi32, _mm256_storeu_si256,
+    _mm256_sub_epi16, _mm256_subs_epu16, _mm256_testz_si256, _mm256_unpackhi_epi16,
+    _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32,
+    _mm256_unpacklo_epi64,
 };
 
 use super::generic::INVERSE_COS_BIT;
@@ -470,6 +471,17 @@ impl NarrowLanes for Narrow16 {
     #[inline(always)]
     fn transpose(rows: [Self; GROUP]) -> [Self; GROUP] {
         transpose8x2(rows.map(|row| row.0)).map(Self)
+    }
+
+    #[inline(always)]
+    fn join_groups(first: Self, second: Self) -> (Self, Self) {
+        // SAFETY: AVX2 entry points only; register shuffles.
+        unsafe {
+            (
+                Self(_mm256_permute2x128_si256::<0x20>(first.0, second.0)),
+                Self(_mm256_permute2x128_si256::<0x31>(first.0, second.0)),
+            )
+        }
     }
 
     #[inline(always)]

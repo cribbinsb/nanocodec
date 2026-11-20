@@ -21,6 +21,7 @@ pub(crate) fn deblock_fns() -> DeblockFns {
         av1_line: super::av1_line::neon,
         av1_grid: super::av1_grid::neon,
         av1_runs: super::runs::neon::av1,
+        av1_lanes: None,
         hevc_luma_runs: super::runs::neon::luma,
         hevc_chroma_runs: super::runs::neon::chroma,
         vvc_luma_runs: super::runs::neon::vvc,

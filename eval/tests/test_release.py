@@ -44,7 +44,8 @@ def test_quality_chains_overlap_the_pgo_builds_and_uploads_overlap_the_charts(tm
     quality = next(chain for chain in minutes if chain.startswith(release.QUALITY_CHAIN_PREFIX))
     minutes.update({quality: 50, "lens-jetson": 40})
     run = make_release(tmp_path)
-    with patch.dict(release.CHART_CHAIN_MINUTES, minutes):
+    with patch.dict(release.CHART_CHAIN_MINUTES, minutes), \
+         patch.object(release, "charts_preflight", return_value=[]):
         run.plan(list(release.STAGES))
         commit, pgo = release.STAGE_MINUTES["commit"], release.STAGE_MINUTES["pgo"]
         charts = max(commit + 50, commit + pgo + 40) + release.CHARTS_LAND_MINUTES
@@ -52,6 +53,13 @@ def test_quality_chains_overlap_the_pgo_builds_and_uploads_overlap_the_charts(tm
         minutes[quality] = 200  # a 200-minute chain puts the plan over the limit
         with patch.dict(release.CHART_CHAIN_MINUTES, minutes), pytest.raises(SystemExit):
             run.plan(list(release.STAGES))
+
+
+def test_a_failed_charts_preflight_stops_the_plan(tmp_path):
+    run = make_release(tmp_path)
+    with patch.object(release, "charts_preflight", return_value=["missing: x"]), \
+         pytest.raises(SystemExit, match="missing: x"):
+        run.plan(list(release.STAGES))
 
 
 def test_a_stage_waits_for_what_it_needs_and_a_failure_stops_its_dependents(tmp_path):
@@ -116,3 +124,25 @@ def test_the_jetson_lens_times_two_points_of_every_encoders_scale():
     chosen = {int(p) for p in release.jetson_lens_points().split(",")}
     for scale, points in POINTS.items():
         assert len(chosen & set(points)) == 2, scale
+
+
+def test_the_charts_preflight_names_each_missing_tool_and_a_full_work_budget(tmp_path):
+    from nceval import diskguard
+    harness, sources = tmp_path / "bin" / "openh264-harness", tmp_path / "src"
+    sources.mkdir()  # present but empty: the lens finds no sequence in it
+    work = tmp_path / "work"
+    problems = release.charts_preflight(work, [harness, sources])
+    assert problems == [f"missing (or empty): {harness}", f"missing (or empty): {sources}"]
+    harness.parent.mkdir()
+    harness.write_text("")
+    (sources / "a.yuv").write_text("")
+    assert release.charts_preflight(work, [harness, sources]) == []
+    full = diskguard.WORK_BUDGET_BYTES - (release.CHARTS_WORK_HEADROOM_GIB - 1) * diskguard.GIB
+    with patch.object(diskguard, "shared_work_bytes", return_value=full):
+        [problem] = release.charts_preflight(work, [harness, sources])
+    assert "24 GiB left" in problem
+
+
+def test_the_charts_preflight_checks_the_paths_the_chains_use():
+    names = {path.name for path in release.chart_tool_paths()}
+    assert {"openh264-harness", "src", "bin"} <= names

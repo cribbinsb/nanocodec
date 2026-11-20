@@ -54,7 +54,12 @@ pub(crate) fn bench(dsp: &Dsp, results: &mut Vec<BenchResult>) {
                             let mut dst = PlaneViewMut::new(&mut output, SIDE, SIDE, SIDE)
                                 .expect("benchmark plane");
                             if single == 0 {
-                                dsp.av1_loop_filter_runs(&mut dst, vertical, &[run]);
+                                dsp.av1_loop_filter_runs(
+                                    &mut dst,
+                                    vertical,
+                                    &[run],
+                                    &mut nc_dsp::LoopFilterLanes::default(),
+                                );
                             } else {
                                 dsp.av1_loop_filter_edge(
                                     &mut dst,

@@ -25,11 +25,19 @@ pub(crate) mod kernels;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 mod self_guided;
+#[cfg(target_arch = "x86_64")]
+mod sgr_avx2;
 mod sgr_lanes;
+#[cfg(target_arch = "aarch64")]
+mod sgr_neon;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+mod sgr_stripe;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod simd128;
 pub mod superres;
 mod wiener;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+mod wiener_stripe;
 
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 

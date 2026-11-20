@@ -5,14 +5,25 @@
 //! of one multi-type tree level, each one transform unit unless larger than
 //! the largest transform (`transform_tree`).
 use crate::{
-    cabac::CabacWriter,
     coeff::Bins,
-    contexts::Contexts,
+    contexts::{Context, Contexts},
     motion::{AmvpLists, Amvr, Motion, Mv16},
     transform_tree,
 };
 use nc_common::decode::Result;
 use nc_dsp::Dsp;
+
+/// Write (or price, [`crate::coeff::BitCost`]) one context-coded bin:
+/// writing never fails.
+fn put(w: &mut impl Bins, c: &mut Context, value: bool) {
+    w.bin(c, value).expect("writing a bin never fails");
+}
+
+/// Write (or price) `bits` bypass bins of `value`.
+fn put_bypass(w: &mut impl Bins, value: u32, bits: u32) {
+    w.bypass(value, bits)
+        .expect("writing bypass bins never fails");
+}
 
 /// How an inter CU's motion is signalled (§7.3.11.5, §7.3.11.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +97,7 @@ pub(crate) enum Item {
 /// Coding unit `coding` in a picture with (`inter`) or without P slices
 /// of `references` active references, with the SPS's optional `tools`.
 pub(crate) fn block(
-    w: &mut CabacWriter,
+    w: &mut impl Bins,
     c: &mut Contexts,
     dsp: &Dsp,
     (inter, references, tools): (bool, usize, crate::headers::Tools),
@@ -107,26 +118,26 @@ pub(crate) fn block(
     let mut qp_delta = qp_delta;
     let intra = motion.is_none();
     if inter {
-        w.encode_bin(&mut c.skip[p.skip_ctx], skip);
+        put(w, &mut c.skip[p.skip_ctx], skip);
         if skip {
             let syntax = motion.expect("a skip CU merges").syntax;
             merge_data(w, c, tools, p, &cu, syntax);
             return;
         }
-        w.encode_bin(&mut c.intra[p.intra_ctx], intra);
+        put(w, &mut c.intra[p.intra_ctx], intra);
     }
     if let Some(motion) = motion {
         let merged = matches!(
             motion.syntax,
             InterSyntax::Merge(_) | InterSyntax::SubblockMerge(_)
         );
-        w.encode_bin(&mut c.merge, merged);
+        put(w, &mut c.merge, merged);
         if merged {
             merge_data(w, c, tools, p, &cu, motion.syntax);
         } else {
             amvp_data(w, c, (references, tools), p, &cu, motion);
             let present = levels.iter().flatten().any(|&v| v != 0);
-            w.encode_bin(&mut c.root_cbf, present);
+            put(w, &mut c.root_cbf, present);
             if !present {
                 return;
             }
@@ -168,7 +179,7 @@ pub(crate) fn block(
 /// slice of `references` active references: the affine flags,
 /// `ref_idx_l0`, the MVDs, `mvp_l0_flag` and the AMVR precision.
 fn amvp_data(
-    w: &mut CabacWriter,
+    w: &mut impl Bins,
     c: &mut Contexts,
     (references, tools): (usize, crate::headers::Tools),
     p: &crate::motion::CuContexts,
@@ -191,7 +202,7 @@ fn amvp_data(
     match syntax {
         InterSyntax::Amvp { mvp, amvr, mvd } => {
             write_mvd(w, c, mvd);
-            w.encode_bin(&mut c.mvp, mvp != 0);
+            put(w, &mut c.mvp, mvp != 0);
             if mvd != [0; 2] {
                 amvr_precision(w, c, amvr).expect("valid AMVR precision");
             }
@@ -203,7 +214,7 @@ fn amvp_data(
             for &delta in &mvd[..model.points()] {
                 write_mvd(w, c, delta);
             }
-            w.encode_bin(&mut c.mvp, mvp != 0);
+            put(w, &mut c.mvp, mvp != 0);
         }
         InterSyntax::Merge(_) | InterSyntax::SubblockMerge(_) => {
             unreachable!("AMVP data of a merge CU")
@@ -213,7 +224,7 @@ fn amvp_data(
 
 /// `cu_qp_delta_abs`/`cu_qp_delta_sign_flag` of a transform unit with a
 /// coded block, when the CU still carries its group's delta (§7.3.11.10).
-fn write_qp_delta(w: &mut CabacWriter, c: &mut Contexts, qp_delta: &mut Option<i32>) {
+fn write_qp_delta(w: &mut impl Bins, c: &mut Contexts, qp_delta: &mut Option<i32>) {
     if let Some(delta) = qp_delta.take() {
         crate::quant_group::code_delta(w, &mut c.cu_qp_delta, delta).expect("valid QP delta");
     }
@@ -224,18 +235,18 @@ fn write_qp_delta(w: &mut CabacWriter, c: &mut Contexts, qp_delta: &mut Option<i
 /// zero (intra CUs, CUs of several TUs); otherwise it is inferred 1.
 /// `size` is the TU's luma width and height; `qp_delta`: the CU's delta
 /// while still to be coded.
-fn transform_unit(
-    (w, c, dsp): (&mut CabacWriter, &mut Contexts, &Dsp),
+fn transform_unit<W: Bins>(
+    (w, c, dsp): (&mut W, &mut Contexts, &Dsp),
     levels: [&[i32]; 3],
     (width, height): (usize, usize),
     luma_flag: bool,
     qp_delta: &mut Option<i32>,
 ) {
     let present = levels.each_ref().map(|v| v.iter().any(|&c| c != 0));
-    w.encode_bin(&mut c.cbf_cb, present[1]);
-    w.encode_bin(&mut c.cbf_cr[usize::from(present[1])], present[2]);
+    put(w, &mut c.cbf_cb, present[1]);
+    put(w, &mut c.cbf_cr[usize::from(present[1])], present[2]);
     if luma_flag || present[1] || present[2] {
-        w.encode_bin(&mut c.cbf_y, present[0]);
+        put(w, &mut c.cbf_y, present[0]);
     }
     if present.contains(&true) {
         write_qp_delta(w, c, qp_delta);
@@ -257,8 +268,8 @@ fn transform_unit(
 
 /// §7.3.11.8-10 the transform units of an ISP CU: one per sub-partition,
 /// the CU's chroma flags and residuals with the last (§7.3.11.10 `chromaAvailable`).
-fn isp_units(
-    (w, c, dsp): (&mut CabacWriter, &mut Contexts, &Dsp),
+fn isp_units<W: Bins>(
+    (w, c, dsp): (&mut W, &mut Contexts, &Dsp),
     cu: &nc_encoder::Block,
     split: crate::isp::Split,
     levels: &[Vec<i32>; 3],
@@ -272,8 +283,8 @@ fn isp_units(
         let last = index == crate::isp::PARTS - 1;
         let chroma = [&levels[1], &levels[2]].map(|v| last && v.iter().any(|&l| l != 0));
         if last {
-            w.encode_bin(&mut c.cbf_cb, chroma[0]);
-            w.encode_bin(&mut c.cbf_cr[usize::from(chroma[0])], chroma[1]);
+            put(w, &mut c.cbf_cb, chroma[0]);
+            put(w, &mut c.cbf_cr[usize::from(chroma[0])], chroma[1]);
         }
         crate::isp::code_luma_flag(w, c, index, &coded[..index], coded[index])
             .expect("a coded last sub-partition after empty ones");
@@ -294,7 +305,7 @@ fn isp_units(
 
 /// §7.3.11.7 `merge_data` of a skip or merge CU (`syntax` a merge).
 fn merge_data(
-    w: &mut CabacWriter,
+    w: &mut impl Bins,
     c: &mut Contexts,
     tools: crate::headers::Tools,
     p: &crate::motion::CuContexts,
@@ -553,24 +564,24 @@ pub(crate) fn affine_amvp_coding(
     best
 }
 
-pub(crate) fn write_mvd(w: &mut CabacWriter, c: &mut Contexts, delta: [i32; 2]) {
+fn write_mvd(w: &mut impl Bins, c: &mut Contexts, delta: [i32; 2]) {
     for d in delta {
-        w.encode_bin(&mut c.mvd[0], d != 0);
+        put(w, &mut c.mvd[0], d != 0);
     }
     for d in delta {
         if d != 0 {
-            w.encode_bin(&mut c.mvd[1], d.unsigned_abs() > 1);
+            put(w, &mut c.mvd[1], d.unsigned_abs() > 1);
         }
     }
     for d in delta {
         if d.unsigned_abs() > 1 {
             let code = d.unsigned_abs() - 2;
             let prefix = ((code >> 1) + 1).ilog2();
-            w.encode_bypass((1 << prefix) - 1, prefix);
-            w.encode_bypass(code - (((1 << prefix) - 1) << 1), prefix + 2);
+            put_bypass(w, (1 << prefix) - 1, prefix);
+            put_bypass(w, code - (((1 << prefix) - 1) << 1), prefix + 2);
         }
         if d != 0 {
-            w.encode_bypass(u32::from(d < 0), 1);
+            put_bypass(w, u32::from(d < 0), 1);
         }
     }
 }

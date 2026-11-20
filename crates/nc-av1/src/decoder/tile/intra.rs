@@ -15,7 +15,7 @@ use crate::tables::{
 use nc_common::decode::DecodeError;
 use nc_common::{Picture, PlaneIndex, PlaneViewMut};
 use nc_dsp::Pixel;
-use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
+use nc_dsp::intra_prediction::av1_block::{EdgeAvail, EdgeFilterCtx, EdgeNeeds, IntraKind};
 
 /// Blocks of at most this side (log2) may use `CfL` and filter intra.
 const SMALL_BLOCK_MAX_LOG2: u8 = 5;
@@ -202,32 +202,45 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         } else {
             None
         };
+        let depth = self.depth();
+        let edges = &mut self.maps.intra_edges;
+        let plane = self.recon.plane(tx.plane);
         if let Some(filter) = filter {
-            let edges = BlockEdges::read(
-                self.recon.plane(tx.plane),
+            edges.read_into(
+                plane,
                 (x, y),
                 (w, h),
                 tx.avail,
-                self.depth(),
+                depth,
+                EdgeNeeds::sides((w, h)),
             );
             let kernels = self.kernels();
-            let mut dst = self.destination(tx)?;
-            kernels.av1_intra_predict_filter_block(&edges, filter, &mut dst);
+            let mut dst = region(&mut self.recon, tx)?;
+            kernels.av1_intra_predict_filter_block(&self.maps.intra_edges, filter, &mut dst);
             return Ok(());
         }
-        // Read after the filter branch: built here, in place, the edges
-        // are not moved (a memcpy per transform block when read earlier).
-        let edges = BlockEdges::read(
-            self.recon.plane(tx.plane),
+        // CfL predicts from the DC value (§7.11.5), so its edges are DC's.
+        let kind = if cfl {
+            IntraKind::Dc
+        } else if tx.plane == PlaneIndex::Y {
+            intra_kind(modes.luma.mode, modes.luma.angle_delta, tx.edge_filter)
+        } else {
+            let mode =
+                IntraMode::from_symbol(modes.uv).ok_or(DecodeError::Malformed("AV1 UV mode"))?;
+            intra_kind(mode, modes.uv_angle_delta, tx.edge_filter)
+        };
+        edges.read_into(
+            plane,
             (x, y),
             (w, h),
             tx.avail,
-            self.depth(),
+            depth,
+            EdgeNeeds::of(kind, (w, h)),
         );
         if cfl {
             let alpha = modes.alpha[tx.plane as usize - 1];
             if alpha != 0 {
-                let dc = edges.dc_value();
+                let dc = self.maps.intra_edges.dc_value();
                 let kernels = self.kernels();
                 let [y_plane, uv_planes @ ..] = self.recon.planes_mut();
                 let view = y_plane
@@ -246,23 +259,10 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                 return Ok(());
             }
         }
-        let kind = if cfl {
-            IntraKind::Dc
-        } else if tx.plane == PlaneIndex::Y {
-            intra_kind(modes.luma.mode, modes.luma.angle_delta, tx.edge_filter)
-        } else {
-            let mode =
-                IntraMode::from_symbol(modes.uv).ok_or(DecodeError::Malformed("AV1 UV mode"))?;
-            intra_kind(mode, modes.uv_angle_delta, tx.edge_filter)
-        };
         let kernels = self.kernels();
-        let mut dst = self.destination(tx)?;
-        kernels.av1_intra_predict_block(&edges, kind, &mut dst);
+        let mut dst = region(&mut self.recon, tx)?;
+        kernels.av1_intra_predict_block(&self.maps.intra_edges, kind, &mut dst);
         Ok(())
-    }
-
-    fn destination(&mut self, tx: IntraTransform) -> Result<PlaneViewMut<'_, T>, DecodeError> {
-        region(&mut self.recon, tx)
     }
 }
 

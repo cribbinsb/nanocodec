@@ -590,9 +590,18 @@ pub(crate) fn sps_layered(
     w.into_bytes()
 }
 
-/// The PPS. `block_qp`: `pps_cu_qp_delta_enabled_flag`, block quantizers
-/// coded as `cu_qp_delta` in CTB quantization groups (`quant_group.rs`).
-pub(crate) fn pps(geometry: &Geometry, block_qp: bool) -> Vec<u8> {
+/// The PPS settings our streams vary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PpsTools {
+    /// `pps_cu_qp_delta_enabled_flag`: block quantizers coded as
+    /// `cu_qp_delta` in CTB quantization groups (`quant_group.rs`).
+    pub(crate) block_qp: bool,
+    /// The luma deblocking offsets (chroma's are inferred equal, §7.4.3.5).
+    pub(crate) deblock: crate::filter::Offsets,
+}
+
+/// The PPS.
+pub(crate) fn pps(geometry: &Geometry, tools: PpsTools) -> Vec<u8> {
     let (width, height) = (geometry.coded_width, geometry.coded_height);
     let mut w = BitWriter::new();
     w.put_bits(0, 6); // PPS id
@@ -613,13 +622,13 @@ pub(crate) fn pps(geometry: &Geometry, block_qp: bool) -> Vec<u8> {
     w.put_bit(false); // weighted biprediction
     w.put_bit(false); // wraparound
     w.put_se(0); // initial QP minus 26
-    w.put_bit(block_qp); // pps_cu_qp_delta_enabled_flag
+    w.put_bit(tools.block_qp); // pps_cu_qp_delta_enabled_flag
     w.put_bit(false); // chroma tool offsets
     w.put_bit(true); // deblocking control present
     w.put_bit(false); // deblocking override
     w.put_bit(false); // deblocking enabled
-    w.put_se(0); // beta offset
-    w.put_se(0); // tc offset
+    w.put_se(i32::from(tools.deblock.beta_div2)); // pps_luma_beta_offset_div2
+    w.put_se(i32::from(tools.deblock.tc_div2)); // pps_luma_tc_offset_div2
     w.put_bit(false); // PH extension
     w.put_bit(false); // SH extension
     w.put_bit(false); // PPS extension

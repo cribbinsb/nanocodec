@@ -11,6 +11,9 @@ pub(super) const LINE_ORIGIN: usize = 16;
 /// and the upsampling margin.
 pub(super) const LINE_LEN: usize = LINE_ORIGIN + super::EDGE_LEN + 1;
 
+/// Entries of [`filter_edge`]'s padded copy of an edge: the line and two
+/// clamped samples each side.
+const PADDED_LEN: usize = LINE_LEN + 4;
 /// Taps of the three edge filter strengths (§7.11.2.12
 /// `Intra_Edge_Kernel`).
 const KERNELS: [[u16; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
@@ -70,22 +73,21 @@ pub(super) fn filter_edge<T: Sample>(
         return;
     }
     let kernel = &KERNELS[strength - 1];
-    let src = &src[..count];
-    let corner_u16 = corner.to_i32() as u16;
-    let sample_at = |idx: usize| -> u16 {
-        if idx == 0 {
-            corner_u16
-        } else {
-            src[idx - 1].to_i32() as u16
-        }
-    };
+    // `padded[k + 2]` is edge index `k` (the corner at 0, `src` after it)
+    // clamped to `0..=count`, for `k` in `-2..=count + 2`: every output is
+    // then a plain 5-tap sum over consecutive entries, without the
+    // per-tap clamp and corner test, which the compiler vectorises.
+    let mut padded = [0u16; PADDED_LEN];
+    let corner = corner.to_i32() as u16;
+    padded[..3].fill(corner);
+    for (out, sample) in padded[3..=count + 2].iter_mut().zip(&src[..count]) {
+        *out = sample.to_i32() as u16;
+    }
+    let last = padded[count + 2];
+    padded[count + 3..count + 5].fill(last);
     for (m, out) in dst[..count].iter_mut().enumerate() {
-        let i = m + 1;
-        let sum: u16 = kernel
-            .iter()
-            .enumerate()
-            .map(|(j, &tap)| tap * sample_at((i + j).saturating_sub(2).min(count)))
-            .sum();
+        let taps = &padded[m + 1..m + 6];
+        let sum: u16 = kernel.iter().zip(taps).map(|(&tap, &x)| tap * x).sum();
         *out = T::from_i32(i32::from((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS));
     }
 }

@@ -8,6 +8,8 @@
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2;
 #[cfg(target_arch = "x86_64")]
+pub(crate) mod avx2_full;
+#[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2_wide;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx512;

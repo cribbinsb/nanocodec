@@ -143,6 +143,19 @@ impl<T: Sample> Plane<T> {
             .expect("the visible area is always inside the plane")
     }
 
+    /// The visible area, writable, with its slice running on to the end of
+    /// the plane's buffer (through the border below and to the right):
+    /// for kernels that read and write back whole groups of lines past the
+    /// visible edge, unchanged.
+    #[inline]
+    pub fn view_mut_to_end(&mut self) -> PlaneViewMut<'_, T> {
+        let (width, height, stride) = (self.width, self.height, self.stride);
+        let samples = self
+            .samples_at_mut(0, 0, width, height)
+            .expect("the visible area is always inside the plane");
+        PlaneViewMut::new(samples, stride, width, height).expect("the plane holds its visible area")
+    }
+
     /// The whole padded area as one view: `width + 2 * border_x` by
     /// `height + 2 * border_y` samples, with visible sample (0, 0) at
     /// (`border_x`, `border_y`). Motion searches index candidate blocks in
@@ -177,12 +190,10 @@ impl<T: Sample> Plane<T> {
     ) -> Option<PlaneView<'_, T>> {
         let start = self.offset_of(x, y, width, height)?;
         let len = required_len(width, height, self.stride);
-        PlaneView::new(
-            &self.buf.as_slice()[start..start + len],
-            self.stride,
-            width,
-            height,
-        )
+        // `offset_of` checked the window against the padded area, so
+        // `stride >= width` and the slice covers every row.
+        let data = self.buf.as_slice().get(start..start + len)?;
+        Some(PlaneView::from_validated(data, self.stride, width, height))
     }
 
     /// Writable version of [`Plane::region`].
@@ -201,12 +212,9 @@ impl<T: Sample> Plane<T> {
         let start = self.offset_of(x, y, width, height)?;
         let len = required_len(width, height, self.stride);
         let stride = self.stride;
-        PlaneViewMut::new(
-            &mut self.buf.as_mut_slice()[start..start + len],
-            stride,
-            width,
-            height,
-        )
+        // As in `region`.
+        let data = self.buf.as_mut_slice().get_mut(start..start + len)?;
+        Some(PlaneViewMut::from_validated(data, stride, width, height))
     }
 
     /// The samples from the top-left of the `width` x `height` window at

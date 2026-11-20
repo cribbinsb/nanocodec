@@ -1,0 +1,21 @@
+# Workspace build configuration (applies to builds in this repository only; cargo
+# does not read it for crates that depend on ours, see README "Build").
+
+# x86-64-v3 code generation on every x86_64 target (owner decision, 2026-11-19).
+#
+# Why: the non-kernel code (mode decision, entropy coding, rate control, the
+# decoders' control paths) gets AVX2/BMI2/FMA/LZCNT/MOVBE code generation instead of
+# baseline SSE2. The nc-dsp kernels are unaffected: they are chosen at run time by
+# the per-instance dispatch table exactly as before, so the AVX-512 tier is still
+# dispatched where the CPU has it. Streams are identical (Rust never contracts
+# floating point into FMA, so the arithmetic is unchanged).
+# Requires: an x86-64-v3 CPU (Intel Haswell / AMD Zen 1 or later). An older x86_64
+# CPU fails with an illegal instruction; build it with
+# `RUSTFLAGS="-C target-cpu=x86-64"` (RUSTFLAGS replaces these flags).
+# Measured effect: docs/handoff/lowlevel.md "Build profile".
+# aarch64 and wasm32 builds are unaffected.
+#
+# Scripts that add flags (tools/dev/pgo_build.sh) pass them with `cargo --config`,
+# which joins them to these; setting RUSTFLAGS would drop target-cpu.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]

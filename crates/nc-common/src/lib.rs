@@ -25,6 +25,7 @@
 //!   with its own probability model).
 //! - [`cabac_encoder`]: the CABAC arithmetic encoding engine of the HEVC
 //!   and H.266 encoders.
+//! - [`cell_grid`]: block fills of the codecs' mode-information grids.
 //! - [`fnv1a`]: the FNV-1a fingerprint tests compare samples by.
 //! - [`propagate_carry`]: the carry step of the 64-bit-window range
 //!   encoders (AV1, AV2, VP9).
@@ -41,6 +42,7 @@ mod aligned;
 mod bitwriter;
 pub mod cabac;
 pub mod cabac_encoder;
+pub mod cell_grid;
 pub mod colour;
 pub mod decode;
 pub mod eob;

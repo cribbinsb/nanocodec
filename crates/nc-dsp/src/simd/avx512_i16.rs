@@ -150,6 +150,20 @@ impl I16Lanes for I16x32 {
     }
 
     #[inline(always)]
+    fn pair_sum_u8(src: &[u8]) -> Self {
+        use core::arch::x86_64::{_mm512_loadu_si512, _mm512_maddubs_epi16, _mm512_set1_epi8};
+        // SAFETY: these types run only inside AVX-512F/BW/VL kernels (module docs);
+        // slices are indexed before every load.
+        unsafe {
+            let src = &src[..64];
+            Self(_mm512_maddubs_epi16(
+                _mm512_loadu_si512(src.as_ptr().cast()),
+                _mm512_set1_epi8(1),
+            ))
+        }
+    }
+
+    #[inline(always)]
     fn load(src: &[i16]) -> Self {
         // SAFETY: these types run only inside AVX-512F/BW/VL kernels (module docs);
         // slices are indexed before every load and store.

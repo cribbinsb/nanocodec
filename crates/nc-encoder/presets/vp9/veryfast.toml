@@ -54,12 +54,6 @@ vp9.intra_mode_estimate = 0
 # QP cadence 1.4x the engine's (the Default takes 1.2; 2026-11-11): J_real
 # (k 0.6) vs 1, TRAIN -1.9%, VAL -1.7%, no guard.
 rate.cadence_scale = 1.4
-# The Default's jointly tuned planner lambda (2026-11-12) is not screened for
-# this preset: it keeps the previous value.
-planner.lambda_scale = 2
-# The Default's error-gap chroma offset (2026-11-12) is not screened for this
-# preset.
-vp9.chroma_delta_gap_slope = 0
 #
 # The Faster levers (quality / Jetson time, each alone vs vp9-fast):
 # Intra blocks of inter frames take DC without a mode search (-0.6 / -2.3%).
@@ -96,9 +90,6 @@ vp9.pre_tx_skip_energy = 8
 vp9.inter_max_tx_log2 = 4
 # Intra blocks code their largest transform only.
 vp9.intra_tx_depth = 0
-# P-frame intra tried only on blocks of variance >= 256 (Fast: 64;
-# +1.7 / -1.6%).
-decision.intra_gate_variance = 256
 # Key frames planned by source variance (+1.3 / -1.0%).
 planner.intra_plan = 1
 # Pre-analysis on even rows of a decimated half level (h264-faster's).
@@ -121,7 +112,6 @@ vp9.inter_rounding_divisor = 4
 vp9.lambda_per_step_squared = 0.09
 quant.trellis_lambda_scale = 1
 vp9.filter_level_scale = 1
-vp9.chroma_delta_q = -8
 # Pinned before VP9 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
 # Pinned before VP9 Default's key still boost (2026-11-14).
@@ -140,3 +130,20 @@ rate.prekey_quiet = 0
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# Not screened with the Default's coded-cost key intra modes (2026-11-19).
+vp9.intra_rd_candidates = 1
+
+# The Default's cheap levers (2026-11-20 ladder spacing, docs/handoff/h264-fast.md
+# method): its P-frame intra gate (variance 6.857, was 256), chroma offsets
+# (-14 with the error-gap slope 3, was -8) and planner lambda (2.379, was 2).
+# Single levers on the pool L1 draw (2026-11-20, k 0.6, quality J + 0.6 x
+# callgrind dCPU with a key every 10 s, against Veryfast): intra gate -5.10
+# (+0.2%), chroma -0.27 (+1.4%), planner lambda -0.24 (-0.4%). Bundle: x86
+# instructions +1.0%; L3 (draw 2026-11-20, 108 clips) J -5.94% [-7.15,
+# -5.23] BETTER; final-check (33 clips, 600 f) quality -8.95% [-10.54,
+# -6.46] BETTER, no guard. Not taken: the rate set (-0.59, but its rate
+# ceiling guard: 0.68% mean over target), the intra mode estimate (+0.27).
+decision.intra_gate_variance = 6.857
+vp9.chroma_delta_q = -14
+vp9.chroma_delta_gap_slope = 3
+planner.lambda_scale = 2.379

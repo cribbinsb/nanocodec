@@ -428,6 +428,17 @@ struct Cell {
     nonzero: [bool; 3],
 }
 
+/// A CU's grid entries, and the picture-wide state coding a CU changes
+/// (the history list, the affine models), noted before a whole-CU coding
+/// trial (`backend/cu_trial.rs`) to be put back when it is undone.
+#[derive(Debug, Default)]
+pub(crate) struct CuSnapshot {
+    cells: Vec<Option<Cell>>,
+    ref_indices: Vec<u8>,
+    affine_models: usize,
+    history: Vec<RefMv>,
+}
+
 #[derive(Debug)]
 pub(crate) struct MotionGrid {
     ctu_log2: u8,
@@ -1074,6 +1085,44 @@ impl MotionGrid {
             }
             self.history.push(mv);
         }
+    }
+
+    /// The index ranges of `block`'s cells, row by row.
+    fn cell_rows(&self, block: &Block) -> impl Iterator<Item = std::ops::Range<usize>> + use<> {
+        let (x0, x1) = (block.x / GRID_SIZE, (block.x + block.width()) / GRID_SIZE);
+        let cols = self.cols;
+        (block.y / GRID_SIZE..(block.y + block.height()) / GRID_SIZE)
+            .map(move |y| y * cols + x0..y * cols + x1)
+    }
+
+    /// Note in `snapshot` what coding CU `block` changes here.
+    pub(crate) fn save_cu(&self, block: &Block, snapshot: &mut CuSnapshot) {
+        snapshot.cells.clear();
+        snapshot.ref_indices.clear();
+        for row in self.cell_rows(block) {
+            snapshot.cells.extend_from_slice(&self.cells[row.clone()]);
+            if !self.ref_indices.is_empty() {
+                snapshot
+                    .ref_indices
+                    .extend_from_slice(&self.ref_indices[row]);
+            }
+        }
+        snapshot.affine_models = self.affine_models.len();
+        snapshot.history.clone_from(&self.history);
+    }
+
+    /// Put back what [`Self::save_cu`] noted of CU `block`.
+    pub(crate) fn restore_cu(&mut self, block: &Block, snapshot: &CuSnapshot) {
+        let mut cells = snapshot.cells.chunks_exact(block.width() / GRID_SIZE);
+        let mut ref_indices = snapshot.ref_indices.chunks_exact(block.width() / GRID_SIZE);
+        for row in self.cell_rows(block) {
+            self.cells[row.clone()].copy_from_slice(cells.next().expect("noted"));
+            if let Some(saved) = ref_indices.next() {
+                self.ref_indices[row].copy_from_slice(saved);
+            }
+        }
+        self.affine_models.truncate(snapshot.affine_models);
+        self.history.clone_from(&snapshot.history);
     }
 
     /// Set the reference index of CU `block`'s cells (pictures of more

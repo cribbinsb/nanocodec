@@ -16,7 +16,9 @@ the AOM CTC v8 §5.5 method). Metrics:
   encoders; the extension figure all six points.
 - Our J for cross-reference (docs/PROCEDURES.md): per sequence the mean of
   the full-overlap and lower-half BD-rates, each the mean over PSNR-YUV
-  (6:1:1 of the frame-averaged planes), VMAF v1 and MS-SSIM (dB).
+  (6:1:1 of the frame-averaged planes, each frame's plane capped at
+  framepipe.PSNR_CAP_DB as in our own scoring), VMAF v1 and MS-SSIM (dB).
+  The JVET figures stay libvmaf's uncapped frame averages (`min_sse` 0.5).
 - XPSNR-YUV, reported beside J and never in it, where the run scored it
   (worker.py `xpsnr`): 6:1:1 of each plane's sequence XPSNR
   (nceval.metrics.xpsnr_measurement).
@@ -96,8 +98,16 @@ def quality_of(record: dict) -> dict[str, float]:
             "APSNR-YUV": _psnr(sum(w * _mse(p) for w, p in zip(APSNR_WEIGHTS, (y, u, v)))),
             **{figure: means[metric] for figure, metric in _POOLED.items() if metric in means},
             "Y-fa": yf, "U-fa": uf, "V-fa": vf,
-            "PSNR-YUV": sum(w * p for w, p in zip(PSNR_YUV_WEIGHTS, (yf, uf, vf))),
+            "PSNR-YUV": capped_psnr_yuv(record["per_frame"]),
             "VMAF-v1": means["vmaf_v1"], **xpsnr_of(record)}
+
+
+def capped_psnr_yuv(per_frame: dict[str, list[float]]) -> float:
+    """J's PSNR-YUV: 6:1:1 of each plane's frame average, every frame capped at
+    PSNR_CAP_DB (nceval.metrics), from the worker's per-frame libvmaf PSNR."""
+    planes = [mean(min(PSNR_CAP_DB, x) for x in per_frame[m])
+              for m in ("psnr_y", "psnr_cb", "psnr_cr")]
+    return sum(w * p for w, p in zip(PSNR_YUV_WEIGHTS, planes))
 
 
 def xpsnr_of(record: dict) -> dict[str, float]:

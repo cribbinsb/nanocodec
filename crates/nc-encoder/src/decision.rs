@@ -254,6 +254,34 @@ impl DecidedMode {
     }
 }
 
+/// The ranking's margins whole-CU pricing (`cu_pricing.rs`) gates on, per
+/// leaf, in the ranking's units (not yet per sample or λ).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PricingHint {
+    /// The inter winner's mean-removed prediction error (`n_variance`)
+    /// where inter won the intra test; NaN otherwise.
+    pub winner_error: f32,
+    /// How far intra's cost was below inter's where intra won; NaN
+    /// otherwise.
+    pub intra_margin: f32,
+    /// Where inter won: intra's estimated cost (DC, or the directional
+    /// estimate where it ran) over inter's; NaN otherwise.
+    pub intra_ratio: f32,
+    /// Where inter won: its cost with the residual's mean error
+    /// (distortion + λ · bits, as the intra test compares); NaN otherwise.
+    pub inter_cost: f32,
+}
+
+impl PricingHint {
+    /// Nothing to gate on: no pricing.
+    pub(crate) const NONE: Self = Self {
+        winner_error: f32::NAN,
+        intra_margin: f32::NAN,
+        intra_ratio: f32::NAN,
+        inter_cost: f32::NAN,
+    };
+}
+
 /// The engine's choice for one block on an inter frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Choice {
@@ -262,6 +290,8 @@ pub(crate) struct Choice {
     /// intra cost it beat inter with). `-inf` when a cached planner
     /// measurement was accepted without ranking: nothing need be compared.
     pub cost: f32,
+    /// What whole-CU pricing (`cu_pricing.rs`) gates on.
+    pub pricing: PricingHint,
 }
 
 /// Buffers mode decision reuses from block to block, owned by the encoder:
@@ -406,6 +436,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
             return Choice {
                 mode: DecidedMode::inter(mv),
                 cost: f32::NEG_INFINITY,
+                pricing: PricingHint::NONE,
             };
         }
     }
@@ -925,6 +956,7 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
     cost.is_finite().then_some(Choice {
         mode: DecidedMode::inter(mv),
         cost,
+        pricing: PricingHint::NONE,
     })
 }
 
@@ -1001,6 +1033,7 @@ pub(crate) fn choose_compound_mode<B: CodecBackend>(
     cost.is_finite().then_some(Choice {
         mode: DecidedMode::inter(primary_mv),
         cost,
+        pricing: PricingHint::NONE,
     })
 }
 
@@ -1662,31 +1695,53 @@ fn intra_or_inter<B: CodecBackend>(
             return Choice {
                 mode: DecidedMode::INTRA,
                 cost: dc_cost,
+                pricing: PricingHint {
+                    intra_margin: inter_cost - dc_cost,
+                    ..PricingHint::NONE
+                },
             };
         }
         // The directional estimate only matters where DC intra loses.
-        if params.intra_directional >= 0.5
-            && let Some(cost) = directional_intra_cost(
-                backend,
-                (measurer.dsp, source),
-                block,
-                (lambda, mode_bits),
-                params,
-                (dc_cost, inter_cost),
-            )
-            && cost < inter_cost
-        {
+        let directional = (params.intra_directional >= 0.5)
+            .then(|| {
+                directional_intra_cost(
+                    backend,
+                    (measurer.dsp, source),
+                    block,
+                    (lambda, mode_bits),
+                    params,
+                    (dc_cost, inter_cost),
+                )
+            })
+            .flatten();
+        if let Some(cost) = directional.filter(|&cost| cost < inter_cost) {
             // The estimate is open loop (source neighbours): the backend's
             // own intra search may still find inter cheaper.
             return Choice {
                 mode: DecidedMode::intra_over(inter.mv),
                 cost,
+                pricing: PricingHint {
+                    intra_margin: inter_cost - cost,
+                    ..PricingHint::NONE
+                },
             };
         }
+        let intra_cost = directional.map_or(dc_cost, |cost| cost.min(dc_cost));
+        return Choice {
+            mode: DecidedMode::inter(inter.mv),
+            cost: inter.cost,
+            pricing: PricingHint {
+                winner_error: inter.distortion,
+                intra_ratio: intra_cost / inter_cost,
+                inter_cost,
+                ..PricingHint::NONE
+            },
+        };
     }
     Choice {
         mode: DecidedMode::inter(inter.mv),
         cost: inter.cost,
+        pricing: PricingHint::NONE,
     }
 }
 

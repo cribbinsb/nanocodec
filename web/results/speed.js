@@ -5,7 +5,7 @@
 // and the hardware encoders
 // (data/hardware.json).
 import { drawRatioBars, drawScatter } from './chart.js';
-import { CODEC_NAMES, control, el, fail, fps, loadData, pct, ratio, segmented, sources, table } from './common.js';
+import { CODEC_NAMES, control, el, fail, fps, loadData, measuredNote, pct, ratio, segmented, sources, table } from './common.js';
 
 const SPEED_VIEW = 'fresh-psnr'; // every view carries the same timing record
 
@@ -25,7 +25,8 @@ function encode(chart, root) {
     { label: 'fps, x86 core', num: true, cell: (r) => fps(r.v.fps.x86) },
     { label: 'fps, Zen 3 core', num: true, cell: (r) => fps(r.v.fps.zen3) },
     { label: 'fps, Graviton4 core', num: true, cell: (r) => fps(r.v.fps.graviton) },
-  ], rows, (r) => (r.p.ours ? 'ours' : '')), sources(view.source));
+  ], rows, (r) => (r.p.ours ? 'ours' : '')), measuredNote([view.measured.speed, view.measured.dated].filter(Boolean).join(' ')),
+  sources(view.source));
 }
 
 function wasm(data, root) {
@@ -34,7 +35,7 @@ function wasm(data, root) {
   const cell = (direction, codec, preset, res) => {
     const r = byKey.get(`${direction}|${codec}|${preset}|${res}`);
     if (!r) return '–';
-    return `${fps(r.wasm_fps)} (${ratio(r.native_fps / r.wasm_fps)})${r.seed_caveat ? ' *' : ''}`;
+    return `${fps(r.wasm_fps)} (${ratio(r.native_fps / r.wasm_fps)})`;
   };
   const codecs = [...new Set(data.rows.map((r) => r.codec))].sort((a, b) => Object.keys(CODEC_NAMES).indexOf(a) - Object.keys(CODEC_NAMES).indexOf(b));
   const columns = [{ label: 'Codec', cell: (c) => CODEC_NAMES[c] }];
@@ -44,16 +45,12 @@ function wasm(data, root) {
       columns.push({ label: `Encode ${res} ${preset === 'default' ? 'Medium (default)' : 'Fast'}`, num: true, cell: (c) => cell('encode', c, preset, res) });
     }
   }
-  const builds = [...new Set(data.rows.flatMap((r) => r.builds))];
   root.querySelector('.wasm').replaceChildren(table(columns, codecs),
-    el('p', { class: 'note' }, `Builds ${builds.join(', ')}; the "${data.module}" module; frame-weighted over ${Math.max(...data.rows.map((r) => r.clips))} clips per row.`),
-    sources(data.source));
-  if (data.rows.some((r) => r.seed_caveat)) {
-    root.querySelector('.wasm-caveat').textContent = '* Measured with a different first-key quantizer than the demo uses (fixed in the bench afterwards): the WebAssembly side coded a larger first key frame and costlier frames after it, so these rows understate its speed.';
-  }
+    el('p', { class: 'note' }, `The "${data.module}" module; frame-weighted over ${Math.max(...data.rows.map((r) => r.clips))} clips per row.`),
+    measuredNote(data.measured.caption), sources(data.source));
 }
 
-const DECODE_PLATFORMS = { x86: 'PC (x86)', jetson: 'Jetson (Arm)', wasm: 'Browser (WebAssembly)' };
+const DECODE_PLATFORMS = { x86: 'x86', jetson: 'Jetson (Arm)', wasm: 'Browser (WebAssembly)' };
 const decodeState = { platform: 'x86' };
 
 /** Per stream on the chosen platform: ours and the reference in ms per frame and their ratio
@@ -79,8 +76,8 @@ function decoders(native, browser, root) {
   const rows = decodeRows(native, browser);
   const ms = (v) => (v === null ? 'no data' : `${v.toFixed(2)} ms`);
   root.querySelector('.decoder-note').textContent = decodeState.platform === 'wasm'
-    ? `Browser: our module (build ${browser.build}) and ffmpeg.wasm, one PC core, same session. ffmpeg.wasm has no SIMD and no AV1, VVC or AV2 decoder; streams it was not run on show no data.`
-    : `${DECODE_PLATFORMS[decodeState.platform]}: build ${native.build}, every decoder single-threaded.`;
+    ? `Browser: our module and ffmpeg.wasm, one x86 core, same session. ffmpeg.wasm has no SIMD and no AV1, VVC or AV2 decoder; streams it was not run on show no data. ${browser.measured.caption}`
+    : `${DECODE_PLATFORMS[decodeState.platform]}, every decoder single-threaded. ${native.measured_by_platform[decodeState.platform].caption}`;
   drawRatioBars(root.querySelector('.ratio-chart'), rows.map((x) => ({
     label: `${CODEC_NAMES[x.r.codec]} · ${x.r.stream}`, ratio: x.ratio,
     tip: x.ratio === null ? '' : `${CODEC_NAMES[x.r.codec]} ${x.r.stream}: ours ${ms(x.ours)}, ${x.reference} ${ms(x.ref)}`,
@@ -103,7 +100,7 @@ function wasmEncode(data, root) {
     label: ours(r) ? r.label.replace(/^nanocodec /, '') : `${r.label} (ffmpeg.wasm)`, flagged: false, twin: null,
     priority: ours(r) ? 2 : 1, aria: `${r.label}: ${fps(r.fps)} fps`,
   })), {
-    xLabel: 'browser encode fps, 720p, one PC core (log scale)', yLabel: 'BD-J of the same encoder (lower is better)',
+    xLabel: 'browser encode fps, 720p, one x86 core (log scale)', yLabel: 'BD-J of the same encoder (lower is better)',
     ariaLabel: 'Browser encode speed against quality', selected: null, onSelect: () => {},
     describe: (p) => {
       const r = data.encode.find((e) => e.name === p.id);
@@ -116,10 +113,10 @@ function wasmEncode(data, root) {
   new ResizeObserver(draw).observe(chart.parentElement);
   root.querySelector('.wasm-encode-table').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${ours(r) ? 'ours' : 'ref'}` }), r.label] },
-    { label: 'Module', cell: (r) => (ours(r) ? `ours (build ${data.build})` : 'ffmpeg.wasm, no SIMD') },
+    { label: 'Module', cell: (r) => (ours(r) ? 'ours' : 'ffmpeg.wasm, no SIMD') },
     { label: 'fps', num: true, cell: (r) => fps(r.fps) },
     { label: 'BD-J (native chart point)', num: true, cell: (r) => pct(r.j) },
-  ], data.encode, (r) => (ours(r) ? 'ours' : '')), sources(data.source));
+  ], data.encode, (r) => (ours(r) ? 'ours' : '')), measuredNote(data.measured.caption), sources(data.source));
 }
 
 function hardware(data, root) {
@@ -128,7 +125,8 @@ function hardware(data, root) {
     { label: 'BD-J vs x264 medium', num: true, cell: (r) => pct(r.j) + (r.chained ? ' ‡' : '') },
     { label: 'Aggregate fps', num: true, cell: (r) => `${fps(r.fps_aggregate)} (${r.aggregate_streams} streams)` },
     { label: 'One-stream fps', num: true, cell: (r) => fps(r.fps_1stream) },
-  ], data.rows), el('p', { class: 'note' }, '‡ one clip chained through an intermediate encoder (no direct overlap with the zero line).'), sources(data.source));
+  ], data.rows), el('p', { class: 'note' }, '‡ one clip chained through an intermediate encoder (no direct overlap with the zero line).'),
+  measuredNote(data.measured.caption), sources(data.source));
 }
 
 async function main() {

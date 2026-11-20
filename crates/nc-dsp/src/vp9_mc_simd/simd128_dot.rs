@@ -22,7 +22,10 @@
 //!
 //! The horizontal pass loads a row's `N + 7` source bytes once (bytes 0-7 and
 //! 7-14 in the two halves) and forms each pair by one in-range byte swizzle;
-//! the vertical pass interleaves two source rows per pair.
+//! the vertical pass interleaves two source rows per pair. These operations
+//! use the common `mc::simd128_byte_dot` kernel. VP9 keeps separate
+//! accumulation by sign because full taps can exceed the AV1/HEVC/VVC
+//! signed 16-bit range and the intermediate in its 2-D pass clips to bytes.
 //!
 //! Measured against the plain kernel (`nc-checkasm --bench-vp9-mc`, node 22
 //! on x86, regular taps, ns per block): horizontal 8x8 36.3 -> 36.0, 16x16
@@ -32,11 +35,11 @@
 
 use super::driver::{RowKernel, SHIFT, layout};
 use super::simd128::{load_row, store_row};
+use crate::mc::simd128_byte_dot as bytes;
 use crate::vp9_mc::VP9_TAPS;
 use core::arch::wasm32::{
-    i8x16_relaxed_swizzle, i8x16_shuffle, i16x8_add, i16x8_relaxed_dot_i8x16_i7x16, i16x8_splat,
-    u8x16, u8x16_narrow_i16x8, u8x16_splat, u16x8_shr, u16x8_splat, u16x8_sub_sat, v128,
-    v128_load32_lane, v128_load64_lane, v128_load64_zero, v128_xor,
+    i16x8_add, u8x16_narrow_i16x8, u8x16_splat, u16x8_shr, u16x8_splat, u16x8_sub_sat, v128,
+    v128_xor,
 };
 
 /// Turns an unsigned byte into its signed offset from 128.
@@ -58,34 +61,6 @@ const fn pairs(layout: u8) -> Pairs {
         // Only the centre taps, both positive.
         _ => [Some((3, 4)), None, None, None],
     }
-}
-
-/// Lane of source byte `j` (0..15) after the horizontal pass's two loads:
-/// bytes 0-7 in lanes 0-7, bytes 7-14 in lanes 8-15.
-const fn source_lane(j: usize) -> u8 {
-    (if j < 8 { j } else { j + 1 }) as u8
-}
-
-/// Swizzle indices gathering, for each output `i`, bytes `i + k1` and
-/// `i + k2` into lanes `2i` and `2i + 1`. Outputs past N read lanes the
-/// loads left zero (or bytes of later outputs): their results are not stored.
-const fn pair_indices(k1: usize, k2: usize) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    let mut i = 0;
-    while i < 8 {
-        out[2 * i] = source_lane(i + k1);
-        out[2 * i + 1] = source_lane(i + k2);
-        i += 1;
-    }
-    out
-}
-
-#[inline(always)]
-fn constant(b: [u8; 16]) -> v128 {
-    u8x16(
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
-        b[14], b[15],
-    )
 }
 
 pub(super) struct Simd128Dot;
@@ -123,7 +98,7 @@ fn finish<const LAYOUT: u8>(f: &DotFilters, dot: impl Fn(usize) -> v128) -> v128
 
 #[inline(always)]
 fn sign_interleave(a: v128, b: v128) -> v128 {
-    let interleaved = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(a, b);
+    let interleaved = bytes::interleave(a, b);
     v128_xor(interleaved, u8x16_splat(SIGN_FLIP))
 }
 
@@ -131,17 +106,11 @@ fn sign_interleave(a: v128, b: v128) -> v128 {
 fn finish_four(f: &DotFilters, p0: v128, p1: v128, n0: v128, n1: v128) -> v128 {
     let pos = i16x8_add(
         f.positive_bias,
-        i16x8_add(
-            i16x8_relaxed_dot_i8x16_i7x16(p0, f.pairs[0]),
-            i16x8_relaxed_dot_i8x16_i7x16(p1, f.pairs[1]),
-        ),
+        i16x8_add(bytes::dot(p0, f.pairs[0]), bytes::dot(p1, f.pairs[1])),
     );
     let neg = i16x8_add(
         f.negative_bias,
-        i16x8_add(
-            i16x8_relaxed_dot_i8x16_i7x16(n0, f.pairs[2]),
-            i16x8_relaxed_dot_i8x16_i7x16(n1, f.pairs[3]),
-        ),
+        i16x8_add(bytes::dot(n0, f.pairs[2]), bytes::dot(n1, f.pairs[3])),
     );
     let sums = u16x8_shr(u16x8_sub_sat(pos, neg), SHIFT);
     u8x16_narrow_i16x8(sums, u16x8_splat(0))
@@ -247,7 +216,7 @@ impl RowKernel for Simd128Dot {
         let magnitude = |k: usize| taps[k].unsigned_abs();
         let p = pairs(LAYOUT);
         let pair = |index: usize| match p[index] {
-            Some((k1, k2)) => i16x8_splat((magnitude(k1) | magnitude(k2) << 8) as i16),
+            Some((k1, k2)) => bytes::magnitudes(taps[k1], taps[k2]),
             None => u16x8_splat(0),
         };
         // Σ|t| over the taps of each sign (the pairs cover every nonzero tap).
@@ -258,7 +227,7 @@ impl RowKernel for Simd128Dot {
                 .sum()
         };
         let indices = |index: usize| match p[index] {
-            Some((k1, k2)) => constant(pair_indices(k1, k2)),
+            Some((k1, k2)) => bytes::mask(bytes::indices::<VP9_TAPS>(k1, k2)),
             None => u16x8_splat(0),
         };
         DotFilters {
@@ -282,20 +251,11 @@ impl RowKernel for Simd128Dot {
     }
     #[inline(always)]
     unsafe fn horizontal<const N: usize, const LAYOUT: u8>(src: *const u8, f: &DotFilters) -> v128 {
-        // SAFETY: the caller provides N + 7 readable bytes: bytes 0..8 and,
-        // from byte 7, the remaining N - 1 (4 or 8 bytes, within N + 7).
-        let row = unsafe {
-            let low = v128_load64_zero(src.cast());
-            if N == 4 {
-                v128_load32_lane::<2>(low, src.add(7).cast())
-            } else {
-                v128_load64_lane::<1>(low, src.add(7).cast())
-            }
-        };
+        // SAFETY: the caller provides an eight-tap window of N + 7 bytes.
+        let row = unsafe { bytes::load_row::<N, VP9_TAPS>(src) };
         let signed = v128_xor(row, u8x16_splat(SIGN_FLIP));
         finish::<LAYOUT>(f, |index| {
-            let gathered = i8x16_relaxed_swizzle(signed, f.indices[index]);
-            i16x8_relaxed_dot_i8x16_i7x16(gathered, f.pairs[index])
+            bytes::horizontal(signed, f.indices[index], u16x8_splat(0), f.pairs[index])
         })
     }
     #[inline(always)]
@@ -306,7 +266,7 @@ impl RowKernel for Simd128Dot {
         let p = pairs(LAYOUT);
         finish::<LAYOUT>(f, |index| {
             let (k1, k2) = p[index].expect("finish asks only for present pairs");
-            i16x8_relaxed_dot_i8x16_i7x16(sign_interleave(rows[k1], rows[k2]), f.pairs[index])
+            bytes::dot(sign_interleave(rows[k1], rows[k2]), f.pairs[index])
         })
     }
     #[inline(always)]

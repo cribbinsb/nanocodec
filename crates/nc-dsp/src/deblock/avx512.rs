@@ -12,6 +12,9 @@ pub(crate) fn install(table: &mut super::DeblockFns) {
     table.av1_line = super::av1_line::avx512;
     table.av1_grid = super::av1_grid::avx512;
     table.av1_runs = super::runs::avx512;
+    // The ICL grouped kernels stay: the lane kernels were not faster on
+    // this tier (`deblock::lanes` module docs).
+    table.av1_lanes = None;
     table.luma_pair = super::h264_runs::pair_avx512;
     table.h264_luma_runs = super::h264_runs::avx512;
     table.hevc_luma_runs = super::runs::hevc_luma_avx512;

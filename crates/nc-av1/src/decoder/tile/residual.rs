@@ -3,9 +3,10 @@
 //! block's transform blocks in 64x64 chunks, clipped to the frame, the
 //! coefficient contexts of each (§8.3.2), and reconstruction.
 use super::super::availability::PlaneTransform;
-use super::super::block_info::{BlockInfo, Neighbours, splat_slice};
+use super::super::block_info::{BlockInfo, Neighbours, splat_bytes};
 use super::super::block_size::BlockSize;
 use super::super::coefficients::{self, Coded, Request, TxTypeSource, TxbNeighbours};
+use super::super::strided::strided;
 use super::super::transform::{TxSet, TxSize, chroma_block, intra_mode_tx_type};
 use super::intra::{IntraModes, IntraTransform};
 use super::{BlockPos, FrameDecoder};
@@ -102,8 +103,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let (chroma_w, chroma_h) = chroma_block(block.size);
         // The end of the block's decoded luma (`MaxLumaW`, `MaxLumaH`).
         let mut max_luma: (usize, usize) = (0, 0);
-        for row in (0..max_h4).step_by(CHUNK_MI) {
-            for col in (0..max_w4).step_by(CHUNK_MI) {
+        for row in strided(0..max_h4, CHUNK_MI) {
+            for col in strided(0..max_w4, CHUNK_MI) {
                 for &plane in planes {
                     let ss = usize::from(plane != PlaneIndex::Y);
                     let (tx, block_units) = if ss == 0 {
@@ -116,8 +117,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                     let end_h = ((row + CHUNK_MI).min(max_h4) + ss) >> ss;
                     let origin = (block.mi_col >> ss, block.mi_row >> ss);
                     let fills_block = (tx.width() / 4, tx.height() / 4) == block_units;
-                    for blk_row in ((row >> ss)..end_h).step_by(step_h) {
-                        for blk_col in ((col >> ss)..end_w).step_by(step_w) {
+                    for blk_row in strided((row >> ss)..end_h, step_h) {
+                        for blk_col in strided((col >> ss)..end_w, step_w) {
                             let x = (origin.0 + blk_col) * 4;
                             let y = (origin.1 + blk_row) * 4;
                             let geometry = PlaneTransform {
@@ -229,8 +230,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             let columns = span(block.mi_col, w4);
             let rows = span(block.mi_row, h4);
             let first = rows.start % (self.superblock.height_mi() >> ss);
-            splat_slice(&mut self.above[index][columns], 0);
-            splat_slice(&mut self.left[index][first..first + rows.len()], 0);
+            splat_bytes(&mut self.above[index][columns], 0);
+            splat_bytes(&mut self.left[index][first..first + rows.len()], 0);
         }
     }
 
@@ -252,15 +253,15 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             (self.header.height / 4) >> ss,
         );
         let above = &mut self.above[index][x4..x4 + w4];
-        splat_slice(above, value);
+        splat_bytes(above, value);
         if x4 + w4 > columns {
-            splat_slice(&mut above[columns.saturating_sub(x4)..], 0);
+            splat_bytes(&mut above[columns.saturating_sub(x4)..], 0);
         }
         let row = y4 % (self.superblock.height_mi() >> ss);
         let left = &mut self.left[index][row..row + h4];
-        splat_slice(left, value);
+        splat_bytes(left, value);
         if y4 + h4 > rows {
-            splat_slice(&mut left[rows.saturating_sub(y4)..], 0);
+            splat_bytes(&mut left[rows.saturating_sub(y4)..], 0);
         }
     }
 

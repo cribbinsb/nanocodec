@@ -2,7 +2,7 @@
 // command lines from data/chart.json, and the window-length comparison from
 // data/window.json, all filled in from the generated data.
 import {
-  METRIC_SHORT, ZERO_NAMES, control, el, fail, loadData, pct, segmented, sources, table,
+  METRIC_SHORT, ZERO_NAMES, control, el, fail, loadData, measuredNote, pct, segmented, sources, table,
 } from './common.js';
 
 const WINDOW_METRICS = { j: 'j', psnr: 'psnr_yuv', vmaf: 'vmaf_v1', ms_ssim: 'ms_ssim' };
@@ -67,7 +67,7 @@ function windowTable(data, chart, root) {
         return r ? `${r.points_over_buffer} of ${r.points}` : '–';
       } },
     ], rows, (f) => (f.startsWith('nanocodec-') ? 'ours' : '') + (f === state.zero ? ' zero' : '')),
-    sources(data.source));
+    measuredNote(data.measured.caption), sources(data.source));
 }
 
 async function main() {

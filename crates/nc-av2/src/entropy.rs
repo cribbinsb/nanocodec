@@ -466,12 +466,20 @@ impl Writer {
             cdf.adapt(symbol);
             return Ok(());
         }
-        let Some(mut models) = self.models.take() else {
-            return self.fixed(symbol, fixed);
+        let cdf = select(models);
+        let Some(&lower) = cdf.inverse.get(symbol) else {
+            return Err(DecodeError::Malformed("AV2 symbol outside CDF"));
         };
-        let result = self.symbol(symbol, select(&mut models));
-        self.models = Some(models);
-        result
+        let upper = if symbol == 0 {
+            0
+        } else {
+            cdf.inverse[symbol - 1]
+        };
+        // The interval uses the old probabilities. With its bounds copied,
+        // the model can adapt in place before the writer emits the symbol.
+        cdf.adapt(symbol);
+        self.write_interval(symbol, N, upper, lower);
+        Ok(())
     }
 
     /// The inverse CDF the next [`Self::model`] call with `fixed` and
@@ -527,6 +535,13 @@ impl Writer {
             return Ok(());
         }
         let upper = if symbol == 0 { 0 } else { cdf[symbol - 1] };
+        self.write_interval(symbol, cdf.len(), upper, cdf[symbol]);
+        Ok(())
+    }
+
+    /// Emit the interval already read from the CDF.
+    #[inline]
+    fn write_interval(&mut self, symbol: usize, count: usize, upper: u16, lower: u16) {
         if self.log.is_some() {
             // A recording writer's own interval is never output: the replay
             // codes the tile again from the log (coding it live as well was
@@ -534,14 +549,13 @@ impl Writer {
             // Alphabets have at most 16 symbols (`validate_cdf`).
             self.log_operation(Operation::Symbol {
                 symbol: symbol as u8,
-                count: cdf.len() as u8,
+                count: count as u8,
                 upper,
-                lower: cdf[symbol],
+                lower,
             });
         } else {
-            self.code_interval(symbol, cdf.len(), upper, cdf[symbol]);
+            self.code_interval(symbol, count, upper, lower);
         }
-        Ok(())
     }
 
     /// Append to the recording. Kept out of line so that symbol coding,

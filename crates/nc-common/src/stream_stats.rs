@@ -277,6 +277,9 @@ pub struct StreamStats {
     /// Whether completed pictures are aggregated into `frames` (else only
     /// the last picture's records are kept: bounded memory for a viewer).
     tallies: bool,
+    /// Every completed picture's records in decoding order, when kept
+    /// ([`StreamStats::with_history`]).
+    history: Option<Vec<Vec<BlockRecord>>>,
 }
 
 impl Default for StreamStats {
@@ -288,6 +291,7 @@ impl Default for StreamStats {
             frames: Vec::new(),
             started: false,
             tallies: true,
+            history: None,
         }
     }
 }
@@ -301,6 +305,24 @@ impl StreamStats {
             tallies: false,
             ..Self::default()
         }
+    }
+
+    /// Analysis that also keeps every completed picture's records
+    /// ([`StreamStats::history`]): memory grows with the stream, so this is
+    /// for offline block-by-block comparisons of short streams.
+    #[must_use]
+    pub fn with_history() -> Self {
+        Self {
+            history: Some(Vec::new()),
+            ..Self::default()
+        }
+    }
+
+    /// Each completed picture's records in decoding order (empty unless
+    /// built by [`StreamStats::with_history`]).
+    #[must_use]
+    pub fn history(&self) -> &[Vec<BlockRecord>] {
+        self.history.as_deref().unwrap_or_default()
     }
 
     /// Start a new picture, completing the previous one.
@@ -320,6 +342,9 @@ impl StreamStats {
         if self.tallies {
             aggregate(&self.current, &mut frame);
             self.frames.push(frame);
+        }
+        if let Some(history) = &mut self.history {
+            history.push(self.current.clone());
         }
         std::mem::swap(&mut self.current, &mut self.completed);
         self.current.clear();
@@ -584,6 +609,32 @@ fn transform(frame: &mut FrameStats, r: &BlockRecord, area: u64, size: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_keeps_every_picture_only_when_asked() {
+        let block = BlockRecord {
+            w: 8,
+            h: 8,
+            ..BlockRecord::default()
+        };
+        let code = |stats: &mut StreamStats| {
+            for blocks in [1, 2] {
+                stats.begin_frame();
+                for _ in 0..blocks {
+                    stats.push(block);
+                }
+            }
+            stats.finish();
+        };
+        let mut kept = StreamStats::with_history();
+        code(&mut kept);
+        let sizes: Vec<usize> = kept.history().iter().map(Vec::len).collect();
+        assert_eq!(sizes, [1, 2]);
+        assert_eq!(kept.frames.len(), 2);
+        let mut plain = StreamStats::default();
+        code(&mut plain);
+        assert_eq!(plain.history(), [] as [Vec<BlockRecord>; 0]);
+    }
 
     #[test]
     fn records_aggregate_per_frame_and_write_json() {

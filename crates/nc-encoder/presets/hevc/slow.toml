@@ -1,22 +1,32 @@
 # HEVC slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first) plus HEVC's levers: four trellis survivors with the chroma
-# trellis, exact staged transforms and pre-transform zero bound, SAO
-# statistics on every row, the full angular P-frame intra search (HEVC's 35
-# modes; Default keeps planar, DC, H/V and the MPMs), the inter/intra
-# transform-split and NxN gates open, and the fifth merge candidate
-# (MaxNumMergeCand 5, HEVC §7.4.7.1). Screened as one bundle: L3 J -5.59%.
+# applied first: the second reference with the full decision) plus HEVC's
+# levers. Re-picked 2026-11-20 (docs/handoff/presets.md "Slow presets"):
+# everything heavy on at once, then cut back by component cost. Alone on the
+# Default (fixed QP J, 21 clips / x86 callgrind P instructions): the winner
+# walk -2.2% / +15%, SAO searched on every row and picture with band offsets
+# -1.8% / +34%, four trellis survivors with the chroma trellis -1.1% / +47%,
+# the second reference -0.6% / +22%, the P-frame intra search widened -0.4% /
+# +20% (-0.8% inside the bundle). Left out: whole-CU pricing on inter error
+# (-0.5 J in the bundle for +57 points), exact staged transforms (0.0% at
+# +8%), the sub-sample walk (-0.1%), the inter transform-split spread, five
+# merge candidates and the TU16 chroma heuristic (+0.6%, worse), 8x8 inter
+# CUs (+0.3%, worse).
+#
+# The winner walk: three quarter-sample moves along the row and column.
+decision.winner_walk_steps = 3
+decision.winner_walk_square = 0
+# SAO: statistics on every row, types searched on every picture, band
+# offsets evaluated beside the edge classes (HEVC §8.7.3).
+hevc.sao_stats_row_step = 1
+hevc.sao_search_interval = 1
+hevc.sao_band = 1
+# Four trellis survivors, chroma trellised at a quarter of the λ.
 quant.trellis_states = 4
 quant.trellis_chroma = 0.25
-hevc.fast_forward16 = 0
-hevc.fast_forward32 = 0
-hevc.pre_transform_zero_scale = 1
-hevc.sao_stats_row_step = 1
+# P-frame intra: the full angular search (HEVC's 35 modes), eight modes
+# costed, and the NxN and intra transform-split gates open.
 hevc.coarse_inter_intra = 0
-hevc.inter_tu_split_spread = 1
+hevc.intra_rd_candidates = 8
 hevc.intra_nxn_min_cost = 0
 hevc.intra_tu_split_min_cost = 0
 hevc.intra_tu_split_spread = 1
-hevc.merge_candidates = 5
-# Slow was not screened with the coarser key under camera motion (HEVC fixed-QP
-# profile, 2026-11-18).
-rate.fixed_qp_moving_key = 0

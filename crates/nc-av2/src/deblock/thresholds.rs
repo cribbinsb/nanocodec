@@ -42,13 +42,15 @@ const SIDE_TABLE: [i16; 296] = [
 /// `av2_ac_quant_QTX`). Zero below qindex 89: such edges are not
 /// filtered.
 #[must_use]
-pub fn q_threshold(qindex: i32) -> u16 {
+pub const fn q_threshold(qindex: i32) -> u16 {
     // `get_q`: qindex zero (lossless) keeps its own table entry; any other
     // value is clamped to the lossy range.
-    let clamped = if qindex == 0 {
-        0
+    let clamped = if qindex < 0 {
+        1
+    } else if qindex > MAX_QINDEX {
+        MAX_QINDEX
     } else {
-        qindex.clamp(1, MAX_QINDEX)
+        qindex
     };
     let step = quantizer_step_q3(clamped as u8);
     let rounded = (step + (1 << (QUANT_TABLE_BITS - 1))) >> QUANT_TABLE_BITS;
@@ -58,9 +60,17 @@ pub fn q_threshold(qindex: i32) -> u16 {
 /// `df_side_from_qindex`: the side (smoothness) threshold for `qindex`
 /// plus offset.
 #[must_use]
-pub fn side_threshold(qindex: i32) -> u16 {
-    let index = qindex.clamp(0, SIDE_TABLE.len() as i32 - 1) as usize;
-    ((i32::from(SIDE_TABLE[index]) + SIDE_ROUND).max(0) >> SIDE_SHIFT) as u16
+pub const fn side_threshold(qindex: i32) -> u16 {
+    let last = SIDE_TABLE.len() as i32 - 1;
+    let index = if qindex < 0 {
+        0
+    } else if qindex > last {
+        last
+    } else {
+        qindex
+    } as usize;
+    let rounded = SIDE_TABLE[index] as i32 + SIDE_ROUND;
+    ((if rounded < 0 { 0 } else { rounded }) >> SIDE_SHIFT) as u16
 }
 
 /// Both thresholds of every block qindex for one channel's offset,
@@ -73,13 +83,15 @@ pub struct ThresholdTable {
 impl ThresholdTable {
     /// The table for a channel whose qindex offset is `offset`.
     #[must_use]
-    pub fn new(offset: i32) -> Self {
-        Self {
-            entries: std::array::from_fn(|qindex| {
-                let qindex = qindex as i32 + offset;
-                (q_threshold(qindex), side_threshold(qindex))
-            }),
+    pub const fn new(offset: i32) -> Self {
+        let mut entries = [(0, 0); 256];
+        let mut i = 0;
+        while i < entries.len() {
+            let qindex = i as i32 + offset;
+            entries[i] = (q_threshold(qindex), side_threshold(qindex));
+            i += 1;
         }
+        Self { entries }
     }
 
     /// `(quantizer, side)` thresholds of a block at `qindex`.

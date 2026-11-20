@@ -22,9 +22,11 @@ use crate::backend::{
     BlockDecision, CodecBackend, FramePlan, FrameType, PredictionMode, ReferenceChoice,
 };
 use crate::config::{Codec, ConfigError, EncoderConfig, FrameRate};
+use crate::cu_pricing;
 use crate::decision::{
-    Choice, DecisionScratch, choose_compound_mode, choose_inter_mode, choose_secondary_mode,
-    is_square_leaf, is_static, is_still, leaf_area, leaf_extent, leaf_log2_min_side,
+    Choice, DecisionScratch, PricingHint, choose_compound_mode, choose_inter_mode,
+    choose_secondary_mode, is_square_leaf, is_static, is_still, leaf_area, leaf_extent,
+    leaf_log2_min_side,
 };
 use crate::effort_class::{Classifier, KeyClassifier, LIGHT_PREFIX, LightOverlay, LightParams};
 use crate::feedback::{LossFeedback, ReferencedFrames};
@@ -2599,7 +2601,7 @@ impl<B: CodecBackend> Encoder<B> {
                 .is_some_and(|s| s.coding_inter_layer_step.is_some());
             let mode = self.random_leaf_choice(node, inter_layer && secondary.is_some(), refresh);
             self.window = window;
-            return Some((mode.0, mode.1, None));
+            return Some((mode.0, mode.1, None, PricingHint::NONE));
         }
         // The static skip proves a zero residual at the frame quantizer; a
         // block coded finer than the frame (`refined`) may well code one.
@@ -2673,10 +2675,22 @@ impl<B: CodecBackend> Encoder<B> {
                 }
                 self.backend.sub_block_motion(node, &vectors[..count]);
             }
+            // No pricing against the secondary reference (no hint), nor on
+            // blocks pre-analysis marks static: there an intra leaf
+            // refreshes what later frames copy, which the coded cost of
+            // one CU does not see (pool L3, CBR: still-camera clips lost up
+            // to +10 % J with it).
+            let static_block = frame.pre.is_some_and(|pre| is_static::<B>(pre, node));
+            let pricing = if chosen == ReferenceChoice::Primary && !static_block {
+                choice.pricing
+            } else {
+                PricingHint::NONE
+            };
             Some((
                 choice.mode.prediction(),
                 chosen,
                 choice.mode.intra_fallback(),
+                pricing,
             ))
         };
         self.window = window;
@@ -2969,18 +2983,20 @@ impl<B: CodecBackend> Encoder<B> {
             .as_ref()
             .map_or(RefreshRegion::Dirty, |w| w.region(&node));
         let qp_offset = self.leaf_qp_offset(&node);
-        let (mode, chosen, intra_fallback, selected_ref) = match inter {
+        let (mode, chosen, intra_fallback, selected_ref, pricing) = match inter {
             None => (
                 PredictionMode::IntraDc,
                 ReferenceChoice::Primary,
                 None,
                 None,
+                PricingHint::NONE,
             ),
             Some(_) if region == RefreshRegion::Intra => (
                 PredictionMode::IntraDc,
                 ReferenceChoice::Primary,
                 None,
                 Some(reference),
+                PricingHint::NONE,
             ),
             Some(frame) => {
                 let pictures = FramePictures {
@@ -3003,11 +3019,11 @@ impl<B: CodecBackend> Encoder<B> {
                 let decided =
                     self.decide_inter_leaf(&node, planned, frame, pictures, clean, qp_offset < 0);
                 if self.spatial.is_some() {
-                    let choice = decided.map(|(mode, chosen, _)| (mode, chosen));
+                    let choice = decided.map(|(mode, chosen, _, _)| (mode, chosen));
                     self.observe_spatial_leaf_choice(leaf_area::<B>(&node), choice);
                 }
                 self.frame_decision_params.lambda_scale = frame_lambda_scale;
-                let Some((mode, chosen, intra_fallback)) = decided else {
+                let Some((mode, chosen, intra_fallback, pricing)) = decided else {
                     // A static skip: coded at the frame quantizer.
                     return;
                 };
@@ -3017,7 +3033,7 @@ impl<B: CodecBackend> Encoder<B> {
                         secondary.expect("only frames with a secondary reference choose it")
                     }
                 };
-                (mode, chosen, intra_fallback, Some(picture))
+                (mode, chosen, intra_fallback, Some(picture), pricing)
             }
         };
         // Rate control's realised offset needs only the leaves coded off the
@@ -3036,19 +3052,14 @@ impl<B: CodecBackend> Encoder<B> {
             qp_offset,
             intra_fallback,
         };
-        if let ReferenceChoice::Compound { .. } = chosen {
-            self.backend.encode_compound_block(
-                &node,
-                &decision,
-                source,
-                reference,
-                secondary.expect("only frames with a secondary reference choose compound"),
-                recon,
-            );
-        } else {
-            self.backend
-                .encode_block(&node, &decision, source, selected_ref, recon);
-        }
+        let decision = self.encode_leaf(
+            &node,
+            decision,
+            (pricing, region == RefreshRegion::Dirty),
+            (source, selected_ref, reference, secondary),
+            recon,
+        );
+        let chosen = decision.reference;
         let reuse_frame = self.reuse_frame.is_some();
         let copy = chosen == ReferenceChoice::Primary && self.backend.copied_reference(&node);
         let step = self
@@ -3060,6 +3071,50 @@ impl<B: CodecBackend> Encoder<B> {
             .filter(|_| inter.is_some() && reuse_frame)
         {
             term.coded_block((node.x, node.y), leaf_extent::<B>(&node), (copy, step));
+        }
+    }
+
+    /// Code leaf `node` as `decision` (compound, whole-CU priced where
+    /// `pricing` allows and the leaf is outside intra refresh's constrained
+    /// region, or plain); returns what was coded. The pictures are the
+    /// source, the decision's reference, the primary and the secondary.
+    fn encode_leaf(
+        &mut self,
+        node: &Block,
+        decision: BlockDecision,
+        (pricing, unconstrained): (PricingHint, bool),
+        (source, selected_ref, reference, secondary): (
+            &Picture,
+            Option<&Picture>,
+            &Picture,
+            Option<&Picture>,
+        ),
+        recon: &mut Picture,
+    ) -> BlockDecision {
+        if let ReferenceChoice::Compound { .. } = decision.reference {
+            self.backend.encode_compound_block(
+                node,
+                &decision,
+                source,
+                reference,
+                secondary.expect("only frames with a secondary reference choose compound"),
+                recon,
+            );
+            decision
+        } else if unconstrained && pricing != PricingHint::NONE {
+            cu_pricing::code_leaf(
+                &mut self.backend,
+                node,
+                decision,
+                pricing,
+                &self.frame_decision_params,
+                (source, selected_ref, reference),
+                recon,
+            )
+        } else {
+            self.backend
+                .encode_block(node, &decision, source, selected_ref, recon);
+            decision
         }
     }
 
@@ -3381,13 +3436,14 @@ const LAYER_COUNT_PARAM: &str = "layers.count";
 /// An inter-frame leaf's decided mode, the reference it predicts from and,
 /// for intra that won only through the directional estimate, the inter
 /// vector it beat (`BlockDecision::intra_fallback`).
-type LeafChoice = (PredictionMode, ReferenceChoice, Option<Mv>);
+type LeafChoice = (PredictionMode, ReferenceChoice, Option<Mv>, PricingHint);
 
 /// The zero vector on the primary reference, with no search.
 const ZERO_VECTOR_LEAF: LeafChoice = (
     PredictionMode::Inter(Mv::ZERO),
     ReferenceChoice::Primary,
     None,
+    PricingHint::NONE,
 );
 
 fn on_reuse_chain(key: bool, references: &FrameReferences) -> bool {

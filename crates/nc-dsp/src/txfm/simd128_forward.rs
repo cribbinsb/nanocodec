@@ -7,23 +7,30 @@
 //! equal-weight ones add or subtract first and take the rounding Q15
 //! multiply. The results equal the generic staged rows (checkasm).
 //!
-//! Kernel contract: see the `codec_txfm` module docs. This module only
+//! The same lanes run the exact AV1/VP9 (libaom) forward DCTs of 16x16 and
+//! larger blocks ([`super::narrow_forward`], range proofs there): eight
+//! columns or row lines per graph run, where the 32-bit `I32x4` drivers ran
+//! four.
+//!
+//! Kernel contract: see the `codec_txfm` and `txfm` module docs. This module only
 //! exists in builds with SIMD128 enabled, so its kernels need no run-time
 //! check.
 
 #![allow(clippy::inline_always)]
 
 use core::arch::wasm32::{
-    i16x8_add, i16x8_narrow_i32x4, i16x8_shl, i16x8_shuffle, i16x8_splat, i16x8_sub, i32x4_add,
-    i32x4_dot_i16x8, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8, i32x4_mul, i32x4_shr,
-    i32x4_splat, v128, v128_load, v128_store,
+    i16x8_abs, i16x8_add, i16x8_narrow_i32x4, i16x8_shl, i16x8_shr, i16x8_shuffle, i16x8_splat,
+    i16x8_sub, i32x4_add, i32x4_dot_i16x8, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8,
+    i32x4_mul, i32x4_shr, i32x4_splat, u16x8_add_sat, u16x8_gt, u16x8_splat, v128, v128_and,
+    v128_any_true, v128_load, v128_store,
 };
 use core::mem::MaybeUninit;
 
 use super::forward_lanes::ForwardLanes;
+use super::narrow_forward::{self, ForwardWords};
 use super::simd128_inverse::transpose8;
-use super::{cospi, dct};
-use crate::simd::simd128::relaxed::q15_mul_round;
+use super::{FORWARD_ROW_ROUNDING, cospi, dct, low_keep};
+use crate::simd::simd128::{I32x4, relaxed::q15_mul_round};
 
 /// Lines per vector.
 const LANES: usize = 8;
@@ -79,6 +86,127 @@ impl ForwardLanes for Column {
             i32x4_shr(i32x4_add(low, round), bit),
             i32x4_shr(i32x4_add(high, round), bit),
         ))
+    }
+}
+
+impl ForwardWords for Column {
+    const LANES: usize = LANES;
+    type Norm = v128;
+    type Wide = I32x4;
+
+    #[inline(always)]
+    fn load(src: &[i16]) -> Self {
+        let src = &src[..LANES];
+        // SAFETY: a 16-byte load of eight values.
+        Self(unsafe { v128_load(src.as_ptr().cast()) })
+    }
+
+    #[inline(always)]
+    fn store(self, dst: &mut [MaybeUninit<i16>]) {
+        let dst = &mut dst[..LANES];
+        // SAFETY: a 16-byte store of eight values.
+        unsafe { v128_store(dst.as_mut_ptr().cast(), self.0) }
+    }
+
+    #[inline(always)]
+    fn shift_left_2(self) -> Self {
+        Self(i16x8_shl(self.0, 2))
+    }
+
+    #[inline(always)]
+    fn round_shift<const SHIFT: u32>(self) -> Self {
+        // `(x >> s) + ((x >> (s - 1)) & 1)`: the rounding shift without the
+        // overflow of adding the offset first.
+        let carry = v128_and(i16x8_shr(self.0, SHIFT - 1), i16x8_splat(1));
+        Self(i16x8_add(i16x8_shr(self.0, SHIFT), carry))
+    }
+
+    #[inline(always)]
+    fn transpose(tile: &mut [Self]) {
+        let tile: &mut [Self; LANES] = tile.try_into().unwrap();
+        *tile = transpose8(tile.map(|v| v.0)).map(Self);
+    }
+
+    #[inline(always)]
+    fn norm_zero() -> v128 {
+        u16x8_splat(0)
+    }
+
+    #[inline(always)]
+    fn accumulate_l1(self, norm: v128) -> v128 {
+        // `|i16::MIN|` wraps to 0x8000, which reads correctly as unsigned.
+        u16x8_add_sat(norm, i16x8_abs(self.0))
+    }
+
+    #[inline(always)]
+    fn within_limit(norm: v128, limit: u16) -> bool {
+        !v128_any_true(u16x8_gt(norm, u16x8_splat(limit)))
+    }
+}
+
+/// Defines SIMD128 entry points of [`narrow_forward::forward`]: `$name`
+/// codes an `$n`-point block keeping `$keep` frequencies, raster when
+/// `$raster`.
+macro_rules! word_forward {
+    ($($name:ident, $n:literal, $raster:literal, $keep:expr);* $(;)?) => {$(
+        pub(super) unsafe fn $name(residual: &[i16], stride: usize, out: &mut [i16]) {
+            // SAFETY: SIMD128 is enabled for the whole build; forwarded
+            // kernel contract.
+            unsafe {
+                narrow_forward::forward::<Column, $n, $raster, { $keep }>(residual, stride, out);
+            }
+        }
+    )*};
+}
+
+word_forward!(
+    forward_16, 16, false, 16;
+    forward_16_raster, 16, true, 16;
+    forward_16_low, 16, false, low_keep(16);
+    forward_16_low_raster, 16, true, low_keep(16);
+    forward_32, 32, false, 32;
+    forward_32_raster, 32, true, 32;
+    forward_32_low, 32, false, low_keep(32);
+    forward_32_low_raster, 32, true, low_keep(32);
+    forward_64, 64, false, 32;
+    forward_64_low, 64, false, low_keep(64);
+);
+
+/// The bounded raster 16-point forward (`narrow_forward::bounded`).
+pub(super) unsafe fn forward_16_bounded(
+    residual: &[i16],
+    stride: usize,
+    zero_limit: u32,
+    out: &mut [i16],
+) -> bool {
+    // SAFETY: SIMD128 is enabled for the whole build; forwarded contract.
+    unsafe {
+        narrow_forward::bounded::<Column, 16>(
+            residual,
+            stride,
+            zero_limit,
+            FORWARD_ROW_ROUNDING[0],
+            out,
+        )
+    }
+}
+
+/// The bounded raster 32-point forward (`narrow_forward::bounded`).
+pub(super) unsafe fn forward_32_bounded(
+    residual: &[i16],
+    stride: usize,
+    zero_limit: u32,
+    out: &mut [i16],
+) -> bool {
+    // SAFETY: SIMD128 is enabled for the whole build; forwarded contract.
+    unsafe {
+        narrow_forward::bounded::<Column, 32>(
+            residual,
+            stride,
+            zero_limit,
+            FORWARD_ROW_ROUNDING[1],
+            out,
+        )
     }
 }
 

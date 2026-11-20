@@ -1,16 +1,34 @@
 # VP9 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first) plus VP9's transform search on every block (the split
-# spread and the transform-size search without their level gates) and a
-# slightly fuller motion search (fewer one-position and HME skips): joint
-# study slow-vp9-2026-11-15 trial 4, J -1.53% at x86 x1.22 (the second
-# reference alone -1.30% at x1.09). Not taken: more trellis survivors
-# (VP9's trellis runs inside its transform-size search: 8 states took the
-# study's bundle to -1.87% at x86 x2.38, Jetson x2.28 alone).
-# L3 (600 f, n=27): J -1.48% [-2.00, -0.96] at x1.16 Jetson cycles.
+# applied first: the second reference with the full decision) plus VP9's
+# levers. Re-picked 2026-11-19 (docs/handoff/presets.md "Slow presets"):
+# everything heavy on at once, then cut back by component cost. Alone on the
+# Default (fixed QP J, 23 clips / x86 callgrind P instructions): the second
+# reference -1.0% / +11%, intra RD over all ten modes with trellis and every
+# transform depth -0.8% / 0%, the transform search on every block -0.5% /
+# +19%, the sub-sample and search gates off -0.3% / +1%; two trellis
+# survivors add -0.3% for +26 points on top of those. Left out: the final
+# stage (+5.6%, worse), 1/8-sample vectors (+1.6%), four trellis survivors
+# (-0.3% alone at +55%), the DC intra gate at 0 (-0.1 J for +44 points), and
+# the mode search for intra blocks of inter frames (`vp9.inter_intra_dc_only`
+# 0: -0.5 J at fixed QP, but its chroma collapses on a dark CBR clip,
+# external_cevo_indoor_night_720p J +14%, PSNR-YUV -4 dB at the low rung).
+# The winner walk, whole-CU pricing, the planner's shape RD and the second
+# reference's margins leave VP9 streams unchanged.
+#
+# The sub-sample search: no seed gates, the coordinate walk, no one-position
+# or skipped HME search.
+decision.skip_no_refine_lambdas = 0
+decision.refine_cheap_min_lambdas = 0
+decision.subpel_walk = 1
+analysis.one_position_sad_per_pixel = 0
+analysis.skip_hme_sad_per_pixel = 0
+# Intra: all ten modes costed with the trellis at every transform depth.
+vp9.intra_rd_candidates = 10
+vp9.intra_rd_trellis = 1
+vp9.intra_tx_depth = 3
+# The transform-size search on every inter block, at every depth.
+vp9.inter_tx_depth = 3
 vp9.inter_tx_split_spread = 1
 vp9.tx_search_min_levels = 0
-analysis.one_position_sad_per_pixel = 1
-analysis.skip_hme_sad_per_pixel = 1
-# Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
-# docs/handoff/rd-depth.md): not screened for this preset.
-rate.fixed_qp_moving_key = 0
+# Two trellis survivors.
+quant.trellis_states = 2

@@ -1,5 +1,6 @@
 {
- "version": "0.4.0",
- "commit": "c9cff89f",
- "build": "PGO"
+ "version": "0.5.0",
+ "commit": "20d31869",
+ "build": "PGO",
+ "date": "2026-11-20"
 }

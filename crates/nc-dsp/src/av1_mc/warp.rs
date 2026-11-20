@@ -609,6 +609,13 @@ fn clamped_window<T: Sample>(
     (left, top): (i64, i64),
 ) -> [T; WINDOW_LEN] {
     let (width, height) = (reference.width() as i64, reference.height() as i64);
+    // The clamped columns are the same on every row: found once, and a
+    // window whose columns all lie inside the plane (only rows clamped, at
+    // the top and bottom edges) copies each row whole, instead of clamping
+    // every sample (-0.7M instructions on a libaom "good" 720p stream).
+    let columns: [usize; WINDOW_SIDE] =
+        core::array::from_fn(|c| (left + c as i64).clamp(0, width - 1) as usize);
+    let columns_inside = left >= 0 && left + WINDOW_SIDE as i64 <= width;
     let mut window = [T::default(); WINDOW_LEN];
     for (i, row) in window
         .as_chunks_mut::<WINDOW_STRIDE>()
@@ -617,8 +624,12 @@ fn clamped_window<T: Sample>(
         .enumerate()
     {
         let source = reference.row((top + i as i64).clamp(0, height - 1) as usize);
-        for (c, sample) in row[..WINDOW_SIDE].iter_mut().enumerate() {
-            *sample = source[(left + c as i64).clamp(0, width - 1) as usize];
+        if columns_inside {
+            row[..WINDOW_SIDE].copy_from_slice(&source[columns[0]..][..WINDOW_SIDE]);
+        } else {
+            for (sample, &column) in row[..WINDOW_SIDE].iter_mut().zip(&columns) {
+                *sample = source[column];
+            }
         }
     }
     window
@@ -665,6 +676,34 @@ fn warp<T: Sample>(
                 store_row(i8 + r, j8, &row[..columns]);
             }
         }
+    }
+}
+
+/// Write `values`, one row of a warped block's outputs, through `convert`
+/// into the start of `line`. A whole row of the 8x8 block is a loop over
+/// fixed-size arrays, which the compiler vectorises (the 8-bit clip
+/// becomes packs and compares); the loop over a slice of unknown length
+/// stays scalar (~45 instructions a row) and is left for the cropped rows
+/// of 4-wide chroma blocks. (`[i32; 8]::map` stayed scalar: +10.7M
+/// instructions on a libaom 720p stream, and a second fixed path for
+/// 4-wide rows +18.2M, 2026-11-19.)
+#[allow(
+    clippy::inline_always,
+    reason = "the store must inline into each block loop for the fixed-size path"
+)]
+#[inline(always)]
+fn store_warp_row<D: Copy>(line: &mut [D], values: &[i32], convert: impl Fn(i32) -> D) {
+    if let (Some(line), Ok(values)) = (
+        line.first_chunk_mut::<WARP_BLOCK>(),
+        <&[i32; WARP_BLOCK]>::try_from(values),
+    ) {
+        for (out, &v) in line.iter_mut().zip(values) {
+            *out = convert(v);
+        }
+        return;
+    }
+    for (out, &v) in line[..values.len()].iter_mut().zip(values) {
+        *out = convert(v);
     }
 }
 
@@ -759,10 +798,7 @@ pub(crate) fn warp_final<T: Sample>(
         sub,
         inter_round1_final(depth),
         |r, c, values| {
-            let line = &mut dst.row_mut(r)[c..c + values.len()];
-            for (out, &v) in line.iter_mut().zip(values) {
-                *out = depth.clip_to(v);
-            }
+            store_warp_row(&mut dst.row_mut(r)[c..], values, |v| depth.clip_to(v));
         },
     );
 }
@@ -861,10 +897,9 @@ pub(crate) fn warp_compound<T: Sample>(
         sub,
         INTER_ROUND1_COMPOUND,
         |r, c, values| {
-            let line = &mut dst[r * dst_stride + c..][..values.len()];
-            for (out, &v) in line.iter_mut().zip(values) {
-                *out = (v - bias) as i16;
-            }
+            store_warp_row(&mut dst[r * dst_stride + c..], values, |v| {
+                (v - bias) as i16
+            });
         },
     );
 }

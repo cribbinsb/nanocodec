@@ -282,6 +282,29 @@ fn forward_16_columns_fit_i16_for_8bit_residuals() {
     });
 }
 
+/// The 32-point (Q12) and pruned 64-point (Q13) forward columns of
+/// `narrow_forward` need no guard either: 8-bit residuals shifted by 2
+/// (32-point) or unshifted (64-point) keep every node and equal-weight
+/// pre-add in `i16`. The low-16 32-point graph is a subgraph of the full
+/// one, probed too for the row L1 limit it also serves.
+#[test]
+fn forward_32_64_columns_fit_i16_for_8bit_residuals() {
+    const RESIDUAL_MAX: i128 = 255;
+    with_large_stack(|| {
+        let (_, limit32) = output_limits::<32>(|x, y| dct::fdct32(x, y, cospi(12), 12), 32);
+        let (low16_l1, low16) =
+            output_limits::<32>(|x, y| dct::fdct32_low16(x, y, cospi(12), 12), 32);
+        let (_, limit64) = output_limits::<64>(|x, y| dct::fdct64_low32(x, y, cospi(13), 13), 64);
+        println!(
+            "FORWARD32 column amplitude limit {limit32} (low16 {low16}, low16 row L1 {low16_l1}), \
+             FORWARD64 {limit64}"
+        );
+        assert!(limit32 >= RESIDUAL_MAX << 2 && low16 >= RESIDUAL_MAX << 2);
+        assert!(limit64 >= RESIDUAL_MAX);
+        assert!(low16_l1 >= i128::from(super::forward_lanes::NARROW_ROW_L1_LIMIT));
+    });
+}
+
 /// Bound the actual column outputs before checking the row graph, rather
 /// than assuming independent full-range i16 row inputs.
 #[test]

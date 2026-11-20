@@ -22,7 +22,7 @@ use crate::Isa;
 use crate::av1_mc::high_blend::BlendSample;
 use crate::deblock::samples::transpose;
 use crate::intra_prediction::av1_block::cfl::{CFL_MAX_SIDE, cfl_predict_scalar};
-use crate::intra_prediction::av1_block::{BlockEdges, IntraKind};
+use crate::intra_prediction::av1_block::{BlockEdges, IntraKind, ZoneBlock};
 use crate::intra_prediction::directional::{self, DirectionalKernels};
 use crate::intra_prediction::filter::{
     FILTER_TAP_COLUMNS, FilterGrid, FilterIntraMode, PATCH_SAMPLES, SCALE_BITS, TAPS, patch_inputs,
@@ -47,6 +47,9 @@ pub(crate) type RunFn<T> = unsafe fn(window: &[T], weight: usize, out: &mut [T])
 pub(crate) type PaethBlockFn<T> = unsafe fn(edges: &BlockEdges<T>, dst: &mut PlaneViewMut<'_, T>);
 pub(crate) type SmoothBlockFn<T> =
     unsafe fn(edges: &BlockEdges<T>, kind: IntraKind, dst: &mut PlaneViewMut<'_, T>);
+/// Whole-block directional prediction of a block that
+/// [fits](ZoneBlock::fits) ([`ZoneBlock::predict`]'s contract).
+pub(crate) type ZonesFn = unsafe fn(block: &ZoneBlock<'_, u8>, dst: &mut PlaneViewMut<'_>);
 pub(crate) type CflPredictFn<T> = unsafe fn(
     luma: &PlaneView<'_, T>,
     luma_extent: (usize, usize),
@@ -67,6 +70,8 @@ pub(crate) struct HighAv1IntraFns {
     pub paeth_u8: PaethBlockFn<u8>,
     pub smooth_u16: SmoothBlockFn<u16>,
     pub smooth_u8: SmoothBlockFn<u8>,
+    /// `None` where the ISA has none: blocks then go by runs.
+    pub zones_u8: Option<ZonesFn>,
     pub cfl_u16: CflPredictFn<u16>,
     pub cfl_u8: CflPredictFn<u8>,
 }
@@ -111,6 +116,7 @@ impl HighAv1IntraFns {
         paeth_u8: scalar_paeth::<u8>,
         smooth_u16: scalar_smooth::<u16>,
         smooth_u8: scalar_smooth::<u8>,
+        zones_u8: None,
         cfl_u16: cfl_predict_scalar::<u16>,
         cfl_u8: cfl_predict_scalar::<u8>,
     };
@@ -332,6 +338,32 @@ unsafe fn smooth_block_lanes<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: 
     kind: IntraKind,
     dst: &mut PlaneViewMut<'_, S>,
 ) {
+    // One inlined copy per kind, so that no row or vector tests it again.
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        match kind {
+            IntraKind::Smooth => {
+                smooth_block_rows::<S, V4, V8, VWide>(edges, IntraKind::Smooth, dst);
+            }
+            IntraKind::SmoothVertical => {
+                smooth_block_rows::<S, V4, V8, VWide>(edges, IntraKind::SmoothVertical, dst);
+            }
+            _ => smooth_block_rows::<S, V4, V8, VWide>(edges, IntraKind::SmoothHorizontal, dst),
+        }
+    }
+}
+
+/// [`smooth_block_lanes`] for one smooth `kind`.
+///
+/// # Safety
+///
+/// The lane types' ISA must be enabled in the caller.
+#[inline(always)]
+unsafe fn smooth_block_rows<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: I16Lanes>(
+    edges: &BlockEdges<S>,
+    kind: IntraKind,
+    dst: &mut PlaneViewMut<'_, S>,
+) {
     let (w, h) = edges.shape();
     assert!(dst.width() == w && dst.height() == h);
     let (above, left, _) = edges.edges();
@@ -411,6 +443,54 @@ fn scale_cfl<V: I16Lanes>(raw: V, avg: V, alpha_q15: V, neg: bool) -> V {
     ac.abs().mul_q15_round(alpha_q15).with_sign_of(signed)
 }
 
+/// `out[c]` is twice the sum of the 2x2 luma samples under chroma column
+/// `c` (`CflAC`'s 4:2:0 average before its shift, §7.11.5): pair sums of
+/// the two rows, the widest lanes first.
+///
+/// # Safety
+///
+/// The lane types' ISA must be enabled in the caller.
+#[inline(always)]
+unsafe fn luma_quads<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: I16Lanes>(
+    top: &[S],
+    bot: &[S],
+    out: &mut [i16],
+) {
+    #[inline(always)]
+    unsafe fn step<S: BlendSample, V: I16Lanes>(top: &[S], bot: &[S], out: &mut [i16]) {
+        // SAFETY: forwarded caller contract; the loads and the store index
+        // their slices.
+        unsafe {
+            let sum = S::pair_sum_i16::<V>(top).add(S::pair_sum_i16::<V>(bot));
+            sum.add(sum).store(out);
+        }
+    }
+    let mut c = 0;
+    // SAFETY: forwarded caller contract; `c + LANES <= out.len()` and the
+    // rows hold `2 · out.len()` samples (indexing checks them).
+    unsafe {
+        while c + VWide::LANES <= out.len() {
+            step::<S, VWide>(&top[2 * c..], &bot[2 * c..], &mut out[c..]);
+            c += VWide::LANES;
+        }
+        while c + V8::LANES <= out.len() {
+            step::<S, V8>(&top[2 * c..], &bot[2 * c..], &mut out[c..]);
+            c += V8::LANES;
+        }
+        while c + V4::LANES <= out.len() {
+            step::<S, V4>(&top[2 * c..], &bot[2 * c..], &mut out[c..]);
+            c += V4::LANES;
+        }
+    }
+    for (c, value) in out.iter_mut().enumerate().skip(c) {
+        let sum = top[2 * c].to_i32()
+            + top[2 * c + 1].to_i32()
+            + bot[2 * c].to_i32()
+            + bot[2 * c + 1].to_i32();
+        *value = (sum << 1) as i16;
+    }
+}
+
 #[inline(always)]
 unsafe fn cfl_predict_lanes<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: I16Lanes>(
     luma: &PlaneView<'_, S>,
@@ -444,12 +524,9 @@ unsafe fn cfl_predict_lanes<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: I
     for r in 0..h {
         if r < stored_h {
             let (top, bot) = (luma.row(2 * r), luma.row(2 * r + 1));
-            for c in 0..stored_w {
-                let sum = top[2 * c].to_i32()
-                    + top[2 * c + 1].to_i32()
-                    + bot[2 * c].to_i32()
-                    + bot[2 * c + 1].to_i32();
-                last_row[c] = (sum << 1) as i16;
+            // SAFETY: forwarded caller contract (the ISA's lanes).
+            unsafe {
+                luma_quads::<S, V4, V8, VWide>(top, bot, &mut last_row[..stored_w]);
             }
             let pad = last_row[stored_w - 1];
             last_row[stored_w..w].fill(pad);
@@ -522,7 +599,7 @@ unsafe fn cfl_predict_lanes<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: I
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 macro_rules! high_intra_isa {
-    ($mod_name:ident, $(#[$feature:meta])*, $v4:ty, $v8:ty, $vwide:ty, $run_u8:path) => {
+    ($mod_name:ident, $(#[$feature:meta])*, $v4:ty, $v8:ty, $vwide:ty, $run_u8:path, $zones_u8:expr) => {
         mod $mod_name {
             use nc_common::{BitDepth, PlaneView, PlaneViewMut};
 
@@ -664,6 +741,7 @@ macro_rules! high_intra_isa {
                 paeth_u8,
                 smooth_u16,
                 smooth_u8,
+                zones_u8: $zones_u8,
                 cfl_u16,
                 cfl_u8,
             };
@@ -678,7 +756,8 @@ high_intra_isa!(
     crate::simd::avx2::I16x4,
     crate::simd::avx2::I16x8,
     crate::simd::avx2::I16x16,
-    super::super::avx2::run_u8
+    super::super::avx2::run_u8,
+    Some(super::super::zones_avx2::zones)
 );
 
 #[cfg(target_arch = "x86_64")]
@@ -688,7 +767,8 @@ high_intra_isa!(
     crate::simd::avx2::I16x4,
     crate::simd::avx2::I16x8,
     crate::simd::avx512_i16::I16x32,
-    super::super::avx2::run_u8
+    super::super::avx2::run_u8,
+    Some(super::super::zones_avx2::zones)
 );
 
 #[cfg(target_arch = "aarch64")]
@@ -698,5 +778,6 @@ high_intra_isa!(
     crate::simd::neon::I16x4,
     crate::simd::neon::I16x8,
     crate::simd::neon::I16x8,
-    super::super::neon::run_u8
+    super::super::neon::run_u8,
+    Some(super::super::zones_neon::zones)
 );

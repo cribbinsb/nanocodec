@@ -169,12 +169,9 @@ impl Grid {
     /// Set every cell of the square block at `(x, y)` of side `size`.
     pub fn fill(&mut self, x: usize, y: usize, size: usize, cell: Cell) {
         let side = size >> LOG2_MIN_CB;
-        let (col0, row0) = (x >> LOG2_MIN_CB, y >> LOG2_MIN_CB);
-        for row in row0..(row0 + side).min(self.rows) {
-            let start = row * self.cols + col0;
-            let end = start + side.min(self.cols - col0);
-            self.cells[start..end].fill(cell);
-        }
+        let at = (y >> LOG2_MIN_CB, x >> LOG2_MIN_CB);
+        let grid = (self.cols, self.rows);
+        nc_common::cell_grid::fill_square(&mut self.cells, grid, at, side, cell);
     }
 
     /// Update the luma-coded flag and transform id of a transform block.

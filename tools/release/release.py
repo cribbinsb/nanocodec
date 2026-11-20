@@ -184,6 +184,9 @@ DRY_CHARTS_MINUTES = 5
 #: A release refuses to start when its stages are expected to take longer (owner,
 #: 2026-11-18), unless --over-budget.
 MAX_RELEASE_MINUTES = 90
+#: The charts stage's pre-flight: the space it needs under the work budget
+#: (nceval.diskguard), with room to spare (2026-11-19: chains measured at 102 of 100 GiB).
+CHARTS_WORK_HEADROOM_GIB = 25
 SHORT = 8
 
 # --- the release commit -------------------------------------------------------------------
@@ -1125,7 +1128,9 @@ class Release:
         elif git("branch", "--show-current", cwd=tree) != branch:
             sys.exit(f"{tree} is not on {branch}: remove it or check it out")
         (tree / RELEASE_RECORD).write_text(json.dumps(
-            {"version": self.version, "commit": self.binary_short, "build": "PGO"}, indent=1) + "\n")
+            {"version": self.version, "commit": self.binary_short, "build": "PGO",
+             # the day the charts were measured: the site's captions say it
+             "date": datetime.date.today().isoformat()}, indent=1) + "\n")
         # a resumed stage skips the commands it finished (each one re-times or rents
         # machines); the list is cleared when the stage is done
         with self.state_lock:
@@ -1292,6 +1297,8 @@ class Release:
         for stage in stages:
             say(f"plan: {stage:8s} " + (f"ends at ~{ends[stage]:g} min" if stage in todo
                                          else "done earlier"))
+        if self.real and "charts" in todo and (problems := charts_preflight()):
+            sys.exit("charts pre-flight failed:\n" + "\n".join(f"  {p}" for p in problems))
         total = max(ends.values())
         say(f"plan: ~{total:g} min in all (limit {MAX_RELEASE_MINUTES})")
         if total > MAX_RELEASE_MINUTES and not self.args.over_budget:
@@ -1397,6 +1404,34 @@ def all_of(commands: list[str], cwd: str | None = None) -> str:
     return (enter + "".join(f"{command} & p{i}=$!; " for i, command in enumerate(commands))
             + "status=0; " + "".join(f"wait $p{i} || status=1; " for i in range(len(commands)))
             + "exit $status")
+
+
+def chart_tool_paths() -> list[Path]:
+    """What the chart chains read outside the repository, as their own modules name it:
+    the --bitrate openh264 driver (the CBR charts' openh264-baseline), the lens sources
+    and both platforms' anchor tools (fixedqp_timing.py)."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.realuse import OPENH264_HARNESS
+    timing = load_module("fixedqp_timing", REPO / "tools/dev/fixedqp_timing.py")
+    return [OPENH264_HARNESS, timing.DEFAULT_SOURCES, timing.ANCHOR_TOOLS, timing.AARCH64_TOOLS]
+
+
+def charts_preflight(work: Path = DATA / "work", tools: list[Path] | None = None) -> list[str]:
+    """Why the charts stage would fail part-way, each named; empty when it can start.
+    2026-11-19 lost over an hour to all three: the work budget, a pruned openh264 driver
+    and a missing lens source directory."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.diskguard import GIB, WORK_BUDGET_BYTES, shared_work_bytes
+    problems = [f"missing (or empty): {path}" for path in
+                (tools if tools is not None else chart_tool_paths())
+                if not path.exists() or (path.is_dir() and not any(path.iterdir()))]
+    work.mkdir(parents=True, exist_ok=True)
+    headroom = (WORK_BUDGET_BYTES - shared_work_bytes(work)) / GIB
+    if headroom < CHARTS_WORK_HEADROOM_GIB:
+        problems.append(f"{work} has {headroom:.0f} GiB left under its "
+                        f"{WORK_BUDGET_BYTES / GIB:.0f} GiB budget (need "
+                        f"{CHARTS_WORK_HEADROOM_GIB}): prune it first")
+    return problems
 
 
 def jetson_lens_points() -> str:

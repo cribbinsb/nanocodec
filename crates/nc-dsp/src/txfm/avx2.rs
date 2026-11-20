@@ -1,6 +1,8 @@
 //! AVX2 transform kernels: the generic 2-D DCT drivers on 8 lanes (4 for
-//! 4x4), the guarded 16-bit inverses (`avx2_inverse`) for 8x8 and larger,
-//! and quantisation by exact reciprocal multiplication.
+//! 4x4) for the 4x4 and 8x8 forwards and the 16-point low forward, the
+//! 16-bit forwards (`avx2_forward`, `narrow_forward`) for 16x16 and larger,
+//! the guarded 16-bit inverses (`avx2_inverse`) for 8x8 and larger, and
+//! quantisation by exact reciprocal multiplication.
 //!
 //! Kernel contract: see the `txfm` module docs.
 
@@ -21,7 +23,10 @@ use core::arch::x86_64::{
 };
 
 use super::scalar::{fix_dc, quantize_tail};
-use super::{Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, avx2_inverse, generic};
+use super::{
+    Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, avx2_forward, avx2_inverse,
+    generic,
+};
 use crate::simd::avx2::{I32x4, I32x8};
 
 /// The AVX2 transform table.
@@ -31,14 +36,19 @@ use crate::simd::avx2::{I32x4, I32x8};
 /// The CPU must support AVX2 (`Isa::Avx2.is_supported()`).
 pub(crate) unsafe fn txfm_fns() -> TxfmFns {
     TxfmFns {
-        forward_dct: [forward_4, forward_8, forward_16, forward_32],
+        forward_dct: [
+            forward_4,
+            forward_8,
+            avx2_forward::forward_16,
+            avx2_forward::forward_32,
+        ],
         inverse_dct_add: [
             inverse_4,
             avx2_inverse::inverse_8,
             avx2_inverse::inverse_16,
             avx2_inverse::inverse_32,
         ],
-        forward_dct_64: forward_64,
+        forward_dct_64: avx2_forward::forward_64,
         inverse_dct_add_64: avx2_inverse::inverse_64,
         inverse_dct_add_sparse: [
             avx2_inverse::inverse_16_sparse,
@@ -54,16 +64,24 @@ pub(crate) unsafe fn txfm_fns() -> TxfmFns {
         forward_dct_raster: [
             forward_4_raster,
             forward_8_raster,
-            forward_16_raster,
-            forward_32_raster,
+            avx2_forward::forward_16_raster,
+            avx2_forward::forward_32_raster,
         ],
+        // The 16-point low forward keeps 8 frequencies, fewer than the
+        // sixteen-lane word driver's tiles: it stays on 32-bit lanes.
         forward_dct_low: [
             Some(forward_16_low),
-            Some(forward_32_low),
-            Some(forward_64_low),
+            Some(avx2_forward::forward_32_low),
+            Some(avx2_forward::forward_64_low),
         ],
-        forward_dct_raster_low: [Some(forward_16_low_raster), Some(forward_32_low_raster)],
-        forward_dct_raster_bounded: [forward_16_bounded, forward_32_bounded],
+        forward_dct_raster_low: [
+            Some(forward_16_low_raster),
+            Some(avx2_forward::forward_32_low_raster),
+        ],
+        forward_dct_raster_bounded: [
+            avx2_forward::forward_16_bounded,
+            avx2_forward::forward_32_bounded,
+        ],
     }
 }
 
@@ -99,18 +117,10 @@ macro_rules! avx2_raster {
     )*};
 }
 
-avx2_raster!(forward_4_raster, forward_4_layout, I32x4; forward_8_raster, forward_8_layout, I32x8;
-             forward_16_raster, forward_16_layout, I32x8;
-             forward_32_raster, forward_32_layout, I32x8);
+avx2_raster!(forward_4_raster, forward_4_layout, I32x4; forward_8_raster, forward_8_layout, I32x8);
 
-avx2_forward!(forward_4, I32x4; forward_8, I32x8; forward_16, I32x8; forward_32, I32x8);
+avx2_forward!(forward_4, I32x4; forward_8, I32x8);
 avx2_inverse!(inverse_4, I32x4);
-
-#[target_feature(enable = "avx2")]
-unsafe fn forward_64(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: AVX2 is enabled for this function.
-    unsafe { generic::forward_64_pruned::<I32x8>(residual, stride, out) }
-}
 
 /// Quantiser storage loaded and stored eight 32-bit lanes at a time.
 pub(super) trait Lanes8: QuantStorage {
@@ -311,53 +321,4 @@ unsafe fn forward_16_low_raster(residual: &[i16], stride: usize, out: &mut [i16]
     unsafe {
         generic::forward_16_low::<I32x8, { super::low_keep(16) }, true>(residual, stride, out);
     }
-}
-
-/// The low-frequency 32-point forward (`generic::forward_32_low`).
-#[target_feature(enable = "avx2")]
-unsafe fn forward_32_low(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe {
-        generic::forward_32_low::<I32x8, { super::low_keep(32) }, false>(residual, stride, out);
-    }
-}
-
-/// The low-frequency 64x64 forward (`generic::forward_64_low`).
-#[target_feature(enable = "avx2")]
-unsafe fn forward_64_low(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe { generic::forward_64_low::<I32x8, { super::low_keep(64) }>(residual, stride, out) }
-}
-
-/// The low-frequency 32-point forward (raster) (`generic::forward_32_low`).
-#[target_feature(enable = "avx2")]
-unsafe fn forward_32_low_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe {
-        generic::forward_32_low::<I32x8, { super::low_keep(32) }, true>(residual, stride, out);
-    }
-}
-
-/// The bounded raster 16-point forward (`generic::forward_16_bounded`).
-#[target_feature(enable = "avx2")]
-unsafe fn forward_16_bounded(
-    residual: &[i16],
-    stride: usize,
-    zero_limit: u32,
-    out: &mut [i16],
-) -> bool {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe { generic::forward_16_bounded::<I32x8>(residual, stride, zero_limit, out) }
-}
-
-/// The bounded raster 32-point forward (`generic::forward_32_bounded`).
-#[target_feature(enable = "avx2")]
-unsafe fn forward_32_bounded(
-    residual: &[i16],
-    stride: usize,
-    zero_limit: u32,
-    out: &mut [i16],
-) -> bool {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe { generic::forward_32_bounded::<I32x8>(residual, stride, zero_limit, out) }
 }

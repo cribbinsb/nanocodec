@@ -233,20 +233,14 @@ impl ModeInfoGrid {
     /// Record `info` for the `side` x `side` cells from (`row`, `col`),
     /// clipped to the frame (a transform inside a larger block).
     pub fn fill_square(&mut self, row: usize, col: usize, side: usize, info: ModeInfo) {
-        for r in row..(row + side).min(self.mi_rows) {
-            let start = r * self.mi_cols;
-            self.cells[start + col..start + (col + side).min(self.mi_cols)].fill(info);
-        }
+        let grid = (self.mi_cols, self.mi_rows);
+        nc_common::cell_grid::fill_square(&mut self.cells, grid, (row, col), side, info);
     }
 
     /// Record `info` for the square block of `1 << info.size_log2_mi` cells
     /// whose top-left cell is (`row`, `col`), clipped to the frame.
     pub fn fill(&mut self, row: usize, col: usize, info: ModeInfo) {
-        let side = info.size_mi();
-        for r in row..(row + side).min(self.mi_rows) {
-            let start = r * self.mi_cols;
-            self.cells[start + col..start + (col + side).min(self.mi_cols)].fill(info);
-        }
+        self.fill_square(row, col, info.size_mi(), info);
     }
 
     /// Record secondary vector `mv2` for the `side` x `side` compound cells from
@@ -255,10 +249,8 @@ impl ModeInfoGrid {
         if self.mv2_cells.len() < self.cells.len() {
             self.mv2_cells.resize(self.cells.len(), Av1Mv::ZERO);
         }
-        for r in row..(row + side).min(self.mi_rows) {
-            let start = r * self.mi_cols;
-            self.mv2_cells[start + col..start + (col + side).min(self.mi_cols)].fill(mv2);
-        }
+        let grid = (self.mi_cols, self.mi_rows);
+        nc_common::cell_grid::fill_square(&mut self.mv2_cells, grid, (row, col), side, mv2);
     }
 }
 

@@ -44,6 +44,7 @@ mod chroma_offset;
 pub mod chroma_policy;
 mod coded_groups;
 mod config;
+mod cu_pricing;
 mod decision;
 mod effort_class;
 mod encoder;
@@ -138,7 +139,8 @@ pub use frame_role::{FRAME_PARAM_SPECS, FrameRole, NONBASE_PREFIX};
 pub use held_slots::{HeldSlots, scaled_reference_allowed};
 pub use hold::holds_frames;
 pub use intra_candidates::{
-    AngleDeltaSearch, IntraModeSet, directions_by_orientation, shortlist_intra, with_neighbours,
+    AngleDeltaSearch, FlatGate, IntraModeSet, LevelRateModel, LevelStats,
+    directions_by_orientation, prediction_settles, rank_intra, shortlist_intra, with_neighbours,
 };
 pub use key_qp::{
     KEY_OFFSET_REFERENCE_PERIOD, fixed_qp_key_offset, offset_key_quantizer, scaled_quantizer,

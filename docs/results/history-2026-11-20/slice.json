@@ -1,0 +1,209 @@
+{
+ "clipset": "independent_fresh_2026-11-13.json",
+ "rule": "per content class, the first clips by SHA-256 of the clip name",
+ "per_class": {
+  "crowd": 6,
+  "pan": 6,
+  "static": 6,
+  "bodycam": 5,
+  "lowlight": 5
+ },
+ "clips": [
+  {
+   "name": "ind_personpath22_uid_vid_00177",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_cctv_uid_vid_00054",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_personpath22_uid_vid_00090",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_mot_mot20_01",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 25.0
+  },
+  {
+   "name": "ind_personpath22_uid_vid_00195",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_mp4_pedestrians2",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 25.0
+  },
+  {
+   "name": "ind_jaad_video_0318",
+   "class": "pan",
+   "width": 960,
+   "height": 540,
+   "fps": 30.0
+  },
+  {
+   "name": "ind_jaad_video_0151",
+   "class": "pan",
+   "width": 960,
+   "height": 540,
+   "fps": 30.0
+  },
+  {
+   "name": "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
+   "class": "pan",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_jaad_video_0042",
+   "class": "pan",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_bdd100k_mot_bdd_00d4b6b7_a0b1a3e0",
+   "class": "pan",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_bdd100k_mot_bdd_00d77344_9fe25620",
+   "class": "pan",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_otw_homes_00310",
+   "class": "static",
+   "width": 404,
+   "height": 720,
+   "fps": 30.0
+  },
+  {
+   "name": "ind_mp4_london",
+   "class": "static",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_base_ukof_ld_indoor_light_ohcam_003",
+   "class": "static",
+   "width": 1280,
+   "height": 720,
+   "fps": 15.0
+  },
+  {
+   "name": "ind_personpath22_uid_vid_00079",
+   "class": "static",
+   "width": 960,
+   "height": 540,
+   "fps": 24.0
+  },
+  {
+   "name": "ind_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
+   "class": "static",
+   "width": 960,
+   "height": 536,
+   "fps": 30.0
+  },
+  {
+   "name": "ind_antare_bwc_intruder_removed_fixed_01",
+   "class": "static",
+   "width": 960,
+   "height": 540,
+   "fps": 10.0
+  },
+  {
+   "name": "ind_mot_mot17_05",
+   "class": "bodycam",
+   "width": 640,
+   "height": 480,
+   "fps": 14.0
+  },
+  {
+   "name": "ind_bwc_videotext_video317",
+   "class": "bodycam",
+   "width": 424,
+   "height": 240,
+   "fps": 30.0
+  },
+  {
+   "name": "ind_bwc_videotext_video289",
+   "class": "bodycam",
+   "width": 424,
+   "height": 240,
+   "fps": 30.0
+  },
+  {
+   "name": "ind_bwc_videotext_video190",
+   "class": "bodycam",
+   "width": 424,
+   "height": 240,
+   "fps": 30.0
+  },
+  {
+   "name": "ind_bwc_videotext_video321",
+   "class": "bodycam",
+   "width": 424,
+   "height": 240,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_personpath22_uid_vid_00026",
+   "class": "lowlight",
+   "width": 960,
+   "height": 540,
+   "fps": 23.976
+  },
+  {
+   "name": "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
+   "class": "lowlight",
+   "width": 640,
+   "height": 360,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_jaad_video_0023",
+   "class": "lowlight",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_bwc_videotext_video28",
+   "class": "lowlight",
+   "width": 480,
+   "height": 270,
+   "fps": 29.97
+  },
+  {
+   "name": "ind_bwc_videotext_video354",
+   "class": "lowlight",
+   "width": 424,
+   "height": 240,
+   "fps": 29.97
+  }
+ ]
+}

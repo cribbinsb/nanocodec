@@ -85,7 +85,12 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                 let mut output = [input.clone(), input.clone()];
                 for (dsp, samples) in [candidate, reference].into_iter().zip(&mut output) {
                     let mut view = PlaneViewMut::new(samples, stride, SIDE, SIDE).expect("plane");
-                    dsp.av1_loop_filter_runs(&mut view, vertical, &runs);
+                    dsp.av1_loop_filter_runs(
+                        &mut view,
+                        vertical,
+                        &runs,
+                        &mut nc_dsp::LoopFilterLanes::default(),
+                    );
                 }
                 record(report, candidate.isa(), output[0] == output[1], || {
                     format!(
@@ -213,6 +218,7 @@ fn check_av1_groups(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                                     lines,
                                     filter,
                                 }],
+                                &mut nc_dsp::LoopFilterLanes::default(),
                             );
                         }
                         record(report, candidate.isa(), outputs[0] == outputs[1], || {

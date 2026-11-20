@@ -4,9 +4,8 @@
 //! and multiplies them by the taps with `pmaddubsw` in 16-bit lanes, adds
 //! `128 · centre` with a saturating add whose bounds are exactly the
 //! intermediate clamp, and the vertical pass multiplies pair sums of rows
-//! with `pmaddwd`. A complete-stripe entry prepares taps once and rotates
-//! the seven row pointers, following the reference stripe schedule. The
-//! horizontal and vertical arithmetic is unchanged. The self-guided rows
+//! with `pmaddwd`; complete stripes run them in the shared schedule
+//! ([`super::wiener_stripe`]). The self-guided rows
 //! are [`super::sgr_lanes`] on eight 32-bit lanes (16-bit rows widened
 //! with `vpmovsxwd`, narrowed with `packssdw`); their factor uses
 //! dav1d's reciprocal form with exact rounding.
@@ -43,11 +42,13 @@ use super::kernels::{Kernels, WIENER_ROWS};
 use super::self_guided::{SGR_BITS, Z_MAX};
 use super::sgr_lanes::{SgrLanes, sgr_kernels};
 use super::wiener::{ROUND1, SATURATION_BIAS, SATURATION_OFFSET, WienerTaps};
+use super::wiener_stripe::WienerLanes;
 use crate::simd::packed_pair;
 
 /// This ISA's table.
 pub(super) const KERNELS: Kernels = Kernels {
     wiener_stripe: Some(wiener_stripe),
+    sgr_stripe: Some(super::sgr_avx2::sgr_stripe),
     wiener_h,
     wiener_v,
     box_sums3,
@@ -256,9 +257,51 @@ unsafe fn wiener_v(rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8
     // SAFETY: AVX2 enabled, input extents checked, dst is its exact slice.
     unsafe { vertical_row::<false>(&pointers, vertical_taps(taps), dst.as_mut_ptr(), dst.len()) };
 }
-/// Select each axis independently once per stripe: luma may have only one
-/// zero outer tap. The const choices remove unused arithmetic and row loads
-/// from the inner loops, following dav1d's five-tap specialization.
+/// The AVX2 rows of [`super::wiener_stripe`].
+struct WienerAvx2;
+
+impl WienerLanes for WienerAvx2 {
+    type Horizontal = Horizontal;
+    type Vertical = (__m256i, __m256i);
+    const H_STEP: usize = STEP;
+    const V_STEP: usize = V_STEP;
+
+    #[inline(always)]
+    unsafe fn horizontal(taps: WienerTaps) -> Horizontal {
+        // SAFETY: AVX2 is enabled in the calling kernel.
+        unsafe { Horizontal::new(taps) }
+    }
+
+    #[inline(always)]
+    unsafe fn vertical(taps: WienerTaps) -> (__m256i, __m256i) {
+        // SAFETY: AVX2 is enabled in the calling kernel.
+        unsafe { vertical_taps(taps) }
+    }
+
+    #[inline(always)]
+    unsafe fn h_row<const FIVE: bool>(
+        taps: Horizontal,
+        src: *const u8,
+        out: *mut i16,
+        blocks: usize,
+    ) {
+        // SAFETY: the trait's contract.
+        unsafe { taps.row::<FIVE>(src, out, blocks) }
+    }
+
+    #[inline(always)]
+    unsafe fn v_row<const FIVE: bool>(
+        rows: &[*const i16; WIENER_ROWS],
+        taps: (__m256i, __m256i),
+        dst: *mut u8,
+        n: usize,
+    ) {
+        // SAFETY: the trait's contract.
+        unsafe { vertical_row::<FIVE>(rows, taps, dst, n) }
+    }
+}
+
+/// A complete Wiener stripe ([`super::wiener_stripe::run`]).
 #[target_feature(enable = "avx2")]
 unsafe fn wiener_stripe(
     horizontal: WienerTaps,
@@ -268,89 +311,9 @@ unsafe fn wiener_stripe(
     ring: &mut [i16],
     output: (&mut nc_common::PlaneViewMut<'_>, usize, usize),
 ) {
-    // SAFETY: AVX2 enabled; each implementation checks all spans. FIVE is
-    // selected only when that axis's outer coefficient is exactly zero.
+    // SAFETY: AVX2 is enabled (this function's target feature).
     unsafe {
-        match (horizontal[0] == 0, vertical[0] == 0) {
-            (false, false) => {
-                wiener_stripe_impl::<false, false>(
-                    horizontal, vertical, source, size, ring, output,
-                );
-            }
-            (true, false) => {
-                wiener_stripe_impl::<true, false>(horizontal, vertical, source, size, ring, output);
-            }
-            (false, true) => {
-                wiener_stripe_impl::<false, true>(horizontal, vertical, source, size, ring, output);
-            }
-            (true, true) => {
-                wiener_stripe_impl::<true, true>(horizontal, vertical, source, size, ring, output);
-            }
-        }
-    }
-}
-
-/// Prepare once and rotate pointers as dav1d's Wiener stripe does. The
-/// original arithmetic remains; per-row indirect calls and modulo go away.
-#[target_feature(enable = "avx2")]
-unsafe fn wiener_stripe_impl<const H5: bool, const V5: bool>(
-    horizontal: WienerTaps,
-    vertical: WienerTaps,
-    (window, stride): (&[u8], usize),
-    (w, h): (usize, usize),
-    ring: &mut [i16],
-    (dst, x, y): (&mut nc_common::PlaneViewMut<'_>, usize, usize),
-) {
-    use super::{AV1_LR_BORDER, AV1_LR_OVERREAD};
-    assert!(x <= dst.width() && w <= dst.width() - x);
-    assert!(y <= dst.height() && h <= dst.height() - y);
-    if w == 0 || h == 0 {
-        return;
-    }
-    let row_len = w.checked_add(AV1_LR_OVERREAD).expect("Wiener row extent");
-    let source_len = row_len
-        .checked_add(2 * AV1_LR_BORDER)
-        .expect("Wiener source row");
-    let source_rows = h
-        .checked_add(2 * AV1_LR_BORDER)
-        .expect("Wiener source rows");
-    let source_end = (source_rows - 1)
-        .checked_mul(stride)
-        .and_then(|offset| offset.checked_add(source_len))
-        .expect("Wiener source extent");
-    assert!(window.len() >= source_end);
-    assert!(
-        ring.len()
-            >= WIENER_ROWS
-                .checked_mul(row_len)
-                .expect("Wiener ring extent")
-    );
-    let dst_stride = dst.stride();
-    // SAFETY: checked spans cover every window/ring row and output rectangle.
-    // Horizontal writes ceil(w/16)*16 and vertical reads ceil(w/32)*32,
-    // both within the overread. The seven scratch rows are distinct and
-    // horizontal completes before vertical reads; pointers rotate among them.
-    unsafe {
-        let horizontal = Horizontal::new(horizontal);
-        let vertical = vertical_taps(vertical);
-        let blocks = w.div_ceil(STEP);
-        let start = ring.as_mut_ptr();
-        let mut rows: [*const i16; WIENER_ROWS] =
-            core::array::from_fn(|k| start.add(k * row_len).cast_const());
-        for (k, &row) in rows[..WIENER_ROWS - 1].iter().enumerate() {
-            horizontal.row::<H5>(window.as_ptr().add(k * stride), row.cast_mut(), blocks);
-        }
-        let output = dst.data_mut().as_mut_ptr().add(y * dst_stride + x);
-        for r in 0..h {
-            horizontal.row::<H5>(
-                window.as_ptr().add((r + WIENER_ROWS - 1) * stride),
-                rows[WIENER_ROWS - 1].cast_mut(),
-                blocks,
-            );
-            vertical_row::<V5>(&rows, vertical, output.add(r * dst_stride), w);
-            let [a, b, c, d, e, f, g] = rows;
-            rows = [b, c, d, e, f, g, a];
-        }
+        super::wiener_stripe::run::<WienerAvx2>(horizontal, vertical, source, size, ring, output);
     }
 }
 

@@ -355,6 +355,27 @@ fn check_hevc_quant(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
     record(report, isa, same, || {
         format!("hevc_quantize qp={qp} log2={log2} intra={intra} mode={mode}")
     });
+    // VVC's rectangular quantisers (QP up to 63, the sqrt(2) scale row) on a
+    // ragged length, so the vector loop's tail is exercised too.
+    let (vvc_qp, log2_width, log2_height) = (
+        rng.below(64) as u8,
+        2 + rng.below(4) as u8,
+        2 + rng.below(4) as u8,
+    );
+    let rect = VvcQuantizer::rect(vvc_qp, log2_width, log2_height);
+    let ragged = coefficients16(1 + rng.below(1 << (log2_width + log2_height)), mode, rng);
+    let quantize_rect = |dsp: &Dsp| {
+        let mut wide = vec![i32::MIN; ragged.len()];
+        let nonzero = dsp.vvc_quantize_from(&ragged, &rect, &mut wide);
+        (wide, nonzero)
+    };
+    let same = quantize_rect(candidate) == quantize_rect(reference);
+    record(report, isa, same, || {
+        format!(
+            "vvc_quantize_from rect qp={vvc_qp} {log2_width}x{log2_height} len={} mode={mode}",
+            ragged.len()
+        )
+    });
     // Levels of any i32 value (VVC's, before a decoder's range check): the
     // dequantiser is exact for all of them; and every 16-bit level.
     let levels: Vec<i32> = (0..n * n)

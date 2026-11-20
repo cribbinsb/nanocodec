@@ -63,36 +63,33 @@ planner.depth_removal_qp_scale = 1
 # Fast keeps chroma at luma's 32/128.
 av2.inter_chroma_rounding_delta_q7 = 0
 # The Default's qindex-ramped finer chroma (av2.chroma_delta_q_coarse -12)
-# is a Default quality arm, not screened on Fast.
+# stays off: 2026-11-20 ladder spacing, below.
 av2.chroma_delta_q_coarse = 0
 # The Default's luma give-back (P rounding 36/128, lambda 0.125 per squared
 # step) is a Default quality arm, not screened on Fast.
 av2.inter_rounding_q7 = 32
 nonbase.av2.lambda_per_step_squared = 0.135
-# The Default's QP cadence moved to the engine's full scale (2026-11-11,
-# nc-av2 RATE_MODEL); Fast keeps the old 0.7: at 1.0 vs 0.7 (k 0.6) proxy-6
-# -1.2% but VAL WORSE (static +4.5% / low +6.7%, worst-1% VMAF +2.3%).
-rate.cadence_scale = 0.7
-# The Default's jointly tuned planner lambda (2026-11-12) is not screened for
-# this preset: it keeps the previous value.
-light.planner.lambda_scale = 2
-# Pinned before AV2 Default's key-period ceiling (2026-11-14).
-rate.period_ceiling = 0
-# Pinned before AV2 Default's key still boost (2026-11-14).
-rate.key_still_boost = 0
+# The Default's jointly tuned planner lambda (2026-11-12) on light
+# superblocks too: 2026-11-20 ladder spacing, below.
+light.planner.lambda_scale = 2.58125
 # AV2 Default's fixed-QP profile (2026-11-15) stays off here: pinned, byte-identical.
 rate.fixed_qp_profile = 0
-# Pinned before AV2 Default's inherited cadence depth (2026-11-15).
-structure.inherited_depth = 0
-# The Default's parity hiding and depth removal before 2026-11-15, pinned so
-# this preset's streams do not move with the Default.
-nonbase.av2.parity_hiding = 0
-light.planner.depth_removal_th_32_16 = 25
-light.planner.depth_removal_th_16_8 = 50
-# Pinned before AV2 Default's reference plan (2026-11-15).
-structure.unified = 0
-# Pinned before the engine-default quiet second before keys (2026-11-16).
-rate.prekey_quiet = 0
+# The Default's parity hiding on non-base frames and no depth removal on
+# light superblocks (2026-11-20 ladder spacing). With the light planner
+# lambda above, single levers on the pool L1 draw (2026-11-20, k 0.6,
+# quality J + 0.6 x callgrind dCPU with a key every 10 s, against Fast):
+# light planner -0.88 (+0.6%), parity hiding -0.50 (+0.1%). Together (x86
+# about +0.75%): L3 (108 clips, ladder) J -0.26% [-0.56, +0.06] BETTER;
+# final-check (33 clips, 600 f) quality -1.19% [-1.45, -0.58], pulse worst
+# clip +0.52 dB (guard 0.50), adopted. The Default's chroma rounding and finer chroma
+# (L1 -0.60 at +2.7%) were in the first bundle: final-check quality -3.39%
+# but worst-1% luma frames +3.3% (26/33 clips worse), so they stay off.
+# Not taken: flat structure (quality -3.1%
+# for +5.8%, J +0.42), the Default's luma rounding, non-base skip gates and
+# sub-pel margins, chroma deblocking (+5.3%), CDEF search, trellis.
+nonbase.av2.parity_hiding = 1
+light.planner.depth_removal_th_32_16 = 0
+light.planner.depth_removal_th_16_8 = 0
 
 # AV1 Faster's gated temporal layers (L1T3 where the camera is steady and the
 # scene neither mostly static nor repeated; shared engine) and the engine's
@@ -139,3 +136,22 @@ av2.coeff_rate_model = 1
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+
+# Rate control and references as the Default (av2-pareto, 2026-11-19): the
+# engine's QP cadence scale, key-period ceiling, key still boost, inherited
+# cadence depth, unified reference plan and quiet second before keys, which
+# Fast had pinned off as each landed for the Default. x86 instructions (CBR
+# 600, 150 f; bodycam / crowd / lowlight) -0.7 / -1.2 / -0.8 %. CBR pool
+# against the old Fast (k 0.6, dCPU -0.9, rotation 2026-11-19): L1 J -1.25 %
+# [-1.94, -0.60], L2 -3.95 % [-4.88, -2.96], L3 -3.31 % [-3.91, -2.69]
+# BETTER (n 108; quality alone -2.77 %, static class -6.1 %), no guard,
+# periodic-key pulse within -1.20..+0.28 dB (2 s keys, one clip a class).
+# Fixed QP lens (box) W / J -19.8 / -25.4 -> -20.2 / -25.6. Long single-key run (900 f, CBR 600, PSNR-Y per third against
+# the old Fast): crowd_mot20_02 0.00 / +0.01 / 0.00 dB, chirla static
+# -0.04 / +0.21 / +0.34 dB.
+# The engine's still-level damping arrived with the AV2 Default (2026-11-19,
+# docs/handoff/rate-control.md): not screened for this preset.
+rate.still_level_damping = 0
+# AV2 Default's key still boost moved 4 -> 6 (2026-11-19, docs/handoff/rate-control.md):
+# not screened for this preset.
+rate.key_still_boost = 4

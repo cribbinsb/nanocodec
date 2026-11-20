@@ -2,7 +2,7 @@
 // single-layer x264 medium, as a chart (platform selectable) and a table.
 // Data: data/svc.json.
 import { drawScatter } from './chart.js';
-import { control, el, fail, fps, loadData, pct, segmented, sources, table } from './common.js';
+import { control, el, fail, fps, loadData, measuredNote, pct, segmented, sources, table } from './common.js';
 
 const SHAPES = { libaom: 'plus', libvpx: 'cross', x264: 'square' };
 const PLATFORMS = { jetson: 'Jetson Orin Nano core', x86: 'Ryzen 9 5950X core' };
@@ -15,7 +15,8 @@ function shapeOf(row) {
 
 function render(data, root) {
   const chart = root.querySelector('.chart');
-  drawScatter(chart, data.rows.map((r) => ({
+  // a point not timed on this machine has no place on the speed axis (the table lists it)
+  drawScatter(chart, data.rows.filter((r) => r.fps[state.platform] != null).map((r) => ({
     id: r.family, x: r.fps[state.platform], y: r.j, iqr: r.ours || r.j !== 0 ? r.iqr : null,
     kind: r.ours ? 'ours' : 'ref', shape: shapeOf(r), label: r.label, flagged: false, twin: null,
     priority: r.ours ? 2 : 1, aria: `${r.label}: ${pct(r.j)}, ${fps(r.fps[state.platform])} fps`,
@@ -51,7 +52,7 @@ async function main() {
       { label: '180p view vs its codec alone at 180p', num: true, cell: (r) => (r.op180_j === null ? '' : pct(r.op180_j)) },
       { label: 'fps Jetson', num: true, cell: (r) => fps(r.fps.jetson) },
       { label: 'fps PC', num: true, cell: (r) => fps(r.fps.x86) },
-    ], data.rows, (r) => (r.ours ? 'ours' : '')), sources(data.source));
+    ], data.rows, (r) => (r.ours ? 'ours' : '')), measuredNote(data.measured.caption), sources(data.source));
     let width = root.clientWidth;
     new ResizeObserver(() => {
       if (Math.abs(root.clientWidth - width) > 8) { width = root.clientWidth; render(data, root); }

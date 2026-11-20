@@ -464,6 +464,17 @@ pub trait CodecBackend {
         self.superblock_log2()
     }
 
+    /// log2 of the largest leaf whose transform codes every frequency of
+    /// its residual. A larger leaf zeroes out its high frequencies (VVC's
+    /// 64-point transform units code only their 32x32 lowest, H.266
+    /// §7.4.11.x and §8.7.4), which the inter planner's variance model
+    /// cannot see; it confirms such leaves with
+    /// [`CodecBackend::inter_leaf_cost`] (`partition_plan.rs`, "Zero-out").
+    /// Default: the superblock, i.e. every leaf codes every frequency.
+    fn full_spectrum_log2(&self) -> u8 {
+        self.superblock_log2()
+    }
+
     /// The picture size the codec actually codes for a `width` x `height`
     /// input. Codecs whose syntax can only describe whole units larger than
     /// the minimum block (H.264 macroblocks) code a padded picture and
@@ -805,6 +816,41 @@ pub trait CodecBackend {
     ) -> Option<f32> {
         let _ = (source, reference, block, candidate);
         None
+    }
+
+    /// Start a whole-CU pricing trial of `block` (`cu_pricing.rs`): note
+    /// the coded state the next [`CodecBackend::encode_block`] of `block`
+    /// changes, so [`CodecBackend::undo_cu_trial`] can put it back. `false`
+    /// (the default) for a codec without trials: the leaf is coded as
+    /// decided.
+    fn begin_cu_trial(&mut self, block: &Block, recon: &Picture) -> bool {
+        let _ = (block, recon);
+        false
+    }
+
+    /// The coded cost of `block` as the last [`CodecBackend::encode_block`]
+    /// coded it: squared error of every plane (chroma weighted as the
+    /// codec's rate-distortion decisions weigh it) plus
+    /// [`CodecBackend::lambda`] times its estimated bits.
+    fn cu_trial_cost(&mut self, block: &Block, source: &Picture, recon: &Picture) -> f32 {
+        let _ = (block, source, recon);
+        f32::INFINITY
+    }
+
+    /// Put the coded state back as [`CodecBackend::begin_cu_trial`] found
+    /// it (it may be undone again until the next trial begins).
+    fn undo_cu_trial(&mut self, recon: &mut Picture) {
+        let _ = recon;
+    }
+
+    /// The leaf's pricing has ended (the CU last coded is kept).
+    fn end_cu_trial(&mut self) {}
+
+    /// The vector whole-CU pricing codes an intra leaf at instead (the
+    /// codec's cheapest-to-signal inter vector). The default is
+    /// [`CodecBackend::skip_vector`].
+    fn cu_trial_skip_vector(&mut self, block: &Block) -> Option<Mv> {
+        self.skip_vector(block)
     }
 
     /// Whether [`CodecBackend::intra_leaf_cost`] is implemented. Without it,

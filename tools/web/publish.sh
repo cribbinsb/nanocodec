@@ -53,8 +53,18 @@ git -C "$tree" checkout -q --detach "$branch"
 head=$(git -C "$tree" rev-parse --short=8 HEAD)
 
 cd "$tree"
-stage "building $head in $tree (target $target)"
-CARGO_TARGET_DIR=$target BUILD_JOBS=${BUILD_JOBS:-16} tools/web/build.sh
+# The WASM modules depend only on crates/, the lockfile and the build script: a
+# data- or page-only publish (new chart numbers, a page fix) reuses the last
+# build instead of re-running the bindgen/opt steps (minutes on a loaded box).
+inputs=$(git rev-parse HEAD:crates HEAD:Cargo.lock HEAD:tools/web/build.sh | sha256sum | cut -c1-16)
+stamp=$target/publish-inputs
+if [[ -f $stamp && $(cat "$stamp") == "$inputs" && -f web/pkg/nc_web_bg.wasm ]]; then
+  stage "WASM inputs unchanged since the last build ($inputs): build skipped"
+else
+  stage "building $head in $tree (target $target)"
+  CARGO_TARGET_DIR=$target BUILD_JOBS=${BUILD_JOBS:-16} tools/web/build.sh
+  echo "$inputs" > "$stamp"
+fi
 [[ $build_only == 1 ]] && { stage "built $head (not published)"; exit 0; }
 
 if [[ $smoke == 1 ]]; then

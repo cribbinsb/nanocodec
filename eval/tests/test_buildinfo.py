@@ -64,3 +64,29 @@ def test_verify_built_refuses_a_stale_build(tmp_path):
     binary = fake_binary(tmp_path, "nanocodec 0.1.0 old111")
     with pytest.raises(SystemExit, match="refusing to use it"):
         buildinfo.verify_built(binary, "new222")
+
+
+def test_a_box_build_of_local_changes_names_its_diff():
+    info = buildinfo.parse_version("nanocodec 0.1.0 abc123-dirty.0123456789abcdef")
+    assert (info["commit"], info["dirty"], info["diff"]) == ("abc123", True, "0123456789abcdef")
+    assert buildinfo.parse_version("nanocodec 0.1.0 abc123-dirty")["diff"] is None
+    assert buildinfo.parse_version("nanocodec 0.1.0 abc123")["diff"] is None
+    assert "dirty" in buildinfo.stamp_problem(info, "abc123")
+
+
+def test_variants_of_one_commit_never_share_a_stream_identity(tmp_path):
+    def identity(name, word):
+        directory = tmp_path / name
+        directory.mkdir()
+        return buildinfo.stream_identity(fake_binary(directory, f"nanocodec 0.1.0 {word}"))
+
+    clean = identity("clean", "abc123")
+    variant_a = identity("a", "abc123-dirty.aaaa")
+    variant_a_again = identity("a2", "abc123-dirty.aaaa")
+    variant_b = identity("b", "abc123-dirty.bbbb")
+    assert clean == buildinfo.COMMIT_IDENTITY_PREFIX + "abc123"
+    assert len({clean, variant_a, variant_b}) == 3
+    # Two builds of one variant (gate and release) share their points.
+    assert variant_a == variant_a_again
+    # A dirty stamp without a diff hash is keyed on the binary's bytes.
+    assert not identity("bytes", "abc123-dirty").startswith(buildinfo.COMMIT_IDENTITY_PREFIX)

@@ -61,3 +61,5 @@ rate.prekey_quiet = 0
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# Not screened with the Default's coded-cost key intra modes (2026-11-19).
+vp9.intra_rd_candidates = 1

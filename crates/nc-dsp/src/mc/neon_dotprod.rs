@@ -1,15 +1,17 @@
 //! Signed-byte NEON dot-product row helpers for the shared AV1/HEVC/VVC
-//! eight-tap MC family (`av1_neon`). Coefficients sum to 64; flipping pixel high bits
-//! with 128 is undone by the 8192 accumulator bias. Exact 11/15-byte
+//! eight-tap MC family, with codec-specific rounding (AV1/HEVC/VVC or VP9).
+//! The accumulator adds 128 times the tap sum to undo the pixel sign flip.
+//! Exact 11/15-byte
 //! windows preserve the final-row contract without dav1d's padded reads.
 //! The by-element SDOT structure follows dav1d 1.5.4 `mc_dotprod.S`, BSD-2;
 //! see `THIRD_PARTY.md` and `docs/licenses/dav1d/COPYING`.
 
 use super::{ConvolveFn, SeparableTaps};
 use core::arch::aarch64::{
-    int8x8_t, int8x16_t, int16x8_t, int32x4_t, uint8x16_t, vcombine_u8, vdupq_n_s32, vdupq_n_u8,
-    veorq_u8, vext_u8, vld1_u8, vld1q_s16, vld1q_u8, vmovn_s16, vqtbl1q_s8, vreinterpretq_s8_u8,
-    vreinterpretq_s16_s32, vshrq_n_s16, vuzp1q_s16,
+    int8x8_t, int8x16_t, int16x8_t, int32x4_t, uint8x8_t, uint8x16_t, vcombine_u8, vcombine_u16,
+    vdupq_n_s32, vdupq_n_u8, veorq_u8, vext_u8, vld1_u8, vld1q_s16, vld1q_u8, vmovn_s16,
+    vqmovn_u16, vqrshrun_n_s32, vqtbl1q_s8, vreinterpretq_s8_u8, vreinterpretq_s16_s32,
+    vshrq_n_s16, vuzp1q_s16,
 };
 
 /// Unsigned-to-signed pixel compensation: coefficients sum to 64.
@@ -58,7 +60,7 @@ pub(crate) fn separable_fns<T: SeparableTaps<8>>() -> [ConvolveFn; 5] {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct DotFilter {
+pub(crate) struct DotFilter {
     coefficients: int8x8_t,
     gather0: uint8x16_t,
     gather4: uint8x16_t,
@@ -67,7 +69,7 @@ pub(super) struct DotFilter {
 
 impl DotFilter {
     #[target_feature(enable = "neon,dotprod")]
-    pub(super) unsafe fn new(taps: &[i16; 8]) -> Self {
+    pub(crate) unsafe fn new(taps: &[i16; 8]) -> Self {
         // SAFETY: the table contains eight coefficients and each mask sixteen bytes.
         unsafe {
             Self {
@@ -104,16 +106,12 @@ impl DotFilter {
 
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
-    unsafe fn sum(self, a: int8x16_t, b: int8x16_t, av1: bool) -> int32x4_t {
-        // SAFETY: dotprod is enabled; coefficients sum to 64. Folding the
-        // AV1 +2 bias permits one word-level nonrounding shift after UZP.
+    unsafe fn sum(self, a: int8x16_t, b: int8x16_t, bias: i32) -> int32x4_t {
+        // SAFETY: dotprod is enabled. The bias compensates the signed input
+        // offset and can include the codec's rounding constant.
         unsafe {
             dot_lane::<1>(
-                dot_lane::<0>(
-                    vdupq_n_s32(DOT_PIXEL_BIAS + if av1 { 2 } else { 0 }),
-                    a,
-                    self.coefficients,
-                ),
+                dot_lane::<0>(vdupq_n_s32(bias), a, self.coefficients),
                 b,
                 self.coefficients,
             )
@@ -122,33 +120,61 @@ impl DotFilter {
 
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
-    unsafe fn words<const AV1: bool>(a: int32x4_t, b: int32x4_t) -> int16x8_t {
+    fn words<const AV1: bool>(a: int32x4_t, b: int32x4_t) -> int16x8_t {
         let words = vuzp1q_s16(vreinterpretq_s16_s32(a), vreinterpretq_s16_s32(b));
         if AV1 { vshrq_n_s16::<2>(words) } else { words }
     }
 
-    /// One four/eight-output horizontal row for the rolling HV window.
+    /// Full-width dot sums before the codec's narrowing and rounding.
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn sums<const W: usize, const PADDED: bool>(
+        self,
+        row: *const u8,
+        bias: i32,
+    ) -> (int32x4_t, int32x4_t) {
+        // SAFETY: the driver supplies W+7 bytes and a 16th readable byte
+        // when PADDED. W is four or eight.
+        unsafe {
+            let a = vreinterpretq_s8_u8(veorq_u8(Self::load::<W, PADDED>(row), vdupq_n_u8(128)));
+            let first = vqtbl1q_s8(a, self.gather0);
+            let middle = vqtbl1q_s8(a, self.gather4);
+            let lo = self.sum(first, middle, bias);
+            let hi = if W == 4 {
+                lo
+            } else {
+                self.sum(middle, vqtbl1q_s8(a, self.gather8), bias)
+            };
+            (lo, hi)
+        }
+    }
+
+    /// Horizontal intermediate for the AV1/HEVC/VVC rolling window.
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
     pub(super) unsafe fn row<const W: usize, const AV1: bool, const PADDED: bool>(
         self,
         row: *const u8,
     ) -> int16x8_t {
-        // SAFETY: the parent checks the complete source window. PADDED is
-        // used only before its final row, or with a trimmed six-tap window.
-        unsafe {
-            let a = vreinterpretq_s8_u8(veorq_u8(Self::load::<W, PADDED>(row), vdupq_n_u8(128)));
-            let first = vqtbl1q_s8(a, self.gather0);
-            let middle = vqtbl1q_s8(a, self.gather4);
-            let lo = self.sum(first, middle, AV1);
-            let hi = if W == 4 {
-                lo
-            } else {
-                self.sum(middle, vqtbl1q_s8(a, self.gather8), AV1)
-            };
-            Self::words::<AV1>(lo, hi)
-        }
+        // SAFETY: the parent checked the complete source window.
+        let (low, high) =
+            unsafe { self.sums::<W, PADDED>(row, DOT_PIXEL_BIAS + if AV1 { 2 } else { 0 }) };
+        Self::words::<AV1>(low, high)
     }
+
+    /// VP9 sums full-scale taps. Round and clip from i32 before storing
+    /// the intermediate so results above 32767 cannot wrap.
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    pub(crate) unsafe fn vp9_row<const W: usize>(self, row: *const u8) -> uint8x8_t {
+        // SAFETY: the VP9 driver checked the W+7 byte window.
+        let (low, high) = unsafe { self.sums::<W, false>(row, 128 * 128) };
+        vqmovn_u16(vcombine_u16(
+            vqrshrun_n_s32::<7>(low),
+            vqrshrun_n_s32::<7>(high),
+        ))
+    }
+
     /// Sixteen outputs share five shuffles; exact tails use two narrow rows.
     #[inline]
     #[target_feature(enable = "neon,dotprod")]
@@ -170,9 +196,10 @@ impl DotFilter {
             let last = vqtbl1q_s8(a, self.gather8);
             let next = vqtbl1q_s8(b, self.gather0);
             let end = vqtbl1q_s8(b, self.gather4);
+            let bias = DOT_PIXEL_BIAS + if AV1 { 2 } else { 0 };
             [
-                Self::words::<AV1>(self.sum(first, middle, AV1), self.sum(middle, last, AV1)),
-                Self::words::<AV1>(self.sum(last, next, AV1), self.sum(next, end, AV1)),
+                Self::words::<AV1>(self.sum(first, middle, bias), self.sum(middle, last, bias)),
+                Self::words::<AV1>(self.sum(last, next, bias), self.sum(next, end, bias)),
             ]
         }
     }

@@ -41,6 +41,8 @@ MIN_FREE_ENV = "NC_MIN_FREE_GIB"
 #: How long a measured work-directory size stands (see the module docstring).
 USAGE_TTL_SECONDS = 60
 USAGE_CACHE = ".disk-usage.json"
+#: While another process re-walks, a size up to this old stands instead of waiting.
+STALE_USAGE_SECONDS = 1800
 
 
 class DiskBudgetExceeded(RuntimeError):
@@ -83,7 +85,16 @@ def shared_work_bytes(work: Path) -> int:
     if stored is not None:
         return stored
     with (work / (USAGE_CACHE + ".lock")).open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # one walker; the others then read its result
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Another process is walking (minutes at load on ~90 GB): use the
+            # last measured size rather than queue behind it (2026-11-19: a
+            # screen sat 47 min mostly waiting here). Only a missing cache waits.
+            stale = _usage(cache, max_age=STALE_USAGE_SECONDS)
+            if stale is not None:
+                return stale
+            fcntl.flock(lock, fcntl.LOCK_EX)  # one walker; the others then read its result
         stored = _fresh_usage(cache)
         if stored is not None:
             return stored
@@ -95,11 +106,15 @@ def shared_work_bytes(work: Path) -> int:
 
 
 def _fresh_usage(cache: Path) -> int | None:
+    return _usage(cache, max_age=USAGE_TTL_SECONDS)
+
+
+def _usage(cache: Path, max_age: float) -> int | None:
     try:
         stored = json.loads(cache.read_text())
     except (FileNotFoundError, ValueError):
         return None
-    return stored["bytes"] if time.time() - stored["time"] < USAGE_TTL_SECONDS else None
+    return stored["bytes"] if time.time() - stored["time"] < max_age else None
 
 
 def _outermost_work_dir(work: Path) -> Path:

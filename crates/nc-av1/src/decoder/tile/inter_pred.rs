@@ -32,7 +32,7 @@ use nc_dsp::av1_mc::filter::{AV1_FILTER_BEFORE, AV1_FILTER_TAPS, Av1Filters};
 use nc_dsp::av1_mc::mask::{Av1InterIntraMode, Av1WedgeMasks, av1_interintra_smooth_mask};
 use nc_dsp::av1_mc::scale::Av1ScaleSizes;
 use nc_dsp::av1_mc::warp::{Av1Shear, av1_setup_shear};
-use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, IntraKind};
+use nc_dsp::intra_prediction::av1_block::{EdgeAvail, EdgeNeeds, IntraKind};
 use nc_dsp::{DepthKernels, Pixel};
 
 /// 1/16-sample positions per sample (`1 << SUBPEL_BITS`).
@@ -781,18 +781,6 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         ((x, y), (w, h)): ((usize, usize), (usize, usize)),
     ) -> Result<(), DecodeError> {
         let (above, left) = block.available(plane);
-        let edges = BlockEdges::read(
-            self.recon.plane(plane),
-            (x, y),
-            (w, h),
-            EdgeAvail {
-                have_above: above,
-                have_left: left,
-                have_above_right: false,
-                have_below_left: false,
-            },
-            self.depth(),
-        );
         let kind = match interintra.mode {
             Av1InterIntraMode::Dc => IntraKind::Dc,
             Av1InterIntraMode::Smooth => IntraKind::Smooth,
@@ -805,12 +793,28 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 edge_filter: None,
             },
         };
+        let depth = self.depth();
+        let edges = &mut self.maps.intra_edges;
+        edges.read_into(
+            self.recon.plane(plane),
+            (x, y),
+            (w, h),
+            EdgeAvail {
+                have_above: above,
+                have_left: left,
+                have_above_right: false,
+                have_below_left: false,
+            },
+            depth,
+            EdgeNeeds::of(kind, (w, h)),
+        );
         let kernels = self.kernels();
+        let edges = &self.maps.intra_edges;
         let scratch = &mut self.maps.prediction;
         scratch.block.clear();
         scratch.block.resize(w * h, T::default());
         let mut intra = PlaneViewMut::new(&mut scratch.block, w, w, h).expect("block buffer");
-        kernels.av1_intra_predict_block(&edges, kind, &mut intra);
+        kernels.av1_intra_predict_block(edges, kind, &mut intra);
         let sub = plane != PlaneIndex::Y;
         let mask = if let Some(index) = interintra.wedge {
             debug_assert!(wedge_used(block.size));

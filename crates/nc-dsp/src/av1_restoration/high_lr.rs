@@ -1096,6 +1096,9 @@ mod avx512_sgr {
             on,
             around,
             blend,
+            // The AVX-512 tier keeps its sixteen-lane rows until the AVX2
+            // stripe is measured there.
+            sgr_stripe: None,
             ..base
         }
     }

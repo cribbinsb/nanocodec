@@ -90,8 +90,8 @@ const QUANTIZER_STEPS_Q3: [i32; 256] = {
 /// Native equal-DC/AC quantizer in Q3 units for an 8-bit frame without deltas.
 /// Qindex zero is the special lossless value 64, not the curve extrapolation.
 #[must_use]
-pub fn quantizer_step_q3(qindex: u8) -> i32 {
-    QUANTIZER_STEPS_Q3[usize::from(qindex)]
+pub const fn quantizer_step_q3(qindex: u8) -> i32 {
+    QUANTIZER_STEPS_Q3[qindex as usize]
 }
 
 /// Smallest frame-level quantizer delta (AVM `read_delta_q`: a present
@@ -214,7 +214,7 @@ fn offset_qindex(base: u8, delta: i8) -> u8 {
 /// AVM `av2_get_tx_scale`: the extra dequantization shift of transforms
 /// above 256 samples (one bit) and above 1024 samples (two bits), which
 /// compensates their smaller forward scaling.
-fn dequant_shift(size: TxSize) -> u32 {
+pub(crate) const fn dequant_shift(size: TxSize) -> u32 {
     match size {
         TxSize::Tx4 | TxSize::Tx8 | TxSize::Tx16 => 0,
         TxSize::Tx32 => 1,
@@ -382,7 +382,7 @@ pub fn quantize(
     let area = size.coded_len();
     let levels = &mut levels[..area];
     let step = quantizer_step_q3(qindex.ac);
-    let nonzero = dsp.av1_quantize_from_wide(
+    dsp.quantize_from_wide_with_dc_rounding(
         &coefficients[..area],
         &Av1Quantizer {
             dc_step: quantizer_step_q3(qindex.dc),
@@ -391,12 +391,9 @@ pub fn quantize(
             max_level: MAX_LEVEL,
             log_scale: QUANT_BITS + dequant_shift(size),
         },
+        rounding.dc_q7,
         levels,
-    );
-    let ac_nonzero = nonzero - u32::from(levels[0] != 0);
-    // The kernel has one rounding offset; DC has its own.
-    levels[0] = LevelQuantizer::new(size, qindex.dc, rounding.dc_q7).level(coefficients[0]);
-    ac_nonzero + u32::from(levels[0] != 0)
+    )
 }
 
 /// Largest squared Euclidean norm of a `DCT_DCT` basis row (one coded
@@ -423,10 +420,17 @@ pub fn dct_quantizes_to_zero(
     sse: u64,
 ) -> bool {
     let qindex = qindex.into();
-    let zero_below = LevelQuantizer::new(size, qindex.dc, rounding.dc_q7)
-        .zero_below
-        .min(LevelQuantizer::new(size, qindex.ac, rounding.ac_q7).zero_below);
-    let Some(room) = u64::from(zero_below).checked_sub(DCT_ROUNDING_SLACK) else {
+    let unit_shift = ROUNDING_Q7_ONE.ilog2() + QUANT_BITS + dequant_shift(size);
+    let unit = 1i64 << unit_shift;
+    let first_nonzero = |qindex, rounding_q7| {
+        debug_assert!((0..ROUNDING_Q7_ONE).contains(&rounding_q7));
+        let margin =
+            i64::from(quantizer_step_q3(qindex)) * i64::from(ROUNDING_Q7_ONE - rounding_q7);
+        (margin + unit - 1) >> unit_shift
+    };
+    let zero_below = first_nonzero(qindex.dc, rounding.dc_q7)
+        .min(first_nonzero(qindex.ac, rounding.ac_q7)) as u64;
+    let Some(room) = zero_below.checked_sub(DCT_ROUNDING_SLACK) else {
         return false;
     };
     // ‖row‖·‖residual‖ < room, squared and in 1/256.
@@ -443,9 +447,14 @@ pub fn level_one_magnitude(size: TxSize, qindex: u8) -> i32 {
 /// The dequantized magnitude of a level of magnitude `level` (as
 /// [`dequantize`]), in coefficient units.
 #[must_use]
-pub fn dequantized_magnitude(size: TxSize, qindex: u8, level: u32) -> i32 {
+pub const fn dequantized_magnitude(size: TxSize, qindex: u8, level: u32) -> i32 {
     let product = level.wrapping_mul(quantizer_step_q3(qindex).unsigned_abs()) & DEQUANT_MASK;
-    ((((product + 4) >> QUANT_BITS) >> dequant_shift(size)) as i32).min(COEFF_MAX)
+    let coefficient = (((product + 4) >> QUANT_BITS) >> dequant_shift(size)) as i32;
+    if coefficient > COEFF_MAX {
+        COEFF_MAX
+    } else {
+        coefficient
+    }
 }
 
 /// The dequantized magnitude of a TCQ level whose reconstruction index is
@@ -573,42 +582,26 @@ pub fn estimated_error_from_change(size: TxSize, change: i64) -> f64 {
     change as f64 * coefficient_error_scale(size) + KERNEL_ROUNDING_ERROR[size.index()] * area
 }
 
-/// [`quantize`]'s scaling for one transform size and quantizer.
-#[derive(Debug, Clone, Copy)]
+/// Reference division for quantization tests.
+#[cfg(test)]
 struct LevelQuantizer {
     shift: u32,
     divisor: i64,
     offset: i64,
-    /// Magnitudes below this quantize to zero: the exact condition
-    /// `scaled + offset < divisor` solved for the magnitude, so that the
-    /// common zero level costs one comparison (most coefficients of a
-    /// low-rate residual are zero).
-    zero_below: u32,
 }
 
+#[cfg(test)]
 impl LevelQuantizer {
     fn new(size: TxSize, qindex: u8, rounding_q7: i32) -> Self {
-        debug_assert!((0..ROUNDING_Q7_ONE).contains(&rounding_q7));
         let step = i64::from(quantizer_step_q3(qindex));
-        let divisor = step * i64::from(ROUNDING_Q7_ONE);
-        let offset = step * i64::from(rounding_q7);
-        let shift = QUANT_BITS + dequant_shift(size);
-        // `scaled = magnitude · unit` is below `divisor − offset` exactly when
-        // the magnitude is below the ceiling of their quotient.
-        let unit = i64::from(ROUNDING_Q7_ONE) << shift;
-        let zero_below = (divisor - offset + unit - 1) / unit;
         Self {
-            shift,
-            divisor,
-            offset,
-            zero_below: u32::try_from(zero_below).expect("bounded by the quantizer step"),
+            shift: QUANT_BITS + dequant_shift(size),
+            divisor: step * i64::from(ROUNDING_Q7_ONE),
+            offset: step * i64::from(rounding_q7),
         }
     }
 
-    fn level(self, value: i32) -> i32 {
-        if value.unsigned_abs() < self.zero_below {
-            return 0;
-        }
+    fn level(&self, value: i32) -> i32 {
         let scaled = (i64::from(value.unsigned_abs()) << self.shift) * i64::from(ROUNDING_Q7_ONE);
         let magnitude = (scaled + self.offset) / self.divisor;
         magnitude.min(i64::from(MAX_LEVEL)) as i32 * value.signum()
@@ -660,10 +653,21 @@ pub fn dequantize(
     qindex: impl Into<Qindices>,
     out: &mut [i16],
 ) -> Result<()> {
-    let qindex = qindex.into();
+    dequantize_levels::<true>(size, levels, qindex.into(), out)
+}
+
+/// Dequantize the coded region, checking levels from outside the quantizer.
+fn dequantize_levels<const CHECK: bool>(
+    size: TxSize,
+    levels: &[i32],
+    qindex: Qindices,
+    out: &mut [i16],
+) -> Result<()> {
     let area = size.coded_len();
     let levels = &levels[..area];
-    check_level_range(levels)?;
+    if CHECK {
+        check_level_range(levels)?;
+    }
     let step = quantizer_step_q3(qindex.ac).unsigned_abs();
     let shift = dequant_shift(size);
     // Sparse levels: all-zero chunks dequantize to zero without arithmetic.
@@ -716,7 +720,7 @@ fn dequantize_dc(size: TxSize, level: i32, qindex: Qindices) -> i16 {
 /// levels only, the rest of `out` left as it is: levels that end within
 /// the square's corner (the end of block bounds them) need nothing else,
 /// and a small corner of a large transform is a fraction of its area.
-fn dequantize_square(
+fn dequantize_square<const CHECK: bool>(
     size: TxSize,
     levels: &[i32],
     qindex: Qindices,
@@ -725,7 +729,7 @@ fn dequantize_square(
 ) -> Result<()> {
     let coded = size.coded_width();
     if side == coded {
-        return dequantize(size, levels, qindex, out);
+        return dequantize_levels::<CHECK>(size, levels, qindex, out);
     }
     let step = quantizer_step_q3(qindex.ac).unsigned_abs();
     let shift = dequant_shift(size);
@@ -735,7 +739,9 @@ fn dequantize_square(
         .take(side)
     {
         let levels = &levels[..side];
-        check_level_range(levels)?;
+        if CHECK {
+            check_level_range(levels)?;
+        }
         for (coefficient, &value) in out[..side].iter_mut().zip(levels) {
             *coefficient = dequantize_level(value, step, shift);
         }
@@ -843,21 +849,62 @@ pub fn reconstruct_into(
     coefficients: &mut [i16],
     residual: &mut [i16],
 ) -> Result<()> {
-    let qindex = qindex.into();
+    reconstruct_levels::<true>(
+        dsp,
+        (size, tx_type),
+        (levels, eob, dequantizer),
+        qindex.into(),
+        coefficients,
+        residual,
+    )
+}
+
+/// Reconstruct the encoder's own bounded levels with the statistics it
+/// calculated during quantization. Parsing and public reconstruction
+/// still check coefficients from bitstreams or other callers.
+pub(crate) fn reconstruct_quantized(
+    dsp: &Dsp,
+    transform: (TxSize, TxType),
+    (levels, stats, dequantizer): (&[i32], crate::coeff::LevelStats, Dequantizer),
+    qindex: Qindices,
+    coefficients: &mut [i16],
+    residual: &mut [i16],
+) -> Result<()> {
+    debug_assert!(check_level_range(&levels[..transform.0.coded_len()]).is_ok());
+    reconstruct_levels::<false>(
+        dsp,
+        transform,
+        (levels, stats.eob(), dequantizer),
+        qindex,
+        coefficients,
+        residual,
+    )
+}
+
+fn reconstruct_levels<const CHECK: bool>(
+    dsp: &Dsp,
+    (size, tx_type): (TxSize, TxType),
+    (levels, eob, dequantizer): (&[i32], usize, Dequantizer),
+    qindex: Qindices,
+    coefficients: &mut [i16],
+    residual: &mut [i16],
+) -> Result<()> {
     let lossless = is_lossless(size, tx_type, qindex.ac)?;
     let coefficients = &mut coefficients[..size.coded_len()];
     let corner = nonzero_corner(size, eob);
     match dequantizer {
         Dequantizer::Tcq if !lossless => {
-            check_level_range(&levels[..size.coded_len()])?;
+            if CHECK {
+                check_level_range(&levels[..size.coded_len()])?;
+            }
             crate::coeff::tcq::dequantize(size, (levels, eob), qindex, coefficients);
         }
         // The DCT kernels read only the corner's square of lane tiles.
         _ if tx_type == TxType::DctDct && !lossless => {
             let read = kernel_size(size).inverse_read_side(corner);
-            dequantize_square(size, levels, qindex, coefficients, read)?;
+            dequantize_square::<CHECK>(size, levels, qindex, coefficients, read)?;
         }
-        _ => dequantize(size, levels, qindex, coefficients)?,
+        _ => dequantize_levels::<CHECK>(size, levels, qindex, coefficients)?,
     }
     if lossless {
         residual[..WHT_AREA].copy_from_slice(&wht_inverse(wht_block(coefficients)));
@@ -959,9 +1006,22 @@ mod tests {
                         })
                         .collect();
                     let mut levels = vec![0; area];
-                    quantize(&dsp, size, &coefficients, (qindex, rounding), &mut levels);
-                    let dc = LevelQuantizer::new(size, qindex, dc_q7);
-                    let ac = LevelQuantizer::new(size, qindex, ac_q7);
+                    let qindices = Qindices {
+                        dc: if dc_q7 == ac_q7 {
+                            qindex
+                        } else {
+                            qindex.saturating_sub(9)
+                        },
+                        ac: qindex,
+                    };
+                    let nonzero =
+                        quantize(&dsp, size, &coefficients, (qindices, rounding), &mut levels);
+                    assert_eq!(
+                        nonzero as usize,
+                        levels.iter().filter(|&&level| level != 0).count()
+                    );
+                    let dc = LevelQuantizer::new(size, qindices.dc, dc_q7);
+                    let ac = LevelQuantizer::new(size, qindices.ac, ac_q7);
                     for (i, (&c, &level)) in coefficients.iter().zip(&levels).enumerate() {
                         let reference = if i == 0 { dc.level(c) } else { ac.level(c) };
                         assert_eq!(
@@ -2039,6 +2099,29 @@ mod tests {
         ],
     ];
     const QUANT_HASH: [u64; 1] = [0xaa57_e874_9ce9_9364];
+
+    #[test]
+    fn checked_inverse_rejects_levels_outside_the_coded_range() {
+        let dsp = Dsp::new();
+        for size in [TxSize::Tx4, TxSize::Tx32] {
+            let mut levels = vec![0; size.coded_len()];
+            levels[0] = -MAX_LEVEL - 1;
+            levels[1] = 1;
+            let mut coefficients = vec![0; size.coded_len()];
+            let mut residual = vec![0; size.width() * size.width()];
+            for dequantizer in [Dequantizer::Plain, Dequantizer::Tcq] {
+                let result = reconstruct_into(
+                    &dsp,
+                    (size, TxType::DctDct),
+                    (&levels, 2, dequantizer),
+                    100,
+                    &mut coefficients,
+                    &mut residual,
+                );
+                assert!(matches!(result, Err(DecodeError::Malformed(_))));
+            }
+        }
+    }
 
     #[test]
     fn matches_original_avm_transforms_and_dequantization() {

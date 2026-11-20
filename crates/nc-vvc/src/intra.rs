@@ -667,13 +667,12 @@ pub(crate) fn choose(
                 modes
             } else {
                 let mut proxy = DirectionProxy::new(dsp, &references, &source_luma, lambda);
-                let mut ranked: Vec<(u8, f32)> = modes
-                    .into_iter()
-                    .map(|m| (m, proxy.cost(m, contexts, candidates)))
-                    .collect();
-                ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
-                ranked.truncate(rd_candidates);
-                ranked.into_iter().map(|(m, _)| m).collect()
+                nc_encoder::rank_intra(modes, rd_candidates, |m| {
+                    proxy.cost(m, contexts, candidates)
+                })
+                .into_iter()
+                .map(|(m, _)| m)
+                .collect()
             }
         }
         DirectionSearch::Ranked {

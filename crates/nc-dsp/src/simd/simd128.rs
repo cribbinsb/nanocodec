@@ -433,6 +433,16 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn pair_sum_u8(src: &[u8]) -> Self {
+        use core::arch::wasm32::{u16x8_extadd_pairwise_u8x16, v128_load};
+        let src = &src[..16];
+        // SAFETY: `src` holds 16 bytes; `v128_load` has no alignment requirement.
+        Self(u16x8_extadd_pairwise_u8x16(unsafe {
+            v128_load(src.as_ptr().cast())
+        }))
+    }
+
+    #[inline(always)]
     fn load_i8(src: &[i8]) -> Self {
         let src = &src[..8];
         // SAFETY: `src` holds 8 bytes.

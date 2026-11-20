@@ -92,21 +92,83 @@ pub(crate) unsafe fn add<B: ByteLanes>(
     dst: &mut [u8],
     stride: usize,
 ) {
-    const VECTOR: usize = 16;
     assert!(vector_width(width));
     assert!(height == 0 || (stride >= width && dst.len() >= (height - 1) * stride + width));
     let residual = residual.clamp(-255, 255);
     let up = B::splat(residual.max(0) as u8);
     let down = B::splat((-residual).max(0) as u8);
-    let bytes = width.min(VECTOR);
+    // One loop per width, so each row is straight-line code with the
+    // vector size fixed (a runtime width cost a loop and a size branch per
+    // row: ~450 instructions for a 16x16 DC block).
+    // SAFETY: as `add_rows` requires: the block check above, the ISA from
+    // the caller.
+    unsafe {
+        match width {
+            4 => add_rows::<B, 4>(up, down, height, dst, stride),
+            8 => add_rows::<B, 8>(up, down, height, dst, stride),
+            16 => add_rows::<B, 16>(up, down, height, dst, stride),
+            32 => add_rows::<B, 32>(up, down, height, dst, stride),
+            64 => add_rows::<B, 64>(up, down, height, dst, stride),
+            _ => add_rows_any::<B>(up, down, width, height, dst, stride),
+        }
+    }
+}
+
+/// Sixteen bytes a vector (or the low eight or four).
+const VECTOR: usize = 16;
+
+/// [`add`] on blocks `W` wide.
+///
+/// # Safety
+///
+/// `B`'s ISA must be enabled; `dst` covers `height` rows of `W` samples
+/// `stride` apart.
+#[inline(always)]
+unsafe fn add_rows<B: ByteLanes, const W: usize>(
+    up: B,
+    down: B,
+    height: usize,
+    dst: &mut [u8],
+    stride: usize,
+) {
+    let bytes = const { if W < VECTOR { W } else { VECTOR } };
     let base = dst.as_mut_ptr();
     for y in 0..height {
-        for x in (0..width).step_by(VECTOR) {
-            // SAFETY: the block check above covers `bytes` samples from
-            // (x, y); the caller enables the ISA.
+        for x in (0..W).step_by(VECTOR) {
+            // SAFETY: the caller's block covers `bytes` samples from (x, y)
+            // and enables the ISA.
             unsafe {
                 let p = base.add(y * stride + x);
                 B::load(p, bytes).add_sat(up).sub_sat(down).store(p, bytes);
+            }
+        }
+    }
+}
+
+/// [`add_rows`] at a runtime width that is a multiple of 16.
+///
+/// # Safety
+///
+/// As [`add_rows`].
+#[inline(always)]
+unsafe fn add_rows_any<B: ByteLanes>(
+    up: B,
+    down: B,
+    width: usize,
+    height: usize,
+    dst: &mut [u8],
+    stride: usize,
+) {
+    let base = dst.as_mut_ptr();
+    for y in 0..height {
+        for x in (0..width).step_by(VECTOR) {
+            // SAFETY: as in `add_rows`.
+            unsafe {
+                let p = base.add(y * stride + x);
+                B::load(p, VECTOR)
+                    .add_sat(up)
+                    .sub_sat(down)
+                    .store(p, VECTOR);
             }
         }
     }

@@ -88,32 +88,43 @@ impl SavedMv {
 }
 
 /// The vectors a frame keeps (§7.19), one per 8x8 unit.
+///
+/// Like [`super::motion::MotionGrid`] (dav1d `splat_mv`), the store has a
+/// block's worth of spare units past the frame's right and bottom edges,
+/// so a block is written whole, one fixed-width run per row, never clipped
+/// to the frame (units outside it are never read).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SavedMotion {
     units: Vec<SavedMv>,
+    /// Units per row, the spare ones included.
+    stride: usize,
     columns: usize,
     rows: usize,
 }
+
+/// The widest block (128 samples), in 8x8 units: the spare units past
+/// each edge.
+const MAX_BLOCK_UNITS: usize = 16;
 
 impl SavedMotion {
     /// The store of a frame of `mi_cols` x `mi_rows` 4x4 units, empty.
     pub(crate) fn new(mi_cols: usize, mi_rows: usize) -> Self {
         let (columns, rows) = (mi_cols.div_ceil(2), mi_rows.div_ceil(2));
+        let stride = columns + MAX_BLOCK_UNITS;
         Self {
-            units: vec![SavedMv::NONE; columns * rows],
+            units: vec![SavedMv::NONE; stride * (rows + MAX_BLOCK_UNITS)],
+            stride,
             columns,
             rows,
         }
     }
 
     /// Keep the vectors of `cell`, the block at 4x4 unit (`mi_col`,
-    /// `mi_row`) covering `w4` x `h4` units inside the frame: the last of
-    /// its references that is not ahead of the frame (`side` false) with a
-    /// small enough vector.
+    /// `mi_row`): the last of its references that is not ahead of the
+    /// frame (`side` false) with a small enough vector.
     pub(crate) fn record(
         &mut self,
         (mi_col, mi_row): (usize, usize),
-        (w4, h4): (usize, usize),
         cell: &MotionCell,
         side: [bool; TOTAL_REFS],
     ) {
@@ -127,16 +138,37 @@ impl SavedMotion {
                 kept = SavedMv::new(reference, mv);
             }
         }
-        let (x8, y8) = (mi_col >> 1, mi_row >> 1);
-        for row in y8..y8 + h4.div_ceil(2) {
-            let start = row * self.columns;
-            self.units[start + x8..start + x8 + w4.div_ceil(2)].fill(kept);
+        // A block 4 units wide (high) covers half an 8x8 unit, whose
+        // value is that of the block after it (at the odd unit).
+        let at = (mi_row >> 1) * self.stride + (mi_col >> 1);
+        let h8 = cell.height_mi().div_ceil(2);
+        match cell.width_mi() {
+            1 | 2 => self.splat::<1>(at, h8, kept),
+            4 => self.splat::<2>(at, h8, kept),
+            8 => self.splat::<4>(at, h8, kept),
+            16 => self.splat::<8>(at, h8, kept),
+            _ => self.splat::<MAX_BLOCK_UNITS>(at, h8, kept),
+        }
+    }
+
+    /// Write `kept` over `h8` rows of `W` units from position `at`, the
+    /// block's area sliced once and walked by rows.
+    #[allow(
+        clippy::inline_always,
+        reason = "once per block; each width is a few stores per row"
+    )]
+    #[inline(always)]
+    fn splat<const W: usize>(&mut self, at: usize, h8: usize, kept: SavedMv) {
+        let area = &mut self.units[at..at + (h8 - 1) * self.stride + W];
+        for row in area.chunks_mut(self.stride) {
+            let run: &mut [SavedMv; W] = (&mut row[..W]).try_into().expect("a row of W units");
+            *run = [kept; W];
         }
     }
 
     /// The kept vectors of row `y8` of units.
     fn row(&self, y8: usize) -> &[SavedMv] {
-        &self.units[y8 * self.columns..(y8 + 1) * self.columns]
+        &self.units[y8 * self.stride..y8 * self.stride + self.columns]
     }
 }
 

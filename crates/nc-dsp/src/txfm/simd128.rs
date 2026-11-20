@@ -1,6 +1,8 @@
 //! WebAssembly SIMD128 transform kernels: the generic 2-D DCT drivers on 4
-//! lanes, the guarded 16-bit inverses (`simd128_inverse`) for 8x8 and
-//! larger, and quantisation by exact reciprocal multiplication.
+//! lanes for the 4x4 and 8x8 forwards, the 16-bit forwards
+//! (`simd128_forward`, `narrow_forward`) for 16x16 and larger, the guarded
+//! 16-bit inverses (`simd128_inverse`) for 8x8 and larger, and quantisation
+//! by exact reciprocal multiplication.
 //!
 //! Kernel contract: see the `txfm` module docs. This module only exists in
 //! builds with SIMD128 enabled, so its kernels need no run-time check.
@@ -20,21 +22,27 @@ use core::arch::wasm32::{
 
 use super::scalar::{fix_dc, quantize_tail};
 use super::{
-    Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, generic, simd128_inverse,
+    Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, generic, simd128_forward,
+    simd128_inverse,
 };
 use crate::simd::simd128::I32x4;
 
 /// The SIMD128 transform table.
 pub(crate) fn txfm_fns() -> TxfmFns {
     TxfmFns {
-        forward_dct: [forward_4, forward_8, forward_16, forward_32],
+        forward_dct: [
+            forward_4,
+            forward_8,
+            simd128_forward::forward_16,
+            simd128_forward::forward_32,
+        ],
         inverse_dct_add: [
             inverse_4,
             simd128_inverse::inverse_8,
             simd128_inverse::inverse_16,
             simd128_inverse::inverse_32,
         ],
-        forward_dct_64: forward_64,
+        forward_dct_64: simd128_forward::forward_64,
         inverse_dct_add_64: simd128_inverse::inverse_64,
         inverse_dct_add_sparse: [
             simd128_inverse::inverse_16_sparse,
@@ -50,16 +58,22 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         forward_dct_raster: [
             forward_4_raster,
             forward_8_raster,
-            forward_16_raster,
-            forward_32_raster,
+            simd128_forward::forward_16_raster,
+            simd128_forward::forward_32_raster,
         ],
         forward_dct_low: [
-            Some(forward_16_low),
-            Some(forward_32_low),
-            Some(forward_64_low),
+            Some(simd128_forward::forward_16_low),
+            Some(simd128_forward::forward_32_low),
+            Some(simd128_forward::forward_64_low),
         ],
-        forward_dct_raster_low: [Some(forward_16_low_raster), Some(forward_32_low_raster)],
-        forward_dct_raster_bounded: [forward_16_bounded, forward_32_bounded],
+        forward_dct_raster_low: [
+            Some(simd128_forward::forward_16_low_raster),
+            Some(simd128_forward::forward_32_low_raster),
+        ],
+        forward_dct_raster_bounded: [
+            simd128_forward::forward_16_bounded,
+            simd128_forward::forward_32_bounded,
+        ],
     }
 }
 
@@ -120,13 +134,11 @@ macro_rules! simd128_raster {
     )*};
 }
 
-simd128_raster!(forward_4_raster, forward_4_layout; forward_8_raster, forward_8_layout; forward_16_raster, forward_16_layout;
-                forward_32_raster, forward_32_layout);
+simd128_raster!(forward_4_raster, forward_4_layout; forward_8_raster, forward_8_layout);
 
 simd128_sizes!(forward_4, inverse_4);
 
-/// Forward DCTs of the sizes whose inverses run on 16-bit lanes
-/// (`simd128_inverse`).
+/// The 8x8 forward DCT (16x16 and larger: `simd128_forward`).
 macro_rules! simd128_forward {
     ($($forward:ident),*) => {$(
         unsafe fn $forward(residual: &[i16], stride: usize, out: &mut [i16]) {
@@ -136,12 +148,7 @@ macro_rules! simd128_forward {
     )*};
 }
 
-simd128_forward!(forward_8, forward_16, forward_32);
-
-unsafe fn forward_64(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: SIMD128 is enabled for the whole build.
-    unsafe { generic::forward_64_pruned::<I32x4>(residual, stride, out) }
-}
+simd128_forward!(forward_8);
 
 /// Quantiser storage loaded and stored as two four-lane 32-bit halves (then
 /// one half for a short tail).
@@ -343,64 +350,4 @@ unsafe fn quantize_from<S: Lanes, D: Lanes>(coeffs: &[S], q: &QuantTerms, out: &
 unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     // SAFETY: SIMD128 is enabled for this function.
     unsafe { generic::dequantize::<I32x4>(levels, q, out) }
-}
-
-/// The low-frequency 16-point forward (`generic::forward_16_low`).
-unsafe fn forward_16_low(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe {
-        generic::forward_16_low::<I32x4, { super::low_keep(16) }, false>(residual, stride, out);
-    }
-}
-
-/// The low-frequency 16-point forward (raster) (`generic::forward_16_low`).
-unsafe fn forward_16_low_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe {
-        generic::forward_16_low::<I32x4, { super::low_keep(16) }, true>(residual, stride, out);
-    }
-}
-
-/// The low-frequency 32-point forward (`generic::forward_32_low`).
-unsafe fn forward_32_low(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe {
-        generic::forward_32_low::<I32x4, { super::low_keep(32) }, false>(residual, stride, out);
-    }
-}
-
-/// The low-frequency 64x64 forward (`generic::forward_64_low`).
-unsafe fn forward_64_low(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe { generic::forward_64_low::<I32x4, { super::low_keep(64) }>(residual, stride, out) }
-}
-
-/// The low-frequency 32-point forward (raster) (`generic::forward_32_low`).
-unsafe fn forward_32_low_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe {
-        generic::forward_32_low::<I32x4, { super::low_keep(32) }, true>(residual, stride, out);
-    }
-}
-
-/// The bounded raster 16-point forward (`generic::forward_16_bounded`).
-unsafe fn forward_16_bounded(
-    residual: &[i16],
-    stride: usize,
-    zero_limit: u32,
-    out: &mut [i16],
-) -> bool {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe { generic::forward_16_bounded::<I32x4>(residual, stride, zero_limit, out) }
-}
-
-/// The bounded raster 32-point forward (`generic::forward_32_bounded`).
-unsafe fn forward_32_bounded(
-    residual: &[i16],
-    stride: usize,
-    zero_limit: u32,
-    out: &mut [i16],
-) -> bool {
-    // SAFETY: the ISA is enabled for this function; forwarded contract.
-    unsafe { generic::forward_32_bounded::<I32x4>(residual, stride, zero_limit, out) }
 }

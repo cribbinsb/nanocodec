@@ -14,6 +14,7 @@
 #![allow(clippy::inline_always)]
 #![allow(unsafe_code)]
 
+#[cfg(not(target_arch = "x86_64"))]
 use crate::intra_prediction::filter::{
     FILTER_TAP_COLUMNS, FilterGrid, FilterIntraMode, PATCH_SAMPLES, SCALE_BITS, TAPS, patch_inputs,
     store_patch,
@@ -22,13 +23,17 @@ use nc_common::PlaneViewMut;
 
 use crate::intra_prediction::{IntraEdges, directional};
 use crate::lpf_bytes::{self, Bytes, LANES};
-use crate::simd::{I16FilterLanes, I16Lanes};
+use crate::simd::I16FilterLanes;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::simd::I16Lanes;
 
 /// Side of the blocks whose Paeth rows go two to a vector.
 const PAIRED_SIDE: usize = 4;
 
 /// Patch width and height (`filter`'s 4x2 patches).
+#[cfg(not(target_arch = "x86_64"))]
 const PATCH_W: usize = 4;
+#[cfg(not(target_arch = "x86_64"))]
 const PATCH_H: usize = 2;
 
 /// As `filter::predict_patches`, a patch per vector.
@@ -36,6 +41,7 @@ const PATCH_H: usize = 2;
 /// # Safety
 ///
 /// `V`'s ISA must be available; `V::LANES` is [`PATCH_SAMPLES`].
+#[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 pub(crate) unsafe fn filter_patches<V: I16Lanes>(
     grid: &mut FilterGrid,
@@ -178,24 +184,32 @@ pub(crate) unsafe fn paeth_4x4<V: I16FilterLanes>(edges: &IntraEdges, dst: &mut 
     }
 }
 
-/// Instantiates one ISA's kernels: filter intra on `$v8`; Paeth on `$v8`
-/// (4x4 two rows per vector) and `$wide`; smooth through the ISA module's
-/// own `smooth` from 8x8 (4x4 is the scalar code, which measured faster).
-macro_rules! av1_intra_kernels {
-    ($(#[$attr:meta])*; $v8:ty, $wide:ty) => {
-        use $crate::intra_prediction::filter::{FilterGrid, FilterIntraMode};
-
+/// Instantiates one ISA's filter intra patches on `$v8` (AVX2 has its
+/// own, byte-pair multiply-adds).
+#[cfg(not(target_arch = "x86_64"))]
+macro_rules! filter_patch_kernel {
+    ($(#[$attr:meta])*; $v8:ty) => {
         $(#[$attr])*
         pub(crate) unsafe fn filter_patches(
-            grid: &mut FilterGrid,
+            grid: &mut $crate::intra_prediction::filter::FilterGrid,
             width: usize,
             height: usize,
-            mode: FilterIntraMode,
+            mode: $crate::intra_prediction::filter::FilterIntraMode,
         ) {
             // SAFETY: see the module docs.
             unsafe { super::generic::filter_patches::<$v8>(grid, width, height, mode) }
         }
+    };
+}
 
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) use filter_patch_kernel;
+
+/// Instantiates one ISA's kernels: Paeth on `$v8` (4x4 two rows per
+/// vector) and `$wide`; smooth through the ISA module's own `smooth` from
+/// 8x8 (4x4 is the scalar code, which measured faster).
+macro_rules! av1_intra_kernels {
+    ($(#[$attr:meta])*; $v8:ty, $wide:ty) => {
         $(#[$attr])*
         pub(crate) unsafe fn smooth_paeth(
             edges: &$crate::intra_prediction::IntraEdges,

@@ -119,6 +119,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_av1_deblock::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av1_grid::check(&candidate, &reference, &mut rng.clone(), &mut report);
     crate::check_filter_runs::check(&candidate, &reference, &mut rng.clone(), &mut report);
+    crate::check_lane_filters::check(&candidate, &reference, &mut rng.clone(), &mut report);
     crate::check_vp9_intra::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_h264_intra::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_hevc_intra::check(&candidate, &reference, &mut rng, &mut report);

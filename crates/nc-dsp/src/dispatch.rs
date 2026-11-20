@@ -44,6 +44,96 @@ use crate::sao::{self, Rect, SAO_EO_NEIGHBOURS, SaoFns, SaoStats};
 use crate::simd::saturate_i16;
 use crate::txfm::{self, Av1Quantizer, DctSize, TxfmFns};
 
+/// Geometry and kernels shared by the blocks of one CDEF plane.
+struct CdefPlane<'a> {
+    source: &'a CdefSource,
+    size: usize,
+    width: usize,
+    height: usize,
+    filled_rows: usize,
+    destination_stride: usize,
+    interior: cdef::CdefFn8,
+    edge: cdef::CdefFn,
+}
+
+impl<'a> CdefPlane<'a> {
+    #[inline]
+    fn new(dsp: &Dsp, size: usize, source: &'a CdefSource, dst: &PlaneViewMut<'_>) -> Self {
+        let (interior, edge) = match size {
+            8 => (dsp.cdef.block8_interior, dsp.cdef.block8),
+            4 => (dsp.cdef.block4_interior, dsp.cdef.block4),
+            _ => panic!("CDEF blocks are 8x8 or 4x4, not {size}"),
+        };
+        let (width, height) = (source.width(), source.height());
+        assert!(
+            width >= size && height >= size,
+            "CDEF source smaller than a block"
+        );
+        assert!(
+            dst.width() >= width && dst.height() >= height,
+            "CDEF destination smaller than the plane"
+        );
+        Self {
+            source,
+            size,
+            width,
+            height,
+            filled_rows: source.filled_rows(),
+            destination_stride: dst.stride(),
+            interior,
+            edge,
+        }
+    }
+
+    #[inline]
+    fn filter(&self, (x, y): (usize, usize), args: &CdefArgs, dst: &mut [u8]) {
+        let reach = crate::CDEF_PADDING;
+        assert!(
+            x <= self.width - self.size && y <= self.height - self.size,
+            "CDEF block outside the plane"
+        );
+        let (right, bottom) = (x + self.size, y + self.size);
+        assert!(
+            (bottom + reach).min(self.height) <= self.filled_rows,
+            "CDEF block reads source rows not copied yet"
+        );
+        let stride = self.destination_stride;
+        let out = &mut dst[y * stride + x..];
+        if x >= reach && y >= reach && right + reach <= self.width && bottom + reach <= self.height
+        {
+            // SAFETY: the table matches this CPU. The checks above keep
+            // every tap inside the plane and its filled rows; index and
+            // the kernel's window check catch dropped rows. The
+            // destination covers the source plane (checked in new).
+            unsafe {
+                (self.interior)(
+                    self.source.samples(),
+                    self.width,
+                    self.source.index(x, y),
+                    args,
+                    out,
+                    stride,
+                );
+            }
+        } else {
+            let side = self.size + 2 * reach;
+            let window = self.source.padded_window(x, y, self.size);
+            // SAFETY: as above; the padded window holds the full block
+            // plus the filter's reach on each side.
+            unsafe {
+                (self.edge)(
+                    &window[..side * side],
+                    side,
+                    reach * side + reach,
+                    args,
+                    out,
+                    stride,
+                );
+            }
+        }
+    }
+}
+
 /// Pixel kernels for one ISA. Cheap to copy; create one per encoder or
 /// decoder instance.
 ///
@@ -389,8 +479,15 @@ impl Dsp {
         kind: crate::intra_prediction::av1_block::IntraKind,
         dst: &mut nc_common::PlaneViewMut<'_>,
     ) {
-        use crate::intra_prediction::av1_block::Square;
+        use crate::intra_prediction::av1_block::{Square, ZoneBlock};
         let intra = &self.high.av1_intra;
+        let zones = intra.zones_u8.map(|kernel| {
+            move |block: &ZoneBlock<'_, u8>, dst: &mut nc_common::PlaneViewMut<'_>| {
+                // SAFETY: `self.high` matches this CPU's supported ISA; the
+                // kernel checks that the block fits.
+                unsafe { kernel(block, dst) }
+            }
+        });
         edges.predict_full(
             |square, prediction, dst| match prediction {
                 Square::Angle(angle) => self.av1_intra_predict_angle(square, angle, dst),
@@ -402,6 +499,7 @@ impl Dsp {
             |e, k, dst| unsafe { (intra.smooth_u8)(e, k, dst) },
             // SAFETY: `self.high` matches this CPU's supported ISA.
             |win, weight, out| unsafe { (intra.run_u8)(win, weight, out) },
+            zones.as_ref().map(|kernel| kernel as _),
             kind,
             dst,
         );
@@ -2164,6 +2262,11 @@ impl Dsp {
         dst: &mut PlaneViewMut<'_>,
     ) {
         assert!(matches!(sec, 0 | 1 | 2 | 4), "CDEF strength out of range");
+        if blocks.is_empty() {
+            return;
+        }
+        let plane = CdefPlane::new(self, size, src, dst);
+        let out = dst.data_mut();
         // Strength-derived arguments, by primary strength.
         let mut by_strength: [Option<CdefArgs>; 16] = [None; 16];
         for block in blocks {
@@ -2171,7 +2274,7 @@ impl Dsp {
             let args = by_strength[usize::from(block.pri)]
                 .get_or_insert_with(|| CdefArgs::new(block.pri, sec, 0, damping))
                 .with_dir(block.dir);
-            self.cdef_filter_block_at(size, src, (block.x, block.y), &args, dst);
+            plane.filter((block.x, block.y), &args, out);
         }
     }
 
@@ -2198,55 +2301,7 @@ impl Dsp {
         args: &CdefArgs,
         dst: &mut PlaneViewMut<'_>,
     ) {
-        let (interior_kernel, edge_kernel) = match size {
-            8 => (self.cdef.block8_interior, self.cdef.block8),
-            4 => (self.cdef.block4_interior, self.cdef.block4),
-            _ => panic!("CDEF blocks are 8x8 or 4x4, not {size}"),
-        };
-        let reach = crate::CDEF_PADDING;
-        let (width, height) = (src.width(), src.height());
-        assert!(
-            x + size <= width
-                && y + size <= height
-                && dst.width() >= width
-                && dst.height() >= height,
-            "CDEF block outside the plane"
-        );
-        assert!(
-            (y + size + reach).min(height) <= src.filled_rows(),
-            "CDEF block reads source rows not copied yet"
-        );
-        let dst_stride = dst.stride();
-        let out = &mut dst.data_mut()[y * dst_stride + x..];
-        if cdef::band::is_interior(src, (x, y), size) {
-            // Every tap is inside the plane: the 8-bit kernel reads it
-            // directly.
-            // SAFETY: the table matches this CPU (built after
-            // `is_supported`); every tap lies inside the plane, in rows
-            // `src.samples()` holds (checked above; `index` and the kernel's
-            // window check catch dropped rows), and `out` starts at the
-            // block, which lies inside the plane `dst` views.
-            unsafe {
-                interior_kernel(src.samples(), width, src.index(x, y), args, out, dst_stride);
-            }
-        } else {
-            // Near an edge: a padded 16-bit copy of the block's window
-            // marks the samples outside the plane (`cdef` module docs).
-            let side = size + 2 * reach;
-            let window = src.padded_window(x, y, size);
-            // SAFETY: as above; the window holds the block plus `reach`
-            // samples on every side.
-            unsafe {
-                edge_kernel(
-                    &window[..side * side],
-                    side,
-                    reach * side + reach,
-                    args,
-                    out,
-                    dst_stride,
-                );
-            }
-        }
+        CdefPlane::new(self, size, src, dst).filter((x, y), args, dst.data_mut());
     }
 
     /// [`Dsp::cdef_filter`] reading the unfiltered 8-bit plane `src`
@@ -2656,6 +2711,8 @@ impl Dsp {
     /// Filter sparse AV1 edge runs, including final scalar tails in supplied order.
     /// Empty runs are ignored. Adjacent equal filters may share a kernel call.
     /// The caller schedules codec-specific passes; no dense grid is allocated.
+    /// `lanes` is the reusable entry table of the lane kernels (kept by the
+    /// caller between passes and frames).
     ///
     /// # Panics
     /// Invalid run lengths or footprints panic when consumed. Earlier runs may
@@ -2665,6 +2722,7 @@ impl Dsp {
         dst: &mut PlaneViewMut<'_>,
         vertical: bool,
         runs: &[crate::EdgeRun<Av1EdgeFilter>],
+        lanes: &mut crate::LoopFilterLanes,
     ) {
         let plane = deblock::runs::Plane {
             width: dst.width(),
@@ -2672,11 +2730,52 @@ impl Dsp {
             stride: dst.stride(),
             vertical,
         };
+        if self.deblock.av1_lanes.is_some() && lanes.fill_av1(&plane, runs).is_some() {
+            self.av1_loop_filter_lanes(dst, vertical, lanes);
+            return;
+        }
         // SAFETY: the instance selected a supported ISA; the run traversal
         // checks each footprint against the valid view before calling a kernel.
         unsafe {
             (self.deblock.av1_runs)(dst.data_mut(), plane, runs);
         }
+    }
+
+    /// Begin an AV1 pass (all vertical or all horizontal edges of `dst`)
+    /// whose edges the caller writes into `lanes` as it finds them
+    /// ([`crate::LoopFilterLanes::set_av1`], `chroma`: the plane's filters
+    /// are chroma's), then filters with [`Dsp::av1_loop_filter_lanes`].
+    /// `false` when this ISA has no lane kernels or the plane does not fit
+    /// them: then use [`Dsp::av1_loop_filter_runs`].
+    #[must_use]
+    pub fn av1_lane_pass(
+        &self,
+        dst: &PlaneViewMut<'_>,
+        vertical: bool,
+        chroma: bool,
+        lanes: &mut crate::LoopFilterLanes,
+    ) -> bool {
+        self.deblock.av1_lanes.is_some()
+            && lanes.start_av1((dst.width(), dst.height(), dst.stride()), vertical, chroma)
+    }
+
+    /// Filter the entries of the pass in `lanes` (begun by
+    /// [`Dsp::av1_lane_pass`] or filled from runs), clearing them.
+    pub fn av1_loop_filter_lanes(
+        &self,
+        dst: &mut PlaneViewMut<'_>,
+        vertical: bool,
+        lanes: &mut crate::LoopFilterLanes,
+    ) {
+        let kernel = self
+            .deblock
+            .av1_lanes
+            .expect("a lane pass needs lane kernels");
+        let stride = dst.stride();
+        let chroma = lanes.chroma;
+        // SAFETY: the instance selected a supported ISA; the kernel checks
+        // every group's tile against the view.
+        unsafe { kernel(dst.data_mut(), stride, vertical, chroma, lanes) };
     }
 
     /// Filter sparse HEVC luma runs whose lengths are multiples of four in supplied order.
@@ -3764,6 +3863,9 @@ impl Dsp {
         }
         let stride = dst.stride();
         let index = tx.index().expect("valid size (checked by fits)");
+        // Only AArch64 tables hold direct functions: elsewhere the lookup
+        // is not compiled (it ran for every block).
+        #[cfg(target_arch = "aarch64")]
         if let Some(direct) = self.av1_inverse.direct_i16[index][kind as usize] {
             let last = i32::try_from(eob.min(tx.coded_area()) - 1).expect("at most 1024");
             // SAFETY: the table holds dav1d's NEON functions only on AArch64
@@ -3971,6 +4073,22 @@ impl Dsp {
     ///
     /// If `out` is shorter than `coeffs` or a step is zero.
     pub fn av1_quantize_from_wide(&self, coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u32 {
+        self.quantize_from_wide_with_dc_rounding(coeffs, q, q.rounding_q7, out)
+    }
+
+    /// Quantize 32-bit coefficients with a separate DC rounding offset.
+    /// Both rounding offsets are in 1/128 of a step, in 0..128.
+    ///
+    /// # Panics
+    ///
+    /// If the output is shorter than the coefficients or a step is nonpositive.
+    pub fn quantize_from_wide_with_dc_rounding(
+        &self,
+        coeffs: &[i32],
+        q: &Av1Quantizer,
+        dc_rounding_q7: i32,
+        out: &mut [i32],
+    ) -> u32 {
         assert!(
             q.dc_step > 0 && q.ac_step > 0,
             "quantiser steps must be positive"
@@ -3979,7 +4097,9 @@ impl Dsp {
             out.len() >= coeffs.len(),
             "quantise output shorter than input"
         );
-        let q = txfm::QuantTerms::from(q);
+        let dc_offset = (q.dc_step * dc_rounding_q7) as u32;
+        let mut q = txfm::QuantTerms::from(q);
+        q.dc.offset = dc_offset;
         // SAFETY: as for `av1_forward_dct`; `out` covers `coeffs`.
         unsafe { (self.txfm.quantize_from_wide)(coeffs, &q, out) }
     }

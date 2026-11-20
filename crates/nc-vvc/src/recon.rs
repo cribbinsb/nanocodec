@@ -823,34 +823,12 @@ pub(crate) fn store(
         .plane_mut(plane)
         .region_mut(x as isize, y as isize, width, height)
         .unwrap();
-    copy_prediction(&mut view, pred, width);
+    // The shared block-copy rows (one checked rectangle; the per-row
+    // `memcpy` calls this replaced were 1.3% of a Jetson Default encode).
+    let stride = view.stride();
+    dsp.block_copies()
+        .copy_rect(pred, width, view.data_mut(), stride, (width, height), false);
     add(dsp, &mut view, levels, scaling);
-}
-
-/// Copy `pred` (`width` samples per row) into `view`, by block width so
-/// each row is a fixed-size move: a `memcpy` call per row was 1.3% of a
-/// Jetson Default encode (gdb samples, CBR 600).
-fn copy_prediction(view: &mut PlaneViewMut<'_>, pred: &[u8], width: usize) {
-    match width {
-        4 => copy_rows::<4>(view, pred),
-        8 => copy_rows::<8>(view, pred),
-        16 => copy_rows::<16>(view, pred),
-        32 => copy_rows::<32>(view, pred),
-        64 => copy_rows::<64>(view, pred),
-        _ => {
-            for (row, samples) in pred.chunks_exact(width).enumerate() {
-                view.row_mut(row).copy_from_slice(samples);
-            }
-        }
-    }
-}
-
-/// [`copy_prediction`] of rows `W` samples wide.
-fn copy_rows<const W: usize>(view: &mut PlaneViewMut<'_>, pred: &[u8]) {
-    for (row, samples) in pred.as_chunks::<W>().0.iter().enumerate() {
-        let target: &mut [u8; W] = (&mut view.row_mut(row)[..W]).try_into().unwrap();
-        *target = *samples;
-    }
 }
 
 /// [`add`] of a block of other kinds (MTS): its levels, or their

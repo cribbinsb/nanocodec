@@ -487,6 +487,10 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--rounds", type=int, default=act.HOST_ROUNDS)
     parser.add_argument("--binary", type=Path, help="our build for the instance's architecture "
                         "(default: each family's x86 release build from the chart's record)")
+    parser.add_argument("--binaries", action="append", default=[], metavar="NAME=PATH",
+                        help="several builds of ours staged as bin/NAME, which the plan's "
+                             "commands name ({BIN}/NAME): one session times them side by "
+                             "side (each checked by its own --version line)")
     parser.add_argument("--tools-dir", type=Path,
                         help=f"reference encoders (default for x86: {X86_TOOLS})")
     parser.add_argument("--expect-version", help="our binary's `--version` line (default: "
@@ -539,12 +543,15 @@ def main(argv: list[str]) -> None:
     out = args.out or WORK_DIR / f"timing-{args.instance_type}-{stamp}"
     # sessions run side by side: one staging directory each
     stage_dir = WORK_DIR / f"stage-{args.instance_type}-{stamp}-{os.getpid()}"
-    ours = {"nanocodec": args.binary} if args.binary else chart_binaries(plan)
+    named = dict(pair.split("=", 1) for pair in args.binaries)
+    ours = ({name: Path(path) for name, path in named.items()} if named
+            else {"nanocodec": args.binary} if args.binary else chart_binaries(plan))
     if args.baseline_binary:
         ours[BASELINE_BINARY] = args.baseline_binary
     # the remote readiness check compares each binary's version stamp with these
-    versions = {name: args.expect_version or subprocess.run(
-        [str(path), "--version"], capture_output=True, text=True, check=True).stdout.strip()
+    # an explicit empty --expect-version: a build whose --version prints nothing (before 2026-11-11)
+    versions = {name: args.expect_version if args.expect_version is not None else subprocess.run(
+        [str(path), "--version"], capture_output=True, text=True, check=not named).stdout.strip()
         for name, path in ours.items()}
     stage(stage_dir, plan, ours, args.tools_dir or X86_TOOLS)
     if args.checkasm:

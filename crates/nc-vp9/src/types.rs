@@ -216,10 +216,7 @@ impl ModeInfoGrid {
     /// Store `info` over the block's units, clipped to the frame.
     pub(crate) fn fill(&mut self, row: usize, col: usize, info: ModeInfo) {
         let units = 1usize << (info.size_log2 - MI_LOG2);
-        for r in row..(row + units).min(self.rows) {
-            let start = r * self.cols + col;
-            let end = r * self.cols + (col + units).min(self.cols);
-            self.cells[start..end].fill(info);
-        }
+        let grid = (self.cols, self.rows);
+        nc_common::cell_grid::fill_square(&mut self.cells, grid, (row, col), units, info);
     }
 }

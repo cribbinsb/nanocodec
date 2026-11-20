@@ -189,7 +189,12 @@ TIMING_HARDWARE_FILE = f"{RESULTS}/bd-vs-speed-timing-nvenc.json"
 #: the build directory's copy, so a preset change alone needs no new binary.
 PRESETS_PATH, OLD_PRESETS_PATH = "crates/nc-encoder/presets", "presets"
 BINARY_INPUTS = ("crates", f":(exclude){PRESETS_PATH}", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo")
-BUILD_INPUTS = (*BINARY_INPUTS, PRESETS_PATH, OLD_PRESETS_PATH)
+#: Everything a build directory depends on: the binary's sources and its presets. Not
+#: `(*BINARY_INPUTS, PRESETS_PATH, ...)`: git applies an `:(exclude)` pathspec to the
+#: whole list, so the presets path stayed excluded and presets-only commits were taken
+#: for the same build (2026-11-19, binary_for.sh b51ddbb40 returned b9c7a6382's build).
+BUILD_INPUTS = ("crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo",
+                OLD_PRESETS_PATH)
 #: Written last into a finished build directory (on both machines).
 COMPLETE_MARKER = "COMMIT"
 #: x86 timing machines side by side (aws_timing.TIMING_MACHINE, one pair at a time on

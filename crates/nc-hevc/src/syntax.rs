@@ -13,12 +13,13 @@
 use nc_common::BitWriter;
 use nc_encoder::{Block, CodedGroups, Mv};
 
-use crate::cabac::CabacWriter;
+use crate::cabac::{BinSink, CabacWriter};
 use crate::contexts::{Contexts, SliceKind};
 use crate::grid::Grid;
 use crate::headers::{LOG2_CTB, LOG2_MIN_CB, LOG2_MIN_TB, SIGN_DATA_HIDING};
 use crate::predict::{CHROMA_DM, ModeCode};
 use crate::quant_group::QuantGroup;
+use crate::rate::{BinCosts, BitEstimator};
 use crate::residual::write_residual;
 use crate::sao::{self, PictureSao};
 use crate::scan::{ScanKind, Scans};
@@ -77,6 +78,18 @@ impl LevelStore {
     pub fn clear(&mut self) {
         self.levels.clear();
         self.blocks.clear();
+    }
+
+    /// The store's (levels, blocks) lengths, for undoing a coding trial.
+    #[must_use]
+    pub fn mark(&self) -> (usize, usize) {
+        (self.levels.len(), self.blocks.len())
+    }
+
+    /// Forget the blocks pushed after `mark` (an undone coding trial).
+    pub fn truncate(&mut self, (levels, blocks): (usize, usize)) {
+        self.levels.truncate(levels);
+        self.blocks.truncate(blocks);
     }
 
     /// Append a coded block's row-major `levels` and its coded
@@ -448,8 +461,8 @@ struct Tables<'a> {
     merge_candidates: usize,
 }
 
-fn write_cu(
-    w: &mut CabacWriter,
+fn write_cu<W: CuSink>(
+    w: &mut W,
     ctx: &mut Contexts,
     grid: &Grid,
     tables: &Tables<'_>,
@@ -573,7 +586,7 @@ pub fn min_transform_log2(cu_log2: u8, max_depth: u8, max_log2: u8) -> u8 {
 
 /// `prev_intra_luma_pred_flag` of every prediction unit, then each unit's
 /// `mpm_idx` or `rem_intra_luma_pred_mode` (§7.3.8.5).
-fn write_intra_luma_modes(w: &mut CabacWriter, ctx: &mut Contexts, codes: &[ModeCode]) {
+fn write_intra_luma_modes<W: CuSink>(w: &mut W, ctx: &mut Contexts, codes: &[ModeCode]) {
     for code in codes {
         w.encode_bin(
             &mut ctx.prev_intra_luma_pred_flag,
@@ -595,8 +608,8 @@ fn write_intra_luma_modes(w: &mut CabacWriter, ctx: &mut Contexts, codes: &[Mode
 
 /// `transform_tree()` (§7.3.8.8) with maximum-size implied splits and
 /// optional splits.
-fn write_transform_tree(
-    w: &mut CabacWriter,
+fn write_transform_tree<W: CuSink>(
+    w: &mut W,
     ctx: &mut Contexts,
     tables: &Tables<'_>,
     block: &Block,
@@ -646,8 +659,8 @@ pub fn split_transform_flag_present(
 /// 4x4 luma block's chroma belongs to its 8x8 parent: no flags of its own
 /// (they are the parent's), and the residual follows the fourth block
 /// (§7.3.8.8, §7.3.8.10), which is where the backend records it.
-fn write_transform_node(
-    w: &mut CabacWriter,
+fn write_transform_node<W: CuSink>(
+    w: &mut W,
     ctx: &mut Contexts,
     tables: &Tables<'_>,
     node: TransformNode,
@@ -732,15 +745,15 @@ fn write_transform_node(
 }
 
 /// `transform_unit()` residuals in Y, Cb, Cr order (§7.3.8.10).
-fn write_tu_residuals(
-    w: &mut CabacWriter,
+fn write_tu_residuals<W: CuSink>(
+    w: &mut W,
     ctx: &mut Contexts,
     tables: &Tables<'_>,
     tu: &TransformUnit,
 ) {
     for (residual, luma) in [(&tu.luma, true), (&tu.cb, false), (&tu.cr, false)] {
         if residual.coded {
-            w.with_local(|w| {
+            w.local(|w| {
                 write_residual(
                     w,
                     ctx,
@@ -756,7 +769,7 @@ fn write_tu_residuals(
 
 /// `cu_qp_delta_abs` (prefix TR cMax 5, first bin context 0, the others
 /// context 1; EG0 suffix, §9.3.3.10) and `cu_qp_delta_sign_flag` (§7.3.8.14).
-fn write_cu_qp_delta(w: &mut CabacWriter, ctx: &mut Contexts, delta: i32) {
+fn write_cu_qp_delta<W: CuSink>(w: &mut W, ctx: &mut Contexts, delta: i32) {
     let magnitude = delta.unsigned_abs();
     for bin in 0..magnitude.min(QP_DELTA_PREFIX) {
         w.encode_bin(&mut ctx.cu_qp_delta_abs[usize::from(bin > 0)], true);
@@ -773,7 +786,7 @@ fn write_cu_qp_delta(w: &mut CabacWriter, ctx: &mut Contexts, delta: i32) {
 
 /// `merge_idx` (§9.3.3.2 TR): truncated rice with cMax `MaxNumMergeCand − 1`,
 /// first bin context coded, the rest bypass.
-fn write_merge_idx(w: &mut CabacWriter, ctx: &mut Contexts, idx: usize, candidates: usize) {
+fn write_merge_idx<W: CuSink>(w: &mut W, ctx: &mut Contexts, idx: usize, candidates: usize) {
     if candidates < 2 {
         return;
     }
@@ -787,7 +800,7 @@ fn write_merge_idx(w: &mut CabacWriter, ctx: &mut Contexts, idx: usize, candidat
 }
 
 /// `mvd_coding()` (§7.3.8.9) of `mv − pred`.
-fn write_mvd(w: &mut CabacWriter, ctx: &mut Contexts, mv: Mv, pred: Mv) {
+fn write_mvd<W: CuSink>(w: &mut W, ctx: &mut Contexts, mv: Mv, pred: Mv) {
     let d = [
         i32::from(mv.x) - i32::from(pred.x),
         i32::from(mv.y) - i32::from(pred.y),
@@ -811,7 +824,7 @@ fn write_mvd(w: &mut CabacWriter, ctx: &mut Contexts, mv: Mv, pred: Mv) {
 }
 
 /// k-th order Exp-Golomb bypass bins (§9.3.3.3).
-fn write_exp_golomb(w: &mut CabacWriter, mut value: u32, mut k: u32) {
+fn write_exp_golomb<W: CuSink>(w: &mut W, mut value: u32, mut k: u32) {
     while value >= (1 << k) {
         w.encode_bypass(1, 1);
         value -= 1 << k;
@@ -819,6 +832,57 @@ fn write_exp_golomb(w: &mut CabacWriter, mut value: u32, mut k: u32) {
     }
     w.encode_bypass(0, 1);
     w.encode_bypass(value, k);
+}
+
+/// A bin sink the CU writer runs on: the arithmetic coder, or a bit
+/// estimate for whole-CU pricing (`backend/cu_trial.rs`).
+pub trait CuSink: BinSink {
+    /// Run `code` on this sink (the coder keeps its state in a local).
+    fn local<R>(&mut self, code: impl FnOnce(&mut Self) -> R) -> R;
+}
+
+impl CuSink for CabacWriter {
+    fn local<R>(&mut self, code: impl FnOnce(&mut Self) -> R) -> R {
+        self.with_local(code)
+    }
+}
+
+impl CuSink for BitEstimator<'_> {
+    fn local<R>(&mut self, code: impl FnOnce(&mut Self) -> R) -> R {
+        code(self)
+    }
+}
+
+/// Estimated bits of CU `cu` written at contexts `ctx` (which adapt),
+/// without `cu_qp_delta`: the CU writer run on a [`BitEstimator`].
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_cu_bits(
+    costs: &BinCosts,
+    ctx: &mut Contexts,
+    grid: &Grid,
+    (levels, units): (&LevelStore, &[TransformUnit]),
+    transform: TransformSyntax<'_>,
+    merge_candidates: usize,
+    cu: &CuRecord,
+) -> f32 {
+    let tables = Tables {
+        transform,
+        levels,
+        units,
+        merge_candidates,
+    };
+    let mut estimate = BitEstimator::new(costs);
+    write_cu(
+        &mut estimate,
+        ctx,
+        grid,
+        &tables,
+        SliceKind::Predicted,
+        cu,
+        &mut None,
+    );
+    estimate.bits
 }
 
 #[cfg(test)]

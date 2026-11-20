@@ -264,7 +264,7 @@ mod tests {
         let shared = parse_file(SHARED_FILES[0].1).unwrap();
         let hevc = preset_params(Codec::Hevc, 1, "slow").unwrap();
         assert_eq!(hevc.get("refs.second"), Some(2.0));
-        assert_eq!(hevc.get("hevc.merge_candidates"), Some(5.0));
+        assert_eq!(hevc.get("decision.winner_walk_steps"), Some(3.0));
         assert_eq!(hevc.overlaid_with(&shared), hevc);
     }
 

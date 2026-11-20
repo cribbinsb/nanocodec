@@ -224,7 +224,7 @@ impl ForcedFrame {
         );
         headers::nal(
             headers::PPS_NUT,
-            &headers::pps(&GEOMETRY, false),
+            &headers::pps(&GEOMETRY, headers::PpsTools::default()),
             &mut packet,
         );
         headers::nal(headers::IDR_N_LP, &slice, &mut packet);
@@ -235,6 +235,7 @@ impl ForcedFrame {
             &crate::filter::DeblockQp {
                 frame: [self.qp; 2],
                 blocks: None,
+                offsets: crate::filter::Offsets::default(),
             },
         );
         let mut expected = Vec::new();

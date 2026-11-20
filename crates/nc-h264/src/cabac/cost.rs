@@ -11,6 +11,7 @@
 //! nothing (`codIRange - 2` of `codIRange`).
 
 use super::{BinRun, BinSink, Context, MbPart};
+use crate::tables::CONTEXT_COUNT;
 use crate::tables::RANGE_TAB_LPS;
 
 /// Number of probability states (`pStateIdx` 0..=63, §9.3.1.1).
@@ -22,19 +23,19 @@ const COST_UNITS_PER_BIT: f64 = 256.0;
 /// (`(codIRange >> 6) & 3` over 256..=511, §9.3.4.2).
 const RANGE_QUARTER_MIDPOINTS: [f64; 4] = [288.0, 352.0, 416.0, 480.0];
 
-/// The cost of a bin by context state: `[MPS, LPS]` in 1/256 bit, the
-/// mean over the four range quarters.
+/// The cost in 1/256 bit by packed context state and bin value, the mean
+/// over the four range quarters.
 #[derive(Debug, Clone)]
 pub struct BinCosts {
-    costs: [[u16; 2]; PROBABILITY_STATES],
+    costs: [u16; PROBABILITY_STATES * 4],
 }
 
 impl BinCosts {
     /// The cost table of the standard's probability states.
     #[must_use]
     pub fn new() -> Self {
-        let mut costs = [[0u16; 2]; PROBABILITY_STATES];
-        for (cost, lps_ranges) in costs.iter_mut().zip(RANGE_TAB_LPS.iter()) {
+        let mut costs = [0u16; PROBABILITY_STATES * 4];
+        for (cost, lps_ranges) in costs.as_chunks_mut::<4>().0.iter_mut().zip(&RANGE_TAB_LPS) {
             let mean_bits = |probability: &dyn Fn(f64) -> f64| {
                 let total: f64 = lps_ranges
                     .iter()
@@ -43,7 +44,10 @@ impl BinCosts {
                     .sum();
                 (total / RANGE_QUARTER_MIDPOINTS.len() as f64 * COST_UNITS_PER_BIT).round() as u16
             };
-            *cost = [mean_bits(&|p_lps| 1.0 - p_lps), mean_bits(&|p_lps| p_lps)];
+            let mps = mean_bits(&|p_lps| 1.0 - p_lps);
+            let lps = mean_bits(&|p_lps| p_lps);
+            // The low bits of the index are valMPS and the coded bin.
+            *cost = [mps, lps, lps, mps];
         }
         Self { costs }
     }
@@ -53,8 +57,8 @@ impl BinCosts {
     /// The cost of `bin` in a context in state `ctx`, in 1/256 bit.
     #[inline]
     fn units(&self, ctx: Context, bin: bool) -> u32 {
-        let lps = usize::from(bin != ctx.val_mps());
-        u32::from(self.costs[usize::from(ctx.p_state_idx())][lps])
+        let index = ctx.state.wrapping_shl(1) | u8::from(bin);
+        u32::from(self.costs[usize::from(index)])
     }
 }
 
@@ -66,8 +70,8 @@ impl Default for BinCosts {
 
 /// A [`BinSink`] that adds up the cost of the bins written to it.
 #[derive(Debug)]
-pub struct BitCounter<'a> {
-    contexts: &'a [Context],
+pub struct BitCounter<'a, const TRACK_PARTS: bool = true> {
+    contexts: &'a [Context; CONTEXT_COUNT],
     costs: &'a BinCosts,
     /// Running totals per [`MbPart`] in 1/256 bit.
     units: [u32; MbPart::COUNT],
@@ -75,8 +79,8 @@ pub struct BitCounter<'a> {
     part: usize,
 }
 
-impl<'a> BitCounter<'a> {
-    pub(super) fn new(contexts: &'a [Context], costs: &'a BinCosts) -> Self {
+impl<'a, const TRACK_PARTS: bool> BitCounter<'a, TRACK_PARTS> {
+    pub(super) fn new(contexts: &'a [Context; CONTEXT_COUNT], costs: &'a BinCosts) -> Self {
         Self {
             contexts,
             costs,
@@ -94,7 +98,12 @@ impl<'a> BitCounter<'a> {
     /// Bits counted so far.
     #[must_use]
     pub fn bits(&self) -> f32 {
-        self.units.iter().sum::<u32>() as f32 / COST_UNITS_PER_BIT as f32
+        let units = if TRACK_PARTS {
+            self.units.iter().sum()
+        } else {
+            self.units[0]
+        };
+        units as f32 / COST_UNITS_PER_BIT as f32
     }
 
     /// Bits of `bin` in context `ctx_idx` with the current states (not
@@ -104,6 +113,17 @@ impl<'a> BitCounter<'a> {
         self.costs.units(self.contexts[ctx_idx], bin) as f32 / COST_UNITS_PER_BIT as f32
     }
 
+    #[inline]
+    fn add(&mut self, units: u32) {
+        if TRACK_PARTS {
+            self.units[self.part] += units;
+        } else {
+            self.units[0] += units;
+        }
+    }
+}
+
+impl BitCounter<'_> {
     /// Bits counted so far in `part`.
     #[must_use]
     pub fn part_bits(&self, part: MbPart) -> f32 {
@@ -111,27 +131,30 @@ impl<'a> BitCounter<'a> {
     }
 }
 
-impl BinSink for BitCounter<'_> {
+impl<const TRACK_PARTS: bool> BinSink for BitCounter<'_, TRACK_PARTS> {
     #[inline]
     fn encode_decision(&mut self, ctx_idx: usize, bin: bool) {
-        self.units[self.part] += self.costs.units(self.contexts[ctx_idx], bin);
+        self.add(self.costs.units(self.contexts[ctx_idx], bin));
     }
 
     #[inline]
     fn encode_bypass(&mut self, _bin: bool) {
-        self.units[self.part] += COST_UNITS_PER_BIT as u32;
+        self.add(COST_UNITS_PER_BIT as u32);
     }
 
     fn encode_terminate(&mut self, bin: bool) {
         // A 1 ends the slice (flush: about 7 bits); a 0 costs ~2/510 bit.
         const FLUSH_BITS: u32 = 7;
         if bin {
-            self.units[self.part] += FLUSH_BITS * COST_UNITS_PER_BIT as u32;
+            self.add(FLUSH_BITS * COST_UNITS_PER_BIT as u32);
         }
     }
 
+    #[inline]
     fn begin_part(&mut self, part: MbPart) {
-        self.part = part.index();
+        if TRACK_PARTS {
+            self.part = part.index();
+        }
     }
 
     /// The run's bins (one block's levels, all in the current part) are
@@ -145,14 +168,14 @@ impl BinSink for BitCounter<'_> {
             units: 0,
         };
         let output = run.code(&mut local);
-        self.units[self.part] += local.units;
+        self.add(local.units);
         output
     }
 }
 
 /// [`BitCounter`] inside one [`BinRun`]: the bins of one part.
 struct RunCounter<'a> {
-    contexts: &'a [Context],
+    contexts: &'a [Context; CONTEXT_COUNT],
     costs: &'a BinCosts,
     /// Running total in 1/256 bit.
     units: u32,
@@ -162,6 +185,12 @@ impl BinSink for RunCounter<'_> {
     #[inline]
     fn encode_decision(&mut self, ctx_idx: usize, bin: bool) {
         self.units += self.costs.units(self.contexts[ctx_idx], bin);
+    }
+
+    #[inline]
+    fn encode_repeated_decision(&mut self, ctx_idx: usize, bin: bool, count: u32) {
+        // A count uses the same context state for the whole macroblock.
+        self.units += count * self.costs.units(self.contexts[ctx_idx], bin);
     }
 
     #[inline]
@@ -186,16 +215,22 @@ mod tests {
     fn costs_follow_the_probability_states() {
         let costs = BinCosts::new();
         // State 0 is equiprobable: both values cost about one bit.
-        for value in costs.costs[0] {
+        for &value in &costs.costs[..4] {
             assert!((230..=290).contains(&value), "state 0 cost {value}");
         }
         // Costs are monotonic: higher states make the MPS cheaper and
         // the LPS dearer.
-        for pair in costs.costs.windows(2) {
+        for pair in costs.costs.as_chunks::<4>().0.windows(2) {
             assert!(pair[1][0] <= pair[0][0]);
             assert!(pair[1][1] >= pair[0][1]);
         }
-        assert!(costs.costs[62][0] < 10);
-        assert!(costs.costs[62][1] > 5 * 256);
+        assert!(costs.units(Context::new(62, false), false) < 10);
+        assert!(costs.units(Context::new(62, false), true) > 5 * 256);
+        for state in 0..64 {
+            let a = Context::new(state, false);
+            let b = Context::new(state, true);
+            assert_eq!(costs.units(a, false), costs.units(b, true));
+            assert_eq!(costs.units(a, true), costs.units(b, false));
+        }
     }
 }

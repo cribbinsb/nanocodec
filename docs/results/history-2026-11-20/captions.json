@@ -1,0 +1,63 @@
+{
+ "2026-11-07": [
+  "Since the first commit (2026-11-06): the shared engine with H.264, HEVC and AV1; first CBR rate control (2c8eb080f).",
+  "H.264 only here: this build's HEVC and AV1 refuse sizes that are not multiples of 8; its only H.264 preset file (h264-balanced) is not on the speed ladder."
+ ],
+ "2026-11-08": [
+  "New: VP9 and AV2 encoders, time-based rate control, temporal layers with a long-term reference.",
+  "H.264: balanced default set (VAL BD −14.5 % PSNR-YUV, −11.7 % instructions); keycad rate-control defaults for H.264, HEVC, AV1 (PSNR-YUV BD −6.0 to −8.6 %).",
+  "AV1 / HEVC: first key budget 2.5x (PSNR-YUV BD −10.5 / −5.7 %); AV2: 32x32 largest leaf (PSNR-YUV −11.8 %)."
+ ],
+ "2026-11-09": [
+  "New: the VVC encoder (64x64 CTUs: quality −3.9 %).",
+  "AV1: deblocking on (TRAIN −5.1 %, VAL −6.6 %); AV2 and AV1: P-frame trellis (J −3.3 % / −2.2 %); HEVC: trellis, cheap-vector refine (−2.4 % each).",
+  "New presets: H.264 Fast and Faster, VP9 Fast."
+ ],
+ "2026-11-10": [
+  "Start-up QP cadence in all six Defaults (VAL J −5.0 % H.264, −9.7 % HEVC, −6.5 % AV1 and VP9, −11.3 % VVC); 1000 ms rate-control buffer (was 500).",
+  "H.264: quality set (proxy-6 −4.95 %, P instructions +22.9 %); VVC: seven speed levers (Jetson cycles −10 to −13 %).",
+  "New presets: VVC Fast, AV2 Fast."
+ ],
+ "2026-11-11": [
+  "Frame hold (unchanged repeats not coded) and AV1 adaptive coded resolution, both on by default.",
+  "H.264: gated L1T3 adaptive layers (VAL J −5.7 %); VP9: Default bundle (J −2.9 %); QP cadence re-tuned per codec (−0.5 to −1.9 %).",
+  "New presets: H.264 Veryfast (h264-fastest), HEVC Faster, AV1 Faster."
+ ],
+ "2026-11-12": [
+  "Default points jointly tuned at equal CPU for H.264, HEVC, VP9 and AV2 (disjoint L3 J −0.7 to −0.9 % each).",
+  "HEVC: exact speed-ups (x86 −1.1 %, −0.3 % instructions).",
+  "New presets: VP9 Faster and Veryfast."
+ ],
+ "2026-11-13": [
+  "Rate control: a debit term holds the long-run rate at or under the target (627886590).",
+  "H.264: intra by coded cost (L3 J −2.35 %); AV1: inter rounding 41 (x86 −4.2 % instructions); VVC: ALF bank reuse (x86 P −5.6 %), joint tuning (L2 J −0.82 %)."
+ ],
+ "2026-11-14": [
+  "Key-period ceiling in all six Defaults (J −0.2 to −1.3 %); quiet second before scheduled keys (H.264 −0.89 %, HEVC −1.26 %).",
+  "AV1: key still boost 6 (L3 J −1.95 %); VP9: jointly tuned CPU cut (x86 −12.2 %, Jetson −8.0 %, L3 J −0.02 %)."
+ ],
+ "2026-11-15": [
+  "One preset ladder for every codec (Veryfast, Faster, Fast, Default, and the new Slow); unified reference plan and inherited-depth QP cadence in the Defaults.",
+  "Key still boost in five Defaults (600-frame L3 J −0.4 to −1.8 %); QP cadence by measured inheritance (L3 J −1.2 to −1.3 %); AV2 parity hiding (L2 −2.06 %)."
+ ],
+ "2026-11-16": [
+  "Engine defaults: quiet second before keys, key reserve and key quality match on, exact-rank margin 0 (VVC L3 J −0.43 %).",
+  "H.264: five Intra_4x4 candidates, not nine (x86 −2.8 % instructions, L3 J −0.10 %); AV1: three of Slow's cheap groups (J −0.30 %, Jetson cycles +4.8 %).",
+  "New preset: AV1 Veryfast."
+ ],
+ "2026-11-17": [
+  "Exact speed-ups only: block copies shared across codecs and ISA tiers; picture borders with ordinary stores (Zen 3 −0.6 % HEVC and AV1)."
+ ],
+ "2026-11-18": [
+  "AV2: fitted coefficient-price model (L3 J −2.33 %, x86 −4.9 % instructions).",
+  "H.264: winner walk (final-check J −1.89 %, +1 % instructions), still-share damping (−0.24 %).",
+  "New preset: AV2 Faster."
+ ],
+ "2026-11-19": [
+  "x86-64-v3 code generation for every x86 build (−2.7 to −4.4 % instructions); rate control: keys carry the earlier loan.",
+  "H.264: shared RD final decision stage (L3 J −2.53 %); VVC: 64-point TUs from QP 34 (L3 J −0.86 %); still-level damping on (VVC J −0.65 %)."
+ ],
+ "2026-11-20": [
+  "Up to 07:52 UTC: the key-period ledger no longer saves twice for a key (2 s keys BD PSNR-YUV −0.28 to −0.97 %); otherwise Slow, decoder and eval changes."
+ ]
+}

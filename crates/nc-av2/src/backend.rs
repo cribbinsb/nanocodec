@@ -25,7 +25,7 @@ use crate::tx_type::{TxSetMode, TxType};
 use crate::{motion, packet};
 use nc_common::Picture;
 use nc_encoder::{
-    Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan,
+    Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FlatGate, FramePlan,
     FrameReferences, FrameType, IntraModeSet, Mv, PredictionMode, QuantParams, ReferenceChoice,
 };
 use std::rc::Rc;
@@ -41,6 +41,7 @@ nc_encoder::param_group! {
         coeff_rate_model: 1.0, [0.0, 1.0], "with frozen estimates (estimate_adaptation 0), RD trials price coefficient levels with a linear model fitted to the exact walk (counts of zero / one / two / larger levels per frequency region, low-range increments, signs and remainders; coeff::rate_model) instead of walking their contexts (1), or walk (0); the final write always walks. Default 1 (2026-11-18): c8a fixed-QP lens 332.9 -> 358.5 fps at W +0.3 / J +0.3, CBR x86 instructions -4.9 %, pool L3 J -2.33 % [-2.70, -1.96] BETTER at k 0.6, final-check quality +0.11 % [-0.07, +0.27]; Slow pins 0 (no time saved under TCQ)",
         lambda_per_step_squared: 0.135, [0.01, 4.0], "Lagrange multiplier per squared quantizer step (SSE per bit)",
         deblock: 1.0, [0.0, 1.0], "apply the deblocking filter with AVM's qindex-derived strength (1) or leave it off (0)",
+        deblock_delta: 0.0, [-2.0, 1.0], "with av2.deblock, the qindex offset of every filtered channel's thresholds in DF_DELTA_SCALE (8) units, rounded (the frame header's two-bit deltas, AV2 setup_loopfilter): higher filters more edges and corrects them more",
         deblock_chroma: 1.0, [0.0, 1.0], "with av2.deblock, also deblock the chroma planes (1) or luma only (0; apply_deblocking_filter_u/v off). AV2 Fast takes 0: the chroma channels' edge walk and filters are 2.8% of its x86 instructions (bodycam / lowlight / crowd 720p CBR 600) and 2.7% of its Jetson time, for PSNR-YUV +2.0% but VMAF v1 -1.4%, MS-SSIM 0.0% (pool L2); J_real k 0.6 L2+L3 -1.14% BETTER, no guard",
         ccso: 0.0, [0.0, 1.0], "the sequence enables CCSO, the cross-component sample offset filter after CDEF (enable_ccso): 1 lets lossy frames filter each plane by offsets looked up from the deblocked luma around each sample, chosen from class statistics (crate::ccso_search); 0 off. Default 0: proxy-4 (60 f) J_real +0.5% (PSNR-YUV -0.2%, VMAF v1 +0.5%, MS-SSIM +1.0%); the AVM oracle puts CCSO at -0.6% PSNR-Y BD (docs/handoff/av2.md, \"In-loop luma filters\")",
         cdef: 2.0, [0.0, 2.0], "CDEF: off (0), one strength set probed per plane type among off, the quantiser model's and a short shared ladder on sampled rows (1), or a strength search with up to cdef_max_sets sets chosen per 64x64 block (2)",
@@ -63,12 +64,17 @@ nc_encoder::param_group! {
         intra_layouts_per_candidate: 0.0, [0.0, 1.0], "every intra RD candidate tries both luma transform layouts (1), or later candidates reuse the first one's winner (0); default 0 since the key-frame guard (see av2.intra_chroma_candidates)",
         intra_zero_exit: 0.0, [0.0, 1.0], "stop the intra RD trials at the first coding without residual (1) or try every candidate and layout (0)",
         key_plan_chroma: 0.0, [0.0, 1.0], "key-frame partition planning costs chroma too (1) or luma only (0); default 0 since the key-frame guard (see av2.intra_chroma_candidates)",
-        intra_modes: 3.0, [0.0, 3.0], "key-frame intra luma candidates: the engine's shared set (0 DC only, 1 smooth/Paeth, 2 adds vertical/horizontal) plus the neighbours' modes, or (3) every nominal direction and the best one's angle deltas",
-        p_intra_modes: 0.0, [0.0, 3.0], "as av2.intra_modes, for intra blocks of P frames; default 0 (DC only, as AV1 P frames): over the one-candidate, 7-chroma P search, P frames 167.6M -> 160.1M (-4.4%, crowd_mot17_09 720p q180), J_real proxy-4 vs 3: -2.7% (quality full -0.1%, low -0.2%, dCPU -4.2%, no guard)",
+        intra_modes: 3.0, [0.0, 4.0], "key-frame intra luma candidates: the engine's shared set (0 DC only, 1 smooth/Paeth, 2 adds vertical/horizontal, 4 its core set: DC, smooth, vertical, horizontal) plus the neighbours' modes, or (3) every nominal direction and the best one's angle deltas",
+        p_intra_modes: 0.0, [0.0, 4.0], "as av2.intra_modes, for intra blocks of P frames; default 0 (DC only, as AV1 P frames): over the one-candidate, 7-chroma P search, P frames 167.6M -> 160.1M (-4.4%, crowd_mot17_09 720p q180), J_real proxy-4 vs 3: -2.7% (quality full -0.1%, low -0.2%, dCPU -4.2%, no guard)",
         p_intra_rd_candidates: 1.0, [1.0, 4.0], "as av2.intra_rd_candidates, for intra blocks of P frames; default 1 with p_intra_chroma_candidates=7 (vs 2 and 13): crowd_mot17_09 720p q180 P 177.8M -> 168.8M (-5.0%), J_real proxy-6 clips -2.5% (quality +0.3%, dCPU -4.7%, no guard); also dropping p_intra_modes to 1 (-8.4%) trips the worst-frame guard (bodycam worst-1% VMAF NEG +19.8%)",
         p_intra_delta_search: 2.0, [0.0, 2.0], "as av2.intra_delta_search, for intra blocks of P frames",
         p_intra_chroma_candidates: 1.0, [1.0, 13.0], "as av2.intra_chroma_candidates, for intra blocks of P frames; default 1 since the cheap P-intra path (see p_intra_tx_split); 7 before",
         inter_split_min_nonzero: 4.0, [0.0, 16.0], "inter blocks try the split luma layout only when the unsplit luma coding has at least this many nonzero levels (0: always); J_real proxy-4 vs 0: -7.4% (quality +0.3%, dCPU -12.8%)",
+        // The engine's shared recipe for cheap intra (AV1's
+        // `av1.keyframe_flat_gate`): blocks DC already predicts well skip
+        // the luma ranking.
+        intra_flat_gate: 0.0, [0.0, 4096.0], "key-frame intra blocks whose DC prediction leaves less luma residual energy per sample than this keep DC luma without ranking other modes (nc_encoder::FlatGate); 0 off: higher is faster",
+        intra_flat_gate_size_scale: 1.0, [1.0, 16.0], "av2.intra_flat_gate's multiplier per doubling of the block side above 8x8: higher ranks large blocks less",
         intra_rd_candidates: 2.0, [1.0, 4.0], "key-frame intra luma modes (best by prediction SATD plus mode bits, each with its best chroma mode) given full transform rate-distortion",
         keyframe_step_permille: 240.0, [100.0, 1000.0], "fixed-QP key-frame quantizer step relative to the inter step, in 1/1000 (as av1.keyframe_step_permille); rate control picks key quantizers itself",
         intra_tx_types: 1.0, [0.0, 1.0], "intra luma transform types: DCT only (0), or DCT or ADST_ADST for TX4..TX16 (1: reduced_tx_set_used 1; the winning mode and layout is recoded with ADST_ADST and kept if cheaper by rate and distortion)",
@@ -110,6 +116,9 @@ nc_encoder::param_group! {
 /// `intra_modes` values from which every direction is ranked rather than
 /// the engine's shared set.
 const ALL_DIRECTIONS: f32 = 2.5;
+/// `intra_modes` values selecting the engine's core set
+/// ([`IntraModeSet::Core`]) instead.
+const CORE_SET: f32 = 3.5;
 /// Largest dimension the backend accepts.
 const MAX_DIMENSION: usize = 4096;
 /// Largest picture area, in 64x64 superblocks (uniform one-tile limit).
@@ -735,8 +744,17 @@ impl Av2Backend {
                 p.p_intra_chroma_candidates,
             )
         };
+        // P-frame intra keeps no gate: its blocks are few, and on the
+        // VC-1K worst six a gated core set gained nothing over DC alone.
+        let flat = FlatGate {
+            sse_per_pixel: if self.key { p.intra_flat_gate } else { 0.0 },
+            size_scale: p.intra_flat_gate_size_scale,
+        };
         IntraSearch {
-            modes: if modes >= ALL_DIRECTIONS {
+            flat,
+            modes: if modes >= CORE_SET {
+                LumaCandidates::Shared(IntraModeSet::Core)
+            } else if modes >= ALL_DIRECTIONS {
                 LumaCandidates::AllDirections
             } else {
                 LumaCandidates::Shared(IntraModeSet::from_param(modes))
@@ -854,17 +872,6 @@ impl CodecBackend for Av2Backend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 5.0),
         ("rate.cadence_motion_gate", 1.0),
-        // A fixed-QP key planned up to 6 QP units coarser under camera motion
-        // (`rate.fixed_qp_moving_key`, engine `moving_camera.rs`: the offset ramps from 1 luma
-        // sample per frame to the cadence gate's limit and fades on a fixed camera; fixed QP only,
-        // so CBR streams are unchanged): a moving camera replaces the picture before later frames
-        // inherit a fine key. Found on VC-1K phone calls (docs/handoff/rd-depth.md). Fixed QP,
-        // matched QP: worst six VC-1K clips of the Fixed QP sample (against SVT-AV1 M8), with the
-        // plain 1-sample threshold, J -4.6 % [-5.7, -3.5]. Pool draw fixedqp-2026-11-19, adopt
-        // level: J -1.5 % [-2.1, -0.9] (n 48); one clip worse (pool_bodycam_bc1 +1.3), 19 changed,
-        // static clips unchanged. HEVC Default takes the same value; it becomes the engine default
-        // once H.264 and VVC are screened. The other presets pin it off.
-        ("rate.fixed_qp_moving_key", 6.0),
         // The target as a ceiling over every key period (`rate.period_ceiling`,
         // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still scenes).
         // 600-frame long-window L3 (keys every 10 s, 31 points, draw 2026-11-14):
@@ -873,9 +880,6 @@ impl CodecBackend for Av2Backend {
         // on the 22 static and crowd points 13.0 -> 17.2 per 1000 frames.
         // Inert within one key period. The other AV2 presets pin it off.
         ("rate.period_ceiling", 1.0),
-        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
-        // only (2026-11-18); pinned off here until this codec is screened.
-        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool levels,
         // draw 2026-11-14: L1 -1.46% [-2.07, -0.31]; L2 -1.69% [-2.36, -1.03];
@@ -883,9 +887,11 @@ impl CodecBackend for Av2Backend {
         // -6.2%, crowd -0.5%, pan and lowlight unchanged; achieved/target max
         // 1.000 -> 0.999; re-codes on the 22 static and crowd points 17.2 -> 20.4
         // per 1000 frames. 6 QP: L3 -2.02% but the periodic-key pulse guard
-        // tripped (+0.46 dB).
-        // The other AV2 presets pin it off.
-        ("rate.key_still_boost", 4.0),
+        // tripped (+0.46 dB). Re-screened after the key fix of 612fda158
+        // (final-check 2026-11-19, 600 f, keys every 10 s, n 36): 6 against 4
+        // J -0.14 % [-0.36, +0.09], no guard (static -1.4 %): 6, the other
+        // Defaults' value. AV2 Faster pins it off; Fast and Slow pin 4.
+        ("rate.key_still_boost", 6.0),
         // The QP cadence at least as strong as the frames between measurably
         // inherit the high-quality frame (`structure.inherited_depth`,
         // `nc-encoder` `inheritance.rs`), beside the static share: it adds
@@ -1398,12 +1404,15 @@ impl CodecBackend for Av2Backend {
     /// Deblock, then CDEF, then CCSO, the finished reconstruction (it
     /// becomes the reference); CDEF strengths are measured against `source`.
     fn filter_frame(&mut self, source: &Picture, recon: &mut Picture) {
+        let delta = self.params.deblock_delta.round() as i8;
         self.deblock = if self.params.deblock < 0.5 {
             DeblockParams::OFF
         } else if self.params.deblock_chroma < 0.5 {
-            DeblockParams::from_qindex(self.qindex).luma_only()
-        } else {
             DeblockParams::from_qindex(self.qindex)
+                .with_delta(delta)
+                .luma_only()
+        } else {
+            DeblockParams::from_qindex(self.qindex).with_delta(delta)
         };
         if self.deblock.is_on() {
             let params = self.deblock;

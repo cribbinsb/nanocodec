@@ -208,12 +208,10 @@ RC_COST_GLOB = "rc-cost-*.csv"
 SVC_CSV = "svc-chart.csv"
 WASM_CSV = "wasm-speed.csv"
 #: The 20 s window study (tools/dev/independent_report.py), one build, the same 71 sources.
-WINDOW_FILES = {"short": "long150-8b492382", "long": "long600-8b492382"}
+WINDOW_FILES = {"short": "long150-c9cff89f", "long": "long600-c9cff89f"}
 WINDOW_GROUP = "all"
 WASM_MODULE = "relaxed"  # the module the demo loads where the browser supports it
 #: WASM encode rows the bench measured with the wrong first-key seed (wasm-speed.md, Caution).
-WASM_SEED_CAVEAT_CODECS = ("av1", "vp9", "av2")
-WASM_SEED_CAVEAT_BUILD = "f2f7a221"
 CODEC_ORDER = ("h264", "hevc", "vvc", "av1", "vp9", "av2")
 CODEC_NAMES = {"h264": "H.264", "hevc": "HEVC", "vvc": "VVC", "av1": "AV1", "vp9": "VP9",
                "av2": "AV2"}
@@ -437,6 +435,10 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
                                           if p not in CHART_CSV_PLATFORMS)],
              "builds": builds["builds"], "base_build": builds["base"],
              "family_builds": {current_family_name(f): b for f, b in builds["families"].items()},
+             # families whose streams a later build was checked to code byte-identically
+             # (chart_refresh verify), so their points stand for that build too
+             "family_timed_on": {current_family_name(f): b
+                                 for f, b in builds.get("timed_on", {}).items()},
              "tools": builds["tools"],
              "metrics": with_xpsnr(["j", "psnr", "vmaf"], values), "values": values}, labels)
 
@@ -467,20 +469,46 @@ def speed_notes(timing: dict[str, dict]) -> dict[str, dict]:
             for platform, record in timing.items()}
 
 
-def build_label(build: str) -> str:
-    """A timed build as captions name it: the release's (RELEASE_FILE) as
-    'release 0.3.0, PGO build (1a2b3c4d)', any other by its commit."""
+@functools.cache
+def crate_version(commit: str) -> str | None:
+    """The workspace version in Cargo.toml at a commit; None for a commit git does not know."""
+    shown_toml = subprocess.run(["git", "show", f"{commit}:Cargo.toml"], cwd=REPO,
+                                capture_output=True, text=True)
+    match = re.search(r'^version = "([^"]+)"', shown_toml.stdout, re.MULTILINE)
+    return match.group(1) if shown_toml.returncode == 0 and match else None
+
+
+def is_release_commit(commit: str) -> bool:
+    """Whether a commit is a release's own: the one commit that sets the workspace to a new
+    version (tools/release/release.py, stage commit)."""
+    version = crate_version(commit)
+    return version is not None and crate_version(f"{commit}^") != version
+
+
+def build_label(build: str, kind: str | None = None) -> str:
+    """A build of ours as captions name it, with its released crate version: the release's
+    (RELEASE_FILE) as 'release 0.3.0, PGO build (1a2b3c4d)', another release commit as
+    'release 0.2.0 (1a2b3c4d)', any other commit as 'development build 1a2b3c4d (crate version
+    0.1.0)' (not a release: the version it carries is the last one released before it), and a
+    commit git does not know by its name alone. `kind` ('PGO', 'plain') is how the measured
+    binary was built, where the record says."""
+    built = f", {kind} build" if kind else ""
     if RELEASE_FILE.is_file():
         release = json.loads(RELEASE_FILE.read_text())
         if build == release["commit"]:
-            return f"release {release['version']}, {release['build']} build ({build})"
-    return build
+            return f"release {release['version']}, {kind or release['build']} build ({build})"
+    version = crate_version(build)
+    if version is None:
+        return build
+    if is_release_commit(build):
+        return f"release {version}{built} ({build})"
+    return f"development build {build}{f', {kind}' if kind else ''} (crate version {version})"
 
 
 def timed_builds(record: dict) -> str | None:
     """The builds a timing record's encoders of ours ran on: the most common (the record's
     own where no point names one), and any other build some points carry (fixedqp_timing.py merge,
-    anchor_chart_timing.py merge --build-for, chart_refresh), e.g. 'b11b2f83 (2860f897 for 7)';
+    anchor_chart_timing.py merge --build-for, chart_refresh), e.g. 'b11b2f83; 2860f897 for 7';
     None for a record that names no build."""
     counts = Counter(point.get("build", record.get("build"))
                      for name, point in record["points"].items() if name.startswith(OWN_PREFIX))
@@ -491,7 +519,95 @@ def timed_builds(record: dict) -> str | None:
     later = sorted((b, n) for b, n in counts.items() if b != main)
     if not later:
         return build_label(main)
-    return f"{build_label(main)} ({', '.join(f'{build_label(b)} for {n}' for b, n in later)})"
+    return "; ".join([build_label(main), *(f"{build_label(b)} for {n}" for b, n in later)])
+
+
+# --- what each table was measured on --------------------------------------------------------
+
+#: Where, when and on which build of ours each result outside the charts was measured, by
+#: source (a path under docs/results): the record each measuring run leaves beside its data.
+#: Per source: date; commits {commit: what it covers, "" for everything}; build, how our binary
+#: was built ("PGO" or "plain"); machines; references (the other implementations and their
+#: versions); and, for a table with no build of ours in it, reference_only (why).
+PROVENANCE_FILE = RESULTS / "provenance.json"
+#: Generated data files that hold no measurement (provenance_problems skips them), and why.
+NOT_MEASURED_DATA = {"clips.json": "the clip sets' lists and exclusions"}
+#: The machines' names in the charts' captions.
+PLATFORM_NAMES = {"jetson": "Jetson", "x86": "x86 (Zen 5)", "zen3": "x86 without AVX-512 (Zen 3)",
+                  "graviton": "server Arm (Graviton4)"}
+
+
+def measured(source: str) -> dict:
+    """A result source's 'measured on' record for its page: when, on which builds of ours (with
+    their crate versions), on which machines and against which references, as the caption the
+    page shows."""
+    entry = json.loads(PROVENANCE_FILE.read_text())["sources"][source]
+    builds = [build_label(commit, entry.get("build")) + (f" for {what}" if what else "")
+              for commit, what in entry.get("commits", {}).items()]
+    ours = (f"on nanocodec {'; '.join(builds)}" if builds
+            else f"with no build of ours ({entry['reference_only']})")
+    caption = f"Measured {entry['date']} {ours}. " + " ".join(f"{m}." for m in entry["machines"])
+    if entry.get("references"):
+        caption += f" References: {entry['references']}."
+    return {"date": entry["date"], "builds": builds,
+            "reference_only": entry.get("reference_only"), "caption": caption}
+
+
+def view_measured(view: dict, timing_builds: dict[str, str]) -> dict:
+    """A chart view's 'measured on' record: each build its points of ours were measured at
+    (labels: its caption name, with the crate version; quality: how many presets each), the
+    builds our encoders were timed at on each machine (`timing_builds`: the CBR charts' records;
+    a Fixed QP view carries its own), and the day the release's points were measured."""
+    if "family_builds" in view:
+        # a family whose streams the newer build was checked to code byte-identically
+        # (chart_refresh's stream check) stands for that build: its points are that build's
+        # (chart_refresh records `timed_on` only after that check passed)
+        current = {f: view["family_timed_on"].get(f, b) for f, b in view["family_builds"].items()}
+        counts = Counter(current.values())
+        quality = []
+        for b, n in counts.most_common():
+            same = sorted({view["family_builds"][f] for f, c in current.items()
+                           if c == b and view["family_builds"][f] != b})
+            quality.append(f"{build_label(b)} for {n} preset{'s' if n > 1 else ''}" + (
+                f" ({sum(1 for f, c in current.items() if c == b and view['family_builds'][f] != b)}"
+                f" of them coded by it byte-identically to the build that first coded and scored"
+                f" them, {', '.join(same)}: streams checked by hash)" if same else ""))
+        family_labels = {f: build_label(b) for f, b in current.items()}
+    else:
+        counts = Counter([view["build_commit"].split()[0]])
+        quality = [f"{build_label(next(iter(counts)))} for every preset"]
+        family_labels = {}
+    speed = timing_builds if "speed" not in view else {
+        platform: note["build"] for platform, note in view["speed"].items() if note["build"]}
+    timed = "; ".join(f"{label} on {', '.join(PLATFORM_NAMES[p] for p, b in speed.items() if b == label)}"
+                      for label in Counter(speed.values()))
+    dated = ""
+    if RELEASE_FILE.is_file():
+        release = json.loads(RELEASE_FILE.read_text())
+        if release.get("date") and release["commit"] in counts:
+            dated = f"Release {release['version']}'s points were measured {release['date']}."
+    record = {"labels": {b: build_label(b) for b in counts}, "family_labels": family_labels,
+              "builds": quality,
+              "quality": f"Quality: ours measured at {'; '.join(quality)}.",
+              "speed": f"Speed: ours timed at {timed}." if timed else "", "dated": dated}
+    record["caption"] = " ".join(filter(None, (record["quality"], record["speed"], dated)))
+    return record
+
+
+def provenance_problems(files: dict[Path, str]) -> list[str]:
+    """Each generated data file, and each chart view, that does not say what it was measured on."""
+    problems = []
+    for path, text in files.items():
+        if path.parent != SITE_DATA or path.suffix != ".json" or path.name in NOT_MEASURED_DATA:
+            continue
+        data = json.loads(text)
+        records = ([(f"{path.name} view {v['id']}", v.get("measured")) for v in data["views"]]
+                   if path.name == "chart.json" else [(path.name, data.get("measured"))])
+        problems += [f"{name}: names no build it was measured on (record it in "
+                     f"{PROVENANCE_FILE.relative_to(REPO)})" for name, record in records
+                     if not record or not record.get("caption")
+                     or not (record.get("builds") or record.get("reference_only"))]
+    return problems
 
 
 def size_range(sizes: list[tuple[int, int]]) -> str:
@@ -524,7 +640,7 @@ def fixed_qp_view() -> dict | None:
         values[family] = {
             "weighted": row["weighted"], "j": row["j"], "psnr": row["psnr_yuv"],
             "vmaf": row["vmaf"], "ms_ssim": row["ms_ssim"], "xpsnr": row.get("xpsnr"),
-            "iqr": None,
+            "xpsnr_clips": row.get("xpsnr_clips"), "iqr": None,
             "clips_scored": row["n"], "clips": None, "flagged": False, "chained": 0,
             "rate_invalid_points": 0,
             # never the lens run's own fps: not a timing (other runs, shared load)
@@ -673,16 +789,18 @@ def chart_data() -> dict:
         info["timing_is_twin"] = family not in timing and info["timing"] is not None
         points[family] = info
     not_measured = not_measured_marks()
+    timing_builds = {name: timed_builds(record) for name, record in cbr_timing().items()
+                     if timed_builds(record)}
     for view in views:
         view["not_measured"] = not_measured.get(view["id"], {})
+        view["measured"] = view_measured(view, timing_builds)
     platforms = {name: record.get("platform", "") for name, record in cbr_timing().items()}
     return {
         "clipsets": {k: v for k, v in CLIPSETS.items() if shown(k)}, "datasets": datasets_data(),
         "codecs": CODEC_NAMES, "codec_order": list(CODEC_ORDER),
         "platforms": platforms, "points": points, "views": views,
         # a machine whose one session timed all our points at one build says which
-        "timing_builds": {name: timed_builds(record) for name, record in cbr_timing().items()
-                          if timed_builds(record)},
+        "timing_builds": timing_builds,
         "ladder_kbps": list(LADDER_KBPS), "low_ladder_kbps": list(LOW_LADDER_KBPS),
         "buffer_ms": BUFFER_MS, "frames": DEFAULT_FRAMES,
         "example": {"kbps": EXAMPLE_KBPS, "width": EXAMPLE_CLIP.width,
@@ -703,7 +821,7 @@ def other_tool_versions() -> dict[str, str]:
 
 def hardware_data() -> dict:
     rows = read_csv(RESULTS / HARDWARE_CSV)
-    return {"source": [f"docs/results/{HARDWARE_CSV}"], "rows": [
+    return {"source": [f"docs/results/{HARDWARE_CSV}"], "measured": measured(HARDWARE_CSV), "rows": [
         {"family": r["family"], "label": r["label"], "j": number(r["bd_j_pct"]),
          "psnr": number(r["bd_psnr_yuv_pct"]), "vmaf": number(r["bd_vmaf_v1_pct"]),
          "fps_aggregate": number(r["fps_aggregate"]),
@@ -722,13 +840,14 @@ def rc_cost_data() -> dict:
                     "vmaf": number(r["bd_vmaf_v1"]), "ms_ssim": number(r["bd_ms_ssim"]),
                     "clips": int(r["clips"])})
     first = rows[0]
-    return {"source": [f"docs/results/{path.name}"], "build_commit": first["binary_commit"][:8],
+    return {"source": [f"docs/results/{path.name}"], "measured": measured(path.name),
+            "build_commit": first["binary_commit"][:8],
             "ladder_kbps": first["ladder_kbps"], "frames": int(first["frames"]), "rows": out}
 
 
 def svc_data() -> dict:
     rows = read_csv(RESULTS / SVC_CSV)
-    return {"source": [f"docs/results/{SVC_CSV}"], "rows": [
+    return {"source": [f"docs/results/{SVC_CSV}"], "measured": measured(SVC_CSV), "rows": [
         {"family": r["family"], "label": r["label"], "ours": r["ours"] == "1",
          "j": number(r["bd_j_op0_pct"]), "psnr": number(r["bd_psnr_yuv_pct"]),
          "vmaf": number(r["bd_vmaf_v1_pct"]),
@@ -760,10 +879,9 @@ def wasm_data() -> dict:
         out.append({"direction": direction, "codec": codec, "preset": preset or None,
                     "res": res, "clips": len(group), "builds": builds,
                     "wasm_fps": round(frames * 1000 / wasm_ms, 1),
-                    "native_fps": round(frames * 1000 / native_ms, 1),
-                    "seed_caveat": direction == "encode" and codec in WASM_SEED_CAVEAT_CODECS
-                    and WASM_SEED_CAVEAT_BUILD in builds})
-    return {"source": [f"docs/results/{WASM_CSV}"], "module": WASM_MODULE, "rows": out}
+                    "native_fps": round(frames * 1000 / native_ms, 1)})
+    return {"source": [f"docs/results/{WASM_CSV}"], "measured": measured(WASM_CSV),
+            "module": WASM_MODULE, "rows": out}
 
 
 def window_data() -> dict:
@@ -798,28 +916,28 @@ def window_data() -> dict:
                               "points_over_buffer": int(r["points_over_buffer"])}
     labels = {f: describe(f, f)["owner"] for f in out["families"]}
     out["owners"] = labels
+    out["measured"] = measured(f"{INDEPENDENT.name}/{WINDOW_FILES['long']}")
     return out
 
 
 # --- decoder speed against the established decoders ---------------------------------------------
 
-DECODER_DIR = RESULTS / "decoder-speed-2026-11-13"
-#: x86 runs (merged: the second file re-ran some streams; every round counts) and the Jetson run.
-DECODER_X86_RUNS = ("xdec-final.json", "xdec-final2.json")
-DECODER_JETSON_RUN = "jdec-final.json"
-#: label, codec, WxH (empty: from the label), decoded bytes, per stream (frames = bytes / I420 frame).
-DECODER_FRAMES = "frames.tsv"
-DECODER_BUILD = "d007869b"
+DECODER_DIR = RESULTS / "decoder-speed-2026-11-19"
+#: Each platform's run: tools/dev/decoder_speed.py's record, {"stream|codec|decoder": {"t": best
+#: seconds, "rss": peak KiB}}, every decoder single-threaded, best of interleaved rounds.
+DECODER_RUNS = {"x86": "x86.json", "jetson": "jetson.json"}
+#: Frames per stream (stream file, codec, frames), counted by our decoder.
+DECODER_FRAMES = "streams.tsv"
 #: The reference decoder each codec is compared with; VP9 also shows FFmpeg's.
 DECODER_REFERENCES = {"h264": "ffmpeg", "hevc": "ffmpeg", "av1": "dav1d", "vp9": "vpxdec",
                       "vvc": "vvdec", "av2": "avmdec"}
 DECODER_NAMES = {"ffmpeg": "FFmpeg", "dav1d": "dav1d", "vpxdec": "vpxdec", "vvdec": "VVdeC",
                  "avmdec": "avmdec"}
 SECOND_REFERENCE = {"vp9": "ffmpeg"}
-OURS_DECODER, WASM_DECODER = "ours", "wasm-head"
+OURS_DECODER = "ours"
 
-#: The Jetson run names streams by file; these are the x86 run's labels for them.
-JETSON_STREAMS = {
+#: The streams' labels on the page, by file stem (without the codec and container suffixes).
+STREAM_LABELS = {
     "crowd_mot17_09.600k": "ours 720p crowd 600k", "crowd1080.3000k.ours": "ours 1080p 3M",
     "crowd1080.3000k.x264": "x264 CABAC 1080p 3M",
     "openh264_cabac_1080p.3000k": "openh264 CABAC 1080p 3M",
@@ -830,54 +948,28 @@ JETSON_STREAMS = {
     "cam150.axis-p1375e-1080p": "Axis 1080p camera", "cam150.axis-p3267lv-5mp": "Axis 5MP camera",
     "cam150.hanwha-qnvc9011r-4k": "Hanwha 4K camera",
 }
-#: Our 720p HEVC stream is labelled apart on x86 (a different 600 kbps encode, wasm-speed.md).
-JETSON_LABEL_FIXES = {("hevc", "ours 720p crowd 600k"): "ours 720p 600k"}
-#: Streams timed on the Jetson only, without a frames.tsv entry, have this many frames.
-JETSON_ONLY_FRAMES = 150
 STREAM_SUFFIXES = (".ivf", ".264", ".hevc", ".vvc")
-I420_BYTES_PER_PIXEL = 1.5
-DEFAULT_DIMS = {"720p": (1280, 720), "1080p": (1920, 1080)}
 
 
-def decoded_frames() -> dict[tuple[str, str], int]:
-    frames = {}
-    for line in (DECODER_DIR / DECODER_FRAMES).read_text().splitlines():
-        label, codec, dims, size = line.split("\t")
-        width, height = (map(int, dims.split("x")) if dims else
-                         DEFAULT_DIMS["720p" if "720p" in label else "1080p"])
-        frames[(label, codec)] = int(int(size) // (width * height * I420_BYTES_PER_PIXEL))
-    return frames
-
-
-def jetson_label(name: str, codec: str) -> str:
+def stream_label(name: str, codec: str) -> str:
     stem = name
     for suffix in STREAM_SUFFIXES:
         stem = stem.removesuffix(suffix)
-    label = JETSON_STREAMS[stem.removesuffix(f".{codec}")]
-    return JETSON_LABEL_FIXES.get((codec, label), label)
+    return STREAM_LABELS[stem.removesuffix(f".{codec}")]
 
 
 def decoder_times() -> dict[tuple[str, str], dict[str, dict[str, float]]]:
-    """(codec, stream) -> platform -> decoder -> best ms per frame."""
-    frames = decoded_frames()
+    """(codec, stream label) -> platform -> decoder -> best ms per frame."""
+    frames = {}
+    for line in (DECODER_DIR / DECODER_FRAMES).read_text().splitlines():
+        name, codec, count = line.split("\t")
+        frames[(name, codec)] = int(count)
     times: dict[tuple[str, str], dict[str, dict[str, float]]] = {}
-    runs: dict[str, dict[str, list[float]]] = {}
-    for name in DECODER_X86_RUNS:
-        for key, entry in json.loads((DECODER_DIR / name).read_text()).items():
-            merged = runs.setdefault(key, {"t": [], "wasm_ms": []})
-            merged["t"] += entry["t"]
-            merged["wasm_ms"] += entry["wasm_ms"]
-    for key, entry in runs.items():
-        label, codec, decoder = key.split("|")
-        n = frames[(label, codec)]
-        per_frame = entry["wasm_ms"] or [t * 1000 / n for t in entry["t"]]
-        if per_frame:
-            times.setdefault((codec, label), {}).setdefault("x86", {})[decoder] = min(per_frame)
-    for key, entry in json.loads((DECODER_DIR / DECODER_JETSON_RUN).read_text()).items():
-        name, codec, decoder = key.split("|")
-        label = jetson_label(name, codec)
-        n = frames.get((label, codec), JETSON_ONLY_FRAMES)
-        times.setdefault((codec, label), {}).setdefault("jetson", {})[decoder] = entry["t"] * 1000 / n
+    for platform, run in DECODER_RUNS.items():
+        for key, entry in json.loads((DECODER_DIR / run).read_text()).items():
+            name, codec, decoder = key.split("|")
+            ms = entry["t"] * 1000 / frames[(name, codec)]
+            times.setdefault((codec, stream_label(name, codec)), {}).setdefault(platform, {})[decoder] = ms
     return times
 
 
@@ -889,7 +981,7 @@ def decoder_data() -> dict:
         ref, second = DECODER_REFERENCES[codec], SECOND_REFERENCE.get(codec)
         row = {"codec": codec, "stream": label, "reference": DECODER_NAMES[ref],
                "second_reference": DECODER_NAMES[second] if second else None}
-        for platform in ("x86", "jetson"):
+        for platform in DECODER_RUNS:
             ms = platforms.get(platform, {})
             ours, theirs = ms.get(OURS_DECODER), ms.get(ref)
             other = ms.get(second) if second else None
@@ -898,20 +990,20 @@ def decoder_data() -> dict:
                 "ratio": None if theirs is None else round(ours / theirs, 2),
                 "second_ms": None if other is None else round(other, 2),
                 "second_ratio": None if other is None else round(ours / other, 2)}
-        wasm, native = platforms.get("x86", {}).get(WASM_DECODER), platforms.get("x86", {}).get(OURS_DECODER)
-        row["wasm"] = None if wasm is None or native is None else {
-            "ms": round(wasm, 2), "ratio": round(wasm / native, 2)}
-        if row["x86"] or row["jetson"]:
+        if any(row[platform] for platform in DECODER_RUNS):
             rows.append(row)
     return {"source": [f"docs/results/{DECODER_DIR.name}/{name}" for name in
-                       (*DECODER_X86_RUNS, DECODER_JETSON_RUN, DECODER_FRAMES)],
-            "build": DECODER_BUILD, "rows": rows}
+                       (*DECODER_RUNS.values(), DECODER_FRAMES)],
+            "measured": measured(DECODER_DIR.name),
+            "measured_by_platform": {platform: measured(f"{DECODER_DIR.name}/{run}")
+                                     for platform, run in DECODER_RUNS.items()},
+            "rows": rows}
 
 
 # --- the browser build against ffmpeg.wasm -------------------------------------------------------
 
-WASM_YARDSTICK = RESULTS / "wasm-yardstick-2026-11-12" / "wasm.json"
-WASM_YARDSTICK_BUILD = "bcbc5601"
+WASM_YARDSTICK = RESULTS / "wasm-yardstick-2026-11-19" / "wasm.json"
+WASM_YARDSTICK_BUILD = "c9cff89f"
 OURS_WASM, FFMPEG_WASM = "ours-wasm", "ffmpeg.wasm"
 #: Each encode run's chart family, whose (native) point gives its quality.
 WASM_ENCODE_FAMILIES = {
@@ -973,7 +1065,8 @@ def wasm_yardstick_data(chart: dict) -> dict:
                        "ref_ms": round(theirs, 2), "ratio": round(ours / theirs, 2)})
     encode.sort(key=lambda r: -r["fps"])
     return {"source": [f"docs/results/{WASM_YARDSTICK.relative_to(RESULTS)}"],
-            "build": WASM_YARDSTICK_BUILD, "quality_view": WASM_QUALITY_VIEW,
+            "build": WASM_YARDSTICK_BUILD, "measured": measured(WASM_YARDSTICK.parent.name),
+            "quality_view": WASM_QUALITY_VIEW,
             "encode": encode, "decode": decode}
 
 
@@ -1129,7 +1222,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.check:
         for path in out_of_date:
             print(f"out of date: {path.relative_to(REPO)} (run python3 -m nceval.site)")
-        coverage = coverage_problems(json.loads(files[SITE_DATA / "chart.json"]))
+        coverage = (coverage_problems(json.loads(files[SITE_DATA / "chart.json"]))
+                    + provenance_problems(files))
         for problem in coverage:
             print(problem)
         sys.exit(1 if out_of_date or coverage else 0)

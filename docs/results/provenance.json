@@ -1,0 +1,133 @@
+{
+ "about": "What each result outside the charts was measured on: date, our builds (commit: what it covers, empty for everything), how our binary was built, the machines and the references. Read by eval/nceval/site.py (measured), which writes each page's caption from it; a page whose data has no entry fails python3 -m nceval.site --check.",
+ "sources": {
+  "decoder-speed-2026-11-19": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": ""
+   },
+   "build": "PGO",
+   "machines": [
+    "x86: AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core, quiet (1-minute load under 2), ours and the references in the same session, best of 7 interleaved rounds",
+    "Jetson: Orin Nano, one Cortex-A78AE core (core 3, jetson-timed.sh), board otherwise idle, best of 5 interleaved rounds"
+   ],
+   "references": "FFmpeg n8.0.1, dav1d 1.5.4, vpxdec (libvpx v1.16.0), VVdeC 3.3.0-dev (d261469), avmdec (AVM v1.0.0), each with one thread"
+  },
+  "decoder-speed-2026-11-19/x86.json": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": ""
+   },
+   "build": "PGO",
+   "machines": [
+    "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core, quiet (1-minute load under 2), ours and the references in the same session, best of 7 interleaved rounds"
+   ],
+   "references": "FFmpeg n8.0.1, dav1d 1.5.4, vpxdec (libvpx v1.16.0), VVdeC 3.3.0-dev (d261469), avmdec (AVM v1.0.0), each with one thread"
+  },
+  "decoder-speed-2026-11-19/jetson.json": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": ""
+   },
+   "build": "PGO",
+   "machines": [
+    "Jetson Orin Nano, one Cortex-A78AE core (core 3, jetson-timed.sh), board otherwise idle, best of 5 interleaved rounds"
+   ],
+   "references": "FFmpeg n8.0.1, dav1d 1.5.4, vpxdec (libvpx v1.16.0), VVdeC 3.3.0-dev (d261469), avmdec (AVM v1.0.0), each with one thread"
+  },
+  "wasm-speed.csv": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": ""
+   },
+   "build": "plain",
+   "machines": [
+    "The browser module (plain web build) under node v22.21.1 (V8) and the native plain build on aWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core, quiet (1-minute load under 2), ours and the references in the same session, best of 3 interleaved rounds"
+   ]
+  },
+  "wasm-yardstick-2026-11-12": {
+   "date": "2026-11-12",
+   "commits": {
+    "bcbc5601": "our browser module (relaxed SIMD)"
+   },
+   "build": "plain",
+   "machines": [
+    "One core (15) of a shared AMD Ryzen 9 5950X under node 22, both modules in the same rounds"
+   ],
+   "references": "ffmpeg.wasm (@ffmpeg/core 0.12.10: x264 and FFmpeg's decoders, one thread, no SIMD)"
+  },
+  "rc-cost-2026-11-15.csv": {
+   "date": "2026-11-15",
+   "commits": {
+    "c323b045": ""
+   },
+   "machines": [
+    "Quality only (BD-rate on the 11 development clips, 150 frames, one key frame): no timing"
+   ],
+   "references": "x264 medium (0.165), default and --tune psnr"
+  },
+  "svc-chart.csv": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": ""
+   },
+   "build": "PGO",
+   "machines": [
+    "x86 speed: CPU time on reserved core 14 or 15 (tools/dev/host-timed.sh) of a shared AMD Ryzen 9 5950X at 1-minute load 44-60, 7 rounds, each point paired with x264 medium (median per-round ratio), scaled by x264 medium's fps on the CBR chart's x86 machine",
+    "Jetson speed: Orin Nano core 3 at 1.728 GHz (jetson-timed.sh), 3 rounds, paired with x264 medium",
+    "The reference encoders keep their 2026-11-13 quality and speed (their tools are unchanged); libaom L3T3_KEY, libvpx L2T1_KEY, L3T1 and L3T1_KEY and VP9 three-way simulcast on the Jetson were never timed"
+   ],
+   "references": "libaom svc_encoder_rtc v3.15.3, libvpx vp9_spatial_svc_encoder v1.16.0, x264 medium (0.165)"
+  },
+  "independent-2026-11-13/long600-8b492382": {
+   "date": "2026-11-13",
+   "commits": {
+    "8b492382": "our six Defaults"
+   },
+   "machines": [
+    "Quality only: coded on rented AWS machines and scored with VMAF v1, MS-SSIM and PSNR on every frame; no timing"
+   ],
+   "references": "x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0"
+  },
+  "bd-vs-speed-hardware.csv": {
+   "date": "2026-11-12",
+   "reference_only": "NVENC hardware encoders only",
+   "machines": [
+    "NVIDIA GeForce RTX 5090 NVENC, driver 610.57.04, ffmpeg 7.1.1"
+   ],
+   "references": "zero line x264 medium (0.165) on the development clips"
+  },
+  "rc-cost-2026-11-19.csv": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": ""
+   },
+   "build": "PGO",
+   "machines": [
+    "Quality only (BD-rate on the 11 development clips, 150 frames, one key frame; python3 -m nceval.rc_cost): no timing"
+   ],
+   "references": "x264 medium (0.165), default and --tune psnr"
+  },
+  "independent-2026-11-13/long600-c9cff89f": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": "our six Defaults"
+   },
+   "machines": [
+    "Quality only: every point (ours and the references) coded and scored with VMAF v1, MS-SSIM and PSNR on every frame on rented AWS c7a.metal-48xl machines (AMD EPYC 9R14); no timing"
+   ],
+   "references": "x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0"
+  },
+  "wasm-yardstick-2026-11-19": {
+   "date": "2026-11-19",
+   "commits": {
+    "c9cff89f": "our browser module (relaxed SIMD)"
+   },
+   "build": "plain",
+   "machines": [
+    "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core, quiet (1-minute load under 2), ours and the references in the same session, node v22.21.1, both modules in the same 7 interleaved rounds (tools/web/ffmpeg_wasm_yardstick.py); the Axis 720p camera stream is a 150-frame cut (901 frames on 2026-11-12)"
+   ],
+   "references": "ffmpeg.wasm (@ffmpeg/core 0.12.10: x264 and FFmpeg's decoders, one thread, no SIMD; its times include module start-up)"
+  }
+ }
+}
