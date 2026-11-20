@@ -222,12 +222,11 @@ td:first-child { white-space: nowrap; }
 .still .site-header, .still .results-bar, .still h1, .still .lede, .still .disclaimer, .still .controls,
 .still .view-note, .still .table-view, .still .note, .still footer { display: none; }
 .still main { padding: 8px; }
-.frame-caption { margin: 2px 8px 4px; padding-left: 18px; font-size: 13px; color: var(--ink-2); min-height: 4.6em; }
+.frame-caption { margin: 2px 8px 4px; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
 .frame-caption li { margin: 1px 0; }
 .frame-activity { margin: 0 8px 4px; font-size: 12px; color: var(--muted); }
-/* stills (the GIF / MP4 frames) keep the chart in one place whatever a day's caption length */
-.still .frame-caption { height: 8.4em; overflow: hidden; }
-.still .frame-activity { height: 3.2em; }
+/* history.js reserves the tallest frame's text here (min-height), so the chart below never moves */
+.frame-head { overflow: hidden; }
 .change-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 10px 0 4px; }
 .change-panel { width: 100%; height: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
 .change-panel text { fill: var(--muted); font-size: 11px; }

@@ -97,9 +97,7 @@ function draw(root, data, index, domain) {
     { kind: 'ours bold', line: frontLine(day), ids: ours },
   ];
 
-  root.querySelector('.frame-day').textContent = `${day.date} · build ${day.commit}`;
-  root.querySelector('.frame-activity').textContent = activityText(day);
-  root.querySelector('.frame-caption').replaceChildren(...(day.caption || []).map((line) => el('li', {}, line)));
+  fillHead(root, data, index);
   drawChange(root, data, index);
   drawScatter(root.querySelector('.chart'), points, {
     xLabel: X_LABEL, yLabel: 'BD-J, % bits for the same quality (lower is fewer bits)', describe, onSelect: () => {},
@@ -143,17 +141,40 @@ function changePanel(data, index, title, value, format, zero) {
   return root;
 }
 
+/** "… points of BD-J at equal speed, …× speed at equal J" for a front change, or why not. */
+function frontChange(c) {
+  return (c && c.j_points !== null ? `${pct(c.j_points).replace('%', '')} points of BD-J at equal speed` : 'no overlap')
+    + (c && c.speed_factor !== null ? `, ${c.speed_factor.toFixed(2)}× speed at equal J` : '');
+}
+
+/** The text above the chart for frame `index`: date and build, captions, git activity and
+ * the front's change. */
+function fillHead(root, data, index) {
+  const day = data.days[index];
+  root.querySelector('.frame-day').textContent = `${day.date} · build ${day.commit}`;
+  root.querySelector('.frame-caption').replaceChildren(...(day.caption || []).map((line) => el('li', {}, line)));
+  root.querySelector('.frame-activity').textContent = activityText(day);
+  const prev = day.front_vs_previous;
+  root.querySelector('.frame-front').textContent = `Front: against the previous frame ${prev ? frontChange(prev) : '–'}; `
+    + `against the ${data.front_base_day} front ${frontChange(day.front_vs_base)}.`;
+}
+
+/** Reserve the tallest frame's text height above the chart (at the current width), so the
+ * chart never moves between frames. */
+function fixHeadHeight(root, data, index) {
+  const head = root.querySelector('.frame-head');
+  head.style.minHeight = '';
+  let tallest = 0;
+  data.days.forEach((_, i) => { fillHead(root, data, i); tallest = Math.max(tallest, head.getBoundingClientRect().height); });
+  head.style.minHeight = `${Math.ceil(tallest)}px`;
+  fillHead(root, data, index);
+}
+
 function drawChange(root, data, index) {
   const base = data.front_base_day;
-  const day = data.days[index];
-  const b = day.front_vs_base;
-  const prev = day.front_vs_previous;
-  const both = (c) => (c && c.j_points !== null ? `${pct(c.j_points).replace('%', '')} points of BD-J at equal speed` : 'no overlap')
-    + (c && c.speed_factor !== null ? `, ${c.speed_factor.toFixed(2)}× speed at equal J` : '');
   root.querySelector('.change-charts').replaceChildren(
     changePanel(data, index, `BD-J gap to the ${base} front (percentage points)`, (d) => d.front_vs_base?.j_points, (v) => pct(v), 0),
     changePanel(data, index, `speed factor at equal J vs the ${base} front`, (d) => d.front_vs_base?.speed_factor, (v) => `${v.toFixed(2)}×`, 1));
-  root.querySelector('.frame-front').textContent = `Front: against the previous frame ${prev ? both(prev) : '–'}; against the ${base} front ${both(b)}.`;
   root.querySelector('.change-note').textContent = 'Each front is BD-J as a piecewise-linear function of log fps; the J gap is the mean difference at equal speed over the speeds both fronts cover, the speed factor the mean at equal BD-J over the BD-J range both cover; nothing is extrapolated.';
 }
 
@@ -210,8 +231,9 @@ async function main() {
     root.querySelector('.all-toggle').addEventListener('change', () => draw(root, data, index, domain));
     if (still) document.body.classList.add('still');
     else root.querySelector('.table-slot').append(dayTable(data));
+    fixHeadHeight(root, data, index);
     show(index);
-    window.addEventListener('resize', () => draw(root, data, index, domain));
+    window.addEventListener('resize', () => { fixHeadHeight(root, data, index); draw(root, data, index, domain); });
     document.body.dataset.ready = 'true';
   } catch (error) {
     fail(root, error);
