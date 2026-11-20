@@ -103,7 +103,8 @@ decoders that check our streams. Module-by-module credits: [THIRD_PARTY.md](THIR
 The code was written and is maintained by AI coding agents (mostly Anthropic's Claude, also OpenAI's Codex and
 Google's Gemini) under the direction of one person. All of it was written in fifteen days, from the first commit on
 6 November 2026 to release 0.5.0 on 20 November 2026: about 4,000 commits and about 510,000 lines of Rust,
-tests and tables included, in the development history. How it is checked is in the [FAQ](docs/FAQ.md#ai-authorship).
+tests and tables included, in the development history. How it is checked is in the [FAQ](docs/FAQ.md#ai-authorship). The rules the agents work under are in [docs/agent-rules.md](docs/agent-rules.md), and what they tried
+is summarised in [docs/ideas-ledger-summary.md](docs/ideas-ledger-summary.md).
 
 ## Quick start
 
