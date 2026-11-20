@@ -7,7 +7,24 @@
 import { paretoFront, frontierLine } from './frontier.js';
 import { drawScatter } from './chart.js';
 import { plotDomain } from './domain.js';
-import { CODEC_NAMES, control, el, fail, fps, loadData, pct, segmented, table } from './common.js';
+import { CODEC_NAMES, control, el, fail, fps, pct, segmented, table } from './common.js';
+
+/** Set an element's text if the page has it (a page cached from before the element existed
+ * still renders). */
+function setText(root, selector, text) {
+  const node = root.querySelector(selector);
+  if (node) node.textContent = text;
+}
+
+/** Replace an element's children if the page has it. */
+function setChildren(root, selector, children) {
+  const node = root.querySelector(selector);
+  if (node) node.replaceChildren(...children);
+}
+
+// The asset version this module was loaded with (history.html: history.js?v=...), so the
+// data it reads is the one published with it.
+const VERSION = new URL(import.meta.url).searchParams.get('v') || '';
 
 const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1': 'triangle', openh264: 'triangle-down', libvpx: 'cross', libaom: 'plus' };
 const FRAME_MS = 1100;
@@ -162,19 +179,20 @@ function frontChange(c) {
  * the front's change. */
 function fillHead(root, data, index) {
   const day = data.days[index];
-  root.querySelector('.frame-day').textContent = `${day.date} · build ${day.commit}`;
-  root.querySelector('.frame-caption').replaceChildren(...(day.caption || []).map((line) => el('li', {}, line)));
-  root.querySelector('.frame-activity').textContent = activityText(day);
+  setText(root, '.frame-day', `${day.date} · build ${day.commit}`);
+  setChildren(root, '.frame-caption', (day.caption || []).map((line) => el('li', {}, line)));
+  setText(root, '.frame-activity', activityText(day));
   const name = view.codec === ALL ? 'Front' : `${CODEC_NAMES[view.codec]} front`;
   const base = baseDay(data);
-  root.querySelector('.frame-front').textContent = `${name}: against the previous frame ${index ? frontChange(vsPrevious(day)) : '–'}; `
-    + (base ? `against the ${base} front ${frontChange(vsBase(day))}.` : 'n/a (no day with two presets).');
+  setText(root, '.frame-front', `${name}: against the previous frame ${index ? frontChange(vsPrevious(day)) : '–'}; `
+    + (base ? `against the ${base} front ${frontChange(vsBase(day))}.` : 'n/a (no day with two presets).'));
 }
 
 /** Reserve the tallest frame's text height above the chart (at the current width), so the
  * chart never moves between frames. */
 function fixHeadHeight(root, data, index) {
   const head = root.querySelector('.frame-head');
+  if (!head) return;
   head.style.minHeight = '';
   let tallest = 0;
   data.days.forEach((_, i) => { fillHead(root, data, i); tallest = Math.max(tallest, head.getBoundingClientRect().height); });
@@ -185,10 +203,10 @@ function fixHeadHeight(root, data, index) {
 function drawChange(root, data, index) {
   const base = baseDay(data);
   const who = view.codec === ALL ? '' : `${CODEC_NAMES[view.codec]}: `;
-  root.querySelector('.change-charts').replaceChildren(
+  setChildren(root, '.change-charts', [
     changePanel(data, index, `${who}BD-J gap to the ${base} front (points)`, (d) => vsBase(d)?.j_points, (v) => pct(v), 0),
-    changePanel(data, index, `${who}speed factor at equal J vs the ${base} front`, (d) => vsBase(d)?.speed_factor, (v) => `${v.toFixed(2)}×`, 1));
-  root.querySelector('.change-note').textContent = 'Each front is BD-J as a piecewise-linear function of log fps; the J gap is the mean difference at equal speed over the speeds both fronts cover, the speed factor the mean at equal BD-J over the BD-J range both cover; nothing is extrapolated.';
+    changePanel(data, index, `${who}speed factor at equal J vs the ${base} front`, (d) => vsBase(d)?.speed_factor, (v) => `${v.toFixed(2)}×`, 1)]);
+  setText(root, '.change-note', 'Each front is BD-J as a piecewise-linear function of log fps; the J gap is the mean difference at equal speed over the speeds both fronts cover, the speed factor the mean at equal BD-J over the BD-J range both cover; nothing is extrapolated.');
 }
 
 function dayTable(data) {
@@ -203,26 +221,23 @@ function dayTable(data) {
 
 /** The timing's own noise (history_chart.py noise_text says the same in the docs). */
 function noiseText(noise) {
-  if (!noise) return '';
-  const moves = Object.values(noise.between_sessions.fps_change_pct);
-  const paired = Object.values(noise.same_session_time_ratio.ratios);
-  if (!moves.length || !paired.length) return '';
+  if (!noise || noise.within_session_median_deviation_pct === null) return '';
+  const moves = Object.values(noise.unchanged.fps_change_pct);
   const signed = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
-  return `Each preset is timed in five repeats and the median kept; within a session the repeats deviate from their median by ${noise.within_session_median_deviation_pct.toFixed(1)}% (median over presets). `
-    + `Between sessions on different instances, the ${moves.length} presets whose streams did not change from ${noise.between_sessions.from} to ${noise.between_sessions.to} moved by ${signed(Math.min(...moves))} to ${signed(Math.max(...moves))} in fps, `
-    + `while ${paired.length} of them timed side by side in one session differed by at most ${(Math.max(...paired.map((r) => Math.abs(r - 1))) * 100).toFixed(1)}%: frame-to-frame speed differences of a few per cent are session noise, not the builds. `;
+  return `Each preset is timed in five repeats and the median kept; within a session the repeats deviate from their median by ${noise.within_session_median_deviation_pct.toFixed(1)}% (median over presets)`
+    + (moves.length ? `; the ${moves.length} presets whose streams did not change from ${noise.unchanged.from} to ${noise.unchanged.to}, each timed in one session, moved by ${signed(Math.min(...moves))} to ${signed(Math.max(...moves))} in fps. ` : '. ');
 }
 
 function note(data) {
   const s = data.slice;
-  return `Each frame is the last commit of that day on the integration branch (every other day, and today's head), built as a plain release build and measured now with one protocol: `
+  return `Each frame is the last commit of that day on the integration branch , built as a plain release build and measured now with one protocol: `
     + `every speed-ladder preset that build shipped, with its own values (before 2026-11-15 the files <codec>-fast, -faster and -fastest are Fast, Faster and Veryfast; files off the ladder are left out), real-time CBR on the chart's ladder (${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip, `
     + `plus ${data.low_ladder_kbps.join('/')} kbps on ${data.low_rung_clips.length} clips whose curves need them), ${data.frames} frames, one key frame, `
     + `our reconstruction scored. Bits: BD-J (PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds, class-balanced) against ${data.zero_label} `
     + `on a fixed slice of ${s.clips.length} of the ${data.fresh_clips} held-out fresh clips (${Object.entries(s.per_class).map(([k, n]) => `${n} ${k}`).join(', ')}; `
     + `within a class the first by a hash of the name), averaged over the ${data.clips_used} clips on which every point of every day and every reference overlaps the zero line. `
     + `Speed: fps timed on AWS c8a (Zen 5), one core, by the chart's own timing: its commands (three 720p clips, fixed QP found per build for about ${data.timing_rung_kbps} kbps), `
-    + `each run back to back with x264 medium on one c8a.large, the median time ratio times the chart's stored x264 medium time; every day here is a plain release build (the overview's builds are PGO). `
+    + `each run back to back with x264 medium, one c8a.large per preset holding that preset's build of every day (so day-to-day speed differences are the same machine's), the median time ratio times the chart's stored x264 medium time; every day here is a plain release build (the overview's builds are PGO). `
     + `${noiseText(data.timing_noise)}The references are the overview chart's, `
     + `their quality re-averaged on the same clips and their fps as timed on the c8a. `
     + `The bold line is our Pareto frontier that day over every codec and preset (no other of our points is both faster and lower); the faint blue lines are the earlier frames' frontiers, older ones fainter; `
@@ -243,6 +258,7 @@ function shortDate(date) {
  * (the first and last always shown). */
 function drawTicks(root, data) {
   const ticks = root.querySelector('.day-ticks');
+  if (!ticks) return;
   const n = data.days.length;
   const step = Math.max(1, Math.ceil((TICK_PX * n) / Math.max(1, ticks.clientWidth)));
   ticks.replaceChildren(...data.days.map((d, i) => {
@@ -252,10 +268,17 @@ function drawTicks(root, data) {
   }));
 }
 
+/** data/history.json, at the version this module was published with. */
+async function loadHistory() {
+  const response = await fetch(`data/history.json${VERSION ? `?v=${VERSION}` : ''}`);
+  if (!response.ok) throw new Error(`data/history.json: HTTP ${response.status}`);
+  return response.json();
+}
+
 async function main() {
   const root = document.getElementById('history');
   try {
-    const data = await loadData('history');
+    const data = await loadHistory();
     const all = [...referencePoints(data), ...data.days.flatMap(ourPoints)];
     const domain = plotDomain(all);
     const params = new URLSearchParams(location.search);
@@ -264,15 +287,8 @@ async function main() {
     const requested = params.get('codec');
     view.codec = requested in CODEC_NAMES ? requested : ALL;
     let index = Math.min(Number(params.get('frame') ?? data.days.length - 1), data.days.length - 1);
-    root.querySelector('.view-note').textContent = note(data);
-    const paired = Object.values(data.timing_noise?.same_session_time_ratio?.ratios || {});
-    root.querySelector('.omitted-note').textContent = [
-      ...(data.omitted || []).map((o) => `${o.date} omitted: ${o.reason}.`),
-      ...(data.session_calibration || []).filter((c) => c.presets).map((c, i, all) => {
-        const previous = data.days[data.days.findIndex((d) => d.date === c.date) - 1]?.date;
-        return `${c.date.slice(5)} fps calibrated on the ${c.presets} presets whose streams did not change since ${previous?.slice(5)} (same-box check ≤ ${(Math.max(...paired.map((r) => Math.abs(r - 1))) * 100).toFixed(1)}%).`;
-      }),
-    ].join(' ');
+    setText(root, '.view-note', note(data));
+
     const slider = root.querySelector('input[type=range]');
     const button = root.querySelector('.play');
     slider.max = String(data.days.length - 1);
@@ -281,7 +297,7 @@ async function main() {
     const show = (i) => {
       index = i;
       slider.value = String(i);
-      root.querySelector('.day-label').textContent = `${data.days[i].date} · frame ${i + 1} of ${data.days.length}`;
+      setText(root, '.day-label', `${data.days[i].date} · frame ${i + 1} of ${data.days.length}`);
       draw(root, data, i, domain);
     };
     drawTicks(root, data);
@@ -294,9 +310,9 @@ async function main() {
       timer = setInterval(() => { if (index >= data.days.length - 1) stop(); else show(index + 1); }, FRAME_MS);
     });
     slider.addEventListener('input', () => { stop(); show(Number(slider.value)); });
-    root.querySelector('.all-toggle').addEventListener('change', () => draw(root, data, index, domain));
+    root.querySelector('.all-toggle')?.addEventListener('change', () => draw(root, data, index, domain));
     const codecs = [{ value: ALL, label: 'All' }, ...Object.entries(CODEC_NAMES).map(([value, label]) => ({ value, label }))];
-    root.querySelector('.controls').prepend(control('Front of', segmented('Front of', codecs, view.codec, (value) => {
+    root.querySelector('.controls')?.prepend(control('Front of', segmented('Front of', codecs, view.codec, (value) => {
       view.codec = value;
       const url = new URL(location.href);
       if (value === ALL) url.searchParams.delete('codec'); else url.searchParams.set('codec', value);
@@ -305,7 +321,7 @@ async function main() {
       draw(root, data, index, domain);
     })));
     if (still) document.body.classList.add('still');
-    else root.querySelector('.table-slot').append(dayTable(data));
+    else root.querySelector('.table-slot')?.append(dayTable(data));
     fixHeadHeight(root, data, index);
     show(index);
     window.addEventListener('resize', () => { fixHeadHeight(root, data, index); drawTicks(root, data); draw(root, data, index, domain); });
