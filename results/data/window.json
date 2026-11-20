@@ -1326,9 +1326,9 @@
  "measured": {
   "date": "2026-11-19",
   "builds": [
-   "release 0.4.0, PGO build (c9cff89f) for our six Defaults"
+   "release 0.4.0 (c9cff89f) for our six Defaults"
   ],
   "reference_only": null,
-  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, PGO build (c9cff89f) for our six Defaults. Quality only: every point (ours and the references) coded and scored with VMAF v1, MS-SSIM and PSNR on every frame on rented AWS c7a.metal-48xl machines (AMD EPYC 9R14); no timing. References: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0."
+  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0 (c9cff89f) for our six Defaults. Quality only: every point (ours and the references) coded and scored with VMAF v1, MS-SSIM and PSNR on every frame on rented AWS c7a.metal-48xl machines (AMD EPYC 9R14); no timing. References: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0."
  }
 }

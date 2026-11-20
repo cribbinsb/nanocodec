@@ -1577,8 +1577,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": false,
-    "left_out_reason": "no reliable overlap for HEVC Slow, HEVC, HEVC Fast, HEVC Faster, AV1 Slow, AV1, AV1 Fast, AV1 Faster, AV1 Veryfast, VP9 Slow, VP9, VP9 Fast, VP9 Faster, VP9 Veryfast, AV2 Slow, AV2, AV2 Fast, AV2 Faster, VVC Slow, VVC, VVC Fast, SVT-AV1 M8, SVT-AV1 M10"
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00214",
@@ -2239,8 +2239,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true,
-    "left_out_reason": null
+    "scored": false,
+    "left_out_reason": "no reliable overlap for VVC Slow"
    },
    {
     "name": "pool_otw_homes_00168",
@@ -4087,8 +4087,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": false,
-    "left_out_reason": "no reliable overlap for HEVC Slow, HEVC, HEVC Fast, HEVC Faster, AV1 Slow, AV1, AV1 Fast, AV1 Faster, AV1 Veryfast, VP9 Slow, VP9, VP9 Fast, VP9 Faster, VP9 Veryfast, AV2 Slow, AV2, AV2 Fast, AV2 Faster, VVC Slow, VVC, VVC Fast, SVT-AV1 M8, SVT-AV1 M10"
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00214",
@@ -5998,8 +5998,8 @@
  "counts": {
   "fresh": {
    "clips": 138,
-   "scored": 136,
-   "left_out": 2
+   "scored": 137,
+   "left_out": 1
   },
   "heldout": {
    "clips": 209,
