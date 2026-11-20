@@ -12,7 +12,11 @@ A session (`with Session(spec) as s:`):
   2. creates a key pair (private key under WORK_DIR, mode 600) and a security
      group that admits SSH from this machine's public IP only;
   3. appends a "started" row to the ledger, then launches one ONE-TIME spot
-     instance (no persistent request) on the official Ubuntu LTS AMI:
+     instance (no persistent request) on the official Ubuntu LTS AMI, of the
+     type asked for or, when it has no capacity in any zone or the spot quota
+     refuses it, of the next of `spec.fallback_types` within the budget (a
+     throughput job's ladder, THROUGHPUT_X86_TYPES; a timing session has none:
+     its type is the measurement):
      InstanceInitiatedShutdownBehavior=terminate, a root volume deleted on
      termination, and user-data whose first command is `shutdown -h +N`
      (the hard lifetime, even if this process dies);
@@ -40,7 +44,7 @@ import signal
 import subprocess
 import time
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 WORK_DIR = Path.home() / "nanocodec-data/work/aws"
@@ -62,6 +66,17 @@ QUOTA_FULL = "MaxSpotInstanceCountExceeded"
 #: How long a launch waits for the quota to free: a terminating metal instance takes
 #: a minute or two to stop counting.
 QUOTA_RETRIES, QUOTA_WAIT_S = 6, 30
+#: run_instances errors that mean "not this type in this zone now": the next zone, then
+#: the next type, is tried.
+NO_CAPACITY = ("InsufficientInstanceCapacity", "SpotMaxPriceTooLow", "Unsupported",
+               "InsufficientCapacity")
+#: Large x86 machines for throughput jobs (encoding, scoring: any many-core x86 does), in
+#: the order a session falls back through them when the one asked for has no spot
+#: capacity in any zone or the quota refuses it (2026-11-20: no c7a.metal-48xl or
+#: c7a.48xlarge in any eu-north-1 zone for two hours; a c7a.24xlarge launched at once).
+#: Same Zen 4 first, the smaller one before the other vendors' (same AVX-512 tier).
+THROUGHPUT_X86_TYPES = ("c7a.metal-48xl", "c7a.48xlarge", "c7a.24xlarge", "c7i.48xlarge",
+                        "m7a.48xlarge")
 #: Running costs beside the instance (eu-north-1 list prices, USD).
 GP3_USD_PER_GB_MONTH = 0.0836
 PUBLIC_IPV4_USD_PER_HOUR = 0.005
@@ -100,10 +115,33 @@ class SessionSpec:
     #: ExpectedEnd = launch + lifetime + this margin (the cleanup's slack; the
     #: instance itself stops at the lifetime).
     end_margin_minutes: int = 15
+    #: Types tried in order after `instance_type` (no capacity, quota full), each within
+    #: `budget_usd`. Empty for timing: there the type is what is measured.
+    fallback_types: tuple[str, ...] = ()
+
+
+def fallbacks_after(instance_type: str, ladder: tuple[str, ...] = THROUGHPUT_X86_TYPES
+                    ) -> tuple[str, ...]:
+    """The ladder's types after `instance_type` (all of it when the type is not on it)."""
+    return ladder[ladder.index(instance_type) + 1:] if instance_type in ladder else ladder
+
+
+class NoCapacity(RuntimeError):
+    """No type of the session's list could be launched in any zone."""
 
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+@dataclass
+class Candidate:
+    """One instance type a session may launch: its zones by price (cheapest first),
+    the max price bid and the worst case over the lifetime."""
+    instance_type: str
+    zones: dict[str, float]
+    max_price: float
+    cap: float
 
 
 def utc_now() -> datetime.datetime:
@@ -158,20 +196,13 @@ class Session:
         self._previous_handlers = {sig: signal.signal(sig, _raise_exit)
                                    for sig in (signal.SIGTERM, signal.SIGHUP)}
         try:
-            zones = self.on_demand_zones() if self.spec.on_demand else self.zone_prices()
-            max_price = min(zones.values()) * (1 if self.spec.on_demand else MAX_PRICE_FACTOR)
-            cap = self.cost(max_price, self.spec.lifetime_minutes / 60)
-            market = "on demand" if self.spec.on_demand else "spot"
-            say(f"{self.spec.instance_type} in {self.spec.region}: {market} from "
-                f"${min(zones.values()):.4f}/h, cap ${max_price:.4f}/h, worst case ${cap:.2f} "
-                f"for the {self.spec.lifetime_minutes}-minute lifetime")
-            if cap > self.spec.budget_usd:
-                raise BudgetExceeded(f"worst case ${cap:.2f} exceeds the session budget "
-                                     f"${self.spec.budget_usd:.2f}")
+            candidates = self.candidates()
             self.create_access()
+            names = " or ".join(c.instance_type for c in candidates)
             ledger_row(self.row_resources(), "started", iso(utc_now()), "—",
-                       f"cap ${cap:.2f}", self.spec)
-            self.launch(zones, max_price)
+                       f"cap ${max(c.cap for c in candidates):.2f}",
+                       replace(self.spec, instance_type=names))
+            self.launch(candidates)
             self.wait_for_ssh()
         except BaseException:
             self.__exit__(None, None, None)
@@ -194,13 +225,42 @@ class Session:
         return [{"ResourceType": resource,
                  "Tags": [{"Key": k, "Value": v} for k, v in tags.items()]}]
 
-    def on_demand_zones(self) -> dict[str, float]:
+    def candidates(self) -> list[Candidate]:
+        """The type asked for, then its fallbacks, each priced; a type without a price
+        in the region, or whose worst case passes the budget, is left out (logged)."""
+        found, skipped = [], []
+        for instance_type in (self.spec.instance_type, *self.spec.fallback_types):
+            try:
+                zones = (self.on_demand_zones(instance_type) if self.spec.on_demand
+                         else self.zone_prices(instance_type))
+            except RuntimeError as error:
+                say(f"{instance_type}: {error}: skipped")
+                skipped.append(str(error))
+                continue
+            max_price = min(zones.values()) * (1 if self.spec.on_demand else MAX_PRICE_FACTOR)
+            cap = self.cost(max_price, self.spec.lifetime_minutes / 60)
+            market = "on demand" if self.spec.on_demand else "spot"
+            say(f"{instance_type} in {self.spec.region}: {market} from "
+                f"${min(zones.values()):.4f}/h, cap ${max_price:.4f}/h, worst case ${cap:.2f} "
+                f"for the {self.spec.lifetime_minutes}-minute lifetime")
+            if cap > self.spec.budget_usd:
+                say(f"{instance_type}: worst case ${cap:.2f} exceeds the session budget "
+                    f"${self.spec.budget_usd:.2f}: skipped")
+                skipped.append(f"{instance_type} worst case ${cap:.2f}")
+                continue
+            found.append(Candidate(instance_type, zones, max_price, cap))
+        if not found:
+            raise BudgetExceeded(f"no instance type fits the session budget "
+                                 f"${self.spec.budget_usd:.2f}: {'; '.join(skipped)}")
+        return found
+
+    def on_demand_zones(self, instance_type: str) -> dict[str, float]:
         """The on-demand price (AWS Pricing API, Linux, shared tenancy) in every zone
         of the region that offers the type."""
         import boto3
 
         pricing = boto3.client("pricing", region_name=PRICING_REGION)
-        filters = {"instanceType": self.spec.instance_type, "regionCode": self.spec.region,
+        filters = {"instanceType": instance_type, "regionCode": self.spec.region,
                    "operatingSystem": "Linux", "tenancy": "Shared", "preInstalledSw": "NA",
                    "capacitystatus": "Used"}
         products = pricing.get_products(ServiceCode="AmazonEC2", Filters=[
@@ -209,21 +269,21 @@ class Session:
                   for term in json.loads(item)["terms"]["OnDemand"].values()
                   for dim in term["priceDimensions"].values()]
         if not prices:
-            raise RuntimeError(f"no on-demand price for {self.spec.instance_type} in "
+            raise RuntimeError(f"no on-demand price for {instance_type} in "
                                f"{self.spec.region}")
         zones = [o["Location"] for o in self.ec2.describe_instance_type_offerings(
             LocationType="availability-zone",
-            Filters=[{"Name": "instance-type", "Values": [self.spec.instance_type]}])[
+            Filters=[{"Name": "instance-type", "Values": [instance_type]}])[
                 "InstanceTypeOfferings"]]
         return {zone: max(prices) for zone in sorted(zones)}
 
-    def zone_prices(self) -> dict[str, float]:
+    def zone_prices(self, instance_type: str) -> dict[str, float]:
         history = self.ec2.describe_spot_price_history(
-            InstanceTypes=[self.spec.instance_type], ProductDescriptions=["Linux/UNIX"],
+            InstanceTypes=[instance_type], ProductDescriptions=["Linux/UNIX"],
             StartTime=utc_now())["SpotPriceHistory"]
         prices = {h["AvailabilityZone"]: float(h["SpotPrice"]) for h in history}
         if not prices:
-            raise RuntimeError(f"no spot price for {self.spec.instance_type} in "
+            raise RuntimeError(f"no spot price for {instance_type} in "
                                f"{self.spec.region}")
         return dict(sorted(prices.items(), key=lambda item: item[1]))
 
@@ -257,25 +317,49 @@ class Session:
         image = self.ec2.describe_images(ImageIds=[image_id])["Images"][0]
         return image_id, image["RootDeviceName"]
 
-    def launch(self, zones: dict[str, float], max_price: float) -> None:
+    def launch(self, candidates: list[Candidate]) -> None:
+        """Launch the first candidate type with capacity in any zone. A type without
+        capacity anywhere, or refused by the spot quota, gives way to the next; when
+        only the quota refused, the whole list is tried again after QUOTA_WAIT_S (the
+        quota counts instances still shutting down)."""
         image_id, root_device = self.ami()
         # The hard lifetime comes first: it holds even if this process dies.
         user_data = f"#!/bin/bash\nshutdown -h +{self.spec.lifetime_minutes}\n"
         for attempt in range(QUOTA_RETRIES + 1):
-            if self.try_zones(zones, max_price, image_id, root_device, user_data):
+            quota_full = False
+            for index, candidate in enumerate(candidates):
+                outcome = self.try_zones(candidate, image_id, root_device, user_data)
+                if outcome == LAUNCHED:
+                    if candidate.instance_type != self.spec.instance_type:
+                        say(f"fell back from {self.spec.instance_type} to "
+                            f"{candidate.instance_type}")
+                        self.spec = replace(self.spec, instance_type=candidate.instance_type)
+                    self.await_running()
+                    return
+                quota_full |= outcome == QUOTA
+                after = (f"trying {candidates[index + 1].instance_type}"
+                         if index + 1 < len(candidates) else "no type left")
+                reason = ("the spot instance quota is full" if outcome == QUOTA
+                          else "no capacity in any zone")
+                say(f"{candidate.instance_type}: {reason}; {after}")
+            if not quota_full:
                 break
             # The spot quota counts instances still shutting down (a session that just
             # ended): one launched right after it is refused for a minute or two
             # (2026-11-15: the second scoring session of a held-out refresh).
-            say(f"spot instance quota full; retry {attempt + 1}/{QUOTA_RETRIES} in "
-                f"{QUOTA_WAIT_S} s")
-            time.sleep(QUOTA_WAIT_S)
+            if attempt < QUOTA_RETRIES:
+                say(f"spot instance quota full; retry {attempt + 1}/{QUOTA_RETRIES} in "
+                    f"{QUOTA_WAIT_S} s")
+                time.sleep(QUOTA_WAIT_S)
         else:
-            raise RuntimeError(f"the spot instance quota stayed full for "
-                               f"{QUOTA_RETRIES * QUOTA_WAIT_S} s")
-        if self.instance_id is None:
-            raise RuntimeError(f"no zone could launch {self.spec.instance_type}")
-        say(f"launched {self.instance_id} in {self.zone} (spot ${self.price:.4f}/h)")
+            raise NoCapacity(f"the spot instance quota stayed full for "
+                             f"{QUOTA_RETRIES * QUOTA_WAIT_S} s")
+        raise NoCapacity(f"no zone of {self.spec.region} could launch "
+                         f"{' or '.join(c.instance_type for c in candidates)}")
+
+    def await_running(self) -> None:
+        say(f"launched {self.instance_id} ({self.spec.instance_type}) in {self.zone} "
+            f"(spot ${self.price:.4f}/h)")
         self.ec2.get_waiter("instance_running").wait(
             InstanceIds=[self.instance_id], WaiterConfig={"Delay": 10, "MaxAttempts": 90})
         instance = self.describe()
@@ -283,12 +367,12 @@ class Session:
         self.launched = instance["LaunchTime"]
         say(f"{self.instance_id} running at {self.host}")
 
-    def try_zones(self, zones: dict[str, float], max_price: float, image_id: str,
-                  root_device: str, user_data: str) -> bool:
-        """Launch in the cheapest zone with capacity; False when the account's spot
-        quota is full (worth waiting for), True otherwise (launched, or no zone could)."""
+    def try_zones(self, candidate: Candidate, image_id: str, root_device: str,
+                  user_data: str) -> str:
+        """Launch `candidate` in its cheapest zone with capacity: LAUNCHED, NO_ROOM (no
+        zone had capacity) or QUOTA (the account's spot quota is full)."""
         from botocore.exceptions import ClientError
-        for zone in zones:  # cheapest first; a zone without capacity is skipped
+        for zone in candidate.zones:  # cheapest first; a zone without capacity is skipped
             subnets = self.ec2.describe_subnets(Filters=[
                 {"Name": "availability-zone", "Values": [zone]},
                 {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
@@ -296,12 +380,13 @@ class Session:
                 continue
             try:
                 reply = self.ec2.run_instances(
-                    ImageId=image_id, InstanceType=self.spec.instance_type, MinCount=1,
+                    ImageId=image_id, InstanceType=candidate.instance_type, MinCount=1,
                     MaxCount=1, KeyName=self.key_name, UserData=user_data,
                     InstanceInitiatedShutdownBehavior="terminate",
                     **({} if self.spec.on_demand else {"InstanceMarketOptions": {
                         "MarketType": "spot", "SpotOptions": {
-                            "SpotInstanceType": "one-time", "MaxPrice": f"{max_price:.4f}",
+                            "SpotInstanceType": "one-time",
+                            "MaxPrice": f"{candidate.max_price:.4f}",
                             "InstanceInterruptionBehavior": "terminate"}}}),
                     BlockDeviceMappings=[{"DeviceName": root_device, "Ebs": {
                         "VolumeSize": self.spec.root_gb, "VolumeType": "gp3",
@@ -314,18 +399,17 @@ class Session:
                                          else self.tags("spot-instances-request"))])
             except ClientError as error:
                 code = error.response["Error"]["Code"]
-                if code in ("InsufficientInstanceCapacity", "SpotMaxPriceTooLow",
-                            "Unsupported", "InsufficientCapacity"):
-                    say(f"{zone}: {code}, trying the next zone")
+                if code in NO_CAPACITY:
+                    say(f"{candidate.instance_type} {zone}: {code}, trying the next zone")
                     continue
                 if code == QUOTA_FULL:
-                    return False
+                    return QUOTA
                 raise
             self.instance_id = reply["Instances"][0]["InstanceId"]
             self.spot_request = reply["Instances"][0].get("SpotInstanceRequestId")
-            self.zone, self.price = zone, zones[zone]
-            return True
-        return True
+            self.zone, self.price = zone, candidate.zones[zone]
+            return LAUNCHED
+        return NO_ROOM
 
     def describe(self) -> dict | None:
         reply = self.ec2.describe_instances(InstanceIds=[self.instance_id])
@@ -524,6 +608,10 @@ class Session:
                 if status.strip() != "0":
                     raise RemoteFailure(f"exit status {status.strip()}", tail)
                 return
+
+
+#: try_zones outcomes.
+LAUNCHED, NO_ROOM, QUOTA = "launched", "no capacity", "quota full"
 
 
 class RemoteFailure(RuntimeError):

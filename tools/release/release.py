@@ -184,9 +184,19 @@ DRY_CHARTS_MINUTES = 5
 #: A release refuses to start when its stages are expected to take longer (owner,
 #: 2026-11-18), unless --over-budget.
 MAX_RELEASE_MINUTES = 90
-#: The charts stage's pre-flight: the space it needs under the work budget
+#: The charts stage's pre-flight: the space a whole stage needs under the work budget
 #: (nceval.diskguard), with room to spare (2026-11-19: chains measured at 102 of 100 GiB).
+#: A resumed stage needs the share of it of the chains with data-writing commands left
+#: (Release.charts_work_gib; 2026-11-20 it refused twice with only renders left).
 CHARTS_WORK_HEADROOM_GIB = 25
+#: Chart commands that write next to nothing under work/ (renders from cached points,
+#: merges and records of small JSON files, plans, the site's data): by name suffix.
+LIGHT_CHART_COMMANDS = ("-psnr", "-merge", "-record", "-plan", "-site", "-compare", "-rows")
+#: A failed chart command is retried once (unless --no-chain-retry) after this wait: its
+#: rented sessions fall back through other instance types already (aws_session), and
+#: spot capacity comes back within minutes as often as not (2026-11-20: none at 14:17,
+#: a c7a.24xlarge at once at 16:33).
+CHAIN_RETRY_WAIT_S = 120
 SHORT = 8
 
 # --- the release commit -------------------------------------------------------------------
@@ -309,6 +319,18 @@ GH_REPO = "cribbinsb/nanocodec"
 
 def say(line: str) -> None:
     print(f"[release {datetime.datetime.now():%H:%M:%S}] {line}", flush=True)
+
+
+def alarm(line: str) -> None:
+    """`say`, and on stderr too unless it is the same file as stdout (the run log)."""
+    say(line)
+    try:
+        same = os.path.samestat(os.fstat(sys.stdout.fileno()), os.fstat(sys.stderr.fileno()))
+    except (OSError, ValueError, AttributeError):  # a captured stream has no descriptor
+        same = False
+    if not same:
+        print(f"[release {datetime.datetime.now():%H:%M:%S}] {line}", file=sys.stderr,
+              flush=True)
 
 
 def run(cmd: list[str], cwd: Path = REPO, log: Path | None = None, check: bool = True,
@@ -594,6 +616,7 @@ class Release:
                             git("show", f"{base}:Cargo.toml"))[1]
         if version_tuple(self.version) <= version_tuple(current):
             sys.exit(f"{self.version} is not after the workspace's {current}")
+        check_launch_tree(base)
         since, since_version = last_release(base)
         say(f"release {self.version}: base {base[:9]} (verified: streams and tests), "
             f"last release {since_version} at {since[:9]}")
@@ -740,9 +763,11 @@ class Release:
             raise SystemExit(f"build says {line.strip()!r}, not {self.version_line()!r}")
 
     def identity_x86(self, out: Path) -> str:
-        """Every shipped preset: PGO and plain builds code identical streams (PC clips)."""
+        """Every shipped preset: PGO and plain builds code identical streams (PC clips).
+        The release tree's tool: it lists the presets of its own tree (a launch tree's
+        would check that tree's presets, not the release's)."""
         log = self.log("identity-x86_64")
-        run([*MEMORY_SCOPE, "python3", str(REPO / "tools/dev/preset_identity.py"),
+        run([*MEMORY_SCOPE, "python3", str(self.tree / "tools/dev/preset_identity.py"),
              str(out / "plain" / "nanocodec"), str(out / "nanocodec"), "--jobs", "8"], log=log)
         return log.read_text().strip().splitlines()[-1]
 
@@ -1060,7 +1085,7 @@ class Release:
         results: dict[str, object] = {}
         began = time.monotonic()
         run(["python3", "tools/dev/chart_refresh.py", self.binary_short, "--families",
-             ",".join(self.our_families(REPO)), "--pgo", "--dry-run"],
+             ",".join(self.our_families(self.tree)), "--pgo", "--dry-run"],
             log=self.log("charts-refresh-dry-run"))
         for machine, (instance, _, _) in CBR_SERIES.items():
             arm = machine == "graviton"
@@ -1139,25 +1164,16 @@ class Release:
         for name, command in self.chart_commands(tree):
             chains.setdefault(chart_chain(name), []).append((name, command))
 
-        def run_chain(chain: str, commands: list[tuple[str, list[str]]]) -> None:
-            if not chain.startswith(QUALITY_CHAIN_PREFIX):
-                self.wait_for("pgo")  # it times the PGO builds
-            for name, command in commands:
-                if name in timings:
-                    say(f"charts: {name} done earlier ({timings[name]} min): skipped")
-                    continue
-                began = time.monotonic()
-                run(command, cwd=tree, log=self.log(f"charts-{name}"), env=self.lens_env())
-                with self.state_lock:
-                    timings[name] = round((time.monotonic() - began) / 60, 1)
-                    self.save()
-
         # each machine's timing is its own rented session (or the Jetson's lock), and the
         # quality refresh runs on this PC and its own sessions: the stage takes as long
         # as its slowest chain (0.3.0 ran them one after another: ~2.5 h of timing)
         with ThreadPoolExecutor(len(chains)) as pool:
-            for job in [pool.submit(run_chain, *c) for c in chains.items()]:
-                job.result()
+            jobs = {chain: pool.submit(self.run_chart_chain, chain, commands, tree, timings)
+                    for chain, commands in chains.items()}
+        failed = [chain for chain, job in jobs.items() if job.exception()]
+        if failed:
+            sys.exit(f"chart chain(s) failed: {', '.join(failed)} (each logged when it "
+                     f"failed); resume with --from charts")
         run(["python3", "-m", "nceval.site"], cwd=tree / "eval", log=self.log("charts-site"))
         run(["git", "add", "--", RESULTS, "web/results/data", "README.md"], cwd=tree)
         run(["git", "commit", "-q", "-m", f"charts: release {self.version} (PGO builds of "
@@ -1166,24 +1182,75 @@ class Release:
         del self.state["charts_progress"]
         return {"minutes": timings}
 
+    def run_chart_chain(self, chain: str, commands: list[tuple[str, list[str]]], tree: Path,
+                        timings: dict[str, float]) -> None:
+        """One chain's commands in order, each finished one recorded (a resume skips it)."""
+        if not chain.startswith(QUALITY_CHAIN_PREFIX):
+            self.wait_for("pgo")  # it times the PGO builds
+        for name, command in commands:
+            if name in timings:
+                say(f"charts: {name} done earlier ({timings[name]} min): skipped")
+                continue
+            began = time.monotonic()
+            self.run_chart_command(chain, name, command, tree)
+            with self.state_lock:
+                timings[name] = round((time.monotonic() - began) / 60, 1)
+                self.save()
+
+    def run_chart_command(self, chain: str, name: str, command: list[str], tree: Path) -> None:
+        """A chart command; its failure is announced at once in the run log and on stderr
+        (2026-11-20: a chain that died at 14:17 was reported at 16:28, when the last
+        chain ended), then the command is retried once (unless --no-chain-retry)."""
+        log = self.log(f"charts-{name}")
+        try:
+            run(command, cwd=tree, log=log, env=self.lens_env())
+            return
+        except SystemExit:
+            alarm(f"== charts chain {chain} FAILED: {log}")
+            if self.args.no_chain_retry:
+                raise
+        retry = self.log(f"charts-{name}-retry")
+        say(f"== charts chain {chain}: {name} retried once in {CHAIN_RETRY_WAIT_S} s "
+            f"[{retry}]")
+        time.sleep(CHAIN_RETRY_WAIT_S)
+        try:
+            run(command, cwd=tree, log=retry, env=self.lens_env())
+        except SystemExit:
+            alarm(f"== charts chain {chain} FAILED (after its retry): {retry}")
+            raise
+        say(f"== charts chain {chain}: {name} passed on its retry")
+
+    def charts_work_gib(self) -> float:
+        """The work/ headroom the charts stage still needs: CHARTS_WORK_HEADROOM_GIB
+        shared by the chains' minutes, counting only chains with a data-writing command
+        left (LIGHT_CHART_COMMANDS write next to nothing). A first run needs all of it;
+        a resume with only renders, the site and the landing left, none."""
+        progress = self.state.get("charts_progress")
+        tree = Path(str(CHART_TREE).format(version=self.version))
+        if not progress or not (tree / ".git").exists():
+            return CHARTS_WORK_HEADROOM_GIB
+        heavy_left = {chart_chain(name) for name, _ in self.chart_commands(tree)
+                      if name not in progress and not name.endswith(LIGHT_CHART_COMMANDS)}
+        minutes = chain_minutes()
+        return CHARTS_WORK_HEADROOM_GIB * sum(minutes.get(c, 0) for c in heavy_left) \
+            / sum(minutes.values())
+
     # --- stage 4: crates ------------------------------------------------------------------
 
     def stage_crates(self) -> dict:
+        """The release tree's own script: it publishes the workspace it sits in (2026-11-20:
+        the launch tree's script published the launch tree, at 0.4.0)."""
         script = "tools/release/publish_crates.sh"
+        check_tree_version(self.tree, self.version)
         if self.publish:
             # the real upload runs here, with this PC's `cargo login`, from the clean tag
-            run(["bash", str(REPO / script), "--yes-publish"], cwd=self.tree,
+            run(["bash", str(self.tree / script), "--yes-publish"], cwd=self.tree,
                 log=self.log("crates-publish"))
             return {"published": True}
         # the dry run packages and builds every crate: on the build box (no .git there,
-        # so cargo sees no dirty files; the script, which runs from its tree's
-        # tools/release, is this checkout's)
-        shutil.copy2(REPO / script, self.root / "publish_crates.sh")
-        command = (f"cp ~/{(self.root / 'publish_crates.sh').relative_to(Path.home())} {script} "
-                   f"&& bash {script}")
+        # so cargo sees no dirty files)
         run([str(NC_REMOTE), "run", "--worktree", str(self.tree), "--name", REMOTE_JOB,
-             "--sync", str(self.root / "publish_crates.sh"), "--", command],
-            log=self.log("crates-dry-run"))
+             "--", f"bash {script}"], log=self.log("crates-dry-run"))
         return {"published": False, "dry_run": "passed"}
 
     # --- stage 5: GitHub release ----------------------------------------------------------
@@ -1206,18 +1273,29 @@ class Release:
         notes = out / "notes.md"
         section = changelog_section((self.tree / "CHANGELOG.md").read_text(), self.version)
         notes.write_text(section + "\n" + build_notes(self.version) + self.binary_note() + "\n")
+        check_tree_version(self.tree, self.version)
         public = self.public_tag_commit()
         tag = f"v{self.version}"
-        commands = [["git", "push", "origin", f"{public}:refs/tags/{tag}"],
-                    ["gh", "release", "create", tag, "--repo", GH_REPO, "--verify-tag",
-                     "--title", f"nanocodec {self.version}", "--notes-file", str(notes),
-                     *map(str, files), str(sums)]]
+        commands = {"push": ["git", "push", "origin", f"{public}:refs/tags/{tag}"],
+                    "release": ["gh", "release", "create", tag, "--repo", GH_REPO,
+                                "--verify-tag", "--title", f"nanocodec {self.version}",
+                                "--notes-file", str(notes), *map(str, files), str(sums)]}
         script = out / "upload.sh"
         script.write_text("#!/usr/bin/env bash\nset -euo pipefail\n"
-                          + "".join(shlex.join(c) + "\n" for c in commands))
+                          + "".join(shlex.join(c) + "\n" for c in commands.values()))
         if self.publish:
-            for command in commands:
-                run(command, log=self.log("github"))
+            # idempotent (2026-11-20: a resume pushed a second v0.5.0 tag object, refused):
+            # a tag already there on the same public tree, and its release, are kept
+            remote = remote_tag_commit(tag)
+            todo = github_actions(remote and git("rev-parse", f"{remote}^{{tree}}"),
+                                  git("rev-parse", f"{public}^{{tree}}"),
+                                  remote is not None and github_release_exists(tag))
+            if not todo:
+                say(f"github: {tag} and its release exist at {remote[:9]} (the same tree): "
+                    f"kept")
+            for action in todo:
+                run(commands[action], log=self.log("github"))
+            public = remote or public
         return {"files": [f.name for f in files], "public_commit": public,
                 "uploaded": self.publish, "script": str(script)}
 
@@ -1240,7 +1318,13 @@ class Release:
         parent = git("rev-parse", PUBLIC_REF)
         message = (f"nanocodec {self.version}\n\nRelease commit {self.commit[:9]}, "
                    f"published tree.\n\n{publish.TRAILER}\n")
-        return git("commit-tree", tree, "-p", parent, "-m", message)
+        # dated as the release commit, so a rerun makes the same commit object
+        date = git("log", "-1", "--format=%cI", self.commit)
+        result = subprocess.run(["git", "-C", str(REPO), "commit-tree", tree, "-p", parent,
+                                 "-m", message], capture_output=True, text=True, check=True,
+                                env={**os.environ, "GIT_AUTHOR_DATE": date,
+                                     "GIT_COMMITTER_DATE": date})
+        return result.stdout.strip()
 
     # --- stage 6: mirror and site -----------------------------------------------------------
 
@@ -1297,7 +1381,8 @@ class Release:
         for stage in stages:
             say(f"plan: {stage:8s} " + (f"ends at ~{ends[stage]:g} min" if stage in todo
                                          else "done earlier"))
-        if self.real and "charts" in todo and (problems := charts_preflight()):
+        if self.real and "charts" in todo and (
+                problems := charts_preflight(headroom_gib=self.charts_work_gib())):
             sys.exit("charts pre-flight failed:\n" + "\n".join(f"  {p}" for p in problems))
         total = max(ends.values())
         say(f"plan: ~{total:g} min in all (limit {MAX_RELEASE_MINUTES})")
@@ -1343,6 +1428,8 @@ class Release:
             self.running[stage].set()
 
     def execute(self) -> None:
+        if "base_commit" in self.state:
+            check_launch_tree(self.state["base_commit"])
         start = STAGES.index(self.args.start) if self.args.start else 0
         stages = [self.args.only] if self.args.only else list(STAGES[start:])
         todo = self.plan(stages)
@@ -1372,6 +1459,54 @@ def binary_neutral(path: str) -> bool:
     """Cargo.lock (the binaries were built with the dependencies it pins; a workspace
     member's version line in it is not compiled in) or documentation."""
     return path in BINARY_NEUTRAL_FILES or path.endswith(".md")
+
+
+def check_launch_tree(base: str, launch: Path = REPO) -> None:
+    """The tools of the tree release.py runs from are no older than the code it releases:
+    its HEAD contains the release base. (Stages read the release's own files from the
+    release tree, never from this one: Release.stage_crates, identity_x86.)"""
+    head = git("rev-parse", "HEAD", cwd=launch)
+    if subprocess.run(["git", "-C", str(launch), "merge-base", "--is-ancestor", base, head],
+                      capture_output=True).returncode:
+        sys.exit(f"launch release.py from a tree that contains the release base {base[:9]}: "
+                 f"{launch} is at {head[:9]}")
+
+
+def check_tree_version(tree: Path, version: str) -> None:
+    """`tree` is the release's: its workspace version is `version`."""
+    found = re.search(r'\[workspace\.package\]\nversion = "([^"]+)"',
+                      (tree / "Cargo.toml").read_text())
+    if not found or found[1] != version:
+        sys.exit(f"{tree} is at version {found[1] if found else '?'}, not {version}: the "
+                 f"release's stages run on the release tree")
+
+
+def remote_tag_commit(tag: str) -> str | None:
+    """The commit `tag` names on origin, fetched here (None: no such tag)."""
+    listed = git("ls-remote", "origin", f"refs/tags/{tag}")
+    if not listed:
+        return None
+    commit = listed.split()[0]
+    if not full_commit(commit):
+        run(["git", "fetch", "--no-tags", "origin", f"refs/tags/{tag}"], capture=True)
+    return commit
+
+
+def github_release_exists(tag: str) -> bool:
+    return subprocess.run(["gh", "release", "view", tag, "--repo", GH_REPO],
+                          capture_output=True).returncode == 0
+
+
+def github_actions(remote_tree: str | None, public_tree: str, release_exists: bool
+                   ) -> list[str]:
+    """What the github stage still has to do: push the tag and create the release, or
+    the release alone (the tag is there), or nothing; a tag on another tree stops it."""
+    if remote_tree is None:
+        return ["push", "release"]
+    if remote_tree != public_tree:
+        sys.exit(f"the remote tag names another tree ({remote_tree[:9]}, the release's is "
+                 f"{public_tree[:9]}): a published tag is never moved; check by hand")
+    return [] if release_exists else ["release"]
 
 
 def chart_chain(name: str) -> str:
@@ -1416,21 +1551,27 @@ def chart_tool_paths() -> list[Path]:
     return [OPENH264_HARNESS, timing.DEFAULT_SOURCES, timing.ANCHOR_TOOLS, timing.AARCH64_TOOLS]
 
 
-def charts_preflight(work: Path = DATA / "work", tools: list[Path] | None = None) -> list[str]:
+def charts_preflight(work: Path = DATA / "work", tools: list[Path] | None = None,
+                     headroom_gib: float = CHARTS_WORK_HEADROOM_GIB) -> list[str]:
     """Why the charts stage would fail part-way, each named; empty when it can start.
     2026-11-19 lost over an hour to all three: the work budget, a pruned openh264 driver
-    and a missing lens source directory."""
+    and a missing lens source directory. The work directory's size is measured afresh
+    before it refuses (2026-11-20: the shared cache, up to 30 min old, still said 75 GiB
+    after a prune)."""
     sys.path.insert(0, str(REPO / "eval"))
-    from nceval.diskguard import GIB, WORK_BUDGET_BYTES, shared_work_bytes
+    from nceval.diskguard import GIB, WORK_BUDGET_BYTES, measure_work_bytes, shared_work_bytes
     problems = [f"missing (or empty): {path}" for path in
                 (tools if tools is not None else chart_tool_paths())
                 if not path.exists() or (path.is_dir() and not any(path.iterdir()))]
     work.mkdir(parents=True, exist_ok=True)
     headroom = (WORK_BUDGET_BYTES - shared_work_bytes(work)) / GIB
-    if headroom < CHARTS_WORK_HEADROOM_GIB:
+    if headroom < headroom_gib:
+        say(f"{work}: {headroom:.0f} GiB left by the shared size cache; measuring afresh")
+        headroom = (WORK_BUDGET_BYTES - measure_work_bytes(work)) / GIB
+    if headroom < headroom_gib:
         problems.append(f"{work} has {headroom:.0f} GiB left under its "
                         f"{WORK_BUDGET_BYTES / GIB:.0f} GiB budget (need "
-                        f"{CHARTS_WORK_HEADROOM_GIB}): prune it first")
+                        f"{headroom_gib:.0f}): prune it first")
     return problems
 
 
@@ -1536,6 +1677,9 @@ def main() -> None:
                         help="make the release: tag, landings, charts, mirror (no uploads)")
     parser.add_argument("--over-budget", action="store_true",
                         help=f"run although the plan expects over {MAX_RELEASE_MINUTES} min")
+    parser.add_argument("--no-chain-retry", action="store_true",
+                        help="a failed chart command is not retried (default: once, after "
+                             f"{CHAIN_RETRY_WAIT_S} s)")
     parser.add_argument("--yes-publish", action="store_true",
                         help="with --real: upload to crates.io and GitHub (owner's word only)")
     args = parser.parse_args()

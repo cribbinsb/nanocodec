@@ -8,8 +8,8 @@ hold them; if a number here and a results page disagree, the results page is rig
 **Who wrote this?** AI coding agents, mostly Anthropic's Claude, with some work by OpenAI's Codex and Google's
 Gemini, under the direction of one person, who set the goals, priorities and rules and made the judgement calls.
 
-**How long did it take?** Ten days. The first commit is dated 6 November 2026 and this text 15 November 2026; in
-between are about 3,300 commits and about 350,000 lines of Rust (tests and tables included), plus the
+**How long did it take?** Fifteen days to release 0.5.0. The first commit is dated 6 November 2026 and 0.5.0
+20 November 2026; in between are about 4,000 commits and about 510,000 lines of Rust (tests and tables included), plus the
 evaluation harness and the web pages. Those counts are from the development history; the public repository
 receives it as periodic sync commits. Commits carry
 `Co-Authored-By` trailers naming the model. The commit author name is the project's.

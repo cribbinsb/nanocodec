@@ -3,6 +3,7 @@
 
     python3 tools/dev/aws_heldout_chart.py select --clipset FILE [--count 72]
     python3 tools/dev/aws_heldout_chart.py run --clipset FILE [--instance-type c7a.metal-48xl]
+        [--no-fallback]
     python3 tools/dev/aws_heldout_chart.py score --clipset FILE [--minutes 25]
     python3 tools/dev/aws_heldout_chart.py page --clipset FILE --out docs/results/heldout-chart-DATE
 
@@ -26,7 +27,10 @@ tuning or chart decision has used.
           back (--streams). Fail-fast stages: readiness (tools run, our version
           stamp, every clip decodes to its size), a pipe-cleaner (one point per
           family), then the rest, slowest first, watched for stalls and errors.
-          Two clips' remote decodes are checked against local decodes.
+          Two clips' remote decodes are checked against local decodes. A session
+          falls back to the next type of aws_session.THROUGHPUT_X86_TYPES when its
+          type has no capacity, and its root volume is sized to the upload and the
+          streams it writes (root_gb).
   score   the same points scored here by the shared point engine
           (nceval.realuse.Runner) from those streams (cbr.Bench.prebuilt: the
           anchors' path, metrics from a standard decoder on the GPU slots, our
@@ -77,7 +81,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))
-from aws_session import say  # noqa: E402
+from aws_session import THROUGHPUT_X86_TYPES, fallbacks_after, say  # noqa: E402
 from nceval.cbr import Bench, Point  # noqa: E402
 from nceval.cbr import Family  # noqa: E402
 from nceval.encoders.nanocodec import MEDIUM  # noqa: E402
@@ -110,9 +114,22 @@ SOURCE_SET = "pool"
 RAW_SETS = tuple(s for s in POOL_SETS if s != SOURCE_SET)
 SELECT_SEED = "heldout-chart"
 MIN_RUNGS = 3
-#: Instance choices: (region, cores used for encodes = vCPUs minus two).
-INSTANCES = {"c7a.metal-48xl": ("eu-north-1", 190), "c7a.48xlarge": ("eu-north-1", 190),
-             "c7a.24xlarge": ("eu-north-1", 94), "c7a.4xlarge": ("eu-north-1", 14)}
+#: The sessions' default region and instance type; a session falls back through the
+#: throughput ladder after the type asked for (aws_session.THROUGHPUT_X86_TYPES:
+#: 2026-11-20, no c7a.metal-48xl in any eu-north-1 zone for two hours). The small type
+#: is for pipe-cleaners.
+REGION = "eu-north-1"
+DEFAULT_INSTANCE = "c7a.metal-48xl"
+PIPE_CLEAN_INSTANCE = "c7a.4xlarge"
+#: Encode workers: the launched machine's CPUs minus two (for SSH and the job runner),
+#: counted there, since a fallback type may have fewer.
+REMOTE_WORKERS = "$(( $(nproc) - 2 ))"
+#: A session's root volume: the system with its packages, plus what goes up (the
+#: extracted upload) and what the job writes there, with this margin (2026-11-20: a
+#: 24 GB root took 209 clips' streams of a whole held-out refresh and filled up: dpkg
+#: failed, exit 100). gp3 costs ~$0.0001/GB-hour, so sizing up is nearly free.
+ROOT_SYSTEM_GB = 12
+ROOT_DATA_MARGIN = 1.25
 REMOTE_DIR = "heldout"
 #: The decoded sources live in a tmpfs of their own (the instance's RAM, never its disk):
 #: not /dev/shm, whose files logind removes when the user's last SSH session ends.
@@ -156,7 +173,6 @@ STREAMS_REL = "work/heldout-chart/streams"
 RESULTS_REL = "realuse"
 REPO_ARCHIVE = "repo.tar"
 SEED_REL = "work/heldout-chart/seed"
-SCORE_ROOT_GB = 24
 #: Anchor tools scoring never runs (a CUDA build, a formatter).
 UNNEEDED_TOOLS = ("vmaf-cuda", "clang-format")
 #: Clips whose remote decode is compared with a local one, every run.
@@ -480,6 +496,30 @@ def tmpfs_mb(clips: list[Clip], frames: int) -> int:
     return round(total * TMPFS_MARGIN / 1e6) + 64
 
 
+def staged_bytes(stage_dir: Path) -> int:
+    """What an upload of `stage_dir` sends: every file, symlinks (to files and to
+    directories) followed, as `tar -h` does."""
+    total = 0
+    for directory, _, files in os.walk(stage_dir, followlinks=True):
+        total += sum(os.stat(os.path.join(directory, name)).st_size for name in files)
+    return total
+
+
+def root_gb(upload_bytes: int, written_bytes: int = 0) -> int:
+    """The root volume for a session that uploads and then writes this much."""
+    data_gb = (upload_bytes + written_bytes) * ROOT_DATA_MARGIN / (1 << 30)
+    return ROOT_SYSTEM_GB + int(data_gb + 0.999)
+
+
+def encoded_bytes(jobs: list) -> int:
+    """The streams `run` writes on the instance: each point's rate over its frames
+    (rate-controlled, so its target bounds it), the low rungs included; QP points
+    (no rate) at the ladder's top rung."""
+    top = max(LADDER_KBPS)
+    return sum(int((point.kbps or top) * 1000 / 8 * min(DEFAULT_FRAMES, point.clip.frames)
+                   / point.clip.fps) for _, point in jobs)
+
+
 def check_decodes(streams: Path, clips: list[Clip], frames: int) -> None:
     """The remote decodes of the first DECODE_CHECKS clips equal local decodes."""
     remote = {Path(line.split()[1]).stem: line.split()[0]
@@ -496,7 +536,6 @@ def check_decodes(streams: Path, clips: list[Clip], frames: int) -> None:
 def run(args: argparse.Namespace) -> None:
     from aws_session import Session, SessionSpec  # boto3: only where sessions start
 
-    region, workers = INSTANCES[args.instance_type]
     run_setup = setup(args)
     clips = run_setup.clips
     # every clip's low rungs too: which clips need them is only known once scored here;
@@ -529,17 +568,20 @@ def run(args: argparse.Namespace) -> None:
             f"upload {upload_mb:.0f} MB")
         stages = [("prepare", prepare_command(version, list(tools), clips, run_setup.frames), PREPARE_MINUTES, 0),
                   ("pipe-cleaner", f"cd ~/{REMOTE_DIR} && python3 remote_jobs.py --jobs "
-                   f"pipe.json --workers {workers}", PIPE_MINUTES, 0),
+                   f"pipe.json --workers {REMOTE_WORKERS}", PIPE_MINUTES, 0),
                   ("encode", f"cd ~/{REMOTE_DIR} && python3 remote_jobs.py --jobs jobs.json "
-                   f"--workers {workers}", args.minutes,
+                   f"--workers {REMOTE_WORKERS}", args.minutes,
                    max(2, round(MAX_FAILED_SHARE * len(jobs))))]
         if args.dry_run:
             for name, command, minutes, _ in stages:
                 print(f"{name} ({minutes} min): {command[:600]}")
             return
-        spec = SessionSpec(region=region, instance_type=args.instance_type, arch="amd64",
-                           purpose=args.purpose or "heldout-chart", lifetime_minutes=args.lifetime,
-                           budget_usd=args.budget, root_gb=args.root_gb)
+        root = args.root_gb or root_gb(staged_bytes(stage_dir), encoded_bytes(jobs))
+        say(f"root volume {root} GB")
+        spec = SessionSpec(region=args.region or REGION, instance_type=args.instance_type,
+                           arch="amd64", purpose=args.purpose or "heldout-chart",
+                           lifetime_minutes=args.lifetime, budget_usd=args.budget,
+                           root_gb=root, fallback_types=fallbacks(args))
         timings = {}
         with Session(spec) as session:
             started = time.monotonic()
@@ -618,8 +660,6 @@ def score_cloud(args: argparse.Namespace) -> None:
     and only the result files come back, into this machine's point cache."""
     from aws_session import Session, SessionSpec  # boto3: only where sessions start
 
-    region, cores = INSTANCES[args.instance_type]
-    region = args.region or region
     CLOUD_RESULTS.mkdir(parents=True, exist_ok=True)  # the seed (none on a first session)
     run = setup(args)
     pending = [j for j in run.ladder(args.rungs) + run.extras() if not j[0].cached(j[1])]
@@ -685,9 +725,14 @@ def score_cloud(args: argparse.Namespace) -> None:
         print(f"score rounds ({CHECKPOINT_MINUTES} min each, to {args.minutes} min): {score_round}")
         unstage_score(stage_dir)
         return
-    spec = SessionSpec(region=region, instance_type=args.instance_type, arch="amd64",
-                       purpose=args.purpose or "heldout-score", lifetime_minutes=args.lifetime,
-                       budget_usd=args.budget, root_gb=SCORE_ROOT_GB)
+    upload = staged_bytes(stage_dir)
+    # the results come back from a tmpfs (REMOTE_WORK): the root holds the upload only
+    root = root_gb(upload)
+    say(f"upload {upload / 1e9:.1f} GB: root volume {root} GB")
+    spec = SessionSpec(region=args.region or REGION, instance_type=args.instance_type,
+                       arch="amd64", purpose=args.purpose or "heldout-score",
+                       lifetime_minutes=args.lifetime, budget_usd=args.budget, root_gb=root,
+                       fallback_types=fallbacks(args))
     results = CLOUD_RESULTS
     results.mkdir(parents=True, exist_ok=True)
     timings = {}
@@ -713,6 +758,11 @@ def score_cloud(args: argparse.Namespace) -> None:
     finally:
         unstage_score(stage_dir)
     merge_results(results, load_paths().work / RESULTS_REL)
+
+
+def fallbacks(args: argparse.Namespace) -> tuple[str, ...]:
+    """The types a session falls back to after --instance-type (none: --no-fallback)."""
+    return () if args.no_fallback else fallbacks_after(args.instance_type)
 
 
 def score_rounds(session, command: str, minutes: float, results: Path, frames: int) -> None:
@@ -971,11 +1021,20 @@ def main(argv: list[str]) -> None:
                        help="frames per point (a longer window than the chart's 150)")
         p.add_argument("--key-seconds", type=float,
                        help="a key every this many seconds (default: one key, the chart's)")
+    for name in ("run", "score-cloud"):
+        cloud = sub.choices[name]
+        cloud.add_argument("--instance-type", default=DEFAULT_INSTANCE, choices=sorted(
+            {*THROUGHPUT_X86_TYPES, PIPE_CLEAN_INSTANCE}))
+        cloud.add_argument("--no-fallback", action="store_true",
+                           help="only --instance-type (default: the throughput ladder after "
+                                "it when it has no capacity)")
+        cloud.add_argument("--region", help="another region than the default (a second "
+                           "region's spot quota lets more sessions run side by side)")
     r = sub.choices["run"]
-    r.add_argument("--instance-type", default="c7a.metal-48xl", choices=sorted(INSTANCES))
     r.add_argument("--budget", type=float, default=15.0)
     r.add_argument("--lifetime", type=int, default=90, help="hard instance lifetime, min")
-    r.add_argument("--root-gb", type=int, default=16)
+    r.add_argument("--root-gb", type=int,
+                   help="the root volume, GB (default: sized to the upload and the streams)")
     r.add_argument("--dry-run", action="store_true")
     r.add_argument("--purpose", help="the session's Purpose tag (default heldout-chart)")
     r.add_argument("--minutes", type=float, default=RUN_MINUTES,
@@ -988,11 +1047,8 @@ def main(argv: list[str]) -> None:
     sc.add_argument("--shard", help="I/N: every Nth clip from the Ith")
     sc.add_argument("--session", help="I/N: the clips of score-cloud's session I of N")
     c = sub.choices["score-cloud"]
-    c.add_argument("--instance-type", default="c7a.metal-48xl", choices=sorted(INSTANCES))
     c.add_argument("--budget", type=float, default=15.0)
     c.add_argument("--lifetime", type=int, default=90, help="hard instance lifetime, min")
-    c.add_argument("--region", help="another region than the instance type's own (a "
-                   "second region's spot quota lets more sessions run side by side)")
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--purpose", help="the session's Purpose tag (default heldout-score)")
     c.add_argument("--session", help="I/N[,J/N]: this session scores every Nth clip from the "

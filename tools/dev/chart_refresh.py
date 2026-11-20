@@ -71,8 +71,9 @@ whose families and builds are recorded apart (docs/results/bd-vs-speed-<set>-bui
 `--seed` starts the record with every family on COMMIT's build). Its points are too many
 for this PC: measure encodes and scores them on rented machines (tools/dev/
 aws_heldout_chart.py `run`, then `score-cloud`, checkpointed; `--cloud-regions`,
-`--cloud-budget`), and
-render reads them from those streams. The speed axis stays the main chart's: timed on
+`--cloud-budget`; one scoring session per CLOUD_SESSION_STREAM_GB of streams, at least
+one per region), and render reads them from those streams; `delete` removes a replaced
+build's streams with its points. The speed axis stays the main chart's: timed on
 its timing clips, said so under the chart. A build that any record still uses is never
 removed.
 
@@ -177,6 +178,11 @@ CLOUD_REGIONS = ("eu-north-1", "eu-central-1")
 #: worst case (eu-north-1 $1.05/h). Spend is the time used, not the cap.
 CLOUD_SESSION_BUDGET = 8.0
 CLOUD_SCORE_MINUTES = 120
+#: The most stream data one scoring session takes up (each gets a root volume sized to
+#: its share, aws_heldout_chart.root_gb; 2026-11-20: 209 clips' ~17 GB in one session
+#: took 5.6 min to upload and filled a 24 GB root): more data means more sessions, run
+#: one per region at a time.
+CLOUD_SESSION_STREAM_GB = 8
 PLAN_FILE = f"{RESULTS}/bd-vs-speed-plan.json"
 TIMING_FILE = f"{RESULTS}/bd-vs-speed-timing.json"
 TIMING_X86_FILE = f"{RESULTS}/bd-vs-speed-timing-x86.json"
@@ -478,7 +484,8 @@ class Refresh:
         return ssh(f"cat {marker} 2>/dev/null || true").strip() == self.commit
 
     def delete(self) -> None:
-        """Delete the replaced builds' cached chart points; record the new build."""
+        """Delete the replaced builds' cached chart points (and, on a clip set, their
+        rented encodes' streams); record the new build."""
         sys.path.insert(0, str(REPO / "eval"))
         from nceval.chart import chart_clips, low_ladder
         from nceval.config import load_paths
@@ -486,6 +493,11 @@ class Refresh:
         from nceval.realuse import DEFAULT_FRAMES, Runner, own_family
 
         runner = Runner(load_paths(), EVALUATION_GATE, 1, over_budget=True)
+        # a clip set's streams, encoded on rented machines, are kept per build too: the
+        # replaced build's go with its points (2026-11-20: 41 GiB of streams of builds no
+        # chart showed any more pushed work/ to its budget)
+        streams = (Runner(load_paths(), EVALUATION_GATE, 1, over_budget=True,
+                          prebuilt=self.streams()) if self.args.clipset else None)
         clips = chart_clips(self.args.clipset)
         for family in self.stale:
             if family in self.new:
@@ -509,9 +521,30 @@ class Refresh:
                                 entry.unlink()
                 print(f"  {family}: {'would delete' if self.args.dry_run else 'deleted'} "
                       f"{removed} cached files of {len(jobs)} old points")
+                if streams is not None:
+                    self.delete_streams(streams, stale, clips)
             self.record["families"][family] = self.commit
         self.drop_unused_builds()
         self.save_record()
+
+    def delete_streams(self, runner, families: list, clips: list) -> None:
+        """The rented encodes of `families` (a replaced build) under the clip set's
+        streams: each point's files, every suffix (stream, rate log, times, .done)."""
+        from nceval.chart import low_ladder
+        from nceval.realuse import DEFAULT_FRAMES
+        jobs = (runner.points(families, clips, DEFAULT_FRAMES, None)
+                + runner.points(families, clips, DEFAULT_FRAMES, None, ladder=low_ladder))
+        removed = 0
+        for bench, point in jobs:
+            base = bench.prebuilt_base(point)
+            if not base.parent.is_dir():
+                continue
+            for entry in base.parent.glob(f"{base.name}.*"):
+                removed += entry.stat().st_size
+                if not self.args.dry_run:
+                    entry.unlink()
+        print(f"  {families[0].name}: {'would delete' if self.args.dry_run else 'deleted'} "
+              f"{removed / 1e9:.2f} GB of its old streams")
 
     def verify(self) -> None:
         """--retime's guard: each retimed family's streams at COMMIT equal its recorded
@@ -642,14 +675,17 @@ class Refresh:
         self.run(["python3", "tools/dev/aws_heldout_chart.py", "run", *common,
                   "--budget", f"{budget:.2f}", "--purpose", "chart-refresh-encode"],
                  "cloud-encode.log")
+        sessions = score_sessions(regions, 0 if self.args.dry_run
+                                  else directory_bytes(self.streams()))
+        # one session per region at a time (each region's spot quota), the rest queued
         with ThreadPoolExecutor(len(regions)) as pool:
             jobs = [pool.submit(self.run, [
                 "python3", "tools/dev/aws_heldout_chart.py", "score-cloud", *common,
-                "--session", f"{index}/{len(regions)}", "--region", region,
+                "--session", f"{index}/{len(sessions)}", "--region", region,
                 "--minutes", str(CLOUD_SCORE_MINUTES), "--budget", f"{budget:.2f}",
                 "--purpose", "chart-refresh-score"],
-                f"cloud-score-{index}-{len(regions)}.log")
-                for index, region in enumerate(regions, 1)]
+                f"cloud-score-{index}-{len(sessions)}.log")
+                for index, region in enumerate(sessions, 1)]
             for job in jobs:
                 job.result()
 
@@ -875,6 +911,19 @@ class Refresh:
                         for build, names in sorted(timed.items()))
         return {**self.record["tools"], "commit": line, "build": line,
                 "x86_timing_note": self.record.get("x86_timing_note", "")}
+
+
+def score_sessions(regions: list[str], stream_bytes: int) -> list[str]:
+    """Each scoring session's region: one per region listed, more when the streams pass
+    CLOUD_SESSION_STREAM_GB a session (the regions taken in turn)."""
+    needed = math.ceil(stream_bytes / (CLOUD_SESSION_STREAM_GB * (1 << 30)))
+    return [regions[i % len(regions)] for i in range(max(len(regions), needed))]
+
+
+def directory_bytes(root: Path) -> int:
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.diskguard import directory_bytes as walk
+    return walk(root) if root.is_dir() else 0
 
 
 def clipset_views() -> list:

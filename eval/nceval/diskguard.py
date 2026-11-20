@@ -98,11 +98,26 @@ def shared_work_bytes(work: Path) -> int:
         stored = _fresh_usage(cache)
         if stored is not None:
             return stored
-        used = directory_bytes(work)
-        partial = cache.with_name(f"{cache.name}.{os.getpid()}")
-        partial.write_text(json.dumps({"bytes": used, "time": time.time()}))
-        partial.replace(cache)
-        return used
+        return _measure(work)
+
+
+def measure_work_bytes(work: Path) -> int:
+    """`directory_bytes(work)` walked now, whatever the cache holds, and stored there for
+    every process: for a decision that refuses on the size (a release's pre-flight),
+    where a cached size from before a prune would be wrong."""
+    with (work / (USAGE_CACHE + ".lock")).open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _measure(work)
+
+
+def _measure(work: Path) -> int:
+    """Walk `work` and store its size in the shared cache (the caller holds the lock)."""
+    used = directory_bytes(work)
+    cache = work / USAGE_CACHE
+    partial = cache.with_name(f"{cache.name}.{os.getpid()}")
+    partial.write_text(json.dumps({"bytes": used, "time": time.time()}))
+    partial.replace(cache)
+    return used
 
 
 def _fresh_usage(cache: Path) -> int | None:

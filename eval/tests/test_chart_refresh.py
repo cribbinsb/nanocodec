@@ -167,3 +167,31 @@ def test_a_complete_build_keeps_its_presets_and_a_new_one_gets_them_whole(tmp_pa
                           side_effect=AssertionError("re-extracted")):
             refresh.build()
     assert refresh.record["builds"] == {refresh.commit: refresh.commit}
+
+
+def test_scoring_sessions_grow_with_the_streams_one_region_at_a_time():
+    gib = 1 << 30
+    per = chart_refresh.CLOUD_SESSION_STREAM_GB * gib
+    assert chart_refresh.score_sessions(["a", "b"], 0) == ["a", "b"]
+    assert chart_refresh.score_sessions(["a"], per + 1) == ["a", "a"]
+    assert chart_refresh.score_sessions(["a", "b"], 3 * per) == ["a", "b", "a"]
+
+
+def test_a_replaced_builds_streams_go_with_its_points(tmp_path):
+    """2026-11-20: 41 GiB of rented encodes of builds no chart showed filled work/."""
+    from types import SimpleNamespace
+    clip = tmp_path / "clip" / "nanocodec-av1"
+    clip.mkdir(parents=True)
+    for name in ("cbr600-old.ivf", "cbr600-old.done", "cbr600-old.rate.csv", "cbr600-new.ivf"):
+        (clip / name).write_text("x")
+
+    class Bench:
+        def prebuilt_base(self, point):
+            return clip / point
+
+    runner = SimpleNamespace(points=lambda *_a, ladder=None: [] if ladder else
+                             [(Bench(), "cbr600-old"), (Bench(), "cbr400-gone")])
+    refresh = chart_refresh.Refresh.__new__(chart_refresh.Refresh)
+    refresh.args = argparse.Namespace(dry_run=False)
+    refresh.delete_streams(runner, [SimpleNamespace(name="nanocodec-av1")], [])
+    assert sorted(p.name for p in clip.iterdir()) == ["cbr600-new.ivf"]
