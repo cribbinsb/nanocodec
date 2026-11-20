@@ -44,12 +44,12 @@
     <div class="controls">
       <button type="button" class="play" aria-pressed="false">Play</button>
       <label class="control ladder-control"><span>Show every preset</span><input type="checkbox" class="all-toggle" aria-label="Show every preset, not only those on the frontier"></label>
-      <label class="control day-control"><span>Day</span><input type="range" min="0" max="0" step="1" value="0" aria-label="Day"></label>
+      <div class="control day-control"><label><span>Day <output class="day-label"></output></span><input type="range" min="0" max="0" step="1" value="0" aria-label="Day"></label><div class="day-ticks" aria-hidden="true"></div></div>
     </div>
     <div class="chart-card">
       <div class="frame-head">
         <p class="chart-title">BD-J vs x264 medium --tune zerolatency,psnr, against single-thread encode speed</p>
-        <p class="chart-sub"><span class="frame-day"></span> · every preset · real-time CBR · held-out fresh clips (fixed slice) · bold: our Pareto frontier over every codec and preset, its presets marked (ringed: a Default) · faint: earlier frames' frontiers · lower is fewer bits, right is faster</p>
+        <p class="chart-sub"><span class="frame-day"></span> · every preset · real-time CBR · held-out fresh clips (fixed slice) · bold: our Pareto frontier (over every codec and preset, or one codec's presets: Front of), its presets marked (ringed: a Default) · faint: earlier frames' frontiers · lower is fewer bits, right is faster</p>
         <ul class="frame-caption" aria-live="polite"></ul>
         <p class="frame-activity"></p>
         <p class="frame-front"></p>

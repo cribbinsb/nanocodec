@@ -7,7 +7,7 @@
 import { paretoFront, frontierLine } from './frontier.js';
 import { drawScatter } from './chart.js';
 import { plotDomain } from './domain.js';
-import { CODEC_NAMES, el, fail, fps, loadData, pct, table } from './common.js';
+import { CODEC_NAMES, control, el, fail, fps, loadData, pct, segmented, table } from './common.js';
 
 const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1': 'triangle', openh264: 'triangle-down', libvpx: 'cross', libaom: 'plus' };
 const FRAME_MS = 1100;
@@ -26,6 +26,16 @@ const STEM_NAMES = { slow: 'Slow', fast: 'Fast', faster: 'Faster', veryfast: 'Ve
 const GHOST_OPACITY = 0.7;
 const GHOST_FADE = 0.6;
 
+// The codec filter: 'all' (our whole front) or one codec's own presets (?codec=av1).
+const ALL = 'all';
+const view = { codec: ALL };
+const inView = (key) => view.codec === ALL || key.split('@')[0] === view.codec;
+/** The day's frontier in the current view: over every codec, or the codec's presets alone. */
+const frontKeys = (day) => (view.codec === ALL ? day.frontier : day.codec_fronts?.[view.codec]) || [];
+const vsBase = (day) => (view.codec === ALL ? day.front_vs_base : day.codec_vs_base?.[view.codec]);
+const vsPrevious = (day) => (view.codec === ALL ? day.front_vs_previous : day.codec_vs_previous?.[view.codec]);
+const baseDay = (data) => (view.codec === ALL ? data.front_base_day : data.codec_front_base_days?.[view.codec]);
+
 /** `hevc@fast` -> HEVC Fast; `hevc` (the Default) -> HEVC. */
 function presetLabel(key) {
   const [codec, stem] = key.split('@');
@@ -35,8 +45,8 @@ function presetLabel(key) {
 /** Our points of a day: the presets on the day's frontier, small and labelled; with `all`,
  * the others too, faint and unlabelled. A Default is ringed. */
 function ourPoints(day, all = true) {
-  const front = new Set(day.frontier || []);
-  return Object.entries(day.values).filter(([k, v]) => v.j !== null && v.fps_x86 && (all || front.has(k))).map(([key, v]) => ({
+  const front = new Set(frontKeys(day));
+  return Object.entries(day.values).filter(([k, v]) => inView(k) && v.j !== null && v.fps_x86 && (all || front.has(k))).map(([key, v]) => ({
     id: `nanocodec-${key}`, x: v.fps_x86, y: v.j, iqr: null, kind: 'ours', shape: 'circle',
     label: front.has(key) ? presetLabel(key) : '', flagged: v.flagged, priority: front.has(key) ? 3 : 2,
     classes: [front.has(key) ? '' : 'off-front', key.includes('@') ? '' : 'default-preset'].join(' ').trim(),
@@ -49,12 +59,12 @@ const xy = (v) => [v.fps_x86, v.j];
 
 /** A day's frontier as a line, slowest first. */
 function frontLine(day) {
-  return (day.frontier || []).map((k) => xy(day.values[k]));
+  return frontKeys(day).map((k) => xy(day.values[k]));
 }
 
 /** Each codec's presets that day, slowest first: thin lines under the marks. */
 function ladders(day) {
-  return Object.keys(CODEC_NAMES).map((codec) => Object.entries(day.values)
+  return Object.keys(CODEC_NAMES).filter((codec) => view.codec === ALL || codec === view.codec).map((codec) => Object.entries(day.values)
     .filter(([k, v]) => k.split('@')[0] === codec && v.j !== null && v.fps_x86)
     .map(([, v]) => xy(v)).sort((p, q) => p[0] - q[0]))
     .map((line) => ({ line, cls: 'ladder' }));
@@ -91,7 +101,7 @@ function draw(root, data, index, domain) {
   const showAll = root.querySelector('.all-toggle')?.checked ?? false;
   const points = [...referencePoints(data), ...ourPoints(day, showAll)];
   const refs = paretoFront(points.filter((p) => p.kind !== 'ours'));
-  const ours = new Set((day.frontier || []).map((k) => `nanocodec-${k}`));
+  const ours = new Set(frontKeys(day).map((k) => `nanocodec-${k}`));
   const frontiers = [
     { kind: 'ref', line: frontierLine(refs), ids: new Set(refs.map((p) => p.id)) },
     { kind: 'ours bold', line: frontLine(day), ids: ours },
@@ -143,8 +153,9 @@ function changePanel(data, index, title, value, format, zero) {
 
 /** "… points of BD-J at equal speed, …× speed at equal J" for a front change, or why not. */
 function frontChange(c) {
-  return (c && c.j_points !== null ? `${pct(c.j_points).replace('%', '')} points of BD-J at equal speed` : 'no overlap')
-    + (c && c.speed_factor !== null ? `, ${c.speed_factor.toFixed(2)}× speed at equal J` : '');
+  if (!c || (c.j_points === null && c.speed_factor === null)) return 'n/a (a front needs two presets and an overlap)';
+  return (c.j_points !== null ? `${pct(c.j_points).replace('%', '')} points of BD-J at equal speed` : 'no overlap')
+    + (c.speed_factor !== null ? `, ${c.speed_factor.toFixed(2)}× speed at equal J` : '');
 }
 
 /** The text above the chart for frame `index`: date and build, captions, git activity and
@@ -154,9 +165,10 @@ function fillHead(root, data, index) {
   root.querySelector('.frame-day').textContent = `${day.date} · build ${day.commit}`;
   root.querySelector('.frame-caption').replaceChildren(...(day.caption || []).map((line) => el('li', {}, line)));
   root.querySelector('.frame-activity').textContent = activityText(day);
-  const prev = day.front_vs_previous;
-  root.querySelector('.frame-front').textContent = `Front: against the previous frame ${prev ? frontChange(prev) : '–'}; `
-    + `against the ${data.front_base_day} front ${frontChange(day.front_vs_base)}.`;
+  const name = view.codec === ALL ? 'Front' : `${CODEC_NAMES[view.codec]} front`;
+  const base = baseDay(data);
+  root.querySelector('.frame-front').textContent = `${name}: against the previous frame ${index ? frontChange(vsPrevious(day)) : '–'}; `
+    + (base ? `against the ${base} front ${frontChange(vsBase(day))}.` : 'n/a (no day with two presets).');
 }
 
 /** Reserve the tallest frame's text height above the chart (at the current width), so the
@@ -171,10 +183,11 @@ function fixHeadHeight(root, data, index) {
 }
 
 function drawChange(root, data, index) {
-  const base = data.front_base_day;
+  const base = baseDay(data);
+  const who = view.codec === ALL ? '' : `${CODEC_NAMES[view.codec]}: `;
   root.querySelector('.change-charts').replaceChildren(
-    changePanel(data, index, `BD-J gap to the ${base} front (percentage points)`, (d) => d.front_vs_base?.j_points, (v) => pct(v), 0),
-    changePanel(data, index, `speed factor at equal J vs the ${base} front`, (d) => d.front_vs_base?.speed_factor, (v) => `${v.toFixed(2)}×`, 1));
+    changePanel(data, index, `${who}BD-J gap to the ${base} front (points)`, (d) => vsBase(d)?.j_points, (v) => pct(v), 0),
+    changePanel(data, index, `${who}speed factor at equal J vs the ${base} front`, (d) => vsBase(d)?.speed_factor, (v) => `${v.toFixed(2)}×`, 1));
   root.querySelector('.change-note').textContent = 'Each front is BD-J as a piecewise-linear function of log fps; the J gap is the mean difference at equal speed over the speeds both fronts cover, the speed factor the mean at equal BD-J over the BD-J range both cover; nothing is extrapolated.';
 }
 
@@ -188,6 +201,18 @@ function dayTable(data) {
   ], data.days);
 }
 
+/** The timing's own noise (history_chart.py noise_text says the same in the docs). */
+function noiseText(noise) {
+  if (!noise) return '';
+  const moves = Object.values(noise.between_sessions.fps_change_pct);
+  const paired = Object.values(noise.same_session_time_ratio.ratios);
+  if (!moves.length || !paired.length) return '';
+  const signed = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
+  return `Each preset is timed in five repeats and the median kept; within a session the repeats deviate from their median by ${noise.within_session_median_deviation_pct.toFixed(1)}% (median over presets). `
+    + `Between sessions on different instances, the ${moves.length} presets whose streams did not change from ${noise.between_sessions.from} to ${noise.between_sessions.to} moved by ${signed(Math.min(...moves))} to ${signed(Math.max(...moves))} in fps, `
+    + `while ${paired.length} of them timed side by side in one session differed by at most ${(Math.max(...paired.map((r) => Math.abs(r - 1))) * 100).toFixed(1)}%: frame-to-frame speed differences of a few per cent are session noise, not the builds. `;
+}
+
 function note(data) {
   const s = data.slice;
   return `Each frame is the last commit of that day on the integration branch (every other day, and today's head), built as a plain release build and measured now with one protocol: `
@@ -197,10 +222,34 @@ function note(data) {
     + `on a fixed slice of ${s.clips.length} of the ${data.fresh_clips} held-out fresh clips (${Object.entries(s.per_class).map(([k, n]) => `${n} ${k}`).join(', ')}; `
     + `within a class the first by a hash of the name), averaged over the ${data.clips_used} clips on which every point of every day and every reference overlaps the zero line. `
     + `Speed: fps timed on AWS c8a (Zen 5), one core, by the chart's own timing: its commands (three 720p clips, fixed QP found per build for about ${data.timing_rung_kbps} kbps), `
-    + `each run back to back with x264 medium on one c8a.large, the median time ratio times the chart's stored x264 medium time; every day here is a plain release build (the overview's builds are PGO). The references are the overview chart's, `
+    + `each run back to back with x264 medium on one c8a.large, the median time ratio times the chart's stored x264 medium time; every day here is a plain release build (the overview's builds are PGO). `
+    + `${noiseText(data.timing_noise)}The references are the overview chart's, `
     + `their quality re-averaged on the same clips and their fps as timed on the c8a. `
     + `The bold line is our Pareto frontier that day over every codec and preset (no other of our points is both faster and lower); the faint blue lines are the earlier frames' frontiers, older ones fainter; `
     + `the marks on it are its presets, a ringed one a codec's Default. "Show every preset" adds the presets off the frontier, faint, with thin lines joining each codec's presets.`;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// A tick label needs about this many pixels; narrower, every other one is left out.
+const TICK_PX = 48;
+
+/** "2026-11-13" -> "Nov 13". */
+function shortDate(date) {
+  const [, month, day] = date.split('-').map(Number);
+  return `${MONTHS[month - 1]} ${day}`;
+}
+
+/** Date labels under the slider at each frame's position, thinned to fit the width
+ * (the first and last always shown). */
+function drawTicks(root, data) {
+  const ticks = root.querySelector('.day-ticks');
+  const n = data.days.length;
+  const step = Math.max(1, Math.ceil((TICK_PX * n) / Math.max(1, ticks.clientWidth)));
+  ticks.replaceChildren(...data.days.map((d, i) => {
+    // the last always; a thinned label too close before it is left out
+    const shown = i === n - 1 || (i % step === 0 && n - 1 - i >= step);
+    return el('span', { style: `left: ${n > 1 ? (i / (n - 1)) * 100 : 0}%`, class: shown ? '' : 'thinned' }, shortDate(d.date));
+  }));
 }
 
 async function main() {
@@ -211,6 +260,9 @@ async function main() {
     const domain = plotDomain(all);
     const params = new URLSearchParams(location.search);
     const still = params.has('still');
+    // the axes are the whole front's, so every codec view shares them
+    const requested = params.get('codec');
+    view.codec = requested in CODEC_NAMES ? requested : ALL;
     let index = Math.min(Number(params.get('frame') ?? data.days.length - 1), data.days.length - 1);
     root.querySelector('.view-note').textContent = note(data);
     const slider = root.querySelector('input[type=range]');
@@ -218,7 +270,13 @@ async function main() {
     slider.max = String(data.days.length - 1);
     slider.value = String(index);
     let timer = null;
-    const show = (i) => { index = i; slider.value = String(i); draw(root, data, i, domain); };
+    const show = (i) => {
+      index = i;
+      slider.value = String(i);
+      root.querySelector('.day-label').textContent = `${data.days[i].date} · frame ${i + 1} of ${data.days.length}`;
+      draw(root, data, i, domain);
+    };
+    drawTicks(root, data);
     const stop = () => { clearInterval(timer); timer = null; button.textContent = 'Play'; button.setAttribute('aria-pressed', 'false'); };
     button.addEventListener('click', () => {
       if (timer) { stop(); return; }
@@ -229,11 +287,20 @@ async function main() {
     });
     slider.addEventListener('input', () => { stop(); show(Number(slider.value)); });
     root.querySelector('.all-toggle').addEventListener('change', () => draw(root, data, index, domain));
+    const codecs = [{ value: ALL, label: 'All' }, ...Object.entries(CODEC_NAMES).map(([value, label]) => ({ value, label }))];
+    root.querySelector('.controls').prepend(control('Front of', segmented('Front of', codecs, view.codec, (value) => {
+      view.codec = value;
+      const url = new URL(location.href);
+      if (value === ALL) url.searchParams.delete('codec'); else url.searchParams.set('codec', value);
+      history.replaceState(null, '', url);
+      fixHeadHeight(root, data, index);
+      draw(root, data, index, domain);
+    })));
     if (still) document.body.classList.add('still');
     else root.querySelector('.table-slot').append(dayTable(data));
     fixHeadHeight(root, data, index);
     show(index);
-    window.addEventListener('resize', () => { fixHeadHeight(root, data, index); draw(root, data, index, domain); });
+    window.addEventListener('resize', () => { fixHeadHeight(root, data, index); drawTicks(root, data); draw(root, data, index, domain); });
     document.body.dataset.ready = 'true';
   } catch (error) {
     fail(root, error);

@@ -218,7 +218,13 @@ td:first-child { white-space: nowrap; }
 .play { font: inherit; font-size: 13px; min-height: 32px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--page); color: var(--ink); cursor: pointer; }
 .play[aria-pressed="true"] { background: var(--surface); font-weight: 600; }
 .day-control { flex: 1 1 240px; }
-.day-control input { width: 100%; }
+.day-control input { width: 100%; margin: 0; }
+.day-control label { display: flex; flex-direction: column; gap: 4px; }
+.day-label { color: var(--ink); font-weight: 600; text-transform: none; letter-spacing: 0; }
+/* date ticks under the slider; the thumb's half width keeps the ends aligned with it */
+.day-ticks { position: relative; height: 1.4em; margin: 2px 8px 0; font-size: 11px; color: var(--muted); }
+.day-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.day-ticks span.thinned { visibility: hidden; }
 .still .site-header, .still .results-bar, .still h1, .still .lede, .still .disclaimer, .still .controls,
 .still .view-note, .still .table-view, .still .note, .still footer { display: none; }
 .still main { padding: 8px; }
@@ -237,3 +243,4 @@ td:first-child { white-space: nowrap; }
 .change-dot.current { stroke: var(--ink); stroke-width: 1.5; }
 .still .change-note { display: none; }
 .frame-front { margin: 0 8px 4px; font-size: 13px; color: var(--ink); font-weight: 600; }
+.day-control label > span { font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase; font-weight: 650; color: var(--muted); }
