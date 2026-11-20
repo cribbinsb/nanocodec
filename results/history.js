@@ -1,7 +1,7 @@
 // The headline chart's history (history.html): one frame per day, each the last
 // integration build of that day re-measured under one protocol (tools/dev/history_chart.py),
 // drawn in the overview chart's style with fixed axes, the reference encoders fixed,
-// a play / pause button and a day slider. ?frame=N&still=1 shows one frame without
+// a play / pause button (autoplays on a loop) and a day slider. ?frame=N&still=1 shows one frame without
 // controls (the GIF and MP4 frames are screenshots of it).
 // Data: data/history.json (docs/results/history-2026-11-20/history.json).
 import { paretoFront, frontierLine } from './frontier.js';
@@ -27,7 +27,7 @@ function setChildren(root, selector, children) {
 const VERSION = new URL(import.meta.url).searchParams.get('v') || '';
 
 const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1': 'triangle', openh264: 'triangle-down', libvpx: 'cross', libaom: 'plus' };
-const FRAME_MS = 1100;
+const FRAME_MS = 550;
 const X_LABEL = 'single-thread encode fps, 720p, one AMD EPYC 9R45 (Zen 5) core; timed on AWS c8a (log scale; faster →)';
 
 function referencePoints(data) {
@@ -302,13 +302,13 @@ async function main() {
     };
     drawTicks(root, data);
     const stop = () => { clearInterval(timer); timer = null; button.textContent = 'Play'; button.setAttribute('aria-pressed', 'false'); };
-    button.addEventListener('click', () => {
-      if (timer) { stop(); return; }
-      if (index === data.days.length - 1) show(0);
+    // plays on a loop: after the last day it starts again from the first
+    const play = () => {
       button.textContent = 'Pause';
       button.setAttribute('aria-pressed', 'true');
-      timer = setInterval(() => { if (index >= data.days.length - 1) stop(); else show(index + 1); }, FRAME_MS);
-    });
+      timer = setInterval(() => show(index >= data.days.length - 1 ? 0 : index + 1), FRAME_MS);
+    };
+    button.addEventListener('click', () => { if (timer) stop(); else play(); });
     slider.addEventListener('input', () => { stop(); show(Number(slider.value)); });
     root.querySelector('.all-toggle')?.addEventListener('change', () => draw(root, data, index, domain));
     const codecs = [{ value: ALL, label: 'All' }, ...Object.entries(CODEC_NAMES).map(([value, label]) => ({ value, label }))];
@@ -324,6 +324,8 @@ async function main() {
     else root.querySelector('.table-slot')?.append(dayTable(data));
     fixHeadHeight(root, data, index);
     show(index);
+    // autoplay unless a single frame was asked for (?frame=N or ?still)
+    if (!still && !params.has('frame')) play();
     window.addEventListener('resize', () => { fixHeadHeight(root, data, index); drawTicks(root, data); draw(root, data, index, domain); });
     document.body.dataset.ready = 'true';
   } catch (error) {
