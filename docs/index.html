@@ -38,13 +38,19 @@ cargo build --release -p nanocodec-cli          # the command line: target/relea
 cargo build --release -p nanocodec-capi         # the C library: target/release/libnanocodec.{a,so}</code></pre>
   <div class="table-wrap"><table>
     <tr><th>Target</th><th>How</th><th>Kernels</th></tr>
-    <tr><td>x86_64</td><td><code>cargo build --release</code></td><td>AVX2 and AVX-512 where the CPU has them, else scalar</td></tr>
+    <tr><td>x86_64</td><td><code>cargo build --release</code> (needs an x86-64-v3 CPU, see below)</td><td>AVX2, and AVX-512 where the CPU has it</td></tr>
     <tr><td>aarch64</td><td><code>cargo build --release</code> on the device (tested on a Jetson Orin Nano), or
       <code>--target aarch64-unknown-linux-gnu</code> with a cross linker</td><td>NEON</td></tr>
     <tr><td>wasm32</td><td><code>rustup target add wasm32-unknown-unknown</code>, then
       <code>tools/web/build.sh</code> (needs <code>wasm-bindgen-cli</code> 0.2.105); see <a href="browser.html">Browser</a></td>
       <td>SIMD128 (required), relaxed SIMD where available</td></tr>
   </table></div>
+  <p>On x86_64 the repository's <code>.cargo/config.toml</code> compiles all code with
+    <code>-C target-cpu=x86-64-v3</code> (AVX2, BMI2 and FMA code generation; Intel Haswell or AMD Zen 1 and
+    later); the kernels are still chosen at run time. Cargo reads that file only for builds inside this
+    repository: <code>cargo install</code> and crates that depend on ours build for baseline x86_64 unless you set
+    <code>RUSTFLAGS="-C target-cpu=x86-64-v3"</code> yourself (or <code>native</code>). For a CPU older than
+    x86-64-v3, build here with <code>RUSTFLAGS="-C target-cpu=x86-64"</code>, which replaces the file's flags.</p>
 
   <h2 id="first-encode">First encode and decode</h2>
   <p>The encoder reads raw 8-bit 4:2:0 frames (I420 by default). Any raw clip works; this makes a 5-second test

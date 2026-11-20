@@ -96,7 +96,10 @@ function pinArrow(dx, dy, r) {
  *   points: [{id, x, y, iqr: [lo, hi] | null, kind: 'ours'|'ref'|'tuned', shape, label,
  *             flagged, twin: id | null, priority}]
  *   opts: {xLabel, yLabel, describe(point) -> Node (tooltip), onSelect(point), selected,
- *          frontiers: [{kind: 'ours'|'ref', line: [[x, y], ...], ids: Set}] (Pareto, frontier.js)}
+ *          frontiers: [{kind: 'ours'|'ref', line: [[x, y], ...], ids: Set}] (Pareto, frontier.js),
+ *          lines: [{line: [[x, y], ...], cls, opacity?}] (extra polylines under the marks: the
+ *            history page's preset ladders and earlier days' frontiers),
+ *          domain: {x: [lo, hi], y: [lo, hi]} (fixed axes across redraws; default plotDomain)}
  * Returns {pinned: [id, ...]}, the points beyond the axes, so the page can say so.
  */
 export function drawScatter(container, points, opts) {
@@ -107,7 +110,7 @@ export function drawScatter(container, points, opts) {
   const plotW = width - MARGIN.left - MARGIN.right;
   const plotH = height - MARGIN.top - MARGIN.bottom;
 
-  const domain = plotDomain(points);
+  const domain = opts.domain || plotDomain(points);
   const ys = [...domain.y, 0];
   const xLo = domain.x[0] * 0.82;
   const xHi = domain.x[1] * 1.22;
@@ -176,6 +179,11 @@ export function drawScatter(container, points, opts) {
     }
   }
   root.append(fronts);
+  const extra = clipped('extra-lines');
+  for (const { line, cls, opacity } of opts.lines || []) {
+    if (line.length > 1) extra.append(svg('polyline', { class: cls, opacity, points: line.map(([x, y]) => `${sx(x)},${sy(y)}`).join(' ') }));
+  }
+  root.append(extra);
   const onFront = new Set((opts.frontiers || []).flatMap((f) => [...f.ids]));
 
   const bars = clipped('bars');
@@ -197,6 +205,7 @@ export function drawScatter(container, points, opts) {
   const labels = svg('g');
   const overlaps = (b) => placed.some((o) => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
   for (const p of [...points].sort((a, b) => b.priority - a.priority)) {
+    if (!p.label) continue; // a point drawn without a label (the history page's off-frontier presets)
     const w = p.label.length * LABEL_CHAR_PX;
     const { x: cx, y: cy } = at.get(p.id);
     // The four sides next to the point, then the same farther out on a leader line:
@@ -240,8 +249,8 @@ export function drawScatter(container, points, opts) {
   for (const p of [...points].sort((a, b) => a.priority - b.priority)) {
     const { x, y, out } = at.get(p.id);
     const g = svg('g', { class: `point${opts.selected === p.id ? ' active' : ''}${out ? ' pinned' : ''}`, transform: `translate(${x} ${y})` });
-    const cls = `mark ${p.kind}${p.flagged ? ' flagged' : ''}${p.kind === 'tuned' ? ' ref' : ''}${onFront.has(p.id) ? ' on-front' : ''}`;
-    const r = p.kind === 'ours' ? radius + 0.5 : radius;
+    const cls = `mark ${p.kind}${p.flagged ? ' flagged' : ''}${p.kind === 'tuned' ? ' ref' : ''}${onFront.has(p.id) ? ' on-front' : ''}${p.classes ? ` ${p.classes}` : ''}`;
+    const r = (p.kind === 'ours' ? radius + 0.5 : radius) * (p.scale || 1);
     g.append(svg('path', { d: shapePath(p.shape, r), class: cls }));
     if (out) g.append(pinArrow(out[0], out[1], r));
     const aria = out ? `${p.aria} (beyond the axes, pinned to the edge)` : p.aria;
