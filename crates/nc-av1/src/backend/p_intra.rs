@@ -110,7 +110,7 @@ impl Av1Backend {
     }
 
     /// The best `av1.inter_intra_rd_candidates` of [`CANDIDATES`] by
-    /// prediction SATD + √λ · mode bits.
+    /// prediction SATD + √λ · mode bits (the engine's shared ranking).
     fn inter_frame_shortlist(
         &self,
         block: &Block,
@@ -118,24 +118,15 @@ impl Av1Backend {
         recon: &mut Picture,
     ) -> Vec<LumaIntra> {
         let bit_cost = (self.lambda() * self.params.intra_rate_scale).sqrt();
-        let mut ranked: Vec<(f32, LumaIntra)> = CANDIDATES
-            .iter()
-            .map(|&mode| {
-                let luma = LumaIntra::plain(mode);
-                let satd = self.intra_prediction_satd(block, source, recon, luma);
-                (
-                    satd + bit_cost * self.inter_frame_intra_bits(block, luma),
-                    luma,
-                )
-            })
-            .collect();
-        ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
         let keep = self.params.inter_intra_rd_candidates.round().max(1.0) as usize;
-        ranked
-            .into_iter()
-            .take(keep)
-            .map(|(_, luma)| luma)
-            .collect()
+        let candidates = CANDIDATES.iter().map(|&mode| LumaIntra::plain(mode));
+        nc_encoder::rank_intra(candidates, keep, |luma| {
+            self.intra_prediction_satd(block, source, recon, luma)
+                + bit_cost * self.inter_frame_intra_bits(block, luma)
+        })
+        .into_iter()
+        .map(|(luma, _)| luma)
+        .collect()
     }
 
     /// Bits of intra luma `luma` in an inter frame: `is_inter`, `y_mode`

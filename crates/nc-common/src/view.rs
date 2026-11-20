@@ -100,6 +100,25 @@ impl<'a, T: Sample> PlaneView<'a, T> {
         })
     }
 
+    /// A view over `data` whose geometry the caller has validated (a
+    /// plane's window: `stride >= width` and `data` covers every row), so
+    /// that a window costs no second check of what [`Self::new`] tests.
+    #[inline]
+    pub(crate) fn from_validated(
+        data: &'a [T],
+        stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Self {
+        debug_assert!(Self::new(data, stride, width, height).is_some());
+        Self {
+            data,
+            stride,
+            width,
+            height,
+        }
+    }
+
     /// Samples per row.
     #[must_use]
     pub fn width(&self) -> usize {
@@ -185,6 +204,25 @@ impl<'a, T: Sample> PlaneViewMut<'a, T> {
         })
     }
 
+    /// A view over `data` whose geometry the caller has validated (a
+    /// plane's window: `stride >= width` and `data` covers every row), so
+    /// that a window costs no second check of what [`Self::new`] tests.
+    #[inline]
+    pub(crate) fn from_validated(
+        data: &'a mut [T],
+        stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Self {
+        debug_assert!(stride >= width && data.len() >= required_len(width, height, stride));
+        Self {
+            data,
+            stride,
+            width,
+            height,
+        }
+    }
+
     /// Samples per row.
     #[must_use]
     pub fn width(&self) -> usize {
@@ -236,8 +274,54 @@ impl<'a, T: Sample> PlaneViewMut<'a, T> {
 
     /// Set every sample in the window to `value`.
     pub fn fill(&mut self, value: T) {
+        // A constant row width compiles to inline stores; a run-time one
+        // calls `memset` per row, which cost more than the stores on the
+        // small blocks of intra DC prediction (callgrind, AV1 decode).
+        match self.width {
+            4 => self.fill_rows::<4>(value),
+            8 => self.fill_rows::<8>(value),
+            16 => self.fill_rows::<16>(value),
+            32 => self.fill_rows::<32>(value),
+            _ => {
+                for y in 0..self.height {
+                    self.row_mut(y).fill(value);
+                }
+            }
+        }
+    }
+
+    /// Copy the window's rows from `src`, whose rows start `src_stride`
+    /// apart from `src[0]`, as `fill` with constant widths inline.
+    ///
+    /// # Panics
+    ///
+    /// If `src` is shorter than the window's rows need.
+    pub fn copy_from_rows(&mut self, src: &[T], src_stride: usize) {
+        match self.width {
+            4 => self.copy_rows::<4>(src, src_stride),
+            8 => self.copy_rows::<8>(src, src_stride),
+            16 => self.copy_rows::<16>(src, src_stride),
+            32 => self.copy_rows::<32>(src, src_stride),
+            width => {
+                for y in 0..self.height {
+                    self.row_mut(y)
+                        .copy_from_slice(&src[y * src_stride..][..width]);
+                }
+            }
+        }
+    }
+
+    /// [`Self::copy_from_rows`] of a window `N` samples wide.
+    fn copy_rows<const N: usize>(&mut self, src: &[T], src_stride: usize) {
         for y in 0..self.height {
-            self.row_mut(y).fill(value);
+            self.row_mut(y)[..N].copy_from_slice(&src[y * src_stride..][..N]);
+        }
+    }
+
+    /// [`Self::fill`] of a window `N` samples wide.
+    fn fill_rows<const N: usize>(&mut self, value: T) {
+        for y in 0..self.height {
+            self.row_mut(y)[..N].fill(value);
         }
     }
 

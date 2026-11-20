@@ -235,10 +235,6 @@ pub(crate) fn fdct32<V: super::forward_lanes::ForwardLanes>(
     fdct32_impl::<V, false>(input, output, cospi, cos_bit);
 }
 
-#[cfg(any(
-    target_arch = "x86_64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
 /// Exact low16 outputs; entries16..31 are scratch and must not be consumed.
 #[inline(always)]
 pub(crate) fn fdct32_low16<V: super::forward_lanes::ForwardLanes>(

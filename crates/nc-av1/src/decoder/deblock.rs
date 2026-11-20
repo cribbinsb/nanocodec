@@ -186,6 +186,8 @@ pub(super) struct EdgeMap {
     /// Scratch pending-run slots reused across every plane/direction pass
     /// (every pass drains its active slots back to `None`).
     pending: Vec<Option<Run>>,
+    /// The lane kernels' entry table, reused by every pass.
+    lanes: nc_dsp::LoopFilterLanes,
 }
 
 /// A block's chroma plane size and transform size (log2 samples).
@@ -392,25 +394,68 @@ pub(super) fn apply<T: Pixel>(
         if areas.is_empty() {
             continue;
         }
-        let mut view = recon.plane_mut(plane).view_mut();
+        // The lane kernels' last group of a column reads and writes back
+        // whole groups of lines, unchanged, past the frame: into the border,
+        // which is extended again after the loop filters.
+        let mut view = recon.plane_mut(plane).view_mut_to_end();
         let size = ((width + ss) >> ss, (height + ss) >> ss);
         let sides = if plane == PlaneIndex::Y {
             &map.luma
         } else {
             &map.chroma
         };
-        runs.clear();
-        PlanePass::<T, true>::new(sides, &mut map.pending, plane, &limits, size, runs).filter(
-            kernels,
-            &mut view,
-            areas.clone(),
-        );
-        runs.clear();
-        PlanePass::<T, false>::new(sides, &mut map.pending, plane, &limits, size, runs)
-            .filter(kernels, &mut view, areas);
+        for vertical in [true, false] {
+            let pass = Pass {
+                sides,
+                pending: &mut map.pending,
+                plane,
+                limits: &limits,
+                size,
+                runs: &mut *runs,
+                lanes: &mut map.lanes,
+            };
+            if vertical {
+                pass.filter::<T, true>(kernels, &mut view, areas.clone());
+            } else {
+                pass.filter::<T, false>(kernels, &mut view, areas.clone());
+            }
+        }
     }
     map.luma.filtered = ends[0];
     map.chroma.filtered = ends[1];
+}
+
+/// What one [`PlanePass`] borrows.
+struct Pass<'a> {
+    sides: &'a PlaneSides,
+    pending: &'a mut Vec<Option<Run>>,
+    plane: PlaneIndex,
+    limits: &'a Limits,
+    size: (usize, usize),
+    runs: &'a mut Vec<EdgeRun<Av1EdgeFilter>>,
+    lanes: &'a mut nc_dsp::LoopFilterLanes,
+}
+
+impl Pass<'_> {
+    /// Filter the edges of `areas` in one direction: into the lane
+    /// kernels' entry table when the ISA and plane allow a lane pass,
+    /// else as runs. Each way is its own [`PlanePass`] instance, so the
+    /// runs path compiles as it did before the lane passes.
+    fn filter<T: Pixel, const VERTICAL: bool>(
+        self,
+        kernels: DepthKernels<'_>,
+        view: &mut PlaneViewMut<'_, T>,
+        areas: core::ops::Range<usize>,
+    ) {
+        let fits = self.size.0 <= view.width() && self.size.1 <= view.height();
+        let luma = self.plane == PlaneIndex::Y;
+        if fits && kernels.av1_lane_pass(&*view, VERTICAL, !luma, self.lanes) {
+            PlanePass::<T, VERTICAL, true>::new(self).filter(kernels, view, areas);
+        } else {
+            self.runs.clear();
+            PlanePass::<T, VERTICAL, false>::new(self).filter(kernels, view, areas);
+        }
+    }
 }
 
 /// Lines of one edge waiting to be filtered: `start..end` along it, with
@@ -435,7 +480,12 @@ struct Run {
 /// samples: each instance then calls its own copy of the run building,
 /// which stays inlined (shared by both instances it was not: +2.8 % 8-bit
 /// decode instructions, callgrind, crowd 720p of ours).
-struct PlanePass<'a, T, const VERTICAL: bool> {
+///
+/// `DIRECT`: finished runs go straight into the lane kernels' entry table
+/// (a lane pass), not into the run list that `Dsp::av1_loop_filter_runs`
+/// would convert (AVX2 decode −0.60 % / −0.10 % instructions on
+/// `aom720_good4_1000k` / `svt720_p8_1000k`, 2026-11-20).
+struct PlanePass<'a, T, const VERTICAL: bool, const DIRECT: bool> {
     sides: &'a PlaneSides,
     plane: PlaneIndex,
     limits: &'a Limits,
@@ -448,18 +498,21 @@ struct PlanePass<'a, T, const VERTICAL: bool> {
     max_across: usize,
     /// The pass's finished runs, in order, for one filter call.
     runs: &'a mut Vec<EdgeRun<Av1EdgeFilter>>,
+    lanes: &'a mut nc_dsp::LoopFilterLanes,
     samples: core::marker::PhantomData<T>,
 }
 
-impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
-    fn new(
-        sides: &'a PlaneSides,
-        pending_buf: &'a mut Vec<Option<Run>>,
-        plane: PlaneIndex,
-        limits: &'a Limits,
-        size: (usize, usize),
-        runs: &'a mut Vec<EdgeRun<Av1EdgeFilter>>,
-    ) -> Self {
+impl<'a, T: Pixel, const VERTICAL: bool, const DIRECT: bool> PlanePass<'a, T, VERTICAL, DIRECT> {
+    fn new(pass: Pass<'a>) -> Self {
+        let Pass {
+            sides,
+            pending: pending_buf,
+            plane,
+            limits,
+            size,
+            runs,
+            lanes,
+        } = pass;
         let lines = if VERTICAL { sides.columns } else { sides.rows };
         if pending_buf.len() < lines {
             pending_buf.resize(lines, None);
@@ -473,6 +526,7 @@ impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
             min_across: lines,
             max_across: 0,
             runs,
+            lanes,
             samples: core::marker::PhantomData,
         }
     }
@@ -558,8 +612,10 @@ impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
                 }
             }
         }
-        if !self.runs.is_empty() {
-            kernels.av1_loop_filter_runs(view, VERTICAL, self.runs);
+        if DIRECT {
+            kernels.av1_loop_filter_lanes(view, VERTICAL, self.lanes);
+        } else if !self.runs.is_empty() {
+            kernels.av1_loop_filter_runs(view, VERTICAL, self.runs, self.lanes);
         }
     }
 
@@ -633,6 +689,12 @@ impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
     /// Add the finished `run` of the edge line at unit `across` to the
     /// pass's run list (whole 4-line units, as the edge filter takes them).
     fn finish(&mut self, across: usize, run: Run) {
+        if DIRECT {
+            let first = run.start >> UNIT_LOG2;
+            let units = run.end.div_ceil(AV1_EDGE_LINES) - first;
+            self.lanes.set_av1(across, first, units, run.filter);
+            return;
+        }
         let (x, y) = if VERTICAL {
             (across << UNIT_LOG2, run.start)
         } else {

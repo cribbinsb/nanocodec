@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.5.0 (2026-11-20)
+
+- **Speed figures.** The results site's speeds are measured on this release's profile-guided (PGO)
+  builds of the command-line tool and C API (x86_64 and aarch64, attached to the GitHub release).
+  crates.io carries source: a crate built by cargo is a plain release build, which took 1.4-3.2 % more
+  CPU on x86 than PGO (AV1, HEVC and H.264 Faster, 2026-11-11). The browser (WASM) module is a plain
+  build.
+- **x86-64-v3 builds.** The repository's `.cargo/config.toml` now builds x86_64 with
+  `-C target-cpu=x86-64-v3` (Haswell / Zen 1 or later): encode instructions -2.7 to -4.4 %, decode
+  -0.4 to -1.7 %, streams identical. It does not reach crates built by cargo from crates.io; set
+  `RUSTFLAGS` yourself (README, "Build").
+
+### Presets: a better-spaced ladder
+- **Slow** was re-picked for every codec (everything heavy on, then cut back to the knee), measured
+  against each Default at fixed QP: H.264 J -4.4 %, HEVC -6.6 %, VVC -4.2 %, AV1 -5.5 %, VP9 -2.0 %,
+  AV2 -7.0 %, at 1.6-2.5x the Default's P-frame instructions. The old Slow presets were within
+  -2.1..+0.2 % of their Defaults.
+- **Fast, Faster and Veryfast** take the Defaults' cheap levers where they pay at the faster rungs'
+  CPU weighting (pool screens, J with CPU credit): VVC Fast -10.3 %, HEVC Fast -6.4 %, HEVC Faster
+  -5.5 %, H.264 Fast -5.9 %, Faster -3.9 %, Veryfast -3.9 %, VP9 Fast -2.2 %, Faster -3.7 %,
+  Veryfast -5.9 %, AV1 Fast -1.9 %, Faster -1.2 %, AV2 Fast -0.3 %, Faster -2.9 %; each within
+  about +-2 % of its old CPU.
+
+### Encoders
+- **Keys in rate control.** A key now matches the quality the inter frames hold on the unchanged part
+  of a still picture, an earlier key's unpaid loan carries into the next key, and with key periods up
+  to 5 s the frames before a key no longer save for it (the key's loan is repaid after it). 600-frame
+  final-checks J -0.01 to -0.73 % across 11 presets; with keys every 2 s, BD PSNR-YUV -0.3 to -1.0 %
+  and the frames before a key up to 2.7 dB better on still scenes. On still scenes with 2 s keys the
+  first 2.5 s can run up to 1.17x the target; every later window and the long-term rate stay at or
+  under it.
+- **VVC 64-point transform units** in the Default, with the planner pricing the detail a 64-point unit
+  cannot code (H.266 zero-out above frequency 32): pool J -0.9 %, 600-frame final-check -0.75 %.
+- **Still-scene level damping** on in the AV1, VVC and AV2 Defaults (VVC final-check -0.65 %).
+- **Encode speed (exact, streams identical):** AV2 Default -7.3 % and Faster -15.2 % instructions
+  against 0.4.0 (measured 2026-11-20 morning); AV1 Faster -6.4 % and VP9 Faster/Veryfast -2.3/-2.8 %
+  from per-block work, then 16-bit forward DCTs (AV1/VP9 16-64 points, one driver for AVX2, NEON and
+  SIMD128): VP9 -4.5 %, AV1 -2.6..-2.8 %; HEVC Faster -1.4 %, VVC Fast -1.9 %. Every change kept was
+  also faster on the Jetson.
+
+### Decoders
+- **AV1 decode** on a libaom 720p stream: 1259 M -> 1193 M instructions (-5.2 %, dav1d 909 M).
+  Deblocking moved to dav1d's lane layout (its kernel now runs fewer instructions than dav1d's);
+  self-guided restoration, filter intra, small-block directional prediction, edge reading and inverse
+  transforms ported from or modelled on dav1d. On the Jetson (NEON) the directional, self-guided and
+  Wiener kernels followed: about -2 % cycles.
+
+### Measurement
+- **PSNR is capped at 60 dB per plane** (libvmaf's 8-bit cap; was 100 dB). A perfectly coded flat plane
+  no longer counts as 100 dB, which swung grayscale clips by several dB. Published J moves by more
+  than 0.1 on 7 rows, all on two flat-chroma clips. Results before 2026-11-20 used 100 dB.
+- **History page:** the results site animates our Pareto front, 2026-11-07 to 2026-11-20, every preset
+  re-measured on a fixed 28-clip slice and timed on AWS c8a.
+
 ## 0.4.0 (2026-11-19)
 
 - **Speed figures.** The results site's speeds are measured on this release's profile-guided (PGO)

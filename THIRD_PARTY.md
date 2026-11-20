@@ -320,6 +320,39 @@ addressing and register schedule of `src/x86/mc_avx2.asm`
 (`warp_affine_8x8_8bpc`). Its Rust wrapper preserves full signed intermediate
 outputs, validates table/window bounds and falls back to the clamped kernel.
 
+The byte-pair AVX2 interpolation rows in
+`crates/nc-dsp/src/mc/avx2_byte_dot.rs` retain the schedule of dav1d's
+`put_8tap` and `prep_8tap` in `src/x86/mc_avx2.asm`, shared by AV1,
+HEVC, VVC and VP9 with codec-specific rounding.
+
+The AV1 self-guided stripe (`crates/nc-dsp/src/av1_restoration/sgr_stripe.rs`,
+its AVX2 arithmetic in `sgr_avx2.rs`) ports dav1d 1.5.4
+`src/x86/looprestoration_avx2.asm` (`sgr_filter_5x5_8bpc`,
+`sgr_filter_3x3_8bpc`, `sgr_filter_mix_8bpc`): one pass per row of
+horizontal sums, running vertical sums, `A`/`B` packed in one 32-bit word,
+the 565 / 222 + 343 neighbourhood weights and the projection on the
+difference, over our padded stripe window. Its NEON arithmetic
+(`sgr_neon.rs`) follows `src/arm/64/looprestoration.S` and
+`looprestoration_common.S` (`sgr_box35_row_h_8bpc_neon`'s `ext` taps and
+widening sums, `sgr_box5_vert_neon`'s saturating `z` and table lookup of
+`x` in place of a division).
+
+The AV1 AVX2 filter intra patches (`crates/nc-dsp/src/av1_intra/avx2.rs`,
+`filter_patches`) follow the byte-pair multiply-adds of `ipred_filter_8bpc`
+(`FILTER_XMM`) in `src/x86/ipred_avx2.asm` and its `filter_intra_taps`
+layout.
+
+The AV1 AVX2 whole-block directional predictor
+(`crates/nc-dsp/src/av1_intra/zones_avx2.rs`) follows `ipred_z1_8bpc`,
+`ipred_z2_8bpc` and `ipred_z3_8bpc` in the same file: per-lane edge
+positions, the `pshufb` gather of sample pairs, `pmaddubsw` against
+weight pairs with the `pmulhrsw` rounding, and zone 2's
+per-lane blend of the above and left predictions. Its NEON version
+(`zones_neon.rs`) follows `ipred_z1_fill1`, `ipred_z2_fill1` and
+`ipred_z3_fill1` in `src/arm/64/ipred.S`: the same per-lane positions,
+the pair gathered by `tbl` from two registers and blended by
+`umull`/`umlal` with a rounding narrow.
+
 Full notice: [COPYING](docs/licenses/dav1d/COPYING).
 
 The AV1 decoder's coefficient level pass
@@ -358,8 +391,9 @@ The shared eight-tap NEON motion-compensation family
 horizontal dot products with shared shuffles and folded rounding, transposed
 four-row vertical dot products with rolling table updates, and horizontal
 i16 rows accumulated vertically. The same passes serve AV1, HEVC and VVC
-with their own coefficients and rounding. Exact-size tail loads replace
-upstream's padded-read assumptions. Copyright © 2018, 2024 VideoLAN and
+with their own coefficients and rounding. VP9 shares the horizontal
+signed-dot rows in `neon_dotprod.rs` and rounds them to bytes. Exact-size
+tail loads replace upstream's padded-read assumptions. Copyright © 2018, 2024 VideoLAN and
 dav1d authors, Janne Grunau and Martin Storsjo; Copyright © 2024 Arm Limited.
 BSD-2-Clause; the retained source notices are in
 [docs/licenses/dav1d/MC.txt](docs/licenses/dav1d/MC.txt), with the project notice
@@ -381,6 +415,16 @@ nc-checkasm's conformant-block check
 floating-point forward transforms and per-size scale factors of dav1d
 1.5.4 `tests/checkasm/itx.c`, Copyright © 2018 VideoLAN and dav1d authors,
 Copyright © 2018 Two Orioles, LLC, BSD-2-Clause.
+
+The AV1 lane-layout loop filters (`crates/nc-dsp/src/deblock/lanes.rs`,
+`deblock/lanes/kernel.rs`, `lpf_bytes/avx2_full.rs`) reimplement in Rust the
+design of dav1d 1.5.4 `src/x86/loopfilter_avx2.asm` (`lpf_h_sb_y`, `lpf_v_sb_y`,
+`lpf_h_sb_uv`, `lpf_v_sb_uv`, `FILTER`, `TRANSPOSE_16X16B`): 32 lines per
+vector with each 4-line unit's thresholds and filter width unpacked from a
+4-byte entry, the group dispatch on its widest unit with narrower units masked
+per lane, the 4/8/16-column transposes of 32 rows, the byte-pair `pmaddubsw`
+running smoothing sums and `pmulhrsw` rounding. Copyright © 2018-2021 VideoLAN
+and dav1d authors; Copyright © 2018 Two Orioles, LLC. BSD-2-Clause.
 
 The shared AV1/AV2 interior CDEF filters
 (`crates/nc-dsp/src/cdef/avx2_interior.rs`, `cdef/avx512.rs`) reimplement
@@ -415,12 +459,12 @@ CPUs without GFNI retain AVX2. VBMI is not required. The shared byte/word
 arithmetic serves AV1, VP9 and AV2's distinct ramp equations.
 
 AV1 loop restoration (`crates/nc-dsp/src/av1_restoration/`: `mod.rs`,
-`wiener.rs`, `self_guided.rs`, `sgr_lanes.rs`, `avx2.rs`, `neon.rs`,
-`simd128.rs`) ports dav1d 1.5.4 `src/lr_apply_tmpl.c`,
+`wiener.rs`, `wiener_stripe.rs`, `self_guided.rs`, `sgr_lanes.rs`, `avx2.rs`,
+`neon.rs`, `simd128.rs`) ports dav1d 1.5.4 `src/lr_apply_tmpl.c`,
 `src/looprestoration_tmpl.c`, `src/x86/looprestoration_avx2.asm` and
 `src/arm/64/looprestoration.S`: in-place restoration by stripe, the Wiener
-ring of 16-bit horizontal rows, the AVX2 stripe-wide tap setup and
-rotating row-pointer schedule, independent horizontal/vertical five-tap
+ring of 16-bit horizontal rows, the stripe-wide tap setup and rotating
+row-pointer schedule (shared by AVX2 and NEON in `wiener_stripe.rs`), independent horizontal/vertical five-tap
 specialization when the outer coefficient is zero, the 8-bit Wiener arithmetic (byte-pair
 `pmaddubsw` / 16-bit `mla`, the clamp as a saturating add with dav1d's
 offsets, vertical pair sums with `pmaddwd`) and the self-guided row
@@ -433,7 +477,10 @@ The AV1 decoder's motion field projection
 superblock row at a time into a one-row buffer, per-reference span tables,
 runs of equal kept vectors projected once) follows dav1d 1.5.4
 `src/refmvs.c` (`load_tmvs`, `dav1d_refmvs_init_frame`), reimplemented in
-Rust.
+Rust. Its motion store and kept-vector store (`decoder/motion.rs`
+`MotionGrid`, `motion_field.rs` `SavedMotion`) follow the same file's
+`splat_mv`: rows padded past the frame edge so that each block is written
+unclipped, one fixed-width run per row.
 
 Structure only, no code: `crates/nc-dsp/src/mc/separable_simd128.rs` (the SIMD128 HEVC/H.266
 separable prediction) follows the pass structure of dav1d 1.5.4 `put_8tap` as `mc/av1_simd128.rs`

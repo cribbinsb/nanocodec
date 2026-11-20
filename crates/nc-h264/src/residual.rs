@@ -283,9 +283,7 @@ impl<F: Fn(usize) -> usize, G: Fn(usize) -> usize> BinRun for SignificanceAndLev
             let prefix = abs_minus1.min(LEVEL_PREFIX_MAX);
             cabac.encode_decision(contexts.level + first_inc, prefix > 0);
             if prefix > 0 {
-                for _ in 1..prefix {
-                    cabac.encode_decision(contexts.level + rest_inc, true);
-                }
+                cabac.encode_repeated_decision(contexts.level + rest_inc, true, prefix - 1);
                 if prefix < LEVEL_PREFIX_MAX {
                     cabac.encode_decision(contexts.level + rest_inc, false);
                 }

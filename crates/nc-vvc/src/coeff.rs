@@ -14,16 +14,21 @@ pub(crate) trait Bins {
     /// Whether the bins are read (decoding): the walk then skips what only
     /// writing or pricing needs, finding the coded values in the source.
     const READS: bool = false;
-    /// Pricing can read already-known magnitudes without reconstructing levels.
-    const PRICES: bool = false;
     fn bin(&mut self, c: &mut Context, value: bool) -> Result<bool>;
     fn bypass(&mut self, value: u32, bits: u32) -> Result<u32>;
 }
+#[allow(
+    clippy::inline_always,
+    reason = "inlined into the coefficient walk: one call per coded bin otherwise \
+              (6.6M per 61-frame 720p VVC Fast encode)"
+)]
 impl Bins for CabacWriter {
+    #[inline(always)]
     fn bin(&mut self, c: &mut Context, value: bool) -> Result<bool> {
         self.encode_bin(c, value);
         Ok(value)
     }
+    #[inline(always)]
     fn bypass(&mut self, value: u32, bits: u32) -> Result<u32> {
         self.encode_bypass(value, bits);
         Ok(value)
@@ -285,7 +290,7 @@ const NONZERO_SHIFT: u32 = 5;
 /// The low bits of a summed [`SourceLevels::first_pass`] template.
 const PASS_ONE_MASK: u32 = (1 << NONZERO_SHIFT) - 1;
 
-/// Known encoder magnitudes, for pricing. Every template neighbour is later
+/// Known encoder magnitudes, for writing and pricing. Every template neighbour is later
 /// in the grouped scan, so the walk has priced it before any position reads
 /// it: [`LevelValues::set`] records its first-pass magnitude and nonzero
 /// flag, packed in one byte, on a grid `PAD` wider and taller than the block
@@ -623,7 +628,10 @@ fn walk_sized<B: Bins>(
         debug_assert!(B::READS, "writers code through `emit`, with the Dsp");
         0
     };
-    if B::PRICES && levels.is_none() {
+    if !B::READS && levels.is_none() {
+        // A writer or pricer knows every magnitude up front: the source grid
+        // ([`SourceLevels`], one byte a position) gives the contexts the
+        // reconstructed one would, without clearing an `i32` grid per block.
         // Coded sides are powers of two up to `MAX_SIDE`.
         return match coded.0.max(coded.1) {
             1..=4 => walk_source::<4, { padded_area(4) }, _>(io, c, (source, last), coded, block),
@@ -676,7 +684,7 @@ fn walk_grid<const AREA: usize, B: Bins>(
     Ok(())
 }
 
-/// The pricing walk over the encoder's own levels ([`SourceLevels`]).
+/// The writing or pricing walk over the encoder's own levels ([`SourceLevels`]).
 fn walk_source<const SIDE: usize, const AREA: usize, B: Bins>(
     io: &mut B,
     c: &mut CoeffContexts,
@@ -739,9 +747,9 @@ fn walk<B: Bins>(
                 bypass.push(sp);
                 continue;
             }
-            // The last level has inferred significance and level context 0;
-            // pricing it need not derive either from its zero template.
-            let (sig_ctx, mut level_ctx) = if B::PRICES && sp == last {
+            // The last level has inferred significance and level context 0:
+            // neither is derived from its (zero) template.
+            let (sig_ctx, level_ctx) = if sp == last {
                 (0, 0)
             } else {
                 contexts(values, p, log2, ch)
@@ -756,9 +764,6 @@ fn walk<B: Bins>(
             if !sig {
                 step(&mut state, 0);
                 continue;
-            }
-            if sp == last {
-                level_ctx = 0;
             }
             let abs = source[p].unsigned_abs();
             budget -= 1;
@@ -804,7 +809,6 @@ fn walk<B: Bins>(
 #[derive(Default)]
 pub(crate) struct BitCost(pub f32);
 impl Bins for BitCost {
-    const PRICES: bool = true;
     fn bin(&mut self, c: &mut Context, value: bool) -> Result<bool> {
         self.0 += c.bits(value);
         c.update(value);

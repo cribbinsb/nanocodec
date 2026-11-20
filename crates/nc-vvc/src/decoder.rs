@@ -66,9 +66,9 @@ const EIGHT_BIT_ONLY: DecodeError = DecodeError::Unsupported(
 #[derive(Debug, Default)]
 pub struct Decoder {
     geometry: Option<headers::Geometry>,
-    /// Whether the PPS enables `cu_qp_delta` (`quant_group.rs`); `None`
-    /// until one of our PPSs arrives after the SPS.
-    pps_block_qp: Option<bool>,
+    /// The PPS's settings; `None` until one of our PPSs arrives after the
+    /// SPS.
+    pps: Option<headers::PpsTools>,
     colour: nc_common::ColourInfo,
     /// The SPS's chroma QP map; `None` until an SPS arrives.
     chroma_qp: Option<ChromaQpTable>,
@@ -385,7 +385,7 @@ impl Decoder {
     }
 
     fn accept_sps(&mut self, rbsp: &[u8]) -> Result<()> {
-        self.pps_block_qp = None;
+        self.pps = None;
         self.general_picture = None;
         self.picture_header = None;
         if let Ok(info) = parse_sps(rbsp) {
@@ -431,12 +431,7 @@ impl Decoder {
         let geometry = self
             .geometry
             .ok_or(DecodeError::Malformed("PPS before SPS"))?;
-        let block_qp = match rbsp {
-            _ if rbsp == headers::pps(&geometry, false) => false,
-            _ if rbsp == headers::pps(&geometry, true) => true,
-            _ => return Err(DecodeError::Unsupported("VVC PPS tools")),
-        };
-        self.pps_block_qp = Some(block_qp);
+        self.pps = Some(parse_own_pps(rbsp, &geometry)?);
         Ok(())
     }
 
@@ -495,7 +490,7 @@ impl Decoder {
             rbsp,
             &geometry,
             &chroma_qp,
-            (self.tools, self.pps_block_qp == Some(true)),
+            (self.tools, self.pps.unwrap_or_default()),
             predicted,
             (&dpb, motion),
             &self.alf_banks,
@@ -513,7 +508,7 @@ impl Decoder {
             rbsp,
             &geometry,
             &chroma_qp,
-            (self.tools, self.pps_block_qp == Some(true)),
+            (self.tools, self.pps.unwrap_or_default()),
             predicted,
             (&dpb, motion),
             &self.alf_banks,
@@ -705,7 +700,7 @@ impl Decoder {
                     general_done = self.general_slice(&rbsp, kind, unit[1] & 7)?;
                 }
                 kind @ (headers::IDR_N_LP | headers::TRAIL_NUT)
-                    if picture.is_none() && self.pps_block_qp.is_some() =>
+                    if picture.is_none() && self.pps.is_some() =>
                 {
                     if unit[1] & 7 != 1 {
                         return Err(DecodeError::Unsupported("VVC subset temporal layer"));
@@ -787,6 +782,48 @@ fn parse_partitioning(bytes: &[u8], geometry: &headers::Geometry) -> Result<head
         }
     }
     Err(DecodeError::Unsupported("VVC SPS partition constraints"))
+}
+
+/// Bits of our PPS before `pps_init_qp_minus26` that follow the coded size:
+/// the cropping, scaling-window, output-flag, no-partition, ID-mapping and
+/// CABAC-init flags.
+const PPS_FLAGS_AFTER_SIZE: usize = 6;
+/// The flags between the default active list sizes and the initial QP: RPL1
+/// index, weighted prediction and biprediction, wraparound.
+const PPS_FLAGS_AFTER_LISTS: usize = 4;
+/// PPS and SPS ids and the mixed-NAL flag before the coded size.
+const PPS_PREFIX_BITS: usize = 11;
+/// The chroma-tool-offsets, deblocking control, override and disabled flags
+/// between `pps_cu_qp_delta_enabled_flag` and the deblocking offsets.
+const PPS_FLAGS_BEFORE_DEBLOCK_OFFSETS: usize = 4;
+
+/// The settings of one of our own PPSs ([`headers::pps`]): the two fields
+/// that vary (block QP and the deblocking offsets) are read, and the PPS
+/// must be exactly the one our encoder writes with them.
+fn parse_own_pps(bytes: &[u8], geometry: &headers::Geometry) -> Result<headers::PpsTools> {
+    const UNSUPPORTED: DecodeError = DecodeError::Unsupported("VVC PPS tools");
+    let mut r = BitReader::new(bytes);
+    r.skip_bits(PPS_PREFIX_BITS)?;
+    r.read_ue()?; // pps_pic_width_in_luma_samples
+    r.read_ue()?; // pps_pic_height_in_luma_samples
+    r.skip_bits(PPS_FLAGS_AFTER_SIZE)?;
+    r.read_ue()?; // default active L0 minus one
+    r.read_ue()?; // default active L1 minus one
+    r.skip_bits(PPS_FLAGS_AFTER_LISTS)?;
+    r.read_se()?; // pps_init_qp_minus26
+    let block_qp = r.read_bit()?;
+    r.skip_bits(PPS_FLAGS_BEFORE_DEBLOCK_OFFSETS)?;
+    let mut offset = || -> Result<i8> { i8::try_from(r.read_se()?).map_err(|_| UNSUPPORTED) };
+    let deblock = crate::filter::Offsets {
+        beta_div2: offset()?,
+        tc_div2: offset()?,
+    };
+    let tools = headers::PpsTools { block_qp, deblock };
+    if bytes == headers::pps(geometry, tools) {
+        Ok(tools)
+    } else {
+        Err(UNSUPPORTED)
+    }
 }
 
 fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
@@ -932,7 +969,7 @@ fn decode_slice(
     bytes: &[u8],
     geometry: &headers::Geometry,
     chroma_qp: &ChromaQpTable,
-    (tools, block_qp): (headers::Tools, bool),
+    (tools, pps): (headers::Tools, headers::PpsTools),
     inter_frame: bool,
     (dpb, motion): (&[(u8, &Picture)], &mut MotionGrid),
     alf_banks: &[Option<Box<crate::alf_aps::SignalledFilters>>; ALF_APS_IDS],
@@ -941,7 +978,7 @@ fn decode_slice(
     pictures: &mut PictureRecycler,
     #[cfg(feature = "analysis")] mut stats: Option<&mut nc_common::stream_stats::StreamStats>,
 ) -> Result<OwnPicture> {
-    let (header, data) = parse_slice_header(bytes, (tools, block_qp), inter_frame, alf_banks)?;
+    let (header, data) = parse_slice_header(bytes, (tools, pps.block_qp), inter_frame, alf_banks)?;
     #[cfg(feature = "analysis")]
     if let Some(s) = stats.as_deref_mut() {
         crate::analysis::picture_facts(s, inter_frame, header.qp, data.len());
@@ -981,7 +1018,7 @@ fn decode_slice(
         qp: [qp, chroma_qp.map(qp)],
         partitioning: geometry.partitioning,
         tools,
-        block_qp: block_qp.then(|| {
+        block_qp: pps.block_qp.then(|| {
             let mut map = QpMap::default();
             map.reset(cw, ch, qp);
             (QuantGroup::new(qp), map)
@@ -1032,6 +1069,7 @@ fn decode_slice(
     let deblock_qp = crate::filter::DeblockQp {
         frame: [qp, chroma_qp.map(qp)],
         blocks: block_qp_map.as_ref().map(|map| (map, chroma_qp)),
+        offsets: pps.deblock,
     };
     crate::filter::apply(dsp, &mut picture, motion, &deblock_qp);
     crate::sao::apply(dsp, &mut picture, &sao, ctu);

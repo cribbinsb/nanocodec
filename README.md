@@ -125,6 +125,11 @@ target/release/nanocodec encode --codec av1 --input input.yuv --width 1280 --hei
 target/release/nanocodec decode --codec av1 --input video.ivf --output decoded.yuv
 ```
 
+On x86_64, builds in this repository use `-C target-cpu=x86-64-v3` (`.cargo/config.toml`: AVX2/BMI2/FMA code
+generation, Haswell or Zen 1 and later; SIMD kernels are still chosen at run time). Cargo does not apply that file
+to `cargo install` or to crates that depend on ours: set `RUSTFLAGS="-C target-cpu=x86-64-v3"` (or `native`)
+yourself to get the same code. For an older CPU, build here with `RUSTFLAGS="-C target-cpu=x86-64"`.
+
 `--codec h264 | hevc | vvc | av1 | vp9 | av2`. The [usage docs](https://cribbinsb.github.io/nanocodec/docs/)
 cover building for x86_64, aarch64 and wasm32, every command-line option, the C API, the Rust API, the browser
 module and the presets; more CLI detail: [crates/nc-cli/README.md](crates/nc-cli/README.md).

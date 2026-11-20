@@ -99,16 +99,40 @@ pub(super) fn code_hidden_high_range<C: SymbolCoder>(
     Ok(coded + 2 * coder.code_high_range(remainder, average >> 1)?)
 }
 
-/// The rate change of a one-level move under the parity adjustment's
-/// model. A nonzero level pays 2.5 bits for significance and sign plus
-/// one bit per unit. A move between two nonzero levels changes only its
-/// magnitude rate.
-fn move_bits(level: u32, direction: f64) -> f64 {
-    const CROSS_ZERO_BITS: f64 = 3.5;
-    if level == 0 || (level == 1 && direction < 0.0) {
-        direction * CROSS_ZERO_BITS
-    } else {
-        direction
+/// The AC levels eligible to change parity have a small fixed alphabet.
+const AC_LEVELS: usize = SUM_CAP as usize + 1;
+const QUANTIZERS: usize = 1 << u8::BITS;
+
+const fn ac_dequantizers(size: TxSize) -> [[i16; AC_LEVELS]; QUANTIZERS] {
+    let mut table = [[0; AC_LEVELS]; QUANTIZERS];
+    let mut q = 0;
+    while q < table.len() {
+        let mut level = 1;
+        while level < AC_LEVELS {
+            table[q][level] = transform::dequantized_magnitude(size, q as u8, level as u32) as i16;
+            level += 1;
+        }
+        q += 1;
+    }
+    table
+}
+
+static AC_DEQUANT: [[[i16; AC_LEVELS]; QUANTIZERS]; 3] = [
+    ac_dequantizers(TxSize::Tx16),
+    ac_dequantizers(TxSize::Tx32),
+    ac_dequantizers(TxSize::Tx64),
+];
+
+/// The rate model charges 2.5 extra bits for a level that becomes nonzero.
+const CROSS_ZERO_BITS: f64 = 3.5;
+
+type Move = (f64, usize, u32);
+
+#[inline]
+fn retain_move(best: &mut Option<Move>, added: f64, position: usize, level: u32) {
+    // Positions and directions are visited in the original scan order.
+    if best.is_none_or(|(least, ..)| added < least) {
+        *best = Some((added, position, level));
     }
 }
 
@@ -131,10 +155,11 @@ fn raster_tally(levels: &[i32]) -> Tally {
 
 /// Make the quantized luma `levels` of a `tx` transform of type `tx_type`
 /// with end of block `eob` decodable under parity hiding, returning the
-/// end of block after it. Where the block hides its DC parity and the DC
+/// end of block after it. The input `eob` ends at the last nonzero level
+/// in scan order. Where the block hides its DC parity and the DC
 /// level disagrees, one level within the end of block moves by one, the
 /// move of least added squared error plus `lambda` (sample SSE per bit)
-/// times its approximate rate ([`move_bits`]; AVM's
+/// times its approximate rate (AVM's
 /// `parity_hiding_trellis_off` moves toward the coefficient by least
 /// error, which spends rate on raising levels): a DC move fixes the DC
 /// parity, any other move the hidden parity, since every sum term below
@@ -170,45 +195,61 @@ pub(crate) fn conform(
         return eob;
     }
     let error_scale = transform::coefficient_error_scale(tx);
-    let first_level = [qindices.0, qindices.1].map(|q| transform::dequantized_magnitude(tx, q, 1));
-    // (added cost, position, new magnitude)
-    let mut best: Option<(f64, usize, u32)> = None;
-    for (index, at) in positions.iter().enumerate() {
+    let cross_zero_cost = lambda * CROSS_ZERO_BITS;
+    let mut best = None;
+    let dc_step = transform::dequantized_magnitude(tx, qindices.0, 1);
+    let (magnitude, level) = (coefficients[0].unsigned_abs(), levels[0].unsigned_abs());
+    if level != 0 || 2 * i64::from(magnitude) >= i64::from(dc_step) {
+        let step = f64::from(dc_step);
+        let error = f64::from(magnitude)
+            - f64::from(transform::dequantized_magnitude(tx, qindices.0, level));
+        let shift_error = (2.0 * step) * error;
+        if level != 0 {
+            let rate = if level == 1 {
+                -cross_zero_cost
+            } else {
+                -lambda
+            };
+            let added = (step * step + shift_error) * error_scale + rate;
+            retain_move(&mut best, added, 0, level - 1);
+        }
+        let rate = if level == 0 { cross_zero_cost } else { lambda };
+        let added = (step * step - shift_error) * error_scale + rate;
+        retain_move(&mut best, added, 0, level + 1);
+    }
+
+    // The transform shift and quantizer are fixed across the AC scan.
+    let shift = transform::dequant_shift(tx) as usize;
+    let dequant = &AC_DEQUANT[shift][usize::from(qindices.1)];
+    let first_level = i32::from(dequant[1]);
+    let step = f64::from(first_level);
+    let step_squared = step * step;
+    let twice_step = 2.0 * step;
+    for at in &positions[1..] {
         let pos = at.pos();
-        let (magnitude, level) = (coefficients[pos].unsigned_abs(), levels[pos].unsigned_abs());
-        let is_ac = usize::from(index != 0);
-        // An AC level above the cap cannot flip the parity with either
-        // move. Skip its dequantization and distortion calculation.
-        if is_ac == 1 && level > SUM_CAP {
+        let level = levels[pos].unsigned_abs();
+        let Some(&reconstructed) = dequant.get(level as usize) else {
+            continue;
+        };
+        let magnitude = coefficients[pos].unsigned_abs();
+        if level == 0 && 2 * i64::from(magnitude) < i64::from(first_level) {
             continue;
         }
-        // Speed: a zero level whose coefficient is under half the first
-        // level's reconstruction gains nothing by rising (more error and
-        // more rate), and zeros are most positions; skipping them only
-        // narrows the choice. Crowd 720p key frame: conform's work about
-        // halves.
-        if level == 0 && 2 * i64::from(magnitude) < i64::from(first_level[is_ac]) {
-            continue;
+        let error = f64::from(magnitude) - f64::from(reconstructed);
+        let shift_error = twice_step * error;
+        if level != 0 {
+            let rate = if level == 1 {
+                -cross_zero_cost
+            } else {
+                -lambda
+            };
+            let added = (step_squared + shift_error) * error_scale + rate;
+            retain_move(&mut best, added, pos, level - 1);
         }
-        let qindex = if is_ac == 0 { qindices.0 } else { qindices.1 };
-        // A move by one changes the reconstruction by about one first-level
-        // step `s`: from error `e` the squared error changes by
-        // `s² ∓ 2·s·e` (one dequantization per position instead of three).
-        let step = f64::from(first_level[is_ac]);
-        let error =
-            f64::from(magnitude) - f64::from(transform::dequantized_magnitude(tx, qindex, level));
-        for (moved, direction) in [(level.checked_sub(1), -1.0), (Some(level + 1), 1.0)] {
-            let Some(moved) = moved else { continue };
-            // A level after DC flips the hidden parity only if its capped
-            // value changes.
-            if is_ac == 1 && moved.min(SUM_CAP) == level.min(SUM_CAP) {
-                continue;
-            }
-            let added = (step * step - 2.0 * direction * step * error) * error_scale
-                + lambda * move_bits(level, direction);
-            if best.is_none_or(|(least, ..)| added < least) {
-                best = Some((added, pos, moved));
-            }
+        if level < SUM_CAP {
+            let rate = if level == 0 { cross_zero_cost } else { lambda };
+            let added = (step_squared - shift_error) * error_scale + rate;
+            retain_move(&mut best, added, pos, level + 1);
         }
     }
     let Some((_, pos, moved)) = best else {
@@ -220,7 +261,10 @@ pub(crate) fn conform(
     } else {
         moved as i32
     };
-    positions
+    if moved != 0 || pos != positions[eob - 1].pos() {
+        return eob;
+    }
+    positions[..eob - 1]
         .iter()
         .rposition(|at| levels[at.pos()] != 0)
         .map_or(0, |index| index + 1)

@@ -26,7 +26,7 @@ use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
 use crate::skip_budget::{self, SkipBudget};
 use crate::still_rate::StillRate;
-use crate::still_refine::{KeyQuality, RefineCost};
+use crate::still_refine::{KEY_RUN_UP_FRAMES, KeyQuality, RefineCost};
 use crate::{Codec, FrameRate};
 use std::fmt;
 
@@ -896,6 +896,15 @@ impl RateController {
     /// with a 0.7–1.6 dB dip, and the 5 s after the change coded 509–534
     /// kbps for 600; scaled, the first window is within 10%, there is no
     /// overshoot or dip, and they code 562–564 kbps. 2x up is unchanged.
+    /// A key coded during a short dip (`static_recovery`: 30 -> 4 -> 30
+    /// kbps around a requested key) comes back with its loan scaled up as
+    /// well: the frames after it repay more bits than it took, an
+    /// undershoot (the target is a ceiling). Keeping a rising target's debt
+    /// in bits instead was measured there (AV1 Veryfast, static half at
+    /// frame 28 against the undisturbed stream): the earlier key's loan,
+    /// scaled down for the dip, never came back, -1.86 dB (-2.62 dB with
+    /// the loan carried, `carried_loan_boost`); kept as time with the loan
+    /// carried, -0.51 dB.
     pub fn reconfigure(&mut self, config: RateControlConfig) -> Result<(), RateControlError> {
         let s = Settings::new(config, &self.calibration)?;
         if self.steps.len() <= s.max as usize {
@@ -1443,36 +1452,51 @@ impl RateController {
     }
 
     /// Ratio (at most 1) from `level_step` to the step at which the key
-    /// being planned would code as well as the inter frames before it,
-    /// where they stand above the last key: the last key's step made finer
-    /// by the dB they stand above it, at [`DB_PER_STEP_OCTAVE`] (the last
-    /// key calibrates the content's intra quality per step). The move from
-    /// the level is bounded by that same gain: a last key coded far from
-    /// the level (the first key's start-up boost) calibrates badly, since
-    /// real PSNR falls well under 6 dB per octave at low rates (H.264
-    /// Default, `external_uvg_volleyball_720p` 300k, keys every 2 s: the
-    /// first key q38 33.65 dB, the second at q50 28.77 dB, 2.4 dB per
-    /// octave; unbounded, a key at q40 with its P frames at 27.9 dB). 1
-    /// before a key and its inter frames are measured (the quiet run-up's
-    /// measure, `rate.prekey_quiet`: without it nothing is measured and
-    /// the key keeps the level, so presets that never measured distortion
-    /// pay no per-frame cost), where they stand
-    /// at or below the key, or where the level already asks as much.
-    /// AV1 Faster base-only, `pool_static_london_bus_540p` 389k, 600 f: the
-    /// first key q154 32.48 dB, the inter frames 34.76 dB, so q139 against
-    /// the inter level's q153 (Faster: 145 against 146, its key at 146
-    /// coded 33.71 against 33.88 aimed).
+    /// being planned would code as well as the inter frames before it: the
+    /// last key's step moved by the dB they stand above (or below) it, at
+    /// [`DB_PER_STEP_OCTAVE`] (the last key calibrates the content's intra
+    /// quality per step). Never coarser than the level. The match is taken
+    /// in the running unchanged-block share (`still_share`), log-linearly:
+    /// - Unchanged blocks are not coded at the level: they hold the quality
+    ///   of the frame that last refined them, and a key re-codes them. On a
+    ///   still picture the level is only where the debt correction stands
+    ///   after the last refinement burst, so a key planned from it moved
+    ///   with every small upstream change: HEVC Fast,
+    ///   `pool_otw_homes_00004` 150 kbps, keys every 2 s, frame 540: level
+    ///   43 against 49 under `hevc.tu16_chroma_concentration` 0.5 / 0 (the
+    ///   inter frames at 29.36 / 29.37 dB in both), key 94 / 33 kbit, 26.8
+    ///   / 24.7 dB; HEVC Default `pool_chad_3_086` 1200k, keys every 300,
+    ///   `rate.still_level_damping` 0 / 0.5: key q41 / q37, 24.7 / 27.5 dB
+    ///   with the inter frames at 32.3 / 32.4 dB.
+    /// - Changed blocks are coded at the level, where the match is bounded
+    ///   to move by the gain itself and only finer: a last key coded far
+    ///   from the level (the first key's start-up boost) calibrates badly,
+    ///   since real PSNR falls well under 6 dB per octave at low rates
+    ///   (H.264 Default, `external_uvg_volleyball_720p` 300k, keys every
+    ///   2 s: the first key q38 33.65 dB, the second at q50 28.77 dB, 2.4 dB
+    ///   per octave; unbounded, a key at q40 with its P frames at 27.9 dB).
+    ///
+    /// 1 before a key and its inter frames are measured (every frame with
+    /// the quiet run-up, else the keys and the run-up to a scheduled key,
+    /// `wants_distortion`). AV1 Faster base-only,
+    /// `pool_static_london_bus_540p` 389k, 600 f: the first key q154 32.48
+    /// dB, the inter frames 34.76 dB, so q139 against the inter level's
+    /// q153 (Faster: 145 against 146, its key at 146 coded 33.71 against
+    /// 33.88 aimed).
     fn quality_matched_ratio(&self, level_step: f64) -> f64 {
         let (Some(key_step), Some(gain)) = (self.last_key_step, self.key_quality.inter_gain_db())
         else {
             return 1.;
         };
-        if gain <= 0. {
-            return 1.;
-        }
-        let bound = (-gain / DB_PER_STEP_OCTAVE).exp2();
-        let matched = key_step * bound;
-        (matched / level_step).clamp(bound, 1.)
+        let move_ratio = (-gain / DB_PER_STEP_OCTAVE).exp2();
+        let matched = (key_step * move_ratio / level_step).min(1.);
+        let coded = if gain > 0. {
+            matched.max(move_ratio)
+        } else {
+            1.
+        };
+        let held = self.still_share.clamp(0., 1.);
+        coded.powf(1. - held) * matched.powf(held)
     }
 
     /// QP units finer the key being planned is coded on a fixed camera
@@ -1509,6 +1533,27 @@ impl RateController {
         let phase = frames * self.uniform_budget();
         let left = (phase - bits).max(self.uniform_budget() * HELD_KEY_MIN_PHASE_SHARE);
         bits * (frames - 1.) / left
+    }
+
+    /// The repayment-phase boost of a key just coded whose phase also
+    /// repays `carried` bits of the previous key's loan: the key's planned
+    /// bits and the carried loan are scheduled together, as if the key had
+    /// taken both (`boost_repaying`; a phase too short to hold them leaves
+    /// the rest to the debt correction).
+    ///
+    /// Why: a periodic key's phase ends before the next periodic key, so
+    /// only keys that come early (requested, scene cuts) find a loan
+    /// unpaid. Turning that remainder into ordinary debt made it due at
+    /// once: in `static_recovery` the first key's still-scene loan had 0.79 s
+    /// of channel left at the requested key, its excess went from -0.66 to
+    /// +0.56 buffers after the refinement that followed, and AV1
+    /// Veryfast's inter level climbed to qindex 126 and was still 43-66
+    /// at frame 39, against 9-19 undisturbed (the static half 2.55 dB
+    /// short at frame 28; carried, 0.51 dB, the level at 31-41 by frame
+    /// 39 and the excess at -0.64 buffers, undisturbed -0.84).
+    fn carried_loan_boost(&self, carried: f64) -> f64 {
+        let planned = self.loan_inter_budget() * self.loan_boost;
+        self.boost_repaying(planned + carried)
     }
 
     /// Whether the key being planned is a periodic key of a still scene
@@ -1622,10 +1667,24 @@ impl RateController {
         self.cadence_depth = depth;
     }
 
-    /// Whether the encoder should report each inter frame's luma distortion
-    /// (`observe_distortion`).
+    /// Whether the encoder should report the luma distortion of the frame
+    /// just coded (`observe_distortion`): every frame for the refinement
+    /// gain and the quiet run-up; else, for `rate.key_quality_match`, keys
+    /// and the [`KEY_RUN_UP_FRAMES`] before a scheduled key, all its match
+    /// reads. Without that the presets that turn the quiet run-up off
+    /// planned their keys at the last inter level alone, which on a still
+    /// picture moves with every refinement burst (AV2 Faster's cheaper key
+    /// modes, b9c7a6382, `pool_chad_1_093` 298k, keys every 300: the same
+    /// inter frames to frame 291, then a burst at 292 of 150 against 74
+    /// kbit, level 182 against 174 at the key, key 78 against 108 kbit,
+    /// 24.98 against 25.68 dB).
     pub fn wants_distortion(&self) -> bool {
-        (self.refinement.enabled() && !self.last_key) || self.still.quiets()
+        let run_up = self.key_quality_match > 0.
+            && (self.last_key
+                || self
+                    .frames_to_key
+                    .is_some_and(|frames| frames <= KEY_RUN_UP_FRAMES));
+        (self.refinement.enabled() && !self.last_key) || self.still.quiets() || run_up
     }
 
     /// The share (0..=1) of the frame just coded that the noise skip took,
@@ -1930,6 +1989,9 @@ impl RateController {
         let period = u64::from(self.period);
         let to_key = (period > 0 && self.period != u32::MAX)
             .then(|| period - index.saturating_sub(self.last_key_index) % period);
+        let periodic = period > 0 && self.period != u32::MAX;
+        self.still
+            .set_loan_spans_period(periodic && self.repay_frames() >= self.period);
         self.still
             .plan_period(self.elapsed, self.ledger_seconds(), self.frame_fps, to_key);
         self.frames_to_key = to_key;
@@ -2359,6 +2421,7 @@ impl RateController {
         // TRAIN proxy: an undershooting first key no longer handed its
         // unspent budget to the frames after it.)
         if self.last_key {
+            let carried = self.scheduled_key_debt;
             self.last_key_step = Some(self.steps[self.current as usize]);
             self.frames_since_key = 0;
             self.still.observe_key(bits as f64);
@@ -2371,6 +2434,11 @@ impl RateController {
                 self.loan_boost = self.loan_boost.max(self.boost_repaying(bits as f64));
             }
             self.key_still_applied = 0.;
+            if carried > 0. {
+                // The last key's loan not yet repaid stays a loan: this
+                // key's phase repays it with its own (`carried_loan_boost`).
+                self.loan_boost = self.carried_loan_boost(carried);
+            }
             self.scheduled_key_debt =
                 (self.loan_inter_budget() * self.loan_boost - uniform).max(0.);
         } else {
@@ -2560,7 +2628,7 @@ mod tests {
     }
 
     #[test]
-    fn every_key_borrows_its_plan_and_a_new_key_leaves_the_rest_as_debt() {
+    fn every_key_borrows_its_plan_and_a_new_key_carries_the_rest() {
         let mut r = controller(500_000);
         let p = r.inter_budget();
         let planned = p * 8.;
@@ -2575,14 +2643,17 @@ mod tests {
         r.feedback(p.round() as u64);
         let unpaid = r.scheduled_key_debt;
         let before = r.fullness - r.settings.capacity / 2. - unpaid;
-        // A requested key borrows its plan too; what was left of the old
-        // loan becomes ordinary debt.
+        // A requested key borrows its plan too, and its phase repays what
+        // was left of the old loan with it: the excess moves by the key's
+        // own overspend only (none here).
         r.select(true, 2, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
         let planned = r.loan_inter_budget() * r.loan_boost;
         r.feedback(planned.round() as u64);
-        assert!((r.scheduled_key_debt - (planned - r.uniform_budget())).abs() < 1.);
+        let loan = r.loan_inter_budget() * r.loan_boost - r.uniform_budget();
+        assert!((r.scheduled_key_debt - loan).abs() < 1.);
+        assert!((r.scheduled_key_debt - (planned + unpaid - r.uniform_budget())).abs() < 1.);
         let after = r.fullness - r.settings.capacity / 2. - r.scheduled_key_debt;
-        assert!((after - before - unpaid).abs() < 1.);
+        assert!((after - before).abs() < 1.);
     }
 
     #[test]
@@ -3104,6 +3175,18 @@ mod tests {
         r.key_quality.observe(true, 16.);
         r.key_quality.observe(false, 64.);
         assert_eq!(r.quality_matched_ratio(18.), 1.);
+        // On a still picture the unchanged blocks hold the inter frames'
+        // quality whatever the level: their share of the key matches it in
+        // full, also where it stands below the last key (step 20 made
+        // 6.02 dB coarser: 40).
+        r.still_share = 0.5;
+        assert!((r.quality_matched_ratio(160.) - (40f64 / 160.).sqrt()).abs() < 1e-3);
+        assert_eq!(r.quality_matched_ratio(30.), 1.);
+        r.key_quality.observe(true, 64.);
+        r.key_quality.observe(false, 16.);
+        let coded = bound;
+        assert!((r.quality_matched_ratio(400.) - (coded * 10. / 400.).sqrt()).abs() < 1e-3);
+        r.still_share = 0.;
         r.key_quality.observe(true, 64.);
         r.key_quality.observe(false, 16.);
         // Off, the key's level step is the inter level's.

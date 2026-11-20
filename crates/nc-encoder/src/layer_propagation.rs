@@ -47,7 +47,9 @@ use nc_analysis::preanalysis::PreAnalysis;
 use crate::params::LayerParams;
 
 /// Side of a cell (the 8x8 analysis grid).
-const CELL: f32 = 8.;
+const CELL_SIDE: i16 = 8;
+/// [`CELL_SIDE`] as a float.
+const CELL: f32 = CELL_SIDE as f32;
 /// Samples per cell.
 const CELL_SAMPLES: f32 = CELL * CELL;
 /// Mean absolute per squared deviation of a Gaussian (`2/π`): the intra
@@ -275,9 +277,9 @@ impl LayerPropagation {
                 if amount <= 0. {
                     continue;
                 }
-                for (source, weight) in overlap(cell, cols, rows, mvx, mvy) {
+                overlap(cell, cols, rows, mvx, mvy, |source, weight| {
                     target.received[source] += amount * weight;
-                }
+                });
             }
         }
         let base = &self.period[0];
@@ -332,10 +334,11 @@ fn warp(history: &[f32], motion: &[(i16, i16, u32)], cols: usize) -> Vec<f32> {
         .iter()
         .enumerate()
         .map(|(cell, &(mvx, mvy, _))| {
-            let (sum, weight) = overlap(cell, cols, rows, mvx, mvy)
-                .fold((0., 0.), |(s, w), (source, weight)| {
-                    (s + history[source] * weight, w + weight)
-                });
+            let (mut sum, mut weight) = (0., 0.);
+            overlap(cell, cols, rows, mvx, mvy, |source, share| {
+                sum += history[source] * share;
+                weight += share;
+            });
             if weight < MIN_WARP_WEIGHT {
                 history[cell]
             } else {
@@ -351,35 +354,48 @@ fn intra_cost(sum_sq_dev: u32) -> f32 {
         + CELL_SAMPLES * MIN_INTRA_PER_SAMPLE
 }
 
-/// The cells of a `cols` x `rows` grid that the block of `cell` displaced
-/// by `(mvx, mvy)` samples overlaps, with the share of its area in each.
+/// Visit the cells of a `cols` x `rows` grid that the block of `cell`
+/// displaced by `(mvx, mvy)` samples overlaps, with the share of its area in
+/// each: at most four, rows then columns.
+///
+/// A visitor in integer cell coordinates. The iterator over `f32`
+/// coordinates it replaced (`flat_map` / `filter_map`, a saturating
+/// float-to-integer cast per bound) made the propagation 9.2 % of AV1
+/// Faster's instructions, now 3.6 % (x86 callgrind, 2026-11-20); AV1 Faster
+/// is the only rung with `layers.propagation`. The shares are the same
+/// `f32` values: a displacement of whole samples is `CELL` x (whole cells)
+/// plus `mv mod CELL`, both exact in `f32`.
 fn overlap(
     cell: usize,
     cols: usize,
     rows: usize,
     mvx: i16,
     mvy: i16,
-) -> impl Iterator<Item = (usize, f32)> {
-    let y = (cell / cols) as f32 + f32::from(mvy) / CELL;
-    let x = (cell % cols) as f32 + f32::from(mvx) / CELL;
-    let (y0, x0) = (y.floor(), x.floor());
-    let (fy, fx) = (y - y0, x - x0);
-    [(0., 1. - fy), (1., fy)]
-        .into_iter()
-        .flat_map(move |(dy, wy)| {
-            [(0., 1. - fx), (1., fx)]
-                .into_iter()
-                .filter_map(move |(dx, wx)| {
-                    let (r, c) = (y0 + dy, x0 + dx);
-                    let weight = wy * wx;
-                    (weight > 0.
-                        && r >= 0.
-                        && c >= 0.
-                        && (r as usize) < rows
-                        && (c as usize) < cols)
-                        .then(|| (r as usize * cols + c as usize, weight))
-                })
-        })
+    mut visit: impl FnMut(usize, f32),
+) {
+    let (y0, fy) = displaced(cell / cols, mvy);
+    let (x0, fx) = displaced(cell % cols, mvx);
+    for (r, wy) in [(y0, 1. - fy), (y0 + 1, fy)] {
+        let Some(r) = usize::try_from(r).ok().filter(|&r| r < rows) else {
+            continue;
+        };
+        for (c, wx) in [(x0, 1. - fx), (x0 + 1, fx)] {
+            let weight = wy * wx;
+            if weight > 0.
+                && let Some(c) = usize::try_from(c).ok().filter(|&c| c < cols)
+            {
+                visit(r * cols + c, weight);
+            }
+        }
+    }
+}
+
+/// The cell a cell at `position` moves to by `mv` samples (rounded down)
+/// and the fraction of a cell left over.
+fn displaced(position: usize, mv: i16) -> (isize, f32) {
+    let whole = isize::from(mv.div_euclid(CELL_SIDE));
+    let fraction = f32::from(mv.rem_euclid(CELL_SIDE)) / CELL;
+    (position as isize + whole, fraction)
 }
 
 #[cfg(test)]
@@ -388,9 +404,15 @@ mod tests {
 
     #[test]
     fn overlap_splits_by_area() {
-        let parts: Vec<_> = overlap(0, 3, 1, 4, 0).collect();
-        assert_eq!(parts, [(0, 0.5), (1, 0.5)]);
-        assert_eq!(overlap(0, 3, 1, -8, 0).count(), 0);
+        let parts = |mvx| {
+            let mut parts = Vec::new();
+            overlap(0, 3, 1, mvx, 0, |source, weight| {
+                parts.push((source, weight));
+            });
+            parts
+        };
+        assert_eq!(parts(4), [(0, 0.5), (1, 0.5)]);
+        assert_eq!(parts(-8), []);
     }
 
     #[test]

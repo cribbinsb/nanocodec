@@ -8,7 +8,12 @@ use crate::simd::I32Lanes;
 /// Integer-overflow safety envelope for the guarded AV1 row graph, not an
 /// RD control. The outward-rounded interval test in `range_probe` checks
 /// every stage.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", test))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128"),
+    test
+))]
 pub(super) const NARROW_ROW_L1_LIMIT: i32 = 32000;
 
 /// Largest 16-point forward column input: an 8-bit residual (`|r| <= 255`)

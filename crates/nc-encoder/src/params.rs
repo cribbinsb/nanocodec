@@ -352,6 +352,15 @@ param_group! {
             "rectangular shape cost multiplier (‰) against the plan it competes with: higher plans fewer shapes (each extra leaf's signalling is not in the planner's cost)",
         rect_motion_gate: 1.0, [0.0, 16.0],
             "measure a rectangular shape only where every motion-search vector of one leaf differs from every one of the next by at least this many whole samples (0 measures every declared shape): higher is faster, with fewer shapes",
+        /// Speed gate of the zero-out trial (`partition_plan.rs` "Zero-out"):
+        /// skips it where the leaf's residual sigma is below this fraction
+        /// of the step, where the four leaves' fine detail would quantise
+        /// to zero too. VVC Default instructions (gate, 30 f, QP 36,
+        /// Johnny): ungated +14 %, 0.2 -0.8 % against the former QP floor;
+        /// `pool_meva_hospital_g301` CBR 150 / 400 mean PSNR-Y 0: 41.65 /
+        /// 46.36, 0.1: 41.70 / 46.36, 0.2: 41.78 / 46.57, 0.3: 41.43 / 46.49.
+        zero_out_gate: 0.2, [0.0, 1.0],
+            "inter leaves larger than the backend's full-spectrum transform (VVC's 64-point units) are confirmed against four leaves by coded cost only where their residual's standard deviation is at least this fraction of the quantizer step (0: always): higher skips more trials, keeping large leaves whose fine detail would quantise away anyway",
         rect_rd: 0.0, [0.0, 1.0],
             "1 has the backend's inter rate-distortion cost (sub-sample vector, transform, quantisation, coefficient and mode bits) confirm each shape the variance model plans against the square plan, 0 trusts the variance model: 1 rejects shapes that cost more to code, at a coded-cost trial per planned shape",
     }
@@ -425,6 +434,17 @@ param_group! {
             "with the final stage on, 1 lets the codec's skip vector compete with the ranking's winner, 0 leaves it out: 0 is faster",
         final_intra_candidate: 1.0, [0.0, 1.0],
             "with the final stage on, 1 lets intra compete with the ranking's winner, 0 leaves it out (and DC intra with it): 0 is faster",
+        /// Whole-CU pricing after the ranking (`cu_pricing.rs`): the
+        /// codec codes the leaf both ways in all planes and keeps the
+        /// cheaper by coded cost.
+        cu_price_error_lambdas: 0.0, [0.0, 8.0],
+            "inter leaves whose ranking winner leaves more than this many lambda per sample of prediction error are also coded as intra, and the cheaper coded CU (all planes) is kept (0: off): lower prices more, slower",
+        cu_price_intra_ratio: 4.0, [0.0, 64.0],
+            "with the error-gated intra pricing on, only inter leaves whose estimated intra cost is below this multiple of inter's are also coded as intra (0: no limit): lower is faster",
+        cu_price_screen_ratio: 0.0, [0.0, 64.0],
+            "with the error-gated intra pricing on, intra is coded only where the codec's intra screen (uncoded luma error of its best simple prediction from the reconstruction, plus mode bits) is below this multiple of inter's cost (0: no screen): lower is faster",
+        cu_price_intra_lambdas: 0.0, [0.0, 4.0],
+            "intra leaves that beat inter by less than this many lambda per sample are also coded at the skip vector, and the cheaper coded CU (all planes) is kept (0: off): higher prices more, slower",
         // Engine motion defaults (2026-11-09): the measured quality point
         // AV1 and AV2 had each copied into their own `DEFAULT_PARAMS`
         // (measurements in `nc_av1`'s `DEFAULT_PARAMS`). A codec overrides
@@ -866,7 +886,7 @@ param_group! {
         // +0.00], london_bus pulse -0.40 dB; H.264 Default +0.00% [+0.00,
         // +0.00]; no guard in either.
         key_quality_match: 1.0, [0.0, 1.0],
-            "rate control: share of the way a key's quality requirement moves from the inter level's step toward the step that would bring the last key up to the inter frames' running PSNR-Y (6.02 dB per octave of step, the move bounded by that gain), where they stand above it (0 = off); needs the distortion `rate.prekey_quiet` measures; the buffers still bound it",
+            "rate control: share of the way a key's quality requirement moves from the inter level's step toward the step that would bring the last key to the inter frames' running PSNR-Y (6.02 dB per octave of step; in the running unchanged-block share in full, in the rest only finer and bounded by that gain; never coarser than the level) (0 = off); measures the keys' and the last 16 inter frames' distortion where nothing else does; the buffers still bound it",
         // The key's room is the physical buffer's, so the run-up keeps it
         // rather than the key borrowing: AV1 Fast base-only on
         // `pool_external_meva_admin_720p_536p` (194k, keys every 300) lost
@@ -994,8 +1014,14 @@ param_group! {
         // AV1 byte spread 2.0 -> 1.4 %, PSNR spread 0.047 -> 0.010 dB, BD-rate
         // -2.6 %; the two VC-1K clips (moving people) unchanged. H.264
         // Default final-check (600 f, keys every 10 s, n 33): J -0.24 %
-        // [-0.37, +0.08], no guard. Pinned 0 in every other preset until
-        // screened (docs/handoff/rate-control.md "Still-picture chaos").
+        // [-0.37, +0.08], no guard. After the key fix of 612fda158
+        // (final-checks, 600 f, keys every 10 s, n 36, 2026-11-19): VVC
+        // Default J -0.65 % [-0.88, -0.43] (drone -4.4 %, static +0.6 %), AV2
+        // Default -0.10 % [-0.39, +0.20], AV1 Default +0.00 % [-0.14, +0.15],
+        // no guard in any: the shared value there. HEVC Default -0.36 %
+        // [-0.59, -0.14] but a real key loss on meva_hospital (key -0.93 dB,
+        // whole clip -0.19 dB at 75 kbps): pinned 0, as is every other preset
+        // until screened (docs/handoff/rate-control.md "Still-picture chaos").
         still_level_damping: 0.5, [0.0, 1.0],
             "rate control: the per-frame inter-level limit is scaled by 1 - this x the running unchanged-block share: on a still picture frame bits respond to the level only by refining past the quality the picture holds, a cliff the level otherwise crosses at full speed, so the refinement's size (and the stream's trajectory) jumps with tiny perturbations (0 = off)",
         cadence_scale: 0.0, [0.0, 2.0],
@@ -1012,7 +1038,15 @@ param_group! {
             "1 also applies the cadence at fixed QP; 0 keeps fixed-QP frames flat (the cadence then only shapes rate control)",
         fixed_qp_profile: 0.0, [0.0, 1.0],
             "1 applies the codec's fixed-QP profile (`CodecBackend::FIXED_QP_PARAMS`: its static frame-level pattern for coding without rate control) beneath the caller's settings; the CLI sets it for --qp without --bitrate, a preset may pin 0",
-        fixed_qp_moving_key: 0.0, [0.0, 18.0],
+        // 6 in every codec's Default (the VC-1K phone-call diagnosis,
+        // docs/handoff/hevc.md "VC-1K phone video calls"). Fixed QP, matched
+        // QP, pool adopt level, J: HEVC -0.8 [-1.4, -0.4] (draw
+        // fixedqp-2026-11-18; final level -0.8 [-1.0, -0.5]); draw
+        // fixedqp-2026-11-19: AV1 -1.5 [-2.3, -0.9], VP9 -1.9 [-3.5, -0.8],
+        // AV2 -1.5 [-2.1, -0.9], VVC -0.8 [-1.2, -0.5], H.264 -0.9
+        // [-1.8, -0.3]. CBR streams are unchanged. Every other preset pins 0
+        // (not screened).
+        fixed_qp_moving_key: 6.0, [0.0, 18.0],
             "fixed QP: QP units coarser a key frame is coded under camera motion (growing from 1 luma sample per frame to `rate.cadence_max_camera_motion`, less as the still-block share passes 0.8: the start-up lookahead's for the first key, the running values of the inter frames for later ones; 0 = off): a moving camera replaces the picture before later frames inherit a fine key",
         fixed_qp_moving_cadence: 0.0, [0.0, 1.0],
             "fixed QP: 1 scales the QP cadence by the still-block share under camera motion (as `rate.fixed_qp_moving_key` measures it) whatever `rate.cadence_static_scaling` says: a fixed-QP profile's full cadence then holds for still cameras only",
@@ -1022,6 +1056,12 @@ param_group! {
             "buffers a periodic key of a still scene (running unchanged-block share at least `rate.key_repay_still_from`) may take whatever the debt, planned at the quality the inter frames hold rather than by its repay phase or the debt correction (0 = off): the frames after it repay it",
         period_ceiling: 0.0, [0.0, 1.0],
             "1 holds the target as a ceiling over every key period: an inter frame may take at most what the rest of the period can repay of the stream's spend above the target line (`period_ledger.rs`), and is re-coded coarser past it; 0 corrects debt through budgets only",
+        // 0 since 2026-11-20 (docs/handoff/rate-control.md "The still boost on
+        // short key periods"): 2 s keys, 600 f, 12 pool clips, BD PSNR-YUV
+        // -0.28 (HEVC) .. -0.97 % (AV1) in every Default, worst-1 % frames
+        // -1.0 .. -3.3 %, pulse within +-0.07 dB; keys every 10 s unchanged.
+        period_key_saving: 0.0, [0.0, 1.0],
+            "with `rate.period_ceiling`, 1 also saves in each key period for the key that starts the next one (the last key's size times how still the scene is) when the next period repays that key's whole loan (a key period no longer than the repay horizon); 0 leaves such a key to its loan alone (longer periods always save)",
         // The quiet second before a scheduled key, scaled by how the inter
         // frames stand against the last key (`KeyQuality::quiet_strength`).
         // Was H.264 and HEVC Default (600 f, keys every 10 s: J -0.89% and

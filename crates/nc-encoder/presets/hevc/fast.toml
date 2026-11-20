@@ -55,8 +55,11 @@ hevc.inter_tu_split = 1
 # on top and rejected: bodycam J-low +0.6% vs SVT (fails the bar).
 # Evidence: work/presets2/fc150.hevc-fast-{dc,dcm,dcs}.log.
 light.hevc.inter_intra_dc_only = 1
-light.decision.exact_rank_margin = 1.1
-hevc.tu16_chroma_concentration = 0.5
+light.decision.exact_rank_margin = 0
+# The TU16 chroma heuristic off, as in the Default (2026-11-19): pool L3 (k 0.6, dCPU -3.3 %
+# callgrind) J -3.10 % [-3.41, -2.81], quality -1.12 %, no guard; static +0.11. Keys every 2 s:
+# pool_otw_homes_00004's late keys lose 1-2.5 dB (rate control's key budget on static content).
+hevc.tu16_chroma_concentration = 0
 hevc.sao_stats_row_step = 4
 hevc.fast_forward16 = 1
 hevc.fast_forward32 = 1
@@ -111,24 +114,16 @@ light.decision.intra_directional = 0
 # 85 (2026-11-16 re-point, top of file).
 hevc.inter_rounding = 85
 hevc.intra_rounding = 171
-light.planner.lambda_scale = 2
-light.planner.split_rate_factor = 2
+light.planner.lambda_scale = 2.58125
+light.planner.split_rate_factor = 2.2625
 # Default's four merge candidates (2026-11-14, fixed-qp program) stay off
 # here; its depth removal thresholds (0, no removal) are taken (2026-11-16
 # re-point, top of file).
 nonbase.hevc.merge_candidates = 2
 planner.depth_removal_th_32_16 = 0
 planner.depth_removal_th_16_8 = 0
-# Pinned before HEVC Default's key-period ceiling (2026-11-14).
-rate.period_ceiling = 0
-# Pinned before HEVC Default's unified reference plan (2026-11-15).
-structure.unified = 0
 # HEVC Default's fixed-QP profile (2026-11-14) stays off here: pinned, byte-identical.
 rate.fixed_qp_profile = 0
-# Pinned before HEVC Default's key still boost (2026-11-14).
-rate.key_still_boost = 0
-# Pinned before HEVC Default's inherited cadence depth (2026-11-15).
-structure.inherited_depth = 0
 # The Default's sub-sample refinement gates before 2026-11-15, pinned so this
 # preset's streams do not move with the Default.
 light.decision.skip_no_refine_lambdas = 0.25
@@ -169,3 +164,30 @@ effort.light_nonbase_only = 1
 adapt.subpel = 1
 adapt.rank = 1
 adapt.probe = 1
+# Whole-CU pricing of intra leaves (Default, 2026-11-19) was not screened here.
+decision.cu_price_intra_lambdas = 0
+# Pinned before the engine's coarser fixed-QP key under camera motion became the default
+# (rate.fixed_qp_moving_key 6, 2026-11-19, docs/handoff/rd-depth.md): not screened for this preset.
+rate.fixed_qp_moving_key = 0
+# The Default's cheap levers (2026-11-19 ladder spacing, docs/handoff/h264-fast.md
+# method): its key-period ceiling and key still boost (the quiet second was
+# already on), its structure (unified reference plan, inherited cadence
+# depth), and on light superblocks its planner lambda / split rate (above)
+# and exact ranking without a margin (above, was 1.1). Single levers on the
+# pool L1 draw (2026-11-20, k 0.6, quality J + 0.6 x callgrind dCPU with a
+# key every 10 s, against Fast): rate set -1.17 (0.0%), light planner -0.83
+# (-1.1%), structure -0.55 (+1.1%), light rank margin -0.18 (0.0%). Bundle:
+# x86 instructions +0.1%; L3 (draw 2026-11-20, 108 clips) J -6.39%
+# [-6.88, -3.06] BETTER, no guard; final-check (33 clips, 600 f) quality -3.30% [-3.96, -2.90],
+# 2/33 clips worse (at most +0.3%); its pulse guard trips on
+# external_uvg_volleyball_720p (+2.6 dB: key +2.0 dB, P before -1.5 .. +0.1,
+# all frames +0.3 .. +0.4), whose 2 s-key start-up overshoots its target by
+# 6-9% over 2.5 s with the key still boost, as the HEVC and VVC Defaults do
+# (600 frames: within target); adopted on judgement. Not taken: CU
+# intra pricing, rounding, chroma SAO, light directional intra, key intra
+# bundle, the light sub-pel seed / early merge / partial forward gates and
+# SAO on unchanged CTBs (J -0.08 .. +2.4).
+rate.period_ceiling = 1
+rate.key_still_boost = 4
+structure.unified = 1
+structure.inherited_depth = 1

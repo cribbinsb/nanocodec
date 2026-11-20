@@ -243,11 +243,16 @@ impl SplitContexts {
             std::cmp::Ordering::Greater => 4,
             std::cmp::Ordering::Less => 3,
             std::cmp::Ordering::Equal => match (left, above) {
-                (Some(left), Some(above)) => match (w / above.width).cmp(&(h / left.height)) {
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Less => 1,
-                    std::cmp::Ordering::Greater => 2,
-                },
+                // `w / above.width` against `h / left.height`, all powers
+                // of two: their log2 ratios, a ratio below one as -1 (the
+                // division's 0), order the same without dividing.
+                (Some(left), Some(above)) => {
+                    match log2_ratio(w, above.width).cmp(&log2_ratio(h, left.height)) {
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Less => 1,
+                        std::cmp::Ordering::Greater => 2,
+                    }
+                }
                 _ => 0,
             },
         };
@@ -258,6 +263,11 @@ impl SplitContexts {
             binary_base: usize::from(node.mtt_depth <= 1),
         }
     }
+}
+
+/// `log2(a / b)` of powers of two, -1 when `a < b` (the integer quotient 0).
+fn log2_ratio(a: usize, b: usize) -> i32 {
+    (a.trailing_zeros() as i32 - b.trailing_zeros() as i32).max(-1)
 }
 
 /// `split_cu_flag` context offset (3 · ctxSetIdx) by the count of allowed

@@ -2,7 +2,8 @@
 
 Agents kept measuring old builds (a VP9 final check reused one, 2026-11-11).
 `nanocodec --version` names the commit it was built from (nc-cli build.rs;
-"-dirty": crates/ or presets/ had local changes). Every screen, level run,
+"-dirty": crates/ or presets/ had local changes; "-dirty.HASH": a build box's
+copy whose local changes hash to HASH, tools/dev/build_stamp.py). Every screen, level run,
 tune study and chart run prints it at start and records it in its results
 (`build_info`); `--expect-commit SHA` or NC_EXPECT_COMMIT makes the run fail
 at once when the binary is anything else, and a binary whose commit is
@@ -28,7 +29,7 @@ UNKNOWN = "unknown"
 
 @functools.lru_cache(maxsize=None)
 def build_info(binary: Path, mtime_ns: int | None = None) -> dict:
-    """{"binary", "commit", "dirty", "version"}; commit None if the binary does not say.
+    """{"binary", "commit", "dirty", "diff", "version"}; commit None if the binary does not say.
 
     `mtime_ns` keys the cache, so a rebuilt binary is asked again."""
     try:
@@ -40,13 +41,16 @@ def build_info(binary: Path, mtime_ns: int | None = None) -> dict:
 
 
 def parse_version(line: str) -> dict:
-    """{"commit", "dirty", "version"} of a `nanocodec --version` line."""
+    """{"commit", "dirty", "diff", "version"} of a `nanocodec --version` line.
+
+    "diff" is the hash of a dirty build's local changes when its stamp names
+    them (`COMMIT-dirty.HASH`), else None."""
     line = line.strip()
     word = line.split()[-1] if line.startswith("nanocodec ") else ""
-    dirty = word.endswith(DIRTY_SUFFIX)
-    commit = word.removesuffix(DIRTY_SUFFIX) or None
-    return {"commit": None if commit == UNKNOWN else commit, "dirty": dirty,
-            "version": line or None}
+    commit, dirty, diff = word.partition(DIRTY_SUFFIX)
+    commit = commit or None
+    return {"commit": None if commit == UNKNOWN else commit, "dirty": bool(dirty),
+            "diff": diff.removeprefix(".") or None, "version": line or None}
 
 
 def stamp_problem(info: dict, commit: str) -> str | None:
@@ -86,11 +90,15 @@ def stream_identity(binary: Path) -> str:
     release, PGO, gate (no LTO) and per-agent target-dir builds differ in bytes
     but not in output (docs/PROCEDURES.md "Build and check"). Keying caches on
     the binary's bytes made every agent re-encode the same integration head's
-    anchor curves with its own build. So a clean build is keyed on its commit;
-    a dirty or unstamped one keeps the SHA-256 of its bytes."""
+    anchor curves with its own build. So a clean build is keyed on its commit,
+    a dirty one whose stamp names its local changes (a build box's,
+    tools/dev/build_stamp.py) on its commit and that diff hash; any other dirty
+    or unstamped one keeps the SHA-256 of its bytes."""
     info = info_of(binary)
     if info["commit"] and not info["dirty"]:
         return COMMIT_IDENTITY_PREFIX + info["commit"]
+    if info["commit"] and info["diff"]:
+        return f"{COMMIT_IDENTITY_PREFIX}{info['commit']}{DIRTY_SUFFIX}.{info['diff']}"
     digest = hashlib.sha256()
     with Path(binary).open("rb") as source:
         for block in iter(lambda: source.read(1 << 20), b""):

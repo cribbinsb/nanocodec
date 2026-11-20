@@ -8,6 +8,7 @@
 //! `decode_reconstruct_tx` (BSD-2-Clause, see `THIRD_PARTY.md`).
 use super::super::block_size::BlockSize;
 use super::super::deblock::EdgeBlock;
+use super::super::strided::strided;
 use super::super::transform::{TxSize, chroma_block};
 use super::{BlockPos, FrameDecoder, MI_SIZE};
 use crate::decoder_range::SymbolReader;
@@ -49,8 +50,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let (max_w4, max_h4) = self.visible_units(block);
         let (step_w, step_h) = (largest.width() / MI_SIZE, largest.height() / MI_SIZE);
         let select = self.header.tx_mode_select && block.size != BlockSize::BLOCK_4X4 && !skip;
-        for y4 in (0..max_h4).step_by(step_h) {
-            for x4 in (0..max_w4).step_by(step_w) {
+        for y4 in strided(0..max_h4, step_h) {
+            for x4 in strided(0..max_w4, step_w) {
                 if select {
                     self.read_tx_tree(r, block, (max_w4, max_h4), largest, 0, (x4, y4))?;
                 } else {
@@ -134,8 +135,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             }
             Some(sub) => {
                 let (sw, sh) = (sub.width() / MI_SIZE, sub.height() / MI_SIZE);
-                for dy in (0..units.1).step_by(sh) {
-                    for dx in (0..units.0).step_by(sw) {
+                for dy in strided(0..units.1, sh) {
+                    for dx in strided(0..units.0, sw) {
                         let at = (x4 + dx, y4 + dy);
                         self.read_tx_tree(r, block, (max_w4, max_h4), sub, depth + 1, at)?;
                     }
@@ -183,8 +184,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
     ) -> Result<(), DecodeError> {
         let (max_w4, max_h4) = self.visible_units(block);
         let luma_block = (block.size.width(), block.size.height());
-        for row in (0..max_h4).step_by(CHUNK_MI) {
-            for col in (0..max_w4).step_by(CHUNK_MI) {
+        for row in strided(0..max_h4, CHUNK_MI) {
+            for col in strided(0..max_w4, CHUNK_MI) {
                 let rows = row..row + CHUNK_MI;
                 let cols = col..col + CHUNK_MI;
                 for index in 0..self.maps.tx_leaves.len() {
@@ -235,8 +236,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let end_w = ((col + CHUNK_MI).min(max_w4) + 1) >> 1;
         let end_h = ((row + CHUNK_MI).min(max_h4) + 1) >> 1;
         let origin = (block.mi_col >> 1, block.mi_row >> 1);
-        for blk_row in ((row >> 1)..end_h).step_by(step_h) {
-            for blk_col in ((col >> 1)..end_w).step_by(step_w) {
+        for blk_row in strided((row >> 1)..end_h, step_h) {
+            for blk_col in strided((col >> 1)..end_w, step_w) {
                 let luma = self.luma_tx_type((blk_col << 1, blk_row << 1));
                 let source = self.tx_type_source(plane, tx, true, 0, luma);
                 let at = (

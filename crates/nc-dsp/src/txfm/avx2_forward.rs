@@ -11,22 +11,32 @@
 //! or subtract first and take the rounding Q15 multiply (`vpmulhrsw`). The
 //! results equal the generic staged rows (checkasm).
 //!
+//! The same lanes run the exact AV1/VP9 (libaom) forward DCTs of 16x16 and
+//! larger blocks ([`super::narrow_forward`], range proofs there): sixteen
+//! columns, then sixteen row lines, per graph run, where the 32-bit `I32x8`
+//! drivers ran two of each (the 16x16 forward was ~2,000 instructions and
+//! ~10 % of x86 VP9 Faster, 2026-11-20).
+//!
 //! Kernel contract: see the `txfm` module docs.
 
 #![allow(clippy::inline_always)]
 
 use core::arch::x86_64::{
-    __m256i, _mm_cvtsi32_si128, _mm256_add_epi16, _mm256_add_epi32, _mm256_castsi256_si128,
-    _mm256_cvtepi16_epi32, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
-    _mm256_mulhrs_epi16, _mm256_mullo_epi32, _mm256_packs_epi32, _mm256_permute2x128_si256,
-    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_slli_epi16, _mm256_sra_epi32, _mm256_storeu_si256,
-    _mm256_sub_epi16, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64,
-    _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
+    __m256i, _mm_cvtsi32_si128, _mm256_abs_epi16, _mm256_add_epi16, _mm256_add_epi32,
+    _mm256_adds_epu16, _mm256_castsi256_si128, _mm256_cvtepi16_epi32, _mm256_extracti128_si256,
+    _mm256_loadu_si256, _mm256_madd_epi16, _mm256_mulhrs_epi16, _mm256_mullo_epi32,
+    _mm256_packs_epi32, _mm256_permute2x128_si256, _mm256_set1_epi16, _mm256_set1_epi32,
+    _mm256_setzero_si256, _mm256_slli_epi16, _mm256_sra_epi32, _mm256_storeu_si256,
+    _mm256_sub_epi16, _mm256_subs_epu16, _mm256_testz_si256, _mm256_unpackhi_epi16,
+    _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32,
+    _mm256_unpacklo_epi64,
 };
 use core::mem::MaybeUninit;
 
 use super::forward_lanes::ForwardLanes;
-use super::{cospi, dct};
+use super::narrow_forward::{self, ForwardWords};
+use super::{FORWARD_ROW_ROUNDING, cospi, dct, low_keep};
+use crate::simd::avx2::I32x8;
 
 /// Lines per vector.
 const LANES: usize = 16;
@@ -92,6 +102,162 @@ impl ForwardLanes for Column {
                 _mm256_sra_epi32(_mm256_add_epi32(high, round), count),
             ))
         }
+    }
+}
+
+impl ForwardWords for Column {
+    const LANES: usize = LANES;
+    type Norm = __m256i;
+    type Wide = I32x8;
+
+    #[inline(always)]
+    fn load(src: &[i16]) -> Self {
+        let src = &src[..LANES];
+        // SAFETY: AVX2 kernels only; a 32-byte load of sixteen values.
+        unsafe { Self(_mm256_loadu_si256(src.as_ptr().cast())) }
+    }
+
+    #[inline(always)]
+    fn store(self, dst: &mut [MaybeUninit<i16>]) {
+        let dst = &mut dst[..LANES];
+        // SAFETY: AVX2 kernels only; a 32-byte store of sixteen values.
+        unsafe { _mm256_storeu_si256(dst.as_mut_ptr().cast(), self.0) }
+    }
+
+    #[inline(always)]
+    fn shift_left_2(self) -> Self {
+        // SAFETY: AVX2 kernels only; register arithmetic.
+        unsafe { Self(_mm256_slli_epi16::<2>(self.0)) }
+    }
+
+    #[inline(always)]
+    fn round_shift<const SHIFT: u32>(self) -> Self {
+        // `(x * 2^(15 - SHIFT) + 2^14) >> 15` is `(x + 2^(SHIFT - 1)) >>
+        // SHIFT` exactly: the product is formed in 32 bits.
+        // SAFETY: AVX2 kernels only; register arithmetic.
+        unsafe {
+            Self(_mm256_mulhrs_epi16(
+                self.0,
+                _mm256_set1_epi16(1 << (Q15_BITS - SHIFT)),
+            ))
+        }
+    }
+
+    #[inline(always)]
+    fn transpose(tile: &mut [Self]) {
+        let tile: &mut [Self; LANES] = tile.try_into().unwrap();
+        *tile = transpose16(tile.map(|v| v.0)).map(Self);
+    }
+
+    #[inline(always)]
+    fn norm_zero() -> __m256i {
+        // SAFETY: AVX2 kernels only.
+        unsafe { _mm256_setzero_si256() }
+    }
+
+    #[inline(always)]
+    fn accumulate_l1(self, norm: __m256i) -> __m256i {
+        // SAFETY: AVX2 kernels only; `|i16::MIN|` reads correctly as
+        // unsigned, and the sum saturates.
+        unsafe { _mm256_adds_epu16(norm, _mm256_abs_epi16(self.0)) }
+    }
+
+    #[inline(always)]
+    fn within_limit(norm: __m256i, limit: u16) -> bool {
+        // SAFETY: AVX2 kernels only; a lane above `limit` leaves a nonzero
+        // saturating difference.
+        unsafe {
+            let excess = _mm256_subs_epu16(norm, _mm256_set1_epi16(limit as i16));
+            _mm256_testz_si256(excess, excess) != 0
+        }
+    }
+
+    #[inline(always)]
+    fn wide_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
+        buf: &[i16],
+        r0: usize,
+        out: &mut [i16],
+    ) {
+        // SAFETY: `Column` values exist only inside AVX2 kernels.
+        unsafe { wide_rows::<N, RASTER, KEEP>(buf, r0, out) }
+    }
+}
+
+/// [`ForwardWords::wide_rows`] compiled for AVX2: outside a function of its
+/// ISA every intrinsic of the 32-bit graph would be an out-of-line call.
+#[cold]
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+unsafe fn wide_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
+    buf: &[i16],
+    r0: usize,
+    out: &mut [i16],
+) {
+    narrow_forward::wide_row_batch::<I32x8, N, RASTER, KEEP>(buf, r0, LANES, out);
+}
+
+/// Defines AVX2 entry points of [`narrow_forward::forward`]: `$name` codes
+/// an `$n`-point block keeping `$keep` frequencies, raster when `$raster`.
+macro_rules! word_forward {
+    ($($name:ident, $n:literal, $raster:literal, $keep:expr);* $(;)?) => {$(
+        #[target_feature(enable = "avx2")]
+        pub(super) unsafe fn $name(residual: &[i16], stride: usize, out: &mut [i16]) {
+            // SAFETY: AVX2 is enabled; forwarded kernel contract.
+            unsafe {
+                narrow_forward::forward::<Column, $n, $raster, { $keep }>(residual, stride, out);
+            }
+        }
+    )*};
+}
+
+word_forward!(
+    forward_16, 16, false, 16;
+    forward_16_raster, 16, true, 16;
+    forward_32, 32, false, 32;
+    forward_32_raster, 32, true, 32;
+    forward_32_low, 32, false, low_keep(32);
+    forward_32_low_raster, 32, true, low_keep(32);
+    forward_64, 64, false, 32;
+    forward_64_low, 64, false, low_keep(64);
+);
+
+/// The bounded raster 16-point forward (`narrow_forward::bounded`).
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn forward_16_bounded(
+    residual: &[i16],
+    stride: usize,
+    zero_limit: u32,
+    out: &mut [i16],
+) -> bool {
+    // SAFETY: AVX2 is enabled; forwarded kernel contract.
+    unsafe {
+        narrow_forward::bounded::<Column, 16>(
+            residual,
+            stride,
+            zero_limit,
+            FORWARD_ROW_ROUNDING[0],
+            out,
+        )
+    }
+}
+
+/// The bounded raster 32-point forward (`narrow_forward::bounded`).
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn forward_32_bounded(
+    residual: &[i16],
+    stride: usize,
+    zero_limit: u32,
+    out: &mut [i16],
+) -> bool {
+    // SAFETY: AVX2 is enabled; forwarded kernel contract.
+    unsafe {
+        narrow_forward::bounded::<Column, 32>(
+            residual,
+            stride,
+            zero_limit,
+            FORWARD_ROW_ROUNDING[1],
+            out,
+        )
     }
 }
 

@@ -37,7 +37,6 @@ quant.trellis = 0
 quant.trellis_key = 0
 nonbase.vp9.shave_gap = 8
 light.planner.depth_removal_min_quantizer = 0
-nonbase.vp9.intra_mode_estimate = 0
 # Tuned jointly (eval/nceval/tune_pool.py, study vp9-vp9-fast-eq2-2026-11-11,
 # trial #92, equal x86 CPU at most): a speed/quality trade at the Fast weight
 # (k 0.6). Study L3 J_real -0.71% [-0.96, -0.45] with x86 -1.4%, Jetson
@@ -64,7 +63,15 @@ vp9.chroma_delta_gap_slope = 0
 # Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial #23).
 quant.trellis_lambda_scale = 1
 vp9.filter_level_scale = 1
-nonbase.vp9.inter_intra_dc_only = 0
+# The Default's non-base intra (2026-11-20 ladder spacing): intra blocks of
+# non-base frames DC only, choosing intra by the cheap mode estimate
+# (nonbase.vp9.intra_mode_estimate / inter_intra_dc_only 1, as the Default).
+# x86 instructions -2.1% (callgrind, key every 10 s); pool L1 (draw
+# 2026-11-20, k 0.6) quality -0.35%, J -1.60; L3 (108 clips) J -2.20%
+# [-2.63, -1.91] BETTER; final-check (33 clips, 600 f) quality -0.51%
+# [-0.84, -0.08] BETTER, no guard.
+nonbase.vp9.intra_mode_estimate = 1
+nonbase.vp9.inter_intra_dc_only = 1
 # Pinned before VP9 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
 # Pinned before VP9 Default's key still boost (2026-11-14).
@@ -108,3 +115,5 @@ effort.light_nonbase_only = 1
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# Not screened with the Default's coded-cost key intra modes (2026-11-19).
+vp9.intra_rd_candidates = 1

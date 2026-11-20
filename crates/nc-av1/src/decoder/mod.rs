@@ -71,6 +71,7 @@ mod mv_stack;
 mod obu;
 mod restoration;
 mod sequence;
+mod strided;
 mod subset;
 #[cfg(test)]
 mod tests;

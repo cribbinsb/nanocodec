@@ -97,8 +97,28 @@ def test_speed_captions_name_the_release_build(tmp_path, monkeypatch):
     record = {"points": {"nanocodec-av1": {"build": "1a2b3c4d"},
                          "nanocodec-h264": {"build": "1a2b3c4d"},
                          "nanocodec-vp9": {"build": "0f0f0f0f"}}}
-    assert site.timed_builds(record) == ("release 0.3.0, PGO build (1a2b3c4d) "
-                                         "(0f0f0f0f for 1)")
+    assert site.timed_builds(record) == "release 0.3.0, PGO build (1a2b3c4d); 0f0f0f0f for 1"
+
+
+def test_build_labels_name_the_crate_version():
+    """A release commit is named by its release; any other known commit as a development
+    build with the crate version it carries; an unknown one by its name alone."""
+    assert site.build_label("b33ba3bb") == "release 0.3.0 (b33ba3bb)"
+    assert site.build_label("b33ba3bb", "PGO") == "release 0.3.0, PGO build (b33ba3bb)"
+    assert site.build_label("d007869b", "plain") == ("development build d007869b, plain "
+                                                     "(crate version 0.1.0)")
+    assert site.build_label("0f0f0f0f") == "0f0f0f0f"
+
+
+def test_every_measurement_names_its_build(tmp_path, monkeypatch):
+    """The site check fails for a data file, or a chart view, with no 'measured on' record."""
+    files = {site.SITE_DATA / "svc.json": json.dumps({"rows": []}),
+             site.SITE_DATA / "chart.json": json.dumps({"views": [{"id": "dev-psnr"}]}),
+             site.SITE_DATA / "clips.json": json.dumps({}),
+             site.SITE_DATA / "hardware.json": json.dumps(
+                 {"measured": {"caption": "x", "builds": [], "reference_only": "NVENC"}})}
+    problems = site.provenance_problems(files)
+    assert [p.split(":")[0] for p in problems] == ["svc.json", "chart.json view dev-psnr"]
 
 
 def test_outside_datasets_carry_their_credit_and_licence():

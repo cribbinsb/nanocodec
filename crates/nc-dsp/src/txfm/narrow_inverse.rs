@@ -172,6 +172,14 @@ pub(crate) trait NarrowLanes: InverseLanes {
     fn round_shift<const SHIFT: u32>(self) -> Self;
     /// The 8x8 transpose of eight rows, in each lane group independently.
     fn transpose(rows: [Self; GROUP]) -> [Self; GROUP];
+    /// On sixteen lanes: `(low, high)` with `low` the first lane groups of
+    /// `first` and `second`, `high` their second groups (dav1d's
+    /// `vperm2i128` pairs completing a 16x16 transpose). Only sixteen-lane
+    /// types are asked.
+    fn join_groups(first: Self, second: Self) -> (Self, Self) {
+        let _ = (first, second);
+        unreachable!("only sixteen-lane types join lane groups")
+    }
     /// Add the residual `self` to the first `LANES` pixels with 8-bit
     /// clipping.
     fn add_to_pixels(self, pixels: &mut [u8]);
@@ -371,6 +379,12 @@ fn inverse_for_pixel<
     let coded_h = H.min(CODED_MAX);
     assert!(V::LANES <= W && V::LANES <= H && V::LANES <= MAX_LANES);
     assert!(inverse.rows <= coded_h && inverse.columns <= W.min(CODED_MAX));
+    if W == V::LANES
+        && H == V::LANES
+        && inverse_in_registers::<V, C, S, W, H>(inverse, coeffs, dst, stride, max_val)
+    {
+        return;
+    }
     // Row transforms' outputs, row-major: `rows[r * W + c]`. Coefficient rows
     // from `inverse.rows` on are zero and transform to zero: whole batches
     // of them are skipped, and the column pass treats them as zero inputs.
@@ -399,6 +413,60 @@ fn inverse_for_pixel<
     for c0 in (0..W).step_by(V::LANES) {
         column_batch::<V, S, W, H>(inverse.vertical, rows, live_rows, c0, dst, stride, max_val);
     }
+}
+
+/// [`inverse_for_pixel`] of a square of one batch side (8x8 on eight
+/// lanes, 16x16 on sixteen) with the whole block in registers, as dav1d's
+/// 8x8 and 16x16 inverses: one row batch, a register transpose, one column
+/// batch (no row buffer, and every extent a constant). Returns `false`,
+/// having written nothing, when the column inputs exceed the guard; the
+/// caller then runs the general driver.
+#[inline(always)]
+fn inverse_in_registers<
+    V: NarrowLanes,
+    C: NarrowCoefficient,
+    S: NarrowPixel,
+    const W: usize,
+    const H: usize,
+>(
+    inverse: Inverse,
+    coeffs: &[C],
+    dst: &mut [S],
+    stride: usize,
+    max_val: i32,
+) -> bool {
+    let rows = row_batch::<V, C, S, W, H>(inverse, coeffs, 0);
+    let mut columns = [V::splat(0); H];
+    let tile = |k0: usize| -> [V; GROUP] {
+        V::transpose(rows[k0..k0 + GROUP].try_into().expect("eight columns"))
+    };
+    if V::LANES == GROUP {
+        columns[..GROUP].copy_from_slice(&tile(0));
+    } else {
+        // Tile `k` holds rows i (low group) and 8 + i (high group) of
+        // columns 8k..8k + 8 in its vector i.
+        let (left, right) = (tile(0), tile(GROUP));
+        for i in 0..GROUP {
+            (columns[i], columns[GROUP + i]) = V::join_groups(left[i], right[i]);
+        }
+    }
+    let mut norm = V::norm_zero();
+    for v in &columns {
+        norm = v.accumulate_l1(norm);
+    }
+    if !V::within_limit(norm, l1_limit(inverse.vertical, H)) {
+        return false;
+    }
+    let mut y = [V::splat(0); H];
+    transform(inverse.vertical, &columns, &mut y, H);
+    for (r, value) in y.iter().enumerate() {
+        S::add_narrow(
+            value.round_shift::<COLUMN_SHIFT>(),
+            &mut dst[r * stride..][..V::LANES],
+            max_val,
+        );
+    }
+    true
 }
 
 /// Inverse `W`x`H` transform of the column-major coefficients

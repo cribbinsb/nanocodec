@@ -256,7 +256,7 @@ pub(crate) const LOOKUP_TABLE: usize = 257;
 /// Entries of an [`I16Lanes::lookup_u12`] table: 4096 and one of padding.
 pub(crate) const HIGH_LOOKUP_TABLE: usize = 4097;
 /// Lanes of the widest [`I16Lanes`] vector (AVX-512).
-const MAX_I16_LANES: usize = 32;
+pub(crate) const MAX_I16_LANES: usize = 32;
 
 pub(crate) trait I16Lanes: Copy {
     /// Lanes per vector.
@@ -497,6 +497,23 @@ pub(crate) trait I16Lanes: Copy {
         Self::load_u8(a)
             .mul(Self::splat(i16::from(wa)))
             .add(Self::load_u8(b).mul(Self::splat(i16::from(wb))))
+    }
+    /// `src[2i] + src[2i + 1]` over the first `2 · LANES` bytes of `src`:
+    /// the horizontal pair sums that halve a row of a mask or plane. x86
+    /// computes it with one `pmaddubsw` against ones, NEON with `uaddlp`,
+    /// SIMD128 with a pairwise extending add; the default widens each pair.
+    #[allow(
+        clippy::inline_always,
+        reason = "lane operations must inline into the kernels"
+    )]
+    #[inline(always)]
+    fn pair_sum_u8(src: &[u8]) -> Self {
+        let mut lanes = [0i16; MAX_I16_LANES];
+        let (pairs, _) = src[..2 * Self::LANES].as_chunks::<2>();
+        for (lane, &[a, b]) in lanes.iter_mut().zip(pairs) {
+            *lane = i16::from(a) + i16::from(b);
+        }
+        Self::load(&lanes)
     }
     /// Lane-wise signed minimum.
     fn min(self, other: Self) -> Self;

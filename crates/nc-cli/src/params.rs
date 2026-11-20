@@ -276,17 +276,23 @@ mod tests {
         expected.set("chroma.policy", 0.0);
         // Fast's P-frame deadzone (L3 2026-11-11: J -2.2 %, faster).
         expected.set("av1.inter_rounding_q7", 41.0);
-        // Fast's key frames are DC-only, as SVT M12 (L3 2026-11-13).
+        // Fast's key frames rank DC, smooth, Paeth, V and H by SATD and a
+        // modelled RD instead of the full search (DC-only from 2026-11-13,
+        // the cheap ranking by owner decision 2026-11-19).
         expected.set("av1.keyframe_intra_modes", 0.0);
-        // Fast keeps budget-only debt correction when the Default adopted the
-        // key-period ceiling (2026-11-14).
-        expected.set("rate.period_ceiling", 0.0);
+        expected.set("av1.keyframe_satd_modes", 4.0);
+        expected.set("av1.keyframe_model_candidates", 7.0);
+        expected.set("av1.keyframe_intra_rd_candidates", 1.0);
+        expected.set("av1.keyframe_flat_gate", 150.0);
+        expected.set("av1.keyframe_flat_gate_size_scale", 3.0);
+        // Fast takes the Default's rate set (key-period ceiling, key still
+        // boost 6, still-level damping) since the ladder spacing (2026-11-20).
+        expected.set("rate.period_ceiling", 1.0);
+        expected.set("rate.key_still_boost", 6.0);
+        expected.set("rate.still_level_damping", 0.5);
         // Fast keeps a single reference when the Default adopted the unified
         // structure's reference plan (2026-11-14).
         expected.set("structure.unified", 0.0);
-        // Fast keeps its keys' budget sizing when the Default adopted the
-        // key still boost (2026-11-14).
-        expected.set("rate.key_still_boost", 0.0);
         // Fast keeps its fixed-QP key when the Default adopted the coarser
         // key under camera motion (2026-11-19).
         expected.set("rate.fixed_qp_moving_key", 0.0);

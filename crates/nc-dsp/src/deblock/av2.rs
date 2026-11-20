@@ -391,6 +391,15 @@ pub(crate) struct Av2Segments {
     pub max_pos: [i16; AV2_DECIDE_SEGMENTS],
 }
 
+/// A segment [`Av2Segments`] leaves alone: zero thresholds, and lengths
+/// that modify no sample.
+const LEFT_ALONE: Av2EdgeFilter = Av2EdgeFilter {
+    length_neg: 0,
+    length_pos: 0,
+    q_threshold: 0,
+    side_threshold: 0,
+};
+
 impl Av2Segments {
     /// The chunk of `filters` (`None`: left alone) at `q0`, or `None` if a
     /// threshold exceeds the kernels' range.
@@ -409,18 +418,26 @@ impl Av2Segments {
             max_neg: [0; AV2_DECIDE_SEGMENTS],
             max_pos: [0; AV2_DECIDE_SEGMENTS],
         };
+        // Branch-free per segment: a segment left alone reads as zero
+        // thresholds and lengths (no samples), and one range test covers
+        // the chunk (AV2 decode -0.10 % instructions, 2026-11-20). Storing
+        // the filters in this layout up front (an `i16` table per field,
+        // as the AV1 lane layout's entries) was exact but +2.6 % decode
+        // instructions: filling and clearing four tables per edge line
+        // cost more than this per-chunk copy (branch
+        // `av2-deblock-table-experiment`).
+        let mut out_of_range = false;
         for (s, filter) in filters.iter().enumerate() {
-            let Some(filter) = filter else { continue };
-            if filter.q_threshold > AV2_CHUNK_MAX_Q || filter.side_threshold > AV2_CHUNK_MAX_SIDE {
-                return None;
-            }
-            // In range: thresholds checked above, lengths are bytes.
+            let filter = filter.unwrap_or(LEFT_ALONE);
+            out_of_range |=
+                filter.q_threshold > AV2_CHUNK_MAX_Q || filter.side_threshold > AV2_CHUNK_MAX_SIDE;
+            // In range once checked; lengths are bytes.
             segments.q[s] = filter.q_threshold as i16;
             segments.side[s] = filter.side_threshold as i16;
             segments.max_neg[s] = max_samples(filter.length_neg) as i16;
             segments.max_pos[s] = max_samples(filter.length_pos) as i16;
         }
-        Some(segments)
+        (!out_of_range).then_some(segments)
     }
 
     /// The limits of segment `s`.

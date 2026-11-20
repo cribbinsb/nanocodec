@@ -2,6 +2,12 @@
  "source": [
   "docs/results/bd-vs-speed-hardware.csv"
  ],
+ "measured": {
+  "date": "2026-11-12",
+  "builds": [],
+  "reference_only": "NVENC hardware encoders only",
+  "caption": "Measured 2026-11-12 with no build of ours (NVENC hardware encoders only). NVIDIA GeForce RTX 5090 NVENC, driver 610.57.04, ffmpeg 7.1.1. References: zero line x264 medium (0.165) on the development clips."
+ },
  "rows": [
   {
    "family": "nvenc-h264",

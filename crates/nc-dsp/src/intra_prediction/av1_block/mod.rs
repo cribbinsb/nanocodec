@@ -7,11 +7,16 @@
 //!
 //! [`BlockEdges::read`] forms `AboveRow` and `LeftCol` from the picture and
 //! the availability the block layer derives (§7.11.2); [`BlockEdges::predict`]
-//! fills the block. The edges are stored in the encoder's square
+//! fills the block. A decoder forms them in place with
+//! [`BlockEdges::read_into`], only the samples the block's prediction reads
+//! ([`EdgeNeeds`], as dav1d's `prepare_intra_edges`). The edges are stored in the encoder's square
 //! [`IntraEdges`], so a square block whose prediction the square kernels
 //! cover (every non-directional mode, and directional modes when
 //! `enable_intra_edge_filter` is 0, as in our own streams) runs exactly those
-//! kernels on it, without a copy. Every other case runs the scalar code here.
+//! kernels on it, without a copy. Directional blocks up to 16x16 with
+//! prepared (filtered or upsampled) edges go to a whole-block kernel where
+//! the ISA has one (`directional::ZoneBlock`); every other case runs
+//! the scalar code here.
 //!
 //! Edge processing, zones and the rectangular predictors follow libaom
 //! `av1/common/reconintra.c` and `aom_dsp/intrapred.c` (BSD-2-Clause,
@@ -20,6 +25,10 @@
 pub mod cfl;
 mod directional;
 mod edge;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) use directional::{ZONE_TABLE, ZONE2_MARGIN, Zone};
+pub(crate) use directional::{ZoneBlock, ZoneKernel};
 
 use nc_common::{BitDepth, Plane, PlaneViewMut, Sample};
 
@@ -62,6 +71,67 @@ impl EdgeFilterCtx {
     }
 }
 
+/// How many samples of each edge a prediction reads, so that
+/// [`BlockEdges::read_for`] forms only those (dav1d `prepare_intra_edges`
+/// and its `av1_intra_prediction_edges` table: reading the column left of
+/// a block is a strided gather, the larger part of forming the edges).
+/// The corner is always formed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeNeeds {
+    /// Samples of `AboveRow[0..]`.
+    pub above: usize,
+    /// Samples of `LeftCol[0..]`.
+    pub left: usize,
+}
+
+impl EdgeNeeds {
+    /// The samples `kind` reads on a `width`x`height` block (§7.11.2):
+    /// DC, smooth and Paeth read the block's own sides; directional angles
+    /// below 90 the above row and its right extension (`w + h`, filtered
+    /// and upsampled within it), above 180 the left column and its
+    /// extension, zone 2 the block's own sides (its edge filter reads
+    /// `numPx = Min(w, maxX - x + 1) + 1` samples, corner included).
+    #[must_use]
+    pub const fn of(kind: IntraKind, (width, height): (usize, usize)) -> Self {
+        let span = width + height;
+        match kind {
+            IntraKind::Directional { angle, .. } if angle < directional::VERTICAL => Self {
+                above: span,
+                left: 0,
+            },
+            IntraKind::Directional {
+                angle: directional::VERTICAL,
+                ..
+            } => Self {
+                above: width,
+                left: 0,
+            },
+            IntraKind::Directional {
+                angle: directional::HORIZONTAL,
+                ..
+            } => Self {
+                above: 0,
+                left: height,
+            },
+            IntraKind::Directional { angle, .. } if angle > directional::HORIZONTAL => Self {
+                above: 0,
+                left: span,
+            },
+            _ => Self::sides((width, height)),
+        }
+    }
+
+    /// The block's own sides: DC, smooth, Paeth, zone 2 and filter intra
+    /// (§7.11.2.3 reads `AboveRow[-1..w]` and `LeftCol[-1..h]`).
+    #[must_use]
+    pub const fn sides((width, height): (usize, usize)) -> Self {
+        Self {
+            above: width,
+            left: height,
+        }
+    }
+}
+
 /// An intra prediction of one transform block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntraKind {
@@ -88,6 +158,8 @@ pub enum IntraKind {
 
 /// Largest coded side of an intra transform block.
 const MAX_SIDE: usize = MAX_INTRA_SIZE;
+/// Smallest side of an intra transform block.
+const MIN_SIDE: usize = 4;
 /// Longest edge that is upsampled (§7.11.2.10 allows `w + h <= 16`).
 const MAX_UPSAMPLE: usize = 16;
 
@@ -120,6 +192,9 @@ impl<T: Sample> BlockEdges<T> {
     /// (the plane is the `MiCols` / `MiRows` area, so `maxX` / `maxY` are
     /// its last column and row). `depth` is the plane's bit depth.
     ///
+    /// Every sample any prediction may read is formed (`w + h` of each
+    /// edge); [`Self::read_for`] forms only those one prediction reads.
+    ///
     /// # Panics
     ///
     /// If a side is not 4, 8, 16, 32 or 64, the aspect ratio exceeds 4:1,
@@ -128,11 +203,78 @@ impl<T: Sample> BlockEdges<T> {
     #[must_use]
     pub fn read(
         plane: &Plane<T>,
+        origin: (usize, usize),
+        size: (usize, usize),
+        avail: EdgeAvail,
+        depth: BitDepth,
+    ) -> Self {
+        let span = size.0 + size.1;
+        let need = EdgeNeeds {
+            above: span,
+            left: span,
+        };
+        Self::read_for(plane, origin, size, avail, depth, need)
+    }
+
+    /// [`Self::read`] forming only the edge samples `need` names (see
+    /// [`EdgeNeeds`]); the others are left unset, so `self` then serves
+    /// only the predictions `need` was derived for.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::read`].
+    #[must_use]
+    pub fn read_for(
+        plane: &Plane<T>,
+        origin: (usize, usize),
+        size: (usize, usize),
+        avail: EdgeAvail,
+        depth: BitDepth,
+        need: EdgeNeeds,
+    ) -> Self {
+        let mut edges = Self::empty(depth);
+        edges.read_into(plane, origin, size, avail, depth, need);
+        edges
+    }
+
+    /// Edges of no block yet, for [`Self::read_into`] to fill.
+    #[must_use]
+    pub fn empty(depth: BitDepth) -> Self {
+        let (base, ..) = no_neighbour_values::<T>(depth);
+        Self {
+            square: IntraEdges {
+                above: [base; EDGE_LEN],
+                left: [base; EDGE_LEN],
+                corner: base,
+                dc: base,
+                size: MIN_SIDE,
+            },
+            depth,
+            width: MIN_SIDE,
+            height: MIN_SIDE,
+            avail: EdgeAvail::default(),
+            above_inside: 0,
+            left_inside: 0,
+        }
+    }
+
+    /// [`Self::read_for`] into `self`, in place: a decoder keeps one
+    /// `BlockEdges` for every block, so the edges are neither zeroed nor
+    /// moved per block (samples beyond `need` keep an earlier block's
+    /// values, which the predictions `need` serves never read).
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::read`].
+    pub fn read_into(
+        &mut self,
+        plane: &Plane<T>,
         (x, y): (usize, usize),
         (width, height): (usize, usize),
         avail: EdgeAvail,
         depth: BitDepth,
-    ) -> Self {
+        need: EdgeNeeds,
+    ) {
         assert!(
             is_side(width) && is_side(height),
             "intra block {width}x{height}"
@@ -147,70 +289,78 @@ impl<T: Sample> BlockEdges<T> {
             "intra block origin outside the plane"
         );
         let (max_x, max_y) = (view.width() - 1, view.height() - 1);
-        let span = width + height;
+        let (above_n, left_n) = (need.above, need.left);
+        debug_assert!(above_n <= width + height && left_n <= width + height);
         let (base, above_default, left_default) = no_neighbour_values::<T>(depth);
-        let mut square = IntraEdges {
-            above: [T::default(); EDGE_LEN],
-            left: [T::default(); EDGE_LEN],
-            corner: base,
-            dc: base,
-            size: width,
-        };
-        if avail.have_above {
-            let row = view.row(y - 1);
-            let reach = if avail.have_above_right {
-                2 * width
+        // Samples are indexed in the view's data directly (`at`), not
+        // through per-row views: their checks were most of this function's
+        // instructions (callgrind, 2026-11-20).
+        let (data, stride) = (view.data(), view.stride());
+        let at = |column: usize, row: usize| data[row * stride + column];
+        let square = &mut self.square;
+        if above_n > 0 {
+            if avail.have_above {
+                let reach = if avail.have_above_right {
+                    2 * width
+                } else {
+                    width
+                };
+                let limit = (x + reach - 1).min(max_x);
+                // Samples x..=limit, then the last of them repeated (§7.11.2:
+                // reads clamp to `limit`); copied whole rather than per sample.
+                let inside = (limit + 1 - x).min(above_n);
+                let row = (y - 1) * stride;
+                square.above[..inside].copy_from_slice(&data[row + x..row + x + inside]);
+                // Mostly empty (blocks inside the picture): a `memset` call
+                // per block otherwise.
+                if inside < above_n {
+                    square.above[inside..above_n].fill(data[row + limit]);
+                }
+            } else if avail.have_left {
+                square.above[..above_n].fill(at(x - 1, y));
             } else {
-                width
-            };
-            let limit = (x + reach - 1).min(max_x);
-            // Samples x..=limit, then the last of them repeated (§7.11.2:
-            // reads clamp to `limit`); copied whole rather than per sample.
-            let inside = (limit + 1 - x).min(span);
-            square.above[..inside].copy_from_slice(&row[x..x + inside]);
-            square.above[inside..span].fill(row[limit]);
-        } else if avail.have_left {
-            square.above[..span].fill(view.row(y)[x - 1]);
-        } else {
-            square.above[..span].fill(above_default);
-        }
-        if avail.have_left {
-            let reach = if avail.have_below_left {
-                2 * height
-            } else {
-                height
-            };
-            let limit = (y + reach - 1).min(max_y);
-            // Rows y..=limit of column x - 1, then the last repeated; the
-            // column is walked by stride, not row by row.
-            let inside = (limit + 1 - y).min(span);
-            let stride = view.stride();
-            let first = y * stride + (x - 1);
-            let col_slice = &view.data()[first..=(first + (inside - 1) * stride)];
-            for (r, sample) in square.left[..inside].iter_mut().enumerate() {
-                *sample = col_slice[r * stride];
+                square.above[..above_n].fill(above_default);
             }
-            square.left[inside..span].fill(view.row(limit)[x - 1]);
-        } else if avail.have_above {
-            square.left[..span].fill(view.row(y - 1)[x]);
-        } else {
-            square.left[..span].fill(left_default);
+        }
+        if left_n > 0 {
+            if avail.have_left {
+                let reach = if avail.have_below_left {
+                    2 * height
+                } else {
+                    height
+                };
+                let limit = (y + reach - 1).min(max_y);
+                // Rows y..=limit of column x - 1, then the last repeated; the
+                // column is walked one stride-long chunk per sample.
+                let inside = (limit + 1 - y).min(left_n);
+                let first = y * stride + (x - 1);
+                let column = data[first..=first + (inside - 1) * stride].chunks(stride);
+                for (sample, chunk) in square.left[..inside].iter_mut().zip(column) {
+                    *sample = chunk[0];
+                }
+                if inside < left_n {
+                    square.left[inside..left_n].fill(at(x - 1, limit));
+                }
+            } else if avail.have_above {
+                square.left[..left_n].fill(at(x, y - 1));
+            } else {
+                square.left[..left_n].fill(left_default);
+            }
         }
         square.corner = match (avail.have_above, avail.have_left) {
-            (true, true) => view.row(y - 1)[x - 1],
-            (true, false) => view.row(y - 1)[x],
-            (false, true) => view.row(y)[x - 1],
+            (true, true) => at(x - 1, y - 1),
+            (true, false) => at(x, y - 1),
+            (false, true) => at(x - 1, y),
             (false, false) => base,
         };
-        Self {
-            square,
-            depth,
-            width,
-            height,
-            avail,
-            above_inside: width.min(max_x + 1 - x),
-            left_inside: height.min(max_y + 1 - y),
-        }
+        square.dc = base;
+        square.size = width;
+        self.depth = depth;
+        self.width = width;
+        self.height = height;
+        self.avail = avail;
+        self.above_inside = width.min(max_x + 1 - x);
+        self.left_inside = height.min(max_y + 1 - y);
     }
 
     /// The block's DC prediction value (§7.11.2.5).
@@ -258,6 +408,7 @@ impl<T: Sample> BlockEdges<T> {
             Self::paeth_scalar,
             Self::smooth,
             crate::intra_prediction::directional::interpolate_run,
+            None,
             kind,
             dst,
         );
@@ -274,13 +425,15 @@ impl<T: Sample> BlockEdges<T> {
     }
 
     /// [`Self::predict_with`] with custom rectangular Paeth, Smooth, and
-    /// directional run kernels.
+    /// directional run kernels, and the whole-block directional kernel
+    /// `zones` if this ISA has one.
     pub(crate) fn predict_full(
         &self,
         square: impl FnOnce(&IntraEdges<T>, Square, &mut PlaneViewMut<'_, T>),
         rect_paeth: impl FnOnce(&Self, &mut PlaneViewMut<'_, T>),
         rect_smooth: impl FnOnce(&Self, IntraKind, &mut PlaneViewMut<'_, T>),
         rect_run: impl Fn(&[T], usize, &mut [T]),
+        zones: Option<ZoneKernel<'_, T>>,
         kind: IntraKind,
         dst: &mut PlaneViewMut<'_, T>,
     ) {
@@ -318,7 +471,7 @@ impl<T: Sample> BlockEdges<T> {
                 rect_smooth(self, kind, dst);
             }
             IntraKind::Directional { angle, edge_filter } => {
-                directional::predict_with_run(self, angle, edge_filter, dst, rect_run);
+                directional::predict_with_run(self, angle, edge_filter, dst, rect_run, zones);
             }
         }
     }

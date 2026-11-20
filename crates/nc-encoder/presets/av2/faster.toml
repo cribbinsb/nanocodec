@@ -26,15 +26,12 @@ av2.inter_rounding_q7 = 32
 nonbase.av2.lambda_per_step_squared = 0.135
 rate.cadence_scale = 0.7
 light.planner.lambda_scale = 2
-rate.period_ceiling = 0
-rate.key_still_boost = 0
 rate.fixed_qp_profile = 0
 structure.inherited_depth = 0
 nonbase.av2.parity_hiding = 0
 light.planner.depth_removal_th_32_16 = 25
 light.planner.depth_removal_th_16_8 = 50
 structure.unified = 0
-rate.prekey_quiet = 0
 av2.lambda_per_step_squared = 0.125
 av2.parity_hiding = 1
 av2.pre_tx_skip = 0
@@ -79,6 +76,23 @@ nonbase.av2.pre_tx_skip_energy = 100
 # cheaper key intra search (one RD candidate, no angle deltas) was left out:
 # it lowered periodic keys by 1.9 dB on static content.
 planner.intra_min_log2 = 4
+# Key-frame luma modes by the engine's cheap-intra recipe (cheap-intra,
+# 2026-11-19; docs/handoff/vp9-av2.md "Cheap intra beyond AV1 keys"): the
+# core set (DC, smooth, vertical, horizontal) plus the neighbours' modes,
+# ranked by modelled transform cost, one RD candidate; blocks DC predicts
+# within 150 squared error per sample (x3 per size doubling) keep DC
+# unranked. Key x86 instructions (fixed QP 160, 720p) -20..-31 %; CBR 600
+# with keys every 2 s, whole encode -4.6 %. Re-screened on 612fda158's rate
+# control (keys match the held quality on still pictures): pool (draw
+# 2026-11-19, k 0.6, dCPU -4.61) L3 J -2.50 % [-2.70, -2.29] BETTER (n 108),
+# quality +0.27 %; final-check (600 f, keys every 10 s) quality +0.37 %
+# [+0.16, +0.57], pulse +0.51 / long +0.82 dB from finer P frames; later keys
+# -0.55 dB at most on the clips that lost 1.4-2.7 dB before the fix, -0.98 dB
+# on chirla_seq_024 at 60 kbps (whole clip +0.13 dB PSNR-Y).
+av2.intra_modes = 4
+av2.intra_rd_candidates = 1
+av2.intra_flat_gate = 150
+av2.intra_flat_gate_size_scale = 3
 
 # Mode-decision trials price coefficient levels with the fitted model instead
 # of the context walk (av2-cheap-rate, 2026-11-18; coeff::rate_model, VAL error
@@ -93,3 +107,19 @@ av2.coeff_rate_model = 1
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# The Default's rate set (2026-11-20 ladder spacing, as AV2 Fast): the quiet
+# second before a key, key-period ceiling, key still boost 6 and still-level
+# damping. Pool L1 (draw 2026-11-20, k 0.6) quality -1.71%, x86 instructions
+# 0.0%; L3 (108 clips) J -2.87% [-3.40, -1.66]; final-check (33 clips, 600 f)
+# quality -1.19% [-1.84, -0.83]; its pulse guards trip on
+# external_uvg_volleyball_720p (the key still boost's finer 2 s keys, as in
+# the Default), adopted on judgement. With it, the cheapest speed levers did
+# not hold in the final-check (pre-analysis SADs / even rows and the window
+# exit: lowlight class +4.1%; pre-transform skip on every frame and three key
+# chroma candidates: quality neutral for -2.3%), and the rest trade about 1:1
+# (docs/handoff/presets.md "Ladder spacing"): Faster stays this close to Fast
+# in speed until code makes it faster.
+rate.prekey_quiet = 1
+rate.period_ceiling = 1
+rate.key_still_boost = 6
+rate.still_level_damping = 0.5

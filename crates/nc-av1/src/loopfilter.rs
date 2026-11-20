@@ -1,7 +1,7 @@
 //! AV1 loop filter (deblocking, AV1 §7.14): which edges of the frame are
 //! filtered, with which length and thresholds, and the frame-header syntax
-//! (`loop_filter_params()`, §5.9.11). The per-line filters are nc-dsp's
-//! [`Dsp::av1_loop_filter_edge`].
+//! (`loop_filter_params()`, §5.9.11). The filters are nc-dsp's
+//! [`Dsp::av1_loop_filter_runs`], one call per plane and direction.
 //!
 //! In our subset every transform covers its whole block (`TX_MODE_LARGEST`,
 //! square blocks of 8x8 and up), so every transform edge is a block edge
@@ -17,7 +17,7 @@
 //! as the readable reference.
 
 use nc_common::{BitWriter, Picture, PlaneIndex};
-use nc_dsp::{AV1_EDGE_LINES, Av1EdgeFilter, Av1FilterLength, Dsp};
+use nc_dsp::{AV1_EDGE_LINES, Av1EdgeFilter, Av1FilterLength, Dsp, EdgeRun, LoopFilterLanes};
 
 use crate::modeinfo::{MI_LOG2, ModeInfo, ModeInfoGrid};
 
@@ -125,6 +125,14 @@ pub fn level_from_q(ac_q: i32, key: bool) -> u8 {
     level.clamp(0, i64::from(MAX_LOOP_FILTER)) as u8
 }
 
+/// The loop filter's buffers, kept between frames: one pass's edge runs
+/// and the lane kernels' table.
+#[derive(Debug, Default)]
+pub struct FilterScratch {
+    runs: Vec<EdgeRun<Av1EdgeFilter>>,
+    lanes: LoopFilterLanes,
+}
+
 /// Filter `recon` in place. `width` x `height` is the frame size: edges
 /// at or beyond it are not filtered.
 pub fn apply(
@@ -132,8 +140,8 @@ pub fn apply(
     recon: &mut Picture,
     grid: &ModeInfoGrid,
     params: LoopFilterParams,
-    width: usize,
-    height: usize,
+    (width, height): (usize, usize),
+    scratch: &mut FilterScratch,
 ) {
     if !params.is_on() {
         return;
@@ -161,6 +169,7 @@ pub fn apply(
                 vertical,
                 starts,
                 (width, height),
+                scratch,
             );
         }
     }
@@ -192,8 +201,9 @@ fn transform_starts(
 }
 
 /// One pass (all vertical or all horizontal edges) over one plane: the
-/// left (top) side of every transform in `starts`, filtered whole, in runs
-/// of equal filter length, which lets the kernel process many lines at once.
+/// left (top) side of every transform in `starts`, in runs of equal filter
+/// length, filtered together (edges of one pass do not interact, §7.14.1)
+/// so the kernel shares vectors between them.
 fn filter_plane_edges(
     dsp: &Dsp,
     recon: &mut Picture,
@@ -203,6 +213,7 @@ fn filter_plane_edges(
     vertical: bool,
     starts: &[(usize, usize, usize)],
     (width, height): (usize, usize),
+    scratch: &mut FilterScratch,
 ) {
     let ss = usize::from(plane != PlaneIndex::Y);
     let (plane_width, plane_height) = ((width + ss) >> ss, (height + ss) >> ss);
@@ -210,7 +221,8 @@ fn filter_plane_edges(
     if level == 0 {
         return;
     }
-    let mut view = recon.plane_mut(plane).view_mut();
+    let mut view = recon.plane_mut(plane).view_mut_to_end();
+    scratch.runs.clear();
     for &(x, y, side) in starts {
         let on_edge = if vertical { x > 0 } else { y > 0 };
         if !on_edge {
@@ -236,16 +248,16 @@ fn filter_plane_edges(
             } else {
                 (run_start, y)
             };
-            dsp.av1_loop_filter_edge(
-                &mut view,
-                origin,
-                vertical,
-                (run_end - run_start).next_multiple_of(EDGE_STEP),
-                params.thresholds(level, length),
-            );
+            scratch.runs.push(EdgeRun {
+                x: origin.0,
+                y: origin.1,
+                lines: (run_end - run_start).next_multiple_of(EDGE_STEP),
+                filter: params.thresholds(level, length),
+            });
         };
         for_each_run(start..end, side, plane, previous_side, &mut filter_run);
     }
+    dsp.av1_loop_filter_runs(&mut view, vertical, &scratch.runs, &mut scratch.lanes);
 }
 
 /// Call `filter_run(start, end, length)` for each run of equal filter

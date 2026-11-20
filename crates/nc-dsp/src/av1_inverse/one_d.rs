@@ -137,17 +137,20 @@ pub(crate) fn iadst8<V: InverseLanes>(
     cospi: &[i32; 64],
     bit: u32,
 ) {
+    // The rotations are written out, not looped over their angles: a loop
+    // was compiled with its weights (and `half_btf`'s weight tests) at run
+    // time and `x` on the stack.
     let mut x = permute_input(input);
-    for (k, angle) in [4, 20, 36, 52].into_iter().enumerate() {
-        rotate(&mut x, 2 * k, angle, cospi, bit);
-    }
+    rotate(&mut x, 0, 4, cospi, bit);
+    rotate(&mut x, 2, 20, cospi, bit);
+    rotate(&mut x, 4, 36, cospi, bit);
+    rotate(&mut x, 6, 52, cospi, bit);
     butterflies(&mut x, 8);
     rotate(&mut x, 4, 16, cospi, bit);
     rotate_mirrored(&mut x, 6, 16, cospi, bit);
     butterflies(&mut x, 4);
-    for i in [2, 6] {
-        rotate(&mut x, i, QUARTER_PI, cospi, bit);
-    }
+    rotate(&mut x, 2, QUARTER_PI, cospi, bit);
+    rotate(&mut x, 6, QUARTER_PI, cospi, bit);
     permute_output(&x, &ADST8_OUTPUT, output);
 }
 
@@ -159,24 +162,31 @@ pub(crate) fn iadst16<V: InverseLanes>(
     cospi: &[i32; 64],
     bit: u32,
 ) {
+    // Rotations written out, as in `iadst8`.
     let mut x = permute_input(input);
-    for (k, angle) in [2, 10, 18, 26, 34, 42, 50, 58].into_iter().enumerate() {
-        rotate(&mut x, 2 * k, angle, cospi, bit);
-    }
+    rotate(&mut x, 0, 2, cospi, bit);
+    rotate(&mut x, 2, 10, cospi, bit);
+    rotate(&mut x, 4, 18, cospi, bit);
+    rotate(&mut x, 6, 26, cospi, bit);
+    rotate(&mut x, 8, 34, cospi, bit);
+    rotate(&mut x, 10, 42, cospi, bit);
+    rotate(&mut x, 12, 50, cospi, bit);
+    rotate(&mut x, 14, 58, cospi, bit);
     butterflies(&mut x, 16);
     rotate(&mut x, 8, 8, cospi, bit);
     rotate(&mut x, 10, 40, cospi, bit);
     rotate_mirrored(&mut x, 12, 8, cospi, bit);
     rotate_mirrored(&mut x, 14, 40, cospi, bit);
     butterflies(&mut x, 8);
-    for i in [4, 12] {
-        rotate(&mut x, i, 16, cospi, bit);
-        rotate_mirrored(&mut x, i + 2, 16, cospi, bit);
-    }
+    rotate(&mut x, 4, 16, cospi, bit);
+    rotate_mirrored(&mut x, 6, 16, cospi, bit);
+    rotate(&mut x, 12, 16, cospi, bit);
+    rotate_mirrored(&mut x, 14, 16, cospi, bit);
     butterflies(&mut x, 4);
-    for i in [2, 6, 10, 14] {
-        rotate(&mut x, i, QUARTER_PI, cospi, bit);
-    }
+    rotate(&mut x, 2, QUARTER_PI, cospi, bit);
+    rotate(&mut x, 6, QUARTER_PI, cospi, bit);
+    rotate(&mut x, 10, QUARTER_PI, cospi, bit);
+    rotate(&mut x, 14, QUARTER_PI, cospi, bit);
     permute_output(&x, &ADST16_OUTPUT, output);
 }
 

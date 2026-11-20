@@ -46,6 +46,7 @@ import numpy as np
 
 from . import toolstats
 from .config import find_tool, load_paths
+from .framepipe import PSNR_CAP_DB
 
 # Inspection output flags: block size, tx size, mode, skip, MVs, delta-q,
 # accounting. Everything else stays off to keep the JSON small.
@@ -245,7 +246,7 @@ def per_frame_psnr(stream: Path, source: Path, width: int, height: int,
 
 def _psnr(a: np.ndarray, b: np.ndarray) -> float:
     mse = float(np.mean((a - b) ** 2))
-    return 100.0 if mse == 0 else min(100.0, 10 * np.log10(255.0 ** 2 / mse))
+    return PSNR_CAP_DB if mse == 0 else min(PSNR_CAP_DB, 10 * np.log10(255.0 ** 2 / mse))
 
 
 def analyse(stream: Path, source: Path | None = None, width: int = 0,

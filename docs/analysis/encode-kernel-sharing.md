@@ -164,8 +164,45 @@ crates, scalar.
 | HEVC/VVC separable (`SeparableTaps<N>`) | x86: `mc/av1_avx2.rs` `separable` with `av1_avx512` rows (shared with AV1); NEON eight-tap `av1_neon.rs` + `neon_dotprod.rs` (shared AV1/HEVC/VVC), four-tap `mc/generic.rs`; WASM `av1_simd128.rs` | S A2 A5 (shared, 32/64 wide, luma and chroma) N(+dot luma) W | AVX2: AV1's `vpshufb` + `vpmaddubsw` horizontal, `vpmaddwd` vertical, two rows per step at 4/8 wide; 4-tap chroma on two tap pairs | HEVC 8.6 / 9.5; VVC 5.2 / 5.3 | full taps (fit i8), unrounded first pass, `(v+2048)>>12`; HEVC = VVC at shared phases | **AVX2 merged** (2026-11-16) onto the AV1 kernel with a `Rounding` scheme (AV1: halved taps and its roundings; HEVC/VVC: full taps). **AVX-512 merged** (2026-11-16): the same passes on rows of 32 outputs in four 128-bit lanes (`av1_avx512`, `WidePasses`); the old 32-word-lane `generic::hevc` AVX-512 path is gone. **SIMD128 merged** (2026-11-16): `separable_simd128` folded into `av1_simd128` (rounding schemes shared in `mc/rounding.rs`); node on the box, min of two runs, new/base: HEVC luma vertical 0.74-0.90 (AV1's rolling row window), luma 2-D 0.97-1.04, luma horizontal 1.00-1.09, chroma 2-D 1.04-1.07, sum of the HEVC rows 0.97 (unchanged AV1 rows 0.97-1.04, the noise). **NEON merged** (2026-11-18): the dav1d signed-byte H/V/HV schedules serve AV1 regular/smooth/sharp/mixed, HEVC luma/prep and VVC normal/affine luma, parameterised by tables and rounding. Four-tap chroma remains generic. See [fractional MC handoff](../handoff/astra-neon-mc.md) for selected native measurements and validation |
 | AV1 compound average | `mc/generic.rs:323`, `avx512.rs:109` | S A2 A5 N W | i16 | small | `(p0+p1+16)>>5` | Keep; HEVC `hevc_bi` (decoder only) could share later |
 | H.264 luma/chroma | `mc/generic.rs:842-1283`, `neon_h264.rs` | S A2 A5(copy) N W | symmetric 6-tap, `j` in 32-bit, quarter-pel `avg` | H.264 1.7 / 2.1 | 6-tap + bilinear | Keep (structurally different) |
-| VP9 convolve | `vp9_mc.rs` (420), `vp9_mc_simd/` (1431) | S A2 (A5 inh.) N W (+relaxed dot) | **u8 intermediate**, `maddubs` both passes; NEON `vmull_u8` magnitude split | VP9 3.5 / 4.6 | VP9 tables (odd taps), round 7 and clip after each pass | Keep (different tables and rounding); port `sdot` row primitive to NEON |
+| VP9 convolve | `vp9_mc.rs`, `vp9_mc_simd/`, `mc` byte-dot rows | S A2 A5 (32-wide strips) N(+dot) W (+relaxed dot) | Shared byte-pair rows, **u8 intermediate** | VP9 3.5 / 4.6 | Full taps, round by 7 and clip after each pass | Share the input row arithmetic across all four ISAs. VP9 keeps its per-pass narrowing and byte intermediate |
 | AV1 scaled / VP9 scaled | `av1_mc/scaled/`, `vp9_mc_scaled.rs` | S A2 N W | per-sample phase | resized refs only | | Keep |
+
+### Shared byte-dot rows (2026-11-19)
+
+AV1, AV2, HEVC, VVC and VP9 use the overlapping source loads and packed
+tap-pair gather in `mc/avx2_byte_dot.rs`. In the wide AVX-512 tier VP9
+also uses the 32-output gather and sliding byte column in `mc/av1_avx512.rs`.
+VP9's 4- and 8-wide AVX2 rows pair two output rows in the same vector.
+VP9 uses signed SDOT sums from `mc/neon_dotprod.rs` for eight-tap
+horizontal filtering on capable AArch64 cores. Vertical VP9 consumes
+byte-clipped rows with widening products of each tap's magnitude.
+The scalar oracle and the plain NEON fallback cover those arithmetic
+and dispatch cases.
+
+The relaxed SIMD128 filters share the source window, pair masks, byte
+gather, vertical interleave and dot in `mc/simd128_byte_dot.rs`. A VP9
+phase can produce an unrounded sum outside signed 16 bits. Its two sign
+groups feed the saturating subtract and its intermediate clips to bytes.
+AV1, HEVC and VVC use their signed intermediate for the second pass.
+
+The whole-encode comparison used 30 public Johnny frames. AV1 and VP9
+used qindex 135, HEVC and VVC QP 36, all at Default. AV2 Faster was
+included at qindex 135 in the c8a check. Callgrind used the cached gate
+control at `f23b8614c` (AVX2). Zen 5 used four shuffled links each with
+four paired rounds. Jetson used five alternating pairs.
+
+| Preset | AVX2 callgrind instructions | Zen 5 instructions | Zen 5 cycles | Jetson instructions | Jetson cycles |
+|---|---:|---:|---:|---:|---:|
+| AV1 Default | +0.116% | +0.146% | +0.065% | +0.001% | +0.651% |
+| VP9 Default | +0.065% | +0.112% | +0.149% | −0.136% | +1.179% |
+| HEVC Default | +0.042% | +0.069% | +0.087% | −0.186% | −0.035% |
+| VVC Default | +0.064% | +0.076% | +0.290% | −0.078% | +0.396% |
+| AV2 Faster | | +0.047% | −0.051% | | |
+
+The shared rows matched 306/306 preset streams. Native checkasm passed
+2,909,101 cases on each x86 tier and 3,064,091 on NEON. Plain and relaxed
+SIMD128 passed 2,909,101 and 3,171,245 cases. The outlined-SIMD checks found
+zero functions. Measurements are under `work/astra-kernels-20261119/`.
 
 ## 6. Loop filters
 
@@ -183,6 +220,21 @@ crates, scalar.
 | SAO | `sao/` (1680) | S A2 A5 N W | byte apply; NEON byte stats | HEVC 2.6 / 2.4, VVC 1.1 / 1.2 | HEVC §8.7.3 = H.266 §8.8.4 | Already shared; spread NEON byte stats |
 | VVC ALF | `vvc_alf/` | S A2 A5(linear row) N(+dot) W | i16 paired `pmaddwd`, ICL 32 independent pixels; other statistics inherit A2 | VVC 4.7 / 7.1 | 7x7 diamond with clipping | Keep; `vvc_alf_gram` duplicates `gram::gram_rows` (merge) |
 | AV1 LR (Wiener, SGR) | `av1_restoration/` (3423) | S A2 N W | dav1d Wiener port | ~0 at Default | separable, no clip | Keep |
+
+AV1 lane layout (av1-dec-gap-why, 2026-11-19): `deblock/lanes.rs`,
+`lanes/kernel.rs` and `lpf_bytes/avx2_full.rs` filter one edge line's units
+32 lines a vector with per-unit thresholds and widths (dav1d's
+`loopfilter_avx2.asm` design), AVX2 only so far (AVX-512 keeps the ICL
+grouped kernels until an SDE comparison, NEON and SIMD128 the eight-line
+kernels). VP9 through the same kernel (a policy: 16-tap wide filter, narrow
+mask on p3..q3) was exact but not faster (kernel equal, queueing +2.3 %
+whole decode) and stays on its packed kernel. Details:
+`docs/handoff/av1-decoder.md` "Deblocking in dav1d's lane layout". The
+other tiers were measured on 2026-11-19 and keep their kernels: AVX-512
+lanes (32 lines with ternlog/mask/GFNI, or 64 lines) were exact but slower
+on Zen 5 (+0.3 to +1.0 % decode time) or in instructions (64 lines +3.5 %),
+NEON lanes +1.5 % Jetson cycles (handoff "Lane layout on the other ISA
+tiers").
 
 AVX-512 implementation (Astra, 2026-11-16): AV1/AV2/VP9 share the grouped
 `lpf_bytes` backend and tile IO. The owner requires the full Ice Lake/GFNI

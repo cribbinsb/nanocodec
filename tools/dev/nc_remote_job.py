@@ -4,6 +4,9 @@ tools/dev/nc_remote.py sends this file's text over SSH (`python3 -c`), so the
 box always runs the PC's version:
 
     python3 -c <this file> NAME COMMIT JOBS COMMAND [KEY=VALUE ...]
+
+(nc-remote passes NC_BUILD_DIRTY=<hash of the local changes, or empty> as the
+first KEY=VALUE: with NC_BUILD_COMMIT it stamps the build, tools/dev/build_stamp.py.)
     python3 -c <this file> --status      (the slots and the queue)
 
 It waits for a free slot (one flock'd file per slot under ~/ncbox/slots; the

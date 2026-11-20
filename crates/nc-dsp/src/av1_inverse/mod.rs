@@ -79,6 +79,25 @@ const SQRT2: i32 = 5793;
 /// Fractional bits of [`INV_SQRT2`] and [`SQRT2`].
 const SQRT2_BITS: u32 = 12;
 
+/// log2 of the smallest transform side.
+const MIN_SIDE_LOG2: u8 = 2;
+/// Side log2 values a transform takes (2..=6).
+const SIDE_LOG2_COUNT: usize = 5;
+/// [`Av1TxSize::index`] by `(width_log2 - 2) * 5 + height_log2 - 2`; the
+/// entries of sizes beyond 4:1 are never read.
+const SIZE_INDEX: [u8; SIDE_LOG2_COUNT * SIDE_LOG2_COUNT] = {
+    let mut table = [u8::MAX; SIDE_LOG2_COUNT * SIDE_LOG2_COUNT];
+    let mut i = 0;
+    while i < Av1TxSize::ALL.len() {
+        let size = Av1TxSize::ALL[i];
+        let grid = (size.width_log2 - MIN_SIDE_LOG2) as usize * SIDE_LOG2_COUNT
+            + (size.height_log2 - MIN_SIDE_LOG2) as usize;
+        table[grid] = i as u8;
+        i += 1;
+    }
+    table
+};
+
 /// An AV1 transform size (AV1 §6.10.18 `TX_SIZES_ALL`): sides of 4 to 64
 /// samples with an aspect ratio of at most 4:1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -159,16 +178,16 @@ impl Av1TxSize {
 
     /// Position in [`Self::ALL`]; `None` for an invalid size.
     #[must_use]
+    #[inline]
     pub const fn index(self) -> Option<usize> {
-        let mut i = 0;
-        while i < Self::ALL.len() {
-            let size = Self::ALL[i];
-            if size.width_log2 == self.width_log2 && size.height_log2 == self.height_log2 {
-                return Some(i);
-            }
-            i += 1;
+        if !self.is_valid() {
+            return None;
         }
-        None
+        // A table lookup, not a search of `ALL`: the inverse dispatch looks
+        // the size up for every transform block.
+        let grid = (self.width_log2 - MIN_SIDE_LOG2) as usize * SIDE_LOG2_COUNT
+            + (self.height_log2 - MIN_SIDE_LOG2) as usize;
+        Some(SIZE_INDEX[grid] as usize)
     }
 
     /// Rounding shift after the row pass (§7.13.3 `Transform_Row_Shift`,
@@ -305,6 +324,11 @@ impl Av1TxType {
     /// transform-set syntax (§5.11.47–48) only ever selects such types; a
     /// 64-sample side is always `DCT_DCT` there.
     #[must_use]
+    #[allow(
+        clippy::inline_always,
+        reason = "checked per transform block; out of line it measured ~30 instructions per call (callgrind)"
+    )]
+    #[inline(always)]
     pub const fn fits(self, size: Av1TxSize) -> bool {
         let (vertical, horizontal) = self.kernels();
         size.is_valid() && vertical.supports(size.height()) && horizontal.supports(size.width())

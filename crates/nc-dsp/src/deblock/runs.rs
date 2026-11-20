@@ -587,6 +587,7 @@ mod tests {
                     lines: 0,
                     filter,
                 }],
+                &mut crate::LoopFilterLanes::default(),
             );
             for (x, y, lines) in [
                 (usize::MAX, 0, 4),
@@ -605,6 +606,7 @@ mod tests {
                             lines,
                             filter,
                         }],
+                        &mut crate::LoopFilterLanes::default(),
                     );
                 }));
                 assert!(result.is_err());

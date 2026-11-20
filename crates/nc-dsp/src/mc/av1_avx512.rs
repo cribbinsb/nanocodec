@@ -26,10 +26,11 @@
     reason = "the pass selection must inline into the AVX-512 kernels"
 )]
 
-use super::av1_avx2::{Sink, WidePasses, Window, Words, span, tap_pairs};
+use super::av1_avx2::{Sink, WidePasses, Window, Words, tap_pairs};
+use super::avx2_byte_dot::span;
 use super::{PREP_LAST_ROUND, PREP_LAST_SHIFT, ROUND_2, ROUND_6, Rounding};
 use core::arch::x86_64::{
-    __m512i, _mm_cvtsi32_si128, _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16,
+    __m256i, __m512i, _mm_cvtsi32_si128, _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16,
     _mm512_add_epi32, _mm512_castsi256_si512, _mm512_castsi512_si256, _mm512_loadu_si512,
     _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_maskz_loadu_epi8, _mm512_mulhrs_epi16,
     _mm512_packs_epi32, _mm512_packus_epi16, _mm512_permutexvar_epi8, _mm512_permutexvar_epi64,
@@ -88,11 +89,7 @@ impl Words for __m512i {
     unsafe fn store_bytes(self, dst: *mut u8) {
         // SAFETY: the caller enables this tier and provides 32 bytes.
         unsafe {
-            // Lane k's low 8 bytes are outputs 8k..8k+8: gather quadwords
-            // 0, 2, 4, 6.
-            let lows = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
-            let bytes = _mm512_permutexvar_epi64(lows, _mm512_packus_epi16(self, self));
-            _mm256_storeu_si256(dst.cast(), _mm512_castsi512_si256(bytes));
+            _mm256_storeu_si256(dst.cast(), pack_32(self));
         }
     }
     #[inline]
@@ -102,10 +99,21 @@ impl Words for __m512i {
     }
 }
 
+/// Pack the eight outputs in each lane into one 32-byte row.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+#[inline]
+pub(crate) fn pack_32(words: __m512i) -> __m256i {
+    let lows = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
+    _mm512_castsi512_si256(_mm512_permutexvar_epi64(
+        lows,
+        _mm512_packus_epi16(words, words),
+    ))
+}
+
 /// Tap pairs as signed byte pairs in every 16-bit lane (`vpmaddubsw`).
 #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
 #[inline]
-fn byte_pairs<const P: usize>(pairs: [(i16, i16); P]) -> [__m512i; P] {
+pub(crate) fn byte_pairs<const P: usize>(pairs: [(i16, i16); P]) -> [__m512i; P] {
     pairs.map(|(lo, hi)| _mm512_set1_epi16(i16::from_le_bytes([lo as i8 as u8, hi as i8 as u8])))
 }
 
@@ -136,6 +144,7 @@ const fn gathers<const P: usize>() -> [[u8; 64]; P] {
     out
 }
 
+const GATHERS_2: [[u8; 64]; 1] = gathers::<1>();
 const GATHERS_4: [[u8; 64]; 2] = gathers::<2>();
 const GATHERS_6: [[u8; 64]; 3] = gathers::<3>();
 const GATHERS_8: [[u8; 64]; 4] = gathers::<4>();
@@ -143,8 +152,9 @@ const GATHERS_8: [[u8; 64]; 4] = gathers::<4>();
 /// The `P` gather vectors of [`gathers`].
 #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
 #[inline]
-fn gather_vectors<const P: usize>() -> [__m512i; P] {
+pub(crate) fn gather_vectors<const P: usize>() -> [__m512i; P] {
     let table = match P {
+        1 => &GATHERS_2[..],
         2 => &GATHERS_4[..],
         3 => &GATHERS_6[..],
         _ => &GATHERS_8[..],
@@ -157,7 +167,7 @@ fn gather_vectors<const P: usize>() -> [__m512i; P] {
 /// exactly `span(32, P)` bytes.
 #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
 #[inline]
-unsafe fn row_32<const P: usize>(
+pub(crate) unsafe fn row_32<const P: usize>(
     src: *const u8,
     gathers: &[__m512i; P],
     taps: &[__m512i; P],
@@ -255,29 +265,58 @@ unsafe fn vertical<const W: usize, const P: usize, S: Sink, R: Rounding, const C
     taps: &[i16],
 ) {
     let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
-    let spread = _mm512_set_epi64(3, 3, 2, 2, 1, 1, 0, 0);
     for c0 in (0..W).step_by(LANES) {
-        // SAFETY: rows lead.. at columns c0 + C.. (see `av1_avx2::put`).
-        let load = |k: usize| unsafe {
-            let row = _mm256_loadu_si256(window.at(lead + k, c0 + C).cast());
-            _mm512_permutexvar_epi64(spread, _mm512_castsi256_si512(row))
-        };
-        let mut rows = [_mm512_setzero_si512(); 8];
-        for (k, row) in rows.iter_mut().enumerate().take(2 * P - 1) {
-            *row = load(k);
+        // SAFETY: rows lead.. at columns c0 + C.. and this output strip
+        // were validated by the entry point.
+        unsafe {
+            column_32(
+                h,
+                &taps,
+                |k| _mm256_loadu_si256(window.at(lead + k, c0 + C).cast()),
+                |r, sum| out.wide(r, c0, round(sum, if S::PREP { ROUND_2 } else { ROUND_6 })),
+            );
         }
-        for r in 0..h {
-            rows[2 * P - 1] = load(r + 2 * P - 1);
-            let mut sum = _mm512_setzero_si512();
-            for (j, weight) in taps.iter().enumerate() {
-                let pairs = _mm512_unpacklo_epi8(rows[2 * j], rows[2 * j + 1]);
-                sum = _mm512_add_epi16(sum, _mm512_maddubs_epi16(pairs, *weight));
-            }
-            let words = round(sum, if S::PREP { ROUND_2 } else { ROUND_6 });
-            // SAFETY: output row r, columns c0..c0 + 32 (see `av1_avx2::put`).
-            unsafe { out.wide(r, c0, words) };
-            super::slide(&mut rows, 1, 2 * P - 1);
-        }
+    }
+}
+
+/// Expand each group of eight bytes to the front of one 128-bit lane.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+#[inline]
+pub(crate) fn spread_32(row: __m256i) -> __m512i {
+    let spread = _mm512_set_epi64(3, 3, 2, 2, 1, 1, 0, 0);
+    _mm512_permutexvar_epi64(spread, _mm512_castsi256_si512(row))
+}
+
+/// Sum the byte-tap pairs from rows in the layout of [`spread_32`].
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+#[inline]
+pub(crate) fn vertical_32<const P: usize>(rows: &[__m512i; 8], taps: &[__m512i; P]) -> __m512i {
+    let mut sum = _mm512_setzero_si512();
+    for (j, weight) in taps.iter().enumerate() {
+        let pairs = _mm512_unpacklo_epi8(rows[2 * j], rows[2 * j + 1]);
+        sum = _mm512_add_epi16(sum, _mm512_maddubs_epi16(pairs, *weight));
+    }
+    sum
+}
+
+/// Byte-input sliding window for the wide column pass, before codec rounding.
+/// `load` provides h + 2 × P − 1 rows of 32 source bytes.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+#[inline]
+pub(crate) fn column_32<const P: usize>(
+    h: usize,
+    taps: &[__m512i; P],
+    mut load: impl FnMut(usize) -> __m256i,
+    mut store: impl FnMut(usize, __m512i),
+) {
+    let mut rows = [_mm512_setzero_si512(); 8];
+    for (k, row) in rows.iter_mut().enumerate().take(2 * P - 1) {
+        *row = spread_32(load(k));
+    }
+    for r in 0..h {
+        rows[2 * P - 1] = spread_32(load(r + 2 * P - 1));
+        store(r, vertical_32(&rows, taps));
+        super::slide(&mut rows, 1, 2 * P - 1);
     }
 }
 

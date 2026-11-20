@@ -25,6 +25,8 @@
 
 use nc_common::{Picture, PlaneIndex, PlaneView};
 use nc_dsp::BlockSize;
+use nc_dsp::intra_prediction::IntraMode;
+use nc_encoder::IntraModeSet;
 use nc_encoder::{Block, CodecBackend, Mv, PredictionMode};
 
 use super::rd::SavedSquare;
@@ -45,6 +47,10 @@ use crate::transform::MAX_COEFFS;
 const LAST_QUADRANT: usize = 3;
 /// Luma samples of an 8x8 CU.
 const MIN_CU_SAMPLES: f32 = 64.0;
+/// Smallest luma transform block whose mode choice the transform-cost
+/// pricing (`hevc.intra_rd_candidates`) covers: 4x4 blocks take the DST,
+/// which [`HevcBackend::luma_transform_cost`] does not model.
+const LOG2_MIN_RD_TB: u8 = 3;
 
 /// One luma transform block of an intra trial.
 #[derive(Debug, Clone, Copy, Default)]
@@ -132,35 +138,35 @@ impl HevcBackend {
         let src = source.plane(PlaneIndex::Y).view();
         let src = src.sub_view(x, y, n, n).expect("block inside the picture");
         // Horizontal modes are predicted transposed; compare them against
-        // the transposed source (SATD is transpose invariant).
+        // the transposed source (SATD is transpose invariant). It is built
+        // on the first horizontal mode only: the smooth P-frame set (planar,
+        // DC) never needs it, and the scalar transpose of a 32x32 block was
+        // the largest part of that path's cost (callgrind, HEVC Fast CBR,
+        // docs/analysis/rd-mode-audit-2026-11-19.md).
         // One source row slice per row, scattered down a column, not a row
         // lookup per sample.
-        let mut src_t = [0u8; MAX_COEFFS];
-        let src_t_block = &mut src_t[..n * n];
-        for row in 0..n {
-            for (col, &sample) in src.row(row)[..n].iter().enumerate() {
-                src_t_block[col * n + row] = sample;
-            }
-        }
-        let src_t = PlaneView::new(&src_t, n, n, n).expect("block buffer");
+        let mut src_t_buffer = [0u8; MAX_COEFFS];
+        let mut src_t_built = false;
         let sqrt_lambda = self.frame_quantization.sqrt_lambda;
         let mut pred = [0u8; MAX_COEFFS];
-        let mut tried = [false; predict::MODES as usize];
         let search_refs = predict::SearchRefs::new(&refs);
-        let mut cost = |mode: u8, best: &mut (f32, u8)| {
-            if std::mem::replace(&mut tried[usize::from(mode)], true) {
-                return;
-            }
+        let mut cost_of = |mode: u8| {
             let transposed = search_refs.predict_oriented(&self.dsp, mode, &mut pred);
             let view = PlaneView::new(&pred, n, n, n).expect("prediction covers the block");
-            let reference = if transposed { &src_t } else { &src };
-            let satd = self.dsp.satd(size, reference, &view) as f32;
-            let c = satd + sqrt_lambda * ModeCode::of(mode, mpm).bits();
-            if c < best.0 {
-                *best = (c, mode);
+            if transposed && !src_t_built {
+                let src_t_block = &mut src_t_buffer[..n * n];
+                for row in 0..n {
+                    for (col, &sample) in src.row(row)[..n].iter().enumerate() {
+                        src_t_block[col * n + row] = sample;
+                    }
+                }
+                src_t_built = true;
             }
+            let src_t = PlaneView::new(&src_t_buffer, n, n, n).expect("block buffer");
+            let reference = if transposed { &src_t } else { &src };
+            self.dsp.satd(size, reference, &view) as f32
+                + sqrt_lambda * ModeCode::of(mode, mpm).bits()
         };
-        let mut best = (f32::MAX, predict::DC);
         let search = match self.slice {
             SliceKind::Predicted => self.inter_intra,
             SliceKind::Intra => self.key_intra,
@@ -169,20 +175,29 @@ impl HevcBackend {
             // P-frame intra mostly repairs brightness changes and occlusions,
             // where a smooth prediction does most of the work; the angular
             // sweep (about 16 SATD evaluations) is kept for key frames
-            // unless `hevc.key_intra_coarse` (a Fast speed lever).
-            for mode in [
+            // unless `hevc.key_intra_coarse` (a Fast speed lever). The
+            // engine's shared ranking keeps the cheapest.
+            let coarse = [
                 predict::PLANAR,
                 predict::DC,
                 predict::HORIZONTAL,
                 predict::VERTICAL,
-            ]
-            .into_iter()
-            .chain(mpm)
-            {
-                cost(mode, &mut best);
-            }
-            return (best.1, best.0);
+            ];
+            let (mode, cost) = nc_encoder::rank_intra(coarse.into_iter().chain(mpm), 1, cost_of)[0];
+            return (mode, cost);
         }
+        let mut tried = [f32::INFINITY; predict::MODES as usize];
+        let mut cost = |mode: u8, best: &mut (f32, u8)| {
+            if tried[usize::from(mode)].is_finite() {
+                return;
+            }
+            let c = cost_of(mode);
+            tried[usize::from(mode)] = c;
+            if c < best.0 {
+                *best = (c, mode);
+            }
+        };
+        let mut best = (f32::MAX, predict::DC);
         let sweep = (2..predict::MODES)
             .step_by(4)
             .filter(|_| seed.is_none())
@@ -202,14 +217,54 @@ impl HevcBackend {
                 }
             }
         }
+        let keep = self.intra_rd_candidates;
+        if keep > 1 && seed.is_none() && log2 >= LOG2_MIN_RD_TB {
+            let shortlist = nc_encoder::rank_intra(
+                (0..predict::MODES).filter(|&m| tried[usize::from(m)].is_finite()),
+                keep,
+                |m| tried[usize::from(m)],
+            );
+            return self.rd_intra_mode(&refs, (&src, n), mpm, &shortlist);
+        }
         (best.1, best.0)
+    }
+
+    /// The luma mode among the SATD-ranked `shortlist` (`hevc.intra_rd_candidates`)
+    /// whose first transform block (`src`, side `n`) codes cheapest: each is
+    /// predicted as coded, transformed, plainly quantised and priced by
+    /// coefficient-domain error plus λ · (CABAC level bits + mode bits)
+    /// ([`Self::luma_transform_cost`]). Why: SATD scores residual energy the
+    /// quantiser removes; on VP9 keys pricing the best three this way gained
+    /// 3 % all-intra BD-rate (docs/analysis/rd-mode-audit-2026-11-19.md).
+    /// Returns the mode and its SATD cost (what the inter fallback compares).
+    fn rd_intra_mode(
+        &self,
+        refs: &predict::Refs,
+        (src, n): (&PlaneView<'_>, usize),
+        mpm: [u8; 3],
+        shortlist: &[(u8, f32)],
+    ) -> (u8, f32) {
+        let lambda = self.rd_lambda();
+        let mut pred = [0u8; MAX_COEFFS];
+        let mut best = (f32::INFINITY, shortlist[0]);
+        for &(mode, satd) in shortlist {
+            predict::predict(&self.dsp, refs, mode, true, &mut pred);
+            let view = PlaneView::new(&pred, n, n, n).expect("prediction covers the block");
+            let (distortion, bits) = self.luma_transform_cost(src, &view, mode);
+            let cost =
+                distortion as f32 + lambda * (bits + self.intra_mode_bits(ModeCode::of(mode, mpm)));
+            if cost < best.0 {
+                best = (cost, (mode, satd));
+            }
+        }
+        best.1
     }
 
     /// Whether P-frame intra CU `block` keeps the DC prediction without a
     /// mode search (`hevc.inter_intra_dc_only`).
     fn inter_intra_dc_only(&self, block: &Block) -> bool {
         self.slice == SliceKind::Predicted
-            && matches!(self.inter_intra, InterIntraSearch::DcOnly { max_log2 } if block.log2_size() <= max_log2)
+            && matches!(self.inter_intra, InterIntraSearch::DcOnly { max_log2, .. } if block.log2_size() <= max_log2)
     }
 
     /// The inter vector, and its `reference`, that intra CU `block` beat
@@ -219,7 +274,9 @@ impl HevcBackend {
     /// search measures it, on the CU's first transform block) against the
     /// vector's on the same samples, as x264 compares them. A CU that would
     /// keep DC without a search falls back unconditionally: the estimate
-    /// promised a direction it cannot use. `None` codes intra.
+    /// promised a direction it cannot use. `Err` codes intra, with the luma
+    /// mode the comparison already searched (the search
+    /// [`Self::encode_intra_cu`] would repeat on the same samples).
     pub(super) fn inter_fallback<'r>(
         &mut self,
         block: &Block,
@@ -227,14 +284,15 @@ impl HevcBackend {
         source: &Picture,
         reference: Option<&'r Picture>,
         recon: &Picture,
-    ) -> Option<(Mv, &'r Picture)> {
-        let mv = fallback?;
-        let reference = reference?;
+    ) -> Result<(Mv, &'r Picture), Option<u8>> {
+        let (Some(mv), Some(reference)) = (fallback, reference) else {
+            return Err(None);
+        };
         if self.inter_intra_dc_only(block) {
-            return Some((mv, reference));
+            return Ok((mv, reference));
         }
         let mpm = self.most_probable_modes(block.x, block.y);
-        let (_, intra_cost) = self.choose_intra_mode(
+        let (intra_mode, intra_cost) = self.choose_intra_mode(
             (block.x, block.y, block.log2_size()),
             source,
             recon,
@@ -253,14 +311,25 @@ impl HevcBackend {
         let inter_cost = self.dsp.satd(size, &src, &pred) as f32
             + self.frame_quantization.sqrt_lambda
                 * self.mode_bits(block, &PredictionMode::Inter(mv));
-        (inter_cost < intra_cost).then_some((mv, reference))
+        if inter_cost < intra_cost {
+            Ok((mv, reference))
+        } else {
+            Err(Some(intra_mode))
+        }
     }
 
     /// An intra CU: luma (mode, transform tree, partition) is decided and
     /// reconstructed, then chroma (DM: the first unit's luma mode) is coded
-    /// along the same tree.
-    pub(super) fn encode_intra_cu(&mut self, block: &Block, source: &Picture, recon: &mut Picture) {
-        let mut choice = self.choose_intra_luma(block, source, recon);
+    /// along the same tree. `searched` is the luma mode
+    /// [`Self::choose_intra_mode`] already chose for the CU, if any.
+    pub(super) fn encode_intra_cu(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+        searched: Option<u8>,
+    ) {
+        let mut choice = self.choose_intra_luma(block, source, recon, searched);
         if choice.trial && self.trellis_for(PlaneIndex::Y).is_some() {
             self.finalise_intra_luma(&mut choice, source, recon);
         }
@@ -328,9 +397,8 @@ impl HevcBackend {
         quantisation: Quantisation,
     ) -> PlaneResidual {
         let luma = plane == PlaneIndex::Y;
-        let refs = self.intra_refs(recon, plane, x, y, n);
         let mut pred = [0u8; MAX_COEFFS];
-        predict::predict(&self.dsp, &refs, mode, luma, &mut pred);
+        self.intra_prediction(plane, (x, y, n), mode, recon, &mut pred);
         let scan = ScanKind::for_intra(mode, n.trailing_zeros() as u8, luma);
         self.code_residual(
             plane,
@@ -344,6 +412,32 @@ impl HevcBackend {
             scan,
             quantisation,
         )
+    }
+
+    /// The intra prediction (mode `mode`) of the `n`-square block of `plane`
+    /// at `(x, y)` into `pred`: the one the smooth choice handed over
+    /// ([`Self::smooth_intra_mode`]) when it is that luma block's, else
+    /// predicted from the gathered references.
+    fn intra_prediction(
+        &self,
+        plane: PlaneIndex,
+        (x, y, n): (usize, usize, usize),
+        mode: u8,
+        recon: &Picture,
+        pred: &mut [u8; MAX_COEFFS],
+    ) {
+        let luma = plane == PlaneIndex::Y;
+        {
+            let mut scratch = self.scratch.borrow_mut();
+            let handed = luma && scratch.smooth_prediction == Some(((x, y, n), mode));
+            scratch.smooth_prediction = None;
+            if handed {
+                pred[..n * n].copy_from_slice(&scratch.smooth_samples[..n * n]);
+                return;
+            }
+        }
+        let refs = self.intra_refs(recon, plane, x, y, n);
+        predict::predict(&self.dsp, &refs, mode, luma, pred);
     }
 
     /// Re-code the luma leaves of `choice`, decided in a trial with the plain
@@ -368,12 +462,56 @@ impl HevcBackend {
         choice.trial = false;
     }
 
+    /// Planar or DC for P-frame intra CU `block` (`hevc.inter_intra_smooth`),
+    /// the cheaper by SATD + √λ · mode bits on its first transform block,
+    /// as [`Self::choose_intra_mode`] ranks them; the winner's prediction is
+    /// handed to that block's coding ([`Self::code_intra_block`]), so the
+    /// choice costs one reference gather and two predictions in all.
+    /// Measured in docs/analysis/rd-mode-audit-2026-11-19.md.
+    fn smooth_intra_mode(
+        &self,
+        block: &Block,
+        source: &Picture,
+        recon: &Picture,
+        mpm: [u8; 3],
+    ) -> u8 {
+        let n = block.size().min(1 << self.info.max_transform_log2);
+        let refs = self.intra_refs(recon, PlaneIndex::Y, block.x, block.y, n);
+        let size = BlockSize::new(n, n).expect("intra blocks are 4..32");
+        let src = source.plane(PlaneIndex::Y).view();
+        let src = src
+            .sub_view(block.x, block.y, n, n)
+            .expect("block inside the picture");
+        let sqrt_lambda = self.frame_quantization.sqrt_lambda;
+        let mut predictions = [[0u8; MAX_COEFFS]; 2];
+        let mut costs = [0f32; 2];
+        // The engine's smooth set, planar for its smooth mode.
+        let set = IntraModeSet::Smooth.modes();
+        let modes: [u8; 2] = std::array::from_fn(|i| match set[i] {
+            IntraMode::Smooth => predict::PLANAR,
+            _ => predict::DC,
+        });
+        for ((&mode, pred), cost) in modes.iter().zip(&mut predictions).zip(&mut costs) {
+            predict::predict(&self.dsp, &refs, mode, true, pred);
+            let view = PlaneView::new(&pred[..], n, n, n).expect("prediction covers the block");
+            *cost = self.dsp.satd(size, &src, &view) as f32
+                + sqrt_lambda * ModeCode::of(mode, mpm).bits();
+        }
+        // Ties keep DC, the smooth set's first mode.
+        let best = usize::from(costs[1] < costs[0]);
+        let mut scratch = self.scratch.borrow_mut();
+        scratch.smooth_prediction = Some(((block.x, block.y, n), modes[best]));
+        scratch.smooth_samples[..n * n].copy_from_slice(&predictions[best][..n * n]);
+        modes[best]
+    }
+
     /// Decide and reconstruct the luma of intra `block`.
     fn choose_intra_luma(
         &mut self,
         block: &Block,
         source: &Picture,
         recon: &mut Picture,
+        searched: Option<u8>,
     ) -> LumaChoice {
         // Planar and angular prediction (and reference smoothing) read the
         // above-right samples (2N wide in all, §8.4.4.2.2), dirty where they
@@ -394,8 +532,16 @@ impl HevcBackend {
         let try_splits = trials && self.info.intra_transform_depth > 0;
         let costed = try_quarters || try_splits;
         let mpm = self.most_probable_modes(block.x, block.y);
-        let mode = if dirty_edge || self.inter_intra_dc_only(block) {
+        let smooth_only = matches!(
+            self.inter_intra,
+            InterIntraSearch::DcOnly { smooth: true, .. }
+        );
+        let mode = if dirty_edge || (self.inter_intra_dc_only(block) && !smooth_only) {
             predict::DC
+        } else if smooth_only && searched.is_none() && self.inter_intra_dc_only(block) {
+            self.smooth_intra_mode(block, source, recon, mpm)
+        } else if let Some(mode) = searched {
+            mode
         } else {
             self.choose_intra_mode(
                 (block.x, block.y, block.log2_size()),
@@ -532,9 +678,14 @@ impl HevcBackend {
         }
         let depth = usize::from(tree.cu.log2_size() - node.log2_size());
         let n = node.size();
-        let refs = self.intra_refs(recon, PlaneIndex::Y, node.x, node.y, n);
         let mut pred = [0u8; MAX_COEFFS];
-        predict::predict(&self.dsp, &refs, tree.mode, true, &mut pred);
+        self.intra_prediction(
+            PlaneIndex::Y,
+            (node.x, node.y, n),
+            tree.mode,
+            recon,
+            &mut pred,
+        );
         let scan = ScanKind::for_intra(tree.mode, node.log2_size(), true);
         let flag_present =
             split_transform_flag_present(node.log2_size(), depth, tree.min_log2, max_log2, false);

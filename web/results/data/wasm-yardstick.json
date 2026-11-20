@@ -1,8 +1,16 @@
 {
  "source": [
-  "docs/results/wasm-yardstick-2026-11-12/wasm.json"
+  "docs/results/wasm-yardstick-2026-11-19/wasm.json"
  ],
- "build": "bcbc5601",
+ "build": "c9cff89f",
+ "measured": {
+  "date": "2026-11-19",
+  "builds": [
+   "release 0.4.0, plain build (c9cff89f) for our browser module (relaxed SIMD)"
+  ],
+  "reference_only": null,
+  "caption": "Measured 2026-11-19 on nanocodec release 0.4.0, plain build (c9cff89f) for our browser module (relaxed SIMD). AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core, quiet (1-minute load under 2), ours and the references in the same session, node v22.21.1, both modules in the same 7 interleaved rounds (tools/web/ffmpeg_wasm_yardstick.py); the Axis 720p camera stream is a 150-frame cut (901 frames on 2026-11-12). References: ffmpeg.wasm (@ffmpeg/core 0.12.10: x264 and FFmpeg's decoders, one thread, no SIMD; its times include module start-up)."
+ },
  "quality_view": "fresh-psnr",
  "encode": [
   {
@@ -10,53 +18,53 @@
    "family": "nanocodec-h264@fast",
    "label": "nanocodec H.264 Fast",
    "module": "ours-wasm",
-   "ms": 11.01,
-   "fps": 90.8,
+   "ms": 5.35,
+   "fps": 186.9,
    "j": -11.65
-  },
-  {
-   "name": "h264",
-   "family": "nanocodec-h264",
-   "label": "nanocodec H.264 Medium (default)",
-   "module": "ours-wasm",
-   "ms": 11.59,
-   "fps": 86.3,
-   "j": -23.21
   },
   {
    "name": "hevc-fast",
    "family": "nanocodec-hevc@fast",
    "label": "nanocodec HEVC Fast",
    "module": "ours-wasm",
-   "ms": 18.29,
-   "fps": 54.7,
+   "ms": 7.81,
+   "fps": 128.0,
    "j": -37.04
-  },
-  {
-   "name": "x264 ultrafast",
-   "family": "x264-ultrafast",
-   "label": "x264 ultrafast",
-   "module": "ffmpeg.wasm",
-   "ms": 18.57,
-   "fps": 53.9,
-   "j": 46.37
   },
   {
    "name": "av1-fast",
    "family": "nanocodec-av1@fast",
    "label": "nanocodec AV1 Fast",
    "module": "ours-wasm",
-   "ms": 22.62,
-   "fps": 44.2,
+   "ms": 9.24,
+   "fps": 108.3,
    "j": -37.2
+  },
+  {
+   "name": "h264",
+   "family": "nanocodec-h264",
+   "label": "nanocodec H.264 Medium (default)",
+   "module": "ours-wasm",
+   "ms": 9.81,
+   "fps": 101.9,
+   "j": -23.21
+  },
+  {
+   "name": "x264 ultrafast",
+   "family": "x264-ultrafast",
+   "label": "x264 ultrafast",
+   "module": "ffmpeg.wasm",
+   "ms": 12.95,
+   "fps": 77.2,
+   "j": 46.37
   },
   {
    "name": "vp9",
    "family": "nanocodec-vp9",
    "label": "nanocodec VP9 Medium (default)",
    "module": "ours-wasm",
-   "ms": 25.83,
-   "fps": 38.7,
+   "ms": 13.01,
+   "fps": 76.9,
    "j": -39.94
   },
   {
@@ -64,8 +72,8 @@
    "family": "x264-veryfast",
    "label": "x264 veryfast",
    "module": "ffmpeg.wasm",
-   "ms": 46.52,
-   "fps": 21.5,
+   "ms": 31.3,
+   "fps": 31.9,
    "j": 12.26
   }
  ],
@@ -73,44 +81,44 @@
   {
    "codec": "h264",
    "stream": "ours 720p crowd 600k",
-   "ours_ms": 2.57,
-   "ref_ms": 3.65,
-   "ratio": 0.7
+   "ours_ms": 1.46,
+   "ref_ms": 3.38,
+   "ratio": 0.43
   },
   {
    "codec": "h264",
    "stream": "x264 CABAC 1080p 3M",
-   "ours_ms": 9.4,
-   "ref_ms": 11.11,
-   "ratio": 0.85
+   "ours_ms": 5.12,
+   "ref_ms": 8.65,
+   "ratio": 0.59
   },
   {
    "codec": "hevc",
    "stream": "Axis 720p camera",
-   "ours_ms": 2.35,
-   "ref_ms": 2.67,
-   "ratio": 0.88
+   "ours_ms": 1.81,
+   "ref_ms": 3.46,
+   "ratio": 0.52
   },
   {
    "codec": "hevc",
    "stream": "ours 1080p 3M",
-   "ours_ms": 14.13,
-   "ref_ms": 18.49,
-   "ratio": 0.76
+   "ours_ms": 5.72,
+   "ref_ms": 13.01,
+   "ratio": 0.44
   },
   {
    "codec": "hevc",
    "stream": "ours 720p crowd 600k",
-   "ours_ms": 3.66,
-   "ref_ms": 5.1,
-   "ratio": 0.72
+   "ours_ms": 1.91,
+   "ref_ms": 4.47,
+   "ratio": 0.43
   },
   {
    "codec": "vp9",
    "stream": "vpxenc 1080p 3M",
-   "ours_ms": 14.85,
-   "ref_ms": 21.21,
-   "ratio": 0.7
+   "ours_ms": 5.09,
+   "ref_ms": 15.31,
+   "ratio": 0.33
   }
  ]
 }

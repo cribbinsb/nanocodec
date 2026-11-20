@@ -478,7 +478,8 @@ libaom AV1 in realtime CBR (`--rt --end-usage=cbr --lag-in-frames=0 --threads=1`
 v2.7.0, x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libvpx v1.16.0, libaom v3.15.3; command lines in
 [tools/anchors/README.md](../../tools/anchors/README.md).
 
-**Metrics.** Per frame PSNR (per plane; PSNR-YUV weights Y:U:V 6:1:1 as is usual in codec evaluation) and VMAF v1
+**Metrics.** Per frame PSNR (per plane, each capped at 60 dB, libvmaf's 8-bit cap; charts published before
+2026-11-20 capped at 100 dB; PSNR-YUV weights Y:U:V 6:1:1 as is usual in codec evaluation) and VMAF v1
 (the `vmaf_v1.0.16` 3d0h model, at native geometry), MS-SSIM on every frame (every 4th frame before 2026-11-11).
 VMAF and MS-SSIM are computed either by libvmaf v3.2.1 on the CPU or by VMAFx, a GPU implementation, with our
 patches. On a 200-point sample, an independent cross-check of 200 held-out points (stock libvmaf 3.2.1 on CPU with `vmaf_v1.0.16_3d0h.json`, plus our MS-SSIM, against the GPU path on the same streams) found PSNR-YUV within 7e-15 dB, VMAF identical, MS-SSIM within 3.9e-6 and identical packet sizes. One caveat: the GPU scorer was not run-to-run reproducible on 8 of 144 chart points (sequence VMAF moved by up to 0.037, single frames by up to 5.5, on bit-identical pictures), so scores are reproducible to about 0.04 VMAF at sequence level; this is a known, open scorer issue. Since 2026-11-11 (owner decision) the score uses VMAF v1 in place of the legacy VMAF v0.6.1 NEG: v1's ADM

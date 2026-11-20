@@ -51,18 +51,20 @@ async function main() {
   const root = document.getElementById('fixed-qp');
   let data;
   let names;
+  let measured;
   try {
     data = await loadData('fixed-qp-lens');
     // display names: the overview's, through its fixed-QP view's lens-test map
     const chart = await loadData('chart');
     const lens = chart.views.find((v) => v.id === 'qp')?.lens_names || {};
     names = (t) => chart.points[lens[t] || t]?.label || t;
+    measured = chart.views.find((v) => v.id === 'qp')?.measured;
   } catch (error) {
     root.querySelector('.run').textContent = 'The fixed-QP lens has not been published for this build yet.';
     return;
   }
   try {
-    root.querySelector('.run').textContent = `Build ${data.build_commit}; condition ${data.condition}.`;
+    root.querySelector('.run').textContent = `${measured ? measured.caption : `Build ${data.build_commit}.`} Condition ${data.condition}.`;
     root.querySelector('.controls').append(control('Metric', segmented('Metric',
       Object.keys(METRICS).map((value) => ({ value, label: value === 'weighted' ? 'Weighted' : METRICS[value].split(' (')[0] })),
       state.metric, (v) => { state.metric = v; render(data, names, root); })));

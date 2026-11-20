@@ -94,6 +94,7 @@ pub(crate) fn check_codec_kernels(
     crate::check_av1_intra::check_av1_intra(candidate, reference, iterations, rng, report);
     crate::check_cfl_sse::check_cfl_sse(candidate, reference, iterations, rng, report);
     crate::check_av1_intra::check_av1_directional(candidate, reference, iterations, rng, report);
+    crate::check_av1_intra::check_av1_edge_needs(candidate, reference, iterations, rng, report);
     crate::check_av2_intra::check_av2_intra(candidate, reference, iterations, rng, report);
 }
 
@@ -742,14 +743,16 @@ fn check_quantize_from(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: 
             _ => 0,
         })
         .collect();
+    let dc_rounding_q7 = rng.below(128) as i32;
     let run_wide = |dsp: &Dsp| {
         let mut levels = vec![i32::MIN; len + 3];
-        let nonzero = dsp.av1_quantize_from_wide(&wide, &q, &mut levels[..len]);
+        let nonzero =
+            dsp.quantize_from_wide_with_dc_rounding(&wide, &q, dc_rounding_q7, &mut levels[..len]);
         (levels, nonzero)
     };
     let same = run_wide(candidate) == run_wide(reference);
     record(report, isa, same, || {
-        format!("av1_quantize_from_wide len={len} {q:?}")
+        format!("quantize_from_wide len={len} dc_rounding_q7={dc_rounding_q7} {q:?}")
     });
 }
 

@@ -78,7 +78,7 @@ pub(super) fn passes(set: u8) -> [bool; 2] {
 /// `x / (x + 1)` in 1/256, with 0 mapped to 1 (libaom
 /// `av1_x_by_xplus1`; equals the spec's `((z << 8) + z / 2) / (z + 1)`
 /// formula for `0 < z < 255`).
-pub(super) fn x_by_xplus1(z: u32) -> u32 {
+pub(super) const fn x_by_xplus1(z: u32) -> u32 {
     match z {
         0 => 1,
         255.. => 256,
@@ -327,6 +327,39 @@ pub(super) struct SgrScratch {
     radius2: PassRings,
     radius1: PassRings,
     filtered: FilteredScratch,
+    stripe: SgrStripeScratch,
+}
+
+/// Reusable rows of a complete-stripe kernel ([`RowKernels::sgr_stripe`]),
+/// laid out by the kernel.
+#[derive(Debug, Default)]
+#[cfg_attr(
+    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    expect(
+        dead_code,
+        reason = "only the AVX2 and NEON tables have a stripe kernel"
+    )
+)]
+pub(crate) struct SgrStripeScratch {
+    pub(super) words: Vec<i16>,
+    pub(super) dwords: Vec<i32>,
+}
+
+/// What a complete-stripe kernel needs of a unit's parameters.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(
+    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    expect(
+        dead_code,
+        reason = "only the AVX2 and NEON tables have a stripe kernel"
+    )
+)]
+pub(crate) struct SgrStripe {
+    /// The scale `s` of radius 2 and of radius 1; 0 when that pass does
+    /// not run.
+    pub(super) scales: [u32; 2],
+    /// The projection weights `w0`, `w1` ([`projection_weights`]).
+    pub(super) weights: [i32; 2],
 }
 
 /// The window rows of one region and what the kernels read of them.
@@ -425,6 +458,20 @@ pub(super) fn self_guided<T: Sample, K: RowKernels<T>>(
     (dst, x, y): (&mut PlaneViewMut<'_, T>, usize, usize),
 ) {
     let [r0, s0, r1, s1] = SGR_PARAMS[usize::from(params.set)];
+    let weights = projection_weights(params, [r0 > 0, r1 > 0]);
+    let stripe = SgrStripe {
+        scales: [if r0 > 0 { s0 } else { 0 }, if r1 > 0 { s1 } else { 0 }],
+        weights,
+    };
+    if kernels.sgr_stripe(
+        stripe,
+        (window, stride),
+        (w, h),
+        &mut scratch.stripe,
+        (&mut *dst, x, y),
+    ) {
+        return;
+    }
     let region = Region { window, stride, w };
     let len = region.box_columns() + AV1_LR_OVERREAD;
     // Radius 2 keeps the box rows either side of an even output row;
@@ -435,6 +482,7 @@ pub(super) fn self_guided<T: Sample, K: RowKernels<T>>(
         radius2,
         radius1,
         filtered,
+        ..
     } = scratch;
     let [flt0, flt1] = <K::Filtered as LaneRow>::scratch_vecs(filtered);
     let flt0 = super::grow(flt0, w + AV1_LR_OVERREAD);
@@ -448,7 +496,6 @@ pub(super) fn self_guided<T: Sample, K: RowKernels<T>>(
         radius1_box_row(kernels, &region, radius1, s1, -1);
         radius1_box_row(kernels, &region, radius1, s1, 0);
     }
-    let weights = projection_weights(params, [r0 > 0, r1 > 0]);
     for i in 0..h {
         let source = region.source(i);
         if r0 > 0 {

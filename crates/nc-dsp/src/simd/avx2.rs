@@ -817,6 +817,20 @@ impl I16Lanes for I16x16 {
     }
 
     #[inline(always)]
+    fn pair_sum_u8(src: &[u8]) -> Self {
+        use core::arch::x86_64::{_mm256_loadu_si256, _mm256_maddubs_epi16, _mm256_set1_epi8};
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // slices are indexed before every load.
+        unsafe {
+            let src = &src[..32];
+            Self(_mm256_maddubs_epi16(
+                _mm256_loadu_si256(src.as_ptr().cast()),
+                _mm256_set1_epi8(1),
+            ))
+        }
+    }
+
+    #[inline(always)]
     fn load_i8(src: &[i8]) -> Self {
         // SAFETY: these types run only inside AVX2 kernels (module docs);
         // slices are indexed before every load and store.
@@ -1172,6 +1186,20 @@ impl I16Lanes for I16x8 {
         unsafe {
             let src = &src[..8];
             Self(_mm_cvtepu8_epi16(_mm_loadl_epi64(src.as_ptr().cast())))
+        }
+    }
+
+    #[inline(always)]
+    fn pair_sum_u8(src: &[u8]) -> Self {
+        use core::arch::x86_64::{_mm_loadu_si128, _mm_maddubs_epi16, _mm_set1_epi8};
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // slices are indexed before every load.
+        unsafe {
+            let src = &src[..16];
+            Self(_mm_maddubs_epi16(
+                _mm_loadu_si128(src.as_ptr().cast()),
+                _mm_set1_epi8(1),
+            ))
         }
     }
 

@@ -75,7 +75,17 @@ def test_psnr_sink_matches_direct_computation_and_reads_only_a_prefix(tmp_path):
     diff = reference[:distorted.size].astype(np.int16) - distorted
     luma = diff.reshape(3, -1)[:, :FMT.luma_size].astype(np.int64)
     expected = 10 * np.log10(255.0 ** 2 / ((luma ** 2).sum(axis=1) / FMT.luma_size))
-    np.testing.assert_array_equal(sink.per_plane_psnr()[:, 0], np.minimum(100, expected))
+    np.testing.assert_array_equal(sink.per_plane_psnr()[:, 0], np.minimum(framepipe.PSNR_CAP_DB, expected))
+
+
+def test_psnr_is_capped_at_libvmafs_8_bit_60_db():
+    """A flat plane coded exactly and one off by +-1 on a few samples are equally
+    invisible: both score the cap (owner, 2026-11-20; at 100 dB they were 16 dB apart)."""
+    assert framepipe.PSNR_CAP_DB == 60.0
+    exact, off_by_one = 0.0, 0.01  # 1 % of the samples off by 1: 68.1 dB uncapped
+    psnr = framepipe.psnr_from_mse([(exact, off_by_one, 1.0)])
+    np.testing.assert_array_equal(psnr[0, :2], [60.0, 60.0])
+    assert psnr[0, 2] == pytest.approx(10 * np.log10(255 ** 2))  # below the cap: unchanged
 
 
 def test_pipe_output_reads_what_a_child_writes_to_its_path(tmp_path):
@@ -241,7 +251,7 @@ def test_run_point_scores_the_reconstruction_and_writes_only_the_bitstream(tmp_p
     with fake_decoders(tmp_path, frames(1, 3), frames(1, 3)):
         result = point.run_point(command, stream, Codec.H264, spec, None, [metrics.PsnrMetric(spec)])
     assert result.gate.passed
-    assert result.measurement.summary["psnr_y"] == pytest.approx((100 + 10 * np.log10(255 ** 2)) / 2)
+    assert result.measurement.summary["psnr_y"] == pytest.approx((framepipe.PSNR_CAP_DB + 10 * np.log10(255 ** 2)) / 2)
     assert list(work.iterdir()) == [stream]
     other = lambda recon: command(recon)[:-1] + ["other bits"]  # not in the verified cache
     with fake_decoders(tmp_path, frames(1, 3), frames(1, 4)):
@@ -312,7 +322,7 @@ def test_file_api_streams_through_the_same_components(tmp_path):
     reference.write_bytes(frames(10, 20))
     distorted.write_bytes(frames(10, 21))
     result = metrics.psnr(reference, distorted, FMT)
-    assert result.per_frame[0]["psnr_y"] == 100
+    assert result.per_frame[0]["psnr_y"] == framepipe.PSNR_CAP_DB
     assert result.per_frame[1]["psnr_y"] == pytest.approx(10 * np.log10(255 ** 2))
     short = tmp_path / "short.yuv"
     short.write_bytes(frames(1))

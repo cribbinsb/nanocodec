@@ -402,11 +402,18 @@ fn loop_filters_at_eight_bits_match() {
                 }
             })
             .collect();
-            k.av1_loop_filter_runs(&mut p8.plane_mut(PlaneIndex::Y).view_mut(), vertical, &runs);
+            let mut lanes = crate::LoopFilterLanes::default();
+            k.av1_loop_filter_runs(
+                &mut p8.plane_mut(PlaneIndex::Y).view_mut(),
+                vertical,
+                &runs,
+                &mut lanes,
+            );
             k.av1_loop_filter_runs(
                 &mut p16.plane_mut(PlaneIndex::Y).view_mut(),
                 vertical,
                 &runs,
+                &mut lanes,
             );
         }
         assert_eq!(contents(&p8), contents(&p16), "seed {seed}");

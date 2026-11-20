@@ -102,6 +102,13 @@ impl CdefMap {
             *value = index(block);
         }
     }
+    /// The number of coded 8x8 units ([`Self::coded_units`]).
+    pub(crate) fn coded_count(&self) -> usize {
+        self.coded
+            .iter()
+            .map(|mask| mask.count_ones() as usize)
+            .sum()
+    }
     /// The top-left luma samples of the coded 8x8 units, in raster order.
     pub(crate) fn coded_units(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.coded

@@ -239,6 +239,10 @@ nc_encoder::param_group! {
         /// -0.64 / -0.69 / -0.70 with the filter on).
         deblock_inter: 1.0, [0.0, 1.0],
             "0 switches the deblocking filter off in P slices (key frames stay filtered): faster, blockier at low rates",
+        deblock_alpha_offset: 0.0, [-6.0, 6.0],
+            "slice_alpha_c0_offset_div2 (§7.4.3): higher treats more edges as blocking and allows larger corrections (more filtering)",
+        deblock_beta_offset: 0.0, [-6.0, 6.0],
+            "slice_beta_offset_div2 (§7.4.3): higher filters edges with more texture across them (more filtering)",
         /// A speed lever (H.264 Veryfast): CAVLC slice data
         /// (`entropy_coding_mode_flag` 0, `cavlc.rs`) instead of CABAC. Mode
         /// decision and the rate-distortion tools keep pricing with the
@@ -972,7 +976,7 @@ impl H264Backend {
         let (col, row) = Self::mb_index(block);
         let nb = Neighbours::of(&self.mbs, self.params.mb_cols, col, row);
         let cabac = self.cabac.as_ref().expect("encode_block outside a frame");
-        let mut counter = cabac.bit_counter(&self.bin_costs);
+        let mut counter = cabac.total_bit_counter(&self.bin_costs);
         let mut qp = self.qp_tracker;
         write_macroblock(
             &mut counter,
@@ -2065,7 +2069,11 @@ impl H264Params {
     fn deblock_control(&self, frame_type: FrameType) -> DeblockControl {
         match frame_type {
             FrameType::Inter if self.deblock_inter < 0.5 => DeblockControl::OFF,
-            _ => DeblockControl::DEFAULT,
+            _ => DeblockControl {
+                alpha_offset_div2: self.deblock_alpha_offset.round() as i8,
+                beta_offset_div2: self.deblock_beta_offset.round() as i8,
+                ..DeblockControl::DEFAULT
+            },
         }
     }
 }

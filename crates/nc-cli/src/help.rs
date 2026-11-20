@@ -445,6 +445,11 @@ pub const COMMANDS: &[CommandDoc] = &[
                 opt("--codec", CODECS, "Stream format."),
                 opt("--input", "PATH", "The stream."),
                 opt("--json", "FILE", "Write the statistics as JSON."),
+                opt(
+                    "--records",
+                    "FILE",
+                    "HEVC: also write every picture's block records (packed, little-endian).",
+                ),
             ],
         }],
     },

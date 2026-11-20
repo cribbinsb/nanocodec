@@ -40,15 +40,14 @@
     <p class="note platforms"></p>
     <div class="encode"></div>
     <h2 id="browser">In the browser (WebAssembly)</h2>
-    <p class="prose">Frames per second of the browser build on one PC core, single-threaded (the module has no
+    <p class="prose">Frames per second of the browser build on one x86 core, single-threaded (the module has no
       threads), under V8 (node, cross-checked in headless Chromium). Decode: our CBR streams, decode alone. Encode:
       the demo's settings and its whole encode call (RGBA in). In brackets, the WebAssembly time over the native
       build's on the same streams. Fast only where the demo offers it.</p>
     <div class="wasm"></div>
-    <p class="note wasm-caveat"></p>
     <h3 id="wasm-encode">Browser encode against ffmpeg.wasm</h3>
     <p class="prose">Encode speed of our browser module and of the official single-thread ffmpeg.wasm
-      (x264), on one PC core in the same session: one 720p clip at the chart's middle rung. <strong>ffmpeg.wasm is
+      (x264), on one x86 core in the same session: one 720p clip at the chart's middle rung. <strong>ffmpeg.wasm is
       a generic build without SIMD</strong>, so it is a weak yardstick for what a SIMD port of x264 would reach;
       no estimate of such a port is plotted. Quality is the chart's point for the same encoder and preset (the
       held-out fresh clips against x264 --tune psnr, native builds); the browser runs were not scored themselves.
@@ -64,9 +63,8 @@
       and in the browser against ffmpeg.wasm (no SIMD; it has no AV1, VVC or AV2 decoder), every
       decoder with one thread, though the references are normally run multi-threaded and are faster that way.
       Streams: ours, and third-party ones (x264, openh264, x265 with B-frames, IP cameras, SVT-AV1, libaom,
-      vpxenc). Below 1 means ours took less time. Every native output matched its reference decoder's. The PC was
-      loaded during this run: read its ratios as rough and its WebAssembly times as upper bounds; the Jetson
-      core was otherwise idle.</p>
+      vpxenc). Below 1 means ours took less time. Ours and the references ran in the same session on each
+      machine; the caption under the chart says which machine, build and rounds.</p>
     <div class="controls decoder-controls"></div>
     <p class="note decoder-note"></p>
     <div class="chart-card"><div class="chart ratio-chart"></div></div>

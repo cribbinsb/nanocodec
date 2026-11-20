@@ -7,8 +7,9 @@ fingerprint of an encoder configuration hashes:
     source of tools/openh264-harness for the openh264 anchors;
   - the adapter's command template: its command line for a fixed dummy job,
     so any flag change in an adapter makes its old results stale;
-  - the measurement chain: pinned decoders and libvmaf, and
-    metrics.METRICS_REVISION;
+  - the measurement chain: pinned decoders and libvmaf,
+    metrics.METRICS_REVISION and the PSNR cap (framepipe.PSNR_CAP_DB; left
+    out by cbr.Bench, whose points carry it and are re-capped on read);
   - the clip itself (clip_fingerprint): geometry, frame rate, frame count and
     a hash of its YUV data, so two different clips that share a name (e.g. a
     720p clip and its 360p version) can never reuse each other's results.
@@ -29,6 +30,7 @@ from .clips import Clip
 from .codecs import Codec
 from .config import Paths, find_tool, load_paths
 from .encoders.base import CodingStructure, EncodeJob, EncoderAdapter
+from .framepipe import PSNR_CAP_DB
 from .metrics import (DISPLAY_METRICS_REVISION, DISPLAY_PROFILE, LEGACY_METRICS_REVISION,
                       LEGACY_PROFILE, METRICS_REVISION, V1_PROFILE, vmaf_v1_protocol)
 
@@ -61,7 +63,12 @@ def pinned_commits() -> dict[str, str]:
     return commits
 
 
-def measurement_fingerprint(profile: str = V1_PROFILE, paths: Paths | None = None) -> str:
+def measurement_fingerprint(profile: str = V1_PROFILE, paths: Paths | None = None,
+                            psnr_cap: bool = True) -> str:
+    """The metric protocol's identity. `psnr_cap` False leaves the PSNR cap out: for a
+    cache whose results record the cap they were measured under and are re-capped on
+    read (cbr.Bench, `cbr.under_psnr_cap`); its key is the one from before the cap
+    moved to 60 dB, so its points survive the move."""
     commits = pinned_commits()
     parts = [f"{k}={commits.get(k, '?')}" for k in _MEASUREMENT_KEYS]
     if profile == LEGACY_PROFILE:
@@ -78,6 +85,8 @@ def measurement_fingerprint(profile: str = V1_PROFILE, paths: Paths | None = Non
         parts.append("default_secondary=psnr;xpsnr=opt-in;float_ms_ssim=explicit-shortlist-only")
     else:
         raise ValueError(f"unknown measurement profile {profile!r}")
+    if psnr_cap:  # every profile's PSNR and XPSNR take it: other caps' aggregates are stale
+        parts.append(f"psnr_cap_db={PSNR_CAP_DB:g}")
     return _digest(parts)
 
 

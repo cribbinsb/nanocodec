@@ -3,6 +3,7 @@
     python3 -m nceval.ctc local --source-dir DIR --run-dir DIR --encoder nanocodec-av1
         [--label NAME] [--param k=v ...] [--conditions aom-ld] [--sequences A,B]
         [--kinds qp,cbr] [--x264 qp|cbr|psnr-qp|psnr-cbr] [--workers 4]
+        [--references DIR] [--skip ID,...]
     python3 -m nceval.ctc compare --results DIR[,DIR...] [--points CSV[,CSV...]]
         [--anchor x264-medium] [--paired-with ENCODER] [--stored-tests ENC,...] [--json OUT]
         [--ledger BASE]
@@ -25,7 +26,10 @@ with three differences:
 
 Any other anchor of the condition (`--encoder x265-slow`) runs its staged
 fixed-QP jobs unchanged, so a curve the stored results lack can be added
-locally.
+locally (HM and VVenC from `--references`, the directory `stage` takes).
+`--skip` leaves out named jobs: a re-run that adds XPSNR to a stored curve
+codes only the points that curve has (HM's WestWindEasy QP 22 never finished
+within a launch's limit).
 
 Sources: raw I420 files named `<sequence>.yuv` in `--source-dir` with at
 least the condition's frames (`worker.py prepare`, or any download of the
@@ -156,10 +160,14 @@ def _local_jobs(args: argparse.Namespace, source_dir: Path) -> list[dict]:
     return [own_variant(j, args.param, args.label) for j in jobs if j["kind"] in kinds]
 
 
-def tool_paths() -> dict[str, Path]:
+def tool_paths(references: Path | None = None) -> dict[str, Path]:
+    """The anchors' tools and ours, plus the reference software's bin/ and cfg/ files
+    where `references` is given (the layout `stage --references` takes)."""
     paths = load_paths()
     tools = {p.name: p for p in (paths.anchors / "bin").iterdir()}
     tools["nanocodec"] = paths.nanocodec_bin / "nanocodec"
+    if references is not None:
+        tools.update({p.name: p for d in ("bin", "cfg") for p in (references / d).iterdir()})
     return tools
 
 
@@ -176,7 +184,12 @@ def xpsnr_tool() -> Path | None:
 def local(args: argparse.Namespace) -> None:
     run_dir = Path(args.run_dir)
     jobs = with_metrics(local_jobs(args, Path(args.source_dir).resolve()), args.metrics)
-    tools = tool_paths()
+    skipped = set(args.skip.split(",")) if args.skip else set()
+    unknown = skipped - {job["id"] for job in jobs}
+    if unknown:
+        raise SystemExit(f"--skip: no such job: {', '.join(sorted(unknown))}")
+    jobs = [job for job in jobs if job["id"] not in skipped]
+    tools = tool_paths(Path(args.references) if args.references else None)
     if not run_dir.exists():
         planner.stage(run_dir, jobs, tools, [WORKER, load_paths().anchors / VMAF_V1_MODEL],
                       xpsnr_tool())
@@ -285,6 +298,21 @@ def mean_figures(curves: Curves, condition: str, anchor: tuple[str, str],
     return means, len(per_sequence), mean(times) if times else float("nan")
 
 
+def reported_counts(curves: Curves, condition: str, anchor: tuple[str, str],
+                    test: tuple[str, str]) -> dict[str, int]:
+    """Per reported metric, the sequences its mean is over (`<metric> n`): the ones
+    where it can be computed, as the CBR charts' BD-XPSNR (chart.reported_pair)."""
+    counts = dict.fromkeys(REPORTED_METRICS, 0)
+    for sequence in CONDITIONS[condition].sequences:
+        a = curves.get(condition, sequence.name, *anchor)
+        t = curves.get(condition, sequence.name, *test)
+        if a and t:
+            values = figures(a, t)
+            for metric in REPORTED_METRICS:
+                counts[metric] += values[metric] is not None
+    return {f"{metric} n": n for metric, n in counts.items()}
+
+
 def encode_fps(curves: Curves, condition: str, test: tuple[str, str]) -> float | None:
     """Frames per CPU second over every point of the curve (user time where it was coded)."""
     frames = CONDITIONS[condition].frames
@@ -331,7 +359,8 @@ def compare(args: argparse.Namespace) -> None:
             rows.append({"condition": condition, "test": encoder, "kind": kind,
                          "anchor": bar[0], "anchor_kind": bar[1], "n": n,
                          "fps": encode_fps(curves, condition, (encoder, kind)),
-                         **{f: None if v is None else round(v, 2) for f, v in means.items()}})
+                         **{f: None if v is None else round(v, 2) for f, v in means.items()},
+                         **reported_counts(curves, condition, bar, (encoder, kind))})
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=1) + "\n")
     if args.ledger:
@@ -356,6 +385,8 @@ def main_local(sub) -> None:
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--metrics", default="lean", choices=("lean", "ctc"),
                    help="lean: only what Weighted and J read (worker.py vmaf_process)")
+    p.add_argument("--references", help="bin/ and cfg/ of the reference software (HM, VVenC)")
+    p.add_argument("--skip", help="job ids (condition/sequence/encoder/qN) not to code")
     p.set_defaults(handler=local)
     c = sub.add_parser("compare", help="BD-rates of local results against stored curves")
     c.add_argument("--results", required=True)

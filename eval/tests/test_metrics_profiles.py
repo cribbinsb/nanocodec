@@ -116,6 +116,21 @@ def test_model_bytes_and_preprocessing_revision_change_v1_not_legacy_identity(tm
         assert fp(metrics.LEGACY_PROFILE) == legacy
 
 
+def test_psnr_cap_is_part_of_every_profiles_identity(tmp_path):
+    """Results under the old 100 dB cap are never mixed with 60 dB ones."""
+    paths, model = model_paths(tmp_path)
+    with patch.object(metrics, 'find_tool', return_value=model), \
+         patch.object(metrics.subprocess, 'run', return_value=SimpleNamespace(stdout='ffmpeg')):
+        fp = lambda profile: fingerprint.measurement_fingerprint(profile, paths)
+        current = {profile: fp(profile) for profile in metrics.PROFILES}
+        uncapped = fingerprint.measurement_fingerprint(metrics.V1_PROFILE, paths, psnr_cap=False)
+        with patch.object(fingerprint, 'PSNR_CAP_DB', 100.0):
+            assert all(fp(profile) != current[profile] for profile in metrics.PROFILES)
+            # cbr.Bench's key leaves the cap out: its points carry it and are re-capped on read
+            assert fingerprint.measurement_fingerprint(metrics.V1_PROFILE, paths,
+                                                       psnr_cap=False) == uncapped
+
+
 def record(structure):
     return EncodeRecord('enc', structure, 'clip', 30, 1, 10, 100, True, '', 'test', 'fp', 'test')
 

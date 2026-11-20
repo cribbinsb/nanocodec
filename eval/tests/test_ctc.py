@@ -97,7 +97,8 @@ def test_y4m_frames_become_raw_i420(tmp_path):
 def _record(job_id: str, kbps: float, psnr: float) -> dict:
     means = {m: psnr for m in worker.MEAN_METRICS}
     return {"id": job_id, "kbps": kbps, "user_s": 1.0, "means": means,
-            "overall_psnr": {"apsnr_y": psnr, "apsnr_cb": psnr, "apsnr_cr": psnr}}
+            "overall_psnr": {"apsnr_y": psnr, "apsnr_cb": psnr, "apsnr_cr": psnr},
+            "per_frame": {m: [psnr] * 2 for m in worker.PER_FRAME}}
 
 
 def test_report_halving_the_rate_at_equal_quality_is_minus_fifty(tmp_path):

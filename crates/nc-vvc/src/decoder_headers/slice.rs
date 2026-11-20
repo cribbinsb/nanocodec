@@ -333,7 +333,9 @@ mod tests {
             None,
         ))
         .unwrap();
-        let p = PictureParameters::parse(&headers::pps(&geometry, false), &s).unwrap();
+        let p =
+            PictureParameters::parse(&headers::pps(&geometry, headers::PpsTools::default()), &s)
+                .unwrap();
         for inter in [false, true] {
             for qp in [0, 22, 48, 63] {
                 let poc = if inter { 255 } else { 0 };

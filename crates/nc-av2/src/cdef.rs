@@ -1117,6 +1117,14 @@ fn unit_errors(
     scratch: &mut CdefScratch,
 ) -> Vec<u64> {
     let mut errors = vec![0; rows * candidates.len()];
+    // Only a single error row may sum neighbouring luma units as one strip.
+    let luma_runs: Vec<_> = if rows == 1 && planes == [PlaneIndex::Y] {
+        units
+            .chunk_by(|left, right| left.y == right.y && left.x + UNIT == right.x)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let CdefScratch {
         unfiltered: unfiltered_planes,
         trial,
@@ -1128,35 +1136,74 @@ fn unit_errors(
         let (width, height) = (unfiltered.width(), unfiltered.height());
         let storage = unfiltered_planes.plane(picture, plane);
         let side = UNIT >> usize::from(plane != PlaneIndex::Y);
-        // Only refreshed rows are read, so earlier contents may stay.
+        // Scoring reads only the measured blocks.
         if trial.len() < width * height {
             trial.resize(width * height, 0);
         }
         let filtered = &mut trial[..width * height];
-        let measured_rows = unit_rows(units, plane, side);
+        let min_luma_contrast = if plane == PlaneIndex::Y {
+            units.iter().map(|unit| unit.var as u32).min()
+        } else {
+            None
+        };
+        let mut measured_rows = None;
         for (index, &candidate) in candidates.iter().enumerate() {
             let measured = if candidate.is_off() {
                 unfiltered
             } else {
-                // Units the filter leaves alone must read unfiltered. Only
-                // the units' rows are measured, so only they are refreshed
-                // (a whole-plane copy per candidate was ~0.6% of the
-                // encoder's instructions at the default row period 8).
-                for &y in &measured_rows {
-                    filtered[y * width..(y + 1) * width].copy_from_slice(unfiltered.row(y));
+                // Only primary-only luma can leave a measured block
+                // untouched. Attenuation is monotonic in contrast, so
+                // test the weakest block once for the whole candidate.
+                if candidate.secondary == 0
+                    && min_luma_contrast.is_some_and(|min| {
+                        nc_dsp::cdef_adjust_strength(candidate.primary, min as i32) == 0
+                    })
+                {
+                    let rows = measured_rows.get_or_insert_with(|| unit_rows(units, plane, side));
+                    for &y in rows.iter() {
+                        filtered[y * width..(y + 1) * width].copy_from_slice(unfiltered.row(y));
+                    }
                 }
                 let mut out = PlaneViewMut::new(filtered, width, width, height)
                     .expect("a plane-sized buffer");
                 filter_units(dsp, storage, &mut out, units, damping, plane, |_| candidate);
                 PlaneView::new(filtered, width, width, height).expect("a plane-sized buffer")
             };
-            for unit in units {
-                errors[row(unit) * candidates.len() + index] +=
-                    unit_sse(dsp, (&original, &measured), unit, side, plane);
+            if luma_runs.is_empty() {
+                for unit in units {
+                    errors[row(unit) * candidates.len() + index] +=
+                        unit_sse(dsp, (&original, &measured), unit, side, plane);
+                }
+            } else {
+                for run in &luma_runs {
+                    errors[index] += luma_run_sse(dsp, (&original, &measured), run);
+                }
             }
         }
     }
     errors
+}
+
+/// Sum a strip with the shared 8x8 SSE row kernel. Short runs use the
+/// existing block kernel.
+fn luma_run_sse(
+    dsp: &Dsp,
+    (original, measured): (&PlaneView<'_>, &PlaneView<'_>),
+    run: &[Unit],
+) -> u64 {
+    const CELLS_PER_VECTOR: usize = 4;
+    if run.len() < CELLS_PER_VECTOR {
+        return run
+            .iter()
+            .map(|unit| unit_sse(dsp, (original, measured), unit, UNIT, PlaneIndex::Y))
+            .sum();
+    }
+    let (x, y) = (run[0].x, run[0].y);
+    let width = run.len() * UNIT;
+    let inside = "CDEF units lie inside the plane";
+    let original = original.sub_view(x, y, width, UNIT).expect(inside);
+    let measured = measured.sub_view(x, y, width, UNIT).expect(inside);
+    dsp.sse(&original, &measured)
 }
 
 /// The rows of `plane` that the blocks of `units` (raster order, `side`

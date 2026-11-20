@@ -216,39 +216,50 @@ impl MotionCell {
 /// reach `-1`). Indexing rows modulo `ring_mask + 1` (`32` rows for 64x64
 /// superblocks, `64` rows for 128x128) keeps the entire store inside L2 cache
 /// (~240 KiB at 1080p instead of 2.1 MiB in DRAM).
+///
+/// As in dav1d's `refmvs` (`src/refmvs.c` `splat_mv`, BSD-2-Clause,
+/// Copyright (c) 2020, `VideoLAN` and dav1d authors; see `THIRD_PARTY.md`),
+/// rows carry [`MAX_BLOCK_MI`] spare units past the frame's right edge and
+/// a block is written unclipped to the frame: units outside the frame are
+/// never read, so a block's runs need no clipping. A block below the
+/// frame's bottom edge stays in its superblock's half of the ring, which
+/// holds nothing else.
 #[derive(Debug, Default)]
 pub(crate) struct MotionGrid {
     cells: Vec<MotionCell>,
-    mi_cols: usize,
-    mi_rows: usize,
+    /// Units per ring row: the frame's columns and the spare ones.
+    stride: usize,
     ring_mask: usize,
 }
 
+/// The widest block, in 4x4 units: the spare units each row carries.
+const MAX_BLOCK_MI: usize = 32;
+
 impl MotionGrid {
-    /// Size the store for a frame of `mi_cols` x `mi_rows` units and
+    /// Size the store for a frame of `mi_cols` units across and
     /// superblock height `sb_mi` (`16` or `32` units). Every unit a reader
     /// visits is written by this frame first, so an existing buffer of the
     /// same stride and ring height is reused in place.
-    pub(crate) fn start_frame(&mut self, mi_cols: usize, mi_rows: usize, sb_mi: usize) {
+    pub(crate) fn start_frame(&mut self, mi_cols: usize, sb_mi: usize) {
         let ring_rows = if sb_mi <= 16 { 32 } else { 64 };
         let ring_mask = ring_rows - 1;
-        if (self.mi_cols, self.ring_mask) != (mi_cols, ring_mask) {
-            self.cells = vec![MotionCell::intra(BlockSize::BLOCK_4X4); mi_cols * ring_rows];
-            self.mi_cols = mi_cols;
+        let stride = mi_cols + MAX_BLOCK_MI;
+        if (self.stride, self.ring_mask) != (stride, ring_mask) {
+            self.cells = vec![MotionCell::intra(BlockSize::BLOCK_4X4); stride * ring_rows];
+            self.stride = stride;
             self.ring_mask = ring_mask;
         }
-        self.mi_rows = mi_rows;
     }
     /// The unit at (`mi_row`, `mi_col`), inside the active superblock window.
     #[inline]
     pub(crate) fn at(&self, mi_row: usize, mi_col: usize) -> &MotionCell {
-        &self.cells[(mi_row & self.ring_mask) * self.mi_cols + mi_col]
+        &self.cells[self.index(mi_row, mi_col)]
     }
     /// The position of unit (`mi_row`, `mi_col`) for [`Self::cell`]:
     /// a horizontal scan along a row steps it by 1.
     #[inline]
     pub(crate) fn index(&self, mi_row: usize, mi_col: usize) -> usize {
-        (mi_row & self.ring_mask) * self.mi_cols + mi_col
+        (mi_row & self.ring_mask) * self.stride + mi_col
     }
     /// The unit at position `index` ([`Self::index`]), inside the ring.
     #[inline]
@@ -256,27 +267,32 @@ impl MotionGrid {
         &self.cells[index]
     }
     /// Record the block `cell` at (`mi_col`, `mi_row`): the units of it
-    /// within [`CANDIDATE_REACH`] of its bottom or right edge, inside the
-    /// frame.
+    /// within [`CANDIDATE_REACH`] of its bottom or right edge, unclipped.
+    ///
+    /// One plain fill per row (a `splat_slice` jump table per row cost 31
+    /// more instructions a block on `aom720_good4_1000k`; fills of a
+    /// constant length per block width had their cells split into one
+    /// store per field instead of one 128-bit store). A block's rows are
+    /// contiguous in the ring (it lies inside one superblock, whose height
+    /// divides the ring's), so the block's area is sliced once and walked
+    /// by rows.
     #[allow(
         clippy::extra_unused_type_parameters,
         reason = "one copy per decoder instance, kept inlined (docs/handoff/high-bit-depth.md)"
     )]
     #[inline]
     pub(crate) fn fill<T>(&mut self, (mi_col, mi_row): (usize, usize), cell: MotionCell) {
-        let w4 = cell.width_mi().min(self.mi_cols - mi_col);
-        let h4 = cell.height_mi().min(self.mi_rows - mi_row);
-        let inner_rows = h4.saturating_sub(CANDIDATE_REACH);
+        let (w4, h4) = (cell.width_mi(), cell.height_mi());
+        let stride = self.stride;
+        let base = self.index(mi_row, mi_col);
+        let area = &mut self.cells[base..base + (h4 - 1) * stride + w4];
         let right = w4.saturating_sub(CANDIDATE_REACH);
-        let stride = self.mi_cols;
-        let mask = self.ring_mask;
-        for dy in 0..inner_rows {
-            let row_base = ((mi_row + dy) & mask) * stride + mi_col;
-            super::block_info::splat_slice(&mut self.cells[row_base + right..row_base + w4], cell);
+        let mut rows = area.chunks_mut(stride);
+        for row in rows.by_ref().take(h4.saturating_sub(CANDIDATE_REACH)) {
+            row[right..w4].fill(cell);
         }
-        for dy in inner_rows..h4 {
-            let row_base = ((mi_row + dy) & mask) * stride + mi_col;
-            super::block_info::splat_slice(&mut self.cells[row_base..row_base + w4], cell);
+        for row in rows {
+            row[..w4].fill(cell);
         }
     }
 }

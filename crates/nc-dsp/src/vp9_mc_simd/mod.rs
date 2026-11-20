@@ -12,6 +12,8 @@ use crate::vp9_mc::Vp9Filter;
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+#[cfg(target_arch = "x86_64")]
+mod avx512;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -27,9 +29,17 @@ pub(crate) type ConvolveFn =
 pub(crate) fn kernel(isa: Isa) -> ConvolveFn {
     match isa {
         #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 | Isa::Avx512 => avx2::convolve,
+        Isa::Avx2 => avx2::convolve,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::convolve,
         #[cfg(target_arch = "aarch64")]
-        Isa::Neon => neon::convolve,
+        Isa::Neon => {
+            if std::arch::is_aarch64_feature_detected!("dotprod") {
+                neon::convolve_dotprod
+            } else {
+                neon::convolve
+            }
+        }
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         Isa::Simd128 => simd128::convolve,
         _ => crate::vp9_mc::vp9_convolve_into,

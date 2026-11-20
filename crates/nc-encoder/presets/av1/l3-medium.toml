@@ -26,3 +26,9 @@ av1.compound = 1
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# The engine's still-level damping arrived with the AV1 Default (2026-11-19,
+# docs/handoff/rate-control.md): not screened for this preset.
+rate.still_level_damping = 0
+# The key-period ledger's saving for the next period's key was dropped from the
+# engine (2026-11-20, docs/handoff/rate-control.md): not screened for this preset.
+rate.period_key_saving = 1

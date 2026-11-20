@@ -110,6 +110,16 @@ impl DeblockParams {
         self.deltas[channel.index()]
     }
 
+    /// These parameters with every channel that is on at offset `delta`,
+    /// clamped to the syntax range.
+    #[must_use]
+    pub fn with_delta(self, delta: i8) -> Self {
+        let delta = delta.clamp(MIN_DELTA, MAX_DELTA);
+        Self {
+            deltas: self.deltas.map(|d| d.map(|_| delta)),
+        }
+    }
+
     /// These parameters with both chroma channels off.
     #[must_use]
     pub fn luma_only(self) -> Self {

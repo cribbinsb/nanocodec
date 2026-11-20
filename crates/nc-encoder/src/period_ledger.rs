@@ -65,9 +65,26 @@ pub(crate) struct PeriodLedger {
     key_in_period: bool,
     /// Bits of the last key: what the next one is expected to need.
     last_key_bits: f64,
+    /// `rate.period_key_saving`: whether a key that starts the next period
+    /// is also saved for in this one when its loan is repaid over that whole
+    /// period (`room`).
+    save_for_next_key: bool,
+    /// Whether a key's loan is repaid over the whole key period (the key
+    /// period no longer than the repay horizon), so the next period repays
+    /// the next key in full.
+    loan_spans_period: bool,
 }
 
 impl PeriodLedger {
+    /// A ledger that saves for a key starting the next period when
+    /// `save_for_next_key` (`rate.period_key_saving`).
+    pub fn new(save_for_next_key: bool) -> Self {
+        Self {
+            save_for_next_key,
+            ..Self::default()
+        }
+    }
+
     /// Plan the frame at stream time `elapsed` (seconds) of a stream at
     /// `fps` whose ledger periods last `period` seconds: the debt is due at
     /// the next multiple of `period` of stream time. Stream time, not the
@@ -80,6 +97,11 @@ impl PeriodLedger {
         self.frames_left = Some(left);
         self.key_due = to_key.filter(|&frames| frames <= left && self.last_key_bits > 0.);
         self.key_in_period = self.key_due.is_some_and(|frames| frames < left);
+    }
+
+    /// Whether a key's loan is repaid over the whole key period.
+    pub fn set_loan_spans_period(&mut self, spans: bool) {
+        self.loan_spans_period = spans;
     }
 
     /// A key of `bits` was coded.
@@ -110,10 +132,23 @@ impl PeriodLedger {
         // (AV1 Default, keys every 2 s: periodic-key pulse +2.25 dB, crowd
         // +3.9, lowlight +4.5); only a key inside the period (requested
         // mid-period) is paid for in it.
+        //
+        // Nor is a still scene's key saved for here when the next period
+        // repays its loan in full (the key period no longer than the repay
+        // horizon, `loan_spans_period`): its whole size becomes that loan,
+        // so a saving here paid for it twice. `external_uvg_volleyball_720p` (60 fps, keys
+        // every 2 s, HEVC Default 505 kbps): the frames before the second key
+        // at 2.5-4.7 kbit budgets (q48-51, 31.2-31.8 dB) against 8.3 kbit
+        // (q43-44) without the boosted first key, each period ending 85-199
+        // kbit under the target line while the windows over the keys ran
+        // over it (600 f: 0.968 of target, rolling 3 s 1.16). With longer
+        // periods (keys every 10 s, a 5 s horizon) the saving stays: dropped
+        // there too, the final-check lost (H.264 Default J +0.47 % [+0.08,
+        // +0.66], HEVC +0.11 %, VP9 +0.31 %).
         let still = fixed_camera(still_share);
         let key = if self.key_in_period {
             self.last_key_bits - uniform
-        } else if self.key_due.is_some() {
+        } else if self.key_due.is_some() && (self.save_for_next_key || !self.loan_spans_period) {
             (self.last_key_bits - uniform) * still
         } else {
             0.

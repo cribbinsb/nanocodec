@@ -32,7 +32,7 @@ pub(super) mod layout {
     }
 }
 
-const fn layout_of(kind: Vp9Filter) -> u8 {
+pub(super) const fn layout_of(kind: Vp9Filter) -> u8 {
     match kind {
         Vp9Filter::Regular | Vp9Filter::Sharp => layout::ALTERNATING,
         Vp9Filter::Smooth => layout::OUTER,
@@ -332,7 +332,7 @@ unsafe fn full_sample<K: RowKernel, const AVG: bool>(
 }
 
 #[inline(always)]
-unsafe fn convolve<K: RowKernel, const N: usize, const LAYOUT: u8, const AVG: bool>(
+pub(super) unsafe fn convolve<K: RowKernel, const N: usize, const LAYOUT: u8, const AVG: bool>(
     kind: Vp9Filter,
     src: &[u8],
     stride: usize,

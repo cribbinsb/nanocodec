@@ -104,7 +104,11 @@ mod av1_avx2;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
-mod av1_avx512;
+pub(crate) mod avx2_byte_dot;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+pub(crate) mod av1_avx512;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
@@ -116,7 +120,7 @@ pub(crate) mod neon;
 
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
-mod neon_dotprod;
+pub(crate) mod neon_dotprod;
 
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
@@ -141,6 +145,14 @@ mod av1_simd128;
 ))]
 #[allow(unsafe_code)]
 mod av1_simd128_dot;
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    target_feature = "relaxed-simd"
+))]
+#[allow(unsafe_code)]
+pub(crate) mod simd128_byte_dot;
 
 /// Taps of the AV1 filter.
 pub(crate) const TAPS: usize = 8;

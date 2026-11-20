@@ -405,6 +405,14 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn pair_sum_u8(src: &[u8]) -> Self {
+        use core::arch::aarch64::{vld1q_u8, vpaddlq_u8};
+        let src = &src[..16];
+        // SAFETY: NEON kernels only; `src` holds 16 bytes.
+        unsafe { Self(vreinterpretq_s16_u16(vpaddlq_u8(vld1q_u8(src.as_ptr())))) }
+    }
+
+    #[inline(always)]
     fn load_i8(src: &[i8]) -> Self {
         use core::arch::aarch64::{vld1_s8, vmovl_s8};
         let src = &src[..8];

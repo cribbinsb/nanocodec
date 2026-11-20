@@ -5,8 +5,12 @@
 //! symmetric pair sums with wrapping 16-bit `mul`/`mla` (exact: see
 //! `avx2.rs` for the bound) and adds `128 · centre` with `sqadd`, whose
 //! bounds are the intermediate clamp; the vertical pass accumulates with
-//! widening `smull`/`smlal` and narrows with saturating shifts. The
-//! self-guided rows are [`super::sgr_lanes`] on two `int32x4_t`.
+//! widening `smull`/`smlal` and narrows with saturating shifts; complete
+//! stripes run them in the shared schedule ([`super::wiener_stripe`],
+//! with five-tap forms where an outer tap is zero). 8-bit
+//! self-guided stripes run whole ([`super::sgr_neon`] in the shared
+//! [`super::sgr_stripe`] schedule); the self-guided rows, which the other
+//! callers use, are [`super::sgr_lanes`] on two `int32x4_t`.
 
 #![allow(
     clippy::many_single_char_names,
@@ -30,10 +34,12 @@ use core::arch::aarch64::{
 use super::kernels::{Kernels, WIENER_ROWS};
 use super::sgr_lanes::{SgrLanes, sgr_kernels};
 use super::wiener::{ROUND1, SATURATION_BIAS, SATURATION_OFFSET, WienerTaps};
+use super::wiener_stripe::WienerLanes;
 
 /// This ISA's table.
 pub(super) const KERNELS: Kernels = Kernels {
-    wiener_stripe: None,
+    wiener_stripe: Some(wiener_stripe),
+    sgr_stripe: Some(super::sgr_neon::sgr_stripe),
     wiener_h,
     wiener_v,
     box_sums3,
@@ -49,71 +55,86 @@ pub(super) const KERNELS: Kernels = Kernels {
 /// Outputs per Wiener step.
 const STEP: usize = 8;
 
+/// `blocks` horizontal steps of the row at `src` into `out`: widen to 16
+/// bits, take the shifted rows with `ext`, multiply the symmetric pair
+/// sums (the outer pair skipped when `FIVE`: its tap is zero).
+///
+/// # Safety
+///
+/// NEON must be enabled in the caller; `src` holds `blocks · 8 + 8`
+/// readable bytes and `out` `blocks · 8` writable values.
+#[inline(always)]
+unsafe fn h_row<const FIVE: bool>(taps: WienerTaps, src: *const u8, out: *mut i16, blocks: usize) {
+    let [c0, c1, c2, c3] = taps;
+    // SAFETY: the contract.
+    unsafe {
+        let offset = vdupq_n_s16(SATURATION_OFFSET);
+        let bias = vdupq_n_s16(SATURATION_BIAS);
+        for block in 0..blocks {
+            let j = block * STEP;
+            let x = vld1q_u8(src.add(j));
+            let low = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(x)));
+            let high = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(x)));
+            let p3 = vextq_s16::<3>(low, high);
+            let b = vaddq_s16(vextq_s16::<1>(low, high), vextq_s16::<5>(low, high));
+            let c = vaddq_s16(vextq_s16::<2>(low, high), vextq_s16::<4>(low, high));
+            let centre = vmulq_n_s16(p3, c3);
+            let centre = if FIVE {
+                centre
+            } else {
+                vmlaq_n_s16(centre, vaddq_s16(low, vextq_s16::<6>(low, high)), c0)
+            };
+            let sum = vmlaq_n_s16(vmlaq_n_s16(centre, b, c1), c, c2);
+            let saturated = vqaddq_s16(sum, vaddq_s16(vshlq_n_s16::<7>(p3), offset));
+            vst1q_s16(out.add(j), vaddq_s16(vshrq_n_s16::<3>(saturated), bias));
+        }
+    }
+}
+
 #[target_feature(enable = "neon")]
 unsafe fn wiener_h(src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
     let blocks = n.div_ceil(STEP);
-    // Every load and store below stays within these bounds.
+    // Every load and store stays within these bounds.
     assert!(src.len() >= blocks * STEP + STEP && out.len() >= blocks * STEP);
-    let [c0, c1, c2, c3] = taps;
-    let offset = vdupq_n_s16(SATURATION_OFFSET);
-    let bias = vdupq_n_s16(SATURATION_BIAS);
-    for block in 0..blocks {
-        let j = block * STEP;
-        // SAFETY: NEON is enabled; bytes j .. j + 16 lie in `src` (checked
-        // above).
-        let x = unsafe { vld1q_u8(src.as_ptr().add(j)) };
-        let low = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(x)));
-        let high = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(x)));
-        let p3 = vextq_s16::<3>(low, high);
-        let a = vaddq_s16(low, vextq_s16::<6>(low, high));
-        let b = vaddq_s16(vextq_s16::<1>(low, high), vextq_s16::<5>(low, high));
-        let c = vaddq_s16(vextq_s16::<2>(low, high), vextq_s16::<4>(low, high));
-        let sum = vmlaq_n_s16(
-            vmlaq_n_s16(vmlaq_n_s16(vmulq_n_s16(p3, c3), a, c0), b, c1),
-            c,
-            c2,
-        );
-        let saturated = vqaddq_s16(sum, vaddq_s16(vshlq_n_s16::<7>(p3), offset));
-        let result = vaddq_s16(vshrq_n_s16::<3>(saturated), bias);
-        // SAFETY: NEON is enabled; values j .. j + 8 lie in `out`.
-        unsafe { vst1q_s16(out.as_mut_ptr().add(j), result) };
-    }
+    // SAFETY: NEON is enabled; both extents checked above.
+    unsafe { h_row::<false>(taps, src.as_ptr(), out.as_mut_ptr(), blocks) };
 }
 
 /// Outputs per vertical Wiener step: two 8-lane halves.
 const V_STEP: usize = 2 * STEP;
 
 /// Eight vertical Wiener outputs at `rows[k] + j`, saturated to 16 bits
-/// unsigned (`clamp(Σ >> 11, 0, 65535)`).
+/// unsigned (`clamp(Σ >> 11, 0, 65535)`); rows 0 and 6 are not read when
+/// `FIVE` (their tap is zero).
 ///
 /// # Safety
 ///
 /// NEON must be available and every `rows[k]` readable for 8 values at
 /// `j`.
 #[inline(always)]
-unsafe fn vertical8(rows: &[*const i16; WIENER_ROWS], j: usize, taps: WienerTaps) -> uint16x8_t {
+unsafe fn vertical8<const FIVE: bool>(
+    rows: &[*const i16; WIENER_ROWS],
+    j: usize,
+    taps: WienerTaps,
+) -> uint16x8_t {
     let [c0, c1, c2, c3] = taps;
     // SAFETY: the caller's contract.
     unsafe {
         let row = |k: usize| vld1q_s16(rows[k].add(j));
-        let a = vaddq_s16(row(0), row(6));
         let b = vaddq_s16(row(1), row(5));
         let c = vaddq_s16(row(2), row(4));
         let d = row(3);
-        let low = vmlal_n_s16(
-            vmlal_n_s16(
-                vmlal_n_s16(vmull_n_s16(vget_low_s16(a), c0), vget_low_s16(b), c1),
-                vget_low_s16(c),
-                c2,
-            ),
+        let mut low = vmlal_n_s16(
+            vmlal_n_s16(vmull_n_s16(vget_low_s16(b), c1), vget_low_s16(c), c2),
             vget_low_s16(d),
             c3,
         );
-        let high = vmlal_high_n_s16(
-            vmlal_high_n_s16(vmlal_high_n_s16(vmull_high_n_s16(a, c0), b, c1), c, c2),
-            d,
-            c3,
-        );
+        let mut high = vmlal_high_n_s16(vmlal_high_n_s16(vmull_high_n_s16(b, c1), c, c2), d, c3);
+        if !FIVE {
+            let a = vaddq_s16(row(0), row(6));
+            low = vmlal_n_s16(low, vget_low_s16(a), c0);
+            high = vmlal_high_n_s16(high, a, c0);
+        }
         vcombine_u16(
             vqshrun_n_s32::<{ ROUND1 as i32 }>(low),
             vqshrun_n_s32::<{ ROUND1 as i32 }>(high),
@@ -121,32 +142,103 @@ unsafe fn vertical8(rows: &[*const i16; WIENER_ROWS], j: usize, taps: WienerTaps
     }
 }
 
+/// `n` vertical output bytes at `dst` from the seven rows.
+///
+/// # Safety
+///
+/// NEON must be enabled in the caller; every row holds `ceil(n / 16) · 16`
+/// readable values and `dst` `n` writable bytes.
+#[inline(always)]
+unsafe fn v_row<const FIVE: bool>(
+    rows: &[*const i16; WIENER_ROWS],
+    taps: WienerTaps,
+    dst: *mut u8,
+    n: usize,
+) {
+    // SAFETY: the contract; a partial last step goes through `tail`.
+    unsafe {
+        for block in 0..n.div_ceil(V_STEP) {
+            let j = block * V_STEP;
+            let bytes = vcombine_u8(
+                vqmovn_u16(vertical8::<FIVE>(rows, j, taps)),
+                vqmovn_u16(vertical8::<FIVE>(rows, j + STEP, taps)),
+            );
+            if j + V_STEP <= n {
+                vst1q_u8(dst.add(j), bytes);
+            } else {
+                let mut tail = [0u8; V_STEP];
+                vst1q_u8(tail.as_mut_ptr(), bytes);
+                core::ptr::copy_nonoverlapping(tail.as_ptr(), dst.add(j), n - j);
+            }
+        }
+    }
+}
+
 #[target_feature(enable = "neon")]
 unsafe fn wiener_v(rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8]) {
-    let n = dst.len();
-    let blocks = n.div_ceil(V_STEP);
+    let blocks = dst.len().div_ceil(V_STEP);
     // Every load below stays within these bounds.
     assert!(rows.iter().all(|row| row.len() >= blocks * V_STEP));
     let pointers = rows.map(<[i16]>::as_ptr);
-    for block in 0..blocks {
-        let j = block * V_STEP;
-        // SAFETY: NEON is enabled; values j .. j + 16 of every row lie in
-        // it (checked above).
-        let bytes = unsafe {
-            vcombine_u8(
-                vqmovn_u16(vertical8(&pointers, j, taps)),
-                vqmovn_u16(vertical8(&pointers, j + STEP, taps)),
-            )
-        };
-        if j + V_STEP <= n {
-            // SAFETY: NEON is enabled; bytes j .. j + 16 lie in `dst`.
-            unsafe { vst1q_u8(dst.as_mut_ptr().add(j), bytes) };
-        } else {
-            let mut tail = [0u8; V_STEP];
-            // SAFETY: NEON is enabled; the store covers `tail`.
-            unsafe { vst1q_u8(tail.as_mut_ptr(), bytes) };
-            dst[j..].copy_from_slice(&tail[..n - j]);
-        }
+    // SAFETY: NEON is enabled; input extents checked, `dst` is its slice.
+    unsafe { v_row::<false>(&pointers, taps, dst.as_mut_ptr(), dst.len()) };
+}
+
+/// The NEON rows of [`super::wiener_stripe`].
+struct WienerNeon;
+
+impl WienerLanes for WienerNeon {
+    type Horizontal = WienerTaps;
+    type Vertical = WienerTaps;
+    const H_STEP: usize = STEP;
+    const V_STEP: usize = V_STEP;
+
+    #[inline(always)]
+    unsafe fn horizontal(taps: WienerTaps) -> WienerTaps {
+        taps
+    }
+
+    #[inline(always)]
+    unsafe fn vertical(taps: WienerTaps) -> WienerTaps {
+        taps
+    }
+
+    #[inline(always)]
+    unsafe fn h_row<const FIVE: bool>(
+        taps: WienerTaps,
+        src: *const u8,
+        out: *mut i16,
+        blocks: usize,
+    ) {
+        // SAFETY: the trait's contract.
+        unsafe { h_row::<FIVE>(taps, src, out, blocks) }
+    }
+
+    #[inline(always)]
+    unsafe fn v_row<const FIVE: bool>(
+        rows: &[*const i16; WIENER_ROWS],
+        taps: WienerTaps,
+        dst: *mut u8,
+        n: usize,
+    ) {
+        // SAFETY: the trait's contract.
+        unsafe { v_row::<FIVE>(rows, taps, dst, n) }
+    }
+}
+
+/// A complete Wiener stripe ([`super::wiener_stripe::run`]).
+#[target_feature(enable = "neon")]
+unsafe fn wiener_stripe(
+    horizontal: WienerTaps,
+    vertical: WienerTaps,
+    source: (&[u8], usize),
+    size: (usize, usize),
+    ring: &mut [i16],
+    output: (&mut nc_common::PlaneViewMut<'_>, usize, usize),
+) {
+    // SAFETY: NEON is enabled (this function's target feature).
+    unsafe {
+        super::wiener_stripe::run::<WienerNeon>(horizontal, vertical, source, size, ring, output);
     }
 }
 

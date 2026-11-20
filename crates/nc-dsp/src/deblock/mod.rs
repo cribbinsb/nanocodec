@@ -74,6 +74,8 @@ pub(crate) mod hevc;
 pub(crate) mod hevc_chroma;
 #[allow(unsafe_code)]
 pub(crate) mod hevc_high;
+#[allow(unsafe_code)]
+pub(crate) mod lanes;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -222,6 +224,8 @@ pub(crate) struct DeblockFns {
     /// Row-major AV1 edge descriptors.
     pub av1_grid: av1_grid::GridFn,
     pub av1_runs: runs::Av1RunsFn,
+    /// AV1 passes in the lane layout ([`lanes`]), where the ISA has it.
+    pub av1_lanes: Option<lanes::Av1LanesFn>,
     pub hevc_luma_runs: runs::HevcLumaRunsFn,
     pub hevc_chroma_runs: runs::HevcChromaRunsFn,
     pub vvc_luma_runs: runs::VvcLumaRunsFn,

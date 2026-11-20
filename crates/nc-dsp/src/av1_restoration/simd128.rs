@@ -31,6 +31,7 @@ use crate::simd::packed_pair;
 /// This ISA's table.
 pub(super) const KERNELS: Kernels = Kernels {
     wiener_stripe: None,
+    sgr_stripe: None,
     wiener_h,
     wiener_v,
     box_sums3,

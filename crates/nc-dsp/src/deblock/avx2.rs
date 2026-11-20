@@ -23,6 +23,7 @@ pub(crate) unsafe fn deblock_fns() -> DeblockFns {
         av1_line: super::av1_line::avx2,
         av1_grid: super::av1_grid::avx2,
         av1_runs: super::runs::avx2::av1,
+        av1_lanes: Some(av1_lanes),
         hevc_luma_runs: super::runs::avx2::luma,
         hevc_chroma_runs: super::runs::avx2::chroma,
         vvc_luma_runs: super::runs::avx2::vvc,
@@ -44,6 +45,28 @@ pub(super) unsafe fn av1_edge(
         super::av1_packed::filter_edge::<crate::lpf_bytes::avx2::B>(
             plane, q0, across, along, lines, filter,
         );
+    }
+}
+
+/// The AV1 passes in the lane layout, 32 lines per vector.
+#[target_feature(enable = "avx2")]
+unsafe fn av1_lanes(
+    plane: &mut [u8],
+    stride: usize,
+    vertical: bool,
+    chroma: bool,
+    lanes: &mut super::lanes::LoopFilterLanes,
+) {
+    use super::lanes::kernel::{Av1Chroma, Av1Luma};
+    use crate::lpf_bytes::avx2_full::B;
+    // SAFETY: AVX2 is enabled for this function (dispatch contract).
+    unsafe {
+        match (vertical, chroma) {
+            (true, false) => lanes.filter::<B, Av1Luma, true>(plane, stride),
+            (false, false) => lanes.filter::<B, Av1Luma, false>(plane, stride),
+            (true, true) => lanes.filter::<B, Av1Chroma, true>(plane, stride),
+            (false, true) => lanes.filter::<B, Av1Chroma, false>(plane, stride),
+        }
     }
 }
 

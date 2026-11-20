@@ -48,6 +48,30 @@ av1.keyframe_filter_intra = 0
 # broad_independent_v1, every class); Jetson -3.0% time, x86 -4.5%
 # instructions (150 f, the chart clips). (2026-11-11)
 av1.keyframe_intra_modes = 0
+# Key frames no longer DC-only (owner decision, 2026-11-19: DC-only keys look
+# bad): DC, the smooth modes, Paeth, vertical and horizontal ranked by SATD,
+# re-ranked by the transform-domain model RD (KEY_LEVEL_RATE), the winner
+# coded without a further trial; blocks DC predicts within 150 squared
+# error per sample stay DC. AV1 Faster key (720p chart clips, q195) against
+# DC-only: +25..+31 % key instructions, bytes -1.0..-1.9 %, PSNR-Y
+# 0..+0.08 dB. CBR keys every 2 s (6 static + 6 moving clips): key PSNR-Y
+# +0.075 / +0.062 dB, whole-stream +0.024 / +0.020 dB. Pool L1 (AV1 Faster):
+# quality +0.13 % (neutral), J_real +1.27 % [+0.96, +1.59] at dCPU +1.9 %:
+# J-neutral at about +2 % CPU, landed on the owner's call. Full final-check
+# owed. docs/handoff/vp9-av2.md "AV2 on the Pareto frontier".
+# DC, smooth, vertical and horizontal only (the engine's core set): smooth
+# vertical / horizontal and Paeth add 7 % of the gain (6 VAL clips, modelled
+# RD over DC) for 3 of the 7 predictions.
+av1.keyframe_satd_modes = 4
+av1.keyframe_model_candidates = 7
+av1.keyframe_intra_rd_candidates = 1
+av1.keyframe_flat_gate = 150
+# The gate per size: threshold x3 per doubling above 8x8 (mode choice pays on
+# small blocks; fitted on every-mode-RD-costed key dumps, no lambda term).
+# With the core set at gate 150: AV1 Faster key +13 % over DC-only (seven
+# modes at gate 300 +18 %, at one gate 150 +28 %), bytes -1.1..-1.9 %
+# (-0.5..-1.4 %, -1.0..-1.9 %), PSNR-Y -0.01..+0.05 dB.
+av1.keyframe_flat_gate_size_scale = 3
 decision.intra_directional = 0
 av1.inter_intra_search = 0
 #
@@ -100,12 +124,8 @@ light.av1.skip_bias_energy = 0.25
 # static-recovery fix: tests/static_recovery.rs).
 # Pinned before AV1 Default's seed refinement gate (2026-11-14).
 light.decision.seed_refine_ratio = 0
-# Pinned before AV1 Default's key-period ceiling (2026-11-14).
-rate.period_ceiling = 0
 # Pinned before AV1 Default's unified reference plan (2026-11-14).
 structure.unified = 0
-# Pinned before AV1 Default's key still boost (2026-11-14).
-rate.key_still_boost = 0
 # Pinned before AV1 Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
 # The engine's depth removal before 2026-11-15, pinned so this preset's
@@ -198,3 +218,15 @@ layers.propagation_prekey = 1
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# The Default's rate set (2026-11-20 ladder spacing, as AV1 Fast): key-period
+# ceiling, key still boost 6 and still-level damping. Pool L1 (draw
+# 2026-11-20, k 0.6) quality -2.00%, x86 instructions 0.0%; L3 (108 clips) J
+# -1.23% [-2.04, -0.55] BETTER; final-check (32 clips, 600 f) quality -1.34%
+# [-1.78, -0.82]; its pulse guard trips on external_uvg_volleyball_720p
+# alone (the key still boost's finer 2 s keys, as in the Default), adopted
+# on judgement. The Default's other cheap levers lose at k 0.6 here: key
+# filter intra -0.20, directional intra +0.15, chroma delta +0.59, rounding
+# +0.88 (pan class guard); inter-intra search does not change streams.
+rate.period_ceiling = 1
+rate.key_still_boost = 6
+rate.still_level_damping = 0.5

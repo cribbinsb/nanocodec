@@ -4,11 +4,17 @@
 //! to show which block sizes, modes, motion, transforms, QPs and filters an
 //! encoder actually used. The input is Annex-B or an IVF file of Annex-B
 //! access units (H.264, HEVC), Annex-B (VVC) or IVF (AV1, VP9, AV2); `eval/nceval/streamstats.py` summarises the output.
+//!
+//! `--records FILE` (HEVC) also writes every picture's block records, for
+//! block-by-block comparisons of two encoders' streams of one source: per
+//! picture in decoding order a little-endian `u32` record count, then the
+//! records as `nc_common::stream_stats::pack_records` lays them out
+//! (little-endian `i16`).
 
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 
-use nc_common::stream_stats::StreamStats;
+use nc_common::stream_stats::{StreamStats, pack_records};
 use nc_encoder::Codec;
 
 use crate::framing::{is_ivf, read_ivf, read_ivf_annex_b};
@@ -19,6 +25,7 @@ struct StatArgs {
     codec: Codec,
     input: PathBuf,
     json: Option<PathBuf>,
+    records: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<StatArgs, String> {
@@ -40,6 +47,7 @@ fn parse(args: &[String]) -> Result<StatArgs, String> {
         codec,
         input,
         json: get("--json").map(PathBuf::from),
+        records: get("--records").map(PathBuf::from),
     })
 }
 
@@ -48,13 +56,22 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     let args = parse(args)?;
     let data = stdio::read_all(&args.input)?;
     let stats = match args.codec {
-        Codec::Hevc => hevc(&data)?,
+        Codec::Hevc => hevc(&data, args.records.is_some())?,
         Codec::H264 => h264(&data)?,
         Codec::Av1 => av1(&data)?,
         Codec::Vp9 => vp9(&data)?,
         Codec::Vvc => vvc(&data)?,
         Codec::Av2 => av2(&data)?,
     };
+    if let Some(path) = &args.records {
+        if args.codec != Codec::Hevc {
+            return Err("--records is for --codec hevc".into());
+        }
+        stdio::write_all(path, &packed_history(&stats))?;
+        if args.json.is_none() {
+            return Ok(());
+        }
+    }
     let json = stats.to_json();
     match &args.json {
         Some(path) => stdio::write_all(path, json.as_bytes()),
@@ -78,9 +95,26 @@ fn for_each_packet(
     }
 }
 
-fn hevc(data: &[u8]) -> Result<StreamStats, String> {
+/// Every picture's records as `--records` writes them (module doc).
+fn packed_history(stats: &StreamStats) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut packed = Vec::new();
+    for picture in stats.history() {
+        let count = u32::try_from(picture.len()).expect("a picture has fewer than 2^32 blocks");
+        out.extend_from_slice(&count.to_le_bytes());
+        pack_records(picture, &mut packed);
+        out.extend(packed.iter().flat_map(|v| v.to_le_bytes()));
+    }
+    out
+}
+
+fn hevc(data: &[u8], history: bool) -> Result<StreamStats, String> {
     let mut decoder = nc_hevc::Decoder::new();
-    decoder.collect_stats(StreamStats::default());
+    decoder.collect_stats(if history {
+        StreamStats::with_history()
+    } else {
+        StreamStats::default()
+    });
     for_each_packet(data, |packet| {
         decoder.push(packet).map_err(|e| e.to_string())?;
         while decoder.next_output().is_some() {}

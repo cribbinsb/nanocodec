@@ -47,7 +47,7 @@ impl QuantizationSettings {
 /// block QP).
 #[derive(Debug)]
 pub(super) struct BlockQp {
-    group: QuantGroup,
+    pub(super) group: QuantGroup,
     settings: Option<QuantizationSettings>,
     /// The current frame's quantisations by QP, built on first use.
     by_qp: Vec<Option<FrameQuantization>>,

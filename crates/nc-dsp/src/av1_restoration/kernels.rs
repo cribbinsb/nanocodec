@@ -21,7 +21,8 @@ use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 use super::AV1_LR_OVERREAD;
 use super::self_guided::{
-    blend, blend_at, box_ab, box_ab_at, box_sums, filter_around, filter_between, filter_on,
+    SgrStripe, SgrStripeScratch, blend, blend_at, box_ab, box_ab_at, box_sums, filter_around,
+    filter_between, filter_on,
 };
 use super::wiener::{WienerTaps, h_row, h_row_at, v_row, v_row_at};
 
@@ -33,6 +34,15 @@ pub(crate) type WienerStripeFn = unsafe fn(
     window: (&[u8], usize),
     size: (usize, usize),
     ring: &mut [i16],
+    dst: (&mut PlaneViewMut<'_>, usize, usize),
+);
+/// Complete self-guided stripe kernel (8-bit), with the contract of
+/// [`super::self_guided::self_guided`]; it checks every extent itself.
+pub(crate) type SgrStripeFn = unsafe fn(
+    params: SgrStripe,
+    window: (&[u8], usize),
+    size: (usize, usize),
+    scratch: &mut SgrStripeScratch,
     dst: (&mut PlaneViewMut<'_>, usize, usize),
 );
 /// Wiener rows the vertical filter reads.
@@ -69,6 +79,7 @@ pub(crate) type BlendFn =
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
     pub(crate) wiener_stripe: Option<WienerStripeFn>,
+    pub(crate) sgr_stripe: Option<SgrStripeFn>,
     pub(crate) wiener_h: WienerHFn,
     pub(crate) wiener_v: WienerVFn,
     pub(crate) box_sums3: BoxSumsFn,
@@ -84,6 +95,7 @@ pub(crate) struct Kernels {
 /// The scalar references.
 pub(crate) const SCALAR: Kernels = Kernels {
     wiener_stripe: None,
+    sgr_stripe: None,
     wiener_h: h_row,
     wiener_v: v_row,
     box_sums3: box_sums::<u8, 1>,
@@ -130,6 +142,18 @@ pub(crate) trait RowKernels<T: Sample> {
         ring: &mut [i16],
         dst: (&mut PlaneViewMut<'_, T>, usize, usize),
     ) -> bool;
+    /// A complete self-guided stripe, when the kernels have one (else
+    /// `false`).
+    fn sgr_stripe(
+        &self,
+        _params: SgrStripe,
+        _window: (&[T], usize),
+        _size: (usize, usize),
+        _scratch: &mut SgrStripeScratch,
+        _dst: (&mut PlaneViewMut<'_, T>, usize, usize),
+    ) -> bool {
+        false
+    }
     /// [`Kernels::wiener_h`].
     fn wiener_h(&self, src: &[T], taps: WienerTaps, out: &mut [i16], n: usize);
     /// [`Kernels::wiener_v`].
@@ -202,6 +226,22 @@ impl RowKernels<u8> for Kernels {
         dst: (&mut PlaneViewMut<'_>, usize, usize),
     ) -> bool {
         Kernels::wiener_stripe(self, taps, window, size, ring, dst)
+    }
+    fn sgr_stripe(
+        &self,
+        params: SgrStripe,
+        window: (&[u8], usize),
+        size: (usize, usize),
+        scratch: &mut SgrStripeScratch,
+        dst: (&mut PlaneViewMut<'_>, usize, usize),
+    ) -> bool {
+        let Some(kernel) = self.sgr_stripe else {
+            return false;
+        };
+        // SAFETY: the table is selected for a supported ISA. The stripe
+        // kernel checks window, scratch and destination extents.
+        unsafe { kernel(params, window, size, scratch, dst) };
+        true
     }
     fn wiener_h(&self, src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
         Kernels::wiener_h(self, src, taps, out, n);

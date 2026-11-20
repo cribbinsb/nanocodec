@@ -49,6 +49,20 @@ impl VvcBackend {
         }
     }
 
+    /// The quantization group's state (with block QP), for a coding trial
+    /// to put back (`cu_trial.rs`); the QP map needs none, as every coding
+    /// of a CU rewrites its entries.
+    pub(super) fn quant_group(&self) -> Option<QuantGroup> {
+        self.block_qp.as_ref().map(|b| b.group)
+    }
+
+    /// Put back a state [`Self::quant_group`] returned.
+    pub(super) fn restore_quant_group(&mut self, group: Option<QuantGroup>) {
+        if let (Some(block_qp), Some(group)) = (self.block_qp.as_mut(), group) {
+            block_qp.group = group;
+        }
+    }
+
     /// Start the quantization group of the CTB at luma (`x`, `y`).
     pub(super) fn begin_quant_group(&mut self, x: usize, y: usize) {
         if let Some(block_qp) = self.block_qp.as_mut() {

@@ -206,6 +206,12 @@ nc_encoder::param_group! {
         /// measured in docs/handoff/vp9-faster.md.
         intra_mode_search: 0.0, [0.0, 2.0],
             "intra mode choice: 0 tries all ten modes, 1 the four basic ones and the two directions beside the best, 2 luma DC/V/H and chroma DC only (libvpx real-time)",
+        /// 1 by default (the prediction measure decides alone).
+        intra_rd_candidates: 1.0, [1.0, 10.0],
+            "intra luma modes (the cheapest by the intra_mode_estimate measure, each with its best chroma mode) coded at the largest transform and decided by squared error plus lambda times token and mode bits; 1 takes the cheapest uncoded: higher is slower, better intra",
+        /// 1 by default (trials quantise as the final coding does).
+        intra_rd_trellis: 1.0, [0.0, 1.0],
+            "with vp9.intra_rd_candidates above 1, 1 quantises the mode trials with the trellis where the final coding uses it, 0 with plain quantisation: 0 is faster",
         /// 4 with `shave_gap` 8 (HEVC's pair): J_real TRAIN proxy-6 -1.2%
         /// (full -1.5%, low -1.0%; NEG -3.3%, MS-SSIM -1.4%, VMAF -1.3%;
         /// every class better), no guards; +8.2% Jetson / +5.3% x86 CPU
@@ -401,6 +407,8 @@ struct Scratch {
     /// One inter plane block's 4x4 SADs against its prediction, raster
     /// order ([`plane_quad_sads`]).
     quad_sads: Vec<u16>,
+    /// Mode trials quantise without the trellis (`vp9.intra_rd_trellis` 0).
+    plain_trial: bool,
 }
 
 impl Scratch {
@@ -867,17 +875,13 @@ impl CodecBackend for Vp9Backend {
     /// 720p 20 f CBR 400, callgrind): +1.7%, +0.1%, +0.8%. VP9 Fast keeps
     /// the engine values.
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
-        // A fixed-QP key planned up to 6 QP units coarser under camera motion
-        // (`rate.fixed_qp_moving_key`, engine `moving_camera.rs`: the offset ramps from 1 luma
-        // sample per frame to the cadence gate's limit and fades on a fixed camera; fixed QP only,
-        // so CBR streams are unchanged): a moving camera replaces the picture before later frames
-        // inherit a fine key. Found on VC-1K phone calls (docs/handoff/rd-depth.md). Fixed QP,
-        // matched QP: worst six VC-1K clips of the Fixed QP sample (against x265 medium), with the
-        // plain 1-sample threshold, J -4.3 % [-5.8, -3.1]. Pool draw fixedqp-2026-11-19, adopt
-        // level: J -1.9 % [-3.5, -0.8] (n 47), no clip worse (19 changed; static clips unchanged).
-        // HEVC Default takes the same value; it becomes the engine default once H.264 and VVC are
-        // screened. The other presets pin it off.
-        ("rate.fixed_qp_moving_key", 6.0),
+        // Key intra modes by coded cost among the SATD-best three, trials
+        // without the trellis: all-intra PSNR-YUV BD -3.00 % at +43 % key
+        // instructions (CBR 150 f +1.7-1.9 %). Pool (k 0.1, dCPU 1.8, draw
+        // 2026-11-19) L3 J -0.44 % [-0.72, -0.17] n 108; final-check -0.70 %
+        // [-0.99, -0.42], no guard (docs/analysis/rd-mode-audit-2026-11-19.md).
+        ("vp9.intra_rd_candidates", 3.0),
+        ("vp9.intra_rd_trellis", 0.0),
         // Tuned jointly (eval/nceval/tune_pool.py, study
         // vp9-default-eq2-2026-11-11, equal x86 CPU): planner lambda 2 ->
         // 3.16 (fewer splits). Study clips J -1.97%, L3 of the study's draw
@@ -1085,6 +1089,7 @@ impl CodecBackend for Vp9Backend {
                 best_coded: Vec::with_capacity(MAX_TX_BLOCKS),
                 kept_chroma: Vec::with_capacity(MAX_TX_BLOCKS),
                 quad_sads: vec![0; QUAD_SADS],
+                plain_trial: false,
             },
             random: None,
             trellis: Vp9Trellis::from_params(&QuantParams::from_overrides(&config.params)),
@@ -1660,10 +1665,9 @@ impl CodecBackend for Vp9Backend {
                 Some(self.predict_inter_block(block, &position, mv, source, engine_ref, recon))
             }
         };
-        let intra_modes = inter.is_none().then(|| match &mut self.random {
-            Some(random) => random.intra_modes(&CODED_INTRA_MODES),
-            None => self.choose_intra_modes(block, tx, source, recon),
-        });
+        let intra_modes = inter
+            .is_none()
+            .then(|| self.intra_modes(block, tx, source, recon));
         let drop_residual = self
             .random
             .as_mut()
@@ -2380,6 +2384,19 @@ impl Vp9Backend {
         source: &Picture,
         recon: &Picture,
     ) -> (IntraMode, IntraMode) {
+        self.intra_mode_candidates(block, tx, (source, recon), 1)[0].0
+    }
+
+    /// The `keep` cheapest luma modes of an intra block by the measure of
+    /// [`Self::choose_intra_modes`], cheapest first, each with its cheapest
+    /// chroma mode (conditioned on that luma mode) and its luma cost.
+    fn intra_mode_candidates(
+        &self,
+        block: &Block,
+        tx: TxSize,
+        (source, recon): (&Picture, &Picture),
+        keep: usize,
+    ) -> Vec<((IntraMode, IntraMode), f32)> {
         // Speed lever (`vp9.inter_intra_dc_only`): intra blocks of inter
         // frames take DC without a search (`1.0` = all non-key frames in VP9
         // Default; `2.0` = interior blocks of >=360p non-reset inter frames).
@@ -2387,7 +2404,7 @@ impl Vp9Backend {
             && self.params.inter_intra_dc_only >= 0.5
             && (self.params.inter_intra_dc_only < 1.5 || self.interior_spatial_inter_block(block))
         {
-            return (IntraMode::Dc, IntraMode::Dc);
+            return vec![((IntraMode::Dc, IntraMode::Dc), 0.0)];
         }
         let (row, col) = (block.y >> MI_LOG2, block.x >> MI_LOG2);
         let whole_block = self.params.intra_mode_estimate >= 0.5;
@@ -2397,57 +2414,56 @@ impl Vp9Backend {
             (recon::IntraMetric::Sse, self.lambda())
         };
         let search = IntraSearch::of(self.params.intra_mode_search);
-        let pick = |plane: PlaneIndex, plane_tx: TxSize, costs: &[f32; INTRA_MODES]| {
-            // Speed heuristic (`vp9.intra_mode_search` 2, libvpx real-time
-            // speeds' intra masks): chroma takes DC unsearched and luma
-            // chooses among DC, V and H. Measured in
-            // docs/handoff/vp9-faster.md.
-            if search == IntraSearch::RealTime && plane != PlaneIndex::Y {
-                return IntraMode::Dc;
-            }
-            let estimate_tx = if whole_block {
-                let side_log2 = block.log2_size() - u8::from(plane != PlaneIndex::Y);
-                TxSize::from_log2(side_log2.clamp(TxSize::Tx4.log2(), TxSize::Tx32.log2()))
-            } else {
-                plane_tx
+        let rank =
+            |plane: PlaneIndex, plane_tx: TxSize, costs: &[f32; INTRA_MODES], keep: usize| {
+                // Speed heuristic (`vp9.intra_mode_search` 2, libvpx real-time
+                // speeds' intra masks): chroma takes DC unsearched and luma
+                // chooses among DC, V and H. Measured in
+                // docs/handoff/vp9-faster.md.
+                if search == IntraSearch::RealTime && plane != PlaneIndex::Y {
+                    return vec![(IntraMode::Dc, 0.0)];
+                }
+                let estimate_tx = if whole_block {
+                    let side_log2 = block.log2_size() - u8::from(plane != PlaneIndex::Y);
+                    TxSize::from_log2(side_log2.clamp(TxSize::Tx4.log2(), TxSize::Tx32.log2()))
+                } else {
+                    plane_tx
+                };
+                let first = recon::tx_blocks(plane, block.x, block.y, block.size(), estimate_tx)
+                    .next()
+                    .expect("a block has transform blocks");
+                let cost = |mode: IntraMode| {
+                    let distortion = recon::intra_prediction_cost(
+                        &self.dsp,
+                        recon,
+                        source,
+                        &first,
+                        (mode, metric),
+                        row > 0,
+                        col > 0,
+                    );
+                    distortion as f32 + bit_weight * costs[mode as usize]
+                };
+                // The engine's shared ranking keeps the cheapest.
+                let ranked = |modes: &[IntraMode], keep: usize| {
+                    nc_encoder::rank_intra(modes.iter().copied(), keep, &cost)
+                };
+
+                match search {
+                    IntraSearch::All => return ranked(&CODED_INTRA_MODES, keep),
+                    IntraSearch::RealTime => return ranked(&REAL_TIME_LUMA_MODES, keep),
+                    IntraSearch::Pruned => {}
+                }
+                // Speed heuristic (`vp9.intra_mode_search`): the four
+                // non-directional modes, then the two directions beside the
+                // winner's. Measured in the commit message.
+                let mut base = ranked(&BASE_INTRA_MODES, keep);
+                let refined = ranked(&directions_beside(base[0].0), keep);
+                base.extend(refined);
+                base.sort_by(|a, b| a.1.total_cmp(&b.1));
+                base.truncate(keep);
+                base
             };
-            let first = recon::tx_blocks(plane, block.x, block.y, block.size(), estimate_tx)
-                .next()
-                .expect("a block has transform blocks");
-            let cost = |mode: IntraMode| {
-                let distortion = recon::intra_prediction_cost(
-                    &self.dsp,
-                    recon,
-                    source,
-                    &first,
-                    (mode, metric),
-                    row > 0,
-                    col > 0,
-                );
-                (distortion as f32 + bit_weight * costs[mode as usize], mode)
-            };
-            let best = |modes: &mut dyn Iterator<Item = IntraMode>| {
-                modes
-                    .map(cost)
-                    .min_by(|a, b| a.0.total_cmp(&b.0))
-                    .expect("at least one mode")
-            };
-            match search {
-                IntraSearch::All => return best(&mut CODED_INTRA_MODES.into_iter()).1,
-                IntraSearch::RealTime => return best(&mut REAL_TIME_LUMA_MODES.into_iter()).1,
-                IntraSearch::Pruned => {}
-            }
-            // Speed heuristic (`vp9.intra_mode_search`): the four
-            // non-directional modes, then the two directions beside the
-            // winner's. Measured in the commit message.
-            let base = best(&mut BASE_INTRA_MODES.into_iter());
-            let refined = best(&mut directions_beside(base.1).into_iter());
-            if refined.0 < base.0 {
-                refined.1
-            } else {
-                base.1
-            }
-        };
         let costs = &self.mode_costs;
         let (y_costs, uv_costs) = if self.header.key {
             let (above, left) = contexts::key_frame_modes(&self.grids.grid, row, col);
@@ -2460,9 +2476,95 @@ impl Vp9Backend {
         } else {
             uv_tx_size(block.log2_size(), tx)
         };
-        let y = pick(PlaneIndex::Y, tx, y_costs);
-        let uv = pick(PlaneIndex::U, uv_tx, &uv_costs[y as usize]);
-        (y, uv)
+        rank(PlaneIndex::Y, tx, y_costs, keep)
+            .into_iter()
+            .map(|(y, cost)| {
+                (
+                    (y, rank(PlaneIndex::U, uv_tx, &uv_costs[y as usize], 1)[0].0),
+                    cost,
+                )
+            })
+            .collect()
+    }
+
+    /// The modes of an intra block: random syntax, the RD choice among
+    /// `vp9.intra_rd_candidates`, or the prediction measure alone.
+    fn intra_modes(
+        &mut self,
+        block: &Block,
+        tx: TxSize,
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> (IntraMode, IntraMode) {
+        if let Some(random) = &mut self.random {
+            return random.intra_modes(&CODED_INTRA_MODES);
+        }
+        let keep = self.params.intra_rd_candidates.round().max(1.0) as usize;
+        if keep > 1 && !self.lossless {
+            self.rd_intra_modes(block, tx, source, recon, keep)
+        } else {
+            self.choose_intra_modes(block, tx, source, recon)
+        }
+    }
+
+    /// Mode bits of an intra block's luma and chroma modes at its contexts.
+    fn intra_mode_bits(&self, block: &Block, (y, uv): (IntraMode, IntraMode)) -> f32 {
+        let costs = &self.mode_costs;
+        if self.header.key {
+            let (row, col) = (block.y >> MI_LOG2, block.x >> MI_LOG2);
+            let (above, left) = contexts::key_frame_modes(&self.grids.grid, row, col);
+            costs.kf_y[above as usize][left as usize][y as usize]
+                + costs.kf_uv[y as usize][uv as usize]
+        } else {
+            costs.y[size_group(block.log2_size())][y as usize] + costs.uv[y as usize][uv as usize]
+        }
+    }
+
+    /// The intra modes of a block decided by coded cost
+    /// (`vp9.intra_rd_candidates`): the cheapest few by the prediction
+    /// measure are each coded at the largest transform, all planes, and the
+    /// one with the lowest squared error plus λ · (token and mode bits) is
+    /// kept. Why: SATD of the prediction scores residual energy the
+    /// quantiser removes; on AV1 keys SATD top 1 left 70 % of DC-only's RD
+    /// loss against a transform-costed search, top 2 + RD 29 %
+    /// (docs/handoff/vp9-av2.md "AV2 on the Pareto frontier"). Leaves
+    /// `recon` holding some trial; the caller codes the winner.
+    fn rd_intra_modes(
+        &mut self,
+        block: &Block,
+        tx: TxSize,
+        source: &Picture,
+        recon: &mut Picture,
+        keep: usize,
+    ) -> (IntraMode, IntraMode) {
+        let candidates = self.intra_mode_candidates(block, tx, (source, recon), keep);
+        if candidates.len() == 1 {
+            return candidates[0].0;
+        }
+        let lambda = self.lambda();
+        // Speed heuristic (`vp9.intra_rd_trellis` 0): the trials compare
+        // modes, so plain quantisation ranks them nearly as the trellis
+        // would at a fraction of the work. Measured in
+        // docs/analysis/rd-mode-audit-2026-11-19.md.
+        self.scratch.plain_trial = self.params.intra_rd_trellis < 0.5;
+        let mut best = (f32::INFINITY, candidates[0].0);
+        for (modes, _) in candidates {
+            self.code_residuals(
+                block,
+                (tx, TrialPlanes::All),
+                Some(modes),
+                ResidualDrop::None,
+                source,
+                recon,
+            );
+            let cost = self.reconstruction_sse(block, source, recon) as f32
+                + lambda * (self.token_bits(false) + self.intra_mode_bits(block, modes));
+            if cost < best.0 {
+                best = (cost, modes);
+            }
+        }
+        self.scratch.plain_trial = false;
+        best.1
     }
 
     /// Keep the coded state of the current transform-size trial (its
@@ -3018,6 +3120,9 @@ impl Vp9Backend {
     /// also `quant.trellis_chroma` and the squared chroma/luma step ratio
     /// (x264/HM chroma λ practice).
     fn trellis_lambda(&self, plane: PlaneIndex) -> Option<f32> {
+        if self.scratch.plain_trial {
+            return None;
+        }
         let trellis = self
             .trellis
             .as_ref()

@@ -16,10 +16,8 @@
 //! `P` dot products instead of `2P` widening multiplies and loads.
 
 use super::av1_simd128::{Raw, Sink, round};
-use core::arch::wasm32::{
-    i8x16_relaxed_swizzle, i8x16_shuffle, i16x8_add, i16x8_relaxed_dot_i8x16_i7x16, i16x8_splat,
-    u8x16, v128, v128_load64_lane, v128_load64_zero, v128_xor,
-};
+use super::simd128_byte_dot::{self as bytes, interleave as interleave_bytes};
+use core::arch::wasm32::{i16x8_add, i16x8_splat, v128, v128_load64_zero, v128_xor};
 
 /// Prepared 8-lane byte-pair filter for `P` tap pairs (`T = 2P` taps).
 pub(super) struct DotFilter<const P: usize> {
@@ -27,46 +25,6 @@ pub(super) struct DotFilter<const P: usize> {
     mags: [v128; P],
     indices: [v128; P],
     bias: v128,
-}
-
-/// Source byte lane in [`load_row8`] for 8-wide output and `T` (`4`, `6` or `8`) taps.
-const fn row_lane<const T: usize>(s: usize) -> u8 {
-    (if s < 8 { s } else { s + 9 - T }) as u8
-}
-
-const fn swizzle_pair<const T: usize>(pair: usize) -> [u8; 16] {
-    let mut idx = [0u8; 16];
-    let mut i = 0;
-    while i < 8 {
-        idx[2 * i] = row_lane::<T>(i + 2 * pair);
-        idx[2 * i + 1] = row_lane::<T>(i + 2 * pair + 1);
-        i += 1;
-    }
-    idx
-}
-
-#[inline]
-fn bytes16(b: [u8; 16]) -> v128 {
-    u8x16(
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
-        b[14], b[15],
-    )
-}
-
-/// Load `8 + T - 1` readable horizontal bytes at `src` into lanes matching [`row_lane`].
-#[inline]
-unsafe fn load_row8<const T: usize>(src: *const u8) -> v128 {
-    // SAFETY: caller guarantees `8 + T - 1` readable bytes starting at `src`.
-    unsafe {
-        let low = v128_load64_zero(src.cast());
-        v128_load64_lane::<1>(low, src.add(T - 1).cast())
-    }
-}
-
-/// Interleave the first 8 bytes of two rows (`(a[i], b[i])` for `i in 0..8`).
-#[inline]
-fn interleave_bytes(a: v128, b: v128) -> v128 {
-    i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(a, b)
 }
 
 impl<const P: usize> DotFilter<P> {
@@ -82,10 +40,8 @@ impl<const P: usize> DotFilter<P> {
         for j in 0..P {
             let (t0, t1) = (taps[2 * j], taps[2 * j + 1]);
             sign_xor[j] = i16x8_splat((flip(t0) | (flip(t1) << 8)) as i16);
-            let (m0, m1) = (t0.unsigned_abs(), t1.unsigned_abs());
-            debug_assert!(m0 <= 127 && m1 <= 127);
-            mags[j] = i16x8_splat((m0 | (m1 << 8)) as i16);
-            indices[j] = bytes16(swizzle_pair::<T>(j));
+            mags[j] = bytes::magnitudes(t0, t1);
+            indices[j] = bytes::mask(bytes::indices::<T>(2 * j, 2 * j + 1));
         }
         // Keep swizzle vectors opaque so V8 holds them in registers across the
         // row loop rather than rematerializing byte constants per iteration.
@@ -112,19 +68,19 @@ impl<const P: usize> DotFilter<P> {
     #[inline]
     pub(super) unsafe fn horizontal8<const T: usize>(&self, src: *const u8) -> v128 {
         // SAFETY: caller guarantees `8 + T - 1` readable bytes at `src`.
-        let loaded = unsafe { load_row8::<T>(src) };
+        let loaded = unsafe { bytes::load_row::<8, T>(src) };
         let mut sum = self.bias;
         for j in 0..P {
-            let pair = i8x16_relaxed_swizzle(loaded, self.indices[j]);
-            let signed = v128_xor(pair, self.sign_xor[j]);
-            sum = i16x8_add(sum, i16x8_relaxed_dot_i8x16_i7x16(signed, self.mags[j]));
+            let products =
+                bytes::horizontal(loaded, self.indices[j], self.sign_xor[j], self.mags[j]);
+            sum = i16x8_add(sum, products);
         }
         sum
     }
 
     #[inline]
     fn dot_pair(&self, j: usize, pair: v128) -> v128 {
-        i16x8_relaxed_dot_i8x16_i7x16(v128_xor(pair, self.sign_xor[j]), self.mags[j])
+        bytes::dot(v128_xor(pair, self.sign_xor[j]), self.mags[j])
     }
 
     #[inline]

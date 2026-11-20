@@ -20,6 +20,7 @@ use nc_encoder::{
 
 mod alf_search;
 mod block_qp;
+mod cu_trial;
 mod motion_choice;
 
 use alf_search::{AlfSearch, AlfSearchParams, AlfSkip};
@@ -160,6 +161,12 @@ nc_encoder::param_group! {
             "added to the intra-period-derived fixed-QP key-frame QP offset (HEVC's hevc.key_qp_offset_delta): higher spends more on key frames",
         chroma_qp_offset: CHROMA_QP_OFFSET, [-12.0, 6.0],
             "chroma QP offset folded into the SPS chroma QP table (HEVC's 4:2:0 map of QP + offset, never above the luma QP; 6 is the identity): higher spends fewer bits on chroma",
+        trial_full_intra: 0.0, [0.0, 1.0],
+            "1 gives intra CUs coded while a whole-CU pricing trial is open (decision.cu_price_*) the key pictures' direction search instead of the P-picture one (HEVC's hevc.trial_full_intra): slower trials, better intra alternatives",
+        deblock_beta_offset: 0.0, [-6.0, 6.0],
+            "pps_luma_beta_offset_div2 (HEVC's hevc.deblock_beta_offset; chroma inferred equal): higher treats more edges as blocking (more filtering)",
+        deblock_tc_offset: 0.0, [-6.0, 6.0],
+            "pps_luma_tc_offset_div2 (HEVC's hevc.deblock_tc_offset; chroma inferred equal): higher allows larger deblocking corrections",
         // Default off until screened (docs/handoff/vvc.md "Multi-type tree").
         mtt: 0.0, [0.0, 2.0],
             "inter-slice multi-type tree (sps_max_mtt_hierarchy_depth_inter_slice 1): 0 quadtree only, 1 adds binary splits of quadtree leaves, 2 binary and ternary; the engine plans the rectangular CUs (planner.rect_*): more partitioning work, finer motion boundaries",
@@ -209,8 +216,11 @@ nc_encoder::param_group! {
         /// Off: TRAIN gained (real-use k 0.1 `J_real` −0.9% with the
         /// planner's leaf cost), but VAL `bodycam_airport` lost +14.5% with
         /// three guards. That clip runs at QP 25–32 (PSNR-Y 47–51 dB), where
-        /// the approximate 64-point forward (2x2 mean, 32-point DCT) costs
-        /// 0.4–0.6 dB; it needs an exact forward at fine quantisers.
+        /// 64-point units lose 0.4–0.5 dB. Not the approximate forward: an
+        /// exact one (2026-11-19, `docs/handoff/vvc.md`) kept most of the
+        /// loss. The cause is the zero-out on large static leaves, which the
+        /// planner now prices (`full_spectrum_log2`, docs/handoff/vvc.md
+        /// "Zero-out").
         tx64: 0.0, [0.0, 1.0],
             "with vvc.ctu_size 64 and vvc.mtt 0, 1 codes 64x64 CUs with one 64-point DCT-II transform unit of their 32x32 lowest frequencies (sps_max_luma_transform_size_64_flag) instead of four 32x32 ones: cheaper residual for large smooth blocks, an approximate forward transform",
     }
@@ -442,8 +452,31 @@ pub struct VvcBackend {
     planning_scratch: std::cell::RefCell<Box<recon::QuantScratch>>,
     /// Block-level QP (`cu_qp_delta`), once the engine enables it.
     block_qp: Option<block_qp::BlockQp>,
+    /// The PPS deblocking offsets.
+    deblock_offsets: crate::filter::Offsets,
+    /// The open whole-CU coding trial's saved state (`cu_trial.rs`).
+    cu_trial: cu_trial::CuTrial,
 }
 impl VvcParams {
+    /// log2 of `vvc.ctu_size`, which must be 32 or 64.
+    fn ctu_log2(&self) -> Result<u8, ConfigError> {
+        let ctu_size = self.ctu_size.round() as usize;
+        let ctu_log2 = ctu_size.ilog2() as u8;
+        if ctu_size.is_power_of_two() && headers::CTU_LOG2_RANGE.contains(&ctu_log2) {
+            Ok(ctu_log2)
+        } else {
+            Err(ConfigError::Unsupported("vvc.ctu_size must be 32 or 64"))
+        }
+    }
+
+    /// The PPS deblocking offsets.
+    fn deblock_offsets(&self) -> crate::filter::Offsets {
+        crate::filter::Offsets {
+            beta_div2: self.deblock_beta_offset.round() as i8,
+            tc_div2: self.deblock_tc_offset.round() as i8,
+        }
+    }
+
     /// How intra sub-partitions are searched.
     fn isp_search(&self) -> IspSearch {
         IspSearch {
@@ -605,9 +638,6 @@ impl CodecBackend for VvcBackend {
         // and crowd points 4.9 -> 6.7 per 1000 frames.
         // Inert within one key period. The other VVC presets pin it off.
         ("rate.period_ceiling", 1.0),
-        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
-        // only (2026-11-18); pinned off here until this codec is screened.
-        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool levels,
         // draw 2026-11-14: L1 -1.67% [-2.18, -0.39]; L2 -2.78% [-3.62, -1.89];
@@ -748,6 +778,35 @@ impl CodecBackend for VvcBackend {
         // BETTER, -0.4%; four candidates alone: proxy-6 +0.1% (stopped).
         // docs/handoff/vvc.md "vvc-tmvp".
         ("vvc.temporal_mvp", 1.0),
+        // 64-point transform units for 64x64 CUs (sps_max_luma_transform_size_64_flag,
+        // H.266 §7.4.3.4) instead of four 32x32, in pictures from QP 34: HEVC's
+        // TU16 lesson (a transform-size cap cost flat phone video; docs/analysis/
+        // port-hevc-wins-2026-11-19.md). Six worst VC-1K clips (fixed QP) J
+        // -3.5 [-5.8, -1.1]; instructions (gate, 30 f, Johnny / KristenAndSara /
+        // WestWindEasy) -5.9 / -5.6 / -0.3 % at QP 36, -0.3 / -0.6 / -1.1 % at
+        // QP 30. Ungated it failed the final-check's static guard (+4.5 %: keys
+        // up to 2 dB worse at fine QPs; an exact 64-point forward left them as
+        // bad, docs/handoff/vvc.md), hence a QP floor 34 (`vvc.tx64_min_qp`) until
+        // 2026-11-19. Gated,
+        // pool (CBR, k 0.1, dCPU -3.9, draw 2026-11-19): L1 -2.43 % [-3.60,
+        // -1.30], L2 -1.44 % [-1.96, -0.99], L3 (single, n 108) -0.86 % [-1.42,
+        // -0.32], quality -0.47 % (videocall -3.1, pan -1.4, lowlight -1.2,
+        // static +0.5, drone +2.6), verdict WORSE on two guards judged
+        // marginal: long-window pulse +0.27 dB (limit +0.25), rate ceiling
+        // 0.48 % over target (anchor 0.17 % + 0.25); final-check (600 f, n 36,
+        // keys every 10 s) J -0.75 % [-1.33, -0.18] BETTER, no guard (static
+        // +0.1 %, dKeyN -0.05 dB); keys every 2 s (12 clips): pulse +0.01 dB,
+        // worst-1 % Y -3.6 %. The floor's loss was the zero-out: static P
+        // pictures planned whole 64x64 leaves, 78 % of whose residual energy
+        // lay above frequency 32 (`pool_meva_hospital_g301` P pictures -2.2 dB
+        // PSNR-Y without the floor). Since 2026-11-19 the shared planner prices
+        // it (`full_spectrum_log2`, `planner.zero_out_gate`) and the floor is
+        // gone: pool (k 0.1, dCPU -0.4) L3 -0.16 % [-0.75, +0.43], final-check
+        // +0.33 % [-0.06, +0.71], no guard, hospital -1.6 %; adopted as the
+        // shared mechanism over the stopgap (CLAUDE.md "Shared first").
+        // Fast pins tx64 0 (its own screen, 2026-11-11); Slow pins 0 (not
+        // screened).
+        ("vvc.tx64", 1.0),
         ("vvc.merge_candidates", 6.0),
         // Seven VVC Fast speed levers, screened as one bundle: SAO classes
         // searched every 4th P picture and none in all-skip P CTUs; full RD
@@ -828,11 +887,7 @@ impl CodecBackend for VvcBackend {
     fn new(config: &EncoderConfig) -> Result<Self, ConfigError> {
         check_config(config)?;
         let params = VvcParams::from_overrides(&config.params);
-        let ctu_size = params.ctu_size.round() as usize;
-        let ctu_log2 = ctu_size.ilog2() as u8;
-        if !ctu_size.is_power_of_two() || !headers::CTU_LOG2_RANGE.contains(&ctu_log2) {
-            return Err(ConfigError::Unsupported("vvc.ctu_size must be 32 or 64"));
-        }
+        let ctu_log2 = params.ctu_log2()?;
         let partitioning =
             crate::coding_tree::Partitioning::of_mode(params.mtt.round() as u8, ctu_log2);
         let geometry = headers::Geometry::new(config.width, config.height, ctu_log2)
@@ -928,10 +983,22 @@ impl CodecBackend for VvcBackend {
             )
             .with_slots(nc_encoder::reference_slots(config.temporal_layers)),
             block_qp: None,
+            deblock_offsets: params.deblock_offsets(),
+            cu_trial: cu_trial::CuTrial::new(params.trial_full_intra >= 0.5),
         })
     }
     fn superblock_log2(&self) -> u8 {
         self.geometry.ctu_log2
+    }
+    /// A 64x64 CU with `vvc.tx64` is one 64-point unit coding its 32x32
+    /// lowest frequencies (H.266 §7.4.11.x zero-out); without it, four
+    /// 32x32 units code every frequency.
+    fn full_spectrum_log2(&self) -> u8 {
+        if self.tools.large_transforms {
+            transform_tree::MAX_TB_LOG2
+        } else {
+            self.geometry.ctu_log2
+        }
     }
     fn min_block_log2(&self) -> u8 {
         headers::MIN_QT_LOG2
@@ -1041,6 +1108,18 @@ impl CodecBackend for VvcBackend {
                 out.push(mv);
             }
         }
+    }
+    fn begin_cu_trial(&mut self, block: &Block, recon: &Picture) -> bool {
+        self.save_cu_trial(block, recon)
+    }
+    fn cu_trial_cost(&mut self, block: &Block, source: &Picture, recon: &Picture) -> f32 {
+        self.coded_cu_cost(block, source, recon)
+    }
+    fn undo_cu_trial(&mut self, recon: &mut Picture) {
+        self.restore_cu_trial(recon);
+    }
+    fn end_cu_trial(&mut self) {
+        self.cu_trial.end();
     }
     fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
         let ref_idx = self.active_ref;
@@ -1332,6 +1411,7 @@ impl CodecBackend for VvcBackend {
         let qp = crate::filter::DeblockQp {
             frame: self.quantizers().qp,
             blocks: self.block_qp.as_ref().map(|b| (&b.map, &self.chroma_qp)),
+            offsets: self.deblock_offsets,
         };
         crate::filter::apply(&self.dsp, recon, &self.motion, &qp);
     }
@@ -1726,7 +1806,11 @@ impl VvcBackend {
             (width, height),
             ch,
         );
-        let size = nc_dsp::BlockSize::new(width, height).expect("a transform unit size");
+        // Intra sub-partition strips one or two samples thin (`vvc.isp_inter`,
+        // H.266 §8.4.5.1) have no distortion kernel; they keep their levels.
+        let Some(size) = nc_dsp::BlockSize::new(width, height) else {
+            return false;
+        };
         let original = source
             .plane(plane)
             .region(x as isize, y as isize, width, height)
@@ -1938,7 +2022,13 @@ impl VvcBackend {
         );
         headers::nal(
             headers::PPS_NUT,
-            &headers::pps(&self.geometry, self.block_qp.is_some()),
+            &headers::pps(
+                &self.geometry,
+                headers::PpsTools {
+                    block_qp: self.block_qp.is_some(),
+                    deblock: self.deblock_offsets,
+                },
+            ),
             out,
         );
     }
@@ -2100,7 +2190,7 @@ impl VvcBackend {
         source: &Picture,
         reconstruction: &Picture,
     ) -> Option<crate::intra::LumaChoice> {
-        let search = if self.inter {
+        let search = if self.inter && !self.cu_trial.full_intra() {
             self.inter_intra_search.search(
                 block,
                 (self.geometry.coded_width, self.geometry.ctu_size()),

@@ -250,9 +250,9 @@ impl<T: Pixel> FrameDecoder<'_, T> {
     /// [`Self::compound_frame_references`] in a frame with skip mode or
     /// compound blocks: `SkipModeFrame[]`, or `comp_mode` and the compound
     /// references.
-    // Out of line: our own streams code no compound frames.
-    #[cold]
-    #[inline(never)]
+    // Inline: libaom streams read it in most blocks of their compound
+    // frames (our own streams code none, so never reach it).
+    #[inline]
     fn read_compound_frame_references(
         &mut self,
         r: &mut SymbolReader<'_>,

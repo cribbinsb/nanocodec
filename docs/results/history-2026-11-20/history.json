@@ -1,0 +1,2546 @@
+{
+ "view": "fresh-psnr",
+ "front_base_day": "2026-11-09",
+ "zero": "x264-medium~psnr",
+ "zero_label": "x264 medium --tune zerolatency,psnr",
+ "fresh_clips": 136,
+ "ladder_kbps": [
+  150,
+  300,
+  600,
+  1200
+ ],
+ "low_ladder_kbps": [
+  40,
+  75
+ ],
+ "frames": 150,
+ "timing_rung_kbps": 600,
+ "slice": {
+  "clipset": "independent_fresh_2026-11-13.json",
+  "rule": "per content class, the first clips by SHA-256 of the clip name",
+  "per_class": {
+   "crowd": 6,
+   "pan": 6,
+   "static": 6,
+   "bodycam": 5,
+   "lowlight": 5
+  },
+  "clips": [
+   {
+    "name": "ind_personpath22_uid_vid_00177",
+    "class": "crowd",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_cctv_uid_vid_00054",
+    "class": "crowd",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_personpath22_uid_vid_00090",
+    "class": "crowd",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_mot_mot20_01",
+    "class": "crowd",
+    "width": 960,
+    "height": 540,
+    "fps": 25.0
+   },
+   {
+    "name": "ind_personpath22_uid_vid_00195",
+    "class": "crowd",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_mp4_pedestrians2",
+    "class": "crowd",
+    "width": 960,
+    "height": 540,
+    "fps": 25.0
+   },
+   {
+    "name": "ind_jaad_video_0318",
+    "class": "pan",
+    "width": 960,
+    "height": 540,
+    "fps": 30.0
+   },
+   {
+    "name": "ind_jaad_video_0151",
+    "class": "pan",
+    "width": 960,
+    "height": 540,
+    "fps": 30.0
+   },
+   {
+    "name": "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
+    "class": "pan",
+    "width": 1280,
+    "height": 720,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_jaad_video_0042",
+    "class": "pan",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_bdd100k_mot_bdd_00d4b6b7_a0b1a3e0",
+    "class": "pan",
+    "width": 1280,
+    "height": 720,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_bdd100k_mot_bdd_00d77344_9fe25620",
+    "class": "pan",
+    "width": 1280,
+    "height": 720,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_otw_homes_00310",
+    "class": "static",
+    "width": 404,
+    "height": 720,
+    "fps": 30.0
+   },
+   {
+    "name": "ind_mp4_london",
+    "class": "static",
+    "width": 1280,
+    "height": 720,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_base_ukof_ld_indoor_light_ohcam_003",
+    "class": "static",
+    "width": 1280,
+    "height": 720,
+    "fps": 15.0
+   },
+   {
+    "name": "ind_personpath22_uid_vid_00079",
+    "class": "static",
+    "width": 960,
+    "height": 540,
+    "fps": 24.0
+   },
+   {
+    "name": "ind_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
+    "class": "static",
+    "width": 960,
+    "height": 536,
+    "fps": 30.0
+   },
+   {
+    "name": "ind_antare_bwc_intruder_removed_fixed_01",
+    "class": "static",
+    "width": 960,
+    "height": 540,
+    "fps": 10.0
+   },
+   {
+    "name": "ind_mot_mot17_05",
+    "class": "bodycam",
+    "width": 640,
+    "height": 480,
+    "fps": 14.0
+   },
+   {
+    "name": "ind_bwc_videotext_video317",
+    "class": "bodycam",
+    "width": 424,
+    "height": 240,
+    "fps": 30.0
+   },
+   {
+    "name": "ind_bwc_videotext_video289",
+    "class": "bodycam",
+    "width": 424,
+    "height": 240,
+    "fps": 30.0
+   },
+   {
+    "name": "ind_bwc_videotext_video190",
+    "class": "bodycam",
+    "width": 424,
+    "height": 240,
+    "fps": 30.0
+   },
+   {
+    "name": "ind_bwc_videotext_video321",
+    "class": "bodycam",
+    "width": 424,
+    "height": 240,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_personpath22_uid_vid_00026",
+    "class": "lowlight",
+    "width": 960,
+    "height": 540,
+    "fps": 23.976
+   },
+   {
+    "name": "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
+    "class": "lowlight",
+    "width": 640,
+    "height": 360,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_jaad_video_0023",
+    "class": "lowlight",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_bwc_videotext_video28",
+    "class": "lowlight",
+    "width": 480,
+    "height": 270,
+    "fps": 29.97
+   },
+   {
+    "name": "ind_bwc_videotext_video354",
+    "class": "lowlight",
+    "width": 424,
+    "height": 240,
+    "fps": 29.97
+   }
+  ]
+ },
+ "clips_used": 28,
+ "excluded": [],
+ "low_rung_clips": [
+  "ind_personpath22_uid_vid_00177",
+  "ind_mot_mot20_01",
+  "ind_personpath22_uid_vid_00195",
+  "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
+  "ind_jaad_video_0042",
+  "ind_otw_homes_00310",
+  "ind_personpath22_uid_vid_00079",
+  "ind_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
+  "ind_bwc_videotext_video317",
+  "ind_bwc_videotext_video190",
+  "ind_bwc_videotext_video321",
+  "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
+  "ind_bwc_videotext_video28",
+  "ind_bwc_videotext_video354"
+ ],
+ "timing": {
+  "anchor_times": "docs/results/bd-vs-speed-timing-x86.json",
+  "machine": "AWS c8a.large (Zen 5), one core"
+ },
+ "references": {
+  "x264-medium~psnr": {
+   "j": 0.0,
+   "iqr": [
+    0.0,
+    0.0
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "x264 medium, metric-tuned (--tune psnr)",
+   "owner": "x264",
+   "fps_x86": 112.77
+  },
+  "x264-medium": {
+   "j": 12.92,
+   "iqr": [
+    8.86,
+    17.41
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "x264 medium",
+   "owner": "x264",
+   "fps_x86": 112.77
+  },
+  "openh264-baseline": {
+   "j": 23.67,
+   "iqr": [
+    -15.94,
+    46.45
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "openh264",
+   "owner": "openh264",
+   "fps_x86": 524.65
+  },
+  "x264-ultrafast": {
+   "j": 43.66,
+   "iqr": [
+    18.59,
+    61.46
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "x264 ultrafast",
+   "owner": "x264",
+   "fps_x86": 1016.98
+  },
+  "x264-veryfast": {
+   "j": 10.77,
+   "iqr": [
+    1.44,
+    18.58
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "x264 veryfast",
+   "owner": "x264",
+   "fps_x86": 363.31
+  },
+  "x265-ultrafast": {
+   "j": -16.73,
+   "iqr": [
+    -30.5,
+    -6.53
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "x265 ultrafast",
+   "owner": "x265",
+   "fps_x86": 85.13
+  },
+  "x265-superfast": {
+   "j": -22.66,
+   "iqr": [
+    -33.49,
+    -15.63
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "x265 superfast",
+   "owner": "x265",
+   "fps_x86": 57.92
+  },
+  "x265-medium": {
+   "j": -22.89,
+   "iqr": [
+    -29.35,
+    -17.63
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "x265 medium",
+   "owner": "x265",
+   "fps_x86": 37.96
+  },
+  "svtav1-m8": {
+   "j": -35.74,
+   "iqr": [
+    -42.16,
+    -26.67
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "SVT-AV1 M8",
+   "owner": "SVT-AV1",
+   "fps_x86": 80.8
+  },
+  "svtav1-m10": {
+   "j": -28.45,
+   "iqr": [
+    -36.31,
+    -20.13
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "SVT-AV1 M10",
+   "owner": "SVT-AV1",
+   "fps_x86": 228.89
+  },
+  "svtav1-m12": {
+   "j": -22.37,
+   "iqr": [
+    -33.51,
+    -12.93
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "SVT-AV1 M12",
+   "owner": "SVT-AV1",
+   "fps_x86": 408.65
+  },
+  "svtav1-m13": {
+   "j": -20.35,
+   "iqr": [
+    -30.79,
+    -9.21
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "SVT-AV1 M13",
+   "owner": "SVT-AV1",
+   "fps_x86": 445.37
+  },
+  "libvpx-vp9-cpu7": {
+   "j": 12.28,
+   "iqr": [
+    3.88,
+    16.73
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "libvpx VP9 rt 7",
+   "owner": "libvpx",
+   "fps_x86": 122.7
+  },
+  "libvpx-vp9-cpu9": {
+   "j": 7.66,
+   "iqr": [
+    2.86,
+    12.55
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "libvpx VP9 rt 9",
+   "owner": "libvpx",
+   "fps_x86": 204.4
+  },
+  "libaom-av1-cpu8": {
+   "j": -20.6,
+   "iqr": [
+    -26.86,
+    -14.76
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "libaom rt 8",
+   "owner": "libaom",
+   "fps_x86": 68.76
+  },
+  "libaom-av1-cpu10": {
+   "j": -20.89,
+   "iqr": [
+    -27.7,
+    -12.97
+   ],
+   "clips_scored": 28,
+   "chained": 0,
+   "flagged": false,
+   "label": "libaom rt 10",
+   "owner": "libaom",
+   "fps_x86": 90.47
+  }
+ },
+ "days": [
+  {
+   "date": "2026-11-07",
+   "commit": "e9e1c0cb6",
+   "values": {
+    "h264": {
+     "j": 14.75,
+     "iqr": [
+      -0.38,
+      36.25
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 283.85
+    }
+   },
+   "frontier": [
+    "h264"
+   ],
+   "caption": [
+    "Since the first commit (2026-11-06): the shared engine with H.264, HEVC and AV1; first CBR rate control (2c8eb080f).",
+    "H.264 only here: this build's HEVC and AV1 refuse sizes that are not multiples of 8; its only H.264 preset file (h264-balanced) is not on the speed ladder."
+   ],
+   "activity": {
+    "since": "2026-11-06",
+    "commits": 446,
+    "lines": {
+     "rust": [
+      81476,
+      17010
+     ],
+     "eval_tools": [
+      12793,
+      1031
+     ],
+     "docs": [
+      10147,
+      2672
+     ],
+     "other": [
+      1127,
+      52
+     ]
+    },
+    "agents": {
+     "Codex": 100,
+     "unmarked": 191,
+     "Claude": 155
+    },
+    "rust_lines_total": 64303
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": null,
+    "speed_factor": null
+   },
+   "front_vs_previous": null
+  },
+  {
+   "date": "2026-11-09",
+   "commit": "adaa8531b",
+   "values": {
+    "h264": {
+     "j": -12.83,
+     "iqr": [
+      -28.93,
+      0.02
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 288.54
+    },
+    "h264@fast": {
+     "j": -11.33,
+     "iqr": [
+      -28.44,
+      3.38
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 294.22
+    },
+    "h264@faster": {
+     "j": -10.29,
+     "iqr": [
+      -26.7,
+      4.77
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 320.25
+    },
+    "hevc": {
+     "j": -39.35,
+     "iqr": [
+      -48.41,
+      -28.91
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 165.43
+    },
+    "hevc@fast": {
+     "j": -33.41,
+     "iqr": [
+      -43.03,
+      -25.34
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 277.92
+    },
+    "vvc": {
+     "j": -39.37,
+     "iqr": [
+      -50.55,
+      -29.96
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 105.34
+    },
+    "av1": {
+     "j": -39.48,
+     "iqr": [
+      -50.22,
+      -29.55
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 129.38
+    },
+    "av1@fast": {
+     "j": -32.65,
+     "iqr": [
+      -45.95,
+      -23.23
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 224.1
+    },
+    "vp9": {
+     "j": -38.06,
+     "iqr": [
+      -48.29,
+      -29.52
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 114.98
+    },
+    "vp9@fast": {
+     "j": -33.98,
+     "iqr": [
+      -46.97,
+      -24.27
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 167.0
+    },
+    "av2": {
+     "j": -38.61,
+     "iqr": [
+      -49.12,
+      -31.58
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 110.74
+    }
+   },
+   "frontier": [
+    "av1",
+    "hevc",
+    "vp9@fast",
+    "hevc@fast",
+    "h264",
+    "h264@fast",
+    "h264@faster"
+   ],
+   "caption": [
+    "New: VP9 and AV2 (11-08) and VVC (11-09) encoders; time-based rate control; temporal layers with a long-term reference.",
+    "H.264: balanced default set (VAL BD \u221214.5 % PSNR-YUV, \u221211.7 % instructions); keycad rate-control defaults (PSNR-YUV BD \u22126.0 to \u22128.6 %); first key budget 2.5x (AV1 \u221210.5 %).",
+    "AV1: deblocking on (VAL \u22126.6 %); P-frame trellis in AV1, AV2, HEVC, VP9 and H.264 (J \u22121.3 to \u22123.3 %); AV2: 32x32 largest leaf (PSNR-YUV \u221211.8 %). New presets: H.264 Fast and Faster, VP9 Fast."
+   ],
+   "activity": {
+    "since": "2026-11-08",
+    "commits": 1025,
+    "lines": {
+     "rust": [
+      192132,
+      42407
+     ],
+     "eval_tools": [
+      29088,
+      3655
+     ],
+     "docs": [
+      23218,
+      2332
+     ],
+     "other": [
+      1704,
+      202
+     ]
+    },
+    "agents": {
+     "Claude": 973,
+     "Codex": 32,
+     "unmarked": 20
+    },
+    "rust_lines_total": 210077
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": 0.0,
+    "speed_factor": 1.0
+   },
+   "front_vs_previous": {
+    "base": "2026-11-07",
+    "j_points": null,
+    "speed_factor": null
+   }
+  },
+  {
+   "date": "2026-11-11",
+   "commit": "31d1a4809",
+   "values": {
+    "h264": {
+     "j": -20.35,
+     "iqr": [
+      -32.74,
+      -9.74
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 259.53
+    },
+    "h264@fast": {
+     "j": -14.09,
+     "iqr": [
+      -28.18,
+      -2.08
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 365.56
+    },
+    "h264@faster": {
+     "j": -5.19,
+     "iqr": [
+      -23.68,
+      13.13
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 467.22
+    },
+    "h264@veryfast": {
+     "j": -1.2,
+     "iqr": [
+      -20.3,
+      20.41
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 511.61
+    },
+    "hevc": {
+     "j": -43.12,
+     "iqr": [
+      -52.96,
+      -35.31
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 169.5
+    },
+    "hevc@fast": {
+     "j": -35.61,
+     "iqr": [
+      -45.43,
+      -27.83
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 276.28
+    },
+    "hevc@faster": {
+     "j": -29.36,
+     "iqr": [
+      -42.54,
+      -20.39
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 343.21
+    },
+    "vvc": {
+     "j": -47.28,
+     "iqr": [
+      -56.2,
+      -41.02
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 92.64
+    },
+    "vvc@fast": {
+     "j": -40.63,
+     "iqr": [
+      -51.78,
+      -31.13
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 167.7
+    },
+    "av1": {
+     "j": -41.01,
+     "iqr": [
+      -49.52,
+      -34.02
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 139.05
+    },
+    "av1@fast": {
+     "j": -36.42,
+     "iqr": [
+      -47.8,
+      -28.13
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 237.25
+    },
+    "av1@faster": {
+     "j": -30.8,
+     "iqr": [
+      -44.27,
+      -23.03
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 294.86
+    },
+    "vp9": {
+     "j": -41.09,
+     "iqr": [
+      -50.34,
+      -34.79
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 116.21
+    },
+    "vp9@fast": {
+     "j": -35.7,
+     "iqr": [
+      -48.0,
+      -26.56
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 165.56
+    },
+    "av2": {
+     "j": -45.72,
+     "iqr": [
+      -54.64,
+      -37.38
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 122.16
+    },
+    "av2@fast": {
+     "j": -38.85,
+     "iqr": [
+      -51.77,
+      -28.28
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 161.93
+    }
+   },
+   "frontier": [
+    "vvc",
+    "av2",
+    "hevc",
+    "av1@fast",
+    "hevc@fast",
+    "av1@faster",
+    "hevc@faster",
+    "h264@fast",
+    "h264@faster",
+    "h264@veryfast"
+   ],
+   "caption": [
+    "Start-up QP cadence in all six Defaults (VAL J \u22125.0 % H.264, \u22129.7 % HEVC, \u22126.5 % AV1 and VP9, \u221211.3 % VVC); 1000 ms rate-control buffer.",
+    "Frame hold and AV1 adaptive coded resolution on by default; H.264: gated L1T3 layers (VAL J \u22125.7 %); VP9: Default bundle (J \u22122.9 %).",
+    "New presets: H.264 Veryfast (h264-fastest), HEVC Faster, AV1 Faster, VVC Fast, AV2 Fast."
+   ],
+   "activity": {
+    "since": "2026-11-10",
+    "commits": 557,
+    "lines": {
+     "rust": [
+      93083,
+      20853
+     ],
+     "eval_tools": [
+      14945,
+      2384
+     ],
+     "docs": [
+      22665,
+      9211
+     ],
+     "other": [
+      1749,
+      365
+     ]
+    },
+    "agents": {
+     "Claude": 524,
+     "unmarked": 23,
+     "Codex": 10
+    },
+    "rust_lines_total": 282167
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": -6.93,
+    "speed_factor": 1.268
+   },
+   "front_vs_previous": {
+    "base": "2026-11-09",
+    "j_points": -6.93,
+    "speed_factor": 1.268
+   }
+  },
+  {
+   "date": "2026-11-13",
+   "commit": "f29b59338",
+   "values": {
+    "h264": {
+     "j": -23.83,
+     "iqr": [
+      -35.51,
+      -16.68
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 232.52
+    },
+    "h264@fast": {
+     "j": -16.42,
+     "iqr": [
+      -30.54,
+      -6.49
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 372.29
+    },
+    "h264@faster": {
+     "j": -9.69,
+     "iqr": [
+      -27.6,
+      5.81
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 446.7
+    },
+    "h264@veryfast": {
+     "j": -2.79,
+     "iqr": [
+      -23.52,
+      15.41
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 527.69
+    },
+    "hevc": {
+     "j": -43.87,
+     "iqr": [
+      -52.09,
+      -36.67
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 189.42
+    },
+    "hevc@fast": {
+     "j": -36.14,
+     "iqr": [
+      -44.89,
+      -29.14
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 307.49
+    },
+    "hevc@faster": {
+     "j": -30.65,
+     "iqr": [
+      -43.03,
+      -21.07
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 384.46
+    },
+    "vvc": {
+     "j": -48.13,
+     "iqr": [
+      -56.82,
+      -42.56
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 108.27
+    },
+    "vvc@fast": {
+     "j": -41.43,
+     "iqr": [
+      -51.76,
+      -32.93
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 181.77
+    },
+    "av1": {
+     "j": -41.0,
+     "iqr": [
+      -49.02,
+      -34.18
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 167.03
+    },
+    "av1@fast": {
+     "j": -35.86,
+     "iqr": [
+      -48.41,
+      -25.46
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 285.21
+    },
+    "av1@faster": {
+     "j": -30.97,
+     "iqr": [
+      -45.28,
+      -21.9
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 346.21
+    },
+    "vp9": {
+     "j": -42.08,
+     "iqr": [
+      -50.72,
+      -34.96
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 133.9
+    },
+    "vp9@fast": {
+     "j": -36.05,
+     "iqr": [
+      -48.65,
+      -27.94
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 183.77
+    },
+    "vp9@faster": {
+     "j": -32.58,
+     "iqr": [
+      -45.66,
+      -20.7
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 292.54
+    },
+    "vp9@veryfast": {
+     "j": -26.33,
+     "iqr": [
+      -40.52,
+      -14.22
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 301.7
+    },
+    "av2": {
+     "j": -45.98,
+     "iqr": [
+      -54.91,
+      -38.01
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 132.67
+    },
+    "av2@fast": {
+     "j": -40.14,
+     "iqr": [
+      -52.5,
+      -30.86
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 185.41
+    }
+   },
+   "frontier": [
+    "vvc",
+    "av2",
+    "hevc",
+    "hevc@fast",
+    "av1@faster",
+    "hevc@faster",
+    "h264@faster",
+    "h264@veryfast"
+   ],
+   "caption": [
+    "Default points jointly tuned at equal CPU for H.264, HEVC, VP9 and AV2 (disjoint L3 J \u22120.7 to \u22120.9 % each); VP9 Faster and Veryfast.",
+    "H.264: intra by coded cost (L3 J \u22122.35 %); AV1: inter rounding 41 (x86 \u22124.2 % instructions); rate control: debit term holds the long-run rate under target."
+   ],
+   "activity": {
+    "since": "2026-11-12",
+    "commits": 740,
+    "lines": {
+     "rust": [
+      73724,
+      19393
+     ],
+     "eval_tools": [
+      16431,
+      2154
+     ],
+     "docs": [
+      29479,
+      8939
+     ],
+     "other": [
+      9146,
+      1737
+     ]
+    },
+    "agents": {
+     "Claude": 495,
+     "unmarked": 245
+    },
+    "rust_lines_total": 336425
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": -9.69,
+    "speed_factor": 1.48
+   },
+   "front_vs_previous": {
+    "base": "2026-11-11",
+    "j_points": -4.11,
+    "speed_factor": 1.155
+   }
+  },
+  {
+   "date": "2026-11-15",
+   "commit": "594793b33",
+   "values": {
+    "h264": {
+     "j": -24.67,
+     "iqr": [
+      -38.03,
+      -17.13
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 214.43
+    },
+    "h264@slow": {
+     "j": -25.67,
+     "iqr": [
+      -37.72,
+      -18.14
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 143.66
+    },
+    "h264@fast": {
+     "j": -16.42,
+     "iqr": [
+      -30.54,
+      -6.49
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 372.69
+    },
+    "h264@faster": {
+     "j": -9.69,
+     "iqr": [
+      -27.6,
+      5.81
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 428.74
+    },
+    "h264@veryfast": {
+     "j": -5.18,
+     "iqr": [
+      -22.57,
+      13.76
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 505.16
+    },
+    "hevc": {
+     "j": -46.45,
+     "iqr": [
+      -54.35,
+      -40.08
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 174.88
+    },
+    "hevc@slow": {
+     "j": -48.25,
+     "iqr": [
+      -54.95,
+      -41.44
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 105.86
+    },
+    "hevc@fast": {
+     "j": -36.14,
+     "iqr": [
+      -44.89,
+      -29.14
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 311.55
+    },
+    "hevc@faster": {
+     "j": -30.65,
+     "iqr": [
+      -43.03,
+      -21.07
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 396.05
+    },
+    "vvc": {
+     "j": -49.86,
+     "iqr": [
+      -57.97,
+      -43.52
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 104.55
+    },
+    "vvc@slow": {
+     "j": -50.43,
+     "iqr": [
+      -57.96,
+      -44.1
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 82.12
+    },
+    "vvc@fast": {
+     "j": -41.43,
+     "iqr": [
+      -51.76,
+      -32.93
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 189.99
+    },
+    "av1": {
+     "j": -43.77,
+     "iqr": [
+      -51.55,
+      -35.8
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 159.73
+    },
+    "av1@slow": {
+     "j": -44.91,
+     "iqr": [
+      -53.55,
+      -37.8
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 101.44
+    },
+    "av1@fast": {
+     "j": -37.32,
+     "iqr": [
+      -47.98,
+      -29.83
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 285.65
+    },
+    "av1@faster": {
+     "j": -32.1,
+     "iqr": [
+      -45.38,
+      -21.9
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 348.36
+    },
+    "vp9": {
+     "j": -42.91,
+     "iqr": [
+      -51.89,
+      -34.69
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 146.0
+    },
+    "vp9@slow": {
+     "j": -43.23,
+     "iqr": [
+      -50.98,
+      -37.24
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 121.19
+    },
+    "vp9@fast": {
+     "j": -36.05,
+     "iqr": [
+      -48.65,
+      -27.94
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 182.29
+    },
+    "vp9@faster": {
+     "j": -32.58,
+     "iqr": [
+      -45.66,
+      -20.7
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 301.8
+    },
+    "vp9@veryfast": {
+     "j": -26.33,
+     "iqr": [
+      -40.52,
+      -14.22
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 312.71
+    },
+    "av2": {
+     "j": -47.53,
+     "iqr": [
+      -55.5,
+      -40.36
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 137.95
+    },
+    "av2@slow": {
+     "j": -49.09,
+     "iqr": [
+      -56.5,
+      -42.41
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 71.32
+    },
+    "av2@fast": {
+     "j": -40.14,
+     "iqr": [
+      -52.5,
+      -30.86
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 188.96
+    }
+   },
+   "frontier": [
+    "vvc@slow",
+    "vvc",
+    "hevc@slow",
+    "av2",
+    "hevc",
+    "vvc@fast",
+    "av1@fast",
+    "hevc@fast",
+    "av1@faster",
+    "hevc@faster",
+    "h264@faster",
+    "h264@veryfast"
+   ],
+   "caption": [
+    "One preset ladder for every codec (Veryfast, Faster, Fast, Default, and the new Slow); key-period ceiling in all six Defaults (J \u22120.2 to \u22121.3 %).",
+    "Key still boost (600-frame L3 J \u22120.4 to \u22121.95 %); QP cadence by measured inheritance (L3 J \u22121.2 to \u22121.3 %); VP9: jointly tuned CPU cut (x86 \u221212.2 %).",
+    "AV2: parity hiding (L2 J \u22122.06 %)."
+   ],
+   "activity": {
+    "since": "2026-11-14",
+    "commits": 561,
+    "lines": {
+     "rust": [
+      97365,
+      19992
+     ],
+     "eval_tools": [
+      96396,
+      8180
+     ],
+     "docs": [
+      58507,
+      10657
+     ],
+     "other": [
+      29859,
+      7988
+     ]
+    },
+    "agents": {
+     "Claude": 468,
+     "unmarked": 93
+    },
+    "rust_lines_total": 410596
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": -9.8,
+    "speed_factor": 1.48
+   },
+   "front_vs_previous": {
+    "base": "2026-11-13",
+    "j_points": -0.15,
+    "speed_factor": 1.005
+   }
+  },
+  {
+   "date": "2026-11-17",
+   "commit": "1f85eff44",
+   "values": {
+    "h264": {
+     "j": -24.9,
+     "iqr": [
+      -38.35,
+      -17.15
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 227.46
+    },
+    "h264@slow": {
+     "j": -25.67,
+     "iqr": [
+      -37.72,
+      -18.14
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 143.27
+    },
+    "h264@fast": {
+     "j": -16.42,
+     "iqr": [
+      -30.54,
+      -6.49
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 378.82
+    },
+    "h264@faster": {
+     "j": -9.69,
+     "iqr": [
+      -27.6,
+      5.81
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 452.18
+    },
+    "h264@veryfast": {
+     "j": -5.18,
+     "iqr": [
+      -22.57,
+      13.76
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 532.93
+    },
+    "hevc": {
+     "j": -46.45,
+     "iqr": [
+      -54.35,
+      -40.08
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 188.24
+    },
+    "hevc@slow": {
+     "j": -48.25,
+     "iqr": [
+      -54.95,
+      -41.44
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 115.5
+    },
+    "hevc@fast": {
+     "j": -40.62,
+     "iqr": [
+      -50.12,
+      -32.53
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 299.63
+    },
+    "hevc@faster": {
+     "j": -31.63,
+     "iqr": [
+      -43.52,
+      -21.28
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 419.35
+    },
+    "vvc": {
+     "j": -49.97,
+     "iqr": [
+      -57.98,
+      -43.67
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 117.31
+    },
+    "vvc@slow": {
+     "j": -50.43,
+     "iqr": [
+      -57.96,
+      -44.1
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 93.3
+    },
+    "vvc@fast": {
+     "j": -41.15,
+     "iqr": [
+      -51.93,
+      -31.61
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 207.38
+    },
+    "av1": {
+     "j": -44.04,
+     "iqr": [
+      -54.9,
+      -36.04
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 176.73
+    },
+    "av1@slow": {
+     "j": -44.91,
+     "iqr": [
+      -53.55,
+      -37.8
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 116.49
+    },
+    "av1@fast": {
+     "j": -40.14,
+     "iqr": [
+      -48.2,
+      -32.9
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 261.97
+    },
+    "av1@faster": {
+     "j": -38.09,
+     "iqr": [
+      -48.5,
+      -30.56
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 322.63
+    },
+    "av1@veryfast": {
+     "j": -34.05,
+     "iqr": [
+      -47.99,
+      -22.89
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 428.36
+    },
+    "vp9": {
+     "j": -42.91,
+     "iqr": [
+      -51.89,
+      -34.69
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 165.6
+    },
+    "vp9@slow": {
+     "j": -43.23,
+     "iqr": [
+      -50.98,
+      -37.24
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 140.19
+    },
+    "vp9@fast": {
+     "j": -38.81,
+     "iqr": [
+      -48.56,
+      -30.7
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 223.21
+    },
+    "vp9@faster": {
+     "j": -32.58,
+     "iqr": [
+      -45.66,
+      -20.7
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 349.47
+    },
+    "vp9@veryfast": {
+     "j": -26.33,
+     "iqr": [
+      -40.52,
+      -14.22
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 363.82
+    },
+    "av2": {
+     "j": -47.57,
+     "iqr": [
+      -55.43,
+      -40.62
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 146.27
+    },
+    "av2@slow": {
+     "j": -49.09,
+     "iqr": [
+      -56.5,
+      -42.41
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 74.42
+    },
+    "av2@fast": {
+     "j": -42.1,
+     "iqr": [
+      -53.69,
+      -33.78
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 203.13
+    }
+   },
+   "frontier": [
+    "vvc@slow",
+    "vvc",
+    "av2",
+    "hevc",
+    "av2@fast",
+    "vvc@fast",
+    "hevc@fast",
+    "av1@faster",
+    "av1@veryfast",
+    "h264@faster",
+    "h264@veryfast"
+   ],
+   "caption": [
+    "Engine defaults: quiet second before keys, key reserve and key quality match, exact-rank margin 0 (VVC L3 J \u22120.43 %); AV1 Veryfast.",
+    "H.264: five Intra_4x4 candidates (x86 \u22122.8 % instructions); exact speed-ups: block copies shared across codecs, borders with ordinary stores."
+   ],
+   "activity": {
+    "since": "2026-11-16",
+    "commits": 368,
+    "lines": {
+     "rust": [
+      90401,
+      19409
+     ],
+     "eval_tools": [
+      15209,
+      917
+     ],
+     "docs": [
+      24447,
+      7317
+     ],
+     "other": [
+      3866,
+      1140
+     ]
+    },
+    "agents": {
+     "unmarked": 48,
+     "Claude": 320
+    },
+    "rust_lines_total": 481224
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": -11.59,
+    "speed_factor": 1.655
+   },
+   "front_vs_previous": {
+    "base": "2026-11-15",
+    "j_points": -2.92,
+    "speed_factor": 1.117
+   }
+  },
+  {
+   "date": "2026-11-19",
+   "commit": "da018cbbf",
+   "values": {
+    "h264": {
+     "j": -27.35,
+     "iqr": [
+      -39.7,
+      -20.94
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 202.13
+    },
+    "h264@slow": {
+     "j": -29.12,
+     "iqr": [
+      -40.54,
+      -21.93
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 110.65
+    },
+    "h264@fast": {
+     "j": -19.87,
+     "iqr": [
+      -33.72,
+      -9.09
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 362.16
+    },
+    "h264@faster": {
+     "j": -12.17,
+     "iqr": [
+      -31.3,
+      2.99
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 430.1
+    },
+    "h264@veryfast": {
+     "j": -9.25,
+     "iqr": [
+      -27.23,
+      10.06
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 519.33
+    },
+    "hevc": {
+     "j": -47.13,
+     "iqr": [
+      -55.39,
+      -40.18
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 167.39
+    },
+    "hevc@slow": {
+     "j": -48.67,
+     "iqr": [
+      -55.47,
+      -42.27
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 102.18
+    },
+    "hevc@fast": {
+     "j": -41.06,
+     "iqr": [
+      -50.32,
+      -32.33
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 315.17
+    },
+    "hevc@faster": {
+     "j": -35.71,
+     "iqr": [
+      -46.97,
+      -25.76
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 377.02
+    },
+    "vvc": {
+     "j": -50.22,
+     "iqr": [
+      -57.9,
+      -44.24
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 119.47
+    },
+    "vvc@slow": {
+     "j": -50.53,
+     "iqr": [
+      -58.06,
+      -44.39
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 94.55
+    },
+    "vvc@fast": {
+     "j": -41.1,
+     "iqr": [
+      -52.02,
+      -31.53
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 215.32
+    },
+    "av1": {
+     "j": -44.07,
+     "iqr": [
+      -52.82,
+      -36.74
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 180.32
+    },
+    "av1@slow": {
+     "j": -46.27,
+     "iqr": [
+      -54.28,
+      -39.61
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 110.26
+    },
+    "av1@fast": {
+     "j": -40.35,
+     "iqr": [
+      -48.85,
+      -33.4
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 271.01
+    },
+    "av1@faster": {
+     "j": -38.61,
+     "iqr": [
+      -47.41,
+      -31.16
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 309.27
+    },
+    "av1@veryfast": {
+     "j": -34.16,
+     "iqr": [
+      -48.24,
+      -23.2
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 430.04
+    },
+    "vp9": {
+     "j": -43.53,
+     "iqr": [
+      -51.72,
+      -37.29
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 165.43
+    },
+    "vp9@slow": {
+     "j": -43.61,
+     "iqr": [
+      -51.78,
+      -37.39
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 139.49
+    },
+    "vp9@fast": {
+     "j": -38.81,
+     "iqr": [
+      -48.56,
+      -30.7
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 223.85
+    },
+    "vp9@faster": {
+     "j": -32.58,
+     "iqr": [
+      -45.66,
+      -20.7
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 333.22
+    },
+    "vp9@veryfast": {
+     "j": -29.42,
+     "iqr": [
+      -42.45,
+      -19.88
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 372.97
+    },
+    "av2": {
+     "j": -47.86,
+     "iqr": [
+      -56.46,
+      -40.34
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 164.45
+    },
+    "av2@slow": {
+     "j": -49.09,
+     "iqr": [
+      -56.5,
+      -42.41
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 71.38
+    },
+    "av2@fast": {
+     "j": -43.72,
+     "iqr": [
+      -54.82,
+      -35.47
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 236.12
+    },
+    "av2@faster": {
+     "j": -41.84,
+     "iqr": [
+      -52.49,
+      -33.94
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 278.11
+    }
+   },
+   "frontier": [
+    "vvc@slow",
+    "vvc",
+    "av2",
+    "hevc",
+    "av1",
+    "av2@fast",
+    "av2@faster",
+    "hevc@fast",
+    "hevc@faster",
+    "av1@veryfast",
+    "h264@faster",
+    "h264@veryfast"
+   ],
+   "caption": [
+    "H.264: shared RD final decision stage (L3 J \u22122.53 %), winner walk (final-check \u22121.89 %); AV2: fitted coefficient-price model (L3 J \u22122.33 %, x86 \u22124.9 %); AV2 Faster.",
+    "x86-64-v3 code generation for every x86 build (\u22122.7 to \u22124.4 % instructions); VVC: 64-point TUs from QP 34 (L3 J \u22120.86 %)."
+   ],
+   "activity": {
+    "since": "2026-11-18",
+    "commits": 241,
+    "lines": {
+     "rust": [
+      33192,
+      8628
+     ],
+     "eval_tools": [
+      9895,
+      761
+     ],
+     "docs": [
+      30581,
+      16762
+     ],
+     "other": [
+      16120,
+      11219
+     ]
+    },
+    "agents": {
+     "Claude": 176,
+     "unmarked": 65
+    },
+    "rust_lines_total": 505347
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": -12.6,
+    "speed_factor": 1.642
+   },
+   "front_vs_previous": {
+    "base": "2026-11-17",
+    "j_points": -0.59,
+    "speed_factor": 1.022
+   }
+  },
+  {
+   "date": "2026-11-20",
+   "commit": "5d33d7e2a",
+   "values": {
+    "h264": {
+     "j": -27.35,
+     "iqr": [
+      -39.7,
+      -20.94
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 199.37
+    },
+    "h264@slow": {
+     "j": -29.12,
+     "iqr": [
+      -40.54,
+      -21.93
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 110.73
+    },
+    "h264@fast": {
+     "j": -19.87,
+     "iqr": [
+      -33.72,
+      -9.09
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 346.06
+    },
+    "h264@faster": {
+     "j": -12.17,
+     "iqr": [
+      -31.3,
+      2.99
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 438.15
+    },
+    "h264@veryfast": {
+     "j": -9.25,
+     "iqr": [
+      -27.23,
+      10.06
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 490.26
+    },
+    "hevc": {
+     "j": -47.13,
+     "iqr": [
+      -55.39,
+      -40.18
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 168.86
+    },
+    "hevc@slow": {
+     "j": -49.74,
+     "iqr": [
+      -56.85,
+      -44.18
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 74.97
+    },
+    "hevc@fast": {
+     "j": -42.45,
+     "iqr": [
+      -50.26,
+      -35.28
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 297.29
+    },
+    "hevc@faster": {
+     "j": -35.71,
+     "iqr": [
+      -46.97,
+      -25.76
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 357.89
+    },
+    "vvc": {
+     "j": -50.22,
+     "iqr": [
+      -57.9,
+      -44.24
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 120.3
+    },
+    "vvc@slow": {
+     "j": -51.73,
+     "iqr": [
+      -58.46,
+      -46.27
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 63.18
+    },
+    "vvc@fast": {
+     "j": -45.39,
+     "iqr": [
+      -55.48,
+      -37.31
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 202.61
+    },
+    "av1": {
+     "j": -44.07,
+     "iqr": [
+      -52.82,
+      -36.74
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 177.6
+    },
+    "av1@slow": {
+     "j": -46.27,
+     "iqr": [
+      -54.28,
+      -39.61
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 110.31
+    },
+    "av1@fast": {
+     "j": -40.64,
+     "iqr": [
+      -51.72,
+      -32.32
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 254.53
+    },
+    "av1@faster": {
+     "j": -39.12,
+     "iqr": [
+      -50.76,
+      -31.14
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 310.26
+    },
+    "av1@veryfast": {
+     "j": -34.16,
+     "iqr": [
+      -48.24,
+      -23.2
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 414.13
+    },
+    "vp9": {
+     "j": -43.53,
+     "iqr": [
+      -51.72,
+      -37.29
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 162.61
+    },
+    "vp9@slow": {
+     "j": -43.83,
+     "iqr": [
+      -51.87,
+      -38.02
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 96.36
+    },
+    "vp9@fast": {
+     "j": -38.84,
+     "iqr": [
+      -49.12,
+      -30.87
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 217.28
+    },
+    "vp9@faster": {
+     "j": -34.77,
+     "iqr": [
+      -47.87,
+      -23.34
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 341.3
+    },
+    "vp9@veryfast": {
+     "j": -31.87,
+     "iqr": [
+      -44.25,
+      -23.16
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 355.82
+    },
+    "av2": {
+     "j": -47.86,
+     "iqr": [
+      -56.46,
+      -40.34
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 165.05
+    },
+    "av2@slow": {
+     "j": -50.11,
+     "iqr": [
+      -56.16,
+      -44.48
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 61.2
+    },
+    "av2@fast": {
+     "j": -43.94,
+     "iqr": [
+      -53.25,
+      -35.35
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 226.73
+    },
+    "av2@faster": {
+     "j": -42.84,
+     "iqr": [
+      -53.39,
+      -34.49
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 266.93
+    }
+   },
+   "frontier": [
+    "vvc@slow",
+    "vvc",
+    "av2",
+    "hevc",
+    "vvc@fast",
+    "av2@fast",
+    "av2@faster",
+    "hevc@fast",
+    "av1@faster",
+    "hevc@faster",
+    "av1@veryfast",
+    "h264@faster",
+    "h264@veryfast"
+   ],
+   "caption": [
+    "Up to 07:52 UTC: the key-period ledger no longer saves twice for a key (2 s keys BD PSNR-YUV \u22120.28 to \u22120.97 %); otherwise Slow, decoder and eval changes."
+   ],
+   "activity": {
+    "since": "2026-11-20",
+    "commits": 34,
+    "lines": {
+     "rust": [
+      2679,
+      401
+     ],
+     "eval_tools": [
+      179,
+      29
+     ],
+     "docs": [
+      525,
+      100
+     ],
+     "other": [
+      0,
+      0
+     ]
+    },
+    "agents": {
+     "Claude": 31,
+     "unmarked": 3
+    },
+    "rust_lines_total": 507487
+   },
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": -13.1,
+    "speed_factor": 1.612
+   },
+   "front_vs_previous": {
+    "base": "2026-11-19",
+    "j_points": 0.08,
+    "speed_factor": 0.998
+   }
+  }
+ ]
+}

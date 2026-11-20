@@ -56,6 +56,24 @@
 //! SVT's units: its `RDCOST(λ, R, D)` weighs a bit at λ/128 squared-error
 //! units, so its per-sample distortion cap `λ >> 10` is our λ/8.
 //!
+//! ## Zero-out
+//!
+//! A leaf larger than the backend's largest full-spectrum transform
+//! ([`CodecBackend::full_spectrum_log2`]: VVC's 64x64 CU with one 64-point
+//! unit, which codes only its 32x32 lowest frequencies) cannot code its
+//! residual's fine detail at any quantizer. Neither the prediction variance
+//! nor the static rule (a static node stays whole) sees that, so such a
+//! leaf is confirmed by the backend's coded cost (`inter_leaf_cost`, whose
+//! reconstruction error includes the discarded energy) against four leaves.
+//! `pool_meva_hospital_g301` (static, CBR 400, 600 f): without it every P
+//! picture planned 64x64 static leaves, 78 % of their residual energy lay
+//! above frequency 32, and the P pictures settled 2.2 dB PSNR-Y below VVC's
+//! former QP floor for 64-point units (46.63 → 44.40 dB; with it 46.57).
+//! `planner.zero_out_gate` (0.2) skips the trial where the leaf's residual
+//! is far below the step: ungated it cost +14 % instructions at QP 36,
+//! gated the Default is -0.8..+1.2 % against the floor (docs/handoff/vvc.md,
+//! "Zero-out").
+//!
 //! ## Rectangular shapes
 //!
 //! For a backend that declares rectangular partitions
@@ -301,7 +319,7 @@ impl<B: CodecBackend> Planner<'_, B> {
         let is_static = leaf.is_some() && self.pre.is_some_and(|pre| is_static::<B>(pre, &node));
         if is_static {
             return leaf.map_or((0.0, Partition::Leaf(None)), |(cost, stats)| {
-                (cost, Partition::Leaf(Some(stats)))
+                self.unless_zeroed_out(&node, can_split, (cost, Partition::Leaf(Some(stats))))
             });
         }
         if !can_split {
@@ -326,6 +344,7 @@ impl<B: CodecBackend> Planner<'_, B> {
                 && limits.bias * cost <= 1000.0 * split_cost
             {
                 let best = (cost, Partition::Leaf(leaf.map(|(_, stats)| stats)));
+                let best = self.unless_zeroed_out(&node, can_split, best);
                 return self.or_shape(&node, limits, cost, best);
             }
             if child.x >= self.width || child.y >= self.height {
@@ -339,6 +358,7 @@ impl<B: CodecBackend> Planner<'_, B> {
         match leaf_cost {
             Some(cost) if limits.bias * cost <= 1000.0 * split_cost => {
                 let best = (cost, Partition::Leaf(leaf.map(|(_, stats)| stats)));
+                let best = self.unless_zeroed_out(&node, can_split, best);
                 self.or_shape(&node, limits, cost, best)
             }
             Some(cost) => self.or_shape(
@@ -473,6 +493,58 @@ impl<B: CodecBackend> Planner<'_, B> {
             shape.log2_min_side(node.log2_size()) >= min_side
                 && (gate <= 0.0 || self.motion_separates(&parts[..shape.part_count()], gate))
         })
+    }
+
+    /// The leaf plan `leaf` of `node`, or four leaves when `node` is
+    /// larger than the backend's largest full-spectrum transform
+    /// ([`CodecBackend::full_spectrum_log2`]) and the backend's coded cost
+    /// ([`CodecBackend::inter_leaf_cost`]) prefers them (module docs,
+    /// "Zero-out"). The plan keeps the leaf's variance cost: the parent
+    /// compares variance costs.
+    fn unless_zeroed_out(
+        &self,
+        node: &Block,
+        can_split: bool,
+        leaf: (f32, Partition),
+    ) -> (f32, Partition) {
+        if !can_split || node.log2_size() <= self.backend.full_spectrum_log2() {
+            return leaf;
+        }
+        let Partition::Leaf(Some(stats)) = &leaf.1 else {
+            return leaf;
+        };
+        // Speed gate (`planner.zero_out_gate`): residual this far below the
+        // step leaves the four leaves' fine detail quantised away too.
+        let area = leaf_area::<B>(node) as f32;
+        if (n_variance::<B>(stats.search, node) as f32)
+            < area * (self.params.zero_out_gate * self.step).powi(2)
+        {
+            return leaf;
+        }
+        let lambda = self.backend.lambda();
+        let Some(leaf_cost) = self.coded_cost(node, stats) else {
+            return leaf;
+        };
+        let leaf_cost = leaf_cost + lambda * self.backend.partition_bits(node, false);
+        let mut split_cost = lambda * self.backend.partition_bits(node, true);
+        let mut children = std::array::from_fn(|_| Partition::Leaf(None));
+        for (slot, child) in children.iter_mut().zip(node.quadrants()) {
+            // Coded costs are nonnegative: the split cannot win any more.
+            if split_cost >= leaf_cost {
+                return leaf;
+            }
+            let (_, child_stats) = self.distortion(&child);
+            let Some(cost) = self.coded_cost(&child, &child_stats) else {
+                return leaf;
+            };
+            split_cost += cost + lambda * self.backend.partition_bits(&child, false);
+            *slot = Partition::Leaf(Some(child_stats));
+        }
+        if split_cost < leaf_cost {
+            (leaf.0, Partition::Split(Box::new(children)))
+        } else {
+            leaf
+        }
     }
 
     /// Whether the backend's rate-distortion cost (`planner.rect_rd`,

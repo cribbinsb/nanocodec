@@ -18,7 +18,7 @@
 # byte-identical to the plain release build (chart_refresh checks every
 # timed stream against the scan's bytes; a release checks every shipped
 # preset with preset_identity.py). Extra RUSTFLAGS and NC_BUILD_COMMIT
-# pass through. Env: PGO_CLIPS (paths of 1280x720 I420 clips; default four
+# pass through (RUSTFLAGS joined to the workspace's .cargo/config.toml flags). Env: PGO_CLIPS (paths of 1280x720 I420 clips; default four
 # clips of ~/nanocodec-data/clips/main; a release trains on public clips,
 # tools/release/release.py), PGO_FRAMES (default 20), PGO_CODECS (default
 # every codec; fewer only for a pipe-clean), PGO_CAPI, JOBS (cargo -j,
@@ -46,10 +46,20 @@ mkdir -p "$target"
 [ ! -e "$work" ] || rm -r -- "$target/pgo-work"
 mkdir -p "$work/profiles" "$work/streams"
 
-base_flags=${RUSTFLAGS:-}
+# The profile flags go in through `cargo --config`, which joins them to the
+# workspace's own (.cargo/config.toml: target-cpu on x86_64); RUSTFLAGS would
+# replace those, so a caller's RUSTFLAGS move into the same list.
+read -r -a extra_flags <<< "${RUSTFLAGS:-}"
+unset RUSTFLAGS
+rustflags_config() {  # the --config value: target.<host>.rustflags = [extra flags, $1]
+  local items="" flag
+  for flag in "${extra_flags[@]}" "$1"; do items+="\"$flag\", "; done
+  echo "target.$host.rustflags=[${items%, }]"
+}
+generate_flags=$(rustflags_config "-Cprofile-generate=$work/profiles")
 cd "$tree"
-RUSTFLAGS="$base_flags -Cprofile-generate=$work/profiles" CARGO_TARGET_DIR=$target/pgo-generate \
-  "$cargo" build --release -j"$jobs" --bin nanocodec
+CARGO_TARGET_DIR=$target/pgo-generate \
+  "$cargo" build --config "$generate_flags" --release -j"$jobs" --bin nanocodec
 instrumented=$target/pgo-generate/release/nanocodec
 
 # Every codec's shipped presets (medium and presets/<codec>/*.toml), one line
@@ -89,15 +99,15 @@ while read -r codec preset preset_args; do
 done < "$work/presets.txt"
 
 "$profdata" merge -o "$work/merged.profdata" "$work/profiles"
-RUSTFLAGS="$base_flags -Cprofile-use=$work/merged.profdata" CARGO_TARGET_DIR=$target \
-  "$cargo" build --release -j"$jobs" --bin nanocodec
+use_flags=$(rustflags_config "-Cprofile-use=$work/merged.profdata")
+CARGO_TARGET_DIR=$target "$cargo" build --config "$use_flags" --release -j"$jobs" --bin nanocodec
 if [ "$out" != "$target/release/nanocodec" ]; then
   mkdir -p "$(dirname "$out")"
   cp "$target/release/nanocodec" "$out"
 fi
 if [ "${PGO_CAPI:-0}" = 1 ]; then
-  RUSTFLAGS="$base_flags -Cprofile-use=$work/merged.profdata" CARGO_TARGET_DIR=$target \
-    "$cargo" build --release -j"$jobs" -p nanocodec-capi
+  CARGO_TARGET_DIR=$target \
+    "$cargo" build --config "$use_flags" --release -j"$jobs" -p nanocodec-capi
   cp "$target/release/libnanocodec.a" "$target/release/libnanocodec.so" "$(dirname "$out")/"
 fi
 rm -r -- "$target/pgo-work/streams"

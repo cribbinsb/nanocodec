@@ -34,7 +34,7 @@
 use nc_common::Picture;
 
 use crate::backend::{CodecBackend, FinalCandidate, PredictionMode};
-use crate::decision::{Choice, DecidedMode, is_square_leaf, leaf_area};
+use crate::decision::{Choice, DecidedMode, PricingHint, is_square_leaf, leaf_area};
 use crate::mv::Mv;
 use crate::params::DecisionParams;
 use crate::partition::Block;
@@ -146,7 +146,11 @@ pub(crate) fn decide<B: CodecBackend>(
             .map_or(finalists.winner.rank_cost, |s| s.rank_cost),
         FinalCandidate::Intra => finalists.intra_rank_cost,
     };
-    Choice { mode, cost }
+    Choice {
+        mode,
+        cost,
+        pricing: PricingHint::NONE,
+    }
 }
 
 /// The candidate of the lowest cost (the first on ties: the winner).

@@ -18,6 +18,7 @@ import pytest
 
 from nceval import cachefile, cbr
 from nceval.conformance import GateResult
+from nceval.framepipe import PSNR_CAP_DB
 from nceval.metrics import Measurement
 
 FRAMES = 2
@@ -147,13 +148,13 @@ def test_real_use_result_of_the_old_ms_ssim_protocol_is_remeasured_when_used(tmp
                       metric_set="real")
     point = SimpleNamespace(check=PointCheck.NONE)
     stored = tmp_path / "point.json"
-    stored.write_text(json.dumps({"gate_level": "full", "ms_ssim": 0.9}))  # every 4th frame
+    stored.write_text(json.dumps({"gate_level": "full", "psnr_cap_db": PSNR_CAP_DB, "ms_ssim": 0.9}))  # every 4th frame
     assert bench._reusable(point, stored) is None
-    stored.write_text(json.dumps({"gate_level": "full", "ms_ssim": 0.9,
+    stored.write_text(json.dumps({"gate_level": "full", "psnr_cap_db": PSNR_CAP_DB, "ms_ssim": 0.9,
                                   "ms_ssim_revision": REAL_MS_SSIM_REVISION}))
     assert bench._reusable(point, stored) is not None
     bench.metric_set = "classic"  # no MS-SSIM: unaffected
-    stored.write_text(json.dumps({"gate_level": "full"}))
+    stored.write_text(json.dumps({"gate_level": "full", "psnr_cap_db": PSNR_CAP_DB}))
     assert bench._reusable(point, stored) is not None
 
 
@@ -166,7 +167,7 @@ def test_a_result_without_xpsnr_serves_j_and_is_remeasured_only_for_xpsnr(tmp_pa
                       metric_set="real")
     point = SimpleNamespace(check=PointCheck.NONE)
     stored = tmp_path / "point.json"
-    without = {"gate_level": "full", "ms_ssim": 0.9, "ms_ssim_revision": REAL_MS_SSIM_REVISION}
+    without = {"gate_level": "full", "psnr_cap_db": PSNR_CAP_DB, "ms_ssim": 0.9, "ms_ssim_revision": REAL_MS_SSIM_REVISION}
     stored.write_text(json.dumps(without))
     assert bench._reusable(point, stored) is not None
     bench.xpsnr = True

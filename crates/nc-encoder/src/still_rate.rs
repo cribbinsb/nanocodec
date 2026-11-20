@@ -26,7 +26,8 @@ impl StillRate {
         Self {
             prekey_quiet_frames: f64::from(params.prekey_quiet) * fps,
             key_hold_buffers: f64::from(params.key_hold_still),
-            ledger: (params.period_ceiling >= 0.5).then(PeriodLedger::default),
+            ledger: (params.period_ceiling >= 0.5)
+                .then(|| PeriodLedger::new(params.period_key_saving >= 0.5)),
         }
     }
 
@@ -35,6 +36,14 @@ impl StillRate {
     pub fn plan_period(&mut self, elapsed: f64, period: f64, fps: f64, to_key: Option<u64>) {
         if let Some(ledger) = self.ledger.as_mut() {
             ledger.plan(elapsed, period, fps, to_key);
+        }
+    }
+
+    /// Whether a key's loan is repaid over the whole key period
+    /// (`PeriodLedger::set_loan_spans_period`).
+    pub fn set_loan_spans_period(&mut self, spans: bool) {
+        if let Some(ledger) = self.ledger.as_mut() {
+            ledger.set_loan_spans_period(spans);
         }
     }
 

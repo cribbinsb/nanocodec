@@ -20,11 +20,12 @@ use std::rc::Rc;
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
     AngleDeltaSearch, Block, BlockDecision, CdefEffort, CodecBackend, ConfigError, EncoderConfig,
-    FilterEffort, FramePlan, FrameReferences, FrameType, GateParams, IntraModeSet,
-    MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams, ReferenceChoice,
-    RefreshWindow, SearchEvidence, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest,
-    TrellisSettings, WorkGate, ZeroLimits, copy_zero_vector_prediction, directions_by_orientation,
-    residual_quantises_to_zero, zero_vector_residual_is_zero,
+    FilterEffort, FlatGate, FramePlan, FrameReferences, FrameType, GateParams, IntraModeSet,
+    LevelRateModel, LevelStats, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode,
+    QuantParams, ReferenceChoice, RefreshWindow, SearchEvidence, SlotMask, SpatialConfig,
+    SpatialLayerFrame, StaticSkipTest, TrellisSettings, WorkGate, ZeroLimits,
+    copy_zero_vector_prediction, directions_by_orientation, residual_quantises_to_zero,
+    shortlist_intra, zero_vector_residual_is_zero,
 };
 
 use crate::cdef::{self, CdefParams};
@@ -76,6 +77,34 @@ use delta_q::DeltaQ;
 use p_intra::InterFrameIntra;
 use segments::SegmentCoding;
 use stress::RandomSyntax;
+
+/// How [`Av1Backend::residual_cost`] prices a block's coefficients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoefficientRate {
+    /// The coefficient syntax's bits under the current CDFs.
+    Coded,
+    /// [`KEY_LEVEL_RATE`]'s estimate from the level statistics: no
+    /// coefficient walk.
+    Modelled,
+}
+
+/// Luma coefficient bits of key-frame intra blocks from their level
+/// statistics, for the speed rungs' key mode ranking
+/// (`av1.keyframe_model_candidates`). Least-squares fit (2026-11-19) of the
+/// coded bits of every luma mode of every final-coding block, AV1 Faster key
+/// frames of six TRAIN clips at qindex 150 / 195 / 235 (1.4 M transform
+/// blocks): relative mean absolute error 7.0 % (8x8), 7.0 % (16x16), 7.5 %
+/// (32x32), 7.1 % (64x64); the 4x4 row repeats 8x8's (no 4x4 key leaves in
+/// the fit). Ranking by this model's RD cost leaves 25 % of DC-only's
+/// RD-cost loss against the full transform-costed search on six VAL clips,
+/// against 70 % for prediction SATD (`work/av2-pareto/dump/analyze.py`).
+const KEY_LEVEL_RATE: LevelRateModel = LevelRateModel::new([
+    [0.30, 3.27, 3.45, -3.72],
+    [0.30, 3.27, 3.45, -3.72],
+    [0.25, 3.80, 3.97, -7.30],
+    [0.21, 4.12, 6.60, -21.72],
+    [0.15, 4.12, 10.03, -34.61],
+]);
 
 /// 64x64 superblocks (`use_128x128_superblock = 0`).
 const SUPERBLOCK_LOG2: u8 = 6;
@@ -511,6 +540,8 @@ pub struct Av1Backend {
     params: Av1Params,
     /// This frame's deblocking levels (`loop_filter_params()`).
     loop_filter: LoopFilterParams,
+    /// The loop filter's buffers.
+    filter_scratch: loopfilter::FilterScratch,
     /// This frame's `TxMode`: inter frames with `av1.inter_tx_split` signal
     /// transform sizes (inter transform trees, intra `tx_depth`).
     tx_mode: TxMode,
@@ -686,6 +717,39 @@ nc_encoder::param_group! {
             "key-frame directions predicted for the SATD ranking: the likeliest this many by gradient orientation (8: all allowed); rounded, lower is faster",
         keyframe_intra_rd_candidates: 3.0, [1.0, 16.0],
             "SATD-ranked extra key-frame intra candidates (directions, deltas, filter intra) that are also transform-costed; rounded, higher searches more",
+        /// Off by default. The cheap key search of the speed rungs (instead of
+        /// DC only): with `keyframe_intra_modes` 0, DC is no longer the
+        /// transform-costed base mode but one of this set's modes, all ranked
+        /// with the allowed directions by prediction SATD plus √λ · mode bits
+        /// (the engine's `shortlist_intra`); the best
+        /// `keyframe_intra_rd_candidates` are transform-costed, and a single
+        /// one is coded without any costing.
+        keyframe_satd_modes: 0.0, [0.0, 4.0],
+            "key-frame modes ranked by prediction SATD (with av1.keyframe_intra_modes 0) beside the allowed directions (av1.keyframe_directional, av1.keyframe_directions: the likeliest by gradient orientation): 0 off, 1 DC, 2 DC/smooth/Paeth, 3 adds vertical/horizontal, 4 DC/smooth/vertical/horizontal; with av1.keyframe_intra_rd_candidates 1 the winner is coded without transform costing; rounded",
+        /// 6 (every block) by default. Blocks above 16x16 hold most of a key's
+        /// transform work but little of the mode search's gain (AV1 Faster
+        /// keys, 6 VAL clips: 12 % of DC-only's RD loss in 45 % of the
+        /// area), so the speed rungs rank only the smaller ones.
+        keyframe_rank_max_log2: 6.0, [3.0, 6.0],
+            "with av1.keyframe_satd_modes: the largest key block (log2 side) whose intra mode is ranked; larger blocks stay DC; rounded, lower is faster",
+        /// Off by default. Blocks whose DC prediction leaves less residual
+        /// energy per sample than this stay DC ([`nc_encoder::prediction_settles`]):
+        /// at qindex 150 / 195 / 235 on 720p keys, 150 searches about the
+        /// most active half of the blocks, 600 about 30 %.
+        keyframe_flat_gate: 0.0, [0.0, 4096.0],
+            "with av1.keyframe_satd_modes: blocks whose DC prediction's luma SSE per sample is below this stay DC without ranking other modes (0: off); higher keeps more blocks DC, faster",
+        /// 1 by default (one threshold for every size). Mode choice pays
+        /// most on small blocks: a fit of which blocks to search (AV1 Faster
+        /// keys, every mode RD-costed, 6 TRAIN clips at three qindex) put the
+        /// 16x16 threshold about 3x and the 32x32 one about 9x the 8x8 one,
+        /// with no dependence on λ.
+        keyframe_flat_gate_size_scale: 1.0, [1.0, 16.0],
+            "av1.keyframe_flat_gate's multiplier per doubling of the block side above 8x8: higher searches large blocks less",
+        /// 0 by default (SATD alone). The SATD ranking's weakness: it scores
+        /// residual energy the quantiser removes, so smooth and Paeth win
+        /// where their residual codes worse than DC's.
+        keyframe_model_candidates: 0.0, [0.0, 16.0],
+            "with av1.keyframe_satd_modes: the best this many by SATD are ranked again by transform, quantisation and modelled coefficient bits (KEY_LEVEL_RATE, no coefficient walk) before av1.keyframe_intra_rd_candidates are kept; 0 ranks by SATD alone; rounded",
         intra_rate_scale: 1.0, [0.25, 4.0],
             "intra mode-bit cost relative to prediction distortion: higher favours cheaper prediction modes",
         inter_intra_search: 0.0, [0.0, 2.0],
@@ -971,6 +1035,11 @@ impl CodecBackend for Av1Backend {
         "av1.keyframe_angle_deltas",
         "av1.keyframe_directions",
         "av1.keyframe_intra_rd_candidates",
+        "av1.keyframe_satd_modes",
+        "av1.keyframe_model_candidates",
+        "av1.keyframe_flat_gate",
+        "av1.keyframe_flat_gate_size_scale",
+        "av1.keyframe_rank_max_log2",
     ];
 
     fn block_qp_grid(&self) -> (u8, usize) {
@@ -1094,9 +1163,6 @@ impl CodecBackend for Av1Backend {
         // per 1000 frames. Inert within one key period (150-frame levels and
         // single-key streams unchanged). The other AV1 presets pin it off.
         ("rate.period_ceiling", 1.0),
-        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
-        // only (2026-11-18); pinned off here until this codec is screened.
-        ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool
         // levels, draw 2026-11-14: L1 -0.57% [-1.24, -0.03]; L2 -1.87%
@@ -1150,17 +1216,6 @@ impl CodecBackend for Av1Backend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 4.0),
         ("rate.cadence_motion_gate", 1.0),
-        // A fixed-QP key planned up to 6 QP units coarser under camera motion
-        // (`rate.fixed_qp_moving_key`, engine `moving_camera.rs`: the offset ramps from 1 luma
-        // sample per frame to the cadence gate's limit and fades on a fixed camera; fixed QP only,
-        // so CBR streams are unchanged): a moving camera replaces the picture before later frames
-        // inherit a fine key. Found on VC-1K phone calls (docs/handoff/rd-depth.md). Fixed QP,
-        // matched QP: worst six VC-1K clips of the Fixed QP sample (against SVT-AV1 M8), with the
-        // plain 1-sample threshold, J -4.4 % [-5.2, -3.6]. Pool draw fixedqp-2026-11-19, adopt
-        // level: J -1.5 % [-2.3, -0.9] (n 47), no clip worse (19 changed; static clips unchanged).
-        // HEVC Default takes the same value; it becomes the engine default once H.264 and VVC are
-        // screened. The other presets pin it off.
-        ("rate.fixed_qp_moving_key", 6.0),
         ("decision.intra_test_dc", 0.0),
         ("planner.depth_removal_min_quantizer", 0.8),
         ("quant.trellis_key", 0.0),
@@ -1284,6 +1339,7 @@ impl CodecBackend for Av1Backend {
             chroma_skip_sad_num: params.chroma_skip_sad_num.round() as u32,
             params,
             loop_filter: LoopFilterParams::OFF,
+            filter_scratch: loopfilter::FilterScratch::default(),
             tx_mode: TxMode::Largest,
             random: None,
             trellis: TrellisSettings::from_params(&QuantParams::from_overrides(&config.params)),
@@ -1981,8 +2037,8 @@ impl CodecBackend for Av1Backend {
             recon,
             &self.grids.mode_info,
             self.loop_filter,
-            self.grids.width,
-            self.grids.height,
+            (self.grids.width, self.grids.height),
+            &mut self.filter_scratch,
         );
         let boundaries = self
             .restoration
@@ -3236,6 +3292,19 @@ impl Av1Backend {
         intra_mode: usize,
         sse: u64,
     ) -> (f32, u32) {
+        self.residual_cost(tx, plane, is_inter, intra_mode, sse, CoefficientRate::Coded)
+    }
+
+    /// [`Self::residual_rd_cost`] with the coefficient bits priced by `rate`.
+    fn residual_cost(
+        &mut self,
+        tx: TxSize,
+        plane: PlaneIndex,
+        is_inter: bool,
+        intra_mode: usize,
+        sse: u64,
+        rate: CoefficientRate,
+    ) -> (f32, u32) {
         let n = tx.size();
         let coded_area = tx.coded_size() * tx.coded_size();
         let quantizer = self.plane_quantizer(plane, tx);
@@ -3258,7 +3327,14 @@ impl Av1Backend {
         };
         let ctx = TxbContext::derive(plane_type, true, &[], &[]);
         let linear_below = self.params.key_linear_rate_eob_share * coded_area as f32;
-        let bits = if self.kind == FrameKind::Key && (eob as f32) < linear_below {
+        let bits = if rate == CoefficientRate::Modelled {
+            let stats = LevelStats {
+                level_sum: levels.iter().map(|&l| u32::from(l.unsigned_abs())).sum(),
+                nonzero,
+                eob: eob as u32,
+            };
+            KEY_LEVEL_RATE.bits(u32::from(tx.log2()), stats)
+        } else if self.kind == FrameKind::Key && (eob as f32) < linear_below {
             self.cdfs.coeff.linear_bits(tx, ctx, eob)
         } else {
             self.cdfs
@@ -3916,6 +3992,9 @@ impl Av1Backend {
         recon: &mut Picture,
     ) -> LumaIntra {
         let set = IntraModeSet::from_param(self.params.keyframe_intra_modes);
+        if set == IntraModeSet::DcOnly && self.params.keyframe_satd_modes >= 0.5 {
+            return self.choose_key_intra_by_satd(block, source, recon);
+        }
         let shortlist = self.key_intra_shortlist(block, source, recon, set.modes());
         if set == IntraModeSet::DcOnly && shortlist.is_empty() {
             return LumaIntra::DC;
@@ -3928,6 +4007,76 @@ impl Av1Backend {
             .collect();
         self.rd_best_luma(block, source, recon, &candidates, Self::key_mode_bits)
             .1
+    }
+
+    /// The speed rungs' key-frame luma mode (`av1.keyframe_satd_modes`).
+    /// Blocks above `av1.keyframe_rank_max_log2`, and those DC already
+    /// predicts within `av1.keyframe_flat_gate` per sample, stay DC
+    /// ([`nc_encoder::prediction_settles`]); otherwise `keyframe_satd_modes`' set and the
+    /// allowed directions (with `av1.keyframe_directions` below eight, the
+    /// likeliest by the source block's gradient orientation, as libaom prunes
+    /// directional modes by a histogram of oriented gradients)
+    /// (`av1.keyframe_directional`, `av1.keyframe_directions`) ranked by
+    /// prediction SATD plus √λ · mode bits in the engine's
+    /// [`shortlist_intra`], the best `av1.keyframe_model_candidates` of them
+    /// again by modelled RD cost ([`Self::key_intra_model_cost`]); the best
+    /// `av1.keyframe_intra_rd_candidates` are transform-costed, a single one
+    /// is taken as it is. No coefficient walk unless more than one candidate
+    /// is kept, against one per mode in [`Self::choose_key_intra_mode`]'s
+    /// full search.
+    fn choose_key_intra_by_satd(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> LumaIntra {
+        if f32::from(block.log2_size()) > self.params.keyframe_rank_max_log2.round() {
+            return LumaIntra::DC;
+        }
+        let gate = FlatGate {
+            sse_per_pixel: self.params.keyframe_flat_gate,
+            size_scale: self.params.keyframe_flat_gate_size_scale,
+        };
+        if gate.is_on() {
+            let dc_sse = self.intra_prediction_sse(block, source, recon, LumaIntra::DC);
+            if gate.settles(dc_sse, block.size() * block.size(), block.log2_size()) {
+                return LumaIntra::DC;
+            }
+        }
+        // 1 is DC alone, 2 and 3 the engine's growing sets, 4 its core set.
+        let set = if self.params.keyframe_satd_modes >= 3.5 {
+            IntraModeSet::Core
+        } else {
+            IntraModeSet::from_param(self.params.keyframe_satd_modes - 1.0)
+        };
+        let directional = self.params.keyframe_directional >= 0.5;
+        let pool: Vec<LumaIntra> = set
+            .modes()
+            .iter()
+            .copied()
+            .chain(self.key_directions(block, source, directional))
+            .map(LumaIntra::plain)
+            .collect();
+        let keep = self.params.keyframe_intra_rd_candidates.round().max(1.0) as usize;
+        let modelled = self.params.keyframe_model_candidates.round() as usize;
+        let this = &*self;
+        let by_satd = shortlist_intra(std::iter::empty(), pool, modelled.max(keep), |luma| {
+            this.key_intra_satd_cost(block, source, recon, luma)
+        });
+        let winners = if modelled > keep {
+            shortlist_intra(std::iter::empty(), by_satd, keep, |luma| {
+                self.key_intra_model_cost(block, source, recon, luma)
+            })
+        } else {
+            by_satd
+        };
+        match winners.as_slice() {
+            [only] => *only,
+            _ => {
+                self.rd_best_luma(block, source, recon, &winners, Self::key_mode_bits)
+                    .1
+            }
+        }
     }
 
     /// The cheapest of `candidates` for the luma of intra `block` and its
@@ -4103,10 +4252,12 @@ impl Av1Backend {
             + bit_cost * self.key_mode_bits(block, luma)
     }
 
-    /// Prediction SATD of `luma` on the block (the prediction is written
-    /// into `recon`, which coding overwrites).
-    fn intra_prediction_satd(
-        &self,
+    /// Modelled RD cost of `luma` on the block: its residual transformed and
+    /// quantised as coding would, the coefficient bits estimated from the
+    /// levels ([`KEY_LEVEL_RATE`]) instead of walked, plus λ · its mode bits
+    /// (the prediction is written into `recon`, which coding overwrites).
+    fn key_intra_model_cost(
+        &mut self,
         block: &Block,
         source: &Picture,
         recon: &mut Picture,
@@ -4123,7 +4274,71 @@ impl Av1Backend {
             .plane(PlaneIndex::Y)
             .region(block.x as isize, block.y as isize, n, n)
             .expect("block inside reconstruction");
-        self.dsp.satd(size, &src, &pred) as f32
+        self.dsp
+            .residual(size, &src, &pred, &mut self.scratch.residual, n);
+        let sse = u64::from(self.dsp.variance(size, &src, &pred).sse);
+        let tx = TxSize::from_log2(block.log2_size()).expect("supported transform size");
+        let (residual, _) = self.residual_cost(
+            tx,
+            PlaneIndex::Y,
+            false,
+            luma.intra_dir(),
+            sse,
+            CoefficientRate::Modelled,
+        );
+        residual + self.lambda() * self.params.intra_rate_scale * self.key_mode_bits(block, luma)
+    }
+
+    /// Luma SSE of `luma`'s prediction of the block (the prediction is
+    /// written into `recon`, which coding overwrites).
+    fn intra_prediction_sse(
+        &self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+        luma: LumaIntra,
+    ) -> u64 {
+        self.measure_intra_prediction(block, source, recon, luma, |dsp, size, src, pred| {
+            u64::from(dsp.variance(size, src, pred).sse)
+        })
+    }
+
+    /// Prediction SATD of `luma` on the block (the prediction is written
+    /// into `recon`, which coding overwrites).
+    fn intra_prediction_satd(
+        &self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+        luma: LumaIntra,
+    ) -> f32 {
+        self.measure_intra_prediction(block, source, recon, luma, |dsp, size, src, pred| {
+            dsp.satd(size, src, pred) as f32
+        })
+    }
+
+    /// `measure` of the block's source luma against `luma`'s prediction,
+    /// written into `recon` (which coding overwrites).
+    fn measure_intra_prediction<R>(
+        &self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+        luma: LumaIntra,
+        measure: impl FnOnce(&Dsp, BlockSize, &PlaneView<'_>, &PlaneView<'_>) -> R,
+    ) -> R {
+        self.predict_plane(block, PlaneIndex::Y, &Prediction::Intra(luma), recon);
+        let n = block.size();
+        let size = BlockSize::new(n, n).expect("intra blocks are kernel sizes");
+        let src = source
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, n, n)
+            .expect("block inside source");
+        let pred = recon
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, n, n)
+            .expect("block inside reconstruction");
+        measure(&self.dsp, size, &src, &pred)
     }
 
     /// Key-frame luma mode bits: `y_mode`, its angle delta, `uv_mode` DC

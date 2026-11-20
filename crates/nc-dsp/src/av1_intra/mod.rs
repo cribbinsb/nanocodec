@@ -1,7 +1,8 @@
 //! AV1 intra prediction kernels with SIMD versions: the patches of filter
 //! intra (AV1 §7.11.2.3), directional prediction (§7.11.2.4: its
-//! interpolation runs and column-tile transposes), and smooth and Paeth
-//! prediction (§7.11.2.6, §7.11.2.2).
+//! interpolation runs and column-tile transposes, and whole small blocks
+//! of any shape in `zones_avx2` and `zones_neon`), and smooth and Paeth prediction
+//! (§7.11.2.6, §7.11.2.2).
 //!
 //! The codec-side logic (edges, grid, zones) and the scalar references live
 //! in [`crate::intra_prediction::filter`] and
@@ -30,9 +31,17 @@ pub(crate) mod high;
 #[allow(unsafe_code)]
 pub(crate) mod avx2;
 
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+pub(crate) mod zones_avx2;
+
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon;
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(crate) mod zones_neon;
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]

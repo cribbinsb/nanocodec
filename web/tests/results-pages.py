@@ -26,8 +26,9 @@ WEB = Path(__file__).resolve().parents[1]
 # Each page and the data files it renders: its figures may come only from those.
 PAGES = {"index.html": ("chart",), "codecs.html": ("chart",),
          "speed.html": ("chart", "wasm", "decoders", "wasm-yardstick", "hardware"), "rate-control.html": ("rc-cost",),
-         "fixed-qp.html": ("fixed-qp-lens",), "clips.html": ("clips",),
-         "svc.html": ("svc",), "method.html": ("chart", "window"), "yardsticks.html": ()}
+         "fixed-qp.html": ("fixed-qp-lens", "chart"), "clips.html": ("clips",),
+         "svc.html": ("svc",), "method.html": ("chart", "window"), "yardsticks.html": (),
+         "history.html": ("history",)}
 VIEWPORTS = {"desktop": (1280, 900), "phone": (400, 860)}
 # Numbers that the pages' prose uses as names or setup facts, not results:
 # resolutions and formats (720p, 4:2:0, 8-bit, 10-bit), product names

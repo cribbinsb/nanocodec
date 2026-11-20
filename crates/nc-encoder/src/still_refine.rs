@@ -99,6 +99,11 @@ impl RefineCost {
 /// Frames the inter frames' running PSNR-Y averages over: the pulse guard's
 /// 8-frame median before a key, over a cadence cycle's base and its others.
 const INTER_DB_FRAMES: f64 = 8.;
+/// Inter frames before a scheduled key whose distortion the key's quality
+/// match needs where nothing else measures it: two of the running mean's
+/// time constants ([`INTER_DB_FRAMES`]), so the frames before them weigh
+/// little in it.
+pub(crate) const KEY_RUN_UP_FRAMES: u64 = 2 * INTER_DB_FRAMES as u64;
 /// dB the last key may stand above the inter frames' running PSNR-Y before
 /// the quiet run-up is off; it is whole from equal quality up. Measured
 /// against a run-up off from equal quality (a 1 dB ramp from 0): that left

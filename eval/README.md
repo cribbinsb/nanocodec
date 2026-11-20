@@ -78,7 +78,8 @@ the anchor supports them. Each configuration is pinned explicitly in
   reported per clip, per content class and overall, because an overall
   number alone hides class-dependent results.
 - **Metrics:** adoption decisions use J_real's set: mean BD-rate over
-  PSNR-YUV (6:1:1), VMAF v1 and MS-SSIM, in equal thirds (VMAF v0.6.1 NEG is
+  PSNR-YUV (6:1:1; each plane's per-frame PSNR capped at 60 dB, libvmaf's
+  8-bit cap, since 2026-11-20, 100 dB before), VMAF v1 and MS-SSIM, in equal thirds (VMAF v0.6.1 NEG is
   no longer used); `nceval/metrics.py` documents the others and the
   measurement profiles. No metric is computed on a stream that failed the
   conformance gate.

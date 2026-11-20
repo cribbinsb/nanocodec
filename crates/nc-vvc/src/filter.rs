@@ -54,6 +54,8 @@ pub(crate) struct DeblockQp<'a> {
     pub(crate) frame: [u32; 2],
     /// Every CU's `QpY` and the chroma QP table, when CUs carry their own.
     pub(crate) blocks: Option<(&'a QpMap, &'a ChromaQpTable)>,
+    /// The offsets the thresholds are looked up at.
+    pub(crate) offsets: Offsets,
 }
 
 impl DeblockQp<'_> {
@@ -107,7 +109,14 @@ pub(crate) fn apply(
                     edge(dsp, picture, grid, qp, (x, y), horizontal, &mut luma);
                     if let Some(cu) = &affine {
                         for x in (x + MIN_CU..block_end).step_by(MIN_CU) {
-                            sub_block_edge(&mut luma, grid, inside, cu, (x, y), horizontal);
+                            sub_block_edge(
+                                &mut luma,
+                                grid,
+                                (inside, qp.offsets),
+                                cu,
+                                (x, y),
+                                horizontal,
+                            );
                         }
                     }
                 } else if y == tu.y {
@@ -116,12 +125,19 @@ pub(crate) fn apply(
                     }
                 } else if let Some(cu) = &affine {
                     for x in (x..block_end).step_by(MIN_CU) {
-                        sub_block_edge(&mut luma, grid, inside, cu, (x, y), horizontal);
+                        sub_block_edge(
+                            &mut luma,
+                            grid,
+                            (inside, qp.offsets),
+                            cu,
+                            (x, y),
+                            horizontal,
+                        );
                     }
                 }
                 if let Some(split) = grid.narrow_sub_partitions(x, y) {
                     luma.flush(picture);
-                    sub_partition_edges(picture, inside, (&tu, split), y, horizontal);
+                    sub_partition_edges(picture, (inside, qp.offsets), (&tu, split), y, horizontal);
                 }
                 x = tu.x + tu.width();
             }
@@ -176,9 +192,32 @@ impl<'a> LumaQueue<'a> {
     }
 }
 
-/// `tC` (§8.8.3.6.2, 8-bit) at `qp` for boundary strength `bs` (1 or 2).
-fn tc(qp: u32, bs: u8) -> i32 {
-    (TC[qp as usize + 2 * (usize::from(bs) - 1)] + 2) >> 2
+/// The picture's deblocking offsets (`pps_luma_beta_offset_div2` and
+/// `pps_luma_tc_offset_div2`, §7.4.3.5): without chroma tool offsets the
+/// chroma ones are inferred equal, so one pair serves every plane.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Offsets {
+    pub(crate) beta_div2: i8,
+    pub(crate) tc_div2: i8,
+}
+
+/// Largest index into [`BETA`] and [`TC`] (§8.8.3.6.2, eqs. 1279 and 1281).
+const MAX_BETA_INDEX: i32 = 63;
+const MAX_TC_INDEX: i32 = 65;
+
+impl Offsets {
+    /// `β` (§8.8.3.6.2, 8-bit) at `qp`.
+    fn beta(self, qp: u32) -> i32 {
+        let index = (qp as i32 + 2 * i32::from(self.beta_div2)).clamp(0, MAX_BETA_INDEX);
+        BETA[index as usize]
+    }
+
+    /// `tC` (§8.8.3.6.2, 8-bit) at `qp` for boundary strength `bs` (1 or 2).
+    fn tc(self, qp: u32, bs: u8) -> i32 {
+        let index = (qp as i32 + 2 * (i32::from(bs) - 1) + 2 * i32::from(self.tc_div2))
+            .clamp(0, MAX_TC_INDEX);
+        (TC[index as usize] + 2) >> 2
+    }
 }
 
 /// Filter the luma of the edge between two affine sub-blocks at `(x, y)`
@@ -188,7 +227,7 @@ fn tc(qp: u32, bs: u8) -> i32 {
 fn sub_block_edge(
     luma: &mut LumaQueue<'_>,
     grid: &MotionGrid,
-    qp: u32,
+    (qp, offsets): (u32, Offsets),
     cu: &nc_encoder::Block,
     (x, y): (usize, usize),
     horizontal: bool,
@@ -215,7 +254,7 @@ fn sub_block_edge(
     } else {
         SHORT_REACH
     };
-    let beta = BETA[qp as usize];
+    let beta = offsets.beta(qp);
     for (segment, moved) in grid
         .segment_motion((x, y), horizontal)
         .into_iter()
@@ -228,7 +267,7 @@ fn sub_block_edge(
             } else {
                 (x, y + along)
             };
-            let tc = tc(qp, MOTION_STRENGTH);
+            let tc = offsets.tc(qp, MOTION_STRENGTH);
             luma.push(at, SEGMENT, beta, tc, [reach; 2]);
         }
     }
@@ -254,16 +293,25 @@ fn edge(
     if edge.luma == [0; 2] && edge.chroma == [0; 2] {
         return;
     }
+    let offsets = qp.offsets;
     let qp = qp.edge((x, y), horizontal);
     let boundary = horizontal && y.is_multiple_of(grid.ctu_size());
-    luma_edge(luma, picture, qp[0], (x, y), horizontal, &edge, boundary);
+    luma_edge(
+        luma,
+        picture,
+        (qp[0], offsets),
+        (x, y),
+        horizontal,
+        &edge,
+        boundary,
+    );
     for plane in [PlaneIndex::U, PlaneIndex::V] {
         let bs = edge.chroma[plane as usize - 1];
         if bs == 0 {
             continue;
         }
-        let tc = tc(qp[1], bs);
-        let beta = BETA[qp[1] as usize];
+        let tc = offsets.tc(qp[1], bs);
+        let beta = offsets.beta(qp[1]);
         let perp = if horizontal { y } else { x };
         let large = edge.sizes[1].iter().all(|&s| s >= 16);
         if !perp.is_multiple_of(16) || (bs == 1 && !large) {
@@ -291,7 +339,7 @@ fn edge(
 fn luma_edge(
     luma: &mut LumaQueue<'_>,
     picture: &mut Picture,
-    qp: u32,
+    (qp, offsets): (u32, Offsets),
     (x, y): (usize, usize),
     horizontal: bool,
     edge: &crate::motion::Edge,
@@ -300,12 +348,18 @@ fn luma_edge(
     if edge.luma == [0; 2] {
         return;
     }
-    let beta = BETA[qp as usize];
+    let beta = offsets.beta(qp);
     let sizes = edge.sizes[0];
     if sizes.iter().any(|&s| s <= NARROW_BLOCK) {
         // Only beside intra sub-partitions: intra, one strength.
         luma.flush(picture);
-        narrow_luma_edge(picture, (x, y), horizontal, beta, tc(qp, edge.luma[0]));
+        narrow_luma_edge(
+            picture,
+            (x, y),
+            horizontal,
+            beta,
+            offsets.tc(qp, edge.luma[0]),
+        );
         return;
     }
     let reach = |side: usize| {
@@ -318,7 +372,7 @@ fn luma_edge(
     };
     let lengths = [reach(0), reach(1)];
     if edge.luma[0] == edge.luma[1] {
-        let tc = tc(qp, edge.luma[0]);
+        let tc = offsets.tc(qp, edge.luma[0]);
         luma.push((x, y), EDGE_LINES, beta, tc, lengths);
         return;
     }
@@ -330,7 +384,7 @@ fn luma_edge(
             } else {
                 (x, y + along)
             };
-            luma.push(at, SEGMENT, beta, tc(qp, bs), lengths);
+            luma.push(at, SEGMENT, beta, offsets.tc(qp, bs), lengths);
         }
     }
 }
@@ -342,14 +396,14 @@ fn luma_edge(
 /// (horizontal edges).
 fn sub_partition_edges(
     picture: &mut Picture,
-    qp: u32,
+    (qp, offsets): (u32, Offsets),
     (cu, split): (&nc_encoder::Block, crate::isp::Split),
     y: usize,
     horizontal: bool,
 ) {
     const INTRA_STRENGTH: u8 = 2;
-    let tc = tc(qp, INTRA_STRENGTH);
-    let beta = BETA[qp as usize];
+    let tc = offsets.tc(qp, INTRA_STRENGTH);
+    let beta = offsets.beta(qp);
     // An 8x8 CU's 2-sample sub-partitions meet off the grid between grid
     // edges: only the grid ones are filtered.
     let on_grid = |part: &&nc_encoder::Block| {

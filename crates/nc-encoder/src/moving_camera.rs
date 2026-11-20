@@ -131,8 +131,19 @@ mod tests {
     const FULL: f64 = 2.;
 
     #[test]
-    fn off_by_default() {
+    fn default_is_six() {
+        // The engine default (585a09daf): the key 6 QP units coarser under
+        // full camera motion; the cadence half stays off.
         let mut c = camera(&[], false);
+        assert!(c.enabled());
+        c.observe_startup(FULL * 4., 0.);
+        assert_eq!(c.key_offset(), 6.);
+        assert!(!c.cadence_follows_scene());
+    }
+
+    #[test]
+    fn off_when_zero() {
+        let mut c = camera(&[("rate.fixed_qp_moving_key", 0.)], false);
         assert!(!c.enabled());
         c.observe_startup(FULL * 4., 0.);
         assert_eq!(c.key_offset(), 0.);

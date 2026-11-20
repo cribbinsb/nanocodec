@@ -284,15 +284,21 @@ fn h264_static_content_recovers_from_a_starved_key() {
 
 #[test]
 fn h264_layered_streams_recover_at_the_next_base_frame() {
+    // The Default carries the codec's premise (without the reuse term the
+    // copies stay degraded); the shipped rungs, like every other codec's, are
+    // checked for the recovery only: since the Fast rung took the Default's
+    // rate-control set (2026-11-19) its copies without the term no longer
+    // stay 3 dB down (37.0 against 38.9 dB at frame 20), which says nothing
+    // about the term.
+    check::<nc_h264::H264Backend>(Codec::H264, &ParamOverrides::default(), &LAYERED_RECOVERY);
     for preset in [
-        ParamOverrides::default(),
         shipped(Codec::H264, 1, "fast"),
         shipped(Codec::H264, 1, "faster"),
         shipped(Codec::H264, 1, "veryfast"),
         // The slow rung: the shared bundle, then H.264's levers (nc_encoder::presets).
         shipped(Codec::H264, 1, "slow"),
     ] {
-        check::<nc_h264::H264Backend>(Codec::H264, &preset, &LAYERED_RECOVERY);
+        check_preset::<nc_h264::H264Backend>(Codec::H264, &preset, &LAYERED_RECOVERY);
     }
 }
 

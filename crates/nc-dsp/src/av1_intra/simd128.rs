@@ -16,6 +16,7 @@ use nc_common::PlaneViewMut;
 use crate::intra_prediction::directional::DirectionalKernels;
 use crate::intra_prediction::{IntraEdges, IntraMode, SMOOTH_SHIFT, smooth_weights};
 
+super::generic::filter_patch_kernel!(; crate::simd::simd128::I16x8);
 super::generic::av1_intra_kernels!(;
     crate::simd::simd128::I16x8,
     crate::simd::simd128::I16x8

@@ -72,6 +72,7 @@ use crate::syntax::{
 use crate::transform::{MAX_COEFFS, forward_bound, inverse_dc};
 
 mod block_qp;
+mod cu_trial;
 mod inter_tree;
 mod intra;
 mod key_cost;
@@ -495,6 +496,15 @@ pub struct HevcBackend {
     /// While the frame has light superblocks (`set_light_params`), the
     /// per-block settings not in use.
     alternate: Option<Alternate>,
+    /// The engine's whole-CU pricing trial in progress (`cu_trial.rs`).
+    cu_trial: cu_trial::CuTrial,
+    /// The luma mode search of intra CUs coded in a pricing trial
+    /// (`hevc.trial_full_intra`: the full one), or `None` to keep the
+    /// P-frame search.
+    trial_intra_search: Option<InterIntraSearch>,
+    /// `hevc.intra_rd_candidates`: luma modes of the full intra search
+    /// priced by transform cost (1: the SATD-best is taken).
+    intra_rd_candidates: usize,
 }
 
 /// The settings HEVC reads per CU, swapped between light and regular
@@ -604,7 +614,9 @@ enum InterIntraSearch {
     Coarse,
     /// DC (the mode the engine's intra test priced), no search or trials,
     /// for CUs up to `2^max_log2`; larger CUs search as [`Self::Coarse`].
-    DcOnly { max_log2: u8 },
+    /// With `smooth` (`hevc.inter_intra_smooth`) the CUs up to that size
+    /// take planar or DC, the cheaper by SATD, otherwise as DC.
+    DcOnly { max_log2: u8, smooth: bool },
 }
 
 impl InterIntraSearch {
@@ -621,6 +633,7 @@ impl InterIntraSearch {
         if params.inter_intra_dc_only >= 0.5 {
             Self::DcOnly {
                 max_log2: params.inter_intra_dc_only_max_log2.round() as u8,
+                smooth: params.inter_intra_smooth >= 0.5,
             }
         } else if params.coarse_inter_intra >= 0.5 {
             Self::Coarse
@@ -681,6 +694,12 @@ impl EarlyMergeHint {
 /// Working buffers of [`HevcBackend::code_residual`].
 #[derive(Debug)]
 struct Scratch {
+    /// The luma prediction the smooth P-frame intra choice
+    /// (`hevc.inter_intra_smooth`) built for the first transform block of
+    /// its CU, at `(x, y, n)` with `mode`: that block's coding takes it
+    /// instead of gathering the references and predicting again.
+    smooth_prediction: Option<((usize, usize, usize), u8)>,
+    smooth_samples: Box<[u8; MAX_COEFFS]>,
     residual: Box<[i16; MAX_COEFFS]>,
     levels: Box<[i16; MAX_COEFFS]>,
     coeffs: Box<[i16; MAX_COEFFS]>,
@@ -691,6 +710,8 @@ struct Scratch {
 impl Default for Scratch {
     fn default() -> Self {
         Self {
+            smooth_prediction: None,
+            smooth_samples: Box::new([0; MAX_COEFFS]),
             residual: Box::new([0; MAX_COEFFS]),
             levels: Box::new([0; MAX_COEFFS]),
             coeffs: Box::new([0; MAX_COEFFS]),
@@ -823,6 +844,17 @@ nc_encoder::param_group! {
         // instructions (callgrind) -19% lowlight_city_night QP 43 / -26%
         // bodycam_bc1 / -24% crowd09 QP 47, for key bytes +1.6% / +2.4% /
         // +8.8% at the same QP.
+        // Whole-CU pricing (engine `cu_pricing.rs`, `backend/cu_trial.rs`).
+        trial_full_intra: 1.0, [0.0, 1.0],
+            "1 gives intra CUs coded in a whole-CU pricing trial the full (key-frame) luma mode search, 0 the P-frame search: 0 is faster",
+        // 1 by default (SATD decides alone).
+        intra_rd_candidates: 1.0, [1.0, 8.0],
+            "luma modes of the full intra search (key frames) whose first transform block is transformed, plainly quantised and priced by CABAC bits plus coefficient-domain error before one is chosen; 1 takes the SATD-best: higher is slower, better intra",
+        // The engine's smooth set for P-frame intra
+        // (`IntraModeSet::Smooth`): most P-frame intra CUs repair brightness
+        // changes and occlusions, where planar does most of the work.
+        inter_intra_smooth: 0.0, [0.0, 1.0],
+            "with hevc.inter_intra_dc_only, 1 codes those P-frame intra CUs with planar or DC, the cheaper by SATD + sqrt(lambda) mode bits, otherwise as DC only (no trials, inter fallback unconditional): finer than DC alone at about its cost",
         key_intra_coarse: 0.0, [0.0, 1.0],
             "1 gives key-frame intra CUs the coarse P-frame mode search (planar, DC, pure horizontal/vertical, MPMs): faster key frames, coarser intra",
         inter_intra_dc_only: 0.0, [0.0, 1.0],
@@ -914,6 +946,7 @@ impl CodecBackend for HevcBackend {
         "hevc.deblock_tc_offset",
         "hevc.key_qp_offset_delta",
         "hevc.key_intra_coarse",
+        "hevc.intra_rd_candidates",
         "hevc.intra_leaf_cost",
         "hevc.intra_nxn",
         "hevc.intra_nxn_min_cost",
@@ -923,6 +956,7 @@ impl CodecBackend for HevcBackend {
         "hevc.inter_tu_split",
         "hevc.inter_tu_split_min_cost",
         "hevc.inter_tu_split_spread",
+        "hevc.trial_full_intra",
     ];
     /// Read per CU (`BlockSettings`); transform trees and `NxN` intra can only
     /// be switched off, as the parameter sets allow them or not.
@@ -944,6 +978,7 @@ impl CodecBackend for HevcBackend {
         "hevc.coarse_inter_intra",
         "hevc.inter_intra_dc_only",
         "hevc.inter_intra_dc_only_max_log2",
+        "hevc.inter_intra_smooth",
         "quant.trellis",
         "quant.trellis_lambda_scale",
     ];
@@ -989,7 +1024,7 @@ impl CodecBackend for HevcBackend {
     // carries it): two draws of 15-16 clips J -1.3% [-2.1, -0.6] and -1.7%
     // [-3.0, -0.5]. The other HEVC presets pin the plan and the profile off.
     //
-    // Under camera motion the key is 6 QP coarser (`rate.fixed_qp_moving_key`,
+    // Under camera motion the key is 6 QP coarser (`rate.fixed_qp_moving_key`, now the engine default,
     // engine `moving_camera.rs`): the profile's key, 15 QP finer than the P
     // frames at a 10 s period, is inherited by a fixed camera's frames, not
     // by a handheld or driving one's. Fixed QP, matched QP (nceval.fixedqp):
@@ -1000,13 +1035,12 @@ impl CodecBackend for HevcBackend {
     // -1.3, static +0.3 (`static_meva_hospital` +9.1 %, the worst of five
     // clips worse). A long single key (450 f from a moving start): rate
     // -6.0 %, P-frame PSNR unchanged. CBR is untouched. 12 coarser (x265's
-    // key offset): VC-1K -4.7, pool quick -1.2. HEVC Slow pins 0 (not
-    // screened); Fast and Faster pin the profile off.
+    // key offset): VC-1K -4.7, pool quick -1.2. HEVC Slow, Fast and Faster
+    // pin 0 (not screened).
     // docs/handoff/hevc.md "VC-1K phone video calls".
     const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
         ("rate.cadence_static_scaling", 0.0),
         ("refs.second_full", 1.0),
-        ("rate.fixed_qp_moving_key", 6.0),
     ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
@@ -1034,8 +1068,10 @@ impl CodecBackend for HevcBackend {
         // achieved/target max 1.008 -> 1.000.)
         // Inert within one key period. The other HEVC presets pin it off.
         ("rate.period_ceiling", 1.0),
-        // `rate.still_level_damping` (engine 0.5) was screened on H.264 Default
-        // only (2026-11-18); pinned off here until this codec is screened.
+        // `rate.still_level_damping` (engine 0.5) off: its final-check (2026-11-19,
+        // 600 f, keys every 10 s) was J -0.36 % [-0.59, -0.14] with a pulse
+        // guard of +1.03 dB from a real loss on meva_hospital_g301 (75 kbps:
+        // key -0.93 dB, the 30 frames after it -1.42 dB, whole clip -0.19 dB).
         ("rate.still_level_damping", 0.0),
         // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
         // times how still the scene is): its later frames inherit it. Pool levels,
@@ -1121,7 +1157,18 @@ impl CodecBackend for HevcBackend {
         ("hevc.intra_rounding", 209.0),
         ("planner.lambda_scale", 2.581_25),
         ("planner.split_rate_factor", 2.262_5),
-        ("hevc.tu16_chroma_concentration", 0.35),
+        // The diffuse-chroma TU16 heuristic off: it predates the RD inter
+        // transform tree (`inter_tree.rs`), which now decides 32x32 against
+        // 16x16 by cost; forcing the split made 26-48 % of the inter transform
+        // area 16x16 on VC-1K phone calls (x265: 3-7 %). Six worst VC-1K
+        // clips (fixed QP) J -1.5 [-1.9, -1.1]; instructions -0.1 to -2.7 %.
+        // Pool (CBR, k 0.1, dCPU -1, draw 2026-11-19, head 3db6e2c1): L1
+        // -1.45 % [-1.99, -0.95], L2 -0.57 % [-1.31, +0.09] (drone +3.35),
+        // L3 -0.31 % [-0.69, +0.06] BETTER, no guard (videocall -1.57, drone
+        // +2.53, static +0.23); final-check (600 f, 36 clips) -0.68 % [-0.97,
+        // -0.38], no guard. docs/handoff/hevc.md "VC-1K phone video calls".
+        // Fast and Faster pin 0.5, Slow 0.35 (not screened).
+        ("hevc.tu16_chroma_concentration", 0.0),
         // Four merge candidates (MaxNumMergeCand, `mvpred.rs`) and no depth
         // removal (16x16 and 8x8 always on offer to the planner). What they
         // add: the third spatial candidate and TMVP for skip and merge, and
@@ -1135,6 +1182,24 @@ impl CodecBackend for HevcBackend {
         // HEVC Fast and Faster pin the old values. No depth removal is the
         // engine default since 2026-11-15.
         ("hevc.merge_candidates", 4.0),
+        // Whole-CU pricing of intra leaves (engine `cu_pricing.rs`): an
+        // intra leaf (not pre-analysis static) that beat inter by under 0.1
+        // λ per sample is also coded at merge candidate 0, and the cheaper
+        // coded CU (all planes) is kept; trial intra takes the full search.
+        // The shadow RD log found intra -> inter worth 1.2 % of the coded
+        // cost on the six worst VC-1K clips, 69 % of it within 0.05 λ.
+        // Worst six (fixed QP, matched QP) J -2.1 [-2.6, -1.7] (VMAF -3.2);
+        // instructions (QP 36, 30 f: Johnny / KristenAndSara /
+        // WestWindEasy / ControlledBurn) +0.5 / +1.0 / +6.8 / +3.3 %. Pool
+        // (draw 2026-11-19, k 0.1, dCPU 2.8): L1 -1.52 %, L2 -1.23 %, L3
+        // (single point, n 108) -1.00 % [-1.39, -0.61]; the periodic-key
+        // pulse guard (+0.56 dB, external_otw_square_native) comes from a
+        // better key (rate control gave it more bits: key +2.9 dB, P frames
+        // before and after it better). final-check (36 clips, 600 f, keys
+        // every 10 s) J -0.80 % [-0.96, -0.64], no guard.
+        // docs/handoff/hevc.md "VC-1K: shadow
+        // RD ceiling and whole-CU pricing". The other HEVC presets pin it off.
+        ("decision.cu_price_intra_lambdas", 0.1),
     ];
 
     // A flat field-by-field initialisation of the backend's state.
@@ -1231,6 +1296,9 @@ impl CodecBackend for HevcBackend {
             tools: CodingTools::new(&params),
             trellis: TrellisQuant::from_params(&QuantParams::from_overrides(&config.params)),
             alternate: None,
+            cu_trial: cu_trial::CuTrial::default(),
+            trial_intra_search: (params.trial_full_intra >= 0.5).then_some(InterIntraSearch::Full),
+            intra_rd_candidates: params.intra_rd_candidates.round().max(1.0) as usize,
         })
     }
 
@@ -1427,6 +1495,35 @@ impl CodecBackend for HevcBackend {
         self.tools
             .intra_leaf_cost
             .then(|| self.key_leaf_cost(source, block))
+    }
+
+    fn begin_cu_trial(&mut self, block: &Block, recon: &Picture) -> bool {
+        self.save_cu_trial(block, recon)
+    }
+
+    fn cu_trial_cost(&mut self, block: &Block, source: &Picture, recon: &Picture) -> f32 {
+        self.coded_cu_cost(block, source, recon)
+    }
+
+    fn undo_cu_trial(&mut self, recon: &mut Picture) {
+        self.restore_cu_trial(recon);
+    }
+
+    fn end_cu_trial(&mut self) {
+        self.finish_cu_trial();
+    }
+
+    fn final_intra_screen(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+        block: &Block,
+    ) -> Option<(f32, f32)> {
+        Some(self.screen_intra_cu(source, recon, block))
+    }
+
+    fn cu_trial_skip_vector(&mut self, block: &Block) -> Option<Mv> {
+        self.first_merge_vector(block)
     }
 
     fn static_skip_vector(&mut self, _block: &Block) -> Option<Mv> {
@@ -1628,10 +1725,10 @@ impl CodecBackend for HevcBackend {
             PredictionMode::IntraDc => {
                 let fallback = decision.intra_fallback;
                 match self.inter_fallback(block, fallback, source, reference, recon) {
-                    Some((mv, reference)) => {
+                    Ok((mv, reference)) => {
                         self.encode_inter_cu(block, mv, source, reference, recon);
                     }
-                    None => self.encode_intra_cu(block, source, recon),
+                    Err(searched) => self.encode_intra_cu(block, source, recon, searched),
                 }
             }
             PredictionMode::Inter(mv) => {
@@ -2222,11 +2319,13 @@ impl HevcBackend {
     }
 
     fn prefer_tu16(&self, block: &Block, source: &Picture, x: usize, y: usize) -> bool {
-        let size16 = BlockSize::new(16, 16).expect("chroma16");
-        let mut views = [None, None];
         let zero_limit = self.frame_quantization.planes[1].transforms[0][2].zero_limit;
-        let mut negligible = true;
-        for (slot, plane) in [PlaneIndex::U, PlaneIndex::V].into_iter().enumerate() {
+        // The four 8x8 quadrants' statistics of each plane: their SSEs add
+        // up to the 16x16 SSE of the zero bound, and their sums give the
+        // coarse energy. (One 16x16 variance per plane, then the quadrants
+        // for nearly every TU, measured 10 kernel calls and ~900
+        // instructions of glue per call; HEVC Faster.)
+        let quadrants = [PlaneIndex::U, PlaneIndex::V].map(|plane| {
             let (px, py, _) = plane_rect(plane, x, y, 5);
             let (cu_x, cu_y, stride) = plane_rect(plane, block.x, block.y, block.log2_size());
             let offset = (py - cu_y) * stride + px - cu_x;
@@ -2237,25 +2336,24 @@ impl HevcBackend {
                 .expect("chroma TU");
             let pred = PlaneView::new(&self.inter_pred[plane as usize][offset..], stride, 16, 16)
                 .expect("chroma prediction");
-            let stats = self.dsp.variance(size16, &src, &pred);
+            chroma_quadrants(&self.dsp, &src, &pred)
+        });
+        let negligible = quadrants.iter().all(|quads| {
+            let sse: u64 = quads.iter().map(|q| u64::from(q.sse)).sum();
             // Cauchy bounds L1 by sqrt(area*SSE), so this avoids quadrant
             // analysis for residuals whose large chroma transform is zero.
-            let squared_bound = u64::from(stats.sse) * 256;
+            let squared_bound = sse * 256;
             let root = squared_bound.isqrt();
             let abs_bound = root + u64::from(root * root != squared_bound);
-            negligible &= forward_bound(4, abs_bound) <= zero_limit;
-            views[slot] = Some((src, pred));
-        }
+            forward_bound(4, abs_bound) <= zero_limit
+        });
         if negligible {
             return false;
         }
-        let mut energy = 0;
-        let mut squared_error = 0;
-        for (src, pred) in views.iter().flatten() {
-            let (e, s) = chroma_coarse_energy(&self.dsp, src, pred);
-            energy += e;
-            squared_error += s;
-        }
+        let (energy, squared_error) = quadrants
+            .iter()
+            .map(coarse_energy)
+            .fold((0, 0), |(e, s), (qe, qs)| (e + qe, s + qs));
         energy * 65536 < squared_error * 64 * u64::from(self.tu16_chroma_concentration_q16)
     }
 
@@ -2346,6 +2444,7 @@ impl HevcBackend {
             coeffs,
             scaled,
             decoded,
+            ..
         } = &mut *scratch;
         // 4x4 intra luma uses the DST (§8.6.4.2).
         let transform = crate::transform::kind(log2, intra && plane == PlaneIndex::Y)
@@ -2657,22 +2756,25 @@ fn copy_prediction<const N: usize>(
     nc_dsp::copy_square::<N>(&mut dst, pred, stride);
 }
 
-/// Energy captured by four8x8 residual means in one16x16 chroma TU.
-fn chroma_coarse_energy(dsp: &Dsp, src: &PlaneView<'_>, pred: &PlaneView<'_>) -> (u64, u64) {
-    let mut coarse = 0;
-    let mut sse = 0;
-    let size = BlockSize::new(8, 8).expect("chroma quadrant");
-    for y in [0, 8] {
-        for x in [0, 8] {
-            let a = src.sub_view(x, y, 8, 8).expect("quadrant");
-            let b = pred.sub_view(x, y, 8, 8).expect("quadrant");
-            let stats = dsp.variance(size, &a, &b);
-            let sum = i64::from(stats.sum);
-            coarse += (sum * sum) as u64;
-            sse += u64::from(stats.sse);
-        }
-    }
-    (coarse, sse)
+/// The residual statistics of the four 8x8 quadrants of a 16x16 chroma TU,
+/// in raster order.
+fn chroma_quadrants(dsp: &Dsp, src: &PlaneView<'_>, pred: &PlaneView<'_>) -> [nc_dsp::Variance; 4] {
+    let mut quads = [nc_dsp::Variance::default(); 4];
+    let (top, bottom) = quads.split_at_mut(2);
+    dsp.variance_8x8_row(src, pred, top);
+    let lower_src = src.sub_view(0, 8, 16, 8).expect("lower quadrants");
+    let lower_pred = pred.sub_view(0, 8, 16, 8).expect("lower quadrants");
+    dsp.variance_8x8_row(&lower_src, &lower_pred, bottom);
+    quads
+}
+
+/// Energy captured by the four 8x8 residual means of one 16x16 chroma TU
+/// (its [`chroma_quadrants`]), and the TU's SSE.
+fn coarse_energy(quads: &[nc_dsp::Variance; 4]) -> (u64, u64) {
+    quads.iter().fold((0, 0), |(coarse, sse), stats| {
+        let sum = i64::from(stats.sum);
+        (coarse + (sum * sum) as u64, sse + u64::from(stats.sse))
+    })
 }
 
 /// The transform units of a CU, `(x, y, log2)` in luma samples, in coding
@@ -2986,7 +3088,7 @@ mod transform_unit_tests {
 
 #[cfg(test)]
 mod selective_transform_tests {
-    use super::chroma_coarse_energy;
+    use super::{chroma_quadrants, coarse_energy};
     use nc_common::PlaneView;
     use nc_dsp::Dsp;
 
@@ -3020,7 +3122,7 @@ mod selective_transform_tests {
                 })
                 .collect();
             let src = PlaneView::new(&source, 16, 16, 16).unwrap();
-            let (energy, sse) = chroma_coarse_energy(&dsp, &src, &reference);
+            let (energy, sse) = coarse_energy(&chroma_quadrants(&dsp, &src, &reference));
             match pattern {
                 0 => assert_eq!((energy, sse), (0, 0)),
                 1 | 2 => assert_eq!(energy, 64 * sse),

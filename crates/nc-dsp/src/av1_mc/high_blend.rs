@@ -173,6 +173,9 @@ pub(crate) trait BlendSample: Sample {
     unsafe fn load_i16<V: I16Lanes>(src: &[Self]) -> V;
     unsafe fn store_i16<V: I16Lanes>(v: V, dst: &mut [Self]);
     unsafe fn clamp_and_store<V: I16Lanes>(v: V, zero: V, hi: V, dst: &mut [Self]);
+    /// Lane `i` is `src[2i] + src[2i + 1]` over the first `2 · V::LANES`
+    /// samples (at most `2 · 4095`: exact in `i16`).
+    unsafe fn pair_sum_i16<V: I16Lanes>(src: &[Self]) -> V;
 }
 
 impl BlendSample for u8 {
@@ -190,6 +193,11 @@ impl BlendSample for u8 {
     unsafe fn clamp_and_store<V: I16Lanes>(v: V, _zero: V, _hi: V, dst: &mut [u8]) {
         // `store_u8_sat` (`packuswb` / `vqmovun`) saturates `i16 -> 0..=255` directly.
         v.store_u8_sat(dst);
+    }
+
+    #[inline(always)]
+    unsafe fn pair_sum_i16<V: I16Lanes>(src: &[u8]) -> V {
+        V::pair_sum_u8(src)
     }
 }
 
@@ -214,6 +222,16 @@ impl BlendSample for u16 {
     unsafe fn clamp_and_store<V: I16Lanes>(v: V, zero: V, hi: V, dst: &mut [u16]) {
         // SAFETY: forwarded caller contract.
         unsafe { Self::store_i16(v.max(zero).min(hi), dst) };
+    }
+
+    #[inline(always)]
+    unsafe fn pair_sum_i16<V: I16Lanes>(src: &[u16]) -> V {
+        let mut lanes = [0i16; crate::simd::MAX_I16_LANES];
+        let (pairs, _) = src[..2 * V::LANES].as_chunks::<2>();
+        for (lane, &[a, b]) in lanes.iter_mut().zip(pairs) {
+            *lane = (a + b) as i16;
+        }
+        V::load(&lanes)
     }
 }
 
@@ -584,7 +602,37 @@ fn mask_weights_row<V8: I16Lanes, VWide: I16Lanes>(
                 out[c] = ((u16::from(top[c]) + u16::from(bot[c]) + 1) >> 1) as i16;
             }
         }
-        _ => mask.weights_row(row, out),
+        (true, sub_y) => {
+            // Horizontally subsampled (4:2:0 and 4:2:2 chroma): pair sums
+            // of one row, or of two rows added, rounded down by the samples
+            // summed (`Round2(sum, 1 + sub_y)`, as `Av1Mask::weights_row`).
+            let rows = 1 + usize::from(sub_y);
+            let shift = rows.trailing_zeros() + 1;
+            let top = &mask.data[(rows * row) * mask.stride..][..2 * n];
+            let bottom = &mask.data[(rows * row + rows - 1) * mask.stride..][..2 * n];
+            let half = 1 << (shift - 1);
+            let mut c0 = 0usize;
+            while c0 + VWide::LANES <= n {
+                let mut sum = VWide::pair_sum_u8(&top[2 * c0..]);
+                if sub_y {
+                    sum = sum.add(VWide::pair_sum_u8(&bottom[2 * c0..]));
+                }
+                sum.add(VWide::splat(half)).sra(shift).store(&mut out[c0..]);
+                c0 += VWide::LANES;
+            }
+            if V8::LANES < VWide::LANES && c0 + V8::LANES <= n {
+                let mut sum = V8::pair_sum_u8(&top[2 * c0..]);
+                if sub_y {
+                    sum = sum.add(V8::pair_sum_u8(&bottom[2 * c0..]));
+                }
+                sum.add(V8::splat(half)).sra(shift).store(&mut out[c0..]);
+                c0 += V8::LANES;
+            }
+            // Rows are powers of two: only rows narrower than `V8` are left.
+            if c0 < n {
+                mask.weights_row(row, out);
+            }
+        }
     }
 }
 

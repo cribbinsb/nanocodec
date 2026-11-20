@@ -1,6 +1,6 @@
 # Spatial scalability (SVC): 720p30 + 360p30 (+ 180p30)
 
-<sub>Updated 2026-11-13, build 52903ab1, vp9-svc at 53890097, vp9-svc+L2T3 at 53890097, vp9-svc-fast at 53890097, av1-svc3 at 4594ae65, av1-svc3+L3T3 at 4594ae65, av1-svc3-fast at 4594ae65; libaom svc_encoder_rtc v3.15.3, libvpx vp9_spatial_svc_encoder v1.16.0; paired-timed x86 speed (see the notes)</sub>
+<sub>Updated 2026-11-19, build c9cff89f; libaom svc_encoder_rtc v3.15.3, libvpx vp9_spatial_svc_encoder v1.16.0; speed partly estimated from instruction counts (see the notes)</sub>
 
 ![SVC chart](svc-chart.svg)
 
@@ -8,31 +8,54 @@ Two-layer AV1 and VP9 streams (360p base, operating point 1; 720p, operating poi
 
 | Encoder | BD-J op 0 | BD-PSNR-YUV | BD-VMAF v1 | per-clip IQR (BD-J) | 360p op BD-J | 360p op share of rate | fps (Jetson, 1 core) | fps (x86, 1 core) | x86 speed vs x264 medium | clips |
 |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-| **AV1 Medium 720p (single layer)** | -53.0% | -57.3% | -57.7% | -55.7 … -43.0 |  |  | 41.1 | 92.4 | 1.37× | 8/8 |
-| **VP9 Medium 720p (single layer)** | -50.1% | -54.4% | -53.6% | -53.8 … -39.6 |  |  | 34.4 | 89.7 | 1.33× | 8/8 |
-| **AV1 L2T3** | -46.6% | -50.7% | -52.2% | -49.0 … -34.2 | -8.6% | 23% | 25.5 | 57.9 | 0.86× | 8/8 |
-| **AV1 L2T1** | -44.9% | -49.6% | -50.1% | -50.0 … -33.3 | -6.5% | 22% | 24.0 | 54.8 | 0.81× | 8/8 |
-| **VP9 L2T3** | -42.4% | -46.2% | -46.8% | -46.6 … -29.2 | -3.1% | 21% | 23.4 | 58.8 | 0.87× | 8/8 |
-| **AV1 L3T3** | -41.7% | -45.9% | -48.0% | -43.3 … -28.9 | +17.5% | 28% | 23.3 | 54.3 | 0.80× | 8/8 |
-| **VP9 L2T1** | -40.7% | -44.5% | -45.1% | -45.5 … -28.1 | -0.7% | 21% | 22.3 | 56.2 | 0.83× | 8/8 |
-| **AV1 L2T1 Fast** | -40.1% | -41.7% | -46.7% | -44.5 … -25.7 | +7.0% | 22% | 42.4 | 78.4 | 1.16× | 8/8 |
-| **AV1 L3T1** | -39.6% | -44.3% | -45.8% | -44.0 … -28.0 | +20.5% | 27% | 22.3 | 51.9 | 0.77× | 8/8 |
-| **VP9 L2T1 Fast** | -35.2% | -37.9% | -40.5% | -39.0 … -23.7 | +16.4% | 23% | 33.7 | 74.2 | 1.10× | 8/8 |
-| **AV1 L3T1 Fast** | -33.7% | -35.5% | -40.6% | -37.0 … -21.3 | +37.2% | 27% | 39.9 | 75.4 | 1.12× | 8/8 |
-| **AV1 simulcast 720p+360p+180p** | -33.7% | -38.3% | -39.1% | -35.5 … -20.1 |  | 26% | 31.8* | 72.7 | 1.08× | 8/8 |
-| **AV1 simulcast 720p+360p** | -33.3% | -37.9% | -38.8% | -34.9 … -20.1 |  | 35% | 32.9* | 72.3 | 1.07× | 8/8 |
-| **VP9 simulcast 720p+360p** | -29.6% | -34.1% | -33.2% | -33.2 … -16.0 |  | 35% | 28.1* | 73.2 | 1.08× | 8/8 |
-| libaom SVC L2T1 rt 10 | -8.7% | -14.0% | -11.4% | -17.9 … +10.1 | +42.6% | 32% | 30.6 | 68.6 | 1.01× | 8/8 |
-| libaom SVC L2T1 rt 8 | -8.5% | -12.5% | -10.1% | -20.4 … +8.6 | +47.4% | 31% | 24.0 | 54.2 | 0.80× | 8/8 |
-| libaom SVC L3T1 rt 10 | -6.7% | -12.7% | -9.3% | -15.4 … +13.3 | +80.3% | 33% | 27.6 | 64.5 | 0.95× | 8/8 |
-| libaom SVC L3T1 rt 8 | -1.7% | -5.1% | -4.0% | -15.4 … +16.7 | +87.5% | 32% | 20.3 | 46.2 | 0.68× | 8/8 |
-| x264 medium (720p) | +0.0% | +0.0% | +0.0% | +0.0 … +0.0 |  |  | 26.7 | 67.6 | 1.00× | 8/8 |
-| libaom SVC L2T3 rt 8 | +16.4% | +14.4% | +12.1% | -4.6 … +37.6 | +60.1% | 31% | 26.0 | 59.4 | 0.88× | 8/8 |
-| libaom SVC L2T3 rt 10 | +18.1% | +15.1% | +14.9% | +0.6 … +36.0 | +59.7% | 30% | 32.8 | 77.1 | 1.14× | 8/8 |
-| libaom SVC L3T3 rt 8 | +19.1% | +16.3% | +15.6% | -1.3 … +39.7 | +118.0% | 32% | 24.1 | 53.3 | 0.79× | 8/8 |
-| libaom SVC L3T3 rt 10 | +21.1% | +17.5% | +17.3% | +2.4 … +39.1 | +121.5% | 32% | 30.2 | 65.9 | 0.97× | 8/8 |
-| libvpx SVC L2T1 rt 9 | +27.4% | +29.6% | +17.8% | +13.1 … +36.0 | +108.2% | 30% | 37.6 | 72.4 | 1.07× | 8/8 |
-| libvpx SVC L2T1 rt 7 | +30.3% | +31.3% | +20.6% | +18.2 … +46.9 | +114.8% | 31% | 22.9 | 53.3 | 0.79× | 8/8 |
+| **AV1 Medium 720p (single layer)** | -55.9% | -59.8% | -61.2% | -63.8 … -43.8 |  |  | 45.0 | 193.4 | 1.72× | 8/8 |
+| **VP9 Medium 720p (single layer)** | -51.9% | -56.2% | -55.5% | -57.0 … -40.5 |  |  | 43.2 | 216.0 | 1.92× | 8/8 |
+| **AV1 L2T1** | -48.0% | -52.3% | -53.4% | -55.0 … -34.3 | -3.1% | 21% | 30.2 | 114.0 | 1.01× | 8/8 |
+| **AV1 L2T3** | -47.8% | -51.8% | -53.0% | -54.8 … -34.4 | -2.7% | 22% | 31.6 | 124.4 | 1.10× | 8/8 |
+| **AV1 L2T1_KEY** | -47.3% | -51.5% | -53.0% | -54.5 … -34.0 | -3.1% | 21% | 34.9 | 125.0 | 1.11× | 8/8 |
+| **AV1 L2T3_KEY** | -46.0% | -49.8% | -51.8% | -54.3 … -32.3 | -4.1% | 22% | 38.7 | 126.7 | 1.12× | 8/8 |
+| **VP9 L2T3** | -44.4% | -48.3% | -48.6% | -51.9 … -30.6 | -2.9% | 21% | 28.0 | 122.9 | 1.09× | 8/8 |
+| **AV1 L3T3** | -43.9% | -47.6% | -49.8% | -50.0 … -29.8 | +23.9% | 28% | 28.1 | 111.3 | 0.99× | 8/8 |
+| **VP9 L2T1** | -43.4% | -47.3% | -48.0% | -50.6 … -29.2 | -0.6% | 21% | 27.6 | 105.1 | 0.93× | 8/8 |
+| **AV1 L3T1_KEY** | -43.2% | -47.0% | -49.6% | -49.7 … -29.5 | +0.5% | 20% | 32.1 | 116.8 | 1.04× | 8/8 |
+| **VP9 L2T1_KEY** | -43.1% | -47.2% | -46.9% | -52.3 … -29.3 | -1.7% | 21% | 31.4 | 117.5 | 1.04× | 8/8 |
+| **VP9 L2T3_KEY** | -43.1% | -47.1% | -46.9% | -50.4 … -30.5 | -2.9% | 21% | 33.9 | 130.4 | 1.16× | 8/8 |
+| **AV1 L3T1** | -42.8% | -47.0% | -48.4% | -50.1 … -29.3 | +23.5% | 27% | 26.7 | 109.1 | 0.97× | 8/8 |
+| **AV1 L3T3_KEY** | -42.2% | -45.5% | -49.0% | -49.9 … -28.2 | +0.8% | 21% | 35.7 | 125.7 | 1.12× | 8/8 |
+| **VP9 L3T3_KEY** | -40.8% | -44.7% | -44.7% | -48.8 … -26.2 | -2.0% | 21% | 31.5 | 120.8 | 1.07× | 8/8 |
+| **VP9 L3T3** | -40.4% | -44.2% | -45.4% | -45.8 … -25.9 | +19.8% | 28% | 25.2 | 96.8 | 0.86× | 8/8 |
+| **AV1 L2T1 Fast** | -40.1% | -41.7% | -46.5% | -44.4 … -26.9 | +13.6% | 22% | 49.1 | 141.6 | 1.26× | 8/8 |
+| **VP9 L3T1_KEY** | -39.8% | -43.8% | -43.9% | -46.2 … -25.3 | +1.2% | 21% | 29.2 | 116.5 | 1.03× | 8/8 |
+| **VP9 L3T1** | -39.3% | -43.0% | -44.5% | -49.3 … -24.2 | +22.0% | 27% | 24.9 | 100.3 | 0.89× | 8/8 |
+| **AV1 L2T1_KEY Fast** | -39.1% | -40.5% | -46.1% | -41.7 … -25.8 | +14.6% | 20% | 58.9 | 174.0 | 1.54× | 8/8 |
+| **AV1 simulcast 720p+360p** | -37.8% | -41.9% | -44.0% | -45.3 … -22.5 |  | 35% | 36.0* | 164.2 | 1.46× | 8/8 |
+| **AV1 simulcast 720p+360p+180p** | -37.8% | -42.1% | -43.7% | -43.5 … -23.4 |  | 26% | 34.8* | 135.3 | 1.20× | 8/8 |
+| **VP9 L2T1 Fast** | -36.5% | -39.1% | -41.6% | -40.4 … -25.1 | +20.3% | 22% | 39.3 | 134.3 | 1.19× | 8/8 |
+| **VP9 L2T1_KEY Fast** | -34.7% | -37.5% | -40.6% | -37.5 … -23.7 | +22.1% | 20% | 45.3 | 139.1 | 1.23× | 8/8 |
+| **AV1 L3T1 Fast** | -33.8% | -35.4% | -40.7% | -34.0 … -22.3 | +50.5% | 27% | 45.4 | 142.7 | 1.27× | 8/8 |
+| **AV1 L3T1_KEY Fast** | -33.4% | -35.0% | -41.3% | -33.8 … -22.0 | +21.8% | 20% | 55.9 | 161.1 | 1.43× | 8/8 |
+| **VP9 simulcast 720p+360p** | -32.4% | -36.6% | -36.6% | -38.1 … -18.3 |  | 35% | 35.3* | 167.5 | 1.49× | 8/8 |
+| **VP9 simulcast 720p+360p+180p** | -32.4% | -36.7% | -36.5% | -36.2 … -18.9 |  | 26% | n/a* | 151.3 | 1.34× | 8/8 |
+| **VP9 L3T1 Fast** | -30.9% | -33.9% | -35.9% | -35.8 … -20.3 | +52.0% | 27% | 36.7 | 115.1 | 1.02× | 8/8 |
+| **VP9 L3T1_KEY Fast** | -29.9% | -33.1% | -35.4% | -33.4 … -18.6 | +26.7% | 20% | 43.1 | 134.0 | 1.19× | 8/8 |
+| libaom SVC L2T1 rt 10 | -8.7% | -14.0% | -11.4% | -17.9 … +10.1 | +49.8% | 32% | 30.6 | 114.4 | 1.01× | 8/8 |
+| libaom SVC L2T1 rt 8 | -8.5% | -12.5% | -10.1% | -20.4 … +8.6 | +54.4% | 31% | 24.0 | 90.4 | 0.80× | 8/8 |
+| libaom SVC L3T1 rt 10 | -6.7% | -12.7% | -9.3% | -15.4 … +13.3 | +90.0% | 33% | 27.6 | 107.6 | 0.95× | 8/8 |
+| libaom SVC L3T1 rt 8 | -1.7% | -5.1% | -4.0% | -15.4 … +16.7 | +97.1% | 32% | 20.3 | 77.1 | 0.68× | 8/8 |
+| x264 medium (720p) | +0.0% | +0.0% | +0.0% | +0.0 … +0.0 |  |  | 26.7 | 112.8 | 1.00× | 8/8 |
+| libaom SVC L2T3 rt 8 | +16.4% | +14.4% | +12.1% | -4.6 … +37.6 | +70.0% | 31% | 26.0 | 99.0 | 0.88× | 8/8 |
+| libaom SVC L2T3 rt 10 | +18.1% | +15.1% | +14.9% | +0.6 … +36.0 | +69.6% | 30% | 32.8 | 128.6 | 1.14× | 8/8 |
+| libaom SVC L3T3 rt 8 | +19.1% | +16.3% | +15.6% | -1.3 … +39.7 | +135.7% | 32% | 24.1 | 88.9 | 0.79× | 8/8 |
+| libaom SVC L3T3_KEY rt 8 | +19.1% | +16.3% | +15.6% | -1.3 … +39.7 | +81.8% | 25% | n/a* | n/a* | n/a* | 8/8 |
+| libaom SVC L3T3 rt 10 | +21.1% | +17.5% | +17.3% | +2.4 … +39.1 | +139.5% | 32% | 30.2 | 109.9 | 0.97× | 8/8 |
+| libaom SVC L3T3_KEY rt 10 | +21.1% | +17.5% | +17.3% | +2.4 … +39.1 | +84.4% | 25% | n/a* | n/a* | n/a* | 8/8 |
+| libvpx SVC L2T1 rt 9 | +27.4% | +29.6% | +17.8% | +13.1 … +36.0 | +115.0% | 30% | 37.6 | 120.8 | 1.07× | 8/8 |
+| libvpx SVC L2T1_KEY rt 9 | +28.6% | +31.2% | +18.0% | +12.7 … +39.7 | +114.3% | 30% | n/a* | n/a* | n/a* | 8/8 |
+| libvpx SVC L3T1 rt 9 | +30.0% | +30.1% | +22.4% | +5.6 … +43.3 | +164.2% | 33% | n/a* | n/a* | n/a* | 8/8 |
+| libvpx SVC L2T1 rt 7 | +30.3% | +31.3% | +20.6% | +18.2 … +46.9 | +122.8% | 31% | 22.9 | 89.0 | 0.79× | 8/8 |
+| libvpx SVC L3T1_KEY rt 9 | +30.7% | +31.4% | +23.5% | +7.6 … +46.3 | +108.1% | 25% | n/a* | n/a* | n/a* | 8/8 |
+| libvpx SVC L3T1 rt 7 | +30.8% | +31.2% | +23.6% | +22.2 … +47.8 | +197.5% | 33% | n/a* | n/a* | n/a* | 8/8 |
+| libvpx SVC L3T1_KEY rt 7 | +31.7% | +31.8% | +24.8% | +21.7 … +49.1 | +127.8% | 25% | n/a* | n/a* | n/a* | 8/8 |
 
 Speed: x264 medium's timed fps (the main chart's) over the point's median per-round time ratio to x264 medium, timed in pairs on one reserved core (`time-host`, the 600 kbps rung, lowlight_city_night, crowd_mot17_09, bodycam_bc1; the Jetson's with the same pairing on its core 3).
 
@@ -40,46 +63,134 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 
 ## 360p operating point (operating point 1)
 
-360p output against the source downscaled to 360p (ffmpeg Lanczos), at the operating point's own rate (what a 360p receiver gets: the base layer of two, the 180p and 360p layers of three), as BD-J against the same codec's Default coded alone at 360p (the two-layer simulcast's low stream): AV1 points against AV1 Default, VP9 points against VP9 Default.
+360p output against the source downscaled to 360p (ffmpeg Lanczos), at the operating point's own rate (what a 360p receiver gets: the base layer of two; the 180p and 360p layers of three in full SVC, or `{S0, S1}` on key units and `{S1}` alone on non-key units in KEY modes), as BD-J against the same codec's Default coded alone at 360p (the two-layer simulcast's low stream): AV1 points against AV1 Default, VP9 points against VP9 Default.
 
 | Encoder | base BD-J | base BD-PSNR-YUV | base BD-VMAF v1 | base share of total rate | mean base PSNR-YUV | mean base VMAF v1 | clips |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| AV1 L2T3 | -8.6% | -7.4% | -9.9% | 23% | 31.96 dB | 55.5 | 8/8 |
-| AV1 L2T1 | -6.5% | -7.0% | -6.3% | 22% | 31.82 dB | 55.0 | 8/8 |
-| AV1 L2T1 Fast | +7.0% | +14.6% | +6.2% | 22% | 31.02 dB | 53.0 | 8/8 |
-| AV1 L3T3 | +17.5% | +18.3% | +16.5% | 28% | 31.73 dB | 53.8 | 8/8 |
-| AV1 L3T1 | +20.5% | +20.8% | +20.1% | 27% | 31.54 dB | 53.3 | 8/8 |
-| AV1 L3T1 Fast | +37.2% | +48.3% | +37.4% | 27% | 30.72 dB | 51.0 | 8/8 |
-| libaom SVC L2T1 rt 10 | +42.6% | +48.2% | +51.4% | 32% | 32.55 dB | 63.3 | 8/8 |
-| libaom SVC L2T1 rt 8 | +47.4% | +53.3% | +56.0% | 31% | 32.47 dB | 63.6 | 8/8 |
-| libaom SVC L2T3 rt 10 | +59.7% | +62.9% | +69.2% | 30% | 32.13 dB | 61.7 | 8/8 |
-| libaom SVC L2T3 rt 8 | +60.1% | +65.0% | +66.4% | 31% | 32.09 dB | 61.8 | 8/8 |
-| libaom SVC L3T1 rt 10 | +80.3% | +82.9% | +98.5% | 33% | 31.98 dB | 58.5 | 8/8 |
-| libaom SVC L3T1 rt 8 | +87.5% | +92.0% | +105.1% | 32% | 31.99 dB | 59.1 | 8/8 |
-| libaom SVC L3T3 rt 8 | +118.0% | +121.2% | +133.6% | 32% | 31.33 dB | 56.6 | 8/8 |
-| libaom SVC L3T3 rt 10 | +121.5% | +122.7% | +139.0% | 32% | 31.35 dB | 56.5 | 8/8 |
-| AV1 Medium, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.30 dB | 63.2 | |
-| VP9 L2T3 | -3.1% | -3.2% | -1.4% | 21% | 31.57 dB | 53.3 | 8/8 |
-| VP9 L2T1 | -0.7% | -1.1% | +0.8% | 21% | 31.36 dB | 52.9 | 8/8 |
-| VP9 L2T1 Fast | +16.4% | +19.1% | +17.3% | 23% | 31.02 dB | 52.5 | 8/8 |
-| libvpx SVC L2T1 rt 9 | +108.2% | +130.3% | +115.2% | 30% | 32.39 dB | 67.9 | 8/8 |
-| libvpx SVC L2T1 rt 7 | +114.8% | +131.7% | +119.2% | 31% | 32.41 dB | 68.2 | 7/8 |
-| VP9 Medium, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.25 dB | 63.8 | |
+| AV1 L2T3_KEY | -4.1% | -3.8% | -3.3% | 22% | 31.72 dB | 53.9 | 8/8 |
+| AV1 L2T1 | -3.1% | -4.2% | -1.2% | 21% | 31.64 dB | 53.3 | 8/8 |
+| AV1 L2T1_KEY | -3.1% | -4.6% | -0.7% | 21% | 31.63 dB | 53.1 | 8/8 |
+| AV1 L2T3 | -2.7% | -2.5% | -2.1% | 22% | 31.72 dB | 53.8 | 8/8 |
+| AV1 L3T1_KEY | +0.5% | +1.3% | -0.3% | 20% | 31.43 dB | 51.9 | 8/8 |
+| AV1 L3T3_KEY | +0.8% | +2.4% | +0.2% | 21% | 31.48 dB | 52.0 | 8/8 |
+| AV1 L2T1 Fast | +13.6% | +21.7% | +12.9% | 22% | 30.80 dB | 51.5 | 8/8 |
+| AV1 L2T1_KEY Fast | +14.6% | +21.8% | +15.7% | 20% | 30.57 dB | 49.6 | 8/8 |
+| AV1 L3T1_KEY Fast | +21.8% | +31.2% | +22.4% | 20% | 30.27 dB | 47.5 | 8/8 |
+| AV1 L3T1 | +23.5% | +23.7% | +25.1% | 27% | 31.67 dB | 53.2 | 8/8 |
+| AV1 L3T3 | +23.9% | +24.3% | +25.9% | 28% | 31.74 dB | 53.6 | 8/8 |
+| libaom SVC L2T1 rt 10 | +49.8% | +55.7% | +58.8% | 32% | 32.55 dB | 63.3 | 8/8 |
+| AV1 L3T1 Fast | +50.5% | +62.1% | +52.9% | 27% | 30.53 dB | 49.5 | 8/8 |
+| libaom SVC L2T1 rt 8 | +54.4% | +61.3% | +62.4% | 31% | 32.47 dB | 63.6 | 8/8 |
+| libaom SVC L2T3 rt 10 | +69.6% | +73.9% | +79.2% | 30% | 32.13 dB | 61.7 | 8/8 |
+| libaom SVC L2T3 rt 8 | +70.0% | +76.2% | +76.1% | 31% | 32.09 dB | 61.8 | 8/8 |
+| libaom SVC L3T3_KEY rt 8 | +81.8% | +83.9% | +97.1% | 25% | 31.33 dB | 56.6 | 8/8 |
+| libaom SVC L3T3_KEY rt 10 | +84.4% | +84.5% | +101.4% | 25% | 31.35 dB | 56.5 | 8/8 |
+| libaom SVC L3T1 rt 10 | +90.0% | +92.6% | +110.2% | 33% | 31.98 dB | 58.5 | 8/8 |
+| libaom SVC L3T1 rt 8 | +97.1% | +102.4% | +115.5% | 32% | 31.99 dB | 59.1 | 8/8 |
+| libaom SVC L3T3 rt 8 | +135.7% | +138.4% | +155.5% | 32% | 31.33 dB | 56.6 | 8/8 |
+| libaom SVC L3T3 rt 10 | +139.5% | +139.5% | +161.6% | 32% | 31.35 dB | 56.5 | 8/8 |
+| AV1 Medium, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.31 dB | 63.5 | |
+| VP9 L2T3_KEY | -2.9% | -3.6% | +0.0% | 21% | 31.61 dB | 53.5 | 8/8 |
+| VP9 L2T3 | -2.9% | -3.5% | +0.1% | 21% | 31.49 dB | 52.5 | 8/8 |
+| VP9 L3T3_KEY | -2.0% | -1.7% | -1.6% | 21% | 31.49 dB | 53.1 | 8/8 |
+| VP9 L2T1_KEY | -1.7% | -2.6% | +0.7% | 21% | 31.45 dB | 53.0 | 8/8 |
+| VP9 L2T1 | -0.6% | -1.5% | +2.5% | 21% | 31.37 dB | 52.6 | 8/8 |
+| VP9 L3T1_KEY | +1.2% | +1.2% | +2.7% | 21% | 31.34 dB | 52.8 | 8/8 |
+| VP9 L3T3 | +19.8% | +19.4% | +20.1% | 28% | 31.75 dB | 55.1 | 8/8 |
+| VP9 L2T1 Fast | +20.3% | +22.9% | +22.2% | 22% | 30.78 dB | 50.7 | 8/8 |
+| VP9 L3T1 | +22.0% | +21.9% | +23.0% | 27% | 31.51 dB | 54.4 | 8/8 |
+| VP9 L2T1_KEY Fast | +22.1% | +24.6% | +25.3% | 20% | 30.59 dB | 49.0 | 8/8 |
+| VP9 L3T1_KEY Fast | +26.7% | +30.7% | +27.6% | 20% | 30.37 dB | 47.8 | 8/8 |
+| VP9 L3T1 Fast | +52.0% | +57.2% | +53.1% | 27% | 30.59 dB | 49.7 | 8/8 |
+| libvpx SVC L3T1_KEY rt 9 | +108.1% | +127.0% | +117.8% | 25% | 31.94 dB | 65.1 | 8/8 |
+| libvpx SVC L2T1_KEY rt 9 | +114.3% | +138.9% | +122.4% | 30% | 32.39 dB | 68.0 | 8/8 |
+| libvpx SVC L2T1 rt 9 | +115.0% | +138.0% | +124.4% | 30% | 32.39 dB | 67.9 | 8/8 |
+| libvpx SVC L2T1 rt 7 | +122.8% | +140.4% | +131.3% | 31% | 32.41 dB | 68.2 | 7/8 |
+| libvpx SVC L3T1_KEY rt 7 | +127.8% | +141.0% | +143.3% | 25% | 31.86 dB | 65.2 | 8/8 |
+| libvpx SVC L3T1 rt 9 | +164.2% | +188.2% | +176.4% | 33% | 31.94 dB | 65.1 | 8/8 |
+| libvpx SVC L3T1 rt 7 | +197.5% | +213.6% | +217.9% | 33% | 31.81 dB | 64.8 | 8/8 |
+| VP9 Medium, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.21 dB | 63.3 | |
 
 ## 180p operating point of three layers (operating point 2)
 
-180p output against the source downscaled to 180p (ffmpeg Lanczos), at the 180p layer's own rate (what a thumbnail receiver gets), as BD-J against AV1 Default coded alone at 180p (the three-way simulcast's lowest stream).
+180p output against the source downscaled to 180p (ffmpeg Lanczos), at the 180p layer's own rate (what a thumbnail receiver gets), as BD-J against the same codec's Default coded alone at 180p (the three-way simulcast's lowest stream): AV1 points against AV1 Default, VP9 points against VP9 Default.
 
 | Encoder | 180p BD-J | 180p BD-PSNR-YUV | 180p BD-VMAF v1 | 180p share of total rate | mean 180p PSNR-YUV | mean 180p VMAF v1 | clips |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| AV1 L3T3 | +0.8% | +1.4% | +0.5% | 7% | 29.02 dB | 40.8 | 8/8 |
-| AV1 L3T1 | +4.9% | +4.8% | +4.9% | 7% | 28.85 dB | 39.8 | 8/8 |
-| AV1 L3T1 Fast | +12.4% | +17.2% | +11.1% | 7% | 28.23 dB | 37.6 | 8/8 |
-| libaom SVC L3T1 rt 8 | +38.1% | +57.8% | +30.4% | 8% | 29.23 dB | 51.9 | 8/8 |
-| libaom SVC L3T3 rt 8 | +42.2% | +60.1% | +34.6% | 8% | 29.07 dB | 50.9 | 8/8 |
-| libaom SVC L3T1 rt 10 | +42.2% | +64.1% | +34.1% | 8% | 29.07 dB | 51.4 | 8/8 |
-| libaom SVC L3T3 rt 10 | +48.3% | +68.2% | +40.5% | 8% | 28.93 dB | 50.4 | 8/8 |
-| AV1 Medium, 180p alone | +0.0% | +0.0% | +0.0% | 9% | 30.05 dB | 46.6 | |
+| AV1 L3T3_KEY | -0.1% | +0.1% | +0.6% | 7% | 29.12 dB | 41.2 | 8/8 |
+| AV1 L3T3 | +0.2% | +0.4% | +0.6% | 7% | 29.12 dB | 41.2 | 8/8 |
+| AV1 L3T1_KEY | +2.8% | +1.8% | +4.8% | 7% | 29.00 dB | 40.3 | 8/8 |
+| AV1 L3T1 | +2.8% | +2.1% | +4.4% | 7% | 29.00 dB | 40.3 | 8/8 |
+| AV1 L3T1_KEY Fast | +12.4% | +16.6% | +11.5% | 7% | 27.95 dB | 35.5 | 8/8 |
+| AV1 L3T1 Fast | +12.6% | +16.7% | +11.6% | 7% | 27.94 dB | 35.5 | 8/8 |
+| libaom SVC L3T1 rt 8 | +46.6% | +64.3% | +38.8% | 8% | 29.23 dB | 51.9 | 8/8 |
+| libaom SVC L3T3 rt 8 | +50.4% | +65.5% | +43.7% | 8% | 29.07 dB | 50.9 | 8/8 |
+| libaom SVC L3T3_KEY rt 8 | +50.4% | +65.5% | +43.7% | 8% | 29.07 dB | 50.9 | 8/8 |
+| libaom SVC L3T1 rt 10 | +50.6% | +70.1% | +43.1% | 8% | 29.07 dB | 51.4 | 8/8 |
+| libaom SVC L3T3 rt 10 | +56.4% | +72.7% | +50.4% | 8% | 28.93 dB | 50.4 | 8/8 |
+| libaom SVC L3T3_KEY rt 10 | +56.4% | +72.7% | +50.4% | 8% | 28.93 dB | 50.4 | 8/8 |
+| AV1 Medium, 180p alone | +0.0% | +0.0% | +0.0% | 9% | 30.20 dB | 48.0 | |
+| VP9 L3T1 | -1.0% | -1.5% | +1.5% | 7% | 29.08 dB | 42.4 | 8/8 |
+| VP9 L3T1_KEY | -0.7% | -1.3% | +1.9% | 7% | 29.06 dB | 42.4 | 8/8 |
+| VP9 L3T3_KEY | +0.4% | +0.2% | +2.3% | 7% | 29.12 dB | 42.6 | 8/8 |
+| VP9 L3T3 | +0.5% | -0.1% | +2.9% | 7% | 29.13 dB | 42.6 | 8/8 |
+| VP9 L3T1_KEY Fast | +12.6% | +14.2% | +14.9% | 7% | 28.16 dB | 36.7 | 8/8 |
+| VP9 L3T1 Fast | +13.5% | +15.1% | +15.8% | 7% | 28.16 dB | 36.7 | 8/8 |
+| libvpx SVC L3T1_KEY rt 9 | +82.4% | +99.6% | +77.5% | 8% | 30.32 dB | 61.8 | 8/8 |
+| libvpx SVC L3T1 rt 9 | +82.6% | +99.5% | +78.6% | 8% | 30.32 dB | 61.8 | 8/8 |
+| libvpx SVC L3T1 rt 7 | +90.6% | +107.9% | +87.9% | 8% | 30.39 dB | 63.3 | 8/8 |
+| libvpx SVC L3T1_KEY rt 7 | +91.3% | +109.1% | +88.1% | 8% | 30.39 dB | 63.3 | 8/8 |
+| VP9 Medium, 180p alone | +0.0% | +0.0% | +0.0% | 9% | 30.14 dB | 48.8 | |
+
+## 720p receiver view (operating point 0 at its own downloaded rate)
+
+720p output against the source at the wire rate a 720p receiver downloads (all layers in full SVC; `{S0..=S_top}` on key units and `{S_top}` alone on non-key units in KEY modes), as BD-J against the same codec's single-layer Default at 720p.
+
+| Encoder | 720p view BD-J | 720p view BD-PSNR-YUV | 720p view BD-VMAF v1 | 720p share of total rate | mean 720p PSNR-YUV | mean 720p VMAF v1 | clips |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| AV1 L2T1_KEY | +5.0% | +4.3% | +5.0% | 83% | 34.59 dB | 63.0 | 8/8 |
+| AV1 L3T1_KEY | +5.1% | +5.7% | +3.3% | 77% | 34.34 dB | 61.7 | 8/8 |
+| AV1 L2T3_KEY | +8.3% | +9.1% | +7.5% | 82% | 34.40 dB | 62.4 | 8/8 |
+| AV1 L3T3_KEY | +8.6% | +10.6% | +5.3% | 76% | 34.15 dB | 61.3 | 8/8 |
+| AV1 L2T1 | +22.6% | +21.6% | +23.9% | 100% | 34.65 dB | 63.2 | 8/8 |
+| AV1 L2T3 | +24.4% | +24.1% | +25.9% | 100% | 34.56 dB | 63.1 | 8/8 |
+| AV1 L2T1_KEY Fast | +27.2% | +35.9% | +24.2% | 83% | 33.69 dB | 60.6 | 8/8 |
+| AV1 L3T1_KEY Fast | +31.5% | +40.6% | +25.9% | 77% | 33.42 dB | 59.0 | 8/8 |
+| AV1 L3T3 | +35.7% | +36.1% | +35.7% | 100% | 34.30 dB | 61.6 | 8/8 |
+| AV1 L3T1 | +37.5% | +36.5% | +39.1% | 100% | 34.34 dB | 61.4 | 8/8 |
+| AV1 L2T1 Fast | +48.6% | +57.3% | +47.6% | 100% | 33.79 dB | 60.7 | 8/8 |
+| AV1 L3T1 Fast | +67.8% | +77.9% | +66.9% | 100% | 33.50 dB | 58.9 | 8/8 |
+| libaom SVC L3T3_KEY rt 10 | +101.1% | +106.2% | +141.0% | 68% | 32.92 dB | 57.7 | 6/8 |
+| libaom SVC L3T3_KEY rt 8 | +114.8% | +106.5% | +136.0% | 68% | 32.89 dB | 57.7 | 8/8 |
+| libaom SVC L2T1 rt 8 | +138.4% | +128.9% | +168.1% | 100% | 33.80 dB | 61.2 | 8/8 |
+| libaom SVC L2T1 rt 10 | +138.9% | +129.2% | +163.7% | 100% | 33.87 dB | 61.4 | 8/8 |
+| libaom SVC L3T1 rt 10 | +141.0% | +128.9% | +164.9% | 100% | 33.84 dB | 61.1 | 8/8 |
+| libaom SVC L3T1 rt 8 | +143.4% | +134.7% | +171.0% | 100% | 33.62 dB | 60.1 | 8/8 |
+| libaom SVC L3T3 rt 10 | +199.2% | +207.3% | +260.9% | 100% | 32.92 dB | 57.7 | 6/8 |
+| libaom SVC L2T3 rt 8 | +213.0% | +205.5% | +242.1% | 100% | 32.94 dB | 58.2 | 8/8 |
+| libaom SVC L2T3 rt 10 | +219.5% | +198.9% | +253.0% | 100% | 32.98 dB | 58.2 | 7/8 |
+| libaom SVC L3T3 rt 8 | +221.8% | +210.5% | +253.3% | 100% | 32.89 dB | 57.7 | 8/8 |
+| AV1 Medium 720p (single layer) | +0.0% | +0.0% | +0.0% | 100% | | | |
+| VP9 L3T3_KEY | +0.8% | +2.3% | +0.8% | 78% | 34.09 dB | 60.1 | 8/8 |
+| VP9 L3T1_KEY | +2.1% | +2.8% | +1.3% | 78% | 34.09 dB | 60.0 | 8/8 |
+| VP9 L2T3_KEY | +2.7% | +3.9% | +3.4% | 83% | 34.27 dB | 61.0 | 8/8 |
+| VP9 L2T1_KEY | +2.7% | +3.1% | +3.1% | 84% | 34.28 dB | 60.9 | 8/8 |
+| VP9 L2T3 | +20.0% | +21.5% | +19.9% | 100% | 34.42 dB | 62.1 | 8/8 |
+| VP9 L2T1 | +22.5% | +23.3% | +21.2% | 100% | 34.36 dB | 61.6 | 8/8 |
+| VP9 L2T1_KEY Fast | +22.5% | +26.9% | +16.6% | 83% | 33.64 dB | 58.7 | 8/8 |
+| VP9 L3T1_KEY Fast | +25.4% | +28.8% | +19.8% | 78% | 33.39 dB | 57.2 | 8/8 |
+| VP9 L3T3 | +30.2% | +31.9% | +28.6% | 100% | 34.17 dB | 60.9 | 8/8 |
+| VP9 L3T1 | +33.1% | +34.2% | +30.1% | 100% | 34.08 dB | 60.2 | 8/8 |
+| VP9 L2T1 Fast | +43.2% | +48.4% | +38.2% | 100% | 33.77 dB | 59.1 | 8/8 |
+| VP9 L3T1 Fast | +59.6% | +64.2% | +55.2% | 100% | 33.50 dB | 57.4 | 8/8 |
+| libvpx SVC L2T1_KEY rt 9 | +93.1% | +116.5% | +88.7% | 71% | 33.98 dB | 68.2 | 8/8 |
+| libvpx SVC L3T1_KEY rt 9 | +94.6% | +115.0% | +94.1% | 69% | 34.00 dB | 67.6 | 8/8 |
+| libvpx SVC L3T1_KEY rt 7 | +94.7% | +112.5% | +98.2% | 68% | 34.07 dB | 68.8 | 8/8 |
+| libvpx SVC L2T1 rt 9 | +178.4% | +209.9% | +173.2% | 100% | 34.00 dB | 68.2 | 8/8 |
+| libvpx SVC L3T1 rt 7 | +181.9% | +207.3% | +187.3% | 100% | 34.07 dB | 68.6 | 8/8 |
+| libvpx SVC L3T1 rt 9 | +182.2% | +209.7% | +182.3% | 100% | 34.00 dB | 67.6 | 8/8 |
+| libvpx SVC L2T1 rt 7 | +182.6% | +207.5% | +181.0% | 100% | 33.95 dB | 68.0 | 8/8 |
+| VP9 Medium 720p (single layer) | +0.0% | +0.0% | +0.0% | 100% | | | |
 
 ## Method
 
@@ -92,42 +203,3 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 - Rate validity flags (realuse.rate_valid) are not shown: our points carry no key-loan adjustment here.
 - Clips left out for every point (no reliable overlap): static_cam29, pan_bdd_00cef86b, handheld_mot17_10.
 - Low rungs (40/75 kbps at 720p30, every point) on: static_otw_homes390, static_cam29, static_london_bus, pan_bdd_00cef86b, bodycam_airport, handheld_mot17_10.
-
-## K-SVC (KEY) modes: AV1 L3T1_KEY and L3T3_KEY
-
-<sub>Measured 2026-11-14 at the merge of feature/svc-key (build 95728f25: every point and every anchor in this section from that one build and today's presets); not yet in the table and chart above, which are from earlier builds.</sub>
-
-In a KEY mode the upper layers predict from the layer below only in key temporal units, so a relay forwards one receiver `{S0..Sk}` on key units and `{Sk}` alone otherwise. Each view is scored at the rate its receiver downloads (`svcbase.av1_ksvc_receiver_bits`): 720p view against AV1 Default coded alone at 720p, 360p and 180p views against AV1 Default coded alone at that size (the three-way simulcast's streams), total against full SVC and against three-way simulcast. BD-J (mean of the PSNR-YUV, VMAF v1 and MS-SSIM BD-rates); the chart's 8 clips, 150 frames, the chart's ladder and low rungs, one key, 1 s buffer. In brackets, all 11 natural VAL clips (the 8 plus static_cam29, pan_bdd_00cef86b and handheld_mot17_10).
-
-| View (BD-J) | L3T1_KEY | L3T3_KEY | full SVC L3T1 | full SVC L3T3 |
-|---|---:|---:|---:|---:|
-| 720p view vs AV1 720p alone | +4.3% (+3.2%) | +3.9% (+5.4%) | +35.7% (+34.5%) | +30.7% (+32.0%) |
-| 360p view vs AV1 360p alone | -1.3% (+0.0%) | -3.1% (-0.3%) | +21.4% (+22.3%) | +18.0% (+20.8%) |
-| 180p view vs AV1 180p alone | +1.6% (+4.8%) | -2.3% (+1.9%) | +2.1% (+5.4%) | -2.2% (+2.4%) |
-| total vs full SVC L3T1 | -0.3% (-0.0%) | -1.0% (+1.4%) | | -3.8% (-1.6%) |
-| total vs full SVC L3T3 | | +3.0% (+3.0%) | | |
-| total vs three-way simulcast | -9.8% (-9.5%) | -10.6% (-8.3%) | -9.5% (-9.5%) | -13.1% (-11.0%) |
-| share of the total rate: 720p / 360p / 180p view | 77% / 20% / 7% | 77% / 20% / 7% | 100% / 27% / 7% | 100% / 27% / 7% |
-
-Encode instructions per frame (callgrind, the chart's three timing clips lowlight_city_night, crowd_mot17_09, bodycam_bc1 at the 600 kbps rung, all layers) relative to single-layer AV1 Default at 720p: L3T1_KEY 1.53x (1.58 / 1.51 / 1.51), L3T3_KEY 1.41x (1.53 / 1.40 / 1.31), full SVC L3T1 1.87x. **L3T1_KEY misses the 1.5x target** of the brief (the branch reported 1.48x against an older single-layer build).
-
-libaom `svc_encoder_rtc` v3.15.3 in its KEY mode (layering mode 10, L3T3, CBR, the settings in the method below): on the 11 clips its total-rate curve is +110.6% BD-J (rt 10) and +109.1% (rt 8) against our L3T3_KEY (10 of 11 clips overlap). In that version of the example, modes 9 and 10 produce the same streams: the inter-layer (GOLDEN) reference is only switched on in the code that follows `case 11`, which mode 9 never reaches, so its L3T3 is already key-unit-only inter-layer prediction; the L3T3 rows above score it at full-SVC receiver rates, its KEY rows at K-SVC receiver rates. libaom's SVC encoder is a mature, general implementation; ours codes a narrow real-time subset, so this compares two configurations on these clips, not the encoders in general.
-
-## VP9: three layers (L3T1, L3T3) and K-SVC (L3T1_KEY, L3T3_KEY)
-
-<sub>Measured 2026-11-14 at the merge of feature/svc-key (build 463b5f14: every point and anchor in this section from that one build); not yet in the table and chart above.</sub>
-
-`presets/vp9/l3-medium.toml` (vp9-svc at three layers, 2:1 steps, shares 0.08 / 0.26; K-SVC 0.08 / 0.24) packs each unit as a VP9 superframe `[S0, S1, S2]` with per-layer probability contexts; lower layers, and in K-SVC the top layer too, are hidden frames shown with `show_existing_frame`. Same method as the AV1 K-SVC section: each view at its receiver's own rate against VP9 Default coded alone at that size, the chart's 8 clips (all 11 in brackets). The svc3 presets keep vp9-svc's values from before the VP9 Default CPU cut (88a246f4); the single-layer and size-alone anchors are today's VP9 Default.
-
-| View (BD-J) | L3T1_KEY | L3T3_KEY | full SVC L3T1 | full SVC L3T3 |
-|---|---:|---:|---:|---:|
-| 720p view vs VP9 720p alone | +3.5% (+3.2%) | +1.4% (+2.9%) | +35.6% (+35.0%) | +30.5% |
-| 360p view vs VP9 360p alone | +1.2% (+2.5%) | -1.9% (+1.0%) | +23.6% (+25.3%) | +19.8% |
-| 180p view vs VP9 180p alone | +4.8% (**+5.9%**) | +0.9% (+3.9%) | +5.2% (+6.2%) | +0.0% |
-| total vs full SVC L3T1 | -1.5% (-0.9%) | -3.9% (-1.8%) | | -4.2% |
-| total vs three-way simulcast | -11.8% (-11.4%) | -14.3% (-12.5%) | -10.2% (-10.5%) | -14.5% |
-| share of the total rate: 720p / 360p / 180p view | 78% / 20% / 7% | 78% / 20% / 6% | 100% / 27% / 7% | 100% / 27% / 7% |
-
-Encode instructions per frame (callgrind, the three timing clips at the 600 kbps rung) relative to single-layer VP9 Default at 720p: L3T1_KEY 1.64x, L3T3_KEY 1.50x, full SVC L3T1 1.90x. **L3T1_KEY misses the 1.5x target**, and the L3T1_KEY 180p view misses its +5% target on all 11 clips (+5.9%; +4.8% on the chart's 8). Part of the CPU ratio is the anchor: today's VP9 Default is about 12% cheaper on x86 after its CPU cut, which the svc3 presets do not take.
-
-libvpx `vp9_spatial_svc_encoder` v1.16.0 in L3T1_KEY (settings as in the method below, inter-layer prediction on key frames only): its total-rate curve is +95.9% (speed 9) and +96.9% (speed 7) BD-J against our full-SVC L3T1 on the 11 clips (9 overlapping). libvpx's SVC encoder is a mature, general implementation; ours codes a narrow real-time subset, so this compares two configurations on these clips, not the encoders in general.

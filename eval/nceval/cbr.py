@@ -67,7 +67,7 @@ from .gatepolicy import (EVALUATION_GATE, GatePolicy, PointCheck, anchor_check, 
 from .diskguard import check_disk
 from .encoders.base import fps_fraction
 from .fingerprint import measurement_fingerprint
-from .framepipe import ProcessFailed
+from .framepipe import PSNR_CAP_DB, ProcessFailed
 from .framestats import coded_at_times, probe_frames, with_held_frames
 from .metrics import (REAL_METRICS_REVISION, REAL_MS_SSIM_REVISION, REAL_XPSNR_REVISION, MetricSession,
                       PsnrMetric, StreamSpec, gpu_slot_need, real_metrics, vmaf_v1_and_ms_ssim)
@@ -428,8 +428,9 @@ class Bench:
     tool_hashes: dict[Path, str] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)  # shared caches
     #: The metric protocol's fingerprint (nceval.fingerprint), part of every
-    #: scored point's identity.
-    measurement: str = field(default_factory=measurement_fingerprint)
+    #: scored point's identity. Without the PSNR cap: each result records the cap
+    #: it was measured under and is re-capped on read (`under_psnr_cap`).
+    measurement: str = field(default_factory=lambda: measurement_fingerprint(psnr_cap=False))
     #: "classic" (PSNR + VMAF v1) or "real" (nceval.realuse: + MS-SSIM and
     #: the per-frame series J_real's temporal terms need).
     metric_set: str = "classic"
@@ -615,12 +616,13 @@ class Bench:
             return result
 
     def _reusable(self, point: Point, result_path: Path) -> dict | None:
-        """The cached result, unless missing, this run needs a stronger gate,
-        or (real-use set) its MS-SSIM is of an older protocol: such a point
+        """The cached result, unless missing, measured under another PSNR cap and not
+        provably unchanged by the current one (`under_psnr_cap`), this run needs a
+        stronger gate, or (real-use set) its MS-SSIM is of an older protocol: such a point
         is re-measured lazily, when used (metrics.REAL_MS_SSIM_REVISION).
         The reconstruction is not kept, so MS-SSIM cannot be re-scored
         alone; the deterministic re-encode reproduces PSNR and VMAF v1."""
-        cached = read_json(result_path)
+        cached = under_psnr_cap(read_json(result_path))
         if cached is None or not level_satisfies(cached.get("gate_level", ""), point.check):
             return None
         if self.metric_set == "real" and not self.stored_ms_ssim and \
@@ -830,6 +832,53 @@ def add_real_series(result: dict, measured, keys: list[bool]) -> None:
                   frame_psnr_y=[f["psnr_y"] for f in measured.per_frame], frame_key=keys)
 
 
+#: The cap results without a `psnr_cap_db` field were measured under (before 2026-11-20).
+LEGACY_PSNR_CAP_DB = 100.0
+#: An old point is kept as it is only if every frame's mean chroma PSNR, (U + V) / 2 =
+#: (8 PSNR-YUV - 6 Y) / 2 (the cache keeps Y and the 6:1:1 value, not U and V), is at
+#: most this. Then neither plane can reach the 60 dB cap unless U and V differ by over
+#: 8 dB in that frame. Measured (2026-11-20, results.sqlite sweep frames, 838k frames
+#: with per-plane PSNR): where the mean is 44 dB or more, |U - V| is at most 4.1 dB
+#: (99.9th percentile 3.2-4.0 dB), and no frame with a mean of 58 dB or less has a
+#: plane above 60 dB; so 56 dB keeps twice the largest spread seen as margin. A flat
+#: (grayscale) chroma plane at 84-100 dB is far above it. 50 dB (a 20 dB margin) would
+#: re-measure ~8 % of the held-out chart's points for no change; 56 dB marks 0.8 % of
+#: them (298 of 37380: the grayscale clip's 252) and 3.5 % of VC-1K's (dark phone clips),
+#: and every kept point's BD-J matches a full per-frame re-cap to 5e-10
+#: (docs/handoff/eval-methodology.md "PSNR cap 60 dB"). Old XPSNR is kept with the point: no per-frame XPSNR above 60 dB was
+#: seen in 39k frames of CTC records.
+RECAP_MAX_CHROMA_DB = 56.0
+
+
+def under_psnr_cap(result: dict | None) -> dict | None:
+    """A cached result as measured under PSNR_CAP_DB, or None (re-measure it).
+
+    A result of the current cap is returned as is. One measured under the legacy
+    100 dB cap is unchanged by the new cap, and is returned stamped with it, when
+    every frame's Y is at most the cap (exact: min(60, Y) = Y, so no Y-derived term
+    moves) and its mean chroma at most RECAP_MAX_CHROMA_DB; so must its base layer's
+    (svcbase). Anything else, including a result without per-frame Y (the classic
+    metric set), is stale: only the flat-chroma and near-lossless points are re-measured.
+    """
+    if result is None or result.get("psnr_cap_db", LEGACY_PSNR_CAP_DB) == PSNR_CAP_DB:
+        return result
+    layers = [result] + ([result["base"]] if "base" in result else [])
+    if not all(_unchanged_by_cap(layer) for layer in layers):
+        return None
+    stamped = {**result, "psnr_cap_db": PSNR_CAP_DB}
+    if "base" in result:
+        stamped["base"] = {**result["base"], "psnr_cap_db": PSNR_CAP_DB}
+    return stamped
+
+
+def _unchanged_by_cap(result: dict) -> bool:
+    luma, yuv = result.get("frame_psnr_y"), result.get("frame_psnr_yuv")
+    if not luma or not yuv or len(luma) != len(yuv):
+        return False
+    return max(luma) <= PSNR_CAP_DB and \
+        max((8 * f - 6 * y) / 2 for y, f in zip(luma, yuv)) <= RECAP_MAX_CHROMA_DB
+
+
 def summarize(point: Point, kbps: float, sizes: list[int], psnr_yuv: float,
               psnr_frames: list[dict], vmaf_mean: float, vmaf_frames: list[float]) -> dict:
     per_yuv = weighted_yuv_per_frame([f["psnr_y"] for f in psnr_frames],
@@ -840,7 +889,8 @@ def summarize(point: Point, kbps: float, sizes: list[int], psnr_yuv: float,
               "worst_psnr_yuv": worst_quality(per_yuv), "worst_vmaf_v1": worst_quality(vmaf_frames),
               "flicker_psnr_y": flicker([f["psnr_y"] for f in psnr_frames]),
               "flicker_vmaf_v1": flicker(vmaf_frames), "frame_bits": sizes,
-              "frame_psnr_yuv": per_yuv, "frame_vmaf_v1": vmaf_frames}
+              "frame_psnr_yuv": per_yuv, "frame_vmaf_v1": vmaf_frames,
+              "psnr_cap_db": PSNR_CAP_DB}
     if point.kbps:
         replay = replay_buffer(sizes, point.kbps * 1000.0, point.clip.fps, BUFFER_MS)
         result.update(target_kbps=point.kbps, rate_error=kbps / point.kbps - 1.0,

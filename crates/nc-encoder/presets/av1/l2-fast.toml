@@ -82,3 +82,6 @@ av1.keyframe_cfl = 0
 # Pinned before the Default's coarser fixed-QP key under camera motion (2026-11-19,
 # docs/handoff/rd-depth.md): not screened for this preset.
 rate.fixed_qp_moving_key = 0
+# The engine's still-level damping arrived with the AV1 Default (2026-11-19,
+# docs/handoff/rate-control.md): not screened for this preset.
+rate.still_level_damping = 0

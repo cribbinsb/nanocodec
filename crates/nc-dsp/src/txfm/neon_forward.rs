@@ -1,27 +1,24 @@
-//! Shared eight-lane narrow forward butterflies for AV1 columns and optional
-//! HEVC rows. Per-size input shifts keep all graph stages within i16;
-//! multiplication widens before rounding. Optional AV1 rows use an exact L1
-//! guard and eight lanes, retaining wide fallback for high-range batches.
+//! NEON eight-lane 16-bit forward butterflies: the lane type of the exact
+//! AV1/VP9 forward DCTs of 16x16 and larger (`narrow_forward`, the shared
+//! driver and its range proofs), the in-register 8x8 forward, and the
+//! approximate HEVC rows and columns. Multiplications widen to 32 bits
+//! before rounding back to 16.
 
 #![allow(clippy::inline_always)]
 
 #[cfg(test)]
 use super::generic;
-use super::{
-    cospi, dct,
-    forward_lanes::{ForwardLanes, NARROW_ROW_L1_LIMIT},
-};
-use crate::codec_txfm::generic::as_uninit;
-use crate::simd::I32Lanes;
+use super::narrow_forward::{self, ForwardWords};
+use super::{cospi, dct, forward_lanes::ForwardLanes};
 use crate::simd::neon::I32x4;
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, vabsq_s16, vaddq_s16, vaddq_s32, vcombine_s16, vdupq_n_s16, vdupq_n_s32,
-    vdupq_n_u16, vget_high_s16, vget_low_s16, vld1q_s16, vld1q_s32, vmaxq_s32, vmaxvq_u16,
-    vminq_s32, vmlal_n_s16, vmovl_s16, vmovn_s32, vmull_n_s16, vmulq_n_s32, vqaddq_u16, vqmovn_s32,
-    vqrdmulhq_n_s16, vreinterpretq_s16_s64, vreinterpretq_s32_s16, vreinterpretq_s64_s32,
-    vreinterpretq_u16_s16, vrshlq_s32, vrshrn_high_n_s32, vrshrn_n_s32, vrshrq_n_s16, vrshrq_n_s32,
-    vshlq_n_s16, vst1q_s16, vst1q_s32, vsubq_s16, vtrn1q_s16, vtrn1q_s32, vtrn1q_s64, vtrn2q_s16,
-    vtrn2q_s32, vtrn2q_s64,
+    int16x8_t, int32x4_t, uint16x8_t, vabsq_s16, vaddq_s16, vaddq_s32, vcombine_s16, vdupq_n_s16,
+    vdupq_n_s32, vdupq_n_u16, vget_high_s16, vget_low_s16, vld1q_s16, vld1q_s32, vmaxq_s32,
+    vmaxvq_u16, vminq_s32, vmlal_n_s16, vmovl_s16, vmovn_s32, vmull_n_s16, vmulq_n_s32, vqaddq_u16,
+    vqmovn_s32, vqrdmulhq_n_s16, vreinterpretq_s16_s64, vreinterpretq_s32_s16,
+    vreinterpretq_s64_s32, vreinterpretq_u16_s16, vrshlq_s32, vrshrn_high_n_s32, vrshrn_n_s32,
+    vrshrq_n_s16, vrshrq_n_s32, vshlq_n_s16, vst1q_s16, vst1q_s32, vsubq_s16, vtrn1q_s16,
+    vtrn1q_s32, vtrn1q_s64, vtrn2q_s16, vtrn2q_s32, vtrn2q_s64,
 };
 use core::mem::MaybeUninit;
 
@@ -73,6 +70,73 @@ impl ForwardLanes for Column {
             );
             Self(round_narrow(low, high, bit))
         }
+    }
+}
+
+impl ForwardWords for Column {
+    const LANES: usize = 8;
+    type Norm = uint16x8_t;
+    type Wide = I32x4;
+
+    #[inline(always)]
+    fn load(src: &[i16]) -> Self {
+        let src = &src[..8];
+        // SAFETY: NEON kernels only; one 128-bit load of eight values.
+        unsafe { Self(vld1q_s16(src.as_ptr())) }
+    }
+
+    #[inline(always)]
+    fn store(self, dst: &mut [MaybeUninit<i16>]) {
+        let dst = &mut dst[..8];
+        // SAFETY: NEON kernels only; one 128-bit store of eight values.
+        unsafe { vst1q_s16(dst.as_mut_ptr().cast(), self.0) }
+    }
+
+    #[inline(always)]
+    fn shift_left_2(self) -> Self {
+        // SAFETY: NEON kernels only; register arithmetic.
+        unsafe { Self(vshlq_n_s16::<2>(self.0)) }
+    }
+
+    #[inline(always)]
+    fn round_shift<const SHIFT: u32>(self) -> Self {
+        // The rounding shift computes its offset without overflow. The
+        // forwards shift by 2 or 4; `SHIFT` is a constant, so the match
+        // folds away.
+        // SAFETY: NEON kernels only; register arithmetic.
+        unsafe {
+            match SHIFT {
+                2 => Self(vrshrq_n_s16::<2>(self.0)),
+                4 => Self(vrshrq_n_s16::<4>(self.0)),
+                _ => unreachable!("forward shifts are 2 or 4"),
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn transpose(tile: &mut [Self]) {
+        let tile: &mut [Self; 8] = tile.try_into().unwrap();
+        // SAFETY: NEON kernels only; register shuffles.
+        *tile = unsafe { transpose(tile.map(|v| v.0)) }.map(Self);
+    }
+
+    #[inline(always)]
+    fn norm_zero() -> uint16x8_t {
+        // SAFETY: NEON kernels only.
+        unsafe { vdupq_n_u16(0) }
+    }
+
+    #[inline(always)]
+    fn accumulate_l1(self, norm: uint16x8_t) -> uint16x8_t {
+        // SAFETY: NEON kernels only; `|i16::MIN|` reads correctly as
+        // unsigned, and the sum saturates.
+        unsafe { vqaddq_u16(norm, vreinterpretq_u16_s16(vabsq_s16(self.0))) }
+    }
+
+    #[inline(always)]
+    fn within_limit(norm: uint16x8_t, limit: u16) -> bool {
+        // SAFETY: NEON kernels only.
+        unsafe { vmaxvq_u16(norm) <= limit }
     }
 }
 
@@ -377,7 +441,7 @@ unsafe fn forward_32_wide_reference(residual: &[i16], stride: usize, out: &mut [
 pub(crate) unsafe fn forward_16(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: dispatcher guarantees NEON and complete8-bit residual windows.
     unsafe {
-        forward_narrow_rows::<16, false, 16>(residual, stride, out);
+        narrow_forward::forward::<Column, 16, false, 16>(residual, stride, out);
     }
 }
 
@@ -387,7 +451,7 @@ pub(crate) unsafe fn forward_16(residual: &[i16], stride: usize, out: &mut [i16]
 pub(crate) unsafe fn forward_16_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: as for `forward_16`.
     unsafe {
-        forward_narrow_rows::<16, true, 16>(residual, stride, out);
+        narrow_forward::forward::<Column, 16, true, 16>(residual, stride, out);
     }
 }
 
@@ -447,7 +511,7 @@ unsafe fn forward_8_layout<const RASTER: bool>(residual: &[i16], stride: usize, 
 pub(crate) unsafe fn forward_32(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: dispatcher guarantees NEON and complete8-bit residual windows.
     unsafe {
-        forward_narrow_rows::<32, false, 32>(residual, stride, out);
+        narrow_forward::forward::<Column, 32, false, 32>(residual, stride, out);
     }
 }
 
@@ -457,7 +521,7 @@ pub(crate) unsafe fn forward_32(residual: &[i16], stride: usize, out: &mut [i16]
 pub(crate) unsafe fn forward_32_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: as for `forward_32`.
     unsafe {
-        forward_narrow_rows::<32, true, 32>(residual, stride, out);
+        narrow_forward::forward::<Column, 32, true, 32>(residual, stride, out);
     }
 }
 
@@ -467,25 +531,24 @@ pub(crate) unsafe fn forward_32_raster(residual: &[i16], stride: usize, out: &mu
 pub(crate) unsafe fn forward_64(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: dispatcher guarantees NEON and complete8-bit residual windows.
     unsafe {
-        forward_narrow_rows::<64, false, 32>(residual, stride, out);
+        narrow_forward::forward::<Column, 64, false, 32>(residual, stride, out);
     }
 }
 
 /// The low-frequency forward of an `N`-point block (`txfm::low_keep`):
 /// the column pass keeps its `KEEP` lowest outputs, the row pass runs only
 /// on those and keeps its `KEEP` lowest; the rest of the coded square is
-/// zero. Equal to the full forward with the other coefficients zeroed.
+/// zero. Equal to the full forward with the other coefficients zeroed
+/// (`narrow_forward::forward`).
 #[target_feature(enable = "neon")]
 unsafe fn forward_low<const N: usize, const KEEP: usize, const RASTER: bool>(
     residual: &[i16],
     stride: usize,
     out: &mut [i16],
 ) {
-    let coded = kept(N);
-    out[..coded * coded].fill(0);
     // SAFETY: dispatcher guarantees NEON and complete 8-bit residual windows.
     unsafe {
-        forward_narrow_rows::<N, RASTER, KEEP>(residual, stride, out);
+        narrow_forward::forward::<Column, N, RASTER, KEEP>(residual, stride, out);
     }
 }
 
@@ -524,171 +587,7 @@ pub(crate) unsafe fn forward_64_low(residual: &[i16], stride: usize, out: &mut [
     unsafe { forward_low::<64, { super::low_keep(64) }, false>(residual, stride, out) }
 }
 
-/// Most inputs of a forward graph.
-const MAX_POINTS: usize = 64;
-/// Inter-pass buffer capacity: 64 columns of 32 kept outputs.
-const BUFFER_CAPACITY: usize = MAX_POINTS * 32;
-
-/// Coefficients kept per dimension: all of a 16x16 or 32x32 block, the low
-/// 32 of a 64x64 (libaom `av1_get_adjusted_tx_size`).
-const fn kept(n: usize) -> usize {
-    if n == 16 { 16 } else { 32 }
-}
-
-// Per-size libaom configuration (`fwd_shift_NxN`, `av1_fwd_cos_bit_col/row`;
-// see `generic.rs`): 16x16 shifts {2, -2, 0} with cosine bits 13/12, 32x32
-// {2, -4, 0} with 12/12, 64x64 {0, -2, -2} with 13/10. Matching on `N`
-// gives the immediates the shift instructions need; it folds at compile time.
-
-/// The input shift of an `N`-point column.
-#[inline(always)]
-fn column_input<const N: usize>(row: int16x8_t) -> int16x8_t {
-    // SAFETY: NEON kernels only; 8-bit residuals shifted by 2 fit i16.
-    unsafe { if N == 64 { row } else { vshlq_n_s16::<2>(row) } }
-}
-
-/// The column graph of an `N`-point forward.
-#[inline(always)]
-fn column_dct<const N: usize>(x: &[Column; MAX_POINTS], y: &mut [Column; MAX_POINTS]) {
-    match N {
-        16 => dct::fdct16(
-            x[..16].try_into().unwrap(),
-            (&mut y[..16]).try_into().unwrap(),
-            cospi(13),
-            13,
-        ),
-        32 => dct::fdct32(
-            x[..32].try_into().unwrap(),
-            (&mut y[..32]).try_into().unwrap(),
-            cospi(12),
-            12,
-        ),
-        _ => dct::fdct64_low32(x, y, cospi(13), 13),
-    }
-}
-
-/// The rounding shift between the passes of an `N`-point forward.
-#[inline(always)]
-fn mid_shift<const N: usize>(column: int16x8_t) -> int16x8_t {
-    // SAFETY: NEON kernels only; register arithmetic.
-    unsafe {
-        if N == 32 {
-            vrshrq_n_s16::<4>(column)
-        } else {
-            vrshrq_n_s16::<2>(column)
-        }
-    }
-}
-
-/// The row graph of an `N`-point forward, on either lane type.
-#[inline(always)]
-fn row_dct<V: ForwardLanes, const N: usize>(x: &[V; MAX_POINTS], y: &mut [V; MAX_POINTS]) {
-    match N {
-        16 => dct::fdct16(
-            x[..16].try_into().unwrap(),
-            (&mut y[..16]).try_into().unwrap(),
-            cospi(12),
-            12,
-        ),
-        32 => dct::fdct32(
-            x[..32].try_into().unwrap(),
-            (&mut y[..32]).try_into().unwrap(),
-            cospi(12),
-            12,
-        ),
-        _ => dct::fdct64_low32(x, y, cospi(10), 10),
-    }
-}
-
-/// Exact eight-lane forward `N`x`N` DCT (16, 32 or 64): 16-bit columns,
-/// then the guarded 16-bit row pass, storing column-major coefficients or
-/// (`RASTER`) row-major ones. Returns the number of narrow row batches.
-#[target_feature(enable = "neon")]
-unsafe fn forward_narrow_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
-    residual: &[i16],
-    stride: usize,
-    out: &mut [i16],
-) -> u32 {
-    let mut buf = [MaybeUninit::<i16>::uninit(); BUFFER_CAPACITY];
-    // SAFETY: forwarded contract.
-    unsafe {
-        let columns = narrow_columns::<N, KEEP>(residual, stride, &mut buf);
-        narrow_rows::<N, RASTER, KEEP>(columns, out)
-    }
-}
-
-/// The column pass of [`forward_narrow_rows`]: column `c`'s `KEEP` lowest
-/// outputs at `c * KEEP` of the returned buffer.
-#[target_feature(enable = "neon")]
-unsafe fn narrow_columns<'buf, const N: usize, const KEEP: usize>(
-    residual: &[i16],
-    stride: usize,
-    buf: &'buf mut [MaybeUninit<i16>; BUFFER_CAPACITY],
-) -> &'buf [i16] {
-    assert!(matches!(N, 16 | 32 | 64) && KEEP <= kept(N) && KEEP.is_multiple_of(8));
-    let mut input = [Column::splat(0); MAX_POINTS];
-    let mut output = input;
-    // SAFETY: caller checked8-bit residual windows and NEON support; every
-    // load/store below is one complete checked eight-sample slice.
-    unsafe {
-        for x in (0..N).step_by(8) {
-            for (r, column) in input[..N].iter_mut().enumerate() {
-                let row = &residual[r * stride + x..][..8];
-                *column = Column(column_input::<N>(vld1q_s16(row.as_ptr())));
-            }
-            column_dct::<N>(&input, &mut output);
-            for k in (0..KEEP).step_by(8) {
-                let tile = transpose(core::array::from_fn(|i| mid_shift::<N>(output[k + i].0)));
-                for (i, row) in tile.into_iter().enumerate() {
-                    let dest = &mut buf[(x + i) * KEEP + k..][..8];
-                    vst1q_s16(dest.as_mut_ptr().cast::<i16>(), row);
-                }
-            }
-        }
-        // Columns 0..N each stored all `KEEP` outputs above.
-        core::slice::from_raw_parts(buf.as_ptr().cast::<i16>(), N * KEEP)
-    }
-}
-
-/// The bounded raster forward (`generic::dct_bounded!`) on the 16-bit
-/// driver: false, leaving `out` untouched, when every row-pass input
-/// line's L1 norm is within `zero_limit` minus the row rounding.
-#[target_feature(enable = "neon")]
-unsafe fn forward_bounded<const N: usize>(
-    residual: &[i16],
-    stride: usize,
-    zero_limit: u32,
-    rounding: u32,
-    out: &mut [i16],
-) -> bool {
-    let mut buf = [MaybeUninit::<i16>::uninit(); BUFFER_CAPACITY];
-    // SAFETY: forwarded contract.
-    let columns = unsafe { narrow_columns::<N, N>(residual, stride, &mut buf) };
-    // Per-line L1 in saturating u16 lanes: a saturated norm (65535) is
-    // above every limit tested here (clamped below it).
-    let limit = zero_limit
-        .saturating_sub(rounding)
-        .min(u32::from(u16::MAX) - 1) as u16;
-    let mut within = true;
-    for r0 in (0..N).step_by(8) {
-        let mut l1 = vdupq_n_u16(0);
-        for c in 0..N {
-            let values = &columns[c * N + r0..][..8];
-            // SAFETY: complete eight-element checked slice; NEON enabled.
-            let row = unsafe { vld1q_s16(values.as_ptr()) };
-            l1 = vqaddq_u16(l1, vreinterpretq_u16_s16(vabsq_s16(row)));
-        }
-        within &= vmaxvq_u16(l1) <= limit;
-    }
-    if within {
-        return false;
-    }
-    // SAFETY: forwarded contract.
-    unsafe { narrow_rows::<N, true, N>(columns, out) };
-    true
-}
-
-/// [`forward_bounded`] of a 16x16 block.
+/// The bounded raster 16-point forward (`narrow_forward::bounded`).
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn forward_16_bounded(
     residual: &[i16],
@@ -698,7 +597,7 @@ pub(crate) unsafe fn forward_16_bounded(
 ) -> bool {
     // SAFETY: forwarded contract.
     unsafe {
-        forward_bounded::<16>(
+        narrow_forward::bounded::<Column, 16>(
             residual,
             stride,
             zero_limit,
@@ -708,7 +607,7 @@ pub(crate) unsafe fn forward_16_bounded(
     }
 }
 
-/// [`forward_bounded`] of a 32x32 block.
+/// The bounded raster 32-point forward (`narrow_forward::bounded`).
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn forward_32_bounded(
     residual: &[i16],
@@ -718,7 +617,7 @@ pub(crate) unsafe fn forward_32_bounded(
 ) -> bool {
     // SAFETY: forwarded contract.
     unsafe {
-        forward_bounded::<32>(
+        narrow_forward::bounded::<Column, 32>(
             residual,
             stride,
             zero_limit,
@@ -726,104 +625,6 @@ pub(crate) unsafe fn forward_32_bounded(
             out,
         )
     }
-}
-
-/// The row pass: `buf` holds column `c`'s `KEEP` lowest outputs at
-/// `c * KEEP`; the output keeps the `KEEP` lowest of each row transform, in
-/// the coded square of side `kept(N)` (the rest of which is left to the
-/// caller: all of it when `KEEP == kept(N)`).
-#[target_feature(enable = "neon")]
-unsafe fn narrow_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
-    buf: &[i16],
-    out: &mut [i16],
-) -> u32 {
-    let (kept, coded) = (KEEP, kept(N));
-    let mut input = [Column::splat(0); MAX_POINTS];
-    let mut output = input;
-    let mut narrow_batches = 0;
-    for r0 in (0..kept).step_by(8) {
-        // Per-lane L1 norms, saturating in u16: the limit is below
-        // `u16::MAX`, so a saturated norm still fails the test, and
-        // `|i16::MIN|` reads correctly as unsigned.
-        let mut l1 = vdupq_n_u16(0);
-        for (c, column) in input[..N].iter_mut().enumerate() {
-            let values = &buf[c * kept + r0..][..8];
-            // SAFETY: complete eight-element checked slice and NEON enabled.
-            let row = unsafe { vld1q_s16(values.as_ptr()) };
-            *column = Column(row);
-            l1 = vqaddq_u16(l1, vreinterpretq_u16_s16(vabsq_s16(row)));
-        }
-        if i32::from(vmaxvq_u16(l1)) <= NARROW_ROW_L1_LIMIT {
-            narrow_batches += 1;
-            row_dct::<Column, N>(&input, &mut output);
-            // libaom `fwd_shift_64x64[2]`; the smaller sizes have none.
-            let shifted = |value: Column| {
-                if N == 64 {
-                    vrshrq_n_s16::<2>(value.0)
-                } else {
-                    value.0
-                }
-            };
-            if RASTER {
-                // Lane i of output[k] is coefficient (r0 + i, k): transpose
-                // each 8x8 tile so that a vector is one coefficient row.
-                for k0 in (0..kept).step_by(8) {
-                    // SAFETY: NEON is enabled; register-only transpose.
-                    let tile =
-                        unsafe { transpose(core::array::from_fn(|i| shifted(output[k0 + i]))) };
-                    for (i, row) in tile.into_iter().enumerate() {
-                        store_i16(&mut out[(r0 + i) * coded + k0..], row);
-                    }
-                }
-            } else {
-                for (k, value) in output[..kept].iter().enumerate() {
-                    store_i16(&mut out[k * coded + r0..], shifted(*value));
-                }
-            }
-        } else {
-            let mut x = [<I32x4 as I32Lanes>::splat(0); MAX_POINTS];
-            let mut y = x;
-            for first in [r0, r0 + 4] {
-                for (c, column) in x[..N].iter_mut().enumerate() {
-                    *column = I32x4::load_i16(&buf[c * kept + first..]);
-                }
-                row_dct::<I32x4, N>(&x, &mut y);
-                let shifted = |value: &I32x4| {
-                    if N == 64 {
-                        value.round_shift(2)
-                    } else {
-                        *value
-                    }
-                };
-                if RASTER {
-                    // Lane j of y[k] is coefficient (first + j, k).
-                    let view = as_uninit(&mut out[..coded * coded]);
-                    for k0 in (0..kept).step_by(4) {
-                        let rows: [I32x4; 4] = core::array::from_fn(|i| shifted(&y[k0 + i]));
-                        I32x4::store_transposed_sat16(
-                            &rows,
-                            &mut view[first * coded + k0..],
-                            coded,
-                        );
-                    }
-                } else {
-                    for (k, value) in y[..kept].iter().enumerate() {
-                        shifted(value).store_sat16(&mut out[k * coded + first..]);
-                    }
-                }
-            }
-        }
-    }
-    narrow_batches
-}
-
-/// Store eight i16 lanes at the start of `dest`.
-#[inline(always)]
-fn store_i16(dest: &mut [i16], row: int16x8_t) {
-    let dest = &mut dest[..8];
-    // SAFETY: NEON kernels only; one 128-bit store into the checked
-    // eight-element slice.
-    unsafe { vst1q_s16(dest.as_mut_ptr(), row) }
 }
 
 #[cfg(test)]
@@ -875,7 +676,7 @@ mod tests {
                         match n {
                             16 => {
                                 generic::forward_16::<i32>(&residual[1..], stride, &mut expected);
-                                forward_narrow_rows::<16, false, 16>(
+                                narrow_forward::forward::<Column, 16, false, 16>(
                                     &residual[1..],
                                     stride,
                                     &mut actual,
@@ -883,7 +684,7 @@ mod tests {
                             }
                             32 => {
                                 generic::forward_32::<i32>(&residual[1..], stride, &mut expected);
-                                forward_narrow_rows::<32, false, 32>(
+                                narrow_forward::forward::<Column, 32, false, 32>(
                                     &residual[1..],
                                     stride,
                                     &mut actual,
@@ -891,7 +692,7 @@ mod tests {
                             }
                             _ => {
                                 generic::forward_64::<i32>(&residual[1..], stride, &mut expected);
-                                forward_narrow_rows::<64, false, 32>(
+                                narrow_forward::forward::<Column, 64, false, 32>(
                                     &residual[1..],
                                     stride,
                                     &mut actual,
@@ -912,7 +713,7 @@ mod tests {
                         dispatched, actual,
                         "production dispatch equals measured91 narrow-helper oracle"
                     );
-                    let all_batches = kept(n) as u32 / 8;
+                    let all_batches = narrow_forward::kept(n) as u32 / 8;
                     if pattern == 0 {
                         assert!(
                             batches < all_batches,
@@ -959,9 +760,13 @@ mod tests {
                                 let input = std::hint::black_box(&residual);
                                 if narrow {
                                     hits += if n == 32 {
-                                        forward_narrow_rows::<32, false, 32>(input, n, &mut out)
+                                        narrow_forward::forward::<Column, 32, false, 32>(
+                                            input, n, &mut out,
+                                        )
                                     } else {
-                                        forward_narrow_rows::<64, false, 32>(input, n, &mut out)
+                                        narrow_forward::forward::<Column, 64, false, 32>(
+                                            input, n, &mut out,
+                                        )
                                     };
                                 } else if n == 32 {
                                     forward_32_wide_reference(input, n, &mut out);

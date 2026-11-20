@@ -76,6 +76,13 @@ mod forward_lanes;
 #[allow(unsafe_code)]
 pub(crate) mod generic;
 pub(crate) mod inverse_lanes;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code)]
+pub(crate) mod narrow_forward;
 #[cfg(test)]
 mod range_probe;
 #[allow(unsafe_code)]

@@ -51,7 +51,12 @@ pub(crate) fn replay(path: &str, batch: bool, isa: Option<Isa>) -> Result<(), St
         // outside timing. Each pass sees identical input in both dispatch modes.
         let start = Instant::now();
         if batch {
-            dsp.av1_loop_filter_runs(&mut view, pass.vertical, &pass.runs);
+            dsp.av1_loop_filter_runs(
+                &mut view,
+                pass.vertical,
+                &pass.runs,
+                &mut nc_dsp::LoopFilterLanes::default(),
+            );
         } else {
             for run in &pass.runs {
                 dsp.av1_loop_filter_edge(

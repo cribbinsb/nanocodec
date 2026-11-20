@@ -4,8 +4,9 @@
 //! filter sum clipped below at zero, so a rounding saturating narrow gives the
 //! reference's round-shift-clip exactly, for every table.
 
-use super::driver::{RowKernel, SHIFT, layout};
+use super::driver::{self, RowKernel, SHIFT, layout};
 use crate::Vp9Filter;
+use crate::mc::neon_dotprod::DotFilter;
 use core::arch::aarch64::{
     uint8x8_t, vdup_n_u8, vdup_n_u32, vdupq_n_u16, vld1_lane_u32, vld1_u8, vmlal_u8, vmull_u8,
     vqrshrn_n_u16, vqsubq_u16, vreinterpret_u8_u32, vreinterpret_u32_u8, vrhadd_u8, vst1_lane_u32,
@@ -111,6 +112,108 @@ pub(super) unsafe fn convolve(
             super::driver::entry::<Neon, true>(kind, src, stride, phase, size, dst, dst_stride);
         } else {
             super::driver::entry::<Neon, false>(kind, src, stride, phase, size, dst, dst_stride);
+        }
+    }
+}
+
+/// Horizontal signed dot rows share the 32-bit accumulators used by
+/// AV1/HEVC/VVC. The VP9 vertical pass reads byte-clipped horizontal rows
+/// and retains its widening byte kernel.
+struct Dotprod;
+
+impl RowKernel for Dotprod {
+    type Filters = (DotFilter, [uint8x8_t; 8]);
+    type Row = uint8x8_t;
+    const LANES: usize = 8;
+    const COPY_ISA: crate::Isa = crate::Isa::Neon;
+
+    #[inline(always)]
+    unsafe fn prepare<const LAYOUT: u8>(taps: &[i16; 8]) -> Self::Filters {
+        // SAFETY: the entry enables dotprod and all nonidentity taps fit i8.
+        unsafe { (DotFilter::new(taps), Neon::prepare::<LAYOUT>(taps)) }
+    }
+
+    #[inline(always)]
+    unsafe fn load<const N: usize>(src: *const u8) -> uint8x8_t {
+        // SAFETY: forwarded from the driver.
+        unsafe { Neon::load::<N>(src) }
+    }
+
+    #[inline(always)]
+    unsafe fn store<const N: usize, const AVG: bool>(dst: *mut u8, row: uint8x8_t) {
+        // SAFETY: forwarded from the driver.
+        unsafe { Neon::store::<N, AVG>(dst, row) }
+    }
+
+    #[inline(always)]
+    unsafe fn horizontal<const N: usize, const LAYOUT: u8>(
+        src: *const u8,
+        filters: &Self::Filters,
+    ) -> uint8x8_t {
+        // SAFETY: the caller validates the N+7 byte source window.
+        unsafe {
+            if LAYOUT == layout::BILINEAR {
+                Neon::horizontal::<N, LAYOUT>(src, &filters.1)
+            } else {
+                filters.0.vp9_row::<N>(src)
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn vertical<const N: usize, const LAYOUT: u8>(
+        rows: &[uint8x8_t; 8],
+        filters: &Self::Filters,
+    ) -> uint8x8_t {
+        // SAFETY: forwarded from the driver.
+        unsafe { Neon::vertical::<N, LAYOUT>(rows, &filters.1) }
+    }
+}
+
+#[target_feature(enable = "neon,dotprod")]
+pub(super) unsafe fn convolve_dotprod(
+    kind: Vp9Filter,
+    src: &[u8],
+    stride: usize,
+    phase: (usize, usize),
+    size: (usize, usize),
+    dst: &mut [u8],
+    dst_stride: usize,
+    average: bool,
+) {
+    // SAFETY: Dsp validated the buffers. The dot path handles four- and
+    // eight-output strips; the plain entry covers copies and vertical-only.
+    unsafe {
+        if size.0 == 0
+            || size.1 == 0
+            || !size.0.is_multiple_of(4)
+            || phase.0 == 0
+            || kind == Vp9Filter::Bilinear
+        {
+            convolve(kind, src, stride, phase, size, dst, dst_stride, average);
+            return;
+        }
+        macro_rules! filter {
+            ($n:expr, $layout:expr, $avg:expr) => {
+                driver::convolve::<Dotprod, $n, $layout, $avg>(
+                    kind, src, stride, phase, size, dst, dst_stride,
+                )
+            };
+        }
+        macro_rules! at_width {
+            ($n:expr) => {
+                match (driver::layout_of(kind), average) {
+                    (layout::OUTER, false) => filter!($n, { layout::OUTER }, false),
+                    (layout::OUTER, true) => filter!($n, { layout::OUTER }, true),
+                    (_, false) => filter!($n, { layout::ALTERNATING }, false),
+                    (_, true) => filter!($n, { layout::ALTERNATING }, true),
+                }
+            };
+        }
+        if size.0.is_multiple_of(8) {
+            at_width!(8);
+        } else {
+            at_width!(4);
         }
     }
 }

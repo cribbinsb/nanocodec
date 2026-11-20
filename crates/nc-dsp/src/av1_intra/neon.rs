@@ -16,6 +16,7 @@ use nc_common::PlaneViewMut;
 use crate::intra_prediction::directional::DirectionalKernels;
 use crate::intra_prediction::{IntraEdges, IntraMode, smooth_weights};
 
+super::generic::filter_patch_kernel!(#[target_feature(enable = "neon")]; crate::simd::neon::I16x8);
 super::generic::av1_intra_kernels!(#[target_feature(enable = "neon")];
     crate::simd::neon::I16x8,
     crate::simd::neon::I16x8

@@ -71,6 +71,13 @@ pub(super) const INVERSE_COS_BIT: u32 = 12;
 /// (libaom `inv_shift_NxN[1]`).
 pub(super) const INVERSE_COLUMN_SHIFT: u32 = 4;
 
+/// `(0..n).step_by(V::LANES)` as a counted loop: the compiler then knows
+/// each group's bound and drops the slice checks of its loads and stores.
+#[inline(always)]
+fn lane_groups<V: I32Lanes>(n: usize) -> impl Iterator<Item = usize> {
+    (0..n.div_ceil(V::LANES)).map(|group| group * V::LANES)
+}
+
 /// Store one pass's `n` output vectors (`lanes[k]`: element `k` of the
 /// `V::LANES` transforms at `first..first + LANES`) transposed into `buf`:
 /// `buf[(first + i) * n + k] = lane i of lanes[k]`.
@@ -81,7 +88,7 @@ pub(crate) fn store_pass<V: I32Lanes>(
     n: usize,
     buf: &mut [MaybeUninit<i32>],
 ) {
-    for k0 in (0..n).step_by(V::LANES) {
+    for k0 in lane_groups::<V>(n) {
         V::store_transposed(&lanes[k0..k0 + V::LANES], &mut buf[first * n + k0..], n);
     }
 }
@@ -95,17 +102,14 @@ pub(crate) fn store_pass_sat16<V: I32Lanes>(
     n: usize,
     buf: &mut [MaybeUninit<i16>],
 ) {
-    for k0 in (0..n).step_by(V::LANES) {
+    for k0 in lane_groups::<V>(n) {
         V::store_transposed_sat16(&lanes[k0..k0 + V::LANES], &mut buf[first * n + k0..], n);
     }
 }
 
 /// [`store_pass_sat16`] of the first `lanes.len()` outputs only, into rows
 /// of `stride` values: `buf[(first + i) * stride + k] = lane i of lanes[k]`.
-#[cfg(any(
-    target_arch = "x86_64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn store_pass_prefix_sat16<V: I32Lanes>(
     lanes: &[V],
@@ -113,7 +117,7 @@ fn store_pass_prefix_sat16<V: I32Lanes>(
     stride: usize,
     buf: &mut [MaybeUninit<i16>],
 ) {
-    for k0 in (0..lanes.len()).step_by(V::LANES) {
+    for k0 in lane_groups::<V>(lanes.len()) {
         V::store_transposed_sat16(
             &lanes[k0..k0 + V::LANES],
             &mut buf[first * stride + k0..],
@@ -179,7 +183,7 @@ macro_rules! dct_2d {
             let cfg = &$cfg;
             let mut x = [V::splat(0); N];
             let mut y = [V::splat(0); N];
-            for c0 in (0..N).step_by(V::LANES) {
+            for c0 in lane_groups::<V>(N) {
                 for (r, lane) in x.iter_mut().enumerate() {
                     *lane = V::load_i16(&residual[r * stride + c0..]).shl(cfg.input_shift);
                 }
@@ -214,7 +218,7 @@ macro_rules! dct_2d {
             let cfg = &$cfg;
             let mut x = [V::splat(0); N];
             let mut y = [V::splat(0); N];
-            for r0 in (0..N).step_by(V::LANES) {
+            for r0 in lane_groups::<V>(N) {
                 for (c, lane) in x.iter_mut().enumerate() {
                     *lane = V::load(&transposed[c * N + r0..]);
                 }
@@ -246,7 +250,7 @@ macro_rules! dct_2d {
             let mut buf = [MaybeUninit::<i32>::uninit(); N * N];
             let mut x = [V::splat(0); N];
             let mut y = [V::splat(0); N];
-            for r0 in (0..N).step_by(V::LANES) {
+            for r0 in lane_groups::<V>(N) {
                 for (c, lane) in x.iter_mut().enumerate() {
                     *lane = V::load_i16(&coeffs[c * N + r0..]);
                 }
@@ -266,7 +270,7 @@ macro_rules! dct_2d {
                 // SAFETY: as stated above.
                 unsafe { core::slice::from_raw_parts(elements, N * N) }
             };
-            for c0 in (0..N).step_by(V::LANES) {
+            for c0 in lane_groups::<V>(N) {
                 for (r, lane) in x.iter_mut().enumerate() {
                     *lane = V::load(&transposed[r * N + c0..]).clamp16();
                 }
@@ -371,7 +375,7 @@ macro_rules! dct_bounded {
 pub(crate) fn line_l1_within<V: I32Lanes, const N: usize>(transposed: &[i32], limit: u32) -> bool {
     let limit = V::splat(limit.min(i32::MAX as u32) as i32);
     let mut over = 0u32;
-    for r0 in (0..N).step_by(V::LANES) {
+    for r0 in lane_groups::<V>(N) {
         let mut l1 = V::splat(0);
         for c in 0..N {
             l1 = l1.add(V::load(&transposed[c * N + r0..]).abs());
@@ -410,10 +414,7 @@ macro_rules! dct_low {
         ///
         /// `V`'s ISA must be available (module docs); `V::LANES` divides
         /// `KEEP`.
-        #[cfg(any(
-            target_arch = "x86_64",
-            all(target_arch = "wasm32", target_feature = "simd128")
-        ))]
+        #[cfg(target_arch = "x86_64")]
         #[inline(always)]
         pub(crate) unsafe fn $name<V: I32Lanes, const KEEP: usize, const RASTER: bool>(
             residual: &[i16],
@@ -433,7 +434,7 @@ macro_rules! dct_low {
             let mut buf = [MaybeUninit::<i32>::uninit(); N * N];
             let mut x = [V::splat(0); N];
             let mut y = [V::splat(0); N];
-            for c0 in (0..N).step_by(V::LANES) {
+            for c0 in lane_groups::<V>(N) {
                 for (r, lane) in x.iter_mut().enumerate() {
                     *lane = V::load_i16(&residual[r * stride + c0..]).shl(cfg.input_shift);
                 }
@@ -449,7 +450,7 @@ macro_rules! dct_low {
                 // (all `KEEP` values each) for every c0: `N * KEEP` values.
                 unsafe { core::slice::from_raw_parts(elements, N * KEEP) }
             };
-            for r0 in (0..KEEP).step_by(V::LANES) {
+            for r0 in lane_groups::<V>(KEEP) {
                 for (c, lane) in x.iter_mut().enumerate() {
                     *lane = V::load(&transposed[c * KEEP + r0..]);
                 }
@@ -468,7 +469,6 @@ macro_rules! dct_low {
 }
 
 dct_low!(forward_16_low, 16, fdct16, FORWARD_16);
-dct_low!(forward_32_low, 32, fdct32_low16, FORWARD_32);
 
 /// 64x64 forward configuration (libaom `fwd_shift_64x64` = {0, -2, -2},
 /// `av1_fwd_cos_bit_col/row` = 13 / 10).
@@ -489,62 +489,25 @@ pub(super) const INVERSE_64_ROW_SHIFT: u32 = 2;
 /// Forward 64x64 DCT of a residual (row-major at `stride`), keeping the
 /// top-left 32x32 coefficients, column-major, in `out` (libaom
 /// `fwd_txfm2d_c` with `TX_64X64`), on the full 64-point graph: the scalar
-/// reference that [`forward_64_pruned`] is checked against.
+/// reference that the pruned 16-bit forwards (`narrow_forward`) are
+/// checked against.
 ///
 /// # Safety
 ///
 /// `V`'s ISA must be available (module docs).
 #[inline(always)]
 pub(crate) unsafe fn forward_64<V: I32Lanes>(residual: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: forwarded caller contract.
-    unsafe { forward_64_impl::<V, false>(residual, stride, out) }
-}
-
-/// [`forward_64`] with both passes pruned to the 32 lowest outputs
-/// (`dct::fdct64_low32`): only those outputs of each column transform feed
-/// the row transforms, and only those of each row transform are kept, so the
-/// butterflies feeding outputs 32..63 are skipped. Bit-exact with
-/// [`forward_64`] (checkasm).
-///
-/// # Safety
-///
-/// `V`'s ISA must be available (module docs).
-// The AVX2 and SIMD128 tables use it; NEON has its own pruned driver.
-#[cfg(any(
-    target_arch = "x86_64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
-#[inline(always)]
-pub(crate) unsafe fn forward_64_pruned<V: I32Lanes>(
-    residual: &[i16],
-    stride: usize,
-    out: &mut [i16],
-) {
-    // SAFETY: forwarded caller contract.
-    unsafe { forward_64_impl::<V, true>(residual, stride, out) }
-}
-
-#[inline(always)]
-unsafe fn forward_64_impl<V: I32Lanes, const LOW32: bool>(
-    residual: &[i16],
-    stride: usize,
-    out: &mut [i16],
-) {
     const N: usize = 64;
     let cfg = &FORWARD_64;
     // Rows 0..31 of the column pass's output, transposed: `buf[c * 32 + r]`.
     let mut buf = [MaybeUninit::<i32>::uninit(); N * CODED_64];
     let mut x = [V::splat(0); N];
     let mut y = [V::splat(0); N];
-    for c0 in (0..N).step_by(V::LANES) {
+    for c0 in lane_groups::<V>(N) {
         for (r, lane) in x.iter_mut().enumerate() {
             *lane = V::load_i16(&residual[r * stride + c0..]).shl(cfg.input_shift);
         }
-        if LOW32 {
-            dct::fdct64_low32(&x, &mut y, cospi(cfg.cos_bit_col), cfg.cos_bit_col);
-        } else {
-            dct::fdct64(&x, &mut y, cospi(cfg.cos_bit_col), cfg.cos_bit_col);
-        }
+        dct::fdct64(&x, &mut y, cospi(cfg.cos_bit_col), cfg.cos_bit_col);
         for lane in &mut y[..CODED_64] {
             *lane = lane.round_shift(cfg.mid_shift);
         }
@@ -559,65 +522,7 @@ unsafe fn forward_64_impl<V: I32Lanes, const LOW32: bool>(
         // SAFETY: as stated above.
         unsafe { core::slice::from_raw_parts(elements, N * CODED_64) }
     };
-    forward_64_rows_impl::<V, LOW32>(transposed, out);
-}
-
-/// The low-frequency 64x64 forward (`txfm::low_keep`): the pruned 64-point
-/// graphs of [`forward_64_pruned`], with the column pass keeping its `KEEP`
-/// lowest outputs and the row pass running only on those and keeping its
-/// `KEEP` lowest, column-major in the coded 32x32 square; the rest of `out`
-/// is zero. Equal to [`forward_64_pruned`] with the other coefficients
-/// zeroed (each kept output is computed as the pruned forward computes it).
-/// The x86 counterpart of NEON's `forward_64_low`: the full pruned forward
-/// was 1.2-2.0 % of x86 AV1 Faster instructions (2026-11-11).
-///
-/// # Safety
-///
-/// `V`'s ISA must be available (module docs); `V::LANES` divides `KEEP`.
-#[cfg(any(
-    target_arch = "x86_64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
-#[inline(always)]
-pub(crate) unsafe fn forward_64_low<V: I32Lanes, const KEEP: usize>(
-    residual: &[i16],
-    stride: usize,
-    out: &mut [i16],
-) {
-    const N: usize = 64;
-    let cfg = &FORWARD_64;
-    let out = &mut out[..CODED_64 * CODED_64];
-    out.fill(0);
-    // Column `c`'s `KEEP` lowest outputs at `buf[c * KEEP..]`.
-    let mut buf = [MaybeUninit::<i32>::uninit(); N * CODED_64];
-    let mut x = [V::splat(0); N];
-    let mut y = [V::splat(0); N];
-    for c0 in (0..N).step_by(V::LANES) {
-        for (r, lane) in x.iter_mut().enumerate() {
-            *lane = V::load_i16(&residual[r * stride + c0..]).shl(cfg.input_shift);
-        }
-        dct::fdct64_low32(&x, &mut y, cospi(cfg.cos_bit_col), cfg.cos_bit_col);
-        for lane in &mut y[..KEEP] {
-            *lane = lane.round_shift(cfg.mid_shift);
-        }
-        store_pass::<V>(&y[..KEEP], c0, KEEP, &mut buf);
-    }
-    let transposed: &[i32] = {
-        let elements = buf.as_ptr().cast::<i32>();
-        // SAFETY: the loop above wrote buffer rows c0..c0 + LANES (all
-        // `KEEP` values each) for every c0: `N * KEEP` values.
-        unsafe { core::slice::from_raw_parts(elements, N * KEEP) }
-    };
-    for r0 in (0..KEEP).step_by(V::LANES) {
-        for (c, lane) in x.iter_mut().enumerate() {
-            *lane = V::load(&transposed[c * KEEP + r0..]);
-        }
-        dct::fdct64_low32(&x, &mut y, cospi(cfg.cos_bit_row), cfg.cos_bit_row);
-        for (k, lane) in y[..KEEP].iter().enumerate() {
-            lane.round_shift(FORWARD_64_FINAL_SHIFT)
-                .store_sat16(&mut out[k * CODED_64 + r0..]);
-        }
-    }
+    forward_64_rows_impl::<V, false>(transposed, out);
 }
 
 /// Wide32-point reference row pass for the native benchmark baseline.
@@ -627,7 +532,7 @@ pub(crate) fn forward_32_rows<V: I32Lanes>(transposed: &[i32], out: &mut [i16]) 
     const N: usize = 32;
     let mut x = [V::splat(0); N];
     let mut y = [V::splat(0); N];
-    for r0 in (0..N).step_by(V::LANES) {
+    for r0 in lane_groups::<V>(N) {
         for (c, lane) in x.iter_mut().enumerate() {
             *lane = V::load(&transposed[c * N + r0..]);
         }
@@ -656,7 +561,7 @@ fn forward_64_rows_impl<V: I32Lanes, const LOW32: bool>(transposed: &[i32], out:
     let cfg = &FORWARD_64;
     let mut x = [V::splat(0); N];
     let mut y = [V::splat(0); N];
-    for r0 in (0..CODED_64).step_by(V::LANES) {
+    for r0 in lane_groups::<V>(CODED_64) {
         for (c, lane) in x.iter_mut().enumerate() {
             *lane = V::load(&transposed[c * CODED_64 + r0..]);
         }
@@ -688,7 +593,7 @@ pub(crate) unsafe fn inverse_64<V: I32Lanes>(coeffs: &[i16], dst: &mut [u8], dst
     let mut buf = [MaybeUninit::<i32>::uninit(); CODED_64 * N];
     let mut x = [V::splat(0); N];
     let mut y = [V::splat(0); N];
-    for r0 in (0..CODED_64).step_by(V::LANES) {
+    for r0 in lane_groups::<V>(CODED_64) {
         for (c, lane) in x[..CODED_64].iter_mut().enumerate() {
             *lane = V::load_i16(&coeffs[c * CODED_64 + r0..]);
         }
@@ -710,7 +615,7 @@ pub(crate) unsafe fn inverse_64<V: I32Lanes>(coeffs: &[i16], dst: &mut [u8], dst
         // SAFETY: as stated above.
         unsafe { core::slice::from_raw_parts(elements, CODED_64 * N) }
     };
-    for c0 in (0..N).step_by(V::LANES) {
+    for c0 in lane_groups::<V>(N) {
         for (r, lane) in x[..CODED_64].iter_mut().enumerate() {
             *lane = V::load(&rows[r * N + c0..]).clamp16();
         }
@@ -750,7 +655,7 @@ macro_rules! sparse_inverse {
             let mut buf = [MaybeUninit::<i32>::uninit(); $coded * N];
             let mut x = [V::splat(0); N];
             let mut y = [V::splat(0); N];
-            for r0 in (0..limit).step_by(V::LANES) {
+            for r0 in lane_groups::<V>(limit) {
                 for (c, lane) in x[..limit].iter_mut().enumerate() {
                     *lane = V::load_i16(&coeffs[c * $coded + r0..]);
                 }
@@ -770,7 +675,7 @@ macro_rules! sparse_inverse {
                 // SAFETY: exactly limit complete rows were initialized above.
                 unsafe { core::slice::from_raw_parts(buf.as_ptr().cast::<i32>(), limit * N) }
             };
-            for c0 in (0..N).step_by(V::LANES) {
+            for c0 in lane_groups::<V>(N) {
                 for (r, lane) in x[..limit].iter_mut().enumerate() {
                     *lane = V::load(&rows[r * N + c0..]).clamp16();
                 }

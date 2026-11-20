@@ -88,6 +88,14 @@ impl MbPart {
 pub trait BinSink {
     /// A context-coded bin (`EncodeDecision`, §9.3.4.2).
     fn encode_decision(&mut self, ctx_idx: usize, bin: bool);
+    /// A run of identical decisions in the same context. The encoder
+    /// adapts after every one. A counter can add their fixed cost together.
+    #[inline]
+    fn encode_repeated_decision(&mut self, ctx_idx: usize, bin: bool, count: u32) {
+        for _ in 0..count {
+            self.encode_decision(ctx_idx, bin);
+        }
+    }
     /// A bypass bin (`EncodeBypass`, §9.3.4.4).
     fn encode_bypass(&mut self, bin: bool);
     /// The terminate bin (`EncodeTerminate`, §9.3.4.5).
@@ -173,6 +181,7 @@ impl Context {
     }
 
     /// `pStateIdx`.
+    #[cfg(test)]
     pub(crate) const fn p_state_idx(self) -> u8 {
         self.state / 2
     }
@@ -304,6 +313,11 @@ impl CabacEncoder {
 
     /// A [`BitCounter`] pricing bins with the current context states.
     pub fn bit_counter<'a>(&'a self, costs: &'a BinCosts) -> BitCounter<'a> {
+        BitCounter::new(&self.contexts, costs)
+    }
+
+    /// A macroblock price when the caller needs only the total.
+    pub(crate) fn total_bit_counter<'a>(&'a self, costs: &'a BinCosts) -> BitCounter<'a, false> {
         BitCounter::new(&self.contexts, costs)
     }
 

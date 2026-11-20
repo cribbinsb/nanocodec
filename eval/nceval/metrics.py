@@ -23,8 +23,9 @@ request (`xpsnr`): final checks and results scoring record it, screens and
 tuning do not. It is reported, never part of J or any decision.
 
 PSNR is computed from exact per-plane squared-error sums, so its definition
-is under our control: per-frame PSNR per plane (MSE 0 is capped at
-PSNR_CAP_DB), averaged over frames (JVET convention), then combined 6:1:1.
+is under our control: per-frame PSNR per plane, each capped at PSNR_CAP_DB
+(60 dB, libvmaf's 8-bit cap; 100 dB before 2026-11-20), averaged over frames
+(JVET convention), then combined 6:1:1. Per-frame XPSNR takes the same cap.
 The sums come from the streamed frames (`PsnrMetric`) or, on our own
 encoder's ungated points, from the encoder itself (`EncoderPsnrMetric`,
 nceval.point), which then sends its reconstruction straight to VMAF: Python

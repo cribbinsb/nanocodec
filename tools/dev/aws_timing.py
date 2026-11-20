@@ -543,7 +543,8 @@ def main(argv: list[str]) -> None:
     if args.baseline_binary:
         ours[BASELINE_BINARY] = args.baseline_binary
     # the remote readiness check compares each binary's version stamp with these
-    versions = {name: args.expect_version or subprocess.run(
+    # an explicit empty --expect-version: a build whose --version prints nothing (before 2026-11-11)
+    versions = {name: args.expect_version if args.expect_version is not None else subprocess.run(
         [str(path), "--version"], capture_output=True, text=True, check=True).stdout.strip()
         for name, path in ours.items()}
     stage(stage_dir, plan, ours, args.tools_dir or X86_TOOLS)
