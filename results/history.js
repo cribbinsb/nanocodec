@@ -265,6 +265,14 @@ async function main() {
     view.codec = requested in CODEC_NAMES ? requested : ALL;
     let index = Math.min(Number(params.get('frame') ?? data.days.length - 1), data.days.length - 1);
     root.querySelector('.view-note').textContent = note(data);
+    const paired = Object.values(data.timing_noise?.same_session_time_ratio?.ratios || {});
+    root.querySelector('.omitted-note').textContent = [
+      ...(data.omitted || []).map((o) => `${o.date} omitted: ${o.reason}.`),
+      ...(data.session_calibration || []).filter((c) => c.presets).map((c, i, all) => {
+        const previous = data.days[data.days.findIndex((d) => d.date === c.date) - 1]?.date;
+        return `${c.date.slice(5)} fps calibrated on the ${c.presets} presets whose streams did not change since ${previous?.slice(5)} (same-box check ≤ ${(Math.max(...paired.map((r) => Math.abs(r - 1))) * 100).toFixed(1)}%).`;
+      }),
+    ].join(' ');
     const slider = root.querySelector('input[type=range]');
     const button = root.querySelector('.play');
     slider.max = String(data.days.length - 1);
