@@ -38,7 +38,9 @@ function referencePoints(data) {
   }));
 }
 
-const STEM_NAMES = { slow: 'Slow', fast: 'Fast', faster: 'Faster', veryfast: 'Veryfast' };
+const STEM_NAMES = { veryslow: 'Veryslow', slower: 'Slower', slow: 'Slow', fast: 'Fast', faster: 'Faster', veryfast: 'Veryfast' };
+// A rung renamed away keeps its old stem behind this prefix (history_chart.py RETIRED).
+const RETIRED = 'retired-';
 // Earlier frames' frontiers fade with age: the newest ghost at GHOST_OPACITY, older ones less.
 const GHOST_OPACITY = 0.7;
 const GHOST_FADE = 0.6;
@@ -53,10 +55,14 @@ const vsBase = (day) => (view.codec === ALL ? day.front_vs_base : day.codec_vs_b
 const vsPrevious = (day) => (view.codec === ALL ? day.front_vs_previous : day.codec_vs_previous?.[view.codec]);
 const baseDay = (data) => (view.codec === ALL ? data.front_base_day : data.codec_front_base_days?.[view.codec]);
 
-/** `hevc@fast` -> HEVC Fast; `hevc` (the Default) -> HEVC. */
+/** `hevc@fast` -> HEVC Fast; `hevc` (the Default) -> HEVC; `h264@retired-faster` ->
+ * H.264 Faster (retired). */
 function presetLabel(key) {
   const [codec, stem] = key.split('@');
-  return stem ? `${CODEC_NAMES[codec]} ${STEM_NAMES[stem] || stem}` : CODEC_NAMES[codec];
+  if (!stem) return CODEC_NAMES[codec];
+  const retired = stem.startsWith(RETIRED);
+  const name = stem.slice(retired ? RETIRED.length : 0);
+  return `${CODEC_NAMES[codec]} ${STEM_NAMES[name] || name}${retired ? ' (retired)' : ''}`;
 }
 
 /** Our points of a day: the presets on the day's frontier, small and labelled; with `all`,
@@ -179,7 +185,7 @@ function frontChange(c) {
  * the front's change. */
 function fillHead(root, data, index) {
   const day = data.days[index];
-  setText(root, '.frame-day', `${day.date} · build ${day.commit}`);
+  setText(root, '.frame-day', `${day.date} · ${day.release ? `release ${day.release} · ` : ''}build ${day.commit}`);
   setChildren(root, '.frame-caption', (day.caption || []).map((line) => el('li', {}, line)));
   setText(root, '.frame-activity', activityText(day));
   const name = view.codec === ALL ? 'Front' : `${CODEC_NAMES[view.codec]} front`;
@@ -230,15 +236,15 @@ function noiseText(noise) {
 
 function note(data) {
   const s = data.slice;
-  return `Each frame is the last commit of that day on the integration branch , built as a plain release build and measured now with one protocol: `
+  return `Each frame is the last commit of that day on the integration branch, built as a plain release build and measured with one protocol when the frame was added (preset names follow later renames: 0.5.0's Slow is Slower, Veryslow on HEVC and VVC; the old H.264 Fast is Faster, and the old H.264 Faster, retired on 2026-11-21, ends there): `
     + `every speed-ladder preset that build shipped, with its own values (before 2026-11-15 the files <codec>-fast, -faster and -fastest are Fast, Faster and Veryfast; files off the ladder are left out), real-time CBR on the chart's ladder (${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip, `
     + `plus ${data.low_ladder_kbps.join('/')} kbps on ${data.low_rung_clips.length} clips whose curves need them), ${data.frames} frames, one key frame, `
     + `our reconstruction scored. Bits: BD-J (PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds, class-balanced) against ${data.zero_label} `
     + `on a fixed slice of ${s.clips.length} of the ${data.fresh_clips} held-out fresh clips (${Object.entries(s.per_class).map(([k, n]) => `${n} ${k}`).join(', ')}; `
     + `within a class the first by a hash of the name), averaged over the ${data.clips_used} clips on which every point of every day and every reference overlaps the zero line. `
     + `Speed: fps timed on AWS c8a (Zen 5), one core, by the chart's own timing: its commands (three 720p clips, fixed QP found per build for about ${data.timing_rung_kbps} kbps), `
-    + `each run back to back with x264 medium, one c8a.large per preset holding that preset's build of every day (so day-to-day speed differences are the same machine's), the median time ratio times the chart's stored x264 medium time; every day here is a plain release build (the overview's builds are PGO). `
-    + `${noiseText(data.timing_noise)}The references are the overview chart's, `
+    + `each run back to back with x264 medium, to 2026-11-20 one c8a.large per preset holding that preset's build of every one of those days (so their day-to-day speed differences are the same machine's), later frames in their own sessions; the median time ratio times the chart's stored x264 medium time; every day here is a plain release build (the overview's builds are PGO). `
+    + `${noiseText(data.timing_noise)}${data.days.filter((d) => d.note).map((d) => `${d.date}: ${d.note} `).join('')}The references are the overview chart's, `
     + `their quality re-averaged on the same clips and their fps as timed on the c8a. `
     + `The bold line is our Pareto frontier that day over every codec and preset (no other of our points is both faster and lower); the faint blue lines are the earlier frames' frontiers, older ones fainter; `
     + `the marks on it are its presets, a ringed one a codec's Default. "Show every preset" adds the presets off the frontier, faint, with thin lines joining each codec's presets.`;

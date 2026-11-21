@@ -26,9 +26,13 @@ import { RESOLUTIONS } from './view-settings.js';
  * per 640x360 area, two rounds each (2026-11-14; the machine was loaded, so the
  * ratios are good to about 15%). Spatially layered (SVC) streams are not estimated.
  * A preset without a cost is never offered as lighter.
- * Slow's cost is the native Jetson cycle ratio (docs/handoff/presets.md "Slow
- * presets"; not measured in WASM yet), so a view coded at Slow that falls behind
- * is offered the rungs below it. AV1 Veryfast's cost is Faster's before base-only effort
+ * Each codec's slowest rung (veryslow or slower; 0.5.0's slow) and the quality rungs below it cost their
+ * native whole-encode time ratio to Medium (Graviton 3/4 and Zen 5, 720p CBR 600, docs/handoff/presets.md
+ * "The ladder"; not measured in WASM yet), so a view coded at one that falls behind is offered the rungs
+ * below it. Slow's cost is its native whole-encode time ratio to Medium
+ * (Graviton 3/4 and Zen 5, 720p CBR 600, docs/handoff/presets.md "The ladder"; not measured in
+ * WASM yet). VVC Faster (VVC's Fast until 2026-11-21) keeps that Fast's cost; VVC Fast's is
+ * 0.55 times its native time ratio to Faster, 1.30 (the same measurement as Slow's). AV1 Veryfast's cost is Faster's before base-only effort
  * (0.45) times its native Jetson cycle ratio to it (0.81, chart clips;
  * docs/handoff/av1-veryfast.md). AV1 Faster with base-only effort (2026-11-16) is that
  * 0.45 times its c8a chart-path time ratio, 1.094 (not measured in WASM yet). AV1 Veryfast
@@ -42,12 +46,12 @@ import { RESOLUTIONS } from './view-settings.js';
  * 600 kbit/s; neither measured in WASM yet).
  */
 export const PRESET_COST = {
-  h264: { slow: 1.7, medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
-  hevc: { slow: 1.74, medium: 1, fast: 0.68, faster: 0.47 },
-  av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.49, veryfast: 0.38 },
-  vvc: { slow: 1.22, medium: 1, fast: 0.55 },
-  vp9: { slow: 1.16, medium: 1, fast: 0.73, faster: 0.5, veryfast: 0.45 },
-  av2: { slow: 1.37, medium: 1, fast: 0.69, faster: 0.54 },
+  h264: { slower: 1.74, slow: 1.31, medium: 1, fast: 0.67, faster: 0.53, veryfast: 0.45 },
+  hevc: { veryslow: 4.44, slower: 2.29, slow: 1.34, medium: 1, fast: 0.68, faster: 0.47 },
+  av1: { slower: 3.0, slow: 1.48, medium: 1, fast: 0.71, faster: 0.49, veryfast: 0.38 },
+  vvc: { veryslow: 3.14, slower: 1.88, slow: 1.35, medium: 1, fast: 0.63, faster: 0.55 },
+  vp9: { slower: 2.86, slow: 1.40, medium: 1, fast: 0.73, faster: 0.61, veryfast: 0.45 },
+  av2: { slower: 5.61, slow: 1.32, medium: 1, fast: 0.69, faster: 0.54 },
 };
 /**
  * Encode time scales with picture area to this power. Less than linear: the

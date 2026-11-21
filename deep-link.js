@@ -8,8 +8,11 @@
 // Results: ?codec=av1&preset=fast   the overview filtered to that codec and preset,
 //          with that preset's point selected.
 
-/** The ladder presets (codecs.js PRESETS) that the results charts have points for. */
-export const CHART_PRESETS = ['slow', 'medium', 'fast', 'faster', 'veryfast'];
+/**
+ * The ladder presets (codecs.js PRESETS) that the results charts have points for.
+ * A chart published before 2026-11-21 calls today's Slower `slow`.
+ */
+export const CHART_PRESETS = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast'];
 const DEFAULT_PRESET = 'medium';
 const SIZE_PATTERN = /^(\d+)x(\d+)$/;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;

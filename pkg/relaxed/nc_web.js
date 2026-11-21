@@ -739,8 +739,9 @@ export class BrowserEncoder {
     /**
      * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
      * `preset_name` is a rung of the speed ladder: "medium" (the codec's
-     * Default), "slow", "fast", "faster" (H.264, HEVC, AV1, VP9 and AV2)
-     * or "veryfast" (H.264, AV1 and VP9); `spatial_layers` (optional, default 1) picks the
+     * Default), "slow", "slower", "fast", "faster" (every codec), "veryslow"
+     * (HEVC and VVC) or "veryfast" (H.264, AV1 and VP9) ([`nc_encoder::speeds`]
+     * lists a codec's rungs); `spatial_layers` (optional, default 1) picks the
      * rung's file for two or three spatial layers (AV1 and VP9, at "medium"
      * and "fast");
      * `overrides` (optional) holds `name=value` lines applied over the

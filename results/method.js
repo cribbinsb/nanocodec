@@ -75,6 +75,7 @@ async function main() {
   try {
     const [chart, windowData] = await Promise.all([loadData('chart'), loadData('window')]);
     facts(chart, root);
+    root.querySelector('.buffer-text').textContent = chart.buffer_note;
     root.querySelector('.window-controls').append(
       control('Zero line', segmented('Zero line', [
         { value: 'x264-medium', label: 'x264 medium, default' }, { value: 'x264-medium~psnr', label: 'x264 medium, --tune psnr' },
