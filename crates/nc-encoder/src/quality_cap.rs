@@ -17,17 +17,12 @@ use nc_analysis::noise::MEAN_ABS_DIFF_PER_SIGMA;
 use nc_analysis::{Grid, Mv};
 
 use crate::bpp_curve;
-use crate::config::Codec;
 use crate::params::RateParams;
 use crate::qp_cadence::step_ratio;
 
 /// H.264 quantizer step at QP 0 (H.264 §8.5.12.1: Qstep doubles every 6
 /// QP from 0.625); HEVC uses the same scale.
 const H264_STEP_AT_QP0: f64 = 0.625;
-/// Rate-control step units of AV1 and VP9 (the AC quantizer lookup) are
-/// eight times the pixel-domain step (AV1 §7.12.2: dequantized
-/// coefficients carry three fractional bits).
-const AC_LOOKUP_STEPS_PER_PIXEL_STEP: f64 = 8.;
 /// `rate.max_quality_qp` value that disables the floor.
 const DISABLED: f64 = 0.;
 /// Samples in one 8x8 block of the analyzer's fine motion field.
@@ -49,10 +44,12 @@ pub(crate) struct QualityFloor {
 }
 
 impl QualityFloor {
-    pub(crate) fn new(params: &RateParams, codec: Codec) -> Self {
+    /// `sample_step_scale`: the codec's `RateModel::sample_step_scale`,
+    /// the sample-domain step of one rate-control step unit.
+    pub(crate) fn new(params: &RateParams, sample_step_scale: f64) -> Self {
         Self {
-            absolute: max_quality_step(params, codec),
-            noise: NoiseFloor::new(params, codec),
+            absolute: max_quality_step(params, sample_step_scale),
+            noise: NoiseFloor::new(params, sample_step_scale),
             keeps_cadence: params.quality_floor_cadence >= 0.5,
         }
     }
@@ -83,11 +80,12 @@ impl QualityFloor {
 }
 
 /// Finest step any frame may use (`rate.max_quality_qp`), in the
-/// backend's rate-control step units; 0 when off.
-pub(crate) fn max_quality_step(params: &RateParams, codec: Codec) -> f64 {
+/// backend's rate-control step units (`sample_step_scale` samples each);
+/// 0 when off.
+pub(crate) fn max_quality_step(params: &RateParams, sample_step_scale: f64) -> f64 {
     let qp = f64::from(params.max_quality_qp);
     if qp > DISABLED {
-        H264_STEP_AT_QP0 * step_ratio(qp) / pixel_step_per_unit(codec)
+        H264_STEP_AT_QP0 * step_ratio(qp) / sample_step_scale
     } else {
         0.
     }
@@ -133,10 +131,10 @@ pub(crate) struct NoiseFloor {
 const SIGMA_SMOOTHING: f64 = 0.25;
 
 impl NoiseFloor {
-    pub(crate) fn new(params: &RateParams, codec: Codec) -> Self {
+    pub(crate) fn new(params: &RateParams, sample_step_scale: f64) -> Self {
         Self {
             scale: f64::from(params.noise_floor_scale),
-            pixel_step_per_unit: pixel_step_per_unit(codec),
+            pixel_step_per_unit: sample_step_scale,
             max_qp: (
                 f64::from(params.noise_floor_max_qp_starved),
                 f64::from(params.noise_floor_max_qp),
@@ -195,33 +193,30 @@ pub(crate) fn residual_sigma(fine: &Grid<MotionBlock>) -> Option<f64> {
     Some(f64::from(median) / FINE_BLOCK_SAMPLES / f64::from(MEAN_ABS_DIFF_PER_SIGMA))
 }
 
-/// Pixel-domain step of one rate-control step unit of `codec`.
-fn pixel_step_per_unit(codec: Codec) -> f64 {
-    match codec {
-        // `CodecBackend::rate_control_quantizer_step` default: 2^(q/6).
-        Codec::H264 | Codec::Hevc | Codec::Vvc => H264_STEP_AT_QP0,
-        Codec::Av1 | Codec::Vp9 => 1. / AC_LOOKUP_STEPS_PER_PIXEL_STEP,
-        // nc-av2 already divides its Q3 step by eight.
-        Codec::Av2 => 1.,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn step(qp: f32, codec: Codec) -> f64 {
+    use crate::RateModel;
+
+    const H26X: f64 = RateModel::QP.sample_step_scale;
+    const AC_LOOKUP: f64 = RateModel::AC_LOOKUP_QINDEX.sample_step_scale;
+
+    fn step(qp: f32, sample_step_scale: f64) -> f64 {
         let mut params = crate::ParamOverrides::default();
         params.set("rate.max_quality_qp", qp);
-        max_quality_step(&RateParams::from_overrides(&params), codec)
+        max_quality_step(&RateParams::from_overrides(&params), sample_step_scale)
     }
 
     #[test]
     fn absolute_floor_is_the_h264_step_in_every_codec() {
-        // H.264 QP 24: 2^(24/6) = 16 rate-control units, a 10-sample step.
-        assert!((step(24., Codec::H264) - 16.).abs() < 1e-9);
-        assert!((step(24., Codec::Av1) - 80.).abs() < 1e-9);
-        assert_eq!(step(0., Codec::H264), 0.);
+        // H.264 QP 24: 2^(24/6) = 16 rate-control units, a 10-sample step;
+        // 80 units of an eighth of a sample in AV1, VP9 and AV2 (whose
+        // models share the AC lookup's scale; AV2 once used 1 and set the
+        // ceiling 8x too fine).
+        assert!((step(24., H26X) - 16.).abs() < 1e-9);
+        assert!((step(24., AC_LOOKUP) - 80.).abs() < 1e-9);
+        assert_eq!(step(0., H26X), 0.);
     }
 
     /// Bits per pixel of a starved stream: the floor's clamp (QP 30) is
@@ -232,7 +227,7 @@ mod tests {
     fn a_generous_stream_clamps_the_noise_floor() {
         let mut params = crate::ParamOverrides::default();
         params.set("rate.noise_floor_scale", 16.);
-        let mut floor = NoiseFloor::new(&RateParams::from_overrides(&params), Codec::H264);
+        let mut floor = NoiseFloor::new(&RateParams::from_overrides(&params), H26X);
         floor.observe(false, Some(1.));
         // 16 x sigma 1 is a 16-sample step; at 1 bit per pixel the clamp is
         // H.264 QP 16: 0.625 * 2^(16/6) samples, 2^(16/6) units; starved,
@@ -245,7 +240,7 @@ mod tests {
     fn noise_floor_follows_the_still_sigma_and_lifts_without_it() {
         let mut params = crate::ParamOverrides::default();
         params.set("rate.noise_floor_scale", 4.);
-        let mut floor = NoiseFloor::new(&RateParams::from_overrides(&params), Codec::H264);
+        let mut floor = NoiseFloor::new(&RateParams::from_overrides(&params), H26X);
         assert_eq!(floor.step(STARVED_BPP), 0.);
         floor.observe(false, Some(1.));
         // 4 x sigma 1 = a 4-sample step, in 0.625-sample H.264 units.
@@ -263,7 +258,7 @@ mod tests {
         );
         let off = NoiseFloor::new(
             &RateParams::from_overrides(&crate::ParamOverrides::default()),
-            Codec::H264,
+            H26X,
         );
         assert!(!off.enabled());
     }

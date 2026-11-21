@@ -8,7 +8,10 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
 ROOT = Path(__file__).resolve().parents[2]
@@ -94,7 +97,7 @@ def main():
     source=subprocess.check_output(['git','-C',str(args.source),'show',PIN+':av2/encoder/bitstream.c'],text=True)
     begin=source.index('static AVM_INLINE PARTITION_TYPE write_partition(')
     end=source.index('\nstatic AVM_INLINE void write_modes_sb(',begin)
-    with tempfile.TemporaryDirectory(prefix='nc-av2-partition-') as tmp:
+    with tempdirs.temp_dir("av2-partition") as tmp:
         path=Path(tmp)
         tx_begin=source.index('static void write_tx_partition(')
         tx_end=source.index('\nstatic int write_skip(',tx_begin)

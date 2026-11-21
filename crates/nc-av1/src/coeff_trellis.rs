@@ -345,6 +345,37 @@ impl CoeffRateModel for RateModel<'_> {
     }
 }
 
+/// The shared rate-aware trimming (`nc_encoder::trim_levels`) of a block's
+/// plain `levels` (end of block `eob`) from its forward coefficients
+/// `coeffs` (libaom layout), at `lambda` (sample SSE per bit), with
+/// distortion in coefficient units as [`TrellisQuantizer::quantize`] prices
+/// it. Returns the new end of block.
+pub(crate) fn rate_trim(
+    trim: &nc_encoder::RateTrim,
+    lambda: f64,
+    tx: TxSize,
+    quantizer: &Av1Quantizer,
+    coeffs: &[i16],
+    levels: &mut [i16],
+    eob: usize,
+) -> usize {
+    let log_scale = quantizer.log_scale;
+    let to_sse = 1.0 / f64::from(1_u32 << (COEFFICIENT_GAIN_LOG2 - 2 * log_scale));
+    nc_encoder::trim_levels(trim, levels, scan(tx), eob, lambda, |pos, magnitude| {
+        let step = i64::from(if pos == 0 {
+            quantizer.dc_step
+        } else {
+            quantizer.ac_step
+        });
+        let dequantized = (i64::from(magnitude) * step) >> log_scale;
+        nc_encoder::dequantized_removal_sse(
+            i64::from(coeffs[pos].unsigned_abs()),
+            dequantized,
+            to_sse,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

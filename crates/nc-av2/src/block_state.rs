@@ -12,10 +12,10 @@
 //! It also collects the deblocking edge grid ([`EdgeGrid`]) of the tile and
 //! answers CDEF's per-8×8 skip question.
 use crate::coeff::{self, TxSize};
-use crate::deblock::EdgeGrid;
+use crate::deblock::{BlockEdges, EdgeGrid};
 use crate::interp_filter;
 use crate::intra_modes::Mode;
-use crate::mv_refs::{ListConfig, MAX_REFERENCES, ReferenceGrid};
+use crate::mv_refs::{ListConfig, MAX_REFERENCES, ReferenceGrid, SavedMotion};
 use crate::prediction::InterpFilter;
 use nc_common::decode::{DecodeError, Result};
 
@@ -237,6 +237,11 @@ impl BlockState {
             .sum()
     }
 
+    /// The picture's luma size (`width`, `height`).
+    pub fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
     /// Whether the coded 8×8 block at luma `(x, y)` skipped its luma
     /// transforms (AVM `skip_txfm[PLANE_TYPE_Y]`, read by `is_8x8_block_skip`
     /// for CDEF); intra blocks never do. Positions not yet coded read as not
@@ -403,6 +408,51 @@ impl BlockState {
         }
     }
 
+    /// Note what the square of side `size` at `(x, y)` (inside the tile)
+    /// holds for later blocks and the loop filters: its mode information,
+    /// coefficient contexts and motion cells, the MV bank, and the
+    /// deblocking records of the blocks coded since `edge_mark`
+    /// ([`EdgeGrid::mark`]). An RD partition trial puts it back with
+    /// [`Self::restore_square`].
+    pub fn save_square(
+        &self,
+        (x, y): (usize, usize),
+        size: usize,
+        edge_mark: usize,
+        saved: &mut SavedSquare,
+    ) {
+        let grid = (self.width / INFO_UNIT, self.height / INFO_UNIT);
+        let cells = size / INFO_UNIT;
+        nc_common::cell_grid::save_rect(
+            &self.info,
+            grid,
+            (y / INFO_UNIT, x / INFO_UNIT),
+            (cells, cells),
+            &mut saved.info,
+        );
+        saved.coefficients = Some(self.save_coeff_contexts(x, y, size));
+        self.motion.save_square((x, y), size, &mut saved.motion);
+        saved.edge_mark = edge_mark;
+        self.edges.save_after(edge_mark, &mut saved.edges);
+    }
+
+    /// Put back what [`Self::save_square`] noted of the same square.
+    pub fn restore_square(&mut self, (x, y): (usize, usize), size: usize, saved: &SavedSquare) {
+        let grid = (self.width / INFO_UNIT, self.height / INFO_UNIT);
+        let cells = size / INFO_UNIT;
+        nc_common::cell_grid::restore_rect(
+            &mut self.info,
+            grid,
+            (y / INFO_UNIT, x / INFO_UNIT),
+            (cells, cells),
+            &saved.info,
+        );
+        self.restore_coeff_contexts(saved.coefficients.as_ref().expect("a saved square"));
+        self.motion.restore_square((x, y), size, &saved.motion);
+        self.edges
+            .restore_after(saved.edge_mark, ((x, y), size), &saved.edges);
+    }
+
     /// Fail unless every block left of and above `(x, y)` is coded.
     /// # Errors
     /// Reports a coding-order violation.
@@ -422,6 +472,24 @@ fn zero_padded(inside: &[u8]) -> [u8; MAX_TX_UNITS] {
     let mut padded = [0; MAX_TX_UNITS];
     padded[..inside.len()].copy_from_slice(inside);
     padded
+}
+
+/// The state of one square of the tile ([`BlockState::save_square`]),
+/// buffers reused from trial to trial.
+#[derive(Debug, Default)]
+pub(crate) struct SavedSquare {
+    info: Vec<Option<BlockInfo>>,
+    coefficients: Option<SavedContexts>,
+    motion: SavedMotion,
+    edge_mark: usize,
+    edges: Vec<BlockEdges>,
+}
+
+impl SavedSquare {
+    /// The deblocking mark the square was saved against.
+    pub fn edge_mark(&self) -> usize {
+        self.edge_mark
+    }
 }
 
 /// Context units along one side of the largest (64×64 luma) block.

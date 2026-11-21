@@ -33,7 +33,13 @@ pub(crate) const IDR_N_LP: u8 = 8;
 pub(crate) const TRAIL_NUT: u8 = 0;
 const MAIN_10_PROFILE: u32 = 1;
 const LEVEL_6: u32 = 96;
+/// Bits of `ph_pic_order_cnt_lsb` (`sps_log2_max_pic_order_cnt_lsb_minus4`
+/// plus 4): references within 126 pictures (`references.rs`).
 pub(crate) const POC_BITS: u32 = 8;
+/// With a long-held second reference (`nc_encoder::holds_second_reference`):
+/// 16, the most §7.4.3.4 allows, for references up to
+/// `nc_encoder::MAX_REFERENCE_AGE` back, at one more byte a picture.
+pub(crate) const LONG_POC_BITS: u32 = 16;
 
 /// Stream timing in the SPS without HRD buffer models
 /// (`general_timing_hrd_parameters()` and `ols_timing_hrd_parameters()`,
@@ -139,13 +145,17 @@ pub(crate) struct Tools {
     /// The DPB also holds the second reference (`refs.second`,
     /// `references.rs`): `sps_max_dec_pic_buffering_minus1` one more.
     pub second_reference: bool,
+    /// Bits of the POC LSBs: [`POC_BITS`] or [`LONG_POC_BITS`].
+    pub poc_bits: u32,
 }
 
 impl Tools {
-    /// These tools, the DPB also holding the second reference when `second`.
-    pub(crate) fn with_second_reference(self, second: bool) -> Self {
+    /// These tools, the DPB also holding the second reference when `second`,
+    /// held long (`refs.second_hold`) when `held`.
+    pub(crate) fn with_second_reference(self, second: bool, held: bool) -> Self {
         Self {
             second_reference: second,
+            poc_bits: if held { LONG_POC_BITS } else { POC_BITS },
             ..self
         }
     }
@@ -171,6 +181,7 @@ impl Default for Tools {
             mts: None,
             large_transforms: false,
             second_reference: false,
+            poc_bits: POC_BITS,
         }
     }
 }
@@ -264,7 +275,7 @@ fn sps_layered_head(geometry: &Geometry, tools: Tools, layers: u8) -> BitWriter 
     w.put_ue(0); // bitdepth minus eight
     w.put_bit(false); // entropy sync
     w.put_bit(false); // entry points
-    w.put_bits(POC_BITS - 4, 4);
+    w.put_bits(tools.poc_bits - 4, 4); // sps_log2_max_pic_order_cnt_lsb_minus4
     w.put_bit(false); // POC MSB
     w.put_bits(0, 4); // extra PH/SH bytes
     if layers > 1 {
@@ -657,7 +668,7 @@ pub(crate) enum SliceAlf {
 pub(crate) fn slice(
     qp: u32,
     inter: bool,
-    poc: u8,
+    poc: u16,
     alf: Option<SliceAlf>,
     block_qp: bool,
     temporal_mvp: Option<bool>,
@@ -679,7 +690,7 @@ pub(crate) fn slice(
 pub(crate) fn slice_layered(
     qp: u32,
     inter: bool,
-    poc: u8,
+    poc: u16,
     alf: Option<SliceAlf>,
     block_qp: bool,
     temporal_mvp: Option<bool>,
@@ -697,7 +708,8 @@ pub(crate) fn slice_layered(
         w.put_bit(true);
     } // intra slices allowed
     w.put_ue(0); // PPS id
-    w.put_bits(u32::from(poc), POC_BITS);
+    let lsb_mask = (1u32 << references.poc_bits) - 1;
+    w.put_bits(u32::from(poc) & lsb_mask, references.poc_bits); // ph_pic_order_cnt_lsb
     if block_qp {
         // ph_cu_qp_delta_subdiv_intra_slice, then (P pictures)
         // ph_cu_qp_delta_subdiv_inter_slice: quantization groups are CTBs

@@ -114,16 +114,24 @@ pub(crate) fn pack_32(words: __m512i) -> __m256i {
 #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
 #[inline]
 pub(crate) fn byte_pairs<const P: usize>(pairs: [(i16, i16); P]) -> [__m512i; P] {
-    pairs.map(|(lo, hi)| _mm512_set1_epi16(i16::from_le_bytes([lo as i8 as u8, hi as i8 as u8])))
+    // A plain loop, not `array::map`: the closure would be compiled outside
+    // this function's target features (the outlined-SIMD check).
+    let mut out = [_mm512_setzero_si512(); P];
+    for (slot, (lo, hi)) in out.iter_mut().zip(pairs) {
+        *slot = _mm512_set1_epi16(i16::from_le_bytes([lo as i8 as u8, hi as i8 as u8]));
+    }
+    out
 }
 
 /// Tap pairs as 16-bit pairs in every 32-bit lane (`vpmaddwd`).
 #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
 #[inline]
 fn word_pairs<const P: usize>(pairs: [(i16, i16); P]) -> [__m512i; P] {
-    pairs.map(|(lo, hi)| {
-        _mm512_set1_epi32((u32::from(lo as u16) | u32::from(hi as u16) << 16) as i32)
-    })
+    let mut out = [_mm512_setzero_si512(); P];
+    for (slot, (lo, hi)) in out.iter_mut().zip(pairs) {
+        *slot = _mm512_set1_epi32((u32::from(lo as u16) | u32::from(hi as u16) << 16) as i32);
+    }
+    out
 }
 
 /// `vpermb` indexes gathering tap pair `p` of 32 outputs from a row loaded

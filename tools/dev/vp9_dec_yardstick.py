@@ -35,8 +35,10 @@ import shutil
 import statistics
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 DATA = Path.home() / "nanocodec-data"
 DEFAULT_STREAMS = DATA / "work/vp9-dec-parity/streams"
@@ -239,7 +241,7 @@ def main() -> int:
         for row in rows:
             row["binaries"] = provenance
     else:
-        with tempfile.TemporaryDirectory(prefix="vp9yard-") as tmp, \
+        with tempdirs.temp_dir("vp9yard") as tmp, \
                 concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
             rows = list(pool.map(lambda s: measure(s, args, Path(tmp)), streams))
     print("Cycles (minimum of five alternating rounds)" if args.mode == "perf" else "Callgrind instructions")

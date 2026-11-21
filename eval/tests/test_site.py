@@ -33,6 +33,8 @@ def test_readme_figures_are_only_in_the_generated_block():
 def test_readme_block_figures_are_in_the_data():
     text = site.README.read_text()
     block = text[text.index(site.README_BEGIN) + len(site.README_BEGIN):text.index(site.README_END)]
+    # the buffer statement is a fixed measured text (nceval.buffer_note), not chart data
+    block = block.replace(site.buffer_note.STATEMENT, "")
     chart = json.loads((site.SITE_DATA / "chart.json").read_text())
     allowed = set()
     for view in chart["views"]:

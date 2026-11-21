@@ -10,7 +10,10 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 PIN='966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
 ROOT=Path(__file__).resolve().parents[2]
@@ -65,7 +68,7 @@ def main():
     if revision!=PIN:raise SystemExit('AVM revision must be '+PIN)
     rust=(ROOT/'crates/nc-av2/src/prediction.rs').read_text()
     for avm_filter,fixture in FILTERS:
-        with tempfile.TemporaryDirectory(prefix='nc-av2-prediction-') as tmp:
+        with tempdirs.temp_dir("av2-prediction") as tmp:
             path=Path(tmp);(path/'oracle.c').write_text(C)
             (path/'convolve.c').write_text(subprocess.check_output(['git','-C',str(args.source),'show',PIN+':av2/common/convolve.c'],text=True))
             subprocess.run(['cc','-O2','-std=c11','-ffunction-sections','-fdata-sections','-DFILTER='+avm_filter,

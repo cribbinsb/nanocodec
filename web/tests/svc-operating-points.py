@@ -147,7 +147,7 @@ def check(binary: Path, codec: str, preset: str, layers: int, out: dict) -> None
         f"{name}: the first frame and the requested one are keys"
     assert all((p["width"], p["height"]) == (WIDTH, HEIGHT) for p in out["full"]), name
     assert all((p["width"], p["height"]) == low_size for p in out["base"]), name
-    with tempfile.TemporaryDirectory(prefix="svc-web-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="nanocodec-svc-web-") as scratch:
         stream = Path(scratch) / "svc.ivf"
         write_ivf(stream, codec, [bytes(p) for p in out["packets"]])
         full = native_md5(binary, codec, stream, 0)

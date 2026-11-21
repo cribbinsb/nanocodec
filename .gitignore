@@ -12,3 +12,9 @@ __pycache__/
 # nc-remote run outputs kept on the build box between runs (docs/PROCEDURES.md
 # "Remote build box"); `--fetch remote-out/...` brings them back.
 /remote-out/
+
+# Raw video (sources, reconstructions, decodes) is never tracked: clips and frames
+# are never published (CLAUDE.md); rec.yuv, a private clip's reconstruction, was
+# committed by mistake on 2026-11-15.
+*.yuv
+*.y4m

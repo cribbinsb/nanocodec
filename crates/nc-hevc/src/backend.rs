@@ -34,10 +34,10 @@ use nc_dsp::{
 use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, CodedGroups, ConfigError, EncoderConfig, FramePlan,
-    FrameReferences, FrameType, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode,
-    QuantParams, ReferenceChoice, RefreshWindow, StaticSkipTest, TrellisSettings, ZeroLimits,
-    copy_zero_vector_prediction, long_term_slot, reference_slots, uses_long_term_slot,
-    zero_vector_residual_is_zero,
+    FrameReferences, FrameType, IntraChoice, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits,
+    PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, StaticSkipTest, TrellisSettings,
+    ZeroLimits, copy_zero_vector_prediction, holds_second_reference, long_term_slot,
+    reference_slots, uses_long_term_slot, zero_vector_residual_is_zero,
 };
 
 use crate::collocated::MotionStore;
@@ -46,9 +46,9 @@ use crate::deblock::{Strength, deblock};
 use crate::grid::{Cell, Grid};
 use crate::headers::ReferenceSet;
 use crate::headers::{
-    CraPoc, LOG2_CTB, LOG2_MAX_TB, LOG2_MIN_CB, NalType, POC_LSB_BITS, SIGN_DATA_HIDING,
-    SliceDeblocking, SliceQp, SliceReferenceSet, StreamInfo, irap_slice_header, level_idc,
-    nal_header, p_slice_header, pps, sps, vps,
+    CraPoc, LOG2_CTB, LOG2_MAX_TB, LOG2_MIN_CB, LONG_POC_LSB_BITS, NalType, POC_LSB_BITS,
+    SIGN_DATA_HIDING, SliceDeblocking, SliceQp, SliceReferenceSet, StreamInfo, irap_slice_header,
+    level_idc, nal_header, p_slice_header, pps, sps, vps,
 };
 use crate::inter::{predict_chroma, predict_luma};
 use crate::mvpred::{
@@ -72,10 +72,14 @@ use crate::syntax::{
 use crate::transform::{MAX_COEFFS, forward_bound, inverse_dc};
 
 mod block_qp;
+mod coded_snapshot;
 mod cu_trial;
+mod final_cost;
 mod inter_tree;
 mod intra;
 mod key_cost;
+mod leaf_alternatives;
+mod node_trial;
 mod rd;
 mod stress;
 use block_qp::{BlockQp, QuantizationSettings};
@@ -416,6 +420,12 @@ pub struct HevcBackend {
     /// `commit_frame` (the recode contract: a re-coded or discarded coding
     /// must not change what later pictures reuse).
     pending_sao_classes: Option<Vec<CtbTypes>>,
+    /// The SAO search's outcome per CTB against the last picture's types
+    /// (`nc_encoder::FilterOutcome`).
+    sao_outcome: nc_encoder::OutcomeTracker<CtbTypes>,
+    /// The engine's usage gate for this frame's SAO statistics
+    /// (`filter.usage_*`, `nc_encoder::UsageGate`).
+    sao_usage: Option<nc_encoder::UsageGate>,
     grid: Grid,
     /// Each reference slot's motion: the collocated motion for TMVP.
     motion: MotionStore,
@@ -458,6 +468,9 @@ pub struct HevcBackend {
     /// Inter prediction of the current CU, per plane (allocated once).
     inter_pred: [Vec<u8>; 3],
     cached_luma: Option<CachedLuma>,
+    /// The luma modes of the key-frame CU last asked about by
+    /// [`CodecBackend::intra_alternatives`], the mode search's choice first.
+    key_luma_ranking: Option<(Block, Vec<u8>)>,
     early_merge_lambdas: f32,
     /// How P-frame intra CUs choose their luma mode
     /// (`hevc.coarse_inter_intra`, `hevc.inter_intra_dc_only`).
@@ -487,17 +500,24 @@ pub struct HevcBackend {
     /// `debug.random_decisions` only (`CodecBackend::enable_random_decisions`):
     /// random syntax choices replace the backend's own.
     random: Option<RandomSyntax>,
+    /// The final decision stage's pricing scratch (`final_cost.rs`).
+    final_scratch: final_cost::FinalScratch,
     /// Bin costs of the CABAC rate estimates (`crate::rate`).
     bin_costs: BinCosts,
     /// The optional intra/inter coding tools.
     tools: CodingTools,
     /// `quant.trellis`: trellis quantisation of every coded transform block.
     trellis: Option<TrellisQuant>,
+    /// `quant.rd_trim`: rate-aware trimming of the coded (winning) blocks'
+    /// plain luma levels, where the trellis would run, while it is off.
+    rd_trim: Option<nc_encoder::RateTrim>,
     /// While the frame has light superblocks (`set_light_params`), the
     /// per-block settings not in use.
     alternate: Option<Alternate>,
     /// The engine's whole-CU pricing trial in progress (`cu_trial.rs`).
     cu_trial: cu_trial::CuTrial,
+    /// The partition search's open node trials (`backend/node_trial.rs`).
+    node_trials: node_trial::NodeTrials,
     /// The luma mode search of intra CUs coded in a pricing trial
     /// (`hevc.trial_full_intra`: the full one), or `None` to keep the
     /// P-frame search.
@@ -924,6 +944,17 @@ nc_encoder::param_group! {
 }
 
 impl CodecBackend for HevcBackend {
+    // A long-held second reference widens the POC LSBs to 16 bits
+    // (`headers::LONG_POC_LSB_BITS`), so it reaches the engine's reference age.
+    const SECOND_REFERENCE_REACH: u64 = nc_encoder::MAX_REFERENCE_AGE - 1;
+    fn filter_outcomes(&self) -> Vec<(nc_encoder::FilterTool, nc_encoder::FilterOutcome)> {
+        self.sao_outcome
+            .frame()
+            .map(|outcome| (nc_encoder::FilterTool::Sao, outcome))
+            .into_iter()
+            .collect()
+    }
+
     // λ and the zero-residual bounds follow the planned step (`begin_frame`).
     // CBR 150 f, crowd_mot20_06 at 150 kbps: 315 -> 156 kbps.
     const SUPPORTS_LAMBDA_HEADROOM: bool = true;
@@ -988,6 +1019,7 @@ impl CodecBackend for HevcBackend {
     // Intra refresh: dirty-edge CUs keep to DC and TMVP is off under it
     // (`slice_temporal_mvp_enabled_flag`, HEVC §7.4.7.1).
     const INTRA_REFRESH: bool = true;
+    const NODE_TRIALS: bool = true;
 
     /// Shared decision values for HEVC:
     /// - `intra_gate_variance` 0: with the DC-aware intra test, trying intra
@@ -1157,6 +1189,14 @@ impl CodecBackend for HevcBackend {
         ("hevc.intra_rounding", 209.0),
         ("planner.lambda_scale", 2.581_25),
         ("planner.split_rate_factor", 2.262_5),
+        // The zero-trial split selector at half its fitted shift (engine
+        // `split_selector.rs`, docs/handoff/planner-selector.md): fixed QP
+        // J -0.6% [-0.9, -0.4] (quick draw, n 24); pool k 0.1 (dCPU +0.35%):
+        // L1 -0.24% [-0.48, -0.01], L3 -0.30% [-0.51, -0.10] BETTER,
+        // final-check (600 f) -0.61% [-0.90, -0.43] BETTER, no guard. The
+        // other HEVC presets pin it off until screened on their own.
+        ("planner.split_selector", 1.0),
+        ("planner.split_selector_scale", 0.5),
         // The diffuse-chroma TU16 heuristic off: it predates the RD inter
         // transform tree (`inter_tree.rs`), which now decides 32x32 against
         // 16x16 by cost; forcing the split made 26-48 % of the inter transform
@@ -1200,6 +1240,38 @@ impl CodecBackend for HevcBackend {
         // docs/handoff/hevc.md "VC-1K: shadow
         // RD ceiling and whole-CU pricing". The other HEVC presets pin it off.
         ("decision.cu_price_intra_lambdas", 0.1),
+        // SAO decisions from every second row's statistics (the registered
+        // 4 samples a quarter): edge classes and offsets fit the CTB better.
+        // Fixed QP (draw fixedqp-2026-11-21, 23 clips) J -1.0 % [-1.2,
+        // -0.6] at +2.6 % P instructions (every row: -1.2 % at +7.9 %);
+        // whole encode (chart timing commands, callgrind) +2.75 %. Quick
+        // (k 0.1) L1 -0.75 % [-1.22, -0.28], probe -0.36 %; nceval.train
+        // (k 0.1): L3 (n 108) -0.43 % [-0.68, -0.19] BETTER, final-check
+        // (n 34, 600 f) -0.94 % [-1.11, -0.65] BETTER, no guard
+        // (docs/analysis/unused-tools-2026-11-21.md). Fast and Faster pin 4,
+        // Slow sets 1.
+        ("hevc.sao_stats_row_step", 2.0),
+        // P-frame CTUs whose CUs are all skipped (they copy filtered
+        // reference samples) keep SAO off without gathering statistics, as
+        // Fast and Faster do: the SAO decision is 6-7 % of the encode
+        // (callgrind, crowd / static 720p) and these CTUs rarely take it.
+        // Fixed QP (24 clips) J +0.0 [-0.2, +0.2]; whole encode Zen 5
+        // -2.15 %, Graviton3 -1.62 %, Graviton4 -1.80 %. nceval.train
+        // (k 0.1): L3 (n 108) -0.20 % [-0.39, -0.01] BETTER, final-check
+        // (n 34) +0.20 % [-0.07, +0.44] AMBIGUOUS, passed
+        // (docs/analysis/unused-tools-2026-11-21.md); Veryslow too (k 0:
+        // docs/handoff/filter-effort.md).
+        ("hevc.sao_skip_unchanged", 1.0),
+        // Filter-search effort by usage (`nc_encoder::UsageGate`): on non-base
+        // P frames, CTUs coded as skip over at least 3/4 of their area keep SAO
+        // off without statistics (each CTU refreshed every 8 frames). HEVC
+        // reason: its SAO is wired to the gate (with VVC's SAO and ALF).
+        // nceval.train (k 0.1, base 1cb80965c): L3 (n 108) -0.17 % [-0.44,
+        // +0.09] BETTER, final-check (n 34) -0.01 % [-0.15, +0.19] AMBIGUOUS;
+        // whole encode cycles Graviton3 -0.34 %, Graviton4 -0.48 %, Zen 5
+        // -0.36 % (docs/handoff/filter-effort.md). Fast, Faster, Slow,
+        // Slower and Veryslow pin 0.
+        ("filter.usage_quiet_share", 0.75),
     ];
 
     // A flat field-by-field initialisation of the backend's state.
@@ -1239,6 +1311,8 @@ impl CodecBackend for HevcBackend {
             sao: None,
             sao_classes: Vec::new(),
             pending_sao_classes: None,
+            sao_outcome: nc_encoder::OutcomeTracker::default(),
+            sao_usage: None,
             grid: Grid::new(width, height),
             motion: MotionStore::new(
                 width,
@@ -1280,6 +1354,7 @@ impl CodecBackend for HevcBackend {
                 vec![0; CTU_SAMPLES / 4],
             ],
             cached_luma: None,
+            key_luma_ranking: None,
             early_merge_lambdas: params.early_merge_lambdas,
             inter_intra: InterIntraSearch::new(&params),
             key_intra: InterIntraSearch::key(&params),
@@ -1292,11 +1367,14 @@ impl CodecBackend for HevcBackend {
             deblocking: SliceDeblocking::Fixed,
             deblock_inter: params.deblock_inter >= 0.5,
             random: None,
+            final_scratch: final_cost::FinalScratch::default(),
             bin_costs: BinCosts::new(),
             tools: CodingTools::new(&params),
             trellis: TrellisQuant::from_params(&QuantParams::from_overrides(&config.params)),
+            rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
             alternate: None,
             cu_trial: cu_trial::CuTrial::default(),
+            node_trials: node_trial::NodeTrials::default(),
             trial_intra_search: (params.trial_full_intra >= 0.5).then_some(InterIntraSearch::Full),
             intra_rd_candidates: params.intra_rd_candidates.round().max(1.0) as usize,
         })
@@ -1513,6 +1591,38 @@ impl CodecBackend for HevcBackend {
         self.finish_cu_trial();
     }
 
+    fn begin_node_trial(&mut self, node: &Block, recon: &Picture) {
+        self.open_node_trial(node, recon);
+    }
+
+    fn begin_node_pricing(&mut self, node: &Block, _recon: &Picture) {
+        self.open_node_pricing(node);
+    }
+
+    fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
+        self.node_trial_price(source, recon)
+    }
+
+    fn undo_node_trial(&mut self, recon: &mut Picture) {
+        self.undo_node(recon);
+    }
+
+    fn keep_node_candidate(&mut self, recon: &Picture) {
+        self.keep_node(recon);
+    }
+
+    fn restore_node_candidate(&mut self, recon: &mut Picture) {
+        self.restore_kept_node(recon);
+    }
+
+    fn end_node_trial(&mut self) {
+        self.close_node_trial();
+    }
+
+    fn last_cu_skipped(&self) -> bool {
+        self.last_cu_was_skip()
+    }
+
     fn final_intra_screen(
         &mut self,
         source: &Picture,
@@ -1520,6 +1630,29 @@ impl CodecBackend for HevcBackend {
         block: &Block,
     ) -> Option<(f32, f32)> {
         Some(self.screen_intra_cu(source, recon, block))
+    }
+
+    fn final_coded_cost(
+        &mut self,
+        source: &Picture,
+        reference: &Picture,
+        block: &Block,
+        candidate: nc_encoder::FinalCandidate,
+    ) -> Option<f32> {
+        self.prices_final_candidates()
+            .then(|| self.price_final(source, reference, block, candidate))
+            .flatten()
+    }
+
+    /// Random decisions bypass the pricing.
+    fn prices_final_candidates(&self) -> bool {
+        self.random.is_none()
+    }
+
+    /// Merge candidate 0 (`final_cost.rs`): the winner walk keeps it, and
+    /// the final decision stage sets it against the ranking's winner.
+    fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
+        self.merge_skip_vector(block)
     }
 
     fn cu_trial_skip_vector(&mut self, block: &Block) -> Option<Mv> {
@@ -1621,8 +1754,13 @@ impl CodecBackend for HevcBackend {
         self.refresh = window.cloned();
     }
 
+    fn set_filter_effort(&mut self, effort: nc_encoder::FilterEffort) {
+        self.sao_usage = effort.usage;
+    }
+
     fn begin_frame(&mut self, plan: &FramePlan) {
         self.pending_sao_classes = None;
+        self.sao_outcome.begin_picture();
         self.references = plan.references;
         self.active_ref = 0;
         self.frame_index = plan.index;
@@ -1708,6 +1846,16 @@ impl CodecBackend for HevcBackend {
         self.items.push(Item::Split { node: *node, split });
     }
 
+    fn intra_alternatives(
+        &mut self,
+        block: &Block,
+        _decision: &BlockDecision,
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> IntraChoice {
+        self.key_intra_alternatives(block, source, recon)
+    }
+
     fn encode_block(
         &mut self,
         block: &Block,
@@ -1728,7 +1876,10 @@ impl CodecBackend for HevcBackend {
                     Ok((mv, reference)) => {
                         self.encode_inter_cu(block, mv, source, reference, recon);
                     }
-                    Err(searched) => self.encode_intra_cu(block, source, recon, searched),
+                    Err(searched) => {
+                        let choice = self.leaf_alternative(block, decision.intra, searched);
+                        self.encode_intra_cu(block, source, recon, choice);
+                    }
                 }
             }
             PredictionMode::Inter(mv) => {
@@ -1773,8 +1924,16 @@ impl CodecBackend for HevcBackend {
         } else {
             Candidates::Reuse(&self.sao_classes)
         };
-        let skipped = (self.sao_components.skip_unchanged && self.slice == SliceKind::Predicted)
-            .then(|| self.grid.skipped_ctbs());
+        let predicted = self.slice == SliceKind::Predicted;
+        let skip_shares = self.grid.skip_shares_ctbs();
+        let usage = self.sao_usage.filter(|_| predicted).map(|gate| {
+            self.sao_outcome
+                .usage_skips(&gate, skip_shares.len(), |ctb| skip_shares[ctb])
+        });
+        let skipped = nc_encoder::merge_skips(
+            (self.sao_components.skip_unchanged && predicted).then(|| self.grid.skipped_ctbs()),
+            usage,
+        );
         let lambda = f64::from(self.lambda());
         let decision = sao::decide(
             (source, recon),
@@ -1800,6 +1959,12 @@ impl CodecBackend for HevcBackend {
             }
             self.pending_sao_classes = Some(classes);
         }
+        self.sao_outcome.observe(
+            sao::types(&decision),
+            |ctb| !skipped.as_ref().is_some_and(|s| s[ctb]),
+            |types| types.iter().any(Option::is_some),
+            |ctb| skip_shares[ctb],
+        );
         sao::apply(recon, &decision);
         self.sao = Some(decision);
     }
@@ -1830,7 +1995,8 @@ impl CodecBackend for HevcBackend {
         let nal_type = match self.slice {
             SliceKind::Intra => {
                 let cra = (!self.idr).then(|| CraPoc {
-                    lsb: self.poc & ((1 << POC_LSB_BITS) - 1),
+                    lsb: self.poc & ((1 << self.info.poc_lsb_bits) - 1),
+                    lsb_bits: self.info.poc_lsb_bits,
                     sps_sets: self.info.reference_sets().len(),
                 });
                 irap_slice_header(&mut header, cra, qp, self.slice_sao(), self.deblocking);
@@ -1841,7 +2007,7 @@ impl CodecBackend for HevcBackend {
                 }
             }
             SliceKind::Predicted => {
-                let lsb = self.poc & ((1 << POC_LSB_BITS) - 1);
+                let lsb = self.poc & ((1 << self.info.poc_lsb_bits) - 1);
                 let sets = self.info.reference_sets();
                 let explicit = if self.info.long_term {
                     self.long_term_set()
@@ -1861,7 +2027,7 @@ impl CodecBackend for HevcBackend {
                 };
                 p_slice_header(
                     &mut header,
-                    lsb,
+                    (lsb, self.info.poc_lsb_bits),
                     references,
                     qp,
                     self.slice_sao(),
@@ -1894,6 +2060,7 @@ impl CodecBackend for HevcBackend {
         if let Some(classes) = self.pending_sao_classes.take() {
             self.sao_classes = classes;
         }
+        self.sao_outcome.commit();
         if self.slice == SliceKind::Intra && self.idr {
             self.sequence_sets = Some(self.sequence_set_bytes());
         }
@@ -2554,8 +2721,71 @@ impl HevcBackend {
         if let Some(trellis) = trellis {
             nonzero = self.trellis_quantize(trellis, plane, coeffs, scan.log2, scan.kind, levels);
             sub_blocks = quantised_sub_blocks(levels, nonzero, scan);
+        } else if let Some(trim) = self
+            .rd_trim_for(plane)
+            .filter(|_| quantisation == Quantisation::Final)
+        {
+            nonzero = self.rate_trim(trim, coeffs, scan, (levels, nonzero, sub_blocks));
+            sub_blocks = quantised_sub_blocks(levels, nonzero, scan);
         }
         (nonzero, sub_blocks)
+    }
+
+    /// The rate-aware trimming for a transform block of `plane` in this
+    /// slice: luma only (chroma keeps the plain quantiser, as the trellis
+    /// does by default), and only while the trellis is off.
+    fn rd_trim_for(&self, plane: PlaneIndex) -> Option<&nc_encoder::RateTrim> {
+        if self.trellis.is_some() || plane != PlaneIndex::Y {
+            return None;
+        }
+        self.rd_trim
+            .as_ref()
+            .filter(|t| t.covers(self.slice == SliceKind::Intra))
+    }
+
+    /// `quant.rd_trim` on one luma block: the shared rules
+    /// (`nc_encoder::trim_levels`), with distortion in quantiser steps as
+    /// the trellis prices it (`trellis_quantize`), from the plain levels'
+    /// `nonzero` count (or bound) and coded sub-blocks. Returns the number
+    /// of non-zero levels, or a bound on it as `quantise_levels` does.
+    fn rate_trim(
+        &self,
+        trim: &nc_encoder::RateTrim,
+        coeffs: &[i16],
+        scan: &Scan,
+        (levels, nonzero, sub_blocks): (&mut [i16], u32, CodedGroups),
+    ) -> u32 {
+        // A lone DC above one is untouched by the ±1 rules: only the
+        // whole-block rule could change it.
+        if nonzero == 1 && levels[0].unsigned_abs() > 1 && !trim.block {
+            return nonzero;
+        }
+        let Some(last) = quant::previous_nonzero(levels, scan, sub_blocks, scan.positions.len())
+        else {
+            return 0;
+        };
+        let qp = self.frame_quantization.planes[0].qp;
+        let (qbits, scale) = quant::step_terms(qp, scan.log2);
+        let step_sse = 2f64.powf(f64::from(qp - QSTEP_UNIT_QP) / 3.0);
+        // 2^-qbits: exact, so multiplying equals dividing by 2^qbits.
+        let unit = 1.0 / (1_i64 << qbits) as f64;
+        let eob = nc_encoder::trim_levels(
+            trim,
+            levels,
+            &scan.positions,
+            last + 1,
+            f64::from(self.lambda()),
+            |p, magnitude| {
+                let value = (i64::from(coeffs[p].unsigned_abs()) * scale) as f64 * unit;
+                nc_encoder::level_removal_sse(value, magnitude, step_sse)
+            },
+        );
+        // A bound, as `quantise_levels` returns: trimming only removes
+        // levels, and an end of block of one is the DC alone.
+        match eob {
+            0 | 1 => eob as u32,
+            _ => nonzero,
+        }
     }
 
     /// The decoded residual of a coded block's `levels` (`scaled` and
@@ -2934,6 +3164,11 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamI
         deblock_override: params.deblock_inter < 0.5 || nonbase_params(config).deblock_inter < 0.5,
         intra_transform_depth: params.intra_tu_depth.round() as u8,
         temporal_layers: config.temporal_layers,
+        poc_lsb_bits: if holds_second_reference(&config.params) {
+            LONG_POC_LSB_BITS
+        } else {
+            POC_LSB_BITS
+        },
         signal: config.signal,
         frame_rate: config.frame_rate,
         long_term: uses_long_term_slot(&config.params),

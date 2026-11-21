@@ -1,0 +1,14 @@
+# existing intra settings, λ and bias around the key RD searches; one-frame fixed-QP ab
+cand8: av1.keyframe_intra_rd_candidates=8
+deltas2: av1.keyframe_angle_deltas=2
+trellis_key: quant.trellis_key=1
+trellis_key4: quant.trellis_key=1 quant.trellis_states=4
+krd22_cand8_deltas2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2
+best: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4
+best_lam0.09: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 av1.lambda_per_step_squared=0.09
+best_lam0.2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 av1.lambda_per_step_squared=0.2
+best_rate0.7: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 av1.intra_rate_scale=0.7
+best_rate1.4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 av1.intra_rate_scale=1.4
+best_restoration: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 av1.restoration=1
+best_bias950: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 planner.intra_bias=950
+best_bias1150: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 planner.intra_bias=1150

@@ -230,7 +230,43 @@ def temporal_stats(psnr_y: Sequence[float], vmaf_v1: Sequence[float],
                                  if pairs else 0.0),
         "first_key_pulse_psnr_y": psnr_y[key_frames[0]] - steady_psnr if key_frames else 0.0,
         "periodic_key_pulse_psnr_y": periodic_pulse(psnr_y, keys, key_frames[1:]),
+        **periodic_levels(psnr_y, keys, key_frames[1:]),
     }
+
+
+def periodic_levels(psnr_y: Sequence[float], keys: Sequence[bool],
+                    later_keys: list[int]) -> dict[str, float]:
+    """The later keys' own PSNR-Y and that of the P frames just before them (the two
+    sides of the periodic pulse), means over the later keys; {} without one."""
+    pairs = []
+    for key in later_keys:
+        before = [psnr_y[i] for i in range(max(0, key - PULSE_NEIGHBOURS), key) if not keys[i]]
+        if before:
+            pairs.append((psnr_y[key], statistics.median(before)))
+    if not pairs:
+        return {}
+    return {"periodic_key_psnr_y": sum(k for k, _ in pairs) / len(pairs),
+            "periodic_pre_key_psnr_y": sum(p for _, p in pairs) / len(pairs)}
+
+
+def key_attributed_pulse(raw: float | None, key: float | None) -> float | None:
+    """The part of a pulse change the guard counts (owner rule, 2026-11-16; computed in
+    the tool since 2026-11-21): a pulse that grows because the P frames got better is
+    not a block, so per clip it counts only as far as the key itself got worse,
+    min(d|pulse|, max(0, -d key)). Without a key delta (results from before the key
+    term), the raw change."""
+    if raw is None:
+        return None
+    return raw if key is None else min(raw, max(0.0, -key))
+
+
+#: Each pulse term's companions in the rows (add_periodic_pulse): the raw |pulse| change,
+#: the key's and the P frames' own changes; the term itself is the key-attributed one.
+def pulse_companions(term: str) -> dict[str, str]:
+    stem = term.removesuffix("_psnr_y")  # d_periodic_pulse / d_periodic_pulse_long
+    window = stem.removeprefix("d_periodic_pulse")  # "" / "_long"
+    return {"raw": f"{stem}_raw_psnr_y", "key": f"d_periodic_key{window}_psnr_y",
+            "pre_key": f"d_periodic_pre_key{window}_psnr_y"}
 
 
 def flicker_over_headroom(delta: float | None, anchor: list[dict],
@@ -409,6 +445,10 @@ def compare_clip(anchor: list[dict], test: list[dict], min_points: int = BD_MIN_
     terms["d_periodic_pulse_psnr_y"] = (
         matched_delta(anchor, test, lambda p: abs(p["periodic_key_pulse_psnr_y"]))
         if len(periodic) == len(anchor) + len(test) else None)
+    for side in ("key", "pre_key"):
+        field = f"periodic_{side}_psnr_y"
+        terms[f"d_{field}"] = (matched_delta(anchor, test, lambda p: p[field])
+                               if all(field in p for p in anchor + test) else None)
     terms.update(headline_quality(terms))
     terms["base_quality"] = base_quality(anchor, test, min_points)
     for side, points in (("test", test), ("anchor", anchor)):
@@ -559,7 +599,9 @@ TERMS = ("quality", "quality_low",
          *(f"bd_{m}" for m in WORST_METRICS + WORST_FRAME_METRICS),
          *(f"{prefix}{m}" for m in REPORTED_METRICS for prefix in ("bd_", "low_")),
          "d_flicker_psnr_y", "d_flicker_guard_psnr_y", "d_flicker_frame_psnr_y",
-         "d_first_pulse_psnr_y", *PULSE_TERMS, "base_quality")
+         "d_first_pulse_psnr_y", *PULSE_TERMS,
+         *(name for term in PULSE_TERMS for name in pulse_companions(term).values()),
+         "base_quality")
 
 
 def aggregate(per_clip: dict[str, dict], term: str) -> dict:
@@ -628,8 +670,13 @@ def objective(summary: dict[str, dict], dcpu_pct: float | None = None,
     check("d_flicker_guard_psnr_y", flicker["balanced"], FLICKER_GUARD_DB, False)
     for term in PULSE_TERMS:
         if term in summary:  # summaries from before the long pass have only the 2 s term
-            check(term, summary[term]["balanced"], PULSE_GUARD_DB, False)
-            check(f"{term} (worst clip)", summary[term].get("max"), PULSE_WORST_CLIP_DB, False)
+            # key-attributed (key_attributed_pulse); the raw change is reported beside it
+            raw = summary.get(pulse_companions(term)["raw"], {})
+            note = (f" (key-attributed; raw {raw['balanced']:+.2f}, worst clip "
+                    f"{raw['max']:+.2f})") if raw.get("balanced") is not None else ""
+            check(f"{term}{note}", summary[term]["balanced"], PULSE_GUARD_DB, False)
+            check(f"{term} (worst clip){note}", summary[term].get("max"), PULSE_WORST_CLIP_DB,
+                  False)
     if "base_quality" in summary:  # None (unchecked) unless both arms are two-layer
         check("svc base_quality", summary["base_quality"]["balanced"], SVC_BASE_GUARD_PCT, True)
     buffer = summary.get("compliance")

@@ -1,20 +1,24 @@
-# H.264 Fast: the Default without trellis quantisation, plus the two speed
-# levers that pass the J_real screen and the long-GOP trend (2026-11-09;
-# docs/handoff/h264-fast.md). Against the Default without trellis, CBR
-# ladder, full TRAIN 150 f: J_real -1.5% at k 0.6 (quality +1.4% full /
-# +0.7% low, no guard); Jetson -6.1% crowd09 / -3.4% bodycam_bc1 at
-# openh264-rate-matched QPs; single-key 300 f trend flat.
-# The wider chroma zero bound (h264.inter_zero_chroma_scale) passed 150 f
-# but decays chroma over long GOPs, so it stays at 1.
-quant.trellis = 0
+# H.264 fast (`--preset fast`): the rung between medium and faster on H.264's front
+# (docs/handoff/presets.md "The ladder"), from the gap study pl-s8k-h264-fast (trial
+# 5; seeded from both neighbours). It is H.264 faster (the old fast, below) with
+# trellis quantisation, the cheap-vector refinement and the full-pel probe on, all
+# nine Intra_4x4 modes, both 8x8 intra sizes and no HME from the seed on non-base
+# frames. preset-ladder 2026-11-21 (ff40ad7bf): whole-encode 1.26x faster's time,
+# medium 1.49x this rung's (Graviton 3/4 and Zen 5, 720p CBR 600); final check (34
+# clips, 600 f, draw 2026-11-21) J against medium +8.82 % [+7.59, +10.69] (faster
+# +13.44 %), within 0.32 of the medium-faster log-speed chord.
+#
+# Every parameter of faster follows (so this rung does not move when faster does),
+# with the study's values set in place.
+quant.trellis = 1
 h264.inter_zero_luma_scale = 1.25
 decision.subpel_quarter_needs_half_move = 1
 # The Default's speed levers before its quality set (2026-11-10), pinned so
 # this preset's streams do not move with the Default.
-decision.codec_fullpel_probe = 0
-decision.refine_cheap_vector = 0
+decision.codec_fullpel_probe = 1
+decision.refine_cheap_vector = 1
 decision.subpel_walk = 0
-h264.intra4x4_all_modes = 0
+h264.intra4x4_all_modes = 1
 analysis.window_half_width = 3
 quant.trellis_lambda_scale = 1
 h264.split_gate_lambda = 0
@@ -41,7 +45,7 @@ decision.nonbase_disposable_only = 1
 nonbase.decision.subpel_half_only = 1
 nonbase.analysis.window_half_width = 1
 nonbase.decision.intra_gate_variance = 1024
-nonbase.analysis.hme_from_seed = 1
+nonbase.analysis.hme_from_seed = 0
 nonbase.h264.deblock_inter = 0
 nonbase.h264.inter_zero_luma_scale = 3
 # The Default's QP cadence scale 1.4 (2026-11-11) lost here on worst-1%
@@ -78,5 +82,5 @@ rate.fixed_qp_moving_key = 0
 # lambda -0.40%, key RD intra -0.43%, mixed motion -0.32%. The Default's heavier levers
 # lose at k 0.6 here (quality / dCPU): final stage -6.0% / +14.5%,
 # winner walk -2.1% / +9.8%, trellis -2.1% / +26.6%, integer probes -1.8% / +6.6%.
-h264.intra8x8 = 1
+h264.intra8x8 = 2
 h264.intra_rd = 1

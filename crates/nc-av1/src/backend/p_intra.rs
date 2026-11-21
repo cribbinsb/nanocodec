@@ -132,7 +132,7 @@ impl Av1Backend {
     /// Bits of intra luma `luma` in an inter frame: `is_inter`, `y_mode`
     /// (AV1 §5.11.22 `intra_block_mode_info`) and what follows it
     /// ([`Self::luma_mode_tail_bits`]).
-    fn inter_frame_intra_bits(&self, block: &Block, luma: LumaIntra) -> f32 {
+    pub(super) fn inter_frame_intra_bits(&self, block: &Block, luma: LumaIntra) -> f32 {
         let (above, left) = self.neighbours(block);
         self.cdfs.intra_inter[intra_inter_context(above, left)].bits(0)
             + self.cdfs.y_mode[size_group(block)].bits(luma.mode.symbol())

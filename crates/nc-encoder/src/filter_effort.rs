@@ -1,5 +1,6 @@
-//! Frame-level loop-filter effort: which inter frames are deblocked and which
-//! search their CDEF strengths.
+//! Frame-level loop-filter effort: which inter frames are deblocked, which
+//! search their CDEF strengths, and which units of a frame skip their SAO /
+//! ALF statistics by usage ([`UsageGate`]).
 //!
 //! SVT-AV1 real time (`enc_mode_config.c` `get_dlf_level_rtc` and the CDEF
 //! levels, `deblocking_filter.c`; BSD-3-Clause, ideas only) does not filter
@@ -42,13 +43,16 @@ pub enum CdefEffort {
 }
 
 /// The engine's loop-filter decision for one frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FilterEffort {
     /// Whether the frame is deblocked (where the backend's settings
     /// deblock at all).
     pub deblock: bool,
     /// Whether the frame searches its CDEF strengths or reuses the last.
     pub cdef: CdefEffort,
+    /// Which units skip their filter statistics by usage (`None`: every
+    /// unit the backend's own settings search).
+    pub usage: Option<UsageGate>,
 }
 
 impl FilterEffort {
@@ -56,7 +60,46 @@ impl FilterEffort {
     pub const FULL: Self = Self {
         deblock: true,
         cdef: CdefEffort::Search,
+        usage: None,
     };
+}
+
+/// Filter-search effort by usage, for one inter frame: which units (CTBs)
+/// keep the filter off without gathering statistics.
+///
+/// What it skips: the SAO / ALF statistics of a unit coded mostly without
+/// residual (`quiet_share` of its area or more), optionally only after its
+/// last `off_runs` searches ended off. Why safe: such a unit mostly copies
+/// reference samples that were filtered already, so the filter rarely pays
+/// there; measured 2026-11-21 (each codec's medium, CBR 600, 120 frames,
+/// 5 classes; `--filter-stats` "quiet"), 74-92 % of those HEVC SAO CTBs,
+/// 88-98 % of VVC SAO and 64-94 % of VVC ALF ones ended off when searched,
+/// while the unit's own last outcome predicted little (P(off | off last)
+/// within a few points of P(off)). Every unit is still searched on every
+/// `refresh`-th frame (staggered across units) and on key frames, so a
+/// unit that starts to need the filter recovers. Speed and J effect: in
+/// `docs/handoff/filter-effort.md`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsageGate {
+    /// Smallest residual-free share of a unit's area that may skip.
+    pub quiet_share: f32,
+    /// Searches that must have ended off in a row before a unit may skip.
+    pub off_runs: u8,
+    /// Every unit searches once per this many frames.
+    pub refresh: u64,
+    /// The frame's index (the refresh phase).
+    pub frame: u64,
+}
+
+impl UsageGate {
+    /// Whether unit `unit`, with `residual_free` share of its area coded
+    /// without residual and its last `off_run` searches off, skips.
+    #[must_use]
+    pub fn skips(&self, unit: usize, residual_free: f32, off_run: Option<u8>) -> bool {
+        let refreshing = (self.frame + unit as u64).is_multiple_of(self.refresh.max(1));
+        let off_enough = self.off_runs == 0 || off_run.is_some_and(|run| run >= self.off_runs);
+        !refreshing && off_enough && residual_free >= self.quiet_share
+    }
 }
 
 /// What the decision reads about one inter frame.
@@ -69,6 +112,33 @@ pub(crate) struct FrameActivity {
     pub previous_skip_share: Option<f32>,
     /// Consecutive frames just before this one decided [`CdefEffort::Reuse`].
     pub cdef_reused: u32,
+}
+
+/// A frame's units that skip their filter statistics: those the codec's
+/// own rule skips (`own`) and those the usage gate skips (`usage`).
+#[must_use]
+pub fn merge_skips(own: Option<Vec<bool>>, usage: Option<Vec<bool>>) -> Option<Vec<bool>> {
+    match (own, usage) {
+        (Some(mut own), Some(usage)) if own.len() == usage.len() => {
+            for (own, usage) in own.iter_mut().zip(usage) {
+                *own |= usage;
+            }
+            Some(own)
+        }
+        (own, usage) => own.or(usage),
+    }
+}
+
+/// The usage gate of inter frame `frame` of `role` (`None`: off, or a
+/// base frame while `filter.usage_base` is 0).
+pub(crate) fn usage_gate(params: &FilterParams, role: FrameRole, frame: u64) -> Option<UsageGate> {
+    let gated_role = role == FrameRole::NonBase || params.usage_base >= 0.5;
+    (params.usage_quiet_share > 0.0 && gated_role).then(|| UsageGate {
+        quiet_share: params.usage_quiet_share,
+        off_runs: params.usage_off_runs.round() as u8,
+        refresh: params.usage_refresh.round() as u64,
+        frame,
+    })
 }
 
 /// The loop-filter effort of an inter frame with `activity`.
@@ -95,7 +165,11 @@ pub(crate) fn decide(params: &FilterParams, activity: FrameActivity) -> FilterEf
     } else {
         CdefEffort::Search
     };
-    FilterEffort { deblock, cdef }
+    FilterEffort {
+        deblock,
+        cdef,
+        usage: None,
+    }
 }
 
 #[cfg(test)]
@@ -145,7 +219,8 @@ mod tests {
             easy,
             FilterEffort {
                 deblock: false,
-                cdef: CdefEffort::Reuse
+                cdef: CdefEffort::Reuse,
+                usage: None,
             }
         );
         assert_eq!(
@@ -163,5 +238,27 @@ mod tests {
             ..activity(FrameRole::NonBase, 0.2, 0.0)
         };
         assert_eq!(decide(&params, long_reuse).cdef, CdefEffort::Search);
+    }
+
+    #[test]
+    fn the_usage_gate_skips_quiet_units_off_long_enough_outside_their_refresh() {
+        let params = FilterParams {
+            usage_quiet_share: 0.75,
+            usage_off_runs: 1.0,
+            usage_refresh: 4.0,
+            ..FilterParams::default()
+        };
+        assert_eq!(
+            usage_gate(&FilterParams::default(), FrameRole::NonBase, 1),
+            None
+        );
+        assert_eq!(usage_gate(&params, FrameRole::Base, 1), None);
+        let gate = usage_gate(&params, FrameRole::NonBase, 1).unwrap();
+        assert!(gate.skips(0, 0.8, Some(1)));
+        assert!(!gate.skips(0, 0.7, Some(1)));
+        assert!(!gate.skips(0, 0.8, Some(0)));
+        assert!(!gate.skips(0, 0.8, None));
+        // Unit 3 refreshes at frame 1 (1 + 3 is a multiple of 4).
+        assert!(!gate.skips(3, 1.0, Some(5)));
     }
 }

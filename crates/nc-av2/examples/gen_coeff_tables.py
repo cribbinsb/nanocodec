@@ -57,7 +57,7 @@ for name, dims, expression in specs:
     lines.append(f'for(int z=0;z<{dims[-1]};++z) printf("%u ", {expression}[z]);')
     lines.extend('}' for _ in dims[:-1])
 lines.append('return 0;}')
-with tempfile.TemporaryDirectory(prefix='nc-av2-coeff-') as temp:
+with tempfile.TemporaryDirectory(prefix='nanocodec-av2-coeff-') as temp:
     c=pathlib.Path(temp)/'tables.c'; binary=c.with_suffix('')
     c.write_text('\n'.join(lines))
     subprocess.run(['cc','-O1','-I'+str(source),'-I'+str(build),str(c),'-o',str(binary)],check=True)

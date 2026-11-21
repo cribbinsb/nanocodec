@@ -101,7 +101,7 @@ def main():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Quiet, directory=str(WEB)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     errors = []
-    with tempfile.TemporaryDirectory() as scratch, sync_playwright() as p:
+    with tempfile.TemporaryDirectory(prefix="nanocodec-web-test-") as scratch, sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(accept_downloads=True, viewport={'width': 1400, 'height': 1000})
         page.on('pageerror', lambda error: errors.append(str(error)))

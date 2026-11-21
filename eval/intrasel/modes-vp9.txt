@@ -1,0 +1,5 @@
+# intra-selector step 5: VP9 medium keys
+rd2: vp9.intra_rd_candidates=2
+rd3: vp9.intra_rd_candidates=3
+tx3: vp9.intra_tx_depth=3
+tx1: vp9.intra_tx_depth=1

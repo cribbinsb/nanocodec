@@ -574,6 +574,13 @@ pub enum Filter {
     VvcAffineLuma,
     /// H.266 4-tap chroma, 1/32-sample positions.
     VvcChroma,
+    /// VP9 `EIGHTTAP` (regular), 1/16-sample positions, each pass rounded
+    /// and clipped to 8 bits (VP9 §8.5.2.4; the `vp9_mc` kernels).
+    Vp9,
+    /// VP9 `EIGHTTAP_SMOOTH`, as [`Filter::Vp9`].
+    Vp9Smooth,
+    /// VP9 `EIGHTTAP_SHARP`, as [`Filter::Vp9`].
+    Vp9Sharp,
 }
 
 impl Filter {
@@ -586,7 +593,10 @@ impl Filter {
             | Filter::Av1Sharp
             | Filter::HevcLuma
             | Filter::VvcLuma
-            | Filter::VvcAffineLuma => 8,
+            | Filter::VvcAffineLuma
+            | Filter::Vp9
+            | Filter::Vp9Smooth
+            | Filter::Vp9Sharp => 8,
             Filter::HevcChroma | Filter::VvcChroma => 4,
             Filter::H264Luma => 6,
             Filter::H264Chroma => 2,
@@ -602,11 +612,29 @@ impl Filter {
             | Filter::Av1Sharp
             | Filter::HevcLuma
             | Filter::VvcLuma
-            | Filter::VvcAffineLuma => 3,
+            | Filter::VvcAffineLuma
+            | Filter::Vp9
+            | Filter::Vp9Smooth
+            | Filter::Vp9Sharp => 3,
             Filter::HevcChroma | Filter::VvcChroma => 1,
             Filter::H264Luma => 2,
             Filter::H264Chroma => 0,
         }
+    }
+
+    /// Whether [`crate::Dsp::predict_compound`] has kernels for this
+    /// filter (AV1 and HEVC: the codecs whose compound prediction keeps
+    /// intermediate precision).
+    #[must_use]
+    pub const fn has_compound(self) -> bool {
+        matches!(
+            self,
+            Filter::Av1
+                | Filter::Av1Smooth
+                | Filter::Av1Sharp
+                | Filter::HevcLuma
+                | Filter::HevcChroma
+        )
     }
 
     /// Sub-sample positions per sample.
@@ -617,7 +645,10 @@ impl Filter {
             | Filter::Av1Smooth
             | Filter::Av1Sharp
             | Filter::VvcLuma
-            | Filter::VvcAffineLuma => 16,
+            | Filter::VvcAffineLuma
+            | Filter::Vp9
+            | Filter::Vp9Smooth
+            | Filter::Vp9Sharp => 16,
             Filter::HevcLuma | Filter::H264Luma => 4,
             Filter::HevcChroma | Filter::H264Chroma => 8,
             Filter::VvcChroma => 32,
@@ -685,7 +716,7 @@ pub(crate) struct CompoundFns {
 
 impl CompoundFns {
     /// The compound-precision prediction kernels of `filter`; `None` for
-    /// filters without them (H.264, H.266).
+    /// filters without them (H.264, H.266, VP9).
     pub(crate) fn prep(&self, filter: Filter) -> Option<&[PrepFn; 5]> {
         match filter {
             Filter::Av1 => Some(&self.prep[0]),
@@ -723,6 +754,8 @@ pub(crate) struct McFns {
     pub vvc_luma: [ConvolveFn; 5],
     pub vvc_affine_luma: [ConvolveFn; 5],
     pub vvc_chroma: [ConvolveFn; 5],
+    /// VP9 regular, smooth and sharp (`crate::vp9_mc_simd::families`).
+    pub vp9: [[ConvolveFn; 5]; 3],
     /// H.264 kernels resolved per block shape and sub-sample phase, where
     /// the ISA has them; otherwise every phase uses the width kernel.
     pub h264_phases: Option<H264PhaseFns>,
@@ -840,6 +873,9 @@ impl McFns {
             Filter::VvcLuma => &self.vvc_luma,
             Filter::VvcAffineLuma => &self.vvc_affine_luma,
             Filter::VvcChroma => &self.vvc_chroma,
+            Filter::Vp9 => &self.vp9[0],
+            Filter::Vp9Smooth => &self.vp9[1],
+            Filter::Vp9Sharp => &self.vp9[2],
         }
     }
 }

@@ -42,7 +42,18 @@ av1.cdef_local_strong_primary = 15
 av1.cdef_local_strong_variance_min = 0
 av1.cdef_local_noise_full_search_sigma = 0
 av1.cdef_local_strong_model_scale = 3
-av1.loop_filter = 0
+# Deblocking on key and base frames only (off on the rest, as before on every
+# frame), as AV1 Faster. Fixed QP (24 clips) J -2.5% [-3.4, -1.8] (everywhere
+# -3.1% at +5.0% P instructions); whole encode Zen 5 +2.79%, Graviton3 +2.42%,
+# Graviton4 +2.75%. nceval.train (k 0.6): L3 (n 107) -1.91% [-2.30, -1.50],
+# final-check (n 34) -2.55% [-3.39, -1.78] BETTER. L3's periodic-key pulse guard
+# (bodycam_antare_0815, +0.78 dB) comes from better keys: there (150 f, key every
+# 50, CBR 105/211/422) key PSNR-Y +1.08 / +0.92 / +0.58 dB, the P frames before
+# the keys +0.49 / +0.30 / +0.12 dB and after them +0.48 / +0.27 / +0.21 dB, so
+# not a block (owner rule). Keys unfiltered instead keeps the pulse but loses
+# about a fifth of the gain there.
+av1.loop_filter = 1
+nonbase.av1.loop_filter = 0
 planner.depth_removal_min_quantizer = 0
 quant.trellis = 0
 av1.keyframe_directional = 0
@@ -180,3 +191,20 @@ rate.fixed_qp_moving_key = 0
 # The engine's still-level damping arrived with the AV1 Default (2026-11-19,
 # docs/handoff/rate-control.md): not screened for this preset.
 rate.still_level_damping = 0
+# Zero-vector SADs from pre-analysis, as H.264 Veryfast (fast-analysis,
+# 2026-11-21): the zz gates and the zero grid of static SBs read the
+# pre-analysis 8x8 SADs instead of re-reading both frames. Jetson cycles
+# -1.04% (pan / crowd / bodycam / static -0.28 / -1.02 / -0.96 / -1.90), x86
+# -0.02% instructions; CBR pool at k 0.6 (dCPU -0.70) L1 -0.41%
+# [-0.75, -0.06], L2 -0.15% [-0.35, +0.05], L3 -0.52% [-0.77, -0.29] BETTER
+# (n 108), no guards; final-check (600 f, keys every 10 s, 34 clips) J -0.01%
+# [-0.15, +0.17], no guards: quality unchanged on long windows for the CPU
+# saved. static_recovery passes.
+analysis.zero_sads_from_pre = 1
+
+# The trellis's cheap substitute (`quant.rd_trim`, docs/handoff/cheap-rdoq.md): trailing
+# ±1 and whole-block rules on coded luma. nceval.train (da811e9099, base eb55cd325, draw
+# 2026-11-21, k 0.6): L3 J -0.70 % [-0.90, -0.51] n=108, final check J -0.11 % [-0.37,
+# +0.10] n=34; cycles -0.7 / -0.6 / -0.1 % (Graviton 3 / 4, Zen 5).
+quant.rd_trim = 1
+quant.rd_trim_block = 1

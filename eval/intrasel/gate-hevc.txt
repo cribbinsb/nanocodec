@@ -1,0 +1,6 @@
+# intra-selector step 4: the key RD search's margin gate (planner.key_rd_margin), window 1/1, one-frame fixed-QP ab
+krd11: planner.key_rd_split=1
+g105: planner.key_rd_split=1 planner.key_rd_margin=1.05
+g110: planner.key_rd_split=1 planner.key_rd_margin=1.1
+g120: planner.key_rd_split=1 planner.key_rd_margin=1.2
+rd2_g110: planner.key_rd_split=1 planner.key_rd_margin=1.1 hevc.intra_rd_candidates=2

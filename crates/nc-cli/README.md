@@ -47,9 +47,11 @@ grain-free. `decode --film-grain 0` shows AV1 frames grain-free too (as
 `aomdec --skip-film-grain`); the evaluation harness scores grain streams that
 way.
 
-Add `--preset av1-fast` for the optional AV1 speed/quality tradeoff used by
-browser Fast. Held-out VMAF BD-rate costs 3.45% versus the current default;
-the default remains the quality choice.
+Add `--preset NAME` for another rung of the codec's speed ladder (for AV1:
+`veryfast`, `faster`, `fast`, `slow`, `slower`; `nanocodec params --codec av1`
+lists them); `medium`, used without `--preset`, is the Default. The old names
+(`av1-fast` and the like) are refused; the main README's "Presets" section maps
+them.
 
 Enable single-pass realtime bitrate control instead of fixed quantization:
 

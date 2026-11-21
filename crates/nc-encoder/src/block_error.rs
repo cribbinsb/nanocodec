@@ -1,4 +1,4 @@
-//! Squared error of a square block, and how it spreads over the block's
+//! Squared error of a block, and how it spreads over the block's
 //! quadrants: the distortion terms every backend's RD trials and
 //! transform-split gates use (shared `Dsp::variance` kernels).
 
@@ -10,17 +10,29 @@ use nc_dsp::{BlockSize, Dsp};
 #[must_use]
 pub fn block_sse(
     dsp: &Dsp,
-    (source, recon): (&Picture, &Picture),
+    pictures: (&Picture, &Picture),
     plane: PlaneIndex,
     (x, y, side): (usize, usize, usize),
 ) -> u64 {
-    let size = BlockSize::new(side, side).expect("square block sizes are kernel sizes");
+    block_sse_rect(dsp, pictures, plane, (x, y, side, side))
+}
+
+/// Squared error between `source` and `recon` over the `w` x `h` block of
+/// `plane` at `(x, y)` (inside both pictures; kernel sizes).
+#[must_use]
+pub fn block_sse_rect(
+    dsp: &Dsp,
+    (source, recon): (&Picture, &Picture),
+    plane: PlaneIndex,
+    (x, y, w, h): (usize, usize, usize, usize),
+) -> u64 {
+    let size = BlockSize::new(w, h).expect("block sizes are kernel sizes");
     let (source, recon) = (source.plane(plane).view(), recon.plane(plane).view());
     let source = source
-        .sub_view(x, y, side, side)
+        .sub_view(x, y, w, h)
         .expect("block inside the picture");
     let recon = recon
-        .sub_view(x, y, side, side)
+        .sub_view(x, y, w, h)
         .expect("block inside the picture");
     u64::from(dsp.variance(size, &source, &recon).sse)
 }

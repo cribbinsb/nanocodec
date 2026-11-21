@@ -44,6 +44,7 @@ from typing import Iterator
 
 import numpy as np
 
+from . import tempdirs
 from . import toolstats
 from .config import find_tool, load_paths
 from .framepipe import PSNR_CAP_DB
@@ -300,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", type=Path, help="write per-frame stats here")
     args = parser.parse_args(argv)
     if args.codec != "av1":
-        with tempfile.TemporaryDirectory() as scratch:
+        with tempdirs.temp_dir("streamstats") as scratch:
             tallies = toolstats.run_stat(args.stream, args.codec, Path(scratch) / "stat.json")
         if args.json:
             args.json.write_text(json.dumps(tallies))

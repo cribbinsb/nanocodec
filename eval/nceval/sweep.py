@@ -48,6 +48,7 @@ from .cachefile import entry_lock, entry_lock_if_free, publish, sibling_temp, wr
 from .clips import Clip
 from .codecs import Codec
 from .conformance import DECODERS, GateResult, gate_stream
+from . import retention
 from .diskguard import DiskBudgetExceeded, check_disk
 from .config import Paths
 from .encoders.base import CodingStructure, EncodeJob, EncoderAdapter
@@ -84,6 +85,9 @@ FLOOR_MARGIN = 1.1
 ENCODE_TIMEOUT_SECONDS = 3600
 # Length of the excerpt used to probe bitrate against quantiser.
 PROBE_SECONDS = 2.0
+#: How this module names itself to the retention manifest: a store that lists it in
+#: `evicted_by` lets it remove a curve's older fingerprint versions inside the store.
+RETENTION_OWNER = "nceval.sweep"
 IVF_FILE_HEADER_BYTES = 32
 IVF_FRAME_HEADER_BYTES = 12
 # Structure tag of a one-key-frame-per-clip ("long GOP") result set, and the
@@ -523,7 +527,8 @@ def _remove_other_versions(work: Path) -> None:
     """
     if work.parent.is_dir():
         for sibling in work.parent.iterdir():
-            if sibling != work and sibling.is_dir():
+            if sibling != work and sibling.is_dir() and \
+                    retention.guard(sibling, RETENTION_OWNER) is None:
                 with entry_lock_if_free(sibling) as free:
                     if free:
                         shutil.rmtree(sibling, ignore_errors=True)

@@ -1,0 +1,616 @@
+# What is kept under ~/nanocodec-data (eval/nceval/retention.py; docs/PROCEDURES.md
+# "Data retention"). Everything not covered here is swept once it is older than
+# grace_hours and nothing uses it. Add an entry in the same commit as the tool that
+# starts keeping something; nobody deletes, or keeps, by guess.
+#
+# Directories of `durable` and `tool` entries carry a NANOCODEC-KEEP.md marker
+# (`retention.py mark`; tools creating a store call retention.ensure_entry_marker), unless
+# the entry says `marker = false` and why. [[regenerable]] entries are declared free to
+# delete; anything neither kept nor declared is UNKNOWN, and UNKNOWN is kept.
+#
+# Each [[keep]]: path (relative to the data root; `*` and `?` match within one path
+# component), class (durable: a published result's inputs or an expensive cache;
+# tool: a tool needs it to run; cache: kept, its owner evicts inside it under cap_gb),
+# reader (what reads it), regen (what losing it costs), evicted_by (the tools that may
+# remove paths strictly inside it: retention.guard owner names), release (checked by
+# `retention.py verify-release`), require_globs (each must match a file in it).
+
+grace_hours = 24
+
+# --- published charts' point stores and streams -----------------------------------------
+
+[[keep]]
+path = "work/realuse/f150-ip300"
+class = "durable"
+reader = "the shared 150-frame point cache (nceval.realuse.Runner.bench -> cbr.Bench.result_path): the main chart (nceval.chart; chart_refresh.py; release.py chain 'main', 11 VAL clips), the history page (tools/dev/history_chart.py runner() -> Runner.points), held-out points merged from cloud-results (aws_heldout_chart.merge_results), screens at 150 f"
+regen = "main chart: 1,554 points at 2a5aa4a8 (35 families + both x264 zero lines), ~15 CPU-s each (nceval.realuse REAL_COST_FACTOR), ~6.5 CPU-h; history page: every day's locally measured points (re-measure each day's build); held-out points: re-merge from work/heldout-chart/cloud-results. Lost 2026-11-21 15:17Z to a clean-up"
+evicted_by = ["nceval.sweep", "chart_refresh"]
+release = true
+require_globs = ["*/x264-medium/*.json", "*/x264-medium~psnr/*.json", "*/nanocodec-av1/*.json"]
+
+[[keep]]
+path = "work/heldout-chart/cloud-results"
+class = "durable"
+reader = "held-out charts' scored points: aws_heldout_chart.py CLOUD_RESULTS (seeded into the next cloud run), chart_refresh --clipset render"
+regen = "cloud scoring of every family of the held-out and VC-1K charts: ~1.7-5.1 c7a.metal-min a family (release.py CHART_CHAIN_MINUTES)"
+evicted_by = ["nceval.sweep", "chart_refresh"]
+release = true
+
+[[keep]]
+path = "work/heldout-chart/streams-independent_2026-11-13"
+class = "durable"
+reader = "held-out chart streams (chart_refresh CLIPSET_STREAMS, release.py HELDOUT_STREAMS)"
+regen = "re-encode every family on rented boxes (~8 min coding + scoring, release.py CHART_CHAIN_MINUTES heldout-independent 62 min)"
+evicted_by = ["chart_refresh"]
+release = true
+marker = false  # aws_heldout_chart.py links every file of a streams dir into the upload
+
+[[keep]]
+path = "work/heldout-chart/streams-independent_fresh_2026-11-13"
+class = "durable"
+reader = "fresh held-out chart streams (chart_refresh CLIPSET_STREAMS)"
+regen = "re-encode every family on rented boxes (~9 min + scoring)"
+evicted_by = ["chart_refresh"]
+marker = false  # aws_heldout_chart.py links every file of a streams dir into the upload
+
+[[keep]]
+path = "work/heldout-chart/streams-vc1k_2026-11-18"
+class = "durable"
+reader = "VC-1K chart streams (chart_refresh CLIPSET_STREAMS, release.py HELDOUT_STREAMS)"
+regen = "re-encode every family on rented boxes (~13 min coding + 5.1 metal-min a family scoring)"
+evicted_by = ["chart_refresh"]
+release = true
+marker = false  # aws_heldout_chart.py links every file of a streams dir into the upload
+
+[[keep]]
+path = "work/heldout-chart/streams-*"
+class = "cache"
+reader = "a new clip-set chart's streams (chart_refresh --clipset; e.g. streams-mainval3_2026-11-21)"
+regen = "re-encode on rented boxes"
+evicted_by = ["chart_refresh"]
+
+[[keep]]
+path = "work/svc-chart"
+class = "durable"
+reader = "SVC chart points (nceval.svc_chart; docs/results/svc-chart-plan.json)"
+regen = "the SVC chart's points (hours of CPU)"
+evicted_by = ["nceval.sweep", "nceval.svc_chart"]
+
+[[keep]]
+path = "work/cloud-measure"
+class = "cache"
+reader = "aws_measure.py CLOUD_WORK: cloud-scored points uploaded to seed the next cloud run"
+regen = "re-scored on the next cloud run (cents to a few dollars)"
+cap_gb = 10
+evicted_by = ["nceval.sweep"]
+
+# --- the engine's own state and records -------------------------------------------------
+
+[[keep]]
+path = "screen-cache"
+class = "durable"
+reader = "nceval.stages cache_root: history.jsonl (learned proxy sigmas), screen points"
+regen = "the history cannot be regenerated; the points are re-measured"
+evicted_by = ["nceval.sweep"]
+
+[[keep]]
+path = "tuning"
+class = "durable"
+reader = "nceval.tune studies, nceval.levers_backfill"
+regen = "the studies' runs (hours each)"
+evicted_by = ["nceval.sweep"]
+
+[[keep]]
+path = "results"
+class = "durable"
+reader = "nceval.config results.sqlite, the lever ledger's spool (levers.jsonl), train locks"
+regen = "not regenerable (ledger spool, results history)"
+
+[[keep]]
+path = "run"
+class = "durable"
+reader = "land.sh (verified-history, verified-head, land queue and locks), release.py (verified heads)"
+regen = "not regenerable: release.py picks its base from run/verified-history"
+
+[[keep]]
+path = "work/aws"
+class = "durable"
+reader = "aws_session.py: ledger.md (the AWS spend against the $300 budget)"
+regen = "not regenerable"
+
+[[keep]]
+path = "work/cloud-results"
+class = "durable"
+reader = "nceval.cloud results of offloaded runs; nceval.levers_backfill"
+regen = "the cloud runs"
+
+[[keep]]
+path = "reports"
+class = "durable"
+reader = "agents' reports to the owner (nceval.realuse, sanity)"
+regen = "not regenerable"
+
+[[keep]]
+path = "backup"
+class = "durable"
+reader = "the owner: full-history git bundle of 2026-11-13"
+regen = "not regenerable"
+
+[[keep]]
+path = "fuzz"
+class = "durable"
+reader = "decoder fuzz corpora (docs/handoff/*: cargo fuzz runs)"
+regen = "hours of fuzzing to rebuild the seeded corpora"
+
+# --- clips -----------------------------------------------------------------------------
+
+[[keep]]
+path = "clips/*.json"
+class = "durable"
+reader = "every clip set (nceval.clips load_clipset; chart_refresh --clipset; nceval.pool)"
+regen = "eval/clipset selection scripts; the sealed sets' exact selection must be reproduced"
+release = true
+
+[[keep]]
+path = "clips/main"
+class = "durable"
+reader = "main.json (TRAIN/VAL: the main chart's 11 VAL clips), pool POOL_SETS"
+regen = "eval/clipset/extract.py from /mldata (~20 GB of YUV, an hour)"
+release = true
+
+[[keep]]
+path = "clips/pool"
+class = "durable"
+reader = "pool.json and the held-out sets independent_2026-11-13 / heldout_chart (POOL_SETS)"
+regen = "eval/clipset/build_pool.py from /mldata"
+release = true
+
+[[keep]]
+path = "clips/independent"
+class = "durable"
+reader = "independent*.json: the held-out charts (sealed, SEALED_SETS)"
+regen = "eval/clipset/select_independent.py, reproduced exactly"
+release = true
+
+[[keep]]
+path = "clips/vc1k_2026-11-18"
+class = "durable"
+reader = "vc1k_2026-11-18.json, vc1k_qp_2026-11-18.json: the VC-1K chart and Fixed QP view (sealed)"
+regen = "eval/clipset/select_vc1k.py, reproduced exactly"
+release = true
+
+[[keep]]
+path = "clips/adv12"
+class = "durable"
+reader = "adv12.json: sealed milestone set (nceval.pool SEALED_SETS)"
+regen = "the sealed selection, reproduced exactly"
+
+[[keep]]
+path = "clips/broad_independent_v1"
+class = "durable"
+reader = "pool POOL_SETS"
+regen = "eval/clipset extract from /mldata (14 GB)"
+
+[[keep]]
+path = "clips/layergate_fit"
+class = "durable"
+reader = "pool POOL_SETS, eval/clipset/grade.py"
+regen = "eval/clipset extract from /mldata (6 GB)"
+
+[[keep]]
+path = "clips/layergate_fit2"
+class = "durable"
+reader = "pool POOL_SETS, eval/clipset/grade.py"
+regen = "eval/clipset extract from /mldata"
+
+[[keep]]
+path = "clips/long"
+class = "durable"
+reader = "pool POOL_SETS, long.json (sanity and reference configs)"
+regen = "eval/clipset extract from /mldata (8 GB)"
+
+[[keep]]
+path = "clips/vc1k_dev"
+class = "durable"
+reader = "pool POOL_SETS (VC-1K dev clips)"
+regen = "eval/clipset/select_vc1k.py --dev"
+
+[[keep]]
+path = "clips/independent_long"
+class = "durable"
+reader = "independent_long*.json (long-window held-out runs)"
+regen = "eval/clipset/select_independent.py"
+
+[[keep]]
+path = "clips/quick"
+class = "tool"
+reader = "quick.json: preset_identity, release.py JETSON_IDENTITY_CLIPS, eval configs"
+regen = "eval/clipset extract"
+
+[[keep]]
+path = "clips/quick360"
+class = "tool"
+reader = "av2 probes, aws_decode_speed.py"
+regen = "eval/clipset extract"
+
+[[keep]]
+path = "clips/smoke"
+class = "tool"
+reader = "smoke.json (eval/clipset extract tests, smoke runs)"
+regen = "eval/clipset extract"
+
+[[keep]]
+path = "clips/xiph"
+class = "durable"
+reader = "eval/clipset/pool.json sources (clips/xiph/excerpts), grade.py"
+regen = "re-download the Xiph/Netflix sequences and cut the excerpts"
+
+[[keep]]
+path = "clips/svt"
+class = "durable"
+reader = "eval/clipset/pool.json sources (clips/svt/excerpts), nceval.cbr"
+regen = "re-download the SVT sequences and cut the excerpts"
+
+[[keep]]
+path = "clips/pristine"
+class = "durable"
+reader = "eval/clipset/main.json and pool.json sources, grade.py"
+regen = "eval/clipset extract from /mldata"
+
+[[keep]]
+path = "inventory"
+class = "tool"
+reader = "eval/clipset build_pool / extract / grade / select_* (the source inventory)"
+regen = "re-scan /mldata (an hour)"
+
+[[keep]]
+path = "ctc-sources"
+class = "tool"
+reader = "release.py lens chain (LENS_BOX_SOURCES): the standards lens's public sequences"
+regen = "re-download (nceval.ctc.sequences)"
+
+# --- reference tools and suites ---------------------------------------------------------
+
+[[keep]]
+path = "anchors/*"
+class = "tool"
+reader = "nceval.config Paths.anchors (x264, x265, SVT-AV1, aomenc, ffmpeg, JM, HM, VVdeC, avmdec ...); release.py AARCH64_TOOLS"
+regen = "tools/anchors/build_anchors.sh (~1 h of builds per machine)"
+release = true
+
+[[keep]]
+path = "conformance/*"
+class = "tool"
+reader = "landing_conformance.py, tools/ci/*conformance*, tools/dev/conformance_fetch.py"
+regen = "tools/dev/conformance_fetch.py / vvc_conformance_fetch.py (downloads, minutes)"
+
+[[keep]]
+path = "ext/vmafx"
+class = "tool"
+reader = "VMAFx source tree (docs/handoff/vmafx-gpu.md): new frozen builds are made from it"
+regen = "clone VMAFx 1068c699 and apply ext/vmafx-patches"
+
+[[keep]]
+path = "ext/vmafx-serve6"
+class = "tool"
+reader = "nceval.metrics VMAFX_DEFAULT: every GPU score"
+regen = "a CUDA build of ext/vmafx with the patches (~10 min)"
+release = true
+
+[[keep]]
+path = "ext/vmafx-patches"
+class = "tool"
+reader = "nceval.metrics (patches 0001-0011 define our VMAFx)"
+regen = "not regenerable outside git history"
+
+[[keep]]
+path = "ext/sde"
+class = "tool"
+reader = "tools/dev/avx512_check.sh (Intel SDE)"
+regen = "download Intel SDE"
+
+[[keep]]
+path = "ext/llvm-mca"
+class = "tool"
+reader = "docs/handoff/avx512.md kernel analysis"
+regen = "download LLVM"
+
+[[keep]]
+path = "ext/prefix"
+class = "tool"
+reader = "VMAFx build prefix (docs/handoff/eval-throughput.md)"
+regen = "rebuild VMAFx dependencies"
+
+[[keep]]
+path = "ext/mesonvenv"
+class = "tool"
+reader = "VMAFx build (meson)"
+regen = "pip install meson"
+
+[[keep]]
+path = "ext/nv-codec-headers"
+class = "tool"
+reader = "NVENC anchors' ffmpeg build"
+regen = "git clone"
+
+[[keep]]
+path = "tools"
+class = "tool"
+reader = "nceval.cloud / checkrun (data-root tools: ref, root, browser-demo)"
+regen = "rebuild (minutes)"
+
+[[keep]]
+path = "bin"
+class = "tool"
+reader = "nc-remote, nc-wait, cargo-capped, mem-guard.sh (CLAUDE.md, PROCEDURES.md)"
+regen = "tools/dev install steps"
+
+[[keep]]
+path = "bins"
+class = "tool"
+reader = "tools/dev/jperf.py"
+regen = "rebuild"
+
+[[keep]]
+path = "locks"
+class = "tool"
+reader = "build slots and cargo locks of running agents"
+regen = "made on demand; removing a held lock breaks its holder"
+
+[[keep]]
+path = "local.env"
+class = "tool"
+reader = "nceval.localenv (NC_JETSON)"
+regen = "rewrite by hand"
+
+[[keep]]
+path = "host-timing.lock"
+class = "tool"
+reader = "tools/dev/host-timed.sh"
+regen = "made on demand"
+
+[[keep]]
+path = "work/.disk-usage.json*"
+class = "tool"
+reader = "nceval.diskguard (the shared work-size cache and its lock)"
+regen = "made on demand"
+
+[[keep]]
+path = "work/mem-guard.log"
+class = "tool"
+reader = "tools/dev/mem-guard.sh (appends its log here)"
+regen = "made on demand"
+
+[[keep]]
+path = "work/ratecontrol"
+class = "tool"
+reader = "nceval.realuse OPENH264_HARNESS (bin/openh264-harness, built against its lib/ and include/)"
+regen = "build openh264 and tools/openh264-harness (~10 min)"
+
+[[keep]]
+path = "work/landing-conformance"
+class = "cache"
+reader = "landing_conformance.py (shared source crops; its runs remove themselves)"
+regen = "seconds"
+evicted_by = ["landing_conformance"]
+
+[[keep]]
+path = "work/chart-refresh"
+class = "tool"
+reader = "chart_refresh.py and release.py (chart logs and staging)"
+regen = "made on demand"
+evicted_by = ["chart_refresh"]
+
+[[keep]]
+path = "work/cpu-ab"
+class = "cache"
+reader = "aws_cpu_ab.py WORK (builds by commit, cut clips, runs)"
+regen = "a build ~3 min on the build box; clips seconds"
+evicted_by = ["aws_cpu_ab"]
+cap_gb = 5
+
+[[keep]]
+path = "work/cloud-measure-stage"
+class = "cache"
+reader = "aws_measure.py STAGE_ROOT (a running cloud job's upload staging)"
+regen = "made per job"
+evicted_by = ["aws_measure"]
+cap_gb = 10
+
+[[keep]]
+path = "work/history-anim"
+class = "cache"
+reader = "tools/dev/history_chart.py WORK"
+regen = "re-measured by history_chart.py"
+cap_gb = 2
+evicted_by = ["nceval.sweep"]
+
+[[keep]]
+path = "work/overnight"
+class = "tool"
+reader = "tools/release/release.py publish stage: OVERNIGHT/mirror.py and PUBLISH_PUBLIC (publish_public.py); eval/nceval/site.py --unpublished-paths. Only those two scripts are needed: move them into the repo after 0.6.0"
+regen = "impossible: the mirror and public-publish scripts exist only here (not in git)"
+
+[[keep]]
+path = "work/ctc-improve/src"
+class = "tool"
+reader = "tools/dev/fixedqp_timing.py DEFAULT_SOURCES"
+regen = "re-fetch the CTC sources"
+
+[[keep]]
+path = "work/ffmpeg-wasm-yardstick"
+class = "tool"
+reader = "tools/web/ffmpeg_wasm_yardstick.py (--core node_modules/@ffmpeg/core)"
+regen = "npm install @ffmpeg/core (minutes)"
+
+[[keep]]
+path = "work/web-tests"
+class = "tool"
+reader = "tools/ci/web_tests.py"
+regen = "made on demand"
+
+[[keep]]
+path = "work/pool-sheets"
+class = "tool"
+reader = "eval/clipset/grade.py (the pool's grading sheets; PROCEDURES.md)"
+regen = "re-grade the pool"
+
+# --- builds -----------------------------------------------------------------------------
+
+[[keep]]
+path = "charts/builds"
+class = "cache"
+reader = "the landed-commit cache (binary_for.sh / build_cache.py), chart_refresh BUILDS_ROOT, release.py CHART_BUILDS"
+regen = "a build ~3 min on the build box; a build a chart record names must stay (build_cache keeps them)"
+evicted_by = ["build_cache", "chart_refresh"]
+release = true
+marker = true  # the landed-commit cache: history and publish need its builds
+
+[[keep]]
+path = "builds"
+class = "cache"
+reader = "nceval.levels final checks' builds by commit"
+regen = "a build ~3 min"
+evicted_by = ["nceval.levels"]
+cap_gb = 3
+
+[[keep]]
+path = "release/v0.[0-9]*.[0-9]"
+class = "durable"
+reader = "a release's records (lens/qp/cbr JSON), its clip caches and the shipped tarballs; release.py --resume"
+regen = "the release's chains (hours of cloud timing)"
+
+[[keep]]
+path = "release/*.out"
+class = "durable"
+reader = "release run logs (PROCEDURES.md Release lessons)"
+regen = "not regenerable"
+
+[[keep]]
+path = "release/builds"
+class = "cache"
+reader = "release.py pgo stage: PGO builds cached by commit"
+regen = "pgo_build.sh (~20 min per architecture)"
+
+[[keep]]
+path = "release/pgo-clips"
+class = "tool"
+reader = "release.py TRAINING_CLIPS for PGO profiles"
+regen = "cut from the training clips (minutes)"
+release = true
+
+[[keep]]
+path = "release/pgo-clips-zst"
+class = "tool"
+reader = "release.py TRAIN_ZST_DIR (uploaded to the build box)"
+regen = "compress release/pgo-clips"
+
+# --- worktrees and target directories that tools need -----------------------------------
+
+[[keep]]
+path = "worktrees/variance-integration"
+class = "tool"
+reader = "land.sh (the integration tree)"
+regen = "git worktree add; never remove"
+release = true
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "worktrees/gh-pages"
+class = "tool"
+reader = "tools/web/publish.sh (the site's gh-pages tree)"
+regen = "git worktree add of gh-pages"
+release = true
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "worktrees/demo-publish"
+class = "tool"
+reader = "tools/web/publish.sh, release.py DEMO_PUBLISH_TREE"
+regen = "git worktree add + a WASM build (~15 min)"
+release = true
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "worktrees/verifier"
+class = "tool"
+reader = "land.sh --verify (tests)"
+regen = "made on first use"
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "worktrees/verifier-streams"
+class = "tool"
+reader = "land.sh --verify (streams)"
+regen = "made on first use"
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "worktrees/chart-build*"
+class = "tool"
+reader = "chart_refresh.py BUILD_TREE / SCORING_TREE"
+regen = "made on first use"
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "worktrees/release-*"
+class = "tool"
+reader = "release.py (release-<name>, release-charts-v*, release-land-v*)"
+regen = "made by release.py"
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "worktrees/final-check-*"
+class = "tool"
+reader = "nceval.levels final-check builds"
+regen = "made on first use"
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
+path = "targets/demo-publish"
+class = "tool"
+reader = "tools/web/publish.sh (warm WASM target: a cold build makes a republish 15 min)"
+regen = "a cold WASM build (~15 min)"
+marker = false  # cargo owns the directory
+
+[[keep]]
+path = "targets/verifier*"
+class = "tool"
+reader = "land.sh --verify"
+regen = "a cold build on the build box"
+marker = false  # cargo owns the directory
+
+[[keep]]
+path = "targets/chart-build*"
+class = "tool"
+reader = "chart_refresh.py BUILD_TARGET / SCORING_TARGET"
+regen = "a cold build"
+marker = false  # cargo owns the directory
+
+[[keep]]
+path = "targets/crates-publish"
+class = "tool"
+reader = "tools/release/publish_crates.sh"
+regen = "a cold build"
+marker = false  # cargo owns the directory
+
+[[keep]]
+path = "targets/final-check-*"
+class = "tool"
+reader = "nceval.levels final-check builds"
+regen = "a cold build"
+marker = false  # cargo owns the directory
+
+[[keep]]
+path = "targets/land"
+class = "tool"
+reader = "land.sh"
+regen = "a cold build"
+marker = false  # cargo owns the directory
+
+[[keep]]
+path = "targets/web"
+class = "tool"
+reader = "tools/ci/web_tests.py"
+regen = "a cold WASM build"
+marker = false  # cargo owns the directory

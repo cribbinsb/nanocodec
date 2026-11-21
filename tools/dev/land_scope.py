@@ -240,10 +240,18 @@ def classify(path, root, dirs, embedded):
     return "unknown", set()
 
 
+#: What builds or runs the page tests themselves: a change here re-runs them too.
+PAGE_TOOLING = ("tools/ci/browser_smoke.sh", "tools/ci/web_tests.py", "tools/web/*")
+
+
 def changes_page(kind, path):
     """Whether a changed path is the page itself (web/** or the browser module's
-    crate), so the page tests in headless Chromium run at landing."""
-    return kind == "web" or path.startswith(PAGE_CRATE_DIR)
+    crate) or the tooling that builds and runs the page tests, so the page tests in
+    headless Chromium run at landing. Other gate files (land.sh, check.sh, the rest of
+    tools/ci) re-run every other check but not these: they do not change the page
+    (coordinator, 2026-11-21: 562 s of Chromium tests on the PC for a land.sh change)."""
+    return (kind == "web" or path.startswith(PAGE_CRATE_DIR)
+            or any(fnmatch.fnmatch(path, pattern) for pattern in PAGE_TOOLING))
 
 
 def conformance_codecs(changed, affected, full):
@@ -355,7 +363,7 @@ def plan_for_paths(root, changed):
     # crates and names the preset's codec itself (conformance_codecs).
     conformance = conformance_codecs(changed, closure(code_crates, dependents), full)
     out = [("rust", rust), ("eval", [str(int(eval_tests))]), ("web", [str(int(web))]),
-           ("page", [str(int(page or full))]), ("conformance", conformance),
+           ("page", [str(int(page))]), ("conformance", conformance),
            ("checkasm", [str(int(checkasm))]),
            ("eval_skip", eval_skipped(changed, full)),
            ("touched", sorted(crates))]

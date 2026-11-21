@@ -1,0 +1,6 @@
+# key-frame RD partition search (planner.key_rd_split), one-frame fixed-QP ab
+krd11: planner.key_rd_split=1
+krd22: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2
+krd33: planner.key_rd_split=1 planner.key_rd_deeper=3 planner.key_rd_shallower=3
+slowkey: hevc.intra_rd_candidates=8 hevc.intra_nxn_min_cost=0 hevc.intra_tu_split_min_cost=0
+krd22_slowkey: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 hevc.intra_rd_candidates=8 hevc.intra_nxn_min_cost=0 hevc.intra_tu_split_min_cost=0

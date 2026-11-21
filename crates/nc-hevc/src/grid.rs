@@ -10,7 +10,7 @@
 //! 2 whatever the coefficients (§8.7.2.4), and 4x4 transform edges off the
 //! 8x8 grid are not filtered.
 
-use nc_encoder::Mv;
+use nc_encoder::{Block, Mv};
 
 use crate::headers::{LOG2_CTB, LOG2_MIN_CB};
 
@@ -174,6 +174,32 @@ impl Grid {
         nc_common::cell_grid::fill_square(&mut self.cells, grid, at, side, cell);
     }
 
+    /// Save the square's cells for a coding trial.
+    pub(crate) fn save_square(&self, block: &Block, saved: &mut Vec<Cell>) {
+        let side = block.size() >> LOG2_MIN_CB;
+        let at = (block.y >> LOG2_MIN_CB, block.x >> LOG2_MIN_CB);
+        nc_common::cell_grid::save_rect(
+            &self.cells,
+            (self.cols, self.rows),
+            at,
+            (side, side),
+            saved,
+        );
+    }
+
+    /// Restore the square's cells after a coding trial.
+    pub(crate) fn restore_square(&mut self, block: &Block, saved: &[Cell]) {
+        let side = block.size() >> LOG2_MIN_CB;
+        let at = (block.y >> LOG2_MIN_CB, block.x >> LOG2_MIN_CB);
+        nc_common::cell_grid::restore_rect(
+            &mut self.cells,
+            (self.cols, self.rows),
+            at,
+            (side, side),
+            saved,
+        );
+    }
+
     /// Update the luma-coded flag and transform id of a transform block.
     /// The 4x4 blocks of a cell are recorded as one: the first sets the id,
     /// and the cell is coded if any of them is.
@@ -253,21 +279,38 @@ impl Grid {
     /// only, no residual), CTBs in raster order.
     #[must_use]
     pub fn skipped_ctbs(&self) -> Vec<bool> {
+        self.ctb_skip_counts()
+            .map(|(skipped, cells)| skipped == cells)
+            .collect()
+    }
+
+    /// The share of each CTB's area coded as skip, CTBs in raster order.
+    #[must_use]
+    pub fn skip_shares_ctbs(&self) -> Vec<f32> {
+        self.ctb_skip_counts()
+            .map(|(skipped, cells)| skipped as f32 / cells.max(1) as f32)
+            .collect()
+    }
+
+    /// Each CTB's (skipped cells, cells), CTBs in raster order.
+    fn ctb_skip_counts(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         let side = 1usize << (LOG2_CTB - LOG2_MIN_CB);
         let ctb_rows = self.rows.div_ceil(side);
-        (0..ctb_rows * self.ctb_cols)
-            .map(|index| {
-                let (col0, row0) = (
-                    (index % self.ctb_cols) * side,
-                    (index / self.ctb_cols) * side,
-                );
-                (row0..(row0 + side).min(self.rows)).all(|row| {
-                    let start = row * self.cols + col0;
-                    let end = row * self.cols + (col0 + side).min(self.cols);
-                    self.cells[start..end].iter().all(|c| c.skip)
-                })
+        (0..ctb_rows * self.ctb_cols).map(move |index| {
+            let (col0, row0) = (
+                (index % self.ctb_cols) * side,
+                (index / self.ctb_cols) * side,
+            );
+            (row0..(row0 + side).min(self.rows)).fold((0, 0), |(skipped, cells), row| {
+                let start = row * self.cols + col0;
+                let end = row * self.cols + (col0 + side).min(self.cols);
+                let row_cells = &self.cells[start..end];
+                (
+                    skipped + row_cells.iter().filter(|c| c.skip).count(),
+                    cells + row_cells.len(),
+                )
             })
-            .collect()
+        })
     }
 
     /// [`Grid::set_transform`] of a 4x4 block: the cell's first one sets

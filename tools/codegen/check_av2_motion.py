@@ -9,7 +9,10 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +50,7 @@ def main():
     match=re.search(r'const VECTORS:.*?=\s*\[(.*?)\];',rust,re.S)
     if not match:raise SystemExit('Missing VECTORS Rust fixture')
     vectors=re.sub(r'\((-?\d[\d_]*),\s*(-?\d[\d_]*)\)',r'{\1,\2}',match.group(1)).replace('_','')
-    with tempfile.TemporaryDirectory(prefix='nc-av2-motion-') as tmp:
+    with tempdirs.temp_dir("av2-motion") as tmp:
         path=Path(tmp)
         (path/'oracle.c').write_text(C.replace('VECTORS',vectors).replace('allow_update_cdf=0', 'allow_update_cdf='+str(int(args.adaptive))))
         subprocess.run(['cc','-O2','-std=c11','-I'+str(args.source),'-I'+str(args.build),

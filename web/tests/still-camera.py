@@ -100,7 +100,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     results = {}
     try:
-        with tempfile.TemporaryDirectory() as scratch:
+        with tempfile.TemporaryDirectory(prefix="nanocodec-web-test-") as scratch:
             for on in (True, False):
                 result = run(server.server_port, on, Path(scratch))
                 replay = subprocess.run([sys.executable, str(REPO / 'tools/web/replay-debug-report.py'),

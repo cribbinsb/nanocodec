@@ -59,5 +59,9 @@
  ],
  "2026-11-20": [
   "Up to 07:52 UTC: the key-period ledger no longer saves twice for a key (2 s keys BD PSNR-YUV −0.28 to −0.97 %); otherwise Slow, decoder and eval changes."
+ ],
+ "2026-11-21": [
+  "Release 0.6.0. Every codec gains a slow rung between the Default and the former slow (now slower; veryslow on HEVC and VVC), the Default plus a gated RD partition search; VVC gains a fast rung (the former fast is now faster), and H.264's fast end is re-pointed along the front (the former fast is now faster, the former faster retired).",
+  "The zero-trial split selector on most Defaults and fast rungs; temporal layer propagation on flat streams (HEVC slow/veryslow, VVC Default/slow, AV1 slow/slower, AV2 Default); loop-filter search effort by usage; rate-aware coefficient trimming (quant.rd_trim) on the fast rungs; a held second reference (AV1 and VP9 slow)."
  ]
 }

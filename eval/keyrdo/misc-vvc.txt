@@ -1,0 +1,6 @@
+# existing intra settings, λ and bias around the key RD searches; one-frame fixed-QP ab
+krd22: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2
+krd22_slow: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 vvc.rd_candidates=10 vvc.angular_candidates=5
+slow: vvc.rd_candidates=10 vvc.angular_candidates=5
+krd22_slow_isp: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 vvc.rd_candidates=10 vvc.angular_candidates=5 vvc.isp=1
+krd22_slow_mts: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 vvc.rd_candidates=10 vvc.angular_candidates=5 vvc.mts=1

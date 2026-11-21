@@ -45,6 +45,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -62,6 +63,7 @@ from .config import Paths, find_tool, load_paths
 from .conformance import gate_stream
 from .encoders.nanocodec import preset_cli_args
 from . import svcbase
+from .infosei import strip_info_sei
 from .gatepolicy import (EVALUATION_GATE, GatePolicy, PointCheck, anchor_check, combination_key,
                          gate_arguments, level_satisfies, point_check)
 from .diskguard import check_disk
@@ -137,10 +139,15 @@ ANCHOR_PRESET_PREFIXES = {"svt": "svtav1-m", "x264": "x264-", "x265": "x265-",
 #:   ssim       libvpx / libaom --tune=ssim instead of their default --tune=psnr
 #:   aq         openh264 with its adaptive quantisation on (its default); NVENC
 #:              with spatial AQ on (-spatial-aq 1; off by default)
+#:   allintra   libaom --allintra (its still-image / all-intra usage) at good-quality
+#:              speeds, and `good` for libaom: the strong intra references of the
+#:              key-frame headroom study (docs/analysis/key-frame-rdo-2026-11-21.md)
+#:   still, ra  SVT-AV1 without --rtc: `still` is its still-picture mode (--avif 1),
+#:              `ra` its default (random access) settings; one-frame runs only
 ANCHOR_PROFILES = {"x264": ("lookahead", "threads4", "psnr", "ssim"),
                    "x265": ("lookahead", "threads4", "psnr", "ssim"),
-                   "svt": ("hier",), "vpx": ("webrtc", "good", "ssim"),
-                   "aom": ("webrtc", "ssim"), "openh264": ("aq",), "nvenc": ("aq",)}
+                   "svt": ("hier", "still", "ra"), "vpx": ("webrtc", "good", "ssim"),
+                   "aom": ("webrtc", "ssim", "good", "allintra"), "openh264": ("aq",), "nvenc": ("aq",)}
 WEBRTC_VPX_AOM = ("--aq-mode=3", "--max-q=52", "--min-q=2", "--undershoot-pct=50",
                   "--overshoot-pct=50")
 PROFILE_THREADS = "4"
@@ -152,7 +159,13 @@ PROFILE_SEPARATOR = "~"
 #: appended to the preset's: ablations that attribute a slow preset's lead to its
 #: tools (docs/analysis/fixed-qp-gap-2026-11-14.md). A bare name is a flag (`+no-rect`).
 OPTION_SEPARATOR = "+"
-OPTION_KINDS = ("x264", "x265")
+OPTION_KINDS = ("x264", "x265", "aom", "svt")
+#: Kinds whose programs take a long option's value only as `--key=value` (aomenc).
+JOINED_OPTION_KINDS = ("aom",)
+#: SVT-AV1 profiles that are not real-time (no --rtc, no low-delay structure).
+SVT_OFFLINE_PROFILES = ("still", "ra")
+#: libaom profiles that replace its --rt deadline, with the option of each.
+AOM_DEADLINES = {"good": "--good", "allintra": "--allintra"}
 ANCHOR_TOOLS = {"svt": "SvtAv1EncApp", "x264": "x264", "x265": "x265", "vpx": "vpxenc",
                 "aom": "aomenc", "vvenc": "vvencFFapp", "avm": "avmenc"}
 ANCHOR_CODECS = {"svt": Codec.AV1, "x264": Codec.H264, "x265": Codec.HEVC, "vpx": Codec.VP9,
@@ -223,6 +236,9 @@ class Family:
     #: Anchors: one of the program's ANCHOR_PROFILES instead of the chart's
     #: real-time settings ("" = the chart's): the independent test's fairness check.
     profile: str = ""
+    #: Anchors: False drops the program's information SEI from the stream
+    #: (nceval.infosei: one-frame key studies, where it is a large share).
+    info_sei: bool = True
 
     @property
     def hardware(self) -> bool:
@@ -264,8 +280,13 @@ class Family:
                 ["--rc", "0", "--aq-mode", "0", "--qp", str(qp)]
             hierarchy = [] if self.profile == "hier" else ["--hierarchical-levels",
                                                            str(layers - 1)]
-            return [str(self.tool), "--rtc", "1", "--preset", self.anchor_preset,
-                    "--pred-struct", "1", *hierarchy, *mode, "--keyint", str(intra),
+            # the real-time families keep their argument list as the site prints it
+            structure = ["--rtc", "1", "--preset", self.anchor_preset, "--pred-struct", "1",
+                         *hierarchy]
+            if self.profile in SVT_OFFLINE_PROFILES:
+                structure = [*(("--avif", "1") if self.profile == "still" else ()),
+                             "--preset", self.anchor_preset]
+            return [str(self.tool), *structure, *mode, *self.extra, "--keyint", str(intra),
                     "--scd", "0",
                     "--lp", "1", "--fps-num", str(num), "--fps-denom", str(den),
                     "-w", common["w"], "-h", common["h"], "-n", common["n"],
@@ -333,12 +354,13 @@ class Family:
                 else ["--end-usage=q", f"--cq-level={qp}", f"--min-q={qp}", f"--max-q={qp}",
                       "--disable-warning-prompt"])  # min = max q is a warning, not an error
         deadline = "--good" if self.profile == "good" else "--rt"
-        codec = ["--codec=vp9", deadline] if self.kind == "vpx" else [deadline]
+        codec = ["--codec=vp9", deadline] if self.kind == "vpx" else \
+            [AOM_DEADLINES.get(self.profile, "--rt")]
         profile = WEBRTC_VPX_AOM if self.profile == "webrtc" and kbps else ()
         profile += ("--tune=ssim",) if self.profile == "ssim" else ()
         return [str(self.tool), *codec, "--passes=1", "--lag-in-frames=0",
                 "--error-resilient=0", "--threads=1", f"--cpu-used={self.preset}", *mode,
-                *profile,
+                *profile, *self.extra,
                 f"--kf-min-dist={intra}", f"--kf-max-dist={intra}", "--i420",
                 f"--width={clip.width}", f"--height={clip.height}", f"--fps={num}/{den}",
                 f"--limit={frames}", "--ivf", "-o", str(out), str(clip.yuv)]
@@ -400,7 +422,11 @@ class Family:
     def quantizer_grid(self) -> range:
         if self.own or self.kind in ("vvenc", "avm"):
             return COARSE_GRIDS[self.codec]
-        return SVT_QP_GRID if self.kind == "svt" else COARSE_GRIDS[Codec.H264]
+        # libaom's offline profiles reach key-frame rates only near its coarsest
+        # quantizer (63); its real-time families keep the grid their points have
+        if self.kind == "svt" or (self.kind == "aom" and self.profile in AOM_DEADLINES):
+            return SVT_QP_GRID
+        return COARSE_GRIDS[Codec.H264]
 
 
 @dataclass(frozen=True)
@@ -486,6 +512,8 @@ class Bench:
                 # x265's real --tune since 2026-11-13 (the first form set the tune's
                 # options beside zerolatency): never the first form's cached points
                 parts.append("x265-tune")
+        if not family.info_sei:
+            parts.append("no-info-sei")
         if self.spatial(family):  # their results carry the base layer too
             parts.append("svc-base")
         if scored:
@@ -545,8 +573,10 @@ class Bench:
                 + (["--layer-md5", str(layer_md5)] if layer_md5 else []))
 
     def encode(self, point: Point, out: Path, rate_log: Path | None = None,
-               source: ClipFrames | None = None) -> None:
-        """Encode without a reconstruction (rate probes and anchors).
+               source: ClipFrames | None = None) -> float:
+        """Encode without a reconstruction (rate probes and anchors); returns the
+        encoder process's CPU seconds (user + system, from its own exit status, so
+        other workers' children are not counted).
 
         `source`: the point's frames when the caller also scores them."""
         with contextlib.ExitStack() as stack:
@@ -555,12 +585,19 @@ class Bench:
             cmd = self.command(point, out, None, rate_log, source=source)
             # the NVENC slot first, like GPU slots (nceval.slots)
             with nvenc_slots() if point.family.hardware else contextlib.nullcontext(), \
-                    cpu_slots(1):
-                proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
-                                      text=True)
+                    cpu_slots(1), tempfile.TemporaryFile("w+") as log:
+                proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log,
+                                        stderr=subprocess.STDOUT)
+                _, status, usage = os.wait4(proc.pid, 0)
+                proc.returncode = os.waitstatus_to_exitcode(status)
+                log.seek(0)
+                output = log.read()
         if proc.returncode != 0:
-            tail = " | ".join((proc.stderr or proc.stdout).strip().splitlines()[-3:])
+            tail = " | ".join(output.strip().splitlines()[-3:])
             raise RuntimeError(f"{point.family.name} {point.clip.name} {point.label}: {tail}")
+        if not point.family.info_sei:
+            strip_info_sei(out, point.family.codec)
+        return usage.ru_utime + usage.ru_stime
 
     def rate_kbps(self, point: Point, bitstream: Path) -> float:
         bits = payload_bytes(bitstream, point.family.codec, self.frames) * 8
@@ -568,16 +605,24 @@ class Bench:
 
     def price(self, family: Family, clip: Clip, qp: int) -> float:
         """Achieved rate of one fixed-QP encode, without gating or scoring."""
+        return self.probe(family, clip, qp)["kbps"]
+
+    def probe(self, family: Family, clip: Clip, qp: int, timed: bool = False) -> dict:
+        """One fixed-QP rate probe: `kbps`, and `cpu_s` (the encoder's CPU seconds;
+        absent from probes cached before 2026-11-21: `timed` codes those again)."""
         point = Point(family, clip, qp=qp)
         cache = self.point_dir(family, clip) / f"rate-{point.label}-" \
             f"{self.identity(family, clip, point.label, scored=False)}.json"
 
-        def encode() -> float:
+        def encode() -> dict:
             with sibling_temp(cache, family.codec.bitstream_suffix) as out:
-                self.encode(point, out)
-                return self.rate_kbps(point, out)
-        return get_or_create(cache, lambda path: read_json(path, "kbps"), encode,
-                             lambda kbps: json.dumps({"kbps": kbps}))
+                cpu_s = self.encode(point, out)
+                return {"kbps": self.rate_kbps(point, out), "cpu_s": cpu_s}
+
+        def read(path: Path) -> dict | None:
+            cached = read_json(path)
+            return None if cached is None or (timed and "cpu_s" not in cached) else cached
+        return get_or_create(cache, read, encode, json.dumps)
 
     def result_path(self, point: Point) -> Path:
         return self.point_dir(point.family, point.clip) / \
@@ -977,9 +1022,12 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False,
         profile, *options = profile.split(OPTION_SEPARATOR)
         if profile not in ANCHOR_PROFILES.get(family.kind, ()):
             raise ValueError(f"{name}: {family.kind} has no profile {profile!r}")
-        if options and family.kind not in OPTION_KINDS:
-            raise ValueError(f"{name}: only {', '.join(OPTION_KINDS)} take +option=value")
-        return replace(family, name=name, profile=profile, extra=option_args(options))
+        if options and (family.kind not in OPTION_KINDS
+                        or (family.kind == "svt" and profile not in SVT_OFFLINE_PROFILES)):
+            raise ValueError(f"{name}: only {', '.join(OPTION_KINDS)} take +option=value "
+                             f"(SVT-AV1 in its {' / '.join(SVT_OFFLINE_PROFILES)} profiles)")
+        return replace(family, name=name, profile=profile,
+                       extra=option_args(options, family.kind in JOINED_OPTION_KINDS))
     for kind, prefix in ANCHOR_PRESET_PREFIXES.items():
         if name.startswith(prefix) and len(name) > len(prefix):
             codec = ANCHOR_CODECS[kind]
@@ -990,12 +1038,15 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False,
                      f"{', '.join(p + '<preset>' for p in ANCHOR_PRESET_PREFIXES.values())}")
 
 
-def option_args(options: list[str]) -> tuple[str, ...]:
-    """`ref=1` -> `--ref 1`; `no-rect` -> `--no-rect`."""
+def option_args(options: list[str], joined: bool = False) -> tuple[str, ...]:
+    """`ref=1` -> `--ref 1` (`joined`: `--ref=1`); `no-rect` -> `--no-rect`."""
     args: list[str] = []
     for option in options:
         key, sep, value = option.partition("=")
-        args += [f"--{key}", value] if sep else [f"--{key}"]
+        if joined or not sep:
+            args.append(f"--{option}")
+        else:
+            args += [f"--{key}", value]
     return tuple(args)
 
 

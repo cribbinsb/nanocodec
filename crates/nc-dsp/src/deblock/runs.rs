@@ -573,8 +573,8 @@ mod tests {
             thresh: 0,
         };
         for dsp in [
-            Dsp::with_isa(crate::Isa::Scalar).expect("scalar"),
-            Dsp::default(),
+            Box::new(Dsp::with_isa(crate::Isa::Scalar).expect("scalar")),
+            Box::new(Dsp::default()),
         ] {
             let mut data = [128u8; 64];
             let mut view = PlaneViewMut::new(&mut data, 8, 8, 8).expect("plane");

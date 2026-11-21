@@ -1,0 +1,3 @@
+tl0.8: quant.trellis_lambda_scale=0.8
+tl1.5: quant.trellis_lambda_scale=1.5
+tk0: quant.trellis_key=0

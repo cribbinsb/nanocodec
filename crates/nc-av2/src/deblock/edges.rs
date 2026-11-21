@@ -138,6 +138,40 @@ impl EdgeGrid {
         }
     }
 
+    /// The number of blocks recorded: a mark for [`Self::save_after`] and
+    /// [`Self::restore_after`].
+    pub fn mark(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Copy the blocks recorded since `mark` into `saved`.
+    pub fn save_after(&self, mark: usize, saved: &mut Vec<BlockEdges>) {
+        saved.clear();
+        saved.extend_from_slice(&self.blocks[mark..]);
+    }
+
+    /// Forget the blocks recorded since `mark`, all inside the square of
+    /// side `size` at luma `(x, y)` (inside the picture), and record
+    /// `saved` in their place.
+    pub fn restore_after(
+        &mut self,
+        mark: usize,
+        ((x, y), size): ((usize, usize), usize),
+        saved: &[BlockEdges],
+    ) {
+        self.blocks.truncate(mark);
+        nc_common::cell_grid::fill_square(
+            &mut self.units,
+            (self.columns, self.rows),
+            (y >> MI_LOG2, x >> MI_LOG2),
+            size >> MI_LOG2,
+            UNRECORDED,
+        );
+        for &block in saved {
+            self.record(block);
+        }
+    }
+
     /// Every recorded block.
     fn blocks(&self) -> impl Iterator<Item = BlockEdges> + '_ {
         self.blocks.iter().copied()

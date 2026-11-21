@@ -158,6 +158,17 @@ impl<const N: usize> SymbolCosts<N> {
         self.valid = true;
     }
 
+    /// Exchange this cache with the first `N` symbols of a cache of a
+    /// larger alphabet (`M >= N`): an undo journal
+    /// ([`crate::undo_journal`]) keeps the caches of every alphabet in one
+    /// size.
+    #[inline]
+    pub fn swap_prefix<const M: usize>(&mut self, wider: &mut SymbolCosts<M>) {
+        const { assert!(N <= M) };
+        std::mem::swap(&mut self.valid, &mut wider.valid);
+        self.costs.swap_with_slice(&mut wider.costs[..N]);
+    }
+
     /// Drop the cached costs: the owner's probabilities changed.
     pub fn invalidate(&mut self) {
         self.valid = false;

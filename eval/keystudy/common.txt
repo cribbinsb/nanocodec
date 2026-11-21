@@ -1,0 +1,7 @@
+# shared engine candidates on a key frame (Stage 1; one-frame fixed-QP ab)
+aq0.5: rate.aq_strength=0.5
+aq1: rate.aq_strength=1
+aq2: rate.aq_strength=2
+bias900: planner.intra_bias=900
+bias1250: planner.intra_bias=1250
+trellis_chroma1: quant.trellis_chroma=1

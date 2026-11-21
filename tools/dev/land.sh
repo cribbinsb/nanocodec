@@ -27,9 +27,10 @@
 # real stream mismatch there reverts a landing; other failures are fixed
 # forward.
 #
-# The revert guard (tools/dev/land_guard.py: a stale tree after `git reset
-# --soft` put back other agents' work) no longer refuses: what it finds is
-# added to the commit message as a `Land-warning:` trailer and printed.
+# The revert guard (tools/dev/land_guard.py) refuses a candidate that puts back the
+# old text of recently landed commits (a stale tree after `git reset --soft` onto a
+# moved integration head), naming the commits and files and the fix; `land.sh
+# --reverts SHA` lands a deliberate revert.
 #
 # The integration worktree (variance-integration checked out) is not needed
 # to land; after a landing it is moved to the new head when it was clean at an
@@ -79,13 +80,25 @@ main() {
     mkdir -p "$logs"
     prune_logs
     if [[ "${1:-}" == --verify ]]; then verify_target "${2:-}"; exit $?; fi
+    if [[ "${1:-}" == --run-part ]]; then run_part_here "${2:-}"; exit $?; fi
 
+    local reverts=()  # `--reverts SHA`: a deliberate revert of SHA (repeatable)
+    while [[ "${1:-}" == --reverts ]]; do
+        [[ -n "${2:-}" ]] || die "--reverts needs the reverted commit's sha"
+        reverts+=("$2")
+        shift 2
+    done
     branch=$(git rev-parse --abbrev-ref HEAD)
     [[ $# -eq 0 || "$1" == "$branch" ]] ||
         die "check out $1 in this worktree first (never land another tree's branch)"
     [[ -z "$(git status --porcelain --untracked-files=no)" ]] ||
         die "uncommitted changes: commit or drop them first"
     export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$data_root/targets/$(basename "$PWD")}
+    local sha
+    for sha in "${reverts[@]}"; do  # named in the message, the guard lets that revert pass
+        git log -1 --format=%B | grep -q "Reverts: $sha" ||
+            git -c core.hooksPath=/dev/null commit --quiet --amend --no-edit --trailer "Reverts: $sha"
+    done
 
     local began=$SECONDS base checked_base="" attempt
     for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
@@ -100,7 +113,7 @@ main() {
         regenerate_site "$base"
         if [[ -z "$checked_base" ]]; then
             printf '== land %s on %s %s\n' "$branch" "$target" "${base:0:9}"
-            guard_warning "$base"
+            revert_guard "$base"
             pre_land_checks "$base"
         elif touches_same_files "$checked_base" "$base"; then
             printf '== %s moved in files %s changes: checking again\n' "$target" "$branch"
@@ -122,7 +135,7 @@ main() {
 # tools/dev/cargo-capped.sh, memory-capped. The reserved slot: a lander never
 # waits behind other agents' builds for the shared slots.
 cargo_shim() {
-    shim_dir=$(mktemp -d)
+    shim_dir=$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-land-XXXXXX")
     trap 'rm -rf -- "$shim_dir"' EXIT
     ln -s "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cargo-capped.sh" "$shim_dir/cargo"
     export PATH="$shim_dir:$PATH" NC_BUILD_RESERVED=1
@@ -157,14 +170,27 @@ touches_same_files() {
 
 # The revert guard, as a warning: its findings become a `Land-warning:`
 # trailer on HEAD's commit message.
-guard_warning() {
-    local found
-    found=$(timeout "$GUARD_TIMEOUT" python3 tools/dev/land_guard.py "$1" 2>&1 >/dev/null) && return 0
-    [[ -n "$found" ]] || found="land_guard.py did not finish in ${GUARD_TIMEOUT}s"
-    printf '== WARNING (landing anyway; recorded in the commit):\n%s\n' "$found"
-    git -c core.hooksPath=/dev/null commit --quiet --amend --no-edit \
-        --trailer "Land-warning: $(grep -m1 -o 'undoes [0-9]* upstream change(s)\|did not finish.*' <<<"$found" ||
-            echo 'revert guard flagged this commit') (tools/dev/land_guard.py)"
+# The revert guard (tools/dev/land_guard.py): a candidate whose diff puts back the
+# old text of recently landed commits is refused, with the commits and files it would
+# revert and the fix (2026-11-21: twice in a day a `git reset --soft` squash onto a
+# moved integration head carried its stale tree, once 45 files, and only luck caught
+# it; the guard only warned then). `land.sh --reverts SHA` lands a deliberate revert.
+revert_guard() {
+    local found status=0
+    found=$(timeout "$GUARD_TIMEOUT" python3 tools/dev/land_guard.py "$1" 2>&1 >/dev/null) ||
+        status=$?
+    ((status == 0)) && return 0
+    if ((status == 124)); then
+        printf '== WARNING: land_guard.py did not finish in %ss: landing unchecked\n' "$GUARD_TIMEOUT"
+        return 0
+    fi
+    if [[ $found != *"Fix: rebuild the commit"* ]]; then  # the guard itself failed
+        printf '%s\n== WARNING: land_guard.py failed (exit %s): landing unchecked\n' \
+            "$found" "$status" >&2
+        return 0
+    fi
+    printf '%s\n' "$found" >&2
+    die "refused: this commit reverts other agents' work (above); see the fix"
 }
 
 #: Author of the commits land.sh makes on a lander's branch (regenerated files).
@@ -330,9 +356,7 @@ verify_streams() {
     scope=$(cd "$tree" && python3 tools/dev/land_scope.py "$base") || return 1
     printf '== verifying streams %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
     local target_dir=${NC_VERIFY_STREAMS_TARGET_DIR:-$data_root/targets/verifier-streams}
-    (cd "$tree" && CARGO_TARGET_DIR=$target_dir timed "streams" conformance_check_plan "$scope") \
-        >"$log" 2>&1 || status=$?
-    cache_binaries "$tree" "$head" "$target_dir"
+    verify_part streams "$tree" "$head" "$scope" "$target_dir" >"$log" 2>&1 || status=$?
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         record_verified streams "$head"
@@ -366,10 +390,9 @@ verify_tests() {
     local target_dir=${NC_VERIFY_TARGET_DIR:-$data_root/targets/verifier} began_at
     began_at=$(date +%s)
     # NC_WEB_TESTS_SINCE: the page tests run only where these changes reach (tools/ci/web_tests.py).
-    (cd "$tree" && CARGO_TARGET_DIR=$target_dir \
-        NC_CHECK_PARTS=$log.parts NC_WEB_TESTS_SINCE=$base run_checks "$scope") \
+    NC_CHECK_PARTS=$log.parts NC_WEB_TESTS_SINCE=$base \
+        verify_part tests "$tree" "$head" "$scope" "$target_dir" --since "$began_at" \
         >"$log" 2>&1 || status=$?
-    cache_binaries "$tree" "$head" "$target_dir" --since "$began_at"
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         record_verified tests "$head"
@@ -380,6 +403,64 @@ verify_tests() {
         report_failure "TESTS FAILED (fix forward; listed in $list)" "$head" "$base" "$log"
     fi
     return "$status"
+}
+
+# `verify_part PART TREE HEAD SCOPE TARGET_DIR [--since EPOCH]`: one verify part's checks.
+# On the build box by default (owner, 2026-11-21: the PC carries no material compute):
+# nc-remote syncs the verifier tree, the clips landing conformance reads and the
+# verified-stream cache, runs `land.sh --run-part PART` there, and brings back the
+# cache (new verified streams) and the gate binaries for the landed-commit cache;
+# only the verdict (the exit status) and the log decide here, where the verified
+# head and its history line are written. NC_VERIFY_LOCAL=1 runs the checks here.
+verify_part() {
+    local part=$1 tree=$2 head=$3 scope=$4 target_dir=$5 status=0
+    shift 5
+    if [[ "${NC_VERIFY_LOCAL:-0}" == 1 ]]; then
+        (cd "$tree" && CARGO_TARGET_DIR=$target_dir run_part "$part" "$scope") || status=$?
+        cache_binaries "$tree" "$head" "$target_dir" "$@"
+        return "$status"
+    fi
+    local fetched=$tree/remote-out/verify-target clips=() clip binaries=(--fetch target/gate/nanocodec)
+    [[ "$part" == tests ]] && binaries+=(--fetch target/gate/nc-checkasm)
+    local changed=()  # the box's tree has no git: the page tests' selection goes with it
+    if [[ -n "${NC_WEB_TESTS_SINCE:-}" ]]; then
+        changed=(--env "NC_WEB_TESTS_CHANGED=$(git -C "$tree" diff --name-only "$NC_WEB_TESTS_SINCE" HEAD | tr '\n' ' ')")
+    fi
+    local verified=$data_root/run/verified
+    local cache=${verified#"$HOME"/}  # the same place under the box's home
+    for clip in $(cd "$tree" && python3 tools/ci/landing_conformance.py --list-clips); do
+        clips+=(--clip "$clip")
+    done
+    rm -rf "$fetched"
+    mkdir -p "$verified"
+    "$HOME/nanocodec-data/bin/nc-remote" run --worktree "$tree" --name "verifier-$part" \
+        --env "NC_VERIFY_SCOPE=$(base64 -w0 <<<"$scope")" \
+        "${changed[@]}" --env NC_CHECK_STRICT=1 \
+        --sync "$verified" --fetch "~/$cache" \
+        "${clips[@]}" "${binaries[@]}" \
+        --fetch-to "$fetched" -- "NC_VERIFIED_DIR=\$HOME/$cache NC_CHECK_GROUPS='rust conformance' \
+NC_CONFORMANCE_WORKERS=\$(( \$(nproc) / 4 )) \
+bash tools/dev/land.sh --run-part $part" || status=$?
+    if [[ "$part" == tests ]]; then  # the eval suite needs this repository's git history
+        (cd "$tree" && NC_CHECK_GROUPS=python run_part tests "$scope") || status=$?
+    fi
+    [[ -d "$fetched/target/gate" ]] && cache_binaries "$tree" "$head" "$fetched/target" "$@"
+    return "$status"
+}
+
+# `run_part PART SCOPE`: the checks of a verify part, in the current tree.
+run_part() {
+    case $1 in
+        streams) timed "streams" conformance_check_plan "$2" ;;
+        tests) run_checks "$2" ;;
+        *) die "unknown verify part $1" ;;
+    esac
+}
+
+# `land.sh --run-part PART` on the build box (verify_part): the scope comes in
+# NC_VERIFY_SCOPE (base64), CARGO_TARGET_DIR is the job's.
+run_part_here() {
+    run_part "$1" "$(base64 -d <<<"${NC_VERIFY_SCOPE:?no NC_VERIFY_SCOPE}")"
 }
 
 # `cache_binaries TREE HEAD TARGET_DIR [--since EPOCH]`: the binaries the verifier
@@ -433,15 +514,19 @@ run_checks() {
     while read -r key values; do plan[$key]=$values; done <<<"$1"
     if [[ "${NC_LAND_FULL:-0}" == 1 ]]; then plan[rust]=all plan[eval]=1 plan[web]=1 plan[page]=1 plan[conformance]=all plan[checkasm]=1; fi
     local -A pid=() failed=()
-    scratch=${NC_CHECK_PARTS:-$(mktemp -d)}
+    scratch=${NC_CHECK_PARTS:-$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-land-XXXXXX")}
     mkdir -p "$scratch"
-    python_checks plan >"$scratch/python" 2>&1 &
-    pid[python]=$!
-    rust_checks plan >"$scratch/rust" 2>&1 &
-    pid[rust]=$!
-    conformance_check plan >"$scratch/conformance" 2>&1 &
-    pid[conformance]=$!
-    local -a groups=(python rust conformance)
+    # NC_CHECK_GROUPS: a subset (verify_part runs the Rust checks on the build box and
+    # the Python ones here, where the eval suite has the repository's git history).
+    local -a groups=(${NC_CHECK_GROUPS:-python rust conformance})
+    for group in "${groups[@]}"; do
+        case $group in
+            python) python_checks plan >"$scratch/python" 2>&1 & ;;
+            rust) rust_checks plan >"$scratch/rust" 2>&1 & ;;
+            conformance) conformance_check plan >"$scratch/conformance" 2>&1 & ;;
+        esac
+        pid[$group]=$!
+    done
     for group in "${groups[@]}"; do wait "${pid[$group]}" || { failed[$group]=1 status=1; }; done
     for group in "${groups[@]}"; do [[ -n "${failed[$group]:-}" ]] || print_group "$scratch" "$group"; done
     for group in "${groups[@]}"; do [[ -z "${failed[$group]:-}" ]] || print_group "$scratch" "$group" FAILED; done
@@ -488,6 +573,15 @@ rust_checks() {
     if [[ "${p[web]}" == 1 && "${p[rust]}" != all && " ${p[rust]} " != *" nc-web "* ]]; then  # web/ only
         timed "browser module and product smoke (web/ changed)" tools/ci/browser_smoke.sh || return 1
     fi
+    # Random legal decisions against every decoder (check.sh runs it only without
+    # --quick): a VP9 writer abort under it went unseen for a day (95874a490 to
+    # 4fc9a1de4, 2026-11-21) because no verify ran it. The gate build is the one the
+    # landed-commit cache stores.
+    if [[ "${p[rust]}" != none ]]; then
+        timed "syntax stress build" cargo build --profile gate --quiet -p nanocodec-cli || return 1
+        NC_NANOCODEC_BIN="${CARGO_TARGET_DIR:-target}/gate" timed "syntax stress" \
+            python3 tools/ci/syntax_stress.py --quick --workers 8 || return 1
+    fi
 }
 
 conformance_check() {
@@ -499,7 +593,8 @@ conformance_check() {
     printf '== landing conformance (every shipped preset vs the standard decoders and ours)\n'
     timed "conformance build" cargo build --profile gate --quiet -p nanocodec-cli || return 1
     NC_NANOCODEC_BIN="$CARGO_TARGET_DIR/gate" timed "landing conformance" \
-        python3 tools/ci/landing_conformance.py "${codecs[@]}" || return 1
+        python3 tools/ci/landing_conformance.py "${codecs[@]}" \
+            --workers "${NC_CONFORMANCE_WORKERS:-4}" || return 1
 }
 
 main "$@"

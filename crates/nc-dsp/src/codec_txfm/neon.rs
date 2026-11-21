@@ -10,18 +10,21 @@ use core::arch::aarch64::{
     int16x4_t, int16x8_t, int32x4_t, uint16x8_t, uint32x4_t, vabsq_s16, vaddl_s16, vaddlvq_u16,
     vaddq_s16, vaddq_s32, vaddq_u16, vaddv_u8, vandq_u8, vceqzq_s16, vcombine_s16, vcombine_u8,
     vdupq_n_s16, vdupq_n_s32, vdupq_n_u16, vdupq_n_u32, veorq_s16, vget_high_s16, vget_high_u8,
-    vget_low_s16, vget_low_u8, vget_low_u16, vld1q_s16, vld1q_u8, vmaxq_s32, vmaxvq_u16, vminq_s32,
-    vminq_u16, vmlal_high_n_u16, vmlal_n_s16, vmlal_n_u16, vmlaq_n_s16, vmovl_high_s16, vmovl_s16,
-    vmovn_u16, vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_high_u32, vqmovn_s32, vqmovn_u32,
-    vqshlq_s32, vreinterpretq_s16_s32, vreinterpretq_s16_s64, vreinterpretq_s16_u16,
-    vreinterpretq_s32_s16, vreinterpretq_s64_s16, vreinterpretq_u16_s16, vrshlq_s32, vrshrq_n_s32,
-    vshlq_n_s16, vshlq_n_s32, vshlq_u32, vshrq_n_s16, vst1q_s16, vst1q_s32, vsubl_s16, vsubq_s16,
-    vsubq_s32, vsubq_u16, vtrn1q_s16, vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64,
-    vzip2q_s64,
+    vget_low_s16, vget_low_u8, vget_low_u16, vld1q_s16, vld1q_u8, vld1q_u16, vmaxq_s32, vmaxvq_u16,
+    vminq_s32, vminq_u16, vmlal_high_n_u16, vmlal_high_u16, vmlal_n_s16, vmlal_n_u16, vmlal_u16,
+    vmlaq_n_s16, vmovl_high_s16, vmovl_s16, vmovn_u16, vmull_n_s16, vmulq_n_s16, vmulq_s32,
+    vqmovn_high_u32, vqmovn_s32, vqmovn_u32, vqshlq_s32, vreinterpretq_s16_s32,
+    vreinterpretq_s16_s64, vreinterpretq_s16_u16, vreinterpretq_s32_s16, vreinterpretq_s64_s16,
+    vreinterpretq_u16_s16, vrshlq_s32, vrshrq_n_s32, vshlq_n_s16, vshlq_n_s32, vshlq_u32,
+    vshrq_n_s16, vst1q_s16, vst1q_s32, vsubl_s16, vsubq_s16, vsubq_s32, vsubq_u16, vtrn1q_s16,
+    vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64, vzip2q_s64,
 };
 
-use super::generic::{Element, H264Forward8x8, HEVC_DEQUANT_LEVEL_LIMIT};
-use super::{H264Quantizer, HEVC_MAX_LEVEL, HevcForwardMode, HevcForwardStaging, HevcQuantizer};
+use super::generic::{Element, HEVC_DEQUANT_LEVEL_LIMIT};
+use super::{
+    H264_MAX_LEVEL, H264Quantizer, HEVC_MAX_LEVEL, HevcForwardMode, HevcForwardStaging,
+    HevcQuantizer, QUANT_MF_4X4_POS, QUANT_MF_8X8_POS,
+};
 use crate::simd::neon::I32x4;
 use crate::txfm::neon::Lanes;
 use crate::txfm::neon_forward::transpose;
@@ -49,6 +52,7 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.h264_forward_8x8 = h264_forward_8x8;
     table.h264_forward_4x4 = h264_forward_4x4;
     table.h264_forward_quantize_mb = h264_forward_quantize_mb;
+    table.h264_forward_quantize_chroma = h264_forward_quantize_chroma;
     table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
     table.nonzero_mask = nonzero_mask;
     table
@@ -297,18 +301,81 @@ fn transpose4(rows: [int16x8_t; 4]) -> [int16x8_t; 4] {
     ]
 }
 
-/// [`h264_forward_8x8`] for the macroblock driver.
-struct NarrowForward8x8;
+/// Compile-time `u16` H.264 quantisation factor tables (no per-call packing).
+const fn pack_mf_u16<const N: usize>(src: &[[i32; N]; 6]) -> ([[u16; N]; 6], u32) {
+    let mut out = [[0u16; N]; 6];
+    let mut max = 0u32;
+    let mut r = 0;
+    while r < 6 {
+        let mut i = 0;
+        while i < N {
+            let v = src[r][i];
+            assert!(v > 0 && v <= u16::MAX as i32);
+            out[r][i] = v as u16;
+            if (v as u32) > max {
+                max = v as u32;
+            }
+            i += 1;
+        }
+        r += 1;
+    }
+    (out, max)
+}
 
-impl H264Forward8x8 for NarrowForward8x8 {
-    #[inline(always)]
-    unsafe fn forward(residual: &[i16], stride: usize, out: &mut [i16; 64]) {
-        // SAFETY: forwarded contract (NEON is always present on AArch64).
-        unsafe { h264_forward_8x8(residual, stride, out) }
+const MF_4X4: ([[u16; 16]; 6], u32) = pack_mf_u16(&QUANT_MF_4X4_POS);
+const MF_8X8: ([[u16; 64]; 6], u32) = pack_mf_u16(&QUANT_MF_8X8_POS);
+
+/// Quantise `coeffs` (length a multiple of `mf16.len()`, which is 16 or 64)
+/// in place on eight 16-bit lanes using `umlal` and an all-zero group skip.
+#[inline(always)]
+fn h264_quantize_u16<const PERIOD: usize, const MAX_MF: u32>(
+    coeffs: &mut [i16],
+    mf16: &[u16; PERIOD],
+    offset: i32,
+    qbits: u32,
+) -> u32 {
+    let offset_u32 = offset as u32;
+    let zero_limit = (1u32 << qbits)
+        .checked_sub(offset_u32 + 1)
+        .map_or(0, |rem| (rem / MAX_MF).min(u32::from(u16::MAX)) as u16);
+    // SAFETY: called only from `#[target_feature(enable = "neon")]` entries.
+    unsafe {
+        let offset_v = vdupq_n_u32(offset_u32);
+        let shift = vdupq_n_s32(-(qbits as i32));
+        let maximum = vdupq_n_u16(H264_MAX_LEVEL as u16);
+        let zero = vdupq_n_s16(0);
+        let mut nonzero = vdupq_n_u16(0);
+        for block in coeffs.as_chunks_mut::<PERIOD>().0 {
+            for (chunk, m_chunk) in block
+                .as_chunks_mut::<QUANT_STEP>()
+                .0
+                .iter_mut()
+                .zip(mf16.as_chunks::<QUANT_STEP>().0)
+            {
+                let raw = vld1q_s16(chunk.as_ptr());
+                let mag = vreinterpretq_u16_s16(vabsq_s16(raw));
+                if vmaxvq_u16(mag) <= zero_limit {
+                    vst1q_s16(chunk.as_mut_ptr(), zero);
+                    continue;
+                }
+                let m = vld1q_u16(m_chunk.as_ptr());
+                let low = vmlal_u16(offset_v, vget_low_u16(mag), vget_low_u16(m));
+                let high = vmlal_high_u16(offset_v, mag, m);
+                let narrowed =
+                    vqmovn_high_u32(vqmovn_u32(vshlq_u32(low, shift)), vshlq_u32(high, shift));
+                let level = vreinterpretq_s16_u16(vminq_u16(narrowed, maximum));
+                let sign = vshrq_n_s16::<15>(raw);
+                let signed = vsubq_s16(veorq_s16(level, sign), sign);
+                vst1q_s16(chunk.as_mut_ptr(), signed);
+                nonzero = vsubq_u16(nonzero, vtstq_s16(signed, signed));
+            }
+        }
+        vaddlvq_u16(nonzero)
     }
 }
 
-/// `generic::h264_forward_quantize_mb` with [`h264_forward_8x8`].
+/// `generic::h264_forward_quantize_mb` with [`h264_forward_8x8`] and 16-bit
+/// NEON [`h264_quantize_u16`].
 #[target_feature(enable = "neon")]
 unsafe fn h264_forward_quantize_mb(
     residual: &[i16],
@@ -317,12 +384,57 @@ unsafe fn h264_forward_quantize_mb(
     q: &H264Quantizer,
     out: &mut [[i16; 64]; 4],
 ) -> [u32; 4] {
-    // SAFETY: NEON is enabled here and the caller's contract is forwarded.
-    unsafe {
-        super::generic::h264_forward_quantize_mb::<NarrowForward8x8, I32x4>(
-            residual, stride, zero_mask, q, out,
-        )
+    let (qbits, offset) = q.forward_terms(1);
+    let mf16 = &MF_8X8.0[q.rem];
+    let mut counts = [0; 4];
+    for (i, block) in out.iter_mut().enumerate() {
+        if zero_mask & (1 << i) != 0 {
+            block.fill(0);
+            continue;
+        }
+        let start = (i / 2) * 8 * stride + (i % 2) * 8;
+        // SAFETY: NEON is enabled; caller covers all four quadrants.
+        unsafe { h264_forward_8x8(&residual[start..], stride, block) };
+        counts[i] = h264_quantize_u16::<64, { MF_8X8.1 }>(block, mf16, offset, qbits);
     }
+    counts
+}
+
+/// `generic::h264_forward_quantize_chroma` using NEON's 16-bit two-block
+/// [`h264_forward_4x4`] and 16-bit [`h264_quantize_u16`].
+#[target_feature(enable = "neon")]
+unsafe fn h264_forward_quantize_chroma(
+    residual: &[i16],
+    stride: usize,
+    q: &H264Quantizer,
+    ac: &mut [[i16; 16]; 4],
+) -> ([i16; 4], u32) {
+    // SAFETY: NEON is enabled; caller covers the 8x8 chroma block.
+    unsafe { h264_forward_4x4(residual, stride, 2, ac) };
+    let c: [i16; 4] = core::array::from_fn(|b| ac[b][0]);
+    let mut dc = [
+        c[0] + c[1] + c[2] + c[3],
+        c[0] - c[1] + c[2] - c[3],
+        c[0] + c[1] - c[2] - c[3],
+        c[0] - c[1] - c[2] + c[3],
+    ];
+    let (dc_qbits, dc_offset) = q.forward_terms(1);
+    let mf = &QUANT_MF_4X4_POS[q.rem];
+    // SAFETY: scalar lane type needs no ISA.
+    unsafe {
+        super::generic::quantize::<i32, i16>(&mut dc, &mf[..1], dc_offset, dc_qbits, H264_MAX_LEVEL)
+    };
+    for block in ac.iter_mut() {
+        block[0] = 0;
+    }
+    let (qbits, offset) = q.forward_terms(0);
+    let nonzero = h264_quantize_u16::<16, { MF_4X4.1 }>(
+        ac.as_flattened_mut(),
+        &MF_4X4.0[q.rem],
+        offset,
+        qbits,
+    );
+    (dc, nonzero)
 }
 
 /// Levels per step: four independent vectors.

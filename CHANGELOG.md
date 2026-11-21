@@ -1,5 +1,122 @@
 # Changelog
 
+## 0.6.0 (2026-11-21)
+
+### Breaking: preset names moved
+
+**`--preset slow` now picks a faster, lower-quality rung than it did in 0.5.0.** The rung 0.5.0
+called `slow` is `slower` in H.264, AV1, VP9 and AV2, and `veryslow` in HEVC and VVC. `slow` is a
+new rung between `medium` and `slower`. VVC's and H.264's old `fast` is now `faster`. If a
+script pins `--preset slow` or `--preset fast` to get 0.5.0's settings, change the name using
+this table. A name is a position on that codec's own ladder, always in the order veryfast,
+faster, fast, medium, slow, slower, veryslow. `nanocodec params --codec C` lists a codec's
+rungs.
+
+| 0.5.0 name | H.264 | HEVC | VVC | AV1 | VP9 | AV2 |
+|---|---|---|---|---|---|---|
+| `veryfast` | `veryfast` | - | - | `veryfast` | `veryfast` | - |
+| `faster` | retired (nearest: `veryfast` or `faster`) | `faster` | - | `faster` | `faster`, re-pointed (about 1.2x 0.5.0's time) | `faster` |
+| `fast` | **`faster`** | `fast` | **`faster`** | `fast` | `fast` | `fast`, re-pointed (about 1.25x 0.5.0's time) |
+| `medium` | `medium` | `medium` | `medium` | `medium` | `medium` | `medium` |
+| `slow` | **`slower`** | **`veryslow`** | **`veryslow`** | **`slower`** | **`slower`** | **`slower`** |
+| new in 0.6.0 | `fast`, `slow` | `slow`, `slower` | `fast`, `slow`, `slower` | `slow` | `slow` | `slow` |
+
+"Same name" means the same position on the ladder. It does not mean the same streams: the
+day's other changes (below) also changed several rungs.
+
+The ladders in 0.6.0, fastest first:
+
+| codec | rungs |
+|---|---|
+| H.264 | veryfast, faster, fast, medium, slow, slower |
+| HEVC | faster, fast, medium, slow, slower, veryslow |
+| VVC | faster, fast, medium, slow, slower, veryslow |
+| AV1 | veryfast, faster, fast, medium, slow, slower |
+| VP9 | veryfast, faster, fast, medium, slow, slower |
+| AV2 | faster, fast, medium, slow, slower |
+
+What the new rungs are:
+- `slow` is medium plus the RD partition search (nodes decided by coded cost) with its context
+  gate on HEVC, VVC, AV1, VP9 and AV2. AV1 and VP9 `slow` also hold a long-lived second
+  reference. H.264 `slow` is medium plus slower's final decision stage and winner walk.
+- HEVC and VVC `slower` sit between `slow` and `veryslow`.
+- VVC `fast` is `faster` plus the adaptive loop filter and trellis quantisation.
+- H.264 `fast` is `faster` plus trellis quantisation and wider intra and vector searches.
+
+Results published for 0.5.0 keep their 0.5.0 labels (`Slow`, `Fast`): they name what the 0.5.0
+binary calls each rung. The 0.6.0 charts re-measure every rung under its new name.
+
+### Speed figures
+- The results site's speeds are measured on this release's profile-guided (PGO) builds of the
+  command-line tool and C API (x86_64 and aarch64, attached to the GitHub release). crates.io
+  carries source: a crate built by cargo is a plain release build, which took 1.4-3.2 % more CPU on
+  x86 than PGO (AV1, HEVC and H.264 Faster, 2026-11-11). The browser (WASM) module is a plain build.
+- `medium` encode speed, measured 2026-11-21 on one Jetson Orin Nano core with the CBR chart's
+  method (720p, the chart's three clips, 150 frames), the 0.5.0 release build against a plain
+  build of this release: H.264 65.9 -> 61.6, HEVC 45.0 -> 43.5, AV1 45.3 -> 42.5, VP9 41.8 -> 35.0,
+  AV2 39.0 -> 33.0, VVC 29.7 -> 24.8 fps. The release (PGO) build measured 4-7 % faster than a
+  plain build on all codecs but VVC (0.4 %). The results site has the release build's figures.
+  Speed depends heavily on content.
+- **VVC `medium` is slower than in 0.5.0**, for about 4 % better quality: it now runs the final
+  decision stage, temporal lambda and ALF statistics on every row of key and base pictures. VVC
+  `fast` is the faster VVC point (0.5.0's `fast` is now `faster`).
+- **VP9 `medium` and AV2 `medium` are also slower than in 0.5.0** (figures above). VP9 `medium` now ranks candidates on VP9's own filter and walks
+  the winner; AV2 `medium` gained the motion-vector bank with a four-entry reference list,
+  temporal lambda on flat streams and the split selector. `fast` is the faster point in each.
+
+### Encoders
+Measured per change on the day it landed (J is PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds,
+negative is better; final check = 34 clips, 600 frames; CPU = whole-encode cycles on rented
+Graviton3 / Graviton4 / Zen 5). The charts re-measure every preset as a whole.
+
+- **RD partition search** (`planner.rd_split`): at each inter block the planned coding and a split
+  one level either side are coded and the cheaper kept. On the slowest rungs (0.5.0's `slow`),
+  final check: VVC -9.85 % (with the final decision stage), HEVC -8.37 %, VP9 -8.76 %, AV2 -5.71 %,
+  AV1 -3.24 % J. A context gate (trials only where neighbouring decisions suggest another size)
+  gives the new `slow` rungs: J -3.6 to -4.7 % against `medium` at 1.32-1.48x its time (HEVC, VVC,
+  AV1, VP9, AV2; AV1 and VP9 `slow` include the held second reference). H.264 `slow` is `medium`
+  plus the final decision stage and winner walk: J -2.57 % at 1.31x.
+- **Split selector** (`planner.split_selector`): the planner's split bias at each node shifts by a
+  fitted function of its residual, quadrant and motion-search evidence, with no coding work. On
+  the `medium` rungs of HEVC, VVC, AV1, VP9 and AV2, and on faster AV1 and AV2 rungs.
+- **Held second reference** (`refs.second_hold`): the last high-quality frame kept as the second
+  reference for up to 255 frames (VP9, AV1), moved to a later high-quality frame coded at least as
+  well, and released when the camera moves. On AV1 and VP9 `slow`.
+- **Temporal lambda on flat streams** (`layers.propagation_flat`): blocks that later frames reuse
+  are coded finer, under rate control only. J -0.3 to -1.5 % (L3 and final check) on HEVC
+  `slow`/`veryslow`, VVC `medium`/`slow`, AV1 `slow`/`slower`, AV2 `medium`, for +1.2 to +3.4 %
+  cycles.
+- **Loop-filter search by usage** (`filter.usage_*`): SAO and ALF search effort on non-base
+  pictures follows how much of the unit the reference coded as skip. HEVC and VVC `medium`, VVC
+  `fast`: about -0.3 to -2.4 % cycles at equal or better J.
+- **Cheap coefficient trimming** (`quant.rd_trim`), where the trellis is off: final check J -0.1 to
+  -1.7 % on VP9 `veryfast`/`fast`/`faster`, VVC `faster` and AV1 `veryfast`/`faster`/`fast`, for
+  -0.7 to +2.3 % cycles.
+- **Sub-pel**: the quarter-sample step predicted from the half-sample costs
+  (`decision.subpel_quarter_predict`) on VVC and VP9 `fast` and VP9 and HEVC `faster`.
+- **Speed, streams identical**: fewer copies in RD-trial bookkeeping (undo journals, row
+  snapshots), coefficient coding for AV2 and VP9, VVC long deblocking.
+- **Kernels**: NEON 16-bit quantise for H.264, AV1, VP9 and AV2; NEON VP9 motion compensation in
+  16-byte rows; AV1 smooth intra per mode on NEON and 16-wide on WASM SIMD128; NEON high-precision
+  VVC motion compensation.
+- **Fixes**: VVC `slow` reconstruction now matches the decoded stream on still content with the
+  partition search (the block-QP map was missing from the trial snapshot; found before release);
+  VP9 never offers a NEWMV difference outside the coded range, and H.264 vectors stay within the
+  level's range (Table A-1); `nanocodec extract` accepts HEVC streams with CRA pictures (broken in
+  0.5.0).
+
+### Decoders
+- Conformance (official streams decoded bit-exactly, 2026-11-21): HEVC 147/147, VP9 305/305, AV1
+  242/242, VVC 226/226, H.264 110/190.
+
+### Housekeeping
+- A raw video file (`rec.yuv`, a reconstruction made while testing the VVC decoder) had been
+  committed by mistake. It has been removed, and raw video (`*.yuv`, `*.y4m`) is now ignored.
+
+### Known issues
+- AV2 with `--frame-drop` does not drop frames: on a 202x98 test pattern at an 8 kbps target the
+  stream came out at about 14.7 kbps (24 frames, at the highest quantizer). The same in 0.5.0.
+
 ## 0.5.0 (2026-11-20)
 
 - **Speed figures.** The results site's speeds are measured on this release's profile-guided (PGO)

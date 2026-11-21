@@ -13,7 +13,8 @@ shutdown -h +@LIFETIME_MINUTES@
 
 BOX=/home/ubuntu/ncbox
 install -d -o ubuntu -g ubuntu "$BOX" "$BOX/slots" "$BOX/jobs"
-for slot in $(seq 0 $((@SLOTS@ - 1))); do
+# One slot per @JOBS_PER_SLOT@ vCPU of whichever type the fleet chose.
+for slot in $(seq 0 $(( $(nproc) / @JOBS_PER_SLOT@ - 1 ))); do
   install -o ubuntu -g ubuntu -m 644 /dev/null "$BOX/slots/$slot"
 done
 # The idle clock starts at boot.
@@ -30,6 +31,7 @@ done
 last=$(stat -c %Y "$BOX/activity" 2>/dev/null || echo 0)
 if [ $(( $(date +%s) - last )) -ge "$limit" ]; then
   logger -t ncbox-idle "idle for @IDLE_MINUTES@ min: shutting down"
+  rm -rf -- /home/ubuntu/nanocodec-data/clips   # clips never outlive their use
   shutdown -h now
 fi
 EOF

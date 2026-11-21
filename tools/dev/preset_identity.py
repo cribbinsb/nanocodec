@@ -10,11 +10,20 @@ the two builds' streams are compared by SHA-256. Streams are written to a
 temporary directory and deleted as soon as they are hashed; no YUVs are written.
 
     python3 tools/dev/preset_identity.py OLD_BINARY NEW_BINARY [--codecs h264,av1]
-        [--frames N] [--jobs N] [--old-names] [--clip-dir DIR]
+        [--frames N] [--jobs N] [--old-names] [--renamed OLD=NEW ...] [--added STEM ...]
+        [--clip-dir DIR]
 
 `--old-names`: OLD_BINARY predates the speed ladder (2026-11-15) and is given
 each preset by its codec-prefixed name (`h264-fastest` for H.264 `veryfast`,
 `av1-svc3-fast` for AV1 `--scalability L3T1 --preset fast`).
+
+`--renamed OLD=NEW` (repeatable): a rung renamed between the builds (2026-11-21:
+`slow=slower`); OLD_BINARY codes the new tree's NEW file under its OLD name. A new
+tree's file named OLD is then a rung OLD_BINARY does not have: it is listed as new,
+not compared, and the count of checked encodes leaves it out.
+
+`--added STEM` (repeatable): a rung the new tree adds (`slow`, 2026-11-21) is listed as
+new and not compared, as above.
 
 `--clip-dir`: where the clips are (`<clip>.yuv`, 1280x720 I420), for a machine
 without the PC's clip sets (the Jetson keeps crowd_mot17_09 in clips/quick).
@@ -22,19 +31,31 @@ A clip missing there is left out, and the count of checked encodes says so.
 
 Exit status 0 when every stream is identical, 1 otherwise (the differing
 encodes are listed).
+
+It runs on the build box by default (owner, 2026-11-21: the PC carries no material
+compute): `nc-remote run` syncs this tree, both builds and the clips, runs it there
+with `--local`, and prints its output; `--local` runs it here.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
+import shlex
 import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
+NC_REMOTE = Path.home() / "nanocodec-data/bin/nc-remote"
+#: Set in every nc-remote job (tools/dev/nc_remote_job.py).
+ON_BUILD_BOX_ENV = "NC_REMOTE_BOX"
 CLIP_DIR = Path.home() / "nanocodec-data/clips/main"
 #: One clip per motion regime the engine branches on (moving crowd, fixed camera, pan).
 CLIPS = ("crowd_mot17_09", "static_otw_homes390", "pan_bdd_00c12bd0")
@@ -67,6 +88,15 @@ def old_preset_args(codec: str, stem: str | None) -> list[str]:
         return []
     old = OLD_LAYERED_NAMES.get(stem) or OLD_RUNG_NAMES[stem]
     return ["--preset", f"{codec}-{old}"]
+
+
+def renamed_stem(stem: str | None, renamed: dict[str, str]) -> str | None:
+    """The stem OLD_BINARY knows the new tree's `stem` by (`--renamed`), layers kept."""
+    if stem is None:
+        return None
+    layers, dash, speed = stem.rpartition("-")
+    old = {new: old for old, new in renamed.items()}.get(speed, speed)
+    return f"{layers}{dash}{old}"
 
 
 def presets(codec: str, preset_dir: Path) -> list[str | None]:
@@ -104,6 +134,29 @@ def stream_hash(binary: Path, args: list[str], work: Path) -> str:
         out.unlink(missing_ok=True)
 
 
+def on_build_box(a: argparse.Namespace) -> int:
+    """This check on the build box: the tree, both builds and the clips go up
+    (nc-remote run --sync / --clip), the same command runs there with --local."""
+    builds = [a.old.resolve(), a.new.resolve()]
+    if not all(b.is_relative_to(Path.home()) for b in builds):
+        raise SystemExit("the builds must be under ~ to go to the build box (or --local)")
+    clips = [a.clip_dir.resolve() / f"{clip}.yuv" for clip in CLIPS]
+    box = lambda path: "$HOME/" + str(path.relative_to(Path.home()))
+    command = ["python3", "tools/dev/preset_identity.py", box(builds[0]), box(builds[1]),
+               "--codecs", a.codecs, "--frames", str(a.frames), "--jobs", str(a.jobs),
+               "--clip-dir", box(a.clip_dir.resolve()), "--local",
+               *(["--old-names"] if a.old_names else []),
+               *[x for r in a.renamed for x in ("--renamed", r)],
+               *[x for r in a.added for x in ("--added", r)]]
+    print("preset_identity on the build box (nc-remote; --local runs it here)", flush=True)
+    return subprocess.call([str(NC_REMOTE), "run", "--worktree", str(REPO),
+                            "--name", f"preset-identity-{REPO.name}",
+                            *[x for b in builds for x in ("--sync", str(b))],
+                            *[x for c in clips if c.is_file() for x in ("--clip", str(c))],
+                            "--", " ".join(shlex.quote(x) if not x.startswith("$HOME") else
+                                           f'"{x}"' for x in command)])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("old", type=Path)
@@ -113,19 +166,34 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--old-names", action="store_true",
                     help="OLD_BINARY takes the presets' names from before the ladder")
+    ap.add_argument("--renamed", action="append", default=[], metavar="OLD=NEW",
+                    help="a rung renamed between the builds: OLD_BINARY codes NEW as OLD")
+    ap.add_argument("--added", action="append", default=[], metavar="STEM",
+                    help="a rung the new tree adds: listed, not compared")
     ap.add_argument("--clip-dir", type=Path, default=CLIP_DIR,
                     help="the clips' directory (default: the PC's main set)")
+    ap.add_argument("--local", action="store_true",
+                    help="encode here (default: on the build box, nc-remote)")
     a = ap.parse_args()
+    if not a.local and not os.environ.get(ON_BUILD_BOX_ENV):
+        return on_build_box(a)
 
+    renamed = dict(r.split("=", 1) for r in a.renamed)
     jobs = []  # (name, old arguments, new arguments)
+    added = []  # new rungs OLD_BINARY does not have (`--renamed`, `--added`)
+    new_rungs = {*renamed, *a.added}
     for codec in a.codecs.split(","):
         for stem in presets(codec, REPO / "crates/nc-encoder/presets"):
-            old_args = old_preset_args(codec, stem) if a.old_names else preset_args(stem)
+            if stem is not None and stem.rpartition("-")[2] in new_rungs:
+                added.append(f"{codec} {stem}")
+                continue
+            old_stem = renamed_stem(stem, renamed)
+            old_args = old_preset_args(codec, old_stem) if a.old_names else preset_args(old_stem)
             old = commands(codec, old_args, a.frames, a.clip_dir)
             new = commands(codec, preset_args(stem), a.frames, a.clip_dir)
             for (label, o), (_, n) in zip(old, new):
                 jobs.append((f"{codec} {stem or 'medium'} {label}", o, n))
-    with tempfile.TemporaryDirectory(prefix="preset-identity-") as tmp:
+    with tempdirs.temp_dir("preset-identity") as tmp:
         work = Path(tmp)
         with ThreadPoolExecutor(a.jobs) as pool:
             old = pool.map(lambda j: stream_hash(a.old, j[1], work), jobs)
@@ -137,6 +205,8 @@ def main() -> int:
     differ = [(job[0], o, n) for job, o, n in pairs if o != n or o.startswith("FAILED")]
     for name, o, n in differ:
         print(f"DIFF {name}: {o[:16]} vs {n[:16]}")
+    if added:
+        print(f"new rungs, not compared: {', '.join(added)}")
     print(f"{len(pairs) - len(differ)}/{len(pairs)} streams identical")
     return 1 if differ else 0
 

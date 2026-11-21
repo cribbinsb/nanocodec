@@ -29,7 +29,8 @@ both standard decoders and our own (nceval.conformance.gate_stream):
              with `structure.secondary_min_depth` 0: the first high-quality
              frame after each key predicts from that key as its second
              reference (the unified structure's plan; AV2 named a slot the
-             key had not filled there, 2026-11-15) (medium preset)
+             key had not filled there, 2026-11-15); every preset since
+             2026-11-21 (VVC Slow's RD partition search mismatched only here)
     stillqp  `still` at a fixed quantizer
     starved  CBR far below the content's rate with a key every KEY_PERIOD
              frames (keys under a starved budget) over a source that
@@ -67,6 +68,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import shutil
 import subprocess
 import sys
@@ -95,7 +97,9 @@ from nceval.yuv import SwitchedFormat, YuvFormat  # noqa: E402
 
 CODECS = (Codec.H264, Codec.HEVC, Codec.VVC, Codec.AV1, Codec.VP9, Codec.AV2)
 PRESETS_DIR = REPO_ROOT / "crates/nc-encoder/presets"
-MAX_WORKERS = 8
+#: The PC's per-agent cap (CLAUDE.md "Working in parallel"); on the build box
+#: (NC_REMOTE_BOX, land.sh verify) the box's cores.
+MAX_WORKERS = (os.cpu_count() or 8) if os.environ.get("NC_REMOTE_BOX") else 8
 DEFAULT_WORKERS = 4
 FPS = 30
 SOURCE_STEP = 2  # every second source frame: more motion per coded frame
@@ -317,14 +321,13 @@ def fixed_temporal_layers(codec: Codec, preset: str) -> bool:
 
 
 def cases(codecs: list[Codec]) -> list[Case]:
-    kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp")
+    kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp", "still", "stillqp")
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(codec, preset) == 1
             for kind in kinds
             if not (kind == "refresh" and (codec in NO_INTRA_REFRESH
                                            or fixed_temporal_layers(codec, preset)))]
     base += [Case(codec, MEDIUM, "timed") for codec in codecs]
-    base += [Case(codec, MEDIUM, kind) for codec in codecs for kind in ("still", "stillqp")]
     base += [Case(codec, preset, "switch") for codec in codecs
              if codec in ADAPTIVE_RESOLUTION_CODECS
              for preset in shipped_presets(codec) if spatial_layers(codec, preset) == 1]
@@ -510,7 +513,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--param", action="append", default=[],
                         help="name=value added to every case (a lever that lands off)")
+    parser.add_argument("--list-clips", action="store_true",
+                        help="print the source clips the cases read (for a run on another "
+                             "machine: land.sh's verify on the build box) and exit")
     args = parser.parse_args(argv)
+    if args.list_clips:
+        paths = load_paths()
+        shapes = dict.fromkeys([SMALL, LARGE, *(c.shape for c in cases(
+            [Codec(c) for c in args.codecs.split(",")]))])
+        print("\n".join(sorted({str(paths.data_root / s.source) for s in shapes})))
+        return 0
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers must be 1..{MAX_WORKERS}")
     started = time.monotonic()

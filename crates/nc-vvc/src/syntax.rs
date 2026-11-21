@@ -76,7 +76,7 @@ pub(crate) struct Coding {
 
 /// Decisions recorded during the shared walk. Like HEVC, entropy coding waits
 /// until frame filtering has chosen SAO parameters, which precede each CTU.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Item {
     Ctu {
         x: usize,

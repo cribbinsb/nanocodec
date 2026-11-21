@@ -84,12 +84,12 @@ pub struct Decoder {
     reference_border_ready: bool,
     /// The other pictures the latest picture's RPL0 keeps in the DPB
     /// (§8.3.2: the second reference, `references.rs`), with their POCs.
-    retained: Vec<(u8, Picture)>,
+    retained: Vec<(u16, Picture)>,
     /// Whether the last decode succeeded, so `reference` is its picture.
     shown: bool,
     /// Replaced references, reused as later reconstructions and output copies.
     pictures: PictureRecycler,
-    next_poc: Option<u8>,
+    next_poc: Option<u16>,
     dsp: Dsp,
     /// Parameter NALs awaiting the next slice in the streaming API.
     pending: Vec<u8>,
@@ -478,9 +478,9 @@ impl Decoder {
         // kept.
         let latest = self
             .next_poc
-            .map(|next| next.wrapping_sub(1))
+            .map(|next| poc_lsb(u32::from(next).wrapping_sub(1), self.tools.poc_bits))
             .zip(self.reference.as_ref());
-        let dpb: Vec<(u8, &Picture)> = latest
+        let dpb: Vec<(u16, &Picture)> = latest
             .into_iter()
             .chain(self.retained.iter().map(|(poc, picture)| (*poc, picture)))
             .collect();
@@ -521,7 +521,7 @@ impl Decoder {
 
     /// Keep, of the retained pictures, those the new picture's RPL0 lists
     /// (`listed` POCs); the others leave the DPB (§8.3.2).
-    fn retain(&mut self, listed: &[u8]) {
+    fn retain(&mut self, listed: &[u16]) {
         let (kept, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retained)
             .into_iter()
             .partition(|(poc, _)| listed.contains(poc));
@@ -732,7 +732,9 @@ impl Decoder {
         // Extend only when a later inter picture actually uses this reference.
         // All-intra streams and the final output need no border work.
         if let Some(replaced) = self.reference.replace(coded) {
-            let previous = self.next_poc.map(|next| next.wrapping_sub(1));
+            let previous = self
+                .next_poc
+                .map(|next| poc_lsb(u32::from(next).wrapping_sub(1), self.tools.poc_bits));
             // A stream with a second reference keeps every picture the new
             // one lists (§8.3.2), which a later picture may list again; its
             // borders were extended when the new picture predicted from it.
@@ -746,7 +748,7 @@ impl Decoder {
             motion.commit_motion_field();
         }
         self.reference_border_ready = false;
-        self.next_poc = Some(poc.wrapping_add(1));
+        self.next_poc = Some(poc_lsb(u32::from(poc) + 1, self.tools.poc_bits));
         self.shown = true;
         Ok(true)
     }
@@ -887,13 +889,14 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
     };
     let timing = headers::read_sps_timing(&mut r)?;
     let colour = read_colour(&mut r)?;
-    // The DPB size says whether the stream keeps a second reference; the
-    // other tool flags were read above.
+    // The DPB size says whether the stream keeps a second reference, and
+    // the POC LSB length whether it is held long; the other tool flags were
+    // read above.
     let tools = [false, true]
         .into_iter()
-        .map(|second_reference| headers::Tools {
-            second_reference,
-            ..tools
+        .flat_map(|second| [(second, false), (second, true)])
+        .map(|(second_reference, held)| headers::Tools {
+            ..tools.with_second_reference(second_reference, held)
         })
         .find(|&tools| bytes == headers::sps(&geometry, colour, &chroma_qp, tools, timing))
         .ok_or(DecodeError::Unsupported("VVC SPS tools"))?;
@@ -971,9 +974,9 @@ fn decode_slice(
     chroma_qp: &ChromaQpTable,
     (tools, pps): (headers::Tools, headers::PpsTools),
     inter_frame: bool,
-    (dpb, motion): (&[(u8, &Picture)], &mut MotionGrid),
+    (dpb, motion): (&[(u16, &Picture)], &mut MotionGrid),
     alf_banks: &[Option<Box<crate::alf_aps::SignalledFilters>>; ALF_APS_IDS],
-    next_poc: Option<u8>,
+    next_poc: Option<u16>,
     dsp: &Dsp,
     pictures: &mut PictureRecycler,
     #[cfg(feature = "analysis")] mut stats: Option<&mut nc_common::stream_stats::StreamStats>,
@@ -1089,10 +1092,10 @@ fn decode_slice(
 fn slice_references<'a>(
     header: &OwnSliceHeader<'_>,
     inter_frame: bool,
-    next_poc: Option<u8>,
-    dpb: &[(u8, &'a Picture)],
+    next_poc: Option<u16>,
+    dpb: &[(u16, &'a Picture)],
 ) -> Result<(
-    Vec<u8>,
+    Vec<u16>,
     [Option<&'a Picture>; crate::motion::MAX_ACTIVE_REFERENCES],
 )> {
     let mut references = [None; crate::motion::MAX_ACTIVE_REFERENCES];
@@ -1103,9 +1106,9 @@ fn slice_references<'a>(
         return Err(DecodeError::Malformed("out-of-order VVC picture"));
     }
     let rpl = &header.references;
-    let listed: Vec<u8> = rpl.distances[..rpl.count]
+    let listed: Vec<u16> = rpl.distances[..rpl.count]
         .iter()
-        .map(|&distance| header.poc.wrapping_sub(distance as u8))
+        .map(|&distance| poc_lsb(u32::from(header.poc).wrapping_sub(distance), rpl.poc_bits))
         .collect();
     for (index, &listed_poc) in listed.iter().enumerate() {
         let picture = dpb
@@ -1120,9 +1123,14 @@ fn slice_references<'a>(
     Ok((listed, references))
 }
 
+/// `poc` reduced to its `bits` LSBs (`ph_pic_order_cnt_lsb`, at most 16).
+fn poc_lsb(poc: u32, bits: u32) -> u16 {
+    (poc & ((1 << bits) - 1)) as u16
+}
+
 /// What a slice of our own streams signals in its header.
 struct OwnSliceHeader<'b> {
-    poc: u8,
+    poc: u16,
     qp: u32,
     /// `None` without ALF in the SPS.
     alf: Option<headers::SliceAlf>,
@@ -1138,12 +1146,12 @@ struct OwnSliceHeader<'b> {
 /// lists.
 struct OwnPicture {
     picture: Picture,
-    poc: u8,
-    listed: Vec<u8>,
+    poc: u16,
+    listed: Vec<u16>,
 }
 
 impl OwnPicture {
-    fn new(picture: Picture, poc: u8, listed: Vec<u8>) -> Self {
+    fn new(picture: Picture, poc: u16, listed: Vec<u16>) -> Self {
         Self {
             picture,
             poc,
@@ -1163,7 +1171,7 @@ fn parse_slice_header<'a, 'b>(
 ) -> Result<(OwnSliceHeader<'b>, &'a [u8])> {
     let mut r = BitReader::new(bytes);
     r.skip_bits(6)?; // embedded PH flags and PPS id
-    let poc = r.read_bits(8)? as u8;
+    let poc = r.read_bits(tools.poc_bits)? as u16;
     if block_qp {
         // ph_cu_qp_delta_subdiv_intra_slice (and _inter_slice), ue(v) 0:
         // one bit each, validated by the canonical header below.
@@ -1180,10 +1188,13 @@ fn parse_slice_header<'a, 'b>(
         r.skip_bits(1)?; // no-output flag
     }
     let (alf, bank) = slice_alf(&mut r, tools, alf_banks)?;
-    let references = if inter_frame {
-        read_reference_lists(&mut r, temporal_mvp == Some(true))?
-    } else {
-        crate::references::Syntax::FLAT
+    let references = crate::references::Syntax {
+        poc_bits: tools.poc_bits,
+        ..if inter_frame {
+            read_reference_lists(&mut r, temporal_mvp == Some(true))?
+        } else {
+            crate::references::Syntax::FLAT
+        }
     };
     let qp = 26i64 + i64::from(r.read_se()?);
     if !(0..=i64::from(headers::MAX_QP)).contains(&qp) {

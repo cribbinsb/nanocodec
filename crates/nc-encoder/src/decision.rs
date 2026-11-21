@@ -31,6 +31,7 @@ use crate::params::DecisionParams;
 use crate::partition::Block;
 use crate::partition_plan::LeafStats;
 use crate::psy::{ac_energy, psy_penalty};
+use crate::quarter_predict::{QuarterPredict, predicted_step};
 use crate::rd_refine::{RdWalk, rd_refine_vector};
 use crate::refresh::RefreshWindow;
 use crate::threshold_control::{Band, BandEvidence, Tool};
@@ -90,6 +91,14 @@ impl QuarterStage {
         }
     }
 }
+/// What the fixed-stage search predicts where it skips its quarter stage.
+fn quarter_predict(params: &DecisionParams) -> QuarterPredict {
+    QuarterPredict::of(
+        params.subpel_quarter_predict,
+        params.subpel_quarter_predict_strength,
+    )
+}
+
 /// Area from which `decision.codec_subpel_seed_lambdas_large` applies (32x32).
 const LARGE_BLOCK_AREA: f32 = 32.0 * 32.0;
 /// Integer-probe order matches the decision-neutral omitted-candidate oracle.
@@ -107,6 +116,19 @@ trait RefineCost {
     /// [`Self::cost`] of each of `mvs`, in order.
     fn cost_four(&mut self, mvs: [Mv; 4]) -> [(f32, f32); 4] {
         mvs.map(|mv| self.cost(mv))
+    }
+
+    /// [`Self::cost_four`], except that a vector whose distortion alone
+    /// cannot win (`distortion * bias >= best`) may cost `f32::INFINITY`:
+    /// costs are distortion plus a rate that is never negative, so its cost
+    /// times `bias` is at least `best` as well.
+    fn cost_four_below(&mut self, mvs: [Mv; 4], (_best, _bias): (f32, f32)) -> [(f32, f32); 4] {
+        self.cost_four(mvs)
+    }
+
+    /// [`Self::cost_four_below`] of one vector.
+    fn cost_below(&mut self, mv: Mv, (_best, _bias): (f32, f32)) -> (f32, f32) {
+        self.cost(mv)
     }
 }
 
@@ -134,6 +156,56 @@ where
 
     fn cost_four(&mut self, mvs: [Mv; 4]) -> [(f32, f32); 4] {
         (self.four)(mvs)
+    }
+}
+
+/// The bilinear ranking's refinement cost: distortion plus `rate`, with the
+/// four vectors of a stage measured in one batch and priced only where
+/// their distortion alone can still win
+/// ([`RefineCost::cost_four_below`]): a vector's mode bits are a backend
+/// rate estimate per vector, and most of a stage's vectors already lose on
+/// distortion.
+struct RateAfterDistortion<'a, One, Four, Rate> {
+    distortion: &'a One,
+    distortion_four: &'a Four,
+    rate: Rate,
+}
+
+impl<One, Four, Rate> RefineCost for RateAfterDistortion<'_, One, Four, Rate>
+where
+    One: Fn(Mv) -> f32,
+    Four: Fn([Mv; 4]) -> [f32; 4],
+    Rate: FnMut(Mv) -> f32,
+{
+    fn cost(&mut self, mv: Mv) -> (f32, f32) {
+        let distortion = (self.distortion)(mv);
+        (distortion + (self.rate)(mv), distortion)
+    }
+
+    fn cost_four(&mut self, mvs: [Mv; 4]) -> [(f32, f32); 4] {
+        let distortions = (self.distortion_four)(mvs);
+        [0, 1, 2, 3].map(|i| (distortions[i] + (self.rate)(mvs[i]), distortions[i]))
+    }
+
+    fn cost_four_below(&mut self, mvs: [Mv; 4], (best, bias): (f32, f32)) -> [(f32, f32); 4] {
+        let distortions = (self.distortion_four)(mvs);
+        [0, 1, 2, 3].map(|i| {
+            let distortion = distortions[i];
+            if distortion * bias >= best {
+                (f32::INFINITY, distortion)
+            } else {
+                (distortion + (self.rate)(mvs[i]), distortion)
+            }
+        })
+    }
+
+    fn cost_below(&mut self, mv: Mv, (best, bias): (f32, f32)) -> (f32, f32) {
+        let distortion = (self.distortion)(mv);
+        if distortion * bias >= best {
+            (f32::INFINITY, distortion)
+        } else {
+            (distortion + (self.rate)(mv), distortion)
+        }
     }
 }
 
@@ -654,13 +726,16 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
                 (cost, distortion, stats)
             })
         };
-        // Neither the codec's skip vector nor a static block is walked: on a
-        // still camera, moving them to a sub-sample neighbour blurs the scene
-        // over the GOP (skip vector: pool_chad_3_086, fixed QP, J +7.2 %
-        // walked, -0.3 % kept; static blocks: the long windows of
-        // final-check, docs/handoff/rd-depth.md).
+        // Neither the codec's skip vector (`decision.winner_walk_keeps_skip`)
+        // nor a static block is walked: on a still camera, moving them to a
+        // sub-sample neighbour blurs the scene over the GOP (skip vector:
+        // pool_chad_3_086, fixed QP, J +7.2 % walked, -0.3 % kept; fixed QP,
+        // draw fixedqp-2026-11-20, walked: H.264 Default +0.2 %, HEVC Slow
+        // +0.2 %; static blocks: the long windows of final-check,
+        // docs/handoff/rd-depth.md). The AV1 family walks it (its codecs'
+        // `DEFAULT_PARAMS`).
         let walk = winner_walk(params).filter(|_| {
-            Some(inter_mv) != skip_vector
+            (params.winner_walk_keeps_skip < 0.5 || Some(inter_mv) != skip_vector)
                 && !static_block
                 && inter_distortion
                     >= params.winner_walk_min_lambdas * lambda * leaf_area::<B>(block) as f32
@@ -687,7 +762,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
             dc: dc_error::<B>(params, inter_stats, block),
             mv: inter_mv,
         };
-        if params.final_stage < 0.5 {
+        if !final_stage_on(backend, params) {
             return intra_or_inter(backend, (&measurer, source), block, lambda, params, inter);
         }
         let finish = Finish {
@@ -699,17 +774,15 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
         return finish.decide(backend, &measurer, block, lambda, params, inter);
     }
 
-    let cost = |mv: Mv, stats: Variance| -> (f32, f32) {
-        let distortion = n_variance::<B>(stats, block) as f32;
-        let cost = distortion + lambda * backend.mode_bits(block, &PredictionMode::Inter(mv));
-        (cost, distortion)
+    let distortion_of = |mv: Mv| n_variance::<B>(stats_of(mv), block) as f32;
+    let distortion_of_four =
+        |mvs: [Mv; 4]| stats_of_four(mvs).map(|stats| n_variance::<B>(stats, block) as f32);
+    let mut refine_cost = RateAfterDistortion {
+        distortion: &distortion_of,
+        distortion_four: &distortion_of_four,
+        rate: |mv: Mv| lambda * backend.mode_bits(block, &PredictionMode::Inter(mv)),
     };
-    let cost_of = |mv: Mv| cost(mv, stats_of(mv));
-    let cost_of_four = |mvs: [Mv; 4]| {
-        let stats = stats_of_four(mvs);
-        [0, 1, 2, 3].map(|i| cost(mvs[i], stats[i]))
-    };
-    let best = rank(candidates, cost_of);
+    let best = rank(candidates, |mv| refine_cost.cost(mv));
     // Only the winner is refined: refining every candidate (or the search
     // vector before ranking) costs up to 8 more evaluations each.
     let area = leaf_area::<B>(block) as f32;
@@ -717,23 +790,35 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     // refining it would cost up to 8 evaluations to move a block that is
     // about to be coded as skip anyway.
     let negligible = params.skip_no_refine_lambdas * lambda * area;
+    // The winner is not refined below the codec's variance gate
+    // (`CodecBackend::subpel_skip_variance`) nor below the engine's seed gate
+    // (`decision.codec_subpel_seed_lambdas`, the exact-filter path's gate on
+    // its NEW seed), whichever is higher. What it skips: up to 8 bilinear
+    // evaluations on a winner whose residual is already a small fraction of
+    // λ per sample, where a sub-sample move rarely repays its vector bits.
+    // VP9 Veryfast, four quick clips, 60 f, CBR 600: refinement ran on every
+    // block and moved 11 % of them. At 0.05 (VP9 Veryfast): Jetson cycles
+    // -3.0 %, x86 instructions -3.55 %; pool L3 J -1.30 % at k 0.6, quality
+    // +0.85 %; final-check quality +0.48 %, no guard
+    // (docs/handoff/fast-decision.md).
+    let skip_below = backend
+        .subpel_skip_variance()
+        .max(seed_gate_threshold(area, params) * lambda)
+        * area;
     let (inter_cost, inter_distortion, inter_mv) =
         if Some(best.2) == skip_vector && best.1 < negligible {
             best
         } else {
             refine_subpel(
                 best,
-                backend.subpel_skip_variance() * area,
+                skip_below,
                 (
                     params.subpel_move_bias,
                     params.subpel_move_bias_nonzero,
                     params.subpel_fractional_bias,
                 ),
-                QuarterStage::of(params),
-                BatchedCost {
-                    one: &cost_of,
-                    four: &cost_of_four,
-                },
+                (QuarterStage::of(params), quarter_predict(params)),
+                refine_cost,
             )
         };
 
@@ -750,7 +835,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
         dc,
         mv: inter_mv,
     };
-    if params.final_stage < 0.5 {
+    if !final_stage_on(backend, params) {
         return intra_or_inter(backend, (&measurer, source), block, lambda, params, inter);
     }
     // The final stage needs the winner's prediction error (the planner's
@@ -762,6 +847,13 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
         winner_sse: stats_of(inter_mv).sse as f32,
     };
     finish.decide(backend, &measurer, block, lambda, params, inter)
+}
+
+/// Whether the final decision stage decides this leaf: asked for, and the
+/// codec can price its candidates (a codec without a pricing keeps the
+/// ranking's winner or DC intra, as with the stage off).
+fn final_stage_on<B: CodecBackend>(backend: &B, params: &DecisionParams) -> bool {
+    params.final_stage >= 0.5 && backend.prices_final_candidates()
 }
 
 /// What the end of the inter decision needs besides the ranking's winner:
@@ -791,13 +883,23 @@ impl Finish<'_> {
         inter: InterChoice,
     ) -> Choice {
         let (source, reference, recon) = self.pictures;
+        let ranked = intra_or_inter(backend, (measurer, source), block, lambda, params, inter);
         // The stage settles near-ties of flat, well-predicted blocks; where
         // the winner's error is large the residual dominates whatever is
         // chosen, and pricing it (many coefficients) costs most.
         let max_winner =
             params.final_max_winner_lambdas * backend.lambda() * leaf_area::<B>(block) as f32;
-        if max_winner > 0.0 && self.winner_sse > max_winner {
-            return intra_or_inter(backend, (measurer, source), block, lambda, params, inter);
+        // Intra won through the directional estimate (`decision.intra_directional`),
+        // which the stage's whole-block intra screen cannot price: it
+        // stands, and the backend's own direction search confirms it.
+        // Without the stage's intra candidate (`decision.final_intra_candidate`
+        // 0) intra stays the ranking's decision.
+        let ranked_intra = !ranked.mode.is_inter() && params.final_intra_candidate < 0.5;
+        if (max_winner > 0.0 && self.winner_sse > max_winner)
+            || ranked.mode.intra_fallback().is_some()
+            || ranked_intra
+        {
+            return ranked;
         }
         let skip = self
             .skip_vector
@@ -831,13 +933,23 @@ impl Finish<'_> {
                 && inter.distortion + inter.dc
                     > final_intra_gate(params, lambda) * leaf_area::<B>(block) as f32,
         };
-        final_stage::decide(
+        let choice = final_stage::decide(
             backend,
             (source, reference, recon),
             block,
             params,
             finalists,
-        )
+        );
+        // Where the stage agrees with the ranking, whole-CU pricing
+        // (`cu_pricing.rs`) keeps the ranking's margins to gate on.
+        if choice.mode == ranked.mode {
+            Choice {
+                pricing: ranked.pricing,
+                ..choice
+            }
+        } else {
+            choice
+        }
     }
 }
 
@@ -1007,7 +1119,13 @@ pub(crate) fn choose_compound_mode<B: CodecBackend>(
         pred_buf.resize(area, 0);
     }
     let pred_slice = &mut pred_buf[..area];
-    let filter = backend.luma_filter().unwrap_or(Filter::Av1);
+    // A codec without compound-precision kernels (VP9 averages two 8-bit
+    // predictions) is ranked by AV1's compound prediction, as before it
+    // exposed its filter.
+    let filter = backend
+        .luma_filter()
+        .filter(|filter| filter.has_compound())
+        .unwrap_or(Filter::Av1);
     primary_measurer.predict_compound_into(filter, primary_mv, &mut compound_a[..area]);
     secondary_measurer.predict_compound_into(filter, secondary_mv, &mut compound_b[..area]);
     let mut dst_view = PlaneViewMut::new(pred_slice, w, w, h).expect("block fits");
@@ -1146,7 +1264,7 @@ fn refine_codec_subpel(
                 params.subpel_move_bias_nonzero,
                 params.subpel_fractional_bias,
             ),
-            QuarterStage::of(params),
+            (QuarterStage::of(params), quarter_predict(params)),
             cost,
         );
     }
@@ -1830,7 +1948,7 @@ fn refine_subpel(
     (start_cost, start_distortion, start): (f32, f32, Mv),
     skip_below: f32,
     (zero_bias, nonzero_bias, fractional_bias): (f32, f32, f32),
-    quarter: QuarterStage,
+    (quarter, predict): (QuarterStage, QuarterPredict),
     mut cost: impl RefineCost,
 ) -> (f32, f32, Mv) {
     let mut best = (start_cost, start_distortion, start);
@@ -1853,15 +1971,67 @@ fn refine_subpel(
         } else {
             fractional_bias
         };
-        // The four vectors of a stage share its centre: one batch.
+        // The four vectors of a stage share its centre: one batch. A vector
+        // is taken only if `c * move_bias < best`, so one whose distortion
+        // alone fails that against the stage's starting best need not be
+        // priced.
         let mvs = cross_around(centre, step, CROSS);
-        for (mv, (c, d)) in mvs.into_iter().zip(cost.cost_four(mvs)) {
+        let costs = cost.cost_four_below(mvs, (best.0, move_bias));
+        for (mv, (c, d)) in mvs.into_iter().zip(costs) {
             if c * move_bias < best.0 {
                 best = (c, d, mv);
             }
         }
+        // A half stage that did not move, before a quarter stage that will
+        // not run: its costs predict the quarter step
+        // (`decision.subpel_quarter_predict`).
+        if predict != QuarterPredict::Off
+            && step != 1
+            && best.2 == centre
+            && quarter.skips(centre, start)
+        {
+            return predicted_quarter(best, (costs, move_bias), predict, &mut cost);
+        }
     }
     best
+}
+
+/// The half-stage winner `best` (unmoved) after the quarter step its
+/// half-stage `costs` predict, under `predict` with the stage's `move_bias`.
+fn predicted_quarter(
+    best: (f32, f32, Mv),
+    (costs, move_bias): ([(f32, f32); 4], f32),
+    predict: QuarterPredict,
+    cost: &mut impl RefineCost,
+) -> (f32, f32, Mv) {
+    let Some((index, predicted)) = predicted_step(best.1, costs.map(|(_, d)| d)) else {
+        return best;
+    };
+    let (dx, dy) = CROSS[index];
+    let mv = Mv {
+        x: best.2.x + dx,
+        y: best.2.y + dy,
+    };
+    match predict {
+        QuarterPredict::Off => best,
+        QuarterPredict::Probe => {
+            let (c, d) = cost.cost_below(mv, (best.0, move_bias));
+            if c * move_bias < best.0 {
+                (c, d, mv)
+            } else {
+                best
+            }
+        }
+        // Unmeasured: the cost falls by the predicted distortion gain.
+        QuarterPredict::Model { strength } => {
+            let gain = best.1 - predicted;
+            if gain >= strength * best.1 {
+                (best.0 - gain, predicted, mv)
+            } else {
+                best
+            }
+        }
+    }
 }
 
 /// Whole-sample `start` (residual `start_stats`) of `block` refined to sub-sample
@@ -1888,7 +2058,7 @@ pub(crate) fn refined_vector<B: CodecBackend>(
         (start_distortion, start_distortion, start),
         0.0,
         no_bias,
-        QuarterStage::Always,
+        (QuarterStage::Always, QuarterPredict::Off),
         cost,
     )
     .2

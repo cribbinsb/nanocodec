@@ -2,9 +2,12 @@
 """Regression tests for bounded streaming conformance execution."""
 import hashlib
 import importlib.util
-import tempfile
 import unittest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 spec = importlib.util.spec_from_file_location('vvc_conformance', Path(__file__).with_name('vvc_conformance.py'))
 runner = importlib.util.module_from_spec(spec)
@@ -13,7 +16,7 @@ spec.loader.exec_module(runner)
 
 class StreamingGate(unittest.TestCase):
     def run_fixture(self, program, expected=b'pixels', timeout=2):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempdirs.temp_dir("test-vvc-conformance") as directory:
             root = Path(directory)
             binary = root / 'decoder'
             binary.write_text('#!/usr/bin/env python3\n' + program)

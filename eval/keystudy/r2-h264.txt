@@ -1,0 +1,3 @@
+dbk-2: h264.deblock_alpha_offset=-2 h264.deblock_beta_offset=-2
+dbk-4: h264.deblock_alpha_offset=-4 h264.deblock_beta_offset=-4
+dbk-2a: h264.deblock_alpha_offset=-2

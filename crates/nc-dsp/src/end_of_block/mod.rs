@@ -10,8 +10,8 @@
 //! 16-bit maximum: AVX2 16 levels per step, AVX-512 32 (masked maximum),
 //! NEON and SIMD128 8. The 32-bit-level form ([`WideEobFn`], AV2 and VVC
 //! levels) narrows its nonzero masks to 16 bits and also returns the OR
-//! of the magnitudes (it exceeds an all-ones limit exactly when one
-//! magnitude does).
+//! of the magnitudes when requested (it exceeds an all-ones limit exactly
+//! when one magnitude does).
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
@@ -47,18 +47,23 @@ pub const fn eob_table<const N: usize>(scan: &[u16; N]) -> [u16; N] {
 /// calls it.
 pub(crate) type EobFn = unsafe fn(levels: &[i16], table: &[u16]) -> usize;
 
-/// End of block of 32-bit `levels` under `table`, and the OR of their
-/// magnitudes ([`scalar_wide`]'s contract).
+/// End of block of 32-bit `levels` and the OR of their magnitudes, or zero
+/// in the second element for a scan specialized to just the end position.
 pub(crate) type WideEobFn = unsafe fn(levels: &[i32], table: &[u16]) -> (usize, u32);
 
 /// The scalar reference of [`WideEobFn`].
-pub(crate) fn scalar_wide(levels: &[i32], table: &[u16]) -> (usize, u32) {
+pub(crate) fn scalar_wide<const MAGNITUDES: bool>(levels: &[i32], table: &[u16]) -> (usize, u32) {
     levels
         .iter()
         .zip(table)
         .fold((0, 0), |(end, bits), (&level, &position)| {
             let coded = if level == 0 { 0 } else { usize::from(position) };
-            (end.max(coded), bits | level.unsigned_abs())
+            let bits = if MAGNITUDES {
+                bits | level.unsigned_abs()
+            } else {
+                0
+            };
+            (end.max(coded), bits)
         })
 }
 
@@ -74,15 +79,15 @@ pub(crate) fn scalar(levels: &[i16], table: &[u16]) -> usize {
 }
 
 /// The 32-bit-level kernel of `isa`.
-pub(crate) fn wide_kernel(isa: Isa) -> WideEobFn {
+pub(crate) fn wide_kernel<const MAGNITUDES: bool>(isa: Isa) -> WideEobFn {
     match isa {
         #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 | Isa::Avx512 => avx2::end_of_block_wide,
+        Isa::Avx2 | Isa::Avx512 => avx2::end_of_block_wide::<MAGNITUDES>,
         #[cfg(target_arch = "aarch64")]
-        Isa::Neon => neon::end_of_block_wide,
+        Isa::Neon => neon::end_of_block_wide::<MAGNITUDES>,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-        Isa::Simd128 => simd128::end_of_block_wide,
-        _ => scalar_wide,
+        Isa::Simd128 => simd128::end_of_block_wide::<MAGNITUDES>,
+        _ => scalar_wide::<MAGNITUDES>,
     }
 }
 

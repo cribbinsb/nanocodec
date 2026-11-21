@@ -24,7 +24,7 @@ def main():
     if revision != PIN:
         raise SystemExit(f"Expected AVM {PIN}, found {revision}")
     driver = Path(__file__).with_name("sequence_oracle.c").resolve()
-    with tempfile.TemporaryDirectory(prefix="nc-av2-sequence-") as directory:
+    with tempfile.TemporaryDirectory(prefix="nanocodec-av2-sequence-") as directory:
         root = Path(directory)
         # Include the original translation unit so its internal sequence helpers
         # remain intact; section GC discards unrelated picture-writing routines.

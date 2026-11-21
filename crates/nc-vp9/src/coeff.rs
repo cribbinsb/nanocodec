@@ -130,9 +130,9 @@ const DEFAULT_SCAN_32X32_EOB: [u16; 1024] = nc_dsp::eob_table(&tables::DEFAULT_S
 
 impl ScanOrder {
     /// The end of block of raster-order `levels`: one past the scan index
-    /// of the last nonzero level (the shared kernel, `Dsp::end_of_block_wide`).
+    /// of the last nonzero level (the shared kernel, `Dsp::last_nonzero_wide`).
     fn end_of_block(&self, dsp: &Dsp, levels: &[i32]) -> usize {
-        dsp.end_of_block_wide(&levels[..self.eob.len()], self.eob).0
+        dsp.last_nonzero_wide(&levels[..self.eob.len()], self.eob)
     }
 }
 
@@ -307,23 +307,32 @@ fn write_magnitude(emit: &mut impl FnMut(bool, u8), value: i32, pivot: u8) {
     }
 }
 
+/// Read the Pareto tail and its energy class with libvpx's direct
+/// branches. The same branch that picks a magnitude range gives the class
+/// for the next coefficients, including for high-depth category 6.
 #[inline]
-fn read_magnitude(reader: &mut BoolReader<'_>, pivot: u8, categories: &Categories) -> i32 {
+fn read_magnitude(reader: &mut BoolReader<'_>, pivot: u8, categories: &Categories) -> (i32, u8) {
     let probs = &tables::PARETO[usize::from(pivot) - 1];
-    let mut node = 0;
-    let token = loop {
-        let bit = reader.read(probs[node]);
-        let child = TAIL_TREE[node][usize::from(bit)];
-        if child < 0 {
-            break (-child - 1) as usize;
-        }
-        node = child as usize;
+    if !reader.read(probs[0]) {
+        return if reader.read(probs[1]) {
+            (3 + i32::from(reader.read(probs[2])), 3)
+        } else {
+            (2, 2)
+        };
+    }
+
+    let (category, energy) = if !reader.read(probs[3]) {
+        (3 + usize::from(reader.read(probs[4])), 4)
+    } else if !reader.read(probs[5]) {
+        (5 + usize::from(reader.read(probs[6])), 5)
+    } else {
+        (7 + usize::from(reader.read(probs[7])), 5)
     };
     let mut offset = 0;
-    for &probability in categories[token] {
+    for &probability in categories[category] {
         offset = (offset << 1) | i32::from(reader.read(probability));
     }
-    BASE[token] + offset
+    (BASE[category] + offset, energy)
 }
 
 /// Emit the token bits of raster-order `levels`, whose end of block is
@@ -338,6 +347,25 @@ fn emit_tokens(
     initial: usize,
     emit: &mut impl FnMut(bool, u8, Option<Node>),
 ) {
+    // As in read_tokens, an all-zero block codes only the DC EOB
+    // branch. The scan and cache are needed only after that branch.
+    if eob == 0 {
+        if let Some(counts) = counts {
+            let count = &mut counts[0][initial];
+            count.eob_branch += 1;
+            count.tokens[EOB_MODEL_TOKEN] += 1;
+        }
+        emit(
+            false,
+            probs[0][initial][0],
+            Some(Node {
+                band: 0,
+                ctx: initial,
+                index: 0,
+            }),
+        );
+        return;
+    }
     // The token cache is sized to the transform: rate estimation calls this
     // for every candidate, and zeroing a 32x32 cache for every 4x4 block
     // was most of its cost in WASM profiles.
@@ -463,41 +491,58 @@ pub(crate) fn write(
     );
 }
 
+/// The shared rate-aware trimming (`nc_encoder::trim_levels`) of a block's
+/// `levels` (raster) from its `coefficients`, at `lambda` (sample SSE per
+/// bit), with distortion in coefficient units as the trellis prices it
+/// (`trellis::TrellisQuantizer::quantize`). Returns the new end of block.
+pub(crate) fn rate_trim(
+    dsp: &Dsp,
+    trim: &nc_encoder::RateTrim,
+    (levels, coefficients): (&mut [i32], &[i16]),
+    (tx, ty): (TxSize, TxType),
+    steps: crate::transform::Steps,
+    lambda: f64,
+) -> usize {
+    let order = scan_order(tx, ty);
+    let eob = order.end_of_block(dsp, levels);
+    let shift = tx.dequant_shift();
+    // Coefficients are 8x orthonormal (32x32: 4x, as the trellis's).
+    let scale_log2 = if tx == TxSize::Tx32 { 2 } else { 3 };
+    let to_sse = 1.0 / f64::from(1_u32 << (2 * scale_log2));
+    nc_encoder::trim_levels(trim, levels, order.scan, eob, lambda, |p, magnitude| {
+        let dequantized = (i64::from(magnitude) * i64::from(steps.step(p))) >> shift;
+        nc_encoder::dequantized_removal_sse(
+            i64::from(coefficients[p].unsigned_abs()),
+            dequantized,
+            to_sse,
+        )
+    })
+}
+
 /// Drop trailing ±1 levels of raster-order `levels` that stand at least
 /// `min_gap` scan positions after the previous nonzero level, from the end
 /// backwards (SVT-AV1 `shave_coeff`, as HEVC's `shave_isolated_ones`: an
 /// isolated high-frequency ±1 pays its end-of-block placement and zero
 /// tokens for almost no distortion; it is mostly noise). The first nonzero
-/// level is always kept. Returns whether any level remains.
+/// level is always kept. Returns the end of the remaining scan.
 pub(crate) fn shave_isolated_ones(
     dsp: &Dsp,
     levels: &mut [i32],
     tx: TxSize,
     ty: TxType,
     min_gap: usize,
-) -> bool {
+) -> usize {
     let order = scan_order(tx, ty);
-    let mut eob = order.end_of_block(dsp, levels);
-    loop {
-        // No level, or only the first one, which is always kept.
-        if eob <= 1 {
-            return eob == 1;
+    nc_encoder::shave_isolated_ones(levels, order.scan, min_gap, |levels, end| {
+        // Find the tail with the shared SIMD scan. Then walk backwards
+        // through the prefix once, without clearing and rescanning it.
+        if end == order.scan.len() {
+            return order.end_of_block(dsp, levels).checked_sub(1);
         }
-        let last = eob - 1;
-        let position = usize::from(order.scan[last]);
-        let level = levels[position];
-        if level.abs() != 1 {
-            return true;
-        }
-        // The previous nonzero level: the end of block without the last.
-        levels[position] = 0;
-        let previous_eob = order.end_of_block(dsp, levels);
-        if previous_eob == 0 || last + 1 - previous_eob < min_gap {
-            levels[position] = level;
-            return true;
-        }
-        eob = previous_eob;
-    }
+        order.scan[..end]
+            .iter()
+            .rposition(|&position| levels[usize::from(position)] != 0)
+    })
 }
 
 /// Estimated bits of coding `levels`, whose end of block is `eob` (as
@@ -715,17 +760,17 @@ fn read_tokens<C: Av1Coefficient>(
             counts.tokens[1 + usize::from(more)] += 1;
             // At most the largest category's 14 (8-bit) to 18 (12-bit)
             // extra bits.
-            let magnitude = if more {
+            let (magnitude, energy) = if more {
                 read_magnitude(reader, probs[2], dequantizer.categories)
             } else {
-                1
+                (1, 1)
             };
             // §8.6.2 makes a valid stream's dequantized value fit 8 +
             // `BitDepth` bits (libvpx's 8-bit `dqcoeff` is `int16_t`); a
             // corrupt one wraps, as every inverse treated it.
             let negative = reader.read_bit();
             coefficients[position] = dequantize(magnitude, step, dequantizer.shift, negative);
-            cache[position] = energy(magnitude);
+            cache[position] = energy;
             rows = rows.max((position >> *row_shift) + 1);
             columns = columns.max((position & *column_mask) + 1);
         } else {
@@ -764,24 +809,18 @@ mod tests {
         levels[at(2)] = 1;
         levels[at(20)] = -1;
         levels[at(40)] = 1;
-        assert!(shave_isolated_ones(
-            &Dsp::new(),
-            &mut levels,
-            TxSize::Tx8,
-            TxType::DctDct,
-            8
-        ));
+        assert_eq!(
+            shave_isolated_ones(&Dsp::new(), &mut levels, TxSize::Tx8, TxType::DctDct, 8),
+            3
+        );
         // Both far ±1 levels go; the one 2 positions after the DC stays.
         assert_eq!((levels[at(40)], levels[at(20)], levels[at(2)]), (0, 0, 1));
         let mut lone = [0; 64];
         lone[at(30)] = 1;
-        assert!(shave_isolated_ones(
-            &Dsp::new(),
-            &mut lone,
-            TxSize::Tx8,
-            TxType::DctDct,
-            8
-        ));
+        assert_eq!(
+            shave_isolated_ones(&Dsp::new(), &mut lone, TxSize::Tx8, TxType::DctDct, 8),
+            31
+        );
         assert_eq!(lone[at(30)], 1, "the first level is always kept");
     }
 

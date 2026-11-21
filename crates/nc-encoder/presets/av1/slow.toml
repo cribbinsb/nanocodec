@@ -1,31 +1,29 @@
-# AV1 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first: the second reference with the full decision) plus AV1's
-# levers. Re-picked 2026-11-19 (docs/handoff/presets.md "Slow presets"):
-# everything heavy on at once, then cut back by component cost. Alone on the
-# Default (fixed QP J, 23 clips / x86 callgrind P instructions): the winner
-# walk -1.5% / +16%, the pre-transform skip off -1.5% / +8%, the inter-frame
-# intra search widened -0.8% / +5%, key-frame trellis -0.9% / 0%, the biased
-# skip off -0.4% / +1%, four trellis survivors -0.3% / +20%. Left out: the
-# final stage (+2.4%, worse), chroma trellis (+2.5%), 8x8 inter blocks (the
-# planner set, +2.4%), the luma residual check on every vector (+0.9%), loop
-# restoration (+0.3% at +142%), the sub-sample refinement gates (no gain in
-# the bundle at +11%), the square winner walk and every transform-split
-# trial (-0.1 J each for +12..+29 points).
-#
-# The winner walk: three quarter-sample moves along the row and column.
-decision.winner_walk_steps = 3
-decision.winner_walk_square = 0
-# Inter-frame intra: every block searched, all seven candidates costed, the
-# DC intra gate lower; key frames cost more candidates and every angle delta.
-av1.inter_intra_search = 2
-av1.inter_intra_rd_candidates = 7
-av1.keyframe_intra_rd_candidates = 8
-av1.keyframe_angle_deltas = 2
-decision.intra_gate_variance = 16
-# Every residual reaches the transform: no pre-transform skip, no biased skip.
-av1.pre_tx_skip = 0
-av1.skip_bias_pct = 100
-av1.skip_bias_pct_base = 100
-# Trellis on key frames too, with four survivors.
-quant.trellis_key = 1
-quant.trellis_states = 4
+# AV1 slow (`--preset slow`): the Default plus the RD partition search with its
+# context gate (`nc_encoder` `rd_split.rs`, `depth_context.rs`;
+# docs/handoff/rd-split-gate.md): inter nodes decided by coding the plan's
+# alternative where the neighbours' and co-located leaf sizes suggest it.
+# The rung between medium and slower on AV1's front (docs/handoff/presets.md
+# "The ladder"). Against medium, preset-ladder 2026-11-21 (16a104a1b): whole-encode
+# fps 136.7 -> 98.7 (1.38x the time) (combined: Graviton 3/4 and Zen 5, log-equal ARM/x86, 720p CBR 600,
+# 4 quick clips); final check (34 clips, 600 f, keys every 10 s, draw 2026-11-21)
+# J -2.92 % [-3.68, -1.75], no guard.
+planner.rd_split = 1
+planner.rd_split_context = 1
+# The second reference on every frame, held: the last high-quality frame stays the
+# second reference for up to 5 s (re-armed at a new one, released while the camera
+# moves; docs/handoff/background-reference.md). With it this rung measured (151ac8ab8,
+# same method) 1.48x medium's time, J -4.45 % against medium, no guard, against 1.36x and
+# -2.36 % for the gate alone: 1.3 J better than the medium-slower chord.
+structure.unified = 0
+refs.second = 2
+refs.second_hold = 5
+refs.second_hold_rearm = 1
+refs.second_hold_moving = 1
+
+# Layer propagation on the flat stream's QP-cadence cycles (layer_propagation.rs,
+# docs/handoff/temporal-lambda.md). nceval.train (k 0.1, base f953cd97d): L3 (n 108)
+# -0.68 % [-1.34, -0.08] BETTER, final-check (n 34) -1.51 % [-2.09, -0.98] BETTER; whole encode cycles Graviton3 +2.70 %, Zen 5 +3.39 % (AV1 slow).
+layers.propagation = 1
+layers.propagation_flat = 1
+layers.propagation_grid = 3
+layers.propagation_prekey = 1

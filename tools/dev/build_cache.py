@@ -47,6 +47,7 @@ sys.path.insert(0, str(HERE.parents[1] / "eval"))
 from chart_refresh import (  # noqa: E402
     BUILD_INPUTS, BUILDS_ROOT, COMPLETE_MARKER, OLD_PRESETS_PATH, PRESETS_PATH, SCORING_BINARY,
     place)
+from nceval import retention, tempdirs  # noqa: E402
 from nceval.buildinfo import info_of, stamp_problem  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -118,6 +119,7 @@ def store(commit: str, gate_dir: Path, since: float | None) -> Path | None:
     with cache_lock():
         if problem is None and not complete(directory):
             directory.mkdir(parents=True, exist_ok=True)
+            retention.ensure_entry_marker(CACHE)
             (directory / CACHE_MARKER).touch()
             place(cli, directory / SCORING_BINARY)
             install_presets(commit, directory)
@@ -150,7 +152,7 @@ def prune_locked() -> None:
                   if {p.name for p in d.iterdir()} <= OWN_FILES]
     keep = referenced([d.name for d in candidates])
     for directory in candidates:
-        if directory.name not in keep:
+        if directory.name not in keep and retention.guard(directory, "build_cache") is None:
             print(f"build cache: pruned {directory}")
             shutil.rmtree(directory)
 
@@ -185,7 +187,7 @@ def remote_build(commit: str) -> Path:
             git("worktree", "add", "--detach", str(REMOTE_TREE), full)
         subprocess.run(["git", "-C", str(REMOTE_TREE), "checkout", "-q", "--force", "--detach",
                         full], check=True)
-        with tempfile.TemporaryDirectory(prefix="binary-for-") as fetched:
+        with tempdirs.temp_dir("binary-for") as fetched:
             print(f"build cache: {full[:SHORT]} not cached: building it on the build box",
                   file=sys.stderr)
             subprocess.run([str(NC_REMOTE), "run", "--worktree", str(REMOTE_TREE), "--name",

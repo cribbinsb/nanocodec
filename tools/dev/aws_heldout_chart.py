@@ -50,7 +50,8 @@ session, and judges which clips need low rungs on all of the chart's families, a
 chart's render does (a session of a few families judged on those alone left the other
 clips' low rungs to the render, which scores without XPSNR). With `--session I/N` only
 those clips' streams and seed results go up; `--region` runs a session in a second
-region's spot quota.
+region's spot quota. `--low-clips A,B` gives the low rungs to those clips instead of the chart's
+rule (the history page's fixed basis, tools/dev/history_chart.py).
 
 The independent test (docs/results/independent-*.md) runs the same stages with
 `--build DIR` (a scoring build of the commit under test instead of the
@@ -82,13 +83,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))
 from aws_session import THROUGHPUT_X86_TYPES, fallbacks_after, say  # noqa: E402
+from nceval import retention  # noqa: E402
 from nceval.cbr import Bench, Point  # noqa: E402
 from nceval.cbr import Family  # noqa: E402
 from nceval.encoders.nanocodec import MEDIUM  # noqa: E402
 from nceval.plotted import own_families  # noqa: E402
 from nceval.chart import (ANCHOR, OURS, REFERENCES, chart_families, low_ladder,  # noqa: E402
                           low_rung_clips, quality_points)
-from nceval.clipframes import decode_command  # noqa: E402
+from nceval.clipframes import frames_command  # noqa: E402
 from nceval.clips import Clip, load_clipset  # noqa: E402
 from nceval.config import load_paths  # noqa: E402
 from nceval.gatepolicy import EVALUATION_GATE  # noqa: E402
@@ -173,6 +175,8 @@ STREAMS_REL = "work/heldout-chart/streams"
 RESULTS_REL = "realuse"
 REPO_ARCHIVE = "repo.tar"
 SEED_REL = "work/heldout-chart/seed"
+#: Where a build record (--record) goes up, under the remote data root.
+RECORD_REL = "work/heldout-chart/record"
 #: Anchor tools scoring never runs (a CUDA build, a formatter).
 UNNEEDED_TOOLS = ("vmaf-cuda", "clang-format")
 #: Clips whose remote decode is compared with a local one, every run.
@@ -326,9 +330,19 @@ class Setup:
     #: The families whose curves decide which clips get low rungs (nceval.chart's rule:
     #: the chart's own points, never a tuned twin); None: `families`.
     judges: list[Family] | None = None
+    #: The clips that get low rungs, fixed in advance (`--low-clips`: the history page's
+    #: frozen basis); None: judged by the chart's rule on the ladder (`low_rung_clips`).
+    fixed_low: frozenset[str] | None = None
 
     def low_rung_clips(self, curves: dict) -> list[Clip]:
         return low_rung_clips(curves, self.judges or self.families, self.clips)
+
+    def low_clips(self, rungs: tuple[int, ...] | None) -> list[Clip]:
+        """The clips whose low rungs this run measures: `fixed_low`, else the chart's rule
+        on the judges' (cached) ladder."""
+        if self.fixed_low is not None:
+            return [c for c in self.clips if c.name in self.fixed_low]
+        return self.low_rung_clips(self.judge_ladder(rungs))
 
     def judge_ladder(self, rungs: tuple[int, ...] | None) -> dict:
         """The judges' cached ladder curves on the run's clips."""
@@ -404,7 +418,8 @@ def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
                                          xpsnr=True),
                  extra_clips, extra_families(families) if args.extras else [],
                  getattr(args, "frames", None) or DEFAULT_FRAMES,
-                 getattr(args, "key_seconds", None), judges)
+                 getattr(args, "key_seconds", None), judges,
+                 frozenset(args.low_clips.split(",")) if args.low_clips else None)
 
 
 def remote_job(bench: Bench, point: Point) -> dict:
@@ -452,8 +467,19 @@ def stage(stage_dir: Path, jobs: list, clips: list[Clip], tools: dict[str, Path]
         first_clip.setdefault(point.family.name, remote_job(bench, point))
     (stage_dir / "jobs.json").write_text(json.dumps(ordered) + "\n")
     (stage_dir / "pipe.json").write_text(json.dumps(list(first_clip.values())) + "\n")
-    decodes = [(c.name, c.yuv.name, min(frames, c.frames), c.frame_bytes) for c in clips]
-    (stage_dir / "decode.txt").write_text("".join(f"{n} {f} {k} {b}\n" for n, f, k, b in decodes))
+    (stage_dir / "decode.txt").write_text("".join(decode_line(c, frames) for c in clips))
+
+
+#: decode.txt's last field: how the box takes a clip's frames (prepare_command).
+RAW_KIND, ENCODED_KIND = "raw", "encoded"
+
+
+def decode_line(clip: Clip, frames: int) -> str:
+    """A clip's line of decode.txt: name, stored file, frames, frame bytes, and whether
+    its file is raw I420 (its first bytes are the frames, as here: Clip.encoded) or
+    encoded (an ffmpeg decode)."""
+    kind = ENCODED_KIND if clip.encoded else RAW_KIND
+    return f"{clip.name} {clip.yuv.name} {min(frames, clip.frames)} {clip.frame_bytes} {kind}\n"
 
 
 def unstage(stage_dir: Path) -> None:
@@ -469,10 +495,13 @@ def unstage(stage_dir: Path) -> None:
 
 def prepare_command(version: str, tools: list[str], clips: list[Clip], frames: int) -> str:
     """Readiness: ffmpeg and xxhash installed, every tool runs (our version stamp
-    matches), every clip decodes (in parallel, to RAM) to exactly its size."""
-    decode = (f"ffmpeg -nostdin -v error -i clips/$2 -frames:v $3 -f rawvideo -pix_fmt yuv420p "
-              f"{REMOTE_CLIPS}/$1.yuv && test $(stat -c %s {REMOTE_CLIPS}/$1.yuv) = $(($3 * $4))"
-              f" && sha256sum {REMOTE_CLIPS}/$1.yuv")
+    matches), every clip's frames land (in parallel, in RAM) at exactly their size: a raw
+    clip's first frames copied as they are, an encoded clip decoded (decode_line)."""
+    frames_out = f"{REMOTE_CLIPS}/$1.yuv"
+    decode = (f"if [ \"$5\" = {RAW_KIND} ]; then head -c $(($3 * $4)) clips/$2 > {frames_out}; "
+              f"else ffmpeg -nostdin -v error -i clips/$2 -frames:v $3 -f rawvideo "
+              f"-pix_fmt yuv420p {frames_out}; fi"
+              f" && test $(stat -c %s {frames_out}) = $(($3 * $4)) && sha256sum {frames_out}")
     return " && ".join([
         f"cd ~/{REMOTE_DIR}",
         "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update",
@@ -521,11 +550,11 @@ def encoded_bytes(jobs: list) -> int:
 
 
 def check_decodes(streams: Path, clips: list[Clip], frames: int) -> None:
-    """The remote decodes of the first DECODE_CHECKS clips equal local decodes."""
+    """The remote frames of the first DECODE_CHECKS clips equal the frames read here."""
     remote = {Path(line.split()[1]).stem: line.split()[0]
               for line in (streams / "decoded.sha256").read_text().splitlines()}
     for clip in clips[:DECODE_CHECKS]:
-        command = decode_command(clip, min(frames, clip.frames))
+        command = frames_command(clip, min(frames, clip.frames))
         local = hashlib.sha256(subprocess.run(command, capture_output=True, check=True)
                                .stdout).hexdigest()
         if local != remote.get(clip.name):
@@ -543,8 +572,9 @@ def run(args: argparse.Namespace) -> None:
     # 2026-11-18, VC-1K's scored zero lines would have rented a machine for 162 low-rung
     # encodes no score uses)
     ladder = run_setup.ladder(args.rungs)
-    low = (run_setup.low_rungs(run_setup.low_rung_clips(run_setup.judge_ladder(args.rungs)))
-           if all(bench.cached(point) for bench, point in ladder) else run_setup.low_rungs())
+    low = (run_setup.low_rungs(run_setup.low_clips(args.rungs))
+           if run_setup.fixed_low is not None or all(bench.cached(point) for bench, point in ladder)
+           else run_setup.low_rungs())
     jobs = ladder + low + run_setup.extras()
     streams = Path(args.streams)
     # a rerun encodes only what an earlier, stopped session did not bring back
@@ -625,7 +655,7 @@ def score(args: argparse.Namespace) -> None:
         elif uncached(run.ladder(args.rungs)):
             break  # which clips need low rungs is judged on the whole ladder
         else:
-            low = run.low_rung_clips(run.judge_ladder(args.rungs))
+            low = run.low_clips(args.rungs)
             say(f"low rungs on {len(low)} of {len(run.clips)} clips")
             todo = uncached(run.low_rungs(low))
         if not score_points(run.runner, todo, phase, args.workers, deadline):
@@ -664,7 +694,7 @@ def score_cloud(args: argparse.Namespace) -> None:
     run = setup(args)
     pending = [j for j in run.ladder(args.rungs) + run.extras() if not j[0].cached(j[1])]
     if not pending:  # the ladder is all here: are its low rungs too? (score's rule)
-        low = run.low_rung_clips(run.judge_ladder(args.rungs))
+        low = run.low_clips(args.rungs)
         pending = [j for j in run.low_rungs(low) if not j[0].cached(j[1])]
     if not pending:  # every point scored here already: no instance (76259 re-scored once)
         say("every point is scored here: no scoring session")
@@ -735,7 +765,9 @@ def score_cloud(args: argparse.Namespace) -> None:
                        fallback_types=fallbacks(args))
     results = CLOUD_RESULTS
     results.mkdir(parents=True, exist_ok=True)
+    retention.ensure_entry_marker(results)
     timings = {}
+    brought: list[Path] = []  # this session's result files, as they come back
     try:
         with Session(spec) as session:
             started = time.monotonic()
@@ -748,16 +780,17 @@ def score_cloud(args: argparse.Namespace) -> None:
                     session.run_detached(command, f"~/{name}.log", minutes,
                                          stall_minutes=SCORE_STALL_MINUTES)
                     timings[name] = time.monotonic() - started
-                score_rounds(session, score_round, args.minutes, results, run.frames)
+                score_rounds(session, score_round, args.minutes, results, run.frames, brought)
             finally:
                 started = time.monotonic()
-                session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER)
+                session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER,
+                                     brought)
                 timings["download"] = time.monotonic() - started
                 say("stage minutes: " + ", ".join(f"{k} {v / 60:.1f}" for k, v in
                                                   timings.items()))
     finally:
         unstage_score(stage_dir)
-    merge_results(results, load_paths().work / RESULTS_REL)
+    merge_results(results, load_paths().work / RESULTS_REL, brought)
 
 
 def fallbacks(args: argparse.Namespace) -> tuple[str, ...]:
@@ -765,7 +798,8 @@ def fallbacks(args: argparse.Namespace) -> tuple[str, ...]:
     return () if args.no_fallback else fallbacks_after(args.instance_type)
 
 
-def score_rounds(session, command: str, minutes: float, results: Path, frames: int) -> None:
+def score_rounds(session, command: str, minutes: float, results: Path, frames: int,
+                 brought: list[Path]) -> None:
     """Score in rounds until no shard has points left or `minutes` have passed, each
     round's new results brought back and merged here (a checkpoint). A round ends when
     its shards finish the points they started, so its limit allows for the longest
@@ -776,8 +810,11 @@ def score_rounds(session, command: str, minutes: float, results: Path, frames: i
         log = f"~/score-{round_index}.log"
         say(f"remote: score round {round_index}")
         session.run_detached(command, log, limit, stall_minutes=SCORE_STALL_MINUTES)
-        moved = session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER)
-        merge_results(results, load_paths().work / RESULTS_REL)
+        back: list[Path] = []
+        moved = session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER,
+                                     back)
+        brought.extend(back)
+        merge_results(results, load_paths().work / RESULTS_REL, back)
         left = session.ssh(f"grep -c 'run score again' {log} || true", quiet=True,
                            check=False).stdout.strip()
         say(f"round {round_index}: {moved / 1e6:.0f} MB back, {left or 0} shard phases unfinished")
@@ -788,8 +825,8 @@ def score_rounds(session, command: str, minutes: float, results: Path, frames: i
 def remote_options(args: argparse.Namespace) -> str:
     """The run's own options for the remote `score` (the build at its remote path)."""
     options = ""
-    if args.record:  # the repository's copy (the remote runs this repository's HEAD)
-        options += f" --record ~/repo/{Path(args.record).resolve().relative_to(REPO)}"
+    if args.record:  # staged beside the data (a release's record may not be committed yet)
+        options += f" --record ~/nanocodec-data/{RECORD_REL}/{Path(args.record).name}"
     if args.build:
         options += f" --build ~/nanocodec-data/charts/builds/{chart_build(args.build).name}"
     if args.references:
@@ -802,6 +839,8 @@ def remote_options(args: argparse.Namespace) -> str:
         options += f" --extras {args.extras}"
     if args.session:
         options += f" --session {args.session}"
+    if args.low_clips:
+        options += f" --low-clips {shlex.quote(args.low_clips)}"
     if args.frames != DEFAULT_FRAMES:
         options += f" --frames {args.frames}"
     if args.key_seconds:
@@ -820,6 +859,8 @@ def stage_score(stage_dir: Path, args: argparse.Namespace, clips: list[Clip],
     subprocess.run(["git", "-C", str(REPO), "archive", "-o", str(stage_dir / REPO_ARCHIVE),
                     "HEAD"], check=True)
     links = {data / "clips" / Path(args.clipset).name: Path(args.clipset),
+             **({data / RECORD_REL / Path(args.record).name: Path(args.record)}
+                if args.record else {}),
              data / "anchors/x86_64/share/vmaf": DATA / "anchors/x86_64/share/vmaf"}
     streams = Path(args.streams)
     links.update({data / STREAMS_REL / p.name: p for p in streams.iterdir() if p.is_file()})
@@ -865,11 +906,14 @@ def unstage_score(stage_dir: Path) -> None:
     stage_dir.rmdir()
 
 
-def merge_results(results: Path, cache: Path) -> None:
-    """Every remote result file into the local point cache; reports how many points
-    the cache already held and whether those were bit-identical."""
+def merge_results(results: Path, cache: Path, files: list[Path] | None = None) -> None:
+    """The remote result files (`files`, those a round brought back; default every one
+    under `results`) into the local point cache; reports how many points the cache
+    already held and whether those were bit-identical. Merging the whole store each
+    round re-read ~190,000 earlier results, ~10 min a round (2026-11-21)."""
     same = differ = new = 0
-    for remote in sorted(results.rglob("*.json")):
+    chosen = files if files is not None else results.rglob("*.json")
+    for remote in sorted(p for p in chosen if p.suffix == ".json"):
         local = cache / remote.relative_to(results)
         if local.exists():
             if local.read_bytes() == remote.read_bytes():
@@ -1021,6 +1065,8 @@ def main(argv: list[str]) -> None:
                        help="frames per point (a longer window than the chart's 150)")
         p.add_argument("--key-seconds", type=float,
                        help="a key every this many seconds (default: one key, the chart's)")
+        p.add_argument("--low-clips", help="comma-separated clips that get the low rungs, "
+                       "instead of the chart's rule (the history page's frozen basis)")
     for name in ("run", "score-cloud"):
         cloud = sub.choices[name]
         cloud.add_argument("--instance-type", default=DEFAULT_INSTANCE, choices=sorted(

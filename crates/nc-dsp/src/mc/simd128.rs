@@ -62,6 +62,7 @@ pub(crate) fn mc_fns() -> McFns {
         vvc_luma: super::av1_simd128::separable_family::<VvcLumaTaps, 8, 4>(),
         vvc_affine_luma: super::av1_simd128::separable_family::<VvcAffineLumaTaps, 8, 4>(),
         vvc_chroma: super::av1_simd128::separable_family::<VvcChromaTaps, 4, 2>(),
+        vp9: crate::vp9_mc_simd::families(crate::Isa::Simd128),
         h264_phases: Some(h264_phase_fns()),
         av1_mixed: Some(super::av1_simd128::mixed_fns()),
     }

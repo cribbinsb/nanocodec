@@ -109,8 +109,9 @@ PERF_CLIPS = 2
 REMOTE_DIR = "timing"
 ZSTD_LEVEL = 12
 #: Minutes the remote timing may take, per repeat (boot and upload come on top), and
-#: the readiness and pipe-cleaner stages' limit.
-REPEAT_TIMEOUT_MINUTES = 30
+#: the readiness and pipe-cleaner stages' limit. 0.6.0's 35 families took about 37 min a
+#: repeat on c8g.large (105 pairs; 30 stopped it at pair 86 of 105), inside the 90-min lifetime.
+REPEAT_TIMEOUT_MINUTES = 50
 PREPARE_MINUTES = 5
 CHECKASM_MINUTES = 20
 PERF_MINUTES = 10

@@ -1,13 +1,21 @@
 //! The built-in presets: one codec-independent speed ladder, `veryfast`,
-//! `faster`, `fast`, `medium` and `slow`, with x264's familiar names. `medium`
-//! is each codec's Default (its backend `DEFAULT_PARAMS` over the engine
-//! defaults, no overrides) and what an encode gets without a preset; every
-//! other rung is a parameter file in the repository's `presets/<codec>/`
-//! directory, built in here. `slow` is the quality-first rung: more
-//! compression for more CPU, still real time and low delay. Its shared
-//! engine bundle (`presets/slow.toml`: the second reference on every frame)
-//! is applied before the codec's file, which adds the levers that pay for
-//! that codec; a codec offers the rung by having that file.
+//! `faster`, `fast`, `medium`, `slow`, `slower` and `veryslow`, with x264's
+//! familiar names, fastest first. The rungs of a codec are points on its own speed /
+//! quality front, roughly equally spaced in log(speed) (owner, 2026-11-21;
+//! docs/handoff/presets.md "The ladder"); a codec offers the rungs its front
+//! supports. `medium` is each codec's Default (its backend `DEFAULT_PARAMS`
+//! over the engine defaults, no overrides) and what an encode gets without a
+//! preset; every other rung is a parameter file in the repository's
+//! `presets/<codec>/` directory, built in here. A name is a position on that
+//! codec's ladder, always in this order; a codec may lack some names (owner,
+//! 2026-11-21: the names can change later). `slow`, `slower` and `veryslow`
+//! are the quality-first rungs: more compression for more CPU, still low
+//! delay. The slowest rung a codec has starts from a shared engine bundle
+//! (`presets/slowest.toml`: the second reference on every frame) applied
+//! before the codec's file, which adds the levers that pay for that codec; a
+//! codec offers a rung by having its file. (Renames on 2026-11-21: `slow`
+//! became `slower` in every codec, and where a codec then gained a rung between
+//! `slow` and `slower`, its `slower` became `veryslow`.)
 //!
 //! The names are relative to our own Default for each codec: `veryfast` here is
 //! not as fast as x264's `veryfast`, nor `medium` as slow as x264's `medium`.
@@ -37,19 +45,25 @@ pub enum Speed {
     Fast,
     /// The codec's Default: no overrides.
     Medium,
-    /// The quality-first rung: more compression than the Default for more
-    /// CPU (about 1.5-2.5x on the Jetson), still real time and low delay.
+    /// The first rung above the Default's CPU: more compression for more CPU.
     Slow,
+    /// Between `slow` and `veryslow` (or a codec's slowest rung where it has no
+    /// `veryslow`).
+    Slower,
+    /// The slowest rung: the most compression for the most CPU, still low delay.
+    Veryslow,
 }
 
 impl Speed {
     /// Every rung, fastest first.
-    pub const LADDER: [Self; 5] = [
+    pub const LADDER: [Self; 7] = [
         Self::Veryfast,
         Self::Faster,
         Self::Fast,
         Self::Medium,
         Self::Slow,
+        Self::Slower,
+        Self::Veryslow,
     ];
 
     /// The rung's name (`--preset NAME`).
@@ -61,6 +75,8 @@ impl Speed {
             Self::Fast => "fast",
             Self::Medium => "medium",
             Self::Slow => "slow",
+            Self::Slower => "slower",
+            Self::Veryslow => "veryslow",
         }
     }
 
@@ -97,15 +113,22 @@ macro_rules! preset_file {
 /// codec's Default.
 #[rustfmt::skip] // one file per line reads as the table it is
 const PRESET_FILES: &[PresetFile] = &[
+    preset_file!(H264, 1, Slower, include_str!("../presets/h264/slower.toml")),
     preset_file!(H264, 1, Slow, include_str!("../presets/h264/slow.toml")),
     preset_file!(H264, 1, Veryfast, include_str!("../presets/h264/veryfast.toml")),
     preset_file!(H264, 1, Faster, include_str!("../presets/h264/faster.toml")),
     preset_file!(H264, 1, Fast, include_str!("../presets/h264/fast.toml")),
+    preset_file!(Hevc, 1, Veryslow, include_str!("../presets/hevc/veryslow.toml")),
+    preset_file!(Hevc, 1, Slower, include_str!("../presets/hevc/slower.toml")),
     preset_file!(Hevc, 1, Slow, include_str!("../presets/hevc/slow.toml")),
     preset_file!(Hevc, 1, Faster, include_str!("../presets/hevc/faster.toml")),
     preset_file!(Hevc, 1, Fast, include_str!("../presets/hevc/fast.toml")),
+    preset_file!(Vvc, 1, Veryslow, include_str!("../presets/vvc/veryslow.toml")),
+    preset_file!(Vvc, 1, Slower, include_str!("../presets/vvc/slower.toml")),
     preset_file!(Vvc, 1, Slow, include_str!("../presets/vvc/slow.toml")),
+    preset_file!(Vvc, 1, Faster, include_str!("../presets/vvc/faster.toml")),
     preset_file!(Vvc, 1, Fast, include_str!("../presets/vvc/fast.toml")),
+    preset_file!(Av1, 1, Slower, include_str!("../presets/av1/slower.toml")),
     preset_file!(Av1, 1, Slow, include_str!("../presets/av1/slow.toml")),
     preset_file!(Av1, 1, Veryfast, include_str!("../presets/av1/veryfast.toml")),
     preset_file!(Av1, 1, Faster, include_str!("../presets/av1/faster.toml")),
@@ -115,6 +138,7 @@ const PRESET_FILES: &[PresetFile] = &[
     preset_file!(Av1, 3, Fast, include_str!("../presets/av1/l3-fast.toml")),
     preset_file!(Av1, 3, Medium, include_str!("../presets/av1/l3-medium.toml")),
     preset_file!(Vp9, 1, Veryfast, include_str!("../presets/vp9/veryfast.toml")),
+    preset_file!(Vp9, 1, Slower, include_str!("../presets/vp9/slower.toml")),
     preset_file!(Vp9, 1, Slow, include_str!("../presets/vp9/slow.toml")),
     preset_file!(Vp9, 1, Faster, include_str!("../presets/vp9/faster.toml")),
     preset_file!(Vp9, 1, Fast, include_str!("../presets/vp9/fast.toml")),
@@ -122,17 +146,15 @@ const PRESET_FILES: &[PresetFile] = &[
     preset_file!(Vp9, 2, Medium, include_str!("../presets/vp9/l2-medium.toml")),
     preset_file!(Vp9, 3, Fast, include_str!("../presets/vp9/l3-fast.toml")),
     preset_file!(Vp9, 3, Medium, include_str!("../presets/vp9/l3-medium.toml")),
+    preset_file!(Av2, 1, Slower, include_str!("../presets/av2/slower.toml")),
     preset_file!(Av2, 1, Slow, include_str!("../presets/av2/slow.toml")),
     preset_file!(Av2, 1, Faster, include_str!("../presets/av2/faster.toml")),
     preset_file!(Av2, 1, Fast, include_str!("../presets/av2/fast.toml")),
 ];
 
-/// The parameters every codec's file at a rung starts from (`presets/<rung>.toml`),
-/// applied before it: the levers that are the shared engine's, not syntax.
-#[rustfmt::skip] // one file per line reads as the table it is
-const SHARED_FILES: &[(Speed, &str)] = &[
-    (Speed::Slow, include_str!("../presets/slow.toml")),
-];
+/// The parameters every codec's slowest rung starts from, applied before its file:
+/// the levers that are the shared engine's, not syntax.
+const SLOWEST_SHARED: &str = include_str!("../presets/slowest.toml");
 
 /// Why a preset cannot be applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,10 +247,8 @@ pub fn preset_params(
         None if speed == Speed::Medium => "",
         None => return Err(PresetError::NotOffered { codec, speed }),
     };
-    let shared = SHARED_FILES
-        .iter()
-        .find(|(rung, _)| *rung == speed)
-        .map_or("", |(_, text)| text);
+    let slowest = speeds(codec).last() == Some(&speed) && speed != Speed::Medium;
+    let shared = if slowest { SLOWEST_SHARED } else { "" };
     Ok(parse_file(shared)?.overlaid_with(&parse_file(text)?))
 }
 
@@ -260,9 +280,9 @@ mod tests {
     }
 
     #[test]
-    fn slow_is_the_shared_bundle_under_the_codec_file() {
-        let shared = parse_file(SHARED_FILES[0].1).unwrap();
-        let hevc = preset_params(Codec::Hevc, 1, "slow").unwrap();
+    fn the_slowest_rung_is_the_shared_bundle_under_the_codec_file() {
+        let shared = parse_file(SLOWEST_SHARED).unwrap();
+        let hevc = preset_params(Codec::Hevc, 1, "veryslow").unwrap();
         assert_eq!(hevc.get("refs.second"), Some(2.0));
         assert_eq!(hevc.get("decision.winner_walk_steps"), Some(3.0));
         assert_eq!(hevc.overlaid_with(&shared), hevc);
@@ -286,17 +306,24 @@ mod tests {
         assert!(
             unknown
                 .to_string()
-                .contains("veryfast, faster, fast, medium, slow")
+                .contains("veryfast, faster, fast, medium, slow, slower, veryslow")
         );
         assert!(preset_params(Codec::H264, 1, "default").is_err());
         let missing = preset_params(Codec::Vvc, 1, "veryfast").unwrap_err();
         assert_eq!(
             missing.to_string(),
-            "vvc has no 'veryfast' preset (its presets: fast, medium, slow)"
+            "vvc has no 'veryfast' preset (its presets: faster, fast, medium, slow, slower, veryslow)"
         );
         assert_eq!(
             speeds(Codec::Hevc),
-            [Speed::Faster, Speed::Fast, Speed::Medium, Speed::Slow]
+            [
+                Speed::Faster,
+                Speed::Fast,
+                Speed::Medium,
+                Speed::Slow,
+                Speed::Slower,
+                Speed::Veryslow
+            ]
         );
     }
 }

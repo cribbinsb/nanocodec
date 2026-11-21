@@ -33,7 +33,7 @@ impl TxBlock {
     /// Edge availability: inner transform blocks always have the edges
     /// above and to the left; above-right lies inside the block unless the
     /// transform block is in its rightmost column (`have_right`).
-    fn edges(&self, top: bool, left: bool) -> Edges {
+    pub(crate) fn edges(&self, top: bool, left: bool) -> Edges {
         Edges {
             top: top || self.offset_y > 0,
             left: left || self.offset_x > 0,
@@ -290,23 +290,22 @@ impl ResidualBuffers {
     }
 
     /// Dequantize `levels` (raster) and add the inverse transform to the
-    /// prediction already in `recon`.
+    /// prediction already in `recon`. `eob` is its last nonzero scan
+    /// position plus one.
     pub(crate) fn add_residual(
         &mut self,
         recon: &mut Picture,
         block: &TxBlock,
         ty: TxType,
         lossless: bool,
-        levels: &[i32],
+        (levels, eob): (&[i32], usize),
         steps: Steps,
     ) {
         let area = block.tx.area();
         // Exact shortcut: a DC-only DCT block adds one constant (most coded
         // blocks at low rates), without dequantizing and inverting the
         // whole block.
-        if dc_only_applies(block.tx, ty, lossless)
-            && levels[1..area].iter().all(|&level| level == 0)
-        {
+        if eob == 1 && dc_only_applies(block.tx, ty, lossless) {
             let dc = transform::dequantize_level(block.tx, 0, levels[0], steps) as i16;
             let value = transform::dc_only_residual(block.tx, dc);
             self.dsp

@@ -98,7 +98,7 @@ fn check_external(
     static NEXT_STREAM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let unique = NEXT_STREAM.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "nc-vvc-{}-{unique}-{width}-{height}-{qp}.vvc",
+        "nanocodec-vvc-{}-{unique}-{width}-{height}-{qp}.vvc",
         std::process::id()
     ));
     std::fs::write(&path, stream).unwrap();
@@ -345,17 +345,19 @@ fn colour_and_key_offset_match_standard_decoders() {
 #[ignore = "requires NC_FFMPEG (FFmpeg >= 8.0) and NC_VVDEC pointing to vvdecapp"]
 fn multi_type_tree_matches_standard_decoders() {
     let vvdec = std::env::var("NC_VVDEC").unwrap();
-    // Binary, then binary and ternary leaves; planned (seed 0) and random
-    // shapes, modes and vectors (`debug.random_decisions`).
-    for ((mtt, ctu), seed) in [1, 2]
+    // Binary, then binary and ternary leaves; planned (seed 0), searched
+    // by coded cost (seed 0 with `planner.rd_split`) and random shapes,
+    // modes and vectors (`debug.random_decisions`).
+    for ((mtt, ctu), (seed, rd)) in [1, 2]
         .into_iter()
         .flat_map(|mtt| CTU_SIZES.map(|ctu| (mtt, ctu)))
-        .flat_map(|case| [0, 7, 11].map(|seed| (case, seed)))
+        .flat_map(|case| [(0, 0), (0, 1), (7, 0), (11, 0)].map(|run| (case, run)))
     {
         for (width, height) in [(66, 34), (200, 136)] {
             for qp in [22, 37] {
                 let mut c = config_ctu(width, height, qp, ctu);
                 c.params.set("vvc.mtt", mtt as f32);
+                c.params.set("planner.rd_split", rd as f32);
                 if seed > 0 {
                     c.params.set("debug.random_decisions", seed as f32);
                 }
@@ -385,7 +387,7 @@ fn multi_type_tree_matches_standard_decoders() {
                     yuv::write_frame(&mut b, encoder.reconstruction()).unwrap();
                     assert!(
                         a == b,
-                        "{width}x{height} mtt{mtt} ctu{ctu} seed{seed} qp{qp} frame{frame}"
+                        "{width}x{height} mtt{mtt} ctu{ctu} seed{seed} rd{rd} qp{qp} frame{frame}"
                     );
                     stream.extend(packet);
                     expected.extend(b);

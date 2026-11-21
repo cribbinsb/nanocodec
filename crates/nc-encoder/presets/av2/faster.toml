@@ -123,3 +123,20 @@ rate.prekey_quiet = 1
 rate.period_ceiling = 1
 rate.key_still_boost = 6
 rate.still_level_damping = 0.5
+# The Default's reference MV bank and four-entry DRL (2026-11-21) stay off here: pool
+# L1 at k 0.6 +2.07% [+1.67, +2.50] at whole-encode +5.5% (quality alone gains, the CPU does not pay at this rung).
+av2.ref_mv_bank = 0
+av2.max_drl_bits = 1
+# Zero-vector SADs from pre-analysis, as H.264 and AV1 Veryfast
+# (fast-analysis, 2026-11-21): the zz gates and the zero grid of static SBs
+# read the pre-analysis 8x8 SADs instead of re-reading both frames. Jetson
+# cycles -1.05% (pan / crowd / bodycam / static -0.37 / -0.43 / -0.25 /
+# -3.17), x86 -0.01% instructions; final-check (600 f, keys every 10 s, 34
+# clips) J -0.04% [-0.28, +0.14], no guards; CBR pool at k 0.6 (dCPU -0.70)
+# L1 -0.25% [-0.51, +0.03], L2 -0.36% [-0.68, -0.05], L3 -0.46%
+# [-0.76, -0.17] BETTER (n 108), no guards. static_recovery passes.
+analysis.zero_sads_from_pre = 1
+
+# Layer propagation (the codec Default's flat-stream form, docs/handoff/temporal-lambda.md)
+# stays off here: layered here, and the layered form lost (quick L1 +0.07 %, probe +0.32 %).
+layers.propagation = 0

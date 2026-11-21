@@ -122,7 +122,10 @@ impl HevcBackend {
     /// enclosing CU's mode, for `PART_NxN` units) the angle sweep is
     /// replaced by the seed: a 4x4 unit's best mode is mostly near its CU's,
     /// and the refinement still moves ±2/±1 from the best. Returns the mode
-    /// and its cost.
+    /// and its cost. `ranking`, if given, receives the modes the full search
+    /// scored: the chosen one, then the others by cost
+    /// ([`CodecBackend::intra_alternatives`]); nothing from the coarse
+    /// search.
     pub(super) fn choose_intra_mode(
         &self,
         (x, y, log2): (usize, usize, u8),
@@ -130,6 +133,7 @@ impl HevcBackend {
         recon: &Picture,
         mpm: [u8; 3],
         seed: Option<u8>,
+        ranking: Option<&mut Vec<u8>>,
     ) -> (u8, f32) {
         let log2 = log2.min(self.info.max_transform_log2);
         let n = 1usize << log2;
@@ -218,15 +222,26 @@ impl HevcBackend {
             }
         }
         let keep = self.intra_rd_candidates;
-        if keep > 1 && seed.is_none() && log2 >= LOG2_MIN_RD_TB {
+        let chosen = if keep > 1 && seed.is_none() && log2 >= LOG2_MIN_RD_TB {
             let shortlist = nc_encoder::rank_intra(
                 (0..predict::MODES).filter(|&m| tried[usize::from(m)].is_finite()),
                 keep,
                 |m| tried[usize::from(m)],
             );
-            return self.rd_intra_mode(&refs, (&src, n), mpm, &shortlist);
+            self.rd_intra_mode(&refs, (&src, n), mpm, &shortlist)
+        } else {
+            (best.1, best.0)
+        };
+        if let Some(ranking) = ranking {
+            let mut others: Vec<u8> = (0..predict::MODES)
+                .filter(|&m| m != chosen.0 && tried[usize::from(m)].is_finite())
+                .collect();
+            others.sort_by(|&a, &b| tried[usize::from(a)].total_cmp(&tried[usize::from(b)]));
+            ranking.clear();
+            ranking.push(chosen.0);
+            ranking.extend(others);
         }
-        (best.1, best.0)
+        chosen
     }
 
     /// The luma mode among the SATD-ranked `shortlist` (`hevc.intra_rd_candidates`)
@@ -298,6 +313,7 @@ impl HevcBackend {
             recon,
             mpm,
             None,
+            None,
         );
         self.predict_inter_cu(block, mv, reference);
         let n = block.size().min(1 << self.info.max_transform_log2);
@@ -321,19 +337,21 @@ impl HevcBackend {
     /// An intra CU: luma (mode, transform tree, partition) is decided and
     /// reconstructed, then chroma (DM: the first unit's luma mode) is coded
     /// along the same tree. `searched` is the luma mode
-    /// [`Self::choose_intra_mode`] already chose for the CU, if any.
+    /// [`Self::choose_intra_mode`] already chose for the CU, if any;
+    /// `chroma` its `intra_chroma_pred_mode` (`predict::CHROMA_DM` unless
+    /// the leaf search tries another, `leaf_alternatives.rs`).
     pub(super) fn encode_intra_cu(
         &mut self,
         block: &Block,
         source: &Picture,
         recon: &mut Picture,
-        searched: Option<u8>,
+        (searched, chroma): (Option<u8>, u8),
     ) {
         let mut choice = self.choose_intra_luma(block, source, recon, searched);
         if choice.trial && self.trellis_for(PlaneIndex::Y).is_some() {
             self.finalise_intra_luma(&mut choice, source, recon);
         }
-        let chroma_mode = predict::chroma_mode(predict::CHROMA_DM, choice.modes[0]);
+        let chroma_mode = predict::chroma_mode(chroma, choice.modes[0]);
         let mut tus = TransformUnits::default();
         for leaf in choice.leaves.iter() {
             // 4x4 luma blocks: the 8x8 parent's chroma follows the fourth.
@@ -379,7 +397,7 @@ impl HevcBackend {
             block,
             CuKind::Intra {
                 luma: choice.luma,
-                chroma: predict::CHROMA_DM,
+                chroma,
             },
             tus.as_slice(),
         );
@@ -549,6 +567,7 @@ impl HevcBackend {
                 recon,
                 mpm,
                 None,
+                None,
             )
             .0
         };
@@ -622,7 +641,14 @@ impl HevcBackend {
             let (left, above) = self.grid.neighbour_intra_modes(x, y);
             let mpm = predict::most_probable(left, above);
             let mode = self
-                .choose_intra_mode((x, y, LOG2_MIN_TB as u8), source, recon, mpm, Some(seed))
+                .choose_intra_mode(
+                    (x, y, LOG2_MIN_TB as u8),
+                    source,
+                    recon,
+                    mpm,
+                    Some(seed),
+                    None,
+                )
                 .0;
             modes[index] = mode;
             codes[index] = ModeCode::of(mode, mpm);

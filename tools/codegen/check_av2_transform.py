@@ -15,7 +15,10 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 COMMIT = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
 ROOT = Path(__file__).resolve().parents[2]
@@ -181,7 +184,7 @@ def main() -> None:
     parser.add_argument('--cc', default=os.environ.get('CC', 'cc'))
     parser.add_argument('--emit', action='store_true')
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='nc-av2-transform-oracle-') as tmp:
+    with tempdirs.temp_dir("av2-transform-oracle") as tmp:
         root = Path(tmp)
         cfile, binary = root / 'oracle.c', root / 'oracle'
         cfile.write_text(source(args.source.resolve()))

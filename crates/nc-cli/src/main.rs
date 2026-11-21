@@ -37,6 +37,7 @@ mod extract;
 mod framing;
 mod help;
 mod input;
+mod key_oracle;
 mod md5;
 #[cfg(test)]
 mod outcome_tests;
@@ -90,6 +91,7 @@ const ENCODE_INPUT_FLAGS: &[&str] = &[
     "--timestamps",
     "--params",
     "--qp-replay",
+    "--key-offsets",
 ];
 /// `encode`/`session` path options written, any one of which may be stdout (`-`).
 const ENCODE_OUTPUT_FLAGS: &[&str] = &[
@@ -98,8 +100,10 @@ const ENCODE_OUTPUT_FLAGS: &[&str] = &[
     "--display-recon",
     "--layer-md5",
     "--spatial-stats",
+    "--filter-stats",
     "--sse-log",
     "--rate-log",
+    "--analysis-log",
     "--timestamps-out",
     "--display",
 ];
@@ -118,6 +122,8 @@ struct EncodeArgs {
     layer_md5: Option<PathBuf>,
     /// `--spatial-stats`: JSON summary of spatial reference and byte statistics.
     spatial_stats: Option<PathBuf>,
+    /// `--filter-stats`: JSON of the filter searches' outcomes by tool and role.
+    filter_stats: Option<PathBuf>,
     /// `--sse-log` and its `--sse-reference`: the shown pictures' errors.
     sse_log: Option<(PathBuf, PathBuf)>,
     width: usize,
@@ -144,6 +150,11 @@ struct EncodeArgs {
     /// `--qp-replay`: quantizers imposed on rate control's plan, by input
     /// frame (`qp_replay.rs`).
     qp_replay: Option<qp_replay::Replay>,
+    /// `--key-offsets`: QP offsets per 8x8 cell imposed on key frames, by
+    /// input frame (`key_oracle.rs`).
+    key_offsets: Option<key_oracle::KeyOffsets>,
+    /// `--analysis-log`: every frame's analysis per 8x8 cell (`key_oracle.rs`).
+    analysis_log: Option<PathBuf>,
     /// Input frame times (`--timestamps`), microseconds.
     timestamps: Option<Vec<i64>>,
     timestamps_out: Option<PathBuf>,
@@ -303,6 +314,13 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
             qp_replay::parse(&text)
         })
         .transpose()?;
+    let key_offsets = get("--key-offsets")
+        .map(|path| {
+            let text = std::io::read_to_string(stdio::open(Path::new(&path))?)
+                .map_err(|e| format!("{path}: {e}"))?;
+            key_oracle::parse(&text)
+        })
+        .transpose()?;
     if qp_replay.is_some() && rate_control.is_none() {
         return Err("--qp-replay needs --bitrate".into());
     }
@@ -318,6 +336,7 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         display_recon: get("--display-recon").map(PathBuf::from),
         layer_md5: get("--layer-md5").map(PathBuf::from),
         spatial_stats: get("--spatial-stats").map(PathBuf::from),
+        filter_stats: get("--filter-stats").map(PathBuf::from),
         sse_log: match (get("--sse-log"), get("--sse-reference")) {
             (Some(log), Some(reference)) => Some((log.into(), reference.into())),
             (None, None) => None,
@@ -358,6 +377,8 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         keyframes: parse_keyframes(args)?,
         rate_log: get("--rate-log").map(PathBuf::from),
         qp_replay,
+        key_offsets,
+        analysis_log: get("--analysis-log").map(PathBuf::from),
         timestamps,
         timestamps_out: get("--timestamps-out").map(PathBuf::from),
         simulate_loss: get("--simulate-loss")
@@ -643,7 +664,7 @@ fn write_rate_row(
     };
     writeln!(
         log,
-        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height},{:.0},{:.0},{},{:.3},{:.4},{:.0},{:.0},{:.0},{},{encode_us}",
+        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height},{:.0},{:.0},{},{:.3},{:.4},{:.0},{:.0},{:.0},{},{encode_us},{:.1},{:.1},{:.3},{:.4}",
         frame.metadata.quantizer,
         stats.current_quantizer,
         frame.data.len(),
@@ -663,7 +684,11 @@ fn write_rate_row(
         stats.plan.excess_bits,
         stats.plan.debit_bits,
         stats.plan.capacity_bits,
-        stats.plan.codings
+        stats.plan.codings,
+        stats.plan.spatial_hint,
+        stats.plan.temporal_hint,
+        stats.plan.camera_motion,
+        stats.plan.compensable
     )
 }
 
@@ -878,8 +903,13 @@ fn run<B: CodecBackend, S: FrameSink>(
     }
     let mut rate_log = args.rate_log.as_deref().map(stdio::create).transpose()?;
     if let Some(log) = &mut rate_log {
-        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height,budget_bits,predicted_bits,level_q,cadence_offset,static_fraction,excess_bits,debit_bits,capacity_bits,codings,encode_us").map_err(|error|error.to_string())?;
+        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height,budget_bits,predicted_bits,level_q,cadence_offset,static_fraction,excess_bits,debit_bits,capacity_bits,codings,encode_us,spatial_hint,temporal_hint,camera_motion,compensable").map_err(|error|error.to_string())?;
     }
+    let mut analysis_log = args
+        .analysis_log
+        .as_deref()
+        .map(stdio::create)
+        .transpose()?;
     let mut input = FrameReader::new(
         stdio::open_raw(&args.input)?,
         args.input_format,
@@ -902,6 +932,9 @@ fn run<B: CodecBackend, S: FrameSink>(
         pending.apply(index, &mut encoder, &mut input)?;
         if let Some(replay) = &args.qp_replay {
             encoder.force_next_quantizer(replay.get(index as usize).copied().flatten());
+        }
+        if let Some(maps) = &args.key_offsets {
+            encoder.set_next_key_offsets(maps.get(&index).cloned());
         }
         let timestamp = frame_timestamp(args.timestamps.as_deref(), index)?;
         let started = Instant::now();
@@ -938,8 +971,14 @@ fn run<B: CodecBackend, S: FrameSink>(
             write_rate_row(log, index, &frame, &stats, size, encode_us)
                 .map_err(|error| error.to_string())?;
         }
+        if let (Some(log), Some(analysis)) = (&mut analysis_log, encoder.last_cell_analysis()) {
+            key_oracle::write_record(log, index, &analysis).map_err(|error| error.to_string())?;
+        }
         let stream = (encoder.config().width, encoder.config().height);
         recon_out.write(index, shown_pic, stream, coded, lost)?;
+    }
+    if let Some(log) = &mut analysis_log {
+        log.flush().map_err(|error| error.to_string())?;
     }
     if let Some(log) = &mut rate_log {
         log.flush().map_err(|error| error.to_string())?;
@@ -947,11 +986,49 @@ fn run<B: CodecBackend, S: FrameSink>(
     if let Some(path) = args.spatial_stats.as_deref() {
         telemetry.write(path, &encoder)?;
     }
+    if let Some(path) = args.filter_stats.as_deref() {
+        write_filter_stats(path, encoder.filter_outcome_stats())?;
+    }
     recon_out.finish()?;
     if let Some(out) = timestamps_out {
         out.finish().map_err(|e| e.to_string())?;
     }
     sink.finish()
+}
+
+/// `--filter-stats`: one JSON object per (tool, frame role) with the units
+/// by search outcome (`nc_encoder::FilterOutcomeStats`).
+fn write_filter_stats(path: &Path, stats: &nc_encoder::FilterOutcomeStats) -> Result<(), String> {
+    let rows: Vec<String> = stats
+        .iter()
+        .map(|(tool, role, o)| {
+            let given: Vec<String> = nc_encoder::Given::ALL
+                .iter()
+                .zip(&o.given)
+                .map(|(given, t)| {
+                    format!(
+                        "\"{}\":[{},{},{}]",
+                        given.name(),
+                        t.units,
+                        t.off,
+                        t.unchanged
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"tool\":\"{}\",\"role\":\"{}\",\"units\":{},\"searched\":{},\"searched_off\":{},\"searched_unchanged\":{},\"given\":{{{}}}}}",
+                tool.name(),
+                role.name(),
+                o.units,
+                o.searched,
+                o.searched_off,
+                o.searched_unchanged,
+                given.join(",")
+            )
+        })
+        .collect();
+    std::fs::write(path, format!("[{}]\n", rows.join(",")))
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn apply_simulated_loss<B: CodecBackend>(

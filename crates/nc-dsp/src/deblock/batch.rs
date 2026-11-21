@@ -99,7 +99,7 @@ fn less<V: I16x8Tiles>(a: V, b: V) -> V {
     b.gt_mask(a)
 }
 #[inline(always)]
-fn endpoints<V: I16x8Tiles>(v: V) -> (V, V) {
+pub(crate) fn endpoints<V: I16x8Tiles>(v: V) -> (V, V) {
     (v.shuffle_tiles(&FIRST), v.shuffle_tiles(&LAST))
 }
 
@@ -193,52 +193,123 @@ pub(crate) unsafe fn short_tiles<V: I16x8Tiles, const VVC: bool>(
     beta: &[i16; 8],
     tc: &[i16; 8],
 ) {
-    let groups = V::LANES / TILE;
-    let horizontal = tiles[0].along == 1;
-    let mut origins = [0; 4];
-    for (g, e) in tiles.iter().take(groups).enumerate() {
-        let origin = e.base.checked_sub(REACH * e.across).expect("edge reach");
-        let last = origin + (TILE - 1) * (e.along + e.across);
-        assert!(last < data.len(), "complete deblocking tile");
-        origins[g] = origin;
+    let batch = Tiles::new::<V, POSITIONS>(data.len(), tiles);
+    // SAFETY: unchanged geometry and output width; the caller enables the ISA.
+    let values = unsafe { batch.load::<V, POSITIONS>(data) };
+    if let Some(out) = filter::<V, VVC>(values, V::splat_segments(beta), V::splat_segments(tc)) {
+        // SAFETY: same tiles, whose disjointness the caller established.
+        unsafe { batch.store(data, out) };
     }
-    let mut values = [V::splat(0); POSITIONS];
-    for (k, value) in values.iter_mut().enumerate() {
-        let mut sources = [&[][..]; 4];
-        for (g, source) in sources.iter_mut().enumerate().take(groups) {
-            let e = tiles[g];
-            let at = origins[g] + k * if horizontal { e.across } else { e.along };
-            // SAFETY: the exact tile bounds were checked above.
-            *source = unsafe { data.get_unchecked(at..at + TILE) };
+}
+
+/// Bounds-checked geometry shared by short and long luma tiles.
+pub(crate) struct Tiles<'a> {
+    edges: &'a [Geometry; 4],
+    origins: [usize; 4],
+    horizontal: bool,
+}
+
+impl<'a> Tiles<'a> {
+    // Only called by the 8-bit tile kernels with 8 or 16 positions. The
+    // typed array size and the lane type are the same for load and store.
+    #[inline(always)]
+    pub(crate) fn new<V: I16x8Tiles, const N: usize>(
+        length: usize,
+        edges: &'a [Geometry; 4],
+    ) -> Self {
+        let mut origins = [0; 4];
+        for (origin, e) in origins.iter_mut().zip(edges).take(V::LANES / TILE) {
+            *origin = e.base.checked_sub(N / 2 * e.across).expect("edge reach");
+            let last = *origin + (TILE - 1) * e.along + (N - 1) * e.across;
+            assert!(last < length, "complete deblocking tile");
         }
-        *value = V::load_tiles8(sources);
-    }
-    if !horizontal {
-        values = transpose(values);
-    }
-    let Some(mut out) = filter::<V, VVC>(values, V::splat_segments(beta), V::splat_segments(tc))
-    else {
-        return;
-    };
-    if !horizontal {
-        out = transpose(out);
-    }
-    let ptr = data.as_mut_ptr();
-    let changed = if horizontal {
-        1..POSITIONS - 1
-    } else {
-        0..POSITIONS
-    };
-    for k in changed {
-        let mut destinations: [&mut [u8]; 4] = [&mut [], &mut [], &mut [], &mut []];
-        for (g, destination) in destinations.iter_mut().enumerate().take(groups) {
-            let e = tiles[g];
-            let at = origins[g] + k * if horizontal { e.across } else { e.along };
-            // SAFETY: exact bounds checked above, and the driver establishes
-            // that different tiles are disjoint. Within a tile rows are disjoint.
-            *destination = unsafe { core::slice::from_raw_parts_mut(ptr.add(at), TILE) };
+        Self {
+            edges,
+            origins,
+            horizontal: edges[0].along == 1,
         }
-        out[k].store_tiles8(destinations);
+    }
+
+    /// First byte of one horizontal position, or of one row of a vertical slab.
+    #[inline(always)]
+    fn address(&self, group: usize, k: usize) -> usize {
+        let e = self.edges[group];
+        self.origins[group]
+            + if self.horizontal {
+                k * e.across
+            } else {
+                (k % TILE) * e.along + (k / TILE) * TILE
+            }
+    }
+
+    /// # Safety
+    /// Same footprint and lane width as in construction; V's ISA is enabled.
+    #[inline(always)]
+    pub(crate) unsafe fn load<V: I16x8Tiles, const N: usize>(&self, data: &[u8]) -> [V; N] {
+        #[cfg(target_arch = "aarch64")]
+        if N == 16 && !self.horizontal {
+            // SAFETY: the eight rows of the full sixteen-tap tile were checked.
+            let taps = unsafe { V::load_u8_vertical16(data, self.origins[0], self.edges[0].along) };
+            let mut values = [V::splat(0); N];
+            values.copy_from_slice(&taps[..N]);
+            return values;
+        }
+        // A loop, not `array::from_fn`: the closure would be compiled outside this
+        // function's target feature and its vector loads outlined (check_outlined_simd).
+        let mut values = [V::splat(0); N];
+        for (k, value) in values.iter_mut().enumerate() {
+            let mut sources = [&[][..]; 4];
+            for (g, source) in sources.iter_mut().enumerate().take(V::LANES / TILE) {
+                let at = self.address(g, k);
+                // SAFETY: the checked tile contains this complete position or row.
+                *source = unsafe { data.get_unchecked(at..at + TILE) };
+            }
+            *value = V::load_tiles8(sources);
+        }
+        if !self.horizontal {
+            Self::transpose_slabs(&mut values);
+        }
+        values
+    }
+
+    /// # Safety
+    /// Same footprint and lane width as in construction; V's ISA is enabled.
+    /// The tiles' footprints are disjoint.
+    #[inline(always)]
+    #[allow(clippy::needless_range_loop)]
+    pub(crate) unsafe fn store<V: I16x8Tiles, const N: usize>(
+        &self,
+        data: &mut [u8],
+        mut out: [V; N],
+    ) {
+        #[cfg(target_arch = "aarch64")]
+        if N == 16 && !self.horizontal {
+            let taps = out.as_slice().try_into().expect("sixteen tap positions");
+            // SAFETY: the eight rows of the full sixteen-tap tile were checked.
+            unsafe { V::store_u8_vertical16(data, self.origins[0], self.edges[0].along, taps) };
+            return;
+        }
+        if !self.horizontal {
+            Self::transpose_slabs(&mut out);
+        }
+        let ptr = data.as_mut_ptr();
+        let changed = if self.horizontal { 1..N - 1 } else { 0..N };
+        for k in changed {
+            let mut destinations: [&mut [u8]; 4] = [&mut [], &mut [], &mut [], &mut []];
+            for (g, destination) in destinations.iter_mut().enumerate().take(V::LANES / TILE) {
+                let at = self.address(g, k);
+                // SAFETY: checked footprint, with disjoint tiles and rows.
+                *destination = unsafe { core::slice::from_raw_parts_mut(ptr.add(at), TILE) };
+            }
+            out[k].store_tiles8(destinations);
+        }
+    }
+
+    #[inline(always)]
+    fn transpose_slabs<V: I16x8Tiles>(values: &mut [V]) {
+        for slab in values.as_chunks_mut::<TILE>().0 {
+            *slab = transpose(*slab);
+        }
     }
 }
 

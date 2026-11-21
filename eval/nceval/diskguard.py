@@ -20,6 +20,9 @@ lock, while the others read the result). In that time the harness writes at
 most a few hundred MB (bitstreams and results), far inside the gap between
 the budget and the free-space floor.
 
+Nothing here deletes: what may be removed is whatever the retention manifest
+(tools/dev/retention.toml, nceval.retention) does not keep.
+
 Growth is bounded structurally too: only one fingerprint directory is kept
 per (encoder, structure, clip) (see Sweep._run_curve), and decoder outputs
 and encoder reconstructions are deleted as soon as they have been checked.
@@ -75,7 +78,8 @@ def check_disk(work: Path) -> None:
     if used > WORK_BUDGET_BYTES:
         raise DiskBudgetExceeded(f"{work} holds {used / GIB:.0f} GiB "
                                  f"(budget {WORK_BUDGET_BYTES / GIB:.0f} GiB); "
-                                 f"prune stale results before sweeping")
+                                 f"`tools/dev/retention.py status` lists what may go "
+                                 f"(never delete by guess: docs/PROCEDURES.md \"Data retention\")")
 
 
 def shared_work_bytes(work: Path) -> int:

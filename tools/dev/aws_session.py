@@ -42,6 +42,7 @@ import re
 import shlex
 import signal
 import subprocess
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field, replace
@@ -66,6 +67,40 @@ QUOTA_FULL = "MaxSpotInstanceCountExceeded"
 #: How long a launch waits for the quota to free: a terminating metal instance takes
 #: a minute or two to stop counting.
 QUOTA_RETRIES, QUOTA_WAIT_S = 6, 30
+#: The account's spot quota for the standard families, in vCPUs (Service Quotas code),
+#: shared by every agent's sessions and the build box: a session waits in line for room
+#: before it launches rather than being refused (coordinator, 2026-11-21: agents hit the
+#: 512-vCPU quota and fell back to the PC).
+SPOT_QUOTA_CODE = "L-34B43A08"
+STANDARD_FAMILIES = frozenset("acdhimrtz")
+#: The build box (nc-remote, Purpose tag `buildbox`): a box's worth of its region's quota
+#: is always kept free (beside the running build box), so a measurement never keeps its
+#: replacement or the overflow box from starting; measurements spill to other regions.
+BUILD_BOX_PURPOSE = "buildbox"
+BUILD_BOX_VCPUS = 96
+BUILD_BOX_REGION = "eu-north-1"
+#: Every region has its own spot quota (512 vCPU each, 2026-11-21): a spot session whose
+#: home region is full launches in the next of these that has room instead of waiting
+#: (coordinator, 2026-11-21); it waits only when every one is full.
+SPILL_REGIONS = {"eu-north-1": ("eu-west-1", "eu-central-1")}
+#: How often a waiting session re-reads the usage, and how long it waits in all before
+#: it fails loudly (no silent fallback).
+QUOTA_POLL_S = 30
+QUOTA_QUEUE_MINUTES = 90
+#: One launch at a time from this machine per region: a waiting session holds its
+#: region's lock from its check until its instance is running, so two cannot both count
+#: the same free room. Per region because the quota is (2026-11-21: a c6g.large in
+#: eu-west-1 waited behind sessions queued for eu-north-1's full quota).
+LAUNCH_LOCK_DIR = Path.home() / "nanocodec-data" / "run"
+#: How often a launch waiting for this machine's other launch in its home region looks
+#: again (that lock is held from pricing until the instance runs: seconds to minutes).
+LAUNCH_LOCK_POLL_S = 5
+
+
+def launch_lock_path(region: str) -> Path:
+    return LAUNCH_LOCK_DIR / f"aws-launch-{region}.lock"
+
+
 #: run_instances errors that mean "not this type in this zone now": the next zone, then
 #: the next type, is tried.
 NO_CAPACITY = ("InsufficientInstanceCapacity", "SpotMaxPriceTooLow", "Unsupported",
@@ -118,6 +153,8 @@ class SessionSpec:
     #: Types tried in order after `instance_type` (no capacity, quota full), each within
     #: `budget_usd`. Empty for timing: there the type is what is measured.
     fallback_types: tuple[str, ...] = ()
+    #: Whether a spot session may launch in SPILL_REGIONS when its region is full.
+    spill: bool = True
 
 
 def fallbacks_after(instance_type: str, ladder: tuple[str, ...] = THROUGHPUT_X86_TYPES
@@ -171,8 +208,9 @@ class Session:
         import boto3  # here: the instance side of a session imports `say` without boto3
 
         self.spec = spec
-        self.ec2 = boto3.client("ec2", region_name=spec.region)
-        self.ssm = boto3.client("ssm", region_name=spec.region)
+        self._client = lambda service, region: boto3.client(service, region_name=region)
+        self.ec2 = self._client("ec2", spec.region)
+        self.ssm = self._client("ssm", spec.region)
         # The pid too: two sessions of one purpose started in the same second (the
         # held-out chart's score parts, 2026-11-15) collided on the key pair name.
         self.name = f"nanocodec-{spec.purpose}-{utc_now():%Y%m%d-%H%M%S}-{os.getpid()}"
@@ -196,13 +234,14 @@ class Session:
         self._previous_handlers = {sig: signal.signal(sig, _raise_exit)
                                    for sig in (signal.SIGTERM, signal.SIGHUP)}
         try:
-            candidates = self.candidates()
+            candidates = self.candidates() if self.spec.on_demand else self.claim_room()
             self.create_access()
             names = " or ".join(c.instance_type for c in candidates)
             ledger_row(self.row_resources(), "started", iso(utc_now()), "—",
                        f"cap ${max(c.cap for c in candidates):.2f}",
                        replace(self.spec, instance_type=names))
             self.launch(candidates)
+            release_launch_lock(getattr(self, "_launch_lock", None))
             self.wait_for_ssh()
         except BaseException:
             self.__exit__(None, None, None)
@@ -212,12 +251,46 @@ class Session:
     def __exit__(self, *exc) -> None:
         # A second Ctrl-C must not interrupt the cleanup.
         previous_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        release_launch_lock(getattr(self, "_launch_lock", None))
         try:
             self.cleanup()
         finally:
             signal.signal(signal.SIGINT, previous_int)
             for sig, handler in getattr(self, "_previous_handlers", {}).items():
                 signal.signal(sig, handler)
+
+    # --- a session that outlives its process (aws_warm: a warm measurement box) -----
+
+    #: What `detach` keeps: enough for `attach` to ssh to the box and to clean it up.
+    KEPT = ("name", "key_name", "group_id", "instance_id", "host", "zone", "price",
+            "spot_request")
+
+    def detach(self) -> dict:
+        """Leave the box running past this process: its record (see `attach`). The
+        caller owns it from here (aws_warm: an idle timer on the box, a reap here)."""
+        release_launch_lock(getattr(self, "_launch_lock", None))
+        for sig, handler in getattr(self, "_previous_handlers", {}).items():
+            signal.signal(sig, handler)
+        self._previous_handlers = {}
+        return {**{k: getattr(self, k) for k in self.KEPT},
+                "key_path": str(self.key_path), "known_hosts": str(self.known_hosts),
+                "launched": iso(self.launched) if self.launched else None,
+                "spec": {**self.spec.__dict__, "tags": dict(self.spec.tags),
+                         "fallback_types": list(self.spec.fallback_types)}}
+
+    @classmethod
+    def attach(cls, record: dict) -> "Session":
+        """The session of a detached box, to run on it or clean it up."""
+        spec = SessionSpec(**{**record["spec"],
+                              "fallback_types": tuple(record["spec"]["fallback_types"])})
+        session = cls(spec)
+        for name in cls.KEPT:
+            setattr(session, name, record[name])
+        session.key_path, session.known_hosts = Path(record["key_path"]), \
+            Path(record["known_hosts"])
+        session.launched = datetime.datetime.fromisoformat(record["launched"].replace(
+            "Z", "+00:00")) if record.get("launched") else None
+        return session
 
     def tags(self, resource: str) -> list[dict]:
         tags = {"Project": PROJECT_TAG, "Owner": OWNER_TAG, "Purpose": self.spec.purpose,
@@ -316,6 +389,94 @@ class Session:
         image_id = self.ssm.get_parameter(Name=name)["Parameter"]["Value"]
         image = self.ec2.describe_images(ImageIds=[image_id])["Images"][0]
         return image_id, image["RootDeviceName"]
+
+    def use_region(self, region: str) -> None:
+        if region != self.spec.region:
+            self.spec = replace(self.spec, region=region)
+            self.ec2, self.ssm = self._client("ec2", region), self._client("ssm", region)
+
+    def regions(self) -> list[str]:
+        home = self.spec.region
+        return [home, *(SPILL_REGIONS.get(home, ()) if self.spec.spill else ())]
+
+    def room(self) -> tuple[int, str]:
+        """(vCPU free in the session's region beside every live spot instance of the
+        account and, in the build box's region, its share; a note for the log)."""
+        limit = spot_quota(self.spec.region)
+        used, _ = spot_usage(self.ec2)
+        # Always kept in the build box's region, running or not: its make-before-break
+        # replacement (or the overflow box) needs that room while it runs (2026-11-21: the
+        # 96-vCPU replacement could not start beside measurement boxes at 512/512).
+        reserve = BUILD_BOX_VCPUS if self.spec.region == BUILD_BOX_REGION else 0
+        free = limit - used - reserve
+        return free, (f"{self.spec.region}: {free} vCPU free of {limit} ({used} in use"
+                      + (f", {reserve} kept for the build box" if reserve else "") + ")")
+
+    def claim_room(self) -> list[Candidate]:
+        """The region to launch in and its priced candidates (cheapest per vCPU first),
+        holding that region's launch lock: of the regions (home, then SPILL_REGIONS)
+        whose quota has room for a candidate, the one whose cheapest fitting candidate
+        costs least per vCPU (2026-11-21: the first region that fitted was taken, and six
+        spilled boxes started at 2.5x eu-north-1's price per vCPU); when none has room,
+        wait and look again, failing loudly after QUOTA_QUEUE_MINUTES."""
+        home, priced = self.spec.region, {}
+        deadline = time.monotonic() + QUOTA_QUEUE_MINUTES * 60
+        while True:
+            notes, options, home_busy = [], [], False
+            for region in self.regions():
+                self.use_region(region)
+                if region not in priced:
+                    try:
+                        priced[region] = self.candidates()
+                    except BudgetExceeded as error:
+                        priced[region] = []
+                        say(f"{region}: {error}")
+                if not priced[region]:
+                    notes.append(f"{region}: no type within budget")
+                    continue
+                handle = try_launch_lock(region)
+                if handle is None:
+                    notes.append(f"{region}: another launch from this machine")
+                    home_busy |= region == home
+                    continue
+                free, note = self.room()
+                fitting = sorted((c for c in priced[region]
+                                  if instance_vcpus(self.ec2, c.instance_type) <= free),
+                                 key=lambda c: per_vcpu(self.ec2, c))
+                if fitting:
+                    options.append((per_vcpu(self.ec2, fitting[0]), region, fitting, handle,
+                                    note))
+                else:
+                    release_launch_lock(handle)
+                notes.append(note)
+            if home_busy and time.monotonic() < deadline:
+                # this machine's other launch holds the home region's lock for seconds:
+                # wait for it rather than spill (2026-11-21: two scoring sessions started
+                # together, one spilled to eu-west-1, found no capacity there and failed)
+                for _, _, _, other, _ in options:
+                    release_launch_lock(other)
+                say(f"{home}: waiting for this machine's other launch there "
+                    f"({LAUNCH_LOCK_POLL_S} s)")
+                time.sleep(LAUNCH_LOCK_POLL_S)
+                continue
+            if options:
+                options.sort(key=lambda option: option[0])
+                rate, region, fitting, handle, note = options[0]
+                for _, _, _, other, _ in options[1:]:
+                    release_launch_lock(other)
+                self.use_region(region)
+                self._launch_lock = handle
+                say(f"spot quota: {note}: launching there, {fitting[0].instance_type} at "
+                    f"${rate * 1000:.2f}/h per 1000 vCPU"
+                    + ("" if region == home else f" (chosen over: {'; '.join(notes)})"))
+                return fitting
+            self.use_region(home)
+            if time.monotonic() > deadline:
+                raise NoCapacity(f"waited {QUOTA_QUEUE_MINUTES} min for spot quota: "
+                                 + "; ".join(notes))
+            say("WAITING for spot quota in every region: " + "; ".join(notes)
+                + f"; re-checking in {QUOTA_POLL_S} s")
+            time.sleep(QUOTA_POLL_S)
 
     def launch(self, candidates: list[Candidate]) -> None:
         """Launch the first candidate type with capacity in any zone. A type without
@@ -425,9 +586,11 @@ class Session:
             time.sleep(10)
         raise RuntimeError("SSH did not come up")
 
-    def cleanup(self) -> None:
-        ended = utc_now()
-        if self.instance_id:
+    def cleanup(self, ended_at: datetime.datetime | None = None) -> None:
+        """Terminate (verified), delete the key pair and group, write the ledger row.
+        `ended_at`: when a box that stopped itself ended (its cost runs to then)."""
+        ended = min(ended_at, utc_now()) if ended_at else utc_now()
+        if self.instance_id and ended_at is None:
             spot_request = self.spot_request or (self.describe() or {}).get(
                 "SpotInstanceRequestId")
             say(f"terminating {self.instance_id}")
@@ -530,25 +693,32 @@ class Session:
         if ssh.wait() != 0:
             raise RuntimeError(f"download of {remote_dir} failed")
 
-    def download_new(self, remote_dir: str, local_dir: Path, marker: str) -> int:
+    def download_new(self, remote_dir: str, local_dir: Path, marker: str,
+                     names: list[Path] | None = None) -> int:
         """The files under `remote_dir` changed since the last call with `marker` (all of
         them on the first) into `local_dir`: a checkpoint that a spot reclaim cannot
-        take back. Returns the bytes moved (billed as egress)."""
+        take back. Returns the bytes moved (billed as egress); `names` gains the paths
+        of the files brought back (under `local_dir`)."""
         local_dir.mkdir(parents=True, exist_ok=True)
-        newer = f"-newer {marker}"
-        command = (f"cd {remote_dir} && touch {marker}.next && "
-                   f"{{ if [ -f {marker} ]; then find . -type f {newer}; else find . -type f; fi; }}"
-                   f" | tar -cf - -T - && mv {marker}.next {marker}")
-        ssh = subprocess.Popen([*self.ssh_base(), command], stdout=subprocess.PIPE)
-        untar = subprocess.Popen(["tar", "-C", str(local_dir), "-xf", "-"],
-                                 stdin=subprocess.PIPE)
+        ssh = subprocess.Popen([*self.ssh_base(), checkpoint_command(remote_dir, marker)],
+                               stdout=subprocess.PIPE)
+        untar = subprocess.Popen(["tar", "-C", str(local_dir), "-xvf", "-"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        listing = []
+        reader = threading.Thread(target=lambda: listing.extend(
+            untar.stdout.read().decode().splitlines()))
+        reader.start()
         moved = 0
         while chunk := ssh.stdout.read(1 << 20):
             moved += len(chunk)
             untar.stdin.write(chunk)
         untar.stdin.close()
-        if ssh.wait() != 0 or untar.wait() != 0:
+        status = untar.wait()
+        reader.join()
+        if ssh.wait() != 0 or status != 0:
             raise RuntimeError(f"checkpoint download of {remote_dir} failed")
+        if names is not None:
+            names.extend(local_dir / name for name in listing if not name.endswith("/"))
         self.egress_bytes += moved
         return moved
 
@@ -612,6 +782,86 @@ class Session:
 
 #: try_zones outcomes.
 LAUNCHED, NO_ROOM, QUOTA = "launched", "no capacity", "quota full"
+
+
+def checkpoint_command(remote_dir: str, marker: str) -> str:
+    """The box's side of download_new: a tar of the files under `remote_dir` newer than
+    `marker` (all on the first call). Other jobs on a warm box write the same point
+    cache at the same time, so their in-progress temporary files (dot files, renamed
+    into place when complete) are left out, and a file that vanishes between the list
+    and the tar is skipped, not an error (2026-11-21: one job's checkpoint failed on
+    another's `.cbr150-....json.qlpmzmbo.times.txt`)."""
+    files = "find . -type f ! -name '.*'"
+    return (f"cd {remote_dir} && touch {marker}.next && "
+            f"{{ if [ -f {marker} ]; then {files} -newer {marker}; else {files}; fi; }}"
+            f" | tar --ignore-failed-read -cf - -T - 2>/dev/null && mv {marker}.next {marker}")
+
+
+def try_launch_lock(region: str):
+    """This machine's launch lock of `region` if free now (an open handle), else None."""
+    path = launch_lock_path(region)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("w")
+    if _try_lock(handle):
+        return handle
+    handle.close()
+    return None
+
+
+def _try_lock(handle) -> bool:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
+def release_launch_lock(handle) -> None:
+    if handle is not None and not handle.closed:
+        handle.close()
+
+
+def per_vcpu(ec2, candidate: Candidate) -> float:
+    """A candidate's cheapest zone price per vCPU (USD/h)."""
+    return min(candidate.zones.values()) / instance_vcpus(ec2, candidate.instance_type)
+
+
+def spot_quota(region: str) -> int:
+    """The account's standard-family spot quota in `region` (vCPUs)."""
+    import boto3
+    quotas = boto3.client("service-quotas", region_name=region)
+    return int(quotas.get_service_quota(ServiceCode="ec2", QuotaCode=SPOT_QUOTA_CODE)
+               ["Quota"]["Value"])
+
+
+_VCPUS: dict[str, int] = {}
+
+
+def instance_vcpus(ec2, instance_type: str) -> int:
+    if instance_type not in _VCPUS:
+        info = ec2.describe_instance_types(InstanceTypes=[instance_type])["InstanceTypes"][0]
+        _VCPUS[instance_type] = info["VCpuInfo"]["DefaultVCpus"]
+    return _VCPUS[instance_type]
+
+
+def spot_usage(ec2) -> tuple[int, bool]:
+    """(vCPUs the account's standard-family spot instances hold, whether the build box
+    is among them): every live state counts, as the quota counts them."""
+    used, build_box = 0, False
+    pages = ec2.get_paginator("describe_instances").paginate(Filters=[
+        {"Name": "instance-lifecycle", "Values": ["spot"]},
+        {"Name": "instance-state-name",
+         "Values": ["pending", "running", "stopping", "shutting-down"]}])
+    for page in pages:
+        for reservation in page["Reservations"]:
+            for instance in reservation["Instances"]:
+                if instance["InstanceType"][0] not in STANDARD_FAMILIES:
+                    continue
+                cpu = instance.get("CpuOptions") or {}
+                used += cpu.get("CoreCount", 0) * cpu.get("ThreadsPerCore", 1)
+                tags = {t["Key"]: t["Value"] for t in instance.get("Tags", [])}
+                build_box |= tags.get("Purpose") == BUILD_BOX_PURPOSE
+    return used, build_box
 
 
 class RemoteFailure(RuntimeError):

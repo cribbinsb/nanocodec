@@ -100,7 +100,8 @@ def test_reset_soft_squash_onto_moved_integration_is_refused(tmp_path):
     result = guard(repo)
     assert result.returncode == 1
     assert "a.txt: reverts" in result.stderr and "other agent: a" in result.stderr
-    assert "b.txt" not in result.stderr  # the agent's own change is fine
+    assert "b.txt: reverts" not in result.stderr  # the agent's own change is fine
+    assert "touches only: b.txt" in result.stderr  # and is named as the change to keep
 
 
 def test_a_tree_stale_by_two_commits_is_refused(tmp_path):

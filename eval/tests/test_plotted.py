@@ -30,7 +30,8 @@ def test_every_shipped_preset_is_plotted():
     assert set(plotted.own_names()) == shipped
     assert {name for name, _ in chart.OURS} == shipped
     assert {e.name for e in conditions.OURS} == shipped  # the fixed-QP lens
-    assert {r.encoder for r in rows.ROWS} == {n for n in shipped if "@slow" not in n}
+    assert {r.encoder for r in rows.ROWS} == {n for n in shipped
+                                                  if not n.endswith(("@slow", "@slower", "@veryslow"))}
 
 
 def test_every_codec_has_an_order_a_label_and_a_bar():

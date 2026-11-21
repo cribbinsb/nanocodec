@@ -429,13 +429,17 @@ struct Cell {
 }
 
 /// A CU's grid entries, and the picture-wide state coding a CU changes
-/// (the history list, the affine models), noted before a whole-CU coding
-/// trial (`backend/cu_trial.rs`) to be put back when it is undone.
+/// (the history list, the affine models), noted before a coding trial
+/// (`backend/coded_snapshot.rs`) to be put back when it is undone, or
+/// after one to be put back when it is kept.
 #[derive(Debug, Default)]
 pub(crate) struct CuSnapshot {
     cells: Vec<Option<Cell>>,
     ref_indices: Vec<u8>,
+    /// The number of affine models before the trial.
     affine_models: usize,
+    /// The models the trial added (noted after a trial only).
+    added_models: Vec<crate::affine::Model>,
     history: Vec<RefMv>,
 }
 
@@ -630,19 +634,41 @@ impl MotionGrid {
         self.ctus_where(|c| c.mv.is_some() && !c.nonzero[0])
     }
 
+    /// The share of each CTU's coded area that is skipped (merge, no
+    /// residual), CTUs in raster order.
+    pub(crate) fn skip_shares_ctus(&self) -> Vec<f32> {
+        self.ctu_counts(|c| c.skip)
+            .into_iter()
+            .map(|(meeting, coded)| meeting as f32 / coded.max(1) as f32)
+            .collect()
+    }
+
     /// For each CTU in raster order, whether every coded cell in it meets
     /// `test`.
     fn ctus_where(&self, test: impl Fn(&Cell) -> bool) -> Vec<bool> {
+        self.ctu_counts(test)
+            .into_iter()
+            .map(|(meeting, coded)| meeting == coded)
+            .collect()
+    }
+
+    /// Each CTU's (coded cells meeting `test`, coded cells), CTUs in raster
+    /// order.
+    fn ctu_counts(&self, test: impl Fn(&Cell) -> bool) -> Vec<(usize, usize)> {
         let side = self.ctu_size() / GRID_SIZE;
         let rows = self.cells.len() / self.cols;
         let ctu_cols = self.cols.div_ceil(side);
         (0..rows.div_ceil(side) * ctu_cols)
             .map(|index| {
                 let (col0, row0) = ((index % ctu_cols) * side, (index / ctu_cols) * side);
-                (row0..(row0 + side).min(rows)).all(|row| {
+                (row0..(row0 + side).min(rows)).fold((0, 0), |(meeting, coded), row| {
                     let start = row * self.cols + col0;
                     let end = row * self.cols + (col0 + side).min(self.cols);
-                    self.cells[start..end].iter().flatten().all(&test)
+                    let cells = self.cells[start..end].iter().flatten();
+                    (
+                        meeting + cells.clone().filter(|c| test(c)).count(),
+                        coded + cells.count(),
+                    )
                 })
             })
             .collect()
@@ -700,6 +726,12 @@ impl MotionGrid {
             // As in HEVC, only derive motion when it can change the answer.
             let luma = if p.nonzero[0] || q.nonzero[0] {
                 [1; 2]
+            } else if p.affine.is_none() && q.affine.is_none() {
+                // Both 4-line segments lie in these two 8x8 cells, and a
+                // non-affine cell's sub-blocks all carry its vector and
+                // reference: one comparison decides both segments.
+                let apart = self.cells_move_apart((p, (px, py)), (q, (x as isize, y as isize)));
+                [u8::from(apart); 2]
             } else {
                 self.segment_motion((x, y), horizontal).map(u8::from)
             };
@@ -729,6 +761,24 @@ impl MotionGrid {
             chroma,
             affine: [p.affine.is_some(), q.affine.is_some()],
         })
+    }
+
+    /// Whether the inter cells `p` and `q` (with a luma sample of each)
+    /// move half a sample or more apart or use different references
+    /// (§8.8.3.5), as [`Self::segment_motion`] decides for each of their
+    /// sub-blocks when neither cell is affine.
+    fn cells_move_apart(
+        &self,
+        (p, p_at): (&Cell, (isize, isize)),
+        (q, q_at): (&Cell, (isize, isize)),
+    ) -> bool {
+        let (Some(p_mv), Some(q_mv)) = (p.mv, q.mv) else {
+            return false;
+        };
+        let reference = |(x, y): (isize, isize)| {
+            self.ref_indices[(y as usize / GRID_SIZE) * self.cols + x as usize / GRID_SIZE]
+        };
+        (self.multi_reference() && reference(p_at) != reference(q_at)) || p_mv.far_from(q_mv)
     }
 
     /// For each 4-line segment of the 8 lines from `(x, y)` along an edge,
@@ -1108,10 +1158,27 @@ impl MotionGrid {
             }
         }
         snapshot.affine_models = self.affine_models.len();
+        snapshot.added_models.clear();
         snapshot.history.clone_from(&self.history);
     }
 
-    /// Put back what [`Self::save_cu`] noted of CU `block`.
+    /// Note CU `block`'s entries after a trial that `before` noted the
+    /// start of, with the affine models the trial added.
+    pub(crate) fn save_cu_after(
+        &self,
+        block: &Block,
+        before: &CuSnapshot,
+        snapshot: &mut CuSnapshot,
+    ) {
+        self.save_cu(block, snapshot);
+        snapshot.affine_models = before.affine_models;
+        snapshot
+            .added_models
+            .extend_from_slice(&self.affine_models[before.affine_models..]);
+    }
+
+    /// Put back what [`Self::save_cu`] or [`Self::save_cu_after`] noted of
+    /// CU `block`.
     pub(crate) fn restore_cu(&mut self, block: &Block, snapshot: &CuSnapshot) {
         let mut cells = snapshot.cells.chunks_exact(block.width() / GRID_SIZE);
         let mut ref_indices = snapshot.ref_indices.chunks_exact(block.width() / GRID_SIZE);
@@ -1122,6 +1189,7 @@ impl MotionGrid {
             }
         }
         self.affine_models.truncate(snapshot.affine_models);
+        self.affine_models.extend_from_slice(&snapshot.added_models);
         self.history.clone_from(&snapshot.history);
     }
 

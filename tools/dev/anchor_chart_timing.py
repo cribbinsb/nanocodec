@@ -203,7 +203,7 @@ def scan(args: argparse.Namespace) -> None:
         {f.name: digest for f in families if f.own})  # per point: builds may differ
     tool_digests = {f.tool: sha256(f.tool) for f in families}
     keys = {(f.name, c.name): scan_key(f, c, tool_digests[f.tool]) for f in families for c in clips}
-    with ThreadPoolExecutor(SCAN_WORKERS) as pool:
+    with ThreadPoolExecutor(args.workers) as pool:
         jobs = {}
         for f in families:
             for c in clips:
@@ -582,6 +582,9 @@ def main(argv: list[str]) -> None:
     s.add_argument("--presets-dir", required=True)
     s.add_argument("--plan", required=True)
     s.add_argument("--points", help="comma-separated families (default: every chart point)")
+    s.add_argument("--workers", type=int, default=SCAN_WORKERS,
+                   help="(point, clip) scans side by side, each SCAN_PROBES encodes at a time "
+                        f"(default {SCAN_WORKERS}: one per timing clip; a rented box takes more)")
     t = sub.add_parser("time")
     t.add_argument("--plan", required=True)
     t.add_argument("--point", required=True)

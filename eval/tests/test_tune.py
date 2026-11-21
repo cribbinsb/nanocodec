@@ -723,9 +723,10 @@ class SeedTrialsTest(unittest.TestCase):
     domains = {"a.x": {"low": 0.0, "high": 2.0}, "a.y": {"choices": [0.0, 0.5, 1.0]}}
 
     def seeds(self, content):
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
             json.dump(content, f)
-        return tune.seed_trials(f.name, ["a.x", "a.y"], self.specs, self.domains)
+            f.flush()
+            return tune.seed_trials(f.name, ["a.x", "a.y"], self.specs, self.domains)
 
     def test_unlisted_parameters_take_defaults(self):
         self.assertEqual(self.seeds([{"a.x": 1.5}]), [{"a.x": 1.5, "a.y": 0.5}])

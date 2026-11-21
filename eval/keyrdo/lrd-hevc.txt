@@ -1,0 +1,12 @@
+# key-frame leaf search by coded cost (decision.intra_rd_*), one-frame fixed-QP ab
+lrd2: decision.intra_rd_modes=2
+lrd4: decision.intra_rd_modes=4
+lrd8: decision.intra_rd_modes=8
+krd22: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2
+krd22_lrd4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4
+krd22_slow_lrd4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 hevc.intra_rd_candidates=8 hevc.intra_nxn_min_cost=0 hevc.intra_tu_split_min_cost=0 decision.intra_rd_modes=4
+krd22_slow: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 hevc.intra_rd_candidates=8 hevc.intra_nxn_min_cost=0 hevc.intra_tu_split_min_cost=0
+chroma4: decision.intra_rd_chroma=4
+lrd4_chroma4: decision.intra_rd_modes=4 decision.intra_rd_chroma=4
+krd22_lrd4_chroma4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4 decision.intra_rd_chroma=4
+krd22_slow_lrd8_chroma4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 hevc.intra_rd_candidates=8 hevc.intra_nxn_min_cost=0 hevc.intra_tu_split_min_cost=0 decision.intra_rd_modes=8 decision.intra_rd_chroma=4

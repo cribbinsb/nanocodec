@@ -14,8 +14,15 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+if __package__:
+    from . import tempdirs
+else:
+    # Run as a script (`python3 -I jm_split.py`, nceval.conformance): -I leaves the
+    # script's directory off sys.path, so the package is found from here.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from nceval import tempdirs
 
 START_CODE = re.compile(b"\\x00\\x00\\x00\\x01")
 NAL_TYPE_SPS = 7
@@ -37,7 +44,7 @@ def distinct_sps_count(data: bytes) -> int:
 def main(ldecod: str, bitstream: str, output: str) -> int:
     data = Path(bitstream).read_bytes()
     cuts = [offset for offset, kind in nal_starts(data) if kind == NAL_TYPE_SPS] or [0]
-    with tempfile.TemporaryDirectory(prefix="jm-split-") as work, open(output, "wb") as out:
+    with tempdirs.temp_dir("jm-split") as work, open(output, "wb") as out:
         for a, b in zip(cuts, cuts[1:] + [len(data)]):
             part, decoded = Path(work) / "part.264", Path(work) / "part.yuv"
             part.write_bytes(data[a:b])

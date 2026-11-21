@@ -14,7 +14,7 @@ use crate::check::{CheckReport, MAX_EXTRA_STRIDE, PATTERNS, TestBlock, fill};
 use crate::rng::Rng;
 
 /// Every prediction filter.
-const FILTERS: [Filter; 10] = [
+const FILTERS: [Filter; 13] = [
     Filter::Av1,
     Filter::Av1Smooth,
     Filter::Av1Sharp,
@@ -25,6 +25,9 @@ const FILTERS: [Filter; 10] = [
     Filter::VvcLuma,
     Filter::VvcAffineLuma,
     Filter::VvcChroma,
+    Filter::Vp9,
+    Filter::Vp9Smooth,
+    Filter::Vp9Sharp,
 ];
 /// The filters with compound-precision prediction: AV1's families and
 /// HEVC's 14-bit `predSamplesLX`.
@@ -754,6 +757,29 @@ fn check_quantize_from(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: 
     record(report, isa, same, || {
         format!("quantize_from_wide len={len} dc_rounding_q7={dc_rounding_q7} {q:?}")
     });
+
+    let mut table: Vec<u16> = (1..=len as u16).collect();
+    for i in (2..len).rev() {
+        table.swap(i, 1 + rng.below(i));
+    }
+    for coeffs in [wide.as_slice(), &wide[..1]] {
+        let len = coeffs.len();
+        let table = &table[..len];
+        let mut levels = vec![i32::MIN; len + 3];
+        let mut expected = levels.clone();
+        reference.quantize_from_wide_with_dc_rounding(
+            coeffs,
+            &q,
+            dc_rounding_q7,
+            &mut expected[..len],
+        );
+        let end = reference.end_of_block_wide(&expected[..len], table).0;
+        let found =
+            candidate.quantize_wide_eob(coeffs, &q, dc_rounding_q7, &mut levels[..len], table);
+        record(report, isa, found == end && levels == expected, || {
+            format!("quantize_wide_eob len={len} dc_rounding_q7={dc_rounding_q7} {q:?}")
+        });
+    }
 }
 
 /// The bounded raster forwards (16 and 32 points) against the reference:

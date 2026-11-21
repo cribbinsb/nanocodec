@@ -71,12 +71,13 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import buildinfo, levers, tune
+from . import buildinfo, cloud, levers, pool, tune
 from .bdrate import bd_rate
 from .codecs import Codec
 from .config import load_paths
@@ -392,6 +393,16 @@ def format_stage(stage: dict) -> str:
     return "\n".join(lines)
 
 
+def pool_levels(spec: str) -> tuple[str, ...]:
+    """`--levels quick,final` as pool levels in the pool's order."""
+    wanted = {level.strip() for level in spec.split(",") if level.strip()}
+    unknown = wanted - set(pool.LEVELS)
+    if unknown or not wanted:
+        raise argparse.ArgumentTypeError(f"pool levels are {', '.join(pool.LEVELS)}; "
+                                         f"got {spec!r}")
+    return tuple(level for level in pool.LEVELS if level in wanted)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="python3 -m nceval.screen", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -407,6 +418,10 @@ def main() -> None:
     p.add_argument("--max-level", type=int, choices=(1, 2, 3), default=3,
                    help="--clips adopt: stop after this level (3, the default, is adoption "
                         "evidence; 1-2 rank ideas)")
+    p.add_argument("--levels", type=pool_levels,
+                   help="--clips adopt: run only these pool levels, comma-separated "
+                        f"({','.join(pool.LEVELS)}), in order; overrides --max-level (the "
+                        "bundle checks of nceval.train run L3 alone)")
     p.add_argument("--final-estimator", choices=("single", "ladder"),
                    help="--clips adopt: L3 per clip, one rung on the anchor's curve or the "
                         "full ladder (default: single for a parameter-only change, i.e. "
@@ -432,6 +447,9 @@ def main() -> None:
     p.add_argument("--over-budget", action="store_true",
                    help="run even if estimated over the 30-min limit (logged)")
     p.add_argument("--json", help="also write the result here")
+    p.add_argument("--local", action="store_true",
+                   help="measure here (default: a warm rented box, nceval.cloud; --mode cqp "
+                        "always runs here)")
     p.add_argument("--mode", choices=("real", "cqp"), default="real",
                    help="real: CBR ladder judged by J_real (default); cqp: the fixed-QP proxy")
     p.add_argument("--dcpu", type=float,
@@ -445,6 +463,8 @@ def main() -> None:
                    help="fail at once unless --binary was built from this commit "
                         f"(also ${buildinfo.EXPECT_ENV}; nceval.buildinfo)")
     args = p.parse_args()
+    if args.mode == "real" and not cloud.runs_here(args.local):
+        cloud.offload("nceval.screen", sys.argv[1:], args.json, cloud.default_json("screen"))
     builds = {"candidate": buildinfo.check(Path(args.binary), "candidate", args.expect_commit)}
     if args.anchor_binary:
         builds["anchor"] = buildinfo.check(Path(args.anchor_binary), "anchor", measured=False)

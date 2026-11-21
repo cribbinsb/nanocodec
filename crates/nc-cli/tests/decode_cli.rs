@@ -9,7 +9,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
         let name = format!(
-            "nc-cli-decode-{}-{}",
+            "nanocodec-cli-decode-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -128,6 +128,75 @@ fn all_codecs_default_fast_key_p_and_repeated_headers_match_encoder_recon() {
                 "{name}"
             );
         }
+    }
+}
+/// The final decision stage (`decision.final_stage`) prices candidates in
+/// every codec without touching coded state: its streams decode to the
+/// encoder's reconstruction.
+#[test]
+fn final_stage_streams_match_encoder_recon_in_every_codec() {
+    let scratch = Scratch::new();
+    let dir = &scratch.0;
+    let input = dir.join("source.yuv");
+    let (width, height, frames) = (96, 64, 6);
+    let frame_bytes = width * height * 3 / 2;
+    // A texture moving one sample a frame, with a flat band: inter, skip
+    // and intra candidates all occur.
+    let bytes: Vec<u8> = (0..frames * frame_bytes)
+        .map(|i| {
+            let (f, p) = (i / frame_bytes, i % frame_bytes);
+            let (x, y) = (p % width + f, p / width);
+            if y < 16 {
+                90
+            } else {
+                ((x * 13 + y * 7 + (x * y) % 17) % 251) as u8
+            }
+        })
+        .collect();
+    fs::write(&input, bytes).unwrap();
+    for codec in ["h264", "hevc", "vvc", "av1", "vp9", "av2"] {
+        let ivf = matches!(codec, "av1" | "vp9" | "av2");
+        let stream = dir.join(format!("{codec}.{}", if ivf { "ivf" } else { "bin" }));
+        let recon = dir.join(format!("{codec}.encoder.yuv"));
+        let decoded = dir.join(format!("{codec}.decoder.yuv"));
+        let qp = if ivf { "140" } else { "32" };
+        run(&[
+            "encode".into(),
+            "--codec".into(),
+            codec.into(),
+            "--input".into(),
+            path(&input),
+            "--output".into(),
+            path(&stream),
+            "--recon".into(),
+            path(&recon),
+            "--width".into(),
+            width.to_string(),
+            "--height".into(),
+            height.to_string(),
+            "--fps".into(),
+            "30".into(),
+            "--qp".into(),
+            qp.into(),
+            "--frames".into(),
+            frames.to_string(),
+            "--param".into(),
+            "decision.final_stage=1".into(),
+        ]);
+        run(&[
+            "decode".into(),
+            "--codec".into(),
+            codec.into(),
+            "--input".into(),
+            path(&stream),
+            "--output".into(),
+            path(&decoded),
+        ]);
+        assert_eq!(
+            fs::read(&decoded).unwrap(),
+            fs::read(&recon).unwrap(),
+            "{codec}"
+        );
     }
 }
 #[test]

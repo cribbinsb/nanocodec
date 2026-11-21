@@ -421,6 +421,9 @@ pub struct H264Backend {
     random: Option<RandomSyntax>,
     /// `quant.trellis`: trellis quantisation of coded residuals.
     trellis: Option<H264Trellis>,
+    /// `quant.rd_trim`: rate-aware trimming of inter macroblocks' coded
+    /// luma while the trellis is off.
+    rd_trim: Option<nc_encoder::RateTrim>,
 }
 
 /// The registered trellis controls (`nc_encoder::QuantParams`,
@@ -1054,6 +1057,7 @@ impl H264Backend {
                 },
                 refine_steps: self.tuning.split_refine_steps.round() as usize,
                 refine_mv16: self.tuning.split_refine_mv16 >= 0.5,
+                range: self.params.mv_range(),
             },
         );
         let best_split = best_split.filter(|(_, mvs)| self.refresh_allows_quadrants(x, mvs));
@@ -1513,6 +1517,7 @@ impl H264Backend {
     #[inline]
     fn trellis_residual(&mut self, block: &Block, source: &Picture, pred: &Prediction) {
         let Some(trellis) = self.trellis.as_ref() else {
+            self.rate_trim_residual();
             return;
         };
         let residual = &*self.residual;
@@ -1527,6 +1532,31 @@ impl H264Backend {
         {
             self.trellis_coded_residual(block, source, pred, luma);
         }
+    }
+
+    /// The trellis's cheap substitute (`quant.rd_trim`) where it is off:
+    /// inter macroblocks' coded luma, at the mode-decision λ, not past the
+    /// λ-headroom cap (as the trellis).
+    fn rate_trim_residual(&mut self) {
+        let Some(trim) = self.rd_trim else {
+            return;
+        };
+        let residual = &mut *self.residual;
+        if residual.cbp_luma == 0
+            || !residual.kind.is_inter()
+            || !trim.covers(self.slice == SliceKind::I)
+            || self.lambda_scale > 1.0
+            || self.random.is_some()
+        {
+            return;
+        }
+        crate::macroblock::rate_trim_luma(
+            &self.dsp,
+            residual,
+            &self.quantizers,
+            &trim,
+            f64::from(self.rd_lambda),
+        );
     }
 
     /// [`Self::trellis_residual`] past its gate: the luma if `luma`, and the
@@ -2079,6 +2109,11 @@ impl H264Params {
 }
 
 impl CodecBackend for H264Backend {
+    // The second reference is a long-term frame (`references.rs`), named by
+    // its long-term index whatever its age; a held one is marked again within
+    // `MAX_REFERENCE_AGE` frames, before `frame_num` (8 bits) wraps, so the
+    // IDR picture's index 0 is released as the module notes require.
+    const SECOND_REFERENCE_REACH: u64 = nc_encoder::MAX_REFERENCE_AGE - 1;
     // mb_qp_delta (§7.3.5) carries `BlockDecision::qp_offset`.
     const SUPPORTS_BLOCK_QP: bool = true;
     const BLOCK_QP_LOG2: u8 = MB_LOG2;
@@ -2416,6 +2451,7 @@ impl CodecBackend for H264Backend {
                 &QuantParams::from_overrides(&config.params),
                 &tuning,
             ),
+            rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
         })
     }
 
@@ -2631,6 +2667,16 @@ impl CodecBackend for H264Backend {
         match *mode {
             PredictionMode::IntraDc => INTRA_16X16_BITS,
             PredictionMode::Inter(mv) => {
+                // A vector past the level's range cannot be coded (Table
+                // A-1): wide or tall pictures and scaled second-reference
+                // seeds reach it.
+                if !self
+                    .params
+                    .mv_range()
+                    .contains(i32::from(mv.x), i32::from(mv.y))
+                {
+                    return f32::INFINITY;
+                }
                 let PredictedVectors { skip, mvp } = self.predicted_vectors(block);
                 if Some(mv) == skip {
                     return SKIP_BITS;
@@ -2659,9 +2705,14 @@ impl CodecBackend for H264Backend {
         block: &Block,
         candidate: nc_encoder::FinalCandidate,
     ) -> Option<f32> {
-        (self.cabac.is_some() && self.random.is_none())
+        self.prices_final_candidates()
             .then(|| self.price_final(source, reference, block, candidate))
             .flatten()
+    }
+
+    /// The pricing counts CABAC bits; random decisions bypass it.
+    fn prices_final_candidates(&self) -> bool {
+        self.cabac.is_some() && self.random.is_none()
     }
 
     fn set_rate_control_enabled(&mut self, enabled: bool) {

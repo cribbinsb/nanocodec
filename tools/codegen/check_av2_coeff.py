@@ -16,7 +16,10 @@ Usage: check_av2_coeff.py --source AVM_SRC --build AVM_BUILD --vectors BIN
 import argparse
 from pathlib import Path
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
 ORACLE = r'''
@@ -185,7 +188,7 @@ def main():
     revision = subprocess.check_output(['git', '-C', str(args.source), 'rev-parse', 'HEAD'], text=True).strip()
     assert revision == PIN, revision
     vectors = subprocess.check_output([str(args.vectors)])
-    with tempfile.TemporaryDirectory(prefix='nc-av2-coeff-') as directory:
+    with tempdirs.temp_dir("av2-coeff") as directory:
         source = Path(directory) / 'oracle.c'
         binary = source.with_suffix('')
         source.write_text(ORACLE)

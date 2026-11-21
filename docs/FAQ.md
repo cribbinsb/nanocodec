@@ -217,8 +217,8 @@ its output under the GPL; we distribute only the output streams, not the program
   frame (no corpus stream has several). Details in the
   [detailed results](results/README.md#decoders).
 - **Speed gaps:** our AV1 and VP9 decoders are slower than dav1d and vpxdec single-threaded; SVT-AV1 M12/M13 and
-  x264's fast presets encode faster than our Default presets; VVC Default runs below 30 fps at 720p on one Jetson
-  core.
+  x264's fast presets encode faster than our Default presets; VVC Default is the slowest of our Defaults at 720p
+  on one Jetson Orin Nano core (the charts' speed axis; speed depends on content).
 - **Known quality weak points:** fine pristine texture (water, foliage), where x264 and x265 need fewer bits;
   H.264 flicker; VP9 trails our HEVC; SVC costs 6–14 points of BD-J against single-layer streams; AV2 and VVC are
   young (rate control and quality work ongoing). See [known weaknesses](results/README.md#known-weaknesses).

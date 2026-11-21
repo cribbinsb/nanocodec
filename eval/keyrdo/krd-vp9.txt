@@ -1,0 +1,4 @@
+# key-frame RD partition search (planner.key_rd_split), one-frame fixed-QP ab
+krd11: planner.key_rd_split=1
+krd22: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2
+krd33: planner.key_rd_split=1 planner.key_rd_deeper=3 planner.key_rd_shallower=3

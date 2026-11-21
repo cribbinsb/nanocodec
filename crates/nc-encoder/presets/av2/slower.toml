@@ -1,0 +1,73 @@
+# AV2 slower (`--preset slower`; `slow` until 2026-11-21): the shared slower bundle (presets/slower.toml,
+# applied first: the second reference with the full decision) plus AV2's
+# levers. Re-picked 2026-11-20 (docs/handoff/presets.md "Slow presets"):
+# everything heavy on at once, then cut back by component cost. Alone on the
+# Default (fixed QP J, 24 clips / x86 callgrind P instructions): TCQ on inter
+# frames -2.7% / +63%, the winner walk -1.9% / +17%, the MV bank, a full DRL
+# and skip mode -1.9% / +31%, the sub-sample gates off -0.7% / +7%, the
+# second reference -0.4% / +18%, the exact coefficient walk -0.3% / +3%.
+# Left out: CDEF searched on every row with eight sets (-1.1% alone at +46%:
+# past the 2.5x budget on top of the bundle), CCSO (-0.8% at +539%),
+# switchable filters (-0.2% alone, +0.4% worse inside the bundle), 8x8 inter
+# blocks with shape RD (+0.2%), inter transform types (+0.2%: a real small
+# loss). Whole-CU pricing leaves AV2 streams unchanged. The "every transform
+# split" (+5.4%) and "widened intra" (+0.5%) losses of the first pick were
+# settings, not tools (tools-hurt, 2026-11-20): tx_split 2 forces the split
+# and intra_modes 4 is narrower than the Default's 3. Corrected, against
+# this Slow (fixed QP J / P instructions): the split gate off -0.4% / +11%,
+# P-frame intra widened -0.7% / +14% (docs/analysis/tools-that-hurt-2026-11-20.md).
+#
+# Trellis-coded quantisation of inter luma (enable_tcq, tcq_mode).
+av2.tcq = 2
+# RD trials price coefficients with the exact walk, not the fitted model.
+av2.coeff_rate_model = 0
+# The winner walk: three quarter-sample moves along the row and column.
+decision.winner_walk_steps = 3
+decision.winner_walk_square = 0
+# The sub-sample search: no seed gates, the coordinate walk.
+decision.codec_subpel_seed_lambdas = 0
+decision.skip_no_refine_lambdas = 0
+decision.refine_cheap_min_lambdas = 0
+decision.subpel_walk = 1
+# More predicted vectors: the reference MV bank, the largest DRL and skip
+# mode with its whole list ranked.
+av2.ref_mv_bank = 1
+av2.max_drl_bits = 5
+av2.skip_mode = 1
+av2.skip_mode_candidates = 6
+# Every inter block tries the split luma layout (no nonzero-level gate).
+av2.inter_split_min_nonzero = 0
+# P-frame intra: every nominal direction, four RD candidates with every
+# chroma mode, the transform split by RD and the ADST retry; DC intra tried
+# from a lower residual variance.
+av2.p_intra_modes = 3
+av2.p_intra_rd_candidates = 4
+av2.p_intra_chroma_candidates = 13
+av2.p_intra_tx_split = 1
+av2.p_intra_type_retry = 1
+decision.intra_gate_variance = 16
+# The RD partition search (planner.rd_split, docs/handoff/av2.md "RD partition
+# search"): quadtree, one level either side of the plan, 16x16 smallest inter
+# block. Fixed QP against this Slow (draw fixedqp-2026-11-21, 24 clips) J -5.2%
+# [-5.6, -4.8] at +77% P instructions (x86 callgrind); 8x8 blocks -6.6% at
+# +108%, the margin gate 1.5 -5.0% at +64%, no deeper split -3.0% at +51%.
+# Pool (draw 2026-11-21): L1 -6.10% [-6.52, -5.71], L3 -5.68% [-6.32, -5.05]
+# n108, final-check -5.71% [-6.40, -4.68] n34. Its periodic-key pulse guard
+# (worst clip +0.56 dB, chad_3_086 at 1199 k, where the key is +0.91 dB better)
+# was overridden on judgement as for AV1, HEVC and VVC Slow: keys +0.08 dB mean
+# over 32 clip-rungs, 4 worse beyond 0.1 dB (at most -0.44, with the P frames
+# before them better on 3).
+planner.rd_split = 1
+# The Default's per-role CDEF search density (2026-11-21) is not screened here:
+# every frame keeps the old period 8, byte-identical.
+key.av2.cdef_search_row_period = 8
+av2.cdef_search_row_period = 8
+nonbase.av2.cdef_search_row_period = 8
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here (docs/handoff/planner-selector.md).
+planner.split_selector = 0
+
+# Layer propagation (the codec Default's flat-stream form, docs/handoff/temporal-lambda.md)
+# stays off here: the quick gain was below the probe bar (L1 -0.14 %, probe -0.07 %); not queued.
+layers.propagation = 0

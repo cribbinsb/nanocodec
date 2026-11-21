@@ -20,7 +20,10 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 COMMIT = "1024874c5919305883187e2953de8fcb4c3d7fa6"
 ROOT = Path(__file__).resolve().parents[2]
@@ -204,7 +207,7 @@ def main() -> None:
     parser.add_argument('--cc', default=os.environ.get('CC', 'cc'), help='C99 compiler executable')
     args = parser.parse_args()
     ref = Reference(args.source.resolve())
-    with tempfile.TemporaryDirectory(prefix='nc-vp9-kernel-oracles-') as temporary:
+    with tempdirs.temp_dir("vp9-kernel-oracles") as temporary:
         directory = Path(temporary)
         actual = run(motion_source(ref), args.cc, directory, 'motion')
         require_equal('motion', list(actual), rust_array('motion.rs', 'expected'))

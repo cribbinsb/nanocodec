@@ -44,7 +44,7 @@ const MAX_SIDE: usize = 32;
 const PASS_ONE_LIMIT: u32 = 4;
 /// The QP whose quantisation step is one sample (`2^((qp − 4) / 6)`, H.266
 /// §8.7.3 with flat scaling, as HEVC).
-const QSTEP_UNIT_QP: f32 = 4.;
+pub(crate) const QSTEP_UNIT_QP: f32 = 4.;
 
 /// What the contexts of the levels still to be decided depend on, besides
 /// the decided levels themselves.

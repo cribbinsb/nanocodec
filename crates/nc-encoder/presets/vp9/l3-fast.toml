@@ -7,7 +7,10 @@
 # transforms enhancement pictures coded from the upscaled lower layer only
 # (key or repair units) without partial-forward pruning
 # (static_recovery.rs `vp9_three_layer_svc_recovers_every_upper_layer`).
-decision.codec_subpel_seed_lambdas = 0.05
+# The seed gate is inert on the bilinear ranking these presets use, and
+# stays so here: since 2026-11-21 it also gates the bilinear refinement,
+# screened on the single-layer rungs only (docs/handoff/fast-decision.md).
+decision.codec_subpel_seed_lambdas = 0
 decision.subpel_move_bias = 1.1
 decision.subpel_move_bias_nonzero = 1.1
 decision.subpel_fractional_bias = 1.1
@@ -63,3 +66,19 @@ rate.prekey_quiet = 0
 rate.fixed_qp_moving_key = 0
 # Not screened with the Default's coded-cost key intra modes (2026-11-19).
 vp9.intra_rd_candidates = 1
+
+# Not screened with the Default's exact ranking and winner walk (2026-11-20).
+vp9.exact_ranking = 0
+# The bilinear ranking's skip shortcut (`decision.skip_no_refine_lambdas`)
+# became live when VP9 gained its skip vector (NEARESTMV, 2026-11-20);
+# pinned off, as before, until screened on this rung.
+decision.skip_no_refine_lambdas = 0
+# The reuse term's key offsets unless the buffer bounds the key became the
+# engine default (2026-11-21, docs/handoff/rate-control.md "Reuse offsets on
+# keys"): not screened for SVC; AV1 L3 Medium's starved-key recovery
+# (static_recovery) fell 0.2 dB outside its bound with it.
+persist.reuse_keys = 1
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here (docs/handoff/planner-selector.md).
+planner.split_selector = 0

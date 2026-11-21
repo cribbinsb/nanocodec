@@ -5,7 +5,7 @@ families from here; `--families` on any of them is only an explicit subset.
 
 - Our families come from the shipped preset registry
   (crates/nc-encoder/presets, `encoders.nanocodec.shipped_presets`): every
-  speed rung of every codec, Slow to Veryfast. Layered presets (`l2-*`,
+  speed rung of every codec, Slower to Veryfast. Layered presets (`l2-*`,
   `l3-*`) are not points of these charts; the SVC chart (nceval.svc_chart)
   has its own. A preset file added to the registry is plotted without any
   other edit: its family, label, head-to-head pairs and scoreboard row
@@ -30,10 +30,12 @@ OWN_PREFIX = "nanocodec-"
 CODEC_ORDER = (Codec.H264, Codec.HEVC, Codec.AV1, Codec.VP9, Codec.AV2, Codec.VVC)
 CODEC_LABELS = {Codec.H264: "H.264", Codec.HEVC: "HEVC", Codec.VVC: "VVC", Codec.AV1: "AV1",
                 Codec.VP9: "VP9", Codec.AV2: "AV2"}
-#: The quality rung above the speed ladder (encoders.nanocodec.LADDER, fastest first).
-SLOW = "slow"
+#: The quality rungs above the speed ladder (encoders.nanocodec.LADDER, fastest first),
+#: slowest first. `slower` was named `slow` until 2026-11-21: a frozen build's `@slow`
+#: family is the rung its own presets/ directory holds.
+QUALITY_RUNGS = ("veryslow", "slower", "slow")
 #: Every rung a chart can plot, slowest first (a codec ships a subset).
-RUNG_ORDER = (SLOW, *reversed(LADDER))
+RUNG_ORDER = (*QUALITY_RUNGS, *reversed(LADDER))
 
 
 @dataclass(frozen=True)
@@ -129,7 +131,7 @@ def bar(family: OwnFamily, presets: Path = PRESETS_DIR) -> str | None:
 
 def next_slower(family: OwnFamily, presets: Path = PRESETS_DIR) -> str | None:
     """The next slower speed-ladder rung of the same codec (fast -> medium); None for
-    medium and slow (the quality rungs are compared with the references only)."""
+    medium, slow and slower (the quality rungs are compared with the references only)."""
     if family.rung not in LADDER or family.rung == MEDIUM:
         return None
     rungs = [r for r in own_rungs(family.codec, presets) if r in LADDER]

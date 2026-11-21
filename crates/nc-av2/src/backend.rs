@@ -134,8 +134,6 @@ const SUPERBLOCK_LOG2: u8 = 6;
 const MIN_BLOCK_LOG2: u8 = 3;
 /// Quarter-sample engine vectors are eighth-sample AV2 vectors times two.
 const EIGHTHS_PER_QUARTER: i32 = 2;
-/// Order hints wrap at the sequence's eight order-hint bits.
-const ORDER_HINT_MASK: u16 = 255;
 
 /// The filters a switchable search tries besides regular
 /// (`av2.interp_switchable` 1, 2 and 3).
@@ -233,6 +231,9 @@ pub struct Av2Backend {
     params: ToolParams,
     /// `quant.trellis`: trellis quantisation of the coded transforms.
     trellis: Option<nc_encoder::TrellisSettings>,
+    /// `quant.rd_trim`: the shared rate-aware trimming, in place of
+    /// `av2.coeff_trim`'s trailing rule alone, while the trellis is off.
+    rd_trim: Option<nc_encoder::RateTrim>,
     order_hint: u16,
     /// The last committed frame's display order hint (AVM
     /// `display_order_hint`: the order hint unwrapped, 0 at the key frame),
@@ -277,6 +278,9 @@ pub struct Av2Backend {
     /// CDEF's copy of the unfiltered plane and the search's buffers, reused
     /// across frames.
     cdef_scratch: crate::cdef::CdefScratch,
+    /// The CDEF search's outcome per filter block against the last
+    /// picture's strengths (`nc_encoder::FilterOutcome`).
+    cdef_outcome: nc_encoder::OutcomeTracker<Option<cdef::StrengthSet>>,
     /// The deblocking edge map, reused across frames: it is kept clear
     /// between uses, so a frame neither allocates nor zeroes it.
     deblock_map: crate::deblock::EdgeMap,
@@ -612,16 +616,24 @@ impl Av2Backend {
 
     /// The frame's coefficient trimming (`av2.coeff_trim` scope).
     fn trim_options(&self) -> Option<TrimOptions> {
+        let rules = self
+            .rd_trim
+            .filter(|t| self.trellis.is_none() && t.covers(self.key));
+        let rate_scales = TrimOptions {
+            luma_rate_scale: f64::from(self.params.coeff_trim_rate_scale),
+            chroma_rate_scale: f64::from(self.params.coeff_trim_chroma_rate_scale),
+            rules,
+        };
+        if rules.is_some() {
+            return Some(rate_scales);
+        }
         let applies = match TrimScope::from_param(self.params.coeff_trim) {
             TrimScope::Never => false,
             TrimScope::AllFrames => true,
             TrimScope::KeyFrames => self.key,
             TrimScope::PFrames => !self.key,
         };
-        applies.then(|| TrimOptions {
-            luma_rate_scale: f64::from(self.params.coeff_trim_rate_scale),
-            chroma_rate_scale: f64::from(self.params.coeff_trim_chroma_rate_scale),
-        })
+        applies.then_some(rate_scales)
     }
 
     /// The frame's quantizer offsets. Chroma AC: the noise-attenuated
@@ -769,6 +781,17 @@ impl Av2Backend {
 }
 
 impl CodecBackend for Av2Backend {
+    // A long-held second reference widens the order hints to 10 bits
+    // (`packet::LONG_ORDER_HINT_BITS`), so it reaches the engine's age.
+    const SECOND_REFERENCE_REACH: u64 = nc_encoder::MAX_REFERENCE_AGE - 1;
+    fn filter_outcomes(&self) -> Vec<(nc_encoder::FilterTool, nc_encoder::FilterOutcome)> {
+        self.cdef_outcome
+            .frame()
+            .map(|outcome| (nc_encoder::FilterTool::Cdef, outcome))
+            .into_iter()
+            .collect()
+    }
+
     const PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[ToolParams::SPECS];
     /// Every `av2.*` setting is read when a frame begins (the block coder,
     /// filters and quantizer offsets are built from `self.params` there),
@@ -842,6 +865,15 @@ impl CodecBackend for Av2Backend {
     const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Where the winner walk runs (Slow), it also walks a winner at the
+        // skip vector (the first reference vector,
+        // `decision.winner_walk_keeps_skip` 0). Codec reason: H.264 P_Skip
+        // and HEVC cu_skip_flag tie residual-free coding to the inherited
+        // vector; in AV2, as in AV1, any vector may skip its residual and a
+        // moved reference vector costs only its vector bits. Kept unwalked,
+        // fixed QP (draw fixedqp-2026-11-20, quick): AV2 Slow J +0.5 %
+        // [+0.2, +0.9], n 24.
+        ("decision.winner_walk_keeps_skip", 0.0),
         ("decision.refine_cheap_vector", 0.0),
         ("av2.inter_rounding_q7", 36.0),
         // Tuned jointly (eval/nceval/tune_pool.py, study
@@ -854,6 +886,21 @@ impl CodecBackend for Av2Backend {
         // +1.1%. AV2 Fast pins the previous planner lambda.
         ("av2.inter_chroma_rounding_delta_q7", 22.0),
         ("planner.lambda_scale", 2.581_25),
+        // The zero-trial split selector at half its fitted shift (engine
+        // `split_selector.rs`, docs/handoff/planner-selector.md). nceval.train
+        // against 9a0ff2c7c (draw 2026-11-21), L3 / final-check (600 f) J:
+        // Default (k 0.1) -1.53% [-2.09, -0.99] / -1.40% [-1.62, -1.16]; Fast
+        // (k 0.6) -1.14% [-1.44, -0.77] / -2.54% [-2.99, -2.16]; Faster (k
+        // 0.6) -1.36% [-1.66, -1.02] / -2.98% [-3.52, -2.52]. Fast's and
+        // Faster's final checks tripped the worst-clip periodic-key pulse
+        // guard (+0.60 / +0.74 dB > +0.50), adopted on judgement: the clip
+        // (meva_bus_detail, static) codes the same 10 s keys to 0.01 dB in
+        // both arms at every rung while its P frames gain +0.3..+1.0 dB, and
+        // its J is -3.5% / -7.7%. Cycles zen5 / graviton3 / graviton4:
+        // Default +1.7 / +1.5 / +1.5%, Fast +1.3 / +1.5 / +1.5%, Faster +1.6 /
+        // +1.0 / +1.0%. Slower pins it off (neutral under the RD search).
+        ("planner.split_selector", 1.0),
+        ("planner.split_selector_scale", 0.5),
         ("av2.lambda_per_step_squared", 0.125),
         ("av2.chroma_delta_q_coarse", -12.0),
         ("quant.trellis_key", 0.0),
@@ -943,6 +990,44 @@ impl CodecBackend for Av2Backend {
         // AV2 Fast pins the old values. No depth removal is now the engine
         // default.
         ("av2.parity_hiding", 1.0),
+        // The reference MV bank and a four-entry DRL (Slow has the bank and
+        // six): more predicted vectors for NEARMV and skip, chosen by the
+        // engine's ranking. Fixed QP (draw fixedqp-2026-11-21, 24 clips) J
+        // -1.7% [-2.4, -1.2] (bank alone -0.9%, DRL 3 alone -0.8%) at +4.8%
+        // P instructions; whole encode (chart timing commands, callgrind)
+        // +4.6%. Adoption screen and final-check: docs/handoff/av2.md
+        // "MV bank and DRL 3 at the Default". AV2 Fast and Faster pin 0 / 1.
+        ("av2.ref_mv_bank", 1.0),
+        ("av2.max_drl_bits", 3.0),
+        // The CDEF search samples every row of key frames, every 4th of
+        // base frames and every 8th of the rest (8 everywhere before): the
+        // density pays where the frame's strengths propagate furthest.
+        // Fixed QP (draw fixedqp-2026-11-21, 24 clips) J -0.5 % [-0.6, -0.3]
+        // (keys alone -0.2 %; period 4 everywhere -0.6 % at +6.7 % P
+        // instructions); whole encode Zen 5 +1.93 %, Graviton3 +2.19 %,
+        // Graviton4 +2.17 %. nceval.train (k 0.1): L3 (n 108) -0.12 %
+        // [-0.23, -0.02] BETTER, final-check (n 34) -0.17 % [-0.46, -0.04]
+        // BETTER (docs/analysis/unused-tools-2026-11-21.md, "by frame
+        // role"). AV2 Fast and Faster probe CDEF (av2.cdef 1) and do not
+        // search; AV2 Slow pins 8.
+        ("key.av2.cdef_search_row_period", 1.0),
+        ("av2.cdef_search_row_period", 4.0),
+        ("nonbase.av2.cdef_search_row_period", 8.0),
+        // Layer propagation on the flat stream's QP-cadence cycles
+        // (`layer_propagation.rs`, `layers.propagation_flat`): base blocks the
+        // last cycle's chain reused little go up to the leaf quantizer; rate
+        // control only. Codec reason for a per-codec value: the shared
+        // mechanism, adopted where the pool screens pass. nceval.train (k 0.1,
+        // base f953cd97d): L3 (n 108) -0.37 % [-0.82, +0.02] BETTER, final-check (n 34) -0.82 % [-1.19, -0.35]
+        // BETTER; whole encode cycles
+        // Graviton3 +1.45 %, Zen 5 +2.38 %
+        // (docs/handoff/temporal-lambda.md). Fast,
+        // Faster (layered: the layered form lost there), Slow and Slower pin it
+        // off.
+        ("layers.propagation", 1.0),
+        ("layers.propagation_flat", 1.0),
+        ("layers.propagation_grid", 3.0),
+        ("layers.propagation_prekey", 1.0),
     ];
 
     // AV1's motion-decision quality point is the engine default (see
@@ -984,10 +1069,11 @@ impl CodecBackend for Av2Backend {
                 max: MAX_QINDEX,
             });
         }
-        // Non-base and light-superblock settings (`nonbase.<name>`,
-        // `light.<name>`) are the engine's to check.
+        // Non-base, key and light-superblock settings (`nonbase.<name>`,
+        // `key.<name>`, `light.<name>`) are the engine's to check.
         let (_, framed) = config.params.split_prefix(nc_encoder::LIGHT_PREFIX);
         let (_, ordinary) = framed.split_prefix(nc_encoder::NONBASE_PREFIX);
+        let (_, ordinary) = ordinary.split_prefix(nc_encoder::KEY_PREFIX);
         ordinary
             .validate(&[nc_encoder::engine_specs(), Self::PARAM_SPECS.to_vec()].concat())
             .map_err(ConfigError::Param)?;
@@ -998,6 +1084,7 @@ impl CodecBackend for Av2Backend {
             trellis: nc_encoder::TrellisSettings::from_params(&QuantParams::from_overrides(
                 &config.params,
             )),
+            rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
             order_hint: 0,
             display_order: 0,
             slot_display_orders: [0; REFERENCE_SLOTS as usize],
@@ -1023,6 +1110,7 @@ impl CodecBackend for Av2Backend {
             frame_filter: FrameFilter::Fixed(InterpFilter::Regular),
             psy_strength: nc_encoder::DecisionParams::from_overrides(&config.params).psy_strength,
             cdef_scratch: crate::cdef::CdefScratch::default(),
+            cdef_outcome: nc_encoder::OutcomeTracker::default(),
             deblock_map: crate::deblock::EdgeMap::default(),
             chroma_error_ratio: None,
             frame_chroma_error_ratio: None,
@@ -1032,8 +1120,7 @@ impl CodecBackend for Av2Backend {
             inherits_context: false,
             frame_context: None,
             sequence: packet::sequence_header(
-                config.width,
-                config.height,
+                (config.width, config.height),
                 layering(config),
                 reference_lists(&ToolParams::from_overrides(&config.params)),
                 {
@@ -1043,6 +1130,11 @@ impl CodecBackend for Av2Backend {
                         tools.tcq >= 0.5,
                         tools.ccso >= 0.5,
                     )
+                },
+                if nc_encoder::holds_second_reference(&config.params) {
+                    packet::LONG_ORDER_HINT_BITS
+                } else {
+                    packet::ORDER_HINT_BITS
                 },
             ),
             references: FrameReferences::FLAT,
@@ -1164,6 +1256,71 @@ impl CodecBackend for Av2Backend {
         }
     }
 
+    /// The first derived reference vector (`NEARMV` at index 0), else the
+    /// zero (global) vector: the cheapest to signal. The winner walk keeps
+    /// it, and the final decision stage sets it against the winner.
+    fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
+        let candidates = self
+            .coder()
+            .candidates(block.x, block.y, block.size())
+            .ok()?;
+        Some(
+            candidates
+                .derived()
+                .first()
+                .map_or(Mv::ZERO, |&v| to_engine(v)),
+        )
+    }
+
+    /// AV2 takes no static skips (the default would offer the skip vector).
+    fn static_skip_vector(&mut self, _block: &Block) -> Option<Mv> {
+        None
+    }
+
+    fn final_intra_screen(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+        block: &Block,
+    ) -> Option<(f32, f32)> {
+        if !self.prices_final_candidates() {
+            return None;
+        }
+        let sse =
+            self.coder()
+                .final_intra_screen((source, recon), (block.x, block.y), block.size());
+        Some((sse as f32, self.mode_bits(block, &PredictionMode::IntraDc)))
+    }
+
+    /// Luma at the block's one transform, as the key-frame planner prices
+    /// leaves (`BlockCoder::final_luma_cost`), plus λ times the mode bits.
+    fn final_coded_cost(
+        &mut self,
+        source: &Picture,
+        reference: &Picture,
+        block: &Block,
+        candidate: nc_encoder::FinalCandidate,
+    ) -> Option<f32> {
+        if !self.prices_final_candidates() {
+            return None;
+        }
+        let (inter, mode) = match candidate {
+            nc_encoder::FinalCandidate::Inter(mv) => {
+                (Some((reference, to_av2(mv))), PredictionMode::Inter(mv))
+            }
+            nc_encoder::FinalCandidate::Intra => (None, PredictionMode::IntraDc),
+        };
+        let (distortion, bits) =
+            self.coder()
+                .final_luma_cost(source, (block.x, block.y), block.size(), inter)?;
+        Some(distortion as f32 + self.lambda() * (bits as f32 + self.mode_bits(block, &mode)))
+    }
+
+    /// Random decisions and lossless coding bypass the pricing.
+    fn prices_final_candidates(&self) -> bool {
+        self.random.is_none() && self.qindex != 0
+    }
+
     fn mv_seeds(&mut self, block: &Block, out: &mut Vec<Mv>) {
         let ranked = self.ranked_drl_entries();
         if let Ok(candidates) = self.coder().candidates(block.x, block.y, block.size()) {
@@ -1258,6 +1415,7 @@ impl CodecBackend for Av2Backend {
     }
 
     fn begin_frame(&mut self, plan: &FramePlan) {
+        self.cdef_outcome.begin_picture();
         self.key = plan.frame_type == FrameType::Key;
         self.references = plan.references;
         let planned = plan.quantizer.min(MAX_QINDEX) as u8;
@@ -1376,6 +1534,49 @@ impl CodecBackend for Av2Backend {
             .expect("engine quadtrees are expressible in AV2 partitions");
     }
 
+    /// Node trials (`block_coder/node_trial.rs`) for the RD partition
+    /// search (`planner.rd_split`).
+    const NODE_TRIALS: bool = true;
+
+    fn begin_node_trial(&mut self, node: &Block, recon: &Picture) {
+        self.coder()
+            .begin_node_trial(((node.x, node.y), node.size()), recon);
+    }
+
+    fn begin_node_pricing(&mut self, node: &Block, _recon: &Picture) {
+        self.coder()
+            .begin_node_pricing(((node.x, node.y), node.size()));
+    }
+
+    fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
+        self.coder().node_trial_cost(source, recon)
+    }
+
+    fn undo_node_trial(&mut self, recon: &mut Picture) {
+        // The coder uses the single reset between a leaf and a split to
+        // exchange the before and after model buffers.
+        const { assert!(!Self::RECTANGULAR_LEAVES) };
+        self.coder().undo_node_trial(recon);
+    }
+
+    fn keep_node_candidate(&mut self, recon: &Picture) {
+        self.coder().keep_node_candidate(recon);
+    }
+
+    fn restore_node_candidate(&mut self, recon: &mut Picture) {
+        self.coder().restore_node_candidate(recon);
+    }
+
+    fn end_node_trial(&mut self) {
+        self.coder().end_node_trial();
+    }
+
+    fn last_cu_skipped(&self) -> bool {
+        self.coder
+            .as_ref()
+            .is_some_and(BlockCoder::last_block_skipped)
+    }
+
     fn encode_block(
         &mut self,
         block: &Block,
@@ -1426,7 +1627,17 @@ impl CodecBackend for Av2Backend {
         }
         self.cdef = if self.params.cdef >= 0.5 {
             let coder = self.coder.as_mut().expect("filtering runs inside a frame");
-            coder.cdef(source, recon, self.key, &mut self.cdef_scratch)
+            let params = coder.cdef(source, recon, self.key, &mut self.cdef_scratch);
+            let (sets, searched, filtered) = coder.cdef_choices();
+            // A filter block with no unit to filter costs the search
+            // nothing: it is not counted as searched.
+            self.cdef_outcome.observe(
+                sets,
+                |block| searched && filtered[block] > 0.0,
+                |set| set.is_some_and(|set| set != cdef::StrengthSet::OFF),
+                |block| 1.0 - filtered[block],
+            );
+            params
         } else {
             CdefParams::OFF
         };
@@ -1514,6 +1725,7 @@ impl CodecBackend for Av2Backend {
     }
 
     fn commit_frame(&mut self) {
+        self.cdef_outcome.commit();
         if let Some(ratio) = self.frame_chroma_error_ratio.take() {
             self.chroma_error_ratio = Some(ratio);
         }
@@ -1541,7 +1753,7 @@ impl CodecBackend for Av2Backend {
         self.order_hint = if self.key {
             1
         } else {
-            (self.order_hint + 1) & ORDER_HINT_MASK
+            (self.order_hint + 1) & ((1 << self.sequence.order_hint_bits) - 1)
         };
     }
 }
@@ -1896,6 +2108,82 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_ne!(packets(0.0), packets(3.0));
+    }
+
+    /// The RD partition search (`planner.rd_split`) codes, undoes and
+    /// re-codes nodes and puts kept codings back: CDFs, the symbol log,
+    /// contexts, the MV bank, deblocking records, CDEF slots and deferred
+    /// symbols must come back exactly, so every stream decodes to the
+    /// encoder's reconstruction (partial superblocks, superblock deltas,
+    /// Slow's tools, a second reference, frames that start recording at the
+    /// first trial), and the search changes the stream.
+    #[test]
+    fn rd_split_streams_roundtrip_and_differ() {
+        let variants: [&[(&str, f32)]; 6] = [
+            &[("rate.aq_strength", 3.0)],
+            &[
+                ("av2.tcq", 2.0),
+                ("av2.skip_mode", 1.0),
+                ("av2.skip_mode_candidates", 6.0),
+                ("av2.ref_mv_bank", 1.0),
+                ("av2.max_drl_bits", 5.0),
+                ("av2.ccso", 1.0),
+            ],
+            &[("refs.second", 1.0), ("refs.second_full", 1.0)],
+            &[("av2.cdef", 1.0)],
+            &[("av2.cdef", 0.0), ("av2.interp_switchable", 1.0)],
+            &[("av2.parity_hiding", 1.0), ("av2.p_intra_modes", 3.0)],
+        ];
+        for (width, height) in [(72, 40), (192, 136)] {
+            for extra in variants {
+                let packets = |rd_split: f32| {
+                    let mut config = config();
+                    (config.width, config.height, config.quantizer) = (width, height, 150);
+                    config.intra_period = 8;
+                    config.params.set("planner.rd_split", rd_split);
+                    config.params.set("planner.inter_min_log2", 3.0);
+                    for &(name, value) in extra {
+                        config.params.set(name, value);
+                    }
+                    let mut encoder = Encoder::<Av2Backend>::new(config).unwrap();
+                    let mut decoder = crate::Decoder::default();
+                    (0..5)
+                        .map(|frame| {
+                            let source = banded(width, height, frame);
+                            let packet = encoder.encode(&source);
+                            let decoded = decoder.decode_ref(&packet.data).unwrap();
+                            assert_eq!(
+                                bytes(decoded),
+                                bytes(encoder.reconstruction()),
+                                "{width}x{height} {extra:?} frame {frame}"
+                            );
+                            packet.data
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_ne!(
+                    packets(0.0),
+                    packets(1.0),
+                    "{width}x{height} {extra:?}: the search changed nothing"
+                );
+            }
+        }
+    }
+
+    /// Bands of 16 rows moving apart, so splits pay at band edges.
+    fn banded(width: usize, height: usize, frame: usize) -> Picture {
+        let mut picture = Picture::new(width, height, 0).unwrap();
+        for plane in PlaneIndex::ALL {
+            let mut view = picture.plane_mut(plane).view_mut();
+            for y in 0..view.height() {
+                let shift = if y % 32 < 16 { frame * 3 } else { 0 };
+                for (x, sample) in view.row_mut(y).iter_mut().enumerate() {
+                    let u = x + shift;
+                    *sample = ((u * 23 + y * 17 + plane as usize * 47) ^ (u * y / 7)) as u8;
+                }
+            }
+        }
+        picture
     }
 
     /// A pattern scrolling by whole samples, so inter frames use vectors.

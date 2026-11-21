@@ -166,8 +166,10 @@ pub(crate) fn read_annex_b<R: BufRead>(
                 if nal.len() < 2 {
                     return Err("truncated HEVC NAL header".into());
                 }
+                // H.265 Table 7-1: TRAIL_N/TRAIL_R, IDR_W_RADL for the first key
+                // and CRA_NUT for later ones (nc-hevc backend) carry a picture.
                 match (nal[0] >> 1) & 63 {
-                    0 | 1 | 19 => true,
+                    0 | 1 | 19 | 21 => true,
                     32..=34 => false,
                     _ => return Err("unsupported HEVC NAL type outside emitted subset".into()),
                 }
@@ -435,6 +437,21 @@ mod tests {
             assert_eq!(reader.next_nal().unwrap().unwrap(), [0x65, 4]);
             assert!(reader.next_nal().unwrap().is_none());
         }
+    }
+    #[test]
+    fn hevc_access_units_include_cra_pictures() {
+        // VPS, SPS, PPS, IDR_W_RADL, TRAIL_R, then a later key: CRA_NUT (type 21).
+        let mut stream = Vec::new();
+        for header in [0x40u8, 0x42, 0x44, 0x26, 0x02, 0x2a] {
+            stream.extend_from_slice(&[0, 0, 0, 1, header, 1, 0x80]);
+        }
+        let mut units = 0;
+        let count = read_annex_b(Codec::Hevc, &mut Cursor::new(stream), |_| {
+            units += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!((count, units), (3, 3));
     }
     #[test]
     fn annex_b_rejects_garbage_empty_units_and_oversized_nals() {

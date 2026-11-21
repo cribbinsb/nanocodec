@@ -147,6 +147,18 @@ pub(crate) trait I32Lanes: Copy {
     }
     /// `dst[i] = clamp(dst[i] + lane i, 0, 255)` for the first `LANES` bytes.
     fn add_to_u8(self, dst: &mut [u8]);
+    /// Add one constant `residual` to an `n`x`n` block of `u8` samples at
+    /// `stride`, clipping to `0..=255`. Vector implementations route through
+    /// `constant_add` (16- or 32-byte saturating ops).
+    #[inline]
+    fn add_constant_u8(residual: i32, n: usize, dst: &mut [u8], stride: usize) {
+        let lanes = Self::splat(residual);
+        for r in 0..n {
+            for c in (0..n).step_by(Self::LANES) {
+                lanes.add_to_u8(&mut dst[r * stride + c..]);
+            }
+        }
+    }
     /// `dst[i] = clamp(dst[i] + lane i, 0, max_val)` for the first `LANES`
     /// `u16` samples (`0 <= max_val <= 65535`).
     #[inline]
@@ -610,6 +622,23 @@ pub(crate) trait I16Lanes: Copy {
     fn acc_round_shift_narrow(acc: Self::Acc, round: i32, shift: u32) -> Self;
     /// Sum of every accumulator.
     fn acc_sum(acc: Self::Acc) -> i64;
+    /// True when [`Self::horiz_taps_acc`] provides an ISA-specific fast path
+    /// that extracts shifted windows from two loads (`p[0..LANES]` and
+    /// `p[N - 1..LANES + N - 1]`) and multiplies by indexed tap lanes.
+    const FAST_HORIZ_EXT: bool = false;
+    /// Compute `Σ_k cx[k] * p[x + k]` from `s0 = p[0..LANES]` and
+    /// `s_last = p[N - 1..LANES + N - 1]`. Only called when
+    /// [`Self::FAST_HORIZ_EXT`] is true and `N` is 4 or 8.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn horiz_taps_acc<const N: usize>(
+        _s0: Self,
+        _s_last: Self,
+        _six_x: bool,
+        _cx: &[i16; N],
+    ) -> Self::Acc {
+        unreachable!("horiz_taps_acc requires FAST_HORIZ_EXT")
+    }
 }
 
 /// Further 16-bit operations of the loop-filter kernels, on the vector
@@ -889,6 +918,18 @@ pub(crate) trait I16x8Tiles: I16FilterLanes {
     fn shuffle_tiles(self, pattern: &[u8; 16]) -> Self;
     /// Eight bytes from each of the first `LANES / 8` rows, widened.
     fn load_tiles8(rows: [&[u8]; 4]) -> Self;
+    /// Read a vertical tile of eight rows of sixteen bytes, then widen.
+    /// # Safety
+    /// The tile at `origin` with this row stride lies inside `data`.
+    #[cfg(target_arch = "aarch64")]
+    #[allow(unsafe_code)]
+    unsafe fn load_u8_vertical16(data: &[u8], origin: usize, stride: usize) -> [Self; 16];
+    /// Narrow before writing the same tile.
+    /// # Safety
+    /// The tile at `origin` with this row stride lies inside `data`.
+    #[cfg(target_arch = "aarch64")]
+    #[allow(unsafe_code)]
+    unsafe fn store_u8_vertical16(data: &mut [u8], origin: usize, stride: usize, taps: &[Self; 16]);
     /// Narrow each 8-word tile into the corresponding eight-byte row.
     fn store_tiles8(self, rows: [&mut [u8]; 4]);
     /// Eight `u16` samples (`0..=32767`) from each of the first `LANES / 8` rows.
@@ -935,6 +976,25 @@ macro_rules! eight_word_tiles {
             #[inline(always)]
             fn load_tiles8(rows: [&[u8]; 4]) -> Self {
                 Self::load_u8(rows[0])
+            }
+            #[cfg(target_arch = "aarch64")]
+            #[inline(always)]
+            #[allow(unsafe_code)]
+            unsafe fn load_u8_vertical16(data: &[u8], origin: usize, stride: usize) -> [Self; 16] {
+                // SAFETY: the caller checked the entire tile.
+                unsafe { Self::load_u8_vertical16(data, origin, stride) }
+            }
+            #[cfg(target_arch = "aarch64")]
+            #[inline(always)]
+            #[allow(unsafe_code)]
+            unsafe fn store_u8_vertical16(
+                data: &mut [u8],
+                origin: usize,
+                stride: usize,
+                taps: &[Self; 16],
+            ) {
+                // SAFETY: the caller checked the entire tile.
+                unsafe { Self::store_u8_vertical16(data, origin, stride, taps) }
             }
             #[inline(always)]
             fn store_tiles8(self, rows: [&mut [u8]; 4]) {

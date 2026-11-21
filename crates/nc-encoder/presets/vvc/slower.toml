@@ -1,0 +1,39 @@
+# VVC slower (`--preset slower`): the rung between slow and veryslow on VVC's front
+# (docs/handoff/presets.md "The ladder"), from the gap study pl-s3k-vvc-slow (trial 78;
+# seeded from both neighbours): slow (presets/vvc/slow.toml, below) with the RD
+# partition search ungated, 8x8-minimum inter CUs, a wider intra search (10 RD and 5
+# angular candidates), SAO searched on every CTB and no second reference (values set
+# in place below). preset-ladder 2026-11-21 (ff40ad7bf): whole-encode 1.39x slow's time,
+# veryslow 1.67x this rung's (Graviton 3/4 and Zen 5, 720p CBR 600); final check (34
+# clips, 600 f, draw 2026-11-21) J -10.41 % against medium (slow -4.71, veryslow -12.78
+# on the same build), 2.55 better than the slow-veryslow log-speed chord; L3 (108 clips,
+# 150 f) -9.05 % (slow -4.37, veryslow -10.82), 2.15 better than the chord.
+#
+planner.rd_split = 1
+planner.rd_split_context = 0
+planner.rd_split_deepen_context = -3
+# The Default's filter-search effort by usage (filter.usage_quiet_share, 2026-11-21)
+# is not screened here.
+filter.usage_quiet_share = 0
+# Set by the pick, not in the file it starts from:
+decision.codec_subpel_seed_lambdas = 0.07408
+decision.final_margin_lambdas = 0.02475
+decision.intra_gate_variance = 59
+decision.subpel_walk = 1
+decision.winner_walk_steps = 0
+planner.inter_min_log2 = 3
+planner.rd_split_merge_context = -4
+planner.split_selector = 1
+planner.split_selector_scale = 0.4525
+refs.second = 0
+structure.unified = 1
+vvc.angular_candidates = 5
+vvc.chroma_search_inter = 0
+vvc.coarse_inter_intra = 1
+vvc.fast_forward = 1
+vvc.pre_transform_zero_scale = 2
+vvc.rd_candidates = 10
+vvc.sao_search_interval = 1
+# Layer propagation (the Default's flat-stream form, docs/handoff/temporal-lambda.md)
+# stays off: this rung was measured without it (on ff40ad7bf, before it reached slow).
+layers.propagation = 0

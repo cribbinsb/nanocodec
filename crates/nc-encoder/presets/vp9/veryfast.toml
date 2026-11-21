@@ -21,6 +21,10 @@ vp9.inter_tx_split_spread = 1.5
 # and the quarter-sample stage only after a half-sample move: with the
 # spread gate off, Jetson about -6%, x86 -7.3% CPU; quality vs Default
 # (proxy-4) +3.4% full / +2.5% low, pan worst.
+# Since 2026-11-21 the seed gate also gates the bilinear ranking's winner
+# refinement (fast-decision, docs/handoff/fast-decision.md): Jetson cycles
+# -3.0%, x86 -3.55%; pool L3 J -1.30% [-1.43, -1.15] at k 0.6 (quality
+# +0.85%), final-check quality +0.48% [+0.23, +0.97], no guards.
 decision.codec_subpel_seed_lambdas = 0.05
 decision.subpel_move_bias = 1.1
 decision.subpel_move_bias_nonzero = 1.1
@@ -147,3 +151,41 @@ decision.intra_gate_variance = 6.857
 vp9.chroma_delta_q = -14
 vp9.chroma_delta_gap_slope = 3
 planner.lambda_scale = 2.379
+
+# Not screened with the Default's exact ranking and winner walk (2026-11-20).
+vp9.exact_ranking = 0
+# Still blocks (`still.*` detector) take the zero vector with no candidate,
+# sub-sample or intra trial (`decision.static_zero_vector`, as H.264
+# Faster/Veryfast; fast-paths agent, 2026-11-20, docs/handoff/fast-paths.md).
+# Jetson cycles (90 f CBR 600) pan -1.1%, crowd +0.6%, bodycam -6.1%,
+# lowlight -0.9%; x86 P instructions static -1.4%, bodycam -5.0%. CBR pool
+# at k 0.6, dCPU -1.7%: L1 -0.92%, L2 -0.90%, L3 -1.09% [-1.34, -0.88]
+# BETTER, n=108, no guards (quality per class within +-0.4%); final-check
+# 600 f J +0.03% [-0.37, +0.25], no guards.
+decision.static_zero_vector = 1
+# The bilinear ranking's skip shortcut (`decision.skip_no_refine_lambdas`)
+# became live when VP9 gained its skip vector (NEARESTMV, 2026-11-20);
+# pinned off, as before, until screened on this rung.
+decision.skip_no_refine_lambdas = 0
+# Zero-vector SADs from pre-analysis, as H.264 / AV1 Veryfast, AV2 and HEVC
+# Faster (fast-analysis, 2026-11-21): the zz gates and the zero grid of
+# static SBs read the pre-analysis 8x8 SADs instead of re-reading both
+# frames. Jetson cycles -0.99% (pan / crowd / bodycam / static -0.86 / -0.61
+# / -1.47 / -1.04), x86 +0.28% instructions; quick (k 0.6) L1 -0.15%
+# [-0.48, +0.18], probe -0.18%; final-check (600 f, keys every 10 s) J -0.00%
+# [-0.15, +0.07], no guard; L3 -0.45% [-0.60, -0.28] BETTER (n 108).
+# static_recovery passes.
+analysis.zero_sads_from_pre = 1
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here (docs/handoff/planner-selector.md).
+planner.split_selector = 0
+
+# The trellis's cheap substitute (`quant.rd_trim`, docs/handoff/cheap-rdoq.md): trailing,
+# interior (4 -> 8 bits) and whole-block rules. nceval.train (6fbb722d59, base f953cd97d,
+# draw 2026-11-21, k 0.6): L3 J -0.11 % [-0.35, +0.14] n=108, final check J -0.34 %
+# [-0.57, -0.04] n=34; cycles +0.7 / +0.5 / +0.8 % (Graviton 3 / 4, Zen 5).
+quant.rd_trim = 1
+quant.rd_trim_block = 1
+quant.rd_trim_interior_bits = 4
+quant.rd_trim_interior_hf_bits = 8

@@ -19,13 +19,16 @@ sudo apt-get -qq install -y --no-install-recommends \
   build-essential pkg-config clang lld cmake ninja-build nasm yasm meson \
   autoconf automake libtool xxd \
   valgrind python3 python3-venv python3-pip python3-xxhash python3-numpy \
-  rsync git zstd curl unzip ffmpeg nodejs npm > /dev/null
+  rsync git zstd curl unzip ffmpeg nodejs npm wabt > /dev/null
 
 if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 fi
 source "$HOME/.cargo/env"
-rustup toolchain install @RUST_STABLE@ --profile minimal -c clippy -c rustfmt -c llvm-tools -t wasm32-unknown-unknown
+# The targets check.sh builds and lints: the browser module, the WASI checkasm, the
+# aarch64 cross-check.
+rustup toolchain install @RUST_STABLE@ --profile minimal -c clippy -c rustfmt -c llvm-tools \
+  -t wasm32-unknown-unknown -t wasm32-wasip1 -t aarch64-unknown-linux-gnu
 rustup default @RUST_STABLE@
 nightly=nightly-@NIGHTLY_DATE@
 rustup toolchain install "$nightly" --profile minimal -c miri -c rust-src -c llvm-tools-preview
@@ -54,7 +57,27 @@ got=$(rustc +nightly -vV | sed -n 's/^commit-hash: //p')
 python3 -m venv "$HOME/ncbox/venv"
 "$HOME/ncbox/venv/bin/pip" install -q --upgrade pip
 "$HOME/ncbox/venv/bin/pip" install -q numpy scipy opencv-python-headless xxhash av \
-  matplotlib scikit-learn optuna pytest pytest-xdist
+  matplotlib scikit-learn optuna pytest pytest-xdist playwright==@PLAYWRIGHT_VERSION@
+# The page tests' Chromium (tools/ci/browser_smoke.sh). Playwright 1.60 does not know
+# Ubuntu 26.04: it installs and runs its Ubuntu 24.04 build (the job environment sets
+# the same override, tools/dev/nc_remote_job.py), with the libraries it lacks here.
+# Noto Sans as the PC's sans-serif: with DejaVu the results page measured 37 px wider
+# on a phone and results-pages.py failed (2026-11-21).
+sudo apt-get -qq install -y libxcomposite1 libxdamage1 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+  libatspi2.0-0t64 libcups2t64 fonts-noto-core > /dev/null
+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=@PLAYWRIGHT_PLATFORM@ \
+  "$HOME/ncbox/venv/bin/python" -m playwright install chromium chromium-headless-shell > /dev/null
+
+# wasm-bindgen-cli, the version Cargo.lock pins, where tools/web/build.sh looks for
+# it: the release the PC uses (its tarball's SHA-256 checked).
+bindgen=$HOME/nanocodec-data/tools/browser-demo
+if [ ! -x "$bindgen/wasm-bindgen-@WASM_BINDGEN_VERSION@-x86_64-unknown-linux-musl/wasm-bindgen" ]; then
+  mkdir -p "$bindgen"
+  curl -sSfL -o "$bindgen/wasm-bindgen.tar.gz" \
+    "https://github.com/rustwasm/wasm-bindgen/releases/download/@WASM_BINDGEN_VERSION@/wasm-bindgen-@WASM_BINDGEN_VERSION@-x86_64-unknown-linux-musl.tar.gz"
+  echo "@WASM_BINDGEN_SHA256@  $bindgen/wasm-bindgen.tar.gz" | sha256sum -c --quiet
+  tar -C "$bindgen" -xzf "$bindgen/wasm-bindgen.tar.gz"
+fi
 
 touch "$MARKER"
 echo "provisioned: $(rustc --version), $(cargo clippy --version), $(rustc +nightly --version), $(valgrind --version), $(python3 --version)"

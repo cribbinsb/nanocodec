@@ -50,7 +50,8 @@
 //!   the cell's noise, which the next frame replaces.
 //! - **Keys** code every block again: a still cell gets the step that keeps
 //!   it no worse than it is (or its target, if better), no finer than its
-//!   price.
+//!   price; `persist.reuse_keys` leaves them at the key's own quantizer,
+//!   always or when the buffer bounds the key ([`ReuseTerm::key_cells`]).
 //!
 //! Measured: `crates/nc-cli/tests/static_recovery.rs`; the looped waterfall
 //! in `docs/handoff/rate-control.md`.
@@ -140,6 +141,10 @@ pub(crate) struct ReuseFrame<'a> {
     /// back; 0 on other frames, and unused without
     /// `persist.reuse_level_price`.
     pub role_offset: f64,
+    /// On a key: whether rate control's allowance bounds it
+    /// (`RateController::key_bound_by_allowance`; false when not asked,
+    /// `ReuseTerm::wants_key_bound`).
+    pub key_bound: bool,
 }
 
 impl ReuseFrame<'_> {
@@ -181,6 +186,18 @@ impl PlannedOffsets {
     }
 }
 
+/// What a key's still cells are coded at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyCells {
+    /// The step that keeps each no worse than it is, within its price.
+    Kept,
+    /// The key's own quantizer, like every other block.
+    KeyQuantizer,
+    /// Kept, unless the key's bits are bounded by the buffer
+    /// (`ReuseFrame::key_bound`): then at the key's own quantizer.
+    KeptUnlessBound,
+}
+
 /// What the price of an inter frame's refinement is an offset from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PriceBase {
@@ -199,6 +216,8 @@ pub(crate) struct ReuseTerm {
     per_block: bool,
     /// What a refinement's price is an offset from.
     price_base: PriceBase,
+    /// What a key's still cells are coded at (`persist.reuse_keys`).
+    keys: KeyCells,
     cols: usize,
     /// Frames observed so far: the index of the frame being coded.
     frame: u32,
@@ -255,6 +274,19 @@ pub(crate) struct ReuseTerm {
     pending: Vec<usize>,
     /// One run of cells' squared errors (scratch).
     row_scratch: Vec<u32>,
+    /// The blocks of the frame's current coding, marked when it is kept.
+    coded: Vec<CodedBlock>,
+}
+
+/// A block the engine coded ([`ReuseTerm::coded_block`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CodedBlock {
+    origin: (usize, usize),
+    extent: (usize, usize),
+    /// A copy of its reference at the zero vector.
+    copy: bool,
+    /// Its sample-domain quantizer step.
+    step: f64,
 }
 
 impl ReuseTerm {
@@ -267,6 +299,7 @@ impl ReuseTerm {
         Self {
             per_block,
             price_base: PriceBase::Frame,
+            keys: KeyCells::Kept,
             cols: 0,
             frame: 0,
             period: MEASURE_PERIOD,
@@ -287,6 +320,7 @@ impl ReuseTerm {
             candidates: Vec::new(),
             pending: Vec::new(),
             row_scratch: Vec::new(),
+            coded: Vec::new(),
         }
     }
 
@@ -303,6 +337,47 @@ impl ReuseTerm {
             },
             ..self
         }
+    }
+
+    /// What this term codes a key's still cells at (`persist.reuse_keys`:
+    /// 0 the key's own quantizer, 1 the step that keeps each, 2 that unless
+    /// the buffer bounds the key).
+    ///
+    /// Why the bound matters: a key's offsets are planned against the inter
+    /// level and apply to the key's quantizer. A key planned at its quality
+    /// takes the offsets as extra bits, which go to the still background
+    /// later frames copy (crowd: HEVC Default `external_cevo_outdoor_crowd`
+    /// 144 kbps, keys every 10 s, keys 84 / 97 kbit 34.16 / 35.79 dB with
+    /// them, 65 / 65 kbit 33.02 / 33.98 dB without). A key the buffer
+    /// bounds has its bits fixed: the frame quantizer rises to pay for the
+    /// finer cells and every other cell is coded that much coarser (HEVC
+    /// Slow `static_chirla_seq_024` 93 kbps: q45 37.96 dB for 89.6 kbit
+    /// with them, q29 39.00 dB for 86.4 kbit without)
+    /// (docs/handoff/rate-control.md "Reuse offsets on keys").
+    #[must_use]
+    pub fn key_cells(self, mode: f64) -> Self {
+        let keys = match mode.round() as u8 {
+            0 => KeyCells::KeyQuantizer,
+            1 => KeyCells::Kept,
+            _ => KeyCells::KeptUnlessBound,
+        };
+        Self { keys, ..self }
+    }
+
+    /// Whether `frame` is a key whose still cells are coded at its own
+    /// quantizer ([`Self::key_cells`]).
+    fn key_at_quantizer(&self, frame: &ReuseFrame<'_>) -> bool {
+        frame.key
+            && match self.keys {
+                KeyCells::Kept => false,
+                KeyCells::KeyQuantizer => true,
+                KeyCells::KeptUnlessBound => frame.key_bound,
+            }
+    }
+
+    /// Whether planning a key needs `ReuseFrame::key_bound`.
+    pub fn wants_key_bound(&self) -> bool {
+        self.keys == KeyCells::KeptUnlessBound
     }
 
     /// Whether refinements are priced against the inter level
@@ -368,7 +443,7 @@ impl ReuseTerm {
         self.offset_cells.clear();
         self.any_offset = false;
         let measured = self.cols == cols && self.error.len() == runs.len();
-        if !measured || pre.len() != runs.len() || cols == 0 {
+        if !measured || pre.len() != runs.len() || cols == 0 || self.key_at_quantizer(frame) {
             return;
         }
         // What coding the cell at the inter level would deliver.
@@ -512,16 +587,71 @@ impl ReuseTerm {
         self.copies_previous = previous_reference;
     }
 
+    /// A coding of the frame starts: the blocks an earlier coding of it
+    /// recorded are dropped. A frame re-coded (`rate.recode_overflow`, or
+    /// `debug.recode_identity`'s throw-away first coding) must leave the
+    /// term as if only its last coding had happened: marking the discarded
+    /// coding's cells dirty and its finer steps held changed the next
+    /// frames (H.264 and AV1, whose backends report copied blocks).
+    pub fn begin_coding(&mut self) {
+        self.coded.clear();
+    }
+
     /// The engine coded the `width` x `height` luma block at (`x`, `y`),
     /// as a copy of its reference at the zero vector (`copy`: a static skip,
     /// or a block the backend reports as one) or not. Every cell it changed
-    /// is marked dirty, to be measured in its row's turn.
+    /// is marked dirty, to be measured in its row's turn, when the frame's
+    /// coding is kept ([`Self::observe`]).
     pub fn coded_block(
         &mut self,
-        (x, y): (usize, usize),
-        (width, height): (usize, usize),
+        origin: (usize, usize),
+        extent: (usize, usize),
         (copy, step): (bool, f64),
     ) {
+        self.coded.push(CodedBlock {
+            origin,
+            extent,
+            copy,
+            step,
+        });
+    }
+
+    /// The number of blocks noted so far in this coding
+    /// ([`Self::coded_block`]), for [`Self::forget_coded_after`].
+    pub fn coded_count(&self) -> usize {
+        self.coded.len()
+    }
+
+    /// The blocks noted after the first `count`.
+    pub fn coded_after(&self, count: usize) -> &[CodedBlock] {
+        &self.coded[count..]
+    }
+
+    /// Keep the first `count` noted blocks and note `blocks` after them: a
+    /// partition trial undid the coding of the others, or put back an
+    /// earlier coding (`rd_split.rs`).
+    pub fn replace_coded_after(&mut self, count: usize, blocks: &[CodedBlock]) {
+        self.coded.truncate(count);
+        self.coded.extend_from_slice(blocks);
+    }
+
+    /// Mark the cells of the kept coding's blocks ([`Self::coded_block`]).
+    fn mark_coded(&mut self) {
+        let mut coded = std::mem::take(&mut self.coded);
+        for block in coded.drain(..) {
+            self.mark_block(block);
+        }
+        self.coded = coded;
+    }
+
+    /// Mark the cells `block` changed dirty, holding its step.
+    fn mark_block(&mut self, block: CodedBlock) {
+        let CodedBlock {
+            origin: (x, y),
+            extent: (width, height),
+            copy,
+            step,
+        } = block;
         let cols = self.cols;
         if (copy && self.copies_previous) || cols == 0 {
             return;
@@ -555,6 +685,7 @@ impl ReuseTerm {
         (width, height): (usize, usize),
         coded: CodedFrame<'_>,
     ) {
+        self.mark_coded();
         let (source, recon) = (
             source.plane(PlaneIndex::Y).view(),
             recon.plane(PlaneIndex::Y).view(),
@@ -948,6 +1079,7 @@ mod tests {
             horizon: None,
             sample_step: 16.,
             role_offset: 0.,
+            key_bound: false,
         };
         // Owed 5 at 9, worse than the level (50), owed 5 at 5, and owed 5 at
         // 50 but not still.
@@ -982,6 +1114,7 @@ mod tests {
             horizon: None,
             sample_step: 16.,
             role_offset: 1.5,
+            key_bound: false,
         };
         let inf = f64::INFINITY;
         let price = reuse_offset(3.);
@@ -1006,6 +1139,7 @@ mod tests {
             horizon: Some(3),
             sample_step: 16.,
             role_offset: 0.,
+            key_bound: false,
         };
         // Error 21.3/4 needs half the step to keep (-6, the price at reuse
         // 3); 21.3/64 would need an eighth, more than the price allows.
@@ -1016,6 +1150,10 @@ mod tests {
         assert!((offsets[0] + QP_UNITS_PER_OCTAVE).abs() < 1e-9);
         assert!((offsets[1] + QP_UNITS_PER_OCTAVE).abs() < 1e-9);
         assert_eq!(offsets[2], 0.);
+        // Off, a key carries none.
+        let mut t = term(vec![inf; 3], vec![LEVEL / 4., LEVEL / 64., 1.]).key_cells(0.);
+        t.plan(&frame);
+        assert!(t.offsets().iter().all(|&offset| offset == 0.));
     }
 
     /// One inter frame of a one-row term over a zero source: the
@@ -1116,5 +1254,28 @@ mod tests {
         let mut want = vec![1.; MEASURE_PERIOD];
         want[MEASURE_PERIOD - 1] = 4.;
         assert_eq!(errors, want);
+    }
+
+    /// A frame coded twice (an overflow re-code, `debug.recode_identity`)
+    /// leaves the term as its kept coding alone does: the discarded
+    /// coding's blocks mark nothing.
+    #[test]
+    fn a_discarded_coding_marks_nothing() {
+        let inf = f64::INFINITY;
+        let (mut once, mut twice) = (
+            term(vec![inf; 2], vec![1.; 2]),
+            term(vec![inf; 2], vec![1.; 2]),
+        );
+        // Twice: first coded at step 1 (cell 1 not a copy), then re-coded
+        // with both cells copied.
+        twice.set_reference(true);
+        twice.coded_block((0, 0), (2 * CELL, CELL), (false, 1.));
+        twice.begin_coding();
+        let values = [0, 0];
+        let errors_twice = code(&mut twice, &values, (&[false, false], &[3, 3]), 0);
+        let errors_once = code(&mut once, &values, (&[false, false], &[3, 3]), 0);
+        assert_eq!(errors_once, errors_twice);
+        assert_eq!(once.flags, twice.flags);
+        assert_eq!(once.held, twice.held);
     }
 }

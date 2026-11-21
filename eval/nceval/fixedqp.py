@@ -43,12 +43,13 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import buildinfo, interval, levers, plotted, pool
+from . import buildinfo, cloud, interval, levers, plotted, pool
 from .cbr import CQP_SPAN_MARGIN, Bench, Family, clip_targets, curve_points, preset_anchor
 from .clips import Clip
 from .codecs import Codec
@@ -67,10 +68,18 @@ FRAMES = 150
 #: `--clips` unset with `ab --clipset`: every clip of the set.
 ALL_CLIPS = 10_000
 WORKERS = 8
+#: Progress lines per measuring stage (measure).
+PROGRESS_STEPS = 100
 OWN_PREFIX = "nanocodec-"
 OPENH264 = "openh264-baseline"
 #: The J terms and the per-metric BD-rates reported for each pair (XPSNR beside J,
 #: never in it; measured only by `gap --clipset`, the site's runs).
+#: `--key-share` runs: our key at the quantizer the walk chose, not the codec's finer
+#: fixed-QP key offset (which would put the keys outside the goals).
+KEY_ARGS = ("--key-qp-offset", "0")
+#: `--key-share` runs: the reference encoders whose streams open with an information
+#: SEI (x264, x265), dropped from their one-frame streams (nceval.infosei).
+INFO_SEI_CODECS = (Codec.H264, Codec.HEVC)
 TERMS = ("full", "low", "psnr_yuv", "vmaf_v1", "ms_ssim", "xpsnr_yuv")
 
 
@@ -138,13 +147,19 @@ class Quantizers:
     (Bench.price), and the nearer grid neighbour in log rate is taken.
     """
 
-    def __init__(self, benches: Benches):
+    def __init__(self, benches: Benches, key_share: float | None = None):
+        """`key_share` (a one-frame run, `ab --key-share`): the goals are key frames of
+        this share of a one-second buffer at each ladder rate, so a one-frame stream's
+        rate is the ladder rate times key_share times the frame rate. The rate cap
+        scales with it: it bounds the stream the key belongs to."""
         self.benches = benches
+        self.key_share = key_share
 
     def goals(self, clip: Clip) -> list[float]:
-        targets = clip_targets(clip, LADDER_KBPS)
+        scale = self.key_share * clip.fps if self.key_share else 1.0
+        targets = [t * scale for t in clip_targets(clip, LADDER_KBPS)]
         low = min(targets) / CQP_SPAN_MARGIN
-        high = min(max(targets) * CQP_SPAN_MARGIN, clip.max_test_kbps)
+        high = min(max(targets) * CQP_SPAN_MARGIN, clip.max_test_kbps * scale)
         return [low * (high / low) ** (i / (CURVE_POINTS - 1)) for i in range(CURVE_POINTS)]
 
     def choose(self, family: Family, clip: Clip) -> list[int]:
@@ -171,7 +186,8 @@ class Quantizers:
             candidates = [i for i in (index, index + 1) if i < len(grid)]
             near = min(candidates, key=lambda i: abs(math.log(rate(i) / goal)))
             # never above the clip's rate cap (encode at <= half the source rate)
-            if rate(near) > clip.max_test_kbps and near + 1 < len(grid):
+            cap = clip.max_test_kbps * (self.key_share * clip.fps if self.key_share else 1.0)
+            if rate(near) > cap and near + 1 < len(grid):
                 near += 1
             chosen.add(grid[near])
         return sorted(chosen)
@@ -179,7 +195,8 @@ class Quantizers:
 
 def measure(benches: Benches, families: list[Family], clips: list[Clip],
             quantizers: dict[tuple[str, str], list[int]] | None = None,
-            workers: int = WORKERS) -> dict[tuple[str, str], list[dict]]:
+            workers: int = WORKERS,
+            key_share: float | None = None) -> dict[tuple[str, str], list[dict]]:
     """{(family, clip): fixed-QP points sorted by rate}. `quantizers` fixes the
     grid per (family name, clip name); otherwise each family's own (Quantizers).
 
@@ -187,16 +204,20 @@ def measure(benches: Benches, families: list[Family], clips: list[Clip],
     serve its frames) is reported and left out, never silently: pair_rows
     then drops that clip from the pairs it is missing from.
     """
-    chooser = Quantizers(benches)
+    chooser = Quantizers(benches, key_share)
     failed: dict[tuple[str, str], str] = {}
 
     def collect(jobs: dict) -> dict:
-        done = {}
-        for key, job in jobs.items():
+        """Each job's result; a line per hundredth done, so a long run (600-frame
+        points) shows progress to the rented box's stall watchdog."""
+        done, step = {}, max(1, len(jobs) // PROGRESS_STEPS)
+        for count, (key, job) in enumerate(jobs.items(), 1):
             try:
                 done[key] = job.result()
             except RuntimeError as error:
                 failed.setdefault(key[:2], str(error).splitlines()[0][:200])
+            if count % step == 0:
+                print(f"  {count}/{len(jobs)} done", flush=True)
         return done
     with ThreadPoolExecutor(max_workers=workers) as executor:
         grids = collect({(f.name, c.name): executor.submit(chooser.choose, f, c)
@@ -250,10 +271,30 @@ def describe(label: str, result: dict) -> str:
             f"n={result['n']}")
 
 
+def probe_cpu(benches: Benches, families: list[Family], clips: list[Clip],
+              curves: dict, workers: int = WORKERS) -> dict[str, list[float]]:
+    """Per curve, the encoder's CPU seconds at each of its quantizers, from the rate
+    probes that chose them (cached; a probe older than the timing is coded again)."""
+    def times(job: tuple[Family, Clip]) -> list[float]:
+        family, clip = job
+        return [benches.of(clip).probe(family, clip, int(p["label"].removeprefix("qp")),
+                                       timed=True)["cpu_s"]
+                for p in curves[(family.name, clip.name)]]
+    jobs = [(f, c) for c in clips for f in families if curves.get((f.name, c.name))]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return {f"{f.name}|{c.name}": t for (f, c), t in zip(jobs, executor.map(times, jobs))}
+
+
 def gap(args: argparse.Namespace) -> dict:
     paths, binary = load_paths(), Path(args.binary)
     names = args.families.split(",") if args.families else plotted.plotted_names()
     families = [family_of(n, binary, paths, Path(args.presets_dir)) for n in names]
+    if args.key_share:  # ours code the key at the walk's quantizer (as `ab --key-share`)
+        if args.frames != 1:
+            raise SystemExit("--key-share sizes one-frame runs: give --frames 1")
+        families = [replace(f, extra=f.extra + KEY_ARGS) if f.name.startswith(OWN_PREFIX)
+                    else replace(f, info_sei=f.codec not in INFO_SEI_CODECS)
+                    for f in families]
     if args.clipset:
         clips = held_out_clips(args.clipset, args.clips, args.frames)
         print(f"clip set {args.clipset}: {len(clips)} clips; {len(families)} families",
@@ -263,8 +304,8 @@ def gap(args: argparse.Namespace) -> dict:
         print(f"draw {args.rotation} {args.level}: {len(clips)} clips; "
               f"{len(families)} families", flush=True)
     # the site's runs (--clipset) record XPSNR; pool-draw gaps only rank ideas
-    curves = measure(Benches(paths, args.frames, xpsnr=bool(args.clipset)), families, clips,
-                     workers=args.workers)
+    benches = Benches(paths, args.frames, xpsnr=bool(args.clipset))
+    curves = measure(benches, families, clips, workers=args.workers, key_share=args.key_share)
     pairs = [tuple(p.split(":")) for p in args.pairs.split(",")] if args.pairs else []
     results = {}
     for anchor, test in pairs:
@@ -280,6 +321,7 @@ def gap(args: argparse.Namespace) -> dict:
             "pairs": results,
             "rates": {f"{f}|{c}": [round(p["kbps"], 1) for p in pts]
                       for (f, c), pts in curves.items()},
+            "cpu_s": probe_cpu(benches, families, clips, curves, args.workers),
             "quantizers": {f"{f}|{c}": [int(p["label"].removeprefix("qp")) for p in pts]
                            for (f, c), pts in curves.items()}}
 
@@ -305,7 +347,8 @@ def ab(args: argparse.Namespace) -> dict:
     codec = Codec(args.codec)
     name = OWN_PREFIX + codec.value + (f"@{args.preset}" if args.preset else "")
     anchor = own_family(name, Path(args.anchor_binary or args.binary))
-    anchor = replace(anchor, extra=anchor.extra + param_args(args.anchor_param))
+    key_args = KEY_ARGS if args.key_share else ()
+    anchor = replace(anchor, extra=anchor.extra + key_args + param_args(args.anchor_param))
     base = own_family(name, Path(args.binary))
     sets = candidate_sets(args)
     tests = [replace(base, name=f"{name}+{index}", extra=anchor.extra + param_args(pairs))
@@ -318,11 +361,16 @@ def ab(args: argparse.Namespace) -> dict:
         print(f"draw {args.rotation} {args.level}: {len(clips)} clips; "
               f"{len(sets)} candidates", flush=True)
     benches = Benches(paths, args.frames)
-    chooser = Quantizers(benches)
+    if args.key_share and args.frames != 1:
+        raise SystemExit("--key-share sizes one-frame runs: give --frames 1")
+    chooser = Quantizers(benches, args.key_share)
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        grids = {(anchor.name, c.name): executor.submit(chooser.choose, anchor, c)
-                 for c in clips}
-        grids = {k: j.result() for k, j in grids.items()}
+        jobs = {(anchor.name, c.name): executor.submit(chooser.choose, anchor, c)
+                for c in clips}
+        grids = {}
+        for count, (key, job) in enumerate(jobs.items(), 1):
+            grids[key] = job.result()
+            print(f"  quantizers {count}/{len(jobs)}", flush=True)
     grids |= {(test.name, clip): q for test in tests for (_, clip), q in grids.items()}
     curves = measure(benches, [anchor, *tests], clips, grids, args.workers)
     results = []
@@ -335,7 +383,11 @@ def ab(args: argparse.Namespace) -> dict:
                         "per_clip": rows})
         print(describe(f"{codec.value}{'@' + args.preset if args.preset else ''} {label}",
                        results[-1]["summary"]), flush=True)
+    # one-frame runs: each curve's encoder CPU (a second one-frame encode per point)
+    cpu_s = (probe_cpu(benches, [anchor, *tests], clips, curves, args.workers)
+             if args.key_share else {})
     return {"codec": codec.value, "preset": args.preset, "anchor_param": args.anchor_param,
+            "frames": args.frames, "key_share": args.key_share, "cpu_s": cpu_s,
             "rotation": None if args.clipset else args.rotation, "clipset": args.clipset,
             "level": None if args.clipset else args.level, "candidates": results,
             "binary_commit": buildinfo.info_of(Path(args.binary)).get("commit")}
@@ -460,6 +512,9 @@ def main(argv: list[str] | None = None) -> None:
     g.add_argument("--presets-dir", default=str(PRESETS_DIR),
                    help="our presets for --binary (a frozen build: its own commit's presets/)")
     for name in ("gap", "ab"):
+        sub.choices[name].add_argument("--key-share", type=float,
+                                       help="with --frames 1: quantizers for key frames of "
+                                       "this share of a one-second buffer at the ladder rates")
         sub.choices[name].add_argument(
             "--clipset", help="a chart clip set (JSON spec) instead of the pool draw: --clips "
             "of its clips, by held_out_clips' rule (ab: ranks ideas on that content only)")
@@ -470,7 +525,10 @@ def main(argv: list[str] | None = None) -> None:
         a.add_argument("--param", action="append", default=[], help="one candidate's name=value")
         a.add_argument("--sets", help="file of candidates, one per line: `label: a=1 b=2`")
     sub.choices["ab"].add_argument("--anchor-binary")
+
     sub.choices["ab"].add_argument("--anchor-param", action="append", default=[])
+    sub.choices["ab"].add_argument("--local", action="store_true",
+                                   help="measure here (default: a warm rented box, nceval.cloud)")
     sub.choices["cost"].add_argument("--only", help="comma-separated candidate labels")
     r = sub.add_parser("site", help="the site's held-out Fixed QP data from gap --clipset runs")
     r.add_argument("--gap", action="append", required=True)
@@ -479,6 +537,9 @@ def main(argv: list[str] | None = None) -> None:
                    "encoders' rows are kept where the gap runs measured only ours")
     r.add_argument("--json", required=True)
     args = parser.parse_args(argv)
+    if args.command == "ab" and not args.clipset and not cloud.runs_here(args.local):
+        cloud.offload("nceval.fixedqp", list(argv if argv is not None else sys.argv[1:]),
+                      args.json, cloud.default_json("fixedqp-ab"))
     result = {"gap": gap, "ab": ab, "cost": cost, "site": site_record}[args.command](args)
     if args.command != "site":
         record_levers(args, result)

@@ -27,9 +27,12 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 
 import check_av2_transform as tx
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 SIZES = [4, 8, 16, 32, 64]
 DSP_TABLE = tx.ROOT / 'crates/nc-dsp/src/av2_txfm/mod.rs'
@@ -214,7 +217,7 @@ def main() -> None:
     args = parser.parse_args()
     root = args.source.resolve()
     check_cosine_rule(root)
-    with tempfile.TemporaryDirectory(prefix='nc-av2-dct-oracle-') as tmp:
+    with tempdirs.temp_dir("av2-dct-oracle") as tmp:
         cfile, binary = Path(tmp) / 'oracle.c', Path(tmp) / 'oracle'
         cfile.write_text(oracle_source(root))
         subprocess.run(['nice', '-n', '19', args.cc, '-std=c99', '-O2', str(cfile), '-o', str(binary)], check=True)

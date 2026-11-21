@@ -8,9 +8,9 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'eval'))
+from nceval import tempdirs  # noqa: E402
 from nceval.codecs import Codec
 from nceval.config import load_paths
 from nceval.conformance import gate_stream
@@ -63,7 +63,7 @@ def main() -> None:
     cases = [('lossless-periodic', 3, ['--qp', '0']),
              ('lossy-all-key', 1, ['--qp', '160']),
              ('cbr-periodic', 3, ['--bitrate', '100', '--qp', '140', '--buffer-ms', '300'])]
-    with cpu_slots(1), tempfile.TemporaryDirectory(prefix='nc-av2-cli-') as temporary:
+    with cpu_slots(1), tempdirs.temp_dir("av2-cli") as temporary:
         for name, period, rate_args in cases:
             path = Path(temporary) / f'{name}.ivf'
             rate_log = Path(temporary) / f'{name}.csv'

@@ -81,7 +81,7 @@ impl fmt::Display for ParamError {
             Self::Unknown(name) => write!(f, "unknown parameter '{name}' (see `nanocodec params`)"),
             Self::NotPerFrame(name) => write!(
                 f,
-                "parameter '{name}' cannot take a non-base frame value: it is not re-read per frame"
+                "parameter '{name}' cannot take a per-role (non-base or key) frame value: it is not re-read per frame"
             ),
             Self::OutOfRange {
                 name,
@@ -361,8 +361,64 @@ param_group! {
         /// 46.36, 0.1: 41.70 / 46.36, 0.2: 41.78 / 46.57, 0.3: 41.43 / 46.49.
         zero_out_gate: 0.2, [0.0, 1.0],
             "inter leaves larger than the backend's full-spectrum transform (VVC's 64-point units) are confirmed against four leaves by coded cost only where their residual's standard deviation is at least this fraction of the quantizer step (0: always): higher skips more trials, keeping large leaves whose fine detail would quantise away anyway",
+        /// The zero-trial split selector (`split_selector.rs`).
+        split_selector: 0.0, [0.0, 1.0],
+            "1 shifts the inter planner's parent bias at each node by a fitted function of its residual, quadrant and motion-search evidence (`split_selector.rs`), 0 compares the plain variance costs: 1 follows the coded cost's split decisions more closely at no coding work",
+        split_selector_scale: 1.0, [0.0, 3.0],
+            "multiple of the split selector's fitted bias shift (`planner.split_selector`): 0 is the plain planner, higher trusts the selector more",
         rect_rd: 0.0, [0.0, 1.0],
             "1 has the backend's inter rate-distortion cost (sub-sample vector, transform, quantisation, coefficient and mode bits) confirm each shape the variance model plans against the square plan, 0 trusts the variance model: 1 rejects shapes that cost more to code, at a coded-cost trial per planned shape",
+        /// The RD partition search (`rd_split.rs`): inter-picture nodes
+        /// decided by coding their candidates, for backends with node
+        /// trials (`CodecBackend::begin_node_trial`).
+        rd_split: 0.0, [0.0, 1.0],
+            "1 decides each inter node's partition by coding its candidates (leaf, quad split, rectangular shapes near the plan) and keeping the cheapest coded one, 0 codes the planned partition: 1 is much slower, better partitions",
+        rd_split_deeper: 1.0, [0.0, 3.0],
+            "with the RD partition search on, quad splits are tried up to this many levels below the planned leaves (rounded): higher is slower, finer partitions on offer",
+        rd_split_shallower: 1.0, [0.0, 3.0],
+            "with the RD partition search on, leaves are tried up to this many levels above the planned leaves (rounded): higher is slower, larger leaves on offer",
+        rd_split_shapes: 2.0, [0.0, 2.0],
+            "with the RD partition search on, which nodes also try the backend's rectangular shapes (rounded): 0 only the planned shape, 1 nodes the plan codes as a leaf or shape, 2 wherever a leaf is tried: higher is slower",
+        rd_split_shape_gate: 0.0, [0.0, 16.0],
+            "with the RD partition search on, a shape beyond the planned one is tried only where the motion search separates its parts by at least this many whole samples (0: always): higher is faster",
+        rd_split_skip_exit: 1.0, [0.0, 1.0],
+            "with the RD partition search on, 1 tries nothing smaller at a node whose planned leaf codes as a skip CU: faster, rarely worse",
+        rd_split_margin: 0.0, [0.0, 4.0],
+            "with the RD partition search on, a planned node is also coded the other way (split for a planned leaf, leaf for a planned split) only where the planner's cost of that alternative is below this multiple of its choice's (0: everywhere): lower is faster, searches only the nodes the variance model nearly tied",
+        /// The context gate (`rd_split.rs`, `depth_context.rs`).
+        rd_split_context: 0.0, [0.0, 1.0],
+            "with the RD partition search on, 1 tries a planned node's alternative (split for a leaf, leaf for a split) only where the leaves coded around it (left and above neighbours, the co-located area of the last frame) suggest it (`rd_split_deepen_context`, `rd_split_merge_context`), 0 everywhere: 1 is faster",
+        rd_split_deepen_context: -1.0, [-3.0, 3.0],
+            "with the context gate on, a planned leaf tries the split only where the smaller of its neighbours' and co-located leaf levels, relative to its own, is at most this (rounded): lower is faster",
+        rd_split_merge_context: -1.0, [-4.0, 4.0],
+            "with the context gate on, a planned split tries the leaf only where its neighbours' and co-located leaf levels relative to its own (each clamped to +-2) sum to at least this (rounded): higher is faster",
+        rd_split_frame_period: 1.0, [1.0, 16.0],
+            "with the RD partition search on, it runs on one inter frame in this many (rounded; the others code their plan): higher is faster",
+        rd_split_deepen_residual: 0.0, [0.0, 4.0],
+            "with the RD partition search on, a planned leaf tries the split only where its residual variance per sample (at its search vector, from planning) is at least this many λ (0: everywhere): higher is faster",
+        rd_split_merge_skipped: 0.0, [0.0, 1.0],
+            "with the RD partition search on, 1 has a planned split try the leaf only where every leaf of its coded split is a skip: faster",
+        rd_split_context_period: 0.0, [0.0, 64.0],
+            "with the context gate on, one superblock in this many (rotating by frame; 0: none) is searched without the gate, so a partition the gated context keeps agreeing with is still re-checked: lower is slower",
+        rd_split_tt_margin: 0.05, [0.0, 1.0],
+            "with the RD partition search on, a ternary shape is tried only where the binary shape of its direction cost at most this fraction more than the best so far (1: always): lower is faster",
+        rd_split_tail_satd: 0.0, [0.0, 1.0],
+            "with the RD partition search on, fraction of an approximate luma SATD tail cost counted when pruning a split or shape near its bound (0: exact search without this estimate)",
+        /// The RD partition search on key frames (`rd_split.rs` "Key
+        /// frames"): needs the key plan (`intra_plan` above 0) and the
+        /// backend's node trials. Measured in
+        /// docs/analysis/key-frame-rdo-2026-11-21.md.
+        key_rd_split: 0.0, [0.0, 1.0],
+            "key frames: 1 decides each node's partition by coding the leaf and the quad split near the key plan and keeping the cheaper coded one, 0 codes the planned partition: 1 is much slower on key frames only, better key partitions",
+        key_rd_deeper: 1.0, [0.0, 3.0],
+            "with the key-frame RD partition search on, quad splits are tried up to this many levels below the planned leaves (rounded): higher is slower, finer key partitions on offer",
+        key_rd_shallower: 1.0, [0.0, 3.0],
+            "with the key-frame RD partition search on, leaves are tried up to this many levels above the planned leaves (rounded): higher is slower, larger key blocks on offer",
+        /// The key search's margin gate (`rd_split.rs` "Key frames"): the
+        /// intra counterpart of `rd_split_margin`, read from the key plan's
+        /// margins. Measured in docs/analysis/intra-selection-2026-11-21.md.
+        key_rd_margin: 0.0, [0.0, 4.0],
+            "with the key-frame RD partition search on, a planned key node is also coded the other way only where the key plan's cost of that alternative is below this multiple of its choice's (0: everywhere): lower is faster, searches only the nodes the transform estimate nearly tied",
     }
 }
 
@@ -410,6 +466,8 @@ param_group! {
             "with the winner walk on, 1 tries all eight quarter-sample neighbours per move, 0 the four in its row and column: 0 is faster",
         winner_walk_min_lambdas: 0.0, [0.0, 4.0],
             "with the winner walk on, only winners whose residual variance/sample is at least this many lambda are walked: higher is faster",
+        winner_walk_keeps_skip: 1.0, [0.0, 1.0],
+            "with the winner walk on, 1 leaves a winner at the codec's skip vector (the backend's `skip_vector`) unwalked, 0 walks it like any other",
         /// The final decision stage (`final_stage.rs`): the ranking's winner,
         /// the codec's skip vector and the codec's best intra prediction are
         /// screened by uncoded luma error + λ · mode bits, and those within
@@ -433,7 +491,7 @@ param_group! {
         final_skip_candidate: 1.0, [0.0, 1.0],
             "with the final stage on, 1 lets the codec's skip vector compete with the ranking's winner, 0 leaves it out: 0 is faster",
         final_intra_candidate: 1.0, [0.0, 1.0],
-            "with the final stage on, 1 lets intra compete with the ranking's winner, 0 leaves it out (and DC intra with it): 0 is faster",
+            "with the final stage on, 1 lets intra compete with the ranking's winner, 0 leaves intra to the ranking's own test (DC and the directional estimate): 0 is faster",
         /// Whole-CU pricing after the ranking (`cu_pricing.rs`): the
         /// codec codes the leaf both ways in all planes and keeps the
         /// cheaper by coded cost.
@@ -456,9 +514,9 @@ param_group! {
         codec_fullpel_probe_min_lambdas: 0.0, [0.0, 64.0],
             "skip integer-neighbor probes below this seed residual variance/sample lambda multiple: 0 preserves unrestricted probes; higher saves work and can lose prediction quality",
         codec_subpel_seed_lambdas: 0.03, [0.0, 64.0],
-            "exact-filter codecs: skip NEW sub-pel refinement when seed residual variance/sample is below this lambda multiple (0 disables)",
+            "skip sub-pel refinement (exact-filter ranking: of the NEW seed; bilinear ranking: of the winner) when its residual variance/sample is below this lambda multiple (0 disables)",
         codec_subpel_seed_lambdas_large: 0.0, [0.0, 64.0],
-            "exact-filter codecs: the seed gate for blocks of 32x32 and larger (the larger of this and the general seed gate): higher refines fewer large blocks (faster)",
+            "the seed gate for blocks of 32x32 and larger (the larger of this and the general seed gate): higher refines fewer large blocks (faster)",
         subpel_quarter_needs_half_move: 0.0, [0.0, 1.0],
             "1 skips the quarter-sample stage when no half-sample move won (four of the eight refinement evaluations): faster, fewer quarter-sample vectors",
         // A disposable-frame lever (h264-faster3): stopping after the
@@ -467,6 +525,12 @@ param_group! {
         // samples. Measured in docs/handoff/h264-faster.md.
         subpel_half_only: 0.0, [0.0, 1.0],
             "1 ends the fixed-stage sub-sample search after its half-sample stage (the `decision.subpel_walk` search is unaffected): faster, coarser vectors",
+        // Where the quarter stage is skipped after an unmoved half stage, the
+        // half stage's costs predict the quarter step (`quarter_predict.rs`).
+        subpel_quarter_predict: 0.0, [0.0, 2.0],
+            "where the fixed-stage search skips its quarter stage after a half stage that did not move: 0 nothing, 1 probe the quarter neighbour the half-stage costs predict best and keep it if cheaper, 2 take it unmeasured where its predicted gain reaches `decision.subpel_quarter_predict_strength`",
+        subpel_quarter_predict_strength: 0.05, [0.0, 1.0],
+            "with `decision.subpel_quarter_predict` 2, the predicted distortion gain, as a share of the half-stage vector's, from which the predicted quarter step is taken unmeasured: lower moves more",
         subpel_walk_max_noise_sigma: 255.0, [0.0, 255.0],
             "retain the legacy sub-pel search above this estimated sensor-noise sigma: lower limits coordinate-walk refinement to cleaner input",
         subpel_walk: 0.0, [0.0, 2.0],
@@ -515,6 +579,16 @@ param_group! {
         // SVT M9+ `skip_intra` (enc_mode_config.c: norm_me_dist <= 5000,
         // the mean over 64x64 blocks of the summed best 8x8 SADs, about 1.2
         // SAD per sample). A Fast lever; default off.
+        /// Key-frame leaves by coded cost (`leaf_rd.rs`): how many of the
+        /// backend's alternatives per axis are coded and priced beside its
+        /// own choice. Measured in
+        /// docs/analysis/key-frame-rdo-2026-11-21.md.
+        intra_rd_modes: 0.0, [0.0, 16.0],
+            "key frames: each leaf is also coded with up to this many of the backend's next-ranked luma intra modes and keeps the cheapest by coded cost (rounded; 0: the backend's own choice): higher is slower on key frames only, better modes",
+        intra_rd_transforms: 0.0, [0.0, 8.0],
+            "key frames: each leaf is also coded with up to this many of the backend's alternative transform layouts (size, split, type) for its mode and keeps the cheapest by coded cost (rounded; 0: off): higher is slower on key frames only",
+        intra_rd_chroma: 0.0, [0.0, 8.0],
+            "key frames: each leaf is also coded with up to this many of the backend's alternative chroma intra modes and keeps the cheapest by coded cost (rounded; 0: off): higher is slower on key frames only",
         intra_frame_skip_me_dist: 0.0, [0.0, 65_536.0],
             "P frames whose mean per-superblock 8x8 motion-search distortion (SVT `norm_me_dist`) is at most this try no intra (0 = off): higher skips intra in more frames (faster)",
         // A Fast lever (default off): static content should cost almost
@@ -643,6 +717,11 @@ param_group! {
         // leaf, and the one refinement of a starved key's still half landed
         // coarser by the leaf's offset (AV1: recovered 46.9 dB against an
         // undisturbed 49.0; 48.4 with the static-scaled cadence).
+        /// 2 since rc-key-budget (2026-11-21; final-check per codec and preset
+        /// in docs/handoff/rate-control.md "Reuse offsets on keys"); the SVC
+        /// presets pin 1: `ReuseTerm::key_cells`.
+        reuse_keys: 2.0, [0.0, 2.0],
+            "the reuse term on keys: 1 codes each still block at the step that keeps its quality (planned against the inter level), 0 codes keys at their own quantizer, 2 does the first unless rate control's allowance bounds the key (its bits are fixed, so the offsets would coarsen the rest)",
         reuse_level_price: 0.0, [0.0, 1.0],
             "1 prices a still block's refinement against the inter level on every frame: on a frame the QP cadence codes coarser (a leaf) the block gets that much more offset, so a recovery does not depend on the role of the frame it falls on; 0 prices it against the frame's own quantizer",
         memory: 0.75, [0.0, 0.95],
@@ -727,7 +806,11 @@ param_group! {
         // Layer propagation (`layer_propagation.rs`, 2026-11-18; screened
         // in docs/handoff/block-aq.md "Layer propagation retry").
         propagation: 0.0, [0.0, 1.0],
-            "layered streams: how far towards the top layer's quantizer a T0 block goes when the last period's frames reused none of it (MB-tree propagation one period late, `layer_propagation.rs`; 0 = off): higher codes unreferenced base blocks coarser",
+            "layered streams (and flat ones with `layers.propagation_flat`): how far towards the top layer's quantizer a T0 block goes when the last period's frames reused none of it (MB-tree propagation one period late, `layer_propagation.rs`; 0 = off): higher codes unreferenced base blocks coarser",
+        // Off: identical streams. The flat-stream form of the term
+        // (temporal-lambda, 2026-11-21; docs/handoff/temporal-lambda.md).
+        propagation_flat: 0.0, [0.0, 1.0],
+            "layer propagation on flat streams too, under rate control (with `layers.propagation` above 0): the QP cadence's base frames take the T0 role and its base-to-leaf span the top layer's offset, over each cadence cycle; 0 = layered mini-GOPs only",
         propagation_memory: 0.5, [0.0, 0.95],
             "layer propagation: weight of the carried history in each base block's reuse forecast, per period: higher reacts slower",
         propagation_grid: 1.0, [0.0, 8.0],
@@ -953,6 +1036,11 @@ param_group! {
         // byte-identical (no re-code). At 1, static_cam22 cost +3.5%.
         recode_overflow: 1.4, [0.0, 2.0],
             "rate control: codes a frame again, coarser, when it would fill a buffer drained at the target rate (a strict-CBR receiver, 1 s by default) past this multiple of its capacity, for backends that support re-coding (0 = never): 1 keeps the buffer, higher tolerates short overflows and re-codes less",
+        // Off: under a hard key budget a first key misses its target by log2
+        // SD 0.38-0.47, 9-11 % of them by 2x (docs/analysis/
+        // key-frame-study-2026-11-21.md section 4); measured there.
+        key_recode_miss: 0.0, [0.0, 2.0],
+            "rate control: codes a key frame once more when its size misses its budget by more than this many octaves either way, at the step the miss implies (0 = never): lower hits the key budget closer, at one more key coding",
         recode_overflow_inter: 0.0, [0.0, 2.0],
             "rate control: the re-code ceiling of inter frames, as a multiple of the buffer (0 = the main re-code ceiling): lower keeps static refinement bursts inside a strict-CBR receiver's buffer, at the refinement they would have bought",
         aq_max_offset: 8.0, [1.0, 12.0],
@@ -1163,6 +1251,16 @@ param_group! {
             "1 runs the full mode decision (sub-sample refinement, intra trial) against the second reference; 0 ranks its zero, predicted and scaled-seed vectors only: 0 is faster",
         second_compound_margin: 0.15, [0.0, 4.0],
             "compound inter trial gate: try the equal-weight average of primary and secondary inter winners only when the worse single-reference cost is within this fraction of the better one (0 = off when neither ties; higher tries compound on more blocks)",
+        second_hold: 0.0, [0.0, 10.0],
+            "seconds a high-quality frame stays the second reference before the next one replaces it (0: every high-quality frame replaces it): a long-lived reference keeps the background a passing object has since covered, at the cost of older detail; the reference distance limit refreshes it sooner",
+        second_hold_rearm: 0.0, [0.0, 1.0],
+            "with `refs.second_hold`: 1 releases the held frame when a later high-quality frame is coded at least as well (luma error), so the next one replaces it: the hold follows a still scene's refinement instead of keeping a coarser key",
+        second_hold_engage: 0.0, [0.0, 1.0],
+            "with `refs.second_hold`: 1 holds nothing after a key until a high-quality frame is coded at least as well as the key (luma error); until then every high-quality frame replaces the second reference as without a hold: a coarse rate-controlled key is never the frame held",
+        second_hold_moving: 0.0, [0.0, 1.0],
+            "with `refs.second_hold`: 1 releases the held frame while the camera moves (the running camera motion of `rate.fixed_qp_moving_key`'s test), so a pan refreshes the second reference with every high-quality frame",
+        second_hold_min_share: 0.0, [0.0, 1.0],
+            "with `refs.second_hold`: share of a frame's coded area predicted from the held reference below which the next high-quality frame replaces it before the hold ends (0: never early): a held frame the scene has moved away from (camera motion, lighting) is given up for a current one",
     }
 }
 
@@ -1180,6 +1278,14 @@ param_group! {
             "a non-base inter frame whose mean benefit proxy is below this reuses the previous CDEF strengths without a search (0: never): higher skips the CDEF search on more well-predicted frames",
         cdef_max_reuse: 7.0, [1.0, 64.0],
             "most consecutive frames the CDEF reuse test lets reuse CDEF strengths before one searches again: higher searches less often on long static stretches",
+        usage_quiet_share: 0.0, [0.0, 1.0],
+            "filter-search effort by usage (`filter_effort.rs` `UsageGate`; HEVC SAO, VVC SAO and ALF): an inter-frame CTB coded without residual over at least this share of its area keeps the filter off without statistics (0: never): lower skips more searches",
+        usage_off_runs: 0.0, [0.0, 8.0],
+            "with `filter.usage_quiet_share`: a CTB skips only after its last this many searches ended off (0: content alone decides): higher skips fewer, safer",
+        usage_refresh: 8.0, [1.0, 64.0],
+            "with `filter.usage_quiet_share`: every this many frames each CTB is searched regardless (staggered across CTBs): lower recovers sooner, skips less",
+        usage_base: 0.0, [0.0, 1.0],
+            "with `filter.usage_quiet_share`: 1 also gates base frames (0: non-base frames only; key frames always search)",
     }
 }
 
@@ -1274,6 +1380,22 @@ param_group! {
             "1 also trellises key frames (0: P frames only): 0 keeps the key frame every later frame predicts from at the plain quantiser's quality",
         trellis_states: 1.0, [1.0, 16.0],
             "entropy-context states kept per scan position: higher searches more level combinations",
+        // Off: the cheap trellis substitute for rungs without the trellis
+        // (`rate_trim.rs`, docs/handoff/cheap-rdoq.md), adopted per preset.
+        rd_trim: 0.0, [0.0, 1.0],
+            "rate-aware trimming of the plain quantiser's levels where the trellis is off (0 off, 1 on): ±1 levels whose static bit estimate is worth more than the error they remove go to zero; a walk over the nonzero levels, no entropy contexts",
+        rd_trim_lambda_scale: 1.0, [0.25, 4.0],
+            "with `quant.rd_trim`, multiple of the mode-decision λ it trades bits at: higher drops more levels",
+        rd_trim_trailing: 1.0, [0.0, 1.0],
+            "with `quant.rd_trim`, 1 drops trailing ±1 levels (last first) while their bits, the zeros before them and the shorter end of block are worth more than their error",
+        rd_trim_interior_bits: 0.0, [0.0, 8.0],
+            "with `quant.rd_trim`, bits charged to a ±1 before the end of block at the first scan position (0 with `quant.rd_trim_interior_hf_bits` 0: interior levels untouched): higher drops more low-frequency ones",
+        rd_trim_interior_hf_bits: 0.0, [0.0, 8.0],
+            "with `quant.rd_trim`, bits charged to a ±1 before the end of block at the last scan position (linear in between): higher drops more high-frequency ones",
+        rd_trim_block: 0.0, [0.0, 1.0],
+            "with `quant.rd_trim`, 1 empties a transform block whose levels' static bit estimate (end of block included) is worth more than the error they remove",
+        rd_trim_key: 0.0, [0.0, 1.0],
+            "with `quant.rd_trim`, 1 also trims key frames (0: P frames only)",
     }
 }
 

@@ -21,6 +21,7 @@ use super::{HevcBackend, Scratch, transform_units};
 use crate::headers::LOG2_MIN_CB;
 use crate::predict::{self, ModeCode};
 use crate::scan::{ScanKind, coded_sub_blocks};
+use crate::transform::forward_bound;
 
 /// The forward transform's coefficients are `2^(7 − log2 n)` times the
 /// orthonormal ones (HM scaling, 8-bit: `15 − BitDepth − log2 n`).
@@ -63,23 +64,40 @@ impl HevcBackend {
     }
 
     /// Distortion and bits of one `n`-square luma block (n ≥ 8) of source
-    /// `src` coded as intra `mode` with prediction `pred`: transformed,
-    /// quantised as `code_residual` would without the trellis and priced by
-    /// the CABAC estimate (coded-block flag and levels). The distortion is
-    /// measured on the coefficients (`Σ (c − c′)²` scaled back to samples by
-    /// the forward transform's gain): HEVC's DCT is orthogonal to within
-    /// rounding, and this saves the inverse transform.
+    /// `src` coded as intra `mode` with prediction `pred`
+    /// ([`Self::luma_residual_cost`]).
     pub(super) fn luma_transform_cost(
         &self,
         src: &PlaneView<'_>,
         pred: &PlaneView<'_>,
         mode: u8,
     ) -> (u64, f32) {
+        let cost = self.luma_residual_cost(src, pred, Some(mode));
+        (cost.distortion, cost.bits)
+    }
+
+    /// What coding the luma residual `src − pred` of one `n`-square
+    /// transform block (8..32) costs, intra with `mode` or (`None`) inter:
+    /// transformed, quantised as `code_residual` would without the trellis
+    /// (the intra or inter rounding) and priced by the CABAC estimate
+    /// (coded-block flag and levels). The distortion is measured on the
+    /// coefficients (`Σ (c − c′)²` scaled back to samples by the forward
+    /// transform's gain): HEVC's DCT is orthogonal to within rounding, and
+    /// this saves the inverse transform. An inter residual the SAD bound
+    /// proves zero (`pre_transform_zero_limit`, as `code_residual`) is not
+    /// transformed.
+    pub(super) fn luma_residual_cost(
+        &self,
+        src: &PlaneView<'_>,
+        pred: &PlaneView<'_>,
+        mode: Option<u8>,
+    ) -> LumaCost {
         let n = src.width();
         let log2 = n.trailing_zeros() as u8;
         let size = BlockSize::new(n, n).expect("transform sizes 8..32");
-        let quantizer =
-            &self.frame_quantization.planes[0].transforms[1][usize::from(log2 - 2)].quantizer;
+        let quantization = &self.frame_quantization.planes[0].transforms
+            [usize::from(mode.is_some())][usize::from(log2 - 2)];
+        let quantizer = &quantization.quantizer;
         let transform = HevcTransform::dct(log2).expect("transform sizes 8..32");
         let mut scratch = self.scratch.borrow_mut();
         let Scratch {
@@ -90,7 +108,19 @@ impl HevcBackend {
             ..
         } = &mut *scratch;
         let area = n * n;
-        self.dsp.residual_sad(size, src, pred, &mut residual[..], n);
+        let abs_sum = self.dsp.residual_sad(size, src, pred, &mut residual[..], n);
+        if mode.is_none()
+            && forward_bound(log2, u64::from(abs_sum)) <= quantization.pre_transform_zero_limit
+        {
+            return LumaCost {
+                distortion: residual[..area]
+                    .iter()
+                    .map(|&r| i64::from(r).pow(2) as u64)
+                    .sum(),
+                bits: self.bin_bits(self.contexts.cbf_luma[1], false),
+                coded: false,
+            };
+        }
         self.dsp
             .hevc_forward(transform, &residual[..area], n, &mut coeffs[..area]);
         let nonzero = self
@@ -104,7 +134,9 @@ impl HevcBackend {
                 .map(|&c| i64::from(c).pow(2) as u64)
                 .sum::<u64>()
         } else {
-            let scan = ScanKind::for_intra(mode, log2, true);
+            let scan = mode.map_or(ScanKind::Diagonal, |mode| {
+                ScanKind::for_intra(mode, log2, true)
+            });
             let sub_blocks = coded_sub_blocks(&levels[..area], self.scans.get(log2, scan));
             bits += self.levels_bits((&levels[..area], sub_blocks), log2, scan, true);
             self.dsp
@@ -115,8 +147,23 @@ impl HevcBackend {
                 .map(|(&c, &d)| (i64::from(c) - i64::from(d)).pow(2) as u64)
                 .sum::<u64>()
         };
-        (error >> gain_shift, bits)
+        LumaCost {
+            distortion: error >> gain_shift,
+            bits,
+            coded: nonzero > 0,
+        }
     }
+}
+
+/// [`HevcBackend::luma_residual_cost`] of one transform block.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LumaCost {
+    /// Squared error left after coding, in samples.
+    pub distortion: u64,
+    /// Estimated bits: the coded-block flag and the levels.
+    pub bits: f32,
+    /// Whether any level is non-zero.
+    pub coded: bool,
 }
 
 /// The DC value (§8.4.4.2.5) of the `n`-square block at `(x, y)` predicted

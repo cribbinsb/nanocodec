@@ -1,0 +1,5 @@
+# intra-selector step 5: one level down (modes, transform size) on HEVC medium keys, one-frame fixed-QP ab
+rd2: hevc.intra_rd_candidates=2
+rd3: hevc.intra_rd_candidates=3
+tu0: hevc.intra_tu_split_min_cost=0
+nxn0: hevc.intra_nxn_min_cost=0

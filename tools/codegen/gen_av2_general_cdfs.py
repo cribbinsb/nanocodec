@@ -20,8 +20,11 @@ Tool agents add the families their syntax reads to SPECS (docs/handoff/av2.md
 import argparse
 import itertools
 import subprocess
-import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
@@ -358,7 +361,7 @@ def probe(source, build):
                  f' for(int j=0;j<{n};j++) hash=(hash^model[j])*1099511628211ULL; }} }}')
         c.extend('}' for _ in dims)
     c.append('printf("HASH %llu\\n",(unsigned long long)hash); } return 0; }')
-    with tempfile.TemporaryDirectory(prefix='nc-av2-general-cdf-') as directory:
+    with tempdirs.temp_dir("av2-general-cdf") as directory:
         path = Path(directory) / 'probe.c'
         path.write_text('\n'.join(c))
         subprocess.run(['cc', '-O1', '-I' + str(source), '-I' + str(build), str(path),
@@ -496,7 +499,7 @@ def main():
     assert head == PIN, f'AVM at {head}, expected {PIN}'
     defaults, hashes = probe(args.source, args.build)
     for name, text in generate(defaults, hashes).items():
-        with tempfile.TemporaryDirectory(prefix='nc-av2-general-cdf-rust-') as directory:
+        with tempdirs.temp_dir("av2-general-cdf-rust") as directory:
             path = Path(directory) / Path(name).name
             path.write_text(text)
             subprocess.run([str(Path.home() / '.cargo/bin/rustfmt'), '--edition', '2024',

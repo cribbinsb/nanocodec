@@ -127,6 +127,26 @@ impl SegmentCoding {
         frame.map.fill(at, units, id);
     }
 
+    /// Note the segment ids of the `side`-sample square at luma (`x`, `y`)
+    /// while the frame codes them (a coding trial).
+    pub(super) fn save_square(&self, (x, y): (usize, usize), side: usize, saved: &mut Vec<u8>) {
+        saved.clear();
+        if let Some(frame) = &self.frame {
+            frame
+                .map
+                .save_square((x >> MI_LOG2, y >> MI_LOG2), side >> MI_LOG2, saved);
+        }
+    }
+
+    /// Put back what [`Self::save_square`] noted of the same square.
+    pub(super) fn restore_square(&mut self, (x, y): (usize, usize), side: usize, saved: &[u8]) {
+        if let Some(frame) = &mut self.frame {
+            frame
+                .map
+                .restore_square((x >> MI_LOG2, y >> MI_LOG2), side >> MI_LOG2, saved);
+        }
+    }
+
     /// `FeatureData[segment][SEG_LVL_ALT_Q]` of the frame's segments 1..7
     /// (segment 0 codes no feature), or `None` when the frame codes no
     /// segmentation.

@@ -35,7 +35,8 @@ Moved here from the front page on 2026-11-15 (figures as measured then).
 
 Each codec has a **Default** (quality point) and a **Fast** preset (speed point):
 `--preset h264-fast | hevc-fast | av1-fast | vp9-fast | av2-fast | vvc-fast`. Some codecs have further speed
-points: `h264-faster`, `h264-fastest`, `hevc-faster`, `av1-faster`, `vp9-faster`, `vp9-fastest`. Measured on the
+points: `h264-faster`, `h264-fastest`, `hevc-faster`, `av1-faster`, `vp9-faster`, `vp9-fastest`. (Names of that
+date; today's are `--codec C --preset NAME` on one ladder, mapped in the main README's "Presets" section.) Measured on the
 11 development clips (150 frames, one key frame; held-out figures for the same pairs are on the [fresh-clip page](bd-vs-speed-independent_fresh_2026-11-13.md#selected-pairs)) and one Jetson core (fps), against the reference encoders at the
 settings above:
 

@@ -197,7 +197,10 @@ fn both_precisions(
 
 #[test]
 fn convolve_matches_libaom_for_every_filter_pair_and_size() {
-    for dsp in [Dsp::new(), Dsp::with_isa(nc_dsp::Isa::Scalar).unwrap()] {
+    for dsp in [
+        Box::new(Dsp::new()),
+        Box::new(Dsp::with_isa(nc_dsp::Isa::Scalar).unwrap()),
+    ] {
         check_group("convolve", |d| {
             let size = (d.pick(&SIZES), d.pick(&SIZES));
             let pred = Pred::draw(d, size);
@@ -291,7 +294,10 @@ fn compound_average_and_distance_blends_match_libaom() {
 
 #[test]
 fn compound_mask_blend_matches_libaom() {
-    for dsp in [Dsp::new(), Dsp::with_isa(nc_dsp::Isa::Scalar).unwrap()] {
+    for dsp in [
+        Box::new(Dsp::new()),
+        Box::new(Dsp::with_isa(nc_dsp::Isa::Scalar).unwrap()),
+    ] {
         compound_mask_blend_matches_libaom_with(&dsp);
     }
 }
@@ -538,7 +544,10 @@ fn warp_estimation_matches_libaom() {
 
 #[test]
 fn warp_filter_matches_libaom() {
-    for dsp in [Dsp::new(), Dsp::with_isa(nc_dsp::Isa::Scalar).unwrap()] {
+    for dsp in [
+        Box::new(Dsp::new()),
+        Box::new(Dsp::with_isa(nc_dsp::Isa::Scalar).unwrap()),
+    ] {
         warp_filter_matches_libaom_with(&dsp);
     }
 }

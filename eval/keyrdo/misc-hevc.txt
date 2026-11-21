@@ -1,0 +1,7 @@
+# existing intra settings, λ and bias around the key RD searches; one-frame fixed-QP ab
+best: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4
+best_lam0.7: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4 hevc.lambda_scale=0.7
+best_lam1.4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4 hevc.lambda_scale=1.4
+best_bias950: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4 planner.intra_bias=950
+best_bias1150: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4 planner.intra_bias=1150
+best_sao: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4 hevc.sao_band=1

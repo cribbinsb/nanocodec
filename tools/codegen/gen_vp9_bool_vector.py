@@ -9,8 +9,11 @@ from pathlib import Path
 import hashlib
 import re
 import subprocess
-import tempfile
 import urllib.request
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 COMMIT = "1024874c5919305883187e2953de8fcb4c3d7fa6"
 BASE = f"https://raw.githubusercontent.com/webmproject/libvpx/{COMMIT}/"
@@ -51,7 +54,7 @@ int main(void) {
     return fwrite(output, 1, writer.pos, stdout) != writer.pos;
 }
 """
-    with tempfile.TemporaryDirectory(prefix="nc-vpx-oracle-") as tmp:
+    with tempdirs.temp_dir("vpx-oracle") as tmp:
         tmp = Path(tmp)
         (tmp / "oracle.c").write_text(code)
         subprocess.run(["cc", "-std=c99", "-O2", str(tmp / "oracle.c"), "-o", str(tmp / "oracle")], check=True)

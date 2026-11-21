@@ -411,6 +411,13 @@ pub(crate) struct QuantTerms {
 }
 
 impl QuantTerms {
+    /// AV1-family terms with the independent DC rounding used by AV2.
+    pub(crate) fn with_dc_rounding(q: &Av1Quantizer, dc_rounding_q7: i32) -> Self {
+        let mut terms = Self::from(q);
+        terms.dc.offset = (q.dc_step * dc_rounding_q7) as u32;
+        terms
+    }
+
     /// The terms of coefficient `index`.
     #[inline]
     pub(crate) fn step(&self, index: usize) -> &StepTerms {

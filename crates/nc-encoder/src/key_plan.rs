@@ -25,7 +25,7 @@ use crate::backend::CodecBackend;
 use crate::decision::source_variance;
 use crate::params::PlannerParams;
 use crate::partition::Block;
-use crate::partition_plan::Partition;
+use crate::partition_plan::{NodeMargins, Partition};
 
 /// Area (an 8x8 block) `planner.intra_flat_stop` is counted per.
 const FLAT_STOP_UNIT_AREA: usize = 64;
@@ -73,9 +73,12 @@ pub(crate) struct KeyPlanner<'a, B: CodecBackend> {
 }
 
 impl<B: CodecBackend> KeyPlanner<'_, B> {
-    /// Plan the key-frame superblock `sb`.
-    pub fn plan(&mut self, sb: Block) -> Partition {
-        self.plan_node(sb).1
+    /// Plan the key-frame superblock `sb`, with how decisively each node was
+    /// planned (the key RD search's margin gate, `planner.key_rd_margin`).
+    pub fn plan(&mut self, sb: Block) -> (Partition, NodeMargins) {
+        let mut margins = NodeMargins::new(&sb);
+        let partition = self.plan_node(sb, &mut margins).1;
+        (partition, margins)
     }
 
     /// λ weighing partition bits against the leaf costs. The transform
@@ -109,7 +112,7 @@ impl<B: CodecBackend> KeyPlanner<'_, B> {
             && leaf_cost <= self.params.intra_flat_stop * self.lambda() * per_8x8
     }
 
-    fn plan_node(&mut self, node: Block) -> (f32, Partition) {
+    fn plan_node(&mut self, node: Block, margins: &mut NodeMargins) -> (f32, Partition) {
         let inside = node.is_inside(self.width, self.height);
         let min_log2 = self.backend.min_block_log2();
         let floor = (self.params.intra_min_log2.round() as u8).max(min_log2);
@@ -134,20 +137,26 @@ impl<B: CodecBackend> KeyPlanner<'_, B> {
             if let Some(cost) = leaf_cost
                 && self.params.intra_bias * cost <= 1000.0 * split_cost
             {
+                margins.note(&node, self.params.intra_bias * cost, 1000.0 * split_cost);
                 return (cost, Partition::Leaf(None));
             }
             if child.x >= self.width || child.y >= self.height {
                 continue;
             }
-            let (cost, plan) = self.plan_node(child);
+            let (cost, plan) = self.plan_node(child, margins);
             split_cost += cost;
             children[i] = plan;
         }
-        match leaf_cost {
-            Some(cost) if self.params.intra_bias * cost <= 1000.0 * split_cost => {
-                (cost, Partition::Leaf(None))
-            }
-            _ => (split_cost, Partition::Split(Box::new(children))),
+        let Some(cost) = leaf_cost else {
+            return (split_cost, Partition::Split(Box::new(children)));
+        };
+        let (leaf, split) = (self.params.intra_bias * cost, 1000.0 * split_cost);
+        if leaf <= split {
+            margins.note(&node, leaf, split);
+            (cost, Partition::Leaf(None))
+        } else {
+            margins.note(&node, split, leaf);
+            (split_cost, Partition::Split(Box::new(children)))
         }
     }
 }

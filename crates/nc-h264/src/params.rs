@@ -95,7 +95,51 @@ pub struct StreamParams {
     pub parameter_set_id: u32,
 }
 
+/// The motion vectors a level allows, in quarter luma samples: Table A-1
+/// `MaxVmvR` vertically, and horizontally [-2048, 2047.75] samples up to
+/// level 5.2, [-8192, 8191.75] from level 6 (§A.3.1, §A.3.2). No sub-8x8
+/// partitions are coded, so `MaxMvsPer2Mb` (16 from level 3.1) always
+/// holds: at most four vectors a macroblock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MvRange {
+    /// Exclusive bound of |horizontal| + 1/4 sample, in quarter samples.
+    horizontal: i32,
+    /// Exclusive bound of |vertical| + 1/4 sample, in quarter samples.
+    vertical: i32,
+}
+
+/// Quarter samples per luma sample of an H.264 vector (§8.4.2.2).
+const QUARTERS: i32 = 4;
+
+impl MvRange {
+    /// The range of `level_idc` (Table A-1).
+    pub fn of_level(level_idc: u8) -> Self {
+        let (horizontal, vertical) = match level_idc {
+            ..=10 => (2048, 64),
+            11..=20 => (2048, 128),
+            21..=30 => (2048, 256),
+            31..=52 => (2048, 512),
+            _ => (8192, 8192),
+        };
+        Self {
+            horizontal: horizontal * QUARTERS,
+            vertical: vertical * QUARTERS,
+        }
+    }
+
+    /// Whether `(x, y)` (quarter samples) lies within the range.
+    pub fn contains(self, x: i32, y: i32) -> bool {
+        (-self.horizontal..self.horizontal).contains(&x)
+            && (-self.vertical..self.vertical).contains(&y)
+    }
+}
+
 impl StreamParams {
+    /// The vectors this stream's level allows.
+    pub fn mv_range(&self) -> MvRange {
+        MvRange::of_level(self.level_idc)
+    }
+
     /// Parameters for a `width` x `height` stream at `frame_rate`.
     pub fn new(width: usize, height: usize, frame_rate: FrameRate) -> Self {
         let mb_cols = width.div_ceil(16);
@@ -425,6 +469,18 @@ mod tests {
         assert_eq!(StreamParams::new(640, 360, FPS30).level_idc, 30);
         assert_eq!(StreamParams::new(1280, 720, FPS30).level_idc, 31);
         assert_eq!(StreamParams::new(1920, 1080, FPS30).level_idc, 40);
+    }
+
+    #[test]
+    fn vectors_stay_within_the_level_range() {
+        // Table A-1 MaxVmvR from level 3.1: [-512, +511.75] samples.
+        let range = StreamParams::new(1280, 720, FPS30).mv_range();
+        assert!(range.contains(-2048, 2047));
+        assert!(!range.contains(0, 2048) && !range.contains(0, -2049));
+        assert!(range.contains(8191, 0) && !range.contains(8192, 0));
+        // Level 3.0 (640x360): [-256, +255.75].
+        let range = StreamParams::new(640, 360, FPS30).mv_range();
+        assert!(range.contains(0, 1023) && !range.contains(0, 1024));
     }
 
     #[test]

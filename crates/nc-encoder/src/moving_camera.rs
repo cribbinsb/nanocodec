@@ -92,7 +92,8 @@ impl MovingCamera {
         }));
     }
 
-    fn moving(&self) -> bool {
+    /// Whether the running camera motion is a moving camera's.
+    pub(crate) fn moving(&self) -> bool {
         self.scene
             .is_some_and(|(motion, _)| motion >= STARTUP_CAMERA_MOTION)
     }

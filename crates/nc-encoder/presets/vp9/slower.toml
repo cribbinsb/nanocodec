@@ -1,0 +1,50 @@
+# VP9 slower (`--preset slower`; `slow` until 2026-11-21): the shared slower bundle (presets/slower.toml,
+# applied first: the second reference with the full decision) plus VP9's
+# levers. Re-picked 2026-11-20 (docs/handoff/presets.md "Slow presets")
+# once VP9 handed the engine its own 8-tap filter (`vp9.exact_ranking`):
+# exact candidate ranking lets the winner walk run, VP9's largest Slow lever
+# as for the other codecs. Fixed QP J against the Default (23 clips, draw
+# fixedqp-2026-11-20) / x86 callgrind P instructions: the previous Slow
+# -2.6% / +61%; + exact ranking -3.4% / +84%; + the walk (3 moves, row and
+# column) -4.8% / +110%. Cut to the knee: without the transform search on
+# every block and the two trellis survivors -4.5% / +58% (each alone gave
+# back 0.2 J for 19-26 points). The walk gated at 0.25 lambda per sample
+# (-4.1%) and a square 2-move walk (-4.8% at +131%) were worse trades; the
+# sub-sample gates no longer cost anything measurable with exact ranking
+# (gates on: -4.4% at +107%). Left out as before: the final stage, 1/8-sample
+# vectors, the DC intra gate at 0 and the mode search for intra blocks of
+# inter frames. Whole-CU pricing and the planner's shape RD still need VP9
+# backend hooks (`begin_cu_trial`, `inter_leaf_cost`).
+#
+# Exact ranking on VP9's own filter, and the winner walk.
+vp9.exact_ranking = 1
+decision.winner_walk_steps = 3
+decision.winner_walk_square = 0
+# Every winner is walked (the Default gates at 0.25 lambda per sample:
+# -4.1% instead of -4.8% here).
+decision.winner_walk_min_lambdas = 0
+# The sub-sample search: no seed gates, the coordinate walk, no one-position
+# or skipped HME search.
+decision.skip_no_refine_lambdas = 0
+decision.refine_cheap_min_lambdas = 0
+decision.subpel_walk = 1
+analysis.one_position_sad_per_pixel = 0
+analysis.skip_hme_sad_per_pixel = 0
+# Intra: all ten modes costed with the trellis at every transform depth.
+vp9.intra_rd_candidates = 10
+vp9.intra_rd_trellis = 1
+vp9.intra_tx_depth = 3
+# The RD partition search (2026-11-21, docs/handoff/vp9.md "RD partition
+# search"): each inter node decided by coding the leaf and the quad split one
+# level either side of the plan, with 8x8 inter blocks on offer. Fixed QP J
+# (24 clips, draw fixedqp-2026-11-21) / x86 callgrind P instructions: -7.7%
+# [-8.4, -7.1] / +145% (without the 8x8 blocks -6.5% / +91%; no deeper split
+# -3.0% / +48%); Jetson cycles +86.5% (2 clips). CBR against 7910373e0 (draw
+# 2026-11-21): L3 -8.79% [-9.40, -8.20] n 108, final-check (34 clips, 600 f)
+# -8.76% [-9.37, -7.85], no guard tripped.
+planner.rd_split = 1
+planner.inter_min_log2 = 3
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here (docs/handoff/planner-selector.md).
+planner.split_selector = 0

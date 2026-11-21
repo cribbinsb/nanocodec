@@ -125,3 +125,95 @@ def test_svc_base_guard_is_a_constraint_only_for_two_layer_rows():
     rows = {"a": {"class": "pan", "quality": -1.0, "base_quality": 3.0},
             "b": {"class": "static", "quality": -1.0, "base_quality": 1.0}}
     assert base_constraint(rows) == [2.0 - jreal.SVC_BASE_GUARD_PCT]
+
+
+def test_a_study_on_another_cpu_family_is_refused_unless_re_anchored(monkeypatch):
+    import pytest
+    from nceval import cloud
+    monkeypatch.setattr(cloud, "cpu_family", lambda: "c7i")
+    assert tune_pool.check_family(None, "study s", False) is False  # nothing recorded
+    assert tune_pool.check_family("c7i", "study s", False) is False
+    with pytest.raises(SystemExit, match="counted on c7a, this is c7i"):
+        tune_pool.check_family("c7a", "study s", False)
+    assert tune_pool.check_family("c7a", "study s", True) is True  # count the anchor again
+    assert cloud.box_family("host:pc") is None and cloud.box_family("c7a") == "c7a"
+
+
+def test_a_finalists_dcpu_weighs_arm_and_x86_equally_with_callgrind_standing_in():
+    both = tune_pool.combined_dcpu(-3.0, {"arm": -4.0, "x86": -2.0, "targets": {}})
+    assert both["dcpu"] == -3.0 and both["dcpu_x86"] == -2.0
+    assert both["dcpu_x86_how"] == "zen5" and both["dcpu_callgrind"] == -3.0
+    arm_only = tune_pool.combined_dcpu(-3.0, {"arm": -5.0, "x86": None})
+    assert arm_only["dcpu"] == -4.0 and arm_only["dcpu_x86_how"] == "callgrind"
+    none = tune_pool.combined_dcpu(-3.0, None)
+    assert none["dcpu"] == -3.0 and none["dcpu_arm"] is None
+
+
+def two_rung_study(slow_j, slow_cpu, k=0.5, explicit=False):
+    """A fake between-rungs study: trial 0 the base rung, trial 1 the slower seed rung."""
+    import optuna
+    study = optuna.create_study(directions=["minimize", "minimize"])
+    for attr, value in {"k": k, "k_explicit": explicit,
+                        "seed_rungs": [{"rung": "fast", "trial": 0},
+                                       {"rung": "medium", "trial": 1}]}.items():
+        study.set_user_attr(attr, value)
+    for j, cpu in ((0.0, 1.0), (slow_j, slow_cpu)):
+        study.add_trial(optuna.trial.create_trial(
+            values=[j, cpu], user_attrs={tune_pool.FIDELITY_ATTR: tune_pool.FULL}))
+    return study
+
+
+def test_a_between_rungs_study_takes_k_from_the_chord_and_judges_its_front_against_it(capsys):
+    import math
+    study = two_rung_study(-3.0, 1.5)  # the slower rung: 3 % better for 50 % more CPU
+    assert tune_pool.study_k(study.user_attrs) == (0.5, "the default k (chord not measured yet)")
+    tune_pool.set_chord(study)
+    k, source = tune_pool.study_k(study.user_attrs)
+    slope = 3.0 / (100 * math.log(1.5))
+    assert math.isclose(k, slope) and source == "the chord fast -> medium"
+    assert "k 0.07399 (the chord fast -> medium)" in capsys.readouterr().out
+    chord = study.user_attrs["chord"]
+    # half-way in log CPU the chord is at half the J; a move along it scores ~0 at its k
+    assert math.isclose(tune_pool.chord_j(chord, math.sqrt(1.5)), -1.5)
+    on_chord = -1.5
+    assert abs(on_chord + k * 100 * math.log(math.sqrt(1.5))) < 1e-9
+    assert 0.5 * 100 * (math.sqrt(1.5) - 1) + on_chord > 0  # the base k stopped it
+
+
+def test_an_explicit_k_above_the_chord_is_kept_but_warned_and_a_rung_that_buys_nothing_has_none(
+        capsys):
+    study = two_rung_study(-3.0, 1.5, k=0.5, explicit=True)
+    tune_pool.set_chord(study)
+    assert tune_pool.study_k(study.user_attrs) == (0.5, "--k")
+    out = capsys.readouterr().out
+    assert "!!!" in out and "--k 0.5 is above the chord's slope 0.07399" in out
+    flat = two_rung_study(+0.5, 1.5)
+    tune_pool.set_chord(flat)
+    assert flat.user_attrs["chord"]["k"] is None
+    assert tune_pool.study_k(flat.user_attrs)[0] == 0.5
+    assert "does not buy J with CPU" in capsys.readouterr().out
+
+
+def test_a_study_from_a_binary_path_records_its_commit_and_finalists_need_rented_core_cpu(
+        tmp_path, monkeypatch):
+    import optuna
+    import pytest
+    from nceval import buildinfo
+    binary = tmp_path / "nanocodec"
+    binary.write_text("elf")
+    (tmp_path / "COMMIT").write_text("f" * 40 + "\n")
+    monkeypatch.setattr(buildinfo, "build_info", lambda b: {"commit": None, "dirty": False})
+    assert tune_pool.binary_commit(binary) == "f" * 40  # the cached copy's COMMIT
+    monkeypatch.setattr(buildinfo, "build_info", lambda b: {"commit": "a" * 40, "dirty": False})
+    assert tune_pool.binary_commit(binary) == "a" * 40  # the stamp first
+    monkeypatch.setattr(buildinfo, "build_info", lambda b: {"commit": "a" * 40, "dirty": True})
+    assert tune_pool.binary_commit(binary) is None  # a dirty build is no commit's
+    study = optuna.create_study(directions=["minimize", "minimize"])
+    study.set_user_attr("commit", "")
+    monkeypatch.setattr(tune_pool, "finalist_todo", lambda s, c, k: {"3": None})
+    monkeypatch.setattr(tune_pool, "study_k", lambda attrs: (0.1, "k"))
+    with pytest.raises(SystemExit, match="#3 have no rented-core CPU"):
+        tune_pool.require_box_cpu(study, 5, None, callgrind_only=False)
+    tune_pool.require_box_cpu(study, 5, None, callgrind_only=True)
+    study.set_user_attr("finalist_cpu", {"3": {"arm": 0.0, "x86": None}})
+    tune_pool.require_box_cpu(study, 5, None, callgrind_only=False)  # 0.0 is a measurement

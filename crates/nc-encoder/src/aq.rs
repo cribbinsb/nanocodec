@@ -44,6 +44,10 @@ const CELL_LOG2: u8 = 3;
 const CELL_SAMPLES: f64 = 64.;
 /// Variance floor, so flat blocks do not dominate the log mean.
 const MIN_VARIANCE: f64 = 1.;
+/// Largest spread of `log2(variance)` over a frame's cells: an 8-bit 8x8
+/// block's variance is at most `255² / 4` (half its samples at 0, half at
+/// 255), below `2^14`, and [`MIN_VARIANCE`] puts the floor at `2^0`.
+const LOG2_VARIANCE_SPAN: f64 = 14.;
 /// Distinct offsets kept free for the reuse term (added after the grid)
 /// when the codec codes only a few per frame.
 const RESERVED_REUSE_OFFSETS: usize = 1;
@@ -174,7 +178,7 @@ impl BlockAq {
         }
         self.total_weight = self.bit_weight.iter().map(|&w| f64::from(w)).sum();
         self.offset.clear();
-        if self.strength > 0. {
+        if self.strength > 0. && !self.variance_rounds_away() {
             self.offset.extend(pre.blocks.cells().iter().map(|b| {
                 (f64::from(b.sum_sq_dev) / CELL_SAMPLES)
                     .max(MIN_VARIANCE)
@@ -237,6 +241,21 @@ impl BlockAq {
         self.nonzero
             .extend((0..self.offset.len()).filter(|&cell| self.offset[cell] != 0.));
         self.active = !self.nonzero.is_empty();
+    }
+
+    /// Whether the variance term is too weak to move any cell by a coded
+    /// step: with only a few distinct offsets per frame its values are
+    /// rounded to `offset_step`, and when its largest possible magnitude
+    /// (`strength` x [`LOG2_VARIANCE_SPAN`]; pooling only averages them) is
+    /// under half a step, every cell rounds to 0, as if it were off. Only
+    /// when no persistence offset is added before the rounding. (VP9 Fast's
+    /// `rate.aq_strength` is 0.0003: its per-cell `log2` cost ~1 % of the
+    /// rung's instructions for offsets that were always 0.)
+    fn variance_rounds_away(&self) -> bool {
+        self.persistence.is_none()
+            && self
+                .offset_step
+                .is_some_and(|step| self.strength * LOG2_VARIANCE_SPAN < step / 2.)
     }
 
     /// Plan a frame whose only offsets are the reuse term's `reuse`: a few

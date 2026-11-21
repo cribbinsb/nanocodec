@@ -253,7 +253,12 @@
  ],
  "timing": {
   "anchor_times": "docs/results/bd-vs-speed-timing-x86.json",
-  "machine": "AWS c8a.large (Zen 5), one core"
+  "machine": "AWS c8a.large (Zen 5), one core",
+  "x264_medium_ms_per_frame": {
+   "lowlight_city_night": 6.982933333333333,
+   "crowd_mot17_09": 9.096519999999998,
+   "bodycam_bc1": 10.978513333333334
+  }
  },
  "references": {
   "x264-medium~psnr": {
@@ -472,13 +477,13 @@
    "to": "2026-11-20",
    "fps_change_pct": {
     "av1": -0.09,
-    "av1@slow": 0.03,
+    "av1@slower": 0.03,
     "av1@veryfast": -0.14,
     "av2": -0.04,
     "h264": 0.25,
-    "h264@fast": 0.18,
-    "h264@faster": 0.3,
-    "h264@slow": 0.04,
+    "h264@faster": 0.18,
+    "h264@retired-faster": 0.3,
+    "h264@slower": 0.04,
     "h264@veryfast": 0.97,
     "hevc": -0.25,
     "hevc@faster": 0.39,
@@ -828,7 +833,7 @@
      "flagged": false,
      "fps_x86": 276.84
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -11.33,
      "iqr": [
       -28.44,
@@ -839,7 +844,7 @@
      "flagged": false,
      "fps_x86": 296.12
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -10.29,
      "iqr": [
       -26.7,
@@ -944,8 +949,8 @@
     "hevc",
     "hevc@fast",
     "h264",
-    "h264@fast",
-    "h264@faster"
+    "h264@faster",
+    "h264@retired-faster"
    ],
    "caption": [
     "New: the VVC encoder (64x64 CTUs: quality \u22123.9 %).",
@@ -993,8 +998,8 @@
    "codec_fronts": {
     "h264": [
      "h264",
-     "h264@fast",
-     "h264@faster"
+     "h264@faster",
+     "h264@retired-faster"
     ],
     "hevc": [
      "hevc",
@@ -1095,7 +1100,7 @@
      "flagged": false,
      "fps_x86": 236.12
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -11.12,
      "iqr": [
       -29.27,
@@ -1106,7 +1111,7 @@
      "flagged": false,
      "fps_x86": 334.74
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -1.25,
      "iqr": [
       -24.01,
@@ -1150,7 +1155,7 @@
      "flagged": false,
      "fps_x86": 90.48
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -40.66,
      "iqr": [
       -51.21,
@@ -1232,10 +1237,10 @@
     "vvc",
     "av2",
     "hevc",
-    "vvc@fast",
+    "vvc@faster",
     "hevc@fast",
-    "h264@fast",
-    "h264@faster"
+    "h264@faster",
+    "h264@retired-faster"
    ],
    "caption": [
     "Start-up QP cadence in all six Defaults (VAL J \u22125.0 % H.264, \u22129.7 % HEVC, \u22126.5 % AV1 and VP9, \u221211.3 % VVC); 1000 ms rate-control buffer (was 500).",
@@ -1283,8 +1288,8 @@
    "codec_fronts": {
     "h264": [
      "h264",
-     "h264@fast",
-     "h264@faster"
+     "h264@faster",
+     "h264@retired-faster"
     ],
     "hevc": [
      "hevc",
@@ -1292,7 +1297,7 @@
     ],
     "vvc": [
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
      "av1",
@@ -1387,7 +1392,7 @@
      "flagged": false,
      "fps_x86": 257.17
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -14.09,
      "iqr": [
       -28.18,
@@ -1398,7 +1403,7 @@
      "flagged": false,
      "fps_x86": 373.15
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -5.19,
      "iqr": [
       -23.68,
@@ -1464,7 +1469,7 @@
      "flagged": false,
      "fps_x86": 91.92
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -40.63,
      "iqr": [
       -51.78,
@@ -1561,8 +1566,8 @@
     "hevc@fast",
     "av1@faster",
     "hevc@faster",
-    "h264@fast",
     "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -1610,8 +1615,8 @@
    "codec_fronts": {
     "h264": [
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
@@ -1621,7 +1626,7 @@
     ],
     "vvc": [
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
      "av1",
@@ -1717,7 +1722,7 @@
      "flagged": false,
      "fps_x86": 249.45
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -15.4,
      "iqr": [
       -28.32,
@@ -1728,7 +1733,7 @@
      "flagged": false,
      "fps_x86": 364.34
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -8.69,
      "iqr": [
       -26.49,
@@ -1794,7 +1799,7 @@
      "flagged": false,
      "fps_x86": 96.04
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -40.63,
      "iqr": [
       -51.78,
@@ -1909,13 +1914,13 @@
     "vvc",
     "av2",
     "hevc",
-    "vvc@fast",
+    "vvc@faster",
     "av1@fast",
     "hevc@fast",
     "av1@faster",
     "hevc@faster",
-    "h264@fast",
     "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -1963,8 +1968,8 @@
    "codec_fronts": {
     "h264": [
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
@@ -1974,7 +1979,7 @@
     ],
     "vvc": [
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
      "av1",
@@ -2072,7 +2077,7 @@
      "flagged": false,
      "fps_x86": 230.56
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -16.42,
      "iqr": [
       -30.54,
@@ -2083,7 +2088,7 @@
      "flagged": false,
      "fps_x86": 366.47
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -9.69,
      "iqr": [
       -27.6,
@@ -2149,7 +2154,7 @@
      "flagged": false,
      "fps_x86": 104.59
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -41.43,
      "iqr": [
       -51.76,
@@ -2264,11 +2269,11 @@
     "vvc",
     "av2",
     "hevc",
-    "vvc@fast",
+    "vvc@faster",
     "hevc@fast",
     "av1@faster",
     "hevc@faster",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -2315,8 +2320,8 @@
    "codec_fronts": {
     "h264": [
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
@@ -2326,7 +2331,7 @@
     ],
     "vvc": [
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
      "av1",
@@ -2424,7 +2429,7 @@
      "flagged": false,
      "fps_x86": 219.14
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -16.42,
      "iqr": [
       -30.54,
@@ -2435,7 +2440,7 @@
      "flagged": false,
      "fps_x86": 362.47
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -9.69,
      "iqr": [
       -27.6,
@@ -2501,7 +2506,7 @@
      "flagged": false,
      "fps_x86": 100.0
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -41.43,
      "iqr": [
       -51.76,
@@ -2616,12 +2621,12 @@
     "vvc",
     "av2",
     "hevc",
-    "vvc@fast",
+    "vvc@faster",
     "av1@fast",
     "hevc@fast",
     "av1@faster",
     "hevc@faster",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -2668,8 +2673,8 @@
    "codec_fronts": {
     "h264": [
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
@@ -2679,7 +2684,7 @@
     ],
     "vvc": [
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
      "av1",
@@ -2777,7 +2782,7 @@
      "flagged": false,
      "fps_x86": 217.29
     },
-    "h264@slow": {
+    "h264@slower": {
      "j": -25.67,
      "iqr": [
       -37.72,
@@ -2788,7 +2793,7 @@
      "flagged": false,
      "fps_x86": 136.57
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -16.42,
      "iqr": [
       -30.54,
@@ -2799,7 +2804,7 @@
      "flagged": false,
      "fps_x86": 361.94
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -9.69,
      "iqr": [
       -27.6,
@@ -2832,7 +2837,7 @@
      "flagged": false,
      "fps_x86": 161.66
     },
-    "hevc@slow": {
+    "hevc@veryslow": {
      "j": -48.25,
      "iqr": [
       -54.95,
@@ -2876,7 +2881,7 @@
      "flagged": false,
      "fps_x86": 103.4
     },
-    "vvc@slow": {
+    "vvc@veryslow": {
      "j": -50.43,
      "iqr": [
       -57.96,
@@ -2887,7 +2892,7 @@
      "flagged": false,
      "fps_x86": 84.19
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -41.43,
      "iqr": [
       -51.76,
@@ -2909,7 +2914,7 @@
      "flagged": false,
      "fps_x86": 156.35
     },
-    "av1@slow": {
+    "av1@slower": {
      "j": -44.91,
      "iqr": [
       -53.55,
@@ -2953,7 +2958,7 @@
      "flagged": false,
      "fps_x86": 146.63
     },
-    "vp9@slow": {
+    "vp9@slower": {
      "j": -43.23,
      "iqr": [
       -50.98,
@@ -3008,7 +3013,7 @@
      "flagged": false,
      "fps_x86": 132.43
     },
-    "av2@slow": {
+    "av2@slower": {
      "j": -49.09,
      "iqr": [
       -56.5,
@@ -3032,17 +3037,17 @@
     }
    },
    "frontier": [
-    "vvc@slow",
+    "vvc@veryslow",
     "vvc",
-    "hevc@slow",
+    "hevc@veryslow",
     "av2",
     "hevc",
-    "vvc@fast",
+    "vvc@faster",
     "av1@fast",
     "hevc@fast",
     "av1@faster",
     "hevc@faster",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -3088,38 +3093,38 @@
    },
    "codec_fronts": {
     "h264": [
-     "h264@slow",
+     "h264@slower",
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
-     "hevc@slow",
+     "hevc@veryslow",
      "hevc",
      "hevc@fast",
      "hevc@faster"
     ],
     "vvc": [
-     "vvc@slow",
+     "vvc@veryslow",
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
-     "av1@slow",
+     "av1@slower",
      "av1",
      "av1@fast",
      "av1@faster"
     ],
     "vp9": [
-     "vp9@slow",
+     "vp9@slower",
      "vp9",
      "vp9@fast",
      "vp9@faster",
      "vp9@veryfast"
     ],
     "av2": [
-     "av2@slow",
+     "av2@slower",
      "av2",
      "av2@fast"
     ]
@@ -3204,7 +3209,7 @@
      "flagged": false,
      "fps_x86": 226.75
     },
-    "h264@slow": {
+    "h264@slower": {
      "j": -25.67,
      "iqr": [
       -37.72,
@@ -3215,7 +3220,7 @@
      "flagged": false,
      "fps_x86": 140.68
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -16.42,
      "iqr": [
       -30.54,
@@ -3226,7 +3231,7 @@
      "flagged": false,
      "fps_x86": 367.03
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -9.69,
      "iqr": [
       -27.6,
@@ -3259,7 +3264,7 @@
      "flagged": false,
      "fps_x86": 178.66
     },
-    "hevc@slow": {
+    "hevc@veryslow": {
      "j": -48.25,
      "iqr": [
       -54.95,
@@ -3303,7 +3308,7 @@
      "flagged": false,
      "fps_x86": 110.82
     },
-    "vvc@slow": {
+    "vvc@veryslow": {
      "j": -50.43,
      "iqr": [
       -57.96,
@@ -3314,7 +3319,7 @@
      "flagged": false,
      "fps_x86": 91.66
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -41.43,
      "iqr": [
       -51.76,
@@ -3336,7 +3341,7 @@
      "flagged": false,
      "fps_x86": 164.68
     },
-    "av1@slow": {
+    "av1@slower": {
      "j": -44.91,
      "iqr": [
       -53.55,
@@ -3391,7 +3396,7 @@
      "flagged": false,
      "fps_x86": 167.22
     },
-    "vp9@slow": {
+    "vp9@slower": {
      "j": -43.23,
      "iqr": [
       -50.98,
@@ -3446,7 +3451,7 @@
      "flagged": false,
      "fps_x86": 141.16
     },
-    "av2@slow": {
+    "av2@slower": {
      "j": -49.09,
      "iqr": [
       -56.5,
@@ -3470,18 +3475,18 @@
     }
    },
    "frontier": [
-    "vvc@slow",
+    "vvc@veryslow",
     "vvc",
-    "hevc@slow",
+    "hevc@veryslow",
     "av2",
     "hevc",
-    "vvc@fast",
+    "vvc@faster",
     "av1@fast",
     "av1@faster",
     "hevc@fast",
     "vp9@faster",
     "av1@veryfast",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -3528,39 +3533,39 @@
    },
    "codec_fronts": {
     "h264": [
-     "h264@slow",
+     "h264@slower",
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
-     "hevc@slow",
+     "hevc@veryslow",
      "hevc",
      "hevc@fast",
      "hevc@faster"
     ],
     "vvc": [
-     "vvc@slow",
+     "vvc@veryslow",
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
-     "av1@slow",
+     "av1@slower",
      "av1",
      "av1@fast",
      "av1@faster",
      "av1@veryfast"
     ],
     "vp9": [
-     "vp9@slow",
+     "vp9@slower",
      "vp9",
      "vp9@fast",
      "vp9@faster",
      "vp9@veryfast"
     ],
     "av2": [
-     "av2@slow",
+     "av2@slower",
      "av2",
      "av2@fast"
     ]
@@ -3645,7 +3650,7 @@
      "flagged": false,
      "fps_x86": 220.66
     },
-    "h264@slow": {
+    "h264@slower": {
      "j": -25.67,
      "iqr": [
       -37.72,
@@ -3656,7 +3661,7 @@
      "flagged": false,
      "fps_x86": 140.05
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -16.42,
      "iqr": [
       -30.54,
@@ -3667,7 +3672,7 @@
      "flagged": false,
      "fps_x86": 368.36
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -9.69,
      "iqr": [
       -27.6,
@@ -3700,7 +3705,7 @@
      "flagged": false,
      "fps_x86": 178.79
     },
-    "hevc@slow": {
+    "hevc@veryslow": {
      "j": -48.25,
      "iqr": [
       -54.95,
@@ -3744,7 +3749,7 @@
      "flagged": false,
      "fps_x86": 112.43
     },
-    "vvc@slow": {
+    "vvc@veryslow": {
      "j": -50.43,
      "iqr": [
       -57.96,
@@ -3755,7 +3760,7 @@
      "flagged": false,
      "fps_x86": 92.82
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -41.15,
      "iqr": [
       -51.93,
@@ -3777,7 +3782,7 @@
      "flagged": false,
      "fps_x86": 169.29
     },
-    "av1@slow": {
+    "av1@slower": {
      "j": -44.91,
      "iqr": [
       -53.55,
@@ -3832,7 +3837,7 @@
      "flagged": false,
      "fps_x86": 171.13
     },
-    "vp9@slow": {
+    "vp9@slower": {
      "j": -43.23,
      "iqr": [
       -50.98,
@@ -3887,7 +3892,7 @@
      "flagged": false,
      "fps_x86": 144.68
     },
-    "av2@slow": {
+    "av2@slower": {
      "j": -49.09,
      "iqr": [
       -56.5,
@@ -3911,16 +3916,16 @@
     }
    },
    "frontier": [
-    "vvc@slow",
+    "vvc@veryslow",
     "vvc",
     "av2",
     "hevc",
     "av2@fast",
-    "vvc@fast",
+    "vvc@faster",
     "hevc@fast",
     "av1@faster",
     "av1@veryfast",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -3965,39 +3970,39 @@
    },
    "codec_fronts": {
     "h264": [
-     "h264@slow",
+     "h264@slower",
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
-     "hevc@slow",
+     "hevc@veryslow",
      "hevc",
      "hevc@fast",
      "hevc@faster"
     ],
     "vvc": [
-     "vvc@slow",
+     "vvc@veryslow",
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
-     "av1@slow",
+     "av1@slower",
      "av1",
      "av1@fast",
      "av1@faster",
      "av1@veryfast"
     ],
     "vp9": [
-     "vp9@slow",
+     "vp9@slower",
      "vp9",
      "vp9@fast",
      "vp9@faster",
      "vp9@veryfast"
     ],
     "av2": [
-     "av2@slow",
+     "av2@slower",
      "av2",
      "av2@fast"
     ]
@@ -4082,7 +4087,7 @@
      "flagged": false,
      "fps_x86": 221.8
     },
-    "h264@slow": {
+    "h264@slower": {
      "j": -25.67,
      "iqr": [
       -37.72,
@@ -4093,7 +4098,7 @@
      "flagged": false,
      "fps_x86": 140.3
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -16.42,
      "iqr": [
       -30.54,
@@ -4104,7 +4109,7 @@
      "flagged": false,
      "fps_x86": 367.24
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -9.69,
      "iqr": [
       -27.6,
@@ -4137,7 +4142,7 @@
      "flagged": false,
      "fps_x86": 179.17
     },
-    "hevc@slow": {
+    "hevc@veryslow": {
      "j": -48.15,
      "iqr": [
       -54.99,
@@ -4181,7 +4186,7 @@
      "flagged": false,
      "fps_x86": 112.63
     },
-    "vvc@slow": {
+    "vvc@veryslow": {
      "j": -50.53,
      "iqr": [
       -58.06,
@@ -4192,7 +4197,7 @@
      "flagged": false,
      "fps_x86": 92.8
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -41.1,
      "iqr": [
       -52.02,
@@ -4214,7 +4219,7 @@
      "flagged": false,
      "fps_x86": 169.47
     },
-    "av1@slow": {
+    "av1@slower": {
      "j": -44.91,
      "iqr": [
       -53.55,
@@ -4269,7 +4274,7 @@
      "flagged": false,
      "fps_x86": 171.54
     },
-    "vp9@slow": {
+    "vp9@slower": {
      "j": -43.23,
      "iqr": [
       -50.98,
@@ -4324,7 +4329,7 @@
      "flagged": false,
      "fps_x86": 155.89
     },
-    "av2@slow": {
+    "av2@slower": {
      "j": -49.09,
      "iqr": [
       -56.5,
@@ -4359,7 +4364,7 @@
     }
    },
    "frontier": [
-    "vvc@slow",
+    "vvc@veryslow",
     "vvc",
     "av2",
     "hevc",
@@ -4368,7 +4373,7 @@
     "hevc@fast",
     "av1@faster",
     "av1@veryfast",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -4415,39 +4420,39 @@
    },
    "codec_fronts": {
     "h264": [
-     "h264@slow",
+     "h264@slower",
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
-     "hevc@slow",
+     "hevc@veryslow",
      "hevc",
      "hevc@fast",
      "hevc@faster"
     ],
     "vvc": [
-     "vvc@slow",
+     "vvc@veryslow",
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
-     "av1@slow",
+     "av1@slower",
      "av1",
      "av1@fast",
      "av1@faster",
      "av1@veryfast"
     ],
     "vp9": [
-     "vp9@slow",
+     "vp9@slower",
      "vp9",
      "vp9@fast",
      "vp9@faster",
      "vp9@veryfast"
     ],
     "av2": [
-     "av2@slow",
+     "av2@slower",
      "av2",
      "av2@fast",
      "av2@faster"
@@ -4533,7 +4538,7 @@
      "flagged": false,
      "fps_x86": 196.93
     },
-    "h264@slow": {
+    "h264@slower": {
      "j": -29.12,
      "iqr": [
       -40.54,
@@ -4544,7 +4549,7 @@
      "flagged": false,
      "fps_x86": 107.52
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -19.87,
      "iqr": [
       -33.72,
@@ -4555,7 +4560,7 @@
      "flagged": false,
      "fps_x86": 351.84
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -12.17,
      "iqr": [
       -31.3,
@@ -4588,7 +4593,7 @@
      "flagged": false,
      "fps_x86": 166.66
     },
-    "hevc@slow": {
+    "hevc@veryslow": {
      "j": -48.67,
      "iqr": [
       -55.47,
@@ -4632,7 +4637,7 @@
      "flagged": false,
      "fps_x86": 118.23
     },
-    "vvc@slow": {
+    "vvc@veryslow": {
      "j": -50.53,
      "iqr": [
       -58.06,
@@ -4643,7 +4648,7 @@
      "flagged": false,
      "fps_x86": 93.88
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -41.1,
      "iqr": [
       -52.02,
@@ -4665,7 +4670,7 @@
      "flagged": false,
      "fps_x86": 176.43
     },
-    "av1@slow": {
+    "av1@slower": {
      "j": -46.27,
      "iqr": [
       -54.28,
@@ -4720,7 +4725,7 @@
      "flagged": false,
      "fps_x86": 165.48
     },
-    "vp9@slow": {
+    "vp9@slower": {
      "j": -43.61,
      "iqr": [
       -51.78,
@@ -4775,7 +4780,7 @@
      "flagged": false,
      "fps_x86": 165.87
     },
-    "av2@slow": {
+    "av2@slower": {
      "j": -49.09,
      "iqr": [
       -56.5,
@@ -4810,7 +4815,7 @@
     }
    },
    "frontier": [
-    "vvc@slow",
+    "vvc@veryslow",
     "vvc",
     "av2",
     "hevc",
@@ -4821,7 +4826,7 @@
     "av1@faster",
     "hevc@faster",
     "av1@veryfast",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -4867,39 +4872,39 @@
    },
    "codec_fronts": {
     "h264": [
-     "h264@slow",
+     "h264@slower",
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
-     "hevc@slow",
+     "hevc@veryslow",
      "hevc",
      "hevc@fast",
      "hevc@faster"
     ],
     "vvc": [
-     "vvc@slow",
+     "vvc@veryslow",
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
-     "av1@slow",
+     "av1@slower",
      "av1",
      "av1@fast",
      "av1@faster",
      "av1@veryfast"
     ],
     "vp9": [
-     "vp9@slow",
+     "vp9@slower",
      "vp9",
      "vp9@fast",
      "vp9@faster",
      "vp9@veryfast"
     ],
     "av2": [
-     "av2@slow",
+     "av2@slower",
      "av2",
      "av2@fast",
      "av2@faster"
@@ -4985,7 +4990,7 @@
      "flagged": false,
      "fps_x86": 197.42
     },
-    "h264@slow": {
+    "h264@slower": {
      "j": -29.12,
      "iqr": [
       -40.54,
@@ -4996,7 +5001,7 @@
      "flagged": false,
      "fps_x86": 107.56
     },
-    "h264@fast": {
+    "h264@faster": {
      "j": -19.87,
      "iqr": [
       -33.72,
@@ -5007,7 +5012,7 @@
      "flagged": false,
      "fps_x86": 352.47
     },
-    "h264@faster": {
+    "h264@retired-faster": {
      "j": -12.17,
      "iqr": [
       -31.3,
@@ -5040,7 +5045,7 @@
      "flagged": false,
      "fps_x86": 166.24
     },
-    "hevc@slow": {
+    "hevc@veryslow": {
      "j": -49.74,
      "iqr": [
       -56.85,
@@ -5084,7 +5089,7 @@
      "flagged": false,
      "fps_x86": 118.65
     },
-    "vvc@slow": {
+    "vvc@veryslow": {
      "j": -51.73,
      "iqr": [
       -58.46,
@@ -5095,7 +5100,7 @@
      "flagged": false,
      "fps_x86": 65.99
     },
-    "vvc@fast": {
+    "vvc@faster": {
      "j": -45.39,
      "iqr": [
       -55.48,
@@ -5117,7 +5122,7 @@
      "flagged": false,
      "fps_x86": 176.27
     },
-    "av1@slow": {
+    "av1@slower": {
      "j": -46.27,
      "iqr": [
       -54.28,
@@ -5172,7 +5177,7 @@
      "flagged": false,
      "fps_x86": 164.86
     },
-    "vp9@slow": {
+    "vp9@slower": {
      "j": -43.83,
      "iqr": [
       -51.87,
@@ -5227,7 +5232,7 @@
      "flagged": false,
      "fps_x86": 165.81
     },
-    "av2@slow": {
+    "av2@slower": {
      "j": -50.11,
      "iqr": [
       -56.16,
@@ -5262,18 +5267,18 @@
     }
    },
    "frontier": [
-    "vvc@slow",
+    "vvc@veryslow",
     "vvc",
     "av2",
     "hevc",
-    "vvc@fast",
+    "vvc@faster",
     "av2@fast",
     "av2@faster",
     "hevc@fast",
     "av1@faster",
     "hevc@faster",
     "av1@veryfast",
-    "h264@faster",
+    "h264@retired-faster",
     "h264@veryfast"
    ],
    "caption": [
@@ -5318,39 +5323,39 @@
    },
    "codec_fronts": {
     "h264": [
-     "h264@slow",
+     "h264@slower",
      "h264",
-     "h264@fast",
      "h264@faster",
+     "h264@retired-faster",
      "h264@veryfast"
     ],
     "hevc": [
-     "hevc@slow",
+     "hevc@veryslow",
      "hevc",
      "hevc@fast",
      "hevc@faster"
     ],
     "vvc": [
-     "vvc@slow",
+     "vvc@veryslow",
      "vvc",
-     "vvc@fast"
+     "vvc@faster"
     ],
     "av1": [
-     "av1@slow",
+     "av1@slower",
      "av1",
      "av1@fast",
      "av1@faster",
      "av1@veryfast"
     ],
     "vp9": [
-     "vp9@slow",
+     "vp9@slower",
      "vp9",
      "vp9@fast",
      "vp9@faster",
      "vp9@veryfast"
     ],
     "av2": [
-     "av2@slow",
+     "av2@slower",
      "av2",
      "av2@fast",
      "av2@faster"
@@ -5420,6 +5425,573 @@
      "speed_factor": 1.033
     }
    }
+  },
+  {
+   "date": "2026-11-21",
+   "commit": "207745d77",
+   "values": {
+    "h264@slower": {
+     "j": -29.2,
+     "iqr": [
+      -40.54,
+      -21.93
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 108.83
+    },
+    "h264@slow": {
+     "j": -28.95,
+     "iqr": [
+      -40.68,
+      -22.71
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 158.55
+    },
+    "h264": {
+     "j": -27.35,
+     "iqr": [
+      -39.7,
+      -20.94
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 205.66
+    },
+    "h264@fast": {
+     "j": -22.39,
+     "iqr": [
+      -35.21,
+      -12.9
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 285.03
+    },
+    "h264@faster": {
+     "j": -19.91,
+     "iqr": [
+      -33.72,
+      -9.09
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 352.44
+    },
+    "h264@veryfast": {
+     "j": -9.21,
+     "iqr": [
+      -27.23,
+      10.06
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 521.02
+    },
+    "hevc@veryslow": {
+     "j": -53.21,
+     "iqr": [
+      -58.38,
+      -48.5
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 39.63
+    },
+    "hevc@slower": {
+     "j": -50.62,
+     "iqr": [
+      -57.21,
+      -44.5
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 71.21
+    },
+    "hevc@slow": {
+     "j": -49.79,
+     "iqr": [
+      -57.19,
+      -43.32
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 126.62
+    },
+    "hevc": {
+     "j": -47.5,
+     "iqr": [
+      -55.55,
+      -41.34
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 175.88
+    },
+    "hevc@fast": {
+     "j": -42.27,
+     "iqr": [
+      -49.7,
+      -35.53
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 297.32
+    },
+    "hevc@faster": {
+     "j": -36.1,
+     "iqr": [
+      -46.66,
+      -26.28
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 365.63
+    },
+    "av1@slower": {
+     "j": -48.15,
+     "iqr": [
+      -52.51,
+      -42.11
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 60.37
+    },
+    "av1@slow": {
+     "j": -46.32,
+     "iqr": [
+      -53.09,
+      -40.31
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 116.84
+    },
+    "av1": {
+     "j": -44.16,
+     "iqr": [
+      -53.25,
+      -36.68
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 183.08
+    },
+    "av1@fast": {
+     "j": -41.62,
+     "iqr": [
+      -50.71,
+      -34.38
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 260.49
+    },
+    "av1@faster": {
+     "j": -41.2,
+     "iqr": [
+      -51.1,
+      -32.89
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 318.04
+    },
+    "av1@veryfast": {
+     "j": -35.89,
+     "iqr": [
+      -49.96,
+      -24.72
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 429.75
+    },
+    "vp9@slower": {
+     "j": -47.64,
+     "iqr": [
+      -55.39,
+      -40.89
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 51.41
+    },
+    "vp9@slow": {
+     "j": -46.65,
+     "iqr": [
+      -53.72,
+      -41.11
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 92.13
+    },
+    "vp9": {
+     "j": -44.25,
+     "iqr": [
+      -53.1,
+      -38.29
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 147.88
+    },
+    "vp9@fast": {
+     "j": -39.77,
+     "iqr": [
+      -49.89,
+      -32.11
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 247.18
+    },
+    "vp9@faster": {
+     "j": -38.27,
+     "iqr": [
+      -49.7,
+      -26.53
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 322.27
+    },
+    "vp9@veryfast": {
+     "j": -31.57,
+     "iqr": [
+      -43.02,
+      -23.02
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 397.9
+    },
+    "av2@slower": {
+     "j": -52.62,
+     "iqr": [
+      -58.43,
+      -46.95
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 26.91
+    },
+    "av2@slow": {
+     "j": -49.77,
+     "iqr": [
+      -57.48,
+      -42.89
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 121.47
+    },
+    "av2": {
+     "j": -49.0,
+     "iqr": [
+      -56.79,
+      -40.77
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 156.93
+    },
+    "av2@fast": {
+     "j": -46.84,
+     "iqr": [
+      -56.39,
+      -37.99
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 181.57
+    },
+    "av2@faster": {
+     "j": -43.4,
+     "iqr": [
+      -53.82,
+      -34.74
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 271.35
+    },
+    "vvc@veryslow": {
+     "j": -55.8,
+     "iqr": [
+      -61.3,
+      -51.32
+     ],
+     "clips_scored": 28,
+     "chained": 1,
+     "flagged": false,
+     "fps_x86": 31.08
+    },
+    "vvc@slower": {
+     "j": -54.6,
+     "iqr": [
+      -60.9,
+      -48.85
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 54.75
+    },
+    "vvc@slow": {
+     "j": -53.1,
+     "iqr": [
+      -60.78,
+      -47.37
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 75.34
+    },
+    "vvc": {
+     "j": -51.72,
+     "iqr": [
+      -59.47,
+      -44.74
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 106.06
+    },
+    "vvc@fast": {
+     "j": -47.42,
+     "iqr": [
+      -55.86,
+      -41.13
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 177.46
+    },
+    "vvc@faster": {
+     "j": -45.22,
+     "iqr": [
+      -54.31,
+      -38.26
+     ],
+     "clips_scored": 28,
+     "chained": 0,
+     "flagged": false,
+     "fps_x86": 225.54
+    }
+   },
+   "caption": [
+    "Release 0.6.0. Every codec gains a slow rung between the Default and the former slow (now slower; veryslow on HEVC and VVC), the Default plus a gated RD partition search; VVC gains a fast rung (the former fast is now faster), and H.264's fast end is re-pointed along the front (the former fast is now faster, the former faster retired).",
+    "The zero-trial split selector on most Defaults and fast rungs; temporal layer propagation on flat streams (HEVC slow/veryslow, VVC Default/slow, AV1 slow/slower, AV2 Default); loop-filter search effort by usage; rate-aware coefficient trimming (quant.rd_trim) on the fast rungs; a held second reference (AV1 and VP9 slow)."
+   ],
+   "activity": {
+    "since": "2026-11-21",
+    "commits": 275,
+    "lines": {
+     "rust": [
+      13949,
+      2577
+     ],
+     "eval_tools": [
+      11711,
+      1381
+     ],
+     "docs": [
+      6116,
+      1401
+     ],
+     "other": [
+      501,
+      690
+     ]
+    },
+    "agents": {
+     "unmarked": 35,
+     "Claude": 240
+    },
+    "rust_lines_total": 521409
+   },
+   "release": "0.6.0",
+   "note": "quality on the release's chart builds (4fc9a1de; H.264 Default c9cff89f and Veryfast 20d31869, streams unchanged), the same streams as 207745d77; fps on 207745d77's plain release build, timed in its own c8a.large sessions.",
+   "frontier": [
+    "vvc@veryslow",
+    "vvc@slower",
+    "vvc@slow",
+    "vvc",
+    "hevc@slow",
+    "av2",
+    "hevc",
+    "vvc@fast",
+    "av2@fast",
+    "vvc@faster",
+    "av2@faster",
+    "hevc@fast",
+    "av1@faster",
+    "vp9@faster",
+    "hevc@faster",
+    "av1@veryfast",
+    "h264@veryfast"
+   ],
+   "front_vs_base": {
+    "base": "2026-11-09",
+    "j_points": -12.86,
+    "speed_factor": 1.748
+   },
+   "front_vs_previous": {
+    "base": "2026-11-20",
+    "j_points": -2.04,
+    "speed_factor": 1.093
+   },
+   "codec_fronts": {
+    "h264": [
+     "h264@slower",
+     "h264@slow",
+     "h264",
+     "h264@fast",
+     "h264@faster",
+     "h264@veryfast"
+    ],
+    "hevc": [
+     "hevc@veryslow",
+     "hevc@slower",
+     "hevc@slow",
+     "hevc",
+     "hevc@fast",
+     "hevc@faster"
+    ],
+    "vvc": [
+     "vvc@veryslow",
+     "vvc@slower",
+     "vvc@slow",
+     "vvc",
+     "vvc@fast",
+     "vvc@faster"
+    ],
+    "av1": [
+     "av1@slower",
+     "av1@slow",
+     "av1",
+     "av1@fast",
+     "av1@faster",
+     "av1@veryfast"
+    ],
+    "vp9": [
+     "vp9@slower",
+     "vp9@slow",
+     "vp9",
+     "vp9@fast",
+     "vp9@faster",
+     "vp9@veryfast"
+    ],
+    "av2": [
+     "av2@slower",
+     "av2@slow",
+     "av2",
+     "av2@fast",
+     "av2@faster"
+    ]
+   },
+   "codec_vs_base": {
+    "h264": {
+     "base": "2026-11-09",
+     "j_points": -10.52,
+     "speed_factor": 1.631
+    },
+    "hevc": {
+     "base": "2026-11-08",
+     "j_points": -12.65,
+     "speed_factor": null
+    },
+    "vvc": {
+     "base": "2026-11-10",
+     "j_points": -6.86,
+     "speed_factor": 2.136
+    },
+    "av1": {
+     "base": "2026-11-08",
+     "j_points": -11.4,
+     "speed_factor": null
+    },
+    "vp9": {
+     "base": "2026-11-09",
+     "j_points": -8.55,
+     "speed_factor": 2.508
+    },
+    "av2": {
+     "base": "2026-11-10",
+     "j_points": -8.45,
+     "speed_factor": 2.361
+    }
+   },
+   "codec_vs_previous": {
+    "h264": {
+     "base": "2026-11-20",
+     "j_points": -0.49,
+     "speed_factor": 1.04
+    },
+    "hevc": {
+     "base": "2026-11-20",
+     "j_points": -0.94,
+     "speed_factor": 1.097
+    },
+    "vvc": {
+     "base": "2026-11-20",
+     "j_points": -1.1,
+     "speed_factor": 1.138
+    },
+    "av1": {
+     "base": "2026-11-20",
+     "j_points": -1.02,
+     "speed_factor": 1.129
+    },
+    "vp9": {
+     "base": "2026-11-20",
+     "j_points": -1.69,
+     "speed_factor": 1.156
+    },
+    "av2": {
+     "base": "2026-11-20",
+     "j_points": -0.94,
+     "speed_factor": 1.183
+    }
+   }
   }
- ]
+ ],
+ "rung_renames": 5
 }

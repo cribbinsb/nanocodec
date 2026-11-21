@@ -26,10 +26,13 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 
 import check_av2_dct as dct
 import check_av2_transform as tx
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 TABLES = tx.ROOT / 'crates/nc-dsp/src/av2_txfm/adst_tables.rs'
 ADST_SIZES = [4, 8, 16]
@@ -152,7 +155,7 @@ def main() -> None:
     parser.add_argument('--write', action='store_true')
     args = parser.parse_args()
     root = args.source.resolve()
-    with tempfile.TemporaryDirectory(prefix='nc-av2-txtype-oracle-') as tmp:
+    with tempdirs.temp_dir("av2-txtype-oracle") as tmp:
         cfile, binary = Path(tmp) / 'oracle.c', Path(tmp) / 'oracle'
         cfile.write_text(oracle_source(root))
         subprocess.run(['nice', '-n', '19', args.cc, '-std=c99', '-O2', str(cfile), '-o', str(binary)], check=True)

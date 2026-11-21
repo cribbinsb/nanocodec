@@ -4,7 +4,10 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
 ROOT = Path(__file__).resolve().parents[2]
@@ -129,7 +132,7 @@ def main():
                  'highbd_dc_top_predictor','highbd_dc_128_predictor']:
         code += extract(prediction,name)
     code += PIXEL_CASES
-    with tempfile.TemporaryDirectory(prefix='nc-av2-intra-modes-') as tmp:
+    with tempdirs.temp_dir("av2-intra-modes") as tmp:
         path=Path(tmp);(path/'oracle.c').write_text(code+SUFFIX)
         subprocess.run(['nice','-n','19','cc','-O2','-std=c11','-I'+str(args.source),'-I'+str(args.build),str(path/'oracle.c'),'-o',str(path/'oracle')],check=True)
         output=subprocess.check_output([str(path/'oracle')],text=True)

@@ -38,6 +38,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import buffer_note
 from .cbr import ANCHOR_PRESET_PREFIXES, ANCHOR_TOOLS, BUFFER_MS, Family, preset_anchor
 from .chart import LENS_REFERENCES, LOW_LADDER_KBPS, OURS
 from .clips import Clip
@@ -763,6 +764,10 @@ def latest_rc_cost() -> Path:
     return sorted(RESULTS.glob(RC_COST_GLOB))[-1]
 
 
+#: The CBR views: each carries the buffer statement's pointer in its caption (owner,
+#: 2026-11-21: published as measured, the difference stated plainly).
+CBR_VIEW_IDS = frozenset(v.id for v in CHART_VIEWS)
+
 def chart_data() -> dict:
     views, labels = [], {}
     for view in filter(lambda v: shown(v.clipset), CHART_VIEWS):
@@ -794,8 +799,11 @@ def chart_data() -> dict:
     for view in views:
         view["not_measured"] = not_measured.get(view["id"], {})
         view["measured"] = view_measured(view, timing_builds)
+        if view["id"] in CBR_VIEW_IDS:
+            view["measured"]["caption"] += " " + buffer_note.CAPTION
     platforms = {name: record.get("platform", "") for name, record in cbr_timing().items()}
     return {
+        "buffer_note": buffer_note.STATEMENT,
         "clipsets": {k: v for k, v in CLIPSETS.items() if shown(k)}, "datasets": datasets_data(),
         "codecs": CODEC_NAMES, "codec_order": list(CODEC_ORDER),
         "platforms": platforms, "points": points, "views": views,
@@ -1126,14 +1134,17 @@ def readme_block(chart: dict) -> str:
         f"lookahead, one thread), our default (`medium`) presets need {pct([fresh[d]['j'] for d in defaults])} "
         f"fewer bits for the same quality than x264 {fresh_view['tools']['x264']} "
         f"`medium --tune zerolatency,psnr` on {fresh_view['clips']} fresh held-out clips "
-        f"({pct([held[d]['j'] for d in defaults])} on all {held_view['clips']}).",
+        f"({pct([held[d]['j'] for d in defaults])} on all {held_view['clips']}). Our buffer "
+        f"is looser than the references' in these charts: see "
+        f"[{buffer_note.HEADING}]({buffer_note.URL}).",
         f"- **Speed:** {fps_range([fresh[d]['fps']['jetson'] for d in defaults])} fps at 720p on "
         f"one Jetson Orin Nano core, {fps_range([fresh[d]['fps']['x86'] for d in defaults])} on "
         f"one AMD EPYC 9R45 (Zen 5) core (that x264: {zero['fps']['jetson']:.0f} and "
         f"{zero['fps']['x86']:.0f}).",
         f"- **Where we are behind:** {' and '.join(behind)} ([details]({CODECS_PAGE})).",
     ]
-    return "\n".join([README_BEGIN, *facts, README_END])
+    return "\n".join([README_BEGIN, *facts, "", f"**{buffer_note.HEADING}.** {buffer_note.STATEMENT}",
+                      README_END])
 
 
 def with_readme_block(text: str, block: str) -> str:

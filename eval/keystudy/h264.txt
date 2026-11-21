@@ -1,0 +1,21 @@
+# shared engine candidates on a key frame (Stage 1; one-frame fixed-QP ab)
+aq0.5: rate.aq_strength=0.5
+aq1: rate.aq_strength=1
+aq2: rate.aq_strength=2
+bias900: planner.intra_bias=900
+bias1250: planner.intra_bias=1250
+trellis_chroma1: quant.trellis_chroma=1
+trellis_intra: h264.trellis_i16x16=1 h264.trellis_i4x4=1
+trellis_key0: quant.trellis_key=0
+trellis_l0.8: quant.trellis_lambda_scale=0.8
+trellis_l2: quant.trellis_lambda_scale=2
+lam0.53: decision.lambda_scale=0.53
+lam0.83: decision.lambda_scale=0.83
+psy0: decision.psy_strength=0
+psy0.5: decision.psy_strength=0.5
+plan1.5: planner.lambda_scale=1.5
+plan3: planner.lambda_scale=3
+cqp0: h264.chroma_qp_offset=0
+cqp-6: h264.chroma_qp_offset=-6
+dbk+2: h264.deblock_alpha_offset=2 h264.deblock_beta_offset=2
+dbk-2: h264.deblock_alpha_offset=-2 h264.deblock_beta_offset=-2

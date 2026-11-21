@@ -1,0 +1,4 @@
+# intra-selector step 5: AV1 medium keys
+rd1: av1.keyframe_intra_rd_candidates=1
+rd8: av1.keyframe_intra_rd_candidates=8
+delta2: av1.keyframe_angle_deltas=2

@@ -18,6 +18,7 @@ const W32: usize = 3;
 const W64: usize = 4;
 
 pub(crate) fn install(table: &mut McFns) {
+    table.vp9 = crate::vp9_mc_simd::families(crate::Isa::Avx512);
     table.av1[W32] = av1_put::<Regular, 32>;
     table.av1_smooth[W32] = av1_put::<Smooth, 32>;
     table.av1_sharp[W32] = av1_put::<Sharp, 32>;

@@ -1,0 +1,24 @@
+# shared engine candidates on a key frame (Stage 1; one-frame fixed-QP ab)
+aq0.5: rate.aq_strength=0.5
+aq1: rate.aq_strength=1
+aq2: rate.aq_strength=2
+bias900: planner.intra_bias=900
+bias1250: planner.intra_bias=1250
+trellis_chroma1: quant.trellis_chroma=1
+trellis_key0: quant.trellis_key=0
+trellis_l0.6: quant.trellis_lambda_scale=0.6
+trellis_l1.5: quant.trellis_lambda_scale=1.5
+hlam0.8: hevc.lambda_scale=0.8
+hlam1.25: hevc.lambda_scale=1.25
+plan1.9: planner.lambda_scale=1.9
+plan3.9: planner.lambda_scale=3.9
+iround171: hevc.intra_rounding=171
+iround240: hevc.intra_rounding=240
+cqp0: hevc.chroma_qp_offset=0
+cqp-6: hevc.chroma_qp_offset=-6
+dbk+2: hevc.deblock_tc_offset=2 hevc.deblock_beta_offset=2
+dbk-2: hevc.deblock_tc_offset=-2 hevc.deblock_beta_offset=-2
+sao_l0.5: hevc.sao_luma_lambda_scale=0.5
+sao_l2: hevc.sao_luma_lambda_scale=2
+sao_band: hevc.sao_band=1
+sao_off: hevc.sao_luma=0 hevc.sao_chroma=0

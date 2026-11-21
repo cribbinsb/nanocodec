@@ -37,7 +37,10 @@ pub(super) unsafe fn end_of_block(levels: &[i16], table: &[u16]) -> usize {
 ///
 /// None beyond NEON, which `AArch64` always has.
 #[target_feature(enable = "neon")]
-pub(super) unsafe fn end_of_block_wide(levels: &[i32], table: &[u16]) -> (usize, u32) {
+pub(super) unsafe fn end_of_block_wide<const MAGNITUDES: bool>(
+    levels: &[i32],
+    table: &[u16],
+) -> (usize, u32) {
     let n = levels.len().min(table.len());
     let (whole, _) = levels[..n].as_chunks::<LANES>();
     let (ends, _) = table[..n].as_chunks::<LANES>();
@@ -57,20 +60,22 @@ pub(super) unsafe fn end_of_block_wide(levels: &[i32], table: &[u16]) -> (usize,
             vmovn_u32(vtstq_s32(high, high)),
         );
         largest = vmaxq_u16(largest, vandq_u16(coded, end));
-        bits = vorrq_u32(
-            bits,
-            vorrq_u32(
-                vreinterpretq_u32_s32(vabsq_s32(low)),
-                vreinterpretq_u32_s32(vabsq_s32(high)),
-            ),
-        );
+        if MAGNITUDES {
+            bits = vorrq_u32(
+                bits,
+                vorrq_u32(
+                    vreinterpretq_u32_s32(vabsq_s32(low)),
+                    vreinterpretq_u32_s32(vabsq_s32(high)),
+                ),
+            );
+        }
     }
     // The OR of the four lanes.
     let mut lanes = [0u32; 4];
     // SAFETY: `lanes` holds four `u32`.
     unsafe { core::arch::aarch64::vst1q_u32(lanes.as_mut_ptr(), bits) };
     let done = whole.len() * LANES;
-    let (end, tail_bits) = super::scalar_wide(&levels[done..n], &table[done..n]);
+    let (end, tail_bits) = super::scalar_wide::<MAGNITUDES>(&levels[done..n], &table[done..n]);
     (
         usize::from(vmaxvq_u16(largest)).max(end),
         lanes.iter().fold(tail_bits, |any, &lane| any | lane),

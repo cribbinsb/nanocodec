@@ -30,7 +30,9 @@ use crate::tables::{
     SPATIAL_PRED_SEG_TREE_CDF, TX_SIZE_CDF, TXFM_PARTITION_CDF, UNI_COMP_REF_CDF, UV_MODE_CDF,
     WIENER_RESTORE_CDF, Y_MODE_CDF, ZEROMV_CDF,
 };
+use nc_encoder::journaled_fields;
 use nc_encoder::symbol_cost::{SymbolCosts, symbol_bits};
+use nc_encoder::undo_journal::{Journaled, UndoJournal};
 
 /// Probability scale: CDFs are 15-bit fixed point (AV1 §4.10.7).
 pub const PROB_TOP: u16 = 1 << 15;
@@ -115,6 +117,48 @@ impl<const N: usize> Cdf<N> {
     #[must_use]
     pub fn bits(&self, symbol: usize) -> f32 {
         symbol_bits(&self.icdf, symbol)
+    }
+
+    /// This CDF's whole state (probabilities, counter, cost cache) as a
+    /// [`CdfState`], for the trials' undo journal.
+    #[inline]
+    #[must_use]
+    pub fn state(&self) -> CdfState {
+        let mut state = Cdf::new([0; MAX_SYMBOLS]);
+        let mut copy = *self;
+        copy.swap_state(&mut state);
+        state
+    }
+
+    /// Exchange this CDF's whole state with `state` (whose entries past `N`
+    /// stay padding).
+    #[inline]
+    fn swap_state(&mut self, state: &mut CdfState) {
+        const { assert!(N <= MAX_SYMBOLS) };
+        self.icdf.swap_with_slice(&mut state.icdf[..N]);
+        std::mem::swap(&mut self.count, &mut state.count);
+        self.costs.swap_prefix(&mut state.costs);
+    }
+}
+
+/// The largest alphabet of any CDF in [`CdfContext`] (transform types and
+/// `CfL` slopes).
+pub const MAX_SYMBOLS: usize = 16;
+
+/// Any one CDF's state, in the largest alphabet's size: an entry of the
+/// trials' undo journal (`nc_encoder::undo_journal`).
+pub type CdfState = Cdf<MAX_SYMBOLS>;
+
+/// The undo journal of the [`CdfContext`] (`backend/node_trial.rs`).
+pub type CdfJournal = UndoJournal<CdfState>;
+
+impl<const N: usize> Journaled for Cdf<N> {
+    type State = CdfState;
+
+    #[inline]
+    fn swap_at(&mut self, offset: usize, state: &mut CdfState) {
+        assert_eq!(offset, 0, "a journal entry names a CDF's start");
+        self.swap_state(state);
     }
 }
 
@@ -283,6 +327,14 @@ impl CdfContext {
         }
     }
 }
+
+// The coefficient tables first: most of a trial's symbols are theirs.
+journaled_fields!(CdfContext, CdfState;
+    coeff, skip, partition, intra_inter, single_ref, new_mv, zero_mv, ref_mv, drl, mv,
+    compound_mode, comp_mode, comp_ref_type, uni_comp_ref, txfm_split, tx_depth, y_mode,
+    uv_mode, angle_delta, cfl_sign, cfl_alpha, filter_intra, filter_intra_mode, kf_y_mode,
+    delta_q, segment_id, use_wiener,
+);
 
 impl ResetCounters for CdfContext {
     fn reset_counters(&mut self) {

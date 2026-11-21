@@ -61,6 +61,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import buildinfo, jreal, plotted
+from . import buffer_note
 from .budget import MAX_MINUTES, estimate_minutes
 from .cbr import METRIC_TUNES, PROFILE_SEPARATOR, Family, anchor_families, clip_targets
 from .clips import Clip
@@ -239,7 +240,11 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
         base, _, profile = name.partition(PROFILE_SEPARATOR)
         anchors[name] = replace(anchors[base], name=name, profile=profile)
     binaries, presets_for = binaries or {}, presets_for or {}
-    ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets))
+    # a family on its recorded build (`presets_for`, a chart's record) is the one its points
+    # were measured as: its name in that build's own preset files (a rung renamed since,
+    # e.g. 0.5.0's `slow`, is today's `slower`; nanocodec.recorded_values)
+    ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets),
+                             recorded=name in presets_for)
             for name, _ in OURS if name in wanted}
     unknown = [n for n in wanted if n not in anchors and n not in ours]
     if unknown:
@@ -1714,6 +1719,7 @@ def render(args: argparse.Namespace) -> None:
                  if zero != ANCHOR else [])
     page = [f"# {args.title}\n", f"<sub>{stamp}</sub>\n", *zero_note, *speed_note,
             f"![bitrate vs speed]({stem.name}.svg)\n",
+            f"**{buffer_note.HEADING}.** {buffer_note.STATEMENT}\n",
             *([f"The same on x86 (one Ryzen 9 5950X core):\n\n"
                f"![bitrate vs x86 speed]({stem.name}{X86.suffix}.svg)\n"] if x86 else []),
             markdown_table(points, front, x86), coverage_note(quality),

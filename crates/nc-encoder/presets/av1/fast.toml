@@ -167,3 +167,11 @@ rate.fixed_qp_moving_key = 0
 rate.period_ceiling = 1
 rate.key_still_boost = 6
 rate.still_level_damping = 0.5
+
+# The trellis's cheap substitute (`quant.rd_trim`, docs/handoff/cheap-rdoq.md): trailing
+# ±1 and whole-block rules on coded luma. nceval.train (62b41f4aaf, base eb55cd325, draw
+# 2026-11-21, k 0.6): L3 J -0.34 % [-0.68, +0.02] n=108 (quality -1.35 %), final check J
+# -1.19 % [-1.67, -1.05] n=34; cycles +1.2 / +0.9 / +2.3 % (Graviton 3 / 4, Zen 5). The
+# trellis here: CBR L1 -2.77 % at +10-17 % cycles.
+quant.rd_trim = 1
+quant.rd_trim_block = 1

@@ -1,0 +1,7 @@
+tk: quant.trellis_key=1
+tk_l0.4: quant.trellis_key=1 quant.trellis_lambda_scale=0.4
+tk_l0.8: quant.trellis_key=1 quant.trellis_lambda_scale=0.8
+tk_lr: quant.trellis_key=1 av1.restoration=1
+tk_r40: quant.trellis_key=1 av1.keyframe_rounding_q7=40
+tk_r56: quant.trellis_key=1 av1.keyframe_rounding_q7=56
+tk_s4: quant.trellis_key=1 quant.trellis_states=4

@@ -1,0 +1,6 @@
+# existing intra settings, λ and bias around the key RD searches; one-frame fixed-QP ab
+trellis_i16: h264.trellis_i16x16=1
+trellis_i4: h264.trellis_i4x4=1
+trellis_both: h264.trellis_i16x16=1 h264.trellis_i4x4=1
+slowintra: h264.intra_rd_candidates=9 h264.intra8x8_all_modes=1 h264.intra4x4_gate_satd=0 h264.intra8x8_gate_satd=0
+slowintra_trellis: h264.intra_rd_candidates=9 h264.intra8x8_all_modes=1 h264.intra4x4_gate_satd=0 h264.intra8x8_gate_satd=0 h264.trellis_i16x16=1 h264.trellis_i4x4=1

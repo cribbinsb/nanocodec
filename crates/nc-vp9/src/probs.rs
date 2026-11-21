@@ -184,6 +184,47 @@ pub(crate) struct Counts {
 }
 
 impl Counts {
+    /// Copy `source` into `self` in place, keeping the coefficient table's
+    /// allocation (the RD partition search copies the counts per node).
+    pub(crate) fn copy_from(&mut self, source: &Self) {
+        let Self {
+            coef,
+            skip,
+            intra_inter,
+            single_ref,
+            comp_inter,
+            comp_ref,
+            inter_mode,
+            y_mode,
+            uv_mode,
+            partition,
+            tx8,
+            tx16,
+            tx32,
+            mv_joints,
+            mv,
+            switchable_interp,
+            high_precision,
+        } = source;
+        *self.coef = **coef;
+        self.skip = *skip;
+        self.intra_inter = *intra_inter;
+        self.single_ref = *single_ref;
+        self.comp_inter = *comp_inter;
+        self.comp_ref = *comp_ref;
+        self.inter_mode = *inter_mode;
+        self.y_mode = *y_mode;
+        self.uv_mode = *uv_mode;
+        self.partition = *partition;
+        self.tx8 = *tx8;
+        self.tx16 = *tx16;
+        self.tx32 = *tx32;
+        self.mv_joints = *mv_joints;
+        self.mv = *mv;
+        self.switchable_interp = *switchable_interp;
+        self.high_precision = *high_precision;
+    }
+
     /// Count a coded transform size (`get_tx_counts`).
     pub(crate) fn count_tx(
         &mut self,

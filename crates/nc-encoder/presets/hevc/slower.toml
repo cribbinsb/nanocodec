@@ -1,0 +1,36 @@
+# HEVC slower (`--preset slower`): the rung between slow and veryslow on HEVC's front
+# (docs/handoff/presets.md "The ladder"), from the gap study pl-s2-hevc-slow (trial 39;
+# seeded from both neighbours): slow (presets/hevc/slow.toml, below) with the RD
+# partition search ungated, the final decision stage, a two-step winner walk, a wider
+# intra search (6 RD candidates, NxN), SAO band offsets searched every 4th CTB,
+# trellis on chroma, 8x8-minimum inter CUs and the second reference on the high-quality
+# frames. preset-ladder 2026-11-21 (ff40ad7bf): whole-encode 1.71x slow's time,
+# veryslow 1.94x this rung's (Graviton 3/4 and Zen 5, 720p CBR 600); final check (34
+# clips, 600 f, draw 2026-11-21) J -7.52 % [-8.79, -5.70] against medium (slow -3.41,
+# veryslow -13.52 on the same build), within 0.41 of the slow-veryslow log-speed chord.
+#
+planner.rd_split = 1
+planner.rd_split_context = 0
+# Set by the pick, not in the file it starts from:
+decision.final_intra_candidate = 1
+decision.final_stage = 1
+decision.winner_walk_keeps_skip = 1
+decision.winner_walk_steps = 2
+hevc.coarse_inter_intra = 0
+hevc.intra_nxn_min_cost = 1
+hevc.intra_rd_candidates = 6
+hevc.sao_band = 1
+hevc.sao_search_interval = 4
+hevc.sao_skip_unchanged = 1
+planner.inter_min_log2 = 4
+planner.rd_split_deepen_context = 0
+planner.rd_split_merge_context = 0
+planner.split_selector = 0
+planner.split_selector_scale = 0.3465
+quant.trellis_chroma = 0.3725
+quant.trellis_states = 1
+refs.second = 2
+structure.unified = 1
+# The Default's filter-search effort by usage (filter.usage_quiet_share, 2026-11-21)
+# is not screened here.
+filter.usage_quiet_share = 0

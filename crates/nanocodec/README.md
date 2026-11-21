@@ -6,7 +6,7 @@ Once published, add it with `cargo add nanocodec`. Each codec is a cargo
 feature (`h264`, `hevc`, `vvc`, `av1`, `vp9`, `av2`; all on by default):
 
 ```toml
-nanocodec = { version = "0.5", default-features = false, features = ["h264", "av1"] }
+nanocodec = { version = "0.6", default-features = false, features = ["h264", "av1"] }
 ```
 
 The crate documentation has an encode and decode example. The command-line

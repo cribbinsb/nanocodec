@@ -587,6 +587,10 @@ compact 16/8-stride padding, the byte and unavailable-edge filters, split
 byte accumulators with halving rounding, and the one-pass direction sums.
 The existing scalar reference and AV1/AV2 shared dispatch are retained.
 
+The AV1 decoder's whole-sample intra block copy in
+`crates/nc-av1/src/decoder/tile/intrabc.rs` follows the direct in-bounds
+prediction path of dav1d 1.5.4 `src/recon_tmpl.c` (`mc`, BSD-2-Clause).
+
 ## libyuv — BSD-3-Clause
 
 Copyright 2011 The LibYuv Project Authors. All rights reserved.
@@ -687,6 +691,9 @@ vectors/hashes against original C functions extracted from the pinned commit.
 It compiles temporary external oracles, reads expected values directly from
 the Rust tests and retains neither reference binaries nor raw video. Reference
 implementations are not linked into nanocodec.
+The Rust coefficient reader uses the direct Pareto tail branches and
+associated energy classes of libvpx v1.16.0's
+`vp9/decoder/vp9_detokenize.c` (`decode_coefs`, WebM Project, BSD-3-Clause).
 
 Full notices: [LICENSE](docs/licenses/libvpx/LICENSE) and
 [separate patent grant](docs/licenses/libvpx/PATENTS). Preserve these with

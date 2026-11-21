@@ -1,0 +1,5 @@
+# existing intra settings, λ and bias around the key RD searches; one-frame fixed-QP ab
+krd22: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2
+krd22_cand4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_rd_candidates=4
+cand4: av2.intra_rd_candidates=4
+krd22_cand8: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_rd_candidates=8

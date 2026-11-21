@@ -127,6 +127,15 @@ fn encode<B: CodecBackend>(
     };
     let mut params = preset.clone();
     params.set("persist.reuse", if reuse { 1. } else { 0. });
+    if !reuse {
+        // The control arm also drops layer propagation: on a preset that
+        // runs it (AV1 slow and slower), the moving half's coarser base
+        // blocks lower the frame level and refine the still half without
+        // the reuse term (one of those rungs, frame 24: 42.15 dB against
+        // 41.68 undisturbed), so the control would no longer show the
+        // copies staying degraded.
+        params.set("layers.propagation", 0.);
+    }
     let mut encoder = Encoder::<B>::new(EncoderConfig {
         codec,
         width: WIDTH,
@@ -295,7 +304,9 @@ fn h264_layered_streams_recover_at_the_next_base_frame() {
         shipped(Codec::H264, 1, "fast"),
         shipped(Codec::H264, 1, "faster"),
         shipped(Codec::H264, 1, "veryfast"),
-        // The slow rung: the shared bundle, then H.264's levers (nc_encoder::presets).
+        // The slower rung: the shared bundle, then H.264's levers (nc_encoder::presets).
+        shipped(Codec::H264, 1, "slower"),
+        // The slow rung: the Default plus slower's final stage and winner walk.
         shipped(Codec::H264, 1, "slow"),
     ] {
         check_preset::<nc_h264::H264Backend>(Codec::H264, &preset, &LAYERED_RECOVERY);
@@ -312,7 +323,9 @@ fn av1_static_content_recovers_from_a_starved_key() {
     for preset in [
         ParamOverrides::default(),
         shipped(Codec::Av1, 1, "fast"),
-        // The slow rung: the shared bundle, then AV1's levers (nc_encoder::presets).
+        // The slower rung: the shared bundle, then AV1's levers (nc_encoder::presets).
+        shipped(Codec::Av1, 1, "slower"),
+        // The slow rung: the Default plus the gated RD partition search.
         shipped(Codec::Av1, 1, "slow"),
         overrides(&[("av1.restoration", 1.0)]),
         overrides(&[("structure.unified", 1.0)]),
@@ -606,7 +619,11 @@ fn hevc_presets_recover() {
         ParamOverrides::default(),
         shipped(Codec::Hevc, 1, "fast"),
         shipped(Codec::Hevc, 1, "faster"),
-        // The slow rung: the shared bundle, then HEVC's deltas (nc_encoder::presets).
+        // The slower rung: the shared bundle, then HEVC's deltas (nc_encoder::presets).
+        shipped(Codec::Hevc, 1, "veryslow"),
+        // The slower rung: between slow and veryslow.
+        shipped(Codec::Hevc, 1, "slower"),
+        // The slow rung: the Default plus the gated RD partition search.
         shipped(Codec::Hevc, 1, "slow"),
     ] {
         check_preset::<nc_hevc::HevcBackend>(Codec::Hevc, &preset, &FLAT_RECOVERY);
@@ -620,7 +637,9 @@ fn vp9_presets_recover() {
         shipped(Codec::Vp9, 1, "fast"),
         shipped(Codec::Vp9, 1, "faster"),
         shipped(Codec::Vp9, 1, "veryfast"),
-        // The slow rung: the shared bundle, then VP9's levers (nc_encoder::presets).
+        // The slower rung: the shared bundle, then VP9's levers (nc_encoder::presets).
+        shipped(Codec::Vp9, 1, "slower"),
+        // The slow rung: the Default plus the gated RD partition search.
         shipped(Codec::Vp9, 1, "slow"),
     ] {
         check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, &preset, &FLAT_RECOVERY);
@@ -632,7 +651,12 @@ fn vvc_presets_recover() {
     for preset in [
         ParamOverrides::default(),
         shipped(Codec::Vvc, 1, "fast"),
-        // The slow rung: the shared bundle, then VVC's levers (nc_encoder::presets).
+        shipped(Codec::Vvc, 1, "faster"),
+        // The slower rung: the shared bundle, then VVC's levers (nc_encoder::presets).
+        shipped(Codec::Vvc, 1, "veryslow"),
+        // The slower rung: between slow and veryslow.
+        shipped(Codec::Vvc, 1, "slower"),
+        // The slow rung: the Default plus the gated RD partition search.
         shipped(Codec::Vvc, 1, "slow"),
     ] {
         check_preset::<nc_vvc::VvcBackend>(Codec::Vvc, &preset, &FLAT_RECOVERY);
@@ -643,7 +667,9 @@ fn vvc_presets_recover() {
 fn av2_presets_recover() {
     for preset in [
         ParamOverrides::default(),
-        // The slow rung: the shared bundle, then AV2's levers (nc_encoder::presets).
+        // The slower rung: the shared bundle, then AV2's levers (nc_encoder::presets).
+        shipped(Codec::Av2, 1, "slower"),
+        // The slow rung: the Default plus the gated RD partition search.
         shipped(Codec::Av2, 1, "slow"),
     ] {
         check_preset::<nc_av2::Av2Backend>(Codec::Av2, &preset, &FLAT_RECOVERY);

@@ -10,7 +10,10 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
@@ -154,7 +157,7 @@ def main():
     production_loop = SCALAR if SCALAR in source else BATCHED.replace('remaining.min(8)', 'remaining.min(16)')
     assert source.count(production_loop)==1, 'Production literal changed; review this experiment'
     candidate=source.replace(production_loop,BATCHED.replace('remaining.min(8)',f'remaining.min({args.chunk})')).replace('include_bytes!("../tests/data/avm-entropy.bin")',f'include_bytes!("{ROOT}/crates/nc-av2/tests/data/avm-entropy.bin")')
-    with tempfile.TemporaryDirectory(prefix='nc-av2-bypass-') as directory:
+    with tempdirs.temp_dir("av2-bypass") as directory:
         path=Path(directory); (path/'oracle.c').write_text(C)
         subprocess.run(['cc','-O1','-I'+str(args.source),'-I'+str(args.build),str(path/'oracle.c'),str(args.build/'libavm.a'),'-lm','-lpthread','-o',str(path/'oracle')],check=True)
         (path/'oracle.bin').write_bytes(subprocess.check_output([str(path/'oracle')]))

@@ -37,6 +37,9 @@ class FakeAws:
 
     ours = staticmethod(nc_remote.Aws.ours)
 
+    def regional(self, _region):
+        return self  # one fake EC2 for every region
+
     def launch(self, plan, on_demand_fallback=True):
         self.launches.append(plan.market)
         market = plan.market
@@ -89,7 +92,7 @@ def world(tmp_path, monkeypatch):
 
 def current_box(aws, market=nc_remote.ON_DEMAND, age=datetime.timedelta(hours=1)):
     launched = NOW - age
-    box = nc_remote.Box(instance_id=OLD, instance_type="c6i.16xlarge", zone="eu-north-1c",
+    box = nc_remote.Box(instance_id=OLD, instance_type="c6i.24xlarge", zone="eu-north-1c",
                         price=2.912, launched=nc_remote.iso(launched),
                         expected_end=nc_remote.iso(launched + datetime.timedelta(hours=12.25)),
                         host="198.51.100.1", market=market)
@@ -149,7 +152,7 @@ def test_no_spot_capacity_keeps_the_on_demand_box(world):
     world.jobs[OLD] = 1
     world.spot_capacity = False
     reap()
-    assert world.launches == [nc_remote.SPOT]  # no second on-demand box
+    assert world.launches == [nc_remote.SPOT] * len(nc_remote.SPILL_REGIONS)  # no on-demand box
     assert nc_remote.load_state().instance_id == OLD
     assert world.terminated == []
 
