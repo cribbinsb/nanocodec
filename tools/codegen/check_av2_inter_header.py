@@ -9,7 +9,10 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,7 +77,7 @@ def main():
     revision=subprocess.check_output(['git','-C',str(args.source),'rev-parse','HEAD'],text=True).strip()
     if revision!=PIN:raise SystemExit('AVM revision must be '+PIN)
     source=subprocess.check_output(['git','-C',str(args.source),'show',PIN+':av2/encoder/bitstream.c'],text=True)
-    with tempfile.TemporaryDirectory(prefix='nc-av2-inter-header-') as tmp:
+    with tempdirs.temp_dir("av2-inter-header") as tmp:
         path=Path(tmp)
         (path/'bitstream.c').write_text(source)
         (path/'oracle.c').write_text('#include "bitstream.c"\n'+HARNESS.replace('disable_cdf_update=1', 'disable_cdf_update='+str(int(not args.adaptive))))

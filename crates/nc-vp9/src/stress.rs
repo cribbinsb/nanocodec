@@ -95,9 +95,14 @@ impl RandomSyntax {
         crate::contexts::symbol_filter(self.rng.below(3) as usize)
     }
 
-    /// Any inter mode that denotes `mv`.
-    pub(crate) fn inter_mode(&mut self, refs: &MvRefs, mv: Mv) -> InterMode {
-        let mut modes = vec![InterMode::New];
+    /// Any inter mode that denotes `mv`: NEWMV only where it can code it
+    /// (`new_codable`; an odd 1/8 reference vector without high precision is
+    /// NEARESTMV/NEARMV only). NEWMV when none can (the backend replaces it).
+    pub(crate) fn inter_mode(&mut self, refs: &MvRefs, mv: Mv, new_codable: bool) -> InterMode {
+        let mut modes = Vec::with_capacity(4);
+        if new_codable {
+            modes.push(InterMode::New);
+        }
         for (mode, vector) in [
             (InterMode::Zero, Mv::ZERO),
             (InterMode::Nearest, refs.nearest),
@@ -106,6 +111,9 @@ impl RandomSyntax {
             if vector == mv {
                 modes.push(mode);
             }
+        }
+        if modes.is_empty() {
+            return InterMode::New;
         }
         modes[self.rng.below(modes.len() as u64) as usize]
     }

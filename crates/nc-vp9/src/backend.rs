@@ -44,6 +44,9 @@ use crate::types::{
 use crate::{loopfilter, motion};
 use nc_encoder::segment_quantizers::SegmentQuantizers;
 
+mod final_cost;
+mod node_trial;
+
 /// The non-directional modes and V/H a pruned intra search starts with.
 const BASE_INTRA_MODES: [IntraMode; 4] = [IntraMode::Dc, IntraMode::V, IntraMode::H, IntraMode::Tm];
 /// The luma modes libvpx's real-time speeds try (`INTRA_DC_H_V`,
@@ -195,6 +198,13 @@ nc_encoder::param_group! {
             "inter frames' interpolation filter: 0 smooth, 1 regular, 2 sharp, 3 switchable per block",
         high_precision_qindex: 0.0, [0.0, 256.0],
             "inter frames below this qindex allow 1/8-sample vectors (libvpx HIGH_PRECISION_MV_QTHRESH)",
+        /// 1 hands the engine VP9's own 8-tap filter (`luma_filter`), as
+        /// H.264's `h264.exact_ranking` does: inter candidates are ranked
+        /// on exact predictions (the engine's light-PD1 flow) and the
+        /// winner walk (`decision.winner_walk_steps`) can run. 0 keeps the
+        /// bilinear ranking every VP9 rung below Slow was tuned on.
+        exact_ranking: 0.0, [0.0, 1.0],
+            "1 ranks inter candidates on exact VP9 8-tap predictions (engine light-PD1 flow, enables the winner walk): slower, decides on the coded prediction",
         /// 1 (Default): `J_real --clips adopt` full TRAIN -0.9% / VAL -1.2%
         /// (both BETTER, no guard); keys alone (crowd, 4 intra frames,
         /// qindex 130-240) BD-rate PSNR-YUV -3.3%; -0.6% instructions
@@ -335,26 +345,17 @@ struct CodedTx {
 impl CodedTx {
     /// A block without levels to code.
     fn uncoded(block: &TxBlock, ty: transform::TxType, levels_offset: usize) -> Self {
-        Self::new(block, ty, None, levels_offset)
+        Self::new(block, ty, 0, levels_offset)
     }
 
-    /// A block whose `levels` (the scratch's from `levels_offset`), when
-    /// given, may code something.
-    fn new(
-        block: &TxBlock,
-        ty: transform::TxType,
-        levels: Option<(&nc_dsp::Dsp, &[i32])>,
-        levels_offset: usize,
-    ) -> Self {
+    /// A block whose levels in scratch have the given end of block.
+    fn new(block: &TxBlock, ty: transform::TxType, eob: usize, levels_offset: usize) -> Self {
         let unit = |sample: usize| u16::try_from(sample >> 2).expect("VP9 frames fit 16-bit units");
-        let eob = levels.map_or(0, |(dsp, levels)| {
-            coeff::end_of_block(dsp, levels, block.tx, ty)
-        });
         Self {
             plane: block.plane,
             tx: block.tx,
             ty,
-            eob_nonzero: levels.is_some(),
+            eob_nonzero: eob != 0,
             eob: u16::try_from(eob).expect("end of block fits 1024"),
             unit: (unit(block.x), unit(block.y)),
             levels_offset: u32::try_from(levels_offset).expect("per-block levels fit 32 bits"),
@@ -720,7 +721,7 @@ pub struct Vp9Backend {
     /// Mode symbol bits under `context`, priced once per frame.
     mode_costs: Box<ModeCosts>,
     /// Symbols coded in the current frame.
-    counts: Counts,
+    counts: Box<Counts>,
     writer: TileRecorder,
     /// Reference vectors of the block being decided, cached per position and
     /// reference (`(row, col, log2_size, secondary_ref)`).
@@ -733,8 +734,18 @@ pub struct Vp9Backend {
     dsp: nc_dsp::Dsp,
     /// Random syntax for the stress test (`debug.random_decisions`) only.
     random: Option<RandomSyntax>,
+    /// The final decision stage's pricing scratch (`final_cost.rs`).
+    final_scratch: final_cost::FinalScratch,
     /// `quant.trellis`: trellis quantisation of every transform block.
     trellis: Option<Vp9Trellis>,
+    /// `quant.rd_trim`: rate-aware trimming of the plain quantiser's luma
+    /// levels, in every residual coding, while the trellis is off.
+    rd_trim: Option<nc_encoder::RateTrim>,
+    /// The RD partition search's open node trials (`node_trial.rs`).
+    node_trials: node_trial::NodeTrials,
+    /// Whether the block last coded is an inter block without residual
+    /// predicted from a candidate vector (`CodecBackend::last_cu_skipped`).
+    last_block_skipped: bool,
 }
 
 /// log2 of the 4x4-sample units of the entropy contexts.
@@ -831,6 +842,7 @@ impl CodecBackend for Vp9Backend {
     // Scaling λ alone reaches low targets here: crowd_mot20_06 CBR 150 kbps,
     // 150 f, headroom 2 octaves: 309 -> 159 kbps.
     const SUPPORTS_LAMBDA_HEADROOM: bool = true;
+    const NODE_TRIALS: bool = true;
 
     const PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[Vp9Params::SPECS];
     /// Every `vp9.*` parameter is read per frame (`set_frame_params`): each
@@ -986,11 +998,46 @@ impl CodecBackend for Vp9Backend {
         ("vp9.inter_tx_split_spread", 1.047),
         ("vp9.lambda_per_step_squared", 0.1006),
         ("planner.lambda_scale", 2.379),
+        // The zero-trial split selector at half its fitted shift (engine
+        // `split_selector.rs`, docs/handoff/planner-selector.md). nceval.train
+        // against 9a0ff2c7c (draw 2026-11-21, k 0.1, cycles zen5 / graviton3
+        // / graviton4 +2.1 / +1.4 / +1.3%): L3 J -0.55% [-0.78, -0.32]
+        // BETTER; final-check (600 f) -0.86% [-1.11, -0.69], its worst-clip
+        // periodic-key pulse guard tripped (+0.58 dB > +0.50), adopted on
+        // judgement: that clip (meva_bus_detail, static) codes the same keys
+        // to 0.01 dB in both arms while its P frames gain +0.06..+1.0 dB. The
+        // other VP9 presets pin it off (Fast L1 +0.06, Faster +0.81,
+        // Veryfast +1.53 with their CPU at k 0.6; Slower +0.1 fixed QP).
+        ("planner.split_selector", 1.0),
+        ("planner.split_selector_scale", 0.5),
         ("quant.trellis_lambda_scale", 1.139),
         ("decision.intra_gate_variance", 6.857),
         ("vp9.filter_level_scale", 0.6274),
         ("vp9.chroma_delta_q", -14.0),
         ("vp9.inter_intra_dc_only", 1.0),
+        // Exact candidate ranking on VP9's own filter, and the winner walk
+        // over the winners whose residual is at least 0.25 lambda per sample
+        // (H.264's gate). Fixed QP (23 clips, draw fixedqp-2026-11-20) J -2.1%
+        // [-3.0, -1.2] at +13.6% x86 P instructions; whole encode (CBR 600,
+        // the three chart timing clips, 150 f, callgrind) +9.9%. Pool k 0.1
+        // (draw 2026-11-20): L2 (ladder) -0.78% [-1.23, -0.26], L3 (108 clips,
+        // single-point) -1.24% [-1.69, -0.90], no guard; final-check (33
+        // clips, 600 f, ladder) -1.53% [-1.78, -1.24]. Its periodic-key pulse
+        // guard (+0.57 dB on the worst clip, 2 s keys) comes from better P
+        // frames: the absolute key PSNR-Y moves -0.04..+0.13 dB on all six
+        // clips, the eight frames before each key +0.0..+0.16 dB. The other
+        // VP9 presets pin it off (not screened there).
+        ("vp9.exact_ranking", 1.0),
+        ("decision.winner_walk_steps", 3.0),
+        ("decision.winner_walk_min_lambdas", 0.25),
+        // The winner walk also walks a winner at the skip vector (NEARESTMV,
+        // `decision.winner_walk_keeps_skip` 0). Codec reason: H.264 P_Skip and
+        // HEVC cu_skip_flag tie residual-free coding to the inherited vector,
+        // so moving it off costs the skip syntax; in VP9 any vector may skip
+        // its residual and a moved NEARESTMV costs only its vector bits.
+        // Kept unwalked, fixed QP (draw fixedqp-2026-11-20, quick): VP9
+        // Default J +0.3 % [+0.1, +0.4], n 22.
+        ("decision.winner_walk_keeps_skip", 0.0),
     ];
 
     // The fixed-QP profile (`--qp`): every high-quality frame of the unified
@@ -1073,7 +1120,7 @@ impl CodecBackend for Vp9Backend {
             chroma_policy: nc_encoder::chroma_policy::ChromaPolicy::from_params(&config.params),
             context: FrameContext::default(),
             mode_costs: ModeCosts::new(&FrameContext::default()),
-            counts: Counts::default(),
+            counts: Box::default(),
             writer: TileRecorder::default(),
             refs: None,
             scratch: Scratch {
@@ -1092,10 +1139,14 @@ impl CodecBackend for Vp9Backend {
                 plain_trial: false,
             },
             random: None,
+            final_scratch: final_cost::FinalScratch::default(),
             trellis: Vp9Trellis::from_params(&QuantParams::from_overrides(&config.params)),
+            rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
             buffers: recon::ResidualBuffers::new(&nc_dsp::Dsp::new()),
             inter: recon::InterScratch::new(),
             dsp: nc_dsp::Dsp::new(),
+            node_trials: node_trial::NodeTrials::default(),
+            last_block_skipped: false,
         })
     }
 
@@ -1232,6 +1283,22 @@ impl CodecBackend for Vp9Backend {
 
     fn coded_size(&self, width: usize, height: usize) -> (usize, usize) {
         coded_size(width, height)
+    }
+
+    /// The frame's filter, or regular where blocks switch filters (the
+    /// filter most blocks code), with `vp9.exact_ranking`.
+    fn luma_filter(&self) -> Option<nc_dsp::Filter> {
+        if self.params.exact_ranking < 0.5 {
+            return None;
+        }
+        Some(match self.header.interp_filter {
+            Some(nc_dsp::Vp9Filter::Smooth) => nc_dsp::Filter::Vp9Smooth,
+            Some(nc_dsp::Vp9Filter::Sharp) => nc_dsp::Filter::Vp9Sharp,
+            // The encoder never codes bilinear frames (`INTERP_FILTERS`).
+            Some(nc_dsp::Vp9Filter::Regular | nc_dsp::Vp9Filter::Bilinear) | None => {
+                nc_dsp::Filter::Vp9
+            }
+        })
     }
 
     /// At the current block's quantizer inside `encode_block` (the engine
@@ -1433,15 +1500,48 @@ impl CodecBackend for Vp9Backend {
         Some(sse as f32 + self.lambda() * bits)
     }
 
+    /// `NEARESTMV` (`final_cost.rs`): the winner walk keeps it, and the
+    /// final decision stage sets it against the ranking's winner.
+    fn skip_vector(&mut self, block: &Block) -> Option<EngineMv> {
+        Some(self.nearest_vector(block))
+    }
+
+    /// VP9 takes no static skips (the default would offer the skip vector).
+    fn static_skip_vector(&mut self, _block: &Block) -> Option<EngineMv> {
+        None
+    }
+
+    fn final_intra_screen(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+        block: &Block,
+    ) -> Option<(f32, f32)> {
+        self.prices_final_candidates()
+            .then(|| self.screen_intra(source, recon, block))
+    }
+
+    fn final_coded_cost(
+        &mut self,
+        source: &Picture,
+        reference: &Picture,
+        block: &Block,
+        candidate: nc_encoder::FinalCandidate,
+    ) -> Option<f32> {
+        self.prices_final_candidates()
+            .then(|| self.price_final(source, reference, block, candidate))
+            .flatten()
+    }
+
+    /// Random decisions bypass the pricing.
+    fn prices_final_candidates(&self) -> bool {
+        self.random.is_none() && !self.lossless
+    }
+
     fn mv_candidates(&mut self, block: &Block, out: &mut Vec<EngineMv>) {
         let refs = self.refs_for(block);
         for mv in [refs.nearest, refs.near] {
-            let mut engine = to_engine_mv(mv);
-            if let Some(sp) = &self.spatial {
-                let offset = sp.scaled_mv_offset(self.active_ref);
-                engine.x = engine.x.saturating_sub(offset.x);
-                engine.y = engine.y.saturating_sub(offset.y);
-            }
+            let engine = self.engine_candidate(mv);
             if !out.contains(&engine) {
                 out.push(engine);
             }
@@ -1471,10 +1571,7 @@ impl CodecBackend for Vp9Backend {
                         refs: self.find_refs(block),
                         reference_bits: self.reference_bits(block),
                     });
-                let vp9_mv = match &self.spatial {
-                    None => to_vp9_mv(mv),
-                    Some(sp) => sp.to_vp9_mv(self.active_ref, mv),
-                };
+                let vp9_mv = self.coded_vector(&cached.refs, mv);
                 cached.reference_bits
                     + cheapest_inter_mode(
                         &self.mode_costs,
@@ -1587,7 +1684,7 @@ impl CodecBackend for Vp9Backend {
             self.grids.segment_map =
                 SegmentMap::cleared(self.grids.grid.cols, self.grids.grid.rows);
         }
-        self.counts = Counts {
+        *self.counts = Counts {
             high_precision: self.header.allow_hp,
             ..Counts::default()
         };
@@ -1734,9 +1831,48 @@ impl CodecBackend for Vp9Backend {
             self.write_tokens(info.is_inter());
         }
         self.grids.grid.fill(row, col, info);
+        // A skip CU: no residual, predicted from a candidate vector
+        // (`NEARESTMV`, `NEARMV`, `ZEROMV`; VP9 §6.4.16).
+        self.last_block_skipped =
+            skip && info.inter.is_some_and(|(mode, _)| mode != InterMode::New);
         self.refs = None;
         self.active_ref = ReferenceChoice::Primary;
         self.coding_q_idx = self.header.base_q_idx;
+    }
+
+    fn begin_node_trial(&mut self, node: &Block, recon: &Picture) {
+        self.open_node_trial(node, recon);
+    }
+
+    fn begin_node_pricing(&mut self, node: &Block, _recon: &Picture) {
+        self.open_node_pricing(node);
+    }
+
+    fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
+        self.node_trial_price(source, recon)
+    }
+
+    fn undo_node_trial(&mut self, recon: &mut Picture) {
+        // The leaf and quad require just one undo, which keeps the first
+        // candidate's entropy state in the buffer that held the starting state.
+        const { assert!(!Self::RECTANGULAR_LEAVES) };
+        self.undo_node(recon);
+    }
+
+    fn keep_node_candidate(&mut self, recon: &Picture) {
+        self.keep_node(recon);
+    }
+
+    fn restore_node_candidate(&mut self, recon: &mut Picture) {
+        self.restore_kept_node(recon);
+    }
+
+    fn end_node_trial(&mut self) {
+        self.close_node_trial();
+    }
+
+    fn last_cu_skipped(&self) -> bool {
+        self.last_block_skipped
     }
 
     fn filter_frame(&mut self, source: &Picture, recon: &mut Picture) {
@@ -2717,9 +2853,8 @@ impl Vp9Backend {
     }
 
     /// SSE of the block's reconstruction and of its saved prediction
-    /// against the source, all planes (shared DSP kernels).
-    /// Chroma is weighted by `vp9.chroma_sse_weight`, or by the chroma
-    /// policy's squared step ratio.
+    /// against the source, all planes (shared DSP kernels), each weighted
+    /// by [`Self::distortion_weight`].
     fn block_sse(&self, block: &Block, source: &Picture, recon: &Picture) -> (f32, f32) {
         let (mut coded_total, mut predicted_total) = (0f32, 0f32);
         let mut offset = 0;
@@ -2737,24 +2872,31 @@ impl Vp9Backend {
             let packed = &self.scratch.prediction[offset..offset + n * n];
             let predicted = PlaneView::new(packed, n, n, n).expect("packed prediction");
             offset += n * n;
-            let weight = match (plane, self.chroma_policy) {
-                (PlaneIndex::Y, _) => 1.0,
-                (_, Some(_)) => {
-                    let (luma, chroma) = (
-                        self.header.steps_at(self.header.base_q_idx, PlaneIndex::Y),
-                        self.header.steps_at(self.header.base_q_idx, plane),
-                    );
-                    nc_encoder::chroma_policy::distortion_weight(
-                        f64::from(luma.ac),
-                        f64::from(chroma.ac),
-                    ) as f32
-                }
-                (_, None) => self.own_chroma_weight(),
-            };
+            let weight = self.distortion_weight(plane);
             coded_total += weight * self.dsp.variance(size, &src, &rec).sse as f32;
             predicted_total += weight * self.dsp.variance(size, &src, &predicted).sse as f32;
         }
         (coded_total, predicted_total)
+    }
+
+    /// The squared-error weight of `plane` in the backend's rate-distortion
+    /// decisions: 1 for luma; for chroma `vp9.chroma_sse_weight` (or its
+    /// adaptive form), or the chroma policy's squared step ratio.
+    fn distortion_weight(&self, plane: PlaneIndex) -> f32 {
+        match (plane, self.chroma_policy) {
+            (PlaneIndex::Y, _) => 1.0,
+            (_, Some(_)) => {
+                let (luma, chroma) = (
+                    self.header.steps_at(self.header.base_q_idx, PlaneIndex::Y),
+                    self.header.steps_at(self.header.base_q_idx, plane),
+                );
+                nc_encoder::chroma_policy::distortion_weight(
+                    f64::from(luma.ac),
+                    f64::from(chroma.ac),
+                ) as f32
+            }
+            (_, None) => self.own_chroma_weight(),
+        }
     }
 
     /// Put the saved inter prediction of `planes` back into `recon`.
@@ -3252,6 +3394,43 @@ impl Vp9Backend {
         }
     }
 
+    /// The engine's (quarter-sample) candidate for VP9 reference vector
+    /// `mv`: an odd (1/8) component moves towards zero, and a spatial
+    /// layer's reference offset comes off.
+    fn engine_candidate(&self, mv: Mv) -> EngineMv {
+        let mut engine = to_engine_mv(mv);
+        if let Some(sp) = &self.spatial {
+            let offset = sp.scaled_mv_offset(self.active_ref);
+            engine.x = engine.x.saturating_sub(offset.x);
+            engine.y = engine.y.saturating_sub(offset.y);
+        }
+        engine
+    }
+
+    /// The VP9 vector the engine's `mv` codes for a block with reference
+    /// vectors `refs`. With 1/8 precision allowed the block's NEARESTMV or
+    /// NEARMV vector can be odd, which the engine sees only as its
+    /// quarter-sample candidate ([`Self::engine_candidate`]); that
+    /// candidate stands for the reference vector itself, so it is priced
+    /// and coded as NEARESTMV / NEARMV. (Converting it as a plain vector
+    /// made it a NEWMV one eighth away: with `vp9.high_precision_qindex`
+    /// 256 the cheap modes of blocks next to 1/8 vectors were lost,
+    /// `bodycam_airport` fixed QP BD-rate PSNR-YUV +7.2%.)
+    /// The zero vector stays ZEROMV.
+    fn coded_vector(&self, refs: &MvRefs, mv: EngineMv) -> Mv {
+        let plain = match &self.spatial {
+            None => to_vp9_mv(mv),
+            Some(sp) => sp.to_vp9_mv(self.active_ref, mv),
+        };
+        if plain == Mv::ZERO {
+            return plain;
+        }
+        [refs.nearest, refs.near]
+            .into_iter()
+            .find(|&r| (r.row & 1 != 0 || r.col & 1 != 0) && self.engine_candidate(r) == mv)
+            .unwrap_or(plain)
+    }
+
     fn predict_inter_block(
         &mut self,
         block: &Block,
@@ -3264,15 +3443,23 @@ impl Vp9Backend {
         let refs = self.refs_for(block);
         let (held_pic, ref_size) = self.active_reference();
         let ref_pic = held_pic.as_deref().unwrap_or(engine_ref);
-        let base_mv = match &self.spatial {
-            None => to_vp9_mv(mv),
-            Some(sp) => sp.to_vp9_mv(self.active_ref, mv),
-        };
+        let base_mv = self.coded_vector(&refs, mv);
         let mv = self.refine_high_precision(source, (ref_pic, ref_size), position, &refs, base_mv);
         let allow_hp = self.header.allow_hp;
+        let new_codable = new_mv_codable(&refs, mv, allow_hp);
         let mode = match &mut self.random {
-            Some(random) => random.inter_mode(&refs, mv),
+            Some(random) => random.inter_mode(&refs, mv, new_codable),
             None => cheapest_inter_mode(&self.mode_costs, &refs, mv, allow_hp).0,
+        };
+        // A vector no mode can code (NEWMV out of range or of precision, and
+        // no reference vector equal to it) is replaced by NEARESTMV before it
+        // predicts anything, so the stream stays decodable: the engine never
+        // hands over such a vector on the shipped presets (its NEWMV price is
+        // infinite), this keeps an encoder abort impossible if one ever did.
+        let (mode, mv) = if mode == InterMode::New && !new_codable {
+            (InterMode::Nearest, refs.nearest)
+        } else {
+            (mode, mv)
         };
         let (filter, luma_ready) = self.choose_filter(source, (ref_pic, ref_size), position, mv);
         let side = block.size();
@@ -3328,6 +3515,7 @@ impl Vp9Backend {
         let mut offset = 0;
         for plane in PlaneIndex::ALL.into_iter().filter(|&p| planes.includes(p)) {
             let trellis_lambda = self.trellis_lambda(plane);
+            let rd_trim = self.rd_trim_lambda(plane);
             let plane_tx = self.plane_tx(block, tx, plane);
             let skip_plane = dropped.includes(plane)
                 || self.plane_skip(block, (plane, plane_tx), &shortcuts, (source, recon));
@@ -3355,7 +3543,7 @@ impl Vp9Backend {
                     offset += area;
                     continue;
                 }
-                let tx_coding = (plane_tx, offset, (rounding, min_level));
+                let tx_coding = (plane_tx, offset, &quantization);
                 let nonrd = (steps, shortcuts.nonrd_scale);
                 if self.code_nonrd(source, recon, &tx_block, tx_coding, nonrd) {
                     offset += area;
@@ -3402,9 +3590,13 @@ impl Vp9Backend {
                     );
                 let nonzero = transformed
                     && quantization.quantize(&self.dsp, self.lossless, coefficients, levels);
-                let nonzero =
-                    nonzero && trim_levels(&self.dsp, plane_tx, ty, (min_level, shave_gap), levels);
-                let nonzero = match (&mut self.trellis, trellis_lambda) {
+                let trimmed_eob = if nonzero {
+                    trim_levels(&self.dsp, plane_tx, ty, (min_level, shave_gap), levels)
+                } else {
+                    Some(0)
+                };
+                let nonzero = trimmed_eob != Some(0);
+                let (nonzero, known_eob) = match (&mut self.trellis, trellis_lambda) {
                     (Some(trellis), Some(lambda)) if nonzero => {
                         let block = (
                             &self.context,
@@ -3412,31 +3604,63 @@ impl Vp9Backend {
                             &tx_block,
                             intra.is_none(),
                         );
-                        trellis.quantize(
+                        let nonzero = trellis.quantize(
                             &self.dsp,
                             block,
                             ty,
                             (lambda, coefficients, steps),
                             levels,
-                        )
+                        );
+                        // The trellis can change the last coefficient.
+                        (nonzero, None)
                     }
-                    _ => nonzero,
+                    _ => match rd_trim {
+                        Some((trim, lambda)) if nonzero => {
+                            let eob = coeff::rate_trim(
+                                &self.dsp,
+                                &trim,
+                                (levels, coefficients),
+                                (plane_tx, ty),
+                                steps,
+                                lambda,
+                            );
+                            (eob != 0, Some(eob))
+                        }
+                        _ => (nonzero, trimmed_eob),
+                    },
                 };
-                if nonzero {
-                    self.buffers
-                        .add_residual(recon, &tx_block, ty, self.lossless, levels, steps);
+                let eob = if nonzero {
+                    known_eob
+                        .unwrap_or_else(|| coeff::end_of_block(&self.dsp, levels, plane_tx, ty))
+                } else {
+                    0
+                };
+                if eob != 0 {
+                    self.buffers.add_residual(
+                        recon,
+                        &tx_block,
+                        ty,
+                        self.lossless,
+                        (levels, eob),
+                        steps,
+                    );
                 }
-                let coded = CodedTx::new(
-                    &tx_block,
-                    ty,
-                    nonzero.then_some((&self.dsp, &*levels)),
-                    offset,
-                );
+                let coded = CodedTx::new(&tx_block, ty, eob, offset);
                 self.scratch.coded.push(coded);
                 offset += area;
             }
         }
         self.scratch.finish_trial();
+    }
+
+    /// The rate-aware trimming of a transform block of `plane` and its λ:
+    /// luma only, while the trellis is off (`trellis_lambda` covers it then).
+    fn rd_trim_lambda(&self, plane: PlaneIndex) -> Option<(nc_encoder::RateTrim, f64)> {
+        if self.trellis.is_some() || self.lossless || plane != PlaneIndex::Y {
+            return None;
+        }
+        let trim = self.rd_trim.filter(|t| t.covers(self.header.key))?;
+        Some((trim, f64::from(self.lambda())))
     }
 
     /// The inexact residual shortcuts in force for an intra or inter block.
@@ -3589,7 +3813,7 @@ impl Vp9Backend {
         source: &Picture,
         recon: &mut Picture,
         tx_block: &TxBlock,
-        (tx, offset, quantization): (TxSize, usize, (Rounding, i32)),
+        (tx, offset, quantization): (TxSize, usize, &transform::PlaneQuantization),
         (steps, scale): (transform::Steps, f32),
     ) -> bool {
         let skip = self.nonrd_skip_of(tx_block, tx, steps, scale, source, recon);
@@ -3601,8 +3825,7 @@ impl Vp9Backend {
             }
         };
         let ty = transform::TxType::DctDct;
-        let levels = &self.scratch.levels[offset..offset + tx.area()];
-        let coded = CodedTx::new(tx_block, ty, nonzero.then_some((&self.dsp, levels)), offset);
+        let coded = CodedTx::new(tx_block, ty, usize::from(nonzero), offset);
         self.scratch.coded.push(coded);
         true
     }
@@ -3613,28 +3836,19 @@ impl Vp9Backend {
         &mut self,
         recon: &mut Picture,
         tx_block: &TxBlock,
-        (tx, offset, quantization): (TxSize, usize, (Rounding, i32)),
+        (tx, offset, quantization): (TxSize, usize, &transform::PlaneQuantization),
         steps: transform::Steps,
         dc: i16,
     ) -> bool {
         let area = tx.area();
-        let coefficients = &mut self.scratch.coefficients[..area];
-        coefficients.fill(0);
-        coefficients[0] = dc;
         let levels = &mut self.scratch.levels[offset..offset + area];
-        let nonzero = transform::quantize(
-            &self.dsp,
-            tx,
-            false,
-            coefficients,
-            steps,
-            quantization,
-            levels,
-        );
+        let nonzero = quantization.quantize_dc(&self.dsp, dc, &mut levels[0]);
         if nonzero {
+            // Later pricing and reconstruction still see a raster block.
+            levels[1..].fill(0);
             let ty = transform::TxType::DctDct;
             self.buffers
-                .add_residual(recon, tx_block, ty, false, levels, steps);
+                .add_residual(recon, tx_block, ty, false, (levels, 1), steps);
         }
         nonzero
     }
@@ -3708,8 +3922,8 @@ fn write_tx_size(
     counts.count_tx(max, ctx, info.tx_size);
 }
 
-/// Drop the quantized levels the encoder chooses not to code; returns
-/// whether any is left. Past qindex 255 the residual is quantised as if at
+/// Drop the quantized levels the encoder chooses not to code. Returns
+/// the end of block when known. Past qindex 255 the residual is quantised as if at
 /// the planned step (`FramePlan::lambda_scale`, levels below `min_level`):
 /// λ alone left blocks drifting into dense residual (`pan_bdd_00cef86b` at
 /// 150 kbps: 283 kbps with 2 octaves, 403 with 3). `shave_gap`
@@ -3720,9 +3934,11 @@ fn trim_levels(
     ty: transform::TxType,
     (min_level, shave_gap): (i32, usize),
     levels: &mut [i32],
-) -> bool {
-    (min_level <= 1 || transform::apply_planned_dead_zone(tx, min_level, levels))
-        && (shave_gap == 0 || coeff::shave_isolated_ones(dsp, levels, tx, ty, shave_gap))
+) -> Option<usize> {
+    if min_level > 1 && !transform::apply_planned_dead_zone(tx, min_level, levels) {
+        return Some(0);
+    }
+    (shave_gap != 0).then(|| coeff::shave_isolated_ones(dsp, levels, tx, ty, shave_gap))
 }
 
 /// VP9's delta range (`delta_q` is 4 bits and a sign, §6.2.9).
@@ -3827,6 +4043,20 @@ fn scaled_qindex(qindex: u32, scale: f64) -> u32 {
 
 /// The cheapest inter mode signalling `mv`, with its bits (mode, plus the
 /// vector difference for NEWMV).
+/// Whether NEWMV can code `mv` for a block with reference vectors `refs`
+/// (VP9 §6.4.19): without 1/8 precision (`allow_hp` and a small nearest
+/// vector) an odd difference cannot be coded, nor one past `MV_CLASS_10`
+/// (±2048 samples), which a vector and a nearest vector of opposite sign
+/// reach on wide pictures (1080p and up). Mode choices offer NEWMV only
+/// where this holds ([`cheapest_inter_mode`], the stress chooser), so the
+/// writer never meets a difference it cannot code.
+fn new_mv_codable(refs: &MvRefs, mv: Mv, allow_hp: bool) -> bool {
+    let usehp = allow_hp && motion::uses_high_precision(refs.nearest);
+    let (dr, dc) = (mv.row - refs.nearest.row, mv.col - refs.nearest.col);
+    let in_range = |v: i32| (-motion::MAX_DIFFERENCE..=motion::MAX_DIFFERENCE).contains(&v);
+    (usehp || (dr & 1 == 0 && dc & 1 == 0)) && in_range(dr) && in_range(dc)
+}
+
 fn cheapest_inter_mode(
     costs: &ModeCosts,
     refs: &MvRefs,
@@ -3836,8 +4066,7 @@ fn cheapest_inter_mode(
     let mode_cost = |mode: InterMode| costs.inter[refs.mode_context][mode as usize];
     let usehp = allow_hp && motion::uses_high_precision(refs.nearest);
     let (dr, dc) = (mv.row - refs.nearest.row, mv.col - refs.nearest.col);
-    // Without 1/8 precision an odd difference cannot be coded as NEWMV.
-    let new_cost = if usehp || (dr & 1 == 0 && dc & 1 == 0) {
+    let new_cost = if new_mv_codable(refs, mv, allow_hp) {
         mode_cost(InterMode::New) + costs.mv.cost(dr, dc, usehp)
     } else {
         f32::INFINITY
@@ -3863,7 +4092,8 @@ fn to_vp9_mv(mv: EngineMv) -> Mv {
     }
 }
 
-/// Reference vectors are even eighths (no high precision), so exact.
+/// The engine vector of a VP9 vector: exact for even eighths, an odd
+/// (1/8) component moves towards zero.
 fn to_engine_mv(mv: Mv) -> EngineMv {
     EngineMv {
         x: (mv.col / MV_PER_ENGINE_MV) as i16,
@@ -4120,5 +4350,47 @@ impl ModeCosts {
             kf_uv: tables::KF_UV_MODE.map(|probs| intra(&probs)),
             leaf,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_odd_difference_is_new_mv_only_with_high_precision() {
+        // 2026-11-21 syntax stress: an odd (1/8) NEARMV vector chosen as NEWMV
+        // beside an even nearest vector could not be coded (writer panic).
+        let refs = MvRefs {
+            nearest: Mv { row: 0, col: 8 },
+            near: Mv { row: 3, col: 8 },
+            mode_context: 0,
+        };
+        assert!(!new_mv_codable(&refs, refs.near, false));
+        assert!(new_mv_codable(&refs, refs.near, true));
+        assert!(new_mv_codable(&refs, Mv { row: 2, col: 8 }, false));
+    }
+
+    #[test]
+    fn a_difference_past_the_coded_range_is_not_new_mv() {
+        let costs = ModeCosts::new(&FrameContext::default());
+        let refs = MvRefs {
+            nearest: Mv { row: 0, col: -8000 },
+            near: Mv::ZERO,
+            mode_context: 0,
+        };
+        // 2048 samples right of a nearest vector 1000 samples left.
+        let far = Mv { row: 0, col: 8384 };
+        assert!(
+            cheapest_inter_mode(&costs, &refs, far, false)
+                .1
+                .is_infinite()
+        );
+        let near = Mv { row: 0, col: 0 };
+        assert!(
+            cheapest_inter_mode(&costs, &refs, near, false)
+                .1
+                .is_finite()
+        );
     }
 }

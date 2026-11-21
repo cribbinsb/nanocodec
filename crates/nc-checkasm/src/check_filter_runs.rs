@@ -415,6 +415,20 @@ fn check_vvc_groups(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                     runs.push(make(48, 68, 8, [5, 5]));
                     runs.push(make(48, 76, 4, [1, 1]));
                     runs.push(make(56, 64, 8, [2, 2]));
+                    // One four-tile long batch, with different per-tile
+                    // thresholds, followed by a dependent long edge.
+                    runs.push(make(64, 0, 8, [7, 7]));
+                    for along in [8, 16, 24] {
+                        let mut run = make(64, along, 8, [7, 7]);
+                        run.filter.beta = beta.saturating_sub((along / 8) as u8);
+                        run.filter.tc = tc.saturating_sub((along / 8) as u8);
+                        runs.push(run);
+                    }
+                    runs.push(make(68, 16, 8, [7, 7]));
+                    // Adjacent equal four-line runs share one eight-line
+                    // kernel, with a separate decision for each segment.
+                    runs.push(make(64, 32, 4, [7, 5]));
+                    runs.push(make(64, 36, 4, [7, 5]));
                     runs.push(EdgeRun {
                         x: usize::MAX,
                         y: usize::MAX,

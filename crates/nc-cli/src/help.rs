@@ -110,9 +110,10 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
             ),
             opt(
                 "--preset",
-                "veryfast|faster|fast|medium|slow",
+                "veryfast|faster|fast|medium|slow|slower|veryslow",
                 "A rung of the speed ladder; medium is the codec's Default and is used without \
-                 --preset. Not every codec has every rung (`nanocodec params --codec C`); with \
+                 --preset. A name is a position on that codec's ladder (in this order); not every \
+                 codec has every rung (`nanocodec params --codec C`); with \
                  --scalability L2*/L3* a rung takes the codec's file for that many layers.",
             ),
             opt(
@@ -290,6 +291,11 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "CSV of each layer picture's size, bytes and MD5.",
             ),
             opt(
+                "--filter-stats",
+                "FILE",
+                "JSON of the frame-level filter searches' units by outcome (off, unchanged), by tool and frame role; \"given\": [units, off, unchanged] of the searched units by their own last outcomes (off at the last 1, 2, 4 searches, on, unchanged) and content (quiet: mostly coded without residual).",
+            ),
+            opt(
                 "--spatial-stats",
                 "FILE",
                 "JSON summary of per-layer bytes, rates and references.",
@@ -448,7 +454,7 @@ pub const COMMANDS: &[CommandDoc] = &[
                 opt(
                     "--records",
                     "FILE",
-                    "HEVC: also write every picture's block records (packed, little-endian).",
+                    "HEVC, H.264: also write every picture's block records (packed, little-endian).",
                 ),
             ],
         }],

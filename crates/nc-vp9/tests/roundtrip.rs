@@ -809,3 +809,71 @@ fn flat_second_reference_round_trips_and_changes_the_stream() {
     let without = coded_sequence(1, &[("structure.unified", 0.0)], None).0;
     assert_ne!(packets, without);
 }
+
+/// Bands of 16 rows moving apart (`frame * 3` samples a frame): a quad
+/// split pays where a band edge crosses a block.
+fn sliding_bands(width: usize, height: usize, frame: usize) -> Picture {
+    const BAND_ROWS: usize = 16;
+    const SHIFT_PER_FRAME: usize = 3;
+    let mut picture = Picture::new(width, height, 0).unwrap();
+    for plane in PlaneIndex::ALL {
+        let mut view = picture.plane_mut(plane).view_mut();
+        for y in 0..view.height() {
+            let moving_band = y % (2 * BAND_ROWS) < BAND_ROWS;
+            let shift = if moving_band {
+                frame * SHIFT_PER_FRAME
+            } else {
+                0
+            };
+            for (x, sample) in view.row_mut(y).iter_mut().enumerate() {
+                let u = x + shift;
+                *sample = ((u * 23 + y * 17 + plane as usize * 47) ^ (u * y / 7)) as u8;
+            }
+        }
+    }
+    picture
+}
+
+/// The RD partition search (`planner.rd_split`) codes, undoes and re-codes
+/// nodes and puts kept codings back: every frame must still decode to the
+/// encoder's reconstruction, with partial superblocks (and a size that is
+/// not whole 8x8 units), block quantizers (segment ids, `SEG_LVL_ALT_Q`),
+/// the skip segment and 8x8 inter blocks; the search must change the
+/// stream, and coding every frame twice must not.
+#[test]
+fn rd_split_streams_reconstruct_exactly_and_differ() {
+    let levers: [&[(&str, f32)]; 2] = [
+        &[("rate.aq_strength", 3.), ("rate.aq_max_offset", 12.)],
+        &[("vp9.skip_filter_off", 1.)],
+    ];
+    for (width, height) in [(74, 42), (200, 136)] {
+        for extra in levers {
+            let coded = |rd_split: f32, identity: f32| {
+                let mut params = vec![
+                    ("planner.rd_split", rd_split),
+                    ("planner.inter_min_log2", 3.),
+                    ("debug.recode_identity", identity),
+                ];
+                params.extend_from_slice(extra);
+                coded_sequence_of(sliding_bands, (width, height), 1, &params, None)
+            };
+            let (packets, recons, _) = coded(1., 0.);
+            let case = format!("{width}x{height} {extra:?}");
+            let mut decoder = Decoder::new();
+            for (frame, (packet, recon)) in packets.iter().zip(&recons).enumerate() {
+                let decoded = decoder.decode(packet).unwrap();
+                assert_eq!(&bytes(&decoded), recon, "{case} frame {frame}");
+            }
+            assert_ne!(
+                packets,
+                coded(0., 0.).0,
+                "{case}: the search changed nothing"
+            );
+            assert_eq!(
+                packets,
+                coded(1., 1.).0,
+                "{case}: recoding changed the stream"
+            );
+        }
+    }
+}

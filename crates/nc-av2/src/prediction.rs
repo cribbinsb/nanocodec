@@ -537,7 +537,10 @@ mod tests {
             (InterpFilter::Smooth, SMOOTH_HASHES),
             (InterpFilter::Sharp, SHARP_HASHES),
         ] {
-            for dsp in [Dsp::with_isa(Isa::Scalar).unwrap(), Dsp::new()] {
+            for dsp in [
+                Box::new(Dsp::with_isa(Isa::Scalar).unwrap()),
+                Box::new(Dsp::new()),
+            ] {
                 let mut index = 0;
                 for side in [4, 8] {
                     for subsample in 0..2 {

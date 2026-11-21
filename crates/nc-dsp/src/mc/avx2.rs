@@ -65,6 +65,7 @@ pub(crate) unsafe fn mc_fns() -> McFns {
         vvc_luma: separable_family::<VvcLumaTaps, 8>(),
         vvc_affine_luma: separable_family::<VvcAffineLumaTaps, 8>(),
         vvc_chroma: separable_family::<VvcChromaTaps, 4>(),
+        vp9: crate::vp9_mc_simd::families(crate::Isa::Avx2),
         h264_phases: Some(h264_phase_fns()),
         av1_mixed: Some(super::av1_avx2::mixed_fns()),
     }

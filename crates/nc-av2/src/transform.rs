@@ -380,20 +380,40 @@ pub fn quantize(
 ) -> u32 {
     let qindex = qindex.into();
     let area = size.coded_len();
-    let levels = &mut levels[..area];
-    let step = quantizer_step_q3(qindex.ac);
     dsp.quantize_from_wide_with_dc_rounding(
         &coefficients[..area],
-        &Av1Quantizer {
-            dc_step: quantizer_step_q3(qindex.dc),
-            ac_step: step,
-            rounding_q7: rounding.ac_q7,
-            max_level: MAX_LEVEL,
-            log_scale: QUANT_BITS + dequant_shift(size),
-        },
+        &quantizer(size, qindex, rounding),
         rounding.dc_q7,
-        levels,
+        &mut levels[..area],
     )
+}
+
+/// Quantize the levels and return their end of block.
+pub(crate) fn quantize_eob(
+    dsp: &Dsp,
+    size: TxSize,
+    coefficients: &[i32],
+    (qindex, rounding): (Qindices, Rounding),
+    levels: &mut [i32],
+) -> usize {
+    let table = crate::coeff::eob_table_of(size);
+    dsp.quantize_wide_eob(
+        &coefficients[..table.len()],
+        &quantizer(size, qindex, rounding),
+        rounding.dc_q7,
+        &mut levels[..table.len()],
+        table,
+    )
+}
+
+fn quantizer(size: TxSize, qindex: Qindices, rounding: Rounding) -> Av1Quantizer {
+    Av1Quantizer {
+        dc_step: quantizer_step_q3(qindex.dc),
+        ac_step: quantizer_step_q3(qindex.ac),
+        rounding_q7: rounding.ac_q7,
+        max_level: MAX_LEVEL,
+        log_scale: QUANT_BITS + dequant_shift(size),
+    }
 }
 
 /// Largest squared Euclidean norm of a `DCT_DCT` basis row (one coded
@@ -1237,9 +1257,10 @@ mod tests {
         );
     }
 
-    /// Every kernel set this machine runs: the scalar reference and the best.
-    fn dsps() -> [Dsp; 2] {
-        [Dsp::with_isa(Isa::Scalar).unwrap(), Dsp::new()]
+    /// Every kernel set this machine runs: the scalar reference and the best (on the
+    /// heap: two dispatch tables exceed clippy's 16 KiB stack-array limit).
+    fn dsps() -> Vec<Dsp> {
+        vec![Dsp::with_isa(Isa::Scalar).unwrap(), Dsp::new()]
     }
 
     fn levels_of(dsp: &Dsp, size: TxSize, residual: &[i32], qindex: u8) -> Vec<i32> {

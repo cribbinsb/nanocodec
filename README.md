@@ -28,10 +28,9 @@ delay, you may be in the right place:
   - **HEVC** (Main, Main Still Picture, Main 10): 147/147 of the JCT-VC HEVC_v1 set.
   - **AV1** (Main, 8- and 10-bit): 242/242 libaom test vectors, 66 of them 10-bit.
   - **VP9** (profiles 0 and 2, 8- to 12-bit): 305/305 libvpx vectors.
-  - **VVC** (Main 10): 224 of the 226 official conformance streams. The two left are interlaced field
-    pairs, which we output as separate fields, so it is not yet a compliant Main 10 decoder. Also 138 of 138
-    short 8-bit streams we coded with VTM and VVenC to cover the tools one by one
-    ([what passes](docs/handoff/vvc-foreign-corpus.md)).
+  - **VVC** (Main 10): 226/226 of the official conformance streams (9 8-bit, 217 10-bit, the two field-pair
+    streams with their fields output interleaved). Also 138 of 138 short 8-bit streams we coded with VTM and
+    VVenC to cover the tools one by one ([what passes](docs/handoff/vvc-foreign-corpus.md)).
   - **H.264** (High and High 10, progressive): 110 of the 190 ITU-T H.264.1 streams, including every
     progressive Main (41), High (24) and High 10 (7) stream. Interlaced coding, FMO/ASO and SP/SI slices
     are not supported.
@@ -42,10 +41,11 @@ delay, you may be in the right place:
   ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). 10-bit decoding has SIMD on
   AVX2, AVX-512, NEON and WASM for AV1 and VP9, plus WASM for the kernels HEVC and VVC share; VVC's native (x86/Arm) and H.264's 10-bit paths
   are scalar so far.
-- **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
-  1 s buffer); 720p at real-time speed on one Jetson Orin core for every format's `medium` preset except VVC,
-  which runs just under it (VVC `fast` is above); figures in [Headline results](#headline-results).
-- **Real-time VVC and AV2:** single-thread real-time encoders and decoders for VVC (H.266) and AV2 (a draft,
+- **Fast, low-delay codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
+  1 s buffer). Speed depends heavily on content: the measured fps of every preset at 720p on one Jetson Orin
+  Nano core and one Zen 5 core, on the charts' clips, are in [Headline results](#headline-results) and on the
+  [speed page](https://cribbinsb.github.io/nanocodec/results/speed.html).
+- **VVC and AV2:** single-thread, low-delay encoders and decoders for VVC (H.266) and AV2 (a draft,
   tracking the AOM reference software AVM), natively and in the browser.
 - **Optimised for x86, Arm and WebAssembly:** hand-written SIMD kernels for AVX2 / AVX-512, NEON and WASM
   SIMD128; the encoders and decoders run in the browser ([demo](https://cribbinsb.github.io/nanocodec/)).
@@ -148,16 +148,22 @@ One preset ladder for every codec, chosen with `--codec X --preset NAME`:
 
 | Preset | Codecs | Preset file |
 |---|---|---|
-| `slow` | all six | `presets/slow.toml` (shared) then `presets/<codec>/slow.toml` |
+| `veryslow` | HEVC, VVC | `presets/slowest.toml` (shared) then `presets/<codec>/veryslow.toml` |
+| `slower` | all six | `presets/<codec>/slower.toml` (the slowest rung of H.264, AV1, VP9 and AV2, after `presets/slowest.toml`) |
+| `slow` | all six | `presets/<codec>/slow.toml` |
 | `medium` (the default when no `--preset` is given) | all six | built in (each codec's Default) |
 | `fast` | all six | `presets/<codec>/fast.toml` |
-| `faster` | H.264, HEVC, AV1, VP9 | `presets/<codec>/faster.toml` |
-| `veryfast` | H.264, VP9 | `presets/<codec>/veryfast.toml` |
+| `faster` | H.264, HEVC, VVC, AV1, VP9, AV2 | `presets/<codec>/faster.toml` |
+| `veryfast` | H.264, AV1, VP9 | `presets/<codec>/veryfast.toml` |
 
 The names rank our own presets for each codec relative to that codec's Default (`medium`). They are **not**
 speed-equivalent to x264's presets of the same name, and the ladders of different codecs do not line up with
-each other; the [results pages](docs/results/README.md) give absolute speeds. `slow` is the quality-first rung:
-more compression for about 1.5-2.5x the Default's CPU, still real time and low delay.
+each other; the [results pages](docs/results/README.md) give absolute speeds. A codec's rungs are points on its
+own speed/quality front, spaced roughly evenly in log(speed); a name is a position on that codec's ladder, always
+in the order veryfast, faster, fast, medium, slow, slower, veryslow, and a codec may lack some names (`nanocodec
+params --codec C` lists them). The slowest rungs trade the most CPU for compression, still low delay. Renames of
+2026-11-21: `slow` became `slower` in every codec; HEVC and VVC then gained a rung between `slow` and `slower`, so their old
+`slower` is `veryslow`; VVC and H.264 `fast` became `faster` (H.264's old `faster` was retired).
 
 Spatial SVC (AV1 and VP9) is a mode, not a speed: `--scalability L2T1` or `L3T1` (also L2T3, L3T3 and the
 `_KEY` variants) with `--preset medium` or `--preset fast`, from `presets/<codec>/{l2,l3}-{medium,fast}.toml`.
@@ -175,7 +181,10 @@ Old names (2026-11-15 and earlier) are rejected with a list of the new ones; the
 | `av1-svc3`, `vp9-svc3` | `--scalability L3T1 --preset medium` |
 | `av1-svc3-fast`, `vp9-svc3-fast` | `--scalability L3T1 --preset fast` |
 | `h264-balanced` | removed (a stale snapshot of an old H.264 Default) |
-| `hevc-better` | `--preset slow` (the old file was tuned against a much older Default) |
+| `hevc-better` | `--preset slower` (the old file was tuned against a much older Default) |
+| `slow` (until 2026-11-21) | `--preset slower` (HEVC, VVC: `--preset veryslow`) |
+| VVC and H.264 `fast` (until 2026-11-21) | `--preset faster` |
+| H.264 `faster` (until 2026-11-21) | retired; nearest `--preset veryfast` or `--preset faster` |
 
 ## Licence and patents
 

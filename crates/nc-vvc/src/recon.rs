@@ -321,6 +321,9 @@ pub(crate) enum LevelSearch<'a> {
     /// Dependent quantisation's four-state search (`dep_quant.rs`): no
     /// sign hiding, no shaving.
     Dependent(crate::dep_quant::DepQuant<'a>),
+    /// The shared rate-aware trimming (`nc_encoder::trim_levels`, luma at
+    /// its λ), then sign hiding: the trellis's cheap substitute.
+    RateTrim(&'a nc_encoder::RateTrim, f64),
 }
 
 /// [`quantize_rect`] into `scratch.levels`; false when every level is zero.
@@ -558,6 +561,25 @@ fn choose_levels(
             return false;
         };
         coded = chosen;
+    } else if let Some(LevelSearch::RateTrim(trim, lambda)) = search {
+        let Some(last) = previous_nonzero(levels, size, coded, samples) else {
+            return false;
+        };
+        let positions = crate::scan::rect_positions(size.0, size.1);
+        let step_sse =
+            2f64.powf((f64::from(quant.qp) - f64::from(crate::trellis::QSTEP_UNIT_QP)) / 3.0);
+        let eob =
+            nc_encoder::trim_levels(trim, levels, positions, last + 1, lambda, |p, magnitude| {
+                nc_encoder::level_removal_sse(
+                    quantizer.magnitude_in_steps(coefficients[p]),
+                    magnitude,
+                    step_sse,
+                )
+            });
+        if eob == 0 {
+            return false;
+        }
+        coded = coded_groups(levels, size);
     }
     hide_signs(coefficients, levels, size, coded, quantizer);
     true
@@ -711,7 +733,7 @@ pub(crate) fn shave_isolated_ones(
     let positions = crate::scan::rect_positions(size.0, size.1);
     nc_encoder::shave_isolated_ones(levels, positions, min_gap, |levels, end| {
         previous_nonzero(levels, size, coded, end)
-    })
+    }) != 0
 }
 
 /// The side of a coefficient group of a block at least 4 a side, and the

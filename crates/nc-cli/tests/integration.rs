@@ -15,6 +15,7 @@ mod key_qp_offset_cli;
 mod keyframe_cli;
 mod moving_camera_cli;
 mod rate_control_cli;
+mod recode_identity;
 mod restoration_cli;
 mod sse_log_cli;
 mod static_recovery;

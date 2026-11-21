@@ -44,6 +44,7 @@ import argparse
 import datetime
 import json
 import math
+import os
 import sys
 import threading
 from collections import Counter
@@ -52,7 +53,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import jreal
+from . import jreal, retention
 from .budget import MAX_MINUTES, OverBudget, check as check_budget, estimate_minutes, \
     point_cpu_seconds
 from .cbr import (BUFFER_MS, DEFAULT_INTRA_PERIOD, Bench, Family, Point, anchor_families,
@@ -66,7 +67,7 @@ from .clips import Clip, load_clipset
 from .flicker_reference import REFERENCE_WINDOW_FLICKER_DB
 from .codecs import Codec
 from .config import Paths, find_tool, load_paths
-from .encoders.nanocodec import PRESETS_DIR, preset_values
+from .encoders.nanocodec import PRESETS_DIR, param_text, preset_values, recorded_values
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .rows import ROWS, Row
 from .stages import (ALL_FOUR, PART_FILL, STAGES, TRAIN_PROXY, VAL_PROXY, VAL_STAGES, Stage,
@@ -83,6 +84,9 @@ REAL_COST_FACTOR = 1.5
 WORK_SUBDIR = "realuse"
 DEFAULT_FRAMES = 150
 DEFAULT_WORKERS = 8
+#: Raises the cap on a run's workers (default DEFAULT_WORKERS, the shared PC's share): a
+#: rented measurement box (tools/dev/aws_measure.py) sets it to its own cores' worth.
+MAX_WORKERS_ENV = "NC_MAX_WORKERS"
 OPENH264_HARNESS = Path.home() / "nanocodec-data/work/ratecontrol/bin/openh264-harness"
 #: Context anchors per codec on the board (the bars are the scoreboard rows').
 CONTEXT_ANCHORS = {Codec.H264: ("x264-veryfast",), Codec.HEVC: ("x265-superfast",)}
@@ -91,6 +95,14 @@ STAGE_TERMS = ("j_real",)
 
 def history_path() -> Path:
     return cache_root() / "history-real.jsonl"
+
+
+def max_workers() -> int:
+    """The most workers one run may use (MAX_WORKERS_ENV, else DEFAULT_WORKERS)."""
+    count = int(os.environ.get(MAX_WORKERS_ENV, DEFAULT_WORKERS))
+    if count < 1:
+        raise ValueError(f"{MAX_WORKERS_ENV} must be positive")
+    return count
 
 
 class Runner:
@@ -106,7 +118,7 @@ class Runner:
         self.paths, self.policy = paths, policy
         self.stored_ms_ssim, self.prebuilt, self.xpsnr = stored_ms_ssim, prebuilt, xpsnr
         self.stored_xpsnr = stored_xpsnr
-        self.workers, self.over_budget = min(workers, DEFAULT_WORKERS), over_budget
+        self.workers, self.over_budget = min(workers, max_workers()), over_budget
         self._benches: dict[int, Bench] = {}
         #: Points that are not rate-valid (rate_valid: buffer broken, or average
         #: rate too far over the target, e.g. openh264 RC's floor on fast pans).
@@ -119,6 +131,8 @@ class Runner:
     def bench(self, frames: int, intra: int = DEFAULT_INTRA_PERIOD) -> Bench:
         if (frames, intra) not in self._benches:
             work = self.paths.work / WORK_SUBDIR / f"f{frames}-ip{intra}"
+            # a kept store (the charts' 150-frame cache) is marked as it is made
+            retention.ensure_entry_marker(work)
             self._benches[(frames, intra)] = Bench(self.paths, frames, intra, work,
                                                    metric_set="real",
                                                    stored_ms_ssim=self.stored_ms_ssim,
@@ -344,9 +358,14 @@ def compare(curves: dict, anchor: str, test: str, clips: list[Clip],
         wins = losses = 0
         if paired:
             a, t, wins, losses = jreal.pair_rungs(a, t)
-        rows[clip.name] = {"class": clip.content_class, "points": [len(a), len(t)],
-                           **jreal.compare_clip(a, t, min_points,
-                                                REFERENCE_WINDOW_FLICKER_DB.get(clip.name)),
+        terms = jreal.compare_clip(a, t, min_points, REFERENCE_WINDOW_FLICKER_DB.get(clip.name))
+        names = jreal.pulse_companions(jreal.PULSE_TERMS[0])
+        # a curve with periodic keys (a long-window level): the guarded pulse is the
+        # key-attributed one, the raw change kept beside it (as add_periodic_pulse)
+        terms[names["raw"]] = terms["d_periodic_pulse_psnr_y"]
+        terms["d_periodic_pulse_psnr_y"] = jreal.key_attributed_pulse(
+            terms["d_periodic_pulse_psnr_y"], terms["d_periodic_key_psnr_y"])
+        rows[clip.name] = {"class": clip.content_class, "points": [len(a), len(t)], **terms,
                            "rate_wins": wins, "rate_losses": losses}
     return rows
 
@@ -398,7 +417,13 @@ def add_periodic_pulse(runner: "Runner", anchor: Family, test: Family, clips: li
             a, t = curves[(anchor.name, clip.name)], curves[(test.name, clip.name)]
             if anchor.own:
                 a, t, _, _ = jreal.pair_rungs(a, t)
-            row[term] = jreal.compare_clip(a, t, min_points=2)["d_periodic_pulse_psnr_y"]
+            terms = jreal.compare_clip(a, t, min_points=2)
+            names = jreal.pulse_companions(term)
+            row[names["raw"]] = terms["d_periodic_pulse_psnr_y"]
+            row[names["key"]] = terms["d_periodic_key_psnr_y"]
+            row[names["pre_key"]] = terms["d_periodic_pre_key_psnr_y"]
+            # the guarded term: only as far as the key itself got worse
+            row[term] = jreal.key_attributed_pulse(row[names["raw"]], row[names["key"]])
 
 
 def param_args(pairs: list[str]) -> tuple[str, ...]:
@@ -408,17 +433,20 @@ def param_args(pairs: list[str]) -> tuple[str, ...]:
     return tuple(x for pair in pairs for x in ("--param", pair))
 
 
-def own_family(encoder: str, binary: Path, presets: Path = PRESETS_DIR) -> Family:
+def own_family(encoder: str, binary: Path, presets: Path = PRESETS_DIR,
+               recorded: bool = False) -> Family:
     """`nanocodec-<codec>[@stem]` in CBR; presets/<codec>/<stem>.toml's values
     become --param pairs (no stem: medium, the engine defaults).
 
     `presets` is the preset directory: a frozen build is measured with the
     presets of its own commit (board --presets-dir), not the tree's newer ones.
+    `recorded`: the name as a build record wrote it, in that build's own preset names
+    (nanocodec.recorded_values), not today's rung renamed onto the build.
     """
     base, _, preset = encoder.partition("@")
     codec = Codec(base.removeprefix("nanocodec-"))
-    overrides = preset_values(presets, codec, preset)
-    extra = param_args([f"{k}={v:g}" for k, v in sorted(overrides.items())])
+    overrides = (recorded_values if recorded else preset_values)(presets, codec, preset)
+    extra = param_args([f"{k}={param_text(v)}" for k, v in sorted(overrides.items())])
     return Family(encoder, codec, binary, extra, own=True, cqp=False)
 
 
@@ -428,6 +456,21 @@ def main_clips(paths: Paths) -> dict[str, Clip]:
 
 def natural_val(paths: Paths) -> list[Clip]:
     return [c for c in main_clips(paths).values() if c.split == "val" and c.clean_reference is None]
+
+
+def write_natural_val_clipset(paths: Paths, out: Path) -> Path:
+    """The main chart's clips (`natural_val`) as a clip-set file at `out`: main.json's own
+    entries of those clips, unchanged, so `clipset_clips(out)` gives the same clips and
+    every point the same identity (cbr.Bench.identity) as `natural_val`. Rented machines
+    measure the main chart through it (tools/dev/aws_heldout_chart.py)."""
+    wanted = {c.name for c in natural_val(paths)}
+    main = json.loads((paths.clips / "main.json").read_text())
+    entries = [entry for entry in main["clips"] if entry["name"] in wanted]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps({"name": out.stem, "clips": entries}, indent=1) + "\n"
+    if not out.is_file() or out.read_text() != text:
+        out.write_text(text)
+    return out
 
 
 def clipset_path(spec: str, paths: Paths) -> Path:

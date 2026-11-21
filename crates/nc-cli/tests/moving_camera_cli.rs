@@ -25,8 +25,10 @@ impl Scratch {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("nc-cli-moving-{}-{stamp}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "nanocodec-cli-moving-{}-{stamp}",
+            std::process::id()
+        ));
         fs::create_dir(&path).unwrap();
         Self(path)
     }

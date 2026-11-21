@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="The nanocodec preset ladder (veryfast, faster, fast, medium, slow), what the Default is, and tuning parameters.">
+  <meta name="description" content="The nanocodec preset ladder (veryfast, faster, fast, medium, slow, slower), what the Default is, and tuning parameters.">
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
   <title>nanocodec: presets</title>
   <link rel="stylesheet" href="../site-header.css">
@@ -26,7 +26,9 @@
   <h1>Presets and tuning</h1>
   <p class="lede">A preset is a set of encoder parameters that trades compression for speed. The presets form one
     ladder, the same names for every codec: <code>veryfast</code>, <code>faster</code>, <code>fast</code>,
-    <code>medium</code> and <code>slow</code>, fastest first.</p>
+    <code>medium</code>, <code>slow</code>, <code>slower</code> and <code>veryslow</code>, fastest first; a name
+    is a position on that codec's ladder, and a codec may lack some names. A codec's rungs are points
+    on its own speed/quality front, chosen to be spaced roughly evenly in log(speed).</p>
 
   <h2 id="default">What the Default is</h2>
   <ul>
@@ -37,10 +39,11 @@
       How much, per codec and machine, is on the <a href="../results/speed.html">speed results</a>.</li>
     <li>The names are relative to our own Default for each codec: our <code>veryfast</code> is not as fast as
       x264's, nor our <code>medium</code> as slow as x264's.</li>
-    <li><code>slow</code> is the quality-first rung: Default plus the work the Default limits for speed (a
+    <li>The slowest rung (<code>veryslow</code> for HEVC, <code>slower</code> for the others; 0.5.0 named it
+      <code>slow</code>) is the quality-first rung: Default plus the work the Default limits for speed (a
       second reference, wider trellis and refinement searches), at a measured cost of about 1.5x Default's CPU for H.264, 1.6x for HEVC, 1.5x for AV1, 1.2x for VP9,
-      1.7x (Jetson) to 1.9x (PC) for AV2 and 1.2x for VVC (held-out clips, build bad14976). It stays real time
-      and low delay: P frames only, no lookahead.</li>
+      1.7x (Jetson) to 1.9x (PC) for AV2 and 1.2x for VVC (held-out clips, build bad14976). It stays
+      low delay: P frames only, no lookahead.</li>
   </ul>
 
   <h2 id="ladder">Which codec has which rung</h2>

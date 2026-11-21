@@ -129,9 +129,11 @@ impl TierPlan {
     }
 }
 
-/// Frames after the high-quality frame that may still reference it. Codecs
-/// size their picture-order distances from it (VVC `references.rs`).
-const MAX_DISTANCE: u64 = 64;
+/// Frames after the high-quality frame that may still reference it, when
+/// every HQ frame replaces it (the default of
+/// `CodecBackend::SECOND_REFERENCE_REACH`). Codecs size their picture-order
+/// distances from it (VVC `references.rs`).
+pub(crate) const MAX_DISTANCE: u64 = 64;
 
 /// Whether the stream `params` configure keeps a frame in the long-term
 /// slot (`ltr::long_term_slot`): a long-term reference (`ltr.interval`) or
@@ -140,6 +142,15 @@ const MAX_DISTANCE: u64 = 64;
 #[must_use]
 pub fn uses_long_term_slot(params: &ParamOverrides) -> bool {
     LtrParams::from_overrides(params).interval > 0.0 || second_reference_enabled(params)
+}
+
+/// Whether the stream `params` configure holds its second reference for
+/// longer than the last high-quality frame (`refs.second_hold`): backends
+/// whose picture-order syntax is sized for [`MAX_DISTANCE`] widen it then
+/// (`CodecBackend::SECOND_REFERENCE_REACH`).
+#[must_use]
+pub fn holds_second_reference(params: &ParamOverrides) -> bool {
+    second_reference_enabled(params) && RefParams::from_overrides(params).second_hold > 0.0
 }
 
 /// The second-reference state between frames.
@@ -161,6 +172,52 @@ pub(crate) struct SecondReference {
     /// No frame carries it for now (intra refresh running under the plan);
     /// HQ frames still refresh the slot, so it is current when released.
     suspended: bool,
+    /// The oldest the held frame may be: [`MAX_DISTANCE`], or with a hold
+    /// what the codec's syntax reaches (`CodecBackend::SECOND_REFERENCE_REACH`).
+    reach: u64,
+    /// How long the held frame stays (`refs.second_hold*`).
+    hold: Hold,
+}
+
+/// When a held second reference (`refs.second_hold`) is replaced.
+#[derive(Debug, Clone)]
+struct Hold {
+    /// `refs.second_hold` in frames: an HQ frame replaces the held one only
+    /// once it is this old (0: every HQ frame does).
+    frames: u64,
+    /// `refs.second_hold_min_share`: the held frame's least useful share.
+    min_share: f32,
+    /// `refs.second_hold_rearm`.
+    rearm: bool,
+    /// `refs.second_hold_moving`.
+    release_moving: bool,
+    /// How much of the frame being coded predicts from the held frame.
+    usage: Usage,
+    /// The held frame fell below `min_share`, or a later HQ frame was coded
+    /// at least as well (`rearm`): the next HQ frame replaces it.
+    released: bool,
+    /// Luma squared error per sample of the held frame, when known.
+    held_error: Option<f64>,
+    /// `refs.second_hold_engage`: where the hold stands since the key.
+    engage: Option<Engage>,
+}
+
+/// Whether a hold has begun since the last key (`refs.second_hold_engage`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Engage {
+    /// No HQ frame has yet been coded as well as the key (its luma error,
+    /// once coded): HQ frames replace the second reference as without a hold.
+    Waiting(Option<f64>),
+    /// One has: the held frame is held.
+    Engaged,
+}
+
+/// Coded area of the frame being coded: all of it, and the part predicted
+/// from the second reference.
+#[derive(Debug, Clone, Copy, Default)]
+struct Usage {
+    total: u64,
+    secondary: u64,
 }
 
 impl SecondReference {
@@ -174,6 +231,47 @@ impl SecondReference {
             compound_margin: params.second_compound_margin,
             plan: None,
             suspended: false,
+            reach: MAX_DISTANCE,
+            hold: Hold {
+                frames: 0,
+                min_share: params.second_hold_min_share,
+                rearm: params.second_hold_rearm >= 0.5,
+                release_moving: params.second_hold_moving >= 0.5,
+                engage: (params.second_hold_engage >= 0.5).then_some(Engage::Waiting(None)),
+                usage: Usage::default(),
+                released: false,
+                held_error: None,
+            },
+        }
+    }
+
+    /// This second reference held for `frames` frames (`refs.second_hold`;
+    /// 0: not held), reaching back at most `reach` frames when held.
+    pub(crate) fn with_hold(self, frames: u64, reach: u64) -> Self {
+        Self {
+            reach: if frames > 0 { reach } else { self.reach },
+            hold: Hold {
+                frames,
+                ..self.hold
+            },
+            ..self
+        }
+    }
+
+    /// Whether frame `index` (an HQ frame if `high_quality`) replaces the
+    /// held frame. A held reference ([`SecondReference::with_hold`]) is
+    /// replaced by the first HQ frame once it is `refs.second_hold` old, and by
+    /// any frame at the reach, the oldest a frame may still predict from, so
+    /// it never lapses.
+    fn refreshes(&self, index: u64, high_quality: bool) -> bool {
+        match self.held {
+            Some(_) if matches!(self.hold.engage, Some(Engage::Waiting(_))) => high_quality,
+            Some(held) if self.hold.frames > 0 => {
+                let age = index - held;
+                (high_quality && (age >= self.hold.frames || self.hold.released))
+                    || age >= self.reach
+            }
+            _ => high_quality,
         }
     }
 
@@ -212,16 +310,17 @@ impl SecondReference {
     }
 
     /// `references` of frame `index` with the second reference: a
-    /// high-quality frame (`high_quality`) also refreshes the HQ slot, and
+    /// high-quality frame (`high_quality`) also refreshes the HQ slot
+    /// (once the held one is old enough, [`SecondReference::with_hold`]), and
     /// a frame whose reference is younger than the HQ frame may predict
-    /// from it too, if it is at most [`MAX_DISTANCE`] frames on.
+    /// from it too, if it is at most the reach frames on.
     pub(crate) fn apply(
         &self,
         index: u64,
         high_quality: bool,
         references: FrameReferences,
     ) -> FrameReferences {
-        let refresh = if high_quality {
+        let refresh = if self.refreshes(index, high_quality) {
             SlotMask(references.refresh.0 | SlotMask::only(self.slot).0)
         } else {
             references.refresh
@@ -232,7 +331,7 @@ impl SecondReference {
             .filter(|&held| {
                 held < primary_frame
                     && references.refresh != SlotMask::ALL
-                    && index - held <= MAX_DISTANCE
+                    && index - held <= self.reach
             })
             .map(|held| ReferenceLink {
                 slot: self.slot,
@@ -249,7 +348,70 @@ impl SecondReference {
     pub(crate) fn coded(&mut self, index: u64, references: &FrameReferences) {
         if references.refresh.contains(self.slot) {
             self.held = Some(index);
+            self.hold.released = false;
         }
+    }
+
+    /// Whether HQ frames' coded quality re-arms the hold
+    /// (`refs.second_hold_rearm`).
+    pub(crate) fn rearms(&self) -> bool {
+        self.hold.frames > 0 && (self.hold.rearm || self.hold.engage.is_some())
+    }
+
+    /// An HQ frame was coded with luma squared error `error` per sample,
+    /// with `references`: a frame it refreshed becomes the held frame's
+    /// quality; one coded at least as well as the held frame releases it.
+    pub(crate) fn hq_coded(&mut self, references: &FrameReferences, error: f64) {
+        if let Some(engage) = self.hold.engage.as_mut() {
+            *engage = match *engage {
+                _ if references.refresh == SlotMask::ALL => Engage::Waiting(Some(error)),
+                Engage::Waiting(Some(key)) if error <= key => Engage::Engaged,
+                state => state,
+            };
+        }
+        if references.refresh.contains(self.slot) {
+            self.hold.held_error = Some(error);
+        } else if self.hold.rearm && self.hold.held_error.is_some_and(|held| error <= held) {
+            self.hold.released = true;
+        }
+    }
+
+    /// The camera is moving (`moving`): with `refs.second_hold_moving` the
+    /// next HQ frame replaces the held frame.
+    pub(crate) fn camera_moving(&mut self, moving: bool) {
+        if moving && self.hold.release_moving {
+            self.hold.released = true;
+        }
+    }
+
+    /// Whether the held frame's use is being watched
+    /// (`refs.second_hold_min_share`).
+    pub(crate) fn watches_usage(&self) -> bool {
+        self.hold.frames > 0 && self.hold.min_share > 0.0
+    }
+
+    /// A leaf of `area` samples of a frame carrying the second reference
+    /// was coded, from it if `secondary`.
+    pub(crate) fn observe_leaf(&mut self, area: usize, secondary: bool) {
+        let area = area as u64;
+        self.hold.usage.total += area;
+        if secondary {
+            self.hold.usage.secondary += area;
+        }
+    }
+
+    /// Start counting a frame (again, when it is re-coded).
+    pub(crate) fn begin_usage(&mut self) {
+        self.hold.usage = Usage::default();
+    }
+
+    /// The frame is final: a held frame it barely used is released.
+    pub(crate) fn finish_usage(&mut self) {
+        let Usage { total, secondary } = self.hold.usage;
+        if total > 0 && (secondary as f64) < f64::from(self.hold.min_share) * total as f64 {
+            self.hold.released = true;
+        }
+        self.hold.usage = Usage::default();
     }
 
     /// Restart `slot` on a spatial layer reset (key temporal unit or
@@ -364,6 +526,111 @@ mod tests {
                 .secondary
                 .is_some()
         );
+    }
+
+    #[test]
+    fn a_held_reference_waits_for_its_hold_and_never_lapses() {
+        let mut second =
+            SecondReference::new(1, &RefParams::from_overrides(&ParamOverrides::default()))
+                .with_hold(10, MAX_DISTANCE);
+        let key = FrameReferences {
+            refresh: SlotMask::ALL,
+            ..flat(1)
+        };
+        second.coded(0, &second.apply(0, true, key));
+        // An HQ frame younger than the hold keeps the key.
+        let refs = second.apply(8, true, flat(1));
+        assert!(!refs.refresh.contains(1));
+        second.coded(8, &refs);
+        // The first HQ frame at the hold replaces it.
+        let refs = second.apply(12, true, flat(1));
+        assert!(refs.refresh.contains(1));
+        second.coded(12, &refs);
+        // Without HQ frames, the frame at the distance limit does.
+        let refs = second.apply(12 + MAX_DISTANCE - 1, false, flat(1));
+        assert!(!refs.refresh.contains(1) && refs.secondary.is_some());
+        let refs = second.apply(12 + MAX_DISTANCE, false, flat(1));
+        assert!(refs.refresh.contains(1) && refs.secondary.is_some());
+    }
+
+    #[test]
+    fn a_held_reference_barely_used_is_replaced_by_the_next_hq_frame() {
+        let mut params = ParamOverrides::default();
+        params.set("refs.second_hold_min_share", 0.05);
+        let mut second = SecondReference::new(1, &RefParams::from_overrides(&params))
+            .with_hold(100, MAX_DISTANCE);
+        assert!(second.watches_usage());
+        let key = FrameReferences {
+            refresh: SlotMask::ALL,
+            ..flat(1)
+        };
+        second.coded(0, &second.apply(0, true, key));
+        // Used on a tenth of frame 2: still held at the next HQ frame.
+        second.begin_usage();
+        second.observe_leaf(90, false);
+        second.observe_leaf(10, true);
+        second.finish_usage();
+        assert!(!second.apply(4, true, flat(1)).refresh.contains(1));
+        // Used on 1 %: the next HQ frame replaces it, and the new one is held.
+        second.begin_usage();
+        second.observe_leaf(99, false);
+        second.observe_leaf(1, true);
+        second.finish_usage();
+        assert!(!second.apply(5, false, flat(1)).refresh.contains(1));
+        let refs = second.apply(8, true, flat(1));
+        assert!(refs.refresh.contains(1));
+        second.coded(8, &refs);
+        assert!(!second.apply(12, true, flat(1)).refresh.contains(1));
+    }
+
+    #[test]
+    fn a_later_hq_frame_coded_as_well_rearms_the_hold() {
+        let mut params = ParamOverrides::default();
+        params.set("refs.second_hold_rearm", 1.0);
+        let mut second = SecondReference::new(1, &RefParams::from_overrides(&params))
+            .with_hold(100, MAX_DISTANCE);
+        assert!(second.rearms());
+        let key = FrameReferences {
+            refresh: SlotMask::ALL,
+            ..flat(1)
+        };
+        let refs = second.apply(0, true, key);
+        second.coded(0, &refs);
+        second.hq_coded(&refs, 20.0);
+        // A coarser HQ frame keeps the hold.
+        let refs = second.apply(4, true, flat(1));
+        second.coded(4, &refs);
+        second.hq_coded(&refs, 25.0);
+        assert!(!second.apply(8, true, flat(1)).refresh.contains(1));
+        // A finer one releases it: the next HQ frame is held.
+        second.hq_coded(&second.apply(8, true, flat(1)), 18.0);
+        assert!(second.apply(12, true, flat(1)).refresh.contains(1));
+    }
+
+    #[test]
+    fn the_hold_begins_with_the_first_hq_frame_as_good_as_the_key() {
+        let mut params = ParamOverrides::default();
+        params.set("refs.second_hold_engage", 1.0);
+        let mut second = SecondReference::new(1, &RefParams::from_overrides(&params))
+            .with_hold(100, MAX_DISTANCE);
+        let key = FrameReferences {
+            refresh: SlotMask::ALL,
+            ..flat(1)
+        };
+        let refs = second.apply(0, true, key);
+        second.coded(0, &refs);
+        second.hq_coded(&refs, 20.0);
+        // A coarser HQ frame replaces the reference as without a hold.
+        let refs = second.apply(4, true, flat(1));
+        assert!(refs.refresh.contains(1));
+        second.coded(4, &refs);
+        second.hq_coded(&refs, 25.0);
+        // One as good as the key is held from then on.
+        let refs = second.apply(8, true, flat(1));
+        assert!(refs.refresh.contains(1));
+        second.coded(8, &refs);
+        second.hq_coded(&refs, 19.0);
+        assert!(!second.apply(12, true, flat(1)).refresh.contains(1));
     }
 
     #[test]

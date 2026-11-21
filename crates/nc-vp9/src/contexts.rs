@@ -43,6 +43,20 @@ impl EntropyContexts {
         }
     }
 
+    /// Copy `source` (contexts of the same frame size) into `self`, keeping
+    /// the allocations (the RD partition search copies them per node).
+    pub(crate) fn copy_from(&mut self, source: &Self) {
+        for (to, from) in self.above.iter_mut().zip(&source.above) {
+            to.copy_from_slice(from);
+        }
+        for (to, from) in self.left.iter_mut().zip(&source.left) {
+            to.copy_from_slice(from);
+        }
+        self.partition_above
+            .copy_from_slice(&source.partition_above);
+        self.partition_left = source.partition_left;
+    }
+
     /// Clear everything (start of a frame).
     pub(crate) fn reset_frame(&mut self) {
         self.above.iter_mut().for_each(|a| a.fill(false));

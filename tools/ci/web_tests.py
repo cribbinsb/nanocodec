@@ -92,7 +92,14 @@ TESTS = (
 )
 
 
+#: The changed paths given directly, space-separated (land.sh's verify on the build box,
+#: whose copy of the tree has no git history).
+CHANGED_ENV = "NC_WEB_TESTS_CHANGED"
+
+
 def changed_paths(since: str) -> list[str]:
+    if os.environ.get(CHANGED_ENV) is not None:
+        return os.environ[CHANGED_ENV].split()
     out = subprocess.run(["git", "diff", "--name-only", since, "HEAD"], cwd=REPO, check=True,
                          capture_output=True, text=True).stdout
     return [p for p in out.splitlines() if p]
@@ -149,7 +156,8 @@ def main() -> None:
                         help="exit 0 if the selection includes a test that needs NC_NANOCODEC_BIN, else 1")
     args = parser.parse_args()
 
-    tests = select(changed_paths(args.since) if args.since else None)
+    given = args.since or os.environ.get(CHANGED_ENV) is not None
+    tests = select(changed_paths(args.since or "") if given else None)
     if args.needs_native:
         sys.exit(0 if any(t.native for t in tests) else 1)
     print(f"page tests: {len(tests)} of {len(TESTS)}, {args.workers} at a time, then the timed ones {TIMED_WORKERS} at a time: "

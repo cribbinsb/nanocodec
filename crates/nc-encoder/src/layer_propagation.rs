@@ -39,6 +39,19 @@
 //! planned from that level came out finer than the frames before it (AV1
 //! Faster final check: long-window key pulse +0.40 dB; with the stop +0.00).
 //!
+//! **Flat streams** (`layers.propagation_flat`): a flat chain has no layers,
+//! but its QP cadence (`qp_cadence.rs`) codes every period-th frame finer for
+//! the same reason the ladder codes T0 finer. With the flag, the cadence's
+//! base frames take the T0 role, the frames of a cadence cycle form the
+//! period (each predicts from the one before, so the propagation runs along
+//! the chain), and the cycle's base-to-leaf span ([`QpCadence::span`]) is the
+//! room the offsets move in, as the top-layer offset is on a layered stream.
+//! Where the cadence is off (period 1, or no strength under camera motion)
+//! the span is 0 and so are the offsets; so it is at a fixed quantizer,
+//! where the offsets would only coarsen blocks (`Encoder::propagation_role`).
+//!
+//! [`QpCadence::span`]: crate::qp_cadence::QpCadence::span
+//!
 //! Analysis-only: no pixel pass; a few passes over the 8x8 cells per frame.
 
 use nc_analysis::MotionAnalysis;
@@ -86,6 +99,18 @@ struct PeriodFrame {
     received: Vec<f32>,
 }
 
+/// The period structure a frame belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Period {
+    /// A layered mini-GOP (`LayerPosition::layers > 1`).
+    Layered,
+    /// A flat frame whose QP cadence is on: its cycle stands in for the
+    /// period (`layers.propagation_flat`).
+    Cadence,
+    /// A flat frame without a cadence.
+    None,
+}
+
 /// What the propagation needs of the frame being planned.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LayerFrame<'a> {
@@ -93,11 +118,13 @@ pub(crate) struct LayerFrame<'a> {
     /// The frame's primary reference, `index - distance`.
     pub reference: u64,
     pub key: bool,
-    /// Layered structure (`LayerPosition::layers > 1`).
-    pub layered: bool,
-    /// Temporal layer (0 is the base).
+    /// What period the frame belongs to.
+    pub period: Period,
+    /// Temporal layer (0 is the base); on a flat stream 0 for the
+    /// cadence's base frames, 1 for the others.
     pub layer: u8,
-    /// The ladder's top-layer offset (QP units), the coarsest it codes.
+    /// The ladder's top-layer offset (QP units), the coarsest it codes; on
+    /// a flat stream the cadence's base-to-leaf span.
     pub top_offset: f64,
     /// The frame lies in the run-up to a scheduled periodic key
     /// (`rate.prekey_quiet`).
@@ -112,6 +139,9 @@ pub(crate) struct LayerPropagation {
     strength: f64,
     /// Whether offsets stop in the run-up to a key (`layers.propagation_prekey`).
     prekey: bool,
+    /// Whether flat streams run the term over their cadence cycles
+    /// (`layers.propagation_flat`).
+    flat: bool,
     memory: f32,
     gate_error: f64,
     cols: usize,
@@ -133,6 +163,7 @@ impl LayerPropagation {
         (params.propagation > 0.).then(|| Self {
             strength: f64::from(params.propagation),
             prekey: params.propagation_prekey >= 0.5,
+            flat: params.propagation_flat >= 0.5,
             memory: params.propagation_memory,
             gate_error: f64::from(params.propagation_gate),
             cols: 0,
@@ -164,10 +195,16 @@ impl LayerPropagation {
             .motion
             .filter(|m| m.fine.cols() == cols && m.fine.cells().len() == intra.len())
             .filter(|_| !frame.key);
-        let restart = frame.key || !frame.layered || motion.is_none() || cols != self.cols;
+        let periodic = match frame.period {
+            Period::Layered => true,
+            Period::Cadence => self.flat,
+            Period::None => false,
+        };
+        let restart = frame.key || !periodic || motion.is_none() || cols != self.cols;
         if restart {
             // A key, a flat frame or a new geometry: this frame starts a
-            // period with no history (a flat chain has no layer period).
+            // period with no history (a flat chain has no layer period
+            // unless its cadence stands in for one).
             self.cols = cols;
             self.forecast = None;
             self.period.clear();
@@ -365,6 +402,12 @@ fn intra_cost(sum_sq_dev: u32) -> f32 {
 /// is the only rung with `layers.propagation`. The shares are the same
 /// `f32` values: a displacement of whole samples is `CELL` x (whole cells)
 /// plus `mv mod CELL`, both exact in `f32`.
+///
+/// A still cell (zero vector, the common case) visits itself whole, and an
+/// axis displaced by whole cells visits one row or column: the same visits
+/// and shares, without the arithmetic or the zero-share neighbours (the
+/// flat-stream form, which runs on every rung's cadence: VP9 Veryfast x86
+/// callgrind, the term 4.6 % of the instructions before).
 fn overlap(
     cell: usize,
     cols: usize,
@@ -373,18 +416,21 @@ fn overlap(
     mvy: i16,
     mut visit: impl FnMut(usize, f32),
 ) {
+    if mvx == 0 && mvy == 0 {
+        visit(cell, 1.);
+        return;
+    }
     let (y0, fy) = displaced(cell / cols, mvy);
     let (x0, fx) = displaced(cell % cols, mvx);
-    for (r, wy) in [(y0, 1. - fy), (y0 + 1, fy)] {
+    let row_parts = 1 + usize::from(fy > 0.);
+    let col_parts = 1 + usize::from(fx > 0.);
+    for (r, wy) in [(y0, 1. - fy), (y0 + 1, fy)].into_iter().take(row_parts) {
         let Some(r) = usize::try_from(r).ok().filter(|&r| r < rows) else {
             continue;
         };
-        for (c, wx) in [(x0, 1. - fx), (x0 + 1, fx)] {
-            let weight = wy * wx;
-            if weight > 0.
-                && let Some(c) = usize::try_from(c).ok().filter(|&c| c < cols)
-            {
-                visit(r * cols + c, weight);
+        for (c, wx) in [(x0, 1. - fx), (x0 + 1, fx)].into_iter().take(col_parts) {
+            if let Some(c) = usize::try_from(c).ok().filter(|&c| c < cols) {
+                visit(r * cols + c, wy * wx);
             }
         }
     }
@@ -419,12 +465,31 @@ mod tests {
     fn a_still_cell_is_fully_reused_and_a_new_one_not() {
         // Two cells; an L1T3 period of four frames after base 0. Cell 0 is
         // still (SAD 0), cell 1 changes completely (SAD at its intra cost).
+        let reuse = period_reuse(&[(1, 0), (2, 0), (3, 2), (4, 0)]);
+        assert!((reuse[0] - 1.).abs() < 1e-6);
+        assert!(reuse[1].abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_flat_cadence_cycle_reuses_a_still_cell_along_the_chain() {
+        // The same cells over a flat cycle of four (`layers.propagation_flat`):
+        // each frame predicts from the one before, so the base frame's still
+        // cell receives what the whole chain copied, as a T0 cell does.
+        let reuse = period_reuse(&[(1, 0), (2, 1), (3, 2), (4, 3)]);
+        assert!((reuse[0] - 1.).abs() < 1e-6);
+        assert!(reuse[1].abs() < 1e-6);
+    }
+
+    /// The reuse of base frame 0's two cells (still, changed) over a
+    /// period of frames `(index, reference)`.
+    fn period_reuse(frames: &[(u64, u64)]) -> Vec<f32> {
         let intra = vec![intra_cost(64 * 100); 2];
         let still = |sad1| vec![(0, 0, 0), (0, 0, sad1)];
         let full = intra[1] as u32 * 2;
         let mut p = LayerPropagation {
             strength: 1.,
             prekey: false,
+            flat: false,
             memory: 0.,
             gate_error: 0.,
             cols: 2,
@@ -441,7 +506,7 @@ mod tests {
             offsets: Vec::new(),
             last_error: None,
         };
-        for (index, reference) in [(1, 0), (2, 0), (3, 2), (4, 0)] {
+        for &(index, reference) in frames {
             p.period.push(PeriodFrame {
                 index,
                 reference: Some(reference),
@@ -451,8 +516,6 @@ mod tests {
                 noise: 0,
             });
         }
-        let reuse = p.propagate().unwrap();
-        assert!((reuse[0] - 1.).abs() < 1e-6);
-        assert!(reuse[1].abs() < 1e-6);
+        p.propagate().unwrap()
     }
 }

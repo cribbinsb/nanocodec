@@ -167,10 +167,9 @@ fn is_textured(stats: &Grid<BlockStats>, c: usize, r: usize, per: usize) -> bool
     // mean compares exactly as it would in floating point.
     let (mut sum_sq_dev, mut count) = (0u64, 0u64);
     for row in r * per..(r + 1) * per {
-        for b in stats.row_run(c * per, row, per) {
-            sum_sq_dev += u64::from(b.sum_sq_dev);
-            count += 1;
-        }
+        let run = stats.row_run(c * per, row, per);
+        sum_sq_dev += run.iter().map(|b| u64::from(b.sum_sq_dev)).sum::<u64>();
+        count += run.len() as u64;
     }
     count > 0 && sum_sq_dev as f64 >= MIN_TEXTURE_VARIANCE * 64.0 * count as f64
 }

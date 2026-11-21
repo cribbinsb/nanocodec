@@ -998,6 +998,64 @@ fn variance_aq_streams_roundtrip_and_differ() {
     assert_ne!(packets(0.0), packets(2.0));
 }
 
+/// The RD partition search (`planner.rd_split`) codes, undoes and re-codes
+/// nodes and puts kept codings back: CDFs, the symbol log, contexts and
+/// CDEF slots must come back exactly, so every stream decodes to the
+/// encoder's reconstruction (partial superblocks, superblock deltas and
+/// segment ids, compound blocks).
+#[test]
+fn rd_split_streams_roundtrip_and_differ() {
+    let variants: [&[(&str, f32)]; 3] = [
+        &[("rate.aq_strength", 3.0)],
+        &[("rate.aq_strength", 3.0), ("av1.segment_qp", 1.0)],
+        &[("refs.second", 2.0), ("refs.second_full", 1.0)],
+    ];
+    for (width, height) in [(72, 40), (192, 136)] {
+        for extra in variants {
+            let packets = |rd_split: f32| {
+                let mut cfg = config(width, height, 120, 6);
+                cfg.intra_period = 8;
+                cfg.params.set("planner.rd_split", rd_split);
+                cfg.params.set("planner.inter_min_log2", 3.0);
+                for &(name, value) in extra {
+                    cfg.params.set(name, value);
+                }
+                let mut encoder = Encoder::<Av1Backend>::new(cfg).unwrap();
+                let mut decoder = Decoder::new();
+                (0..5)
+                    .map(|frame| {
+                        let mut input = Picture::new(width, height, 64).unwrap();
+                        for plane in PlaneIndex::ALL {
+                            let mut v = input.plane_mut(plane).view_mut();
+                            for y in 0..v.height() {
+                                // Bands of 16 rows move apart: splits pay.
+                                let shift = if y % 32 < 16 { frame * 3 } else { 0 };
+                                for (x, s) in v.row_mut(y).iter_mut().enumerate() {
+                                    let u = x + shift;
+                                    *s = ((u * 23 + y * 17 + plane as usize * 47) ^ (u * y / 7))
+                                        as u8;
+                                }
+                            }
+                        }
+                        input.extend_borders();
+                        let packet = encoder.encode(&input);
+                        assert_picture(
+                            &decoder.decode(&packet.data).unwrap(),
+                            encoder.reconstruction(),
+                        );
+                        packet.data
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_ne!(
+                packets(0.0),
+                packets(1.0),
+                "{width}x{height} {extra:?}: the search changed nothing"
+            );
+        }
+    }
+}
+
 /// Superres (`av1.superres_denom`): frames coded narrower than the stream,
 /// upscaled normatively, every inter block predicted from a wider
 /// reference, decode to the encoder's (upscaled) reconstruction; also when

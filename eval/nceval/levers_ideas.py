@@ -172,6 +172,21 @@ def add(args: argparse.Namespace) -> None:
           f"in {levers.spool_path()}")
 
 
+def revise(key: str, rows: list[str], reason: str, source: str,
+           outcome: str | None = None) -> dict:
+    """A revision of idea `key` that links `rows` and states `reason` (and `outcome`,
+    else the previous one): how a tool records its verdict on an existing idea."""
+    previous = next((i for i in load_ideas() if i["idea"] == key), None)
+    if previous is None:
+        raise SystemExit(f"no idea {key!r} in the ledger (record it with `ideas add`)")
+    fields = {f: previous.get(f) for f in FIELDS if f not in ("id", "date", "source")}
+    fields.update(rows=(previous.get("rows") or []) + rows, reason=reason, last=levers.today(),
+                  outcome=outcome or previous["outcome"])
+    idea = make_idea(**fields, source=source)
+    levers.append([idea])
+    return idea
+
+
 def show(args: argparse.Namespace) -> None:
     ideas = [i for i in load_ideas() if args.idea in (i["idea"], i["name"])]
     if not ideas:

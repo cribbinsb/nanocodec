@@ -428,7 +428,7 @@ layer is supported.
 ## VVC
 
 The same H.266 encoder and own-stream decoder as the CLI (`--codec vvc`, Default
-or `--preset vvc-fast`, 32x32 leaves, CTU 64): WASM packets are byte-identical to
+or `--preset faster` (named `vvc-fast` when this was checked), 32x32 leaves, CTU 64): WASM packets are byte-identical to
 native ones for the same input and settings, and the WASM decoder's output equals
 the native reconstruction, which VVdeC and FFmpeg reproduce. Any even size is
 coded (padded to 8, cropped by the conformance window). Downloads are Annex-B

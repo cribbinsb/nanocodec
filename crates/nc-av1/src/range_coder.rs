@@ -22,8 +22,11 @@
 //! `disable_cdf_update` ([`SymbolWriter::restart`]); booleans and
 //! literals (`L(n)`) use fixed probabilities (AV1 §8.2.3).
 
-use crate::cdf::Cdf;
+use std::sync::OnceLock;
+
 use nc_encoder::symbol_cost::BitCounter;
+
+use crate::cdf::{Cdf, CdfContext, CdfJournal};
 
 /// Probability scale: CDFs are 15-bit fixed point (AV1 §4.10.7).
 const PROB_TOP: u32 = 1 << 15;
@@ -124,6 +127,20 @@ impl SymbolSink for SpanWriter<'_> {
 
     fn write_literal_bit(&mut self, bit: bool) {
         self.push(Interval::literal(bit));
+    }
+}
+
+/// Symbols logged after a mark ([`SymbolWriter::save_after`]), to be put
+/// back after other codings were tried.
+#[derive(Debug, Default)]
+pub struct SymbolTail {
+    intervals: Vec<Interval>,
+}
+
+impl SymbolTail {
+    /// Forget the noted symbols.
+    pub fn clear(&mut self) {
+        self.intervals.clear();
     }
 }
 
@@ -371,8 +388,24 @@ pub struct SymbolWriter {
     recording: Recording,
     /// Whether symbols are logged rather than coded at once.
     deferred: bool,
-    /// Whether coded symbols adapt their CDFs (`disable_cdf_update = 0`).
-    adapt: bool,
+    /// Whether and how coded symbols adapt their CDFs.
+    adaptation: Adaptation,
+    /// The node trials' record of the CDF context's adaptations
+    /// (`backend/node_trial.rs`; inactive outside trials).
+    journal: CdfJournal,
+}
+
+/// What coding a symbol does to its CDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Adaptation {
+    /// Nothing (`disable_cdf_update = 1`, AV1 §5.9.2).
+    Fixed,
+    /// It adapts.
+    Adapt,
+    /// It adapts, its state before recorded in the journal (inside node
+    /// trials): a state of its own, so coding outside trials tests no more
+    /// than whether to adapt.
+    Journaled,
 }
 
 impl Default for SymbolWriter {
@@ -389,7 +422,8 @@ impl SymbolWriter {
             coder: RangeEncoder::new(),
             recording: Recording::default(),
             deferred: false,
-            adapt: true,
+            adaptation: Adaptation::Adapt,
+            journal: CdfJournal::default(),
         }
     }
 
@@ -415,7 +449,11 @@ impl SymbolWriter {
             self.recording.intervals.reserve(INITIAL_CAPACITY);
         }
         self.deferred = deferred;
-        self.adapt = adapt;
+        self.adaptation = if adapt {
+            Adaptation::Adapt
+        } else {
+            Adaptation::Fixed
+        };
     }
 
     fn intervals(&mut self) -> &mut Vec<Interval> {
@@ -464,7 +502,7 @@ impl SymbolWriter {
         span.start = span_intervals.len();
         span.end = span.start;
         SpanWriter {
-            adapt: self.adapt,
+            adapt: self.adaptation != Adaptation::Fixed,
             intervals: span_intervals,
             span,
         }
@@ -491,9 +529,45 @@ impl SymbolWriter {
         } else {
             self.coder.encode(Interval::symbol(s, &cdf.icdf, nsyms));
         }
-        if self.adapt {
+        if self.adaptation != Adaptation::Fixed {
+            if self.adaptation == Adaptation::Journaled {
+                self.record(cdf);
+            }
             cdf.adapt(s, nsyms);
         }
+    }
+
+    /// Journal `cdf`'s state before it adapts. Out of line: inlined into
+    /// every symbol write, it made `Cdf::adapt` calls out of line in the
+    /// coefficient writer, where no trial journals (AV1 Default, callgrind:
+    /// +0.16 % instructions inlined, +0.06 % out of line).
+    #[cold]
+    #[inline(never)]
+    fn record<const N: usize>(&mut self, cdf: &Cdf<N>) {
+        self.journal.record(cdf, || cdf.state());
+    }
+
+    /// Record the adaptations of `cdfs`' CDFs from now on (the first node
+    /// trial of a superblock opens).
+    pub fn start_journal(&mut self, cdfs: &CdfContext) {
+        self.journal.start(cdfs);
+        if self.adaptation == Adaptation::Adapt {
+            self.adaptation = Adaptation::Journaled;
+        }
+    }
+
+    /// Stop recording and forget the journal (the outermost trial closed).
+    pub fn stop_journal(&mut self) {
+        self.journal.stop();
+        if self.adaptation == Adaptation::Journaled {
+            self.adaptation = Adaptation::Adapt;
+        }
+    }
+
+    /// The journal of the CDF context's adaptations, which node trials
+    /// mark, undo and redo.
+    pub fn journal_mut(&mut self) -> &mut CdfJournal {
+        &mut self.journal
     }
 
     /// Code a binary symbol with `cdf`, then adapt it.
@@ -521,6 +595,63 @@ impl SymbolWriter {
         } else {
             self.coder.encode_bool(bit, HALF);
         }
+    }
+
+    /// Log the symbols from here on instead of coding them at once (a
+    /// frame's first node trial): the log is coded at
+    /// [`Self::finish_frame`] from the coder's state at this point, so the
+    /// bytes are those of coding at once. Spans and literal slots are only
+    /// reserved in frames deferred from their start.
+    pub fn start_logging(&mut self) {
+        self.deferred = true;
+    }
+
+    /// Where the next symbol of a deferred frame is logged: a mark to
+    /// price ([`Self::bits_since`]), note ([`Self::save_after`]) or
+    /// replace ([`Self::restore_after`]) what is coded after it (the RD partition
+    /// search's node trials, `backend/node_trial.rs`). Spans are reserved
+    /// only at superblock starts, so a mark inside a superblock has none
+    /// after it.
+    #[must_use]
+    pub fn mark(&self) -> usize {
+        assert!(self.deferred, "writer must be deferred");
+        self.recording.intervals.len()
+    }
+
+    /// Note in `tail` the symbols logged after `mark`.
+    pub fn save_after(&self, mark: usize, tail: &mut SymbolTail) {
+        tail.intervals.clear();
+        tail.intervals
+            .extend_from_slice(&self.recording.intervals[mark..]);
+    }
+
+    /// Forget the symbols logged after `mark` and log `tail`'s instead (a
+    /// kept coding put back; literal slots reserved in it keep their
+    /// places, as the tail was taken at the same mark).
+    pub fn restore_after(&mut self, mark: usize, tail: &SymbolTail) {
+        let intervals = self.intervals();
+        intervals.truncate(mark);
+        intervals.extend_from_slice(&tail.intervals);
+    }
+
+    /// The bits the symbols logged after `mark` cost: `-log2` of each
+    /// interval's probability (the coder's own range scaling and its
+    /// `EC_MIN_PROB` floor left out).
+    #[must_use]
+    pub fn bits_since(&self, mark: usize) -> f32 {
+        // Keep the original f32 costs and summation order. Different trials
+        // can price the same intervals, so compute each possible cost once.
+        static COSTS: OnceLock<Box<[f32]>> = OnceLock::new();
+        let costs = COSTS.get_or_init(|| {
+            let top = (PROB_TOP as f32).log2();
+            (0..=PROB_TOP)
+                .map(|width| top - (width.max(1) as f32).log2())
+                .collect()
+        });
+        self.recording.intervals[mark..]
+            .iter()
+            .map(|iv| costs[usize::from(iv.fl - iv.fh)])
+            .sum()
     }
 
     /// Code what a deferred frame logged, flush, and return the tile's

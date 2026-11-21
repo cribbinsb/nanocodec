@@ -433,6 +433,7 @@ mod chroma_edge;
 mod generic;
 pub(crate) use chroma_edge::{ChromaEdge, scalar_at as chroma_edge_at};
 mod inplace;
+pub(crate) mod long_luma;
 
 /// Eight luma lines across one edge, in the plane (two 4-line segments
 /// between the same two coded blocks).

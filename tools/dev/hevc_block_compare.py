@@ -17,10 +17,13 @@ Numbers only. Example and findings: docs/handoff/hevc.md "VC-1K: block-by-block 
 import argparse
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 import numpy as np
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 INTRA, AMVP, SKIP, MERGE = 0, 1, 2, 3
 NAMES = ['intra', 'amvp', 'skip', 'merge']
@@ -107,7 +110,7 @@ def main():
         'NC_ANALYSIS_BIN', str(Path.home() / 'nanocodec-data/targets/analysis/release')))
     args = parser.parse_args()
     w, h, first = args.width, args.height, args.first
-    with tempfile.TemporaryDirectory() as scratch:
+    with tempdirs.temp_dir("hevc-block-compare") as scratch:
         ro, rx = (records(s, args.analysis_bin, scratch) for s in (args.ours, args.theirs))
     last = args.last if args.last is not None else min(len(ro), len(rx)) - 1
     src, po, px = decoded(args.source), decoded(args.ours), decoded(args.theirs)

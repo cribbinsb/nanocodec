@@ -120,13 +120,17 @@ pub const QUANT_GROUP_DEPTH: u32 = 0;
 pub const LOG2_MIN_TB: u32 = 2;
 /// Largest transform block, 32x32.
 pub const LOG2_MAX_TB: u32 = 5;
-/// `log2_max_pic_order_cnt_lsb_minus4`: 8-bit POC LSBs.
-const LOG2_MAX_POC_LSB_MINUS4: u32 = 4;
+/// Bits of `slice_pic_order_cnt_lsb` (`log2_max_pic_order_cnt_lsb_minus4`
+/// plus 4): 8, so a reference stays within half the LSB range (§8.3.1) up
+/// to the engine's 64-frame second reference.
+pub const POC_LSB_BITS: u32 = 8;
+/// With a long-held second reference (`nc_encoder::holds_second_reference`):
+/// 16, the most §7.4.3.2.1 allows, for references up to
+/// `nc_encoder::MAX_REFERENCE_AGE` back, at one more byte a slice.
+pub const LONG_POC_LSB_BITS: u32 = 16;
 /// `sign_data_hiding_enabled_flag`: one sign per 4x4 sub-block is carried
 /// by the parity of its levels instead of a bit (about 1–2% fewer bits).
 pub const SIGN_DATA_HIDING: bool = true;
-/// Bits of `slice_pic_order_cnt_lsb`.
-pub const POC_LSB_BITS: u32 = LOG2_MAX_POC_LSB_MINUS4 + 4;
 /// Main profile (`general_profile_idc`, HEVC §A.3.2).
 const PROFILE_MAIN: u32 = 1;
 /// Main 10 (Main streams also conform to it, so its compatibility flag is set).
@@ -168,6 +172,9 @@ pub struct StreamInfo {
     pub deblock_override: bool,
     /// Temporal sub-layers (1 for a flat chain).
     pub temporal_layers: u8,
+    /// Bits of `slice_pic_order_cnt_lsb`: [`POC_LSB_BITS`] or
+    /// [`LONG_POC_LSB_BITS`].
+    pub poc_lsb_bits: u32,
     /// Colour and timing signalling; when either is set, the SPS carries a
     /// VUI for it.
     pub signal: StreamSignal,
@@ -284,7 +291,7 @@ pub fn sps(info: &StreamInfo) -> Vec<u8> {
     }
     w.put_ue(0); // bit_depth_luma_minus8
     w.put_ue(0); // bit_depth_chroma_minus8
-    w.put_ue(LOG2_MAX_POC_LSB_MINUS4);
+    w.put_ue(info.poc_lsb_bits - 4); // log2_max_pic_order_cnt_lsb_minus4
     w.put_bit(true); // sps_sub_layer_ordering_info_present_flag
     write_dpb_sizes(&mut w, info);
     w.put_ue(LOG2_MIN_CB - 3); // log2_min_luma_coding_block_size_minus3
@@ -423,6 +430,8 @@ impl SliceQp {
 pub struct CraPoc {
     /// `slice_pic_order_cnt_lsb`.
     pub lsb: u32,
+    /// Its bits (`StreamInfo::poc_lsb_bits`).
+    pub lsb_bits: u32,
     /// `num_short_term_ref_pic_sets` of the SPS: the explicit (empty)
     /// reference set follows them.
     pub sps_sets: usize,
@@ -452,7 +461,7 @@ pub fn irap_slice_header(
     w.put_ue(0); // slice_pic_parameter_set_id
     w.put_ue(SLICE_TYPE_I); // slice_type
     if let Some(cra) = cra {
-        w.put_bits(cra.lsb, POC_LSB_BITS); // slice_pic_order_cnt_lsb
+        w.put_bits(cra.lsb, cra.lsb_bits); // slice_pic_order_cnt_lsb
         w.put_bit(false); // short_term_ref_pic_set_sps_flag
         write_reference_set(w, cra.sps_sets, &[]); // st_ref_pic_set(): empty
         // No long-term syntax (long_term_ref_pics_present_flag 0); an I
@@ -548,7 +557,7 @@ pub fn reference_set_index_bits(sets: usize) -> u32 {
 /// with POC LSBs `poc_lsb`, predicted through `references`.
 pub fn p_slice_header(
     w: &mut BitWriter,
-    poc_lsb: u32,
+    (poc_lsb, poc_lsb_bits): (u32, u32),
     references: SliceReferenceSet<'_>,
     qp: SliceQp,
     sao: (bool, bool),
@@ -559,7 +568,7 @@ pub fn p_slice_header(
     w.put_bit(true); // first_slice_segment_in_pic_flag
     w.put_ue(0); // slice_pic_parameter_set_id
     w.put_ue(SLICE_TYPE_P); // slice_type
-    w.put_bits(poc_lsb, POC_LSB_BITS); // slice_pic_order_cnt_lsb
+    w.put_bits(poc_lsb, poc_lsb_bits); // slice_pic_order_cnt_lsb
     match references {
         SliceReferenceSet::Sps { index, count } => {
             w.put_bit(true); // short_term_ref_pic_set_sps_flag

@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -214,8 +216,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--workers must be 1..{MAX_WORKERS}")
     paths = load_paths()
     binary = find_tool("nanocodec", paths)
-    work = paths.work / "syntax-stress"
-    work.mkdir(parents=True, exist_ok=True)
+    # One directory per run: two runs on one machine (an agent's check.sh beside
+    # land.sh --verify on the build box, 2026-11-21) overwrote each other's streams.
+    # Removed when every stream passes; kept with the failures for their repro lines.
+    (paths.work / "syntax-stress").mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="nanocodec-run-", dir=paths.work / "syntax-stress"))
     seeds = QUICK_SEEDS if args.quick else parse_seeds(args.seeds)
     # Clips are made before the workers start, so no two write the same file.
     clips = {(s.width, s.height): stress_clip(s, paths, work) for s in SIZES}
@@ -238,7 +243,11 @@ def main(argv: list[str] | None = None) -> int:
           f"every decoder ({binary})")
     if args.json:
         args.json.write_text(json.dumps([asdict(o) for o in outcomes], indent=1) + "\n")
-    return 1 if failures else 0
+    if failures:
+        print(f"streams of the failures kept in {work}")
+        return 1
+    shutil.rmtree(work)
+    return 0
 
 
 if __name__ == "__main__":

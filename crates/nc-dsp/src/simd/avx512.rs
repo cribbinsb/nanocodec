@@ -247,6 +247,16 @@ impl I32Lanes for I32x16 {
     }
 
     #[inline(always)]
+    fn add_constant_u8(residual: i32, n: usize, dst: &mut [u8], stride: usize) {
+        // SAFETY: AVX-512 implies AVX2; caller's slice covers `n` rows at `stride`.
+        unsafe {
+            crate::constant_add::add::<crate::constant_add::avx2::Bytes>(
+                residual, n, n, dst, stride,
+            );
+        }
+    }
+
+    #[inline(always)]
     fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
         let dst = &mut dst[..16];
         // SAFETY: AVX-512F/BW/VL enabled; `dst` holds 16 `u16` samples.

@@ -813,6 +813,94 @@ pub fn trellis_luma(
     }
 }
 
+/// The shared rate-aware trimming (`quant.rd_trim`, `nc_encoder::trim_levels`)
+/// of the coded luma blocks of an inter macroblock in `out`, the cheap
+/// substitute for [`trellis_luma`]: the same re-derived coefficients and
+/// distortion (`Qstep²` per squared level step), λ `lambda` (sample SSE per
+/// bit), a static rate estimate in place of the CABAC model. Updates
+/// `cbp_luma`.
+pub fn rate_trim_luma(
+    dsp: &Dsp,
+    out: &mut Residual,
+    quantizers: &MbQuantizers,
+    trim: &nc_encoder::RateTrim,
+    lambda: f64,
+) {
+    debug_assert!(out.kind.is_inter(), "inter macroblocks only");
+    let (luma_q, _) = quantizers.for_kind(out.kind);
+    let step = luma_q.step();
+    let step_sse = step * step;
+    if out.kind == ResidualKind::Inter8x8 {
+        let (mf, qbits) = luma_q.forward_scale_8x8();
+        let unit = 1.0 / f64::from(1_u32 << qbits);
+        for b8 in 0..4 {
+            if (out.cbp_luma >> b8) & 1 == 0 {
+                continue;
+            }
+            let (qx, qy) = (MB / 2 * (b8 % 2), MB / 2 * (b8 / 2));
+            let mut coeffs = [0; 64];
+            dsp.h264_forward_8x8(&out.samples[qy * MB + qx..], MB, &mut coeffs);
+            if trim_block(
+                trim,
+                &mut out.luma_8x8[b8],
+                &ZIGZAG_8X8,
+                lambda,
+                |p| (i64::from(coeffs[p].unsigned_abs()) * i64::from(mf[p])) as f64 * unit,
+                step_sse,
+            ) == 0
+            {
+                out.cbp_luma &= !(1 << b8);
+            }
+        }
+        return;
+    }
+    let (mf, qbits) = luma_q.forward_scale_4x4();
+    let unit = 1.0 / f64::from(1_u32 << qbits);
+    for b8 in 0..4 {
+        if (out.cbp_luma >> b8) & 1 == 0 {
+            continue;
+        }
+        // Only the coded quadrants' coefficients are re-derived, in the
+        // raster order of `blocks_of_8x8`.
+        let (qx, qy) = (MB / 2 * (b8 % 2), MB / 2 * (b8 / 2));
+        let mut coeffs = [[0; 16]; 4];
+        dsp.h264_forward_4x4(&out.samples[qy * MB + qx..], MB, 2, &mut coeffs);
+        let mut any = false;
+        for (c, blk) in coeffs.iter().zip(blocks_of_8x8(b8)) {
+            any |= trim_block(
+                trim,
+                &mut out.luma[blk],
+                &ZIGZAG_4X4,
+                lambda,
+                |p| (i64::from(c[p].unsigned_abs()) * i64::from(mf[p])) as f64 * unit,
+                step_sse,
+            ) != 0;
+        }
+        if !any {
+            out.cbp_luma &= !(1 << b8);
+        }
+    }
+}
+
+/// [`rate_trim_luma`] on one block of `levels` coded in `scan`, whose
+/// coefficient at raster `p` is `value(p)` quantiser steps. Returns the new
+/// end of block.
+fn trim_block(
+    trim: &nc_encoder::RateTrim,
+    levels: &mut [i16],
+    scan: &[usize],
+    lambda: f64,
+    value: impl Fn(usize) -> f64,
+    step_sse: f64,
+) -> usize {
+    let Some(last) = scan.iter().rposition(|&p| levels[p] != 0) else {
+        return 0;
+    };
+    nc_encoder::trim_levels(trim, levels, scan, last + 1, lambda, |p, magnitude| {
+        nc_encoder::level_removal_sse(value(p), magnitude, step_sse)
+    })
+}
+
 /// Trellis-quantise the coded chroma AC blocks of the macroblock at luma
 /// `(x, y)` in `out`, re-deriving their coefficients from `source` and
 /// `pred`, and update `cbp_chroma`. Blocks the plain quantiser left empty

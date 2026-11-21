@@ -52,13 +52,13 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import buildinfo, interval, jreal, levers, pool, singlepoint
+from . import buildinfo, cloud, interval, jreal, levers, pool, singlepoint
 from .cbr import Family, clip_targets
 from .clips import Clip
 from .codecs import Codec
 from .config import Paths, load_paths
-from .encoders.nanocodec import (MEDIUM, OLD_PRESETS_PATH, PRESETS_PATH, presets_in,
-                                 preset_values)
+from .encoders.nanocodec import (MEDIUM, OLD_PRESETS_PATH, PRESETS_PATH, param_text,
+                                 presets_in, preset_values)
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .realuse import (DEFAULT_FRAMES, DEFAULT_WORKERS, LADDER_KBPS, Runner, Track,
                       add_periodic_pulse, compare, format_stage, one_per_class, param_args,
@@ -97,7 +97,7 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
     `args.final_frames` (LONG_FRAMES) runs L3 on the long window, keys every
     LONG_KEY_SECONDS.
     """
-    levels = levels or pool.LEVELS[:args.max_level]
+    levels = levels or getattr(args, "levels", None) or pool.LEVELS[:args.max_level]
     frames = int(args.frames)
     draw = pool.draw(pool.load_pool(paths, usable), pool.rotation_key(args.rotation), frames)
     print(f"pool draw {draw.key}: " + ", ".join(
@@ -133,6 +133,8 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
         result["decision"] = interval.decide(stats, final=level == pool.FINAL)
         pulsing = [g for g in result.get("verdict", {}).get("guards", [])
                    if g.startswith(jreal.PULSE_TERMS)]
+        if level == pool.FINAL and "summary" in result:
+            print(f"{level}: {pulse_report(result['summary'])}", flush=True)
         if level == pool.FINAL and pulsing:
             # A visible periodic-key pulse fails the screen outright, unlike the other
             # guards (judgement calls): it slipped through as one on 2026-11-15.
@@ -159,6 +161,23 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
     print(f"levels -> {decision.upper()}", flush=True)
     return {"clips": "adopt", "staged": True, "decision": decision, "levels": per_level,
             "draw": draw.record(), "stages": stages}
+
+
+def pulse_report(summary: dict) -> str:
+    """The periodic-key pulse as the guard judges it (key-attributed) and its parts:
+    the raw |pulse| change and the keys' and the P frames' own changes (balanced, dB)."""
+    parts = []
+    for term in jreal.PULSE_TERMS:
+        names = jreal.pulse_companions(term)
+        value = lambda name: (summary.get(name) or {}).get("balanced")
+        if value(term) is None:
+            continue
+        fmt = lambda v: "n/a" if v is None else f"{v:+.2f}"
+        window = "10 s keys" if "long" in term else "2 s keys"
+        parts.append(f"{window}: guarded (key-attributed) {fmt(value(term))} dB, raw |pulse| "
+                     f"{fmt(value(names['raw']))}, key {fmt(value(names['key']))}, P frames "
+                     f"before keys {fmt(value(names['pre_key']))}")
+    return "periodic-key pulse " + ("; ".join(parts) if parts else "not measured")
 
 
 def long_clips(clips: list[Clip], frames: int) -> list[Clip]:
@@ -401,7 +420,7 @@ def preset_args(presets: Path | None, codec: Codec, preset: str | None) -> list[
     if presets is None:
         return []
     values = preset_values(presets, codec, preset)
-    return [f"{k}={v:g}" for k, v in sorted(values.items())]
+    return [f"{k}={param_text(v)}" for k, v in sorted(values.items())]
 
 
 def final_check(args: argparse.Namespace) -> dict:
@@ -475,7 +494,12 @@ def main(argv: list[str] | None = None) -> None:
                    help="accept identical preset files for builds that are not clean commits "
                         "(a code-only change)")
     f.add_argument("--json", help="also write the report here")
+    f.add_argument("--local", action="store_true",
+                   help="measure here (default: a warm rented box, nceval.cloud)")
     args = parser.parse_args(argv)
+    if not cloud.runs_here(args.local):
+        cloud.offload("nceval.levels", list(argv if argv is not None else sys.argv[1:]),
+                      args.json, cloud.default_json("final-check"))
     report = final_check(args)
     print(json.dumps({c: {"decision": r["decision"], **r["levels"][pool.FINAL]}
                       for c, r in report["codecs"].items()}, indent=1, default=str))

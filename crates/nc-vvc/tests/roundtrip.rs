@@ -316,6 +316,10 @@ fn large_transforms_roundtrip_and_code_smooth_pictures_in_fewer_bytes() {
         cfg.intra_period = 30;
         cfg.params.set("vvc.ctu_size", ctu);
         cfg.params.set("vvc.tx64", tx64);
+        // Transform sizes alone: the final decision stage (VVC Default,
+        // 2026-11-21) may move a CU between inter and intra differently
+        // with and without 64-point units.
+        cfg.params.set("decision.final_stage", 0.);
         cfg.block_log2 = (ctu as usize).ilog2() as u8;
         let mut encoder = Encoder::<VvcBackend>::new(cfg).unwrap();
         let mut decoder = Decoder::new();
@@ -387,6 +391,62 @@ fn split_texture(w: usize, h: usize, frame: usize) -> Picture {
         }
     }
     p
+}
+
+/// A picture whose top and bottom halves of every 32 rows move apart, so
+/// splits and binary shapes pay.
+fn shearing_texture(w: usize, h: usize, frame: usize) -> Picture {
+    let mut p = Picture::new(w, h, 0).unwrap();
+    for plane in PlaneIndex::ALL {
+        let mut view = p.plane_mut(plane).view_mut();
+        for y in 0..view.height() {
+            let shift = if y % 32 < 16 { frame * 3 } else { 0 };
+            for (x, s) in view.row_mut(y).iter_mut().enumerate() {
+                let u = x + shift;
+                *s = ((u * 23 + y * 17 + plane as usize * 47) ^ (u * y / 7)) as u8;
+            }
+        }
+    }
+    p
+}
+
+#[test]
+fn rd_split_streams_reconstruct_exactly_and_differ() {
+    // The partition search codes, undoes and re-codes nodes: every stream
+    // must still decode to the encoder's reconstruction (partial CTUs,
+    // block quantizers, shapes).
+    for ((w, h), mtt) in [(66, 34), (192, 136)]
+        .into_iter()
+        .flat_map(|size| [0., 1., 2.].map(|mtt| (size, mtt)))
+    {
+        let mut streams = Vec::new();
+        for rd in [0., 1.] {
+            let mut c = config(w, h, 32);
+            c.intra_period = 8;
+            c.params.set("vvc.mtt", mtt);
+            c.params.set("planner.inter_min_log2", 3.);
+            c.params.set("planner.rd_split", rd);
+            c.params.set("rate.aq_strength", 3.);
+            let mut encoder = Encoder::<VvcBackend>::new(c).unwrap();
+            let mut decoder = Decoder::new();
+            let mut stream = Vec::new();
+            for frame in 0..5 {
+                let packet = encoder.encode(&shearing_texture(w, h, frame));
+                let decoded = decoder.decode(&packet.data).unwrap();
+                assert_eq!(
+                    bytes(&decoded),
+                    bytes(encoder.reconstruction()),
+                    "{w}x{h} mtt {mtt} rd {rd} frame {frame}"
+                );
+                stream.extend(packet.data);
+            }
+            streams.push(stream);
+        }
+        assert_ne!(
+            streams[0], streams[1],
+            "{w}x{h} mtt {mtt}: the search changed nothing"
+        );
+    }
 }
 
 #[test]

@@ -21,7 +21,7 @@ bin=$HOME/nanocodec-data/anchors/x86_64/bin
 clip=$HOME/nanocodec-data/clips/quick/crowd_mot17_09.yuv
 clip_size=1280x720
 frames=30
-scratch=$(mktemp -d)
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-h264-conformance-supplement-XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
 # Non-flat scaling lists in x264's cqmfile syntax (H.264 §7.4.2.1.1.1

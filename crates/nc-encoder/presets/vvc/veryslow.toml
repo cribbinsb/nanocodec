@@ -1,0 +1,80 @@
+# VVC veryslow (`--preset veryslow`; `slow` until 2026-11-21, then `slower`): the
+# shared bundle of the slowest rung (presets/slowest.toml,
+# applied first: the second reference with the full decision) plus VVC's
+# levers. Re-picked 2026-11-20 (docs/handoff/presets.md "Slow presets"):
+# everything heavy on at once, then cut back by component cost. Alone on the
+# Default (fixed QP J, 24 clips / x86 callgrind P instructions): the P-frame
+# intra search widened -1.4% / +27%, the second reference -1.1% / +20%, the
+# winner walk -0.8% / +7%, 8x8 inter CUs with shape RD -0.6% / +20% (-0.8%
+# inside the bundle), exact forward transforms -0.3% / +7%, the sub-sample
+# gates off -0.3% / +5%. Left out: whole-CU pricing (-0.7 J in the bundle
+# for +87 points), SAO band offsets, the ALF statistics on every row and
+# picture (-0.4% alone at +39%), MTS (0.0% at +79%), ISP on P pictures (no gain), dependent
+# quantisation (+6.6%, worse), binary and ternary splits (+4.6%, worse).
+# Affine is refused beside the second reference.
+#
+# The RD partition search (2026-11-21, docs/handoff/vvc.md "RD-checked
+# partition search"): each inter node decided by coding the leaf and the
+# quad split one level either side of the plan. Fixed QP J (24 clips) -9.1%
+# at +99% P instructions against this Slow without it. With binary and
+# ternary splits searched too, -10.7% at +283%; pruned to the knee (shapes at
+# planned leaves where motion separates the parts) -8.0% at +147%: the
+# quadtree search alone is the better point.
+#
+# The winner walk: three quarter-sample moves along the row and column.
+decision.winner_walk_steps = 3
+decision.winner_walk_square = 0
+# The sub-sample search: no seed gates, the coordinate walk.
+decision.codec_subpel_seed_lambdas = 0
+decision.skip_no_refine_lambdas = 0
+decision.refine_cheap_min_lambdas = 0
+decision.subpel_walk = 1
+# P-frame intra: the full angular search (no coarse shortlist), chroma
+# directions searched, ISP's runner-up tried, more directions costed, and
+# the DC intra gate lower.
+vvc.coarse_inter_intra = 0
+vvc.chroma_search_inter = 1
+vvc.isp_modes = 2
+vvc.angular_candidates = 8
+vvc.rd_candidates = 8
+vvc.inter_angular_candidates = 8
+decision.intra_gate_variance = 16
+# Exact forward transforms and the exact pre-transform zero bound.
+vvc.fast_forward = 0
+vvc.pre_transform_zero_scale = 1
+# 8x8 inter CUs, rectangular shapes confirmed by coded cost.
+planner.inter_min_log2 = 3
+planner.rect_rd = 1
+# The Default's final decision stage at the engine's margin (0.1 λ per
+# sample) and no winner limit (k 0: the Default's 0.03 / 1 λ gave fixed QP
+# -0.7 %, this -1.2 % [-1.7, -0.8], quick draw fixedqp-2026-11-21, n 24,
+# against the stage off). final-check (34 clips, 600 f, CBR ladder, against
+# 99e9e7fb6) J -0.97 % [-1.27, -0.78] BETTER, no guard.
+decision.final_margin_lambdas = 0.1
+decision.final_max_winner_lambdas = 0
+# The RD partition search, quadtree only. Withdrawn for a reconstruction
+# mismatch on still content (623342262) and back once the node trials
+# snapshot the block-QP map (a66836ad7): re-measured, fixed QP J -8.9% alone
+# and -10.0% [-10.8, -9.3] with the final stage against neither (24 clips).
+planner.rd_split = 1
+# SAO types searched on every picture from every row's statistics (Default:
+# every 4th picture and row). Fixed QP (24 clips) J -0.4% [-0.6, -0.3] at
+# +2.8% P instructions; quick (k 0) L1 -0.92% [-1.31, -0.55], probe -0.52%;
+# nceval.train on the RD-partition Slow (4c0e7b9e9): L3 (n 108) -0.59%
+# [-1.00, -0.19] BETTER, final-check (n 34, 600 f) -0.63% [-0.87, -0.20]
+# BETTER (docs/analysis/unused-tools-2026-11-21.md).
+vvc.sao_search_interval = 1
+vvc.sao_stats_row_step = 1
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here until screened on this rung (docs/handoff/planner-selector.md).
+planner.split_selector = 0
+# Every row on non-base pictures too (the Default's non-base value is 4).
+nonbase.vvc.sao_stats_row_step = 1
+# The Default's filter-search effort by usage (filter.usage_quiet_share, 2026-11-21)
+# is not screened here.
+filter.usage_quiet_share = 0
+
+# Layer propagation (the codec Default's flat-stream form, docs/handoff/temporal-lambda.md)
+# stays off here: nceval.train (k 0) L3 -0.24 % [-0.85, +0.34] AMBIGUOUS, final-check -0.29 % [-0.67, +0.02]: ejected.
+layers.propagation = 0

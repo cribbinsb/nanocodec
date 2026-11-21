@@ -183,6 +183,13 @@ pub struct ModeInfoGrid {
     pub mi_rows: usize,
 }
 
+/// A square of a [`ModeInfoGrid`] noted by [`ModeInfoGrid::save_square`].
+#[derive(Debug, Default)]
+pub struct SavedCells {
+    cells: Vec<ModeInfo>,
+    mv2: Vec<Av1Mv>,
+}
+
 impl ModeInfoGrid {
     /// A grid of default (intra, unskipped) cells.
     #[must_use]
@@ -241,6 +248,60 @@ impl ModeInfoGrid {
     /// whose top-left cell is (`row`, `col`), clipped to the frame.
     pub fn fill(&mut self, row: usize, col: usize, info: ModeInfo) {
         self.fill_square(row, col, info.size_mi(), info);
+    }
+
+    /// Note the `side` x `side` cells from (`row`, `col`), clipped to the
+    /// frame, with their secondary vectors (a coding trial,
+    /// `backend/node_trial.rs`).
+    pub fn save_square(&self, (row, col): (usize, usize), side: usize, saved: &mut SavedCells) {
+        let grid = (self.mi_cols, self.mi_rows);
+        nc_common::cell_grid::save_rect(
+            &self.cells,
+            grid,
+            (row, col),
+            (side, side),
+            &mut saved.cells,
+        );
+        saved.mv2.clear();
+        if !self.mv2_cells.is_empty() {
+            nc_common::cell_grid::save_rect(
+                &self.mv2_cells,
+                grid,
+                (row, col),
+                (side, side),
+                &mut saved.mv2,
+            );
+        }
+    }
+
+    /// Put back the cells [`Self::save_square`] noted of the same square.
+    pub fn restore_square(&mut self, (row, col): (usize, usize), side: usize, saved: &SavedCells) {
+        let grid = (self.mi_cols, self.mi_rows);
+        nc_common::cell_grid::restore_rect(
+            &mut self.cells,
+            grid,
+            (row, col),
+            (side, side),
+            &saved.cells,
+        );
+        if !saved.mv2.is_empty() {
+            nc_common::cell_grid::restore_rect(
+                &mut self.mv2_cells,
+                grid,
+                (row, col),
+                (side, side),
+                &saved.mv2,
+            );
+        } else if !self.mv2_cells.is_empty() {
+            // The table was created inside the trial: its square was zero.
+            nc_common::cell_grid::fill_square(
+                &mut self.mv2_cells,
+                grid,
+                (row, col),
+                side,
+                Av1Mv::ZERO,
+            );
+        }
     }
 
     /// Record secondary vector `mv2` for the `side` x `side` compound cells from

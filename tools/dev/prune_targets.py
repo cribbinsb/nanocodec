@@ -3,19 +3,21 @@
 Run by the coordinator's watchdog when free disk nears the 200 GiB floor
 (2026-11-15: 156 finished agents' targets held 133 GB).
 
-Stale = not touched (newest file mtime at the top two levels) for 6 hours and not in KEEP.
-Prints the list with sizes first; removes only with --yes, one literal path at a time.
+Stale = not touched (newest file mtime at the top two levels) for 6 hours and not kept by
+the retention manifest (tools/dev/retention.toml: the shared tools' warm targets, which
+must stay even when idle for hours). Prints the list with sizes first; removes only with
+--yes, one literal path at a time.
 """
 import os
 import shutil
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import retention  # noqa: E402
 
 ROOT = os.path.expanduser("~/nanocodec-data/targets")
-#: Targets of shared tools that must stay warm even when idle for hours.
-KEEP = {"verifier", "verifier-streams", "efficiency", "demo-publish", "chart-build", "crates-publish",
-        "gate-test-coord", "coord-test",
-        "web", "land"}
 #: An idle target this old belongs to a finished agent; rebuilding it costs minutes.
 STALE_S = 6 * 3600
 
@@ -48,7 +50,7 @@ now = time.time()
 victims = []
 for name in sorted(os.listdir(ROOT)):
     path = os.path.join(ROOT, name)
-    if name in KEEP or not os.path.isdir(path) or os.path.islink(path):
+    if retention.guard(Path(path)) is not None or not os.path.isdir(path) or os.path.islink(path):
         continue
     if now - newest(path) > STALE_S:
         victims.append(path)

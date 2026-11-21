@@ -14,7 +14,7 @@
 //! Only `DCT_DCT` (transform class 2D) and square sizes are supported;
 //! 64x64 transforms code their top-left 32x32 as a 32x32 block.
 
-use crate::cdf::{Cdf, FromDefaults, ResetCounters};
+use crate::cdf::{Cdf, CdfState, FromDefaults, ResetCounters};
 use crate::range_coder::SymbolSink;
 use crate::tables::{
     COEFF_BASE_CDF, COEFF_BASE_EOB_CDF, COEFF_BR_CDF, DC_SIGN_CDF, DEFAULT_SCAN_4X4,
@@ -25,6 +25,7 @@ use crate::tables::{
 };
 use crate::transform::TxSize;
 use nc_common::eob::{GROUP_START as EOB_GROUP_START, group as eob_group};
+use nc_encoder::journaled_fields;
 use nc_encoder::symbol_cost::BitCounter;
 
 /// SVT's linear coefficient-rate estimate ([`CoeffCdfs::eob_linear_bits`]):
@@ -760,6 +761,12 @@ impl CoeffCdfs {
         w.write_symbol(symbol, &mut self.inter_tx_type[set][tx.index()], nsyms);
     }
 }
+
+// The level tables first: most coefficient symbols are theirs.
+journaled_fields!(CoeffCdfs, CdfState;
+    base, br, txb_skip, base_eob, eob_extra, dc_sign, eob_pt_16, eob_pt_64, eob_pt_256,
+    eob_pt_1024, inter_tx_type, intra_tx_type,
+);
 
 impl ResetCounters for CoeffCdfs {
     fn reset_counters(&mut self) {

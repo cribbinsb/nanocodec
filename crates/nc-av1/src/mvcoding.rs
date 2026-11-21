@@ -18,9 +18,11 @@
 
 use std::cell::OnceCell;
 
-use crate::cdf::{Cdf, FromDefaults, ResetCounters};
+use crate::cdf::{Cdf, CdfState, FromDefaults, ResetCounters};
 use crate::modeinfo::Av1Mv;
 use crate::range_coder::SymbolWriter;
+use nc_encoder::journaled_fields;
+use nc_encoder::undo_journal::Journaled;
 
 /// `mv_joint` inverse CDF: which components are non-zero.
 const JOINT_CDF: [u16; MV_JOINTS] = [28672, 21504, 13440, 0];
@@ -120,6 +122,20 @@ impl Default for ComponentCdfs {
     }
 }
 
+impl<const N: usize> Journaled for PricedCdf<N> {
+    type State = CdfState;
+
+    /// The CDF changes, so its costs are dropped.
+    #[inline]
+    fn swap_at(&mut self, offset: usize, state: &mut CdfState) {
+        self.bits.take();
+        self.cdf
+            .swap_at(offset - std::mem::offset_of!(Self, cdf), state);
+    }
+}
+
+journaled_fields!(ComponentCdfs, CdfState; bits, class, class0, class0_fr, fr, sign);
+
 impl ResetCounters for ComponentCdfs {
     fn reset_counters(&mut self) {
         self.sign.reset_counters();
@@ -147,6 +163,8 @@ impl Default for MvCdfs {
         }
     }
 }
+
+journaled_fields!(MvCdfs, CdfState; components, joint);
 
 impl ResetCounters for MvCdfs {
     fn reset_counters(&mut self) {

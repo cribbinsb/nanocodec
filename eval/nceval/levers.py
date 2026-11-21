@@ -94,8 +94,8 @@ LEVEL_NAMES = {"quick": "L1", "adopt": "L2", "final": "L3"}
 #: Evidence order when one change has several rows: the first level present wins.
 EVIDENCE = ("L3", "final-check", "L2", "tune-ladder", "tune-f2", "L1", "sensitivity",
             "tune-f1", "fixedqp", "lens")
-#: Jetson CPU counts twice the x86 change (owner: Jetson primary, ~2:1; tune_pool).
-JETSON_WEIGHT = 2.0
+#: ARM and x86 CPU changes count equally (owner, 2026-11-21: no target is special).
+JETSON_WEIGHT = 1.0
 #: Replay decision, as nceval.interval decides L3: adopt below -ADOPT_MIN_GAIN_PCT
 #: with the upper bound at most ADOPT_UPPER_PCT; reject when the bound is above 0.
 ADOPT_MIN_GAIN_PCT = 0.05
@@ -378,14 +378,25 @@ def levels_rows(result: dict, common: dict) -> list[dict]:
         dcpu, k = verdict.get("dcpu_pct"), verdict.get("k_cpu")
         shift = (k or 0.0) * (dcpu or 0.0)  # the interval includes k * dCPU; J here does not
         unshift = lambda v: None if v is None else v - shift
+        frames = stage.get("frames") or (result.get("draw") or {}).get("frames")
         rows.append(make_row(
-            **common, rate="cbr", level=LEVEL_NAMES.get(level, level), draw=draw,
-            n=stats.get("n"), frames=stage.get("frames") or (result.get("draw") or {}).get("frames"),
+            **common, rate="cbr", level=level_name(level, frames), draw=draw,
+            n=stats.get("n"), frames=frames,
             j=unshift(stats.get("mean")), lo=unshift(stats.get("lo")), hi=unshift(stats.get("hi")),
             **metrics_of(stage.get("summary") or {}), guards=stats.get("guards"),
             x86_pct=dcpu, x86_how="--dcpu given to the screen" if dcpu is not None else None,
             k=k, verdict=stats.get("decision")))
     return rows
+
+
+def level_name(level: str, frames: int | None) -> str:
+    """L1/L2/L3, and "final-check" for L3 on the long window (a screen's `--levels final
+    --final-frames 600` is the final check's measurement; as "L3" its row had the id of
+    the same change's 150-frame L3, which was then dropped as a duplicate, 2026-11-21)."""
+    from .levels import LONG_FRAMES
+    if level == "final" and frames and frames >= LONG_FRAMES:
+        return "final-check"
+    return LEVEL_NAMES.get(level, level)
 
 
 def final_check_rows(report: dict, source: str, kind: str = "live",
@@ -568,19 +579,36 @@ def finalist_rows(attrs: dict, finalists: dict, trials: dict[int, dict], start: 
         if not level or params is None:
             continue
         row = trial_row(attrs, int(number), params, start, None, None, {}, source, kind, date)
-        k = attrs.get("k") or 0.0
+        k = result.get("k", attrs.get("k")) or 0.0  # the k its L3 was judged with
         shift = k * (result.get("dcpu") or 0.0)
         unshift = lambda v: None if v is None else v - shift
         row.update(level="L3", n=level.get("n"), j=unshift(level.get("mean")),
                    lo=unshift(level.get("lo")), hi=unshift(level.get("hi")),
                    guards=level.get("guards"), x86_pct=result.get("dcpu_x86"),
-                   jetson_pct=result.get("dcpu_jetson"),
-                   jetson_how="Jetson cycles (tune_pool.jetson_ratios)"
-                   if result.get("dcpu_jetson") is not None else None,
+                   x86_how=X86_HOW.get(result.get("dcpu_x86_how"), CALLGRIND_TUNE),
+                   # the Arm column: the rented Graviton cores since 2026-11-21, the Jetson
+                   # before (both judged at equal weight with x86, JETSON_WEIGHT)
+                   jetson_pct=arm_pct(result), jetson_how=arm_how(result),
                    verdict=level.get("decision"))
         row["id"] = row_id(row)
         rows.append(row)
     return rows
+
+
+#: How a finalist's x86 change was measured (tune_pool.combined_dcpu's dcpu_x86_how).
+X86_HOW = {"callgrind": CALLGRIND_TUNE, "zen5": "aws_cpu_ab zen5 (c8a) cycles"}
+
+
+def arm_pct(result: dict) -> float | None:
+    return result["dcpu_arm"] if "dcpu_arm" in result else result.get("dcpu_jetson")
+
+
+def arm_how(result: dict) -> str | None:
+    if result.get("dcpu_arm") is not None:
+        return "aws_cpu_ab graviton3+graviton4 cycles (tune_pool.box_cpu)"
+    if result.get("dcpu_jetson") is not None:
+        return "Jetson cycles (tune_pool.jetson_ratios)"
+    return None
 
 
 def sensitivity_rows(codec: str, preset: str, results: dict, preset_of: dict[str, float],

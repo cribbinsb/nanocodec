@@ -27,7 +27,7 @@ check src/arm/64/itx.S caca60c3574cda4f91e510ff40b43b06b5bb951cbe47e1cd9c103b1e5
 check src/arm/asm.S b25a015cd950010feb49b9c94684ce002de8dfd4af0dd19a53d6fbf0734da224
 check src/arm/64/util.S a505f81cd8cc3025f157cf076e1c30c5c9db43b735301dd36f29f20df7272d9b
 
-cfg=$(mktemp -d)
+cfg=$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-vendor-dav1d-itx-XXXXXX")
 trap 'rm -r -- "$cfg"' EXIT
 # The configuration dav1d's meson build would write for an aarch64 ELF
 # target, reduced to what asm.S reads. HAVE_AS_FUNC 0: LLVM's assembler has

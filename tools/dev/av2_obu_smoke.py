@@ -7,7 +7,10 @@ payloads exercise framing, not picture decoding or full stream conformance.
 import argparse
 from pathlib import Path
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 COMMIT = "966a7d7cd6fcf60360caf5dc413b2aeeb65e144d"
 ORACLE = r'''
@@ -47,7 +50,7 @@ def main():
     actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if actual != COMMIT:
         raise ValueError(f"AVM oracle requires {COMMIT}, got {actual}")
-    with tempfile.TemporaryDirectory(prefix="nc-av2-obu-") as directory:
+    with tempdirs.temp_dir("av2-obu") as directory:
         root = Path(directory)
         (root / "config").mkdir()
         # These scalar syntax files need only the C inline spelling from config.

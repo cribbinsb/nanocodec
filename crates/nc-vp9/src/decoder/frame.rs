@@ -30,7 +30,14 @@ use crate::types::MI_SIZE;
 pub(super) const SB_MI: usize = 8;
 const SB_MI_LOG2: u32 = 3;
 /// 4x4 units per superblock side (left coefficient contexts).
-const SB_4X4: usize = 16;
+/// 4x4 units along one luma superblock side.
+pub(super) const SB_4X4_LOG2: usize = 4;
+
+/// The coefficient-context bits of a block wholly inside a superblock.
+#[inline]
+pub(super) fn context_mask(start: usize, count: usize) -> u16 {
+    (((1u32 << count) - 1) << start) as u16
+}
 /// Bytes of a tile size marker (all tiles but the last).
 const TILE_SIZE_BYTES: usize = 4;
 
@@ -54,8 +61,8 @@ pub(super) struct FrameInputs<'a, T: Pixel> {
 pub(super) struct Tile {
     pub col_start: usize,
     pub col_end: usize,
-    /// Left coefficient contexts per plane (4x4 units of one superblock).
-    pub left_nonzero: [[u8; SB_4X4]; 3],
+    /// Left coefficient contexts, one bit per 4x4 unit of the superblock.
+    pub left_nonzero: [u16; 3],
     pub left_partition: [u8; SB_MI],
 }
 
@@ -71,8 +78,8 @@ pub(super) struct FrameDecoder<'a, T: Pixel> {
     pub mvs: Vec<MvRef>,
     pub segment_map: Vec<u8>,
     pub counts: Counts,
-    /// Above coefficient contexts per plane (4x4 units, superblock-aligned).
-    pub above_nonzero: [Vec<u8>; 3],
+    /// Above coefficient contexts, one bit per 4x4 unit in each superblock.
+    pub above_nonzero: [Vec<u16>; 3],
     pub above_partition: Vec<u8>,
     pub scratch: Box<BlockScratch<T>>,
     /// Quantizer steps per segment, luma and chroma (libvpx `seg_dequant`):
@@ -95,7 +102,7 @@ pub(super) struct BlockScratch<T: Pixel> {
     pub blocks: Vec<BlockInfo>,
     pub grid: Vec<u32>,
     pub mvs: Vec<MvRef>,
-    pub above_nonzero: [Vec<u8>; 3],
+    pub above_nonzero: [Vec<u16>; 3],
     pub above_partition: Vec<u8>,
     pub filter_masks: Masks,
     /// Dequantized coefficients of one transform block (16-bit at 8 bits,
@@ -187,7 +194,6 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let recon = pictures
             .take(width, height, REFERENCE_BORDER)
             .map_err(|_| DecodeError::Unsupported("VP9 frame size"))?;
-        let units = sb_cols * SB_4X4;
         let mut blocks = std::mem::take(&mut scratch.blocks);
         blocks.clear();
         let mut grid = std::mem::take(&mut scratch.grid);
@@ -200,9 +206,9 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             mvs.fill(MvRef::default());
         }
         let mut above_nonzero = std::mem::take(&mut scratch.above_nonzero);
-        for (plane, len) in above_nonzero.iter_mut().zip([units, units / 2, units / 2]) {
+        for plane in &mut above_nonzero {
             plane.clear();
-            plane.resize(len, 0);
+            plane.resize(sb_cols, 0);
         }
         let mut above_partition = std::mem::take(&mut scratch.above_partition);
         above_partition.clear();
@@ -275,7 +281,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 let tile = Tile {
                     col_start,
                     col_end,
-                    left_nonzero: [[0; SB_4X4]; 3],
+                    left_nonzero: [0; 3],
                     left_partition: [0; SB_MI],
                 };
                 tiles.push((BoolReader::new(tile_data)?, tile));
@@ -284,7 +290,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             // tile row), so that each row is complete before it is filtered.
             for mi_row in (row_start..row_end).step_by(SB_MI) {
                 for (reader, tile) in &mut tiles {
-                    tile.left_nonzero = [[0; SB_4X4]; 3];
+                    tile.left_nonzero = [0; 3];
                     tile.left_partition = [0; SB_MI];
                     for mi_col in (tile.col_start..tile.col_end).step_by(SB_MI) {
                         self.decode_partition(reader, tile, mi_row, mi_col, 3)?;
@@ -493,9 +499,10 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             let ss = usize::from(plane > 0);
             let (x, y) = position.plane_4x4(ss);
             let (w, h) = position.plane_size_4x4(ss);
-            fill_run(&mut self.above_nonzero[plane][x..x + w], 0);
-            let y = y & ((SB_4X4 >> ss) - 1);
-            fill_run(&mut tile.left_nonzero[plane][y..y + h], 0);
+            let log2 = SB_4X4_LOG2 - ss;
+            let within = (1usize << log2) - 1;
+            self.above_nonzero[plane][x >> log2] &= !context_mask(x & within, w);
+            tile.left_nonzero[plane] &= !context_mask(y & within, h);
         }
     }
 }

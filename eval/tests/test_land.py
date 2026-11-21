@@ -1,7 +1,7 @@
 """tools/dev/land.sh on a toy repository with stub checks (no lock, no queue).
 
 Two branches landing at the same time both land (the compare-and-swap loser
-rebases and retries); the revert guard only warns, in the commit message; a
+rebases and retries); the revert guard refuses a stale tree (`--reverts SHA` passes); a
 stale integration worktree is moved to the new head.
 """
 
@@ -39,7 +39,10 @@ def toy(tmp_path):
     (repo / "tools/dev/land_guard.py").write_text(
         "import os, sys\n"
         "if os.path.exists('STALE'):\n"
-        "    sys.exit(print('land: REFUSED: the candidate undoes 1 upstream change(s)', file=sys.stderr) or 1)\n")
+        "    sys.exit(print('land: REFUSED: the candidate undoes 1 upstream change(s)\\n"
+        "Fix: rebuild the commit on the current tree', file=sys.stderr) or 1)\n"
+        "if os.path.exists('BROKEN'):\n"
+        "    raise RuntimeError('the guard itself broke')\n")
     env = {**os.environ, "NC_LAND_TARGET": "integ", "NC_INTEGRATION_TREE": str(repo),
            "NC_DATA_ROOT": str(tmp_path / "data"), "CARGO_TARGET_DIR": str(tmp_path / "t"),
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
@@ -84,13 +87,53 @@ def test_concurrent_landers_both_land_and_the_stale_integration_tree_follows(toy
     assert (repo / "f_a").exists() and (repo / "f_b").exists()
 
 
-def test_the_revert_guard_warns_in_the_commit_instead_of_refusing(toy):
+def test_the_revert_guard_refuses_and_names_the_fix(toy):
     tree = branch(toy, "stale", "STALE")
     [result] = land(toy, [tree])
-    assert result.returncode == 0, result.stdout
-    assert "WARNING" in result.stdout
+    assert result.returncode != 0 and "reverts other agents' work" in result.stdout
     _, repo, _ = toy
-    assert "Land-warning: undoes 1 upstream change(s)" in git(repo, "log", "-1", "--format=%B", "integ")
+    assert git(repo, "log", "-1", "--format=%s", "integ") == "base"  # nothing landed
+
+
+def test_a_guard_that_breaks_warns_and_lands_unchecked(toy):
+    tree = branch(toy, "broken", "BROKEN")
+    [result] = land(toy, [tree])
+    assert result.returncode == 0, result.stdout
+    assert "land_guard.py failed (exit 1): landing unchecked" in result.stdout
+
+
+def test_a_reset_soft_squash_onto_a_moved_head_is_refused_by_the_real_guard(toy):
+    """The 2026-11-21 incident in miniature: the branch's author squashes with `git reset
+    --soft` onto an integration head that moved, so the commit carries the stale tree."""
+    tmp, repo, env = toy
+    shutil.copy(REPO / "tools/dev/land_guard.py", repo / "tools/dev/land_guard.py")
+    (repo / "shared.py").write_text("".join(f"line {i}\n" for i in range(20)))
+    commit = lambda cwd, message: subprocess.run(["git", "commit", "-qam", message], cwd=cwd,
+                                                 env=env, check=True)
+    git(repo, "add", "-A")
+    commit(repo, "guard and shared file")
+    tree = tmp / "mine"
+    git(repo, "worktree", "add", "-q", "-b", "mine", str(tree), "integ")
+    (tree / "mine.py").write_text("my change\n")
+    git(tree, "add", "-A")
+    commit(tree, "wip")
+    # meanwhile another agent lands a change to shared.py
+    other = (repo / "shared.py").read_text().replace("line 7\n", "line 7, improved\n")
+    (repo / "shared.py").write_text(other)
+    commit(repo, "other agent: improve line 7")
+    # the squash: reset --soft onto the moved head keeps this tree's old shared.py
+    git(tree, "reset", "-q", "--soft", "integ")
+    commit(tree, "my change, squashed")
+    [result] = land(toy, [tree])
+    assert result.returncode != 0, result.stdout
+    assert "shared.py: reverts" in result.stdout and "other agent: improve line 7" in result.stdout
+    assert "touches only: mine.py" in result.stdout
+    assert "improved" in (repo / "shared.py").read_text()  # the integration head is intact
+    # a deliberate revert, named, lands
+    sha = git(repo, "rev-parse", "--short", "integ")
+    proc = subprocess.run(["bash", "tools/dev/land.sh", "--reverts", sha], cwd=tree, env=env,
+                          text=True, capture_output=True, timeout=LAND_TIMEOUT_SECONDS)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def test_a_rebase_conflict_is_refused_and_leaves_the_branch_as_it_was(toy):

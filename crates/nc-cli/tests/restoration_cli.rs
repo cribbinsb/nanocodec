@@ -20,7 +20,7 @@ impl Scratch {
     /// pay at a coarse quantizer.
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "nc-cli-restoration-{}-{}",
+            "nanocodec-cli-restoration-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

@@ -82,13 +82,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))
 from aws_session import THROUGHPUT_X86_TYPES, fallbacks_after, say  # noqa: E402
+from nceval import retention  # noqa: E402
 from nceval.cbr import Bench, Point  # noqa: E402
 from nceval.cbr import Family  # noqa: E402
 from nceval.encoders.nanocodec import MEDIUM  # noqa: E402
 from nceval.plotted import own_families  # noqa: E402
 from nceval.chart import (ANCHOR, OURS, REFERENCES, chart_families, low_ladder,  # noqa: E402
                           low_rung_clips, quality_points)
-from nceval.clipframes import decode_command  # noqa: E402
+from nceval.clipframes import frames_command  # noqa: E402
 from nceval.clips import Clip, load_clipset  # noqa: E402
 from nceval.config import load_paths  # noqa: E402
 from nceval.gatepolicy import EVALUATION_GATE  # noqa: E402
@@ -452,8 +453,19 @@ def stage(stage_dir: Path, jobs: list, clips: list[Clip], tools: dict[str, Path]
         first_clip.setdefault(point.family.name, remote_job(bench, point))
     (stage_dir / "jobs.json").write_text(json.dumps(ordered) + "\n")
     (stage_dir / "pipe.json").write_text(json.dumps(list(first_clip.values())) + "\n")
-    decodes = [(c.name, c.yuv.name, min(frames, c.frames), c.frame_bytes) for c in clips]
-    (stage_dir / "decode.txt").write_text("".join(f"{n} {f} {k} {b}\n" for n, f, k, b in decodes))
+    (stage_dir / "decode.txt").write_text("".join(decode_line(c, frames) for c in clips))
+
+
+#: decode.txt's last field: how the box takes a clip's frames (prepare_command).
+RAW_KIND, ENCODED_KIND = "raw", "encoded"
+
+
+def decode_line(clip: Clip, frames: int) -> str:
+    """A clip's line of decode.txt: name, stored file, frames, frame bytes, and whether
+    its file is raw I420 (its first bytes are the frames, as here: Clip.encoded) or
+    encoded (an ffmpeg decode)."""
+    kind = ENCODED_KIND if clip.encoded else RAW_KIND
+    return f"{clip.name} {clip.yuv.name} {min(frames, clip.frames)} {clip.frame_bytes} {kind}\n"
 
 
 def unstage(stage_dir: Path) -> None:
@@ -469,10 +481,13 @@ def unstage(stage_dir: Path) -> None:
 
 def prepare_command(version: str, tools: list[str], clips: list[Clip], frames: int) -> str:
     """Readiness: ffmpeg and xxhash installed, every tool runs (our version stamp
-    matches), every clip decodes (in parallel, to RAM) to exactly its size."""
-    decode = (f"ffmpeg -nostdin -v error -i clips/$2 -frames:v $3 -f rawvideo -pix_fmt yuv420p "
-              f"{REMOTE_CLIPS}/$1.yuv && test $(stat -c %s {REMOTE_CLIPS}/$1.yuv) = $(($3 * $4))"
-              f" && sha256sum {REMOTE_CLIPS}/$1.yuv")
+    matches), every clip's frames land (in parallel, in RAM) at exactly their size: a raw
+    clip's first frames copied as they are, an encoded clip decoded (decode_line)."""
+    frames_out = f"{REMOTE_CLIPS}/$1.yuv"
+    decode = (f"if [ \"$5\" = {RAW_KIND} ]; then head -c $(($3 * $4)) clips/$2 > {frames_out}; "
+              f"else ffmpeg -nostdin -v error -i clips/$2 -frames:v $3 -f rawvideo "
+              f"-pix_fmt yuv420p {frames_out}; fi"
+              f" && test $(stat -c %s {frames_out}) = $(($3 * $4)) && sha256sum {frames_out}")
     return " && ".join([
         f"cd ~/{REMOTE_DIR}",
         "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update",
@@ -521,11 +536,11 @@ def encoded_bytes(jobs: list) -> int:
 
 
 def check_decodes(streams: Path, clips: list[Clip], frames: int) -> None:
-    """The remote decodes of the first DECODE_CHECKS clips equal local decodes."""
+    """The remote frames of the first DECODE_CHECKS clips equal the frames read here."""
     remote = {Path(line.split()[1]).stem: line.split()[0]
               for line in (streams / "decoded.sha256").read_text().splitlines()}
     for clip in clips[:DECODE_CHECKS]:
-        command = decode_command(clip, min(frames, clip.frames))
+        command = frames_command(clip, min(frames, clip.frames))
         local = hashlib.sha256(subprocess.run(command, capture_output=True, check=True)
                                .stdout).hexdigest()
         if local != remote.get(clip.name):
@@ -735,6 +750,7 @@ def score_cloud(args: argparse.Namespace) -> None:
                        fallback_types=fallbacks(args))
     results = CLOUD_RESULTS
     results.mkdir(parents=True, exist_ok=True)
+    retention.ensure_entry_marker(results)
     timings = {}
     try:
         with Session(spec) as session:

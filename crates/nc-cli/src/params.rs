@@ -312,6 +312,10 @@ mod tests {
         expected.set("decision.exact_rank_margin", 1.1);
         expected.set("av1.cdef_search_row_step", 4.0);
         expected.set("av1.keyframe_cfl", 0.0);
+        // Fast takes the trellis's cheap substitute (2026-11-21,
+        // docs/handoff/cheap-rdoq.md).
+        expected.set("quant.rd_trim", 1.0);
+        expected.set("quant.rd_trim_block", 1.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected

@@ -245,7 +245,9 @@ fn spatial_layer_state<B: CodecBackend>(
         .flatten();
     let persist = PersistParams::from_overrides(&config.params);
     let reuse = use_reuse.then(|| {
-        ReuseTerm::new(B::SUPPORTS_BLOCK_QP).level_priced(persist.reuse_level_price >= 0.5)
+        ReuseTerm::new(B::SUPPORTS_BLOCK_QP)
+            .level_priced(persist.reuse_level_price >= 0.5)
+            .key_cells(f64::from(persist.reuse_keys))
     });
     let last_visible_recon = Picture::new(w, h, 0).map_err(bad_dims)?;
     let layer_params = LayerParams::from_overrides(&config.params);
@@ -770,7 +772,6 @@ impl<B: CodecBackend> Encoder<B> {
             } else {
                 let mut rc = RateController::new(
                     budget.config,
-                    self.config.codec,
                     model,
                     budget.frame_rate,
                     budget.intra_period,
@@ -1666,7 +1667,7 @@ impl<B: CodecBackend> Encoder<B> {
         let still = analysis.filter(|_| motion.is_some()).map(|a| &a.still);
 
         let (reuse_frame, key_reuse_offset) =
-            self.plan_spatial_reuse_and_aq(layer_plan, rc_key, analysis, motion);
+            self.plan_spatial_reuse_and_aq(layer_plan, (rc_key, from_lower_key), analysis, motion);
 
         self.block_offsets.clear();
         let plan = self.spatial_frame_plan(
@@ -1753,7 +1754,7 @@ impl<B: CodecBackend> Encoder<B> {
         role: crate::encoder::FrameRole,
         noise_sigma: f32,
     ) -> SpatialLayerFrame {
-        self.apply_backend_role(role);
+        self.apply_backend_role(role, key_unit);
         // Spatial layers code every superblock with the frame's settings,
         // and filter every frame fully.
         self.frame_light = None;
@@ -1826,7 +1827,7 @@ impl<B: CodecBackend> Encoder<B> {
     fn plan_spatial_reuse_and_aq(
         &mut self,
         layer_plan: &SpatialLayerPlan,
-        rc_key: bool,
+        (rc_key, from_lower_key): (bool, bool),
         analysis: Option<&nc_analysis::FrameAnalysis>,
         motion: Option<&nc_analysis::MotionAnalysis>,
     ) -> (bool, f64) {
@@ -1837,6 +1838,8 @@ impl<B: CodecBackend> Encoder<B> {
             return (reuse_frame, 0.0);
         };
         let depth = (!rc_key).then(|| self.cadence_depth(analysis, &layer_plan.references));
+        let share = self.layer_share(index, rc_key, from_lower_key, Some(&analysis.pre));
+        let key_bound = rc_key && self.reuse_key_bound(index, &analysis.pre, &share);
         let rframe = ReuseFrame {
             still: &analysis.still,
             pre: &analysis.pre,
@@ -1844,6 +1847,7 @@ impl<B: CodecBackend> Encoder<B> {
             horizon: self.spatial_frames_to_next_key(layer_plan.spatial_id),
             sample_step: self.reuse_sample_step(),
             role_offset: self.reuse_role_offset(index, rc_key, &layer_plan.references, depth),
+            key_bound,
         };
         let step_dist = if layer_plan.spatial_id == 1 {
             let interval = self

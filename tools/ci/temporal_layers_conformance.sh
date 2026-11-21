@@ -24,7 +24,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 ANCHORS=${NC_ANCHORS:-$HOME/nanocodec-data/anchors/$(uname -m)}/bin
 NANOCODEC=${NANOCODEC:-$REPO/target/release/nanocodec}
-WORK=$(mktemp -d)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-temporal-layers-conformance-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 CODECS=("$@")

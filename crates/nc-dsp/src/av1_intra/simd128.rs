@@ -7,8 +7,9 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::wasm32::{
-    i16x8_mul, u8x16_narrow_i16x8, u16x8_add, u16x8_avgr, u16x8_extend_low_u8x16, u16x8_shr,
-    u16x8_splat, u16x8_sub, v128, v128_and, v128_load64_zero, v128_store64_lane, v128_xor,
+    i16x8_mul, u8x16_narrow_i16x8, u16x8_add, u16x8_avgr, u16x8_extend_high_u8x16,
+    u16x8_extend_low_u8x16, u16x8_shr, u16x8_splat, u16x8_sub, v128, v128_and, v128_load,
+    v128_load64_zero, v128_store, v128_store64_lane, v128_xor,
 };
 
 use nc_common::PlaneViewMut;
@@ -22,7 +23,8 @@ super::generic::av1_intra_kernels!(;
     crate::simd::simd128::I16x8
 );
 
-/// Outputs per half step of the smooth kernels.
+/// Outputs per full and per half step of the smooth kernels.
+const STEP: usize = 16;
 const HALF_STEP: usize = 8;
 
 /// SIMD128 directional kernels.
@@ -81,15 +83,15 @@ impl SmoothRow {
 /// carried low bit.
 #[inline(always)]
 fn smooth8(mode: IntraMode, row: SmoothRow, top: v128, wx: v128) -> v128 {
-    let vertical = u16x8_add(i16x8_mul(top, row.wy), row.vertical);
-    let horizontal = u16x8_add(i16x8_mul(wx, row.slope), row.horizontal);
     let sum = match mode {
         IntraMode::Smooth => {
+            let vertical = u16x8_add(i16x8_mul(top, row.wy), row.vertical);
+            let horizontal = u16x8_add(i16x8_mul(wx, row.slope), row.horizontal);
             let carry = v128_and(v128_xor(vertical, horizontal), u16x8_splat(1));
             u16x8_sub(u16x8_avgr(vertical, horizontal), carry)
         }
-        IntraMode::SmoothVertical => vertical,
-        _ => horizontal,
+        IntraMode::SmoothVertical => u16x8_add(i16x8_mul(top, row.wy), row.vertical),
+        _ => u16x8_add(i16x8_mul(wx, row.slope), row.horizontal),
     };
     u16x8_shr(
         u16x8_add(sum, u16x8_splat(1 << (SMOOTH_SHIFT - 1))),
@@ -98,30 +100,67 @@ fn smooth8(mode: IntraMode, row: SmoothRow, top: v128, wx: v128) -> v128 {
 }
 
 /// AV1 smooth prediction (§7.11.2.6) of `mode`, one of the three smooth
-/// modes, on a side of 8 or more: 8 outputs per step.
+/// modes, on a side of 8 or more: 16 outputs per step (8 on 8x8).
 unsafe fn smooth(edges: &IntraEdges, mode: IntraMode, dst: &mut PlaneViewMut<'_>) {
+    // One inlined copy per mode, so that no row tests the mode again or
+    // computes the unused axis.
+    // SAFETY: SIMD128 is enabled for the whole build.
+    unsafe {
+        match mode {
+            IntraMode::Smooth => smooth_rows(edges, IntraMode::Smooth, dst),
+            IntraMode::SmoothVertical => smooth_rows(edges, IntraMode::SmoothVertical, dst),
+            _ => smooth_rows(edges, IntraMode::SmoothHorizontal, dst),
+        }
+    }
+}
+
+/// The rows of [`smooth`] for one `mode`.
+///
+/// # Safety
+///
+/// SIMD128 must be enabled in the caller.
+#[inline(always)]
+unsafe fn smooth_rows(edges: &IntraEdges, mode: IntraMode, dst: &mut PlaneViewMut<'_>) {
     let n = edges.size();
     assert!(n >= HALF_STEP && dst.width() == n && dst.height() == n);
     let (above, left) = (edges.above_row(), edges.left_column());
     let weights = smooth_weights(n);
     let (bottom, right) = (left[n - 1], above[n - 1]);
-    for (y, (&wy, &l)) in weights.iter().zip(left).enumerate() {
-        let row = SmoothRow::new(wy, l, bottom, right);
-        let out = &mut dst.row_mut(y)[..n];
-        for x0 in (0..n).step_by(HALF_STEP) {
-            // SAFETY: SIMD128 is enabled for the whole build; every load
-            // and store covers checked subslices.
-            unsafe {
-                let top = u16x8_extend_low_u8x16(v128_load64_zero(
-                    above[x0..][..HALF_STEP].as_ptr().cast(),
-                ));
-                let wx = u16x8_extend_low_u8x16(v128_load64_zero(
-                    weights[x0..][..HALF_STEP].as_ptr().cast(),
-                ));
+    // SAFETY: SIMD128 is enabled for the whole build; every load and store
+    // covers checked subslices.
+    unsafe {
+        if n == HALF_STEP {
+            let top = u16x8_extend_low_u8x16(v128_load64_zero(above[..HALF_STEP].as_ptr().cast()));
+            let wx = u16x8_extend_low_u8x16(v128_load64_zero(weights[..HALF_STEP].as_ptr().cast()));
+            for (y, (&wy, &l)) in weights.iter().zip(left).enumerate() {
+                let row = SmoothRow::new(wy, l, bottom, right);
+                let out = &mut dst.row_mut(y)[..HALF_STEP];
                 let value = smooth8(mode, row, top, wx);
-                v128_store64_lane::<0>(
-                    u8x16_narrow_i16x8(value, value),
-                    out[x0..][..HALF_STEP].as_mut_ptr().cast(),
+                v128_store64_lane::<0>(u8x16_narrow_i16x8(value, value), out.as_mut_ptr().cast());
+            }
+            return;
+        }
+        for (y, (&wy, &l)) in weights.iter().zip(left).enumerate() {
+            let row = SmoothRow::new(wy, l, bottom, right);
+            let out = &mut dst.row_mut(y)[..n];
+            for x0 in (0..n).step_by(STEP) {
+                let top = v128_load(above[x0..][..STEP].as_ptr().cast());
+                let wx = v128_load(weights[x0..][..STEP].as_ptr().cast());
+                let low = smooth8(
+                    mode,
+                    row,
+                    u16x8_extend_low_u8x16(top),
+                    u16x8_extend_low_u8x16(wx),
+                );
+                let high = smooth8(
+                    mode,
+                    row,
+                    u16x8_extend_high_u8x16(top),
+                    u16x8_extend_high_u8x16(wx),
+                );
+                v128_store(
+                    out[x0..][..STEP].as_mut_ptr().cast(),
+                    u8x16_narrow_i16x8(low, high),
                 );
             }
         }

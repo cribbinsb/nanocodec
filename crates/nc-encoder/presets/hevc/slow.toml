@@ -1,32 +1,24 @@
-# HEVC slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first: the second reference with the full decision) plus HEVC's
-# levers. Re-picked 2026-11-20 (docs/handoff/presets.md "Slow presets"):
-# everything heavy on at once, then cut back by component cost. Alone on the
-# Default (fixed QP J, 21 clips / x86 callgrind P instructions): the winner
-# walk -2.2% / +15%, SAO searched on every row and picture with band offsets
-# -1.8% / +34%, four trellis survivors with the chroma trellis -1.1% / +47%,
-# the second reference -0.6% / +22%, the P-frame intra search widened -0.4% /
-# +20% (-0.8% inside the bundle). Left out: whole-CU pricing on inter error
-# (-0.5 J in the bundle for +57 points), exact staged transforms (0.0% at
-# +8%), the sub-sample walk (-0.1%), the inter transform-split spread, five
-# merge candidates and the TU16 chroma heuristic (+0.6%, worse), 8x8 inter
-# CUs (+0.3%, worse).
-#
-# The winner walk: three quarter-sample moves along the row and column.
-decision.winner_walk_steps = 3
-decision.winner_walk_square = 0
-# SAO: statistics on every row, types searched on every picture, band
-# offsets evaluated beside the edge classes (HEVC §8.7.3).
-hevc.sao_stats_row_step = 1
-hevc.sao_search_interval = 1
-hevc.sao_band = 1
-# Four trellis survivors, chroma trellised at a quarter of the λ.
-quant.trellis_states = 4
-quant.trellis_chroma = 0.25
-# P-frame intra: the full angular search (HEVC's 35 modes), eight modes
-# costed, and the NxN and intra transform-split gates open.
-hevc.coarse_inter_intra = 0
-hevc.intra_rd_candidates = 8
-hevc.intra_nxn_min_cost = 0
-hevc.intra_tu_split_min_cost = 0
-hevc.intra_tu_split_spread = 1
+# HEVC slow (`--preset slow`): the Default plus the RD partition search with its
+# context gate (`nc_encoder` `rd_split.rs`, `depth_context.rs`;
+# docs/handoff/rd-split-gate.md): inter nodes decided by coding the plan's
+# alternative where the neighbours' and co-located leaf sizes suggest it.
+# The rung between medium and slower on HEVC's front (docs/handoff/presets.md
+# "The ladder"). Against medium, preset-ladder 2026-11-21 (16a104a1b): whole-encode
+# fps 131.4 -> 97.8 (1.34x the time) (combined: Graviton 3/4 and Zen 5, log-equal ARM/x86, 720p CBR 600,
+# 4 quick clips); final check (34 clips, 600 f, keys every 10 s, draw 2026-11-21)
+# J -3.64 % [-4.76, -2.46], no guard.
+# rd-gate train (k 0.1, base a10208d08): L3 J -0.15 % [-0.46, +0.16] n108,
+# final check -4.07 % [-4.87, -2.99] n34, no guard.
+planner.rd_split = 1
+planner.rd_split_context = 1
+# The Default's filter-search effort by usage (filter.usage_quiet_share, 2026-11-21)
+# is not screened here.
+filter.usage_quiet_share = 0
+
+# Layer propagation on the flat stream's QP-cadence cycles (layer_propagation.rs,
+# docs/handoff/temporal-lambda.md). nceval.train (k 0.1, base f953cd97d): L3 (n 108)
+# -0.67 % [-1.32, -0.09] BETTER, final-check (n 34) -1.27 % [-2.07, -0.78] BETTER; whole encode cycles Graviton3 +2.32 %, Zen 5 +2.82 % (HEVC Default).
+layers.propagation = 1
+layers.propagation_flat = 1
+layers.propagation_grid = 3
+layers.propagation_prekey = 1

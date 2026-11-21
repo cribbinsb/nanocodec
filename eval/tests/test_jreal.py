@@ -324,3 +324,39 @@ def test_xpsnr_is_reported_beside_j_never_in_it():
         jreal.compare_clip(curve(1.0, False), curve(0.9, False))["quality"])
     assert jreal.compare_clip(anchor, curve(0.9, False))["bd_xpsnr_yuv"] is None
     assert "bd_xpsnr_yuv" in jreal.TERMS
+
+
+def periodic_point(kbps, p_psnr, key_psnr, frames=600, period=300):
+    """A CBR point whose P frames sit at `p_psnr` and whose later key at `key_psnr`."""
+    keys = [i % period == 0 for i in range(frames)]
+    psnr = [key_psnr if k else p_psnr for k in keys]
+    return {"kbps": kbps, "target_kbps": kbps, "psnr_yuv": p_psnr, "vmaf_v1": 80.0,
+            "ms_ssim": 0.95, "overruns": 0, "max_fullness": 0.5, "rate_valid": True,
+            **jreal.temporal_stats(psnr, [80.0] * frames, keys)}
+
+
+def pulse_terms(anchor_p, anchor_key, test_p, test_key):
+    anchor = [periodic_point(r, anchor_p + d, anchor_key + d) for r, d in ((300, 0), (600, 1))]
+    test = [periodic_point(r, test_p + d, test_key + d) for r, d in ((300, 0), (600, 1))]
+    terms = jreal.compare_clip(anchor, test, min_points=2)
+    return terms, jreal.key_attributed_pulse(terms["d_periodic_pulse_psnr_y"],
+                                             terms["d_periodic_key_psnr_y"])
+
+
+def test_a_pulse_from_better_p_frames_with_the_key_unchanged_is_not_counted():
+    terms, guarded = pulse_terms(40.0, 39.8, 40.6, 39.8)
+    assert terms["d_periodic_pulse_psnr_y"] == pytest.approx(0.6)  # the raw pulse grew
+    assert terms["d_periodic_pre_key_psnr_y"] == pytest.approx(0.6)  # because P improved
+    assert guarded == pytest.approx(0.0)
+
+
+def test_a_key_worse_by_six_tenths_trips_the_worst_clip_guard():
+    terms, guarded = pulse_terms(40.0, 39.8, 40.0, 39.2)
+    assert terms["d_periodic_key_psnr_y"] == pytest.approx(-0.6) and guarded == pytest.approx(0.6)
+    assert guarded > jreal.PULSE_WORST_CLIP_DB
+
+
+def test_better_p_and_a_worse_key_count_only_the_key_part():
+    terms, guarded = pulse_terms(40.0, 39.8, 40.3, 39.5)
+    assert terms["d_periodic_pulse_psnr_y"] == pytest.approx(0.6)
+    assert guarded == pytest.approx(0.3)  # the key's 0.3 dB, not the raw 0.6

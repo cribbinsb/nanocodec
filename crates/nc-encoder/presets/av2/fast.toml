@@ -1,3 +1,13 @@
+# Re-pointed 2026-11-21 (preset-ladder; docs/handoff/presets.md "The ladder"): AV2
+# faster and fast were 1.13x apart. The gap study pl-s10k-av2-fast (trial 56; seeded
+# from this rung and medium) moved fast toward medium: trellis quantisation, CDEF
+# checked every 11th row, the MV bank with DRL 2, light effort on non-base frames
+# only, and smaller per-role shifts (values set in place below). ff40ad7bf, against
+# medium: whole-encode 1.25x the old fast's time (faster 1.42x faster than this rung,
+# medium 1.24x slower; Graviton 3/4 and Zen 5, 720p CBR 600); final check (34 clips,
+# 600 f, draw 2026-11-21) J +4.11 % [+3.52, +5.20] (the old fast +9.46 %), 0.52 better
+# than the medium-faster log-speed chord.
+#
 # AV2 Fast: the speed point (docs/PROCEDURES.md "Preset roles"), judged at
 # Fast's k 0.6 against our AV1 Fast (J_real board row). Levers ranked one by
 # one against the AV2 Default (proxy-4, 60 f; quality % for Jetson CPU %,
@@ -17,16 +27,16 @@ light.decision.exact_rank_margin = 1.1
 # AV1 Fast's sub-pel gates (seed 0.1 lambdas, move biases 1.1) on non-base
 # frames only: on every frame they lost pan quality (proxy-6 vs AV1 Fast:
 # pan class +4.1% with them, +1.0% non-base only).
-nonbase.decision.codec_subpel_seed_lambdas = 0.1
+nonbase.decision.codec_subpel_seed_lambdas = 0.06701
 nonbase.decision.subpel_move_bias = 1.1
 nonbase.decision.subpel_move_bias_nonzero = 1.1
-nonbase.decision.subpel_fractional_bias = 1.1
+nonbase.decision.subpel_fractional_bias = 1.051
 # Pre-transform luma skip (SVT light-PD1; +1.1% for -5.0%), the texture
 # zero test at allowance 8 (+1.5% for -4.6%) and the skip estimate at 8
 # (+0.5% for -1.8%).
 nonbase.av2.pre_tx_skip = 1
 nonbase.av2.zero_test_texture_scale = 8
-nonbase.av2.skip_estimate = 8
+nonbase.av2.skip_estimate = 5
 # Luma-only deblocking (av2-fast-speed, 2026-11-13): the chroma channels
 # cost 2.8% x86 instructions / 2.7% Jetson time for little: PSNR-YUV +2.0%
 # but VMAF v1 -1.4%, MS-SSIM 0.0% (L2). Pool levels, rotation 2026-11-13,
@@ -37,13 +47,13 @@ av2.deblock_chroma = 0
 # every 4th (av2-fast-speed, then the model's off-or-model check): x86
 # -1.4%, Jetson -1.6%; L2 quality 0.0%, L2+L3 J -0.95% [-1.16, -0.76]
 # BETTER at k 0.6, no guard.
-av2.cdef_check_row_period = 16
+av2.cdef_check_row_period = 11
 # Trellis quantisation is a Default quality arm (+2.9% for -9.7%). CDEF
 # codes one set chosen by the shared probe (off, the quantiser model and a
 # short strength ladder; nc-encoder cdef_model.rs), not the search's sets.
 # Probe vs the model alone (cdef-model-fix, 2026-11-18): VC-1K fixed QP J
 # -14.0%, lens J -1.0, CBR L1 -3.4%, c8a +3.8% (search: -14.1%, ~+6%).
-quant.trellis = 0
+quant.trellis = 1
 av2.cdef = 1
 # Kept from the Default because they cost more than they save: deblocking
 # (off: +3.2% for -4.9%, and +8% J_real against AV1 Fast in the bundle),
@@ -61,14 +71,14 @@ av2.cdef = 1
 planner.depth_removal_qp_scale = 1
 # The Default's chroma P-frame rounding (48/128) is a Default quality arm;
 # Fast keeps chroma at luma's 32/128.
-av2.inter_chroma_rounding_delta_q7 = 0
+av2.inter_chroma_rounding_delta_q7 = 18
 # The Default's qindex-ramped finer chroma (av2.chroma_delta_q_coarse -12)
 # stays off: 2026-11-20 ladder spacing, below.
-av2.chroma_delta_q_coarse = 0
+av2.chroma_delta_q_coarse = -5
 # The Default's luma give-back (P rounding 36/128, lambda 0.125 per squared
 # step) is a Default quality arm, not screened on Fast.
-av2.inter_rounding_q7 = 32
-nonbase.av2.lambda_per_step_squared = 0.135
+av2.inter_rounding_q7 = 37
+nonbase.av2.lambda_per_step_squared = 0.1322
 # The Default's jointly tuned planner lambda (2026-11-12) on light
 # superblocks too: 2026-11-20 ladder spacing, below.
 light.planner.lambda_scale = 2.58125
@@ -105,7 +115,7 @@ layers.adaptive_max_repeat_share = 0.25
 layers.adaptive_max_static = 0.68
 layers.adaptive_max_camera_jitter = 2
 decision.subpel_walk = 2
-decision.subpel_walk_max_noise_sigma = 1
+decision.subpel_walk_max_noise_sigma = 82
 
 # Effort by frame role, "base-only" (2026-11-17, docs/analysis/zen5-fixed-qp-goal.md
 # "Base-only on the other codecs"): keys and base frames code with the
@@ -121,7 +131,7 @@ decision.exact_rank_margin = 0
 planner.depth_removal_th_16_8 = 0
 planner.depth_removal_th_32_16 = 0
 planner.lambda_scale = 2.58125
-effort.regular_fraction = 0
+effort.regular_fraction = 1
 effort.light_nonbase_only = 1
 
 # Mode-decision trials price coefficient levels with the fitted model
@@ -155,3 +165,19 @@ rate.still_level_damping = 0
 # AV2 Default's key still boost moved 4 -> 6 (2026-11-19, docs/handoff/rate-control.md):
 # not screened for this preset.
 rate.key_still_boost = 4
+# Still blocks (`still.*` detector) take the zero vector with no candidate,
+# sub-sample or intra trial (`decision.static_zero_vector`; fast-paths
+# agent, 2026-11-20, docs/handoff/fast-paths.md). Jetson cycles (90 f CBR
+# 600) pan -0.6%, crowd 0.0%, bodycam -4.6%, lowlight +0.6%. CBR pool at
+# k 0.6, dCPU -0.95%: L1 -0.51%, L2 -0.69%, L3 -0.54% [-0.70, -0.39]
+# BETTER, n=108, no guards; final-check 600 f J -0.04% [-0.27, +0.16], no
+# guards.
+decision.static_zero_vector = 0
+# The Default's reference MV bank and four-entry DRL (2026-11-21) stay off here: pool
+# L1 at k 0.6 +0.95% [+0.56, +1.33] at whole-encode +4.7% (quality alone gains, the CPU does not pay at this rung).
+av2.ref_mv_bank = 1
+av2.max_drl_bits = 2
+
+# Layer propagation (the codec Default's flat-stream form, docs/handoff/temporal-lambda.md)
+# stays off here: layered here, and the layered form lost (quick L1 -0.30 %, probe +0.08 %; fixed QP +1.2 %).
+layers.propagation = 0

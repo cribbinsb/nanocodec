@@ -98,6 +98,7 @@ const ENCODE_OUTPUT_FLAGS: &[&str] = &[
     "--display-recon",
     "--layer-md5",
     "--spatial-stats",
+    "--filter-stats",
     "--sse-log",
     "--rate-log",
     "--timestamps-out",
@@ -118,6 +119,8 @@ struct EncodeArgs {
     layer_md5: Option<PathBuf>,
     /// `--spatial-stats`: JSON summary of spatial reference and byte statistics.
     spatial_stats: Option<PathBuf>,
+    /// `--filter-stats`: JSON of the filter searches' outcomes by tool and role.
+    filter_stats: Option<PathBuf>,
     /// `--sse-log` and its `--sse-reference`: the shown pictures' errors.
     sse_log: Option<(PathBuf, PathBuf)>,
     width: usize,
@@ -318,6 +321,7 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         display_recon: get("--display-recon").map(PathBuf::from),
         layer_md5: get("--layer-md5").map(PathBuf::from),
         spatial_stats: get("--spatial-stats").map(PathBuf::from),
+        filter_stats: get("--filter-stats").map(PathBuf::from),
         sse_log: match (get("--sse-log"), get("--sse-reference")) {
             (Some(log), Some(reference)) => Some((log.into(), reference.into())),
             (None, None) => None,
@@ -947,11 +951,49 @@ fn run<B: CodecBackend, S: FrameSink>(
     if let Some(path) = args.spatial_stats.as_deref() {
         telemetry.write(path, &encoder)?;
     }
+    if let Some(path) = args.filter_stats.as_deref() {
+        write_filter_stats(path, encoder.filter_outcome_stats())?;
+    }
     recon_out.finish()?;
     if let Some(out) = timestamps_out {
         out.finish().map_err(|e| e.to_string())?;
     }
     sink.finish()
+}
+
+/// `--filter-stats`: one JSON object per (tool, frame role) with the units
+/// by search outcome (`nc_encoder::FilterOutcomeStats`).
+fn write_filter_stats(path: &Path, stats: &nc_encoder::FilterOutcomeStats) -> Result<(), String> {
+    let rows: Vec<String> = stats
+        .iter()
+        .map(|(tool, role, o)| {
+            let given: Vec<String> = nc_encoder::Given::ALL
+                .iter()
+                .zip(&o.given)
+                .map(|(given, t)| {
+                    format!(
+                        "\"{}\":[{},{},{}]",
+                        given.name(),
+                        t.units,
+                        t.off,
+                        t.unchanged
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"tool\":\"{}\",\"role\":\"{}\",\"units\":{},\"searched\":{},\"searched_off\":{},\"searched_unchanged\":{},\"given\":{{{}}}}}",
+                tool.name(),
+                role.name(),
+                o.units,
+                o.searched,
+                o.searched_off,
+                o.searched_unchanged,
+                given.join(",")
+            )
+        })
+        .collect();
+    std::fs::write(path, format!("[{}]\n", rows.join(",")))
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn apply_simulated_loss<B: CodecBackend>(

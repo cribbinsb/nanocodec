@@ -1,3 +1,12 @@
+# Re-pointed 2026-11-21 (preset-ladder; docs/handoff/presets.md "The ladder"): VP9
+# faster and veryfast were 1.13x apart. The gap study pl-s11t-vp9-faster (trial 59;
+# seeded from this rung, fast and veryfast) moved faster toward fast (values set in
+# place below). ff40ad7bf, against medium: whole-encode 1.22x the old faster's time
+# (224.9 fps combined: veryfast 1.38x faster than this rung, fast 1.38x slower;
+# Graviton 3/4 and Zen 5, 720p CBR 600); final check (34 clips, 600 f, draw 2026-11-21)
+# J +20.48 % [+18.13, +23.23] (the old faster +28.56 %), 2.23 better than the
+# medium-faster log-speed chord.
+#
 # VP9 Faster: the speed point below VP9 Fast (vp9-faster agent, 2026-11-12;
 # docs/handoff/vp9-faster.md). vp9-fast plus the levers with the least
 # quality lost per CPU saved: single-lever J_real (k 0, pool L1 draw of
@@ -19,11 +28,23 @@ vp9.inter_tx_split_spread = 1.5
 # and the quarter-sample stage only after a half-sample move: with the
 # spread gate off, Jetson about -6%, x86 -7.3% CPU; quality vs Default
 # (proxy-4) +3.4% full / +2.5% low, pan worst.
-decision.codec_subpel_seed_lambdas = 0.05
+# Since 2026-11-21 the seed gate also gates the bilinear ranking's winner
+# refinement (fast-decision, docs/handoff/fast-decision.md): Jetson cycles
+# -2.3%, x86 -2.44%; pool L3 J -0.82% [-0.96, -0.67] at k 0.6 (quality
+# +0.55%), final-check quality +0.36% [+0.28, +0.51], no guards.
+decision.codec_subpel_seed_lambdas = 0.009689
 decision.subpel_move_bias = 1.1
 decision.subpel_move_bias_nonzero = 1.1
 decision.subpel_fractional_bias = 1.1
 decision.subpel_quarter_needs_half_move = 1
+# Where that skips the quarter stage, the half stage's costs predict the
+# quarter step and one probe confirms it (`decision.subpel_quarter_predict`,
+# docs/analysis/literature-ideas-2026-11-21.md §4): fixed QP J -2.70 % of the
+# full quarter stage's -2.80 %; whole-encode cycles Graviton3 +2.10 %,
+# Graviton4 +1.87 %, Zen 5 +1.75 % (aws_cpu_ab); L3 J -0.44 % [-0.84, -0.06],
+# final-check -0.68 % [-1.19, -0.36] at dCPU +1.47 %, about -0.20 / -0.44 %
+# at the cloud dCPU +1.87 % (k 0.6).
+decision.subpel_quarter_predict = 1
 # 32x32 transforms code only their low 16x16 frequencies (encoder-side
 # forward approximation; NEON computes only those): crowd 720p q230 Jetson
 # -3.9%, x86 +1.6% (full forward then zeroed there), weighted -2.1%; J_real
@@ -53,7 +74,7 @@ planner.depth_removal_min_quantizer = 0
 rate.cadence_scale = 1.4
 # The Default's jointly tuned planner lambda (2026-11-12) is not screened for
 # this preset: it keeps the previous value.
-planner.lambda_scale = 2
+planner.lambda_scale = 2.052
 #
 # The Faster levers (quality / Jetson time, each alone vs vp9-fast):
 # Intra blocks of inter frames take DC without a mode search (-0.6 / -2.3%).
@@ -67,15 +88,15 @@ persist.reuse = 0
 vp9.intra_mode_search = 2
 # Inter residual within 3x the zero proof's bound is dropped before the
 # transform (+0.6 / -2.2%).
-vp9.pre_transform_zero_scale = 3
+vp9.pre_transform_zero_scale = 1
 # Inter transforms at most 16x16 (+1.9 / -4.6%).
 vp9.inter_max_tx_log2 = 4
 # Inter blocks code their largest transform only (+4.8 / -6.2%; with the
 # 16x16 cap together -12.9%).
-vp9.inter_tx_depth = 0
+vp9.inter_tx_depth = 1
 # Non-base frames of the QP cadence (3 of 4) skip the loop filter
 # (+3.4 / -4.4%; long GOP in the handoff).
-nonbase.vp9.filter_level_scale = 0
+nonbase.vp9.filter_level_scale = 0.4404
 #
 # Round 2: libvpx's real-time encoder (vp9_pickmode.c, BSD; reimplemented).
 # Transform blocks under its variance thresholds skip the transform, coding
@@ -84,7 +105,7 @@ nonbase.vp9.filter_level_scale = 0
 vp9.nonrd_skip_scale = 1
 # Residual RD and transform trials price levels at 4 bits per unit of
 # magnitude instead of their token costs (block_yrd; +3.1 / -8.0% alone).
-vp9.residual_bits_per_level = 4
+vp9.residual_bits_per_level = 7
 #
 # Round 3 (2026-11-13), libvpx real-time ports. Bundle vs round 2: pool
 # L1-L3 (2026-11-13 draw, n 127) quality J_real -0.59% (better), J at
@@ -136,8 +157,39 @@ vp9.intra_rd_candidates = 1
 # inter-intra transform depth (+3.1%), structure (+2.6%).
 decision.intra_gate_variance = 6.857
 vp9.intra_mode_estimate = 1
-vp9.chroma_delta_q = -14
+vp9.chroma_delta_q = -7
 vp9.chroma_delta_gap_slope = 3
 rate.prekey_quiet = 1
 rate.period_ceiling = 1
 rate.key_still_boost = 6
+
+# Not screened with the Default's exact ranking and winner walk (2026-11-20).
+vp9.exact_ranking = 0
+# Still blocks (`still.*` detector) take the zero vector with no candidate,
+# sub-sample or intra trial (`decision.static_zero_vector`; fast-paths
+# agent, 2026-11-20, docs/handoff/fast-paths.md). Jetson cycles (90 f CBR
+# 600) pan -0.8%, crowd +0.1%, bodycam -5.2%, lowlight +0.2%. CBR pool at
+# k 0.6, dCPU -1.45%: L1 -0.81%, L2 -0.79%, L3 -1.29% [-1.37, -1.00]
+# BETTER, n=108, no guards; final-check 600 f J -0.01% [-0.35, +0.38],
+# no guards.
+decision.static_zero_vector = 1
+# The bilinear ranking's skip shortcut (`decision.skip_no_refine_lambdas`)
+# became live when VP9 gained its skip vector (NEARESTMV, 2026-11-20);
+# pinned off, as before, until screened on this rung.
+decision.skip_no_refine_lambdas = 0
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here (docs/handoff/planner-selector.md).
+planner.split_selector = 0
+# Set by the pick, not in the file it starts from:
+effort.light_nonbase_only = 1
+effort.regular_fraction = 1
+nonbase.vp9.partial_forward = 1
+
+# The trellis's cheap substitute (`quant.rd_trim`, docs/handoff/cheap-rdoq.md): trailing
+# ±1 and whole-block rules at 1.5x the mode-decision λ. nceval.train (3c98c85f0f, base
+# eb55cd325, draw 2026-11-21, k 0.6): L3 J -0.48 % [-0.73, -0.24] n=108, final check J
+# -1.25 % [-1.76, -0.80] n=34; cycles +1.2 / +1.3 / +0.9 % (Graviton 3 / 4, Zen 5).
+quant.rd_trim = 1
+quant.rd_trim_block = 1
+quant.rd_trim_lambda_scale = 1.5

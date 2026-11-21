@@ -95,12 +95,72 @@ impl CdefMap {
             }
         }
     }
+    /// Note the coded-unit masks of the filter block holding the `w4` x
+    /// `h4` units at (`mi_col`, `mi_row`) (inside one filter block) for the
+    /// unit rows they cover, in `saved` (a coding trial).
+    pub(crate) fn save_coded(
+        &self,
+        (mi_col, mi_row): (usize, usize),
+        h4: usize,
+        saved: &mut Vec<u8>,
+    ) {
+        saved.clear();
+        let block = mi_col >> FILTER_BLOCK_MI_LOG2;
+        saved.extend(
+            self.unit_rows(mi_row, h4)
+                .map(|row| self.coded[row * self.columns + block]),
+        );
+    }
+
+    /// Put back what [`Self::save_coded`] noted of the same units.
+    pub(crate) fn restore_coded(
+        &mut self,
+        (mi_col, mi_row): (usize, usize),
+        h4: usize,
+        saved: &[u8],
+    ) {
+        let block = mi_col >> FILTER_BLOCK_MI_LOG2;
+        for (row, &mask) in self.unit_rows(mi_row, h4).zip(saved) {
+            self.coded[row * self.columns + block] = mask;
+        }
+    }
+
+    /// The unit rows `h4` 4x4 rows from `mi_row` cover, clipped to the frame.
+    fn unit_rows(&self, mi_row: usize, h4: usize) -> std::ops::Range<usize> {
+        let rows = self.coded.len() / self.columns.max(1);
+        let first = mi_row >> UNIT_MI_LOG2;
+        first.min(rows)..((mi_row + h4).div_ceil(1 << UNIT_MI_LOG2)).min(rows)
+    }
+
     /// Give filter block `i` (raster order) the index `index(i)`: an
     /// encoder that decides its indices after coding the blocks.
     pub(crate) fn set_block_indices(&mut self, mut index: impl FnMut(usize) -> i8) {
         for (block, value) in self.index.iter_mut().enumerate() {
             *value = index(block);
         }
+    }
+    /// Each filter block's share of its 8x8 units that are coded
+    /// ([`Self::coded_block`]), filter blocks in raster order.
+    pub(crate) fn block_coded_shares(&self) -> Vec<f32> {
+        let columns = self.columns.max(1);
+        let unit_rows = self.coded.len() / columns;
+        let block_rows = unit_rows.div_ceil(UNITS_PER_BLOCK);
+        (0..block_rows * columns)
+            .map(|block| {
+                let (block_col, block_row) = (block % columns, block / columns);
+                let rows =
+                    block_row * UNITS_PER_BLOCK..((block_row + 1) * UNITS_PER_BLOCK).min(unit_rows);
+                let width = self
+                    .unit_columns
+                    .saturating_sub(block_col * UNITS_PER_BLOCK)
+                    .min(UNITS_PER_BLOCK);
+                let coded: u32 = rows
+                    .clone()
+                    .map(|row| self.coded[row * columns + block_col].count_ones())
+                    .sum();
+                coded as f32 / (rows.len() * width).max(1) as f32
+            })
+            .collect()
     }
     /// The number of coded 8x8 units ([`Self::coded_units`]).
     pub(crate) fn coded_count(&self) -> usize {

@@ -1491,6 +1491,10 @@ pub(crate) unsafe fn h264_dequantize<V: I32Lanes>(
 /// §8.5.13.2 with all other inputs zero).
 #[inline(always)]
 pub(super) fn add_constant<V: I32Lanes>(value: i32, n: usize, dst: &mut [u8], stride: usize) {
+    if n >= 8 {
+        V::add_constant_u8(value, n, dst, stride);
+        return;
+    }
     let lanes = V::splat(value);
     for r in 0..n {
         for c in (0..n).step_by(V::LANES) {

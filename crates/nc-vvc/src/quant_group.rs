@@ -132,6 +132,9 @@ pub(crate) fn row_start_prediction(map: &QpMap, x: usize, y: usize) -> Option<u3
 }
 
 /// `QpY` of every 8x8 luma cell of a picture (deblocking's `QpP`/`QpQ`).
+/// A rectangle of [`QpMap`] cells: the grid, (row, column) and size.
+type GridRect = ((usize, usize), (usize, usize), (usize, usize));
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct QpMap {
     columns: usize,
@@ -160,6 +163,32 @@ impl QpMap {
             let end = row * self.columns + (x0 + w).min(self.columns);
             self.cells[start..end].fill(qp as u8);
         }
+    }
+
+    /// Note the cells of `block` (a coding trial: deblocking reads the map,
+    /// so an undone or put-back coding's QPs must come back with it).
+    pub(crate) fn save(&self, block: &nc_encoder::Block, saved: &mut Vec<u8>) {
+        let (grid, at, size) = self.cells_of(block);
+        nc_common::cell_grid::save_rect(&self.cells, grid, at, size, saved);
+    }
+
+    /// Put back what [`Self::save`] noted of `block`.
+    pub(crate) fn restore(&mut self, block: &nc_encoder::Block, saved: &[u8]) {
+        let (grid, at, size) = self.cells_of(block);
+        nc_common::cell_grid::restore_rect(&mut self.cells, grid, at, size, saved);
+    }
+
+    /// The grid, (row, column) and size of `block`'s cells.
+    fn cells_of(&self, block: &nc_encoder::Block) -> GridRect {
+        let rows = self.cells.len() / self.columns.max(1);
+        (
+            (self.columns, rows),
+            (block.y >> CELL_LOG2, block.x >> CELL_LOG2),
+            (
+                (block.width() >> CELL_LOG2).max(1),
+                (block.height() >> CELL_LOG2).max(1),
+            ),
+        )
     }
 
     /// `QpY` of the CU covering luma sample (`x`, `y`).

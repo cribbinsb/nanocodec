@@ -69,6 +69,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from . import tempdirs
 from .clipframes import ClipFrames
 from . import gpuserve
 from .config import Paths, find_tool
@@ -192,7 +193,7 @@ def _vmafx_self_check(command: tuple[str, ...], model: Path) -> None:
     """
     fmt = _SELF_CHECK_FORMAT
     pattern = bytes(range(256)) * (fmt.frame_size * _SELF_CHECK_FRAMES // 256 + 1)
-    with tempfile.TemporaryDirectory(prefix="nc-vmafx-check-") as scratch:
+    with tempdirs.temp_dir("vmafx-check") as scratch:
         reference = Path(scratch) / "reference.yuv"
         reference.write_bytes(pattern[:fmt.frame_size * _SELF_CHECK_FRAMES])
         report = Path(scratch) / "report.json"
@@ -769,7 +770,7 @@ class MetricSession:
         self.sinks: list[FrameSink] = []
 
     def __enter__(self) -> "MetricSession":
-        self._scratch = tempfile.TemporaryDirectory(prefix="nc-metrics-")
+        self._scratch = tempdirs.temp_dir("metrics")
         try:
             for component in self._components:
                 self.sinks += component.start(self._processes, Path(self._scratch.name))

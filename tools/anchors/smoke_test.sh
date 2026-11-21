@@ -200,7 +200,7 @@ main() {
     command -v "$FFMPEG" >/dev/null || die "ffmpeg not found (set FFMPEG)"
     local own_work=0
     if [[ -z $WORK ]]; then
-        WORK=$(mktemp -d)
+        WORK=$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-smoke-test-XXXXXX")
         own_work=1
     fi
     mkdir -p "$WORK"

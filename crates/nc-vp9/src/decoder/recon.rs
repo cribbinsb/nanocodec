@@ -15,7 +15,7 @@ use nc_dsp::{
 };
 
 use super::block::{BlockInfo, REFS_PER_FRAME};
-use super::frame::{BlockPosition, FrameDecoder, Tile};
+use super::frame::{BlockPosition, FrameDecoder, SB_4X4_LOG2, Tile, context_mask};
 use super::header::valid_reference_size;
 use crate::bool_coder::BoolReader;
 use crate::coeff::{self, Coder, Dequantizer, Extent, Model, PlaneType};
@@ -617,7 +617,10 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let lossless = self.inputs.header.quantizer.lossless();
         let ty = tx_type(PLANES[plane], None, tx, lossless);
         let (bx, by) = position.plane_4x4(ss);
-        let left_mask = (16 >> ss) - 1;
+        let sb_log2 = SB_4X4_LOG2 - ss;
+        let within = (1usize << sb_log2) - 1;
+        let sb_col = bx >> sb_log2;
+        let (start_x, start_y) = (bx & within, by & within);
         let steps = self.steps(info.segment_id, plane);
         let model = Model::of(PLANES[plane], tx, ty, true);
         let depth = self.depth();
@@ -631,16 +634,18 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             },
         );
         let mut coder = Coder::new(model, self.inputs.context, &mut self.counts);
-        let above_plane = &mut self.above_nonzero[plane];
-        let left_plane = &mut tile.left_nonzero[plane];
+        let mut above = self.above_nonzero[plane][sb_col];
+        let mut left = tile.left_nonzero[plane];
         let scratch = &mut *self.scratch;
         let mut coded = false;
         for row in (0..max_h).step_by(step) {
-            let ly = (by + row) & left_mask;
+            let y = start_y + row;
+            let left_mask = context_mask(y, step);
+            let visible_left = context_mask(y, step.min(max_h - row));
             for col in (0..max_w).step_by(step) {
-                let above = &mut above_plane[bx + col..bx + col + step];
-                let left = &mut left_plane[ly..ly + step];
-                let ctx = usize::from(any_set(above)) + usize::from(any_set(left));
+                let x = start_x + col;
+                let above_mask = context_mask(x, step);
+                let ctx = usize::from(above & above_mask != 0) + usize::from(left & left_mask != 0);
                 let extent = coeff::read_prepared(
                     reader,
                     &mut scratch.coefficients,
@@ -652,9 +657,11 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                 let nonzero = extent.eob > 0;
                 // Units outside the coded frame must remain zero, even for a
                 // partially visible transform with nonzero coefficients.
-                set_contexts(above, u8::from(nonzero), max_w.saturating_sub(col));
-                set_contexts(left, u8::from(nonzero), max_h.saturating_sub(row));
+                above &= !above_mask;
+                left &= !left_mask;
                 if nonzero {
+                    above |= context_mask(x, step.min(max_w - col));
+                    left |= visible_left;
                     let block = TxBlock {
                         plane: PLANES[plane],
                         x: (bx + col) * 4,
@@ -677,6 +684,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                 }
             }
         }
+        self.above_nonzero[plane][sb_col] = above;
+        tile.left_nonzero[plane] = left;
         coded
     }
 
@@ -708,10 +717,14 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let (bx, by) = position.plane_4x4(ss);
         let (max_w, max_h) = position.plane_limits_4x4(ss);
         let n = tx.units();
-        let (ax, ly) = (bx + col, (by + row) & ((16 >> ss) - 1));
-        let above = &mut self.above_nonzero[plane][ax..ax + n];
-        let left = &mut tile.left_nonzero[plane][ly..ly + n];
-        let ctx = usize::from(any_set(above)) + usize::from(any_set(left));
+        let sb_log2 = SB_4X4_LOG2 - ss;
+        let within = (1usize << sb_log2) - 1;
+        let (x, y) = ((bx & within) + col, (by & within) + row);
+        let above = &mut self.above_nonzero[plane][bx >> sb_log2];
+        let left = &mut tile.left_nonzero[plane];
+        let above_mask = context_mask(x, n);
+        let left_mask = context_mask(y, n);
+        let ctx = usize::from(*above & above_mask != 0) + usize::from(*left & left_mask != 0);
         let model = Model {
             tx,
             ty,
@@ -733,10 +746,11 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         );
         let eob = extent.eob;
         // `get_ctx_shift`: units beyond the frame edge stay zero.
-        let nonzero = u8::from(eob > 0);
-        set_contexts(above, nonzero, max_w.saturating_sub(col));
-        set_contexts(left, nonzero, max_h.saturating_sub(row));
+        *above &= !above_mask;
+        *left &= !left_mask;
         if eob > 0 {
+            *above |= context_mask(x, n.min(max_w - col));
+            *left |= context_mask(y, n.min(max_h - row));
             let block = TxBlock {
                 plane: PLANES[plane],
                 x: (bx + col) * 4,
@@ -953,44 +967,6 @@ fn block_samples<T: Sample>(
         .samples_at_mut(x as isize, y as isize, w, h)
         .expect("blocks lie inside the plane");
     (samples, stride)
-}
-
-/// `get_entropy_context`: whether any of a transform block's 1, 2, 4 or 8
-/// coefficient contexts is set, read as one word as libvpx does.
-#[inline]
-fn any_set(contexts: &[u8]) -> bool {
-    match contexts.len() {
-        1 => contexts[0] != 0,
-        2 => u16::from_ne_bytes(contexts.try_into().expect("two contexts")) != 0,
-        4 => u32::from_ne_bytes(contexts.try_into().expect("four contexts")) != 0,
-        8 => u64::from_ne_bytes(contexts.try_into().expect("eight contexts")) != 0,
-        _ => contexts.iter().any(|&v| v != 0),
-    }
-}
-
-/// `dec_set_contexts`: set a transform block's contexts to `value`, those
-/// from `inside` on (beyond the frame edge) to zero.
-#[inline]
-fn set_contexts(contexts: &mut [u8], value: u8, inside: usize) {
-    if inside >= contexts.len() {
-        // Fixed sizes: whole-word stores instead of a `memset` call.
-        match contexts.len() {
-            1 => contexts[0] = value,
-            2 => set_all::<2>(contexts, value),
-            4 => set_all::<4>(contexts, value),
-            8 => set_all::<8>(contexts, value),
-            _ => contexts.fill(value),
-        }
-    } else {
-        let (set, outside) = contexts.split_at_mut(inside);
-        set.fill(value);
-        outside.fill(0);
-    }
-}
-
-fn set_all<const N: usize>(contexts: &mut [u8], value: u8) {
-    let contexts: &mut [u8; N] = contexts.try_into().expect("N contexts");
-    *contexts = [value; N];
 }
 
 /// Which neighbours of a transform block intra prediction may read.

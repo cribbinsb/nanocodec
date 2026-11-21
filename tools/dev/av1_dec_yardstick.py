@@ -35,9 +35,11 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 from bisect import bisect_right
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -98,7 +100,7 @@ def dav1d_cmd(dav1d: Path, stream: Path, out: str) -> list[str]:
 
 def output_md5(argv_for: callable) -> str:
     """MD5 of a decoder's I420 output, read through a FIFO (nothing on disk)."""
-    tmp = Path(tempfile.mkdtemp(prefix="av1yard-"))
+    tmp = tempdirs.mkdtemp("av1yard")
     fifo = tmp / "out.yuv"
     os.mkfifo(fifo)
     try:
@@ -251,11 +253,11 @@ def main() -> None:
         if opts.mode == "perf":
             result = measure_perf(opts, stream)
         else:
-            scratch = opts.keep or Path(tempfile.mkdtemp(prefix="av1yard-cg-"))
-            scratch.mkdir(parents=True, exist_ok=True)
-            result = measure_callgrind(opts, stream, scratch)
+            work = opts.keep or tempdirs.mkdtemp("av1yard-cg")
+            work.mkdir(parents=True, exist_ok=True)
+            result = measure_callgrind(opts, stream, work)
             if not opts.keep:
-                scratch.rmdir()
+                work.rmdir()
         return report(stream, ivf_frames(stream), same, result, opts.stages)
 
     # perf mode times; it must not run streams side by side.

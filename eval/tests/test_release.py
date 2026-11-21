@@ -17,6 +17,7 @@ def make_release(tmp_path, **flags) -> "release.Release":
     args = argparse.Namespace(**{
         "version": "9.9.9", "commit": None, "start": None, "only": None, "pipe_clean": False,
         "real": True, "over_budget": False, "yes_publish": False, "no_chain_retry": False,
+        "local_charts": False,
         **flags})
     with patch.object(release, "RELEASE_ROOT", tmp_path):
         return release.Release(args)
@@ -76,14 +77,17 @@ def test_a_stage_waits_for_what_it_needs_and_a_failure_stops_its_dependents(tmp_
     run.wait_for("crates")
 
 
-def test_the_clip_set_scoring_sessions_fit_each_regions_spot_quota():
-    """Both clip-set chains score at once: at most two c7a.metal-48xl (512 spot vCPU)
-    per region, or a session waits for the quota and fails."""
+def test_the_scoring_sessions_fit_each_regions_spot_quota():
+    """The clip-set chains and the main chart score at once: no more c7a.metal-48xl per
+    region than its spot quota holds, or a session waits for the quota."""
     from collections import Counter
     regions = Counter(region for chain in release.clip_chains() for region in
                       release.CLIPSET_CLOUD_REGIONS.get(
                           chain[0].stem, release.HELDOUT_CLOUD_REGIONS).split(","))
-    assert max(regions.values()) <= 2
+    regions.update(release.MAIN_CLOUD_REGIONS.split(","))
+    for region, sessions in regions.items():
+        assert sessions <= release.METAL_SESSIONS_PER_REGION.get(
+            region, release.DEFAULT_METAL_SESSIONS), region
 
 
 def test_every_fixed_qp_sample_view_is_re_measured_in_a_priced_chain():

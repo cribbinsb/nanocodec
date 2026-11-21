@@ -89,8 +89,9 @@ flicker and pulse guards are full-curve terms left to L3.
 
 Finalists: the top FINALISTS of the front by J + k * dCPU (k: --k, J_real's
 K_CPU by default; 0.1 for Default quality arms), among those that beat the
-preset on it (score below -RECHECK_MIN_GAIN), get a Jetson cost
-(nceval.jetson; 2:1 over x86) and L3 (nceval.levels, single-point over the
+preset on it (score below -RECHECK_MIN_GAIN), get a CPU A/B on rented single
+cores (box_cpu: Graviton 3 and 4 for Arm, Zen 5 for x86, equal weight; it
+replaced the Jetson on 2026-11-21) and L3 (nceval.levels, single-point over the
 whole disjoint L3 pool, escalated to the full ladder when the change reshapes
 the curve; candidate vs preset, J with that combined dCPU); only BETTER passes.
 A finalist that moves a rate-control or structure parameter (rate.*, layers.*,
@@ -120,7 +121,10 @@ import dataclasses
 import hashlib
 import json
 import math
+import os
 import random
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -131,7 +135,7 @@ from pathlib import Path
 import numpy as np
 import optuna
 
-from . import interval, jetson, jreal, levels, levers, pool, realuse, slots
+from . import checkrun, cloud, interval, jreal, levels, levers, pool, realuse, slots
 from .singlepoint import (RESHAPE_PCT, RESHAPE_T, assign_rungs, balanced_j, base_constraint,
                           ceiling_constraint, rung_trend, single_points, worst_constraint)
 from .cbr import DEFAULT_INTRA_PERIOD, Family
@@ -141,8 +145,15 @@ from .config import load_paths
 from .encoders.nanocodec import MEDIUM, preset_values
 from .fingerprint import measurement_fingerprint
 from .gatepolicy import EVALUATION_GATE, file_sha256
-from .tune import (QUANTIZERS, REPO_ROOT, TUNING_DIR, instruction_cost,
+from .tune import (REPO_ROOT, TUNING_DIR, instruction_cost,
                    serialize_trial_acquisition, specs_of, study_storage)
+
+#: Cloud studies (cloud_search): a box job of SLICE_MINUTES of trials, plus the margin
+#: for the trials in flight when the slice's timeout stops new ones; the default cap on
+#: a study's cloud cost (coordinator, 2026-11-21: at most $10 unless overridden).
+SLICE_MINUTES = 25.0
+SLICE_MARGIN_MINUTES = 15.0
+STUDY_MAX_USD = 10.0
 
 PROTOCOL = "pool-jreal-2"
 FRAMES = realuse.DEFAULT_FRAMES
@@ -169,7 +180,13 @@ AGREE_MIN_MOVE = 0.02
 FINALISTS = 5
 PARALLEL_TRIALS = 2
 MAX_WORKERS = 8
-JETSON_WEIGHT = 2.0
+#: A finalist's dCPU: the Arm targets' mean and the x86 one, equal weight (owner: the
+#: Jetson step replaced by rented cores, 2026-11-21; tools/dev/aws_cpu_ab.py).
+ARM_WEIGHT = 1.0
+ARM_TARGETS = ("graviton3", "graviton4")
+X86_TARGET = "zen5"
+#: The finalists' CPU A/B (aws_cpu_ab's defaults: 4 clips, 150 frames, 600 kbit/s).
+CPU_AB_ROUNDS = 5
 TPE_STARTUP_TRIALS = 10
 #: Share of the parameters each start-up trial moves (sparse_moves).
 SPARSE_SHARE = 1 / 3
@@ -471,7 +488,7 @@ class Study:
         #: Stop a trial whose stage-1 J trails the best full trial by more than this.
         self.reach_pct: float | None = attrs.get("reach_pct")
         self.anchor_cost: float = attrs["anchor_cost"]
-        self.k: float = attrs["k"]
+        self.k: float = study_k(attrs)[0]
         self.workers: int = attrs["workers"]
         #: CPU-capped study: maximise J subject to x86 CPU <= cpu_max (a ratio).
         self.cpu_max: float | None = attrs.get("cpu_max")
@@ -525,10 +542,17 @@ class Study:
         # A confident loss on J + k dCPU, as L3 judges: a speed study's points
         # lose quality by design (all 120 of the first HEVC Faster speed
         # study's trials stopped here on J alone).
-        credit = self.k * 100 * (cpu - 1)
-        loses = stats["lo"] is not None and stats["lo"] + credit > interval.STOP_LOWER_PCT
-        fidelity = STOPPED if (loses or over_cap or self.dominated(stats, cpu)
-                               or self.out_of_reach(stats)) else FULL
+        # A between-rungs study (--seed-preset) judges it at the chord's slope
+        # (study_k), and not before both rungs are measured; the rungs themselves
+        # always run in full, being the chord's two ends.
+        rung = trial.user_attrs.get("warm_start", "").startswith("preset")
+        k = self.stop_k()
+        credit = (k or 0.0) * 100 * (cpu - 1)
+        loses = k is not None and stats["lo"] is not None and \
+            stats["lo"] + credit > interval.STOP_LOWER_PCT
+        fidelity = FULL if rung else STOPPED if (
+            loses or over_cap or self.dominated(stats, cpu) or self.out_of_reach(stats)) \
+            else FULL
         if fidelity == FULL:
             rows |= single_points(runner, self.anchor, test, stage_2, self.rungs, self.frames,
                                   key_seconds=self.key_seconds)
@@ -625,12 +649,92 @@ class Study:
             self.domains = widened(self.domains, self.front())
             self.study.set_user_attr("domains", self.domains)
 
+    def stop_k(self) -> float | None:
+        """The k of the stage-1 stop: the study's (study_k), or None while a
+        between-rungs study's chord still lacks one of its two rungs."""
+        with self.lock:
+            attrs = self.study.user_attrs
+            if attrs.get("seed_rungs") and "chord" not in attrs:
+                return None
+            self.k = study_k(attrs)[0]
+            return self.k
+
     def after_trial(self, study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
+        if study.user_attrs.get("seed_rungs") and "chord" not in study.user_attrs:
+            with self.lock:
+                set_chord(study)
         done = sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
         if done and done % RECHECK_EVERY == 0 and \
                 study.user_attrs.get("last_recheck", 0) < done:
             study.set_user_attr("last_recheck", done)
             self.recheck(done)
+
+
+def rung_points(study: optuna.Study) -> list[tuple[str, float, float]] | None:
+    """The two seed rungs' measured (rung, J, CPU) of a between-rungs study, from their
+    full-fidelity trials; None until both are in."""
+    out = []
+    for seed in study.user_attrs.get("seed_rungs", [])[:2]:
+        trial = next((t for t in study.get_trials(deepcopy=False)
+                      if t.number == seed["trial"]), None)
+        if trial is None or trial.state != optuna.trial.TrialState.COMPLETE or \
+                trial.user_attrs.get(FIDELITY_ATTR) not in (FULL, LADDER):
+            return None
+        out.append((seed["rung"], trial_j(trial), trial_cpu(trial)))
+    return out if len(out) == 2 else None
+
+
+def chord_of(points: list[tuple[str, float, float]]) -> dict | None:
+    """The line between two rungs in (log CPU, J): its slope as k (J points per percent
+    of CPU, -dJ / (100 dln CPU): moving along it scores 0 on J + k dCPU), None when the
+    second rung does not buy J with CPU (it is not slower and better)."""
+    (_, j0, c0), (_, j1, c1) = points
+    if c1 <= c0 or j1 >= j0:
+        return None
+    return {"k": -(j1 - j0) / (100 * math.log(c1 / c0)), "points": points}
+
+
+def chord_j(chord: dict, cpu: float) -> float:
+    """The chord's J at `cpu` (interpolated, or extended, in log CPU)."""
+    (_, j0, c0), (_, j1, c1) = chord["points"]
+    return j0 + (j1 - j0) * math.log(cpu / c0) / math.log(c1 / c0)
+
+
+def set_chord(study: optuna.Study) -> None:
+    """Once both seed rungs are measured: the chord into the study (its k for the stop
+    and ranking, study_k), said aloud, loudly when an explicit --k exceeds its slope."""
+    points = rung_points(study)
+    if points is None:
+        return
+    chord = chord_of(points)
+    attrs = study.user_attrs
+    if chord is None:
+        chord = {"k": None, "points": points}
+        print(f"!!! {study.study_name}: rung {points[1][0]} (J {points[1][1]:+.2f}%, CPU "
+              f"x{points[1][2]:.3f}) does not buy J with CPU over {points[0][0]}: no chord, "
+              f"k stays {attrs['k']:g}", flush=True)
+    study.set_user_attr("chord", chord)
+    k, source = study_k(study.user_attrs)
+    print(f"{study.study_name}: k {k:.4g} ({source})", flush=True)
+    if chord["k"] is not None and attrs.get("k_explicit") and attrs["k"] > chord["k"]:
+        print(f"!!! {study.study_name}: --k {attrs['k']:g} is above the chord's slope "
+              f"{chord['k']:.4g}: the stop will reject moves along the chord toward "
+              f"{points[1][0]}, which is the gap this study fills", flush=True)
+
+
+def study_k(attrs: dict) -> tuple[float, str]:
+    """The CPU weight a study stops and ranks by, and where it came from: an explicit
+    --k; else a between-rungs study's chord slope once measured (owner/coordinator,
+    2026-11-21: at the base rung's k, 42 of 44 moves toward the slower rung were
+    stopped as confident losses); else the study's default k."""
+    chord = attrs.get("chord") or {}
+    if attrs.get("k_explicit"):
+        return attrs["k"], "--k"
+    if chord.get("k") is not None:
+        (low, _, _), (high, _, _) = chord["points"]
+        return chord["k"], f"the chord {low} -> {high}"
+    return attrs["k"], "the default k" + (" (chord not measured yet)"
+                                          if attrs.get("seed_rungs") else "")
 
 
 def trial_j(trial: optuna.trial.FrozenTrial) -> float:
@@ -695,7 +799,7 @@ def create(args: argparse.Namespace) -> optuna.Study:
     clips, recheck = long_window_sets(key, window) if window else draw_sets(key, args.half)
     frames = window or FRAMES
     key_seconds = levels.LONG_KEY_SECONDS if window else None
-    workers = min(args.workers, MAX_WORKERS)
+    workers = min(args.workers, realuse.max_workers())  # the box's own on a rented box
     print(f"study {args.study}: {codec.value} {args.preset}, {len(domains)} parameters, "
           f"rotation {key}, {len(clips)} trial clips, {len(recheck)} re-check clips",
           flush=True)
@@ -710,23 +814,34 @@ def create(args: argparse.Namespace) -> optuna.Study:
                                 sampler=sampler(args.seed))
     attrs = {"protocol": PROTOCOL, "codec": codec.value, "preset": args.preset,
              "preset_values": preset, "binary": str(binary),
-             "binary_sha256": file_sha256(binary), "commit": commit or args.commit or "",
+             "binary_sha256": file_sha256(binary), "commit": commit or args.commit or binary_commit(binary) or "",
              "domains": domains, "rotation": key, "half": args.half,
              "clips": clip_record(clips), "recheck_clips": clip_record(recheck),
              "rungs": assign_rungs(clips), "frames": frames, "key_seconds": key_seconds,
              "short_guard_pct": SHORT_WINDOW_GUARD_PCT if window else None,
              "stage_1_clips": WINDOW_STAGE_1_PER_CLASS * len(WINDOW_STAGE_1_CLASSES) if window
              else STAGE_1_CLIPS,
-             "reach_pct": WINDOW_REACH_PCT if window else None, "k": args.k,
+             "reach_pct": WINDOW_REACH_PCT if window else None,
+             "k": jreal.K_CPU if args.k is None else args.k, "k_explicit": args.k is not None,
+             # a between-rungs study: its chord's ends, trials 0 and 1 (set_chord)
+             "seed_rungs": [{"rung": args.preset, "trial": 0},
+                            {"rung": args.seed_preset[0], "trial": 1}]
+             if getattr(args, "seed_preset", []) else [],
              "workers": workers, "measurement": measurement_fingerprint(),
              "cpu_max": args.cpu_max, "j_max": args.j_max,
-             "anchor_cost": anchor_cost}
+             "anchor_cost": anchor_cost, "cpu_family": cloud.cpu_family(),
+             "cpu_families": [{"family": cloud.cpu_family(), "from_trial": 0}]}
     for name, value in attrs.items():
         study.set_user_attr(name, value)
     start = warm_start_point(domains, preset, specs)
     study.enqueue_trial(start, user_attrs={"warm_start": "preset"})
+    # A study of the gap between two rungs starts from both ends (owner, 2026-11-21).
+    for other in getattr(args, "seed_preset", []):
+        study.enqueue_trial(warm_start_point(domains, preset_values(presets, codec, other), specs),
+                            user_attrs={"warm_start": f"preset {other}"})
     sweep = Path(args.space).with_name("results.json") if args.space else None
-    seeds = sensitivity_seeds(json.loads(sweep.read_text()), domains, args.cpu_max, args.k) \
+    seeds = sensitivity_seeds(json.loads(sweep.read_text()), domains, args.cpu_max,
+                              study_k(study.user_attrs)[0]) \
         if sweep and sweep.exists() else []
     for moves in seeds:
         study.enqueue_trial({**start, **moves}, user_attrs={"warm_start": "sensitivity"})
@@ -766,9 +881,14 @@ def sensitivity_seeds(results: dict, domains: dict[str, dict], cpu_max: float | 
 
 
 def search(args: argparse.Namespace) -> None:
+    if not cloud.runs_here(args.local):
+        return cloud_search(args)
     if args.study in optuna.study.get_all_study_names(study_storage(args.study)):
         study = load(args.study)
         study.sampler = sampler(args.seed)
+        repin_binary(study, args.binary)
+        pin_commit(study, args.commit)
+        pin_study_family(study, args.re_anchor)
     else:
         study = create(args)
     setting = Study(serialize_trial_acquisition(study))
@@ -787,6 +907,171 @@ def search(args: argparse.Namespace) -> None:
                 for t in study.trials)
     if args.finalists and spent >= args.trials:
         run_finalists(study, args.finalists, args.workers)
+    if args.json:
+        Path(args.json).write_text(json.dumps(
+            {"status": "done", "study": args.study, "trials": args.trials,
+             "complete": completed(study), "spent": spent}) + "\n")
+
+
+def pin_study_family(study: optuna.Study, re_anchor: bool) -> None:
+    """A resumed study's CPU stays on the family it was counted on (check_family); a
+    study from before the pin adopts this one."""
+    attrs = study.user_attrs
+    here = cloud.cpu_family()
+    if "cpu_family" not in attrs:
+        print(f"{study.study_name}: no CPU family recorded (older study): pinned to {here}",
+              flush=True)
+    elif check_family(attrs["cpu_family"], f"study {study.study_name}", re_anchor):
+        Study(study).check_binary()
+        codec = Codec(attrs["codec"])
+        study.set_user_attr("anchor_cost", cpu_cost(Path(attrs["binary"]), codec,
+                                                    attrs["preset_values"]))
+    else:
+        return
+    history = [*attrs.get("cpu_families", []),
+               {"family": here, "from_trial": len(study.trials)}]
+    study.set_user_attr("cpu_family", here)
+    study.set_user_attr("cpu_families", history)
+
+
+def completed(study: optuna.Study) -> int:
+    return sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
+
+
+def study_family(name: str) -> str | None:
+    """The instance family a stored study's CPU was counted on (None: none recorded,
+    or this machine's)."""
+    return cloud.box_family(stored_attrs(name).get("cpu_family"))
+
+
+def local_completed(name: str) -> int:
+    """Complete trials of study `name` in this machine's storage (0: no such study)."""
+    if not (TUNING_DIR / f"{name}.sqlite").exists() or \
+            name not in optuna.study.get_all_study_names(study_storage(name)):
+        return 0
+    return completed(optuna.load_study(study_name=name, storage=study_storage(name)))
+
+
+def cloud_search(args: argparse.Namespace) -> None:
+    """The study on rented boxes: slices of SLICE_MINUTES of trials, each one
+    aws_measure job on a warm box (the study's storage goes up and comes back, its points
+    stay in the cloud cache, CPU scoring, callgrind there), until the trials are done or
+    the study has cost --max-usd. A resumed study asks for the instance family its CPU
+    was counted on (check_family). Finalists (rented-core CPU and L3) are not run here:
+    `tune finalists` afterwards."""
+    check_started(stored_attrs(args.study).get("tools_version"))
+    binary = cloud_binary(args.binary)
+    passed = drop_options(sys.argv[2:] if sys.argv[1:2] == ["search"] else sys.argv[1:],
+                          ("--binary", "--timeout", "--finalists", "--json"), ("--local",))
+    spent_usd, started = 0.0, time.monotonic()
+    done = local_completed(args.study)
+    print(f"cloud study {args.study}: {done} of {args.trials} trials done; slices of "
+          f"{args.slice_minutes:g} min on warm boxes, at most ${args.max_usd:.2f} "
+          f"(--max-usd; a warm 96-vCPU box costs about $0.6/h in eu-north-1)", flush=True)
+    while done < args.trials:
+        if spent_usd >= args.max_usd:
+            print(f"cloud study {args.study}: STOPPED at its ${args.max_usd:.2f} cap "
+                  f"(${spent_usd:.2f} spent, {done} of {args.trials} trials); raise --max-usd "
+                  f"to go on", flush=True)
+            break
+        slice_started = time.monotonic()
+        code, result = offload("search", [*passed, "--binary", str(binary), "--timeout",
+                                          f"{args.slice_minutes:g}", "--finalists", "0"],
+                               args.slice_minutes + SLICE_MARGIN_MINUTES,
+                               None if args.re_anchor else study_family(args.study))
+        if args.re_anchor:  # once: the slices after it stay on the new family
+            passed = [a for a in passed if a != "--re-anchor"]
+            args.re_anchor = False
+        cost = (result.get("cloud") or {}).get("estimated_usd") or 0.0
+        spent_usd += cost
+        if local_completed(args.study):  # the box pinned its own path: back to this one
+            repin_binary(load(args.study), str(binary))
+            load(args.study).set_user_attr("tools_version", cloud.tools_version())
+        before, done = done, local_completed(args.study)
+        minutes = (time.monotonic() - slice_started) / 60
+        per = f"{minutes / (done - before):.2f} min and ${cost / (done - before):.3f} a trial" \
+            if done > before else "no trial finished"
+        print(f"cloud study {args.study}: slice {done - before} trials in {minutes:.1f} min, "
+              f"${cost:.2f} ({per}); {done} of {args.trials} done, ${spent_usd:.2f} spent",
+              flush=True)
+        if code != 0 or done == before:
+            raise SystemExit(f"cloud study {args.study}: the slice failed (exit {code}) or made "
+                             f"no progress; the study keeps what it has (resume: same command)")
+    print(f"cloud study {args.study}: {done} trials, {(time.monotonic() - started) / 60:.1f} "
+          f"min, ${spent_usd:.2f}. Next: `python3 -m nceval.tune front --study {args.study}`, "
+          f"then `tune finalists --study {args.study}` (rented-core CPU and L3)", flush=True)
+
+
+def binary_commit(binary: Path) -> str | None:
+    """The commit a clean build was made from: its `--version` stamp, else the COMMIT
+    file of the cached copy it sits in (None: a dirty or unstamped build, which the
+    rented-core CPU step cannot rebuild)."""
+    from . import buildinfo
+    try:
+        info = buildinfo.build_info(binary)
+    except (OSError, subprocess.SubprocessError):
+        info = {}
+    if info.get("commit") and not info.get("dirty"):
+        return info["commit"]
+    marker = binary.parent / "COMMIT"
+    return marker.read_text().strip() or None if marker.is_file() and not info.get("dirty") \
+        else None
+
+
+def pin_commit(study: optuna.Study, given: str | None) -> None:
+    """Record the study's commit (the rented-core CPU step builds it): `given`
+    (--commit), else the binary's own (binary_commit); a given commit that the
+    binary's stamp contradicts is refused."""
+    attrs = study.user_attrs
+    stamped = binary_commit(Path(attrs["binary"])) if Path(attrs["binary"]).is_file() else None
+    if given:
+        resolved = levels.git(REPO_ROOT, "rev-parse", f"{given}^{{commit}}")
+        if stamped and stamped != resolved:
+            raise SystemExit(f"--commit {given} is {resolved[:12]}, but the study's binary says "
+                             f"{stamped[:12]}")
+        study.set_user_attr("commit", resolved)
+    elif not attrs.get("commit") and stamped:
+        print(f"{study.study_name}: commit {stamped[:12]} recorded from its binary", flush=True)
+        study.set_user_attr("commit", stamped)
+
+
+def check_started(recorded: str | None) -> None:
+    """The stale-tools check (cloud.check_fresh) at a study's or sweep's start, and its
+    pin for the slices; a resume from this tree at the tool version the study recorded
+    (`recorded`) is the same run going on, not checked again."""
+    if recorded and recorded == cloud.tools_version():
+        os.environ[cloud.PINNED_ENV] = recorded
+    cloud.check_fresh()
+
+
+def stored_attrs(name: str) -> dict:
+    """A stored study's user attributes ({}: none here)."""
+    if not (TUNING_DIR / f"{name}.sqlite").exists() or \
+            name not in optuna.study.get_all_study_names(study_storage(name)):
+        return {}
+    return optuna.load_study(study_name=name, storage=study_storage(name)).user_attrs
+
+
+def cloud_binary(spec: str | None) -> Path:
+    """A binary path as given, else the landed-commit cache's build of the commit
+    (never a compile here)."""
+    return Path(spec) if spec and Path(spec).is_file() else \
+        checkrun.landed_binary(spec or "HEAD")
+
+
+def drop_options(argv: list[str], valued: tuple[str, ...], flags: tuple[str, ...]) -> list[str]:
+    """`argv` without the given options (`--x v`, `--x=v`) and flags."""
+    out, skip = [], False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg in valued:
+            skip = True
+        elif arg in flags or any(arg.startswith(v + "=") for v in valued):
+            continue
+        else:
+            out.append(arg)
+    return out
 
 
 # --- sensitivity sweep --------------------------------------------------------------
@@ -828,10 +1113,19 @@ def widened_bounds(centre: float, domain: dict, results: list[dict]) -> tuple[fl
     return low, high
 
 
+def sensitivity_dir(root: Path, codec: str, preset: str, key: str) -> Path:
+    """A sweep's directory (its results.json, table and space file)."""
+    return root / f"sens-{codec}-{preset}-{key}"
+
+
 def sensitivity(args: argparse.Namespace) -> None:
     """One-at-a-time sweep of a space file's parameters on the first STAGE_1_CLIPS
     trial clips (single-point J, x86 CPU); writes the table, the live parameters'
-    study space file and the raw results (resumable)."""
+    study space file and the raw results (resumable). On a warm box unless --local
+    (cloud_sensitivity); the table is then written here from what came back."""
+    if not cloud.runs_here(args.local):
+        args.binary = str(cloud_sensitivity(args))  # the table from what came back
+        args.measure = False
     codec = Codec(args.codec)
     binary, commit = levels.build(args.binary, load_paths(), "tune")
     specs = specs_of(binary, codec)
@@ -842,22 +1136,31 @@ def sensitivity(args: argparse.Namespace) -> None:
     key = pool.rotation_key(args.rotation)
     clips = draw_sets(key, "none")[0][:STAGE_1_CLIPS]
     rungs = assign_rungs(clips)
-    out = TUNING_DIR / f"sens-{codec.value}-{args.preset}-{key}"
+    out = sensitivity_dir(TUNING_DIR, codec.value, args.preset, key)
     out.mkdir(parents=True, exist_ok=True)
     store = out / "results.json"
     done = json.loads(store.read_text()) if store.exists() else {}
+    jobs = sensitivity_jobs(domains, preset, specs, done, len(clips))
+    if not getattr(args, "measure", True):
+        if jobs:
+            print(f"sensitivity: {len(jobs)} values still unmeasured (the table shows the "
+                  f"rest; the same command resumes)", flush=True)
+        return write_sensitivity(out, domains, preset, specs, done, args)
+    started = time.monotonic()
     anchor = family(codec, binary, preset, f"nanocodec-{codec.value}")
+    if check_family(done.get("_cpu_family"), f"sensitivity {out.name}", args.re_anchor):
+        done.pop("_anchor_cost", None)
     anchor_cost = done.get("_anchor_cost") or cpu_cost(binary, codec, preset)
     done["_anchor_cost"] = anchor_cost
-    jobs = [(name, value) for name, d in domains.items()
-            for value in sweep_values(preset.get(name, specs[name][0]), d)
-            if f"{name}={value!r}" not in done or done[f"{name}={value!r}"]["n"] < len(clips)]
+    done["_cpu_family"] = cloud.cpu_family()
     print(f"sensitivity {codec.value} {args.preset}: {len(domains)} parameters, "
           f"{len(jobs)} values to measure on {len(clips)} clips (rotation {key})", flush=True)
     lock = threading.Lock()
 
     def measure(job: tuple[str, float]) -> None:
         name, value = job
+        if args.timeout and time.monotonic() - started > 60 * args.timeout:
+            return  # a cloud slice's time is up: the next one resumes
         values = {**preset, name: value}
         test = family(codec, binary, values, f"nanocodec-{codec.value}@{settings_label(values)}")
         runner = realuse.Runner(load_paths(), EVALUATION_GATE,
@@ -885,6 +1188,59 @@ def sensitivity(args: argparse.Namespace) -> None:
     with ThreadPoolExecutor(PARALLEL_TRIALS) as executor:
         list(executor.map(measure, jobs))
     write_sensitivity(out, domains, preset, specs, done, args)
+    if args.json:
+        left = sensitivity_jobs(domains, preset, specs, done, len(clips))
+        Path(args.json).write_text(json.dumps({"status": "done", "sweep": out.name,
+                                               "measured": len(jobs) - len(left),
+                                               "remaining": len(left)}) + "\n")
+
+
+def sensitivity_jobs(domains: dict[str, dict], preset: dict[str, float],
+                     specs: dict[str, tuple[float, float, float]], done: dict,
+                     clips: int) -> list[tuple[str, float]]:
+    """The (parameter, value) points of the sweep not yet measured on every clip."""
+    return [(name, value) for name, d in domains.items()
+            for value in sweep_values(preset.get(name, specs[name][0]), d)
+            if f"{name}={value!r}" not in done or done[f"{name}={value!r}"]["n"] < clips]
+
+
+def cloud_sensitivity(args: argparse.Namespace) -> Path:
+    """The sweep on warm boxes, a slice of SLICE_MINUTES at a time (its results go up
+    and come back, resuming) on the instance family its CPU was counted on, until no
+    value is left or it has cost --max-usd; prints the measured wall time."""
+    binary = cloud_binary(args.binary)
+    key = pool.rotation_key(args.rotation)
+    store = sensitivity_dir(TUNING_DIR, args.codec, args.preset, key) / "results.json"
+    check_started(json.loads(store.read_text()).get("_tools_version") if store.exists()
+                  else None)
+    passed = drop_options(sys.argv[2:] if sys.argv[1:2] == ["sensitivity"] else sys.argv[1:],
+                          ("--binary", "--timeout", "--json", "--max-usd", "--rotation"),
+                          ("--local",))
+    spent, started, remaining = 0.0, time.monotonic(), None
+    while remaining != 0:
+        if spent >= args.max_usd:
+            raise SystemExit(f"sensitivity: STOPPED at its ${args.max_usd:.2f} cap with "
+                             f"{remaining} values left; raise --max-usd (same command resumes)")
+        recorded = json.loads(store.read_text()).get("_cpu_family") if store.exists() else None
+        code, result = offload("sensitivity", [*passed, "--binary", str(binary), "--rotation",
+                                               key, "--timeout", f"{SLICE_MINUTES:g}"],
+                               SLICE_MINUTES + SLICE_MARGIN_MINUTES,
+                               None if args.re_anchor else cloud.box_family(recorded))
+        spent += (result.get("cloud") or {}).get("estimated_usd") or 0.0
+        if store.exists():
+            kept = json.loads(store.read_text())
+            kept["_tools_version"] = cloud.tools_version()
+            store.write_text(json.dumps(kept, indent=1) + "\n")
+        if code != 0 or not result.get("measured") and result.get("remaining"):
+            raise SystemExit(f"sensitivity: the box slice failed (exit {code}) or measured "
+                             f"nothing; what came back is kept (same command resumes)")
+        remaining = result.get("remaining", 0)
+        if args.re_anchor:  # once: later slices stay on the new family
+            passed = [a for a in passed if a != "--re-anchor"]
+            args.re_anchor = False
+    print(f"sensitivity {args.codec} {args.preset}: swept on boxes in "
+          f"{(time.monotonic() - started) / 60:.1f} min, ${spent:.2f}", flush=True)
+    return binary
 
 
 def write_sensitivity(out: Path, domains: dict[str, dict], preset: dict[str, float],
@@ -924,77 +1280,165 @@ def write_sensitivity(out: Path, domains: dict[str, dict], preset: dict[str, flo
 
 # --- finalists, L3 and agreement ----------------------------------------------------
 
-def jetson_ratios(commit: str, codec: Codec, preset: dict[str, float],
-                  candidates: dict[str, dict[str, float]]) -> dict[str, float]:
-    """Jetson cycles ratio to the preset per candidate ({} when it cannot be measured)."""
+def box_cpu(commit: str, codec: Codec, preset: str, start: dict[str, float],
+            candidates: dict[str, dict[str, float]]) -> dict[str, dict]:
+    """Per candidate, its CPU change against the preset on rented single cores
+    (tools/dev/aws_cpu_ab.py: ARM_TARGETS and X86_TARGET, the same box measuring both
+    in interleaved rounds): {number: {"arm", "x86", "targets"}} in percent, {} when it
+    cannot be measured (the finalists then take callgrind's x86 alone)."""
     if not commit:
-        print("no commit recorded (bare --binary): x86 CPU only", flush=True)
+        print("no commit recorded (bare --binary): callgrind x86 CPU only", flush=True)
         return {}
-    try:
-        measured = jetson.cost(commit, codec, QUANTIZERS[codec][2],
-                               {"preset": preset, **{f"c{n}": v for n, v in candidates.items()}})
-    except (RuntimeError, OSError, SystemExit) as error:
-        print(f"Jetson cost failed ({error}): x86 CPU only", flush=True)
+    plan = [{"name": f"t{number}", "base": {"build": commit},
+             "cand": {"build": commit, "params": [f"{n}={v!r}" for n, v in sorted(values.items())
+                                                  if start.get(n) != v]},
+             "rungs": [f"{codec.value}:{preset}"]} for number, values in candidates.items()]
+    work = load_paths().work / "cpu-ab"
+    work.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    plan_file, out = work / f"tune-plan-{stamp}.json", work / f"tune-summary-{stamp}.json"
+    plan_file.write_text(json.dumps(plan, indent=1) + "\n")
+    targets = (*ARM_TARGETS, X86_TARGET)
+    print(f"finalists' CPU: {len(plan)} candidates on {', '.join(targets)} "
+          f"(tools/dev/aws_cpu_ab.py)", flush=True)
+    code = subprocess.call([sys.executable, str(REPO_ROOT / "tools/dev/aws_cpu_ab.py"),
+                            "--plan", str(plan_file), "--targets", ",".join(targets),
+                            "--rounds", str(CPU_AB_ROUNDS), "--purpose", "tune-finalists",
+                            "--json", str(out)])
+    plan_file.unlink(missing_ok=True)
+    if not out.exists():
+        print(f"aws_cpu_ab failed (exit {code}): callgrind x86 CPU only", flush=True)
         return {}
-    return {name.removeprefix("c"): r["cycles"] for name, r in measured.items()
-            if name != "preset"}
+    rows = json.loads(out.read_text())["rows"]
+    measured: dict[str, dict] = {}
+    for row in rows:
+        if row["change_pct"]:
+            measured.setdefault(row["pair"].removeprefix("t"), {})[row["target"]] = \
+                row["change_pct"][0]
+    result = {}
+    for number, by_target in measured.items():
+        arm = [by_target[t] for t in ARM_TARGETS if t in by_target]
+        result[number] = {"arm": sum(arm) / len(arm) if arm else None,
+                          "x86": by_target.get(X86_TARGET), "targets": by_target,
+                          "summary": str(out)}
+    return result
+
+
+def combined_dcpu(callgrind_x86: float, measured: dict | None) -> dict:
+    """A finalist's dCPU fields (percent): the rented cores' Arm and x86 changes at
+    equal weight (ARM_WEIGHT), callgrind's x86 standing in for a side not measured."""
+    measured = measured or {}
+    arm, x86 = measured.get("arm"), measured.get("x86")
+    x86_used = callgrind_x86 if x86 is None else x86
+    dcpu = x86_used if arm is None else (ARM_WEIGHT * arm + x86_used) / (ARM_WEIGHT + 1)
+    return {"dcpu_x86": x86_used, "dcpu_x86_how": "callgrind" if x86 is None else X86_TARGET,
+            "dcpu_callgrind": callgrind_x86, "dcpu_arm": arm,
+            "cpu_targets": measured.get("targets"), "dcpu": dcpu}
 
 
 def l3_check(setting: Study, values: dict[str, float], label: str, x86_ratio: float,
-             jetson_ratio: float | None, workers: int, long_window: bool = False) -> dict:
+             measured: dict | None, workers: int, long_window: bool = False) -> dict:
     """L3 of the study's draw for one candidate: single-point (a parameter-only change;
-    the full ladder if it reshapes the curve), J with the combined dCPU. `long_window`
+    the full ladder if it reshapes the curve), J with the combined dCPU (combined_dcpu
+    of callgrind's `x86_ratio` and the rented cores' `measured`). `long_window`
     (a rate, key, cadence or structure move: rate_or_structure) decides on the
     long-window L3 (levels.LONG_FRAMES, keys every levels.LONG_KEY_SECONDS)."""
-    x86 = 100 * (x86_ratio - 1)
-    jet = None if jetson_ratio is None else 100 * (jetson_ratio - 1)
-    dcpu = x86 if jet is None else (JETSON_WEIGHT * jet + x86) / (JETSON_WEIGHT + 1)
+    cpu = combined_dcpu(100 * (x86_ratio - 1), measured)
+    dcpu = cpu["dcpu"]
     test = family(setting.codec, setting.binary, values, f"nanocodec-{setting.codec.value}@{label}")
     check_args = argparse.Namespace(frames=FRAMES, rotation=setting.study.user_attrs["rotation"],
                                     max_level=len(pool.LEVELS), dcpu=dcpu, k=setting.k,
                                     all_stages=False, final_estimator=levels.SINGLE,
                                     final_frames=levels.LONG_FRAMES if long_window else None)
-    print(f"== {label}: dCPU x86 {x86:+.1f}%" + (f", Jetson {jet:+.1f}%" if jet is not None
-                                                  else "") + "; L3", flush=True)
+    arm = cpu["dcpu_arm"]
+    print(f"== {label}: dCPU {dcpu:+.1f}% (x86 {cpu['dcpu_x86']:+.1f}% {cpu['dcpu_x86_how']}"
+          + (f", Arm {arm:+.1f}%" if arm is not None else ", Arm not measured") + "); L3",
+          flush=True)
     level = levels.run(setting.runner(workers), (setting.anchor, test), load_paths(),
                        check_args, (pool.FINAL,))["levels"].get(pool.FINAL)
-    return {"dcpu_x86": x86, "dcpu_jetson": jet, "dcpu": dcpu, "l3": level,
+    return {**cpu, "k": setting.k, "l3": level,
             "passed": bool(level) and level["decision"] == interval.BETTER}
 
 
-def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None = None) -> dict:
-    """Jetson cost, then L3, for the best `count` front points (resumable); `k`
-    re-weights CPU for another role (e.g. 0.1: a quality arm for Default)."""
+def finalist_todo(study: optuna.Study, count: int,
+                  k: float) -> dict[str, optuna.trial.FrozenTrial]:
+    """The best `count` front points by J + k dCPU that beat the preset on it and have
+    no finalist result yet."""
+    setting = Study(study)
+    j_max = study.user_attrs.get("j_max")
+    better = [t for t in setting.front() if score(t, k) < -RECHECK_MIN_GAIN
+              and (j_max is None or trial_j(t) <= j_max)]
+    picks = sorted(better, key=lambda t: score(t, k))[:count]
+    if not picks:
+        print(f"no front point beats the preset at k {k:g}: no finalists", flush=True)
+    results = study.user_attrs.get("finalists", {})
+    return {str(t.number): t for t in picks if str(t.number) not in results}
+
+
+def measure_finalist_cpu(study: optuna.Study, count: int, k: float | None) -> None:
+    """The rented cores' CPU for the finalists still to check (box_cpu), kept in the
+    study (`finalist_cpu`) for run_finalists, wherever that runs."""
+    setting = Study(study)
+    todo = finalist_todo(study, count, setting.k if k is None else k)
+    stored: dict = dict(study.user_attrs.get("finalist_cpu", {}))
+    missing = {n: {**setting.preset, **t.params} for n, t in todo.items() if n not in stored}
+    if not missing:
+        return
+    stored.update(box_cpu(study.user_attrs["commit"], setting.codec, study.user_attrs["preset"],
+                          {**setting.preset, **study.trials[0].params}, missing))
+    study.set_user_attr("finalist_cpu", stored)
+
+
+def require_box_cpu(study: optuna.Study, count: int, k: float | None,
+                    callgrind_only: bool) -> None:
+    """Refuse to rank finalists whose CPU the rented cores did not measure (callgrind's
+    x86 alone), unless `callgrind_only` (--callgrind-only) says so."""
+    stored = study.user_attrs.get("finalist_cpu", {})
+    todo = finalist_todo(study, count, study_k(study.user_attrs)[0] if k is None else k)
+    missing = [n for n in todo if (stored.get(n) or {}).get("arm") is None
+               and (stored.get(n) or {}).get("x86") is None]
+    if missing and not callgrind_only:
+        raise SystemExit(f"finalists {', '.join('#' + n for n in missing)} have no rented-core "
+                         f"CPU (study commit {study.user_attrs.get('commit') or 'none'}): give "
+                         f"--commit, or --callgrind-only to rank them on callgrind's x86 alone")
+
+
+def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None = None,
+                  timeout_minutes: float | None = None, callgrind_only: bool = False) -> dict:
+    """The rented cores' CPU (measured first where this can rent them, else as stored),
+    then L3, for the best `count` front points (resumable); `k` re-weights CPU for
+    another role (e.g. 0.1: a quality arm for Default). `timeout_minutes`: start no
+    finalist after that (a cloud slice; the next one resumes)."""
+    started = time.monotonic()
     setting = Study(study)
     setting.check_binary()
     setting.k = setting.k if k is None else k
-    # Only points that beat the preset on J + k dCPU are worth an L3.
-    j_max = study.user_attrs.get("j_max")
-    better = [t for t in setting.front() if score(t, setting.k) < -RECHECK_MIN_GAIN
-              and (j_max is None or trial_j(t) <= j_max)]
-    picks = sorted(better, key=lambda t: score(t, setting.k))[:count]
-    if not picks:
-        print(f"no front point beats the preset at k {setting.k:g}: no finalists", flush=True)
+    if not os.environ.get(cloud.ON_BOX_ENV):
+        measure_finalist_cpu(study, count, setting.k)
+    require_box_cpu(study, count, setting.k, callgrind_only)
     results: dict = dict(study.user_attrs.get("finalists", {}))
-    todo = {str(t.number): t for t in picks if str(t.number) not in results}
+    todo = finalist_todo(study, count, setting.k)
     values = {n: {**setting.preset, **t.params} for n, t in todo.items()}
     # The preset point (trial 0): what a finalist moved, for the long-horizon guard.
     start = study.trials[0].params
-    jetson_cpu = jetson_ratios(study.user_attrs["commit"], setting.codec, setting.preset,
-                               values) if todo else {}
+    box_measured = study.user_attrs.get("finalist_cpu", {})
     for number, trial in todo.items():
+        if timeout_minutes is not None and time.monotonic() - started > 60 * timeout_minutes:
+            print(f"finalists: {timeout_minutes:g} min passed; the rest next time", flush=True)
+            break
         moved = [n for n, v in trial.params.items() if start.get(n) != v]
         long_guard = long_horizon_guard(setting, values[number], workers) \
             if any(rate_or_structure(n) for n in moved) else None
         if long_guard and long_guard["guards"]:
             print(f"#{number}: long-horizon guard failed: {'; '.join(long_guard['guards'])}",
                   flush=True)
-            results[number] = {"j": trial_j(trial), "dcpu_x86": 100 * (trial_cpu(trial) - 1),
-                               "dcpu_jetson": None, "dcpu": None, "l3": None, "passed": False,
-                               "long_horizon": long_guard}
+            results[number] = {"j": trial_j(trial),
+                               **combined_dcpu(100 * (trial_cpu(trial) - 1),
+                                               box_measured.get(number)),
+                               "l3": None, "passed": False, "long_horizon": long_guard}
         else:
             result = l3_check(setting, values[number], f"t{number}", trial_cpu(trial),
-                              jetson_cpu.get(number), workers,
+                              box_measured.get(number), workers,
                               long_window=setting.key_seconds is not None
                               or any(rate_or_structure(n) for n in moved))
             results[number] = {"j": trial_j(trial), **result,
@@ -1019,6 +1463,12 @@ def rate_or_structure(name: str) -> bool:
         word in base for word in RATE_STRUCTURE_WORDS)
 
 
+def long_guard_clips() -> list[Clip]:
+    clips = {c.name: c for c in load_clipset(load_paths().clips / LONG_GUARD_CLIPSET,
+                                              load_paths().data_root).clips}
+    return [clips[name] for name in LONG_GUARD_CLIPS]
+
+
 def long_horizon_guard(setting: Study, values: dict[str, float], workers: int) -> dict:
     """The long-horizon check of `values` vs the preset, calibrated on run-to-run noise.
 
@@ -1034,9 +1484,7 @@ def long_horizon_guard(setting: Study, values: dict[str, float], workers: int) -
     dB), so a single clip's raw J_real guards misjudge (HEVC Fast's finalists
     all "failed" them; H.264 Fast's cadence 1.3, reverted, also lost J there).
     """
-    clips = {c.name: c for c in load_clipset(load_paths().clips / LONG_GUARD_CLIPSET,
-                                              load_paths().data_root).clips}
-    chosen = [clips[name] for name in LONG_GUARD_CLIPS]
+    chosen = long_guard_clips()
     test = family(setting.codec, setting.binary, values,
                   f"nanocodec-{setting.codec.value}@{settings_label(values)}")
     curves = setting.runner(workers).measure("long-horizon guard", [setting.anchor, test], chosen,
@@ -1076,7 +1524,103 @@ def judge_long_horizon(rows: dict[str, dict], codec: Codec = LONG_NULL_DEFAULT) 
 
 
 def finalists(args: argparse.Namespace) -> None:
-    run_finalists(load(args.study), args.count, args.workers, args.k)
+    """Finalists on a rented box (cloud_finalists) unless --local; here: re-pin the
+    study's build (a box's path of the same file), then run_finalists."""
+    if not cloud.runs_here(args.local):
+        return cloud_finalists(args)
+    study = load(args.study)
+    repin_binary(study, args.binary)
+    if not os.environ.get(cloud.ON_BOX_ENV):
+        pin_commit(study, args.commit)
+    results = run_finalists(study, args.count, args.workers, args.k, args.timeout,
+                            args.callgrind_only)
+    if args.json:
+        todo = finalist_todo(study, args.count, study_k(study.user_attrs)[0]
+                             if args.k is None else args.k)
+        Path(args.json).write_text(json.dumps({"status": "done", "study": args.study,
+                                               "finalists": results,
+                                               "remaining": len(todo)}, default=str) + "\n")
+
+
+def cloud_finalists(args: argparse.Namespace) -> None:
+    """The finalists' CPU on rented single cores from here (box_cpu: it rents its own
+    boxes, which a measurement box cannot), then their long-horizon guards and L3s on
+    warm boxes, a slice at a time (each SLICE_MINUTES; the study goes up and comes back,
+    resuming), until none is left or the study has cost --max-usd."""
+    study = load(args.study)
+    check_started(study.user_attrs.get("tools_version"))
+    study.set_user_attr("tools_version", cloud.tools_version())
+    repin_binary(study, args.binary)
+    if not Path(study.user_attrs["binary"]).is_file() and study.user_attrs.get("commit"):
+        # a study last run on a box names the box's copy: the commit's build here
+        repin_binary(study, str(cloud_binary(study.user_attrs["commit"])))
+    Study(study).check_binary()
+    pin_commit(study, args.commit)
+    measure_finalist_cpu(study, args.count, args.k)
+    require_box_cpu(study, args.count, args.k, args.callgrind_only)
+    passed = drop_options(sys.argv[2:] if sys.argv[1:2] == ["finalists"] else sys.argv[1:],
+                          ("--binary", "--timeout", "--json", "--max-usd", "--commit"),
+                          ("--local",))
+    spent = 0.0
+    while True:
+        remaining = len(finalist_todo(load(args.study), args.count,
+                                      study_k(study.user_attrs)[0] if args.k is None
+                                      else args.k))
+        if not remaining:
+            break
+        if spent >= args.max_usd:
+            raise SystemExit(f"tune finalists {args.study}: STOPPED at its ${args.max_usd:.2f} "
+                             f"cap with {remaining} finalists left; raise --max-usd")
+        code, result = offload("finalists", [*passed, "--binary", study.user_attrs["binary"],
+                                             "--timeout", f"{SLICE_MINUTES:g}"],
+                               SLICE_MINUTES + SLICE_MARGIN_MINUTES)
+        spent += (result.get("cloud") or {}).get("estimated_usd") or 0.0
+        if code != 0 or result.get("remaining", remaining) >= remaining:
+            raise SystemExit(f"tune finalists {args.study}: the box slice failed (exit {code}) "
+                             f"or checked none; the study keeps what it has (same command "
+                             f"resumes)")
+    print(f"tune finalists {args.study}: ${spent:.2f} on boxes", flush=True)
+    print_finalists(load(args.study).user_attrs.get("finalists", {}))
+
+
+def offload(sub: str, argv: list[str], minutes: float,
+            family: str | None = None) -> tuple[int, dict]:
+    """`python3 -m nceval.tune SUB ARGV` as one aws_measure job on a warm box (of
+    `family` when given), `minutes` its limit there: (exit code, its result JSON)."""
+    work = load_paths().work / "cloud-results"
+    work.mkdir(parents=True, exist_ok=True)
+    out = work / f"tune-{sub}-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.json"
+    code = subprocess.call([sys.executable, str(cloud.AWS_MEASURE), "--run-minutes",
+                            f"{minutes:g}", *(["--instance-family", family] if family else []),
+                            "--", "python3", "-m", "nceval.tune", sub, *argv,
+                            "--json", str(out)])
+    return code, (json.loads(out.read_text()) if out.exists() else {})
+
+
+def repin_binary(study: optuna.Study, given: str | None) -> None:
+    """Point the study at `given` when it is the study's build at another path (a cloud
+    job's directory); the sha check (Study.check_binary) still guards it."""
+    path = Path(given) if given else None
+    if path and path.is_file() and str(path) != study.user_attrs["binary"] and \
+            file_sha256(path) == study.user_attrs["binary_sha256"]:
+        study.set_user_attr("binary", str(path))
+
+
+def check_family(recorded: str | None, what: str, re_anchor: bool) -> bool:
+    """Whether the CPU counts here (cloud.cpu_family) may join `what`'s, counted on
+    `recorded`: True when the anchor must be counted again here (`--re-anchor` on
+    another family). Callgrind counts the kernels the CPU's dispatch picks (AVX-512 on
+    c7a and c7i, AVX2 elsewhere), so a ratio against another family's anchor is not a
+    ratio: a different family is refused unless re-anchored."""
+    here = cloud.cpu_family()
+    if recorded is None or recorded == here:
+        return False
+    if not re_anchor:
+        raise SystemExit(f"{what}: its CPU was counted on {recorded}, this is {here}: run it "
+                         f"there (the cloud driver asks for that family), or --re-anchor to "
+                         f"count the anchor again here (later CPU ratios against that)")
+    print(f"{what}: re-anchored on {here} (was {recorded})", flush=True)
+    return True
 
 
 def best_point(study: optuna.Study) -> optuna.trial.FrozenTrial:
@@ -1118,10 +1662,11 @@ def agree(args: argparse.Namespace) -> None:
     if moves:
         values = {**first.preset, **moves}
         x86 = cpu_cost(first.binary, first.codec, values) / first.anchor_cost
-        jet = jetson_ratios(studies[0].user_attrs["commit"], first.codec, first.preset,
-                            {"agreed": values}).get("agreed")
+        measured = box_cpu(studies[0].user_attrs["commit"], first.codec,
+                           studies[0].user_attrs["preset"], first.preset,
+                           {"agreed": values}).get("agreed")
         report |= {"values": values, "x86_ratio": x86,
-                   **l3_check(first, values, "agreed", x86, jet, args.workers,
+                   **l3_check(first, values, "agreed", x86, measured, args.workers,
                               long_window=any(rate_or_structure(n) for n in moves))}
     path = TUNING_DIR / f"agree-{'-'.join(s.study_name for s in studies)}.json"
     path.write_text(json.dumps(report, indent=1, default=str) + "\n")
@@ -1148,14 +1693,19 @@ def print_front(study: optuna.Study) -> None:
     complete = [t for t in trials if t.state == optuna.trial.TrialState.COMPLETE]
     count = lambda f: sum(t.user_attrs.get(FIDELITY_ATTR) == f for t in complete)
     seconds = [t.user_attrs["seconds"] for t in complete if "seconds" in t.user_attrs]
-    k = study.user_attrs["k"]
+    k, source = study_k(study.user_attrs)
+    chord = (study.user_attrs.get("chord") or {})
+    chord = chord if chord.get("k") is not None else None
     print(f"study {study.study_name} ({study.user_attrs['codec']} {study.user_attrs['preset']}): "
           f"{len(complete)} trials ({count(STOPPED)} stopped at stage 1, {count(LADDER)} "
           f"escalated to the full ladder), median {np.median(seconds) if seconds else 0:.0f} s; "
-          f"front (J vs preset, x86 CPU ratio, score J + {k:g} dCPU):")
+          f"front (J vs preset, x86 CPU ratio, score J + {k:g} dCPU; k from {source}"
+          + ("; vs chord: J minus the chord's J at that CPU, negative is better: the "
+             "acceptance test" if chord else "") + "):")
     for t in sorted(Study(study).front(), key=trial_cpu):
+        versus = f"vs chord {trial_j(t) - chord_j(chord, trial_cpu(t)):+6.2f}  " if chord else ""
         print(f"  #{t.number:3d}  J {trial_j(t):+6.2f}%  CPU x{trial_cpu(t):.3f}  "
-              f"score {score(t, k):+6.2f}  "
+              f"score {score(t, k):+6.2f}  {versus}"
               + ", ".join(f"{n}={v:.4g}" for n, v in sorted(t.params.items())))
 
 
@@ -1171,14 +1721,14 @@ def print_finalists(results: dict) -> None:
 def finalist_table(results: dict) -> list[str]:
     pct = lambda v: "n/a" if v is None else f"{v:+.2f}%"
     lines = ["| trial | J (trial clips) | L3 J (90% interval, n) | overfit gap | dCPU x86 | "
-             "dCPU Jetson | L3 | passed |", "|---|---|---|---|---|---|---|---|"]
+             "dCPU Arm | L3 | passed |", "|---|---|---|---|---|---|---|---|"]
     for number, r in sorted(results.items(), key=lambda kv: kv[0]):
         l3 = r["l3"] or {}
         stats = (f"{pct(l3.get('mean'))} [{pct(l3.get('lo'))}, {pct(l3.get('hi'))}], "
                  f"n {l3.get('n')}") if l3 else "n/a"
         gap = l3["mean"] - r["j"] if l3.get("mean") is not None else None
         lines.append(f"| #{number} | {pct(r['j'])} | {stats} | {pct(gap)} | "
-                     f"{pct(r['dcpu_x86'])} | {pct(r['dcpu_jetson'])} | "
+                     f"{pct(r['dcpu_x86'])} | {pct(r.get('dcpu_arm', r.get('dcpu_jetson')))} | "
                      f"{l3.get('decision', 'n/a')} | {'yes' if r['passed'] else 'no'} |")
     gap = overfit(results)
     if gap:
@@ -1267,6 +1817,17 @@ def plot_front(study: optuna.Study, path: Path, chosen: list[int]) -> Path:
     return path
 
 
+def cloud_options(parser, what: str) -> None:
+    parser.add_argument("--local", action="store_true",
+                        help=f"run {what} here (default: on warm rented boxes, nceval.cloud)")
+    parser.add_argument("--max-usd", type=float, default=STUDY_MAX_USD,
+                        help=f"cloud: stop starting slices once this has cost so much "
+                             f"(default ${STUDY_MAX_USD:g})")
+    parser.add_argument("--timeout", type=float,
+                        help="start nothing new after N minutes (a cloud slice)")
+    parser.add_argument("--json", help="write a summary here (the cloud driver reads it)")
+
+
 def add_commands(sub) -> None:
     """The protocol's subcommands on nceval.tune's parser."""
     s = sub.add_parser("search", help="run or resume a study (J_real vs CPU, pool clips)")
@@ -1274,7 +1835,9 @@ def add_commands(sub) -> None:
     s.add_argument("--codec", choices=[c.value for c in Codec])
     s.add_argument("--preset", default=MEDIUM, help="the preset tuned and measured against")
     s.add_argument("--binary", help="nanocodec binary, or a commit (built and cached)")
-    s.add_argument("--commit", help="the binary's commit, for the Jetson build")
+    s.add_argument("--commit", help="the binary's commit (default: its --version stamp, or "
+                                    "the COMMIT beside it), for the rented-core CPU builds; "
+                                    "also recorded on a resumed study that has none")
     space = s.add_mutually_exclusive_group()
     space.add_argument("--space", help="search-space file (`name [low high] [int|log]` lines)")
     space.add_argument("--params", help="comma-separated parameter names (trust region)")
@@ -1294,21 +1857,44 @@ def add_commands(sub) -> None:
     s.add_argument("--j-max", type=float,
                    help="finalists lose at most this much J (percent; a speed study's "
                         "accepted quality cost)")
-    s.add_argument("--k", type=float, default=jreal.K_CPU,
-                   help="CPU weight for finalist order and L3's J (0.1: Default quality arms)")
+    s.add_argument("--k", type=float,
+                   help=f"CPU weight for the stage-1 stop, finalist order and L3's J (default "
+                        f"{jreal.K_CPU:g}; with --seed-preset, the slope of the chord between "
+                        f"the two rungs once both are measured; 0.1: Default quality arms)")
     s.add_argument("--seed", type=int, default=1)
+    s.add_argument("--seed-preset", action="append", default=[], metavar="RUNG",
+                   help="also start from this rung's values (a study of the gap between "
+                        "--preset and RUNG); repeatable")
     s.add_argument("--timeout", type=float, help="stop starting trials after N minutes")
     s.add_argument("--finalists", type=int, default=FINALISTS,
                    help="front points checked on Jetson and L3 once the trials are done")
+    s.add_argument("--local", action="store_true",
+                   help="run the trials here (default: on warm rented boxes, nceval.cloud)")
+    s.add_argument("--max-usd", type=float, default=STUDY_MAX_USD,
+                   help=f"cloud: stop starting slices once the study has cost this (default "
+                        f"${STUDY_MAX_USD:g})")
+    s.add_argument("--slice-minutes", type=float, default=SLICE_MINUTES,
+                   help="cloud: trials per box job, in minutes (the study resumes after each)")
+    s.add_argument("--re-anchor", action="store_true",
+                   help="resume on another CPU family than the study's: count the anchor "
+                        "again there (default: refused; the cloud driver asks for its family)")
+    s.add_argument("--json", help="write a summary here (the cloud driver reads it)")
     s.set_defaults(func=search)
     f = sub.add_parser("front", help="a study's Pareto front")
     f.add_argument("--study", required=True)
     f.set_defaults(func=front)
-    n = sub.add_parser("finalists", help="Jetson cost and L3 for the front's best points")
+    n = sub.add_parser("finalists",
+                       help="rented-core CPU (Arm and x86) and L3 for the front's best points")
     n.add_argument("--study", required=True)
     n.add_argument("--count", type=int, default=FINALISTS)
     n.add_argument("--k", type=float, help="CPU weight for this run (default: the study's)")
     n.add_argument("--workers", type=int, default=MAX_WORKERS)
+    cloud_options(n, "the L3s")
+    n.add_argument("--binary", help="the study's build at another path (a box's)")
+    n.add_argument("--commit", help="the study's commit, when it has none recorded (the "
+                                    "rented-core CPU step builds it)")
+    n.add_argument("--callgrind-only", action="store_true",
+                   help="rank finalists the rented cores could not measure on callgrind's x86")
     n.set_defaults(func=finalists)
     w = sub.add_parser("write-presets", help="candidate preset files and the study report")
     w.add_argument("--study", required=True)
@@ -1322,6 +1908,10 @@ def add_commands(sub) -> None:
     v.add_argument("--space", required=True, help="candidate parameters (space file)")
     v.add_argument("--rotation", help="pool rotation key (default: today, UTC)")
     v.add_argument("--workers", type=int, default=MAX_WORKERS)
+    cloud_options(v, "the sweep")
+    v.add_argument("--re-anchor", action="store_true",
+                   help="resume on another CPU family than the sweep's: count the anchor "
+                        "again there")
     v.set_defaults(func=sensitivity)
     a = sub.add_parser("agree", help="L3-check the moves two studies agree on")
     a.add_argument("--studies", required=True, help="comma-separated, e.g. X-a,X-b")

@@ -58,7 +58,10 @@ fn maximum(lanes: v128) -> usize {
 /// # Safety
 ///
 /// None beyond the build's SIMD128.
-pub(super) unsafe fn end_of_block_wide(levels: &[i32], table: &[u16]) -> (usize, u32) {
+pub(super) unsafe fn end_of_block_wide<const MAGNITUDES: bool>(
+    levels: &[i32],
+    table: &[u16],
+) -> (usize, u32) {
     let n = levels.len().min(table.len());
     let (whole, _) = levels[..n].as_chunks::<LANES>();
     let (ends, _) = table[..n].as_chunks::<LANES>();
@@ -75,10 +78,12 @@ pub(super) unsafe fn end_of_block_wide(levels: &[i32], table: &[u16]) -> (usize,
         };
         let coded = i16x8_narrow_i32x4(i32x4_ne(low, zero), i32x4_ne(high, zero));
         largest = u16x8_max(largest, v128_and(coded, end));
-        bits = v128_or(bits, v128_or(i32x4_abs(low), i32x4_abs(high)));
+        if MAGNITUDES {
+            bits = v128_or(bits, v128_or(i32x4_abs(low), i32x4_abs(high)));
+        }
     }
     let done = whole.len() * LANES;
-    let (end, tail_bits) = super::scalar_wide(&levels[done..n], &table[done..n]);
+    let (end, tail_bits) = super::scalar_wide::<MAGNITUDES>(&levels[done..n], &table[done..n]);
     let or = (i32x4_extract_lane::<0>(bits)
         | i32x4_extract_lane::<1>(bits)
         | i32x4_extract_lane::<2>(bits)

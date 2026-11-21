@@ -51,11 +51,11 @@ import hashlib
 import re
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+from . import tempdirs
 from . import dav2d_crop, jm_split
 from .codecs import Codec
 from .config import Paths, find_anchor_tool, find_tool
@@ -371,7 +371,7 @@ def _run_decoders(bitstream: Path, codec: Codec, fmt: YuvFormat, paths: Paths,
     """
     errors: dict[str, str] = {}
     # Reference decoders write log/trace files into the working directory.
-    with (cpu_slots(slots), tempfile.TemporaryDirectory(prefix="nc-dec-") as cwd,
+    with (cpu_slots(slots), tempdirs.temp_dir("dec") as cwd,
           ProcessSet() as processes):
         running = []
         for name, decoder, sinks in decoders:
@@ -645,7 +645,7 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
     dav1d = find_anchor_tool("dav1d", paths)
     aomdec = find_tool("aomdec", paths)
 
-    with cpu_slots(1), tempfile.TemporaryDirectory(prefix="nc-av1-op-") as tmp_dir:
+    with cpu_slots(1), tempdirs.temp_dir("av1-op") as tmp_dir:
         tmp = Path(tmp_dir)
         for op_idx, (idc, (max_s, max_t)) in enumerate(zip(idcs, stream_ops)):
             shown = []
@@ -947,7 +947,7 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
             ext_shown.append((sel[2], sel[3], sel[4]))
         return shown, ext_shown
 
-    with cpu_slots(1), tempfile.TemporaryDirectory(prefix="nc-vp9-op-") as tmp_dir:
+    with cpu_slots(1), tempdirs.temp_dir("vp9-op") as tmp_dir:
         tmp = Path(tmp_dir)
         if own_decoder is not None:
             all_md5s = [entry[4] for layers in ordered_tus for entry in layers]

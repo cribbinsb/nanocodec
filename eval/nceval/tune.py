@@ -91,6 +91,7 @@ Usage (from eval/):
 
 from __future__ import annotations
 
+import os
 import argparse
 import hashlib
 import json
@@ -1814,8 +1815,10 @@ def main() -> None:
                              help="fail at once unless --binary was built from this commit "
                                   f"(also ${buildinfo.EXPECT_ENV})")
     args = parser.parse_args()
-    if getattr(args, "workers", 1) > MAX_WORKERS:
-        raise SystemExit(f"at most {MAX_WORKERS} workers (project rule)")
+    # The PC's per-agent cap; a rented box's own (aws_measure sets NC_MAX_WORKERS there).
+    limit = int(os.environ.get("NC_MAX_WORKERS", MAX_WORKERS))
+    if getattr(args, "workers", 1) > limit:
+        raise SystemExit(f"at most {limit} workers (project rule)")
     if getattr(args, "binary", None) and hasattr(args, "expect_commit"):
         # Legacy commands; nceval.tune_pool's take a commit and check its build
         # (nceval.levels.build).

@@ -11,7 +11,13 @@ const SEQUENCE_HEADER: u8 = 1;
 /// OBU type of a regular (non-key) frame.
 const REGULAR_FRAME: u8 = 7;
 /// Order-hint bits signalled in the sequence header.
-const ORDER_HINT_BITS: u8 = 8;
+/// `order_hint_bits_minus_1 + 1`: references within half the hint range
+/// (127 frames) reach the engine's 64-frame second reference.
+pub const ORDER_HINT_BITS: u8 = 8;
+/// With a long-held second reference (`nc_encoder::holds_second_reference`):
+/// 10 bits, so references up to `nc_encoder::MAX_REFERENCE_AGE` back keep
+/// their display order (`get_relative_dist` stays within half the range).
+pub const LONG_ORDER_HINT_BITS: u8 = 10;
 /// Level 31: no level-specific limits are claimed.
 const UNCONSTRAINED_LEVEL: u8 = 31;
 
@@ -33,14 +39,14 @@ pub fn coded_size(width: usize, height: usize) -> (usize, usize) {
 /// `layering` and motion-vector reference lists `reference_lists`. Frames
 /// may code a chroma quantizer delta (one bit per frame when zero), hide
 /// luma DC parities when `parity_hiding`, and signal TCQ per frame when
-/// `tcq`.
+/// `tcq`; order hints have `order_hint_bits`.
 #[must_use]
 pub fn sequence_header(
-    width: usize,
-    height: usize,
+    (width, height): (usize, usize),
     layering: sequence::Layering,
     reference_lists: ListConfig,
     (parity_hiding, tcq, ccso): (bool, bool, bool),
+    order_hint_bits: u8,
 ) -> sequence::SequenceHeader {
     let (coded_width, coded_height) = coded_size(width, height);
     sequence::SequenceHeader {
@@ -49,7 +55,7 @@ pub fn sequence_header(
         max_height: coded_height as u32,
         level: UNCONSTRAINED_LEVEL,
         single_picture: false,
-        order_hint_bits: ORDER_HINT_BITS,
+        order_hint_bits,
         crop: sequence::CropWindow {
             right: (coded_width - width) as u32,
             bottom: (coded_height - height) as u32,

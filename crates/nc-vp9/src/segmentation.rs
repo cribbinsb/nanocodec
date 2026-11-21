@@ -211,7 +211,7 @@ pub(crate) fn tree_path(id: u8) -> [(usize, bool); 3] {
 /// The branches taken at each segment-tree node by one frame's explicitly
 /// coded ids, which give that frame's own tree probabilities (the header
 /// sends them, VP9 §6.2.11, and the tile is written after the frame).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SegmentStats {
     branches: [[u32; 2]; TREE_PROBS],
 }

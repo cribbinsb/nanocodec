@@ -24,7 +24,13 @@
 //! With `decision.nonbase_disposable_only`, only frames no later frame
 //! references (the top temporal layer) are non-base: cheap settings there
 //! cannot propagate into other frames.
-//! Without `nonbase.` settings nothing here runs, so streams are unchanged.
+//!
+//! Key frames may take their own backend values too, `key.<name> = value`
+//! (a backend per-frame parameter only): a frame-level search that costs
+//! little on the few key frames, where its gain propagates the furthest,
+//! can be denser there than on the base frames.
+//! Without `nonbase.` or `key.` settings nothing here runs, so streams are
+//! unchanged.
 
 use nc_analysis::motion::SearchConfig;
 
@@ -35,6 +41,9 @@ use crate::params::{
 
 /// Prefix of a non-base frame setting: `nonbase.<name> = value`.
 pub const NONBASE_PREFIX: &str = "nonbase.";
+
+/// Prefix of a key frame's backend setting: `key.<name> = value`.
+pub const KEY_PREFIX: &str = "key.";
 
 /// The engine groups that are read per frame and so may take a non-base
 /// value.
@@ -90,54 +99,88 @@ pub(crate) struct EffortOverlay {
     /// Every override with the non-base values on top: what the backend
     /// re-reads on non-base frames.
     pub nonbase_overrides: ParamOverrides,
+    /// Every override with the `key.` values on top, when there are any:
+    /// what the backend re-reads on key frames.
+    pub key_overrides: Option<ParamOverrides>,
 }
 
 impl EffortOverlay {
-    /// The overlay `params` asks for, or `None` without `nonbase.`
-    /// settings. `params` holds both kinds of setting;
+    /// The overlay `params` asks for, or `None` without `nonbase.` or
+    /// `key.` settings. `params` holds every kind of setting;
     /// `backend_frame_specs` are the backend's per-frame groups and
     /// `backend_fixed` the names in them that stay fixed for the stream.
     ///
     /// # Errors
     ///
-    /// A non-base setting that names an unknown parameter, lies outside its
-    /// range, or names a parameter that is not re-read per frame.
+    /// A non-base or key setting that names an unknown parameter, lies
+    /// outside its range, or names a parameter that is not re-read per frame
+    /// (for `key.`, one outside the backend's per-frame groups).
     pub fn from_overrides(
         params: &ParamOverrides,
         backend_frame_specs: &[&[ParamSpec]],
         backend_fixed: &[&str],
     ) -> Result<Option<Self>, ParamError> {
-        let (nonbase, ordinary) = params.split_prefix(NONBASE_PREFIX);
-        if nonbase.is_empty() {
+        let (key, framed) = params.split_prefix(KEY_PREFIX);
+        let (nonbase, ordinary) = framed.split_prefix(NONBASE_PREFIX);
+        if nonbase.is_empty() && key.is_empty() {
             return Ok(None);
         }
-        let prefixed = |error: ParamError| match error {
-            ParamError::Unknown(name) => ParamError::Unknown(format!("{NONBASE_PREFIX}{name}")),
-            other => other,
+        let in_groups = |groups: &[&[ParamSpec]], name: &str| {
+            groups
+                .iter()
+                .any(|group| group.iter().any(|spec| spec.name == name))
+                && !CADENCE_PARAMS.contains(&name)
+                && !backend_fixed.contains(&name)
         };
+        let engine_and_backend: Vec<&[ParamSpec]> = FRAME_PARAM_SPECS
+            .iter()
+            .chain(backend_frame_specs)
+            .copied()
+            .collect();
+        let engine_or_backend = |name: &str| in_groups(&engine_and_backend, name);
+        let backend_only = |name: &str| in_groups(backend_frame_specs, name);
         let every: Vec<&[ParamSpec]> = engine_specs()
             .into_iter()
             .chain(backend_frame_specs.iter().copied())
             .collect();
-        nonbase.validate(&every).map_err(prefixed)?;
-        let per_frame = |name: &str| {
-            FRAME_PARAM_SPECS
-                .iter()
-                .chain(backend_frame_specs)
-                .flat_map(|group| group.iter())
-                .any(|spec| spec.name == name)
-                && !CADENCE_PARAMS.contains(&name)
-                && !backend_fixed.contains(&name)
-        };
-        if let Some(name) = nonbase.names().find(|name| !per_frame(name)) {
-            return Err(ParamError::NotPerFrame(format!("{NONBASE_PREFIX}{name}")));
+        for (prefix, settings, per_frame) in [
+            (
+                NONBASE_PREFIX,
+                &nonbase,
+                &engine_or_backend as &dyn Fn(&str) -> bool,
+            ),
+            (KEY_PREFIX, &key, &backend_only),
+        ] {
+            let prefixed = |error: ParamError| match error {
+                ParamError::Unknown(name) => ParamError::Unknown(format!("{prefix}{name}")),
+                other => other,
+            };
+            settings.validate(&every).map_err(prefixed)?;
+            if let Some(name) = settings.names().find(|name| !per_frame(name)) {
+                return Err(ParamError::NotPerFrame(format!("{prefix}{name}")));
+            }
         }
         let nonbase_overrides = ordinary.overlaid_with(&nonbase);
         Ok(Some(Self {
             base: RoleParams::from_overrides(&ordinary),
             nonbase: RoleParams::from_overrides(&nonbase_overrides),
             nonbase_overrides,
+            key_overrides: (!key.is_empty()).then(|| ordinary.overlaid_with(&key)),
         }))
+    }
+
+    /// The backend settings of a frame of `role` (`key`: a key frame).
+    pub fn backend_overrides<'a>(
+        &'a self,
+        stream: &'a ParamOverrides,
+        role: FrameRole,
+        key: bool,
+    ) -> &'a ParamOverrides {
+        match (&self.key_overrides, role) {
+            (Some(key_overrides), _) if key => key_overrides,
+            (_, FrameRole::Base) => stream,
+            (_, FrameRole::NonBase) => &self.nonbase_overrides,
+        }
     }
 
     /// The engine parameters of `role`.
@@ -197,6 +240,35 @@ mod tests {
             overlay.params(FrameRole::NonBase).search.window_half_width,
             2
         );
+    }
+
+    #[test]
+    fn key_values_apply_to_key_frames_only() {
+        const SPECS: &[ParamSpec] = &[ParamSpec {
+            name: "codec.density",
+            default: 4.0,
+            min: 1.0,
+            max: 8.0,
+            doc: "a backend per-frame setting",
+        }];
+        let stream = overrides(&[("codec.density", 4.0), ("key.codec.density", 1.0)]);
+        let overlay = EffortOverlay::from_overrides(&stream, &[SPECS], &[])
+            .unwrap()
+            .expect("key settings make an overlay");
+        let value = |key, role| {
+            overlay
+                .backend_overrides(&stream, role, key)
+                .get("codec.density")
+        };
+        assert_eq!(value(true, FrameRole::Base), Some(1.0));
+        assert_eq!(value(false, FrameRole::Base), Some(4.0));
+        assert_eq!(value(false, FrameRole::NonBase), Some(4.0));
+        // Engine groups are per frame for non-base frames, not for keys.
+        let engine = overrides(&[("key.decision.max_cheap_vectors", 2.0)]);
+        assert!(matches!(
+            EffortOverlay::from_overrides(&engine, &[SPECS], &[]),
+            Err(ParamError::NotPerFrame(_))
+        ));
     }
 
     #[test]

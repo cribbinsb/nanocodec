@@ -1,36 +1,18 @@
-# H.264 slow (`--preset slow`): Default plus the decision work that buys the most J per
-# instruction, picked from an all-on bundle (h264-spacing, 2026-11-19;
-# docs/handoff/presets.md "Slow presets"). x86 callgrind P-frame instructions against
-# Default (cost clips, fixed QP): this bundle x1.87 (+87%); the all-on bundle x5.7 for
-# fixed QP J -5.6% [-6.9, -4.3] (47 clips), CBR L1 -5.58% / L2 -4.22% (k 0).
-# This bundle, fixed QP, 22 clips: J -4.4% [-4.7, -3.7] against Default
-# (PSNR -5.3, VMAF -3.5, MS-SSIM -4.9). Each component alone on Default
-# (22 clips, J / instructions):
-#   intra search widened: -1.3% / +44%      final stage widened: -1.6% / +15%
-#   winner walk widened:  -1.0% / +14%      RD transform size + residual RD: -0.3% / +16%
-# Left out: RD vector refinement (h264.rd_refine 1: -0.5% / +41%, adds -0.1% on top of
-# this bundle for +39 points; 2 with three square steps: +240%), split search on every
-# macroblock (+1.3% worse, +60%), four trellis states (0.0%, +15%), intra trellis and
-# ungated sub-pel refinement (0.0%, +9%).
-# The shared bundle's second reference stays off: H.264 cannot signal it beside the
-# Default's temporal layers, and asking for it codes the stream flat (all-on with it:
-# fixed QP J -5.1% against -5.6% without).
-refs.second = 0
-refs.second_full = 0
-# Intra: all nine Intra_4x4 modes priced by RD, all nine Intra_8x8 modes, no SATD gates.
-h264.intra_rd_candidates = 9
-h264.intra8x8_all_modes = 1
-h264.intra4x4_gate_satd = 0
-h264.intra8x8_gate_satd = 0
-# Winner walk: three square steps on every winner.
-decision.winner_walk_steps = 3
-decision.winner_walk_square = 1
-decision.winner_walk_min_lambdas = 0
-# Final decision stage: wider pricing margin, no winner limit or energy gate, chroma priced.
+# H.264 slow (`--preset slow`): the Default plus two of slower's decision components,
+# the ones with the most J per instruction there (presets/h264/slower.toml): the final
+# decision stage widened (pricing margin, no winner limit or energy gate, chroma
+# priced) and the winner walk (three square steps on every winner). H.264 has no
+# quadtree below the macroblock, so no RD partition search (the other codecs' slow).
+# The rung between medium and slower on H.264's front (docs/handoff/presets.md "The
+# ladder"). Against medium, preset-ladder 2026-11-21 (16a104a1b): whole-encode fps
+# 1.31x the time (combined: Graviton 3/4 and Zen 5, log-equal ARM/x86, 720p CBR 600,
+# 4 quick clips; slower is 1.33x this rung's time); final check (34 clips, 600 f, keys
+# every 10 s, draw 2026-11-21) J -2.57 % [-2.95, -2.02], no guard, 0.73 better than the
+# medium-slower log-speed chord. The final stage alone: 1.21x, J -1.18 % (on the chord).
 decision.final_margin_lambdas = 0.1
 decision.final_max_winner_lambdas = 0
 decision.final_intra_energy_ratio = 0
 h264.final_chroma = 1
-# RD luma transform size and the residual RD check.
-h264.transform_size_rd = 1
-h264.residual_rd_lambda = 0.315
+decision.winner_walk_steps = 3
+decision.winner_walk_square = 1
+decision.winner_walk_min_lambdas = 0

@@ -1,4 +1,6 @@
-//! Encoder-only coefficient rate-distortion trimming ("trellis-lite").
+//! Encoder-only coefficient rate-distortion trimming ("trellis-lite"): AV2's
+//! use of the shared trailing rule (`nc_encoder::trim_trailing_ones`, whose
+//! static rate model this was), with its exact coefficient-domain distortion.
 //!
 //! After deadzone quantization, a transform often ends in isolated ±1 levels:
 //! each costs its sign, its last-position base symbol, the zero symbols
@@ -26,17 +28,6 @@ use crate::coeff;
 use crate::transform::{self, Qindices};
 use crate::tx_size::TxSize;
 
-/// Estimated bits of a trailing level of one: its bypass sign bit plus the
-/// last-position base symbol (whose alphabet omits zero; level one is its
-/// most likely symbol).
-const LEVEL_ONE_BITS: f64 = 2.0;
-/// Estimated bits of one zero level between the trailing level and the
-/// previous nonzero one (high-frequency zeros are cheap).
-const ZERO_BITS: f64 = 0.3;
-/// Estimated bits an all-zero transform saves beyond its last level: the
-/// end-of-block class symbol, against a cheaper all-zero flag.
-const EMPTY_BITS: f64 = 2.0;
-
 /// The tuning of trimming (encoder parameters).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TrimOptions {
@@ -44,6 +35,9 @@ pub(crate) struct TrimOptions {
     pub luma_rate_scale: f64,
     /// Scale of the chroma rate estimate (zero: chroma is never trimmed).
     pub chroma_rate_scale: f64,
+    /// The shared rules (`quant.rd_trim`) in place of the trailing rule
+    /// alone, or `None` for that rule.
+    pub rules: Option<nc_encoder::RateTrim>,
 }
 
 /// The trimming model of one frame.
@@ -54,12 +48,6 @@ pub(crate) struct Trim {
     /// Chroma squared error in luma units: divides the chroma λ.
     pub chroma_weight: f64,
     pub options: TrimOptions,
-}
-
-/// Approximate bits of end-of-block `eob` beyond the first positions: the
-/// offset bits of its class (AVM `av2_eob_offset_bits`), about `log2(eob)`.
-fn eob_offset_bits(eob: usize) -> f64 {
-    (eob as f64).log2()
 }
 
 impl Trim {
@@ -88,38 +76,20 @@ impl Trim {
         }
         let scan = coeff::scan(tx);
         let error_scale = transform::coefficient_error_scale(tx);
-        let Some(mut last) = eob.checked_sub(1) else {
-            return 0;
-        };
-        loop {
-            let pos = usize::from(scan[last]);
-            if levels[pos].abs() != 1 {
-                return last + 1;
-            }
-            let previous = scan[..last]
-                .iter()
-                .rposition(|&p| levels[usize::from(p)] != 0);
-            let zeros = last - previous.map_or(0, |p| p + 1);
-            let bits = LEVEL_ONE_BITS
-                + ZERO_BITS * zeros as f64
-                + match previous {
-                    Some(p) => eob_offset_bits(last + 1) - eob_offset_bits(p + 1),
-                    None => EMPTY_BITS + eob_offset_bits(last + 1),
-                };
-            // Zeroing moves the reconstruction from `one` to zero:
-            // c² − (|c| − one)² = one · (2|c| − one).
+        let lambda = lambda * rate_scale;
+        if let Some(rules) = &self.options.rules {
+            return nc_encoder::trim_levels(rules, levels, scan, eob, lambda, |pos, level| {
+                let magnitude = i64::from(coefficients[pos].unsigned_abs());
+                let dequantized =
+                    i64::from(transform::dequantized_magnitude(tx, qindex.at(pos), level));
+                nc_encoder::dequantized_removal_sse(magnitude, dequantized, error_scale)
+            });
+        }
+        nc_encoder::trim_trailing_ones(levels, scan, eob, lambda, |pos| {
             let magnitude = i64::from(coefficients[pos].unsigned_abs());
             let one = i64::from(transform::level_one_magnitude(tx, qindex.at(pos)));
-            let added = (one * (2 * magnitude - one)) as f64 * error_scale;
-            if added >= lambda * rate_scale * bits {
-                return last + 1;
-            }
-            levels[pos] = 0;
-            match previous {
-                Some(p) => last = p,
-                None => return 0,
-            }
-        }
+            nc_encoder::dequantized_removal_sse(magnitude, one, error_scale)
+        })
     }
 }
 
@@ -137,6 +107,7 @@ mod tests {
             options: TrimOptions {
                 luma_rate_scale: 1.0,
                 chroma_rate_scale: 0.0,
+                rules: None,
             },
         }
     }

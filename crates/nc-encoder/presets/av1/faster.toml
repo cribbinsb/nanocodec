@@ -36,7 +36,14 @@ av1.cdef_local_strong_primary = 15
 av1.cdef_local_strong_variance_min = 0
 av1.cdef_local_noise_full_search_sigma = 0
 av1.cdef_local_strong_model_scale = 3
-av1.loop_filter = 0
+# Deblocking on key and base frames only (off on the rest, as before on every
+# frame): the base frames the later ones predict from. Fixed QP (24 clips) J
+# -1.9% [-3.0, -1.0] (everywhere -2.8% at +5.5% P instructions; keys alone
+# -0.2%); whole encode Zen 5 +2.68%, Graviton3 +2.01%, Graviton4 +2.20%.
+# nceval.train (k 0.6): L3 (n 108) -1.19% [-1.72, -0.68] BETTER, final-check
+# (n 34) -2.00% [-3.12, -1.10] BETTER (docs/analysis/unused-tools-2026-11-21.md).
+av1.loop_filter = 1
+nonbase.av1.loop_filter = 0
 light.planner.depth_removal_min_quantizer = 0
 quant.trellis = 0
 av1.keyframe_directional = 0
@@ -230,3 +237,10 @@ rate.fixed_qp_moving_key = 0
 rate.period_ceiling = 1
 rate.key_still_boost = 6
 rate.still_level_damping = 0.5
+
+# The trellis's cheap substitute (`quant.rd_trim`, docs/handoff/cheap-rdoq.md): trailing
+# ±1 and whole-block rules on coded luma. nceval.train (e12968bfc8, base eb55cd325, draw
+# 2026-11-21, k 0.6): L3 J -0.16 % [-0.34, +0.02] n=108, final check J -0.40 % [-0.61,
+# -0.18] n=34; cycles +0.2 / 0.0 / +0.9 % (Graviton 3 / 4, Zen 5).
+quant.rd_trim = 1
+quant.rd_trim_block = 1

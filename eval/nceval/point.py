@@ -31,11 +31,11 @@ import csv
 import functools
 import os
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import tempdirs
 from .codecs import Codec
 from .config import Paths
 from .conformance import GateResult, coded_format_from_layer_md5, gate_stream
@@ -154,7 +154,7 @@ def score_ungated(command: EncodeCommand, spec: StreamSpec, metrics: list[Metric
     """
     with gpu_slots(gpu_slot_need(metrics)), \
             cpu_slots(1 + sum(m.cpu_threads for m in metrics)), \
-            tempfile.TemporaryDirectory(prefix="nc-point-") as scratch:
+            tempdirs.temp_dir("point") as scratch:
         extra: list[str] = []
         if writes_sse_log(command(os.devnull)[0]):
             psnr = EncoderPsnrMetric(spec, Path(scratch) / "sse.csv")

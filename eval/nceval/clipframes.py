@@ -424,6 +424,18 @@ def _write_all(descriptor: int, data: bytes) -> None:
         view = view[os.write(descriptor, view):]
 
 
+def frames_command(clip: Clip, frames: int) -> list[str]:
+    """A command writing the `frames` frames a measurement of `clip` reads, as raw I420
+    on its stdout, from frame 0: a raw clip's first bytes as they are (what
+    ClipFrames.reader serves it, no decode), an encoded clip's ffmpeg decode."""
+    if clip.start_frame:
+        raise ValueError(f"{clip.name}: frames_command reads from frame 0, not "
+                         f"{clip.start_frame}")
+    if not clip.encoded:
+        return ["head", "-c", str(frames * clip.frame_bytes), str(clip.yuv)]
+    return decode_command(clip, frames)
+
+
 def decode_command(clip: Clip, frames: int) -> list[str]:
     """ffmpeg decoding `frames` frames of an encoded clip from its start frame."""
     seek = []

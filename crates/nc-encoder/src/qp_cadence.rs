@@ -214,17 +214,33 @@ impl QpCadence {
         if self.is_flat() {
             return 0.;
         }
-        let base_boost = if distance <= self.startup_end {
-            self.startup_base_boost
-        } else {
-            self.base_boost
-        };
         strength
             * match self.role(distance) {
-                CadenceRole::Base => -base_boost,
+                CadenceRole::Base => -self.base_boost_at(distance),
                 CadenceRole::Middle => 0.,
                 CadenceRole::Leaf => self.leaf_penalty,
             }
+    }
+
+    /// QP units from the base (finest) to the leaf (coarsest) frames of the
+    /// cycle holding the inter frame `distance` frames after the last key,
+    /// at `strength`: the room the layer propagation term moves a flat
+    /// stream's base blocks within (`layer_propagation.rs`), as the ladder's
+    /// top-layer offset is on a layered one.
+    pub fn span(&self, distance: u64, strength: f64) -> f64 {
+        if self.is_flat() {
+            return 0.;
+        }
+        strength * (self.base_boost_at(distance) + self.leaf_penalty)
+    }
+
+    /// The base boost in force `distance` frames after the last key.
+    fn base_boost_at(&self, distance: u64) -> f64 {
+        if distance <= self.startup_end {
+            self.startup_base_boost
+        } else {
+            self.base_boost
+        }
     }
 
     /// The distances from the last key of the cadence cycle holding the
@@ -375,6 +391,14 @@ mod tests {
         assert_eq!(c.offset(5, 1.), 1.);
         assert_eq!(c.offset(6, 1.), 0.);
         assert_eq!(c.offset(8, 0.5), -1.5);
+    }
+
+    #[test]
+    fn span_runs_from_the_base_to_the_leaf_offset() {
+        let c = cadence(4., 3., 1.);
+        assert_eq!(c.span(6, 1.), c.offset(5, 1.) - c.offset(4, 1.));
+        assert_eq!(c.span(6, 0.5), 2.);
+        assert_eq!(cadence(1., 3., 1.).span(4, 1.), 0.);
     }
 
     #[test]

@@ -79,7 +79,10 @@ fn horizontal_or(lanes: __m256i) -> u32 {
 ///
 /// The CPU must support AVX2.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn end_of_block_wide(levels: &[i32], table: &[u16]) -> (usize, u32) {
+pub(super) unsafe fn end_of_block_wide<const MAGNITUDES: bool>(
+    levels: &[i32],
+    table: &[u16],
+) -> (usize, u32) {
     let n = levels.len().min(table.len());
     let (whole, _) = levels[..n].as_chunks::<LANES>();
     let (ends, _) = table[..n].as_chunks::<LANES>();
@@ -99,13 +102,15 @@ pub(super) unsafe fn end_of_block_wide(levels: &[i32], table: &[u16]) -> (usize,
             _mm256_cmpeq_epi32(high, zero),
         ));
         largest = _mm256_max_epu16(largest, _mm256_andnot_si256(zeros, end));
-        bits = _mm256_or_si256(
-            bits,
-            _mm256_or_si256(_mm256_abs_epi32(low), _mm256_abs_epi32(high)),
-        );
+        if MAGNITUDES {
+            bits = _mm256_or_si256(
+                bits,
+                _mm256_or_si256(_mm256_abs_epi32(low), _mm256_abs_epi32(high)),
+            );
+        }
     }
     let done = whole.len() * LANES;
-    let (end, tail_bits) = super::scalar_wide(&levels[done..n], &table[done..n]);
+    let (end, tail_bits) = super::scalar_wide::<MAGNITUDES>(&levels[done..n], &table[done..n]);
     (
         usize::from(horizontal_max(largest)).max(end),
         horizontal_or(bits) | tail_bits,

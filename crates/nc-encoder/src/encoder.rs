@@ -8,7 +8,7 @@
 //! decide each leaf's mode, and keep the reconstruction in the slots it
 //! refreshes.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 
 use nc_analysis::motion::{SbSearch, SearchConfig};
 use nc_analysis::preanalysis::PreAnalysis;
@@ -28,17 +28,19 @@ use crate::decision::{
     choose_secondary_mode, is_square_leaf, is_static, is_still, leaf_area, leaf_extent,
     leaf_log2_min_side,
 };
+use crate::depth_context::DepthContext;
 use crate::effort_class::{Classifier, KeyClassifier, LIGHT_PREFIX, LightOverlay, LightParams};
 use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::filter_effort::{CdefEffort, FilterEffort, FrameActivity};
-use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
+use crate::filter_outcome::{FilterOutcomeStats, OutcomeRole};
+use crate::frame_role::{EffortOverlay, FrameRole, KEY_PREFIX, NONBASE_PREFIX};
 use crate::hold::{FrameHold, LastCoded};
 use crate::inheritance::{Inheritance, Tier};
 use crate::input::write_raw;
 use crate::key_clock::KeyClock;
 use crate::key_plan::{KeyPlanMode, KeyPlanner};
 use crate::layer::LayerPosition;
-use crate::layer_propagation::LayerFrame;
+use crate::layer_propagation::{LayerFrame, Period};
 use crate::ltr::{LongTermReference, LtrAction, long_term_slot};
 use crate::moving_camera::MovingCamera;
 use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
@@ -51,7 +53,7 @@ use crate::params::{
     engine_specs,
 };
 use crate::partition::{Block, should_split};
-use crate::partition_plan::{LeafStats, NoiseTest, Partition, Planner};
+use crate::partition_plan::{LeafStats, NodeMargins, NoiseTest, Partition, Planner};
 use crate::qp_cadence::{
     CadenceRole, LayerLadder, MotionHint, QP_UNITS_PER_OCTAVE, QpCadence, nearest_quantizer,
     step_ratio,
@@ -84,7 +86,10 @@ use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, Tempo
 use crate::threshold_control::{BandEvidence, ThresholdControl, Tool};
 use crate::timeline::{FrameTime, Timeline};
 use nc_analysis::link::{MAX_REFERENCE_SLOTS, SlotMask};
+use rd_split::LeafTally;
 
+#[path = "rd_split.rs"]
+mod rd_split;
 #[path = "spatial_encode.rs"]
 mod spatial_encode;
 
@@ -281,6 +286,17 @@ pub struct Encoder<B: CodecBackend> {
     hold: Option<FrameHold>,
     /// Scratch list of candidate vectors, reused for every inter block.
     decision_scratch: DecisionScratch,
+    /// The planner's margins of the inter superblock being coded, the RD
+    /// partition search's gate (`rd_split.rs`).
+    plan_margins: Option<NodeMargins>,
+    /// The coded leaf sizes the RD partition search's context gate reads
+    /// (`depth_context.rs`).
+    depths: DepthContext,
+    /// Leaves the RD partition search coded and how many were skips, for
+    /// `planner.rd_split_merge_skipped` (`rd_split.rs`).
+    rd_leaf_tally: LeafTally,
+    /// The committed frames' filter-search outcomes (`filter_outcome.rs`).
+    filter_outcomes: FilterOutcomeStats,
     /// Tunable partition-planner parameters.
     planner_params: PlannerParams,
     /// Tunable mode-decision parameters.
@@ -376,7 +392,9 @@ impl<B: CodecBackend> Encoder<B> {
         let aq = BlockAq::new(&config.params, qp_log2, qp_offsets).filter(|_| B::SUPPORTS_BLOCK_QP);
         let persist = PersistParams::from_overrides(&config.params);
         let reuse = (persist.reuse >= 0.5).then(|| {
-            ReuseTerm::new(B::SUPPORTS_BLOCK_QP).level_priced(persist.reuse_level_price >= 0.5)
+            ReuseTerm::new(B::SUPPORTS_BLOCK_QP)
+                .level_priced(persist.reuse_level_price >= 0.5)
+                .key_cells(f64::from(persist.reuse_keys))
         });
         let cadence_fixed_qp = RateParams::from_overrides(&config.params).cadence_fixed_qp >= 0.5;
         let moving_camera = MovingCamera::new(
@@ -497,6 +515,10 @@ impl<B: CodecBackend> Encoder<B> {
             window: None,
             scene,
             decision_scratch: DecisionScratch::default(),
+            plan_margins: None,
+            depths: DepthContext::default(),
+            rd_leaf_tally: LeafTally::default(),
+            filter_outcomes: FilterOutcomeStats::default(),
             planner_params,
             decision_params,
             frame_decision_params: decision_params,
@@ -575,7 +597,6 @@ impl<B: CodecBackend> Encoder<B> {
             };
             self.layer.rate_control = Some(RateController::new(
                 config,
-                self.config.codec,
                 model,
                 self.config.frame_rate,
                 u32::try_from(self.key_period()).unwrap_or(u32::MAX),
@@ -598,6 +619,13 @@ impl<B: CodecBackend> Encoder<B> {
         }
         self.layer.rate_control = None;
         self.backend.set_rate_control_enabled(false);
+    }
+
+    /// What the frame-level filter searches decided on the committed
+    /// single-layer frames, by tool and frame role (`filter_outcome.rs`).
+    #[must_use]
+    pub fn filter_outcome_stats(&self) -> &FilterOutcomeStats {
+        &self.filter_outcomes
     }
 
     /// Packet feedback and VBV statistics, or `None` in fixed-QP mode.
@@ -831,6 +859,30 @@ impl<B: CodecBackend> Encoder<B> {
             .and_then(RateController::inter_level)
             .unwrap_or(self.config.quantizer);
         self.sample_step(level)
+    }
+
+    /// Whether key `index` (buffer share `share`) is bounded by rate
+    /// control's allowance (`ReuseFrame::key_bound`): asked only when the
+    /// reuse term needs it, and false under fixed QP.
+    pub(crate) fn reuse_key_bound(
+        &mut self,
+        index: u64,
+        pre: &PreAnalysis,
+        share: &LayerShare,
+    ) -> bool {
+        if !self
+            .layer
+            .reuse
+            .as_ref()
+            .is_some_and(ReuseTerm::wants_key_bound)
+        {
+            return false;
+        }
+        let hint = Complexity::from_preanalysis(Some(pre));
+        self.layer
+            .rate_control
+            .as_mut()
+            .is_some_and(|c| c.key_bound_by_allowance(index, hint, share))
     }
 
     /// QP units inter frame `index` is planned coarser than the inter level
@@ -1248,14 +1300,15 @@ impl<B: CodecBackend> Encoder<B> {
         Some(search)
     }
 
-    /// Before coding frame `index`, the backend's settings of its `role`,
-    /// when the effort overlay is on.
-    fn apply_backend_role(&mut self, role: FrameRole) {
+    /// Before coding frame `index`, the backend's settings of its `role`
+    /// (`key`: a key frame), when the effort overlay is on.
+    fn apply_backend_role(&mut self, role: FrameRole, key: bool) {
         if let Some(overlay) = &self.effort_overlay {
-            match role {
-                FrameRole::Base => self.backend.set_frame_params(&self.config.params),
-                FrameRole::NonBase => self.backend.set_frame_params(&overlay.nonbase_overrides),
-            }
+            self.backend.set_frame_params(overlay.backend_overrides(
+                &self.config.params,
+                role,
+                key,
+            ));
         }
     }
 
@@ -1323,8 +1376,13 @@ impl<B: CodecBackend> Encoder<B> {
     /// Before coding a frame of `role`, the backend's loop-filter effort
     /// (`filter_effort.rs`): decided from `motion` on inter frames, the
     /// full filters on key frames.
-    fn apply_filter_effort(&mut self, role: FrameRole, motion: Option<&MotionAnalysis>) {
-        let effort = match motion {
+    fn apply_filter_effort(
+        &mut self,
+        (role, index): (FrameRole, u64),
+        inter: bool,
+        motion: Option<&MotionAnalysis>,
+    ) {
+        let mut effort = match motion {
             Some(motion) => {
                 let proxy = Classifier {
                     motion,
@@ -1359,6 +1417,9 @@ impl<B: CodecBackend> Encoder<B> {
             }
             None => FilterEffort::FULL,
         };
+        if inter {
+            effort.usage = crate::filter_effort::usage_gate(&self.filter_params, role, index);
+        }
         self.cdef_reused = match effort.cdef {
             CdefEffort::Reuse => self.cdef_reused + 1,
             CdefEffort::Search => 0,
@@ -1641,6 +1702,9 @@ impl<B: CodecBackend> Encoder<B> {
             self.moving_camera
                 .observe(hint.camera_motion, f64::from(a.pre.static_fraction));
         }
+        if let Some(second) = self.layer.second.as_mut() {
+            second.camera_moving(self.moving_camera.moving());
+        }
         let depth = analyzer
             .as_ref()
             .and_then(Analyzer::analysis)
@@ -1702,6 +1766,7 @@ impl<B: CodecBackend> Encoder<B> {
         let reuse_frame = on_reuse_chain(key, &references);
         self.reuse_frame = reuse_frame.then_some(index);
         if let Some(analysis) = analysis {
+            let key_bound = key && self.reuse_key_bound(index, &analysis.pre, &LayerShare::WHOLE);
             let frame = ReuseFrame {
                 still: &analysis.still,
                 pre: &analysis.pre,
@@ -1709,6 +1774,7 @@ impl<B: CodecBackend> Encoder<B> {
                 horizon: self.frames_to_next_key(index),
                 sample_step: self.reuse_sample_step(),
                 role_offset: self.reuse_role_offset(index, key, &references, depth),
+                key_bound,
             };
             // The term's state is the frame before, or on a layered stream
             // the previous base frame (the last one it saw).
@@ -1738,19 +1804,21 @@ impl<B: CodecBackend> Encoder<B> {
                 && self
                     .frames_to_next_key(index)
                     .is_some_and(|frames| frames as f64 <= window);
+            let (layer, top_offset) = self.propagation_role(index, &references, depth);
             if let Some(aq) = self.layer.aq.as_mut() {
-                let ladder = if self.layer.rate_control.is_some() {
-                    self.layer.rate_control_ladder
-                } else {
-                    self.layer.ladder
-                };
                 aq.plan_layer(&LayerFrame {
                     index,
                     reference: index.saturating_sub(u64::from(references.reference.distance)),
                     key,
-                    layered: !references.position.is_flat(),
-                    layer: references.position.layer,
-                    top_offset: ladder.top_offset(),
+                    period: if !references.position.is_flat() {
+                        Period::Layered
+                    } else if self.layer.cadence.is_flat() {
+                        Period::None
+                    } else {
+                        Period::Cadence
+                    },
+                    layer,
+                    top_offset,
                     before_key,
                     pre: &analysis.pre,
                     motion,
@@ -1799,9 +1867,10 @@ impl<B: CodecBackend> Encoder<B> {
         let (decision_params, planner_params) =
             self.frame_params(index, &references, role, analysis);
         self.frame_decision_params = decision_params;
-        self.apply_backend_role(role);
+        self.apply_backend_role(role, key);
         self.apply_light_role(index, &references, (role, key), analysis);
-        self.apply_filter_effort(role, motion.filter(|_| frame_type == FrameType::Inter));
+        let inter_frame = frame_type == FrameType::Inter;
+        self.apply_filter_effort((role, index), inter_frame, motion.filter(|_| inter_frame));
         if decision_params.noise_skip > 0.
             && let (Some(pre), Some(motion)) = (pre, motion)
         {
@@ -1843,6 +1912,7 @@ impl<B: CodecBackend> Encoder<B> {
         };
         let first = self.identity_trial(plan).unwrap_or(plan);
         self.frame_quantizer = first.quantizer;
+        self.begin_second_usage();
         let mut data = self.code_picture(&first, pictures, inter.as_ref(), &planner_params);
         let mut codings = 1;
         while let Some(recode) = self.recode_plan(plan, bit_count(&data), codings) {
@@ -1858,9 +1928,22 @@ impl<B: CodecBackend> Encoder<B> {
                 secondary,
                 recon: &mut *recon,
             };
+            self.begin_second_usage();
             data = self.code_picture(&plan, pictures, inter.as_ref(), &planner_params);
         }
         self.backend.commit_frame();
+        let outcome_role = match (key, role) {
+            (true, _) => OutcomeRole::Key,
+            (false, FrameRole::Base) => OutcomeRole::Base,
+            (false, FrameRole::NonBase) => OutcomeRole::NonBase,
+        };
+        self.filter_outcomes
+            .add(outcome_role, &self.backend.filter_outcomes());
+        if let Some(second) = self.layer.second.as_mut().filter(|s| s.watches_usage()) {
+            second.finish_usage();
+        }
+        self.observe_hq_quality(index, key, &references, (coded_source, &*recon));
+        self.depths.commit();
         self.previous_skip_share = self.backend.coded_skip_share();
         if frame_type == FrameType::Inter
             && let (Some(motion), Some(search)) = (motion, self.search_config(role))
@@ -2042,6 +2125,17 @@ impl<B: CodecBackend> Encoder<B> {
         })
     }
 
+    /// Start a coding of the frame at `plan`: everything a coding gathers
+    /// starts empty, so a re-coded frame keeps nothing of a discarded one.
+    fn begin_coding(&mut self, plan: &FramePlan) {
+        self.backend.begin_frame(plan);
+        if let Some(term) = self.layer.reuse.as_mut() {
+            term.begin_coding();
+        }
+        let band = self.threshold_control.as_ref().map(ThresholdControl::band);
+        self.decision_scratch.evidence.clear(band);
+    }
+
     /// Code one picture from `begin_frame` to `end_frame` (the partition
     /// walk, or a picture-owning backend's own pipeline), writing its
     /// reconstruction into `pictures.recon`; returns the unit, not yet
@@ -2059,9 +2153,7 @@ impl<B: CodecBackend> Encoder<B> {
             secondary,
             recon,
         } = pictures;
-        self.backend.begin_frame(plan);
-        let band = self.threshold_control.as_ref().map(ThresholdControl::band);
-        self.decision_scratch.evidence.clear(band);
+        self.begin_coding(plan);
         let sb_log2 = self.backend.superblock_log2();
         let sb = 1usize << sb_log2;
         let regular_decision = self.frame_decision_params;
@@ -2115,6 +2207,7 @@ impl<B: CodecBackend> Encoder<B> {
                     lambda_headroom: plan.lambda_scale,
                     step,
                     leaf_bits: OnceCell::new(),
+                    margins: RefCell::default(),
                 };
                 let key_mode = KeyPlanMode::resolve(planner_params.intra_plan, &self.backend);
                 let plan = match inter {
@@ -2123,6 +2216,7 @@ impl<B: CodecBackend> Encoder<B> {
                     Some(frame) if splittable => {
                         let planner = planner(frame.motion, frame.pre);
                         let partition = planner.plan(sb);
+                        self.plan_margins = planner.take_margins();
                         record_depth_evidence(
                             &planner,
                             &sb,
@@ -2151,7 +2245,7 @@ impl<B: CodecBackend> Encoder<B> {
                     secondary,
                     recon: &mut *recon,
                 };
-                self.code_node(sb, plan.as_ref(), pictures, inter);
+                self.code_superblock(sb, plan.as_ref(), pictures, inter, planner_params);
             }
         }
         if light.is_some() {
@@ -2196,6 +2290,42 @@ impl<B: CodecBackend> Encoder<B> {
                 action => (FrameType::Inter, action),
             },
             _ => (scheduled, LtrAction::None),
+        }
+    }
+
+    /// With `refs.second_hold_rearm`: an HQ frame's coded luma error, for
+    /// the held reference to follow a still scene's refinement.
+    fn observe_hq_quality(
+        &mut self,
+        index: u64,
+        key: bool,
+        references: &FrameReferences,
+        (source, recon): (&Picture, &Picture),
+    ) {
+        if !self
+            .layer
+            .second
+            .as_ref()
+            .is_some_and(SecondReference::rearms)
+            || !(key || self.is_high_quality(index, references.position))
+        {
+            return;
+        }
+        let size = (self.layer.width, self.layer.height);
+        let sse = self
+            .dsp
+            .sse(&visible_luma(source, size), &visible_luma(recon, size));
+        let error = sse as f64 / (size.0 * size.1) as f64;
+        if let Some(second) = self.layer.second.as_mut() {
+            second.hq_coded(references, error);
+        }
+    }
+
+    /// Start counting the coding of a frame's use of the second reference
+    /// (`refs.second_hold_min_share`; again when the frame is re-coded).
+    fn begin_second_usage(&mut self) {
+        if let Some(second) = self.layer.second.as_mut() {
+            second.begin_usage();
         }
     }
 
@@ -2252,6 +2382,41 @@ impl<B: CodecBackend> Encoder<B> {
     fn inherited_depth(&self) -> Option<f64> {
         self.layer.rate_control.as_ref()?;
         self.layer.inheritance.as_ref()?.depth()
+    }
+
+    /// The layer propagation term's view of frame `index`
+    /// (`layer_propagation.rs`): its layer and the room above it, the
+    /// ladder's top-layer offset on a layered frame; on a flat one 0 for a
+    /// cadence base frame (1 otherwise) and the cadence's base-to-leaf span
+    /// at the frame's strength `depth`, under rate control only. At a fixed
+    /// quantizer the flat form's offsets only coarsen blocks, with nothing
+    /// to spend the saved bits on: fixed-QP A/B (draw fixedqp-2026-11-21,
+    /// 24 clips) J +1.3 % AV2 Default, +1.0 % VP9 Fast, +0.6 % HEVC Default,
+    /// +0.5 % VVC Default, +0.2 % AV1 Fast, against CBR probe gains
+    /// (docs/handoff/temporal-lambda.md).
+    fn propagation_role(
+        &self,
+        index: u64,
+        references: &FrameReferences,
+        depth: Option<f64>,
+    ) -> (u8, f64) {
+        let position = references.position;
+        if !position.is_flat() {
+            let ladder = if self.layer.rate_control.is_some() {
+                self.layer.rate_control_ladder
+            } else {
+                self.layer.ladder
+            };
+            return (position.layer, ladder.top_offset());
+        }
+        let layer = u8::from(!self.is_high_quality(index, position));
+        let strength = depth.unwrap_or(0.);
+        let span = self
+            .layer
+            .rate_control
+            .as_ref()
+            .map_or(0., |controller| controller.cadence_span(index, strength));
+        (layer, span)
     }
 
     /// Whether inter frame `index` is coded finer than its neighbours: a
@@ -2786,7 +2951,10 @@ impl<B: CodecBackend> Encoder<B> {
         if (!primary.mode.is_inter() && ratio > 0.0) || !ranked {
             return (primary, ReferenceChoice::Primary);
         }
-        let seed = scaled_vector(search_mv, ratio);
+        let seed = within_picture(
+            scaled_vector(search_mv, ratio),
+            (self.layer.coded_width, self.layer.coded_height),
+        );
         let include_dc = !primary.mode.is_inter();
         let Some(second) = self.secondary_choice(
             node,
@@ -3023,6 +3191,15 @@ impl<B: CodecBackend> Encoder<B> {
                     self.observe_spatial_leaf_choice(leaf_area::<B>(&node), choice);
                 }
                 self.frame_decision_params.lambda_scale = frame_lambda_scale;
+                if secondary.is_some()
+                    && let Some(second) = self.layer.second.as_mut().filter(|s| s.watches_usage())
+                {
+                    let from_secondary = decided.as_ref().is_some_and(|(mode, chosen, ..)| {
+                        matches!(mode, PredictionMode::Inter(_))
+                            && *chosen != ReferenceChoice::Primary
+                    });
+                    second.observe_leaf(leaf_area::<B>(&node), from_secondary);
+                }
                 let Some((mode, chosen, intra_fallback, pricing)) = decided else {
                     // A static skip: coded at the frame quantizer.
                     return;
@@ -3693,9 +3870,13 @@ fn second_reference<B: CodecBackend>(
     if RefreshParams::from_overrides(&config.params).period > 0.0 {
         return Err(ConfigError::SecondReference("not with intra refresh"));
     }
+    let refs = RefParams::from_overrides(&config.params);
+    let rate = config.frame_rate;
+    let hold = (f64::from(refs.second_hold) * f64::from(rate.num) / f64::from(rate.den)).round();
     Ok(Some(
-        SecondReference::new(slot, &RefParams::from_overrides(&config.params))
-            .with_plan(TierPlan::new(&config.params)),
+        SecondReference::new(slot, &refs)
+            .with_plan(TierPlan::new(&config.params))
+            .with_hold(hold as u64, B::SECOND_REFERENCE_REACH),
     ))
 }
 
@@ -3710,6 +3891,24 @@ fn scaled_vector(mv: Mv, ratio: f32) -> Mv {
     Mv {
         x: scale(mv.x),
         y: scale(mv.y),
+    }
+}
+
+/// `mv` limited to the picture's size in each direction: a scaled seed
+/// beyond it (a long-held second reference scales by its distance, up to
+/// 255) points wholly into the padding and past the vector range some
+/// codecs can code (VP9 §6.4.19, ±2048 samples).
+fn within_picture(mv: Mv, (width, height): (usize, usize)) -> Mv {
+    let clamp = |v: i16, size: usize| {
+        let limit = i32::try_from(size)
+            .unwrap_or(i32::MAX)
+            .saturating_mul(MV_UNITS_PER_SAMPLE);
+        let limit = i16::try_from(limit).unwrap_or(i16::MAX);
+        v.clamp(-limit, limit)
+    };
+    Mv {
+        x: clamp(mv.x, width),
+        y: clamp(mv.y, height),
     }
 }
 
@@ -3740,7 +3939,8 @@ fn validated_params<B: CodecBackend>(
     params: &ParamOverrides,
 ) -> Result<(Option<EffortOverlay>, Option<LightOverlay>), ConfigError> {
     let (light, framed) = params.split_prefix(LIGHT_PREFIX);
-    let (_, ordinary) = framed.split_prefix(NONBASE_PREFIX);
+    let (nonbase, ordinary) = framed.split_prefix(NONBASE_PREFIX);
+    let (_, ordinary) = ordinary.split_prefix(KEY_PREFIX);
     ordinary
         .validate(&[engine_specs(), B::PARAM_SPECS.to_vec()].concat())
         .map_err(ConfigError::Param)?;
@@ -3750,7 +3950,11 @@ fn validated_params<B: CodecBackend>(
     let light = LightOverlay::from_overrides(
         &light,
         &ordinary,
-        effort.as_ref().map(|e| &e.nonbase_overrides),
+        // Key-only settings leave the non-base frames' backend values alone.
+        effort
+            .as_ref()
+            .filter(|_| !nonbase.is_empty())
+            .map(|e| &e.nonbase_overrides),
         (B::PARAM_SPECS, B::SUPERBLOCK_PARAMS),
     )
     .map_err(ConfigError::Param)?;
@@ -3996,5 +4200,26 @@ const fn min_quantizer(codec: Codec) -> u32 {
     match codec {
         Codec::Av1 | Codec::Vp9 | Codec::Av2 => 1,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scaled_seed_past_the_picture_is_held_at_its_edge() {
+        // A 40-sample vector to a second reference 255 frames back.
+        let seed = scaled_vector(Mv { x: 160, y: -40 }, 255.0);
+        let held = within_picture(seed, (1280, 720));
+        assert_eq!(
+            held,
+            Mv {
+                x: 1280 * 4,
+                y: -720 * 4
+            }
+        );
+        let small = Mv { x: 12, y: -8 };
+        assert_eq!(within_picture(small, (64, 64)), small);
     }
 }

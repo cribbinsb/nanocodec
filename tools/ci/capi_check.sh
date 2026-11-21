@@ -14,7 +14,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$REPO"
 export PATH="$HOME/.cargo/bin:$PATH"
 TARGET=${CARGO_TARGET_DIR:-$REPO/target}
-WORK=$(mktemp -d)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-capi-check-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 cargo build --release --quiet -p nanocodec-capi -p nanocodec-cli

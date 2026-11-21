@@ -239,7 +239,11 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
         base, _, profile = name.partition(PROFILE_SEPARATOR)
         anchors[name] = replace(anchors[base], name=name, profile=profile)
     binaries, presets_for = binaries or {}, presets_for or {}
-    ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets))
+    # a family on its recorded build (`presets_for`, a chart's record) is the one its points
+    # were measured as: its name in that build's own preset files (a rung renamed since,
+    # e.g. 0.5.0's `slow`, is today's `slower`; nanocodec.recorded_values)
+    ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets),
+                             recorded=name in presets_for)
             for name, _ in OURS if name in wanted}
     unknown = [n for n in wanted if n not in anchors and n not in ours]
     if unknown:

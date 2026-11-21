@@ -7,13 +7,18 @@
 //! the frame's updated probability, and segment ids with the frame's own
 //! segment-tree probabilities; every other bit keeps the probability it
 //! was coded with.
+//!
+//! The RD partition search (`backend/node_trial.rs`) undoes a node's
+//! coding by cutting the recording back to a [`RecorderMark`], puts a kept
+//! coding back from a [`RecordedRun`], and prices what was recorded since
+//! a mark ([`TileRecorder::estimated_bits_since`]).
 
 use crate::bool_coder::{BitSink, BoolWriter};
 use crate::probs::FrameContext;
 use crate::segmentation::{self, SegmentStats, TREE_PROBS};
 use crate::tables::BandProbs;
 use crate::transform::TxSize;
-use crate::tree::Tree;
+use crate::tree::{Tree, bit_cost};
 
 /// Updatable coefficient nodes: 4 sizes x 2 plane types x 2 references x
 /// 6 bands x 6 contexts x nodes 0 and 1.
@@ -228,6 +233,20 @@ pub(crate) struct TileRecorder {
     segment_ids: SegmentStats,
 }
 
+/// A point in the recording that later bits can be undone to.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct RecorderMark {
+    bits: usize,
+}
+
+/// The bits recorded after a mark, kept to be put back after other codings
+/// were tried (buffers reused run to run).
+#[derive(Debug, Default)]
+pub(crate) struct RecordedRun {
+    bits: Vec<Recorded>,
+    segment_ids: SegmentStats,
+}
+
 impl TileRecorder {
     /// A coefficient node decision coded with `prob`, replayed with the
     /// slot's final probability.
@@ -290,6 +309,50 @@ impl TileRecorder {
                 slot: SEGMENT_TREE_SLOT + node as u16,
             });
         }
+    }
+
+    /// The recording as it stands.
+    pub(crate) fn mark(&self) -> RecorderMark {
+        RecorderMark {
+            bits: self.bits.len(),
+        }
+    }
+
+    /// Note in `run` what was recorded after `mark` and the segment-id
+    /// statistics as they stand.
+    pub(crate) fn save_after(&self, mark: RecorderMark, run: &mut RecordedRun) {
+        run.bits.clear();
+        run.bits.extend_from_slice(&self.bits[mark.bits..]);
+        run.segment_ids = self.segment_ids;
+    }
+
+    /// Put `run` back after `mark`, in place of what was recorded since (an
+    /// empty run saved at the mark undoes everything recorded after it).
+    pub(crate) fn restore_after(&mut self, mark: RecorderMark, run: &RecordedRun) {
+        self.bits.truncate(mark.bits);
+        self.bits.extend_from_slice(&run.bits);
+        self.segment_ids = run.segment_ids;
+    }
+
+    /// Estimated bits of what was recorded after `mark`: each bit at the
+    /// probability it was coded with (coefficient nodes at the frame's
+    /// probabilities before its forward updates, which are not known
+    /// until the frame ends), segment ids at the tree probabilities of the
+    /// ids written so far.
+    pub(crate) fn estimated_bits_since(&self, mark: RecorderMark) -> f32 {
+        let segment_probs = self.segment_ids.tree_probs();
+        self.bits[mark.bits..]
+            .iter()
+            .map(|recorded| {
+                let prob = match recorded.slot {
+                    slot if (SEGMENT_TREE_SLOT..MODE_SLOT_BASE).contains(&slot) => {
+                        segment_probs[usize::from(slot - SEGMENT_TREE_SLOT)]
+                    }
+                    _ => recorded.prob,
+                };
+                bit_cost(recorded.bit, prob)
+            })
+            .sum()
     }
 
     /// The segment-tree probabilities of the ids written so far.

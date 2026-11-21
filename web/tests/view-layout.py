@@ -109,7 +109,7 @@ def main():
     url = f'http://127.0.0.1:{server.server_port}/?views=live&display=cpu'
     errors = []
     try:
-        with tempfile.TemporaryDirectory() as scratch, sync_playwright() as p:
+        with tempfile.TemporaryDirectory(prefix="nanocodec-web-test-") as scratch, sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(accept_downloads=True, viewport={'width': 1400, 'height': 1800})
             page = context.new_page()

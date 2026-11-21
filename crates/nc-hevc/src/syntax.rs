@@ -92,6 +92,24 @@ impl LevelStore {
         self.blocks.truncate(blocks);
     }
 
+    /// Note in `tail` the blocks pushed after `mark`, for
+    /// [`Self::restore_after`].
+    pub fn save_after(&self, (levels, blocks): (usize, usize), tail: &mut LevelTail) {
+        tail.levels.clear();
+        tail.levels.extend_from_slice(&self.levels[levels..]);
+        tail.blocks.clear();
+        tail.blocks.extend_from_slice(&self.blocks[blocks..]);
+    }
+
+    /// Forget the blocks pushed after `mark` and push `tail`'s instead (a
+    /// kept coding trial put back): its entries were taken at the same
+    /// mark, so they point at the same places.
+    pub fn restore_after(&mut self, mark: (usize, usize), tail: &LevelTail) {
+        self.truncate(mark);
+        self.levels.extend_from_slice(&tail.levels);
+        self.blocks.extend_from_slice(&tail.blocks);
+    }
+
     /// Append a coded block's row-major `levels` and its coded
     /// `sub_blocks`; returns the block's entry.
     pub fn push(&mut self, levels: &[i16], sub_blocks: CodedGroups) -> u32 {
@@ -109,6 +127,22 @@ impl LevelStore {
         let (start, sub_blocks) = self.blocks[entry as usize];
         let start = start as usize;
         (&self.levels[start..start + (1 << (2 * log2))], sub_blocks)
+    }
+}
+
+/// The blocks a coding trial pushed onto a [`LevelStore`] after a mark
+/// (`LevelStore::save_after`).
+#[derive(Debug, Default)]
+pub struct LevelTail {
+    levels: Vec<i16>,
+    blocks: Vec<(u32, CodedGroups)>,
+}
+
+impl LevelTail {
+    /// Forget the noted blocks.
+    pub fn clear(&mut self) {
+        self.levels.clear();
+        self.blocks.clear();
     }
 }
 
@@ -300,7 +334,7 @@ impl TuRange {
 }
 
 /// One recorded CU.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CuRecord {
     /// The CU.
     pub block: Block,
@@ -313,7 +347,7 @@ pub struct CuRecord {
 /// One element of the slice data, in coding order. Items are written per
 /// CU and read back by the slice writer at the end of the frame, so their
 /// size is memory traffic: the transform units live in their own store.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     /// Start of the CTU with top-left luma sample `(x, y)`.
     Ctu {

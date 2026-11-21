@@ -7,6 +7,7 @@ checks it against the decoders.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..codecs import Codec
@@ -45,6 +46,41 @@ SCALABILITY_STEM_MODES = {"l2": "L2T1", "l3": "L3T1"}
 #: rebuilt past the rename.
 OLD_FLAT_SUFFIX = {"veryfast": "fastest", "l2-medium": "svc", "l2-fast": "svc-fast",
                    "l3-medium": "svc3", "l3-fast": "svc3-fast"}
+
+
+@dataclass(frozen=True)
+class RungRename:
+    """A rung renamed in the ladder (frozen-build compatibility): in a frozen build (a
+    presets/ directory beside a COMMIT file, as the build cache keeps them) from before
+    it (one without `marker`, a glob under presets/), today's `new` is the build's `old`
+    file and `--preset old`, and today's `old` (a rung that took the name later) does
+    not exist. `codec` limits it to one codec's directory; `text`, when given, must be
+    in the marker file (a rename that kept every file name)."""
+    new: str
+    old: str
+    marker: str
+    codec: str | None = None
+    text: str | None = None
+
+    def predates(self, presets: Path, codec: str) -> bool:
+        """A tree that is not a frozen build (the repository's, a test's) has today's
+        names."""
+        frozen = (presets.parent / FROZEN_BUILD_MARKER).is_file()
+        return frozen and self.codec in (None, codec) and not any(
+            self.text is None or self.text in path.read_text() for path in presets.glob(self.marker))
+
+
+#: The file beside a frozen build's presets/ (tools/dev/build_cache.py).
+FROZEN_BUILD_MARKER = "COMMIT"
+#: Every rung rename, oldest first (docs/handoff/presets.md "The ladder").
+RUNG_RENAMES = (
+    RungRename("slower", "slow", "**/slower.toml"),  # 2026-11-21: slow -> slower
+    RungRename("faster", "fast", "vvc/faster.toml", "vvc"),  # 2026-11-21: VVC fast -> faster
+    # 2026-11-21: H.264 fast -> faster; the old faster is retired (no name today)
+    RungRename("faster", "fast", "h264/faster.toml", "h264", "`fast` until 2026-11-21"),
+    RungRename("veryslow", "slower", "hevc/veryslow.toml", "hevc"),  # 2026-11-21
+    RungRename("veryslow", "slower", "vvc/veryslow.toml", "vvc"),  # 2026-11-21
+)
 #: `nc_encoder::MAX_TEMPORAL_LAYERS`.
 MAX_TEMPORAL_LAYERS = 3
 
@@ -95,18 +131,48 @@ class Nanocodec(EncoderAdapter):
         return cmd
 
 
+#: The quality rungs from the slowest, for "the codec's slowest rung" (nc_encoder::presets).
+SLOWEST_FIRST = ("veryslow", "slower", "slow")
+SLOWEST_SHARED = "slowest.toml"
+
+
+def _shared_bundle(path: Path) -> Path | None:
+    """The shared bundle under rung file `path` (presets/<codec>/<rung>.toml), as
+    nc_encoder::presets applies it: presets/slowest.toml under the codec's slowest rung;
+    in a frozen build from before it, the same-named presets/<rung>.toml."""
+    if path.parent.name not in CODEC_DIRS:
+        return None
+    presets = path.parent.parent
+    if (presets / SLOWEST_SHARED).is_file():
+        slowest = next((r for r in SLOWEST_FIRST if (path.parent / f"{r}.toml").is_file()), None)
+        return presets / SLOWEST_SHARED if path.stem == slowest else None
+    legacy = presets / path.name
+    return legacy if legacy.is_file() else None
+
+
 def read_preset(path: Path) -> dict[str, float]:
     """A parameter file: `name = value` lines, `#` comments. A codec's rung file
-    (presets/<codec>/<rung>.toml) lies over the rung's shared bundle
-    (presets/<rung>.toml) where there is one, as nc_encoder::presets applies it."""
-    shared = path.parent.parent / path.name
-    overrides = read_preset(shared) if path.parent.name in CODEC_DIRS and shared.is_file() else {}
+    (presets/<codec>/<rung>.toml) lies over its shared bundle where it has one
+    (`_shared_bundle`)."""
+    shared = _shared_bundle(path)
+    overrides = read_preset(shared) if shared else {}
     for line in path.read_text().splitlines():
         line = line.split("#")[0].strip()
         if line:
             name, value = line.split("=")
             overrides[name.strip()] = float(value)
     return overrides
+
+
+def param_text(value: float) -> str:
+    """A parameter value as `--param` text, exactly the value the preset file holds.
+
+    `:g` keeps six significant digits: h264 fast's 1.3333334 became 1.33333, so
+    final checks, boards and charts measured a slightly different setting than the
+    shipped preset (found 2026-11-21). Values `:g` writes exactly keep that form
+    (their cached points stay valid); the rest take Python's round-trip repr."""
+    short = f"{value:g}"
+    return short if float(short) == value else repr(float(value))
 
 
 def current_family_name(name: str) -> str:
@@ -137,16 +203,64 @@ def _is_old_layout(presets: Path, codec: Codec | str, stem: str) -> bool:
             and (presets / f"{_old_flat_stem(codec, stem)}.toml").is_file())
 
 
+def _build_stem(presets: Path, codec: Codec | str, stem: str) -> str | None:
+    """The stem build `presets` has for today's `stem` (RUNG_RENAMES, newest first), or
+    None when the build has no such rung."""
+    name = _codec_name(codec)
+    for rename in reversed(RUNG_RENAMES):
+        if rename.predates(presets, name):
+            if stem == rename.new:
+                stem = rename.old
+            elif stem == rename.old:
+                return None
+    return stem
+
+
+def _today_stem(presets: Path, codec: str, stem: str) -> str | None:
+    """Today's name of build `presets`' file `stem` (RUNG_RENAMES, oldest first), or None
+    for a rung retired since (a file the build already had under a rename's new name)."""
+    for rename in RUNG_RENAMES:
+        if rename.predates(presets, codec):
+            if stem == rename.new:
+                return None
+            if stem == rename.old:
+                stem = rename.new
+    return stem
+
+
 def preset_path(presets: Path, codec: Codec | str, stem: str) -> Path:
-    """presets/<codec>/<stem>.toml, or a frozen build's old flat file."""
-    if _is_old_layout(presets, codec, stem):
-        return presets / f"{_old_flat_stem(codec, stem)}.toml"
-    return presets / _codec_name(codec) / f"{stem}.toml"
+    """presets/<codec>/<stem>.toml, or a frozen build's renamed or old flat file (a path
+    that does not exist when the build has no such rung). The renames apply first, to
+    a flat build too: its h264-fast.toml is today's `faster`, as in every later build."""
+    built = _build_stem(presets, codec, stem)
+    if built is None:
+        return presets / _codec_name(codec) / f"{stem}.absent"
+    if _is_old_layout(presets, codec, built):
+        return presets / f"{_old_flat_stem(codec, built)}.toml"
+    return presets / _codec_name(codec) / f"{built}.toml"
 
 
 def preset_values(presets: Path, codec: Codec | str, stem: str | None) -> dict[str, float]:
     """Preset `stem`'s parameter values ({} for medium, the engine defaults)."""
-    return read_preset(preset_path(presets, codec, stem)) if stem and stem != MEDIUM else {}
+    if not stem or stem == MEDIUM:
+        return {}
+    if _build_stem(presets, codec, stem) is None:
+        raise ValueError(f"{presets}: this build has no {_codec_name(codec)} rung {stem!r}")
+    return read_preset(preset_path(presets, codec, stem))
+
+
+def recorded_values(presets: Path, codec: Codec | str, stem: str | None) -> dict[str, float]:
+    """Preset `stem`'s values as build `presets` itself named its files, without
+    RUNG_RENAMES: what a build record's family meant when its points were measured (a
+    record keeps the names of its day: 0.5.0's `nanocodec-av1@slow` is today's
+    `slower`, and that build has no rung today's `slow` names)."""
+    if not stem or stem == MEDIUM:
+        return {}
+    path = (presets / f"{_old_flat_stem(codec, stem)}.toml" if _is_old_layout(presets, codec, stem)
+            else presets / _codec_name(codec) / f"{stem}.toml")
+    if not path.is_file():
+        raise ValueError(f"{presets}: this build has no {_codec_name(codec)} preset file {stem!r}")
+    return read_preset(path)
 
 
 def preset_cli_args(codec: Codec | str, stem: str | None, presets: Path = PRESETS_DIR,
@@ -160,20 +274,27 @@ def preset_cli_args(codec: Codec | str, stem: str | None, presets: Path = PRESET
     """
     if not stem or stem == MEDIUM:
         return ()
-    if _is_old_layout(presets, codec, stem):
-        return ("--preset", _old_flat_stem(codec, stem))
-    layers, _, speed = stem.partition("-")
+    built = _build_stem(presets, codec, stem)
+    if built is None:
+        raise ValueError(f"{presets}: this build has no {_codec_name(codec)} rung {stem!r}")
+    if _is_old_layout(presets, codec, built):
+        return ("--preset", _old_flat_stem(codec, built))
+    layers, _, speed = built.partition("-")
     if speed and layers in SCALABILITY_STEM_MODES:
         # medium is named explicitly here: the file is l2-medium, not "no preset".
         return ("--scalability", mode or SCALABILITY_STEM_MODES[layers], "--preset", speed)
-    return ("--preset", stem)
+    return ("--preset", built)
 
 
 def shipped_presets(codec: Codec | str, presets: Path = PRESETS_DIR) -> list[str]:
-    """Every shipped preset stem of `codec`: medium (no file) and presets/<codec>/*.toml."""
-    directory = presets / _codec_name(codec)
-    return [MEDIUM, *sorted(p.stem for p in directory.glob("*.toml"))] if directory.is_dir() \
-        else [MEDIUM]
+    """Every shipped preset stem of `codec`: medium (no file) and presets/<codec>/*.toml,
+    by today's names (RUNG_RENAMES: a frozen build's `slow` is `slower`)."""
+    name = _codec_name(codec)
+    directory = presets / name
+    if not directory.is_dir():
+        return [MEDIUM]
+    today = (_today_stem(presets, name, p.stem) for p in directory.glob("*.toml"))
+    return [MEDIUM, *sorted(stem for stem in today if stem)]
 
 
 def nanocodec_with_preset(name: str) -> Nanocodec | None:

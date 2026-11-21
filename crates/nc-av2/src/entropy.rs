@@ -131,14 +131,23 @@ fn scaled(probability: u16, range: u32, symbol: usize, count: usize) -> u32 {
 /// `Cdf<N>` is a constant in its divisions.
 #[inline]
 fn coded_cost_q9(cdf: &[u16], symbol: usize) -> u32 {
-    let current = u32::from(cdf[symbol]) >> EDGE_DROPPED_BITS;
+    let upper = if symbol == 0 { 0 } else { cdf[symbol - 1] };
+    interval_cost_q9(symbol, cdf.len(), upper, cdf[symbol])
+}
+
+/// [`coded_cost_q9`] of `symbol` of `count` from its inverse CDF edges
+/// (`upper` is ignored for symbol 0, whose upper edge is the range), as a
+/// recording writer logs them.
+#[inline]
+fn interval_cost_q9(symbol: usize, count: usize, upper: u16, lower: u16) -> u32 {
+    let current = u32::from(lower) >> EDGE_DROPPED_BITS;
     let previous = if symbol == 0 {
         1 << EDGE_KEPT_BITS
     } else {
-        u32::from(cdf[symbol - 1]) >> EDGE_DROPPED_BITS
+        u32::from(upper) >> EDGE_DROPPED_BITS
     };
     let width = ((previous - current) << (EDGE_BITS - EDGE_KEPT_BITS)) as i32
-        + i32::from(WIDTH_INCREMENTS[cdf.len()][symbol]);
+        + i32::from(WIDTH_INCREMENTS[count][symbol]);
     u32::from(EDGE_COSTS_Q9[width as usize])
 }
 
@@ -258,6 +267,11 @@ enum Operation {
     /// A symbol whose value is chosen after the tile is coded.
     Deferred,
 }
+
+/// A run of a recording writer's operations after a mark
+/// ([`Writer::save_after`]), put back by [`Writer::restore_after`].
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SymbolRun(Vec<Operation>);
 
 /// Per-tile native AV2 entropy writer; no global probability state.
 #[derive(Debug)]
@@ -391,12 +405,69 @@ impl Writer {
             .map_or(0.0, |counter| f64::from(counter.bits()))
     }
 
-    /// Record every committed operation so that [`Self::replay`] can code
-    /// the tile again with deferred symbols filled in; the recording writer
-    /// itself only adapts its models and logs. Call before coding any
-    /// symbols.
+    /// Record every committed operation from now on, so that
+    /// [`Self::replay`] can code them after the symbols already coded,
+    /// with deferred symbols filled in; the recording writer itself only
+    /// adapts its models and logs. Recording that has started already
+    /// goes on.
     pub(crate) fn record(&mut self) {
-        self.log = Some(Vec::new());
+        self.log.get_or_insert_with(Vec::new);
+    }
+
+    /// The length of the recording: a mark for [`Self::bits_since`],
+    /// [`Self::save_after`] and [`Self::restore_after`].
+    pub(crate) fn mark(&self) -> usize {
+        self.log
+            .as_ref()
+            .expect("marks need a recording writer")
+            .len()
+    }
+
+    /// Bits of the operations recorded since `mark`, priced as estimates
+    /// price them (the coded interval's width, [`interval_cost_q9`];
+    /// bypass bits one each; deferred symbols, whose value is not chosen
+    /// yet, nothing).
+    pub(crate) fn bits_since(&self, mark: usize) -> f32 {
+        let log = self.log.as_ref().expect("marks need a recording writer");
+        let mut counter = BitCounter::default();
+        for operation in &log[mark..] {
+            match *operation {
+                Operation::Symbol {
+                    symbol,
+                    count,
+                    upper,
+                    lower,
+                } => counter.add_q9(interval_cost_q9(
+                    usize::from(symbol),
+                    usize::from(count),
+                    upper,
+                    lower,
+                )),
+                Operation::Literal { bits, .. } => counter.add_bypass(u32::from(bits)),
+                Operation::Deferred => {}
+            }
+        }
+        counter.bits()
+    }
+
+    /// Copy the operations recorded since `mark` into `run`.
+    pub(crate) fn save_after(&self, mark: usize, run: &mut SymbolRun) {
+        let log = self.log.as_ref().expect("marks need a recording writer");
+        run.0.clear();
+        run.0.extend_from_slice(&log[mark..]);
+    }
+
+    /// Replace the operations recorded since `mark` with `run`.
+    pub(crate) fn restore_after(&mut self, mark: usize, run: &SymbolRun) {
+        let log = self.log.as_mut().expect("marks need a recording writer");
+        log.truncate(mark);
+        log.extend_from_slice(&run.0);
+    }
+
+    /// The tile's live adaptive models in their box (`None` when it does
+    /// not adapt), so a caller can exchange them whole.
+    pub(crate) fn models_box(&mut self) -> &mut Option<Box<TileCdfs>> {
+        &mut self.models
     }
 
     /// Reserve a symbol whose value is chosen after the tile is coded: the
@@ -675,9 +746,9 @@ impl Writer {
         self.pending = (s & 7) - 8;
     }
 
-    /// Finish a recording writer's tile: code its operations again into a
-    /// fresh writer, calling `fill` at each deferred symbol (in coding
-    /// order) to code it there. `fill` sees this writer's final models, in
+    /// Finish a recording writer's tile: code its operations after the
+    /// symbols it coded before recording, calling `fill` at each deferred
+    /// symbol (in coding order) to code it there. `fill` sees this writer's final models, in
     /// which the deferred symbols' models are still at their initial
     /// values. A writer that did not record just finishes. Returns the
     /// tile's bytes and its final models (`None` when it did not adapt).
@@ -692,6 +763,10 @@ impl Writer {
         };
         let mut replay = Self {
             models: self.models.take(),
+            out: std::mem::take(&mut self.out),
+            low: self.low,
+            range: self.range,
+            pending: self.pending,
             ..Self::new()
         };
         for operation in log {

@@ -155,7 +155,8 @@ def blame(tree: str, path: str) -> list[tuple[str, int]]:
 
 def applies(patch: str, tree: str) -> bool:
     """Whether `patch` applies forward to `tree` (checked in a throwaway index)."""
-    with tempfile.NamedTemporaryFile(prefix="land-guard-index-") as index:
+    # standalone (land.sh copies it into test repos): nanocodec's name, not nceval.tempdirs
+    with tempfile.NamedTemporaryFile(prefix="nanocodec-land-guard-index-") as index:
         env = {**os.environ, "GIT_INDEX_FILE": index.name}
         subprocess.run(["git", "read-tree", tree], env=env, check=True, capture_output=True)
         return subprocess.run(["git", "apply", "--cached", "--check", "-"], input=patch,
@@ -372,9 +373,13 @@ def main() -> int:
     for path, commit in pairs:
         subject = git("log", "-1", "--format=%h %s", commit).strip()
         print(f"  {path}: reverts {subject}", file=sys.stderr)
-    print("Rebuild the commit on the current tree (cherry-pick your own changes onto it); "
-          "for a deliberate revert, name the commit (`Reverts: <sha>`) in the message.",
-          file=sys.stderr)
+    reverted = {path for path, _ in pairs}
+    own = [path for path in files if path not in reverted]
+    print("Fix: rebuild the commit on the current tree instead of `git reset --soft`: "
+          f"`git rebase {base}` (or cherry-pick your own changes onto it). Your change "
+          f"otherwise touches only: {', '.join(own) or '(nothing else)'}.\n"
+          "A deliberate revert: `tools/dev/land.sh --reverts <sha>` (or `Reverts: <sha>` "
+          "in the commit message).", file=sys.stderr)
     return 1
 
 

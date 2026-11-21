@@ -58,6 +58,7 @@ pub(crate) fn mc_fns() -> McFns {
         vvc_luma: separable_family::<VvcLumaTaps, 8>(),
         vvc_affine_luma: separable_family::<VvcAffineLumaTaps, 8>(),
         vvc_chroma: separable_family::<VvcChromaTaps, 4>(),
+        vp9: crate::vp9_mc_simd::families(crate::Isa::Neon),
         h264_phases: None,
         av1_mixed: None,
     };

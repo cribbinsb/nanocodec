@@ -24,6 +24,16 @@ pub(super) const GATHER: [[u8; 16]; 3] = [
     [8, 9, 10, 11, 9, 10, 11, 12, 10, 11, 12, 13, 11, 12, 13, 14],
 ];
 
+/// [`GATHER`] shifted by +1 byte so a 16-byte load at `row + 7` covers outputs 8..16
+/// inside an exact 23-byte (`16 + 7`) VP9 window with zero overread.
+const GATHER_SHIFT1: [[u8; 16]; 3] = [
+    [1, 2, 3, 4, 2, 3, 4, 5, 3, 4, 5, 6, 4, 5, 6, 7],
+    [5, 6, 7, 8, 6, 7, 8, 9, 7, 8, 9, 10, 8, 9, 10, 11],
+    [
+        9, 10, 11, 12, 10, 11, 12, 13, 11, 12, 13, 14, 12, 13, 14, 15,
+    ],
+];
+
 /// By-element SDOT, retaining dav1d's single packed coefficient register.
 /// The intrinsic postdates our Rust 1.90 MSRV, so isolate its register-only
 /// instruction here until the minimum compiler supports the intrinsic.
@@ -173,6 +183,38 @@ impl DotFilter {
             vqrshrun_n_s32::<7>(low),
             vqrshrun_n_s32::<7>(high),
         ))
+    }
+
+    /// Sixteen VP9 horizontal outputs from an exact 23-byte (`16 + 7`) window
+    /// using two 128-bit loads (`row` and `row + 7`) with zero overread.
+    #[inline]
+    #[target_feature(enable = "neon,dotprod")]
+    pub(crate) unsafe fn vp9_row16(self, row: *const u8) -> uint8x16_t {
+        // SAFETY: the VP9 driver checked the 16 + 7 = 23 byte window.
+        unsafe {
+            let sign = vdupq_n_u8(128);
+            let a = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(row), sign));
+            let b = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(row.add(7)), sign));
+            let first = vqtbl1q_s8(a, self.gather0);
+            let middle = vqtbl1q_s8(a, self.gather4);
+            let last = vqtbl1q_s8(a, self.gather8);
+            let s0 = self.sum(first, middle, 128 * 128);
+            let s1 = self.sum(middle, last, 128 * 128);
+            let first2 = vqtbl1q_s8(b, vld1q_u8(GATHER_SHIFT1[0].as_ptr()));
+            let middle2 = vqtbl1q_s8(b, vld1q_u8(GATHER_SHIFT1[1].as_ptr()));
+            let last2 = vqtbl1q_s8(b, vld1q_u8(GATHER_SHIFT1[2].as_ptr()));
+            let s2 = self.sum(first2, middle2, 128 * 128);
+            let s3 = self.sum(middle2, last2, 128 * 128);
+            let lo = vqmovn_u16(vcombine_u16(
+                vqrshrun_n_s32::<7>(s0),
+                vqrshrun_n_s32::<7>(s1),
+            ));
+            let hi = vqmovn_u16(vcombine_u16(
+                vqrshrun_n_s32::<7>(s2),
+                vqrshrun_n_s32::<7>(s3),
+            ));
+            vcombine_u8(lo, hi)
+        }
     }
 
     /// Sixteen outputs share five shuffles; exact tails use two narrow rows.

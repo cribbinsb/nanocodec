@@ -22,8 +22,9 @@ test('nothing fits: the lightest preset and the smallest size', () => {
 });
 
 test('only presets the page offers for the codec, and no size below the smallest', () => {
+  // VVC Fast (0.63) is not light enough at 60 ms for 30 fps; Faster (0.55) is the lightest.
   const vvc = lighterChoices(view('vvc', 'medium', 640, 360, 30), 60);
-  assert.deepEqual(vvc[0].change, { preset: 'fast' });
+  assert.deepEqual(vvc[0].change, { preset: 'faster' });
   // AV2 offers Fast and Faster since 2026-11-18 (d6bd02130); at the smallest size only a preset is left.
   assert.deepEqual(lighterChoices(view('av2', 'medium', 384, 216, 30), 100).map(o => o.change),
                    [{ preset: 'faster' }]);
@@ -35,18 +36,18 @@ test('a spatially layered stream gets size choices only', () => {
   assert.deepEqual(options.map(o => Object.keys(o.change)), [['width', 'height']]);
 });
 
-test('every estimated preset is one the page offers for the codec, lighter than Medium (Slow heavier)', () => {
+test('every estimated preset is one the page offers for the codec, lighter than Medium (Slow and Slower heavier)', () => {
   for (const [codec, { presets }] of Object.entries(CODECS)) {
     const costs = PRESET_COST[codec];
     assert.equal(costs.medium, 1, codec);
     for (const [preset, cost] of Object.entries(costs).filter(([name]) => name !== 'medium')) {
       assert.ok(presets.includes(preset), `${codec} ${preset}`);
-      assert.ok(preset === 'slow' ? cost > 1 : cost > 0 && cost < 1, `${codec} ${preset}`);
+      assert.ok(['slow', 'slower', 'veryslow'].includes(preset) ? cost > 1 : cost > 0 && cost < 1, `${codec} ${preset}`);
     }
   }
 });
 
-test('a view coded at Slow that falls behind is offered Medium', () => {
-  const choices = lighterChoices({ codec: 'hevc', preset: 'slow', width: 1280, height: 720, fps: 30 }, 40);
+test('a view coded at Slower that falls behind is offered Medium', () => {
+  const choices = lighterChoices({ codec: 'hevc', preset: 'slower', width: 1280, height: 720, fps: 30 }, 60);
   assert.ok(choices.some(choice => choice.change.preset === 'medium'), JSON.stringify(choices));
 });

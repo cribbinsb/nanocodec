@@ -24,9 +24,11 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
 from conformance import SUITES as RUNNER_SUITES, Hashes  # noqa: E402
@@ -560,7 +562,7 @@ def reference_hashes(command, frame_bytes):
     """Hash the reference decoder's output, written into a FIFO; also its
     exit status (VTM exits 1 on a picture-hash SEI mismatch, as after a GDR
     start, though its output is the conformance output)."""
-    with tempfile.TemporaryDirectory(prefix="conformance-") as scratch:
+    with tempdirs.temp_dir("conformance") as scratch:
         fifo = Path(scratch) / "out.yuv"
         os.mkfifo(fifo)
         hashes = Hashes(frame_bytes)

@@ -402,6 +402,35 @@ impl StrengthIndices {
         self.indices[block] = index;
     }
 
+    /// Each filter block's strengths in `params` (raster order; `None`:
+    /// passed over, no index coded, or CDEF off in the frame).
+    pub(crate) fn chosen_sets(&self, params: &CdefParams) -> Vec<Option<StrengthSet>> {
+        let sets = params.sets();
+        self.indices
+            .iter()
+            .map(|index| index.and_then(|i| sets.get(usize::from(i)).copied()))
+            .collect()
+    }
+
+    /// Each filter block's share of its 8×8 units that CDEF filters (with
+    /// an index, not all skipped: [`filtered_units`]), raster order.
+    pub(crate) fn filtered_shares(&self, state: &BlockState) -> Vec<f32> {
+        let (width, height) = state.size();
+        let mut counts = vec![(0u32, 0u32); self.indices.len()];
+        for y in (0..height).step_by(UNIT) {
+            for x in (0..width).step_by(UNIT) {
+                let block = self.block(x, y);
+                let filtered = self.indices[block].is_some() && !state.skips_transform(x, y);
+                counts[block].0 += u32::from(filtered);
+                counts[block].1 += 1;
+            }
+        }
+        counts
+            .iter()
+            .map(|&(filtered, units)| filtered as f32 / units.max(1) as f32)
+            .collect()
+    }
+
     /// Whether the coding block at (`x`, `y`) codes its filter block's
     /// index: it is the first one CDEF does not pass over (`read_cdef`;
     /// `passed_over`: [`CdefParams::passes_over`] of its skip flag).

@@ -11,6 +11,9 @@
 //! `av1_find_best_ref_mvs` and `av1_find_ref_dv`
 //! (`av1/decoder/decodemv.c`, `av1/common/mvref_common.{c,h}`;
 //! BSD-2-Clause, see `THIRD_PARTY.md`).
+//! Whole-pel prediction uses the in-bounds copy path of dav1d 1.5.4
+//! `src/recon_tmpl.c` (`mc`, BSD-2-Clause); clipping and fractional
+//! prediction still use the same clamped-window path.
 use super::super::block_info::InterFlags;
 use super::super::motion::{INTRA_FRAME, InterMode, NONE_FRAME};
 use super::super::mv_stack::MvStack;
@@ -20,8 +23,8 @@ use super::{BlockPos, FrameDecoder, MI_SIZE};
 use crate::backend::Av1Mv;
 use crate::decoder_range::SymbolReader;
 use crate::mvcoding::MvPrecision;
-use nc_common::PlaneIndex;
 use nc_common::decode::DecodeError;
+use nc_common::{Plane, PlaneIndex, Sample};
 use nc_dsp::Pixel;
 use nc_dsp::av1_mc::filter::{AV1_FILTER_TAPS, Av1Filter, Av1Filters};
 
@@ -115,14 +118,25 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         for &plane in planes {
             let ss = usize::from(plane != PlaneIndex::Y);
             let (origin, size) = Self::plane_block(block, plane);
+            let (width, height) = (self.header.size.width, self.header.size.height);
+            let visible = ((width + ss) >> ss, (height + ss) >> ss);
+            let pel = SUBPEL_PER_SAMPLE << ss;
+            if dv.col % pel == 0 && dv.row % pel == 0 {
+                let source = (
+                    origin.0 as isize + isize::from(dv.col / pel),
+                    origin.1 as isize + isize::from(dv.row / pel),
+                );
+                if copy_intrabc(self.recon.plane_mut(plane), (visible, size), source, origin) {
+                    continue;
+                }
+            }
             let ((x0, y0), axes) = window_position(origin, dv, (ss == 1, ss == 1));
             let span = (size.0 + AV1_FILTER_TAPS - 1, size.1 + AV1_FILTER_TAPS - 1);
-            let (width, height) = (self.header.size.width, self.header.size.height);
             // Copied out first: the window and the block are in the same
             // picture.
             let source = PlaneReference {
                 plane: self.recon.plane(plane),
-                size: ((width + ss) >> ss, (height + ss) >> ss),
+                size: visible,
                 scale: None,
             };
             let window = gather(source, &mut self.maps.prediction.window, (x0, y0), span);
@@ -146,4 +160,41 @@ fn quarter_precision(mv: Av1Mv) -> Av1Mv {
         row: even(mv.row),
         col: even(mv.col),
     }
+}
+
+/// Copy a full-pel rectangle from the current picture. Choose the row
+/// direction as for memmove so an overlapping rectangle still reads
+/// the original samples, just like the gathered prediction.
+fn copy_intrabc<T: Sample>(
+    plane: &mut Plane<T>,
+    ((visible_width, visible_height), (width, height)): ((usize, usize), (usize, usize)),
+    (source_x, source_y): (isize, isize),
+    (dest_x, dest_y): (usize, usize),
+) -> bool {
+    let (Ok(source_x), Ok(source_y)) = (usize::try_from(source_x), usize::try_from(source_y))
+    else {
+        return false;
+    };
+    if source_x + width > visible_width
+        || source_y + height > visible_height
+        || dest_x + width > plane.width()
+        || dest_y + height > plane.height()
+    {
+        return false;
+    }
+
+    let mut view = plane.view_mut();
+    let stride = view.stride();
+    let samples = view.data_mut();
+    let mut copy = |row| {
+        let source = (source_y + row) * stride + source_x;
+        let dest = (dest_y + row) * stride + dest_x;
+        samples.copy_within(source..source + width, dest);
+    };
+    if dest_y > source_y {
+        (0..height).rev().for_each(&mut copy);
+    } else {
+        (0..height).for_each(copy);
+    }
+    true
 }

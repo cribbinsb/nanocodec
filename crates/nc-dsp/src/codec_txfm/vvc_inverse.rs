@@ -338,7 +338,10 @@ mod tests {
     }
     #[test]
     fn rectangular_inverse_matches_direct_matrix_and_scaling() {
-        let dsps = [Dsp::with_isa(Isa::Scalar).unwrap(), Dsp::new()];
+        let dsps = [
+            Box::new(Dsp::with_isa(Isa::Scalar).unwrap()),
+            Box::new(Dsp::new()),
+        ];
         for width in [2, 4, 8, 16, 32] {
             for height in [2, 4, 8, 16, 32] {
                 for qp in [0, 5, 22, 37, 63] {

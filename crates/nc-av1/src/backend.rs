@@ -69,6 +69,8 @@ use nc_dsp::{Av1Quantizer, BlockSize, CdefSource, Dsp};
 use nc_encoder::symbol_cost::symbol_bits;
 
 mod delta_q;
+mod final_cost;
+mod node_trial;
 mod p_intra;
 mod segments;
 mod stress;
@@ -519,6 +521,9 @@ pub struct Av1Backend {
     /// What this frame's per-superblock CDEF search changed against the
     /// choices it could have reused (`filter_search_evidence`).
     cdef_search_evidence: Option<SearchEvidence>,
+    /// The per-superblock CDEF choice's outcome per filter block against
+    /// the last picture's (`nc_encoder::FilterOutcome`).
+    cdef_outcome: nc_encoder::OutcomeTracker<bool>,
     noise_sigma: f32,
     /// The engine chroma policy (`chroma.policy` 1): replaces
     /// `av1.chroma_delta_q` and its noise and key-frame adaptations.
@@ -548,8 +553,13 @@ pub struct Av1Backend {
     /// `debug.random_decisions` only (`CodecBackend::enable_random_decisions`):
     /// random syntax choices replace the backend's own.
     random: Option<RandomSyntax>,
+    /// The final decision stage's pricing scratch (`final_cost.rs`).
+    final_scratch: final_cost::FinalScratch,
     /// `quant.trellis`: trellis quantisation of the coded block.
     trellis: Option<TrellisSettings>,
+    /// `quant.rd_trim`: rate-aware trimming of coded luma blocks' plain
+    /// levels while the trellis is off.
+    rd_trim: Option<nc_encoder::RateTrim>,
     /// While the frame has light superblocks (`set_light_params`), the
     /// per-block settings not in use.
     alternate: Option<Alternate>,
@@ -569,6 +579,10 @@ pub struct Av1Backend {
     /// it, the frame searches it, the place each superblock's unit syntax
     /// goes, and the frame's choice.
     restoration: RestorationState,
+    /// The partition search's open node trials (`backend/node_trial.rs`).
+    node_trials: node_trial::NodeTrials,
+    /// The top-left 4x4 unit (row, column) of the block last coded.
+    last_coded: Option<(usize, usize)>,
 }
 
 /// Loop restoration state of the stream and of the frame being coded.
@@ -976,6 +990,14 @@ fn configured_frame_ids(params: &Av1Params, config: &EncoderConfig) -> Option<Fr
 }
 
 impl CodecBackend for Av1Backend {
+    fn filter_outcomes(&self) -> Vec<(nc_encoder::FilterTool, nc_encoder::FilterOutcome)> {
+        self.cdef_outcome
+            .frame()
+            .map(|outcome| (nc_encoder::FilterTool::Cdef, outcome))
+            .into_iter()
+            .collect()
+    }
+
     // λ, the zero-residual limits and the luma residual RD check follow the
     // planned step. CBR 150 f, crowd_mot20_06 at 150 kbps: 273 -> 159 kbps.
     const SUPPORTS_LAMBDA_HEADROOM: bool = true;
@@ -1059,6 +1081,7 @@ impl CodecBackend for Av1Backend {
     // Intra refresh: the inter-frame intra search keeps DC on the dirty
     // edge; no temporal motion (`use_ref_frame_mvs` 0).
     const INTRA_REFRESH: bool = true;
+    const NODE_TRIALS: bool = true;
 
     /// The DC-aware intra test stays off for AV1: on VAL-150 (full gate) it
     /// loses VMAF v1 although PSNR gains. With every block also trying intra
@@ -1122,6 +1145,10 @@ impl CodecBackend for Av1Backend {
     /// flat mini-GOP and every high-quality frame has `temporal_id` 0, so no
     /// frame references a higher layer.
     const SECOND_REFERENCE_WITH_LAYERS: bool = true;
+    // Slots are named by index, without order hints (`enable_order_hint`
+    // 0, obu.rs); frame ids, sized to `reference_reach`, are coded only with
+    // a long-term reference, which the second reference never runs beside.
+    const SECOND_REFERENCE_REACH: u64 = nc_encoder::MAX_REFERENCE_AGE - 1;
 
     // The fixed-QP profile (`--qp`): every high-quality frame of the unified
     // plan carries the second reference (no cadence-strength gate), with the
@@ -1137,6 +1164,15 @@ impl CodecBackend for Av1Backend {
     ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Where the winner walk runs (Slow), it also walks a winner at the
+        // skip vector (NEARESTMV, `decision.winner_walk_keeps_skip` 0).
+        // Codec reason: H.264 P_Skip and
+        // HEVC cu_skip_flag tie residual-free coding to the inherited vector,
+        // so moving it off costs the skip syntax; in AV1 any vector may skip
+        // its residual and a moved NEARESTMV costs only its vector bits.
+        // Kept unwalked, fixed QP (draw fixedqp-2026-11-20, quick): AV1 Slow
+        // J +0.3 % [+0.0, +0.4], n 23.
+        ("decision.winner_walk_keeps_skip", 0.0),
         // A coarser inter rounding offset (48 -> 41, AV1 Fast's value): a CPU
         // cut at equal quality (study av1-default-md-2026-11-13 trial #1,
         // mode-decision levers only). Head 0cdb619d (rate.debit), pool
@@ -1218,6 +1254,19 @@ impl CodecBackend for Av1Backend {
         ("rate.cadence_motion_gate", 1.0),
         ("decision.intra_test_dc", 0.0),
         ("planner.depth_removal_min_quantizer", 0.8),
+        // The zero-trial split selector at half its fitted shift (engine
+        // `split_selector.rs`, docs/handoff/planner-selector.md). nceval.train
+        // against 9ac0fd130 (draw 2026-11-21), L3 / final-check (600 f) J:
+        // Default (k 0.1) -1.30% [-1.58, -1.04] / -1.07% [-1.49, -0.71];
+        // Faster (k 0.6) -0.98% [-1.24, -0.72] / -1.40% [-1.74, -0.90];
+        // Veryfast (k 0.6) -0.93% [-1.23, -0.62] / -1.02% [-1.33, -0.60];
+        // Fast (k 0.6) -1.12% [-1.57, -0.68] / -0.80% [-1.07, -0.51];
+        // all BETTER, no guard. Cycles zen5 / graviton3 / graviton4: Default
+        // -1.6 / -0.8 / -0.2%, Fast -2.1 / -0.2 / +0.1%, Faster -0.5 / +0.4 /
+        // +0.6%, Veryfast -0.5 / -0.1 / +0.3%. Slower and the layered presets
+        // pin it off.
+        ("planner.split_selector", 1.0),
+        ("planner.split_selector_scale", 0.5),
         ("quant.trellis_key", 0.0),
         ("quant.trellis_lambda_scale", 0.6),
         ("av1.keyframe_directional", 1.0),
@@ -1325,6 +1374,7 @@ impl CodecBackend for Av1Backend {
                 search: true,
             },
             cdef_search_evidence: None,
+            cdef_outcome: nc_encoder::OutcomeTracker::default(),
             noise_sigma: 0.0,
             chroma_policy: nc_encoder::chroma_policy::ChromaPolicy::from_params(&config.params),
             kind: FrameKind::Key,
@@ -1342,7 +1392,9 @@ impl CodecBackend for Av1Backend {
             filter_scratch: loopfilter::FilterScratch::default(),
             tx_mode: TxMode::Largest,
             random: None,
+            final_scratch: final_cost::FinalScratch::default(),
             trellis: TrellisSettings::from_params(&QuantParams::from_overrides(&config.params)),
+            rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
             alternate: None,
             filter_effort: FilterEffort::FULL,
             gates: GateParams::from_overrides(&config.params),
@@ -1353,6 +1405,8 @@ impl CodecBackend for Av1Backend {
                 sequence: restoration_sequence,
                 ..RestorationState::default()
             },
+            node_trials: node_trial::NodeTrials::default(),
+            last_coded: None,
         })
     }
 
@@ -1673,6 +1727,72 @@ impl CodecBackend for Av1Backend {
         Some(Mv::ZERO)
     }
 
+    fn begin_node_trial(&mut self, node: &Block, recon: &Picture) {
+        self.open_node_trial(node, recon);
+    }
+
+    fn begin_node_pricing(&mut self, node: &Block, _recon: &Picture) {
+        self.open_node_pricing(node);
+    }
+
+    fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
+        self.node_trial_price(source, recon)
+    }
+
+    fn undo_node_trial(&mut self, recon: &mut Picture) {
+        self.undo_node(recon);
+    }
+
+    fn keep_node_candidate(&mut self, recon: &Picture) {
+        self.keep_node(recon);
+    }
+
+    fn restore_node_candidate(&mut self, recon: &mut Picture) {
+        self.restore_kept_node(recon);
+    }
+
+    fn end_node_trial(&mut self) {
+        self.close_node_trial();
+    }
+
+    fn last_cu_skipped(&self) -> bool {
+        self.last_block_skipped()
+    }
+
+    /// `NEARESTMV` (`final_cost.rs`): the winner walk keeps it, and the
+    /// final decision stage sets it against the ranking's winner.
+    fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
+        Some(self.nearest_vector(block))
+    }
+
+    fn final_intra_screen(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+        block: &Block,
+    ) -> Option<(f32, f32)> {
+        self.prices_final_candidates()
+            .then(|| self.screen_intra(source, recon, block))
+    }
+
+    fn final_coded_cost(
+        &mut self,
+        source: &Picture,
+        reference: &Picture,
+        block: &Block,
+        candidate: nc_encoder::FinalCandidate,
+    ) -> Option<f32> {
+        self.prices_final_candidates()
+            .then(|| self.price_final(source, reference, block, candidate))
+            .flatten()
+    }
+
+    /// Random decisions bypass the pricing; a held reference predicts
+    /// scaled, not from the picture the stage is given.
+    fn prices_final_candidates(&self) -> bool {
+        self.random.is_none() && self.held_reference().is_none()
+    }
+
     fn copied_reference(&self, block: &Block) -> bool {
         // A held reference's prediction is not a copy of the engine's.
         self.luma_copy == Some((block.x, block.y)) && self.held_reference().is_none()
@@ -1852,6 +1972,7 @@ impl CodecBackend for Av1Backend {
     }
 
     fn begin_frame(&mut self, plan: &FramePlan) {
+        self.cdef_outcome.begin_picture();
         self.lambda_scale = plan.lambda_scale;
         self.active_ref = ReferenceChoice::Primary;
         // The engine uses one immutable reference throughout this frame.
@@ -2164,6 +2285,7 @@ impl CodecBackend for Av1Backend {
     }
 
     fn commit_frame(&mut self) {
+        self.cdef_outcome.commit();
         let intra_only = self
             .spatial
             .as_ref()
@@ -2833,6 +2955,15 @@ impl Av1Backend {
                 );
                 self.grids.cdef_memory.cached_selection.clone()
             };
+            // A filter block with no coded unit costs the search nothing:
+            // it is not counted as searched.
+            let coded = self.grids.cdef_map.block_coded_shares();
+            self.cdef_outcome.observe(
+                selected.clone(),
+                |block| must_search && coded.get(block).is_some_and(|&share| share > 0.0),
+                |&on| on,
+                |block| 1.0 - coded.get(block).copied().unwrap_or(0.0),
+            );
             self.grids
                 .cdef_memory
                 .cached_selection
@@ -3410,6 +3541,7 @@ impl Av1Backend {
     /// Store the coded block's mode info, with each leaf's transform size
     /// where its transform tree split.
     fn record_block(&mut self, block: &Block, info: ModeInfo, tx_split: TxSplit) {
+        self.last_coded = Some((block.y >> MI_LOG2, block.x >> MI_LOG2));
         self.grids
             .mode_info
             .fill(block.y >> MI_LOG2, block.x >> MI_LOG2, info);
@@ -4744,6 +4876,7 @@ impl Av1Backend {
         let quantizer = self.plane_quantizer(plane, tx);
         let planned_min_level = self.planned_min_level(plane);
         let trellis = self.trellis_block(block, plane, prediction, true);
+        let rd_trim = self.rd_trim_for(plane);
         let scratch = &mut self.scratch;
         let levels = &mut scratch.levels[plane as usize][..coded_area];
         let inter = matches!(
@@ -4773,6 +4906,12 @@ impl Av1Backend {
         };
         // The trellis needs the unquantised coefficients too.
         let cached = cached.filter(|c| c.originals || trellis.is_none());
+        // The rate-aware trimming needs them as well; a cached block without
+        // them keeps its levels untrimmed rather than being transformed again.
+        let trim_originals = match &cached {
+            Some(c) => c.originals.then_some(true),
+            None => Some(false),
+        };
         let nonzero = if let Some(cached) = cached {
             if let Some(t) = trellis {
                 // The trial's coefficients (a fresh transform: same
@@ -4802,7 +4941,7 @@ impl Av1Backend {
             {
                 return uncoded;
             }
-            if transform_rd_context.is_some() || trellis.is_some() {
+            if transform_rd_context.is_some() || trellis.is_some() || rd_trim.is_some() {
                 // The RD paths keep the unquantised coefficients: transform
                 // into them and quantise out of place (no copy).
                 if scratch.original_coefficients.is_empty() {
@@ -4850,6 +4989,19 @@ impl Av1Backend {
                 levels,
                 eob,
                 self.shave_min_zero_run,
+            );
+        }
+        if let Some((trim, lambda)) = rd_trim
+            && let Some(from_cache) = trim_originals
+            && eob > 0
+        {
+            let originals = if from_cache {
+                &scratch.intra_originals[..coded_area]
+            } else {
+                &scratch.original_coefficients[..coded_area]
+            };
+            eob = crate::coeff::trellis::rate_trim(
+                &trim, lambda, tx, &quantizer, originals, levels, eob,
             );
         }
         if eob == 0 {
@@ -5007,6 +5159,18 @@ impl Av1Backend {
     /// context then reads the neighbour contexts as they stand, before the
     /// earlier leaves of the same tree have written theirs (an
     /// approximation of the coded-block flag's price only).
+    /// The rate-aware trimming of a transform block of `plane` and its λ:
+    /// luma only, while the trellis is off.
+    fn rd_trim_for(&self, plane: PlaneIndex) -> Option<(nc_encoder::RateTrim, f64)> {
+        if self.trellis.is_some() || plane != PlaneIndex::Y {
+            return None;
+        }
+        let trim = self
+            .rd_trim
+            .filter(|t| t.covers(self.kind == FrameKind::Key))?;
+        Some((trim, f64::from(self.lambda())))
+    }
+
     fn trellis_block(
         &self,
         block: &Block,

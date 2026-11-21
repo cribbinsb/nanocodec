@@ -152,11 +152,24 @@ CHARTS_LAND_MINUTES = 1
 #:   ~0.3 Mpx in 6 min), renders ~8, the fresh refresh and renders ~9: 38 + 1.7 N;
 #: - VC-1K (0.92 Mpx): coding ~13, scoring 11 + 5.1 metal-min per family (437 points at
 #:   85/min, 2026-11-18) over 3 sessions, renders ~8: 32 + 1.7 N.
-CHART_CHAIN_MINUTES = {"main": 17, "heldout-independent_2026-11-13": 62,
-                       "heldout-vc1k_2026-11-18": 56, "cbr-zen3": 25,
-                       "cbr-graviton": 19, "lens-x86": 19, "lens-zen3": 29,
-                       "lens-graviton": 25, "lens-jetson": 46, "qp-vc1k": 36,
-                       "qp-fresh": 26, "lens-quality": 20}
+#: Each chain as measured at 0.5.0 (2026-11-20, state.json: every command's minutes summed
+#: per chain, 26 families of ours), times 35/26 for 0.6.0's 35 families (2026-11-21: the
+#: renamed and new rungs), rounded up. The estimates above (from 0.3.0) were far under it:
+#: 0.5.0's main chain took 85 (priced 17), held out 137 (62), VC-1K 90 (56), the Fixed QP
+#: gaps 87-89 (26-36). The main chain's point cache (work/realuse/f150-ip300) was empty at
+#: 0.6.0, so all its 1,554 points are coded again on this PC (Runner.price: ~51 min at 8
+#: workers for the measure alone).
+#: 0.6.0 (2026-11-21) moved the main chart's measure and scan and the Fixed QP gaps to
+#: rented machines (measured on 3 VAL clips x 40 families: 680 encodes in 0.7 min on a
+#: c7a.24xlarge, its 440 points scored at ~60/min a clip shard; a 2-clip gap 0.35 min of
+#: box time; a 3-family scan 19 s on the build box): the main chain after the PGO builds
+#: is the scan, both timings (the Jetson's ~25) and the render (its quality ~20 min runs
+#: from the release commit, MAIN_BEFORE_PGO), and each Fixed QP gap part one box.
+CHART_CHAIN_MINUTES = {"main": 45, "heldout-independent_2026-11-13": 185,
+                       "heldout-vc1k_2026-11-18": 121, "cbr-zen3": 37,
+                       "cbr-graviton": 30, "lens-x86": 34, "lens-zen3": 44,
+                       "lens-graviton": 44, "lens-jetson": 39, "qp-vc1k": 35,
+                       "qp-fresh": 30, "lens-quality": 29}
 #: Our presets in a tree (the release commit's: its PGO build's own).
 PRESETS = "crates/nc-encoder/presets"
 #: The Fixed QP sample views' chains (qp_commands) start with the PGO builds: our 26
@@ -167,6 +180,8 @@ PRESETS = "crates/nc-encoder/presets"
 QP_PARTS = {"qp-vc1k": 3}
 QP_DEFAULT_PARTS = 2
 QP_WORKERS = 8
+#: A Fixed QP gap part's box budget, USD (aws_measure.py --budget).
+QP_BOX_BUDGET = 3.0
 QP_TIMING_PARALLEL = 16
 #: The Fixed QP lens's quality chain (lens_quality_commands): every lens row of ours
 #: (0.4.0: 49 variants of 26 presets) on the build box, LENS_BOX_JOBS slots side by side
@@ -251,6 +266,9 @@ JETSON_TIMED = "~/nanocodec-data/jetson-timed.sh"
 JETSON_SOURCES = ("crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo",
                   "eval/nceval", "tools/dev/pgo_build.sh", "tools/dev/preset_identity.py",
                   "tools/dev/jperf.py")
+#: JETSON_SOURCES taken from this checkout, not the release commit: the release tools and
+#: the evaluation library they import (both tooling; no binary is built from them).
+LAUNCH_TREE_SOURCES = ("tools/", "eval/")
 #: The Jetson's PGO-over-plain cycle check: one preset, one clip, min of the rounds.
 CYCLES_ROUNDS = 3
 CYCLES_CLIP = "crowd_mot17_09"
@@ -289,7 +307,17 @@ ZERO_LINE_LIFETIME = 40
 #: (~0.3 Mpx, ~1.7) one, so both chains take ~32-38 + 1.7 N min (two each: VC-1K
 #: 32 + 2.6 N, the release's longest chain past N = 18).
 CLIPSET_CLOUD_REGIONS = {"vc1k_2026-11-18": "eu-central-1,eu-north-1,eu-central-1"}
-HELDOUT_CLOUD_REGIONS = "eu-north-1"
+HELDOUT_CLOUD_REGIONS = "eu-north-1,eu-north-1"
+#: c7a.metal-48xl (192 vCPU) sessions each region's spot quota holds at once (2026-11-21:
+#: eu-north-1 raised to 1,200 vCPU; the others 512), with the main chart's two scoring
+#: sessions (chart_refresh.CLOUD_REGIONS) beside the clip-set chains'.
+METAL_SESSIONS_PER_REGION = {"eu-north-1": 6}
+DEFAULT_METAL_SESSIONS = 2
+#: The main chain's commands that need no PGO build (quality only, on rented machines):
+#: they start with the release commit, the rest of the chain after the PGO builds.
+MAIN_BEFORE_PGO = ("main-build", "main-quality")
+#: The main chart's scoring sessions (chart_refresh --cloud-regions).
+MAIN_CLOUD_REGIONS = "eu-north-1,eu-north-1"
 #: Fixed QP lens: per machine its timing record and how our build is named there.
 LENS_MACHINES = {"x86": "fixed-qp-timing-x86.json", "zen3": "fixed-qp-timing-zen3.json",
                  "graviton": "fixed-qp-timing-graviton.json",
@@ -791,9 +819,11 @@ class Release:
         self.check_version(jetson(f"~/{remote}/pgo/nanocodec --version"))
         began = time.monotonic()
         log = self.log("identity-aarch64")
+        # --local: the board runs its own identity (preset_identity goes to the build box by
+        # default since 2026-11-21, which the board has no client for)
         jetson(f"cd ~/{remote}/src && {JETSON_BUILD} nice -n 19 python3 tools/dev/preset_identity.py "
                f"~/{remote}/plain/nanocodec ~/{remote}/pgo/nanocodec "
-               f"--clip-dir {JETSON_IDENTITY_CLIPS} --jobs {JETSON_JOBS}", log=log)
+               f"--clip-dir {JETSON_IDENTITY_CLIPS} --jobs {JETSON_JOBS} --local", log=log)
         identity = log.read_text().strip().splitlines()[-1]
         identity_minutes = (time.monotonic() - began) / 60
         return {"build_minutes": round(build_minutes, 1), "identity": identity,
@@ -834,15 +864,18 @@ class Release:
 
     def jetson_sources(self, remote: str) -> None:
         """The release commit's build inputs unpacked on the board (git archive), with
-        the release tools of this checkout (the release commit may predate them)."""
-        sources = [p for p in JETSON_SOURCES if not p.startswith("tools/") and subprocess.run(
-            ["git", "-C", str(REPO), "cat-file", "-e", f"{self.commit}:{p}"],
-            capture_output=True).returncode == 0]
+        the release tools of this checkout and the evaluation library they import (the
+        release commit may predate them: 2026-11-21's dry run on an older base shipped
+        today's preset_identity.py beside the base's nceval, without nceval.tempdirs)."""
+        sources = [p for p in JETSON_SOURCES if not p.startswith(LAUNCH_TREE_SOURCES)
+                   and subprocess.run(["git", "-C", str(REPO), "cat-file", "-e",
+                                       f"{self.commit}:{p}"], capture_output=True).returncode == 0]
         archive = self.root / "aarch64-sources.tar"
         run(["git", "archive", "--format=tar", "-o", str(archive), self.commit, *sources])
         with tarfile.open(archive, mode="a") as tar:
-            for tool in (p for p in JETSON_SOURCES if p.startswith("tools/")):
-                tar.add(REPO / tool, arcname=tool)
+            for tool in (p for p in JETSON_SOURCES if p.startswith(LAUNCH_TREE_SOURCES)):
+                tar.add(REPO / tool, arcname=tool,
+                        filter=lambda info: None if "__pycache__" in info.name else info)
         with archive.open("rb") as stream:
             subprocess.run(["ssh", "-o", "BatchMode=yes", jetson_host(),
                             f"mkdir -p ~/{remote}/src && tar -x -C ~/{remote}/src"],
@@ -888,6 +921,8 @@ class Release:
         families = ",".join(self.our_families(tree))
         ours = [f for f in self.lens_encoders() if f.startswith("nanocodec-")]
         refresh = ["python3", "tools/dev/chart_refresh.py", self.binary_short]
+        main_refresh = [*refresh, *(["--local"] if self.args.local_charts else
+                                    ["--cloud-regions", MAIN_CLOUD_REGIONS])]
         record = json.loads((tree / BUILDS_RECORD).read_text())
         base = CHART_BUILDS / record["base"]
         # the zero lines first, with XPSNR (a cached point lacking it is scored again), so
@@ -896,12 +931,21 @@ class Release:
         builds = "".join(f" --binary-for {f}={CHART_BUILDS / b}/nanocodec --presets-for "
                          f"{f}={CHART_BUILDS / b}/presets"
                          for f, b in sorted(record["families"].items()))
-        commands = [
-            ("zero-line-xpsnr", [
+        if self.args.local_charts:  # the proven local commands (0.5.0), unchanged
+            commands = [("zero-line-xpsnr", [
                 "bash", "-c", f"cd eval && python3 -m nceval.chart measure --binary "
                 f"{base}/nanocodec --presets-dir {base}/presets{builds} --points "
-                f"{','.join(ZERO_LINES)} --workers 8 --over-budget"]),
-            ("chart-refresh", [*refresh, "--families", families, "--pgo"])]
+                f"{','.join(ZERO_LINES)} --workers 8 --over-budget"])]
+        else:
+            # on rented machines, from the release commit (MAIN_BEFORE_PGO): its scoring
+            # build on the build box (build_cache: the plain gate build codes the PGO
+            # build's streams), then every point of the chart, the references and zero
+            # lines with ours (chart_refresh measures the main chart on boxes); the
+            # refresh after the PGO builds finds them cached and only scans and times
+            commands = [("main-build", ["bash", "tools/dev/binary_for.sh", self.binary_short]),
+                        ("main-quality", [*main_refresh, "--families", families,
+                                          "--metrics-only"])]
+        commands.append(("chart-refresh", [*main_refresh, "--families", families, "--pgo"]))
         # each clip-set chart (every site chart view's, chart_refresh.clipset_chains): its
         # zero lines coded where missing and scored on rented machines (cached: no
         # machine), then the refresh as chart_refresh --heldout runs it (refresh_heldout),
@@ -1010,7 +1054,11 @@ class Release:
         tool = ["python3", "tools/dev/fixedqp_timing.py"]
         plan, out = self.root / f"{view.id}-timing-plan.json", self.root / f"{view.id}-timing"
         scratch = self.root / f"{view.id}-timing-record.json"
-        gap = [shlex.join(["python3", "-m", "nceval.fixedqp", "gap", "--binary", str(binary),
+        # on a rented box each (tools/dev/aws_measure.py: the clip set's clips, the build,
+        # its presets and x264 go up, the result JSON comes back), or here (--local-charts)
+        box = ([] if self.args.local_charts else
+               ["python3", "../tools/dev/aws_measure.py", "--budget", str(QP_BOX_BUDGET), "--"])
+        gap = [shlex.join([*box, "python3", "-m", "nceval.fixedqp", "gap", "--binary", str(binary),
                            "--presets-dir", str(presets), "--clipset", str(clipset),
                            "--clips", str(len(record["clips"])),
                            "--families", ",".join([anchor, *part]),
@@ -1185,9 +1233,9 @@ class Release:
     def run_chart_chain(self, chain: str, commands: list[tuple[str, list[str]]], tree: Path,
                         timings: dict[str, float]) -> None:
         """One chain's commands in order, each finished one recorded (a resume skips it)."""
-        if not chain.startswith(QUALITY_CHAIN_PREFIX):
-            self.wait_for("pgo")  # it times the PGO builds
         for name, command in commands:
+            if not chain.startswith(QUALITY_CHAIN_PREFIX) and name not in MAIN_BEFORE_PGO:
+                self.wait_for("pgo")  # it times the PGO builds (or codes with them)
             if name in timings:
                 say(f"charts: {name} done earlier ({timings[name]} min): skipped")
                 continue
@@ -1316,6 +1364,8 @@ class Release:
         tree = publish.public_tree(self.commit)
         publish.assert_clean(tree, publish.excluded_paths(self.commit))
         parent = git("rev-parse", PUBLIC_REF)
+        # no raw video, no large new blob outside the published media (2026-11-21: rec.yuv)
+        publish.assert_no_raw_or_large(tree, f"{parent}^{{tree}}")
         message = (f"nanocodec {self.version}\n\nRelease commit {self.commit[:9]}, "
                    f"published tree.\n\n{publish.TRAILER}\n")
         # dated as the release commit, so a rerun makes the same commit object
@@ -1677,6 +1727,9 @@ def main() -> None:
                         help="make the release: tag, landings, charts, mirror (no uploads)")
     parser.add_argument("--over-budget", action="store_true",
                         help=f"run although the plan expects over {MAX_RELEASE_MINUTES} min")
+    parser.add_argument("--local-charts", action="store_true",
+                        help="measure the main chart and the Fixed QP gaps on this PC, as up "
+                             "to 0.5.0 (default: on rented machines)")
     parser.add_argument("--no-chain-retry", action="store_true",
                         help="a failed chart command is not retried (default: once, after "
                              f"{CHAIN_RETRY_WAIT_S} s)")

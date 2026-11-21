@@ -215,17 +215,17 @@ fn store_full_u16<V: I16x8Shuffles>(
 }
 
 #[inline(always)]
-fn derivative<V: I16FilterLanes>(a: V, b: V, c: V) -> V {
+pub(super) fn derivative<V: I16FilterLanes>(a: V, b: V, c: V) -> V {
     a.sub(times(b, 2)).add(c).abs()
 }
 
 #[inline(always)]
-fn mean<V: I16FilterLanes>(a: V, b: V) -> V {
+pub(super) fn mean<V: I16FilterLanes>(a: V, b: V) -> V {
     round(a.add(b), 1)
 }
 
 #[inline(always)]
-fn spread<V: I16FilterLanes, const EXTENDED: bool>(side: &[V; 8], length: usize) -> V {
+pub(super) fn spread<V: I16FilterLanes, const EXTENDED: bool>(side: &[V; 8], length: usize) -> V {
     let near = side[3].sub(side[0]).abs();
     if length <= 3 {
         return near;
@@ -238,7 +238,7 @@ fn spread<V: I16FilterLanes, const EXTENDED: bool>(side: &[V; 8], length: usize)
 }
 
 #[inline(always)]
-fn long_derivative<V: I16FilterLanes>(side: &[V; 8], d: V, is_long: bool) -> V {
+pub(super) fn long_derivative<V: I16FilterLanes>(side: &[V; 8], d: V, is_long: bool) -> V {
     if is_long {
         mean(d, derivative(side[3], side[4], side[5]))
     } else {
@@ -440,7 +440,7 @@ fn compute_short_edge<V: I16x8Shuffles + I16FilterLanes>(
 /// V's ISA is enabled (dispatch contract); every index is bounds checked.
 #[inline(always)]
 pub(super) unsafe fn luma<
-    V: I16x8Shuffles + I16FilterLanes,
+    V: I16x8Shuffles + crate::simd::I16x8Tiles,
     const LINES: usize,
     const EXTENDED: bool,
 >(
@@ -457,6 +457,11 @@ pub(super) unsafe fn luma<
         if let Some(out) = compute_short_edge::<V>(samples::load::<V>(plane, &edge), e) {
             samples::store(plane, &edge, out, (1, samples::POSITIONS - 1));
         }
+        return;
+    }
+    if LINES == LANES && reach(e) == LUMA_REACH {
+        // SAFETY: the caller enables V's ISA and the checked tile is one edge.
+        unsafe { super::long_luma::single::<V>(plane, e) };
         return;
     }
     let values = if LINES == LANES {
@@ -598,21 +603,19 @@ fn short_filters<V: I16x8Shuffles + I16FilterLanes, const SIDE: usize, const N: 
     out
 }
 
-/// §8.8.3.6.7: the long filter of `lengths` (3, 5 or 7 per side).
+/// §8.8.3.6.7: common reference for both sides of the edge.
 #[inline(always)]
-fn long<V: I16FilterLanes, const EXTENDED: bool>(
+pub(super) fn long_middle<V: I16FilterLanes, const EXTENDED: bool>(
     p: &[V; 8],
     q: &[V; 8],
-    values: &[V; POSITIONS],
-    tc: i32,
     lengths: [usize; 2],
-) -> [V; POSITIONS] {
+) -> V {
     let pair = if EXTENDED {
         (lengths[0].max(lengths[1]), lengths[0].min(lengths[1]))
     } else {
         (lengths[0], lengths[1])
     };
-    let middle = match pair {
+    match pair {
         (7, 7) => round(
             times(p[0].add(q[0]), 2)
                 .add(sum(&p[1..7]))
@@ -646,7 +649,18 @@ fn long<V: I16FilterLanes, const EXTENDED: bool>(
                 4,
             )
         }
-    };
+    }
+}
+
+#[inline(always)]
+fn long<V: I16FilterLanes, const EXTENDED: bool>(
+    p: &[V; 8],
+    q: &[V; 8],
+    values: &[V; POSITIONS],
+    tc: i32,
+    lengths: [usize; 2],
+) -> [V; POSITIONS] {
+    let middle = long_middle::<V, EXTENDED>(p, q, lengths);
     let mut out = *values;
     for (which, side) in [p, q].into_iter().enumerate() {
         let length = lengths[which];

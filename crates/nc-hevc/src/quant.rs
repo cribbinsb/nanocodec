@@ -141,7 +141,7 @@ pub fn shave_isolated_ones(
 
 /// The highest scan index below `end` whose level is non-zero, searched in
 /// the sub-blocks `sub_blocks` may hold levels in.
-fn previous_nonzero(
+pub(crate) fn previous_nonzero(
     levels: &[i16],
     scan: &Scan,
     sub_blocks: CodedGroups,

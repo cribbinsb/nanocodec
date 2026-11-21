@@ -303,6 +303,16 @@ impl I32Lanes for I32x8 {
     }
 
     #[inline(always)]
+    fn add_constant_u8(residual: i32, n: usize, dst: &mut [u8], stride: usize) {
+        // SAFETY: AVX2 kernels only; caller's slice covers `n` rows at `stride`.
+        unsafe {
+            crate::constant_add::add::<crate::constant_add::avx2::Bytes>(
+                residual, n, n, dst, stride,
+            );
+        }
+    }
+
+    #[inline(always)]
     fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
         let dst = &mut dst[..8];
         // SAFETY: AVX2 kernels only; `dst` holds 8 `u16` samples.
@@ -618,6 +628,16 @@ impl I32Lanes for I32x4 {
             let sum = _mm_add_epi32(self.0, pred);
             let packed = _mm_packus_epi16(_mm_packs_epi32(sum, sum), _mm_setzero_si128());
             dst.copy_from_slice(&_mm_cvtsi128_si32(packed).to_le_bytes());
+        }
+    }
+
+    #[inline(always)]
+    fn add_constant_u8(residual: i32, n: usize, dst: &mut [u8], stride: usize) {
+        // SAFETY: AVX2 kernels only; caller's slice covers `n` rows at `stride`.
+        unsafe {
+            crate::constant_add::add::<crate::constant_add::avx2::Bytes>(
+                residual, n, n, dst, stride,
+            );
         }
     }
 

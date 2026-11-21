@@ -396,6 +396,14 @@ impl Bank {
 /// A block's position and side, `(x, y, size)` in luma samples.
 type BlockKey = (usize, usize, usize);
 
+/// The motion state of a square of the grid and the bank, noted for an RD
+/// partition trial ([`ReferenceGrid::save_square`]).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SavedMotion {
+    cells: Vec<Cell>,
+    bank: Bank,
+}
+
 /// Coding-order motion state for one independently decoded tile.
 /// Call [`Self::begin_superblock`] before each superblock and commit each
 /// block immediately after coding it: the availability of diagonal
@@ -880,6 +888,38 @@ impl ReferenceGrid {
     /// Rejects repeated blocks and invalid geometry.
     pub fn commit_intra(&mut self, x: usize, y: usize, size: usize) -> Result<()> {
         self.fill(x, y, size, None)
+    }
+
+    /// Note the cells of the square of side `size` at `(x, y)` (inside the
+    /// picture) and the bank, whose updates follow the coding order.
+    pub(crate) fn save_square(&self, (x, y): (usize, usize), size: usize, saved: &mut SavedMotion) {
+        nc_common::cell_grid::save_rect(
+            &self.cells,
+            (self.width / CELL, self.height / CELL),
+            (y / CELL, x / CELL),
+            (size / CELL, size / CELL),
+            &mut saved.cells,
+        );
+        saved.bank.clone_from(&self.bank);
+    }
+
+    /// Put back what [`Self::save_square`] noted of the same square.
+    pub(crate) fn restore_square(
+        &mut self,
+        (x, y): (usize, usize),
+        size: usize,
+        saved: &SavedMotion,
+    ) {
+        self.last.set(None);
+        self.last_skip.set(None);
+        nc_common::cell_grid::restore_rect(
+            &mut self.cells,
+            (self.width / CELL, self.height / CELL),
+            (y / CELL, x / CELL),
+            (size / CELL, size / CELL),
+            &saved.cells,
+        );
+        self.bank.clone_from(&saved.bank);
     }
 
     fn fill(&mut self, x: usize, y: usize, size: usize, motion: Option<Entry>) -> Result<()> {

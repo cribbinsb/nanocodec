@@ -5,7 +5,7 @@
 //! encoder actually used. The input is Annex-B or an IVF file of Annex-B
 //! access units (H.264, HEVC), Annex-B (VVC) or IVF (AV1, VP9, AV2); `eval/nceval/streamstats.py` summarises the output.
 //!
-//! `--records FILE` (HEVC) also writes every picture's block records, for
+//! `--records FILE` (HEVC, H.264) also writes every picture's block records, for
 //! block-by-block comparisons of two encoders' streams of one source: per
 //! picture in decoding order a little-endian `u32` record count, then the
 //! records as `nc_common::stream_stats::pack_records` lays them out
@@ -57,15 +57,15 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     let data = stdio::read_all(&args.input)?;
     let stats = match args.codec {
         Codec::Hevc => hevc(&data, args.records.is_some())?,
-        Codec::H264 => h264(&data)?,
+        Codec::H264 => h264(&data, args.records.is_some())?,
         Codec::Av1 => av1(&data)?,
         Codec::Vp9 => vp9(&data)?,
         Codec::Vvc => vvc(&data)?,
         Codec::Av2 => av2(&data)?,
     };
     if let Some(path) = &args.records {
-        if args.codec != Codec::Hevc {
-            return Err("--records is for --codec hevc".into());
+        if !matches!(args.codec, Codec::Hevc | Codec::H264) {
+            return Err("--records is for --codec hevc|h264".into());
         }
         stdio::write_all(path, &packed_history(&stats))?;
         if args.json.is_none() {
@@ -177,9 +177,13 @@ fn av2(data: &[u8]) -> Result<StreamStats, String> {
     Ok(decoder.take_stats().unwrap_or_default())
 }
 
-fn h264(data: &[u8]) -> Result<StreamStats, String> {
+fn h264(data: &[u8], history: bool) -> Result<StreamStats, String> {
     let mut decoder = nc_h264::Decoder::new();
-    decoder.collect_stats(StreamStats::default());
+    decoder.collect_stats(if history {
+        StreamStats::with_history()
+    } else {
+        StreamStats::default()
+    });
     for_each_packet(data, |packet| {
         for nal in nc_common::decode::annex_b_units(packet).map_err(|e| e.to_string())? {
             decoder.push_nal(nal).map_err(|e| e.to_string())?;

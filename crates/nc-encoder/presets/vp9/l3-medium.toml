@@ -51,3 +51,19 @@ vp9.intra_rd_candidates = 1
 # The key-period ledger's saving for the next period's key was dropped from the
 # engine (2026-11-20, docs/handoff/rate-control.md): not screened for this preset.
 rate.period_key_saving = 1
+
+# Not screened with the Default's exact ranking and winner walk (2026-11-20).
+vp9.exact_ranking = 0
+# The bilinear ranking's skip shortcut (`decision.skip_no_refine_lambdas`)
+# became live when VP9 gained its skip vector (NEARESTMV, 2026-11-20);
+# pinned off, as before, until screened on this rung.
+decision.skip_no_refine_lambdas = 0
+# The reuse term's key offsets unless the buffer bounds the key became the
+# engine default (2026-11-21, docs/handoff/rate-control.md "Reuse offsets on
+# keys"): not screened for SVC; AV1 L3 Medium's starved-key recovery
+# (static_recovery) fell 0.2 dB outside its bound with it.
+persist.reuse_keys = 1
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here (docs/handoff/planner-selector.md).
+planner.split_selector = 0

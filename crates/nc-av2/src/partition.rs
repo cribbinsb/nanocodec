@@ -308,6 +308,40 @@ impl PartitionWriter {
         Ok(())
     }
 
+    /// Note the partition contexts above and left of the square node of
+    /// side `size` at `(x, y)` (inside the tile) and the halves still to
+    /// be split, which coding the node changes, for an RD partition trial.
+    pub fn save_square(&self, (x, y): (usize, usize), size: usize, saved: &mut SavedPartitions) {
+        let (x4, y4, units) = Self::context_units((x, y), size);
+        saved.above.clear();
+        saved
+            .above
+            .extend_from_slice(&self.contexts.above[x4..x4 + units]);
+        saved.left.clear();
+        saved
+            .left
+            .extend_from_slice(&self.contexts.left[y4..y4 + units]);
+        saved.pending.clone_from(&self.pending);
+    }
+
+    /// Put back what [`Self::save_square`] noted of the same node.
+    pub fn restore_square(&mut self, (x, y): (usize, usize), size: usize, saved: &SavedPartitions) {
+        let (x4, y4, units) = Self::context_units((x, y), size);
+        self.contexts.above[x4..x4 + units].copy_from_slice(&saved.above);
+        self.contexts.left[y4..y4 + units].copy_from_slice(&saved.left);
+        self.pending.clone_from(&saved.pending);
+    }
+
+    /// The first above and left context units of the square of side `size`
+    /// at `(x, y)`, and its side in units.
+    fn context_units((x, y): (usize, usize), size: usize) -> (usize, usize, usize) {
+        (
+            x / CONTEXT_UNIT,
+            (y / CONTEXT_UNIT) % LEFT_UNITS,
+            size / CONTEXT_UNIT,
+        )
+    }
+
     /// Approximate bits of the decision for the square node at `(x, y)` of
     /// side `size` under the default CDFs and the current contexts: its own
     /// symbols plus, for a split, those of the two halves it splits into.
@@ -387,6 +421,15 @@ impl PartitionWriter {
         }
         Ok(preferred_vertical)
     }
+}
+
+/// The partition state of one node ([`PartitionWriter::save_square`]),
+/// buffers reused from trial to trial.
+#[derive(Debug, Default, Clone)]
+pub struct SavedPartitions {
+    above: Vec<u8>,
+    left: Vec<u8>,
+    pending: Vec<Node>,
 }
 
 /// Reads the partition subset written by [`PartitionWriter`]: square leaves

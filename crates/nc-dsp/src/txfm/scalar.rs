@@ -81,6 +81,23 @@ unsafe fn quantize_from<S: QuantStorage, D: QuantStorage>(
     nonzero
 }
 
+/// Quantize and find the last coded scan position in the same pass.
+pub(crate) fn quantize_wide_eob(
+    coeffs: &[i32],
+    q: &QuantTerms,
+    out: &mut [i32],
+    scan: &[u16],
+) -> usize {
+    let mut end = 0;
+    for (i, (&coefficient, level)) in coeffs.iter().zip(out).enumerate() {
+        *level = q.level(coefficient, i);
+        if *level != 0 {
+            end = end.max(usize::from(scan[i]));
+        }
+    }
+    end
+}
+
 unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     for (i, (&level, dq)) in levels.iter().zip(out.iter_mut()).enumerate() {
         // Clamped to 16 bits (`dequantize_one`): the narrowing is exact.

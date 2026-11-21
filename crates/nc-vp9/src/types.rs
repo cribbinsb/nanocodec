@@ -213,6 +213,33 @@ impl ModeInfoGrid {
         )
     }
 
+    /// Append the cells of the `units`-wide square at `(row, col)` (inside
+    /// the frame) to `out`, raster order.
+    pub(crate) fn save_square(
+        &self,
+        (row, col): (usize, usize),
+        units: usize,
+        out: &mut Vec<ModeInfo>,
+    ) {
+        for r in row..row + units {
+            let start = r * self.cols + col;
+            out.extend_from_slice(&self.cells[start..start + units]);
+        }
+    }
+
+    /// Put back the cells [`Self::save_square`] saved of the same square.
+    pub(crate) fn restore_square(
+        &mut self,
+        (row, col): (usize, usize),
+        units: usize,
+        saved: &[ModeInfo],
+    ) {
+        for (r, cells) in (row..row + units).zip(saved.chunks_exact(units)) {
+            let start = r * self.cols + col;
+            self.cells[start..start + units].copy_from_slice(cells);
+        }
+    }
+
     /// Store `info` over the block's units, clipped to the frame.
     pub(crate) fn fill(&mut self, row: usize, col: usize, info: ModeInfo) {
         let units = 1usize << (info.size_log2 - MI_LOG2);

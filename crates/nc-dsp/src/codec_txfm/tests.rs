@@ -21,6 +21,10 @@ impl Rng {
     }
 }
 
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "two dispatch tables, destructured by the callers; a test helper"
+)]
 fn dsps() -> [Dsp; 2] {
     [Dsp::with_isa(Isa::Scalar).unwrap(), Dsp::new()]
 }

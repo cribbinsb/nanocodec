@@ -90,7 +90,7 @@ CODECS = ("h264", "hevc", "vvc", "av1", "vp9", "av2")
 CODEC_LABELS = {"h264": "H.264", "hevc": "HEVC", "vvc": "VVC", "av1": "AV1", "vp9": "VP9",
                 "av2": "AV2"}
 #: The speed ladder's presets beside each codec's Default (medium), as the chart shows them.
-LADDER_STEMS = ("slow", "fast", "faster", "veryfast")
+LADDER_STEMS = ("veryslow", "slower", "slow", "fast", "faster", "veryfast")
 #: Days whose build codes only some of its codecs on the slice: on 2026-11-07 HEVC and AV1
 #: refuse sizes that are not multiples of 8 (960x540, most of the slice), and a refused
 #: point would drop its clip for every point (anchor_points), so that day is H.264 only.
@@ -310,9 +310,15 @@ def day_presets(presets: Path, codec: str) -> list[str]:
     """medium, then each LADDER_STEMS preset the build ships for `codec`. Builds before
     2026-11-15 keep them flat as presets/<codec>-fast|faster|fastest.toml (the speed
     ladder's fast, faster, veryfast: nanocodec.preset_path maps them); their other files
-    (h264-balanced, hevc-better, default) are not ladder presets and are left out."""
-    return [MEDIUM, *(stem for stem in LADDER_STEMS
-                      if preset_path(presets, codec, stem).is_file())]
+    (h264-balanced, hevc-better, default) are not ladder presets and are left out. A
+    build from before 2026-11-21 has today's `slower` as slow.toml (nanocodec.preset_path
+    maps it), so a file is the first stem that reaches it, in LADDER_STEMS order."""
+    paths = {}
+    for stem in LADDER_STEMS:
+        path = preset_path(presets, codec, stem)
+        if path.is_file():
+            paths.setdefault(path, stem)
+    return [MEDIUM, *paths.values()]
 
 
 def family_name(codec: str, stem: str) -> str:

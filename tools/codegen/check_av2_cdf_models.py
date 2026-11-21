@@ -10,7 +10,10 @@ import itertools
 import re
 from pathlib import Path
 import subprocess
-import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from nceval import tempdirs  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PIN = '966a7d7cd6fcf60360caf5dc413b2aeeb65e144d'
@@ -113,7 +116,7 @@ def main():
                  f' for(int j=0;j<{n};j++) hash=(hash^model[j])*1099511628211ULL; }} }}')
         c.extend('}' for _ in dims)
     c.append('printf("HASH %llu\\n",(unsigned long long)hash); } return 0; }')
-    with tempfile.TemporaryDirectory(prefix='nc-av2-cdf-') as directory:
+    with tempdirs.temp_dir("av2-cdf") as directory:
         path = Path(directory) / 'probe.c'
         path.write_text('\n'.join(c))
         subprocess.run(['cc', '-O1', '-I'+str(args.source), '-I'+str(args.build), str(path), '-o', str(path.with_suffix(''))], check=True)
@@ -262,7 +265,7 @@ def main():
     outputs = {'cdf_defaults.rs': generated, 'cdf_models.rs': '\n'.join(model)+'\n'}
     for name, text in outputs.items():
         # Format in temporary storage so --check is read-only.
-        with tempfile.TemporaryDirectory(prefix='nc-av2-cdf-rust-') as directory:
+        with tempdirs.temp_dir("av2-cdf-rust") as directory:
             path = Path(directory)/name
             path.write_text(text)
             subprocess.run([str(Path.home()/'.cargo/bin/rustfmt'), '--edition', '2024', '--config', 'skip_children=true', str(path)], check=True)

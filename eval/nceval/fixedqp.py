@@ -43,12 +43,13 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import buildinfo, interval, levers, plotted, pool
+from . import buildinfo, cloud, interval, levers, plotted, pool
 from .cbr import CQP_SPAN_MARGIN, Bench, Family, clip_targets, curve_points, preset_anchor
 from .clips import Clip
 from .codecs import Codec
@@ -67,6 +68,8 @@ FRAMES = 150
 #: `--clips` unset with `ab --clipset`: every clip of the set.
 ALL_CLIPS = 10_000
 WORKERS = 8
+#: Progress lines per measuring stage (measure).
+PROGRESS_STEPS = 100
 OWN_PREFIX = "nanocodec-"
 OPENH264 = "openh264-baseline"
 #: The J terms and the per-metric BD-rates reported for each pair (XPSNR beside J,
@@ -191,12 +194,16 @@ def measure(benches: Benches, families: list[Family], clips: list[Clip],
     failed: dict[tuple[str, str], str] = {}
 
     def collect(jobs: dict) -> dict:
-        done = {}
-        for key, job in jobs.items():
+        """Each job's result; a line per hundredth done, so a long run (600-frame
+        points) shows progress to the rented box's stall watchdog."""
+        done, step = {}, max(1, len(jobs) // PROGRESS_STEPS)
+        for count, (key, job) in enumerate(jobs.items(), 1):
             try:
                 done[key] = job.result()
             except RuntimeError as error:
                 failed.setdefault(key[:2], str(error).splitlines()[0][:200])
+            if count % step == 0:
+                print(f"  {count}/{len(jobs)} done", flush=True)
         return done
     with ThreadPoolExecutor(max_workers=workers) as executor:
         grids = collect({(f.name, c.name): executor.submit(chooser.choose, f, c)
@@ -320,9 +327,12 @@ def ab(args: argparse.Namespace) -> dict:
     benches = Benches(paths, args.frames)
     chooser = Quantizers(benches)
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        grids = {(anchor.name, c.name): executor.submit(chooser.choose, anchor, c)
-                 for c in clips}
-        grids = {k: j.result() for k, j in grids.items()}
+        jobs = {(anchor.name, c.name): executor.submit(chooser.choose, anchor, c)
+                for c in clips}
+        grids = {}
+        for count, (key, job) in enumerate(jobs.items(), 1):
+            grids[key] = job.result()
+            print(f"  quantizers {count}/{len(jobs)}", flush=True)
     grids |= {(test.name, clip): q for test in tests for (_, clip), q in grids.items()}
     curves = measure(benches, [anchor, *tests], clips, grids, args.workers)
     results = []
@@ -471,6 +481,8 @@ def main(argv: list[str] | None = None) -> None:
         a.add_argument("--sets", help="file of candidates, one per line: `label: a=1 b=2`")
     sub.choices["ab"].add_argument("--anchor-binary")
     sub.choices["ab"].add_argument("--anchor-param", action="append", default=[])
+    sub.choices["ab"].add_argument("--local", action="store_true",
+                                   help="measure here (default: a warm rented box, nceval.cloud)")
     sub.choices["cost"].add_argument("--only", help="comma-separated candidate labels")
     r = sub.add_parser("site", help="the site's held-out Fixed QP data from gap --clipset runs")
     r.add_argument("--gap", action="append", required=True)
@@ -479,6 +491,9 @@ def main(argv: list[str] | None = None) -> None:
                    "encoders' rows are kept where the gap runs measured only ours")
     r.add_argument("--json", required=True)
     args = parser.parse_args(argv)
+    if args.command == "ab" and not args.clipset and not cloud.runs_here(args.local):
+        cloud.offload("nceval.fixedqp", list(argv if argv is not None else sys.argv[1:]),
+                      args.json, cloud.default_json("fixedqp-ab"))
     result = {"gap": gap, "ab": ab, "cost": cost, "site": site_record}[args.command](args)
     if args.command != "site":
         record_levers(args, result)

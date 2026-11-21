@@ -79,12 +79,22 @@ fn smooth8(mode: IntraMode, row: SmoothRow, top: uint8x8_t, wx: uint8x8_t) -> ui
     // operations only.
     unsafe {
         // No closures: they would not inherit the caller's target feature.
-        let vertical = vmlal_u8(vmull_u8(top, row.wy), row.bottom, row.wy_rest);
-        let horizontal = vmlal_u8(vmull_u8(row.left, wx), row.right, vsub_u8(vdup_n_u8(0), wx));
         match mode {
-            IntraMode::Smooth => vrshrn_n_u16::<8>(vhaddq_u16(vertical, horizontal)),
-            IntraMode::SmoothVertical => vrshrn_n_u16::<8>(vertical),
-            _ => vrshrn_n_u16::<8>(horizontal),
+            IntraMode::Smooth => {
+                let vertical = vmlal_u8(vmull_u8(top, row.wy), row.bottom, row.wy_rest);
+                let horizontal =
+                    vmlal_u8(vmull_u8(row.left, wx), row.right, vsub_u8(vdup_n_u8(0), wx));
+                vrshrn_n_u16::<8>(vhaddq_u16(vertical, horizontal))
+            }
+            IntraMode::SmoothVertical => {
+                let vertical = vmlal_u8(vmull_u8(top, row.wy), row.bottom, row.wy_rest);
+                vrshrn_n_u16::<8>(vertical)
+            }
+            _ => {
+                let horizontal =
+                    vmlal_u8(vmull_u8(row.left, wx), row.right, vsub_u8(vdup_n_u8(0), wx));
+                vrshrn_n_u16::<8>(horizontal)
+            }
         }
     }
 }
@@ -93,6 +103,25 @@ fn smooth8(mode: IntraMode, row: SmoothRow, top: uint8x8_t, wx: uint8x8_t) -> ui
 /// modes, on a side of 8 or more: 16 outputs per step (8 on 8x8).
 #[target_feature(enable = "neon")]
 unsafe fn smooth(edges: &IntraEdges, mode: IntraMode, dst: &mut PlaneViewMut<'_>) {
+    // One inlined copy per mode, so that no row tests the mode again or
+    // computes the unused axis.
+    // SAFETY: NEON is enabled (this function's target feature).
+    unsafe {
+        match mode {
+            IntraMode::Smooth => smooth_rows(edges, IntraMode::Smooth, dst),
+            IntraMode::SmoothVertical => smooth_rows(edges, IntraMode::SmoothVertical, dst),
+            _ => smooth_rows(edges, IntraMode::SmoothHorizontal, dst),
+        }
+    }
+}
+
+/// The rows of [`smooth`] for one `mode`.
+///
+/// # Safety
+///
+/// NEON must be enabled in the caller.
+#[inline(always)]
+unsafe fn smooth_rows(edges: &IntraEdges, mode: IntraMode, dst: &mut PlaneViewMut<'_>) {
     let n = edges.size();
     assert!(n >= HALF_STEP && dst.width() == n && dst.height() == n);
     let (above, left) = (edges.above_row(), edges.left_column());
@@ -101,6 +130,22 @@ unsafe fn smooth(edges: &IntraEdges, mode: IntraMode, dst: &mut PlaneViewMut<'_>
     // subslices.
     unsafe {
         let (bottom, right) = (vdup_n_u8(left[n - 1]), vdup_n_u8(above[n - 1]));
+        if n == HALF_STEP {
+            let top = vld1_u8(above[..HALF_STEP].as_ptr());
+            let wx = vld1_u8(weights[..HALF_STEP].as_ptr());
+            for (y, (&wy, &l)) in weights.iter().zip(left).enumerate() {
+                let row = SmoothRow {
+                    wy: vdup_n_u8(wy),
+                    wy_rest: vdup_n_u8(wy.wrapping_neg()),
+                    left: vdup_n_u8(l),
+                    bottom,
+                    right,
+                };
+                let out = &mut dst.row_mut(y)[..HALF_STEP];
+                vst1_u8(out.as_mut_ptr(), smooth8(mode, row, top, wx));
+            }
+            return;
+        }
         for (y, (&wy, &l)) in weights.iter().zip(left).enumerate() {
             let row = SmoothRow {
                 wy: vdup_n_u8(wy),
@@ -110,12 +155,6 @@ unsafe fn smooth(edges: &IntraEdges, mode: IntraMode, dst: &mut PlaneViewMut<'_>
                 right,
             };
             let out = &mut dst.row_mut(y)[..n];
-            if n == HALF_STEP {
-                let top = vld1_u8(above[..HALF_STEP].as_ptr());
-                let value = smooth8(mode, row, top, vld1_u8(weights[..HALF_STEP].as_ptr()));
-                vst1_u8(out[..HALF_STEP].as_mut_ptr(), value);
-                continue;
-            }
             for x0 in (0..n).step_by(STEP) {
                 let top = vld1q_u8(above[x0..][..STEP].as_ptr());
                 let wx = vld1q_u8(weights[x0..][..STEP].as_ptr());

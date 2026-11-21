@@ -38,6 +38,7 @@ use context::EntropyContext;
 pub use context::{Context, entropy_context};
 
 use crate::entropy::{Reader, Writer};
+pub(crate) use levels::eob_table_of;
 use levels::{LevelMap, Neighbours, ScanPosition};
 use models::BaseFamily;
 use nc_common::decode::{DecodeError, Result};

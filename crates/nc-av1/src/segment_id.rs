@@ -125,6 +125,25 @@ impl SegmentMap {
         self.at(mi_col, mi_row)
     }
 
+    /// Note the ids of the `side` x `side` units from (`mi_col`, `mi_row`),
+    /// clipped to the frame (a coding trial).
+    pub fn save_square(&self, (mi_col, mi_row): (usize, usize), side: usize, saved: &mut Vec<u8>) {
+        let grid = (self.mi_cols, self.mi_rows);
+        nc_common::cell_grid::save_rect(&self.ids, grid, (mi_row, mi_col), (side, side), saved);
+    }
+
+    /// Put back what [`Self::save_square`] noted of the same units.
+    pub fn restore_square(&mut self, (mi_col, mi_row): (usize, usize), side: usize, saved: &[u8]) {
+        let grid = (self.mi_cols, self.mi_rows);
+        nc_common::cell_grid::restore_rect(
+            &mut self.ids,
+            grid,
+            (mi_row, mi_col),
+            (side, side),
+            saved,
+        );
+    }
+
     /// Set the `width` x `height` units from (`mi_col`, `mi_row`), clipped
     /// to the frame, to `id`.
     pub fn fill(

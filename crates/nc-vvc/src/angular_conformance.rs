@@ -270,7 +270,7 @@ fn all_directions_match_standard_decoders() {
                 expected.extend(recon);
             }
             let path = std::env::temp_dir().join(format!(
-                "nc-vvc-angular-{}-{leaf_log2}-{qp}.vvc",
+                "nanocodec-vvc-angular-{}-{leaf_log2}-{qp}.vvc",
                 std::process::id()
             ));
             std::fs::write(&path, stream).unwrap();

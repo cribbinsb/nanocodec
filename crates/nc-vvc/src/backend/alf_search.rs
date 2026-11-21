@@ -3,7 +3,7 @@
 //! non-base picture value (`nonbase.vvc.alf_*`, `nc_encoder` `frame_role`),
 //! and the filter bank kept for temporal reuse (`vvc.alf_bank_interval`).
 
-use crate::alf::{Analysis, DecideOptions, DecideScratch, Decision};
+use crate::alf::{Analysis, CtbFilter, DecideOptions, DecideScratch, Decision};
 use crate::alf_aps::SignalledFilters;
 use crate::contexts::Contexts;
 use nc_common::Picture;
@@ -69,6 +69,12 @@ pub(super) struct AlfSearch {
     /// What `held` becomes when the current picture is committed (recodes
     /// and dropped pictures leave it alone).
     pending: Option<HeldBank>,
+    /// The decision's outcome per CTB against the last picture's
+    /// (`nc_encoder::FilterOutcome`); a signalled filter is the same one only
+    /// while its bank is reused.
+    outcome: nc_encoder::OutcomeTracker<Option<(CtbFilter, usize)>>,
+    /// Banks derived so far: tells a reused bank from a new one.
+    banks: usize,
     scratch: Box<DecideScratch>,
 }
 
@@ -98,6 +104,8 @@ impl AlfSearch {
             reuse_on_only: false,
             held: None,
             pending: None,
+            outcome: nc_encoder::OutcomeTracker::default(),
+            banks: 0,
             scratch: Box::default(),
         };
         search.configure(params);
@@ -127,17 +135,40 @@ impl AlfSearch {
     /// A new picture: forget what an earlier attempt would have committed.
     pub(super) fn begin_picture(&mut self) {
         self.pending = None;
+        self.outcome.begin_picture();
     }
 
     /// The picture is final: its bank becomes the held one.
     pub(super) fn commit(&mut self) {
         self.held = self.pending.take();
+        self.outcome.commit();
+        if self.held.as_ref().is_some_and(|held| held.served == 1) {
+            self.banks += 1;
+        }
+    }
+
+    /// The CTBs the usage `gate` skips this picture (`skip_shares`: each
+    /// CTB's skipped share of its area).
+    pub(super) fn usage_skips(
+        &self,
+        gate: &nc_encoder::UsageGate,
+        skip_shares: &[f32],
+    ) -> Vec<bool> {
+        self.outcome
+            .usage_skips(gate, skip_shares.len(), |ctb| skip_shares[ctb])
+    }
+
+    /// This picture's outcome, when its ALF was decided.
+    pub(super) fn outcome(&self) -> Option<nc_encoder::FilterOutcome> {
+        self.outcome.frame()
     }
 
     /// Decide and apply the luma ALF of the deblocked, SAO-filtered
     /// `recon` against `source` (`ctu`-sample CTUs, decision λ `lambda`).
     /// `skipped` names the CTBs that stay off without analysis
-    /// (`vvc.alf_skip_unchanged`, P pictures only).
+    /// (`vvc.alf_skip_unchanged`, P pictures only); `skip_shares` is each
+    /// CTB's skipped share of its area (the outcome counter's content
+    /// signal).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn filter(
         &mut self,
@@ -146,6 +177,7 @@ impl AlfSearch {
         ctu: usize,
         inter: bool,
         skipped: Option<&[bool]>,
+        skip_shares: &[f32],
         lambda: f32,
         contexts: &Contexts,
     ) -> Decision {
@@ -173,6 +205,23 @@ impl AlfSearch {
             &mut self.scratch,
         );
         analysis.apply_decided(recon, &decision, self.options, &self.scratch);
+        // A reused bank keeps the held one's number; a new one takes the next.
+        let bank = self.banks + usize::from(reuse.is_none());
+        self.outcome.observe(
+            decision
+                .ctbs
+                .iter()
+                .map(|ctb| {
+                    ctb.map(|filter| match filter {
+                        CtbFilter::Signalled => (filter, bank),
+                        CtbFilter::Fixed(_) => (filter, 0),
+                    })
+                })
+                .collect(),
+            |ctb| !is_skipped(ctb),
+            Option::is_some,
+            |ctb| skip_shares.get(ctb).copied().unwrap_or(0.0),
+        );
         let served = match reuse {
             Some(held) => held.served + 1,
             None => 1,

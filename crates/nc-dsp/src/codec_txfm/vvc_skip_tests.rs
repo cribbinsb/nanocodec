@@ -36,7 +36,10 @@ fn inverse_skip_matches_normative_scaling() {
                             .clamp(-32768, 32767) as i16
                         })
                         .collect();
-                    for dsp in [Dsp::with_isa(Isa::Scalar).unwrap(), Dsp::new()] {
+                    for dsp in [
+                        Box::new(Dsp::with_isa(Isa::Scalar).unwrap()),
+                        Box::new(Dsp::new()),
+                    ] {
                         let mut actual = vec![0; width * height];
                         dsp.vvc_inverse_skip((width, height), &levels, qp, direction, &mut actual);
                         assert_eq!(

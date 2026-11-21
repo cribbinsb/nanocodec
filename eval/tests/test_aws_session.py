@@ -51,7 +51,7 @@ def session(ec2: FakeEc2, instance_type: str = "c7a.metal-48xl", budget: float =
     return made
 
 
-PRICES = {"c7a.metal-48xl": 1.1, "c7a.48xlarge": 1.8, "c7a.24xlarge": 0.55,
+PRICES = {"c7a.metal-48xl": 1.1, "c7a.48xlarge": 1.8, "c7a.24xlarge": 0.55, "c7a.16xlarge": 0.4,
           "c7i.48xlarge": 2.0, "m7a.48xlarge": 2.2}
 
 
@@ -133,3 +133,105 @@ def test_a_scoring_root_volume_holds_its_upload(tmp_path):
     gib = 1 << 30
     assert heldout.root_gb(17 * gib) == heldout.ROOT_SYSTEM_GB + 22  # 17 x 1.25, up
     assert heldout.root_gb(0) == heldout.ROOT_SYSTEM_GB
+
+
+class QuotaEc2(FakeEc2):
+    """Spot instances in use: (type, vCPUs, Purpose) per describe call, in turn."""
+
+    def __init__(self, usage_by_call):
+        super().__init__(PRICES, {})
+        self.usage_by_call, self.calls = usage_by_call, 0
+
+    def describe_instance_types(self, InstanceTypes):
+        vcpus = {"c7a.24xlarge": 96, "c7a.16xlarge": 64}[InstanceTypes[0]]
+        return {"InstanceTypes": [{"VCpuInfo": {"DefaultVCpus": vcpus}}]}
+
+    def get_paginator(self, name):
+        usage = self.usage_by_call[min(self.calls, len(self.usage_by_call) - 1)]
+        self.calls += 1
+        instances = [{"InstanceType": kind, "CpuOptions": {"CoreCount": cpus,
+                                                            "ThreadsPerCore": 1},
+                      "Tags": [{"Key": "Purpose", "Value": purpose}]}
+                     for kind, cpus, purpose in usage]
+        pages = [{"Reservations": [{"Instances": instances}]}]
+        return type("P", (), {"paginate": lambda self, **_: pages})()
+
+
+def regional(monkeypatch, tmp_path, usage: dict[str, list], instance_type="c7a.24xlarge",
+             fallbacks=()):
+    """A session whose regions each answer with their own QuotaEc2 (usage per call)."""
+    full = [("m7a.48xlarge", 192, "measure"), ("m7a.48xlarge", 192, "measure"),
+            ("c7a.24xlarge", 96, "measure")]  # a region not named is full
+    usage = {r: usage.get(r, [full]) for r in ("eu-north-1", "eu-west-1", "eu-central-1")}
+    ecs = {region: QuotaEc2(calls) for region, calls in usage.items()}
+    run = session(ecs["eu-north-1"], instance_type, fallbacks=fallbacks)
+    run._client = lambda service, region: ecs[region]
+    monkeypatch.setattr(aws_session, "spot_quota", lambda region: 512)
+    monkeypatch.setattr(aws_session, "QUOTA_POLL_S", 0)
+    monkeypatch.setattr(aws_session, "LAUNCH_LOCK_DIR", tmp_path)
+    return run, ecs
+
+
+BUSY = [("m7a.48xlarge", 192, "measure"), ("c7a.24xlarge", 96, "measure"),
+        ("c7a.24xlarge", 96, "measure")]  # 384 of 512 in use
+FULL = [("m7a.48xlarge", 192, "measure"), ("m7a.48xlarge", 192, "measure"),
+        ("c7a.24xlarge", 96, "measure")]  # 480 of 512
+
+
+def test_a_full_home_region_spills_to_the_next_region_with_room(monkeypatch, tmp_path, capsys):
+    # eu-north-1: 384 in use and 96 kept for the absent build box: 32 free
+    run, _ = regional(monkeypatch, tmp_path, {"eu-north-1": [BUSY], "eu-west-1": [FULL],
+                                              "eu-central-1": [[]]})
+    candidates = run.claim_room()
+    out = capsys.readouterr().out
+    assert run.spec.region == "eu-central-1" and candidates[0].instance_type == "c7a.24xlarge"
+    assert "chosen over: eu-north-1" in out and "WAITING" not in out
+    assert run.ec2 is run._client("ec2", "eu-central-1")
+
+
+def test_every_region_full_waits_then_takes_the_first_that_frees(monkeypatch, tmp_path, capsys):
+    run, _ = regional(monkeypatch, tmp_path, {"eu-north-1": [BUSY, BUSY[1:]],
+                                              "eu-west-1": [FULL], "eu-central-1": [FULL]})
+    run.claim_room()
+    out = capsys.readouterr().out
+    assert out.count("WAITING for spot quota in every region") == 1
+    assert "96 kept for the build box" in out and run.spec.region == "eu-north-1"
+
+
+def test_the_build_box_share_stays_free_beside_a_running_build_box(monkeypatch, tmp_path,
+                                                                    capsys):
+    usage = [("c7a.16xlarge", 64, "buildbox"), *BUSY[1:], ("c7a.24xlarge", 96, "measure")]
+    run, _ = regional(monkeypatch, tmp_path, {"eu-north-1": [usage], "eu-west-1": [[]]})
+    run.claim_room()  # 352 in use and 96 kept: 64 free, so the 96-vCPU box spills
+    assert run.spec.region == "eu-west-1"
+    assert "64 vCPU free of 512 (352 in use, 96 kept for the build box)" in \
+        capsys.readouterr().out
+
+
+def test_waiting_too_long_fails_loudly(monkeypatch, tmp_path):
+    run, _ = regional(monkeypatch, tmp_path, {r: [FULL] for r in
+                                              ("eu-north-1", "eu-west-1", "eu-central-1")})
+    monkeypatch.setattr(aws_session, "QUOTA_QUEUE_MINUTES", 0)
+    with pytest.raises(aws_session.NoCapacity, match="waited 0 min"):
+        run.claim_room()
+
+
+def test_a_smaller_fallback_that_fits_ends_the_wait(monkeypatch, tmp_path, capsys):
+    usage = [("m7a.48xlarge", 192, "measure"), *BUSY[1:2]]
+    run, _ = regional(monkeypatch, tmp_path, {"eu-north-1": [usage]},
+                      fallbacks=("c7a.16xlarge",))
+    run.claim_room()  # 288 in use, 96 kept: 128 free... the 24xlarge fits at home
+    out = capsys.readouterr().out
+    assert "WAITING" not in out and run.spec.region == "eu-north-1"
+
+
+def test_the_cheapest_pool_per_vcpu_wins_over_the_first_region_with_room(monkeypatch,
+                                                                       tmp_path):
+    run, ecs = regional(monkeypatch, tmp_path, {"eu-north-1": [[]], "eu-west-1": [[]],
+                                                "eu-central-1": [[]]},
+                        fallbacks=("c7a.16xlarge",))
+    ecs["eu-north-1"].prices = {"c7a.24xlarge": 0.9, "c7a.16xlarge": 0.5}  # 0.0094 vs 0.0078
+    ecs["eu-west-1"].prices = {"c7a.24xlarge": 0.6, "c7a.16xlarge": 0.6}   # 0.0063 per vCPU
+    ecs["eu-central-1"].prices = {"c7a.24xlarge": 1.4, "c7a.16xlarge": 1.2}
+    candidates = run.claim_room()
+    assert run.spec.region == "eu-west-1" and candidates[0].instance_type == "c7a.24xlarge"

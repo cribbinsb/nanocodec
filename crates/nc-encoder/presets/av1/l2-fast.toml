@@ -85,3 +85,12 @@ rate.fixed_qp_moving_key = 0
 # The engine's still-level damping arrived with the AV1 Default (2026-11-19,
 # docs/handoff/rate-control.md): not screened for this preset.
 rate.still_level_damping = 0
+# The reuse term's key offsets unless the buffer bounds the key became the
+# engine default (2026-11-21, docs/handoff/rate-control.md "Reuse offsets on
+# keys"): not screened for SVC; AV1 L3 Medium's starved-key recovery
+# (static_recovery) fell 0.2 dB outside its bound with it.
+persist.reuse_keys = 1
+
+# The Default's zero-trial split selector (planner.split_selector) stays off
+# here until screened on this rung (docs/handoff/planner-selector.md).
+planner.split_selector = 0

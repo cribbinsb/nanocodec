@@ -62,6 +62,15 @@ fn check_end_of_block(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &
                     candidate.isa()
                 ));
             }
+            report.cases += 1;
+            if candidate.last_nonzero_wide(&wide, &table)
+                != reference.end_of_block_wide(&wide, &table).0
+            {
+                report.failures.push(format!(
+                    "{} last_nonzero_wide len={len} case={case}",
+                    candidate.isa()
+                ));
+            }
         }
     }
 }

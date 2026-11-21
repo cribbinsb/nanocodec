@@ -452,7 +452,8 @@ def main() -> int:
     report = parse_report(args.report)
     print(f'Report from demo commit {report["build"]["commit"]}{" (local changes)" if report["build"]["dirty"] else ""}; '
           f'source {report["source"]["kind"]} {report["source"].get("clip") or ""}')
-    with tempfile.TemporaryDirectory(prefix='nc-replay-', dir=DATA / 'work' if (DATA / 'work').is_dir() else None) as scratch:
+    with tempfile.TemporaryDirectory(prefix='nanocodec-replay-', dir=DATA / 'work' if (DATA / 'work').is_dir()
+                                     else tempfile.gettempdir()) as scratch:
         replay = Replay(report, Path(scratch), args.nanocodec)
         checks = replay.renditions() + [check for view in report['views'] for check in replay.view(view)]
     for check in checks:

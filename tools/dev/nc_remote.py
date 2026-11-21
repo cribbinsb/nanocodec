@@ -72,20 +72,46 @@ from build_stamp import diff_identity  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REGION = "eu-north-1"
-#: The fleet's 64-vCPU x86 types (EC2 picks the type and zone).
+#: Every region has its own spot quota: a spot launch refused in REGION (no capacity, or
+#: the quota full) is tried in the next of these (coordinator, 2026-11-21). The baked
+#: AMI is REGION's; elsewhere the box starts from Ubuntu and is provisioned.
+SPILL_REGIONS = (REGION, "eu-west-1", "eu-central-1")
+#: Spot quota full (EC2 error codes): never a reason for on-demand.
+QUOTA_CODES = frozenset({"MaxSpotInstanceCountExceeded"})
+#: No build box above this price per hour, spot or on-demand, without the coordinator's
+#: say (2026-11-21: an on-demand c6i.24xlarge at $4.37/h started on a full quota, then
+#: a spilled eu-west-1 spot c6i.24xlarge at $1.93/h). A fleet offers only the types
+#: priced at or below it in its region (spot: the cheapest zone); with none, the next
+#: region, and finally the current box is kept. On-demand only for the owner's rule
+#: (RECLAIMED_TYPES_FOR_ON_DEMAND types reclaimed, or no spot capacity in any region).
+MAX_USD_PER_HOUR = 1.50
+#: The fleet's x86 types and their vCPUs (EC2 picks the type and zone). Each is
+#: weighted by its vCPUs against a target of MIN_VCPUS, so the price-capacity-optimized
+#: fleet compares price per vCPU: a 96-vCPU box wins whenever it costs no more per
+#: vCPU (owner, 2026-11-21: c7a.24xlarge spot $0.558/h against c7a.16xlarge $0.559/h).
 #: eu-north-1 because its spot prices were a quarter of eu-west-1's
-#: (2026-11-16: c7a.8xlarge $0.23/h against $0.89/h). That day's 64-vCPU
-#: prices there: c6i $0.29, m7a $0.55, c7i $0.60, c7a $0.62 per hour.
-INSTANCE_TYPES = ("c7a.16xlarge", "c7i.16xlarge", "c6i.16xlarge", "m7a.16xlarge",
-                  "m7i.16xlarge", "m6i.16xlarge")
-VCPUS = 64
-#: One heavy job per 8 vCPU; each job gets cargo -j JOBS_PER_SLOT.
+#: (2026-11-16: c7a.8xlarge $0.23/h against $0.89/h).
+#: 96 vCPU only since 2026-11-21 (coordinator: the 64-vCPU box's 8 slots queued verify,
+#: identity, callgrind and agents' jobs); a running 64-vCPU box drains (make before break).
+TYPE_VCPUS = {"c7a.24xlarge": 96, "c7i.24xlarge": 96, "c6i.24xlarge": 96,
+              "m7a.24xlarge": 96, "m7i.24xlarge": 96, "m6i.24xlarge": 96}
+INSTANCE_TYPES = tuple(TYPE_VCPUS)
+MIN_VCPUS = 96
+#: One heavy job per 8 vCPU (the box makes nproc / JOBS_PER_SLOT slots); each job gets
+#: cargo -j JOBS_PER_SLOT.
 JOBS_PER_SLOT = 8
-SLOTS = VCPUS // JOBS_PER_SLOT
 #: Conformance suites (~6 GB), anchors and up to ~20 agents' targets.
 ROOT_GB = 200
 LIFETIME_MINUTES = 12 * 60
-IDLE_MINUTES = 10
+#: The pool this process manages: "" the build box, OVERFLOW the second box that `run`
+#: starts when every slot of the first has been busy for OVERFLOW_AFTER_SECONDS
+#: (coordinator, 2026-11-21); each has its own state, key pair, history and idle limit.
+POOL_ENV = "NC_REMOTE_POOL"
+OVERFLOW = "overflow"
+POOL = os.environ.get(POOL_ENV, "")
+OVERFLOW_AFTER_SECONDS = 120
+OVERFLOW_POLL_SECONDS = 10
+IDLE_MINUTES = 20 if POOL == OVERFLOW else 10
 #: A busy box this close to its hard lifetime is replaced (make before break),
 #: so jobs started from then on do not die with it at the hard end; the jobs
 #: already on it have this long to finish.
@@ -110,13 +136,22 @@ SPOT_RECLAIM_CODE = "Server.SpotInstanceTermination"
 #: The Price List API is served from us-east-1 (prices are still REGION's).
 PRICING_API_REGION = "us-east-1"
 PURPOSE = "buildbox"
-NAME = "nanocodec-buildbox"
+NAME = "nanocodec-buildbox" + (f"-{POOL}" if POOL else "")
 #: Bump when nc_remote_provision.sh changes, so boxes re-provision.
-PROVISION_VERSION = "4"
+PROVISION_VERSION = "6"
+#: What the browser checks need, pinned to the PC's (tools/web/build.sh, Cargo.lock):
+#: substituted into nc_remote_provision.sh.
+BROWSER_TOOLS = {"WASM_BINDGEN_VERSION": "0.2.105",
+                 "WASM_BINDGEN_SHA256":
+                     "b391448c4926ac4b11425a6752484d85164e72489d97804461d5e868c643b88a",
+                 "PLAYWRIGHT_VERSION": "1.60.0",
+                 # Playwright 1.60 refuses Ubuntu 26.04; its 24.04 Chromium runs there
+                 # with six apt libraries (proved by the page tests, 2026-11-21).
+                 "PLAYWRIGHT_PLATFORM": "ubuntu24.04-x64"}
 #: AMIs and their snapshots have no lifetime of their own; their ExpectedEnd is reviewed then.
 AMI_EXPECTED_END = "2026-12-31T00:00:00Z"
 
-STATE_DIR = WORK_DIR / "buildbox"
+STATE_DIR = WORK_DIR / ("buildbox" + (f"-{POOL}" if POOL else ""))
 STATE = STATE_DIR / "state.json"
 HISTORY = STATE_DIR / "history.json"
 LOCK = STATE_DIR / "lock"
@@ -128,9 +163,16 @@ KEY = STATE_DIR / "key.pem"
 SSH_USER = "ubuntu"
 BOX_HOME = f"/home/{SSH_USER}"
 SSH_READY_SECONDS = 10 * 60
-#: Paths never synced to the box: the private clips and their copies.
+#: Paths never synced by --sync: the private clips and their copies. Clips the
+#: job needs go up with --clip instead (owner, 2026-11-20: clips may go to our AWS
+#: boxes and are deleted there afterwards): the box deletes CLIP_ROOT before it
+#: shuts itself down (nc_remote_box.sh), and `stop` before it terminates the box.
 PRIVATE_PATHS = ("/mldata", str(Path.home() / "nanocodec-data/clips"),
                  str(WORK_DIR / "cache"))
+CLIP_ROOT = Path.home() / "nanocodec-data/clips"
+#: Clips keep their size and time (data, not build inputs), so one already there
+#: is not sent again.
+CLIP_MODE = ("-a",)
 RSYNC_EXCLUDES = ("--exclude=/target", "--exclude=/.git", "--exclude=*.yuv",
                   "--exclude=*.y4m", "--exclude=__pycache__", "--max-size=64m")
 
@@ -148,6 +190,7 @@ class Box:
     ended: str = ""
     market: str = SPOT
     reclaimed: bool = False
+    region: str = REGION
 
     def hours(self, start: datetime.datetime, end: datetime.datetime) -> float:
         """Billed hours of this box inside [start, end)."""
@@ -161,7 +204,7 @@ class Box:
         return self.hours(start, end) * (self.price + storage + PUBLIC_IPV4_USD_PER_HOUR)
 
     def spec(self) -> SessionSpec:
-        return SessionSpec(region=REGION, instance_type=self.instance_type, purpose=PURPOSE)
+        return SessionSpec(region=self.region, instance_type=self.instance_type, purpose=PURPOSE)
 
 
 @dataclass(frozen=True)
@@ -173,7 +216,12 @@ class MarketPlan:
 
 
 class NoCapacity(RuntimeError):
-    """A fleet request launched nothing: no capacity in any pool it offered."""
+    """A fleet request launched nothing: no capacity in any pool it offered, or
+    (`quota`) the region's spot quota is full."""
+
+    def __init__(self, message: str, quota: bool = False):
+        super().__init__(message)
+        self.quota = quota
 
 
 def parse(stamp: str) -> datetime.datetime:
@@ -311,10 +359,18 @@ def starting_id() -> str:
 class Aws:
     """The calls nc-remote makes; every resource it creates or changes is tagged ours."""
 
-    def __init__(self):
+    def __init__(self, region: str = REGION):
         import boto3
-        self.ec2 = boto3.client("ec2", region_name=REGION)
-        self.ssm = boto3.client("ssm", region_name=REGION)
+        self.region = region
+        self.ec2 = boto3.client("ec2", region_name=region)
+        self.ssm = boto3.client("ssm", region_name=region)
+        self._regional = {region: self}
+
+    def regional(self, region: str) -> "Aws":
+        """The calls for `region` (a box's), one client set per region."""
+        if region not in self._regional:
+            self._regional[region] = Aws(region)
+        return self._regional[region]
 
     @staticmethod
     def tag_list(expected_end: str) -> list[dict]:
@@ -337,15 +393,16 @@ class Aws:
         """Our key pair, recreated when its private key is not on this PC."""
         found = self.ec2.describe_key_pairs(Filters=[{"Name": "key-name", "Values": [NAME]},
                                                      *self.ours()])["KeyPairs"]
-        if found and KEY.exists():
+        key_file = key_path(self.region)
+        if found and key_file.exists():
             self.retag(found[0]["KeyPairId"], expected_end)
             return NAME
         if found:
             self.ec2.delete_key_pair(KeyPairId=found[0]["KeyPairId"])
         key = self.ec2.create_key_pair(KeyName=NAME, KeyType="ed25519",
                                        TagSpecifications=self.tags("key-pair", expected_end))
-        KEY.touch(mode=0o600)
-        KEY.write_text(key["KeyMaterial"])
+        key_file.touch(mode=0o600)
+        key_file.write_text(key["KeyMaterial"])
         return NAME
 
     def security_group(self, expected_end: str) -> str:
@@ -394,19 +451,19 @@ class Aws:
         return dict(sorted(prices.items(), key=lambda item: item[1]))
 
     def on_demand_price(self, instance_type: str) -> float:
-        """The Linux on-demand list price in REGION (AWS Price List API)."""
+        """The Linux on-demand list price in this region (AWS Price List API)."""
         import boto3
         pricing = boto3.client("pricing", region_name=PRICING_API_REGION)
         products = pricing.get_products(ServiceCode="AmazonEC2", Filters=[
             {"Type": "TERM_MATCH", "Field": field, "Value": value} for field, value in (
-                ("instanceType", instance_type), ("regionCode", REGION),
+                ("instanceType", instance_type), ("regionCode", self.region),
                 ("operatingSystem", "Linux"), ("tenancy", "Shared"),
                 ("preInstalledSw", "NA"), ("capacitystatus", "Used"))])["PriceList"]
         for product in products:
             for term in json.loads(product)["terms"]["OnDemand"].values():
                 for dimension in term["priceDimensions"].values():
                     return float(dimension["pricePerUnit"]["USD"])
-        raise RuntimeError(f"no on-demand price for {instance_type} in {REGION}")
+        raise RuntimeError(f"no on-demand price for {instance_type} in {self.region}")
 
     def launch(self, plan: MarketPlan, on_demand_fallback: bool = True) -> Box:
         """One instance from an instant EC2 Fleet over the plan's types x every
@@ -419,7 +476,7 @@ class Aws:
         image_id, root_device = self.image()
         user_data = (HERE / "nc_remote_box.sh").read_text() \
             .replace("@LIFETIME_MINUTES@", str(LIFETIME_MINUTES)) \
-            .replace("@IDLE_MINUTES@", str(IDLE_MINUTES)).replace("@SLOTS@", str(SLOTS))
+            .replace("@IDLE_MINUTES@", str(IDLE_MINUTES)).replace("@JOBS_PER_SLOT@", str(JOBS_PER_SLOT))
         template = self.ec2.create_launch_template(
             LaunchTemplateName=f"{NAME}-{utc_now():%Y%m%d-%H%M%S}",
             TagSpecifications=self.tags("launch-template", expected_end),
@@ -448,18 +505,19 @@ class Aws:
         say(f"launched {market} {instance_type} {instance_id} in {zone} (${price:.4f}/h)")
         return Box(instance_id=instance_id, instance_type=instance_type, zone=zone,
                    price=price, launched=iso(described["LaunchTime"]),
-                   expected_end=expected_end, host=described["PublicIpAddress"], market=market)
+                   expected_end=expected_end, host=described["PublicIpAddress"], market=market,
+                   region=self.region)
 
     def fleet_instance(self, template_id: str, plan: MarketPlan, expected_end: str,
                        on_demand_fallback: bool = True) -> tuple[str, str]:
         """(instance id, market) from the plan's fleet, or from an on-demand
         fleet over every type when no spot pool in the plan has capacity (and
-        `on_demand_fallback`)."""
+        `on_demand_fallback`; never when the spot quota is what refused)."""
         try:
             return self.create_fleet(template_id, plan.market, plan.types, expected_end), \
                 plan.market
         except NoCapacity as missing:
-            if plan.market != SPOT or not on_demand_fallback:
+            if plan.market != SPOT or not on_demand_fallback or missing.quota:
                 raise
             say(f"{missing}: on-demand instead")
             return self.create_fleet(template_id, ON_DEMAND, INSTANCE_TYPES, expected_end), \
@@ -467,16 +525,29 @@ class Aws:
 
     def create_fleet(self, template_id: str, market: str, types: tuple[str, ...],
                      expected_end: str) -> str:
+        types = self.affordable(market, types)
         subnets = self.ec2.describe_subnets(Filters=[
             {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
-        overrides = [{"InstanceType": t, "SubnetId": subnet["SubnetId"]}
-                     for t in types for subnet in subnets]
+        # Spot: only the pools (type x zone) priced within the cap, since the fleet's
+        # price-capacity-optimized choice may take a pricier zone (2026-11-21: m6i.24xlarge
+        # at $1.96/h in eu-central-1 beside zones within $1.50/h).
+        within = {t: ({z for z, price in self.zone_prices(t).items()
+                       if price <= MAX_USD_PER_HOUR} if market == SPOT else None)
+                  for t in types}
+        overrides = [{"InstanceType": t, "SubnetId": subnet["SubnetId"],
+                      "WeightedCapacity": float(TYPE_VCPUS[t])}
+                     for t in types for subnet in subnets
+                     if within[t] is None or subnet.get("AvailabilityZone") in within[t]]
+        if not overrides:
+            raise NoCapacity(f"no {market} pool within ${MAX_USD_PER_HOUR:.2f}/h in "
+                             f"{self.region} among {', '.join(types)}")
+        cap = f"{MAX_USD_PER_HOUR:.4f}"  # the fleet's one instance, whatever its pool
         reply = self.ec2.create_fleet(
             Type="instant",
             SpotOptions={"AllocationStrategy": "price-capacity-optimized",
-                         "InstanceInterruptionBehavior": "terminate"},
-            OnDemandOptions={"AllocationStrategy": "lowest-price"},
-            TargetCapacitySpecification={"TotalTargetCapacity": 1,
+                         "InstanceInterruptionBehavior": "terminate", "MaxTotalPrice": cap},
+            OnDemandOptions={"AllocationStrategy": "lowest-price", "MaxTotalPrice": cap},
+            TargetCapacitySpecification={"TotalTargetCapacity": MIN_VCPUS,
                                          "DefaultTargetCapacityType": market},
             LaunchTemplateConfigs=[{"LaunchTemplateSpecification": {
                 "LaunchTemplateId": template_id, "Version": "$Latest"},
@@ -485,9 +556,23 @@ class Aws:
         launched = [i for group in reply.get("Instances", []) for i in group["InstanceIds"]]
         if not launched:
             errors = {e.get("ErrorCode") for e in reply.get("Errors", [])}
-            raise NoCapacity(f"no {market} capacity for any of {', '.join(types)} in {REGION} "
-                             f"({', '.join(sorted(c for c in errors if c)) or 'no error code'})")
+            raise NoCapacity(f"no {market} capacity for any of {', '.join(types)} in {self.region} "
+                             f"({', '.join(sorted(c for c in errors if c)) or 'no error code'})",
+                             quota=bool(errors & QUOTA_CODES))
         return launched[0]
+
+    def affordable(self, market: str, types: tuple[str, ...]) -> tuple[str, ...]:
+        """The types priced within MAX_USD_PER_HOUR here (spot: the cheapest zone)."""
+        def price(instance_type: str) -> float:
+            if market == ON_DEMAND:
+                return self.on_demand_price(instance_type)
+            zones = self.zone_prices(instance_type)
+            return min(zones.values()) if zones else float("inf")
+        cheap = tuple(t for t in types if price(t) <= MAX_USD_PER_HOUR)
+        if not cheap:
+            raise NoCapacity(f"no {market} type within ${MAX_USD_PER_HOUR:.2f}/h in "
+                             f"{self.region} among {', '.join(types)}")
+        return cheap
 
     def describe(self, instance_id: str) -> dict | None:
         reply = self.ec2.describe_instances(InstanceIds=[instance_id])
@@ -535,8 +620,13 @@ class Aws:
 
 # --- the box over SSH --------------------------------------------------------------------
 
+def key_path(region: str) -> Path:
+    """This pool's private key for `region` (a key pair exists per region)."""
+    return KEY if region == REGION else STATE_DIR / f"key-{region}.pem"
+
+
 def ssh_options(box: Box) -> list[str]:
-    return ["-i", str(KEY), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+    return ["-i", str(key_path(box.region)), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=6",
             "-o", f"UserKnownHostsFile={STATE_DIR / ('known_hosts-' + box.instance_id)}",
             "-o", "StrictHostKeyChecking=accept-new", "-o", "ControlMaster=auto",
@@ -599,7 +689,7 @@ def provision(box: Box) -> None:
     say(f"provisioning (toolchains {toolchains['RUST_STABLE']} and nightly "
         f"{toolchains['NIGHTLY_DATE']}, as on the PC)")
     script = (HERE / "nc_remote_provision.sh").read_text().replace("@PROVISION_VERSION@", tag)
-    for key, value in toolchains.items():
+    for key, value in {**toolchains, **BROWSER_TOOLS}.items():
         script = script.replace(f"@{key}@", value)
     ssh(box, "bash -s", input=script.encode(), check=True)
 
@@ -610,7 +700,7 @@ def close_out(aws: Aws, box: Box, ended: datetime.datetime) -> None:
     """Record a box that has gone: history (with whether spot reclaimed it),
     ledger row, state cleared."""
     box.ended = iso(ended)
-    box.reclaimed = aws.reclaimed(box.instance_id)
+    box.reclaimed = aws.regional(box.region).reclaimed(box.instance_id)
     if box.reclaimed:
         say(f"{box.instance_id} was reclaimed by spot")
     record(box)
@@ -678,20 +768,36 @@ def live_box(aws: Aws) -> Box | None:
     """The current box if it is still running. Every box that has gone (the
     current one or a draining one) is closed out."""
     for box in unended():
-        if aws.state(box.instance_id) not in ("pending", "running"):
-            close_out(aws, box, aws.end_time(box.instance_id))
+        regional = aws.regional(box.region)
+        if regional.state(box.instance_id) not in ("pending", "running"):
+            close_out(aws, box, regional.end_time(box.instance_id))
     return load_state()
 
 
-def drain_if_outdated(box: Box | None) -> Box | None:
-    """A running box of a type no longer in INSTANCE_TYPES gets no new jobs: it
-    finishes the ones it has and is ended by reap once drained."""
-    if box is None or box.instance_type in INSTANCE_TYPES:
-        return box
-    say(f"{box.instance_type} {box.instance_id} is no longer a build box type: draining it "
-        "(its jobs finish, then reap ends it); starting a new box")
-    save_state(None)
-    return None
+def launch_anywhere(aws: Aws, plan: MarketPlan, on_demand_fallback: bool) -> Box:
+    """A spot box in the first of SPILL_REGIONS that launches one (quota full or no
+    capacity: the next region); on-demand only after every region refused spot for
+    capacity (not quota), when `on_demand_fallback` (and within the price cap)."""
+    if plan.market != SPOT:
+        return aws.launch(plan, on_demand_fallback=False)
+    refusals: list[NoCapacity] = []
+    for region in SPILL_REGIONS:
+        try:
+            box = aws.regional(region).launch(plan, on_demand_fallback=False)
+            if region != REGION:
+                say(f"launched in {region} (spilled from {REGION}: "
+                    f"{'; '.join(map(str, refusals))})")
+            return box
+        except NoCapacity as missing:
+            say(f"{region}: {missing}")
+            refusals.append(missing)
+    # On-demand only when some region had quota room but no spot capacity.
+    every_quota = all(r.quota for r in refusals)
+    if on_demand_fallback and not every_quota:
+        return aws.launch(MarketPlan(ON_DEMAND, INSTANCE_TYPES, "on-demand: no spot capacity "
+                                     "in any region"), on_demand_fallback=False)
+    raise NoCapacity("no spot box in any of " + ", ".join(SPILL_REGIONS) + ": "
+                     + "; ".join(map(str, refusals)), quota=every_quota)
 
 
 def start_box(aws: Aws, plan: MarketPlan, guard, on_demand_fallback: bool = True,
@@ -701,7 +807,7 @@ def start_box(aws: Aws, plan: MarketPlan, guard, on_demand_fallback: bool = True
     already holds it). A box that launched but never became ready is ended."""
     started = time.monotonic()
     say(f"launching {plan.reason}")
-    box = aws.launch(plan, on_demand_fallback)
+    box = launch_anywhere(aws, plan, on_demand_fallback)
     with guard():
         record(box)
     if on_launch:
@@ -723,7 +829,7 @@ def start_box(aws: Aws, plan: MarketPlan, guard, on_demand_fallback: bool = True
 def ensure_box(aws: Aws) -> BoxUse:
     """The current box (started if there is none), held for one `run`."""
     with Locked():
-        box = drain_if_outdated(live_box(aws))
+        box = live_box(aws)
         if box is None:
             check_budget()
             box = start_box(aws, market_now(), contextlib.nullcontext)
@@ -748,6 +854,10 @@ def replacement_reason(box: Box, plan: MarketPlan, now: datetime.datetime) -> st
         return f"within {REPLACE_BEFORE_END.total_seconds() / 3600:g} h of its hard lifetime"
     if box.market == ON_DEMAND and plan.market == SPOT:
         return "on-demand while spot is allowed"
+    if box.instance_type not in INSTANCE_TYPES:
+        # A type no longer listed (the 64-vCPU boxes, 2026-11-21) keeps serving until a
+        # listed type has started on spot: make before break, never on-demand for this.
+        return f"{box.instance_type} is no longer a build box type"
     return ""
 
 
@@ -798,8 +908,12 @@ def stop_all(aws: Aws) -> None:
 
 
 def stop_box(aws: Aws, box: Box) -> None:
+    # The clips leave the box before it is terminated (owner, 2026-11-20).
+    with contextlib.suppress(Exception):
+        ssh(box, f"rm -rf -- {BOX_HOME}/{CLIP_ROOT.relative_to(Path.home())}", check=False,
+            capture_output=True, timeout=60)
     say(f"terminating {box.instance_id}")
-    aws.terminate(box)
+    aws.regional(box.region).terminate(box)
     close_out(aws, box, utc_now())
 
 
@@ -814,7 +928,15 @@ def checked_sync_path(path: str) -> Path:
     return resolved
 
 
-def sync(box: Box, worktree: Path, name: str, extra: list[Path]) -> None:
+def checked_clip_path(path: str) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_relative_to(CLIP_ROOT) or not resolved.is_file():
+        raise SystemExit(f"nc-remote: --clip takes a clip file under {CLIP_ROOT}: {path}")
+    return resolved
+
+
+def sync(box: Box, worktree: Path, name: str, extra: list[Path],
+         clips: tuple[Path, ...] = ()) -> None:
     started = time.monotonic()
     rsync(box, UPLOAD_MODE, "-z", "--delete", *RSYNC_EXCLUDES, "--filter=:- .gitignore",
           f"{worktree}/", remote(box, f"ncbox/jobs/{name}/src/"))
@@ -823,6 +945,8 @@ def sync(box: Box, worktree: Path, name: str, extra: list[Path]) -> None:
         suffix = "/" if path.is_dir() else ""
         rsync(box, UPLOAD_MODE, "-z", *RSYNC_EXCLUDES, f"{path}{suffix}",
               remote(box, f"{relative}{suffix}"))
+    for clip in clips:
+        rsync(box, CLIP_MODE, str(clip), remote(box, str(clip.relative_to(Path.home()))))
     say(f"synced in {time.monotonic() - started:.0f} s")
 
 
@@ -835,9 +959,34 @@ def fetch(box: Box, name: str, paths: list[str], fetch_to: Path) -> None:
             local = fetch_to / path
         else:
             source, local = f"ncbox/jobs/{name}/src/{path}", fetch_to / path
+        if ssh(box, f"test -e {shlex.quote(source.rstrip('/'))}", capture_output=True).returncode:
+            say(f"not fetched: {path} does not exist on the box (the job did not make it)")
+            continue
         local.parent.mkdir(parents=True, exist_ok=True)
         rsync(box, FETCH_MODE, remote(box, source.rstrip("/")), f"{local.parent}/")
         say(f"fetched {path} -> {local}")
+
+
+#: The PC's record of each box job's worktree (job name -> path), so a job whose
+#: worktree is gone has its directory removed from the box (note_job).
+JOB_TREES = WORK_DIR / "nc-remote-jobs.json"
+
+
+def note_job(name: str, worktree: Path) -> list[str]:
+    """Record `name`'s worktree; return (and forget) the recorded jobs whose worktree
+    no longer exists."""
+    JOB_TREES.parent.mkdir(parents=True, exist_ok=True)
+    with open(JOB_TREES.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        trees = json.loads(JOB_TREES.read_text()) if JOB_TREES.exists() else {}
+        trees[name] = str(worktree)
+        gone = sorted(n for n, tree in trees.items() if not Path(tree).is_dir())
+        for n in gone:
+            del trees[n]
+        partial = JOB_TREES.with_suffix(".partial")
+        partial.write_text(json.dumps(trees, indent=1, sort_keys=True) + "\n")
+        partial.rename(JOB_TREES)
+    return gone
 
 
 def job_command(command: list[str]) -> str:
@@ -853,8 +1002,12 @@ def run_once(aws: Aws, args, worktree: Path, name: str, commit: str,
 
 
 def run_on(box: Box, args, worktree: Path, name: str, commit: str, dirty: str) -> int:
-    sync(box, worktree, name, [checked_sync_path(p) for p in args.sync])
     job = (HERE / "nc_remote_job.py").read_text()
+    gone = note_job(name, worktree)
+    if gone:  # their directories on the box go too (targets: GBs each)
+        ssh(box, shlex.join(["python3", "-c", job, "--drop", *gone]))
+    sync(box, worktree, name, [checked_sync_path(p) for p in args.sync],
+         tuple(checked_clip_path(p) for p in getattr(args, "clip", [])))
     # NC_BUILD_DIRTY stamps a build of local changes as such (build_stamp.py);
     # always set, so an empty value marks a clean tree.
     argv = ["python3", "-c", job, name, commit, str(args.jobs), job_command(args.command),
@@ -882,11 +1035,42 @@ def cmd_run(args) -> int:
     if dirty:
         say(f"local changes: builds are stamped {commit[:12]}-dirty.{dirty}")
     aws = Aws()
+    if not POOL and not name.startswith("verifier-") and main_box_full(aws):
+        say(f"every slot of the build box has been busy for {OVERFLOW_AFTER_SECONDS} s: "
+            f"running on the overflow box")
+        return subprocess.call([sys.executable, __file__, *sys.argv[1:]],
+                               env={**os.environ, POOL_ENV: OVERFLOW})
     status, box = run_once(aws, args, worktree, name, commit, dirty)
-    if status == 255 and aws.state(box.instance_id) not in ("pending", "running"):
+    if status == 255 and aws.regional(box.region).state(box.instance_id) not in ("pending",
+                                                                                "running"):
         say("the box went away during the job (spot reclaim or limit): restarting, retrying once")
         status, _ = run_once(aws, args, worktree, name, commit, dirty)
     return status
+
+
+def main_box_full(aws: Aws) -> bool:
+    """Whether every job slot of the build box (verify's kept ones aside) stays busy
+    for OVERFLOW_AFTER_SECONDS (a job already waiting that long counts at once)."""
+    with Locked():
+        box = live_box(aws)
+    if box is None:
+        return False
+    job = (HERE / "nc_remote_job.py").read_text()
+    deadline = time.monotonic() + OVERFLOW_AFTER_SECONDS
+    while True:
+        try:
+            out = ssh(box, shlex.join(["python3", "-c", job, "--free"]), capture_output=True,
+                      text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return False
+        if out.returncode != 0:
+            return False  # an older box script or no answer: queue there as before
+        free, waited = (int(x) for x in out.stdout.split()[:2])
+        if free > 0:
+            return False
+        if waited >= OVERFLOW_AFTER_SECONDS or time.monotonic() > deadline:
+            return True
+        time.sleep(OVERFLOW_POLL_SECONDS)
 
 
 def cmd_status(_args) -> int:
@@ -908,6 +1092,9 @@ def cmd_status(_args) -> int:
         ssh(box, shlex.join(["python3", "-c", job, "--status"]))
         ssh(box, "echo \"  idle for $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) s\"; "
                  "df -h --output=avail,size / | tail -1 | sed 's/^/  disk free, size: /'")
+    if not POOL:
+        say("overflow box:")
+        subprocess.call([sys.executable, __file__, "status"], env={**os.environ, POOL_ENV: OVERFLOW})
     return 0
 
 
@@ -956,7 +1143,7 @@ def cmd_reap(_args) -> int:
                 continue
             if role(box, current) == "current":
                 reason = replacement_reason(box, market_now(), utc_now())
-            if reason and unused(box):
+            if reason and unused(box) and box.instance_type in INSTANCE_TYPES:
                 say(f"{box.instance_id}: {reason} and no job runs: ending it")
                 stop_box(aws, box)
                 continue
@@ -968,6 +1155,8 @@ def cmd_reap(_args) -> int:
                 unreachable_marker(box).unlink(missing_ok=True)
     if replacement:
         replace(aws, *replacement)
+    if not POOL:  # the overflow box's records, budget and idle check too
+        subprocess.call([sys.executable, __file__, "reap"], env={**os.environ, POOL_ENV: OVERFLOW})
     return 0
 
 
@@ -1004,7 +1193,9 @@ def between_jobs(box: Box) -> bool:
     """No job slot is held, no job is waiting on the box, and none has ended in
     the last QUIET_SECONDS."""
     probe = ("for s in ncbox/slots/*; do flock -n \"$s\" true || exit 1; done; "
-             "! ls ncbox/jobs/*/waiting.json >/dev/null 2>&1 && "
+             # a waiting record from before this boot (baked, or a reclaim) is no job
+             "[ -z \"$(find ncbox/jobs -maxdepth 2 -name waiting.json -newermt "
+             "@$(awk '/^btime/ {print $2}' /proc/stat))\" ] && "
              f"[ $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) -ge {QUIET_SECONDS} ]")
     return ssh(box, probe, capture_output=True).returncode == 0
 
@@ -1068,6 +1259,9 @@ def main() -> int:
     run.add_argument("--worktree", default=".", help="the agent's worktree (default: cwd)")
     run.add_argument("--name", help="job directory on the box (default: the worktree's name)")
     run.add_argument("--sync", action="append", default=[], help="extra path under ~ to mirror")
+    run.add_argument("--clip", action="append", default=[],
+                     help="a clip file under ~/nanocodec-data/clips the job reads (deleted on "
+                          "the box before it stops)")
     run.add_argument("--fetch", action="append", default=[],
                      help="path to bring back (worktree-relative, target/..., or ~/...)")
     run.add_argument("--fetch-to", type=Path, help="local root for --fetch (default: worktree)")

@@ -34,8 +34,10 @@ Inc.; THIRD_PARTY.md).
 
 from __future__ import annotations
 
+import contextlib
 import math
-import queue
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -149,15 +151,19 @@ def _strip_sums(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 
 class MsSsimSink:
-    """Scores every `subsample`-th streamed frame's luma on a worker thread.
+    """Scores every `subsample`-th streamed frame's luma in a worker process.
 
     A FrameSink (nceval.framepipe): the stream's reader only hands frames
     over, so scoring runs beside it like a metric process would. The
     reference luma is read from the clip at the same frame index.
-    """
 
-    #: Frames queued for the worker before the stream waits (memory bound).
-    QUEUE_FRAMES = 2
+    A process, not a thread: the scoring is many small NumPy steps that hold
+    the GIL, so in one process the points' MS-SSIM threads ran one at a time.
+    2026-11-21, CPU backend on a 96-vCPU box, 32 workers: an L1 of 114 points
+    kept the box 5 % busy for 4 min. The worker (`main`) runs the same
+    `ms_ssim` and prints each score with repr(), so the scores are the same
+    floats as in-process ones. The pipe to it bounds the frames in flight.
+    """
 
     def __init__(self, reference: Path, fmt: YuvFormat, subsample: int = 1):
         if subsample < 1:
@@ -166,11 +172,14 @@ class MsSsimSink:
         self._fmt, self._subsample = fmt, subsample
         self._index = 0
         self.scores: list[float] = []
-        self._error: BaseException | None = None
-        self._queue: queue.Queue = queue.Queue(self.QUEUE_FRAMES)
         self._finished = False
-        self._worker = threading.Thread(target=self._score, name="ms-ssim", daemon=True)
-        self._worker.start()
+        self._worker = subprocess.Popen(
+            [sys.executable, "-m", __name__, str(fmt.width), str(fmt.height)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=Path(__file__).resolve().parents[1])
+        self._lines: list[bytes] = []
+        self._reader = threading.Thread(target=self._read, name="ms-ssim", daemon=True)
+        self._reader.start()
 
     def consume(self, frame: bytes) -> None:
         # The reference is read in order, never sought: an encoded clip's frames
@@ -179,28 +188,43 @@ class MsSsimSink:
         if len(reference) != self._fmt.frame_size:
             raise ValueError("reference has fewer frames than the distorted stream")
         if self._index % self._subsample == 0:
-            self._queue.put((reference[:self._fmt.luma_size], frame))
+            with contextlib.suppress(BrokenPipeError):  # its error is raised by finish()
+                self._worker.stdin.write(reference[:self._fmt.luma_size])
+                self._worker.stdin.write(frame[:self._fmt.luma_size])
         self._index += 1
 
     def finish(self) -> None:
-        """End of stream: wait for the worker; re-raise its error. Idempotent."""
+        """End of stream: wait for the worker; raise its error. Idempotent."""
         if not self._finished:
             self._finished = True
-            self._queue.put(None)
-            self._worker.join()
+            with contextlib.suppress(BrokenPipeError):
+                self._worker.stdin.close()
+            self._reader.join()
+            self._worker.wait()
             self._reference.close()
-        if self._error is not None:
-            raise self._error
+            self.scores = [float(line) for line in self._lines]
+        if self._worker.returncode != 0:
+            message = self._worker.stderr.read().decode(errors="replace").strip()
+            raise ValueError(message.splitlines()[-1] if message else
+                             f"MS-SSIM worker exited with {self._worker.returncode}")
 
-    def _score(self) -> None:
-        shape = (self._fmt.height, self._fmt.width)
-        while (item := self._queue.get()) is not None:
-            if self._error is not None:
-                continue  # keep draining so the stream never blocks
-            reference, frame = item
-            try:
-                self.scores.append(ms_ssim(
-                    np.frombuffer(reference, np.uint8).reshape(shape),
-                    np.frombuffer(frame, np.uint8, self._fmt.luma_size).reshape(shape)))
-            except BaseException as error:
-                self._error = error
+    def _read(self) -> None:
+        self._lines = self._worker.stdout.read().split()
+
+
+def main(argv: list[str]) -> None:
+    """The worker: luma pairs (reference, distorted) on stdin, one score per line."""
+    width, height = int(argv[0]), int(argv[1])
+    size, out = width * height, sys.stdout
+    while reference := sys.stdin.buffer.read(size):
+        distorted = sys.stdin.buffer.read(size)
+        if len(reference) != size or len(distorted) != size:
+            raise ValueError("MS-SSIM worker: a partial frame on stdin")
+        score = ms_ssim(np.frombuffer(reference, np.uint8).reshape(height, width),
+                        np.frombuffer(distorted, np.uint8).reshape(height, width))
+        out.write(f"{score!r}\n")
+    out.flush()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

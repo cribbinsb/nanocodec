@@ -24,6 +24,12 @@ analysis.window_half_width = 2
 analysis.window_half_height = 0
 decision.static_zero_vector = 1
 h264.exact_ranking = 0
+# The bilinear ranking's winner refinement keeps only H.264's own variance
+# gate (`h264.subpel_skip_variance`): the engine's seed gate there
+# (`decision.codec_subpel_seed_lambdas`, 0.1 from DEFAULT_PARAMS) saved
+# -0.1/-0.2% x86 instructions (Veryfast/Faster), not screened
+# (docs/handoff/fast-decision.md).
+decision.codec_subpel_seed_lambdas = 0
 layers.count = 3
 layers.adaptive = 1
 layers.adaptive_max_camera_motion = 16

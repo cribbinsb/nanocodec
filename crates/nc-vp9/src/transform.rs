@@ -284,6 +284,14 @@ impl PlaneQuantization {
         (self.threshold.max(1) - 1) as u32 >> self.tx.dequant_shift()
     }
 
+    /// A DC-only transform still uses the block's zero threshold.
+    pub(crate) fn quantize_dc(&self, dsp: &nc_dsp::Dsp, dc: i16, level: &mut i32) -> bool {
+        if u32::from(dc.unsigned_abs()) <= self.zero_limit() {
+            return false;
+        }
+        dsp.vp9_quantize(&[dc], &self.dc, &self.ac, std::slice::from_mut(level))
+    }
+
     /// [`quantize`] at this quantization.
     pub(crate) fn quantize(
         &self,

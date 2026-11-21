@@ -7,6 +7,8 @@
 #   tools/ci/check.sh --quick    skip the WASM checkasm run, the syntax stress test and
 #                                the H.264 conformance streams
 #                                (the VP9/AV2/VVC browser-module smoke tests always run)
+#   tools/ci/check.sh [--quick] [--crates ...] --preflight
+#                                only list the tools those checks would need and lack
 #   tools/ci/check.sh --quick --crates "nc-vvc nc-cli"
 #                                clippy and test only these crates (land.sh --verify
 #                                passes the changed crates plus their dependents); host
@@ -19,11 +21,12 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
-quick=false
+quick=false preflight_only=false
 crates=""
 while (($#)); do
     case $1 in
         --quick) quick=true ;;
+        --preflight) preflight_only=true ;;
         --crates) crates=${2:?--crates needs a list}; shift ;;
         *) printf 'check.sh: unknown argument %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -46,6 +49,41 @@ step() { step_done; step_name=$*; step_began=$SECONDS; printf '\n== %s\n' "$*"; 
 
 # Agents build into their own target directories (docs/PROCEDURES.md).
 target_dir=${CARGO_TARGET_DIR:-target}
+
+# Preflight: every tool the selected steps need, listed at once before minutes of
+# building. Missing ones fail the run with NC_CHECK_STRICT=1 (land.sh's verify on the
+# build box: a check that silently skips there is not a verify), else only warn
+# (the page tests skip themselves without Playwright).
+missing=()
+need_target() {
+    rustup target list --installed 2>/dev/null | grep -qx "$1" || missing+=("rust target $1")
+}
+command -v cargo >/dev/null || missing+=(cargo)
+if selected nc-web && [[ "${NC_BROWSER_TESTS:-1}" == 1 ]]; then
+    command -v node >/dev/null || missing+=(node)
+    need_target wasm32-unknown-unknown
+    bindgen=${WASM_BINDGEN:-$(command -v wasm-bindgen || echo "${NC_DATA_ROOT:-$HOME/nanocodec-data}/tools/browser-demo/wasm-bindgen-0.2.105-x86_64-unknown-linux-musl/wasm-bindgen")}
+    [[ -x "$bindgen" && "$("$bindgen" --version 2>/dev/null)" == 'wasm-bindgen 0.2.105' ]] ||
+        missing+=("wasm-bindgen-cli 0.2.105")
+    if [[ "${NC_PAGE_TESTS:-1}" != 0 ]]; then
+        python3 -c 'import playwright' 2>/dev/null || missing+=("python playwright (page tests)")
+    fi
+fi
+if ! $quick; then
+    command -v node >/dev/null || missing+=(node)
+    need_target wasm32-wasip1
+    need_target wasm32-unknown-unknown
+    need_target aarch64-unknown-linux-gnu
+fi
+if ((${#missing[@]})); then
+    printf 'check.sh preflight: missing: %s\n' "${missing[*]}" >&2
+    [[ "${NC_CHECK_STRICT:-0}" != 1 ]] || exit 3
+fi
+if $preflight_only; then
+    ((${#missing[@]})) && exit 3
+    echo 'check.sh preflight: every tool is there'
+    exit 0
+fi
 
 step "format"
 cargo fmt --all --check
@@ -72,6 +110,7 @@ step "crate layering, integration-test modules, encode paths"
 python3 tools/ci/check_layering.py
 python3 tools/ci/check_test_modules.py
 python3 tools/ci/check_encode_paths.py
+python3 tools/ci/check_names.py
 
 # Runs in --quick too (land.sh), so browser API changes cannot land unchecked.
 # land.sh sets NC_BROWSER_TESTS=0 unless web/, nc-web or the kernels changed.

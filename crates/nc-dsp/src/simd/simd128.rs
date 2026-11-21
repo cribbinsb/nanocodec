@@ -288,6 +288,16 @@ impl I32Lanes for I32x4 {
     }
 
     #[inline(always)]
+    fn add_constant_u8(residual: i32, n: usize, dst: &mut [u8], stride: usize) {
+        // SAFETY: SIMD128 is enabled for the whole build; caller's slice covers `n` rows.
+        unsafe {
+            crate::constant_add::add::<crate::constant_add::simd128::Bytes>(
+                residual, n, n, dst, stride,
+            );
+        }
+    }
+
+    #[inline(always)]
     fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
         let dst = &mut dst[..4];
         // SAFETY: `dst` holds 4 `u16` samples (8 bytes).

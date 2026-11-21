@@ -449,7 +449,8 @@ the merges above; hot shares are section 0's.
 |---|---|---|---|
 | H.264 deblock (`deblock/h264_bytes/{x86,wide,grouped}.rs`) | single-edge SSE; two-edge AVX2, four-edge ICL | H.264 2.8 / 3.7 | Ordered independent batches landed 3bcd6e7a0; actual two-edge ICL macroblocks use 32 word lanes for widened equations. Single-edge tails retain SSE. |
 | AV1/VP9 deblock (`lpf_bytes/avx2.rs`, `deblock/avx2.rs` `av1_edge`) | 128-bit (8 lines) | AV1 3.8, VP9 3.5 | Astra's AVX-512 work; the 16-line paired `*_wide` lanes exist (256-bit) for the decoder |
-| HEVC luma deblock, VVC short deblock (`deblock/{batch,short_runs}.rs`) | I16x8 single tile; I16x16 AVX2, I16x32 ICL batches | HEVC 1.7, VVC 2-3 | Ordered disjoint eight-line tiles landed 3bcd6e7a0; VVC long/narrow filters retain their previous kernels. |
+| HEVC luma deblock, VVC short deblock (`deblock/{batch,short_runs}.rs`) | I16x8 single tile; I16x16 AVX2, I16x32 ICL batches | HEVC 1.7, VVC 2-3 | Ordered disjoint eight-line tiles landed 3bcd6e7a0; VVC short and long filters use the same ordered tile traversal. |
+| VVC long luma deblock (`vvc_deblock/long_luma.rs`) | I16x8 single tile; I16x16 AVX2, I16x32 ICL batches | VVC | Vector endpoint decisions and signed rounded word blends for the §8.8.3.6.7 taps. The NEON vertical transpose works on bytes, shared with H.264. On Jetson, eight-line long probes use 23–25% fewer cycles and two VVC decode streams use 2.26–2.72% fewer cycles. |
 | HEVC/VVC/AV1/AV2 intra runs of 16 (`intra_runs` `step16`) | 128-bit | intra | 32-wide runs are 256-bit |
 | `constant_add` | 128-bit bytes | small | 32/64-wide blocks could take 256-bit |
 | H.264 inverse 8x8 add (`codec_txfm/avx2.rs` `I16x8`) | I16x8 | H.264 | |

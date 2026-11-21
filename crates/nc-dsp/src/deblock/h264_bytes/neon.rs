@@ -8,15 +8,14 @@
 
 use super::{H264Bytes, H264Math};
 use core::arch::aarch64::{
-    uint8x8_t, uint8x16_t, uint32x4_t, vabdq_u8, vaddl_high_u8, vaddl_u8, vaddq_s16, vaddq_u16,
-    vaddw_high_u8, vaddw_u8, vandq_u8, vbicq_u8, vbslq_u8, vcltq_u8, vcombine_s8, vcombine_u8,
-    vcreate_u8, vdupq_n_u8, vget_high_u8, vget_low_u8, vhaddq_u8, vld1_u8, vld1q_lane_u32,
-    vld1q_u8, vmaxq_s8, vmaxq_u8, vmaxvq_u8, vminq_s8, vminq_u8, vnegq_s8, vqaddq_u8,
-    vqrshrn_n_s16, vqsubq_u8, vreinterpretq_s8_u8, vreinterpretq_s16_u16, vreinterpretq_u8_s8,
-    vreinterpretq_u8_u32, vreinterpretq_u16_u8, vreinterpretq_u32_u8, vreinterpretq_u32_u16,
-    vrhaddq_u8, vrshrn_n_u16, vshlq_n_s16, vshlq_n_u16, vsqaddq_u8, vst1_u8, vst1q_lane_u32,
-    vst1q_u8, vsubl_high_u8, vsubl_u8, vsubq_u8, vtrn1q_u8, vtrn1q_u16, vtrn1q_u32, vtrn2q_u8,
-    vtrn2q_u16, vtrn2q_u32, vuzp1q_u8, vuzp2q_u8, vzip1q_u8, vzip2q_u8,
+    uint8x8_t, uint8x16_t, vabdq_u8, vaddl_high_u8, vaddl_u8, vaddq_s16, vaddq_u16, vaddw_high_u8,
+    vaddw_u8, vandq_u8, vbicq_u8, vbslq_u8, vcltq_u8, vcombine_s8, vcombine_u8, vcreate_u8,
+    vdupq_n_u8, vget_high_u8, vget_low_u8, vhaddq_u8, vld1_u8, vld1q_lane_u32, vld1q_u8, vmaxq_s8,
+    vmaxq_u8, vmaxvq_u8, vminq_s8, vminq_u8, vnegq_s8, vqaddq_u8, vqrshrn_n_s16, vqsubq_u8,
+    vreinterpretq_s8_u8, vreinterpretq_s16_u16, vreinterpretq_u8_s8, vreinterpretq_u8_u32,
+    vreinterpretq_u32_u8, vrhaddq_u8, vrshrn_n_u16, vshlq_n_s16, vshlq_n_u16, vsqaddq_u8, vst1_u8,
+    vst1q_lane_u32, vst1q_u8, vsubl_high_u8, vsubl_u8, vsubq_u8, vuzp1q_u8, vuzp2q_u8, vzip1q_u8,
+    vzip2q_u8,
 };
 
 /// Sixteen byte lanes in one NEON register.
@@ -249,48 +248,9 @@ impl H264Bytes for B {
     }
 }
 
-/// Two 8x8 byte transposes at once: byte `j` of the low (high) half of
-/// output `i` is byte `i` of the low (high) half of input `j`. Its own
-/// inverse.
 #[inline(always)]
-fn transpose_8x8_pairs(r: [B; 8]) -> [B; 8] {
-    // SAFETY: register-only. `trn` pairs elements within each 64-bit
-    // half for 8- and 16-bit elements, and the 32-bit stage pairs
-    // element 0 with 0 and 2 with 2: the two halves never mix.
-    unsafe {
-        let b: [uint8x16_t; 8] = [
-            vtrn1q_u8(r[0].0, r[1].0),
-            vtrn2q_u8(r[0].0, r[1].0),
-            vtrn1q_u8(r[2].0, r[3].0),
-            vtrn2q_u8(r[2].0, r[3].0),
-            vtrn1q_u8(r[4].0, r[5].0),
-            vtrn2q_u8(r[4].0, r[5].0),
-            vtrn1q_u8(r[6].0, r[7].0),
-            vtrn2q_u8(r[6].0, r[7].0),
-        ];
-        // Columns {0, 4}, {2, 6}, {1, 5}, {3, 7} of rows 0..4, then of
-        // rows 4..8.
-        let w = [
-            trn_u16::<true>(b[0], b[2]),
-            trn_u16::<false>(b[0], b[2]),
-            trn_u16::<true>(b[1], b[3]),
-            trn_u16::<false>(b[1], b[3]),
-            trn_u16::<true>(b[4], b[6]),
-            trn_u16::<false>(b[4], b[6]),
-            trn_u16::<true>(b[5], b[7]),
-            trn_u16::<false>(b[5], b[7]),
-        ];
-        [
-            B(vreinterpretq_u8_u32(vtrn1q_u32(w[0], w[4]))),
-            B(vreinterpretq_u8_u32(vtrn1q_u32(w[2], w[6]))),
-            B(vreinterpretq_u8_u32(vtrn1q_u32(w[1], w[5]))),
-            B(vreinterpretq_u8_u32(vtrn1q_u32(w[3], w[7]))),
-            B(vreinterpretq_u8_u32(vtrn2q_u32(w[0], w[4]))),
-            B(vreinterpretq_u8_u32(vtrn2q_u32(w[2], w[6]))),
-            B(vreinterpretq_u8_u32(vtrn2q_u32(w[1], w[5]))),
-            B(vreinterpretq_u8_u32(vtrn2q_u32(w[3], w[7]))),
-        ]
-    }
+fn transpose_8x8_pairs(rows: [B; 8]) -> [B; 8] {
+    crate::simd::neon::transpose_u8x16_pairs(rows.map(|row| row.0)).map(B)
 }
 
 /// Rows of 4 bytes, four per vector (rows `4k..4k + 4` in vector `k`), to
@@ -347,20 +307,5 @@ fn strong_half([x3, x2, x1, x0, y0, y1]: [uint8x8_t; 6]) -> [uint8x8_t; 3] {
             // (x2 + 2·x1 + 2·x0 + 2·y0 + y1 + 4) >> 3
             vrshrn_n_u16::<3>(vaddw_u8(vaddq_u16(s, s2), y1)),
         ]
-    }
-}
-
-/// `trn1` (`FIRST`) or `trn2` of the 16-bit elements of `a` and `b`, as
-/// 32-bit elements.
-#[inline(always)]
-fn trn_u16<const FIRST: bool>(a: uint8x16_t, b: uint8x16_t) -> uint32x4_t {
-    // SAFETY: register-only.
-    unsafe {
-        let (a, b) = (vreinterpretq_u16_u8(a), vreinterpretq_u16_u8(b));
-        vreinterpretq_u32_u16(if FIRST {
-            vtrn1q_u16(a, b)
-        } else {
-            vtrn2q_u16(a, b)
-        })
     }
 }

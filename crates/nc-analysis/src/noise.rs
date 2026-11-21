@@ -55,6 +55,8 @@ const VARIANCE_BUCKET_SHIFT: u32 = 5;
 /// block's bucket.
 const TEXTURED_BUCKET: usize = VARIANCE_BUCKETS - 1;
 const _: () = assert!((FLAT_MAX_SUM_SQ_DEV >> VARIANCE_BUCKET_SHIFT) < TEXTURED_BUCKET as u32);
+// Buckets are stored as bytes.
+const _: () = assert!(VARIANCE_BUCKETS <= 256);
 
 /// Fewer flat blocks than this and the frame's estimate is not trusted (the
 /// previous estimate is kept).
@@ -79,16 +81,23 @@ pub fn update(previous: f32, stats: &Grid<BlockStats>, matches: &Grid<MotionBloc
     // the SADs of the buckets below the one holding the last wanted block
     // and select only within that one: exactly the flattest `count`. One full selection over all flat blocks measured about 30
     // instructions per block.
-    let bucket = |s: &BlockStats| {
-        if s.sum_sq_dev <= FLAT_MAX_SUM_SQ_DEV {
-            (s.sum_sq_dev >> VARIANCE_BUCKET_SHIFT) as usize
-        } else {
-            TEXTURED_BUCKET
-        }
-    };
+    // Every block's bucket is found once, in a branch-free pass that
+    // vectorises, and read again by the gathering pass below (evaluated in
+    // both passes, the test was a third of the estimate's instructions).
+    let buckets: Vec<u8> = stats
+        .cells()
+        .iter()
+        .map(|s| {
+            if s.sum_sq_dev <= FLAT_MAX_SUM_SQ_DEV {
+                (s.sum_sq_dev >> VARIANCE_BUCKET_SHIFT) as u8
+            } else {
+                TEXTURED_BUCKET as u8
+            }
+        })
+        .collect();
     let mut counts = [0u32; VARIANCE_BUCKETS];
-    for s in stats.cells() {
-        counts[bucket(s)] += 1;
+    for &bucket in &buckets {
+        counts[usize::from(bucket)] += 1;
     }
     let flat_count = stats.cells().len() - counts[TEXTURED_BUCKET] as usize;
     let wanted = (stats.cells().len() as f32 * FLAT_FRACTION) as usize;
@@ -101,8 +110,8 @@ pub fn update(previous: f32, stats: &Grid<BlockStats>, matches: &Grid<MotionBloc
     // (variance, SAD) packed into one integer that orders exactly as the
     // pair does.
     let mut edge_keys: Vec<u64> = Vec::with_capacity(counts[edge] as usize);
-    for (s, m) in stats.cells().iter().zip(matches.cells()) {
-        match bucket(s).cmp(&edge) {
+    for ((s, m), &bucket) in stats.cells().iter().zip(matches.cells()).zip(&buckets) {
+        match usize::from(bucket).cmp(&edge) {
             Ordering::Less => flat_sads.push(m.sad),
             Ordering::Equal => edge_keys.push((u64::from(s.sum_sq_dev) << 32) | u64::from(m.sad)),
             Ordering::Greater => {}

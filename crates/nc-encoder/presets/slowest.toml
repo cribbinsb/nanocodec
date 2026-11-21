@@ -1,7 +1,7 @@
-# The shared slow bundle: what every codec's `slow` rung starts from, applied
-# by the engine (nc_encoder::presets) before the codec's
-# presets/<codec>/slow.toml, which adds the levers that pass for that codec.
-# A lever is in slow when its measured J gain pays for its CPU at k 0.025
+# The shared bundle of each codec's slowest rung (`veryslow` where the codec has
+# one, else `slower`): applied by the engine (nc_encoder::presets) before that
+# rung's presets/<codec>/<rung>.toml, which adds the levers that pass for that
+# codec. A lever is in this bundle when its measured J gain pays for its CPU at k 0.025
 # (docs/analysis/lever-gradients-2026-11-15.md); this file holds the one
 # that passes for every codec that can signal it.
 #

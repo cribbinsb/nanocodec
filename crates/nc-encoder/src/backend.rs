@@ -246,6 +246,13 @@ pub trait CodecBackend {
     /// `layers.*` defaults.
     const SECOND_REFERENCE_WITH_LAYERS: bool = false;
 
+    /// Farthest back, in frames, the second reference may lie: what the
+    /// backend's reference syntax can name. The default suits picture-order
+    /// syntax with 8-bit LSBs (HEVC and VVC POC, AV2 order hints: pictures
+    /// within half the LSB range, HEVC §8.3.1) with margin; a long-lived
+    /// second reference (`refs.second_hold`) is refreshed at this age.
+    const SECOND_REFERENCE_REACH: u64 = crate::second_reference::MAX_DISTANCE;
+
     /// Whether the backend codes [`BlockDecision::qp_offset`] with block-level
     /// QP syntax. The engine sends non-zero offsets only to backends that do.
     const SUPPORTS_BLOCK_QP: bool = false;
@@ -784,6 +791,16 @@ pub trait CodecBackend {
         None
     }
 
+    /// Whether [`CodecBackend::final_coded_cost`] prices candidates in the
+    /// current coding state. The final decision stage runs only then:
+    /// without a pricing it could only keep the ranking's winner, and it
+    /// replaces the DC intra test, so inter frames would lose intra (VP9
+    /// fixed QP J +5.6 %, AV1 +2.4 %; docs/analysis/tools-that-hurt-2026-11-20.md).
+    /// `false` (the default) leaves the ranking's own decision.
+    fn prices_final_candidates(&self) -> bool {
+        false
+    }
+
     /// The final decision stage's intra screen of inter-frame `block`
     /// (`final_stage.rs`): the luma squared error of the codec's best
     /// whole-block intra prediction from the reconstruction `recon` (no
@@ -851,6 +868,69 @@ pub trait CodecBackend {
     /// [`CodecBackend::skip_vector`].
     fn cu_trial_skip_vector(&mut self, block: &Block) -> Option<Mv> {
         self.skip_vector(block)
+    }
+
+    /// Whether the codec implements node trials
+    /// ([`CodecBackend::begin_node_trial`] and the calls after it), which
+    /// the RD partition search (`planner.rd_split`) needs. Without them the
+    /// planned partition is coded.
+    const NODE_TRIALS: bool = false;
+
+    /// Start a partition trial of inter-frame `node` (inside the picture;
+    /// `rd_split.rs`): note the coded state that coding the node's
+    /// partition flags and CUs changes, so
+    /// [`CodecBackend::undo_node_trial`] can put it back. Trials nest (a
+    /// quad split's children open their own) and end in reverse order.
+    /// Called only where [`CodecBackend::NODE_TRIALS`].
+    fn begin_node_trial(&mut self, node: &Block, recon: &Picture) {
+        let _ = (node, recon);
+        unreachable!("NODE_TRIALS is false");
+    }
+
+    /// Start a node trial that is only priced and ended, never undone or
+    /// kept (a node with one candidate, a shape's part): a backend whose
+    /// snapshot is costly notes only what the price needs. By default a
+    /// full [`CodecBackend::begin_node_trial`].
+    fn begin_node_pricing(&mut self, node: &Block, recon: &Picture) {
+        self.begin_node_trial(node, recon);
+    }
+
+    /// The coded cost of everything coded since the innermost open node
+    /// trial began: squared error of every plane over its node (chroma
+    /// weighted as in [`CodecBackend::cu_trial_cost`]) plus
+    /// [`CodecBackend::lambda`] times the estimated bits of its partition
+    /// flags and CUs.
+    fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
+        let _ = (source, recon);
+        f32::INFINITY
+    }
+
+    /// Put the coded state back as the innermost open node trial found it
+    /// (the trial stays open: it may be coded and undone again).
+    fn undo_node_trial(&mut self, recon: &mut Picture) {
+        let _ = recon;
+    }
+
+    /// Note what is coded since the innermost node trial began as its
+    /// kept candidate (replacing any kept before), for
+    /// [`CodecBackend::restore_node_candidate`].
+    fn keep_node_candidate(&mut self, recon: &Picture) {
+        let _ = recon;
+    }
+
+    /// Put the innermost node trial's kept candidate back as it was coded.
+    fn restore_node_candidate(&mut self, recon: &mut Picture) {
+        let _ = recon;
+    }
+
+    /// End the innermost node trial, keeping what is coded.
+    fn end_node_trial(&mut self) {}
+
+    /// Whether the CU last coded is a skip CU (no residual, predicted from
+    /// a signalled candidate): the partition search then tries nothing
+    /// smaller. `false` (the default) where unknown.
+    fn last_cu_skipped(&self) -> bool {
+        false
     }
 
     /// Whether [`CodecBackend::intra_leaf_cost`] is implemented. Without it,
@@ -1039,4 +1119,11 @@ pub trait CodecBackend {
     /// the previous frame's syntax) once the unit `end_frame` returned is
     /// final. Called exactly once per coded frame. Nothing by default.
     fn commit_frame(&mut self) {}
+
+    /// What the frame's filter searches decided, per tool (`filter_outcome.rs`),
+    /// read after [`CodecBackend::commit_frame`]. Empty by default: the
+    /// codec searches no filter, or does not count.
+    fn filter_outcomes(&self) -> Vec<(crate::FilterTool, crate::FilterOutcome)> {
+        Vec::new()
+    }
 }

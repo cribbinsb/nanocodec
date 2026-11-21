@@ -13,12 +13,15 @@ use nc_encoder::FrameReferences;
 
 use crate::motion::{ActiveReferences, MAX_ACTIVE_REFERENCES};
 
-/// The POC distance up to which a listed picture may stay in the DPB: the
-/// pictures of a coded video sequence span less than `MaxPicOrderCntLsb / 2`
-/// (§8.3.1 with `POC_BITS` 8, `headers.rs`), the current picture and the
-/// previous one included. The engine's second reference stays within 64
-/// frames (`second_reference.rs`, `MAX_DISTANCE`).
-const MAX_LISTED_DISTANCE: u32 = (1 << (crate::headers::POC_BITS - 1)) - 2;
+/// The POC distance up to which a listed picture may stay in the DPB with
+/// `poc_bits` POC LSBs: the pictures of a coded video sequence span less
+/// than `MaxPicOrderCntLsb / 2` (§8.3.1), the current picture and the
+/// previous one included. With `headers::POC_BITS` the engine's second
+/// reference stays within 64 frames; a held one widens them
+/// (`headers::LONG_POC_BITS`, `CodecBackend::SECOND_REFERENCE_REACH`).
+fn max_listed_distance(poc_bits: u32) -> u32 {
+    (1 << (poc_bits - 1)) - 2
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Syntax {
@@ -29,6 +32,8 @@ pub(crate) struct Syntax {
     /// Active ones (`NumRefIdxActive[0]`): the first `active` entries.
     pub active: usize,
     pub non_reference: bool,
+    /// Bits of `ph_pic_order_cnt_lsb` (the SPS's).
+    pub poc_bits: u32,
 }
 impl Syntax {
     pub const FLAT: Self = Self {
@@ -36,6 +41,7 @@ impl Syntax {
         count: 1,
         active: 1,
         non_reference: false,
+        poc_bits: crate::headers::POC_BITS,
     };
 
     /// The active references, for motion vector prediction.
@@ -53,35 +59,40 @@ impl Syntax {
 pub(crate) struct References {
     pub plan: FrameReferences,
     pub syntax: Syntax,
-    /// The POC LSBs of the picture in each slot.
-    pocs: Vec<u8>,
+    /// The POC of the picture in each slot (only its LSBs are coded).
+    pocs: Vec<u16>,
+    /// Bits of the POC LSBs.
+    poc_bits: u32,
     /// The engine's long-term slot when the second reference is on.
     second_slot: Option<usize>,
 }
 impl References {
     /// References for `layers` temporal layers, with the second reference's
-    /// slot when `second` is on.
-    pub fn new(layers: u8, second: bool) -> Self {
+    /// slot when `second` is on, and `poc_bits` POC LSBs.
+    pub fn new(layers: u8, second: bool, poc_bits: u32) -> Self {
         let slots = nc_encoder::reference_slots(layers);
         let second_slot = second.then(|| nc_encoder::long_term_slot(layers));
         Self {
             plan: FrameReferences::FLAT,
             syntax: Syntax::FLAT,
             pocs: vec![0; slots + usize::from(second)],
+            poc_bits,
             second_slot,
         }
     }
-    pub fn begin(&mut self, plan: FrameReferences, poc: u8, inter: bool) {
+    pub fn begin(&mut self, plan: FrameReferences, poc: u16, inter: bool) {
         self.plan = plan;
         let slot = plan.reference.slot;
         // POC advances only on commit, unlike source-frame distances after drops.
-        let distance_to = |slot: usize| u32::from(poc.wrapping_sub(self.pocs[slot]));
+        let lsb_mask = (1u32 << self.poc_bits) - 1;
+        let distance_to = |slot: usize| u32::from(poc.wrapping_sub(self.pocs[slot])) & lsb_mask;
         let distance = if inter { distance_to(slot) } else { 1 };
         self.syntax = Syntax {
             distances: [distance, 0],
             count: 1,
             active: 1,
             non_reference: plan.refresh.is_empty(),
+            poc_bits: self.poc_bits,
         };
         // A top-layer picture using T1 must retain T0 for the next base picture.
         // It remains inactive, so every coded block still has reference index zero.
@@ -92,7 +103,7 @@ impl References {
         if let Some(second) = self.second_slot.filter(|_| inter) {
             let held = distance_to(second);
             debug_assert_eq!(self.syntax.count, 1, "no second reference with layers");
-            if self.pocs[second] != self.pocs[slot] && held <= MAX_LISTED_DISTANCE {
+            if self.pocs[second] != self.pocs[slot] && held <= max_listed_distance(self.poc_bits) {
                 self.syntax.distances[1] = held;
                 self.syntax.count = 2;
                 if let Some(link) = plan.secondary {
@@ -104,7 +115,7 @@ impl References {
             }
         }
     }
-    pub fn commit(&mut self, poc: u8) {
+    pub fn commit(&mut self, poc: u16) {
         for slot in 0..self.pocs.len() {
             if self.plan.refresh.contains(slot) {
                 self.pocs[slot] = poc;
@@ -128,7 +139,7 @@ mod tests {
 
     #[test]
     fn disposable_and_recode_attempts_do_not_replace_reference_metadata() {
-        let mut refs = References::new(3, false);
+        let mut refs = References::new(3, false, crate::headers::POC_BITS);
         refs.begin(plan(0, SlotMask::ALL), 0, false);
         refs.commit(0);
         refs.begin(plan(0, SlotMask::NONE), 1, true);
@@ -150,7 +161,7 @@ mod tests {
 
     #[test]
     fn syntax_distances_cross_poc_lsb_wrap() {
-        let mut refs = References::new(3, false);
+        let mut refs = References::new(3, false, crate::headers::POC_BITS);
         refs.begin(plan(0, SlotMask::ALL), 252, false);
         refs.commit(252);
         refs.begin(plan(0, SlotMask::only(1)), 254, true);
@@ -162,7 +173,7 @@ mod tests {
     #[test]
     fn the_second_reference_stays_listed_and_is_active_when_planned() {
         let second_slot = nc_encoder::long_term_slot(1);
-        let mut refs = References::new(1, true);
+        let mut refs = References::new(1, true, crate::headers::POC_BITS);
         // A key refreshes every slot, the second reference's too.
         refs.begin(plan(0, SlotMask::ALL), 0, false);
         refs.commit(0);

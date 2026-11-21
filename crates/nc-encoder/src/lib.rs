@@ -46,10 +46,12 @@ mod coded_groups;
 mod config;
 mod cu_pricing;
 mod decision;
+mod depth_context;
 mod effort_class;
 mod encoder;
 mod feedback;
 mod filter_effort;
+mod filter_outcome;
 mod final_stage;
 mod frame_role;
 mod held_slots;
@@ -80,8 +82,10 @@ mod presets;
 mod psy;
 mod qp_cadence;
 mod quality_cap;
+mod quarter_predict;
 mod random_decisions;
 mod rate_control;
+mod rate_trim;
 mod rate_window;
 mod rd_refine;
 mod references;
@@ -98,6 +102,7 @@ mod shape;
 mod skip_budget;
 mod source_scale;
 pub mod spatial;
+mod split_selector;
 mod startup_lookahead;
 mod still_camera;
 mod still_plan;
@@ -109,6 +114,7 @@ pub mod symbol_cost;
 mod threshold_control;
 mod timeline;
 mod trellis;
+pub mod undo_journal;
 mod work_gate;
 mod zero_residual;
 
@@ -116,7 +122,7 @@ pub use backend::{
     BlockDecision, CodecBackend, DEFAULT_LOOP_FILTER_REACH, FinalCandidate, FramePlan, FrameType,
     PredictionMode, ReferenceChoice, SpatialLayerFrame,
 };
-pub use block_error::{block_sse, quadrant_sse};
+pub use block_error::{block_sse, block_sse_rect, quadrant_sse};
 pub use cdef_model::{
     CDEF_MODEL_MAX_Q, CDEF_PROBE_CHROMA, CDEF_PROBE_LUMA, cdef_probe_candidates,
     cdef_probe_luma_refinement, cdef_strengths_from_q,
@@ -134,8 +140,12 @@ pub use encoder::{
     validate_params,
 };
 pub use feedback::ReferencedFrames;
-pub use filter_effort::{CdefEffort, FilterEffort};
-pub use frame_role::{FRAME_PARAM_SPECS, FrameRole, NONBASE_PREFIX};
+pub use filter_effort::{CdefEffort, FilterEffort, UsageGate, merge_skips};
+pub use filter_outcome::{
+    FilterOutcome, FilterOutcomeStats, FilterTool, Given, OutcomeRole, OutcomeTracker, QUIET_SHARE,
+    Tally,
+};
+pub use frame_role::{FRAME_PARAM_SPECS, FrameRole, KEY_PREFIX, NONBASE_PREFIX};
 pub use held_slots::{HeldSlots, scaled_reference_allowed};
 pub use hold::holds_frames;
 pub use intra_candidates::{
@@ -163,9 +173,12 @@ pub use pre_tx_skip::{QuantizerBand, pre_tx_skip_score, pre_tx_skips};
 pub use presets::{PresetError, Speed, preset_params, speeds};
 pub use psy::{ac_energy, psy_penalty};
 pub use random_decisions::DebugRng;
+pub use rate_trim::{
+    RateTrim, dequantized_removal_sse, level_removal_sse, trim_levels, trim_trailing_ones,
+};
 pub use rd_refine::{RdWalk, rd_refine_vector};
 pub use refresh::{IntraRefresh, MIN_REFRESH_PERIOD, RefreshRegion, RefreshWindow};
-pub use second_reference::{second_reference_enabled, uses_long_term_slot};
+pub use second_reference::{holds_second_reference, second_reference_enabled, uses_long_term_slot};
 pub use shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 pub use still_camera::still_camera_params;
 pub use still_skip::{

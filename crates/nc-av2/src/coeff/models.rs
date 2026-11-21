@@ -187,6 +187,11 @@ pub(super) fn lossless_inter_tx_type<C: SymbolCoder>(
 
 /// Base symbol. Luma models are per transform size; chroma models are shared
 /// by all sizes. The last coefficient has its own (zero-free) families.
+#[allow(
+    clippy::inline_always,
+    reason = "specialize the model families for the last, plain and TCQ coefficient walks"
+)]
+#[inline(always)]
 pub(super) fn base<C: SymbolCoder>(
     coder: &mut C,
     symbol: usize,

@@ -111,6 +111,11 @@ def test_only_a_change_to_the_page_runs_the_chromium_page_tests():
     assert not land_scope.changes_page("crate", "crates/nc-vvc/src/lib.rs")
     assert not land_scope.changes_page("crate", "crates/nc-dsp/src/x86/cdef.rs")
     assert not land_scope.changes_page("docs", "docs/PROCEDURES.md")
+    # the gate's other files re-run every other check, not the page tests
+    assert not land_scope.changes_page("gate", "tools/dev/land.sh")
+    assert not land_scope.changes_page("gate", "tools/ci/check.sh")
+    assert land_scope.changes_page("gate", "tools/ci/browser_smoke.sh")
+    assert land_scope.changes_page("gate", "tools/web/build.sh")
 
 
 def test_the_plan_names_the_directly_touched_crates_for_their_unit_tests():

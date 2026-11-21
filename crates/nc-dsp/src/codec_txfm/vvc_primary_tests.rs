@@ -85,7 +85,10 @@ const CASES: &[((usize, usize), [VvcTransformKind; 2], u64)] = &[
 ];
 #[test]
 fn primary_matches_reference_bases_scaling_clipping_and_zero_out() {
-    for dsp in [Dsp::new(), Dsp::with_isa(crate::Isa::Scalar).unwrap()] {
+    for dsp in [
+        Box::new(Dsp::new()),
+        Box::new(Dsp::with_isa(crate::Isa::Scalar).unwrap()),
+    ] {
         for &(size, kinds, expected) in CASES {
             let length = size.0 * size.1;
             let mut digest = FNV1A_OFFSET;

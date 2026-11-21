@@ -63,6 +63,25 @@ impl TxfmContexts {
         self.left[row..(row + side_mi).min(SB_MI)].fill(side);
     }
 
+    /// Note the contexts above and left of the `side_mi` x `side_mi` units
+    /// from (`mi_col`, `mi_row`) in `saved` (a coding trial).
+    pub fn save(&self, mi_col: usize, mi_row: usize, side_mi: usize, saved: &mut Vec<u8>) {
+        let end = (mi_col + side_mi).min(self.above.len());
+        let row = mi_row % SB_MI;
+        saved.clear();
+        saved.extend_from_slice(&self.above[mi_col..end]);
+        saved.extend_from_slice(&self.left[row..(row + side_mi).min(SB_MI)]);
+    }
+
+    /// Put back what [`Self::save`] noted of the same units.
+    pub fn restore(&mut self, mi_col: usize, mi_row: usize, side_mi: usize, saved: &[u8]) {
+        let end = (mi_col + side_mi).min(self.above.len());
+        let row = mi_row % SB_MI;
+        let (above, left) = saved.split_at(end - mi_col);
+        self.above[mi_col..end].copy_from_slice(above);
+        self.left[row..(row + side_mi).min(SB_MI)].copy_from_slice(left);
+    }
+
     /// Width of the transform stored above 4x4 column `mi_col`.
     pub(crate) fn above(&self, mi_col: usize) -> u8 {
         self.above[mi_col]

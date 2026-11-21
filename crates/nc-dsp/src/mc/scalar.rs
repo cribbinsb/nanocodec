@@ -49,6 +49,7 @@ pub(crate) fn mc_fns() -> McFns {
         vvc_luma: separable_family::<VvcLumaTaps, 8>(),
         vvc_affine_luma: separable_family::<VvcAffineLumaTaps, 8>(),
         vvc_chroma: separable_family::<VvcChromaTaps, 4>(),
+        vp9: crate::vp9_mc_simd::families(crate::Isa::Scalar),
         h264_phases: None,
         av1_mixed: None,
     }
@@ -587,6 +588,9 @@ mod tests {
             Filter::VvcLuma,
             Filter::VvcAffineLuma,
             Filter::VvcChroma,
+            Filter::Vp9,
+            Filter::Vp9Smooth,
+            Filter::Vp9Sharp,
         ] {
             for fx in 0..filter.positions() {
                 for fy in 0..filter.positions() {

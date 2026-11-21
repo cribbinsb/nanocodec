@@ -124,7 +124,7 @@ const EOB8: [u16; 64] = nc_dsp::eob_table(&SCAN8);
 const EOB16: [u16; 256] = nc_dsp::eob_table(&SCAN16);
 const EOB32: [u16; 1024] = nc_dsp::eob_table(&SCAN32);
 
-fn eob_table_of(tx: TxSize) -> &'static [u16] {
+pub(crate) fn eob_table_of(tx: TxSize) -> &'static [u16] {
     match tx {
         TxSize::Tx4 => &EOB4,
         TxSize::Tx8 => &EOB8,
@@ -137,7 +137,8 @@ fn eob_table_of(tx: TxSize) -> &'static [u16] {
 /// past the scan index of the last nonzero coefficient, zero if there is
 /// none (nc-dsp's shared end-of-block kernel).
 pub(super) fn end_of_block(dsp: &Dsp, coefficients: &[i32], tx: TxSize) -> usize {
-    end_and_magnitude_bits(dsp, coefficients, tx).0
+    let table = eob_table_of(tx);
+    dsp.last_nonzero_wide(&coefficients[..table.len()], table)
 }
 
 /// [`end_of_block`] of quantizer output `coefficients` holding exactly

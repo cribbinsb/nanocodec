@@ -39,6 +39,8 @@ use nc_dsp::{BlockSize, Dsp, Residual16};
 use nc_encoder::symbol_cost::symbol_bits;
 use nc_encoder::{DebugRng, FlatGate, IntraModeSet, residual_quantises_to_zero, with_neighbours};
 
+mod node_trial;
+
 /// `intra_inter` CDFs by context (AVM `default_intra_inter_cdf`).
 pub(crate) const IS_INTER: [[u16; 2]; 4] = [[31246, 0], [18387, 0], [22313, 0], [4972, 0]];
 /// AVM `default_single_ref_cdf[ctx][0]` (inverse): whether a block of a
@@ -95,6 +97,16 @@ pub(crate) const LOSSLESS_TX4_SYMBOL: usize = 0;
 const MAX_SIZE_GROUP: u32 = 3;
 /// The luma plane's index in per-plane arrays.
 const LUMA: usize = 0;
+/// The intra modes the final decision stage's screen tries
+/// ([`BlockCoder::final_intra_screen`]): the smooth and non-directional
+/// ones, cheapest to predict.
+const FINAL_SCREEN_MODES: [Mode; 5] = [
+    Mode::Dc,
+    Mode::Smooth,
+    Mode::SmoothVertical,
+    Mode::SmoothHorizontal,
+    Mode::Paeth,
+];
 /// The chroma planes' indices in per-plane arrays.
 const CHROMA: [usize; 2] = [1, 2];
 /// Side (log2) of one 4×4 mode-info unit.
@@ -778,10 +790,15 @@ impl Quantizer {
             output.without_residual(&self.dsp, block, &source, prediction, prediction_sse);
             return Ok(LevelStats::EMPTY);
         }
-        let nonzero = transform::quantize(&self.dsp, tx, coefficients, (qindex, rounding), levels);
-        // The plain end of block (from the quantizer's count, or one raster
-        // pass); the trellis and trimming start from it and return theirs.
-        let plain_eob = coeff::quantized_end_of_block(&self.dsp, levels, tx, nonzero);
+        // The trellis and trimming start from the plain end of block and
+        // return their own if they alter the levels.
+        let plain_eob = if cfg!(target_arch = "aarch64") {
+            transform::quantize_eob(&self.dsp, tx, coefficients, (qindex, rounding), levels)
+        } else {
+            let nonzero =
+                transform::quantize(&self.dsp, tx, coefficients, (qindex, rounding), levels);
+            coeff::quantized_end_of_block(&self.dsp, levels, tx, nonzero)
+        };
         // TCQ luma takes the rate source; the trellis, trimming and parity
         // hiding see plain levels only.
         let (tcq_rate, rate) = match tcq {
@@ -1051,6 +1068,10 @@ pub(crate) struct BlockCoder {
     /// Intra edge arrays, reused across predictions.
     edges: Av2IntraEdges,
     tx_reconstruction: Vec<u8>,
+    /// The final decision stage's last intra screen: the winner's luma
+    /// prediction and the block it predicts.
+    final_intra: Vec<u8>,
+    final_intra_block: Option<((usize, usize), usize)>,
     /// Levels of one ranked intra candidate's transform.
     rank_levels: Vec<i32>,
     ranked_luma: RankedLuma,
@@ -1069,6 +1090,10 @@ pub(crate) struct BlockCoder {
     ccso_params: CcsoParams,
     /// The symbols deferred until the filters are chosen, in coding order.
     deferred: Vec<DeferredSymbol>,
+    /// The open RD partition trials ([`Self::begin_node_trial`]).
+    node_trials: node_trial::NodeTrials,
+    /// The block last coded is an inter block without residual.
+    last_inter_skipped: bool,
 }
 
 /// A symbol the block coder defers until the frame's filters are chosen.
@@ -1155,6 +1180,8 @@ impl BlockCoder {
             type_best_pixels: vec![0; MAX_PLANE_AREA],
             edges: Av2IntraEdges::new(),
             tx_reconstruction: vec![0; MAX_PLANE_AREA],
+            final_intra: Vec::new(),
+            final_intra_block: None,
             rank_levels: Vec::new(),
             ranked_luma: RankedLuma::default(),
             pool: Vec::new(),
@@ -1164,6 +1191,8 @@ impl BlockCoder {
             ccso_flags: UnitFlags::new(width, height),
             ccso_params: CcsoParams::OFF,
             deferred: Vec::new(),
+            node_trials: node_trial::NodeTrials::default(),
+            last_inter_skipped: false,
         })
     }
 
@@ -1394,6 +1423,7 @@ impl BlockCoder {
         let coded =
             self.finish_intra_coding(coded, layout, (x, y), (luma, chroma), (source, recon))?;
         self.write_intra(&coded, layout, (x, y), modes, (luma, chroma))?;
+        self.last_inter_skipped = false;
         self.commit_delta_q(size, false);
         if !in_recon {
             store_block(&self.quantizer.dsp, recon, (x, y), size, &coded);
@@ -1811,10 +1841,25 @@ impl BlockCoder {
         size: usize,
         mode: Mode,
     ) -> (f64, Option<(LevelStats, u64)>) {
-        let block_log2 = size.ilog2();
-        let tx = Layout::lossy(block_log2, false).tx(LUMA);
+        self.predict_intra_luma(recon, (x, y), size, mode);
+        let (distortion, bits, stats) = self.tx_prediction_cost(source, (x, y), size, false);
+        (
+            distortion as f64 + self.lambda() * bits,
+            stats.map(|s| (s, distortion)),
+        )
+    }
+
+    /// `mode`'s luma prediction of the block from `recon` as one transform
+    /// (the unsplit layout) into `tx_prediction`.
+    fn predict_intra_luma(
+        &mut self,
+        recon: &Picture,
+        (x, y): (usize, usize),
+        size: usize,
+        mode: Mode,
+    ) {
+        let tx = Layout::lossy(size.ilog2(), false).tx(LUMA);
         let side = tx.width();
-        let area = side * side;
         let target = IntraTarget {
             plane: LUMA,
             block: (x, y),
@@ -1822,7 +1867,6 @@ impl BlockCoder {
             tx: (x, y),
             side,
         };
-        let predicted = &mut self.tx_prediction[..area];
         intra_edges::predict(
             recon.plane(PlaneIndex::Y),
             &self.state,
@@ -1830,8 +1874,27 @@ impl BlockCoder {
             mode,
             &self.quantizer.dsp,
             &mut self.edges,
-            predicted,
+            &mut self.tx_prediction[..side * side],
         );
+    }
+
+    /// The reconstruction's squared error and the estimated coefficient
+    /// bits of coding the luma prediction in `tx_prediction` of the block
+    /// (inter or intra: `is_inter`) as one DCT of the unsplit layout, under
+    /// the block's real coefficient contexts, with its level statistics
+    /// (`None`: not codable). Codes nothing.
+    fn tx_prediction_cost(
+        &mut self,
+        source: &Picture,
+        (x, y): (usize, usize),
+        size: usize,
+        is_inter: bool,
+    ) -> (u64, f64, Option<LevelStats>) {
+        let block_log2 = size.ilog2();
+        let tx = Layout::lossy(block_log2, false).tx(LUMA);
+        let side = tx.width();
+        let area = side * side;
+        let predicted = &self.tx_prediction[..area];
         self.rank_levels.resize(tx.coded_len(), 0);
         let reconstructed = &mut self.tx_reconstruction[..area];
         let coded = self.quantizer.code(
@@ -1847,9 +1910,9 @@ impl BlockCoder {
         );
         let context = self
             .state
-            .coeff_context(LUMA, (x, y), tx, block_log2, false, false);
+            .coeff_context(LUMA, (x, y), tx, block_log2, is_inter, false);
         let (Ok(stats), Ok(context)) = (coded, context) else {
-            return (f64::INFINITY, None);
+            return (u64::MAX, f64::INFINITY, None);
         };
         let distortion = sse(
             &self.quantizer.dsp,
@@ -1872,12 +1935,90 @@ impl BlockCoder {
         );
         let bits = self.writer.finish_estimate();
         if written.is_err() {
-            return (f64::INFINITY, None);
+            return (u64::MAX, f64::INFINITY, None);
         }
-        (
-            distortion as f64 + self.lambda() * bits,
-            Some((stats, distortion)),
-        )
+        (distortion, bits, Some(stats))
+    }
+
+    /// The final decision stage's intra screen of the block
+    /// (`CodecBackend::final_intra_screen`): the luma squared error of the
+    /// best of [`FINAL_SCREEN_MODES`], each predicted from `recon` as one
+    /// transform. The winner's prediction is kept for
+    /// [`Self::final_luma_cost`].
+    pub fn final_intra_screen(
+        &mut self,
+        (source, recon): (&Picture, &Picture),
+        (x, y): (usize, usize),
+        size: usize,
+    ) -> u64 {
+        let side = Layout::lossy(size.ilog2(), false).tx(LUMA).width();
+        let area = side * side;
+        let mut best = u64::MAX;
+        for mode in FINAL_SCREEN_MODES {
+            self.predict_intra_luma(recon, (x, y), size, mode);
+            let error = sse(
+                &self.quantizer.dsp,
+                source,
+                PlaneIndex::Y,
+                (x, y),
+                side,
+                &self.tx_prediction[..area],
+            );
+            if error < best {
+                best = error;
+                self.final_intra.clear();
+                self.final_intra
+                    .extend_from_slice(&self.tx_prediction[..area]);
+            }
+        }
+        self.final_intra_block = Some(((x, y), size));
+        best
+    }
+
+    /// The final decision stage's coded luma cost of the block
+    /// (`CodecBackend::final_coded_cost`) without its mode bits: the
+    /// squared error and the coefficient bits of its luma coded as one
+    /// transform, predicted from `reference` at `mv` or (`None`) by the
+    /// last [`Self::final_intra_screen`] of this block (`None` without one).
+    /// Codes nothing; the inter prediction is the coder's own (the frame's
+    /// fixed filter, else the filter of uncoded modes).
+    pub fn final_luma_cost(
+        &mut self,
+        source: &Picture,
+        (x, y): (usize, usize),
+        size: usize,
+        inter: Option<(&Picture, (i32, i32))>,
+    ) -> Option<(u64, f64)> {
+        let side = Layout::lossy(size.ilog2(), false).tx(LUMA).width();
+        let area = side * side;
+        if let Some((reference, mv)) = inter {
+            let filter = match self.options.filter {
+                FrameFilter::Fixed(filter) => filter,
+                FrameFilter::Switchable => interp_filter::UNCODED,
+            };
+            let key = CachedLuma {
+                position: (x, y),
+                size,
+                mv,
+                filter,
+                reference: self.reference,
+            };
+            if self.cached_luma.is_some_and(|(cached, _)| cached == key) {
+                self.tx_prediction[..area].copy_from_slice(&self.cached_luma_samples[..area]);
+            } else {
+                self.predict(reference, filter, (x, y), size, mv, &[PlaneIndex::Y])
+                    .ok()?;
+                self.tx_prediction[..area].copy_from_slice(&self.prediction[LUMA][..area]);
+            }
+        } else {
+            if self.final_intra_block != Some(((x, y), size)) {
+                return None;
+            }
+            self.tx_prediction[..area].copy_from_slice(&self.final_intra[..area]);
+        }
+        let (distortion, bits, stats) =
+            self.tx_prediction_cost(source, (x, y), size, inter.is_some());
+        stats.map(|_| (distortion, bits))
     }
 
     /// SATD of `mode`'s whole-block prediction of `plane` (one transform of
@@ -2400,6 +2541,7 @@ impl BlockCoder {
             MotionSyntax::Written,
         )?;
         let skip = chosen.is_none();
+        self.last_inter_skipped = skip;
         self.commit_delta_q(size, skip);
         let layout = chosen.as_ref().map_or_else(
             || skipped_layout(block_log2, self.lossless()),
@@ -3921,6 +4063,19 @@ impl BlockCoder {
             ),
         };
         self.cdef_params
+    }
+
+    /// Each filter block's CDEF strengths after [`Self::cdef`] (`None`:
+    /// passed over), whether they came from the search (not the model or
+    /// random decisions), and each block's share of 8×8 units CDEF filters
+    /// (0: the search had nothing to measure there).
+    pub fn cdef_choices(&self) -> (Vec<Option<cdef::StrengthSet>>, bool, Vec<f32>) {
+        let searched = self.random.is_none() && matches!(self.options.cdef, CdefMode::Search(_));
+        (
+            self.cdef_indices.chosen_sets(&self.cdef_params),
+            searched,
+            self.cdef_indices.filtered_shares(&self.state),
+        )
     }
 
     /// Choose this tile's CCSO filters ([`ccso_search::choose`], or random

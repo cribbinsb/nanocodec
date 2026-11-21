@@ -35,6 +35,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import tempdirs
 from .clips import Clip
 from .config import Paths
 from .conformance import check_stream
@@ -92,7 +93,8 @@ def measure(encoders: list[EncoderAdapter], clip: Clip, structure: CodingStructu
     runs = max(runs, MIN_TIMED_RUNS)
     adapters = {enc.name: enc for enc in encoders}
     check_disk(paths.work)
-    scratch = Path(tempfile.mkdtemp(prefix="nc-speed-", dir=_fast_tmp()))
+    scratch = Path(tempfile.mkdtemp(prefix=tempdirs.prefix("speed"),
+                                    dir=_fast_tmp() or tempdirs.root()))
     validation: Path | None = None
     try:
         validation = Path(tempfile.mkdtemp(prefix="nc-speed-check-", dir=paths.work))
@@ -241,7 +243,7 @@ def _perf_usable() -> bool:
 
 
 def _perf_counters(cmd: list[str]) -> tuple[float | None, float | None]:
-    with tempfile.NamedTemporaryFile(mode="r", suffix=".csv") as out:
+    with tempdirs.named_file("perf", mode="r", suffix=".csv") as out:
         subprocess.run(["perf", "stat", "-x,", "-e", "instructions,cycles", "-o", out.name,
                         "--", *cmd], capture_output=True, check=True)
         counts: dict[str, float] = {}

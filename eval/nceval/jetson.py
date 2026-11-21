@@ -1,7 +1,7 @@
 """Jetson CPU cost of encoder settings: one build per commit, hardware counters per setting.
 
 The tuner's finalists (nceval.tune_pool) are timed on the Jetson, the
-primary CPU platform (weighted 2:1 over x86). Settings differ only in
+ARM CPU platform (weighted equally with x86). Settings differ only in
 `--param` values, so one release build of the study's commit serves them
 all. Builds share chart refresh's layout (tools/dev/chart_refresh.py:
 BUILDS_ROOT/<commit>/nanocodec, finished when the COMMIT marker holds the
@@ -20,10 +20,10 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
-import tempfile
 from pathlib import Path
 from statistics import geometric_mean
 
+from . import tempdirs
 from .codecs import Codec
 from .localenv import require
 
@@ -127,7 +127,7 @@ def cost(commit: str, codec: Codec, quantizer: int,
     """{setting: {"instructions", "cycles"}} as ratios to the first setting
     (geometric mean over CLIPS); setting names must be plain words."""
     binary = ensure_build(commit)
-    with tempfile.TemporaryDirectory() as local:
+    with tempdirs.temp_dir("jetson") as local:
         for name, values in settings.items():
             Path(local, f"{name}.params").write_text(
                 "".join(f"{k} = {v!r}\n" for k, v in sorted(values.items())))

@@ -364,6 +364,35 @@ pub(crate) fn prediction(
     out
 }
 
+/// The predictions of transform unit `tu` of `cu` in each of `modes`
+/// (row-major, the unit's samples) into `out`, one buffer per mode, from
+/// one gathering of the references (the final decision stage's intra
+/// screen tries several modes per unit).
+pub(crate) fn predictions_into(
+    dsp: &Dsp,
+    picture: &Picture,
+    grid: Option<&MotionGrid>,
+    (tu, cu): (&Block, &Block),
+    modes: &[u8],
+    out: &mut [Vec<u8>],
+) {
+    let side = tu.size();
+    for buffer in out.iter_mut() {
+        buffer.resize(side * side, 0);
+    }
+    if side > SQUARE_KERNEL_MAX_SIDE {
+        let references = LargeReferences::new(picture, grid, PlaneIndex::Y, tu, cu);
+        for (&mode, buffer) in modes.iter().zip(out) {
+            references.predict(dsp, mode, buffer);
+        }
+    } else {
+        let references = References::new(picture, grid, PlaneIndex::Y, tu, cu);
+        for (&mode, buffer) in modes.iter().zip(out) {
+            references.predict(dsp, mode, buffer);
+        }
+    }
+}
+
 pub(crate) fn supported(mode: u8) -> Result<u8> {
     if mode < 67 {
         Ok(mode)

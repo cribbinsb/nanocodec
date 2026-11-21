@@ -91,6 +91,13 @@ unsafe fn horiz_ptr_acc<const N: usize, S: SimdSample, L: I16Lanes>(
     round: i32,
     shift: u32,
 ) -> L {
+    if L::FAST_HORIZ_EXT && (N == 4 || N == 8) {
+        // SAFETY: caller validated `p` covers `L::LANES + N - 1` readable samples,
+        // so `p[0..L::LANES]` and `p[N - 1..L::LANES + N - 1]` are both in bounds.
+        let (s0, s_last) = unsafe { (S::load_lanes::<L>(p), S::load_lanes::<L>(p.add(N - 1))) };
+        let acc = L::horiz_taps_acc::<N>(s0, s_last, six_x, cx);
+        return L::acc_round_shift_narrow(acc, round, shift);
+    }
     let mut acc = L::acc_zero();
     // SAFETY: caller validated `p` covers `L::LANES + N - 1` readable samples.
     unsafe {

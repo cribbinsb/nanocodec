@@ -21,6 +21,7 @@ use nc_encoder::Mv;
 
 use crate::mbinfo::MbPartition;
 use crate::mc::McKernels;
+use crate::params::MvRange;
 
 /// Estimated `mb_type` (+ `sub_mb_type`) bits per shape.
 const SHAPE_BITS: [f32; 4] = [1.0, 10.0, 10.0, 20.0];
@@ -46,6 +47,9 @@ pub struct SplitSearch {
     /// vector was already refined by the engine for the whole macroblock,
     /// so skipping saves the search where the quadrant agrees with it.
     pub refine_mv16: bool,
+    /// The vectors the stream's level allows: a quadrant never takes one
+    /// past it.
+    pub range: MvRange,
 }
 /// Estimated bits of one `mvd` component (UEG3 binarization with sign):
 /// `|d| + 1` prefix bins below `uCoff` 9, else 9 prefix bins and a 3rd-order
@@ -184,7 +188,11 @@ pub fn choose_partition(
         cache,
     };
     let cost_of = |costs: &mut QuadrantCosts<'_>, quadrants: &[usize], mv: Mv| {
-        costs.satd_of(quadrants, mv) + lambda * vector_bits(mv, pred)
+        if search.range.contains(i32::from(mv.x), i32::from(mv.y)) {
+            costs.satd_of(quadrants, mv) + lambda * vector_bits(mv, pred)
+        } else {
+            f32::INFINITY
+        }
     };
 
     // Best vector of each quadrant: 16x16 or own search vector, refined.

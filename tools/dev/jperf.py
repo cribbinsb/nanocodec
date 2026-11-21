@@ -31,10 +31,14 @@ import os
 import platform
 import struct
 import sys
+import time
+from dataclasses import dataclass
 
 # perf_event_open syscall numbers.
 SYSCALLS = {"aarch64": 241, "x86_64": 298}
+#: perf_event_attr types: the generic hardware events, and a CPU's own (raw) event numbers.
 PERF_TYPE_HARDWARE = 0
+PERF_TYPE_RAW = 4
 HW_CPU_CYCLES = 0
 HW_INSTRUCTIONS = 1
 ATTR_SIZE = 128
@@ -44,49 +48,91 @@ INHERIT = 1 << 1
 EXCLUDE_KERNEL = 1 << 5
 EXCLUDE_HV = 1 << 6
 ENABLE_ON_EXEC = 1 << 12
+# perf_event_attr read_format bits: a read also returns how long the event was enabled
+# and how long it ran, which differ when the kernel multiplexes more events than the
+# PMU has counters (the count is then partial, so it is dropped).
+FORMAT_TOTAL_TIME_ENABLED = 1 << 0
+FORMAT_TOTAL_TIME_RUNNING = 1 << 1
+READ_FORMAT = FORMAT_TOTAL_TIME_ENABLED | FORMAT_TOTAL_TIME_RUNNING
+#: (type, config) of the two counts this tool prints.
+INSTRUCTIONS = (PERF_TYPE_HARDWARE, HW_INSTRUCTIONS)
+CYCLES = (PERF_TYPE_HARDWARE, HW_CPU_CYCLES)
 
 libc = ctypes.CDLL(None, use_errno=True)
 
 
-def event_attr(config: int) -> ctypes.Array:
+@dataclass
+class Run:
+    """One counted run: each event's user-space count (None where the kernel refused
+    to open it, e.g. a VM without that PMU event), the child's CPU time and wall time."""
+    counts: dict[str, int | None]  # None: not offered here, or multiplexed
+    user_s: float
+    system_s: float
+    wall_s: float
+
+
+def event_attr(kind: int, config: int) -> ctypes.Array:
     """A perf_event_attr counting `config` in user space of the process and
     its children, from its exec on."""
     flags = DISABLED | INHERIT | EXCLUDE_KERNEL | EXCLUDE_HV | ENABLE_ON_EXEC
-    head = struct.pack("IIQQQQQ", PERF_TYPE_HARDWARE, ATTR_SIZE, config, 0, 0, 0, flags)
+    head = struct.pack("IIQQQQQ", kind, ATTR_SIZE, config, 0, 0, READ_FORMAT, flags)
     return ctypes.create_string_buffer(head + bytes(ATTR_SIZE - len(head)), ATTR_SIZE)
 
 
-def count(argv: list[str], core: int) -> tuple[int, int]:
-    """(instructions, cycles) of one run of `argv` pinned to `core`."""
+def measure(argv: list[str], core: int, events: dict[str, tuple[int, int]]) -> Run:
+    """One run of `argv` pinned to `core`, its output discarded, with `events`
+    ({name: (type, config)}) counted where the kernel offers them."""
     syscall = SYSCALLS[platform.machine()]
     ready_r, ready_w = os.pipe()
     pid = os.fork()
     if pid == 0:
-        # The child waits until the counters are attached, then execs.
-        os.close(ready_w)
-        os.read(ready_r, 1)
-        os.sched_setaffinity(0, {core})
-        null = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(null, 1)
-        os.dup2(null, 2)
-        os.execv(argv[0], argv)
+        # The child waits until the counters are attached, then execs; if it cannot, it
+        # exits (never returning into the caller's code as a second process).
+        try:
+            os.close(ready_w)
+            os.read(ready_r, 1)
+            os.sched_setaffinity(0, {core})
+            null = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(null, 1)
+            os.dup2(null, 2)
+            os.execv(argv[0], argv)
+        finally:
+            os._exit(127)
     os.close(ready_r)
-    fds = []
-    for config in (HW_INSTRUCTIONS, HW_CPU_CYCLES):
-        fd = libc.syscall(syscall, event_attr(config), pid, -1, -1, 0)
-        if fd < 0:
-            sys.exit(f"jperf: perf_event_open failed ({os.strerror(ctypes.get_errno())}); "
-                     "needs /proc/sys/kernel/perf_event_paranoid <= 2 (the Jetson has 2)")
-        fds.append(fd)
+    fds: dict[str, int | None] = {}
+    for name, (kind, config) in events.items():
+        fd = libc.syscall(syscall, event_attr(kind, config), pid, -1, -1, 0)
+        fds[name] = fd if fd >= 0 else None
+    started = time.perf_counter()
     os.write(ready_w, b"x")
     os.close(ready_w)
-    _, status = os.waitpid(pid, 0)
+    _, status, usage = os.wait4(pid, 0)
+    wall = time.perf_counter() - started
     if os.waitstatus_to_exitcode(status) != 0:
-        sys.exit(f"jperf: {' '.join(argv)} failed")
-    values = [struct.unpack("Q", os.read(fd, 8))[0] for fd in fds]
-    for fd in fds:
-        os.close(fd)
-    return values[0], values[1]
+        raise RuntimeError(f"jperf: {' '.join(argv)} failed")
+    counts = {name: read_count(fd) if fd is not None else None for name, fd in fds.items()}
+    for fd in fds.values():
+        if fd is not None:
+            os.close(fd)
+    return Run(counts, usage.ru_utime, usage.ru_stime, wall)
+
+
+def read_count(fd: int) -> int | None:
+    """An event's count, or None when it did not run for the whole of its time."""
+    value, enabled, running = struct.unpack("QQQ", os.read(fd, 24))
+    return value if running == enabled else None
+
+
+def count(argv: list[str], core: int) -> tuple[int, int]:
+    """(instructions, cycles) of one run of `argv` pinned to `core`."""
+    try:
+        run = measure(argv, core, {"instructions": INSTRUCTIONS, "cycles": CYCLES})
+    except RuntimeError as error:
+        sys.exit(str(error))
+    if None in run.counts.values():
+        sys.exit("jperf: perf_event_open failed; needs /proc/sys/kernel/perf_event_paranoid "
+                 "<= 2 (the Jetson has 2)")
+    return run.counts["instructions"], run.counts["cycles"]
 
 
 def main() -> None:

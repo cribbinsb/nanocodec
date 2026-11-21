@@ -156,6 +156,7 @@ pub struct Dsp {
     constant_add: crate::constant_add::AddFn,
     end_of_block: crate::end_of_block::EobFn,
     end_of_block_wide: crate::end_of_block::WideEobFn,
+    last_nonzero_wide: crate::end_of_block::WideEobFn,
     intra_estimate: crate::intra_estimate::StatsFn,
     analysis_stats: crate::analysis_stats::StatsFn,
     copies: crate::BlockCopy,
@@ -295,7 +296,8 @@ impl Dsp {
             cfl_sse: crate::cfl_sse::kernel(isa),
             constant_add: crate::constant_add::kernel(isa),
             end_of_block: crate::end_of_block::kernel(isa),
-            end_of_block_wide: crate::end_of_block::wide_kernel(isa),
+            end_of_block_wide: crate::end_of_block::wide_kernel::<true>(isa),
+            last_nonzero_wide: crate::end_of_block::wide_kernel::<false>(isa),
             intra_estimate: crate::intra_estimate::kernel(isa),
             analysis_stats: crate::analysis_stats::kernel(isa),
             copies: crate::BlockCopy::with_isa(isa).expect("supported copy ISA"),
@@ -1985,6 +1987,20 @@ impl Dsp {
         assert_eq!(levels.len(), table.len(), "end-of-block table length");
         // SAFETY: as for `end_of_block`.
         unsafe { (self.end_of_block_wide)(levels, table) }
+    }
+
+    /// Scan position plus one of the last nonzero 32-bit level, or zero
+    /// when every level is zero. `table` maps raster positions to scan
+    /// positions plus one.
+    ///
+    /// # Panics
+    ///
+    /// If the slices differ in length.
+    #[must_use]
+    pub fn last_nonzero_wide(&self, levels: &[i32], table: &[u16]) -> usize {
+        assert_eq!(levels.len(), table.len(), "end-of-block table length");
+        // SAFETY: the dispatch table contains only kernels for a supported ISA.
+        unsafe { (self.last_nonzero_wide)(levels, table).0 }
     }
 
     /// The engine's directional intra estimate statistics of the
@@ -4097,11 +4113,49 @@ impl Dsp {
             out.len() >= coeffs.len(),
             "quantise output shorter than input"
         );
-        let dc_offset = (q.dc_step * dc_rounding_q7) as u32;
-        let mut q = txfm::QuantTerms::from(q);
-        q.dc.offset = dc_offset;
+        let q = txfm::QuantTerms::with_dc_rounding(q, dc_rounding_q7);
         // SAFETY: as for `av1_forward_dct`; `out` covers `coeffs`.
         unsafe { (self.txfm.quantize_from_wide)(coeffs, &q, out) }
+    }
+
+    /// Quantize 32-bit coefficients and return the end of block. `scan`
+    /// is a raster-to-scan-position-plus-one table with DC at position one.
+    ///
+    /// # Panics
+    ///
+    /// If the slices differ in length, the scan does not start with DC, or
+    /// a quantizer step is nonpositive.
+    pub fn quantize_wide_eob(
+        &self,
+        coeffs: &[i32],
+        q: &Av1Quantizer,
+        dc_rounding_q7: i32,
+        out: &mut [i32],
+        scan: &[u16],
+    ) -> usize {
+        assert_eq!(out.len(), coeffs.len(), "quantise output length");
+        assert_eq!(scan.len(), coeffs.len(), "scan table length");
+        assert!(scan.first().is_none_or(|&dc| dc == 1));
+        assert!(
+            q.dc_step > 0 && q.ac_step > 0,
+            "quantiser steps must be positive"
+        );
+        let q = txfm::QuantTerms::with_dc_rounding(q, dc_rounding_q7);
+        #[cfg(target_arch = "aarch64")]
+        if self.isa == Isa::Neon {
+            // SAFETY: the ISA and every slice's extent were checked above.
+            return unsafe { txfm::neon::quantize_wide_eob(coeffs, &q, out, scan) };
+        }
+        if self.isa == Isa::Scalar {
+            return txfm::scalar::quantize_wide_eob(coeffs, &q, out, scan);
+        }
+        // SAFETY: the selected ISA is supported, and output covers input.
+        let count = unsafe { (self.txfm.quantize_from_wide)(coeffs, &q, out) };
+        match count {
+            0 => 0,
+            1 if out[0] != 0 => 1,
+            _ => self.last_nonzero_wide(out, scan),
+        }
     }
 
     /// AV1 dequantisation (AV1 §7.12.3) of `levels` into `out`, which holds

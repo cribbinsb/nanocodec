@@ -15,15 +15,20 @@ use nc_common::{Picture, PlaneIndex};
 use nc_dsp::{Dsp, Filter};
 use nc_encoder::{
     Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType,
-    Mv, PartitionShape, PredictionMode, ReferenceChoice, ShapeSet,
+    Mv, PartitionShape, PredictionMode, ReferenceChoice, ShapeSet, holds_second_reference,
 };
 
 mod alf_search;
 mod block_qp;
+mod coded_snapshot;
 mod cu_trial;
+mod final_cost;
 mod motion_choice;
+mod node_trial;
+mod sao_search;
 
 use alf_search::{AlfSearch, AlfSearchParams, AlfSkip};
+use sao_search::{SaoSearch, SaoSearchParams};
 
 nc_encoder::param_group! {
     /// Directional intra search budget for the VVC backend.
@@ -101,17 +106,6 @@ nc_encoder::param_group! {
             "with vvc.affine_merge, try sub-block merge candidates only on CUs whose vector predicts them worse than this luma SATD per sample over √λ: lower tries more CUs, more search",
         alf: 0.0, [0.0, 1.0],
             "1 enables the luma adaptive loop filter: per CTB off, one of the 16 fixed filter sets or (vvc.alf_aps) the picture's signalled filters, chosen by squared error and rate: sharper, more filter work",
-        sao_luma_lambda_scale: 1.0, [0.25, 16.0],
-            "λ multiple for luma SAO decisions (HEVC's hevc.sao_luma_lambda_scale): higher applies fewer luma offsets (less smoothing)",
-        sao_stats_row_step: 4.0, [1.0, 4.0],
-            "sample every Nth row for SAO statistics; higher trades decision precision for speed",
-        sao_search_interval: 1.0, [1.0, 8.0],
-            "SAO types are searched on key pictures and every Nth P picture (by POC) and reused in between, offsets re-derived (HEVC's hevc.sao_search_interval; with vvc.sao_skip_unchanged, all-skip CTUs keep their last types): higher gathers fewer statistics, coarser SAO",
-        // Off, as HEVC's hevc.sao_band (no measured gain for its statistics).
-        sao_band: 0.0, [0.0, 1.0],
-            "1 evaluates SAO band offset (position search, H.266 §8.8.4.3) beside the four edge classes on searched pictures (HEVC's hevc.sao_band)",
-        sao_skip_unchanged: 0.0, [0.0, 1.0],
-            "1 switches SAO off without statistics in P-frame CTUs whose CUs are all skipped (they copy already filtered samples; HEVC's hevc.sao_skip_unchanged): faster",
         // On everywhere it tripped the worst-1% NEG guard (proxy-6 +3.6,
         // bodycam_antare_0815 +14.7%: its fast-motion P frames are coded
         // mostly intra). With the intra-dense gate (`inter_intra`), on the
@@ -268,40 +262,6 @@ const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
 /// 300: 9 -19.8%, 12 -20.4%, 15 -19.5% (docs/handoff/vvc.md, qp-cascade).
 const KEY_QP_OFFSET_AT_REFERENCE: f64 = 9.0;
 
-/// How SAO parameters are searched (`vvc.sao_*`), and the classes reused
-/// between search pictures.
-#[derive(Debug)]
-struct SaoSearch {
-    /// `vvc.sao_stats_row_step`: statistics on every Nth row.
-    row_step: usize,
-    /// `vvc.sao_skip_unchanged`: all-skip P-frame CTUs off, no statistics.
-    skip_unchanged: bool,
-    /// `vvc.sao_luma_lambda_scale`.
-    luma_lambda_scale: f32,
-    /// `vvc.sao_search_interval`: types searched every Nth P picture.
-    interval: u8,
-    /// `vvc.sao_band`: band offset is evaluated.
-    band: bool,
-    /// The types of the last searched picture, and those of the picture
-    /// being coded once it is a search picture (committed in
-    /// `commit_frame`, so a recode never sees them).
-    classes: Vec<crate::sao::CtbTypes>,
-    pending: Option<Vec<crate::sao::CtbTypes>>,
-}
-impl SaoSearch {
-    fn new(params: &VvcParams) -> Self {
-        Self {
-            row_step: params.sao_stats_row_step.round() as usize,
-            skip_unchanged: params.sao_skip_unchanged >= 0.5,
-            luma_lambda_scale: params.sao_luma_lambda_scale,
-            interval: params.sao_search_interval.round() as u8,
-            band: params.sao_band >= 0.5,
-            classes: Vec::new(),
-            pending: None,
-        }
-    }
-}
-
 /// The 16- and 32-point forward DCT: `vvc.fast_forward`'s staged rows, or
 /// exact (fully so under the trellis, which may raise a level the
 /// zero-column skip would have left zero).
@@ -379,8 +339,9 @@ pub struct VvcBackend {
     /// any: then it uses no temporal candidates.
     refresh: Option<nc_encoder::RefreshWindow>,
     inter: bool,
-    poc: u8,
-    next_poc: u8,
+    /// The picture's POC (its LSBs are coded) and the next one's.
+    poc: u16,
+    next_poc: u16,
     temporal_layers: u8,
     references: References,
     /// The reference index of the motion the engine is deciding or the CU
@@ -421,6 +382,12 @@ pub struct VvcBackend {
     /// `vvc.chroma_rd_candidates`: chroma directions given full RD (0: all).
     chroma_rd_candidates: usize,
     sao_search: SaoSearch,
+    /// The SAO decision's outcome per CTB against the last picture's types
+    /// (`nc_encoder::FilterOutcome`).
+    sao_outcome: nc_encoder::OutcomeTracker<nc_encoder::sao::CtbTypes>,
+    /// The engine's usage gate for this picture's SAO and ALF statistics
+    /// (`filter.usage_*`, `nc_encoder::UsageGate`).
+    filter_usage: Option<nc_encoder::UsageGate>,
     /// Luma direction search of intra CUs in key frames and in P frames.
     key_intra_search: crate::intra::DirectionSearch,
     inter_intra_search: InterIntraSearch,
@@ -444,18 +411,25 @@ pub struct VvcBackend {
     dep_quant_lambda: [f32; 3],
     /// `quant.trellis`: trellis quantisation of every coded transform block.
     trellis: Option<crate::trellis::TrellisQuant>,
+    /// `quant.rd_trim`: rate-aware trimming of the coded luma units' plain
+    /// levels while the trellis and dependent quantisation are off.
+    rd_trim: Option<nc_encoder::RateTrim>,
     /// Quantiser working memory, one per plane of a chroma pair (luma
     /// uses the first).
     quant_scratch: Box<[recon::QuantScratch; 2]>,
     /// Quantiser working memory of [`CodecBackend::inter_leaf_cost`], which
     /// the planner calls through a shared reference.
     planning_scratch: std::cell::RefCell<Box<recon::QuantScratch>>,
+    /// The final decision stage's last intra screen (`final_cost.rs`).
+    final_screen: final_cost::ScreenedIntra,
     /// Block-level QP (`cu_qp_delta`), once the engine enables it.
     block_qp: Option<block_qp::BlockQp>,
     /// The PPS deblocking offsets.
     deblock_offsets: crate::filter::Offsets,
     /// The open whole-CU coding trial's saved state (`cu_trial.rs`).
     cu_trial: cu_trial::CuTrial,
+    /// The partition search's open node trials (`backend/node_trial.rs`).
+    node_trials: node_trial::NodeTrials,
 }
 impl VvcParams {
     /// log2 of `vvc.ctu_size`, which must be 32 or 64.
@@ -500,8 +474,9 @@ impl VvcParams {
                 inter: self.mts_inter >= 0.5,
             }),
             large_transforms: self.large_transforms(),
-            // The backend sets it from the engine's parameters (`new`).
+            // The backend sets them from the engine's parameters (`new`).
             second_reference: false,
+            poc_bits: headers::POC_BITS,
         }
     }
 
@@ -585,13 +560,40 @@ impl VvcParams {
 /// `CodecBackend::loop_filter_reach` below).
 const VVC_LOOP_FILTER_REACH: usize = 16;
 
+/// The SPS tools `params` configure, and whether the reference picture
+/// lists hold a second reference: in flat streams only (`references.rs`):
+/// beside temporal layers the engine refuses `refs.second` and its plan
+/// steps aside, so nothing is listed for the long-term slot.
+fn sequence_tools(params: &VvcParams, config: &EncoderConfig) -> (bool, headers::Tools) {
+    let second_reference =
+        nc_encoder::uses_long_term_slot(&config.params) && config.temporal_layers == 1;
+    let tools = params
+        .tools()
+        .with_second_reference(second_reference, holds_second_reference(&config.params));
+    (second_reference, tools)
+}
+
 impl CodecBackend for VvcBackend {
+    // A long-held second reference widens the POC LSBs to 16 bits
+    // (`headers::LONG_POC_BITS`), so it reaches the engine's reference age.
+    const SECOND_REFERENCE_REACH: u64 = nc_encoder::MAX_REFERENCE_AGE - 1;
+    fn filter_outcomes(&self) -> Vec<(nc_encoder::FilterTool, nc_encoder::FilterOutcome)> {
+        [
+            (nc_encoder::FilterTool::Sao, self.sao_outcome.frame()),
+            (nc_encoder::FilterTool::Alf, self.alf_search.outcome()),
+        ]
+        .into_iter()
+        .filter_map(|(tool, outcome)| outcome.map(|outcome| (tool, outcome)))
+        .collect()
+    }
+
     const RECODE: bool = true;
     // Intra refresh: TMVP is off under it (`ph_temporal_mvp_enabled_flag`,
     // `temporal_mvp_enabled`).
     const INTRA_REFRESH: bool = true;
     // Multi-type tree leaves (`vvc.mtt`) are rectangular.
     const RECTANGULAR_LEAVES: bool = true;
+    const NODE_TRIALS: bool = true;
     // Depth removal (dropping blocks below 32x32 where the motion analysis
     // says they barely help) only at coarse quantizers, as HEVC Default:
     // the analysis statistics it reads are per 64x64 superblock, so it acts
@@ -674,6 +676,14 @@ impl CodecBackend for VvcBackend {
         // off.
         ("structure.unified", 1.0),
         ("planner.depth_removal_min_quantizer", 0.8),
+        // The zero-trial split selector at half its fitted shift (engine
+        // `split_selector.rs`, docs/handoff/planner-selector.md). nceval.train
+        // against 9ac0fd130 (draw 2026-11-21, k 0.1): L3 J -0.20% [-0.38,
+        // -0.03], final-check (600 f) -0.19% [-0.41, -0.00], BETTER, no guard;
+        // cycles zen5 / graviton3 / graviton4 -1.2 / -0.2 / 0.0%. Fast and
+        // Slower pin it off (fixed QP +0.1 each).
+        ("planner.split_selector", 1.0),
+        ("planner.split_selector_scale", 0.5),
         // Re-tuned 2026-11-13 as a CPU cut at equal quality (CPU-capped study
         // vvc-default-speed-2026-11-13, trial #2): mode-decision lambda 0.8 ->
         // 0.9125 and a coarser luma inter dead zone, 133 -> 95. Disjoint L3 at
@@ -740,7 +750,18 @@ impl CodecBackend for VvcBackend {
         ("vvc.alf", 1.0),
         ("vvc.alf_fixed_sets", 0.0),
         ("vvc.alf_skip_unchanged", 1.0),
-        ("vvc.alf_stats_row_step", 4.0),
+        // ALF statistics on every row of key and base pictures (every 4th
+        // row of the others, whose filters mostly come from the bank and
+        // whose density does not move the stream: 4 there J 0.0). Fixed QP
+        // (draw fixedqp-2026-11-21, 24 clips) J -0.9 % [-1.2, -0.6] at
+        // +0.7 % P instructions (every picture: -0.9 % at +3.1 %); whole
+        // encode Zen 5 +1.47 %, Graviton3 +1.17 %, Graviton4 +1.40 %.
+        // nceval.train (k 0.1): L3 (n 108) -0.74 % [-1.14, -0.33] BETTER,
+        // final-check (n 34) -0.55 % [-0.88, -0.20] BETTER; VVC Slow (k 0)
+        // L3 -0.22 % [-0.70, +0.26], final-check -0.63 % [-0.79, -0.19]
+        // (docs/analysis/unused-tools-2026-11-21.md, "by frame role").
+        ("vvc.alf_stats_row_step", 1.0),
+        ("nonbase.vvc.alf_stats_row_step", 4.0),
         ("vvc.alf_detail_weight", 0.125),
         // Temporal bank reuse (VVenC's APS reuse): P pictures re-signal the
         // bank derived up to 4 pictures earlier, without statistics or a
@@ -830,6 +851,17 @@ impl CodecBackend for VvcBackend {
         // static_cam22 / crowd_pp22_027). Screened before TMVP (above).
         ("vvc.sao_search_interval", 4.0),
         ("vvc.sao_skip_unchanged", 1.0),
+        // SAO statistics on every second row of key and base pictures
+        // (every 4th of the others, as before everywhere). Fixed QP (draw
+        // fixedqp-2026-11-21, 24 clips) J -0.3 % [-0.6, -0.0]; whole encode
+        // Zen 5 +0.12 %, Graviton3 +0.24 %, Graviton4 +0.11 %. nceval.train
+        // (k 0.1): L3 (n 108) -0.23 % [-0.52, +0.06] BETTER, final-check
+        // (n 34) -0.30 % [-0.53, -0.03] BETTER. The same density on every
+        // picture (-0.5 % at fixed QP) did not carry to rate control (quick
+        // probe +0.22 %): docs/analysis/unused-tools-2026-11-21.md. Fast
+        // pins 4; Slower sets 1 on every picture.
+        ("vvc.sao_stats_row_step", 2.0),
+        ("nonbase.vvc.sao_stats_row_step", 4.0),
         ("vvc.coarse_rd_candidates", 2.0),
         ("vvc.rd_candidates", 4.0),
         // The chroma direction searched on key pictures only (five
@@ -855,13 +887,56 @@ impl CodecBackend for VvcBackend {
         // VVC Fast keeps it off (not screened at k 0.6).
         ("decision.intra_directional", 1.0),
         ("decision.intra_directional_dc_ratio", 2.0),
+        // The final decision stage (`final_stage.rs`, VVC's pricing in
+        // `backend/final_cost.rs`): the walked winner, merge candidate 0 and
+        // the best core-mode intra decided by coded luma cost where they
+        // screen within 0.03 λ per sample and the winner's error is under
+        // 1 λ per sample (H.264's Default values). Fixed QP (quick draw
+        // fixedqp-2026-11-20, n 24) J -1.5 % [-1.9, -1.2] (engine values
+        // -1.7 %); whole encode +8.3 / +7.5 / +8.7 % instructions (Johnny,
+        // KristenAndSara, WestWindEasy, 30 f, QP 36), most of it the intra
+        // CUs it chooses being coded. Pool k 0.1, dCPU 8.2 % (draw
+        // 2026-11-21): L1 -1.89 % [-2.38, -1.41], L2 -0.80 % [-1.37,
+        // -0.34], L3 (108 clips, single-point) -0.76 % [-1.18, -0.36]
+        // BETTER. VVC Fast pins it off (not screened).
+        ("decision.final_stage", 1.0),
+        ("decision.final_margin_lambdas", 0.03),
+        ("decision.final_max_winner_lambdas", 1.0),
+        // Filter-search effort by usage (`nc_encoder::UsageGate`): on non-base
+        // P pictures, CTUs coded as skip over at least 3/4 of their area keep
+        // SAO and ALF off without statistics (each CTU refreshed every 8
+        // pictures). VVC reason: its SAO and ALF are wired to the gate (with
+        // HEVC's SAO). nceval.train (k 0.1, base 1cb80965c): L3 (n 108) -0.05 %
+        // [-0.16, +0.05] BETTER, final-check (n 34) -0.24 % [-0.37, -0.02]
+        // BETTER; whole encode cycles Graviton3 -0.84 %, Graviton4 -0.77 %,
+        // Zen 5 -0.72 % (docs/handoff/filter-effort.md). Fast sets its own;
+        // Faster, Slow and Slower pin 0.
+        ("filter.usage_quiet_share", 0.75),
+        // Layer propagation on the flat stream's QP-cadence cycles
+        // (`layer_propagation.rs`, `layers.propagation_flat`): base blocks the
+        // last cycle's chain reused little go up to the leaf quantizer; rate
+        // control only. Codec reason for a per-codec value: the shared
+        // mechanism, adopted where the pool screens pass. nceval.train (k 0.1,
+        // base f953cd97d): L3 (n 108) -0.28 % [-0.72, +0.15] BETTER, final-check (n 34) -0.84 % [-1.27, -0.43]
+        // BETTER; whole encode cycles
+        // Graviton3 +1.20 %, Zen 5 +1.86 %
+        // (docs/handoff/temporal-lambda.md). Slow
+        // inherits it (screened: L3 -0.25 %, final-check -0.39 %); Fast, Faster
+        // and Slower pin it off.
+        ("layers.propagation", 1.0),
+        ("layers.propagation_flat", 1.0),
+        ("layers.propagation_grid", 3.0),
+        ("layers.propagation_prekey", 1.0),
     ];
-    const PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] =
-        &[VvcParams::SPECS, AlfSearchParams::SPECS];
+    const PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[
+        VvcParams::SPECS,
+        AlfSearchParams::SPECS,
+        SaoSearchParams::SPECS,
+    ];
     /// The ALF search settings are read when a picture is filtered, so each
     /// may take a non-base picture value (`nonbase.vvc.alf_*`).
     const FRAME_PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] =
-        &[AlfSearchParams::SPECS];
+        &[AlfSearchParams::SPECS, SaoSearchParams::SPECS];
     const SUPPORTS_BLOCK_QP: bool = true;
     // One `cu_qp_delta` per CTB quantization group; a 32x32 CTU repeats its
     // 64x64 square's offset (an exact, slightly redundant delta).
@@ -892,13 +967,7 @@ impl CodecBackend for VvcBackend {
             crate::coding_tree::Partitioning::of_mode(params.mtt.round() as u8, ctu_log2);
         let geometry = headers::Geometry::new(config.width, config.height, ctu_log2)
             .with_partitioning(partitioning);
-        // The reference picture lists hold a second reference in flat
-        // streams only (`references.rs`): beside temporal layers the engine
-        // refuses `refs.second` and its plan steps aside, so nothing is
-        // listed for the long-term slot.
-        let second_reference =
-            nc_encoder::uses_long_term_slot(&config.params) && config.temporal_layers == 1;
-        let tools = params.tools().with_second_reference(second_reference);
+        let (second_reference, tools) = sequence_tools(&params, config);
         let trellis = crate::trellis::TrellisQuant::from_params(
             &nc_encoder::QuantParams::from_overrides(&config.params),
             params.trellis_round_up >= 0.5,
@@ -937,10 +1006,15 @@ impl CodecBackend for VvcBackend {
                 params.chroma_search >= 0.5 && params.chroma_search_inter >= 0.5,
             ],
             chroma_rd_candidates: params.chroma_rd_candidates.round() as usize,
-            sao_search: SaoSearch::new(&params),
+            sao_search: SaoSearch::new(&SaoSearchParams::from_overrides(&config.params)),
+            sao_outcome: nc_encoder::OutcomeTracker::default(),
+            filter_usage: None,
             key_intra_search: params.key_intra_search(),
             inter_intra_search: params.inter_intra_search(),
             trellis,
+            // Used only where dependent quantisation and the trellis are off
+            // (`reconstruct_unit`).
+            rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
             dep_quant_lambda: [
                 params.dep_quant_lambda_scale,
                 params.dep_quant_chroma_scale,
@@ -955,6 +1029,7 @@ impl CodecBackend for VvcBackend {
             early_merge_lambdas: params.early_merge_lambdas,
             quant_scratch: Box::default(),
             planning_scratch: std::cell::RefCell::default(),
+            final_screen: final_cost::ScreenedIntra::default(),
             items: Vec::new(),
             sao: nc_encoder::sao::PictureSao::default(),
             tools,
@@ -971,7 +1046,7 @@ impl CodecBackend for VvcBackend {
             poc: 0,
             next_poc: 0,
             temporal_layers: config.temporal_layers,
-            references: References::new(config.temporal_layers, second_reference),
+            references: References::new(config.temporal_layers, second_reference, tools.poc_bits),
             active_ref: PRIMARY_REF_IDX,
             lambda: 1.,
             dsp: Dsp::new(),
@@ -985,6 +1060,7 @@ impl CodecBackend for VvcBackend {
             block_qp: None,
             deblock_offsets: params.deblock_offsets(),
             cu_trial: cu_trial::CuTrial::new(params.trial_full_intra >= 0.5),
+            node_trials: node_trial::NodeTrials::default(),
         })
     }
     fn superblock_log2(&self) -> u8 {
@@ -1121,6 +1197,58 @@ impl CodecBackend for VvcBackend {
     fn end_cu_trial(&mut self) {
         self.cu_trial.end();
     }
+    fn final_intra_screen(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+        block: &Block,
+    ) -> Option<(f32, f32)> {
+        self.prices_final_candidates()
+            .then(|| self.screen_intra(source, recon, block))
+    }
+
+    fn final_coded_cost(
+        &mut self,
+        source: &Picture,
+        reference: &Picture,
+        block: &Block,
+        candidate: nc_encoder::FinalCandidate,
+    ) -> Option<f32> {
+        self.prices_final_candidates()
+            .then(|| self.price_final(source, reference, block, candidate))
+            .flatten()
+    }
+
+    /// The pricing predicts from the primary reference only.
+    fn prices_final_candidates(&self) -> bool {
+        self.active_ref == PRIMARY_REF_IDX
+    }
+
+    fn begin_node_trial(&mut self, node: &Block, recon: &Picture) {
+        self.open_node_trial(node, recon);
+    }
+
+    fn begin_node_pricing(&mut self, node: &Block, _recon: &Picture) {
+        self.open_node_pricing(node);
+    }
+    fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
+        self.node_trial_price(source, recon)
+    }
+    fn undo_node_trial(&mut self, recon: &mut Picture) {
+        self.undo_node(recon);
+    }
+    fn keep_node_candidate(&mut self, recon: &Picture) {
+        self.keep_node(recon);
+    }
+    fn restore_node_candidate(&mut self, recon: &mut Picture) {
+        self.restore_kept_node(recon);
+    }
+    fn end_node_trial(&mut self) {
+        self.close_node_trial();
+    }
+    fn last_cu_skipped(&self) -> bool {
+        self.last_leaf_skipped()
+    }
     fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
         let ref_idx = self.active_ref;
         self.cache_predictors(block)
@@ -1208,10 +1336,16 @@ impl CodecBackend for VvcBackend {
     fn set_frame_params(&mut self, params: &nc_encoder::ParamOverrides) {
         self.alf_search
             .configure(&AlfSearchParams::from_overrides(params));
+        self.sao_search
+            .configure(&SaoSearchParams::from_overrides(params));
     }
     fn set_refresh(&mut self, window: Option<&nc_encoder::RefreshWindow>) {
         self.refresh = window.cloned();
     }
+    fn set_filter_effort(&mut self, effort: nc_encoder::FilterEffort) {
+        self.filter_usage = effort.usage;
+    }
+
     fn begin_frame(&mut self, plan: &FramePlan) {
         self.qp = if plan.frame_type == FrameType::Key && !self.rate_control {
             nc_encoder::offset_key_quantizer(plan.quantizer, self.key_qp_offset, 0, headers::MAX_QP)
@@ -1222,6 +1356,7 @@ impl CodecBackend for VvcBackend {
         self.sao = nc_encoder::sao::PictureSao::default();
         self.sao_search.pending = None;
         self.alf_search.begin_picture();
+        self.sao_outcome.begin_picture();
         self.alf = crate::alf::Decision::default();
         self.inter = plan.frame_type == FrameType::Inter;
         self.inter_intra_search.begin_picture();
@@ -1425,18 +1560,25 @@ impl CodecBackend for VvcBackend {
             let ctu = self.geometry.ctu_size();
             // All-skip P-frame CTBs copy samples their reference already
             // filtered (`vvc.alf_skip_unchanged`).
-            let skipped = match self.alf_search.skip_unchanged {
+            let own = match self.alf_search.skip_unchanged {
                 _ if !self.inter => None,
                 AlfSkip::None => None,
                 AlfSkip::Skipped => Some(self.motion.skipped_ctus()),
                 AlfSkip::LumaPredicted => Some(self.motion.luma_predicted_ctus()),
             };
+            let skip_shares = self.motion.skip_shares_ctus();
+            let usage = self
+                .filter_usage
+                .filter(|_| self.inter)
+                .map(|gate| self.alf_search.usage_skips(&gate, &skip_shares));
+            let skipped = nc_encoder::merge_skips(own, usage);
             self.alf = self.alf_search.filter(
                 &self.dsp,
                 (source, recon),
                 ctu,
                 self.inter,
                 skipped.as_deref(),
+                &skip_shares,
                 self.lambda,
                 &self.contexts,
             );
@@ -1462,6 +1604,7 @@ impl CodecBackend for VvcBackend {
         if self.tools.alf {
             self.alf_search.commit();
         }
+        self.sao_outcome.commit();
     }
     fn end_frame(&mut self) -> Vec<u8> {
         // A picture whose CTBs all leave ALF off disables it in its slice.
@@ -1722,11 +1865,15 @@ impl VvcBackend {
                 ch,
                 lambda,
             }))
-        } else {
-            self.trellis
-                .as_mut()
-                .and_then(|t| t.for_block(&self.contexts.coeff, plane, self.inter, lambdas))
+        } else if let Some(trellis) = self.trellis.as_mut() {
+            trellis
+                .for_block(&self.contexts.coeff, plane, self.inter, lambdas)
                 .map(recon::LevelSearch::Trellis)
+        } else {
+            self.rd_trim
+                .as_ref()
+                .filter(|t| plane == PlaneIndex::Y && t.covers(!self.inter))
+                .map(|trim| recon::LevelSearch::RateTrim(trim, f64::from(lambdas[0])))
         };
         let scratch = &mut self.quant_scratch[0];
         let level = recon::quantize_rect(
@@ -2093,10 +2240,17 @@ impl VvcBackend {
     fn decide_sao(&mut self, source: &Picture, recon: &Picture) {
         let searched = !self.inter
             || self.sao_search.interval <= 1
-            || self.poc.is_multiple_of(self.sao_search.interval)
+            || self.poc.is_multiple_of(u16::from(self.sao_search.interval))
             || self.sao_search.classes.is_empty();
-        let skipped =
-            (self.sao_search.skip_unchanged && self.inter).then(|| self.motion.skipped_ctus());
+        let skip_shares = self.motion.skip_shares_ctus();
+        let usage = self.filter_usage.filter(|_| self.inter).map(|gate| {
+            self.sao_outcome
+                .usage_skips(&gate, skip_shares.len(), |ctb| skip_shares[ctb])
+        });
+        let skipped = nc_encoder::merge_skips(
+            (self.sao_search.skip_unchanged && self.inter).then(|| self.motion.skipped_ctus()),
+            usage,
+        );
         let candidates = if searched {
             nc_encoder::sao::Candidates::Search
         } else {
@@ -2119,6 +2273,12 @@ impl VvcBackend {
             candidates,
             skipped.as_deref(),
             crate::sao::SaoModels::of(&Contexts::new(self.qp, self.inter)),
+        );
+        self.sao_outcome.observe(
+            nc_encoder::sao::types(&self.sao),
+            |ctb| !skipped.as_ref().is_some_and(|s| s[ctb]),
+            |types| types.iter().any(Option::is_some),
+            |ctb| skip_shares[ctb],
         );
         if searched && self.sao_search.interval > 1 {
             // A skipped CTU's "off" says nothing about its classes: it keeps

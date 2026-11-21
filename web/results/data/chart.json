@@ -2099,7 +2099,17 @@
      "rate_invalid_points": 135
     }
    },
-   "not_measured": {},
+   "not_measured": {
+    "nanocodec-h264@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-av1@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vp9@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-av2@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@faster": "measured in 0.5.0 as VVC `fast` (renamed `faster` on 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-vvc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung"
+   },
    "measured": {
     "labels": {
      "20d31869": "release 0.5.0, PGO build (20d31869)"
@@ -3336,7 +3346,17 @@
      "rate_invalid_points": 234
     }
    },
-   "not_measured": {},
+   "not_measured": {
+    "nanocodec-h264@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-av1@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vp9@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-av2@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@faster": "measured in 0.5.0 as VVC `fast` (renamed `faster` on 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-vvc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung"
+   },
    "measured": {
     "labels": {
      "20d31869": "release 0.5.0, PGO build (20d31869)"
@@ -4504,7 +4524,17 @@
      "rate_invalid_points": 17
     }
    },
-   "not_measured": {},
+   "not_measured": {
+    "nanocodec-h264@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-av1@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vp9@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-av2@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@faster": "measured in 0.5.0 as VVC `fast` (renamed `faster` on 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-vvc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung"
+   },
    "measured": {
     "labels": {
      "20d31869": "release 0.5.0, PGO build (20d31869)"
@@ -5578,7 +5608,17 @@
      "rate_invalid_points": 32
     }
    },
-   "not_measured": {},
+   "not_measured": {
+    "nanocodec-h264@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-av1@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vp9@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-av2@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@faster": "measured in 0.5.0 as VVC `fast` (renamed `faster` on 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-vvc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung"
+   },
    "measured": {
     "labels": {
      "20d31869": "release 0.5.0, PGO build (20d31869)"
@@ -6693,7 +6733,17 @@
      }
     }
    },
-   "not_measured": {},
+   "not_measured": {
+    "nanocodec-h264@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-av1@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vp9@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-av2@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@faster": "measured in 0.5.0 as VVC `fast` (renamed `faster` on 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-vvc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung"
+   },
    "measured": {
     "labels": {
      "20d31869": "release 0.5.0, PGO build (20d31869)"
@@ -7682,7 +7732,17 @@
      }
     }
    },
-   "not_measured": {},
+   "not_measured": {
+    "nanocodec-h264@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-av1@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vp9@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-av2@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@faster": "measured in 0.5.0 as VVC `fast` (renamed `faster` on 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-vvc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung"
+   },
    "measured": {
     "labels": {
      "20d31869": "release 0.5.0, PGO build (20d31869)"
@@ -8671,7 +8731,17 @@
      }
     }
    },
-   "not_measured": {},
+   "not_measured": {
+    "nanocodec-h264@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-av1@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vp9@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-av2@slower": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `slower` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-vvc@faster": "measured in 0.5.0 as VVC `fast` (renamed `faster` on 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung",
+    "nanocodec-hevc@slower": "a rung new on 2026-11-21 (between slow and veryslow); the next release measures it",
+    "nanocodec-vvc@veryslow": "measured in 0.5.0 under that release's name `slow` (`slow` in 0.5.0 is `veryslow` from 0.6, renamed 2026-11-21); the 0.5.0 results keep their labels until the next release re-measures every rung"
+   },
    "measured": {
     "labels": {
      "20d31869": "release 0.5.0, PGO build (20d31869)"

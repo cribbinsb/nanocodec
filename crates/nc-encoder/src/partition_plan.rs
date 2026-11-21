@@ -106,7 +106,7 @@
 //! confirms each planned shape against the square plan: the variance model
 //! proposes, the coded cost decides.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 
 use nc_analysis::MotionAnalysis;
 use nc_analysis::preanalysis::PreAnalysis;
@@ -121,9 +121,13 @@ use crate::noise_skip::NoiseMap;
 use crate::params::PlannerParams;
 use crate::partition::Block;
 use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
+use crate::split_selector::SplitEvidence;
 
 /// Index of the 32x32 sum in [`nc_analysis::motion::SbStats::me_dist`].
 const ME_DIST_32X32: usize = 2;
+/// log2 of the smallest of the motion search's aggregated fields (16x16;
+/// [`nc_analysis::motion::MotionFields::aggregated`]).
+const AGGREGATED_MIN_LOG2: u8 = 4;
 /// Largest block when the 8x8 cost spread is high (32x32).
 const CAPPED_MAX_LOG2: u8 = 5;
 // The planner's tunable thresholds and multipliers are `PlannerParams`
@@ -195,6 +199,63 @@ pub(crate) struct LeafStats {
     pub zero: Variance,
 }
 
+/// Quadtree depths below the superblock [`NodeMargins`] holds (128 down
+/// to 8).
+const MARGIN_DEPTHS: usize = 5;
+/// Nodes of a quadtree [`MARGIN_DEPTHS`] deep: `(4^depths - 1) / 3`.
+const MARGIN_NODES: usize = ((1 << (2 * MARGIN_DEPTHS)) - 1) / 3;
+
+/// How decisively the planner chose each node of one superblock's plan:
+/// the cost of the alternative it rejected (the quad split of a planned
+/// leaf, the leaf of a planned split) over the cost of its choice, at
+/// least 1 (a planned leaf's split is often costed only until it lost, so
+/// its margin is a lower bound). Nodes the planner did not weigh both ways
+/// read 1 (no confidence). The RD partition search uses it as its gate
+/// (`planner.rd_split_margin`): only nodes the variance model nearly tied
+/// are coded both ways.
+#[derive(Debug, Clone)]
+pub(crate) struct NodeMargins {
+    sb_log2: u8,
+    sb_x: usize,
+    sb_y: usize,
+    margins: [f32; MARGIN_NODES],
+}
+
+impl NodeMargins {
+    /// No margins known, for superblock `sb`.
+    pub fn new(sb: &Block) -> Self {
+        Self {
+            sb_log2: sb.log2_size(),
+            sb_x: sb.x,
+            sb_y: sb.y,
+            margins: [1.0; MARGIN_NODES],
+        }
+    }
+
+    /// The slot of square `node` of the superblock, if deep enough to hold.
+    fn index(&self, node: &Block) -> Option<usize> {
+        let depth = usize::from(self.sb_log2.checked_sub(node.log2_size())?);
+        if depth >= MARGIN_DEPTHS {
+            return None;
+        }
+        let log2 = usize::from(node.log2_size());
+        let (col, row) = ((node.x - self.sb_x) >> log2, (node.y - self.sb_y) >> log2);
+        let first = ((1 << (2 * depth)) - 1) / 3;
+        Some(first + (row << depth) + col)
+    }
+
+    fn set(&mut self, node: &Block, margin: f32) {
+        if let Some(i) = self.index(node) {
+            self.margins[i] = margin;
+        }
+    }
+
+    /// The planner's margin at `node` (1 where unknown).
+    pub fn get(&self, node: &Block) -> f32 {
+        self.index(node).map_or(1.0, |i| self.margins[i])
+    }
+}
+
 /// Everything the planner needs for one frame.
 pub(crate) struct Planner<'a, B: CodecBackend> {
     pub dsp: &'a Dsp,
@@ -226,6 +287,8 @@ pub(crate) struct Planner<'a, B: CodecBackend> {
     /// planned, and every costed node needs it (re-pricing it per node was
     /// 1.7% of AV1 Faster's P-frame instructions).
     pub leaf_bits: OnceCell<f32>,
+    /// The margins of the superblock being planned ([`Self::plan`]).
+    pub margins: RefCell<Option<NodeMargins>>,
 }
 
 /// The noise skip's test (`noise_skip.rs`) as the planner's noise split
@@ -284,11 +347,50 @@ struct Limits {
     bias: f32,
 }
 
+/// Whether the motion search separates neighbouring `parts`: every
+/// tiling-square vector of one differs from every one of the next by at
+/// least `samples` whole samples in some component.
+pub(crate) fn motion_separates(
+    motion: Option<&MotionAnalysis>,
+    parts: &[Block],
+    samples: f32,
+) -> bool {
+    let vectors = |part: &Block| {
+        let mut out = [Mv::ZERO; MAX_TILING_SQUARES];
+        let count = search_vectors(motion, part, &mut out);
+        (out, count)
+    };
+    let threshold = (samples * MV_UNITS_PER_SAMPLE as f32).round() as i32;
+    parts.windows(2).any(|pair| {
+        let ((a, a_count), (b, b_count)) = (vectors(&pair[0]), vectors(&pair[1]));
+        a[..a_count].iter().all(|u| {
+            b[..b_count].iter().all(|v| {
+                let dx = (i32::from(u.x) - i32::from(v.x)).abs();
+                let dy = (i32::from(u.y) - i32::from(v.y)).abs();
+                dx.max(dy) >= threshold
+            })
+        })
+    })
+}
+
 impl<B: CodecBackend> Planner<'_, B> {
     /// Plan the superblock `sb`.
     pub fn plan(&self, sb: Block) -> Partition {
+        *self.margins.borrow_mut() = Some(NodeMargins::new(&sb));
         let limits = self.limits(&sb);
         self.plan_node(sb, limits, Known::NONE).1
+    }
+
+    /// The margins of the superblock last planned.
+    pub fn take_margins(&self) -> Option<NodeMargins> {
+        self.margins.borrow_mut().take()
+    }
+
+    /// Note how decisively `node` was decided: `rejected` against `chosen`.
+    fn note_margin(&self, node: &Block, chosen: f32, rejected: f32) {
+        if let Some(margins) = self.margins.borrow_mut().as_mut() {
+            margins.set(node, (rejected / chosen.max(f32::MIN_POSITIVE)).max(1.0));
+        }
     }
 
     /// (cost, partition) of the cheapest way to code `node`.
@@ -331,6 +433,13 @@ impl<B: CodecBackend> Planner<'_, B> {
             };
         }
         let leaf_cost = leaf.map(|(cost, _)| cost);
+        let limits = match &leaf {
+            Some((_, stats)) if self.params.split_selector >= 0.5 => Limits {
+                bias: limits.bias * self.selector_factor(&node, stats, &children_known),
+                ..limits
+            },
+            _ => limits,
+        };
         let mut split_cost =
             lambda * self.params.split_rate_factor * self.backend.partition_bits(&node, true);
         let mut children = std::array::from_fn(|_| Partition::Leaf(None));
@@ -343,6 +452,7 @@ impl<B: CodecBackend> Planner<'_, B> {
             if let Some(cost) = leaf_cost
                 && limits.bias * cost <= 1000.0 * split_cost
             {
+                self.note_margin(&node, limits.bias * cost, 1000.0 * split_cost);
                 let best = (cost, Partition::Leaf(leaf.map(|(_, stats)| stats)));
                 let best = self.unless_zeroed_out(&node, can_split, best);
                 return self.or_shape(&node, limits, cost, best);
@@ -354,6 +464,14 @@ impl<B: CodecBackend> Planner<'_, B> {
             let (cost, plan) = self.plan_node(child, limits, children_known[i]);
             split_cost += cost;
             children[i] = plan;
+        }
+        if let Some(cost) = leaf_cost {
+            let (leaf, split) = (limits.bias * cost, 1000.0 * split_cost);
+            if leaf <= split {
+                self.note_margin(&node, leaf, split);
+            } else {
+                self.note_margin(&node, split, leaf);
+            }
         }
         match leaf_cost {
             Some(cost) if limits.bias * cost <= 1000.0 * split_cost => {
@@ -418,6 +536,47 @@ impl<B: CodecBackend> Planner<'_, B> {
             children[i] = plan;
         }
         (cost, Partition::Split(Box::new(children)))
+    }
+
+    /// The split selector's factor on the parent bias at `node`
+    /// (`split_selector.rs`), from its leaf statistics `stats` and what its
+    /// measurement told its quadrants (`quadrants`). Where the node's
+    /// statistics came from its parent the quadrants are unknown and the
+    /// selector goes without them: measuring them cost +0.3..0.5 % ARM cycles
+    /// on HEVC / VP9 for the same fixed-QP J (docs/handoff/planner-selector.md).
+    fn selector_factor(&self, node: &Block, stats: &LeafStats, quadrants: &[Known; 4]) -> f32 {
+        let log2 = node.log2_size();
+        let quadrants = match quadrants.map(|known| known.get(stats.search_mv)) {
+            [Some(a), Some(b), Some(c), Some(d)] => Some([a, b, c, d]),
+            _ => None,
+        };
+        let vector_distance = node
+            .quadrants()
+            .iter()
+            .map(|quadrant| {
+                let v = search_vector::<B>(self.motion, quadrant);
+                (i32::from(v.x) - i32::from(stats.search_mv.x)).unsigned_abs()
+                    + (i32::from(v.y) - i32::from(stats.search_mv.y)).unsigned_abs()
+            })
+            .sum();
+        let search_sads = self.motion.and_then(|motion| {
+            let field = motion
+                .aggregated
+                .get(usize::from(log2.checked_sub(AGGREGATED_MIN_LOG2)?))?;
+            let block = field
+                .blocks
+                .try_get((node.x >> log2) as isize, (node.y >> log2) as isize)?;
+            Some((block.whole_sad, block.split_sad))
+        });
+        SplitEvidence {
+            log2,
+            lambda: self.backend.lambda(),
+            leaf: stats.search,
+            quadrants,
+            vector_distance,
+            search_sads,
+        }
+        .bias_factor(self.params.split_selector_scale)
     }
 
     /// `best`, the square plan of leaf-capable `node` (whose leaf costs
@@ -491,7 +650,8 @@ impl<B: CodecBackend> Planner<'_, B> {
         shapes.iter().filter(move |shape| {
             let parts = shape.parts(&node);
             shape.log2_min_side(node.log2_size()) >= min_side
-                && (gate <= 0.0 || self.motion_separates(&parts[..shape.part_count()], gate))
+                && (gate <= 0.0
+                    || motion_separates(self.motion, &parts[..shape.part_count()], gate))
         })
     }
 
@@ -608,28 +768,6 @@ impl<B: CodecBackend> Planner<'_, B> {
         let mv = refined_vector::<B>(&measurer, block, (stats.search_mv, stats.search));
         self.backend
             .inter_leaf_cost(self.source, self.reference, block, mv)
-    }
-
-    /// Whether the motion search separates neighbouring `parts`: every
-    /// tiling-square vector of one differs from every one of the next by at
-    /// least `samples` whole samples in some component.
-    fn motion_separates(&self, parts: &[Block], samples: f32) -> bool {
-        let vectors = |part: &Block| {
-            let mut out = [Mv::ZERO; MAX_TILING_SQUARES];
-            let count = search_vectors(self.motion, part, &mut out);
-            (out, count)
-        };
-        let threshold = (samples * MV_UNITS_PER_SAMPLE as f32).round() as i32;
-        parts.windows(2).any(|pair| {
-            let ((a, a_count), (b, b_count)) = (vectors(&pair[0]), vectors(&pair[1]));
-            a[..a_count].iter().all(|u| {
-                b[..b_count].iter().all(|v| {
-                    let dx = (i32::from(u.x) - i32::from(v.x)).abs();
-                    let dy = (i32::from(u.y) - i32::from(v.y)).abs();
-                    dx.max(dy) >= threshold
-                })
-            })
-        })
     }
 
     /// Mode and vector bits charged to every leaf: `planner.leaf_bits` when
@@ -1022,6 +1160,7 @@ mod tests {
             lambda_headroom: 1.0,
             step: 1.0,
             leaf_bits: OnceCell::new(),
+            margins: RefCell::default(),
         };
         planner.plan(Block::square(0, 0, 5))
     }

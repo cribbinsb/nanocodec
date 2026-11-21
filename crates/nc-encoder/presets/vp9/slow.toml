@@ -1,34 +1,21 @@
-# VP9 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first: the second reference with the full decision) plus VP9's
-# levers. Re-picked 2026-11-19 (docs/handoff/presets.md "Slow presets"):
-# everything heavy on at once, then cut back by component cost. Alone on the
-# Default (fixed QP J, 23 clips / x86 callgrind P instructions): the second
-# reference -1.0% / +11%, intra RD over all ten modes with trellis and every
-# transform depth -0.8% / 0%, the transform search on every block -0.5% /
-# +19%, the sub-sample and search gates off -0.3% / +1%; two trellis
-# survivors add -0.3% for +26 points on top of those. Left out: the final
-# stage (+5.6%, worse), 1/8-sample vectors (+1.6%), four trellis survivors
-# (-0.3% alone at +55%), the DC intra gate at 0 (-0.1 J for +44 points), and
-# the mode search for intra blocks of inter frames (`vp9.inter_intra_dc_only`
-# 0: -0.5 J at fixed QP, but its chroma collapses on a dark CBR clip,
-# external_cevo_indoor_night_720p J +14%, PSNR-YUV -4 dB at the low rung).
-# The winner walk, whole-CU pricing, the planner's shape RD and the second
-# reference's margins leave VP9 streams unchanged.
-#
-# The sub-sample search: no seed gates, the coordinate walk, no one-position
-# or skipped HME search.
-decision.skip_no_refine_lambdas = 0
-decision.refine_cheap_min_lambdas = 0
-decision.subpel_walk = 1
-analysis.one_position_sad_per_pixel = 0
-analysis.skip_hme_sad_per_pixel = 0
-# Intra: all ten modes costed with the trellis at every transform depth.
-vp9.intra_rd_candidates = 10
-vp9.intra_rd_trellis = 1
-vp9.intra_tx_depth = 3
-# The transform-size search on every inter block, at every depth.
-vp9.inter_tx_depth = 3
-vp9.inter_tx_split_spread = 1
-vp9.tx_search_min_levels = 0
-# Two trellis survivors.
-quant.trellis_states = 2
+# VP9 slow (`--preset slow`): the Default plus the RD partition search with its
+# context gate (`nc_encoder` `rd_split.rs`, `depth_context.rs`;
+# docs/handoff/rd-split-gate.md): inter nodes decided by coding the plan's
+# alternative where the neighbours' and co-located leaf sizes suggest it.
+# The rung between medium and slower on VP9's front (docs/handoff/presets.md
+# "The ladder"). Against medium, preset-ladder 2026-11-21 (16a104a1b): whole-encode
+# fps 103.6 -> 75.2 (1.38x the time) (combined: Graviton 3/4 and Zen 5, log-equal ARM/x86, 720p CBR 600,
+# 4 quick clips); final check (34 clips, 600 f, keys every 10 s, draw 2026-11-21)
+# J -4.54 % [-5.30, -3.72], no guard.
+planner.rd_split = 1
+planner.rd_split_context = 1
+# The second reference on every frame, held: the last high-quality frame stays the
+# second reference for up to 5 s (re-armed at a new one, released while the camera
+# moves; docs/handoff/background-reference.md). With it this rung measured (151ac8ab8,
+# same method) 1.40x medium's time, J -4.70 % against medium, no guard, against 1.33x and
+# -3.99 % for the gate alone: 1.4 J better than the medium-slower chord.
+structure.unified = 0
+refs.second = 2
+refs.second_hold = 5
+refs.second_hold_rearm = 1
+refs.second_hold_moving = 1

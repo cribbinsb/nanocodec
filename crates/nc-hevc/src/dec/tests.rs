@@ -172,6 +172,65 @@ mod round_trips {
     }
 
     #[test]
+    fn rd_split_streams_reconstruct_exactly_and_differ() {
+        // The partition search codes, undoes and re-codes nodes (and puts
+        // a kept coding back): every stream must still decode to the
+        // encoder's reconstruction, with partial CTBs, block QPs and
+        // whole-CU trials nested inside the node trials.
+        for (width, height) in [(72, 40), (192, 136)] {
+            let packets = |rd_split: f32| {
+                let mut params = ParamOverrides::default();
+                params.set("planner.rd_split", rd_split);
+                params.set("planner.inter_min_log2", 3.0);
+                params.set("rate.aq_strength", 3.0);
+                params.set("decision.cu_price_error_lambdas", 0.5);
+                let config = EncoderConfig {
+                    codec: Codec::Hevc,
+                    width,
+                    height,
+                    frame_rate: FrameRate { num: 30, den: 1 },
+                    quantizer: 30,
+                    intra_period: 8,
+                    block_log2: 6,
+                    key_qp_offset: None,
+                    temporal_layers: 1,
+                    signal: nc_encoder::StreamSignal::default(),
+                    params,
+                };
+                let mut encoder = Encoder::<HevcBackend>::new(config).unwrap();
+                let mut decoder = Decoder::new();
+                (0..5)
+                    .map(|frame| {
+                        let mut source = Picture::new(width, height, 0).unwrap();
+                        for p in PlaneIndex::ALL {
+                            let mut v = source.plane_mut(p).view_mut();
+                            for y in 0..v.height() {
+                                // Bands of 16 rows move apart: splits pay.
+                                let shift = if y % 32 < 16 { frame * 3 } else { 0 };
+                                for (x, s) in v.row_mut(y).iter_mut().enumerate() {
+                                    let u = x + shift;
+                                    *s = ((u * 23 + y * 17 + p as usize * 47) ^ (u * y / 7)) as u8;
+                                }
+                            }
+                        }
+                        let packet = encoder.encode(&source);
+                        let decoded = decoder.decode(&packet.data).unwrap_or_else(|e| {
+                            panic!("{width}x{height} rd {rd_split} frame {frame}: {e}")
+                        });
+                        compare(&decoded, encoder.reconstruction());
+                        packet.data
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_ne!(
+                packets(0.0),
+                packets(1.0),
+                "{width}x{height}: the search changed nothing"
+            );
+        }
+    }
+
+    #[test]
     fn colour_signalling_reaches_the_decoder() {
         use nc_encoder::{ColourDescription, ColourInfo};
         for colour in [
