@@ -250,6 +250,126 @@ function drawOneMover(ctx, width, height, seconds) {
   ctx.fillStyle = '#d23c2a'; ctx.beginPath(); ctx.arc(x, y, MOVER.radius * width / 1280, 0, Math.PI * 2); ctx.fill();
 }
 
+// The waving hand's 10 s cycle: wave, hold still, leave the frame, stay out, come back.
+const HAND = {
+  version: 1, waveSeconds: 5, waves: 4, swingRadians: .5, holdSeconds: 2.5, leaveSeconds: 1, outSeconds: 1, returnSeconds: .5,
+  armLength: .5, armWidth: .34, palmRadius: .17, blurSeconds: 1 / 90, blurAlpha: .35,
+};
+const HAND_CYCLE = HAND.waveSeconds + HAND.holdSeconds + HAND.leaveSeconds + HAND.outSeconds + HAND.returnSeconds;
+// The room behind the hand per picture size, drawn once (a pure function of the size:
+// caching it changes no pixel).
+const roomBackgrounds = new Map();
+
+/** A still room: a textured wall, a window, a bookshelf, a poster with fine print and a desk edge. */
+function drawRoom(ctx, width, height) {
+  const u = height / 720;
+  const wall = ctx.createLinearGradient(0, 0, width, height);
+  wall.addColorStop(0, '#c9bfa8'); wall.addColorStop(1, '#a89c86');
+  ctx.fillStyle = wall; ctx.fillRect(0, 0, width, height);
+  for (let i = 0; i < 2400; i++) {  // plaster speckle
+    ctx.fillStyle = hash(i, 11) < .5 ? 'rgba(80, 70, 55, .10)' : 'rgba(255, 250, 235, .12)';
+    ctx.fillRect(hash(i, 12) * width, hash(i, 13) * height, 2 * u, 2 * u);
+  }
+  // A window with frame bars and a bright, slightly blue sky.
+  ctx.fillStyle = '#5b4a36'; ctx.fillRect(width * .06, height * .08, width * .26, height * .42);
+  const sky = ctx.createLinearGradient(0, height * .1, 0, height * .48);
+  sky.addColorStop(0, '#dfeaf2'); sky.addColorStop(1, '#a9c3d6');
+  ctx.fillStyle = sky; ctx.fillRect(width * .07, height * .1, width * .24, height * .38);
+  ctx.fillStyle = '#5b4a36'; ctx.fillRect(width * .185, height * .1, 6 * u, height * .38); ctx.fillRect(width * .07, height * .285, width * .24, 6 * u);
+  // A bookshelf with many book spines: hard vertical edges in many colours.
+  const shelfX = width * .62, shelfW = width * .34;
+  ctx.fillStyle = '#4a3423'; ctx.fillRect(shelfX, height * .06, shelfW, height * .62);
+  for (let row = 0; row < 4; row++) {
+    const top = height * (.08 + row * .15), shelfH = height * .13;
+    for (let x = shelfX + 8 * u, b = 0; x < shelfX + shelfW - 14 * u; b++) {
+      const w = (8 + 14 * hash(row, b, 1)) * u, h = shelfH * (.7 + .3 * hash(row, b, 2));
+      ctx.fillStyle = `hsl(${Math.floor(360 * hash(row, b, 3))}, ${30 + Math.floor(40 * hash(row, b, 4))}%, ${25 + Math.floor(40 * hash(row, b, 5))}%)`;
+      ctx.fillRect(x, top + shelfH - h, w - u, h);
+      x += w;
+    }
+    ctx.fillStyle = '#2e2016'; ctx.fillRect(shelfX, top + shelfH, shelfW, 5 * u);
+  }
+  // A poster with fine print.
+  ctx.fillStyle = '#f1ede2'; ctx.fillRect(width * .38, height * .12, width * .18, height * .3);
+  ctx.fillStyle = '#7a2e2a'; ctx.fillRect(width * .395, height * .14, width * .15, height * .09);
+  ctx.fillStyle = '#333'; ctx.font = `${9 * u}px sans-serif`;
+  for (let line = 0; line < 9; line++) ctx.fillText(textLine(line + 40).slice(6, 34), width * .395, height * (.27 + line * .016));
+  // A desk edge along the bottom.
+  ctx.fillStyle = '#6b4d33'; ctx.fillRect(0, height * .86, width, height * .14);
+  ctx.fillStyle = '#3d2b1c'; ctx.fillRect(0, height * .86, width, 4 * u);
+}
+
+/** Where the hand is at `t` s into its cycle: { shown, x, y, angle, spread }, x and y the elbow (a share of width / height). */
+function handPose(t) {
+  const ease = v => v * v * (3 - 2 * v);  // smoothstep: starts and stops with zero speed
+  let at = t;
+  if (at < HAND.waveSeconds) {
+    // The swing's own sine accelerates and decelerates; the envelope eases it in and out.
+    const envelope = Math.sin(Math.PI * at / HAND.waveSeconds);
+    const phase = 2 * Math.PI * HAND.waves * at / HAND.waveSeconds;
+    return { shown: true, x: .5 + .04 * Math.sin(phase), y: 1, angle: HAND.swingRadians * envelope * Math.sin(phase), spread: .5 + .5 * Math.abs(Math.sin(phase)) };
+  }
+  at -= HAND.waveSeconds;
+  if (at < HAND.holdSeconds) return { shown: true, x: .5, y: 1, angle: 0, spread: .5 };
+  at -= HAND.holdSeconds;
+  if (at < HAND.leaveSeconds) { const v = ease(at / HAND.leaveSeconds); return { shown: true, x: .5 + .75 * v, y: 1 + .3 * v, angle: -.4 * v, spread: .5 }; }
+  at -= HAND.leaveSeconds;
+  if (at < HAND.outSeconds) return { shown: false };
+  at -= HAND.outSeconds;
+  const v = 1 - ease(at / HAND.returnSeconds);
+  return { shown: true, x: .5 - .75 * v, y: 1 + .3 * v, angle: .4 * v, spread: .5 };
+}
+
+/** A forearm from the elbow at the bottom edge up to an open palm with five fingers. */
+function drawHand(ctx, width, height, pose) {
+  const h = height;
+  ctx.save();
+  ctx.translate(pose.x * width, pose.y * height);
+  ctx.rotate(pose.angle);
+  const skin = ctx.createLinearGradient(-HAND.armWidth * h / 2, 0, HAND.armWidth * h / 2, 0);
+  skin.addColorStop(0, '#9c6b4e'); skin.addColorStop(.5, '#d9a27f'); skin.addColorStop(1, '#a8755a');
+  ctx.fillStyle = skin;
+  const length = HAND.armLength * h, half = HAND.armWidth * h / 2;
+  ctx.beginPath(); ctx.moveTo(-half, 0); ctx.lineTo(-half * .8, -length); ctx.lineTo(half * .8, -length); ctx.lineTo(half, 0); ctx.closePath(); ctx.fill();
+  const palm = HAND.palmRadius * h;
+  ctx.beginPath(); ctx.ellipse(0, -length - palm * .4, palm * .85, palm, 0, 0, Math.PI * 2); ctx.fill();
+  for (let f = 0; f < 5; f++) {
+    const spread = (f - 2) * (.25 + .15 * pose.spread), finger = palm * (f === 0 || f === 4 ? .7 : .95);
+    ctx.save(); ctx.translate(0, -length - palm * .8); ctx.rotate(spread);
+    ctx.beginPath(); ctx.ellipse(0, -finger, palm * .22, finger, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  ctx.fillStyle = 'rgba(60, 35, 25, .25)';  // a sleeve cuff near the elbow
+  ctx.fillRect(-half, -length * .25, 2 * half, length * .08);
+  ctx.restore();
+}
+
+/**
+ * A hand waving in front of a still room (the classic webcam case): it sweeps back and
+ * forth with eased acceleration and a little motion blur, holds still, leaves the frame,
+ * stays out (the uncovered room must code cheaply again) and comes back; a 10 s cycle.
+ */
+function drawWavingHand(ctx, width, height, seconds) {
+  const key = `${width}x${height}`;
+  if (!roomBackgrounds.has(key)) {
+    const room = document.createElement('canvas'); room.width = width; room.height = height;
+    drawRoom(room.getContext('2d'), width, height);
+    roomBackgrounds.set(key, room);
+  }
+  ctx.drawImage(roomBackgrounds.get(key), 0, 0);
+  const t = seconds % HAND_CYCLE, pose = handPose(t);
+  if (!pose.shown) return;
+  // Motion blur: the poses a third of a frame before and after, faint, under the sharp one;
+  // when the hand is still they coincide with it.
+  ctx.save(); ctx.globalAlpha = HAND.blurAlpha;
+  for (const dt of [-HAND.blurSeconds, HAND.blurSeconds]) {
+    const ghost = handPose(Math.min(HAND_CYCLE - 1e-6, Math.max(0, t + dt)));
+    if (ghost.shown) drawHand(ctx, width, height, ghost);
+  }
+  ctx.restore();
+  drawHand(ctx, width, height, pose);
+}
+
 /** The scenes in picker order: id, name, what it stresses, its constants and its drawing. */
 export const SCENES = [
   { id: DEFAULT_SCENE, name: 'Motion study', tip: 'Moving shapes, fine texture and a smooth gradient: a general mix.', params: {}, draw: drawStudy },
@@ -260,6 +380,7 @@ export const SCENES = [
   { id: 'global-motion', name: 'Pan, zoom and rotation', tip: 'The whole picture moving at once: motion search and non-translational motion.', params: GLOBAL, draw: drawGlobalMotion },
   { id: 'cuts-fades', name: 'Cuts, flashes and fades', tip: 'Shot changes, a white flash and a fade: key frame decisions and rate control.', params: CUTS, draw: drawCutsAndFades },
   { id: 'crowd', name: 'Many small movers', tip: 'A synthetic crowd of independent movers: block partitioning and the motion field.', params: CROWD, draw: drawCrowd },
+  { id: 'waving-hand', name: 'Hand waving at a webcam', tip: 'A large hand waving before a still room, then holding still, leaving and returning: occlusion, uncovered background, large motion and the return to still.', params: HAND, draw: drawWavingHand },
   { id: 'one-mover', name: 'Still scene, one mover', tip: 'One small ball on a still background: skip efficiency, the bits spent where nothing changes.', params: MOVER, draw: drawOneMover },
 ];
 
