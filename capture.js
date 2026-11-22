@@ -19,7 +19,7 @@
 // Sample clips loop: each loop continues the tick count, so ticks only grow.
 // The built-in scene is drawn at the tick's own time; the webcam has no
 // timeline of its own, so its ticks follow the wall clock.
-import { drawScene } from './scene.js';
+import { DEFAULT_SCENE, drawScene } from './scene.js';
 import { SOURCE_FPS, frameAtTick, loopTicks, tickAt, tickMs, ticksOfFrame } from './timeline.js';
 
 // A media time this far below the last one means the clip looped (ms).
@@ -83,10 +83,11 @@ export class FrameSource {
   }
   /**
    * Start a new timeline for `kind` ('clip', 'file', 'camera' or 'scene'); `fps`
-   * is a clip's own frame rate (others are taken as SOURCE_FPS).
+   * is a clip's own frame rate (others are taken as SOURCE_FPS); `scene`: the
+   * test scene drawn (scene.js SCENES id).
    */
-  reset(kind, fps = SOURCE_FPS) {
-    this.kind = kind; this.fps = fps;
+  reset(kind, fps = SOURCE_FPS, scene = DEFAULT_SCENE) {
+    this.kind = kind; this.fps = fps; this.scene = scene;
     this.presented = null; this.loop = 0; this.lastMediaMs = -Infinity;
     this.waiting = null;
     this.started = performance.now();
@@ -166,7 +167,7 @@ export class FrameSource {
   capture(tick, width, height) {
     if (this.kind === 'scene') {
       if (this.surface.width !== width || this.surface.height !== height) { this.surface.width = width; this.surface.height = height; }
-      drawScene(this.surfaceContext, width, height, tickMs(tick) / 1000);
+      drawScene(this.surfaceContext, width, height, tickMs(tick) / 1000, this.scene);
       return { picture: snapshot(this.surface), element: this.surface, width, height };
     }
     const { video } = this;

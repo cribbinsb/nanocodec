@@ -5,6 +5,7 @@
 // Demo:    ?codec=av1&preset=fast&size=1280x720&fps=30&kbps=600[&stream=ID][&clip=ID]
 //          view B runs live nanocodec at these settings; view A shows pre-encoded
 //          stream ID (a reference encoder's point), or else the original source.
+//          ?scene=ID (alone or with the above): the source is test scene ID (scene.js).
 // Results: ?codec=av1&preset=fast   the overview filtered to that codec and preset,
 //          with that preset's point selected.
 
@@ -68,6 +69,12 @@ export function parseDemoQuery(search) {
     if (value && ID_PATTERN.test(value)) link[key] = value;
   }
   return link;
+}
+
+/** The test scene a demo link asks for (`scene`, a scene.js id), or null. */
+export function parseSceneQuery(search) {
+  const scene = new URLSearchParams(search).get('scene');
+  return scene && ID_PATTERN.test(scene) ? scene : null;
 }
 
 /** The results overview's query string for a codec and preset (the demo's names). */

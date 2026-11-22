@@ -1,5 +1,25 @@
-// Deterministic motion and fine detail, useful without granting camera access.
-export function drawScene(ctx, width, height, seconds) {
+// The built-in synthetic test scenes, drawn in the browser: no hosted bytes and no
+// licences. Each is a pure function of the picture size and the source time (a
+// tick's, timeline.js), so a scene is an exact source (exact-source.js) and two
+// views, a step or a restart see the same pixels. Each stresses one scenario
+// (`tip`); its constants are its `params`, which the debug report records with its id.
+// Noise and placement come from an integer hash of position and frame, not Math.random.
+
+/** The scene a page opens with (and a link without `scene`). */
+export const DEFAULT_SCENE = 'study';
+// Frames per second of the noise and flash schedules (timeline.js SOURCE_FPS).
+const SCENE_FPS = 30;
+
+/** A deterministic value in [0, 1) for integers a, b, c (a 32-bit integer hash). */
+function hash(a, b = 0, c = 0) {
+  let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x632be59b, 0xc2b2ae35) ^ Math.imul(c + 0x27d4eb2f, 0x165667b1);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
+}
+
+/** Moving shapes, fine texture and a smooth gradient (the page's first scene). */
+function drawStudy(ctx, width, height, seconds) {
   ctx.fillStyle = '#102b2c'; ctx.fillRect(0, 0, width, height);
   const gradient = ctx.createLinearGradient(0, 0, width, height);
   gradient.addColorStop(0, '#183c3c'); gradient.addColorStop(.58, '#6a8975'); gradient.addColorStop(1, '#d5d5b3');
@@ -26,4 +46,188 @@ export function drawScene(ctx, width, height, seconds) {
   ctx.fillText('NANO / MOTION STUDY', width * .07, height * .12);
   ctx.font = `${Math.max(9, width / 55)}px monospace`;
   ctx.fillText(`${seconds.toFixed(2).padStart(7, '0')} s`, width * .72, height * .9);
+}
+
+/** Write grey levels `value(x, y)` (0-255) into the whole picture. */
+function drawGrey(ctx, width, height, value) {
+  const image = ctx.createImageData(width, height), data = image.data;
+  for (let y = 0, at = 0; y < height; y++) {
+    for (let x = 0; x < width; x++, at += 4) {
+      const v = value(x, y);
+      data[at] = data[at + 1] = data[at + 2] = v; data[at + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+const ZONE = { contrast: 110, driftSeconds: 9, driftShare: .12, phasePerSecond: 2 };
+/** A zone plate: rings whose frequency rises to the Nyquist limit half a picture from its drifting centre. */
+function drawZonePlate(ctx, width, height, seconds) {
+  const scale = Math.max(width, height);
+  const cx = width * (.5 + ZONE.driftShare * Math.sin(2 * Math.PI * seconds / ZONE.driftSeconds));
+  const cy = height * (.5 + ZONE.driftShare * Math.cos(2 * Math.PI * seconds / ZONE.driftSeconds));
+  const phase = ZONE.phasePerSecond * seconds;
+  drawGrey(ctx, width, height, (x, y) => 128 + ZONE.contrast * Math.cos(Math.PI * ((x - cx) ** 2 + (y - cy) ** 2) / scale + phase));
+}
+
+const PAN = { pixelsPerSecond: 24, periodSeconds: 20 };
+/** A slow pan over wide, low-contrast gradients: a sky, a haze and soft blobs. */
+function drawGradientPan(ctx, width, height, seconds) {
+  const unit = width / 1280, offset = PAN.pixelsPerSecond * unit * (seconds % PAN.periodSeconds);
+  const sky = ctx.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, '#20324a'); sky.addColorStop(.55, '#5d7491'); sky.addColorStop(1, '#a9a3a0');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, width, height);
+  for (let i = 0; i < 7; i++) {
+    const x = ((i * .23 * width - offset) % (width * 1.6) + width * 1.6) % (width * 1.6) - width * .3;
+    const y = height * (.25 + .5 * hash(i, 1));
+    const r = height * (.25 + .25 * hash(i, 2));
+    const blob = ctx.createRadialGradient(x, y, 0, x, y, r);
+    blob.addColorStop(0, `rgba(${200 + 40 * hash(i, 3)}, ${170 + 40 * hash(i, 4)}, 150, .35)`);
+    blob.addColorStop(1, 'rgba(200, 180, 150, 0)');
+    ctx.fillStyle = blob; ctx.fillRect(0, 0, width, height);
+  }
+  const haze = ctx.createLinearGradient(-offset, 0, width * 2 - offset, 0);
+  haze.addColorStop(0, 'rgba(255,255,255,0)'); haze.addColorStop(.5, 'rgba(255,255,255,.12)'); haze.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = haze; ctx.fillRect(0, 0, width, height);
+}
+
+const NOISE = { amplitude: 10 };
+/** The study scene stopped at 0 s under fresh sensor-like noise every frame. */
+function drawSensorNoise(ctx, width, height, seconds) {
+  drawStudy(ctx, width, height, 0);
+  const frame = Math.round(seconds * SCENE_FPS), image = ctx.getImageData(0, 0, width, height), data = image.data;
+  for (let y = 0, at = 0; y < height; y++) {
+    for (let x = 0; x < width; x++, at += 4) {
+      // Luma-like noise shared by the channels, with a little of its own per channel.
+      const shared = (hash(x, y, frame) - .5) * 2 * NOISE.amplitude;
+      for (let c = 0; c < 3; c++) data[at + c] += shared + (hash(x, y, frame * 3 + c + 1) - .5) * NOISE.amplitude * .5;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+const TEXT = { linesPerSecond: 1.5, lines: 400 };
+const WORDS = ['encoder', 'frame', 'key', 'delta', 'buffer', 'rate', 'motion', 'block', 'residual', 'skip', 'quant', 'loop', 'filter', 'tile'];
+/** A text line of the scrolling log: deterministic words and numbers. */
+function textLine(n) {
+  const words = Array.from({ length: 4 + Math.floor(hash(n, 7) * 6) }, (_, i) => WORDS[Math.floor(hash(n, i) * WORDS.length)]);
+  return `${String(n).padStart(4, '0')}  ${words.join(' ')}  ${(hash(n, 9) * 1000).toFixed(1)}`;
+}
+/** Screen content: a static window frame and menu beside a log scrolling up. */
+function drawScrollingText(ctx, width, height, seconds) {
+  const unit = height / 720, line = 22 * unit;
+  ctx.fillStyle = '#f4f4f0'; ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = '#2b5797'; ctx.fillRect(0, 0, width, 40 * unit);
+  ctx.fillStyle = '#ffffff'; ctx.font = `${18 * unit}px sans-serif`; ctx.fillText('nanocodec · session log', 16 * unit, 27 * unit);
+  ctx.fillStyle = '#e3e6ea'; ctx.fillRect(0, 40 * unit, 220 * unit, height);
+  ctx.fillStyle = '#1d1d1d'; ctx.font = `${16 * unit}px sans-serif`;
+  ['Overview', 'Streams', 'Rate control', 'Key frames', 'Analysis', 'Settings'].forEach((item, i) => ctx.fillText(item, 20 * unit, (80 + 34 * i) * unit));
+  ctx.save(); ctx.beginPath(); ctx.rect(240 * unit, 56 * unit, width - 256 * unit, height - 72 * unit); ctx.clip();
+  const scroll = seconds * TEXT.linesPerSecond * line, first = Math.floor(scroll / line);
+  ctx.font = `${15 * unit}px monospace`;
+  for (let n = first; n < first + height / line + 1; n++) {
+    ctx.fillStyle = n % 5 === 0 ? '#b3261e' : '#202124';
+    ctx.fillText(textLine(n % TEXT.lines), 250 * unit, 56 * unit + (n + 1) * line - scroll);
+  }
+  ctx.restore();
+}
+
+const GLOBAL = { panPerSecond: 60, zoomShare: .35, zoomSeconds: 7, rotation: .35, rotationSeconds: 11, tile: 48 };
+/** A textured plane under a combined pan, zoom and rotation of the whole picture. */
+function drawGlobalMotion(ctx, width, height, seconds) {
+  const unit = width / 1280, tile = GLOBAL.tile * unit;
+  ctx.fillStyle = '#333'; ctx.fillRect(0, 0, width, height);
+  ctx.save();
+  ctx.translate(width / 2, height / 2);
+  ctx.rotate(GLOBAL.rotation * Math.sin(2 * Math.PI * seconds / GLOBAL.rotationSeconds));
+  const zoom = 1 + GLOBAL.zoomShare * Math.sin(2 * Math.PI * seconds / GLOBAL.zoomSeconds);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-GLOBAL.panPerSecond * unit * seconds, -.4 * GLOBAL.panPerSecond * unit * seconds);
+  // The tiles around the view's centre, enough to cover it at the smallest zoom and any rotation.
+  const reach = Math.ceil(Math.hypot(width, height) / (tile * (1 - GLOBAL.zoomShare)) / 2) + 1;
+  const ci = Math.floor(GLOBAL.panPerSecond * unit * seconds / tile), cj = Math.floor(.4 * GLOBAL.panPerSecond * unit * seconds / tile);
+  ctx.font = `${tile * .4}px monospace`;
+  for (let j = cj - reach; j <= cj + reach; j++) for (let i = ci - reach; i <= ci + reach; i++) {
+    const shade = Math.floor(60 + 160 * hash(i, j));
+    ctx.fillStyle = `rgb(${shade}, ${Math.floor(80 + 120 * hash(j, i, 1))}, ${Math.floor(70 + 150 * hash(i, j, 2))})`;
+    ctx.fillRect(i * tile, j * tile, tile, tile);
+    ctx.fillStyle = (i + j) % 2 ? '#111' : '#eee';
+    ctx.beginPath(); ctx.arc((i + .5) * tile, (j + .5) * tile, tile * .18, 0, Math.PI * 2); ctx.fill();
+    if ((i - j) % 3 === 0) ctx.fillText(String((i * 7 + j) & 63), i * tile + tile * .1, j * tile + tile * .9);
+  }
+  ctx.restore();
+}
+
+const CUTS = { shotSeconds: 2, flashAt: 4, flashFrames: 3, fadeSeconds: 1 };
+/**
+ * Shots cut every CUTS.shotSeconds over an 8 s cycle: the study, the moving plane,
+ * a white flash, the gradient pan, then a fade to black and back in.
+ */
+function drawCutsAndFades(ctx, width, height, seconds) {
+  const cycle = 4 * CUTS.shotSeconds, t = seconds % cycle, shot = Math.floor(t / CUTS.shotSeconds);
+  [drawStudy, drawGlobalMotion, drawGradientPan, drawStudy][shot](ctx, width, height, seconds);
+  const frame = Math.round((t - CUTS.flashAt) * SCENE_FPS);
+  if (frame >= 0 && frame < CUTS.flashFrames) { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, width, height); }
+  const fade = t - (cycle - 2 * CUTS.fadeSeconds);
+  if (fade >= 0) {
+    ctx.fillStyle = `rgba(0, 0, 0, ${1 - Math.abs(fade - CUTS.fadeSeconds) / CUTS.fadeSeconds})`;
+    ctx.fillRect(0, 0, width, height);
+  }
+}
+
+const CROWD = { movers: 160, maxSpeed: 70, size: 14 };
+/** A static paved ground under many small figures, each on its own straight path, wrapping at the edges. */
+function drawCrowd(ctx, width, height, seconds) {
+  const unit = width / 1280;
+  drawGround(ctx, width, height);
+  for (let i = 0; i < CROWD.movers; i++) {
+    const speed = CROWD.maxSpeed * unit * (.2 + .8 * hash(i, 1)), angle = 2 * Math.PI * hash(i, 2);
+    const x = ((hash(i, 3) * width + Math.cos(angle) * speed * seconds) % width + width) % width;
+    const y = ((hash(i, 4) * height + Math.sin(angle) * speed * seconds) % height + height) % height;
+    const size = CROWD.size * unit * (.7 + .6 * hash(i, 5));
+    ctx.fillStyle = `hsl(${Math.floor(360 * hash(i, 6))}, 55%, ${30 + Math.floor(40 * hash(i, 7))}%)`;
+    ctx.beginPath(); ctx.ellipse(x, y, size * .45, size * .8, angle, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#e8c9a8'; ctx.beginPath(); ctx.arc(x + Math.cos(angle) * size * .5, y + Math.sin(angle) * size * .5, size * .3, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+/** Grey paving stones with fine joints: detailed and still. */
+function drawGround(ctx, width, height) {
+  const unit = width / 1280, stone = 40 * unit;
+  ctx.fillStyle = '#4a4a46'; ctx.fillRect(0, 0, width, height);
+  for (let j = 0; j * stone < height; j++) for (let i = -1; i * stone < width; i++) {
+    const shade = Math.floor(110 + 50 * hash(i, j, 9));
+    ctx.fillStyle = `rgb(${shade}, ${shade - 4}, ${shade - 10})`;
+    ctx.fillRect(i * stone + (j % 2) * stone / 2 + unit, j * stone + unit, stone - 2 * unit, stone - 2 * unit);
+  }
+}
+
+const MOVER = { radius: 18, xSeconds: 6, ySeconds: 4.4 };
+/** A still detailed scene with one small ball on a slow Lissajous path. */
+function drawOneMover(ctx, width, height, seconds) {
+  drawGround(ctx, width, height);
+  const x = width * (.5 + .4 * Math.sin(2 * Math.PI * seconds / MOVER.xSeconds));
+  const y = height * (.5 + .35 * Math.sin(2 * Math.PI * seconds / MOVER.ySeconds));
+  ctx.fillStyle = '#d23c2a'; ctx.beginPath(); ctx.arc(x, y, MOVER.radius * width / 1280, 0, Math.PI * 2); ctx.fill();
+}
+
+/** The scenes in picker order: id, name, what it stresses, its constants and its drawing. */
+export const SCENES = [
+  { id: DEFAULT_SCENE, name: 'Motion study', tip: 'Moving shapes, fine texture and a smooth gradient: a general mix.', params: {}, draw: drawStudy },
+  { id: 'zone-plate', name: 'Moving zone plate', tip: 'Rings up to the finest detail a picture holds: aliasing, transforms and ringing.', params: ZONE, draw: drawZonePlate },
+  { id: 'gradient-pan', name: 'Slow pan over gradients', tip: 'Wide, faint gradients panning slowly: banding and blocking at low rates.', params: PAN, draw: drawGradientPan },
+  { id: 'sensor-noise', name: 'Still scene, sensor noise', tip: 'A still picture under fresh noise each frame: the still-camera noise handling and skip decisions.', params: NOISE, draw: drawSensorNoise },
+  { id: 'scrolling-text', name: 'Scrolling text', tip: 'A window with a scrolling log: screen content and sharp edges.', params: TEXT, draw: drawScrollingText },
+  { id: 'global-motion', name: 'Pan, zoom and rotation', tip: 'The whole picture moving at once: motion search and non-translational motion.', params: GLOBAL, draw: drawGlobalMotion },
+  { id: 'cuts-fades', name: 'Cuts, flashes and fades', tip: 'Shot changes, a white flash and a fade: key frame decisions and rate control.', params: CUTS, draw: drawCutsAndFades },
+  { id: 'crowd', name: 'Many small movers', tip: 'A synthetic crowd of independent movers: block partitioning and the motion field.', params: CROWD, draw: drawCrowd },
+  { id: 'one-mover', name: 'Still scene, one mover', tip: 'One small ball on a still background: skip efficiency, the bits spent where nothing changes.', params: MOVER, draw: drawOneMover },
+];
+
+/** The scene with this id, or the default for an unknown one. */
+export function sceneById(id) { return SCENES.find(scene => scene.id === id) ?? SCENES[0]; }
+
+/** Draw scene `id` (default: DEFAULT_SCENE) at `seconds` of source time. */
+export function drawScene(ctx, width, height, seconds, id = DEFAULT_SCENE) {
+  sceneById(id).draw(ctx, width, height, seconds);
 }

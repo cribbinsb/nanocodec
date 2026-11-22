@@ -31,9 +31,10 @@ import { AnalysisController } from './analysis-view.js';
 import { FrameSource } from './capture.js';
 import { ViewSources } from './exact-source.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
+import { DEFAULT_SCENE, SCENES, sceneById } from './scene.js';
 import { SOURCE_FPS, nextCommonTick, tickMs } from './timeline.js';
 import { matchingSettings } from './view-settings.js';
-import { parseDemoQuery } from './deep-link.js';
+import { parseDemoQuery, parseSceneQuery } from './deep-link.js';
 import { trace, traceTail } from './trace.js';
 import { buildReport, clipSeconds, formatReport, sha256 } from './debug-report.js';
 import { download } from './streams.js';
@@ -60,6 +61,8 @@ const KEEPING_UP = 0.95;
 const STAGE_BOUND = 0.8;
 // Said of a clip or file the browser cannot decode frame by frame (exact-source.js), so it is sampled while it plays.
 const APPROXIMATE = 'sampled while it plays (this browser cannot read it frame by frame): numbers approximate';
+// The test scene drawn when the source is the scene (scene.js SCENES id).
+let sceneId = DEFAULT_SCENE;
 let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
 let running = false, preparing = false, generation = 0, comparison = null, timer = 0, restartTimer = 0;
 let delivered = 0;
@@ -154,7 +157,9 @@ async function sourceState(loopLength) {
   }
   const reason = kind === 'camera' ? 'a webcam picture is never embedded; replay checks the statistics and any embedded streams'
     : 'the test scene is drawn by the browser; replay checks the statistics and any embedded streams';
-  return { ...base, fps: kind === 'scene' ? SOURCE_FPS : null, reproducible: false, reason };
+  // A scene is named with its constants: its pixels follow from them and the tick (scene.js).
+  const scene = kind === 'scene' ? { scene: sceneId, sceneParams: sceneById(sceneId).params } : {};
+  return { ...base, ...scene, fps: kind === 'scene' ? SOURCE_FPS : null, reproducible: false, reason };
 }
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function setPauseButton(label, pressed) { pauseButton.textContent = label; pauseButton.setAttribute('aria-pressed', String(pressed)); }
@@ -371,7 +376,7 @@ function applyLighter(index, change) {
 }
 /** Say what is compared (the header sentence), and when the views' numbers are not directly comparable. */
 function describeViews() {
-  const source = { clip: `the clip ${clip.title}`, scene: 'the test scene', camera: 'your webcam', file: file?.name ?? 'a video file' }[kind];
+  const source = { clip: `the clip ${clip.title}`, scene: `the test scene ${sceneById(sceneId).name}`, camera: 'your webcam', file: file?.name ?? 'a video file' }[kind];
   $('#summary').textContent = `Comparing ${panels[0].summary} in A with ${panels[1].summary} in B, on ${source}.`;
   const configs = panels.map(p => p.config()), notes = [];
   if ((configs[0].width !== configs[1].width || configs[0].height !== configs[1].height)) {
@@ -398,14 +403,14 @@ async function metadata() {
 }
 /** Each view's source: a clip's rendition for the view's height (clips.js clipUrl), the file, or the scene. */
 function viewSourceUrls() {
-  return panels.map(panel => (kind === 'clip' ? clipUrl(clip, panel.current.height) : kind === 'file' ? fileUrl : kind));
+  return panels.map(panel => (kind === 'clip' ? clipUrl(clip, panel.current.height) : kind === 'file' ? fileUrl : kind === 'scene' ? `scene:${sceneId}` : kind));
 }
 /** The exact sources for the current clip, file or scene, reused while they are the same (null: none). */
 async function openExact() {
   const urls = viewSourceUrls(), identity = urls.join(' ');
   if (exactFor === identity) return exact;
   exact?.close();
-  exact = kind === 'camera' ? null : await ViewSources.open(kind, urls, { fps: kind === 'clip' ? clip.fps : null, loops: kind === 'clip' });
+  exact = kind === 'camera' ? null : await ViewSources.open(kind, urls, { fps: kind === 'clip' ? clip.fps : null, loops: kind === 'clip', scene: sceneId });
   exactFor = identity;
   return exact;
 }
@@ -474,7 +479,7 @@ async function start() {
     if (token !== generation) return;
     await Promise.all(panels.map(panel => panel.prepare()));
     if (token !== generation) return;
-    if (!exact) frames.reset(kind, kind === 'clip' ? clip.fps : SOURCE_FPS);
+    if (!exact) frames.reset(kind, kind === 'clip' ? clip.fps : SOURCE_FPS, sceneId);
     const loopLength = (exact ?? frames).loopLength;
     for (const panel of panels) {
       if (panel.current.entry && panel.stream.loopTicks !== loopLength) {
@@ -632,8 +637,10 @@ function sourceChanged(next) {
   exact?.close(); exact = null; exactFor = null;
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
   const speed = clip.speed ? ` · plays ${clip.speed.toFixed(2)}× real time (retimed to 30 fps)` : '';
-  const names = { clip: `${clip.film} · ${clip.title}${speed}`, scene: 'Moving shapes, fine texture and a smooth gradient', camera: 'Webcam', file: file?.name || 'Choose a local video file' };
+  const scene = sceneById(sceneId);
+  const names = { clip: `${clip.film} · ${clip.title}${speed}`, scene: `${scene.name} · ${scene.tip}`, camera: 'Webcam', file: file?.name || 'Choose a local video file' };
   $('#source-name').textContent = names[kind];
+  scenePicker.hidden = kind !== 'scene'; scenePicker.title = scene.tip;
   clipCredit.hidden = kind !== 'clip'; clipCredit.textContent = clip.credit; clipCredit.title = clip.notice ?? '';
   $('#session-stats').textContent = 'Starting…';
   describeViews();
@@ -647,6 +654,10 @@ for (const group of CLIP_GROUPS) {
   clipPicker.append(optgroup);
 }
 clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); });
+// The test scenes (scene.js), each with what it stresses as its tooltip; shown while the scene is the source.
+const scenePicker = $('#scene');
+for (const { id, name, tip } of SCENES) { const option = new Option(name, id, false, id === sceneId); option.title = tip; scenePicker.append(option); }
+scenePicker.addEventListener('change', () => { sceneId = sceneById(scenePicker.value).id; sourceChanged('scene'); });
 $('#file').addEventListener('change', event => { const selected = event.target.files[0]; if (selected) { file = selected; sourceChanged('file'); } });
 $('#keyframe').addEventListener('click', () => {
   if (!running) return;
@@ -702,8 +713,12 @@ async function openLink() {
 }
 /** The opening comparison (a results link, else OPENING_STREAM), then the first start. */
 async function openPage() {
-  if (await openLink()) { sourceChanged('clip'); return; }
-  if (!LIVE_VIEWS) {
+  // A linked test scene is the source (no pre-encoded stream can play on it).
+  const linkedScene = SCENES.find(scene => scene.id === parseSceneQuery(location.search));
+  if (linkedScene) { sceneId = linkedScene.id; scenePicker.value = sceneId; }
+  const opening = linkedScene ? 'scene' : 'clip';
+  if (await openLink()) { sourceChanged(opening); return; }
+  if (!LIVE_VIEWS && !linkedScene) {
     try {
       await panels[0].showStream(OPENING_STREAM);
       clip = clipById(panels[0].reference.clip); clipPicker.value = clip.id;
@@ -713,6 +728,6 @@ async function openPage() {
       panels[0].goLive();
     }
   }
-  sourceChanged('clip');
+  sourceChanged(opening);
 }
 openPage();
