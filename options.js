@@ -5,6 +5,7 @@
 // The module loads on the page only once an Advanced section is first opened.
 import { MODULE_URL, compiledModule } from './wasm.js';
 import { DEFAULT_PRESET, streamExtension } from './codecs.js';
+import { clipStartKeys } from './view-settings.js';
 
 let loading = null;
 
@@ -56,7 +57,7 @@ export function settingLines(text) {
 /**
  * The `nanocodec encode` command with the settings of `config` (as Panel.config returns it)
  * for `frames` frames: codec, size, rate, key interval, quantizer seed, preset, spatial layers, overrides,
- * film grain and the still-camera noise handling.
+ * film grain, the still-camera noise handling and keys requested "On clip start".
  */
 export function cliCommand(config, frames) {
   const args = ['nanocodec encode', `--codec ${config.codec}`, '--input source.yuv',
@@ -69,6 +70,10 @@ export function cliCommand(config, frames) {
   for (const setting of settingLines(config.overrides)) args.push(`--param ${setting}`);
   if (config.filmGrain) args.push('--film-grain');
   if (config.stillCamera) args.push('--still-camera');
+  // Keys "On clip start" on a loop of whole frames are the periodic ones; otherwise requested at each loop.
+  if (config.keyAtClipStart && config.loopTicks) {
+    for (const frame of clipStartKeys(config.loopTicks, config.step, config.fps, frames).requested) args.push(`--keyframe ${frame}`);
+  }
   args.push(`--output stream.${streamExtension(config.codec)}`);
   return args.join(' ');
 }

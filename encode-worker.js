@@ -19,6 +19,7 @@ import { MODULE_URL } from './wasm.js';
 // Frame timestamps from the page are in milliseconds; the encoder takes microseconds.
 const MICROSECONDS_PER_MS = 1000;
 import { warmUpEncoder } from './encode-warmup.js';
+import { tickAt } from './timeline.js';
 // The colour of the sample clips (limited-range BT.709): the usual first frame's.
 const DEFAULT_COLOUR = 'bt709';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
@@ -37,6 +38,19 @@ let coding = false;
 // `rateApplied`), so the page's debug report can replay it at exactly that
 // frame (these messages and the captures come on different ports).
 let keyRequested = false, rateApplied = null;
+// The clip loop the previous coded frame was in, for keys "On clip start"
+// (config.loopTicks, view-settings.js `clipStartKeys`).
+let lastLoop = null;
+/**
+ * Request a key for the first frame coded in a new loop of the clip (timestamps are
+ * source times). A loop of whole frames needs none: its periodic interval is the loop.
+ */
+function keyAtClipStart(timestamp) {
+  if (!config.loopTicks || config.loopTicks % config.step === 0) return;
+  const loop = Math.floor(tickAt(timestamp) / config.loopTicks);
+  if (lastLoop !== null && loop > lastLoop) { encoder.request_keyframe(); keyRequested = true; }
+  lastLoop = loop;
+}
 /** Convert a captured frame (capture-worker.js) into `source`. */
 function convert(frame) {
   if (frame.kind === 'planes') {
@@ -59,6 +73,7 @@ function packedSource() {
 function encodeFrame({ frame, timestamp }) {
   const start = performance.now();
   convert(frame);
+  keyAtClipStart(timestamp);
   // A live source's frames carry their capture time (some may have been skipped):
   // rate control budgets each for the real time since the previous one.
   const packet = config.timed ? encoder.encode_at(source, timestamp * MICROSECONDS_PER_MS) : encoder.encode(source);

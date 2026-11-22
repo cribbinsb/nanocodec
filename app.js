@@ -488,6 +488,8 @@ async function start() {
     const renditions = exact ? viewSourceUrls() : panels.map(() => clipUrl(clip, Math.max(...panels.map(p => p.current.height))));
     panels.forEach((panel, i) => {
       panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null };
+      // "On clip start" keys where the clip loops (panel.js `atLoop`, encode-worker.js).
+      if (kind === 'clip' && Number.isFinite(loopLength)) panel.current = panel.atLoop(panel.current, loopLength);
     });
     comparison = new Comparison(panels, {
       onFrame: (results, originals, tick) => finishFrame(token, results, originals, tick),
@@ -625,6 +627,7 @@ function sourceChanged(next) {
   stop(); kind = next; message();
   // Reference streams exist for the sample clips only.
   for (const panel of panels) panel.setClip(kind === 'clip' ? clip.id : null);
+  for (const panel of panels) panel.setSourceKind(kind);
   exact?.close(); exact = null; exactFor = null;
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
   const speed = clip.speed ? ` · plays ${clip.speed.toFixed(2)}× real time (retimed to 30 fps)` : '';

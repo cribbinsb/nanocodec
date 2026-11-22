@@ -7,7 +7,7 @@
 // own. A stream's file is fetched only when a view selects it.
 import { CODECS } from './codecs.js';
 import { ivfPackets } from './streams.js';
-import { tickStep } from './timeline.js';
+import { SOURCE_FPS, tickStep } from './timeline.js';
 
 export const MANIFEST_URL = new URL('./streams-ref/manifest.json', import.meta.url);
 
@@ -45,6 +45,21 @@ export function pickerGroups(streams, clip) {
   const byEncoder = new Map();
   for (const entry of own) byEncoder.set(entry.label, [...(byEncoder.get(entry.label) ?? []), entry]);
   return { encoders: [...byEncoder], otherClips: ordered.filter(([id]) => id !== clip) };
+}
+
+/** Seconds as the page shows them: whole, or to a tenth. */
+export const secondsLabel = value => `${Number(value.toFixed(1))} s`;
+
+/**
+ * When a stream's key frames come, as a pane shows it. A stream is one loop of its
+ * clip and replays from its first (key) frame at every loop (`framesToDecode`), so
+ * its keys come at least once per loop whatever its key interval, as a live view's do
+ * "On clip start" (view-settings.js KEY_AT_CLIP_START).
+ */
+export function keyCadence(entry) {
+  const loop = secondsLabel(entry.loopTicks / SOURCE_FPS);
+  if (entry.keyInterval >= entry.frames) return `key at each clip start, every ${loop}`;
+  return `key every ${secondsLabel(entry.keyInterval / entry.fps)}, restarting at each clip start (every ${loop})`;
 }
 
 /** One line naming a stream in a picker: encoder, codec (one encoder name may cover several), size, rate, bitrate. */
