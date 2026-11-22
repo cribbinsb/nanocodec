@@ -57,6 +57,16 @@ export function matchProblems(entry, clipIds) {
   return problems;
 }
 
+/**
+ * Whether a view codes a clip at more than half its source file's bitrate: the source's
+ * own coding then shows in the comparison (the project codes a clip at most at half its
+ * source bitrate, CLAUDE.md "Testing"). Unknown (null) source rates are not flagged.
+ */
+export const SOURCE_RATE_SHARE = 0.5;
+export function overSourceShare(targetKbps, sourceKbps) {
+  return Number.isFinite(sourceKbps) && targetKbps > SOURCE_RATE_SHARE * sourceKbps;
+}
+
 /** The longest periodic key interval a live encoder takes (nc-web BrowserEncoder), in seconds. */
 const MAX_KEY_SECONDS = 30;
 

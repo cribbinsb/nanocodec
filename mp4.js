@@ -122,3 +122,12 @@ function samples(view, stbl, shift) {
   }
   return out;
 }
+
+/**
+ * A track's video bitrate in kbps over its playing time at `fps` frames per second (the
+ * page plays a clip file's frames at its own rate, clips.js `fps`): the sample bytes only.
+ */
+export function trackKbps(track, fps) {
+  const bytes = track.samples.reduce((sum, sample) => sum + sample.size, 0);
+  return bytes * 8 / (track.samples.length / fps) / 1000;
+}

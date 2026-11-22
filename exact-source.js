@@ -34,6 +34,8 @@ export class ExactSource {
     this.surface = document.createElement('canvas');
     this.surfaceContext = this.surface.getContext('2d', { willReadFrequently: true });
   }
+  /** The clip file's video bitrate in kbps (null for the scene). */
+  get sourceKbps() { return this.clip?.kbps ?? null; }
   /** Whether `tick` is past the end of a file that does not loop. */
   ended(tick) { return Boolean(this.clip) && !Number.isFinite(this.loopLength) && frameAtTick(tick, this.clip.fps) >= this.clip.frameCount; }
   /**
@@ -77,6 +79,8 @@ export class ViewSources {
   /** Ticks in one loop (every source has the same). */
   get loopLength() { return this.entries[0].source.loopLength; }
   ended(tick) { return this.entries[0].source.ended(tick); }
+  /** The video bitrate in kbps of the file view `view` codes from (null for the scene). */
+  sourceKbps(view) { return this.entries.find(entry => entry.views.includes(view)).source.sourceKbps; }
   /**
    * The pictures of `tick` for the views that code it (`coding`): one shot
    * (ExactSource.picture, plus `views`, the view indices it is for) per source

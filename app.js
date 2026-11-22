@@ -487,7 +487,8 @@ async function start() {
     // the exact path, the playing video's otherwise.
     const renditions = exact ? viewSourceUrls() : panels.map(() => clipUrl(clip, Math.max(...panels.map(p => p.current.height))));
     panels.forEach((panel, i) => {
-      panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null };
+      panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null,
+        sourceKbps: kind === 'clip' && exact ? exact.sourceKbps(i) : null };
       // "On clip start" keys where the clip loops (panel.js `atLoop`, encode-worker.js).
       if (kind === 'clip' && Number.isFinite(loopLength)) panel.current = panel.atLoop(panel.current, loopLength);
     });

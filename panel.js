@@ -12,7 +12,7 @@ import { fetchStream, keyCadence, loadManifest, secondsLabel, pickerGroups, refe
 import { trace } from './trace.js';
 import { CHART_PRESETS, resultsQuery } from './deep-link.js';
 import { BITRATE_FORMULA, PSNR_FORMULA, shownNumbers } from './debug-report.js';
-import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, KEY_AT_CLIP_START, PEAK_TO_TARGET, RATE_LIMITS_KBPS, RESOLUTIONS, clipStartKeys } from './view-settings.js';
+import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, KEY_AT_CLIP_START, PEAK_TO_TARGET, RATE_LIMITS_KBPS, RESOLUTIONS, clipStartKeys, overSourceShare } from './view-settings.js';
 
 // Statistics cover this many recent coded frames.
 const HISTORY_FRAMES = 90;
@@ -543,9 +543,12 @@ export class Panel {
    */
   settingsNote() {
     const c = this.current;
-    if (c.entry) return ` · ${keyCadence(c.entry)} · ${bufferLabel(c.entry.bufferMs)} buffer · still-camera n/a`;
+    const target = c.entry ? c.entry.targetKbps : c.rateMode === 'cbr' ? c.targetKbps : null;
+    const source = target !== null && overSourceShare(target, c.sourceKbps)
+      ? ` · over half the clip file's ${c.sourceKbps.toFixed(0)} kbps: its own coding may show` : '';
+    if (c.entry) return ` · ${keyCadence(c.entry)} · ${bufferLabel(c.entry.bufferMs)} buffer · still-camera n/a${source}`;
     const rate = c.rateMode === 'cbr' ? ` · peak ${c.peakKbps} kbps, ${bufferLabel(c.bufferMs)} buffer` : '';
-    return ` · ${this.liveKeys()}${rate} · still-camera ${onOff(c.stillCamera)}`;
+    return ` · ${this.liveKeys()}${rate} · still-camera ${onOff(c.stillCamera)}${source}`;
   }
   /** When a live view's keys come, as its rate line says. */
   liveKeys() {
