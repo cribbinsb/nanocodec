@@ -55,9 +55,13 @@
     {"flag": "--sse-reference", "value": "PATH", "help": "The reference frames for --sse-log."},
     {"flag": "--layer-md5", "value": "FILE", "help": "CSV of each layer picture's size, bytes and MD5."},
     {"flag": "--filter-stats", "value": "FILE", "help": "JSON of the frame-level filter searches' units by outcome (off, unchanged), by tool and frame role; \"given\": [units, off, unchanged] of the searched units by their own last outcomes (off at the last 1, 2, 4 searches, on, unchanged) and content (quiet: mostly coded without residual)."},
+    {"flag": "--label-dump", "value": "DIR", "help": "Decision labels for learned models: per superblock its inputs and coded cost, per searched node every candidate's coded cost and time, as .npy columns (docs/analysis/nn-dataset-schema.md). The stream is unchanged; encoding is slower."},
+    {"flag": "--label-tool", "value": "NAME:PARAM=VALUE[,...]", "help": "With --label-dump: also code every superblock with these parameters on top of the preset's, the rest of the frame as the preset codes it, recording its J and time (sb/tool_cost, sb/tool_ns); repeatable. Engine decision./planner. parameters, or the codec's per-superblock ones."},
     {"flag": "--spatial-stats", "value": "FILE", "help": "JSON summary of per-layer bytes, rates and references."},
     {"flag": "--qp-replay", "value": "FILE", "help": "With --bitrate: impose these quantisers on rate control's plan, by frame."},
     {"flag": "--key-offsets", "value": "FILE", "help": "QP offsets per 8x8 luma cell imposed on key frames, by input frame (an oracle: `frame N`, then one line of offsets per cell row)."},
+    {"flag": "--partition-record", "value": "FILE", "help": "Every inter superblock's coded partition (an oracle: the transplant log)."},
+    {"flag": "--partition-replay", "value": "FILE", "help": "Code a --partition-record log's partitions in place of the plan, without the RD partition search (an oracle: the partition transplant)."},
     {"flag": "--analysis-log", "value": "FILE", "help": "Every frame's analysis per 8x8 luma cell (binary: variance, motion SAD and vector)."},
     {"flag": "--simulate-loss", "value": "FRAME[:LAYER]", "help": "Report frame FRAME (or spatial layer LAYER of it) lost; every other frame is acknowledged."}]}]},
   {"name": "decode", "about": "Decode one of our streams with our own subset decoder.", "groups": [

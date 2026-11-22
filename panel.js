@@ -692,7 +692,8 @@ export class Panel {
       + `${config.filmGrain ? ' · film grain' : ''} · overrides: ${overrides}. The CLI command below the view takes an I420 file of the`
       + ` ${frames} recorded frames (for a sample clip, ffmpeg's decode of its file at this size); after a live rate change it shows the latest.`;
     cli.title = '';
-    cli.textContent = cliCommand(config, frames);
+    // The colour of the frames the encoder last coded (the source decides it, colour.js).
+    cli.textContent = cliCommand(config, frames, this.log.findLast(frame => frame.colour)?.colour);
   }
   save() {
     if (this.current.entry) {

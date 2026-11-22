@@ -375,6 +375,31 @@ export class BrowserDecoder {
         }
     }
     /**
+     * Show the next picture the decoder has output but not shown yet
+     * (H.264, HEVC and VVC show in output order, so one packet of a
+     * stream that reorders can output several pictures, and
+     * [`Self::finish`] outputs the last ones); `false` when there is none,
+     * as for the other codecs, which show one picture per packet.
+     * # Errors
+     * A deep picture without an even 4:2:0 window.
+     * @returns {boolean}
+     */
+    next_frame() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.browserdecoder_next_frame(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Convert the latest frame to RGBA (`width * height * 4` bytes) with
      * `colour` (the matrix and range of the samples, `SourceFrame` names)
      * in a buffer this decoder reuses, and return its byte offset in the
@@ -725,6 +750,25 @@ export class BrowserDecoder {
             const ptr0 = passArray8ToWasm0(packet, wasm.__wbindgen_export);
             const len0 = WASM_VECTOR_LEN;
             wasm.browserdecoder_decode(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * The end of the stream: pictures still held for output order are
+     * output, for [`Self::next_frame`] to show.
+     * # Errors
+     * As [`Self::decode`] for the last picture.
+     */
+    finish() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.browserdecoder_finish(retptr, this.__wbg_ptr);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             if (r1) {

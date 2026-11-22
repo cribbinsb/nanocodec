@@ -47,6 +47,16 @@ export class BrowserDecoder {
    */
   i420_frame(): number;
   /**
+   * Show the next picture the decoder has output but not shown yet
+   * (H.264, HEVC and VVC show in output order, so one packet of a
+   * stream that reorders can output several pictures, and
+   * [`Self::finish`] outputs the last ones); `false` when there is none,
+   * as for the other codecs, which show one picture per packet.
+   * # Errors
+   * A deep picture without an even 4:2:0 window.
+   */
+  next_frame(): boolean;
+  /**
    * Convert the latest frame to RGBA (`width * height * 4` bytes) with
    * `colour` (the matrix and range of the samples, `SourceFrame` names)
    * in a buffer this decoder reuses, and return its byte offset in the
@@ -147,6 +157,13 @@ export class BrowserDecoder {
    * player uses `decode_frame` instead.
    */
   decode(packet: Uint8Array): void;
+  /**
+   * The end of the stream: pictures still held for output order are
+   * output, for [`Self::next_frame`] to show.
+   * # Errors
+   * As [`Self::decode`] for the last picture.
+   */
+  finish(): void;
   /**
    * The squared error of the latest decoded frame against the source frame
    * the last `psnr` call scored it against, per block of the PSNR map's
@@ -419,10 +436,12 @@ export interface InitOutput {
   readonly browserdecoder_error_map_height: (a: number) => number;
   readonly browserdecoder_error_map_length: (a: number) => number;
   readonly browserdecoder_error_map_width: (a: number) => number;
+  readonly browserdecoder_finish: (a: number, b: number) => void;
   readonly browserdecoder_frame_shown: (a: number) => number;
   readonly browserdecoder_height: (a: number) => number;
   readonly browserdecoder_i420_frame: (a: number, b: number) => void;
   readonly browserdecoder_new: (a: number, b: number, c: number) => void;
+  readonly browserdecoder_next_frame: (a: number, b: number) => void;
   readonly browserdecoder_psnr: (a: number, b: number, c: number, d: number) => void;
   readonly browserdecoder_rgba_frame: (a: number, b: number, c: number, d: number) => void;
   readonly browserdecoder_scored_luma: (a: number, b: number) => void;

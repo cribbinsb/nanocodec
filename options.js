@@ -6,6 +6,7 @@
 import { MODULE_URL, compiledModule } from './wasm.js';
 import { DEFAULT_PRESET, streamExtension } from './codecs.js';
 import { clipStartKeys } from './view-settings.js';
+import { RGBA_COLOUR } from './colour.js';
 
 let loading = null;
 
@@ -55,11 +56,24 @@ export function settingLines(text) {
 }
 
 /**
- * The `nanocodec encode` command with the settings of `config` (as Panel.config returns it)
- * for `frames` frames: codec, size, rate, key interval, quantizer seed, preset, spatial layers, overrides,
- * film grain, the still-camera noise handling and keys requested "On clip start".
+ * The CLI's colour signalling for the colour of the coded samples (colour.js names, as
+ * nc-web `SourceFrame` reports them): the matrix the browser encoder signals (nc-web
+ * `signalled_colour`), and `--range full` for full range. AV2's subset has no colour syntax.
  */
-export function cliCommand(config, frames) {
+export function cliColour(codec, colour) {
+  if (!colour || codec === 'av2') return [];
+  const [family, range] = colour.split('-');
+  return [`--colour ${family}`, ...(range === 'full' ? ['--range full'] : [])];
+}
+
+/**
+ * The `nanocodec encode` command with the settings of `config` (as Panel.config returns it)
+ * for `frames` frames of samples of `colour` (default RGBA_COLOUR, the scene's): codec, size,
+ * rate, key interval, quantizer seed, preset, spatial layers, overrides, film grain, the
+ * still-camera noise handling, keys requested "On clip start" and the colour the browser
+ * encoder signals, so the command codes the page's stream byte for byte.
+ */
+export function cliCommand(config, frames, colour = RGBA_COLOUR) {
   const args = ['nanocodec encode', `--codec ${config.codec}`, '--input source.yuv',
     `--width ${config.width}`, `--height ${config.height}`, `--fps ${config.fps}`, `--frames ${frames}`,
     `--intra-period ${config.keyInterval}`, `--qp ${config.qp}`];
@@ -70,6 +84,7 @@ export function cliCommand(config, frames) {
   for (const setting of settingLines(config.overrides)) args.push(`--param ${setting}`);
   if (config.filmGrain) args.push('--film-grain');
   if (config.stillCamera) args.push('--still-camera');
+  args.push(...cliColour(config.codec, colour));
   // Keys "On clip start" on a loop of whole frames are the periodic ones; otherwise requested at each loop.
   if (config.keyAtClipStart && config.loopTicks) {
     for (const frame of clipStartKeys(config.loopTicks, config.step, config.fps, frames).requested) args.push(`--keyframe ${frame}`);
