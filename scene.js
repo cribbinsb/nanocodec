@@ -1,5 +1,5 @@
-// The built-in synthetic test scenes, drawn in the browser: no hosted bytes and no
-// licences. Each is a pure function of the picture size and the source time (a
+// The built-in synthetic test scenes, drawn in the browser (one, the waving hand, over a
+// hosted CC0 photograph: web/scenes/, web/clips/ATTRIBUTION.md). Each is a pure function of the picture size and the source time (a
 // tick's, timeline.js), so a scene is an exact source (exact-source.js) and two
 // views, a step or a restart see the same pixels. Each stresses one scenario
 // (`tip`); its constants are its `params`, which the debug report records with its id.
@@ -251,14 +251,86 @@ function drawOneMover(ctx, width, height, seconds) {
 }
 
 // The waving hand's 10 s cycle: wave, hold still, leave the frame, stay out, come back.
+// The room photograph behind the hand (tools/web/make-scene-photo.py): a PNG with no colour
+// chunks, decoded without colour conversion, at PHOTO_SIZE; its decoded RGBA pixels must hash
+// to PHOTO_PIXELS_SHA256 in every browser, or the scene falls back to the drawn room.
+const PHOTO_URL = new URL('./scenes/room-photo-1280x720.png', import.meta.url);
+const PHOTO_SIZE = [1280, 720];
+const PHOTO_FILE_SHA256 = 'baf7ac1890f3c80e243aebaceeaaf8ef82bf17428750ee21c2e0870e11eb450f';
+const PHOTO_PIXELS_SHA256 = 'ba53996367c221e999c96a4bd12e08469a1121e54517aac78c91147f0bf54ff4';
+// Version 2 (2026-11-22): the background is the photograph (version 1: the drawn room, now
+// only the fallback), resampled by `resamplePhoto`.
 const HAND = {
-  version: 1, waveSeconds: 5, waves: 4, swingRadians: .5, holdSeconds: 2.5, leaveSeconds: 1, outSeconds: 1, returnSeconds: .5,
+  version: 2, background: 'room-photo-1280x720.png', photoFileSha256: PHOTO_FILE_SHA256, photoPixelsSha256: PHOTO_PIXELS_SHA256,
+  waveSeconds: 5, waves: 4, swingRadians: .5, holdSeconds: 2.5, leaveSeconds: 1, outSeconds: 1, returnSeconds: .5,
   armLength: .5, armWidth: .34, palmRadius: .17, blurSeconds: 1 / 90, blurAlpha: .35,
 };
 const HAND_CYCLE = HAND.waveSeconds + HAND.holdSeconds + HAND.leaveSeconds + HAND.outSeconds + HAND.returnSeconds;
 // The room behind the hand per picture size, drawn once (a pure function of the size:
 // caching it changes no pixel).
 const roomBackgrounds = new Map();
+// The photograph, loaded once when the scene is first chosen (`loadPhoto`), and its
+// outcome once settled: { pixels } or { pixels: null, failure }.
+let photoLoad = null, photoResult = null;
+
+/** Hex SHA-256 of bytes. */
+async function sha256Hex(bytes) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Fetch and decode the photograph exactly: its RGBA pixels, or why they cannot be used. */
+async function decodePhoto() {
+  try {
+    const response = await fetch(PHOTO_URL);
+    if (!response.ok) return { pixels: null, failure: `HTTP ${response.status}` };
+    const bytes = await response.arrayBuffer();
+    if (await sha256Hex(bytes) !== PHOTO_FILE_SHA256) return { pixels: null, failure: 'the file differs' };
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+    const [width, height] = PHOTO_SIZE;
+    // Drawn at its own size: a copy, no scaling.
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pixels = context.getImageData(0, 0, width, height).data;
+    if (await sha256Hex(pixels) !== PHOTO_PIXELS_SHA256) return { pixels: null, failure: 'this browser decodes it to other pixels' };
+    return { pixels };
+  } catch (error) {
+    return { pixels: null, failure: error.message };
+  }
+}
+
+/** The photograph's decoded pixels (null on failure), loaded once. */
+function loadPhoto() {
+  photoLoad ??= decodePhoto().then(result => { photoResult = result; return result; });
+  return photoLoad;
+}
+
+/**
+ * The photograph at width x height: bilinear in integers (8-bit fractions, pixel centres
+ * aligned), so every browser gives the same pixels; the canvas scaler would not.
+ */
+function resamplePhoto(source, width, height) {
+  const [sw, sh] = PHOTO_SIZE, out = new Uint8ClampedArray(width * height * 4);
+  const FRACTION = 256, SHIFT = 16, HALF = 1 << (SHIFT - 1);
+  // Source position of output pixel i, in 1/FRACTION pixels: ((2i + 1) * s - d) / (2d), clamped.
+  const positions = (d, s) => Array.from({ length: d }, (_, i) =>
+    Math.min((s - 1) * FRACTION, Math.max(0, Math.floor((((2 * i + 1) * s - d) * FRACTION) / (2 * d)))));
+  const xs = positions(width, sw), ys = positions(height, sh);
+  for (let y = 0, at = 0; y < height; y++) {
+    const y0 = ys[y] >> 8, fy = ys[y] & 255, y1 = Math.min(sh - 1, y0 + 1);
+    for (let x = 0; x < width; x++, at += 4) {
+      const x0 = xs[x] >> 8, fx = xs[x] & 255, x1 = Math.min(sw - 1, x0 + 1);
+      const a = (y0 * sw + x0) * 4, b = (y0 * sw + x1) * 4, c = (y1 * sw + x0) * 4, d = (y1 * sw + x1) * 4;
+      for (let k = 0; k < 3; k++) {
+        const top = source[a + k] * (FRACTION - fx) + source[b + k] * fx, bottom = source[c + k] * (FRACTION - fx) + source[d + k] * fx;
+        out[at + k] = (top * (FRACTION - fy) + bottom * fy + HALF) >> SHIFT;
+      }
+      out[at + 3] = 255;
+    }
+  }
+  return new ImageData(out, width, height);
+}
 
 /** A still room: a textured wall, a window, a bookshelf, a poster with fine print and a desk edge. */
 function drawRoom(ctx, width, height) {
@@ -344,6 +416,20 @@ function drawHand(ctx, width, height, pose) {
   ctx.restore();
 }
 
+/** The room behind the hand at this size: the photograph's pixels resampled, else the drawn room. */
+function roomBackground(photo, width, height) {
+  if (photo) return resamplePhoto(photo, width, height);
+  const room = document.createElement('canvas'); room.width = width; room.height = height;
+  drawRoom(room.getContext('2d'), width, height);
+  return room;
+}
+
+/** What the waving hand's room is, for the debug report. */
+function handBackground() {
+  if (!photoResult) return 'photo not loaded yet';
+  return photoResult.pixels ? 'photo' : `drawn room (fallback: the photo could not be used: ${photoResult.failure})`;
+}
+
 /**
  * A hand waving in front of a still room (the classic webcam case): it sweeps back and
  * forth with eased acceleration and a little motion blur, holds still, leaves the frame,
@@ -351,12 +437,10 @@ function drawHand(ctx, width, height, pose) {
  */
 function drawWavingHand(ctx, width, height, seconds) {
   const key = `${width}x${height}`;
-  if (!roomBackgrounds.has(key)) {
-    const room = document.createElement('canvas'); room.width = width; room.height = height;
-    drawRoom(room.getContext('2d'), width, height);
-    roomBackgrounds.set(key, room);
-  }
-  ctx.drawImage(roomBackgrounds.get(key), 0, 0);
+  // The drawn room after a failed load (and, uncached, before `prepare` settled: no caller draws then).
+  if (photoResult && !roomBackgrounds.has(key)) roomBackgrounds.set(key, roomBackground(photoResult.pixels, width, height));
+  const room = roomBackgrounds.get(key) ?? roomBackground(null, width, height);
+  if (room instanceof ImageData) ctx.putImageData(room, 0, 0); else ctx.drawImage(room, 0, 0);
   const t = seconds % HAND_CYCLE, pose = handPose(t);
   if (!pose.shown) return;
   // Motion blur: the poses a third of a frame before and after, faint, under the sharp one;
@@ -380,9 +464,13 @@ export const SCENES = [
   { id: 'global-motion', name: 'Pan, zoom and rotation', tip: 'The whole picture moving at once: motion search and non-translational motion.', params: GLOBAL, draw: drawGlobalMotion },
   { id: 'cuts-fades', name: 'Cuts, flashes and fades', tip: 'Shot changes, a white flash and a fade: key frame decisions and rate control.', params: CUTS, draw: drawCutsAndFades },
   { id: 'crowd', name: 'Many small movers', tip: 'A synthetic crowd of independent movers: block partitioning and the motion field.', params: CROWD, draw: drawCrowd },
-  { id: 'waving-hand', name: 'Hand waving at a webcam', tip: 'A large hand waving before a still room, then holding still, leaving and returning: occlusion, uncovered background, large motion and the return to still.', params: HAND, draw: drawWavingHand },
+  { id: 'waving-hand', name: 'Hand waving at a webcam', tip: 'A large hand waving before a photographed room, then holding still, leaving and returning: occlusion, uncovered background, large motion and the return to still.', params: HAND, draw: drawWavingHand,
+    prepare: loadPhoto, background: handBackground },
   { id: 'one-mover', name: 'Still scene, one mover', tip: 'One small ball on a still background: skip efficiency, the bits spent where nothing changes.', params: MOVER, draw: drawOneMover },
 ];
+
+/** Load what scene `id` draws from (its `prepare`; most need nothing): the first frames wait for it. */
+export async function prepareScene(id) { await sceneById(id).prepare?.(); }
 
 /** The scene with this id, or the default for an unknown one. */
 export function sceneById(id) { return SCENES.find(scene => scene.id === id) ?? SCENES[0]; }

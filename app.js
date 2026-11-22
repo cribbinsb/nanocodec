@@ -158,7 +158,8 @@ async function sourceState(loopLength) {
   const reason = kind === 'camera' ? 'a webcam picture is never embedded; replay checks the statistics and any embedded streams'
     : 'the test scene is drawn by the browser; replay checks the statistics and any embedded streams';
   // A scene is named with its constants: its pixels follow from them and the tick (scene.js).
-  const scene = kind === 'scene' ? { scene: sceneId, sceneParams: sceneById(sceneId).params } : {};
+  const shown = sceneById(sceneId), background = shown.background?.();
+  const scene = kind === 'scene' ? { scene: sceneId, sceneParams: shown.params, ...(background ? { sceneBackground: background } : {}) } : {};
   return { ...base, ...scene, fps: kind === 'scene' ? SOURCE_FPS : null, reproducible: false, reason };
 }
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }

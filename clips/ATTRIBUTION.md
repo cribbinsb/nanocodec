@@ -363,3 +363,14 @@ Only material whose terms allow redistribution is shipped here; the project's
 main evaluation sets (`/mldata`) do not. Johnny and FourPeople are also in the
 small `adv12` screening set (AOM CTC copies); being public domain, they may be
 redistributed.
+
+## Test-scene photograph (CC0)
+
+`web/scenes/room-photo-1280x720.png`, the room behind the demo's "Hand waving at a webcam"
+test scene, is made from *Abbotsford House Study Room* by Michael D Beckwith, dedicated to
+the public domain under CC0 1.0 (<https://creativecommons.org/publicdomain/zero/1.0/>):
+<https://commons.wikimedia.org/wiki/File:Abbotsford_House_Study_Room_(248456373).jpeg>
+(imported from 500px by the Archive Team). Changes (`tools/web/make-scene-photo.py`):
+cropped from 2048×1365 to 16:9 (2048×1152 from row 106), scaled to 1280×720 (Lanczos),
+softened (Gaussian radius 0.45), held to 7 bits a channel, and saved as a PNG with no colour
+chunks. No attribution is required; it is given anyway.

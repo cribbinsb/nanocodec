@@ -12,7 +12,7 @@
 // rendition boundary have one exact source each (`ViewSources`), advanced on
 // the same ticks.
 import { ClipSource } from './clip-source.js';
-import { DEFAULT_SCENE, drawScene } from './scene.js';
+import { DEFAULT_SCENE, drawScene, prepareScene } from './scene.js';
 import { snapshot } from './capture.js';
 import { frameAtTick, loopTicks, tickMs } from './timeline.js';
 
@@ -23,7 +23,7 @@ export class ExactSource {
    * frame by frame (the page then samples the playing video).
    */
   static async open(kind, { url, fps, loops, scene } = {}) {
-    if (kind === 'scene') return new ExactSource(null, Infinity, scene);
+    if (kind === 'scene') { await prepareScene(scene); return new ExactSource(null, Infinity, scene); }
     const clip = await ClipSource.open(url, fps);
     return clip && new ExactSource(clip, loops ? loopTicks(clip.frameCount, fps) : Infinity);
   }
