@@ -30,6 +30,7 @@
     {"flag": "--max-qp", "value": "Q", "help": "Highest quantiser rate control may use."},
     {"flag": "--max-qp-step", "value": "N", "help": "Largest quantiser change between inter frames (default 4 QP, 20 AV1 indices)."},
     {"flag": "--frame-drop", "value": "", "help": "Skip an inter frame that would overflow the buffer even at the highest quantiser."},
+    {"flag": "--strict-buffer", "value": "", "help": "Never pass one buffer: re-code any frame that would fill it past its capacity (a hard VBV). By default a frame may reach 1.15 buffers, as the reference encoders' worst points do."},
     {"flag": "--rate-change", "value": "FRAME:KBPS[:PEAK_KBPS[:BUFFER_MS]]", "help": "Change the target (and peak, buffer) before frame FRAME, as a transport's bandwidth estimate would; repeatable."}]},
    {"title": "Key frames and resilience", "options": [
     {"flag": "--intra-period", "value": "N", "help": "A key frame every N frames (default: every 10 seconds of video)."},

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="How full each encoder's 1 s buffer gets in the CBR charts, measured at the target and at its own rate, and the buffer nanocodec keeps.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec rate control and the buffer</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="fixed-qp.html">Fixed QP</a>
+    <a href="clips.html">Clips</a>
+    <a href="svc.html">SVC</a>
+    <a href="method.html">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
+  </nav>
+</div>
+<main>
+  <h1>Rate control and the buffer</h1>
+  <p class="lede">In the CBR charts every encoder is asked for the same thing: a target bitrate and a one-second
+    buffer, so that a receiver on a channel of that rate never waits more than a second for a frame. This page
+    states what each encoder is given, how full each one's buffer actually gets on the published charts, and the
+    buffer nanocodec keeps from its next release.</p>
+  <div id="buffer">
+    <div class="disclaimer statement"></div>
+    <h2 id="asked">What each encoder is asked for</h2>
+    <p class="asked-intro"></p>
+    <div class="requests"></div>
+    <h2 id="measure">How buffer use is measured</h2>
+    <ul class="prose measure"></ul>
+    <h2 id="table">How full the buffers get</h2>
+    <div class="controls view-controls"></div>
+    <p class="note view-note"></p>
+    <div class="use-table"></div>
+    <ul class="prose findings"></ul>
+    <h2 id="position">Our position and the change</h2>
+    <ul class="prose position"></ul>
+    <h3 id="cost">The cost, measured</h3>
+    <p class="note cost-note"></p>
+    <div class="cost-table"></div>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
+</footer>
+<script type="module" src="buffer.js"></script>
+</body>
+</html>

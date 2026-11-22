@@ -51,7 +51,7 @@ function render(data, root) {
   });
   root.querySelector('.codec-tables').replaceChildren(
     el('p', { class: 'note' }, `${METRIC_NAMES[state.metric]} against ${ZERO_NAMES[state.zero]}; in brackets, the clips with a reliable BD. Clip counts per set: ${columns.filter((c) => c.view.clips).map((c) => `${c.title} ${c.view.clips}`).join(', ')}.`),
-    ...out, ...columns.map((c) => measuredNote(`${c.title}: ${c.view.measured.caption}`)),
+    ...out, ...columns.map((c) => measuredNote(`${c.title}: ${c.view.measured.caption}`, c.view.measured.buffer_note)),
     sources([...new Set(columns.flatMap((c) => c.view.source))]));
 }
 
