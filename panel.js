@@ -43,6 +43,15 @@ const bufferLabel = ms => (ms < 1000 ? `${ms} ms` : `${ms / 1000} s`);
 const SPATIAL_LAYERS = [[1, '1 · full size only'], [2, '2 · full + half size'], [3, '3 · full, half and quarter size']];
 const presetLabel = preset => PRESETS.find(([value]) => value === preset)[1].replace(' (default)', '');
 const ORIGINAL_STATUS = 'Uncompressed source · nothing is coded';
+// Why a control does not apply (it stays in place, disabled: both views keep one layout).
+const RATE_ONLY_TIP = 'For target bitrate rate control (Advanced, Rate control)';
+const QUANTIZER_ONLY_TIP = 'For fixed quantizer rate control (Advanced, Rate control)';
+/** Disable `controls` inside `box` (kept in place, dimmed, with `why` as its tooltip) or enable them. */
+function inapplicable(box, controls, off, why) {
+  for (const control of controls) control.disabled = off;
+  box.classList.toggle('inapplicable', off);
+  box.title = off ? why : '';
+}
 const escapeHtml = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const options = (items, selected) => items.map(([value, label]) => `<option value="${value}"${String(value) === String(selected) ? ' selected' : ''}>${label}</option>`).join('');
 const rateInput = (name, value) => `<input class="${name}" type="number" required min="${RATE_LIMITS_KBPS.min}" max="${RATE_LIMITS_KBPS.max}" step="${RATE_LIMITS_KBPS.step}" value="${value}">`;
@@ -68,7 +77,7 @@ export class Panel {
       <p class="source-unavailable" hidden>Pre-encoded reference streams exist for the sample clips only.</p>
       <div class="viewport"><canvas aria-label="Version ${letter} picture"></canvas><div class="empty-overlay"><div class="empty-symbol">◉</div><strong>The picture appears here</strong><span>Starting the comparison…</span></div><span class="frame-badge">STARTING</span></div>
       <div class="metrics"><div class="metric"><span>Bitrate</span><p><b data-metric="bitrate">—</b><small>kbps</small></p></div><div class="metric"><span>Encode</span><p><b data-metric="encode">—</b><small>ms</small></p></div><div class="metric"><span>Decode</span><p><b data-metric="decode">—</b><small>ms</small></p></div><div class="metric"><span>PSNR-YUV</span><p><b data-metric="psnr">—</b><small>dB</small></p></div></div>
-      <div class="picture-options"><label class="compact-control live-only">Codec<select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label class="compact-control live-only">Preset<select class="preset">${options(PRESETS, DEFAULT_PRESET)}</select></label><label class="compact-control live-only spatial-layers-control">Spatial layers<select class="spatial-layers">${options(SPATIAL_LAYERS, 1)}</select></label><label class="compact-control">Resolution<select class="resolution">${options(RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), DEFAULT_RESOLUTION.join('x'))}</select></label><label class="compact-control">Frame rate<select class="fps">${options(FRAME_RATES.map(fps => [fps, `${fps} fps`]), DEFAULT_FPS)}</select></label><label class="compact-control live-only target-option">Bitrate (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><div class="quality-option live-only" hidden><label class="quality-label" for="qp-${letter}">Fixed quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div></div>
+      <div class="picture-options"><label class="compact-control live-only">Codec<select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label class="compact-control live-only">Preset<select class="preset">${options(PRESETS, DEFAULT_PRESET)}</select></label><label class="compact-control live-only spatial-layers-control">Spatial layers<select class="spatial-layers">${options(SPATIAL_LAYERS, 1)}</select></label><label class="compact-control">Resolution<select class="resolution">${options(RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), DEFAULT_RESOLUTION.join('x'))}</select></label><label class="compact-control">Frame rate<select class="fps">${options(FRAME_RATES.map(fps => [fps, `${fps} fps`]), DEFAULT_FPS)}</select></label><label class="compact-control live-only target-option">Bitrate (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><div class="quality-option live-only"><label class="quality-label" for="qp-${letter}">Fixed quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div></div>
       <p class="compare-link live-only"><a href="results/">How does this preset compare?</a></p>
       <div class="reference-options" hidden><label class="compact-control">Stream (encoder · codec · size · rate · bitrate)<select class="stream-picker"></select></label><p class="reference-hint" hidden>This clip has no reference streams: the list shows other sample clips’ streams, and choosing one switches the page to that clip.</p><p class="reference-status" role="status"></p><button type="button" class="match">Match nanocodec to this stream</button><p class="match-note">Sets the other version to live nanocodec at this stream’s codec, size, frame rate and bitrate.</p><details class="reference-about"><summary>About this stream</summary><p class="reference-label"></p><dl class="reference-facts"></dl><p class="reference-version"></p></details></div>
       <p class="original-note" hidden>The source pictures at this size and frame rate, uncompressed: exactly what the encoders are given. Nothing is coded, so there is no bitrate or quality to show.</p>
@@ -77,7 +86,7 @@ export class Panel {
       <div class="reproduce"><span class="reproduce-label">CLI</span><code class="cli"></code><button type="button" class="copy-command" aria-label="Copy the command line">Copy</button></div>`;
     // The Advanced section's general encoder settings; the codec's own options follow them (advanced.js).
     const general = document.createElement('div'); general.className = 'advanced-general';
-    general.innerHTML = `<label class="compact-control">Rate control<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="peak-options"><label class="compact-control">Peak rate (kbps)${rateInput('peak-rate', DEFAULT_TARGET_KBPS * PEAK_TO_TARGET)}</label><label class="compact-control">Rate buffer<select class="buffer-ms">${options(BUFFER_CHOICES_MS.map(ms => [ms, ms < 1000 ? `${ms} ms` : `${ms / 1000} second${ms > 1000 ? 's' : ''}`]), DEFAULT_BUFFER_MS)}</select></label></div><label class="compact-control">Keyframe interval<select class="gop">${options([[KEY_AT_CLIP_START, 'On clip start'], ...GOP_SECONDS.map(s => [s, `${s} second${s > 1 ? 's' : ''}`])], KEY_AT_CLIP_START)}</select></label><label class="compact-control layer-control" hidden>Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Half size (operating point 1)</option><option value="2">Quarter size (operating point 2)</option></select></label><label class="toggle" title="${escapeHtml(STILL_CAMERA_TIP)}"><input class="still-camera" type="checkbox">Still-camera noise handling</label>`;
+    general.innerHTML = `<label class="compact-control">Rate control<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="peak-options"><label class="compact-control">Peak rate (kbps)${rateInput('peak-rate', DEFAULT_TARGET_KBPS * PEAK_TO_TARGET)}</label><label class="compact-control">Rate buffer<select class="buffer-ms">${options(BUFFER_CHOICES_MS.map(ms => [ms, ms < 1000 ? `${ms} ms` : `${ms / 1000} second${ms > 1000 ? 's' : ''}`]), DEFAULT_BUFFER_MS)}</select></label></div><label class="compact-control">Keyframe interval<select class="gop">${options([[KEY_AT_CLIP_START, 'On clip start'], ...GOP_SECONDS.map(s => [s, `${s} second${s > 1 ? 's' : ''}`])], KEY_AT_CLIP_START)}</select></label><label class="compact-control layer-control">Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Half size (operating point 1)</option><option value="2">Quarter size (operating point 2)</option></select></label><label class="toggle" title="${escapeHtml(STILL_CAMERA_TIP)}"><input class="still-camera" type="checkbox">Still-camera noise handling</label>`;
     container.append(this.element);
     const $ = selector => this.element.querySelector(selector);
     // Live nanocodec or a reference encoder's stream (SOURCES), chosen with the buttons.
@@ -359,12 +368,15 @@ export class Panel {
   }
   /** Show the original source in this view (a demo link's view A). */
   showOriginal() { this.sourceChoice = SOURCES.original; this.showSource(); }
-  /** A bitrate target, or the fixed quantizer's slider, by the rate control chosen under Advanced. */
+  /**
+   * The bitrate target (with peak and buffer) or the fixed quantizer's slider, by the rate
+   * control chosen under Advanced: the other stays in place, disabled, saying why.
+   */
   showRateMode() {
     const cbr = this.rateMode.value === 'cbr';
-    this.element.querySelector('.target-option').hidden = !cbr;
-    this.element.querySelector('.peak-options').hidden = !cbr;
-    this.element.querySelector('.quality-option').hidden = cbr;
+    inapplicable(this.element.querySelector('.target-option'), [this.targetRate], !cbr, RATE_ONLY_TIP);
+    inapplicable(this.element.querySelector('.peak-options'), [this.peakRate, this.bufferMs], !cbr, RATE_ONLY_TIP);
+    inapplicable(this.element.querySelector('.quality-option'), [this.qp], cbr, QUANTIZER_ONLY_TIP);
   }
   updateCodec() {
     const { presets, spatialLayers, quantizer } = CODECS[this.codec.value];
@@ -393,14 +405,15 @@ export class Panel {
       option.hidden = count > 1 && !spatialLayers.includes(count);
       option.disabled = option.hidden || (count > 1 && !layerable);
     }
-    this.element.querySelector('.spatial-layers-control').hidden = spatialLayers.length === 0;
+    inapplicable(this.element.querySelector('.spatial-layers-control'), [this.spatialLayers], spatialLayers.length === 0,
+      `${CODECS[this.codec.value].label} has no spatial layers here: AV1 and VP9 do`);
     this.updateLayers();
   }
   /** The shown-layer picker shows with spatial layers only (other streams have one operating point);
    * the quarter-size operating point exists in three-layer streams only. */
   updateLayers() {
     const layered = +this.spatialLayers.value > 1, threeLayers = +this.spatialLayers.value === 3;
-    this.element.querySelector('.layer-control').hidden = !layered;
+    inapplicable(this.element.querySelector('.layer-control'), [this.operatingPoint], !layered, 'Choose 2 or 3 spatial layers to pick the layer shown');
     this.operatingPoint.querySelector('option[value="2"]').disabled = !threeLayers;
     if (!layered || (!threeLayers && this.operatingPoint.value === '2')) this.operatingPoint.value = '0';
   }

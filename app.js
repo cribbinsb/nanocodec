@@ -641,8 +641,13 @@ function sourceChanged(next) {
   const scene = sceneById(sceneId);
   const names = { clip: `${clip.film} · ${clip.title}${speed}`, scene: `${scene.name} · ${scene.tip}`, camera: 'Webcam', file: file?.name || 'Choose a local video file' };
   $('#source-name').textContent = names[kind];
-  scenePicker.hidden = kind !== 'scene'; scenePicker.title = scene.tip;
-  clipCredit.hidden = kind !== 'clip'; clipCredit.textContent = clip.credit; clipCredit.title = clip.notice ?? '';
+  // Only the chosen source's picker shows; each keeps its choice while hidden, and keeps its
+  // space (styles.css .clip-choice), so the views do not move.
+  for (const [element, shown] of [[clipPicker, kind === 'clip'], [scenePicker, kind === 'scene'], [clipCredit, kind === 'clip']]) {
+    element.classList.toggle('unchosen', !shown); element.inert = !shown;
+  }
+  scenePicker.title = scene.tip;
+  clipCredit.textContent = clip.credit; clipCredit.title = clip.notice ?? '';
   $('#session-stats').textContent = 'Starting…';
   describeViews();
   scheduleRestart(`source ${kind}`);
