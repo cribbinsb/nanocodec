@@ -2,7 +2,7 @@
 // that format in every dataset reported on the chosen timing machine, on the common set, for
 // the chosen metric. Data: data/bp3.json (tools/bench/preview.py).
 import { CODEC_NAMES, control, el, fail, loadData, pct, segmented, table } from './common.js';
-import { NAMES, SHORT, SPEED_UNIT, banner, chosenMachine, machinePicker, mean, speed, statement, viewTitle, viewsOn } from './bp3.js';
+import { NAMES, SHORT, SPEED_UNIT, allChoices, banner, chosenMachine, machinePicker, mean, speed, statement, viewTitle, viewsOn } from './bp3.js';
 
 const state = { metric: 'j', machine: null };
 
@@ -45,8 +45,8 @@ async function main() {
   const root = document.getElementById('codecs');
   try {
     const data = await loadData('bp3');
-    state.machine = chosenMachine(data.machines);
-    machinePicker(data.machines, state.machine, (machine) => { state.machine = machine; banner(data, machine); render(data, root); });
+    state.machine = chosenMachine(data.machines, data.views);
+    machinePicker(data.machines, state.machine, (machine) => { state.machine = machine; banner(data, machine); render(data, root); }, allChoices(data));
     banner(data, state.machine);
     root.querySelector('.controls').append(control('Metric', segmented('Metric',
       data.metrics.map((m) => ({ value: m, label: SHORT[m] })), state.metric, (v) => { state.metric = v; render(data, root); })));

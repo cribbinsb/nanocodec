@@ -4,7 +4,7 @@
 // table, and the exclusion check of each family that lost clips (section 9).
 // Data: data/bp3.json (tools/bench/preview.py).
 import { control, el, fail, loadData, pct, segmented, table } from './common.js';
-import { banner, chosenMachine, machinePicker, statement, viewTitle, viewsOn } from './bp3.js';
+import { banner, chosenMachine, datasetChoices, machineFor, machinePicker, statement, viewTitle, viewsOn } from './bp3.js';
 
 const SVG = 'http://www.w3.org/2000/svg';
 const DATASET_PARAM = 'set';
@@ -107,7 +107,11 @@ async function main() {
   const root = document.getElementById('compliance');
   try {
     const data = await loadData('bp3');
-    let machine = chosenMachine(data.machines);
+    const datasets = Object.keys(data.datasets).filter((d) => datasetChoices(data, d).ready.length);
+    if (!datasets.includes(state.dataset)) [state.dataset] = datasets;
+    let machine = machineFor(data, state.dataset, chosenMachine(data.machines, data.views));
+    // The machine selector lists the chosen dataset's machines.
+    const picker = () => machinePicker(data.machines, machine, (m) => { machine = m; show(); }, datasetChoices(data, state.dataset));
     const show = () => {
       banner(data, machine);
       const views = viewsOn(data, machine);
@@ -115,12 +119,13 @@ async function main() {
       root.querySelector('.view').replaceChildren(view ? section(data, view)
         : el('p', { class: 'note' }, 'No report found on this machine yet.'));
     };
-    if (!(state.dataset in data.datasets)) [state.dataset] = Object.keys(data.datasets);
     const controls = root.querySelector('.controls');
     controls.append(
-      control('Dataset', segmented('Dataset', Object.entries(data.datasets).map(([value, d]) => ({ value, label: d.name })),
+      control('Dataset', segmented('Dataset', datasets.map((value) => ({ value, label: data.datasets[value].name })),
         state.dataset, (v) => {
           state.dataset = v;
+          machine = machineFor(data, v, machine);
+          picker();
           const url = new URL(location.href);
           url.searchParams.set(DATASET_PARAM, v);
           history.replaceState(null, '', url);
@@ -128,7 +133,7 @@ async function main() {
         })),
       control('Bucket drained', segmented('Bucket drained', Object.entries(MEASURES).map(([value, label]) => ({ value, label })),
         state.measure, (v) => { state.measure = v; show(); })));
-    machinePicker(data.machines, machine, (m) => { machine = m; show(); });
+    picker();
     show();
   } catch (error) {
     fail(root, error);

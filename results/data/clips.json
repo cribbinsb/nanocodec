@@ -3,6 +3,7 @@
   "ours": {
    "name": "\"ours\" held-out set",
    "about": "the project's held-out clips (eval/clipset/heldout_2026-11-23b.manifest.json), \"audited once, never tuned on\": 84 of the 97 clips were read once by the 0.6.0 results audit and 13 are unseen (sealed log entries 1b-3); the set was also read for quality by release measurements on 2026-11-23 to 11-26 while our encoder changed, and no lever is recorded as chosen from it",
+   "doc": null,
    "manifest": "eval/clipset/heldout_2026-11-23b-bp4.manifest.json",
    "clips": [
     {
@@ -2325,6 +2326,7 @@
   "vc1k": {
    "name": "VC-1K",
    "about": "phone video calls from Meta's VC-1K dataset (CC BY-NC 4.0); numbers only; the headline leaves out the 9 clips our encoders were tuned on",
+   "doc": null,
    "manifest": "eval/clipset/vc1k_2026-11-18-bp4.manifest.json",
    "clips": [
     {
@@ -4266,6 +4268,7 @@
   "aomctc": {
    "name": "AOM-CTC",
    "about": "the AOM common test conditions' sequences (eval/clipset/aomctc_bp3.manifest.json), A2 included; its 12 low-delay clips (A3-A5) are in-sample for ours",
+   "doc": null,
    "manifest": "eval/clipset/aomctc_bp3.manifest.json",
    "clips": [
     {
@@ -4945,6 +4948,611 @@
        ]
       }
      }
+    }
+   }
+  },
+  "fast": {
+   "name": "Fast subset (30 clips)",
+   "about": "30 of the 97 clips of the \"ours\" held-out set (eval/clipset/fast-subset.json), chosen once from the BP-4 per-clip results so that it tracks the full set, and never tuned on. On both AWS machines every one of the 64 current families' BD-J on the 30 is within 1 point of the median offset from its full-set BD-J (check V17: median offset +0.36 on x86 and +0.48 on Arm, largest deviation 0.69 and 0.73), with the same front; so figures on it read about half a point above the full set's. It is the set the slower machines (Apple M4, Jetson Orin Nano) time",
+   "doc": "docs/analysis/fast-subset-2026-11-27.md",
+   "manifest": "eval/clipset/fast-subset.json",
+   "clips": [
+    {
+     "name": "ho_epic_kitchens_p11_107",
+     "class": "bodycam",
+     "width": 960,
+     "height": 540,
+     "fps": 25.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 3002,
+     "rungs": [
+      178,
+      296,
+      474,
+      712
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_epic_kitchens_p33_108",
+     "class": "bodycam",
+     "width": 960,
+     "height": 540,
+     "fps": 25.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 3000,
+     "rungs": [
+      178,
+      296,
+      474,
+      712
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_ucf_crimes_normal_videos_063_x264",
+     "class": "static",
+     "width": 320,
+     "height": 240,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 585,
+     "rungs": [
+      47,
+      78,
+      124,
+      186
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_ucf_crimes_shooting053_x264",
+     "class": "static",
+     "width": 320,
+     "height": 240,
+     "fps": 30.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 574,
+     "rungs": [
+      47,
+      78,
+      124,
+      186
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_ugc_vlog_vlog_1080p_21f5_crf_10_ss_00_t_20_0",
+     "class": "bodycam",
+     "width": 960,
+     "height": 540,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 4841,
+     "rungs": [
+      195,
+      325,
+      520,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_ugc_vlog_vlog_720p_60f8_crf_10_ss_00_t_20_0",
+     "class": "bodycam",
+     "width": 1280,
+     "height": 720,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 8556,
+     "rungs": [
+      300,
+      500,
+      800,
+      1200
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_vcd2_38ab396237c2e3d0014917609733b2a3",
+     "class": "videocall",
+     "width": 960,
+     "height": 540,
+     "fps": 16.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 3821,
+     "rungs": [
+      142,
+      237,
+      379,
+      569
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_vcd2_80e6de8318d8449c5c74f65c2fec0799",
+     "class": "videocall",
+     "width": 960,
+     "height": 720,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 4113,
+     "rungs": [
+      242,
+      403,
+      645,
+      967
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_vcd2_fac675bc4591ea68efda419845af84de",
+     "class": "videocall",
+     "width": 640,
+     "height": 360,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 2135,
+     "rungs": [
+      106,
+      177,
+      283,
+      424
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_city_2025_01_10_st_johannes_der_t_ufer_gerchs",
+     "class": "static",
+     "width": 304,
+     "height": 540,
+     "fps": 29.97,
+     "windows": [
+      150
+     ],
+     "source_kbps": 619,
+     "rungs": [
+      82,
+      137,
+      219
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_city_h_street_festival_37366897252_video",
+     "class": "static",
+     "width": 404,
+     "height": 720,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 2333,
+     "rungs": [
+      126,
+      211,
+      337,
+      505
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_city_lexington_av_63_st_escalator_video_vc",
+     "class": "static",
+     "width": 960,
+     "height": 540,
+     "fps": 29.97,
+     "windows": [
+      150
+     ],
+     "source_kbps": 3921,
+     "rungs": [
+      195,
+      325,
+      519,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_drone_deutsche_welle_daily_drone_elstertalbr_c",
+     "class": "drone",
+     "width": 960,
+     "height": 540,
+     "fps": 25.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 1653,
+     "rungs": [
+      178,
+      296,
+      474,
+      712
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_drone_drone_video_of_j_neda_manor_july_2021",
+     "class": "drone",
+     "width": 960,
+     "height": 540,
+     "fps": 29.97,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 4757,
+     "rungs": [
+      195,
+      325,
+      519,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_drone_drone_video_of_j_rva_jaani_july_2021",
+     "class": "drone",
+     "width": 960,
+     "height": 540,
+     "fps": 29.97,
+     "windows": [
+      150
+     ],
+     "source_kbps": 4691,
+     "rungs": [
+      195,
+      325,
+      519,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_drone_drone_video_of_valgehobusem_e_its_tower_",
+     "class": "drone",
+     "width": 960,
+     "height": 540,
+     "fps": 29.97,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 3298,
+     "rungs": [
+      195,
+      325,
+      519,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_festivals_the_festival_of_ramadan_has_arrived",
+     "class": "crowd",
+     "width": 640,
+     "height": 360,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 2120,
+     "rungs": [
+      106,
+      177,
+      283,
+      424
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_music_earth_to_space_a_national_symphony_orche",
+     "class": "crowd",
+     "width": 960,
+     "height": 540,
+     "fps": 30.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 1627,
+     "rungs": [
+      195,
+      325,
+      520,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_music_lightning_safety_awareness_week_detectin_18f92a",
+     "class": "crowd",
+     "width": 960,
+     "height": 540,
+     "fps": 29.97,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 1849,
+     "rungs": [
+      195,
+      325,
+      519,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_music_square_dancing_at_the_gjoa_haven_communi",
+     "class": "crowd",
+     "width": 640,
+     "height": 360,
+     "fps": 25.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 1258,
+     "rungs": [
+      97,
+      161,
+      258,
+      387
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_night_fourth_of_july_murica_at_night",
+     "class": "lowlight",
+     "width": 960,
+     "height": 540,
+     "fps": 29.97,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 3924,
+     "rungs": [
+      195,
+      325,
+      519,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_night_intercitynotte_1963_on_the_train_ferry_f",
+     "class": "lowlight",
+     "width": 404,
+     "height": 720,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 1135,
+     "rungs": [
+      126,
+      211,
+      337,
+      505
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_night_shanghai_bund_fireworks_show_20250502_vi",
+     "class": "lowlight",
+     "width": 640,
+     "height": 360,
+     "fps": 30.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 1553,
+     "rungs": [
+      106,
+      177,
+      283,
+      424
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_texture_hustadvika_trollkyrkja_lub_2025_07_27_mo",
+     "class": "texture",
+     "width": 202,
+     "height": 360,
+     "fps": 25.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 295,
+     "rungs": [
+      41,
+      68,
+      109
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_texture_nohsngithiang_falls",
+     "class": "texture",
+     "width": 960,
+     "height": 540,
+     "fps": 24.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 4671,
+     "rungs": [
+      174,
+      290,
+      465,
+      697
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "ho_wm_texture_yellowstone_lower_falls_20190716_085646_",
+     "class": "texture",
+     "width": 960,
+     "height": 540,
+     "fps": 30.0,
+     "windows": [
+      150,
+      600
+     ],
+     "source_kbps": 3963,
+     "rungs": [
+      195,
+      325,
+      520,
+      779
+     ],
+     "status": "audited once, never tuned on",
+     "tuned_on": null
+    },
+    {
+     "name": "hob_ugc_vlog_vlog_1080p_2394_crf_10_ss_00_t_20_0",
+     "class": "bodycam",
+     "width": 960,
+     "height": 540,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 4836,
+     "rungs": [
+      195,
+      325,
+      520,
+      779
+     ],
+     "status": "unseen (redrawn)",
+     "tuned_on": null
+    },
+    {
+     "name": "hob_vcd2_7b688897b5bb4eeb7f64b96c72bf5733",
+     "class": "videocall",
+     "width": 640,
+     "height": 360,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 2120,
+     "rungs": [
+      106,
+      177,
+      283,
+      424
+     ],
+     "status": "unseen (redrawn)",
+     "tuned_on": null
+    },
+    {
+     "name": "hob_vcd2_fb8462836f87987983f542020df7158c",
+     "class": "videocall",
+     "width": 960,
+     "height": 540,
+     "fps": 30.0,
+     "windows": [
+      150
+     ],
+     "source_kbps": 2531,
+     "rungs": [
+      195,
+      325,
+      520,
+      779
+     ],
+     "status": "unseen (redrawn)",
+     "tuned_on": null
+    },
+    {
+     "name": "hob_wm_texture_minnehaha_falls_minneapolis",
+     "class": "texture",
+     "width": 960,
+     "height": 540,
+     "fps": 29.833,
+     "windows": [
+      150
+     ],
+     "source_kbps": 3693,
+     "rungs": [
+      194,
+      324,
+      518,
+      777
+     ],
+     "status": "unseen (redrawn)",
+     "tuned_on": null
+    }
+   ],
+   "views": {
+    "c8i": {
+     "view_clips": 42,
+     "common_clips": 42,
+     "lost": {}
+    },
+    "c8g": {
+     "view_clips": 42,
+     "common_clips": 42,
+     "lost": {}
+    },
+    "mac-m4": {
+     "view_clips": 42,
+     "common_clips": 42,
+     "lost": {}
     }
    }
   }

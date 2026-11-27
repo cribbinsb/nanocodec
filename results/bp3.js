@@ -3,7 +3,7 @@
 // the statement under every view (procedure, machine, dataset and clip counts, zero line,
 // phase), view lookup and number formats. Every figure comes from data/bp3.json,
 // which is the benchmark reports' own numbers (tools/bench/report.py).
-import { METRIC_NAMES, METRIC_SHORT, control, el, pct, segmented } from './common.js';
+import { METRIC_NAMES, METRIC_SHORT, REPO, control, el, pct, segmented } from './common.js';
 
 // The report's metric keys under the site's names.
 export const NAMES = { j: METRIC_NAMES.j, psnr_yuv: METRIC_NAMES.psnr, vmaf_v1: METRIC_NAMES.vmaf, ms_ssim: METRIC_NAMES.ms_ssim };
@@ -15,7 +15,8 @@ const ZERO_TUNES = {
   'x264-medium~ssim': 'x264 medium --tune zerolatency,ssim',
 };
 export const SPEED_UNIT = 'Mpx/CPU-s';
-export const SPEED_NAME = 'loaded speed (half load)';
+/** How a machine's speed figures were taken, as the charts' axes name them. */
+export const speedName = (data, machine) => data.machines[machine].speed_name;
 // The URL parameter that keeps the chosen timing machine across pages and reloads.
 const MACHINE_PARAM = 'machine';
 
@@ -26,10 +27,33 @@ export const viewOf = (data, dataset, machine) => data.views.find((v) => v.datas
 export const viewsOn = (data, machine) => data.views.filter((v) => v.machine === machine);
 export const viewTitle = (data, view) => data.datasets[view.dataset].name;
 
-/** The timing machine in the URL, else the first of `machines` (x86). */
-export function chosenMachine(machines) {
+/** The machines that have at least one report (all of `machines` where views are not given). */
+export const machinesWithViews = (machines, views) => Object.keys(machines)
+  .filter((m) => !views || views.some((v) => v.machine === m));
+
+/** The timing machine in the URL when it has a report (`views`), else the first that has one
+ *  (x86). */
+export function chosenMachine(machines, views = null) {
   const asked = new URLSearchParams(location.search).get(MACHINE_PARAM);
-  return asked in machines ? asked : Object.keys(machines)[0];
+  const ready = machinesWithViews(machines, views);
+  return ready.includes(asked) ? asked : ready[0] || Object.keys(machines)[0];
+}
+
+/** The machine selector's entries for one dataset: the machines it is measured on, those
+ *  without a report yet shown but not selectable. */
+export function datasetChoices(data, dataset) {
+  const shown = data.datasets[dataset].machines;
+  return { shown, ready: shown.filter((m) => viewOf(data, dataset, m)) };
+}
+
+/** The machine selector's entries on a page that shows every dataset: every machine, those
+ *  without any report yet shown but not selectable. */
+export const allChoices = (data) => ({ shown: Object.keys(data.machines), ready: machinesWithViews(data.machines, data.views) });
+
+/** A dataset's view on `machine`, else on the first machine that has it (the machine to switch
+ *  to when the reader picks a dataset the current machine does not have). */
+export function machineFor(data, dataset, machine) {
+  return viewOf(data, dataset, machine) ? machine : datasetChoices(data, dataset).ready[0];
 }
 
 /** Keep `machine` in this page's URL and in the links to the other results pages. */
@@ -46,13 +70,21 @@ function keepMachine(machine) {
 
 /** The timing machine selector, first among the page's other controls (the results bar on a
  *  page that has none); onChange(machine) re-renders the page. A page that rebuilds its
- *  controls calls this again after them. */
-export function machinePicker(machines, machine, onChange) {
+ *  controls calls this again after them. `choices` ({shown, ready}, datasetChoices or
+ *  allChoices): the machines listed and those selectable (the rest are marked "not yet");
+ *  every machine by default. */
+export function machinePicker(machines, machine, onChange, choices = null) {
   keepMachine(machine);
+  const shown = choices ? choices.shown : Object.keys(machines);
+  const ready = choices ? choices.ready : shown;
   const host = document.querySelector('.controls') || document.querySelector('.machine-picker');
   host.querySelector('.machine-control')?.remove();
   const node = control('Timing machine', segmented('Timing machine',
-    Object.entries(machines).map(([value, m]) => ({ value, label: m.label, title: m.name })), machine,
+    shown.map((value) => {
+      const m = machines[value];
+      return ready.includes(value) ? { value, label: m.label, title: m.name }
+        : { value, label: `${m.label} (not yet)`, title: `${m.name}: no report yet; shown when it arrives`, disabled: true };
+    }), machine,
     (v) => { keepMachine(v); onChange(v); }));
   node.classList.add('machine-control');
   host.prepend(node);
@@ -108,24 +140,34 @@ const proceduresOf = (views) => [...new Set(views.map((v) => v.procedure))].join
 export function banner(data, machine) {
   const views = viewsOn(data, machine);
   const missing = data.missing.filter((m) => m.machine === machine).map((m) => data.datasets[m.dataset].name);
+  const absent = Object.entries(data.datasets).filter(([, d]) => !d.machines.includes(machine)).map(([, d]) => d.name);
   document.querySelector('.results-banner').replaceChildren(
     `Benchmark procedure ${proceduresOf(views)} (the reports' own record${proceduresOf(views) === data.current_procedure ? '' : `; the procedure is now at ${data.current_procedure}`}); CBR; every figure is from the procedure's own reports, timed on ${data.machines[machine].name}. `,
-    missing.length ? `No report found on this machine for (not shown): ${missing.join('; ')}.` : '',
+    missing.length ? `No report found on this machine yet for (not shown): ${missing.join('; ')}. ` : '',
+    absent.length ? `Not measured on this machine: ${absent.join('; ')}.` : '',
+    el('div', { class: 'machine-conditions' }, el('strong', {}, 'How this machine is timed: '),
+      `${data.machines[machine].about}. Each machine is timed under its own conditions, so speeds compare between encoders on one machine, never across machines.`),
     ...buildIdentity(data, views));
 }
 
-/** What a view measured, on what, against what: the statement under every chart and table. */
+/** A dataset's description, with a link to its analysis where it has one. */
+export function aboutDataset(d) {
+  return d.doc ? [d.about, ' (', el('a', { href: REPO + d.doc }, 'how it was chosen'), ')'] : [d.about];
+}
+
+/** What a view measured, on what, against what: the statement under every chart and table
+ *  (text and links, for el() or replaceChildren(...)). */
 export function statement(data, view) {
   const d = data.datasets[view.dataset];
   const zeros = `BD-J and BD-VMAF v1 against ${zeroName(view, 'j')}, BD-PSNR-YUV against ${zeroName(view, 'psnr_yuv')}, BD-MS-SSIM against ${zeroName(view, 'ms_ssim')}`;
   const quality = view.quality_series === view.timing_series ? ''
     : ` Quality is scored from the ${view.quality_series} series' streams, which the timed streams equal byte for byte.`;
-  return `Procedure ${view.procedure}, CBR, ${d.name}: ${d.about}. `
+  return [`Procedure ${view.procedure}, CBR, ${d.name}: `, ...aboutDataset(d), '. '
     + (view.common_clips > view.distinct_clips
       ? `View: ${view.view_clips} clip-windows (each clip's 150-frame window, and its 600-frame window where the source allows) where the zero line's curves are well formed; common set: ${view.common_clips} of them, on ${view.distinct_clips} clips, where every family but the +drop rows has well-formed curves; each clip counts once, its windows averaged. `
       : `View: ${view.view_clips} clips where the zero line's curves are well formed; common set: ${view.common_clips} of them, where every family but the +drop rows has well-formed curves. `)
     + (Object.keys(view.excluded_clips || {}).length ? `Left out of every family: the ${Object.keys(view.excluded_clips).length} clips a tuning set of ours used (in-sample). ` : '')
     + 'Every BD is over the common set (a +drop row\'s over its own clips); each family\'s own anchor-valid clip count is in the table. '
-    + `Zero line: ${zeros}. Speed: ${SPEED_NAME}, megapixels per CPU-second, geometric mean over clips, on ${data.machines[view.machine].about} (series ${view.timing_series}).${quality} `
-    + `Phase: ${view.phase_name}.`;
+    + `Zero line: ${zeros}. Speed: ${speedName(data, view.machine)}, megapixels per CPU-second, geometric mean over clips, on ${data.machines[view.machine].about} (series ${view.timing_series}).${quality} `
+    + `Phase: ${view.phase_name}.`];
 }

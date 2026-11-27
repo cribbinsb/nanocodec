@@ -2,7 +2,7 @@
 // (procedure commits, phase, series, clip counts, zero lines, envelope drops, refused timing
 // windows, patches, exceptions, binaries). Data: data/bp3.json (tools/bench/preview.py).
 import { el, fail, loadData, table } from './common.js';
-import { SHORT, banner, chosenMachine, machinePicker, statement, viewTitle, viewsOn, zeroName } from './bp3.js';
+import { SHORT, allChoices, banner, chosenMachine, machinePicker, statement, viewTitle, viewsOn, zeroName } from './bp3.js';
 
 const SHA_SHOWN = 16;
 
@@ -51,8 +51,9 @@ async function main() {
       const views = viewsOn(data, machine);
       root.replaceChildren(...(views.length ? views.map((v) => section(data, v)) : [el('p', { class: 'note' }, 'No report found on this machine yet.')]));
     };
-    machinePicker(data.machines, chosenMachine(data.machines), show);
-    show(chosenMachine(data.machines));
+    const machine = chosenMachine(data.machines, data.views);
+    machinePicker(data.machines, machine, show, allChoices(data));
+    show(machine);
   } catch (error) {
     fail(root, error);
   }

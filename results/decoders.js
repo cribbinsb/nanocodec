@@ -1,5 +1,6 @@
 // Decoder speed (decoders.html): our native decoders against each format's reference decoders
-// on the chosen timing machine, and our browser module against ffmpeg.wasm on the same machine.
+// on the chosen timing machine; our browser module against WebAssembly builds of the references
+// on the same machine; and, apart, against the browser's own (native) decoders through WebCodecs.
 // Data: data/decoders.json (tools/bench/preview_decoders.py, from the decoder-speed record).
 import { drawRatioBars } from './chart.js';
 import { CODEC_NAMES, control, el, fail, loadData, segmented, table } from './common.js';
@@ -84,33 +85,110 @@ function native(data, view, root) {
   }).filter(Boolean), el('p', { class: 'note' }, 'ms per frame: the median of the passes (in brackets, the fastest and slowest pass).'));
 }
 
-function browser(data, view, root) {
-  const rows = view.browser;
-  const compared = rows.filter((r) => r['ffmpeg.wasm']);
-  root.querySelector('.browser-sub').textContent = `node ${view.platform.node} (V8) on ${data.machines[state.machine].name}, one core; ffmpeg.wasm ${view.platform.ffmpeg_core} decodes H.264, HEVC and VP9 only.`;
-  if (!rows.length) {
-    root.querySelector('.browser-chart').replaceChildren(el('p', { class: 'note' }, 'Not measured on this machine.'));
-    root.querySelector('.browser-table').replaceChildren();
+const BROWSER_AXIS = 'browser decode time, ours ÷ the yardstick’s (below 1: ours took less time)';
+
+/** Summary rows of one comparison (wasm or WebCodecs) in the page's format order. */
+function orderedBy(data, summary, references) {
+  const order = (s) => data.codec_order.indexOf(s.codec) * 10 + Object.keys(references).indexOf(s.reference);
+  return [...summary].sort((a, b) => order(a) - order(b));
+}
+
+/** Every stream of a browser comparison, one details block per format. */
+function streamDetails(data, rows, ours, references, short, extra = []) {
+  return data.codec_order.map((codec) => {
+    const streams = rows.filter((r) => r.codec === codec);
+    if (!streams.length) return null;
+    const refs = Object.keys(references).filter((ref) => streams.some((r) => r.decoders[ref]));
+    return el('details', { class: 'stream-detail' }, el('summary', {}, `${CODEC_NAMES[codec]}: ${streams.length} streams`),
+      table([
+        { label: 'Stream', cell: (r) => r.stream },
+        { label: 'Encoder', cell: (r) => r.encoder },
+        { label: 'Size', cell: size },
+        { label: 'Ours ms/frame', num: true, cell: (r) => msCell(r.decoders[ours]) },
+        ...refs.flatMap((ref) => [
+          { label: `${short[ref]} ms/frame`, num: true, cell: (r) => msCell(r.decoders[ref]) },
+          { label: `÷ ${short[ref]}`, num: true, cell: (r) => (r.decoders[ref] && r.decoders[ours] ? two(r.decoders[ours].ms / r.decoders[ref].ms) : '–') },
+        ]),
+        ...extra,
+      ], streams));
+  }).filter(Boolean);
+}
+
+function wasm(data, view, root) {
+  const w = view.wasm;
+  const machine = data.machines[state.machine].name;
+  root.querySelector('.wasm-sub').textContent = `node ${view.platform.node || ''} (V8) on ${machine}, one core, every decoder one-threaded; geometric mean over the streams each yardstick decodes.`;
+  if (!w) {
+    root.querySelector('.wasm-chart').replaceChildren(el('p', { class: 'note' }, 'Not measured on this machine.'));
+    root.querySelector('.wasm-table').replaceChildren();
+    root.querySelector('.wasm-streams').replaceChildren();
     return;
   }
-  drawRatioBars(root.querySelector('.browser-chart'), compared.map((r) => ({
-    label: `${CODEC_NAMES[r.codec]} · ${size(r)} · ${r.encoder}`,
-    ratio: r['ours-wasm'].ms / r['ffmpeg.wasm'].ms,
-    tip: `${r.stream}: ours ${r['ours-wasm'].ms.toFixed(2)} ms/frame, ffmpeg.wasm ${r['ffmpeg.wasm'].ms.toFixed(2)} ms/frame`,
-  })), { axisLabel: 'browser decode time, ours ÷ ffmpeg.wasm (below 1: ours took less time)', missingText: '' });
-  root.querySelector('.browser-note').textContent = `${data.about.ffmpeg_wasm}. It is the official browser build of FFmpeg, but without FFmpeg's hand-written SIMD it is a weaker yardstick than native FFmpeg; the native comparison above is the stronger one. The table also gives our browser decoder against our own native decoder on the same machine and stream.`;
-  root.querySelector('.browser-table').replaceChildren(table([
-    { label: 'Format', cell: (r) => CODEC_NAMES[r.codec] },
-    { label: 'Stream', cell: (r) => r.stream },
-    { label: 'Encoder', cell: (r) => r.encoder },
-    { label: 'Size', cell: size },
-    { label: 'Ours (browser) ms/frame', num: true, cell: (r) => r['ours-wasm'].ms.toFixed(2) },
-    { label: 'fps', num: true, cell: (r) => fpsOf(r['ours-wasm']) },
-    { label: 'ffmpeg.wasm ms/frame', num: true, cell: (r) => (r['ffmpeg.wasm'] ? r['ffmpeg.wasm'].ms.toFixed(2) : 'no decoder') },
-    { label: 'Ours ÷ ffmpeg.wasm', num: true, cell: (r) => (r['ffmpeg.wasm'] ? two(r['ours-wasm'].ms / r['ffmpeg.wasm'].ms) : '–') },
-    { label: 'Native (PGO) ms/frame', num: true, cell: (r) => (r.native ? r.native.ms.toFixed(2) : '–') },
-    { label: 'Browser ÷ native', num: true, cell: (r) => (r.native ? two(r['ours-wasm'].ms / r.native.ms) : '–') },
-  ], rows), el('p', { class: 'note' }, 'ms per frame: the median of 7 runs (the record keeps every run).'));
+  const rows = orderedBy(data, w.summary, data.wasm_references);
+  drawRatioBars(root.querySelector('.wasm-chart'), rows.map((s) => ({
+    label: `${CODEC_NAMES[s.codec]} · ${data.wasm_short[s.reference]} (${s.streams})`,
+    ratio: s.ratio,
+    tip: `${CODEC_NAMES[s.codec]}: our module ${two(s.ratio)}× the time of ${data.wasm_references[s.reference]}, geometric mean over ${s.streams} streams`,
+  })), { axisLabel: BROWSER_AXIS, missingText: '' });
+  root.querySelector('.wasm-table').replaceChildren(table([
+    { label: 'Format', cell: (s) => CODEC_NAMES[s.codec] },
+    { label: 'Yardstick', cell: (s) => data.wasm_references[s.reference] },
+    { label: 'Streams', num: true, cell: (s) => String(s.streams) },
+    { label: 'Ours ÷ yardstick, all', num: true, cell: (s) => two(s.ratio) },
+    { label: 'our streams', num: true, cell: (s) => (s.own_streams ? `${two(s.ratio_own)} (${s.own_streams})` : '–') },
+    { label: 'other streams', num: true, cell: (s) => (s.other_streams ? `${two(s.ratio_other)} (${s.other_streams})` : '–') },
+    { label: 'Ours, Mpx/s', num: true, cell: (s) => mpx(s.ours_mpx_s) },
+    { label: 'Yardstick, Mpx/s', num: true, cell: (s) => mpx(s.ref_mpx_s) },
+  ], rows), el('p', { class: 'note' }, `${data.about.wasm_yardsticks} ${Object.keys(w.errors).length ? `Runs that failed and are left out: ${Object.entries(w.errors).map(([k, v]) => `${k.split('|')[0]} on ${data.wasm_short[k.split('|')[2]]} (${v.slice(0, 80)})`).join('; ')}.` : ''}`));
+  root.querySelector('.wasm-streams').replaceChildren(...streamDetails(data, w.rows, 'ours-wasm', data.wasm_references, data.wasm_short, [
+    { label: 'Ours native ms/frame', num: true, cell: (r) => (r.native ? r.native.ms.toFixed(2) : '–') },
+    { label: 'Browser ÷ native', num: true, cell: (r) => (r.native && r.decoders['ours-wasm'] ? two(r.decoders['ours-wasm'].ms / r.native.ms) : '–') },
+  ]), el('p', { class: 'note' }, 'ms per frame: the median of the runs (in brackets, the fastest and slowest run); every decoder\'s time is divided by the same frame count.'));
+}
+
+/** One WebCodecs block: a chart of ours ÷ each mode per format, and what was unavailable. */
+function webcodecsBlock(data, wc, where) {
+  if (!wc) return [el('p', { class: 'note' }, `Not measured on ${where}.`)];
+  const rows = orderedBy(data, wc.summary, data.webcodecs);
+  const chart = el('div', { class: 'chart' });
+  // grouped by reason: "reason (H.264 hardware, HEVC software, ...)"
+  const byReason = {};
+  for (const [k, reason] of Object.entries(wc.unsupported)) {
+    const [scope, mode] = k.split('|');
+    (byReason[reason] ||= []).push(`${CODEC_NAMES[scope] || scope} ${data.webcodecs_short[mode].replace('WebCodecs ', '')}`);
+  }
+  const unsupported = Object.entries(byReason).map(([reason, list]) => `${list.join(', ')} (${reason})`);
+  const parts = [
+    el('p', { class: 'chart-sub' }, `${wc.channel === 'chrome' ? 'Google Chrome' : 'Chromium (Playwright build)'} ${wc.browser}, ${wc.headed ? 'in a window on a private headless Wayland compositor (headless Chrome cannot set up hardware decode output)' : 'headless'}, on ${where}; the browser bound to one core.`),
+    chart,
+    table([
+      { label: 'Format', cell: (s) => CODEC_NAMES[s.codec] },
+      { label: 'Browser decoder', cell: (s) => data.webcodecs[s.reference] },
+      { label: 'Streams', num: true, cell: (s) => String(s.streams) },
+      { label: 'Ours ÷ browser', num: true, cell: (s) => two(s.ratio) },
+      { label: 'Ours, Mpx/s', num: true, cell: (s) => mpx(s.ours_mpx_s) },
+      { label: 'Browser, Mpx/s', num: true, cell: (s) => mpx(s.ref_mpx_s) },
+    ], rows),
+    el('p', { class: 'note' }, `Not available through WebCodecs here: ${unsupported.join('; ') || 'none'}.${wc.gpu_video.length ? ` chrome://gpu: ${wc.gpu_video.join('; ')}.` : ''}`),
+    el('details', { class: 'table-view' }, el('summary', {}, 'Every stream'),
+      ...streamDetails(data, wc.rows, 'ours-chrome', data.webcodecs, data.webcodecs_short)),
+  ];
+  requestAnimationFrame(() => drawRatioBars(chart, rows.map((s) => ({
+    label: `${CODEC_NAMES[s.codec]} · ${data.webcodecs_short[s.reference]} (${s.streams})`,
+    ratio: s.ratio,
+    tip: `${CODEC_NAMES[s.codec]}: our module ${two(s.ratio)}× the time of ${data.webcodecs[s.reference]}, geometric mean over ${s.streams} streams`,
+  })), { axisLabel: 'decode time in Chrome, our module ÷ the browser’s decoder', missingText: '' }));
+  return parts;
+}
+
+function webcodecs(data, view, root) {
+  root.querySelector('.webcodecs-machine').replaceChildren(
+    el('h3', {}, `Software, on ${data.machines[state.machine].name}`),
+    ...webcodecsBlock(data, view.webcodecs, data.machines[state.machine].name));
+  root.querySelector('.webcodecs-pc').replaceChildren(
+    el('h3', {}, `Software and hardware, on ${data.pc.name}`),
+    ...webcodecsBlock(data, data.pc.webcodecs, data.pc.name));
+  root.querySelector('.webcodecs-note').textContent = data.about.webcodecs;
 }
 
 function method(data, view, root) {
@@ -127,7 +205,7 @@ function method(data, view, root) {
     el('p', {}, el('strong', {}, 'Native method: '), `${a.method} ${a.harnesses}`),
     el('p', {}, el('strong', {}, 'References: '), Object.values(data.references).join('; ') + `. ${data.machines[state.machine].anchors}`),
     el('p', {}, el('strong', {}, 'Streams: '), a.streams),
-    el('p', {}, el('strong', {}, 'Browser: '), `${a.browser_build}. ${a.browser_method} ${a.ffmpeg_wasm}.`),
+    el('p', {}, el('strong', {}, 'Browser: '), `${a.browser_build}. ${a.browser_method} ${a.ffmpeg_wasm}. ${a.wasm_builds}`),
     el('p', {}, el('strong', {}, 'Exactness: '), 'checked separately, not here. Every decoder passes the landing conformance check (bit-exact against two standard decoders on our own streams). On other encoders\' streams: HEVC passes the official HEVC_v1 suite (147/147); VVC 226 of the 283 official H.266.1 streams; H.264 110 of 190 official H.264.1 streams (interlaced streams are not decoded yet); AV1 and VP9 pass the libaom (242/242) and libvpx (305/305) encoder test vectors, not official suites, and AV1 does not yet decode some valid Main tools; AV2 has no suite (30 of 30 foreign streams, 8-bit single tile). No decoder decodes every valid stream of its profiles yet: ', el('a', { href: 'https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md#conformance' }, 'the full list of gaps'), '.'),
     el('p', {}, el('strong', {}, 'Record: '), el('a', { href: `https://github.com/cribbinsb/nanocodec/tree/main/${data.record}` }, data.record), ' (every timed pass).'));
 }
@@ -136,7 +214,8 @@ function render(data, root) {
   const view = data.views[state.machine];
   method(data, view, root);
   native(data, view, root);
-  browser(data, view, root);
+  wasm(data, view, root);
+  webcodecs(data, view, root);
 }
 
 async function main() {

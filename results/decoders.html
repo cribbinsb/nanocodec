@@ -28,8 +28,9 @@
 <main id="decoders">
   <h1>Decoder speed</h1>
   <p class="lede">Our six decoders against the established decoder of each format, on one core of an x86 and an Arm
-    server, and our browser (WebAssembly) decoders against ffmpeg.wasm. Below 1, ours took less time than the
-    reference on the same streams.</p>
+    server; our browser (WebAssembly) decoders against the same references built for WebAssembly; and,
+    apart, against the browser's own built-in decoders. Below 1, ours took less time than the reference on the
+    same streams.</p>
   <div class="disclaimer results-banner" role="note"></div>
   <div class="controls"></div>
   <section aria-label="Native decode speed">
@@ -51,17 +52,26 @@
     </details>
   </section>
   <section aria-label="Browser decode speed">
-    <h2>Browser (WebAssembly): ours against ffmpeg.wasm</h2>
+    <h2>Browser (WebAssembly): ours against the references built for WebAssembly</h2>
     <div class="chart-card">
-      <p class="chart-title">Browser decode time, our module ÷ ffmpeg.wasm, per stream</p>
-      <p class="chart-sub browser-sub"></p>
-      <div class="chart browser-chart"></div>
+      <p class="chart-title">Decode time, our module ÷ each WebAssembly yardstick, geometric mean over streams</p>
+      <p class="chart-sub wasm-sub"></p>
+      <div class="chart wasm-chart"></div>
     </div>
-    <p class="note browser-note"></p>
     <details class="table-view" open>
-      <summary>Every browser stream, with our native decoder beside it</summary>
-      <div class="table-wrap browser-table"></div>
+      <summary>As a table, with throughput</summary>
+      <div class="table-wrap wasm-table"></div>
     </details>
+    <details class="table-view">
+      <summary>Every stream, with our native decoder beside it</summary>
+      <div class="wasm-streams"></div>
+    </details>
+  </section>
+  <section aria-label="Browser built-in decoders">
+    <h2>The browser's built-in decoders (native code, not WebAssembly)</h2>
+    <p class="note webcodecs-note"></p>
+    <div class="chart-card webcodecs-machine"></div>
+    <div class="chart-card webcodecs-pc"></div>
   </section>
   <section aria-label="How this was measured">
     <h2>How this was measured</h2>
@@ -69,7 +79,8 @@
   </section>
 </main>
 <footer>
-  <p>The reference decoders are FFmpeg, dav1d, libvpx, VVdeC, dav2d and AVM, and ffmpeg.wasm in the browser:
+  <p>The reference decoders are FFmpeg, dav1d, libvpx, VVdeC, dav2d and AVM, and in the browser ffmpeg.wasm and
+    Chrome's own decoders:
     their implementations are the bar these numbers are held to. With thanks to all of them.</p>
 </footer>
 <script type="module" src="decoders.js"></script>
