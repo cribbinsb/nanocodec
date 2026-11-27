@@ -336,7 +336,7 @@ impl HighFns {
         self.hevc_deblock_luma = crate::deblock::hevc_high::luma_kernel(Isa::Avx512);
         self.hevc_deblock_chroma = crate::deblock::hevc_high::chroma_kernel(Isa::Avx512);
         self.sao_apply = crate::sao::high_simd::apply_icl;
-        self.sao_band = crate::sao::high_simd::avx512::band;
+        self.sao_band = crate::sao::high_simd::band_icl;
         self.high_precision = crate::mc::precision_simd::avx512::high_precision;
         self.vvc_geometric_blend = crate::vvc_geo::high_simd::avx512::blend;
         self.vvc_dmvr_bilinear = crate::vvc_refinement::avx512::bilinear_u16;

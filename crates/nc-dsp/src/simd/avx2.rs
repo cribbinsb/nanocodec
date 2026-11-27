@@ -2509,19 +2509,18 @@ impl super::I16x8Tiles for I16x16 {
 
 impl crate::sao::high_simd::SaoWordLanes for I16x16 {
     #[inline(always)]
-    fn offset_table(offsets: [i16; 4]) -> Self {
+    fn offset_table(offsets: [i16; 8]) -> Self {
         use core::arch::x86_64::{_mm_loadu_si128, _mm256_broadcastsi128_si256};
-        let table = crate::sao::high_simd::offset_words(offsets);
         // SAFETY: the table is eight readable words, in the AVX2 SAO entry.
         unsafe {
             Self(_mm256_broadcastsi128_si256(_mm_loadu_si128(
-                table.as_ptr().cast(),
+                offsets.as_ptr().cast(),
             )))
         }
     }
 
     #[inline(always)]
-    fn select_offset(self, table: Self) -> Self {
+    fn select_offset<const BIAS: i16>(self, table: Self) -> Self {
         use core::arch::x86_64::{
             _mm256_add_epi16, _mm256_mullo_epi16, _mm256_set1_epi16, _mm256_shuffle_epi8,
         };
@@ -2530,7 +2529,7 @@ impl crate::sao::high_simd::SaoWordLanes for I16x16 {
         unsafe {
             let index = _mm256_add_epi16(
                 _mm256_mullo_epi16(self.0, _mm256_set1_epi16(0x0202)),
-                _mm256_set1_epi16(0x0504),
+                _mm256_set1_epi16(BIAS * 0x0202 + 0x0100),
             );
             Self(_mm256_shuffle_epi8(table.0, index))
         }

@@ -297,6 +297,9 @@ The shared HEVC/VVC SAO edge application in `crates/nc-dsp/src/sao`
 adapts the signed byte table, packed word offsets, and vertical
 sign reuse from `common/arm/ihevc_hbd_sao_neon_intr.c` and
 `common/arm64/ihevc_sao_edge_offset_class1.s`.
+Band offset application in the same module uses the band index table
+from `common/arm64/ihevc_sao_band_offset_luma.s` and the high-depth
+variant in `common/arm/ihevc_hbd_sao_neon_intr.c`.
 
 The Linux Arm SVE2 SAO kernel in `crates/nc-dsp/src/sao/sve2_high.S`
 uses libhevc's edge offset table and vertical sign reuse from

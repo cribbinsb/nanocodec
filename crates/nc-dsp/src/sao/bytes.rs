@@ -9,10 +9,12 @@ pub(super) trait Bytes: Copy {
     unsafe fn load(p: *const u8) -> Self;
     unsafe fn store(self, p: *mut u8);
     fn splat(v: u8) -> Self;
+    #[cfg(not(target_arch = "wasm32"))]
     fn eq(self, b: Self) -> Self;
     fn gt(self, b: Self) -> Self;
     fn table(values: [u8; 16]) -> Self;
     fn lookup(self, table: Self) -> Self;
+    #[cfg(not(target_arch = "wasm32"))]
     fn and(self, b: Self) -> Self;
     fn add(self, b: Self) -> Self;
     fn sub(self, b: Self) -> Self;
@@ -20,40 +22,6 @@ pub(super) trait Bytes: Copy {
     fn sub_sat(self, b: Self) -> Self;
     #[cfg(not(target_arch = "wasm32"))]
     fn band(self) -> Self;
-}
-
-#[inline(always)]
-fn offsets<V: Bytes>(offsets: [i8; 4]) -> ([V; 4], [V; 4]) {
-    // Only scalar extraction uses closures; vector splats stay in this body
-    // because outlined closures do not inherit target features.
-    let pos = |i: usize| offsets[i].max(0) as u8;
-    let neg = |i: usize| offsets[i].min(0).unsigned_abs();
-    (
-        [
-            V::splat(pos(0)),
-            V::splat(pos(1)),
-            V::splat(pos(2)),
-            V::splat(pos(3)),
-        ],
-        [
-            V::splat(neg(0)),
-            V::splat(neg(1)),
-            V::splat(neg(2)),
-            V::splat(neg(3)),
-        ],
-    )
-}
-
-#[inline(always)]
-fn adjust<V: Bytes>(c: V, index: V, cats: [V; 4], pos: [V; 4], neg: [V; 4], enabled: V) -> V {
-    let mut plus = V::splat(0);
-    let mut minus = V::splat(0);
-    for k in 0..4 {
-        let mask = index.eq(cats[k]).and(enabled);
-        plus = plus.add(pos[k].and(mask));
-        minus = minus.add(neg[k].and(mask));
-    }
-    c.add_sat(plus).sub_sat(minus)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -66,13 +34,15 @@ pub(super) unsafe fn band<V: Bytes>(
     off: [i8; 4],
     exempt: &[bool],
 ) {
-    let (pos, neg) = offsets::<V>(off);
-    let cats = [
-        V::splat(position),
-        V::splat((position + 1) & 31),
-        V::splat((position + 2) & 31),
-        V::splat((position + 3) & 31),
-    ];
+    let table = |values: [u8; 4]| {
+        let [a, b, c, d] = values;
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, d, c, b, a]
+    };
+    let plus = V::table(table(off.map(|v| v.max(0) as u8)));
+    let minus = V::table(table(off.map(|v| v.min(0).unsigned_abs())));
+    let position_vec = V::splat(position);
+    let mask = V::splat(31);
+    let end = V::splat(15);
     let width = rect.x1 - rect.x0;
     // SAFETY: dispatch checked the rectangle and packed mask footprint. Each
     // vector stays inside a row; bool has a one-byte 0/1 representation.
@@ -88,7 +58,11 @@ pub(super) unsafe fn band<V: Bytes>(
                 } else {
                     V::load(exempt.as_ptr().cast::<u8>().add(mask_start + x)).eq(V::splat(0))
                 };
-                adjust(c, c.band(), cats, pos, neg, enabled).store(row.add(x));
+                // Only relative bands 0..3 reach the four populated entries.
+                let index = end.sub_sat(c.band().sub(position_vec).and(mask));
+                c.add_sat(index.lookup(plus).and(enabled))
+                    .sub_sat(index.lookup(minus).and(enabled))
+                    .store(row.add(x));
                 x += V::LANES;
             }
             for x in x..width {

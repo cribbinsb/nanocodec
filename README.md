@@ -10,10 +10,11 @@ cameras, drones and robots streaming at low bitrate to the cloud or straight int
 **[Try it in your browser](https://cribbinsb.github.io/nanocodec/)** · **[Interactive results](https://cribbinsb.github.io/nanocodec/results/)** ·
 [Docs](https://cribbinsb.github.io/nanocodec/docs/) · [FAQ](docs/FAQ.md)
 
-![Bitrate vs encode speed on the held-out clips, x86](docs/images/bd-vs-speed-bp4.svg)
+![Bitrate vs encode speed on the held-out clips, Arm (Graviton 4)](docs/images/bd-vs-speed-bp4.svg)
 
 *Lower = fewer bits for the same picture quality; right = faster. Blue is nanocodec, orange the established
-encoders, all in the same low-delay, single-thread live setting ([how we measured](https://cribbinsb.github.io/nanocodec/results/method.html)).*
+encoders, all in the same low-delay, single-thread live setting, timed on Arm (AWS Graviton 4); x86 is on the
+results pages ([how we measured](https://cribbinsb.github.io/nanocodec/results/method.html)).*
 
 ## Why it's interesting
 
@@ -27,6 +28,10 @@ encoders, all in the same low-delay, single-thread live setting ([how we measure
 - **Real standards, checked.** Our decoders pass the official conformance streams: HEVC 147/147,
   AV1 242/242, VP9 305/305, VVC 226/226 (the 4:2:0 profiles) and AV2 30/30
   ([details](docs/FAQ.md#conformance)). Every change is checked against two independent decoders per format.
+- **Scalable video (SVC).** Spatial and temporal layers for AV1 and VP9, including the WebRTC modes
+  (L1T2, L1T3, L2T1, L3T1 and K-SVC), so one stream can serve viewers at different resolutions and bitrates.
+  Temporal layers, long-term references, intra refresh and key frames on request (H.264, HEVC, VVC, AV1)
+  keep live streams robust to loss.
 - **Fast on x86, Arm and the web.** Hand-written SIMD for AVX2, AVX-512, NEON and WebAssembly.
 - **Built by AI.** About 4,000 commits and half a million lines of Rust written by AI coding agents
   (mostly Anthropic's Claude) in its first fifteen days, directed by one person ([how it's checked](docs/FAQ.md#ai-authorship)).

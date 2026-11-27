@@ -6,8 +6,8 @@ the earlier README charts (nceval.chart.svg_chart).
         --out docs/images/bd-vs-speed-bp4.svg
 
 Reads the report stage's JSON (tools/bench/report.py, docs/benchmark-procedure.md sections
-8-9), `<dataset>-<machine>.json` of one timing machine (x86 by default: one panel reads at
-README width, two did not), and draws each family's BD-J on the report's headline set (the
+8-9), `<dataset>-<machine>.json` of one timing machine (Arm, Graviton 4, by default: one panel reads
+at README width, two did not), and draws each family's BD-J on the report's headline set (the
 common set) against its loaded speed (megapixels per CPU-second). The +drop rows (frames
 dropped, their own clip sets) and the metric-tuned variants are left out, as on the results
 site's default view. Nothing is measured or averaged here: every figure is the report's own.
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--reports", type=Path, required=True,
                         help="directory with <dataset>-<machine>.json report files")
     parser.add_argument("--dataset", default="ours", help="report dataset (default: ours)")
-    parser.add_argument("--machine", default="c8i", choices=MACHINES)
+    parser.add_argument("--machine", default="c8g", choices=MACHINES)
     parser.add_argument("--out", type=Path, required=True, help="SVG file to write")
     parser.add_argument("--subtitle", default="held-out camera clips, common set; CBR, "
                         "benchmark procedure BP-4")

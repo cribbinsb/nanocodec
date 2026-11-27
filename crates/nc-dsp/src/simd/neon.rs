@@ -1440,12 +1440,12 @@ impl I16x8 {
 
 impl crate::sao::high_simd::SaoWordLanes for I16x8 {
     #[inline(always)]
-    fn offset_table(offsets: [i16; 4]) -> Self {
-        Self::load(&crate::sao::high_simd::offset_words(offsets))
+    fn offset_table(offsets: [i16; 8]) -> Self {
+        Self::load(&offsets)
     }
 
     #[inline(always)]
-    fn select_offset(self, table: Self) -> Self {
+    fn select_offset<const BIAS: i16>(self, table: Self) -> Self {
         use core::arch::aarch64::{
             vaddq_s16, vdupq_n_s16, vmulq_n_s16, vqtbl1q_u8, vreinterpretq_s16_u8,
             vreinterpretq_u8_s16,
@@ -1453,7 +1453,10 @@ impl crate::sao::high_simd::SaoWordLanes for I16x8 {
         // SAFETY: called from the NEON SAO entry. Each sign sum -2..2
         // selects both bytes of a word in its consecutive table slot.
         unsafe {
-            let index = vaddq_s16(vmulq_n_s16(self.0, 0x0202), vdupq_n_s16(0x0504));
+            let index = vaddq_s16(
+                vmulq_n_s16(self.0, 0x0202),
+                vdupq_n_s16(BIAS * 0x0202 + 0x0100),
+            );
             Self(vreinterpretq_s16_u8(vqtbl1q_u8(
                 vreinterpretq_u8_s16(table.0),
                 vreinterpretq_u8_s16(index),

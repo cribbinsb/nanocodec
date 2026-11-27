@@ -1137,14 +1137,17 @@ fn transpose_i32x4(rows: &[I32x4]) -> [v128; 4] {
 
 impl crate::sao::high_simd::SaoWordLanes for I16x8 {
     #[inline(always)]
-    fn offset_table(offsets: [i16; 4]) -> Self {
-        Self::load(&crate::sao::high_simd::offset_words(offsets))
+    fn offset_table(offsets: [i16; 8]) -> Self {
+        Self::load(&offsets)
     }
 
     #[inline(always)]
-    fn select_offset(self, table: Self) -> Self {
+    fn select_offset<const BIAS: i16>(self, table: Self) -> Self {
         use core::arch::wasm32::{i8x16_swizzle, i16x8_add, i16x8_mul, i16x8_splat};
-        let index = i16x8_add(i16x8_mul(self.0, i16x8_splat(0x0202)), i16x8_splat(0x0504));
+        let index = i16x8_add(
+            i16x8_mul(self.0, i16x8_splat(0x0202)),
+            i16x8_splat(BIAS * 0x0202 + 0x0100),
+        );
         Self(i8x16_swizzle(table.0, index))
     }
 }

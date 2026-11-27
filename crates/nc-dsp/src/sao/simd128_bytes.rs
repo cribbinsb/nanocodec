@@ -31,10 +31,6 @@ impl Bytes for Lanes {
         Self(u8x16_splat(v))
     }
     #[inline(always)]
-    fn eq(self, b: Self) -> Self {
-        Self(u8x16_eq(self.0, b.0))
-    }
-    #[inline(always)]
     fn gt(self, b: Self) -> Self {
         Self(u8x16_gt(self.0, b.0))
     }
@@ -49,10 +45,6 @@ impl Bytes for Lanes {
         Self(i8x16_swizzle(table.0, self.0))
     }
 
-    #[inline(always)]
-    fn and(self, b: Self) -> Self {
-        Self(v128_and(self.0, b.0))
-    }
     #[inline(always)]
     fn add(self, b: Self) -> Self {
         Self(u8x16_add(self.0, b.0))

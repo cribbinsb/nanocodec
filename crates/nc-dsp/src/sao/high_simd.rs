@@ -20,25 +20,70 @@ use super::scalar::band_sample_at;
 
 const BAND_BITS: u32 = 5;
 
+trait BandSelection<V: I16FilterLanes> {
+    type Table;
+
+    fn table(offsets: [i16; 4]) -> Self::Table;
+    fn select(index: V, table: &Self::Table) -> V;
+}
+
+#[cfg(target_arch = "x86_64")]
+struct CompareBand;
+
+#[cfg(target_arch = "x86_64")]
+impl<V: I16FilterLanes> BandSelection<V> for CompareBand {
+    type Table = [V; 4];
+
+    #[inline(always)]
+    fn table(offsets: [i16; 4]) -> [V; 4] {
+        [
+            V::splat(offsets[0]),
+            V::splat(offsets[1]),
+            V::splat(offsets[2]),
+            V::splat(offsets[3]),
+        ]
+    }
+
+    #[inline(always)]
+    fn select(index: V, offsets: &[V; 4]) -> V {
+        let mut delta = offsets[0].and(index.eq_mask(V::splat(0)));
+        delta = delta.add(offsets[1].and(index.eq_mask(V::splat(1))));
+        delta = delta.add(offsets[2].and(index.eq_mask(V::splat(2))));
+        delta.add(offsets[3].and(index.eq_mask(V::splat(3))))
+    }
+}
+
+struct LookupBand;
+
+impl<V: SaoWordLanes> BandSelection<V> for LookupBand {
+    type Table = V;
+
+    #[inline(always)]
+    fn table([a, b, c, d]: [i16; 4]) -> V {
+        V::offset_table([a, b, c, d, 0, 0, 0, 0])
+    }
+
+    #[inline(always)]
+    fn select(index: V, offsets: &V) -> V {
+        index.min_u16(V::splat(4)).select_offset::<0>(*offsets)
+    }
+}
+
 #[inline(always)]
-fn band_step<V: I16FilterLanes>(
+fn band_step<V: I16FilterLanes, O: BandSelection<V>>(
     c: V,
     shift: u32,
     pos_vec: V,
-    offset_vecs: &[V; 4],
+    offsets: &O::Table,
     zero: V,
     max_val: V,
 ) -> V {
     let band = c.srl(shift).sub(pos_vec).and(V::splat(31));
-    let mut delta = offset_vecs[0].and(band.eq_mask(zero));
-    delta = delta.add(offset_vecs[1].and(band.eq_mask(V::splat(1))));
-    delta = delta.add(offset_vecs[2].and(band.eq_mask(V::splat(2))));
-    delta = delta.add(offset_vecs[3].and(band.eq_mask(V::splat(3))));
-    c.add_sat(delta).max(zero).min(max_val)
+    c.add_sat(O::select(band, offsets)).max(zero).min(max_val)
 }
 
 #[inline(always)]
-unsafe fn band_lanes<V: I16FilterLanes>(
+unsafe fn band_lanes<V: I16FilterLanes, O: BandSelection<V>>(
     plane: &mut [u16],
     stride: usize,
     rect: Rect,
@@ -47,16 +92,15 @@ unsafe fn band_lanes<V: I16FilterLanes>(
     exempt: &[bool],
     depth: BitDepth,
 ) {
+    if depth.bits() >= i16::BITS {
+        super::scalar::band_at(plane, stride, rect, position, offsets, exempt, depth);
+        return;
+    }
     let zero = V::splat(0);
     let max_val = V::splat(depth.max() as i16);
     let shift = depth.bits() - BAND_BITS;
     let pos_vec = V::splat(i16::from(position));
-    let offset_vecs = [
-        V::splat(offsets[0]),
-        V::splat(offsets[1]),
-        V::splat(offsets[2]),
-        V::splat(offsets[3]),
-    ];
+    let offset_vecs = O::table(offsets);
     let width = rect.x1 - rect.x0;
     let whole = (width / V::LANES) * V::LANES;
     for y in rect.y0..rect.y1 {
@@ -68,7 +112,7 @@ unsafe fn band_lanes<V: I16FilterLanes>(
                 // SAFETY: `line` has length `width >= whole`.
                 unsafe {
                     let c = V::load_u16_at(ptr.add(x));
-                    band_step(c, shift, pos_vec, &offset_vecs, zero, max_val)
+                    band_step::<V, O>(c, shift, pos_vec, &offset_vecs, zero, max_val)
                         .store_u16_at(ptr.add(x));
                 }
                 x += V::LANES;
@@ -90,7 +134,7 @@ unsafe fn band_lanes<V: I16FilterLanes>(
                     // SAFETY: `line` has length `width >= whole`.
                     unsafe {
                         let c = V::load_u16_at(ptr.add(x));
-                        band_step(c, shift, pos_vec, &offset_vecs, zero, max_val)
+                        band_step::<V, O>(c, shift, pos_vec, &offset_vecs, zero, max_val)
                             .store_u16_at(ptr.add(x));
                     }
                 }
@@ -109,12 +153,8 @@ unsafe fn band_lanes<V: I16FilterLanes>(
 pub(crate) struct WordOffsets;
 
 pub(crate) trait SaoWordLanes: I16FilterLanes {
-    fn offset_table(offsets: [i16; 4]) -> Self;
-    fn select_offset(self, table: Self) -> Self;
-}
-
-pub(crate) fn offset_words([a, b, c, d]: [i16; 4]) -> [i16; 8] {
-    [a, b, 0, c, d, 0, 0, 0]
+    fn offset_table(offsets: [i16; 8]) -> Self;
+    fn select_offset<const BIAS: i16>(self, table: Self) -> Self;
 }
 
 impl<V: SaoWordLanes> super::generic::OffsetSelection<V> for WordOffsets {
@@ -122,18 +162,18 @@ impl<V: SaoWordLanes> super::generic::OffsetSelection<V> for WordOffsets {
     const ROLL_VERTICAL: bool = true;
 
     #[inline(always)]
-    fn table(offsets: [i16; 4]) -> V {
-        V::offset_table(offsets)
+    fn table([a, b, c, d]: [i16; 4]) -> V {
+        V::offset_table([a, b, 0, c, d, 0, 0, 0])
     }
 
     #[inline(always)]
     fn adjust<T: super::generic::SaoSample>(value: V, class: V, table: &V) -> V {
-        T::offset_add(value, class.select_offset(*table))
+        T::offset_add(value, class.select_offset::<2>(*table))
     }
 }
 
 macro_rules! isa_sao_u16 {
-    ($mod_name:ident, $lanes:ty, $feature:literal, $selection:ty) => {
+    ($mod_name:ident, $lanes:ty, $feature:literal, $selection:ty, $bands:ty) => {
         pub(crate) mod $mod_name {
             use nc_common::BitDepth;
 
@@ -161,6 +201,7 @@ macro_rules! isa_sao_u16 {
             }
 
             #[target_feature(enable = $feature)]
+            #[inline(never)]
             pub(crate) unsafe fn band(
                 plane: &mut [u16],
                 stride: usize,
@@ -172,7 +213,9 @@ macro_rules! isa_sao_u16 {
             ) {
                 // SAFETY: caller enables `$feature` and checked rectangle/mask.
                 unsafe {
-                    band_lanes::<$lanes>(plane, stride, rect, position, offsets, exempt, depth);
+                    band_lanes::<$lanes, $bands>(
+                        plane, stride, rect, position, offsets, exempt, depth,
+                    );
                 }
             }
         }
@@ -184,7 +227,8 @@ isa_sao_u16!(
     avx2,
     crate::simd::avx2::I16x16,
     "avx2",
-    crate::sao::high_simd::WordOffsets
+    crate::sao::high_simd::WordOffsets,
+    crate::sao::high_simd::LookupBand
 );
 
 #[cfg(target_arch = "x86_64")]
@@ -192,7 +236,8 @@ isa_sao_u16!(
     avx512,
     crate::simd::avx512_i16::I16x32,
     "avx2,avx512f,avx512bw,avx512vl",
-    crate::sao::generic::CompareOffsets
+    crate::sao::generic::CompareOffsets,
+    crate::sao::high_simd::CompareBand
 );
 
 #[cfg(target_arch = "aarch64")]
@@ -200,7 +245,8 @@ isa_sao_u16!(
     neon,
     crate::simd::neon::I16x8,
     "neon",
-    crate::sao::high_simd::WordOffsets
+    crate::sao::high_simd::WordOffsets,
+    crate::sao::high_simd::LookupBand
 );
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -208,7 +254,8 @@ isa_sao_u16!(
     simd128,
     crate::simd::simd128::I16x8,
     "simd128",
-    crate::sao::high_simd::WordOffsets
+    crate::sao::high_simd::WordOffsets,
+    crate::sao::high_simd::LookupBand
 );
 
 /// Keep full 32-lane loops separate from the 16-lane tail schedule.
@@ -261,6 +308,31 @@ pub(crate) unsafe fn apply_icl(
             avx512::apply(
                 input, in_stride, out, out_stride, offs, offsets, rect, depth,
             );
+        }
+    }
+}
+
+/// Preserve the complete 16-sample rows and cropped halves on Ice Lake.
+///
+/// # Safety
+/// The caller selected Ice Lake and validated the rectangle and exemption mask.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+pub(crate) unsafe fn band_icl(
+    plane: &mut [u16],
+    stride: usize,
+    rect: Rect,
+    position: u8,
+    offsets: [i16; 4],
+    exempt: &[bool],
+    depth: BitDepth,
+) {
+    // SAFETY: both kernels use the same checked rectangle and exemption mask.
+    unsafe {
+        if (rect.x1 - rect.x0) % 32 >= 16 {
+            avx2::band(plane, stride, rect, position, offsets, exempt, depth);
+        } else {
+            avx512::band(plane, stride, rect, position, offsets, exempt, depth);
         }
     }
 }

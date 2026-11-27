@@ -80,10 +80,17 @@ unsafe fn band(
     offsets: [i8; 4],
     exempt: &[bool],
 ) {
-    // SAFETY: dispatch checked the rectangle and exemption mask; this enables the ISA.
+    let width = rect.x1 - rect.x0;
+    // SAFETY: dispatch checked the rectangle and exemption mask.
     unsafe {
-        super::bytes::band::<super::avx2_bytes::Lanes>(
-            plane, stride, rect, position, offsets, exempt,
-        );
+        if width < 32 || width % 32 >= 16 {
+            super::bytes::band::<super::avx2_bytes::Lanes<16>>(
+                plane, stride, rect, position, offsets, exempt,
+            );
+        } else {
+            super::bytes::band::<super::avx2_bytes::Lanes<32>>(
+                plane, stride, rect, position, offsets, exempt,
+            );
+        }
     }
 }
