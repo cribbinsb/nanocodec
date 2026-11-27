@@ -13,12 +13,7 @@
 # +56.6 %, Graviton 3 +58.2 / +61.5 %, Graviton 4 +58.2 / +60.6 %.
 #
 # Every parameter of slow follows (so this rung does not move when slow does).
-# Restored decision.final_margin_lambdas = 0.1 (slow's value) and removed
-# h264.subpel_skip_variance = 13.76 (Default's 24) per benchmark-anomalies-2026-11-25.md
-# ("Left open"): c8i/c8g CPU -2.5 / -2.7 %, formal L3 (n=98, draw 2026-11-27,
-# --local --strict-buffer) J -0.23 % [-0.43, -0.05] BETTER, 0 guards,
-# periodic-key pulse 2 s -0.04 dB / 10 s +0.21 dB (faster AND better).
-decision.final_margin_lambdas = 0.1
+decision.final_margin_lambdas = 0.217
 decision.final_max_winner_lambdas = 0
 decision.final_intra_energy_ratio = 0
 h264.final_chroma = 1
@@ -34,7 +29,6 @@ key.h264.intra8x8_rd_candidates = 3
 key.h264.intra8x8_gate_satd = 4
 key.h264.trellis_i8x8 = 1
 key.h264.trellis_intra_lambda_ratio = 0.4
-quant.trellis_key_lambda_scale = 1
 # Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
 # nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
 # streams), final check BETTER at 1/150 and 1/300 (-1.22 / -0.45 %).
@@ -64,3 +58,4 @@ decision.subpel_seed_shift_zero_mv = 0
 
 # This rung's own search (above; its final-stage margin is set where slow's is).
 h264.rd_refine = 1
+h264.subpel_skip_variance = 13.76

@@ -830,7 +830,7 @@ def main(argv: list[str]) -> None:
     c.add_argument("--out", action="append", required=True)
     c.add_argument("--record", required=True)
     c.add_argument("--build", required=True,
-                   help="the main commit our binary's code is (8 characters)")
+                   help="the variance-integration commit our binary's code is (8 characters)")
     c.set_defaults(handler=record)
     m = sub.add_parser("merge", help="re-timed encoders of a newer record into the site's")
     m.add_argument("--record", required=True, help="the site's record, updated in place")

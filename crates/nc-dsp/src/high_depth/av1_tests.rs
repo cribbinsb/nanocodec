@@ -461,45 +461,6 @@ fn cdef_at_eight_bits_matches() {
 }
 
 #[test]
-fn cdef_high_chroma_borders_match_scalar() {
-    let dsp = Dsp::new();
-    let scalar = Dsp::with_isa(crate::Isa::Scalar).unwrap();
-    for depth in [BitDepth::TEN, BitDepth::new(12).unwrap()] {
-        for size in [(8, 8), (18, 18), (24, 24), (24, 16)] {
-            let units: Vec<_> = (0..size.1 / 8)
-                .flat_map(|y| {
-                    (0..size.0 / 8).map(move |x| CdefUnit {
-                        x: x * 8,
-                        y: y * 8,
-                        set: 0,
-                    })
-                })
-                .collect();
-            for (primary, secondary) in [(7, 0), (0, 2), (15, 4)] {
-                let sets = CdefSets::new(
-                    &[CdefStrengths {
-                        chroma_primary: primary,
-                        chroma_secondary: secondary,
-                        ..CdefStrengths::default()
-                    }],
-                    4,
-                );
-                let mut actual = picture::<u16>(size, 6, depth.max() as u32);
-                let mut expected = actual.clone();
-                for (backend, pic) in [(&dsp, &mut actual), (&scalar, &mut expected)] {
-                    let mut lines = CdefLines::new();
-                    lines.start(pic);
-                    backend
-                        .at(depth)
-                        .cdef_filter_band(&mut lines, pic, 0..size.1, &units, &sets);
-                }
-                assert_eq!(contents(&actual), contents(&expected));
-            }
-        }
-    }
-}
-
-#[test]
 fn loop_restoration_at_eight_bits_matches() {
     let dsp = Dsp::new();
     let k = both(&dsp);

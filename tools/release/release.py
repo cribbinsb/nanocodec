@@ -103,7 +103,7 @@ RELEASE_ROOT = DATA / "release"
 #: PGO builds by release commit (BUILDS/<commit8>[-pipeclean]/<arch>/).
 BUILDS = RELEASE_ROOT / "builds"
 WORKTREES = DATA / "worktrees"
-INTEGRATION = "main"
+INTEGRATION = "variance-integration"
 RUN = DATA / "run"
 VERIFY_HISTORY = RUN / "verified-history"
 VERIFY_HEADS = {"streams": RUN / "verified-streams-head", "tests": RUN / "verified-head"}

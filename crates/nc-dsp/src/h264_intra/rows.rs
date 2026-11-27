@@ -1,147 +1,141 @@
-//! The three non-directional H.264 8x8 modes and the packed row
-//! selectors for the six remaining modes. Each directional output
-//! is one selection from a 16-byte window of pair or triple averages.
+//! H.264 `Intra_8x8` predictors as borders and row slices (same results as
+//! [`super::reference`]). With `E` the border of the module docs, `A3[i] =
+//! avg3(E[i−1], E[i], E[i+1])` and `A2[i] = avg2(E[i], E[i+1])`, every
+//! diagonal mode's sample depends on one diagonal index only, so each row
+//! is a window of one sequence:
+//!
+//! - diagonal down-left: row `y` is `A3[11 + y ..]`;
+//! - diagonal down-right: row `y` is `A3[9 − y ..]`;
+//! - vertical-left: even rows `A2[10 + y/2 ..]`, odd rows `A3[11 + y/2 ..]`;
+//! - vertical-right: even rows `2k` are `[A3[4], A3[6], A3[8], A2[9..]]`
+//!   from `3 − k`, odd rows `[A3[3], A3[5], A3[7], A3[9..]]` likewise;
+//! - horizontal-down: `S[s]` for `zHD = 14 − s` (2-tap where `zHD` is even
+//!   and non-negative, 3-tap otherwise), row `y` from `14 − 2y`;
+//! - horizontal-up: `U[zHU]`, row `y` from `2y`.
 
-use super::{H264Intra8x8Refs, LEFT0, TOP0, h264_intra_8x8_mode as mode};
+#![allow(
+    clippy::inline_always,
+    reason = "the predictors must inline into each ISA entry point to vectorise"
+)]
 
-/// Fill the three plain modes without preparing directional averages.
-#[inline]
-pub(super) fn plain(refs: &H264Intra8x8Refs, mode: u8, out: &mut [u8; 64]) {
-    match mode {
+use super::{
+    BORDER, H264_INTRA_8X8_SIDE, H264Intra8x8Refs, avg2, avg3, h264_intra_8x8_mode as mode,
+};
+
+const N: usize = H264_INTRA_8X8_SIDE;
+/// Longest sequence a mode's rows read: horizontal-down and -up span 22.
+const SEQUENCE: usize = 3 * N - 2;
+
+/// Predict `mode` into `out` (raster, stride 8).
+#[inline(always)]
+pub(super) fn predict(refs: &H264Intra8x8Refs, m: u8, out: &mut [u8; 64]) {
+    let e = &refs.border;
+    match m {
         mode::VERTICAL => {
-            let top = &refs.border[TOP0..TOP0 + 8];
-            for row in out.as_chunks_mut::<8>().0 {
-                row.copy_from_slice(top);
+            for row in out.as_chunks_mut::<N>().0 {
+                row.copy_from_slice(&e[super::TOP0..super::TOP0 + N]);
             }
         }
         mode::HORIZONTAL => {
-            for (y, row) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            for (y, row) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
                 row.fill(refs.l(y));
             }
         }
         mode::DC => out.fill(refs.dc()),
-        _ => unreachable!("the caller selected a plain Intra_8x8 mode"),
+        _ => diagonal(e, m, out),
     }
 }
 
-/// Where the 16 consecutive pair and triple averages begin in the border.
-pub(super) const FIRST: [u8; 6] = [TOP0 as u8, 1, 2, 1, TOP0 as u8, 0];
+/// The 3-tap averages `A3` (index 0 and the last unused).
+#[inline(always)]
+fn three_tap(e: &[u8; BORDER]) -> [u8; BORDER] {
+    let mut a3 = [0u8; BORDER];
+    for i in 1..BORDER - 1 {
+        a3[i] = avg3(e[i - 1], e[i], e[i + 1]);
+    }
+    a3
+}
 
-/// A pair's index is 0..15 and a triple's is 16..31 within each mode.
-const PAIR_COUNT: isize = 16;
+/// The 2-tap averages `A2` (the last unused).
+#[inline(always)]
+fn two_tap(e: &[u8; BORDER]) -> [u8; BORDER] {
+    let mut a2 = [0u8; BORDER];
+    for i in 0..BORDER - 1 {
+        a2[i] = avg2(e[i], e[i + 1]);
+    }
+    a2
+}
 
-const fn selector(mode: u8, x: isize, y: isize, first: isize) -> u8 {
-    let top = TOP0 as isize;
-    let left = LEFT0 as isize;
-    let corner = super::CORNER as isize;
-    let triple = PAIR_COUNT;
-    let index = match mode {
-        mode::DIAGONAL_DOWN_LEFT => triple + top + x + y,
-        mode::DIAGONAL_DOWN_RIGHT => triple + corner - 1 + x - y,
+/// Row `y` is `sequence[start(y)..start(y) + 8]`.
+#[inline(always)]
+fn rows_from(sequence: &[u8], out: &mut [u8; 64], start: impl Fn(usize) -> usize) {
+    for (y, row) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
+        row.copy_from_slice(&sequence[start(y)..start(y) + N]);
+    }
+}
+
+#[inline(always)]
+fn diagonal(e: &[u8; BORDER], m: u8, out: &mut [u8; 64]) {
+    let a3 = three_tap(e);
+    match m {
+        mode::DIAGONAL_DOWN_LEFT => rows_from(&a3, out, |y| 11 + y),
+        mode::DIAGONAL_DOWN_RIGHT => rows_from(&a3, out, |y| 9 - y),
+        mode::VERTICAL_LEFT => {
+            let a2 = two_tap(e);
+            for (y, row) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
+                let (sequence, start) = if y % 2 == 0 {
+                    (&a2, 10 + y / 2)
+                } else {
+                    (&a3, 11 + y / 2)
+                };
+                row.copy_from_slice(&sequence[start..start + N]);
+            }
+        }
         mode::VERTICAL_RIGHT => {
-            let z = 2 * x - y;
-            let k = x - (y >> 1);
-            if z >= 0 && z % 2 == 0 {
-                corner + k
-            } else if z > 0 {
-                triple + corner + k - 1
-            } else {
-                triple + corner + z
+            let a2 = two_tap(e);
+            // The leading three samples of each sequence come from the left
+            // column, every second 3-tap average (zVR < −1).
+            let mut even = [0u8; N + 3];
+            let mut odd = [0u8; N + 3];
+            even[..3].copy_from_slice(&[a3[4], a3[6], a3[8]]);
+            odd[..3].copy_from_slice(&[a3[3], a3[5], a3[7]]);
+            even[3..].copy_from_slice(&a2[9..9 + N]);
+            odd[3..].copy_from_slice(&a3[9..9 + N]);
+            for (y, row) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
+                let sequence = if y % 2 == 0 { &even } else { &odd };
+                let start = 3 - y / 2;
+                row.copy_from_slice(&sequence[start..start + N]);
             }
         }
         mode::HORIZONTAL_DOWN => {
-            let z = 2 * y - x;
-            let j = y - (x >> 1);
-            if z >= 0 && z % 2 == 0 {
-                left - j
-            } else if z > 0 {
-                triple + left - j
-            } else {
-                triple + left - 1 - z
+            let a2 = two_tap(e);
+            let mut s = [0u8; SEQUENCE];
+            for (index, sample) in s.iter_mut().enumerate() {
+                let z = 14 - index as isize;
+                *sample = if z >= 0 && z % 2 == 0 {
+                    a2[(8 - z / 2) as usize]
+                } else if z >= -1 {
+                    a3[(9 - (z + 1) / 2) as usize]
+                } else {
+                    a3[(8 - z) as usize]
+                };
             }
-        }
-        mode::VERTICAL_LEFT => {
-            let k = x + (y >> 1);
-            let offset = if y % 2 == 0 { 0 } else { triple };
-            offset + top + k
+            rows_from(&s, out, |y| 14 - 2 * y);
         }
         mode::HORIZONTAL_UP => {
-            let z = x + 2 * y;
-            let j = y + (x >> 1);
-            if z > 13 {
-                // The first two border bytes are both the lowest left pixel.
-                0
-            } else if z % 2 == 0 {
-                left - j - 1
-            } else {
-                triple + left - j - 2
+            let a2 = two_tap(e);
+            let mut u = [0u8; SEQUENCE];
+            for (z, sample) in u.iter_mut().enumerate() {
+                *sample = if z > 13 {
+                    a2[0]
+                } else if z % 2 == 0 {
+                    a2[7 - z / 2]
+                } else {
+                    a3[7 - (z - 1) / 2]
+                };
             }
+            rows_from(&u, out, |y| 2 * y);
         }
-        _ => panic!("expected a directional Intra_8x8 mode"),
-    };
-    (index - first) as u8
-}
-
-const fn indices() -> [[u8; 64]; 6] {
-    let mut modes = [[0; 64]; 6];
-    let mut mode = 0;
-    while mode < modes.len() {
-        let mut pixel = 0;
-        while pixel < 64 {
-            let index = selector(
-                mode::DIAGONAL_DOWN_LEFT + mode as u8,
-                (pixel % 8) as isize,
-                (pixel / 8) as isize,
-                FIRST[mode] as isize,
-            );
-            assert!(index < 32);
-            modes[mode][pixel] = index;
-            pixel += 1;
-        }
-        mode += 1;
+        _ => unreachable!("diagonal Intra8x8PredMode is 3..=8"),
     }
-    modes
 }
-
-pub(super) const INDICES: [[u8; 64]; 6] = indices();
-
-/// Ice Lake selects pairs from its first vector and triples from the second.
-#[cfg(target_arch = "x86_64")]
-const fn icl_indices() -> [[u8; 64]; 6] {
-    let mut modes = INDICES;
-    let mut mode = 0;
-    while mode < modes.len() {
-        let mut pixel = 0;
-        while pixel < modes[mode].len() {
-            if modes[mode][pixel] >= 16 {
-                modes[mode][pixel] += 48;
-            }
-            pixel += 1;
-        }
-        mode += 1;
-    }
-    modes
-}
-
-#[cfg(target_arch = "x86_64")]
-pub(super) const ICL_INDICES: [[u8; 64]; 6] = icl_indices();
-
-/// On lane-local swizzles each table's unavailable indices zero the lane.
-#[cfg(any(target_arch = "x86_64", target_arch = "wasm32"))]
-const fn split_masks() -> [[[u8; 64]; 2]; 6] {
-    let mut masks = [[[0x80; 64]; 2]; 6];
-    let mut mode = 0;
-    while mode < masks.len() {
-        let mut pixel = 0;
-        while pixel < 64 {
-            let index = INDICES[mode][pixel] as usize;
-            masks[mode][index / 16][pixel] = (index % 16) as u8;
-            pixel += 1;
-        }
-        mode += 1;
-    }
-    masks
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "wasm32"))]
-pub(super) const MASKS: [[[u8; 64]; 2]; 6] = split_masks();

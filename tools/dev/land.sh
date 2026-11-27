@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Land an agent's branch on main: the ONLY landing route
+# Land an agent's branch on variance-integration: the ONLY landing route
 # (docs/PROCEDURES.md "Landing").
 #
 #   tools/dev/land.sh [branch]     run from the agent's own worktree, on that branch
@@ -32,8 +32,7 @@
 # moved integration head), naming the commits and files and the fix; `land.sh
 # --reverts SHA` lands a deliberate revert.
 #
-# The integration worktree (the one with main checked out, normally the shared
-# checkout) is not needed
+# The integration worktree (variance-integration checked out) is not needed
 # to land; after a landing it is moved to the new head when it was clean at an
 # older commit (a stale index otherwise failed every later fast-forward).
 #
@@ -43,9 +42,9 @@
 # The whole script is one function, read before it runs: rebasing the
 # agent's worktree can rewrite this file mid-run.
 #
-# Environment: NC_LAND_TARGET (integration branch, default main),
-# NC_INTEGRATION_TREE (its worktree, default the worktree that has it checked
-# out), CARGO_TARGET_DIR (the
+# Environment: NC_LAND_TARGET (integration branch, default
+# variance-integration), NC_INTEGRATION_TREE (its worktree, default
+# ~/nanocodec-data/worktrees/variance-integration), CARGO_TARGET_DIR (the
 # agent's target dir, default ~/nanocodec-data/targets/<worktree name>),
 # NC_LAND_CHECK_BUDGET (seconds the pre-land checks should take, default 90:
 # over it they warn), CARGO_BUILD_JOBS (default 8).
@@ -69,9 +68,8 @@ LOG_DAYS=3
 main() {
     data_root=${NC_DATA_ROOT:-$HOME/nanocodec-data}
     mode=${NC_LAND_MODE:-fast}
-    target=${NC_LAND_TARGET:-main}
-    integration=${NC_INTEGRATION_TREE:-$(git worktree list --porcelain |
-        awk -v branch="branch refs/heads/$target" '/^worktree /{tree=substr($0, 10)} $0 == branch {print tree}')}
+    target=${NC_LAND_TARGET:-variance-integration}
+    integration=${NC_INTEGRATION_TREE:-$data_root/worktrees/variance-integration}
     logs=$data_root/run/land-logs
     export PATH="$HOME/.cargo/bin:$PATH"
     cargo_shim

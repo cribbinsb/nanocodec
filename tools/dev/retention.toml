@@ -601,6 +601,14 @@ release = true
 # --- worktrees and target directories that tools need -----------------------------------
 
 [[keep]]
+path = "worktrees/variance-integration"
+class = "tool"
+reader = "land.sh (the integration tree)"
+regen = "git worktree add; never remove"
+release = true
+marker = false  # a marker in a worktree is an untracked file (publish.sh runs git add -A)
+
+[[keep]]
 path = "worktrees/gh-pages"
 class = "tool"
 reader = "tools/web/publish.sh (the site's gh-pages tree)"

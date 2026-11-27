@@ -172,7 +172,7 @@ def drain_older_builds(tool: Path) -> list[str]:
         raise OlderThanLivePool(
             f"your eval tree is older than the live scoring build: its VMAFx {tool} is "
             f"generation {generation}, but server {newer[0].name} runs generation "
-            f"{newer[0].generation} ({newer[0].tool}); rebase onto main")
+            f"{newer[0].generation} ({newer[0].tool}); rebase onto variance-integration")
     drained = []
     for server in drain_targets(found, tool, generation):
         subprocess.run([str(tool), "--drain-server", server.name], stdin=subprocess.DEVNULL,

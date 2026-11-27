@@ -22,7 +22,7 @@ set -euo pipefail
 
 data=${NC_DATA_ROOT:-$HOME/nanocodec-data}
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
-branch=${PUBLISH_BRANCH:-main}
+branch=${PUBLISH_BRANCH:-variance-integration}
 tree=$data/worktrees/demo-publish
 target=$data/targets/demo-publish
 pages=$data/worktrees/gh-pages
