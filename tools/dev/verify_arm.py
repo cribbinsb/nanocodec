@@ -45,7 +45,7 @@ BOX_TYPES = ("c8g.8xlarge", "c8g.16xlarge")
 REGION = "eu-north-1"
 #: The run takes ~30 min; the hard lifetime and the budget bound a stuck box.
 LIFETIME_MINUTES = 90
-BUDGET_USD = 0.75
+BUDGET_USD = 1.0
 RUN_TIMEOUT_MINUTES = 75
 #: nightly_checks.sh prints only a line per check, and the landing check alone takes
 #: tens of minutes.

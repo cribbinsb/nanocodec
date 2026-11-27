@@ -4,7 +4,9 @@
     python3 tools/dev/verify_schedule.py tick      the timer's entry point (hourly)
     python3 tools/dev/verify_schedule.py status    one line: the last result of every check
     python3 tools/dev/verify_schedule.py hourly    the hourly part now (if main moved)
-    python3 tools/dev/verify_schedule.py nightly   the nightly part now (whatever the hour)
+    python3 tools/dev/verify_schedule.py nightly [--only x86|arm]
+                                                   the nightly part now (whatever the hour;
+                                                   --only: one half, e.g. after an error)
     python3 tools/dev/verify_schedule.py install   (re)write and start the systemd user timer
 
 Why: on 2026-11-27 the checks looked fine but did not run (docs/analysis/
@@ -211,15 +213,17 @@ def run_arm(tree: Path, out: Path) -> int:
                               stdout=log, stderr=subprocess.STDOUT).returncode
 
 
-def nightly() -> int:
-    """Both nightly halves on one checkout of main's head; every check recorded."""
+def nightly(only: str | None = None) -> int:
+    """Both nightly halves (or `only` one) on one checkout of main's head; every check
+    recorded."""
     head = main_head()
     with Records() as status:
         status["parts"]["nightly"] = {"commit": head, "date": utc_now().date().isoformat(),
                                       "state": "running"}
     checkout(NIGHTLY_TREE, head)
     root = LOGS / f"nightly-{head[:9]}"
-    halves = {"x86": run_x86, "arm": run_arm}
+    halves = {name: run for name, run in (("x86", run_x86), ("arm", run_arm))
+              if only in (None, name)}
     codes: dict[str, int] = {}
     threads = []
     for name, run in halves.items():
@@ -314,14 +318,18 @@ WantedBy=timers.target
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("command", choices=("tick", "status", "hourly", "nightly", "install"))
-    command = ap.parse_args().command
+    ap.add_argument("--only", choices=("x86", "arm"), help="nightly: this half only")
+    args = ap.parse_args()
+    command = args.command
     if command == "status":
         print(summary_line())
         return 0
     if command == "install":
         install()
         return 0
-    return {"tick": tick, "hourly": hourly, "nightly": nightly}[command]()
+    if command == "nightly":
+        return nightly(args.only)
+    return {"tick": tick, "hourly": hourly}[command]()
 
 
 if __name__ == "__main__":

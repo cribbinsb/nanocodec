@@ -112,7 +112,8 @@ arm_checks() {
     check cpu-features bash -c 'for f in asimddp i8mm sve2; do
         grep -qw "$f" /proc/cpuinfo || { echo "this CPU lacks $f"; exit 1; }; done; echo "asimddp i8mm sve2"'
     check checkasm-arm "$bin/nc-checkasm" --require neon,sve2
-    check landing-arm env NC_NANOCODEC_BIN="$bin" NC_VERIFIED_DIR="$out/no-verified-cache" \
+    # NC_REMOTE_BOX: a rented box, where more than 8 workers are allowed.
+    check landing-arm env NC_NANOCODEC_BIN="$bin" NC_VERIFIED_DIR="$out/no-verified-cache" NC_REMOTE_BOX=1 \
         python3 tools/ci/landing_conformance.py --workers "$(($(nproc) / 2))"
     check isa-identity-arm tools/ci/isa_identity.sh "$bin/nanocodec" --local \
         --clip-dir "$data/clips/main" --jobs "$(nproc)"

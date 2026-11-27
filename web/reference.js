@@ -15,7 +15,8 @@ let manifest = null;
 
 /** The manifest's stream records, fetched once. */
 export function loadManifest(fetcher = fetch) {
-  manifest ??= fetcher(MANIFEST_URL).then(response => {
+  // revalidated every load (a cheap 304): it names the streams' current hashes
+  manifest ??= fetcher(MANIFEST_URL, { cache: 'no-cache' }).then(response => {
     if (!response.ok) throw new Error(`No pre-encoded stream list (${response.status})`);
     return response.json();
   }).then(data => data.streams).catch(error => { manifest = null; throw error; });
@@ -98,7 +99,10 @@ export function framesToDecode(last, target) {
  * rejects with a readable message on a network or HTTP error.
  */
 export async function fetchStream(entry, onProgress, fetcher = fetch) {
-  const url = new URL(`./streams-ref/${entry.file}`, import.meta.url);
+  // The stream's content hash in the query: a regenerated stream keeps its file name, and a
+  // browser holding the old bytes in its HTTP cache would otherwise serve them against the
+  // new manifest (seen 2026-11-27: "truncated" after the BP-4 regeneration).
+  const url = new URL(`./streams-ref/${entry.file}?sha256=${entry.sha256}`, import.meta.url);
   let response;
   try { response = await fetcher(url); } catch { throw new Error(`Could not fetch ${entry.file}: network error`); }
   if (!response.ok) throw new Error(`Could not fetch ${entry.file} (HTTP ${response.status})`);

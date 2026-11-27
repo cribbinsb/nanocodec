@@ -946,8 +946,13 @@ macro_rules! high_lr_isa {
                 n: usize,
                 depth: BitDepth,
             ) {
-                // SAFETY: target_feature enabled by wrapper.
-                unsafe { box_ab_u16::<$sgr_lanes, 5>(sums, squares, scale, ab, n, depth) }
+                let (a, b) = ab;
+                // SAFETY: target_feature enabled by wrapper, and the
+                // checked output rows cover the box and its SIMD padding.
+                unsafe {
+                    box_ab_u16::<$sgr_lanes, 5>(sums, squares, scale, (&mut *a, &mut *b), n, depth);
+                }
+                sgr_lanes::weight_radius_two::<$sgr_lanes, $w_lanes>(a, b, n);
             }
 
             $(#[$feature])*

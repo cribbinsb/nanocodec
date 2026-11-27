@@ -184,7 +184,7 @@ def test_the_limitations_are_the_procedures_section_16():
     assert nested["items"] and not any("**" in i["text"] or "`" in i["text"] for i in items)
 
 
-def test_a_history_failing_its_tracking_check_is_withdrawn(tmp_path):
+def test_a_history_failing_its_tracking_check_is_shown_with_the_check(tmp_path):
     full = {"x264-medium": row(0.0), "x264-fast": row(10.0), "nanocodec-av1@fast": row(-30.0)}
     write_report(tmp_path, "ours", full)
     # on the subset ours reads 3 points worse than the references do: outside the 1-point limit
@@ -193,12 +193,12 @@ def test_a_history_failing_its_tracking_check_is_withdrawn(tmp_path):
     data = bench_site.preview_history.history_data(
         tmp_path, tmp_path / "days.json", tmp_path / "no-captions.json", [SERIES], {},
         bench_site.describe, bench_site.finite, bench_site.report_path)
-    assert SERIES not in data["views"]
-    check = data["withdrawn"][SERIES]
+    check = data["views"][SERIES]["tracking_check"]
+    assert not check["passed"]
     assert check["median_offset"] == 0.0 and set(check["outside"]) == {"nanocodec-av1@fast"}
     write_report(tmp_path, "history", HISTORY_FAMILIES | {"x264-fast": row(10.0),
                                                          "nanocodec-av1@fast": row(-29.5)})
     data = bench_site.preview_history.history_data(
         tmp_path, tmp_path / "days.json", tmp_path / "no-captions.json", [SERIES], {},
         bench_site.describe, bench_site.finite, bench_site.report_path)
-    assert data["views"][SERIES]["tracking_check"]["passed"] and not data["withdrawn"]
+    assert data["views"][SERIES]["tracking_check"]["passed"]

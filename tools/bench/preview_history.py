@@ -47,7 +47,8 @@ PRIMARY_KEY = "k150"
 COMMIT_SHOWN = 9
 #: Procedure section 14, V17: on the current build, every family's subset-minus-full BD-J
 #: offset lies within this many points of the median offset, with the same front membership.
-#: A failure withdraws the history graph until the owner decides.
+#: Owner decision 2026-11-27: a failure no longer withdraws the graph; it is shown with the
+#: failed check beside it (read it for the trend across days, not the level).
 TRACKING_LIMIT = 1.0
 #: The full set the history subset is checked against: the "ours" report of the same machine.
 FULL_REPORT = "ours"
@@ -212,7 +213,7 @@ def history_data(reports: Path, days_path: Path, captions_path: Path, machines: 
     `shared` is the preview's name and the machines of its selector."""
     builds = {d["day"]: d for d in read_json(days_path) or []}
     captions = read_json(captions_path) or {}
-    views, withdrawn, missing = {}, {}, []
+    views, missing = {}, []
     for machine in machines:
         path = report_path(reports, REPORT_NAME, machine)
         report = read_json(path)
@@ -221,10 +222,7 @@ def history_data(reports: Path, days_path: Path, captions_path: Path, machines: 
             continue
         full = read_json(report_path(reports, FULL_REPORT, machine))
         check = full and tracking_check(report["series"][machine], full["series"][machine])
-        if check and not check["passed"]:  # section 14: withdrawn until the owner decides
-            withdrawn[machine] = finite(check) | {"source": str(path)}
-            continue
         views[machine] = machine_view(report, machine, builds, captions, describe, finite, path)
         views[machine]["tracking_check"] = check and finite(check)
     return shared | {"keys": KEYS, "primary_key": PRIMARY_KEY, "notes": list(NOTES),
-                     "views": views, "withdrawn": withdrawn, "missing": missing}
+                     "views": views, "missing": missing}

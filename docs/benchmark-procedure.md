@@ -712,10 +712,11 @@ and each box's output in its own log. They refuse to start outside a memory-capp
   start-up behaviour is judged there (T31).
 - Earlier release and daily frames are deferred.
 - **Tracking check (V17):** on the current build, every rung's subset-minus-full BD-J offset is
-  within 1 point of the median offset, with the same front membership. A failure withdraws the
-  history graph until the owner decides. The results site applies it itself
-  (`tools/bench/preview_history.py`, `tracking_check`): a machine whose history report fails
-  shows the withdrawal and the offsets instead of the graph. BP-4 fails it on both chips (37 of
+  within 1 point of the median offset, with the same front membership. Owner decision
+  2026-11-27: a failure no longer withdraws the graph; the graph is shown with the failed check
+  and every family's offset beside it, to be read for the trend across days, not the level, until
+  the cause is established and fixed. The results site applies it itself
+  (`tools/bench/preview_history.py`, `tracking_check`). BP-4 fails it on both chips (37 of
   64 families outside, median offset +5.2 / +5.0 points; our families' mean offset +5.5 / +5.2,
   the references' +2.0 / +1.8; the front differs; common set 18 clip-windows, 9 clips), so the
   graph is withdrawn.

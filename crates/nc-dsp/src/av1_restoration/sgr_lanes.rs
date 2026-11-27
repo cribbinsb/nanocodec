@@ -20,6 +20,8 @@
 
 use nc_common::{BitDepth, Sample};
 
+use crate::simd::I16Lanes;
+
 use super::self_guided::{
     BLEND_SHIFT, BoxRows, MTABLE_BITS, ONE_ROW_SHIFT, PRJ_ONE, ProjectionRows, RECIP_BITS,
     RadiusTwo, SGR_BITS, SOURCE_SHIFT, TWO_ROW_SHIFT, Z_MAX, one_by_x,
@@ -239,6 +241,26 @@ fn weigh_on<V: SgrLanes, T: LaneRow>(v: &[T], j: usize) -> V {
     )
 }
 
+/// Keep each radius-two box row already weighted 5/6/5 in the high-depth
+/// ring. Later output rows reuse it individually or add two weighted rows.
+#[inline(always)]
+pub(super) fn weight_radius_two<V: SgrLanes, W: I16Lanes>(a: &mut [i16], b: &mut [i32], n: usize) {
+    let width = n.saturating_sub(2);
+    // A is at most 256. Multiplying by the sum of the three weights
+    // still fits a signed word.
+    for col in (0..width).step_by(W::LANES) {
+        let outer = W::load(&a[col..]).add(W::load(&a[col + 2..]));
+        let centre = W::load(&a[col + 1..]);
+        let factors = outer.mul(W::splat(5)).add(centre.mul(W::splat(6)));
+        factors.store(&mut a[col..]);
+    }
+    // B retains dword precision.
+    for col in (0..width).step_by(V::LANES) {
+        let means = weigh_on::<V, _>(b, col);
+        means.store(&mut b[col..]);
+    }
+}
+
 #[inline(always)]
 fn weigh_around<V: SgrLanes, T: LaneRow>(v: [&[T]; 3], j: usize) -> V {
     let cross = T::load::<V>(&v[1][j..])
@@ -308,13 +330,13 @@ fn project_lanes<V: SgrLanes, const FIVE: u8, const THREE: bool>(
         let u = p.shl::<{ SOURCE_SHIFT as i32 }>();
         let f0 = match FIVE {
             2 => filter_sample::<V, { TWO_ROW_SHIFT as i32 }>(
-                weigh_between(five_a, j),
-                weigh_between(five_b, j),
+                V::load_i16(&five_a[0][j..]).add(V::load_i16(&five_a[1][j..])),
+                V::load(&five_b[0][j..]).add(V::load(&five_b[1][j..])),
                 p,
             ),
             1 => filter_sample::<V, { ONE_ROW_SHIFT as i32 }>(
-                weigh_on(five_a[0], j),
-                weigh_on(five_b[0], j),
+                V::load_i16(&five_a[0][j..]),
+                V::load(&five_b[0][j..]),
                 p,
             ),
             _ => u,
