@@ -445,10 +445,11 @@ def main(argv: list[str] | None = None) -> None:
         print(f"history-{machine}: " + ", ".join(
             f"{key} {len(frames)} frames" for key, frames in h["series"].items())
               + f", common set {h['common_clips']} of {h['view_clips']} ({h['source']})")
-    for machine, w in history["withdrawn"].items():
-        print(f"history-{machine}: WITHDRAWN (V17 fails: {len(w['outside'])} of {w['families']} "
-              f"families more than {w['limit']} point off the median offset "
-              f"{w['median_offset']:+.2f}; same front: {w['front_same']})")
+        w = h.get("tracking_check")
+        if w and not w["passed"]:
+            print(f"  shown with a warning: V17 fails ({len(w['outside'])} of {w['families']} "
+                  f"families more than {w['limit']} point off the median offset "
+                  f"{w['median_offset']:+.2f}; same front: {w['front_same']})")
     for path in history["missing"]:
         print(f"history: no report found ({path})")
     for v in data["views"]:
