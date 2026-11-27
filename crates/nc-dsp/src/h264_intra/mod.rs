@@ -18,6 +18,8 @@
 //! every output row is a contiguous slice at a fixed offset; its loops are
 //! over byte arrays, so each ISA's instantiation vectorises them.
 
+#[allow(unsafe_code)]
+pub(crate) mod four;
 mod plane;
 pub use plane::h264_plane;
 mod reference;

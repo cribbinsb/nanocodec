@@ -2302,10 +2302,7 @@ impl<B: CodecBackend> Encoder<B> {
                     motion,
                 });
                 aq.plan(&analysis.pre, motion, offsets);
-                if key
-                    && index > 0
-                    && self.forced_quantizer.is_none()
-                    && self.layer.key_aq_qp > 0.
+                if key && index > 0 && self.forced_quantizer.is_none() && self.layer.key_aq_qp > 0.
                 {
                     aq.apply_periodic_key_aq(
                         &analysis.pre,

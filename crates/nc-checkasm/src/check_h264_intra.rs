@@ -3,7 +3,7 @@
 //! and alternating neighbours.
 use crate::{check::CheckReport, rng::Rng};
 use nc_common::{BitDepth, Sample};
-use nc_dsp::{Dsp, H264Intra8x8Edges, h264_intra_8x8_mode, h264_plane};
+use nc_dsp::{Dsp, H264Intra4x4Edges, H264Intra8x8Edges, h264_intra_8x8_mode, h264_plane};
 
 /// Random neighbour sets per availability combination.
 const RANDOM_EDGES: usize = 8;
@@ -44,6 +44,27 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                 has_left: flags & 4 != 0,
                 has_corner: flags & 8 != 0,
             };
+            let mut top: [u8; 8] = edges.top[..8].try_into().expect("eight above samples");
+            if !edges.has_top_right {
+                let last = top[3];
+                top[4..].fill(last);
+            }
+            let left = edges.left[..4].try_into().expect("four left samples");
+            let edges4 =
+                H264Intra4x4Edges::new(top, left, edges.corner, (edges.has_top, edges.has_left));
+            let prepared = candidate.h264_intra_4x4_prepare(edges4);
+            for mode in 0..h264_intra_8x8_mode::COUNT {
+                let expected = reference.h264_intra_4x4_single(edges4, mode);
+                report.cases += 2;
+                if candidate.h264_intra_4x4(&prepared, mode) != expected
+                    || candidate.h264_intra_4x4_single(edges4, mode) != expected
+                {
+                    report.failures.push(format!(
+                        "{} h264_intra_4x4 mode={mode} flags={flags:#06b} pattern={pattern}",
+                        candidate.isa()
+                    ));
+                }
+            }
             let refs = edges.filtered();
             for mode in (0..h264_intra_8x8_mode::COUNT).filter(|&m| refs.allows(m)) {
                 let run = |dsp: &Dsp| {

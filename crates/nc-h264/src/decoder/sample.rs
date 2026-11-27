@@ -90,6 +90,17 @@ pub(super) trait H264Sample: Pixel {
         dst: &mut PlaneViewMut<'_, Self>,
     );
 
+    /// `Intra_4x4` prediction of the block at `at` (§8.3.1).
+    fn intra_4x4(
+        _dsp: &Dsp,
+        plane: &mut PlaneViewMut<'_, Self>,
+        at: (usize, usize),
+        mode: u8,
+        avail: (Avail, BitDepth),
+    ) -> Result<()> {
+        intra::predict_nxn(plane, at, 4, mode, avail)
+    }
+
     /// `Intra_8x8` prediction of the block at `at` (§8.3.2).
     fn intra_8x8(
         dsp: &Dsp,
@@ -138,6 +149,17 @@ impl H264Sample for u8 {
     #[inline]
     fn add_8x8(dsp: &Dsp, _depth: BitDepth, coeffs: &[i16; 64], dst: &mut PlaneViewMut<'_, u8>) {
         dsp.h264_add_scaled_8x8(coeffs, dst);
+    }
+
+    #[inline]
+    fn intra_4x4(
+        dsp: &Dsp,
+        plane: &mut PlaneViewMut<'_, Self>,
+        at: (usize, usize),
+        mode: u8,
+        (avail, _depth): (Avail, BitDepth),
+    ) -> Result<()> {
+        intra::predict_4x4(dsp, plane, at, mode, avail)
     }
 
     #[inline]

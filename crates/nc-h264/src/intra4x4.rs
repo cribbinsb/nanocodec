@@ -15,7 +15,7 @@
 use core::cmp::Ordering;
 
 use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, H264Quantizer};
+use nc_dsp::{BlockSize, Dsp, H264Intra4x4Edges, H264Intra4x4Refs, H264Quantizer};
 
 use crate::macroblock::{LumaTrellis, all_zero, scale_4x4};
 use crate::residual::trellis::{RateModel, TrellisBlock, TrellisQuantizer};
@@ -24,7 +24,7 @@ use crate::syntax::write_intra_4x4_mode;
 use crate::tables::ZIGZAG_4X4;
 
 use crate::intra_nxn::mode_bits;
-pub use crate::intra_nxn::{
+use crate::intra_nxn::{
     DC, DIAGONAL_DOWN_LEFT, DIAGONAL_DOWN_RIGHT, HORIZONTAL, HORIZONTAL_DOWN, HORIZONTAL_UP,
     MODE_COUNT, VERTICAL, VERTICAL_LEFT, VERTICAL_RIGHT,
 };
@@ -40,126 +40,19 @@ pub const fn block_index(bx: usize, by: usize) -> usize {
     8 * (by / 2) + 4 * (bx / 2) + 2 * (by % 2) + bx % 2
 }
 
-/// The neighbouring samples of one 4x4 block: `top[i] = p[i, -1]` for
-/// `i = 0..8` (positions 4..8 substituted when the top-right is missing),
-/// `left[j] = p[-1, j]`, with the availability of the top and left edges
-/// (the corner `p[-1, -1]` is available exactly when both are), and the
-/// directional modes' values.
+/// One block's packed border and the availability used to limit mode search.
 pub(crate) struct Neighbours {
-    top: [i32; 8],
-    left: [i32; 4],
+    refs: H264Intra4x4Refs,
     has_top: bool,
     has_left: bool,
-    /// Every value a directional mode predicts, see [`DIRECTIONAL`].
-    directional: [u8; DIRECTIONAL_VALUES],
 }
-
-/// The neighbours as one line `e`: `p[-1, 3]` twice, the left column bottom
-/// up to `p[-1, 0]`, the corner, then `p[0, -1]` to `p[7, -1]` and `p[7, -1]`
-/// again; so `p[i, -1] = e[6 + i]` and `p[-1, j] = e[4 - j]` for `i, j >=
-/// -1`, and the two end values the standard writes as `(a + 3b + 2) >> 2` are
-/// three-tap averages of the line.
-const LINE: usize = 15;
-/// `p[i, -1] = e[TOP + i]`.
-const TOP: usize = 6;
-/// `p[-1, j] = e[LEFT - j]`.
-const LEFT: usize = 4;
-/// Two-tap averages `(e[k] + e[k + 1] + 1) >> 1` the modes use (k = 0..11).
-const PAIRS: usize = 11;
-/// Three-tap averages `(e[k] + 2e[k + 1] + e[k + 2] + 2) >> 2` (k = 0..13).
-const TRIPLES: usize = 13;
-/// The pairs, then the triples.
-const DIRECTIONAL_VALUES: usize = PAIRS + TRIPLES;
-
-/// Index into the directional values of a two-tap average starting at line
-/// position `k`.
-const fn pair(k: i32) -> u8 {
-    k as u8
-}
-
-/// Index into the directional values of a three-tap average starting at
-/// line position `k`.
-const fn triple(k: i32) -> u8 {
-    (PAIRS as i32 + k) as u8
-}
-
-/// The value sample `(x, y)` of directional `mode` takes (§8.3.1.2.4–9, the
-/// standard's formulas with `p[i, -1]` and `p[-1, j]` written as line
-/// positions).
-const fn directional_value(mode: u8, x: i32, y: i32) -> u8 {
-    let top = TOP as i32;
-    let left = LEFT as i32;
-    match mode {
-        // avg3(p[x+y, -1], p[x+y+1, -1], p[x+y+2, -1]); at (3, 3) the
-        // repeated p[7, -1] makes it (p[6, -1] + 3p[7, -1] + 2) >> 2.
-        DIAGONAL_DOWN_LEFT => triple(top + x + y),
-        // Above, on and below the diagonal alike: the three samples centred
-        // on line position top - 1 + (x - y).
-        DIAGONAL_DOWN_RIGHT => triple(top - 2 + x - y),
-        VERTICAL_RIGHT => {
-            let i = x - (y >> 1);
-            match 2 * x - y {
-                0 | 2 | 4 | 6 => pair(top + i - 1),
-                1 | 3 | 5 => triple(top + i - 2),
-                -1 => triple(left),
-                _ => triple(left + 1 - y),
-            }
-        }
-        HORIZONTAL_DOWN => {
-            let j = y - (x >> 1);
-            match 2 * y - x {
-                0 | 2 | 4 | 6 => pair(left - j),
-                1 | 3 | 5 => triple(left - j),
-                -1 => triple(left),
-                _ => triple(top + x - 3),
-            }
-        }
-        VERTICAL_LEFT => {
-            let i = x + (y >> 1);
-            if y % 2 == 0 {
-                pair(top + i)
-            } else {
-                triple(top + i)
-            }
-        }
-        HORIZONTAL_UP => {
-            let j = y + (x >> 1);
-            match x + 2 * y {
-                0 | 2 | 4 => pair(left - j - 1),
-                1 | 3 => triple(left - j - 2),
-                // (p[-1, 2] + 3p[-1, 3] + 2) >> 2 over the repeated p[-1, 3].
-                5 => triple(0),
-                // p[-1, 3]: the average of its two copies.
-                _ => pair(0),
-            }
-        }
-        _ => 0,
-    }
-}
-
-/// For each directional mode (by `Intra4x4PredMode`), the directional value
-/// of each sample, raster order: each prediction is sixteen table loads
-/// from values computed once per block, as the x264 and `FFmpeg`
-/// predictors share their filtered edge values across positions.
-const DIRECTIONAL: [[u8; 16]; MODE_COUNT as usize] = {
-    let mut table = [[0; 16]; MODE_COUNT as usize];
-    let mut mode = 0;
-    while mode < MODE_COUNT {
-        let mut i = 0;
-        while i < 16 {
-            table[mode as usize][i] = directional_value(mode, (i % 4) as i32, (i / 4) as i32);
-            i += 1;
-        }
-        mode += 1;
-    }
-    table
-};
 
 impl Neighbours {
     /// Neighbours of the 4x4 block at luma sample `(px, py)`, which is block
     /// `(bx, by)` of its macroblock. `top_right_mb` says whether the
     /// macroblock above-right exists (for the blocks on the top row).
     pub(crate) fn gather(
+        dsp: &Dsp,
         recon: &PlaneView<'_>,
         px: usize,
         py: usize,
@@ -179,55 +72,42 @@ impl Neighbours {
             } else {
                 bx < 3 && block_index(bx + 1, by - 1) < block_index(bx, by)
             };
-        let mut top = [0i32; 8];
+        let mut top = [0; 8];
         if has_top {
             let row = recon.row(py - 1);
-            for (i, t) in top.iter_mut().enumerate().take(4) {
-                *t = i32::from(row[px + i]);
-            }
-            for i in 4..8 {
-                top[i] = if has_top_right {
-                    i32::from(row[px + i])
-                } else {
-                    top[3]
-                };
+            let columns = if has_top_right { 8 } else { 4 };
+            top[..columns].copy_from_slice(&row[px..px + columns]);
+            if !has_top_right {
+                let last = top[3];
+                top[4..].fill(last);
             }
         }
-        let mut left = [0i32; 4];
+        let mut left = [0; 4];
         if has_left {
-            for (j, l) in left.iter_mut().enumerate() {
-                *l = i32::from(recon.row(py + j)[px - 1]);
+            for (j, pixel) in left.iter_mut().enumerate() {
+                *pixel = recon.row(py + j)[px - 1];
             }
         }
         let corner = if has_top && has_left {
-            i32::from(recon.row(py - 1)[px - 1])
+            recon.row(py - 1)[px - 1]
         } else {
             0
         };
-        Self::new(top, left, corner, (has_top, has_left))
+        Self::new(dsp, top, left, corner, (has_top, has_left))
     }
 
-    /// Neighbours with these samples and availability.
-    fn new(top: [i32; 8], left: [i32; 4], corner: i32, (has_top, has_left): (bool, bool)) -> Self {
-        let mut line = [0i32; LINE];
-        line[..=LEFT].copy_from_slice(&[left[3], left[3], left[2], left[1], left[0]]);
-        line[LEFT + 1] = corner;
-        line[TOP..TOP + 8].copy_from_slice(&top);
-        line[LINE - 1] = top[7];
-        let mut directional = [0u8; DIRECTIONAL_VALUES];
-        let (pairs, triples) = directional.split_at_mut(PAIRS);
-        for (value, w) in pairs.iter_mut().zip(line.windows(2)) {
-            *value = ((w[0] + w[1] + 1) >> 1) as u8;
-        }
-        for (value, w) in triples.iter_mut().zip(line.windows(3)) {
-            *value = ((w[0] + 2 * w[1] + w[2] + 2) >> 2) as u8;
-        }
+    fn new(
+        dsp: &Dsp,
+        top: [u8; 8],
+        left: [u8; 4],
+        corner: u8,
+        (has_top, has_left): (bool, bool),
+    ) -> Self {
+        let edges = H264Intra4x4Edges::new(top, left, corner, (has_top, has_left));
         Self {
-            top,
-            left,
+            refs: dsp.h264_intra_4x4_prepare(edges),
             has_top,
             has_left,
-            directional,
         }
     }
 
@@ -243,32 +123,9 @@ impl Neighbours {
     }
 
     /// The prediction of the block in `mode` (§8.3.1.2.1–9), raster order.
-    pub(crate) fn predict(&self, mode: u8) -> [u8; 16] {
-        match mode {
-            VERTICAL => fill(|x, _| self.top[x as usize] as u8),
-            HORIZONTAL => fill(|_, y| self.left[y as usize] as u8),
-            DC => [self.dc() as u8; 16],
-            _ => DIRECTIONAL[usize::from(mode)].map(|v| self.directional[usize::from(v)]),
-        }
+    pub(crate) fn predict(&self, dsp: &Dsp, mode: u8) -> [u8; 16] {
+        dsp.h264_intra_4x4(&self.refs, mode)
     }
-
-    /// DC prediction (§8.3.1.2.3).
-    fn dc(&self) -> i32 {
-        let sum_top: i32 = self.top[..4].iter().sum();
-        let sum_left: i32 = self.left.iter().sum();
-        match (self.has_top, self.has_left) {
-            (true, true) => (sum_top + sum_left + 4) >> 3,
-            (true, false) => (sum_top + 2) >> 2,
-            (false, true) => (sum_left + 2) >> 2,
-            (false, false) => 128,
-        }
-    }
-}
-
-/// A 4x4 block whose sample at `(x, y)` is `f(x, y)`, raster order. Generic,
-/// not `&dyn Fn`, so each mode's formula is inlined into its own loop.
-fn fill(f: impl Fn(i32, i32) -> u8) -> [u8; 16] {
-    core::array::from_fn(|i| f((i % 4) as i32, (i / 4) as i32))
 }
 
 /// The modes and quantised levels of one `I_NxN` macroblock coded with 4x4
@@ -383,7 +240,7 @@ impl Intra4x4Rdo<'_, '_> {
             // ranking them all first); no SATD for nine of nine modes per
             // block.
             for m in allowed {
-                let pred = neighbours.predict(m);
+                let pred = neighbours.predict(dsp, m);
                 let (cost, coded) = self.rd_cost(
                     dsp,
                     src,
@@ -584,6 +441,7 @@ pub(crate) fn code_intra_4x4_with(
             .region(px as isize, py as isize, 4, 4)
             .expect("block inside the picture");
         let neighbours = Neighbours::gather(
+            dsp,
             &recon.plane(PlaneIndex::Y).view(),
             px,
             py,
@@ -650,7 +508,7 @@ fn evaluate_mode(
     m: u8,
 ) -> ModeChoice {
     let block4 = BlockSize::new(4, 4).expect("4x4 is a kernel size");
-    let pred = neighbours.predict(m);
+    let pred = neighbours.predict(dsp, m);
     let view = PlaneView::new(&pred, 4, 4, 4).expect("prediction covers the block");
     let bits = mode_bits(m, predicted);
     (m, pred, dsp.satd(block4, src, &view) as f32 + lambda * bits)
@@ -722,10 +580,6 @@ mod tests {
         assert_eq!(block_position(10), (0, 3));
     }
 
-    fn neighbours(top: [i32; 8], left: [i32; 4], corner: i32) -> Neighbours {
-        Neighbours::new(top, left, corner, (true, true))
-    }
-
     /// The standard's per-sample formulas (§8.3.1.2.4–9) with `p[i, -1]`
     /// and `p[-1, j]` read directly, as the table-driven prediction must
     /// reproduce them.
@@ -789,6 +643,7 @@ mod tests {
 
     #[test]
     fn directional_tables_follow_the_standard() {
+        let dsp = Dsp::new();
         // A small deterministic generator: varied edges, extremes included.
         let mut state = 0x2545_f491_u32;
         let mut sample = || {
@@ -806,7 +661,13 @@ mod tests {
                 let last = top[3];
                 top[4..].fill(last);
             }
-            let n = Neighbours::new(top, left, corner, (true, true));
+            let n = Neighbours::new(
+                &dsp,
+                top.map(|v| v as u8),
+                left.map(|v| v as u8),
+                corner as u8,
+                (true, true),
+            );
             for mode in [
                 DIAGONAL_DOWN_LEFT,
                 DIAGONAL_DOWN_RIGHT,
@@ -815,7 +676,7 @@ mod tests {
                 VERTICAL_LEFT,
                 HORIZONTAL_UP,
             ] {
-                let got = n.predict(mode);
+                let got = n.predict(&dsp, mode);
                 for (i, &value) in got.iter().enumerate() {
                     let at = ((i % 4) as i32, (i / 4) as i32);
                     let want = reference_directional(top, left, corner, mode, at);
@@ -827,27 +688,31 @@ mod tests {
 
     #[test]
     fn flat_neighbours_predict_flat_blocks() {
-        let n = neighbours([90; 8], [90; 4], 90);
+        let dsp = Dsp::new();
+        let n = Neighbours::new(&dsp, [90; 8], [90; 4], 90, (true, true));
         for mode in 0..9 {
-            assert_eq!(n.predict(mode), [90; 16], "mode {mode}");
+            assert_eq!(n.predict(&dsp, mode), [90; 16], "mode {mode}");
         }
     }
 
     #[test]
     fn directional_modes_follow_their_edges() {
-        let n = neighbours([10, 20, 30, 40, 50, 60, 70, 80], [11, 21, 31, 41], 5);
-        let v = n.predict(VERTICAL);
-        let h = n.predict(HORIZONTAL);
+        let dsp = Dsp::new();
+        let top = [10, 20, 30, 40, 50, 60, 70, 80];
+        let left = [11, 21, 31, 41];
+        let n = Neighbours::new(&dsp, top, left, 5, (true, true));
+        let v = n.predict(&dsp, VERTICAL);
+        let h = n.predict(&dsp, HORIZONTAL);
         for i in 0..16 {
-            assert_eq!(i32::from(v[i]), n.top[i % 4]);
-            assert_eq!(i32::from(h[i]), n.left[i / 4]);
+            assert_eq!(v[i], top[i % 4]);
+            assert_eq!(h[i], left[i / 4]);
         }
         // Diagonal down-left at (3, 3): (p[6,-1] + 3 * p[7,-1] + 2) >> 2.
         assert_eq!(
-            n.predict(DIAGONAL_DOWN_LEFT)[15],
+            n.predict(&dsp, DIAGONAL_DOWN_LEFT)[15],
             ((70 + 3 * 80 + 2) >> 2) as u8
         );
         // Horizontal-up beyond zHU = 5 repeats p[-1, 3].
-        assert_eq!(n.predict(HORIZONTAL_UP)[15], 41);
+        assert_eq!(n.predict(&dsp, HORIZONTAL_UP)[15], 41);
     }
 }

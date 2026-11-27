@@ -245,7 +245,7 @@ impl H264Backend {
             |bx, by, own| nb.predicted_intra_4x4_mode(bx, by, own),
             |_, neighbours, predicted| {
                 let mode = pick_mode(&|m| neighbours.allows(m), predicted);
-                (mode, neighbours.predict(mode), 0.0)
+                (mode, neighbours.predict(&self.dsp, mode), 0.0)
             },
             None,
             f32::INFINITY,

@@ -947,7 +947,12 @@ impl H264Backend {
             };
             let (lambda, max_states) = self.trellis.as_ref().map_or((self.rd_lambda, 1), |t| {
                 (
-                    t.lambda(self.rd_lambda, ResidualKind::Intra4x4, self.slice, &self.tuning),
+                    t.lambda(
+                        self.rd_lambda,
+                        ResidualKind::Intra4x4,
+                        self.slice,
+                        &self.tuning,
+                    ),
                     t.settings.max_states,
                 )
             });
@@ -1017,7 +1022,12 @@ impl H264Backend {
             })
             .map(|t| {
                 (
-                    t.lambda(self.rd_lambda, ResidualKind::Intra8x8, self.slice, &self.tuning),
+                    t.lambda(
+                        self.rd_lambda,
+                        ResidualKind::Intra8x8,
+                        self.slice,
+                        &self.tuning,
+                    ),
                     t.settings.max_states,
                 )
             });
@@ -1967,7 +1977,12 @@ impl H264Backend {
         let luma = LumaTrellis {
             settings: TrellisSettings {
                 bins: &bins,
-                lambda: trellis.lambda(self.rd_lambda, self.residual.kind, self.slice, &self.tuning),
+                lambda: trellis.lambda(
+                    self.rd_lambda,
+                    self.residual.kind,
+                    self.slice,
+                    &self.tuning,
+                ),
                 max_states: trellis.settings.max_states,
             },
             left_coded: std::array::from_fn(|by| {

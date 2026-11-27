@@ -218,6 +218,41 @@ conversions only and are not re-encoded into comparison streams. Ask and we will
 **The demo's pre-encoded streams were made with x264 and x265, which are GPL.** Running a GPL program does not put
 its output under the GPL; we distribute only the output streams, not the programs.
 
+## Conformance
+
+Our decoders also decode other encoders' streams, 8-bit and 10-bit, natively and in the browser. Official conformance streams, decoded natively and
+compared picture by picture with the reference decoder named, on 2026-11-23 at 98069a8b3
+([record](results/conformance-2026-11-23/summary.json)):
+
+- **HEVC** (Main, Main Still Picture, Main 10): 147/147, the whole JCT-VC HEVC_v1 set (136 8-bit, 11
+  10-bit), against HM.
+- **AV1** (Main, 8- and 10-bit): 242/242 libaom v3.15.3 test vectors (176 8-bit, 66 10-bit), against aomdec.
+- **VP9** (profiles 0 and 2, 8- to 12-bit): 305/305 libvpx v1.16.0 vectors (303 8-bit, one 10-bit, one
+  12-bit), against vpxdec; profiles 1 and 3 are not listed.
+- **VVC** (Main 10 and Main 10 Still Picture, 4:2:0 and 4:0:0): 226/226 of the 283 first-edition H.266.1
+  streams (9 8-bit, 217 10-bit), against VTM 24.0. The other 57 are 4:2:2 / 4:4:4, multilayer, palette and
+  ACT streams, plus HRD_B_2 (VTM itself fails it) and VPS_C_2; STILL_B_1 is compared with VTM's output, which
+  differs from the MD5 in its zip. Also 138 of 138 short 8-bit streams we coded with VTM and VVenC to cover
+  the tools one by one.
+- **H.264** (High and High 10, frames only): 110 of the 190 streams of the H.264.1 AVCv1, FRExt and High 10
+  sets we fetch, against JM; the 80 others use field pictures, MBAFF, FMO or SP/SI slices, which are not
+  supported. The suite's 4:2:2, 4:4:4, MVC and SVC streams are not fetched.
+- **AV2** (a draft standard): all 30 of 30 foreign test streams (12 dav2d 8-bit test vectors, 18 avmenc
+  v1.0.0 streams), bit-exact against avmdec v1.0.0 and dav2d (re-run on 2026-11-23 against AVM's frame hashes: 30/30).
+
+In the browser (the WebAssembly module, plain and relaxed SIMD), on the suites' 4:2:0 progressive streams:
+HEVC 147/147, AV1 240/240, VP9 305/305 (10- and 12-bit included) and H.264 108/113 (same record), and VVC
+221/221 by whole-output MD5 against VTM (d010259d0: the record's 214/221 was a runner fault on seven streams
+whose picture size changes or whose fields are output as frames). The 5 H.264 streams not decoded use FMO or
+SP/SI slices, which the native decoder does not support either and which are not among the required
+streams.
+
+Browser decode time against ffmpeg.wasm 0.12.10 (the official build: FFmpeg 5.1.4 with `--disable-asm`, so
+without FFmpeg's hand-written SIMD kernels), decode alone on both sides, stream by stream, is recorded in
+[docs/results/wasm-yardstick-2026-11-23](results/wasm-yardstick-2026-11-23/). 10-bit decoding has SIMD on
+AVX2, AVX-512, NEON and WASM for AV1 and VP9, plus WASM for the kernels HEVC and VVC share; VVC's native (x86/Arm) and H.264's 10-bit paths
+are scalar so far.
+
 ## What is not done
 
 - **Single-threaded** encode and decode; no slices or tiles beyond one per frame.
@@ -225,7 +260,7 @@ its output under the GPL; we distribute only the output streams, not the program
   also decode 10-bit (HEVC Main 10, AV1 10-bit, VP9 profile 2 at 10 and 12 bits, H.264 High 10, VVC Main 10),
   natively and in the browser.
 - **Decoders:** the official conformance streams each decoder passes, with what the denominator is and the
-  reference decoder compared against, are listed in the [README](../README.md#is-this-for-you), from the record
+  reference decoder compared against, are listed under [Conformance](#conformance), from the record
   of 2026-11-23 at 98069a8b3 ([summary.json](results/conformance-2026-11-23/summary.json)). Not supported:
   H.264 interlace (field pictures, MBAFF), FMO/ASO and SP/SI slices (80 of the 190 H.264 streams fetched); VP9
   profiles 1 and 3; VVC 4:2:2 / 4:4:4, multilayer, palette and ACT; AV2 is checked on our own streams and 30

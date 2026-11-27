@@ -10,7 +10,7 @@
 //! the block in the picture, where the residual is then added.
 
 use nc_common::{BitDepth, PlaneViewMut, Sample};
-use nc_dsp::{Dsp, H264Intra8x8Edges};
+use nc_dsp::{Dsp, H264Intra4x4Edges, H264Intra8x8Edges};
 
 use super::{DecodeError, Result};
 /// Largest block side with directional modes (`Intra_8x8`) and of any
@@ -318,6 +318,33 @@ pub(super) fn predict_8x8(
         .enumerate()
     {
         out.row_mut(y)[..MAX_DIRECTIONAL].copy_from_slice(row);
+    }
+    Ok(())
+}
+
+/// Predict the 8-bit block from the same packed border used by the encoder.
+#[inline]
+pub(super) fn predict_4x4(
+    dsp: &Dsp,
+    plane: &mut PlaneViewMut<'_>,
+    at: (usize, usize),
+    mode: u8,
+    avail: Avail,
+) -> Result<()> {
+    const SIDE: usize = 4;
+    if !directional_allowed(mode, avail) {
+        return Err(DecodeError::Malformed(
+            "intra mode needs unavailable samples",
+        ));
+    }
+    let raw = Edge::gather(plane, at, SIDE, avail, BitDepth::EIGHT);
+    let top = core::array::from_fn(|i| raw.line[SIDE + 1 + i]);
+    let left = core::array::from_fn(|i| raw.line[SIDE - 1 - i]);
+    let edges = H264Intra4x4Edges::new(top, left, raw.line[SIDE], (avail.top, avail.left));
+    let prediction = dsp.h264_intra_4x4_single(edges, mode);
+    let mut out = block(plane, at.0, at.1, SIDE);
+    for (y, row) in prediction.as_chunks::<SIDE>().0.iter().enumerate() {
+        out.row_mut(y)[..SIDE].copy_from_slice(row);
     }
     Ok(())
 }

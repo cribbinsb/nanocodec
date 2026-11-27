@@ -1983,7 +1983,7 @@ param_group! {
         trellis_key: 1.0, [0.0, 1.0],
             "1 also trellises key frames (0: P frames only): 0 keeps the key frame every later frame predicts from at the plain quantiser's quality",
         trellis_key_lambda_scale: 1.0, [0.1, 2.0],
-            "with quant.trellis and quant.trellis_key, further multiple of trellis λ on key frames (1 = same as inter; lower keeps more key levels for subsequent frames to inherit)",
+            "with `quant.trellis` and `quant.trellis_key`, further multiple of trellis λ on key frames (1 = same as inter; lower keeps more key levels for subsequent frames to inherit)",
         trellis_states: 1.0, [1.0, 16.0],
             "entropy-context states kept per scan position: higher searches more level combinations",
         // Off: the cheap trellis substitute for rungs without the trellis

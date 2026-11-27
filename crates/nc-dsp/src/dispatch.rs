@@ -183,6 +183,7 @@ pub struct Dsp {
     av1_smooth_paeth: crate::av1_intra::SmoothPaethFn,
     vp9_largest_magnitude: crate::vp9_quant::MagnitudeFn,
     vp9_intra: crate::vp9_intra::PredictFn,
+    h264_intra_4x4: crate::h264_intra::four::Kernels,
     h264_intra_8x8: crate::h264_intra::PredictFn,
     hevc_intra: crate::hevc_intra::HevcIntraFns,
     hevc_weight: crate::hevc_weight::WeightFn,
@@ -338,6 +339,7 @@ impl Dsp {
             av1_smooth_paeth: crate::av1_intra::smooth_paeth(isa),
             vp9_largest_magnitude: crate::vp9_quant::magnitude_kernel(isa),
             vp9_intra: crate::vp9_intra::kernel(isa),
+            h264_intra_4x4: crate::h264_intra::four::Kernels::for_isa(isa),
             h264_intra_8x8: crate::h264_intra::kernel(isa),
             hevc_intra: crate::hevc_intra::kernels(isa),
             hevc_weight: crate::hevc_weight::kernel(isa),
@@ -6541,6 +6543,34 @@ impl Dsp {
         // SAFETY: the table matches the checked CPU ISA; kernels index only
         // within `out` and the fixed-size edge arrays.
         unsafe { (self.vp9_intra)(mode, side, edges, out) }
+    }
+
+    /// Prepare the adjacent averages shared by H.264 4×4 intra modes.
+    #[must_use]
+    #[inline]
+    pub fn h264_intra_4x4_prepare(
+        &self,
+        edges: crate::H264Intra4x4Edges,
+    ) -> crate::H264Intra4x4Refs {
+        self.h264_intra_4x4.prepare(edges)
+    }
+
+    /// Predict an H.264 4×4 intra block from its prepared border.
+    ///
+    /// The caller checks which modes have the required neighbours.
+    #[must_use]
+    #[inline]
+    pub fn h264_intra_4x4(&self, refs: &crate::H264Intra4x4Refs, mode: u8) -> [u8; 16] {
+        self.h264_intra_4x4.predict(refs, mode)
+    }
+
+    /// Predict one H.264 4×4 intra mode from its raw border.
+    ///
+    /// The caller checks which modes have the required neighbours.
+    #[must_use]
+    #[inline]
+    pub fn h264_intra_4x4_single(&self, edges: crate::H264Intra4x4Edges, mode: u8) -> [u8; 16] {
+        self.h264_intra_4x4.single(edges, mode)
     }
 
     /// H.264 `Intra_8x8` prediction (§8.3.2.2) in `Intra8x8PredMode` `mode`

@@ -162,7 +162,7 @@ fn luma_nxn<T: H264Sample>(
         let (x4, y4) = mbstate::block_position(index);
         let (px, py) = (x + x4 * 4, y + y4 * 4);
         let mode = mb.intra_modes[y4 * 4 + x4];
-        intra::predict_nxn(plane, (px, py), 4, mode, (intra.block(x4, y4, 1), depth))?;
+        T::intra_4x4(dsp, plane, (px, py), mode, (intra.block(x4, y4, 1), depth))?;
         residual.add_luma_4x4(dsp, depth, y4 * 4 + x4, &mut block_view(plane, (px, py), 4));
     }
     Ok(())

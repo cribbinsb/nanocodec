@@ -974,6 +974,9 @@ mod tests {
         aq.apply_periodic_key_aq(&f1.pre, &f1.still, 4.0, 0.0);
         let left = aq.offset_qp(&Block::square(0, 0, 3));
         let right = aq.offset_qp(&Block::square(80, 0, 3));
-        assert!(left < 0.0 && right > 0.0 && right <= 2.0 + 1e-6, "left={left} right={right}");
+        assert!(
+            left < 0.0 && right > 0.0 && right <= 2.0 + 1e-6,
+            "left={left} right={right}"
+        );
     }
 }

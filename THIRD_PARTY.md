@@ -269,6 +269,10 @@ follow the two-row byte taps in `common/x86/ih264_inter_pred_filters_ssse3.c`.
 The two-axis half-pel and adjacent quarter-pel schedule in
 `crates/nc-dsp/src/mc/avx2_h264_center.rs` follows the horizontal
 byte products and vertical word products in the same libavc file.
+The 4×4 H.264 intra predictor in `crates/nc-dsp/src/h264_intra/four.rs`
+and its target modules use the paired and truncated outer averages
+from `common/x86/ih264_luma_intra_pred_filters_ssse3.c` and
+`common/armv8/ih264_intra_pred_luma_4x4_av8.s`.
 
 ## libhevc — Apache-2.0
 

@@ -101,6 +101,7 @@ pub use end_of_block::eob_table;
 pub use gram::{
     GRAM_MAX_MAGNITUDE, GRAM_MAX_ROWS, GRAM_ROW_ALIGN, GRAM_ROW_MAX_LEN, gram_index, gram_terms,
 };
+pub use h264_intra::four::{H264Intra4x4Edges, H264Intra4x4Refs};
 pub use h264_intra::{
     H264_INTRA_8X8_SIDE, H264Intra8x8Edges, H264Intra8x8Refs, h264_intra_8x8_mode, h264_plane,
 };
