@@ -35,6 +35,8 @@ OWN_PREFIX = "nanocodec-"
 OWN_BINARY = "nanocodec"
 #: A history family: codec, preset, day and the key-interval variant (none: a key every 150).
 HISTORY_FAMILY = re.compile(r"^nanocodec-(\w+)@(\w+)~(\d{4}-\d{2}-\d{2})(?:~(\w+))?$")
+#: The benchmark build's own families (no day): the main run on the history clips.
+BENCHMARK_FAMILY = re.compile(r"^nanocodec-\w+@\w+$")
 #: The key-interval variants (procedure section 14, long windows), the primary first.
 KEYS = {
     "k150": "a key every 150 frames",
@@ -110,14 +112,23 @@ def compliance(families: dict) -> list[dict]:
 
 
 def by_day(families: dict) -> dict[tuple[str, str], dict[str, dict]]:
-    """Our history families grouped by (key variant, day): {"<codec>@<preset>": row}."""
+    """Our history families grouped by (key variant, day): {"<codec>@<preset>": row}. The
+    benchmark build's own families (`nanocodec-<codec>@<preset>`, from the main run on the
+    history clips, primary key interval) are the newest day's primary frame: the benchmark
+    build is the newest build the history coded."""
     days: dict[tuple[str, str], dict[str, dict]] = {}
+    benchmark: dict[str, dict] = {}
     for family, row in families.items():
-        match = HISTORY_FAMILY.match(family)
-        if not match or not row.get("clips"):
+        if not row.get("clips"):
             continue
-        codec, preset, day, variant = match.groups()
-        days.setdefault((variant or PRIMARY_KEY, day), {})[f"{codec}@{preset}"] = row
+        match = HISTORY_FAMILY.match(family)
+        if match:
+            codec, preset, day, variant = match.groups()
+            days.setdefault((variant or PRIMARY_KEY, day), {})[f"{codec}@{preset}"] = row
+        elif BENCHMARK_FAMILY.match(family):
+            benchmark[family.removeprefix(OWN_PREFIX)] = row
+    if benchmark and days:
+        days[(PRIMARY_KEY, max(day for _, day in days))] = benchmark
     return days
 
 
