@@ -399,6 +399,7 @@ impl Dsp {
         dsp.vvc_deblock = crate::vvc_deblock::kernels(Isa::Avx512);
         dsp.vvc_refinement = crate::vvc_refinement::kernels(Isa::Avx512);
         dsp.vvc_mts = crate::vvc_mts::kernels(Isa::Avx512);
+        dsp.h264_intra_8x8 = crate::h264_intra::kernel(Isa::Avx512);
         dsp.nn = crate::nn::kernels(Isa::Avx512);
         dsp.high.install_avx512();
         Some(dsp)
@@ -6579,6 +6580,7 @@ impl Dsp {
     /// # Panics
     ///
     /// If `refs` lacks samples `mode` reads ([`crate::H264Intra8x8Refs::allows`]).
+    #[inline]
     pub fn h264_intra_8x8(&self, refs: &crate::H264Intra8x8Refs, mode: u8, out: &mut [u8; 64]) {
         assert!(
             refs.allows(mode),

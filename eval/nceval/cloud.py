@@ -31,7 +31,7 @@ RUN_CAP_MINUTES = MAX_MINUTES + 5
 
 
 #: The integration branch: where the current measurement protocol is defined.
-INTEGRATION = "variance-integration"
+INTEGRATION = "main"
 #: The measurement protocol: what a cloud job's results are comparable on (clip draws,
 #: ladder and rates, metrics and their pooling, the screens' estimators and guards, the
 #: CPU charge). Bump it ON PURPOSE in the commit that makes results incomparable with

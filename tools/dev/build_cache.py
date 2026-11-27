@@ -69,7 +69,7 @@ CACHE_MARKER = "CACHED"
 OWN_FILES = {SCORING_BINARY, CHECKASM_BINARY, "presets", COMPLETE_MARKER, CACHE_MARKER}
 #: Cache-made builds kept regardless of use (~25 MB CLI + ~16 MB checkasm each).
 KEEP_NEWEST = 20
-INTEGRATION = os.environ.get("NC_LAND_TARGET", "variance-integration")
+INTEGRATION = os.environ.get("NC_LAND_TARGET", "main")
 #: Results records whose naming of a build keeps it.
 RECORDS = ("docs/results", "web/results/data")
 #: Builds pinned by hand (`pin`): never pruned.

@@ -25,9 +25,11 @@ results pages ([how we measured](https://cribbinsb.github.io/nanocodec/results/m
   only its own syntax. An improvement lands once and every format gets it.
 - **Plays in any browser.** All six decoders compile to WebAssembly, so a web page can play HEVC, VVC or AV2
   with no plug-in and no help from the browser's own codecs.
-- **Real standards, checked.** Our decoders pass the official conformance streams: HEVC 147/147,
-  AV1 242/242, VP9 305/305, VVC 226/226 (the 4:2:0 profiles) and AV2 30/30
-  ([details](docs/FAQ.md#conformance)). Every change is checked against two independent decoders per format.
+- **Standard streams, checked.** Every stream our encoders make is checked against two independent
+  decoders per format. Our decoders pass HEVC's official conformance suite (147/147) and VVC's 4:2:0
+  streams (226/226), and the libaom, libvpx and AV2 test vectors. They do not yet decode every valid
+  stream: some AV1 tools (quantizer matrices, loop-filter deltas, some segment features) and interlaced
+  H.264 are still missing; work on them is under way ([details](docs/FAQ.md#conformance)).
 - **Scalable video (SVC).** Spatial and temporal layers for AV1 and VP9, including the WebRTC modes
   (L1T2, L1T3, L2T1, L3T1 and K-SVC), so one stream can serve viewers at different resolutions and bitrates.
   Temporal layers, long-term references, intra refresh and key frames on request (H.264, HEVC, VVC, AV1)

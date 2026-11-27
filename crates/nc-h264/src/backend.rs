@@ -2621,6 +2621,19 @@ impl CodecBackend for H264Backend {
         ("decision.final_margin_lambdas", 0.03),
         ("decision.final_max_winner_lambdas", 1.0),
         ("quant.trellis_lambda_scale", 1.3),
+        // Key-frame-only intra trellis with 0.5x trellis λ on keys: keeps more
+        // key-frame detail for subsequent P frames to inherit. Pool draw
+        // 2026-11-27 (`--local`, `--strict-buffer`): L1 (n=24) J -0.42%
+        // [-0.77, -0.09], 0 guards; formal L3 (n=98, 150 f) J -0.56%
+        // [-0.92, -0.20] BETTER, 0 guards, periodic-key pulse 2 s -0.03 dB,
+        // 10 s -0.67 dB; pinned single-core ABBA CPU (6 x 720p 150 f CBR 600k)
+        // mean -0.95%, median -0.76% (strictly faster and better). Fast pins
+        // them off; slow/slower pin `quant.trellis_key_lambda_scale = 1`
+        // (they already apply `key.h264.trellis_intra_lambda_ratio = 0.4`).
+        ("key.h264.trellis_i16x16", 1.0),
+        ("key.h264.trellis_i8x8", 1.0),
+        ("key.h264.trellis_i4x4", 1.0),
+        ("quant.trellis_key_lambda_scale", 0.5),
         ("h264.split_gate_lambda", 0.8),
         // Split search without the uniform-vector exit: whole-sample
         // quadrant vectors that agree with the 16x16 one still hide the

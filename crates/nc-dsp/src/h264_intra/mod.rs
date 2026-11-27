@@ -205,6 +205,7 @@ impl H264Intra8x8Refs {
 
     /// Whether `mode` has the samples it reads (§8.3.2.2.2–10; DC works
     /// with none).
+    #[inline]
     #[must_use]
     pub fn allows(&self, m: u8) -> bool {
         match m {
@@ -237,12 +238,13 @@ impl H264Intra8x8Refs {
 /// (raster, stride 8).
 pub(crate) type PredictFn = unsafe fn(&H264Intra8x8Refs, u8, &mut [u8; 64]);
 
-/// The kernel of `isa`: the scalar reference, or the border-and-rows form
-/// compiled for the ISA.
+/// The kernel of `isa`: the scalar reference or packed directional rows.
 pub(crate) fn kernel(isa: Isa) -> PredictFn {
     match isa {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => avx2::predict,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx2::predict_icl,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::predict,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]

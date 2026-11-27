@@ -87,8 +87,11 @@ h264.intra_rd = 1
 # Intra_8x8 trellis; 2026-11-21): not screened for this preset.
 key.h264.intra8x8_rd_candidates = 0
 key.h264.intra8x8_gate_satd = 9.6
+key.h264.trellis_i16x16 = 0
 key.h264.trellis_i8x8 = 0
+key.h264.trellis_i4x4 = 0
 key.h264.trellis_intra_lambda_ratio = 1
+quant.trellis_key_lambda_scale = 1
 # The first key at rate.key_cap_buffer 1.0 too, over H.264's first-key 0.8 (backend
 # DEFAULT_PARAMS): nceval.train at both key shares (base df1506a5, k front slope) passed
 # with it (docs/handoff/rate-control.md "Key distance").

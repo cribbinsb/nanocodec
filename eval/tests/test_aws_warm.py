@@ -136,7 +136,7 @@ def test_only_another_measurement_protocol_on_the_integration_branch_is_refused(
     cloud.check_fresh()  # tools commits at the same protocol: runs on its own tree
     monkeypatch.delenv(cloud.PINNED_ENV, raising=False)
     monkeypatch.setattr(cloud, "integration_protocol", lambda: cloud.MEASUREMENT_PROTOCOL + 1)
-    with pytest.raises(SystemExit, match="rebase variance-integration"):
+    with pytest.raises(SystemExit, match="rebase main"):
         cloud.check_fresh()
     monkeypatch.setenv(cloud.STALE_ENV, "1")
     cloud.check_fresh()  # allowed on request

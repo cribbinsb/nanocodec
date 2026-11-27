@@ -274,6 +274,11 @@ and its target modules use the paired and truncated outer averages
 from `common/x86/ih264_luma_intra_pred_filters_ssse3.c` and
 `common/armv8/ih264_intra_pred_luma_4x4_av8.s`.
 
+H.264 8×8 intra prediction in `crates/nc-dsp/src/h264_intra/` adapts
+libavc's packed reference averages and row-window selection from
+`common/x86/ih264_luma_intra_pred_filters_ssse3.c` and
+`common/armv8/ih264_intra_pred_luma_8x8_av8.s`.
+
 ## libhevc — Apache-2.0
 
 Copyright (C) 2012 Ittiam Systems Pvt Ltd, Bangalore.

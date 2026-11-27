@@ -25,6 +25,7 @@ key.h264.intra8x8_rd_candidates = 3
 key.h264.intra8x8_gate_satd = 4
 key.h264.trellis_i8x8 = 1
 key.h264.trellis_intra_lambda_ratio = 0.4
+quant.trellis_key_lambda_scale = 1
 # Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
 # nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
 # streams), final check BETTER at 1/150 and 1/300 (-1.22 / -0.45 %).
