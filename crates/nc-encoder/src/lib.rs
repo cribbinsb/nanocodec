@@ -26,6 +26,8 @@
 //! - [`CodecBackend`]: what a codec implements.
 //! - [`Encoder`]: the frame loop; returns an [`EncodedFrame`] per input.
 //! - [`ParamOverrides`]: tunable heuristic parameters (see `params`).
+//! - [`rtp_layer_structure`] / [`rtp_layer_frames`]: the layer description
+//!   RTP transport (`nanocodec-rtp`) needs from a coded frame.
 //! - [`RateControlConfig`]: optional runtime target/peak/buffer control, enabled
 //!   by [`Encoder::set_rate_control`], with measured [`RateControlStats`].
 //!   Fixed-QP remains the default. Targets are best-effort at quantizer limits
@@ -105,10 +107,12 @@ mod refresh;
 mod resolution;
 mod resolution_evidence;
 mod reuse;
+mod rtp_frames;
 pub mod sao;
 mod scene;
 mod second_reference;
 pub mod segment_quantizers;
+mod session_switches;
 mod shape;
 mod skip_budget;
 mod source_scale;
@@ -201,7 +205,9 @@ pub use rate_trim::{
 };
 pub use rd_refine::{RdWalk, rd_refine_vector};
 pub use refresh::{IntraRefresh, MIN_REFRESH_PERIOD, RefreshRegion, RefreshWindow};
+pub use rtp_frames::{rtp_layer_frames, rtp_layer_structure};
 pub use second_reference::{holds_second_reference, second_reference_enabled, uses_long_term_slot};
+pub use session_switches::SessionSwitches;
 pub use shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 pub use still_camera::still_camera_params;
 pub use still_skip::{

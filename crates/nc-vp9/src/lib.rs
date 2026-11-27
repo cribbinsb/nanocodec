@@ -1,7 +1,7 @@
-//! Native VP9 Profile 0 encoder backend for the shared engine, and a
-//! VP9 profile 0 and 2 decoder (8-, 10- and 12-bit 4:2:0; `decoder/`),
-//! checked on the 305 libvpx test vectors (VP9 has no official suite);
-//! profiles 1 and 3 are not decoded yet.
+//! Native VP9 Profile 0 encoder backend for the shared engine, and a VP9
+//! decoder of all four profiles (8-, 10- and 12-bit; 4:2:0, 4:2:2, 4:4:0,
+//! 4:4:4; `decoder/`), checked on the 314 libvpx test vectors (VP9 has no
+//! official suite).
 //!
 //! The engine plans partitions (64x64 superblocks down to 8x8) and picks
 //! each block's prediction; this crate writes VP9 syntax: DC intra,

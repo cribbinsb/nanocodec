@@ -35,11 +35,11 @@ Feature rows per status (`tools/ci/decoder_gaps.py --summary`; the check fails i
 
 | Codec | implemented | in progress | open | proposed exception |
 |---|---|---|---|---|
-| H.264 | 0 | 7 | 1 | 2 |
+| H.264 | 2 | 5 | 1 | 2 |
 | HEVC | 0 | 1 | 1 | 1 |
 | VVC | 0 | 4 | 2 | 1 |
 | AV1 | 0 | 1 | 1 | 1 |
-| VP9 | 0 | 2 | 0 | 0 |
+| VP9 | 1 | 1 | 0 | 0 |
 | AV2 | 0 | 7 | 0 | 0 |
 | Browser (WASM) module | 0 | 1 | 0 | 0 |
 
@@ -51,8 +51,8 @@ Feature rows per status (`tools/ci/decoder_gaps.py --summary`; the check fails i
 | MBAFF frames | H.264 §7.3.4, §6.4.10 | Main, Extended, High and above | in progress (H.264 interlace agent) | `H264 MBAFF frames` |
 | Pictures above level 5.2 (levels 6 to 6.2, 8K) | H.264 Table A-1 | all, levels 6 to 6.2 | in progress (compliance-extras agent: VVC NAL/layer/VPS ids, H.264 level 6, VP9 profile 1 sizing, WASM monochrome) | `H264 picture size` |
 | 4:2:2 and 4:4:4 chroma, separate colour planes, lossless transform bypass, more than 10 bits | H.264 §7.4.2.1.1, §8.5.15, A.2.6 to A.2.11 | High 4:2:2, High 4:4:4 Predictive, their Intra profiles | in progress (non-4:2:0 chroma agent: H.264 High 4:2:2 / 4:4:4) | `H264 chroma format above 4:2:0` `H264 separate colour planes` `H264 lossless transform bypass` `H264 bit depth above 10` |
-| Slice groups (FMO) and arbitrary slice order (ASO) | H.264 §7.3.2.2, §8.2.2 | Baseline, Extended | in progress (H.264 Baseline/Extended agent) | `H264 slice groups (FMO)` |
-| Redundant pictures | H.264 §7.3.2.2 `redundant_pic_cnt_present_flag` | Baseline, Extended | in progress (H.264 Baseline/Extended agent) | `H264 redundant pictures` |
+| Slice groups (FMO) and arbitrary slice order (ASO) | H.264 §7.3.2.2, §8.2.2, §7.4.1.2.4 | Baseline, Extended | implemented (2026-11-27): all seven map types (`decoder/slice_groups.rs`), any slice order; suite FM1_BT_B, FM1_FT_E, FM2_SVA_C and the JM streams jm_base_aso, jm_base_fmo_dispersed_aso, jm_ext_dp_aso decode MD5-exact (`--suite h264`, `--suite h264-jm`) | |
+| Redundant pictures | H.264 §7.3.2.2 `redundant_pic_cnt_present_flag` | Baseline, Extended | implemented (2026-11-27): redundant coded pictures are discarded, as §7.4.3 allows when the primary one is decoded; jm_base_redundant decodes MD5-exact (`--suite h264-jm`; the suite has no such stream) | |
 | Data partitioning (NAL types 2 to 4), SP/SI slices | H.264 §7.3.2.9, §8.6 | Extended | in progress (H.264 Baseline/Extended agent) | `H264 data partitioning` `H264 SP/SI slices` |
 | Monochrome (4:0:0) with an odd cropped size | H.264 §7.4.2.1.1 frame cropping | High and above | open | `odd cropped 4:0:0 size` |
 | MVC (multiview, stereo) | H.264 Annex H | Multiview High, Stereo High | proposed exception (owner to confirm): stereo/multiview video, never produced by live camera encoders or browsers; the base view already decodes | |
@@ -128,14 +128,15 @@ Not feature gaps:
 
 | Feature | Spec | Profiles | Status | Rejection names |
 |---|---|---|---|---|
-| 4:2:2, 4:4:0, 4:4:4 chroma (and sRGB) | VP9 §6.2 `color_config`, §7.2 | 1, 3 | in progress (non-4:2:0 chroma agent: VP9 profiles 1/3) | `VP9 profile 1 or 3 (4:4:4, 4:2:2 or 4:4:0)` |
+| 4:2:2, 4:4:0, 4:4:4 chroma (and sRGB) | VP9 §6.2 `color_config`, §7.2 | 1, 3 | implemented (libvpx's 9 profile 1/3 vectors 9/9 MD5-exact; `docs/handoff/chroma-formats.md`) | |
 | Profile 1 frame sizing (chroma subsampling in reference-sized frames) | VP9 §7.2 `frame_size_with_refs` | 1, 3 | in progress (compliance-extras agent: VVC NAL/layer/VPS ids, H.264 level 6, VP9 profile 1 sizing, WASM monochrome) | |
 
 Not feature gaps:
 
 | Rejection names | Why |
 |---|---|
-| `VP9 reserved profile` | Guard: the reserved bit after profile 3 must be 0 (§7.2). |
+| `VP9 reserved profile` `VP9 reserved bit` | Guard: the reserved bits after profile 3 and after the subsampling must be 0 (§7.2). |
+| `VP9 4:2:0 in profile 1 or 3` | Guard: profiles 1 and 3 do not allow 4:2:0 (§7.2). |
 | `VP9 sRGB in profile 0` `VP9 sRGB in profile 0 or 2` | Guard: `color_space` CS_RGB is not allowed in profiles 0 and 2 (§7.2). |
 | `VP9 frame marker` `VP9 empty compressed header` | Guards: `frame_marker` must be 2 and `header_size_in_bytes` non-zero (§7.2). |
 | `VP9 frame size beyond level 6.2` `VP9 frame size` | Bound at level 6.2, the highest VP9 level, and the picture allocation that follows from it. |

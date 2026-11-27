@@ -39,11 +39,11 @@ use core::arch::x86_64::{
     _mm512_castsi512_si256, _mm512_cvtepi32_epi16, _mm512_dpbusd_epi32, _mm512_dpwssds_epi32,
     _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_maskz_loadu_epi8,
     _mm512_mulhrs_epi16, _mm512_packs_epi32, _mm512_packus_epi16, _mm512_packus_epi32,
-    _mm512_permutex2var_epi16, _mm512_permutexvar_epi8, _mm512_permutexvar_epi64, _mm512_set_epi64,
-    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_shuffle_epi8,
-    _mm512_shuffle_i32x4, _mm512_sra_epi32, _mm512_srai_epi16, _mm512_srai_epi32,
-    _mm512_srli_epi16, _mm512_storeu_si512, _mm512_unpackhi_epi16, _mm512_unpacklo_epi8,
-    _mm512_unpacklo_epi16,
+    _mm512_permutex2var_epi16, _mm512_permutexvar_epi8, _mm512_permutexvar_epi16,
+    _mm512_permutexvar_epi64, _mm512_set_epi64, _mm512_set1_epi16, _mm512_set1_epi32,
+    _mm512_setzero_si512, _mm512_shuffle_epi8, _mm512_shuffle_i32x4, _mm512_sra_epi32,
+    _mm512_srai_epi16, _mm512_srai_epi32, _mm512_srli_epi16, _mm512_storeu_si512,
+    _mm512_unpackhi_epi16, _mm512_unpacklo_epi8, _mm512_unpacklo_epi16,
 };
 
 /// Outputs of one vector (32 lanes of 16 bits).
@@ -93,10 +93,14 @@ impl WidePasses for Avx512Narrow {
         h: usize,
         taps: (&[i16], &[i16]),
     ) {
-        debug_assert!(matches!(W, 4 | 8) && R::HALVED && lead == TAPS / 2 - P);
+        debug_assert!(matches!(W, 4 | 8 | 16) && R::HALVED && lead == TAPS / 2 - P);
         // SAFETY: only the checked narrow AV1 paths install these passes.
         unsafe {
-            if h == 4 {
+            if W == 16 && h == 4 {
+                both_sixteen::<P, 2, S, R>(window, out, h, taps);
+            } else if W == 16 {
+                both_sixteen::<P, P, S, R>(window, out, h, taps);
+            } else if h == 4 {
                 both_narrow::<W, P, 2, S, R>(window, out, h, taps);
             } else {
                 both_narrow::<W, P, P, S, R>(window, out, h, taps);
@@ -302,6 +306,122 @@ unsafe fn both_narrow<const W: usize, const H: usize, const V: usize, S: Sink, R
         unsafe { out.two::<W>(row, words) };
         pairs = core::array::from_fn(|j| pairs[(j + 1).min(V - 1)]);
         previous = next;
+    }
+}
+
+/// Two packed rows alternate four words from each within every lane.
+/// The even tap pairs read the previous and new pack. The odd ones read
+/// both rows from the new pack.
+const fn sixteen_pairs() -> [[i16; 32]; 2] {
+    let mut indices = [[0; 32]; 2];
+    let mut col = 0;
+    while col < 16 {
+        let first = (8 * (col / 4) + col % 4) as i16;
+        let second = first + 4;
+        indices[0][2 * col] = second;
+        indices[0][2 * col + 1] = 32 + first;
+        indices[1][2 * col] = first;
+        indices[1][2 * col + 1] = second;
+        col += 1;
+    }
+    indices
+}
+
+const fn sixteen_gather(offset: u8) -> [u8; 64] {
+    let mut indices = [0; 64];
+    let mut i = 0;
+    while i < 64 {
+        indices[i] = offset + (i / 4 + i % 4) as u8;
+        i += 1;
+    }
+    indices
+}
+
+/// One horizontal 16-column strip per dot register. Consecutive rows
+/// interleave once into the alternating vertical pair window.
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl,avx512vbmi,avx512vnni")]
+#[inline]
+unsafe fn both_sixteen<const H: usize, const V: usize, S: Sink, R: Rounding>(
+    window: Window,
+    out: S,
+    h: usize,
+    (h_taps, v_taps): (&[i16], &[i16]),
+) {
+    const GATHER: [[u8; 64]; 2] = [sixteen_gather(0), sixteen_gather(4)];
+    const PAIRS: [[i16; 32]; 2] = sixteen_pairs();
+    let h_lead = TAPS / 2 - H;
+    let v_lead = TAPS / 2 - V;
+    let mut groups = [0u32; 2];
+    for (i, (a, b)) in tap_pairs::<R, H>(h_taps, h_lead).into_iter().enumerate() {
+        groups[i / 2] |= u32::from(u16::from_le_bytes([a as u8, b as u8])) << (i % 2 * 16);
+    }
+    let weights = groups.map(|g| _mm512_set1_epi32(g as i32));
+    let v_taps = word_pairs(tap_pairs::<R, V>(v_taps, v_lead));
+    // SAFETY: the gather and interleave constants hold full vectors.
+    let (gathers, [across, within]) = unsafe {
+        (
+            GATHER
+                .each_ref()
+                .map(|g| _mm512_loadu_si512(g.as_ptr().cast())),
+            PAIRS
+                .each_ref()
+                .map(|p| _mm512_loadu_si512(p.as_ptr().cast())),
+        )
+    };
+    let row = |r| {
+        let mask = u64::MAX >> (64 - span(16, H));
+        // SAFETY: callers cover the live rows and all horizontal taps.
+        let pixels = unsafe { _mm512_maskz_loadu_epi8(mask, window.at(v_lead + r, h_lead).cast()) };
+        let mut sum = _mm512_set1_epi32(2);
+        for (g, tap) in gathers.into_iter().zip(weights) {
+            sum = _mm512_dpbusd_epi32(sum, _mm512_permutexvar_epi8(g, pixels), tap);
+        }
+        sum
+    };
+    let rows = |r0, r1| {
+        // The halved-tap sums and their bias fit signed words.
+        _mm512_srai_epi16::<2>(_mm512_packs_epi32(row(r0), row(r1)))
+    };
+    let zero = _mm512_setzero_si512();
+    let mut even = [zero; V];
+    let mut odd = even;
+    let mut last = rows(0, 0);
+    for j in 0..V - 1 {
+        let next = rows(2 * j + 1, 2 * j + 2);
+        even[j] = _mm512_permutex2var_epi16(last, across, next);
+        odd[j] = _mm512_permutexvar_epi16(within, next);
+        last = next;
+    }
+    let (round, shift) = if S::PREP {
+        (PREP_LAST_ROUND, PREP_LAST_SHIFT)
+    } else {
+        (R::LAST_ROUND, R::LAST_SHIFT)
+    };
+    let round = _mm512_set1_epi32(round);
+    let shift = _mm_cvtsi32_si128(shift);
+    for r in (0..h).step_by(2) {
+        let next = rows(r + 2 * V - 1, r + 2 * V);
+        even[V - 1] = _mm512_permutex2var_epi16(last, across, next);
+        odd[V - 1] = _mm512_permutexvar_epi16(within, next);
+        last = next;
+        let (mut top, mut bottom) = (round, round);
+        for j in 0..V {
+            // A rounded horizontal word times all the halved taps has
+            // magnitude below 2^20. The dword accumulators stay exact.
+            top = _mm512_dpwssds_epi32(top, even[j], v_taps[j]);
+            bottom = _mm512_dpwssds_epi32(bottom, odd[j], v_taps[j]);
+        }
+        // SAFETY: both 16-column rows are in the checked destination.
+        unsafe {
+            out.wide(r, 0, _mm512_cvtepi32_epi16(_mm512_sra_epi32(top, shift)));
+            out.wide(
+                r + 1,
+                0,
+                _mm512_cvtepi32_epi16(_mm512_sra_epi32(bottom, shift)),
+            );
+        }
+        even = core::array::from_fn(|j| even[(j + 1).min(V - 1)]);
+        odd = core::array::from_fn(|j| odd[(j + 1).min(V - 1)]);
     }
 }
 

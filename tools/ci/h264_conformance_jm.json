@@ -1,0 +1,284 @@
+{
+ "suite": "h264-jm",
+ "reference": "the suite's reference decoder (SUITES)",
+ "streams": [
+  {
+   "name": "jm_base_aso",
+   "bitstream": "jm_base_aso/jm_base_aso.264",
+   "profile": "Baseline",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [],
+   "md5": "54ccb904ebee44e6d5c108cf281d96ec",
+   "frames": 12,
+   "frame_md5": [
+    "20f88085303c19e67a8ff9a62331d974",
+    "3d7cc9e12aa2550db768be013e1ced9e",
+    "5771afeeb6224872da1833df94ba1787",
+    "d23474f43bcdc2c0abfea14ef5613525",
+    "cd8b4a770e655758d8b4c635a3eed900",
+    "1000e6c77fd1d2aa440d117a17ab0cdc",
+    "d06db337da3815b69947b5f48e91e024",
+    "5d7bb41ce754de3f985fb639aaa9ddc4",
+    "d6ce976a2eaa3a94b84d55e0fd4fe448",
+    "e891862a0bd148f0dc38311323cdcd35",
+    "224377350efe832d107665abae85741c",
+    "106ce41f8173c5295fcbc77b0097fb43"
+   ],
+   "sha256": "54ec932d7ece242a97770567232b709f79b944b3f6199fc7b0461ebfba16f585",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": false
+  },
+  {
+   "name": "jm_base_fmo_dispersed_aso",
+   "bitstream": "jm_base_fmo_dispersed_aso/jm_base_fmo_dispersed_aso.264",
+   "profile": "Baseline",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [
+    "unparsed headers (FMO)"
+   ],
+   "md5": "cd21f4e96c4072ac0a7c30e8316cb5a0",
+   "frames": 12,
+   "frame_md5": [
+    "0c130a80020273cf5ca478256064c61a",
+    "2167b0909a1f943d78a4051b4215ab77",
+    "18a13e00306fcb58676deac53f9e9619",
+    "ea72efeaa347f93f5a1cc38812d72906",
+    "b555958329259669a9f7c7957d6a5ffb",
+    "24c6f0162dd68e6039778daef5019646",
+    "1b2fb38dadaaba8ca8e84a6d992367a0",
+    "ce518a253dd04a7072dff136b86c79e5",
+    "045e1b681b6547e8718d2c9713e5862c",
+    "30b7a4f5e338b23fc6a007137f646597",
+    "492282a8218d0a70777c3dd14870edce",
+    "ade9a67f2d725e519753c515a01055da"
+   ],
+   "sha256": "7c214b1e4b280d04d93091f61256b70c91b19d82aba64d33d7084af60a9cd399",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": false
+  },
+  {
+   "name": "jm_base_redundant",
+   "bitstream": "jm_base_redundant/jm_base_redundant.264",
+   "profile": "Baseline",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [
+    "redundant pictures"
+   ],
+   "md5": "e2f5b45e476943101af5d6368a578ed6",
+   "frames": 12,
+   "frame_md5": [
+    "128b921404c213ca523d4df6ac7ad6a2",
+    "de42f7fe4650b5d6bd4649a2ddff708d",
+    "d118c875714575c5073d3daa2120568b",
+    "908d51dc031c107d1eb002335443fc28",
+    "014b7077af6a025adfeed7e92f81208c",
+    "5e7fc2769675e2ab887cb7ac2bd0403d",
+    "99f3d1ca79567bd616114857bf88c91a",
+    "5e37ddf0d8c2b58646487dc3c89790e3",
+    "1f05453c6d26c6c0e1e8bf80232c9e82",
+    "3d302fee3cec8f7a0c45f6c759d02a9a",
+    "7968605c0aab52dcc9bb370eec397b1f",
+    "8e03611f78ed4d87a6470f2ebe02022e"
+   ],
+   "sha256": "ad6a61b92c96609872217224ee488a7386c7611bfc234203f57450f9cd6cec28",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "jm_ext_dp_aso",
+   "bitstream": "jm_ext_dp_aso/jm_ext_dp_aso.264",
+   "profile": "Extended",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [],
+   "md5": "4aff88ee3a53c05d9060830b106cd00f",
+   "frames": 12,
+   "frame_md5": [
+    "52b5dc9796cc946f4287f72fd74fdf11",
+    "bbf46853c55a73b785f2ff76fd4a373e",
+    "f39b3db2df4c9f96506e13496e08ecc2",
+    "45c801ca29d555621e3bbf93b9cc6032",
+    "6f1f6c9f2a160c3ecc6a7abfe872ca5a",
+    "6650cb462a7652381fc5a8927ea0fb85",
+    "04ea6116e145f98986995ce2080fc496",
+    "21dfd7e344770083a224f9e85c2138e7",
+    "8909b94ff900b792b9259567acb03b0f",
+    "2eb614a5c0a3ace7fdc26427be1efb83",
+    "a29348218cc4231e427fa51aa75f8238",
+    "224e43e1ced14e5c122da95886188f01"
+   ],
+   "sha256": "da0f820e2fac13c7694d80a58db98b2dc7aaa993de605276ef515c703d349227",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": false
+  },
+  {
+   "name": "jm_ext_dp_b",
+   "bitstream": "jm_ext_dp_b/jm_ext_dp_b.264",
+   "profile": "Extended",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [],
+   "md5": "27a3f3e7624ca341c746c7ef9664f47b",
+   "frames": 12,
+   "frame_md5": [
+    "6f9e6a845c6e47f9c935ed0aa853e553",
+    "44048990fb7e8ceec56b631b4b865b6d",
+    "c95ea7870ce3ea8a4565565f7edf5676",
+    "5adc443d23c1f12fe94b0ea46531c458",
+    "d4c1aad0f2fa7bfee647289e91879137",
+    "369e5b40593b273afe26a31e7e23a8b2",
+    "77a5c214ccef8e924b50c3acd4eb4842",
+    "336d7c24f37d299aee5a071fec246937",
+    "e90d688195244bf1065fb5478aa30fb6",
+    "4422ec102303a6044fbec702a719216b",
+    "97b1bca3ea97db48712742f713f6251a",
+    "d15347dafe1e3827b80453fffb711148"
+   ],
+   "sha256": "f2ac86e5ce722d517582f6b6a0f04da750e08d9a759b64f01cdbe80eab79281e",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": false
+  },
+  {
+   "name": "jm_ext_dp_cip",
+   "bitstream": "jm_ext_dp_cip/jm_ext_dp_cip.264",
+   "profile": "Extended",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [],
+   "md5": "3c70bfcf7c9be6ebed066550c0529012",
+   "frames": 12,
+   "frame_md5": [
+    "128b921404c213ca523d4df6ac7ad6a2",
+    "a4704b513c49bab0f20ed93b99aa504a",
+    "d6e4aa7086bef3ce18826df7f9272e70",
+    "61ebb254b38db344359255be0359377c",
+    "ecbbf81ea349e7f1e2d911e3ef48f460",
+    "2222a6fd7ee64a597f89970f69739071",
+    "99f3d1ca79567bd616114857bf88c91a",
+    "31864384b7adcd146e1c2902596bb60c",
+    "e729eb96cfbbbadf4dafbdc783fb1763",
+    "31330bbb82c3accdb7ceb67cbed09bb3",
+    "cc9f404f845dea9678ca9dc51fb77cad",
+    "e722f014676946037428094941bfb043"
+   ],
+   "sha256": "57abccd721b4f527cc6b97dc06fd7d27cb6a12158f88b9d6da23891c2903c02d",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": false
+  },
+  {
+   "name": "jm_ext_dp_slices",
+   "bitstream": "jm_ext_dp_slices/jm_ext_dp_slices.264",
+   "profile": "Extended",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [],
+   "md5": "b906a0f7c46f0383e5c9857a447ab056",
+   "frames": 12,
+   "frame_md5": [
+    "2c8f1f370b94c0b0e89c6d4c725ac5b6",
+    "ea5a8ec3ac8cd5f57e6dcc646f70fcbb",
+    "c2f2c530b9c34d8d8071c68938f002ad",
+    "0bd50aaf325b41b11902efaa9a53a3eb",
+    "c4ef5de437f00248df358d935fc701b9",
+    "83e70fe926e8485917ff87d64fbdb325",
+    "729031cd4d92ff8fca4fad761435a6cc",
+    "60d14ebdd07f1e9295de2fb1d2c6a2f0",
+    "6f7b1e32e7925b75b2ec33b0a8b28158",
+    "ae15f4d2e569c15741e9a313232b668f",
+    "a8167b44f86920e43e540ff1391905f2",
+    "33946fa0172cab9bba31368f6a476fb4"
+   ],
+   "sha256": "dfc03fc8345805996ee74c6898de6602534e5ff478535357817e040a681709a5",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": false
+  },
+  {
+   "name": "jm_ext_si",
+   "bitstream": "jm_ext_si/jm_ext_si.264",
+   "profile": "Extended",
+   "chroma_format": "4:2:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 176,
+   "height": 144,
+   "frame_bytes": 38016,
+   "scan": "progressive",
+   "features": [
+    "SP/SI slices"
+   ],
+   "md5": "459996329533c5808f3cd5dfb8b29bc2",
+   "frames": 12,
+   "frame_md5": [
+    "864b455d1fc229fc129e69a8a9056517",
+    "1b90844e255d8a9baa812270ffd0207f",
+    "7cde07ec99520e15c62c78ee2c209c47",
+    "55d1b39512b94385ae34e9e12475f250",
+    "459429b9decfabfbe65e7f315251ca84",
+    "552166e55d0f071c2490b827cdebef2d",
+    "b5d718e638e1485cbf6e99f531f48dbd",
+    "2227516801a25096be0f01502af6ce3a",
+    "8cdcc355e31fab4cb380d62daeb6fd1f",
+    "84a1420c28f696cab5c4ceaf4fae0335",
+    "d92fb229866a234e3cc0d7deeaac477c",
+    "c8d213515a9eaff3af654b1794af4a5a"
+   ],
+   "sha256": "d31613298a9a59b3bfa72a9a9a4ed71c05f76e4c07558ae3fa77c39b6c6c4ce2",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  }
+ ]
+}

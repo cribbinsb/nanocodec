@@ -4,6 +4,7 @@
 resolver = "3"
 members = [
     "crates/nc-common",
+    "crates/nc-rtp",
     "crates/nc-dsp",
     "crates/nc-analysis",
     "crates/nc-checkasm",
@@ -35,6 +36,7 @@ categories = ["multimedia::video", "multimedia::encoding"]
 # the directory and library name. The version is what a published crate
 # resolves; the path is what the workspace builds.
 nc-common = { package = "nanocodec-common", version = "0.7.0", path = "crates/nc-common" }
+nc-rtp = { package = "nanocodec-rtp", version = "0.7.0", path = "crates/nc-rtp" }
 nc-dsp = { package = "nanocodec-dsp", version = "0.7.0", path = "crates/nc-dsp" }
 nc-analysis = { package = "nanocodec-analysis", version = "0.7.0", path = "crates/nc-analysis" }
 nc-encoder = { package = "nanocodec-encoder", version = "0.7.0", path = "crates/nc-encoder" }

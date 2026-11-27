@@ -24,6 +24,7 @@ dependencies = [
  "nanocodec-encoder",
  "nanocodec-h264",
  "nanocodec-hevc",
+ "nanocodec-rtp",
  "nanocodec-vp9",
  "nanocodec-vvc",
 ]
@@ -63,6 +64,7 @@ dependencies = [
  "nanocodec-encoder",
  "nanocodec-h264",
  "nanocodec-hevc",
+ "nanocodec-rtp",
  "nanocodec-vp9",
 ]
 
@@ -77,6 +79,7 @@ dependencies = [
  "nanocodec-encoder",
  "nanocodec-h264",
  "nanocodec-hevc",
+ "nanocodec-rtp",
  "nanocodec-vp9",
  "nanocodec-vvc",
 ]
@@ -99,6 +102,7 @@ dependencies = [
  "nanocodec-analysis",
  "nanocodec-common",
  "nanocodec-dsp",
+ "nanocodec-rtp",
 ]
 
 [[package]]
@@ -117,6 +121,13 @@ dependencies = [
  "nanocodec-common",
  "nanocodec-dsp",
  "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-rtp"
+version = "0.7.0"
+dependencies = [
+ "nanocodec-common",
 ]
 
 [[package]]
@@ -148,6 +159,7 @@ dependencies = [
  "nanocodec-encoder",
  "nanocodec-h264",
  "nanocodec-hevc",
+ "nanocodec-rtp",
  "nanocodec-vp9",
  "nanocodec-vvc",
  "wasm-bindgen",

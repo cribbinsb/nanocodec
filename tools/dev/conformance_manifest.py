@@ -9,7 +9,7 @@ them); nothing in them is executed. Per suite, `SUITES` names the codec's
 probe and the reference decoder's command line.
 
 Usage:
-    python3 -I tools/dev/conformance_manifest.py --suite hevc-v1|vvc-v1|av1-libaom|h264|vp9-libvpx
+    python3 -I tools/dev/conformance_manifest.py --suite hevc-v1|vvc-v1|av1-libaom|h264|h264-x264|h264-jm|vp9-libvpx
         [--profiles "Main,Main 10,Main Still Picture"] [--max-bit-depth 10]
         [--chroma 4:2:0,4:0:0] [--only A,B] [--jobs 4]
 
@@ -500,9 +500,13 @@ SUITES = {
         str(DATA / "anchors/x86_64/bin/aomdec"), "--i420", "-o", str(out), str(bitstream)]),
     # vpxdec built with high bit depth (tools/anchors/build_anchors.sh
     # vpxhbd): shown frames at their own size, 8-bit samples as bytes and
-    # deeper ones as 16-bit little-endian (the form of libvpx's .md5 files).
+    # deeper ones as 16-bit little-endian (the form of libvpx's .md5 files);
+    # 4:2:2, 4:4:0 and 4:4:4 in their own format (--rawvideo: --i420 would
+    # convert them).
     "vp9-libvpx": (probe_vp9, lambda bitstream, out: [
-        str(DATA / "anchors/x86_64/bin/vpxdec-hbd"), "--i420", "-o", str(out), str(bitstream)]),
+        str(DATA / "anchors/x86_64/bin/vpxdec-hbd"),
+        "--i420" if probe_vp9(bitstream)["chroma_format"] == "4:2:0" else "--rawvideo",
+        "-o", str(out), str(bitstream)]),
     # JM 19 ldecod: frames in output order, cropped, 4:0:0 written as 4:2:0
     # with mid-grey chroma, deeper samples as 16-bit little-endian.
     "h264": (probe_h264, lambda bitstream, out: [
@@ -511,6 +515,11 @@ SUITES = {
 }
 
 SUITES["h264-x264"] = SUITES["h264"]
+# The JM streams' verified decode, shipped beside each stream
+# (tools/dev/h264_conformance_jm.sh: lencod's reconstruction where JM's or
+# FFmpeg's decode equals it).
+SUITES["h264-jm"] = (probe_h264, lambda bitstream, out: [
+    "cp", str(bitstream.with_suffix(".yuv")), str(out)])
 
 # suite -> a second decoder's command for (bitstream, output path, probe
 # info): its whole-output MD5 is recorded as a cross-check of the reference.
@@ -521,13 +530,16 @@ CROSS_CHECKS = {
         str(out)],
 }
 CROSS_CHECKS["h264-x264"] = CROSS_CHECKS["h264"]
+CROSS_CHECKS["h264-jm"] = CROSS_CHECKS["h264"]
 # FFmpeg's native VP9 decoder; it scales resized pictures to the first
 # size, so those streams record a disagreement.
-VP9_PIXEL_FORMATS = {8: "yuv420p", 10: "yuv420p10le", 12: "yuv420p12le"}
+VP9_PIXEL_FORMATS = {"4:2:0": "yuv420p", "4:2:2": "yuv422p", "4:4:0": "yuv440p",
+                     "4:4:4": "yuv444p"}
+VP9_DEPTH_SUFFIX = {8: "", 10: "10le", 12: "12le"}
 CROSS_CHECKS["vp9-libvpx"] = lambda bitstream, out, info: [
     "ffmpeg", "-v", "error", "-nostdin", "-y", "-c:v", "vp9", "-i", str(bitstream),
     "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt",
-    VP9_PIXEL_FORMATS[max(info["bit_depth"])], str(out)]
+    VP9_PIXEL_FORMATS[info["chroma_format"]] + VP9_DEPTH_SUFFIX[max(info["bit_depth"])], str(out)]
 
 
 def bitstream(directory):

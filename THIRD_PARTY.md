@@ -1289,6 +1289,15 @@ repository (our internal notes (not published) "GPU VMAF"). No VMAFx code is
 copied, linked or reimplemented here, and it is not part of any shipped
 artifact.
 
+## Pion — MIT (test tool only, not vendored)
+
+Source: https://github.com/pion/rtp and https://github.com/pion/webrtc. The RTP
+interop checks (`tools/rtp/pion`, a separate Go program with its own
+`go.mod`) use Pion's payloaders, depacketizers and WebRTC stack as an
+independent implementation to test `crates/nc-rtp` against. No Pion code is
+copied, linked or reimplemented in the Rust crates, and it is not part of
+any shipped artifact.
+
 ## libvmaf — BSD+Patent
 
 Copyright 2016-2020 Netflix, Inc.

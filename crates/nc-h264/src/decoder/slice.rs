@@ -1,10 +1,12 @@
 //! Slice headers (§7.3.3) of I, P and B slices of frames, with their
 //! `ref_pic_list_modification()` (§7.3.3.1), `pred_weight_table()`
-//! (§7.3.3.2) and `dec_ref_pic_marking()` (§7.3.3.3).
+//! (§7.3.3.2) and `dec_ref_pic_marking()` (§7.3.3.3), and the
+//! detection of a new picture's first slice (§7.4.1.2.4).
 
 use super::dpb::{Marking, Mmco, Modification};
 use super::pps::{BipredWeights, MAX_PPS_ID, MAX_REF_IDX_ACTIVE_MINUS1, Pps};
 use super::reader::Reader;
+use super::slice_groups::MapUnits;
 use super::sps::{PocType, Sps};
 use super::{DecodeError, Result};
 use crate::deblock::{DEBLOCK_IDC_NO_SLICE_EDGES, DEBLOCK_OFFSET_DIV2_MAX, DeblockControl};
@@ -19,6 +21,8 @@ const MAX_SLICE_TYPE: u32 = 9;
 const SLICE_TYPES: u32 = 5;
 /// `idr_pic_id` range (§7.4.3).
 const MAX_IDR_PIC_ID: u32 = 65_535;
+/// `redundant_pic_cnt` range (§7.4.3).
+const MAX_REDUNDANT_PIC_CNT: u32 = 127;
 /// `cabac_init_idc` range.
 const MAX_CABAC_INIT_IDC: u32 = 2;
 /// `luma_log2_weight_denom` / `chroma_log2_weight_denom` range.
@@ -100,6 +104,8 @@ pub(super) struct SliceHeader {
     pub pic_order_cnt_lsb: u32,
     pub delta_pic_order_cnt_bottom: i32,
     pub delta_pic_order_cnt: [i32; 2],
+    /// `redundant_pic_cnt`: 0 in the primary coded picture.
+    pub redundant_pic_cnt: u32,
     /// `num_ref_idx_l0_active_minus1 + 1` and the list 1 one (0 for
     /// lists the slice does not use).
     pub num_ref_idx_active: [usize; 2],
@@ -113,6 +119,25 @@ pub(super) struct SliceHeader {
     pub cabac_init_idc: u8,
     pub qp: i32,
     pub deblock: DeblockControl,
+    /// `slice_group_change_cycle` (slice group map types 3..=5, else 0).
+    pub slice_group_change_cycle: u32,
+}
+
+impl SliceHeader {
+    /// Whether this slice belongs to the same primary coded picture as
+    /// `first`, a slice of the picture in progress: none of the
+    /// differences of §7.4.1.2.4 that start a new picture. Fields a header
+    /// does not code are 0 in both.
+    pub fn same_picture(&self, first: &Self) -> bool {
+        self.frame_num == first.frame_num
+            && self.pps_id == first.pps_id
+            && self.reference == first.reference
+            && self.pic_order_cnt_lsb == first.pic_order_cnt_lsb
+            && self.delta_pic_order_cnt_bottom == first.delta_pic_order_cnt_bottom
+            && self.delta_pic_order_cnt == first.delta_pic_order_cnt
+            && self.idr == first.idr
+            && self.idr_pic_id == first.idr_pic_id
+    }
 }
 
 /// Parse the first fields of a slice header: `first_mb_in_slice` and the
@@ -166,6 +191,11 @@ pub(super) fn parse(
     };
     let (pic_order_cnt_lsb, delta_pic_order_cnt_bottom, delta_pic_order_cnt) =
         parse_poc_fields(r, sps, pps)?;
+    let redundant_pic_cnt = if pps.redundant_pic_cnt_present {
+        r.ue_max(MAX_REDUNDANT_PIC_CNT, "redundant_pic_cnt")?
+    } else {
+        0
+    };
     let direct_spatial = slice_type == SliceType::B && r.flag()?;
     let (num_ref_idx_active, modifications) = parse_lists(r, pps, slice_type)?;
     let explicit = match slice_type {
@@ -177,18 +207,7 @@ pub(super) fn parse(
     let weights = explicit
         .then(|| parse_weights(r, &num_ref_idx_active[..lists], sps.monochrome))
         .transpose()?;
-    let marking = if nal_ref_idc == 0 {
-        Marking::NonReference
-    } else if idr {
-        r.flag()?; // no_output_of_prior_pics_flag: every picture is output
-        Marking::Idr {
-            long_term: r.flag()?,
-        }
-    } else if r.flag()? {
-        Marking::Adaptive(parse_mmcos(r)?)
-    } else {
-        Marking::SlidingWindow
-    };
+    let marking = parse_marking(r, idr, nal_ref_idc)?;
     let cabac_init_idc = if pps.cabac && slice_type != SliceType::I {
         r.ue_max(MAX_CABAC_INIT_IDC, "cabac_init_idc")? as u8
     } else {
@@ -205,6 +224,7 @@ pub(super) fn parse(
     } else {
         DeblockControl::DEFAULT
     };
+    let slice_group_change_cycle = parse_change_cycle(r, sps, pps)?;
     if pps.cabac {
         r.align(true)?;
     }
@@ -219,6 +239,7 @@ pub(super) fn parse(
         pic_order_cnt_lsb,
         delta_pic_order_cnt_bottom,
         delta_pic_order_cnt,
+        redundant_pic_cnt,
         num_ref_idx_active,
         modifications,
         direct_spatial,
@@ -227,7 +248,17 @@ pub(super) fn parse(
         cabac_init_idc,
         qp,
         deblock,
+        slice_group_change_cycle,
     })
+}
+
+/// `slice_group_change_cycle`, coded for slice group map types 3..=5.
+fn parse_change_cycle(r: &mut Reader<'_>, sps: &Sps, pps: &Pps) -> Result<u32> {
+    let bits = pps
+        .slice_groups
+        .as_ref()
+        .and_then(|groups| groups.change_cycle_bits(MapUnits::of_frame(sps)));
+    bits.map_or(Ok(0), |bits| r.bits(bits))
 }
 
 /// The active reference counts (`num_ref_idx_active_override_flag` and
@@ -344,6 +375,22 @@ fn parse_weights(r: &mut Reader<'_>, counts: &[usize], monochrome: bool) -> Resu
         luma_log2_denom,
         chroma_log2_denom,
         weights,
+    })
+}
+
+/// `dec_ref_pic_marking()` (§7.3.3.3) of a reference picture.
+fn parse_marking(r: &mut Reader<'_>, idr: bool, nal_ref_idc: u32) -> Result<Marking> {
+    Ok(if nal_ref_idc == 0 {
+        Marking::NonReference
+    } else if idr {
+        r.flag()?; // no_output_of_prior_pics_flag: every picture is output
+        Marking::Idr {
+            long_term: r.flag()?,
+        }
+    } else if r.flag()? {
+        Marking::Adaptive(parse_mmcos(r)?)
+    } else {
+        Marking::SlidingWindow
     })
 }
 

@@ -85,7 +85,7 @@ pub struct Decoder {
     reference: Option<Picture>,
     reference_border_ready: bool,
     /// The other pictures the latest picture's RPL0 keeps in the DPB
-    /// (§8.3.2: the second reference, `references.rs`), with their POCs.
+    /// (§8.3.2: the long-term slot's picture, `references.rs`), with their POCs.
     retained: Vec<(u16, Picture)>,
     /// Whether the last decode succeeded, so `reference` is its picture.
     shown: bool,
@@ -95,7 +95,8 @@ pub struct Decoder {
     general_shown: Option<DecodedPicture>,
     /// Replaced references, reused as later reconstructions and output copies.
     pictures: PictureRecycler,
-    next_poc: Option<u16>,
+    /// The POC LSBs of `reference`.
+    latest_poc: Option<u16>,
     dsp: Dsp,
     /// Parameter NALs awaiting the next slice in the streaming API.
     pending: Vec<u8>,
@@ -433,7 +434,7 @@ impl Decoder {
             if changed_profile || self.geometry != Some(info.geometry) {
                 self.motion = None;
                 self.reference = None;
-                self.next_poc = None;
+                self.latest_poc = None;
             }
             self.geometry = Some(info.geometry);
         } else {
@@ -503,10 +504,7 @@ impl Decoder {
         });
         // The pictures a P picture's RPL0 may list: the latest and those it
         // kept.
-        let latest = self
-            .next_poc
-            .map(|next| poc_lsb(u32::from(next).wrapping_sub(1), self.tools.poc_bits))
-            .zip(self.reference.as_ref());
+        let latest = self.latest_poc.zip(self.reference.as_ref());
         let dpb: Vec<(u16, &Picture)> = latest
             .into_iter()
             .chain(self.retained.iter().map(|(poc, picture)| (*poc, picture)))
@@ -521,7 +519,7 @@ impl Decoder {
             predicted,
             (&dpb, motion),
             &self.alf_banks,
-            self.next_poc,
+            self.latest_poc,
             &self.dsp,
             &mut self.pictures,
             self.stats.as_mut(),
@@ -539,7 +537,7 @@ impl Decoder {
             predicted,
             (&dpb, motion),
             &self.alf_banks,
-            self.next_poc,
+            self.latest_poc,
             &self.dsp,
             &mut self.pictures,
         );
@@ -598,7 +596,7 @@ impl Decoder {
         }
         self.instance = Instance::for_depth(depth);
         self.reference = None;
-        self.next_poc = None;
+        self.latest_poc = None;
     }
 
     /// The PPS id of the picture a slice NAL starts: its embedded picture
@@ -759,14 +757,12 @@ impl Decoder {
         // Extend only when a later inter picture actually uses this reference.
         // All-intra streams and the final output need no border work.
         if let Some(replaced) = self.reference.replace(coded) {
-            let previous = self
-                .next_poc
-                .map(|next| poc_lsb(u32::from(next).wrapping_sub(1), self.tools.poc_bits));
-            // A stream with a second reference keeps every picture the new
+            let previous = self.latest_poc;
+            // A stream listing the long-term slot keeps every picture the new
             // one lists (§8.3.2), which a later picture may list again; its
             // borders were extended when the new picture predicted from it.
             // Other streams list only the latest picture, never again.
-            match previous.filter(|poc| self.tools.second_reference && listed.contains(poc)) {
+            match previous.filter(|poc| self.tools.long_term_slot && listed.contains(poc)) {
                 Some(poc) => self.retained.push((poc, replaced)),
                 None => self.pictures.give(replaced),
             }
@@ -775,7 +771,7 @@ impl Decoder {
             motion.commit_motion_field();
         }
         self.reference_border_ready = false;
-        self.next_poc = Some(poc_lsb(u32::from(poc) + 1, self.tools.poc_bits));
+        self.latest_poc = Some(poc);
         self.shown = true;
         Ok(true)
     }
@@ -916,14 +912,14 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
     };
     let timing = headers::read_sps_timing(&mut r)?;
     let colour = read_colour(&mut r)?;
-    // The DPB size says whether the stream keeps a second reference, and
-    // the POC LSB length whether it is held long; the other tool flags were
-    // read above.
+    // The DPB size says whether the stream keeps the long-term slot's
+    // picture, and the POC LSB length whether it is held long; the other
+    // tool flags were read above.
     let tools = [false, true]
         .into_iter()
-        .flat_map(|second| [(second, false), (second, true)])
-        .map(|(second_reference, held)| headers::Tools {
-            ..tools.with_second_reference(second_reference, held)
+        .flat_map(|listed| [(listed, false), (listed, true)])
+        .map(|(listed, held)| headers::Tools {
+            ..tools.with_long_term_slot(listed, held)
         })
         .find(|&tools| bytes == headers::sps(&geometry, colour, &chroma_qp, tools, timing))
         .ok_or(DecodeError::Unsupported("VVC SPS tools"))?;
@@ -1003,7 +999,7 @@ fn decode_slice(
     inter_frame: bool,
     (dpb, motion): (&[(u16, &Picture)], &mut MotionGrid),
     alf_banks: &[Option<Box<crate::alf_aps::SignalledFilters>>; ALF_APS_IDS],
-    next_poc: Option<u16>,
+    latest_poc: Option<u16>,
     dsp: &Dsp,
     pictures: &mut PictureRecycler,
     #[cfg(feature = "analysis")] mut stats: Option<&mut nc_common::stream_stats::StreamStats>,
@@ -1013,7 +1009,7 @@ fn decode_slice(
     if let Some(s) = stats.as_deref_mut() {
         crate::analysis::picture_facts(s, inter_frame, header.qp, data.len());
     }
-    let (listed, references) = slice_references(&header, inter_frame, next_poc, dpb)?;
+    let (listed, references) = slice_references(&header, inter_frame, latest_poc, dpb)?;
     let OwnSliceHeader {
         poc,
         qp,
@@ -1114,12 +1110,13 @@ fn decode_slice(
 
 /// The POCs of the pictures the RPL0 of slice `header` lists (none for an
 /// intra picture), each found in `dpb` (§8.3.2), and those pictures by
-/// reference index; a P picture must follow `next_poc`.
+/// reference index; a P picture must follow the latest picture
+/// (`latest_poc`) in POC order.
 #[allow(clippy::type_complexity, reason = "the POCs and their pictures")]
 fn slice_references<'a>(
     header: &OwnSliceHeader<'_>,
     inter_frame: bool,
-    next_poc: Option<u16>,
+    latest_poc: Option<u16>,
     dpb: &[(u16, &'a Picture)],
 ) -> Result<(
     Vec<u16>,
@@ -1129,10 +1126,18 @@ fn slice_references<'a>(
     if !inter_frame {
         return Ok((Vec::new(), references));
     }
-    if next_poc != Some(header.poc) {
+    let rpl = &header.references;
+    // POC distances of a coded video sequence stay below half the LSB
+    // range (§8.3.1); a gap is pictures the receiver lost (or never got).
+    let ahead = |latest: u16| {
+        u32::from(poc_lsb(
+            u32::from(header.poc).wrapping_sub(u32::from(latest)),
+            rpl.poc_bits,
+        ))
+    };
+    if !latest_poc.is_some_and(|latest| (1..1 << (rpl.poc_bits - 1)).contains(&ahead(latest))) {
         return Err(DecodeError::Malformed("out-of-order VVC picture"));
     }
-    let rpl = &header.references;
     let listed: Vec<u16> = rpl.distances[..rpl.count]
         .iter()
         .map(|&distance| poc_lsb(u32::from(header.poc).wrapping_sub(distance), rpl.poc_bits))
@@ -1255,9 +1260,9 @@ fn parse_slice_header<'a, 'b>(
     ))
 }
 
-/// A P slice's local RPL0 (one or two short-term entries), empty RPL1,
-/// active-reference override and collocated reference (§7.3.7.1,
-/// §7.3.10), as `headers::slice_layered` writes them; the caller checks
+/// A P slice's local RPL0 (up to `references::MAX_LISTED` short-term
+/// entries), empty RPL1, active-reference override and collocated
+/// reference (§7.3.7.1, §7.3.10), as `headers::slice_layered` writes them; the caller checks
 /// the whole header against its canonical form.
 fn read_reference_lists(
     r: &mut BitReader<'_>,

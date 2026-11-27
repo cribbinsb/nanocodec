@@ -54,6 +54,9 @@ SUITES = {
     # x264 streams for I/P-only High tools (tools/dev/h264_conformance_supplement.sh).
     "h264-x264": ("h264", ROOT / "tools/ci/h264_conformance_x264.json",
                   DATA / "conformance/h264/supplementary"),
+    # JM streams for Baseline / Extended tools the suite lacks
+    # (tools/dev/h264_conformance_jm.sh).
+    "h264-jm": ("h264", ROOT / "tools/ci/h264_conformance_jm.json", DATA / "conformance/h264/jm"),
 }
 
 CHUNK = 1 << 20

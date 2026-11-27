@@ -20,7 +20,7 @@ pub(super) const MAX_SPS_ID: u32 = 31;
 pub(super) const MAX_DPB_FRAMES: usize = 16;
 /// Largest picture accepted, in macroblocks: level 5.2's `MaxFS` (Table A-1),
 /// which bounds memory for hostile input as well.
-const MAX_FRAME_MBS: usize = 36_864;
+pub(super) const MAX_FRAME_MBS: usize = 36_864;
 /// Luma samples per macroblock side.
 const MB_SIZE: usize = 16;
 /// Largest picture side in macroblocks (`sqrt(8 * MaxFS)`, §A.3.1 item f).

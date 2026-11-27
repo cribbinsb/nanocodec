@@ -3,9 +3,9 @@
  *
  *   encode CODEC FORMAT WIDTH HEIGHT FRAMES KBPS IN OUT
  *
- * CODEC: h264 | hevc | av1; FORMAT: nv12 | i420; KBPS 0 = fixed quantizer.
- * Writes the packets back to back (Annex-B for H.264/HEVC, raw OBUs for
- * AV1) and stamps frames at 30 fps. A live application would also call
+ * CODEC: h264 | hevc | av1 | vp9; FORMAT: nv12 | i420; KBPS 0 = fixed
+ * quantizer. Writes the packets back to back (Annex-B for H.264/HEVC, raw
+ * OBUs for AV1, raw frames for VP9) and stamps frames at 30 fps. A live application would also call
  * nc_encoder_request_keyframe, nc_encoder_set_bitrate and
  * nc_encoder_set_intra_refresh between frames. Under rate control it holds
  * frame 0 back one frame for the start-up lookahead, as the CLI does.
@@ -44,10 +44,11 @@ static nc_frame wrap_frame(uint8_t *buffer, int nv12, uint32_t width, uint32_t h
 
 int main(int argc, char **argv) {
     if (argc != 9) {
-        fprintf(stderr, "usage: encode h264|hevc|av1 nv12|i420 W H FRAMES KBPS IN OUT\n");
+        fprintf(stderr, "usage: encode h264|hevc|av1|vp9 nv12|i420 W H FRAMES KBPS IN OUT\n");
         return 2;
     }
     uint32_t codec = strcmp(argv[1], "av1") == 0    ? NC_CODEC_AV1
+                     : strcmp(argv[1], "vp9") == 0  ? NC_CODEC_VP9
                      : strcmp(argv[1], "hevc") == 0 ? NC_CODEC_HEVC
                                                     : NC_CODEC_H264;
     int nv12 = strcmp(argv[2], "nv12") == 0;

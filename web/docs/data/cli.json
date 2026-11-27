@@ -14,7 +14,10 @@
     {"flag": "--output", "value": "PATH", "help": "The stream: IVF for AV1, VP9 and AV2, Annex-B for H.264, HEVC and VVC; `-` writes stdout."},
     {"flag": "--recon", "value": "PATH", "help": "The reconstruction of every coded frame (I420)."},
     {"flag": "--display-recon", "value": "PATH", "help": "One picture per input frame, as a decoder shows it: a frame left uncoded repeats the last one."},
-    {"flag": "--timestamps-out", "value": "FILE", "help": "The time of every coded frame."}]},
+    {"flag": "--timestamps-out", "value": "FILE", "help": "The time of every coded frame."},
+    {"flag": "--rtp", "value": "PATH", "help": "The coded units as RTP packets: pcap for .pcap, otherwise RFC 4571 framing. AV1 carries the Dependency Descriptor (extension id 1), VP9 its layer indices."},
+    {"flag": "--rtp-mtu", "value": "BYTES", "help": "Largest RTP packet of --rtp (default 1200)."},
+    {"flag": "--rtp-dd-id", "value": "ID|none", "help": "Dependency Descriptor extension id of --rtp (AV1 default 1, others none)."}]},
    {"title": "Codec and preset", "options": [
     {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Output format (`h266` is accepted for vvc). Required."},
     {"flag": "--preset", "value": "veryfast|faster|fast|medium|slow|slower|veryslow", "help": "A rung of the speed ladder; medium is the codec's Default and is used without --preset. A name is a position on that codec's ladder (in this order); not every codec has every rung (`nanocodec params --codec C`); with --scalability L2*/L3* a rung takes the codec's file for that many layers."},
@@ -87,6 +90,24 @@
     {"flag": "--base-only", "value": "", "help": "AV1 or VP9: keep the spatial base layer."},
     {"flag": "--operating-point", "value": "N", "help": "AV1 or VP9: keep this operating point."},
     {"flag": "--layer-md5", "value": "FILE", "help": "VP9: the encoder's layer sidecar to split by."}]}]},
+  {"name": "packetize", "about": "A stream file (IVF or Annex B) to RTP packets (no Dependency Descriptor: use encode --rtp).", "groups": [
+   {"title": "Options", "options": [
+    {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format (not av2). Required."},
+    {"flag": "--input", "value": "PATH", "help": "The stream."},
+    {"flag": "--output", "value": "PATH", "help": "pcap for .pcap, otherwise RFC 4571 framing."},
+    {"flag": "--mtu", "value": "BYTES", "help": "Largest RTP packet (default 1200)."},
+    {"flag": "--payload-type", "value": "PT", "help": "RTP payload type (default 96)."},
+    {"flag": "--fps", "value": "N", "help": "Annex-B input: frames per second for timestamps (default 30)."},
+    {"flag": "--vp9-mode", "value": "flexible|non-flexible", "help": "VP9 payload descriptor mode (default flexible)."}]}]},
+  {"name": "depacketize", "about": "RTP packets (pcap or RFC 4571) to a stream file, through the receiver's loss handling.", "groups": [
+   {"title": "Options", "options": [
+    {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format (not av2). Required."},
+    {"flag": "--input", "value": "PATH", "help": "The capture."},
+    {"flag": "--output", "value": "PATH", "help": "IVF (AV1, VP9) or Annex B."},
+    {"flag": "--payload-type", "value": "PT", "help": "Keep only this payload type."},
+    {"flag": "--dd-id", "value": "ID|none", "help": "Dependency Descriptor extension id (AV1 default 1, others none)."},
+    {"flag": "--layers", "value": "S:T", "help": "Forward only spatial layers 0..S and temporal layers 0..T first, by the Dependency Descriptor, as a forwarding server would."},
+    {"flag": "--deliver-after-loss", "value": "", "help": "Keep delivering after a loss instead of waiting for a key frame."}]}]},
   {"name": "session", "about": "Encoder and receiver stepped by commands on stdin (encode options, no --output).", "groups": [
    {"title": "Options", "options": [
     {"flag": "--display", "value": "PATH", "help": "One picture per input frame: what the viewer saw."},

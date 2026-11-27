@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nc_common::{
-    DecodedPicture, OutputPicture, Picture, PlaneIndex, PlaneView, Sample, ShownFrame,
-    ShownPicture, decode::DecodeError,
+    ChromaFormat, DecodedPicture, OutputPicture, Picture, PlaneIndex, PlaneView, Sample,
+    ShownFrame, ShownPicture, decode::DecodeError,
 };
 use nc_encoder::Codec;
 
@@ -311,12 +311,13 @@ impl<'a> Shown<'a> {
         let (samples, (width, height)) = match shown {
             nc_vp9::ShownVp9Frame::Eight(picture, size) => (Samples::Borrowed(picture), size),
             nc_vp9::ShownVp9Frame::High(picture, (width, height), _) => {
+                let format = picture.chroma_format();
                 let planes = PlaneIndex::ALL.map(|plane| {
-                    let ss = usize::from(plane != PlaneIndex::Y);
+                    let (w, h) = format.plane_size(plane, (width, height));
                     picture
                         .plane(plane)
                         .view()
-                        .sub_view(0, 0, (width + ss) >> ss, (height + ss) >> ss)
+                        .sub_view(0, 0, w, h)
                         .expect("the visible size lies inside the picture")
                 });
                 (Samples::HighViews(planes), (width, height))
@@ -379,7 +380,14 @@ impl<'a> Shown<'a> {
             }
             _ => {}
         }
-        let mut copy = Picture::new(self.width, self.height, 0).map_err(|e| e.to_string())?;
+        let format = match &self.samples {
+            Samples::Borrowed(picture) => picture.chroma_format(),
+            Samples::Shared { picture, .. } => picture.chroma_format(),
+            Samples::View(shown) => shown.chroma_format(),
+            _ => ChromaFormat::Yuv420,
+        };
+        let mut copy =
+            Picture::with_format(self.width, self.height, format, 0).map_err(|e| e.to_string())?;
         for plane in PlaneIndex::ALL.into_iter().take(self.planes) {
             let mut target = copy.plane_mut(plane).view_mut();
             self.plane_rows(plane, |y, row| {
@@ -429,8 +437,6 @@ impl<'a> Shown<'a> {
         plane: PlaneIndex,
         mut visit: impl FnMut(usize, &'s [u8]) -> Result<(), E>,
     ) -> Result<(), E> {
-        let ss = usize::from(plane != PlaneIndex::Y);
-        let (w, h) = ((self.width + ss) >> ss, (self.height + ss) >> ss);
         let (picture, (x0, y0)) = match &self.samples {
             Samples::Owned(picture) => (picture, (0, 0)),
             Samples::Borrowed(picture) => (*picture, (0, 0)),
@@ -443,10 +449,13 @@ impl<'a> Shown<'a> {
                 unreachable!("deep pictures are visited in visit_rows / write_rows")
             }
         };
+        let format = picture.chroma_format();
+        let (sx, sy) = format.plane_subsampling(plane);
+        let (w, h) = format.plane_size(plane, (self.width, self.height));
         let view = picture.plane(plane).view();
         for y in 0..h {
-            let row = view.row(y + (y0 >> ss));
-            visit(y, &row[x0 >> ss..(x0 >> ss) + w])?;
+            let row = view.row(y + (y0 >> sy));
+            visit(y, &row[x0 >> sx..(x0 >> sx) + w])?;
         }
         Ok(())
     }

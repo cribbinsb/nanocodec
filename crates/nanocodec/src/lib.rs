@@ -81,6 +81,10 @@ pub use nc_common as common;
 /// The shared encoder engine: configuration, presets, rate control and the
 /// [`CodecBackend`] trait (`nanocodec-encoder`).
 pub use nc_encoder as encoder;
+/// RTP payload formats for the streams: packetizers, depacketizers, the
+/// AV1 Dependency Descriptor and capture files (`nanocodec-rtp`); the
+/// encoder's layer description is `encoder::rtp_layer_frames`.
+pub use nc_rtp as rtp;
 
 pub use nc_common::{Picture, PlaneIndex, RawFrame};
 pub use nc_encoder::{

@@ -1,0 +1,21 @@
+[package]
+name = "nanocodec-rtp"
+description = "RTP payload formats for nanocodec streams: H.264, HEVC, VVC, AV1 (with the Dependency Descriptor) and VP9 packetizers and depacketizers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nanocodec-rtp"
+keywords = ["rtp", "webrtc", "video", "av1", "h264"]
+categories.workspace = true
+
+[lib]
+name = "nc_rtp"
+
+[dependencies]
+nc-common.workspace = true
+
+[lints]
+workspace = true

@@ -1,7 +1,8 @@
 //! Per-macroblock state kept for the whole picture: what later macroblocks
 //! (context selection, intra and motion vector prediction) and the
 //! deblocking filter read from their neighbours, and the neighbour
-//! availability rules of §6.4 for frames without slice groups.
+//! availability rules of §6.4 (a neighbour is available when decoded in
+//! the same slice, which also covers slice groups and any slice order).
 //!
 //! Blocks are addressed by their 4x4 position (`x4`, `y4`) inside the
 //! macroblock; luma arrays are raster order (`y4 * 4 + x4`), chroma arrays

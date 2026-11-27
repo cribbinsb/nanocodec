@@ -30,7 +30,8 @@ typedef enum nc_status {
     NC_ERROR_CONFIG = -2,           /* the configuration was rejected */
     NC_ERROR_FRAME = -3,            /* frame size or layout mismatch */
     NC_ERROR_RATE_CONTROL = -4,     /* invalid bitrate settings */
-    NC_ERROR_INTERNAL = -5          /* internal error: destroy the encoder */
+    NC_ERROR_INTERNAL = -5,         /* internal error: destroy the encoder */
+    NC_ERROR_RTP = -6               /* malformed RTP packet, or a unit RTP cannot carry */
 } nc_status;
 
 /* nc_encoder_config.codec */
@@ -224,6 +225,57 @@ nc_status nc_decoder_picture(const nc_decoder *decoder, nc_picture *picture);
 
 /* Spatial layer id (0..2) of the picture currently on screen (0 on single-layer). */
 nc_status nc_decoder_spatial_id(const nc_decoder *decoder, uint8_t *spatial_id);
+
+/* ---- RTP (docs/handoff/rtp.md) ----
+ * Payload formats: H.264 RFC 6184 (packetization-mode 1), HEVC RFC 7798,
+ * AV1 (AOM RTP payload format, with the Dependency Descriptor header
+ * extension for SVC forwarding), VP9 RFC 9628 (flexible mode). Timestamps
+ * use the 90 kHz clock from nc_packet.timestamp_us. */
+
+typedef struct nc_rtp_sender_config {
+    uint32_t codec;                   /* nc_codec of the encoder */
+    uint8_t payload_type;             /* RTP payload type, e.g. 96 */
+    uint8_t dependency_descriptor_id; /* RFC 8285 extension id 1-14; 0 = not sent */
+    uint32_t ssrc;
+    uint32_t mtu;                     /* largest RTP packet; 0 = 1200 */
+} nc_rtp_sender_config;
+
+typedef struct nc_rtp_sender nc_rtp_sender;
+typedef struct nc_rtp_receiver nc_rtp_receiver;
+
+nc_status nc_rtp_sender_create(const nc_rtp_sender_config *config, nc_rtp_sender **out);
+void nc_rtp_sender_destroy(nc_rtp_sender *sender);
+
+/* Packetize the encoder's latest packet (after nc_encoder_encode); `*count`
+ * packets follow (0 for a dropped frame). */
+nc_status nc_rtp_sender_packetize(nc_rtp_sender *sender, const nc_encoder *encoder,
+                                  size_t *count);
+
+/* RTP packet `index` (< count), valid until the next call on `sender`. */
+nc_status nc_rtp_sender_packet(const nc_rtp_sender *sender, size_t index,
+                               const uint8_t **data, size_t *size);
+
+/* A receiver: `dependency_descriptor_id` 0 = not negotiated;
+ * `deliver_after_loss` non-zero keeps delivering after a loss (streams that
+ * repair themselves: intra refresh, LTR recovery). */
+nc_status nc_rtp_receiver_create(uint32_t codec, uint8_t dependency_descriptor_id,
+                                 uint8_t deliver_after_loss, nc_rtp_receiver **out);
+void nc_rtp_receiver_destroy(nc_rtp_receiver *receiver);
+
+/* One received datagram, in any order; NC_ERROR_RTP: malformed, dropped. */
+nc_status nc_rtp_receiver_push(nc_rtp_receiver *receiver, const uint8_t *data, size_t size);
+
+/* End of stream: release the units held for reordering. */
+nc_status nc_rtp_receiver_flush(nc_rtp_receiver *receiver);
+
+/* The next unit for nc_decoder_decode, valid until the next call on
+ * `receiver`; `*size` 0 when none is ready. `timestamp`, `keyframe` may be NULL. */
+nc_status nc_rtp_receiver_pop(nc_rtp_receiver *receiver, const uint8_t **data, size_t *size,
+                              uint32_t *timestamp, uint8_t *keyframe);
+
+/* `*requested` = 1 once after decoding stopped for want of a key frame:
+ * send a PLI/FIR (or call nc_encoder_request_keyframe on a local encoder). */
+nc_status nc_rtp_receiver_keyframe_request(nc_rtp_receiver *receiver, uint8_t *requested);
 
 #ifdef __cplusplus
 }

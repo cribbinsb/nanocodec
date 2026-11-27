@@ -7,7 +7,8 @@
 #   tools/ci/nightly_checks.sh x86   on the x86 build box (nc-remote), in a tree with
 #                                    cargo: check.sh's full-only steps, host checkasm,
 #                                    the official decoder suites (native and WASM), the
-#                                    AV2 foreign streams, the real-use features, the
+#                                    AV2 foreign streams, the real-use features, the C
+#                                    API against the CLI (capi_check.sh), the
 #                                    #[ignore]d tests that need external decoders or
 #                                    corpora, the fuzz corpus replay, ISA identity
 #   tools/ci/nightly_checks.sh arm   on a Graviton4 box (tools/dev/verify_arm.py), with
@@ -102,6 +103,7 @@ x86_checks() {
     check foreign-encoders foreign_encoders
     check wasm-conformance bash -c 'tools/web/build.sh && tools/ci/wasm_conformance.sh'
     check realuse env NANOCODEC="$bin" tools/ci/realuse_conformance.sh
+    check capi tools/ci/capi_check.sh
     check ignored-tests ignored_tests
     check fuzz-replay fuzz_replay
     check isa-identity-x86 tools/ci/isa_identity.sh "$bin" --local --clip-dir "$data/clips/main"

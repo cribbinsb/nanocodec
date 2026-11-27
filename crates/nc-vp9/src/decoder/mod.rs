@@ -1,6 +1,6 @@
-//! VP9 profile 0 and 2 decoder (8-, 10- and 12-bit 4:2:0): other
-//! encoders' streams, not only the subset nanocodec emits; checked on the
-//! 305 libvpx test vectors, profiles 1 and 3 not decoded yet (VP9 bitstream
+//! VP9 decoder of every profile (8-, 10- and 12-bit; 4:2:0, 4:2:2, 4:4:0
+//! and 4:4:4): other encoders' streams, not only the subset nanocodec
+//! emits; checked on the libvpx test vectors (VP9 bitstream
 //! specification v0.6; structure after libvpx `vp9_decoder.c`,
 //! `vp9_dx_iface.c` and `vp9_decodeframe.c`, BSD-3-Clause, see
 //! `THIRD_PARTY.md`).
@@ -39,14 +39,16 @@ use std::sync::Arc;
 use nc_common::decode::{DecodeError, Result};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
-use nc_common::{BitDepth, Picture, PictureRecycler, PlaneIndex, Sample, ShownPicture};
+use nc_common::{
+    BitDepth, ChromaFormat, Picture, PictureRecycler, PlaneIndex, Sample, ShownPicture,
+};
 use nc_dsp::Pixel;
 
 use self::block::{MvRef, REFS_PER_FRAME};
 use self::frame::{BlockScratch, FrameDecoder, FrameInputs, FrameOutput};
 use self::header::{
-    FRAME_CONTEXTS, FrameHeader, HeaderState, LoopFilter, SLOTS, Segmentation, TxMode,
-    read_compressed,
+    ColorConfig, FRAME_CONTEXTS, FrameHeader, HeaderState, LoopFilter, SLOTS, Segmentation, TxMode,
+    read_compressed, show_existing_bytes,
 };
 pub use self::instance::{Decoder, ShownVp9Frame};
 use self::recon::{Reference, extend_reference};
@@ -58,16 +60,15 @@ use crate::types::MI_SIZE;
 /// `reset_frame_context` values (VP9 §7.2): reset the frame's context, or all.
 const RESET_ONE_CONTEXT: u8 = 2;
 const RESET_ALL_CONTEXTS: u8 = 3;
-/// Bytes a `show_existing_frame` header occupies in Profile 0.
-const SHOW_EXISTING_BYTES: usize = 1;
 
 /// A decoded picture, its visible size, and its spatial layer index within the
 /// packet (`0` for single-layer or base layer `S0`, `1` for enhancement `S1`).
-/// The picture's planes cover the visible size rounded up to even (4:2:0
-/// chroma covers `(w + 1) / 2`).
+/// The picture's planes cover the visible size rounded up to even along
+/// subsampled axes (4:2:0 chroma covers `(w + 1) / 2`).
 #[derive(Debug, Clone)]
 pub struct DecodedFrame<T: Sample = u8> {
-    /// The picture, `width` and `height` rounded up to even.
+    /// The picture, `width` and `height` rounded up to even along
+    /// subsampled axes.
     pub picture: Picture<T>,
     /// Visible luma width.
     pub width: usize,
@@ -77,7 +78,8 @@ pub struct DecodedFrame<T: Sample = u8> {
     pub spatial_id: u8,
 }
 
-/// A reference slot's picture, visible size and depth.
+/// A reference slot's picture (in its chroma format), visible size and
+/// depth.
 #[derive(Debug)]
 struct StoredFrame<T: Sample> {
     picture: Picture<T>,
@@ -106,6 +108,8 @@ pub(super) struct Core<T: Pixel> {
     /// The stream's depth: that of the last key or intra-only frame (8 in
     /// the `u8` instance).
     depth: BitDepth,
+    /// The stream's chroma format, also of the last key or intra-only frame.
+    format: ChromaFormat,
     contexts: Box<[FrameContext; FRAME_CONTEXTS]>,
     loop_filter: LoopFilter,
     segmentation: Segmentation,
@@ -152,6 +156,7 @@ impl<T: Pixel> Default for Core<T> {
         Self {
             slots: Default::default(),
             depth: BitDepth::EIGHT,
+            format: ChromaFormat::Yuv420,
             contexts: Box::new(std::array::from_fn(|_| FrameContext::default())),
             loop_filter: LoopFilter::default(),
             segmentation: Segmentation::default(),
@@ -644,8 +649,8 @@ impl<T: Pixel> Core<T> {
             .iter()
             .position(|&sz| sz == (width, height))
             .map_or(spatial_id, |i| i as u8);
-        if let Some(depth) = header.bit_depth {
-            self.depth = depth;
+        if let Some(color) = header.color {
+            (self.depth, self.format) = (color.depth, color.format);
         }
         let stored = Arc::new(StoredFrame {
             picture: recon,
@@ -719,16 +724,23 @@ impl<T: Pixel> Core<T> {
         self.scratch.take().unwrap_or_else(BlockScratch::new)
     }
 
-    /// The depth `header`'s frame decodes at: the one it signals, else the
-    /// stream's.
-    fn frame_depth(&self, header: &FrameHeader) -> Result<BitDepth> {
-        if header.bit_depth.is_some_and(|depth| !Self::holds(depth)) {
+    /// The depth and chroma format `header`'s frame decodes at: those it
+    /// signals, else the stream's.
+    fn frame_color(&self, header: &FrameHeader) -> Result<ColorConfig> {
+        if header.color.is_some_and(|color| !Self::holds(color.depth)) {
             // The public decoder switches instances before such a frame.
             return Err(DecodeError::Unsupported(
                 "VP9 bit depth of another decoder instance",
             ));
         }
-        Ok(header.bit_depth.unwrap_or(self.depth).of::<T>())
+        let color = header.color.unwrap_or(ColorConfig {
+            depth: self.depth,
+            format: self.format,
+        });
+        Ok(ColorConfig {
+            depth: color.depth.of::<T>(),
+            format: color.format,
+        })
     }
 
     /// Decode one frame; returns it if shown (or when `force_return` is set for
@@ -740,12 +752,12 @@ impl<T: Pixel> Core<T> {
         force_return: bool,
     ) -> Result<(Option<Arc<StoredFrame<T>>>, usize)> {
         let header = FrameHeader::parse(data, &self.header_state())?;
-        let depth = self.frame_depth(&header)?;
+        let color = self.frame_color(&header)?;
         if let Some(slot) = header.show_existing {
             let frame = self.slots[slot]
                 .as_ref()
                 .ok_or(DecodeError::MissingReference)?;
-            return Ok((Some(Arc::clone(frame)), SHOW_EXISTING_BYTES));
+            return Ok((Some(Arc::clone(frame)), show_existing_bytes(data[0])));
         }
         if !header.is_intra() && self.last.is_none() {
             // The key frame was lost.
@@ -782,7 +794,7 @@ impl<T: Pixel> Core<T> {
             && !self.intra_only
             && self.last.is_some_and(|l| l.show_frame && !l.key)
             && self.previous_mvs.len() == mi_units;
-        let references = frame_references(&self.slots, &header, depth)?;
+        let references = frame_references(&self.slots, &header, color)?;
         let inputs = FrameInputs {
             header: &header,
             compressed,
@@ -791,7 +803,8 @@ impl<T: Pixel> Core<T> {
             previous_mvs: use_previous_mvs.then_some(self.previous_mvs.as_slice()),
             last_segment_map,
             dsp: &self.dsp,
-            depth,
+            depth: color.depth,
+            format: color.format,
         };
         let mut frame = FrameDecoder::new(inputs, &mut self.pictures, scratch)?;
         frame.decode_tiles(&data[compressed_end..])?;
@@ -843,18 +856,21 @@ impl<T: Pixel> Core<T> {
     }
 }
 
-/// The visible part of a stored frame, its planes rounded up to even, in a
-/// picture from `pictures` (every sample is copied, so stale ones are fine).
+/// The visible part of a stored frame, its planes rounded up to even along
+/// subsampled axes, in a picture from `pictures` (every sample is copied,
+/// so stale ones are fine).
 fn visible<T: Sample>(
     frame: &StoredFrame<T>,
     pictures: &mut PictureRecycler<T>,
 ) -> Result<DecodedFrame<T>> {
+    let format = frame.picture.chroma_format();
+    let (x, y) = format.subsampling();
     let (width, height) = (
-        frame.width.next_multiple_of(2),
-        frame.height.next_multiple_of(2),
+        frame.width.next_multiple_of(1 << x),
+        frame.height.next_multiple_of(1 << y),
     );
     let mut picture = pictures
-        .take(width, height, 0)
+        .take_with_format(width, height, format, 0)
         .map_err(|_| DecodeError::Unsupported("VP9 frame size"))?;
     for plane in PlaneIndex::ALL {
         let source = frame.picture.plane(plane).view();
@@ -878,16 +894,18 @@ fn visible<T: Sample>(
 fn frame_references<'a, T: Sample>(
     slots: &'a [Option<Arc<StoredFrame<T>>>; SLOTS],
     header: &FrameHeader,
-    depth: BitDepth,
+    color: ColorConfig,
 ) -> Result<[Option<Reference<'a, T>>; REFS_PER_FRAME]> {
     let mut references = [None; REFS_PER_FRAME];
     if !header.is_intra() {
         for (reference, &slot) in references.iter_mut().zip(&header.ref_slots) {
             let stored = slots[slot].as_ref().ok_or(DecodeError::MissingReference)?;
-            if stored.depth != depth {
+            if stored.depth != color.depth || stored.picture.chroma_format() != color.format {
                 // `vp9_setup_scale_factors_for_frame` callers reject a
                 // reference of another colour format.
-                return Err(DecodeError::Malformed("VP9 reference of another bit depth"));
+                return Err(DecodeError::Malformed(
+                    "VP9 reference of another bit depth or chroma format",
+                ));
             }
             *reference = Some(Reference::new(
                 &stored.picture,

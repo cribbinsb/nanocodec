@@ -8,11 +8,11 @@
 #
 # For every codec and setting: the stream must decode bit-exactly against
 # the encoder's reconstruction with every standard decoder (JM + ffmpeg,
-# HM + ffmpeg, aomdec + dav1d + ffmpeg, vpxdec + ffmpeg, avmdec + dav2d) and with our own
-# decoder; ffprobe must report the signalled colour description, and AV1
-# IVF packets must carry the input timestamps. AV2 runs the settings it
-# supports (no colour signalling or intra refresh yet), and so does VP9 (no
-# intra refresh; its colour_config has no primaries or transfer to probe, VP9 §7.2).
+# HM + ffmpeg, VVdeC + ffmpeg, aomdec + dav1d + ffmpeg, vpxdec + ffmpeg,
+# avmdec + dav2d) and with our own decoder; ffprobe must report the
+# signalled colour description, and AV1 IVF packets must carry the input
+# timestamps. VP9 and AV2 run the settings they support (no intra refresh,
+# which their decoders cannot recover by; no colour description cases).
 #
 # Usage: tools/ci/realuse_conformance.sh [codec ...]   (default: all).
 # Needs the pinned decoders from tools/anchors/build_anchors.sh and a release
@@ -66,11 +66,15 @@ SCENE_CASES=(
 
 # Intra refresh instead of periodic keys, at fixed QP and under rate
 # control (recovery itself is tested in each decoder's unit tests); period 7
-# puts range edges inside superblocks (HEVC splits nodes there).
+# puts range edges inside superblocks (HEVC splits nodes there). With fixed
+# temporal layers the sweep runs on the base layer; with a long-term
+# reference a recovery frame restarts it.
 REFRESH_CASES=(
   "--intra-refresh 4"
   "--intra-refresh 3 --bitrate 300"
   "--intra-refresh 7"
+  "--intra-refresh 8 --temporal-layers 3 --param layers.adaptive=0"
+  "--intra-refresh 6 --ltr-interval 4 --simulate-loss 9 --bitrate 300"
 )
 
 # Mid-stream reconfiguration: rate changes (target, peak, buffer) at given
@@ -105,10 +109,10 @@ L1T2="--temporal-layers 2 --param layers.adaptive=0"
 L1T3="--temporal-layers 3 --param layers.adaptive=0"
 LOSS_CASES=(
   "all|--simulate-loss $LOST --bitrate 300|Key"
-  "h264 hevc av1 vp9 av2|--ltr-interval 4 --simulate-loss $LOST --bitrate 300|Inter"
-  "h264 hevc av1 vp9 av2|$L1T2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
-  "h264 hevc av1 vp9 av2|--temporal-layers 2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
-  "h264 hevc av1 vp9 av2|$L1T3 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
+  "all|--ltr-interval 4 --simulate-loss $LOST --bitrate 300|Inter"
+  "all|$L1T2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
+  "all|--temporal-layers 2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
+  "all|$L1T3 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
   "all|$L1T2 --simulate-loss $LOST --bitrate 300|Inter"
 )
 
@@ -198,6 +202,10 @@ standard_decode() {
       "$ANCHORS/TAppDecoder" -b "$stream" -o "$WORK/hm.yuv" -d 8 >/dev/null
       ffmpeg -v error -y -xerror -err_detect explode -f hevc -i "$stream" -noautoscale -fps_mode passthrough -f rawvideo "$WORK/ffmpeg.yuv"
       echo hm ffmpeg ;;
+    vvc)
+      "$ANCHORS/vvdecapp" -v 0 -t 1 -b "$stream" -o "$WORK/vvdec.yuv"
+      ffmpeg -v error -y -xerror -err_detect explode -f vvc -c:v vvc -i "$stream" -noautoscale -fps_mode passthrough -f rawvideo "$WORK/ffmpeg.yuv"
+      echo vvdec ffmpeg ;;
     av1)
       "$ANCHORS/aomdec" --rawvideo --i420 -o "$WORK/aomdec.yuv" "$stream"
       "$ANCHORS/dav1d" -q -i "$stream" -o "$WORK/dav1d.yuv"
@@ -246,7 +254,10 @@ PY
 
 # Where the stream of codec $1 is written.
 stream_path() {
-  case $1 in h264) echo "$WORK/out.264" ;; hevc) echo "$WORK/out.hevc" ;; av1 | vp9 | av2) echo "$WORK/out.ivf" ;; esac
+  case $1 in
+    h264) echo "$WORK/out.264" ;; hevc) echo "$WORK/out.hevc" ;; vvc) echo "$WORK/out.266" ;;
+    av1 | vp9 | av2) echo "$WORK/out.ivf" ;;
+  esac
 }
 
 # Encode with "$@" as extra flags, then check every decoder against the
@@ -255,7 +266,7 @@ encode_and_check() {
   local codec=$1
   shift
   local q stream
-  case $codec in h264) q=30 ;; hevc) q=32 ;; av1 | vp9) q=120 ;; av2) q=140 ;; esac
+  case $codec in h264) q=30 ;; hevc | vvc) q=32 ;; av1 | vp9) q=120 ;; av2) q=140 ;; esac
   stream=$(stream_path "$codec")
   "$NANOCODEC" encode --codec "$codec" --input "${SRC:-$WORK/src.yuv}" --width "$W" --height "$H" \
     --fps 30 --qp "$q" --frames "$FRAMES" --intra-period "$PERIOD" "$@" \
@@ -271,13 +282,14 @@ encode_and_check() {
 }
 
 CODECS=("$@")
-((${#CODECS[@]})) || CODECS=(h264 hevc av1 vp9 av2)
+((${#CODECS[@]})) || CODECS=(h264 hevc vvc av1 vp9 av2)
 
 failures=0
 for codec in "${CODECS[@]}"; do
   stream=$(stream_path "$codec")
-  # AV2 has no colour signalling or intra refresh yet; VP9 no intra refresh, and
-  # its colour_config (VP9 §7.2) carries no primaries or transfer for ffprobe.
+  # AV2 has no colour signalling yet, and VP9's color_config codes the
+  # matrix and range only (no primaries or transfer for ffprobe to
+  # report); neither recovers by intra refresh.
   colour_cases=("${COLOUR_CASES[@]}") refresh_cases=("${REFRESH_CASES[@]}")
   [[ $codec == av2 || $codec == vp9 ]] && colour_cases=() refresh_cases=()
   for entry in "${colour_cases[@]}"; do

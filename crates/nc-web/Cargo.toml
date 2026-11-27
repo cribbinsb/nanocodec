@@ -18,6 +18,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 nc-av2.workspace = true
 nc-common.workspace = true
+nc-rtp.workspace = true
 nc-dsp.workspace = true
 nc-vp9.workspace = true
 nc-encoder.workspace = true

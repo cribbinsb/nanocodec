@@ -2,6 +2,7 @@
 //! The UI transfers captured frames (YUV planes, or RGBA) to workers, which
 //! convert them per view (`source`); compressed bytes alone cross the
 //! encoder/decoder boundary. No reconstruction-buffer shortcut is used.
+//! [`RtpReceiver`] turns received RTP packets into the decoders' units.
 
 #![forbid(unsafe_code)]
 
@@ -9,10 +10,12 @@
 mod error_map;
 mod options;
 mod pixels;
+mod rtp;
 mod source;
 #[cfg(test)]
 mod vvc_corpus_tests;
 
+pub use rtp::RtpReceiver;
 pub use source::SourceFrame;
 
 use nc_common::decode::DecodeError;
@@ -20,8 +23,8 @@ use nc_common::outcome::{FrameOutcome, ReceivedFrames};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::{self, StreamStats};
 use nc_common::{
-    BitDepths, ColourDescription, ColourInfo, Picture, PlaneIndex, RawFrame, ShownFrame,
-    ShownPicture,
+    BitDepths, ChromaFormat, ColourDescription, ColourInfo, Picture, PlaneIndex, RawFrame,
+    ShownFrame, ShownPicture,
 };
 use nc_dsp::DisplayMatrix;
 use nc_dsp::display::display_scale_plane;
@@ -1015,7 +1018,9 @@ impl BrowserDecoder {
         Ok(true)
     }
 
-    /// The latest decoded frame's visible samples.
+    /// The latest decoded frame's visible samples. The page shows 4:2:0
+    /// pictures only: a frame in another chroma format (a foreign stream)
+    /// counts as none shown.
     fn shown(&self) -> Option<ShownPicture<'_>> {
         if self.display_is_deep {
             return self.deep_display.as_ref().map(ShownPicture::whole);
@@ -1028,6 +1033,7 @@ impl BrowserDecoder {
             DecoderKind::Av2(d) => d.shown(),
             DecoderKind::Vvc(d) => d.shown(),
         }
+        .filter(|shown| shown.chroma_format() == ChromaFormat::Yuv420)
     }
 
     /// Deep views have their own entry points: merely checking the depth of
@@ -1041,6 +1047,7 @@ impl BrowserDecoder {
             DecoderKind::Vvc(d) => d.shown_high(),
             DecoderKind::Av2(_) => None,
         }
+        .filter(|(shown, _)| shown.chroma_format() == ChromaFormat::Yuv420)
     }
 
     fn native_shown(&self) -> Option<ShownFrame<'_>> {

@@ -38,6 +38,8 @@ pub enum NcStatus {
     RateControl = -4,
     /// An internal error (a caught panic); the encoder must be destroyed.
     Internal = -5,
+    /// A malformed RTP packet, or a unit its payload format cannot carry.
+    Rtp = -6,
 }
 
 impl From<SessionError> for NcStatus {
@@ -253,13 +255,13 @@ pub struct NcDecoder(Receiver);
 /// `nc_encoder`: opaque to C.
 #[derive(Debug)]
 pub struct NcEncoder {
-    session: Session,
+    pub(crate) session: Session,
     layers: Vec<NcLayerFrame>,
     references: Vec<u64>,
 }
 
 /// Run `body`, turning a panic into [`NcStatus::Internal`].
-fn guarded(body: impl FnOnce() -> NcStatus) -> NcStatus {
+pub(crate) fn guarded(body: impl FnOnce() -> NcStatus) -> NcStatus {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(NcStatus::Internal)
 }
 
@@ -964,7 +966,7 @@ pub unsafe extern "C" fn nc_encoder_set_frame_rate(
     })
 }
 
-fn codec_from(code: u32) -> Option<Codec> {
+pub(crate) fn codec_from(code: u32) -> Option<Codec> {
     match code {
         NC_CODEC_H264 => Some(Codec::H264),
         NC_CODEC_HEVC => Some(Codec::Hevc),

@@ -3,7 +3,10 @@
  * synthetic picture at 300 kbps, decode every packet with our decoder, and
  * report the decoded pictures' mean luma PSNR against the source.
  *
- *   roundtrip [h264|hevc|av1|vp9]      (default h264)
+ *   roundtrip [h264|hevc|av1|vp9] [rtp]      (default h264)
+ *
+ * With `rtp`, every packet travels as RTP packets (nc_rtp_sender) through
+ * a receiver (nc_rtp_receiver) before it is decoded.
  *
  * Exits non-zero if a call fails or a packet does not decode. The project
  * site's C API page shows this file; tools/ci/capi_check.sh builds and runs it.
@@ -55,6 +58,17 @@ int main(int argc, char **argv) {
     if (nc_encoder_create(&config, NULL, 0, &encoder) != NC_OK) return 1;
     if (nc_decoder_create(codec, &decoder) != NC_OK) return 1;
 
+    int over_rtp = argc > 2 && strcmp(argv[2], "rtp") == 0;
+    nc_rtp_sender *sender = NULL;
+    nc_rtp_receiver *receiver = NULL;
+    if (over_rtp) {
+        /* AV1 carries the Dependency Descriptor as header extension 1. */
+        uint8_t descriptor_id = codec == NC_CODEC_AV1 ? 1 : 0;
+        nc_rtp_sender_config rtp = {codec, 96, descriptor_id, 0x1234u, 1200};
+        if (nc_rtp_sender_create(&rtp, &sender) != NC_OK) return 1;
+        if (nc_rtp_receiver_create(codec, descriptor_id, 0, &receiver) != NC_OK) return 1;
+    }
+
     static uint8_t y[WIDTH * HEIGHT], u[WIDTH * HEIGHT / 4], v[WIDTH * HEIGHT / 4];
     nc_frame frame = {0};
     frame.format = NC_FORMAT_I420;
@@ -73,10 +87,29 @@ int main(int argc, char **argv) {
         if (packet.size == 0) continue; /* dropped or held: nothing to send */
         bytes += packet.size;
 
+        const uint8_t *unit = packet.data;
+        size_t unit_size = packet.size;
+        if (over_rtp) {
+            /* Sender: RTP packets of at most 1200 bytes; receiver: the unit back. */
+            size_t count = 0;
+            if (nc_rtp_sender_packetize(sender, encoder, &count) != NC_OK) return 1;
+            for (size_t k = 0; k < count; k++) {
+                const uint8_t *datagram;
+                size_t datagram_size;
+                if (nc_rtp_sender_packet(sender, k, &datagram, &datagram_size) != NC_OK) return 1;
+                if (nc_rtp_receiver_push(receiver, datagram, datagram_size) != NC_OK) return 1;
+            }
+            /* This loop hands over every packet of the frame at once, so it
+             * releases the frame now; a network receiver pops whenever a
+             * unit is ready instead. */
+            if (nc_rtp_receiver_flush(receiver) != NC_OK) return 1;
+            if (nc_rtp_receiver_pop(receiver, &unit, &unit_size, NULL, NULL) != NC_OK) return 1;
+            if (unit_size == 0) return 1;
+        }
+
         /* The receiving side: one outcome per packet. */
         nc_decode_result result;
-        if (nc_decoder_decode(decoder, packet.data, packet.size, packet.index, NULL, 0, &result) !=
-            NC_OK)
+        if (nc_decoder_decode(decoder, unit, unit_size, packet.index, NULL, 0, &result) != NC_OK)
             return 1;
         if (result.outcome != NC_DECODED) {
             fprintf(stderr, "frame %d frozen (outcome %u)\n", i, result.outcome);
@@ -88,6 +121,8 @@ int main(int argc, char **argv) {
         decoded++;
         nc_encoder_acknowledge(encoder, packet.index); /* receiver feedback */
     }
+    nc_rtp_receiver_destroy(receiver);
+    nc_rtp_sender_destroy(sender);
     nc_decoder_destroy(decoder);
     nc_encoder_destroy(encoder);
     printf("%d of %d frames decoded, %zu bytes, mean luma PSNR %.1f dB\n", decoded, FRAMES, bytes,

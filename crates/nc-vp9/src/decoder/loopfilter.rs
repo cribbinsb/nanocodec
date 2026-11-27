@@ -2,7 +2,7 @@
 //! per-segment levels, reference/mode deltas, rectangular and sub-8x8
 //! blocks (VP9 §8.8). The edges are libvpx's per-superblock bit masks
 //! (`vp9_loopfilter.c` `vp9_build_mask`, `vp9_adjust_mask`,
-//! `vp9_filter_block_plane_ss00` / `_ss11`; BSD-3-Clause, see
+//! `vp9_filter_block_plane_ss00` / `_ss11` / `_non420`; BSD-3-Clause, see
 //! `THIRD_PARTY.md`): each block ORs its edges into its superblock's masks
 //! as it is stored, and the filter walks only the set bits. Runs of units
 //! of one edge width and level along a line are one kernel call each; the
@@ -15,13 +15,19 @@
 //! edges, 8-wide on 8x8 edges and every 32-sample boundary, 4-wide
 //! otherwise, plus the internal edge of 4x4 transforms. Skipped inter
 //! blocks filter only their outer edges; a block of level 0 filters none.
+//!
+//! Chroma follows libvpx's three paths by chroma format: 4:2:0 has masks
+//! of its own built with the luma ones, 4:4:4 filters each chroma plane
+//! with the luma masks, and 4:2:2 and 4:4:0 build their masks per
+//! superblock from the blocks' modes when the row is filtered
+//! ([`subsampled_masks`]).
 
-use nc_common::{Picture, PlaneViewMut};
+use nc_common::{ChromaFormat, Picture, PlaneViewMut};
 use nc_dsp::{DepthKernels, Pixel, Vp9FilterLimits as Limits, Vp9FilterWidth as Width};
 
 use super::block::{BlockInfo, BlockSize, INTRA_FRAME, PredMode};
 use super::fill::fill_run;
-use super::frame::SB_MI;
+use super::frame::{BlockGrid, SB_MI};
 use super::header::{LoopFilter, MAX_LOOP_FILTER, SegFeature, Segmentation};
 use crate::segmentation::MAX_SEGMENTS;
 use crate::transform::TxSize;
@@ -69,7 +75,7 @@ impl Levels {
     }
 
     /// `get_filter_level` (`mode_lf_lut`: ZEROMV and intra modes are class 0).
-    fn of(&self, info: &BlockInfo) -> u8 {
+    pub(super) fn of(&self, info: &BlockInfo) -> u8 {
         let class = usize::from(info.ref_frame[0] > INTRA_FRAME && info.mode != PredMode::ZeroMv);
         self.0[usize::from(info.segment_id)][info.ref_frame[0] as usize][class]
     }
@@ -191,9 +197,10 @@ fn builds_chroma(row: usize, col: usize) -> bool {
 
 /// The masks of one direction of one plane, ready to filter: per unit the
 /// edge width (16, 8 or 4 wide), the internal 4x4 edge, and whether it has
-/// the level of the unit before it along its line. `N` units per side, bit
-/// `index * N + position` where `index` is the line of edges (a column for
-/// vertical edges, a row for horizontal ones).
+/// the level of the unit before it along its line. Bit `index * N +
+/// position` where `index` is the line of edges (a column for vertical
+/// edges, a row for horizontal ones) and `N` the units along a line.
+#[derive(Default)]
 struct EdgeMasks {
     sixteen: u64,
     eight: u64,
@@ -281,7 +288,7 @@ impl SuperblockMask {
             fill_run(&mut self.levels[start..start + w.min(SB_MI - col)], level);
         }
         let tx = block.tx_size as usize;
-        let uv_tx = block.size.uv_tx(block.tx_size) as usize;
+        let uv_tx = block.size.uv_tx(block.tx_size, (1, 1)) as usize;
         let shift = row * SB_MI + col;
         let shift_uv = (row >> 1) * (SB_MI / 2) + (col >> 1);
         let chroma = builds_chroma(row, col);
@@ -516,7 +523,7 @@ impl Deblocker {
         &self,
         kernels: DepthKernels<'_>,
         recon: &mut Picture<T>,
-        masks: &Masks,
+        (masks, blocks, levels): (&Masks, &BlockGrid<'_>, &Levels),
         mi_row: usize,
     ) {
         if self.limits.is_empty() {
@@ -525,6 +532,7 @@ impl Deblocker {
         let frame = (masks.mi_rows, masks.mi_cols);
         let sb_row = mi_row / SB_MI;
         let row_masks = &masks.cells[sb_row * masks.sb_cols..][..masks.sb_cols];
+        let format = recon.chroma_format();
         let [y, u, v] = recon.planes_mut();
         let (mut y, mut u, mut v) = (y.view_mut(), u.view_mut(), v.view_mut());
         // `mi_row + r == mi_rows - 1` for an even r: the chroma row of an odd
@@ -544,15 +552,158 @@ impl Deblocker {
                 levels: &mask.levels,
             };
             let [vertical, horizontal] = mask.luma(top);
-            ctx.plane::<T, true, 0>(&mut y, &vertical);
-            ctx.plane::<T, false, 0>(&mut y, &horizontal);
-            let [vertical, horizontal] = mask.chroma(top, last_chroma_row);
-            for plane in [&mut u, &mut v] {
-                ctx.plane::<T, true, 1>(plane, &vertical);
-                ctx.plane::<T, false, 1>(plane, &horizontal);
+            ctx.plane::<T, true, 0, 0>(&mut y, &vertical);
+            ctx.plane::<T, false, 0, 0>(&mut y, &horizontal);
+            let chroma = [&mut u, &mut v];
+            match format {
+                ChromaFormat::Yuv420 => {
+                    let [vertical, horizontal] = mask.chroma(top, last_chroma_row);
+                    for plane in chroma {
+                        ctx.plane::<T, true, 1, 1>(plane, &vertical);
+                        ctx.plane::<T, false, 1, 1>(plane, &horizontal);
+                    }
+                }
+                ChromaFormat::Yuv444 => {
+                    for plane in chroma {
+                        ctx.plane::<T, true, 0, 0>(plane, &vertical);
+                        ctx.plane::<T, false, 0, 0>(plane, &horizontal);
+                    }
+                }
+                ChromaFormat::Yuv422 => {
+                    let [vertical, horizontal] =
+                        subsampled_masks(blocks, levels, (mi_row, mi_col), frame, (1, 0));
+                    for plane in chroma {
+                        ctx.plane::<T, true, 1, 0>(plane, &vertical);
+                        ctx.plane::<T, false, 1, 0>(plane, &horizontal);
+                    }
+                }
+                ChromaFormat::Yuv440 => {
+                    let [vertical, horizontal] =
+                        subsampled_masks(blocks, levels, (mi_row, mi_col), frame, (0, 1));
+                    for plane in chroma {
+                        ctx.plane::<T, true, 0, 1>(plane, &vertical);
+                        ctx.plane::<T, false, 0, 1>(plane, &horizontal);
+                    }
+                }
             }
         }
     }
+}
+
+/// The chroma edges of the superblock at unit (`mi_row`, `mi_col`) in a
+/// plane subsampled along one axis (`(x, y)`, 4:2:2 or 4:4:0), from the
+/// modes of its blocks (libvpx `vp9_filter_block_plane_non420`): per chroma
+/// unit the edge width its block's chroma transform gives, 8 wide on
+/// 32-sample boundaries and on the frame's last column or row of units
+/// when that is subsampled, internal 4x4 edges, and no outer edges on the
+/// frame's left column or top row. Vertical masks are indexed by column,
+/// horizontal ones by row, as [`FilterContext::plane`] reads them.
+fn subsampled_masks(
+    blocks: &BlockGrid<'_>,
+    levels: &Levels,
+    (mi_row, mi_col): (usize, usize),
+    (mi_rows, mi_cols): (usize, usize),
+    (x, y): (usize, usize),
+) -> [EdgeMasks; 2] {
+    let (cols, rows) = (SB_MI >> x, SB_MI >> y);
+    let vertical_bit = |row: usize, col: usize| 1u64 << (col * rows + row);
+    let horizontal_bit = |row: usize, col: usize| 1u64 << (row * cols + col);
+    let mut vertical = EdgeMasks::default();
+    let mut horizontal = EdgeMasks::default();
+    let mut unit_levels = [[0u8; SB_MI]; SB_MI];
+    for r in (0..SB_MI).step_by(1 << y) {
+        if mi_row + r >= mi_rows {
+            break;
+        }
+        for c in (0..SB_MI).step_by(1 << x) {
+            if mi_col + c >= mi_cols {
+                break;
+            }
+            let block = blocks.at(mi_row + r, mi_col + c);
+            let level = levels.of(block);
+            let (row, col) = (r >> y, c >> x);
+            unit_levels[row][col] = level;
+            if level == 0 {
+                continue;
+            }
+            let skip = block.skip && block.is_inter();
+            // A unit on its block's left / top edge filters it even when
+            // the block is skipped.
+            let left_edge = block.size.width_4x4() == 1 || c & (block.size.width_mi() - 1) == 0;
+            let top_edge = block.size.height_4x4() == 1 || r & (block.size.height_mi() - 1) == 0;
+            let (skip_c, skip_r) = (skip && !left_edge, skip && !top_edge);
+            let last_col = x == 1 && mi_col + c == mi_cols - 1;
+            let last_row = y == 1 && mi_row + r == mi_rows - 1;
+            let tx = block.size.uv_tx(block.tx_size, (x, y));
+            let (v, h) = (vertical_bit(row, col), horizontal_bit(row, col));
+            if tx >= TxSize::Tx16 {
+                // The units at the transform's left / top edges.
+                let period = if tx == TxSize::Tx32 { 4 } else { 2 };
+                if !skip_c && col.is_multiple_of(period) {
+                    *if last_col {
+                        &mut vertical.eight
+                    } else {
+                        &mut vertical.sixteen
+                    } |= v;
+                }
+                if !skip_r && row.is_multiple_of(period) {
+                    *if last_row {
+                        &mut horizontal.eight
+                    } else {
+                        &mut horizontal.sixteen
+                    } |= h;
+                }
+            } else {
+                // 8 wide on 8x8 transforms and on 32-sample boundaries.
+                if !skip_c {
+                    *if tx == TxSize::Tx8 || col.is_multiple_of(BOUNDARY_UNITS) {
+                        &mut vertical.eight
+                    } else {
+                        &mut vertical.four
+                    } |= v;
+                }
+                if !skip_r {
+                    *if tx == TxSize::Tx8 || row.is_multiple_of(BOUNDARY_UNITS) {
+                        &mut horizontal.eight
+                    } else {
+                        &mut horizontal.four
+                    } |= h;
+                }
+                if !skip && tx == TxSize::Tx4 && !last_col {
+                    vertical.internal |= v;
+                    // The frame's last subsampled row has no internal
+                    // horizontal edge.
+                    if !last_row {
+                        horizontal.internal |= h;
+                    }
+                }
+            }
+        }
+    }
+    if mi_col == 0 {
+        let first = (1u64 << rows) - 1;
+        vertical.sixteen &= !first;
+        vertical.eight &= !first;
+        vertical.four &= !first;
+    }
+    if mi_row == 0 {
+        let first = (1u64 << cols) - 1;
+        horizontal.sixteen &= !first;
+        horizontal.eight &= !first;
+        horizontal.four &= !first;
+    }
+    for row in 0..rows {
+        for col in 0..cols {
+            let level = unit_levels[row][col];
+            if row > 0 && level == unit_levels[row - 1][col] {
+                vertical.same_level |= vertical_bit(row, col);
+            }
+            if col > 0 && level == unit_levels[row][col - 1] {
+                horizontal.same_level |= horizontal_bit(row, col);
+            }
+        }
+    }
+    [vertical, horizontal]
 }
 
 /// What filtering one superblock needs besides its masks.
@@ -567,21 +718,27 @@ struct FilterContext<'a> {
 
 impl FilterContext<'_> {
     /// Filter the vertical (`VERTICAL`) or horizontal edges of one plane
-    /// (subsampled by `SS`) of the superblock: lines of edges in order
+    /// (subsampled by `SX` across and `SY` down) of the superblock: lines
+    /// of edges in order
     /// (columns left to right, or rows top to bottom). Within a line, units
     /// cover different lines across the edge, so each edge class can run
     /// as a whole: runs of units of one width and level are one kernel call
     /// each, read from the masks (`same_level`) rather than unit by unit, and
     /// the internal 4x4 edges follow their units' outer edges, as in
     /// libvpx's per-row passes.
-    fn plane<T: Pixel, const VERTICAL: bool, const SS: usize>(
+    fn plane<T: Pixel, const VERTICAL: bool, const SX: usize, const SY: usize>(
         &self,
         view: &mut PlaneViewMut<'_, T>,
         edges: &EdgeMasks,
     ) {
-        let side = SB_MI >> SS;
+        // Lines of edges, and units along each.
+        let (lines, side) = if VERTICAL {
+            (SB_MI >> SX, SB_MI >> SY)
+        } else {
+            (SB_MI >> SY, SB_MI >> SX)
+        };
         let line_mask = (1u64 << side) - 1;
-        let (x0, y0) = (self.origin.0 >> SS, self.origin.1 >> SS);
+        let (x0, y0) = (self.origin.0 >> SX, self.origin.1 >> SY);
         let classes = [
             (edges.sixteen, Width::Sixteen, 0),
             (edges.eight, Width::Eight, 0),
@@ -589,7 +746,7 @@ impl FilterContext<'_> {
             (edges.internal, Width::Four, INTERNAL_OFFSET),
         ];
         let any = edges.any();
-        for index in 0..side {
+        for index in 0..lines {
             let shift = index * side;
             if (any >> shift) & line_mask == 0 {
                 continue;
@@ -607,7 +764,7 @@ impl FilterContext<'_> {
                     } else {
                         (index, start)
                     };
-                    let level = self.levels[(row << SS) * SB_MI + (col << SS)];
+                    let level = self.levels[(row << SY) * SB_MI + (col << SX)];
                     let along = start * MI_SIZE;
                     let across = index * MI_SIZE + inset;
                     let (x, y) = if VERTICAL {
@@ -642,6 +799,9 @@ impl FilterContext<'_> {
         );
     }
 }
+
+/// 8x8 units between 32-sample boundaries, where 4-wide edges filter 8 wide.
+const BOUNDARY_UNITS: usize = 4;
 
 /// Internal 4x4 edges lie 4 samples into their unit.
 const INTERNAL_OFFSET: usize = 4;

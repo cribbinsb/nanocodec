@@ -6,15 +6,17 @@
 //! The decoder keeps that reconstruction alive until its next decode, and
 //! the borrow checker keeps callers from holding the views past it.
 
-use crate::picture::{Picture, PlaneIndex};
+use crate::picture::{ChromaFormat, Picture, PlaneIndex};
 use crate::sample::Sample;
 use crate::view::PlaneView;
 
-/// The visible samples of one decoded 4:2:0 picture: three plane views
-/// (chroma of half the luma size, rounded up), borrowed from the decoder (or picture) that owns them.
+/// The visible samples of one decoded picture: three plane views (chroma
+/// of the picture's chroma format, rounded up), borrowed from the decoder
+/// (or picture) that owns them.
 #[derive(Debug, Clone, Copy)]
 pub struct ShownPicture<'a, T: Sample = u8> {
     planes: [PlaneView<'a, T>; 3],
+    format: ChromaFormat,
 }
 
 impl<'a, T: Sample> ShownPicture<'a, T> {
@@ -23,30 +25,33 @@ impl<'a, T: Sample> ShownPicture<'a, T> {
     pub fn whole(picture: &'a Picture<T>) -> Self {
         Self {
             planes: PlaneIndex::ALL.map(|plane| picture.plane(plane).view()),
+            format: picture.chroma_format(),
         }
     }
 
     /// The `width` x `height` luma window of `picture` at (`left`, `top`),
-    /// with the matching chroma windows (an odd width or height takes the
-    /// chroma column or row its last luma one shares, as VP9's odd frame
-    /// sizes do); `None` if the origin is odd, the window is empty or it
-    /// does not fit.
+    /// with the matching chroma windows of its chroma format (an odd width
+    /// or height along a subsampled axis takes the chroma column or row its
+    /// last luma one shares, as VP9's odd frame sizes do); `None` if the
+    /// origin is not on a chroma sample, the window is empty or it does
+    /// not fit.
     #[must_use]
     pub fn window(
         picture: &'a Picture<T>,
         (left, top): (usize, usize),
         (width, height): (usize, usize),
     ) -> Option<Self> {
-        if !(left.is_multiple_of(2) && top.is_multiple_of(2)) || width == 0 || height == 0 {
+        let format = picture.chroma_format();
+        let (x, y) = format.subsampling();
+        if !left.is_multiple_of(1 << x) || !top.is_multiple_of(1 << y) || width == 0 || height == 0
+        {
             return None;
         }
         let window = |plane: PlaneIndex| {
             let view = picture.plane(plane).view();
-            if plane == PlaneIndex::Y {
-                view.sub_view(left, top, width, height)
-            } else {
-                view.sub_view(left / 2, top / 2, width.div_ceil(2), height.div_ceil(2))
-            }
+            let (sx, sy) = format.plane_subsampling(plane);
+            let (w, h) = format.plane_size(plane, (width, height));
+            view.sub_view(left >> sx, top >> sy, w, h)
         };
         Some(Self {
             planes: [
@@ -54,6 +59,7 @@ impl<'a, T: Sample> ShownPicture<'a, T> {
                 window(PlaneIndex::U)?,
                 window(PlaneIndex::V)?,
             ],
+            format,
         })
     }
 
@@ -69,27 +75,33 @@ impl<'a, T: Sample> ShownPicture<'a, T> {
         self.planes[0].height()
     }
 
+    /// The chroma format.
+    #[must_use]
+    pub fn chroma_format(&self) -> ChromaFormat {
+        self.format
+    }
+
     /// One plane's visible samples.
     #[must_use]
     pub fn plane(&self, index: PlaneIndex) -> PlaneView<'a, T> {
         self.planes[index as usize]
     }
 
-    /// Samples of one tightly packed I420 frame of this size.
+    /// Samples of one tightly packed frame of this size (I420 for 4:2:0).
     #[must_use]
     pub fn packed_frame_len(&self) -> usize {
         self.planes.iter().map(|p| p.width() * p.height()).sum()
     }
 
-    /// The samples copied into `target` (of this size), e.g. for a caller
-    /// that keeps the picture past the decoder's next decode.
+    /// The samples copied into `target` (of this size and format), e.g. for
+    /// a caller that keeps the picture past the decoder's next decode.
     ///
     /// # Panics
-    /// If `target`'s size differs.
+    /// If `target`'s size or format differs.
     pub fn copy_to(&self, target: &mut Picture<T>) {
         assert_eq!(
-            (target.width(), target.height()),
-            (self.width(), self.height()),
+            (target.width(), target.height(), target.chroma_format()),
+            (self.width(), self.height(), self.format),
             "copy_to: picture sizes differ"
         );
         for plane in PlaneIndex::ALL {

@@ -98,7 +98,7 @@ unsafe fn filter<B: BatchBytes, const STRONG: bool>(data: &mut [u8], p: &Params)
     for (k, value) in values.iter_mut().enumerate() {
         *value = B::assemble([narrow[0][k], narrow[1][k], narrow[2][k], narrow[3][k]]);
     }
-    let Some([p2, p1, p0, q0, q1, q2]) = luma_filter::<B, STRONG>(p, values) else {
+    let Some([p2, p1, p0, q0, q1, q2]) = luma_filter::<B, STRONG, true>(p, values) else {
         return;
     };
     let outputs = [

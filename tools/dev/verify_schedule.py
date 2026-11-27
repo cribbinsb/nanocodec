@@ -64,9 +64,12 @@ NIGHTLY_HOUR_UTC = 1
 UNIT = "nanocodec-verify"
 NIGHTLY_UNIT = "nanocodec-verify-nightly"
 #: The clips ISA identity codes on x86 (preset_identity.py CLIPS) and the data the x86
-#: checks read beside the build box's conformance corpora and anchors.
+#: checks read beside the build box's anchors and other corpora. The H.264 corpus is
+#: synced (4 GB once, then only changes): the box's copy was empty on 2026-11-27, which
+#: the WASM suite caught.
 IDENTITY_CLIPS = ("crowd_mot17_09", "static_otw_homes390", "pan_bdd_00c12bd0")
-X86_SYNC = ("work/av2-foreign", "fuzz/round3-2026-11-23", "fuzz/regressions")
+X86_SYNC = ("work/av2-foreign", "fuzz/round3-2026-11-23", "fuzz/regressions",
+            "conformance/h264/streams", "conformance/h264/supplementary")
 #: land.sh --verify's line when a part is already running elsewhere (its heads are
 #: covered by that run, so nothing is recorded here).
 ALREADY_RUNNING = "verifier is already running"

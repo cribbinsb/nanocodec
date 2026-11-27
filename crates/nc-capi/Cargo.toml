@@ -28,6 +28,7 @@ panic-probe = []
 [dependencies]
 nc-common.workspace = true
 nc-encoder.workspace = true
+nc-rtp.workspace = true
 nc-h264.workspace = true
 nc-hevc.workspace = true
 nc-av1.workspace = true

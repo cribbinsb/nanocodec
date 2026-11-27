@@ -1,0 +1,5 @@
+# JM streams (tools/dev/h264_conformance_jm.sh) our decoder must decode MD5-exact.
+# Add each stream as it passes; the whole set is the goal.
+jm_base_aso
+jm_base_fmo_dispersed_aso
+jm_base_redundant

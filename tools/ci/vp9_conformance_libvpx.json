@@ -9037,6 +9037,96 @@
    "cross_check_agrees": false
   },
   {
+   "name": "vp91-2-04-yuv422",
+   "bitstream": "vp91-2-04-yuv422/vp91-2-04-yuv422.ivf",
+   "profile": "Profile 1",
+   "chroma_format": "4:2:2",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 28800,
+   "md5": "405879f80ecad20ccb1ce2786a279d3f",
+   "frames": 10,
+   "frame_md5": [
+    "b81b8a8444ac6ce4a4807c37e0a44c8b",
+    "344458b82d35ea9944dc841643fc25c2",
+    "376a4bb3944f052191963740b980eb26",
+    "2fecb02c842bd7d588415904f2d3a82d",
+    "0fda2f1dabba5c179599190f179b9782",
+    "a88ac885ee59e3a3a01fa483cdd40274",
+    "e76b488ffa70a05457fc046e7b999c56",
+    "74ae5e52162f5bbc95258d44a2dd647c",
+    "0c017e2b12e5192c8d598941d9c93306",
+    "ca3941ee43b7033cb48f8498af127d53"
+   ],
+   "sha256": "927c6e8e8016af957dde3818f24c3384020ba41691965d1f0a2e837af00d0c51",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp91-2-04-yuv440",
+   "bitstream": "vp91-2-04-yuv440/vp91-2-04-yuv440.ivf",
+   "profile": "Profile 1",
+   "chroma_format": "4:4:0",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 28800,
+   "md5": "344f808e7ab5b575bf8d7530cbfaafb0",
+   "frames": 10,
+   "frame_md5": [
+    "61157ad4fb02a254de8f34ae7b8915dc",
+    "9431337382bf90d40aa417e297ac05da",
+    "56b739049cc9e97a1d82018bba3db0ee",
+    "75138a9b6bb905b2f79a1ebb959ddfea",
+    "141b2fc9625fad86577838d84a276ef8",
+    "b364668c44a237d4e532e086a55401a9",
+    "a4ca6014d5194e4c921a4cb4289eb315",
+    "cfcacb3d5086d3861f4712a3c87a6b6c",
+    "228d3fd3d849d021f3690cc538edb0a3",
+    "97ecf281eb1130723d70e3c8803fa814"
+   ],
+   "sha256": "c6475342b2d70cbd7c10ddcdbfac4015ea8107febdde7f1c94a10b5251ddf5f8",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp91-2-04-yuv444",
+   "bitstream": "vp91-2-04-yuv444/vp91-2-04-yuv444.ivf",
+   "profile": "Profile 1",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    8,
+    8
+   ],
+   "width": 352,
+   "height": 288,
+   "frame_bytes": 304128,
+   "md5": "bd36f9e7cd888fb94f21c9d194cea7ff",
+   "frames": 10,
+   "frame_md5": [
+    "859df7b3661783e337a16ee79f3c20bc",
+    "3b3ccf344cd5a478c4c1fa422497183d",
+    "3be1f565823cb88013a14a93a3cf9480",
+    "6e188a963deaf46c2d6e741b03c4240c",
+    "82ead184ae478ac821b1b4b72f28c9cd",
+    "59bb43badc76b39a228b1ad96b6339ca",
+    "2eaee790fc188e2251b92dd4ea90c42a",
+    "2a95f8727589e710dc1b95400916b72e",
+    "b7032f73544a7108fcdcaca2832ecc32",
+    "b7778c35b30bcc400b25ed0e5b7913e1"
+   ],
+   "sha256": "174b27809aebe3da142e80e8e3ae455c10f9803b47b36fed2f82659e49f74b40",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
    "name": "vp92-2-20-10bit-yuv420",
    "bitstream": "vp92-2-20-10bit-yuv420/vp92-2-20-10bit-yuv420.ivf",
    "profile": "Profile 2",
@@ -9093,6 +9183,206 @@
     "aae42063df910ed31c09eba5f73a195c"
    ],
    "sha256": "37ce39bd648895245c66e2f497dec6b22830f996f44c385395491a808824a74c",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp93-2-20-10bit-yuv422",
+   "bitstream": "vp93-2-20-10bit-yuv422/vp93-2-20-10bit-yuv422.ivf",
+   "profile": "Profile 3",
+   "chroma_format": "4:2:2",
+   "bit_depth": [
+    10,
+    10
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 57600,
+   "md5": "f5774d6dde2d211026e58e81147bb392",
+   "frames": 10,
+   "frame_md5": [
+    "18fed3eff623f0308561e5db0bc28691",
+    "3f22b2269cd53738e955c4b27ff6abce",
+    "d1a44bae5cf45c68c5ca86f9e1ffd6a0",
+    "6592a5b6f1a8a18930bf27195a836efc",
+    "f1dc8ba72916630aa8ff07f214bd1baf",
+    "195db6438c313e870ecfe9db3e3cbe83",
+    "ad1cca6689026c31c2350594b669b7e7",
+    "6cb437a604a714ea746b429cdd68c47f",
+    "cda524f9de8774cc161224c3b81033f5",
+    "a2ae05ae998b4158a32b96e01ed02241"
+   ],
+   "sha256": "31e44b8706ef45a802a769fff0df38c2c17f022f50336de887a749b9eb95fa6a",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp93-2-20-10bit-yuv440",
+   "bitstream": "vp93-2-20-10bit-yuv440/vp93-2-20-10bit-yuv440.ivf",
+   "profile": "Profile 3",
+   "chroma_format": "4:4:0",
+   "bit_depth": [
+    10,
+    10
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 57600,
+   "md5": "ddf822833174a2d7ec8d585e328a67d3",
+   "frames": 20,
+   "frame_md5": [
+    "504a347654ef41e568c484ab017f5387",
+    "6110f151a39144da5616227d44b81c21",
+    "a856b5e0675c59fb9329d087580c6c5b",
+    "d951b271bf38e7c9b9d215f7a87a079c",
+    "a9e6feb4142a111c74d46cdbac08f2e6",
+    "4802b599651e7aa35cd52d0dfbfaa4d3",
+    "1244f3b9da3341057566915e708c7afb",
+    "212a02d7ee8d56b6f2a4fd7ee6eb3c93",
+    "1872091be977628ff5435f9186f64a29",
+    "d5255599c33859ee96474a20929dc4bb",
+    "16d0056501cd1bfc630f6f99672504a0",
+    "7dcca62c4dc5d508f38376533648bce6",
+    "1e1617813af32cbf7be3df11d275339e",
+    "88b036fde717f72485b24e346f55f9dc",
+    "e689287b89b116ec71670ee479e15717",
+    "211aa3727dcde2d9dfe15d6cebda69e4",
+    "3037677f680cbdcac242da94717da3ff",
+    "0138ea9fd279a939df385ea0c97700ca",
+    "9da47cb99085c352f9e9a07639a9b3cb",
+    "d369f4c840ccb61ce3aaffc77b5f230e"
+   ],
+   "sha256": "33f1bb006b83fa50b3ea533e43af9ef852a6a9767be15202e85dcf09bb5d672a",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp93-2-20-10bit-yuv444",
+   "bitstream": "vp93-2-20-10bit-yuv444/vp93-2-20-10bit-yuv444.ivf",
+   "profile": "Profile 3",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    10,
+    10
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 86400,
+   "md5": "c05c5b755f485e180619599182d5b735",
+   "frames": 10,
+   "frame_md5": [
+    "06a4c4550dc31f75f842a4e65fc32398",
+    "f7feda15d5c2babc1f6438c72d4900e4",
+    "5aa9924c0a17c2209b72ba7ec9af6fdd",
+    "01597451aab5498ba89a7f632cd7d0cf",
+    "9a42ae17c2744c305895acd911066575",
+    "17c1d9cda113a3ce2fc7387e2adaa89b",
+    "6c6e303d282d8e043329eb6b29600cb4",
+    "97b7d47711222a91dd7ac121df01f922",
+    "69f305bc0a4a92422b5ebe05a3ac8b38",
+    "a559c738c428c2f895e94a31957eec6b"
+   ],
+   "sha256": "7eebe6189d60d6eee0dc0302cd21787d62061ecbc7efea6cf1188e93ca144929",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp93-2-20-12bit-yuv422",
+   "bitstream": "vp93-2-20-12bit-yuv422/vp93-2-20-12bit-yuv422.ivf",
+   "profile": "Profile 3",
+   "chroma_format": "4:2:2",
+   "bit_depth": [
+    12,
+    12
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 57600,
+   "md5": "868d373e8bca2f5cd8226abd03495d43",
+   "frames": 10,
+   "frame_md5": [
+    "442a6d932a163907303f1e08056b33b3",
+    "80b21954eb522f0140e2226a03062839",
+    "991251ca3f55879e3ed90d5816bf5056",
+    "33f1a1aa1a48fda4ef7dccf302c4e7bf",
+    "e9faf81b0664be622040910f29e3d522",
+    "fa9aba755df9f52aa551d942bba5e26f",
+    "ef58938b38ced2fecb8afdb9a6d8024b",
+    "ce43338326c024eb187abaeaa64a44b1",
+    "d487dab8c8b9f690f13569f3d1875a6d",
+    "b4ab8672067ffce5df2daa9a2c2496d2"
+   ],
+   "sha256": "0172100432dfb9a52e69fcf3668bac7e01ca7b0c606d1a7037734a06ab7f3195",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp93-2-20-12bit-yuv440",
+   "bitstream": "vp93-2-20-12bit-yuv440/vp93-2-20-12bit-yuv440.ivf",
+   "profile": "Profile 3",
+   "chroma_format": "4:4:0",
+   "bit_depth": [
+    12,
+    12
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 57600,
+   "md5": "9a69f7fac0fb7f3292378933fd13dfb0",
+   "frames": 20,
+   "frame_md5": [
+    "9c03fb4aa813522d9a44b3b309b85d19",
+    "73081beafa17bc23a170172e311c0f54",
+    "36a1eb7aec96b81d54119e26a5056f48",
+    "228ca739c96ceb5c63f593790e487a49",
+    "289e08c01574d23562ce8162b0ec553b",
+    "76ca62fa4b80bef534e3cb4e37d9f178",
+    "0d9d5c09c4a453b8b7e04d2904924e15",
+    "b659b38305c3afbbc84f5aab4c373592",
+    "3f5c87c678c2dc6ffc45ec875920e620",
+    "d758cb908aee57e05af8dd7132ce0973",
+    "5539bdf8f2cfc09580bd9371c3655989",
+    "0446cf34d7f1a081e7eef6050cbcb7d8",
+    "2a29f74bd76f8c2187a0f61ff6935744",
+    "fb4b0e71884069537e3e3e62fbe83877",
+    "57e19855e60825333fbbd9fdbad54ca0",
+    "2f111ed5be32c4cbff83efd5530893db",
+    "87afd9a47e6ee7a71cee99157dd89815",
+    "72992f2a91f9d91dca5c638d6a2f748c",
+    "ad92cad72adfe2ad43c3be5e3b74439f",
+    "d70f736810724ab968307daf4da1120c"
+   ],
+   "sha256": "7d08435e9ee7e1dc55692e7f18a76a9ba3ef23d5076a94f0da28e2d9e0430f59",
+   "shipped_md5_agrees": true,
+   "cross_check_agrees": true
+  },
+  {
+   "name": "vp93-2-20-12bit-yuv444",
+   "bitstream": "vp93-2-20-12bit-yuv444/vp93-2-20-12bit-yuv444.ivf",
+   "profile": "Profile 3",
+   "chroma_format": "4:4:4",
+   "bit_depth": [
+    12,
+    12
+   ],
+   "width": 160,
+   "height": 90,
+   "frame_bytes": 86400,
+   "md5": "fcbdf6d98d4c8d25c58a48026e45206e",
+   "frames": 10,
+   "frame_md5": [
+    "d9500a2c9e0b6b44935de019c3583194",
+    "58edf3e69b332a2b62ca78a8dc99ea68",
+    "ca8894e8496bf0eec64655972323feb2",
+    "3473bbb77d10631525a6e7240f6f0c68",
+    "1bc71b016a90d6a79882bd6b8af0cb23",
+    "ebfbb540587c20586d9ff33adee41f24",
+    "e8bd27ebb53f979232abbb9d18b15085",
+    "820f65d50b3c48ec600924c0bba90c40",
+    "d8d8588550bc9820eb3289c5684dd7a9",
+    "d8bd25842191e47ac1b342655e7015e6"
+   ],
+   "sha256": "9ccf8e95b220091475a3c477489d14f869404bdd0471ee3d0e7c50403380c8a0",
    "shipped_md5_agrees": true,
    "cross_check_agrees": true
   }

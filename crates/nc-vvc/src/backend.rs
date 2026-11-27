@@ -492,7 +492,7 @@ impl VvcParams {
             }),
             large_transforms: self.large_transforms(),
             // The backend sets them from the engine's parameters (`new`).
-            second_reference: false,
+            long_term_slot: false,
             poc_bits: headers::POC_BITS,
         }
     }
@@ -597,16 +597,21 @@ impl VvcParams {
 const VVC_LOOP_FILTER_REACH: usize = 16;
 
 /// The SPS tools `params` configure, and whether the reference picture
-/// lists hold a second reference: in flat streams only (`references.rs`):
-/// beside temporal layers the engine refuses `refs.second` and its plan
-/// steps aside, so nothing is listed for the long-term slot.
+/// lists hold the engine's long-term slot (`references.rs`): with a
+/// long-term reference (`ltr.interval`), and with the second reference in
+/// flat streams only: beside temporal layers the engine refuses
+/// `refs.second` and its plan steps aside, so nothing is listed for it.
+/// Either one reaching back up to `nc_encoder::MAX_REFERENCE_AGE` pictures
+/// widens the POC LSBs (`headers::LONG_POC_BITS`).
 fn sequence_tools(params: &VvcParams, config: &EncoderConfig) -> (bool, headers::Tools) {
-    let second_reference =
-        nc_encoder::uses_long_term_slot(&config.params) && config.temporal_layers == 1;
-    let tools = params
-        .tools()
-        .with_second_reference(second_reference, holds_second_reference(&config.params));
-    (second_reference, tools)
+    let long_term = nc_encoder::long_term_requested(config);
+    let long_term_slot = long_term
+        || (nc_encoder::uses_long_term_slot(&config.params) && config.temporal_layers == 1);
+    let tools = params.tools().with_long_term_slot(
+        long_term_slot,
+        long_term || holds_second_reference(&config.params),
+    );
+    (long_term_slot, tools)
 }
 
 impl CodecBackend for VvcBackend {
@@ -1073,7 +1078,7 @@ impl CodecBackend for VvcBackend {
             crate::coding_tree::Partitioning::of_mode(params.mtt.round() as u8, ctu_log2);
         let geometry = headers::Geometry::new(config.width, config.height, ctu_log2)
             .with_partitioning(partitioning);
-        let (second_reference, tools) = sequence_tools(&params, config);
+        let (long_term_slot, tools) = sequence_tools(&params, config);
         let trellis = crate::trellis::TrellisQuant::from_params(
             &nc_encoder::QuantParams::from_overrides(&config.params),
             params.trellis_round_up >= 0.5,
@@ -1149,7 +1154,7 @@ impl CodecBackend for VvcBackend {
             poc: 0,
             next_poc: 0,
             temporal_layers: config.temporal_layers,
-            references: References::new(config.temporal_layers, second_reference, tools.poc_bits),
+            references: References::new(config.temporal_layers, long_term_slot, tools.poc_bits),
             active_ref: PRIMARY_REF_IDX,
             lambda: 1.,
             dsp: Dsp::new(),
@@ -1455,6 +1460,11 @@ impl CodecBackend for VvcBackend {
     /// The last high-quality picture as a second entry of RPL0
     /// (`references.rs`) and `ref_idx_l0` 1 per CU (§7.3.11.7).
     fn supports_second_reference(&self) -> bool {
+        true
+    }
+    /// RPL0 keeps the long-term slot's picture listed on every picture and
+    /// a recovery picture lists it alone (`references.rs`).
+    fn supports_long_term_reference(&self) -> bool {
         true
     }
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
@@ -1871,8 +1881,9 @@ fn check_config(config: &EncoderConfig) -> Result<(), ConfigError> {
             max: headers::MAX_QP,
         });
     }
-    // Affine candidate lists (`affine_candidates`) know one reference only.
-    if nc_encoder::uses_long_term_slot(&config.params)
+    // Affine candidate lists (`affine_candidates`) know one reference only;
+    // a long-term reference is never active beside another one.
+    if nc_encoder::second_reference_enabled(&config.params)
         && VvcParams::from_overrides(&config.params).affine >= 0.5
     {
         return Err(ConfigError::SecondReference("not with vvc.affine yet"));
@@ -2389,9 +2400,15 @@ impl VvcBackend {
     /// (`ph_temporal_mvp_enabled_flag`). Not under intra refresh: after a
     /// loss the decoder's collocated motion differs from the encoder's, so
     /// a merge index would select a different vector and the clean region
-    /// would not recover (as HEVC's backend).
+    /// would not recover (as HEVC's backend). Nor on a loss-recovery
+    /// picture, whose collocated picture, the long-term slot's, keeps no
+    /// motion field (`commit_frame` stores the structure's slots' only).
     fn temporal_mvp(&self) -> bool {
-        self.tools.temporal_mvp && self.inter && self.refresh.is_none()
+        self.tools.temporal_mvp
+            && self.inter
+            && self.refresh.is_none()
+            && self.references.plan.reference.slot
+                < nc_encoder::reference_slots(self.temporal_layers)
     }
 
     /// `block`'s predictors into the active reference, kept for the

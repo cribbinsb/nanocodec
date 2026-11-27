@@ -30,6 +30,7 @@ use super::sample::H264Sample;
 use super::scaling::{self, LevelScale};
 use super::slice::{self, SliceHeader, SliceType};
 use super::slice_data::SliceDecoder;
+use super::slice_groups::MapUnits;
 use super::sps::Sps;
 #[cfg(feature = "analysis")]
 use super::stats;
@@ -55,6 +56,8 @@ struct CurrentPicture<T: H264Sample> {
     poc: FramePoc,
     id: u32,
     picture: Picture<T>,
+    /// `MbToSliceGroupMap` (§8.2.2) of a picture with slice groups.
+    slice_groups: Option<Box<[u8]>>,
     /// Serial number (`MbState::slice`) of the picture's first slice.
     first_slice: u32,
     /// Deblocking control of each slice, by `MbState::slice - first_slice`.
@@ -185,27 +188,32 @@ impl<T: H264Sample> Core<T> {
         let (sps, pps) = (sps.clone(), pps.clone());
         let mut reader = Reader::new(rbsp);
         let header = slice::parse(&mut reader, &sps, &pps, idr, nal_ref_idc)?;
-        if header.first_mb == 0 {
-            if self.current.take().is_some() {
+        if header.redundant_pic_cnt > 0 {
+            // A slice of a redundant coded picture: a decoder may discard
+            // it, the primary coded picture being decoded (§7.4.3).
+            return Ok(None);
+        }
+        match &self.current {
+            // Any slice may come first (arbitrary slice order, Annex A).
+            None => {
+                #[cfg(feature = "analysis")]
+                if let Some(s) = &mut self.stats {
+                    stats::picture(s, &sps, &pps);
+                }
+                self.start_picture(&sps, &pps, &header)?;
+            }
+            Some(current) if !header.same_picture(&current.header) => {
+                self.current = None;
                 return Err(DecodeError::Malformed("picture with missing slices"));
             }
-            #[cfg(feature = "analysis")]
-            if let Some(s) = &mut self.stats {
-                stats::picture(s, &sps, &pps);
-            }
-            self.start_picture(&sps, &header)?;
+            Some(_) => {}
         }
         #[cfg(feature = "analysis")]
         if let Some(s) = &mut self.stats {
             stats::slice(s, &header, rbsp.len());
         }
-        let current = self.current.as_mut().ok_or(DecodeError::Malformed(
-            "slice of a picture without its first slice",
-        ))?;
-        if !Arc::ptr_eq(&current.sps, &sps)
-            || current.header.frame_num != header.frame_num
-            || current.header.idr != header.idr
-        {
+        let current = self.current.as_ref().expect("picture in progress");
+        if !Arc::ptr_eq(&current.sps, &sps) {
             return Err(DecodeError::Malformed("slice of another picture"));
         }
         self.decode_slice_data(&pps, &header, reader)?;
@@ -218,7 +226,7 @@ impl<T: H264Sample> Core<T> {
 
     /// Activate parameter sets and references for a new picture (§8.2.1,
     /// §8.2.5.2) and allocate it.
-    fn start_picture(&mut self, sps: &Arc<Sps>, header: &SliceHeader) -> Result<()> {
+    fn start_picture(&mut self, sps: &Arc<Sps>, pps: &Pps, header: &SliceHeader) -> Result<()> {
         if header.idr {
             self.dpb
                 .start_idr(sps.max_num_ref_frames, sps.max_frame_num());
@@ -239,6 +247,11 @@ impl<T: H264Sample> Core<T> {
             }
         }
         let poc = self.poc.derive(sps, header);
+        let slice_groups = pps
+            .slice_groups
+            .as_ref()
+            .map(|groups| groups.mb_map(MapUnits::of_frame(sps), header.slice_group_change_cycle))
+            .transpose()?;
         let mut picture =
             self.pool
                 .take(sps.width_mbs * 16, sps.height_mbs * 16, REFERENCE_BORDER)?;
@@ -272,6 +285,7 @@ impl<T: H264Sample> Core<T> {
             poc,
             id,
             picture,
+            slice_groups,
             first_slice: self.slice_serial + 1,
             slices: Vec::new(),
             deblocker: RowDeblocker::default(),
@@ -355,6 +369,7 @@ impl<T: H264Sample> Core<T> {
             first_slice: current.first_slice,
             deblocker: &mut current.deblocker,
             mbs: &mut self.mbs,
+            slice_groups: current.slice_groups.as_deref(),
             width_mbs: sps.width_mbs,
             slice_no,
             residual: &mut self.residual,

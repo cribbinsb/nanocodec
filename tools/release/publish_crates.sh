@@ -15,7 +15,7 @@ set -euo pipefail
 
 # Dependency order: each crate after everything it depends on.
 CRATES=(
-  nanocodec-common nanocodec-dsp nanocodec-analysis nanocodec-encoder
+  nanocodec-common nanocodec-rtp nanocodec-dsp nanocodec-analysis nanocodec-encoder
   nanocodec-h264 nanocodec-hevc nanocodec-vvc nanocodec-av1 nanocodec-vp9 nanocodec-av2
   nanocodec nanocodec-capi nanocodec-cli nanocodec-web
 )

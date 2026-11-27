@@ -8,6 +8,7 @@ use super::intra::{IntraModes, mode};
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::transform::{TxPartition, TxSize};
+use nc_common::BitDepth;
 use nc_dsp::av2_dec::ipred::{
     self, ANGLE_DIP_FLAG, ANGLE_HAS_LEFT_FLAG, ANGLE_HAS_TOP_FLAG, ANGLE_IBP_FLAG, ANGLE_IS_LUMA,
     ANGLE_MRL_IDX_SHIFT, ANGLE_MULTI_MRL_FLAG, ANGLE_SEQHDR_IBP_FLAG, ANGLE_SMOOTH_LEFT_EDGE_FLAG,
@@ -323,6 +324,7 @@ impl Tile<'_, '_> {
                 extra,
                 transpose,
                 eob,
+                BitDepth::EIGHT,
             );
         }
         let mut kind = TxType(residual.tx_type & tx_type::TYPE_MASK);
@@ -341,6 +343,7 @@ impl Tile<'_, '_> {
             &mut coefficients,
             (size, kind),
             eob,
+            BitDepth::EIGHT,
         );
         self.luma_coefficients = coefficients;
     }
@@ -667,6 +670,7 @@ impl Tile<'_, '_> {
                 &mut u[start..start + length],
                 &mut v[start..start + length],
                 &itx::CCTX_ANGLES[usize::from(cross) - 1],
+                BitDepth::EIGHT,
             );
             let larger = if eob(&v_res) > eob(&u_res) {
                 v_res.eob
@@ -700,6 +704,7 @@ impl Tile<'_, '_> {
                 &mut store.coefficients[plane][start..],
                 (size, kind),
                 eob,
+                BitDepth::EIGHT,
             );
         }
         self.chroma_residuals = store;

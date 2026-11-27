@@ -1,8 +1,12 @@
 //! Inverse transforms of the general AV2 decoder: every rectangular size
 //! from 4x4 to 64x64 with every transform type dav2d supports (DCT, ADST,
 //! flipped ADST, identity, the inter DDTs, the lossless WHT and the
-//! lossless DPCM residual), added to 8-bit pixels; and the cross-chroma
-//! transform (CCTX) that mixes the U and V coefficients before them.
+//! lossless DPCM residual), added to the pixels of any depth; and the
+//! cross-chroma transform (CCTX) that mixes the U and V coefficients before
+//! them. The kernels are generic over the sample type ([`Av2Pixel`]: `u8`
+//! with `i16` coefficients and its SIMD routes, `u16` with `i32`
+//! coefficients, scalar) with the depth at run time, as dav2d's bitdepth
+//! template (`bitdepth_max`).
 //!
 //! Ported from dav2d `src/itx_tmpl.c` (`inv_txfm_add_c`, `residual_add`,
 //! `cctx_c`), `src/levels.h` (the size and type numbering), `src/tables.c`
@@ -21,16 +25,14 @@
 //! the first `cw * ch` entries (16 for the WHT), so the caller's buffer is
 //! clean for the next block, as in dav2d.
 
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut};
 
+use super::coefficient::{Av2Pixel, intermediate_bounds};
 use super::itx_1d::{self, MAX_POINTS, Transform1d};
-use crate::{Av2TxSize, BlockSize, Dsp, Isa};
+use crate::{Av1Coefficient, Av2TxSize, BlockSize, Dsp, Isa};
 
 /// Largest coded side ([`MAX_POINTS`]); also the intermediate block's side.
 const MAX_CODED: usize = MAX_POINTS;
-
-/// Largest 8-bit sample.
-const PIXEL_MAX: i32 = 255;
 
 /// `1 / sqrt(2)` in 8 fractional bits: the extra input scale of a 2:1
 /// rectangle, whose 1-D gains multiply to `sqrt(2)` times a square's.
@@ -456,104 +458,114 @@ impl TxType {
     }
 }
 
-/// dav2d `inv_txfm_add_c` (8-bit): inverse transforms the column-major
+/// dav2d `inv_txfm_add_c`: inverse transforms the column-major
 /// coefficients (module docs) of a `size` block of type `tx_type` (the full
 /// dav2d value, DPCM and DDT bits included) and adds the residual to the
-/// 8-bit pixels at `dst[offset..]` (rows `stride` apart), clipping to
-/// `0..=255`. `eob` is the scan index of the last nonzero coefficient
-/// (dav2d's `eob`; after a secondary transform, the value
-/// [`super::stx::apply_secondary`] returns): it only lets the first pass
-/// skip rows that are zero. Zeroes the coefficients it read.
+/// pixels at `dst[offset..]` (rows `stride` apart), clipping to `depth`.
+/// `eob` is the scan index of the last nonzero coefficient (dav2d's `eob`;
+/// after a secondary transform, the value [`super::stx::apply_secondary`]
+/// returns): it only lets the first pass skip rows that are zero. Zeroes
+/// the coefficients it read.
 ///
 /// # Panics
 /// If a kernel of `tx_type` does not exist at `size` (dav2d's syntax never
 /// codes one), `WHT_WHT` is not 4x4, or a slice is too short.
-pub fn inverse_transform_add(
-    dst: &mut [u8],
-    offset: usize,
-    stride: usize,
-    coeffs: &mut [i16],
-    size: RectTxSize,
-    tx_type: TxType,
+pub fn inverse_transform_add<T: Av2Pixel>(
+    dst: &mut [T],
+    (offset, stride): (usize, usize),
+    coeffs: &mut [T::Coefficient],
+    (size, tx_type): (RectTxSize, TxType),
     eob: u16,
+    depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
     let block = Block::new(dst, offset, stride, size.width(), size.height());
     if TxType(tx_type.0 & TYPE_MASK) == TxType::WHT_WHT {
         assert_eq!(size, RectTxSize::Tx4x4, "AV2 WHT_WHT is 4x4 only");
-        inverse_wht_add(block, coeffs, tx_type.dpcm());
+        inverse_wht_add(block, coeffs, tx_type.dpcm(), depth);
     } else if eob == 0 && tx_type == TxType::DCT_DCT {
-        inverse_dc_add(block, coeffs, size);
+        inverse_dc_add(block, coeffs, size, depth);
     } else {
-        inverse_2d_add(block, coeffs, size, tx_type, eob);
+        inverse_2d_add(block, coeffs, (size, tx_type), eob, depth);
     }
 }
 
-/// Add decoder residuals, using the shared square DCT and reconstruction
-/// kernels for plain 8-bit `DCT_DCT` on SIMD targets.
+/// As [`inverse_transform_add`], on the vector kernels of `dsp` where the
+/// sample type has them (8-bit `DCT_DCT`: the shared square DCT and
+/// reconstruction kernels, and the shared rectangle butterflies).
 ///
 /// # Panics
 /// As for [`inverse_transform_add`].
-pub fn inverse_transform_add_with_dsp(
+pub fn inverse_transform_add_with_dsp<T: Av2Pixel>(
+    dsp: &Dsp,
+    dst: &mut [T],
+    position: (usize, usize),
+    coeffs: &mut [T::Coefficient],
+    transform: (RectTxSize, TxType),
+    eob: u16,
+    depth: BitDepth,
+) {
+    if !T::inverse_transform_add_simd(dsp, dst, position, coeffs, transform, eob) {
+        inverse_transform_add(dst, position, coeffs, transform, eob, depth);
+    }
+}
+
+/// The 8-bit vector routes of [`inverse_transform_add_with_dsp`]: `false`
+/// (nothing touched) where none applies.
+pub(super) fn inverse_transform_add_simd(
     dsp: &Dsp,
     dst: &mut [u8],
     (offset, stride): (usize, usize),
     coeffs: &mut [i16],
     (size, tx_type): (RectTxSize, TxType),
     eob: u16,
-) {
+) -> bool {
+    if tx_type != TxType::DCT_DCT || dsp.isa() == Isa::Scalar {
+        return false;
+    }
     let square = match size {
-        RectTxSize::Tx4x4 => Some(Av2TxSize::Tx4),
-        RectTxSize::Tx8x8 => Some(Av2TxSize::Tx8),
-        RectTxSize::Tx16x16 => Some(Av2TxSize::Tx16),
-        RectTxSize::Tx32x32 => Some(Av2TxSize::Tx32),
-        RectTxSize::Tx64x64 => Some(Av2TxSize::Tx64),
-        _ => None,
-    };
-    if tx_type == TxType::DCT_DCT
-        && dsp.isa() != Isa::Scalar
-        && let Some(square) = square
-    {
-        let width = size.width();
-        let mut view = PlaneViewMut::new(&mut dst[offset..], stride, width, width)
-            .expect("AV2 transform block outside its plane");
-        if eob == 0 {
-            let dc = square.inverse_dc_residual(core::mem::take(&mut coeffs[0]));
-            dsp.add_constant(&mut view, i32::from(dc));
-        } else {
-            let rows = first_pass_rows(size, TxClass::TwoD, eob);
-            #[cfg(target_arch = "x86_64")]
-            if matches!(square, Av2TxSize::Tx32 | Av2TxSize::Tx64)
-                && matches!(dsp.isa(), Isa::Avx2 | Isa::Avx512)
-            {
-                crate::av2_txfm::avx2::inverse_add_large(dsp, square, coeffs, rows, &mut view);
-                return;
-            }
-            match square {
-                Av2TxSize::Tx4 => inverse_square_add::<0, 16, 16>(dsp, coeffs, rows, &mut view),
-                Av2TxSize::Tx8 => inverse_square_add::<1, 64, 64>(dsp, coeffs, rows, &mut view),
-                Av2TxSize::Tx16 => inverse_square_add::<2, 256, 256>(dsp, coeffs, rows, &mut view),
-                Av2TxSize::Tx32 => {
-                    inverse_square_add::<3, 1024, 1024>(dsp, coeffs, rows, &mut view);
-                }
-                Av2TxSize::Tx64 => {
-                    inverse_square_add::<4, 1024, 4096>(dsp, coeffs, rows, &mut view);
-                }
-            }
-        }
-    } else {
+        RectTxSize::Tx4x4 => Av2TxSize::Tx4,
+        RectTxSize::Tx8x8 => Av2TxSize::Tx8,
+        RectTxSize::Tx16x16 => Av2TxSize::Tx16,
+        RectTxSize::Tx32x32 => Av2TxSize::Tx32,
+        RectTxSize::Tx64x64 => Av2TxSize::Tx64,
         #[cfg(any(
             target_arch = "x86_64",
             target_arch = "aarch64",
             all(target_arch = "wasm32", target_feature = "simd128")
         ))]
-        if tx_type == TxType::DCT_DCT
-            && eob != 0
-            && rect_simd::try_add(dsp, dst, (offset, stride), coeffs, size, eob)
+        _ => return eob != 0 && rect_simd::try_add(dsp, dst, (offset, stride), coeffs, size, eob),
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        )))]
+        _ => return false,
+    };
+    let width = size.width();
+    let mut view = PlaneViewMut::new(&mut dst[offset..], stride, width, width)
+        .expect("AV2 transform block outside its plane");
+    if eob == 0 {
+        let dc = square.inverse_dc_residual(core::mem::take(&mut coeffs[0]));
+        dsp.add_constant(&mut view, i32::from(dc));
+    } else {
+        let rows = first_pass_rows(size, TxClass::TwoD, eob);
+        #[cfg(target_arch = "x86_64")]
+        if matches!(square, Av2TxSize::Tx32 | Av2TxSize::Tx64)
+            && matches!(dsp.isa(), Isa::Avx2 | Isa::Avx512)
         {
-            return;
+            crate::av2_txfm::avx2::inverse_add_large(dsp, square, coeffs, rows, &mut view);
+            return true;
         }
-        inverse_transform_add(dst, offset, stride, coeffs, size, tx_type, eob);
+        match square {
+            Av2TxSize::Tx4 => inverse_square_add::<0, 16, 16>(dsp, coeffs, rows, &mut view),
+            Av2TxSize::Tx8 => inverse_square_add::<1, 64, 64>(dsp, coeffs, rows, &mut view),
+            Av2TxSize::Tx16 => inverse_square_add::<2, 256, 256>(dsp, coeffs, rows, &mut view),
+            Av2TxSize::Tx32 => inverse_square_add::<3, 1024, 1024>(dsp, coeffs, rows, &mut view),
+            Av2TxSize::Tx64 => inverse_square_add::<4, 1024, 4096>(dsp, coeffs, rows, &mut view),
+        }
     }
+    true
 }
 
 #[inline(never)]
@@ -587,16 +599,16 @@ fn inverse_square_add<const TX: usize, const C: usize, const A: usize>(
 }
 
 /// The destination of one transform block.
-struct Block<'a> {
-    dst: &'a mut [u8],
+struct Block<'a, T> {
+    dst: &'a mut [T],
     offset: usize,
     stride: usize,
     width: usize,
     height: usize,
 }
 
-impl<'a> Block<'a> {
-    fn new(dst: &'a mut [u8], offset: usize, stride: usize, width: usize, height: usize) -> Self {
+impl<'a, T: Av2Pixel> Block<'a, T> {
+    fn new(dst: &'a mut [T], offset: usize, stride: usize, width: usize, height: usize) -> Self {
         assert!(stride >= width, "AV2 transform stride below its width");
         assert!(
             offset + (height - 1) * stride + width <= dst.len(),
@@ -611,10 +623,10 @@ impl<'a> Block<'a> {
         }
     }
 
-    /// Adds `residual(x, y)` to every pixel, clipping to 8 bits (dav2d
+    /// Adds `residual(x, y)` to every pixel, clipping to `depth` (dav2d
     /// `residual_add` and the upsampling loops); with DPCM the residual
     /// accumulates along rows or columns first.
-    fn add(self, dpcm: Dpcm, residual: impl Fn(usize, usize) -> i32) {
+    fn add(self, dpcm: Dpcm, depth: BitDepth, residual: impl Fn(usize, usize) -> i32) {
         let mut column_sums = [0; MAX_CODED];
         for y in 0..self.height {
             let row = &mut self.dst[self.offset + y * self.stride..][..self.width];
@@ -632,7 +644,7 @@ impl<'a> Block<'a> {
                         column_sums[x]
                     }
                 };
-                *pixel = (i32::from(*pixel) + r).clamp(0, PIXEL_MAX) as u8;
+                *pixel = depth.clip_to(pixel.to_i32() + r);
             }
         }
     }
@@ -640,16 +652,21 @@ impl<'a> Block<'a> {
 
 /// dav2d `inv_txfm_add_wht_wht_4x4_c`: the lossless 4x4 WHT, rows then
 /// columns, unrounded.
-fn inverse_wht_add(block: Block, coeffs: &mut [i16], dpcm: Dpcm) {
+fn inverse_wht_add<T: Av2Pixel>(
+    block: Block<T>,
+    coeffs: &mut [T::Coefficient],
+    dpcm: Dpcm,
+    depth: BitDepth,
+) {
     let coeffs = &mut coeffs[..WHT_SIDE * WHT_SIDE];
     let mut tmp = [[0; WHT_SIDE]; WHT_SIDE];
     for (y, row) in tmp.iter_mut().enumerate() {
         for (x, c) in row.iter_mut().enumerate() {
-            *c = i32::from(coeffs[x * WHT_SIDE + y]) >> WHT_INPUT_SHIFT;
+            *c = coeffs[x * WHT_SIDE + y].to_i32() >> WHT_INPUT_SHIFT;
         }
         itx_1d::wht4(row);
     }
-    coeffs.fill(0);
+    coeffs.fill(T::Coefficient::default());
     for x in 0..WHT_SIDE {
         let mut column = tmp.map(|row| row[x]);
         itx_1d::wht4(&mut column);
@@ -657,22 +674,26 @@ fn inverse_wht_add(block: Block, coeffs: &mut [i16], dpcm: Dpcm) {
             row[x] = v;
         }
     }
-    block.add(dpcm, |x, y| tmp[y][x]);
+    block.add(dpcm, depth, |x, y| tmp[y][x]);
 }
 
 /// The DC-only `DCT_DCT` shortcut of dav2d `inv_txfm_add_c`: both passes'
 /// DC gains and roundings folded into one constant add.
-fn inverse_dc_add(block: Block, coeffs: &mut [i16], size: RectTxSize) {
+fn inverse_dc_add<T: Av2Pixel>(
+    block: Block<T>,
+    coeffs: &mut [T::Coefficient],
+    size: RectTxSize,
+    depth: BitDepth,
+) {
     let [shift0, shift1] = size.info().shifts.map(u32::from);
     let shift = shift0 + shift1 - DC_GAIN_LOG2;
     let rnd = (1 << (shift - 1)) + shift0 as i32 - DC_ROUND_BIAS;
-    let mut dc = i32::from(coeffs[0]);
-    coeffs[0] = 0;
+    let mut dc = core::mem::take(&mut coeffs[0]).to_i32();
     if size.is_rect2() {
         dc = rect2_scale(dc);
     }
     let dc = (dc + rnd) >> shift;
-    block.add(Dpcm::None, |_, _| dc);
+    block.add(Dpcm::None, depth, |_, _| dc);
 }
 
 /// dav2d's `1 / sqrt(2)` input scaling for rectangles with odd log2 area.
@@ -686,9 +707,15 @@ fn round_shift(v: i32, shift: u32) -> i32 {
 }
 
 /// The general path of dav2d `inv_txfm_add_c`: rows (only those the end of
-/// block can reach), round and clamp to 16 bits, columns, round, add (each
-/// residual sample repeated over 2 pixels along a 64-point side).
-fn inverse_2d_add(block: Block, coeffs: &mut [i16], size: RectTxSize, tx_type: TxType, eob: u16) {
+/// block can reach), round and clamp to `bd + 8` bits, columns, round, add
+/// (each residual sample repeated over 2 pixels along a 64-point side).
+fn inverse_2d_add<T: Av2Pixel>(
+    block: Block<T>,
+    coeffs: &mut [T::Coefficient],
+    (size, tx_type): (RectTxSize, TxType),
+    eob: u16,
+    depth: BitDepth,
+) {
     let first = kernel(tx_type.horizontal(), size.log2_width4(), tx_type);
     let second = kernel(tx_type.vertical(), size.log2_height4(), tx_type);
     let (cw, ch) = (size.coded_width(), size.coded_height());
@@ -700,7 +727,7 @@ fn inverse_2d_add(block: Block, coeffs: &mut [i16], size: RectTxSize, tx_type: T
     let rows = first_pass_rows(size, tx_type.class(), eob);
     for (y, row) in tmp.chunks_exact_mut(cw).take(rows).enumerate() {
         for (x, c) in row.iter_mut().enumerate() {
-            let coeff = i32::from(coeffs[x * ch + y]);
+            let coeff = coeffs[x * ch + y].to_i32();
             *c = if size.is_rect2() {
                 rect2_scale(coeff)
             } else {
@@ -709,11 +736,12 @@ fn inverse_2d_add(block: Block, coeffs: &mut [i16], size: RectTxSize, tx_type: T
         }
         first(row);
     }
-    coeffs.fill(0);
-    // 8-bit video clamps the intermediate to 16 bits (dav2d
-    // `row_clip_min = INT16_MIN`, AVM `clamp_buf` at `bd + 8`).
+    coeffs.fill(T::Coefficient::default());
+    // The intermediate is clamped to `bd + 8` bits (dav2d `row_clip_min =
+    // ~bitdepth_max << 7`, `INT16_MIN` at 8 bits; AVM `clamp_buf`).
+    let (low, high) = intermediate_bounds(depth);
     for v in &mut tmp[..cw * ch] {
-        *v = round_shift(*v, shift0).clamp(i16::MIN.into(), i16::MAX.into());
+        *v = round_shift(*v, shift0).clamp(low, high);
     }
 
     let mut column = [0; MAX_CODED];
@@ -730,7 +758,7 @@ fn inverse_2d_add(block: Block, coeffs: &mut [i16], size: RectTxSize, tx_type: T
     // A 64-point side holds 32 residual samples, each covering 2 pixels.
     let x_up = u32::from(size.width() > cw);
     let y_up = u32::from(size.height() > ch);
-    block.add(tx_type.dpcm(), |x, y| {
+    block.add(tx_type.dpcm(), depth, |x, y| {
         round_shift(tmp[(y >> y_up) * cw + (x >> x_up)], shift1)
     });
 }
@@ -771,15 +799,21 @@ pub const CCTX_ANGLES: [[i16; 3]; 6] = [
 /// Fractional bits of the CCTX rotation.
 const CCTX_SHIFT: u32 = 8;
 
-/// dav2d `cctx_c` (8-bit): rotates each pair of U and V coefficients by
-/// `angle` (a row of [`CCTX_ANGLES`]: `sin`, `cos`, `-sin`), rounding half
-/// away from zero and clamping to 16 bits. `u` and `v` hold the coded `min(w, 32) * min(h, 32)`
-/// coefficients (a power of two from 16 to 1024).
+/// dav2d `cctx_c`: rotates each pair of U and V coefficients by `angle` (a
+/// row of [`CCTX_ANGLES`]: `sin`, `cos`, `-sin`), rounding half away from
+/// zero and clamping to `bd + 8` bits of `depth` (16 bits at 8). `u` and
+/// `v` hold the coded `min(w, 32) * min(h, 32)` coefficients (a power of
+/// two from 16 to 1024).
 ///
 /// # Panics
 /// If the lengths differ or are not such a power of two, or `angle[2]` is
 /// not `-angle[0]`.
-pub fn cross_chroma(u: &mut [i16], v: &mut [i16], angle: &[i16; 3]) {
+pub fn cross_chroma<C: Av1Coefficient>(
+    u: &mut [C],
+    v: &mut [C],
+    angle: &[i16; 3],
+    depth: BitDepth,
+) {
     assert_eq!(u.len(), v.len(), "CCTX planes differ in size");
     assert!(
         u.len().is_power_of_two() && (16..=MAX_CODED * MAX_CODED).contains(&u.len()),
@@ -788,19 +822,20 @@ pub fn cross_chroma(u: &mut [i16], v: &mut [i16], angle: &[i16; 3]) {
     );
     let [sin, cos, minus_sin] = angle.map(i32::from);
     assert_eq!(minus_sin, -sin, "CCTX angle is not a rotation");
+    let bounds = intermediate_bounds(depth);
     for (u, v) in u.iter_mut().zip(v.iter_mut()) {
-        let (cu, cv) = (i32::from(*u), i32::from(*v));
-        *u = cctx_round(cu * cos - cv * sin);
-        *v = cctx_round(cu * sin + cv * cos);
+        let (cu, cv) = (u.to_i32(), v.to_i32());
+        *u = cctx_round(cu * cos - cv * sin, bounds);
+        *v = cctx_round(cu * sin + cv * cos, bounds);
     }
 }
 
 /// dav2d's CCTX rounding, half away from zero (`(a + 128 - (a < 0)) >> 8`),
-/// then the 16-bit clamp of 8-bit video.
-fn cctx_round(a: i32) -> i16 {
+/// then the `bd + 8`-bit clamp to `(low, high)`.
+fn cctx_round<C: Av1Coefficient>(a: i32, (low, high): (i32, i32)) -> C {
     let half = 1 << (CCTX_SHIFT - 1);
     let r = (a + half - i32::from(a < 0)) >> CCTX_SHIFT;
-    r.clamp(i16::MIN.into(), i16::MAX.into()) as i16
+    C::from_i32(r.clamp(low, high))
 }
 
 #[cfg(test)]

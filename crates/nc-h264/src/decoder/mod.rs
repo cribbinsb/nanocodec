@@ -2,15 +2,16 @@
 //! A.2.4, A.2.5): I, P and B slices of 8- to 10-bit 4:2:0 or 4:0:0 video,
 //! CAVLC and CABAC, 8x8 transforms and intra prediction, scaling matrices,
 //! spatial and temporal direct prediction, explicit and implicit weighted
-//! prediction, any number of slices per picture (in raster order),
-//! long-term references, memory management operations and `frame_num`
-//! gaps. That covers the Baseline (without FMO/ASO), Main, High and High
-//! 10 streams of frames. Everything else (field and MBAFF pictures, SP/SI
-//! slices, FMO/ASO, redundant pictures, data partitioning, other chroma
-//! formats, deeper samples) is rejected as unsupported.
+//! prediction, any number of slices per picture in any order, slice groups
+//! (FMO), redundant pictures (discarded), long-term references, memory
+//! management operations and `frame_num` gaps. That covers the Baseline,
+//! Main, High and High 10 streams of frames. Everything else (field and
+//! MBAFF pictures, SP/SI slices, data partitioning, other chroma formats,
+//! deeper samples) is rejected as unsupported.
 //!
 //! Module map:
-//! - parameter sets and headers: `sps`, `pps`, `scaling`, `slice`, `poc`;
+//! - parameter sets and headers: `sps`, `pps`, `scaling`, `slice`, `poc`,
+//!   `slice_groups` (FMO);
 //! - the decoding process of one sample type: `core` (`u8` for 8-bit
 //!   streams, `u16` deeper ones, `sample` names what differs);
 //! - reference handling: `dpb` (marking, lists) and `output` (output order);
@@ -53,6 +54,7 @@ mod sample;
 mod scaling;
 mod slice;
 mod slice_data;
+mod slice_groups;
 mod sps;
 #[cfg(feature = "analysis")]
 mod stats;

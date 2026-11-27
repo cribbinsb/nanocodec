@@ -178,17 +178,29 @@ impl RefreshSweep {
     /// A sweep over a `width`-wide picture of `unit`-wide columns, for
     /// a codec whose loop filters reach `filter_reach` samples.
     pub fn new(settings: IntraRefresh, width: usize, unit: usize, filter_reach: usize) -> Self {
-        let columns = width.div_ceil(unit);
-        let period = settings.period.max(MIN_REFRESH_PERIOD) as usize;
         let overlap = filter_reach.next_multiple_of(RANGE_ALIGNMENT);
         Self {
             settings,
             width,
             unit,
-            frames: period.min(columns),
+            frames: 0,
             done: 0,
             overlap,
             filter_reach,
+        }
+        .with_frame_spacing(1)
+    }
+
+    /// This sweep, advancing on every `spacing`-th frame only (the base
+    /// layer of a layered structure): it takes as many of those frames as
+    /// cover the period, at least [`MIN_REFRESH_PERIOD`].
+    pub fn with_frame_spacing(self, spacing: u64) -> Self {
+        let columns = self.width.div_ceil(self.unit);
+        let period = u64::from(self.settings.period).div_ceil(spacing.max(1));
+        let frames = usize::try_from(period).unwrap_or(usize::MAX);
+        Self {
+            frames: frames.max(MIN_REFRESH_PERIOD as usize).min(columns),
+            ..self
         }
     }
 
@@ -265,6 +277,21 @@ mod tests {
         }
         assert_eq!(end, 1280);
         assert!(sweep.next_window().sweep_start);
+    }
+
+    #[test]
+    fn base_layer_sweeps_cover_the_period() {
+        // Period 12 on a base layer every 4 frames: 3 base frames a sweep.
+        let mut sweep =
+            RefreshSweep::new(IntraRefresh { period: 12 }, 320, 64, 16).with_frame_spacing(4);
+        assert!(sweep.next_window().sweep_start);
+        sweep.next_window();
+        assert_eq!(sweep.next_window().intra.end, 320);
+        assert!(sweep.next_window().sweep_start);
+        // Never fewer than two frames a sweep.
+        let mut short =
+            RefreshSweep::new(IntraRefresh { period: 4 }, 320, 64, 16).with_frame_spacing(4);
+        assert_eq!(short.next_window().intra.end, 192);
     }
 
     #[test]

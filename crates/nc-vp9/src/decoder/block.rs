@@ -47,24 +47,65 @@ const MAX_TX: [TxSize; 13] = [
     TxSize::Tx32,
     TxSize::Tx32,
 ];
-/// Largest transform of the 4:2:0 chroma block (`uv_txsize_lookup` cap:
-/// `max_txsize_lookup[ss_size_lookup[bsize][1][1]]`); sub-8x8 blocks
-/// code 4x4 chroma.
-const UV_MAX_TX: [TxSize; 13] = [
-    TxSize::Tx4,
-    TxSize::Tx4,
-    TxSize::Tx4,
-    TxSize::Tx4,
-    TxSize::Tx4,
-    TxSize::Tx4,
-    TxSize::Tx8,
-    TxSize::Tx8,
-    TxSize::Tx8,
-    TxSize::Tx16,
-    TxSize::Tx16,
-    TxSize::Tx16,
-    TxSize::Tx32,
-];
+
+/// The index of a chroma subsampling `(x, y)` in the per-subsampling
+/// tables below.
+const fn subsampling_index(x: usize, y: usize) -> usize {
+    x * 2 + y
+}
+
+/// Largest chroma transform per block size and subsampling (the cap of
+/// `dec_get_uv_tx_size`, see [`BlockSize::uv_tx`]): the chroma block's
+/// shorter side in 4x4 units, sub-8x8 blocks counting as 8x8, at most
+/// 32x32. A table, as the 4:2:0 cap was, since every block reads it.
+const UV_MAX_TX: [[TxSize; 4]; BLOCK_SIZES] = {
+    let mut table = [[TxSize::Tx4; 4]; BLOCK_SIZES];
+    let mut size = 0;
+    while size < BLOCK_SIZES {
+        let mut index = 0;
+        while index < 4 {
+            let (x, y) = (index / 2, index % 2);
+            let width = max_one(WIDTH_LOG2[size]) as usize - x;
+            let height = max_one(HEIGHT_LOG2[size]) as usize - y;
+            let side = if width < height { width } else { height };
+            table[size][index] = match side {
+                0 => TxSize::Tx4,
+                1 => TxSize::Tx8,
+                2 => TxSize::Tx16,
+                _ => TxSize::Tx32,
+            };
+            index += 1;
+        }
+        size += 1;
+    }
+    table
+};
+
+/// Whether each block size has a chroma block at each subsampling
+/// (see [`BlockSize::has_chroma_block`]).
+const HAS_CHROMA_BLOCK: [[bool; 4]; BLOCK_SIZES] = {
+    let mut table = [[true; 4]; BLOCK_SIZES];
+    // Sub-8x8 blocks (the first three) always have one.
+    let mut size = 3;
+    while size < BLOCK_SIZES {
+        let mut index = 0;
+        while index < 4 {
+            let (x, y) = (index / 2, index % 2);
+            let width = WIDTH_LOG2[size] as i32 - x as i32;
+            let height = HEIGHT_LOG2[size] as i32 - y as i32;
+            table[size][index] = (width - height).abs() <= 1;
+            index += 1;
+        }
+        size += 1;
+    }
+    table
+};
+
+const BLOCK_SIZES: usize = 13;
+
+const fn max_one(log2: u8) -> u8 {
+    if log2 == 0 { 1 } else { log2 }
+}
 
 impl BlockSize {
     pub(super) const ALL: [Self; 13] = [
@@ -131,10 +172,21 @@ impl BlockSize {
         MAX_TX[self as usize]
     }
 
-    /// The 4:2:0 chroma transform of a block with luma transform `tx`
-    /// (`get_uv_tx_size`).
-    pub(super) fn uv_tx(self, tx: TxSize) -> TxSize {
-        tx.min(UV_MAX_TX[self as usize])
+    /// The chroma transform of a block with luma transform `tx` in chroma
+    /// subsampled by `(x, y)` (libvpx decoder `dec_get_uv_tx_size`): at
+    /// most the shorter side of the chroma block, sub-8x8 blocks counting
+    /// as 8x8 (so 4:2:0 codes 4x4 chroma there).
+    pub(super) fn uv_tx(self, tx: TxSize, (x, y): (usize, usize)) -> TxSize {
+        tx.min(UV_MAX_TX[self as usize][subsampling_index(x, y)])
+    }
+
+    /// Whether the block has a chroma block in chroma subsampled by `(x,
+    /// y)`: `ss_size_lookup` has none for blocks of 8x8 or more whose
+    /// chroma would be four times as long as wide or the reverse (4:2:2
+    /// 8x16, 16x32, 32x64; 4:4:0 16x8, 32x16, 64x32), which libvpx rejects
+    /// as corrupt.
+    pub(super) fn has_chroma_block(self, (x, y): (usize, usize)) -> bool {
+        HAS_CHROMA_BLOCK[self as usize][subsampling_index(x, y)]
     }
 
     /// `partition_context_lookup`: (above, left) partition context bits;

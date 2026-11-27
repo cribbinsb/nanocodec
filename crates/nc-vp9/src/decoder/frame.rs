@@ -9,7 +9,7 @@
 //! (`mvref.rs`) and reconstruction (`recon.rs`) extend it.
 
 use nc_common::decode::{DecodeError, Result};
-use nc_common::{BitDepth, Picture, PictureRecycler};
+use nc_common::{BitDepth, ChromaFormat, Picture, PictureRecycler};
 use nc_dsp::Pixel;
 
 use super::block::{BlockInfo, BlockSize, MvRef, Partition, REFS_PER_FRAME};
@@ -55,6 +55,8 @@ pub(super) struct FrameInputs<'a, T: Pixel> {
     pub dsp: &'a nc_dsp::Dsp,
     /// The frame's bit depth (8 in the `u8` instance).
     pub depth: BitDepth,
+    /// The frame's chroma format.
+    pub format: ChromaFormat,
 }
 
 /// One tile's column range and its left contexts.
@@ -71,6 +73,8 @@ pub(super) struct FrameDecoder<'a, T: Pixel> {
     pub inputs: FrameInputs<'a, T>,
     pub mi_cols: usize,
     pub mi_rows: usize,
+    /// The chroma planes' subsampling (of `inputs.format`), read per block.
+    pub chroma_subsampling: (usize, usize),
     pub recon: Picture<T>,
     /// Every decoded block; `grid` holds each 8x8 unit's block index.
     pub blocks: Vec<BlockInfo>,
@@ -192,7 +196,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         // once it is complete (`extend_reference`).
         let (width, height) = (sb_cols * 64, sb_rows * 64);
         let recon = pictures
-            .take(width, height, REFERENCE_BORDER)
+            .take_with_format(width, height, inputs.format, REFERENCE_BORDER)
             .map_err(|_| DecodeError::Unsupported("VP9 frame size"))?;
         let mut blocks = std::mem::take(&mut scratch.blocks);
         blocks.clear();
@@ -213,10 +217,12 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let mut above_partition = std::mem::take(&mut scratch.above_partition);
         above_partition.clear();
         above_partition.resize(sb_cols * SB_MI, 0);
+        let chroma_subsampling = inputs.format.subsampling();
         Ok(Self {
             inputs,
             mi_cols,
             mi_rows,
+            chroma_subsampling,
             recon,
             blocks,
             grid,
@@ -297,13 +303,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                     }
                 }
                 if mi_row >= SB_MI {
-                    let above = mi_row - SB_MI;
-                    deblocker.filter_row(
-                        self.inputs.dsp.at(self.inputs.depth),
-                        &mut self.recon,
-                        &self.filter_masks,
-                        above,
-                    );
+                    self.filter_row(&deblocker, mi_row - SB_MI);
                 }
             }
             for (reader, _) in &tiles {
@@ -311,13 +311,23 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             }
         }
         let last_row = (self.mi_rows - 1) & !(SB_MI - 1);
+        self.filter_row(&deblocker, last_row);
+        Ok(())
+    }
+
+    /// Deblock the superblock row at 8x8 unit row `mi_row`.
+    fn filter_row(&mut self, deblocker: &Deblocker, mi_row: usize) {
+        let blocks = BlockGrid {
+            blocks: &self.blocks,
+            grid: &self.grid,
+            mi_cols: self.mi_cols,
+        };
         deblocker.filter_row(
             self.inputs.dsp.at(self.inputs.depth),
             &mut self.recon,
-            &self.filter_masks,
-            last_row,
+            (&self.filter_masks, &blocks, &self.filter_levels),
+            mi_row,
         );
-        Ok(())
     }
 
     /// `decode_partition` of the square block of side `8 << log2_8x8` at
@@ -441,6 +451,11 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         mi_col: usize,
         bsize: BlockSize,
     ) -> Result<()> {
+        if !bsize.has_chroma_block(self.chroma_subsampling) {
+            return Err(DecodeError::Malformed(
+                "VP9 block size without a chroma block",
+            ));
+        }
         let position = BlockPosition::new(self, tile, mi_row, mi_col, bsize);
         #[cfg(feature = "analysis")]
         let start = reader.bits_consumed();
@@ -496,14 +511,29 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
     /// contexts it covers (beyond the frame edge too).
     fn reset_skip_context(&mut self, tile: &mut Tile, position: &BlockPosition) {
         for plane in 0..3 {
-            let ss = usize::from(plane > 0);
-            let (x, y) = position.plane_4x4(ss);
-            let (w, h) = position.plane_size_4x4(ss);
-            let log2 = SB_4X4_LOG2 - ss;
-            let within = (1usize << log2) - 1;
-            self.above_nonzero[plane][x >> log2] &= !context_mask(x & within, w);
-            tile.left_nonzero[plane] &= !context_mask(y & within, h);
+            let kind = usize::from(plane > 0);
+            let (x, y) = position.plane_4x4(kind);
+            let (w, h) = position.plane_size_4x4(kind);
+            let (log2_x, log2_y) = position.sb_4x4_log2(kind);
+            let (within_x, within_y) = ((1usize << log2_x) - 1, (1usize << log2_y) - 1);
+            self.above_nonzero[plane][x >> log2_x] &= !context_mask(x & within_x, w);
+            tile.left_nonzero[plane] &= !context_mask(y & within_y, h);
         }
+    }
+}
+
+/// The decoded blocks and the grid of 8x8 units naming each one's block,
+/// for the deblocking of chroma planes subsampled along one axis only.
+pub(super) struct BlockGrid<'a> {
+    pub blocks: &'a [BlockInfo],
+    pub grid: &'a [u32],
+    pub mi_cols: usize,
+}
+
+impl BlockGrid<'_> {
+    /// The block covering 8x8 unit (`mi_row`, `mi_col`).
+    pub(super) fn at(&self, mi_row: usize, mi_col: usize) -> &BlockInfo {
+        &self.blocks[self.grid[mi_row * self.mi_cols + mi_col] as usize]
     }
 }
 
@@ -535,18 +565,20 @@ pub(super) struct BlockPosition {
     pub left: Option<u32>,
     /// The tile's columns (`is_inside`).
     pub tile_cols: (usize, usize),
-    /// Per plane type (luma, 4:2:0 chroma), in 4x4 units: the block's
+    /// Per plane kind (0: luma, 1: chroma), in 4x4 units: the block's
     /// top-left, its size and the part inside the frame. Resolved once per
     /// block; every transform block and prediction reads them.
     planes: [PlaneGeometry; 2],
 }
 
-/// A block's extent in one plane type, in 4x4 units.
+/// A block's extent in one plane kind, in 4x4 units, and the plane's
+/// subsampling.
 #[derive(Debug, Clone, Copy)]
 struct PlaneGeometry {
     origin: (usize, usize),
     size: (usize, usize),
     limits: (usize, usize),
+    subsampling: (usize, usize),
 }
 
 impl BlockPosition {
@@ -562,10 +594,10 @@ impl BlockPosition {
         let cell = |row: usize, col: usize| frame.grid[row * frame.mi_cols + col];
         let to_right = eighths(frame.mi_cols as isize - bw as isize - mi_col as isize);
         let to_bottom = eighths(frame.mi_rows as isize - bh as isize - mi_row as isize);
-        let planes = [0, 1].map(|ss| {
-            let size = ((bw * 2) >> ss, (bh * 2) >> ss);
+        let planes = [(0, 0), frame.chroma_subsampling].map(|(sx, sy)| {
+            let size = ((bw * 2) >> sx, (bh * 2) >> sy);
             // `max_blocks_wide` / `max_blocks_high`.
-            let cut = |edge: i32, size: usize| {
+            let cut = |edge: i32, size: usize, ss: usize| {
                 if edge >= 0 {
                     size
                 } else {
@@ -573,9 +605,10 @@ impl BlockPosition {
                 }
             };
             PlaneGeometry {
-                origin: ((mi_col * 2) >> ss, (mi_row * 2) >> ss),
+                origin: ((mi_col * 2) >> sx, (mi_row * 2) >> sy),
                 size,
-                limits: (cut(to_right, size.0), cut(to_bottom, size.1)),
+                limits: (cut(to_right, size.0, sx), cut(to_bottom, size.1, sy)),
+                subsampling: (sx, sy),
             }
         });
         Self {
@@ -595,20 +628,32 @@ impl BlockPosition {
         }
     }
 
-    /// Top-left in 4x4 units of a plane with subsampling `ss`.
-    pub(super) fn plane_4x4(&self, ss: usize) -> (usize, usize) {
-        self.planes[ss].origin
+    /// Top-left in 4x4 units of a plane of `kind` (0: luma, 1: chroma).
+    pub(super) fn plane_4x4(&self, kind: usize) -> (usize, usize) {
+        self.planes[kind].origin
     }
 
     /// Block size in 4x4 units of the plane (`n4_w`, `n4_h`; sub-8x8
     /// blocks count as 8x8).
-    pub(super) fn plane_size_4x4(&self, ss: usize) -> (usize, usize) {
-        self.planes[ss].size
+    pub(super) fn plane_size_4x4(&self, kind: usize) -> (usize, usize) {
+        self.planes[kind].size
     }
 
     /// `max_blocks_wide` / `max_blocks_high`: 4x4 units of the plane
     /// inside the 8x8-aligned frame.
-    pub(super) fn plane_limits_4x4(&self, ss: usize) -> (usize, usize) {
-        self.planes[ss].limits
+    pub(super) fn plane_limits_4x4(&self, kind: usize) -> (usize, usize) {
+        self.planes[kind].limits
+    }
+
+    /// The horizontal and vertical subsampling of the plane.
+    pub(super) fn subsampling(&self, kind: usize) -> (usize, usize) {
+        self.planes[kind].subsampling
+    }
+
+    /// Log2 of a superblock's side in the plane's 4x4 units, across and
+    /// down (the coefficient contexts' bits per superblock).
+    pub(super) fn sb_4x4_log2(&self, kind: usize) -> (usize, usize) {
+        let (sx, sy) = self.planes[kind].subsampling;
+        (SB_4X4_LOG2 - sx, SB_4X4_LOG2 - sy)
     }
 }

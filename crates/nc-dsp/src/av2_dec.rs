@@ -6,7 +6,8 @@
 //! affine [`warp`], compound blends [`compound`], boundary-aware compound
 //! [`bacp`], decoder-side refinement [`opfl`], wedge and inter-intra
 //! masks [`wedge`]), and the guided detail filter ([`gdf`]), for 8-bit
-//! 4:2:0; the inter kernels are generic over the sample type.
+//! 4:2:0; the inter kernels and the residual kernels (sample and
+//! coefficient types in [`coefficient`]) are generic over the sample type.
 //!
 //! Ported from dav2d (commit 237229e; Copyright © 2018-2026 `VideoLAN` and
 //! dav2d authors, BSD-2-Clause, see `docs/licenses/dav2d`), which is
@@ -16,6 +17,7 @@
 //! serve only the paths other encoders' streams take, so they are scalar.
 
 pub mod bacp;
+pub mod coefficient;
 pub mod compound;
 pub mod gdf;
 pub mod gdf_tables;

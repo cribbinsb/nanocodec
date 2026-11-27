@@ -39,9 +39,9 @@ Ours is development build 23c962d8b, measured before 0.7.0's last encoder change
     layer ids above 0 and a VPS id above 0 are rejected, not yet ignored.
   - H.264: 110/190 of the official H.264.1 suite (its AVCv1, FRExt and High 10 sets); not yet interlaced
     streams (field pictures, MBAFF) or pictures above level 5.2.
-  - AV1 and VP9: 242/242 libaom and 305/305 libvpx test vectors (encoder project vectors, not official
+  - AV1 and VP9: 242/242 libaom and 314/314 libvpx test vectors (encoder project vectors, not official
     suites). AV1 not yet: quantizer matrices, loop-filter deltas, segment features other than the
-    quantizer, lossless segments in mixed frames, odd frame sizes, switch frames. VP9 not yet: profiles 1 and 3.
+    quantizer, lossless segments in mixed frames, odd frame sizes, switch frames. VP9: all four profiles.
   - AV2 (a draft): 30 streams (12 dav2d vectors, 18 we made with avmenc); no suite exists. Not yet:
     10-bit, monochrome, several tiles, reference scaling.
 
@@ -49,9 +49,13 @@ Ours is development build 23c962d8b, measured before 0.7.0's last encoder change
   Every known gap and its status (in progress, open, or proposed exception): [decoder compliance register](docs/decoder-compliance.md).
 - **Scalable video (SVC).** Spatial and temporal layers for AV1 and VP9 in the WebRTC-SVC modes (L1T1–L3T3
   and K-SVC), so one stream can serve viewers at different resolutions and bitrates; every layer is checked in
-  the standard decoders. RTP packetisation is not included.
+  the standard decoders.
+- **RTP / WebRTC transport.** Packetizers and depacketizers for all five standard formats (`nanocodec-rtp`;
+  AV1 with the Dependency Descriptor for SVC forwarding), tested against GStreamer and Pion. Headless Chrome
+  decodes our H.264, AV1 (including two-layer SVC) and VP9 packets over a real WebRTC session, bit-exact. VP9
+  spatial layers are not carried yet ([details](docs/handoff/rtp.md)).
 - **Built for loss.** Temporal layers and key frames on request (all six formats), long-term references with
-  loss feedback (H.264, HEVC, AV1, VP9, AV2) and intra refresh (H.264, HEVC, VVC, AV1). Recovery from a lost
+  loss feedback (H.264, HEVC, VVC, AV1, VP9, AV2) and intra refresh (H.264, HEVC, VVC, AV1). Recovery from a lost
   frame is tested with the standard decoders for H.264, HEVC, AV1 and AV2.
 - **Fast on x86, Arm and the web.** Hand-written SIMD for AVX2, AVX-512, NEON and WebAssembly.
 - **Built by AI.** About 4,000 commits and half a million lines of Rust written by AI coding agents

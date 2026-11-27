@@ -20,6 +20,7 @@ name = "nc_encoder"
 nc-common.workspace = true
 nc-dsp.workspace = true
 nc-analysis.workspace = true
+nc-rtp.workspace = true
 
 [lints]
 workspace = true

@@ -98,6 +98,22 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                  the last one.",
             ),
             opt("--timestamps-out", "FILE", "The time of every coded frame."),
+            opt(
+                "--rtp",
+                "PATH",
+                "The coded units as RTP packets: pcap for .pcap, otherwise RFC 4571 framing. \
+                 AV1 carries the Dependency Descriptor (extension id 1), VP9 its layer indices.",
+            ),
+            opt(
+                "--rtp-mtu",
+                "BYTES",
+                "Largest RTP packet of --rtp (default 1200).",
+            ),
+            opt(
+                "--rtp-dd-id",
+                "ID|none",
+                "Dependency Descriptor extension id of --rtp (AV1 default 1, others none).",
+            ),
         ],
     },
     GroupDoc {
@@ -457,6 +473,63 @@ pub const COMMANDS: &[CommandDoc] = &[
         }],
     },
     CommandDoc {
+        name: "packetize",
+        about: "A stream file (IVF or Annex B) to RTP packets (no Dependency Descriptor: use encode --rtp).",
+        groups: &[GroupDoc {
+            title: "Options",
+            options: &[
+                opt("--codec", CODECS, "Stream format (not av2). Required."),
+                opt("--input", "PATH", "The stream."),
+                opt(
+                    "--output",
+                    "PATH",
+                    "pcap for .pcap, otherwise RFC 4571 framing.",
+                ),
+                opt("--mtu", "BYTES", "Largest RTP packet (default 1200)."),
+                opt("--payload-type", "PT", "RTP payload type (default 96)."),
+                opt(
+                    "--fps",
+                    "N",
+                    "Annex-B input: frames per second for timestamps (default 30).",
+                ),
+                opt(
+                    "--vp9-mode",
+                    "flexible|non-flexible",
+                    "VP9 payload descriptor mode (default flexible).",
+                ),
+            ],
+        }],
+    },
+    CommandDoc {
+        name: "depacketize",
+        about: "RTP packets (pcap or RFC 4571) to a stream file, through the receiver's loss handling.",
+        groups: &[GroupDoc {
+            title: "Options",
+            options: &[
+                opt("--codec", CODECS, "Stream format (not av2). Required."),
+                opt("--input", "PATH", "The capture."),
+                opt("--output", "PATH", "IVF (AV1, VP9) or Annex B."),
+                opt("--payload-type", "PT", "Keep only this payload type."),
+                opt(
+                    "--dd-id",
+                    "ID|none",
+                    "Dependency Descriptor extension id (AV1 default 1, others none).",
+                ),
+                opt(
+                    "--layers",
+                    "S:T",
+                    "Forward only spatial layers 0..S and temporal layers 0..T first, by the \
+                     Dependency Descriptor, as a forwarding server would.",
+                ),
+                opt(
+                    "--deliver-after-loss",
+                    "",
+                    "Keep delivering after a loss instead of waiting for a key frame.",
+                ),
+            ],
+        }],
+    },
+    CommandDoc {
         name: "session",
         about: "Encoder and receiver stepped by commands on stdin (encode options, no --output).",
         groups: &[GroupDoc {
@@ -551,6 +624,7 @@ mod tests {
         include_str!("extract.rs"),
         include_str!("label_dump.rs"),
         include_str!("session.rs"),
+        include_str!("rtp.rs"),
         include_str!("stat.rs"),
         include_str!("stdio.rs"),
     ];

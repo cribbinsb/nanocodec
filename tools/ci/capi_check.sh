@@ -2,7 +2,8 @@
 # C API check: build libnanocodec, compile crates/nc-capi/examples/encode.c
 # against include/nanocodec.h, and require its output to be byte-identical
 # with the CLI's for the same input and settings (NV12 and I420 input, fixed
-# QP and CBR, every codec); then decode it with ffmpeg as a smoke test. Also
+# QP and CBR, every codec the C API has: H.264, HEVC, AV1, VP9); then decode
+# it with ffmpeg as a smoke test. Also
 # build and run examples/roundtrip.c (the usage site's encode and decode loop)
 # for every codec the C API has, and tests/panic_boundary.c: a panic inside
 # the library returns NC_ERROR_INTERNAL instead of aborting the caller. The
@@ -54,27 +55,32 @@ sys.stdout.buffer.write(out)' "$1"
 }
 
 failures=0
-for codec in h264 hevc av1; do
+for codec in h264 hevc av1 vp9; do
   for format in nv12 i420; do
     for kbps in 0 200; do
       rate=(--qp 32)
-      [[ $codec == av1 ]] && rate=(--qp 180)
+      [[ $codec == av1 || $codec == vp9 ]] && rate=(--qp 180)
       [[ $kbps != 0 ]] && rate=(--bitrate "$kbps")
       "$WORK/encode" "$codec" "$format" "$W" "$H" "$FRAMES" "$kbps" "$WORK/in.$format" "$WORK/capi.out"
       "$TARGET/release/nanocodec" encode --codec "$codec" --input "$WORK/in.$format" \
         --input-format "$format" --width "$W" --height "$H" --fps 30 --frames "$FRAMES" \
         --intra-period 300 "${rate[@]}" --timestamps "$WORK/ts.txt" --timing nominal \
         --output "$WORK/cli.out" >/dev/null
+      # Raw VP9 frames have no ffmpeg demuxer: its smoke decode reads the
+      # CLI's IVF, byte-identical in payload.
       if [[ $codec == av1 ]]; then
         ivf_payload "$WORK/cli.out" >"$WORK/cli.payload"
-        demux=(-f obu)
+        demux=(-f obu -i "$WORK/capi.out")
+      elif [[ $codec == vp9 ]]; then
+        ivf_payload "$WORK/cli.out" >"$WORK/cli.payload"
+        demux=(-i "$WORK/cli.out")
       else
         cp "$WORK/cli.out" "$WORK/cli.payload"
-        demux=(-f "$codec")
+        demux=(-f "$codec" -i "$WORK/capi.out")
       fi
       status=PASS
       cmp -s "$WORK/capi.out" "$WORK/cli.payload" || status="FAIL(differs from CLI)"
-      ffmpeg -v error -xerror "${demux[@]}" -i "$WORK/capi.out" -f null - || status="FAIL(ffmpeg)"
+      ffmpeg -v error -xerror "${demux[@]}" -f null - || status="FAIL(ffmpeg)"
       [[ $status == PASS ]] || failures=$((failures + 1))
       printf '%-5s %-5s %4s kbps  %s\n' "$codec" "$format" "$kbps" "$status"
     done
@@ -83,6 +89,8 @@ done
 for codec in h264 hevc av1 vp9; do
   if result=$("$WORK/roundtrip" "$codec"); then status=PASS; else status=FAIL; failures=$((failures + 1)); fi
   printf '%-5s roundtrip  %s  %s\n' "$codec" "$status" "$result"
+  if result=$("$WORK/roundtrip" "$codec" rtp); then status=PASS; else status=FAIL; failures=$((failures + 1)); fi
+  printf '%-5s roundtrip over RTP  %s  %s\n' "$codec" "$status" "$result"
 done
 if result=$("$WORK/panic_boundary"); then status=PASS; else status=FAIL; failures=$((failures + 1)); fi
 printf 'panic boundary  %s  %s\n' "$status" "$result"

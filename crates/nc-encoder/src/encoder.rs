@@ -90,7 +90,10 @@ use crate::spatial::SpatialConfig;
 use crate::startup_lookahead::{StartupLookahead, startup_scene_profile};
 use crate::still_plan::StillPlan;
 use crate::still_skip::StaticSkipTest;
-use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, TemporalStructure};
+use crate::structure::{
+    FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, TemporalStructure,
+    longest_reference_distance,
+};
 use crate::threshold_control::{FrameEvidence, Switch, ThresholdControl, Tool};
 use crate::timeline::{FrameTime, Timeline};
 use crate::transplant::{PartitionLog, Transplant};
@@ -1571,24 +1574,20 @@ impl<B: CodecBackend> Encoder<B> {
     /// Enable intra refresh (`refresh.rs`) instead of periodic key frames, or
     /// disable it (`None`); takes effect at the next frame. An adaptive
     /// temporal structure is held flat while it is on (the sweep starts with
-    /// the first flat frame); fixed layered structures are not supported yet.
+    /// the first flat frame); a fixed layered structure sweeps on its
+    /// base-layer frames only, over as many of them as cover the period.
     ///
     /// # Errors
     ///
-    /// [`ConfigError::IntraRefresh`] with fixed temporal layers, without inter
-    /// frames, for a picture-owning backend, or for a period below
-    /// [`MIN_REFRESH_PERIOD`].
+    /// [`ConfigError::IntraRefresh`] with spatial layers, without inter
+    /// frames, for a backend that cannot recover by it, beside an explicit
+    /// second reference, or for a period below [`MIN_REFRESH_PERIOD`].
     pub fn set_intra_refresh(&mut self, refresh: Option<IntraRefresh>) -> Result<(), ConfigError> {
         if let Some(settings) = refresh {
             if self.spatial.is_some() {
                 return Err(ConfigError::IntraRefresh(
                     "not supported with spatial layers",
                 ));
-            }
-            // An adaptive structure is held flat instead (the sweep runs on
-            // flat frames only); a fixed layered one cannot be.
-            if self.config.temporal_layers > 1 && !self.structure.is_adaptive() {
-                return Err(ConfigError::IntraRefresh("not yet with temporal layers"));
             }
             if !self.backend.supports_inter() {
                 return Err(ConfigError::IntraRefresh(
@@ -1603,9 +1602,6 @@ impl<B: CodecBackend> Encoder<B> {
                 return Err(ConfigError::IntraRefresh(
                     "the codec cannot recover by intra refresh (VP9, AV2)",
                 ));
-            }
-            if self.ltr.is_some() {
-                return Err(ConfigError::IntraRefresh("not with a long-term reference"));
             }
             // A block predicting from the HQ frame may reach back past the
             // sweep's clean region: an explicit `refs.second` refuses the
@@ -1622,6 +1618,13 @@ impl<B: CodecBackend> Encoder<B> {
         }
         self.structure.set_hold_flat(refresh.is_some());
         if refresh != self.refresh.as_ref().map(RefreshSweep::settings) {
+            // An adaptive structure is held flat (the sweep runs on every
+            // frame); a fixed layered one sweeps on its base-layer frames.
+            let base_spacing = if self.structure.is_adaptive() {
+                1
+            } else {
+                longest_reference_distance(self.config.temporal_layers)
+            };
             self.refresh = refresh.map(|settings| {
                 RefreshSweep::new(
                     settings,
@@ -1629,6 +1632,7 @@ impl<B: CodecBackend> Encoder<B> {
                     1 << self.backend.min_block_log2(),
                     self.backend.loop_filter_reach(),
                 )
+                .with_frame_spacing(base_spacing)
             });
         }
         let period = u32::try_from(self.key_period()).unwrap_or(u32::MAX);
@@ -2400,13 +2404,25 @@ impl<B: CodecBackend> Encoder<B> {
         if let Some(labeller) = self.labels.as_mut() {
             labeller.noise_sigma = analysis.map_or(0.0, |a| a.noise_sigma);
         }
-        // The sweep assumes each frame references the previous one: frames
-        // of a layered mini-GOP still in progress when an adaptive structure
-        // was held flat (`set_intra_refresh`) code no window and leave the
-        // sweep where it is.
-        let flat = references.position.layers == 1;
+        // The sweep assumes each frame with a window references the
+        // previous one: only base-layer frames code one. Upper-layer frames
+        // (of a fixed layered structure, or of a layered mini-GOP still in
+        // progress when an adaptive structure was held flat) leave the sweep
+        // where it is; they predict only from frames of their own mini-GOP
+        // and its T0 frame, and no base-layer frame predicts from them, so
+        // they are clean once the base layer is.
+        let base = references.position.layer == 0;
         self.window = match (self.refresh.as_mut(), frame_type) {
-            (Some(sweep), FrameType::Inter) if flat => Some(sweep.next_window()),
+            (Some(sweep), FrameType::Inter) if base => {
+                // A recovery frame predicts from the long-term reference,
+                // coded earlier in the sweep or before it: a receiver that
+                // never lost a frame may hold it partly dirty, so the sweep
+                // starts again from the recovery frame.
+                if recovery {
+                    sweep.restart();
+                }
+                Some(sweep.next_window())
+            }
             (Some(sweep), FrameType::Key) => {
                 sweep.restart();
                 None
@@ -5501,9 +5517,6 @@ fn long_term_reference<B: CodecBackend>(
         return Err(ConfigError::LongTermReference(
             "not supported by this codec yet",
         ));
-    }
-    if RefreshParams::from_overrides(&config.params).period > 0.0 {
-        return Err(ConfigError::LongTermReference("not with intra refresh"));
     }
     Ok(Some(LongTermReference::new(
         interval,

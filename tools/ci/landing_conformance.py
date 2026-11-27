@@ -347,25 +347,13 @@ def spatial_layers(codec: Codec, preset: str) -> int:
     return int(preset_setting(codec, preset, "spatial.layers") or 1)
 
 
-def fixed_temporal_layers(codec: Codec, preset: str) -> bool:
-    """Whether a preset codes a fixed temporal-layer structure (`layers.count` > 1
-    with `layers.adaptive` 0). The encoder refuses intra refresh with fixed
-    layers ("not yet with temporal layers", nc_encoder `set_intra_refresh`; an
-    adaptive structure is held flat instead), so such a preset has no refresh
-    case: the encoder's refusal is the specified behaviour, not a failure."""
-    count = preset_setting(codec, preset, "layers.count") or 1
-    adaptive = preset_setting(codec, preset, "layers.adaptive")
-    return count > 1 and adaptive is not None and adaptive < 0.5
-
-
 def cases(codecs: list[Codec]) -> list[Case]:
     kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp", "still", "stillqp",
              "farqp", "widefarqp")
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(codec, preset) == 1
             for kind in kinds
-            if not (kind == "refresh" and (codec in NO_INTRA_REFRESH
-                                           or fixed_temporal_layers(codec, preset)))]
+            if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
     base += [Case(codec, MEDIUM, "timed") for codec in codecs]
     base += [Case(codec, preset, "switch") for codec in codecs
              if codec in ADAPTIVE_RESOLUTION_CODECS

@@ -38,8 +38,8 @@ const LEVEL_6: u32 = 96;
 /// Bits of `ph_pic_order_cnt_lsb` (`sps_log2_max_pic_order_cnt_lsb_minus4`
 /// plus 4): references within 126 pictures (`references.rs`).
 pub(crate) const POC_BITS: u32 = 8;
-/// With a long-held second reference (`nc_encoder::holds_second_reference`):
-/// 16, the most §7.4.3.4 allows, for references up to
+/// With a long-term reference (`ltr.interval`) or a long-held second
+/// reference (`nc_encoder::holds_second_reference`): 16, the most §7.4.3.4 allows, for references up to
 /// `nc_encoder::MAX_REFERENCE_AGE` back, at one more byte a picture.
 pub(crate) const LONG_POC_BITS: u32 = 16;
 
@@ -144,19 +144,21 @@ pub(crate) struct Tools {
     /// `sps_max_luma_transform_size_64_flag` (64x64 CTUs only): a 64x64 CU
     /// codes one 64-point transform unit (`transform_tree`).
     pub large_transforms: bool,
-    /// The DPB also holds the second reference (`refs.second`,
-    /// `references.rs`): `sps_max_dec_pic_buffering_minus1` one more.
-    pub second_reference: bool,
+    /// The DPB also holds the engine's long-term slot (the second or the
+    /// long-term reference, `references.rs`):
+    /// `sps_max_dec_pic_buffering_minus1` one more.
+    pub long_term_slot: bool,
     /// Bits of the POC LSBs: [`POC_BITS`] or [`LONG_POC_BITS`].
     pub poc_bits: u32,
 }
 
 impl Tools {
-    /// These tools, the DPB also holding the second reference when `second`,
-    /// held long (`refs.second_hold`) when `held`.
-    pub(crate) fn with_second_reference(self, second: bool, held: bool) -> Self {
+    /// These tools, the DPB also holding the long-term slot's picture when
+    /// `listed`, with POC LSBs reaching it when it is `held` long (the
+    /// long-term reference, `refs.second_hold`).
+    pub(crate) fn with_long_term_slot(self, listed: bool, held: bool) -> Self {
         Self {
-            second_reference: second,
+            long_term_slot: listed,
             poc_bits: if held { LONG_POC_BITS } else { POC_BITS },
             ..self
         }
@@ -182,7 +184,7 @@ impl Default for Tools {
             merge_candidates: DEFAULT_MERGE_CANDIDATES,
             mts: None,
             large_transforms: false,
-            second_reference: false,
+            long_term_slot: false,
             poc_bits: POC_BITS,
         }
     }
@@ -284,7 +286,7 @@ fn sps_layered_head(geometry: &Geometry, tools: Tools, layers: u8) -> BitWriter 
         w.put_bit(false); // sublayer DPB parameters inherited
     }
     // References plus the current picture (sps_max_dec_pic_buffering_minus1).
-    let references = nc_encoder::reference_slots(layers) + usize::from(tools.second_reference);
+    let references = nc_encoder::reference_slots(layers) + usize::from(tools.long_term_slot);
     w.put_ue(references as u32);
     w.put_ue(0); // max_num_reorder_pics
     w.put_ue(0); // max_latency_increase_plus1

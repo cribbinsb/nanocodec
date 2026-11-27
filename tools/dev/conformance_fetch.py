@@ -50,7 +50,7 @@ SUITES = {
              r"^(Hi422|PPH422|PPH444|PPCV444)", DATA / "conformance/h264"),
     "av1-libaom": ("listed", AOM_TEST_DATA, ROOT / "tools/conformance/av1_manifest.txt",
                    DATA / "conformance/av1"),
-    # libvpx's VP9 profile 0 and profile 2 (4:2:0) vectors.
+    # libvpx's VP9 vectors of every profile (4:2:0, 4:2:2, 4:4:0, 4:4:4).
     "vp9-libvpx": ("listed", VPX_TEST_DATA, ROOT / "tools/conformance/vp9_manifest.txt",
                    DATA / "conformance/vp9"),
 }

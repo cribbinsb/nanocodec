@@ -19,15 +19,39 @@ const W64: usize = 4;
 
 pub(crate) fn install(table: &mut McFns) {
     table.vp9 = crate::vp9_mc_simd::families(crate::Isa::Avx512);
-    table.av1[..2].copy_from_slice(&[av1_put::<Regular, 4>, av1_put::<Regular, 8>]);
-    table.av1_smooth[..2].copy_from_slice(&[av1_put::<Smooth, 4>, av1_put::<Smooth, 8>]);
-    table.av1_sharp[..2].copy_from_slice(&[av1_put::<Sharp, 4>, av1_put::<Sharp, 8>]);
+    table.av1[..3].copy_from_slice(&[
+        av1_put::<Regular, 4>,
+        av1_put::<Regular, 8>,
+        av1_put::<Regular, 16>,
+    ]);
+    table.av1_smooth[..3].copy_from_slice(&[
+        av1_put::<Smooth, 4>,
+        av1_put::<Smooth, 8>,
+        av1_put::<Smooth, 16>,
+    ]);
+    table.av1_sharp[..3].copy_from_slice(&[
+        av1_put::<Sharp, 4>,
+        av1_put::<Sharp, 8>,
+        av1_put::<Sharp, 16>,
+    ]);
     for (prep, family) in table.compound.prep.iter_mut().zip([
-        [av1_prep::<Regular, 4>, av1_prep::<Regular, 8>],
-        [av1_prep::<Smooth, 4>, av1_prep::<Smooth, 8>],
-        [av1_prep::<Sharp, 4>, av1_prep::<Sharp, 8>],
+        [
+            av1_prep::<Regular, 4>,
+            av1_prep::<Regular, 8>,
+            av1_prep::<Regular, 16>,
+        ],
+        [
+            av1_prep::<Smooth, 4>,
+            av1_prep::<Smooth, 8>,
+            av1_prep::<Smooth, 16>,
+        ],
+        [
+            av1_prep::<Sharp, 4>,
+            av1_prep::<Sharp, 8>,
+            av1_prep::<Sharp, 16>,
+        ],
     ]) {
-        prep[..2].copy_from_slice(&family);
+        prep[..3].copy_from_slice(&family);
     }
     table.av1[W32] = av1_put::<Regular, 32>;
     table.av1_smooth[W32] = av1_put::<Smooth, 32>;
@@ -43,8 +67,16 @@ pub(crate) fn install(table: &mut McFns) {
         prep[W32..].copy_from_slice(&family);
     }
     if let Some(mixed) = table.av1_mixed.as_mut() {
-        mixed.put[..2].copy_from_slice(&[av1_put_mixed::<4>, av1_put_mixed::<8>]);
-        mixed.prep[..2].copy_from_slice(&[av1_prep_mixed::<4>, av1_prep_mixed::<8>]);
+        mixed.put[..3].copy_from_slice(&[
+            av1_put_mixed::<4>,
+            av1_put_mixed::<8>,
+            av1_put_mixed::<16>,
+        ]);
+        mixed.prep[..3].copy_from_slice(&[
+            av1_prep_mixed::<4>,
+            av1_prep_mixed::<8>,
+            av1_prep_mixed::<16>,
+        ]);
         mixed.put[W32..].copy_from_slice(&[av1_put_mixed::<32>, av1_put_mixed::<64>]);
         mixed.prep[W32..].copy_from_slice(&[av1_prep_mixed::<32>, av1_prep_mixed::<64>]);
     }
@@ -76,7 +108,7 @@ unsafe fn av1_put<F: Av1Family, const W: usize>(
 ) {
     // SAFETY: the `mc` contract is the caller's; this tier's ISA is enabled.
     unsafe {
-        if W <= 8 {
+        if W <= 16 {
             av1_avx2::put::<F, W, Avx512Narrow>(src, ss, dst, ds, h, fx, fy);
         } else {
             av1_avx2::put::<F, W, Avx512Wide>(src, ss, dst, ds, h, fx, fy);
@@ -97,7 +129,7 @@ unsafe fn av1_prep<F: Av1Family, const W: usize>(
 ) {
     // SAFETY: as for `av1_put`.
     unsafe {
-        if W <= 8 {
+        if W <= 16 {
             av1_avx2::prep::<F, W, Avx512Narrow>(src, ss, dst, ds, h, fx, fy);
         } else {
             av1_avx2::prep::<F, W, Avx512Wide>(src, ss, dst, ds, h, fx, fy);
@@ -118,7 +150,7 @@ unsafe fn av1_put_mixed<const W: usize>(
 ) {
     // SAFETY: as for `av1_put`.
     unsafe {
-        if W <= 8 {
+        if W <= 16 {
             av1_avx2::put_mixed::<W, Avx512Narrow>(src, ss, dst, ds, h, fracs, taps);
         } else {
             av1_avx2::put_mixed::<W, Avx512Wide>(src, ss, dst, ds, h, fracs, taps);
@@ -139,7 +171,7 @@ unsafe fn av1_prep_mixed<const W: usize>(
 ) {
     // SAFETY: as for `av1_put`.
     unsafe {
-        if W <= 8 {
+        if W <= 16 {
             av1_avx2::prep_mixed::<W, Avx512Narrow>(src, ss, dst, ds, h, fracs, taps);
         } else {
             av1_avx2::prep_mixed::<W, Avx512Wide>(src, ss, dst, ds, h, fracs, taps);

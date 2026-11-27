@@ -46,6 +46,7 @@ mod outcome_tests;
 mod params;
 mod qp_replay;
 mod rate_control;
+mod rtp;
 mod session;
 mod spatial_stats;
 mod sse_log;
@@ -70,8 +71,8 @@ use nc_common::{Picture, yuv};
 use crate::input::{FrameReader, InputFormat};
 use nc_encoder::{
     Codec, CodecBackend, EncodedFrame, Encoder, EncoderConfig, FrameRate, MICROS_PER_SECOND,
-    ParamOverrides, RateControlConfig, RateControlStats, ScalabilityMode, StreamSignal,
-    TimingSignal,
+    ParamOverrides, RateControlConfig, RateControlStats, ScalabilityMode, SessionSwitches,
+    StreamSignal, TimingSignal,
 };
 use nc_h264::H264Backend;
 use nc_hevc::HevcBackend;
@@ -112,6 +113,7 @@ const ENCODE_OUTPUT_FLAGS: &[&str] = &[
     "--partition-record",
     "--timestamps-out",
     "--display",
+    "--rtp",
 ];
 
 #[derive(Debug)]
@@ -174,6 +176,8 @@ struct EncodeArgs {
     /// acknowledged at once, except frame `N` (or spatial layer `S` on TU `N`),
     /// which is reported lost and left out of every output.
     simulate_loss: Option<SimulatedLoss>,
+    /// `--rtp` and its options: the coded units as RTP packets.
+    rtp: Option<rtp::RtpOptions>,
 }
 
 /// `--simulate-loss FRAME[:SPATIAL_ID]`.
@@ -241,6 +245,20 @@ fn main() -> ExitCode {
             }
         };
     }
+    if let Some(command @ ("packetize" | "depacketize")) = args.first().map(String::as_str) {
+        let result = if command == "packetize" {
+            rtp::run_packetize(&args[1..])
+        } else {
+            rtp::run_depacketize(&args[1..])
+        };
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("nanocodec: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().map(String::as_str) == Some("extract") {
         return match extract::run(&args[1..]) {
             Ok(()) => ExitCode::SUCCESS,
@@ -299,6 +317,10 @@ fn parse_block_log2(block: Option<&str>, codec: Codec) -> Result<u8, String> {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one struct field per option; the parsing itself lives in helpers"
+)]
 fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
     stdio::check_streams(args, ENCODE_INPUT_FLAGS, ENCODE_OUTPUT_FLAGS)?;
     let get = |flag: &str| -> Option<String> {
@@ -384,7 +406,7 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
             colour: colour::parse(get)?,
             timing: parse_timing(get("--timing").as_deref(), timestamps.is_some())?,
         },
-        params: with_fixed_qp_profile(encode_params(args, codec)?, rate_control.is_none()),
+        params: encode_params(args, codec, rate_control.is_none())?,
         rate_control,
         rate_changes,
         resizes: parse_resizes(args)?,
@@ -396,6 +418,7 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         transplant: parse_transplant(get("--partition-record"), get("--partition-replay"))?,
         timestamps,
         timestamps_out: get("--timestamps-out").map(PathBuf::from),
+        rtp: rtp::RtpOptions::parse(args, codec)?,
         simulate_loss: get("--simulate-loss")
             .as_deref()
             .map(parse_simulate_loss)
@@ -480,21 +503,9 @@ fn parse_temporal_layers(args: &[String]) -> Result<u8, String> {
 
 /// The heuristic parameters (`--preset`, `--still-camera`, `--params`,
 /// `--scalability`, `--param`) with the options that stand for parameters
-/// applied over them.
-/// The fixed-QP profile (`rate.fixed_qp_profile`) for an encode without
-/// rate control, unless the caller or a preset set it: `--qp` codes with
-/// the codec's static fixed-QP pattern (`CodecBackend::FIXED_QP_PARAMS`).
-fn with_fixed_qp_profile(mut params: ParamOverrides, fixed_qp: bool) -> ParamOverrides {
-    if fixed_qp && !params.contains(FIXED_QP_PROFILE_PARAM) {
-        params.set(FIXED_QP_PROFILE_PARAM, 1.0);
-    }
-    params
-}
-
-/// The switch of the codec's fixed-QP profile.
-const FIXED_QP_PROFILE_PARAM: &str = "rate.fixed_qp_profile";
-
-fn encode_params(args: &[String], codec: Codec) -> Result<ParamOverrides, String> {
+/// applied over them (`nc_encoder::SessionSwitches`; `fixed_qp`: no
+/// `--bitrate`, so the codec's fixed-QP profile applies).
+fn encode_params(args: &[String], codec: Codec, fixed_qp: bool) -> Result<ParamOverrides, String> {
     let number = |v: String, flag: &str| {
         v.parse::<u64>()
             .map_err(|_| format!("bad value for {flag}: {v}"))
@@ -511,14 +522,19 @@ fn encode_params(args: &[String], codec: Codec) -> Result<ParamOverrides, String
         &named,
         parse_scalability(args)?,
     )?;
-    // `--intra-refresh N` is `--param refresh.period=N`.
-    if let Some(period) = params::flag_value(args, "--intra-refresh") {
-        params.set("refresh.period", number(period, "--intra-refresh")? as f32);
+    // `--intra-refresh N`, `--ltr-interval N` and `--qp` without `--bitrate`
+    // stand for parameters, mapped as every front end maps them.
+    let flag_number = |flag: &str| {
+        params::flag_value(args, flag)
+            .map(|v| number(v, flag).map(|n| n as u32))
+            .transpose()
+    };
+    SessionSwitches {
+        intra_refresh_period: flag_number("--intra-refresh")?,
+        ltr_interval: flag_number("--ltr-interval")?,
+        fixed_qp,
     }
-    // `--ltr-interval N` is `--param ltr.interval=N`.
-    if let Some(interval) = params::flag_value(args, "--ltr-interval") {
-        params.set("ltr.interval", number(interval, "--ltr-interval")? as f32);
-    }
+    .apply(&mut params);
     if let Some(FilmGrainFlag { strength }) = parse_film_grain(args)? {
         nc_av1::enable_film_grain(codec, strength, &mut params)
             .map_err(|e| format!("--film-grain: {e}"))?;
@@ -1019,6 +1035,7 @@ fn run<B: CodecBackend, S: FrameSink>(
         })
         .transpose()?;
     let mut recon_out = ReconOutputs::create(args)?;
+    let mut rtp_out = args.rtp.as_ref().map(rtp::RtpOutput::create).transpose()?;
     let mut telemetry = SpatialTelemetry::default();
     input.look_ahead_second(&mut encoder)?;
     let mut pending = PendingChanges::new(args);
@@ -1045,6 +1062,7 @@ fn run<B: CodecBackend, S: FrameSink>(
         let coded = !uncoded && !lost;
         if coded {
             sink.write_frame(&frame.data, pts)?;
+            rtp::write(rtp_out.as_mut(), &frame, &encoder)?;
             telemetry.observe(&frame);
             recon_out.write_layers(index, &frame, &encoder)?;
         }
@@ -1087,6 +1105,7 @@ fn run<B: CodecBackend, S: FrameSink>(
     write_partition_log(args, &mut encoder)?;
     labels.map_or(Ok(()), |dump| dump.finish(&mut encoder, args.codec))?;
     recon_out.finish()?;
+    rtp_out.map_or(Ok(()), rtp::RtpOutput::finish)?;
     if let Some(out) = timestamps_out {
         out.finish().map_err(|e| e.to_string())?;
     }

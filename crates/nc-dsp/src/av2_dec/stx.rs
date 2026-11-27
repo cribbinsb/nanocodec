@@ -14,7 +14,14 @@
 //! stride `min(h, 32)`; the inputs are the first `eob + 1` entries of the
 //! buffer, as dav2d's coefficient reader leaves them for a secondary
 //! transform block.
+//!
+//! The coefficient type is generic ([`Av2Coefficient`]: `i16` at 8 bits,
+//! with its AVX2 / AVX-512 kernels, `i32` deeper, scalar), with the depth's
+//! clamp at run time as dav2d's bitdepth template (`BITDEPTH_MAX`).
 
+use nc_common::BitDepth;
+
+use super::coefficient::{Av2Coefficient, intermediate_bounds};
 use super::itx::RectTxSize;
 use crate::{Dsp, Isa};
 
@@ -74,17 +81,22 @@ const STX_SET_MASK: u8 = 0xf;
 
 /// dav2d `stxfm_c`: the matrix product of the first `eob + 1` inputs with a
 /// kernel of `N` outputs, each rounded half away from zero and clamped to
-/// 16 bits (8-bit video: `±128 · 256`).
-fn matrix_product<const N: usize>(cf: &[i16], kernel: &[i8]) -> [i16; N] {
-    let mut out = [0; N];
+/// `±128 · (1 + BITDEPTH_MAX)` (16 bits at 8-bit depth).
+fn matrix_product<C: Av2Coefficient, const N: usize>(
+    cf: &[C],
+    kernel: &[i8],
+    depth: BitDepth,
+) -> [C; N] {
+    let (low, high) = intermediate_bounds(depth);
+    let mut out = [C::default(); N];
     for (x, o) in out.iter_mut().enumerate() {
         let sum: i32 = cf
             .iter()
             .zip(kernel[x..].iter().step_by(N))
-            .map(|(&c, &k)| i32::from(c) * i32::from(k))
+            .map(|(&c, &k)| c.to_i32() * i32::from(k))
             .sum();
         let magnitude = (sum.abs() + (1 << (KERNEL_SHIFT - 1))) >> KERNEL_SHIFT;
-        *o = (magnitude * sum.signum()).clamp(i16::MIN.into(), i16::MAX.into()) as i16;
+        *o = C::from_i32((magnitude * sum.signum()).clamp(low, high));
     }
     out
 }
@@ -93,29 +105,31 @@ fn matrix_product<const N: usize>(cf: &[i16], kernel: &[i8]) -> [i16; N] {
 /// the first `eob + 1 <= 8` coefficients of `cf`, written to the top-left
 /// 4x4 of the column-major block of column stride `stride` (4 to 32);
 /// `transpose` writes output `y * 4 + x` to row `x`, column `y` instead of
-/// row `y`, column `x`. Inputs outside the 4x4 are zeroed.
-pub fn secondary4(
-    cf: &mut [i16],
+/// row `y`, column `x`. Inputs outside the 4x4 are zeroed. Outputs clamp to
+/// `depth` as [`matrix_product`].
+pub fn secondary4<C: Av2Coefficient>(
+    cf: &mut [C],
     stride: usize,
     transpose: bool,
     kernel: &[i8; STX4_INPUTS * STX4_OUTPUTS],
     eob: u16,
+    depth: BitDepth,
 ) {
-    secondary4_for_isa(Isa::Scalar, cf, stride, transpose, kernel, eob);
+    secondary4_for_isa(Isa::Scalar, cf, (stride, transpose), kernel, eob, depth);
 }
 
-fn secondary4_for_isa(
+fn secondary4_for_isa<C: Av2Coefficient>(
     isa: Isa,
-    cf: &mut [i16],
-    stride: usize,
-    transpose: bool,
+    cf: &mut [C],
+    (stride, transpose): (usize, bool),
     kernel: &[i8; STX4_INPUTS * STX4_OUTPUTS],
     eob: u16,
+    depth: BitDepth,
 ) {
     check_stride(stride, SIDE4);
     assert!(usize::from(eob) < STX4_INPUTS, "4x4 IST end of block {eob}");
-    let sums = secondary_matrix::<STX4_OUTPUTS, 1>(isa, &cf[..=usize::from(eob)], kernel);
-    cf[SIDE4..STX4_INPUTS].fill(0);
+    let sums = secondary_matrix::<C, STX4_OUTPUTS, 1>(isa, &cf[..=usize::from(eob)], kernel, depth);
+    cf[SIDE4..STX4_INPUTS].fill(C::default());
     for (n, &sum) in sums.iter().enumerate() {
         let (y, x) = (n / SIDE4, n % SIDE4);
         let position = if transpose {
@@ -131,38 +145,43 @@ fn secondary4_for_isa(
 /// the first `eob + 1 <= 32` coefficients of `cf`, written to the top-left
 /// 8x8 at the raster positions of mapping `map_idx` (see [`kernel8`]) in a
 /// column-major block of column stride `stride` (8 to 32), transposed as
-/// for [`secondary4`]. The first 32 entries are zeroed first.
-pub fn secondary8(
-    cf: &mut [i16],
+/// for [`secondary4`]. The first 32 entries are zeroed first. Outputs clamp
+/// to `depth` as [`matrix_product`].
+pub fn secondary8<C: Av2Coefficient>(
+    cf: &mut [C],
     stride: usize,
     transpose: bool,
     map_idx: usize,
     kernel: &[i8; STX8_INPUTS * STX8_OUTPUTS],
     eob: u16,
+    depth: BitDepth,
 ) {
-    secondary8_for_isa(Isa::Scalar, cf, stride, (transpose, map_idx), kernel, eob);
+    secondary8_for_isa(
+        Isa::Scalar,
+        cf,
+        (stride, transpose, map_idx),
+        kernel,
+        eob,
+        depth,
+    );
 }
 
-#[allow(unsafe_code)]
-fn secondary8_for_isa(
+fn secondary8_for_isa<C: Av2Coefficient>(
     isa: Isa,
-    cf: &mut [i16],
-    stride: usize,
-    (transpose, map_idx): (bool, usize),
+    cf: &mut [C],
+    (stride, transpose, map_idx): (usize, bool, usize),
     kernel: &[i8; STX8_INPUTS * STX8_OUTPUTS],
     eob: u16,
+    depth: BitDepth,
 ) {
     check_stride(stride, SIDE8);
     assert!(usize::from(eob) < STX8_INPUTS, "8x8 IST end of block {eob}");
     let inputs = usize::from(eob) + 1;
-    #[cfg(target_arch = "x86_64")]
-    if isa == Isa::Avx512 {
-        // SAFETY: the dispatch validated the full Ice Lake feature set.
-        unsafe { avx512::secondary8(cf, stride, (transpose, map_idx), kernel, inputs) };
+    if C::secondary8_simd(isa, cf, stride, (transpose, map_idx), kernel, inputs) {
         return;
     }
-    let sums = secondary_matrix::<STX8_OUTPUTS, 3>(isa, &cf[..inputs], kernel);
-    cf[..STX8_INPUTS].fill(0);
+    let sums = secondary_matrix::<C, STX8_OUTPUTS, 3>(isa, &cf[..inputs], kernel, depth);
+    cf[..STX8_INPUTS].fill(C::default());
     for (&raster, &sum) in COEFF8X8_MAPPING[map_idx].iter().zip(&sums) {
         let (y, x) = (usize::from(raster) / SIDE8, usize::from(raster) % SIDE8);
         let position = if transpose {
@@ -174,19 +193,52 @@ fn secondary8_for_isa(
     }
 }
 
+fn secondary_matrix<C: Av2Coefficient, const N: usize, const GROUPS: usize>(
+    isa: Isa,
+    cf: &[C],
+    kernel: &[i8],
+    depth: BitDepth,
+) -> [C; N] {
+    C::secondary_matrix_simd::<N, GROUPS>(isa, cf, kernel)
+        .unwrap_or_else(|| matrix_product::<C, N>(cf, kernel, depth))
+}
+
+/// The 8-bit vector matrix product of [`secondary_matrix`] (its clamp is
+/// the `i16` saturation), or `None` without one for `isa`.
 #[allow(unsafe_code)]
-fn secondary_matrix<const N: usize, const GROUPS: usize>(
+pub(super) fn matrix_simd<const N: usize, const GROUPS: usize>(
     isa: Isa,
     cf: &[i16],
     kernel: &[i8],
-) -> [i16; N] {
+) -> Option<[i16; N]> {
     #[cfg(target_arch = "x86_64")]
     if matches!(isa, Isa::Avx2 | Isa::Avx512) {
         // SAFETY: both tiers include AVX2 and were validated by Dsp.
-        return unsafe { avx2::matrix::<N, GROUPS>(cf, kernel) };
+        return Some(unsafe { avx2::matrix::<N, GROUPS>(cf, kernel) });
     }
-    let _ = isa;
-    matrix_product::<N>(cf, kernel)
+    let _ = (isa, cf, kernel);
+    None
+}
+
+/// The 8-bit AVX-512 8x8 secondary transform of [`secondary8_for_isa`];
+/// `false` without it for `isa`.
+#[allow(unsafe_code)]
+pub(super) fn secondary8_simd(
+    isa: Isa,
+    cf: &mut [i16],
+    stride: usize,
+    orientation: (bool, usize),
+    kernel: &[i8],
+    inputs: usize,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if isa == Isa::Avx512 {
+        // SAFETY: the dispatch validated the full Ice Lake feature set.
+        unsafe { avx512::secondary8(cf, stride, orientation, kernel, inputs) };
+        return true;
+    }
+    let _ = (isa, cf, stride, orientation, kernel, inputs);
+    false
 }
 
 fn check_stride(stride: usize, side: usize) {
@@ -231,41 +283,43 @@ pub fn transposed(intra_mode: Option<u8>) -> bool {
 /// 2-5) is nonzero: picks the 8x8 kernel when both sides are at least 8,
 /// else the 4x4, runs it on `cf` (column stride `size.coded_height()`), and
 /// returns the end of block to pass to the primary inverse transform.
+/// Outputs clamp to `depth` as [`matrix_product`].
 ///
 /// # Panics
 /// If `stx` has no kernel or the arguments break [`secondary4`] /
 /// [`secondary8`]'s contracts.
-pub fn apply_secondary(
-    cf: &mut [i16],
+pub fn apply_secondary<C: Av2Coefficient>(
+    cf: &mut [C],
     size: RectTxSize,
     stx: u8,
     transpose: bool,
     eob: u16,
+    depth: BitDepth,
 ) -> u16 {
-    apply_secondary_for_isa(Isa::Scalar, cf, size, stx, transpose, eob)
+    apply_secondary_for_isa(Isa::Scalar, cf, (size, stx, transpose), eob, depth)
 }
 
 /// As [`apply_secondary`], with the secondary transform of the selected ISA.
 /// # Panics
 /// As [`apply_secondary`].
-pub fn apply_secondary_with_dsp(
+pub fn apply_secondary_with_dsp<C: Av2Coefficient>(
     dsp: &Dsp,
-    cf: &mut [i16],
+    cf: &mut [C],
     size: RectTxSize,
     stx: u8,
     transpose: bool,
     eob: u16,
+    depth: BitDepth,
 ) -> u16 {
-    apply_secondary_for_isa(dsp.isa(), cf, size, stx, transpose, eob)
+    apply_secondary_for_isa(dsp.isa(), cf, (size, stx, transpose), eob, depth)
 }
 
-fn apply_secondary_for_isa(
+fn apply_secondary_for_isa<C: Av2Coefficient>(
     isa: Isa,
-    cf: &mut [i16],
-    size: RectTxSize,
-    stx: u8,
-    transpose: bool,
+    cf: &mut [C],
+    (size, stx, transpose): (RectTxSize, u8, bool),
     eob: u16,
+    depth: BitDepth,
 ) -> u16 {
     let ty = usize::from(stx & STX_TYPE_MASK)
         .checked_sub(1)
@@ -274,10 +328,11 @@ fn apply_secondary_for_isa(
     let stride = size.coded_height();
     if size.width() >= SIDE8 && size.height() >= SIDE8 {
         let (kernel, map_idx) = kernel8(set, ty);
-        secondary8_for_isa(isa, cf, stride, (transpose, map_idx), kernel, eob);
+        secondary8_for_isa(isa, cf, (stride, transpose, map_idx), kernel, eob, depth);
         EOB_AFTER_STX8
     } else {
-        secondary4_for_isa(isa, cf, stride, transpose, kernel4(set, ty), eob);
+        let kernel = kernel4(set, ty);
+        secondary4_for_isa(isa, cf, (stride, transpose), kernel, eob, depth);
         EOB_AFTER_STX4
     }
 }

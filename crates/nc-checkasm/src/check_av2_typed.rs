@@ -2,6 +2,7 @@
 //! the scalar reference, on random, extreme and alternating inputs, with
 //! guarded outputs.
 use crate::{check::CheckReport, rng::Rng};
+use nc_common::BitDepth;
 use nc_dsp::av2_dec::itx::{self, RectTxSize, TxType};
 use nc_dsp::{Av2Kernel, Av2TxSize, Av2TxType, Dsp};
 
@@ -134,6 +135,7 @@ fn check_decoder_square(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report:
                     &mut coeffs[1..],
                     (size, TxType::DCT_DCT),
                     eob,
+                    BitDepth::EIGHT,
                 );
                 (pixels, coeffs)
             };

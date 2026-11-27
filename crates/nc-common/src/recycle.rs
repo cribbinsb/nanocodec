@@ -8,7 +8,7 @@
 //! only code that writes every sample it later reads may take one.
 
 use crate::error::Result;
-use crate::picture::{Picture, PlaneIndex};
+use crate::picture::{ChromaFormat, Picture, PlaneIndex};
 use crate::plane::ROW_ALIGNMENT;
 use crate::sample::Sample;
 
@@ -37,13 +37,27 @@ impl<T: Sample> PictureRecycler<T> {
     ///
     /// As [`Picture::new`].
     pub fn take(&mut self, width: usize, height: usize, luma_border: usize) -> Result<Picture<T>> {
-        match self
-            .spare
-            .iter()
-            .position(|p| has_geometry(p, width, height, luma_border))
-        {
+        self.take_with_format(width, height, ChromaFormat::Yuv420, luma_border)
+    }
+
+    /// [`PictureRecycler::take`] of a picture in chroma `format` (as
+    /// [`Picture::with_format`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Picture::with_format`].
+    pub fn take_with_format(
+        &mut self,
+        width: usize,
+        height: usize,
+        format: ChromaFormat,
+        luma_border: usize,
+    ) -> Result<Picture<T>> {
+        match self.spare.iter().position(|p| {
+            p.chroma_format() == format && has_geometry(p, width, height, luma_border)
+        }) {
             Some(index) => Ok(self.spare.swap_remove(index)),
-            None => Picture::new(width, height, luma_border),
+            None => Picture::with_format(width, height, format, luma_border),
         }
     }
 

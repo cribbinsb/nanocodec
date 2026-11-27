@@ -8,8 +8,8 @@
 use nc_common::RawFrame;
 use nc_encoder::{
     Codec, ColourDescription, ColourInfo, ConfigError, EncodedFrame, Encoder, EncoderConfig,
-    FrameRate, IntraRefresh, ParamOverrides, RateControlConfig, RateControlError, StreamSignal,
-    TimingSignal,
+    FrameRate, IntraRefresh, ParamOverrides, RateControlConfig, RateControlError, SessionSwitches,
+    StreamSignal, TimingSignal,
 };
 
 /// Leaf block size the engine starts from (16x16), as the CLI's default.
@@ -211,15 +211,18 @@ impl Session {
         } else {
             config.params.clone()
         };
-        if config.intra_refresh_period > 0 {
-            params.set("refresh.period", config.intra_refresh_period as f32);
-        }
-        if config.ltr_interval > 0 {
-            params.set("ltr.interval", config.ltr_interval as f32);
-        }
         if config.film_grain {
             nc_av1::enable_film_grain(config.codec, config.film_grain_strength, &mut params)?;
         }
+        // The same mapping as the CLI's flags, so equal settings code equal
+        // streams (tools/ci/capi_check.sh): 0 leaves a switch unset.
+        SessionSwitches {
+            intra_refresh_period: (config.intra_refresh_period > 0)
+                .then_some(config.intra_refresh_period),
+            ltr_interval: (config.ltr_interval > 0).then_some(config.ltr_interval),
+            fixed_qp: config.target_kbps == 0,
+        }
+        .apply(&mut params);
         let engine = EncoderConfig {
             codec: config.codec,
             width: config.width,
@@ -313,6 +316,14 @@ impl Session {
     #[must_use]
     pub fn packet(&self) -> &EncodedFrame {
         &self.packet
+    }
+
+    /// The stream's layer structure and the most recent packet's layer
+    /// pictures, as RTP transport describes them (`nc_rtp`).
+    #[must_use]
+    pub fn rtp_layers(&self) -> (nc_rtp::LayerStructure, Vec<nc_rtp::LayerFrame>) {
+        let structure = dispatch!(&self.encoder, e => nc_encoder::rtp_layer_structure(e));
+        (structure, nc_encoder::rtp_layer_frames(&self.packet))
     }
 
     /// Code the next frame as a key frame.

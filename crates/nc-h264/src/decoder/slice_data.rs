@@ -1,6 +1,7 @@
 //! `slice_data()` (§7.3.4): the macroblock loop of one slice, with
 //! `mb_skip_run` (CAVLC) or `mb_skip_flag` / `end_of_slice_flag` (CABAC),
-//! decoding and reconstructing each macroblock as it is parsed.
+//! decoding and reconstructing each macroblock as it is parsed, in raster
+//! order or, with slice groups, along `NextMbAddress` (eq. 8-16).
 
 use super::cabac_syntax::CabacSyntax;
 use super::cavlc::CavlcSyntax;
@@ -10,6 +11,7 @@ use super::mbstate::{MbState, Neighbours};
 use super::recon::{self, ReconContext};
 use super::sample::H264Sample;
 use super::slice::SliceType;
+use super::slice_groups;
 #[cfg(feature = "analysis")]
 use super::stats::{self, MbContext};
 use super::syntax::MbSyntax;
@@ -31,6 +33,8 @@ pub(super) struct SliceDecoder<'a, T: H264Sample> {
     /// Filters macroblock rows a row behind decoding.
     pub deblocker: &'a mut RowDeblocker,
     pub mbs: &'a mut [MbState],
+    /// `MbToSliceGroupMap` of a picture with slice groups.
+    pub slice_groups: Option<&'a [u8]>,
     pub width_mbs: usize,
     /// `MbState::slice` of this slice's macroblocks.
     pub slice_no: u32,
@@ -50,6 +54,15 @@ pub(super) struct SliceDecoder<'a, T: H264Sample> {
 }
 
 impl<T: H264Sample> SliceDecoder<'_, T> {
+    /// The macroblock after `addr` in the slice (eq. 8-16).
+    #[inline]
+    fn next_addr(&self, addr: usize) -> usize {
+        match self.slice_groups {
+            None => addr + 1,
+            Some(map) => slice_groups::next_mb(map, addr),
+        }
+    }
+
     /// Decode (or skip) macroblock `addr` and reconstruct it; `skipped`
     /// decides from its neighbours whether it is skipped.
     fn macroblock<S: MbSyntax>(
@@ -135,7 +148,7 @@ impl<T: H264Sample> SliceDecoder<'_, T> {
             self.macroblock(syntax, addr, |syntax, nb| {
                 slice_type != SliceType::I && syntax.mb_skip_flag(slice_type, nb)
             })?;
-            addr += 1;
+            addr = self.next_addr(addr);
             if syntax.end_of_slice() {
                 return Ok(());
             }
@@ -153,14 +166,14 @@ impl<T: H264Sample> SliceDecoder<'_, T> {
                 }
                 for _ in 0..run {
                     self.macroblock(syntax, addr, |_, _| true)?;
-                    addr += 1;
+                    addr = self.next_addr(addr);
                 }
                 if run > 0 && !syntax.reader.more_rbsp_data() {
                     return Ok(());
                 }
             }
             self.macroblock(syntax, addr, |_, _| false)?;
-            addr += 1;
+            addr = self.next_addr(addr);
             if !syntax.reader.more_rbsp_data() {
                 return Ok(());
             }

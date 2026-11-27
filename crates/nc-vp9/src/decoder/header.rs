@@ -1,12 +1,12 @@
-//! Full VP9 profile 0 and 2 frame headers for the decoder: the uncompressed
+//! Full VP9 frame headers (profiles 0 to 3) for the decoder: the uncompressed
 //! header (VP9 §6.2, §7.2) and the compressed header (§6.3, §7.3). Field
 //! order and the state carried between frames follow libvpx
 //! `vp9_decodeframe.c` `read_uncompressed_header`, `setup_loopfilter`,
 //! `setup_segmentation`, `setup_tile_info` and `read_compressed_header`
 //! (BSD-3-Clause, see `THIRD_PARTY.md`).
 
-use nc_common::BitDepth;
 use nc_common::decode::{BitReader, DecodeError, Result};
+use nc_common::{BitDepth, ChromaFormat};
 
 use super::block::{ALTREF_FRAME, GOLDEN_FRAME, LAST_FRAME, REFS_PER_FRAME, RefFrame};
 use crate::bool_coder::BoolReader;
@@ -17,11 +17,13 @@ use crate::transform::TxSize;
 
 const FRAME_MARKER: u32 = 2;
 const SYNC_CODE: u32 = 0x49_83_42;
-/// `VPX_CS_SRGB`: 4:4:4 only, not allowed in Profile 0.
+/// `VPX_CS_SRGB`: 4:4:4 only, not allowed in profiles 0 and 2.
 const COLOR_SPACE_SRGB: u32 = 7;
-/// The profiles decoded: 8-bit and 10/12-bit 4:2:0.
+/// The profiles (VP9 §7.2): 0 is 8-bit 4:2:0, 1 8-bit 4:2:2, 4:4:0 or
+/// 4:4:4, 2 and 3 the same at 10 or 12 bits.
 const PROFILE_0: u32 = 0;
 const PROFILE_2: u32 = 2;
+const PROFILE_3: u32 = 3;
 /// Profile 2 depths (`ten_or_twelve_bit`).
 const TEN_BITS: u32 = 10;
 const TWELVE_BITS: u32 = 12;
@@ -194,8 +196,9 @@ impl HeaderState {
 pub(super) struct FrameHeader {
     /// `show_existing_frame`: the slot to show; nothing else is coded.
     pub show_existing: Option<usize>,
-    /// The depth a key or intra-only frame signals (`None`: the stream's).
-    pub bit_depth: Option<BitDepth>,
+    /// The depth and chroma format a key or intra-only frame signals
+    /// (`None`: the stream's).
+    pub color: Option<ColorConfig>,
     pub key: bool,
     pub show_frame: bool,
     pub error_resilient: bool,
@@ -240,7 +243,7 @@ impl FrameHeader {
         let mut bits = BitReader::new(data);
         let profile = read_profile(&mut bits)?;
         let mut header = Self {
-            bit_depth: None,
+            color: None,
             show_existing: None,
             key: false,
             show_frame: true,
@@ -276,7 +279,7 @@ impl FrameHeader {
         header.error_resilient = bits.read_bit()?;
         if header.key {
             read_sync_code(&mut bits)?;
-            header.bit_depth = Some(read_color_config(&mut bits, profile)?);
+            header.color = Some(read_color_config(&mut bits, profile)?);
             header.refresh = 0xff;
             (header.width, header.height) = read_coded_size(&mut bits)?;
             skip_render_size(&mut bits)?;
@@ -289,8 +292,8 @@ impl FrameHeader {
                 read_sync_code(&mut bits)?;
                 // Profile 0 intra-only frames are 8-bit 4:2:0 by definition;
                 // later profiles signal their colour configuration.
-                header.bit_depth = Some(if profile == PROFILE_0 {
-                    BitDepth::EIGHT
+                header.color = Some(if profile == PROFILE_0 {
+                    ColorConfig::PROFILE_0
                 } else {
                     read_color_config(&mut bits, profile)?
                 });
@@ -364,24 +367,49 @@ fn read_sync_code(bits: &mut BitReader<'_>) -> Result<()> {
     }
 }
 
-/// `frame_marker` and the profile (`vp9_read_profile`, VP9 §6.2): 0
-/// (8-bit 4:2:0) or 2 (10- or 12-bit 4:2:0). Profiles 1 and 3 (4:4:4,
-/// 4:2:2, 4:4:0) are not supported.
+/// A frame's bit depth and chroma format (`color_config`, VP9 §6.2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ColorConfig {
+    pub depth: BitDepth,
+    pub format: ChromaFormat,
+}
+
+impl ColorConfig {
+    /// Profile 0's only configuration (also of its intra-only frames).
+    pub(super) const PROFILE_0: Self = Self {
+        depth: BitDepth::EIGHT,
+        format: ChromaFormat::Yuv420,
+    };
+}
+
+/// `frame_marker` and the profile (`vp9_read_profile`, VP9 §6.2): profile
+/// 3 is followed by a reserved zero bit.
 fn read_profile(bits: &mut BitReader<'_>) -> Result<u32> {
     expect(bits.read_bits(2)? == FRAME_MARKER, "VP9 frame marker")?;
     let low = bits.read_bits(1)?;
     let profile = (bits.read_bits(1)? << 1) | low;
-    expect(
-        profile == PROFILE_0 || profile == PROFILE_2,
-        "VP9 profile 1 or 3 (4:4:4, 4:2:2 or 4:4:0)",
-    )?;
+    if profile == PROFILE_3 {
+        expect(!bits.read_bit()?, "VP9 reserved profile")?;
+    }
     Ok(profile)
 }
 
-/// `read_bitdepth_colorspace_sampling` of profiles 0 and 2 (4:2:0, so no
-/// sampling bits): the bit depth, 8 in profile 0 and 10 or 12 in profile 2.
-fn read_color_config(bits: &mut BitReader<'_>, profile: u32) -> Result<BitDepth> {
-    let depth = if profile == PROFILE_2 {
+/// Bytes of the `show_existing_frame` header that starts with
+/// `first_byte` (libvpx `vp9_decode_frame`): profile 3's reserved bit
+/// makes it nine bits.
+pub(super) fn show_existing_bytes(first_byte: u8) -> usize {
+    // `frame_marker` (2 bits), then `profile_low_bit`, `profile_high_bit`.
+    let low = u32::from((first_byte >> 5) & 1);
+    let high = u32::from((first_byte >> 4) & 1);
+    if (high << 1) | low == PROFILE_3 { 2 } else { 1 }
+}
+
+/// `read_bitdepth_colorspace_sampling` (VP9 §6.2.2): the bit depth (8 in
+/// profiles 0 and 1, 10 or 12 in 2 and 3) and the chroma subsampling
+/// (4:2:0 in profiles 0 and 2; signalled in 1 and 3, where 4:2:0 is not
+/// allowed and sRGB means 4:4:4).
+fn read_color_config(bits: &mut BitReader<'_>, profile: u32) -> Result<ColorConfig> {
+    let depth = if profile >= PROFILE_2 {
         if bits.read_bit()? {
             BitDepth::new(TWELVE_BITS)
         } else {
@@ -391,13 +419,25 @@ fn read_color_config(bits: &mut BitReader<'_>, profile: u32) -> Result<BitDepth>
     } else {
         BitDepth::EIGHT
     };
+    let subsampled_profile = profile == PROFILE_0 || profile == PROFILE_2;
     let color_space = bits.read_bits(3)?;
-    expect(
-        color_space != COLOR_SPACE_SRGB,
-        "VP9 sRGB in profile 0 or 2",
-    )?;
-    bits.read_bit()?; // color_range: output metadata only
-    Ok(depth)
+    let format = if color_space == COLOR_SPACE_SRGB {
+        expect(!subsampled_profile, "VP9 sRGB in profile 0 or 2")?;
+        expect(!bits.read_bit()?, "VP9 reserved bit")?;
+        ChromaFormat::Yuv444
+    } else {
+        bits.read_bit()?; // color_range: output metadata only
+        if subsampled_profile {
+            ChromaFormat::Yuv420
+        } else {
+            let x = bits.read_bits(1)? as usize;
+            let y = bits.read_bits(1)? as usize;
+            expect((x, y) != (1, 1), "VP9 4:2:0 in profile 1 or 3")?;
+            expect(!bits.read_bit()?, "VP9 reserved bit")?;
+            ChromaFormat::from_subsampling(x, y).expect("one-bit subsampling")
+        }
+    };
+    Ok(ColorConfig { depth, format })
 }
 
 /// The bit depth a frame signals: that of a key frame or an intra-only
@@ -427,7 +467,7 @@ pub(super) fn signalled_depth(data: &[u8]) -> Option<BitDepth> {
             return Some(BitDepth::EIGHT);
         }
     }
-    read_color_config(&mut bits, profile).ok()
+    read_color_config(&mut bits, profile).ok().map(|c| c.depth)
 }
 
 fn read_frame_size(bits: &mut BitReader<'_>) -> Result<(usize, usize)> {

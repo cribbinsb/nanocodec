@@ -8,7 +8,9 @@ use super::*;
 use crate::av2_txfm::Av2TxSize;
 use crate::av2_txfm::typed::{Av2Kernel, Av2TxType};
 use crate::{Dsp, Isa};
-use nc_common::fnv1a;
+use nc_common::{BitDepth, fnv1a};
+
+const EIGHT: BitDepth = BitDepth::EIGHT;
 
 /// The coefficient pattern of the C vector program: mixed signs, every
 /// third one large.
@@ -29,7 +31,7 @@ fn run(size: RectTxSize, tx_type: TxType, eob: u16) -> u64 {
         .map(pattern)
         .collect();
     let mut dst: Vec<u8> = (0..w * h).map(|i| pixel(i % w, i / w)).collect();
-    inverse_transform_add(&mut dst, 0, w, &mut coeffs, size, tx_type, eob);
+    inverse_transform_add(&mut dst, (0, w), &mut coeffs, (size, tx_type), eob, EIGHT);
     fnv1a(dst)
 }
 
@@ -102,12 +104,11 @@ fn large_dct_ignores_rows_past_eob_without_truncating_live_columns() {
                     let (mut actual, mut expected) = (initial.clone(), initial.clone());
                     inverse_transform_add(
                         &mut expected,
-                        3,
-                        stride,
+                        (3, stride),
                         &mut expected_coeffs,
-                        size,
-                        TxType::DCT_DCT,
+                        (size, TxType::DCT_DCT),
                         eob,
+                        EIGHT,
                     );
                     inverse_transform_add_with_dsp(
                         &dsp,
@@ -116,6 +117,7 @@ fn large_dct_ignores_rows_past_eob_without_truncating_live_columns() {
                         &mut actual_coeffs,
                         (size, TxType::DCT_DCT),
                         eob,
+                        EIGHT,
                     );
                     assert_eq!(actual, expected, "{isa:?} {size:?} eob {eob}");
                     assert_eq!(actual_coeffs, expected_coeffs);
@@ -129,7 +131,7 @@ fn large_dct_ignores_rows_past_eob_without_truncating_live_columns() {
 fn cross_chroma_matches_dav2d_vector() {
     let mut u: Vec<i16> = (0..64).map(pattern).collect();
     let mut v: Vec<i16> = (500..564).map(pattern).collect();
-    cross_chroma(&mut u, &mut v, &CCTX_ANGLES[2]);
+    cross_chroma(&mut u, &mut v, &CCTX_ANGLES[2], EIGHT);
     let bytes = |c: &[i16]| fnv1a(c.iter().flat_map(|c| c.to_le_bytes()));
     assert_eq!(bytes(&u), 0xf252_6498_8d10_0865);
     assert_eq!(bytes(&v), 0xdd2e_6005_7298_a8df);
@@ -206,16 +208,15 @@ fn clears_the_coefficients_it_reads() {
     for size in RectTxSize::ALL {
         let area = size.coded_width() * size.coded_height();
         let mut coeffs: Vec<i16> = (0..=area).map(pattern).collect();
-        let mut dst = vec![128; size.width() * size.height()];
+        let mut dst = vec![128_u8; size.width() * size.height()];
         let last = coeffs[area];
         inverse_transform_add(
             &mut dst,
-            0,
-            size.width(),
+            (0, size.width()),
             &mut coeffs,
-            size,
-            TxType::DCT_DCT,
+            (size, TxType::DCT_DCT),
             9,
+            EIGHT,
         );
         assert!(coeffs[..area].iter().all(|&c| c == 0), "{size:?}");
         assert_eq!(coeffs[area], last, "{size:?} wrote past its coefficients");
@@ -231,15 +232,14 @@ fn dc_shortcut_matches_the_full_transform() {
             let [shortcut, general] = [0, 1].map(|eob| {
                 let mut coeffs = vec![0; area];
                 coeffs[0] = dc;
-                let mut dst = vec![128; size.width() * size.height()];
+                let mut dst = vec![128_u8; size.width() * size.height()];
                 inverse_transform_add(
                     &mut dst,
-                    0,
-                    size.width(),
+                    (0, size.width()),
                     &mut coeffs,
-                    size,
-                    TxType::DCT_DCT,
+                    (size, TxType::DCT_DCT),
                     eob,
+                    EIGHT,
                 );
                 dst
             });
@@ -291,10 +291,10 @@ fn squares_agree_with_av2_txfm() {
                     .map(|&r| (128 + i32::from(r)).clamp(0, 255) as u8)
                     .collect();
 
-                let mut dst = vec![128; n * n];
+                let mut dst = vec![128_u8; n * n];
                 let mut ours = coeffs.clone();
                 let eob = (coded * coded - 1) as u16;
-                inverse_transform_add(&mut dst, 0, n, &mut ours, size, tx_type, eob);
+                inverse_transform_add(&mut dst, (0, n), &mut ours, (size, tx_type), eob, EIGHT);
                 assert_eq!(dst, expected, "{size:?} {tx_type:?}");
             }
         }
@@ -319,12 +319,11 @@ fn rectangular_dct_dispatch_matches_scalar() {
         let (mut reference, mut coefficients) = (input.clone(), input);
         inverse_transform_add(
             &mut scalar,
-            3,
-            stride,
+            (3, stride),
             &mut reference,
-            size,
-            TxType::DCT_DCT,
+            (size, TxType::DCT_DCT),
             9,
+            EIGHT,
         );
         inverse_transform_add_with_dsp(
             &dsp,
@@ -333,8 +332,150 @@ fn rectangular_dct_dispatch_matches_scalar() {
             &mut coefficients,
             (size, TxType::DCT_DCT),
             9,
+            EIGHT,
         );
         assert_eq!(simd, scalar, "{size:?}");
         assert_eq!(coefficients, reference, "{size:?}");
     }
+}
+
+/// The `u8` instance with `i16` coefficients is the 8-bit path, so the
+/// `u16` instance at 8 bits (`i32` coefficients) must give the same pixels
+/// and clear the same coefficients, for every size and type class.
+#[test]
+fn wide_instance_at_eight_bits_matches_u8() {
+    let types = [
+        TxType::DCT_DCT,
+        TxType::ADST_FLIPADST,
+        TxType::IDTX,
+        TxType::H_DCT,
+        TxType::V_DCT,
+        TxType::IDTX_INV.with_dpcm(Dpcm::Vertical),
+    ];
+    for size in RectTxSize::ALL {
+        let (w, h) = (size.width(), size.height());
+        let area = size.coded_width() * size.coded_height();
+        for tx_type in types {
+            let supported = |kind, log2| itx_1d::transform(kind, log2).is_some();
+            if !supported(tx_type.horizontal(), size.log2_width4())
+                || !supported(tx_type.vertical(), size.log2_height4())
+            {
+                continue;
+            }
+            for eob in [0, 9, (area - 1) as u16] {
+                let narrow_coeffs: Vec<i16> = (0..area).map(pattern).collect();
+                let mut wide_coeffs: Vec<i32> = narrow_coeffs.iter().map(|&c| c.into()).collect();
+                let mut narrow_coeffs = narrow_coeffs;
+                let mut narrow: Vec<u8> = (0..w * h).map(|i| pixel(i % w, i / w)).collect();
+                let mut wide: Vec<u16> = narrow.iter().map(|&p| p.into()).collect();
+                let transform = (size, tx_type);
+                inverse_transform_add(
+                    &mut narrow,
+                    (0, w),
+                    &mut narrow_coeffs,
+                    transform,
+                    eob,
+                    EIGHT,
+                );
+                inverse_transform_add(&mut wide, (0, w), &mut wide_coeffs, transform, eob, EIGHT);
+                let widened: Vec<u16> = narrow.iter().map(|&p| p.into()).collect();
+                assert_eq!(wide, widened, "{size:?} {tx_type:?} eob {eob}");
+                let narrow_coeffs: Vec<i32> = narrow_coeffs.iter().map(|&c| c.into()).collect();
+                assert_eq!(wide_coeffs, narrow_coeffs, "{size:?} {tx_type:?} eob {eob}");
+            }
+        }
+    }
+}
+
+/// At 10 bits an all-zero-but-DC `DCT_DCT` block gives the DC shortcut's
+/// result (for DCs whose row output stays inside the clamp, as dav2d's
+/// shortcut assumes), every output stays in `0..=1023`, and coefficients
+/// beyond the 8-bit `i16` range are kept.
+#[test]
+fn ten_bit_dc_and_range() {
+    let ten = BitDepth::TEN;
+    for size in RectTxSize::ALL {
+        let (w, h) = (size.width(), size.height());
+        let area = size.coded_width() * size.coded_height();
+        for dc in [-65_000, -40_000, -4000, 0, 513, 40_000, 65_000] {
+            let [shortcut, general] = [0, 1].map(|eob| {
+                let mut coeffs = vec![0_i32; area];
+                coeffs[0] = dc;
+                let mut dst = vec![512_u16; w * h];
+                let transform = (size, TxType::DCT_DCT);
+                inverse_transform_add(&mut dst, (0, w), &mut coeffs, transform, eob, ten);
+                dst
+            });
+            assert_eq!(shortcut, general, "{size:?} dc {dc}");
+            assert!(general.iter().all(|&p| p <= 1023), "{size:?} dc {dc}");
+        }
+        let mut coeffs: Vec<i32> = (0..area).map(|k| i32::from(pattern(k)) * 16).collect();
+        let mut dst: Vec<u16> = (0..w * h).map(|i| (i * 37 % 1024) as u16).collect();
+        let eob = (area - 1) as u16;
+        let transform = (size, TxType::ADST_ADST.with_inter_ddt(size));
+        if itx_1d::transform(transform.1.horizontal(), size.log2_width4()).is_none()
+            || itx_1d::transform(transform.1.vertical(), size.log2_height4()).is_none()
+        {
+            continue;
+        }
+        inverse_transform_add(&mut dst, (0, w), &mut coeffs, transform, eob, ten);
+        assert!(dst.iter().all(|&p| p <= 1023), "{size:?}");
+    }
+}
+
+/// The row pass clamps to `bd + 8` bits as dav2d (`row_clip_min =
+/// ~bitdepth_max << 7`): `±2^17` at 10 bits, the `i16` range at 8.
+#[test]
+fn ten_bit_row_clamp_is_dav2ds() {
+    let ten = BitDepth::TEN;
+    let (low, high) = intermediate_bounds(ten);
+    assert_eq!((low, high), (-(1 << 17), (1 << 17) - 1));
+    assert_eq!(
+        intermediate_bounds(EIGHT),
+        (i16::MIN.into(), i16::MAX.into())
+    );
+    // `V_DCT` 4x4: the identity row pass keeps each coefficient (gain 128,
+    // shift 7), then the clamp; the column DCT's first output is
+    // `64 * (row 0 + row 2)`. Row 0 is `2^20`, clamped to `high`; row 2 is
+    // `-(high - 100)`, inside the 10-bit clamp but not the 8-bit one. The
+    // sum `6400`, after the 10-bit column shift, adds 6 to mid-grey; no
+    // clamp would saturate, the 8-bit clamp would add nothing.
+    let mut coeffs = vec![0_i32; 16];
+    coeffs[0] = 1 << 20;
+    coeffs[2] = -(high - 100);
+    let mut dst = vec![512_u16; 16];
+    inverse_transform_add(
+        &mut dst,
+        (0, 4),
+        &mut coeffs,
+        (RectTxSize::Tx4x4, TxType::V_DCT),
+        15,
+        ten,
+    );
+    assert_eq!(dst[0], 518);
+}
+
+/// The cross-chroma rotation clamps to `bd + 8` bits of the depth, and
+/// agrees with the `i16` instance where nothing clamps.
+#[test]
+fn cross_chroma_clamps_to_the_depth() {
+    let mut u = vec![1_i32 << 18; 16];
+    let mut v = vec![-(1_i32 << 18); 16];
+    // 45 degrees: u' = (u - v) / sqrt(2) beyond 2^17, v' = (u + v) / sqrt(2) = 0.
+    cross_chroma(&mut u, &mut v, &CCTX_ANGLES[0], BitDepth::TEN);
+    assert!(u.iter().all(|&c| c == (1 << 17) - 1));
+    assert!(v.iter().all(|&c| c == 0));
+    let mut u = vec![3000_i32; 16];
+    let mut v = vec![-3000_i32; 16];
+    let (mut narrow_u, mut narrow_v) = (vec![3000_i16; 16], vec![-3000_i16; 16]);
+    cross_chroma(&mut u, &mut v, &CCTX_ANGLES[1], BitDepth::TEN);
+    cross_chroma(&mut narrow_u, &mut narrow_v, &CCTX_ANGLES[1], EIGHT);
+    assert_eq!(
+        u,
+        narrow_u.iter().map(|&c| i32::from(c)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        v,
+        narrow_v.iter().map(|&c| i32::from(c)).collect::<Vec<_>>()
+    );
 }

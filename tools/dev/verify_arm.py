@@ -19,8 +19,9 @@ and runs checkasm (NEON with its dotprod and I8MM paths, SVE2; a missing tier fa
 landing conformance streams coded there, and ISA identity (scalar = NEON = SVE2). The
 summary and per-check logs come back into OUT_DIR (nightly_checks.sh's layout). Exit
 status: 0 all passed, 1 a check failed, 2 the run could not complete (build, launch,
-reclaim): the scheduler records that as an infrastructure failure and the next night
-reruns the whole part (unit: one ~30-minute run; no partial resume).
+reclaim): the scheduler records that as an infrastructure failure. A run lost with its box
+(a spot reclaim: one came 5 minutes in on 2026-11-27) is retried whole on a new box once
+(unit: one ~30-minute run; no partial resume), else the next night reruns it.
 """
 
 from __future__ import annotations
@@ -65,6 +66,8 @@ CLIP_CACHE = DATA / "scratch/verify-arm/clips"
 #: What the tree contributes (the checks need no Rust sources on the box).
 TREE_PATHS = ("tools", "eval", "crates/nc-encoder/presets")
 BOX_ROOT = "nightly"
+#: Boxes tried per run: a reclaimed box loses the run, which then starts again whole.
+ATTEMPTS = 2
 
 
 def cross_build(tree: Path, stage: Path) -> None:
@@ -160,7 +163,12 @@ def main() -> int:
         try:
             cross_build(a.tree.resolve(), stage)
             stage_inputs(a.tree.resolve(), stage)
-            return run_on_box(stage, a.out)
+            for attempt in range(1, ATTEMPTS + 1):
+                status = run_on_box(stage, a.out)
+                if status != 2:
+                    return status
+                say(f"arm run {attempt} of {ATTEMPTS} lost with its box")
+            return 2
         except (subprocess.CalledProcessError, RuntimeError, OSError) as error:
             say(f"arm verify could not complete: {error}")
             return 2

@@ -6,7 +6,7 @@ strictly lower layer, so codec crates can use the shared engine, but the
 engine can never reach a codec (and codecs never depend on each other).
 
     0  nc-common
-    1  nc-dsp
+    1  nc-dsp, nc-rtp
     2  nc-analysis
     3  nc-encoder
     4  nc-h264, nc-hevc, nc-av1, nc-vp9, nc-av2
@@ -23,6 +23,7 @@ import sys
 LAYERS = {
     "nanocodec-common": 0,
     "nanocodec-dsp": 1,
+    "nanocodec-rtp": 1,
     "nanocodec-analysis": 2,
     "nanocodec-encoder": 3,
     "nanocodec-h264": 4,

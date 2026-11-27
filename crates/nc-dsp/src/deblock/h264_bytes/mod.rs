@@ -212,19 +212,28 @@ fn chroma_style<B: H264Math>(x1: B, x0: B, y1: B) -> B {
 #[inline(always)]
 pub(crate) unsafe fn luma<B: H264Bytes>(plane: &mut [u8], e: &Edge) {
     if e.bs.contains(&STRONG_BS) {
-        // SAFETY: forwarded.
-        unsafe { luma_edge::<B, true>(plane, e) }
+        // SAFETY: forwarded. An all-strong edge needs no normal masks.
+        unsafe {
+            if e.bs == [STRONG_BS; 4] {
+                luma_edge::<B, true, false>(plane, e);
+            } else {
+                luma_edge::<B, true, true>(plane, e);
+            }
+        }
     } else {
         // SAFETY: forwarded.
-        unsafe { luma_edge::<B, false>(plane, e) }
+        unsafe { luma_edge::<B, false, true>(plane, e) };
     }
 }
 
-/// [`luma`] with the bS == 4 filters compiled in (`STRONG`) or out (no
-/// entry of the edge is 4).
+/// [`luma`] with the filters for bS == 4 (`STRONG`) and bS < 4
+/// (`NORMAL`) selected once per edge.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-unsafe fn luma_edge<B: H264Bytes, const STRONG: bool>(plane: &mut [u8], e: &Edge) {
+unsafe fn luma_edge<B: H264Bytes, const STRONG: bool, const NORMAL: bool>(
+    plane: &mut [u8],
+    e: &Edge,
+) {
     // Every access below is to a sample p3..q3 of one of the 16 lines,
     // which the caller guarantees lie inside `plane`.
     let ptr = plane.as_mut_ptr();
@@ -242,7 +251,7 @@ unsafe fn luma_edge<B: H264Bytes, const STRONG: bool>(plane: &mut [u8], e: &Edge
         // SAFETY: p3..q3 of each line (see above).
         unsafe { B::load_rows_8(rows) }
     };
-    let Some(out) = luma_filter::<B, STRONG>(e, positions) else {
+    let Some(out) = luma_filter::<B, STRONG, NORMAL>(e, positions) else {
         return;
     };
     if e.along == 1 {
@@ -266,12 +275,12 @@ unsafe fn luma_edge<B: H264Bytes, const STRONG: bool>(plane: &mut [u8], e: &Edge
 #[allow(clippy::inline_always)]
 #[inline(always)]
 #[allow(clippy::similar_names)]
-fn luma_filter<B: H264Math, const STRONG: bool>(
+fn luma_filter<B: H264Math, const STRONG: bool, const NORMAL: bool>(
     e: &impl LumaParams<B>,
     positions: [B; 8],
 ) -> Option<[B; 6]> {
     let [p3, p2, p1, p0, q0, q1, q2, q3] = positions;
-    let bs = e.bs();
+    let bs = if NORMAL { e.bs() } else { B::splat(STRONG_BS) };
     let beta = e.beta();
     let flag = B::splat(0)
         .less(bs)
@@ -283,7 +292,9 @@ fn luma_filter<B: H264Math, const STRONG: bool>(
     }
     let ap = p2.abs_diff(p0).less(beta);
     let aq = q2.abs_diff(q0).less(beta);
-    let four = if STRONG {
+    let four = if !NORMAL {
+        flag
+    } else if STRONG {
         B::splat(STRONG_BS - 1).less(bs).and(flag)
     } else {
         B::splat(0)
@@ -294,12 +305,12 @@ fn luma_filter<B: H264Math, const STRONG: bool>(
     let (mut new_q0, mut new_q1, mut new_q2) = (q0, q1, q2);
     // Exact inactive-mask skip: strong-only edges have no normal outputs.
     // STRONG=false compiles away the mask test on ordinary inter edges.
-    if !STRONG || normal.any() {
+    if NORMAL && (!STRONG || normal.any()) {
         [new_p1, new_p0, new_q0, new_q1] =
             normal_luma([p2, p1, p0], [q0, q1, q2], e.tc0(), ap, aq, normal);
     }
 
-    if STRONG && four.any() {
+    if STRONG && (!NORMAL || four.any()) {
         // bS == 4 (§8.7.2.4).
         let alpha_quarter = e.alpha_quarter();
         let strong = p0.abs_diff(q0).less(alpha_quarter).and(four);

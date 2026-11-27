@@ -257,10 +257,12 @@ keeps in step with the decoders' rejection paths.
   block loop-filter deltas, segment features other than the quantizer, lossless segments in a frame that
   is not wholly lossless, odd frame sizes, switch frames. A fix is in progress. High and Professional
   profiles are not supported.
-- **VP9** (profiles 0 and 2, 8- to 12-bit): 305/305 libvpx v1.16.0 test vectors (303 8-bit, one 10-bit,
-  one 12-bit), against vpxdec. These are an encoder project's test vectors (the de facto suite; VP9 has no
-  official one), and only two cover profile 2. **Not yet**: profiles 1 and 3 (4:2:2, 4:4:0, 4:4:4); their
-  vectors are not run.
+- **VP9** (profiles 0 to 3, 8- to 12-bit, 4:2:0, 4:2:2, 4:4:0, 4:4:4): 314/314 libvpx v1.16.0 test
+  vectors (306 8-bit, four 10-bit, four 12-bit; 303 profile 0, 3 profile 1, 2 profile 2, 6 profile 3),
+  against vpxdec and the vectors' shipped MD5s. These are an encoder project's test vectors (the de facto
+  suite; VP9 has no official one), and only eleven cover profiles 1 to 3; 26 more profile 1 and 3 streams
+  we made with ffmpeg's libvpx-vp9 (every format and depth, sRGB, odd sizes, lossless, alt-ref) also
+  decode bit-exact against vpxdec (`docs/handoff/chroma-formats.md`).
 - **AV2** (a draft standard, AVM v1.0.0): 30 of 30 foreign streams (12 dav2d test vectors, 18 we made with
   avmenc v1.0.0), all 8-bit, single tile, 640x360 or smaller, bit-exact against avmdec v1.0.0 and dav2d
   (re-run on 2026-11-23 against AVM's frame hashes: 30/30; not part of the record above). No AV2
@@ -283,6 +285,34 @@ without FFmpeg's hand-written SIMD kernels), decode alone on both sides, stream 
 AVX2, AVX-512, NEON and WASM for AV1 and VP9, plus WASM for the kernels HEVC and VVC share; VVC's native (x86/Arm) and H.264's 10-bit paths
 are scalar so far.
 
+## Which resilience tools does each codec support?
+
+Checked by running the encoder (2026-11-27, `tools/ci/realuse_conformance.sh`: every stream below decodes
+bit-exactly against our reconstruction in both standard decoders of its codec and in ours, with a simulated
+loss where the row names one). "Yes" means the encoder codes it, alone and combined with the other columns,
+except where a cell says otherwise.
+
+| Codec | Temporal layers | Long-term reference (LTR) | Intra refresh | Key frame on request | Loss recovery (feedback) |
+|---|---|---|---|---|---|
+| H.264 | yes (2-3, fixed or adaptive) | yes | yes | yes | from the LTR, else a key frame |
+| HEVC | yes | yes | yes | yes | from the LTR, else a key frame |
+| VVC | yes | yes | yes | yes | from the LTR, else a key frame |
+| AV1 | yes | yes | yes¹ | yes | from the LTR, else a key frame |
+| VP9 | yes | yes | no² | yes | from the LTR, else a key frame |
+| AV2 | yes | yes | no² | yes | from the LTR, else a key frame |
+
+- With temporal layers, LTRs are marked on base-layer frames and intra refresh sweeps across the base-layer
+  frames only (as many as cover the period, at least two). With an LTR, intra refresh restarts its sweep at a
+  recovery frame.
+- ¹ AV1's intra refresh repairs a decoder whose reference pictures are wrong; a standard decoder (dav1d,
+  aomdec) that missed a whole frame stops there, because inter frames load the probability tables their
+  reference saved: after a dropped frame, recovery is by LTR or key frame.
+- ² Refused: VP9's backward-adapted probabilities and previous-frame motion vectors, and AV2's
+  `primary_ref_frame`, carry state a lost frame changes, so vpxdec and avmdec do not recover by a sweep
+  ([handoff](handoff/loss-resilience.md#intra-refresh-after-a-dropped-frame-2026-11-15)).
+- Not combined: intra refresh with spatial layers (SVC) or with an explicit second reference
+  (`refs.second` 1).
+
 ## What is not done
 
 - **Single-threaded** encode and decode; no slices or tiles beyond one per frame.
@@ -294,7 +324,7 @@ are scalar so far.
   decoded (valid streams of the main profiles): H.264 interlace (field pictures, MBAFF) and pictures above
   level 5.2; AV1 quantizer matrices, block loop-filter deltas, segment features other than the quantizer,
   lossless segments in mixed frames, odd frame sizes and switch frames (fix in progress); VVC reserved NAL
-  types, `nuh_layer_id` above 0 and a VPS id above 0 (rejected instead of ignored); VP9 profiles 1 and 3;
+  types, `nuh_layer_id` above 0 and a VPS id above 0 (rejected instead of ignored);
   AV2 10-bit, monochrome, several tiles, reference scaling, multi-frame headers, bridge frames and layers.
   Not checked: the AV1 Argon conformance streams; no AV2 suite exists (30 streams only); monochrome in the
   browser. Other profiles not supported: H.264 Baseline/Extended tools (FMO/ASO, SP/SI) and 4:2:2/4:4:4;

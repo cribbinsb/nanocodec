@@ -14,6 +14,7 @@ categories.workspace = true
 [dependencies]
 nc-common.workspace = true
 nc-encoder.workspace = true
+nc-rtp.workspace = true
 nc-h264 = { workspace = true, optional = true }
 nc-hevc = { workspace = true, optional = true }
 nc-vvc = { workspace = true, optional = true }

@@ -15,7 +15,7 @@ use nc_dsp::{
 };
 
 use super::block::{BlockInfo, REFS_PER_FRAME};
-use super::frame::{BlockPosition, FrameDecoder, SB_4X4_LOG2, Tile, context_mask};
+use super::frame::{BlockPosition, FrameDecoder, Tile, context_mask};
 use super::header::valid_reference_size;
 use crate::bool_coder::BoolReader;
 use crate::coeff::{self, Coder, Dequantizer, Extent, Model, PlaneType};
@@ -89,7 +89,7 @@ struct ReferencePlane<'a, T: Sample> {
     /// Padding columns and rows before the visible area.
     border: (usize, usize),
     /// Visible size of the reference plane (`y_crop_width`,
-    /// `y_crop_height`, halved and rounded up for chroma).
+    /// `y_crop_height`; `uv_crop_*` subsampled and rounded up for chroma).
     crop: (usize, usize),
 }
 
@@ -158,14 +158,14 @@ impl<'a, T: Sample> Reference<'a, T> {
         } else {
             Scaling::Invalid
         };
+        let format = picture.chroma_format();
         let planes = PlaneIndex::ALL.map(|index| {
             let plane = picture.plane(index);
-            let ss = usize::from(index != PlaneIndex::Y);
             ReferencePlane {
                 padded: plane.padded_view(),
                 visible: plane.view(),
                 border: (plane.border_x(), plane.border_y()),
-                crop: ((width + ss) >> ss, (height + ss) >> ss),
+                crop: format.plane_size(index, (width, height)),
             }
         });
         Self { planes, scale }
@@ -202,7 +202,8 @@ impl<T: Sample> InterScratch<T> {
 
 /// One prediction request inside a block.
 struct PredictionBlock {
-    plane: PlaneIndex,
+    /// The plane's horizontal and vertical subsampling.
+    subsampling: (usize, usize),
     /// The block's top-left in plane samples, the sub-block's offset and
     /// size, and the whole block's plane size.
     origin: (i32, i32),
@@ -283,20 +284,23 @@ fn predict_unscaled<T: Pixel>(
 fn predict_whole_block<T: Pixel>(
     kernels: DepthKernels<'_>,
     planes: &mut [Plane<T>; 3],
-    (references, kind): (&[Option<&Reference<'_, T>>; 2], Vp9Filter),
+    (references, filter): (&[Option<&Reference<'_, T>>; 2], Vp9Filter),
     (info, position): (&BlockInfo, &BlockPosition),
     window: &mut [T],
 ) {
     for (plane, picture_plane) in PlaneIndex::ALL.into_iter().zip(planes) {
-        let ss = usize::from(plane != PlaneIndex::Y);
-        let (n4w, n4h) = position.plane_size_4x4(ss);
+        let kind = usize::from(plane != PlaneIndex::Y);
+        let (sx, sy) = position.subsampling(kind);
+        let (n4w, n4h) = position.plane_size_4x4(kind);
         let size = (n4w * 4, n4h * 4);
         let (x, y) = (
-            ((position.mi_col * MI_SIZE) >> ss) as i32,
-            ((position.mi_row * MI_SIZE) >> ss) as i32,
+            ((position.mi_col * MI_SIZE) >> sx) as i32,
+            ((position.mi_row * MI_SIZE) >> sy) as i32,
         );
         let stride = picture_plane.stride();
-        let unit = 1 << (1 - ss);
+        // Vectors are in 1/8 luma samples: 1/16 plane samples are twice
+        // that along a full-resolution axis.
+        let unit = (1 << (1 - sx), 1 << (1 - sy));
         for (r, reference) in references.iter().flatten().enumerate() {
             let mv = info.mv[r];
             let block = picture_plane
@@ -308,9 +312,9 @@ fn predict_whole_block<T: Pixel>(
                 average: r == 1,
             };
             // Positions in 1/16 plane samples.
-            let at = (x * 16 + mv.col * unit, y * 16 + mv.row * unit);
+            let at = (x * 16 + mv.col * unit.0, y * 16 + mv.row * unit.1);
             let plane_ref = &reference.planes[plane as usize];
-            predict_unscaled(kernels, plane_ref, kind, at, size, window, target);
+            predict_unscaled(kernels, plane_ref, filter, at, size, window, target);
         }
     }
 }
@@ -350,9 +354,8 @@ fn predict_scaled<T: Pixel>(
         average,
     }: Target<'_, T>,
 ) {
-    let ss = u32::from(request.plane != PlaneIndex::Y);
     let (w, h) = request.size;
-    let (x, y) = scaled_position(scale, position, request, ss);
+    let (x, y) = scaled_position(scale, position, request);
     let (x_phase, y_phase) = ((x & SUBPEL_MASK) as usize, (y & SUBPEL_MASK) as usize);
     let (xs, ys) = (scale.x_step as usize, scale.y_step as usize);
     // The footprint plus the rows above and below that the scaled
@@ -390,9 +393,9 @@ pub(super) fn extend_reference<T: Sample>(
     picture: &mut Picture<T>,
     (width, height): (usize, usize),
 ) {
-    for (index, plane) in picture.planes_mut().iter_mut().enumerate() {
-        let ss = usize::from(index > 0);
-        let (keep_w, keep_h) = ((width + ss) >> ss, (height + ss) >> ss);
+    let format = picture.chroma_format();
+    for (plane, index) in picture.planes_mut().iter_mut().zip(PlaneIndex::ALL) {
+        let (keep_w, keep_h) = format.plane_size(index, (width, height));
         let mut view = plane.view_mut();
         let (plane_w, plane_h) = (view.width(), view.height());
         for y in 0..keep_h {
@@ -445,14 +448,16 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             return Ok(());
         }
         for (plane, picture_plane) in PlaneIndex::ALL.into_iter().zip(self.recon.planes_mut()) {
-            let ss = usize::from(plane != PlaneIndex::Y);
-            let (n4w, n4h) = position.plane_size_4x4(ss);
+            let plane_kind = usize::from(plane != PlaneIndex::Y);
+            let subsampling = position.subsampling(plane_kind);
+            let (sx, sy) = subsampling;
+            let (n4w, n4h) = position.plane_size_4x4(plane_kind);
             let origin = (
-                ((position.mi_col * MI_SIZE) >> ss) as i32,
-                ((position.mi_row * MI_SIZE) >> ss) as i32,
+                ((position.mi_col * MI_SIZE) >> sx) as i32,
+                ((position.mi_row * MI_SIZE) >> sy) as i32,
             );
-            // Sub-8x8 blocks predict each 4x4 block with its own vector
-            // (chroma: one 4x4 block with their mean).
+            // Sub-8x8 blocks predict each 4x4 block of the plane with a
+            // vector of its own (`sub8x8_mv`).
             let (grid, size) = if sub8x8 {
                 ((n4w, n4h), (4, 4))
             } else {
@@ -464,12 +469,10 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                 for row in 0..grid.1 {
                     for col in 0..grid.0 {
                         let offset = ((4 * col) as i32, (4 * row) as i32);
-                        let mv = if !sub8x8 {
-                            info.mv[r]
-                        } else if ss == 0 {
-                            info.sub_mvs[row * grid.0 + col][r]
+                        let mv = if sub8x8 {
+                            sub8x8_mv(info, r, subsampling, row * grid.0 + col)
                         } else {
-                            average_sub_mvs(info, r)
+                            info.mv[r]
                         };
                         let (x, y) = (origin.0 + offset.0, origin.1 + offset.1);
                         // The first prediction goes straight into the
@@ -486,8 +489,10 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                         match &reference.scale {
                             Scaling::None => {
                                 // Positions in 1/16 plane samples.
-                                let unit = 1 << (1 - ss);
-                                let at = (x * 16 + mv.col * unit, y * 16 + mv.row * unit);
+                                let at = (
+                                    x * 16 + mv.col * (1 << (1 - sx)),
+                                    y * 16 + mv.row * (1 << (1 - sy)),
+                                );
                                 predict_unscaled(
                                     kernels,
                                     plane_ref,
@@ -500,7 +505,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                             }
                             Scaling::Scaled(scale) => {
                                 let request = PredictionBlock {
-                                    plane,
+                                    subsampling,
                                     origin,
                                     offset,
                                     size,
@@ -525,12 +530,12 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         Ok(())
     }
 
-    /// Plane geometry of `plane` for transform-block loops.
-    fn plane_tx(info: &BlockInfo, plane: usize) -> TxSize {
+    /// The transform size of `plane` in the block.
+    fn plane_tx(info: &BlockInfo, position: &BlockPosition, plane: usize) -> TxSize {
         if plane == 0 {
             info.tx_size
         } else {
-            info.size.uv_tx(info.tx_size)
+            info.size.uv_tx(info.tx_size, position.subsampling(1))
         }
     }
 
@@ -548,11 +553,11 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         position: &BlockPosition,
     ) {
         for (plane, &index) in PLANES.iter().enumerate() {
-            let ss = usize::from(plane > 0);
-            let tx = Self::plane_tx(info, plane);
+            let kind = usize::from(plane > 0);
+            let tx = Self::plane_tx(info, position, plane);
             let step = tx.units();
-            let (max_w, max_h) = position.plane_limits_4x4(ss);
-            let (n4w, _) = position.plane_size_4x4(ss);
+            let (max_w, max_h) = position.plane_limits_4x4(kind);
+            let (n4w, _) = position.plane_size_4x4(kind);
             for row in (0..max_h).step_by(step) {
                 for col in (0..max_w).step_by(step) {
                     let mode = if plane > 0 {
@@ -607,20 +612,19 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         position: &BlockPosition,
         plane: usize,
     ) -> bool {
-        let ss = usize::from(plane > 0);
-        let (max_w, max_h) = position.plane_limits_4x4(ss);
+        let kind = usize::from(plane > 0);
+        let (max_w, max_h) = position.plane_limits_4x4(kind);
         if max_w == 0 || max_h == 0 {
             return false;
         }
-        let tx = Self::plane_tx(info, plane);
+        let tx = Self::plane_tx(info, position, plane);
         let step = tx.units();
         let lossless = self.inputs.header.quantizer.lossless();
         let ty = tx_type(PLANES[plane], None, tx, lossless);
-        let (bx, by) = position.plane_4x4(ss);
-        let sb_log2 = SB_4X4_LOG2 - ss;
-        let within = (1usize << sb_log2) - 1;
-        let sb_col = bx >> sb_log2;
-        let (start_x, start_y) = (bx & within, by & within);
+        let (bx, by) = position.plane_4x4(kind);
+        let (log2_x, log2_y) = position.sb_4x4_log2(kind);
+        let sb_col = bx >> log2_x;
+        let (start_x, start_y) = (bx & ((1 << log2_x) - 1), by & ((1 << log2_y) - 1));
         let steps = self.steps(info.segment_id, plane);
         let model = Model::of(PLANES[plane], tx, ty, true);
         let depth = self.depth();
@@ -713,14 +717,16 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             shift: tx.dequant_shift(),
             categories: coeff::categories(depth),
         };
-        let ss = usize::from(plane > 0);
-        let (bx, by) = position.plane_4x4(ss);
-        let (max_w, max_h) = position.plane_limits_4x4(ss);
+        let kind = usize::from(plane > 0);
+        let (bx, by) = position.plane_4x4(kind);
+        let (max_w, max_h) = position.plane_limits_4x4(kind);
         let n = tx.units();
-        let sb_log2 = SB_4X4_LOG2 - ss;
-        let within = (1usize << sb_log2) - 1;
-        let (x, y) = ((bx & within) + col, (by & within) + row);
-        let above = &mut self.above_nonzero[plane][bx >> sb_log2];
+        let (log2_x, log2_y) = position.sb_4x4_log2(kind);
+        let (x, y) = (
+            (bx & ((1 << log2_x) - 1)) + col,
+            (by & ((1 << log2_y) - 1)) + row,
+        );
+        let above = &mut self.above_nonzero[plane][bx >> log2_x];
         let left = &mut tile.left_nonzero[plane];
         let above_mask = context_mask(x, n);
         let left_mask = context_mask(y, n);
@@ -786,12 +792,13 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         mode: IntraMode,
         available: IntraAvailability,
     ) {
-        let ss = usize::from(plane > 0);
-        let (bx, by) = position.plane_4x4(ss);
+        let kind = usize::from(plane > 0);
+        let (bx, by) = position.plane_4x4(kind);
+        let (sx, sy) = position.subsampling(kind);
         let (x, y) = ((bx + col) * 4, (by + row) * 4);
         let side = tx.side();
-        let frame_w = (self.mi_cols * MI_SIZE) >> ss;
-        let frame_h = (self.mi_rows * MI_SIZE) >> ss;
+        let frame_w = (self.mi_cols * MI_SIZE) >> sx;
+        let frame_h = (self.mi_rows * MI_SIZE) >> sy;
         // The block with its above row and left column (one offset check
         // instead of a view per transform block); `base` is sample (x, y).
         let picture_plane = self.recon.plane(PLANES[plane]);
@@ -978,14 +985,28 @@ struct IntraAvailability {
     right: bool,
 }
 
-/// `mi_mv_pred_q4`: the chroma vector of a sub-8x8 block, the rounded
-/// mean of its four 4x4 vectors.
-fn average_sub_mvs(info: &BlockInfo, r: usize) -> Mv {
-    let round = |sum: i32| (if sum < 0 { sum - 2 } else { sum + 2 }) / 4;
-    let sum = |f: fn(&Mv) -> i32| info.sub_mvs.iter().map(|m| f(&m[r])).sum::<i32>();
-    Mv {
-        row: round(sum(|m| m.row)),
-        col: round(sum(|m| m.col)),
+/// The vector of 4x4 block `index` (raster order in the plane) of a
+/// sub-8x8 block's plane subsampled by `(x, y)` for reference `r`
+/// (libvpx `average_split_mvs`, VP9 §8.5.2.2): luma and 4:4:4 chroma take
+/// their own block's vector, 4:2:0 chroma the rounded mean of all four,
+/// 4:4:0 chroma the mean of its column's two, and 4:2:2 chroma the mean of
+/// blocks `index` and `index + 1`, as libvpx and the specification do (so
+/// its lower 4x4 averages blocks 1 and 2, not 2 and 3).
+fn sub8x8_mv(info: &BlockInfo, r: usize, (x, y): (usize, usize), index: usize) -> Mv {
+    let mean = |blocks: &[usize]| {
+        let n = blocks.len() as i32;
+        let round = |sum: i32| (if sum < 0 { sum - n / 2 } else { sum + n / 2 }) / n;
+        let sum = |f: fn(&Mv) -> i32| blocks.iter().map(|&b| f(&info.sub_mvs[b][r])).sum();
+        Mv {
+            row: round(sum(|m| m.row)),
+            col: round(sum(|m| m.col)),
+        }
+    };
+    match (x, y) {
+        (0, 0) => info.sub_mvs[index][r],
+        (0, _) => mean(&[index, index + 2]),
+        (_, 0) => mean(&[index, index + 1]),
+        _ => mean(&[0, 1, 2, 3]),
     }
 }
 
@@ -998,21 +1019,21 @@ fn scaled_position(
     scale: &Scale,
     position: &BlockPosition,
     request: &PredictionBlock,
-    ss: u32,
 ) -> (i32, i32) {
-    let factor = 1 << (1 - ss);
+    let (sx, sy) = request.subsampling;
+    let (factor_x, factor_y) = (1 << (1 - sx), 1 << (1 - sy));
     let (bw, bh) = request.block_size;
     let spel_left = (INTERP_EXTEND + bw) << SUBPEL_BITS;
     let spel_right = spel_left - (1 << SUBPEL_BITS);
     let spel_top = (INTERP_EXTEND + bh) << SUBPEL_BITS;
     let spel_bottom = spel_top - (1 << SUBPEL_BITS);
-    let mv_row = (request.mv.row * factor).clamp(
-        position.to_top * factor - spel_top,
-        position.to_bottom * factor + spel_bottom,
+    let mv_row = (request.mv.row * factor_y).clamp(
+        position.to_top * factor_y - spel_top,
+        position.to_bottom * factor_y + spel_bottom,
     );
-    let mv_col = (request.mv.col * factor).clamp(
-        position.to_left * factor - spel_left,
-        position.to_right * factor + spel_right,
+    let mv_col = (request.mv.col * factor_x).clamp(
+        position.to_left * factor_x - spel_left,
+        position.to_right * factor_x + spel_right,
     );
     let (x_start, y_start) = request.origin;
     let (ox, oy) = request.offset;

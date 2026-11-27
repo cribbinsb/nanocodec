@@ -1,10 +1,10 @@
-//! Picture parameter sets (§7.3.2.2) within Constrained High: one slice
-//! group (no FMO) and no redundant pictures; the High extension (8x8
-//! transform, picture scaling matrices, a separate Cr QP offset) is parsed
-//! when present.
+//! Picture parameter sets (§7.3.2.2), with their slice groups
+//! (`slice_groups.rs`) and the High extension (8x8 transform, picture
+//! scaling matrices, a separate Cr QP offset) when present.
 
 use super::reader::Reader;
 use super::scaling::{self, ParsedMatrix};
+use super::slice_groups::{self, SliceGroups};
 use super::sps::MAX_SPS_ID;
 use super::{DecodeError, Result};
 
@@ -44,6 +44,8 @@ pub(super) struct Pps {
     pub cabac: bool,
     /// `bottom_field_pic_order_in_frame_present_flag`.
     pub bottom_field_pic_order_in_frame_present: bool,
+    /// More than one slice group (`num_slice_groups_minus1` > 0).
+    pub slice_groups: Option<SliceGroups>,
     /// `num_ref_idx_l0_default_active_minus1 + 1` and the list 1 one.
     pub num_ref_idx_default_active: [u32; 2],
     pub weighted_pred: bool,
@@ -53,6 +55,8 @@ pub(super) struct Pps {
     pub chroma_qp_offset: [i8; 2],
     pub deblocking_filter_control_present: bool,
     pub constrained_intra_pred: bool,
+    /// `redundant_pic_cnt_present_flag`.
+    pub redundant_pic_cnt_present: bool,
     pub transform_8x8_mode: bool,
     /// Picture scaling lists (fall-back applied at activation, Table 7-2).
     pub scaling: Option<ParsedMatrix>,
@@ -64,9 +68,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
     let sps_id = r.ue_max(MAX_SPS_ID, "seq_parameter_set_id")?;
     let cabac = r.flag()?;
     let bottom_field_pic_order_in_frame_present = r.flag()?;
-    if r.ue()? != 0 {
-        return Err(DecodeError::Unsupported("H264 slice groups (FMO)"));
-    }
+    let slice_groups = slice_groups::parse(&mut r)?;
     let mut num_ref_idx_default_active = [0; 2];
     for count in &mut num_ref_idx_default_active {
         *count = r.ue_max(
@@ -99,14 +101,13 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
     let cb_offset = chroma_offset(&mut r)?;
     let deblocking_filter_control_present = r.flag()?;
     let constrained_intra_pred = r.flag()?;
-    if r.flag()? {
-        return Err(DecodeError::Unsupported("H264 redundant pictures"));
-    }
+    let redundant_pic_cnt_present = r.flag()?;
     let mut pps = Pps {
         id,
         sps_id,
         cabac,
         bottom_field_pic_order_in_frame_present,
+        slice_groups,
         num_ref_idx_default_active,
         weighted_pred,
         weighted_bipred,
@@ -114,6 +115,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
         chroma_qp_offset: [cb_offset; 2],
         deblocking_filter_control_present,
         constrained_intra_pred,
+        redundant_pic_cnt_present,
         transform_8x8_mode: false,
         scaling: None,
     };
