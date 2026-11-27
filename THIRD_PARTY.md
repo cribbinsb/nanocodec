@@ -247,8 +247,9 @@ Source: https://github.com/ittiam-systems/libavc (revision
 
 The H.264 NEON plane predictor in `crates/nc-dsp/src/h264_intra/plane.rs`
 adapts the weighted edges and incremental row ramps from
-`common/armv8/ih264_intra_pred_luma_16x16_av8.s`. The Apache License,
-Version 2.0 is at https://www.apache.org/licenses/LICENSE-2.0.
+`common/armv8/ih264_intra_pred_luma_16x16_av8.s`. Notices: the Apache
+License, Version 2.0 [LICENSE](docs/licenses/libavc/LICENSE) and libavc's
+[NOTICE](docs/licenses/libavc/NOTICE), as in that revision.
 
 The H.264 CABAC writer in `crates/nc-h264/src/cabac/mod.rs` batches
 bypass bins using the constant-range update described in
@@ -296,8 +297,8 @@ the lane MACs and transposed scratch of `ihevc_itrans_recon_16x16.s`. The
 `ihevc_itrans_recon_32x32.s` in the same directory. The shared 10-bit HEVC and VVC luma
 interpolation in `crates/nc-dsp/src/high_depth/luma_mc_neon.rs` follows the
 NEON row schedules in `common/arm/ihevc_hbd_inter_pred_filters_neon_intr.c`.
-The Apache License, Version 2.0 is at
-https://www.apache.org/licenses/LICENSE-2.0.
+Notices: the Apache License, Version 2.0 [LICENSE](docs/licenses/libhevc/LICENSE)
+and libhevc's [NOTICE](docs/licenses/libhevc/NOTICE), as in that revision.
 The shared HEVC/VVC SAO edge application in `crates/nc-dsp/src/sao`
 adapts the signed byte table, packed word offsets, and vertical
 sign reuse from `common/arm/ihevc_hbd_sao_neon_intr.c` and
@@ -311,10 +312,18 @@ uses libhevc's edge offset table and vertical sign reuse from
 `common/arm/ihevc_hbd_sao_neon_intr.c`.
 
 
-## SVT-AV1 — BSD-3-Clause-Clear
+## SVT-AV1 — BSD-3-Clause-Clear (files under BSD-2-Clause), AOM Patent License 1.0
 
 Source: https://gitlab.com/AOMediaCodec/SVT-AV1 (pinned v4.3.0,
 commit e3d63405f9ba8219913a7276c2c47d10e5d022fe; see `tools/anchors/versions.env`).
+
+Licence, as SVT-AV1's README states it: up to v0.8.7 the project was BSD-2-Clause and
+the Alliance for Open Media Patent License 1.0; from v0.9 it is BSD-3-Clause-Clear and
+the same patent licence. Many of its source files still carry their original
+BSD-2-Clause header, and where we used such a file this document names that file's
+licence (the AVX-512, AVX2 and NEON sections below). Both texts are reproduced: the
+BSD-3-Clause-Clear text below, the BSD-2-Clause text and the patent licence in
+[docs/licenses/svt-av1-forward](docs/licenses/svt-av1-forward/LICENSE-BSD2.md).
 
 Used as an algorithm guide and reimplemented in:
 
@@ -425,6 +434,9 @@ The wide H-only AV1-family AVX-512 ICL interpolation in
 four-tap dot products and pack-first rounding in dav1d 1.5.4
 `src/x86/mc_avx512.asm` (`PUT_8TAP_H` and `PREP_8TAP_H`,
 BSD-2-Clause).
+The narrow two-axis AV1 kernels in the same module use the packed
+two-row byte dots, alternating vertical word pairs and word dots of
+`put_8tap_8bpc` and `prep_8tap_8bpc` in that source.
 
 The AV1 AVX2 fused warp module (`crates/nc-dsp/src/av1_mc/warp_avx2/fused.rs`)
 ports the packed-byte vertical transpose, alternating row pairs, scalar phase
@@ -672,11 +684,14 @@ Storsjo, Janne Grunau):
   DC-only `eob == 1` fast paths and EOB-bounded row/column sub-band pruning
   (`src/itx_tmpl.c`, `src/x86/itx16_avx2.asm`, `src/x86/itx16_avx512.asm`,
   `src/arm/64/itx16.S`).
-- `src/av1_restoration/high_lr.rs` and `src/av1_restoration/sgr_lanes.rs`:
+- `src/av1_restoration/high_lr.rs`, `src/av1_restoration/sgr_lanes.rs` and
+  `src/av1_restoration/sgr_words.rs`:
   register-sliding 10- and 12-bit 5/7-tap Wiener stripe convolution and shared
   8-/16-lane self-guided restoration (`src/looprestoration_tmpl.c`,
   `src/x86/looprestoration16_avx2.asm`,
   `src/x86/looprestoration16_avx512.asm`, `src/arm/64/looprestoration16.S`).
+  The high-depth SGR word-pair box sums, Ice Lake byte-table factor and
+  projection in one output pass follow the same reference.
 - `src/deblock/av1_high.rs`: batched 4/6/8/14-tap `u16` loop filter with
   8x8 and wide 16-/32-row vertical-edge register transpose and modular `u16`
   14-tap smoothing (`src/lpf_tmpl.c`, `src/x86/loopfilter16_avx2.asm`,
@@ -1046,6 +1061,10 @@ The AV2 secondary transform in `crates/nc-dsp/src/av2_dec/stx/` adapts
 the paired input rows from `src/x86/stx_avx2.asm` and the Ice Lake
 word dot products from `src/x86/stx_avx512.asm`.
 
+The AV2 64×64 inverse reconstruction in `crates/nc-dsp/src/av2_txfm/`
+adapts the register expansion and predictor add of `write_64x32`
+in `src/x86/itx_avx2.asm`, with the same AV2 paired butterflies.
+
 ## VVenC — BSD-3-Clause-Clear
 
 Source: https://github.com/fraunhoferhhi/vvenc, commit `a455d51e335c97b40eeea7bb90e3ad52b84c6e83`.
@@ -1299,8 +1318,10 @@ the structure of HM's SAO encoder (`TEncSampleAdaptiveOffset`: per-CTB
 statistics, `deriveOffsets` / `estIterOffset` offset estimation, band
 position search, merge and per-component RD choice) in `crates/nc-encoder/src/sao/`.
 HM and VTM are distributed under the BSD-3-Clause licence (copyright the
-ITU-T/ISO/IEC and their contributors); JM under the copyright notice in its own
-distribution. Sources: https://vcgit.hhi.fraunhofer.de/jvet/HM,
+ITU-T/ISO/IEC and their contributors): HM's text is
+[docs/licenses/hm/COPYING](docs/licenses/hm/COPYING), and VTM's is reproduced in the
+VTM section above. JM is distributed under the copyright notice in its own
+distribution; from JM only the published λ formula is used, no code. Sources: https://vcgit.hhi.fraunhofer.de/jvet/HM,
 https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM,
 https://vcgit.hhi.fraunhofer.de/jvet/JM.
 

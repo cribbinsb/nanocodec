@@ -1,0 +1,134 @@
+{
+ "_comment": "Clips of the benchmark datasets that a tuning or lever-ranking set used (procedure section 4, V3). These are in-sample for ours: a report can leave them out (tools/bench/report.py --exclude-clips this file), and the site shows the view without them beside the full set. eval/tests/test_content_id.py checks that every dataset overlaps the tuning sets in exactly these clips. Added 2026-11-27 (benchmark integrity audit findings 1 and 2).",
+ "sets": {
+  "vc1k_worst6": {
+   "dataset": "eval/clipset/vc1k_2026-11-18.manifest.json",
+   "used": "2026-11-18/19",
+   "how": "lever-ranking sets: each codec's six worst VC-1K clips against a reference, picked from the VC-1K Fixed QP sample after its results were charted (vc1k-worst6-{av1,av2,hevc,vp9,vvc}.json in the work area; H.264's set is deleted)",
+   "landed": "HEVC TU16 heuristic off; HEVC deblocking +2/+2 (carried to other codecs); the moving-camera key; the RD final decision stage",
+   "evidence": "docs/analysis/benchmark-integrity-audit-2026-11-27.md finding 1; docs/handoff/rd-depth.md; docs/analysis/port-hevc-wins-2026-11-19.md; CHANGELOG.md (VC-1K six worst clips)",
+   "clips": [
+    {
+     "name": "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447",
+     "ranked_for": [
+      "av1",
+      "av2",
+      "hevc",
+      "vp9",
+      "vvc"
+     ]
+    },
+    {
+     "name": "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076",
+     "ranked_for": [
+      "av1",
+      "av2"
+     ]
+    },
+    {
+     "name": "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409",
+     "ranked_for": [
+      "av1",
+      "av2",
+      "hevc",
+      "vp9",
+      "vvc"
+     ]
+    },
+    {
+     "name": "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954",
+     "ranked_for": [
+      "av1",
+      "av2",
+      "hevc",
+      "vp9",
+      "vvc"
+     ]
+    },
+    {
+     "name": "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046",
+     "ranked_for": [
+      "av1",
+      "av2",
+      "vvc"
+     ]
+    },
+    {
+     "name": "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790",
+     "ranked_for": [
+      "hevc",
+      "vp9",
+      "vvc"
+     ]
+    },
+    {
+     "name": "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678",
+     "ranked_for": [
+      "av1",
+      "hevc",
+      "vp9"
+     ]
+    },
+    {
+     "name": "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796",
+     "ranked_for": [
+      "av2"
+     ]
+    },
+    {
+     "name": "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878",
+     "ranked_for": [
+      "hevc",
+      "vp9",
+      "vvc"
+     ]
+    }
+   ]
+  },
+  "standards_lens": {
+   "dataset": "eval/clipset/aomctc_bp3.manifest.json",
+   "used": "2026-11-14 onwards",
+   "how": "the standards lens: the AOM-CTC low-delay classes A3-A5 used to develop and justify our presets (docs/results/standards-ctc-2026-11-14/sources.json, whose 1280x720 '_E' variants are the same contents)",
+   "landed": "preset choices citing lens results (presets/av1/{veryfast,faster,fast}.toml; refs.second); the frozen build still cites the lens (crates/nc-av1/src/backend.rs)",
+   "evidence": "docs/analysis/benchmark-integrity-audit-2026-11-27.md finding 2; docs/analysis/bp4-adversarial-review-2026-11-25.md finding 4; docs/analysis/standards-lens-improvement-2026-11-14.md",
+   "clips": [
+    {
+     "name": "Johnny_1280x720_60"
+    },
+    {
+     "name": "KristenAndSara_1280x720_60"
+    },
+    {
+     "name": "ControlledBurn_1280x720p30_420"
+    },
+    {
+     "name": "WestWindEasy_1280x720p30_420"
+    },
+    {
+     "name": "BlueSky_360p25_v2"
+    },
+    {
+     "name": "Stockholm_640x360_5994"
+    },
+    {
+     "name": "RedKayak_360_2997"
+    },
+    {
+     "name": "SnowMountain_640x360_2997"
+    },
+    {
+     "name": "SpeedBag_640x360_2997"
+    },
+    {
+     "name": "TouchdownPass_640x360_2997"
+    },
+    {
+     "name": "FourPeople_480x270_60"
+    },
+    {
+     "name": "Vertical_Bayshore_270x480_2997"
+    }
+   ]
+  }
+ }
+}

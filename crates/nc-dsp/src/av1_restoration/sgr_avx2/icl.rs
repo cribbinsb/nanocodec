@@ -27,6 +27,24 @@ const FACTORS: [u8; 256] = {
     table
 };
 
+/// Exact `256 - A` for sixteen clipped 8-bit indices in dwords.
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+#[inline]
+pub(in crate::av1_restoration) fn lookup_complement(z: __m512i) -> __m512i {
+    // SAFETY: the table has four complete 64-byte chunks.
+    unsafe {
+        let table = FACTORS.as_ptr();
+        let lo0 = _mm512_loadu_si512(table.cast());
+        let lo1 = _mm512_loadu_si512(table.add(64).cast());
+        let hi0 = _mm512_loadu_si512(table.add(128).cast());
+        let hi1 = _mm512_loadu_si512(table.add(192).cast());
+        let lo = _mm512_permutex2var_epi8(lo0, z, lo1);
+        let hi = _mm512_permutex2var_epi8(hi0, z, hi1);
+        let top = _mm512_test_epi32_mask(z, _mm512_set1_epi32(128));
+        _mm512_and_si512(_mm512_mask_blend_epi32(top, lo, hi), _mm512_set1_epi32(255))
+    }
+}
+
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
 #[inline]
 pub(super) unsafe fn store_packed(stats: Statistics, sums: Sums, dst: *mut i32) {
@@ -46,18 +64,10 @@ pub(super) unsafe fn store_packed(stats: Statistics, sums: Sums, dst: *mut i32) 
         _mm512_set1_epi32(1 << (MTABLE_BITS - 1)),
     ));
     let z = _mm512_min_epu32(z, _mm512_set1_epi32(255));
-    // SAFETY: the table has four complete 64-byte chunks and the caller
-    // reserves sixteen consecutive columns in the packed statistics row.
+    // SAFETY: the caller reserves sixteen consecutive columns in the
+    // packed statistics row.
     unsafe {
-        let table = FACTORS.as_ptr();
-        let lo0 = _mm512_loadu_si512(table.cast());
-        let lo1 = _mm512_loadu_si512(table.add(64).cast());
-        let hi0 = _mm512_loadu_si512(table.add(128).cast());
-        let hi1 = _mm512_loadu_si512(table.add(192).cast());
-        let lo = _mm512_permutex2var_epi8(lo0, z, lo1);
-        let hi = _mm512_permutex2var_epi8(hi0, z, hi1);
-        let top = _mm512_test_epi32_mask(z, _mm512_set1_epi32(128));
-        let x = _mm512_and_si512(_mm512_mask_blend_epi32(top, lo, hi), _mm512_set1_epi32(255));
+        let x = lookup_complement(z);
         let b = _mm512_add_epi32(
             _mm512_mullo_epi32(_mm512_madd_epi16(sum, reciprocal), x),
             _mm512_set1_epi32(B_ROUND),

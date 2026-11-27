@@ -21,8 +21,8 @@ use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 use super::AV1_LR_OVERREAD;
 use super::self_guided::{
-    SgrStripe, SgrStripeScratch, blend, blend_at, box_ab, box_ab_at, box_sums, filter_around,
-    filter_between, filter_on,
+    ProjectionRows, SgrStripe, SgrStripeScratch, blend, blend_at, box_ab, box_ab_at, box_sums,
+    filter_around, filter_between, filter_on, project_rows,
 };
 use super::wiener::{WienerTaps, h_row, h_row_at, v_row, v_row_at};
 
@@ -160,6 +160,17 @@ pub(crate) trait RowKernels<T: Sample> {
         _dst: (&mut PlaneViewMut<'_, T>, usize, usize),
     ) -> bool {
         false
+    }
+    /// Compute the active guided filters and project one output row.
+    fn sgr_project(
+        &self,
+        rows: ProjectionRows<'_>,
+        src: &[T],
+        filtered: [&mut [Self::Filtered]; 2],
+        weights: [i32; 2],
+        dst: &mut [T],
+    ) {
+        project_rows(self, rows, src, filtered, weights, dst);
     }
     /// [`Kernels::wiener_h`].
     fn wiener_h(&self, src: &[T], taps: WienerTaps, out: &mut [i16], n: usize);

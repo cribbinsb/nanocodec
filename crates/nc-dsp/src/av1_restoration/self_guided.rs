@@ -369,6 +369,42 @@ struct Region<'a, T> {
     w: usize,
 }
 
+pub(super) type BoxRows<'a, const N: usize> = ([&'a [i16]; N], [&'a [i32]; N]);
+
+#[derive(Clone, Copy)]
+pub(super) enum RadiusTwo<'a> {
+    Off,
+    On(&'a [i16], &'a [i32]),
+    Between(BoxRows<'a, 2>),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProjectionRows<'a> {
+    pub(super) radius2: RadiusTwo<'a>,
+    pub(super) radius1: Option<BoxRows<'a, 3>>,
+}
+
+/// Project through the reference row kernels and their intermediate rows.
+pub(super) fn project_rows<T: Sample, K: RowKernels<T> + ?Sized>(
+    kernels: &K,
+    rows: ProjectionRows<'_>,
+    source: &[T],
+    [flt0, flt1]: [&mut [K::Filtered]; 2],
+    weights: [i32; 2],
+    dst: &mut [T],
+) {
+    let width = dst.len();
+    match rows.radius2 {
+        RadiusTwo::Off => {}
+        RadiusTwo::On(a, b) => kernels.sgr_filter_on(a, b, source, flt0, width),
+        RadiusTwo::Between((a, b)) => kernels.sgr_filter_between(a, b, source, flt0, width),
+    }
+    if let Some((a, b)) = rows.radius1 {
+        kernels.sgr_filter_around(a, b, source, flt1, width);
+    }
+    kernels.sgr_blend(source, [flt0, flt1], weights, dst);
+}
+
 impl<T> Region<'_, T> {
     /// Window row `t` from column `x`, as far as the kernels may read.
     fn row(&self, t: usize, x: usize) -> &[T] {
@@ -498,27 +534,34 @@ pub(super) fn self_guided<T: Sample, K: RowKernels<T>>(
     }
     for i in 0..h {
         let source = region.source(i);
-        if r0 > 0 {
+        let five = if r0 > 0 {
             let up = i / 2;
             if i % 2 == 0 {
                 radius2_box_row(kernels, &region, radius2, s0, (i as isize + 1, up + 1));
                 let a = [radius2.a.row(up), radius2.a.row(up + 1)];
                 let b = [radius2.b.row(up), radius2.b.row(up + 1)];
-                kernels.sgr_filter_between(a, b, source, flt0, w);
+                RadiusTwo::Between((a, b))
             } else {
-                let (a, b) = (radius2.a.row(up + 1), radius2.b.row(up + 1));
-                kernels.sgr_filter_on(a, b, source, flt0, w);
+                RadiusTwo::On(radius2.a.row(up + 1), radius2.b.row(up + 1))
             }
-        }
-        if r1 > 0 {
+        } else {
+            RadiusTwo::Off
+        };
+        let three = if r1 > 0 {
             radius1_box_row(kernels, &region, radius1, s1, i as isize + 1);
             let a = core::array::from_fn(|k| radius1.a.row(i + k));
             let b = core::array::from_fn(|k| radius1.b.row(i + k));
-            kernels.sgr_filter_around(a, b, source, flt1, w);
-        }
-        kernels.sgr_blend(
+            Some((a, b))
+        } else {
+            None
+        };
+        kernels.sgr_project(
+            ProjectionRows {
+                radius2: five,
+                radius1: three,
+            },
             source,
-            [flt0, flt1],
+            [&mut *flt0, &mut *flt1],
             weights,
             &mut dst.row_mut(y + i)[x..x + w],
         );

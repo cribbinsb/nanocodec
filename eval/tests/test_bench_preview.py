@@ -76,7 +76,7 @@ def test_a_drop_row_is_over_its_own_clips(tmp_path):
 
 def test_both_machines_are_views_and_missing_reports_are_listed_not_invented(tmp_path):
     write_report(tmp_path, "ours", FAMILIES)
-    write_report(tmp_path, "vc1k", FAMILIES, series="c8g")
+    write_report(tmp_path, "vc1k-out-of-sample", FAMILIES, series="c8g")
     data = bench_site.site_data(tmp_path)
     assert {v["id"] for v in data["views"]} == {"ours-c8i", "vc1k-c8g"}
     assert {m["id"] for m in data["missing"]} == {"vc1k-c8i", "aomctc-c8i", "ours-c8g", "aomctc-c8g"}
@@ -163,3 +163,42 @@ def test_a_days_compliance_is_the_worst_of_our_families():
     figures = {r["label"]: r["value"] for r in bench_site.preview_history.compliance(rows)}
     assert figures["worst buffer peak at its own rate"] == "1.040 buffers"
     assert figures["achieved / target rate, highest family mean"] == "1.050"
+
+
+def test_a_dataset_shows_its_headline_report_with_the_other_view_beside_it(tmp_path):
+    write_report(tmp_path, "vc1k-out-of-sample", FAMILIES)
+    write_report(tmp_path, "vc1k", FAMILIES | {"nanocodec-av1@fast": row(-29.0)}, common_clips=9)
+    (view,) = bench_site.site_data(tmp_path)["views"]
+    assert view["dataset"] == "vc1k" and view["source"].endswith("vc1k-out-of-sample-c8i.json")
+    assert view["values"]["nanocodec-av1@fast"]["bd"]["j"]["mean"] == -30.0
+    beside = view["beside"]
+    assert beside["common_clips"] == 9 and beside["values"]["nanocodec-av1@fast"]["bd"]["j"]["mean"] == -29.0
+    (tuned,) = view["in_sample"]  # the in-sample record's VC-1K set
+    assert len(tuned["clips"]) == 9
+
+
+def test_the_limitations_are_the_procedures_section_16():
+    items = bench_site.limitations()
+    assert items[0]["text"].startswith("Machines:")
+    nested = next(i for i in items if i["text"].startswith("Loaded speed"))
+    assert nested["items"] and not any("**" in i["text"] or "`" in i["text"] for i in items)
+
+
+def test_a_history_failing_its_tracking_check_is_withdrawn(tmp_path):
+    full = {"x264-medium": row(0.0), "x264-fast": row(10.0), "nanocodec-av1@fast": row(-30.0)}
+    write_report(tmp_path, "ours", full)
+    # on the subset ours reads 3 points worse than the references do: outside the 1-point limit
+    write_report(tmp_path, "history", HISTORY_FAMILIES | {"x264-fast": row(10.0),
+                                                         "nanocodec-av1@fast": row(-27.0)})
+    data = bench_site.preview_history.history_data(
+        tmp_path, tmp_path / "days.json", tmp_path / "no-captions.json", [SERIES], {},
+        bench_site.describe, bench_site.finite, bench_site.report_path)
+    assert SERIES not in data["views"]
+    check = data["withdrawn"][SERIES]
+    assert check["median_offset"] == 0.0 and set(check["outside"]) == {"nanocodec-av1@fast"}
+    write_report(tmp_path, "history", HISTORY_FAMILIES | {"x264-fast": row(10.0),
+                                                         "nanocodec-av1@fast": row(-29.5)})
+    data = bench_site.preview_history.history_data(
+        tmp_path, tmp_path / "days.json", tmp_path / "no-captions.json", [SERIES], {},
+        bench_site.describe, bench_site.finite, bench_site.report_path)
+    assert data["views"][SERIES]["tracking_check"]["passed"] and not data["withdrawn"]

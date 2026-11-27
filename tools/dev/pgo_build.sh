@@ -12,7 +12,8 @@
 #    merges the profiles, and the release build (`-Cprofile-use`) goes to
 #    TARGET_DIR, its binary copied to OUT_BINARY; with PGO_CAPI=1 the C API's
 #    static and shared libraries (nanocodec-capi) are built with the same
-#    profile and copied beside it (libnanocodec.a, libnanocodec.so).
+#    profile data in the `capi` cargo profile (it unwinds, so the C ABI's
+#    panic guard works) and copied beside it (libnanocodec.a, libnanocodec.so).
 #
 # PGO changes code layout, inlining and branch order only: streams are
 # byte-identical to the plain release build (chart_refresh checks every
@@ -132,8 +133,8 @@ if [ "$out" != "$target/release/nanocodec" ]; then
 fi
 if [ "${PGO_CAPI:-0}" = 1 ]; then
   CARGO_TARGET_DIR=$target \
-    "$cargo" build --config "$use_flags" --release -j"$jobs" -p nanocodec-capi
-  cp "$target/release/libnanocodec.a" "$target/release/libnanocodec.so" "$(dirname "$out")/"
+    "$cargo" build --config "$use_flags" --profile capi -j"$jobs" -p nanocodec-capi
+  cp "$target/capi/libnanocodec.a" "$target/capi/libnanocodec.so" "$(dirname "$out")/"
 fi
 rm -r -- "$target/pgo-work/streams"
 echo "pgo_build: $out"

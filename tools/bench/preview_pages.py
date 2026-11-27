@@ -25,6 +25,8 @@ from nceval import rate_ladder  # noqa: E402
 MANIFESTS = {"ours": "eval/clipset/heldout_2026-11-23b-bp4.manifest.json",
              "vc1k": "eval/clipset/vc1k_2026-11-18-bp4.manifest.json",
              "aomctc": "eval/clipset/aomctc_bp3.manifest.json"}
+#: The record of the dataset clips a tuning set used (procedure section 4, V3).
+TUNED_ON = REPO / "eval" / "clipset" / "tuned_on.json"
 #: The 600-frame window (procedure D7): coded where the source allows it.
 LONG_WINDOW = 600
 WINDOW_SEPARATOR = "@"
@@ -65,8 +67,16 @@ def lost_by_clip(report: dict, machine: str) -> dict[str, dict[str, list[str]]]:
     return lost
 
 
+def tuned_on() -> dict[str, str]:
+    """{clip: the tuning set that used it} from the in-sample record."""
+    record = json.loads(TUNED_ON.read_text())
+    return {c["name"]: f"{name} ({entry['used']})"
+            for name, entry in record["sets"].items() for c in entry["clips"]}
+
+
 def clips_data(reports: Path, datasets, machines, report_path) -> dict:
     out = {}
+    tuned = tuned_on()
     for dataset in datasets:
         manifest = json.loads((REPO / MANIFESTS[dataset.key]).read_text())
         views = {}
@@ -80,7 +90,8 @@ def clips_data(reports: Path, datasets, machines, report_path) -> dict:
                                   "lost": lost_by_clip(report, machine)}
         out[dataset.key] = {"name": dataset.name, "about": dataset.about,
                             "manifest": MANIFESTS[dataset.key],
-                            "clips": [clip_row(c) for c in manifest["clips"]], "views": views}
+                            "clips": [clip_row(c) | {"tuned_on": tuned.get(c["name"])}
+                                      for c in manifest["clips"]], "views": views}
     return {"datasets": out, "drop_suffix": DROP_SUFFIX,
             "ladder_kbps": list(rate_ladder.LADDER_720P30_KBPS)}
 

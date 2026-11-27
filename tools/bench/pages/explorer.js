@@ -46,22 +46,78 @@ function describe(data, view, family) {
     el('div', { class: 'dim' }, 'Select the point for every metric'));
 }
 
+const share = (s) => `${(100 * s).toFixed(1)}%`;
+const ratio = (value) => (value === null || value === undefined ? '–' : value.toFixed(3));
+const seconds = (value) => (value === null || value === undefined ? '–' : value.toFixed(2));
+
+/** A family's BDs on the 600-frame windows only, with their clip count (each clip has a
+ *  150-frame window; those with a long source also a 600-frame one), or null. */
+function longWindow(view, v) {
+  const bd = v.bd_by_window && v.bd_by_window['600'];
+  return bd && !v.own_only ? { bd, clips: view.common_clips - view.distinct_clips } : null;
+}
+
+/** What the reader needs beside this view's BDs (procedure D17 and section 9; benchmark
+ *  integrity audit 2026-11-27): in-sample clips, start-up, untimed points, timing machines. */
+function disclosures(data, view) {
+  const items = [];
+  for (const s of view.in_sample) {
+    const left = Object.keys(view.excluded_clips).length;
+    items.push(el('li', {}, el('strong', {}, 'In-sample clips. '),
+      `${s.clips.length} of this dataset's clips were used to tune our encoders: ${s.how}; used ${s.used}; what landed: ${s.landed}. `,
+      left ? `The headline leaves them out (${left} clips, every family); ` : 'The headline includes them; ',
+      view.beside ? `${view.beside.label}, the figures are in the table's "${view.beside.label}" column (common set ${view.beside.common_clips} of ${view.beside.view_clips} clip-windows). ` : '',
+      el('details', {}, el('summary', {}, 'The clips'), el('ul', { class: 'note' }, s.clips.map((c) => el('li', {}, c))))));
+  }
+  const ours = Object.entries(view.values).filter(([f]) => data.points[f].ours && view.values[f].compliance);
+  const refs = Object.entries(view.values).filter(([f]) => !data.points[f].ours && !data.points[f].drop && view.values[f].compliance);
+  const range = (rows) => {
+    const values = rows.map(([, v]) => v.compliance.first_key_seconds.median);
+    return `${seconds(Math.min(...values))}-${seconds(Math.max(...values))} s`;
+  };
+  if (ours.length && refs.length) {
+    items.push(el('li', {}, el('strong', {}, 'Start-up. '),
+      `Every window starts with a key frame and a full 1 s buffer, and the headline's windows are short (150 frames; AOM-CTC's 130; few clips also have 600), so the first key carries weight. Median first key, in seconds of the channel at the stream's own rate: ours ${range(ours)}, the references ${range(refs)} (per family in the table's "First key" column). `
+      + 'Our own measurement: capping our first key at 6 mean frames costs ours 5.0-7.8 % BD-J (docs/analysis/first-key-2026-11-25.md); the references\' start-up effect is not measured. '
+      + (view.common_clips > view.distinct_clips ? `The "600 f" column gives each family's BD-J on the ${view.common_clips - view.distinct_clips} clips with a 600-frame window only, where the first key weighs a quarter as much.` : '')));
+  }
+  if (view.untimed_points.length) {
+    items.push(el('li', {}, el('strong', {}, 'Untimed points. '),
+      `${view.untimed_points.length} point(s) have a valid stream and score but no valid time: counted in the BDs, left out of their family's speed: ${view.untimed_points.map((u) => u.id).join('; ')}.`));
+  }
+  if (view.timing_note) items.push(el('li', {}, el('strong', {}, 'Timing machines. '), view.timing_note));
+  items.push(el('li', {}, el('strong', {}, 'Own clips beside the common set. '),
+    'A claim about one of our families quotes its BD over all its own anchor-valid clips ("Own-clip BD"), with the common-set figure beside it (procedure section 9).'));
+  return el('ul', { class: 'prose' }, items);
+}
+
+/** Procedure section 16's known limitations, nested as the procedure lists them. */
+function limitationList(items) {
+  return el('ul', { class: 'prose' }, items.map((i) => el('li', {}, i.text, i.items.length ? limitationList(i.items) : '')));
+}
+
 function detail(data, view, family) {
   const p = data.points[family];
   const v = view.values[family];
   const c = v.compliance;
   const x = v.exclusion_check;
-  const share = (s) => `${(100 * s).toFixed(2)}%`;
+  const alt = view.beside && view.beside.values[family];
+  const long = longWindow(view, v);
+  const lost = Object.entries(v.lost_clips || {});
   const rows = [
     ['Encoder', p.owner], ['Codec', CODEC_NAMES[p.codec]],
     ['Preset', p.preset + (p.tune ? `, tune ${p.tune}` : '') + (p.drop ? ', its own frame dropping on (+drop)' : '')],
     ...data.metrics.map((m) => [`${NAMES[m]} (${clipsNote(v)})`, `${pct(mean(v.bd[m]), 2)} (95 % interval ${interval(v.bd[m])})`]),
-    ['Its own anchor-valid clips', String(v.own_clips)],
+    ...data.metrics.map((m) => [`${NAMES[m]}, all its own anchor-valid clips (${v.own_clips})`, `${pct(mean(v.bd_own[m]), 2)} (95 % interval ${interval(v.bd_own[m])})`]),
+    alt ? [`BD-J ${view.beside.label} (${alt.clips} clips)`, `${pct(mean(alt.bd.j), 2)} (95 % interval ${interval(alt.bd.j)})`] : null,
+    long ? [`BD-J on the 600-frame windows only (${long.clips} clips)`, `${pct(mean(long.bd.j), 2)} (95 % interval ${interval(long.bd.j)}); 150-frame windows ${pct(mean(v.bd_by_window['150'].j), 2)}`] : null,
     ['Clips lost to a malformed curve', String(v.lost)],
+    lost.length ? ['Lost clips and why', el('ul', {}, lost.map(([clip, why]) => el('li', {}, `${clip}: ${why}`)))] : null,
     ['Encode speed', `${speed(v.speed)} ${SPEED_UNIT} (${SPEED_NAME}) over ${v.speed_clips} clips, normalised to the timing references (raw ${speed(v.speed_raw)})`],
     ['On the report’s front (common set, BD-J and speed, all families)', view.front.includes(family) ? 'yes' : 'no'],
-    c ? ['Rate compliance (one bucket for every encoder)', `${share(c.share_frames_over)} of ${c.frames} frames over the bucket; ${share(c.share_points_over)} of ${c.points} points with a frame over it; worst excess ${c.worst_excess_buffers.toFixed(2)} buffers; 95th-percentile peak ${c.p95_peak_buffers.toFixed(2)} buffers; rate ${c.mean_rate_over_target.toFixed(3)} of target`] : null,
-    x ? ['Exclusion check', `on its ${x.missing_clips} lost clips, rate ${x.rate_over_target_missing === null ? '–' : x.rate_over_target_missing.toFixed(3)} of target (kept clips ${x.rate_over_target_kept.toFixed(3)})`] : null,
+    c ? ['Rate compliance (one 1 s bucket for every encoder)', `at its own rate: ${share(c.own_rate.share_points_over_1)} of ${c.points} points over one buffer; peak median ${c.own_rate.median_peak_buffers.toFixed(2)}, 95th percentile ${c.own_rate.p95_peak_buffers.toFixed(2)}, worst ${c.own_rate.worst_peak_buffers.toFixed(2)} buffers. At the target rate: ${share(c.target_rate.share_points_over_1)} of points over one buffer, worst ${c.target_rate.worst_peak_buffers.toFixed(2)}. Rate ${c.mean_rate_over_target.toFixed(3)} of target (mean)${p.ours ? '. Ours holds the buffer by re-coding a frame that would overflow it (--strict-buffer): compliant by re-coding; the runs do not record the re-coded share' : ''}`] : null,
+    c ? ['First key frame', `${c.first_key_seconds.median.toFixed(2)} s of the channel at its own rate (median; 95th percentile ${c.first_key_seconds.p95.toFixed(2)}, worst ${c.first_key_seconds.worst.toFixed(2)})`] : null,
+    x ? ['Exclusion check', `on its ${x.missing_clips} lost clips, rate ${ratio(x.rate_over_target_missing)} of target (kept clips ${ratio(x.rate_over_target_kept)})`] : null,
     Object.keys(v.envelope_dropped).length ? ['Points dropped by the monotone envelope', Object.entries(v.envelope_dropped).map(([m, n]) => `${SHORT[m]} ${n}`).join(', ')] : null,
   ].filter(Boolean);
   return el('section', { class: 'detail', 'aria-live': 'polite' },
@@ -140,19 +196,26 @@ function render(data, root) {
     .sort((a, b) => mean(a.v.bd[state.metric]) - mean(b.v.bd[state.metric]));
   const m = SHORT[state.metric];
   root.querySelector('.table-slot').replaceChildren(
-    el('p', { class: 'note' }, `Sorted by the chart's BD. Front: on the report's front, the families no other family beats on both BD-J and speed on the common set. A +drop row has only its own clips. Own clips: each family's own anchor-valid clips.`),
+    el('p', { class: 'note' }, `Sorted by the chart's BD. Front: on the report's front, the families no other family beats on both BD-J and speed on the common set. A +drop row has only its own clips. Own clips: each family's own anchor-valid clips; a claim about ours quotes its own-clip BD with the common-set BD beside it. Compliance beside each BD: the share of its points whose peak exceeds one 1 s buffer drained at the stream's own rate, and its first key's size in seconds of the channel (the Rate control page has every figure).`),
     table([
       { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
       { label: 'Front', cell: (r) => (view.front.includes(r.family) ? 'front' : '') },
       { label: `BD-${m}`, num: true, cell: (r) => pct(mean(r.v.bd[state.metric]), 2) },
       { label: '95 % interval', num: true, cell: (r) => interval(r.v.bd[state.metric]) },
       { label: 'Clips', num: true, cell: (r) => String(r.v.clips) + (r.v.own_only ? ' (own)' : '') },
+      { label: `Own-clip BD-${m}`, num: true, cell: (r) => pct(mean(r.v.bd_own[state.metric]), 2) },
       { label: 'Own clips', num: true, cell: (r) => String(r.v.own_clips) },
       { label: 'Lost', num: true, cell: (r) => String(r.v.lost) },
+      ...(view.beside ? [{ label: `BD-${m} ${view.beside.label}`, num: true, cell: (r) => { const a = view.beside.values[r.family]; return a ? pct(mean(a.bd[state.metric]), 2) : '–'; } }] : []),
+      ...(view.common_clips > view.distinct_clips ? [{ label: `BD-${m}, 600 f windows`, num: true, cell: (r) => { const l = longWindow(view, r.v); return l ? pct(mean(l.bd[state.metric]), 2) : '–'; } }] : []),
       { label: SPEED_UNIT, num: true, cell: (r) => speed(r.v.speed) },
       { label: 'Timed clips', num: true, cell: (r) => String(r.v.speed_clips) },
+      { label: 'Points over 1 buffer (own rate)', num: true, cell: (r) => (r.v.compliance ? share(r.v.compliance.own_rate.share_points_over_1) : '–') },
+      { label: 'First key, s (median)', num: true, cell: (r) => (r.v.compliance ? seconds(r.v.compliance.first_key_seconds.median) : '–') },
     ], rows, (r) => (r.p.ours ? 'ours' : '') + (r.family === zero ? ' zero' : '')),
-    el('p', { class: 'sources' }, 'Data: ', el('code', {}, view.source)));
+    el('p', { class: 'sources' }, 'Data: ', el('code', {}, view.source), view.beside ? [' and ', el('code', {}, view.beside.source)] : ''));
+  document.querySelector('.disclosures').replaceChildren(disclosures(data, view));
+  document.querySelector('.limitations').replaceChildren(limitationList(data.limitations));
 }
 
 function toggle(label, title, key, kind, data, root) {

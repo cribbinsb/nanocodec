@@ -34,10 +34,10 @@ initial_level_ms = "1000: the buffer starts full for every encoder (owner, 2026-
 optimal_level_ms = 600
 peak = "equal to the target (no encoder gets a higher drain rate)"
 frames = "150 (\"ours\", VC-1K); 130 (AOM-CTC, the CTC's count)"
-keyint = 300
+keyint = "150: a key every 150 frames in every window (D8; tools/bench/plan.py --keyint, KEY_INTERVAL)"
 bframes = "0: no picture references a later one (no reordering, past references only); VVenC's low-delay B slices reference past pictures only (verified, VVenC entry)"
 lookahead_frames = 0
-scene_cut = "off"
+scene_cut = "not uniform (audit 2026-11-27, finding 10): x264 and openh264 choose their own scene-cut keys in CBR (procedure section 3, rule 4); x265 (--no-scenecut --min-keyint), SVT-AV1 (--scd 0) and libvpx and libaom (--kf-min-dist = --kf-max-dist) run without them; ours runs its preset defaults. Keys per stream are reported per family (V30)"
 threads = 1
 frame_skip = "off on every main row (no encoder sends nothing for a frame); libvpx and libaom also have labelled +drop rows with their own frame dropping on (CBR only); ours codes a held frame as an all-skip frame (engine task T1; until it lands, hold off)"
 resize = "allowed where it is the encoder's own recommended real-time setting: ours on (AV1), the references as their projects' real-time examples set it (off); size-changed frames are scored after one pinned upscale (nceval.display, bilinear centre-aligned) for all"

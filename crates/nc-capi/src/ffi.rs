@@ -263,6 +263,15 @@ fn guarded(body: impl FnOnce() -> NcStatus) -> NcStatus {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(NcStatus::Internal)
 }
 
+/// A deliberate panic inside [`guarded`]: `tools/ci/capi_check.sh` calls it
+/// from C to check that a panic comes back as [`NcStatus::Internal`] in the
+/// `capi` profile instead of aborting. Only with the `panic-probe` feature.
+#[cfg(feature = "panic-probe")]
+#[unsafe(no_mangle)]
+pub extern "C" fn nc_debug_panic() -> NcStatus {
+    guarded(|| panic!("nc_debug_panic: deliberate panic for the C API check"))
+}
+
 /// Run `body` on the session of `encoder`, [`guarded`]; no encoder (a
 /// null pointer) is [`NcStatus::InvalidArgument`].
 fn with_session(
@@ -293,38 +302,40 @@ pub unsafe extern "C" fn nc_encoder_config_default(
     width: u32,
     height: u32,
 ) -> NcStatus {
-    let Some(codec) = codec_from(code) else {
-        return NcStatus::InvalidArgument;
-    };
-    // SAFETY: the caller guarantees `config` is null or valid for writes.
-    let Some(config) = (unsafe { config.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    let defaults = SessionConfig::new(codec, 0, 0);
-    *config = NcEncoderConfig {
-        codec: code,
-        width,
-        height,
-        fps_num: defaults.frame_rate.num,
-        fps_den: defaults.frame_rate.den,
-        quantizer: default_quantizer(codec),
-        intra_period: defaults.intra_period,
-        temporal_layers: u32::from(defaults.temporal_layers),
-        intra_refresh_period: 0,
-        ltr_interval: 0,
-        target_kbps: 0,
-        peak_kbps: 0,
-        buffer_ms: 0,
-        frame_drop: 0,
-        strict_buffer: 0,
-        colour: [0; 3],
-        full_range: 0,
-        timing: 0,
-        film_grain: 0,
-        film_grain_strength: 0.0,
-        still_camera: 0,
-    };
-    NcStatus::Ok
+    guarded(|| {
+        let Some(codec) = codec_from(code) else {
+            return NcStatus::InvalidArgument;
+        };
+        // SAFETY: the caller guarantees `config` is null or valid for writes.
+        let Some(config) = (unsafe { config.as_mut() }) else {
+            return NcStatus::InvalidArgument;
+        };
+        let defaults = SessionConfig::new(codec, 0, 0);
+        *config = NcEncoderConfig {
+            codec: code,
+            width,
+            height,
+            fps_num: defaults.frame_rate.num,
+            fps_den: defaults.frame_rate.den,
+            quantizer: default_quantizer(codec),
+            intra_period: defaults.intra_period,
+            temporal_layers: u32::from(defaults.temporal_layers),
+            intra_refresh_period: 0,
+            ltr_interval: 0,
+            target_kbps: 0,
+            peak_kbps: 0,
+            buffer_ms: 0,
+            frame_drop: 0,
+            strict_buffer: 0,
+            colour: [0; 3],
+            full_range: 0,
+            timing: 0,
+            film_grain: 0,
+            film_grain_strength: 0.0,
+            still_camera: 0,
+        };
+        NcStatus::Ok
+    })
 }
 
 /// Create an encoder; `params` (`param_count` entries, may be null when 0)
@@ -1074,6 +1085,13 @@ unsafe fn raw_frame<'a>(frame: &NcFrame, width: usize, height: usize) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test builds always unwind; `tools/ci/capi_check.sh` checks the same
+    /// through C in the `capi` profile.
+    #[test]
+    fn a_panic_inside_the_guard_is_an_internal_error() {
+        assert_eq!(guarded(|| panic!("deliberate")), NcStatus::Internal);
+    }
 
     /// One packet through `nc_decoder_decode`.
     fn decode(

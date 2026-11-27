@@ -171,28 +171,70 @@ pub(crate) unsafe fn inverse<V: WordPairLanes, const C: usize>(
     // SAFETY: forwarded contract.
     unsafe {
         match corner_bound::<C>(nonzero) {
-            CornerBound::Quarter => inverse_within::<V, C>(coeffs, nonzero, C / 4, shifts, out),
-            CornerBound::Half => inverse_within::<V, C>(coeffs, nonzero, C / 2, shifts, out),
-            CornerBound::Full => inverse_within::<V, C>(coeffs, nonzero, C, shifts, out),
+            CornerBound::Quarter => {
+                inverse_within::<V, C, false>(coeffs, nonzero, (C / 4, C / 4), shifts, out);
+            }
+            CornerBound::Half => {
+                inverse_within::<V, C, false>(coeffs, nonzero, (C / 2, C / 2), shifts, out);
+            }
+            CornerBound::Full => {
+                inverse_within::<V, C, false>(coeffs, nonzero, (C, C), shifts, out);
+            }
         }
     }
 }
 
-/// [`inverse`] with every 1-D pass's inputs from `inputs` (at least
-/// `nonzero`) on known to be zero.
+/// Apply the paired butterflies to the decoder's column-major input.
+/// Only `rows` can contribute to the second pass.
+///
+/// # Safety
+/// As [`inverse`], with `0 < rows <= C` and column-major coefficients.
+/// With `narrow`, live coefficients are in the first quarter of columns.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(super) unsafe fn inverse_from_columns<V: WordPairLanes, const C: usize>(
+    coeffs: &[i16],
+    rows: usize,
+    narrow: bool,
+    shifts: (u32, u32),
+    out: &mut [i16],
+) {
+    // SAFETY: forwarded contract.
+    unsafe {
+        match (narrow, corner_bound::<C>(rows)) {
+            (true, CornerBound::Quarter) => {
+                inverse_within::<V, C, true>(coeffs, rows, (C / 4, C / 4), shifts, out);
+            }
+            (true, CornerBound::Half) => {
+                inverse_within::<V, C, true>(coeffs, rows, (C / 4, C / 2), shifts, out);
+            }
+            (false, CornerBound::Quarter) => {
+                inverse_within::<V, C, true>(coeffs, rows, (C, C / 4), shifts, out);
+            }
+            (false, CornerBound::Half) => {
+                inverse_within::<V, C, true>(coeffs, rows, (C, C / 2), shifts, out);
+            }
+            (_, CornerBound::Full) => {
+                inverse_within::<V, C, true>(coeffs, rows, (C, C), shifts, out);
+            }
+        }
+    }
+}
+
+/// Compile the row and column passes at their known input bounds.
 ///
 /// # Safety
 ///
 /// As [`inverse`].
 #[inline(always)]
-unsafe fn inverse_within<V: WordPairLanes, const C: usize>(
+unsafe fn inverse_within<V: WordPairLanes, const C: usize, const COLUMN_MAJOR: bool>(
     coeffs: &[i16],
     nonzero: usize,
-    inputs: usize,
+    (horizontal, vertical): (usize, usize),
     shifts: (u32, u32),
     out: &mut [i16],
 ) {
-    debug_assert!(nonzero <= inputs);
+    debug_assert!(nonzero <= vertical);
     let lanes = V::LANES;
     let mut x = [V::splat(0); C];
     let mut y = [V::splat(0); C];
@@ -200,18 +242,23 @@ unsafe fn inverse_within<V: WordPairLanes, const C: usize>(
     let mut m = [MaybeUninit::<i16>::uninit(); MAX_CODED_AREA];
     for r0 in (0..C).step_by(lanes) {
         if r0 < nonzero {
-            // Load only the present coefficient tiles of this row band.
-            // The transpose feeds the first pass directly, avoiding a
-            // complete second coefficient plane between load and transform.
-            let mut tile = [V::splat(0); 16];
-            let tile = &mut tile[..lanes];
-            for k0 in (0..nonzero).step_by(lanes) {
-                for (row, lane) in tile.iter_mut().enumerate() {
-                    *lane = V::load_i16(&coeffs[(r0 + row) * C + k0..]);
+            if COLUMN_MAJOR {
+                for (column, lane) in x[..horizontal].iter_mut().enumerate() {
+                    *lane = V::load_i16(&coeffs[column * C + r0..]);
                 }
-                V::transpose_registers(tile, &mut x[k0..k0 + lanes]);
+            } else {
+                // The transpose feeds the first pass directly, avoiding a
+                // complete second coefficient plane between load and transform.
+                let mut tile = [V::splat(0); 16];
+                let tile = &mut tile[..lanes];
+                for k0 in (0..nonzero).step_by(lanes) {
+                    for (row, lane) in tile.iter_mut().enumerate() {
+                        *lane = V::load_i16(&coeffs[(r0 + row) * C + k0..]);
+                    }
+                    V::transpose_registers(tile, &mut x[k0..k0 + lanes]);
+                }
             }
-            inverse_dct(&x, inputs, &mut y);
+            inverse_dct(&x, horizontal, &mut y);
             for lane in &mut y {
                 *lane = lane.round_shift(shifts.0);
             }
@@ -223,11 +270,17 @@ unsafe fn inverse_within<V: WordPairLanes, const C: usize>(
     // SAFETY: rows r0..r0 + LANES of `m` were written for every r0.
     let m = unsafe { written(&m, C * C) };
     let (low, high) = (V::splat(RESIDUAL_MIN), V::splat(RESIDUAL_MAX));
+    let rows = if COLUMN_MAJOR { nonzero } else { C };
+    if COLUMN_MAJOR {
+        // A partial last vector may have held coefficients from rows past
+        // the decoder's scan bound. Those rows remain zero in pass two.
+        x[rows..].fill(V::splat(0));
+    }
     for x0 in (0..C).step_by(lanes) {
-        for (r, lane) in x.iter_mut().enumerate() {
+        for (r, lane) in x[..rows].iter_mut().enumerate() {
             *lane = V::load_i16(&m[r * C + x0..]);
         }
-        inverse_dct(&x, inputs, &mut y);
+        inverse_dct(&x, vertical, &mut y);
         for (r, lane) in y.iter().enumerate() {
             let sample = lane.round_shift(shifts.1).max(low).min(high);
             sample.store_sat16(&mut out[r * C + x0..]);

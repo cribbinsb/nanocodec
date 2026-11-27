@@ -77,6 +77,18 @@ def test_a_family_with_a_known_saving_reports_it(tmp_path):
     assert rows["families"]["ours"]["compliance"]["target_rate"]["share_points_over_1"] == 0
 
 
+def test_in_sample_clips_leave_every_family_and_are_listed(tmp_path):
+    run = make_run(tmp_path, {**{z: 0.0 for z in ZEROS}, "ours": 0.3})
+    record = tmp_path / "tuned_on.json"
+    record.write_text(json.dumps({"sets": {"worst": {"used": "2026-11-18", "clips": [
+        {"name": "a"}, {"name": "not-in-this-run"}]}}}))
+    result = report.report(run, exclude=report.tuned_on(record))
+    rows = result["series"]["c8a"]
+    assert rows["view_clips"] == rows["common_clips"] == 2
+    assert rows["families"]["ours"]["own_clips"] == 2
+    assert result["excluded_clips"] == {"a": "worst (2026-11-18)"}  # only the run's own clips
+
+
 def test_a_malformed_curve_costs_only_its_own_family_the_clip(tmp_path):
     run = make_run(tmp_path, {**{z: 0.0 for z in ZEROS}, "nanocodec-x": 0.3, "ref": 0.1})
     scores = run / "series" / "c8a" / "scores.jsonl"

@@ -649,6 +649,7 @@ unsafe fn single_row(
 }
 
 mod icl;
+pub(super) use icl::lookup_complement;
 
 /// The shared x86 lanes of [`super::sgr_stripe`].
 struct X86<const ICL: bool>;

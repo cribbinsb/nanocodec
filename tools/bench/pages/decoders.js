@@ -60,9 +60,10 @@ function native(data, view, root) {
     { label: 'Ours ÷ ref, all', num: true, cell: (s) => two(s.ratio) },
     { label: 'our streams', num: true, cell: (s) => (s.own_streams ? `${two(s.ratio_own)} (${s.own_streams})` : '–') },
     { label: 'other streams', num: true, cell: (s) => (s.other_streams ? `${two(s.ratio_other)} (${s.other_streams})` : '–') },
+    { label: 'Plain build ÷ ref, all', num: true, cell: (s) => two(s.ratio_plain) },
     { label: 'Ours, Mpx/s', num: true, cell: (s) => mpx(s.ours_mpx_s) },
     { label: 'Ref, Mpx/s', num: true, cell: (s) => mpx(s.ref_mpx_s) },
-  ], rows), el('p', { class: 'note' }, 'Mpx/s: decoded megapixels per second (luma width × height ÷ median time per frame), geometric mean over the streams; the ratios are geometric means of per-stream time ratios.'));
+  ], rows), el('p', { class: 'note' }, 'Mpx/s: decoded megapixels per second (luma width × height ÷ median time per frame), geometric mean over the streams; the ratios are geometric means of per-stream time ratios. Ours is the 0.7.0 PGO release build; the plain build (the same commit without PGO, as crates.io builds it) was timed in the same rounds, against the same reference runs.'));
   root.querySelector('.native-streams').replaceChildren(...data.codec_order.map((codec) => {
     const streams = view.native.filter((r) => r.codec === codec);
     if (!streams.length) return null;
@@ -74,6 +75,7 @@ function native(data, view, root) {
         { label: 'Size', cell: size },
         { label: 'Frames', num: true, cell: (r) => String(r.frames) },
         { label: 'Ours ms/frame', num: true, cell: (r) => msCell(r.decoders.ours) },
+        { label: 'Plain ms/frame', num: true, cell: (r) => msCell(r.decoders['ours-plain']) },
         ...refs.flatMap((ref) => [
           { label: `${data.short[ref]} ms/frame`, num: true, cell: (r) => msCell(r.decoders[ref]) },
           { label: `÷ ${data.short[ref]}`, num: true, cell: (r) => (r.decoders[ref] ? two(r.decoders.ours.ms / r.decoders[ref].ms) : '–') },
@@ -106,7 +108,7 @@ function browser(data, view, root) {
     { label: 'fps', num: true, cell: (r) => fpsOf(r['ours-wasm']) },
     { label: 'ffmpeg.wasm ms/frame', num: true, cell: (r) => (r['ffmpeg.wasm'] ? r['ffmpeg.wasm'].ms.toFixed(2) : 'no decoder') },
     { label: 'Ours ÷ ffmpeg.wasm', num: true, cell: (r) => (r['ffmpeg.wasm'] ? two(r['ours-wasm'].ms / r['ffmpeg.wasm'].ms) : '–') },
-    { label: 'Native ms/frame', num: true, cell: (r) => (r.native ? r.native.ms.toFixed(2) : '–') },
+    { label: 'Native (PGO) ms/frame', num: true, cell: (r) => (r.native ? r.native.ms.toFixed(2) : '–') },
     { label: 'Browser ÷ native', num: true, cell: (r) => (r.native ? two(r['ours-wasm'].ms / r.native.ms) : '–') },
   ], rows), el('p', { class: 'note' }, 'ms per frame: the median of 7 runs (the record keeps every run).'));
 }
@@ -115,12 +117,12 @@ function method(data, view, root) {
   const a = data.about;
   const p = view.platform;
   root.querySelector('.results-banner').replaceChildren(
-    el('strong', {}, `nanocodec ${a.release} (${a.commit}). `),
+    el('strong', {}, `nanocodec ${a.release} PGO release build (${a.commit}). `),
     `Timed on ${data.machines[state.machine].name}${p.cpu ? `, ${p.cpu}` : ''}: one decode per physical core, every decoder one-threaded, `,
     `median of 15 passes per decoder and stream. Our own measurements; the references are timed one-threaded here and are usually run with more threads.`,
     data.missing.length ? ` Not measured yet: ${data.missing.join(', ')}.` : '');
   root.querySelector('.method-detail').replaceChildren(
-    el('p', {}, el('strong', {}, 'Our decoders: '), `${a.build}. ${p.nanocodec ? `Version line: ${p.nanocodec}.` : ''}`),
+    el('p', {}, el('strong', {}, 'Our decoders: '), `${a.build}. ${p.nanocodec ? `Version line: ${p.nanocodec}.` : ''} ${a.plain_build}.`),
     el('p', {}, el('strong', {}, 'Machine: '), `AWS ${data.machines[state.machine].type} (spot, eu-north-1)${p.cpu ? `, ${p.cpu}` : ''}. The decoders were split over three of its physical cores, one process per core and the box otherwise idle (${p.pinning || 'pinning not recorded'}); each stream's decoders ran in the same process's interleaved rounds.`),
     el('p', {}, el('strong', {}, 'Native method: '), `${a.method} ${a.harnesses}`),
     el('p', {}, el('strong', {}, 'References: '), Object.values(data.references).join('; ') + `. ${data.machines[state.machine].anchors}`),

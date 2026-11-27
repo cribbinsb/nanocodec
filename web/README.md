@@ -124,9 +124,9 @@ are needed: each worker has its own ordinary WASM memory.
 - **Pre-encoded streams (`reference.js`, `streams-ref/`):** "Pre-encoded reference" at
   a version's top (disabled, with the reason, for the webcam, a file or the test
   scene: streams exist for the sample clips only). A
-  reference stream is a clip coded offline by x264, openh264, x265,
-  SVT-AV1, libaom, libvpx or NVENC in the chart configurations
-  (`docs/results/bd-vs-speed.md`), fetched with progress when chosen and decoded here
+  reference stream is a clip coded offline by x264, openh264, x265, Kvazaar,
+  SVT-AV1, libaom or libvpx with the BP-4 benchmark's exact CBR command for one of its
+  families (`docs/benchmark-fairness.toml`) and its x86_64 encoder build, fetched with progress when chosen and decoded here
   by our WASM decoder (no encode worker). The picker lists the playing clip's streams
   grouped by encoder, each named by encoder, codec, size, frame rate and bitrate, then
   other clips' (choosing one switches the clip; a clip with none says so). A reference
@@ -418,16 +418,14 @@ prediction modes, malformed/truncated packets and reconstruction equality.
 The browser demo was additionally exercised in Chromium with real WASM using
 the test scene, simulated webcam, local video, all codec quantizer endpoints,
 fast presets, downloads and mobile layout. Browser-produced default/fast
-packets for all three codecs were decoded by both independent standard decoders
+packets for the three codecs the demo had then (H.264, HEVC, AV1) were decoded by both independent standard decoders
 and compared byte-for-byte with browser-WASM decoded I420 output.
 
 ## Initial VP9 and AV2
 
-Both use native Rust encoders and independent decoders (VP9 profiles 0 and 2; AV2 8-bit single-tile streams; gaps in docs/FAQ.md#conformance), with
-shared GOP planning and realtime bitrate controls. VP9 uses 8×8/16×16 inter
-blocks and TX8; AV2 uses 8×8 prediction blocks, TX8 luma, adaptive probabilities
-and residual skipping. Geometry must be divisible by eight, and one temporal
-layer is supported.
+Both use native Rust encoders on the shared engine and independent decoders
+(VP9 profiles 0 and 2; AV2 8-bit single-tile streams; gaps in docs/FAQ.md#conformance).
+Their supported coding tools are listed in docs/handoff/vp9-av2.md.
 
 ## VVC
 

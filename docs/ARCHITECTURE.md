@@ -31,8 +31,9 @@ on small edge devices and decodes it anywhere, especially in a web page.
   from the encoder's choices within the standard.
 - **WASM decode is the primary browser path.** Our own decoders compile to
   WebAssembly (SIMD128), so a page plays our streams with no dependence on
-  the browser's codecs. WebCodecs is an optional extra. 8-bit 4:2:0 only
-  (the decoders' high-bit-depth output is not shown in the browser yet).
+  the browser's codecs. WebCodecs is an optional extra. Encoding is 8-bit
+  4:2:0; 10-bit streams decode and are converted to 8 bits for display
+  (`crates/nc-web/README.md`).
 - **Noise is removed, not reproduced.** Sensor noise is unwanted at these
   rates: a clean picture is the better result. Film-grain synthesis is an
   experiment only (AV1 `grain.enable`, off); the
@@ -90,11 +91,13 @@ layer 0   nc-common                                 pictures, views, bit I/O, YU
 
 A crate depends only on crates in lower layers; `tools/ci/check_layering.py`
 enforces it, so the engine can never reach into a codec and codecs never
-depend on each other. `unsafe` is allowed only in `nc-dsp` kernels and the C
-ABI of `nc-capi`; every other crate has `#![forbid(unsafe_code)]`.
+depend on each other. `unsafe` is allowed only in `nc-dsp` (its kernels,
+assembly and their dispatch) and the C ABI of `nc-capi`; every other crate has `#![forbid(unsafe_code)]`.
 
 - `nc-capi`: a C ABI (`include/nanocodec.h`) over a safe, codec-independent
-  encoder session; panics are caught at the boundary.
+  encoder session; panics are caught at the boundary and returned as
+  `NC_ERROR_INTERNAL`, which needs the unwinding `capi` build profile
+  (`cargo build --profile capi -p nanocodec-capi`; `--release` aborts).
 - `nc-cli`: the `nanocodec` command (encode, decode, params, stream tools).
 - `nc-web`: browser bindings; encoder and decoder run in separate workers
   and only compressed bytes cross between them.

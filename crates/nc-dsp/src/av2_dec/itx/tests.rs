@@ -71,6 +71,61 @@ fn matches_dav2d_vectors() {
 }
 
 #[test]
+fn large_dct_ignores_rows_past_eob_without_truncating_live_columns() {
+    for isa in [Isa::Avx2, Isa::Avx512] {
+        let Some(dsp) = Dsp::with_isa(isa) else {
+            continue;
+        };
+        for size in [RectTxSize::Tx32x32, RectTxSize::Tx64x64] {
+            let stride = size.width() + 11;
+            let initial: Vec<_> = (0..stride * (size.height() + 2))
+                .map(|i| pixel(i % stride, i / stride))
+                .collect();
+            for eob in [1, 10, 36, 78, 136, 406, 1023] {
+                let rows = first_pass_rows(size, TxClass::TwoD, eob);
+                for whole_width in [false, true] {
+                    let mut actual_coeffs = [0_i16; 1025];
+                    for (column, coeffs) in actual_coeffs[..1024]
+                        .as_chunks_mut::<32>()
+                        .0
+                        .iter_mut()
+                        .enumerate()
+                    {
+                        for (row, coeff) in coeffs.iter_mut().enumerate() {
+                            if row >= rows || whole_width || column < 8 {
+                                *coeff = pattern(column * 32 + row);
+                            }
+                        }
+                    }
+                    actual_coeffs[1024] = 17;
+                    let mut expected_coeffs = actual_coeffs;
+                    let (mut actual, mut expected) = (initial.clone(), initial.clone());
+                    inverse_transform_add(
+                        &mut expected,
+                        3,
+                        stride,
+                        &mut expected_coeffs,
+                        size,
+                        TxType::DCT_DCT,
+                        eob,
+                    );
+                    inverse_transform_add_with_dsp(
+                        &dsp,
+                        &mut actual,
+                        (3, stride),
+                        &mut actual_coeffs,
+                        (size, TxType::DCT_DCT),
+                        eob,
+                    );
+                    assert_eq!(actual, expected, "{isa:?} {size:?} eob {eob}");
+                    assert_eq!(actual_coeffs, expected_coeffs);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn cross_chroma_matches_dav2d_vector() {
     let mut u: Vec<i16> = (0..64).map(pattern).collect();
     let mut v: Vec<i16> = (500..564).map(pattern).collect();

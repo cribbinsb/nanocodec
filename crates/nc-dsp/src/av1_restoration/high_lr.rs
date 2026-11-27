@@ -25,8 +25,9 @@ use nc_common::{BitDepth, PlaneViewMut};
 
 use super::kernels::{RowKernels, WIENER_ROWS};
 use super::self_guided::{
-    blend_at, box_ab_at as scalar_box_ab_at, box_sums as scalar_box_sums,
+    ProjectionRows, blend_at, box_ab_at as scalar_box_ab_at, box_sums as scalar_box_sums,
     filter_around as scalar_around, filter_between as scalar_between, filter_on as scalar_on,
+    project_rows,
 };
 use super::sgr_lanes::{self, SgrLanes};
 use super::wiener::{WienerTaps, h_row_at, v_row_at};
@@ -124,6 +125,7 @@ pub(crate) type Around16Fn =
     unsafe fn(a: [&[i16]; 3], b: [&[i32]; 3], src: &[u16], out: &mut [i32], n: usize);
 pub(crate) type Blend16Fn =
     unsafe fn(src: &[u16], filtered: [&[i32]; 2], weights: [i32; 2], dst: &mut [u16], BitDepth);
+type Project16Fn = unsafe fn(ProjectionRows<'_>, &[u16], [i32; 2], &mut [u16], BitDepth);
 
 /// High-bit-depth (`u16`) loop restoration kernels for one ISA.
 #[derive(Debug, Clone, Copy)]
@@ -139,6 +141,7 @@ pub(crate) struct HighLrFns {
     pub on: On16Fn,
     pub around: Around16Fn,
     pub blend: Blend16Fn,
+    project: Option<Project16Fn>,
 }
 
 fn scalar_box_ab16<const N: usize>(
@@ -165,6 +168,7 @@ impl HighLrFns {
         on: scalar_on::<u16, i32>,
         around: scalar_around::<u16, i32>,
         blend: blend_at::<u16, i32>,
+        project: None,
     };
 
     pub fn for_isa(isa: Isa) -> Self {
@@ -201,6 +205,23 @@ fn rows_cover<T>(rows: &[&[T]], n: usize) -> bool {
 
 impl RowKernels<u16> for HighLrBound<'_> {
     type Filtered = i32;
+
+    fn sgr_project(
+        &self,
+        rows: ProjectionRows<'_>,
+        src: &[u16],
+        filtered: [&mut [Self::Filtered]; 2],
+        weights: [i32; 2],
+        dst: &mut [u16],
+    ) {
+        if let Some(project) = self.fns.project {
+            // SAFETY: the selected ISA supports this kernel. It indexes
+            // the row slices with their checked Rust lengths.
+            unsafe { project(rows, src, weights, dst, self.depth) };
+        } else {
+            project_rows(self, rows, src, filtered, weights, dst);
+        }
+    }
 
     fn wiener_stripe(
         &self,
@@ -843,6 +864,7 @@ macro_rules! high_lr_isa {
             use nc_common::{BitDepth, PlaneViewMut};
 
             use super::super::kernels::WIENER_ROWS;
+            use super::super::self_guided::ProjectionRows;
             use super::super::sgr_lanes;
             use super::super::wiener::WienerTaps;
             use super::{
@@ -893,13 +915,13 @@ macro_rules! high_lr_isa {
             $(#[$feature])*
             unsafe fn box_sums3(src: &[u16], sum: &mut [i16], squares: &mut [i32], n: usize) {
                 // SAFETY: target_feature enabled by wrapper.
-                unsafe { sgr_lanes::box_sums::<$sgr_lanes, u16, 1>(src, sum, squares, n) }
+                unsafe { super::super::sgr_words::box_sums::<$w_lanes, 1>(src, sum, squares, n) }
             }
 
             $(#[$feature])*
             unsafe fn box_sums5(src: &[u16], sum: &mut [i16], squares: &mut [i32], n: usize) {
                 // SAFETY: target_feature enabled by wrapper.
-                unsafe { sgr_lanes::box_sums::<$sgr_lanes, u16, 2>(src, sum, squares, n) }
+                unsafe { super::super::sgr_words::box_sums::<$w_lanes, 2>(src, sum, squares, n) }
             }
 
             $(#[$feature])*
@@ -970,6 +992,17 @@ macro_rules! high_lr_isa {
                 unsafe { sgr_lanes::blend::<$sgr_lanes, u16>(src, filtered, weights, dst, depth) }
             }
 
+            $(#[$feature])*
+            unsafe fn project(
+                rows: ProjectionRows<'_>,
+                src: &[u16],
+                weights: [i32; 2],
+                dst: &mut [u16],
+                depth: BitDepth,
+            ) {
+                sgr_lanes::project::<$sgr_lanes>(rows, src, weights, dst, depth);
+            }
+
             pub(super) const FNS: HighLrFns = HighLrFns {
                 wiener_stripe: Some(wiener_stripe),
                 wiener_h,
@@ -982,6 +1015,7 @@ macro_rules! high_lr_isa {
                 on,
                 around,
                 blend,
+                project: Some(project),
             };
         }
     };
@@ -998,7 +1032,7 @@ high_lr_isa!(
 #[cfg(target_arch = "x86_64")]
 high_lr_isa!(
     x86_avx512,
-    #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vnni")],
+    #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi,avx512vnni")],
     crate::simd::avx512_i16::I16x32,
     super::avx512_sgr::Lanes16
 );
@@ -1025,25 +1059,24 @@ high_lr_isa!(
 mod avx512_sgr {
     use core::arch::x86_64::{
         __m512i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm_storeu_si128, _mm256_loadu_si256,
-        _mm256_storeu_si256, _mm512_add_epi32, _mm512_add_ps, _mm512_cmpeq_epi32_mask,
-        _mm512_cmpneq_epi32_mask, _mm512_cvtepi16_epi32, _mm512_cvtepi32_ps, _mm512_cvtepu8_epi32,
-        _mm512_cvtepu16_epi32, _mm512_cvtsepi32_epi16, _mm512_cvttps_epi32, _mm512_cvtusepi32_epi8,
-        _mm512_cvtusepi32_epi16, _mm512_div_ps, _mm512_loadu_si512, _mm512_maskz_min_epi32,
-        _mm512_maskz_set1_epi32, _mm512_max_epi32, _mm512_min_epi32, _mm512_mul_ps,
-        _mm512_mullo_epi32, _mm512_rcp14_ps, _mm512_set1_epi32, _mm512_set1_ps,
-        _mm512_setzero_si512, _mm512_sll_epi32, _mm512_sra_epi32, _mm512_srl_epi32,
-        _mm512_storeu_si512, _mm512_sub_epi32,
+        _mm256_storeu_si256, _mm512_add_epi32, _mm512_cmpeq_epi32_mask, _mm512_cvtepi16_epi32,
+        _mm512_cvtepi32_ps, _mm512_cvtepu8_epi32, _mm512_cvtepu16_epi32, _mm512_cvtsepi32_epi16,
+        _mm512_cvttps_epi32, _mm512_cvtusepi32_epi8, _mm512_cvtusepi32_epi16, _mm512_div_ps,
+        _mm512_loadu_si512, _mm512_maskz_set1_epi32, _mm512_max_epi32, _mm512_min_epi32,
+        _mm512_mullo_epi32, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_sll_epi32,
+        _mm512_sra_epi32, _mm512_srl_epi32, _mm512_storeu_si512, _mm512_sub_epi32,
     };
 
     use super::super::kernels::Kernels;
-    use super::super::self_guided::{SGR_BITS, Z_MAX};
+    use super::super::self_guided::SGR_BITS;
+    use super::super::sgr_avx2::lookup_complement;
     use super::super::sgr_lanes::{SgrLanes, sgr_kernels};
 
     /// Sixteen `i32` lanes for AVX-512 self-guided kernels (`u8` and `u16`).
     #[derive(Clone, Copy)]
     pub(super) struct Lanes16(__m512i);
 
-    // SAFETY (every method): `Lanes16` exists only inside `avx512f,avx512bw,avx512vl`
+    // SAFETY (every method): `Lanes16` exists only inside `avx512f,avx512bw,avx512vl,avx512vbmi`
     // kernels; slices are indexed before raw loads and stores.
     impl SgrLanes for Lanes16 {
         const LANES: usize = 16;
@@ -1157,22 +1190,13 @@ mod avx512_sgr {
         }
         #[inline(always)]
         fn sgr_factor(self) -> Self {
-            // SAFETY: see `avx2::Lanes::sgr_factor` error bound; `_mm512_rcp14_ps`
-            // has `< 2^-14` relative error, 4x tighter than `_mm256_rcp_ps`.
+            // SAFETY: the Ice Lake callers enable VBMI, and box statistics
+            // clip the index to the byte table's domain.
             unsafe {
-                let unit = _mm512_set1_epi32(1 << SGR_BITS);
-                let den = _mm512_cvtepi32_ps(_mm512_add_epi32(self.0, _mm512_set1_epi32(1)));
-                let rounded = _mm512_cvttps_epi32(_mm512_add_ps(
-                    _mm512_mul_ps(
-                        _mm512_rcp14_ps(den),
-                        _mm512_set1_ps(f32::from(1_u16 << SGR_BITS)),
-                    ),
-                    _mm512_set1_ps(0.5),
-                ));
-                let max = _mm512_set1_epi32(Z_MAX);
-                let not_max = _mm512_cmpneq_epi32_mask(self.0, max);
-                let complement = _mm512_maskz_min_epi32(not_max, rounded, max);
-                Self(_mm512_sub_epi32(unit, complement))
+                Self(_mm512_sub_epi32(
+                    _mm512_set1_epi32(1 << SGR_BITS),
+                    lookup_complement(self.0),
+                ))
             }
         }
         #[inline(always)]
@@ -1187,7 +1211,7 @@ mod avx512_sgr {
         }
     }
 
-    sgr_kernels!(#[target_feature(enable = "avx512f,avx512bw,avx512vl")]; Lanes16);
+    sgr_kernels!(#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]; Lanes16);
 
     pub(crate) const fn install_u8(base: Kernels) -> Kernels {
         Kernels {
@@ -1206,21 +1230,21 @@ mod avx512_sgr {
 
     #[cfg(test)]
     mod tests {
-        use super::{Lanes16, SgrLanes, Z_MAX};
+        use super::{Lanes16, SgrLanes};
         use crate::Isa;
-        use crate::av1_restoration::self_guided::x_by_xplus1;
+        use crate::av1_restoration::self_guided::{Z_MAX, x_by_xplus1};
 
         #[test]
-        fn avx512_reciprocal_factor_matches_entire_legal_domain() {
+        fn avx512_lookup_factor_matches_entire_legal_domain() {
             if !Isa::Avx512.is_supported() {
                 return;
             }
-            // SAFETY: AVX-512F/BW/VL detected above.
-            unsafe { check_reciprocal_factors() };
+            // SAFETY: Ice Lake capabilities detected above.
+            unsafe { check_lookup_factors() };
         }
 
-        #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-        unsafe fn check_reciprocal_factors() {
+        #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+        unsafe fn check_lookup_factors() {
             for first in (0..=Z_MAX).step_by(16) {
                 let z: [i32; 16] = core::array::from_fn(|i| first + i as i32);
                 let mut got = [0; 16];

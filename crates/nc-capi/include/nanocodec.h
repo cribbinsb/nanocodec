@@ -1,12 +1,15 @@
 /*
  * nanocodec: low-latency H.264 / HEVC / AV1 encoder and decoder, C API.
  *
- * Link with the static or shared library built from crates/nc-capi
- * (libnanocodec.a / libnanocodec.so; the static library also needs
- * -lpthread -ldl -lm). examples/encode.c shows the whole life cycle.
+ * Link with the static or shared library built from crates/nc-capi with
+ * `cargo build --profile capi -p nanocodec-capi` (target/capi/libnanocodec.a
+ * or .so; the static library also needs -lpthread -ldl -lm).
+ * examples/encode.c shows the whole life cycle.
  *
- * Every function returns an nc_status; nothing is ever thrown or aborted
- * across this interface. An encoder is not thread-safe: use one per thread.
+ * Every function returns an nc_status; nothing is thrown across this
+ * interface, and an internal panic returns NC_ERROR_INTERNAL instead of
+ * aborting (in the capi profile, which unwinds; a --release build aborts).
+ * An encoder is not thread-safe: use one per thread.
  *
  * This header mirrors crates/nc-capi/src/ffi.rs; tools/ci/capi_check.sh
  * compiles and runs the example against it.

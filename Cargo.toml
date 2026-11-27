@@ -73,6 +73,16 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
+# The C library (nanocodec-capi): release code that unwinds on a panic, so
+# the guard around every `extern "C"` call (`catch_unwind` in
+# crates/nc-capi/src/ffi.rs) can turn a panic into NC_ERROR_INTERNAL instead
+# of aborting the host process. Cargo sets the panic strategy per profile,
+# not per package, hence a profile of its own; tools/ci/capi_check.sh checks
+# a forced panic through the C ABI in this profile.
+[profile.capi]
+inherits = "release"
+panic = "unwind"
+
 # The browser module (tools/web/build.sh). Thin LTO decodes as fast as fat
 # LTO in WASM with less cold build time; `strip = true` drops the ~0.52 MB
 # `custom:name` section at zero runtime or build-time cost. Lower opt levels

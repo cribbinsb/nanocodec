@@ -3,6 +3,13 @@
 //! pass covers sixteen lines per vector instead of eight. The arithmetic is
 //! the AVX2 kernel's (`vpmaddwd` on word pairs), so results are identical.
 
+use core::arch::x86_64::{
+    _mm512_add_epi16, _mm512_loadu_si512, _mm512_packus_epi16, _mm512_setzero_si512,
+    _mm512_storeu_si512, _mm512_unpackhi_epi8, _mm512_unpackhi_epi16, _mm512_unpacklo_epi8,
+    _mm512_unpacklo_epi16,
+};
+use nc_common::PlaneViewMut;
+
 use super::typed::Av2TxType;
 use super::typed_lanes::{self, Av2TypedFns};
 use super::{Av2TxfmFns, paired, size_of_side};
@@ -48,4 +55,42 @@ unsafe fn forward<const N: usize, const C: usize>(
     let shifts = const { size_of_side(N) }.forward_shifts();
     // SAFETY: AVX-512F/BW/VL are enabled for this function; 16 lanes <= C.
     unsafe { paired::forward::<I32x16, N, C>(residual, stride, shifts, out) }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+pub(super) unsafe fn inverse_large(
+    coefficients: &[i16],
+    rows: usize,
+    narrow: bool,
+    shifts: (u32, u32),
+    residual: &mut [i16; 1024],
+) {
+    // SAFETY: the caller has checked the coded area, ISA and row bound.
+    unsafe {
+        paired::inverse_from_columns::<I32x16, 32>(coefficients, rows, narrow, shifts, residual);
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+pub(super) unsafe fn add_repeated_residual(dst: &mut PlaneViewMut<'_>, residual: &[i16; 1024]) {
+    let stride = dst.stride();
+    let dst = &mut dst.data_mut()[..63 * stride + 64];
+    let zero = _mm512_setzero_si512();
+    // SAFETY: each checked row has one vector of residuals and a vector
+    // of pixels. The residual plus prediction fits signed i16.
+    unsafe {
+        for (y, row) in residual.as_chunks::<32>().0.iter().enumerate() {
+            let r = _mm512_loadu_si512(row.as_ptr().cast());
+            let lo = _mm512_unpacklo_epi16(r, r);
+            let hi = _mm512_unpackhi_epi16(r, r);
+            let pair = dst.as_mut_ptr().add(2 * y * stride);
+            for offset in [0, stride] {
+                let ptr = pair.add(offset);
+                let pred = _mm512_loadu_si512(ptr.cast());
+                let a = _mm512_add_epi16(_mm512_unpacklo_epi8(pred, zero), lo);
+                let b = _mm512_add_epi16(_mm512_unpackhi_epi8(pred, zero), hi);
+                _mm512_storeu_si512(ptr.cast(), _mm512_packus_epi16(a, b));
+            }
+        }
+    }
 }

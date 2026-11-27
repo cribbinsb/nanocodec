@@ -9,9 +9,9 @@
 //! filter and SAO (edge offset) on.
 //!
 //! [`Decoder`] decodes HEVC Main, Main 10 and Main Still Picture streams
-//! (MD5-exact against HM on all 147 streams of the official JCT-VC HEVC_v1
-//! conformance suite; no known gap in these profiles, range extensions are
-//! rejected; docs/FAQ.md#conformance); it shares only normative
+//! (MD5-exact against HM on all 147 streams of the official JCT-VC `HEVC_v1`
+//! conformance suite; no known gap in these profiles, range extensions and
+//! screen content coding are rejected; docs/FAQ.md#conformance); it shares only normative
 //! helpers with the encoder (intra prediction, scans, transforms, DSP kernels).
 //!
 //! Module map:

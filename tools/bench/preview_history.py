@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 from pathlib import Path
 
 DEFAULT_DAYS = Path.home() / "nanocodec-data" / "bench" / "bp4-prep" / "history" / "days-bp4.json"
@@ -44,6 +45,13 @@ KEYS = {
 }
 PRIMARY_KEY = "k150"
 COMMIT_SHOWN = 9
+#: Procedure section 14, V17: on the current build, every family's subset-minus-full BD-J
+#: offset lies within this many points of the median offset, with the same front membership.
+#: A failure withdraws the history graph until the owner decides.
+TRACKING_LIMIT = 1.0
+#: The full set the history subset is checked against: the "ours" report of the same machine.
+FULL_REPORT = "ours"
+DROP_SUFFIX = "+drop"
 BENCHMARK_BUILD = "BP-4 benchmark build"
 
 NOTES = (
@@ -178,19 +186,45 @@ def machine_view(report: dict, machine: str, builds: dict[str, dict], captions: 
     }
 
 
+def tracking_check(history: dict, full: dict) -> dict:
+    """V17 over the families both reports hold for the current build (our benchmark build's
+    own families and the references; not the earlier days, not the +drop rows, which are on
+    their own clips): each one's subset-minus-full BD-J offset against the median offset, and
+    the front membership among them."""
+    families, full_families = history["families"], full["families"]
+    offsets = {f: row["bd"]["j"]["mean"] - full_families[f]["bd"]["j"]["mean"]
+               for f, row in families.items()
+               if not HISTORY_FAMILY.match(f) and not f.endswith(DROP_SUFFIX) and row.get("clips")
+               and (full_families.get(f) or {}).get("clips")}
+    median = statistics.median(offsets.values())
+    outside = {f: o for f, o in offsets.items() if abs(o - median) > TRACKING_LIMIT}
+    front = sorted(set(history["front"]).intersection(offsets))
+    full_front = sorted(set(full["front"]).intersection(offsets))
+    return {"families": len(offsets), "median_offset": median, "limit": TRACKING_LIMIT,
+            "outside": dict(sorted(outside.items())), "offsets": dict(sorted(offsets.items())),
+            "front_same": front == full_front, "passed": not outside and front == full_front,
+            "subset_clips": history["common_clips"], "full_clips": full["common_clips"]}
+
+
 def history_data(reports: Path, days_path: Path, captions_path: Path, machines: list[str],
                  shared: dict, describe, finite, report_path) -> dict:
     """The history page's data from each machine's history report found under `reports`;
     `shared` is the preview's name and the machines of its selector."""
     builds = {d["day"]: d for d in read_json(days_path) or []}
     captions = read_json(captions_path) or {}
-    views, missing = {}, []
+    views, withdrawn, missing = {}, {}, []
     for machine in machines:
         path = report_path(reports, REPORT_NAME, machine)
         report = read_json(path)
         if report is None:
             missing.append(str(path))
             continue
+        full = read_json(report_path(reports, FULL_REPORT, machine))
+        check = full and tracking_check(report["series"][machine], full["series"][machine])
+        if check and not check["passed"]:  # section 14: withdrawn until the owner decides
+            withdrawn[machine] = finite(check) | {"source": str(path)}
+            continue
         views[machine] = machine_view(report, machine, builds, captions, describe, finite, path)
+        views[machine]["tracking_check"] = check and finite(check)
     return shared | {"keys": KEYS, "primary_key": PRIMARY_KEY, "notes": list(NOTES),
-                     "views": views, "missing": missing}
+                     "views": views, "withdrawn": withdrawn, "missing": missing}

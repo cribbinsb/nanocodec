@@ -16,18 +16,22 @@ receives it as periodic sync commits. Commits carry
 
 **Has a human reviewed the code?** Not line by line. The safeguards are mechanical:
 
-- the Rust compiler and `#![forbid(unsafe_code)]` in every crate except `nc-dsp` (pixel kernels) and `nc-capi`
-  (the C ABI); every `unsafe` block there carries a `// SAFETY:` comment, and every SIMD kernel has a scalar
+- the Rust compiler and `#![forbid(unsafe_code)]` in every crate except `nc-dsp` (SIMD kernels, assembly and
+  their dispatch) and `nc-capi` (the C ABI); every `unsafe` block there carries a `// SAFETY:` comment, and every SIMD kernel has a scalar
   reference and a bit-exactness test (`nc-checkasm`);
-- `cargo clippy -D warnings`, `cargo fmt`, unit and round-trip tests;
-- conformance checks against independent decoders (below) before numbers are published;
+- `cargo clippy -D warnings`, `cargo fmt`, unit and round-trip tests (run in a post-landing check; not every
+  release has a recorded pass of them);
+- after each change lands, short test streams of every shipped preset of every format are decoded by two
+  independent decoders and ours and compared frame by frame with the encoder's own pictures (below); this
+  check runs beside landing, not as a gate;
 - an adversarial review of the public claims ([review notes](review/adversarial-review-2026-11-13.md)).
 
 None of this proves the code is correct or well designed; it catches crashes, mismatches with the standards'
 decoders and regressions in what is measured.
 
-**Is any of it copied from GPL code?** We have found none. x264, x265, FFmpeg and libde265 are run only as
-external programs. A spot check of distinctive x264/FFmpeg functions, tables and names (cost tables, AQ, psy-rd,
+**Is any of it copied from GPL code?** We have found none. x264, x265, FFmpeg and libde265 are run as external
+programs; one benchmark tool (`tools/anchors/libavcodec_bench.c`, not shipped) links FFmpeg's libraries to time
+its decoders. A spot check of distinctive x264/FFmpeg functions, tables and names (cost tables, AQ, psy-rd,
 SATD, rate control) found only credited ideas reimplemented differently (for example our AQ uses log-variance, not
 x264's energy formula). Code learned from permissively licensed projects (SVT-AV1, libaom, dav1d, libvpx,
 openh264, kvazaar, VVenC/VVdeC, AVM, libyuv, Thor, libvmaf, JM/HM/VTM) is credited module by module in
@@ -47,49 +51,53 @@ AI-written; see "What do the benchmarks show" below for what it does and does no
 
 ## What the benchmarks show, and what they do not
 
-**What is compared?** Each encoder in its own low-delay rate control at the same bitrate targets on one CPU
-thread, against x264 `medium --tune zerolatency,psnr` as the zero line: 150 frames per clip with one key frame, a
-1 s buffer, and a ladder of 150, 300, 600 and 1200 kbps at 720p30, scaled down by pixel rate for smaller clips
-(most held-out clips are below 720p), plus 40 and 75 kbps (scaled the same way) for every encoder on any clip
-where some curve does not overlap the zero line's. The exact clip counts, ladder and builds of each chart are
-stated with it on the [results pages](https://cribbinsb.github.io/nanocodec/results/). Reference encoders and versions: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3,
-libvpx v1.16.0, openh264 v2.7.0, NVENC (RTX 5090). Command lines: [bd-vs-speed.md](results/bd-vs-speed.md#method)
-and [tools/anchors/README.md](../tools/anchors/README.md).
+**What is compared?** The charts follow benchmark procedure BP-4
+([benchmark-procedure.md](benchmark-procedure.md); each encoder's command, flag by flag with its reason, in
+[benchmark-fairness.toml](benchmark-fairness.toml)). In short:
+
+- **CBR only**, low delay (no B-frames, no reordering, no lookahead), one thread, a 1 s buffer that starts full,
+  peak rate equal to the target. Ours runs `--strict-buffer`: it never passes the 1 s buffer.
+- **Rates:** 300, 500, 800 and 1200 kbps at 720p30, scaled per clip by (pixels / 1280×720)^0.75 ×
+  (fps / 30)^0.5, and never above half the source's bitrate. Nothing above 1200 kbps (720p30-equivalent) is
+  measured.
+- **Windows:** 150 frames per clip, starting with a key frame, with a key every 150 frames; on sources long
+  enough, 600 frames with a key every 150 as well.
+- **Each reference at its own real-time defaults** (for libvpx and libaom, their projects' real-time example
+  settings), with only the two shared constraints above. Every reference is built with LTO and PGO where its
+  build allows (fairness record). Versions: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx
+  v1.16.0, openh264 v2.7.0, Kvazaar v2.3.2. VVenC is not charted: its only single-pass rate control is VBR with
+  a look-ahead.
+- **Zero line:** x264 `medium` in its best tune for each metric: `--tune zerolatency,psnr` for BD-PSNR, BD-VMAF
+  and BD-J, `--tune zerolatency,ssim` for BD-MS-SSIM. Default-tuned x264 `medium` needs about 14 % more bits
+  (BD-J) on the same chart, so the PSNR tune is the harder zero line for us.
+- **Every scored stream is decoded**, ours and the references' alike; no score is taken from an encoder's own
+  reconstruction (details below).
 
 **Is the comparison fair to them?** It is one configuration: the one our use case needs (no B-frames, no
 lookahead, one thread, CBR with a 1 s buffer). Those projects are general-purpose and are usually run with more
-threads, lookahead or B-frames, where they will do better. Two settings are known to cost references bits: openh264
-runs Constrained Baseline with CAVLC, and with CABAC on it needed about 17 % fewer bits on five 720p development
-clips; libvpx and libaom run without cyclic-refresh AQ (`--aq-mode=3`), which moved libvpx by about −7 % and
-libaom by −2 to −4 % on average on the same five clips, with mixed signs by clip (one run each,
-[audit, finding 3](analysis/results-audit-2026-11-23.md#3-reference-settings)). Ours is a PGO + LTO build; the
-references are stock release builds. Within that configuration we made three choices:
+threads, lookahead or B-frames, where they will do better. openh264 is charted with CAVLC (Constrained Baseline)
+and with CABAC. libvpx and libaom also have labelled `+drop` rows with their own frame dropping on; the main rows
+code every frame, as every encoder does. Our presets are tuned at these rates on clips of this kind; no
+reference is. The remaining asymmetries, per encoder, are listed in the fairness record and in
+[section 16 of the procedure](benchmark-procedure.md#16-known-limitations).
 
-- **The zero line is x264 `medium` set up as a careful live sender for these metrics:** `--tune
-  zerolatency,psnr` (psychovisual optimisation and adaptive quantisation off), no B-frames, no lookahead, ABR with
-  the same 1 s VBV our encoders get. x264's default tuning favours how the picture looks, which PSNR, VMAF and
-  MS-SSIM cannot judge (we ran no subjective test), so against the metrics we report it needed 10.3% more bits than
-  the PSNR tune on the fresh held-out clips (2026-11-13 builds); it stays in the table as a row. Our presets are tuned on exactly this
-  metric mix.
-- **Every other reference at its own metric-oriented setting:** x264 and x265 also at `--tune psnr` / `--tune
-  ssim` where that is distinguishably better for them; SVT-AV1 `--rtc`, libaom and libvpx realtime already run
-  their PSNR tunes; openh264 and NVENC run with adaptive quantisation off (turning it on did not help them).
 - **Rate control is part of what is compared.** Every encoder runs its own low-delay CBR, so a margin mixes coding
-  efficiency with how much each rate control costs. Measured separately on 2026-11-14 on the development clips
-  (preset names of that date) for our AV1 Default: at fixed QP against fixed QP it needs 33.9% fewer bits than PSNR-tuned x264 `medium` (38.3% in CBR
-  against CBR); CBR costs our encoders 10.7–21.5% against their own fixed QP, x264 `--tune psnr` 48.6% and
-  default-tuned x264 70.5% ([rc-cost-2026-11-14.csv](results/rc-cost-2026-11-14.csv)). Our H.264 Default is level
-  with x264 `medium` at fixed QP (+0.4% / +2.6% against `--tune psnr`): its whole CBR margin is rate control, and
-  our H.264 Fastest needs about 30% more bits than x264 `medium` at fixed QP.
+  efficiency with how much each rate control costs. History (2026-11-14 builds, development clips, preset names
+  of that date, an earlier procedure): our AV1 Default at fixed QP against fixed QP needed 33.9% fewer bits than
+  PSNR-tuned x264 `medium` (38.3% in CBR against CBR); CBR cost our encoders 10.7–21.5% against their own fixed
+  QP, x264 `--tune psnr` 48.6% and default-tuned x264 70.5%
+  ([rc-cost-2026-11-14.csv](results/rc-cost-2026-11-14.csv)). Our H.264 Default was then level with x264
+  `medium` at fixed QP (+0.4% / +2.6% against `--tune psnr`).
 
-The current figures for every preset against that anchor, with their clip counts and builds, are in the
-README's [headline](../README.md#headline-results) and the [per-codec table](https://cribbinsb.github.io/nanocodec/results/codecs.html).
+The current figures for every preset against that anchor, with their clip counts and build, are in the
+[chart at the top of the README](../README.md) and on the
+[results pages](https://cribbinsb.github.io/nanocodec/results/codecs.html).
 We would welcome better settings for any reference within the same constraints.
 
 **Why a composite metric ("BD-J")?** We tune on it, so we report it, but every table also gives the plain
 BD-PSNR-YUV and BD-VMAF numbers ([full table](results/bd-vs-speed.md), [per metric](results/README.md#per-metric)).
 BD-J is the mean of the BD-rates on PSNR-YUV (Y:U:V weighted 6:1:1, each plane's per-frame PSNR capped at 60 dB,
-libvmaf's 8-bit cap; 100 dB in charts published before 2026-11-20), VMAF and MS-SSIM, averaged over content classes.
+libvmaf's 8-bit cap; 100 dB in charts published before 2026-11-20), VMAF and MS-SSIM, each against the zero line's tune for that metric, averaged with equal weight per clip.
 Charts rendered before 2026-11-23 (release 0.6.0's) also average the full overlap of each curve with its
 lower-rate half, so the low rates count twice; charts rendered from 16de42521 on use the whole overlap and give
 the BD by rate regime (up to 600 kbps, and 600 kbps–4 Mbps, at 720p30 scaled) beside it
@@ -99,67 +107,60 @@ libvmaf (points scored on our PC), at each clip's own size: most held-out clips 
 comparable with figures from the 1080p VMAF protocol. Does the GPU fork change the scores? An independent cross-check of 200 held-out points (stock libvmaf 3.2.1 on CPU with `vmaf_v1.0.16_3d0h.json`, plus our MS-SSIM, against the GPU path on the same streams) found PSNR-YUV within 7e-15 dB, VMAF identical, MS-SSIM within 3.9e-6 and identical packet sizes. One caveat: the GPU scorer was not run-to-run reproducible on 8 of 144 chart points (sequence VMAF moved by up to 0.037, single frames by up to 5.5, on bit-identical pictures), so scores are reproducible to about 0.04 VMAF at sequence level; this is a known, open scorer issue. MS-SSIM is scored on every frame
 by our reimplementation of libvmaf's float MS-SSIM (agreeing to about 1e-6).
 
-**Are your streams actually decoded, or do you score your own reconstruction?** Both, by where a point is
-scored. The references' points are always scored on a standard decoder's output. Ours scored on rented machines
-(the held-out and VC-1K charts and, since 2026-11-21, the chart refreshes) are scored on the first standard
-decoder's output, checked equal to the encoder's reconstruction frame by frame; ours scored on our PC are scored
-on the encoder's reconstruction, with PSNR from the encoder's own squared-error log (on 65 re-encoded points it
-matched libvmaf's PSNR within 5e-7 dB per plane per frame;
-[metric validation](results/metric-validation-2026-11-23.md)). Scoring the reconstruction is valid only if it
-equals what a standard decoder outputs. We check that before a build's numbers are published, on
-short streams of every shipped preset of every codec, decoded by two standard decoders per codec and by ours,
-compared frame by frame. An independent check also re-encoded 144 chart points (every codec's Default, all 11
-clips) and passed them through both standard decoders and ours: all bit-exact with the scored reconstruction. One open caveat: the reference frames of clips stored compressed are decoded by the first FFmpeg on the
-machine's path, which is not pinned; FFmpeg 7.1.1 and 8.0.1 decode 3 of 38 sampled VC-1K clips differently, and
-the stored chart values match 8.0.1.
+**Are your streams actually decoded, or do you score your own reconstruction?** In the charts, decoded: every
+scored stream, ours and the references', is decoded and scored on that output. In the BP-4 series our own
+decoder (the frozen 23c962d8b build) decoded every family's streams; where it exited with an error, the codec's
+standard decoder did (the pinned FFmpeg 8.0.1, with dav1d for AV1; avmdec for AV2), and the score record names
+it. A sample of the series' streams, plus 13 more reference streams checked in the 2026-11-27 integrity audit,
+decoded bit-identically in ours and the standard decoders (the
+[method page](https://cribbinsb.github.io/nanocodec/results/method.html) lists them). VMAF v1 and MS-SSIM are
+scored on our PC's GPU by VMAFx, checked once per scorer build against libvmaf 3.2.1 on CPU; PSNR comes from
+exact squared-error sums with libvmaf's 60 dB cap. Separately, the landing check decodes short streams of every
+shipped preset in two standard decoders and ours, frame by frame against the encoder's reconstruction. Our
+development screens (not published) score the encoder's reconstruction, which that check shows is what a
+standard decoder outputs.
 
-**Only 150 frames with one key frame?** Yes (5 s at 30 fps), and our presets were tuned on such windows. It
-favours us: in 5 s our first key frame takes 8–10% of the bits and our streams end 5–6% over target (the key
-frame's loan is not yet repaid). On 71 fresh held-out sources at commit 8b492382, over 600 frames (20 s) with a
-key every 10 s, our savings against x264 `medium` are 6–10 points smaller than over 150 frames (AV1 −47.1% →
-−40.8%, HEVC −48.3% → −40.9%, H.264 −29.8% → −19.8%), while the references move less or gain (SVT-AV1 M8 −43.8% →
-−41.1%, x265 `medium` −30.4% → −32.2%); SVT-AV1 M8 is then level with our AV1, HEVC and VP9 Defaults, at well
-under half their speed. Against x264 `medium --tune psnr` at 600 frames our Defaults are −31% to −37%, H.264
-−8.2%. The table is in the [method page](https://cribbinsb.github.io/nanocodec/results/method.html#window).
+**Only 150 frames?** Each clip is scored over 150 frames (5 s at 30 fps) starting with a key frame, and, where
+the source is long enough (40 of the held-out clips), also over 600 frames with a key every 150 frames, so
+mid-sequence keys count. History (commit 8b492382, 2026-11-13, an earlier procedure with one key per window): on
+71 held-out sources over 600 frames with a key every 10 s, our savings against default-tuned x264 `medium` were
+6–10 points smaller than over 150 frames (AV1 −47.1% → −40.8%, HEVC −48.3% → −40.9%, H.264 −29.8% → −19.8%),
+while the references moved less or gained.
 
 **Why these bitrates?** Our use case is low-bitrate streaming. Each clip's ladder is scaled to its pixel rate and
 capped at half its source's bitrate, because many sources are already compressed and coding above that measures
-the source's artefacts. Our savings are largest at these low rates: on the 10–11 held-out clips with room for
-2,400 and 4,000 kbps (720p30), BD-J over 600 kbps–4 Mbps was about half the chart-rate figure (AV1 −24.8% vs
-−47.2%, H.264 −9.3% vs −29.0%), and the references' gaps shrank too. Read every headline number as "at the
-150–1200 kbps ladder at 720p30, scaled down for smaller pictures (down to about 30 kbps, and lower where the 40
-and 75 kbps rungs are added)".
+the source's artefacts. Our savings are largest at low rates: in an earlier procedure (0.6.0), on the 10–11
+held-out clips with room for 2,400 and 4,000 kbps (720p30), BD-J over 600 kbps–4 Mbps was about half the
+chart-rate figure (AV1 −24.8% vs −47.2%, H.264 −9.3% vs −29.0%), and the references' gaps shrank too. Read every
+headline number as "on the 300–1200 kbps ladder at 720p30, scaled down for smaller pictures".
 
-**Which clips?** The headline chart uses the 138 fresh held-out clips (a fixed, seeded draw of clips no clip set
-of ours had used; most come from the same public datasets as the development clips), with the 209-clip held-out
-set (the fresh clips plus 71 clips of an earlier check) beside it; the README states how many of each were
-scored. The fresh set has been re-measured at seven or more builds since 2026-11-13, with its numbers seen by
-the people and agents choosing what to work on next. The
-[development chart](results/development-chart.md) uses the 11 natural camera clips we tune beside (our VAL
-set); they were used to confirm which candidate changes were kept, so they are not independent of the tuning, and
-they give most of our presets more favourable numbers. Many
+**Which clips?** The headline is BP-4's held-out set: 97 camera clips (`eval/clipset/heldout_2026-11-23b.manifest.json`),
+84 of them audited once and never tuned on, 13 unseen. The set has been measured at several builds, each
+reading logged in [the sealed log](results/sealed-log.md). The README chart averages every encoder over the
+common set, the clips where every encoder's curves are well formed (92 of 97 on the chart's build); the clips
+it lacks are listed with the reason on the [Clips page](https://cribbinsb.github.io/nanocodec/results/clips.html).
+The results pages also give a video-call set (VC-1K, 100 clips) and the AOM common test conditions' clips. Many
 sources are not redistributable, so the clips themselves cannot be published; the clip lists are in
-`eval/clipset/`.
+`eval/clipset/`. "Ours" sources are x264 re-encodes of the original videos; their effect on the ranking is not
+measured yet.
 
-**Did you overfit?** Our presets were found by automated search on clips that include the development chart's,
-so the headline chart is measured on held-out clips (above). At commit 8b492382 (2026-11-13, preset names of that
-date; 150 frames, one key frame), BD-J vs the default-tuned x264 `medium`, held-out (137 fresh) vs development
-(11 clips): our AV1
-Default −45.3% vs −50.7%, HEVC −47.0% vs −49.6%, VVC −51.1% vs −54.4%, H.264 −28.7% vs −24.0%; the references
-moved more (SVT-AV1 M12 `--rtc` −29.1% vs −34.9%, x265 `medium` −30.3% vs −40.7%). So the size of a saving depends
-on the clips, our position among the encoders tested held, and our H.264 does better on the held-out clips. The
-independent report (an earlier build) gives 95% bootstrap intervals, about ±2 points for these figures. The full
-table is on the [results pages](https://cribbinsb.github.io/nanocodec/results/).
+**Did you overfit?** Our presets were found by automated search on development clips, disjoint from the
+held-out set by content (`nceval.content_id`), so the headline is measured on clips the search never saw. The
+held-out set's results have been seen by the people and agents choosing what to work on next, which the
+sealed log records. History (commit 8b492382, 2026-11-13, an earlier procedure): BD-J against default-tuned x264
+`medium`, held-out (137 fresh clips) vs development (11 clips): AV1 Default −45.3% vs −50.7%, HEVC −47.0% vs
+−49.6%, VVC −51.1% vs −54.4%, H.264 −28.7% vs −24.0%; the references moved more (SVT-AV1 M12 `--rtc` −29.1% vs
+−34.9%, x265 `medium` −30.3% vs −40.7%). So the size of a saving depends on the clips, and our position among
+the encoders tested held.
 
-**Speed: how measured?** In the published 0.6.0 charts: encode CPU time per frame, one thread, at a fixed
-quantizer that lands each encoder near 600 kbps, on three 720p development clips (`lowlight_city_night`,
-`crowd_mot17_09`, `bodycam_bc1`), 150 frames; not in CBR mode and not on the clips the quality is measured on
-(re-timing the CBR encodes on each chart's own clips is in progress). In CBR our encoders took a median about 2%
-more CPU (0–7% by preset, the same three clips, x86); the references' CBR cost was not measured. Jetson Orin Nano:
-one Cortex-A78AE core, clock locked at 1.728 GHz. x86: one core of a rented AMD EPYC 9R45 (AWS c8a.large); our
-times there are scaled per clip to an earlier session's x264 `medium` time, and the references keep their own
-earlier sessions' times, so points of different sessions share one axis. The metric-tuned references carry the
-time of their default-tuned runs.
+**Speed: how measured?** From the same CBR encodes that are scored (each timed stream's SHA-256 must equal the
+scored one). Each encode's CPU time (user + sys) is measured on a bare-metal AWS machine, one per chip: c8i.metal-48xl
+(Intel Xeon 6975P-C, Granite Rapids) and c8g.metal-24xl (Graviton 4), while half the machine's physical cores
+run the same encoder family ("loaded speed", the way a server full of streams runs). Against an idle machine
+this slows encoders by ×1.00–1.07 on Intel and ×1.01–1.23 on Graviton, our fast presets and SVT-AV1's among
+the most. The figure is megapixels per CPU-second, geometric mean over the clips; it is not a frames-per-second
+or real-time claim. Every machine runs a check set when it starts, and a machine outside ±1 % of the others is
+replaced. Ours on Graviton uses NEON plus SVE2 for some kernel families; each encoder uses its own best SIMD.
 
 ## Rate control
 
@@ -179,8 +180,9 @@ keys included, inside a one-buffer receiver, at a quality cost on static scenes.
 hard 1 s VBV whose maximum rate is the target; SVT-AV1, libaom and libvpx with their real-time CBR and a 1 s
 buffer; openh264 has no buffer setting. Our encoder's default peak rate is twice the target.
 
-An independent audit of the chart's points (42 per encoder, 150 frames), **at the builds the charts were measured
-on, before that change** (the key loan was then repaid over 10 s and the long-run rate was not held under the
+In the BP-4 charts ours runs `--strict-buffer` and never passes the 1 s buffer; each encoder's buffer use is on
+the Rate control page. History: an independent audit of the 0.6.0 charts' points (42 per encoder, 150 frames),
+**at the builds those charts were measured on, before that change** (the key loan was then repaid over 10 s and the long-run rate was not held under the
 target), found:
 
 - our streams end a median 3–5% above target (about on target once the unrepaid loan is excluded); x264 and x265
@@ -196,13 +198,14 @@ Every encoder's actual bytes, the loan included, are what the BD axis uses. The 
 tables (bucket peak above 1.5× the buffer, or an average more than 10% plus the buffer's share of the window over
 target) is looser than one buffer, and for our points only the outstanding key loan is deducted first, so it
 flags few of ours; the share of each encoder's points over one buffer is on the
-[buffer page](https://cribbinsb.github.io/nanocodec/results/buffer.html).
+[Rate control page](https://cribbinsb.github.io/nanocodec/results/compliance.html).
 
 **Do you skip frames?** Our encoder does not code an input frame that would not change the picture (exact or
 near-exact repeats, typical of recompressed or frame-doubled sources). Such "held" frames cost no bits and no
 encode time and are scored as the repeated picture, which is what a viewer sees. The references code every frame
-(cheaply, as skip frames). On the chart's points no frame was held (independent audit), so holds do not affect
-the published numbers. No encoder in the charts drops frames.
+(cheaply, as skip frames). In the BP-4 charts ours codes a held frame as an all-skip frame (`hold.code_skip=1`),
+so every encoder codes every input frame on the main rows; only the labelled `+drop` rows of libvpx and libaom
+drop frames.
 
 ## Patents and licences
 
@@ -226,7 +229,9 @@ line names the suite, says whether it is an official ITU-T/ISO conformance suite
 test vectors, gives the count, and lists every valid-stream feature of the main profiles that decoder
 still rejects. Streams decoded natively and compared picture by picture with the reference decoder named,
 on 2026-11-23 at 98069a8b3 ([record](results/conformance-2026-11-23/summary.json)); the gap lists are
-from the [audit of 2026-11-27](analysis/decoder-compliance-gaps-2026-11-27.md).
+from the [audit of 2026-11-27](analysis/decoder-compliance-gaps-2026-11-27.md). Every gap, with its status (in progress, open, or proposed
+exception with its reason), is in the [decoder compliance register](decoder-compliance.md), which a check
+keeps in step with the decoders' rejection paths.
 
 - **HEVC** (Main, Main Still Picture, Main 10): 147/147 of the official ITU-T/ISO JCT-VC HEVC_v1
   conformance suite (H.265.1; 136 8-bit, 11 10-bit), against HM. No known gap in these profiles. Not
@@ -308,9 +313,10 @@ are scalar so far.
 
 ## Security and fuzzing
 
-The decoders are written in safe Rust (no `unsafe` outside the SIMD kernels and the C ABI), so memory-safety bugs
-are unlikely outside those kernels, but a malformed stream can still make a decoder panic (abort) or misbehave.
-Each decoder has a `cargo fuzz` target (`fuzz/`) that drives the browser, C API and command-line decode paths,
+The decoders are written in safe Rust (no `unsafe` outside the DSP crate, which holds the SIMD kernels, assembly
+and their dispatch, and the C ABI), so memory-safety bugs are unlikely outside those, but a malformed stream can still make a decoder panic (abort) or misbehave.
+Each decoder has a `cargo fuzz` target (`fuzz/`) that drives the browser, C API receiver (its Rust session, not the `extern "C"` layer) and
+command-line decode paths,
 seeded from our streams and the conformance and test-vector streams. On 2026-11-13/14 (an earlier build, before the
 10-bit, general VVC and general AV2 decoders) every decoder had 2.1 to 3.8 worker-hours of fuzzing in two rounds
 (about 2.75 million executions; the second round used small inputs and per-codec dictionaries), and every corpus
@@ -328,7 +334,9 @@ a stream error, as AVM does, and VP9 caps the picture area at level 6.2's 35,651
 regression tests. Every round-3 corpus input was then replayed through the WASM build of all six decoders
 without a trap (the build before the fix traps on exactly the three AV2 inputs). That is a bounded search, not a proof: see
 [results/fuzzing.md](results/fuzzing.md) for the numbers and what was not tested. No corpus is published. Do not
-expose these decoders to untrusted input in production. The C ABI catches panics at the boundary. The browser demo
+expose these decoders to untrusted input in production. The C library, built as documented (`cargo build --profile capi`, which unwinds), returns `NC_ERROR_INTERNAL`
+from a panic instead of aborting the host (`tools/ci/capi_check.sh` forces one through the C ABI); a `--release`
+build aborts on a panic. The browser demo
 decodes only streams it encoded itself and the project's hosted streams.
 
 ## Why build this at all?

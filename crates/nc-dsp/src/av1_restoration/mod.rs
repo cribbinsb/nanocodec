@@ -32,6 +32,12 @@ mod sgr_lanes;
 mod sgr_neon;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod sgr_stripe;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+mod sgr_words;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod simd128;
 pub mod superres;

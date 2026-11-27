@@ -130,7 +130,8 @@ try:
         page.wait_for_function(r"/^\d+ frames compared · [0-9.]+ fps( · running at [0-9.]+× real time, so no frame is skipped)?$/.test(document.querySelector('#session-stats').textContent)"
                                r" && /^(Keeping up · slowest|Limited by) (encode|decode) [AB] \(\d+ ms\)$/.test(document.querySelector('#session-stats').title)", timeout=10000)
         autostart_configs = page.evaluate('window.workerConfigs')
-        assert [(c['codec'], c['width'], c['fps'], c['targetKbps'], c['peakKbps'], c['keyInterval'], c['preset']) for c in autostart_configs] == [('h264', 854, 30, 400, 800, 300, 'medium')], autostart_configs
+        # matched to the opening stream: the benchmark key interval, 150 frames (5 s at 30 fps)
+        assert [(c['codec'], c['width'], c['fps'], c['targetKbps'], c['peakKbps'], c['keyInterval'], c['preset']) for c in autostart_configs] == [('h264', 854, 30, 400, 800, 150, 'medium')], autostart_configs
         # Headless Chromium on SwiftShader loses new GL contexts once and restores them ~1 s later.
         page.wait_for_function("[...document.querySelectorAll('.viewport canvas')].every(c => !c.getContext('webgl2').isContextLost())", timeout=10000)
         # Zoom (view-zoom.js): scrolling up on B zooms both views together, unsmoothed,

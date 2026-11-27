@@ -63,7 +63,7 @@ gives the decision, the alternatives that were considered and why they were reje
 | D15 | Reference results | **Coded once, reused for every build of ours; re-timed when a run's check set moves more than 1 %** (2026-11-25) | **Re-running references every build:** about two thirds of the cost, for nothing. |
 | D16 | Scoring | **On the PC's GPU** (the existing VMAFx service), with a 1 % libvmaf CPU parity sample; cloud CPU only as a labelled fallback (2026-11-24/25) | **Cloud CPU scoring by default:** about 97 % of earlier dev spend for work the local GPU does free. |
 | D17 | Publication | **Only with both platforms complete, the speed measure stated, compliance beside every BD, and the limitations listed; the owner lifts the freeze** (2026-11-25) | **Publishing one platform:** a benchmark was once reported complete with Graviton missing. |
-| D18 | Does the benchmark prove our streams are standard-conformant? | **No. Benchmarking and correctness are separate procedures. The benchmark is optimised for cost and time: each stream is decoded once by its codec's standard decoder, no cross-decoding** (2026-11-25) | **Cross-decoding every one of our streams in every decoder (V10 as written at BP-3):** it re-proves what the landing check (`land.sh --verify`: every shipped preset bit-exact in both standard decoders and ours, cached by stream hash) already proves, and it made scoring 2-5x slower (110-245 frames/s against the GPU's 550). Raised and rejected more than once (owner, 2026-11-25: "BENCHMARKING IS NOT PROVING CORRECTNESS"). **A 2 % sample:** proposed the same day; rejected for the same reason. |
+| D18 | Does the benchmark prove our streams are standard-conformant? | **No. Benchmarking and correctness are separate procedures. The benchmark is optimised for cost and time: each stream is decoded once, no cross-decoding** (2026-11-25; which decoder: section 7) | **Cross-decoding every one of our streams in every decoder (V10 as written at BP-3):** it re-proves what the landing check (`land.sh --verify`: every shipped preset bit-exact in both standard decoders and ours, cached by stream hash) already proves, and it made scoring 2-5x slower (110-245 frames/s against the GPU's 550). Raised and rejected more than once (owner, 2026-11-25: "BENCHMARKING IS NOT PROVING CORRECTNESS"). **A 2 % sample:** proposed the same day; rejected for the same reason. |
 | D19 | Which checks run in every benchmark run? | **Only what the fair result needs: the shared conditions are met (V2, V4, V5, V7-V9, V24, V28-V31), the same input for all, and the timing machine is sound (check sets, V6). Correctness and tool verification are separate procedures, never steps of a benchmark run: the GPU scorer's agreement with libvmaf is `tools/bench/verify_scorer.py`, run once per scorer build (V27), and benchmark scoring only refuses an unverified build; ISA bit-exactness and stream conformance in the landing check (V10, V12 removed); no hardware-counter diagnostics; no extra decode for stream structure: V29 reads only what the stream's bytes give (AV1/VP9 frame headers, every codec's first-picture key), and H.264/HEVC/VVC output order is not checked** (2026-11-25) | **Per-pass V27 parity on a cloud box:** it re-proves the same scorer build every run (already proven on 210 streams, identical). **ISA bit-exactness at plan time (V12):** the landing check's job. **Hardware counters on every family:** diagnostics, not results. **V29 by a second decode of every H.264/HEVC/VVC stream (ffprobe packet positions):** doubled the scoring decode CPU of those codecs (no refusal logged); a per-build sample check was also rejected (owner, 2026-11-25). Owner, 2026-11-25: the benchmark is optimised for fair results quickly and cheaply, nothing else |
 | D20 | Which reference rows carry metric twins (PSNR/SSIM tunes)? | **For now only the zero line, x264 medium. The other twins (x264 below medium, x265, libvpx and libaom `~ssim`) are a later addition, backfilled when time and budget allow** (2026-11-25) | **Coding every twin in the first run:** about 38 % more reference encodes, delaying the first results |
 | D21 | Does ours run frame hold in the main rows? | **Yes: hold on with all-skip output (`hold.enable=1 hold.code_skip=1`); every frame is still coded** (2026-11-25) | **Hold off:** our own default disabled although the benchmark sets contain repeats (held-out 20 of 97 clips, 2.4 % of frames, mostly static CCTV and video calls; sealed log 23), and all-skip output is conformant (725/725). **A send-nothing `+drop` row for ours:** not needed |
@@ -250,8 +250,8 @@ platform.
 | Set | Manifest (committed) | Clips | Frames | Notes |
 |---|---|---:|---:|---|
 | ours | `eval/clipset/heldout_2026-11-23b.manifest.json` (sealed, release-only) | 97 (85 with four legal rungs) | 150 | **"Audited once, never tuned on"** for 84 clips, unseen for 13 (sealed log 1b-3). No pan class |
-| VC-1K | `eval/clipset/vc1k_2026-11-18.manifest.json` (sealed) | 100 | 150 | video calls; numbers only (licence) |
-| AOM-CTC | `eval/clipset/aomctc_bp3.manifest.json` | 34: 12 low-delay (A3-A5) + 22 A2 (1080p) | 130 | A2 reported separately; 9 A2 sources 10-bit, converted to 8-bit by the pinned ffmpeg 8.0.1 (checked exactly against `(x + 2) >> 2`) |
+| VC-1K | `eval/clipset/vc1k_2026-11-18.manifest.json` (sealed) | 100 | 150 | video calls; numbers only (licence). **9 clips are in-sample:** each codec's six worst were lever-ranking sets on 2026-11-18/19 (`eval/clipset/tuned_on.json`, sealed log 28). The headline leaves them out (91 clips); the full 100 is shown beside it (owner, 2026-11-27) |
+| AOM-CTC | `eval/clipset/aomctc_bp3.manifest.json` | 34: 12 low-delay (A3-A5) + 22 A2 (1080p) | 130 | **The 12 low-delay clips are in-sample:** they are the standards lens ours was developed on (`tuned_on.json`, sealed log 29). The headline is all 34, labelled; the view without them (A2 only) is shown beside it. 9 A2 sources 10-bit, converted to 8-bit by the pinned ffmpeg 8.0.1 (checked exactly against `(x + 2) >> 2`) |
 
 - Each manifest lists, per clip:
   - the source and start;
@@ -264,7 +264,15 @@ platform.
 - "ours" sources are x264 re-encodes of the original videos (`eval/clipset/build_pool.py`). Their
   effect on the ranking is not yet measured (task T7).
 - Datasets are disjoint from every PGO training set and tuning set, and from each other, by
-  `nceval.content_id` (aliases, shoots, source paths; V3).
+  `nceval.content_id` (aliases, shoots, source paths; V3), except the in-sample clips recorded in
+  `eval/clipset/tuned_on.json` (VC-1K 9, AOM-CTC 12): a clip a tuning or lever-ranking set used
+  is listed there with the set, its date and what landed, and the V3 test requires every
+  overlap between a dataset and a tuning set to be exactly those clips.
+- **In-sample clips (owner, 2026-11-27).** A report can leave them out
+  (`report.py --exclude-clips eval/clipset/tuned_on.json`: every family loses them, and the
+  report lists them). The results site shows, per dataset, the headline and the other view beside
+  it, with the clips and why: VC-1K's headline leaves its 9 out; AOM-CTC's includes its 12,
+  labelled. The held-out set keeps its D12 rule (logged and disclosed, never excluded).
 - A sealed set is read only by release measurements (`nceval.sealing`), and every reading is
   logged in `docs/results/sealed-log.md`.
 
@@ -400,15 +408,27 @@ also code points past each end:
 
 ## 7. Decoding, metrics and bits
 
-- **Decoders:** every stream, ours included, is decoded for scoring by the codec's standard
-  decoder:
-  - ffmpeg 8.0.1 for H.264, HEVC, VVC and VP9;
-  - ffmpeg with dav1d for AV1;
-  - avmdec for AV2.
+- **Decoders (as BP-4 ran, corrected 2026-11-27).** Every scored stream is decoded; no score
+  is read from an encoder's reconstruction.
+  - **Our decoder decodes every family's streams, the references' included** (owner,
+    2026-11-26: `NC_SCORE_OURS_DECODER`, the frozen 23c962d8b build; `score.py`). Score records
+    name `decoder: "ours"`.
+  - **Fallback:** where ours exits with an error, the stream is decoded by the codec's standard
+    decoder and its record names it (`"standard"`): ffmpeg 8.0.1 for H.264, HEVC, VVC and VP9;
+    ffmpeg with dav1d for AV1; avmdec for AV2. AV1 streams whose frames change size go to
+    aomdec. A silent difference would not be caught by this fallback.
+  - **Identity evidence:** ours against the standard decoders on a sample of the series' real
+    streams (26 AV1, 6 AV2, 36 H.264, 24 HEVC, 12 VP9: `bench/decode-identity-2026-11-26.md`),
+    all identical. That sample had no x265 stream, one SVT-AV1 preset (M10) and no VVC stream;
+    the 2026-11-27 integrity audit decoded 13 more reference streams (x265 ultrafast, superfast,
+    veryfast, faster and medium; SVT-AV1 M8, M12 and M13; openh264 CABAC; x264 ultrafast and
+    faster; Kvazaar veryfast; libaom cpu10), all bit-identical to the pinned ffmpeg 8.0.1. Every
+    VVC stream of the series is ours, which the landing check proves bit-exact against VVdeC and
+    ffmpeg. 307 BP-4 score records carry no `decoder` field (77 in `bp4-aomctc-ours-c8i`, 230 in
+    `bp4-vc1k-refs-c8g`).
 
   ffmpeg runs with `-fps_mode passthrough` (one frame per coded frame).
-  - Each stream is decoded once, by its codec's standard decoder. The benchmark does not
-    cross-decode (D18).
+  - Each stream is decoded once. The benchmark does not cross-decode (D18).
   - A stream whose frames change size is decoded at each frame's size and upscaled by the
     pinned player model (`nceval.display`, bilinear).
   - A `+drop` row's dropped frames show the previous picture, placed by IVF timestamps, and
@@ -546,7 +566,11 @@ also code points past each end:
   - our BD-J on those clips.
 
   On the first run, the lost clips were hard low-rate clips where the references overshoot,
-  and dropping them raised our headline.
+  and dropping them raised our headline. In BP-4 ("ours", c8i) it is the other way: 8 of the 9
+  clip-windows lost from the common set are lost wholly or partly because our curves lie above
+  x264's quality range, so dropping them lowers our headline; the ninth is lost to one rising
+  point of our AV1/AV2 MS-SSIM curve. The site shows each family's own-clip figure beside the
+  common set.
 
 **Aggregation:**
 - **Set mean:** equal weight per clip. The mean of the per-clip log rate ratio,
@@ -567,7 +591,7 @@ also code points past each end:
 |---|---|---|
 | V1 | Manifest frozen: procedure commit, dataset manifests, ladders, families, binaries' SHA-256 | plan, stage |
 | V2 | Every binary's SHA-256 equals the manifest's on every box | box |
-| V3 | Datasets disjoint from every PGO training set, tuning set and each other (`nceval.content_id`) | plan, tests |
+| V3 | Datasets disjoint from every PGO training set, tuning set and each other (`nceval.content_id`); the only overlaps with tuning sets are the in-sample clips of `eval/clipset/tuned_on.json` (`eval/tests/test_content_id.py`) | plan, tests |
 | V4 | The clip's decoded frames hash and frame count match the manifest; the staged input holds exactly the job's frames | box, scorer |
 | V5 | Input on tmpfs and wholly resident before the encode | box |
 | V6 | One CPU model for every machine of a series; each machine's start check set (section 6) within ±1 % of the series median of the machines' start sets (judged by the driver as the set comes back: a failing machine does no work and is replaced; and by the report over every machine); the end set's drift is reported, never a refusal (D13); times are never rescaled | fleet, report |
@@ -689,7 +713,12 @@ and each box's output in its own log. They refuse to start outside a memory-capp
 - Earlier release and daily frames are deferred.
 - **Tracking check (V17):** on the current build, every rung's subset-minus-full BD-J offset is
   within 1 point of the median offset, with the same front membership. A failure withdraws the
-  history graph until the owner decides.
+  history graph until the owner decides. The results site applies it itself
+  (`tools/bench/preview_history.py`, `tracking_check`): a machine whose history report fails
+  shows the withdrawal and the offsets instead of the graph. BP-4 fails it on both chips (37 of
+  64 families outside, median offset +5.2 / +5.0 points; our families' mean offset +5.5 / +5.2,
+  the references' +2.0 / +1.8; the front differs; common set 18 clip-windows, 9 clips), so the
+  graph is withdrawn.
 
 ## 15. This round's plan (owner, 2026-11-25)
 
@@ -757,20 +786,37 @@ result is published only with:
   - On Intel the range is ×1.00-1.07.
 - **Agreement between machines of one type** is assumed. It is checked on every run (V6), and
   each report states it.
-- **Rates:** nothing above 1200 kbps (720p30-equivalent) is measured. The 0.6.0 audit saw our
-  gap to the references narrow there.
+- **Rates:** nothing above 1200 kbps (720p30-equivalent) is measured. A dev diagnosis at
+  600-4000 kbps (`docs/analysis/upper-rates-diagnosis-2026-11-23.md`, four 720p pool clips)
+  measured a reversal for our fast presets there: AV1 veryfast +5.4 % and H.264 veryfast
+  +41.9 % against x264 medium.
+- **Slow end:** no reference is charted slower than x265 medium, SVT-AV1 M8, libaom cpu8 or
+  libvpx cpu7, so our slowest presets (VVC slow to veryslow) have no reference beside them.
 - **Tuning:** our presets are tuned at these rates; no reference is. Screens rank at 150 frames, but
   changes to rate, keys, cadence or key quality, and every preset bundle's final check, are
   decided on long windows (`nceval.levels`, `nceval.key_shares`): 600 frames with a key every
   150, and 900 frames with a key every 300.
+- **In-sample clips:** 9 VC-1K clips were lever-ranking sets for every codec on 2026-11-18/19
+  (the VC-1K headline leaves them out; the full set is shown beside it), and AOM-CTC's 12
+  low-delay clips are the standards lens ours was developed on (labelled; A2 alone is shown
+  beside it). The rest of VC-1K shares its source with the clips whose problems were chosen.
+- **Start-up:** every window starts with a key frame and a full 1 s buffer; each "ours" clip
+  counts once, and only 40 of its 97 clips also have a 600-frame window beside the 150-frame one. Our first key is 0.35-0.58 s of the
+  channel (median) against 0.09-0.21 s for x264, x265 and SVT-AV1 ("ours", c8i); capping it
+  costs ours 5.0-7.8 % J by our own measurement (`docs/analysis/first-key-2026-11-25.md`). The
+  references' start-up effect is not measured. The site shows each family's first key beside its
+  BD and the 600-frame windows' BD beside the headline.
+- **Timing machines:** on c8i "ours", our families and the references were timed on two machines
+  whose start check sets used different clips, so their agreement was not measured.
 - **Clip sets:**
-  - the "ours" set was audited once;
+  - the "ours" set was audited once, and read for quality by release measurements on
+    2026-11-23 to 11-26 while our encoder changed; no lever is recorded as chosen from it;
   - it has no pan or moving-camera class;
   - pan, lowlight and drone are thin.
-- **Common set:** on the re-measured build (889309c99, BP-3.14 rules) 84 of the 97
-  view clips on "ours" CBR, 99 of 100 on VC-1K CBR and 24 of 34 on AOM-CTC CBR. The clips still lost are mostly libaom's and libvpx's, whose curves lie
-  wholly above the zero line's quality range where they overshoot the low rungs (the ranges
-  do not touch), or keep one point after the envelope. Each report lists them with the
+- **Common set:** in BP-4 (both chips) 92 of the 97 clips on "ours" (128 of 137 clip-windows),
+  99 of 100 on VC-1K (90 of 91 without its in-sample clips) and 34 of 34 on AOM-CTC. On
+  "ours", 8 of the 9 lost clip-windows are lost wholly or partly because our own curves lie
+  above x264 medium's quality range (section 9). Each report lists the lost clips with the
   reason. Both the common-set and the own-set figures are published.
 - **Thin overlaps and two-point curves** count in full since BP-3.14. A BD over a narrow
   shared range, or through two points, is a weaker estimate than one over four points and a
@@ -781,7 +827,10 @@ result is published only with:
   - "ours" sources are x264 re-encodes;
   - CrowdRun and OldTownCross carry a standards-only licence notice and are flagged.
 - **Encoders:**
-  - one thread, 8-bit, flat P for everyone;
+  - one thread, 8-bit, no reordering for everyone; the prediction structure is each encoder's
+    own real-time default (SVT-AV1 runs its 2-level structure, Kvazaar `lp-g8d4t1`);
+  - scene-cut keys are not uniform: x264 and openh264 choose their own, the other references
+    run without them (section 17, `scene_cut`);
   - VVenC is not charted: its rate control is VBR with a look-ahead, so it has no real-time CBR
     mode, and BP-4 has no Fixed QP mode.
 - **Window:** the 150-frame unit includes one key frame.
@@ -799,10 +848,10 @@ result is published only with:
 | optimal_level_ms | 600 |
 | peak | equal to the target (no encoder gets a higher drain rate) |
 | frames | 150 ("ours", VC-1K); 130 (AOM-CTC, the CTC's count) |
-| keyint | 300 |
+| keyint | 150: a key every 150 frames in every window (D8; tools/bench/plan.py --keyint, KEY_INTERVAL) |
 | bframes | 0: no picture references a later one (no reordering, past references only); VVenC's low-delay B slices reference past pictures only (verified, VVenC entry) |
 | lookahead_frames | 0 |
-| scene_cut | off |
+| scene_cut | not uniform (audit 2026-11-27, finding 10): x264 and openh264 choose their own scene-cut keys in CBR (procedure section 3, rule 4); x265 (--no-scenecut --min-keyint), SVT-AV1 (--scd 0) and libvpx and libaom (--kf-min-dist = --kf-max-dist) run without them; ours runs its preset defaults. Keys per stream are reported per family (V30) |
 | threads | 1 |
 | frame_skip | off on every main row (no encoder sends nothing for a frame); libvpx and libaom also have labelled +drop rows with their own frame dropping on (CBR only); ours codes a held frame as an all-skip frame (engine task T1; until it lands, hold off) |
 | resize | allowed where it is the encoder's own recommended real-time setting: ours on (AV1), the references as their projects' real-time examples set it (off); size-changed frames are scored after one pinned upscale (nceval.display, bilinear centre-aligned) for all |
@@ -1026,3 +1075,4 @@ Phase now: **full-start**; values per phase:
 | BP-4.0, stream structure | 2026-11-25 | D19, V29, V30: no extra decode for stream structure; H.264/HEVC/VVC reordering is no longer read (their first-picture key is, from its NAL unit type); AV1/VP9 checks unchanged | Owner, 2026-11-25: the ffprobe pass doubled the decode CPU of every H.26x stream (docs/analysis/time-audit-2026-11-25.md) |
 | BP-4.0, one type | 2026-11-26 | D13, V6, V24: a point's time is valid on its own (its machine's start check set passed, V7/V8 per encode); the rule that a family's times count only from one machine is removed; chained machines (one machine serving several runs of its chip) carry their start check set by reference | Owner, 2026-11-26 21:28: machines of one type are equivalent; the one-machine rule left 3,759 points without a valid time after machines were lost mid-family |
 | BP-4.0, untimed points | 2026-11-26 | V13 refuses only a missing stream or score. A point with a valid stream and score but no valid time (a refused box, a timing refusal) counts for quality and BD, is left out of its family's speed figure, and is listed with its reason at the top of the report | Owner, 2026-11-26 (no stupid rules): two held-out c8i points of one box without a start check set would otherwise have held the whole report |
+| BP-4.0, audit fixes | 2026-11-27 | Section 4, V3: the in-sample record `eval/clipset/tuned_on.json` (VC-1K 9, AOM-CTC 12) and `report.py --exclude-clips`; VC-1K's headline leaves its 9 out, the full set beside; AOM-CTC labelled, A2 alone beside. Section 7 corrected to the decoder BP-4 used (ours for every family, the standard decoder on error) with the identity evidence. Section 14: the site withdraws the history graph on a V17 failure. Section 16: in-sample clips, start-up, timing machines, slow end, rates (reversal measured, not "narrows"), prediction structures and scene cuts. Section 17: keyint 150, scene cuts as run. Section 9: BP-4's lost clips lower our headline | Benchmark integrity audit 2026-11-27, findings 1-7 and 10; owner, 2026-11-27: fix, not only document |

@@ -76,6 +76,7 @@ function section(data, view) {
   return el('section', {},
     el('h2', { id: view.id }, viewTitle(data, view)),
     el('p', { class: 'note measured' }, statement(data, view)),
+    el('p', { class: 'note' }, 'Ours runs with --strict-buffer: it re-codes any frame that would take the buffer past one second, so its figures are "compliant by re-coding". The BP-4 runs do not record how many frames were re-coded. The references hold the same buffer by their own rate control. Every window starts with a full buffer, so a large first key (its size is the "First key" column) is paid from that start-up reserve: the Overview states its measured effect.'),
     stripChart(charted, state.measure),
     el('details', { class: 'table-view' }, el('summary', {}, 'The figures as a table'),
       table([

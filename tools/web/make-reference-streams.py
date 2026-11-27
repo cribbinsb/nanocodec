@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Regenerate the browser demo's pre-encoded reference streams (web/streams-ref/).
 
-Each stream is a sample clip coded offline by a third-party encoder in the
-exact real-time configuration the bitrate-vs-speed chart uses (the families of
-eval/nceval/cbr.py: the same command builder, so the flags cannot drift),
-for a visitor to compare live against nanocodec. The grid (GRID) is a sparse,
+Each stream is a sample clip coded offline by a third-party encoder with the BP-4
+benchmark's exact CBR command for one of its families: the command comes from the
+benchmark fairness record (docs/benchmark-fairness.toml, through
+`nceval.fairness.command`, the one builder tools/bench/plan.py uses), its key interval is
+the benchmark's (plan.py KEY_INTERVAL), and the encoder is the benchmark's own x86_64 build
+(anchors/x86_64-opt-bp4, whose SHA-256s the BP-4 run manifests record), so the flags and
+builds cannot drift. As in the benchmark, SEI and metadata units are then removed
+(`nceval.streamstrip`). It is for a visitor to compare live against nanocodec. The grid (GRID) is a sparse,
 deliberately varied set: content, encoder and preset, resolution, frame rate and
 bitrate all vary, and every entry is one the other view can be set to live
 (a resolution, frame rate and target the page offers; web/tests/reference.test.js).
@@ -53,10 +57,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "eval"))
-from nceval.cbr import BUFFER_MS, Family, preset_anchor  # noqa: E402
-from nceval.clips import Clip  # noqa: E402
+from nceval import fairness  # noqa: E402
 from nceval.codecs import Codec  # noqa: E402
-from nceval.config import OPENH264_HARNESS, load_paths  # noqa: E402
+from nceval.rate_ladder import frame_rate  # noqa: E402
+from nceval.streamstrip import strip  # noqa: E402
+
+sys.path.insert(0, str(REPO / "tools/bench"))
+from plan import KEY_INTERVAL, TOOL_STREAM  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from source_frames import split_i420, view_frame  # noqa: E402
@@ -64,9 +71,10 @@ from source_frames import split_i420, view_frame  # noqa: E402
 WEB = REPO / "web"
 OUT = WEB / "streams-ref"
 DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
+# The reference decoders (ffmpeg n8.0.1, dav1d, vpxdec) the streams are checked with.
 ANCHORS = DATA / "anchors/x86_64/bin"
-# The openh264 driver with bitrate control (nceval.config.OPENH264_HARNESS).
-OPENH264_RC_HARNESS = DATA / OPENH264_HARNESS
+# The BP-4 benchmark's x86_64 reference encoder builds ({BIN} of the record's commands).
+BENCHMARK_BIN = DATA / "anchors/x86_64-opt-bp4/bin"
 VERSIONS_ENV = REPO / "tools/anchors/versions.env"
 TABLE = REPO / "docs/results/reference-streams.md"
 
@@ -76,11 +84,10 @@ SOURCE_FPS = 30
 # a view of height h reads the smallest at least h tall (clips.js clipUrl, `clip_file`).
 VARIANT_HEIGHTS = tuple(int(h) for h in re.search(r"const VARIANT_HEIGHTS = \[([\d, ]+)\]",
                                                   (WEB / "clips.js").read_text()).group(1).split(","))
-# The chart's key interval (eval/nceval/cbr.py DEFAULT_INTRA_PERIOD): 10 s. A stream is
-# one loop of its clip (8-11 s) and the page replays it from its first frame, so a
-# pre-encoded view shows a key at every loop start whatever this is (web/reference.js
-# `keyCadence`, shown in the view's rate line); only a stream over 10 s has a second key.
-KEY_INTERVAL_SECONDS = 10
+# The benchmark's key interval is KEY_INTERVAL frames (tools/bench/plan.py: 150, whatever
+# the frame rate). A stream is one loop of its clip (8-11 s) and the page replays it from
+# its first frame, so a pre-encoded view also shows a key at every loop start (web/reference.js
+# `keyCadence`, shown in the view's rate line).
 IVF_HEADER = struct.Struct("<4sHH4sHHIII4x")
 IVF_FRAME = struct.Struct("<IQ")
 IVF_FOURCC = {Codec.H264: b"H264", Codec.HEVC: b"HEVC", Codec.AV1: b"AV01", Codec.VP9: b"VP90"}
@@ -94,33 +101,30 @@ SOURCE_PIXELS = "decoded planes, nc-web SourceFrame placement (tools/web/source_
 
 @dataclass(frozen=True)
 class Encoder:
-    """A reference encoder configuration: a chart family, or a named variant of one."""
+    """A BP-4 benchmark family (a main row: every frame coded) under a short page key."""
     key: str
     label: str
-    family: str  # eval/nceval/cbr.py family name
-    tool: str  # binary whose version is recorded
-    pinned: str = ""  # versions.env prefix of the pinned source
-    chart: bool = True  # False: not one of the chart's configurations
-    rewrite: tuple[tuple[str, str], ...] = ()  # flag replacements for a variant
+    family: str  # nceval.fairness family name
+    pinned: str  # versions.env prefix of the pinned source
+
+    @property
+    def tool(self) -> str:
+        """The binary the record's command runs."""
+        return fairness.families()[self.family][0]
 
 
 ENCODERS = {e.key: e for e in [
-    Encoder("x264-medium", "x264 medium", "x264-medium", "x264", "X264"),
-    Encoder("x264-veryfast", "x264 veryfast", "x264-veryfast", "x264", "X264"),
-    Encoder("openh264", "openh264 (real-time, medium complexity)", "openh264-baseline", "openh264", "OPENH264"),
-    Encoder("x265-medium", "x265 medium", "x265-medium", "x265", "X265"),
-    Encoder("x265-superfast", "x265 superfast", "x265-superfast", "x265", "X265"),
-    Encoder("svtav1-m12", "SVT-AV1 M12 --rtc", "svtav1-m12", "SvtAv1EncApp", "SVTAV1"),
-    Encoder("svtav1-m8", "SVT-AV1 M8 --rtc", "svtav1-m8", "SvtAv1EncApp", "SVTAV1"),
-    Encoder("aom-rt8", "libaom AV1 realtime cpu-used 8", "libaom-av1-cpu8", "aomenc", "LIBAOM"),
-    Encoder("vpx-rt7", "libvpx VP9 realtime cpu-used 7", "libvpx-vp9-cpu7", "vpxenc", "LIBVPX"),
-    Encoder("vpx-rt9", "libvpx VP9 realtime cpu-used 9", "libvpx-vp9-cpu9", "vpxenc", "LIBVPX"),
-    # libvpx's good-quality mode, one pass, no lag: not a chart configuration.
-    Encoder("vpx-good4", "libvpx VP9 good cpu-used 4 (one pass, no lag)", "libvpx-vp9-cpu4", "vpxenc", "LIBVPX",
-            chart=False, rewrite=(("--rt", "--good"),)),
-    Encoder("nvenc-h264", "NVENC H.264 p4 low latency (RTX 5090)", "nvenc-h264", "ffmpeg"),
-    Encoder("nvenc-hevc", "NVENC HEVC p4 low latency (RTX 5090)", "nvenc-hevc", "ffmpeg"),
-    Encoder("nvenc-av1", "NVENC AV1 p4 low latency (RTX 5090)", "nvenc-av1", "ffmpeg"),
+    Encoder("x264-medium", "x264 medium", "x264-medium", "X264"),
+    Encoder("x264-veryfast", "x264 veryfast", "x264-veryfast", "X264"),
+    Encoder("openh264", "openh264 (real-time, medium complexity)", "openh264-baseline", "OPENH264"),
+    Encoder("x265-medium", "x265 medium", "x265-medium", "X265"),
+    Encoder("x265-superfast", "x265 superfast", "x265-superfast", "X265"),
+    Encoder("kvazaar-superfast", "Kvazaar superfast", "kvazaar-superfast", "KVAZAAR"),
+    Encoder("svtav1-m12", "SVT-AV1 M12 --rtc", "svtav1-m12", "SVTAV1"),
+    Encoder("svtav1-m8", "SVT-AV1 M8 --rtc", "svtav1-m8", "SVTAV1"),
+    Encoder("aom-rt8", "libaom AV1 realtime cpu-used 8", "libaom-av1-cpu8", "LIBAOM"),
+    Encoder("vpx-rt7", "libvpx VP9 realtime cpu-used 7", "libvpx-vp9-cpu7", "LIBVPX"),
+    Encoder("vpx-rt9", "libvpx VP9 realtime cpu-used 9", "libvpx-vp9-cpu9", "LIBVPX"),
 ]}
 
 
@@ -135,7 +139,7 @@ class Entry:
 
     @property
     def key_interval(self) -> int:
-        return KEY_INTERVAL_SECONDS * self.fps
+        return KEY_INTERVAL
 
     @property
     def name(self) -> str:
@@ -159,8 +163,8 @@ GRID = [
     Entry("xiph-four-people", "x265-medium", 854, 480, 30, 400),
     Entry("xiph-four-people", "vpx-rt7", 854, 480, 30, 400),
     Entry("xiph-four-people", "svtav1-m12", 854, 480, 30, 400),
-    # KristenAndSara 720p30 600 kbps across H.264 (NVENC, x264) and VP9; openh264 starved.
-    Entry("xiph-kristen-sara", "nvenc-h264", 1280, 720, 30, 600),
+    # KristenAndSara 720p30 600 kbps across H.264, AV1 and VP9; openh264 starved.
+    Entry("xiph-kristen-sara", "svtav1-m12", 1280, 720, 30, 600),
     Entry("xiph-kristen-sara", "x264-veryfast", 1280, 720, 30, 600),
     Entry("xiph-kristen-sara", "vpx-rt9", 1280, 720, 30, 600),
     Entry("xiph-kristen-sara", "openh264", 640, 360, 30, 100),
@@ -173,31 +177,31 @@ GRID = [
     Entry("xiph-vidyo3", "x264-medium", 1280, 720, 15, 250),
     Entry("xiph-vidyo3", "openh264", 1280, 720, 15, 250),
     Entry("xiph-vidyo3", "aom-rt8", 1280, 720, 15, 250),
-    # Tears of Steel canal: 720p30 1200 kbps (AV1, HEVC, VP9 good), 360p10 150 kbps (AV1, H.264).
+    # Tears of Steel canal: 720p30 1200 kbps (AV1, HEVC, VP9), 360p10 150 kbps (AV1, H.264).
     Entry("tos-canal", "svtav1-m8", 1280, 720, 30, 1200),
     Entry("tos-canal", "x265-superfast", 1280, 720, 30, 1200),
-    Entry("tos-canal", "vpx-good4", 1280, 720, 30, 1200),
+    Entry("tos-canal", "vpx-rt7", 1280, 720, 30, 1200),
     Entry("tos-canal", "aom-rt8", 640, 360, 10, 150),
     Entry("tos-canal", "openh264", 640, 360, 10, 150),
-    # Waterfall 720p30 2000 kbps: H.264, AV1 (NVENC), VP9.
+    # Waterfall 720p30 2000 kbps: H.264, AV1, VP9.
     Entry("svt-waterfall", "x264-medium", 1280, 720, 30, 2000),
-    Entry("svt-waterfall", "nvenc-av1", 1280, 720, 30, 2000),
+    Entry("svt-waterfall", "svtav1-m12", 1280, 720, 30, 2000),
     Entry("svt-waterfall", "vpx-rt7", 1280, 720, 30, 2000),
-    # Smoke sauna 480p30 600 kbps: VP9 good, x264, SVT-AV1; VP9 360p15 200 kbps.
-    Entry("svt-smoke-sauna", "vpx-good4", 854, 480, 30, 600),
+    # Smoke sauna 480p30 600 kbps: VP9, x264, SVT-AV1; VP9 360p15 200 kbps.
+    Entry("svt-smoke-sauna", "vpx-rt7", 854, 480, 30, 600),
     Entry("svt-smoke-sauna", "x264-medium", 854, 480, 30, 600),
     Entry("svt-smoke-sauna", "svtav1-m12", 854, 480, 30, 600),
     Entry("svt-smoke-sauna", "vpx-rt9", 640, 360, 15, 200),
-    # Midnight sun 360p30 400 kbps: HEVC (NVENC, x265), VP9; openh264 216p15 100 kbps.
-    Entry("svt-midnight-sun", "nvenc-hevc", 640, 360, 30, 400),
+    # Midnight sun 360p30 400 kbps: HEVC (Kvazaar, x265), VP9; openh264 216p15 100 kbps.
+    Entry("svt-midnight-sun", "kvazaar-superfast", 640, 360, 30, 400),
     Entry("svt-midnight-sun", "x265-medium", 640, 360, 30, 400),
     Entry("svt-midnight-sun", "vpx-rt7", 640, 360, 30, 400),
     Entry("svt-midnight-sun", "openh264", 384, 216, 15, 100),
-    # Big Buck Bunny tree: 216p15 100 kbps (AV1), 480p30 500 kbps (openh264, x264, VP9 good).
+    # Big Buck Bunny tree: 216p15 100 kbps (AV1), 480p30 500 kbps (openh264, x264, VP9).
     Entry("bbb-tree", "svtav1-m12", 384, 216, 15, 100),
     Entry("bbb-tree", "openh264", 854, 480, 30, 500),
     Entry("bbb-tree", "x264-veryfast", 854, 480, 30, 500),
-    Entry("bbb-tree", "vpx-good4", 854, 480, 30, 500),
+    Entry("bbb-tree", "vpx-rt9", 854, 480, 30, 500),
     # MOT20-05: ~200 people at night, 720p30 1500 kbps across AV1, H.264 (x264, openh264), VP9; starved 360p30.
     Entry("mot20-dense-crowd", "svtav1-m12", 1280, 720, 30, 1500),
     Entry("mot20-dense-crowd", "x264-medium", 1280, 720, 30, 1500),
@@ -227,17 +231,19 @@ NOTICES = {
     "mot20-dense-crowd": MOT_NOTICE.format(set="MOT20", authors="Dendorfer et al."),
 }
 
-# How each kind of encoder controls its rate (manifest `rateControl`, shown in the
-# panel): the chart's real-time CBR settings (eval/nceval/cbr.py `Family.command`).
+# How each benchmark tool controls its rate (manifest `rateControl`, shown in the panel):
+# a summary of its record command (docs/benchmark-fairness.toml says why, flag by flag).
 RATE_CONTROL = {
-    "x264": "ABR with a 1 s VBV at the target (the chart's CBR)",
-    "x265": "ABR with a 1 s VBV at the target (the chart's CBR)",
-    "openh264": "openh264 real-time bitrate control at the target (the chart's)",
-    "svt": "CBR (--rc 2), 1 s buffer",
-    "vpx": "CBR (--end-usage=cbr), 1 s buffer",
-    "aom": "CBR (--end-usage=cbr), 1 s buffer",
-    "nvenc": "CBR, peak at the target, 1 s buffer",
+    "x264": "ABR with a 1 s VBV at the target, starting full",
+    "x265": "ABR with a 1 s VBV at the target, starting full",
+    "openh264-harness": "openh264 real-time bitrate control at the target (no buffer options)",
+    "kvazaar": "Kvazaar bitrate control at the target (no buffer options)",
+    "SvtAv1EncApp": "CBR (--rc 2), 1 s buffer starting full",
+    "vpxenc": "CBR (--end-usage=cbr), 1 s buffer starting full, full quantizer range, no frame dropping",
+    "aomenc": "CBR (--end-usage=cbr), 1 s buffer starting full, full quantizer range, no frame dropping",
 }
+# Where every command comes from (named in the manifest and the results table).
+BENCHMARK_RECORD = "docs/benchmark-fairness.toml"
 
 
 
@@ -288,18 +294,16 @@ def write_source(entry: Entry, path: Path, source: Path | None = None) -> tuple[
     return len(wanted), loop_ticks
 
 
-def family(encoder: Encoder) -> Family:
-    if encoder.key == "openh264":
-        return Family("openh264-baseline", Codec.H264, OPENH264_RC_HARNESS, kind="openh264")
-    return preset_anchor(encoder.family, load_paths())
+def codec(encoder: Encoder) -> Codec:
+    return Codec(TOOL_STREAM[encoder.tool][0])
 
 
 def command(encoder: Encoder, entry: Entry, frames: int, yuv: Path, out: Path) -> list[str]:
-    clip = Clip(name=entry.clip, yuv=yuv, width=entry.width, height=entry.height, fps=entry.fps,
-                frames=frames, source_kbps=0.0, content_class="", split="")
-    cmd = family(encoder).command(clip, frames, entry.key_interval, out, None, kbps=entry.kbps)
-    rewrites = dict(encoder.rewrite)
-    return [rewrites.get(arg, arg) for arg in cmd]
+    """The benchmark's CBR command for the entry (tools/bench/plan.py fills the same values)."""
+    num, den = frame_rate(entry.fps)
+    values = {"BIN": BENCHMARK_BIN, "INPUT": yuv, "OUTPUT": out, "W": entry.width, "H": entry.height,
+              "FPS_NUM": num, "FPS_DEN": den, "N": frames, "KEYINT": entry.key_interval, "KBPS": entry.kbps}
+    return fairness.command(encoder.family, "cbr", values)
 
 
 def pinned_source(prefix: str) -> dict:
@@ -312,9 +316,11 @@ def pinned_source(prefix: str) -> dict:
 def version(encoder: Encoder, binary: str) -> dict:
     """The binary's own version string, the pinned source and (NVENC) the driver."""
     probes = {"x264": ["--version"], "x265": ["--version"], "SvtAv1EncApp": ["--version"],
-              "ffmpeg": ["-hide_banner", "-version"], "aomenc": ["--help"], "vpxenc": ["--help"]}
-    # the program's name only: the manifest is published, a local path says nothing
-    info = {"binary": Path(binary).name, "source": pinned_source(encoder.pinned)}
+              "kvazaar": ["--version"], "aomenc": ["--help"], "vpxenc": ["--help"]}
+    # the program's name only: the manifest is published, a local path says nothing; its
+    # SHA-256 matches the BP-4 run manifests' `binaries`
+    info = {"binary": Path(binary).name, "sha256": sha256(Path(binary)), "build": BENCHMARK_BIN.parent.name,
+            "source": pinned_source(encoder.pinned)}
     if encoder.tool in probes:
         r = subprocess.run([binary, *probes[encoder.tool]], capture_output=True, text=True)
         text = (r.stdout + r.stderr).splitlines()
@@ -324,9 +330,6 @@ def version(encoder: Encoder, binary: str) -> dict:
         info["version"] = " / ".join(line.removeprefix("vp9 - ").removeprefix("av1 - ") for line in tidy if line)
     else:
         info["version"] = f"openh264 {pinned_source(encoder.pinned)['ref']} (eval openh264-harness driver)"
-    if encoder.tool == "ffmpeg":
-        driver = run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"], text=True)
-        info["gpu"] = driver.stdout.strip()
     return info
 
 
@@ -411,7 +414,7 @@ def verify(stream: Path, codec: Codec, entry: Entry, nanocodec: Path, scratch: P
 
 def make(entry: Entry, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]:
     encoder = ENCODERS[entry.encoder]
-    fam = family(encoder)
+    stream_codec = codec(encoder)
     raw = scratch / f"{entry.name}.raw"
     yuv = scratch / "source.yuv"
     try:
@@ -420,15 +423,16 @@ def make(entry: Entry, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]
         run(cmd)
     finally:
         yuv.unlink(missing_ok=True)
+    strip(raw, stream_codec)  # as the benchmark counts bits: no SEI or metadata units
     data = raw.read_bytes()
-    packets = ivf_packets(data) if data[:4] == b"DKIF" else access_units(data, fam.codec)
+    packets = ivf_packets(data) if data[:4] == b"DKIF" else access_units(data, stream_codec)
     if len(packets) != frames:
         raise RuntimeError(f"{entry.name}: {len(packets)} coded frames, expected {frames}")
     target = OUT / f"{entry.name}.ivf"
-    write_ivf(target, fam.codec, entry, packets)
+    write_ivf(target, stream_codec, entry, packets)
     # The native decoder reads Annex-B for H.264/HEVC: verify the encoder's own file.
-    checked = raw if fam.codec in (Codec.H264, Codec.HEVC) else target
-    hashes = verify(checked, fam.codec, entry, nanocodec, scratch)
+    checked = raw if stream_codec in (Codec.H264, Codec.HEVC) else target
+    hashes = verify(checked, stream_codec, entry, nanocodec, scratch)
     pixel_format = run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=pix_fmt", "-of",
                         "csv=p=0", str(checked)], text=True).stdout.strip()
     if pixel_format not in PIXEL_FORMATS:
@@ -436,11 +440,12 @@ def make(entry: Entry, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]
     coded = sum(map(len, packets))
     seconds = frames / entry.fps
     record = {
-        "id": entry.name, "file": target.name, "clip": entry.clip, "codec": PAGE_CODEC[fam.codec],
-        "encoder": encoder.key, "label": encoder.label, "chartConfiguration": encoder.chart,
+        "id": entry.name, "file": target.name, "clip": entry.clip, "codec": PAGE_CODEC[stream_codec],
+        "encoder": encoder.key, "label": encoder.label, "family": encoder.family, "record": BENCHMARK_RECORD,
         "width": entry.width, "height": entry.height, "fps": entry.fps, "frames": frames,
         "loopTicks": loop_ticks, "keyInterval": entry.key_interval,
-        "targetKbps": entry.kbps, "actualKbps": round(coded * 8 / seconds / 1000, 1), "bufferMs": BUFFER_MS,
+        "targetKbps": entry.kbps, "actualKbps": round(coded * 8 / seconds / 1000, 1),
+        "bufferMs": fairness.load()["shared"]["buffer_ms"],
         "bytes": target.stat().st_size, "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         "sourceFile": f"clips/{clip_file(entry.clip, entry.height).name}",
         "sourceSha256": sha256(clip_file(entry.clip, entry.height)),
@@ -458,7 +463,7 @@ def described(record: dict) -> dict:
     """A generated record with the descriptive fields that follow from its encoder
     (refreshed on every run, as they need no re-encode)."""
     encoder = ENCODERS[record["encoder"]]
-    return {**record, "label": encoder.label, "rateControl": RATE_CONTROL[family(encoder).kind],
+    return {**record, "label": encoder.label, "rateControl": RATE_CONTROL[encoder.tool],
             "keyFrames": -(-record["frames"] // record["keyInterval"])}
 
 
@@ -472,19 +477,19 @@ def display_arg(arg: str, yuv: Path, raw: Path) -> str:
 
 def write_table(manifest: dict) -> None:
     """The streams, their encoders' versions and exact commands, as a results page."""
-    def note(r: dict) -> str:
-        return "" if r["chartConfiguration"] else " (not a chart configuration)"
-    rows = [f"| {r['clip']} | {r['label']}{note(r)} | {r['codec']} | {r.get('rateControl', '')} | "
+    rows = [f"| {r['clip']} | {r['label']} (`{r['family']}`) | {r['codec']} | {r.get('rateControl', '')} | "
             f"{r['width']}x{r['height']} | {r['fps']} | {r['targetKbps']} | {r['actualKbps']} | {r['bytes'] / 1024:.0f} |"
             for r in manifest["streams"]]
     commands = [f"- `{r['id']}`: {r['version']['version']}"
                 f"{' (source ' + r['version']['source']['ref'] + ' ' + r['version']['source']['commit'][:12] + ')' if r['version']['source'] else ''}"
-                f"{' on ' + r['version']['gpu'] if 'gpu' in r['version'] else ''}\n\n  ```\n  {r['command']}\n  ```"
+                f", build {r['version']['build']}, SHA-256 {r['version']['sha256'][:16]}\n\n  ```\n  {r['command']}\n  ```"
                 for r in manifest["streams"]]
     total = sum(r["bytes"] for r in manifest["streams"]) / 2**20
     TABLE.write_text("\n".join([
         "# Pre-encoded reference streams in the browser demo", "",
         "Generated by `tools/web/make-reference-streams.py` from `web/streams-ref/manifest.json`; do not edit.",
+        f"Every command is the BP-4 benchmark's CBR command for the named family ({BENCHMARK_RECORD},",
+        "`nceval.fairness.command`), with its key interval, run with the benchmark's own x86_64 encoder build.",
         f"{len(rows)} streams, {total:.1f} MiB. Each is decoded identically, frame by frame, by the codec's reference",
         "decoder, our native decoder and both WASM builds (`web/tests/reference-streams-wasm.mjs`).", "",
         "| Clip | Encoder | Codec | Rate control | Size | fps | Target kbps | Actual kbps | KiB |",

@@ -875,12 +875,13 @@ def pairs_table(pairs: list[tuple[str, ChartPoint]]) -> str:
 
 @dataclass(frozen=True)
 class SpeedPlatform:
-    """Where the speed axis was timed: output suffix, CSV column, axis title, and the
-    core named in the chart title."""
+    """Where the speed axis was timed: output suffix, CSV column, axis title, the core
+    named in the chart title, and the speed's unit in each point's tooltip."""
     suffix: str
     column: str
     axis: str
     core: str
+    unit: str = "fps"
 
 
 JETSON = SpeedPlatform("", "fps_jetson", "single-thread encode fps, 720p, one Jetson Orin "
@@ -1630,7 +1631,7 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
         speed = (" (GPU aggregate throughput, frames in GPU memory)" if is_hardware(p) else
                  f", {p.speed:.2f}× x264 medium" if p.speed else "")
         out.append(f'<g><title>{p.label}: BD-J {p.bd_j:+.1f}%, BD-PSNR {fmt(p.bd_psnr)}, BD-VMAF v1 {fmt(p.bd_vmaf)}, '
-                   f'{p.fps:.1f} fps{speed}</title>{marker(p, cx, cy)}</g>')
+                   f'{p.fps:.1f} {platform.unit}{speed}</title>{marker(p, cx, cy)}</g>')
         tx, ty, anchor, leader = labels[p.family]
         if leader:  # from the marker's edge to the label's near side
             end_y = ty - 12 if ty > cy else ty + 3

@@ -95,10 +95,8 @@ fn horizontal<R: Rounding, S: Sink>(sum: __m256i) -> __m256i {
     }
 }
 
-/// The passes of blocks 16 or more wide: this module's 16-output strips
-/// ([`Avx2Wide`]) or the AVX-512 tier's 32-output rows
-/// (`av1_avx512::Avx512Wide`, blocks 32 and 64 wide). Blocks 4 and 8 wide
-/// always take this module's two-row passes.
+/// Pass selection after resolving window, rounding, and taps. The
+/// one-axis passes for blocks four or eight wide are shared.
 pub(super) trait WidePasses {
     /// Horizontal only (see [`horizontal_wide`]).
     ///
@@ -173,7 +171,13 @@ impl WidePasses for Avx2Wide {
         taps: (&[i16], &[i16]),
     ) {
         // SAFETY: forwarded from the caller.
-        unsafe { both_wide::<W, P, S, R, C>(window, lead, out, h, taps) }
+        unsafe {
+            if W <= HALF {
+                both_narrow::<W, P, S, R, C>(window, lead, out, h, taps);
+            } else {
+                both_wide::<W, P, S, R, C>(window, lead, out, h, taps);
+            }
+        }
     }
 }
 
@@ -786,8 +790,7 @@ unsafe fn put_taps<
             (_, 0, false) => X::horizontal::<W, P, S, R, C>(window, lead, out, h, h_taps),
             (0, _, true) => vertical_narrow::<W, P, S, R, C>(window, lead, out, h, v_taps),
             (0, _, false) => X::vertical::<W, P, S, R, C>(window, lead, out, h, v_taps),
-            (_, _, true) => both_narrow::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
-            (_, _, false) => X::both::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
+            _ => X::both::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
         }
     }
 }

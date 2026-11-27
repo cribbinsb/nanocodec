@@ -1,6 +1,6 @@
 [package]
 name = "nanocodec"
-description = "Real-time, low-latency video encoders and matching decoders for H.264, HEVC, VVC, AV1, VP9 and AV2 on one shared engine"
+description = "Low-latency (no B-frames, no lookahead) video encoders and matching decoders for H.264, HEVC, VVC, AV1, VP9 and AV2 on one shared engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -20,6 +20,11 @@ name = "nanocodec"
 crate-type = ["staticlib", "cdylib"]
 doc = false
 
+[features]
+# Exports `nc_debug_panic`, a deliberate panic inside the ABI guard, for
+# tools/ci/capi_check.sh. Never in a shipped build.
+panic-probe = []
+
 [dependencies]
 nc-common.workspace = true
 nc-encoder.workspace = true

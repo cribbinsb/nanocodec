@@ -44,6 +44,7 @@ function render(data, machine, root) {
     { label: 'Source kbps', num: true, cell: (c) => c.source_kbps.toLocaleString('en') },
     { label: 'Rungs (kbps)', num: true, cell: (c) => c.rungs.join(' / ') },
     { label: 'Malformed curves (hover for the families)', cell: (c) => lostCell(data, view, c) },
+    { label: 'Tuned on (in-sample for ours)', cell: (c) => c.tuned_on || '' },
   ], d.clips, (c) => (view && c.windows.every((w) => losses(data, view, c, w).out) ? 'out' : '')));
 }
 

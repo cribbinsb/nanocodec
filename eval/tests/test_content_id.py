@@ -83,3 +83,45 @@ def test_collection_of_a_source():
         "/mldata/downloaded_datasets/other/nasa_videos"
     assert collection("/mldata/downloaded_datasets/other/vc1k/a.mp4") != \
         collection("/mldata/downloaded_datasets/other/vcd2/a.mp4")
+
+
+# --- V3 for tuning sets (benchmark integrity audit 2026-11-27, findings 1 and 2) ------------
+
+#: The tuning pools and sets committed in the repository, and the standards lens.
+TUNING_SETS = ("pool", "main", "independent", "independent_long", "quick", "long", "smoke",
+               "vc1k_dev")
+#: The benchmark's datasets (procedure section 4), by manifest.
+DATASETS = ("heldout_2026-11-23b", "vc1k_2026-11-18", "aomctc_bp3")
+
+
+def _tuning_sets() -> dict[str, list[dict]]:
+    sets = {name: _clips(f"eval/clipset/{name}.json") for name in TUNING_SETS}
+    sets["standards_lens"] = json.loads(
+        (REPO / "docs/results/standards-ctc-2026-11-14/sources.json").read_text())
+    # the ad-hoc lever-ranking sets kept outside the repository, as the in-sample record lists them
+    record = json.loads((REPO / "eval/clipset/tuned_on.json").read_text())["sets"]
+    for name, entry in record.items():
+        sets.setdefault(name, entry["clips"])
+    return sets
+
+
+def test_datasets_overlap_tuning_sets_only_in_the_recorded_in_sample_clips():
+    record = json.loads((REPO / "eval/clipset/tuned_on.json").read_text())["sets"]
+    tuning = _tuning_sets()
+    for dataset in DATASETS:
+        manifest = f"eval/clipset/{dataset}.manifest.json"
+        clips = _clips(manifest)
+        found = set()
+        for name, entries in tuning.items():
+            found |= {x for x, _ in overlaps([c["name"] for c in clips], [c["name"] for c in entries])}
+            found |= {x for x, _ in source_overlaps(
+                [c for c in clips if "source" in c], [c for c in entries if "source" in c])}
+        recorded = {c["name"] for entry in record.values() if entry["dataset"] == manifest
+                    for c in entry["clips"]}
+        assert found == recorded, (dataset, sorted(found ^ recorded))
+        assert recorded <= {c["name"] for c in clips}
+
+
+def test_the_in_sample_record_names_the_audits_clips():
+    record = json.loads((REPO / "eval/clipset/tuned_on.json").read_text())["sets"]
+    assert len(record["vc1k_worst6"]["clips"]) == 9 and len(record["standards_lens"]["clips"]) == 12

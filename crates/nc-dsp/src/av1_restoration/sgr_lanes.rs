@@ -21,8 +21,8 @@
 use nc_common::{BitDepth, Sample};
 
 use super::self_guided::{
-    BLEND_SHIFT, MTABLE_BITS, ONE_ROW_SHIFT, PRJ_ONE, RECIP_BITS, SGR_BITS, SOURCE_SHIFT,
-    TWO_ROW_SHIFT, Z_MAX, one_by_x,
+    BLEND_SHIFT, BoxRows, MTABLE_BITS, ONE_ROW_SHIFT, PRJ_ONE, ProjectionRows, RECIP_BITS,
+    RadiusTwo, SGR_BITS, SOURCE_SHIFT, TWO_ROW_SHIFT, Z_MAX, one_by_x,
 };
 
 /// Default lane count of [`SgrLanes`] vectors (AVX2, NEON, SIMD128).
@@ -210,7 +210,12 @@ fn four_three<V: SgrLanes>(x: V, y: V) -> V {
 /// Columns `j..j + V::LANES` of the filtered row: `(a · src + b + round) >> shift`.
 #[inline(always)]
 fn filtered<V: SgrLanes, S: SgrSample, const SHIFT: i32>(a: V, b: V, src: &[S], j: usize) -> V {
-    a.mul(S::load_sample::<V>(&src[j..]))
+    filter_sample::<V, SHIFT>(a, b, S::load_sample::<V>(&src[j..]))
+}
+
+#[inline(always)]
+fn filter_sample<V: SgrLanes, const SHIFT: i32>(a: V, b: V, sample: V) -> V {
+    a.mul(sample)
         .add(b)
         .add(V::splat(1 << (SHIFT - 1)))
         .sra::<SHIFT>()
@@ -246,6 +251,98 @@ fn weigh_around<V: SgrLanes, T: LaneRow>(v: [&[T]; 3], j: usize) -> V {
         .add(T::load(&v[2][j..]))
         .add(T::load(&v[2][j + 2..]));
     four_three(cross, diagonal)
+}
+
+/// Project the high-depth output from the A/B rings. Both radii
+/// share one source load and keep their filtered samples in registers.
+#[inline(always)]
+pub(super) fn project<V: SgrLanes>(
+    rows: ProjectionRows<'_>,
+    src: &[u16],
+    weights: [i32; 2],
+    dst: &mut [u16],
+    depth: BitDepth,
+) {
+    match rows.radius2 {
+        RadiusTwo::Off => {
+            project_with::<V, 0>(src, weights, dst, depth, ([&[]; 2], [&[]; 2]), rows.radius1);
+        }
+        RadiusTwo::On(a, b) => {
+            project_with::<V, 1>(src, weights, dst, depth, ([a, a], [b, b]), rows.radius1);
+        }
+        RadiusTwo::Between(five) => {
+            project_with::<V, 2>(src, weights, dst, depth, five, rows.radius1);
+        }
+    }
+}
+
+#[inline(always)]
+fn project_with<V: SgrLanes, const FIVE: u8>(
+    src: &[u16],
+    weights: [i32; 2],
+    dst: &mut [u16],
+    depth: BitDepth,
+    five: BoxRows<'_, 2>,
+    three: Option<BoxRows<'_, 3>>,
+) {
+    if let Some(three) = three {
+        project_lanes::<V, FIVE, true>(src, weights, dst, depth, five, three);
+    } else {
+        project_lanes::<V, FIVE, false>(src, weights, dst, depth, five, ([&[]; 3], [&[]; 3]));
+    }
+}
+
+#[inline(always)]
+fn project_lanes<V: SgrLanes, const FIVE: u8, const THREE: bool>(
+    src: &[u16],
+    weights: [i32; 2],
+    dst: &mut [u16],
+    depth: BitDepth,
+    (five_a, five_b): BoxRows<'_, 2>,
+    (three_a, three_b): BoxRows<'_, 3>,
+) {
+    let [w0, w1] = weights.map(V::splat);
+    let round = V::splat(1 << (BLEND_SHIFT - 1));
+    for j in (0..dst.len()).step_by(V::LANES) {
+        let p = V::load_u16(&src[j..]);
+        let u = p.shl::<{ SOURCE_SHIFT as i32 }>();
+        let f0 = match FIVE {
+            2 => filter_sample::<V, { TWO_ROW_SHIFT as i32 }>(
+                weigh_between(five_a, j),
+                weigh_between(five_b, j),
+                p,
+            ),
+            1 => filter_sample::<V, { ONE_ROW_SHIFT as i32 }>(
+                weigh_on(five_a[0], j),
+                weigh_on(five_b[0], j),
+                p,
+            ),
+            _ => u,
+        };
+        let f1 = if THREE {
+            filter_sample::<V, { TWO_ROW_SHIFT as i32 }>(
+                weigh_around(three_a, j),
+                weigh_around(three_b, j),
+                p,
+            )
+        } else {
+            u
+        };
+        let result = p.add(
+            w0.mul(f0.sub(u))
+                .add(w1.mul(f1.sub(u)))
+                .add(round)
+                .sra::<{ BLEND_SHIFT as i32 }>(),
+        );
+        let tail = &mut dst[j..];
+        if tail.len() >= V::LANES {
+            result.store_u16_clip(depth.max(), &mut tail[..V::LANES]);
+        } else {
+            let mut pad = [0; MAX_LANES];
+            result.store_u16_clip(depth.max(), &mut pad[..V::LANES]);
+            tail.copy_from_slice(&pad[..tail.len()]);
+        }
+    }
 }
 
 /// Horizontal box sums of radius `R` for any [`SgrSample`] (`u8` or `u16`).

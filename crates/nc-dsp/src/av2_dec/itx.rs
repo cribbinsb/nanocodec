@@ -521,6 +521,13 @@ pub fn inverse_transform_add_with_dsp(
             dsp.add_constant(&mut view, i32::from(dc));
         } else {
             let rows = first_pass_rows(size, TxClass::TwoD, eob);
+            #[cfg(target_arch = "x86_64")]
+            if matches!(square, Av2TxSize::Tx32 | Av2TxSize::Tx64)
+                && matches!(dsp.isa(), Isa::Avx2 | Isa::Avx512)
+            {
+                crate::av2_txfm::avx2::inverse_add_large(dsp, square, coeffs, rows, &mut view);
+                return;
+            }
             match square {
                 Av2TxSize::Tx4 => inverse_square_add::<0, 16, 16>(dsp, coeffs, rows, &mut view),
                 Av2TxSize::Tx8 => inverse_square_add::<1, 64, 64>(dsp, coeffs, rows, &mut view),

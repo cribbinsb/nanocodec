@@ -1,6 +1,6 @@
 // Pre-encoded reference streams: sample clips coded offline by third-party
-// encoders (x264, openh264, x265, SVT-AV1, libaom, libvpx, NVENC) in the
-// configurations the project's charts use, which a view can play instead of a
+// encoders (x264, openh264, x265, Kvazaar, SVT-AV1, libaom, libvpx) with the BP-4
+// benchmark's exact commands and builds, which a view can play instead of a
 // live nanocodec encode. tools/web/make-reference-streams.py makes the files and
 // the manifest in streams-ref/ (encoder, version, exact command line, clip,
 // size, frame rate, target and actual bitrate); the page keeps no list of its

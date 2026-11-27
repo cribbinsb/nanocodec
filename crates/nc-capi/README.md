@@ -7,6 +7,11 @@ Most users want the [`nanocodec`](https://crates.io/crates/nanocodec) crate,
 which re-exports the engine and the codecs behind cargo features. This crate
 builds the C library `libnanocodec`; its header is `include/nanocodec.h`.
 
+Build it with the workspace's `capi` profile, `cargo build --profile capi -p
+nanocodec-capi` (output in `target/capi/`). That profile unwinds, so a panic
+inside the library returns `NC_ERROR_INTERNAL` instead of aborting the host
+process; a `--release` build uses `panic = "abort"`.
+
 - Repository: <https://github.com/cribbinsb/nanocodec>
 - Documentation and results: <https://cribbinsb.github.io/nanocodec/>
 

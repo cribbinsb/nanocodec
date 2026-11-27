@@ -102,8 +102,8 @@ square-block angular intra directions, independent chroma prediction, forward in
 deblocking and edge-offset SAO. The shared engine owns motion search, partition
 planning, intra/inter selection and rate control. It accepts even sizes up to
 4096 per axis and QP 0–63; the default maximum block is 32. Colour VUI and fixed
-QP keyframe offsets are supported. Temporal layers, LTR, intra refresh and HRD
-timing are not yet supported. Output is Annex B.
+QP keyframe offsets, temporal layers and intra refresh are supported; long-term
+references and HRD timing are not yet. Output is Annex B.
 
 VVC considers every angular direction using shared DSP SATD and signalling
 cost, then uses the shared engine's shortlist helper before transform RD.
@@ -118,7 +118,7 @@ VVC chroma selection compares all five ordinary candidates using reconstructed
 distortion and estimated bits. `--param vvc.chroma_search=0` retains derived-only
 chroma for comparisons; the default is `1`. CCLM is not implemented.
 
-Install from crates.io, once published: `cargo install nanocodec-cli`.
+Install from crates.io: `cargo install nanocodec-cli`.
 
 - Repository: <https://github.com/cribbinsb/nanocodec>
 - Documentation and results: <https://cribbinsb.github.io/nanocodec/>

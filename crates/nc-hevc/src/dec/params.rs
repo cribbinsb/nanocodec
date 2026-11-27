@@ -223,17 +223,35 @@ fn explicit_list(r: &mut BitReader<'_>, size: usize) -> Result<(Vec<u8>, u8), De
     Ok((coefficients, dc))
 }
 
-/// `sps_range_extension()` and friends are outside Main: their presence
-/// flags must be 0.
+/// The range and SCC extension flags among the eight extension presence
+/// flags (`pps_range_extension_flag` first, then multilayer, 3D, SCC; §7.3.2.3.1).
+const RANGE_EXTENSION_FLAG: u32 = 0x80;
+const SCC_EXTENSION_FLAG: u32 = 0x10;
+/// `general_profile_idc` of the screen content profiles (A.3.7: Screen-Extended
+/// Main, Main 10, Main 4:4:4, Main 4:4:4 10, and A.3.8 High Throughput 4:4:4
+/// 14 with SCC).
+const SCC_PROFILES: [u32; 2] = [9, 11];
+/// `general_profile_idc` values a Main, Main 10 or Main Still Picture decoder
+/// decodes (A.3.2 to A.3.4).
+const MAIN_PROFILES: [u32; 3] = [1, 2, 3];
+
+/// `pps_range_extension()` and `pps_scc_extension()` are outside Main: their
+/// presence flags must be 0.
 fn no_extensions(r: &mut BitReader<'_>) -> Result<(), DecodeError> {
     if r.read_bit()? {
         let flags = r.read_bits(8)?;
-        // sps/pps_range_extension_flag is the first of the eight.
-        if flags & 0x80 != 0 {
+        // pps_range_extension_flag is the first of the eight.
+        if flags & RANGE_EXTENSION_FLAG != 0 {
             return Err(DecodeError::Unsupported("range extension"));
         }
-        // Other extensions do not affect single-layer Main decoding; their
-        // data is ignored (§7.4.3.2.1: decoders shall ignore it).
+        // pps_scc_extension_flag (§7.3.2.3.1) enables intra block copy,
+        // adaptive colour transform and palette predictor initialisers,
+        // which change the slice and CU syntax: decoding on would be wrong.
+        if flags & SCC_EXTENSION_FLAG != 0 {
+            return Err(DecodeError::Unsupported("HEVC screen content coding"));
+        }
+        // The multilayer and 3D extensions do not affect decoding the base
+        // layer; their data is ignored (§7.4.3.3.1: decoders shall ignore it).
     }
     Ok(())
 }
@@ -494,11 +512,24 @@ impl Sps {
     }
 }
 
-/// `profile_tier_level(1, maxNumSubLayersMinus1)` (§7.3.3). Nothing in it
-/// changes decoding: unsupported tools are detected from the syntax itself.
+/// `profile_tier_level(1, maxNumSubLayersMinus1)` (§7.3.3). Unsupported
+/// tools are detected from the syntax itself, except screen content coding:
+/// its SPS tools (palette, adaptive motion vector resolution) sit in
+/// `sps_scc_extension()` after the VUI, which is not parsed, so an SCC
+/// profile that does not also claim Main, Main 10 or Main Still Picture
+/// (A.3.7) is refused here instead of misdecoding.
 fn profile_tier_level(r: &mut BitReader<'_>, sub_layers_minus1: usize) -> Result<(), DecodeError> {
-    // general profile (88 bits) and level (8 bits).
-    r.skip_bits(96)?;
+    r.skip_bits(3)?; // general_profile_space, general_tier_flag
+    let profile = r.read_bits(5)?;
+    let compatible = r.read_bits(32)?;
+    let claims_main = MAIN_PROFILES
+        .iter()
+        .any(|&main| profile == main || compatible & (1 << (31 - main)) != 0);
+    if SCC_PROFILES.contains(&profile) && !claims_main {
+        return Err(DecodeError::Unsupported("HEVC screen content coding"));
+    }
+    // The rest of the general profile (48 bits) and level (8 bits).
+    r.skip_bits(56)?;
     let mut present = [(false, false); MAX_SUB_LAYERS];
     for p in present.iter_mut().take(sub_layers_minus1) {
         *p = (r.read_bit()?, r.read_bit()?);
@@ -917,6 +948,45 @@ mod tests {
             w.put_bit(false);
         }
         w.into_bytes()
+    }
+
+    /// A general profile (§7.3.3): `profile_idc` and its compatibility flags.
+    fn general_profile(profile: u32, compatible: &[u32]) -> Vec<u8> {
+        let mut w = nc_common::BitWriter::new();
+        w.put_bits(profile, 8); // profile space 0, Main tier, profile_idc
+        w.put_bits(
+            compatible.iter().fold(0, |flags, &j| flags | 1 << (31 - j)),
+            32,
+        );
+        w.put_bits(0, 32);
+        w.put_bits(0, 24);
+        w.into_bytes()
+    }
+
+    /// Screen content profiles were decoded as Main with their SCC tools
+    /// ignored; they are refused unless they also claim a Main profile.
+    #[test]
+    fn screen_content_coding_is_refused() {
+        let scc = Some(DecodeError::Unsupported("HEVC screen content coding"));
+        let ptl = |profile, compatible: &[u32]| {
+            profile_tier_level(
+                &mut BitReader::new(&general_profile(profile, compatible)),
+                0,
+            )
+            .err()
+        };
+        assert_eq!(ptl(9, &[9]), scc);
+        assert_eq!(ptl(11, &[11]), scc);
+        assert_eq!(ptl(9, &[1, 9]), None);
+        assert_eq!(ptl(1, &[1, 2]), None);
+        // pps_extension_present_flag, then pps_scc_extension_flag alone.
+        let pps_scc = [0b1000_1000, 0];
+        assert_eq!(no_extensions(&mut BitReader::new(&pps_scc)).err(), scc);
+        let pps_multilayer = [0b1010_0000, 0];
+        assert_eq!(
+            no_extensions(&mut BitReader::new(&pps_multilayer)).err(),
+            None
+        );
     }
 
     /// Values near `u32::MAX` used to wrap in `+ 4` and in the window sums

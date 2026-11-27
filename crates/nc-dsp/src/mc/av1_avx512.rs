@@ -27,16 +27,21 @@
     reason = "the pass selection must inline into the AVX-512 kernels"
 )]
 
-use super::av1_avx2::{Sink, WidePasses, Window, Words, tap_pairs};
+use super::av1_avx2::{Avx2Wide, Sink, WidePasses, Window, Words, tap_pairs};
 use super::avx2_byte_dot::span;
-use super::{PREP_LAST_ROUND, PREP_LAST_SHIFT, ROUND_2, ROUND_6, Rounding};
+use super::{PREP_LAST_ROUND, PREP_LAST_SHIFT, ROUND_2, ROUND_6, Rounding, TAPS};
 use core::arch::x86_64::{
-    __m256i, __m512i, _mm_cvtsi32_si128, _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16,
-    _mm512_add_epi32, _mm512_castsi256_si512, _mm512_castsi512_si256, _mm512_dpbusd_epi32,
+    __m256i, __m512i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_maskz_loadu_epi8,
+    _mm256_broadcastsi128_si256, _mm256_castsi128_si256, _mm256_dpbusd_epi32, _mm256_dpwssds_epi32,
+    _mm256_inserti128_si256, _mm256_loadu_si256, _mm256_packs_epi32, _mm256_permutex2var_epi16,
+    _mm256_set1_epi32, _mm256_shuffle_epi8, _mm256_sra_epi32, _mm256_srai_epi32,
+    _mm256_storeu_si256, _mm512_add_epi16, _mm512_add_epi32, _mm512_castsi256_si512,
+    _mm512_castsi512_si256, _mm512_cvtepi32_epi16, _mm512_dpbusd_epi32, _mm512_dpwssds_epi32,
     _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_maskz_loadu_epi8,
     _mm512_mulhrs_epi16, _mm512_packs_epi32, _mm512_packus_epi16, _mm512_packus_epi32,
-    _mm512_permutexvar_epi8, _mm512_permutexvar_epi64, _mm512_set_epi64, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_setzero_si512, _mm512_sra_epi32, _mm512_srai_epi16,
+    _mm512_permutex2var_epi16, _mm512_permutexvar_epi8, _mm512_permutexvar_epi64, _mm512_set_epi64,
+    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_shuffle_epi8,
+    _mm512_shuffle_i32x4, _mm512_sra_epi32, _mm512_srai_epi16, _mm512_srai_epi32,
     _mm512_srli_epi16, _mm512_storeu_si512, _mm512_unpackhi_epi16, _mm512_unpacklo_epi8,
     _mm512_unpacklo_epi16,
 };
@@ -50,6 +55,255 @@ const LANE_BYTES: usize = 16;
 
 /// The AVX-512 passes of 32-output rows (`W` 32 or 64).
 pub(super) struct Avx512Wide;
+
+/// Ice Lake narrow AV1 uses the packed two-row filter from dav1d's
+/// `mc_avx512.asm` (BSD-2-Clause). One-axis filters keep the shared passes.
+pub(super) struct Avx512Narrow;
+
+impl WidePasses for Avx512Narrow {
+    #[inline(always)]
+    unsafe fn horizontal<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: &[i16],
+    ) {
+        // SAFETY: the same checked footprints and AVX2 support.
+        unsafe { Avx2Wide::horizontal::<W, P, S, R, C>(window, lead, out, h, taps) };
+    }
+
+    #[inline(always)]
+    unsafe fn vertical<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: &[i16],
+    ) {
+        // SAFETY: the same checked footprints and AVX2 support.
+        unsafe { Avx2Wide::vertical::<W, P, S, R, C>(window, lead, out, h, taps) };
+    }
+
+    #[inline(always)]
+    unsafe fn both<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: (&[i16], &[i16]),
+    ) {
+        debug_assert!(matches!(W, 4 | 8) && R::HALVED && lead == TAPS / 2 - P);
+        // SAFETY: only the checked narrow AV1 paths install these passes.
+        unsafe {
+            if h == 4 {
+                both_narrow::<W, P, 2, S, R>(window, out, h, taps);
+            } else {
+                both_narrow::<W, P, P, S, R>(window, out, h, taps);
+            }
+        }
+    }
+}
+
+/// Dot four horizontally adjacent bytes, with two four-pixel rows in
+/// separate lanes. Leave each rounded result in its dword for the vertical
+/// word permutation.
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl,avx512vnni")]
+#[inline]
+unsafe fn horizontal_four_pair(
+    first: *const u8,
+    second: *const u8,
+    gather: __m256i,
+    taps: __m256i,
+) -> __m256i {
+    // SAFETY: eight bytes fit in the checked row from column two. The
+    // shuffle uses the first seven bytes.
+    let rows = unsafe {
+        _mm256_inserti128_si256::<1>(
+            _mm256_castsi128_si256(_mm_loadl_epi64(first.cast())),
+            _mm_loadl_epi64(second.cast()),
+        )
+    };
+    let dots = _mm256_dpbusd_epi32(
+        _mm256_set1_epi32(2),
+        _mm256_shuffle_epi8(rows, gather),
+        taps,
+    );
+    _mm256_srai_epi32::<2>(dots)
+}
+
+/// For an eight-wide row, each of its two lanes gathers four output
+/// pixels. Each dot uses a different group of four taps.
+const fn eight_gather(offset: u8) -> [u8; 64] {
+    let mut gather = [0; 64];
+    let mut byte = 0;
+    while byte < gather.len() {
+        let col = (byte / 16 % 2 * 4 + byte % 16 / 4) as u8;
+        gather[byte] = offset + col + (byte % 4) as u8;
+        byte += 1;
+    }
+    gather
+}
+
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl,avx512vnni")]
+#[inline]
+unsafe fn horizontal_eight_pair<const P: usize>(
+    first: *const u8,
+    second: *const u8,
+    taps: [__m512i; 2],
+) -> __m512i {
+    const GATHER: [[u8; 64]; 2] = [eight_gather(0), eight_gather(4)];
+    // SAFETY: only bytes in the checked horizontal tap span are loaded.
+    // GATHER contains the two full permutation vectors.
+    unsafe {
+        let mask = (1 << span(8, P)) - 1;
+        let low = _mm_maskz_loadu_epi8(mask, first.cast());
+        let high = _mm_maskz_loadu_epi8(mask, second.cast());
+        let pair = _mm512_castsi256_si512(_mm256_inserti128_si256::<1>(
+            _mm256_castsi128_si256(low),
+            high,
+        ));
+        let rows = _mm512_shuffle_i32x4::<0x50>(pair, pair);
+        let mut sum = _mm512_set1_epi32(2);
+        for (gather, taps) in GATHER.iter().zip(taps) {
+            let gather = _mm512_loadu_si512(gather.as_ptr().cast());
+            sum = _mm512_dpbusd_epi32(sum, _mm512_shuffle_epi8(rows, gather), taps);
+        }
+        _mm512_srai_epi32::<2>(sum)
+    }
+}
+
+/// First output: previous high row and next low row. Second output:
+/// next low and high rows. The sums' low words are at even indices.
+const fn narrow_pairs<const W: usize>() -> [i16; 32] {
+    let mut indices = [0; 32];
+    let mut col = 0;
+    while col < W {
+        let i = 2 * col;
+        indices[i] = (2 * W + i) as i16;
+        indices[i + 1] = (4 * W + i) as i16;
+        indices[2 * W + i] = (4 * W + i) as i16;
+        indices[2 * W + i + 1] = (6 * W + i) as i16;
+        col += 1;
+    }
+    indices
+}
+
+/// Keep one interleaved vertical pair per tap pair for each of the two
+/// independently strided output rows.
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl,avx512vnni")]
+#[inline]
+unsafe fn both_narrow<const W: usize, const H: usize, const V: usize, S: Sink, R: Rounding>(
+    window: Window,
+    out: S,
+    h: usize,
+    (h_taps, v_taps): (&[i16], &[i16]),
+) {
+    // All AV1 four-wide families use only taps 2 through 5 horizontally.
+    let h_taps = <&[i16; TAPS]>::try_from(h_taps).unwrap();
+    let v_taps = <&[i16; TAPS]>::try_from(v_taps).unwrap();
+    let first = if W == 4 { 2 } else { TAPS / 2 - H };
+    let v_lead = TAPS / 2 - V;
+    let horizontal = &h_taps[first..first + if W == 4 { 4 } else { 2 * H }];
+    let first_four = <[i16; 4]>::try_from(&horizontal[..4]).unwrap();
+    let pack = |taps: [i16; 4]| i32::from_le_bytes(taps.map(|tap| ((tap >> 1) as i8) as u8));
+    let h0 = pack(first_four);
+    let h1 = if W == 4 {
+        0
+    } else if H == 3 {
+        pack([horizontal[4], horizontal[5], 0, 0])
+    } else {
+        pack(<[i16; 4]>::try_from(&horizontal[4..8]).unwrap())
+    };
+    let gather = _mm256_broadcastsi128_si256(core::arch::x86_64::_mm_setr_epi8(
+        0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4, 5, 3, 4, 5, 6,
+    ));
+    // SAFETY: the index table is a complete vector.
+    let pair = unsafe { _mm512_loadu_si512(narrow_pairs::<W>().as_ptr().cast()) };
+    let interleave = |prev, next| {
+        if W == 4 {
+            _mm512_castsi256_si512(_mm256_permutex2var_epi16(
+                _mm512_castsi512_si256(prev),
+                _mm512_castsi512_si256(pair),
+                _mm512_castsi512_si256(next),
+            ))
+        } else {
+            _mm512_permutex2var_epi16(prev, pair, next)
+        }
+    };
+    let v_taps = &v_taps[v_lead..v_lead + 2 * V];
+    let weights: [__m512i; V] = core::array::from_fn(|j| {
+        let lo = v_taps[2 * j] >> 1;
+        let hi = v_taps[2 * j + 1] >> 1;
+        _mm512_set1_epi32(i32::from(lo as u16) | (i32::from(hi) << 16))
+    });
+    let rows = |a, b| {
+        // SAFETY: each row covers the horizontal tap span. Calls below
+        // use rows from v_lead through v_lead + h + 2 * V - 2.
+        unsafe {
+            let lhs = window.at(v_lead + a, first);
+            let rhs = window.at(v_lead + b, first);
+            if W == 4 {
+                _mm512_castsi256_si512(horizontal_four_pair(
+                    lhs,
+                    rhs,
+                    gather,
+                    _mm256_set1_epi32(h0),
+                ))
+            } else {
+                horizontal_eight_pair::<H>(lhs, rhs, [_mm512_set1_epi32(h0), _mm512_set1_epi32(h1)])
+            }
+        }
+    };
+    let mut previous = rows(0, 0);
+    let mut pairs: [__m512i; V] = core::array::from_fn(|j| {
+        if j + 1 == V {
+            return _mm512_setzero_si512();
+        }
+        let next = rows(2 * j + 1, 2 * j + 2);
+        let result = interleave(previous, next);
+        previous = next;
+        result
+    });
+    let (round, shift) = if S::PREP {
+        (PREP_LAST_ROUND, PREP_LAST_SHIFT)
+    } else {
+        (R::LAST_ROUND, R::LAST_SHIFT)
+    };
+    let round = _mm512_set1_epi32(round);
+    let shift = _mm_cvtsi32_si128(shift);
+    for row in (0..h).step_by(2) {
+        let next = rows(row + 2 * V - 1, row + 2 * V);
+        pairs[V - 1] = interleave(previous, next);
+        let mut acc = round;
+        for j in 0..V {
+            // The horizontal sum is bounded by 255 * 120 before its
+            // divide by four, so the signed dword dot never saturates.
+            // This form keeps LLVM from splitting a dot into madd+add.
+            acc = if W == 4 {
+                _mm512_castsi256_si512(_mm256_dpwssds_epi32(
+                    _mm512_castsi512_si256(acc),
+                    _mm512_castsi512_si256(pairs[j]),
+                    _mm512_castsi512_si256(weights[j]),
+                ))
+            } else {
+                _mm512_dpwssds_epi32(acc, pairs[j], weights[j])
+            };
+        }
+        let words = if W == 4 {
+            let lanes = _mm256_sra_epi32(_mm512_castsi512_si256(acc), shift);
+            _mm256_packs_epi32(lanes, lanes)
+        } else {
+            // AV1's two-pass intermediate stays within i16, including
+            // the filters' negative lobes.
+            _mm512_cvtepi32_epi16(_mm512_sra_epi32(acc, shift))
+        };
+        // SAFETY: both rows are within the checked narrow output.
+        unsafe { out.two::<W>(row, words) };
+        pairs = core::array::from_fn(|j| pairs[(j + 1).min(V - 1)]);
+        previous = next;
+    }
+}
 
 impl WidePasses for Avx512Wide {
     #[inline(always)]

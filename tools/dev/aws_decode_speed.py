@@ -20,7 +20,8 @@ the same process's interleaved rounds. Each round's records leave the box as wri
   pipe-clean   decoder_speed.py one round on two streams;
   decoders     tools/dev/decoder_speed.py (our --nanocodec build against the in-process
                harnesses of FFmpeg, dav1d, libvpx, VVdeC, AVM and dav2d), --decoder-rounds
-               rounds, out/decoders-cpuN.json per core;
+               rounds, out/decoders-cpuN.json per core; each --also build of ours
+               is timed beside it in the same rounds;
   yardstick    tools/web/ffmpeg_wasm_yardstick.py (our browser module against
                ffmpeg.wasm), --yardstick-rounds rounds; then, with --compare-pkg, the
                same module encodes of each compared module interleaved with --pkg's;
@@ -134,6 +135,8 @@ def stage(stage_dir: Path, args, clip_sets: dict[str, tuple[str, ...]], tables: 
     bin_dir = stage_dir / "bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "nanocodec").symlink_to(args.nanocodec.resolve())
+    for name, binary in args.also:
+        (bin_dir / f"nanocodec-{name}").symlink_to(Path(binary).resolve())
     for name in HARNESSES + (TABLE_DECODERS if tables else ()):
         if (anchors / name).exists():
             (bin_dir / name).symlink_to((anchors / name).resolve())
@@ -179,7 +182,8 @@ def jobs(args, tables: bool) -> list[tuple[str, str]]:
     cpu = args.cpus[0]
     pin = f"taskset -c {cpu}"
     decoder = (f"python3 repo/tools/dev/decoder_speed.py {{rounds}} {{out}} --nanocodec bin/nanocodec "
-               f"--anchors bin --repeats {args.decoder_repeats} --streams {{streams}}")
+               f"--anchors bin --repeats {args.decoder_repeats} --streams {{streams}}"
+               + "".join(f" --also {name}=bin/nanocodec-{name}" for name, _ in args.also))
     # one process per core, each on its shard; the job fails when any of them does
     decoders = "{ " + " ".join(
         f"taskset -c {c} " + decoder.format(rounds=args.decoder_rounds, out=f"out/decoders-cpu{c}.json",
@@ -236,6 +240,8 @@ def main() -> None:
     parser.add_argument("--nanocodec", type=Path, required=True,
                         help="our CLI for --machine's architecture, timed in the decoder table")
     parser.add_argument("--plain", type=Path, help="our x86 plain CLI (the browser table jobs)")
+    parser.add_argument("--also", type=lambda s: tuple(s.split("=", 1)), action="append", default=[],
+                        metavar="NAME=BIN", help="another build of ours, timed beside --nanocodec as ours-NAME")
     parser.add_argument("--cpus", type=lambda s: [int(c) for c in s.split(",")], default=[1],
                         help="the timed cores (one physical core each), comma list")
     parser.add_argument("--pkg", type=Path, required=True, help="tools/web/build.sh output dir")

@@ -106,13 +106,14 @@ if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then
     python3 tools/ci/check_outlined_simd.py "$target_dir"/gate/nc-checkasm
 fi
 
-step "crate layering, integration-test modules, encode paths, AWS launchers"
+step "crate layering, integration-test modules, encode paths, AWS launchers, decoder register"
 python3 tools/ci/check_layering.py
 python3 tools/ci/check_test_modules.py
 python3 tools/ci/check_encode_paths.py
 python3 tools/ci/check_names.py
 python3 tools/ci/check_sealed_sets.py
 python3 tools/ci/check_aws_launchers.py
+python3 tools/ci/decoder_gaps.py
 
 # Runs in --quick too (land.sh), so browser API changes cannot land unchecked.
 # land.sh sets NC_BROWSER_TESTS=0 unless web/, nc-web or the kernels changed.

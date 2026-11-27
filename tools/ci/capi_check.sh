@@ -4,7 +4,10 @@
 # with the CLI's for the same input and settings (NV12 and I420 input, fixed
 # QP and CBR, every codec); then decode it with ffmpeg as a smoke test. Also
 # build and run examples/roundtrip.c (the usage site's encode and decode loop)
-# for every codec the C API has.
+# for every codec the C API has, and tests/panic_boundary.c: a panic inside
+# the library returns NC_ERROR_INTERNAL instead of aborting the caller. The
+# library is built as shipped, in the `capi` profile (it unwinds), plus the
+# `panic-probe` feature that exports the deliberate panic.
 #
 #   tools/ci/capi_check.sh        (uses $CARGO_TARGET_DIR or target/)
 
@@ -17,11 +20,12 @@ TARGET=${CARGO_TARGET_DIR:-$REPO/target}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/nanocodec-capi-check-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
-cargo build --release --quiet -p nanocodec-capi -p nanocodec-cli
-cc -std=c99 -Wall -Wextra -Werror -I crates/nc-capi/include crates/nc-capi/examples/encode.c \
-  "$TARGET/release/libnanocodec.a" -lpthread -ldl -lm -o "$WORK/encode"
-cc -std=c99 -Wall -Wextra -Werror -I crates/nc-capi/include crates/nc-capi/examples/roundtrip.c \
-  "$TARGET/release/libnanocodec.a" -lpthread -ldl -lm -o "$WORK/roundtrip"
+cargo build --profile capi --quiet -p nanocodec-capi --features panic-probe
+cargo build --release --quiet -p nanocodec-cli
+for program in examples/encode examples/roundtrip tests/panic_boundary; do
+  cc -std=c99 -Wall -Wextra -Werror -I crates/nc-capi/include "crates/nc-capi/$program.c" \
+    "$TARGET/capi/libnanocodec.a" -lpthread -ldl -lm -o "$WORK/$(basename "$program")"
+done
 
 W=202 H=98 FRAMES=10
 ffmpeg -v error -y -f lavfi -i "testsrc2=s=${W}x${H}:r=30,scroll=horizontal=0.01" \
@@ -80,8 +84,10 @@ for codec in h264 hevc av1 vp9; do
   if result=$("$WORK/roundtrip" "$codec"); then status=PASS; else status=FAIL; failures=$((failures + 1)); fi
   printf '%-5s roundtrip  %s  %s\n' "$codec" "$status" "$result"
 done
+if result=$("$WORK/panic_boundary"); then status=PASS; else status=FAIL; failures=$((failures + 1)); fi
+printf 'panic boundary  %s  %s\n' "$status" "$result"
 if ((failures)); then
   echo "capi check: $failures failure(s)"
   exit 1
 fi
-echo "capi check: the C API reproduces the CLI's streams; the round trip decodes"
+echo "capi check: the C API reproduces the CLI's streams; the round trip decodes; a panic returns an error"

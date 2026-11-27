@@ -78,6 +78,8 @@ def main() -> None:
     parser.add_argument("--anchors", type=Path, required=True, help="the directory holding the harnesses")
     parser.add_argument("--streams", type=Path, nargs="+", required=True)
     parser.add_argument("--repeats", type=int, default=3, help="timed passes per process")
+    parser.add_argument("--also", action="append", default=[], metavar="NAME=BIN",
+                        help="another build of ours, timed in the same rounds as `ours-NAME`")
     args = parser.parse_args()
     harnesses = {name: args.anchors / binary for name, binary in HARNESSES.items()}
     for name, harness in harnesses.items():
@@ -90,9 +92,10 @@ def main() -> None:
     jobs = []
     for stream in streams:
         codec = codec_of(stream.name)
-        jobs.append((stream.name, codec, "ours", [
-            str(args.nanocodec), "decode", "--codec", codec, "--input", str(stream),
-            "--bench", str(args.repeats)]))
+        for decoder, binary in [("ours", str(args.nanocodec)),
+                                *((f"ours-{n}", b) for n, b in (a.split("=", 1) for a in args.also))]:
+            jobs.append((stream.name, codec, decoder, [
+                binary, "decode", "--codec", codec, "--input", str(stream), "--bench", str(args.repeats)]))
         jobs += [(stream.name, codec, name, [str(harnesses[name]), "--repeat", str(args.repeats), str(stream)])
                  for name in REFERENCES[codec] if harnesses[name].exists()]
     results: dict[str, dict] = {}

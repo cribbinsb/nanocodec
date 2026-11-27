@@ -33,7 +33,7 @@ import json
 import math
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -960,6 +960,9 @@ class Part:
     #: only the families matching these patterns (empty: all), as ours and the zero line for
     #: a history point, whose common clip set must be the history days' own
     families: tuple[str, ...] = ()
+    #: never these clips: the dataset clips a tuning set used (`--exclude-clips`), so that the
+    #: report is the view without what ours was tuned on (procedure section 4, V3)
+    exclude: frozenset[str] = frozenset()
 
     def keeps(self, family: str) -> bool:
         if self.families and not any(fnmatch.fnmatchcase(family, f) for f in self.families):
@@ -971,7 +974,16 @@ class Part:
     def keeps_id(self, job_id: str) -> bool:
         """Whether the part takes this point (an id is family|clip|point)."""
         family, clip = job_id.split("|")[:2]
-        return self.keeps(family) and (not self.inputs or clip in self.inputs)
+        return (self.keeps(family) and (not self.inputs or clip in self.inputs)
+                and clip not in self.exclude)
+
+
+def tuned_on(path: Path) -> dict[str, str]:
+    """{clip: why} of an in-sample record (eval/clipset/tuned_on.json): every clip of every
+    tuning set it lists, with the set's name and use."""
+    record = json.loads(path.read_text())
+    return {clip["name"]: f"{name} ({entry['used']})"
+            for name, entry in record["sets"].items() for clip in entry["clips"]}
 
 
 def check_commands(part: Part, jobs: dict[str, dict]) -> None:
@@ -1031,13 +1043,22 @@ def part_points(part: Part, timing_series: str | None, mode: str | None,
     return {timing_series: points}, planned, quality_series
 
 
+def excluded_ids(parts: tuple[Part, ...], mode: str | None) -> set[str]:
+    """The planned ids the parts leave out by clip (`Part.exclude`)."""
+    return {j["id"] for p in parts for run in p.runs
+            for j in json.loads((run / "jobs.json").read_text())
+            if j["id"].split("|")[1] in p.exclude and (mode is None or j.get("mode") == mode)}
+
+
 def report(*runs: Path, timing_runs: tuple[Path, ...] = (), timing_series: str | None = None,
            mode: str | None = None, checks_only: bool = False,
-           parts: tuple[Part, ...] = ()) -> dict:
+           parts: tuple[Part, ...] = (), exclude: dict[str, str] | None = None) -> dict:
     """The report over one or more runs of the same dataset and mode (a later run may add
     points, such as the anchor's extra points, BP-3.4); each run is checked on its own. `parts`
     instead of `runs`: a mixed report, each family taken from the part that holds it."""
     parts = parts or (Part(tuple(runs), tuple(timing_runs)),)
+    exclude = exclude or {}
+    parts = tuple(replace(p, exclude=p.exclude | frozenset(exclude)) for p in parts)
     every_run = list(dict.fromkeys(r for p in parts for r in p.runs))
     manifests = [json.loads((run / "manifest.json").read_text()) for run in every_run]
     try:  # V25: one recorded build identity for every binary, quality and timing runs alike
@@ -1085,6 +1106,9 @@ def report(*runs: Path, timing_runs: tuple[Path, ...] = (), timing_series: str |
     structure = check_structure(merged)
     out = {"provenance": block, "encoder_failures": failures, "manifests": manifests,
            "untimed_points": list(UNTIMED_POINTS),
+           # the clips left out (in-sample for ours), those of the runs' plans only
+           "excluded_clips": {c: why for c, why in sorted(exclude.items())
+                              if any(c == j.split("|")[1] for j in excluded_ids(parts, mode))},
            "series": {}, "stream_structure": structure,
            "speed_provisional": bool(V6_FAILURES),
            "envelope": ENVELOPE, "envelope_dropped": DROPPED,
@@ -1182,6 +1206,9 @@ def main() -> int:
                     help="report only this mode's jobs (a run holding both, as the history's)")
     ap.add_argument("--no-envelope", action="store_true",
                     help="the BP-3.7 view, without the BP-3.9 monotone envelope")
+    ap.add_argument("--exclude-clips", type=Path,
+                    help="leave out the clips of this in-sample record (eval/clipset/tuned_on.json:"
+                         " the dataset clips a tuning set used), listed in the report")
     ap.add_argument("--speed-unchecked", action="store_true",
                     help="V6 failures label speed provisional instead of refusing")
     a = ap.parse_args()
@@ -1200,7 +1227,8 @@ def main() -> int:
                            tuple(p.get("inputs", [])), tuple(p.get("families", [])))
                       for p in json.loads(a.parts.read_text())) if a.parts else ()
         result = report(*a.runs, timing_runs=tuple(a.timing), timing_series=a.timing_series,
-                        mode=a.mode, parts=parts)
+                        mode=a.mode, parts=parts,
+                        exclude=tuned_on(a.exclude_clips) if a.exclude_clips else None)
     except ReportRefusal as why:
         print(f"refused: {why}", file=sys.stderr)
         return 1
@@ -1211,6 +1239,12 @@ def main() -> int:
               f"for quality and BD, left out of their family's speed):")
         for u in untimed:
             print(f"  {u['series']} {u['id']}: {u['reason']}")
+    excluded = result.get("excluded_clips", {})
+    if excluded:
+        print(f"EXCLUDED CLIPS ({len(excluded)}: in-sample for ours, a tuning set used them; "
+              f"every family leaves them):")
+        for clip, why in excluded.items():
+            print(f"  {clip}: {why}")
     print("\n".join(provenance.text(result["provenance"])))
     st = result.get("stream_structure", {})
     if st:  # V29-V31: read from the streams themselves

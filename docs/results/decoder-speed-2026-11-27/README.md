@@ -5,12 +5,18 @@ The results site's Decoders page (`tools/bench/pages/decoders.html`, data built 
 `../decoder-speed-2026-11-23/` (decode alone on both sides), now on the benchmark's two
 timing families and on the 0.7.0 release.
 
-- **Ours:** the `v0.7.0` tag (`ce89975ea`) built with `cargo build --release` in the
-  repository (fat LTO, one codegen unit, x86-64-v3 code generation on x86; no PGO, as
-  published on crates.io), on the build box: x86_64 natively, aarch64 cross-compiled. The
-  version line ends in `-dirty`: the build's only change from the tag is Cargo.lock's stale
-  `nc-checkasm` version (0.6.0 to 0.7.0; the tag's lockfile fails `--locked`). Browser: the
-  tag's `tools/web/build.sh` module, its relaxed-SIMD build.
+- **Ours (the page):** the 0.7.0 PGO release build, the binaries of the GitHub release
+  assets `nanocodec-0.7.0-{x86_64,aarch64}-linux.tar.gz` (commit `ce89975ea`,
+  `tools/dev/pgo_build.sh`; copies in `~/nanocodec-data/release/builds/ce89975e/`). Timed in
+  the same rounds, against the same reference runs: the plain release build of that commit
+  (`.../ce89975e/<arch>/plain/nanocodec`, no PGO, as crates.io builds it), as `ours-plain`.
+  These are the second session on each machine (`<machine>/decoders-cpu*.json`).
+- **First session (kept, not on the page):** `first-session-plain/<machine>/`: our own plain
+  `cargo build --release` of the tag in the repository (version line `-dirty`: the tag's
+  Cargo.lock had a stale `nc-checkasm` version, fixed on main in 3db6eec8d), with its own
+  reference runs. Its ratios match the second session's plain column within a few hundredths.
+- **Browser:** the first session's runs (`<machine>/yardstick.json`), the tag's
+  `tools/web/build.sh` module, its relaxed-SIMD build (WASM is never a PGO build).
 - **Machines:** AWS c8i.2xlarge (Intel Xeon 6975P-C, Granite Rapids; our decoders on their
   AVX-512 tier) and c8g.2xlarge (Graviton 4, Neoverse V2; NEON and SVE2), spot, eu-north-1
   (`tools/dev/aws_decode_speed.py --machine ... --cpus 1,2,3`). The streams were split over
@@ -30,25 +36,29 @@ timing families and on the 0.7.0 release.
   1280x720, 600 frames, the 1200 kbps rung), coded by our six encoders at Medium and by x264
   medium, x265 medium, libvpx VP9 rt 7, SVT-AV1 M10 and libaom rt 8 (from
   `~/nanocodec-data/bench/bp4-ours-{ours,refs}-c8g`). Numbers only: no stream is published.
-- **Files:** `<machine>/decoders-cpu{1,2,3}.json` (every pass), `<machine>/yardstick.json`,
+- **Files:** `<machine>/decoders-cpu{1,2,3}.json` (every pass, PGO and plain), `<machine>/yardstick.json`,
   the platform notes, `about.json` (the page's statements).
-- **Cost:** c8i 16.3 min, $0.02; c8g 21.0 min, $0.03 (spot); builds on the shared build box (15 min of one job slot).
+- **Cost:** first sessions c8i 16.3 min, $0.02, c8g 21.0 min, $0.03; PGO re-time c8i 14.4 min, $0.02, c8g 16.8 min, $0.02; one aborted launch (a bad --pkg path, terminated during upload) under $0.01; all spot. Builds on the shared build box (15 min of one job slot).
 
 ## Summary
 
-Decode time, ours ÷ reference, geometric mean over streams (all / our encoder's / other encoders' streams), and geometric mean Mpx/s.
+Decode time, ours ÷ reference, geometric mean over streams: the PGO release build (all / our encoder's / other encoders' streams), the plain release build timed in the same rounds, and both decoders' geometric mean Mpx/s (PGO).
 
-| format | reference | streams | c8i all | c8i ours / other | c8i Mpx/s ours / ref | c8g all | c8g ours / other | c8g Mpx/s ours / ref |
-|---|---|---|---|---|---|---|---|---|
-| H.264 | FFmpeg | 18 | 1.16 | 1.16 / 1.16 | 644 / 747 | 0.94 | 0.94 / 0.94 | 616 / 581 |
-| HEVC | FFmpeg | 23 | 0.83 | 0.80 / 0.84 | 613 / 506 | 0.87 | 0.81 / 0.90 | 527 / 456 |
-| VVC | FFmpeg | 9 | 0.45 | 0.45 / – | 346 / 156 | 0.33 | 0.33 / – | 307 / 100 |
-| VVC | VVdeC | 9 | 0.66 | 0.66 / – | 346 / 226 | 0.62 | 0.62 / – | 307 / 191 |
-| AV1 | dav1d | 26 | 1.23 | 1.18 / 1.26 | 411 / 507 | 1.02 | 0.97 / 1.04 | 330 / 337 |
-| VP9 | FFmpeg | 17 | 0.97 | 0.96 / 0.98 | 549 / 532 | 1.08 | 1.08 / 1.07 | 463 / 498 |
-| VP9 | libvpx | 17 | 1.09 | 1.07 / 1.11 | 549 / 599 | 1.07 | 1.06 / 1.07 | 463 / 494 |
-| AV2 | dav2d | 9 | 1.32 | 1.32 / – | 312 / 411 | 0.77 | 0.77 / – | 270 / 208 |
-| AV2 | AVM | 9 | 0.39 | 0.39 / – | 312 / 121 | 0.29 | 0.29 / – | 270 / 79 |
+| format | reference | streams | c8i PGO | c8i ours / other | c8i plain | c8i Mpx/s ours / ref | c8g PGO | c8g ours / other | c8g plain | c8g Mpx/s ours / ref |
+|---|---|---|---|---|---|---|---|---|---|---|
+| H.264 | FFmpeg | 18 | 1.23 | 1.24 / 1.23 | 1.16 | 599 / 739 | 0.99 | 1.00 / 0.99 | 0.95 | 585 / 580 |
+| HEVC | FFmpeg | 23 | 0.87 | 0.84 / 0.89 | 0.84 | 570 / 497 | 0.89 | 0.84 / 0.94 | 0.87 | 505 / 452 |
+| VVC | FFmpeg | 9 | 0.47 | 0.47 / – | 0.45 | 327 / 154 | 0.34 | 0.34 / – | 0.33 | 287 / 99 |
+| VVC | VVdeC | 9 | 0.67 | 0.67 / – | 0.65 | 327 / 219 | 0.65 | 0.65 / – | 0.62 | 287 / 187 |
+| AV1 | dav1d | 26 | 1.25 | 1.20 / 1.28 | 1.23 | 394 / 494 | 1.03 | 0.99 / 1.06 | 1.02 | 324 / 335 |
+| VP9 | FFmpeg | 17 | 0.98 | 0.97 / 0.99 | 0.96 | 534 / 522 | 1.11 | 1.11 / 1.11 | 1.08 | 448 / 497 |
+| VP9 | libvpx | 17 | 1.11 | 1.09 / 1.12 | 1.09 | 534 / 591 | 1.10 | 1.10 / 1.10 | 1.07 | 448 / 491 |
+| AV2 | dav2d | 9 | 1.39 | 1.39 / – | 1.32 | 291 / 403 | 0.82 | 0.82 / – | 0.77 | 253 / 207 |
+| AV2 | AVM | 9 | 0.41 | 0.41 / – | 0.39 | 291 / 119 | 0.31 | 0.31 / – | 0.29 | 253 / 78 |
+
+First session (own plain build, own reference runs), all streams: c8i H.264/FFmpeg 1.16, HEVC/FFmpeg 0.83, VVC/FFmpeg 0.45, VVC/VVdeC 0.66, AV1/dav1d 1.23, VP9/FFmpeg 0.97, VP9/libvpx 1.09, AV2/dav2d 1.32, AV2/AVM 0.39; c8g H.264/FFmpeg 0.94, HEVC/FFmpeg 0.87, VVC/FFmpeg 0.33, VVC/VVdeC 0.62, AV1/dav1d 1.02, VP9/FFmpeg 1.08, VP9/libvpx 1.07, AV2/dav2d 0.77, AV2/AVM 0.29.
+
+In these paired rounds the plain build took 1-6 % less time than the PGO build on every format and both machines (no cause investigated).
 
 Browser (node v22.21.1), ms per frame, median of 7: ours, ffmpeg.wasm, ours ÷ ffmpeg.wasm, ours browser ÷ ours native.
 

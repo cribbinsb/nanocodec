@@ -21,8 +21,8 @@ and other permissive licences. We are grateful to their authors. In particular:
   Netflix). Its real-time pipeline is the main guide for nanocodec's shared engine, and its `--rtc` presets
   are the bar we measure ourselves against. It is an excellent encoder.
 - **libaom**, **dav1d** and **libvpx** (AV1 and VP9), **openh264** (H.264), **kvazaar** (HEVC), **VVenC** and
-  **VVdeC** (VVC), **AVM** (AV2), **Thor**, **libyuv** and **libvmaf**, and the **JM**, **HM** and **VTM**
-  reference software.
+  **VVdeC** (VVC), **libavc** (H.264) and **libhevc** (HEVC), **AVM** and **dav2d** (AV2), **rav1e**, **Thor**,
+  **libyuv**, **libvmaf** and **wasm-bindgen**, and the **JM**, **HM** and **VTM** reference software.
 - The experts of **ITU-T VCEG, ISO/IEC MPEG and their joint teams (JVT, JCT-VC, JVET)** and of the **Alliance
   for Open Media**, who designed the formats: every coding tool nanocodec uses is theirs.
 - **Netflix** for VMAF; Wang, Simoncelli and Bovik for **MS-SSIM**; Bjøntegaard for the **BD-rate** method.
@@ -42,7 +42,10 @@ their owners and are used only to identify them.
 
 Our charts compare nanocodec with x264, x265 and FFmpeg, which are GPL or LGPL licensed. We run those programs
 as separate, unmodified external tools to produce comparison streams and to check that our streams decode
-correctly. **No GPL or LGPL source code is copied into, linked into or distributed with nanocodec.** The
+correctly. One benchmark tool, `tools/anchors/libavcodec_bench.c`, links FFmpeg's libraries in-process to time
+FFmpeg's own decoders; it is a development tool, not part of any nanocodec library, binary or the demo, and is
+not shipped. The browser decoder benchmark also runs ffmpeg.wasm, fetched at run time. **No GPL or LGPL source
+code is copied into, linked into or distributed with nanocodec's libraries, binaries or demo.** The
 project's rules forbid it, and contributions that include such code will be rejected.
 
 The demo's "pre-encoded" comparison streams are the output of those external encoders (the exact program,

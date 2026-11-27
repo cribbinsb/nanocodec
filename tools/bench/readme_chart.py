@@ -27,9 +27,9 @@ from preview import describe  # noqa: E402  (the results site's family labels)
 #: The timing machines as the reports name them: the chart title's machine and its axis.
 MACHINES = {
     "c8i": SpeedPlatform("", "", "encode speed, megapixels per CPU-second, half load (log scale; faster →)",
-                         "AWS c8i.metal-48xl (Intel Granite Rapids), half load"),
+                         "AWS c8i.metal-48xl (Intel Granite Rapids), half load", unit="Mpx/CPU-s"),
     "c8g": SpeedPlatform("", "", "encode speed, megapixels per CPU-second, half load (log scale; faster →)",
-                         "AWS c8g.metal-24xl (Graviton 4), half load"),
+                         "AWS c8g.metal-24xl (Graviton 4), half load", unit="Mpx/CPU-s"),
 }
 HEADING = "Bitrate vs encode speed"
 ZERO_LINE = "x264 medium (tune psnr)"

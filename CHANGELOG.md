@@ -18,8 +18,8 @@ Builds published on crates.io carry source only; no PGO.
 
 ### Results
 
-- Benchmark procedure BP-4 (CBR, low delay, one thread) measured development build 23c962d8b, shortly before
-  this release, on Arm (AWS Graviton 4) and x86 (Intel Granite Rapids):
+- Benchmark procedure BP-4 (CBR, low delay, one thread) measured development build 23c962d8b (187 commits
+  before the release; the 0.7.0 encoder changes after it, listed below, are not in these numbers), on Arm (AWS Graviton 4) and x86 (Intel Granite Rapids):
   https://cribbinsb.github.io/nanocodec/results/.
 
 ### Encoders

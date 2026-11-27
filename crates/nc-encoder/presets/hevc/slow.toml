@@ -37,6 +37,13 @@ analysis.zero_gate_cell = 64
 # The key-frame searches medium had (2026-11-22) stay on this rung, which
 # screened them in its own window; medium reverted them (chart-timing cost).
 planner.key_rd_split = 1
+# Key-frame intra RD shortlist (4 SATD-best modes priced by transform cost;
+# slower uses 6, veryslow 8). Pool draw 2026-11-27 (`--local`, `--strict-buffer`):
+# L1 (n=24) J -0.30% [-0.81, +0.26], 0 guards; formal L3 (n=98, 150 f) J -0.80%
+# [-1.02, -0.58] BETTER, 0 guards, periodic-key pulse 2 s -0.02 dB / 10 s -0.16 dB;
+# pinned ABBA CPU +2.54% mean (+2.80% median) -> -0.315% J / 1% CPU (~6.6x
+# above HEVC slow's Pareto slope).
+hevc.intra_rd_candidates = 4
 
 # G2 motion / sub-pel exit shifts: HEVC medium's (DEFAULT_PARAMS, 2026-11-22)
 # pinned off here, not screened on this rung.

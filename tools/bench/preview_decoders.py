@@ -24,6 +24,8 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_RECORD = REPO / "docs" / "results" / "decoder-speed-2026-11-27"
 DATA_NAME = "decoders.json"
 OURS = "ours"
+#: The plain (non-PGO) release build of ours, timed in the same rounds (a secondary figure).
+OURS_PLAIN = "ours-plain"
 #: The records' reference keys (decoder_speed.REFERENCES), as the page names them, in its order.
 REFERENCES = {
     "ffmpeg": "FFmpeg n8.0.1 (libavcodec)",
@@ -87,7 +89,8 @@ def mpx_per_s(row: dict, decoder: str) -> float:
 
 def summaries(rows: list[dict]) -> list[dict]:
     """Per format and reference: the geometric mean time ratio (ours / reference) over all
-    streams, our encoder's and other encoders', and both decoders' geometric mean Mpx/s."""
+    streams, our encoder's and other encoders', our plain build's over all streams where it
+    was timed, and both decoders' geometric mean Mpx/s."""
     out = []
     for codec in sorted({r["codec"] for r in rows}):
         for ref in REFERENCES:
@@ -97,7 +100,10 @@ def summaries(rows: list[dict]) -> list[dict]:
             ratio = lambda rs: geomean([r["decoders"][OURS]["ms"] / r["decoders"][ref]["ms"] for r in rs])  # noqa: E731
             own = [r for r in both if r["own"]]
             other = [r for r in both if not r["own"]]
+            plain = [r for r in both if OURS_PLAIN in r["decoders"]]
             out.append({"codec": codec, "reference": ref, "streams": len(both),
+                        "ratio_plain": geomean([r["decoders"][OURS_PLAIN]["ms"] / r["decoders"][ref]["ms"]
+                                                for r in plain]),
                         "own_streams": len(own), "other_streams": len(other),
                         "ratio": ratio(both), "ratio_own": ratio(own), "ratio_other": ratio(other),
                         "ours_mpx_s": geomean([mpx_per_s(r, OURS) for r in both]),

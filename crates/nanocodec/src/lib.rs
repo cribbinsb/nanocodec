@@ -1,5 +1,6 @@
-//! nanocodec: real-time, low-latency video encoders and matching decoders
-//! for H.264, HEVC, VVC, AV1, VP9 and AV2, built on one shared engine.
+//! nanocodec: low-latency (no B-frames, no lookahead) video encoders and
+//! matching decoders for H.264, HEVC, VVC, AV1, VP9 and AV2, built on one
+//! shared engine.
 //!
 //! This crate is the front door of the workspace. It contains no codec
 //! logic: it re-exports the shared engine ([`encoder`], with [`Encoder`] and

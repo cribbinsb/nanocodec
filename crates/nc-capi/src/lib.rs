@@ -15,7 +15,11 @@
 //!   carries a `SAFETY:` comment.
 //!
 //! Every function reports failure through an `nc_status` code and never
-//! unwinds across the ABI: panics are caught at the boundary.
+//! unwinds across the ABI: each one that runs codec code catches a panic at
+//! the boundary and returns `NC_ERROR_INTERNAL`. That needs unwinding, so the
+//! C library is built with the workspace's `capi` profile
+//! (`cargo build --profile capi -p nanocodec-capi`); under `--release`
+//! (`panic = "abort"`) a panic aborts the process instead.
 
 pub mod ffi;
 pub mod receiver;

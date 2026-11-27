@@ -10,23 +10,30 @@ cameras, drones and robots streaming at low bitrate to the cloud or straight int
 **[Try it in your browser](https://cribbinsb.github.io/nanocodec/)** · **[Interactive results](https://cribbinsb.github.io/nanocodec/results/)** ·
 [Docs](https://cribbinsb.github.io/nanocodec/docs/) · [FAQ](docs/FAQ.md)
 
-![Bitrate vs encode speed on the held-out clips, Arm (Graviton 4)](docs/images/bd-vs-speed-bp4.svg)
+![Bitrate vs encode speed on the held-out clips (audited once, never tuned on), Arm (Graviton 4)](docs/images/bd-vs-speed-bp4.svg)
 
 *Lower = fewer bits for the same picture quality; right = faster. Blue is nanocodec, orange the established
 encoders, all in the same low-delay, single-thread live setting, timed on Arm (AWS Graviton 4); x86 is on the
-results pages ([how we measured](https://cribbinsb.github.io/nanocodec/results/method.html)).*
+results pages ([how we measured](https://cribbinsb.github.io/nanocodec/results/method.html); the procedure's
+[known limitations](https://cribbinsb.github.io/nanocodec/results/#limitations) are listed beside the results). The held-out clips
+are "audited once, never tuned on"; rate compliance and each family's own-clip figure are on the results pages.
+Ours is development build 23c962d8b, measured before 0.7.0's last encoder changes.*
 
 ## Why it's interesting
 
 - **About a third fewer bits than x264.** At their `medium` presets our VVC, AV2, AV1 and HEVC encoders need
-  30–36 % fewer bits than x264 `medium` (tuned for PSNR) for the same quality on our held-out camera clips, at a similar or higher
+  30–36 % fewer bits than x264 `medium` (tuned for PSNR) for the same quality on our held-out camera clips
+  (audited once, never tuned on), at a similar or higher
   speed. ([All results](https://cribbinsb.github.io/nanocodec/results/))
 - **One engine, six formats.** Rate control, motion search and mode decisions are shared; each format adds
   only its own syntax. An improvement lands once and every format gets it.
-- **Plays in any browser.** All six decoders compile to WebAssembly, so a web page can play HEVC, VVC or AV2
-  with no plug-in and no help from the browser's own codecs.
-- **Standard streams, checked.** Every stream our encoders make is checked against two independent
-  decoders per format. Our decoders also decode other encoders' streams, but not yet every valid one:
+- **Plays in the browser.** All six decoders compile to WebAssembly (SIMD128: Chrome/Edge 91+, Firefox 89+,
+  Safari 16.4+; tested in Chromium only), so a page can play HEVC, VVC or AV2 without the browser's own codecs.
+- **Standard streams, checked.** After every landing, short test streams of every shipped preset of every
+  format (layers, holds, intra refresh, starved keys and the main coding tools) must decode bit-exactly in
+  two independent decoders per format and in ours. That checks the presets' coding paths, not every stream
+  an encoder can make; the benchmark itself does not cross-decode. Our decoders also decode other encoders'
+  streams, but not yet every valid one:
   - HEVC: 147/147 of the official ITU-T/ISO HEVC_v1 suite (Main, Main 10); no known gap in those profiles.
   - VVC: 226/283 of the official H.266.1 suite (all its Main 10 streams but two); reserved NAL types,
     layer ids above 0 and a VPS id above 0 are rejected, not yet ignored.
@@ -39,14 +46,18 @@ results pages ([how we measured](https://cribbinsb.github.io/nanocodec/results/m
     10-bit, monochrome, several tiles, reference scaling.
 
   Work on the gaps is under way; full list: [Conformance](docs/FAQ.md#conformance).
-- **Scalable video (SVC).** Spatial and temporal layers for AV1 and VP9, including the WebRTC modes
-  (L1T2, L1T3, L2T1, L3T1 and K-SVC), so one stream can serve viewers at different resolutions and bitrates.
-  Temporal layers, long-term references, intra refresh and key frames on request (H.264, HEVC, VVC, AV1)
-  keep live streams robust to loss.
+  Every known gap and its status (in progress, open, or proposed exception): [decoder compliance register](docs/decoder-compliance.md).
+- **Scalable video (SVC).** Spatial and temporal layers for AV1 and VP9 in the WebRTC-SVC modes (L1T1–L3T3
+  and K-SVC), so one stream can serve viewers at different resolutions and bitrates; every layer is checked in
+  the standard decoders. RTP packetisation is not included.
+- **Built for loss.** Temporal layers and key frames on request (all six formats), long-term references with
+  loss feedback (H.264, HEVC, AV1, VP9, AV2) and intra refresh (H.264, HEVC, VVC, AV1). Recovery from a lost
+  frame is tested with the standard decoders for H.264, HEVC, AV1 and AV2.
 - **Fast on x86, Arm and the web.** Hand-written SIMD for AVX2, AVX-512, NEON and WebAssembly.
 - **Built by AI.** About 4,000 commits and half a million lines of Rust written by AI coding agents
   (mostly Anthropic's Claude) in its first fifteen days, directed by one person ([how it's checked](docs/FAQ.md#ai-authorship)).
-- **Permissive licence.** BSD 3-Clause; safe Rust outside the SIMD kernels and the C API.
+- **Permissive licence.** BSD 3-Clause; safe Rust except the DSP crate (SIMD kernels, assembly and their dispatch) and the C
+  API; every other crate has `#![forbid(unsafe_code)]`.
 
 **Where we're behind:** our H.264 is close to x264 rather than ahead of it, and the fastest settings of
 SVT-AV1, libvpx and openh264 run faster than any of our `medium` presets. These are our own measurements, not
@@ -105,7 +116,8 @@ wrote the standards. Details: [THIRD_PARTY.md](THIRD_PARTY.md).
 
 BSD 3-Clause ([LICENSE](LICENSE)), a copyright licence only: **it grants no patent rights, and using nanocodec or
 its demo does not license you under any patent on H.264, HEVC, VVC, AV1, VP9 or AV2.** Experimental software,
-provided "as is". GPL and LGPL tools (x264, x265, FFmpeg) are only run as separate programs for comparison; none
-of their code is in nanocodec. Details: [Credits, licences, patents and disclaimers](docs/LEGAL.md).
+provided "as is". No GPL or LGPL code is in nanocodec's libraries, binaries or demo. Our
+benchmark tools run x264, x265 and FFmpeg as separate programs, or link FFmpeg's libraries to time its decoders
+(`tools/anchors/libavcodec_bench.c`, not shipped). Details: [Credits, licences, patents and disclaimers](docs/LEGAL.md).
 
 Contact: <bernandocribbenza@gmail.com>, or open an issue on GitHub.

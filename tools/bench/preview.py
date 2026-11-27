@@ -44,6 +44,8 @@ SHARED_ASSETS = ("chart.js", "common.js", "domain.js", "frontier.js", "site.css"
 ROOT_ASSETS = ("site-header.css", "icon.svg")
 DATA_NAME = "bp3.json"
 NOT_RECORDED = "not recorded"
+#: Procedure section 16's heading: the known limitations the pages list (D17).
+LIMITATIONS_HEADING = "## 16. Known limitations"
 
 CODEC_ORDER = ("h264", "hevc", "vvc", "av1", "vp9", "av2")
 CODEC_NAMES = {"h264": "H.264", "hevc": "HEVC", "vvc": "VVC", "av1": "AV1", "vp9": "VP9",
@@ -95,20 +97,51 @@ MACHINES = {
 
 @dataclass(frozen=True)
 class Dataset:
-    """A dataset of procedure section 4, as the pages name it."""
+    """A dataset of procedure section 4, as the pages name it: the report its headline
+    figures come from (`<report>-<machine>.json`), and a second report of the same runs shown
+    beside it (`beside`, with its label), such as the view with or without the clips a tuning
+    set used (eval/clipset/tuned_on.json)."""
     key: str
     name: str
     about: str
+    manifest: str
+    report: str
+    beside: str | None = None
+    beside_label: str = ""
 
 
 DATASETS = (
     Dataset("ours", "\"ours\" held-out set",
-            "the project's held-out clips (eval/clipset/heldout_2026-11-23b.manifest.json)"),
+            "the project's held-out clips (eval/clipset/heldout_2026-11-23b.manifest.json), "
+            "\"audited once, never tuned on\": 84 of the 97 clips were read once by the 0.6.0 "
+            "results audit and 13 are unseen (sealed log entries 1b-3); the set was also read for "
+            "quality by release measurements on 2026-11-23 to 11-26 while our encoder changed, "
+            "and no lever is recorded as chosen from it",
+            "eval/clipset/heldout_2026-11-23b.manifest.json", "ours"),
     Dataset("vc1k", "VC-1K", "phone video calls from Meta's VC-1K dataset (CC BY-NC 4.0); "
-                             "numbers only"),
+                             "numbers only; the headline leaves out the 9 clips our encoders "
+                             "were tuned on",
+            "eval/clipset/vc1k_2026-11-18.manifest.json", "vc1k-out-of-sample",
+            beside="vc1k", beside_label="with the 9 in-sample clips"),
     Dataset("aomctc", "AOM-CTC", "the AOM common test conditions' sequences "
-                                 "(eval/clipset/aomctc_bp3.manifest.json), A2 included"),
+                                 "(eval/clipset/aomctc_bp3.manifest.json), A2 included; its 12 "
+                                 "low-delay clips (A3-A5) are in-sample for ours",
+            "eval/clipset/aomctc_bp3.manifest.json", "aomctc",
+            beside="aomctc-out-of-sample", beside_label="without the 12 in-sample clips (A2 only)"),
 )
+#: The record of the dataset clips a tuning set used (procedure section 4, V3).
+TUNED_ON = REPO / "eval" / "clipset" / "tuned_on.json"
+#: Per view, what the reports cannot show about how it was timed (benchmark integrity audit
+#: 2026-11-27, finding 6): the c8i "ours" families were timed on two machines.
+TIMING_NOTES = {
+    "ours-c8i": "Our families were timed on one c8i machine (box0-154435-0) and the references "
+                "on another (box0-175911-0). The two machines' start check sets used different "
+                "clips, so their agreement was not measured (the check, V6, compares machines "
+                "only on shared check clips). Where two c8i or c8g machines could be compared, "
+                "they agreed within 0.1-1.2 % (c8g \"ours\" 0.1-0.5 % per check job; c8i "
+                "VC-1K 0.2-1.2 %, ours' machine the slower). Procedure D13 assumes machines of "
+                "one type agree.",
+}
 #: The report's headline set of a family averaged over the common set; a +drop row's headline
 #: is its own clips (section 9).
 COMMON_HEADLINE = "common set"
@@ -171,12 +204,16 @@ def finite(value):
 
 def family_values(row: dict, dropped: dict) -> dict:
     """One family's figures in a view: its headline BDs (the common set; a +drop row's own
-    clips) and the clips they average, its own anchor-valid clip count, speed, compliance."""
+    clips) and the clips they average, its BDs over its own anchor-valid clips (section 9: a
+    claim about ours quotes these, the common set beside), each window length's BDs, the
+    clips it lost and why, speed and compliance."""
     common = row["headline_set"] == COMMON_HEADLINE
     return finite({
         "bd": row["bd"] if common else row["bd_own_set"],
+        "bd_own": row["bd_own_set"], "bd_by_window": row.get("bd_by_window"),
         "clips": row["clips"] if common else row["own_clips"], "own_only": not common,
         "own_clips": row["own_clips"], "lost": len(row["missing"]),
+        "lost_clips": row["missing"],
         "speed": row["speed_mpix_per_cpu_s"], "speed_raw": row["speed_raw_mpix_per_cpu_s"],
         "speed_clips": row["speed_clips"],
         "compliance": row["compliance"], "exclusion_check": row["exclusion_check"],
@@ -239,7 +276,30 @@ def recorded(manifests: list[dict], key: str) -> list[dict]:
     return [e for i, e in enumerate(entries) if e not in entries[:i]]
 
 
-def view(dataset: Dataset, machine: str, path: Path) -> dict:
+def in_sample(dataset: Dataset, record: dict) -> list[dict]:
+    """The tuning sets of the in-sample record that used this dataset's clips."""
+    return [{"set": name, "used": entry["used"], "how": entry["how"],
+             "landed": entry["landed"], "clips": [c["name"] for c in entry["clips"]]}
+            for name, entry in record["sets"].items() if entry["dataset"] == dataset.manifest]
+
+
+def beside(dataset: Dataset, machine: str, reports: Path) -> dict | None:
+    """The report shown beside the headline: its clip counts and every family's BDs."""
+    path = report_path(reports, dataset.beside, machine) if dataset.beside else None
+    if path is None or not path.is_file():
+        return None
+    report = json.loads(path.read_text())
+    body = report["series"][machine]
+    return {"label": dataset.beside_label, "source": str(path),
+            "view_clips": body["view_clips"], "common_clips": body["common_clips"],
+            "excluded_clips": report.get("excluded_clips", {}),
+            "values": {f: finite({"bd": family_values(row, {})["bd"],
+                                  "clips": family_values(row, {})["clips"]})
+                       for f, row in body["families"].items() if row["clips"]}}
+
+
+def view(dataset: Dataset, machine: str, path: Path, reports: Path | None = None,
+         record: dict | None = None) -> dict:
     """One report (a dataset timed on one machine) as a page view."""
     report = json.loads(path.read_text())
     body = report["series"][machine]
@@ -266,6 +326,13 @@ def view(dataset: Dataset, machine: str, path: Path) -> dict:
         "envelope": report["envelope"], "speed_provisional": report["speed_provisional"],
         "refused_windows": report["refused_boxes"],
         "same_streams": twins, "source": str(path),
+        "distinct_clips": max((row["clips"] for f, row in families.items()
+                               if row["headline_set"] == COMMON_HEADLINE), default=0),
+        "untimed_points": report.get("untimed_points", []),
+        "excluded_clips": report.get("excluded_clips", {}),
+        "in_sample": in_sample(dataset, record or {"sets": {}}),
+        "beside": beside(dataset, machine, reports) if reports else None,
+        "timing_note": TIMING_NOTES.get(f"{dataset.key}-{machine}"),
         "values": {f: family_values(row, report["envelope_dropped"].get(f, {}))
                    for f, row in families.items() if f not in twins},
     }
@@ -276,14 +343,40 @@ def machines() -> dict:
     return {key: {"label": m.label, "name": m.name, "about": m.about} for key, m in MACHINES.items()}
 
 
+def limitations() -> list[dict]:
+    """Procedure section 16, the known limitations D17 requires beside every published BD, as
+    nested items ({text, items}) with the Markdown emphasis and code marks removed."""
+    lines = PROCEDURE_DOC.read_text().splitlines()
+    start = lines.index(LIMITATIONS_HEADING) + 1
+    end = next(i for i in range(start, len(lines)) if lines[i].startswith("## "))
+    items: list[dict] = []
+    for line in lines[start:end]:
+        if not line.strip():
+            continue
+        depth = (len(line) - len(line.lstrip())) // 2
+        text = re.sub(r"[*`]", "", line.strip())
+        if text.startswith("- "):
+            parent = items
+            for _ in range(depth):
+                parent = parent[-1]["items"]
+            parent.append({"text": text[2:], "items": []})
+        else:  # a continuation line of the last item
+            last = items[-1]
+            for _ in range(depth - 1):
+                last = last["items"][-1] if last["items"] else last
+            last["text"] += " " + text
+    return items
+
+
 def site_data(reports: Path) -> dict:
     """Every report found under `reports`, on every machine, and the ones not there yet."""
     views, missing = [], []
+    record = json.loads(TUNED_ON.read_text())
     for machine in MACHINES:
         for dataset in DATASETS:
-            path = report_path(reports, dataset.key, machine)
+            path = report_path(reports, dataset.report, machine)
             if path.is_file():
-                views.append(view(dataset, machine, path))
+                views.append(view(dataset, machine, path, reports, record))
             else:
                 missing.append({"id": f"{dataset.key}-{machine}", "dataset": dataset.key,
                                 "machine": machine, "path": str(path)})
@@ -294,7 +387,7 @@ def site_data(reports: Path) -> dict:
         "machines": machines(), "metrics": list(METRICS),
         "codecs": CODEC_NAMES, "codec_order": list(CODEC_ORDER),
         "points": {f: describe(f) for f in families},
-        "views": views, "missing": missing,
+        "views": views, "missing": missing, "limitations": limitations(),
     }
 
 
@@ -352,6 +445,10 @@ def main(argv: list[str] | None = None) -> None:
         print(f"history-{machine}: " + ", ".join(
             f"{key} {len(frames)} frames" for key, frames in h["series"].items())
               + f", common set {h['common_clips']} of {h['view_clips']} ({h['source']})")
+    for machine, w in history["withdrawn"].items():
+        print(f"history-{machine}: WITHDRAWN (V17 fails: {len(w['outside'])} of {w['families']} "
+              f"families more than {w['limit']} point off the median offset "
+              f"{w['median_offset']:+.2f}; same front: {w['front_same']})")
     for path in history["missing"]:
         print(f"history: no report found ({path})")
     for v in data["views"]:
