@@ -360,11 +360,11 @@ export class Panel {
       this.showRateMode();
     }
   }
-  /** The link to this codec and preset on the results overview (spatial layers: the SVC page). */
+  /** The link to this codec and preset on the results overview (spatial layers: the overview itself). */
   updateCompareLink() {
     const preset = this.preset.value;
     this.compareLink.href = +this.spatialLayers.value === 1 && CHART_PRESETS.includes(preset)
-      ? `results/${resultsQuery({ codec: this.codec.value, preset })}` : 'results/svc.html';
+      ? `results/${resultsQuery({ codec: this.codec.value, preset })}` : 'results/index.html';
   }
   /** Show the original source in this view (a demo link's view A). */
   showOriginal() { this.sourceChoice = SOURCES.original; this.showSource(); }

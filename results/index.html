@@ -28,7 +28,8 @@
   <div class="disclaimer results-banner" role="note"></div>
   <div class="disclaimer">
     <strong>Our own measurements.</strong> BD-J is the mean of the BD-rates on PSNR-YUV, VMAF v1 and MS-SSIM, each
-    against x264 medium at its default tune; no subjective test was run. Every BD averages every family over the
+    against x264 medium (--tune zerolatency) tuned for that metric: --tune psnr for PSNR-YUV, VMAF v1 and BD-J,
+    --tune ssim for MS-SSIM (the reports' zero line); no subjective test was run. Every BD averages every family over the
     same clips (the common set), except the +drop rows, each over its own clips; the table also gives each
     family's own anchor-valid clip count. The references are measured only at
     the low-delay, one-thread settings of the procedure; their other modes may do better.
