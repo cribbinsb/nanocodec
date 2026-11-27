@@ -26,10 +26,19 @@ results pages ([how we measured](https://cribbinsb.github.io/nanocodec/results/m
 - **Plays in any browser.** All six decoders compile to WebAssembly, so a web page can play HEVC, VVC or AV2
   with no plug-in and no help from the browser's own codecs.
 - **Standard streams, checked.** Every stream our encoders make is checked against two independent
-  decoders per format. Our decoders pass HEVC's official conformance suite (147/147) and VVC's 4:2:0
-  streams (226/226), and the libaom, libvpx and AV2 test vectors. They do not yet decode every valid
-  stream: some AV1 tools (quantizer matrices, loop-filter deltas, some segment features) and interlaced
-  H.264 are still missing; work on them is under way ([details](docs/FAQ.md#conformance)).
+  decoders per format. Our decoders also decode other encoders' streams, but not yet every valid one:
+  - HEVC: 147/147 of the official ITU-T/ISO HEVC_v1 suite (Main, Main 10); no known gap in those profiles.
+  - VVC: 226/283 of the official H.266.1 suite (all its Main 10 streams but two); reserved NAL types,
+    layer ids above 0 and a VPS id above 0 are rejected, not yet ignored.
+  - H.264: 110/190 of the official H.264.1 suite (its AVCv1, FRExt and High 10 sets); not yet interlaced
+    streams (field pictures, MBAFF) or pictures above level 5.2.
+  - AV1 and VP9: 242/242 libaom and 305/305 libvpx test vectors (encoder project vectors, not official
+    suites). AV1 not yet: quantizer matrices, loop-filter deltas, segment features other than the
+    quantizer, lossless segments in mixed frames, odd frame sizes, switch frames. VP9 not yet: profiles 1 and 3.
+  - AV2 (a draft): 30 streams (12 dav2d vectors, 18 we made with avmenc); no suite exists. Not yet:
+    10-bit, monochrome, several tiles, reference scaling.
+
+  Work on the gaps is under way; full list: [Conformance](docs/FAQ.md#conformance).
 - **Scalable video (SVC).** Spatial and temporal layers for AV1 and VP9, including the WebRTC modes
   (L1T2, L1T3, L2T1, L3T1 and K-SVC), so one stream can serve viewers at different resolutions and bitrates.
   Temporal layers, long-term references, intra refresh and key frames on request (H.264, HEVC, VVC, AV1)

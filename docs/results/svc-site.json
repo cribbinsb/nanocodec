@@ -1,0 +1,976 @@
+{
+ "date": "2026-11-27",
+ "build": "ce89975ea47060eb5cb63f432e53411545c90e09",
+ "clips": [
+  {
+   "name": "static_otw_homes390",
+   "class": "static",
+   "width": 1280,
+   "height": 720,
+   "fps": 30.0,
+   "scored": true
+  },
+  {
+   "name": "static_cam29",
+   "class": "static",
+   "width": 1280,
+   "height": 720,
+   "fps": 25.0,
+   "scored": false
+  },
+  {
+   "name": "static_london_bus",
+   "class": "static",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97,
+   "scored": true
+  },
+  {
+   "name": "pan_bdd_00cef86b",
+   "class": "pan",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97,
+   "scored": false
+  },
+  {
+   "name": "pan_jaad_0101",
+   "class": "pan",
+   "width": 1280,
+   "height": 720,
+   "fps": 30.0,
+   "scored": true
+  },
+  {
+   "name": "crowd_pp22_051",
+   "class": "crowd",
+   "width": 1280,
+   "height": 720,
+   "fps": 24.0,
+   "scored": true
+  },
+  {
+   "name": "crowd_mot20_06",
+   "class": "crowd",
+   "width": 1884,
+   "height": 720,
+   "fps": 25.0,
+   "scored": true
+  },
+  {
+   "name": "bodycam_airport",
+   "class": "bodycam",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97,
+   "scored": true
+  },
+  {
+   "name": "handheld_mot17_10",
+   "class": "bodycam",
+   "width": 1280,
+   "height": 720,
+   "fps": 30.0,
+   "scored": false
+  },
+  {
+   "name": "lowlight_pp22_049",
+   "class": "lowlight",
+   "width": 1280,
+   "height": 720,
+   "fps": 24.0,
+   "scored": true
+  },
+  {
+   "name": "lowlight_bdd_00ce95b0",
+   "class": "lowlight",
+   "width": 1280,
+   "height": 720,
+   "fps": 29.97,
+   "scored": true
+  }
+ ],
+ "frames": 150,
+ "ladder_kbps": [
+  300,
+  500,
+  800,
+  1200
+ ],
+ "buffer_ms": 1000,
+ "own_conditions": [
+  "--buffer-ms",
+  "1000",
+  "--peak-bitrate",
+  "{KBPS}",
+  "--strict-buffer",
+  "--param",
+  "rate.first_key_lookahead_off=1",
+  "--param",
+  "hold.enable=1",
+  "--param",
+  "hold.code_skip=1",
+  "--param",
+  "stream.encoder_info=0"
+ ],
+ "anchor": "x264-medium",
+ "timing": {
+  "c8i": {
+   "machine": "c8i.2xlarge",
+   "region": "eu-north-1",
+   "rounds": 3,
+   "date": "2026-11-27",
+   "timed_cpu": 2
+  },
+  "c8g": {
+   "machine": "c8g.2xlarge",
+   "region": "eu-north-1",
+   "rounds": 3,
+   "date": "2026-11-27",
+   "timed_cpu": 2
+  }
+ },
+ "rows": [
+  {
+   "family": "x264-medium",
+   "label": "x264 medium (720p)",
+   "ours": false,
+   "kind": "anchor",
+   "codec": "h264",
+   "mode": null,
+   "layers": 1,
+   "bd": {
+    "j": 0.0,
+    "psnr_yuv": 0.0,
+    "vmaf_v1": 0.0,
+    "ms_ssim": 0.0
+   },
+   "iqr": [
+    0.0,
+    0.0
+   ],
+   "clips": 8,
+   "base_360p": null,
+   "view_180p": null,
+   "receiver_720p": null,
+   "base_share": null,
+   "speed": {
+    "c8i": 81.88989328493557,
+    "c8g": 62.351531259613104
+   }
+  },
+  {
+   "family": "nanocodec-av1",
+   "label": "AV1 Medium 720p (single layer)",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": null,
+   "layers": 1,
+   "bd": {
+    "j": -52.51,
+    "psnr_yuv": -57.79,
+    "vmaf_v1": -59.1,
+    "ms_ssim": -40.62
+   },
+   "iqr": [
+    -60.38,
+    -35.7
+   ],
+   "clips": 8,
+   "base_360p": null,
+   "view_180p": null,
+   "receiver_720p": null,
+   "base_share": null,
+   "speed": {
+    "c8i": 118.35426853119587,
+    "c8g": 112.03043152398878
+   }
+  },
+  {
+   "family": "nanocodec-vp9",
+   "label": "VP9 Medium 720p (single layer)",
+   "ours": true,
+   "kind": "ours",
+   "codec": "vp9",
+   "mode": null,
+   "layers": 1,
+   "bd": {
+    "j": -46.7,
+    "psnr_yuv": -52.6,
+    "vmaf_v1": -51.27,
+    "ms_ssim": -36.22
+   },
+   "iqr": [
+    -60.44,
+    -29.74
+   ],
+   "clips": 8,
+   "base_360p": null,
+   "view_180p": null,
+   "receiver_720p": null,
+   "base_share": null,
+   "speed": {
+    "c8i": 103.82842857662946,
+    "c8g": 90.89965883001445
+   }
+  },
+  {
+   "family": "nanocodec-av1@l2-medium",
+   "label": "AV1 L2T1",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": -40.55,
+    "psnr_yuv": -46.6,
+    "vmaf_v1": -46.54,
+    "ms_ssim": -28.5
+   },
+   "iqr": [
+    -53.7,
+    -18.94
+   ],
+   "clips": 8,
+   "base_360p": 1.88,
+   "view_180p": null,
+   "receiver_720p": 30.42,
+   "base_share": 0.213,
+   "speed": {
+    "c8i": 88.28441998148995,
+    "c8g": 78.88751482170309
+   }
+  },
+  {
+   "family": "nanocodec-av1@l2-medium+L2T3",
+   "label": "AV1 L2T3",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L2T3",
+   "layers": 2,
+   "bd": {
+    "j": -37.09,
+    "psnr_yuv": -43.55,
+    "vmaf_v1": -43.66,
+    "ms_ssim": -24.05
+   },
+   "iqr": [
+    -49.12,
+    -16.21
+   ],
+   "clips": 8,
+   "base_360p": 4.37,
+   "view_180p": null,
+   "receiver_720p": 42.3,
+   "base_share": 0.219,
+   "speed": {
+    "c8i": 92.50363590965311,
+    "c8g": 82.3696699512417
+   }
+  },
+  {
+   "family": "nanocodec-av1@l2-medium+L2T1_KEY",
+   "label": "AV1 L2T1_KEY",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L2T1_KEY",
+   "layers": 2,
+   "bd": {
+    "j": -39.81,
+    "psnr_yuv": -45.86,
+    "vmaf_v1": -46.16,
+    "ms_ssim": -27.41
+   },
+   "iqr": [
+    -52.66,
+    -18.08
+   ],
+   "clips": 8,
+   "base_360p": 1.21,
+   "view_180p": null,
+   "receiver_720p": 10.56,
+   "base_share": 0.211,
+   "speed": {
+    "c8i": 100.20200573475418,
+    "c8g": 91.81451730779423
+   }
+  },
+  {
+   "family": "nanocodec-av1@l2-fast",
+   "label": "AV1 L2T1 Fast",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": -32.19,
+    "psnr_yuv": -33.94,
+    "vmaf_v1": -40.53,
+    "ms_ssim": -22.1
+   },
+   "iqr": [
+    -47.22,
+    -6.7
+   ],
+   "clips": 8,
+   "base_360p": 15.49,
+   "view_180p": null,
+   "receiver_720p": 56.65,
+   "base_share": 0.23,
+   "speed": {
+    "c8i": 149.26268773689839,
+    "c8g": 136.9260078885595
+   }
+  },
+  {
+   "family": "nanocodec-av1@l3-medium",
+   "label": "AV1 L3T1",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L3T1",
+   "layers": 3,
+   "bd": {
+    "j": -35.65,
+    "psnr_yuv": -41.74,
+    "vmaf_v1": -41.95,
+    "ms_ssim": -23.26
+   },
+   "iqr": [
+    -47.63,
+    -14.01
+   ],
+   "clips": 8,
+   "base_360p": 35.98,
+   "view_180p": 2.45,
+   "receiver_720p": 44.21,
+   "base_share": 0.272,
+   "speed": {
+    "c8i": 81.45131578870013,
+    "c8g": 71.5459978569966
+   }
+  },
+  {
+   "family": "nanocodec-av1@l3-medium+L3T3",
+   "label": "AV1 L3T3",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L3T3",
+   "layers": 3,
+   "bd": {
+    "j": -32.04,
+    "psnr_yuv": -38.16,
+    "vmaf_v1": -39.37,
+    "ms_ssim": -18.6
+   },
+   "iqr": [
+    -43.83,
+    -11.34
+   ],
+   "clips": 8,
+   "base_360p": 37.4,
+   "view_180p": 2.37,
+   "receiver_720p": 56.59,
+   "base_share": 0.284,
+   "speed": {
+    "c8i": 84.7303676538713,
+    "c8g": 73.43165219955856
+   }
+  },
+  {
+   "family": "nanocodec-av1@l3-medium+L3T1_KEY",
+   "label": "AV1 L3T1_KEY",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L3T1_KEY",
+   "layers": 3,
+   "bd": {
+    "j": -36.46,
+    "psnr_yuv": -42.19,
+    "vmaf_v1": -43.53,
+    "ms_ssim": -23.66
+   },
+   "iqr": [
+    -48.39,
+    -14.4
+   ],
+   "clips": 8,
+   "base_360p": 8.45,
+   "view_180p": 1.29,
+   "receiver_720p": 11.23,
+   "base_share": 0.195,
+   "speed": {
+    "c8i": 93.32193413138016,
+    "c8g": 83.88549388006567
+   }
+  },
+  {
+   "family": "nanocodec-av1@l3-fast",
+   "label": "AV1 L3T1 Fast",
+   "ours": true,
+   "kind": "ours",
+   "codec": "av1",
+   "mode": "L3T1",
+   "layers": 3,
+   "bd": {
+    "j": -27.53,
+    "psnr_yuv": -29.19,
+    "vmaf_v1": -36.0,
+    "ms_ssim": -17.41
+   },
+   "iqr": [
+    -43.33,
+    -1.94
+   ],
+   "clips": 8,
+   "base_360p": 51.96,
+   "view_180p": 13.37,
+   "receiver_720p": 68.66,
+   "base_share": 0.271,
+   "speed": {
+    "c8i": 139.75200134170913,
+    "c8g": 127.28484689164654
+   }
+  },
+  {
+   "family": "simulcast-av1",
+   "label": "AV1 simulcast 720p+360p",
+   "ours": true,
+   "kind": "simulcast",
+   "codec": "av1",
+   "mode": null,
+   "layers": 2,
+   "bd": {
+    "j": -32.07,
+    "psnr_yuv": -38.11,
+    "vmaf_v1": -39.63,
+    "ms_ssim": -18.46
+   },
+   "iqr": [
+    -44.22,
+    -8.89
+   ],
+   "clips": 8,
+   "base_360p": null,
+   "view_180p": null,
+   "receiver_720p": null,
+   "base_share": 0.351,
+   "speed": {
+    "c8i": null,
+    "c8g": null
+   }
+  },
+  {
+   "family": "simulcast3-av1",
+   "label": "AV1 simulcast 720p+360p+180p",
+   "ours": true,
+   "kind": "simulcast",
+   "codec": "av1",
+   "mode": null,
+   "layers": 3,
+   "bd": {
+    "j": -32.08,
+    "psnr_yuv": -38.17,
+    "vmaf_v1": -39.47,
+    "ms_ssim": -18.6
+   },
+   "iqr": [
+    -43.78,
+    -9.99
+   ],
+   "clips": 8,
+   "base_360p": null,
+   "view_180p": null,
+   "receiver_720p": null,
+   "base_share": 0.257,
+   "speed": {
+    "c8i": null,
+    "c8g": null
+   }
+  },
+  {
+   "family": "libaom-svc-cpu10-L2T1",
+   "label": "libaom SVC L2T1 rt 10",
+   "ours": false,
+   "kind": "aom",
+   "codec": "av1",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": -0.51,
+    "psnr_yuv": -9.07,
+    "vmaf_v1": -3.02,
+    "ms_ssim": 10.57
+   },
+   "iqr": [
+    -9.66,
+    17.63
+   ],
+   "clips": 8,
+   "base_360p": 60.58,
+   "view_180p": null,
+   "receiver_720p": 141.44,
+   "base_share": 0.324,
+   "speed": {
+    "c8i": 59.64019636933278,
+    "c8g": 53.909514761026855
+   }
+  },
+  {
+   "family": "libaom-svc-cpu8-L2T1",
+   "label": "libaom SVC L2T1 rt 8",
+   "ours": false,
+   "kind": "aom",
+   "codec": "av1",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": -1.53,
+    "psnr_yuv": -8.48,
+    "vmaf_v1": -3.62,
+    "ms_ssim": 7.52
+   },
+   "iqr": [
+    -9.47,
+    14.41
+   ],
+   "clips": 8,
+   "base_360p": 63.17,
+   "view_180p": null,
+   "receiver_720p": 145.72,
+   "base_share": 0.322,
+   "speed": {
+    "c8i": 45.72795039996399,
+    "c8g": 42.115762875878595
+   }
+  },
+  {
+   "family": "libaom-svc-cpu10-L2T3",
+   "label": "libaom SVC L2T3 rt 10",
+   "ours": false,
+   "kind": "aom",
+   "codec": "av1",
+   "mode": "L2T3",
+   "layers": 2,
+   "bd": {
+    "j": 23.91,
+    "psnr_yuv": 17.64,
+    "vmaf_v1": 19.93,
+    "ms_ssim": 34.16
+   },
+   "iqr": [
+    15.94,
+    36.39
+   ],
+   "clips": 8,
+   "base_360p": 84.3,
+   "view_180p": null,
+   "receiver_720p": 263.31,
+   "base_share": 0.312,
+   "speed": {
+    "c8i": 69.35349176702155,
+    "c8g": 59.943488666554245
+   }
+  },
+  {
+   "family": "libaom-svc-cpu10-L3T1",
+   "label": "libaom SVC L3T1 rt 10",
+   "ours": false,
+   "kind": "aom",
+   "codec": "av1",
+   "mode": "L3T1",
+   "layers": 3,
+   "bd": {
+    "j": 0.72,
+    "psnr_yuv": -8.11,
+    "vmaf_v1": -2.23,
+    "ms_ssim": 12.49
+   },
+   "iqr": [
+    -6.05,
+    20.65
+   ],
+   "clips": 8,
+   "base_360p": 87.64,
+   "view_180p": 42.41,
+   "receiver_720p": 145.55,
+   "base_share": 0.329,
+   "speed": {
+    "c8i": 52.995627056390965,
+    "c8g": 43.895447613734554
+   }
+  },
+  {
+   "family": "libaom-svc-cpu8-L3T1",
+   "label": "libaom SVC L3T1 rt 8",
+   "ours": false,
+   "kind": "aom",
+   "codec": "av1",
+   "mode": "L3T1",
+   "layers": 3,
+   "bd": {
+    "j": 4.81,
+    "psnr_yuv": -2.72,
+    "vmaf_v1": 3.31,
+    "ms_ssim": 13.83
+   },
+   "iqr": [
+    -5.16,
+    16.85
+   ],
+   "clips": 8,
+   "base_360p": 95.17,
+   "view_180p": 51.48,
+   "receiver_720p": 160.06,
+   "base_share": 0.327,
+   "speed": {
+    "c8i": 38.430046858633716,
+    "c8g": 33.14391667478276
+   }
+  },
+  {
+   "family": "libaom-svc-cpu10-L3T3",
+   "label": "libaom SVC L3T3 rt 10",
+   "ours": false,
+   "kind": "aom",
+   "codec": "av1",
+   "mode": "L3T3",
+   "layers": 3,
+   "bd": {
+    "j": 29.03,
+    "psnr_yuv": 21.21,
+    "vmaf_v1": 24.79,
+    "ms_ssim": 41.11
+   },
+   "iqr": [
+    22.03,
+    42.55
+   ],
+   "clips": 8,
+   "base_360p": 142.32,
+   "view_180p": 57.19,
+   "receiver_720p": 237.17,
+   "base_share": 0.327,
+   "speed": {
+    "c8i": 63.0988276159777,
+    "c8g": 51.465445000657006
+   }
+  },
+  {
+   "family": "nanocodec-vp9@l2-medium",
+   "label": "VP9 L2T1",
+   "ours": true,
+   "kind": "ours",
+   "codec": "vp9",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": -34.97,
+    "psnr_yuv": -41.03,
+    "vmaf_v1": -40.25,
+    "ms_ssim": -23.64
+   },
+   "iqr": [
+    -49.54,
+    -11.86
+   ],
+   "clips": 8,
+   "base_360p": 3.18,
+   "view_180p": null,
+   "receiver_720p": 26.85,
+   "base_share": 0.211,
+   "speed": {
+    "c8i": 82.76995301952059,
+    "c8g": 69.19419156240271
+   }
+  },
+  {
+   "family": "nanocodec-vp9@l2-medium+L2T3",
+   "label": "VP9 L2T3",
+   "ours": true,
+   "kind": "ours",
+   "codec": "vp9",
+   "mode": "L2T3",
+   "layers": 2,
+   "bd": {
+    "j": -31.84,
+    "psnr_yuv": -38.03,
+    "vmaf_v1": -38.01,
+    "ms_ssim": -19.5
+   },
+   "iqr": [
+    -45.97,
+    -10.89
+   ],
+   "clips": 8,
+   "base_360p": 6.1,
+   "view_180p": null,
+   "receiver_720p": 34.36,
+   "base_share": 0.216,
+   "speed": {
+    "c8i": 84.41482364560748,
+    "c8g": 70.68174328067438
+   }
+  },
+  {
+   "family": "nanocodec-vp9@l2-medium+L2T1_KEY",
+   "label": "VP9 L2T1_KEY",
+   "ours": true,
+   "kind": "ours",
+   "codec": "vp9",
+   "mode": "L2T1_KEY",
+   "layers": 2,
+   "bd": {
+    "j": -33.96,
+    "psnr_yuv": -40.03,
+    "vmaf_v1": -38.59,
+    "ms_ssim": -23.27
+   },
+   "iqr": [
+    -45.33,
+    -11.55
+   ],
+   "clips": 8,
+   "base_360p": 2.57,
+   "view_180p": null,
+   "receiver_720p": 6.29,
+   "base_share": 0.208,
+   "speed": {
+    "c8i": 93.87681313663258,
+    "c8g": 79.23281837369292
+   }
+  },
+  {
+   "family": "nanocodec-vp9@l2-fast",
+   "label": "VP9 L2T1 Fast",
+   "ours": true,
+   "kind": "ours",
+   "codec": "vp9",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": -26.72,
+    "psnr_yuv": -31.01,
+    "vmaf_v1": -32.76,
+    "ms_ssim": -16.37
+   },
+   "iqr": [
+    -45.33,
+    -5.07
+   ],
+   "clips": 8,
+   "base_360p": 14.33,
+   "view_180p": null,
+   "receiver_720p": 48.19,
+   "base_share": 0.231,
+   "speed": {
+    "c8i": 116.04781346941542,
+    "c8g": 106.4139203736565
+   }
+  },
+  {
+   "family": "nanocodec-vp9@l3-medium",
+   "label": "VP9 L3T1",
+   "ours": true,
+   "kind": "ours",
+   "codec": "vp9",
+   "mode": "L3T1",
+   "layers": 3,
+   "bd": {
+    "j": -29.95,
+    "psnr_yuv": -35.8,
+    "vmaf_v1": -36.69,
+    "ms_ssim": -17.35
+   },
+   "iqr": [
+    -45.38,
+    -6.21
+   ],
+   "clips": 8,
+   "base_360p": 30.16,
+   "view_180p": null,
+   "receiver_720p": 38.64,
+   "base_share": 0.269,
+   "speed": {
+    "c8i": 76.87149475341448,
+    "c8g": 64.30805512952473
+   }
+  },
+  {
+   "family": "nanocodec-vp9@l3-medium+L3T1_KEY",
+   "label": "VP9 L3T1_KEY",
+   "ours": true,
+   "kind": "ours",
+   "codec": "vp9",
+   "mode": "L3T1_KEY",
+   "layers": 3,
+   "bd": {
+    "j": -30.73,
+    "psnr_yuv": -36.82,
+    "vmaf_v1": -35.96,
+    "ms_ssim": -19.41
+   },
+   "iqr": [
+    -44.25,
+    -8.09
+   ],
+   "clips": 8,
+   "base_360p": 5.56,
+   "view_180p": null,
+   "receiver_720p": 7.07,
+   "base_share": 0.197,
+   "speed": {
+    "c8i": 90.17428217665879,
+    "c8g": 75.33669293883013
+   }
+  },
+  {
+   "family": "simulcast-vp9",
+   "label": "VP9 simulcast 720p+360p",
+   "ours": true,
+   "kind": "simulcast",
+   "codec": "vp9",
+   "mode": null,
+   "layers": 2,
+   "bd": {
+    "j": -23.69,
+    "psnr_yuv": -30.18,
+    "vmaf_v1": -28.71,
+    "ms_ssim": -12.2
+   },
+   "iqr": [
+    -36.82,
+    -0.81
+   ],
+   "clips": 8,
+   "base_360p": null,
+   "view_180p": null,
+   "receiver_720p": null,
+   "base_share": 0.347,
+   "speed": {
+    "c8i": null,
+    "c8g": null
+   }
+  },
+  {
+   "family": "libvpx-svc-cpu9-L2T1",
+   "label": "libvpx SVC L2T1 rt 9",
+   "ours": false,
+   "kind": "vpx",
+   "codec": "vp9",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": 30.24,
+    "psnr_yuv": 30.71,
+    "vmaf_v1": 19.89,
+    "ms_ssim": 40.12
+   },
+   "iqr": [
+    9.48,
+    44.31
+   ],
+   "clips": 8,
+   "base_360p": 87.04,
+   "view_180p": null,
+   "receiver_720p": 154.43,
+   "base_share": 0.309,
+   "speed": {
+    "c8i": 118.01013210379782,
+    "c8g": 106.38374444656975
+   }
+  },
+  {
+   "family": "libvpx-svc-cpu7-L2T1",
+   "label": "libvpx SVC L2T1 rt 7",
+   "ours": false,
+   "kind": "vpx",
+   "codec": "vp9",
+   "mode": "L2T1",
+   "layers": 2,
+   "bd": {
+    "j": 29.24,
+    "psnr_yuv": 27.56,
+    "vmaf_v1": 20.03,
+    "ms_ssim": 40.15
+   },
+   "iqr": [
+    18.06,
+    41.9
+   ],
+   "clips": 8,
+   "base_360p": 98.03,
+   "view_180p": null,
+   "receiver_720p": 151.78,
+   "base_share": 0.314,
+   "speed": {
+    "c8i": 72.723177722636,
+    "c8g": 62.71150333702147
+   }
+  },
+  {
+   "family": "libvpx-svc-cpu9-L2T1_KEY",
+   "label": "libvpx SVC L2T1_KEY rt 9",
+   "ours": false,
+   "kind": "vpx",
+   "codec": "vp9",
+   "mode": "L2T1_KEY",
+   "layers": 2,
+   "bd": {
+    "j": 31.87,
+    "psnr_yuv": 34.37,
+    "vmaf_v1": 20.67,
+    "ms_ssim": 40.58
+   },
+   "iqr": [
+    10.41,
+    48.55
+   ],
+   "clips": 8,
+   "base_360p": 87.54,
+   "view_180p": null,
+   "receiver_720p": 78.4,
+   "base_share": 0.308,
+   "speed": {
+    "c8i": 119.85614044928677,
+    "c8g": 109.31676426778965
+   }
+  },
+  {
+   "family": "libvpx-svc-cpu9-L3T1",
+   "label": "libvpx SVC L3T1 rt 9",
+   "ours": false,
+   "kind": "vpx",
+   "codec": "vp9",
+   "mode": "L3T1",
+   "layers": 3,
+   "bd": {
+    "j": 34.48,
+    "psnr_yuv": 32.95,
+    "vmaf_v1": 26.69,
+    "ms_ssim": 43.81
+   },
+   "iqr": [
+    11.81,
+    49.32
+   ],
+   "clips": 8,
+   "base_360p": 136.52,
+   "view_180p": null,
+   "receiver_720p": 154.09,
+   "base_share": 0.332,
+   "speed": {
+    "c8i": 110.6998802429897,
+    "c8g": 100.70929405253816
+   }
+  }
+ ]
+}

@@ -1,6 +1,6 @@
 [package]
 name = "nanocodec-av2"
-description = "nanocodec AV2 encoder backend for the shared engine (8-bit 4:2:0 subset), and a decoder for the streams it emits"
+description = "nanocodec AV2 encoder backend for the shared engine (8-bit 4:2:0 subset), and an AV2 decoder (8-bit, single tile; not yet 10-bit, monochrome, several tiles or reference scaling)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -423,7 +423,7 @@ and compared byte-for-byte with browser-WASM decoded I420 output.
 
 ## Initial VP9 and AV2
 
-Both use native Rust encoders and independent emitted-subset decoders, with
+Both use native Rust encoders and independent decoders (VP9 profiles 0 and 2; AV2 8-bit single-tile streams; gaps in docs/FAQ.md#conformance), with
 shared GOP planning and realtime bitrate controls. VP9 uses 8×8/16×16 inter
 blocks and TX8; AV2 uses 8×8 prediction blocks, TX8 luma, adaptive probabilities
 and residual skipping. Geometry must be divisible by eight, and one temporal

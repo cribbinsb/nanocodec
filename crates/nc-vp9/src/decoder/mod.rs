@@ -1,5 +1,6 @@
-//! VP9 profile 0 and 2 decoder (8-, 10- and 12-bit 4:2:0): every
-//! conforming stream, not only the subset nanocodec emits (VP9 bitstream
+//! VP9 profile 0 and 2 decoder (8-, 10- and 12-bit 4:2:0): other
+//! encoders' streams, not only the subset nanocodec emits; checked on the
+//! 305 libvpx test vectors, profiles 1 and 3 not decoded yet (VP9 bitstream
 //! specification v0.6; structure after libvpx `vp9_decoder.c`,
 //! `vp9_dx_iface.c` and `vp9_decodeframe.c`, BSD-3-Clause, see
 //! `THIRD_PARTY.md`).

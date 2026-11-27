@@ -59,6 +59,16 @@ bitstreams, deleted once read; results are cached per point by identity.
     python3 -m nceval.svc_chart measure --binary BIN [--points a,b] [--part I/N]
     python3 -m nceval.svc_chart time --binary BIN
     python3 -m nceval.svc_chart render --binary BIN [--out DIR]
+    python3 -m nceval.svc_chart plan --binary BIN [--points a,b] --out DIR
+    python3 -m nceval.svc_chart site --binary BIN [--points a,b] \
+        --timing c8i=SUMMARY --timing c8g=SUMMARY [--out DIR]
+
+Our points run the benchmark's CBR conditions (nceval.fairness.own_conditions: strict buffer,
+peak at the target), so the results site's SVC page matches the benchmark's rate rules. `plan`
+writes the timing plan (x264 medium's benchmark CBR command, our single-layer Default, every
+non-simulcast point, at the 600 kbps rung) that tools/dev/svc_timing.py times on a rented spot
+box per architecture; `site` writes the results site's record (SITE_FILE, rendered by
+tools/bench/pages/svc.html).
 """
 
 from __future__ import annotations
@@ -84,10 +94,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import buildinfo
 from .cachefile import entry_lock, read_json, write_atomic
+from . import buildinfo, fairness
 from .cbr import (BUFFER_MS, DEFAULT_INTRA_PERIOD, Family, Point, add_real_series,
-                  anchor_families, clip_targets, summarize)
+                  anchor_families, clip_targets, conditions_tag, own_mode, summarize)
 from .chart import (ANCHOR, JETSON, LOW_LADDER_KBPS, X86, ChartPoint, anchor_points,
                     binary_overrides, chart_point, fmt, low_rung_clips, pareto, per_clip_rows,
                     svg_chart)
@@ -392,6 +402,8 @@ class SvcBench:
             parts += [list(TEMPORAL_SHARES_L2T3)]
         if point.key_mode:  # full-SVC identities (and their caches) stay as they were
             parts.append("key")
+        if point.ours:  # our condition flags (the benchmark's, fairness.own_conditions)
+            parts.append(conditions_tag())
         return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
 
     def result_path(self, point: SvcPoint, clip: Clip, kbps: int) -> Path:
@@ -430,7 +442,7 @@ class SvcBench:
                 "--width", str(size[0]), "--height", str(size[1]), "--fps", f"{num}/{den}",
                 "--frames", str(self.frames), "--intra-period", str(self.intra),
                 "--temporal-layers", str(layers), "--output", str(out),
-                "--bitrate", str(kbps), "--buffer-ms", str(BUFFER_MS),
+                *own_mode(kbps, None, fairness.conditions()),
                 *self.own_params(preset, codec), *extra]
 
     def _ours(self, point: SvcPoint, clip: Clip, kbps: int, scratch: Path) -> dict:
@@ -1063,7 +1075,27 @@ def plan_argv(bench: SvcBench, point: SvcPoint, clip: Clip, kbps: int) -> list[s
             "--width", str(clip.width), "--height", str(clip.height), "--fps", f"{num}/{den}",
             "--frames", str(FRAMES), "--intra-period", str(bench.intra),
             *layers, "--output", "{OUTPUT}",
-            "--bitrate", str(kbps), "--buffer-ms", str(BUFFER_MS), *preset, *point.params]
+            *own_mode(kbps, None, fairness.conditions()), *preset, *point.params]
+
+
+def single_layer_argv(bench: SvcBench, codec: Codec, clip: Clip) -> list[str]:
+    """The codec's Default coding the clip alone at the timing rung, as the plan's points."""
+    num, den = fps_fraction(clip.fps)
+    kbps = clip_targets(clip, (TIMING_RUNG_KBPS,))[0]
+    return ["{BIN}/nanocodec", "encode", "--codec", codec.value, "--input", "{INPUT}",
+            "--width", str(clip.width), "--height", str(clip.height), "--fps", f"{num}/{den}",
+            "--frames", str(FRAMES), "--intra-period", str(bench.intra),
+            "--temporal-layers", "1", "--output", "{OUTPUT}",
+            *own_mode(kbps, None, fairness.conditions())]
+
+
+def anchor_argv(bench: SvcBench, clip: Clip) -> list[str]:
+    """x264 medium's benchmark CBR command (fairness record) at the timing rung."""
+    num, den = fps_fraction(clip.fps)
+    return fairness.command(ANCHOR, "cbr", {
+        "BIN": "{BIN}", "INPUT": "{INPUT}", "OUTPUT": "{OUTPUT}", "W": clip.width,
+        "H": clip.height, "FPS_NUM": num, "FPS_DEN": den, "N": FRAMES, "KEYINT": bench.intra,
+        "KBPS": clip_targets(clip, (TIMING_RUNG_KBPS,))[0]})
 
 
 def write_plan(args: argparse.Namespace) -> None:
@@ -1073,9 +1105,14 @@ def write_plan(args: argparse.Namespace) -> None:
     bench = SvcBench(paths, Path(args.binary).resolve(), Path(args.presets_dir),
                      point_binaries=binary_overrides(args.binary_for))
     clips = main_clips(paths)
-    main_plan = json.loads(PLAN.read_text())["points"]
-    plan = {"anchor": ANCHOR, "points": {ANCHOR: main_plan[ANCHOR]}}
-    for point in (p for p in POINTS if p.kind != "simulcast"):
+    plan = {"anchor": ANCHOR, "points": {ANCHOR: {clip: {
+        "argv": anchor_argv(bench, clips[clip]), "fps": clips[clip].fps}
+        for clip in TIMING_CLIPS}}}
+    for codec, name in SINGLE_LAYERS.items():  # the single-layer Default beside each codec
+        plan["points"][name] = {clip: {
+            "argv": single_layer_argv(bench, codec, clips[clip]), "fps": clips[clip].fps}
+            for clip in TIMING_CLIPS}
+    for point in (p for p in selected_points(args.points) if p.kind != "simulcast"):
         entry = plan["points"].setdefault(point.name, {})
         for name in TIMING_CLIPS:
             clip = clips[name]
@@ -1257,12 +1294,15 @@ def lowest_points(measured: Measured, clips: list[Clip], points: list[SvcPoint]
     rate) vs its codec's Default coded alone at that size (the three-way simulcast's
     lowest stream)."""
     curves = dict(measured.lowest)
+    anchored = set()  # codecs whose three-way simulcast was measured (the 180p anchor)
     for simulcast in (p for p in points if p.kind == "simulcast" and p.layers == 3):
+        anchored.add(simulcast.codec)
         for clip in clips:
             curves[(LOWEST_ANCHORS[simulcast.codec][0], clip.name)] = \
                 measured.lowest[(simulcast.name, clip.name)]
     return lower_points(curves, clips,
-                        [p for p in points if p.kind != "simulcast" and p.layers == 3],
+                        [p for p in points if p.kind != "simulcast" and p.layers == 3
+                         and p.codec in anchored],
                         lambda p: LOWEST_ANCHORS[p.codec][0])
 
 
@@ -1519,11 +1559,76 @@ def render(args: argparse.Namespace) -> None:
     print(f"wrote {out}/{OUTPUT_STEM}.{{md,csv{',svg' if timing else ''}}}")
 
 
+#: The results site's SVC data (`site`), written beside the other results records.
+SITE_FILE = "svc-site.json"
+
+
+def site_row(p: ChartPoint, point: SvcPoint | None, extra: dict) -> dict:
+    """One encoder's figures for the results site: BDs of operating point 0 at the total
+    rate, and (`extra`) its lower operating points, receiver view and speed."""
+    num = (lambda v: None if v is None else round(v, 2))
+    return {"family": p.family, "label": p.label, "ours": p.ours,
+            "kind": point.kind if point else ("ours" if p.ours else "anchor"),
+            "codec": (point.codec if point else Codec.AV1 if "av1" in p.family else
+                      Codec.VP9 if "vp9" in p.family else Codec.H264).value,
+            "mode": point.scalability if point and point.kind != "simulcast" else None,
+            "layers": point.layers if point else 1,
+            "bd": {"j": num(p.bd_j), "psnr_yuv": num(p.bd_psnr), "vmaf_v1": num(p.bd_vmaf),
+                   "ms_ssim": num(p.bd_msssim)},
+            "iqr": [num(v) for v in p.iqr] if p.iqr else None,
+            "clips": p.scored, **extra}
+
+
+def site(args: argparse.Namespace) -> None:
+    """The results site's SVC record (SITE_FILE in --out): every measured point's BDs (the
+    cached measurements of `measure`), its lower operating points and 720p receiver view,
+    and each timing machine's speed (tools/dev/svc_timing.py summaries)."""
+    clips = chart_clips()
+    points = selected_points(args.points)
+    measured = measure_all(args, clips, points)
+    runner = SimpleNamespace(unreachable={}, refused={})
+    chart, excluded = anchor_points(measured.full, measured.families, clips, runner,
+                                    measured.labels)
+    used = [c for c in clips if c.name not in {e.clip for e in excluded}]
+    lower = {"base_360p": base_points(measured, used, points),
+             "view_180p": lowest_points(measured, used, points),
+             "receiver_720p": top_view_points(measured, used, points)}
+    by_lower = {key: {p.family: p for p in rows} for key, rows in lower.items()}
+    timing = {machine: json.loads(Path(path).read_text())
+              for machine, path in (pair.split("=", 1) for pair in args.timing)}
+    by_name = {p.name: p for p in points}
+    names = {n for n, _, _ in measured.results}
+    rows = []
+    for p in chart:
+        point = by_name.get(p.family)
+        extra = {key: (round(table[p.family].bd_j, 2) if p.family in table
+                       and table[p.family].bd_j is not None else None)
+                 for key, table in by_lower.items()}
+        extra["base_share"] = (round(base_summary(measured, p.family)[0], 3)
+                               if p.family in names else None)
+        extra["speed"] = {machine: (record["points"].get(p.family) or {}).get("fps")
+                          for machine, record in timing.items()}
+        rows.append(site_row(p, point, extra))
+    record = {
+        "date": datetime.date.today().isoformat(),
+        "build": buildinfo.info_of(Path(args.binary).resolve())["commit"],
+        "clips": [{"name": c.name, "class": c.content_class, "width": c.width,
+                   "height": c.height, "fps": c.fps, "scored": c in used} for c in clips],
+        "frames": FRAMES, "ladder_kbps": list(LADDER_KBPS), "buffer_ms": BUFFER_MS,
+        "own_conditions": fairness.own_conditions("cbr"),
+        "anchor": ANCHOR, "timing": {m: {k: v for k, v in r.items() if k != "points"}
+                                     for m, r in timing.items()},
+        "rows": rows}
+    out = Path(args.out) / SITE_FILE
+    out.write_text(json.dumps(record, indent=1) + "\n")
+    print(f"wrote {out}: {len(rows)} rows, {len(used)} of {len(clips)} clips scored")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="nceval.svc_chart", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("measure", "time", "time-host", "plan", "merge-jetson", "render"):
+    for name in ("measure", "time", "time-host", "plan", "merge-jetson", "render", "site"):
         p = sub.add_parser(name)
         p.add_argument("--binary", required=True, help="our encoder (x86 release build)")
         p.add_argument("--presets-dir", default=str(PRESETS_DIR))
@@ -1544,12 +1649,17 @@ def main(argv: list[str] | None = None) -> None:
         if name == "time-host":
             p.add_argument("--cpus", default=",".join(map(str, HOST_CPUS)),
                            help="reserved timing CPUs, one run on each at a time")
+        if name in ("plan", "site"):
+            p.add_argument("--points", help="comma-separated SVC points (default: all)")
+        if name == "site":
+            p.add_argument("--timing", action="append", default=[], metavar="MACHINE=FILE",
+                           help="a timing machine's summary (tools/dev/svc_timing.py)")
         if name in ("time", "time-host"):
             p.add_argument("--points", help="comma-separated points to count (default: all; "
                            "the others keep their stored counts)")
     args = parser.parse_args(argv)
     {"measure": measure, "time": time_points, "time-host": time_host, "plan": write_plan,
-     "merge-jetson": merge_jetson, "render": render}[args.command](args)
+     "merge-jetson": merge_jetson, "render": render, "site": site}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -70,8 +70,6 @@ main() {
     data_root=${NC_DATA_ROOT:-$HOME/nanocodec-data}
     mode=${NC_LAND_MODE:-fast}
     target=${NC_LAND_TARGET:-main}
-    integration=${NC_INTEGRATION_TREE:-$(git worktree list --porcelain |
-        awk -v branch="branch refs/heads/$target" '/^worktree /{tree=substr($0, 10)} $0 == branch {print tree}')}
     logs=$data_root/run/land-logs
     export PATH="$HOME/.cargo/bin:$PATH"
     cargo_shim
@@ -83,6 +81,8 @@ main() {
     prune_logs
     if [[ "${1:-}" == --verify ]]; then verify_target "${2:-}"; exit $?; fi
     if [[ "${1:-}" == --run-part ]]; then run_part_here "${2:-}"; exit $?; fi
+    integration=${NC_INTEGRATION_TREE:-$(git worktree list --porcelain |
+        awk -v branch="branch refs/heads/$target" '/^worktree /{tree=substr($0, 10)} $0 == branch {print tree}')}
 
     local reverts=()  # `--reverts SHA`: a deliberate revert of SHA (repeatable)
     while [[ "${1:-}" == --reverts ]]; do

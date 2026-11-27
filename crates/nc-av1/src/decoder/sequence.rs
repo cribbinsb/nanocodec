@@ -1,5 +1,5 @@
-//! `sequence_header_obu()` (AV1 §5.5): every field of an 8-bit 4:2:0 Main
-//! profile sequence header, with operating point 0 selected (§7.18 leaves
+//! `sequence_header_obu()` (AV1 §5.5): every field of an 8- or 10-bit 4:2:0
+//! Main profile sequence header, with operating point 0 selected (§7.18 leaves
 //! the choice to the application; libaom and dav1d default to 0).
 use nc_common::colour::{matrix, read_code_points};
 use nc_common::decode::{BitReader, DecodeError};

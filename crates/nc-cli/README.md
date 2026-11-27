@@ -67,7 +67,7 @@ Optional `--min-qp` and `--max-qp` bound the codec's native quantizer. `--max-qp
 
 Omitting `--bitrate` preserves fixed-QP encoding and requires `--qp`; other rate-control options require bitrate mode.
 
-Decode with nanocodec's independent Rust subset decoders:
+Decode with nanocodec's independent Rust decoders:
 
 ```sh
 nanocodec decode --codec av1 --input video.ivf --output decoded.yuv
@@ -75,9 +75,9 @@ nanocodec decode --codec h264 --input video.264 --output decoded.yuv
 nanocodec decode --codec hevc --input video.hevc --output decoded.yuv
 ```
 
-AV1 input uses IVF; H.264 and HEVC use Annex-B elementary streams. These commands accept the subset produced by our encoder and browser demo, including key/P pictures and repeated parameter headers. They do not substitute external decoder libraries. Unsupported tools or malformed/truncated data return an error and a failing exit status.
+AV1 input uses IVF; H.264 and HEVC use Annex-B elementary streams. The decoders take other encoders' streams too, but none decodes every valid stream of its codec's main profiles yet (e.g. interlaced H.264, some AV1 tools, AV2 10-bit and tiles); the suites they pass and every gap are in [FAQ: Conformance](../../docs/FAQ.md#conformance). They do not call external decoder libraries. Unsupported tools or malformed/truncated data return an error and a failing exit status.
 
-Output is tightly packed 8-bit I420 (Y, U, V), with dimensions from the stream and no file header. IVF timestamps and any nonzero time base are accepted; decoding preserves packet order and does not resample frames. Input is streamed with a 64 MiB limit per compressed frame/NAL and at most 16 parameter NALs before a picture, so movie length does not determine memory use.
+Output is tightly packed I420 (Y, U, V; 8-bit samples, or 16-bit little-endian for pictures above 8 bits), with dimensions from the stream and no file header. IVF timestamps and any nonzero time base are accepted; decoding preserves packet order and does not resample frames. Input is streamed with a 64 MiB limit per compressed frame/NAL and at most 16 parameter NALs before a picture, so movie length does not determine memory use.
 
 For streams encoded with `--recon`, verify exact reconstruction:
 

@@ -26,7 +26,7 @@
 <main>
   <h1>C API</h1>
   <p class="lede">The <code>nc-capi</code> crate builds nanocodec as a C library: an encoder for H.264, HEVC, AV1
-    and VP9, and our decoders for the same four. Every function returns an <code>nc_status</code>; nothing is
+    and VP9, and our decoders for the same four (the VVC and AV2 decoders are not in the C API; what each decoder does not decode yet: <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md#conformance">FAQ: Conformance</a>). Every function returns an <code>nc_status</code>; nothing is
     thrown or aborted across the interface. An encoder or decoder is not thread-safe: use one per thread.</p>
 
   <h2 id="build">Build and link</h2>

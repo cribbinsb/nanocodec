@@ -49,13 +49,16 @@ ON_DEMAND = {
     "tools/dev/aws_timing.py": "the charts' timing sessions: a reclaimed spot box loses the "
                                "timing (four c8a.large spot sessions reclaimed within 6 min)",
     "tools/dev/fixedqp_timing.py": "timing, as aws_timing",
-    "tools/dev/aws_decode_speed.py": "decoder speed timing, as aws_timing",
+    "tools/dev/aws_decode_speed.py": "the c8a.large choice only (the 2026-11-23 records' box: "
+                                     "c8a has no eu-north-1 spot offering); c8i / c8g are spot",
     "eval/distill/box_run.py": "the study's approved fallback after spot was reclaimed twice "
                                "(2026-11-22)",
 }
 #: Every file that launches instances: its simulated-reclaim test (FILE::TEST), or why it
 #: has none (a reason, not a test path).
 RECLAIM_TESTS = {
+    "tools/dev/svc_timing.py": "eval/tests/test_svc_timing.py::"
+                               "test_a_restarted_box_runs_only_the_missing_encodes",
     "tools/dev/aws_measure.py": "eval/tests/test_aws_measure.py::"
                                 "test_a_retry_is_seeded_with_the_points_pulled_from_the_lost_box",
     "tools/dev/aws_warm.py": "eval/tests/test_aws_measure.py::"
@@ -72,7 +75,9 @@ RECLAIM_TESTS = {
                                "test_a_reclaim_mid_round_loses_only_the_points_in_flight",
     "tools/dev/aws_timing.py": "on demand only (timing): no spot reclaim",
     "tools/dev/fixedqp_timing.py": "on demand only (timing): no spot reclaim",
-    "tools/dev/aws_decode_speed.py": "on demand only (timing): no spot reclaim",
+    "tools/dev/aws_decode_speed.py": "one timing session of minutes per machine: Session.pulling "
+                                     "copies each finished round off, a lost box is rerun whole; "
+                                     "no simulated-reclaim test",
     "tools/dev/aws_ctc.py": "rare one-off lens run: download_new checkpoints and a rerun "
                             "resumes from them; no simulated-reclaim test yet",
     "tools/dev/aws_reference_builds.py": "one-off reference builds (unit: a whole build, rerun "

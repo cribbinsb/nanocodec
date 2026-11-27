@@ -8,7 +8,8 @@
 //! superblocks; directional, filter and chroma-from-luma intra; sub-pel
 //! motion; trellis-quantised residuals with adaptive CDFs; deblocking and
 //! CDEF, no loop restoration. The decoder (`decoder/`) aims at full Main
-//! profile conformance.
+//! profile conformance; the Main tools it does not decode yet are named in
+//! `decoder/subset.rs` (docs/FAQ.md#conformance).
 //!
 //! Module map:
 //! - `backend`: block and frame syntax, reconstruction — [`Av1Backend`];

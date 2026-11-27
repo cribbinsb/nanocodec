@@ -28,7 +28,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import preview_decoders
 import preview_history
+import preview_pages
 
 REPO = Path(__file__).resolve().parents[2]
 PAGES = REPO / "tools" / "bench" / "pages"
@@ -296,8 +298,10 @@ def site_data(reports: Path) -> dict:
     }
 
 
-def write_site(data: dict, out: Path, history: dict | None = None) -> Path:
-    """The preview directory: the pages, the shared site assets and the data."""
+def write_site(data: dict, out: Path, history: dict | None = None,
+               decoders: dict | None = None, pages: dict[str, dict | None] | None = None) -> Path:
+    """The preview directory: the pages, the shared site assets and the data (`pages`: the
+    other pages' data files by name, preview_pages; None: not measured yet)."""
     results = out / "results"
     (results / "data").mkdir(parents=True, exist_ok=True)
     for page in sorted(PAGES.iterdir()):
@@ -310,6 +314,12 @@ def write_site(data: dict, out: Path, history: dict | None = None) -> Path:
     if history is not None:
         (results / "data" / preview_history.DATA_NAME).write_text(
             json.dumps(history, indent=1, allow_nan=False) + "\n")
+    if decoders is not None:
+        (results / "data" / preview_decoders.DATA_NAME).write_text(
+            json.dumps(decoders, indent=1, allow_nan=False) + "\n")
+    for name, page in (pages or {}).items():
+        if page is not None:
+            (results / "data" / f"{name}.json").write_text(json.dumps(page, indent=1) + "\n")
     return results / "index.html"
 
 
@@ -322,6 +332,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="the history days' builds (days.json: day, commit, codecs)")
     ap.add_argument("--captions", type=Path, default=preview_history.DEFAULT_CAPTIONS,
                     help="the earlier history page's captions (their structural landings)")
+    ap.add_argument("--decoders", type=Path, default=preview_decoders.DEFAULT_RECORD,
+                    help="the decoder-speed record directory (the Decoders page)")
     a = ap.parse_args(argv)
     if not a.out.is_absolute():
         ap.error("--out takes an absolute path")
@@ -330,7 +342,12 @@ def main(argv: list[str] | None = None) -> None:
               "machines": machines(), "codecs": CODEC_NAMES}
     history = preview_history.history_data(a.reports, a.days, a.captions, list(MACHINES), shared,
                                            describe, finite, report_path)
-    index = write_site(data, a.out, history)
+    decoders = preview_decoders.decoder_data(a.decoders)
+    pages = {"clips": preview_pages.clips_data(a.reports, DATASETS, MACHINES, report_path),
+             "svc": preview_pages.svc_data(machines())}
+    index = write_site(data, a.out, history, decoders, pages)
+    print(f"decoders: {', '.join(decoders['machines']) or 'no machine'} measured"
+          + (f", missing {', '.join(decoders['missing'])}" if decoders["missing"] else ""))
     for machine, h in history["views"].items():
         print(f"history-{machine}: " + ", ".join(
             f"{key} {len(frames)} frames" for key, frames in h["series"].items())

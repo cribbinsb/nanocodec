@@ -9,9 +9,12 @@
 //! holds that codec's [`CodecBackend`], which [`Encoder`] drives (the one
 //! encode path of every codec), and its decoder.
 //!
-//! The streams are standard-conformant: 8-bit 4:2:0, forward prediction
-//! only, one slice or tile per frame. Each decoder handles the subset its
-//! encoder emits.
+//! The encoders' streams are standard-conformant: 8-bit 4:2:0, forward
+//! prediction only, one slice or tile per frame. The decoders also decode
+//! other encoders' streams of the main profiles, but none decodes every
+//! valid stream yet (e.g. interlaced H.264, some AV1 tools, AV2 10-bit and
+//! tiles); the suites passed and every gap are listed in the FAQ
+//! (`docs/FAQ.md#conformance`).
 //!
 //! # Example
 //!

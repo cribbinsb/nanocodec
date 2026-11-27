@@ -8,9 +8,10 @@
 //! quarter-sample motion — at a fixed QP per picture, with the deblocking
 //! filter and SAO (edge offset) on.
 //!
-//! [`Decoder`] is a complete HEVC Main / Main Still Picture profile decoder
-//! (any conforming 8-bit 4:2:0 stream, checked MD5-exact against HM on the
-//! 136 Main streams of the JCT-VC conformance set); it shares only normative
+//! [`Decoder`] decodes HEVC Main, Main 10 and Main Still Picture streams
+//! (MD5-exact against HM on all 147 streams of the official JCT-VC HEVC_v1
+//! conformance suite; no known gap in these profiles, range extensions are
+//! rejected; docs/FAQ.md#conformance); it shares only normative
 //! helpers with the encoder (intra prediction, scans, transforms, DSP kernels).
 //!
 //! Module map:

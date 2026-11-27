@@ -1,6 +1,8 @@
 # nanocodec-h264
 
-Nanocodec H.264 encoder backend for the shared engine, and an H.264 decoder for the streams it emits.
+Nanocodec H.264 encoder backend for the shared engine, and an H.264 decoder for progressive Constrained Baseline, Main, High and High 10 streams (not yet interlaced streams or sizes above level 5.2).
+
+What the decoder passes and every valid-stream feature it does not decode yet: [FAQ: Conformance](https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md#conformance).
 
 This is one of the crates of [nanocodec](https://github.com/cribbinsb/nanocodec).
 Most users want the [`nanocodec`](https://crates.io/crates/nanocodec) crate,

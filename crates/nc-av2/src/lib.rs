@@ -3,10 +3,11 @@
 //!
 //! The encoder codes 8-bit 4:2:0 I/P pictures: every intra mode except
 //! chroma-from-luma, lossless/lossy residuals, skip and quarter-pel motion.
-//! The decoder is becoming a general 8-bit 4:2:0 decoder for AV2 as AVM
-//! v1.0.0 implements it ([`general`]): its headers and output order are
-//! complete; its blocks still go through the subset our encoder writes
-//! (docs/handoff/av2.md).
+//! The decoder ([`general`]) decodes other encoders' single-tile 8-bit
+//! 4:2:0 AV2 streams as AVM v1.0.0 writes them (30 of 30 foreign streams;
+//! no AV2 conformance suite exists); 10-bit, monochrome, several tiles and
+//! reference scaling are not decoded yet (docs/handoff/av2.md,
+//! docs/FAQ.md#conformance).
 #![forbid(unsafe_code)]
 
 pub mod obu;

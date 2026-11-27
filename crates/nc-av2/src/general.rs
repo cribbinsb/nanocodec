@@ -1,7 +1,8 @@
-//! The general AV2 decoder: 8-bit 4:2:0 streams of any encoder that follows
-//! AVM v1.0.0, not only the subset our own encoder writes
-//! (its blocks still go through the subset tile decoder,
-//! [`crate::tile_decoder`], until the general block layer exists).
+//! The general AV2 decoder: single-tile 8-bit 4:2:0 streams of encoders
+//! that follow AVM v1.0.0, not only the subset our own encoder writes. Not
+//! decoded yet: 10-bit, monochrome, several tiles or tile groups, reference
+//! scaling, multi-frame headers, bridge frames and layers
+//! (docs/FAQ.md#conformance).
 //!
 //! Structure and arithmetic follow dav2d (commit 237229e; Copyright ©
 //! 2018-2026 `VideoLAN` and dav2d authors, BSD-2-Clause, see

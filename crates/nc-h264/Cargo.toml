@@ -1,6 +1,6 @@
 [package]
 name = "nanocodec-h264"
-description = "nanocodec H.264 encoder backend for the shared engine, and an H.264 decoder for the streams it emits"
+description = "nanocodec H.264 encoder backend for the shared engine, and an H.264 decoder for progressive Constrained Baseline, Main, High and High 10 streams (not yet interlaced streams or sizes above level 5.2)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

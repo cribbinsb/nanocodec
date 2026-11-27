@@ -315,7 +315,8 @@ export function drawRatioBars(container, rows, { axisLabel, missingText }) {
   rows.forEach((r, i) => {
     const y = BAR.top + i * (BAR.height + BAR.gap);
     const name = svg('text', { class: 'point-label', x: labelWidth - 8, y: y + BAR.height * 0.7, 'text-anchor': 'end' });
-    const fits = Math.floor((labelWidth - 16) / LABEL_CHAR_PX);
+    // the epsilon: (n x 6.4) / 6.4 can come out just under n, cutting the longest label
+    const fits = Math.floor((labelWidth - 16) / LABEL_CHAR_PX + 1e-9);
     name.textContent = r.label.length > fits ? `${r.label.slice(0, fits - 1)}…` : r.label;
     root.append(name);
     if (r.ratio === null) {

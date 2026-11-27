@@ -1,6 +1,6 @@
 [package]
 name = "nanocodec-vp9"
-description = "nanocodec VP9 Profile 0 encoder backend for the shared engine, and a VP9 Profile 0 decoder"
+description = "nanocodec VP9 Profile 0 encoder backend for the shared engine, and a VP9 profile 0 and 2 decoder (libvpx test vectors pass; not yet profiles 1 and 3)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

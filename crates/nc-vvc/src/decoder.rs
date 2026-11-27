@@ -1,4 +1,6 @@
-//! Bounded decoder for our H.266 intra/inter subset; rejects unsupported tools.
+//! The VVC decoder: general Main 10 streams, with a fast path for our own.
+//! Not yet per §7.4.2.2: reserved NAL unit types and `nuh_layer_id > 0`
+//! units are rejected instead of ignored (docs/FAQ.md#conformance).
 //!
 //! Canonical parameter sets retain the own-stream fast path (8-bit). General
 //! Main 10 streams (8 to 10 bits) use bounded syntax parsing and the general

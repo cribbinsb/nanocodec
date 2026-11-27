@@ -1,0 +1,279 @@
+{
+ "machine": "c8g.2xlarge",
+ "region": "eu-north-1",
+ "rounds": 3,
+ "date": "2026-11-27",
+ "timed_cpu": 2,
+ "points": {
+  "x264-medium": {
+   "ms_per_frame": 16.038098500521173,
+   "fps": 62.351531259613104,
+   "clips": {
+    "lowlight_city_night": 13.176346666666666,
+    "crowd_mot17_09": 15.907773333333331,
+    "bodycam_bc1": 19.68132
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1": {
+   "ms_per_frame": 8.926146105095317,
+   "fps": 112.03043152398878,
+   "clips": {
+    "lowlight_city_night": 9.256,
+    "crowd_mot17_09": 8.200053333333331,
+    "bodycam_bc1": 9.370266666666666
+   },
+   "rounds": 3
+  },
+  "nanocodec-vp9": {
+   "ms_per_frame": 11.001141399991777,
+   "fps": 90.89965883001445,
+   "clips": {
+    "lowlight_city_night": 12.03366,
+    "crowd_mot17_09": 10.13168,
+    "bodycam_bc1": 10.920286666666666
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l2-medium": {
+   "ms_per_frame": 12.676277130292936,
+   "fps": 78.88751482170309,
+   "clips": {
+    "lowlight_city_night": 12.942553333333333,
+    "crowd_mot17_09": 11.82642,
+    "bodycam_bc1": 13.307666666666668
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l2-medium+L2T3": {
+   "ms_per_frame": 12.140391003046933,
+   "fps": 82.3696699512417,
+   "clips": {
+    "lowlight_city_night": 12.306526666666665,
+    "crowd_mot17_09": 11.512866666666667,
+    "bodycam_bc1": 12.629293333333335
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l2-medium+L2T1_KEY": {
+   "ms_per_frame": 10.891523795171212,
+   "fps": 91.81451730779423,
+   "clips": {
+    "lowlight_city_night": 11.52366,
+    "crowd_mot17_09": 10.008573333333334,
+    "bodycam_bc1": 11.202200000000001
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l2-fast": {
+   "ms_per_frame": 7.3032144544363975,
+   "fps": 136.9260078885595,
+   "clips": {
+    "lowlight_city_night": 6.230973333333332,
+    "crowd_mot17_09": 7.1213066666666665,
+    "bodycam_bc1": 8.778626666666666
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l3-medium": {
+   "ms_per_frame": 13.977022194850948,
+   "fps": 71.5459978569966,
+   "clips": {
+    "lowlight_city_night": 13.912279999999997,
+    "crowd_mot17_09": 13.182820000000001,
+    "bodycam_bc1": 14.888033333333336
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l3-medium+L3T3": {
+   "ms_per_frame": 13.618105681217557,
+   "fps": 73.43165219955856,
+   "clips": {
+    "lowlight_city_night": 13.798313333333333,
+    "crowd_mot17_09": 12.813673333333332,
+    "bodycam_bc1": 14.284019999999998
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l3-medium+L3T1_KEY": {
+   "ms_per_frame": 11.921012248312428,
+   "fps": 83.88549388006567,
+   "clips": {
+    "lowlight_city_night": 12.592873333333333,
+    "crowd_mot17_09": 10.858513333333333,
+    "bodycam_bc1": 12.389226666666667
+   },
+   "rounds": 3
+  },
+  "nanocodec-av1@l3-fast": {
+   "ms_per_frame": 7.8563947274200485,
+   "fps": 127.28484689164654,
+   "clips": {
+    "lowlight_city_night": 6.704346666666667,
+    "crowd_mot17_09": 7.678820000000001,
+    "bodycam_bc1": 9.419306666666666
+   },
+   "rounds": 3
+  },
+  "libaom-svc-cpu10-L2T1": {
+   "ms_per_frame": 18.549601205517366,
+   "fps": 53.909514761026855,
+   "clips": {
+    "lowlight_city_night": 13.220913333333334,
+    "crowd_mot17_09": 18.529360000000004,
+    "bodycam_bc1": 26.054446666666667
+   },
+   "rounds": 3
+  },
+  "libaom-svc-cpu8-L2T1": {
+   "ms_per_frame": 23.744078979339598,
+   "fps": 42.115762875878595,
+   "clips": {
+    "lowlight_city_night": 16.51555333333333,
+    "crowd_mot17_09": 22.98946666666667,
+    "bodycam_bc1": 35.25688666666667
+   },
+   "rounds": 3
+  },
+  "libaom-svc-cpu10-L2T3": {
+   "ms_per_frame": 16.682379058093673,
+   "fps": 59.943488666554245,
+   "clips": {
+    "lowlight_city_night": 12.748573333333333,
+    "crowd_mot17_09": 15.821106666666667,
+    "bodycam_bc1": 23.01842
+   },
+   "rounds": 3
+  },
+  "libaom-svc-cpu10-L3T1": {
+   "ms_per_frame": 22.78140568925666,
+   "fps": 43.895447613734554,
+   "clips": {
+    "lowlight_city_night": 16.865153333333332,
+    "crowd_mot17_09": 22.88906666666667,
+    "bodycam_bc1": 30.62832
+   },
+   "rounds": 3
+  },
+  "libaom-svc-cpu8-L3T1": {
+   "ms_per_frame": 30.171449253034137,
+   "fps": 33.14391667478276,
+   "clips": {
+    "lowlight_city_night": 21.54764,
+    "crowd_mot17_09": 29.71585333333333,
+    "bodycam_bc1": 42.8944
+   },
+   "rounds": 3
+  },
+  "libaom-svc-cpu10-L3T3": {
+   "ms_per_frame": 19.430513036217487,
+   "fps": 51.465445000657006,
+   "clips": {
+    "lowlight_city_night": 15.621659999999999,
+    "crowd_mot17_09": 18.33866,
+    "bodycam_bc1": 25.60696
+   },
+   "rounds": 3
+  },
+  "nanocodec-vp9@l2-medium": {
+   "ms_per_frame": 14.45208011568646,
+   "fps": 69.19419156240271,
+   "clips": {
+    "lowlight_city_night": 13.982693333333334,
+    "crowd_mot17_09": 14.106833333333334,
+    "bodycam_bc1": 15.302793333333332
+   },
+   "rounds": 3
+  },
+  "nanocodec-vp9@l2-medium+L2T3": {
+   "ms_per_frame": 14.147924960325893,
+   "fps": 70.68174328067438,
+   "clips": {
+    "lowlight_city_night": 13.424419999999998,
+    "crowd_mot17_09": 13.567766666666667,
+    "bodycam_bc1": 15.547993333333334
+   },
+   "rounds": 3
+  },
+  "nanocodec-vp9@l2-medium+L2T1_KEY": {
+   "ms_per_frame": 12.621032805921523,
+   "fps": 79.23281837369292,
+   "clips": {
+    "lowlight_city_night": 12.737586666666667,
+    "crowd_mot17_09": 11.91284,
+    "bodycam_bc1": 13.248973333333332
+   },
+   "rounds": 3
+  },
+  "nanocodec-vp9@l2-fast": {
+   "ms_per_frame": 9.397266790741758,
+   "fps": 106.4139203736565,
+   "clips": {
+    "lowlight_city_night": 7.719286666666665,
+    "crowd_mot17_09": 10.0257,
+    "bodycam_bc1": 10.722913333333334
+   },
+   "rounds": 3
+  },
+  "nanocodec-vp9@l3-medium": {
+   "ms_per_frame": 15.55015150101913,
+   "fps": 64.30805512952473,
+   "clips": {
+    "lowlight_city_night": 15.121186666666668,
+    "crowd_mot17_09": 14.884719999999998,
+    "bodycam_bc1": 16.706186666666667
+   },
+   "rounds": 3
+  },
+  "nanocodec-vp9@l3-medium+L3T1_KEY": {
+   "ms_per_frame": 13.27374432020733,
+   "fps": 75.33669293883013,
+   "clips": {
+    "lowlight_city_night": 13.28558,
+    "crowd_mot17_09": 12.4133,
+    "bodycam_bc1": 14.181186666666669
+   },
+   "rounds": 3
+  },
+  "libvpx-svc-cpu9-L2T1": {
+   "ms_per_frame": 9.39993234118809,
+   "fps": 106.38374444656975,
+   "clips": {
+    "lowlight_city_night": 7.470033333333332,
+    "crowd_mot17_09": 9.25622,
+    "bodycam_bc1": 12.012073333333333
+   },
+   "rounds": 3
+  },
+  "libvpx-svc-cpu7-L2T1": {
+   "ms_per_frame": 15.946037756834546,
+   "fps": 62.71150333702147,
+   "clips": {
+    "lowlight_city_night": 12.004286666666667,
+    "crowd_mot17_09": 16.337146666666666,
+    "bodycam_bc1": 20.675013333333332
+   },
+   "rounds": 3
+  },
+  "libvpx-svc-cpu9-L2T1_KEY": {
+   "ms_per_frame": 9.147727767996619,
+   "fps": 109.31676426778965,
+   "clips": {
+    "lowlight_city_night": 7.224033333333335,
+    "crowd_mot17_09": 8.878179999999999,
+    "bodycam_bc1": 11.935373333333333
+   },
+   "rounds": 3
+  },
+  "libvpx-svc-cpu9-L3T1": {
+   "ms_per_frame": 9.929570149487084,
+   "fps": 100.70929405253816,
+   "clips": {
+    "lowlight_city_night": 7.967573333333333,
+    "crowd_mot17_09": 9.814493333333335,
+    "bodycam_bc1": 12.519799999999998
+   },
+   "rounds": 3
+  }
+ }
+}

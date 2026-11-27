@@ -370,7 +370,7 @@ pub const COMMANDS: &[CommandDoc] = &[
     },
     CommandDoc {
         name: "decode",
-        about: "Decode one of our streams with our own subset decoder.",
+        about: "Decode a stream, ours or another encoder's, within the supported profiles (gaps: docs/FAQ.md#conformance).",
         groups: &[GroupDoc {
             title: "Options",
             options: &[
@@ -383,7 +383,7 @@ pub const COMMANDS: &[CommandDoc] = &[
                 opt(
                     "--output",
                     "PATH",
-                    "Decoded frames as raw I420; `-` writes stdout.",
+                    "Decoded frames as raw I420 (16-bit little-endian above 8 bits); `-` writes stdout.",
                 ),
                 opt("--frame-md5", "FILE", "One MD5 line per shown frame."),
                 opt(

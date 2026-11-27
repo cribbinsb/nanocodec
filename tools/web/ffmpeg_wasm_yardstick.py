@@ -12,9 +12,10 @@ the best round counts.
   (the demo's BrowserEncoder.encode, H.264 Medium and Fast, HEVC Fast, VP9 Medium, AV1 Fast);
   ffmpeg.wasm's x264 at veryfast and ultrafast at real-time settings (zero latency, no
   B-frames, no lookahead).
-- Decode: the streams of WASM_DECODE_STREAMS (site.py), ours through bench-runner.mjs
-  (`decode_ms_per_frame`: the BrowserDecoder.decode calls; the display hand-off is reported
-  beside it), ffmpeg.wasm with `-f null -`.
+- Decode: DECODE_STREAMS, ours through bench-runner.mjs (`decode_ms_per_frame`: the
+  BrowserDecoder.decode calls; the display hand-off is reported beside it), ffmpeg.wasm with
+  `-f null -`; and OURS_ONLY_DECODE_STREAMS, the formats ffmpeg.wasm 0.12.10 has no decoder
+  for (AV1, VVC, AV2), ours alone (compared with our native decoder by the results page).
 
 Both compare the codec calls alone on both sides. Encode: ours the encode() calls
 (`encode_ms_per_frame`; loading the frame into a SourceFrame is reported beside it, in
@@ -63,7 +64,13 @@ X264_ENCODES = {"x264 veryfast": "veryfast", "x264 ultrafast": "ultrafast"}
 #: Decode streams (file names in --streams, as site.py WASM_DECODE_STREAMS keys them) by codec.
 DECODE_STREAMS = (("hevc", "axis720.cam.hevc"), ("h264", "crowd_mot17_09.600k.h264.264"),
                   ("hevc", "crowd_mot17_09.600k.hevc.hevc"), ("h264", "crowd1080.3000k.x264.h264.264"),
-                  ("hevc", "crowd1080.3000k.ours.hevc.hevc"), ("vp9", "crowd1080.3000k.vpxenc.vp9.ivf"))
+                  ("hevc", "crowd1080.3000k.ours.hevc.hevc"), ("vp9", "crowd1080.3000k.vpxenc.vp9.ivf"),
+                  ("vp9", "crowd_mot17_09.600k.vp9.ivf"))
+#: Streams of the formats @ffmpeg/core 0.12.10 cannot decode (FFmpeg 5.1.4 has no VVC or AV2
+#: decoder, and the package carries no AV1 decoder library): ours alone.
+OURS_ONLY_DECODE_STREAMS = (("av1", "crowd_mot17_09.600k.av1.ivf"), ("av1", "crowd1080.3000k.ours.av1.ivf"),
+                            ("vvc", "crowd_mot17_09.600k.vvc.vvc"), ("vvc", "crowd1080.3000k.ours.vvc.vvc"),
+                            ("av2", "crowd_mot17_09.600k.av2.ivf"), ("av2", "crowd1080.3000k.ours.av2.ivf"))
 
 
 def run_json(cmd: list[str], cpu: int) -> dict:
@@ -92,10 +99,12 @@ def jobs(args) -> list[tuple[str, list[str]]]:
     for name, preset in X264_ENCODES.items():
         out.append((f"enc|{name}|{FFMPEG}", ["node", str(FFMPEG_RUNNER), str(args.core), str(args.yuv),
                                               "out.264", "--", *x264_args(preset)]))
-    for codec, name in DECODE_STREAMS:
+    for codec, name in DECODE_STREAMS + OURS_ONLY_DECODE_STREAMS:
         stream = args.streams / name
         out.append((f"dec|{codec}|{name}|{OURS}", ["node", str(RUNNER), "decode", "--pkg", str(args.pkg),
                                                     "--codec", codec, "--stream", str(stream), "--repeat", "1"]))
+        if (codec, name) in OURS_ONLY_DECODE_STREAMS:
+            continue
         out.append((f"dec|{codec}|{name}|{FFMPEG}", ["node", str(FFMPEG_RUNNER), str(args.core), str(stream),
                                                       "none", "--", "-i", "in", "-f", "null", "-"]))
     return out
@@ -126,10 +135,11 @@ def main() -> None:
             if result.get("rc", 0) != 0:
                 sys.exit(f"{key}: ffmpeg.wasm exited {result['rc']}")
             record["res"].setdefault(key, []).append(result)
+        # after every round, so a lost box keeps the rounds it finished
+        record["load_end"] = list(os.getloadavg())
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(record, indent=1) + "\n")
         print(f"round {index + 1}/{args.rounds} done", file=sys.stderr, flush=True)
-    record["load_end"] = list(os.getloadavg())
-    args.json.parent.mkdir(parents=True, exist_ok=True)
-    args.json.write_text(json.dumps(record, indent=1) + "\n")
 
 
 if __name__ == "__main__":

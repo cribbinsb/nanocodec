@@ -801,7 +801,7 @@ and missing-neighbor rules from `vpx_dsp/intrapred.c` and `vp9_reconintra.c`.
 `filter.rs` reimplements the scalar filter4/filter8 taps, thresholds and
 fixed-8x8/TX4 edge scheduling from `vpx_dsp/loopfilter.c` and
 `vp9/common/vp9_loopfilter.c`.
-The full Profile 0 decoder in `crates/nc-vp9/src/decoder/` reimplements the
+The VP9 profile 0 and 2 decoder in `crates/nc-vp9/src/decoder/` reimplements the
 decoding processes of `vp9/decoder/vp9_decodeframe.c` (headers, tiles,
 partitions, prediction and reconstruction), `vp9_decodemv.c` (mode info and
 candidate vectors), `vp9_detokenize.c`, `vp9_decoder.c` / `vp9_dx_iface.c`

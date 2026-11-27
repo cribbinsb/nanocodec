@@ -1,6 +1,8 @@
 # nanocodec-vp9
 
-Nanocodec VP9 Profile 0 encoder backend for the shared engine, and a VP9 Profile 0 decoder.
+Nanocodec VP9 Profile 0 encoder backend for the shared engine, and a VP9 profile 0 and 2 decoder (libvpx test vectors pass; not yet profiles 1 and 3).
+
+What the decoder passes and every valid-stream feature it does not decode yet: [FAQ: Conformance](https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md#conformance).
 
 This is one of the crates of [nanocodec](https://github.com/cribbinsb/nanocodec).
 Most users want the [`nanocodec`](https://crates.io/crates/nanocodec) crate,

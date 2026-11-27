@@ -44,6 +44,8 @@ ALLOWED_NAMES = {
                                       "and stored grades only; the set's content is not read",
     "eval/tests/test_content_id.py": "reads only the manifest's names and source paths, to keep "
                                      "the PGO training set disjoint from the sealed set",
+    "tools/bench/preview_pages.py": "publish: the clips page lists the published benchmark's "
+                                    "clip names and manifest numbers only; it never reads a clip",
     THIS: "this check",
 }
 ALLOWED_ENV = {

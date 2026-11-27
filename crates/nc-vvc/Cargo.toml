@@ -1,6 +1,6 @@
 [package]
 name = "nanocodec-vvc"
-description = "nanocodec H.266/VVC encoder backend for the shared engine, and a VVC decoder for the streams it emits"
+description = "nanocodec H.266/VVC encoder backend for the shared engine, and a VVC Main 10 decoder (226 of 283 official H.266.1 conformance streams; not yet: reserved NAL types and layer ids above 0 are rejected, not ignored)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

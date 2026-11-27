@@ -32,7 +32,9 @@ github beside the charts):
            preset of every codec must code byte-identical streams in both
            (tools/dev/preset_identity.py: on the PC for x86, on the board for
            aarch64), and the Jetson's PGO-over-plain cycles on one preset are
-           recorded (tools/dev/jperf.py). WASM stays a plain build: PGO needs
+           recorded (tools/dev/jperf.py). `--aarch64-on aws` builds and checks
+           aarch64 on a rented Graviton spot box instead (for when the Jetson is
+           busy timing; no cycle count there). WASM stays a plain build: PGO needs
            the profile run on the target, and the browser module is built by
            tools/web/build.sh as before.
   charts   --real: in a worktree of the integration head, docs/results/release.json
@@ -279,6 +281,20 @@ CYCLES_CLIP = "crowd_mot17_09"
 CYCLES_ARGS = ("encode --codec av1 --preset fast --input {} --width 1280 --height 720 "
                "--fps 30 --frames 60 --bitrate 600 --buffer-ms 1000 --intra-period 300 "
                "--output /dev/null")
+#: The aarch64 build on a rented Graviton box (--aarch64-on aws, when the Jetson is busy:
+#: on 2026-11-27 it was timing BP-4): tools/dev/aws_choose.py build-arm's pick (cold
+#: release build 243 s, docs/aws-cost-guide.md section 5), spot; the budget covers the
+#: lifetime at the session's bid. The same build and identity check as on the board, with
+#: the PC's toolchain (aws_reference_builds.RUST_TOOLCHAIN) and the board's identity clip.
+AWS_ARM_TYPE, AWS_ARM_REGION = "c8g.8xlarge", "eu-north-1"
+AWS_ARM_BUDGET_USD, AWS_ARM_LIFETIME_MINUTES, AWS_ARM_ROOT_GB = 2.0, 90, 40
+AWS_ARM_JOBS = 32
+AWS_RUST_TOOLCHAIN = "1.99.1"
+AWS_PACKAGES = "build-essential zstd python3"
+AWS_BUILD_MINUTES, AWS_IDENTITY_MINUTES, AWS_STALL_MINUTES = 60, 30, 15
+AWS_IDENTITY_CLIP = DATA / "clips/quick" / f"{CYCLES_CLIP}.yuv"
+#: The box's working directory, under its home.
+AWS_REMOTE = "release-aarch64"
 ARCHES = ("x86_64", "aarch64")
 ARTIFACTS = ("nanocodec", "libnanocodec.a", "libnanocodec.so")
 CAPI_HEADER = "crates/nc-capi/include/nanocodec.h"
@@ -795,7 +811,9 @@ class Release:
 
     def build_aarch64(self) -> dict:
         """The aarch64 PGO and plain builds on the Jetson (cached), the identity check
-        and the PGO-over-plain cycle count there."""
+        and the PGO-over-plain cycle count there; or on a rented box (--aarch64-on aws)."""
+        if self.args.aarch64_on == "aws":
+            return self.build_aarch64_aws()
         out = self.builds("aarch64")
         remote = f"{JETSON_ROOT}/{self.build_key}"
         host = jetson_host()
@@ -858,24 +876,105 @@ class Release:
                 and out.parent.name.endswith("-pipeclean") == self.pipe_clean)
 
     def jetson_sources(self, remote: str) -> None:
-        """The release commit's build inputs unpacked on the board (git archive), with
-        the release tools of this checkout and the evaluation library they import (the
-        release commit may predate them: 2026-11-21's dry run on an older base shipped
-        today's preset_identity.py beside the base's nceval, without nceval.tempdirs)."""
-        sources = [p for p in JETSON_SOURCES if not p.startswith(LAUNCH_TREE_SOURCES)
-                   and subprocess.run(["git", "-C", str(REPO), "cat-file", "-e",
-                                       f"{self.commit}:{p}"], capture_output=True).returncode == 0]
-        archive = self.root / "aarch64-sources.tar"
-        run(["git", "archive", "--format=tar", "-o", str(archive), self.commit, *sources])
-        with tarfile.open(archive, mode="a") as tar:
-            for tool in (p for p in JETSON_SOURCES if p.startswith(LAUNCH_TREE_SOURCES)):
-                tar.add(REPO / tool, arcname=tool,
-                        filter=lambda info: None if "__pycache__" in info.name else info)
+        """The release commit's build inputs unpacked on the board (sources_archive)."""
+        archive = self.sources_archive(self.root / "aarch64-sources.tar")
         with archive.open("rb") as stream:
             subprocess.run(["ssh", "-o", "BatchMode=yes", jetson_host(),
                             f"mkdir -p ~/{remote}/src && tar -x -C ~/{remote}/src"],
                            stdin=stream, check=True)
         archive.unlink()
+
+    def sources_archive(self, archive: Path) -> Path:
+        """The release commit's aarch64 build inputs as a tar (git archive), with the
+        release tools of this checkout and the evaluation library they import (the
+        release commit may predate them: 2026-11-21's dry run on an older base shipped
+        today's preset_identity.py beside the base's nceval, without nceval.tempdirs)."""
+        sources = [p for p in JETSON_SOURCES if not p.startswith(LAUNCH_TREE_SOURCES)
+                   and subprocess.run(["git", "-C", str(REPO), "cat-file", "-e",
+                                       f"{self.commit}:{p}"], capture_output=True).returncode == 0]
+        run(["git", "archive", "--format=tar", "-o", str(archive), self.commit, *sources])
+        with tarfile.open(archive, mode="a") as tar:
+            for tool in (p for p in JETSON_SOURCES if p.startswith(LAUNCH_TREE_SOURCES)):
+                tar.add(REPO / tool, arcname=tool,
+                        filter=lambda info: None if "__pycache__" in info.name else info)
+        return archive
+
+    def build_aarch64_aws(self) -> dict:
+        """--aarch64-on aws: the aarch64 PGO and plain builds and their identity check on
+        one rented Graviton spot box (aws_session: terminated on every exit), the board's
+        commands with its clip; cached like the board's builds, with the identity log
+        beside them. A reclaim fails the stage; the resume redoes the box's work."""
+        out = self.builds("aarch64")
+        identity_log = out / "identity-aws.log"
+        began = time.monotonic()
+        if not (self.cached_aarch64(out) and identity_log.is_file()):
+            self.run_on_graviton(out, identity_log)
+        build_minutes = (time.monotonic() - began) / 60
+        shutil.copy2(identity_log, self.log("identity-aarch64"))
+        identity = identity_log.read_text().strip().splitlines()[-1]
+        if not re.fullmatch(r"\d+/\d+ streams identical", identity):
+            sys.exit(f"aarch64 identity: {identity}")
+        return {"build_minutes": round(build_minutes, 1), "identity": identity,
+                "built_on": f"{AWS_ARM_TYPE} spot ({AWS_ARM_REGION})",
+                "cycles": "not measured (rented box, not the Jetson)",
+                "sha256": {a: sha256(out / a) for a in ARTIFACTS}}
+
+    def run_on_graviton(self, out: Path, identity_log: Path) -> None:
+        sys.path.insert(0, str(REPO / "tools/dev"))
+        from aws_session import Session, SessionSpec
+        stage = self.root / "aws-aarch64-stage"
+        if stage.exists():
+            shutil.rmtree(stage)
+        (stage / "clips").mkdir(parents=True)
+        self.sources_archive(stage / "src.tar")
+        for clip in TRAINING_CLIPS:
+            (stage / "clips" / f"{clip}.yuv.zst").symlink_to(TRAIN_ZST_DIR / f"{clip}.yuv.zst")
+        run(["zstd", "-q", "-T0", "-f", str(AWS_IDENTITY_CLIP), "-o",
+             str(stage / f"{AWS_IDENTITY_CLIP.name}.zst")])
+        home = f"/home/ubuntu/{AWS_REMOTE}"
+        train = TRAIN_DIR.relative_to(Path.home())
+        unpack = " && ".join(f"zstd -d -q -f clips/{c}.yuv.zst -o ~/{train}/{c}.yuv"
+                             for c in TRAINING_CLIPS)
+        cargo = "~/.cargo/bin/cargo"
+        build = (
+            f"cd {home} && sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update && "
+            f"sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y {AWS_PACKAGES} "
+            f">/dev/null && curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- -y -q "
+            f"--profile minimal --default-toolchain {AWS_RUST_TOOLCHAIN} -c llvm-tools && "
+            f"mkdir -p src out/pgo out/plain identity-clips ~/{train} && tar -C src -xf src.tar && "
+            f"{unpack} && zstd -d -q -f {AWS_IDENTITY_CLIP.name}.zst -o "
+            f"identity-clips/{AWS_IDENTITY_CLIP.name} && cd src && "
+            f"env JOBS={AWS_ARM_JOBS} NC_BUILD_COMMIT={self.commit} {self.training_env()} "
+            f"bash tools/dev/pgo_build.sh . {home}/target/pgo {home}/out/pgo/nanocodec && "
+            f"env NC_BUILD_COMMIT={self.commit} {cargo} build -q --release -j{AWS_ARM_JOBS} "
+            f"--bin nanocodec --target-dir {home}/target/plain && "
+            f"cp {home}/target/plain/release/nanocodec {home}/out/plain/nanocodec && "
+            f"{home}/out/pgo/nanocodec --version")
+        identity = (f"cd {home}/src && python3 tools/dev/preset_identity.py "
+                    f"{home}/out/plain/nanocodec {home}/out/pgo/nanocodec "
+                    f"--clip-dir {home}/identity-clips --jobs {AWS_ARM_JOBS} --local")
+        spec = SessionSpec(region=AWS_ARM_REGION, instance_type=AWS_ARM_TYPE, arch="arm64",
+                           purpose=f"release {self.version} aarch64 PGO",
+                           lifetime_minutes=AWS_ARM_LIFETIME_MINUTES,
+                           budget_usd=AWS_ARM_BUDGET_USD, root_gb=AWS_ARM_ROOT_GB)
+        fetched = self.root / "fetch-aarch64"
+        try:
+            with Session(spec) as session:
+                session.upload(stage, home)
+                session.run_detached(build, f"{home}/build.log", AWS_BUILD_MINUTES,
+                                     stall_minutes=AWS_STALL_MINUTES)
+                session.run_detached(identity, f"{home}/identity.log", AWS_IDENTITY_MINUTES,
+                                     stall_minutes=AWS_STALL_MINUTES)
+                session.ssh(f"cp {home}/build.log {home}/identity.log {home}/out/")
+                session.download(f"{home}/out", fetched)
+        finally:
+            shutil.rmtree(stage)
+        self.collect(fetched / "pgo", fetched / "plain", out)
+        shutil.copy2(fetched / "build.log", self.log("pgo-aarch64"))
+        shutil.copy2(fetched / "identity.log", identity_log)
+        shutil.rmtree(fetched)
+        # the box's last line: the PGO CLI's --version (it cannot run here)
+        self.check_version(self.log("pgo-aarch64").read_text().strip().splitlines()[-1])
 
     def jetson_cycles(self, remote: str) -> str:
         """PGO over plain on the Jetson's timing core (jperf: min of rounds, one preset)."""
@@ -893,6 +992,8 @@ class Release:
         target = CHART_BUILDS / self.binary_short
         target.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self.builds("x86_64") / "nanocodec", target / PGO_TIMED_BINARY)
+        if self.args.aarch64_on == "aws":
+            return  # the board has no copy of the aarch64 build to place
         jetson(f"mkdir -p ~/{JETSON_CHART_BUILDS}/{self.binary_short} && cp ~/{JETSON_ROOT}/{self.build_key}"
                f"/pgo/nanocodec ~/{JETSON_CHART_BUILDS}/{self.binary_short}/{JETSON_PGO_BINARY}")
 
@@ -1656,8 +1757,8 @@ def chain_minutes() -> dict[str, float]:
 def build_notes(version: str) -> str:
     return (f"Binaries: the `nanocodec` command-line tool and the C API (`libnanocodec.a`, "
             f"`libnanocodec.so`, `include/nanocodec.h`) for x86_64 and aarch64 Linux, "
-            f"profile-guided (PGO) release builds of {version}, the builds the results site's "
-            f"speed figures come from. crates.io carries the same version as source; a "
+            f"profile-guided (PGO) release builds of {version}, trained on public clips. "
+            f"crates.io carries the same version as source; a "
             f"cargo build of it is a plain release build. SHA256SUMS lists the files' hashes.")
 
 
@@ -1710,6 +1811,9 @@ def main() -> None:
     parser.add_argument("--no-chain-retry", action="store_true",
                         help="a failed chart command is not retried (default: once, after "
                              f"{CHAIN_RETRY_WAIT_S} s)")
+    parser.add_argument("--aarch64-on", choices=("jetson", "aws"), default="jetson",
+                        help="where the aarch64 PGO build and its identity check run "
+                             f"(aws: a {AWS_ARM_TYPE} spot box, for when the Jetson is busy)")
     parser.add_argument("--yes-publish", action="store_true",
                         help="with --real: upload to crates.io and GitHub (owner's word only)")
     args = parser.parse_args()

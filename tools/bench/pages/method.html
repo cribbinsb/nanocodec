@@ -17,7 +17,10 @@
     <a href="./">Overview</a>
     <a href="codecs.html">By codec</a>
     <a href="history.html">History</a>
-    <a href="compliance.html">Rate compliance</a>
+    <a href="compliance.html">Rate control</a>
+    <a href="svc.html">SVC</a>
+    <a href="clips.html">Clips</a>
+    <a href="decoders.html">Decoders</a>
     <a href="method.html" aria-current="page">Method</a>
   </nav>
   <div class="machine-picker"></div>
@@ -33,7 +36,7 @@
     <li>Speed on other machines (Jetson, Zen, Graviton), the browser build and hardware encoders: these reports time one machine.</li>
     <li>Frames per second: the reports give megapixels per CPU-second over each dataset's own clip sizes.</li>
     <li>XPSNR, luma-only PSNR, the AOM CTC weighted PSNR and the per-rate-regime BD-J: not in the reports.</li>
-    <li>The Fixed QP standards lens (HM, VTM, the three fixed-QP columns), spatial scalability, history, yardsticks, decoder speed, buffer use and the cost of rate control: not measured by these reports.</li>
+    <li>The Fixed QP standards lens (HM, VTM, the three fixed-QP columns), yardsticks and the cost of rate control against fixed QP: not measured by these reports. Buffer use is on the Rate control page (from these reports); spatial scalability is measured separately (the SVC page states its own conditions).</li>
     <li>Per-clip tables, per-class means and AOM-CTC's separate A2 table: the report JSON carries set means only.</li>
     <li>Command lines per encoder, tool versions and the demo links: the reports carry binaries' hashes; the commands are in the procedure document.</li>
     <li>Our re-coded share (CBR): not in the report JSON.</li>

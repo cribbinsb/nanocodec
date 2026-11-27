@@ -135,8 +135,8 @@ Spot unless the use says on demand (and the check's registry states why).
 
 | Type | Use |
 |---|---|
-| c8i.2xlarge | benchmark timing (BP-3.10), CPU A/B graniterapids |
-| c8g.2xlarge | benchmark timing (second family), CPU A/B graviton4 |
+| c8i.2xlarge | benchmark timing (BP-3.10), CPU A/B graniterapids, decoder speed (aws_decode_speed) |
+| c8g.2xlarge | benchmark timing (second family), CPU A/B graviton4, decoder speed (aws_decode_speed) |
 | c8g.medium, c8g.large | CPU A/B graviton4medium; the charts' Graviton timing (c8g.large) |
 | c8g.4xlarge, c8g.8xlarge, c8g.12xlarge, c8g.16xlarge | packed encodes and scoring on Graviton4 (aws_measure, aws_warm, fleet score), native aarch64 builds |
 | c7i.4xlarge, c7i.8xlarge, c7i.12xlarge, c7i.16xlarge, c7i.24xlarge | packed x86 encodes and scoring, build box, pipe-cleaners |

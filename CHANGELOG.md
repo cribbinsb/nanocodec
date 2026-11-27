@@ -2,6 +2,18 @@
 
 ## 0.7.0 (2026-11-27)
 
+### Corrections
+
+- Earlier entries (0.6.0) called the AV1 and VP9 streams "official streams". They are the libaom and libvpx
+  encoder projects' test vectors, not official conformance suites; only the HEVC (HEVC_v1), VVC (H.266.1)
+  and H.264 (H.264.1) suites are official ITU-T/ISO ones. AV2 has no suite. Our decoders do not yet decode
+  every valid stream of their codecs' main profiles: H.264 interlace (field pictures, MBAFF) and pictures
+  above level 5.2; AV1 quantizer matrices, block loop-filter deltas, segment features other than the
+  quantizer, lossless segments in mixed frames, odd frame sizes and switch frames; VVC reserved NAL types,
+  `nuh_layer_id` above 0 and a VPS id above 0 (rejected instead of ignored); VP9 profiles 1 and 3; AV2
+  10-bit, monochrome, several tiles, reference scaling, multi-frame headers, bridge frames and layers.
+  Monochrome decoding in the browser is untested. Details: [Conformance](docs/FAQ.md#conformance).
+
 Builds published on crates.io carry source only; no PGO.
 
 ### Results

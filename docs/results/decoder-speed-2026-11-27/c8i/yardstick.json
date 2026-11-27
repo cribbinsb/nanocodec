@@ -1,0 +1,2728 @@
+{
+ "date": "2026-11-27",
+ "ffmpeg_core": "0.12.10",
+ "node": "v22.21.1",
+ "cpu": 1,
+ "rounds": 7,
+ "encode_settings": {
+  "fps": 30,
+  "frames": 150,
+  "target_kbps": 600,
+  "peak_kbps": 1200,
+  "buffer_kbit": 600,
+  "ours": "set_rate_control(600, 1200, 1000): target kbps, peak kbps, buffer ms",
+  "x264": "-b:v 600k -maxrate 1200k -bufsize 600k -tune zerolatency -bf 0 -rc-lookahead 0"
+ },
+ "load_start": [
+  1.54248046875,
+  2.18896484375,
+  1.26904296875
+ ],
+ "res": {
+  "enc|h264|ours-wasm": [
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 585.6,
+    "encode_ms_per_frame": 12.764,
+    "frames": 150,
+    "pass_totals_ms": [
+     1950.07
+    ],
+    "ms_per_frame": 13,
+    "fps": 76.92,
+    "median_frame_ms": 9.114,
+    "max_frame_ms": 166.901
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 585.6,
+    "encode_ms_per_frame": 12.68,
+    "frames": 150,
+    "pass_totals_ms": [
+     1936.62
+    ],
+    "ms_per_frame": 12.911,
+    "fps": 77.45,
+    "median_frame_ms": 9.049,
+    "max_frame_ms": 167.587
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 585.6,
+    "encode_ms_per_frame": 13.454,
+    "frames": 150,
+    "pass_totals_ms": [
+     2056.2
+    ],
+    "ms_per_frame": 13.708,
+    "fps": 72.95,
+    "median_frame_ms": 9.79,
+    "max_frame_ms": 168.622
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 585.6,
+    "encode_ms_per_frame": 12.89,
+    "frames": 150,
+    "pass_totals_ms": [
+     1970.49
+    ],
+    "ms_per_frame": 13.137,
+    "fps": 76.12,
+    "median_frame_ms": 9.229,
+    "max_frame_ms": 170.173
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 585.6,
+    "encode_ms_per_frame": 12.681,
+    "frames": 150,
+    "pass_totals_ms": [
+     1947.76
+    ],
+    "ms_per_frame": 12.985,
+    "fps": 77.01,
+    "median_frame_ms": 9.122,
+    "max_frame_ms": 172.825
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 585.6,
+    "encode_ms_per_frame": 12.72,
+    "frames": 150,
+    "pass_totals_ms": [
+     1943.44
+    ],
+    "ms_per_frame": 12.956,
+    "fps": 77.18,
+    "median_frame_ms": 9.129,
+    "max_frame_ms": 170.016
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 585.6,
+    "encode_ms_per_frame": 12.739,
+    "frames": 150,
+    "pass_totals_ms": [
+     1947.65
+    ],
+    "ms_per_frame": 12.984,
+    "fps": 77.02,
+    "median_frame_ms": 9.096,
+    "max_frame_ms": 168.574
+   }
+  ],
+  "enc|h264-fast|ours-wasm": [
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586,
+    "encode_ms_per_frame": 9.857,
+    "frames": 150,
+    "pass_totals_ms": [
+     1513.7
+    ],
+    "ms_per_frame": 10.091,
+    "fps": 99.09,
+    "median_frame_ms": 7.075,
+    "max_frame_ms": 166.416
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586,
+    "encode_ms_per_frame": 9.696,
+    "frames": 150,
+    "pass_totals_ms": [
+     1488.65
+    ],
+    "ms_per_frame": 9.924,
+    "fps": 100.76,
+    "median_frame_ms": 6.891,
+    "max_frame_ms": 166.284
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586,
+    "encode_ms_per_frame": 9.695,
+    "frames": 150,
+    "pass_totals_ms": [
+     1489.57
+    ],
+    "ms_per_frame": 9.93,
+    "fps": 100.7,
+    "median_frame_ms": 6.868,
+    "max_frame_ms": 160.857
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586,
+    "encode_ms_per_frame": 9.696,
+    "frames": 150,
+    "pass_totals_ms": [
+     1489.54
+    ],
+    "ms_per_frame": 9.93,
+    "fps": 100.7,
+    "median_frame_ms": 6.889,
+    "max_frame_ms": 166.581
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586,
+    "encode_ms_per_frame": 10.104,
+    "frames": 150,
+    "pass_totals_ms": [
+     1549.9
+    ],
+    "ms_per_frame": 10.333,
+    "fps": 96.78,
+    "median_frame_ms": 7.461,
+    "max_frame_ms": 167.402
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586,
+    "encode_ms_per_frame": 9.668,
+    "frames": 150,
+    "pass_totals_ms": [
+     1495.58
+    ],
+    "ms_per_frame": 9.971,
+    "fps": 100.3,
+    "median_frame_ms": 6.928,
+    "max_frame_ms": 161.369
+   },
+   {
+    "mode": "encode",
+    "codec": "h264",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586,
+    "encode_ms_per_frame": 9.676,
+    "frames": 150,
+    "pass_totals_ms": [
+     1486.03
+    ],
+    "ms_per_frame": 9.907,
+    "fps": 100.94,
+    "median_frame_ms": 6.915,
+    "max_frame_ms": 166.129
+   }
+  ],
+  "enc|hevc-fast|ours-wasm": [
+   {
+    "mode": "encode",
+    "codec": "hevc",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586.4,
+    "encode_ms_per_frame": 13.49,
+    "frames": 150,
+    "pass_totals_ms": [
+     2062.2
+    ],
+    "ms_per_frame": 13.748,
+    "fps": 72.74,
+    "median_frame_ms": 9.109,
+    "max_frame_ms": 268.786
+   },
+   {
+    "mode": "encode",
+    "codec": "hevc",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586.4,
+    "encode_ms_per_frame": 13.345,
+    "frames": 150,
+    "pass_totals_ms": [
+     2039.29
+    ],
+    "ms_per_frame": 13.595,
+    "fps": 73.56,
+    "median_frame_ms": 9.051,
+    "max_frame_ms": 257.459
+   },
+   {
+    "mode": "encode",
+    "codec": "hevc",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586.4,
+    "encode_ms_per_frame": 13.371,
+    "frames": 150,
+    "pass_totals_ms": [
+     2046.62
+    ],
+    "ms_per_frame": 13.644,
+    "fps": 73.29,
+    "median_frame_ms": 9.025,
+    "max_frame_ms": 260.848
+   },
+   {
+    "mode": "encode",
+    "codec": "hevc",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586.4,
+    "encode_ms_per_frame": 13.427,
+    "frames": 150,
+    "pass_totals_ms": [
+     2048.76
+    ],
+    "ms_per_frame": 13.658,
+    "fps": 73.21,
+    "median_frame_ms": 9.04,
+    "max_frame_ms": 271.997
+   },
+   {
+    "mode": "encode",
+    "codec": "hevc",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586.4,
+    "encode_ms_per_frame": 13.395,
+    "frames": 150,
+    "pass_totals_ms": [
+     2044.52
+    ],
+    "ms_per_frame": 13.63,
+    "fps": 73.37,
+    "median_frame_ms": 9.073,
+    "max_frame_ms": 261.81
+   },
+   {
+    "mode": "encode",
+    "codec": "hevc",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586.4,
+    "encode_ms_per_frame": 13.37,
+    "frames": 150,
+    "pass_totals_ms": [
+     2040.4
+    ],
+    "ms_per_frame": 13.603,
+    "fps": 73.52,
+    "median_frame_ms": 9.02,
+    "max_frame_ms": 259.791
+   },
+   {
+    "mode": "encode",
+    "codec": "hevc",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 586.4,
+    "encode_ms_per_frame": 13.335,
+    "frames": 150,
+    "pass_totals_ms": [
+     2044.1
+    ],
+    "ms_per_frame": 13.627,
+    "fps": 73.38,
+    "median_frame_ms": 9.063,
+    "max_frame_ms": 265.8
+   }
+  ],
+  "enc|vp9|ours-wasm": [
+   {
+    "mode": "encode",
+    "codec": "vp9",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 589.8,
+    "encode_ms_per_frame": 18.798,
+    "frames": 150,
+    "pass_totals_ms": [
+     2857.43
+    ],
+    "ms_per_frame": 19.05,
+    "fps": 52.49,
+    "median_frame_ms": 14.291,
+    "max_frame_ms": 332.298
+   },
+   {
+    "mode": "encode",
+    "codec": "vp9",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 589.8,
+    "encode_ms_per_frame": 18.757,
+    "frames": 150,
+    "pass_totals_ms": [
+     2850.66
+    ],
+    "ms_per_frame": 19.004,
+    "fps": 52.62,
+    "median_frame_ms": 14.255,
+    "max_frame_ms": 330.818
+   },
+   {
+    "mode": "encode",
+    "codec": "vp9",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 589.8,
+    "encode_ms_per_frame": 18.698,
+    "frames": 150,
+    "pass_totals_ms": [
+     2839.8
+    ],
+    "ms_per_frame": 18.932,
+    "fps": 52.82,
+    "median_frame_ms": 14.212,
+    "max_frame_ms": 328.605
+   },
+   {
+    "mode": "encode",
+    "codec": "vp9",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 589.8,
+    "encode_ms_per_frame": 19.6,
+    "frames": 150,
+    "pass_totals_ms": [
+     2975.13
+    ],
+    "ms_per_frame": 19.834,
+    "fps": 50.42,
+    "median_frame_ms": 15.25,
+    "max_frame_ms": 331.991
+   },
+   {
+    "mode": "encode",
+    "codec": "vp9",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 589.8,
+    "encode_ms_per_frame": 18.771,
+    "frames": 150,
+    "pass_totals_ms": [
+     2850.63
+    ],
+    "ms_per_frame": 19.004,
+    "fps": 52.62,
+    "median_frame_ms": 14.291,
+    "max_frame_ms": 328.455
+   },
+   {
+    "mode": "encode",
+    "codec": "vp9",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 589.8,
+    "encode_ms_per_frame": 18.74,
+    "frames": 150,
+    "pass_totals_ms": [
+     2848.82
+    ],
+    "ms_per_frame": 18.992,
+    "fps": 52.65,
+    "median_frame_ms": 14.341,
+    "max_frame_ms": 330.669
+   },
+   {
+    "mode": "encode",
+    "codec": "vp9",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 589.8,
+    "encode_ms_per_frame": 18.842,
+    "frames": 150,
+    "pass_totals_ms": [
+     2862.37
+    ],
+    "ms_per_frame": 19.082,
+    "fps": 52.4,
+    "median_frame_ms": 14.331,
+    "max_frame_ms": 327.59
+   }
+  ],
+  "enc|av1-fast|ours-wasm": [
+   {
+    "mode": "encode",
+    "codec": "av1",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 590.4,
+    "encode_ms_per_frame": 13.63,
+    "frames": 150,
+    "pass_totals_ms": [
+     2081.04
+    ],
+    "ms_per_frame": 13.874,
+    "fps": 72.08,
+    "median_frame_ms": 9.59,
+    "max_frame_ms": 322.543
+   },
+   {
+    "mode": "encode",
+    "codec": "av1",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 590.4,
+    "encode_ms_per_frame": 14.337,
+    "frames": 150,
+    "pass_totals_ms": [
+     2186.52
+    ],
+    "ms_per_frame": 14.577,
+    "fps": 68.6,
+    "median_frame_ms": 10.466,
+    "max_frame_ms": 318.94
+   },
+   {
+    "mode": "encode",
+    "codec": "av1",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 590.4,
+    "encode_ms_per_frame": 13.594,
+    "frames": 150,
+    "pass_totals_ms": [
+     2074.95
+    ],
+    "ms_per_frame": 13.833,
+    "fps": 72.29,
+    "median_frame_ms": 9.476,
+    "max_frame_ms": 316.263
+   },
+   {
+    "mode": "encode",
+    "codec": "av1",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 590.4,
+    "encode_ms_per_frame": 13.769,
+    "frames": 150,
+    "pass_totals_ms": [
+     2104.14
+    ],
+    "ms_per_frame": 14.028,
+    "fps": 71.29,
+    "median_frame_ms": 9.726,
+    "max_frame_ms": 332.009
+   },
+   {
+    "mode": "encode",
+    "codec": "av1",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 590.4,
+    "encode_ms_per_frame": 13.51,
+    "frames": 150,
+    "pass_totals_ms": [
+     2073.89
+    ],
+    "ms_per_frame": 13.826,
+    "fps": 72.33,
+    "median_frame_ms": 9.479,
+    "max_frame_ms": 322.403
+   },
+   {
+    "mode": "encode",
+    "codec": "av1",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 590.4,
+    "encode_ms_per_frame": 13.426,
+    "frames": 150,
+    "pass_totals_ms": [
+     2075.04
+    ],
+    "ms_per_frame": 13.834,
+    "fps": 72.29,
+    "median_frame_ms": 9.522,
+    "max_frame_ms": 322.987
+   },
+   {
+    "mode": "encode",
+    "codec": "av1",
+    "yuv": "/home/ubuntu/decode-speed/data/clips/quick/crowd_mot17_09.yuv",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "achieved_kbps": 590.4,
+    "encode_ms_per_frame": 13.887,
+    "frames": 150,
+    "pass_totals_ms": [
+     2119.12
+    ],
+    "ms_per_frame": 14.127,
+    "fps": 70.78,
+    "median_frame_ms": 9.773,
+    "max_frame_ms": 323.008
+   }
+  ],
+  "enc|x264 veryfast|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 329331,
+    "decode_ms": 1.244,
+    "encode_ms": 5279.74,
+    "startup_ms": 137.17727499999998,
+    "exec_ms": 5345.542832,
+    "ms": 5482.720107
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 329331,
+    "decode_ms": 1.219,
+    "encode_ms": 5263.826,
+    "startup_ms": 137.541602,
+    "exec_ms": 5338.73114,
+    "ms": 5476.272742
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 329331,
+    "decode_ms": 1.228,
+    "encode_ms": 5281.03,
+    "startup_ms": 137.53601500000002,
+    "exec_ms": 5341.636335,
+    "ms": 5479.17235
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 329331,
+    "decode_ms": 1.308,
+    "encode_ms": 5290.12,
+    "startup_ms": 137.65873600000003,
+    "exec_ms": 5360.985852,
+    "ms": 5498.644588
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 329331,
+    "decode_ms": 1.202,
+    "encode_ms": 5265.499,
+    "startup_ms": 137.237286,
+    "exec_ms": 5332.330087,
+    "ms": 5469.567373
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 329331,
+    "decode_ms": 1.289,
+    "encode_ms": 5283.259,
+    "startup_ms": 137.41477400000002,
+    "exec_ms": 5346.361610999999,
+    "ms": 5483.776384999999
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 329331,
+    "decode_ms": 1.264,
+    "encode_ms": 5280.694,
+    "startup_ms": 137.186337,
+    "exec_ms": 5342.576392,
+    "ms": 5479.762729
+   }
+  ],
+  "enc|x264 ultrafast|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 348647,
+    "decode_ms": 1.151,
+    "encode_ms": 2120.882,
+    "startup_ms": 137.52854,
+    "exec_ms": 2202.031682,
+    "ms": 2339.5602219999996
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 348647,
+    "decode_ms": 1.219,
+    "encode_ms": 2112.671,
+    "startup_ms": 137.92836699999998,
+    "exec_ms": 2196.586338,
+    "ms": 2334.514705
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 348647,
+    "decode_ms": 1.159,
+    "encode_ms": 2113.984,
+    "startup_ms": 137.58957900000001,
+    "exec_ms": 2198.57301,
+    "ms": 2336.162589
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 348647,
+    "decode_ms": 1.195,
+    "encode_ms": 2129.82,
+    "startup_ms": 137.874773,
+    "exec_ms": 2202.5446309999998,
+    "ms": 2340.4194039999998
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 348647,
+    "decode_ms": 1.183,
+    "encode_ms": 2101.223,
+    "startup_ms": 137.676158,
+    "exec_ms": 2185.7622100000003,
+    "ms": 2323.438368
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 348647,
+    "decode_ms": 1.168,
+    "encode_ms": 2115.493,
+    "startup_ms": 136.87263099999998,
+    "exec_ms": 2192.859916,
+    "ms": 2329.732547
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 348647,
+    "decode_ms": 1.183,
+    "encode_ms": 2129.984,
+    "startup_ms": 136.73587899999998,
+    "exec_ms": 2203.916867,
+    "ms": 2340.6527459999998
+   }
+  ],
+  "dec|hevc|axis720.cam.hevc|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/axis720.cam.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.375,
+    "display_ms_per_frame": 0.589,
+    "frames": 150,
+    "pass_totals_ms": [
+     444.59
+    ],
+    "ms_per_frame": 2.964,
+    "fps": 337.39,
+    "median_frame_ms": 1.221,
+    "max_frame_ms": 106.843
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/axis720.cam.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.306,
+    "display_ms_per_frame": 0.648,
+    "frames": 150,
+    "pass_totals_ms": [
+     443.1
+    ],
+    "ms_per_frame": 2.954,
+    "fps": 338.52,
+    "median_frame_ms": 1.221,
+    "max_frame_ms": 104.881
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/axis720.cam.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.369,
+    "display_ms_per_frame": 0.591,
+    "frames": 150,
+    "pass_totals_ms": [
+     444.04
+    ],
+    "ms_per_frame": 2.96,
+    "fps": 337.81,
+    "median_frame_ms": 1.217,
+    "max_frame_ms": 105.835
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/axis720.cam.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.367,
+    "display_ms_per_frame": 0.597,
+    "frames": 150,
+    "pass_totals_ms": [
+     444.63
+    ],
+    "ms_per_frame": 2.964,
+    "fps": 337.36,
+    "median_frame_ms": 1.215,
+    "max_frame_ms": 105.351
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/axis720.cam.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.328,
+    "display_ms_per_frame": 0.635,
+    "frames": 150,
+    "pass_totals_ms": [
+     444.4
+    ],
+    "ms_per_frame": 2.963,
+    "fps": 337.53,
+    "median_frame_ms": 1.215,
+    "max_frame_ms": 105.381
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/axis720.cam.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.309,
+    "display_ms_per_frame": 0.633,
+    "frames": 150,
+    "pass_totals_ms": [
+     441.32
+    ],
+    "ms_per_frame": 2.942,
+    "fps": 339.89,
+    "median_frame_ms": 1.216,
+    "max_frame_ms": 105.41
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/axis720.cam.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.329,
+    "display_ms_per_frame": 0.646,
+    "frames": 150,
+    "pass_totals_ms": [
+     446.24
+    ],
+    "ms_per_frame": 2.975,
+    "fps": 336.14,
+    "median_frame_ms": 1.267,
+    "max_frame_ms": 105.101
+   }
+  ],
+  "dec|hevc|axis720.cam.hevc|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 380.758,
+    "encode_ms": 8.59,
+    "startup_ms": 134.907626,
+    "exec_ms": 531.93748,
+    "ms": 666.845106
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 375.79,
+    "encode_ms": 6.004,
+    "startup_ms": 133.043563,
+    "exec_ms": 524.53658,
+    "ms": 657.5801429999999
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 379.722,
+    "encode_ms": 3.503,
+    "startup_ms": 136.958259,
+    "exec_ms": 525.55691,
+    "ms": 662.515169
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 382.786,
+    "encode_ms": 2.351,
+    "startup_ms": 133.135642,
+    "exec_ms": 526.475366,
+    "ms": 659.611008
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 380.828,
+    "encode_ms": 2.347,
+    "startup_ms": 133.129951,
+    "exec_ms": 524.124399,
+    "ms": 657.25435
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 378.188,
+    "encode_ms": 6.837,
+    "startup_ms": 133.87016500000001,
+    "exec_ms": 522.8741600000001,
+    "ms": 656.7443250000001
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 379.764,
+    "encode_ms": 3.225,
+    "startup_ms": 133.86577200000002,
+    "exec_ms": 523.444479,
+    "ms": 657.310251
+   }
+  ],
+  "dec|h264|crowd_mot17_09.600k.h264.264|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 1.907,
+    "display_ms_per_frame": 0.617,
+    "frames": 150,
+    "pass_totals_ms": [
+     378.55
+    ],
+    "ms_per_frame": 2.524,
+    "fps": 396.25,
+    "median_frame_ms": 1.857,
+    "max_frame_ms": 57.503
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 1.893,
+    "display_ms_per_frame": 0.628,
+    "frames": 150,
+    "pass_totals_ms": [
+     378.15
+    ],
+    "ms_per_frame": 2.521,
+    "fps": 396.67,
+    "median_frame_ms": 1.867,
+    "max_frame_ms": 59.269
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 1.895,
+    "display_ms_per_frame": 0.63,
+    "frames": 150,
+    "pass_totals_ms": [
+     378.72
+    ],
+    "ms_per_frame": 2.525,
+    "fps": 396.08,
+    "median_frame_ms": 1.867,
+    "max_frame_ms": 59.815
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 1.903,
+    "display_ms_per_frame": 0.614,
+    "frames": 150,
+    "pass_totals_ms": [
+     377.54
+    ],
+    "ms_per_frame": 2.517,
+    "fps": 397.31,
+    "median_frame_ms": 1.852,
+    "max_frame_ms": 59.701
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 1.897,
+    "display_ms_per_frame": 0.627,
+    "frames": 150,
+    "pass_totals_ms": [
+     378.63
+    ],
+    "ms_per_frame": 2.524,
+    "fps": 396.16,
+    "median_frame_ms": 1.852,
+    "max_frame_ms": 58.673
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 1.841,
+    "display_ms_per_frame": 0.672,
+    "frames": 150,
+    "pass_totals_ms": [
+     376.91
+    ],
+    "ms_per_frame": 2.513,
+    "fps": 397.98,
+    "median_frame_ms": 1.861,
+    "max_frame_ms": 56.813
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 1.888,
+    "display_ms_per_frame": 0.675,
+    "frames": 150,
+    "pass_totals_ms": [
+     384.39
+    ],
+    "ms_per_frame": 2.563,
+    "fps": 390.23,
+    "median_frame_ms": 1.907,
+    "max_frame_ms": 58.884
+   }
+  ],
+  "dec|h264|crowd_mot17_09.600k.h264.264|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 324.28,
+    "encode_ms": 7.185,
+    "startup_ms": 132.745131,
+    "exec_ms": 504.70847100000003,
+    "ms": 637.453602
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 324.752,
+    "encode_ms": 6.092,
+    "startup_ms": 134.055268,
+    "exec_ms": 508.092684,
+    "ms": 642.147952
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 323.893,
+    "encode_ms": 6.989,
+    "startup_ms": 132.856918,
+    "exec_ms": 510.980806,
+    "ms": 643.837724
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 324.167,
+    "encode_ms": 6.67,
+    "startup_ms": 134.247951,
+    "exec_ms": 507.706538,
+    "ms": 641.954489
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 325.591,
+    "encode_ms": 5.477,
+    "startup_ms": 135.508583,
+    "exec_ms": 505.8163370000001,
+    "ms": 641.32492
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 326.337,
+    "encode_ms": 6.912,
+    "startup_ms": 134.453494,
+    "exec_ms": 507.127026,
+    "ms": 641.58052
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 325.273,
+    "encode_ms": 6.499,
+    "startup_ms": 133.297263,
+    "exec_ms": 505.34281100000004,
+    "ms": 638.640074
+   }
+  ],
+  "dec|hevc|crowd_mot17_09.600k.hevc.hevc|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.479,
+    "display_ms_per_frame": 0.645,
+    "frames": 150,
+    "pass_totals_ms": [
+     468.66
+    ],
+    "ms_per_frame": 3.124,
+    "fps": 320.06,
+    "median_frame_ms": 2.221,
+    "max_frame_ms": 86.324
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.552,
+    "display_ms_per_frame": 0.589,
+    "frames": 150,
+    "pass_totals_ms": [
+     471.12
+    ],
+    "ms_per_frame": 3.141,
+    "fps": 318.39,
+    "median_frame_ms": 2.227,
+    "max_frame_ms": 86.769
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.401,
+    "display_ms_per_frame": 0.714,
+    "frames": 150,
+    "pass_totals_ms": [
+     467.25
+    ],
+    "ms_per_frame": 3.115,
+    "fps": 321.03,
+    "median_frame_ms": 2.218,
+    "max_frame_ms": 83.45
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.519,
+    "display_ms_per_frame": 0.786,
+    "frames": 150,
+    "pass_totals_ms": [
+     495.79
+    ],
+    "ms_per_frame": 3.305,
+    "fps": 302.55,
+    "median_frame_ms": 2.404,
+    "max_frame_ms": 86.623
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.498,
+    "display_ms_per_frame": 0.618,
+    "frames": 150,
+    "pass_totals_ms": [
+     467.34
+    ],
+    "ms_per_frame": 3.116,
+    "fps": 320.96,
+    "median_frame_ms": 2.228,
+    "max_frame_ms": 85.355
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.48,
+    "display_ms_per_frame": 0.647,
+    "frames": 150,
+    "pass_totals_ms": [
+     469.04
+    ],
+    "ms_per_frame": 3.127,
+    "fps": 319.8,
+    "median_frame_ms": 2.226,
+    "max_frame_ms": 85.559
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.484,
+    "display_ms_per_frame": 0.641,
+    "frames": 150,
+    "pass_totals_ms": [
+     468.81
+    ],
+    "ms_per_frame": 3.125,
+    "fps": 319.96,
+    "median_frame_ms": 2.235,
+    "max_frame_ms": 85.945
+   }
+  ],
+  "dec|hevc|crowd_mot17_09.600k.hevc.hevc|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 595.159,
+    "encode_ms": 7.198,
+    "startup_ms": 134.43667200000002,
+    "exec_ms": 735.797726,
+    "ms": 870.234398
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 591.113,
+    "encode_ms": 4.415,
+    "startup_ms": 134.223815,
+    "exec_ms": 733.385459,
+    "ms": 867.6092739999999
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 597.092,
+    "encode_ms": 4.183,
+    "startup_ms": 133.411948,
+    "exec_ms": 735.8267910000001,
+    "ms": 869.2387390000001
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 595.222,
+    "encode_ms": 4.277,
+    "startup_ms": 135.483992,
+    "exec_ms": 739.418234,
+    "ms": 874.9022259999999
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 591.035,
+    "encode_ms": 4.245,
+    "startup_ms": 134.884997,
+    "exec_ms": 734.1779180000001,
+    "ms": 869.0629150000001
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 592.868,
+    "encode_ms": 6.39,
+    "startup_ms": 134.606999,
+    "exec_ms": 735.016631,
+    "ms": 869.6236299999999
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 592.58,
+    "encode_ms": 4.255,
+    "startup_ms": 133.910674,
+    "exec_ms": 733.793071,
+    "ms": 867.703745
+   }
+  ],
+  "dec|h264|crowd1080.3000k.x264.h264.264|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.x264.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.025,
+    "display_ms_per_frame": 1.323,
+    "frames": 150,
+    "pass_totals_ms": [
+     1102.22
+    ],
+    "ms_per_frame": 7.348,
+    "fps": 136.09,
+    "median_frame_ms": 6.565,
+    "max_frame_ms": 92.571
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.x264.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.064,
+    "display_ms_per_frame": 1.31,
+    "frames": 150,
+    "pass_totals_ms": [
+     1106.12
+    ],
+    "ms_per_frame": 7.374,
+    "fps": 135.61,
+    "median_frame_ms": 6.632,
+    "max_frame_ms": 92.966
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.x264.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.036,
+    "display_ms_per_frame": 1.318,
+    "frames": 150,
+    "pass_totals_ms": [
+     1103.08
+    ],
+    "ms_per_frame": 7.354,
+    "fps": 135.98,
+    "median_frame_ms": 6.569,
+    "max_frame_ms": 93.139
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.x264.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.037,
+    "display_ms_per_frame": 1.308,
+    "frames": 150,
+    "pass_totals_ms": [
+     1101.75
+    ],
+    "ms_per_frame": 7.345,
+    "fps": 136.15,
+    "median_frame_ms": 6.558,
+    "max_frame_ms": 94.269
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.x264.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.066,
+    "display_ms_per_frame": 1.31,
+    "frames": 150,
+    "pass_totals_ms": [
+     1106.47
+    ],
+    "ms_per_frame": 7.376,
+    "fps": 135.57,
+    "median_frame_ms": 6.585,
+    "max_frame_ms": 93.796
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.x264.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.128,
+    "display_ms_per_frame": 1.304,
+    "frames": 150,
+    "pass_totals_ms": [
+     1114.73
+    ],
+    "ms_per_frame": 7.432,
+    "fps": 134.56,
+    "median_frame_ms": 6.628,
+    "max_frame_ms": 94.005
+   },
+   {
+    "mode": "decode",
+    "codec": "h264",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.x264.h264.264",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.017,
+    "display_ms_per_frame": 1.461,
+    "frames": 150,
+    "pass_totals_ms": [
+     1121.74
+    ],
+    "ms_per_frame": 7.478,
+    "fps": 133.72,
+    "median_frame_ms": 6.657,
+    "max_frame_ms": 93.316
+   }
+  ],
+  "dec|h264|crowd1080.3000k.x264.h264.264|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 1239.462,
+    "encode_ms": 6.24,
+    "startup_ms": 134.91902399999998,
+    "exec_ms": 1467.6859940000002,
+    "ms": 1602.6050180000002
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 1240.646,
+    "encode_ms": 2.643,
+    "startup_ms": 137.646331,
+    "exec_ms": 1460.3834450000002,
+    "ms": 1598.029776
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 1239.135,
+    "encode_ms": 2.761,
+    "startup_ms": 136.07182600000002,
+    "exec_ms": 1458.9676379999999,
+    "ms": 1595.039464
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 1227.806,
+    "encode_ms": 6.08,
+    "startup_ms": 135.791339,
+    "exec_ms": 1456.6496710000001,
+    "ms": 1592.44101
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 1237.336,
+    "encode_ms": 2.901,
+    "startup_ms": 135.637317,
+    "exec_ms": 1462.55665,
+    "ms": 1598.193967
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 1237.335,
+    "encode_ms": 2.678,
+    "startup_ms": 135.622433,
+    "exec_ms": 1455.814231,
+    "ms": 1591.436664
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 1235.525,
+    "encode_ms": 6.296,
+    "startup_ms": 136.163026,
+    "exec_ms": 1461.398381,
+    "ms": 1597.561407
+   }
+  ],
+  "dec|hevc|crowd1080.3000k.ours.hevc.hevc|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 7.074,
+    "display_ms_per_frame": 1.326,
+    "frames": 150,
+    "pass_totals_ms": [
+     1260.03
+    ],
+    "ms_per_frame": 8.4,
+    "fps": 119.04,
+    "median_frame_ms": 6.282,
+    "max_frame_ms": 140.598
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.998,
+    "display_ms_per_frame": 1.367,
+    "frames": 150,
+    "pass_totals_ms": [
+     1254.69
+    ],
+    "ms_per_frame": 8.365,
+    "fps": 119.55,
+    "median_frame_ms": 6.288,
+    "max_frame_ms": 139.335
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 7.042,
+    "display_ms_per_frame": 1.331,
+    "frames": 150,
+    "pass_totals_ms": [
+     1255.98
+    ],
+    "ms_per_frame": 8.373,
+    "fps": 119.43,
+    "median_frame_ms": 6.286,
+    "max_frame_ms": 139.386
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 7.054,
+    "display_ms_per_frame": 1.32,
+    "frames": 150,
+    "pass_totals_ms": [
+     1256.1
+    ],
+    "ms_per_frame": 8.374,
+    "fps": 119.42,
+    "median_frame_ms": 6.29,
+    "max_frame_ms": 140.519
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 7.046,
+    "display_ms_per_frame": 1.339,
+    "frames": 150,
+    "pass_totals_ms": [
+     1257.72
+    ],
+    "ms_per_frame": 8.385,
+    "fps": 119.26,
+    "median_frame_ms": 6.273,
+    "max_frame_ms": 141.715
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 7.093,
+    "display_ms_per_frame": 1.309,
+    "frames": 150,
+    "pass_totals_ms": [
+     1260.36
+    ],
+    "ms_per_frame": 8.402,
+    "fps": 119.01,
+    "median_frame_ms": 6.319,
+    "max_frame_ms": 139.738
+   },
+   {
+    "mode": "decode",
+    "codec": "hevc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.hevc.hevc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 7.095,
+    "display_ms_per_frame": 1.333,
+    "frames": 150,
+    "pass_totals_ms": [
+     1264.16
+    ],
+    "ms_per_frame": 8.428,
+    "fps": 118.66,
+    "median_frame_ms": 6.309,
+    "max_frame_ms": 140.871
+   }
+  ],
+  "dec|hevc|crowd1080.3000k.ours.hevc.hevc|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2266.463,
+    "encode_ms": 2.738,
+    "startup_ms": 135.862666,
+    "exec_ms": 2450.695866,
+    "ms": 2586.558532
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2266.354,
+    "encode_ms": 3.684,
+    "startup_ms": 135.173907,
+    "exec_ms": 2456.224558,
+    "ms": 2591.3984649999998
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2259.464,
+    "encode_ms": 6.261,
+    "startup_ms": 136.170965,
+    "exec_ms": 2447.910468,
+    "ms": 2584.081433
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2260.215,
+    "encode_ms": 6.051,
+    "startup_ms": 134.166321,
+    "exec_ms": 2447.771743,
+    "ms": 2581.938064
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2263.203,
+    "encode_ms": 2.924,
+    "startup_ms": 136.033195,
+    "exec_ms": 2453.353644,
+    "ms": 2589.386839
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2265.405,
+    "encode_ms": 2.92,
+    "startup_ms": 134.499695,
+    "exec_ms": 2455.351681,
+    "ms": 2589.851376
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2270.389,
+    "encode_ms": 6.349,
+    "startup_ms": 136.90881000000002,
+    "exec_ms": 2459.676919,
+    "ms": 2596.585729
+   }
+  ],
+  "dec|vp9|crowd1080.3000k.vpxenc.vp9.ivf|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.vpxenc.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.769,
+    "display_ms_per_frame": 1.316,
+    "frames": 150,
+    "pass_totals_ms": [
+     1212.72
+    ],
+    "ms_per_frame": 8.085,
+    "fps": 123.69,
+    "median_frame_ms": 5.899,
+    "max_frame_ms": 138.658
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.vpxenc.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.734,
+    "display_ms_per_frame": 1.327,
+    "frames": 150,
+    "pass_totals_ms": [
+     1209.21
+    ],
+    "ms_per_frame": 8.061,
+    "fps": 124.05,
+    "median_frame_ms": 5.902,
+    "max_frame_ms": 139.105
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.vpxenc.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.733,
+    "display_ms_per_frame": 1.322,
+    "frames": 150,
+    "pass_totals_ms": [
+     1208.24
+    ],
+    "ms_per_frame": 8.055,
+    "fps": 124.15,
+    "median_frame_ms": 5.882,
+    "max_frame_ms": 138.655
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.vpxenc.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.744,
+    "display_ms_per_frame": 1.33,
+    "frames": 150,
+    "pass_totals_ms": [
+     1211.17
+    ],
+    "ms_per_frame": 8.074,
+    "fps": 123.85,
+    "median_frame_ms": 5.91,
+    "max_frame_ms": 138.26
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.vpxenc.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.747,
+    "display_ms_per_frame": 1.487,
+    "frames": 150,
+    "pass_totals_ms": [
+     1235.1
+    ],
+    "ms_per_frame": 8.234,
+    "fps": 121.45,
+    "median_frame_ms": 6.044,
+    "max_frame_ms": 139.596
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.vpxenc.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.738,
+    "display_ms_per_frame": 1.812,
+    "frames": 150,
+    "pass_totals_ms": [
+     1282.44
+    ],
+    "ms_per_frame": 8.55,
+    "fps": 116.96,
+    "median_frame_ms": 6.443,
+    "max_frame_ms": 138.877
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.vpxenc.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 6.74,
+    "display_ms_per_frame": 1.316,
+    "frames": 150,
+    "pass_totals_ms": [
+     1208.43
+    ],
+    "ms_per_frame": 8.056,
+    "fps": 124.13,
+    "median_frame_ms": 5.886,
+    "max_frame_ms": 138.85
+   }
+  ],
+  "dec|vp9|crowd1080.3000k.vpxenc.vp9.ivf|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2598.921,
+    "encode_ms": 6.508,
+    "startup_ms": 136.005673,
+    "exec_ms": 2831.5717499999996,
+    "ms": 2967.5774229999997
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2609.143,
+    "encode_ms": 3.971,
+    "startup_ms": 134.89753199999998,
+    "exec_ms": 2834.529574,
+    "ms": 2969.427106
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2613.242,
+    "encode_ms": 3.554,
+    "startup_ms": 136.367405,
+    "exec_ms": 2841.39649,
+    "ms": 2977.763895
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2605.942,
+    "encode_ms": 7.339,
+    "startup_ms": 136.176791,
+    "exec_ms": 2832.17391,
+    "ms": 2968.350701
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2624.94,
+    "encode_ms": 3.972,
+    "startup_ms": 135.502721,
+    "exec_ms": 2853.999013,
+    "ms": 2989.501734
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2609.898,
+    "encode_ms": 3.787,
+    "startup_ms": 135.27529299999998,
+    "exec_ms": 2839.259855,
+    "ms": 2974.535148
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 2609.347,
+    "encode_ms": 5.031,
+    "startup_ms": 135.99554799999999,
+    "exec_ms": 2836.945458,
+    "ms": 2972.941006
+   }
+  ],
+  "dec|vp9|crowd_mot17_09.600k.vp9.ivf|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.336,
+    "display_ms_per_frame": 0.845,
+    "frames": 150,
+    "pass_totals_ms": [
+     477.11
+    ],
+    "ms_per_frame": 3.181,
+    "fps": 314.39,
+    "median_frame_ms": 2.355,
+    "max_frame_ms": 84.368
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.291,
+    "display_ms_per_frame": 0.707,
+    "frames": 150,
+    "pass_totals_ms": [
+     449.72
+    ],
+    "ms_per_frame": 2.998,
+    "fps": 333.54,
+    "median_frame_ms": 2.165,
+    "max_frame_ms": 86.142
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.339,
+    "display_ms_per_frame": 0.663,
+    "frames": 150,
+    "pass_totals_ms": [
+     450.28
+    ],
+    "ms_per_frame": 3.002,
+    "fps": 333.13,
+    "median_frame_ms": 2.156,
+    "max_frame_ms": 84.308
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.361,
+    "display_ms_per_frame": 0.65,
+    "frames": 150,
+    "pass_totals_ms": [
+     451.71
+    ],
+    "ms_per_frame": 3.011,
+    "fps": 332.07,
+    "median_frame_ms": 2.163,
+    "max_frame_ms": 86.528
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.243,
+    "display_ms_per_frame": 0.748,
+    "frames": 150,
+    "pass_totals_ms": [
+     448.6
+    ],
+    "ms_per_frame": 2.991,
+    "fps": 334.38,
+    "median_frame_ms": 2.169,
+    "max_frame_ms": 89.674
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.357,
+    "display_ms_per_frame": 0.654,
+    "frames": 150,
+    "pass_totals_ms": [
+     451.67
+    ],
+    "ms_per_frame": 3.011,
+    "fps": 332.1,
+    "median_frame_ms": 2.16,
+    "max_frame_ms": 84.387
+   },
+   {
+    "mode": "decode",
+    "codec": "vp9",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vp9.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 2.34,
+    "display_ms_per_frame": 0.664,
+    "frames": 150,
+    "pass_totals_ms": [
+     450.6
+    ],
+    "ms_per_frame": 3.004,
+    "fps": 332.89,
+    "median_frame_ms": 2.164,
+    "max_frame_ms": 84.618
+   }
+  ],
+  "dec|vp9|crowd_mot17_09.600k.vp9.ivf|ffmpeg.wasm": [
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 860.228,
+    "encode_ms": 12.041,
+    "startup_ms": 136.016956,
+    "exec_ms": 989.554394,
+    "ms": 1125.57135
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 845.707,
+    "encode_ms": 6.118,
+    "startup_ms": 134.45771200000001,
+    "exec_ms": 986.520012,
+    "ms": 1120.9777239999999
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 858.603,
+    "encode_ms": 3.335,
+    "startup_ms": 133.617449,
+    "exec_ms": 988.2374050000001,
+    "ms": 1121.8548540000002
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 848.867,
+    "encode_ms": 6.721,
+    "startup_ms": 134.08380400000001,
+    "exec_ms": 986.6928620000001,
+    "ms": 1120.7766660000002
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 845.111,
+    "encode_ms": 4.382,
+    "startup_ms": 135.13968799999998,
+    "exec_ms": 982.6561519999999,
+    "ms": 1117.7958399999998
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 856.898,
+    "encode_ms": 5.92,
+    "startup_ms": 133.987902,
+    "exec_ms": 990.4711699999999,
+    "ms": 1124.4590719999999
+   },
+   {
+    "rc": 0,
+    "frames": 150,
+    "outBytes": 0,
+    "decode_ms": 851.201,
+    "encode_ms": 10.437,
+    "startup_ms": 133.84147000000002,
+    "exec_ms": 984.9208500000001,
+    "ms": 1118.76232
+   }
+  ],
+  "dec|av1|crowd_mot17_09.600k.av1.ivf|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.293,
+    "display_ms_per_frame": 0.862,
+    "frames": 150,
+    "pass_totals_ms": [
+     773.22
+    ],
+    "ms_per_frame": 5.155,
+    "fps": 193.99,
+    "median_frame_ms": 3.322,
+    "max_frame_ms": 150.462
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.253,
+    "display_ms_per_frame": 0.952,
+    "frames": 150,
+    "pass_totals_ms": [
+     780.69
+    ],
+    "ms_per_frame": 5.205,
+    "fps": 192.14,
+    "median_frame_ms": 3.362,
+    "max_frame_ms": 162.829
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.133,
+    "display_ms_per_frame": 1.031,
+    "frames": 150,
+    "pass_totals_ms": [
+     774.54
+    ],
+    "ms_per_frame": 5.164,
+    "fps": 193.66,
+    "median_frame_ms": 3.322,
+    "max_frame_ms": 161.975
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.396,
+    "display_ms_per_frame": 0.757,
+    "frames": 150,
+    "pass_totals_ms": [
+     773.02
+    ],
+    "ms_per_frame": 5.153,
+    "fps": 194.05,
+    "median_frame_ms": 3.328,
+    "max_frame_ms": 159.709
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.267,
+    "display_ms_per_frame": 0.916,
+    "frames": 150,
+    "pass_totals_ms": [
+     777.43
+    ],
+    "ms_per_frame": 5.183,
+    "fps": 192.94,
+    "median_frame_ms": 3.334,
+    "max_frame_ms": 149.784
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.391,
+    "display_ms_per_frame": 0.758,
+    "frames": 150,
+    "pass_totals_ms": [
+     772.4
+    ],
+    "ms_per_frame": 5.149,
+    "fps": 194.2,
+    "median_frame_ms": 3.335,
+    "max_frame_ms": 162.223
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.323,
+    "display_ms_per_frame": 0.847,
+    "frames": 150,
+    "pass_totals_ms": [
+     775.54
+    ],
+    "ms_per_frame": 5.17,
+    "fps": 193.41,
+    "median_frame_ms": 3.348,
+    "max_frame_ms": 151.496
+   }
+  ],
+  "dec|av1|crowd1080.3000k.ours.av1.ivf|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.283,
+    "display_ms_per_frame": 1.343,
+    "frames": 150,
+    "pass_totals_ms": [
+     1743.87
+    ],
+    "ms_per_frame": 11.626,
+    "fps": 86.02,
+    "median_frame_ms": 8.501,
+    "max_frame_ms": 247.697
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.295,
+    "display_ms_per_frame": 1.353,
+    "frames": 150,
+    "pass_totals_ms": [
+     1747.16
+    ],
+    "ms_per_frame": 11.648,
+    "fps": 85.85,
+    "median_frame_ms": 8.464,
+    "max_frame_ms": 257.526
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.27,
+    "display_ms_per_frame": 1.359,
+    "frames": 150,
+    "pass_totals_ms": [
+     1744.32
+    ],
+    "ms_per_frame": 11.629,
+    "fps": 85.99,
+    "median_frame_ms": 8.474,
+    "max_frame_ms": 261.461
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.296,
+    "display_ms_per_frame": 1.371,
+    "frames": 150,
+    "pass_totals_ms": [
+     1750.12
+    ],
+    "ms_per_frame": 11.667,
+    "fps": 85.71,
+    "median_frame_ms": 8.476,
+    "max_frame_ms": 253.811
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.295,
+    "display_ms_per_frame": 1.344,
+    "frames": 150,
+    "pass_totals_ms": [
+     1745.85
+    ],
+    "ms_per_frame": 11.639,
+    "fps": 85.92,
+    "median_frame_ms": 8.462,
+    "max_frame_ms": 252.1
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.316,
+    "display_ms_per_frame": 1.33,
+    "frames": 150,
+    "pass_totals_ms": [
+     1746.86
+    ],
+    "ms_per_frame": 11.646,
+    "fps": 85.87,
+    "median_frame_ms": 8.459,
+    "max_frame_ms": 252.719
+   },
+   {
+    "mode": "decode",
+    "codec": "av1",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av1.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.251,
+    "display_ms_per_frame": 1.372,
+    "frames": 150,
+    "pass_totals_ms": [
+     1743.43
+    ],
+    "ms_per_frame": 11.623,
+    "fps": 86.04,
+    "median_frame_ms": 8.483,
+    "max_frame_ms": 253.041
+   }
+  ],
+  "dec|vvc|crowd_mot17_09.600k.vvc.vvc|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 3.757,
+    "display_ms_per_frame": 0.612,
+    "frames": 150,
+    "pass_totals_ms": [
+     655.35
+    ],
+    "ms_per_frame": 4.369,
+    "fps": 228.89,
+    "median_frame_ms": 3.065,
+    "max_frame_ms": 152.649
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 3.735,
+    "display_ms_per_frame": 0.622,
+    "frames": 150,
+    "pass_totals_ms": [
+     653.62
+    ],
+    "ms_per_frame": 4.357,
+    "fps": 229.49,
+    "median_frame_ms": 3.109,
+    "max_frame_ms": 152.998
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 3.742,
+    "display_ms_per_frame": 0.615,
+    "frames": 150,
+    "pass_totals_ms": [
+     653.61
+    ],
+    "ms_per_frame": 4.357,
+    "fps": 229.49,
+    "median_frame_ms": 3.09,
+    "max_frame_ms": 153.368
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 3.712,
+    "display_ms_per_frame": 0.645,
+    "frames": 150,
+    "pass_totals_ms": [
+     653.56
+    ],
+    "ms_per_frame": 4.357,
+    "fps": 229.51,
+    "median_frame_ms": 3.084,
+    "max_frame_ms": 152.82
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 3.749,
+    "display_ms_per_frame": 0.627,
+    "frames": 150,
+    "pass_totals_ms": [
+     656.42
+    ],
+    "ms_per_frame": 4.376,
+    "fps": 228.51,
+    "median_frame_ms": 3.063,
+    "max_frame_ms": 156.612
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 3.797,
+    "display_ms_per_frame": 0.587,
+    "frames": 150,
+    "pass_totals_ms": [
+     657.63
+    ],
+    "ms_per_frame": 4.384,
+    "fps": 228.09,
+    "median_frame_ms": 3.112,
+    "max_frame_ms": 155.248
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 3.755,
+    "display_ms_per_frame": 0.613,
+    "frames": 150,
+    "pass_totals_ms": [
+     655.25
+    ],
+    "ms_per_frame": 4.368,
+    "fps": 228.92,
+    "median_frame_ms": 3.102,
+    "max_frame_ms": 155.441
+   }
+  ],
+  "dec|vvc|crowd1080.3000k.ours.vvc.vvc|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 13.179,
+    "display_ms_per_frame": 1.307,
+    "frames": 150,
+    "pass_totals_ms": [
+     2172.85
+    ],
+    "ms_per_frame": 14.486,
+    "fps": 69.03,
+    "median_frame_ms": 10.857,
+    "max_frame_ms": 273.148
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 13.174,
+    "display_ms_per_frame": 1.303,
+    "frames": 150,
+    "pass_totals_ms": [
+     2171.61
+    ],
+    "ms_per_frame": 14.477,
+    "fps": 69.07,
+    "median_frame_ms": 10.849,
+    "max_frame_ms": 274.174
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 13.156,
+    "display_ms_per_frame": 1.302,
+    "frames": 150,
+    "pass_totals_ms": [
+     2168.73
+    ],
+    "ms_per_frame": 14.458,
+    "fps": 69.16,
+    "median_frame_ms": 10.819,
+    "max_frame_ms": 272.503
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 13.155,
+    "display_ms_per_frame": 1.303,
+    "frames": 150,
+    "pass_totals_ms": [
+     2168.7
+    ],
+    "ms_per_frame": 14.458,
+    "fps": 69.17,
+    "median_frame_ms": 10.812,
+    "max_frame_ms": 273.722
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 13.179,
+    "display_ms_per_frame": 1.44,
+    "frames": 150,
+    "pass_totals_ms": [
+     2192.78
+    ],
+    "ms_per_frame": 14.619,
+    "fps": 68.41,
+    "median_frame_ms": 10.903,
+    "max_frame_ms": 276.775
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 13.163,
+    "display_ms_per_frame": 1.307,
+    "frames": 150,
+    "pass_totals_ms": [
+     2170.5
+    ],
+    "ms_per_frame": 14.47,
+    "fps": 69.11,
+    "median_frame_ms": 10.871,
+    "max_frame_ms": 274.879
+   },
+   {
+    "mode": "decode",
+    "codec": "vvc",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.vvc.vvc",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 13.168,
+    "display_ms_per_frame": 1.304,
+    "frames": 150,
+    "pass_totals_ms": [
+     2170.79
+    ],
+    "ms_per_frame": 14.472,
+    "fps": 69.1,
+    "median_frame_ms": 10.793,
+    "max_frame_ms": 273.125
+   }
+  ],
+  "dec|av2|crowd_mot17_09.600k.av2.ivf|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.467,
+    "display_ms_per_frame": 0.645,
+    "frames": 150,
+    "pass_totals_ms": [
+     766.82
+    ],
+    "ms_per_frame": 5.112,
+    "fps": 195.61,
+    "median_frame_ms": 3.831,
+    "max_frame_ms": 131.635
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.45,
+    "display_ms_per_frame": 0.677,
+    "frames": 150,
+    "pass_totals_ms": [
+     769.1
+    ],
+    "ms_per_frame": 5.127,
+    "fps": 195.03,
+    "median_frame_ms": 3.858,
+    "max_frame_ms": 133.62
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.411,
+    "display_ms_per_frame": 0.715,
+    "frames": 150,
+    "pass_totals_ms": [
+     768.88
+    ],
+    "ms_per_frame": 5.126,
+    "fps": 195.09,
+    "median_frame_ms": 3.826,
+    "max_frame_ms": 135.912
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.459,
+    "display_ms_per_frame": 0.729,
+    "frames": 150,
+    "pass_totals_ms": [
+     778.24
+    ],
+    "ms_per_frame": 5.188,
+    "fps": 192.74,
+    "median_frame_ms": 3.798,
+    "max_frame_ms": 134.515
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.462,
+    "display_ms_per_frame": 0.655,
+    "frames": 150,
+    "pass_totals_ms": [
+     767.56
+    ],
+    "ms_per_frame": 5.117,
+    "fps": 195.42,
+    "median_frame_ms": 3.817,
+    "max_frame_ms": 133.015
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.406,
+    "display_ms_per_frame": 0.7,
+    "frames": 150,
+    "pass_totals_ms": [
+     765.87
+    ],
+    "ms_per_frame": 5.106,
+    "fps": 195.86,
+    "median_frame_ms": 3.806,
+    "max_frame_ms": 129.738
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd_mot17_09.600k.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 4.422,
+    "display_ms_per_frame": 0.678,
+    "frames": 150,
+    "pass_totals_ms": [
+     764.96
+    ],
+    "ms_per_frame": 5.1,
+    "fps": 196.09,
+    "median_frame_ms": 3.798,
+    "max_frame_ms": 133.371
+   }
+  ],
+  "dec|av2|crowd1080.3000k.ours.av2.ivf|ours-wasm": [
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.868,
+    "display_ms_per_frame": 1.293,
+    "frames": 150,
+    "pass_totals_ms": [
+     1824.11
+    ],
+    "ms_per_frame": 12.161,
+    "fps": 82.23,
+    "median_frame_ms": 9.136,
+    "max_frame_ms": 212.852
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.879,
+    "display_ms_per_frame": 1.299,
+    "frames": 150,
+    "pass_totals_ms": [
+     1826.65
+    ],
+    "ms_per_frame": 12.178,
+    "fps": 82.12,
+    "median_frame_ms": 9.126,
+    "max_frame_ms": 213.614
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.923,
+    "display_ms_per_frame": 1.295,
+    "frames": 150,
+    "pass_totals_ms": [
+     1832.67
+    ],
+    "ms_per_frame": 12.218,
+    "fps": 81.85,
+    "median_frame_ms": 9.165,
+    "max_frame_ms": 212.826
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.805,
+    "display_ms_per_frame": 1.726,
+    "frames": 150,
+    "pass_totals_ms": [
+     1879.7
+    ],
+    "ms_per_frame": 12.531,
+    "fps": 79.8,
+    "median_frame_ms": 9.534,
+    "max_frame_ms": 213.11
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.812,
+    "display_ms_per_frame": 1.319,
+    "frames": 150,
+    "pass_totals_ms": [
+     1819.7
+    ],
+    "ms_per_frame": 12.131,
+    "fps": 82.43,
+    "median_frame_ms": 9.103,
+    "max_frame_ms": 210.699
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.845,
+    "display_ms_per_frame": 1.322,
+    "frames": 150,
+    "pass_totals_ms": [
+     1825.11
+    ],
+    "ms_per_frame": 12.167,
+    "fps": 82.19,
+    "median_frame_ms": 9.136,
+    "max_frame_ms": 213.335
+   },
+   {
+    "mode": "decode",
+    "codec": "av2",
+    "stream": "/home/ubuntu/decode-speed/streams/all/crowd1080.3000k.ours.av2.ivf",
+    "wasm_sha256": "08777898d14d3b31bbe252da7faca56e876d1088839a1f8e1771b6336e1dd37d",
+    "decode_ms_per_frame": 10.816,
+    "display_ms_per_frame": 1.329,
+    "frames": 150,
+    "pass_totals_ms": [
+     1821.79
+    ],
+    "ms_per_frame": 12.145,
+    "fps": 82.34,
+    "median_frame_ms": 9.151,
+    "max_frame_ms": 210.268
+   }
+  ]
+ },
+ "load_end": [
+  1.4609375,
+  1.82763671875,
+  1.3759765625
+ ]
+}

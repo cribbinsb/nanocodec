@@ -1,0 +1,1 @@
+one thread pinned to one physical core

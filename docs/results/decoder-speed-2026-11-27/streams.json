@@ -1,0 +1,614 @@
+{
+ "cam150.axis-m5074-720p.hevc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "Axis camera",
+  "set": "yardstick-2026-11-23"
+ },
+ "cam150.axis-p1375e-1080p.hevc": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "Axis camera",
+  "set": "yardstick-2026-11-23"
+ },
+ "cam150.axis-p3267lv-5mp.hevc": {
+  "width": 2592,
+  "height": 1944,
+  "encoder": "Axis camera",
+  "set": "yardstick-2026-11-23"
+ },
+ "cam150.hanwha-qnvc9011r-4k.hevc": {
+  "width": 3840,
+  "height": 2160,
+  "encoder": "Hanwha camera",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.ours.av1.ivf": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.ours.av2.ivf": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.ours.h264.264": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.ours.hevc.hevc": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.ours.vp9.ivf": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.ours.vvc.vvc": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.svt.av1.ivf": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "SVT-AV1",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.vpxenc.vp9.ivf": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "libvpx",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd1080.3000k.x264.h264.264": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "x264",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd_mot17_09.600k.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd_mot17_09.600k.av2.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd_mot17_09.600k.h264.264": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd_mot17_09.600k.hevc.hevc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd_mot17_09.600k.vp9.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "crowd_mot17_09.600k.vvc.vvc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "yardstick-2026-11-23"
+ },
+ "aom720_good4_1000k.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "libaom",
+  "set": "yardstick-2026-11-23"
+ },
+ "novatek-bodycam-2460x1848-1s.hevc": {
+  "width": 2460,
+  "height": 1848,
+  "encoder": "Novatek bodycam",
+  "set": "yardstick-2026-11-23"
+ },
+ "openh264_cabac_1080p.3000k.264": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "openh264",
+  "set": "yardstick-2026-11-23"
+ },
+ "svt720_p8_1000k.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "SVT-AV1",
+  "set": "yardstick-2026-11-23"
+ },
+ "x265-1080p-b.hevc": {
+  "width": 1920,
+  "height": 1080,
+  "encoder": "x265",
+  "set": "yardstick-2026-11-23"
+ },
+ "x265-4k-b.hevc": {
+  "width": 3840,
+  "height": 2160,
+  "encoder": "x265",
+  "set": "yardstick-2026-11-23"
+ },
+ "bp4-bodycam.libaom-av1-cpu8.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "libaom",
+  "set": "bp4"
+ },
+ "bp4-bodycam.libvpx-vp9-cpu7.vp9.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "libvpx",
+  "set": "bp4"
+ },
+ "bp4-bodycam.nanocodec-av1-medium.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-bodycam.nanocodec-av2-medium.av2.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-bodycam.nanocodec-h264-medium.264": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-bodycam.nanocodec-hevc-medium.hevc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-bodycam.nanocodec-vp9-medium.vp9.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-bodycam.nanocodec-vvc-medium.vvc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-bodycam.svtav1-m10.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "SVT-AV1",
+  "set": "bp4"
+ },
+ "bp4-bodycam.x264-medium.264": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "x264",
+  "set": "bp4"
+ },
+ "bp4-bodycam.x265-medium.hevc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "x265",
+  "set": "bp4"
+ },
+ "bp4-crowd.libaom-av1-cpu8.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libaom",
+  "set": "bp4"
+ },
+ "bp4-crowd.libvpx-vp9-cpu7.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libvpx",
+  "set": "bp4"
+ },
+ "bp4-crowd.nanocodec-av1-medium.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-crowd.nanocodec-av2-medium.av2.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-crowd.nanocodec-h264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-crowd.nanocodec-hevc-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-crowd.nanocodec-vp9-medium.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-crowd.nanocodec-vvc-medium.vvc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-crowd.svtav1-m10.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "SVT-AV1",
+  "set": "bp4"
+ },
+ "bp4-crowd.x264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x264",
+  "set": "bp4"
+ },
+ "bp4-crowd.x265-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x265",
+  "set": "bp4"
+ },
+ "bp4-drone.libaom-av1-cpu8.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libaom",
+  "set": "bp4"
+ },
+ "bp4-drone.libvpx-vp9-cpu7.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libvpx",
+  "set": "bp4"
+ },
+ "bp4-drone.nanocodec-av1-medium.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-drone.nanocodec-av2-medium.av2.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-drone.nanocodec-h264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-drone.nanocodec-hevc-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-drone.nanocodec-vp9-medium.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-drone.nanocodec-vvc-medium.vvc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-drone.svtav1-m10.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "SVT-AV1",
+  "set": "bp4"
+ },
+ "bp4-drone.x264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x264",
+  "set": "bp4"
+ },
+ "bp4-drone.x265-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x265",
+  "set": "bp4"
+ },
+ "bp4-lowlight.libaom-av1-cpu8.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libaom",
+  "set": "bp4"
+ },
+ "bp4-lowlight.libvpx-vp9-cpu7.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libvpx",
+  "set": "bp4"
+ },
+ "bp4-lowlight.nanocodec-av1-medium.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-lowlight.nanocodec-av2-medium.av2.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-lowlight.nanocodec-h264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-lowlight.nanocodec-hevc-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-lowlight.nanocodec-vp9-medium.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-lowlight.nanocodec-vvc-medium.vvc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-lowlight.svtav1-m10.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "SVT-AV1",
+  "set": "bp4"
+ },
+ "bp4-lowlight.x264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x264",
+  "set": "bp4"
+ },
+ "bp4-lowlight.x265-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x265",
+  "set": "bp4"
+ },
+ "bp4-static.libaom-av1-cpu8.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libaom",
+  "set": "bp4"
+ },
+ "bp4-static.libvpx-vp9-cpu7.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "libvpx",
+  "set": "bp4"
+ },
+ "bp4-static.nanocodec-av1-medium.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-static.nanocodec-av2-medium.av2.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-static.nanocodec-h264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-static.nanocodec-hevc-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-static.nanocodec-vp9-medium.vp9.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-static.nanocodec-vvc-medium.vvc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-static.svtav1-m10.av1.ivf": {
+  "width": 960,
+  "height": 540,
+  "encoder": "SVT-AV1",
+  "set": "bp4"
+ },
+ "bp4-static.x264-medium.264": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x264",
+  "set": "bp4"
+ },
+ "bp4-static.x265-medium.hevc": {
+  "width": 960,
+  "height": 540,
+  "encoder": "x265",
+  "set": "bp4"
+ },
+ "bp4-texture.libaom-av1-cpu8.av1.ivf": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "libaom",
+  "set": "bp4"
+ },
+ "bp4-texture.libvpx-vp9-cpu7.vp9.ivf": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "libvpx",
+  "set": "bp4"
+ },
+ "bp4-texture.nanocodec-av1-medium.av1.ivf": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-texture.nanocodec-av2-medium.av2.ivf": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-texture.nanocodec-h264-medium.264": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-texture.nanocodec-hevc-medium.hevc": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-texture.nanocodec-vp9-medium.vp9.ivf": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-texture.nanocodec-vvc-medium.vvc": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-texture.svtav1-m10.av1.ivf": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "SVT-AV1",
+  "set": "bp4"
+ },
+ "bp4-texture.x264-medium.264": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "x264",
+  "set": "bp4"
+ },
+ "bp4-texture.x265-medium.hevc": {
+  "width": 1080,
+  "height": 540,
+  "encoder": "x265",
+  "set": "bp4"
+ },
+ "bp4-videocall.libaom-av1-cpu8.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "libaom",
+  "set": "bp4"
+ },
+ "bp4-videocall.libvpx-vp9-cpu7.vp9.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "libvpx",
+  "set": "bp4"
+ },
+ "bp4-videocall.nanocodec-av1-medium.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-videocall.nanocodec-av2-medium.av2.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-videocall.nanocodec-h264-medium.264": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-videocall.nanocodec-hevc-medium.hevc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-videocall.nanocodec-vp9-medium.vp9.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-videocall.nanocodec-vvc-medium.vvc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "nanocodec",
+  "set": "bp4"
+ },
+ "bp4-videocall.svtav1-m10.av1.ivf": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "SVT-AV1",
+  "set": "bp4"
+ },
+ "bp4-videocall.x264-medium.264": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "x264",
+  "set": "bp4"
+ },
+ "bp4-videocall.x265-medium.hevc": {
+  "width": 1280,
+  "height": 720,
+  "encoder": "x265",
+  "set": "bp4"
+ }
+}

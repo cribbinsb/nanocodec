@@ -1,6 +1,8 @@
 # nanocodec-hevc
 
-Nanocodec HEVC encoder backend for the shared engine, and an HEVC decoder for the streams it emits.
+Nanocodec HEVC encoder backend for the shared engine, and an HEVC Main, Main 10 and Main Still Picture decoder (147/147 of the official HEVC_v1 conformance suite).
+
+What the decoder passes and every valid-stream feature it does not decode yet: [FAQ: Conformance](https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md#conformance).
 
 This is one of the crates of [nanocodec](https://github.com/cribbinsb/nanocodec).
 Most users want the [`nanocodec`](https://crates.io/crates/nanocodec) crate,

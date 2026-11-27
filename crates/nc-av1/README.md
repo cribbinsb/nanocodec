@@ -1,6 +1,8 @@
 # nanocodec-av1
 
-Nanocodec AV1 encoder backend for the shared engine, and an AV1 decoder for the streams it emits.
+Nanocodec AV1 encoder backend for the shared engine, and an AV1 Main decoder (libaom test vectors pass; not yet: quantizer matrices, loop-filter deltas, some segment features, odd sizes, switch frames).
+
+What the decoder passes and every valid-stream feature it does not decode yet: [FAQ: Conformance](https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md#conformance).
 
 This is one of the crates of [nanocodec](https://github.com/cribbinsb/nanocodec).
 Most users want the [`nanocodec`](https://crates.io/crates/nanocodec) crate,

@@ -1,6 +1,6 @@
 [package]
 name = "nanocodec-hevc"
-description = "nanocodec HEVC encoder backend for the shared engine, and an HEVC decoder for the streams it emits"
+description = "nanocodec HEVC encoder backend for the shared engine, and an HEVC Main, Main 10 and Main Still Picture decoder (147/147 of the official HEVC_v1 conformance suite)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

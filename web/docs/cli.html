@@ -25,7 +25,7 @@
 </div>
 <main>
   <h1>Command line</h1>
-  <p class="lede"><code>nanocodec</code> encodes raw 8-bit 4:2:0 video, decodes our streams, and extracts
+  <p class="lede"><code>nanocodec</code> encodes raw 8-bit 4:2:0 video, decodes streams (ours and other encoders', within the supported profiles), and extracts
     temporal or spatial sub-streams. The examples below use the 640x360 test clip from
     <a href="index.html#first-encode">Getting started</a>; the full option list is at the
     <a href="#reference">end of this page</a>, the same list <code>nanocodec help</code> prints.</p>
@@ -91,11 +91,16 @@ planner.lambda_scale = 1.1</code></pre>
   --bitrate 300 --preset fast --params my-params.toml --param scene.detect=0 --output tuned.264</code></pre>
 
   <h2 id="decode">Decoding</h2>
-  <p>What our decoders read, per format: H.264 (Constrained High), HEVC (Main), AV1 (Main, 8-bit 4:2:0) and VP9
-    (profile 0) pass the conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams
-    and 121 of 133 8-bit VTM and VVenC streams, so it is not a full Main-profile decoder; AV2 decodes our own
-    streams and 14 of 30 foreign test streams (the rest use tools outside our subset). All are 8-bit 4:2:0
-    only. Output is raw I420 (<code>-</code> writes stdout);
+  <p>Our decoders also decode other encoders' streams, but none decodes every valid stream of its codec's
+    main profiles yet. HEVC passes the official HEVC_v1 suite (147/147, Main and Main 10); VVC 226 of the 283
+    official H.266.1 streams (all its Main 10 streams but two); H.264 110 of 190 official H.264.1 streams
+    (not yet interlaced streams or pictures above level 5.2); AV1 and VP9 pass the libaom (242/242) and
+    libvpx (305/305) test vectors, which are encoder project vectors, not official suites (AV1 not yet:
+    quantizer matrices, loop-filter deltas, segment features other than the quantizer, lossless segments in
+    mixed frames, odd frame sizes, switch frames; VP9 not yet: profiles 1 and 3); AV2 (a draft, no suite)
+    decodes 30 of 30 foreign 8-bit single-tile streams (not yet 10-bit, monochrome, several tiles or
+    reference scaling). Every gap: <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md#conformance">FAQ: Conformance</a>.
+    Output is raw I420, 16-bit little-endian for pictures above 8 bits (<code>-</code> writes stdout);
     <code>--frame-md5</code> writes one MD5 per frame, and <code>--discard 1</code> decodes without writing, for
     timing:</p>
 <pre class="run"><code>nanocodec decode --codec hevc --input out.hevc --output decoded.yuv

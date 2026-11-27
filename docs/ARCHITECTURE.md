@@ -320,12 +320,12 @@ layers, long-term references, intra-leaf costs).
 
 | Codec | Profile and tools (encoder) | Decoder |
 |---|---|---|
-| H.264 (`nc-h264`) | High, CABAC; 16x16 to 8x8 inter partitions, intra 4x4/16x16, 8x8 transform; quarter-sample MC; trellis; deblocking | 8-bit High conformance suite |
-| HEVC (`nc-hevc`) | Main; CTU 64, 2Nx2N CUs 8–64 (NxN intra at 8x8), angular intra, merge/AMVP/TMVP, transform trees to 4x4 with DST; deblocking + SAO edge offset | full Main / Main 10 / Main Still Picture, MD5-exact on the JCT-VC HEVC_v1 Main and Main 10 streams (147) |
-| AV1 (`nc-av1`) | Main 8-bit 4:2:0; SB64 with square and rectangular partitions; directional intra with angle deltas, filter intra, CfL; single-reference inter plus LTR slot; adaptive CDFs; trellis on P frames; deblocking + CDEF | toward full Main conformance (libaom vectors, see our internal notes (not published)) |
-| VP9 (`nc-vp9`) | Profile 0; 64x64 to 8x8 partitions, DC intra, single-reference inter, transforms to 32x32, deblocking | any conforming Profile 0 stream |
-| AV2 (`nc-av2`) | 8-bit 4:2:0 I/P; intra modes except CfL, skip, quarter-pel motion | our emitted subset |
-| VVC (`nc-vvc`) | 8-bit 4:2:0 quadtree, 67 intra modes, skip/merge/AMVP, DCT-II, deblocking + SAO | our emitted subset |
+| H.264 (`nc-h264`) | High, CABAC; 16x16 to 8x8 inter partitions, intra 4x4/16x16, 8x8 transform; quarter-sample MC; trellis; deblocking | progressive CB/Main/High/High 10: 110/190 official H.264.1 streams; not yet interlace (field, MBAFF), sizes above level 5.2 |
+| HEVC (`nc-hevc`) | Main; CTU 64, 2Nx2N CUs 8–64 (NxN intra at 8x8), angular intra, merge/AMVP/TMVP, transform trees to 4x4 with DST; deblocking + SAO edge offset | Main / Main 10 / Main Still Picture, MD5-exact on the official JCT-VC HEVC_v1 suite (147/147); no known gap |
+| AV1 (`nc-av1`) | Main 8-bit 4:2:0; SB64 with square and rectangular partitions; directional intra with angle deltas, filter intra, CfL; single-reference inter plus LTR slot; adaptive CDFs; trellis on P frames; deblocking + CDEF | Main 8/10-bit: libaom test vectors 242/242 (not an official suite); not yet: quantizer matrices, loop-filter deltas, segment features other than the quantizer, mixed lossless segments, odd sizes, switch frames |
+| VP9 (`nc-vp9`) | Profile 0; 64x64 to 8x8 partitions, DC intra, single-reference inter, transforms to 32x32, deblocking | profiles 0 and 2: libvpx test vectors 305/305 (no official suite); not yet profiles 1 and 3 |
+| AV2 (`nc-av2`) | 8-bit 4:2:0 I/P; intra modes except CfL, skip, quarter-pel motion | 8-bit single-tile AVM v1.0.0 streams (30/30 foreign, no suite); not yet 10-bit, monochrome, tiles, reference scaling |
+| VVC (`nc-vvc`) | 8-bit 4:2:0 quadtree, 67 intra modes, skip/merge/AMVP, DCT-II, deblocking + SAO | Main 10: 226/283 official H.266.1 streams; not yet: reserved NAL types and layer ids above 0 ignored |
 
 Each backend keeps its own reconstructed references, since reconstruction
 differs per codec. Per-codec detail and supported subsets live in each
@@ -395,10 +395,11 @@ node (SIMD128), since CI here only cross-checks aarch64.
 - The goal is standard profile compliance (decoders: 8-bit, and Main 10
   where it is done; owner 2026-11-15) without slowing the decode of our own
   streams. High bit depth is one generic source per codec, compiled for
-  `u8` and `u16` samples (`docs/handoff/high-bit-depth.md`). Status: the profiles and conformance streams
-  tested so far are listed in the README's Decoders table (H.264 Constrained
-  High, HEVC Main and Main 10, AV1 Main 8-bit 4:2:0, VP9 profile 0; VVC 9 official 8-bit
-  streams; AV2 our own streams only). A decoder that meets syntax it does not
+  `u8` and `u16` samples (`docs/handoff/high-bit-depth.md`). Status: the suites passed (and whether each is
+  official or an encoder project's test vectors) and every valid-stream feature not
+  decoded yet are in `docs/FAQ.md#conformance` and
+  `docs/analysis/decoder-compliance-gaps-2026-11-27.md`; no decoder decodes every
+  valid stream of its profiles yet. A decoder that meets syntax it does not
   support is meant to reject the stream rather than guess.
 - Before a build's numbers are published, short streams of every shipped
   preset of every codec must decode bit-exactly in two standard decoders per

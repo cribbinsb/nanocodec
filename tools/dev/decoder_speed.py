@@ -105,10 +105,11 @@ def main() -> None:
                 sys.exit(f"{name} {decoder}: frame counts differ between passes")
             entry["seconds"] += [p["seconds"] for p in passes]
             entry["rss"] = max(entry["rss"], rss)
+        # after every round, so a lost box keeps the rounds it finished
+        for entry in results.values():
+            entry["t"] = statistics.median(entry["seconds"])
+        args.out.write_text(json.dumps(results, indent=1) + "\n")
         print(f"round {round_} done", file=sys.stderr, flush=True)
-    for entry in results.values():
-        entry["t"] = statistics.median(entry["seconds"])
-    args.out.write_text(json.dumps(results, indent=1) + "\n")
 
 
 if __name__ == "__main__":

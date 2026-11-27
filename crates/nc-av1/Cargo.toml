@@ -1,6 +1,6 @@
 [package]
 name = "nanocodec-av1"
-description = "nanocodec AV1 encoder backend for the shared engine, and an AV1 decoder for the streams it emits"
+description = "nanocodec AV1 encoder backend for the shared engine, and an AV1 Main decoder (libaom test vectors pass; not yet: quantizer matrices, loop-filter deltas, some segment features, odd sizes, switch frames)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
