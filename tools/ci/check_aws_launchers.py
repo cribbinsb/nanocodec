@@ -84,6 +84,8 @@ RECLAIM_TESTS = {
                                          "on failure); the builds are on demand",
     "tools/dev/decoder_yardstick.py": "one-off decoder timing comparison, rerun whole",
     "tools/dev/vp9_efficiency_probe.py": "one-off probe, rerun whole",
+    "tools/dev/verify_arm.py": "the nightly Arm verify (unit: one ~30-minute run, rerun whole "
+                               "the next night; a reclaim is recorded as an error, not a pass)",
     "tools/dev/aws_bake.py": "one-off image bake (unit: one image, minutes): a reclaim leaves "
                              "no image and the next warm box uses the stock image; rerun whole",
     "eval/distill/box_run.py": "the distillation study: Session.pulling copies results off "

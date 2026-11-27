@@ -5,8 +5,10 @@
 //!
 //! The streams are not in the repository (`tools/dev/av2_foreign/` fetches
 //! and encodes them into `$NC_AV2_FOREIGN`, by default
-//! `~/nanocodec-data/work/av2-foreign`). Without that directory the test
-//! says so and checks nothing; with it, a missing stream fails.
+//! `~/nanocodec-data/work/av2-foreign`). Without the default directory the
+//! test says so and checks nothing; a directory named by `NC_AV2_FOREIGN`
+//! must exist (the nightly verifier sets it, so a missing corpus fails there),
+//! and with a corpus a missing stream fails.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -16,14 +18,16 @@ const HASHES: &str = include_str!("data/av2-foreign.md5");
 const STREAM_DIRS: [&str; 2] = ["streams", "vectors/dav2d-test-data/avm"];
 
 fn corpus() -> Option<PathBuf> {
-    let root = std::env::var_os("NC_AV2_FOREIGN").map_or_else(
-        || {
-            Path::new(&std::env::var_os("HOME")?)
-                .join("nanocodec-data/work/av2-foreign")
-                .into()
-        },
-        |root| Some(PathBuf::from(root)),
-    )?;
+    if let Some(root) = std::env::var_os("NC_AV2_FOREIGN") {
+        let root = PathBuf::from(root);
+        assert!(
+            root.is_dir(),
+            "NC_AV2_FOREIGN={} is not a directory",
+            root.display()
+        );
+        return Some(root);
+    }
+    let root = Path::new(&std::env::var_os("HOME")?).join("nanocodec-data/work/av2-foreign");
     root.is_dir().then_some(root)
 }
 

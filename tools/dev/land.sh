@@ -440,7 +440,12 @@ verify_tests() {
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         record_verified tests "$head"
-        rm -f "$list"
+        # Only this part's lines go: the nightly verifier's (tools/dev/verify_schedule.py,
+        # logs under land-logs/nightly-*) stay until their own checks pass.
+        if [[ -f "$list" ]]; then
+            grep -v ' [^ ]*/verify-[0-9a-f]*\.log$' "$list" >"$list.new" || true
+            mv "$list.new" "$list"
+        fi
         printf '== tests verified: %s %s\n' "$target" "${head:0:9}"
     else
         printf '%s %s %s\n' "$head" "$base" "$log" >>"$list"
@@ -479,7 +484,7 @@ verify_part() {
     mkdir -p "$verified"
     "$HOME/nanocodec-data/bin/nc-remote" run --worktree "$tree" --name "verifier-$part" \
         --env "NC_VERIFY_SCOPE=$(base64 -w0 <<<"$scope")" \
-        "${changed[@]}" --env NC_CHECK_STRICT=1 \
+        "${changed[@]}" --env NC_CHECK_STRICT=1 --env NC_CHECKASM_REQUIRE=avx2,avx512 \
         --sync "$verified" --fetch "~/$cache" \
         "${clips[@]}" "${binaries[@]}" \
         --fetch-to "$fetched" -- "NC_VERIFIED_DIR=\$HOME/$cache NC_CHECK_GROUPS='rust conformance' \

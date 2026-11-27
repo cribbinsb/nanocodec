@@ -668,6 +668,25 @@ impl Av2Backend {
         applies.then_some(rate_scales)
     }
 
+    /// The frame's qindex: the plan's, except that fixed-QP key frames code at a finer
+    /// step, as AV1's do (a static scene keeps the key frame's detail for the whole GOP).
+    /// A lossless (qindex 0) stream keeps lossless keys, and a lossy key stays lossy
+    /// (qindex 1 and up).
+    fn frame_qindex(&self, plan: &FramePlan) -> u8 {
+        let planned = plan.quantizer.min(MAX_QINDEX) as u8;
+        let fixed_key = self.key && !self.rate_control && planned != 0;
+        match self.key_qindex_offset {
+            Some(offset) if fixed_key => {
+                nc_encoder::offset_key_quantizer(u32::from(planned), offset, 1, MAX_QINDEX) as u8
+            }
+            _ if fixed_key => key_qindex(
+                planned,
+                f64::from(self.params.keyframe_step_permille) / PERMILLE,
+            ),
+            _ => planned,
+        }
+    }
+
     /// The frame's quantizer offsets. Chroma AC: the noise-attenuated
     /// `av2.chroma_delta_q` on every frame type, moved by the previous
     /// frame's luma/chroma error gap ([`nc_encoder::error_gap_offset`]). Unlike AV1
@@ -1521,22 +1540,7 @@ impl CodecBackend for Av2Backend {
         self.cdef_outcome.begin_picture();
         self.key = plan.frame_type == FrameType::Key;
         self.references = plan.references;
-        let planned = plan.quantizer.min(MAX_QINDEX) as u8;
-        // Fixed-QP key frames code at a finer step, as AV1's do: a static
-        // scene keeps the key frame's detail for the whole GOP.
-        // A lossless (qindex 0) stream keeps lossless keys, and a lossy key
-        // stays lossy (qindex 1 and up).
-        let fixed_key = self.key && !self.rate_control && planned != 0;
-        self.qindex = match self.key_qindex_offset {
-            Some(offset) if fixed_key => {
-                nc_encoder::offset_key_quantizer(u32::from(planned), offset, 1, MAX_QINDEX) as u8
-            }
-            _ if fixed_key => key_qindex(
-                planned,
-                f64::from(self.params.keyframe_step_permille) / PERMILLE,
-            ),
-            _ => planned,
-        };
+        self.qindex = self.frame_qindex(plan);
         self.quant_deltas = self.frame_quant_deltas();
         self.frame_filter = self.choose_frame_filter();
         let inter_tx = InterTxTypes::from_param(self.params.inter_tx_types);

@@ -7,6 +7,9 @@
 #   tools/ci/check.sh --quick    skip the WASM checkasm run, the syntax stress test and
 #                                the H.264 conformance streams
 #                                (the VP9/AV2/VVC browser-module smoke tests always run)
+#   tools/ci/check.sh --full-only
+#                                only the steps --quick leaves out (the nightly verifier,
+#                                tools/dev/verify_schedule.py: the hourly verify runs --quick)
 #   tools/ci/check.sh [--quick] [--crates ...] --preflight
 #                                only list the tools those checks would need and lack
 #   tools/ci/check.sh --quick --crates "nc-vvc nc-cli"
@@ -15,23 +18,30 @@
 #                                checkasm runs only if nc-checkasm is listed and
 #                                the browser module only if nc-web is
 #
+# NC_CHECKASM_REQUIRE=avx2,avx512: host checkasm fails when a listed tier cannot run
+# here instead of skipping it (the verifiers set it for their machines).
+#
 # Exits non-zero on the first failure.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
-quick=false preflight_only=false
+quick=false full_only=false preflight_only=false
 crates=""
 while (($#)); do
     case $1 in
         --quick) quick=true ;;
+        --full-only) full_only=true ;;
         --preflight) preflight_only=true ;;
         --crates) crates=${2:?--crates needs a list}; shift ;;
         *) printf 'check.sh: unknown argument %s\n' "$1" >&2; exit 2 ;;
     esac
     shift
 done
+if $quick && $full_only; then
+    echo 'check.sh: --quick and --full-only exclude each other' >&2; exit 2
+fi
 if [[ -n "$crates" ]]; then
     $quick || { echo 'check.sh: --crates needs --quick' >&2; exit 2; }
     selection=()
@@ -85,41 +95,48 @@ if $preflight_only; then
     exit 0
 fi
 
-step "format"
-cargo fmt --all --check
+# The steps --quick runs too (all but the extras below).
+quick_steps() {
+    step "format"
+    cargo fmt --all --check
 
-step "clippy (host): ${crates:-workspace}"
-cargo clippy "${selection[@]}" --all-targets -- -D warnings
+    step "clippy (host): ${crates:-workspace}"
+    cargo clippy "${selection[@]}" --all-targets -- -D warnings
 
-step "tests: ${crates:-workspace}"
-# gate-test (Cargo.toml): optimised like gate, with debug assertions and overflow
-# checks on (they catch a wrapped i16/u16 value). A one-crate change re-tests in
-# 43 s against 68 s on the opt-level-1 test profile (2026-11-15, -j8; 30 s with
-# the checks off).
-cargo test "${selection[@]}" --profile gate-test --quiet
+    step "tests: ${crates:-workspace}"
+    # gate-test (Cargo.toml): optimised like gate, with debug assertions and overflow
+    # checks on (they catch a wrapped i16/u16 value). A one-crate change re-tests in
+    # 43 s against 68 s on the opt-level-1 test profile (2026-11-15, -j8; 30 s with
+    # the checks off).
+    cargo test "${selection[@]}" --profile gate-test --quiet
 
-# land.sh sets NC_CHECKASM=0 when no kernel crate changed (tools/dev/land_scope.py).
-if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then
-    step "checkasm (host SIMD vs scalar)"
-    cargo run --profile gate --quiet -p nc-checkasm
-    step "no SIMD code outside its #[target_feature] context (host checkasm)"
-    python3 tools/ci/check_outlined_simd.py "$target_dir"/gate/nc-checkasm
-fi
+    # land.sh sets NC_CHECKASM=0 when no kernel crate changed (tools/dev/land_scope.py).
+    if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then
+        step "checkasm (host SIMD vs scalar)"
+        cargo run --profile gate --quiet -p nc-checkasm -- ${NC_CHECKASM_REQUIRE:+--require "$NC_CHECKASM_REQUIRE"}
+        step "no SIMD code outside its #[target_feature] context (host checkasm)"
+        python3 tools/ci/check_outlined_simd.py "$target_dir"/gate/nc-checkasm
+    fi
 
-step "crate layering, integration-test modules, encode paths, AWS launchers, decoder register"
-python3 tools/ci/check_layering.py
-python3 tools/ci/check_test_modules.py
-python3 tools/ci/check_encode_paths.py
-python3 tools/ci/check_names.py
-python3 tools/ci/check_sealed_sets.py
-python3 tools/ci/check_aws_launchers.py
-python3 tools/ci/decoder_gaps.py
+    step "crate layering, integration-test modules, encode paths, AWS launchers, decoder register"
+    python3 tools/ci/check_layering.py
+    python3 tools/ci/check_test_modules.py
+    python3 tools/ci/check_encode_paths.py
+    python3 tools/ci/check_names.py
+    python3 tools/ci/check_sealed_sets.py
+    python3 tools/ci/check_aws_launchers.py
+    python3 tools/ci/decoder_gaps.py
 
-# Runs in --quick too (land.sh), so browser API changes cannot land unchecked.
-# land.sh sets NC_BROWSER_TESTS=0 unless web/, nc-web or the kernels changed.
-if selected nc-web && [[ "${NC_BROWSER_TESTS:-1}" == 1 ]]; then
-    step "browser module (VP9/AV2/VVC WASM smoke tests under node, product smoke in Chromium)"
-    tools/ci/browser_smoke.sh
+    # Runs in --quick too (land.sh), so browser API changes cannot land unchecked.
+    # land.sh sets NC_BROWSER_TESTS=0 unless web/, nc-web or the kernels changed.
+    if selected nc-web && [[ "${NC_BROWSER_TESTS:-1}" == 1 ]]; then
+        step "browser module (VP9/AV2/VVC WASM smoke tests under node, product smoke in Chromium)"
+        tools/ci/browser_smoke.sh
+    fi
+}
+
+if ! $full_only; then
+    quick_steps
 fi
 
 if ! $quick; then
@@ -155,7 +172,7 @@ if ! $quick; then
     step "clippy (aarch64 cross-check)"
     cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 
-    step "H.264 decoder conformance (skipped without the downloaded streams)"
+    step "H.264 decoder conformance (fails without the downloaded streams)"
     tools/ci/h264_conformance.sh
 fi
 

@@ -118,6 +118,6 @@ BSD 3-Clause ([LICENSE](LICENSE)), a copyright licence only: **it grants no pate
 its demo does not license you under any patent on H.264, HEVC, VVC, AV1, VP9 or AV2.** Experimental software,
 provided "as is". No GPL or LGPL code is in nanocodec's libraries, binaries or demo. Our
 benchmark tools run x264, x265 and FFmpeg as separate programs, or link FFmpeg's libraries to time its decoders
-(`tools/anchors/libavcodec_bench.c`, not shipped). Details: [Credits, licences, patents and disclaimers](docs/LEGAL.md).
+(`tools/anchors/libavcodec_bench.c`, not shipped). Details: [Credits, licences, patents and disclaimers](docs/LEGAL.md). The demo's sample media are not BSD: see [MEDIA-LICENSES.md](MEDIA-LICENSES.md).
 
 Contact: <bernandocribbenza@gmail.com>, or open an issue on GitHub.

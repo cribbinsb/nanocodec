@@ -26,11 +26,3 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
----
-
-This licence covers nanocodec's source code and documentation. It does not
-cover the sample media in web/clips/ (video clips) or web/streams-ref/
-(streams coded from them): they keep their rights holders' own licences, some
-NonCommercial or ShareAlike, listed in web/clips/ATTRIBUTION.md and
-docs/LEGAL.md.

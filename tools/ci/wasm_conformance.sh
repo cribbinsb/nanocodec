@@ -10,7 +10,7 @@
 #
 # Run after tools/web/build.sh. H.264 must pass the streams the native decoder
 # must (tools/ci/h264_conformance_passing.txt), the others all. A corpus not fetched
-# (tools/dev/conformance_fetch.py) is skipped with a note. JOBS (default 8)
+# (tools/dev/conformance_fetch.py) fails the run (a suite that does not run must not pass). JOBS (default 8)
 # sets the parallel decodes; extra arguments go to every runner (e.g. --only).
 # JSON_DIR, when set, receives one result file per build and corpus
 # (<build>-<codec>.json, the runner's --json).
@@ -27,7 +27,8 @@ for pkg in "$REPO/web/pkg" "$REPO/web/pkg/relaxed"; do
                  "vp9 vp9_conformance_libvpx.json"; do
         read -r codec manifest extra <<< "$suite"
         if [[ ! -d $DATA/$codec/streams ]]; then
-            echo "skipped $codec: no corpus in $DATA/$codec/streams" >&2
+            echo "FAILED $codec: no corpus in $DATA/$codec/streams (tools/dev/conformance_fetch.py)" >&2
+            status=1
             continue
         fi
         json=()

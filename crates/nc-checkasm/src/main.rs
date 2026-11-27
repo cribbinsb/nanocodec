@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! nc-checkasm [--seed N] [--iterations N]   verify every supported ISA
+//! nc-checkasm --require avx2,avx512           ... and fail if a listed ISA cannot run here
 //! nc-checkasm --bench                        ns/call per kernel and ISA
 //! nc-checkasm --bench-encoder-wide           forward/intra encoder kernels
 //! nc-checkasm --bench-av1-runs               only AV1 edge/run filters
@@ -50,6 +51,9 @@ struct Options {
     seed: u64,
     iterations: usize,
     isa: Option<Isa>,
+    /// ISAs that must be checked: one this machine or build cannot run fails the run
+    /// instead of being skipped, so a verifier on the wrong machine is not a silent pass.
+    required: Vec<Isa>,
 }
 
 fn main() -> ExitCode {
@@ -58,7 +62,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("nc-checkasm: {message}");
             eprintln!(
-                "usage: nc-checkasm [--bench|--bench-encoder-wide|--bench-av1-inverse|--bench-av1-runs|--bench-deblock-batches|--bench-cdef|--bench-copies|--bench-nn|--bench-vp9-mc] [--isa ISA] [--seed N] [--iterations N]"
+                "usage: nc-checkasm [--bench|--bench-encoder-wide|--bench-av1-inverse|--bench-av1-runs|--bench-deblock-batches|--bench-cdef|--bench-copies|--bench-nn|--bench-vp9-mc] [--isa ISA] [--require ISA,...] [--seed N] [--iterations N]"
             );
             return ExitCode::from(2);
         }
@@ -102,6 +106,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         seed: DEFAULT_SEED,
         iterations: DEFAULT_ITERATIONS,
         isa: None,
+        required: Vec::new(),
     };
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -135,6 +140,14 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 }
                 options.isa = Some(isa);
             }
+            "--require" => {
+                let list = args.next().ok_or("--require needs a list of ISA names")?;
+                options.required = list
+                    .split(',')
+                    .filter(|name| !name.is_empty())
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()?;
+            }
             "--seed" => options.seed = parse_value(&arg, args.next().as_deref())?,
             "--iterations" => options.iterations = parse_value(&arg, args.next().as_deref())?,
             other => return Err(format!("unknown argument {other}")),
@@ -157,7 +170,12 @@ fn run_checks(options: &Options) -> ExitCode {
             .map_or(isa != Isa::Scalar, |chosen| chosen == isa)
     }) {
         let Some(report) = check(isa, options.seed, options.iterations) else {
-            println!("{isa:>8}: not available on this machine/build, skipped");
+            if options.required.contains(&isa) {
+                all_passed = false;
+                println!("{isa:>8}: FAILED: required but not available on this machine/build");
+            } else {
+                println!("{isa:>8}: not available on this machine/build, skipped");
+            }
             continue;
         };
         if report.passed() {
@@ -172,6 +190,12 @@ fn run_checks(options: &Options) -> ExitCode {
         );
         for line in report.failures.iter().take(MAX_PRINTED_FAILURES) {
             println!("    {line}");
+        }
+    }
+    if let Some(chosen) = options.isa {
+        for isa in options.required.iter().filter(|&&isa| isa != chosen) {
+            all_passed = false;
+            println!("{isa:>8}: FAILED: required but excluded by --isa {chosen}");
         }
     }
     if all_passed {

@@ -8,10 +8,11 @@
 #
 # For every codec and setting: the stream must decode bit-exactly against
 # the encoder's reconstruction with every standard decoder (JM + ffmpeg,
-# HM + ffmpeg, aomdec + dav1d + ffmpeg, avmdec + dav2d) and with our own
+# HM + ffmpeg, aomdec + dav1d + ffmpeg, vpxdec + ffmpeg, avmdec + dav2d) and with our own
 # decoder; ffprobe must report the signalled colour description, and AV1
 # IVF packets must carry the input timestamps. AV2 runs the settings it
-# supports (no colour signalling or intra refresh yet).
+# supports (no colour signalling or intra refresh yet), and so does VP9 (no
+# intra refresh; its colour_config has no primaries or transfer to probe, VP9 §7.2).
 #
 # Usage: tools/ci/realuse_conformance.sh [codec ...]   (default: all).
 # Needs the pinned decoders from tools/anchors/build_anchors.sh and a release
@@ -104,10 +105,10 @@ L1T2="--temporal-layers 2 --param layers.adaptive=0"
 L1T3="--temporal-layers 3 --param layers.adaptive=0"
 LOSS_CASES=(
   "all|--simulate-loss $LOST --bitrate 300|Key"
-  "h264 hevc av1 av2|--ltr-interval 4 --simulate-loss $LOST --bitrate 300|Inter"
-  "h264 hevc av1 av2|$L1T2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
-  "h264 hevc av1 av2|--temporal-layers 2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
-  "h264 hevc av1 av2|$L1T3 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
+  "h264 hevc av1 vp9 av2|--ltr-interval 4 --simulate-loss $LOST --bitrate 300|Inter"
+  "h264 hevc av1 vp9 av2|$L1T2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
+  "h264 hevc av1 vp9 av2|--temporal-layers 2 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
+  "h264 hevc av1 vp9 av2|$L1T3 --ltr-interval 4 --simulate-loss 10 --bitrate 300|Inter"
   "all|$L1T2 --simulate-loss $LOST --bitrate 300|Inter"
 )
 
@@ -202,6 +203,10 @@ standard_decode() {
       "$ANCHORS/dav1d" -q -i "$stream" -o "$WORK/dav1d.yuv"
       ffmpeg -v error -y -xerror -c:v libdav1d -i "$stream" -noautoscale -fps_mode passthrough -f rawvideo "$WORK/ffmpeg.yuv"
       echo aomdec dav1d ffmpeg ;;
+    vp9)
+      "$ANCHORS/vpxdec" --rawvideo --i420 -o "$WORK/vpxdec.yuv" "$stream"
+      ffmpeg -v error -y -xerror -err_detect explode -c:v vp9 -i "$stream" -noautoscale -fps_mode passthrough -f rawvideo "$WORK/ffmpeg.yuv"
+      echo vpxdec ffmpeg ;;
     av2)
       "$ANCHORS/avmdec" --rawvideo -o "$WORK/avmdec.yuv" "$stream" >/dev/null 2>&1
       # dav2d ignores the conformance window: crop its coded-size frames.
@@ -241,7 +246,7 @@ PY
 
 # Where the stream of codec $1 is written.
 stream_path() {
-  case $1 in h264) echo "$WORK/out.264" ;; hevc) echo "$WORK/out.hevc" ;; av1 | av2) echo "$WORK/out.ivf" ;; esac
+  case $1 in h264) echo "$WORK/out.264" ;; hevc) echo "$WORK/out.hevc" ;; av1 | vp9 | av2) echo "$WORK/out.ivf" ;; esac
 }
 
 # Encode with "$@" as extra flags, then check every decoder against the
@@ -250,7 +255,7 @@ encode_and_check() {
   local codec=$1
   shift
   local q stream
-  case $codec in h264) q=30 ;; hevc) q=32 ;; av1) q=120 ;; av2) q=140 ;; esac
+  case $codec in h264) q=30 ;; hevc) q=32 ;; av1 | vp9) q=120 ;; av2) q=140 ;; esac
   stream=$(stream_path "$codec")
   "$NANOCODEC" encode --codec "$codec" --input "${SRC:-$WORK/src.yuv}" --width "$W" --height "$H" \
     --fps 30 --qp "$q" --frames "$FRAMES" --intra-period "$PERIOD" "$@" \
@@ -266,14 +271,15 @@ encode_and_check() {
 }
 
 CODECS=("$@")
-((${#CODECS[@]})) || CODECS=(h264 hevc av1 av2)
+((${#CODECS[@]})) || CODECS=(h264 hevc av1 vp9 av2)
 
 failures=0
 for codec in "${CODECS[@]}"; do
   stream=$(stream_path "$codec")
-  # AV2 has no colour signalling or intra refresh yet.
+  # AV2 has no colour signalling or intra refresh yet; VP9 no intra refresh, and
+  # its colour_config (VP9 §7.2) carries no primaries or transfer for ffprobe.
   colour_cases=("${COLOUR_CASES[@]}") refresh_cases=("${REFRESH_CASES[@]}")
-  [[ $codec == av2 ]] && colour_cases=() refresh_cases=()
+  [[ $codec == av2 || $codec == vp9 ]] && colour_cases=() refresh_cases=()
   for entry in "${colour_cases[@]}"; do
     flags=${entry%%|*} expected=${entry##*|}
     # shellcheck disable=SC2086 # flags are intentionally word-split
