@@ -314,6 +314,7 @@ mod scalar {
 impl HighFns {
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
     pub(crate) fn install_sve2_mc(&mut self) {
+        self.sao_apply = crate::sao::apply_high_sve2;
         self.prep[family(Filter::HevcLuma)] = vector::sve2::HEVC_LUMA_PREP;
         self.av1_grain = crate::av1_film_grain::high_simd::HighAv1GrainFns::for_isa(Isa::Sve2);
         self.high_precision = crate::mc::precision_simd::sve2::high_precision;

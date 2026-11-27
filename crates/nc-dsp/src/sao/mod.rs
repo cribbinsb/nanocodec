@@ -29,6 +29,12 @@ pub(crate) mod generic;
 ))]
 pub(crate) mod high_simd;
 mod restricted;
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[allow(unsafe_code)]
+mod sve2_high;
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+pub(crate) use sve2_high::apply as apply_high_sve2;
 pub(crate) mod scalar;
 pub(crate) use band_stats::band_stats;
 pub use band_stats::{MAX_BAND_SAMPLES, SAO_BANDS, SaoBandStats};

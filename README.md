@@ -72,65 +72,17 @@ be in the right place:
 
 ## Benchmark results
 
-From the reports of 27 November 2026, benchmark procedure BP-4.0 ([docs/benchmark-procedure.md](docs/benchmark-procedure.md)),
-CBR only, on development build 23c962d8b (crate version 0.6.0, PGO build). Every figure below is from the
-procedure's own reports; the [results pages](https://cribbinsb.github.io/nanocodec/results/) show every preset
-and every reference on every dataset, both machines, per metric.
+**[Interactive results](https://cribbinsb.github.io/nanocodec/results/)**: every preset and every reference
+encoder on every dataset, x86 and Arm, per metric, with the method, rate compliance and build-by-build history.
 
-![BD-J against encode speed on the held-out clips, x86 and Arm](docs/images/bd-vs-speed-bp4.svg)
+![Bitrate vs encode speed on the held-out clips, x86](docs/images/bd-vs-speed-bp4.svg)
 
-Lower is fewer bits for the same score than x264 `medium --tune zerolatency,psnr` (the zero line); right is
-faster. Lines join each format's nanocodec presets; grey circles are the reference encoders' settings. Held-out
-clips ("ours" dataset), common set; drawn from the reports by `tools/bench/readme_chart.py`.
-
-**Bits for the same score (BD-J), each format's `medium` preset and some reference settings**, against x264
-`medium --tune zerolatency,psnr`; negative is fewer bits. Speed is on the held-out clips.
-
-| Encoder | Held-out (92 clips) | VC-1K video calls (99) | AOM CTC (34) | Speed, Mpx/CPU-s, x86 / Arm |
-|---|---:|---:|---:|---:|
-| nanocodec VVC `medium` | −36.3 % | −33.9 % | −42.9 % | 58 / 45 |
-| nanocodec AV2 `medium` | −34.7 % | −35.1 % | −40.0 % | 74 / 61 |
-| nanocodec AV1 `medium` | −30.9 % | −30.8 % | −36.6 % | 91 / 79 |
-| nanocodec HEVC `medium` | −30.2 % | −26.3 % | −36.4 % | 96 / 83 |
-| nanocodec VP9 `medium` | −29.1 % | −25.0 % | −33.9 % | 78 / 61 |
-| nanocodec H.264 `medium` | −10.8 % | +7.3 % | −3.4 % | 136 / 117 |
-| x265 `medium` | −15.4 % | −27.4 % | −23.8 % | 25 / 19 |
-| SVT-AV1 M10 (`--rtc`) | −6.8 % | −18.1 % | −18.0 % | 134 / 92 |
-| SVT-AV1 M12 (`--rtc`) | +0.6 % | −4.2 % | −7.1 % | 215 / 149 |
-| libaom `--rt` cpu-used 10 | −4.8 % | −5.6 % | −10.1 % | 129 / 95 |
-| libvpx VP9 `--rt` cpu-used 9 | +10.8 % | +15.5 % | +12.6 % | 170 / 129 |
-| x264 `medium` (default tune) | +14.2 % | +23.8 % | +16.0 % | 60 / 43 |
-| openh264, camera real-time, CABAC | +38.9 % | +37.2 % | +40.7 % | 310 / 203 |
-| openh264, camera real-time, CAVLC (Constrained Baseline) | +62.4 % | +81.2 % | +80.0 % | 342 / 217 |
-
-- **Score (BD-J):** the mean of the BD-rates on PSNR-YUV, VMAF v1 and MS-SSIM, over the clips every charted
-  encoder shares (the common set). The BD
-  figures are the x86 run's; the Arm run's agree within 0.3 points. No subjective test was run.
-- **Clips:** "held-out" is the project's 97 held-out camera clips, of which 92 are in the common set (150-frame
-  windows, plus 600-frame windows where the source allows); VC-1K is 100 video calls (numbers only, never
-  shown); AOM CTC is 34 sequences of the AOM common test conditions (130 frames). Our presets were tuned on
-  other clips, at these rates; no reference was tuned.
-- **Conditions:** every encoder in its own low-delay real-time CBR: a 1 s buffer starting full, peak rate
-  equal to the target, no B-frames, no lookahead, one thread, a key frame every 150 frames, 8-bit. nanocodec
-  holds the buffer strictly (`--strict-buffer`); each encoder's buffer use is on the
-  [rate compliance page](https://cribbinsb.github.io/nanocodec/results/compliance.html). Rate ladder
-  300/500/800/1200 kbps at 720p30, scaled per clip by picture size and frame rate; nothing above that is
-  measured.
-- **Speed:** megapixels per CPU-second (geometric mean over clips), each encode timed while half of the
-  machine's physical cores run the same encoder; this is not single-encode speed on an idle core. x86: AWS
-  c8i.metal-48xl (Intel Xeon 6975P-C, Granite Rapids); Arm: AWS c8g.metal-24xl (Graviton 4).
-- **References:** x264, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0, Kvazaar v2.3.2 and openh264
-  v2.7.0, each built with LTO and PGO where its build allows, at its own real-time settings. These are their
-  low-delay, one-thread modes only; their other modes (lookahead, B-frames, threads) may do better. Exact
-  versions and command lines are on the [method page](https://cribbinsb.github.io/nanocodec/results/method.html).
-- **Where we are behind:** our H.264 `medium` needs 7.3 % more bits than the zero line on VC-1K and is within a
-  few points of it on AOM CTC; our fastest H.264 rungs (`faster`, `veryfast`) need more bits than it on every
-  dataset. Several reference settings (SVT-AV1 M12, libvpx cpu-used 9, openh264, x264's fastest presets) are
-  faster than any of our `medium` presets on both machines. The [by-codec page](https://cribbinsb.github.io/nanocodec/results/codecs.html)
-  shows each format against its references.
-- **Our own measurements**, not an independent benchmark. The procedure's own list of limitations is in
-  [section 16](docs/benchmark-procedure.md#16-known-limitations); how results changed from build to build is on
-  the [history page](https://cribbinsb.github.io/nanocodec/results/history.html).
+Lower is fewer bits for the same score (BD-J: the mean of the BD-rates on PSNR-YUV, VMAF v1 and MS-SSIM)
+than x264 `medium --tune zerolatency,psnr`; right is faster. Held-out camera clips, common set, low-delay
+one-thread CBR at 300–1200 kbps (720p30-equivalent), timed on AWS c8i.metal-48xl with half its cores busy;
+benchmark procedure BP-4 ([docs/benchmark-procedure.md](docs/benchmark-procedure.md)), development build
+23c962d8b. Our own measurements, not an independent benchmark; drawn from the reports by
+`tools/bench/readme_chart.py`.
 
 ## Built on others' work
 

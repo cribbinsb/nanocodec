@@ -294,6 +294,10 @@ adapts the signed byte table, packed word offsets, and vertical
 sign reuse from `common/arm/ihevc_hbd_sao_neon_intr.c` and
 `common/arm64/ihevc_sao_edge_offset_class1.s`.
 
+The Linux Arm SVE2 SAO kernel in `crates/nc-dsp/src/sao/sve2_high.S`
+uses libhevc's edge offset table and vertical sign reuse from
+`common/arm/ihevc_hbd_sao_neon_intr.c`.
+
 
 ## SVT-AV1 — BSD-3-Clause-Clear
 
