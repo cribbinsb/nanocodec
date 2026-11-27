@@ -4475,7 +4475,7 @@
      },
      {
       "id": "2026-11-26",
-      "label": "BP-4 benchmark build",
+      "label": "2026-11-26",
       "tick": "11-26",
       "commit": "23c962d8b",
       "codecs": [
@@ -4535,7 +4535,9 @@
         "veryslow"
        ]
       },
-      "caption": [],
+      "caption": [
+       "The BP-4 benchmark build: the build the main results pages measure."
+      ],
       "view": {
        "clips": 30,
        "values": {
@@ -9241,7 +9243,7 @@
      },
      {
       "id": "2026-11-26",
-      "label": "BP-4 benchmark build",
+      "label": "2026-11-26",
       "tick": "11-26",
       "commit": "23c962d8b",
       "codecs": [
@@ -9301,7 +9303,9 @@
         "veryslow"
        ]
       },
-      "caption": [],
+      "caption": [
+       "The BP-4 benchmark build: the build the main results pages measure."
+      ],
       "view": {
        "clips": 12,
        "values": {
@@ -14342,7 +14346,7 @@
      },
      {
       "id": "2026-11-26",
-      "label": "BP-4 benchmark build",
+      "label": "2026-11-26",
       "tick": "11-26",
       "commit": "23c962d8b",
       "codecs": [
@@ -14402,7 +14406,9 @@
         "veryslow"
        ]
       },
-      "caption": [],
+      "caption": [
+       "The BP-4 benchmark build: the build the main results pages measure."
+      ],
       "view": {
        "clips": 30,
        "values": {
@@ -19108,7 +19114,7 @@
      },
      {
       "id": "2026-11-26",
-      "label": "BP-4 benchmark build",
+      "label": "2026-11-26",
       "tick": "11-26",
       "commit": "23c962d8b",
       "codecs": [
@@ -19168,7 +19174,9 @@
         "veryslow"
        ]
       },
-      "caption": [],
+      "caption": [
+       "The BP-4 benchmark build: the build the main results pages measure."
+      ],
       "view": {
        "clips": 12,
        "values": {
