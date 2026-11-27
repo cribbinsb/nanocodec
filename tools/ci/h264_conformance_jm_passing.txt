@@ -3,3 +3,8 @@
 jm_base_aso
 jm_base_fmo_dispersed_aso
 jm_base_redundant
+jm_ext_dp_aso
+jm_ext_dp_b
+jm_ext_dp_cip
+jm_ext_dp_slices
+jm_ext_si

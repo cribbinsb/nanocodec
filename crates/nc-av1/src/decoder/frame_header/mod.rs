@@ -1,7 +1,7 @@
 //! `uncompressed_header()` (AV1 §5.9): every field of a frame header, given
 //! the sequence header and what the reference slots keep (§7.20). The
 //! quantiser/segmentation, loop-filter and motion parts live in submodules.
-use super::sequence::{SELECT_PER_FRAME, Sequence};
+use super::sequence::{SELECT_PER_FRAME, Sequence, check_frame_size};
 use nc_common::decode::{BitReader, DecodeError};
 
 mod filters;
@@ -549,6 +549,7 @@ impl<'r> Parser<'r, '_> {
             SUPERRES_NUM
         };
         let width = (upscaled_width * SUPERRES_NUM + denom / 2) / denom;
+        check_frame_size(upscaled_width, height)?;
         Ok(FrameSize {
             width,
             height,

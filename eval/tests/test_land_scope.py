@@ -126,16 +126,18 @@ def test_the_plan_names_the_directly_touched_crates_for_their_unit_tests():
     assert touched("docs/STATUS.md") == []
 
 
-def test_a_kernel_change_reaches_every_crate_but_nc_common(graph):
+def test_a_kernel_change_reaches_every_crate_above_the_kernels(graph):
     dirs, dependents, _ = graph
-    assert land_scope.closure({"nanocodec-dsp"}, dependents) == set(dirs) - {"nanocodec-common"}
+    # nc-rtp (RTP payload formats) depends on nc-common alone, below the kernels
+    below_dsp = {"nanocodec-common", "nanocodec-rtp"}
+    assert land_scope.closure({"nanocodec-dsp"}, dependents) == set(dirs) - below_dsp
 
 
 def test_docs_check_finds_broken_links_and_bad_svg(tmp_path):
     (tmp_path / "img.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
     (tmp_path / "bad.svg").write_text("<svg>")
     (tmp_path / "doc.md").write_text(
-        "[ok](img.svg) ![ok](img.svg#x) [web](https://example.org) [here](#top)\n"
+        "# Top\n[ok](img.svg) ![ok](img.svg#x) [web](https://example.org) [here](#top)\n"
         "`[code](missing.md)`\n```\n[fenced](missing.md)\n```\n"
         "[gone](missing.md) <img src=\"nope.png\">\n")
     problems = (check_docs.check_markdown(tmp_path / "doc.md", tmp_path)
@@ -143,3 +145,18 @@ def test_docs_check_finds_broken_links_and_bad_svg(tmp_path):
                 + check_docs.check_svg(tmp_path / "bad.svg", tmp_path))
     assert [p.split(": ", 1)[1].split(" (")[0] for p in problems] == [
         "broken link missing.md", "broken link nope.png", "not well-formed SVG"]
+
+
+def test_docs_check_follows_anchors_and_checks_a_symlinked_copy_at_its_target(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "LICENSE").write_text("")
+    (tmp_path / "other.md").write_text("## Results `x`\n## Results x\n<a name=\"kept\"></a>\n")
+    (tmp_path / "doc.md").write_text(
+        "[a](other.md#results-x) [b](other.md#results-x-1) [c](other.md#kept)\n"
+        "[d](other.md#gone) [e](#nowhere) [f](docs/LICENSE)\n")
+    (tmp_path / "crate").mkdir()
+    (tmp_path / "crate" / "doc.md").symlink_to("../doc.md")
+    problems = (check_docs.check_markdown(tmp_path / "doc.md", tmp_path)
+                + check_docs.check_markdown(tmp_path / "crate" / "doc.md", tmp_path))
+    assert [p.split(": ", 1)[1] for p in problems] == [
+        "no heading for anchor other.md#gone", "no heading for anchor #nowhere"]

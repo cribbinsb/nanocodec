@@ -9,7 +9,12 @@ pub(crate) const MAX_SEGMENTS: usize = 8;
 pub(crate) const SEG_LVL_MAX: usize = 8;
 /// Segment features (AV1 §6.8.13).
 pub(crate) const SEG_LVL_ALT_Q: usize = 0;
+/// The first of the four loop filter level features (`SEG_LVL_ALT_LF_Y_V`,
+/// then `_Y_H`, `_U`, `_V`: one per `loop_filter_level[i]`).
+pub(crate) const SEG_LVL_ALT_LF_Y_V: usize = 1;
 pub(crate) const SEG_LVL_REF_FRAME: usize = 5;
+pub(crate) const SEG_LVL_SKIP: usize = 6;
+pub(crate) const SEG_LVL_GLOBALMV: usize = 7;
 /// `MAXQ`: the largest qindex.
 const MAXQ: i32 = 255;
 /// `Segmentation_Feature_Bits`, `_Signed`, `_Max` (AV1 §5.9.14).

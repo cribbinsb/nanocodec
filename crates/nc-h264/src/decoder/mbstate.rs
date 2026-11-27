@@ -85,6 +85,8 @@ pub(super) enum MbKind {
     /// `Intra_16x16` with its prediction mode (Table 7-11).
     Intra16x16(u8),
     IPcm,
+    /// `SI` (Table 7-12): `Intra_4x4` prediction, reconstructed by §8.6.2.
+    Si,
     PSkip,
     /// `B_Skip`: direct prediction, no residual.
     BSkip,
@@ -144,6 +146,9 @@ pub(super) struct MbState {
     /// An inter macroblock whose 4x4 blocks all share their vectors and
     /// references (one prediction block; set by the macroblock layer).
     pub single_motion: bool,
+    /// A field macroblock (every macroblock of a field picture): field
+    /// scans and CABAC significance contexts (§8.5.6, Table 9-34).
+    pub field: bool,
     /// `sub_mb_type` of each 8x8 block of a `P_8x8` macroblock (analysis).
     #[cfg(feature = "analysis")]
     pub sub_partitions: [SubPartition; 4],
@@ -169,6 +174,7 @@ impl MbState {
         direct: 0,
         abs_mvd: [[[0; 2]; 16]; LISTS],
         single_motion: false,
+        field: false,
         #[cfg(feature = "analysis")]
         sub_partitions: [SubPartition::P8x8; 4],
     };
@@ -179,11 +185,13 @@ impl MbState {
     /// hot copy (resetting them as well cost 1.2 % of the decode
     /// instructions of P streams). They are read only where `ref_idx[1]`
     /// is non-negative (prediction, deblocking, the co-located block) or
-    /// from neighbours in the same B slice, which are reset whole.
-    pub fn reset(&mut self, slice: u32, b_slice: bool) {
+    /// from neighbours in the same B slice, which are reset whole. `field`:
+    /// a field macroblock.
+    pub fn reset(&mut self, slice: u32, b_slice: bool, field: bool) {
         if b_slice {
             *self = Self {
                 slice,
+                field,
                 ..Self::EMPTY
             };
             return;
@@ -208,6 +216,7 @@ impl MbState {
             direct,
             abs_mvd,
             single_motion,
+            field: field_slot,
             #[cfg(feature = "analysis")]
             sub_partitions,
         } = self;
@@ -228,6 +237,7 @@ impl MbState {
         *direct = empty.direct;
         abs_mvd[0] = empty.abs_mvd[0];
         *single_motion = empty.single_motion;
+        *field_slot = field;
         #[cfg(feature = "analysis")]
         {
             *sub_partitions = empty.sub_partitions;
@@ -237,8 +247,14 @@ impl MbState {
     pub fn is_intra(&self) -> bool {
         matches!(
             self.kind,
-            MbKind::IntraNxN | MbKind::Intra16x16(_) | MbKind::IPcm
+            MbKind::IntraNxN | MbKind::Intra16x16(_) | MbKind::IPcm | MbKind::Si
         )
+    }
+
+    /// `I_NxN` or `SI`: macroblocks with `Intra_4x4` / `Intra_8x8`
+    /// prediction modes per block (§8.3.1.1).
+    pub fn has_block_modes(&self) -> bool {
+        matches!(self.kind, MbKind::IntraNxN | MbKind::Si)
     }
 
     /// `P_Skip` or `B_Skip`.

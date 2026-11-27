@@ -4,14 +4,14 @@
 
 use super::{CDEF_PADDING, CDEF_UNAVAILABLE, CdefArgs, CdefSource, DIRECTIONS};
 use core::arch::x86_64::{
-    __m128i, __m512i, _mm_cvtsi32_si128, _mm_extract_epi64, _mm_mask_loadu_epi16, _mm_set1_epi16,
-    _mm_storel_epi64, _mm256_castsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
-    _mm256_inserti128_si256, _mm512_abs_epi16, _mm512_add_epi16, _mm512_add_epi32,
-    _mm512_castsi256_si512, _mm512_cmplt_epi16_mask, _mm512_cvtepi32_epi16, _mm512_dpwssd_epi32,
-    _mm512_inserti64x4, _mm512_loadu_si512, _mm512_mask_sub_epi16, _mm512_max_epi16,
-    _mm512_min_epi16, _mm512_min_epu16, _mm512_permutex2var_epi16, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_setzero_si512, _mm512_srai_epi32, _mm512_srl_epi16,
-    _mm512_srli_epi32, _mm512_sub_epi16, _mm512_subs_epu16,
+    __m128i, __m512i, _mm_cvtsi32_si128, _mm_extract_epi64, _mm_loadu_si128, _mm_mask_loadu_epi16,
+    _mm_set1_epi16, _mm_storel_epi64, _mm256_castsi128_si256, _mm256_castsi256_si128,
+    _mm256_extracti128_si256, _mm256_inserti128_si256, _mm512_abs_epi16, _mm512_add_epi16,
+    _mm512_add_epi32, _mm512_castsi256_si512, _mm512_cmplt_epi16_mask, _mm512_cvtepi32_epi16,
+    _mm512_dpwssd_epi32, _mm512_inserti64x4, _mm512_loadu_si512, _mm512_mask_sub_epi16,
+    _mm512_max_epi16, _mm512_min_epi16, _mm512_min_epu16, _mm512_permutex2var_epi16,
+    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_srai_epi32,
+    _mm512_srl_epi16, _mm512_srli_epi32, _mm512_sub_epi16, _mm512_subs_epu16,
 };
 
 const SIDE: usize = 4;
@@ -215,5 +215,53 @@ pub(super) unsafe fn border(
             }
         };
         apply([a, b], args, dst, dst_stride);
+    }
+}
+
+/// The same distance-pair filter on a complete eight-by-eight word halo.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vnni")]
+#[inline]
+unsafe fn interior_mixed(
+    source: &[u16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    let start = origin
+        .checked_sub(CDEF_PADDING * (stride + 1))
+        .expect("interior chroma halo");
+    let input = &source[start..][..(HALO - 1) * stride + HALO];
+    // SAFETY: eight samples fit in each row of the checked input.
+    unsafe {
+        let row = |i: usize| _mm_loadu_si128(input.as_ptr().add(i * stride).cast());
+        filter::<true, true>(
+            [
+                pack_rows([row(0), row(1), row(2), row(3)]),
+                pack_rows([row(4), row(5), row(6), row(7)]),
+            ],
+            args,
+            dst,
+            dst_stride,
+        );
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vnni")]
+pub(super) unsafe fn interior_pair_mixed(
+    src: [&[u16]; 2],
+    stride: usize,
+    origins: [usize; 2],
+    args: &CdefArgs,
+    dst: [*mut u16; 2],
+    dst_stride: usize,
+) {
+    for i in 0..2 {
+        // SAFETY: each destination is an independently checked four-row block.
+        unsafe {
+            let out = core::slice::from_raw_parts_mut(dst[i], 3 * dst_stride + SIDE);
+            interior_mixed(src[i], stride, origins[i], args, out, dst_stride);
+        }
     }
 }

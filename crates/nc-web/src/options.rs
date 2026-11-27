@@ -43,14 +43,21 @@ pub(crate) enum CuratedOption {
     TemporalLayers,
     /// The second reference (`refs.second`).
     SecondReference,
+    /// Intra refresh (`refresh.period`), which a codec's backend may refuse
+    /// (`CodecBackend::INTRA_REFRESH`).
+    IntraRefresh,
+    /// Long-term references for loss recovery (`ltr.interval`).
+    LongTermReference,
 }
 
 impl CuratedOption {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 6] = [
         Self::FilmGrain,
         Self::BlockQp,
         Self::TemporalLayers,
         Self::SecondReference,
+        Self::IntraRefresh,
+        Self::LongTermReference,
     ];
 
     /// The option's key in the page's JSON.
@@ -60,6 +67,8 @@ impl CuratedOption {
             Self::BlockQp => "blockQp",
             Self::TemporalLayers => "temporalLayers",
             Self::SecondReference => "secondReference",
+            Self::IntraRefresh => "intraRefresh",
+            Self::LongTermReference => "longTermReference",
         }
     }
 }
@@ -105,12 +114,19 @@ pub(crate) fn offers(codec: Codec, option: CuratedOption) -> bool {
         CuratedOption::BlockQp => backend(codec).block_qp,
         CuratedOption::TemporalLayers => accepts(codec, LAYER_COUNT, 2.0),
         CuratedOption::SecondReference => accepts(codec, SECOND_REFERENCE, 1.0),
+        CuratedOption::IntraRefresh => accepts(codec, REFRESH_PERIOD, PROBE_PERIOD),
+        CuratedOption::LongTermReference => accepts(codec, LTR_INTERVAL, PROBE_PERIOD),
     }
 }
 
-/// The parameters behind the layer and second-reference options.
+/// The parameters behind the layer, second-reference, intra-refresh and
+/// long-term-reference options.
 const LAYER_COUNT: &str = "layers.count";
 const SECOND_REFERENCE: &str = "refs.second";
+const REFRESH_PERIOD: &str = "refresh.period";
+const LTR_INTERVAL: &str = "ltr.interval";
+/// Any valid refresh period or LTR interval for the probe.
+const PROBE_PERIOD: f32 = 15.0;
 /// The probe encoder's size: the smallest the page allows.
 const PROBE_SIZE: usize = 64;
 /// Any valid fixed quantizer for the probe (every codec's range holds it).
@@ -236,6 +252,10 @@ pub(crate) fn options_json(codec: Codec) -> String {
     let entries: Vec<String> = CuratedOption::ALL
         .iter()
         .map(|&option| format!(r#""{}":{}"#, option.key(), offers(codec, option)))
+        .chain(std::iter::once(format!(
+            r#""rtp":{}"#,
+            crate::rtp::payload_format(codec).is_some()
+        )))
         .collect();
     format!("{{{}}}", entries.join(","))
 }
@@ -298,6 +318,23 @@ mod tests {
         }
         assert!(offers(Codec::H264, CuratedOption::TemporalLayers));
         assert!(offers(Codec::Av1, CuratedOption::BlockQp));
+        // docs/FAQ.md "Which resilience tools does each codec support?".
+        for codec in [Codec::H264, Codec::Hevc, Codec::Vvc, Codec::Av1] {
+            assert!(offers(codec, CuratedOption::IntraRefresh));
+        }
+        for codec in [Codec::Vp9, Codec::Av2] {
+            assert!(!offers(codec, CuratedOption::IntraRefresh));
+        }
+        for codec in [
+            Codec::H264,
+            Codec::Hevc,
+            Codec::Vvc,
+            Codec::Av1,
+            Codec::Vp9,
+            Codec::Av2,
+        ] {
+            assert!(offers(codec, CuratedOption::LongTermReference));
+        }
     }
 
     #[test]

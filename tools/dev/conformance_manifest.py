@@ -520,6 +520,7 @@ SUITES["h264-x264"] = SUITES["h264"]
 # FFmpeg's decode equals it).
 SUITES["h264-jm"] = (probe_h264, lambda bitstream, out: [
     "cp", str(bitstream.with_suffix(".yuv")), str(out)])
+SUITES["av1-supplementary"] = SUITES["av1-libaom"]
 
 # suite -> a second decoder's command for (bitstream, output path, probe
 # info): its whole-output MD5 is recorded as a cross-check of the reference.

@@ -1137,6 +1137,17 @@ reference our foreign-corpus streams are compared with.
 
 ## VVdeC — BSD-3-Clause-Clear
 
+The NEON nonlinear luma ALF in
+`crates/nc-dsp/src/vvc_alf/high_simd/neon_clipped.rs` uses the lane
+coefficient schedule and shared clip-limit preparation of VVdeC's
+`AdaptiveLoopFilter_neon.cpp` (d261469). The Clear BSD notice below
+applies to that port.
+
+The VVC ALF classification kernels in `crates/nc-dsp/src/vvc_alf/high_classify.rs`
+use the paired-point Laplacian loads and x86 direction selection from
+VVdeC's `AdaptiveLoopFilterX86.h` and `AdaptiveLoopFilter_neon.cpp`
+at d261469. The Clear BSD notice below applies to those schedules.
+
 Source: https://github.com/fraunhoferhhi/vvdec, commit `d2614690cf13ceee1631dd6d30141755b8a689de`.
 
 `crates/nc-vvc/src/decoder_headers/` reimplements H.266 parameter-set, picture and slice syntax

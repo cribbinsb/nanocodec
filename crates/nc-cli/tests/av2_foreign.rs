@@ -9,6 +9,12 @@
 //! test says so and checks nothing; a directory named by `NC_AV2_FOREIGN`
 //! must exist (the nightly verifier sets it, so a missing corpus fails there),
 //! and with a corpus a missing stream fails.
+//!
+//! Three small streams are in the repository (`data/av2-odd-size`, avmenc
+//! v1.0.0 at `--cpu-used=9`, with and without `--lag-in-frames=0`, of a
+//! synthetic pattern at 202x98 and 201x99): frames whose size is not a
+//! multiple of 8, whose prediction reads the reference's coded area past
+//! the frame, and odd sizes. They are always checked.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,6 +37,38 @@ fn corpus() -> Option<PathBuf> {
     root.is_dir().then_some(root)
 }
 
+/// Decode `stream` with our CLI and check its frame hashes against
+/// `expected` (avmdec's).
+fn check_stream(name: &str, stream: &Path, expected: &[&str]) {
+    let output = Command::new(env!("CARGO_BIN_EXE_nanocodec"))
+        .args(["decode", "--codec", "av2", "--frame-md5", "-", "--input"])
+        .arg(stream)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{name}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let hashes = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        hashes.split_whitespace().collect::<Vec<_>>(),
+        expected,
+        "{name}"
+    );
+}
+
+#[test]
+fn checked_in_odd_size_streams_decode_to_the_reference_hashes() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/av2-odd-size");
+    for line in include_str!("data/av2-odd-size/hashes.md5").lines() {
+        let mut fields = line.split_whitespace();
+        let name = fields.next().expect("a stream name");
+        let expected: Vec<&str> = fields.collect();
+        check_stream(name, &root.join(name), &expected);
+    }
+}
+
 #[test]
 fn foreign_streams_decode_to_the_reference_hashes() {
     let Some(root) = corpus() else {
@@ -46,21 +84,6 @@ fn foreign_streams_decode_to_the_reference_hashes() {
             .map(|dir| root.join(dir).join(name))
             .find(|path| path.is_file())
             .unwrap_or_else(|| panic!("{name} is missing from {}", root.display()));
-        let output = Command::new(env!("CARGO_BIN_EXE_nanocodec"))
-            .args(["decode", "--codec", "av2", "--frame-md5", "-", "--input"])
-            .arg(&stream)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{name}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let hashes = String::from_utf8(output.stdout).unwrap();
-        assert_eq!(
-            hashes.split_whitespace().collect::<Vec<_>>(),
-            expected,
-            "{name}"
-        );
+        check_stream(name, &stream, &expected);
     }
 }

@@ -37,7 +37,7 @@ use crate::filter_effort::{CdefEffort, FilterEffort, FrameActivity};
 use crate::filter_outcome::{FilterOutcomeStats, OutcomeRole};
 use crate::fine_floor::{self, FineFloorGate};
 use crate::frame_role::{EffortOverlay, FrameRole, KEY_PREFIX, NONBASE_PREFIX};
-use crate::hold::{FrameHold, LastCoded};
+use crate::hold::{FrameHold, LastCoded, signalled_timing};
 use crate::in_frame_rate::{
     FrameStart, InFrameRate, Verdict, superblock_weights, watch_grid, watches_rows,
 };
@@ -269,6 +269,10 @@ pub struct Encoder<B: CodecBackend> {
     switched_recon: Option<Picture>,
     /// The reference/GOP manager.
     structure: TemporalStructure,
+    /// The caller asked for temporal layers ([`EncoderConfig::temporal_layers`]
+    /// above 1, not a preset's `layers.count`): intra refresh must code them
+    /// (`fixed_layers_for_refresh`), never hold them flat.
+    caller_layers: bool,
     /// Pixel kernels for mode decision.
     dsp: Dsp,
     next_index: u64,
@@ -520,11 +524,14 @@ impl<B: CodecBackend> Encoder<B> {
     /// A [`ConfigError`] if the engine or the backend rejects the settings.
     #[allow(clippy::too_many_lines)]
     pub fn new(mut config: EncoderConfig) -> Result<Self, ConfigError> {
+        let caller_layers = config.temporal_layers > 1;
+        fixed_layers_for_refresh(&mut config);
         let caller_params = config.params.clone();
         config.params =
             rate_mode_settings(&config.params.layered_over(&backend_defaults::<B>(&config)));
         crate::constant_qp::apply(&mut config);
         config.temporal_layers = configured_temporal_layers(&config);
+        config.signal.timing = signalled_timing(&config);
         let info = EncoderInfo::new(&config, &caller_params);
         validate_stream(&config)?;
         let (effort_overlay, light_overlay) = validated_params::<B>(&config.params)?;
@@ -682,6 +689,7 @@ impl<B: CodecBackend> Encoder<B> {
             resolution_probe,
             switched_recon: None,
             structure,
+            caller_layers,
             dsp: Dsp::new(),
             next_index: 0,
             timeline,
@@ -792,10 +800,24 @@ impl<B: CodecBackend> Encoder<B> {
             .or(self.switched_recon.as_ref())
     }
 
+    /// Whether [`EncoderConfig::block_log2`] decides any leaf's size. Inter
+    /// frames are always planned; key frames code the fixed size only with
+    /// the key planner off (`planner.intra_plan` 0, or a transform plan the
+    /// backend cannot cost), and a superblock that cannot split (H.264's
+    /// macroblock) is that size by construction. Front ends refuse an
+    /// explicit block size that would change nothing.
+    #[must_use]
+    pub fn codes_fixed_block_size(&self) -> bool {
+        self.backend.superblock_log2() <= self.backend.min_block_log2()
+            || KeyPlanMode::resolve(self.planner_params.intra_plan, &self.backend)
+                == KeyPlanMode::Fixed
+    }
+
     /// Enable or update rate control without resetting references or learned rate models.
     /// # Errors
     /// Rejects invalid targets, buffers or actual codec quantizer bounds.
     pub fn set_rate_control(&mut self, config: RateControlConfig) -> Result<(), RateControlError> {
+        self.check_quantizer_bounds(&config)?;
         if self.spatial.is_some() {
             self.set_spatial_rate_control(config)?;
         } else {
@@ -803,6 +825,24 @@ impl<B: CodecBackend> Encoder<B> {
         }
         self.info.set_rate(Some(config));
         self.send_encoder_info();
+        Ok(())
+    }
+
+    /// The caller's quantizer bounds must lie in the codec's own range. The
+    /// controller's model reaches past it by the extra rate steps
+    /// (`quantizer_step_tables`), which are the engine's planning headroom,
+    /// not quantizers a caller can name: without this check a bound in that
+    /// headroom was accepted and acted as no bound at all.
+    fn check_quantizer_bounds(&self, config: &RateControlConfig) -> Result<(), RateControlError> {
+        let model = self.backend.rate_model();
+        let native = model.min_quantizer..=model.max_quantizer;
+        let outside = |bound: Option<u32>| bound.is_some_and(|q| !native.contains(&q));
+        if outside(config.min_quantizer) || outside(config.max_quantizer) {
+            return Err(RateControlError(
+                "quantizer bound outside the codec's range (QP 0-51 for H.264 and HEVC, \
+                 0-63 for VVC; base_q_idx 1-255 for AV1, VP9 and AV2)",
+            ));
+        }
         Ok(())
     }
 
@@ -1611,6 +1651,17 @@ impl<B: CodecBackend> Encoder<B> {
             }
             if settings.period < MIN_REFRESH_PERIOD {
                 return Err(ConfigError::IntraRefresh("period below 2 frames"));
+            }
+            // An adaptive structure is held flat for the sweep: layers the
+            // caller asked for would silently not be coded. Asked for at
+            // creation without `layers.adaptive`, the sweep selects the
+            // fixed structure instead (`fixed_layers_for_refresh`).
+            if self.caller_layers && self.structure.is_adaptive() {
+                return Err(ConfigError::IntraRefresh(
+                    "the adaptive temporal layers (layers.adaptive 1) would be coded flat: use \
+                     fixed layers (layers.adaptive 0, the default when intra refresh is set at \
+                     creation), whose base layer the sweep runs on",
+                ));
             }
         }
         if let Some(second) = self.layer.second.as_mut() {
@@ -5619,6 +5670,23 @@ fn within_reach(mv: Mv, (width, height): (usize, usize), reach: usize) -> Mv {
         y: clamp(mv.y, height),
     }
 }
+
+/// Intra refresh asked for at creation (`refresh.period`) beside temporal
+/// layers the caller asked for selects the fixed layer structure
+/// (`layers.adaptive` 0, unless the caller set it): an adaptive one is held
+/// flat for the sweep, which would silently code none of the layers, while a
+/// fixed one sweeps on its base-layer frames (`Encoder::set_intra_refresh`).
+fn fixed_layers_for_refresh(config: &mut EncoderConfig) {
+    if config.temporal_layers > 1
+        && RefreshParams::from_overrides(&config.params).period > 0.0
+        && !config.params.contains(LAYER_ADAPTIVE_PARAM)
+    {
+        config.params.set(LAYER_ADAPTIVE_PARAM, 0.0);
+    }
+}
+
+/// The parameter that chooses adaptive or fixed temporal layers.
+const LAYER_ADAPTIVE_PARAM: &str = "layers.adaptive";
 
 /// The reference structure `config` asks for: fixed or adaptive layers.
 fn temporal_structure(config: &EncoderConfig) -> TemporalStructure {

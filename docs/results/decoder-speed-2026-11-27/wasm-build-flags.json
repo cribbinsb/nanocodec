@@ -1,0 +1,25 @@
+{
+ "emscripten": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.10 (b7dc6e5747465580df5984e723b9d1f10d8e804b)",
+ "emsdk": "4.0.10",
+ "cflags": "-O3 -msimd128",
+ "link": "-O3 -msimd128 -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=8388608 -sEXIT_RUNTIME=1",
+ "ffmpeg": {
+  "ref": "n8.0.1",
+  "commit": "894da5ca7d742e4429ffb2af534fcda0103ef593",
+  "configure": "--target-os=none --arch=wasm32 --enable-cross-compile --cc=emcc --cxx=em++ --ar=emar --ranlib=emranlib --nm=emnm --disable-stripping --disable-runtime-cpudetect --enable-simd128 --disable-pthreads --disable-w32threads --disable-os2threads --disable-autodetect --disable-everything --disable-programs --disable-doc --disable-network --disable-debug --pkg-config-flags=--static --enable-libdav1d --enable-decoder=h264,hevc,vvc,vp9,libdav1d --enable-parser=h264,hevc,vvc,vp9,av1 --enable-demuxer=h264,hevc,vvc,ivf --enable-bsf=vp9_superframe_split --enable-protocol=file --optflags=-O3 --extra-cflags=-msimd128",
+  "simd128_kernels": "libavcodec/wasm/hevc: HEVC inverse transforms 4x4-32x32 and SAO band/edge filters (8-bit; 10-bit transforms); no other hand-written WebAssembly SIMD in n8.0.1"
+ },
+ "dav1d": {
+  "ref": "1.5.4",
+  "commit": "54706fc6bc0cdecab7e9593974a4039cc038fca7",
+  "meson": "--cross-file /home/ubuntu/ncbox-wasm-prefix/build/emscripten.cross --prefix=/home/ubuntu/ncbox-wasm-prefix/build/dav1d --libdir=lib --buildtype=release --default-library=static -Denable_asm=false -Denable_tools=false -Denable_tests=false -Denable_examples=false",
+  "simd128_kernels": "none upstream: C paths, compiler-vectorised"
+ },
+ "libvpx": {
+  "ref": "v1.16.0",
+  "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6",
+  "configure": "--target=generic-gnu --disable-multithread --disable-runtime-cpu-detect --disable-vp8 --disable-vp9-encoder --enable-vp9-decoder --disable-examples --disable-tools --disable-docs --disable-unit-tests --disable-install-bins --extra-cflags=-msimd128",
+  "cflags_env": "-O3 -msimd128",
+  "simd128_kernels": "none upstream: C paths (generic-gnu), compiler-vectorised"
+ }
+}

@@ -9,15 +9,18 @@
 //! `roundMvComp`), applied here when a picture's motion is stored.
 //!
 //! Temporal layers use the shared engine reference slots; candidates are scaled
-//! by current and collocated reference distances (§8.5.2.12). A field keeps
-//! its picture's POC distance to each of its active references; only a
+//! by current and collocated reference distances (§8.5.2.12), except that a
+//! long-term reference (`ltr.interval`) is never scaled and takes no
+//! candidate from a short-term one or gives one to it. A field keeps its
+//! picture's POC distance to each of its active references, and which were
+//! long-term; only a
 //! picture with two (the second reference) also keeps each block's
 //! reference index, so a single-reference picture stores and reads its
 //! vectors alone.
 //!
 //! Derived from `VVdeC` `UnitTools::getColocatedMVP` and `DecCu`'s
 //! collocated motion store (BSD-3-Clause-Clear; `THIRD_PARTY.md`).
-use crate::motion::{ActiveReferences, MAX_ACTIVE_REFERENCES, Mv16};
+use crate::motion::{ActiveReferences, Mv16};
 use nc_common::decode::{DecodeError, Result};
 use nc_encoder::Block;
 
@@ -29,9 +32,10 @@ const MAX_AREA_WITHOUT_TEMPORAL: usize = 32;
 /// Bits of a stored vector component's signed mantissa (§8.5.2.12).
 const MANTISSA_BITS: u32 = 6;
 
-/// A collocated vector (at storage precision) and the POC distance from
-/// its picture to the reference it pointed into (`colPocDiff`).
-pub(crate) type Collocated = (Mv16, u32);
+/// A collocated vector (at storage precision), the POC distance from its
+/// picture to the reference it pointed into (`colPocDiff`), and whether
+/// that reference was a long-term picture (`LongTermRefPic`).
+pub(crate) type Collocated = (Mv16, u32, bool);
 
 /// The motion of a coded picture as a later picture's collocated picture
 /// reads it: one vector per 8x8 block, the vector of its top-left 4x4
@@ -48,8 +52,8 @@ pub(crate) struct MotionField {
     /// picture had more than one active reference: empty, every vector
     /// points into reference 0.
     ref_indices: Vec<u8>,
-    /// The picture's POC distance to each of its active references.
-    distances: [u32; MAX_ACTIVE_REFERENCES],
+    /// The picture's active references.
+    references: ActiveReferences,
 }
 
 impl MotionField {
@@ -62,7 +66,7 @@ impl MotionField {
             cols,
             mvs: vec![None; cols * height.div_ceil(1 << FIELD_LOG2)],
             ref_indices: Vec::new(),
-            distances: ActiveReferences::SINGLE.distances,
+            references: ActiveReferences::SINGLE,
         }
     }
 
@@ -76,7 +80,7 @@ impl MotionField {
         references: &ActiveReferences,
     ) -> &mut [Option<Mv16>] {
         self.ref_indices.clear();
-        self.distances = references.distances;
+        self.references = *references;
         &mut self.mvs
     }
 
@@ -104,20 +108,32 @@ impl MotionField {
     fn at(&self, x: usize, y: usize) -> Option<Collocated> {
         let index = (y >> FIELD_LOG2) * self.cols + (x >> FIELD_LOG2);
         let mv = self.mvs[index]?;
-        let ref_idx = self.ref_indices.get(index).copied().unwrap_or(0);
-        Some((mv, self.distances[usize::from(ref_idx)]))
+        let ref_idx = usize::from(self.ref_indices.get(index).copied().unwrap_or(0));
+        Some((
+            mv,
+            self.references.distances[ref_idx],
+            self.references.long_term[ref_idx],
+        ))
     }
 
-    /// §8.5.2.11: the collocated vector of CU `cu` in a picture of
-    /// `1 << ctu_log2` CTUs: the [`Self::bottom_right`] one, else the block
-    /// at the CU's centre, else none.
+    /// §8.5.2.11: the collocated candidate of CU `cu` in a picture of
+    /// `1 << ctu_log2` CTUs, `map`ped to the target reference (§8.5.2.12,
+    /// `None` where it is unavailable there): the [`Self::bottom_right`]
+    /// one, else the block at the CU's centre, else none.
     #[inline]
-    pub(crate) fn candidate(&self, cu: &Block, ctu_log2: u8) -> Option<Collocated> {
+    pub(crate) fn candidate<T>(
+        &self,
+        cu: &Block,
+        ctu_log2: u8,
+        map: impl Fn(Collocated) -> Option<T>,
+    ) -> Option<T> {
         if cu.area() <= MAX_AREA_WITHOUT_TEMPORAL {
             return None;
         }
-        self.bottom_right(cu, ctu_log2)
-            .or_else(|| self.at(cu.x + cu.width() / 2, cu.y + cu.height() / 2))
+        self.bottom_right(cu, ctu_log2).and_then(&map).or_else(|| {
+            self.at(cu.x + cu.width() / 2, cu.y + cu.height() / 2)
+                .and_then(map)
+        })
     }
 
     /// The vector of the block below and right of CU `cu`, if that lies in
@@ -213,7 +229,7 @@ mod tests {
         let mut field = MotionField::new(64, 64);
         let single = ActiveReferences::SINGLE;
         let vector = |x| Some(Mv16 { x, y: 0 });
-        let mv = |x| Some((Mv16 { x, y: 0 }, 1));
+        let mv = |x| Some((Mv16 { x, y: 0 }, 1, false));
         let cols = 64 >> FIELD_LOG2;
         // The 8x8 block at (16, 16) and the centre block of the 16x16 CU at
         // (0, 0).
@@ -226,14 +242,20 @@ mod tests {
         entries[3 * cols + 1] = vector(16);
         field.store(entries.iter().copied(), &single);
         let cu = Block::square(0, 0, 4);
-        assert_eq!(field.candidate(&cu, 5), mv(4));
-        assert_eq!(field.candidate(&Block::square(0, 16, 4), 5), mv(16));
+        let candidate =
+            |field: &MotionField, cu: &Block, ctu_log2| field.candidate(cu, ctu_log2, Some);
+        assert_eq!(candidate(&field, &cu, 5), mv(4));
+        assert_eq!(candidate(&field, &Block::square(0, 16, 4), 5), mv(16));
+        // An unavailable bottom-right candidate (a long-term mismatch) falls
+        // back to the centre.
+        let not_four = |c: Collocated| (c.0.x != 4).then_some(c);
+        assert_eq!(field.candidate(&cu, 5, not_four), mv(8));
         // An intra bottom-right block falls back to the centre.
         entries[2 * cols + 2] = None;
         field.store(entries, &single);
-        assert_eq!(field.candidate(&cu, 5), mv(8));
+        assert_eq!(candidate(&field, &cu, 5), mv(8));
         // Nor outside the picture.
-        assert_eq!(field.candidate(&Block::square(48, 48, 4), 6), None);
+        assert_eq!(candidate(&field, &Block::square(48, 48, 4), 6), None);
     }
 
     #[test]
@@ -242,15 +264,16 @@ mod tests {
         let v = Mv16 { x: 4, y: 0 };
         let both = ActiveReferences {
             distances: [1, 3],
+            long_term: [false, true],
             count: 2,
         };
         field.store([Some(v); 4], &both);
         field.store_ref_indices([0, 1, 0, 0]);
-        assert_eq!(field.at(8, 0), Some((v, 3)));
-        assert_eq!(field.at(0, 8), Some((v, 1)));
+        assert_eq!(field.at(8, 0), Some((v, 3, true)));
+        assert_eq!(field.at(0, 8), Some((v, 1, false)));
         // The next single-reference picture's vectors all span its one
         // distance.
         field.store([Some(v); 4], &ActiveReferences::SINGLE);
-        assert_eq!(field.at(8, 0), Some((v, 1)));
+        assert_eq!(field.at(8, 0), Some((v, 1, false)));
     }
 }

@@ -54,6 +54,14 @@ MIN_POINTS = bdj.MIN_POINTS
 THIN_OVERLAP = bdj.THIN_OVERLAP_FRACTION
 OURS_PREFIX = "nanocodec-"
 DROP_SUFFIX = "+drop"
+#: Procedure section 14: the history's single-key families (one key in 600 frames) are coded
+#: only on the clips with a 600-frame window, so they cannot define the common set (in BP-4
+#: they alone shrank the history common set from 20 clips to 9).
+SINGLE_KEY_SUFFIX = "~k600"
+#: The rows shown on their own clips, labelled, beside the common set they do not define (BP-3.3
+#: for `+drop`), with each one's label.
+OWN_CLIP_ROWS = {DROP_SUFFIX: "own clips (+drop row)",
+                 SINGLE_KEY_SUFFIX: "own clips (single-key row)"}
 #: Section 8: statistics (a test compares them with the procedure's text, V20).
 BOOTSTRAP_RESAMPLES = 10_000
 INTERVAL = 0.95
@@ -774,9 +782,16 @@ def overlap_figures(overlaps: dict[str, float], clips: list[str]) -> dict:
             "thin_clips": sum(v < THIN_OVERLAP for v in values), "thin_under": THIN_OVERLAP}
 
 
+def own_clip_row(family: str) -> str | None:
+    """The label of a row shown on its own clips (OWN_CLIP_ROWS), or None for a common-set row."""
+    return next((label for suffix, label in OWN_CLIP_ROWS.items() if family.endswith(suffix)),
+                None)
+
+
 def common_clips(view: list[str], logs: dict, families: list[str]) -> list[str]:
-    """The sensitivity set: clips where every non-drop family is well formed."""
-    return [c for c in view if all(c in logs[f] for f in families if not f.endswith(DROP_SUFFIX))]
+    """The sensitivity set: clips where every common-set family (not an own-clips row) is well
+    formed."""
+    return [c for c in view if all(c in logs[f] for f in families if not own_clip_row(f))]
 
 
 def exclusion_check(fam, family: str, missing: dict, logs: dict, init_s: float) -> dict:
@@ -840,7 +855,7 @@ def speed_text(row: dict) -> str:
 
 def front(rows: dict) -> list[str]:
     """The headline speed / BD-J front on the common set: families no other family beats on
-    both (faster and lower BD-J). `+drop` rows, on their own clips, are not in it."""
+    both (faster and lower BD-J). Own-clips rows (`+drop`, single-key) are not in it."""
     points = {f: (r["speed_mpix_per_cpu_s"], r["bd"]["j"]["mean"]) for f, r in rows.items()
               if r.get("clips") and r.get("bd") and r["headline_set"] == "common set"
               and r.get("speed_mpix_per_cpu_s") is not None}
@@ -978,6 +993,18 @@ class Part:
                 and clip not in self.exclude)
 
 
+def restrict(inputs: tuple[str, ...], subset: tuple[str, ...]) -> tuple[str, ...]:
+    """A part's clips (empty: all) restricted to `subset` (empty: no restriction)."""
+    if not subset:
+        return inputs
+    return tuple(c for c in inputs if c in subset) if inputs else tuple(subset)
+
+
+def clip_subset(path: Path) -> tuple[str, ...]:
+    """The clip names of a clip-set file (`clips`: [{name}], as eval/clipset/fast-subset.json)."""
+    return tuple(sorted(c["name"] for c in json.loads(path.read_text())["clips"]))
+
+
 def tuned_on(path: Path) -> dict[str, str]:
     """{clip: why} of an in-sample record (eval/clipset/tuned_on.json): every clip of every
     tuning set it lists, with the set's name and use."""
@@ -1052,13 +1079,16 @@ def excluded_ids(parts: tuple[Part, ...], mode: str | None) -> set[str]:
 
 def report(*runs: Path, timing_runs: tuple[Path, ...] = (), timing_series: str | None = None,
            mode: str | None = None, checks_only: bool = False,
-           parts: tuple[Part, ...] = (), exclude: dict[str, str] | None = None) -> dict:
+           parts: tuple[Part, ...] = (), exclude: dict[str, str] | None = None,
+           subset: tuple[str, ...] = ()) -> dict:
     """The report over one or more runs of the same dataset and mode (a later run may add
     points, such as the anchor's extra points, BP-3.4); each run is checked on its own. `parts`
-    instead of `runs`: a mixed report, each family taken from the part that holds it."""
+    instead of `runs`: a mixed report, each family taken from the part that holds it. `subset`:
+    only these clips, in every part (a measurement subset such as the fast subset)."""
     parts = parts or (Part(tuple(runs), tuple(timing_runs)),)
     exclude = exclude or {}
-    parts = tuple(replace(p, exclude=p.exclude | frozenset(exclude)) for p in parts)
+    parts = tuple(replace(p, exclude=p.exclude | frozenset(exclude),
+                          inputs=restrict(p.inputs, subset)) for p in parts)
     every_run = list(dict.fromkeys(r for p in parts for r in p.runs))
     manifests = [json.loads((run / "manifest.json").read_text()) for run in every_run]
     try:  # V25: one recorded build identity for every binary, quality and timing runs alike
@@ -1109,6 +1139,7 @@ def report(*runs: Path, timing_runs: tuple[Path, ...] = (), timing_series: str |
            # the clips left out (in-sample for ours), those of the runs' plans only
            "excluded_clips": {c: why for c, why in sorted(exclude.items())
                               if any(c == j.split("|")[1] for j in excluded_ids(parts, mode))},
+           "subset_clips": list(subset),
            "series": {}, "stream_structure": structure,
            "speed_provisional": bool(V6_FAILURES),
            "envelope": ENVELOPE, "envelope_dropped": DROPPED,
@@ -1137,10 +1168,11 @@ def report(*runs: Path, timing_runs: tuple[Path, ...] = (), timing_series: str |
                 rows[family] = {"clips": 0, "missing": missing[family]}
                 continue
             mode = fam[family][own[0]][0]["mode"]
-            drop = family.endswith(DROP_SUFFIX)
+            label = own_clip_row(family)
             # BP-3.3: the headline averages every family over the SAME clips, the common set;
-            # a +drop row, which does not define that set, is shown on its own clips, labelled
-            head = own if drop else common
+            # an own-clips row, which does not define that set, is shown on its own clips,
+            # labelled
+            head = own if label else common
             # D7: each clip counts once in the headline (its windows averaged); each window
             # length is also its own view
             head_logs, own_logs = once_per_clip(logs[family], head), once_per_clip(logs[family], own)
@@ -1148,7 +1180,7 @@ def report(*runs: Path, timing_runs: tuple[Path, ...] = (), timing_series: str |
             rows[family] = {
                 "clips": len({base_clip(c) for c in head}), "own_clips": len({base_clip(c) for c in own}),
                 "missing": missing[family],
-                "headline_set": "own clips (+drop row)" if drop else "common set",
+                "headline_set": label or "common set",
                 "bd": {m: mean_interval(head_logs[m], rng) for m in (*METRICS, "j")} if head else None,
                 "bd_own_set": {m: mean_interval(own_logs[m], rng) for m in (*METRICS, "j")},
                 "bd_by_window": {n: {m: mean_interval([logs[family][c][m] for c in head
@@ -1183,7 +1215,7 @@ def lost_clips(s: dict) -> None:
     why (V14: nothing leaves the headline unlisted)."""
     lost: dict[str, list[str]] = defaultdict(list)
     for family, row in s["families"].items():
-        if not family.endswith(DROP_SUFFIX):
+        if not own_clip_row(family):
             for clip, why in row["missing"].items():
                 lost[clip].append(why)
     for clip, why in sorted(s["out_of_view"].items()):
@@ -1209,6 +1241,9 @@ def main() -> int:
     ap.add_argument("--exclude-clips", type=Path,
                     help="leave out the clips of this in-sample record (eval/clipset/tuned_on.json:"
                          " the dataset clips a tuning set used), listed in the report")
+    ap.add_argument("--subset", type=Path,
+                    help="only the clips of this clip-set file, in every run and part (e.g. "
+                         "eval/clipset/fast-subset.json; procedure section 14)")
     ap.add_argument("--speed-unchecked", action="store_true",
                     help="V6 failures label speed provisional instead of refusing")
     a = ap.parse_args()
@@ -1228,7 +1263,8 @@ def main() -> int:
                       for p in json.loads(a.parts.read_text())) if a.parts else ()
         result = report(*a.runs, timing_runs=tuple(a.timing), timing_series=a.timing_series,
                         mode=a.mode, parts=parts,
-                        exclude=tuned_on(a.exclude_clips) if a.exclude_clips else None)
+                        exclude=tuned_on(a.exclude_clips) if a.exclude_clips else None,
+                        subset=clip_subset(a.subset) if a.subset else ())
     except ReportRefusal as why:
         print(f"refused: {why}", file=sys.stderr)
         return 1
@@ -1245,6 +1281,9 @@ def main() -> int:
               f"every family leaves them):")
         for clip, why in excluded.items():
             print(f"  {clip}: {why}")
+    if result["subset_clips"]:
+        print(f"CLIP SUBSET: {len(result['subset_clips'])} clips ({a.subset}); every run and "
+              f"family is read on them only")
     print("\n".join(provenance.text(result["provenance"])))
     st = result.get("stream_structure", {})
     if st:  # V29-V31: read from the streams themselves

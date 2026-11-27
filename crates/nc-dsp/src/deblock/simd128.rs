@@ -57,10 +57,20 @@ unsafe fn chroma(plane: &mut [u8], edge: &Edge) {
     unsafe { generic::chroma::<I16x8, I16x8>(plane, edge) }
 }
 
+/// Both chroma planes of an edge, one after the other on [`chroma`], not
+/// `h264_bytes::chroma_pair` (both planes in one pass, as the AVX2 and NEON
+/// tables use): WebKit's optimizing WebAssembly tier (JavaScriptCore OMG,
+/// Playwright WebKit 26.4, x86-64) miscompiled that function, so H.264
+/// streams decoded with wrong chroma once it tiered up (51 of 110 official
+/// streams, nondeterministically; the function was found by bisecting
+/// `JSC_wasmFunctionIndexRangeToCompile`; docs/handoff/browser-demo.md).
 #[target_feature(enable = "simd128")]
 unsafe fn chroma_pair(u: &mut [u8], v: &mut [u8], edge: &Edge) {
     // SAFETY: SIMD128 is enabled for this function (dispatch contract).
-    unsafe { super::h264_bytes::chroma_pair::<super::h264_bytes::simd128::B>(u, v, edge) }
+    unsafe {
+        chroma(u, edge);
+        chroma(v, edge);
+    }
 }
 
 #[target_feature(enable = "simd128")]

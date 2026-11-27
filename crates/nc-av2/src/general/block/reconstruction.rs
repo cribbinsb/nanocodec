@@ -57,14 +57,16 @@ fn wide_angle(tx: TxSize, mode: u8, delta: i8, mrl_index: u8) -> (u8, i32) {
 
 /// The chroma transforms' decoded residuals of one block (dav2d
 /// `chroma_txtp`, `chroma_eob`, `cf_uv`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChromaResiduals {
     pub coefficients: [Vec<i16>; 2],
     pub residuals: Vec<[Option<Residual>; 2]>,
 }
 
-impl Default for ChromaResiduals {
-    fn default() -> Self {
+impl ChromaResiduals {
+    /// Allocate the tile's coefficient buffers once. Taking the scratch
+    /// during reconstruction leaves an empty placeholder in the tile.
+    pub(super) fn new() -> Self {
         Self {
             coefficients: [vec![0; CHROMA_COEFFICIENTS], vec![0; CHROMA_COEFFICIENTS]],
             residuals: Vec::new(),
@@ -445,12 +447,19 @@ impl Tile<'_, '_> {
                             let left_edge =
                                 self.contexts.left.chroma_coefficients[plane][l..].to_vec();
                             let offset = i * COEFFICIENTS_PER_UNIT;
-                            let residual = self.coefficients(
+                            let residual = match self.coefficients(
                                 depth + 1,
                                 &input,
                                 (&above_edge, &left_edge),
                                 &mut store.coefficients[plane][offset..],
-                            )?;
+                            ) {
+                                Ok(residual) => residual,
+                                Err(error) => {
+                                    (self.row, self.column) = (row0, column0);
+                                    self.chroma_residuals = store;
+                                    return Err(error);
+                                }
+                            };
                             if plane == 0 {
                                 self.u_has_coefficients = residual.eob.is_some();
                             }

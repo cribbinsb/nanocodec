@@ -77,6 +77,10 @@ pub struct ReceivedUnit {
     pub complete: bool,
     /// Spatial ids of the delivered layer frames, when the packets say.
     pub spatial_ids: Vec<u8>,
+    /// Frame numbers of the delivered layer frames (Dependency Descriptor
+    /// frame numbers or VP9 picture numbers, unwrapped), when the packets
+    /// say: the numbers a receiver acknowledges in loss feedback.
+    pub frame_ids: Vec<u64>,
 }
 
 /// Receiver counters.
@@ -172,6 +176,14 @@ impl Depacketizer {
     /// End of stream: every gap is loss; release what is left.
     pub fn flush(&mut self) {
         self.drain(true);
+    }
+
+    /// Playout deadline (a time-based jitter buffer): packets of RTP
+    /// timestamp `timestamp` or older are due, so a gap before one of
+    /// them is loss now rather than when the reorder window overflows.
+    pub fn set_playout_deadline(&mut self, timestamp: u32) {
+        self.assembler.set_deadline(timestamp);
+        self.drain(false);
     }
 
     /// The next delivered unit.
@@ -293,7 +305,14 @@ impl Depacketizer {
             self.waiting_for_key = false;
         }
         let objects = objects(unit.packets.iter().map(|(_, p)| p));
-        self.push_ready(timestamp, self.join(objects), key, true, Vec::new());
+        self.push_ready(
+            timestamp,
+            self.join(objects),
+            key,
+            true,
+            Vec::new(),
+            Vec::new(),
+        );
     }
 
     /// Deliver the complete, decodable layer frames of a unit whose packets
@@ -314,6 +333,7 @@ impl Depacketizer {
         }
         let mut objects_out = Vec::new();
         let mut spatial_ids = Vec::new();
+        let mut frame_ids = Vec::new();
         for run in runs {
             let tag = &run.tag;
             let references_met = match &tag.references {
@@ -341,6 +361,7 @@ impl Depacketizer {
             let packets = run.packets.iter().map(|&i| &unit.packets[i].1);
             objects_out.extend(objects(packets));
             spatial_ids.push(tag.spatial_id);
+            frame_ids.push(tag.id);
         }
         if spatial_ids.is_empty() {
             self.stats.dropped_units += 1;
@@ -350,7 +371,7 @@ impl Depacketizer {
             self.stats.dropped_units += 1;
         }
         let frames = self.join(objects_out);
-        self.push_ready(timestamp, frames, key, all_complete, spatial_ids);
+        self.push_ready(timestamp, frames, key, all_complete, spatial_ids, frame_ids);
     }
 
     fn start_waiting(&mut self) {
@@ -377,6 +398,7 @@ impl Depacketizer {
         key: bool,
         complete: bool,
         spatial_ids: Vec<u8>,
+        frame_ids: Vec<u64>,
     ) {
         self.stats.units += 1;
         self.ready.push_back(ReceivedUnit {
@@ -385,6 +407,7 @@ impl Depacketizer {
             key,
             complete,
             spatial_ids,
+            frame_ids,
         });
     }
 }

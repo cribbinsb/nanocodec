@@ -149,6 +149,10 @@ Spot unless the use says on demand (and the check's registry states why).
 | r7i.16xlarge, m7i.16xlarge, c6a.16xlarge | NN fits that need RAM (distill box_run) |
 
 Regions: eu-north-1 (home), eu-west-1 and eu-central-1 (spill, and c8a), us-east-1.
+Metal timing capacity search only (tools/bench/wholebox.py `CAPACITY_REGIONS`, owner
+2026-11-26: every region within 1.5x the home spot price, metal spot capacity having been absent
+in eu-north-1 and eu-central-1 for hours): eu-west-3, eu-west-2, eu-south-2, us-east-2,
+us-west-2, ca-central-1, ap-northeast-1, ap-southeast-2, ap-south-1.
 
 ## Quotas and offerings (Service Quotas and describe-instance-type-offerings, 2026-11-24)
 

@@ -7,35 +7,27 @@
 //! four columns with two horizontal adds.
 
 use super::{
-    ACTIVITY_CLASS, ACTIVITY_CLASSES, ACTIVITY_SCALE, ACTIVITY_SHIFT, BOUNDARY_ACTIVITY_SCALE,
-    MAX_ACTIVITY, SAMPLE_BYTE_SOURCES, TRANSPOSE, VVC_ALF_BLOCK, VVC_ALF_DOT_LANES,
-    VVC_ALF_GRAM_ALIGN, VVC_ALF_GRAM_COLUMNS, VVC_ALF_GRAM_TERMS, VVC_ALF_REACH,
-    VVC_ALF_SAMPLE_LANES, VVC_ALF_SAMPLES, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, classify_from,
-    filter_block_row_from, laplacians_from, vvc_alf_gram_index,
+    SAMPLE_BYTE_SOURCES, VVC_ALF_BLOCK, VVC_ALF_DOT_LANES, VVC_ALF_GRAM_ALIGN,
+    VVC_ALF_GRAM_COLUMNS, VVC_ALF_GRAM_TERMS, VVC_ALF_REACH, VVC_ALF_SAMPLE_LANES, VVC_ALF_SAMPLES,
+    VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, filter_block_row_from, vvc_alf_gram_index,
 };
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm_setr_epi8,
     _mm_shuffle_epi8, _mm_storeu_si128, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32,
-    _mm_unpacklo_epi64, _mm256_abs_epi16, _mm256_add_epi16, _mm256_add_epi32, _mm256_add_epi64,
-    _mm256_adds_epi16, _mm256_and_si256, _mm256_blend_epi16, _mm256_blendv_epi8,
-    _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_cmpgt_epi32, _mm256_cvtepu8_epi16,
-    _mm256_cvtepu16_epi32, _mm256_extracti128_si256, _mm256_hadd_epi16, _mm256_loadu_si256,
-    _mm256_madd_epi16, _mm256_max_epi32, _mm256_min_epi32, _mm256_min_epu32, _mm256_mul_epi32,
-    _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32, _mm256_packus_epi16,
-    _mm256_packus_epi32, _mm256_permute2x128_si256, _mm256_permute4x64_epi64,
-    _mm256_permutevar8x32_epi32, _mm256_set_m128i, _mm256_set1_epi32, _mm256_setr_epi8,
-    _mm256_setr_epi32, _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_shuffle_epi32,
-    _mm256_slli_epi32, _mm256_sra_epi32, _mm256_srli_epi32, _mm256_srli_epi64, _mm256_storeu_si256,
-    _mm256_sub_epi16, _mm256_sub_epi32, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32,
-    _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
+    _mm_unpacklo_epi64, _mm256_add_epi16, _mm256_add_epi32, _mm256_add_epi64, _mm256_adds_epi16,
+    _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_loadu_si256, _mm256_madd_epi16,
+    _mm256_mul_epi32, _mm256_or_si256, _mm256_packs_epi32, _mm256_packus_epi16,
+    _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_permutevar8x32_epi32,
+    _mm256_set_m128i, _mm256_set1_epi32, _mm256_setzero_si256, _mm256_shuffle_epi8,
+    _mm256_shuffle_epi32, _mm256_sra_epi32, _mm256_srli_epi64, _mm256_storeu_si256,
+    _mm256_sub_epi16, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64,
+    _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
 
 /// Samples per vector.
 const LANES: usize = 16;
 /// Samples one vector of filter output reads from each row.
 const WINDOW: usize = LANES + 2 * VVC_ALF_REACH;
-/// `vpblendw` mask taking the odd 16-bit lanes from the second operand.
-const ODD_LANES: i32 = 0b1010_1010;
 
 /// Sixteen samples of `row` from `at`, widened to 16 bits.
 #[target_feature(enable = "avx2")]
@@ -153,47 +145,6 @@ pub(super) unsafe fn filter_block_row(
         }
     }
     filter_block_row_from(rows, coefficients, shifts, out, whole);
-}
-
-/// AVX2 [`super::LaplacianFn`]: four groups (sixteen columns) per step.
-#[target_feature(enable = "avx2")]
-pub(super) unsafe fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
-    // Per 128-bit half, after the two horizontal adds: [v0, v1, h0, h1,
-    // d0_0, d0_1, d1_0, d1_1] (two groups) into [v0, h0, d0_0, d1_0, v1, ...].
-    let to_groups = _mm256_setr_epi8(
-        0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15, 0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7,
-        10, 11, 14, 15,
-    );
-    let (steps, _) = out.as_chunks_mut::<4>();
-    let whole = steps.len() * 4;
-    for (step, out) in steps.iter_mut().enumerate() {
-        // Index of the first column (4q − 2, offset by the rows' 3 lead).
-        let x = 16 * step + 1;
-        // Per offset (−1, 0, +1): rows above, at and below each column's
-        // centre: rows 0..3 for even columns, 1..4 for odd ones.
-        let pick = |row: usize, at: usize| {
-            _mm256_blend_epi16::<ODD_LANES>(load(rows[row], at), load(rows[row + 1], at))
-        };
-        // Explicit, not nested `array::map`: that stayed out of line, outside
-        // the `#[target_feature]` context.
-        let up = [pick(0, x - 1), pick(0, x), pick(0, x + 1)];
-        let centre = [pick(1, x - 1), pick(1, x), pick(1, x + 1)];
-        let down = [pick(2, x - 1), pick(2, x), pick(2, x + 1)];
-        let twice = _mm256_add_epi16(centre[1], centre[1]);
-        let laplacian = |a, b| _mm256_abs_epi16(_mm256_sub_epi16(twice, _mm256_add_epi16(a, b)));
-        let vertical = laplacian(up[1], down[1]);
-        let horizontal = laplacian(centre[0], centre[2]);
-        let diagonal0 = laplacian(up[0], down[2]);
-        let diagonal1 = laplacian(down[0], up[2]);
-        let sums = _mm256_hadd_epi16(
-            _mm256_hadd_epi16(vertical, horizontal),
-            _mm256_hadd_epi16(diagonal0, diagonal1),
-        );
-        let groups = _mm256_shuffle_epi8(sums, to_groups);
-        // SAFETY: AVX2 is enabled; the store writes exactly the 32 bytes of `out`.
-        unsafe { _mm256_storeu_si256(out.as_mut_ptr().cast(), groups) };
-    }
-    laplacians_from(rows, out, whole);
 }
 
 /// Bytes of a row a full [`super::TapSumsFn`] call reads: two 64-byte
@@ -476,118 +427,4 @@ pub(super) unsafe fn dot(a: &[i32; VVC_ALF_DOT_LANES], b: &[i32; VVC_ALF_DOT_LAN
     lanes
         .iter()
         .fold(0, |total: i64, &lane| total.wrapping_add(lane))
-}
-
-/// Four Laplacian groups (32 bytes) from `groups[at]`.
-#[target_feature(enable = "avx2")]
-fn load_groups(groups: &[[u16; 4]], at: usize) -> __m256i {
-    let groups: &[[u16; 4]; 4] = groups[at..at + 4].try_into().expect("four groups");
-    // SAFETY: AVX2 is enabled; the load reads exactly the 32 bytes of `groups`.
-    unsafe { _mm256_loadu_si256(groups.as_ptr().cast()) }
-}
-
-/// `table[index]` per 32-bit lane (indexes 0..16; `table[0]` must be 0,
-/// which the lanes' upper bytes look up).
-#[target_feature(enable = "avx2")]
-fn lookup(table: &[u8; 16], index: __m256i) -> __m256i {
-    // SAFETY: AVX2 is enabled; the load reads exactly the 16 bytes of `table`.
-    let table = unsafe { _mm_loadu_si128(table.as_ptr().cast()) };
-    _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(table), index)
-}
-
-/// AVX2 [`super::ClassifyFn`]: eight blocks per step in 32-bit lanes; the
-/// groups' interleaved sums are separated by a byte shuffle, a dword
-/// permute and 64-bit unpacks.
-#[target_feature(enable = "avx2")]
-pub(super) unsafe fn classify(groups: &[[u16; 4]], boundary: bool, out: &mut [[u8; 2]]) {
-    let scale = _mm256_set1_epi32(if boundary {
-        BOUNDARY_ACTIVITY_SCALE
-    } else {
-        ACTIVITY_SCALE
-    } as i32);
-    // Per 128-bit half: words [v0 h0 a0 c0 v1 h1 a1 c1] to [v0 v1 h0 h1 ...].
-    let pair_words = _mm256_setr_epi8(
-        0, 1, 8, 9, 2, 3, 10, 11, 4, 5, 12, 13, 6, 7, 14, 15, 0, 1, 8, 9, 2, 3, 10, 11, 4, 5, 12,
-        13, 6, 7, 14, 15,
-    );
-    let quad_dwords = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
-    let mut activity_class = [0u8; 16];
-    activity_class.copy_from_slice(&ACTIVITY_CLASS);
-    let mut transpose = [0u8; 16];
-    transpose[..8].copy_from_slice(&TRANSPOSE);
-    let (steps, _) = out.as_chunks_mut::<8>();
-    let whole = steps.len() * 8;
-    for (step, out) in steps.iter_mut().enumerate() {
-        let first = 8 * step;
-        // Block sums of blocks first..first + 4 and the next four, as
-        // [v0..v4, h0..h4 | a0..a4, c0..c4] after the shuffles.
-        let quads = [first, first + 4].map(|at| {
-            let sums = _mm256_add_epi16(load_groups(groups, at), load_groups(groups, at + 1));
-            _mm256_permutevar8x32_epi32(_mm256_shuffle_epi8(sums, pair_words), quad_dwords)
-        });
-        // Vertical with first diagonal, horizontal with second diagonal.
-        let vertical_d0 = _mm256_unpacklo_epi64(quads[0], quads[1]);
-        let horizontal_d1 = _mm256_unpackhi_epi64(quads[0], quads[1]);
-        let widen = |v: __m256i, high: bool| {
-            _mm256_cvtepu16_epi32(if high {
-                _mm256_extracti128_si256::<1>(v)
-            } else {
-                _mm256_castsi256_si128(v)
-            })
-        };
-        let (ver, hor, dg0, dg1) = (
-            widen(vertical_d0, false),
-            widen(horizontal_d1, false),
-            widen(vertical_d0, true),
-            widen(horizontal_d1, true),
-        );
-        let activity = _mm256_min_epu32(
-            _mm256_srli_epi32::<{ ACTIVITY_SHIFT as i32 }>(_mm256_mullo_epi32(
-                _mm256_add_epi32(ver, hor),
-                scale,
-            )),
-            _mm256_set1_epi32(MAX_ACTIVITY as i32),
-        );
-        let vertical = _mm256_cmpgt_epi32(ver, hor);
-        let (hv1, hv0) = (_mm256_max_epi32(ver, hor), _mm256_min_epi32(ver, hor));
-        let hv_direction = _mm256_blendv_epi8(_mm256_set1_epi32(3), _mm256_set1_epi32(1), vertical);
-        let first_diagonal = _mm256_cmpgt_epi32(dg0, dg1);
-        let (d1, d0) = (_mm256_max_epi32(dg0, dg1), _mm256_min_epi32(dg0, dg1));
-        let d_direction =
-            _mm256_blendv_epi8(_mm256_set1_epi32(2), _mm256_setzero_si256(), first_diagonal);
-        let diagonal = _mm256_cmpgt_epi32(_mm256_mullo_epi32(d1, hv0), _mm256_mullo_epi32(hv1, d0));
-        let strong = _mm256_blendv_epi8(hv1, d1, diagonal);
-        let weak = _mm256_blendv_epi8(hv0, d0, diagonal);
-        let main = _mm256_blendv_epi8(hv_direction, d_direction, diagonal);
-        let secondary = _mm256_blendv_epi8(d_direction, hv_direction, diagonal);
-        // Strength 1 (strong > 2 weak) or 2 (2 strong > 9 weak, which
-        // implies 1): minus the masks.
-        let one = _mm256_cmpgt_epi32(strong, _mm256_add_epi32(weak, weak));
-        let two = _mm256_cmpgt_epi32(
-            _mm256_add_epi32(strong, strong),
-            _mm256_add_epi32(_mm256_slli_epi32::<3>(weak), weak),
-        );
-        let strength = _mm256_sub_epi32(_mm256_sub_epi32(_mm256_setzero_si256(), one), two);
-        let step_classes = _mm256_add_epi32(
-            _mm256_slli_epi32::<1>(_mm256_and_si256(main, _mm256_set1_epi32(1))),
-            strength,
-        );
-        let directional = _mm256_and_si256(
-            _mm256_mullo_epi32(step_classes, _mm256_set1_epi32(i32::from(ACTIVITY_CLASSES))),
-            one,
-        );
-        let index = _mm256_add_epi32(lookup(&activity_class, activity), directional);
-        let transposes = lookup(
-            &transpose,
-            _mm256_add_epi32(
-                _mm256_slli_epi32::<1>(main),
-                _mm256_srli_epi32::<1>(secondary),
-            ),
-        );
-        let pairs = _mm256_or_si256(index, _mm256_slli_epi32::<8>(transposes));
-        let packed = _mm256_permute4x64_epi64::<0b1000>(_mm256_packus_epi32(pairs, pairs));
-        // SAFETY: AVX2 is enabled; the store writes exactly the 16 bytes of `out`.
-        unsafe { _mm_storeu_si128(out.as_mut_ptr().cast(), _mm256_castsi256_si128(packed)) };
-    }
-    classify_from(groups, boundary, out, whole);
 }

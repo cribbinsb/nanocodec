@@ -22,8 +22,12 @@ const HAS_SIZE_FIELD: u8 = 0b10;
 const TEMPORAL_ID_SHIFT: u8 = 5;
 const SPATIAL_ID_SHIFT: u8 = 3;
 const SPATIAL_ID_MASK: u8 = 3;
-/// Bound on OBUs per temporal unit: memory for untrusted input.
-const MAX_OBUS: usize = 1024;
+/// Bound on OBUs per temporal unit: memory for untrusted input (each OBU
+/// costs a few dozen bytes here and at least two of input). A frame may
+/// code each of its up to 4096 tiles (`MAX_TILE_ROWS * MAX_TILE_COLS`) in a
+/// tile group OBU of its own, and a temporal unit holds several frames
+/// (the Argon streams use more than 1024 OBUs in one).
+const MAX_OBUS: usize = 1 << 16;
 
 /// One OBU: type, layer ids (zero without an extension header) and payload.
 pub(crate) struct Obu<'a> {

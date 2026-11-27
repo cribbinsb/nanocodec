@@ -251,9 +251,13 @@ impl SourceFrame {
             placement,
         );
         if let Some(pairs) = pairs {
+            // The deinterleaved planes' holder: a 4:2:0 picture needs an even size, and
+            // an odd one (WebKit's decoder showed a 640x338 clip as 640x337) has the
+            // same chroma size as the next even one.
+            let even = (width.next_multiple_of(2), height.next_multiple_of(2));
             let chroma = &mut self.chroma;
-            if (chroma.width(), chroma.height()) != (width, height) {
-                *chroma = Picture::new(width, height, 0).map_err(|_| "Invalid frame size")?;
+            if (chroma.width(), chroma.height()) != even {
+                *chroma = Picture::new(even.0, even.1, 0).map_err(|_| "Invalid frame size")?;
             }
             let [_, cb, cr] = chroma.planes_mut();
             self.dsp
@@ -393,6 +397,60 @@ mod tests {
         (data, layout)
     }
 
+    /// The picture of [`i420`] as NV12, with padded rows.
+    fn nv12(
+        width: usize,
+        height: usize,
+        value: impl Fn(usize, usize, usize) -> u8,
+    ) -> (Vec<u8>, Vec<u32>) {
+        let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
+        let (stride, chroma_stride) = (width + 6, 2 * cw + 4);
+        let mut data = vec![0u8; stride * height + chroma_stride * ch];
+        for y in 0..height {
+            for x in 0..width {
+                data[y * stride + x] = value(0, x, y);
+            }
+        }
+        for y in 0..ch {
+            for x in 0..cw {
+                data[stride * height + y * chroma_stride + 2 * x] = value(1, x, y);
+                data[stride * height + y * chroma_stride + 2 * x + 1] = value(2, x, y);
+            }
+        }
+        let layout = vec![
+            0,
+            stride as u32,
+            (stride * height) as u32,
+            chroma_stride as u32,
+        ];
+        (data, layout)
+    }
+
+    #[test]
+    fn odd_sized_nv12_matches_i420() {
+        // WebKit's decoder showed a 640x338 clip as 640x337 (2026-11-27).
+        let (w, h) = (64, 37);
+        let value = |plane: usize, x: usize, y: usize| (plane * 70 + x * 2 + y * 3) as u8;
+        let filled = |layout_kind: Layout, (data, layout): (Vec<u8>, Vec<u32>)| {
+            let mut frame = SourceFrame::new(64, 48).unwrap();
+            frame
+                .fill_planes(
+                    &data,
+                    layout_kind,
+                    DisplayMatrix::Bt709Limited,
+                    (w, h),
+                    &layout,
+                )
+                .unwrap();
+            frame.packed();
+            frame.packed
+        };
+        assert_eq!(
+            filled(Layout::Nv12, nv12(w, h, value)),
+            filled(Layout::I420, i420(w, h, value))
+        );
+    }
+
     #[test]
     fn same_size_planes_pass_through_and_nv12_matches_i420() {
         let (w, h) = (66, 34);
@@ -413,21 +471,7 @@ mod tests {
         assert_eq!(frame.packed, data);
         assert_eq!(frame.colour(), "bt709");
         // The same picture as NV12, with padded rows.
-        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-        let (stride, chroma_stride) = (w + 6, 2 * cw + 4);
-        let mut nv12 = vec![0u8; stride * h + chroma_stride * ch];
-        for y in 0..h {
-            for x in 0..w {
-                nv12[y * stride + x] = value(0, x, y);
-            }
-        }
-        for y in 0..ch {
-            for x in 0..cw {
-                nv12[stride * h + y * chroma_stride + 2 * x] = value(1, x, y);
-                nv12[stride * h + y * chroma_stride + 2 * x + 1] = value(2, x, y);
-            }
-        }
-        let layout = [0, stride as u32, (stride * h) as u32, chroma_stride as u32];
+        let (nv12, layout) = nv12(w, h, value);
         let mut other = SourceFrame::new(w, h).unwrap();
         other
             .fill_planes(

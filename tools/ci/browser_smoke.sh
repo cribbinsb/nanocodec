@@ -46,9 +46,9 @@ node --no-warnings web/tests/vvc-wasm-smoke.mjs
 node --no-warnings web/tests/colour-wasm.mjs
 # The page's own modules (timeline, pre-encoded stream manifest and loader, containers).
 node --test web/tests/*.test.js
-# Every pre-encoded reference stream decodes bit-exactly in both WASM builds.
+# Every pre-encoded reference stream decodes bit-exactly in all three WASM builds.
 node --no-warnings web/tests/reference-streams-wasm.mjs
-# The official conformance corpora (where fetched) through both WASM builds.
+# The official conformance corpora (where fetched) through all three WASM builds.
 tools/ci/wasm_conformance.sh
 # The page tests need Playwright's Chromium (this PC; not the Jetson). land.sh sets
 # NC_PAGE_TESTS=0 for a change that does not touch the page (web/, crates/nc-web):

@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REGISTER = ROOT / "docs" / "decoder-compliance.md"
 CODECS = ("h264", "hevc", "vvc", "av1", "vp9", "av2")
 # The statuses a feature row may have (the register's legend).
-STATUSES = ("implemented", "in progress", "open", "proposed exception")
+STATUSES = ("implemented", "in progress", "open", "exception", "proposed exception")
 
 # Files in decoder crates whose `DecodeError::Unsupported` names are not
 # rejections of a stream by the decoder.

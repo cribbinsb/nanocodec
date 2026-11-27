@@ -33,14 +33,19 @@ pub struct FrameRate {
 }
 
 /// How the sequence headers describe frame timing (H.264 VUI §E.1.1, HEVC
-/// VUI §E.2.1, AV1 `timing_info()` §5.5.3). Timing never affects decoding.
+/// VUI §E.2.1, VVC `general_timing_hrd_parameters()` §7.3.5.1, AV1
+/// `timing_info()` §5.5.3). Every codec with timing syntax signals
+/// `frame_rate` (raw Annex-B streams have no other frame rate); this says
+/// whether it also promises one picture per tick. Timing never affects
+/// decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimingSignal {
-    /// The historical headers: H.264 signals `frame_rate` as a fixed rate,
-    /// HEVC and AV1 carry no timing.
+    /// Constant unless the encoder may leave frames out (frame holds,
+    /// `nc_encoder::signalled_timing`); the engine resolves it before a
+    /// backend sees the configuration.
     #[default]
     Nominal,
-    /// `frame_rate` is signalled as a constant rate in all three codecs.
+    /// `frame_rate` is signalled as a constant rate; no frame is held.
     Constant,
     /// Frames arrive at a variable rate (camera timestamps, dropped frames):
     /// `frame_rate` is signalled as the clock tick, without a constant

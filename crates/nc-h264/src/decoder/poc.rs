@@ -1,9 +1,10 @@
-//! Picture order counts of frames (§8.2.1): types 0, 1 and 2, including the
-//! reset after memory management operation 5. Only output order depends on
-//! them in streams without B slices.
+//! Picture order counts of frames and fields (§8.2.1): types 0, 1 and 2,
+//! including the reset after memory management operation 5. Only output
+//! order depends on them in streams without B slices.
 
 use super::slice::SliceHeader;
 use super::sps::{PocType, Sps};
+use super::structure::{Parity, Structure};
 
 /// What the next picture's derivation needs from earlier pictures.
 #[derive(Debug, Clone, Copy, Default)]
@@ -22,27 +23,65 @@ pub(super) struct PocState {
     prev_frame_num: u32,
 }
 
-/// The order counts of one frame.
+/// The order counts of one picture: both of a frame, one of a field (the
+/// other field's is then the same value, unused).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FramePoc {
     /// `TopFieldOrderCnt`.
     pub top: i64,
     /// `BottomFieldOrderCnt`.
     pub bottom: i64,
+    structure: Structure,
     /// `PicOrderCntMsb` (type 0) or `FrameNumOffset` (types 1, 2).
     msb_or_offset: i64,
     lsb: i64,
 }
 
 impl FramePoc {
-    /// `PicOrderCnt()` of the frame (eq. 8-1).
+    /// `PicOrderCnt()` of the picture (eq. 8-1): the smaller of a frame's
+    /// two counts, a field's own.
     pub fn value(self) -> i64 {
-        self.top.min(self.bottom)
+        match self.structure {
+            Structure::Frame => self.top.min(self.bottom),
+            Structure::Field(Parity::Top) => self.top,
+            Structure::Field(Parity::Bottom) => self.bottom,
+        }
+    }
+
+    /// The counts after memory management operation 5 (§8.2.1:
+    /// `tempPicOrderCnt` subtracted, so the picture's own count is 0).
+    pub fn rebased(self) -> Self {
+        let temp = self.value();
+        Self {
+            top: self.top - temp,
+            bottom: self.bottom - temp,
+            ..self
+        }
+    }
+
+    /// The counts of a picture of `structure` whose frame would have
+    /// `top` and `bottom`: a field keeps its own (and sets the other to it).
+    fn of(structure: Structure, (top, bottom): (i64, i64), msb_or_offset: i64, lsb: i64) -> Self {
+        let (top, bottom) = match structure {
+            Structure::Frame => (top, bottom),
+            Structure::Field(Parity::Top) => (top, top),
+            Structure::Field(Parity::Bottom) => (bottom, bottom),
+        };
+        Self {
+            top,
+            bottom,
+            structure,
+            msb_or_offset,
+            lsb,
+        }
     }
 }
 
 impl PocState {
     /// Derive the order counts of the picture `header` starts (§8.2.1.1..3).
+    /// The bottom field's own syntax elements are parsed only in frames
+    /// (0 in fields), so each type's frame equations give a field's count
+    /// too (eqs. 8-4..8-6, 8-8..8-10, 8-12).
     pub fn derive(&self, sps: &Sps, header: &SliceHeader) -> FramePoc {
         let frame_num = i64::from(header.frame_num);
         let frame_num_offset = || {
@@ -72,49 +111,20 @@ impl PocState {
                     prev_msb
                 };
                 let top = msb + lsb;
-                FramePoc {
-                    top,
-                    bottom: top + i64::from(header.delta_pic_order_cnt_bottom),
-                    msb_or_offset: msb,
-                    lsb,
-                }
+                let bottom = top + i64::from(header.delta_pic_order_cnt_bottom);
+                FramePoc::of(header.structure, (top, bottom), msb, lsb)
             }
             PocType::Cycle {
-                offset_for_non_ref_pic,
                 offset_for_top_to_bottom_field,
-                offsets_for_ref_frame,
                 ..
             } => {
                 let offset = frame_num_offset();
-                let cycle = offsets_for_ref_frame.len() as i64;
-                let mut abs_frame_num = if cycle != 0 { offset + frame_num } else { 0 };
-                if !header.reference && abs_frame_num > 0 {
-                    abs_frame_num -= 1;
-                }
-                // eqs. 8-7..8-10: whole cycles, then the partial one.
-                let mut expected = 0;
-                if abs_frame_num > 0 {
-                    let per_cycle: i64 = offsets_for_ref_frame.iter().map(|&o| i64::from(o)).sum();
-                    let (count, in_cycle) =
-                        ((abs_frame_num - 1) / cycle, (abs_frame_num - 1) % cycle);
-                    expected = count * per_cycle
-                        + offsets_for_ref_frame[..=in_cycle as usize]
-                            .iter()
-                            .map(|&o| i64::from(o))
-                            .sum::<i64>();
-                }
-                if !header.reference {
-                    expected += i64::from(*offset_for_non_ref_pic);
-                }
-                let top = expected + i64::from(header.delta_pic_order_cnt[0]);
-                FramePoc {
-                    top,
-                    bottom: top
-                        + i64::from(*offset_for_top_to_bottom_field)
-                        + i64::from(header.delta_pic_order_cnt[1]),
-                    msb_or_offset: offset,
-                    lsb: 0,
-                }
+                let top = expected_poc(&sps.poc, offset + frame_num, header.reference)
+                    + i64::from(header.delta_pic_order_cnt[0]);
+                let bottom = top
+                    + i64::from(*offset_for_top_to_bottom_field)
+                    + i64::from(header.delta_pic_order_cnt[1]);
+                FramePoc::of(header.structure, (top, bottom), offset, 0)
             }
             PocType::FrameNum => {
                 let offset = frame_num_offset();
@@ -126,25 +136,24 @@ impl PocState {
                 } else {
                     2 * (offset + frame_num) - 1
                 };
-                FramePoc {
-                    top: value,
-                    bottom: value,
-                    msb_or_offset: offset,
-                    lsb: 0,
-                }
+                FramePoc::of(header.structure, (value, value), offset, 0)
             }
         }
     }
 
     /// Record a decoded picture. After memory management operation 5 the
     /// picture counts as `frame_num` 0 with its order counts rebased to 0
-    /// (§8.2.1: `tempPicOrderCnt`).
+    /// (§8.2.1: `tempPicOrderCnt`); a bottom field then leaves
+    /// `prevPicOrderCntLsb` 0, anything else its rebased top count.
     pub fn picture_done(&mut self, sps: &Sps, header: &SliceHeader, poc: FramePoc, reset: bool) {
         match sps.poc {
             PocType::Lsb { .. } if header.reference => {
                 if reset {
                     self.prev_msb = 0;
-                    self.prev_lsb = poc.top - poc.value();
+                    self.prev_lsb = match header.structure {
+                        Structure::Field(Parity::Bottom) => 0,
+                        _ => poc.rebased().top,
+                    };
                 } else {
                     self.prev_msb = poc.msb_or_offset;
                     self.prev_lsb = poc.lsb;
@@ -166,4 +175,38 @@ impl PocState {
         }
         self.prev_frame_num = frame_num;
     }
+}
+
+/// `expectedPicOrderCnt` of type 1 (eqs. 8-6..8-11) for the frame
+/// `abs_frame_num` (`FrameNumOffset + frame_num`) frames in: whole cycles of
+/// `offset_for_ref_frame`, then the partial one, plus
+/// `offset_for_non_ref_pic` for a non-reference picture.
+fn expected_poc(poc: &PocType, frame: i64, reference: bool) -> i64 {
+    let PocType::Cycle {
+        offset_for_non_ref_pic,
+        offsets_for_ref_frame,
+        ..
+    } = poc
+    else {
+        return 0;
+    };
+    let cycle = offsets_for_ref_frame.len() as i64;
+    let mut abs_frame_num = if cycle != 0 { frame } else { 0 };
+    if !reference && abs_frame_num > 0 {
+        abs_frame_num -= 1;
+    }
+    let mut expected = 0;
+    if abs_frame_num > 0 {
+        let per_cycle: i64 = offsets_for_ref_frame.iter().map(|&o| i64::from(o)).sum();
+        let (count, in_cycle) = ((abs_frame_num - 1) / cycle, (abs_frame_num - 1) % cycle);
+        expected = count * per_cycle
+            + offsets_for_ref_frame[..=in_cycle as usize]
+                .iter()
+                .map(|&o| i64::from(o))
+                .sum::<i64>();
+    }
+    if !reference {
+        expected += i64::from(*offset_for_non_ref_pic);
+    }
+    expected
 }

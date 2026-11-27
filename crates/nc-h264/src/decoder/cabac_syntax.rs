@@ -9,7 +9,7 @@ use super::mbstate::{MbKind, MbState, Neighbours};
 use super::slice::SliceType;
 use super::syntax::{Block4x4, Coeffs, MbSyntax};
 use super::{DecodeError, Result};
-use crate::tables::{LAST_CTX_INC_8X8, SIGNIFICANT_CTX_INC_8X8};
+use crate::tables::{LAST_CTX_INC_8X8, SIGNIFICANT_CTX_INC_8X8, SIGNIFICANT_CTX_INC_8X8_FIELD};
 
 // ctxIdxOffset of each syntax element (Table 9-34, frame coded).
 const MB_TYPE_I: usize = 3;
@@ -32,10 +32,15 @@ const CBP_CHROMA: usize = 77;
 const CODED_BLOCK_FLAG: usize = 85;
 const SIGNIFICANT: usize = 105;
 const LAST_SIGNIFICANT: usize = 166;
+/// The significance contexts of field macroblocks (Table 9-34).
+const SIGNIFICANT_FIELD: usize = 277;
+const LAST_SIGNIFICANT_FIELD: usize = 338;
 const ABS_LEVEL: usize = 227;
 const TRANSFORM_8X8: usize = 399;
 const SIGNIFICANT_8X8: usize = 402;
 const LAST_SIGNIFICANT_8X8: usize = 417;
+const SIGNIFICANT_8X8_FIELD: usize = 436;
+const LAST_SIGNIFICANT_8X8_FIELD: usize = 451;
 const ABS_LEVEL_8X8: usize = 426;
 
 /// `mb_type` values (Table 7-11) the binarisation produces directly.
@@ -237,10 +242,15 @@ impl<'a, T> CabacSyntax<'a, T> {
         sub + u8::from(self.engine.decision(ctx(3)))
     }
 
-    /// One residual block of category `cat`: `coded_block_flag` with
-    /// `ctxIdxInc` `cbf_inc` (unless `cat` is `None`: 8x8 blocks, whose flag
-    /// is inferred), then the significance map and levels.
-    fn residual(&mut self, cat: Cat, cbf_inc: usize, out: &mut Coeffs) -> Result<bool> {
+    /// One residual block of category `cat` of a frame or `field`
+    /// macroblock: `coded_block_flag` with `ctxIdxInc` `cbf_inc`, then the
+    /// significance map and levels.
+    fn residual(
+        &mut self,
+        (cat, field): (Cat, bool),
+        cbf_inc: usize,
+        out: &mut Coeffs,
+    ) -> Result<bool> {
         out.count = 0;
         if !self
             .engine
@@ -248,8 +258,13 @@ impl<'a, T> CabacSyntax<'a, T> {
         {
             return Ok(false);
         }
-        let sig = SIGNIFICANT + cat.significance_offset();
-        let last = LAST_SIGNIFICANT + cat.significance_offset();
+        let (sig, last) = if field {
+            (SIGNIFICANT_FIELD, LAST_SIGNIFICANT_FIELD)
+        } else {
+            (SIGNIFICANT, LAST_SIGNIFICANT)
+        };
+        let sig = sig + cat.significance_offset();
+        let last = last + cat.significance_offset();
         let chroma_dc = cat == Cat::ChromaDc;
         // ctxIdxInc of chroma DC significance is Min(i / NumC8x8, 2) (eq. 9-23);
         // a separate instance keeps that choice out of the scan loop.
@@ -360,6 +375,11 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
                 })
             }
             SliceType::B => Ok(self.b_mb_type(nb)),
+            // Refused at the slice header (`switching::parse`): no profile
+            // has CABAC SI slices.
+            SliceType::Si => Err(DecodeError::Unsupported(
+                "H264 SP/SI slices outside the Extended profile",
+            )),
         }
     }
 
@@ -583,7 +603,7 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
     fn luma_dc(&mut self, nb: &Neighbours<'_>, cur: &mut MbState, out: &mut Coeffs) -> Result<()> {
         let dc = |m: &MbState| m.dc_coded[0];
         let inc = cbf_cond(nb.a, true, dc) + 2 * cbf_cond(nb.b, true, dc);
-        cur.dc_coded[0] = self.residual(Cat::LumaDc, inc, out)?;
+        cur.dc_coded[0] = self.residual((Cat::LumaDc, cur.field), inc, out)?;
         Ok(())
     }
 
@@ -627,7 +647,7 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
                 (Cat::ChromaAc, left, above)
             }
         };
-        let coded = self.residual(cat, left + 2 * above, out)?;
+        let coded = self.residual((cat, cur.field), left + 2 * above, out)?;
         let flag = u8::from(coded);
         match block {
             Block4x4::LumaAc(x, y) | Block4x4::Luma(x, y) => cur.total_coeff[y * 4 + x] = flag,
@@ -646,12 +666,22 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
         // 4:2:0 8x8 blocks have no coded_block_flag: a coded 8x8 block has
         // at least one coefficient (§7.3.5.3.3).
         out.count = 0;
-        self.significance_map(
-            64,
-            out,
-            |i| SIGNIFICANT_8X8 + usize::from(SIGNIFICANT_CTX_INC_8X8[i]),
-            |i| LAST_SIGNIFICANT_8X8 + usize::from(LAST_CTX_INC_8X8[i]),
-        );
+        let last = |i: usize| usize::from(LAST_CTX_INC_8X8[i]);
+        if cur.field {
+            self.significance_map(
+                64,
+                out,
+                |i| SIGNIFICANT_8X8_FIELD + usize::from(SIGNIFICANT_CTX_INC_8X8_FIELD[i]),
+                |i| LAST_SIGNIFICANT_8X8_FIELD + last(i),
+            );
+        } else {
+            self.significance_map(
+                64,
+                out,
+                |i| SIGNIFICANT_8X8 + usize::from(SIGNIFICANT_CTX_INC_8X8[i]),
+                |i| LAST_SIGNIFICANT_8X8 + last(i),
+            );
+        }
         self.levels(ABS_LEVEL_8X8, false, out)?;
         let (x8, y8) = (b8 % 2, b8 / 2);
         for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -670,7 +700,7 @@ impl<T> MbSyntax for CabacSyntax<'_, T> {
         let intra = cur.is_intra();
         let dc = |m: &MbState| m.dc_coded[1 + comp];
         let inc = cbf_cond(nb.a, intra, dc) + 2 * cbf_cond(nb.b, intra, dc);
-        cur.dc_coded[1 + comp] = self.residual(Cat::ChromaDc, inc, out)?;
+        cur.dc_coded[1 + comp] = self.residual((Cat::ChromaDc, cur.field), inc, out)?;
         Ok(())
     }
 

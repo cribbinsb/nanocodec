@@ -45,7 +45,7 @@ pub(crate) struct I32x4(int32x4_t);
 
 /// Eight `i16` lanes.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I16x8Kernel<const SVE2: bool>(int16x8_t);
+pub(crate) struct I16x8Kernel<const SVE2: bool>(pub(crate) int16x8_t);
 
 pub(crate) type I16x8 = I16x8Kernel<false>;
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
@@ -53,7 +53,7 @@ pub(crate) type I16x8Sve2 = I16x8Kernel<true>;
 
 /// Four `i16` lanes (a 64-bit register).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I16x4(int16x4_t);
+pub(crate) struct I16x4(pub(crate) int16x4_t);
 
 /// Four bytes as the low lanes of a byte vector.
 #[inline(always)]

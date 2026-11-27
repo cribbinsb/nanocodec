@@ -87,7 +87,56 @@ pub enum SliceReferenceSet<'a> {
         entries: &'a [(u32, bool)],
         /// `num_short_term_ref_pic_sets`.
         sps_count: usize,
+        /// The long-term pictures, when the SPS has
+        /// `long_term_ref_pics_present_flag` ([`KeptSlot::LongTerm`]).
+        long_term: Option<&'a [LongTermEntry]>,
     },
+}
+
+/// A long-term picture of a slice's reference picture set, coded in the
+/// slice header (`num_long_term_pics`; §7.3.6.1, semantics §7.4.7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LongTermEntry {
+    /// `poc_lsb_lt`: the picture's POC LSBs.
+    pub poc_lsb: u32,
+    /// `used_by_curr_pic_lt_flag`.
+    pub used: bool,
+    /// `delta_poc_msb_cycle_lt` when `delta_poc_msb_present_flag` is 1: the
+    /// current picture's POC MSBs minus the long-term picture's, in units
+    /// of `MaxPicOrderCntLsb` (eq. 7-52; the first entry's value is the
+    /// whole difference).
+    pub msb_cycle: Option<u32>,
+}
+
+impl LongTermEntry {
+    /// The entry of the picture at POC `poc` for the current picture at
+    /// `current` with `lsb_bits` POC LSBs. The MSB cycle is coded once the
+    /// picture is a whole LSB cycle back: nearer, no other picture of the
+    /// decoder's previous-POC set (§7.4.7.1, `setOfPrevPocVals`: the
+    /// previous T0 picture, its references and the pictures after it, all
+    /// between this picture and the current one) can share its LSBs.
+    #[must_use]
+    pub fn new(poc: u32, current: u32, lsb_bits: u32, used: bool) -> Self {
+        let max_lsb = 1u32 << lsb_bits;
+        let msb_cycle =
+            (current - poc >= max_lsb).then(|| (current >> lsb_bits) - (poc >> lsb_bits));
+        Self {
+            poc_lsb: poc & (max_lsb - 1),
+            used,
+            msb_cycle,
+        }
+    }
+
+    /// `poc_lsb_lt`, `used_by_curr_pic_lt_flag`, `delta_poc_msb_present_flag`
+    /// and `delta_poc_msb_cycle_lt`.
+    fn write(self, w: &mut BitWriter, lsb_bits: u32) {
+        w.put_bits(self.poc_lsb, lsb_bits); // poc_lsb_lt
+        w.put_bit(self.used); // used_by_curr_pic_lt_flag
+        w.put_bit(self.msb_cycle.is_some()); // delta_poc_msb_present_flag
+        if let Some(cycle) = self.msb_cycle {
+            w.put_ue(cycle); // delta_poc_msb_cycle_lt
+        }
+    }
 }
 
 /// The SPS reference picture sets of each structure (indexed by
@@ -138,6 +187,34 @@ const PROFILE_MAIN: u32 = 1;
 /// Main 10 (Main streams also conform to it, so its compatibility flag is set).
 const PROFILE_MAIN10: u32 = 2;
 
+/// How the engine's long-term slot (`nc_encoder::long_term_slot`) is kept
+/// in the slices' reference picture sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeptSlot {
+    /// No picture is kept there.
+    None,
+    /// The second reference (`refs.second`): a short-term entry.
+    ShortTerm,
+    /// The long-term reference (`ltr.interval`): a long-term picture of the
+    /// sets once no short-term entry names it ([`LongTermEntry`];
+    /// `long_term_ref_pics_present_flag`).
+    LongTerm,
+}
+
+impl KeptSlot {
+    /// Whether a picture is kept in the slot.
+    #[must_use]
+    pub fn is_kept(self) -> bool {
+        self != Self::None
+    }
+
+    /// `long_term_ref_pics_present_flag`.
+    #[must_use]
+    pub fn long_term_refs(self) -> bool {
+        self == Self::LongTerm
+    }
+}
+
 /// Stream-level properties needed by the parameter sets.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamInfo {
@@ -148,7 +225,7 @@ pub struct StreamInfo {
     /// Luma samples cropped from the right and bottom of the coded picture
     /// for display (the conformance window; even for 4:2:0).
     pub crop: (usize, usize),
-    /// `general_level_idc` (30 × level number).
+    /// `general_level_idc` (30 × level number, `nc_encoder::luma_level`).
     pub level_idc: u32,
     /// Initial QP signalled in the PPS (`init_qp_minus26 + 26`).
     pub init_qp: i32,
@@ -177,15 +254,16 @@ pub struct StreamInfo {
     /// Bits of `slice_pic_order_cnt_lsb`: [`POC_LSB_BITS`] or
     /// [`LONG_POC_LSB_BITS`].
     pub poc_lsb_bits: u32,
+
     /// Colour and timing signalling; when either is set, the SPS carries a
     /// VUI for it.
     pub signal: StreamSignal,
     /// Nominal frame rate (the VUI timing clock).
     pub frame_rate: FrameRate,
-    /// A picture is kept in the long-term slot (`ltr.interval`, or the
-    /// second reference `refs.second`): slices carry their own reference
-    /// picture sets ([`SliceReferenceSet::Explicit`]).
-    pub long_term: bool,
+    /// Whether, and how, a picture is kept in the long-term slot: slices
+    /// keeping one carry their own reference picture sets
+    /// ([`SliceReferenceSet::Explicit`]).
+    pub kept_slot: KeptSlot,
     /// CUs carry `cu_qp_delta` (`cu_qp_delta_enabled_flag`), one per
     /// CTB-sized quantization group (`diff_cu_qp_delta_depth` 0).
     pub block_qp: bool,
@@ -208,7 +286,7 @@ impl StreamInfo {
         let largest = largest.unwrap_or(0) as u32;
         // A long-term or second reference is kept beside the structure's
         // pictures.
-        let kept = largest + u32::from(self.long_term);
+        let kept = largest + u32::from(self.kept_slot.is_kept());
         kept + 1
     }
 }
@@ -311,23 +389,24 @@ pub fn sps(info: &StreamInfo) -> Vec<u8> {
     for (index, set) in sets.iter().enumerate() {
         write_reference_set(&mut w, index, set);
     }
-    w.put_bit(false); // long_term_ref_pics_present_flag
+    w.put_bit(info.kept_slot.long_term_refs()); // long_term_ref_pics_present_flag
+    if info.kept_slot.long_term_refs() {
+        // Slices code their long-term pictures themselves.
+        w.put_ue(0); // num_long_term_ref_pics_sps
+    }
     w.put_bit(true); // sps_temporal_mvp_enabled_flag
     w.put_bit(false); // strong_intra_smoothing_enabled_flag
-    // Without colour signalling there is no VUI at all, which keeps
-    // default streams unchanged.
-    let vui = info.signal.colour.is_signalled() || info.signal.timing != TimingSignal::Nominal;
-    w.put_bit(vui); // vui_parameters_present_flag
-    if vui {
-        write_vui(&mut w, info.signal, info.frame_rate);
-    }
+    // The VUI always carries the timing: a raw Annex-B stream has no other
+    // frame rate.
+    w.put_bit(true); // vui_parameters_present_flag
+    write_vui(&mut w, info.signal, info.frame_rate);
     w.put_bit(false); // sps_extension_present_flag
     w.trailing_bits();
     w.into_bytes()
 }
 
-/// `vui_parameters()` (HEVC §E.2.1) carrying the video signal type and
-/// timing, each when configured.
+/// `vui_parameters()` (HEVC §E.2.1) carrying the video signal type when
+/// configured, and the timing.
 fn write_vui(w: &mut BitWriter, signal: StreamSignal, frame_rate: FrameRate) {
     w.put_bit(false); // aspect_ratio_info_present_flag
     w.put_bit(false); // overscan_info_present_flag
@@ -337,21 +416,18 @@ fn write_vui(w: &mut BitWriter, signal: StreamSignal, frame_rate: FrameRate) {
     w.put_bit(false); // field_seq_flag
     w.put_bit(false); // frame_field_info_present_flag
     w.put_bit(false); // default_display_window_flag
-    let timing = signal.timing != TimingSignal::Nominal;
-    w.put_bit(timing); // vui_timing_info_present_flag
-    if timing {
-        // One clock tick per nominal picture.
-        w.put_bits(frame_rate.den, 32); // vui_num_units_in_tick
-        w.put_bits(frame_rate.num, 32); // vui_time_scale
-        // POC counts frames (no reordering), so at a constant rate it is
-        // proportional to output time, one tick per POC step.
-        let proportional = signal.timing == TimingSignal::Constant;
-        w.put_bit(proportional); // vui_poc_proportional_to_timing_flag
-        if proportional {
-            w.put_ue(0); // vui_num_ticks_poc_diff_one_minus1
-        }
-        w.put_bit(false); // vui_hrd_parameters_present_flag
+    w.put_bit(true); // vui_timing_info_present_flag
+    // One clock tick per nominal picture.
+    w.put_bits(frame_rate.den, 32); // vui_num_units_in_tick
+    w.put_bits(frame_rate.num, 32); // vui_time_scale
+    // POC counts frames (no reordering), so at a constant rate it is
+    // proportional to output time, one tick per POC step.
+    let proportional = signal.timing == TimingSignal::Constant;
+    w.put_bit(proportional); // vui_poc_proportional_to_timing_flag
+    if proportional {
+        w.put_ue(0); // vui_num_ticks_poc_diff_one_minus1
     }
+    w.put_bit(false); // vui_hrd_parameters_present_flag
     w.put_bit(false); // bitstream_restriction_flag
 }
 
@@ -437,6 +513,9 @@ pub struct CraPoc {
     /// `num_short_term_ref_pic_sets` of the SPS: the explicit (empty)
     /// reference set follows them.
     pub sps_sets: usize,
+    /// `long_term_ref_pics_present_flag` of the SPS: an empty long-term
+    /// set follows.
+    pub long_term_refs: bool,
 }
 
 /// `slice_segment_header()` (HEVC §7.3.6.1) of the single I slice of an
@@ -466,8 +545,10 @@ pub fn irap_slice_header(
         w.put_bits(cra.lsb, cra.lsb_bits); // slice_pic_order_cnt_lsb
         w.put_bit(false); // short_term_ref_pic_set_sps_flag
         write_reference_set(w, cra.sps_sets, &[]); // st_ref_pic_set(): empty
-        // No long-term syntax (long_term_ref_pics_present_flag 0); an I
-        // slice uses no temporal vectors.
+        if cra.long_term_refs {
+            w.put_ue(0); // num_long_term_pics
+        }
+        // An I slice uses no temporal vectors.
         w.put_bit(false); // slice_temporal_mvp_enabled_flag
     }
     w.put_bit(sao.0); // slice_sao_luma_flag
@@ -578,10 +659,21 @@ pub fn inter_slice_header(
             // short_term_ref_pic_set_idx (no bits with a single set).
             w.put_bits(index as u32, reference_set_index_bits(count));
         }
-        SliceReferenceSet::Explicit { entries, sps_count } => {
+        SliceReferenceSet::Explicit {
+            entries,
+            sps_count,
+            long_term,
+        } => {
             w.put_bit(false); // short_term_ref_pic_set_sps_flag
             // st_ref_pic_set(num_short_term_ref_pic_sets) (§7.3.7).
             write_reference_set(w, sps_count, entries);
+            if let Some(long_term) = long_term {
+                // num_long_term_sps is absent (num_long_term_ref_pics_sps 0).
+                w.put_ue(long_term.len() as u32); // num_long_term_pics
+                for entry in long_term {
+                    entry.write(w, poc_lsb_bits);
+                }
+            }
         }
     }
     w.put_bit(temporal_mvp); // slice_temporal_mvp_enabled_flag
@@ -639,49 +731,19 @@ fn write_dpb_sizes(w: &mut BitWriter, info: &StreamInfo) {
     }
 }
 
-/// The lowest level whose picture-size and sample-rate limits hold
-/// (HEVC Table A.8), as `general_level_idc`.
-#[must_use]
-pub fn level_idc(width: usize, height: usize, fps: f64) -> u32 {
-    // (level_idc, MaxLumaPs, MaxLumaSr)
-    const LEVELS: [(u32, u64, u64); 13] = [
-        (30, 36_864, 552_960),
-        (60, 122_880, 3_686_400),
-        (63, 245_760, 7_372_800),
-        (90, 552_960, 16_588_800),
-        (93, 983_040, 33_177_600),
-        (120, 2_228_224, 66_846_720),
-        (123, 2_228_224, 133_693_440),
-        (150, 8_912_896, 267_386_880),
-        (153, 8_912_896, 534_773_760),
-        (156, 8_912_896, 1_069_547_520),
-        (180, 35_651_584, 1_069_547_520),
-        (183, 35_651_584, 2_139_095_040),
-        (186, 35_651_584, 4_278_190_080),
-    ];
-    let ps = (width * height) as u64;
-    let sr = (ps as f64 * fps).ceil() as u64;
-    let max_dim = width.max(height) as u64;
-    LEVELS
-        .iter()
-        .find(|&&(_, max_ps, max_sr)| {
-            // §A.4.1: each dimension at most sqrt(8 * MaxLumaPs).
-            ps <= max_ps && sr <= max_sr && max_dim * max_dim <= 8 * max_ps
-        })
-        .map_or(LEVELS[LEVELS.len() - 1].0, |l| l.0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn levels_for_common_sizes() {
-        assert_eq!(level_idc(1280, 720, 30.0), 93); // 3.1
-        assert_eq!(level_idc(1920, 1080, 30.0), 120); // 4
-        assert_eq!(level_idc(1920, 1080, 60.0), 123); // 4.1
-        assert_eq!(level_idc(640, 360, 30.0), 63); // 2.1
+    fn long_term_entries_code_the_msb_cycle_only_a_cycle_back() {
+        use super::LongTermEntry;
+        let near = LongTermEntry::new(300, 555, 8, true);
+        assert_eq!((near.poc_lsb, near.msb_cycle), (300 - 256, None));
+        // 256 back: the LSBs alone could name a newer picture.
+        let far = LongTermEntry::new(299, 555, 8, false);
+        assert_eq!((far.poc_lsb, far.msb_cycle), (299 - 256, Some(1)));
     }
+
+    use super::*;
 
     #[test]
     fn nal_header_bytes() {

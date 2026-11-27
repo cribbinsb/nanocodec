@@ -245,12 +245,13 @@ keeps in step with the decoders' rejection paths.
   and unspecified NAL unit types and NAL units with `nuh_layer_id` above 0 are an error instead of being
   ignored (§7.4.2.2), and an SPS with `sps_video_parameter_set_id` above 0 is rejected. Also 138 of 138
   short 8-bit streams we coded with VTM and VVenC to cover the tools one by one (our own streams, not a suite).
-- **H.264** (Constrained Baseline, Main, High, High 10): 110 of the 190 streams of the official ITU-T
-  H.264.1 conformance suite's AVCv1, FRExt and Professional (High 10) sets, against JM. **Not yet**:
-  interlaced streams (field pictures and MBAFF; 75 of the 80 failures are such Main/High streams) and
-  pictures larger than level 5.2 allows (levels 6 to 6.2, 8K). The other 5 failures use FMO/ASO or SP/SI
-  slices (Baseline/Extended only, not supported). The suite's 4:2:2, 4:4:4, MVC and SVC streams are not
-  fetched (other profiles, not supported).
+- **H.264** (Baseline, Constrained Baseline, Main, High, High 10; frames and field pictures): 150 of the 190
+  streams of the official ITU-T H.264.1 conformance suite's AVCv1, FRExt and Professional (High 10) sets,
+  against JM (2026-11-27 natively, at the field-picture landing; the record above had 110): all 113
+  progressive streams without SP/SI slices (FMO/ASO included) and all 37 interlaced streams without MBAFF
+  frames. **Not yet**: MBAFF frames (38 Main, High and High 10 Intra streams) and pictures larger than
+  level 5.2 allows (levels 6 to 6.2, 8K). The other 2 failures use SP/SI slices (Extended only). The
+  suite's 4:2:2, 4:4:4, MVC and SVC streams are not fetched (other profiles, not supported).
 - **AV1** (Main, 8- and 10-bit): 242/242 libaom v3.15.3 test vectors (176 8-bit, 66 10-bit), against
   aomdec. These are an encoder project's test vectors, **not a conformance suite**; the AOM Argon AV1
   conformance streams have not been run. **Not yet** (valid Main streams rejected): quantizer matrices,
@@ -301,6 +302,8 @@ except where a cell says otherwise.
 | VP9 | yes | yes | no² | yes | from the LTR, else a key frame |
 | AV2 | yes | yes | no² | yes | from the LTR, else a key frame |
 
+- How the LTR is signalled: H.264 by long-term marking (MMCO), HEVC and VVC as a long-term reference picture
+  (`long_term_ref_pics_present_flag`, `sps_long_term_ref_pics_flag`), AV1, VP9 and AV2 as a held reference slot.
 - With temporal layers, LTRs are marked on base-layer frames and intra refresh sweeps across the base-layer
   frames only (as many as cover the period, at least two). With an LTR, intra refresh restarts its sweep at a
   recovery frame.
@@ -321,7 +324,7 @@ except where a cell says otherwise.
   natively and in the browser.
 - **Decoders:** no decoder decodes every valid stream of its codec's main profiles yet; the counts, which
   suites are official and which are encoder test vectors, are under [Conformance](#conformance). Not yet
-  decoded (valid streams of the main profiles): H.264 interlace (field pictures, MBAFF) and pictures above
+  decoded (valid streams of the main profiles): H.264 MBAFF frames (field pictures are decoded) and pictures above
   level 5.2; AV1 quantizer matrices, block loop-filter deltas, segment features other than the quantizer,
   lossless segments in mixed frames, odd frame sizes and switch frames (fix in progress); VVC reserved NAL
   types, `nuh_layer_id` above 0 and a VPS id above 0 (rejected instead of ignored);

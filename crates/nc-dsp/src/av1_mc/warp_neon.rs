@@ -141,8 +141,8 @@ pub(crate) unsafe fn warp8x8_av2(
     unsafe {
         filter8x8(source, phases, round1, out, |phase| {
             crate::av2_dec::warp::taps_unchecked(phase)
-        })
-    };
+        });
+    }
 }
 
 #[inline(always)]

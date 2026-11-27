@@ -1,4 +1,4 @@
-//! Slice headers (§7.3.3) of I, P and B slices of frames, with their
+//! Slice headers (§7.3.3) of I, P, B, SP and SI slices of frames and fields, with their
 //! `ref_pic_list_modification()` (§7.3.3.1), `pred_weight_table()`
 //! (§7.3.3.2) and `dec_ref_pic_marking()` (§7.3.3.3), and the
 //! detection of a new picture's first slice (§7.4.1.2.4).
@@ -8,6 +8,8 @@ use super::pps::{BipredWeights, MAX_PPS_ID, MAX_REF_IDX_ACTIVE_MINUS1, Pps};
 use super::reader::Reader;
 use super::slice_groups::MapUnits;
 use super::sps::{PocType, Sps};
+use super::structure::{Parity, Structure};
+use super::switching::{self, Switching};
 use super::{DecodeError, Result};
 use crate::deblock::{DEBLOCK_IDC_NO_SLICE_EDGES, DEBLOCK_OFFSET_DIV2_MAX, DeblockControl};
 
@@ -15,6 +17,8 @@ use crate::deblock::{DEBLOCK_IDC_NO_SLICE_EDGES, DEBLOCK_OFFSET_DIV2_MAX, Debloc
 const SLICE_TYPE_P: u32 = 0;
 const SLICE_TYPE_B: u32 = 1;
 const SLICE_TYPE_I: u32 = 2;
+const SLICE_TYPE_SP: u32 = 3;
+const SLICE_TYPE_SI: u32 = 4;
 /// Largest `slice_type` (types 5..=9 repeat 0..=4 for the whole picture).
 const MAX_SLICE_TYPE: u32 = 9;
 /// Number of distinct slice types.
@@ -37,22 +41,31 @@ const MAX_MODIFICATIONS: usize = 33;
 /// marks one of at most 16 frames, plus the bookkeeping operations.
 const MAX_MMCOS: usize = 66;
 
-/// The decodable slice types.
+/// The slice types by their macroblock syntax. SP slices parse as P
+/// slices (Table 7-13) and differ only in reconstruction
+/// ([`SliceHeader::switching`]); SI slices have their own macroblock types
+/// (Table 7-12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SliceType {
     I,
     P,
     B,
+    Si,
 }
 
 impl SliceType {
     /// The reference lists the slice's macroblocks predict from.
     pub fn lists(self) -> usize {
         match self {
-            Self::I => 0,
+            Self::I | Self::Si => 0,
             Self::P => 1,
             Self::B => 2,
         }
+    }
+
+    /// An I or SI slice: intra macroblocks only, none skipped.
+    pub fn is_intra(self) -> bool {
+        matches!(self, Self::I | Self::Si)
     }
 }
 
@@ -97,6 +110,8 @@ pub(super) struct SliceHeader {
     pub slice_type: SliceType,
     pub pps_id: u32,
     pub frame_num: u32,
+    /// A frame, or a field picture (`field_pic_flag`, `bottom_field_flag`).
+    pub structure: Structure,
     pub idr: bool,
     /// `nal_ref_idc != 0`.
     pub reference: bool,
@@ -119,6 +134,8 @@ pub(super) struct SliceHeader {
     pub cabac_init_idc: u8,
     pub qp: i32,
     pub deblock: DeblockControl,
+    /// The QS fields of an SP or SI slice.
+    pub switching: Option<Switching>,
     /// `slice_group_change_cycle` (slice group map types 3..=5, else 0).
     pub slice_group_change_cycle: u32,
 }
@@ -130,6 +147,7 @@ impl SliceHeader {
     /// does not code are 0 in both.
     pub fn same_picture(&self, first: &Self) -> bool {
         self.frame_num == first.frame_num
+            && self.structure == first.structure
             && self.pps_id == first.pps_id
             && self.reference == first.reference
             && self.pic_order_cnt_lsb == first.pic_order_cnt_lsb
@@ -159,27 +177,30 @@ pub(super) fn parse(
     nal_ref_idc: u32,
 ) -> Result<SliceHeader> {
     let first_mb = r.ue()? as usize;
-    if first_mb >= sps.mbs() {
-        return Err(DecodeError::Malformed("first_mb_in_slice"));
-    }
-    let slice_type = match r.ue_max(MAX_SLICE_TYPE, "slice_type")? % SLICE_TYPES {
-        SLICE_TYPE_P if !idr => SliceType::P,
+    let coded_type = r.ue_max(MAX_SLICE_TYPE, "slice_type")? % SLICE_TYPES;
+    let slice_type = match coded_type {
+        SLICE_TYPE_P | SLICE_TYPE_SP if !idr => SliceType::P,
         SLICE_TYPE_B if !idr => SliceType::B,
         SLICE_TYPE_I => SliceType::I,
-        SLICE_TYPE_P | SLICE_TYPE_B => {
-            return Err(DecodeError::Malformed("inter slice in IDR picture"));
-        }
-        _ => return Err(DecodeError::Unsupported("H264 SP/SI slices")),
+        SLICE_TYPE_SI => SliceType::Si,
+        _ => return Err(DecodeError::Malformed("inter slice in IDR picture")),
     };
     let pps_id = r.ue_max(MAX_PPS_ID, "pic_parameter_set_id")?;
     let frame_num = r.bits(sps.log2_max_frame_num)?;
-    if !sps.frame_mbs_only {
-        if r.flag()? {
-            return Err(DecodeError::Unsupported("H264 field pictures"));
-        }
-        if sps.mbaff {
-            return Err(DecodeError::Unsupported("H264 MBAFF frames"));
-        }
+    let structure = if !sps.frame_mbs_only && r.flag()? {
+        Structure::Field(if r.flag()? {
+            Parity::Bottom
+        } else {
+            Parity::Top
+        })
+    } else {
+        Structure::Frame
+    };
+    if structure == Structure::Frame && sps.mbaff {
+        return Err(DecodeError::Unsupported("H264 MBAFF frames"));
+    }
+    if first_mb >= sps.picture_mbs(structure) {
+        return Err(DecodeError::Malformed("first_mb_in_slice"));
     }
     if idr && frame_num != 0 {
         return Err(DecodeError::Malformed("IDR frame_num"));
@@ -190,7 +211,7 @@ pub(super) fn parse(
         0
     };
     let (pic_order_cnt_lsb, delta_pic_order_cnt_bottom, delta_pic_order_cnt) =
-        parse_poc_fields(r, sps, pps)?;
+        parse_poc_fields(r, sps, pps, structure)?;
     let redundant_pic_cnt = if pps.redundant_pic_cnt_present {
         r.ue_max(MAX_REDUNDANT_PIC_CNT, "redundant_pic_cnt")?
     } else {
@@ -201,14 +222,14 @@ pub(super) fn parse(
     let explicit = match slice_type {
         SliceType::P => pps.weighted_pred,
         SliceType::B => pps.weighted_bipred == BipredWeights::Explicit,
-        SliceType::I => false,
+        SliceType::I | SliceType::Si => false,
     };
     let lists = slice_type.lists();
     let weights = explicit
         .then(|| parse_weights(r, &num_ref_idx_active[..lists], sps.monochrome))
         .transpose()?;
     let marking = parse_marking(r, idr, nal_ref_idc)?;
-    let cabac_init_idc = if pps.cabac && slice_type != SliceType::I {
+    let cabac_init_idc = if pps.cabac && !slice_type.is_intra() {
         r.ue_max(MAX_CABAC_INIT_IDC, "cabac_init_idc")? as u8
     } else {
         0
@@ -219,6 +240,10 @@ pub(super) fn parse(
     if !(-qp_bd_offset..=51).contains(&qp) {
         return Err(DecodeError::Malformed("slice QP"));
     }
+    let sp = coded_type == SLICE_TYPE_SP;
+    let switching = (sp || slice_type == SliceType::Si)
+        .then(|| switching::parse(r, sps, pps, sp))
+        .transpose()?;
     let deblock = if pps.deblocking_filter_control_present {
         parse_deblock(r)?
     } else {
@@ -233,6 +258,7 @@ pub(super) fn parse(
         slice_type,
         pps_id,
         frame_num,
+        structure,
         idr,
         reference: nal_ref_idc != 0,
         idr_pic_id,
@@ -248,6 +274,7 @@ pub(super) fn parse(
         cabac_init_idc,
         qp,
         deblock,
+        switching,
         slice_group_change_cycle,
     })
 }
@@ -287,14 +314,22 @@ fn parse_lists(r: &mut Reader<'_>, pps: &Pps, slice_type: SliceType) -> Result<L
 }
 
 /// The picture order count fields: `pic_order_cnt_lsb`,
-/// `delta_pic_order_cnt_bottom` and `delta_pic_order_cnt[0..2]`.
-fn parse_poc_fields(r: &mut Reader<'_>, sps: &Sps, pps: &Pps) -> Result<(u32, i32, [i32; 2])> {
+/// `delta_pic_order_cnt_bottom` and `delta_pic_order_cnt[0..2]` (the
+/// bottom field's own fields only in frames).
+fn parse_poc_fields(
+    r: &mut Reader<'_>,
+    sps: &Sps,
+    pps: &Pps,
+    structure: Structure,
+) -> Result<(u32, i32, [i32; 2])> {
     let (mut pic_order_cnt_lsb, mut delta_pic_order_cnt_bottom, mut delta_pic_order_cnt) =
         (0, 0, [0; 2]);
+    let bottom_present =
+        pps.bottom_field_pic_order_in_frame_present && structure == Structure::Frame;
     match &sps.poc {
         PocType::Lsb { log2_max_lsb } => {
             pic_order_cnt_lsb = r.bits(*log2_max_lsb)?;
-            if pps.bottom_field_pic_order_in_frame_present {
+            if bottom_present {
                 delta_pic_order_cnt_bottom = r.se()?;
             }
         }
@@ -303,7 +338,7 @@ fn parse_poc_fields(r: &mut Reader<'_>, sps: &Sps, pps: &Pps) -> Result<(u32, i3
             ..
         } => {
             delta_pic_order_cnt[0] = r.se()?;
-            if pps.bottom_field_pic_order_in_frame_present {
+            if bottom_present {
                 delta_pic_order_cnt[1] = r.se()?;
             }
         }

@@ -2,7 +2,9 @@
 //! The UI transfers captured frames (YUV planes, or RGBA) to workers, which
 //! convert them per view (`source`); compressed bytes alone cross the
 //! encoder/decoder boundary. No reconstruction-buffer shortcut is used.
-//! [`RtpReceiver`] turns received RTP packets into the decoders' units.
+//! [`RtpSender`] packetizes an encoder's units for RTP and [`RtpReceiver`]
+//! turns received RTP packets into the decoders' units; the encoder takes
+//! the receiver's loss feedback (`report_lost_frame`, `acknowledge_frame`).
 
 #![forbid(unsafe_code)]
 
@@ -15,7 +17,7 @@ mod source;
 #[cfg(test)]
 mod vvc_corpus_tests;
 
-pub use rtp::RtpReceiver;
+pub use rtp::{RtpLayerFilter, RtpReceiver, RtpSender};
 pub use source::SourceFrame;
 
 use nc_common::decode::DecodeError;
@@ -32,7 +34,24 @@ use nc_encoder::{
     Codec, EncodedFrame, Encoder, EncoderConfig, FrameRate, FrameType, ParamOverrides,
     RateControlConfig, RateControlError, RateControlStats,
 };
+use nc_rtp::{LayerFrame, LayerStructure};
+use std::collections::VecDeque;
 use wasm_bindgen::prelude::*;
+
+/// Layer frames whose temporal unit and spatial layer the encoder
+/// remembers for loss feedback (`BrowserEncoder::report_lost_frame`): a
+/// report older than this is older than any repair the encoder could
+/// still make (feedback arrives within a round trip, a few frames).
+const FEEDBACK_HISTORY: usize = 256;
+
+/// The bits of a frame number on the wire (the Dependency Descriptor's
+/// `frame_number`): loss feedback names frames by these.
+const WIRE_FRAME_NUMBER_BITS: u32 = 16;
+
+/// Frame number `number` as the wire carries it.
+pub(crate) fn wire_frame_number(number: u64) -> u16 {
+    u16::try_from(number & ((1 << WIRE_FRAME_NUMBER_BITS) - 1)).expect("masked to 16 bits")
+}
 
 /// Largest packet the browser decoder accepts.
 const MAX_PACKET_BYTES: usize = 16 * 1024 * 1024;
@@ -132,6 +151,43 @@ impl EncoderKind {
         }
     }
 
+    /// The receiver is missing layer picture `spatial_id` of temporal unit
+    /// `tu_index` (on a single-layer stream: frame `tu_index`).
+    fn report_layer_loss(&mut self, tu_index: u64, spatial_id: u8) {
+        match self {
+            Self::H264(e) => e.report_layer_loss(tu_index, spatial_id),
+            Self::Hevc(e) => e.report_layer_loss(tu_index, spatial_id),
+            Self::Av1(e) => e.report_layer_loss(tu_index, spatial_id),
+            Self::Vp9(e) => e.report_layer_loss(tu_index, spatial_id),
+            Self::Av2(e) => e.report_layer_loss(tu_index, spatial_id),
+            Self::Vvc(e) => e.report_layer_loss(tu_index, spatial_id),
+        }
+    }
+
+    /// The receiver decoded layer picture `spatial_id` of temporal unit `tu_index`.
+    fn acknowledge_layer(&mut self, tu_index: u64, spatial_id: u8) {
+        match self {
+            Self::H264(e) => e.acknowledge_layer(tu_index, spatial_id),
+            Self::Hevc(e) => e.acknowledge_layer(tu_index, spatial_id),
+            Self::Av1(e) => e.acknowledge_layer(tu_index, spatial_id),
+            Self::Vp9(e) => e.acknowledge_layer(tu_index, spatial_id),
+            Self::Av2(e) => e.acknowledge_layer(tu_index, spatial_id),
+            Self::Vvc(e) => e.acknowledge_layer(tu_index, spatial_id),
+        }
+    }
+
+    /// The stream's RTP layer structure (`nc_encoder::rtp_layer_structure`).
+    fn rtp_layer_structure(&self) -> LayerStructure {
+        match self {
+            Self::H264(e) => nc_encoder::rtp_layer_structure(e.as_ref()),
+            Self::Hevc(e) => nc_encoder::rtp_layer_structure(e.as_ref()),
+            Self::Av1(e) => nc_encoder::rtp_layer_structure(e.as_ref()),
+            Self::Vp9(e) => nc_encoder::rtp_layer_structure(e.as_ref()),
+            Self::Av2(e) => nc_encoder::rtp_layer_structure(e.as_ref()),
+            Self::Vvc(e) => nc_encoder::rtp_layer_structure(e.as_ref()),
+        }
+    }
+
     /// Encode `source`, one nominal frame interval after the previous frame
     /// (`timestamp_us` None) or captured at `timestamp_us`: rate control then
     /// budgets it for the real time since the previous frame (`Encoder::encode_at`).
@@ -169,6 +225,11 @@ pub struct BrowserEncoder {
     /// The last input repeated the picture (`hold.rs`) or was dropped:
     /// nothing was coded, and the decoder keeps showing its last frame.
     repeat: bool,
+    /// The last coded frame's layer pictures, for `RtpSender`.
+    rtp_frames: Vec<LayerFrame>,
+    /// `(frame number, temporal unit, spatial id)` of recent layer
+    /// pictures, for loss feedback by frame number.
+    sent_frames: VecDeque<(u64, u64, u8)>,
 }
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
@@ -306,6 +367,8 @@ impl BrowserEncoder {
             temporal_layer: 0,
             quantizer: qp,
             repeat: false,
+            rtp_frames: Vec::new(),
+            sent_frames: VecDeque::with_capacity(FEEDBACK_HISTORY),
         })
     }
 
@@ -345,6 +408,17 @@ impl BrowserEncoder {
         self.temporal_layer = frame.metadata.temporal_layer;
         if !self.repeat {
             self.quantizer = frame.metadata.quantizer;
+        }
+        self.rtp_frames = nc_encoder::rtp_layer_frames(&frame);
+        for layer in &self.rtp_frames {
+            if self.sent_frames.len() == FEEDBACK_HISTORY {
+                self.sent_frames.pop_front();
+            }
+            self.sent_frames.push_back((
+                layer.frame_number,
+                frame.metadata.index,
+                layer.spatial_id,
+            ));
         }
         Ok(frame.data)
     }
@@ -448,9 +522,53 @@ impl BrowserEncoder {
     pub fn temporal_layer(&self) -> u8 {
         self.temporal_layer
     }
+
+    /// Loss feedback: the receiver is missing layer picture `frame_number`
+    /// (the 16-bit number `RtpReceiver` reports, `RtpReceiver::lost_frames`,
+    /// matched against the encoder's recent frames). The
+    /// next frame repairs it from the acknowledged long-term reference, or
+    /// is a key frame (a lost enhancement layer: an enhancement repair);
+    /// a lost top-temporal-layer picture needs nothing
+    /// (`Encoder::report_loss`, `Encoder::report_layer_loss`).
+    /// # Errors
+    /// Rejects numbers that are not non-negative integers.
+    pub fn report_lost_frame(&mut self, frame_number: f64) -> Result<(), JsValue> {
+        if let Some((tu, spatial_id)) = self.sent_frame(frame_index(frame_number)?) {
+            self.inner.report_layer_loss(tu, spatial_id);
+        }
+        Ok(())
+    }
+
+    /// Loss feedback: the receiver decoded layer picture `frame_number`,
+    /// which acknowledges a long-term reference marked on it
+    /// (`Encoder::acknowledge_layer`).
+    /// # Errors
+    /// Rejects numbers that are not non-negative integers.
+    pub fn acknowledge_frame(&mut self, frame_number: f64) -> Result<(), JsValue> {
+        if let Some((tu, spatial_id)) = self.sent_frame(frame_index(frame_number)?) {
+            self.inner.acknowledge_layer(tu, spatial_id);
+        }
+        Ok(())
+    }
 }
 
 impl BrowserEncoder {
+    /// The temporal unit and spatial id of recent layer picture
+    /// `frame_number` (as the wire carries it: `wire_frame_number`).
+    fn sent_frame(&self, frame_number: u64) -> Option<(u64, u8)> {
+        self.sent_frames
+            .iter()
+            .rev()
+            .find(|&&(number, _, _)| u64::from(wire_frame_number(number)) == frame_number)
+            .map(|&(_, tu, spatial_id)| (tu, spatial_id))
+    }
+
+    /// The stream's layer structure and the last coded frame's layer
+    /// pictures (empty when nothing was coded), for `RtpSender`.
+    pub(crate) fn rtp_layers(&self) -> (LayerStructure, &[LayerFrame]) {
+        (self.inner.rtp_layer_structure(), &self.rtp_frames)
+    }
+
     /// `source`'s picture, if it matches the configuration.
     fn input<'a>(&self, source: &'a SourceFrame) -> Result<&'a Picture, JsValue> {
         let picture = source.picture();

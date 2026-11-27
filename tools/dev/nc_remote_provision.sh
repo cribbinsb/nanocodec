@@ -64,9 +64,19 @@ python3 -m venv "$HOME/ncbox/venv"
 # Noto Sans as the PC's sans-serif: with DejaVu the results page measured 37 px wider
 # on a phone and results-pages.py failed (2026-11-21).
 sudo apt-get -qq install -y libxcomposite1 libxdamage1 libatk1.0-0t64 libatk-bridge2.0-0t64 \
-  libatspi2.0-0t64 libcups2t64 fonts-noto-core > /dev/null
-PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=@PLAYWRIGHT_PLATFORM@ \
-  "$HOME/ncbox/venv/bin/python" -m playwright install chromium chromium-headless-shell > /dev/null
+  libatspi2.0-0t64 libcups2t64 libgtk-3-0t64 fonts-noto-core > /dev/null
+# WebKit's media libraries (GStreamer: it does not start without them) and the rest of
+# Playwright's Ubuntu 24.04 WebKit dependencies that 26.04 has under the same names.
+sudo apt-get -qq install -y gstreamer1.0-libav gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad libgstreamer-gl1.0-0 libgstreamer-plugins-bad1.0-0 \
+  libgstreamer-plugins-base1.0-0 libgstreamer1.0-0 libharfbuzz-icu0 libhyphen0 libsecret-1-0 \
+  libenchant-2-2 libflite1 libavif16 libwebpdemux2 libopenjp2-7 libxslt1.1 libgles2 libevdev2 \
+  libgudev-1.0-0 libepoxy0 libopus0 liblcms2-2 libwayland-egl1 libwayland-server0 > /dev/null
+# Firefox and WebKit for the multi-engine check (tools/web/browser_engines.py, which
+# unpacks the Ubuntu 24.04 libraries WebKit lacks here: tools/web/webkit_host_libs.sh,
+# so the install's host check, which would fail on them, is skipped).
+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=@PLAYWRIGHT_PLATFORM@ PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1 \
+  "$HOME/ncbox/venv/bin/python" -m playwright install chromium chromium-headless-shell firefox webkit > /dev/null
 
 # wasm-bindgen-cli, the version Cargo.lock pins, where tools/web/build.sh looks for
 # it: the release the PC uses (its tarball's SHA-256 checked).

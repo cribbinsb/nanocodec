@@ -6,7 +6,8 @@
 #
 #   tools/ci/nightly_checks.sh x86   on the x86 build box (nc-remote), in a tree with
 #                                    cargo: check.sh's full-only steps, host checkasm,
-#                                    the official decoder suites (native and WASM), the
+#                                    the official decoder suites (native and WASM, the
+#                                    WASM ones also in Chromium, Firefox and WebKit), the
 #                                    AV2 foreign streams, the real-use features, the C
 #                                    API against the CLI (capi_check.sh), the
 #                                    #[ignore]d tests that need external decoders or
@@ -102,6 +103,10 @@ x86_checks() {
         cargo test -p nanocodec-cli --profile gate-test --test integration foreign_streams
     check foreign-encoders foreign_encoders
     check wasm-conformance bash -c 'tools/web/build.sh && tools/ci/wasm_conformance.sh'
+    # The module and the demo in Chromium, Firefox and WebKit (after wasm-conformance's build).
+    check browser-engines bash -c 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1 \
+        python3 -m playwright install chromium chromium-headless-shell firefox webkit >/dev/null &&
+        python3 tools/web/browser_engines.py all --out "$1"' _ "$out/browser-engines"
     check realuse env NANOCODEC="$bin" tools/ci/realuse_conformance.sh
     check capi tools/ci/capi_check.sh
     check ignored-tests ignored_tests

@@ -8,11 +8,12 @@
 # Every agent build, test and clippy run goes through this. It takes one of
 # NC_BUILD_SLOTS shared slots (a flock(1) on a slot file, released when cargo
 # exits, however it exits) and runs cargo in a user systemd scope capped at
-# NC_BUILD_MEM without swap, so one build cannot take the machine down. A
+# NC_BUILD_MEM without swap (throttled from NC_BUILD_MEM_HIGH when set), so
+# one build cannot take the machine down. A
 # build waits, polling every SLOT_POLL_SECONDS, while every slot is taken.
 #
 # NC_BUILD_RESERVED=1 skips the shared slots (the scope still applies): the
-# landing script's builds are serialised by the landing lock, so they keep
+# landing script's builds are serialised by its shared-target lock, so they keep
 # their own reserved slot instead of queueing behind agents' builds
 # (tools/dev/land.sh runs every cargo call this way, through a `cargo` shim
 # on its PATH). Invoked as `cargo` (that shim, a symlink), it runs the real
@@ -27,11 +28,13 @@ SLOT_POLL_SECONDS=5
 
 slots=${NC_BUILD_SLOTS:-$DEFAULT_SLOTS}
 mem=${NC_BUILD_MEM:-$DEFAULT_MEM}
+high=()
+[[ -z "${NC_BUILD_MEM_HIGH:-}" ]] || high=(-p MemoryHigh="$NC_BUILD_MEM_HIGH")
 slot_dir=${NC_DATA_ROOT:-$HOME/nanocodec-data}/locks/build-slots
 real_cargo=${CARGO:-$HOME/.cargo/bin/cargo}
 
 capped() {
-    exec systemd-run --user --scope --quiet -p MemoryMax="$mem" -p MemorySwapMax=0 -- \
+    exec systemd-run --user --scope --quiet -p MemoryMax="$mem" "${high[@]}" -p MemorySwapMax=0 -- \
         "$real_cargo" "$@"
 }
 

@@ -5,7 +5,7 @@
 //! consumer of a picture reads its planes' sizes from
 //! [`Picture::chroma_format`] (`docs/handoff/chroma-formats.md`).
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::plane::Plane;
 use crate::sample::Sample;
 
@@ -152,7 +152,9 @@ impl<T: Sample> Picture<T> {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidDimensions`] if either dimension is odd, zero or too large.
+    /// [`crate::Error::InvalidDimensions`] if either dimension is zero or too large.
+    /// Odd sizes are valid (decoded AV1 and VP9 frames may have any size):
+    /// their chroma rounds up.
     pub fn new(width: usize, height: usize, luma_border: usize) -> Result<Self> {
         Self::with_borders(width, height, luma_border, luma_border.div_ceil(2))
     }
@@ -185,8 +187,8 @@ impl<T: Sample> Picture<T> {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidDimensions`] if a dimension is zero or too large, or
-    /// odd along a subsampled axis.
+    /// [`crate::Error::InvalidDimensions`] if a dimension is zero or too large; an
+    /// odd size along a subsampled axis rounds its chroma up.
     pub fn with_format(
         width: usize,
         height: usize,
@@ -207,14 +209,6 @@ impl<T: Sample> Picture<T> {
         luma_border: usize,
         chroma_border: usize,
     ) -> Result<Self> {
-        let (x, y) = format.subsampling();
-        if !width.is_multiple_of(1 << x) || !height.is_multiple_of(1 << y) {
-            return Err(Error::InvalidDimensions {
-                width,
-                height,
-                reason: "subsampled pictures need even width and height",
-            });
-        }
         let (chroma_w, chroma_h) = format.chroma_size((width, height));
         Ok(Self {
             planes: [
@@ -327,8 +321,10 @@ impl<T: Sample> Picture<T> {
     pub fn replicate_beyond(&mut self, width: usize, height: usize) {
         let format = self.format;
         for (plane, index) in self.planes.iter_mut().zip(PlaneIndex::ALL) {
+            // A subsampled plane of an odd luma size keeps its last,
+            // half-covered sample (`(width + 1) >> 1`).
             let (x, y) = format.plane_subsampling(index);
-            let (keep_w, keep_h) = (width >> x, height >> y);
+            let (keep_w, keep_h) = ((width + x) >> x, (height + y) >> y);
             let mut view = plane.view_mut();
             assert!(keep_w > 0 && keep_h > 0 && keep_w <= view.width() && keep_h <= view.height());
             for y in 0..keep_h {
@@ -389,7 +385,7 @@ mod tests {
             assert_eq!(pic.chroma_format(), format);
         }
         assert!(Picture::<u8>::with_format(63, 24, ChromaFormat::Yuv444, 0).is_ok());
-        assert!(Picture::<u8>::with_format(63, 24, ChromaFormat::Yuv422, 0).is_err());
+        assert!(Picture::<u8>::with_format(63, 24, ChromaFormat::Yuv422, 0).is_ok());
         assert!(Picture::<u8>::with_format(64, 23, ChromaFormat::Yuv422, 0).is_ok());
         assert_eq!(
             ChromaFormat::Yuv422.plane_size(PlaneIndex::U, (5, 3)),
@@ -398,8 +394,12 @@ mod tests {
     }
 
     #[test]
-    fn odd_dimensions_are_rejected() {
-        assert!(Picture::<u8>::new(1281, 720, 0).is_err());
-        assert!(Picture::<u16>::new(1280, 721, 0).is_err());
+    fn odd_dimensions_round_chroma_up() {
+        let picture = Picture::<u8>::new(1281, 721, 0).unwrap();
+        assert_eq!(picture.plane(PlaneIndex::U).view().width(), 641);
+        assert_eq!(picture.plane(PlaneIndex::V).view().height(), 361);
+        let picture = Picture::<u16>::with_format(5, 3, ChromaFormat::Yuv422, 0).unwrap();
+        assert_eq!(picture.plane(PlaneIndex::U).view().width(), 3);
+        assert_eq!(picture.plane(PlaneIndex::U).view().height(), 3);
     }
 }

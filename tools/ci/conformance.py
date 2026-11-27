@@ -26,6 +26,13 @@ failures by tool.
 Exit status 0 when every selected stream matches, or with `--must-pass
 FILE` (one stream name per line: a decoder still on its way to the whole
 suite) when every listed stream does.
+
+Before any decode, every selected stream must be in the stream directory with
+the manifest's SHA-256: a partial or damaged corpus fails at once, naming the
+streams (exit 2), rather than as one decode error per stream or, under
+`--must-pass`, not at all for the streams not listed. `--check-corpus` runs
+only that check over the whole manifest (tools/ci/wasm_conformance.sh, and
+after syncing a corpus to the build box).
 """
 
 import argparse
@@ -48,6 +55,10 @@ SUITES = {
     "hevc-v1": ("hevc", ROOT / "tools/ci/hevc_conformance_v1.json", DATA / "conformance/hevc/streams"),
     "vvc-v1": ("vvc", ROOT / "tools/ci/vvc_conformance_v1.json", DATA / "conformance/vvc/streams"),
     "av1-libaom": ("av1", ROOT / "tools/ci/av1_conformance_libaom.json", DATA / "conformance/av1/streams"),
+    # libaom / SVT-AV1 streams for Main-profile tools the libaom vectors lack
+    # (tools/dev/av1_conformance_supplement.sh).
+    "av1-supplementary": ("av1", ROOT / "tools/ci/av1_conformance_supplementary.json",
+                          DATA / "conformance/av1/supplementary"),
     "vp9-libvpx": ("vp9", ROOT / "tools/ci/vp9_conformance_libvpx.json", DATA / "conformance/vp9/streams"),
     # ITU-T H.264.1 (AVCv1, FRExt, High 10): conformance_fetch.py --suite h264.
     "h264": ("h264", ROOT / "tools/ci/h264_conformance.json", DATA / "conformance/h264/streams"),
@@ -157,6 +168,22 @@ def run_one(binary, codec, streams, entry, timeout):
     return result
 
 
+def corpus_problems(entries, streams):
+    """The entries' streams missing from `streams` or differing from their manifest
+    SHA-256 (2026-11-27: the build box's H.264 folders held a stream's notes but not
+    the stream, after a partial copy)."""
+    problems = []
+    for entry in entries:
+        path = streams / entry["bitstream"]
+        if not path.is_file():
+            problems.append(f"{entry['name']}: missing {path}")
+            continue
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != entry["sha256"]:
+                problems.append(f"{entry['name']}: {path} differs from the manifest's SHA-256")
+    return problems
+
+
 def selected(entries, args):
     """The manifest entries the profile, depth and name filters keep."""
     profiles = {p.strip() for p in args.profiles.split(",")} if args.profiles else None
@@ -217,14 +244,25 @@ def main() -> int:
     parser.add_argument("--json", type=Path)
     parser.add_argument("--must-pass", type=Path,
                         help="only these streams (one name per line) must match")
+    parser.add_argument("--check-corpus", action="store_true",
+                        help="only check that the whole corpus is present and intact")
     args = parser.parse_args()
     codec, manifest, streams = SUITES[args.suite]
     manifest = args.manifest or manifest
     streams = args.streams or streams
     data = json.loads(manifest.read_text())
-    entries = selected(data["streams"] if isinstance(data, dict) else data, args)
+    listed = data["streams"] if isinstance(data, dict) else data
+    entries = listed if args.check_corpus else selected(listed, args)
     if not entries:
         parser.error("empty conformance selection")
+    if problems := corpus_problems(entries, streams):
+        print("\n".join(problems))
+        print(f"{args.suite}: {len(problems)} of {len(entries)} streams missing or damaged under "
+              f"{streams} (tools/dev/conformance_fetch.py, or nc-remote run --sync on the box)")
+        return 2
+    if args.check_corpus:
+        print(f"{args.suite}: all {len(entries)} streams present with the manifest's SHA-256")
+        return 0
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(args.jobs, MAX_JOBS)) as pool:
         futures = {pool.submit(run_one, args.bin, codec, streams, e, args.timeout): e for e in entries}

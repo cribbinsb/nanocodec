@@ -8,6 +8,7 @@ use crate::general::block::Tile;
 use crate::general::block::inter_record::CompoundType;
 use crate::general::block::motion::Mv;
 use crate::general::block::size::BlockSize;
+use nc_common::BitDepth;
 use nc_dsp::av2_dec::ipred::SampleRef;
 use nc_dsp::av2_dec::ipred::{
     self, ANGLE_HAS_LEFT_FLAG, ANGLE_HAS_TOP_FLAG, ANGLE_IBP_FLAG, EdgeRequest, IntraPredMode,
@@ -472,6 +473,7 @@ impl Tile<'_, '_> {
             row_above,
             &mut self.edge,
             EDGE_CORNER,
+            BitDepth::EIGHT,
         );
         let (w, h) = ((ssbw4 << UNIT_LOG2) as usize, (ssbh4 << UNIT_LOG2) as usize);
         ipred::predict(
@@ -486,6 +488,7 @@ impl Tile<'_, '_> {
             flags,
             0,
             0,
+            BitDepth::EIGHT,
         );
         let mask = if inter.wedge_index < 0 {
             kernels::inter_intra_mask(self.masks, (w, h), inter.inter_intra_mode)

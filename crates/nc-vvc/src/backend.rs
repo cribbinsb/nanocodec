@@ -339,8 +339,8 @@ pub struct VvcBackend {
     /// The SPS's luma-to-chroma QP map.
     chroma_qp: ChromaQpTable,
     colour: nc_common::ColourInfo,
-    /// The SPS's stream timing, when the configuration signals it.
-    timing: Option<headers::Timing>,
+    /// The SPS's stream timing.
+    timing: headers::Timing,
     key_qp_offset: i32,
     rate_control: bool,
     /// The intra-refresh window of the current frame (`set_refresh`), if
@@ -494,6 +494,7 @@ impl VvcParams {
             // The backend sets them from the engine's parameters (`new`).
             long_term_slot: false,
             poc_bits: headers::POC_BITS,
+            long_term_refs: false,
         }
     }
 
@@ -601,16 +602,20 @@ const VVC_LOOP_FILTER_REACH: usize = 16;
 /// long-term reference (`ltr.interval`), and with the second reference in
 /// flat streams only: beside temporal layers the engine refuses
 /// `refs.second` and its plan steps aside, so nothing is listed for it.
-/// Either one reaching back up to `nc_encoder::MAX_REFERENCE_AGE` pictures
-/// widens the POC LSBs (`headers::LONG_POC_BITS`).
+/// The long-term reference is a long-term entry
+/// (`sps_long_term_ref_pics_flag`); a second reference held up to
+/// `nc_encoder::MAX_REFERENCE_AGE` pictures, a short-term one, widens the
+/// POC LSBs (`headers::LONG_POC_BITS`).
 fn sequence_tools(params: &VvcParams, config: &EncoderConfig) -> (bool, headers::Tools) {
     let long_term = nc_encoder::long_term_requested(config);
     let long_term_slot = long_term
         || (nc_encoder::uses_long_term_slot(&config.params) && config.temporal_layers == 1);
-    let tools = params.tools().with_long_term_slot(
-        long_term_slot,
-        long_term || holds_second_reference(&config.params),
-    );
+    let tools = headers::Tools {
+        long_term_refs: long_term,
+        ..params
+            .tools()
+            .with_long_term_slot(long_term_slot, holds_second_reference(&config.params))
+    };
     (long_term_slot, tools)
 }
 
@@ -1154,7 +1159,7 @@ impl CodecBackend for VvcBackend {
             poc: 0,
             next_poc: 0,
             temporal_layers: config.temporal_layers,
-            references: References::new(config.temporal_layers, long_term_slot, tools.poc_bits),
+            references: References::new(config.temporal_layers, long_term_slot, &tools),
             active_ref: PRIMARY_REF_IDX,
             lambda: 1.,
             dsp: Dsp::new(),
@@ -1366,9 +1371,16 @@ impl CodecBackend for VvcBackend {
     fn last_cu_skipped(&self) -> bool {
         self.last_leaf_skipped()
     }
-    /// Only a repeat frame's CUs (`StaticSkipTest::repeat`): coded at the
-    /// zero vector with no residual, a skip CU where a merge candidate is
-    /// zero (H.266 §7.3.11.5).
+    /// The zero vector, not the first merge vector the default would
+    /// offer: VVC's static skips are only the two below.
+    fn static_skip_vector(&mut self, _block: &Block) -> Option<Mv> {
+        Some(Mv::ZERO)
+    }
+    /// A repeat frame's CUs (`StaticSkipTest::repeat`) and the CUs the
+    /// engine's noise skip passes (`test.within_noise`,
+    /// `decision.noise_skip`): coded at the zero vector with no residual, a
+    /// skip CU where a merge candidate is zero (H.266 §7.3.11.5). VVC has no
+    /// still-skip test of its own.
     fn try_static_skip(
         &mut self,
         block: &Block,
@@ -1377,7 +1389,7 @@ impl CodecBackend for VvcBackend {
         recon: &mut Picture,
         test: StaticSkipTest,
     ) -> bool {
-        if !test.repeat {
+        if !(test.repeat || test.within_noise) {
             return false;
         }
         copy_zero_vector_prediction(&self.dsp, block, reference, recon);
@@ -2365,7 +2377,7 @@ impl VvcBackend {
                 self.colour,
                 &self.chroma_qp,
                 self.tools,
-                self.timing,
+                Some(self.timing),
                 self.temporal_layers,
             ),
             out,

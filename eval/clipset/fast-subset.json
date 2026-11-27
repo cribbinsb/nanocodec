@@ -1,0 +1,298 @@
+{
+ "_comment": "The fast subset of the 'ours' set (docs/benchmark-procedure.md section 14; docs/analysis/fast-subset-2026-11-27.md). A measurement subset, not a tuning set: chosen once from the BP-4 per-clip BD-J of every current family on both chips, so that it passes V17 against the full set. Used for the history series and the slow platforms (Mac M4, Jetson Orin Nano). Fixed: never redrawn; a change is a new file and a sealed-log entry.",
+ "date": "2026-11-27",
+ "dataset": "eval/clipset/heldout_2026-11-23b-bp4.manifest.json",
+ "sealed_log": "docs/results/sealed-log.md entry 31",
+ "rule": "30 clips of the 91 whose every window is in both chips' BP-4 common set. Per-class counts proportional to those 91 (largest remainder); clips with a 600-frame window in the full set's share (12 of 30, against 36 of 91). Chosen by seeded simulated annealing (swaps inside class and window kind) minimising, over both chips and the 64 current families, the V17 deviations above 0.8 points (squared), the mean squared deviation and the front-membership differences; the smallest size whose best search passed V17 on both chips (15-25 searched: none passed).",
+ "not_applied": {
+  "tuned_on": "no 'ours' clip is in eval/clipset/tuned_on.json",
+  "pan": "the one pan clip is outside the both-chip common set"
+ },
+ "data": "bench/fast-subset-2026-11-27/ (dump.py per-clip tables of bench/bp4-ours-{refs,ours}-{c8i,c8g} (+ c8g fill), sel.py, run_search*.py, robust.py, final.py, final.json)",
+ "validation": {
+  "v17_bp4": {
+   "c8i": {
+    "median_offset": 0.36,
+    "max_dev": 0.69,
+    "outside": 0,
+    "front_same": true
+   },
+   "c8g": {
+    "median_offset": 0.48,
+    "max_dev": 0.73,
+    "outside": 0,
+    "front_same": true
+   }
+  },
+  "other_builds_bp3_cbr_c8i": {
+   "74aaa1fcd": {
+    "median_offset": -0.02,
+    "max_dev": 1.75,
+    "outside": 5,
+    "front_diff": [
+     "nanocodec-vp9@faster",
+     "openh264-baseline",
+     "openh264-baseline~aq",
+     "x264-ultrafast"
+    ],
+    "ours_mean_offset": -0.06,
+    "refs_mean_offset": 0.08
+   },
+   "889309c99": {
+    "median_offset": 0.21,
+    "max_dev": 1.66,
+    "outside": 5,
+    "front_diff": [
+     "nanocodec-vp9@faster",
+     "openh264-baseline",
+     "openh264-baseline~aq",
+     "x264-ultrafast"
+    ],
+    "ours_mean_offset": 0.2,
+    "refs_mean_offset": 0.4
+   }
+  }
+ },
+ "clips": [
+  {
+   "name": "ho_epic_kitchens_p11_107",
+   "class": "bodycam",
+   "width": 960,
+   "height": 540,
+   "fps": 25.0,
+   "frames": 600
+  },
+  {
+   "name": "ho_epic_kitchens_p33_108",
+   "class": "bodycam",
+   "width": 960,
+   "height": 540,
+   "fps": 25.0,
+   "frames": 600
+  },
+  {
+   "name": "ho_ucf_crimes_normal_videos_063_x264",
+   "class": "static",
+   "width": 320,
+   "height": 240,
+   "fps": 30.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_ucf_crimes_shooting053_x264",
+   "class": "static",
+   "width": 320,
+   "height": 240,
+   "fps": 30.0,
+   "frames": 600
+  },
+  {
+   "name": "ho_ugc_vlog_vlog_1080p_21f5_crf_10_ss_00_t_20_0",
+   "class": "bodycam",
+   "width": 960,
+   "height": 540,
+   "fps": 30.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_ugc_vlog_vlog_720p_60f8_crf_10_ss_00_t_20_0",
+   "class": "bodycam",
+   "width": 1280,
+   "height": 720,
+   "fps": 30.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_vcd2_38ab396237c2e3d0014917609733b2a3",
+   "class": "videocall",
+   "width": 960,
+   "height": 540,
+   "fps": 16,
+   "frames": 150
+  },
+  {
+   "name": "ho_vcd2_80e6de8318d8449c5c74f65c2fec0799",
+   "class": "videocall",
+   "width": 960,
+   "height": 720,
+   "fps": 30,
+   "frames": 150
+  },
+  {
+   "name": "ho_vcd2_fac675bc4591ea68efda419845af84de",
+   "class": "videocall",
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_city_2025_01_10_st_johannes_der_t_ufer_gerchs",
+   "class": "static",
+   "width": 304,
+   "height": 540,
+   "fps": 29.97,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_city_h_street_festival_37366897252_video",
+   "class": "static",
+   "width": 404,
+   "height": 720,
+   "fps": 30.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_city_lexington_av_63_st_escalator_video_vc",
+   "class": "static",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_drone_deutsche_welle_daily_drone_elstertalbr_c",
+   "class": "drone",
+   "width": 960,
+   "height": 540,
+   "fps": 25.0,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_drone_drone_video_of_j_neda_manor_july_2021",
+   "class": "drone",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_drone_drone_video_of_j_rva_jaani_july_2021",
+   "class": "drone",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_drone_drone_video_of_valgehobusem_e_its_tower_",
+   "class": "drone",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_festivals_the_festival_of_ramadan_has_arrived",
+   "class": "crowd",
+   "width": 640,
+   "height": 360,
+   "fps": 30.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_music_earth_to_space_a_national_symphony_orche",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 30.0,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_music_lightning_safety_awareness_week_detectin_18f92a",
+   "class": "crowd",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_music_square_dancing_at_the_gjoa_haven_communi",
+   "class": "crowd",
+   "width": 640,
+   "height": 360,
+   "fps": 25.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_night_fourth_of_july_murica_at_night",
+   "class": "lowlight",
+   "width": 960,
+   "height": 540,
+   "fps": 29.97,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_night_intercitynotte_1963_on_the_train_ferry_f",
+   "class": "lowlight",
+   "width": 404,
+   "height": 720,
+   "fps": 30.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_night_shanghai_bund_fireworks_show_20250502_vi",
+   "class": "lowlight",
+   "width": 640,
+   "height": 360,
+   "fps": 30.0,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_texture_hustadvika_trollkyrkja_lub_2025_07_27_mo",
+   "class": "texture",
+   "width": 202,
+   "height": 360,
+   "fps": 25.0,
+   "frames": 150
+  },
+  {
+   "name": "ho_wm_texture_nohsngithiang_falls",
+   "class": "texture",
+   "width": 960,
+   "height": 540,
+   "fps": 24.0,
+   "frames": 600
+  },
+  {
+   "name": "ho_wm_texture_yellowstone_lower_falls_20190716_085646_",
+   "class": "texture",
+   "width": 960,
+   "height": 540,
+   "fps": 30.0,
+   "frames": 600
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_1080p_2394_crf_10_ss_00_t_20_0",
+   "class": "bodycam",
+   "width": 960,
+   "height": 540,
+   "fps": 30.0,
+   "frames": 150
+  },
+  {
+   "name": "hob_vcd2_7b688897b5bb4eeb7f64b96c72bf5733",
+   "class": "videocall",
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 150
+  },
+  {
+   "name": "hob_vcd2_fb8462836f87987983f542020df7158c",
+   "class": "videocall",
+   "width": 960,
+   "height": 540,
+   "fps": 30,
+   "frames": 150
+  },
+  {
+   "name": "hob_wm_texture_minnehaha_falls_minneapolis",
+   "class": "texture",
+   "width": 960,
+   "height": 540,
+   "fps": 29.833,
+   "frames": 150
+  }
+ ]
+}

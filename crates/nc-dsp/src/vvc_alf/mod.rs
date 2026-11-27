@@ -327,15 +327,15 @@ const AVX2: Kernels = Kernels {
     clipped_row: high_simd::avx2::clipped_row,
     chroma_row: high_simd::avx2::chroma_row,
     cross_row: high_simd::avx2::cross_row,
-    laplacians: avx2::laplacians,
-    classify: avx2::classify,
+    laplacians: high_classify::avx2::laplacians,
+    classify: high_classify::avx2::classify_8bit,
     samples: avx2::samples,
     gram: avx2::gram,
     dot: avx2::dot,
 };
 
 /// AVX-512 ALF kernel table: wide linear, nonlinear, chroma, and CC-ALF row
-/// kernels, with the remaining encoder/classifier operations inherited from AVX2.
+/// kernels and classification, with encoder statistics inherited from AVX2.
 #[cfg(target_arch = "x86_64")]
 pub(crate) const AVX512: Kernels = Kernels {
     filter_block_row: avx512::filter_block_row,
@@ -343,6 +343,8 @@ pub(crate) const AVX512: Kernels = Kernels {
     clipped_row: high_simd::avx512::clipped_row,
     chroma_row: high_simd::avx512::chroma_row,
     cross_row: high_simd::avx512::cross_row,
+    laplacians: high_classify::avx512::laplacians,
+    classify: high_classify::avx512::classify_8bit,
     ..AVX2
 };
 
@@ -353,7 +355,7 @@ const NEON: Kernels = Kernels {
     clipped_row: high_simd::neon::clipped_row,
     chroma_row: high_simd::neon::chroma_row,
     cross_row: high_simd::neon::cross_row,
-    laplacians: neon::laplacians,
+    laplacians: high_classify::neon::laplacians,
     classify: neon::classify,
     samples: neon::samples,
     gram: neon::gram,
@@ -537,6 +539,10 @@ pub(crate) fn laplacians_at<T: Sample>(rows: &[&[T]; 4], out: &mut [[u16; 4]]) {
 /// Laplacian rows next to a virtual boundary.
 const ACTIVITY_SHIFT_ABOVE_DEPTH: u32 = 4;
 /// The activity shift at 8 bits, which the SIMD classifiers use.
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 const ACTIVITY_SHIFT: u32 = BitDepth::EIGHT.bits() + ACTIVITY_SHIFT_ABOVE_DEPTH;
 const ACTIVITY_SCALE: u32 = 64;
 const BOUNDARY_ACTIVITY_SCALE: u32 = 96;
@@ -643,14 +649,10 @@ pub(crate) fn classify_at(
 }
 
 /// The [`ClassifyFn`] arguments from block `start` on.
-#[cfg_attr(
-    not(any(
-        target_arch = "x86_64",
-        target_arch = "aarch64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    )),
-    allow(dead_code)
-)]
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 fn classify_from(groups: &[[u16; 4]], boundary: bool, out: &mut [[u8; 2]], start: usize) {
     if start < out.len() {
         classify(&groups[start..], boundary, &mut out[start..]);
@@ -768,14 +770,7 @@ fn filter_block_row_from(
 }
 
 /// The [`LaplacianFn`] arguments from group `start` on.
-#[cfg_attr(
-    not(any(
-        target_arch = "x86_64",
-        target_arch = "aarch64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    )),
-    allow(dead_code)
-)]
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 fn laplacians_from(rows: &[&[u8]; 4], out: &mut [[u16; 4]], start: usize) {
     if start < out.len() {
         laplacians(&rows.map(|row| &row[4 * start..]), &mut out[start..]);

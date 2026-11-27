@@ -15,10 +15,24 @@ pub(crate) const SELECT_PER_FRAME: u8 = 2;
 /// Largest picture accepted: the level 6.3 limits (AV1 Annex A.3,
 /// `MaxHSize`, `MaxVSize`, `MaxPicSize`) bound memory and decoding time for
 /// untrusted input. The side limits alone would admit a 16384x16384 picture
-/// (about 400 MB per frame buffer).
+/// (about 400 MB per frame buffer). They bound each frame's size, not the
+/// sequence's `max_frame_width/height`, which may be larger (level 31
+/// streams; SVT-AV1 signals 65536x65536 with switch frames).
 const MAX_WIDTH: usize = 16384;
 const MAX_HEIGHT: usize = 8704;
 const MAX_PICTURE_SIZE: usize = 35_651_584;
+
+/// Refuse a frame of `width` x `height` (upscaled) luma samples beyond the
+/// level 6.3 limits.
+///
+/// # Errors
+/// `Unsupported` for a larger frame.
+pub(crate) fn check_frame_size(width: usize, height: usize) -> Result<(), DecodeError> {
+    if width > MAX_WIDTH || height > MAX_HEIGHT || width * height > MAX_PICTURE_SIZE {
+        return Err(DecodeError::Unsupported("AV1 frame size limit"));
+    }
+    Ok(())
+}
 
 /// `OperatingPointIdc` bit of spatial layer 0 (AV1 §6.4.1).
 const SPATIAL_LAYER_SHIFT: u32 = 8;
@@ -152,12 +166,6 @@ pub(crate) fn parse(payload: &[u8]) -> Result<Sequence, DecodeError> {
     let frame_height_bits = r.read_bits(4)? + 1;
     let max_frame_width = r.read_bits(frame_width_bits)? as usize + 1;
     let max_frame_height = r.read_bits(frame_height_bits)? as usize + 1;
-    if max_frame_width > MAX_WIDTH
-        || max_frame_height > MAX_HEIGHT
-        || max_frame_width * max_frame_height > MAX_PICTURE_SIZE
-    {
-        return Err(DecodeError::Unsupported("AV1 frame size limit"));
-    }
     let frame_ids = if !reduced_still_picture_header && r.read_bit()? {
         let delta = r.read_bits(4)? + 2;
         let id = r.read_bits(3)? + 1 + delta;
@@ -429,18 +437,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pictures_beyond_level_6_3() {
+    fn rejects_frames_beyond_level_6_3_but_not_sequence_maxima() {
         for (width, height) in [(16384, 16384), (16384, 2304), (4096, 8705), (16385, 16)] {
             assert_eq!(
-                parse(&header_up_to_size(width, height)),
+                check_frame_size(width as usize, height as usize),
                 Err(DecodeError::Unsupported("AV1 frame size limit")),
                 "{width}x{height}"
             );
+            assert_ne!(
+                parse(&header_up_to_size(width, height)),
+                Err(DecodeError::Unsupported("AV1 frame size limit"))
+            );
         }
-        let largest = parse(&header_up_to_size(8192, 4352));
-        assert_ne!(
-            largest,
-            Err(DecodeError::Unsupported("AV1 frame size limit"))
-        );
+        assert_eq!(check_frame_size(8192, 4352), Ok(()));
     }
 }

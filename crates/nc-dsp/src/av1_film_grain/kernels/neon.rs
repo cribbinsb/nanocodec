@@ -218,7 +218,7 @@ unsafe fn luma_plane(
     blocks::visit((params, layout), template, views, size, |block| {
         // SAFETY: synthesis and whole_blocks checked the views. The
         // shared block offsets keep each 32-column row within the template.
-        unsafe { apply_block(block, &scales, shift, clip) };
+        unsafe { apply_block(&block, &scales, shift, clip) };
     });
     true
 }
@@ -226,7 +226,7 @@ unsafe fn luma_plane(
 #[target_feature(enable = "neon")]
 #[inline]
 unsafe fn apply_block(
-    block: blocks::LumaBlock,
+    block: &blocks::LumaBlock,
     table: &[uint8x16x4_t; 4],
     shift: int16x8_t,
     [lower, upper]: [uint8x16_t; 2],

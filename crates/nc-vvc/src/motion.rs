@@ -167,11 +167,15 @@ impl Candidate for RefMv {
 }
 
 /// The active references of the current picture: their POC distances
-/// (current minus reference, `DiffPicOrderCnt`), by reference index, and
-/// `NumRefIdxActive[0]`.
+/// (current minus reference, `DiffPicOrderCnt`) and which are long-term
+/// pictures, by reference index, and `NumRefIdxActive[0]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ActiveReferences {
     pub distances: [u32; MAX_ACTIVE_REFERENCES],
+    /// Long-term entries (`ltr.interval`'s picture on a recovery picture):
+    /// temporal candidates are never scaled to them, nor taken from a
+    /// short-term one for them or the reverse (§8.5.2.12).
+    pub long_term: [bool; MAX_ACTIVE_REFERENCES],
     pub count: usize,
 }
 
@@ -179,8 +183,15 @@ impl ActiveReferences {
     /// One reference, the previous picture.
     pub(crate) const SINGLE: Self = Self {
         distances: [1; MAX_ACTIVE_REFERENCES],
+        long_term: [false; MAX_ACTIVE_REFERENCES],
         count: 1,
     };
+}
+
+impl Default for ActiveReferences {
+    fn default() -> Self {
+        Self::SINGLE
+    }
 }
 
 /// A coded inter CU's motion.
@@ -878,9 +889,8 @@ impl MotionGrid {
         let right = C::at(self, x + w, y - 1);
         let below = C::at(self, x - 1, y + h);
         let corner = C::at(self, x - 1, y - 1);
-        let collocated = self.collocated_motion(block);
         // The collocated vector into reference 0 serves merge and AMVP.
-        let temporal = collocated.and_then(|c| self.scale_temporal(c, 0));
+        let temporal = self.temporal_into(block, 0);
         let merge = self.merge_list([above, left, right, below, corner], temporal);
         // §8.5.2.10: the first neighbour of each group into the target
         // picture.
@@ -891,7 +901,7 @@ impl MotionGrid {
         let temporal = if ref_idx == 0 {
             temporal
         } else {
-            collocated.and_then(|c| self.scale_temporal(c, ref_idx))
+            self.temporal_into(block, ref_idx)
         };
         let amvp = Amvr::ALL.map(|amvr| self.amvp_list::<C>(spatial, temporal, ref_idx, amvr));
         let left = self.get(x - 1, y);
@@ -910,20 +920,22 @@ impl MotionGrid {
                 + usize::from(self.is_affine(x, y - 1)),
         }
     }
-    /// The collocated vector of `block` (§8.5.2.11) and the POC distance
-    /// it spans, if this picture uses temporal candidates.
+    /// The collocated vector of `block` (§8.5.2.11) for reference
+    /// `ref_idx`, if this picture uses temporal candidates.
     #[inline]
-    fn collocated_motion(&self, block: &Block) -> Option<(Mv16, u32)> {
+    fn temporal_into(&self, block: &Block, ref_idx: u8) -> Option<Mv16> {
         self.temporal
-            .then(|| self.collocated[self.collocated_slot].candidate(block, self.ctu_log2))
+            .then(|| {
+                self.collocated[self.collocated_slot]
+                    .candidate(block, self.ctu_log2, |c| self.scale_temporal(c, ref_idx))
+            })
             .flatten()
     }
 
     /// The collocated vector of `block` (§8.5.2.11) scaled to reference
     /// index 0, if this picture uses temporal candidates.
     pub(crate) fn temporal_candidate(&self, block: &Block) -> Option<Mv16> {
-        self.collocated_motion(block)
-            .and_then(|c| self.scale_temporal(c, 0))
+        self.temporal_into(block, 0)
     }
 
     /// The collocated vector below and right of `block` alone, if this
@@ -936,10 +948,24 @@ impl MotionGrid {
             .and_then(|c| self.scale_temporal(c, 0))
     }
 
-    /// Collocated vector `mv`, spanning POC distance `source`, scaled to
-    /// reference `ref_idx`'s distance (§8.5.2.12).
-    fn scale_temporal(&self, (mv, source): (Mv16, u32), ref_idx: u8) -> Option<Mv16> {
-        let target = self.references.distances[usize::from(ref_idx)];
+    /// Collocated vector `mv`, spanning POC distance `source` (to a
+    /// long-term picture when `source_long_term`), for reference `ref_idx`
+    /// (§8.5.2.12): none when only one of the two is long-term, as it is
+    /// (clipped) when both are, else scaled to `ref_idx`'s distance.
+    fn scale_temporal(
+        &self,
+        (mv, source, source_long_term): crate::temporal::Collocated,
+        ref_idx: u8,
+    ) -> Option<Mv16> {
+        let index = usize::from(ref_idx);
+        let long_term = self.references.long_term[index];
+        if long_term != source_long_term {
+            return None;
+        }
+        if long_term {
+            return Some(mv.clip());
+        }
+        let target = self.references.distances[index];
         crate::temporal::scale(mv, target as i32, source as i32).ok()
     }
 

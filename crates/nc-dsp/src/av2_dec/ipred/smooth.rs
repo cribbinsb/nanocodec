@@ -8,6 +8,8 @@
 //! [`crate::intra_prediction::av2`]'s smooth, which serves our encoder's
 //! square blocks through its SIMD kernel table.
 
+use nc_common::Sample;
+
 use super::tables::SMOOTH_WEIGHTS;
 use super::{Block, SampleRef};
 
@@ -34,7 +36,12 @@ fn smooth_1d(near: i32, far: i32, offset: usize, len: usize, weight: u8) -> i32 
 }
 
 /// `SMOOTH_PRED`: the mean of the vertical and horizontal predictions.
-pub(super) fn smooth(dst: &mut Block<'_>, edge: SampleRef<'_>, width: usize, height: usize) {
+pub(super) fn smooth<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
+    width: usize,
+    height: usize,
+) {
     let weights = weights(width, height);
     let right = edge.wide(width as isize + 1);
     let bottom = edge.wide(-(height as isize + 1));
@@ -42,34 +49,50 @@ pub(super) fn smooth(dst: &mut Block<'_>, edge: SampleRef<'_>, width: usize, hei
     for y in 0..height {
         let left = edge.wide(-(y as isize + 1));
         for (x, out) in dst.row(y, width).iter_mut().enumerate() {
-            let above = i32::from(top[x]);
+            let above = top[x].to_i32();
             let ver = smooth_1d(above, bottom, height - 1 - y, height, weights[y]);
             let hor = smooth_1d(left, right, width - 1 - x, width, weights[x]);
-            *out = ((ver + hor + 1) >> 1) as u8;
+            *out = T::from_i32((ver + hor + 1) >> 1);
         }
     }
 }
 
 /// `SMOOTH_V_PRED`: the ramp from the top edge to the bottom-left sample.
-pub(super) fn smooth_v(dst: &mut Block<'_>, edge: SampleRef<'_>, width: usize, height: usize) {
+pub(super) fn smooth_v<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
+    width: usize,
+    height: usize,
+) {
     let weights = weights(width, height);
     let bottom = edge.wide(-(height as isize + 1));
     let top = edge.slice(1, width);
     for (y, &weight) in weights.iter().enumerate().take(height) {
         for (out, &above) in dst.row(y, width).iter_mut().zip(top) {
-            *out = smooth_1d(i32::from(above), bottom, height - 1 - y, height, weight) as u8;
+            *out = T::from_i32(smooth_1d(
+                above.to_i32(),
+                bottom,
+                height - 1 - y,
+                height,
+                weight,
+            ));
         }
     }
 }
 
 /// `SMOOTH_H_PRED`: the ramp from the left edge to the top-right sample.
-pub(super) fn smooth_h(dst: &mut Block<'_>, edge: SampleRef<'_>, width: usize, height: usize) {
+pub(super) fn smooth_h<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
+    width: usize,
+    height: usize,
+) {
     let weights = weights(width, height);
     let right = edge.wide(width as isize + 1);
     for y in 0..height {
         let left = edge.wide(-(y as isize + 1));
         for (x, out) in dst.row(y, width).iter_mut().enumerate() {
-            *out = smooth_1d(left, right, width - 1 - x, width, weights[x]) as u8;
+            *out = T::from_i32(smooth_1d(left, right, width - 1 - x, width, weights[x]));
         }
     }
 }

@@ -1,10 +1,16 @@
-//! Every AV2 intra predictor of the general decoder, for 8-bit 4:2:0: DC
+//! Every AV2 intra predictor of the general decoder, for 4:2:0: DC
 //! (with its top-only, left-only and flat forms), vertical, horizontal,
 //! Paeth, the three smooth predictors, directional prediction in its three
 //! zones with edge filtering, multiple reference lines and intra
 //! bi-prediction, data-driven intra prediction (DIP), chroma from luma
 //! (explicit, implicit and multi-hypothesis MHCCP), palette, and the edge
 //! preparation that picks the predictor and fills its edge buffer.
+//!
+//! Every function is generic over the sample type `T` (`u8` for 8-bit
+//! streams, `u16` deeper) and takes the stream's [`BitDepth`] where dav2d's
+//! 16bpc template reads `bitdepth_max` (clips, mid-grey fills, the `CfL` and
+//! MHCCP scales); see `docs/handoff/high-bit-depth.md`. The `u8` instance
+//! folds the depth to the constant 8 ([`BitDepth::of`]).
 //!
 //! Ported from dav2d (`src/ipred_tmpl.c`, `src/ipred_prepare_tmpl.c`,
 //! `src/ipred.h`, `src/ipred_prepare.h`, `src/intra_edge.h`, `src/ibp.c`,
@@ -39,6 +45,8 @@
 //!
 //! The buffer needs [`EDGE_TOPLEFT`] samples before the corner and
 //! [`EDGE_LEN`] in all, as dav2d's `scratch.edge`.
+
+use nc_common::{BitDepth, Sample};
 
 mod cfl;
 mod dc;
@@ -272,28 +280,28 @@ impl CflMhDir {
 /// A read position in a sample buffer: dav2d's `const pixel *`, which edge
 /// and neighbour reads index at negative offsets too.
 #[derive(Debug, Clone, Copy)]
-pub struct SampleRef<'a> {
+pub struct SampleRef<'a, T = u8> {
     /// The buffer.
-    pub data: &'a [u8],
+    pub data: &'a [T],
     /// Index of the position in `data`.
     pub origin: usize,
 }
 
-impl<'a> SampleRef<'a> {
+impl<'a, T: Sample> SampleRef<'a, T> {
     /// The position `origin` in `data`.
     #[must_use]
-    pub fn new(data: &'a [u8], origin: usize) -> Self {
+    pub fn new(data: &'a [T], origin: usize) -> Self {
         Self { data, origin }
     }
 
     /// The sample `offset` away.
-    fn at(self, offset: isize) -> u8 {
+    fn at(self, offset: isize) -> T {
         self.data[index(self.origin, offset)]
     }
 
     /// The sample `offset` away, widened for arithmetic.
     fn wide(self, offset: isize) -> i32 {
-        i32::from(self.at(offset))
+        self.at(offset).to_i32()
     }
 
     /// The position `offset` away.
@@ -302,7 +310,7 @@ impl<'a> SampleRef<'a> {
     }
 
     /// The `len` samples from `offset` on.
-    fn slice(self, offset: isize, len: usize) -> &'a [u8] {
+    fn slice(self, offset: isize, len: usize) -> &'a [T] {
         let start = index(self.origin, offset);
         &self.data[start..start + len]
     }
@@ -317,14 +325,14 @@ fn index(origin: usize, offset: isize) -> usize {
 
 /// A destination block: dav2d's `pixel *dst` with its stride.
 #[derive(Debug)]
-struct Block<'a> {
-    buf: &'a mut [u8],
+struct Block<'a, T> {
+    buf: &'a mut [T],
     offset: usize,
     stride: usize,
 }
 
-impl<'a> Block<'a> {
-    fn new(buf: &'a mut [u8], offset: usize, stride: usize) -> Self {
+impl<'a, T: Sample> Block<'a, T> {
+    fn new(buf: &'a mut [T], offset: usize, stride: usize) -> Self {
         Self {
             buf,
             offset,
@@ -333,13 +341,13 @@ impl<'a> Block<'a> {
     }
 
     /// The first `width` samples of row `y`.
-    fn row(&mut self, y: usize, width: usize) -> &mut [u8] {
+    fn row(&mut self, y: usize, width: usize) -> &mut [T] {
         let start = self.offset + y * self.stride;
         &mut self.buf[start..start + width]
     }
 
     /// The block `rows` rows down and `cols` columns right.
-    fn sub(&mut self, rows: usize, cols: usize) -> Block<'_> {
+    fn sub(&mut self, rows: usize, cols: usize) -> Block<'_, T> {
         Block::new(
             self.buf,
             self.offset + rows * self.stride + cols,
@@ -349,15 +357,17 @@ impl<'a> Block<'a> {
 }
 
 /// Fills `width` x `height` of `dst` with `value` (`splat_dc`).
-fn fill(dst: &mut Block<'_>, width: usize, height: usize, value: u8) {
+fn fill<T: Sample>(dst: &mut Block<'_, T>, width: usize, height: usize, value: T) {
     for y in 0..height {
         dst.row(y, width).fill(value);
     }
 }
 
-/// Clamps to the 8-bit sample range (`iclip_pixel`).
-fn clip_pixel(v: i32) -> u8 {
-    v.clamp(0, i32::from(u8::MAX)) as u8
+/// Clamps to the sample range of `depth` (`iclip_pixel`). The depth is
+/// folded here, not only at the entry points: the predictors that are not
+/// inlined into them would otherwise clip to a runtime bound at `u8`.
+fn clip_pixel<T: Sample>(v: i32, depth: BitDepth) -> T {
+    depth.of::<T>().clip_to(v)
 }
 
 /// The reference line index in an angle argument.
@@ -373,20 +383,22 @@ fn mrl_idx(angle: i32) -> usize {
 /// `angle` is the directional angle in degrees (or DIP's mode for
 /// [`ImplMode::Dip`]) OR'ed with the `ANGLE_*` flags; `max_width` and
 /// `max_height` are the samples from the block to the picture's right and
-/// bottom (they limit the edge filter).
-pub fn predict(
+/// bottom (they limit the edge filter). `depth` is the samples' bit depth.
+pub fn predict<T: Sample>(
     mode: ImplMode,
-    dst: &mut [u8],
+    dst: &mut [T],
     offset: usize,
     stride: usize,
-    edge: &[u8],
+    edge: &[T],
     topleft: usize,
     width: usize,
     height: usize,
     angle: i32,
     max_width: i32,
     max_height: i32,
+    depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
     let mut dst = Block::new(dst, offset, stride);
     let edge = SampleRef::new(edge, topleft);
     let limits = directional::PictureLimits {
@@ -394,19 +406,19 @@ pub fn predict(
         max_height,
     };
     match mode {
-        ImplMode::Dc => dc::dc(&mut dst, edge, width, height, angle),
+        ImplMode::Dc => dc::dc(&mut dst, edge, width, height, angle, depth),
         ImplMode::TopDc => dc::dc_top(&mut dst, edge, width, height, angle),
         ImplMode::LeftDc => dc::dc_left(&mut dst, edge, width, height, angle),
-        ImplMode::Dc128 => dc::dc_128(&mut dst, width, height),
+        ImplMode::Dc128 => dc::dc_128(&mut dst, width, height, depth),
         ImplMode::Vert => plain::vertical(&mut dst, edge, width, height, angle),
         ImplMode::Hor => plain::horizontal(&mut dst, edge, width, height, angle),
         ImplMode::Paeth => plain::paeth(&mut dst, edge, width, height),
         ImplMode::Smooth => smooth::smooth(&mut dst, edge, width, height),
         ImplMode::SmoothV => smooth::smooth_v(&mut dst, edge, width, height),
         ImplMode::SmoothH => smooth::smooth_h(&mut dst, edge, width, height),
-        ImplMode::Z1 => directional::z1(&mut dst, edge, width, height, angle, limits),
-        ImplMode::Z2 => directional::z2(&mut dst, edge, width, height, angle, limits),
-        ImplMode::Z3 => directional::z3(&mut dst, edge, width, height, angle, limits),
-        ImplMode::Dip => dip::dip(&mut dst, edge, width, height, angle),
+        ImplMode::Z1 => directional::z1(&mut dst, edge, width, height, angle, limits, depth),
+        ImplMode::Z2 => directional::z2(&mut dst, edge, width, height, angle, limits, depth),
+        ImplMode::Z3 => directional::z3(&mut dst, edge, width, height, angle, limits, depth),
+        ImplMode::Dip => dip::dip(&mut dst, edge, width, height, angle, depth),
     }
 }

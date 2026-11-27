@@ -17,7 +17,7 @@ use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType, Mv,
     PredictionMode, QuantParams, RdWalk, ReferenceChoice, RefreshWindow, StaticSkipTest,
-    holds_frames, long_term_slot, rd_refine_vector, reference_slots, uses_long_term_slot,
+    long_term_slot, rd_refine_vector, reference_slots, uses_long_term_slot,
 };
 
 use crate::cabac::{BinCosts, BinSink, CabacEncoder, MbPart, SliceKind};
@@ -2777,7 +2777,7 @@ impl CodecBackend for H264Backend {
                 config.temporal_layers,
                 reference_slots(config.temporal_layers),
             )
-            .with_signal(config.signal, holds_frames(config));
+            .with_signal(config.signal);
         if long_term {
             params = params.with_long_term_reference();
         }

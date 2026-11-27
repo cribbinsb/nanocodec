@@ -128,7 +128,7 @@ pub(crate) mod avx2_inverse;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
+    target_arch = "wasm32"
 ))]
 #[allow(unsafe_code)]
 pub(crate) mod narrow_inverse;

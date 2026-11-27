@@ -35,6 +35,17 @@ fn config_ctu(width: usize, height: usize, qp: u32, ctu: usize) -> EncoderConfig
     c
 }
 
+/// Sets `vvc.affine`; with affine on, the second reference (the unified
+/// structure's plan and `refs.second`) is turned off, as the backend refuses
+/// the two together (its affine candidate lists know one reference only).
+fn set_affine(c: &mut EncoderConfig, affine: f32) {
+    c.params.set("vvc.affine", affine);
+    if affine >= 0.5 {
+        c.params.set("structure.unified", 0.0);
+        c.params.set("refs.second", 0.0);
+    }
+}
+
 #[test]
 #[ignore = "requires NC_FFMPEG (FFmpeg >= 8.0) and NC_VVDEC pointing to vvdecapp"]
 fn standard_decoders_match_reconstruction() {
@@ -497,7 +508,7 @@ fn affine_motion_matches_standard_decoders() {
         for (width, height) in [(136, 72), (200, 136)] {
             for (affine, qp) in [(1., 22), (2., 37), (1., 45)] {
                 let mut c = config_ctu(width, height, qp, ctu);
-                c.params.set("vvc.affine", affine);
+                set_affine(&mut c, affine);
                 let mut encoder = Encoder::<VvcBackend>::new(c).unwrap();
                 let mut decoder = nc_vvc::Decoder::new();
                 let mut stream = Vec::new();
@@ -634,7 +645,7 @@ fn temporal_candidates_and_merge_lists_match_standard_decoders() {
                 c.params.set("vvc.temporal_mvp", temporal);
                 c.params.set("vvc.merge_candidates", merge);
                 c.params.set("vvc.mtt", mtt);
-                c.params.set("vvc.affine", affine);
+                set_affine(&mut c, affine);
                 c.params.set(
                     "vvc.alf",
                     std::env::var("ALF").map_or(1., |v| v.parse().unwrap()),

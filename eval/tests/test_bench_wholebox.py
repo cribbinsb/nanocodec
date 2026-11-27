@@ -212,9 +212,10 @@ def test_a_family_counts_once_finished_after_a_passing_start_set():
     ok, refused = report.half_records("c8g", records("m1") + records("m2", start=1.03) +
                                       records("m3"))
     assert {r["box"] for r in ok} == {"m1", "m3"} and "m2" in refused
-    # a family with no family_done marker (an interrupted pass) does not count (V24)
+    # a family with no family_done marker (an interrupted pass) still counts: a point's time
+    # stands on its own once its machine's start set passed (D13/V24 amended 2026-11-26)
     ok, _ = report.half_records("c8g", records("m1", settled=()))
-    assert ok == []
+    assert {r["box"] for r in ok} == {"m1"}
     # a machine reclaimed after a family, before its end set: the family counts and settles
     lost = records("m4", end_set=False)
     ok, refused = report.half_records("c8g", records("m1") + lost)
@@ -259,7 +260,10 @@ def test_a_reclaim_loses_only_the_family_in_progress():
     assert wholebox.settled_families(lost) == {"a"}       # b goes to the replacement
     ok, refused = report.half_records("c8g", lost + head + check("r", "start") +
                                       fam("r", "b") + check("r", "end"))
-    assert {(r["box"], r["family"]) for r in ok} == {("m", "a"), ("r", "b")} and not refused
+    # m's encode of b before the reclaim keeps its time (D13 amended 2026-11-26: a family
+    # may span machines of one type)
+    assert {(r["box"], r["family"]) for r in ok} == {("m", "a"), ("m", "b"), ("r", "b")} \
+        and not refused
     # no family settles before the machine's start set is complete
     assert wholebox.settled_families(head + fam("m", "a")) == set()
 

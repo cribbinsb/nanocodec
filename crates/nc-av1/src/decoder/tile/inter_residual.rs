@@ -49,7 +49,11 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let largest = self.largest_tx(block.size);
         let (max_w4, max_h4) = self.visible_units(block);
         let (step_w, step_h) = (largest.width() / MI_SIZE, largest.height() / MI_SIZE);
-        let select = self.header.tx_mode_select && block.size != BlockSize::BLOCK_4X4 && !skip;
+        // Lossless blocks use 4x4 transforms without syntax (§5.11.15).
+        let select = self.header.tx_mode_select
+            && block.size != BlockSize::BLOCK_4X4
+            && !skip
+            && !self.block_lossless;
         for y4 in strided(0..max_h4, step_h) {
             for x4 in strided(0..max_w4, step_w) {
                 if select {

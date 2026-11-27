@@ -11,13 +11,11 @@
 # queue and no train (owner, 2026-11-15: on that day the queue cost agents
 # ~21 h, median 7 min and worst 47 min a landing, behind other landers' checks):
 #   1. rebase the branch onto the integration head in the agent's own tree;
-#   2. the pre-land checks, in that tree and the agent's own target dir, only
-#      what cannot wait (about 90 s): `cargo check --profile gate` of the
+#   2. the pre-land checks, in that tree and the shared landing target dir
+#      (below), only what cannot wait (about 90 s): `cargo check --profile gate` of the
 #      crates the diff touches and every crate depending on them, the unit
-#      tests (`--lib --bins`) of the touched crates, in the gate profile (warm
-#      in agents' targets: the harness binary; gate-test was cold everywhere,
-#      minutes a first landing), byte-compile of touched Python and `bash -n`
-#      of touched shell scripts;
+#      tests (`--lib --bins`) of the touched crates, in the gate profile,
+#      byte-compile of touched Python and `bash -n` of touched shell scripts;
 #   3. compare-and-swap the integration ref onto the candidate
 #      (`git update-ref NEW OLD`: atomic, it fails if anyone landed meanwhile).
 #      If the head moved, rebase again and retry; the checks re-run only when
@@ -37,6 +35,13 @@
 # to land; after a landing it is moved to the new head when it was clean at an
 # older commit (a stale index otherwise failed every later fast-forward).
 #
+# The pre-land cargo calls share one warm target dir, LAND_TARGET_NAME under
+# ~/nanocodec-data/targets, taken by one lander at a time (a flock; landers
+# already queue on the ref swap), at most LAND_BUILD_JOBS jobs, each cargo
+# call in a scope of LAND_MEM_MAX (throttled from LAND_MEM_HIGH). 2026-11-27:
+# landers checking from their own cold target dirs, several at once at 4-6.6 GB
+# of rustc each, ran the PC out of memory.
+#
 # NC_LAND_MODE=full runs every check (as the verifier does) in the agent's
 # own tree before landing, for a change considered risky.
 #
@@ -45,14 +50,17 @@
 #
 # Environment: NC_LAND_TARGET (integration branch, default main),
 # NC_INTEGRATION_TREE (its worktree, default the worktree that has it checked
-# out), CARGO_TARGET_DIR (the
-# agent's target dir, default ~/nanocodec-data/targets/<worktree name>),
-# NC_LAND_CHECK_BUDGET (seconds the pre-land checks should take, default 90:
-# over it they warn), CARGO_BUILD_JOBS (default 8).
+# out), NC_LAND_CHECK_BUDGET (seconds the pre-land checks should take, default
+# 90: over it they warn), CARGO_BUILD_JOBS (the verifier's; default 8).
 set -euo pipefail
 
 MAX_ATTEMPTS=20
 DEFAULT_BUILD_JOBS=8  # the per-agent cap (CLAUDE.md "Working in parallel")
+#: The pre-land checks' shared target dir (under targets/), jobs and memory (header).
+LAND_TARGET_NAME=land-shared
+LAND_BUILD_JOBS=8
+LAND_MEM_MAX=8G
+LAND_MEM_HIGH=7G
 DEFAULT_CHECK_BUDGET=90
 DEFAULT_PYTEST_WORKERS=4
 #: Seconds the revert guard may take (git blame of the touched files).
@@ -95,7 +103,8 @@ main() {
         die "check out $1 in this worktree first (never land another tree's branch)"
     [[ -z "$(git status --porcelain --untracked-files=no)" ]] ||
         die "uncommitted changes: commit or drop them first"
-    export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$data_root/targets/$(basename "$PWD")}
+    export CARGO_TARGET_DIR=$data_root/targets/$LAND_TARGET_NAME CARGO_BUILD_JOBS=$LAND_BUILD_JOBS \
+        NC_BUILD_MEM=$LAND_MEM_MAX NC_BUILD_MEM_HIGH=$LAND_MEM_HIGH
     local sha
     for sha in "${reverts[@]}"; do  # named in the message, the guard lets that revert pass
         git log -1 --format=%B | grep -q "Reverts: $sha" ||
@@ -257,6 +266,13 @@ drop_site_commit() {
 
 # What cannot wait (header, step 2), on HEAD against base $1.
 pre_land_checks() {
+    local lock_fd
+    mkdir -p "$data_root/locks"
+    exec {lock_fd}>"$data_root/locks/$LAND_TARGET_NAME"
+    if ! flock -n "$lock_fd"; then
+        printf '== waiting for another lander'"'"'s checks (shared target %s)\n' "$CARGO_TARGET_DIR"
+        flock "$lock_fd"
+    fi
     local began=$SECONDS key values budget=${NC_LAND_CHECK_BUDGET:-$DEFAULT_CHECK_BUDGET}
     local -A plan=()
     local scope
@@ -315,6 +331,7 @@ pre_land_checks() {
         printf '== NC_LAND_MODE=full: every check, in this tree (target %s)\n' "$CARGO_TARGET_DIR"
         run_checks "$scope" || die "full checks failed: not landed"
     fi
+    exec {lock_fd}>&-
     printf -- '-- pre-land checks: %ds\n' $((SECONDS - began))
     (((SECONDS - began) <= budget)) ||
         printf '== note: the pre-land checks took over the %ds budget\n' "$budget"
@@ -471,6 +488,15 @@ verify_part() {
     fi
     local fetched=$tree/remote-out/verify-target clips=() clip binaries=(--fetch target/gate/nanocodec)
     [[ "$part" == tests ]] && binaries+=(--fetch target/gate/nc-checkasm)
+    # The browser smoke decodes every conformance corpus, and the box's AMI has all but
+    # H.264's (fetched on the PC): sent each time, only changes go up (2026-11-27: the
+    # box held partial H.264 folders and 216 decodes failed on missing streams).
+    local corpora=() corpus
+    if [[ "$part" == tests ]]; then
+        for corpus in streams supplementary jm; do
+            corpora+=(--sync "$data_root/conformance/h264/$corpus")
+        done
+    fi
     local changed=()  # the box's tree has no git: the page tests' selection goes with it
     if [[ -n "${NC_WEB_TESTS_SINCE:-}" ]]; then
         changed=(--env "NC_WEB_TESTS_CHANGED=$(git -C "$tree" diff --name-only "$NC_WEB_TESTS_SINCE" HEAD | tr '\n' ' ')")
@@ -485,7 +511,7 @@ verify_part() {
     "$HOME/nanocodec-data/bin/nc-remote" run --worktree "$tree" --name "verifier-$part" \
         --env "NC_VERIFY_SCOPE=$(base64 -w0 <<<"$scope")" \
         "${changed[@]}" --env NC_CHECK_STRICT=1 --env NC_CHECKASM_REQUIRE=avx2,avx512 \
-        --sync "$verified" --fetch "~/$cache" \
+        --sync "$verified" --fetch "~/$cache" "${corpora[@]}" \
         "${clips[@]}" "${binaries[@]}" \
         --fetch-to "$fetched" -- "NC_VERIFIED_DIR=\$HOME/$cache NC_CHECK_GROUPS='rust conformance' \
 NC_CONFORMANCE_WORKERS=\$(( \$(nproc) / 4 )) \
@@ -589,7 +615,9 @@ print_group() {  # print_group DIR GROUP [FAILED]
 
 python_checks() {
     local -n p=$1
-    [[ -z "${p[docs]}" ]] || timed docs python3 tools/dev/check_docs.py ${p[docs]} || return 1
+    # Every tracked document, whatever changed (under a second): a rename or a deleted
+    # section breaks links in files the change did not touch.
+    timed docs python3 tools/dev/check_docs.py --all || return 1
     [[ -z "${p[python]}" ]] || timed "python byte-compile" python3 -m py_compile ${p[python]} || return 1
     if [[ -n "${p[shell]}" ]]; then
         for file in ${p[shell]}; do timed "bash -n $file" bash -n "$file" || return 1; done

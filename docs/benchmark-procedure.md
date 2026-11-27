@@ -605,14 +605,14 @@ also code points past each end:
 | V14 | The curve and clip-set rules of section 9; lost clips, reasons and the exclusion check printed | report |
 | V15 | One bucket replay for every encoder; no encoder's own rate log read | report |
 | V16 | Provenance complete for every point (section 11) | report |
-| V17 | The history subset tracks the full sets on the current build (section 14) | report |
+| V17 | The fast subset (history and slow platforms) tracks the full set on the current build: every family's subset-minus-full BD-J offset within 1 point of the median offset, the same front membership (section 14) | report |
 | V18 | Every command is `nceval.fairness.command`'s for its family; `eval/tests/test_fairness_record.py` passes. A reused point (a mixed report) is refused unless its command equals, byte for byte, the command a plan made at the report's tools commit gives the same job | plan, tests, report |
 | V19 | SEI and metadata stripped from every stream; bytes removed recorded | box |
 | V20 | The report's statistics constants equal section 9's text (a test compares them) | tests |
 | V21 | Each encoder's banner shows the dispatch tier the record names | box records |
 | V22 | A sealed run uses no excluded clip, runs a frozen clean commit, and has a sealed-log entry (`plan.py --sealed`) | plan |
 | V23 | Every point is scored from a stream its own machine series coded (score records carry the stream SHA-256 and series) | report |
-| V24 | A family's times count only when all its timed encodes ran on one machine whose start check set passed, under the planned half load of its own family; a family settles the moment it finishes (D13); an encode is settled only when its record (with the stream's SHA-256, and the stream unless a re-timing) is on the PC | fleet, report |
+| V24 | A timed encode's time counts when its machine's start check set passed (amended 2026-11-26, D13: a family may span machines of one type; was: all of a family's encodes on one machine); a family settles the moment it finishes (D13); an encode is settled only when its record (with the stream's SHA-256, and the stream unless a re-timing) is on the PC | fleet, report |
 | V25 | One recorded build identity: every binary of every quality and timing run has the same SHA-256 across the runs, each encoder's hash has a build record (our commit, version and build; each reference's source commit, flags, LTO/PGO and toolchain), and every run records its tools commit; the report opens with this provenance block. A mixed report (our families re-measured on a new build, the other families reused: `report.py --parts`) checks it per family: each encoder has one identity across the parts, and every binary no ours-part uses (the references, the decoders, the scorer) is byte-identical in every part that records it; only our superseded build may differ, and the block does not list it | report |
 | V26 | A point whose stream fails the codec's standard decoder (V9) and is deterministic (coded more than once, always to the same SHA-256) is a failure of that encoder: listed at the top of the report with its stream hash and counted against it (the point is absent, so its clip loses the family's curve where the minimum of points is missed). It is never dropped silently, and never waived for one encoder without the same record for another. The stream and every decoder's output are kept (bench/encoder-failures/). An encode that fails with the same error on every box it was given (the queue quarantines it after two) is the same kind of failure, without a stream | report |
 | V27 | Not a benchmark check (D19). Benchmark scoring refuses a VMAFx build absent from `bench/proven-scorers.json`; a build is entered there by the separate procedure `tools/bench/verify_scorer.py`, run once per build (a 1 % sample, at least 20 streams and every codec, scored again by libvmaf 3.2.1 on CPU: VMAF v1 per frame at printed precision, MS-SSIM within 1e-5, PSNR per plane within 1e-4 dB) | verify_scorer.py |
@@ -680,6 +680,26 @@ and each box's output in its own log. They refuse to start outside a memory-capp
 
 ## 14. History set
 
+- **The fast subset (owner, 2026-11-27):** 30 clips of the "ours" set (`eval/clipset/fast-subset.json`;
+  docs/analysis/fast-subset-2026-11-27.md; sealed log 31). It is the one common subset for the history
+  series and for the slow platforms (Mac M4, Jetson Orin Nano), which measure only on it. It replaces the
+  21-clip history clips below once the history days are re-run on it.
+  - Definition: 30 of the 91 clips whose every window is in both chips' BP-4 common set; classes in
+    proportion; 12 long-source clips (600-frame window), the full set's share, so the 600-frame window
+    weighs what it weighs in the full set; no in-sample clip. Chosen once, by search, to pass V17 on both
+    BP-4 chips; never redrawn (a change is a new file and a sealed-log entry).
+  - Admission test: V17 against each new full measurement (both chips). On BP-4 it passes: median offset
+    +0.36 / +0.48, largest deviation 0.69 / 0.73, front the same (c8i / c8g). On two BP-3 builds it tracks
+    the level (ours against the references within 0.2 points) but 5 families sit 1.0-1.75 points off and
+    four fast-end families change front membership; a failure is shown with every family's offset.
+  - Its common set takes the key-every-150 families only. The single-key (`~k600`) day families are shown
+    on their own long-window clips, labelled, as the `+drop` rows are: in BP-4 they alone shrank the
+    history common set from 20 clips to 9 (`report.py` `OWN_CLIP_ROWS`). A report on the subset takes
+    `report.py --subset eval/clipset/fast-subset.json`.
+  - What a pass means: V17's 1-point limit is below the full set's own sampling noise (its bootstrap moves
+    the largest family deviation by 4.7 points at the median), so the subset tracks these 97 clips, not
+    the clip population. Read it for the trend across days and for a platform's relative standing.
+
 - **The subset:** 30 clips, 10 from each dataset (`eval/clipset/history-set.json`, drawn once by
   `eval/clipset/history_select.py`, never redrawn).
   - It is stratified over class, resolution, frame rate, SI/TI, noise and low light, and
@@ -720,6 +740,10 @@ and each box's output in its own log. They refuse to start outside a memory-capp
   64 families outside, median offset +5.2 / +5.0 points; our families' mean offset +5.5 / +5.2,
   the references' +2.0 / +1.8; the front differs; common set 18 clip-windows, 9 clips), so the
   graph is withdrawn.
+  Diagnosis (docs/analysis/fast-subset-2026-11-27.md): the single-key day families exist only on the 10
+  long-source clips, so the common set kept 9 long-source clips with both windows; the 600-frame window
+  then weighs half (about +2.7 of the +5.2) and the long-source clips alone read harder (about +2.9).
+  The fast subset above replaces these clips.
 
 ## 15. This round's plan (owner, 2026-11-25)
 
@@ -1077,3 +1101,4 @@ Phase now: **full-start**; values per phase:
 | BP-4.0, one type | 2026-11-26 | D13, V6, V24: a point's time is valid on its own (its machine's start check set passed, V7/V8 per encode); the rule that a family's times count only from one machine is removed; chained machines (one machine serving several runs of its chip) carry their start check set by reference | Owner, 2026-11-26 21:28: machines of one type are equivalent; the one-machine rule left 3,759 points without a valid time after machines were lost mid-family |
 | BP-4.0, untimed points | 2026-11-26 | V13 refuses only a missing stream or score. A point with a valid stream and score but no valid time (a refused box, a timing refusal) counts for quality and BD, is left out of its family's speed figure, and is listed with its reason at the top of the report | Owner, 2026-11-26 (no stupid rules): two held-out c8i points of one box without a start check set would otherwise have held the whole report |
 | BP-4.0, audit fixes | 2026-11-27 | Section 4, V3: the in-sample record `eval/clipset/tuned_on.json` (VC-1K 9, AOM-CTC 12) and `report.py --exclude-clips`; VC-1K's headline leaves its 9 out, the full set beside; AOM-CTC labelled, A2 alone beside. Section 7 corrected to the decoder BP-4 used (ours for every family, the standard decoder on error) with the identity evidence. Section 14: the site withdraws the history graph on a V17 failure. Section 16: in-sample clips, start-up, timing machines, slow end, rates (reversal measured, not "narrows"), prediction structures and scene cuts. Section 17: keyint 150, scene cuts as run. Section 9: BP-4's lost clips lower our headline | Benchmark integrity audit 2026-11-27, findings 1-7 and 10; owner, 2026-11-27: fix, not only document |
+| BP-4.0, fast subset | 2026-11-27 | Section 14, V17: the fast subset (`eval/clipset/fast-subset.json`, 30 clips of "ours") for the history series and the slow platforms; V17 is its admission test; single-key day families leave the history common set | Owner, 2026-11-27: fix the history subset (V17 failed, audit finding 7); docs/analysis/fast-subset-2026-11-27.md |

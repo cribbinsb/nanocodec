@@ -15,6 +15,7 @@ use super::super::block_size::BlockSize;
 use super::super::frame_header::{INTERP_SWITCHABLE, TOTAL_REFS, WarpType};
 use super::super::motion::{INTRA_FRAME, InterMode, MotionCell, NONE_FRAME};
 use super::super::mv_stack::{MvBlock, MvStack, find_mv_stack};
+use super::super::subset::ForcedSyntax;
 use super::{BlockPos, FrameDecoder, MI_SIZE};
 use crate::backend::{Av1Mv, PlaneIndex};
 use crate::decoder_range::SymbolReader;
@@ -205,6 +206,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         block: BlockPos,
         near: Neighbours,
         skip_mode: bool,
+        forced: ForcedSyntax,
     ) -> Result<InterModes, DecodeError> {
         // Each helper has one call site (intra block copy shares the
         // stack's), so the single-reference path inlines whole into the
@@ -213,6 +215,9 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let intrabc = self.header.allow_intrabc;
         let refs = if intrabc {
             [INTRA_FRAME, NONE_FRAME]
+        } else if forced.any() {
+            // `read_ref_frames()` (§5.11.25) of a segment feature block.
+            [forced.reference.unwrap_or(LAST_FRAME), NONE_FRAME]
         } else {
             match self.compound_frame_references(r, block, near, skip_mode) {
                 Some(refs) => refs,
@@ -226,7 +231,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         if refs[1] > INTRA_FRAME {
             self.compound_modes(r, block, near, &stack, refs, skip_mode)
         } else {
-            self.single_modes(r, block, refs[0], &stack)
+            self.single_modes(r, block, refs[0], &stack, forced.global_mode())
         }
     }
 
@@ -307,8 +312,15 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         block: BlockPos,
         reference: i8,
         stack: &MvStack,
+        global_mode: bool,
     ) -> Result<InterModes, DecodeError> {
-        let (mv, mode) = self.inter_mode(r, stack)?;
+        // Skip and global motion segment features infer `GLOBALMV`
+        // (§5.11.23).
+        let (mv, mode) = if global_mode {
+            (stack.global(0), InterMode::GlobalMv)
+        } else {
+            self.inter_mode(r, stack)?
+        };
         let interintra = self.read_interintra(r, block.size);
         let refs = if interintra.is_some() {
             [reference, INTRA_FRAME]

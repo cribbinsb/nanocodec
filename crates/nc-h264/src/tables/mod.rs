@@ -25,6 +25,28 @@ pub const ZIGZAG_8X8: [usize; 64] = [
     58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
+/// Field scan of a 4x4 block (H.264 §8.5.6, Table 8-13, field
+/// macroblocks): scan position → raster index.
+pub const FIELD_SCAN_4X4: [usize; 16] = [0, 4, 1, 8, 12, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15];
+
+/// Field scan of an 8x8 block (H.264 §8.5.7, Table 8-14, field
+/// macroblocks): scan position → raster index.
+pub const FIELD_SCAN_8X8: [usize; 64] = [
+    0, 8, 16, 1, 9, 24, 32, 17, 2, 25, 40, 48, 56, 33, 10, 3, //
+    18, 41, 49, 57, 26, 11, 4, 19, 34, 42, 50, 58, 27, 12, 5, 20, //
+    35, 43, 51, 59, 28, 13, 6, 21, 36, 44, 52, 60, 29, 14, 22, 37, //
+    45, 53, 61, 30, 7, 15, 38, 46, 54, 62, 23, 31, 39, 47, 55, 63,
+];
+
+/// ctxIdxInc of `significant_coeff_flag` in a field-coded 8x8 block, by
+/// scan position (H.264 Table 9-43, field coded column).
+pub const SIGNIFICANT_CTX_INC_8X8_FIELD: [u8; 63] = [
+    0, 1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 7, 7, 8, 4, 5, //
+    6, 9, 10, 10, 8, 11, 12, 11, 9, 9, 10, 10, 8, 11, 12, 11, //
+    9, 9, 10, 10, 8, 11, 12, 11, 9, 9, 10, 10, 8, 13, 13, 9, //
+    9, 10, 10, 8, 13, 13, 9, 9, 10, 10, 14, 14, 14, 14, 14,
+];
+
 /// ctxIdxInc of `significant_coeff_flag` in a frame-coded 8x8 block, by
 /// scan position (H.264 Table 9-43, frame coded column).
 pub const SIGNIFICANT_CTX_INC_8X8: [u8; 63] = [

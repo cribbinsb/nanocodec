@@ -11,22 +11,21 @@ use super::{
     ACTIVITY_CLASS, ACTIVITY_CLASSES, ACTIVITY_SCALE, ACTIVITY_SHIFT, BOUNDARY_ACTIVITY_SCALE,
     MAX_ACTIVITY, SAMPLE_BYTE_SOURCES, TRANSPOSE, VVC_ALF_BLOCK, VVC_ALF_DOT_LANES,
     VVC_ALF_GRAM_COLUMNS, VVC_ALF_REACH, VVC_ALF_SAMPLE_LANES, VVC_ALF_SAMPLES,
-    VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, classify_from, filter_block_row_from, laplacians_from,
+    VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, classify_from, filter_block_row_from,
 };
 use core::arch::aarch64::{
-    int16x4_t, int16x8_t, int32x4_t, uint8x16_t, uint8x16x2_t, uint16x4_t, uint16x4x4_t,
-    uint16x8_t, uint32x4_t, vabdq_u16, vaddl_high_u8, vaddl_u8, vaddq_u16, vaddq_u32, vaddvq_s64,
-    vandq_u32, vbslq_u8, vbslq_u32, vcgtq_u32, vcombine_s16, vcombine_u8, vcombine_u16,
-    vdupq_n_s32, vdupq_n_s64, vdupq_n_u16, vdupq_n_u32, vget_high_s16, vget_high_u16, vget_low_s16,
-    vget_low_s32, vget_low_u8, vget_low_u16, vld1_s16, vld1q_s16, vld1q_s32, vld1q_u8, vld4q_u8,
-    vld4q_u16, vmaxq_u32, vminq_u32, vmlal_high_s16, vmlal_high_s32, vmlal_lane_s16,
-    vmlal_laneq_s16, vmlal_s16, vmlal_s32, vmovl_high_u8, vmovl_high_u16, vmovl_u8, vmovl_u16,
-    vmovn_u32, vmulq_n_u32, vmulq_u32, vorrq_u32, vpaddq_s32, vpaddq_u16, vqaddq_s16, vqmovn_s32,
+    int16x4_t, int16x8_t, int32x4_t, uint8x16_t, uint8x16x2_t, uint16x4_t, uint16x8_t, uint32x4_t,
+    vaddl_high_u8, vaddl_u8, vaddq_u16, vaddq_u32, vaddvq_s64, vandq_u32, vbslq_u32, vcgtq_u32,
+    vcombine_s16, vcombine_u8, vcombine_u16, vdupq_n_s32, vdupq_n_s64, vdupq_n_u16, vdupq_n_u32,
+    vget_high_s16, vget_low_s16, vget_low_s32, vget_low_u8, vget_low_u16, vld1_s16, vld1q_s16,
+    vld1q_s32, vld1q_u8, vld4q_u8, vld4q_u16, vmaxq_u32, vminq_u32, vmlal_high_s16, vmlal_high_s32,
+    vmlal_lane_s16, vmlal_laneq_s16, vmlal_s16, vmlal_s32, vmovl_high_u8, vmovl_high_u16, vmovl_u8,
+    vmovl_u16, vmovn_u32, vmulq_n_u32, vmulq_u32, vorrq_u32, vpaddq_s32, vqaddq_s16, vqmovn_s32,
     vqmovun_s16, vqtbl1q_u8, vqtbl2q_u8, vreinterpretq_s16_u16, vreinterpretq_u8_u16,
     vreinterpretq_u8_u32, vreinterpretq_u16_s16, vreinterpretq_u16_u64, vreinterpretq_u32_u8,
     vreinterpretq_u32_u16, vreinterpretq_u64_u32, vrshlq_s32, vshll_high_n_u8, vshll_n_u8,
-    vshlq_n_u32, vshrq_n_u32, vst1q_s32, vst1q_u8, vst1q_u16, vst4_u16, vsubl_high_u8, vsubl_u8,
-    vsubq_u16, vsubq_u32, vtrn1q_u16, vtrn1q_u32, vtrn1q_u64, vtrn2q_u16, vtrn2q_u32, vtrn2q_u64,
+    vshlq_n_u32, vshrq_n_u32, vst1q_s32, vst1q_u8, vst1q_u16, vsubl_high_u8, vsubl_u8, vsubq_u16,
+    vsubq_u32, vtrn1q_u16, vtrn1q_u32, vtrn1q_u64, vtrn2q_u16, vtrn2q_u32, vtrn2q_u64,
 };
 
 /// Samples per step.
@@ -158,52 +157,6 @@ pub(super) unsafe fn filter_block_row(
 }
 
 /// `|2c − (a + b)|` for sixteen columns, as two 16-bit halves.
-#[target_feature(enable = "neon")]
-fn laplacian(centre: uint8x16_t, a: uint8x16_t, b: uint8x16_t) -> [uint16x8_t; 2] {
-    [
-        vabdq_u16(
-            vshll_n_u8::<1>(vget_low_u8(centre)),
-            vaddl_u8(vget_low_u8(a), vget_low_u8(b)),
-        ),
-        vabdq_u16(vshll_high_n_u8::<1>(centre), vaddl_high_u8(a, b)),
-    ]
-}
-
-/// NEON [`super::LaplacianFn`]: four groups (sixteen columns) per step.
-#[target_feature(enable = "neon")]
-pub(super) unsafe fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
-    // Odd columns (centred one row down) take the next row.
-    let odd: [u8; LANES] = std::array::from_fn(|k| if k % 2 == 1 { 0xff } else { 0 });
-    // SAFETY: NEON is enabled; the load reads the sixteen bytes of `odd`.
-    let odd = unsafe { vld1q_u8(odd.as_ptr()) };
-    let (steps, _) = out.as_chunks_mut::<4>();
-    let whole = steps.len() * 4;
-    for (step, out) in steps.iter_mut().enumerate() {
-        let x = 16 * step + 1;
-        let pick =
-            |row: usize, at: usize| vbslq_u8(odd, load(rows[row + 1], at), load(rows[row], at));
-        let [up, centre, down] = [0, 1, 2].map(|row| [x - 1, x, x + 1].map(|at| pick(row, at)));
-        let pair_sums = |[low, high]: [uint16x8_t; 2]| vpaddq_u16(low, high);
-        let vertical = pair_sums(laplacian(centre[1], up[1], down[1]));
-        let horizontal = pair_sums(laplacian(centre[1], centre[0], centre[2]));
-        let diagonal0 = pair_sums(laplacian(centre[1], up[0], down[2]));
-        let diagonal1 = pair_sums(laplacian(centre[1], down[0], up[2]));
-        // [v of groups 0..4, h of groups 0..4] and the same for the diagonals.
-        let straight = vpaddq_u16(vertical, horizontal);
-        let diagonal = vpaddq_u16(diagonal0, diagonal1);
-        let groups = uint16x4x4_t(
-            vget_low_u16(straight),
-            vget_high_u16(straight),
-            vget_low_u16(diagonal),
-            vget_high_u16(diagonal),
-        );
-        // SAFETY: NEON is enabled; the interleaved store writes exactly the
-        // sixteen values of `out`.
-        unsafe { vst4_u16(out.as_mut_ptr().cast(), groups) };
-    }
-    laplacians_from(rows, out, whole);
-}
-
 /// Bytes of a row a full [`super::TapSumsFn`] call reads: two 64-byte
 /// deinterleaving loads, 4 bytes apart.
 const SAMPLED_WINDOW: usize = 4 * VVC_ALF_SAMPLES + 4;

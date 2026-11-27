@@ -1,4 +1,4 @@
-//! High-bit-depth (`u16`) VVC ALF 2x2-subsampled Laplacian group sums and
+//! VVC ALF 2x2-subsampled Laplacian group sums and
 //! 4x4 block classification across AVX2, AVX-512, NEON, and SIMD128.
 //!
 //! At up to [`super::VVC_ALF_MAX_BIT_DEPTH`] (10 bits), each Laplacian
@@ -8,83 +8,138 @@
 //! cross products `d1 * hv0` and `hv1 * d0` in `classify` stay below
 //! `65472^2 = 4_286_582_784 < 2^32` and are compared as **unsigned** 32-bit
 //! products (`> 2^31` overflows signed 32-bit comparison).
+//! X86 and NEON reuse the paired-point load schedule of Clear BSD `VVdeC`
+//! (`AdaptiveLoopFilterX86.h` and `AdaptiveLoopFilter_neon.cpp`).
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2 {
     use core::arch::x86_64::{
-        __m256i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm_storeu_si128, _mm256_abs_epi16,
-        _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256, _mm256_blend_epi16,
-        _mm256_blendv_epi8, _mm256_broadcastsi128_si256, _mm256_castsi256_si128,
-        _mm256_cmpgt_epi32, _mm256_cvtepu16_epi32, _mm256_extracti128_si256, _mm256_hadd_epi16,
-        _mm256_loadu_si256, _mm256_max_epi32, _mm256_min_epi32, _mm256_min_epu32,
-        _mm256_mullo_epi32, _mm256_or_si256, _mm256_packus_epi32, _mm256_permute4x64_epi64,
-        _mm256_permutevar8x32_epi32, _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32,
-        _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_slli_epi32, _mm256_srl_epi32,
-        _mm256_srli_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32,
+        __m256i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm_storel_epi64, _mm_storeu_si128,
+        _mm256_abs_epi16, _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256,
+        _mm256_andnot_si256, _mm256_blend_epi16, _mm256_blendv_epi8, _mm256_broadcastsi128_si256,
+        _mm256_castsi128_si256, _mm256_castsi256_si128, _mm256_cmpgt_epi32, _mm256_cvtepu16_epi32,
+        _mm256_extracti128_si256, _mm256_hadd_epi16, _mm256_loadu_si256, _mm256_max_epi32,
+        _mm256_min_epi32, _mm256_min_epu32, _mm256_mullo_epi32, _mm256_or_si256,
+        _mm256_packus_epi32, _mm256_permute4x64_epi64, _mm256_permutevar8x32_epi32,
+        _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_shuffle_epi8,
+        _mm256_slli_epi32, _mm256_srl_epi32, _mm256_storeu_si256, _mm256_sub_epi16,
         _mm256_unpackhi_epi64, _mm256_unpacklo_epi64, _mm256_xor_si256,
     };
     use nc_common::BitDepth;
 
-    use super::super::{
-        ACTIVITY_CLASS, ACTIVITY_CLASSES, ACTIVITY_SCALE, ACTIVITY_SHIFT_ABOVE_DEPTH,
-        BOUNDARY_ACTIVITY_SCALE, MAX_ACTIVITY, TRANSPOSE, classify_at, laplacians_at,
+    use crate::simd::{
+        SimdSample,
+        avx2::{I16x4, I16x8, I16x16},
     };
 
-    const ODD_LANES: i32 = 0b1010_1010;
-
-    #[target_feature(enable = "avx2")]
-    fn load16(row: &[u16], at: usize) -> __m256i {
-        let samples = &row[at..at + 16];
-        // SAFETY: AVX2 enabled; `samples` holds 16 `u16` values (32 bytes).
-        unsafe { _mm256_loadu_si256(samples.as_ptr().cast()) }
-    }
-
-    #[target_feature(enable = "avx2")]
-    fn pick16(rows: &[&[u16]; 4], row: usize, at: usize) -> __m256i {
-        _mm256_blend_epi16::<ODD_LANES>(load16(rows[row], at), load16(rows[row + 1], at))
-    }
+    use super::super::{
+        ACTIVITY_CLASS, ACTIVITY_CLASSES, ACTIVITY_SCALE, ACTIVITY_SHIFT_ABOVE_DEPTH,
+        BOUNDARY_ACTIVITY_SCALE, MAX_ACTIVITY, classify_at,
+    };
 
     #[target_feature(enable = "avx2")]
     fn lap16(twice: __m256i, a: __m256i, b: __m256i) -> __m256i {
         _mm256_abs_epi16(_mm256_sub_epi16(twice, _mm256_add_epi16(a, b)))
     }
 
+    // Alternate the point order within each adjacent pair, as in Clear BSD
+    // VVdeC's AdaptiveLoopFilterX86.h. The group sum ignores the order,
+    // allowing all directions to share the loads at offsets zero and two.
+    #[inline]
     #[target_feature(enable = "avx2")]
-    pub(crate) unsafe fn laplacians(rows: &[&[u16]; 4], out: &mut [[u16; 4]]) {
+    fn laplacian_groups([a0, a1, a2, a3]: [__m256i; 4], [b0, b1, b2, b3]: [__m256i; 4]) -> __m256i {
         let to_groups = _mm256_setr_epi8(
             0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15, 0, 1, 4, 5, 8, 9, 12, 13, 2, 3,
             6, 7, 10, 11, 14, 15,
         );
-        let (steps, _) = out.as_chunks_mut::<4>();
-        let whole = steps.len() * 4;
-        for (step, out_chunk) in steps.iter_mut().enumerate() {
-            let x = 16 * step + 1;
-            let up0 = pick16(rows, 0, x - 1);
-            let up1 = pick16(rows, 0, x);
-            let up2 = pick16(rows, 0, x + 1);
-            let c0 = pick16(rows, 1, x - 1);
-            let c1 = pick16(rows, 1, x);
-            let c2 = pick16(rows, 1, x + 1);
-            let dn0 = pick16(rows, 2, x - 1);
-            let dn1 = pick16(rows, 2, x);
-            let dn2 = pick16(rows, 2, x + 1);
-            let twice = _mm256_add_epi16(c1, c1);
-            let sums = _mm256_hadd_epi16(
-                _mm256_hadd_epi16(lap16(twice, up1, dn1), lap16(twice, c0, c2)),
-                _mm256_hadd_epi16(lap16(twice, up0, dn2), lap16(twice, dn0, up2)),
-            );
-            let groups = _mm256_shuffle_epi8(sums, to_groups);
-            // SAFETY: AVX2 enabled; `out_chunk` holds 4 `[u16; 4]` groups (32 bytes).
-            unsafe { _mm256_storeu_si256(out_chunk.as_mut_ptr().cast(), groups) };
-        }
-        if whole < out.len() {
-            let tail = [
-                &rows[0][4 * whole..],
-                &rows[1][4 * whole..],
-                &rows[2][4 * whole..],
-                &rows[3][4 * whole..],
-            ];
-            laplacians_at(&tail, &mut out[whole..]);
+        let swap_pair = _mm256_setr_epi8(
+            2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11,
+            8, 9, 14, 15, 12, 13,
+        );
+        let centre = _mm256_blend_epi16::<0x55>(a1, b2);
+        let centre = _mm256_add_epi16(centre, centre);
+        let swapped = _mm256_shuffle_epi8(centre, swap_pair);
+        let vertical = lap16(
+            centre,
+            _mm256_blend_epi16::<0x55>(a0, b1),
+            _mm256_blend_epi16::<0x55>(a2, b3),
+        );
+        let horizontal = lap16(
+            swapped,
+            _mm256_blend_epi16::<0xaa>(a1, a2),
+            _mm256_blend_epi16::<0xaa>(b1, b2),
+        );
+        let diagonal0 = lap16(
+            swapped,
+            _mm256_blend_epi16::<0xaa>(a0, a1),
+            _mm256_blend_epi16::<0xaa>(b2, b3),
+        );
+        let diagonal1 = lap16(
+            swapped,
+            _mm256_blend_epi16::<0xaa>(b0, b1),
+            _mm256_blend_epi16::<0xaa>(a2, a3),
+        );
+        let sums = _mm256_hadd_epi16(
+            _mm256_hadd_epi16(vertical, horizontal),
+            _mm256_hadd_epi16(diagonal0, diagonal1),
+        );
+        _mm256_shuffle_epi8(sums, to_groups)
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    unsafe fn load_laplacian_sources<S: SimdSample, const GROUPS: usize>(
+        rows: &[*const S; 4],
+        x: usize,
+    ) -> [__m256i; 4] {
+        let load = |row: usize| {
+            // SAFETY: inherited from the validated row spans; GROUPS is one,
+            // two or four. Only the lanes of each loaded group are retained.
+            unsafe {
+                let src = rows[row].add(x);
+                match GROUPS {
+                    1 => _mm256_castsi128_si256(S::load_lanes::<I16x4>(src).0),
+                    2 => _mm256_castsi128_si256(S::load_lanes::<I16x8>(src).0),
+                    _ => S::load_lanes::<I16x16>(src).0,
+                }
+            }
+        };
+        [load(0), load(1), load(2), load(3)]
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(crate) unsafe fn laplacians<S: SimdSample>(rows: &[&[S]; 4], out: &mut [[u16; 4]]) {
+        let rows = rows.map(<[S]>::as_ptr);
+        let (steps, tail) = out.as_chunks_mut::<4>();
+        let mut x = 0;
+        // SAFETY: the dispatcher checks rows have 4 * out.len() + 2
+        // samples, covering every complete group plus the two-column halo.
+        // Each store writes exactly the assigned output groups.
+        unsafe {
+            for out_chunk in steps {
+                let a = load_laplacian_sources::<S, 4>(&rows, x);
+                let b = load_laplacian_sources::<S, 4>(&rows, x + 2);
+                _mm256_storeu_si256(out_chunk.as_mut_ptr().cast(), laplacian_groups(a, b));
+                x += 16;
+            }
+            let (pairs, last) = tail.as_chunks_mut::<2>();
+            for pair in pairs {
+                let a = load_laplacian_sources::<S, 2>(&rows, x);
+                let b = load_laplacian_sources::<S, 2>(&rows, x + 2);
+                _mm_storeu_si128(
+                    pair.as_mut_ptr().cast(),
+                    _mm256_castsi256_si128(laplacian_groups(a, b)),
+                );
+                x += 8;
+            }
+            if let [group] = last {
+                let a = load_laplacian_sources::<S, 1>(&rows, x);
+                let b = load_laplacian_sources::<S, 1>(&rows, x + 2);
+                _mm_storel_epi64(
+                    group.as_mut_ptr().cast(),
+                    _mm256_castsi256_si128(laplacian_groups(a, b)),
+                );
+            }
         }
     }
 
@@ -114,7 +169,8 @@ pub(crate) mod avx2 {
     }
 
     #[target_feature(enable = "avx2")]
-    pub(crate) unsafe fn classify(
+    #[inline]
+    fn classify_impl<const BYTE: bool>(
         groups: &[[u16; 4]],
         boundary: bool,
         out: &mut [[u8; 2]],
@@ -132,8 +188,6 @@ pub(crate) mod avx2 {
             12, 13, 6, 7, 14, 15,
         );
         let quad_dwords = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
-        let mut transpose = [0u8; 16];
-        transpose[..8].copy_from_slice(&TRANSPOSE);
         let (steps, _) = out.as_chunks_mut::<8>();
         let whole = steps.len() * 8;
         for (step, out_chunk) in steps.iter_mut().enumerate() {
@@ -152,41 +206,37 @@ pub(crate) mod avx2 {
             );
             let vertical = _mm256_cmpgt_epi32(ver, hor);
             let (hv1, hv0) = (_mm256_max_epi32(ver, hor), _mm256_min_epi32(ver, hor));
-            let hv_dir = _mm256_blendv_epi8(_mm256_set1_epi32(3), _mm256_set1_epi32(1), vertical);
             let first_diag = _mm256_cmpgt_epi32(dg0, dg1);
             let (d1, d0) = (_mm256_max_epi32(dg0, dg1), _mm256_min_epi32(dg0, dg1));
-            let d_dir =
-                _mm256_blendv_epi8(_mm256_set1_epi32(2), _mm256_setzero_si256(), first_diag);
-            // Unsigned 32-bit comparison: d1 * hv0 and hv1 * d0 reach 65472^2 < 2^32.
-            let diagonal = _mm256_cmpgt_epi32(
-                _mm256_xor_si256(_mm256_mullo_epi32(d1, hv0), sign),
-                _mm256_xor_si256(_mm256_mullo_epi32(hv1, d0), sign),
-            );
+            let (p, q) = (_mm256_mullo_epi32(d1, hv0), _mm256_mullo_epi32(hv1, d0));
+            // At depth 8 the products fit signed 32 bits. The 10-bit
+            // contract needs an unsigned comparison of the same products.
+            let diagonal = if BYTE {
+                _mm256_cmpgt_epi32(p, q)
+            } else {
+                _mm256_cmpgt_epi32(_mm256_xor_si256(p, sign), _mm256_xor_si256(q, sign))
+            };
             let strong = _mm256_blendv_epi8(hv1, d1, diagonal);
             let weak = _mm256_blendv_epi8(hv0, d0, diagonal);
-            let main = _mm256_blendv_epi8(hv_dir, d_dir, diagonal);
-            let secondary = _mm256_blendv_epi8(d_dir, hv_dir, diagonal);
             let one = _mm256_cmpgt_epi32(strong, _mm256_add_epi32(weak, weak));
             let two = _mm256_cmpgt_epi32(
                 _mm256_add_epi32(strong, strong),
                 _mm256_add_epi32(_mm256_slli_epi32::<3>(weak), weak),
             );
-            let strength = _mm256_sub_epi32(_mm256_sub_epi32(_mm256_setzero_si256(), one), two);
-            let step_classes = _mm256_add_epi32(
-                _mm256_slli_epi32::<1>(_mm256_and_si256(main, _mm256_set1_epi32(1))),
-                strength,
-            );
-            let directional = _mm256_and_si256(
-                _mm256_mullo_epi32(step_classes, _mm256_set1_epi32(i32::from(ACTIVITY_CLASSES))),
-                one,
+            // VVdeC computes the transpose from the two direction
+            // comparisons; which direction won the cross product only
+            // affects the directional class increment.
+            let five = _mm256_set1_epi32(i32::from(ACTIVITY_CLASSES));
+            let offset = _mm256_and_si256(one, five);
+            let axial = _mm256_andnot_si256(diagonal, offset);
+            let directional = _mm256_add_epi32(
+                _mm256_add_epi32(offset, _mm256_and_si256(two, five)),
+                _mm256_add_epi32(axial, axial),
             );
             let index = _mm256_add_epi32(lookup(&ACTIVITY_CLASS, activity), directional);
-            let transposes = lookup(
-                &transpose,
-                _mm256_add_epi32(
-                    _mm256_slli_epi32::<1>(main),
-                    _mm256_srli_epi32::<1>(secondary),
-                ),
+            let transposes = _mm256_add_epi32(
+                _mm256_add_epi32(_mm256_set1_epi32(3), vertical),
+                _mm256_add_epi32(first_diag, first_diag),
             );
             let pairs = _mm256_or_si256(index, _mm256_slli_epi32::<8>(transposes));
             let packed = _mm256_permute4x64_epi64::<0b1000>(_mm256_packus_epi32(pairs, pairs));
@@ -202,44 +252,43 @@ pub(crate) mod avx2 {
             classify_at(&groups[whole..], boundary, &mut out[whole..], depth);
         }
     }
+    #[target_feature(enable = "avx2")]
+    pub(crate) unsafe fn classify_8bit(groups: &[[u16; 4]], boundary: bool, out: &mut [[u8; 2]]) {
+        classify_impl::<true>(groups, boundary, out, BitDepth::EIGHT);
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(crate) unsafe fn classify(
+        groups: &[[u16; 4]],
+        boundary: bool,
+        out: &mut [[u8; 2]],
+        depth: BitDepth,
+    ) {
+        classify_impl::<false>(groups, boundary, out, depth);
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx512 {
     use core::arch::x86_64::{
         __m512i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm256_storeu_si256, _mm512_abs_epi16,
-        _mm512_add_epi16, _mm512_add_epi32, _mm512_and_si512, _mm512_broadcast_i32x4,
-        _mm512_castsi512_si256, _mm512_cmpgt_epu32_mask, _mm512_cvtepi32_epi16,
-        _mm512_cvtepu16_epi32, _mm512_extracti64x4_epi64, _mm512_loadu_si512, _mm512_madd_epi16,
-        _mm512_mask_blend_epi16, _mm512_mask_blend_epi32, _mm512_maskz_mov_epi32,
-        _mm512_maskz_set1_epi32, _mm512_max_epu32, _mm512_min_epu32, _mm512_mullo_epi32,
-        _mm512_or_si512, _mm512_packs_epi32, _mm512_permutex2var_epi16, _mm512_set_epi16,
-        _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_shuffle_epi8,
-        _mm512_slli_epi32, _mm512_srl_epi32, _mm512_srli_epi32, _mm512_storeu_si512,
+        _mm512_add_epi16, _mm512_add_epi32, _mm512_broadcast_i32x4, _mm512_castsi512_si256,
+        _mm512_cmpgt_epu32_mask, _mm512_cvtepi32_epi16, _mm512_cvtepu16_epi32,
+        _mm512_extracti64x4_epi64, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_mask_blend_epi16,
+        _mm512_mask_blend_epi32, _mm512_mask_sub_epi32, _mm512_maskz_set1_epi32, _mm512_max_epu32,
+        _mm512_min_epu32, _mm512_mullo_epi32, _mm512_or_si512, _mm512_packs_epi32,
+        _mm512_permutex2var_epi16, _mm512_set_epi16, _mm512_set1_epi16, _mm512_set1_epi32,
+        _mm512_shuffle_epi8, _mm512_slli_epi32, _mm512_srl_epi32, _mm512_storeu_si512,
         _mm512_sub_epi16,
     };
     use nc_common::BitDepth;
 
+    use crate::simd::{SimdSample, avx512_i16::I16x32};
+
     use super::super::{
         ACTIVITY_CLASS, ACTIVITY_CLASSES, ACTIVITY_SCALE, ACTIVITY_SHIFT_ABOVE_DEPTH,
-        BOUNDARY_ACTIVITY_SCALE, MAX_ACTIVITY, TRANSPOSE,
+        BOUNDARY_ACTIVITY_SCALE, MAX_ACTIVITY,
     };
-
-    #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-    fn load32(row: &[u16], at: usize) -> __m512i {
-        let samples = &row[at..at + 32];
-        // SAFETY: AVX-512F/BW/VL enabled; `samples` holds 32 `u16` values (64 bytes).
-        unsafe { _mm512_loadu_si512(samples.as_ptr().cast()) }
-    }
-
-    #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-    fn pick32(rows: &[&[u16]; 4], row: usize, at: usize) -> __m512i {
-        _mm512_mask_blend_epi16(
-            0xAAAA_AAAA,
-            load32(rows[row], at),
-            load32(rows[row + 1], at),
-        )
-    }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
     fn lap32(twice: __m512i, a: __m512i, b: __m512i) -> __m512i {
@@ -247,51 +296,62 @@ pub(crate) mod avx512 {
     }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-    pub(crate) unsafe fn laplacians(rows: &[&[u16]; 4], out: &mut [[u16; 4]]) {
-        let group_shuf: [u8; 16] = [0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15];
-        // SAFETY: AVX-512F/BW/VL enabled; `group_shuf` holds 16 bytes.
-        let to_groups =
-            _mm512_broadcast_i32x4(unsafe { _mm_loadu_si128(group_shuf.as_ptr().cast()) });
+    pub(crate) unsafe fn laplacians<S: SimdSample>(rows: &[&[S]; 4], out: &mut [[u16; 4]]) {
+        if out.len() < 8 {
+            // SAFETY: the Ice Lake tier includes AVX2 with the same row bounds.
+            unsafe { super::avx2::laplacians(rows, out) };
+            return;
+        }
+        let group_shuf = [0u8, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15];
+        let pair_shuf = [2u8, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13];
+        // SAFETY: AVX-512 is enabled and the tables hold 16 bytes each.
+        let (to_groups, swap_pair) = unsafe {
+            (
+                _mm512_broadcast_i32x4(_mm_loadu_si128(group_shuf.as_ptr().cast())),
+                _mm512_broadcast_i32x4(_mm_loadu_si128(pair_shuf.as_ptr().cast())),
+            )
+        };
         let ones = _mm512_set1_epi16(1);
-        let (steps, _) = out.as_chunks_mut::<8>();
-        let whole = steps.len() * 8;
+        let (steps, tail) = out.as_chunks_mut::<8>();
+        let consumed = steps.len() * 32;
         for (step, out_chunk) in steps.iter_mut().enumerate() {
-            let x = 32 * step + 1;
-            let up0 = pick32(rows, 0, x - 1);
-            let up1 = pick32(rows, 0, x);
-            let up2 = pick32(rows, 0, x + 1);
-            let c0 = pick32(rows, 1, x - 1);
-            let c1 = pick32(rows, 1, x);
-            let c2 = pick32(rows, 1, x + 1);
-            let dn0 = pick32(rows, 2, x - 1);
-            let dn1 = pick32(rows, 2, x);
-            let dn2 = pick32(rows, 2, x + 1);
-            let twice = _mm512_add_epi16(c1, c1);
+            let x = 32 * step;
+            let load = |row: usize, dx: usize| {
+                // SAFETY: the dispatcher checked 4 * groups + 2 samples
+                // in each row, including both columns of the halo.
+                unsafe { S::load_lanes::<I16x32>(rows[row].as_ptr().add(x + dx)).0 }
+            };
+            let (a0, a1, a2, a3) = (load(0, 0), load(1, 0), load(2, 0), load(3, 0));
+            let (b0, b1, b2, b3) = (load(0, 2), load(1, 2), load(2, 2), load(3, 2));
+            let even = |a, b| _mm512_mask_blend_epi16(0x5555_5555, a, b);
+            let odd = |a, b| _mm512_mask_blend_epi16(0xaaaa_aaaa, a, b);
+            let centre = even(a1, b2);
+            let centre = _mm512_add_epi16(centre, centre);
+            let swapped = _mm512_shuffle_epi8(centre, swap_pair);
+            let vertical = lap32(centre, even(a0, b1), even(a2, b3));
+            let horizontal = lap32(swapped, odd(a1, a2), odd(b1, b2));
+            let diagonal0 = lap32(swapped, odd(a0, a1), odd(b2, b3));
+            let diagonal1 = lap32(swapped, odd(b0, b1), odd(a2, a3));
             let vh_pairs = _mm512_packs_epi32(
-                _mm512_madd_epi16(lap32(twice, up1, dn1), ones),
-                _mm512_madd_epi16(lap32(twice, c0, c2), ones),
+                _mm512_madd_epi16(vertical, ones),
+                _mm512_madd_epi16(horizontal, ones),
             );
             let dd_pairs = _mm512_packs_epi32(
-                _mm512_madd_epi16(lap32(twice, up0, dn2), ones),
-                _mm512_madd_epi16(lap32(twice, dn0, up2), ones),
+                _mm512_madd_epi16(diagonal0, ones),
+                _mm512_madd_epi16(diagonal1, ones),
             );
             let sums = _mm512_packs_epi32(
                 _mm512_madd_epi16(vh_pairs, ones),
                 _mm512_madd_epi16(dd_pairs, ones),
             );
             let groups = _mm512_shuffle_epi8(sums, to_groups);
-            // SAFETY: AVX-512F/BW/VL enabled; `out_chunk` holds 8 `[u16; 4]` groups (64 bytes).
+            // SAFETY: one full vector fits in the eight output groups.
             unsafe { _mm512_storeu_si512(out_chunk.as_mut_ptr().cast(), groups) };
         }
-        if whole < out.len() {
-            let tail = [
-                &rows[0][4 * whole..],
-                &rows[1][4 * whole..],
-                &rows[2][4 * whole..],
-                &rows[3][4 * whole..],
-            ];
-            // SAFETY: AVX-512 implies AVX2; tail slices are in bounds.
-            unsafe { super::avx2::laplacians(&tail, &mut out[whole..]) };
+        if !tail.is_empty() {
+            // SAFETY: the Ice Lake tier includes AVX2. The input tail has
+            // four samples per group plus the original two-column halo.
+            unsafe { super::avx2::laplacians(&rows.map(|row| &row[consumed..]), tail) };
         }
     }
 
@@ -303,27 +363,38 @@ pub(crate) mod avx512 {
     }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+    pub(crate) unsafe fn classify_8bit(groups: &[[u16; 4]], boundary: bool, out: &mut [[u8; 2]]) {
+        // SAFETY: this is the 8-bit instance of the same validated entry.
+        unsafe {
+            if out.len() < 16 {
+                super::avx2::classify_8bit(groups, boundary, out);
+            } else {
+                classify(groups, boundary, out, BitDepth::EIGHT);
+            }
+        }
+    }
+
+    #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
     pub(crate) unsafe fn classify(
         groups: &[[u16; 4]],
         boundary: bool,
         out: &mut [[u8; 2]],
         depth: BitDepth,
     ) {
+        if out.len() < 16 {
+            // SAFETY: the Ice Lake tier includes AVX2 with the same group bounds.
+            unsafe { super::avx2::classify(groups, boundary, out, depth) };
+            return;
+        }
         let scale = _mm512_set1_epi32(if boundary {
             BOUNDARY_ACTIVITY_SCALE
         } else {
             ACTIVITY_SCALE
         } as i32);
         let shift = _mm_cvtsi32_si128((depth.bits() + ACTIVITY_SHIFT_ABOVE_DEPTH) as i32);
-        let mut transpose_bytes = [0u8; 16];
-        transpose_bytes[..8].copy_from_slice(&TRANSPOSE);
         // SAFETY: AVX-512F/BW/VL enabled; each table holds 16 bytes.
-        let (act_tbl, tr_tbl) = unsafe {
-            (
-                _mm512_broadcast_i32x4(_mm_loadu_si128(ACTIVITY_CLASS.as_ptr().cast())),
-                _mm512_broadcast_i32x4(_mm_loadu_si128(transpose_bytes.as_ptr().cast())),
-            )
-        };
+        let act_tbl =
+            _mm512_broadcast_i32x4(unsafe { _mm_loadu_si128(ACTIVITY_CLASS.as_ptr().cast()) });
         let idx_vh = _mm512_set_epi16(
             61, 57, 53, 49, 45, 41, 37, 33, 29, 25, 21, 17, 13, 9, 5, 1, 60, 56, 52, 48, 44, 40,
             36, 32, 28, 24, 20, 16, 12, 8, 4, 0,
@@ -350,43 +421,30 @@ pub(crate) mod avx512 {
             );
             let vertical = _mm512_cmpgt_epu32_mask(ver, hor);
             let (hv1, hv0) = (_mm512_max_epu32(ver, hor), _mm512_min_epu32(ver, hor));
-            let hv_dir =
-                _mm512_mask_blend_epi32(vertical, _mm512_set1_epi32(3), _mm512_set1_epi32(1));
             let first_diag = _mm512_cmpgt_epu32_mask(dg0, dg1);
             let (d1, d0) = (_mm512_max_epu32(dg0, dg1), _mm512_min_epu32(dg0, dg1));
-            let d_dir =
-                _mm512_mask_blend_epi32(first_diag, _mm512_set1_epi32(2), _mm512_setzero_si512());
             let diagonal =
                 _mm512_cmpgt_epu32_mask(_mm512_mullo_epi32(d1, hv0), _mm512_mullo_epi32(hv1, d0));
             let strong = _mm512_mask_blend_epi32(diagonal, hv1, d1);
             let weak = _mm512_mask_blend_epi32(diagonal, hv0, d0);
-            let main = _mm512_mask_blend_epi32(diagonal, hv_dir, d_dir);
-            let secondary = _mm512_mask_blend_epi32(diagonal, d_dir, hv_dir);
             let one = _mm512_cmpgt_epu32_mask(strong, _mm512_add_epi32(weak, weak));
             let two = _mm512_cmpgt_epu32_mask(
                 _mm512_add_epi32(strong, strong),
                 _mm512_add_epi32(_mm512_slli_epi32::<3>(weak), weak),
             );
-            let strength = _mm512_add_epi32(
-                _mm512_maskz_set1_epi32(one, 1),
-                _mm512_maskz_set1_epi32(two, 1),
-            );
-            let step_classes = _mm512_add_epi32(
-                _mm512_slli_epi32::<1>(_mm512_and_si512(main, _mm512_set1_epi32(1))),
-                strength,
-            );
-            let directional = _mm512_maskz_mov_epi32(
-                one,
-                _mm512_mullo_epi32(step_classes, _mm512_set1_epi32(i32::from(ACTIVITY_CLASSES))),
-            );
-            let index = _mm512_add_epi32(_mm512_shuffle_epi8(act_tbl, activity), directional);
-            let transposes = _mm512_shuffle_epi8(
-                tr_tbl,
+            let five = i32::from(ACTIVITY_CLASSES);
+            let directional = _mm512_add_epi32(
+                _mm512_maskz_set1_epi32(one, five),
                 _mm512_add_epi32(
-                    _mm512_slli_epi32::<1>(main),
-                    _mm512_srli_epi32::<1>(secondary),
+                    _mm512_maskz_set1_epi32(two, five),
+                    _mm512_maskz_set1_epi32(one & !diagonal, 2 * five),
                 ),
             );
+            let index = _mm512_add_epi32(_mm512_shuffle_epi8(act_tbl, activity), directional);
+            let three = _mm512_set1_epi32(3);
+            let transpose = _mm512_mask_sub_epi32(three, vertical, three, _mm512_set1_epi32(1));
+            let transposes =
+                _mm512_mask_sub_epi32(transpose, first_diag, transpose, _mm512_set1_epi32(2));
             let pairs = _mm512_or_si512(index, _mm512_slli_epi32::<8>(transposes));
             let packed = _mm512_cvtepi32_epi16(pairs);
             // SAFETY: AVX-512F/BW/VL enabled; `out_chunk` holds 16 `[u8; 2]` pairs (32 bytes).
@@ -404,79 +462,104 @@ pub(crate) mod avx512 {
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon {
     use core::arch::aarch64::{
-        int32x4_t, uint8x16_t, uint16x4_t, uint16x4x4_t, uint16x8_t, uint16x8x4_t, uint32x4_t,
-        vabdq_u16, vaddq_u16, vaddq_u32, vandq_u32, vbslq_u16, vbslq_u32, vcgtq_u32, vcombine_u16,
-        vdupq_n_s32, vdupq_n_u32, vget_high_u16, vget_low_u16, vld1q_u8, vld1q_u16, vld4q_u16,
+        int32x4_t, uint8x16_t, uint16x4_t, uint16x8_t, uint16x8x4_t, uint32x4_t, vabdq_u16,
+        vaddq_u16, vaddq_u32, vandq_u32, vbslq_u16, vbslq_u32, vcgtq_u32, vcombine_s16,
+        vcombine_u16, vdupq_n_s32, vdupq_n_u32, vget_low_u16, vld1q_u8, vld1q_u16, vld4q_u16,
         vmaxq_u32, vminq_u32, vmovl_high_u16, vmovl_u16, vmovn_u32, vmulq_n_u32, vmulq_u32,
-        vorrq_u32, vpaddq_u16, vqtbl1q_u8, vreinterpretq_u8_u32, vreinterpretq_u32_u8, vshlq_n_u32,
-        vshlq_u32, vshrq_n_u32, vst1q_u16, vst4_u16, vsubq_u32,
+        vorrq_u32, vpaddq_u16, vqtbl1q_u8, vreinterpretq_u8_u16, vreinterpretq_u8_u32,
+        vreinterpretq_u16_s16, vreinterpretq_u16_u8, vreinterpretq_u32_u8, vrev32q_u16,
+        vshlq_n_u32, vshlq_u32, vshrq_n_u32, vst1_u16, vst1q_u16, vsubq_u32,
     };
     use nc_common::BitDepth;
 
-    use super::super::{
-        ACTIVITY_CLASS, ACTIVITY_CLASSES, ACTIVITY_SCALE, ACTIVITY_SHIFT_ABOVE_DEPTH,
-        BOUNDARY_ACTIVITY_SCALE, MAX_ACTIVITY, TRANSPOSE, classify_at, laplacians_at,
+    use crate::simd::{
+        SimdSample,
+        neon::{I16x4, I16x8},
     };
 
+    use super::super::{
+        ACTIVITY_CLASS, ACTIVITY_CLASSES, ACTIVITY_SCALE, ACTIVITY_SHIFT_ABOVE_DEPTH,
+        BOUNDARY_ACTIVITY_SCALE, MAX_ACTIVITY, TRANSPOSE, classify_at,
+    };
+
+    // The even/odd columns can trade places for a direction within a
+    // Laplacian pair. VVdeC's NEON schedule uses this to read each source row
+    // at just two offsets, while keeping the same four-column sums.
+    #[inline]
     #[target_feature(enable = "neon")]
-    fn load8(row: &[u16], at: usize) -> uint16x8_t {
-        let s = &row[at..at + 8];
-        // SAFETY: NEON enabled; `s` holds 8 `u16` values.
-        unsafe { vld1q_u16(s.as_ptr()) }
+    fn laplacian_groups(
+        [a0, a1, a2, a3]: [uint16x8_t; 4],
+        [b0, b1, b2, b3]: [uint16x8_t; 4],
+        odd_mask: uint16x8_t,
+        to_groups: uint8x16_t,
+    ) -> uint16x8_t {
+        let even = |a, b| vbslq_u16(odd_mask, a, b);
+        let odd = |a, b| vbslq_u16(odd_mask, b, a);
+        let centre = even(a1, b2);
+        let twice = vaddq_u16(centre, centre);
+        let swapped = vrev32q_u16(twice);
+        let vertical = vabdq_u16(twice, vaddq_u16(even(a0, b1), even(a2, b3)));
+        let horizontal = vabdq_u16(swapped, vaddq_u16(odd(a1, a2), odd(b1, b2)));
+        let diagonal0 = vabdq_u16(swapped, vaddq_u16(odd(a0, a1), odd(b2, b3)));
+        let diagonal1 = vabdq_u16(swapped, vaddq_u16(odd(b0, b1), odd(a2, a3)));
+        let sums = vpaddq_u16(
+            vpaddq_u16(vertical, horizontal),
+            vpaddq_u16(diagonal0, diagonal1),
+        );
+        vreinterpretq_u16_u8(vqtbl1q_u8(vreinterpretq_u8_u16(sums), to_groups))
+    }
+
+    #[inline]
+    #[target_feature(enable = "neon")]
+    unsafe fn load_laplacian_sources<S: SimdSample, const ONE_GROUP: bool>(
+        rows: &[*const S; 4],
+        x: usize,
+    ) -> [uint16x8_t; 4] {
+        let load = |row: usize| {
+            // SAFETY: the public dispatcher bounds all rows, with a
+            // two-column halo. This reads exactly four or eight samples.
+            unsafe {
+                let src = rows[row].add(x);
+                vreinterpretq_u16_s16(if ONE_GROUP {
+                    let first = S::load_lanes::<I16x4>(src).0;
+                    vcombine_s16(first, first)
+                } else {
+                    S::load_lanes::<I16x8>(src).0
+                })
+            }
+        };
+        [load(0), load(1), load(2), load(3)]
     }
 
     #[target_feature(enable = "neon")]
-    fn pick16(rows: &[&[u16]; 4], row: usize, at: usize, odd: uint16x8_t) -> [uint16x8_t; 2] {
-        [
-            vbslq_u16(odd, load8(rows[row + 1], at), load8(rows[row], at)),
-            vbslq_u16(odd, load8(rows[row + 1], at + 8), load8(rows[row], at + 8)),
-        ]
-    }
-
-    #[target_feature(enable = "neon")]
-    fn lap_pair(c: [uint16x8_t; 2], a: [uint16x8_t; 2], b: [uint16x8_t; 2]) -> uint16x8_t {
-        let lo = vabdq_u16(vaddq_u16(c[0], c[0]), vaddq_u16(a[0], b[0]));
-        let hi = vabdq_u16(vaddq_u16(c[1], c[1]), vaddq_u16(a[1], b[1]));
-        vpaddq_u16(lo, hi)
-    }
-
-    #[target_feature(enable = "neon")]
-    pub(crate) unsafe fn laplacians(rows: &[&[u16]; 4], out: &mut [[u16; 4]]) {
-        let odd_lanes: [u16; 8] = [0, 0xffff, 0, 0xffff, 0, 0xffff, 0, 0xffff];
-        // SAFETY: NEON enabled; `odd_lanes` holds 8 `u16` values.
-        let odd = unsafe { vld1q_u16(odd_lanes.as_ptr()) };
-        let (steps, _) = out.as_chunks_mut::<4>();
-        let whole = steps.len() * 4;
-        for (step, out_chunk) in steps.iter_mut().enumerate() {
-            let x = 16 * step + 1;
-            let up0 = pick16(rows, 0, x - 1, odd);
-            let up1 = pick16(rows, 0, x, odd);
-            let up2 = pick16(rows, 0, x + 1, odd);
-            let c0 = pick16(rows, 1, x - 1, odd);
-            let c1 = pick16(rows, 1, x, odd);
-            let c2 = pick16(rows, 1, x + 1, odd);
-            let dn0 = pick16(rows, 2, x - 1, odd);
-            let dn1 = pick16(rows, 2, x, odd);
-            let dn2 = pick16(rows, 2, x + 1, odd);
-            let straight = vpaddq_u16(lap_pair(c1, up1, dn1), lap_pair(c1, c0, c2));
-            let diagonal = vpaddq_u16(lap_pair(c1, up0, dn2), lap_pair(c1, dn0, up2));
-            let groups = uint16x4x4_t(
-                vget_low_u16(straight),
-                vget_high_u16(straight),
-                vget_low_u16(diagonal),
-                vget_high_u16(diagonal),
-            );
-            // SAFETY: NEON enabled; `out_chunk` holds 16 `u16` values.
-            unsafe { vst4_u16(out_chunk.as_mut_ptr().cast(), groups) };
-        }
-        if whole < out.len() {
-            let tail = [
-                &rows[0][4 * whole..],
-                &rows[1][4 * whole..],
-                &rows[2][4 * whole..],
-                &rows[3][4 * whole..],
-            ];
-            laplacians_at(&tail, &mut out[whole..]);
+    pub(crate) unsafe fn laplacians<S: SimdSample>(rows: &[&[S]; 4], out: &mut [[u16; 4]]) {
+        let odd_lanes = [0u16, 0xffff, 0, 0xffff, 0, 0xffff, 0, 0xffff];
+        let shuffle = [0u8, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15];
+        let rows = rows.map(<[S]>::as_ptr);
+        let (pairs, last) = out.as_chunks_mut::<2>();
+        let mut x = 0;
+        // SAFETY: the dispatcher validates every source row for four
+        // columns per group plus two, and each store writes its group(s).
+        unsafe {
+            let odd = vld1q_u16(odd_lanes.as_ptr());
+            let to_groups = vld1q_u8(shuffle.as_ptr());
+            for pair in pairs {
+                let a = load_laplacian_sources::<S, false>(&rows, x);
+                let b = load_laplacian_sources::<S, false>(&rows, x + 2);
+                vst1q_u16(
+                    pair.as_mut_ptr().cast(),
+                    laplacian_groups(a, b, odd, to_groups),
+                );
+                x += 8;
+            }
+            if let [group] = last {
+                let a = load_laplacian_sources::<S, true>(&rows, x);
+                let b = load_laplacian_sources::<S, true>(&rows, x + 2);
+                vst1_u16(
+                    group.as_mut_ptr(),
+                    vget_low_u16(laplacian_groups(a, b, odd, to_groups)),
+                );
+            }
         }
     }
 

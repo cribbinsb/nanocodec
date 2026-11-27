@@ -4,17 +4,19 @@ One frame per day's build, from the BP-4 history report of each timing machine (
 section 14; tools/bench/report.py over the history run), `<reports>/history-<machine>.json`.
 That one report holds every day's builds as families `nanocodec-<codec>@<preset>~<day>`
 (a key every 150 frames) and `nanocodec-<codec>@<preset>~<day>~k600` (one key in 600 frames),
-the reference encoders and the zero line, all over the same common set, timed on the same
-machines and at the same half load as the main pages.
+the reference encoders and the zero line, timed on the same machines and at the same half load
+as the main pages. The key-every-150 families and the references share the report's common set;
+the single-key families are on their own long-source clips (report.py `OWN_CLIP_ROWS`).
 
     <reports>/history-<machine>.json     the report stage's JSON, one per timing machine
     <days>                               [{day, commit, full, codecs}]: each day's build; a day
                                          it does not list is the report's own `nanocodec`
                                          build (the BP-4 benchmark build)
 
-Every figure is the report's: each family's common-set BD-J (its `bd`; `clips` is the clips it
-averages, each clip's windows averaged once) with its interval and speed, the references'
-the same way from the same report, and each day's compliance as the worst over our families.
+Every figure is the report's: each family's headline BD-J (its `bd`: the common set, or its own
+clips for a single-key family; `clips` is the clips it averages, each clip's windows averaged
+once) with its interval and speed, the references' the same way from the same report, and each
+day's compliance as the worst over our families.
 """
 
 from __future__ import annotations
@@ -63,11 +65,12 @@ NOTES = (
     "Timed like the main pages: the same bare-metal machines, at half load, with each day's "
     "build compiled for that machine. The machine selector switches between the x86 and Arm "
     "reports.",
-    "Every BD-J, ours and the references', is over the report's common set: the history clips "
-    "on which every family of every day, at both key intervals, has well-formed curves. The "
-    "600-frame runs cover only the history subset's long clips, so the common set is those "
-    "long clips; each clip counts once, its 150- and 600-frame windows averaged. The clip "
-    "count is in each frame's heading.",
+    "Every BD-J of the primary series, ours and the references', is over the report's common "
+    "set: the history clips on which every family with a key every 150 frames, of every day, "
+    "has well-formed curves; each clip counts once, its 150- and 600-frame windows averaged. "
+    "The single-key families (one key in 600 frames) are coded only on the long-source clips, "
+    "so they are shown on those clips, their own set, and do not define the common set. The "
+    "clip count is in each frame's heading.",
     "Key interval: a key every 150 frames is the primary series; one key in 600 frames is the "
     "long-window view of key-frame and start-up behaviour (procedure section 14). The last "
     "build (the BP-4 benchmark build) was coded with one key in 600 frames only, so it is the "

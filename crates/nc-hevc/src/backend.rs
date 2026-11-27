@@ -36,7 +36,7 @@ use nc_encoder::{
     Block, BlockDecision, CodecBackend, CodedGroups, ConfigError, EncoderConfig, FramePlan,
     FrameReferences, FrameType, IntraChoice, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits,
     PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, StaticSkipTest, TrellisSettings,
-    ZeroLimits, copy_zero_vector_prediction, holds_second_reference, long_term_slot,
+    ZeroLimits, copy_zero_vector_prediction, holds_second_reference, long_term_slot, luma_level,
     reference_slots, uses_long_term_slot, zero_vector_residual_is_zero,
 };
 
@@ -46,9 +46,9 @@ use crate::deblock::{Strength, deblock};
 use crate::grid::{Cell, Grid};
 use crate::headers::ReferenceSet;
 use crate::headers::{
-    CraPoc, LOG2_CTB, LOG2_MAX_TB, LOG2_MIN_CB, LONG_POC_LSB_BITS, NalType, POC_LSB_BITS,
-    SIGN_DATA_HIDING, SliceDeblocking, SliceQp, SliceReferenceSet, StreamInfo, inter_slice_header,
-    irap_slice_header, level_idc, nal_header, pps, sps, vps,
+    CraPoc, KeptSlot, LOG2_CTB, LOG2_MAX_TB, LOG2_MIN_CB, LONG_POC_LSB_BITS, LongTermEntry,
+    NalType, POC_LSB_BITS, SIGN_DATA_HIDING, SliceDeblocking, SliceQp, SliceReferenceSet,
+    StreamInfo, inter_slice_header, irap_slice_header, nal_header, pps, sps, vps,
 };
 use crate::inter::{predict_bi_into, predict_chroma, predict_luma, predict_samples};
 use crate::mvpred::{
@@ -597,6 +597,9 @@ pub struct HevcBackend {
     slot_poc: [u32; MAX_REFERENCE_SLOTS],
     /// The slot of the long-term reference, when one is kept.
     long_term_slot: usize,
+    /// POC of the picture the stream names as a long-term picture
+    /// (`long_term_ref_pics_present_flag`), once a picture has.
+    long_term_poc: Option<u32>,
     next_cu: u32,
     next_tu: u32,
     current: PredictorCache,
@@ -1519,10 +1522,9 @@ impl CodecBackend for HevcBackend {
         if !(LOG2_MIN_CB as u8..=MAX_BLOCK_LOG2).contains(&config.block_log2) {
             return Err(ConfigError::BlockSize(config.block_log2));
         }
-        let fps = f64::from(config.frame_rate.num) / f64::from(config.frame_rate.den.max(1));
         let qp = config.quantizer as i32;
         let params = HevcParams::from_overrides(&config.params);
-        let info = stream_info(config, &params, fps);
+        let info = stream_info(config, &params);
         let (width, height) = (info.width, info.height);
         let rounding = rounding_of(&params);
         let frame_quantization =
@@ -1550,7 +1552,7 @@ impl CodecBackend for HevcBackend {
             motion: MotionStore::new(
                 width,
                 height,
-                if info.long_term {
+                if info.kept_slot.is_kept() {
                     long_term_slot(config.temporal_layers) + 1
                 } else {
                     reference_slots(config.temporal_layers)
@@ -1564,6 +1566,7 @@ impl CodecBackend for HevcBackend {
             bi_first: Vec::new(),
             slot_poc: [0; MAX_REFERENCE_SLOTS],
             long_term_slot: long_term_slot(config.temporal_layers),
+            long_term_poc: None,
             next_cu: 0,
             next_tu: 0,
             current: PredictorCache::default(),
@@ -2385,6 +2388,7 @@ impl CodecBackend for HevcBackend {
                     lsb: self.poc & ((1 << self.info.poc_lsb_bits) - 1),
                     lsb_bits: self.info.poc_lsb_bits,
                     sps_sets: self.info.reference_sets().len(),
+                    long_term_refs: self.info.kept_slot.long_term_refs(),
                 });
                 irap_slice_header(&mut header, cra, qp, self.slice_sao(), self.deblocking);
                 if self.idr {
@@ -2396,15 +2400,20 @@ impl CodecBackend for HevcBackend {
             SliceKind::Predicted | SliceKind::Bi => {
                 let lsb = self.poc & ((1 << self.info.poc_lsb_bits) - 1);
                 let sets = self.info.reference_sets();
-                let explicit = if self.info.long_term {
+                let (short_term, long_term) = if self.info.kept_slot.is_kept() {
                     self.long_term_set()
                 } else {
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 };
-                let references = if self.info.long_term {
+                let references = if self.info.kept_slot.is_kept() {
                     SliceReferenceSet::Explicit {
-                        entries: &explicit,
+                        entries: &short_term,
                         sps_count: sets.len(),
+                        long_term: self
+                            .info
+                            .kept_slot
+                            .long_term_refs()
+                            .then_some(&long_term[..]),
                     }
                 } else {
                     SliceReferenceSet::Sps {
@@ -2465,6 +2474,14 @@ impl CodecBackend for HevcBackend {
             self.reference_list.by_index(),
             self.references.refresh,
         );
+        // A key frame's empty set releases every picture (§8.3.2).
+        self.long_term_poc = if self.slice.is_inter() && self.long_term_signalled() {
+            Some(self.slot_poc[self.long_term_slot])
+        } else if self.slice.is_inter() {
+            self.long_term_poc
+        } else {
+            None
+        };
         for (slot, poc) in self.slot_poc.iter_mut().enumerate() {
             if self.references.refresh.contains(slot) {
                 *poc = self.poc;
@@ -2488,29 +2505,78 @@ impl HevcBackend {
             .expect("a coded video sequence is shorter than 2^32 frames")
     }
 
-    /// The slice reference set with a long-term reference (§7.4.8): the
-    /// picture this one predicts from (used), and, kept for later pictures
-    /// unless this one replaces them, slot 0's T0 picture and the long-term
+    /// The slice reference set with a long-term slot (§7.4.8): the picture
+    /// this one predicts from (used), and, kept for later pictures unless
+    /// this one replaces them, slot 0's T0 picture and the long-term slot's
     /// picture. A recovery picture (predicting from the long-term slot)
     /// replaces every short-term slot, so the pictures it follows, which
-    /// the receiver may have lost, leave the set.
-    fn long_term_set(&self) -> Vec<(u32, bool)> {
-        let slot = self.references.reference.slot;
-        let mut set = vec![(self.poc - self.slot_poc[slot], true)];
+    /// the receiver may have lost, leave the set. Returns the short-term
+    /// entries (distance, used), nearest first, and the long-term ones.
+    ///
+    /// With an LTR ([`KeptSlot::LongTerm`]) the long-term slot's picture is a long-term
+    /// entry ([`Self::long_term_signalled`]), so its distance is not bound
+    /// by the POC LSBs (§8.3.2); otherwise (the second reference,
+    /// `refs.second`) it is one more short-term entry.
+    fn long_term_set(&self) -> (Vec<(u32, bool)>, Vec<LongTermEntry>) {
+        let distance = |slot: usize| self.poc - self.slot_poc[slot];
+        let is_long_term = |slot: usize| self.is_long_term(slot);
+        let mut set: Vec<(u32, bool)> = Vec::new();
+        let mut long_term = Vec::new();
+        let mut list = |slot: usize, used: bool| {
+            if is_long_term(slot) {
+                if long_term.is_empty() {
+                    long_term.push(LongTermEntry::new(
+                        self.slot_poc[slot],
+                        self.poc,
+                        self.info.poc_lsb_bits,
+                        used,
+                    ));
+                }
+            } else if set.iter().all(|&(listed, _)| listed != distance(slot)) {
+                set.push((distance(slot), used));
+            }
+        };
+        list(self.references.reference.slot, true);
         // The second reference (`refs.second`) is the long-term slot's
         // picture, used: its POC distance is larger than the first
         // reference's, so the sorted set lists it second (`ref_idx_l0` 1).
         if let Some(second) = self.references.secondary {
-            set.push((self.poc - self.slot_poc[second.slot], true));
+            list(second.slot, true);
         }
         for kept in [0, self.long_term_slot] {
-            let distance = self.poc - self.slot_poc[kept];
-            if !self.references.refresh.contains(kept) && set.iter().all(|&(d, _)| d != distance) {
-                set.push((distance, false));
+            if !self.references.refresh.contains(kept) {
+                list(kept, false);
             }
         }
         set.sort_unstable();
-        set
+        (set, long_term)
+    }
+
+    /// Whether the picture in `slot` is a long-term entry of the current
+    /// picture: the long-term slot's picture when it is signalled as one.
+    fn is_long_term(&self, slot: usize) -> bool {
+        self.long_term_signalled() && self.slot_poc[slot] == self.slot_poc[self.long_term_slot]
+    }
+
+    /// Whether the current picture names the long-term slot's picture as a
+    /// long-term entry (`long_term_ref_pics_present_flag`): with an LTR,
+    /// once an earlier picture has, or once neither the picture's reference
+    /// nor its kept T0 picture is that same picture. The pictures right
+    /// after it is marked predict from it as their short-term reference (or
+    /// keep it as T0) and list it so; a picture marked long-term never
+    /// returns to short-term (§8.3.2).
+    fn long_term_signalled(&self) -> bool {
+        if !self.info.kept_slot.long_term_refs() {
+            return false;
+        }
+        let held = self.slot_poc[self.long_term_slot];
+        if self.long_term_poc == Some(held) {
+            return true;
+        }
+        let slot = self.references.reference.slot;
+        let reference_is_held = slot != self.long_term_slot && self.slot_poc[slot] == held;
+        let t0_is_held = !self.references.refresh.contains(0) && self.slot_poc[0] == held;
+        !(reference_is_held || t0_is_held)
     }
 
     /// The SPS reference picture set of the current picture: its reference
@@ -2614,13 +2680,21 @@ impl HevcBackend {
 
     /// The reference list of the current P slice: the structure's reference,
     /// and the second reference (`refs.second`) when the engine gave one, by
-    /// POC distance.
+    /// POC distance, and which is a long-term picture.
     fn slice_reference_list(&self) -> ReferenceDistances {
         let distance = |slot: usize| (self.poc - self.slot_poc[slot]) as i32;
-        let primary = distance(self.references.reference.slot);
-        match self.references.secondary {
+        let slot = self.references.reference.slot;
+        let primary = distance(slot);
+        let list = match self.references.secondary {
             Some(second) => ReferenceDistances::two(primary, distance(second.slot)),
             None => ReferenceDistances::one(primary),
+        };
+        // A recovery picture predicts from the long-term picture (§8.5.3.2:
+        // its vectors are never scaled).
+        if self.is_long_term(slot) {
+            list.with_long_term(0)
+        } else {
+            list
         }
     }
 
@@ -3686,7 +3760,7 @@ fn policy_chroma_offset(policy: ChromaPolicy, qp: i32) -> i32 {
     )
 }
 
-fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamInfo {
+fn stream_info(config: &EncoderConfig, params: &HevcParams) -> StreamInfo {
     let policy = ChromaPolicy::from_params(&config.params);
     // Pictures are coded in whole minimum CUs; a conformance window
     // crops the visible size back out (§7.4.3.2.1).
@@ -3695,7 +3769,7 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamI
         width,
         height,
         crop: (width - config.width, height - config.height),
-        level_idc: level_idc(width, height, fps),
+        level_idc: luma_level(width, height, config.frame_rate).hevc_idc(),
         init_qp: config.quantizer as i32,
         max_transform_log2: params.max_transform_log2.round() as u8,
         inter_transform_depth: if params.inter_tu_split >= 0.5
@@ -3732,7 +3806,13 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamI
         },
         signal: config.signal,
         frame_rate: config.frame_rate,
-        long_term: uses_long_term_slot(&config.params),
+        kept_slot: if nc_encoder::long_term_requested(config) {
+            KeptSlot::LongTerm
+        } else if uses_long_term_slot(&config.params) {
+            KeptSlot::ShortTerm
+        } else {
+            KeptSlot::None
+        },
         block_qp: false,
         merge_candidates: params.merge_candidates.round() as usize,
     }

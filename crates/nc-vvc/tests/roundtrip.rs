@@ -585,3 +585,64 @@ fn second_reference_returns_to_the_key_and_decodes_exactly() {
     }
     assert!(totals[1] < totals[0], "{totals:?}");
 }
+
+/// The samples of a general output picture, as `bytes` writes a picture.
+fn output_bytes(picture: &nc_common::DecodedPicture) -> Vec<u8> {
+    let nc_common::DecodedPicture::Eight(picture) = picture else {
+        panic!("our streams are 8-bit");
+    };
+    let view = picture.view();
+    let mut out = Vec::new();
+    for plane in PlaneIndex::ALL {
+        let samples = view.plane(plane);
+        for y in 0..samples.height() {
+            out.extend_from_slice(samples.row(y));
+        }
+    }
+    out
+}
+
+/// An LMCS APS (H.266 §7.3.2.6, §7.3.2.19): id 0, chroma present, every
+/// bin's codeword unchanged. Our encoder never writes one, so the fast path
+/// refuses it; the general path keeps it (no picture enables LMCS).
+const LMCS_APS: [u8; 7] = [0x00, (17 << 3) | 1, 0x20, 0xf0, 0x00, 0x00, 0x80];
+
+/// A stream with our SPS that later uses something our encoder does not
+/// write is decoded by the general path from the last IDR picture on, and
+/// every picture still comes out once, equal to the encoder's.
+#[test]
+fn fast_path_falls_back_to_the_general_path() {
+    let (w, h, frames, foreign_at) = (64, 64, 6, 3);
+    let mut encoder = Encoder::<VvcBackend>::new(EncoderConfig {
+        intra_period: 100,
+        ..config(w, h, 30)
+    })
+    .unwrap();
+    let mut decoder = Decoder::new();
+    let (mut expected, mut decoded) = (Vec::new(), Vec::new());
+    for frame in 0..frames {
+        let packet = encoder.encode(&source(w, h, frame + 2));
+        expected.push(bytes(encoder.reconstruction()));
+        let units = nc_common::decode::annex_b_units(&packet.data).unwrap();
+        let slice = units.len() - 1;
+        for (index, unit) in units.into_iter().enumerate() {
+            if frame == foreign_at && index == slice {
+                assert!(decoder.push_nal(&LMCS_APS[..]).unwrap().is_none());
+            }
+            if let Some(picture) = decoder.push_nal(unit).unwrap() {
+                decoded.push(bytes(&picture));
+            }
+            while let Some(picture) = decoder.next_output() {
+                decoded.push(output_bytes(&picture));
+            }
+        }
+    }
+    decoder.flush().unwrap();
+    while let Some(picture) = decoder.next_output() {
+        decoded.push(output_bytes(&picture));
+    }
+    assert_eq!(decoded.len(), frames);
+    for (frame, (got, want)) in decoded.iter().zip(&expected).enumerate() {
+        assert!(got == want, "frame {frame}");
+    }
+}

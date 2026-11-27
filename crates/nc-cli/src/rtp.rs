@@ -128,7 +128,8 @@ pub(crate) struct RtpOptions {
 }
 
 impl RtpOptions {
-    /// The `--rtp` options of `encode`, if `--rtp` is given.
+    /// The `--rtp` options of `encode`, if `--rtp` is given; its options
+    /// without it are refused.
     pub(crate) fn parse(args: &[String], codec: Codec) -> Result<Option<Self>, String> {
         let get = |flag: &str| {
             args.iter()
@@ -137,7 +138,14 @@ impl RtpOptions {
                 .map(String::as_str)
         };
         let Some(path) = get("--rtp") else {
-            return Ok(None);
+            // Its options alone would be silent no-ops (no packets to shape).
+            return match ["--rtp-mtu", "--rtp-dd-id"]
+                .into_iter()
+                .find(|flag| get(flag).is_some())
+            {
+                Some(flag) => Err(format!("{flag} needs --rtp")),
+                None => Ok(None),
+            };
         };
         let mtu = get("--rtp-mtu").map_or(Ok(nc_rtp::DEFAULT_MTU), |v| {
             v.parse().map_err(|_| format!("bad --rtp-mtu {v}"))

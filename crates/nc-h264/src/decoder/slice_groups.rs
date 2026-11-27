@@ -162,12 +162,13 @@ impl SliceGroups {
         )
     }
 
-    /// `MbToSliceGroupMap` (§8.2.2) of a picture with `units` map units
-    /// and `slice_group_change_cycle` `cycle`.
-    pub fn mb_map(&self, units: MapUnits, cycle: u32) -> Result<Box<[u8]>> {
+    /// `MbToSliceGroupMap` (§8.2.2) of a frame (or, `field_picture`, a
+    /// field) with `units` map units and `slice_group_change_cycle` `cycle`.
+    pub fn mb_map(&self, units: MapUnits, cycle: u32, field_picture: bool) -> Result<Box<[u8]>> {
         let map = self.map_unit_map(units, cycle)?;
-        // §8.2.2.8: eq. 8-24, or 8-26 for map units of macroblock pairs.
-        if !units.pairs {
+        // §8.2.2.8: eq. 8-24, 8-25 for a field (a map unit is one of its
+        // macroblocks), or 8-26 for a frame whose map units are pairs.
+        if !units.pairs || field_picture {
             return Ok(map.into_boxed_slice());
         }
         let width = units.width;
@@ -324,7 +325,7 @@ mod tests {
             reverse: false,
             rate: 1,
         };
-        let map = groups(2, changing).mb_map(QCIF, 3).unwrap();
+        let map = groups(2, changing).mb_map(QCIF, 3, false).unwrap();
         // Centre (5, 4), left to (4, 4), then up to (4, 3).
         let zeros: Vec<usize> = (0..map.len()).filter(|&i| map[i] == 0).collect();
         assert_eq!(zeros, [3 * 11 + 4, 4 * 11 + 4, 4 * 11 + 5]);
@@ -337,7 +338,7 @@ mod tests {
             reverse: false,
             rate: 2,
         };
-        let map = groups(2, changing).mb_map(QCIF, 5).unwrap();
+        let map = groups(2, changing).mb_map(QCIF, 5, false).unwrap();
         // Ten map units: column 0 (9) and the top of column 1.
         assert_eq!(map.iter().map(|&g| usize::from(g == 0)).sum::<usize>(), 10);
         assert_eq!(map[1], 0);
@@ -370,7 +371,7 @@ mod tests {
     #[test]
     fn foreground_lower_groups_win_overlaps() {
         let map = groups(3, MapType::Foreground(vec![(12, 13), (0, 24)]))
-            .mb_map(QCIF, 0)
+            .mb_map(QCIF, 0, false)
             .unwrap();
         assert_eq!(&map[..3], &[1, 1, 1]);
         assert_eq!(&map[11..15], &[1, 0, 0, 2]);
@@ -385,7 +386,7 @@ mod tests {
             pairs: true,
         };
         let map = groups(2, MapType::Interleaved(vec![1, 2]))
-            .mb_map(units, 0)
+            .mb_map(units, 0, false)
             .unwrap();
         // Map units 0 1 / 1 0, each row twice.
         assert_eq!(&*map, &[0, 1, 0, 1, 1, 0, 1, 0]);

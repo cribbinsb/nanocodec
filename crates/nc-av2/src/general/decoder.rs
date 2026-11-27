@@ -46,6 +46,9 @@ mod other_obu {
     pub const PADDING: u8 = 25;
 }
 
+/// Frames are decoded in whole blocks of this many samples a side.
+const CODED_BLOCK: usize = 8;
+
 /// A frame's CCSO flags per 64x64 filter block and plane.
 type CcsoFlags = Rc<Vec<[bool; 3]>>;
 /// A frame's segment ids per luma 4x4 unit.
@@ -63,7 +66,12 @@ struct SlotExtras {
 /// What a reference slot holds beyond the frame's header.
 #[derive(Debug, Clone)]
 struct SlotData {
+    /// The decoded picture at its coded size (dav2d's 8-aligned `bw * 4` x
+    /// `bh * 4`): later frames' prediction reads the samples past the
+    /// frame's edge up to it, as dav2d and AVM do.
     picture: Rc<Picture>,
+    /// The frame's size (`frame_width`, `frame_height`): what is output.
+    size: (usize, usize),
     /// The frame's final CDFs, adaptation restarted (AVM `frame_context`),
     /// for frames that start from them; `None` where it did not adapt.
     context: Option<FrameContext>,
@@ -94,6 +102,8 @@ enum FrameContext {
 #[derive(Debug)]
 struct Output {
     picture: Rc<Picture>,
+    /// The frame's size inside the picture's coded size.
+    size: (usize, usize),
     /// The grain laid over it when it is shown.
     grain: Option<OutputGrain>,
 }
@@ -126,8 +136,9 @@ pub struct Decoder {
     state: State,
     /// Pictures to show, in display order.
     output: VecDeque<Output>,
-    /// The picture [`Decoder::shown`] shows.
+    /// The picture [`Decoder::shown`] shows, and the frame's size in it.
     current: Option<Rc<Picture>>,
+    current_size: (usize, usize),
     /// [`Decoder::decode_ref`]'s copy of the shown picture's window when it
     /// crops anything.
     cropped: Option<Picture>,
@@ -240,24 +251,35 @@ impl Decoder {
             return false;
         };
         let picture = match &next.grain {
-            Some(grain) => Rc::new(self.grained(&next.picture, grain)),
+            Some(grain) => Rc::new(self.grained(&next.picture, next.size, grain)),
             None => next.picture,
         };
+        self.current_size = next.size;
         if let Some(previous) = self.current.replace(picture) {
             self.workspace.release(previous);
         }
         true
     }
 
-    /// `picture` with `grain` laid over it, in a picture of the workspace.
-    fn grained(&mut self, picture: &Picture, grain: &OutputGrain) -> Picture {
-        let mut output = self
-            .workspace
-            .pictures
-            .take(picture.width(), picture.height(), 0)
-            .expect("the geometry of a picture already made");
+    /// The frame of `size` in `picture` with `grain` laid over it, in a
+    /// picture of the workspace (of the frame's size rounded up to even:
+    /// grain blocks start at the frame's origin, so a sample's grain does
+    /// not depend on the frame's extent).
+    fn grained(&mut self, picture: &Picture, size: (usize, usize), grain: &OutputGrain) -> Picture {
+        let even = (size.0.next_multiple_of(2), size.1.next_multiple_of(2));
+        let take = |pictures: &mut nc_common::PictureRecycler| {
+            pictures
+                .take(even.0, even.1, 0)
+                .expect("the geometry of a frame already decoded")
+        };
+        let mut frame = take(&mut self.workspace.pictures);
+        ShownPicture::window(picture, (0, 0), even)
+            .expect("the coded size covers the frame")
+            .copy_to(&mut frame);
+        let mut output = take(&mut self.workspace.pictures);
         let (dsp, ..) = self.workspace.filter_parts();
-        grain.apply(dsp, picture, &mut output);
+        grain.apply(dsp, &frame, &mut output);
+        self.workspace.pictures.give(frame);
         output
     }
 
@@ -275,12 +297,9 @@ impl Decoder {
         let picture = self.current.as_deref()?;
         let sequence = self.state.sequence.as_ref()?;
         let crop = sequence.crop.unwrap_or_default();
-        let width = picture
-            .width()
-            .checked_sub((crop.left + crop.right) as usize)?;
-        let height = picture
-            .height()
-            .checked_sub((crop.top + crop.bottom) as usize)?;
+        let (frame_width, frame_height) = self.current_size;
+        let width = frame_width.checked_sub((crop.left + crop.right) as usize)?;
+        let height = frame_height.checked_sub((crop.top + crop.bottom) as usize)?;
         ShownPicture::window(
             picture,
             (crop.left as usize, crop.top as usize),
@@ -448,7 +467,11 @@ impl Decoder {
         // The show-existing header's grain, not the frame's own (dav2d
         // `dav2d_parse_obus`).
         let grain = self.output_grain(shown.film_grain)?;
-        self.queue_output(&data.picture, grain.as_ref(), header.header.order)?;
+        self.queue_output(
+            (&data.picture, data.size),
+            grain.as_ref(),
+            header.header.order,
+        )?;
         if header.header.frame_type == FrameType::Key {
             for index in 0..MAX_SLOTS {
                 self.state.headers[index] = Some(header.clone());
@@ -574,12 +597,14 @@ impl Decoder {
         extras: SlotExtras,
     ) -> Result<()> {
         let picture = Rc::new(picture);
+        let size = (header.width as usize, header.height as usize);
         let grain = self.output_grain(header.film_grain)?;
         if header.show_immediate {
-            self.queue_output(&picture, grain.as_ref(), header.order)?;
+            self.queue_output((&picture, size), grain.as_ref(), header.order)?;
         } else if self.invisible {
             self.output.push_back(Output {
                 picture: Rc::clone(&picture),
+                size,
                 grain: grain.clone(),
             });
         }
@@ -591,6 +616,7 @@ impl Decoder {
         self.state.frames = self.state.frames.wrapping_add(1);
         let data = SlotData {
             picture,
+            size,
             context,
             ccso_flags: extras.ccso_flags,
             motion_field: extras.motion_field,
@@ -617,17 +643,20 @@ impl Decoder {
         tiles: &[u8],
     ) -> Result<(Picture, Rc<Cdfs>, SlotExtras)> {
         let sequence = self.state.sequence.clone().ok_or(DecodeError::MissingKey)?;
-        let (width, height) = (header.width as usize, header.height as usize);
-        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-            return Err(DecodeError::Unsupported(
-                "AV2 4:2:0 frame of odd width or height",
-            ));
+        // The coded size: the frame rounded up to whole 8x8 blocks (dav2d
+        // `bw * 4`, `bh * 4`). It is decoded, filtered and kept whole.
+        let (coded_w, coded_h) = coded_size(header);
+        for rank in 0..usize::from(header.reference_count) {
+            let slot = usize::from(header.references[rank]);
+            let reference = self.state.data[slot].as_ref();
+            if !header.is_intra()
+                && reference.is_some_and(|data| {
+                    (data.picture.width(), data.picture.height()) != (coded_w, coded_h)
+                })
+            {
+                return Err(DecodeError::Unsupported("AV2 references of another size"));
+            }
         }
-        let (coded_w, coded_h) = if self.unfiltered {
-            (width, height)
-        } else {
-            (width.next_multiple_of(8), height.next_multiple_of(8))
-        };
         let filtered = self.workspace.pictures.take(coded_w, coded_h, 0)?;
         let cdfs = self.initial_models(header, &sequence)?;
         let reused = self.reused_ccso_flags(header)?;
@@ -682,8 +711,8 @@ impl Decoder {
     }
 
     /// Run general-path loop filters on the 8x8-aligned coded surface
-    /// (`f->bw * 4` x `f->bh * 4` in dav2d) and return the `header.width` x
-    /// `header.height` frame picture.
+    /// (`f->bw * 4` x `f->bh * 4` in dav2d) and return it whole: later
+    /// frames predict from it, the output crops it to the frame.
     fn filter_decoded_planes(
         &mut self,
         decoded: &mut block::DecodedTile,
@@ -728,16 +757,7 @@ impl Decoder {
                 (header, sequence.intra.cfl_downsample_filter),
             );
         }
-        let (width, height) = (header.width as usize, header.height as usize);
-        if (filtered.width(), filtered.height()) == (width, height) {
-            return Ok(filtered);
-        }
-        let mut picture = self.workspace.pictures.take(width, height, 0)?;
-        ShownPicture::window(&filtered, (0, 0), (width, height))
-            .expect("coded surface covers visible frame")
-            .copy_to(&mut picture);
-        self.workspace.pictures.give(filtered);
-        Ok(picture)
+        Ok(filtered)
     }
 
     /// Loop restoration, then GDF, of the picture after CDEF and CCSO
@@ -931,7 +951,7 @@ impl Decoder {
     /// Rejects a repeat of the last output's display order.
     fn queue_output(
         &mut self,
-        picture: &Rc<Picture>,
+        (picture, size): (&Rc<Picture>, (usize, usize)),
         grain: Option<&OutputGrain>,
         order: u32,
     ) -> Result<()> {
@@ -944,6 +964,7 @@ impl Decoder {
             match release {
                 Release::Current => self.output.push_back(Output {
                     picture: Rc::clone(picture),
+                    size,
                     grain: grain.cloned(),
                 }),
                 Release::Slot(slot) => self.queue_slot(slot),
@@ -957,10 +978,20 @@ impl Decoder {
         if let Some(data) = &self.state.data[slot] {
             self.output.push_back(Output {
                 picture: Rc::clone(&data.picture),
+                size: data.size,
                 grain: data.grain.clone(),
             });
         }
     }
+}
+
+/// A frame's coded size: its size rounded up to whole 8x8 blocks (dav2d
+/// `bw * 4`, `bh * 4`).
+fn coded_size(header: &FrameHeader) -> (usize, usize) {
+    (
+        (header.width as usize).next_multiple_of(CODED_BLOCK),
+        (header.height as usize).next_multiple_of(CODED_BLOCK),
+    )
 }
 
 /// Copy reconstructed superblock-padded tile planes into `picture`.

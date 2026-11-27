@@ -225,9 +225,14 @@ CLIP_MODE = ("-a",)
 #: `--data` uploads one on request.
 SYNC_MAX_BYTES = 64 * 1024 * 1024
 RAW_VIDEO_SUFFIXES = (".yuv", ".y4m")
-RSYNC_EXCLUDES = ("--exclude=/target", "--exclude=/.git",
-                  *(f"--exclude=*{suffix}" for suffix in RAW_VIDEO_SUFFIXES),
-                  "--exclude=__pycache__", f"--max-size={SYNC_MAX_BYTES // (1024 * 1024)}m")
+#: What no sync sends: raw video (private clips go up only with --clip) and caches.
+SYNC_EXCLUDES = (*(f"--exclude=*{suffix}" for suffix in RAW_VIDEO_SUFFIXES),
+                 "--exclude=__pycache__")
+#: The worktree sync also leaves out builds, git and large files. A `--sync` path is
+#: data asked for by name and goes up whole: the size cap once dropped the one H.264
+#: conformance stream over 64 MB (FREH10-1) from the box's corpus (2026-11-27).
+RSYNC_EXCLUDES = ("--exclude=/target", "--exclude=/.git", *SYNC_EXCLUDES,
+                  f"--max-size={SYNC_MAX_BYTES // (1024 * 1024)}m")
 #: --data keeps size and time (data, not build inputs: nothing already there is
 #: sent again) and keeps a partial transfer, so an interrupted upload resumes.
 DATA_MODE = ("-a", "--partial")
@@ -1266,7 +1271,7 @@ def sync(box: Box, worktree: Path, name: str, extra: list[Path],
         relative = path.relative_to(Path.home())
         suffix = "/" if path.is_dir() else ""
         keep = [f"--exclude=/{name}" for name in box_links(box, str(relative))] if suffix else []
-        rsync(box, SYNC_MODE, "-z", *RSYNC_EXCLUDES, *keep, f"{path}{suffix}",
+        rsync(box, SYNC_MODE, "-z", *SYNC_EXCLUDES, *keep, f"{path}{suffix}",
               remote(box, f"{relative}{suffix}"))
     for clip in clips:
         rsync(box, CLIP_MODE, str(clip), remote(box, str(clip.relative_to(Path.home()))))

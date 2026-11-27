@@ -16,6 +16,7 @@ mod key_qp_offset_cli;
 mod keyframe_cli;
 mod label_dump_cli;
 mod moving_camera_cli;
+mod option_effect_cli;
 mod rate_control_cli;
 mod recode_identity;
 mod restoration_cli;

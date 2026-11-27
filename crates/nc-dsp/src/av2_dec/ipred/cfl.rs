@@ -7,6 +7,8 @@
 //! `cfl_implicit_420_c`) and `src/derivation.h` (`derive_alpha`; commit
 //! 237229e, BSD-2-Clause, see `docs/licenses/dav2d`).
 
+use nc_common::{BitDepth, Sample};
+
 use super::dc::fast_div32_dc;
 use super::tables::DIV_RECIP;
 use super::{
@@ -18,8 +20,6 @@ use super::{
 /// Luma values carry three fraction bits (the 4:2:0 filters' weights sum
 /// to 8).
 const LUMA_FRACTION_BITS: u32 = 3;
-/// Mid-grey chroma, the DC without edges.
-const MID: i32 = 128;
 /// Bits of the alpha-scaled AC term (alphas are 1/32 steps scaled by 32).
 const AC_SHIFT: u32 = 11;
 /// Most edge sample pairs implicit `CfL` fits.
@@ -41,18 +41,18 @@ const MAX_IMPLICIT_ALPHA: i32 = (2 << 8) - 1;
 /// at `offset - 1`. The row above comes from `top_sb_edge` (at the block's
 /// first column) at a superblock's top, else from the row above in `buf`.
 #[derive(Debug)]
-pub struct CflChroma<'a> {
+pub struct CflChroma<'a, T = u8> {
     /// The plane.
-    pub buf: &'a mut [u8],
+    pub buf: &'a mut [T],
     /// Index of the block's first sample.
     pub offset: usize,
     /// The pre-filter row above, at a superblock's top edge.
-    pub top_sb_edge: Option<SampleRef<'a>>,
+    pub top_sb_edge: Option<SampleRef<'a, T>>,
 }
 
-impl CflChroma<'_> {
+impl<T: Sample> CflChroma<'_, T> {
     /// The sample `x` along the row above.
-    fn top(&self, x: usize, stride: usize) -> u8 {
+    fn top(&self, x: usize, stride: usize) -> T {
         match self.top_sb_edge {
             Some(row) => row.at(x as isize),
             None => self.buf[self.offset + x - stride],
@@ -60,7 +60,7 @@ impl CflChroma<'_> {
     }
 
     /// The sample `y` down the column to the left.
-    fn left(&self, y: usize, stride: usize) -> u8 {
+    fn left(&self, y: usize, stride: usize) -> T {
         self.buf[self.offset + y * stride - 1]
     }
 }
@@ -69,9 +69,9 @@ impl CflChroma<'_> {
 /// `row`, whose next row is `below` away and previous row `above` away;
 /// `left` is the column of the left tap. The result has
 /// [`LUMA_FRACTION_BITS`].
-fn downsample(
+fn downsample<T: Sample>(
     flags: u32,
-    row: SampleRef<'_>,
+    row: SampleRef<'_, T>,
     xl: isize,
     left: isize,
     above: isize,
@@ -101,26 +101,26 @@ fn is_pair_sample(i: usize, len: usize, n: usize) -> bool {
 
 /// DC sums and the implicit fit's sample pairs, gathered along the edges.
 #[derive(Default)]
-struct EdgeStats {
+struct EdgeStats<T> {
     /// Sums of luma, U and V.
     sum: [i32; 3],
     /// The pairs: luma (integer) and the two chroma samples.
-    pairs: [[u8; 3]; MAX_PAIRS],
+    pairs: [[T; 3]; MAX_PAIRS],
     n_pairs: usize,
 }
 
-impl EdgeStats {
+impl<T: Sample> EdgeStats<T> {
     /// Adds edge position `i` of a side of `len` samples: luma `l`, chroma
     /// `u` and `v`; the DC skips odd positions of 64-sample sides and the
     /// fit takes `n_fit` evenly spaced pairs.
-    fn add(&mut self, i: usize, len: usize, n_fit: usize, l: i32, u: u8, v: u8) {
+    fn add(&mut self, i: usize, len: usize, n_fit: usize, l: i32, u: T, v: T) {
         if len != SUBSAMPLED_SIDE || i & 1 == 0 {
             self.sum[0] += l;
-            self.sum[1] += i32::from(u);
-            self.sum[2] += i32::from(v);
+            self.sum[1] += u.to_i32();
+            self.sum[2] += v.to_i32();
         }
         if n_fit > 0 && is_pair_sample(i, len, n_fit) {
-            self.pairs[self.n_pairs] = [(l >> LUMA_FRACTION_BITS) as u8, u, v];
+            self.pairs[self.n_pairs] = [T::from_i32(l >> LUMA_FRACTION_BITS), u, v];
             self.n_pairs += 1;
         }
     }
@@ -181,18 +181,18 @@ pub fn derive_alpha(num: i32, den: i32, fallback: i32) -> i32 {
 }
 
 /// The least-squares slopes of U and V on luma over the pairs.
-fn implicit_alphas(pairs: &[[u8; 3]]) -> [i32; 2] {
+fn implicit_alphas<T: Sample>(pairs: &[[T; 3]]) -> [i32; 2] {
     let mut sum_x = 0;
     let mut sum_xx = 0;
     let mut sum_y = [0; 2];
     let mut sum_xy = [0; 2];
     for &[x, u, v] in pairs {
-        let x = i32::from(x);
+        let x = x.to_i32();
         sum_x += x;
         sum_xx += x * x;
         for (pl, c) in [u, v].into_iter().enumerate() {
-            sum_y[pl] += i32::from(c);
-            sum_xy[pl] += x * i32::from(c);
+            sum_y[pl] += c.to_i32();
+            sum_xy[pl] += x * c.to_i32();
         }
     }
     let count_log2 = if pairs.is_empty() {
@@ -234,21 +234,23 @@ fn mean(sum: i32, count: usize) -> i32 {
 /// of the block past the picture's right and bottom edge, which repeat the
 /// last visible column and row. `flags` holds the downsampling filter,
 /// [`CFL_HAS_TOP`]/[`CFL_HAS_LEFT`], [`CFL_IS_TOP_SB_EDGE`] and, for explicit
-/// `CfL`, the coded alphas.
-pub fn cfl_pred_420(
+/// `CfL`, the coded alphas. `depth` is the samples' bit depth.
+pub fn cfl_pred_420<T: Sample>(
     implicit: bool,
-    luma_top: SampleRef<'_>,
-    luma: SampleRef<'_>,
+    luma_top: SampleRef<'_, T>,
+    luma: SampleRef<'_, T>,
     luma_stride: usize,
-    mut u_plane: CflChroma<'_>,
-    mut v_plane: CflChroma<'_>,
+    mut u_plane: CflChroma<'_, T>,
+    mut v_plane: CflChroma<'_, T>,
     chroma_stride: usize,
     wpad: usize,
     hpad: usize,
     w: usize,
     h: usize,
     flags: u32,
+    depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
     debug_assert!(wpad * 4 < w / 2 && hpad * 4 < h / 2);
     let has_t = flags & CFL_HAS_TOP != 0;
     let has_l = flags & CFL_HAS_LEFT != 0;
@@ -311,7 +313,10 @@ pub fn cfl_pred_420(
         };
         stats.sum.map(|s| mean(s, count))
     } else {
-        [MID << LUMA_FRACTION_BITS, MID, MID]
+        // Mid-grey: luma `4 << bitdepth` (with its fraction bits), chroma
+        // `(bitdepth_max + 1) >> 1`.
+        let mid = depth.mid();
+        [mid << LUMA_FRACTION_BITS, mid, mid]
     };
     let alphas = if implicit {
         implicit_alphas(&stats.pairs[..stats.n_pairs])
@@ -328,6 +333,7 @@ pub fn cfl_pred_420(
         dc[1],
         (xlim, ylim),
         (w, h),
+        depth,
     );
     write_plane(
         &mut v_plane,
@@ -337,12 +343,13 @@ pub fn cfl_pred_420(
         dc[2],
         (xlim, ylim),
         (w, h),
+        depth,
     );
 }
 
 /// The block's downsampled luma minus its DC, `xlim` x `ylim` (32 wide).
-fn luma_ac(
-    luma: SampleRef<'_>,
+fn luma_ac<T: Sample>(
+    luma: SampleRef<'_, T>,
     ys: isize,
     flags: u32,
     xlim: usize,
@@ -364,21 +371,22 @@ fn luma_ac(
 
 /// Writes one chroma plane: flat `dc` when `alpha` is zero, else `dc` plus
 /// the scaled AC, with the padded columns and rows repeating the last
-/// visible ones.
-fn write_plane(
-    plane: &mut CflChroma<'_>,
+/// visible ones; clipped to `depth`.
+fn write_plane<T: Sample>(
+    plane: &mut CflChroma<'_, T>,
     stride: usize,
     ac: &[[i32; 32]; 32],
     alpha: i32,
     dc: i32,
     (xlim, ylim): (usize, usize),
     (w, h): (usize, usize),
+    depth: BitDepth,
 ) {
     let row_at = |y: usize| plane.offset + y * stride;
     if alpha == 0 {
         for y in 0..h {
             let start = row_at(y);
-            plane.buf[start..start + w].fill(dc as u8);
+            plane.buf[start..start + w].fill(T::from_i32(dc));
         }
         return;
     }
@@ -392,7 +400,7 @@ fn write_plane(
             } else {
                 scaled as i32
             };
-            *out = clip_pixel(dc + scaled);
+            *out = clip_pixel(dc + scaled, depth);
         }
         let last = row[xlim - 1];
         row[xlim..].fill(last);

@@ -13,6 +13,8 @@
 //! `cfl_mh_pred_c`; commit 237229e, BSD-2-Clause, see
 //! `docs/licenses/dav2d`), bit-exact with AVM v1.0.0.
 
+use nc_common::{BitDepth, Sample};
+
 use super::tables::{DIV_SCALE_SH_BIAS, DIV_SCALE_SH_COEFW, DIV_SCALE_SH_OFFSET};
 use super::{
     CFL_FLT_TYPE_GAUSS, CFL_FLT_TYPE_UNIFORM, CFL_FLT_TYPE_VSTRIP, CFL_HAS_LEFT, CFL_HAS_TOP,
@@ -28,14 +30,10 @@ pub const CFL_MH_MAX_LUMA_SIZE: usize = 1220;
 pub const CFL_MH_MAX_EDGE_SAMPLES: usize = 386;
 /// Offset of the left columns from the block in the luma scratch buffer.
 const LEFT_OFFSET: usize = 32 * 32;
-/// Sample bit depth.
-const BIT_DEPTH: u32 = 8;
-/// Half the sample range, the constant term's unit.
-const MID: i32 = 1 << (BIT_DEPTH - 1);
 /// The fit's matrix and right-hand side are scaled to about this many bits.
 const MATRIX_BITS: i32 = 22;
-/// Regularisation added to the matrix diagonal.
-const DIAGONAL_BIAS: i32 = 2 << (BIT_DEPTH - 8);
+/// Regularisation added to the matrix diagonal at 8 bits (`2 << (bd - 8)`).
+const DIAGONAL_BIAS_8: i32 = 2;
 /// Fraction bits of the model coefficients.
 const ALPHA_BITS: i32 = 16;
 /// Fraction bits of a normalised divisor.
@@ -45,23 +43,26 @@ const REGION_SHIFT: i32 = 11;
 /// Bits a product may keep in [`mul32`].
 const MUL_BITS: u32 = 29;
 
-/// Downsampled squared luma: `(v * v + MID) >> BIT_DEPTH` (`SQRND`).
-fn square(v: u8) -> i32 {
-    (i32::from(v) * i32::from(v) + MID) >> BIT_DEPTH
+/// Downsampled squared luma, back in the sample range: `(v * v + mid) >>
+/// bd` (`SQRND`).
+fn square<T: Sample>(v: T, depth: BitDepth) -> i32 {
+    let depth = depth.of::<T>();
+    let v = v.to_i32();
+    (v * v + depth.mid()) >> depth.bits()
 }
 
 /// The luma rows of a downsampling: the 2x2 window's top row, the row
 /// below it `below` away, and the row the GAUSS filter's top tap reads.
 #[derive(Clone, Copy)]
-struct Window<'a> {
-    row: SampleRef<'a>,
+struct Window<'a, T> {
+    row: SampleRef<'a, T>,
     below: isize,
-    above_row: SampleRef<'a>,
+    above_row: SampleRef<'a, T>,
 }
 
-impl Window<'_> {
+impl<T: Sample> Window<'_, T> {
     /// The downsampled luma at luma column `col` (left tap at `left`).
-    fn sample(self, filter_type: u32, col: isize, left: isize) -> u8 {
+    fn sample(self, filter_type: u32, col: isize, left: isize) -> T {
         let px = |i: isize| self.row.wide(i);
         let below = self.below;
         let right = col + 1;
@@ -83,7 +84,7 @@ impl Window<'_> {
                     >> 3
             }
         };
-        value as u8
+        T::from_i32(value)
     }
 }
 
@@ -96,10 +97,10 @@ impl Window<'_> {
 /// pre-filter luma row above at a superblock's top, at the block's first
 /// column. `flags` holds [`CFL_HAS_TOP`], [`CFL_HAS_LEFT`] and the
 /// direction; `filter_type` is the sequence's `CFL_FLT_TYPE_*`.
-pub fn cfl_mh_gen_y_420(
-    dst: &mut [u8],
-    src: SampleRef<'_>,
-    top_sb_edge: Option<SampleRef<'_>>,
+pub fn cfl_mh_gen_y_420<T: Sample>(
+    dst: &mut [T],
+    src: SampleRef<'_, T>,
+    top_sb_edge: Option<SampleRef<'_, T>>,
     src_stride: usize,
     needed_top_cols: i32,
     needed_left_rows: i32,
@@ -212,11 +213,12 @@ pub fn cfl_mh_gen_y_420(
     }
 }
 
-/// The shift that scales sums over `n` samples to [`MATRIX_BITS`].
-fn matrix_shift(n: usize) -> i32 {
+/// The shift that scales sums over `n` samples of `depth` to
+/// [`MATRIX_BITS`].
+fn matrix_shift(n: usize, depth: BitDepth) -> i32 {
     let n = n as u32;
     let log2 = n.ilog2() as i32;
-    MATRIX_BITS - 2 * BIT_DEPTH as i32 - log2 - i32::from(!n.is_power_of_two())
+    MATRIX_BITS - 2 * depth.bits() as i32 - log2 - i32::from(!n.is_power_of_two())
 }
 
 /// `v << shift` for a nonnegative shift, else `v >> -shift`.
@@ -227,15 +229,21 @@ fn scale(v: i32, shift: i32) -> i32 {
 /// Builds the normal matrix of the fit from the downsampled luma `y` (laid
 /// out by [`cfl_mh_gen_y_420`]) over `refw` top and `refh` left edge
 /// samples (`cfl_mh_gen_mat`); `imat` keeps each sample's two luma terms
-/// for [`cfl_mh_calc_alphas`].
-pub fn cfl_mh_gen_mat(
+/// for [`cfl_mh_calc_alphas`]. `depth` is the samples' bit depth.
+///
+/// The sums are `int32_t` in dav2d and AVM; at 12 bits the products can
+/// pass 32 bits, so they wrap as there.
+pub fn cfl_mh_gen_mat<T: Sample>(
     mat: &mut [[i32; 4]; 3],
-    imat: &mut [[u8; CFL_MH_MAX_EDGE_SAMPLES]; 2],
-    y: &[u8],
+    imat: &mut [[T; CFL_MH_MAX_EDGE_SAMPLES]; 2],
+    y: &[T],
     refw: i32,
     refh: i32,
     flags: u32,
+    depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
+    let half_bits = depth.bits() - 1;
     let has_t = flags & CFL_HAS_TOP != 0;
     let has_l = flags & CFL_HAS_LEFT != 0;
     let dir = CflMhDir::from_flags(flags);
@@ -250,21 +258,25 @@ pub fn cfl_mh_gen_mat(
 
     *mat = [[0; 4]; 3];
     let mut n = 0;
-    let mut add = |v0: u8, v1: i32| {
+    let mut add = |v0: T, v1: i32| {
         imat[0][n] = v0;
-        imat[1][n] = v1 as u8;
-        let v0 = i32::from(v0);
-        mat[0][0] += v0 * v0;
-        mat[0][1] += v0 * v1;
-        mat[0][2] += v0 << (BIT_DEPTH - 1);
-        mat[1][1] += v1 * v1;
-        mat[1][2] += v1 << (BIT_DEPTH - 1);
+        imat[1][n] = T::from_i32(v1);
+        let v0 = v0.to_i32();
+        let accumulate = |m: &mut i32, v: i32| *m = m.wrapping_add(v);
+        accumulate(&mut mat[0][0], v0 * v0);
+        accumulate(&mut mat[0][1], v0 * v1);
+        accumulate(&mut mat[0][2], v0 << half_bits);
+        accumulate(&mut mat[1][1], v1 * v1);
+        accumulate(&mut mat[1][2], v1 << half_bits);
         n += 1;
     };
     if has_t {
         let start = usize::from(!has_l) * dir_t;
         for i in start..start + refw {
-            add(y[i], square(y[dir_t * CFL_MH_TOP_STRIDE + i + dir_l]));
+            add(
+                y[i],
+                square(y[dir_t * CFL_MH_TOP_STRIDE + i + dir_l], depth),
+            );
         }
     }
     if has_l {
@@ -272,21 +284,25 @@ pub fn cfl_mh_gen_mat(
         // row's first sample with the first left sample.
         let extra_tl = usize::from(has_t) * dir_t;
         if extra_tl == 1 {
-            add(y[CFL_MH_TOP_STRIDE], square(left[0]));
+            add(y[CFL_MH_TOP_STRIDE], square(left[0], depth));
         }
         let start = dir_l * usize::from(!has_t);
         for i in start..start + refh - extra_tl {
-            add(left[i * n_left], square(left[(i + dir_t) * n_left + dir_l]));
+            add(
+                left[i * n_left],
+                square(left[(i + dir_t) * n_left + dir_l], depth),
+            );
         }
     }
-    mat[2][2] = (n as i32) << (2 * (BIT_DEPTH - 1));
+    mat[2][2] = (n as i32) << (2 * half_bits);
 
-    let shift = matrix_shift(n);
+    let shift = matrix_shift(n, depth);
+    let diagonal_bias = DIAGONAL_BIAS_8 << depth.above_eight();
     for (i, row) in mat.iter_mut().enumerate() {
         for v in &mut row[i..3] {
             *v = scale(*v, shift);
         }
-        row[i] += DIAGONAL_BIAS;
+        row[i] += diagonal_bias;
     }
     mat[1][0] = mat[0][1];
     mat[2][0] = mat[0][2];
@@ -338,18 +354,22 @@ fn mul32(a: i32, b: i32, sh: i32) -> i32 {
 /// chroma of the block at `c` in `chroma` (rows `stride` apart; the row
 /// above from `top_sb_edge` at a superblock's top, at the block's first
 /// column) against `mat` and `imat` from [`cfl_mh_gen_mat`]. `alpha[3]` is
-/// unused.
-pub fn cfl_mh_calc_alphas(
+/// unused. `depth` is the samples' bit depth; the sums wrap at 32 bits as
+/// in [`cfl_mh_gen_mat`].
+pub fn cfl_mh_calc_alphas<T: Sample>(
     alpha: &mut [i32; 4],
-    chroma: SampleRef<'_>,
-    top_sb_edge: Option<SampleRef<'_>>,
+    chroma: SampleRef<'_, T>,
+    top_sb_edge: Option<SampleRef<'_, T>>,
     stride: usize,
     refw: i32,
     refh: i32,
     mat: &[[i32; 4]; 3],
-    imat: &[[u8; CFL_MH_MAX_EDGE_SAMPLES]; 2],
+    imat: &[[T; CFL_MH_MAX_EDGE_SAMPLES]; 2],
     flags: u32,
+    depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
+    let half_bits = depth.bits() - 1;
     let has_t = flags & CFL_HAS_TOP != 0;
     let has_l = flags & CFL_HAS_LEFT != 0;
     let stride = stride as isize;
@@ -357,11 +377,11 @@ pub fn cfl_mh_calc_alphas(
     let refh = refh.max(0) as usize;
     let mut rhs = [0i32; 3];
     let mut n = 0;
-    let mut add = |c: u8| {
-        let c = i32::from(c);
-        rhs[0] += i32::from(imat[0][n]) * c;
-        rhs[1] += i32::from(imat[1][n]) * c;
-        rhs[2] += c << (BIT_DEPTH - 1);
+    let mut add = |c: T| {
+        let c = c.to_i32();
+        rhs[0] = rhs[0].wrapping_add(imat[0][n].to_i32() * c);
+        rhs[1] = rhs[1].wrapping_add(imat[1][n].to_i32() * c);
+        rhs[2] = rhs[2].wrapping_add(c << half_bits);
         n += 1;
     };
     if has_t {
@@ -379,7 +399,7 @@ pub fn cfl_mh_calc_alphas(
             add(chroma.at(i as isize * stride - 1));
         }
     }
-    let shift = matrix_shift(n);
+    let shift = matrix_shift(n, depth);
     let [mut a0, mut a1, mut a2] = rhs.map(|v| scale(v, shift));
 
     // Gaussian elimination with the reciprocal approximation.
@@ -410,26 +430,29 @@ pub fn cfl_mh_calc_alphas(
 /// Predicts the `w` x `h` chroma block at `offset` in `dst` (rows `stride`
 /// apart) from the downsampled luma `src` (the block in the scratch buffer,
 /// `n_top_rows * CFL_MH_TOP_STRIDE` into it) and the plane's `alpha`
-/// (`cfl_mh_pred_{c,t,l}`; the direction is `dir`).
-pub fn cfl_mh_pred(
+/// (`cfl_mh_pred_{c,t,l}`; the direction is `dir`), clipped to `depth`.
+pub fn cfl_mh_pred<T: Sample>(
     dir: CflMhDir,
-    dst: &mut [u8],
+    dst: &mut [T],
     offset: usize,
     stride: usize,
-    src: SampleRef<'_>,
+    src: SampleRef<'_, T>,
     w: usize,
     h: usize,
     alpha: &[i32; 4],
     flags: u32,
+    depth: BitDepth,
 ) {
+    let depth = depth.of::<T>();
     let has_t = flags & CFL_HAS_TOP != 0;
     let has_l = flags & CFL_HAS_LEFT != 0;
-    let constant = mul32(alpha[2], MID, ALPHA_BITS);
-    let model = |v0: u8, v1: u8| {
+    let constant = mul32(alpha[2], depth.mid(), ALPHA_BITS);
+    let model = |v0: T, v1: T| {
         clip_pixel(
-            mul32(alpha[0], i32::from(v0), ALPHA_BITS)
-                + mul32(alpha[1], square(v1), ALPHA_BITS)
+            mul32(alpha[0], v0.to_i32(), ALPHA_BITS)
+                + mul32(alpha[1], square(v1, depth), ALPHA_BITS)
                 + constant,
+            depth,
         )
     };
     let left = src.shifted(LEFT_OFFSET as isize);

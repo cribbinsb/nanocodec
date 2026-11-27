@@ -714,7 +714,7 @@ impl<T: Pixel> Core<T> {
         spatial_id: u8,
         tiles: &[&[u8]],
     ) -> Result<Option<Rc<SavedFrame<T>>>, DecodeError> {
-        let params = subset::frame_parameters(header)?;
+        let params = subset::frame_parameters(header);
         let seq = self
             .sequence
             .ok_or(DecodeError::Malformed("AV1 frame before sequence header"))?;
@@ -913,7 +913,7 @@ impl<T: Pixel> Core<T> {
                         unit.layer,
                     )
                     .unwrap();
-                    return subset::frame_parameters(&header).unwrap();
+                    return subset::frame_parameters(&header);
                 }
                 _ => {}
             }

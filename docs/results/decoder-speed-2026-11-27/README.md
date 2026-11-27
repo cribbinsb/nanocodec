@@ -37,6 +37,8 @@ timing families and on the 0.7.0 release.
   medium, x265 medium, libvpx VP9 rt 7, SVT-AV1 M10 and libaom rt 8 (from
   `~/nanocodec-data/bench/bp4-ours-{ours,refs}-c8g`). Numbers only: no stream is published.
 - **Files:** `<machine>/decoders-cpu{1,2,3}.json` (every pass, PGO and plain), `<machine>/yardstick.json`,
+  `<machine>/wasm-yardsticks-cpu{1,2,3}.json`, `<machine>/webcodecs-cpu{1,2,3}.json` (+ `.gpu.txt`,
+  chrome://gpu), `pc/webcodecs.json` (+ `.gpu.txt`), `wasm-build-flags.json` (section below),
   the platform notes, `about.json` (the page's statements).
 - **Cost:** first sessions c8i 16.3 min, $0.02, c8g 21.0 min, $0.03; PGO re-time c8i 14.4 min, $0.02, c8g 16.8 min, $0.02; one aborted launch (a bad --pkg path, terminated during upload) under $0.01; all spot. Builds on the shared build box (15 min of one job slot).
 
@@ -77,3 +79,83 @@ Browser (node v22.21.1), ms per frame, median of 7: ours, ffmpeg.wasm, ours ÷ f
 | VP9 | `crowd1080.3000k.vpxenc.vp9.ivf` | 6.74 | 17.40 | 0.39 | 1.79 | 9.96 | 22.52 | 0.44 | 2.02 |
 | VVC | `crowd_mot17_09.600k.vvc.vvc` | 3.75 | no decoder | – | 2.18 | 4.58 | no decoder | – | 2.60 |
 | VVC | `crowd1080.3000k.ours.vvc.vvc` | 13.17 | no decoder | – | 1.96 | 16.76 | no decoder | – | 2.17 |
+
+## Stronger browser yardsticks (third session, 2026-11-27)
+
+ffmpeg.wasm 0.12.10 is built without FFmpeg's SIMD kernels, a soft yardstick. Added, on every stream
+of the native table each one decodes (102 streams, 6 `pan_*` excluded as natively):
+
+- **WebAssembly builds of the references, by us** (`tools/web/build_wasm_yardsticks.sh`, on the build
+  box; emscripten 4.0.10, `-O3 -msimd128`, no threads; every flag in `wasm-build-flags.json`):
+  FFmpeg n8.0.1 (h264, hevc, vvc, vp9 decoders; `--arch=wasm --enable-simd128`, so its only
+  hand-written WebAssembly SIMD, HEVC's inverse transforms and SAO in `libavcodec/wasm/hevc`, is on;
+  the rest is compiler-vectorised C), dav1d 1.5.4 (C, `-Denable_asm=false`: no WebAssembly kernels
+  upstream; through libavcodec as natively) and libvpx v1.16.0 (`generic-gnu` C: no WebAssembly
+  kernels upstream). Timed by the native harnesses (`libavcodec_bench.c`, `vpx_bench.c`) compiled
+  with them, under node v22.21.1 beside our module and ffmpeg.wasm: `tools/web/wasm_yardsticks.py`,
+  5 interleaved rounds, one process per run, each process the faster of two passes (fresh decoder
+  each; the first warms V8's optimising tier), ffmpeg.wasm one pass; median over rounds. Our module:
+  the v0.7.0 relaxed-SIMD build rebuilt from the tag (with the Cargo.lock fix), byte-identical to the
+  first session's (sha256 `08777898...`). Split over vCPUs 1-3 as the decoder table.
+- **The browser's own decoders (WebCodecs, native code)**: `tools/web/webcodecs_yardstick.py`, headless
+  Chrome through Playwright 1.60, the whole browser bound to one vCPU with taskset; our module in the
+  same browser; both the faster of two passes per fresh page, median over rounds. c8i: Google Chrome
+  158.0.8127.88; c8g: Playwright's Chromium 148.0.7778.0 (Google ships no Linux Arm Chrome; this
+  build has no H.264 decoder); the PC: Google Chrome 154.0.8037.97, vCPU 14 (host-timed), 3 rounds.
+  Hardware decode on the PC: see "Hardware decode on the PC" below; the first PC run (before the
+  VA-API driver, 3 rounds) is kept in `pc/before-vaapi-driver/`.
+
+Ours ÷ yardstick, geometric mean of per-stream decode-time ratios (below 1: ours took less time).
+
+| format | yardstick | streams | c8i | c8g |
+|---|---|---|---|---|
+| H.264 | FFmpeg n8.0.1 WASM SIMD (ours-built) | 18 | 0.67 | 0.71 |
+| H.264 | ffmpeg.wasm 0.12.10 (official, no SIMD) | 18 | 0.58 | 0.60 |
+| HEVC | FFmpeg n8.0.1 WASM SIMD (ours-built) | 23 | 0.63 | 0.81 |
+| HEVC | ffmpeg.wasm 0.12.10 | 23 | 0.41 | 0.46 |
+| VVC | FFmpeg n8.0.1 WASM SIMD (ours-built) | 9 | 0.36 | 0.43 |
+| AV1 | dav1d 1.5.4 WASM SIMD (ours-built) | 26 | 0.36 | 0.45 |
+| VP9 | FFmpeg n8.0.1 WASM SIMD (ours-built) | 17 | 0.37 | 0.55 |
+| VP9 | libvpx v1.16.0 WASM SIMD (ours-built) | 17 | 0.24 | 0.34 |
+| VP9 | ffmpeg.wasm 0.12.10 | 17 | 0.30 | 0.35 |
+
+Ours in Chrome ÷ Chrome's own software decoder (WebCodecs, native code with assembly), same browser:
+
+| format | streams | c8i (Chrome 158) | c8g (Chromium 148) | PC (Chrome 154) | PC hardware (NVDEC) |
+|---|---|---|---|---|---|
+| H.264 | 18 | 1.55 | not in this build | 1.51 | 0.55 |
+| HEVC | 23 | no software decoder | no software decoder | no software decoder | 0.88 |
+| AV1 | 26 | 1.62 | 1.53 | 1.39 | failed on all 26 streams |
+| VP9 | 17 | 1.33 | 1.59 | 1.27 | 0.59 |
+| VVC, AV2 | | no WebCodecs codec string | | | |
+
+No run failed. Cost: c8i wasm session $0.02 (20 min; a first c8i launch was spot-reclaimed after one
+round, $0.01, its partial data discarded), c8g wasm $0.03 (23 min; its WebCodecs job failed at
+Playwright's install on the Ubuntu 26.04 image and was rerun with `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE`),
+WebCodecs reruns c8i $0.01, c8g $0.01: $0.08, all spot. Builds: ~8 job-slot minutes on the build box.
+PC: 18 min of one timing core.
+
+### Hardware decode on the PC (after nvidia-vaapi-driver 0.0.14 was installed)
+
+- **Driver:** `/usr/bin/ffmpeg -init_hw_device vaapi` loads `nvidia_drv_video.so` ("VA-API NVDEC driver
+  [direct backend]", kernel driver 610.57.04) without any environment variable; `vainfo` is not installed.
+  ffmpeg's VA-API decode of our AV1, SVT-AV1 and H.264 streams ran without errors.
+- **Chrome 154** (`--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiOnNvidiaGPUs,VaapiIgnoreDriverChecks
+  --ignore-gpu-blocklist --ozone-platform=wayland`): VA-API now initialises, and `isConfigSupported`
+  with `prefer-hardware` is true for H.264, HEVC, VP9 and AV1. Headless, every hardware decode failed
+  (`ChromeosStatusCode::6` while creating the decoder's image processor, all flag variants tried), so the
+  timed run drew into a private headless Wayland compositor (`dbus-run-session gnome-shell --headless
+  --wayland --no-x11 --virtual-monitor 1280x720`, its own socket; nothing on the desktop). One earlier
+  probe opened a window on the desktop; it was closed when the owner objected.
+- **Used hardware:** H.264, HEVC and VP9: every stream decoded under `prefer-hardware`, which fails
+  rather than fall back to software, and Chrome's log in the probe runs shows `VaapiVideoDecoder`; `nvidia-smi dmon`
+  (`pc/nvidia-smi-dmon.txt`, 2 s samples) showed decoder use in 15 of 509 samples, at most 26 %.
+  **AV1: no**, every stream fails in Chrome (`vaEndPicture failed, VA error: internal decoding error`)
+  although ffmpeg decodes them through the same driver.
+- **Run:** 2 interleaved rounds, all streams, Chrome bound to vCPU 14 (host-timed), 16 min; ours, Chrome's
+  software and hardware decoders in the same rounds (`pc/webcodecs.json`). GPU shared: 13 % busy, 4.6 GB
+  used before the run (other projects and the VMAF scorer).
+- **Reading the hardware column:** ours in WebAssembly on one core took 0.55 / 0.88 / 0.59 of the time
+  Chrome's hardware path took for H.264 / HEVC / VP9 (Mpx/s, geometric means: ours 341 / 306 / 324,
+  hardware 189 / 271 / 192). What limits the hardware path's throughput was not measured: the GPU's
+  decoder was mostly idle.

@@ -322,7 +322,10 @@ pub fn warp_affine_8x8_with_dsp(
     {
         let mut out = [0_i32; SIDE * SIDE];
         if warp8_with_dsp(dsp, src, shear, phase, round, &mut out) {
-            for (line, values) in dst[offset..].chunks_mut(stride).zip(out.chunks_exact(SIDE)) {
+            for (line, values) in dst[offset..]
+                .chunks_mut(stride)
+                .zip(out.as_chunks::<SIDE>().0)
+            {
                 store_pixels(&mut line[..SIDE], values.iter().copied(), BitDepth::EIGHT);
             }
             return;
@@ -369,7 +372,7 @@ pub fn warp_affine_8x8t_with_dsp(
         let mut out = [0_i32; SIDE * SIDE];
         if warp8_with_dsp(dsp, src, shear, phase, WARP_FILTER_BITS, &mut out) {
             let precision = Precision::of(BitDepth::EIGHT);
-            for (line, values) in tmp.chunks_mut(stride).zip(out.chunks_exact(SIDE)) {
+            for (line, values) in tmp.chunks_mut(stride).zip(out.as_chunks::<SIDE>().0) {
                 store_compound(&mut line[..SIDE], values.iter().copied(), precision);
             }
             return;

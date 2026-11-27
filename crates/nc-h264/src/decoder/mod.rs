@@ -1,25 +1,30 @@
-//! H.264 decoder of frames for the High and High 10 profiles (Annex
-//! A.2.4, A.2.5): I, P and B slices of 8- to 10-bit 4:2:0 or 4:0:0 video,
-//! CAVLC and CABAC, 8x8 transforms and intra prediction, scaling matrices,
-//! spatial and temporal direct prediction, explicit and implicit weighted
-//! prediction, any number of slices per picture in any order, slice groups
-//! (FMO), redundant pictures (discarded), long-term references, memory
-//! management operations and `frame_num` gaps. That covers the Baseline,
-//! Main, High and High 10 streams of frames. Everything else (field and
-//! MBAFF pictures, SP/SI slices, data partitioning, other chroma formats,
-//! deeper samples) is rejected as unsupported.
+//! H.264 decoder for the High and High 10 profiles (Annex A.2.4, A.2.5)
+//! and the Extended profile's SP and SI slices (A.2.3): I, P, B, SP and SI
+//! slices of 8- to 10-bit 4:2:0 or 4:0:0 video in frames and field pictures
+//! (PAFF), CAVLC and CABAC, 8x8 transforms and intra prediction, scaling
+//! matrices, spatial and temporal direct prediction, explicit and implicit
+//! weighted prediction, any number of slices per picture in any order,
+//! slice groups (FMO), redundant pictures (discarded), long-term
+//! references, memory management operations, `frame_num` gaps and slice
+//! data partitioning. That covers the Baseline, Extended, Main, High and
+//! High 10 streams without MBAFF frames. Everything else (MBAFF frames,
+//! other chroma formats, deeper samples) is rejected as unsupported.
 //!
 //! Module map:
 //! - parameter sets and headers: `sps`, `pps`, `scaling`, `slice`, `poc`,
 //!   `slice_groups` (FMO);
+//! - `structure`: frames and fields (field pictures are rows of their
+//!   frame's buffer);
 //! - the decoding process of one sample type: `core` (`u8` for 8-bit
 //!   streams, `u16` deeper ones, `sample` names what differs);
 //! - reference handling: `dpb` (marking, lists) and `output` (output order);
-//! - slice data: `slice_data` (macroblock loop), `mb` (macroblock layer),
+//! - slice data: `slice_data` (macroblock loop), `partition` (data
+//!   partitioning), `mb` (macroblock layer),
 //!   `syntax` (the entropy interface) with `cavlc` / `vlc` and
 //!   `cabac_syntax` / `cabac`, `mbstate` (neighbour state), `mvpred`,
 //!   `direct` (B direct prediction);
-//! - reconstruction: `recon`, `intra`, `inter`, `transform`, `deblock`;
+//! - reconstruction: `recon`, `intra`, `inter`, `transform`, `deblock`,
+//!   `switching` (the requantisation of SP and SI slices);
 //! - `reader`: the RBSP bit reader;
 //! - `stats`: coding-tool analysis (feature `analysis`;
 //!   `Decoder::collect_stats`).
@@ -45,6 +50,7 @@ mod mb;
 mod mbstate;
 mod mvpred;
 mod output;
+mod partition;
 mod poc;
 mod pool;
 mod pps;
@@ -58,6 +64,8 @@ mod slice_groups;
 mod sps;
 #[cfg(feature = "analysis")]
 mod stats;
+mod structure;
+mod switching;
 mod syntax;
 #[cfg(test)]
 mod tests;
@@ -75,11 +83,13 @@ use nc_common::{
     BitDepths, ColourInfo, DecodedPicture, OutputPicture, Picture, PlaneViewMut, ShownPicture,
 };
 
-use self::core::{Core, Finished};
+use self::core::{Core, SliceData};
 #[cfg(test)]
 pub(crate) use cavlc::block_for_tests as cavlc_block_for_tests;
 use output::DecodedFrame;
+use partition::{PendingSlice, Residuals};
 use pps::Pps;
+use reader::Reader;
 use sample::H264Sample;
 use sps::Sps;
 
@@ -95,6 +105,7 @@ const NAL_TYPE_MASK: u8 = 0x1f;
 /// `nal_unit_type` values (Table 7-1).
 const NAL_SLICE: u8 = 1;
 const NAL_PARTITION_A: u8 = 2;
+const NAL_PARTITION_B: u8 = 3;
 const NAL_PARTITION_C: u8 = 4;
 const NAL_IDR_SLICE: u8 = 5;
 const NAL_SPS: u8 = 7;
@@ -142,6 +153,12 @@ pub struct Decoder {
     /// sharing its samples with the DPB; its buffer goes back to the pool
     /// once the next call drops this.
     shown: Option<DecodedPicture>,
+    /// Partitioned slices of the current picture whose partition A has
+    /// arrived, in arrival order: each is decoded once its partition C
+    /// arrives (B precedes C), or else at the next NAL unit that is not a
+    /// partition of the picture, the end of a [`Decoder::decode`] packet or
+    /// [`Decoder::flush`] (partitions B and C are optional, §8.2.3).
+    pending: Vec<PendingSlice>,
 }
 
 impl Default for Decoder {
@@ -171,6 +188,7 @@ impl Decoder {
             instance: Instance::Eight(Box::new(Core::new())),
             ready: VecDeque::new(),
             shown: None,
+            pending: Vec::new(),
         }
     }
 
@@ -275,8 +293,9 @@ impl Decoder {
         }
         let mut completed = 0;
         for unit in annex_b_units(packet)? {
-            completed += usize::from(self.decode_unit(unit)?);
+            completed += self.decode_unit(unit)?;
         }
+        completed += self.decode_pending()?;
         match completed {
             0 => return Err(DecodeError::Malformed("packet does not complete a picture")),
             1 => {}
@@ -337,73 +356,183 @@ impl Decoder {
 
     /// Make every pending picture due (end of stream).
     pub fn flush(&mut self) {
+        // A last partitioned slice that fails drops its picture, as in
+        // `push_nal`; the end of the stream has no error to report it by.
+        let _ = self.decode_pending();
         let ready = &mut self.ready;
         match &mut self.instance {
-            Instance::Eight(core) => ready.extend(
-                core.queue
-                    .flush()
-                    .into_iter()
-                    .map(|f| DecodedPicture::Eight(output_picture(f))),
-            ),
-            Instance::High(core) => ready.extend(
-                core.queue
-                    .flush()
-                    .into_iter()
-                    .map(|f| DecodedPicture::High(output_picture(f))),
-            ),
+            Instance::Eight(core) => {
+                flush_core(core, ready, DecodedPicture::Eight);
+            }
+            Instance::High(core) => {
+                flush_core(core, ready, DecodedPicture::High);
+            }
         }
     }
 
-    /// One NAL unit; returns whether it completed a picture, which then
-    /// goes through the output queue.
-    fn decode_unit(&mut self, nal: &[u8]) -> Result<bool> {
+    /// One NAL unit; returns the number of pictures it completed, which
+    /// then go through the output queue.
+    fn decode_unit(&mut self, nal: &[u8]) -> Result<usize> {
         let (&header, payload) = nal.split_first().ok_or(DecodeError::Truncated)?;
         if header & FORBIDDEN_ZERO_BIT != 0 {
             return Err(DecodeError::Malformed("forbidden_zero_bit"));
         }
         let nal_ref_idc = u32::from((header >> NAL_REF_IDC_SHIFT) & NAL_REF_IDC_MASK);
-        match header & NAL_TYPE_MASK {
-            NAL_SLICE | NAL_IDR_SLICE => {
-                let idr = header & NAL_TYPE_MASK == NAL_IDR_SLICE;
-                let rbsp = unescape_rbsp(payload)?;
-                self.slice(&rbsp, (idr, nal_ref_idc))
+        let nal_type = header & NAL_TYPE_MASK;
+        match nal_type {
+            NAL_PARTITION_A => {
+                return self.partition_a(unescape_rbsp(payload)?, nal_ref_idc);
             }
-            NAL_SPS => {
-                let sps = sps::parse(&unescape_rbsp(payload)?)?;
-                let id = sps.id as usize;
-                self.sps[id] = Some(Arc::new(sps));
-                Ok(false)
+            NAL_PARTITION_B | NAL_PARTITION_C => {
+                let which = if nal_type == NAL_PARTITION_B {
+                    Residuals::Intra
+                } else {
+                    Residuals::Inter
+                };
+                return self.residual_partition(unescape_rbsp(payload)?, which);
             }
-            NAL_PPS => {
-                let pps = pps::parse(&unescape_rbsp(payload)?)?;
-                let id = pps.id as usize;
-                self.pps[id] = Some(Arc::new(pps));
-                Ok(false)
-            }
-            NAL_PARTITION_A..=NAL_PARTITION_C => {
-                Err(DecodeError::Unsupported("H264 data partitioning"))
-            }
-            // SEI, delimiters, end of sequence/stream, filler, SPS
-            // extensions, auxiliary pictures and the SVC/MVC extension NAL
-            // units do not affect the primary pictures of these profiles.
-            _ => Ok(false),
+            _ => {}
         }
+        let completed = self.decode_pending()?;
+        Ok(completed
+            + usize::from(match nal_type {
+                NAL_SLICE | NAL_IDR_SLICE => {
+                    let idr = nal_type == NAL_IDR_SLICE;
+                    let rbsp = unescape_rbsp(payload)?;
+                    let (sps, pps) = self.parameter_sets(&rbsp)?;
+                    self.slice(SliceData::Whole(&rbsp), (idr, nal_ref_idc), (&sps, &pps))?
+                }
+                NAL_SPS => {
+                    let sps = sps::parse(&unescape_rbsp(payload)?)?;
+                    let id = sps.id as usize;
+                    self.sps[id] = Some(Arc::new(sps));
+                    false
+                }
+                NAL_PPS => {
+                    let pps = pps::parse(&unescape_rbsp(payload)?)?;
+                    let id = pps.id as usize;
+                    self.pps[id] = Some(Arc::new(pps));
+                    false
+                }
+                // SEI, delimiters, end of sequence/stream, filler, SPS
+                // extensions, auxiliary pictures and the SVC/MVC extension NAL
+                // units do not affect the primary pictures of these profiles.
+                _ => false,
+            }))
     }
 
-    /// One slice NAL unit's RBSP, decoded by the core of its SPS's depth:
-    /// an IDR picture of the other depth starts a new core (the previous
-    /// one's pictures are output first). Returns whether it completed a
-    /// picture.
-    fn slice(&mut self, rbsp: &[u8], (idr, nal_ref_idc): (bool, u32)) -> Result<bool> {
-        if idr && nal_ref_idc == 0 {
-            return Err(DecodeError::Malformed("IDR picture with nal_ref_idc 0"));
-        }
+    /// The parameter sets a slice header in `rbsp` refers to.
+    fn parameter_sets(&self, rbsp: &[u8]) -> Result<(Arc<Sps>, Arc<Pps>)> {
         let pps_id = slice::parse_pps_id(rbsp)? as usize;
         // Missing parameter sets: the IDR access unit carrying them was lost.
         let pps = self.pps[pps_id].clone().ok_or(DecodeError::MissingKey)?;
         let sps = self.sps[pps.sps_id as usize]
             .clone()
             .ok_or(DecodeError::MissingKey)?;
+        Ok((sps, pps))
+    }
+
+    /// Partition A of a slice (§7.3.2.9.1): held for its B and C. A
+    /// partition of another picture first decodes the pending ones; one of
+    /// a redundant coded picture is discarded (§7.4.3).
+    fn partition_a(&mut self, rbsp: Vec<u8>, nal_ref_idc: u32) -> Result<usize> {
+        let (sps, pps) = self.parameter_sets(&rbsp)?;
+        if pps.cabac {
+            return Err(DecodeError::Unsupported(
+                "H264 data partitioning with CABAC (in no profile)",
+            ));
+        }
+        let mut reader = Reader::new(&rbsp);
+        let header = slice::parse(&mut reader, &sps, &pps, false, nal_ref_idc)?;
+        let slice_id = partition::parse_slice_id(&mut reader)?;
+        let mut completed = 0;
+        if self
+            .pending
+            .first()
+            .is_some_and(|first| !header.same_picture(&first.header))
+        {
+            completed += self.decode_pending()?;
+        }
+        if header.redundant_pic_cnt == 0 {
+            self.pending.push(PendingSlice {
+                a: rbsp,
+                nal_ref_idc,
+                header,
+                slice_id,
+                sps,
+                pps,
+                b: None,
+                c: None,
+            });
+        }
+        Ok(completed)
+    }
+
+    /// Partition B or C (§7.3.2.9.2, §7.3.2.9.3): attached to its pending
+    /// partition A by `slice_id`; C completes the slice, which is decoded.
+    fn residual_partition(&mut self, rbsp: Vec<u8>, which: Residuals) -> Result<usize> {
+        let pps =
+            self.pending
+                .last()
+                .map(|slice| slice.pps.clone())
+                .ok_or(DecodeError::Malformed(
+                    "slice data partition without its partition A",
+                ))?;
+        let (slice_id, redundant_pic_cnt) =
+            partition::parse_residual_header(&mut Reader::new(&rbsp), &pps)?;
+        if redundant_pic_cnt > 0 {
+            return Ok(0);
+        }
+        let index = self
+            .pending
+            .iter()
+            .rposition(|slice| slice.slice_id == slice_id)
+            .ok_or(DecodeError::Malformed(
+                "slice data partition without its partition A",
+            ))?;
+        self.pending[index].attach(which, rbsp)?;
+        if which == Residuals::Intra {
+            return Ok(0);
+        }
+        let slice = self.pending.remove(index);
+        self.partitioned(&slice)
+    }
+
+    /// Decode every pending partitioned slice, in arrival order.
+    fn decode_pending(&mut self) -> Result<usize> {
+        let mut completed = 0;
+        for slice in std::mem::take(&mut self.pending) {
+            completed += self.partitioned(&slice)?;
+        }
+        Ok(completed)
+    }
+
+    /// Decode a partitioned slice.
+    fn partitioned(&mut self, slice: &PendingSlice) -> Result<usize> {
+        let data = SliceData::Partitioned {
+            a: &slice.a,
+            residuals: [slice.b.as_deref(), slice.c.as_deref()],
+        };
+        let params = (&slice.sps, &slice.pps);
+        Ok(usize::from(self.slice(
+            data,
+            (false, slice.nal_ref_idc),
+            params,
+        )?))
+    }
+
+    /// One slice, decoded by the core of its SPS's depth: an IDR picture
+    /// of the other depth starts a new core (the previous one's pictures
+    /// are output first). Returns whether it completed a picture.
+    fn slice(
+        &mut self,
+        data: SliceData<'_>,
+        (idr, nal_ref_idc): (bool, u32),
+        (sps, pps): (&Arc<Sps>, &Arc<Pps>),
+    ) -> Result<bool> {
+        if idr && nal_ref_idc == 0 {
+            return Err(DecodeError::Malformed("IDR picture with nal_ref_idc 0"));
+        }
         let deep = !sps.depths.is_eight();
         let switch = match &self.instance {
             Instance::Eight(_) => deep,
@@ -421,41 +550,77 @@ impl Decoder {
                 Instance::Eight(Box::new(Core::new()))
             };
         }
-        let params = (&sps, &pps);
+        let params = (sps, pps);
         let ready = &mut self.ready;
-        Ok(match &mut self.instance {
-            Instance::Eight(core) => slice_on(core, rbsp, (idr, nal_ref_idc), params)?
-                .map(|f| {
-                    let due = core.queue.push(f.frame());
-                    ready.extend(
-                        due.into_iter()
-                            .map(|f| DecodedPicture::Eight(output_picture(f))),
-                    );
-                })
-                .is_some(),
-            Instance::High(core) => slice_on(core, rbsp, (idr, nal_ref_idc), params)?
-                .map(|f| {
-                    let due = core.queue.push(f.frame());
-                    ready.extend(
-                        due.into_iter()
-                            .map(|f| DecodedPicture::High(output_picture(f))),
-                    );
-                })
-                .is_some(),
-        })
+        match &mut self.instance {
+            Instance::Eight(core) => slice_on(
+                core,
+                data,
+                (idr, nal_ref_idc),
+                params,
+                ready,
+                DecodedPicture::Eight,
+            ),
+            Instance::High(core) => slice_on(
+                core,
+                data,
+                (idr, nal_ref_idc),
+                params,
+                ready,
+                DecodedPicture::High,
+            ),
+        }
     }
 }
 
 /// One slice on `core`; the picture in progress is dropped if it fails.
+/// The frames it completes go through the output queue into `ready`
+/// (`wrap`ped for the sample type, even when the slice failed: an
+/// unpaired field it found is complete). Returns whether it completed a
+/// picture.
 fn slice_on<T: H264Sample>(
     core: &mut Core<T>,
-    rbsp: &[u8],
+    data: SliceData<'_>,
     nal: (bool, u32),
     params: (&Arc<Sps>, &Arc<Pps>),
-) -> Result<Option<Finished<T>>> {
-    let result = core.slice(rbsp, nal, params);
+    ready: &mut VecDeque<DecodedPicture>,
+    wrap: fn(OutputPicture<T>) -> DecodedPicture,
+) -> Result<bool> {
+    let result = core.slice(data, nal, params);
     if result.is_err() {
         core.drop_current();
     }
+    queue_finished(core, ready, wrap);
     result
+}
+
+/// Move `core`'s completed frames through its output queue into `ready`.
+fn queue_finished<T: H264Sample>(
+    core: &mut Core<T>,
+    ready: &mut VecDeque<DecodedPicture>,
+    wrap: fn(OutputPicture<T>) -> DecodedPicture,
+) {
+    for finished in core.take_finished() {
+        let due = core.queue.push(finished.frame());
+        ready.extend(due.into_iter().map(|f| wrap(output_picture(f))));
+    }
+}
+
+/// End of stream on `core`: a waiting first field, then every pending
+/// frame, into `ready`.
+fn flush_core<T: H264Sample>(
+    core: &mut Core<T>,
+    ready: &mut VecDeque<DecodedPicture>,
+    wrap: fn(OutputPicture<T>) -> DecodedPicture,
+) {
+    // A field whose output buffer cannot be allocated is dropped.
+    if core.finish_stream().is_ok() {
+        queue_finished(core, ready, wrap);
+    }
+    ready.extend(
+        core.queue
+            .flush()
+            .into_iter()
+            .map(|f| wrap(output_picture(f))),
+    );
 }

@@ -58,6 +58,8 @@ mod trellis;
 #[cfg(test)]
 mod angular_conformance;
 #[cfg(test)]
+mod ltr_tests;
+#[cfg(test)]
 mod pinned_ffmpeg;
 #[cfg(test)]
 mod refresh_tests;

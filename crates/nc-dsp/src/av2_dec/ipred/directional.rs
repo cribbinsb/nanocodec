@@ -12,6 +12,8 @@
 //! BSD-2-Clause, see `docs/licenses/dav2d`). The angle derivatives and the
 //! 4-tap filters are AVM's, shared with [`crate::intra_prediction::av2`].
 
+use nc_common::{BitDepth, Sample};
+
 use super::ibp::IBP_WEIGHTS;
 use super::{
     ANGLE_HAS_LEFT_FLAG, ANGLE_HAS_TOP_FLAG, ANGLE_IBP_FLAG, ANGLE_IS_LUMA, ANGLE_MASK,
@@ -48,7 +50,8 @@ pub(super) struct PictureLimits {
 }
 
 /// One zone's predictor, for the multi-line and bi-prediction passes.
-type ZoneFn = fn(&mut Block<'_>, SampleRef<'_>, usize, usize, i32, PictureLimits);
+type ZoneFn<T> =
+    fn(&mut Block<'_, T>, SampleRef<'_, T>, usize, usize, i32, PictureLimits, BitDepth);
 
 /// Edge filter strengths by block size: for each largest `width + height`,
 /// the (smallest angle distance, strength) steps, strongest first; below
@@ -94,26 +97,30 @@ fn filter_strength(wh: usize, d: i32, smooth: bool) -> usize {
 /// Smooths `input` into `out` with the 5-tap kernel of `strength`
 /// (`filter_edge`): only positions in `lim_from..lim_to` are filtered (the
 /// rest, past the picture, are copied), and reads clamp to `input`.
-fn filter_edge(out: &mut [u8], lim_from: i32, lim_to: i32, input: &[u8], strength: usize) {
-    const KERNELS: [[u16; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
+fn filter_edge<T: Sample>(out: &mut [T], lim_from: i32, lim_to: i32, input: &[T], strength: usize) {
+    const KERNELS: [[u32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
     const KERNEL_BITS: u32 = 4;
     let kernel = &KERNELS[strength - 1];
     let last = input.len() as i32 - 1;
-    let read = |i: i32| u16::from(input[i.clamp(0, last) as usize]);
+    let read = |i: i32| input[i.clamp(0, last) as usize];
     for (i, o) in out.iter_mut().enumerate() {
         let i = i as i32;
         *o = if i < lim_from || i >= lim_to {
-            read(i) as u8
+            read(i)
         } else {
-            let sum: u16 = kernel.iter().zip(i - 2..).map(|(&k, j)| k * read(j)).sum();
-            ((sum + (1 << (KERNEL_BITS - 1))) >> KERNEL_BITS) as u8
+            let sum: u32 = kernel
+                .iter()
+                .zip(i - 2..)
+                .map(|(&k, j)| k * Into::<u32>::into(read(j)))
+                .sum();
+            T::from_i32(((sum + (1 << (KERNEL_BITS - 1))) >> KERNEL_BITS) as i32)
         };
     }
 }
 
 /// The edge `src` copied into `out`, through the edge filter when
 /// `strength` is nonzero.
-fn load_edge(out: &mut [u8], src: &[u8], strength: usize, lim_from: i32, lim_to: i32) {
+fn load_edge<T: Sample>(out: &mut [T], src: &[T], strength: usize, lim_from: i32, lim_to: i32) {
     if strength > 0 {
         filter_edge(out, lim_from, lim_to, src, strength);
     } else {
@@ -122,19 +129,20 @@ fn load_edge(out: &mut [u8], src: &[u8], strength: usize, lim_from: i32, lim_to:
 }
 
 /// One interpolated sample between `taps[1]` and `taps[2]` at 1/32
-/// position `shift`: 4-tap for luma, bilinear for chroma.
-fn interpolate(luma: bool, taps: [u8; 4], shift: usize) -> u8 {
+/// position `shift`: 4-tap for luma, bilinear for chroma; clipped to
+/// `depth`.
+fn interpolate<T: Sample>(luma: bool, taps: [T; 4], shift: usize, depth: BitDepth) -> T {
     if luma {
         let sum: i32 = FOUR_TAP[shift]
             .iter()
             .zip(taps)
-            .map(|(&f, t)| f * i32::from(t))
+            .map(|(&f, t)| f * t.to_i32())
             .sum();
-        clip_pixel((sum + (1 << (FOUR_TAP_BITS - 1))) >> FOUR_TAP_BITS)
+        clip_pixel((sum + (1 << (FOUR_TAP_BITS - 1))) >> FOUR_TAP_BITS, depth)
     } else {
         let full = 1 << TWO_TAP_BITS;
-        let sum = (full - shift as i32) * i32::from(taps[1]) + shift as i32 * i32::from(taps[2]);
-        clip_pixel((sum + (full >> 1)) >> TWO_TAP_BITS)
+        let sum = (full - shift as i32) * taps[1].to_i32() + shift as i32 * taps[2].to_i32();
+        clip_pixel((sum + (full >> 1)) >> TWO_TAP_BITS, depth)
     }
 }
 
@@ -146,26 +154,35 @@ fn shift_of(position: i32) -> usize {
 /// Multiple reference lines: the rounded mean of the prediction from line
 /// `mrl_idx` and the one from line 0, which follows it in the edge buffer.
 /// Neither pass filters edges or bi-predicts (dav2d drops those flags).
-fn multi_line(
-    zone: ZoneFn,
-    dst: &mut Block<'_>,
-    edge: SampleRef<'_>,
+fn multi_line<T: Sample>(
+    zone: ZoneFn<T>,
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
     width: usize,
     height: usize,
     angle: i32,
     mrl: usize,
     limits: PictureLimits,
+    depth: BitDepth,
 ) {
     let line0 = edge.shifted(((width + height) * 2 + mrl * 3 + 1) as isize);
-    let mut tmp = [0; TMP_LEN];
+    let mut tmp = [T::default(); TMP_LEN];
     let mut far = Block::new(&mut tmp, 0, TMP_STRIDE);
     let far_flags = angle | ((mrl as i32) << ANGLE_MRL_IDX_SHIFT) | ANGLE_IS_LUMA;
-    zone(&mut far, edge, width, height, far_flags, limits);
-    zone(dst, line0, width, height, angle | ANGLE_IS_LUMA, limits);
+    zone(&mut far, edge, width, height, far_flags, limits, depth);
+    zone(
+        dst,
+        line0,
+        width,
+        height,
+        angle | ANGLE_IS_LUMA,
+        limits,
+        depth,
+    );
     for y in 0..height {
         let far = &tmp[y * TMP_STRIDE..][..width];
         for (out, &f) in dst.row(y, width).iter_mut().zip(far) {
-            *out = ((u16::from(f) + u16::from(*out) + 1) >> 1) as u8;
+            *out = T::from_i32((f.to_i32() + out.to_i32() + 1) >> 1);
         }
     }
 }
@@ -173,9 +190,9 @@ fn multi_line(
 /// Intra bi-prediction: blends `dst` with the opposite-direction prediction
 /// `tmp` by the position weights of `mode` (`ibp_blend`); `transposed`
 /// swaps the weights' axes for z3.
-fn ibp_blend(
-    dst: &mut Block<'_>,
-    tmp: &[u8],
+fn ibp_blend<T: Sample>(
+    dst: &mut Block<'_, T>,
+    tmp: &[T],
     width: usize,
     height: usize,
     transposed: bool,
@@ -184,19 +201,21 @@ fn ibp_blend(
     let weights = &IBP_WEIGHTS[mode];
     let x_shift = width >> (IBP_GRID_LOG2 + 1);
     let y_shift = height >> (IBP_GRID_LOG2 + 1);
-    let full = 1u16 << IBP_BLEND_BITS;
+    let full = 1 << IBP_BLEND_BITS;
     for y in 0..height {
         let wy = y >> y_shift;
         let other = &tmp[y * TMP_STRIDE..][..width];
         for (x, (out, &o)) in dst.row(y, width).iter_mut().zip(other).enumerate() {
             let wx = x >> x_shift;
-            let weight = u16::from(if transposed {
+            let weight = i32::from(if transposed {
                 weights[wx][wy]
             } else {
                 weights[wy][wx]
             });
-            *out = ((u16::from(o) * (full - weight) + u16::from(*out) * weight + (full >> 1))
-                >> IBP_BLEND_BITS) as u8;
+            *out = T::from_i32(
+                (o.to_i32() * (full - weight) + out.to_i32() * weight + (full >> 1))
+                    >> IBP_BLEND_BITS,
+            );
         }
     }
 }
@@ -220,19 +239,20 @@ fn ibp_mode_z3(angle: i32) -> usize {
 }
 
 /// Zone 1: projects each row onto the top edge.
-pub(super) fn z1(
-    dst: &mut Block<'_>,
-    edge: SampleRef<'_>,
+pub(super) fn z1<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
     width: usize,
     height: usize,
     flags: i32,
     limits: PictureLimits,
+    depth: BitDepth,
 ) {
     let angle = flags & ANGLE_MASK;
     let mrl = mrl_idx(flags);
     debug_assert!(angle < VERTICAL);
     if flags & ANGLE_MULTI_MRL_FLAG != 0 {
-        multi_line(z1, dst, edge, width, height, angle, mrl, limits);
+        multi_line(z1, dst, edge, width, height, angle, mrl, limits, depth);
         return;
     }
     let luma = flags & ANGLE_IS_LUMA != 0;
@@ -242,7 +262,7 @@ pub(super) fn z1(
     // filt: one sample of left padding, the corner, the line margin, the
     // top and top-right runs, two of right padding; `top` is the first top
     // sample.
-    let mut filt = [0u8; 2 + EDGE_RUN + 2];
+    let mut filt = [T::default(); 2 + EDGE_RUN + 2];
     let top = 2 + mrl;
     let use_filter = flags & (ANGLE_USE_EDGE_FILTER_FLAG | ANGLE_HAS_TOP_FLAG)
         == ANGLE_USE_EDGE_FILTER_FLAG | ANGLE_HAS_TOP_FLAG
@@ -280,13 +300,14 @@ pub(super) fn z1(
                 luma,
                 [filt[at - 1], filt[at], filt[at + 1], filt[at + 2]],
                 shift,
+                depth,
             );
         }
         row[reach..].fill(last);
     }
 
     if flags & ANGLE_IBP_FLAG != 0 {
-        let mut tmp = [0; TMP_LEN];
+        let mut tmp = [T::default(); TMP_LEN];
         let opposite = (HORIZONTAL + angle) | pass_flags(flags);
         z3(
             &mut Block::new(&mut tmp, 0, TMP_STRIDE),
@@ -295,6 +316,7 @@ pub(super) fn z1(
             height,
             opposite,
             limits,
+            depth,
         );
         ibp_blend(dst, &tmp, width, height, false, ibp_mode_z1(angle));
     }
@@ -302,19 +324,20 @@ pub(super) fn z1(
 
 /// Zone 2: projects each sample onto the top edge, or the left edge where
 /// the projection passes the corner.
-pub(super) fn z2(
-    dst: &mut Block<'_>,
-    edge: SampleRef<'_>,
+pub(super) fn z2<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
     width: usize,
     height: usize,
     flags: i32,
     limits: PictureLimits,
+    depth: BitDepth,
 ) {
     let angle = flags & ANGLE_MASK;
     let mrl = mrl_idx(flags);
     debug_assert!(angle > VERTICAL && angle < HORIZONTAL);
     if flags & ANGLE_MULTI_MRL_FLAG != 0 {
-        multi_line(z2, dst, edge, width, height, angle, mrl, limits);
+        multi_line(z2, dst, edge, width, height, angle, mrl, limits, depth);
         return;
     }
     let luma = flags & ANGLE_IS_LUMA != 0;
@@ -325,7 +348,7 @@ pub(super) fn z2(
 
     // filt: padding, the corner, the line margin, the top run, padding;
     // `filt[top + 1]` is the corner of line mrl_idx.
-    let mut filt = [0u8; 1 + 1 + 3 + 64 + 1];
+    let mut filt = [T::default(); 1 + 1 + 3 + 64 + 1];
     let top = mrl;
     let strength_t = if filter && flags & ANGLE_HAS_TOP_FLAG != 0 {
         filter_strength(
@@ -350,7 +373,7 @@ pub(super) fn z2(
 
     // filt2: padding, the left run bottom to top, the line margin and the
     // corner, padding; `filt2[left - (k + 2)]` is left sample k.
-    let mut filt2 = [0u8; 1 + 1 + 3 + 64 + 1];
+    let mut filt2 = [T::default(); 1 + 1 + 3 + 64 + 1];
     let left = height + 2;
     let strength_l = if filter && flags & ANGLE_HAS_LEFT_FLAG != 0 {
         filter_strength(
@@ -388,6 +411,7 @@ pub(super) fn z2(
                     luma,
                     [filt2[at - 1], filt2[at - 2], filt2[at - 3], filt2[at - 4]],
                     shift_of(ypos),
+                    depth,
                 )
             } else {
                 // The first tap is the sample before line mrl_idx's corner
@@ -402,6 +426,7 @@ pub(super) fn z2(
                         filt[first + 3],
                     ],
                     shift_of(xpos),
+                    depth,
                 )
             };
             xpos += STEP;
@@ -410,19 +435,20 @@ pub(super) fn z2(
 }
 
 /// Zone 3: projects each column onto the left edge.
-pub(super) fn z3(
-    dst: &mut Block<'_>,
-    edge: SampleRef<'_>,
+pub(super) fn z3<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
     width: usize,
     height: usize,
     flags: i32,
     limits: PictureLimits,
+    depth: BitDepth,
 ) {
     let angle = flags & ANGLE_MASK;
     let mrl = mrl_idx(flags);
     debug_assert!(angle > HORIZONTAL);
     if flags & ANGLE_MULTI_MRL_FLAG != 0 {
-        multi_line(z3, dst, edge, width, height, angle, mrl, limits);
+        multi_line(z3, dst, edge, width, height, angle, mrl, limits, depth);
         return;
     }
     let luma = flags & ANGLE_IS_LUMA != 0;
@@ -432,7 +458,7 @@ pub(super) fn z3(
     // filt: two samples of padding, the bottom-left and left runs bottom to
     // top, the line margin and the corner, one of padding; `filt[left - k]`
     // is left sample k.
-    let mut filt = [0u8; 2 + EDGE_RUN + 2];
+    let mut filt = [T::default(); 2 + EDGE_RUN + 2];
     let left = 1 + width + height + 2 * mrl;
     let use_filter = flags & (ANGLE_USE_EDGE_FILTER_FLAG | ANGLE_HAS_LEFT_FLAG)
         == ANGLE_USE_EDGE_FILTER_FLAG | ANGLE_HAS_LEFT_FLAG
@@ -467,6 +493,7 @@ pub(super) fn z3(
                     luma,
                     [filt[at + 1], filt[at], filt[at - 1], filt[at - 2]],
                     shift,
+                    depth,
                 )
             } else {
                 last
@@ -476,7 +503,7 @@ pub(super) fn z3(
     }
 
     if flags & ANGLE_IBP_FLAG != 0 {
-        let mut tmp = [0; TMP_LEN];
+        let mut tmp = [T::default(); TMP_LEN];
         let opposite = (angle - HORIZONTAL) | pass_flags(flags);
         z1(
             &mut Block::new(&mut tmp, 0, TMP_STRIDE),
@@ -485,6 +512,7 @@ pub(super) fn z3(
             height,
             opposite,
             limits,
+            depth,
         );
         ibp_blend(dst, &tmp, width, height, true, ibp_mode_z3(angle));
     }

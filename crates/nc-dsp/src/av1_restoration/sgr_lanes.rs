@@ -22,6 +22,7 @@ use nc_common::{BitDepth, Sample};
 
 use crate::simd::I16Lanes;
 
+use super::AV1_LR_OVERREAD;
 use super::self_guided::{
     BLEND_SHIFT, BoxRows, MTABLE_BITS, ONE_ROW_SHIFT, PRJ_ONE, ProjectionRows, RECIP_BITS,
     RadiusTwo, SGR_BITS, SOURCE_SHIFT, TWO_ROW_SHIFT, Z_MAX, one_by_x,
@@ -261,6 +262,31 @@ pub(super) fn weight_radius_two<V: SgrLanes, W: I16Lanes>(a: &mut [i16], b: &mut
     }
 }
 
+/// Radius-one projections use weights 343 above and below, and 444
+/// on the middle box row. Save both for each newly calculated row.
+#[inline(always)]
+pub(super) fn weight_radius_one<V: SgrLanes, W: I16Lanes>(
+    (outer_a, centre_a): (&mut [i16], &mut [i16]),
+    (outer_b, centre_b): (&mut [i32], &mut [i32]),
+    n: usize,
+) {
+    let width = n.saturating_sub(2);
+    for col in (0..width).step_by(W::LANES) {
+        let side = W::load(&outer_a[col..]).add(W::load(&outer_a[col + 2..]));
+        let middle = W::load(&outer_a[col + 1..]);
+        let uniform = side.add(middle).mul(W::splat(4));
+        uniform.store(&mut centre_a[col..]);
+        uniform.sub(side).store(&mut outer_a[col..]);
+    }
+    for col in (0..width).step_by(V::LANES) {
+        let side = V::load(&outer_b[col..]).add(V::load(&outer_b[col + 2..]));
+        let middle = V::load(&outer_b[col + 1..]);
+        let uniform = side.add(middle).shl::<2>();
+        uniform.store(&mut centre_b[col..]);
+        uniform.sub(side).store(&mut outer_b[col..]);
+    }
+}
+
 #[inline(always)]
 fn weigh_around<V: SgrLanes, T: LaneRow>(v: [&[T]; 3], j: usize) -> V {
     let cross = T::load::<V>(&v[1][j..])
@@ -325,6 +351,7 @@ fn project_lanes<V: SgrLanes, const FIVE: u8, const THREE: bool>(
 ) {
     let [w0, w1] = weights.map(V::splat);
     let round = V::splat(1 << (BLEND_SHIFT - 1));
+    let centre = dst.len() + 2 + AV1_LR_OVERREAD;
     for j in (0..dst.len()).step_by(V::LANES) {
         let p = V::load_u16(&src[j..]);
         let u = p.shl::<{ SOURCE_SHIFT as i32 }>();
@@ -343,8 +370,12 @@ fn project_lanes<V: SgrLanes, const FIVE: u8, const THREE: bool>(
         };
         let f1 = if THREE {
             filter_sample::<V, { TWO_ROW_SHIFT as i32 }>(
-                weigh_around(three_a, j),
-                weigh_around(three_b, j),
+                V::load_i16(&three_a[0][j..])
+                    .add(V::load_i16(&three_a[1][centre + j..]))
+                    .add(V::load_i16(&three_a[2][j..])),
+                V::load(&three_b[0][j..])
+                    .add(V::load(&three_b[1][centre + j..]))
+                    .add(V::load(&three_b[2][j..])),
                 p,
             )
         } else {

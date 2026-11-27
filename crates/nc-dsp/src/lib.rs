@@ -63,7 +63,7 @@ mod intra_runs;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
+    target_arch = "wasm32"
 ))]
 #[allow(unsafe_code)]
 mod lpf_bytes;
@@ -74,6 +74,8 @@ mod nn;
 mod pixel;
 #[allow(unsafe_code)]
 mod prefetch;
+/// The AV1 / AV2 predefined quantizer matrices.
+pub mod quantizer_matrix;
 pub mod resample;
 pub mod reversible_wht4;
 mod sample;

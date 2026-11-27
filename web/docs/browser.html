@@ -32,19 +32,28 @@
   <h2 id="build">Build the module</h2>
 <pre><code>rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.105 --locked
-tools/web/build.sh        # writes web/pkg/ and web/pkg/relaxed/</code></pre>
-  <p>Each directory holds <code>nc_web.js</code> (an ES module) and <code>nc_web_bg.wasm</code>. The two builds
-    give bit-identical output: <code>pkg/</code> uses SIMD128, <code>pkg/relaxed/</code> adds relaxed SIMD.
-    <code>web/wasm.js</code> picks the relaxed build where <code>WebAssembly.validate</code> accepts a
-    relaxed-SIMD probe, else the plain one.</p>
+tools/web/build.sh        # writes web/pkg/, web/pkg/relaxed/ and web/pkg/scalar/</code></pre>
+  <p>Each directory holds <code>nc_web.js</code> (an ES module) and <code>nc_web_bg.wasm</code>. The three builds
+    give bit-identical output: <code>pkg/</code> uses SIMD128, <code>pkg/relaxed/</code> adds relaxed SIMD, and
+    <code>pkg/scalar/</code> uses no SIMD at all (the scalar reference kernels). <code>web/wasm.js</code> picks
+    the relaxed build where <code>WebAssembly.validate</code> accepts a relaxed-SIMD probe, else the SIMD128
+    build where it accepts a SIMD128 probe, else the scalar one.</p>
 
   <h2 id="support">Browser support</h2>
   <ul>
-    <li><strong>WebAssembly SIMD128 is required.</strong> Both modules are compiled with it, and an engine without
-      it rejects the module: <code>init()</code> fails. Chrome and Edge 91, Firefox 89 and Safari 16.4 were the
-      first versions with SIMD128.</li>
-    <li>Our tests run the module in headless Chromium only. Other engines are expected to work where they support
-      SIMD128, but we have not tested them.</li>
+    <li><strong>Any engine with WebAssembly runs it; SIMD128 makes it fast.</strong> Chrome and Edge 91,
+      Firefox 89 and Safari 16.4 were the first versions with SIMD128; an older engine gets the scalar build,
+      which decodes 720p about 4-6 times slower (H.264 4.9x, AV1 3.7x, VP9 6.4x per frame, node 22,
+      2026-11-27), and the demo says so on the page. Relaxed SIMD: current Chrome and Firefox validate it,
+      Safari does not (it gets the SIMD128 build).</li>
+    <li><strong>Tested engines</strong> (<code>tools/web/browser_engines.py</code>, Playwright's headless
+      builds on Linux, 2026-11-27): Chromium 148, Firefox 150 and WebKit 26.4 (Safari's engine) each decode
+      the official conformance corpora with the build <code>wasm.js</code> picks there, and run the demo
+      end to end, except 10-bit VVC in WebKit (203 of 221 VVC streams wrong: its optimizing JIT
+      miscompiles one SIMD128 intra kernel; not fixed yet); Chromium without SIMD runs the scalar build through both. Not tested: Safari itself on
+      macOS or iOS (WebKit's Linux port uses other media back ends), mobile browsers, and the webcam in
+      WebKit (Playwright's Linux WebKit refuses camera access). Results:
+      <code>docs/results/browser-engines-2026-11-27/</code>.</li>
     <li>The browser encoder accepts sizes from 64x64 to 1920x1080 and up to 60 fps. Encoding and decoding are
       single-threaded per instance; the demo runs each encoder and decoder in its own Web Worker.</li>
   </ul>

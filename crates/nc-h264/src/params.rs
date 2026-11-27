@@ -87,8 +87,8 @@ pub struct StreamParams {
     pub frame_num_gaps: bool,
     /// Colour and timing signalling written in the VUI.
     pub signal: StreamSignal,
-    /// `fixed_frame_rate_flag`: not with variable-rate input, nor when the
-    /// encoder may hold frames (`nc_encoder::holds_frames`).
+    /// `fixed_frame_rate_flag`: only for [`TimingSignal::Constant`] (the
+    /// engine's resolved timing, `nc_encoder::signalled_timing`).
     pub fixed_frame_rate: bool,
     /// `seq_parameter_set_id` and `pic_parameter_set_id` (0, or 1 after an
     /// odd number of resolution changes; see the module notes).
@@ -181,13 +181,12 @@ impl StreamParams {
         }
     }
 
-    /// These parameters with `signal` written in the VUI, for an encoder
-    /// that leaves out held frames if `holds_frames`.
+    /// These parameters with `signal` written in the VUI.
     #[must_use]
-    pub fn with_signal(self, signal: StreamSignal, holds_frames: bool) -> Self {
+    pub fn with_signal(self, signal: StreamSignal) -> Self {
         Self {
             signal,
-            fixed_frame_rate: signal.timing != TimingSignal::Variable && !holds_frames,
+            fixed_frame_rate: signal.timing == TimingSignal::Constant,
             ..self
         }
     }

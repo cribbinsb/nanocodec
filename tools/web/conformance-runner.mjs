@@ -8,7 +8,7 @@
 //   node conformance-runner.mjs --pkg DIR --codec C --manifest JSON --streams DIR
 //        [--must-pass FILE] [--only A,B] [--jobs N] [--json OUT]
 //
-// Each 4:2:0 progressive stream is decoded with BrowserDecoder.decode,
+// Each 4:2:0 or 4:0:0 progressive stream is decoded with BrowserDecoder.decode,
 // one packet per picture, taking every picture it shows (next_frame, and
 // finish at the end, where the module has them), cropped Y, Cb, Cr: 8-bit
 // streams as bytes (decoded_i420), deeper ones as the native samples in
@@ -20,7 +20,10 @@
 // picture's size, so they do not split it where pictures change size (VVC RPR_*,
 // BOUNDARY_A_3) or are field pairs shown as frames (FIELD_*), where seven VVC
 // streams equal to the reference failed on the count alone (2026-11-23).
-// 4:0:0 and interlaced streams are left out (the browser shows 4:2:0 frames).
+// The module shows 4:0:0 pictures with neutral chroma planes; where the
+// reference writes luma only (the manifest's frame size is the luma plane's:
+// VTM's 4:0:0 output), only the luma plane is compared. Interlaced streams are
+// left out (the browser shows frames).
 // --json writes each compared stream's result and the counts.
 // Exit status 0 when every stream matches, or with --must-pass FILE (one name
 // per line, # comments) every listed one.
@@ -33,7 +36,7 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 import { streamPackets } from './packets.mjs';
 
 /** The shown pictures' MD5s and the MD5 of all of them, or the error that stopped the decode. */
-async function decodeStream({ pkg, codec, file, deep }) {
+async function decodeStream({ pkg, codec, file, deep, lumaOnly }) {
   const module = await import(pathToFileURL(path.join(pkg, 'nc_web.js')).href);
   await module.default({ module_or_path: readFileSync(path.join(pkg, 'nc_web_bg.wasm')) });
   const decoder = new module.BrowserDecoder(codec);
@@ -41,7 +44,8 @@ async function decodeStream({ pkg, codec, file, deep }) {
   const take = () => {
     const samples = deep ? decoder.decoded_i420_u16() : decoder.decoded_i420();
     // WebAssembly memory is little-endian, so a u16 view's bytes are the reference's layout.
-    const picture = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    const bytes = lumaOnly ? decoder.width * decoder.height * samples.BYTES_PER_ELEMENT : samples.byteLength;
+    const picture = new Uint8Array(samples.buffer, samples.byteOffset, bytes);
     whole.update(picture);
     md5s.push(createHash('md5').update(picture).digest('hex'));
   };
@@ -86,12 +90,19 @@ function isDeep(entry) {
   return entry.bit_depth?.some(d => d > 8) ?? false;
 }
 
-/** The manifest's entries and those this check can compare: 4:2:0 progressive. */
+/** Whether the reference output of a 4:0:0 entry is its luma plane alone. */
+function isLumaOnly(entry) {
+  return entry.chroma_format === '4:0:0'
+    && entry.frame_bytes === entry.width * entry.height * (isDeep(entry) ? 2 : 1);
+}
+
+/** The manifest's entries and those this check can compare: 4:2:0 or 4:0:0, progressive. */
 function comparable(manifest, only) {
   const data = JSON.parse(readFileSync(manifest, 'utf8'));
   const names = new Set(only ? only.split(',') : []);
   const all = (Array.isArray(data) ? data : data.streams).filter(e => !names.size || names.has(e.name));
-  const entries = all.filter(e => e.chroma_format === '4:2:0' && (e.scan ?? 'progressive') === 'progressive');
+  const entries = all.filter(e => ['4:2:0', '4:0:0'].includes(e.chroma_format)
+    && (e.scan ?? 'progressive') === 'progressive');
   return { all, entries };
 }
 
@@ -118,7 +129,9 @@ async function main() {
     const next = () => {
       entry = queue.shift();
       if (!entry) { worker.terminate(); resolve(); return; }
-      worker.postMessage({ file: path.join(args.streams, entry.bitstream), deep: isDeep(entry) });
+      worker.postMessage({
+        file: path.join(args.streams, entry.bitstream), deep: isDeep(entry), lumaOnly: isLumaOnly(entry),
+      });
     };
     worker.on('message', result => { results.set(entry.name, mismatch(entry, result)); next(); });
     worker.on('error', error => { results.set(entry.name, `worker: ${error}`); resolve(); });
@@ -135,7 +148,7 @@ async function main() {
   const deep = entries.filter(isDeep);
   const deepPassed = deep.filter(e => results.has(e.name) && !results.get(e.name)).length;
   console.log(`${args.codec} WASM (${path.basename(path.resolve(args.pkg))}): ${passed}/${entries.length} streams match the reference`
-    + ` (deeper than 8 bits ${deepPassed}/${deep.length}; ${all.length - entries.length} of the manifest's ${all.length} not 4:2:0 progressive)`
+    + ` (deeper than 8 bits ${deepPassed}/${deep.length}; ${all.length - entries.length} of the manifest's ${all.length} not 4:2:0 or 4:0:0 progressive; 4:0:0 ${entries.filter(e => e.chroma_format === '4:0:0').length})`
     + (mustPass ? `, ${failedRequired} required failing` : ''));
   if (args.json) {
     const streams = Object.fromEntries(entries.map(e => [e.name, {

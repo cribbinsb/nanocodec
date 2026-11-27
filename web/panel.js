@@ -6,6 +6,7 @@ import { download, streamBlob, MAX_RECORDING_BYTES } from './streams.js';
 import { CODECS, DEFAULT_PRESET, LAYERED_PRESETS, PRESETS, streamExtension } from './codecs.js';
 import { createRenderer } from './renderer.js';
 import { Advanced } from './advanced.js';
+import { LINK_MODES, LinkControls, LinkMonitor } from './link-panel.js';
 import { cliCommand } from './options.js';
 import { FRAME_RATES, SOURCE_FPS, tickAt, tickMs, tickStep } from './timeline.js';
 import { fetchStream, keyCadence, loadManifest, secondsLabel, pickerGroups, referenceStream, streamTitle } from './reference.js';
@@ -97,6 +98,13 @@ export class Panel {
     this.codec = $('.codec-picker'); this.codec.value = codec;
     this.advanced = new Advanced(letter, codec, changed, general);
     $('.picture-options').after(this.advanced.element);
+    // How the encoder's packets reach the decoder: directly, or over RTP (link-panel.js).
+    this.link = new LinkControls(letter, changed, this.advanced.temporalLayersControl);
+    this.advanced.element.before(this.link.element);
+    this.link.modeChanged = () => this.updateLink();
+    this.monitor = new LinkMonitor();
+    $('.metrics').after(this.monitor.element);
+    for (const control of [this.advanced.layers, this.advanced.secondRef]) control.addEventListener('change', () => this.updateLink());
     this.effective = document.createElement('p'); this.effective.className = 'effective';
     this.advanced.element.append(this.effective);
     this.stillCamera = $('.still-camera');
@@ -407,7 +415,19 @@ export class Panel {
     inapplicable(this.element.querySelector('.spatial-layers-control'), [this.spatialLayers], spatialLayers.length === 0,
       `${CODECS[this.codec.value].label} has no spatial layers here: AV1 and VP9 do`);
     this.updateLayers();
+    this.updateLink();
   }
+  /** Offer the link options that apply to the codec and its layers (link-panel.js). */
+  updateLink() {
+    // The temporal-layer control shows with the link's options: the codec's options must be loaded for it to apply.
+    if (this.link.mode !== LINK_MODES.bitstream && !this.advanced.api) this.advanced.load().then(() => this.updateLink());
+    this.link.update(this.codec.value, { spatialLayers: +this.spatialLayers.value, temporalLayers: this.advanced.temporalLayerCount(),
+      secondReference: this.advanced.secondReference });
+  }
+  /** Whether this view's current run goes over RTP. */
+  get overRtp() { return Boolean(this.current?.link && this.current.link.mode !== LINK_MODES.bitstream); }
+  /** The running link's network settings, now in the controls (they change without a restart). */
+  networkSettings() { return { ...this.current.link, network: this.link.network() }; }
   /** The shown-layer picker shows with spatial layers only (other streams have one operating point);
    * the quarter-size operating point exists in three-layer streams only. */
   updateLayers() {
@@ -429,9 +449,12 @@ export class Panel {
     }
     const [width, height] = this.resolution.value.split('x').map(Number), fps = +this.fps.value;
     if (this.showsOriginal) return { source: SOURCES.original, width, height, fps, step: tickStep(fps) };
+    const advanced = this.advanced.settings(), linked = this.link.settings(fps, this.advanced.temporalLayerCount());
+    // The link's resilience settings first: the Advanced editor's lines win.
+    const overrides = [...linked.overrides, advanced.overrides].filter(Boolean).join('\n');
     return { source: SOURCES.live, codec: this.codec.value, width, height, fps, step: tickStep(fps), qp: +this.qp.value,
-      preset: this.preset.value, spatialLayers: +this.spatialLayers.value, ...this.advanced.settings(), ...this.keySettings(fps), ...this.rateSettings(),
-      stillCamera: this.stillCamera.checked };
+      preset: this.preset.value, spatialLayers: +this.spatialLayers.value, ...advanced, overrides, temporalLayers: this.advanced.temporalLayerCount(),
+      link: linked.link, ...this.keySettings(fps), ...this.rateSettings(), stillCamera: this.stillCamera.checked };
   }
   /**
    * The key interval: seconds, or KEY_AT_CLIP_START (`keyAtClipStart`), whose interval is
@@ -452,6 +475,9 @@ export class Panel {
   }
   reset(config) {
     this.current = config; this.frames = []; this.history = []; this.bytes = 0; this.full = false; this.count = 0;
+    // Over RTP: the receiver's decoded pictures ({ psnr, decode }), which the PSNR and decode time average.
+    this.received = [];
+    this.monitor.reset(config.link);
     // Ticks of this view's rate the source skipped, and the last tick it got.
     this.skipped = 0; this.lastTick = null;
     // For the debug report: recent coded frames with their packets, and what changed the live encoder mid-run.
@@ -486,13 +512,25 @@ export class Panel {
     const free = this.renderer.show(result);
     this.shown = true; this.original = original;
     this.element.querySelector('.empty-overlay').hidden = true;
+    if (result.link) this.receive(result);
     // `earlier`: frames coded with this one (start-up lookahead, or stream frames a capture skipped).
-    for (const coded of [...(result.earlier ?? []), result]) this.record(coded);
+    else for (const coded of [...(result.earlier ?? []), result]) this.record(coded);
     this.analysis?.update(result, tick);
     this.badge.dataset.tick = String(tick);
     this.label(result);
     this.scheduleMetrics(result);
     return free;
+  }
+  /**
+   * Over RTP: the coded frames sent with this capture are the view's stream (bitrate,
+   * count, download); the picture on screen is the receiver's, scored when it was
+   * decoded at this capture (a frozen picture has no PSNR: the strip counts it).
+   */
+  receive(result) {
+    for (const coded of result.earlier ?? []) this.record(coded);
+    if (!result.repeat) this.received.push({ psnr: result.psnr, decode: result.decodeMs });
+    if (this.received.length > HISTORY_FRAMES) this.received.shift();
+    this.monitor.update(result.link);
   }
   /**
    * Show `result` (the picture on screen, decoded again by a replaced decoder:
@@ -520,8 +558,13 @@ export class Panel {
     // The original codes nothing: none of the numbers exist.
     const original = this.current.source === SOURCES.original;
     const encode = this.current.entry ? null : this.average('encode');
+    const received = key => {
+      const values = this.received.map(r => r[key]).filter(Number.isFinite);
+      return values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : null;
+    };
     const values = original ? { bitrate: null, encode: null, decode: null, psnr: null }
-      : { bitrate: this.bitrate(), encode, decode: this.average('decode'), psnr: this.average('psnr') };
+      : this.overRtp ? { bitrate: this.bitrate(), encode, decode: received('decode'), psnr: received('psnr') }
+        : { bitrate: this.bitrate(), encode, decode: this.average('decode'), psnr: this.average('psnr') };
     for (const [key, value] of Object.entries(values)) {
       this.element.querySelector(`[data-metric="${key}"]`).textContent = value === null ? 'n/a' : value.toFixed(key === 'bitrate' ? 0 : 1);
     }
@@ -530,6 +573,7 @@ export class Panel {
         : `${this.count} frames · ${(this.bytes / 1024).toFixed(0)} KiB saved${this.full ? ' · buffer full' : ''}${this.skipNote()}`;
     this.element.querySelector('.rate-status').textContent = this.rateStatus(result);
     this.drawHistory();
+    this.monitor.draw();
     this.describeSettings();
   }
   /** The badge: what is shown, the frame type, its number in this view and its source time. */
@@ -538,8 +582,15 @@ export class Panel {
     const scaled = result.width !== sw || result.height !== sh ? ` · ${result.width}×${result.height}` : '';
     const seconds = (tickMs(+this.badge.dataset.tick) / 1000).toFixed(2);
     if (this.current.source === SOURCES.original) { this.badge.textContent = `ORIGINAL · UNCOMPRESSED · #${this.count} · ${seconds} s`; return; }
+    if (result.link) { this.badge.textContent = `${this.linkBadge(result)}${scaled} · ${seconds} s`; return; }
     const what = this.current.entry ? 'PRE-ENCODED · WASM DECODED' : 'WASM DECODED';
     this.badge.textContent = `${what} · ${result.repeat ? 'REPEAT' : result.key ? 'KEY' : 'INTER'}${scaled} · #${this.count} · ${seconds} s`;
+  }
+  /** The badge over RTP: the receiver's state and the layer on screen. */
+  linkBadge(result) {
+    const layers = this.current.spatialLayers, base = layers > 1 && result.spatialId < layers - 1 ? ` · BASE LAYER S${result.spatialId}` : '';
+    const state = result.link.frozen ? 'FROZEN · WAITING FOR REPAIR' : result.repeat ? 'REPEAT' : result.key ? 'KEY' : 'INTER';
+    return `RTP · RECEIVED · ${state}${base}`;
   }
   rateStatus(result) {
     if (this.current.source === SOURCES.original) return ORIGINAL_STATUS;
@@ -560,7 +611,7 @@ export class Panel {
       ? ` · over half the clip file's ${c.sourceKbps.toFixed(0)} kbps: its own coding may show` : '';
     if (c.entry) return ` · ${keyCadence(c.entry)} · ${bufferLabel(c.entry.bufferMs)} buffer · still-camera n/a${source}`;
     const rate = c.rateMode === 'cbr' ? ` · peak ${c.peakKbps} kbps, ${bufferLabel(c.bufferMs)} buffer` : '';
-    return ` · ${this.liveKeys()}${rate} · still-camera ${onOff(c.stillCamera)}${source}`;
+    return ` · ${this.liveKeys()}${rate} · still-camera ${onOff(c.stillCamera)}${LinkControls.describe(c.link)}${source}`;
   }
   /** When a live view's keys come, as its rate line says. */
   liveKeys() {

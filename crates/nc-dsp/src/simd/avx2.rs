@@ -97,7 +97,7 @@ pub(crate) struct I16x8(pub(crate) __m128i);
 /// Four `i16` lanes in the low half of an SSE register; the high half
 /// stays zero.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I16x4(__m128i);
+pub(crate) struct I16x4(pub(crate) __m128i);
 
 /// Shift counts for the variable-shift intrinsics.
 #[inline(always)]

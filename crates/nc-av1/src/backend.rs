@@ -50,8 +50,8 @@ use crate::mvref::{
     CompoundMvStack, LastOnly, MvStack, SingleRef, find_compound_mv_stack, find_mv_stack,
 };
 use crate::obu::{
-    FrameHeader, FrameIdLengths, FrameIds, FrameKind, FrameSizeSyntax, IntraRefresh, ObuType,
-    RestorationTool, SequenceTools, SlotUse, encoder_info_metadata, sequence_header,
+    FrameHeader, FrameIdLengths, FrameIds, FrameKind, FrameSizeSyntax, IntraRefresh, LevelBasis,
+    ObuType, RestorationTool, SequenceTools, SlotUse, encoder_info_metadata, sequence_header,
     spatial_sequence_header, write_obu, write_obu_layer,
 };
 use crate::predict::{FilterIntraMode, IntraMode, dc_value};
@@ -2525,8 +2525,7 @@ impl CodecBackend for Av1Backend {
                 ObuType::SequenceHeader,
                 None,
                 &sequence_header(
-                    self.stream_size.0,
-                    self.stream_size.1,
+                    self.stream_size,
                     self.temporal_layers,
                     self.signal,
                     self.frame_rate,
@@ -2540,6 +2539,11 @@ impl CodecBackend for Av1Backend {
                             RestorationTool::Disabled
                         },
                         frame_ids: self.frame_ids.as_ref().map(FrameIds::lengths),
+                    },
+                    LevelBasis {
+                        fixed_base_q_idx: (self.quantizer_mode == QuantizerMode::Fixed)
+                            .then_some(self.base_q_idx),
+                        random_decisions: self.random.is_some(),
                     },
                 ),
             );

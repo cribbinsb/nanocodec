@@ -6,6 +6,8 @@
 //! `ipred_paeth_c`; commit 237229e, BSD-2-Clause, see `docs/licenses/dav2d`).
 //! Paeth's choice is AV1's ([`crate::intra_prediction::paeth`]).
 
+use nc_common::Sample;
+
 use super::{ANGLE_MULTI_MRL_FLAG, Block, SampleRef};
 use crate::intra_prediction;
 
@@ -16,19 +18,19 @@ fn line0_offset(width: usize, height: usize) -> isize {
 }
 
 /// Rounded mean of two samples.
-fn average(a: u8, b: u8) -> u8 {
-    ((u16::from(a) + u16::from(b) + 1) >> 1) as u8
+fn average<T: Sample>(a: T, b: T) -> T {
+    T::from_i32((a.to_i32() + b.to_i32() + 1) >> 1)
 }
 
 /// `VERT_PRED`: every row copies the top edge.
-pub(super) fn vertical(
-    dst: &mut Block<'_>,
-    edge: SampleRef<'_>,
+pub(super) fn vertical<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
     width: usize,
     height: usize,
     angle: i32,
 ) {
-    let mut top = [0; 64];
+    let mut top = [T::default(); 64];
     let top = &mut top[..width];
     top.copy_from_slice(edge.slice(1, width));
     if angle & ANGLE_MULTI_MRL_FLAG != 0 {
@@ -43,9 +45,9 @@ pub(super) fn vertical(
 }
 
 /// `HOR_PRED`: every column copies the left edge.
-pub(super) fn horizontal(
-    dst: &mut Block<'_>,
-    edge: SampleRef<'_>,
+pub(super) fn horizontal<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
     width: usize,
     height: usize,
     angle: i32,
@@ -64,7 +66,12 @@ pub(super) fn horizontal(
 
 /// `PAETH_PRED`: per sample, whichever of left, top and corner is nearest
 /// to `left + top - corner`.
-pub(super) fn paeth(dst: &mut Block<'_>, edge: SampleRef<'_>, width: usize, height: usize) {
+pub(super) fn paeth<T: Sample>(
+    dst: &mut Block<'_, T>,
+    edge: SampleRef<'_, T>,
+    width: usize,
+    height: usize,
+) {
     let corner = edge.at(0);
     let top = edge.slice(1, width);
     for y in 0..height {

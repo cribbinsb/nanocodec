@@ -206,6 +206,10 @@ fn rows_cover<T>(rows: &[&[T]], n: usize) -> bool {
 impl RowKernels<u16> for HighLrBound<'_> {
     type Filtered = i32;
 
+    fn weighted_radius_one(&self) -> bool {
+        self.fns.project.is_some()
+    }
+
     fn sgr_project(
         &self,
         rows: ProjectionRows<'_>,
@@ -933,8 +937,19 @@ macro_rules! high_lr_isa {
                 n: usize,
                 depth: BitDepth,
             ) {
+                let (a, b) = ab;
+                let row = n + super::super::AV1_LR_OVERREAD;
+                let (outer_a, centre_a) = a.split_at_mut(row);
+                let (outer_b, centre_b) = b.split_at_mut(row);
                 // SAFETY: target_feature enabled by wrapper.
-                unsafe { box_ab_u16::<$sgr_lanes, 3>(sums, squares, scale, ab, n, depth) }
+                unsafe {
+                    box_ab_u16::<$sgr_lanes, 3>(
+                        sums, squares, scale, (&mut *outer_a, &mut *outer_b), n, depth,
+                    );
+                }
+                sgr_lanes::weight_radius_one::<$sgr_lanes, $w_lanes>(
+                    (outer_a, centre_a), (outer_b, centre_b), n,
+                );
             }
 
             $(#[$feature])*

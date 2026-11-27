@@ -8,6 +8,7 @@ use nc_common::{BitDepth, BitDepths, ColourDescription, ColourInfo};
 
 use super::reader::Reader;
 use super::scaling::{self, ScalingMatrix};
+use super::structure::Structure;
 use super::{DecodeError, Result};
 
 /// Range of `bit_depth_luma_minus8` / `bit_depth_chroma_minus8`
@@ -18,13 +19,14 @@ const MAX_BIT_DEPTH: u32 = 10;
 pub(super) const MAX_SPS_ID: u32 = 31;
 /// `max_num_ref_frames` and DPB frames are at most 16 (§A.3.1).
 pub(super) const MAX_DPB_FRAMES: usize = 16;
-/// Largest picture accepted, in macroblocks: level 5.2's `MaxFS` (Table A-1),
-/// which bounds memory for hostile input as well.
-pub(super) const MAX_FRAME_MBS: usize = 36_864;
+/// Largest picture accepted, in macroblocks: the `MaxFS` of levels 6 to 6.2
+/// (Table A-1, 8192x4320), the largest any level allows. Picture buffers
+/// are sized from the SPS, so this only bounds hostile input.
+pub(super) const MAX_FRAME_MBS: usize = 139_264;
 /// Luma samples per macroblock side.
 const MB_SIZE: usize = 16;
 /// Largest picture side in macroblocks (`sqrt(8 * MaxFS)`, §A.3.1 item f).
-const MAX_SIDE_MBS: usize = 543;
+const MAX_SIDE_MBS: usize = 1_055;
 /// `log2_max_frame_num_minus4` and `log2_max_pic_order_cnt_lsb_minus4` are 0..=12.
 const MAX_LOG2_MINUS4: u32 = 12;
 /// `num_ref_frames_in_pic_order_cnt_cycle` is 0..=255.
@@ -113,8 +115,24 @@ impl Sps {
         1 << self.log2_max_frame_num
     }
 
+    /// Macroblocks of a frame (`FrameHeightInMbs` rows).
     pub fn mbs(&self) -> usize {
         self.width_mbs * self.height_mbs
+    }
+
+    /// `PicHeightInMbs` of a picture of `structure`: a field has half the
+    /// frame's rows (eq. 7-25).
+    pub fn picture_height_mbs(&self, structure: Structure) -> usize {
+        if structure.is_field() {
+            self.height_mbs / 2
+        } else {
+            self.height_mbs
+        }
+    }
+
+    /// `PicSizeInMbs` of a picture of `structure` (eq. 7-26).
+    pub fn picture_mbs(&self, structure: Structure) -> usize {
+        self.width_mbs * self.picture_height_mbs(structure)
     }
 
     /// The visible (cropped) size.
@@ -323,12 +341,9 @@ fn parse_crop(
     {
         return Err(DecodeError::Malformed("frame cropping"));
     }
-    // Pictures are handed out as 4:2:0, which needs an even visible size.
-    if !(width_mbs * MB_SIZE - crop.left - crop.right).is_multiple_of(2)
-        || !(height_mbs * MB_SIZE - crop.top - crop.bottom).is_multiple_of(2)
-    {
-        return Err(DecodeError::Unsupported("odd cropped 4:0:0 size"));
-    }
+    // A 4:0:0 window may be odd in size and origin (CropUnitX 1): it is
+    // handed out as I420 with flat chroma of half its size, rounded up
+    // (`ShownPicture::window`).
     Ok(crop)
 }
 
@@ -409,6 +424,11 @@ mod tests {
 
     /// A Baseline SPS of one macroblock whose crop offsets are `offset`.
     fn sps_with_crop(offset: u32) -> Vec<u8> {
+        baseline_sps((1, 1), Some(offset))
+    }
+
+    /// A Baseline SPS of `size` macroblocks, cropped by `crop` on each side.
+    fn baseline_sps((width_mbs, height_mbs): (u32, u32), crop: Option<u32>) -> Vec<u8> {
         let mut w = BitWriter::new();
         w.put_bits(66, 8); // profile_idc: Baseline
         w.put_bits(0, 8); // constraint flags
@@ -418,14 +438,16 @@ mod tests {
         w.put_ue(2); // pic_order_cnt_type
         w.put_ue(1); // max_num_ref_frames
         w.put_bit(false); // gaps_in_frame_num_value_allowed_flag
-        w.put_ue(0); // pic_width_in_mbs_minus1
-        w.put_ue(0); // pic_height_in_map_units_minus1
+        w.put_ue(width_mbs - 1); // pic_width_in_mbs_minus1
+        w.put_ue(height_mbs - 1); // pic_height_in_map_units_minus1
         w.put_bit(true); // frame_mbs_only_flag
         w.put_bit(true); // direct_8x8_inference_flag
-        w.put_bit(true); // frame_cropping_flag
-        for _ in 0..4 {
-            w.put_ue(offset);
+        w.put_bit(crop.is_some()); // frame_cropping_flag
+        for _ in 0..4 * usize::from(crop.is_some()) {
+            w.put_ue(crop.unwrap_or_default());
         }
+        w.put_bit(false); // vui_parameters_present_flag
+        w.put_bit(true); // rbsp_stop_one_bit
         while !w.is_byte_aligned() {
             w.put_bit(false);
         }
@@ -441,5 +463,20 @@ mod tests {
             parse(&sps_with_crop(0x7fff_ffff)).err(),
             Some(DecodeError::Malformed("frame_crop_offset"))
         );
+    }
+
+    /// Levels 6 to 6.2 allow 8192x4320 (Table A-1: `MaxFS` 139 264, a side
+    /// at most `sqrt(8 * MaxFS)` = 1055 macroblocks); larger is refused.
+    #[test]
+    fn level_6_picture_sizes_are_accepted() {
+        let sps = parse(&baseline_sps((512, 270), None)).unwrap();
+        assert_eq!(sps.mbs(), 138_240);
+        // Above `MaxFS`, or one side above the bound.
+        for too_big in [(512, 273), (1_056, 1)] {
+            assert_eq!(
+                parse(&baseline_sps(too_big, None)).err(),
+                Some(DecodeError::Unsupported("H264 picture size"))
+            );
+        }
     }
 }

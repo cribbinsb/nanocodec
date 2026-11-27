@@ -21,17 +21,17 @@
    {"title": "Codec and preset", "options": [
     {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Output format (`h266` is accepted for vvc). Required."},
     {"flag": "--preset", "value": "veryfast|faster|fast|medium|slow|slower|veryslow", "help": "A rung of the speed ladder; medium is the codec's Default and is used without --preset. A name is a position on that codec's ladder (in this order); not every codec has every rung (`nanocodec params --codec C`); with --scalability L2*/L3* a rung takes the codec's file for that many layers."},
-    {"flag": "--block", "value": "8|16|32|64", "help": "Fixed leaf block size where the codec's planner uses one (default 16; AV2 8, VVC 32)."}]},
+    {"flag": "--block", "value": "8|16|32|64", "help": "Fixed key-frame leaf size (default 16; AV2 8, VVC 32), coded only with the key planner off (`planner.intra_plan` 0; H.264 is always 16): refused where the planner chooses every block size, as the presets do."}]},
    {"title": "Fixed QP", "options": [
     {"flag": "--qp", "value": "Q", "help": "Fixed quantiser in the codec's scale (H.264, HEVC: QP 0-51; VVC: QP 0-63; AV1, VP9, AV2: base_q_idx); with --bitrate, the starting quantiser only. One of --qp and --bitrate is required."},
-    {"flag": "--key-qp-offset", "value": "D", "help": "Code fixed-QP key frames D quantiser steps finer than --qp (default: the codec chooses)."}]},
+    {"flag": "--key-qp-offset", "value": "D", "help": "Code fixed-QP key frames D quantiser steps finer than --qp (default: the codec chooses). Refused with --bitrate: rate control sizes key frames itself."}]},
    {"title": "Rate control (CBR) and buffer", "options": [
     {"flag": "--bitrate", "value": "KBPS", "help": "Real-time rate control at this target bitrate."},
     {"flag": "--peak-bitrate", "value": "KBPS", "help": "Peak drain rate (default twice the target)."},
     {"flag": "--buffer-ms", "value": "MS", "help": "Virtual decoder buffer duration (default 1000 ms)."},
     {"flag": "--buffer-initial-ms", "value": "MS", "help": "Decoder buffer fullness when the stream starts, at most the buffer: the first frames may send this much ahead of the drain (x264 --vbv-init, --buf-initial-sz). Default: the whole buffer."},
-    {"flag": "--min-qp", "value": "Q", "help": "Lowest quantiser rate control may use."},
-    {"flag": "--max-qp", "value": "Q", "help": "Highest quantiser rate control may use."},
+    {"flag": "--min-qp", "value": "Q", "help": "Lowest quantiser rate control may use, in the --qp scale and range."},
+    {"flag": "--max-qp", "value": "Q", "help": "Highest quantiser rate control may use, in the --qp scale and range."},
     {"flag": "--max-qp-step", "value": "N", "help": "Largest quantiser change between inter frames (default 4 QP, 20 AV1 indices)."},
     {"flag": "--frame-drop", "value": "", "help": "Skip an inter frame that would overflow the buffer even at the highest quantiser."},
     {"flag": "--strict-buffer", "value": "", "help": "Never pass one buffer: re-code any frame that would fill it past its capacity (a hard VBV). By default a frame may reach 1.15 buffers, as the reference encoders' worst points do."},
@@ -39,7 +39,7 @@
    {"title": "Key frames and resilience", "options": [
     {"flag": "--intra-period", "value": "N", "help": "A key frame every N frames (default: every 10 seconds of video)."},
     {"flag": "--keyframe", "value": "FRAME", "help": "Code input frame FRAME as a key frame, as a receiver's request would; repeatable."},
-    {"flag": "--intra-refresh", "value": "FRAMES", "help": "Intra refresh sweep over this many frames in place of periodic key frames (`refresh.period`)."},
+    {"flag": "--intra-refresh", "value": "FRAMES", "help": "Intra refresh sweep over this many frames in place of periodic key frames (`refresh.period`). With --temporal-layers 2|3 or --scalability LxT2/T3 the layers are fixed and the sweep runs on the base layer. Not with spatial layers, VP9 or AV2."},
     {"flag": "--ltr-interval", "value": "FRAMES", "help": "Mark a long-term reference every N frames, for loss recovery (`ltr.interval`)."},
     {"flag": "--temporal-layers", "value": "1|2|3", "help": "Hierarchical-P temporal layers; the top layer is droppable. Not with --scalability."},
     {"flag": "--scalability", "value": "LxTy[_KEY]", "help": "Scalability mode L1T1..L3T3: spatial layers (L2, L3: 2:1 steps) and temporal layers in one stream; `_KEY` codes K-SVC."}]},
@@ -49,7 +49,7 @@
    {"title": "Signalling", "options": [
     {"flag": "--colour", "value": "bt709|bt601|bt601-625|P,T,M", "help": "Colour description to signal (ISO/IEC 23091-2 code points for P,T,M)."},
     {"flag": "--range", "value": "full|limited", "help": "Sample range to signal."},
-    {"flag": "--timing", "value": "nominal|constant|variable", "help": "Header timing information (default nominal; variable with --timestamps)."}]},
+    {"flag": "--timing", "value": "nominal|constant|variable", "help": "Header timing information (default nominal; variable with --timestamps); constant also codes every frame (no frame holds). VP9 and AV2 streams carry no timing, so they refuse variable."}]},
    {"title": "Parameters", "options": [
     {"flag": "--params", "value": "FILE", "help": "A parameter file (one `name = value` per line, `#` comments), over the preset."},
     {"flag": "--param", "value": "NAME=VALUE", "help": "One parameter, over the file; repeatable. `nanocodec params` lists them."}]},

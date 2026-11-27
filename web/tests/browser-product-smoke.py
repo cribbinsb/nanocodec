@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Bounded real Chromium demo smoke with synthetic webcam, isolated HTTP/profile."""
+"""Bounded real-browser demo smoke with synthetic webcam, isolated HTTP/profile.
+
+    browser-product-smoke.py [--engine chromium|firefox|webkit] [--no-simd]
+
+Chromium by default (the page tests' engine); tools/web/browser_engines.py runs
+it in Firefox and WebKit too. --no-simd (Chromium only) switches WebAssembly
+SIMD off, so the page runs the scalar module (web/wasm.js).
+"""
+import argparse
 import functools
 import http.server
 import io
@@ -13,6 +21,14 @@ import threading
 from playwright.sync_api import sync_playwright
 
 web = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(web.parent / 'tools/web'))
+from browser_engines import launch_options, playwright_environment  # noqa: E402
+
+parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+parser.add_argument('--engine', choices=['chromium', 'firefox', 'webkit'], default='chromium')
+parser.add_argument('--no-simd', action='store_true')
+args = parser.parse_args()
+playwright_environment()
 class Quiet(http.server.SimpleHTTPRequestHandler):
     """Static files with HTTP range requests, as real hosts serve them: a browser
     seeks a video (the page's Step) only when the server answers ranges."""
@@ -43,12 +59,92 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+# RTP over the lossy network (link-panel.js, rtp-link.js), view A live, B the original:
+# per codec, loss with long-term reference feedback and key requests must be followed by
+# recovery (a decoded picture after every freeze); loss in enhancement layers only must
+# not freeze the picture (temporal layers: the receiver drops what is lost; spatial
+# layers: the base layer is shown). The loss is seeded, so every run loses the same packets.
+RTP_CODECS = ('h264', 'hevc', 'vvc', 'av1', 'vp9')
+# [codec, temporal layers, spatial layers]: layered loss, enhancement layers only.
+RTP_LAYERED = (('h264', 2, 1), ('av1', 3, 1), ('vp9', 2, 1), ('av1', 1, 2))
+
+
+def rtp_scenarios(p):
+    browser = p.chromium.launch(headless=True)
+    page = browser.new_page()
+    page_errors = []
+    page.on('pageerror', lambda error: page_errors.append(str(error)))
+    # Each decode worker's newest link state, by the worker's serial, and every encoder
+    # config with the serial of the decode worker started with it (pipeline.js LiveView).
+    page.add_init_script('''window.links = {}; window.configs = []; let serial = 0, decoder = 0;
+      const Original = Worker; window.Worker = class extends Original {
+        constructor(url, ...args) { super(url, ...args);
+          if (String(url).endsWith('decode-worker.js')) this.serial = decoder = ++serial;
+          this.addEventListener('message', e => { if (e.data.link) window.links[this.serial] = e.data.link; }); }
+        postMessage(d, ...rest) { if (d && d.config) window.configs.push({ config: d.config, decoder }); super.postMessage(d, ...rest); } };''')
+    page.goto(f'http://127.0.0.1:{server.server_port}/?views=live')
+    page.locator('[data-source="scene"]').click()
+    page.locator('.view-source [data-view-source="original"]').nth(1).click()
+    page.locator('.resolution').nth(0).select_option('384x216')
+    page.locator('.fps').nth(0).select_option('15')
+    # AV2 has no RTP payload format: the RTP links are offered disabled, with the reason.
+    page.locator('.codec-picker').nth(0).select_option('av2')
+    page.wait_for_function("document.querySelector('[data-link=\"rtp\"]').disabled", timeout=30000)
+    assert 'no RTP payload format' in page.locator('[data-link="rtp"]').first.get_attribute('title')
+    results = {}
+
+    def run(codec, temporal=1, spatial=1, scope='all'):
+        page.locator('.codec-picker').nth(0).select_option(codec)
+        if page.locator('.spatial-layers').nth(0).is_enabled():
+            page.locator('.spatial-layers').nth(0).select_option(str(spatial))
+        page.locator('[data-link="lossy"]').first.click()
+        page.locator('.layers').nth(0).select_option(str(temporal))
+        details = page.locator('.network-advanced').first
+        if not details.evaluate('d => d.open'):
+            details.locator('summary').click()
+        for selector, value in (('.loss-model', 'burst'), ('.loss-scope', scope)):
+            page.locator(selector).first.select_option(value)
+        for selector, value in (('.loss-percent', '5'), ('.burst-length', '2'), ('.delay', '20'), ('.jitter', '5'), ('.seed', '3')):
+            page.locator(selector).first.fill(value)
+            page.locator(selector).first.dispatch_event('change')
+        # The run with these settings: its decode worker's link state.
+        wanted = (f"c.config.codec === '{codec}' && c.config.spatialLayers === {spatial} && c.config.temporalLayers === {temporal}"
+                  " && c.config.link.mode === 'lossy'")
+        page.wait_for_function(f"window.configs.some(c => {wanted})", timeout=60000)
+        LINK_STATE = f"window.links[window.configs.findLast(c => {wanted}).decoder]"
+        # Frames are lost (the receiver dropped at least one), then the stream recovers:
+        # 15 more pictures decoded after that, and the picture is not frozen.
+        page.wait_for_function(f"{LINK_STATE} && {LINK_STATE}.packetsLost > 0 && {LINK_STATE}.framesDropped > 0", timeout=120000, polling=200)
+        dropped_at = page.evaluate(f"{LINK_STATE}.framesDecoded")
+        page.wait_for_function(f"{LINK_STATE}.framesDecoded >= {dropped_at + 15} && !{LINK_STATE}.frozen", timeout=120000, polling=200)
+        state = page.evaluate(LINK_STATE)
+        badge = page.locator('.frame-badge').first.inner_text()
+        assert badge.startswith('RTP · RECEIVED'), badge
+        assert not page_errors, page_errors
+        return {key: state[key] for key in ('packetsSent', 'packetsLost', 'framesDecoded', 'framesFrozen', 'framesDropped', 'keyRequests', 'lossReports', 'recoveries')}
+
+    for codec in RTP_CODECS:
+        results[codec] = run(codec)
+        assert results[codec]['framesDecoded'] > results[codec]['framesFrozen'], results[codec]
+    for codec, temporal, spatial in RTP_LAYERED:
+        name = f'{codec}-L{spatial}T{temporal}-enhancement-loss'
+        results[name] = state = run(codec, temporal, spatial, 'enhancement')
+        # Loss in enhancement layers never freezes the picture.
+        assert state['framesFrozen'] == 0, (name, state)
+        if spatial > 1:
+            page.wait_for_function("document.querySelector('.frame-badge').textContent.includes('BASE LAYER')", timeout=60000, polling=100)
+    page.locator('[data-link="bitstream"]').first.click()
+    browser.close()
+    return results
+
+
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Quiet, directory=str(web)))
 threading.Thread(target=server.serve_forever, daemon=True).start()
 errors, notices = [], []
 try:
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'])
+        engine = getattr(p, args.engine)
+        browser = engine.launch(**launch_options(engine, args.engine, camera=True, simd=not args.no_simd))
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         errors = []
@@ -96,13 +192,20 @@ try:
         page.add_init_script('''window.resourceNames = [];
           new PerformanceObserver(list => { for (const e of list.getEntries()) window.resourceNames.push(e.name); })
             .observe({ type: 'resource', buffered: true });''')
-        page.goto(f'http://127.0.0.1:{server.server_port}/?display=webgl2')
+        # An engine without WebGL2 when headless and displayless (Firefox 150) runs the
+        # page's CPU display path; the GL checks below need WebGL2.
+        probe = context.new_page()
+        webgl = probe.evaluate("!!document.createElement('canvas').getContext('webgl2')")
+        probe.close()
+        page.goto(f'http://127.0.0.1:{server.server_port}/' + ('?display=webgl2' if webgl else ''))
         # The page opens already comparing, without a user gesture: a pre-encoded x264
         # stream in A and live nanocodec H.264 Medium matched to it in B (app.js
         # OPENING_STREAM), on that stream's clip. Each view has decoded two frames (the
         # faster view can deliver several before the slower one's first, as frames are in flight).
         page.wait_for_function('[0, 1].every(v => window.workerFrames.filter(f => f.view === v).length >= 2)', timeout=60000)
         assert page.locator('#clip-credit').is_visible()
+        # The scalar module's slowness is explained exactly when it is the one loaded (wasm.js).
+        assert page.locator('#build-note').is_visible() == args.no_simd
         assert page.locator('#clip').input_value() == 'xiph-four-people'
         assert page.locator('.stream-picker').nth(0).input_value() == 'xiph-four-people-x264-medium-854x480-30fps-400k'
         summary = page.locator('#summary').inner_text()
@@ -133,7 +236,8 @@ try:
         # matched to the opening stream: the benchmark key interval, 150 frames (5 s at 30 fps)
         assert [(c['codec'], c['width'], c['fps'], c['targetKbps'], c['peakKbps'], c['keyInterval'], c['preset']) for c in autostart_configs] == [('h264', 854, 30, 400, 800, 150, 'medium')], autostart_configs
         # Headless Chromium on SwiftShader loses new GL contexts once and restores them ~1 s later.
-        page.wait_for_function("[...document.querySelectorAll('.viewport canvas')].every(c => !c.getContext('webgl2').isContextLost())", timeout=10000)
+        if webgl:
+            page.wait_for_function("[...document.querySelectorAll('.viewport canvas')].every(c => !c.getContext('webgl2').isContextLost())", timeout=10000)
         # Zoom (view-zoom.js): scrolling up on B zooms both views together, unsmoothed,
         # with a reset chip on each; Escape returns both to the whole picture.
         page.locator('.viewport').nth(1).hover(position={'x': 100, 'y': 60})
@@ -146,8 +250,9 @@ try:
         page.keyboard.press('Escape')
         page.wait_for_function("[...document.querySelectorAll('.zoom-chip')].every(c => c.hidden) && [...document.querySelectorAll('.viewport canvas')].every(c => !c.style.transform)", timeout=5000)
         # Both views draw I420 with WebGL2 (renderer.js).
-        assert page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.dataset.display)") == ['webgl2', 'webgl2']
-        assert page.evaluate("window.workerFrames.every(f => f.format === 'i420')")
+        display, frame_format = ('webgl2', 'i420') if webgl else ('cpu', 'rgba')
+        assert page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.dataset.display)") == [display, display]
+        assert page.evaluate(f"window.workerFrames.every(f => f.format === '{frame_format}')")
         # Clips come in 360p and 720p files (clips.js): the default 854x480 reads the 720p
         # one (scaled down), picking a clip restarts on it, and 640x360 switches to the 360p file.
         clip_files = "window.resourceNames.filter(n => n.includes('/clips/') && n.endsWith('.mp4'))"
@@ -250,7 +355,8 @@ try:
         assert 'openh264 v' in page.locator('.reference-version').nth(1).text_content()
         assert page.locator('[data-metric="encode"]').nth(1).inner_text() == 'n/a'
         assert float(page.locator('[data-metric="psnr"]').nth(1).inner_text()) > 25
-        fetched = page.evaluate("window.resourceNames.filter(n => n.includes('/streams-ref/') && n.endsWith('.ivf'))")
+        # Streams are fetched by content hash (reference.js: `<file>?sha256=...`).
+        fetched = page.evaluate("window.resourceNames.map(n => n.split('?')[0]).filter(n => n.includes('/streams-ref/') && n.endsWith('.ivf'))")
         # Files are fetched only for streams a comparison started with: the opening one, the
         # one picked when the source switched (fetched only if its restart ran before the
         # choice; that depends on timing) and the chosen one.
@@ -291,11 +397,15 @@ try:
         # otherwise post their configs after the reset below and count as the webcam's.
         burst = "['vp9', 'av2'].every(codec => window.workerConfigs.some(c => c.codec === codec && c.width === 384 && c.fps === 10))"
         page.wait_for_function(burst, timeout=60000)
-        # Choosing the webcam starts it (camera access is asked for at once).
+        # Choosing the webcam starts it (camera access is asked for at once). Playwright's
+        # WebKit on Linux refuses getUserMedia whatever its mock-device settings, so there
+        # the steps below run on the test scene instead.
+        live_source = 'scene' if args.engine == 'webkit' else 'camera'
         page.evaluate('window.workerFrames.length = 0; window.workerConfigs.length = 0')
-        page.locator('[data-source="camera"]').click()
+        page.locator(f'[data-source="{live_source}"]').click()
         page.wait_for_function("window.workerConfigs.length === 2 && window.workerFrames.length >= 16", timeout=60000)
-        assert page.locator('#source-name').inner_text() == 'Webcam'
+        if live_source == 'camera':
+            assert page.locator('#source-name').inner_text() == 'Webcam'
         assert not errors, errors
         assert page.locator('.rate-status').nth(0).inner_text().startswith('Target 300 kbps')
         page.locator('#pause').click()
@@ -349,7 +459,7 @@ try:
         page.locator('[data-source="scene"]').click()
         page.evaluate('window.workerFrames.length = 0')
         page.wait_for_function("window.workerConfigs.slice(-2).every(c => c.codec === 'vvc') && window.workerFrames.length >= 12", timeout=60000)
-        assert page.evaluate("window.workerFrames.every(f => f.format === 'i420' && f.width === 384 && f.height === 216)")
+        assert page.evaluate(f"window.workerFrames.every(f => f.format === '{frame_format}' && f.width === 384 && f.height === 216)")
         assert [(c['codec'], c['preset']) for c in page.evaluate('window.workerConfigs')[-2:]] == [('vvc', 'medium'), ('vvc', 'fast')]
         assert all(float(t) > 20 for t in page.locator('[data-metric="psnr"]').all_inner_texts())
         assert all(t.startswith('Target 300 kbps · QP') for t in page.locator('.rate-status').all_inner_texts())
@@ -387,18 +497,20 @@ try:
         # The queue stays bounded (pipeline.js MAX_FRAMES_IN_FLIGHT).
         max_in_flight = page.evaluate('window.maxInFlight')
         assert 1 <= max_in_flight <= 4, max_in_flight
-        summary = {'status':'pass','max_frames_in_flight':max_in_flight,'browser':browser.version,'source':'Chromium synthetic webcam','autostart_clip':True,'startup_lookahead':True,
+        summary = {'status':'pass','max_frames_in_flight':max_in_flight,'engine':args.engine,'browser':browser.version,'simd':not args.no_simd,
+                   'module':page.evaluate("import('./wasm.js').then(m => m.BUILD.name)"),'source':f'{args.engine} synthetic webcam' if live_source == 'camera' else 'test scene (no webcam in this engine)','autostart_clip':True,'startup_lookahead':True,
                    'streams':streams,'decoded_frames':page.evaluate('window.workerFrames.length'),
                    # Frames the encoder held as repeats (frame hold): shown, with nothing coded.
                    'repeated_frames':page.evaluate('window.repeatFrames || 0'),
                    'pause_resume':True,'forced_keys':True,'live_cbr_change':True,'gop_seconds':30,
-                   'resolution_recreation':True,'pre_encoded_view':True,'pause_on_common_instant':True,'webgl2_display':True,'vvc_scene_original_view':True,'zoom':True,'av1_film_grain':True,'advanced_overrides':True,'clip_variants':True}
+                   'resolution_recreation':True,'pre_encoded_view':True,'pause_on_common_instant':True,'webgl2_display':webgl,'vvc_scene_original_view':True,'zoom':True,'av1_film_grain':True,'advanced_overrides':True,'clip_variants':True}
         # A GL context that stays lost falls back to the CPU path on a fresh canvas (VVC in
         # both views here); the magnifier follows it.
-        page.evaluate("document.querySelector('.viewport canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()")
-        page.wait_for_function("document.querySelector('.viewport').dataset.display === 'cpu'")
-        before = page.evaluate('window.workerFrames.length')
-        page.wait_for_function(f"window.workerFrames.slice({before}).filter(f => f.format === 'rgba').length >= 2", timeout=60000)
+        if webgl:
+            page.evaluate("document.querySelector('.viewport canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()")
+            page.wait_for_function("document.querySelector('.viewport').dataset.display === 'cpu'")
+            before = page.evaluate('window.workerFrames.length')
+            page.wait_for_function(f"window.workerFrames.slice({before}).filter(f => f.format === 'rgba').length >= 2", timeout=60000)
         # The zoom follows the new canvas.
         page.locator('.viewport').nth(0).focus()
         page.keyboard.press('+')
@@ -406,17 +518,21 @@ try:
         assert not errors, errors
         context.close()
         browser.close()
-        # Automatic choice: software GL (SwiftShader, the default here) and no WebGL both give the CPU path.
-        for flags in ([], ['--disable-webgl']):
-            browser = p.chromium.launch(headless=True, args=flags)
-            page = browser.new_page()
-            page.on('pageerror', lambda error: errors.append(str(error)))
-            page.goto(f'http://127.0.0.1:{server.server_port}/')
-            page.wait_for_function("[...document.querySelectorAll('.frame-badge')].every(b => b.textContent.includes('#3'))", timeout=60000)
-            assert page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.dataset.display)") == ['cpu', 'cpu']
-            assert not errors, errors
-            browser.close()
-        print(json.dumps(summary | {'context_loss_fallback':True,'software_gl_fallback':True,'no_webgl_fallback':True}))
+        # Automatic choice: software GL (SwiftShader, the default here) and no WebGL both give the
+        # CPU path. Chromium only: the flags are its own, and other engines' headless GL differs.
+        if args.engine == 'chromium':
+            for flags in ([], ['--disable-webgl']):
+                browser = p.chromium.launch(headless=True, args=flags)
+                page = browser.new_page()
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.goto(f'http://127.0.0.1:{server.server_port}/')
+                page.wait_for_function("[...document.querySelectorAll('.frame-badge')].every(b => b.textContent.includes('#3'))", timeout=60000)
+                assert page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.dataset.display)") == ['cpu', 'cpu']
+                assert not errors, errors
+                browser.close()
+            summary |= {'software_gl_fallback': True, 'no_webgl_fallback': True}
+            summary['rtp'] = rtp_scenarios(p)
+        print(json.dumps(summary | {'context_loss_fallback':webgl}))
 except Exception:
     print('page errors:', errors, file=sys.stderr)
     print('last page notices, session lines and lifecycle trace:', *notices[-40:], sep='\n  ', file=sys.stderr)

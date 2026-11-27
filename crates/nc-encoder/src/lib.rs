@@ -80,6 +80,7 @@ mod layer;
 mod layer_propagation;
 mod level_shave;
 mod ltr;
+mod luma_level;
 mod moving_camera;
 mod mv;
 mod noise_skip;
@@ -171,7 +172,7 @@ pub use filter_outcome::{
 };
 pub use frame_role::{FRAME_PARAM_SPECS, FrameRole, KEY_PREFIX, NONBASE_PREFIX};
 pub use held_slots::{HeldSlots, scaled_reference_allowed};
-pub use hold::holds_frames;
+pub use hold::signalled_timing;
 pub use intra_candidates::{
     AngleDeltaSearch, FlatGate, IntraModeSet, LevelRateModel, LevelStats,
     directions_by_orientation, prediction_settles, rank_intra, shortlist_intra, with_neighbours,
@@ -184,6 +185,7 @@ pub use key_qp::{
 pub use layer::LayerPosition;
 pub use level_shave::shave_isolated_ones;
 pub use ltr::{MAX_REFERENCE_AGE, long_term_requested, long_term_slot, reference_reach};
+pub use luma_level::{LumaLevel, luma_level};
 pub use mv::{MV_UNITS_PER_SAMPLE, Mv};
 pub use nc_analysis::grain;
 pub use nc_analysis::link::{MAX_REFERENCE_SLOTS, ReferenceLink, SlotMask};

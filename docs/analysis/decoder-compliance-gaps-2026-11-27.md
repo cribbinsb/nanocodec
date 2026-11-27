@@ -72,6 +72,35 @@ Not run: the profile 1/3 vectors (`vp91-*`, `vp93-*`), and the Argon VP9 streams
 (a commercial coverage suite; not available to us). Only **2** high-bit-depth
 vectors are in the record, so profile 2 coverage is thin.
 
+**Profiles 1 and 3: sizing (2026-11-27), superseded the same day:** the non-4:2:0 chroma agent landed them on a shared chroma-format picture (124deac4b). The sizing as written then: They do
+not fit in an hour, because the shared sample type has no chroma format:
+`nc_common::Picture` is 4:2:0 only (`ChromaFormat::Yuv420`, plane sizes from
+`PlaneIndex::is_subsampled`), and about 74 files build pictures through it. The
+VP9 decoder itself is 4:2:0 in the loop filter masks, the chroma block and
+transform sizes, and sub-8x8 chroma motion. Plan, about two days (M):
+
+1. **Shared picture subsampling (about a day, all codecs benefit).** `Picture` and
+   its recycler, `ShownPicture`/`DecodedPicture` carry `(ss_x, ss_y)`; plane
+   geometry and borders come from it; 4:2:0 stays the default constructor. The
+   CLI's raw/Y4M writers and the browser module's `decoded_i420*` write the planes
+   at their own size (the browser display path converts 4:4:4/4:2:2 to its 4:2:0
+   display, or refuses them with a clear error).
+2. **VP9 header and block layer (half a day).** `read_profile` takes 1 and 3;
+   `read_color_config` reads `subsampling_x/y` and the reserved bit (sRGB means
+   4:4:4, VP9 §6.2); chroma block size from `ss_size_lookup` (4:2:2 and 4:4:0
+   make non-square chroma blocks), `get_uv_tx_size` with both subsampling
+   factors; sub-8x8 chroma MVs per 4x4 in 4:4:4, averaged by pairs in 4:2:2 and
+   4:4:0 (`average_split_mvs`); intra edge availability and MC positions with
+   separate horizontal and vertical subsampling.
+3. **Loop filter (half a day).** 4:4:4 chroma uses the luma masks
+   (`filter_block_plane_ss00`); 4:2:2 and 4:4:0 need libvpx's generic per-block
+   path (`filter_block_plane_non420`), which our 4:2:0 mask builder does not
+   cover.
+4. **Vectors.** Add the libvpx `vp91-2-04-yuv{422,440,444}` and
+   `vp93-2-20-{10,12}bit-yuv{422,440,444}` vectors to the manifest, bit-exact
+   against vpxdec. Profile 3 then costs about two hours on top (the decoder is
+   sample-generic already).
+
 ## AV2 (target: AVM v1.0.0 main profile as the draft defines it)
 
 | # | Gap | Spec (AVM v1.0.0 / dav2d) | In target? | Who produces it | Fix |

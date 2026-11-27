@@ -384,7 +384,7 @@ regen = "git clone"
 [[keep]]
 path = "tools"
 class = "tool"
-reader = "nceval.cloud / checkrun (data-root tools: ref, root, browser-demo)"
+reader = "nceval.cloud / checkrun (data-root tools: ref, root, browser-demo); tools/web/browser_engines.py (webkit-noble-libs: WebKit's Ubuntu 24.04 libraries)"
 regen = "rebuild (minutes)"
 
 [[keep]]

@@ -1359,13 +1359,16 @@ impl CodecBackend for Av2Backend {
         )
     }
 
-    /// AV2 takes no static skips (the default would offer the skip vector).
+    /// The zero vector, not the skip vector the default would offer: AV2's
+    /// static skips are only the two below.
     fn static_skip_vector(&mut self, _block: &Block) -> Option<Mv> {
-        None
+        Some(Mv::ZERO)
     }
 
-    /// Only a repeat frame's blocks (`StaticSkipTest::repeat`): coded at
-    /// the zero vector with no residual, a skipped block.
+    /// A repeat frame's blocks (`StaticSkipTest::repeat`) and the blocks
+    /// the engine's noise skip passes (`test.within_noise`,
+    /// `decision.noise_skip`): coded at the zero vector with no residual, a
+    /// skipped block. AV2 has no still-skip test of its own.
     fn try_static_skip(
         &mut self,
         block: &Block,
@@ -1374,7 +1377,7 @@ impl CodecBackend for Av2Backend {
         recon: &mut Picture,
         test: StaticSkipTest,
     ) -> bool {
-        if !test.repeat || self.random.is_some() {
+        if !(test.repeat || test.within_noise) || self.random.is_some() {
             return false;
         }
         copy_zero_vector_prediction(&self.dsp, block, reference, recon);

@@ -392,17 +392,55 @@ load, 4 interleaved loads each (without → with): the first 10 encodes of H.264
 
 ## Receiving over a lossy network
 
-The demo is loss-free and uses `BrowserDecoder.decode`. A receiver that can
-lose frames uses `BrowserDecoder.decode_frame(packet, index, references)`,
-which reports each frame as decoded or frozen (missing reference, missing key,
-corrupt) with the frame to name in a loss report. Over RTP, pass the frames the
-packet depends on from the **AV1 dependency descriptor** RTP header extension
-(WebRTC's practice for AV1 and VP9; any codec here) as `references`: the
-transport then decides, for every codec, and costs the stream nothing.
-Detecting losses from the stream alone works for H.264 and HEVC, and for AV1
-only when the encoder codes frame ids (`av1.frame_ids`, on with a long-term
-reference; 23-65 bits per inter frame, off by default); VP9 and AV2 cannot
-(our internal notes (not published)).
+Each live view has a **Link** setting (link-panel.js): **Bitstream** (the
+encoder's packets go straight to the decoder), **RTP** (the encoder's output is
+packetized by nanocodec-rtp with nc-web `RtpSender`, depacketized by
+`RtpReceiver` and decoded) and **RTP · lossy network**, where the packets pass
+an in-page network emulator (network.js: random or Gilbert-Elliott burst loss,
+optionally on base or enhancement layers only, delay, jitter, reordering,
+duplication, a bandwidth cap with a queue that drops on overflow; seeded, on the
+source timeline, so a run repeats exactly). AV2 has no RTP payload format and
+VP9 spatial layers are not carried over RTP: those buttons are disabled with the
+reason.
+
+- Every codec's packets carry the AV1 **Dependency Descriptor** (nc-rtp writes it
+  for any format): the receiver knows each frame's number and its references, so
+  it delivers only frames it can decode and reports the lost ones by number. A
+  lost top-temporal-layer frame is dropped and decoding goes on (a skip); a lost
+  enhancement layer of a spatial stream leaves the base layer, shown upscaled
+  and labelled "BASE LAYER" on the picture; a lost base-layer frame freezes the
+  picture until a repair. The picture is what the decoder outputs: no
+  concealment.
+- The receiver's jitter buffer gives a missing packet up once the packet after
+  it is due for playout (`RtpReceiver.set_playout_deadline`, one-way delay plus
+  jitter), not only when the reorder window overflows.
+- **Feedback** (rtp-link.js) reaches the encoder one feedback delay later (the
+  round trip less the forward delay), applied before the first frame captured
+  after it: with *Long-term reference + loss feedback* the receiver acknowledges
+  decoded frames and reports lost ones (`BrowserEncoder.acknowledge_frame`,
+  `report_lost_frame`), and the encoder repairs from the acknowledged long-term
+  reference (`ltr.interval=15`); with *Key frame on request* a stopped receiver
+  asks for a key frame, again every round trip while frozen. *Intra refresh* and
+  *Temporal layers* are offered where the engine accepts them (nc-web
+  `codec_options`), disabled with the reason elsewhere.
+- Under the picture: packets sent / lost (per layer in the tooltip) / late,
+  frames decoded / frozen / skipped, the last recovery time (first frozen frame
+  to the next decoded picture), key requests, loss reports, the wire bitrate
+  (RTP + UDP + IPv4 headers) and the layer on screen; and a 10 s event timeline:
+  packet losses, feedback (with its way to the encoder), key or repair frames
+  coded, frozen spans. PSNR over RTP averages the pictures decoded, each against
+  its own source frame; frozen pictures are counted in the strip, not scored.
+- Delay, jitter and loss settings apply live; the link mode, MTU, the SFU and the
+  resilience toggles restart the view. The SFU (Network emulator) drops spatial
+  or temporal layers by the descriptor alone (`RtpLayerFilter`), before the
+  network.
+
+A receiver without RTP uses `BrowserDecoder.decode_frame(packet, index,
+references)`, which reports each frame as decoded or frozen (missing reference,
+missing key, corrupt) with the frame to name in a loss report. Detecting losses
+from the stream alone works for H.264 and HEVC, and for AV1 only when the
+encoder codes frame ids (`av1.frame_ids`, on with a long-term reference); VP9
+and AV2 cannot.
 
 ## Checks
 

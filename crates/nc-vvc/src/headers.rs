@@ -9,7 +9,7 @@ use nc_common::{
     decode::{BitReader, DecodeError, Result},
     nal,
 };
-use nc_encoder::{FrameRate, TimingSignal};
+use nc_encoder::{FrameRate, TimingSignal, luma_level};
 
 /// §7.4.3.4: `CtbLog2SizeY` is `sps_log2_ctu_size_minus5` + 5; a larger
 /// CTU also signals `sps_max_luma_transform_size_64_flag` (§7.3.2.4).
@@ -34,13 +34,17 @@ pub(crate) const PREFIX_SEI_NUT: u8 = 23;
 pub(crate) const IDR_N_LP: u8 = 8;
 pub(crate) const TRAIL_NUT: u8 = 0;
 const MAIN_10_PROFILE: u32 = 1;
-const LEVEL_6: u32 = 96;
+/// `general_level_idc` of an SPS without timing (level 6, §A.4.1): streams
+/// coded before every SPS carried its frame rate.
+const UNTIMED_LEVEL_IDC: u32 = 96;
 /// Bits of `ph_pic_order_cnt_lsb` (`sps_log2_max_pic_order_cnt_lsb_minus4`
 /// plus 4): references within 126 pictures (`references.rs`).
 pub(crate) const POC_BITS: u32 = 8;
-/// With a long-term reference (`ltr.interval`) or a long-held second
-/// reference (`nc_encoder::holds_second_reference`): 16, the most §7.4.3.4 allows, for references up to
-/// `nc_encoder::MAX_REFERENCE_AGE` back, at one more byte a picture.
+/// With a long-held second reference (`nc_encoder::holds_second_reference`):
+/// 16, the most §7.4.3.4 allows, for short-term references up to
+/// `nc_encoder::MAX_REFERENCE_AGE` back, at one more byte a picture. The
+/// long-term reference (`ltr.interval`) needs no more: it is a long-term
+/// entry (`references.rs`).
 pub(crate) const LONG_POC_BITS: u32 = 16;
 
 /// Stream timing in the SPS without HRD buffer models
@@ -59,14 +63,27 @@ pub(crate) struct Timing {
 }
 
 impl Timing {
-    /// The timing the engine's signalling asks for; none for
-    /// [`TimingSignal::Nominal`], which keeps the historical headers.
-    pub(crate) fn from_signal(signal: TimingSignal, rate: FrameRate) -> Option<Self> {
-        (signal != TimingSignal::Nominal).then_some(Self {
+    /// The `general_level_idc` of a `geometry` stream timed by `timing`:
+    /// the lowest level its coded size and picture rate fit (shared with
+    /// HEVC, `nc_encoder::luma_level`); level 6 without timing, so the
+    /// decoder's SPS comparison still accepts older streams.
+    pub(crate) fn level_idc(timing: Option<Self>, geometry: &Geometry) -> u32 {
+        timing.map_or(UNTIMED_LEVEL_IDC, |t| {
+            let rate = FrameRate {
+                num: t.time_scale,
+                den: t.num_units_in_tick,
+            };
+            luma_level(geometry.coded_width, geometry.coded_height, rate).vvc_idc()
+        })
+    }
+
+    /// The timing the engine's (resolved) signalling asks for.
+    pub(crate) fn from_signal(signal: TimingSignal, rate: FrameRate) -> Self {
+        Self {
             num_units_in_tick: rate.den,
             time_scale: rate.num,
             fixed_rate: signal == TimingSignal::Constant,
-        })
+        }
     }
 }
 
@@ -150,12 +167,15 @@ pub(crate) struct Tools {
     pub long_term_slot: bool,
     /// Bits of the POC LSBs: [`POC_BITS`] or [`LONG_POC_BITS`].
     pub poc_bits: u32,
+    /// `sps_long_term_ref_pics_flag`: the long-term reference
+    /// (`ltr.interval`) is a long-term entry of the lists (`references.rs`).
+    pub long_term_refs: bool,
 }
 
 impl Tools {
     /// These tools, the DPB also holding the long-term slot's picture when
-    /// `listed`, with POC LSBs reaching it when it is `held` long (the
-    /// long-term reference, `refs.second_hold`).
+    /// `listed`, with POC LSBs reaching it when it is `held` long as a
+    /// short-term entry (`refs.second_hold`).
     pub(crate) fn with_long_term_slot(self, listed: bool, held: bool) -> Self {
         Self {
             long_term_slot: listed,
@@ -186,6 +206,7 @@ impl Default for Tools {
             large_transforms: false,
             long_term_slot: false,
             poc_bits: POC_BITS,
+            long_term_refs: false,
         }
     }
 }
@@ -222,7 +243,7 @@ pub(crate) fn sps_prefix(
     tools: Tools,
     timing: Option<Timing>,
 ) -> BitWriter {
-    let mut w = sps_head(geometry, tools);
+    let mut w = sps_head(geometry, tools, timing);
     chroma_qp.write(&mut w);
     sps_tools(&mut w, tools);
     sps_timing(&mut w, timing, 1);
@@ -230,12 +251,18 @@ pub(crate) fn sps_prefix(
 }
 
 /// The SPS up to `sps_same_qp_table_for_chroma_flag` (§7.3.2.4), with the
-/// transform flags of `tools` (the largest transform, MTS).
-pub(crate) fn sps_head(geometry: &Geometry, tools: Tools) -> BitWriter {
-    sps_layered_head(geometry, tools, 1)
+/// transform flags of `tools` (the largest transform, MTS) and the level
+/// of `timing` ([`Timing::level_idc`]).
+pub(crate) fn sps_head(geometry: &Geometry, tools: Tools, timing: Option<Timing>) -> BitWriter {
+    sps_layered_head(geometry, tools, timing, 1)
 }
 
-fn sps_layered_head(geometry: &Geometry, tools: Tools, layers: u8) -> BitWriter {
+fn sps_layered_head(
+    geometry: &Geometry,
+    tools: Tools,
+    timing: Option<Timing>,
+    layers: u8,
+) -> BitWriter {
     let &Geometry {
         width,
         height,
@@ -253,7 +280,7 @@ fn sps_layered_head(geometry: &Geometry, tools: Tools, layers: u8) -> BitWriter 
     w.put_bit(true); // PTL/DPB/HRD present
     w.put_bits(MAIN_10_PROFILE, 7);
     w.put_bit(false); // main tier
-    w.put_bits(LEVEL_6, 8);
+    w.put_bits(Timing::level_idc(timing, geometry), 8); // general_level_idc
     w.put_bit(true); // frame only
     w.put_bit(false); // multilayer
     w.put_bit(false); // general constraints absent
@@ -379,7 +406,7 @@ pub(crate) fn sps_bits_before_mts(geometry: &Geometry) -> usize {
     let mut after = BitWriter::new();
     write_mts(&mut after, None);
     write_after_mts(&mut after);
-    sps_head(geometry, Tools::default()).bit_len() - after.bit_len()
+    sps_head(geometry, Tools::default(), None).bit_len() - after.bit_len()
 }
 
 /// Bits of the inter partitioning fields and the transform sizes after them.
@@ -401,7 +428,7 @@ pub(crate) fn sps_tools(w: &mut BitWriter, tools: Tools) {
     w.put_bit(false); // LMCS
     w.put_bit(false); // weighted prediction
     w.put_bit(false); // weighted biprediction
-    w.put_bit(false); // long term references
+    w.put_bit(tools.long_term_refs); // sps_long_term_ref_pics_flag
     w.put_bit(false); // IDR RPL
     w.put_bit(true); // RPL1 copies RPL0
     w.put_ue(0); // no SPS RPLs
@@ -508,7 +535,9 @@ pub(crate) fn read_sps_tools(r: &mut BitReader<'_>) -> Result<Tools> {
     if tools.alf {
         r.skip_bits(1)?; // CC-ALF
     }
-    r.skip_bits(6)?; // LMCS, weighted (bi)prediction, LTR, IDR RPL, RPL1 copies RPL0
+    r.skip_bits(3)?; // LMCS, weighted (bi)prediction
+    tools.long_term_refs = r.read_bit()?; // sps_long_term_ref_pics_flag
+    r.skip_bits(2)?; // IDR RPL, RPL1 copies RPL0
     r.read_ue()?; // SPS RPLs
     r.skip_bits(1)?; // wraparound
     tools.temporal_mvp = r.read_bit()?;
@@ -566,7 +595,7 @@ pub(crate) fn sps_layered(
     let mut w = if layers == 1 {
         sps_prefix(geometry, chroma_qp, tools, timing)
     } else {
-        let mut w = sps_layered_head(geometry, tools, layers);
+        let mut w = sps_layered_head(geometry, tools, timing, layers);
         chroma_qp.write(&mut w);
         sps_tools(&mut w, tools);
         sps_timing(&mut w, timing, layers);
@@ -730,13 +759,7 @@ pub(crate) fn slice_layered(
         w.put_bit(false); // ph_mvd_l1_zero_flag; no RPL in PH
         w.put_ue(1); // P slice
         slice_alf(&mut w, alf);
-        w.put_ue(references.count as u32);
-        let mut previous = 0;
-        for &distance in &references.distances[..references.count] {
-            w.put_ue(distance - previous - 1); // cumulative short-term POC delta
-            w.put_bit(true);
-            previous = distance;
-        }
+        write_reference_list(&mut w, poc, references);
         w.put_ue(0); // empty local RPL1
         if references.count > 1 {
             // sh_num_ref_idx_active_override_flag: the PPS default is one
@@ -766,6 +789,36 @@ pub(crate) fn slice_layered(
     w.put_bit(true);
     w.trailing_bits(); // byte_alignment before CABAC
     w.into_bytes()
+}
+
+/// The local RPL0 of `ref_pic_lists()` (§7.3.9) of the picture at `poc`:
+/// `ref_pic_list_struct(0, 0)` (§7.3.10; no SPS lists), then the POC LSBs of
+/// its long-term entries (`ltrp_in_header_flag` is inferred 1 for a local
+/// list, §7.4.11).
+fn write_reference_list(w: &mut BitWriter, poc: u16, references: &crate::references::Syntax) {
+    let entries = references.distances[..references.count]
+        .iter()
+        .zip(&references.long_term);
+    w.put_ue(references.count as u32); // num_ref_entries
+    let mut previous = 0;
+    for (&distance, &long_term) in entries.clone() {
+        if references.long_term_refs {
+            w.put_bit(!long_term); // st_ref_pic_flag
+        }
+        if !long_term {
+            // Short-term deltas run from one short-term entry to the next.
+            w.put_ue(distance - previous - 1); // abs_delta_poc_st
+            w.put_bit(true); // strp_entry_sign_flag: an earlier picture
+            previous = distance;
+        }
+    }
+    let lsb_mask = (1u32 << references.poc_bits) - 1;
+    for (&distance, _) in entries.filter(|(_, long_term)| **long_term) {
+        let lsb = u32::from(poc).wrapping_sub(distance) & lsb_mask;
+        w.put_bits(lsb, references.poc_bits); // poc_lsb_lt
+        // Within one LSB cycle no other picture shares the LSBs.
+        w.put_bit(false); // delta_poc_msb_cycle_present_flag
+    }
 }
 
 /// `sh_alf_enabled_flag` and, when set, the luma APS ids (none or one),

@@ -47,6 +47,10 @@ pub(super) unsafe fn transpose4([a, b, c, d]: [int16x4_t; 4]) -> [int16x4_t; 4] 
 }
 
 #[inline(always)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the four input rows (a-d) and weights (w) of the 4-point transform"
+)]
 unsafe fn line<const DST: bool, const SHIFT: i32>(
     [a, b, c, d]: [int16x4_t; 4],
     w: int16x4_t,

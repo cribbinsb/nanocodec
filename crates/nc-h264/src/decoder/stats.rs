@@ -60,10 +60,13 @@ pub(super) fn picture(s: &mut StreamStats, sps: &Sps, pps: &Pps) {
 
 /// Record a slice header and its size.
 pub(super) fn slice(s: &mut StreamStats, h: &SliceHeader, bytes: usize) {
+    // slice_type % 5 (Table 7-6): SP slices parse as P ones.
     let slice_type = match h.slice_type {
+        SliceType::P if h.switching.is_some() => 3,
         SliceType::P => 0,
         SliceType::B => 1,
         SliceType::I => 2,
+        SliceType::Si => 4,
     };
     let fields = [
         ("slice_type", slice_type),
@@ -109,7 +112,7 @@ pub(super) fn macroblock(s: &mut StreamStats, cur: &MbState, mb: &MbContext) {
     let (x0, y0) = (mbx as u16 * MB_SIZE, mby as u16 * MB_SIZE);
     let (pred, shape) = match cur.kind {
         MbKind::IntraNxN if cur.transform_8x8 => (Pred::Intra, Shape::Quarter),
-        MbKind::IntraNxN => (Pred::Intra, Shape::Sixteenth),
+        MbKind::IntraNxN | MbKind::Si => (Pred::Intra, Shape::Sixteenth),
         MbKind::Intra16x16(_) => (Pred::Intra, Shape::Whole),
         MbKind::IPcm => (Pred::Intra, Shape::Raw),
         MbKind::Inter(p) => (Pred::Inter, partition_shape(p)),
@@ -149,7 +152,7 @@ pub(super) fn macroblock(s: &mut StreamStats, cur: &MbState, mb: &MbContext) {
         ..BlockRecord::default()
     });
     match cur.kind {
-        MbKind::IntraNxN | MbKind::Intra16x16(_) => intra(s, cur, (x0, y0)),
+        MbKind::IntraNxN | MbKind::Intra16x16(_) | MbKind::Si => intra(s, cur, (x0, y0)),
         MbKind::Inter(_) | MbKind::PSkip | MbKind::BSkip | MbKind::BDirect16x16 => {
             inter(s, cur, (x0, y0), pred);
         }

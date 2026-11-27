@@ -78,6 +78,130 @@ fn roundtrip_default_flat_and_textured_frames() {
         }
     }
 }
+/// The RBSP of `write` with its trailing bits (§7.3.2.11).
+fn rbsp(write: impl FnOnce(&mut nc_common::BitWriter)) -> Vec<u8> {
+    let mut w = nc_common::BitWriter::new();
+    write(&mut w);
+    w.put_bit(true); // rbsp_stop_one_bit
+    while !w.is_byte_aligned() {
+        w.put_bit(false);
+    }
+    w.into_bytes()
+}
+
+/// A High-profile 4:0:0 stream of one `I_PCM` macroblock (`pcm`, raster
+/// order) cropped by one sample on the left and top (§7.4.2.1.1: `CropUnitX`
+/// and `CropUnitY` are 1 in 4:0:0), so its visible size, 15x15, is odd.
+fn monochrome_odd_crop_stream(pcm: &[u8; 256]) -> Vec<u8> {
+    let sps = rbsp(|w| {
+        w.put_bits(100, 8); // profile_idc: High
+        w.put_bits(0, 8); // constraint flags
+        w.put_bits(30, 8); // level_idc
+        w.put_ue(0); // seq_parameter_set_id
+        w.put_ue(0); // chroma_format_idc: 4:0:0
+        w.put_ue(0); // bit_depth_luma_minus8
+        w.put_ue(0); // bit_depth_chroma_minus8
+        w.put_bit(false); // qpprime_y_zero_transform_bypass_flag
+        w.put_bit(false); // seq_scaling_matrix_present_flag
+        w.put_ue(0); // log2_max_frame_num_minus4
+        w.put_ue(2); // pic_order_cnt_type
+        w.put_ue(0); // max_num_ref_frames
+        w.put_bit(false); // gaps_in_frame_num_value_allowed_flag
+        w.put_ue(0); // pic_width_in_mbs_minus1
+        w.put_ue(0); // pic_height_in_map_units_minus1
+        w.put_bit(true); // frame_mbs_only_flag
+        w.put_bit(true); // direct_8x8_inference_flag
+        w.put_bit(true); // frame_cropping_flag
+        for offset in [1, 0, 1, 0] {
+            w.put_ue(offset); // left, right, top, bottom
+        }
+        w.put_bit(false); // vui_parameters_present_flag
+    });
+    let pps = rbsp(|w| {
+        w.put_ue(0); // pic_parameter_set_id
+        w.put_ue(0); // seq_parameter_set_id
+        w.put_bit(false); // entropy_coding_mode_flag: CAVLC
+        w.put_bit(false); // bottom_field_pic_order_in_frame_present_flag
+        w.put_ue(0); // num_slice_groups_minus1
+        w.put_ue(0); // num_ref_idx_l0_default_active_minus1
+        w.put_ue(0); // num_ref_idx_l1_default_active_minus1
+        w.put_bit(false); // weighted_pred_flag
+        w.put_bits(0, 2); // weighted_bipred_idc
+        w.put_se(0); // pic_init_qp_minus26
+        w.put_se(0); // pic_init_qs_minus26
+        w.put_se(0); // chroma_qp_index_offset
+        w.put_bit(true); // deblocking_filter_control_present_flag
+        w.put_bit(false); // constrained_intra_pred_flag
+        w.put_bit(false); // redundant_pic_cnt_present_flag
+    });
+    let slice = rbsp(|w| {
+        w.put_ue(0); // first_mb_in_slice
+        w.put_ue(7); // slice_type: I (all slices)
+        w.put_ue(0); // pic_parameter_set_id
+        w.put_bits(0, 4); // frame_num
+        w.put_ue(0); // idr_pic_id
+        w.put_bit(false); // no_output_of_prior_pics_flag
+        w.put_bit(false); // long_term_reference_flag
+        w.put_se(0); // slice_qp_delta
+        w.put_ue(1); // disable_deblocking_filter_idc
+        w.put_ue(25); // mb_type: I_PCM
+        while !w.is_byte_aligned() {
+            w.put_bit(false); // pcm_alignment_zero_bit
+        }
+        for &sample in pcm {
+            w.put_bits(u32::from(sample), 8); // pcm_sample_luma; no chroma in 4:0:0
+        }
+    });
+    let mut stream = Vec::new();
+    nc_common::nal::write_nal_unit(&[0x67], &sps, &mut stream);
+    nc_common::nal::write_nal_unit(&[0x68], &pps, &mut stream);
+    nc_common::nal::write_nal_unit(&[0x65], &slice, &mut stream);
+    stream
+}
+
+/// A 4:0:0 cropping window of odd size and origin decodes: luma is the
+/// window, chroma the flat 4:2:0 planes of half its size, rounded up. It
+/// used to be refused (`odd cropped 4:0:0 size`).
+#[test]
+fn monochrome_with_an_odd_cropped_size_decodes() {
+    let pcm: [u8; 256] = std::array::from_fn(|i| (20 + i * 7 % 200) as u8);
+    let mut decoder = Decoder::new();
+    for unit in annex_b_units(&monochrome_odd_crop_stream(&pcm)).unwrap() {
+        decoder.push_nal(unit).unwrap();
+    }
+    decoder.flush();
+    // The general output API: the picture-copy calls need even sizes.
+    let Some(DecodedPicture::Eight(picture)) = decoder.next_output() else {
+        panic!("one 8-bit picture");
+    };
+    let view = picture.view();
+    assert_eq!((view.width(), view.height()), (15, 15));
+    let luma = view.plane(PlaneIndex::Y);
+    for y in 0..15 {
+        let expected: Vec<u8> = (0..15).map(|x| pcm[(y + 1) * 16 + x + 1]).collect();
+        assert_eq!(luma.row(y), expected, "row {y}");
+    }
+    for plane in [PlaneIndex::U, PlaneIndex::V] {
+        let chroma = view.plane(plane);
+        assert_eq!((chroma.width(), chroma.height()), (8, 8));
+        assert!((0..8).all(|y| chroma.row(y).iter().all(|&v| v == 128)));
+    }
+}
+
+/// Level 6.2's largest picture (Table A-1: 8192x4320, 139 264 macroblocks)
+/// decodes; the decoder used to stop at level 5.2's `MaxFS`.
+#[test]
+fn level_6_picture_size_decodes_exactly() {
+    let (width, height) = (8192, 4320);
+    let mut enc =
+        Encoder::<crate::H264Backend>::new(config(width, height, 30, ParamOverrides::default()))
+            .unwrap();
+    let mut dec = Decoder::new();
+    for index in 0..2 {
+        let frame = enc.encode(&source(width, height, index));
+        equal(&dec.decode(&frame.data).unwrap(), enc.reconstruction());
+    }
+}
 #[cfg(feature = "analysis")]
 #[test]
 fn analysis_leaves_decoding_unchanged_and_tiles_each_picture() {

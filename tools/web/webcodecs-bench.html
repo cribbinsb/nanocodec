@@ -1,0 +1,133 @@
+<!doctype html>
+<!-- Page of tools/web/webcodecs_yardstick.py: our browser module and the browser's own decoders
+     (WebCodecs VideoDecoder) timed on the same stream in the same browser. Served with
+     packets.mjs, pkg/ (our module) and streams/ beside it. -->
+<meta charset="utf-8">
+<title>WebCodecs yardstick</title>
+<script type="module">
+import { annexBFrames, ivfFrames } from './packets.mjs';
+
+const IVF_CODECS = new Set(['av1', 'vp9', 'av2']);
+const FRAME_US = 33333;
+// WebCodecs codec strings (the codec registry's); our streams are 8-bit 4:2:0. H.264's
+// profile and level come from the stream's SPS; the others name their Main profile at a level
+// that covers every stream here (VP9 5.1, AV1 5.1, HEVC 5.1). VVC and AV2 have none.
+const CODEC_STRINGS = { hevc: 'hev1.1.6.L153.B0', vp9: 'vp09.00.51.08', av1: 'av01.0.13M.08' };
+const H264_SPS = 7, H264_IDR = 5;
+const HEVC_IRAP_FIRST = 16, HEVC_IRAP_LAST = 21;
+const AV1_OBU_SEQUENCE_HEADER = 1;
+
+async function packetsOf(codec, url) {
+  const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  return IVF_CODECS.has(codec) ? ivfFrames(bytes) : annexBFrames(bytes, codec);
+}
+
+/** The NAL header byte after each Annex-B start code. */
+function* nalHeaders(packet) {
+  for (let i = 0; i + 3 < packet.length; i++) {
+    if (packet[i] === 0 && packet[i + 1] === 0 && packet[i + 2] === 1) { yield i + 3; i += 2; }
+  }
+}
+
+function h264CodecString(packets) {
+  for (const p of packets) for (const at of nalHeaders(p)) {
+    if ((p[at] & 0x1f) === H264_SPS) {
+      return 'avc1.' + [p[at + 1], p[at + 2], p[at + 3]].map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  return null;
+}
+
+/** AV1: whether the temporal unit carries a sequence header (our and the reference
+    encoders' key frames do), walking its OBUs (AV1 §5.3). */
+function av1HasSequenceHeader(p) {
+  for (let at = 0; at < p.length;) {
+    const header = p[at], type = (header >> 3) & 15, extension = (header >> 2) & 1, hasSize = (header >> 1) & 1;
+    if (type === AV1_OBU_SEQUENCE_HEADER) return true;
+    if (!hasSize) return false;
+    at += 1 + extension;
+    let size = 0, shift = 0, byte;
+    do { byte = p[at++]; size += (byte & 0x7f) * 2 ** shift; shift += 7; } while (byte & 0x80);
+    at += size;
+  }
+  return false;
+}
+
+/** VP9 uncompressed header (VP9 §6.2): frame_marker, profile bits, show_existing_frame,
+    frame_type (0 = key). */
+function vp9IsKey(p) {
+  const b = p[0], profile = ((b >> 5) & 1) | (((b >> 4) & 1) << 1);
+  const bit = profile === 3 ? 2 : 3; // profile 3 has a reserved bit before show_existing_frame
+  if ((b >> bit) & 1) return false;
+  return ((b >> (bit - 1)) & 1) === 0;
+}
+
+function isKey(codec, p) {
+  if (codec === 'vp9') return vp9IsKey(p);
+  if (codec === 'av1') return av1HasSequenceHeader(p);
+  for (const at of nalHeaders(p)) {
+    if (codec === 'h264' && (p[at] & 0x1f) === H264_IDR) return true;
+    const type = (p[at] >> 1) & 0x3f;
+    if (codec === 'hevc' && type >= HEVC_IRAP_FIRST && type <= HEVC_IRAP_LAST) return true;
+  }
+  return false;
+}
+
+// Passes per page: each with a fresh decoder; the faster counts (the first also warms V8's
+// optimising compiler for our module, as the node harnesses' two passes do).
+const PASSES = 2;
+
+/** Our module: the BrowserDecoder.decode calls over every packet, one timed span. */
+window.oursDecode = async (codec, url) => {
+  const module = await import('./pkg/nc_web.js');
+  await module.default({ module_or_path: './pkg/nc_web_bg.wasm' });
+  const packets = await packetsOf(codec, url);
+  let best = Infinity;
+  for (let pass = 0; pass < PASSES; pass++) {
+    const decoder = new module.BrowserDecoder(codec);
+    const start = performance.now();
+    for (const packet of packets) decoder.decode(packet);
+    best = Math.min(best, performance.now() - start);
+    decoder.free();
+  }
+  return { supported: true, ms: best, frames: packets.length };
+};
+
+/** One VideoDecoder pass over every chunk: its time, or the failure. */
+async function webcodecsPass(config, chunks) {
+  let frames = 0, failure = null;
+  const decoder = new VideoDecoder({ output: (f) => { frames++; f.close(); }, error: (e) => { failure = e; } });
+  decoder.configure(config);
+  const start = performance.now();
+  try {
+    for (const chunk of chunks) decoder.decode(chunk);
+    await decoder.flush();
+  } catch (e) {
+    return { failure: String(failure || e) };
+  }
+  const ms = performance.now() - start;
+  if (decoder.state !== 'closed') decoder.close();
+  return { ms, frames };
+}
+
+/** The browser's VideoDecoder: every chunk queued, then flush; frames closed on output. */
+window.webcodecsDecode = async (codec, url, hardware) => {
+  if (!('VideoDecoder' in window)) return { supported: false, reason: 'no VideoDecoder' };
+  const packets = await packetsOf(codec, url);
+  const codecString = codec === 'h264' ? h264CodecString(packets) : CODEC_STRINGS[codec];
+  if (!codecString) return { supported: false, reason: 'no WebCodecs codec string' };
+  const config = { codec: codecString, hardwareAcceleration: hardware ? 'prefer-hardware' : 'prefer-software' };
+  const support = await VideoDecoder.isConfigSupported(config);
+  if (!support.supported) return { supported: false, codec: codecString, reason: 'isConfigSupported: false' };
+  const chunks = packets.map((data, i) => new EncodedVideoChunk({
+    type: i === 0 || isKey(codec, data) ? 'key' : 'delta', timestamp: i * FRAME_US, data }));
+  let best = null;
+  for (let pass = 0; pass < PASSES; pass++) {
+    const run = await webcodecsPass(config, chunks);
+    if (run.failure) return { supported: false, codec: codecString, reason: run.failure };
+    if (!best || run.ms < best.ms) best = run;
+  }
+  return { supported: true, codec: codecString, ms: best.ms, frames: best.frames, chunks: chunks.length };
+};
+window.benchReady = true;
+</script>

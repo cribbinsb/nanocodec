@@ -10,6 +10,9 @@
 //! Arithmetic follows BSD-3-Clause-Clear `VVenC` / `VVdeC`
 //! `AdaptiveLoopFilter` (`THIRD_PARTY.md`).
 
+#[cfg(target_arch = "aarch64")]
+mod neon_clipped;
+
 use nc_common::BitDepth;
 
 use crate::simd::{I16FilterLanes, SimdSample};
@@ -143,43 +146,43 @@ unsafe fn clipped_row_lanes<S: SimdSample, V: I16FilterLanes>(
 
 #[inline(always)]
 #[allow(clippy::inline_always)]
-unsafe fn clipped_block_row_lanes<S: SimdSample, V: I16FilterLanes>(
-    rows: &[[&[S]; 7]; VVC_ALF_BLOCK],
+unsafe fn clipped_block_row_vectors<S: SimdSample, V: I16FilterLanes>(
+    ptrs: &[[*const S; 7]; VVC_ALF_BLOCK],
+    dsts: &[*mut S; VVC_ALF_BLOCK],
     coefficients: &[[i16; VVC_ALF_TAPS]],
     limits: &[[i16; VVC_ALF_TAPS]],
     shifts: &[u32; VVC_ALF_BLOCK],
-    out: &mut [&mut [S]; VVC_ALF_BLOCK],
     depth: BitDepth,
+    start: usize,
+    end: usize,
 ) {
-    let depth = depth.of::<S>();
+    #[cfg(target_arch = "aarch64")]
+    if V::LANES == 8 {
+        // SAFETY: the containing dispatcher enables NEON and checked the
+        // source halos, parameter arrays and destination lengths.
+        unsafe {
+            neon_clipped::filter_vectors(
+                ptrs,
+                dsts,
+                coefficients,
+                limits,
+                shifts,
+                depth,
+                start,
+                end,
+            );
+        }
+        return;
+    }
+
     let (zero, max_val) = (V::splat(0), V::splat(depth.max() as i16));
     let blocks_per_vec = V::LANES / VVC_ALF_BLOCK;
-    let width = out[0].len();
-    let total_blocks = width.div_ceil(VVC_ALF_BLOCK);
-    assert_coeffs_and_limits(
-        &coefficients[..total_blocks],
-        &limits[..total_blocks],
-        depth,
-    );
-    let steps = width / V::LANES;
-    let whole = steps * V::LANES;
-    let min_in = whole + 2 * VVC_ALF_REACH;
-    let vec_blocks = steps * blocks_per_vec;
-    let coeff_vec = &coefficients[..vec_blocks];
-    let lim_vec = &limits[..vec_blocks];
-    let shifts = *shifts;
-    let mut ptrs = [[core::ptr::null::<S>(); 7]; VVC_ALF_BLOCK];
-    let mut dsts = [core::ptr::null_mut::<S>(); VVC_ALF_BLOCK];
-    for r in 0..VVC_ALF_BLOCK {
-        assert!(out[r].len() >= whole);
-        ptrs[r] = row_ptrs(&rows[r], min_in);
-        dsts[r] = out[r].as_mut_ptr();
-    }
+    let steps = (end - start) / V::LANES;
     for step in 0..steps {
-        let x = step * V::LANES;
-        let b0 = step * blocks_per_vec;
-        let w_params = V::expand_alf_params(&coeff_vec[b0..b0 + blocks_per_vec]);
-        let l_params = V::expand_alf_params(&lim_vec[b0..b0 + blocks_per_vec]);
+        let x = start + step * V::LANES;
+        let b0 = x / VVC_ALF_BLOCK;
+        let w_params = V::expand_alf_params(&coefficients[b0..b0 + blocks_per_vec]);
+        let l_params = V::expand_alf_params(&limits[b0..b0 + blocks_per_vec]);
         // SAFETY: `ptrs` and `dsts` were bounds-checked once before the loop.
         unsafe {
             for r in 0..VVC_ALF_BLOCK {
@@ -198,6 +201,79 @@ unsafe fn clipped_block_row_lanes<S: SimdSample, V: I16FilterLanes>(
                 };
                 S::store_clamped(centre.add_sat(offset), zero, max_val, dsts[r].add(x));
             }
+        }
+    }
+}
+
+#[inline(always)]
+#[allow(clippy::inline_always)]
+unsafe fn clipped_block_row_lanes<S, V, M, N>(
+    rows: &[[&[S]; 7]; VVC_ALF_BLOCK],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    limits: &[[i16; VVC_ALF_TAPS]],
+    shifts: &[u32; VVC_ALF_BLOCK],
+    out: &mut [&mut [S]; VVC_ALF_BLOCK],
+    depth: BitDepth,
+) where
+    S: SimdSample,
+    V: I16FilterLanes,
+    M: I16FilterLanes,
+    N: I16FilterLanes,
+{
+    let depth = depth.of::<S>();
+    let width = out[0].len();
+    let total_blocks = width.div_ceil(VVC_ALF_BLOCK);
+    assert_coeffs_and_limits(
+        &coefficients[..total_blocks],
+        &limits[..total_blocks],
+        depth,
+    );
+    let ptrs = rows.map(|row| row.map(<[S]>::as_ptr));
+    let dsts = out.each_mut().map(|row| row.as_mut_ptr());
+
+    let wide_end = width / V::LANES * V::LANES;
+    let mut whole = wide_end;
+    // SAFETY: the dispatcher checked every source halo and the four output
+    // lengths. Each range ends at or before width, starts on a four-sample
+    // block boundary, and is processed only in complete vectors.
+    unsafe {
+        clipped_block_row_vectors::<S, V>(
+            &ptrs,
+            &dsts,
+            coefficients,
+            limits,
+            shifts,
+            depth,
+            0,
+            whole,
+        );
+        if M::LANES < V::LANES && width - whole >= M::LANES {
+            let end = whole + (width - whole) / M::LANES * M::LANES;
+            clipped_block_row_vectors::<S, M>(
+                &ptrs,
+                &dsts,
+                coefficients,
+                limits,
+                shifts,
+                depth,
+                whole,
+                end,
+            );
+            whole = end;
+        }
+        if N::LANES < M::LANES && width - whole >= N::LANES {
+            let end = whole + (width - whole) / N::LANES * N::LANES;
+            clipped_block_row_vectors::<S, N>(
+                &ptrs,
+                &dsts,
+                coefficients,
+                limits,
+                shifts,
+                depth,
+                whole,
+                end,
+            );
+            whole = end;
         }
     }
     if whole < width {
@@ -422,7 +498,7 @@ unsafe fn cross_row_lanes<S: SimdSample, V: I16FilterLanes>(
 }
 
 macro_rules! isa_alf_simd {
-    ($mod_name:ident, $lanes:ty, $feature:literal) => {
+    ($mod_name:ident, $lanes:ty, $mid:ty, $narrow:ty, $feature:literal) => {
         pub(crate) mod $mod_name {
             use nc_common::BitDepth;
 
@@ -445,7 +521,7 @@ macro_rules! isa_alf_simd {
             ) {
                 // SAFETY: caller enables `$feature` and checked slice lengths.
                 unsafe {
-                    clipped_block_row_lanes::<S, $lanes>(
+                    clipped_block_row_lanes::<S, $lanes, $mid, $narrow>(
                         rows,
                         coefficients,
                         limits,
@@ -517,17 +593,37 @@ macro_rules! isa_alf_simd {
 }
 
 #[cfg(target_arch = "x86_64")]
-isa_alf_simd!(avx2, crate::simd::avx2::I16x16, "avx2");
+isa_alf_simd!(
+    avx2,
+    crate::simd::avx2::I16x16,
+    crate::simd::avx2::I16x16,
+    crate::simd::avx2::I16x8,
+    "avx2"
+);
 
 #[cfg(target_arch = "x86_64")]
 isa_alf_simd!(
     avx512,
     crate::simd::avx512_i16::I16x32,
-    "avx512f,avx512bw,avx512vl"
+    crate::simd::avx2::I16x16,
+    crate::simd::avx2::I16x8,
+    "avx2,avx512f,avx512bw,avx512vl"
 );
 
 #[cfg(target_arch = "aarch64")]
-isa_alf_simd!(neon, crate::simd::neon::I16x8, "neon");
+isa_alf_simd!(
+    neon,
+    crate::simd::neon::I16x8,
+    crate::simd::neon::I16x8,
+    crate::simd::neon::I16x8,
+    "neon"
+);
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-isa_alf_simd!(simd128, crate::simd::simd128::I16x8, "simd128");
+isa_alf_simd!(
+    simd128,
+    crate::simd::simd128::I16x8,
+    crate::simd::simd128::I16x8,
+    crate::simd::simd128::I16x8,
+    "simd128"
+);

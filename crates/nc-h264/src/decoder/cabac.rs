@@ -32,7 +32,7 @@ impl<'a> Cabac<'a> {
     /// (§9.3.1.1) and the engine on `data` (the byte-aligned slice data).
     pub fn new(data: &'a [u8], slice_type: SliceType, cabac_init_idc: u8, qp: i32) -> Result<Self> {
         let column = match slice_type {
-            SliceType::I => 0,
+            SliceType::I | SliceType::Si => 0,
             SliceType::P | SliceType::B => 1 + usize::from(cabac_init_idc),
         };
         let mut contexts = [0u8; CONTEXT_COUNT];

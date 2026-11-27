@@ -1,6 +1,6 @@
 // Run after tools/web/build.sh: every pre-encoded reference stream
 // (streams-ref/, made by tools/web/make-reference-streams.py) decodes in the
-// browser's WASM decoders, both module builds, bit-exactly: each frame's I420
+// browser's WASM decoders, all three module builds, bit-exactly: each frame's I420
 // MD5 must equal the reference decoder's (ffmpeg, dav1d or vpxdec), which the
 // generator recorded in hashes.json after checking our native decoder agrees.
 // The page plays these streams through the same BrowserDecoder.
@@ -14,7 +14,7 @@ const manifest = JSON.parse(await readFile(new URL('manifest.json', streams)));
 const expected = JSON.parse(await readFile(new URL('hashes.json', streams)));
 const md5 = bytes => createHash('md5').update(bytes).digest('hex');
 const report = [];
-for (const build of ['', 'relaxed/']) {
+for (const build of ['', 'relaxed/', 'scalar/']) {
   const pkg = new URL(`../pkg/${build}`, import.meta.url);
   const module = await import(new URL('nc_web.js', pkg));
   await module.default({ module_or_path: await readFile(new URL('nc_web_bg.wasm', pkg)) });

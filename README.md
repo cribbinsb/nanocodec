@@ -27,8 +27,11 @@ Ours is development build 23c962d8b, measured before 0.7.0's last encoder change
   speed. ([All results](https://cribbinsb.github.io/nanocodec/results/))
 - **One engine, six formats.** Rate control, motion search and mode decisions are shared; each format adds
   only its own syntax. An improvement lands once and every format gets it.
-- **Plays in the browser.** All six decoders compile to WebAssembly (SIMD128: Chrome/Edge 91+, Firefox 89+,
-  Safari 16.4+; tested in Chromium only), so a page can play HEVC, VVC or AV2 without the browser's own codecs.
+- **Plays in the browser.** All six decoders compile to WebAssembly, so a page can play HEVC, VVC or AV2
+  without the browser's own codecs. Checked in headless Chromium 148, Firefox 150 and WebKit 26.4 (Safari's
+  engine) on Linux: the official conformance streams and the demo, except 10-bit VVC in WebKit, which its
+  JIT miscompiles (not fixed yet; [record](docs/results/browser-engines-2026-11-27/)); browsers without WebAssembly SIMD (before Chrome/Edge
+  91, Firefox 89, Safari 16.4) get a scalar build, about 4-6 times slower.
 - **Standard streams, checked.** After every landing, short test streams of every shipped preset of every
   format (layers, holds, intra refresh, starved keys and the main coding tools) must decode bit-exactly in
   two independent decoders per format and in ours. That checks the presets' coding paths, not every stream
@@ -37,8 +40,8 @@ Ours is development build 23c962d8b, measured before 0.7.0's last encoder change
   - HEVC: 147/147 of the official ITU-T/ISO HEVC_v1 suite (Main, Main 10); no known gap in those profiles.
   - VVC: 226/283 of the official H.266.1 suite (all its Main 10 streams but two); reserved NAL types,
     layer ids above 0 and a VPS id above 0 are rejected, not yet ignored.
-  - H.264: 110/190 of the official H.264.1 suite (its AVCv1, FRExt and High 10 sets); not yet interlaced
-    streams (field pictures, MBAFF) or pictures above level 5.2.
+  - H.264: 150/190 of the official H.264.1 suite (its AVCv1, FRExt and High 10 sets), field pictures
+    included; not yet MBAFF frames (38 streams) or pictures above level 5.2.
   - AV1 and VP9: 242/242 libaom and 314/314 libvpx test vectors (encoder project vectors, not official
     suites). AV1 not yet: quantizer matrices, loop-filter deltas, segment features other than the
     quantizer, lossless segments in mixed frames, odd frame sizes, switch frames. VP9: all four profiles.

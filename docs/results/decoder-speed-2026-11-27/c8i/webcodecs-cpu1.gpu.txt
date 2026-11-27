@@ -1,0 +1,2386 @@
+GPU Internals
+:root {
+    color-scheme: light dark;
+  }
+  * {
+    box-sizing: border-box;
+    user-select: none;
+  }
+
+  body {
+    cursor: default;
+    font-family: sans-serif;
+    margin: 8px;
+    padding: 0;
+  }
+:host{--green:#080;--yellow:#880;--red:#f00;--gray:#888;--bg-yellow:#ff0;display:block;flex:1;overflow:auto;padding:10px}@media (prefers-color-scheme:dark){:host{--green:#0F0;--yellow:#FF0;--red:#f00;--gray:#888;--bg-yellow:#880}}:host *{user-select:text}:host([selected]){display:flex;flex-direction:column}h3,ul{margin-bottom:0;margin-top:0}#content>div,#download-to-file{margin-bottom:1em}.feature-green{color:var(--green)}.feature-yellow{color:var(--yellow)}.feature-red{color:var(--red)}.feature-gray{color:var(--gray)}.bg-yellow{background-color:var(--bg-yellow)}#vulkan-info-value{white-space:pre}#download-to-file{font:inherit;min-height:2em;user-select:none}h4.dawn-info-header{color:var(--yellow);margin-bottom:2px;margin-top:10px}table.info-table{border-collapse:collapse;table-layout:fixed;width:100%}.info-table td{border:1px solid #777;vertical-align:top;overflow-x:auto}.info-table td:nth-child(1){font-weight:bold;width:25%}.info-table td:nth-child(2){font-weight:bold;width:75%}.copy{display:none}
+Download Report to File
+GPU Info
+Graphics Feature Status
+=======================
+*
+Canvas:
+Software only, hardware acceleration unavailable
+*
+Direct Rendering Display Compositor:
+Disabled
+*
+Compositing:
+Software only. Hardware acceleration disabled
+*
+Multiple Raster Threads:
+Disabled
+*
+OpenGL:
+Disabled
+*
+Rasterization:
+Software only. Hardware acceleration disabled
+*
+Skia Graphite:
+Disabled
+*
+TreesInViz:
+Disabled
+*
+Video Decode:
+Software only. Hardware acceleration disabled
+*
+Video Encode:
+Software only. Hardware acceleration disabled
+*
+Vulkan:
+Disabled
+*
+WebGL:
+Software only, hardware acceleration unavailable
+*
+WebGPU:
+Software only, hardware acceleration unavailable
+*
+WebGPU interop:
+Disabled
+*
+WebNN:
+Software only, hardware acceleration unavailable
+Version Information
+===================
+Data exported
+:
+2026-11-27T09:28:18.264Z
+Chrome version
+:
+Chrome/158.0.8127.88
+Operating system
+:
+Linux 7.0.0-1018-aws
+Software rendering list URL
+:
+https://chromium.googlesource.com/chromium/src/+/0cefb18236a23db1ebb6b2bc040fbbaf8cbe759e/gpu/config/software_rendering_list.json
+Driver bug list URL
+:
+https://chromium.googlesource.com/chromium/src/+/0cefb18236a23db1ebb6b2bc040fbbaf8cbe759e/gpu/config/gpu_driver_bug_list.json
+ANGLE commit id
+:
+1f6526a566c2
+2D graphics backend
+:
+Skia/158 3279352fdf1fbbd01a6dd024a52d3f178a6d5f07
+Command Line
+:
+/opt/google/chrome/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --user-data-dir=/tmp/playwright_chromiumdev_profile-0ALftV --remote-debugging-pipe --no-startup-window --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl --flag-switches-begin --flag-switches-end --enable-unsafe-swiftshader
+Driver Information
+==================
+Initialization time
+:
+11
+In-process GPU
+:
+false
+Skia Backend
+:
+None
+Passthrough Command Decoder
+:
+true
+Sandboxed
+:
+false
+GPU0
+:
+VENDOR= 0xffff [Google Inc. (Google)], DEVICE=0xffff [ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0)], DRIVER_VENDOR=SwANGLE, DRIVER_VERSION=5.0.0 *ACTIVE*
+Optimus
+:
+false
+AMD switchable
+:
+false
+Pixel shader version
+:
+3.00
+Vertex shader version
+:
+3.00
+Max. MSAA samples
+:
+4
+Machine model name
+:
+Machine model version
+:
+GL implementation parts
+:
+(gl=egl-angle,angle=swiftshader)
+Display type
+:
+ANGLE_SWIFTSHADER
+GL_VENDOR
+:
+Google Inc. (Google)
+GL_RENDERER
+:
+ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0)
+GL_VERSION
+:
+OpenGL ES 3.0 (ANGLE 2.1.29257 git hash: 1f6526a566c2)
+GL_EXTENSIONS
+:
+GL_AMD_performance_monitor GL_ANGLE_base_vertex_base_instance_shader_builtin GL_ANGLE_blob_cache GL_ANGLE_client_arrays GL_ANGLE_clip_cull_distance GL_ANGLE_compressed_texture_etc GL_ANGLE_copy_texture_3d GL_ANGLE_depth_texture GL_ANGLE_framebuffer_blit GL_ANGLE_framebuffer_multisample GL_ANGLE_get_image GL_ANGLE_get_serialized_context_string GL_ANGLE_get_tex_level_parameter GL_ANGLE_instanced_arrays GL_ANGLE_memory_object_flags GL_ANGLE_memory_size GL_ANGLE_multi_draw GL_ANGLE_pack_reverse_row_order GL_ANGLE_polygon_mode GL_ANGLE_program_binary_readiness_query GL_ANGLE_program_cache_control GL_ANGLE_read_only_depth_stencil_feedback_loops GL_ANGLE_relaxed_vertex_attribute_type GL_ANGLE_renderability_validation GL_ANGLE_request_extension GL_ANGLE_rgbx_internal_format GL_ANGLE_robust_client_memory GL_ANGLE_robust_fragment_shader_output GL_ANGLE_robust_resource_initialization GL_ANGLE_shader_pixel_local_storage GL_ANGLE_shader_pixel_local_storage_coherent GL_ANGLE_stencil_texturing GL_ANGLE_texture_compression_dxt3 GL_ANGLE_texture_compression_dxt5 GL_ANGLE_texture_multisample GL_ANGLE_texture_usage GL_ANGLE_translated_shader_source GL_ANGLE_vulkan_image GL_ANGLE_yuv_internal_format GL_APPLE_clip_distance GL_ARM_rgba8 GL_ARM_shader_framebuffer_fetch GL_CHROMIUM_bind_generates_resource GL_CHROMIUM_bind_uniform_location GL_CHROMIUM_copy_compressed_texture GL_CHROMIUM_copy_texture GL_CHROMIUM_lose_context GL_EXT_EGL_image_array GL_EXT_EGL_image_external_wrap_modes GL_EXT_EGL_image_storage GL_EXT_base_instance GL_EXT_blend_minmax GL_EXT_buffer_storage GL_EXT_clear_texture GL_EXT_clip_control GL_EXT_clip_cull_distance GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_compressed_ETC1_RGB8_sub_texture GL_EXT_conservative_depth GL_EXT_copy_image GL_EXT_debug_label GL_EXT_debug_marker GL_EXT_depth_clamp GL_EXT_discard_framebuffer GL_EXT_disjoint_timer_query GL_EXT_draw_buffers GL_EXT_draw_buffers_indexed GL_EXT_draw_elements_base_vertex GL_EXT_float_blend GL_EXT_frag_depth GL_EXT_instanced_arrays GL_EXT_map_buffer_range GL_EXT_memory_object GL_EXT_memory_object_fd GL_EXT_occlusion_query_boolean GL_EXT_polygon_offset_clamp GL_EXT_read_format_bgra GL_EXT_robustness GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_semaphore GL_EXT_semaphore_fd GL_EXT_separate_shader_objects GL_EXT_shader_framebuffer_fetch GL_EXT_shader_framebuffer_fetch_non_coherent GL_EXT_shader_non_constant_global_initializers GL_EXT_shader_texture_lod GL_EXT_shadow_samplers GL_EXT_texture_border_clamp GL_EXT_texture_compression_bptc GL_EXT_texture_compression_dxt1 GL_EXT_texture_compression_rgtc GL_EXT_texture_compression_s3tc_srgb GL_EXT_texture_filter_anisotropic GL_EXT_texture_format_BGRA8888 GL_EXT_texture_lod_bias GL_EXT_texture_mirror_clamp_to_edge GL_EXT_texture_rg GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_RG8 GL_EXT_texture_sRGB_decode GL_EXT_texture_shadow_lod GL_EXT_texture_storage GL_EXT_texture_type_2_10_10_10_REV GL_EXT_unpack_subimage GL_KHR_blend_equation_advanced GL_KHR_debug GL_KHR_robust_buffer_access_behavior GL_KHR_robustness GL_KHR_texture_compression_astc_ldr GL_NV_fence GL_NV_framebuffer_blit GL_NV_pack_subimage GL_NV_pixel_buffer_object GL_NV_polygon_mode GL_NV_read_depth GL_NV_read_depth_stencil GL_NV_read_stencil GL_NV_shader_noperspective_interpolation GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_compressed_ETC1_RGB8_texture GL_OES_compressed_paletted_texture GL_OES_copy_image GL_OES_depth24 GL_OES_depth32 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_draw_buffers_indexed GL_OES_draw_elements_base_vertex GL_OES_element_index_uint GL_OES_fbo_render_mipmap GL_OES_get_program_binary GL_OES_mapbuffer GL_OES_packed_depth_stencil GL_OES_required_internalformat GL_OES_rgb8_rgba8 GL_OES_sample_shading GL_OES_sample_variables GL_OES_shader_multisample_interpolation GL_OES_standard_derivatives GL_OES_surfaceless_context GL_OES_texture_3D GL_OES_texture_border_clamp GL_OES_texture_float GL_OES_texture_float_linear GL_OES_texture_half_float GL_OES_texture_half_float_linear GL_OES_texture_npot GL_OES_texture_stencil8 GL_OES_texture_storage_multisample_2d_array GL_OES_vertex_array_object GL_OES_vertex_half_float GL_OES_vertex_type_10_10_10_2 GL_OVR_multiview GL_OVR_multiview2 GL_QCOM_texture_lod_bias
+Disabled Extensions
+:
+Disabled WebGL Extensions
+:
+Window system binding vendor
+:
+Google Inc. (Google)
+Window system binding version
+:
+1.5 (ANGLE 2.1.29257 git hash: 1f6526a566c2)
+Window system binding extensions
+:
+EGL_EXT_create_context_robustness EGL_ANGLE_surface_orientation EGL_KHR_create_context EGL_KHR_image EGL_KHR_image_base EGL_EXT_image_gl_colorspace EGL_KHR_gl_colorspace EGL_KHR_gl_texture_2D_image EGL_KHR_gl_texture_cubemap_image EGL_KHR_gl_renderbuffer_image EGL_KHR_get_all_proc_addresses EGL_KHR_fence_sync EGL_KHR_wait_sync EGL_ANGLE_create_context_webgl_compatibility EGL_CHROMIUM_create_context_bind_generates_resource EGL_KHR_swap_buffers_with_damage EGL_EXT_pixel_format_float EGL_KHR_surfaceless_context EGL_ANGLE_display_texture_share_group EGL_ANGLE_display_semaphore_share_group EGL_ANGLE_create_context_client_arrays EGL_ANGLE_program_cache_control EGL_ANGLE_robust_resource_initialization EGL_ANGLE_create_context_extensions_enabled EGL_ANDROID_blob_cache EGL_ANDROID_recordable EGL_ANGLE_create_context_backwards_compatible EGL_KHR_no_config_context EGL_IMG_context_priority EGL_KHR_create_context_no_error EGL_KHR_reusable_sync EGL_EXT_buffer_age EGL_ANGLE_create_surface_swap_interval EGL_ANGLE_vulkan_image EGL_KHR_partial_update EGL_ANGLE_global_fence_sync EGL_ANGLE_memory_usage_report
+Direct rendering version
+:
+unknown
+Reset notification strategy
+:
+0x8252
+GPU process crash count
+:
+0
+Driver Bug Workarounds
+======================
+Problems Detected
+=================
+*
+WebGPU has been disabled via blocklist or the command line.
+Disabled Features:
+webgpu
+*
+Accelerated rasterization has been disabled, either via blocklist, about:flags or the command line.
+Disabled Features:
+rasterization
+*
+Accelerated video encode has been disabled, either via blocklist, about:flags or the command line.
+Disabled Features:
+video_encode
+*
+Accelerated video decode has been disabled, either via blocklist, about:flags or the command line.
+Disabled Features:
+video_decode
+*
+WebGL has been disabled via blocklist or the command line.
+Disabled Features:
+webgl
+*
+Gpu compositing has been disabled, either via blocklist, about:flags or the command line. The browser will fall back to software compositing and hardware acceleration will be unavailable.
+Disabled Features:
+gpu_compositing
+*
+Accelerated 2D canvas is unavailable: either disabled via blocklist or the command line.
+Disabled Features:
+2d_canvas
+ANGLE Features
+==============
+*
+allowCompressedFormats
+(Frontend workarounds)
+:
+Enabled
+*
+allowExtensionDisableAfterNonPpTokens
+(Frontend features)
+:
+Disabled
+*
+alwaysEnableEmulatedMultidrawExtensions
+(Frontend workarounds)
+:
+Disabled
+*
+alwaysRunLinkSubJobsThreaded
+(Frontend features)
+:
+Enabled
+*
+cacheCompiledShader
+(Frontend features)
+:
+Enabled
+*
+clipCullDistanceBrokenWithPassthroughShaders
+(Frontend features)
+:
+Disabled
+*
+compileJobIsThreadSafe
+(Frontend features)
+:
+Enabled
+*
+compressProgramBinaryBlob
+(Frontend features)
+:
+Disabled
+*
+disableAnisotropicFiltering
+(Frontend workarounds)
+:
+Disabled
+*
+disableProgramBinary
+(Frontend features)
+:
+Disabled
+*
+disableProgramCaching
+(Frontend features)
+:
+Disabled
+*
+disableProgramCachingForTransformFeedback
+(Frontend workarounds)
+:
+Disabled
+*
+disallowNonZeroBaseLevelAndIncompatibleLevelsOnHardenedContexts
+(Frontend workarounds)
+:
+Disabled
+*
+dumpShaderSource
+(Frontend features)
+:
+Disabled
+*
+dumpTranslatedShaders
+(Frontend features)
+:
+Disabled
+*
+emulatePixelLocalStorage
+(Frontend features)
+:
+Enabled
+*
+enableCaptureLimits
+(Frontend features)
+:
+Disabled
+*
+enableCreateContextBackwardsCompatible
+(Frontend features)
+:
+Enabled
+*
+enableProgramBinaryForCapture
+(Frontend features)
+:
+Disabled
+*
+enableShaderSubstitution
+(Frontend workarounds)
+:
+Disabled
+*
+enableTranslatedShaderSubstitution
+(Frontend workarounds)
+:
+Disabled
+*
+ensureLoopForwardProgress
+(Frontend features)
+:
+Disabled
+*
+forceDebugContexts
+(Frontend features)
+:
+Disabled
+*
+forceDepthAttachmentInitOnClear
+(Frontend workarounds)
+:
+Disabled
+*
+forceFlushAfterDrawcallUsingShadowmap
+(Frontend workarounds)
+:
+Disabled
+*
+forceGlErrorChecking
+(Frontend features)
+:
+Disabled
+*
+forceInitShaderVariables
+(Frontend features)
+:
+Disabled
+*
+forceMinimumMaxVertexAttributes
+(Frontend features)
+:
+Disabled
+*
+forcePassthroughShaders
+(Frontend features)
+:
+Disabled
+*
+forceRobustResourceInit
+(Frontend features)
+:
+Disabled
+*
+limitMaxBufferBytesTo1MB
+(Frontend features)
+:
+Disabled
+*
+limitMaxTextureBytesTo1MB
+(Frontend features)
+:
+Disabled
+*
+linkJobIsThreadSafe
+(Frontend features)
+:
+Enabled
+*
+loseContextOnOutOfMemory
+(Frontend workarounds)
+:
+Enabled
+*
+loseHardenedContextOnBackendError
+(Frontend workarounds)
+:
+Enabled
+*
+noperspectiveInterpolationBrokenWithPassthroughShaders
+(Frontend features)
+:
+Disabled
+*
+setNeedInitOnInvalidation
+(Frontend features)
+:
+Disabled
+*
+singleThreadedTextureDecompression
+(Frontend workarounds)
+:
+Disabled
+*
+uncurrentEglSurfaceUponSurfaceDestroy
+(Frontend workarounds)
+:
+Enabled
+*
+useIr
+(Frontend features)
+:
+Disabled
+*
+addFramebufferFetchBarrierOnUseMidRenderPass
+(Vulkan workarounds)
+:
+Disabled
+*
+adjustClearColorPrecision
+(Vulkan workarounds)
+:
+Disabled
+*
+allocateNonZeroMemory
+(Vulkan features)
+:
+Disabled
+*
+allowGenerateMipmapWithCompute
+(Vulkan features)
+:
+Disabled
+*
+allowHostImageCopyAfterInitialUpload
+(Vulkan features)
+:
+Enabled
+*
+allowHostImageCopyDespiteNonIdenticalLayout
+(Vulkan features)
+:
+Disabled
+*
+allowMultisampledRenderToTextureEmulation
+(Vulkan workarounds)
+:
+Disabled
+*
+allowPipelineBinariesForTesting
+(Vulkan features)
+:
+Disabled
+*
+allowPipelineStatisticsForPrimitivesGeneratedQuery
+(Vulkan workarounds)
+:
+Disabled
+*
+appendAliasedMemoryDecorations
+(Vulkan workarounds)
+:
+Enabled
+*
+asyncCommandBufferReset
+(Vulkan features)
+:
+Enabled
+*
+asyncGarbageCleanup
+(Vulkan features)
+:
+Enabled
+*
+avoidImageGhostOutsideRenderPass
+(Vulkan features)
+:
+Enabled
+*
+avoidInvisibleWindowSwapchainRecreate
+(Vulkan workarounds)
+:
+Disabled
+*
+avoidOpSelectWithMismatchingRelaxedPrecision
+(Vulkan workarounds)
+:
+Disabled
+*
+bottomLeftOriginPresentRegionRectangles
+(Vulkan workarounds)
+:
+Disabled
+*
+bresenhamLineRasterization
+(Vulkan features)
+:
+Enabled
+*
+clBestUniformFitWGS
+(Vulkan features)
+:
+Disabled
+*
+clDumpVkSpirv
+(Vulkan features)
+:
+Disabled
+*
+clSerializedExecution
+(Vulkan features)
+:
+Disabled
+*
+clampFragDepth
+(Vulkan workarounds)
+:
+Disabled
+*
+clampPointSize
+(Vulkan workarounds)
+:
+Disabled
+*
+convertLowpAndMediumpFloatUniformsTo16Bits
+(Vulkan features)
+:
+Disabled
+*
+debugClDumpCommandStream
+(Vulkan features)
+:
+Disabled
+*
+debugSupportsClFp64
+(Vulkan features)
+:
+Disabled
+*
+descriptorSetCache
+(Vulkan features)
+:
+Disabled
+*
+destroyOldSwapchainInSharedPresentMode
+(Vulkan workarounds)
+:
+Disabled
+*
+disableDepthStencilResolveThroughAttachment
+(Vulkan workarounds)
+:
+Disabled
+*
+disablePipelineCacheLoadForTesting
+(Vulkan workarounds)
+:
+Disabled
+*
+disableSeparateShaderObjects
+(Vulkan app workarounds)
+:
+Disabled
+*
+disableSubmitCommandsOnSyncStatusCheckForTesting
+(Vulkan workarounds)
+:
+Disabled
+*
+disallowMixedDepthStencilLoadOpNoneAndLoad
+(Vulkan workarounds)
+:
+Disabled
+*
+doubleDepthBiasConstantFactor
+(Vulkan workarounds)
+:
+Disabled
+*
+dropDepthStencilClearOnInvalidate
+(Vulkan workarounds)
+:
+Disabled
+*
+eglColorspaceAttributePassthrough
+(Vulkan features)
+:
+Disabled
+*
+emulateAdvancedBlendEquations
+(Vulkan features)
+:
+Disabled
+*
+emulateDithering
+(Vulkan features)
+:
+Disabled
+*
+emulateR32fImageAtomicExchange
+(Vulkan workarounds)
+:
+Enabled
+*
+emulateTransformFeedback
+(Vulkan features)
+:
+Enabled
+*
+emulatedPrerotation180
+(Vulkan features)
+:
+Disabled
+*
+emulatedPrerotation270
+(Vulkan features)
+:
+Disabled
+*
+emulatedPrerotation90
+(Vulkan features)
+:
+Disabled
+*
+enableAdditionalBlendFactorsForDithering
+(Vulkan app workarounds)
+:
+Disabled
+*
+enableAlphaChannelImages
+(Vulkan workarounds)
+:
+Disabled
+*
+enableAsyncPipelineCacheCompression
+(Vulkan workarounds)
+:
+Enabled
+*
+enableExtraSubmitFence
+(Vulkan workarounds)
+:
+Disabled
+*
+enableMergeClientAttribBuffer
+(Vulkan features)
+:
+Enabled
+*
+enableMultisampledRenderToTexture
+(Vulkan workarounds)
+:
+Disabled
+*
+enableParallelCompileAndLink
+(Vulkan features)
+:
+Disabled
+*
+enablePipelineCacheDataCompression
+(Vulkan features)
+:
+Enabled
+*
+enablePortabilityEnumeration
+(Vulkan workarounds)
+:
+Disabled
+*
+enablePrecisionQualifiers
+(Vulkan features)
+:
+Enabled
+*
+explicitlyEnablePerSampleShading
+(Vulkan workarounds)
+:
+Enabled
+*
+exposeES32ForTesting
+(Vulkan workarounds)
+:
+Disabled
+*
+exposeNonConformantExtensionsAndVersions
+(Vulkan workarounds)
+:
+Disabled
+*
+externallySynchronizePipelineCacheAccess
+(Vulkan workarounds)
+:
+Disabled
+*
+forceContinuousRefreshOnSharedPresent
+(Vulkan features)
+:
+Disabled
+*
+forceD16TexFilter
+(Vulkan workarounds)
+:
+Disabled
+*
+forceDisableFullScreenExclusive
+(Vulkan workarounds)
+:
+Disabled
+*
+forceFallbackFormat
+(Vulkan workarounds)
+:
+Disabled
+*
+forceHostImageCopyForLuma
+(Vulkan features)
+:
+Disabled
+*
+forceMaxUniformBufferSize16KB
+(Vulkan workarounds)
+:
+Disabled
+*
+forceNearestFiltering
+(Vulkan workarounds)
+:
+Disabled
+*
+forceNearestMipFiltering
+(Vulkan workarounds)
+:
+Disabled
+*
+forceRenderableFallbackFormat
+(Vulkan workarounds)
+:
+Disabled
+*
+forceSampleUsageForAhbBackedImages
+(Vulkan app workarounds)
+:
+Disabled
+*
+forceSizePointerForBoundVertexBuffers
+(Vulkan features)
+:
+Disabled
+*
+forceSubmitExceptionsAtFBOBoundary
+(Vulkan workarounds)
+:
+Disabled
+*
+forceSubmitImmutableTextureUpdates
+(Vulkan app workarounds)
+:
+Enabled
+*
+forceTextureLodOffset1
+(Vulkan workarounds)
+:
+Disabled
+*
+forceTextureLodOffset2
+(Vulkan workarounds)
+:
+Disabled
+*
+forceTextureLodOffset3
+(Vulkan workarounds)
+:
+Disabled
+*
+forceTextureLodOffset4
+(Vulkan workarounds)
+:
+Disabled
+*
+forceWaitForSubmissionToCompleteForQueryResult
+(Vulkan workarounds)
+:
+Disabled
+*
+generateFragmentShadingRateAttchementWithCpu
+(Vulkan features)
+:
+Disabled
+*
+hasBlobCacheThatEvictsOldItemsFirst
+(Vulkan features)
+:
+Enabled
+*
+initializeColorAttachmentWithWhite
+(Vulkan app workarounds)
+:
+Disabled
+*
+isVertexSyncDeferred
+(Vulkan features)
+:
+Disabled
+*
+limitMaxStorageBufferSize
+(Vulkan workarounds)
+:
+Disabled
+*
+limitSampleCountTo2
+(Vulkan workarounds)
+:
+Disabled
+*
+logMemoryReportCallbacks
+(Vulkan features)
+:
+Disabled
+*
+logMemoryReportStats
+(Vulkan features)
+:
+Disabled
+*
+mapUnspecifiedColorSpaceToPassThrough
+(Vulkan features)
+:
+Disabled
+*
+mergeProgramPipelineCachesToGlobalCache
+(Vulkan workarounds)
+:
+Disabled
+*
+mutableMipmapTextureUpload
+(Vulkan features)
+:
+Enabled
+*
+overrideSurfaceFormatRGB8ToRGBA8
+(Vulkan workarounds)
+:
+Enabled
+*
+padBuffersToMaxVertexAttribStride
+(Vulkan workarounds)
+:
+Disabled
+*
+permanentlySwitchToFramebufferFetchMode
+(Vulkan features)
+:
+Disabled
+*
+persistentlyMappedBuffers
+(Vulkan features)
+:
+Enabled
+*
+preferAggregateBarrierCalls
+(Vulkan workarounds)
+:
+Enabled
+*
+preferBGR565ToRGB565
+(Vulkan features)
+:
+Disabled
+*
+preferCPUForBufferSubData
+(Vulkan features)
+:
+Disabled
+*
+preferCachedNoncoherentForDynamicStreamBufferUsage
+(Vulkan features)
+:
+Disabled
+*
+preferDeviceLocalMemoryHostVisible
+(Vulkan features)
+:
+Enabled
+*
+preferDoubleBufferSwapchainOnFifoMode
+(Vulkan features)
+:
+Disabled
+*
+preferDrawClearOverVkCmdClearAttachments
+(Vulkan workarounds)
+:
+Disabled
+*
+preferDynamicRendering
+(Vulkan features)
+:
+Disabled
+*
+preferGPUForCopyBufferSubData
+(Vulkan features)
+:
+Disabled
+*
+preferGlobalPipelineCache
+(Vulkan features)
+:
+Disabled
+*
+preferHostCachedForNonStaticBufferUsage
+(Vulkan features)
+:
+Disabled
+*
+preferLinearFilterForYUV
+(Vulkan features)
+:
+Disabled
+*
+preferMSRTSSFlagByDefault
+(Vulkan features)
+:
+Disabled
+*
+preferMonolithicPipelinesOverLibraries
+(Vulkan workarounds)
+:
+Disabled
+*
+preferPipelineBinaries
+(Vulkan features)
+:
+Disabled
+*
+preferPrecomputedVertexTransform
+(Vulkan features)
+:
+Disabled
+*
+preferSkippingInvalidateForEmulatedFormats
+(Vulkan workarounds)
+:
+Enabled
+*
+preferSubmitAtFBOBoundary
+(Vulkan workarounds)
+:
+Disabled
+*
+preferSubmitOnAnySamplesPassedQueryEnd
+(Vulkan workarounds)
+:
+Disabled
+*
+provokingVertex
+(Vulkan features)
+:
+Enabled
+*
+recycleVkEvent
+(Vulkan features)
+:
+Enabled
+*
+retainSPIRVDebugInfo
+(Vulkan features)
+:
+Disabled
+*
+roundOutputAfterDithering
+(Vulkan workarounds)
+:
+Disabled
+*
+simulateTileMemoryForTesting
+(Vulkan features)
+:
+Disabled
+*
+simulateTileMemoryTransferSrcForTesting
+(Vulkan features)
+:
+Disabled
+*
+skipPipelineCacheSerialization
+(Vulkan features)
+:
+Enabled
+*
+slowDownMonolithicPipelineCreationForTesting
+(Vulkan workarounds)
+:
+Disabled
+*
+splitCrossFormatLayeredImageCopy
+(Vulkan workarounds)
+:
+Disabled
+*
+supportFragmentShadingRateExtExtensions
+(Vulkan features)
+:
+Disabled
+*
+supportShaderPixelLocalStorageAngle
+(Vulkan features)
+:
+Enabled
+*
+supports16BitInputOutput
+(Vulkan features)
+:
+Disabled
+*
+supports16BitPushConstant
+(Vulkan features)
+:
+Disabled
+*
+supports16BitStorageBuffer
+(Vulkan features)
+:
+Disabled
+*
+supports16BitUniformAndStorageBuffer
+(Vulkan features)
+:
+Disabled
+*
+supports8BitPushConstant
+(Vulkan features)
+:
+Disabled
+*
+supports8BitStorageBuffer
+(Vulkan features)
+:
+Disabled
+*
+supports8BitUniformAndStorageBuffer
+(Vulkan features)
+:
+Disabled
+*
+supportsAlphaToCoverageEnableDynamicState
+(Vulkan features)
+:
+Enabled
+*
+supportsAlphaToOneEnableDynamicState
+(Vulkan features)
+:
+Disabled
+*
+supportsAmdShaderCoreProperties
+(Vulkan features)
+:
+Disabled
+*
+supportsAndroidHardwareBuffer
+(Vulkan features)
+:
+Disabled
+*
+supportsAndroidNativeFenceSync
+(Vulkan features)
+:
+Disabled
+*
+supportsAngleRgbxInternalFormat
+(Vulkan features)
+:
+Enabled
+*
+supportsAppleClipDistance
+(Vulkan features)
+:
+Enabled
+*
+supportsAstc3d
+(Vulkan features)
+:
+Disabled
+*
+supportsAstcDecodeMode
+(Vulkan features)
+:
+Disabled
+*
+supportsAstcDecodeModeRgb9e5
+(Vulkan features)
+:
+Disabled
+*
+supportsAstcHdr3dTextures
+(Vulkan features)
+:
+Disabled
+*
+supportsAstcSliced3d
+(Vulkan features)
+:
+Disabled
+*
+supportsBindMemory2
+(Vulkan features)
+:
+Enabled
+*
+supportsBindVertexBuffers2
+(Vulkan features)
+:
+Enabled
+*
+supportsBlendOperationAdvanced
+(Vulkan features)
+:
+Enabled
+*
+supportsBlendOperationAdvancedCoherent
+(Vulkan features)
+:
+Disabled
+*
+supportsBufferDeviceAddress
+(Vulkan features)
+:
+Disabled
+*
+supportsClFp16
+(Vulkan features)
+:
+Disabled
+*
+supportsClFp64
+(Vulkan features)
+:
+Disabled
+*
+supportsClKhrSubgroups
+(Vulkan features)
+:
+Disabled
+*
+supportsClipCullDistanceInGSAndTS
+(Vulkan features)
+:
+Disabled
+*
+supportsColorWriteEnable
+(Vulkan features)
+:
+Disabled
+*
+supportsComputeTranscodeEtcToBc
+(Vulkan features)
+:
+Disabled
+*
+supportsCustomBorderColor
+(Vulkan features)
+:
+Enabled
+*
+supportsDenormFtzFp16
+(Vulkan features)
+:
+Disabled
+*
+supportsDenormFtzFp32
+(Vulkan features)
+:
+Disabled
+*
+supportsDenormFtzFp64
+(Vulkan features)
+:
+Disabled
+*
+supportsDenormPreserveFp16
+(Vulkan features)
+:
+Disabled
+*
+supportsDenormPreserveFp32
+(Vulkan features)
+:
+Disabled
+*
+supportsDenormPreserveFp64
+(Vulkan features)
+:
+Disabled
+*
+supportsDepthClampEnableDynamicState
+(Vulkan features)
+:
+Enabled
+*
+supportsDepthClampZeroOne
+(Vulkan features)
+:
+Disabled
+*
+supportsDepthClipControl
+(Vulkan features)
+:
+Enabled
+*
+supportsDepthStencilIndependentResolveNone
+(Vulkan features)
+:
+Enabled
+*
+supportsDepthStencilResolve
+(Vulkan features)
+:
+Enabled
+*
+supportsDeviceFault
+(Vulkan features)
+:
+Disabled
+*
+supportsDynamicRendering
+(Vulkan features)
+:
+Enabled
+*
+supportsDynamicRenderingLocalRead
+(Vulkan features)
+:
+Enabled
+*
+supportsExtendedDynamicState
+(Vulkan features)
+:
+Enabled
+*
+supportsExtendedDynamicState2
+(Vulkan features)
+:
+Enabled
+*
+supportsExtendedDynamicState3
+(Vulkan features)
+:
+Enabled
+*
+supportsExternalFenceCapabilities
+(Vulkan features)
+:
+Enabled
+*
+supportsExternalFenceFd
+(Vulkan features)
+:
+Disabled
+*
+supportsExternalFormatResolve
+(Vulkan features)
+:
+Disabled
+*
+supportsExternalMemoryDmaBuf
+(Vulkan features)
+:
+Disabled
+*
+supportsExternalMemoryFd
+(Vulkan features)
+:
+Enabled
+*
+supportsExternalMemoryFuchsia
+(Vulkan features)
+:
+Disabled
+*
+supportsExternalMemoryHost
+(Vulkan features)
+:
+Disabled
+*
+supportsExternalSemaphoreCapabilities
+(Vulkan features)
+:
+Enabled
+*
+supportsExternalSemaphoreFd
+(Vulkan features)
+:
+Enabled
+*
+supportsExternalSemaphoreFuchsia
+(Vulkan features)
+:
+Disabled
+*
+supportsFormatFeatureFlags2
+(Vulkan features)
+:
+Enabled
+*
+supportsFoveatedRendering
+(Vulkan features)
+:
+Disabled
+*
+supportsFragmentShaderPixelInterlock
+(Vulkan features)
+:
+Disabled
+*
+supportsFragmentShadingRate
+(Vulkan features)
+:
+Disabled
+*
+supportsFullScreenExclusive
+(Vulkan features)
+:
+Disabled
+*
+supportsGeometryStreamsCapability
+(Vulkan features)
+:
+Disabled
+*
+supportsGetMemoryRequirements2
+(Vulkan features)
+:
+Enabled
+*
+supportsGlobalPriority
+(Vulkan features)
+:
+Disabled
+*
+supportsGraphicsPipelineLibrary
+(Vulkan features)
+:
+Enabled
+*
+supportsHostImageCopy
+(Vulkan features)
+:
+Enabled
+*
+supportsHostQueryReset
+(Vulkan features)
+:
+Enabled
+*
+supportsImage2dViewOf3d
+(Vulkan features)
+:
+Disabled
+*
+supportsImageCompressionControl
+(Vulkan features)
+:
+Disabled
+*
+supportsImageCompressionControlSwapchain
+(Vulkan features)
+:
+Disabled
+*
+supportsImageCubeArray
+(Vulkan features)
+:
+Enabled
+*
+supportsImageDrmFormatModifier
+(Vulkan features)
+:
+Disabled
+*
+supportsImageFormatList
+(Vulkan features)
+:
+Enabled
+*
+supportsImagelessFramebuffer
+(Vulkan features)
+:
+Enabled
+*
+supportsIncrementalPresent
+(Vulkan features)
+:
+Disabled
+*
+supportsIndexTypeUint8
+(Vulkan features)
+:
+Enabled
+*
+supportsLegacyDithering
+(Vulkan features)
+:
+Disabled
+*
+supportsLockSurfaceExtension
+(Vulkan features)
+:
+Disabled
+*
+supportsLogicOpDynamicState
+(Vulkan features)
+:
+Disabled
+*
+supportsMaintenance5
+(Vulkan features)
+:
+Disabled
+*
+supportsMaintenance9
+(Vulkan features)
+:
+Disabled
+*
+supportsMemoryBudget
+(Vulkan features)
+:
+Disabled
+*
+supportsMultiDrawIndirect
+(Vulkan features)
+:
+Enabled
+*
+supportsMultisampledRenderToSingleSampled
+(Vulkan features)
+:
+Disabled
+*
+supportsMultiview
+(Vulkan features)
+:
+Enabled
+*
+supportsMultiviewMultisampleRenderToTexture
+(Vulkan features)
+:
+Disabled
+*
+supportsPatchControlPointsDynamicState
+(Vulkan features)
+:
+Disabled
+*
+supportsPipelineBinary
+(Vulkan features)
+:
+Disabled
+*
+supportsPipelineCreationFeedback
+(Vulkan features)
+:
+Enabled
+*
+supportsPipelineProtectedAccess
+(Vulkan features)
+:
+Disabled
+*
+supportsPipelineRobustness
+(Vulkan features)
+:
+Enabled
+*
+supportsPipelineStatisticsQuery
+(Vulkan features)
+:
+Disabled
+*
+supportsPortabilityEnumeration
+(Vulkan features)
+:
+Enabled
+*
+supportsPresentation
+(Vulkan features)
+:
+Enabled
+*
+supportsPrimitiveFragmentShadingRate
+(Vulkan features)
+:
+Disabled
+*
+supportsPrimitiveTopologyListRestart
+(Vulkan features)
+:
+Enabled
+*
+supportsPrimitivesGeneratedQuery
+(Vulkan features)
+:
+Disabled
+*
+supportsProtectedMemory
+(Vulkan features)
+:
+Disabled
+*
+supportsRasterizationOrderAttachmentAccess
+(Vulkan features)
+:
+Enabled
+*
+supportsRenderPassLoadStoreOpNone
+(Vulkan features)
+:
+Enabled
+*
+supportsRenderPassStoreOpNone
+(Vulkan features)
+:
+Disabled
+*
+supportsRenderpass2
+(Vulkan features)
+:
+Enabled
+*
+supportsRoundingModeRteFp16
+(Vulkan features)
+:
+Disabled
+*
+supportsRoundingModeRteFp32
+(Vulkan features)
+:
+Disabled
+*
+supportsRoundingModeRteFp64
+(Vulkan features)
+:
+Disabled
+*
+supportsRoundingModeRtzFp16
+(Vulkan features)
+:
+Disabled
+*
+supportsRoundingModeRtzFp32
+(Vulkan features)
+:
+Disabled
+*
+supportsRoundingModeRtzFp64
+(Vulkan features)
+:
+Disabled
+*
+supportsSPIRV14
+(Vulkan features)
+:
+Enabled
+*
+supportsSampler2dViewOf3d
+(Vulkan features)
+:
+Disabled
+*
+supportsSamplerMirrorClampToEdge
+(Vulkan features)
+:
+Enabled
+*
+supportsShaderAtomicInt64
+(Vulkan features)
+:
+Disabled
+*
+supportsShaderDemoteToHelperInvocation
+(Vulkan features)
+:
+Enabled
+*
+supportsShaderFloat16
+(Vulkan features)
+:
+Disabled
+*
+supportsShaderFloat64
+(Vulkan features)
+:
+Disabled
+*
+supportsShaderFramebufferFetch
+(Vulkan features)
+:
+Enabled
+*
+supportsShaderFramebufferFetchDepthStencil
+(Vulkan features)
+:
+Disabled
+*
+supportsShaderFramebufferFetchNonCoherent
+(Vulkan features)
+:
+Enabled
+*
+supportsShaderInt8
+(Vulkan features)
+:
+Disabled
+*
+supportsShaderIntegerDotProduct
+(Vulkan features)
+:
+Disabled
+*
+supportsShaderNonSemanticInfo
+(Vulkan features)
+:
+Enabled
+*
+supportsShaderStencilExport
+(Vulkan features)
+:
+Disabled
+*
+supportsSharedPresentableImageExtension
+(Vulkan features)
+:
+Disabled
+*
+supportsSignedZeroInfNanPreserveFp16
+(Vulkan features)
+:
+Disabled
+*
+supportsSignedZeroInfNanPreserveFp32
+(Vulkan features)
+:
+Disabled
+*
+supportsSignedZeroInfNanPreserveFp64
+(Vulkan features)
+:
+Disabled
+*
+supportsSurfaceCapabilities2Extension
+(Vulkan features)
+:
+Enabled
+*
+supportsSurfaceMaintenance1
+(Vulkan features)
+:
+Enabled
+*
+supportsSurfaceProtectedCapabilitiesExtension
+(Vulkan features)
+:
+Disabled
+*
+supportsSurfaceProtectedSwapchains
+(Vulkan features)
+:
+Disabled
+*
+supportsSurfacelessQueryExtension
+(Vulkan features)
+:
+Enabled
+*
+supportsSwapchainMaintenance1
+(Vulkan features)
+:
+Enabled
+*
+supportsSwapchainMutableFormat
+(Vulkan features)
+:
+Enabled
+*
+supportsSynchronization2
+(Vulkan features)
+:
+Enabled
+*
+supportsTextureCompressionAstcHdr
+(Vulkan features)
+:
+Disabled
+*
+supportsTileMemoryHeap
+(Vulkan features)
+:
+Disabled
+*
+supportsTimelineSemaphore
+(Vulkan features)
+:
+Enabled
+*
+supportsTimestampSurfaceAttribute
+(Vulkan features)
+:
+Disabled
+*
+supportsTransformFeedbackExtension
+(Vulkan features)
+:
+Disabled
+*
+supportsUnifiedImageLayouts
+(Vulkan features)
+:
+Enabled
+*
+supportsUniformBufferStandardLayout
+(Vulkan features)
+:
+Disabled
+*
+supportsVertexInputDynamicState
+(Vulkan features)
+:
+Enabled
+*
+supportsYUVSamplerConversion
+(Vulkan features)
+:
+Enabled
+*
+supportsYuvTarget
+(Vulkan features)
+:
+Disabled
+*
+swapbuffersOnFlushOrFinishWithSingleBuffer
+(Vulkan features)
+:
+Disabled
+*
+swapchainDeferredMemoryAllocation
+(Vulkan workarounds)
+:
+Enabled
+*
+syncMonolithicPipelinesToBlobCache
+(Vulkan workarounds)
+:
+Disabled
+*
+syncPipelineCacheToBlobCacheEveryFrame
+(Vulkan workarounds)
+:
+Disabled
+*
+useCullModeDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useDepthBiasEnableDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useDepthCompareOpDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useDepthTestEnableDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useDepthWriteEnableDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useDualPipelineBlobCacheSlots
+(Vulkan features)
+:
+Disabled
+*
+useEmptyBlobsToEraseOldPipelineCacheFromBlobCache
+(Vulkan features)
+:
+Disabled
+*
+useFrontFaceDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useLargeSizeForDynamicBuffers
+(Vulkan workarounds)
+:
+Enabled
+*
+useMultipleDescriptorsForExternalFormats
+(Vulkan workarounds)
+:
+Enabled
+*
+useNonZeroStencilWriteMaskStaticState
+(Vulkan workarounds)
+:
+Disabled
+*
+usePrimitiveRestartEnableDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+usePrimitiveTopologyDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useRasterizerDiscardEnableDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useResetCommandBufferBitForSecondaryPools
+(Vulkan workarounds)
+:
+Disabled
+*
+useStencilOpDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useStencilTestEnableDynamicState
+(Vulkan workarounds)
+:
+Enabled
+*
+useVertexInputBindingStrideDynamicState
+(Vulkan workarounds)
+:
+Disabled
+*
+useVkEventForBufferBarrier
+(Vulkan features)
+:
+Enabled
+*
+useVkEventForImageBarrier
+(Vulkan features)
+:
+Enabled
+*
+useVmaForImageSuballocation
+(Vulkan features)
+:
+Enabled
+*
+usesNativeBuiltinClKernel
+(Vulkan features)
+:
+Disabled
+*
+usesSecondComponentForStencilBorderColor
+(Vulkan features)
+:
+Disabled
+*
+varyingsRequireMatchingPrecisionInSpirv
+(Vulkan workarounds)
+:
+Disabled
+*
+verifyPipelineCacheInBlobCache
+(Vulkan features)
+:
+Disabled
+*
+warmUpPipelineCacheAtLink
+(Vulkan features)
+:
+Enabled
+*
+wrapSwitchInIfTrue
+(Vulkan workarounds)
+:
+Disabled
+Dawn Info
+=========
+<CPU>  Vulkan backend - SwiftShader Device (Subzero)
+----------------------------------------------------
+[WebGPU Status]
+---------------
+*
+Blocklisted - crbug.com/40057808: CPU adapters not fully tested or conformant. |
+[Adapter Supported Features]
+----------------------------
+*
+core-features-and-limits
+*
+depth-clip-control
+*
+depth32float-stencil8
+*
+texture-compression-bc
+*
+texture-compression-bc-sliced-3d
+*
+texture-compression-etc2
+*
+texture-compression-astc
+*
+texture-compression-astc-sliced-3d
+*
+timestamp-query
+*
+indirect-first-instance
+*
+rg11b10ufloat-renderable
+*
+bgra8unorm-storage
+*
+float32filterable
+*
+float32blendable
+*
+clip-distances
+*
+subgroups
+*
+texture-component-swizzle
+*
+subgroup-size-control
+*
+texture-compression-unaligned
+*
+dawn-internal-usages
+*
+dawn-multi-planar-formats
+*
+dawn-native
+*
+implicit-device-synchronization
+*
+transient-attachments
+*
+unorm16texture-formats
+*
+adapter-properties-memory-heaps
+*
+adapter-properties-vk
+*
+dawn-format-capabilities
+*
+shared-texture-memory-opaque-fd
+*
+shared-fence-vk-semaphore-opaque-fd
+*
+dawn-load-resolve-texture
+*
+flexible-texture-views
+*
+unorm16formats-for-external-texture
+*
+dawn-allow-undefined-load-store-op
+[Enabled Toggle Names]
+----------------------
+*
+lazy_clear_resource_on_first_use:
+https://crbug.com/dawn/145
+(https://crbug.com/dawn/145)
+:
+    Clears resource to zero on first usage. This initializes the resource so
+    that no dirty bits from recycled memory is present in the new resource.
+*
+use_temporary_buffer_in_texture_to_texture_copy:
+https://crbug.com/dawn/42
+(https://crbug.com/dawn/42)
+:
+    Split texture-to-texture copy into two copies: copy from source texture
+    into a temporary buffer, and copy from the temporary buffer into the
+    destination texture when copying between compressed textures that don't
+    have block-aligned sizes. This workaround is enabled by default on all
+    Vulkan drivers to solve an issue in the Vulkan SPEC about the
+    texture-to-texture copies with compressed formats. See #1005
+    (https://github.com/KhronosGroup/Vulkan-Docs/issues/1005) for more
+    details.
+*
+vulkan_use_d32s8:
+https://crbug.com/dawn/286
+(https://crbug.com/dawn/286)
+:
+    Vulkan mandates support of either D32_FLOAT_S8 or D24_UNORM_S8. When
+    available the backend will use D32S8 (toggle to on) but setting the toggle
+    to off will make it use the D24S8 format when possible.
+*
+vulkan_use_s8:
+https://crbug.com/dawn/666
+(https://crbug.com/dawn/666)
+:
+    Vulkan has a pure stencil8 format but it is not universally available.
+    When this toggle is on, the backend will use S8 for the stencil8 format,
+    otherwise it will fallback to D32S8 or D24S8.
+*
+disallow_spirv:
+https://crbug.com/1214923
+(https://crbug.com/1214923)
+:
+    Disallow usage of SPIR-V completely so that only WGSL is used for shader
+    modules. This is useful to prevent a Chromium renderer process from
+    successfully sending SPIR-V code to be compiled in the GPU process.
+*
+vulkan_use_demote_to_helper_invocation_extension:
+https://crbug.com/42250787
+(https://crbug.com/42250787)
+:
+    Sets the use of the vulkan demote to helper extension
+*
+use_placeholder_fragment_in_vertex_only_pipeline:
+https://crbug.com/dawn/136
+(https://crbug.com/dawn/136)
+:
+    Use a placeholder empty fragment shader in vertex only render pipeline.
+    This toggle must be enabled for OpenGL ES backend, the Vulkan Backend, and
+    serves as a workaround by default enabled on some Metal devices with Intel
+    GPU to ensure the depth result is correct.
+*
+timestamp_quantization:
+https://crbug.com/dawn/1800
+(https://crbug.com/dawn/1800)
+:
+    Enable timestamp queries quantization to reduce the precision of timers
+    that can be created with timestamp queries.
+*
+use_vulkan_zero_initialize_workgroup_memory_extension:
+https://crbug.com/dawn/1302
+(https://crbug.com/dawn/1302)
+:
+    Initialize workgroup memory with OpConstantNull on Vulkan when the Vulkan
+    extension VK_KHR_zero_initialize_workgroup_memory is supported.
+*
+use_vulkan_memory_model:
+https://crbug.com/392606604
+(https://crbug.com/392606604)
+:
+    Use the Vulkan Memory Model if available.
+*
+vulkan_direct_variable_access_transform_handle:
+https://crbug.com/387000529
+(https://crbug.com/387000529)
+:
+    Transform handles using direct variable access.
+*
+enable_integer_range_analysis_in_robustness:
+https://crbug.com/348701956
+(https://crbug.com/348701956)
+:
+    Compute the range of the index with Integer Range Analysis in the
+    robustness transform and skip doing index clamping when the out of bound
+    access cannot happen.
+*
+use_spirv_1_4:
+https://crbug.com/422421915
+(https://crbug.com/422421915)
+:
+    Use SPIR-V 1.4 if available
+*
+blob_cache_hash_validation:
+https://crbug.com/429938352
+(https://crbug.com/429938352)
+:
+    Enable hash validation when loading/storing from/to the blob cache
+*
+vulkan_use_dynamic_rendering:
+https://crbug.com/dawn/463893794
+(https://crbug.com/dawn/463893794)
+:
+    Makes use of VK_KHR_dynamic_rendering to implement WebGPU RenderPass.
+*
+enable_spirv_validation:
+https://crbug.com/473526415
+(https://crbug.com/473526415)
+:
+    Enable validation of SPIR-V generated by Tint.
+*
+vulkan_use_create_render_pass_2:
+https://crbug.com/chromium/463893793
+(https://crbug.com/chromium/463893793)
+:
+    Makes use of VK_KHR_create_renderpass2 when creating VkRenderPass objects.
+    Ignored when vulkan_use_dynamic_rendering is enabled.
+*
+vulkan_use_rasterization_order_attachment_access:
+https://crbug.com/42241389
+(https://crbug.com/42241389)
+:
+    Use VK_EXT_rasterization_order_attachment_access when it is available.
+*
+wait_is_thread_safe:
+https://crbug.com/412761228
+(https://crbug.com/412761228)
+:
+    WaitFor* functions are thread-safe and can be called without the
+    device-lock if implicit synchronization is enabled.
+[WebGPU Required Toggles - enabled]
+-----------------------------------
+*
+disallow_spirv:
+https://crbug.com/1214923
+(https://crbug.com/1214923)
+:
+    Disallow usage of SPIR-V completely so that only WGSL is used for shader
+    modules. This is useful to prevent a Chromium renderer process from
+    successfully sending SPIR-V code to be compiled in the GPU process.
+*
+timestamp_quantization:
+https://crbug.com/dawn/1800
+(https://crbug.com/dawn/1800)
+:
+    Enable timestamp queries quantization to reduce the precision of timers
+    that can be created with timestamp queries.
+<CPU>  OpenGLES backend - ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver-5.0.0) (Compatibility Mode)
+-------------------------------------------------------------------------------------------------------------------------------------------------
+[WebGPU Status]
+---------------
+*
+Blocklisted - crbug.com/40057808: CPU adapters not fully tested or conformant. |
+[Adapter Supported Features]
+----------------------------
+*
+texture-compression-bc
+*
+texture-compression-etc2
+*
+texture-compression-astc
+*
+float32blendable
+*
+texture-component-swizzle
+*
+dawn-internal-usages
+*
+dawn-native
+*
+implicit-device-synchronization
+*
+transient-attachments
+*
+angle-texture-sharing
+*
+dawn-format-capabilities
+*
+shared-fence-egl-sync
+*
+dawn-allow-undefined-load-store-op
+[Enabled Toggle Names]
+----------------------
+*
+lazy_clear_resource_on_first_use:
+https://crbug.com/dawn/145
+(https://crbug.com/dawn/145)
+:
+    Clears resource to zero on first usage. This initializes the resource so
+    that no dirty bits from recycled memory is present in the new resource.
+*
+disable_indexed_draw_buffers:
+https://crbug.com/dawn/582
+(https://crbug.com/dawn/582)
+:
+    Disables the use of indexed draw buffer state which is unsupported on some
+    platforms.
+*
+flush_before_client_wait_sync:
+https://crbug.com/dawn/633
+(https://crbug.com/dawn/633)
+:
+    Call glFlush before glClientWaitSync to work around bugs in the latter
+*
+disallow_spirv:
+https://crbug.com/1214923
+(https://crbug.com/1214923)
+:
+    Disallow usage of SPIR-V completely so that only WGSL is used for shader
+    modules. This is useful to prevent a Chromium renderer process from
+    successfully sending SPIR-V code to be compiled in the GPU process.
+*
+use_placeholder_fragment_in_vertex_only_pipeline:
+https://crbug.com/dawn/136
+(https://crbug.com/dawn/136)
+:
+    Use a placeholder empty fragment shader in vertex only render pipeline.
+    This toggle must be enabled for OpenGL ES backend, the Vulkan Backend, and
+    serves as a workaround by default enabled on some Metal devices with Intel
+    GPU to ensure the depth result is correct.
+*
+timestamp_quantization:
+https://crbug.com/dawn/1800
+(https://crbug.com/dawn/1800)
+:
+    Enable timestamp queries quantization to reduce the precision of timers
+    that can be created with timestamp queries.
+*
+use_blit_for_buffer_to_stencil_texture_copy:
+https://crbug.com/dawn/1389
+(https://crbug.com/dawn/1389)
+:
+    Use a blit instead of a copy command to copy buffer data to the stencil
+    aspect of a texture. Works around an issue where stencil writes by copy
+    commands are not visible to a render or compute pass.
+*
+use_blit_for_depth16unorm_texture_to_buffer_copy:
+https://crbug.com/dawn/1782
+(https://crbug.com/dawn/1782)
+:
+    Use a blit instead of a copy command to copy depth aspect of a texture to
+    a buffer.Workaround for OpenGL and OpenGLES.
+*
+use_blit_for_depth32float_texture_to_buffer_copy:
+https://crbug.com/dawn/1782
+(https://crbug.com/dawn/1782)
+:
+    Use a blit instead of a copy command to copy depth aspect of a texture to
+    a buffer.Workaround for OpenGLES.
+*
+use_blit_for_stencil_texture_to_buffer_copy:
+https://crbug.com/dawn/1782
+(https://crbug.com/dawn/1782)
+:
+    Use a blit instead of a copy command to copy stencil aspect of a texture
+    to a buffer.Workaround for OpenGLES.
+*
+use_blit_for_snorm_texture_to_buffer_copy:
+https://crbug.com/dawn/1781
+(https://crbug.com/dawn/1781)
+:
+    Use a blit instead of a copy command to copy snorm texture to a
+    buffer.Workaround for OpenGLES.
+*
+use_blit_for_rgb9e5ufloat_texture_copy:
+https://crbug.com/dawn/2079
+(https://crbug.com/dawn/2079)
+:
+    Use a blit instead of a copy command to copy rgb9e5ufloat texture to a
+    texture or a buffer.Workaround for OpenGLES.
+*
+use_blit_for_rg11b10ufloat_texture_copy:
+https://crbug.com/381214487
+(https://crbug.com/381214487)
+:
+    Use a blit instead of a copy command to copy rg11b10ufloat texture to a
+    texture or a buffer.Workaround for OpenGLES.
+*
+use_blit_for_float_16_texture_copy:
+https://crbug.com/381214487
+(https://crbug.com/381214487)
+:
+    Use a blit instead of a copy command to copy float16 texture to a texture
+    or a buffer.Workaround for OpenGLES.
+*
+use_blit_for_non_rgba_unorm_texture_to_buffer_copy:
+https://issues.chromium.org/issues/556959073
+(https://issues.chromium.org/issues/556959073)
+:
+    Use a blit instead of a copy command to copy non-RGBA unorm textures to a
+    buffer. Workaround for OpenGLES.
+*
+use_blit_for_non_rgba_float_texture_to_buffer_copy:
+https://issues.chromium.org/issues/556959073
+(https://issues.chromium.org/issues/556959073)
+:
+    Use a blit instead of a copy command to copy non-RGBA float textures to a
+    buffer. Workaround for OpenGLES.
+*
+use_blit_for_uint_texture_to_buffer_copy:
+https://issues.chromium.org/issues/556959073
+(https://issues.chromium.org/issues/556959073)
+:
+    Use a blit instead of a copy command to copy uint textures to a buffer.
+    Workaround for OpenGLES.
+*
+use_blit_for_sint_texture_to_buffer_copy:
+https://issues.chromium.org/issues/556959073
+(https://issues.chromium.org/issues/556959073)
+:
+    Use a blit instead of a copy command to copy sint textures to a buffer.
+    Workaround for OpenGLES.
+*
+use_t2b2t_for_srgb_texture_copy:
+https://crbug.com/dawn/2362
+(https://crbug.com/dawn/2362)
+:
+    Use T2B and B2T copies to emulate a T2T copy between sRGB and non-sRGB
+    textures.Workaround for OpenGLES.
+*
+gl_depth_bias_modifier:
+https://crbug.com/42241017
+(https://crbug.com/42241017)
+:
+    Empirically some GL drivers select n+1 when a depth value lies between 2^n
+    and 2^(n+1), while the WebGPU CTS is expecting n. Scale the depth bias
+    value by multiple 0.5 on certain backends to achieve conformant result.
+*
+enable_integer_range_analysis_in_robustness:
+https://crbug.com/348701956
+(https://crbug.com/348701956)
+:
+    Compute the range of the index with Integer Range Analysis in the
+    robustness transform and skip doing index clamping when the out of bound
+    access cannot happen.
+*
+blob_cache_hash_validation:
+https://crbug.com/429938352
+(https://crbug.com/429938352)
+:
+    Enable hash validation when loading/storing from/to the blob cache
+[WebGPU Required Toggles - enabled]
+-----------------------------------
+*
+disallow_spirv:
+https://crbug.com/1214923
+(https://crbug.com/1214923)
+:
+    Disallow usage of SPIR-V completely so that only WGSL is used for shader
+    modules. This is useful to prevent a Chromium renderer process from
+    successfully sending SPIR-V code to be compiled in the GPU process.
+*
+timestamp_quantization:
+https://crbug.com/dawn/1800
+(https://crbug.com/dawn/1800)
+:
+    Enable timestamp queries quantization to reduce the precision of timers
+    that can be created with timestamp queries.
+Compositor Information
+======================
+Tile Update Mode
+:
+One-copy
+Partial Raster
+:
+Enabled
+Display(s) Information
+======================
+Info
+:
+Display[2300000000] bounds=[0,0 800x600], workarea=[0,0 800x600], scale=1, rotation=0, panel_rotation=0 external detected
+Color space (all)
+:
+{primaries:BT709, transfer:SRGB, matrix:RGB, range:FULL}
+Buffer format (all)
+:
+RGBA_8888
+Color volume
+:
+{name:'srgb', r:[0.6400, 0.3300], g:[0.3000, 0.6000], b:[0.1500, 0.0600], w:[0.3127, 0.3290]}
+SDR white level in nits
+:
+203
+HDR relative maximum luminance
+:
+1
+Bits per color component
+:
+8
+Bits per pixel
+:
+24
+Video Acceleration Information
+==============================
+Decoding
+:
+Encoding
+:
+Vulkan Information
+==================
+Device Performance Information
+==============================
+Diagnostics
+===========
+Driver Information for Hardware GPU
+===================================
+Graphics Feature Status for Hardware GPU
+========================================
+Driver Bug Workarounds for Hardware GPU
+=======================================
+Problems Detected for Hardware GPU
+==================================
+Log Messages
+============
+[5536:5536:1127/092817.825120:WARNING:sandbox/policy/linux/sandbox_linux.cc:405] : InitializeSandbox() called with multiple threads in process gpu-process.

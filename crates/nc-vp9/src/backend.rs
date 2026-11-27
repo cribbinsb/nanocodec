@@ -1650,13 +1650,16 @@ impl CodecBackend for Vp9Backend {
         Some(self.nearest_vector(block))
     }
 
-    /// VP9 takes no static skips (the default would offer the skip vector).
+    /// The zero vector (`ZEROMV`), not the skip vector the default would
+    /// offer: VP9's static skips are only the two below.
     fn static_skip_vector(&mut self, _block: &Block) -> Option<EngineMv> {
-        None
+        Some(EngineMv::ZERO)
     }
 
-    /// Only a repeat frame's blocks (`StaticSkipTest::repeat`): coded at
-    /// the zero vector with no residual, a skip block (VP9 §6.4.6).
+    /// A repeat frame's blocks (`StaticSkipTest::repeat`) and the blocks
+    /// the engine's noise skip passes (`test.within_noise`,
+    /// `decision.noise_skip`): coded at the zero vector with no residual, a
+    /// skip block (VP9 §6.4.6). VP9 has no still-skip test of its own.
     fn try_static_skip(
         &mut self,
         block: &Block,
@@ -1665,7 +1668,7 @@ impl CodecBackend for Vp9Backend {
         recon: &mut Picture,
         test: StaticSkipTest,
     ) -> bool {
-        if !test.repeat || self.random.is_some() {
+        if !(test.repeat || test.within_noise) || self.random.is_some() {
             return false;
         }
         copy_zero_vector_prediction(&self.dsp, block, reference, recon);

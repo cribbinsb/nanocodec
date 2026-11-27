@@ -258,7 +258,8 @@ def test_a_launch_waits_for_this_machines_other_launch_at_home_rather_than_spill
     launch lock held, spilled to eu-west-1, found no capacity there and failed."""
     run, _ = regional(monkeypatch, tmp_path, {"eu-north-1": [[]], "eu-central-1": [[]]})
     monkeypatch.setattr(aws_session, "LAUNCH_LOCK_POLL_S", 0)
-    other = aws_session.try_launch_lock("eu-north-1")
+    # the lock is per region and instance family (8df0750a6): hold this session's own family's
+    other = aws_session.try_launch_lock("eu-north-1", run.spec.instance_type.split(".")[0])
     polls = []
     real_sleep = aws_session.time.sleep
 

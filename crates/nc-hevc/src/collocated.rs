@@ -7,7 +7,10 @@
 //! frame one picture after its T0, whose vectors span four pictures), or
 //! point at that picture's second reference (`refs.second`), so collocated
 //! vectors are scaled by POC distance (eq. 8-202..8-206). In a flat chain
-//! both distances are 1 and vectors are used as they are.
+//! both distances are 1 and vectors are used as they are. A long-term
+//! reference (`ltr.interval`) is never scaled, and a collocated vector is
+//! unavailable when exactly one of its reference and the current one is
+//! long-term (`LongTermRefPic`, §8.5.3.2.8).
 //!
 //! The encoder keeps one motion grid per reference slot ([`MotionStore`]);
 //! the decoder keeps each reference picture's grid with it in its DPB.
@@ -54,33 +57,75 @@ pub fn scale_mv(mv: Mv, td: i32, tb: i32) -> Mv {
     }
 }
 
+/// A picture's reference list as motion vector prediction sees it, by
+/// `ref_idx_l0`: the POC distance to each entry, and whether the entry is
+/// a long-term picture (`LongTermRefPic`, §8.5.3.2.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListKinds {
+    /// POC distances (`DiffPicOrderCnt` of the picture and the entry).
+    pub distances: [i32; MAX_REF_IDX],
+    /// Long-term entries.
+    pub long_term: [bool; MAX_REF_IDX],
+}
+
+impl ListKinds {
+    /// Short-term entries at `distances`.
+    #[must_use]
+    pub fn short_term(distances: [i32; MAX_REF_IDX]) -> Self {
+        Self {
+            distances,
+            long_term: [false; MAX_REF_IDX],
+        }
+    }
+}
+
 /// The collocated picture's motion and how its vectors map to the current
 /// picture.
 #[derive(Debug, Clone, Copy)]
 pub struct Collocated<'a> {
     /// Motion of the collocated picture.
     pub grid: &'a Grid,
-    /// POC distance from the collocated picture to each of its references,
-    /// by `ref_idx_l0` (`colPocDiff` of a block pointing there).
-    pub col_distances: [i32; MAX_REF_IDX],
+    /// The collocated picture's own references (`colPocDiff` of a block
+    /// pointing at one, and whether it was long-term when that picture was
+    /// coded).
+    pub col_references: ListKinds,
 }
 
 impl Collocated<'_> {
     /// The collocated vector `mv`, which points at the collocated picture's
-    /// reference `ref_idx`, scaled to span `cur_distance` (`currPocDiff`;
-    /// §8.5.3.2.8, eq. 8-202..8-206).
+    /// reference `ref_idx`, mapped to a current reference at `cur_distance`
+    /// (`currPocDiff`), long-term when `cur_long_term` (§8.5.3.2.8, eq.
+    /// 8-202..8-206): `None` when only one of the two is long-term, as it
+    /// is between two long-term pictures, else scaled.
     #[must_use]
-    pub fn scale(&self, mv: Mv, ref_idx: u8, cur_distance: i32) -> Mv {
-        scale_mv(mv, self.col_distances[usize::from(ref_idx)], cur_distance)
+    pub fn scale(
+        &self,
+        mv: Mv,
+        ref_idx: u8,
+        (cur_distance, cur_long_term): (i32, bool),
+    ) -> Option<Mv> {
+        let index = usize::from(ref_idx);
+        let col_long_term = self.col_references.long_term[index];
+        if col_long_term != cur_long_term {
+            None
+        } else if cur_long_term {
+            Some(mv)
+        } else {
+            Some(scale_mv(
+                mv,
+                self.col_references.distances[index],
+                cur_distance,
+            ))
+        }
     }
 }
 
-/// One saved motion grid and the distances its vectors span, by
+/// One saved motion grid and the references its vectors point at, by
 /// `ref_idx_l0`.
 #[derive(Debug)]
 struct SavedMotion {
     grid: Grid,
-    distances: [i32; MAX_REF_IDX],
+    references: ListKinds,
 }
 
 /// The encoder's collocated motion per reference slot.
@@ -99,7 +144,7 @@ impl MotionStore {
         let pool = (0..slot_count)
             .map(|_| SavedMotion {
                 grid: Grid::new(width, height),
-                distances: [1; MAX_REF_IDX],
+                references: ListKinds::short_term([1; MAX_REF_IDX]),
             })
             .collect();
         Self {
@@ -109,11 +154,11 @@ impl MotionStore {
         }
     }
 
-    /// Keep `grid` (a finished picture whose vectors span `distances`, by
-    /// `ref_idx_l0`) as the collocated motion of the slots in `refresh`,
-    /// swapping a grid no remaining slot needs into `grid` for reuse. A flat
-    /// chain swaps with its single entry.
-    pub fn save(&mut self, grid: &mut Grid, distances: [i32; MAX_REF_IDX], refresh: SlotMask) {
+    /// Keep `grid` (a finished picture whose vectors point at `references`)
+    /// as the collocated motion of the slots in `refresh`, swapping a grid
+    /// no remaining slot needs into `grid` for reuse. A flat chain swaps
+    /// with its single entry.
+    pub fn save(&mut self, grid: &mut Grid, references: ListKinds, refresh: SlotMask) {
         if refresh.is_empty() {
             return;
         }
@@ -124,7 +169,7 @@ impl MotionStore {
             .find(|&entry| !kept(entry))
             .expect("refreshed slots release at least one entry");
         std::mem::swap(grid, &mut self.pool[free].grid);
-        self.pool[free].distances = distances;
+        self.pool[free].references = references;
         for slot in 0..self.slot_count {
             if refresh.contains(slot) {
                 self.slots[slot] = free;
@@ -138,7 +183,7 @@ impl MotionStore {
         let saved = &self.pool[self.slots[slot]];
         Collocated {
             grid: &saved.grid,
-            col_distances: saved.distances,
+            col_references: saved.references,
         }
     }
 }
@@ -151,9 +196,10 @@ mod tests {
         let grid = Grid::new(16, 16);
         Collocated {
             grid: &grid,
-            col_distances: [col, 1],
+            col_references: ListKinds::short_term([col, 1]),
         }
-        .scale(mv, 0, cur)
+        .scale(mv, 0, (cur, false))
+        .expect("short-term vectors scale")
     }
 
     #[test]
@@ -178,12 +224,30 @@ mod tests {
         let grid = Grid::new(16, 16);
         let col = Collocated {
             grid: &grid,
-            col_distances: [1, 4],
+            col_references: ListKinds::short_term([1, 4]),
         };
         let mv = Mv { x: 40, y: -8 };
-        assert_eq!(col.scale(mv, 0, 1), mv);
-        assert_eq!(col.scale(mv, 1, 1), Mv { x: 10, y: -2 });
-        assert_eq!(col.scale(mv, 1, 4), mv);
+        assert_eq!(col.scale(mv, 0, (1, false)), Some(mv));
+        assert_eq!(col.scale(mv, 1, (1, false)), Some(Mv { x: 10, y: -2 }));
+        assert_eq!(col.scale(mv, 1, (4, false)), Some(mv));
+    }
+
+    #[test]
+    fn long_term_vectors_are_kept_or_unavailable() {
+        let grid = Grid::new(16, 16);
+        let col = Collocated {
+            grid: &grid,
+            col_references: ListKinds {
+                distances: [3, 1],
+                long_term: [true, false],
+            },
+        };
+        let mv = Mv { x: 40, y: -8 };
+        // Both long-term: the vector as it is, whatever the distances.
+        assert_eq!(col.scale(mv, 0, (9, true)), Some(mv));
+        // One long-term, one short-term: no candidate.
+        assert_eq!(col.scale(mv, 0, (1, false)), None);
+        assert_eq!(col.scale(mv, 1, (9, true)), None);
     }
 
     #[test]
@@ -206,7 +270,7 @@ mod tests {
                 ..crate::grid::Cell::default()
             },
         );
-        store.save(&mut grid, [4, 9], SlotMask::ALL);
+        store.save(&mut grid, ListKinds::short_term([4, 9]), SlotMask::ALL);
         grid.reset();
         grid.fill(
             0,
@@ -217,10 +281,10 @@ mod tests {
                 ..crate::grid::Cell::default()
             },
         );
-        store.save(&mut grid, [2, 1], SlotMask::only(1));
+        store.save(&mut grid, ListKinds::short_term([2, 1]), SlotMask::only(1));
         assert_eq!(store.collocated(0).grid.at(0, 0).mv.x, 1);
-        assert_eq!(store.collocated(0).col_distances, [4, 9]);
+        assert_eq!(store.collocated(0).col_references.distances, [4, 9]);
         assert_eq!(store.collocated(1).grid.at(0, 0).mv.x, 2);
-        assert_eq!(store.collocated(1).col_distances, [2, 1]);
+        assert_eq!(store.collocated(1).col_references.distances, [2, 1]);
     }
 }

@@ -4,8 +4,9 @@
 //!
 //! A packet waits until every earlier sequence number has arrived, or until
 //! the window overflows (the newest packet is `window` or more ahead of the
-//! oldest missing one) or the caller flushes, when the missing ones count
-//! as lost. A unit ends at its marker bit or at the first packet of a later
+//! oldest missing one), the packet after the gap is due for playout (its
+//! timestamp is at or before the caller's playout deadline) or the caller
+//! flushes, when the missing ones count as lost. A unit ends at its marker bit or at the first packet of a later
 //! timestamp (AV1 RTP §4.2: a receiver must cope with a lost marker). What
 //! to make of a unit with gaps is the depacketizer's decision.
 
@@ -49,6 +50,9 @@ pub(crate) struct Assembler {
     timestamp: TimestampUnwrapper,
     /// The last consumed unit ended in a gap (the next one starts after it).
     pending_gap: bool,
+    /// Unwrapped playout deadline: a gap before a packet of this timestamp
+    /// or older is loss (a time-based jitter buffer; `set_deadline`).
+    deadline: Option<u64>,
     /// Packets declared lost.
     pub lost_packets: u64,
     /// Packets that arrived after their place was consumed (too late, or
@@ -74,6 +78,7 @@ impl Assembler {
             sequence: SequenceUnwrapper::new(),
             timestamp: TimestampUnwrapper::new(),
             pending_gap: false,
+            deadline: None,
             lost_packets: 0,
             late_packets: 0,
         }
@@ -95,7 +100,14 @@ impl Assembler {
         self.packets.insert(seq, stored);
     }
 
-    /// True when waiting is over for missing packets below the newest.
+    /// Packets of RTP timestamp `timestamp` or older are due for playout:
+    /// a gap before one of them is loss, whatever the window.
+    pub fn set_deadline(&mut self, timestamp: u32) {
+        self.deadline = Some(self.timestamp.unwrap(u64::from(timestamp)));
+    }
+
+    /// True when waiting is over for missing packets below the newest:
+    /// the window overflowed, or the packet after the oldest gap is due.
     /// The window is measured from the oldest missing packet, so a unit
     /// longer than the window still waits for its own late packets.
     fn overflowed(&self, next: u64) -> bool {
@@ -106,7 +118,12 @@ impl Assembler {
             }
             missing += 1;
         }
-        self.packets
+        let after_gap = self.packets.range(missing..).next();
+        let due = after_gap
+            .zip(self.deadline)
+            .is_some_and(|((_, packet), deadline)| packet.timestamp <= deadline);
+        due || self
+            .packets
             .last_key_value()
             .is_some_and(|(&newest, _)| newest >= missing + self.window)
     }
@@ -242,6 +259,24 @@ mod tests {
             .iter()
             .map(|(_, p)| p.parsed.pieces[0].data[0])
             .collect()
+    }
+
+    #[test]
+    fn a_gap_before_a_due_packet_is_loss() {
+        let mut a = Assembler::new(64);
+        a.push(0, 100, true, payload(1));
+        a.push(2, 300, true, payload(3));
+        a.push(3, 400, true, payload(4));
+        assert_eq!(bytes(&a.pop(false).unwrap()), vec![1]);
+        assert!(a.pop(false).is_none(), "waits for 1 inside the window");
+        a.set_deadline(200);
+        assert!(a.pop(false).is_none(), "3 is not due yet");
+        a.set_deadline(300);
+        let unit = a.pop(false).unwrap();
+        assert_eq!(bytes(&unit), vec![3]);
+        assert!(unit.gap_before);
+        assert_eq!(a.lost_packets, 1);
+        assert_eq!(bytes(&a.pop(false).unwrap()), vec![4]);
     }
 
     #[test]

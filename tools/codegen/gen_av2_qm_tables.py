@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the general AV2 decoder's predefined quantizer matrices from dav2d.
+"""Generate the predefined AV1 / AV2 quantizer matrices (shared, in nc-dsp) from dav2d.
 
     tools/codegen/gen_av2_qm_tables.py DAV2D_SRC [--write]
 
@@ -9,7 +9,7 @@ base tables of `src/quantizer.c` (`qm_tbl_32x16`, `qm_tbl_32x32_t`), derives
 every transform shape's table as `dav2d_init_predefined_qm_tables` does
 (untriangle, subsample, transpose; the tables are in dav2d's transposed
 coefficient order) and writes
-crates/nc-av2/src/general/block/quantizer_matrices.rs. Without --write it only
+crates/nc-dsp/src/quantizer_matrix/tables.rs. Without --write it only
 checks that the checked-in file is current.
 """
 import argparse
@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PIN = '237229ebfefd4eb8e0e25ad9636803bb93bae0c6'
-OUT = ROOT / 'crates/nc-av2/src/general/block/quantizer_matrices.rs'
+OUT = ROOT / 'crates/nc-dsp/src/quantizer_matrix/tables.rs'
 LEVELS = 15
 PLANE_TYPES = 2
 SIDES = [4, 8, 16, 32]
@@ -110,7 +110,7 @@ def render(dav2d):
         sets.append(planes)
     set_len = len(sets[0][0])
     out = [
-        '//! The predefined AV2 quantizer matrices (dav2d `dav2d_qm_tbl`): per',
+        '//! The predefined AV1 / AV2 quantizer matrices (dav2d `dav2d_qm_tbl`): per',
         '//! matrix level and plane type, a weight per coefficient of every',
         '//! transform shape with sides 4..=32, in dav2d\'s transposed coefficient',
         '//! order (64-sample sides use the 32 tables).',
@@ -120,19 +120,19 @@ def render(dav2d):
         '//! `docs/licenses/dav2d`); do not edit.',
         '',
         '/// Matrix levels with tables (level 15 is flat: no matrix).',
-        f'pub const LEVELS: usize = {LEVELS};',
+        f'pub(super) const LEVELS: usize = {LEVELS};',
         '/// Entries of one level and plane type: every shape\'s table.',
-        f'pub const SET_LEN: usize = {set_len};',
+        f'pub(super) const SET_LEN: usize = {set_len};',
         '/// The largest side log2 (in 4-sample units) with its own tables.',
-        f'pub const MAX_SIDE_LOG2: u8 = {len(SIDES) - 1};',
+        f'pub(super) const MAX_SIDE_LOG2: u8 = {len(SIDES) - 1};',
         '/// Where each transform shape\'s table starts in a set, by the log2 of',
         '/// its width and height in 4-sample units (0..=3).',
-        f'pub const OFFSETS: [[u16; {len(SIDES)}]; {len(SIDES)}] = [',
+        f'pub(super) const OFFSETS: [[u16; {len(SIDES)}]; {len(SIDES)}] = [',
     ]
     for w in SIDES:
         out.append('    [' + ', '.join(str(offsets[(w, h)]) for h in SIDES) + '],')
     out += ['];', '/// The tables by level, plane type (luma, chroma) and entry.', '#[rustfmt::skip]',
-            f'pub static MATRICES: [[[u8; SET_LEN]; {PLANE_TYPES}]; LEVELS] = [']
+            f'pub(super) static MATRICES: [[[u8; SET_LEN]; {PLANE_TYPES}]; LEVELS] = [']
     for planes in sets:
         out.append('    [')
         for data in planes:

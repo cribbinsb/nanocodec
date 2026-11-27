@@ -461,6 +461,30 @@ mod tests {
         }
     }
 
+    /// Intra refresh set at creation beside temporal layers codes the
+    /// layers (fixed, the sweep on the base layer), as the CLI does; turned
+    /// on later it would hold the adaptive layers flat, so it is refused.
+    #[test]
+    fn intra_refresh_beside_temporal_layers_codes_the_layers() {
+        let (w, h) = (64, 48);
+        let frame = vec![90u8; w * h * 3 / 2];
+        let mut config = SessionConfig::new(Codec::Hevc, w, h);
+        config.temporal_layers = 2;
+        config.intra_refresh_period = 4;
+        let mut session = Session::new(&config).unwrap();
+        let layers: Vec<u8> = (0..6)
+            .map(|_| {
+                let raw = RawFrame::packed_nv12(&frame, w, h).unwrap();
+                session.encode(&raw, None).unwrap().metadata.temporal_layer
+            })
+            .collect();
+        assert!(layers.iter().any(|&layer| layer > 0), "{layers:?}");
+
+        config.intra_refresh_period = 0;
+        let mut adaptive = Session::new(&config).unwrap();
+        assert!(adaptive.set_intra_refresh(4).is_err());
+    }
+
     #[test]
     fn resolution_change_starts_a_key_frame_at_the_new_size() {
         let (w, h, small_w, small_h) = (64, 48, 32, 24);

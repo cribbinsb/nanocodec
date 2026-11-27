@@ -49,7 +49,11 @@
 #   installing only bin/vpxdec-hbd: the VP9 profile 2 (10/12-bit) reference
 #   of the vp9-libvpx conformance suite. Separate, so the 8-bit vpxdec of
 #   the landing gates is unchanged.
-#   Opt-in tools: libvpx avm dav2d dav2dasm vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd (not built by
+#   dav2dhbd = the pinned dav2d built again with its 16-bit template
+#   (-Dbitdepths=8,16), installing only bin/dav2d-hbd: the AV2 10- and
+#   12-bit reference beside avmdec. Separate, so the 8-bit oracle and its
+#   speed anchor are unchanged.
+#   Opt-in tools: libvpx avm dav2d dav2dasm dav2dhbd vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd (not built by
 #   the default all-tools invocation). vvdec installs bin/vvdecapp, the VVC conformance
 #   gate's second decoder (eval/nceval/conformance.py). vvenc installs
 #   bin/vvencFFapp and its configuration files under share/vvenc/cfg: the
@@ -69,7 +73,7 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly ALL_TOOLS=(python openh264 harness x264 x265 kvazaar svtav1 libaom dav1d jm hm vmaf aominspect)
-readonly OPTIONAL_TOOLS=(libvpx avm dav2d dav2dasm vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd)
+readonly OPTIONAL_TOOLS=(libvpx avm dav2d dav2dasm dav2dhbd vvdec vvenc ffmpeg avbench decbench aomsvc vpxsvc vpxhbd)
 readonly HARNESS_DIR=$(cd "$SCRIPT_DIR/../openh264-harness" 2>/dev/null && pwd || true)
 # Minimum CMake that every CMake-based tool here accepts.
 readonly CMAKE_MIN_VERSION=3.16
@@ -641,6 +645,17 @@ build_dav2d() {
         -Denable_asm=false -Dbitdepths=8
 }
 
+build_dav2dhbd() {
+    # build_dav2d's oracle with both templates; only the CLI is installed,
+    # renamed.
+    local PATH="$PREFIX/venv/bin:$PATH"
+    run "$PREFIX/venv/bin/meson" setup "$BLD" "$SRC" --buildtype=release \
+        --default-library=static -Denable_tests=false -Denable_tools=true \
+        -Denable_asm=false -Dbitdepths=8,16
+    run "$PREFIX/venv/bin/meson" compile -C "$BLD" -j "$JOBS"
+    install -m 755 "$BLD/tools/dav2d" "$PREFIX/bin/dav2d-hbd"
+}
+
 build_dav2dasm() {
     # The same pinned dav2d with its assembly on: the decode-speed reference
     # (decbench's dav2d-bench links it in preference to the scalar oracle above).
@@ -840,8 +855,9 @@ build_tool() {
             commit=$LIBVPX_COMMIT
             : >"$CURRENT_LOG"
             fetch_source libvpx "$LIBVPX_URL" "$ref" "$commit" ;;
-        dav2dasm)
-            # Same pinned source as dav2d, built with its assembly.
+        dav2dasm|dav2dhbd)
+            # Same pinned source as dav2d, built with its assembly or the
+            # 16-bit template.
             ref=$DAV2D_REF
             commit=$DAV2D_COMMIT
             : >"$CURRENT_LOG"

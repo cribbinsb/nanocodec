@@ -2,7 +2,9 @@
 //! contexts §8.3.2) for every transform size and type: the all-zero flag,
 //! the luma transform type (§5.11.47), the end of block, levels in reverse
 //! scan order with the context of their transform class, signs and Golomb
-//! remainders, dequantised (§7.12.3) straight into the coefficient buffer.
+//! remainders, dequantised (§7.12.3, with the quantizer matrix weights of
+//! two-dimensional transforms when the frame uses them) straight into the
+//! coefficient buffer.
 //!
 //! The structure is dav1d 1.5.4 `src/recon_tmpl.c` `decode_coefs`
 //! (BSD-2-Clause, Copyright (c) 2018, `VideoLAN` and dav1d authors; see
@@ -249,6 +251,10 @@ pub(crate) struct Request<'a> {
     pub neighbours: TxbNeighbours<'a>,
     pub source: TxTypeSource,
     pub steps: Steps,
+    /// The quantizer matrix of the block's plane and transform size, when
+    /// it is weighted (§7.12.3; [`nc_dsp::quantizer_matrix`]): applied to
+    /// two-dimensional transform types only (`PlaneTxType < IDTX`).
+    pub matrix: Option<&'static [u8]>,
 }
 
 /// Read one transform block's coefficients (§5.11.39) into
@@ -270,6 +276,7 @@ pub(crate) fn read<C: Av1Coefficient>(
         neighbours,
         source,
         steps,
+        matrix,
     } = request;
     let size_ctx = tx.context();
     let p = plane as usize;
@@ -325,14 +332,18 @@ pub(crate) fn read<C: Av1Coefficient>(
         ),
     };
     let dc_sign = &mut cdfs.dc_sign[p];
-    let context = read_signs(
-        r,
-        (dc_sign, neighbours),
-        buffer,
-        tokens,
-        steps,
-        tx.dequant_shift(),
-    )?;
+    let signs = (dc_sign, neighbours);
+    let context = match matrix.filter(|_| (kind as u8) < Av1TxType::Idtx as u8) {
+        None => read_signs::<C, false>(r, signs, buffer, tokens, (steps, &[]), tx.dequant_shift()),
+        Some(weights) => read_signs::<C, true>(
+            r,
+            signs,
+            buffer,
+            tokens,
+            (steps, weights),
+            tx.dequant_shift(),
+        ),
+    }?;
     Ok(Coded {
         eob: last + 1,
         kind,
@@ -344,14 +355,23 @@ pub(crate) fn read<C: Av1Coefficient>(
 /// (DC first, with its own sign CDF, then the chain the level pass left),
 /// dequantising each; returns the entropy context the block leaves. The
 /// DC sign is read with one of `dc_sign`'s CDFs, which the neighbours pick.
-fn read_signs<C: Av1Coefficient>(
+/// `WEIGHTED`: each step is weighted by the coefficient's entry of
+/// `weights` (a quantizer matrix in storage order; empty otherwise).
+fn read_signs<C: Av1Coefficient, const WEIGHTED: bool>(
     r: &mut SymbolReader<'_>,
     dc_sign: (&mut [Cdf<2>; DC_SIGN_CONTEXTS], TxbNeighbours<'_>),
     buffer: &mut CoefficientBuffer<C>,
     tokens: Tokens,
-    steps: Steps,
+    (steps, weights): (Steps, &[u8]),
     shift: u32,
 ) -> Result<u8, DecodeError> {
+    let step_at = |step: i32, position: usize| {
+        if WEIGHTED {
+            nc_dsp::quantizer_matrix::weighted_step(step as u32, weights[position]) as i32
+        } else {
+            step
+        }
+    };
     let CoefficientBuffer {
         nonzero,
         nonzero_count,
@@ -365,7 +385,9 @@ fn read_signs<C: Av1Coefficient>(
         let (cdfs, TxbNeighbours { above, left, .. }) = dc_sign;
         let negative = r.boolean(&mut cdfs[TxbContext::dc_sign_context(above, left)]);
         dc_category = if negative { DC_NEGATIVE } else { DC_POSITIVE };
-        let (value, level) = coefficient(r, tokens.dc, negative, (steps.dc, steps.max), shift)?;
+        let step = step_at(steps.dc, 0);
+        let (value, level) =
+            coefficient::<WEIGHTED>(r, tokens.dc, negative, (step, steps.max), shift)?;
         level_sum += level;
         coefficients[0] = C::from_i32(value);
         nonzero[0] = 0;
@@ -376,7 +398,8 @@ fn read_signs<C: Av1Coefficient>(
         let negative = r.bit();
         let entry = coefficients[rc & (MAX_CODED - 1)].to_i32();
         let tok = (entry >> TOKEN_SHIFT) as u32;
-        let (value, level) = coefficient(r, tok, negative, (steps.ac, steps.max), shift)?;
+        let step = step_at(steps.ac, rc & (MAX_CODED - 1));
+        let (value, level) = coefficient::<WEIGHTED>(r, tok, negative, (step, steps.max), shift)?;
         level_sum += level;
         coefficients[rc & (MAX_CODED - 1)] = C::from_i32(value);
         nonzero[count & (MAX_CODED - 1)] = rc as u16;
@@ -389,22 +412,27 @@ fn read_signs<C: Av1Coefficient>(
 
 /// A nonzero coefficient with token `tok` and its sign: the dequantised
 /// value (§7.12.3, clamped to `±max`) and the magnitude, with any Golomb
-/// remainder.
+/// remainder. A `WEIGHTED` step may exceed the bound below which small
+/// tokens need neither the wrap nor the clamp (dav1d `ac_qm`).
 #[inline]
-fn coefficient(
+fn coefficient<const WEIGHTED: bool>(
     r: &mut SymbolReader<'_>,
     tok: u32,
     negative: bool,
     (step, max): (i32, i32),
     shift: u32,
 ) -> Result<(i32, u32), DecodeError> {
-    debug_assert!((0..=MAX_STEP_10).contains(&step));
-    if tok < MAX_TOKEN {
+    if !WEIGHTED && tok < MAX_TOKEN {
+        debug_assert!((0..=MAX_STEP_10).contains(&step));
         // Below the 24-bit wrap and the clamp: see [`MAX_STEP_8`].
         let magnitude = (tok as i32 * step) >> shift;
         return Ok((if negative { -magnitude } else { magnitude }, tok));
     }
-    let level = (tok + read_golomb(r)?) & LEVEL_MASK;
+    let level = if tok < MAX_TOKEN {
+        tok
+    } else {
+        (tok + read_golomb(r)?) & LEVEL_MASK
+    };
     // The product wraps at 24 bits, is divided by `dqDenom` and clamped to
     // the coefficient range.
     let magnitude = (((u64::from(level) * step as u64) & DEQUANT_MASK) >> shift) as i32;
@@ -567,6 +595,7 @@ mod tests {
                                 ac: 1,
                                 max: COEFF_MAX_8,
                             },
+                            matrix: None,
                         };
                         let coded = read(&mut decoder, &mut reader, &mut buffer, request).unwrap();
                         // An empty block codes no type.

@@ -10,6 +10,7 @@
 #![allow(clippy::type_complexity, reason = "one fixture row per case")]
 
 use super::*;
+use nc_common::{BitDepth, Sample};
 
 /// Deterministic sample content.
 fn pattern(seed: u32, len: usize) -> Vec<u8> {
@@ -80,6 +81,7 @@ fn predictors_match_dav2d() {
             angle,
             max_w,
             max_h,
+            BitDepth::EIGHT,
         );
         assert_eq!(fnv(&dst), expected, "case {i}: {mode:?} {w}x{h}");
     }
@@ -101,6 +103,7 @@ fn dc_without_edges_is_mid_grey() {
         0,
         4,
         4,
+        BitDepth::EIGHT,
     );
     assert!(dst.iter().all(|&p| p == 128));
 }
@@ -139,7 +142,16 @@ fn edge_preparation_matches_dav2d() {
         let offset = (y as usize * 4) * 128 + x as usize * 4;
         let sb = use_sb.then(|| SampleRef::new(&sb_row, 0));
         let mut edge = vec![0; EDGE_LEN];
-        let got = prepare_intra_edges(&req, &picture, offset, 128, sb, &mut edge, EDGE_TOPLEFT);
+        let got = prepare_intra_edges(
+            &req,
+            &picture,
+            offset,
+            128,
+            sb,
+            &mut edge,
+            EDGE_TOPLEFT,
+            BitDepth::EIGHT,
+        );
         assert_eq!((got, fnv(&edge)), (expected_mode, expected), "case {i}");
     }
 }
@@ -164,7 +176,19 @@ fn run_cfl(implicit: bool, flags: u32) -> (u64, u64) {
     };
     let luma_block = SampleRef::new(&luma, luma_at);
     cfl_pred_420(
-        implicit, luma_top, luma_block, 128, u_block, v_block, 64, 1, 0, 16, 8, flags,
+        implicit,
+        luma_top,
+        luma_block,
+        128,
+        u_block,
+        v_block,
+        64,
+        1,
+        0,
+        16,
+        8,
+        flags,
+        BitDepth::EIGHT,
     );
     (fnv(&u), fnv(&v))
 }
@@ -217,7 +241,15 @@ fn mhccp_matches_dav2d() {
 
     let mut mat = [[0; 4]; 3];
     let mut imat = [[0; CFL_MH_MAX_EDGE_SAMPLES]; 2];
-    cfl_mh_gen_mat(&mut mat, &mut imat, &buf, refw, refh, flags);
+    cfl_mh_gen_mat(
+        &mut mat,
+        &mut imat,
+        &buf,
+        refw,
+        refh,
+        flags,
+        BitDepth::EIGHT,
+    );
     let expected_mat = [
         [1_026_304, 574_316, 853_248, 0],
         [574_316, 412_330, 504_832, 0],
@@ -230,7 +262,16 @@ fn mhccp_matches_dav2d() {
     let mut alpha = [0; 4];
     let chroma_ref = SampleRef::new(&chroma, block);
     cfl_mh_calc_alphas(
-        &mut alpha, chroma_ref, None, 64, refw, refh, &mat, &imat, flags,
+        &mut alpha,
+        chroma_ref,
+        None,
+        64,
+        refw,
+        refh,
+        &mat,
+        &imat,
+        flags,
+        BitDepth::EIGHT,
     );
     assert_eq!(alpha, [2890, -11576, 76638, 0]);
 
@@ -246,6 +287,7 @@ fn mhccp_matches_dav2d() {
         8,
         &alpha,
         flags,
+        BitDepth::EIGHT,
     );
     assert_eq!(fnv(&dst), 0x0cb9_cb4e_006a_62a1);
 }
@@ -266,4 +308,314 @@ fn mode_numbering_is_dav2ds() {
     assert_eq!(ImplMode::from_index(3), Some(ImplMode::LeftDc));
     assert_eq!(ImplMode::Dip as usize, N_INTRA_PRED_MODES);
     assert_eq!(ImplMode::from_index(N_IMPL_INTRA_PRED_MODES as u8), None);
+}
+
+/// `samples` widened to `u16`, shifted left by `shift`.
+fn widen(samples: &[u8], shift: u32) -> Vec<u16> {
+    samples.iter().map(|&s| u16::from(s) << shift).collect()
+}
+
+/// One fixture prediction at samples `T` and `depth`.
+fn predict_case<T: Sample>(
+    edge: &[T],
+    &(mode, w, h, angle, max_w, max_h, _): &(ImplMode, usize, usize, i32, i32, i32, u64),
+    depth: BitDepth,
+) -> Vec<T> {
+    let mut dst = vec![T::default(); 64 * 64];
+    predict(
+        mode,
+        &mut dst,
+        0,
+        64,
+        edge,
+        EDGE_TOPLEFT,
+        w,
+        h,
+        angle,
+        max_w,
+        max_h,
+        depth,
+    );
+    dst
+}
+
+/// The `u16` instance at 8 bits does the `u8` instance's arithmetic.
+#[test]
+fn u16_at_eight_bits_matches_u8() {
+    let edge = pattern(1, EDGE_LEN);
+    let wide = widen(&edge, 0);
+    for (i, case) in PREDICT.iter().enumerate() {
+        let narrow = predict_case(&edge, case, BitDepth::EIGHT);
+        let deep = predict_case(&wide, case, BitDepth::EIGHT);
+        assert_eq!(widen(&narrow, 0), deep, "case {i}: {:?}", case.0);
+    }
+}
+
+/// Flat 10-bit edges predict that flat value, past the 8-bit range. Not
+/// for DIP, whose trained weights need not preserve it, nor for DC over a
+/// non-power-of-two count, whose reciprocal division is approximate.
+#[test]
+fn flat_ten_bit_edges_predict_flat() {
+    const VALUE: u16 = 1000;
+    let edge = vec![VALUE; EDGE_LEN];
+    let mut wrong = Vec::new();
+    for (i, case) in PREDICT.iter().enumerate() {
+        let (mode, w, h) = (case.0, case.1, case.2);
+        let approximate_dc = mode == ImplMode::Dc && !(w + h).is_power_of_two();
+        if matches!(mode, ImplMode::Dip | ImplMode::Dc128) || approximate_dc {
+            continue;
+        }
+        let dst = predict_case(&edge, case, BitDepth::TEN);
+        if !(0..h).all(|y| dst[y * 64..][..w].iter().all(|&p| p == VALUE)) {
+            wrong.push((i, mode));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:?}");
+}
+
+/// Every 10-bit prediction stays within 10 bits, and DC without edges is
+/// the 10-bit mid-grey.
+#[test]
+fn ten_bit_predictions_stay_in_range() {
+    let max = BitDepth::TEN.max() as u16;
+    let edge: Vec<u16> = widen(&pattern(1, EDGE_LEN), 2)
+        .iter()
+        .map(|&p| p | 3)
+        .collect();
+    for (i, case) in PREDICT.iter().enumerate() {
+        let dst = predict_case(&edge, case, BitDepth::TEN);
+        assert!(dst.iter().all(|&p| p <= max), "case {i}: {:?}", case.0);
+    }
+    let dc = (ImplMode::Dc128, 4, 4, 0, 4, 4, 0);
+    let dst = predict_case(&edge, &dc, BitDepth::TEN);
+    assert_eq!(dst[..4], [512; 4]);
+}
+
+/// Copying predictors commute with the scale from 8 to 10 bits: 8-bit
+/// edges `<< 2` predict the 8-bit prediction `<< 2`.
+#[test]
+fn copying_predictors_scale_with_depth() {
+    let edge = pattern(1, EDGE_LEN);
+    let wide = widen(&edge, 2);
+    let cases = [
+        (ImplMode::Vert, 8, 8, 90, 64, 64, 0),
+        (ImplMode::Hor, 16, 4, 180, 64, 64, 0),
+        (ImplMode::Paeth, 8, 32, 0, 64, 64, 0),
+    ];
+    for case in &cases {
+        let narrow = predict_case(&edge, case, BitDepth::EIGHT);
+        let deep = predict_case(&wide, case, BitDepth::TEN);
+        assert_eq!(widen(&narrow, 2), deep, "{:?}", case.0);
+    }
+
+    let pal = [3, 40, 77, 120, 160, 200, 230, 255];
+    let idx: Vec<u8> = pattern(8, 16 * 8 / 2).iter().map(|b| b & 0x77).collect();
+    let mut narrow = vec![0; 16 * 8];
+    pal_pred(&mut narrow, 0, 16, &pal, &idx, 16, 8);
+    let mut deep = vec![0; 16 * 8];
+    pal_pred(
+        &mut deep,
+        0,
+        16,
+        &pal.map(|c| u16::from(c) << 2),
+        &idx,
+        16,
+        8,
+    );
+    assert_eq!(widen(&narrow, 2), deep);
+}
+
+/// Edge preparation at `u16` and 8 bits matches `u8` on every fixture;
+/// without either edge at 10 bits it fills around the 10-bit mid-grey.
+#[test]
+fn edge_preparation_by_depth() {
+    let picture = pattern(2, 128 * 128);
+    let sb_row = pattern(3, 128);
+    let (wide_picture, wide_sb) = (widen(&picture, 0), widen(&sb_row, 0));
+    for (i, case) in PREPARE.iter().enumerate() {
+        let &(mode, x, y, n_tr, n_bl, tw4, th4, intra_flags, use_sb, _, _) = case;
+        let req = EdgeRequest {
+            x,
+            y,
+            end_x: 32,
+            end_y: 32,
+            n_tr,
+            n_bl,
+            mode,
+            tw4,
+            th4,
+            intra_flags,
+        };
+        let offset = (y as usize * 4) * 128 + x as usize * 4;
+        let mut edge = vec![0; EDGE_LEN];
+        let sb = use_sb.then(|| SampleRef::new(&sb_row[..], 0));
+        let narrow = prepare_intra_edges(
+            &req,
+            &picture,
+            offset,
+            128,
+            sb,
+            &mut edge,
+            EDGE_TOPLEFT,
+            BitDepth::EIGHT,
+        );
+        let mut wide_edge = vec![0; EDGE_LEN];
+        let sb = use_sb.then(|| SampleRef::new(&wide_sb[..], 0));
+        let deep = prepare_intra_edges(
+            &req,
+            &wide_picture,
+            offset,
+            128,
+            sb,
+            &mut wide_edge,
+            EDGE_TOPLEFT,
+            BitDepth::EIGHT,
+        );
+        assert_eq!((narrow, widen(&edge, 0)), (deep, wide_edge), "case {i}");
+    }
+
+    let req = EdgeRequest {
+        x: 4,
+        y: 4,
+        end_x: 32,
+        end_y: 32,
+        n_tr: 0,
+        n_bl: 0,
+        mode: IntraPredMode::Smooth,
+        tw4: 2,
+        th4: 2,
+        intra_flags: 0,
+    };
+    let mut edge = vec![0; EDGE_LEN];
+    let mode = prepare_intra_edges(
+        &req,
+        &wide_picture,
+        4 * 4 * 128 + 4 * 4,
+        128,
+        None,
+        &mut edge,
+        EDGE_TOPLEFT,
+        BitDepth::TEN,
+    );
+    assert_eq!(mode, ImplMode::Smooth);
+    let top = &edge[EDGE_TOPLEFT + 1..][..9];
+    let left = &edge[EDGE_TOPLEFT - 9..EDGE_TOPLEFT];
+    assert!(top.iter().all(|&p| p == 511), "{top:?}");
+    assert!(left.iter().all(|&p| p == 513), "{left:?}");
+}
+
+/// `CfL` at `u16` and 8 bits matches `u8`; at 10 bits it stays in range,
+/// and without edges or alphas it is the 10-bit mid-grey.
+#[test]
+fn cfl_by_depth() {
+    fn run<T: Sample>(luma: &[T], u: &mut [T], v: &mut [T], flags: u32, depth: BitDepth) {
+        let (luma_at, chroma_at) = (16 * 128 + 16, 8 * 64 + 8);
+        cfl_pred_420(
+            true,
+            SampleRef::new(luma, luma_at - 2 * 128),
+            SampleRef::new(luma, luma_at),
+            128,
+            CflChroma {
+                buf: u,
+                offset: chroma_at,
+                top_sb_edge: None,
+            },
+            CflChroma {
+                buf: v,
+                offset: chroma_at,
+                top_sb_edge: None,
+            },
+            64,
+            1,
+            0,
+            16,
+            8,
+            flags,
+            depth,
+        );
+    }
+    let flags = CFL_FLT_TYPE_GAUSS | CFL_HAS_TOP | CFL_HAS_LEFT;
+    let luma = pattern(4, 128 * 64);
+    let (mut u, mut v) = (pattern(5, 64 * 32), pattern(6, 64 * 32));
+    let (mut wu, mut wv) = (widen(&u, 0), widen(&v, 0));
+    run(&luma, &mut u, &mut v, flags, BitDepth::EIGHT);
+    run(&widen(&luma, 0), &mut wu, &mut wv, flags, BitDepth::EIGHT);
+    assert_eq!((widen(&u, 0), widen(&v, 0)), (wu, wv));
+
+    let max = BitDepth::TEN.max() as u16;
+    let deep_luma = widen(&luma, 2);
+    let (mut wu, mut wv) = (
+        widen(&pattern(5, 64 * 32), 2),
+        widen(&pattern(6, 64 * 32), 2),
+    );
+    run(&deep_luma, &mut wu, &mut wv, flags, BitDepth::TEN);
+    assert!(wu.iter().chain(&wv).all(|&p| p <= max));
+
+    // Explicit with zero alphas and no edges: flat mid-grey.
+    run(&deep_luma, &mut wu, &mut wv, 0, BitDepth::TEN);
+    assert!(wu[8 * 64 + 8..][..16].iter().all(|&p| p == 512));
+}
+
+/// MHCCP at `u16` and 8 bits matches `u8` through all four steps; at 10
+/// bits its prediction stays in range.
+#[test]
+fn mhccp_by_depth() {
+    fn run<T: Sample>(luma: &[T], chroma: &[T], depth: BitDepth) -> (Vec<T>, [i32; 4]) {
+        let flags = CFL_HAS_TOP | CFL_HAS_LEFT | CflMhDir::Top as u32;
+        let (refw, refh) = (12, 11);
+        let mut buf = vec![T::default(); CFL_MH_MAX_LUMA_SIZE];
+        let src = SampleRef::new(luma, 16 * 128 + 16);
+        cfl_mh_gen_y_420(
+            &mut buf,
+            src,
+            None,
+            128,
+            12,
+            11,
+            8,
+            8,
+            flags,
+            CFL_FLT_TYPE_GAUSS,
+        );
+        let mut mat = [[0; 4]; 3];
+        let mut imat = [[T::default(); CFL_MH_MAX_EDGE_SAMPLES]; 2];
+        cfl_mh_gen_mat(&mut mat, &mut imat, &buf, refw, refh, flags, depth);
+        let block = 8 * 64 + 8;
+        let mut alpha = [0; 4];
+        cfl_mh_calc_alphas(
+            &mut alpha,
+            SampleRef::new(chroma, block),
+            None,
+            64,
+            refw,
+            refh,
+            &mat,
+            &imat,
+            flags,
+            depth,
+        );
+        let mut dst = chroma.to_vec();
+        cfl_mh_pred(
+            CflMhDir::Top,
+            &mut dst,
+            block,
+            64,
+            SampleRef::new(&buf, 2 * CFL_MH_TOP_STRIDE),
+            8,
+            8,
+            &alpha,
+            flags,
+            depth,
+        );
+        (dst, alpha)
+    }
+    let luma = pattern(4, 128 * 64);
+    let chroma = pattern(7, 64 * 32);
+    let (narrow, narrow_alpha) = run(&luma, &chroma, BitDepth::EIGHT);
+    let (deep, deep_alpha) = run(&widen(&luma, 0), &widen(&chroma, 0), BitDepth::EIGHT);
+    assert_eq!((widen(&narrow, 0), narrow_alpha), (deep, deep_alpha));
+
+    let max = BitDepth::TEN.max() as u16;
+    let (deep, _) = run(&widen(&luma, 2), &widen(&chroma, 2), BitDepth::TEN);
+    assert!(deep.iter().all(|&p| p <= max));
 }

@@ -27,7 +27,15 @@ the same process's interleaved rounds. Each round's records leave the box as wri
                same module encodes of each compared module interleaved with --pkg's;
   table        tools/web/bench.py, the browser table's documented runs (decode; encode
                at 360p; encode at 720p), the native column on the plain build,
-               --table-rounds rounds (needs --plain).
+               --table-rounds rounds (needs --plain);
+  wasm-yardsticks  tools/web/wasm_yardsticks.py (our browser module against the WebAssembly
+               builds of FFmpeg, dav1d and libvpx, --wasm-bin, and ffmpeg.wasm), every stream,
+               split over the --cpus like the decoders, --yardstick-rounds rounds,
+               out/wasm-yardsticks-cpuN.json;
+  webcodecs    tools/web/webcodecs_yardstick.py (our module against Chrome's own software
+               decoders through WebCodecs, in the same headless browser: Google Chrome on
+               x86, Playwright's Chromium on Arm, where Google ships no Linux build), the
+               same split, out/webcodecs-cpuN.json.
 
 The clips bench.py and the yardstick read go up as 150-frame zstd cuts; the outputs come
 back into --out (decoders.json, yardstick.json, compare-NAME.json, table-*.json/csv and the
@@ -89,7 +97,13 @@ exec "$(dirname "$0")/../bin/ffmpeg-decode" "${args[@]}"
 #: The repository files the browser runs need, at their repository paths.
 REPO_FILES = ("tools/dev/decoder_speed.py", "tools/web/bench.py", "tools/web/bench-runner.mjs",
               "tools/web/packets.mjs", "tools/web/ffmpeg_wasm_yardstick.py",
-              "tools/web/ffmpeg-wasm-runner.cjs", "web/codecs.js")
+              "tools/web/ffmpeg-wasm-runner.cjs", "web/codecs.js", "tools/web/wasm_yardsticks.py",
+              "tools/web/webcodecs_yardstick.py", "tools/web/webcodecs-bench.html")
+#: The Playwright release the webcodecs job installs (the PC's), and its browser per box:
+#: Google Chrome where Google ships it (x86), else Playwright's Chromium build.
+PLAYWRIGHT_VERSION = "1.60.0"
+BROWSER_CHANNELS = {"amd64": "chrome", "arm64": "chromium"}
+PLAYWRIGHT_PLATFORMS = {"amd64": "ubuntu24.04-x64", "arm64": "ubuntu24.04-arm64"}
 #: bench.py's clip sets and clips (bench.RESOLUTIONS), and the yardstick's clip.
 CLIP_SETS = {"quick": ("crowd_mot17_09", "pan_jaad_0117", "static_chirla_s000c3"),
              "quick360": ("crowd_mot17_09_360p", "pan_jaad_0117_360p", "static_chirla_s000c3_360p")}
@@ -100,6 +114,7 @@ NODE_URL = "https://nodejs.org/dist/{0}/node-{0}-{1}.tar.xz"
 REMOTE_DIR = "decode-speed"
 #: A job's own timeout (minutes); the whole session's lifetime is --lifetime.
 JOB_MINUTES = {"prepare": 10, "pipe-clean": 5, "decoders": 45, "yardstick": 25, "compare": 10,
+               "wasm-yardsticks": 45, "webcodecs": 45,
                "table-decode": 20, "table-encode-360p": 25, "table-encode-720p": 30}
 
 
@@ -158,6 +173,8 @@ def stage(stage_dir: Path, args, clip_sets: dict[str, tuple[str, ...]], tables: 
         (stage_dir / "pkg").mkdir(exist_ok=True)
         (stage_dir / "pkg" / name).symlink_to(Path(pkg).resolve())
     (stage_dir / "core").symlink_to(args.ffmpeg_core.resolve())  # the package (its version)
+    if args.wasm_bin:
+        (stage_dir / "wasm-bin").symlink_to(args.wasm_bin.resolve())
     for index, streams in enumerate(shards(args.streams, len(args.cpus))):
         (stage_dir / f"streams/shard-{index}").mkdir(parents=True)
         for stream in streams:
@@ -184,11 +201,28 @@ def jobs(args, tables: bool) -> list[tuple[str, str]]:
     decoder = (f"python3 repo/tools/dev/decoder_speed.py {{rounds}} {{out}} --nanocodec bin/nanocodec "
                f"--anchors bin --repeats {args.decoder_repeats} --streams {{streams}}"
                + "".join(f" --also {name}=bin/nanocodec-{name}" for name, _ in args.also))
-    # one process per core, each on its shard; the job fails when any of them does
-    decoders = "{ " + " ".join(
-        f"taskset -c {c} " + decoder.format(rounds=args.decoder_rounds, out=f"out/decoders-cpu{c}.json",
-                                            streams=f"streams/shard-{i}") + " &"
-        for i, c in enumerate(args.cpus)) + " fail=0; for p in $(jobs -p); do wait $p || fail=1; done; exit $fail; }"
+
+    def per_core(command: str, rounds: int, out: str) -> str:
+        """One process per core, each on its shard; the job fails when any of them does."""
+        return "{ " + " ".join(
+            f"taskset -c {c} " + command.format(rounds=rounds, out=f"out/{out}-cpu{c}.json",
+                                                streams=f"streams/shard-{i}") + " &"
+            for i, c in enumerate(args.cpus)) + " fail=0; for p in $(jobs -p); do wait $p || fail=1; done; exit $fail; }"
+    decoders = per_core(decoder, args.decoder_rounds, "decoders")
+    wasm = per_core("python3 repo/tools/web/wasm_yardsticks.py {rounds} {out} --pkg pkg/main/relaxed "
+                    "--bin wasm-bin --core core/dist/umd/ffmpeg-core.js --streams {streams}",
+                    args.yardstick_rounds, "wasm-yardsticks")
+    channel = BROWSER_CHANNELS[target.arch]
+    webcodecs = ("export PATH=$HOME/.local/bin:$PATH && "
+                 # the image has no pip: the official bootstrap, into the user's site
+                 "{ python3 -m pip --version || curl -fsSL https://bootstrap.pypa.io/get-pip.py | "
+                 "python3 - -q --user --break-system-packages; } > out/pip-install.log 2>&1 && "
+                 f"python3 -m pip install -q --user --break-system-packages playwright=={PLAYWRIGHT_VERSION} && "
+                 # Playwright 1.60 knows Ubuntu up to 24.04; the image is newer: its 24.04 builds
+                 f"export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE={PLAYWRIGHT_PLATFORMS[target.arch]} && "
+                 f"python3 -m playwright install --with-deps {channel} > out/playwright-install.log 2>&1 && "
+                 + per_core(f"python3 repo/tools/web/webcodecs_yardstick.py {{rounds}} {{out}} --pkg pkg/main/relaxed "
+                            f"--channel {channel} --streams {{streams}}", args.yardstick_rounds, "webcodecs"))
     node_dir = f"node-{NODE_VERSION}-{target.node}"
     yuv = "data/clips/{0}/{1}.yuv".format(*YARDSTICK_CLIP)
     yardstick = (f"{pin} python3 repo/tools/web/ffmpeg_wasm_yardstick.py --pkg {{pkg}}/relaxed "
@@ -214,6 +248,8 @@ def jobs(args, tables: bool) -> list[tuple[str, str]]:
         ("decoders", cd + decoders),
         ("yardstick", cd + yardstick.format(pkg="pkg/main", rounds=args.yardstick_rounds,
                                             out="out/yardstick.json")),
+        ("wasm-yardsticks", cd + wasm),
+        ("webcodecs", cd + webcodecs),
     ]
     for name, _ in args.compare_pkg:
         # interleaved: the yardstick's H.264 Medium encode on each module in turn
@@ -249,6 +285,8 @@ def main() -> None:
                         default=[], metavar="NAME=PKG", help="another module, timed against --pkg")
     parser.add_argument("--streams", type=Path, nargs="+", required=True)
     parser.add_argument("--ffmpeg-core", type=Path, required=True, help="the @ffmpeg/core package directory")
+    parser.add_argument("--wasm-bin", type=Path,
+                        help="tools/web/build_wasm_yardsticks.sh's PREFIX/bin (the wasm-yardsticks job)")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--decoder-rounds", type=int, default=5)
     parser.add_argument("--decoder-repeats", type=int, default=3, help="timed passes per process")

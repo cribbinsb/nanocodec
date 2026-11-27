@@ -31,6 +31,10 @@ pub(super) const WEIGHTS: [i16; 8] = [
 ];
 
 #[inline(always)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the butterfly's coefficient rows (c), weights (w) and even/odd terms (e, o)"
+)]
 pub(super) unsafe fn butterfly<const LOW: bool>(
     c: [int16x4_t; SIDE],
     w: int16x8_t,
@@ -174,8 +178,8 @@ pub(crate) unsafe fn add_u8(coeffs: &[i16], extent: (usize, usize), dst: &mut [u
     if extent.0 == 0 || extent.1 == 0 || extent == (1, 1) {
         // SAFETY: same extent and buffer contract as the original dispatcher.
         unsafe {
-            inverse_add::inverse_add::<I32x4, HevcIdct8, SIDE>(coeffs, extent, dst, stride, true)
-        };
+            inverse_add::inverse_add::<I32x4, HevcIdct8, SIDE>(coeffs, extent, dst, stride, true);
+        }
         return;
     }
     let dst = &mut dst[..(SIDE - 1) * stride + SIDE];
@@ -209,8 +213,8 @@ pub(crate) unsafe fn add_u16(
         unsafe {
             inverse_add::inverse_add_u16::<I32x4, HevcIdct8, SIDE>(
                 coeffs, extent, dst, stride, true, depth,
-            )
-        };
+            );
+        }
         return;
     }
     let dst = &mut dst[..(SIDE - 1) * stride + SIDE];

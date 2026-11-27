@@ -4,7 +4,7 @@
 //! order or, with slice groups, along `NextMbAddress` (eq. 8-16).
 
 use super::cabac_syntax::CabacSyntax;
-use super::cavlc::CavlcSyntax;
+use super::cavlc::CavlcSlice;
 use super::deblock::{DeblockContext, RowDeblocker, SliceFilter};
 use super::mb::{self, MbExtra, SliceParams};
 use super::mbstate::{MbState, Neighbours};
@@ -36,6 +36,8 @@ pub(super) struct SliceDecoder<'a, T: H264Sample> {
     /// `MbToSliceGroupMap` of a picture with slice groups.
     pub slice_groups: Option<&'a [u8]>,
     pub width_mbs: usize,
+    /// A field picture: its macroblocks are field macroblocks.
+    pub field: bool,
     /// `MbState::slice` of this slice's macroblocks.
     pub slice_no: u32,
     pub residual: &'a mut Residual<T::Coeff>,
@@ -80,7 +82,11 @@ impl<T: H264Sample> SliceDecoder<'_, T> {
         // Decoded in place: every neighbour precedes `addr`.
         let (before, rest) = self.mbs.split_at_mut(addr);
         let cur = &mut rest[0];
-        cur.reset(self.slice_no, self.params.slice_type == SliceType::B);
+        cur.reset(
+            self.slice_no,
+            self.params.slice_type == SliceType::B,
+            self.field,
+        );
         let nb = Neighbours::of(before, self.width_mbs, addr, self.slice_no);
         #[cfg(feature = "analysis")]
         let (qp_pred, start) = (self.qp, syntax.bits_consumed());
@@ -134,6 +140,7 @@ impl<T: H264Sample> SliceDecoder<'_, T> {
                 slices: self.slices,
                 monochrome: self.recon.monochrome,
                 depths: self.recon.depths,
+                field: self.field,
             };
             self.deblocker.filter_through(row, &mut self.planes, &ctx);
         }
@@ -146,7 +153,7 @@ impl<T: H264Sample> SliceDecoder<'_, T> {
         let slice_type = self.params.slice_type;
         loop {
             self.macroblock(syntax, addr, |syntax, nb| {
-                slice_type != SliceType::I && syntax.mb_skip_flag(slice_type, nb)
+                !slice_type.is_intra() && syntax.mb_skip_flag(slice_type, nb)
             })?;
             addr = self.next_addr(addr);
             if syntax.end_of_slice() {
@@ -155,11 +162,12 @@ impl<T: H264Sample> SliceDecoder<'_, T> {
         }
     }
 
-    /// The CAVLC macroblock loop from `first_mb`.
-    pub fn cavlc(&mut self, syntax: &mut CavlcSyntax<'_, '_, T>, first_mb: usize) -> Result<()> {
+    /// The CAVLC macroblock loop from `first_mb`, of a whole slice or of
+    /// a partitioned one.
+    pub fn cavlc<S: CavlcSlice>(&mut self, syntax: &mut S, first_mb: usize) -> Result<()> {
         let mut addr = first_mb;
         loop {
-            if self.params.slice_type != SliceType::I {
+            if !self.params.slice_type.is_intra() {
                 let run = syntax.mb_skip_run()? as usize;
                 if run > self.mbs.len() {
                     return Err(DecodeError::Malformed("mb_skip_run"));
@@ -168,13 +176,13 @@ impl<T: H264Sample> SliceDecoder<'_, T> {
                     self.macroblock(syntax, addr, |_, _| true)?;
                     addr = self.next_addr(addr);
                 }
-                if run > 0 && !syntax.reader.more_rbsp_data() {
+                if run > 0 && !syntax.more_rbsp_data() {
                     return Ok(());
                 }
             }
             self.macroblock(syntax, addr, |_, _| false)?;
             addr = self.next_addr(addr);
-            if !syntax.reader.more_rbsp_data() {
+            if !syntax.more_rbsp_data() {
                 return Ok(());
             }
         }

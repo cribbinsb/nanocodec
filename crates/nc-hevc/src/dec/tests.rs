@@ -414,12 +414,12 @@ mod round_trips {
         p
     }
 
-    /// A long-term reference every 4 frames in `temporal_layers` fixed
-    /// layers; the receiver loses `lost`, reports it, and decodes every
-    /// other frame exactly, with no key frame after the first.
-    fn long_term_recovery(temporal_layers: u8, lost: &[u64], frames: u64) {
+    /// A long-term reference every `interval` frames in `temporal_layers`
+    /// fixed layers; the receiver loses `lost`, reports it, and decodes
+    /// every other frame exactly, with no key frame after the first.
+    fn long_term_recovery(temporal_layers: u8, interval: f32, lost: &[u64], frames: u64) {
         let mut params = ParamOverrides::default();
-        params.set("ltr.interval", 4.0);
+        params.set("ltr.interval", interval);
         params.set("layers.adaptive", 0.0);
         let config = EncoderConfig {
             codec: Codec::Hevc,
@@ -578,19 +578,26 @@ mod round_trips {
 
     #[test]
     fn long_term_reference_recovers_a_lost_frame() {
-        long_term_recovery(1, &[9], 16);
+        long_term_recovery(1, 4.0, &[9], 16);
+    }
+
+    /// The long-term picture 140 frames back: beyond half the 8-bit POC
+    /// LSB range, named by `poc_lsb_lt` (§7.4.7.1).
+    #[test]
+    fn long_term_reference_recovers_from_far_back() {
+        long_term_recovery(1, 200.0, &[140], 146);
     }
 
     #[test]
     fn long_term_reference_recovers_with_two_layers() {
         // Frame 10 is T0 (recovered from the LTR marked at 8); 14 is T1.
-        long_term_recovery(2, &[10, 14], 20);
+        long_term_recovery(2, 4.0, &[10, 14], 20);
     }
 
     #[test]
     fn long_term_reference_recovers_with_three_layers() {
         // Frame 10 is T1 (recovered from the LTR marked at 8); 14 is T2.
-        long_term_recovery(3, &[10, 14], 20);
+        long_term_recovery(3, 4.0, &[10, 14], 20);
     }
 
     #[test]

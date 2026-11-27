@@ -20,25 +20,26 @@ use nc_dsp::{Av1Coefficient, Av1TxType, DepthKernels, Pixel};
 
 /// 4x4 units per 64x64 chunk, which large blocks code one at a time.
 const CHUNK_MI: usize = 16;
-/// Coefficients of a 4x4 transform.
+/// Coefficients of a 4x4 transform, and its side (log2).
 const TX_4X4_COEFFICIENTS: usize = 16;
+const TX_4X4_SIDE_LOG2: u8 = 2;
 /// `MAX_TX_DEPTH`: intra `tx_depth` splits at most twice.
 const MAX_TX_DEPTH: usize = 2;
 
 impl<T: Pixel> FrameDecoder<'_, T> {
     /// The largest luma transform of a block (`Max_Tx_Size_Rect`), 4x4 in
-    /// lossless frames (§5.11.16 `read_tx_size`, `TX_MODE_ONLY_4X4`).
+    /// lossless blocks (§5.11.16 `read_tx_size`).
     pub(super) fn largest_tx(&self, size: BlockSize) -> TxSize {
-        if self.header.lossless {
+        if self.block_lossless {
             TxSize::TX_4X4
         } else {
             TxSize::largest(size)
         }
     }
     /// The chroma transform of a block (§5.11.37 `get_tx_size`), 4x4 in
-    /// lossless frames.
+    /// lossless blocks (§5.11.34 `residual`).
     pub(super) fn chroma_tx(&self, size: BlockSize) -> TxSize {
-        if self.header.lossless {
+        if self.block_lossless {
             TxSize::TX_4X4
         } else {
             TxSize::chroma(size)
@@ -53,7 +54,8 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         near: Neighbours,
     ) -> Result<TxSize, DecodeError> {
         let largest = self.largest_tx(block.size);
-        if !self.header.tx_mode_select || block.size == BlockSize::BLOCK_4X4 {
+        if self.block_lossless || !self.header.tx_mode_select || block.size == BlockSize::BLOCK_4X4
+        {
             return Ok(largest);
         }
         // Splits down to 4x4 choose the CDF category; at most two are coded.
@@ -268,7 +270,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
 
     /// How the type of a `tx` transform of `plane` is found (§5.11.47,
     /// `compute_tx_type`): luma types are coded unless the set has one
-    /// type or `qindex` is 0; chroma takes `chroma_kind` if its set has it;
+    /// type or the segment's `qindex` is 0; chroma takes `chroma_kind` if its set has it;
     /// lossless blocks are `DCT_DCT` (reconstructed by the WHT).
     pub(super) fn tx_type_source(
         &self,
@@ -278,7 +280,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         intra_dir: usize,
         chroma_kind: Av1TxType,
     ) -> TxTypeSource {
-        if self.header.lossless {
+        if self.block_lossless {
             return TxTypeSource::Known(Av1TxType::DctDct);
         }
         let set = TxSet::of(tx, inter, self.header.reduced_tx_set);
@@ -290,13 +292,25 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             };
             return TxTypeSource::Known(kind);
         }
-        if set == TxSet::DctOnly || self.header.base_q_idx == 0 {
+        if set == TxSet::DctOnly || !self.block_tx_types_coded {
             return TxTypeSource::Known(Av1TxType::DctDct);
         }
         TxTypeSource::Coded {
             set,
             intra_dir: (!inter).then_some(intra_dir),
         }
+    }
+    /// The quantizer matrix of a `tx` transform of plane `plane` in the
+    /// block being decoded (§7.12.3 `SegQMLevel`): none when the frame
+    /// uses none, the plane's level is flat or the block is lossless.
+    fn quantizer_matrix(&self, plane: usize, tx: TxSize) -> Option<&'static [u8]> {
+        let levels = self.header.qm.filter(|_| !self.block_lossless)?;
+        let units = |side_log2: u8| side_log2 - TX_4X4_SIDE_LOG2;
+        nc_dsp::quantizer_matrix::matrix(
+            levels[plane],
+            plane > 0,
+            (units(tx.width_log2()), units(tx.height_log2())),
+        )
     }
     /// One transform block of `plane` at plane sample (`x`, `y`): its
     /// coefficients (with the neighbour contexts) and inverse transform;
@@ -335,6 +349,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                 },
                 source,
                 steps: self.block_steps[plane_index],
+                matrix: self.quantizer_matrix(plane_index, tx),
             };
             coefficients::read(
                 &mut self.cdfs.coefficients,
@@ -355,7 +370,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
                 .plane_mut(plane)
                 .region_mut(x as isize, y as isize, tx.width(), tx.height())
                 .ok_or(DecodeError::Malformed("AV1 inverse rectangle"))?;
-            if self.header.lossless {
+            if self.block_lossless {
                 inverse_wht(kernels, &self.coefficients.coefficients, &mut dst);
             } else {
                 kernels.av1_inverse_add(

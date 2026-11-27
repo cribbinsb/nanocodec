@@ -144,6 +144,8 @@ struct EncodeArgs {
     quantizer: u32,
     frames: u32,
     block_log2: u8,
+    /// `--block` was given: the encoder must code that fixed size somewhere.
+    block_requested: bool,
     intra_period: u32,
     key_qp_offset: Option<i32>,
     temporal_layers: u8,
@@ -317,6 +319,11 @@ fn parse_block_log2(block: Option<&str>, codec: Codec) -> Result<u8, String> {
     }
 }
 
+/// The text of the file at `path` (`-`: stdin).
+fn read_text(path: &str) -> Result<String, String> {
+    std::io::read_to_string(stdio::open(Path::new(path))?).map_err(|e| format!("{path}: {e}"))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one struct field per option; the parsing itself lives in helpers"
@@ -342,18 +349,10 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         })
         .transpose()?;
     let qp_replay = get("--qp-replay")
-        .map(|path| {
-            let text = std::io::read_to_string(stdio::open(Path::new(&path))?)
-                .map_err(|e| format!("{path}: {e}"))?;
-            qp_replay::parse(&text)
-        })
+        .map(|path| qp_replay::parse(&read_text(&path)?))
         .transpose()?;
     let key_offsets = get("--key-offsets")
-        .map(|path| {
-            let text = std::io::read_to_string(stdio::open(Path::new(&path))?)
-                .map_err(|e| format!("{path}: {e}"))?;
-            key_oracle::parse(&text)
-        })
+        .map(|path| key_oracle::parse(&read_text(&path)?))
         .transpose()?;
     if qp_replay.is_some() && rate_control.is_none() {
         return Err("--qp-replay needs --bitrate".into());
@@ -394,17 +393,19 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         },
         frames: number(required(get("--frames"), "--frames")?, "--frames")? as u32,
         block_log2,
+        block_requested: get("--block").is_some(),
         intra_period: match get("--intra-period") {
             None => default_intra_period(frame_rate),
             Some(v) => number(v, "--intra-period")? as u32,
         },
-        key_qp_offset: get("--key-qp-offset")
-            .map(|v| v.parse().map_err(|_| format!("bad --key-qp-offset {v}")))
-            .transpose()?,
+        key_qp_offset: parse_key_qp_offset(
+            get("--key-qp-offset").as_deref(),
+            rate_control.is_some(),
+        )?,
         temporal_layers: parse_temporal_layers(args)?,
         signal: StreamSignal {
             colour: colour::parse(get)?,
-            timing: parse_timing(get("--timing").as_deref(), timestamps.is_some())?,
+            timing: parse_timing(get("--timing").as_deref(), timestamps.is_some(), codec)?,
         },
         params: encode_params(args, codec, rate_control.is_none())?,
         rate_control,
@@ -579,7 +580,22 @@ fn parse_keyframes(args: &[String]) -> Result<Vec<u32>, String> {
 }
 
 /// `--timing`; without it, timestamped input is signalled as variable-rate.
-fn parse_timing(text: Option<&str>, timestamped: bool) -> Result<TimingSignal, String> {
+/// `--timing`. VP9 has no timing syntax (the IVF container carries the time
+/// base) and our AV2 sequence header writes none, so there `variable` would
+/// change nothing and is refused; `constant` still turns frame holds off
+/// (`nc_encoder::holds_frames`).
+fn parse_timing(
+    text: Option<&str>,
+    timestamped: bool,
+    codec: Codec,
+) -> Result<TimingSignal, String> {
+    if text == Some("variable") && matches!(codec, Codec::Vp9 | Codec::Av2) {
+        return Err(
+            "--timing variable: VP9 and AV2 streams carry no timing information here (the IVF \
+             container holds the time base)"
+                .into(),
+        );
+    }
     match text {
         None if timestamped => Ok(TimingSignal::Variable),
         None | Some("nominal") => Ok(TimingSignal::Nominal),
@@ -643,6 +659,26 @@ fn parse_fps(text: &str) -> Result<FrameRate, String> {
         num: fps.round() as u32,
         den: 1,
     })
+}
+
+/// `--key-qp-offset`: fixed-QP coding only. Rate control sizes key frames
+/// itself (`EncoderConfig::key_qp_offset`), so under `--bitrate` the offset
+/// would do nothing and is refused instead.
+fn parse_key_qp_offset(value: Option<&str>, rate_controlled: bool) -> Result<Option<i32>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if rate_controlled {
+        return Err(
+            "--key-qp-offset applies to fixed-QP coding (--qp) only: with --bitrate, \
+                    rate control sizes key frames itself"
+                .into(),
+        );
+    }
+    value
+        .parse()
+        .map(Some)
+        .map_err(|_| format!("bad --key-qp-offset {value}"))
 }
 
 /// The encoder configuration `args` ask for.
@@ -965,6 +1001,14 @@ fn start_encoder<B: CodecBackend>(
     config: EncoderConfig,
 ) -> Result<(Encoder<B>, Option<LabelDump>), String> {
     let mut encoder = Encoder::<B>::new(config).map_err(|e| e.to_string())?;
+    if args.block_requested && !encoder.codes_fixed_block_size() {
+        return Err(
+            "--block does nothing here: this codec and preset plan every block size \
+                    (planner.intra_plan); add --param planner.intra_plan=0 to code key frames \
+                    at the fixed size"
+                .into(),
+        );
+    }
     if let Some(rate_control) = args.rate_control {
         encoder
             .set_rate_control(rate_control)

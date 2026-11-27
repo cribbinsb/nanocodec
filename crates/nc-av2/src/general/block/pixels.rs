@@ -211,6 +211,7 @@ impl Tile<'_, '_> {
             row_above,
             &mut self.edge,
             topleft,
+            BitDepth::EIGHT,
         );
         let (tw, th) = (
             (request.tw4 << UNIT) as usize,
@@ -228,6 +229,7 @@ impl Tile<'_, '_> {
             request.intra_flags,
             max_width,
             max_height,
+            BitDepth::EIGHT,
         );
     }
 
@@ -419,6 +421,7 @@ impl Tile<'_, '_> {
             ctw,
             cth,
             flags,
+            BitDepth::EIGHT,
         );
     }
 
@@ -530,7 +533,15 @@ impl Tile<'_, '_> {
             );
         }
         if has_t || has_l {
-            ipred::cfl_mh_gen_mat(&mut mat, &mut imat, &luma, refw, refh, flags);
+            ipred::cfl_mh_gen_mat(
+                &mut mat,
+                &mut imat,
+                &luma,
+                refw,
+                refh,
+                flags,
+                BitDepth::EIGHT,
+            );
         }
         let source = SampleRef::new(&luma, top_rows as usize * CFL_MH_TOP_STRIDE);
         let mh = match direction {
@@ -556,6 +567,7 @@ impl Tile<'_, '_> {
                     &mat,
                     &imat,
                     flags,
+                    BitDepth::EIGHT,
                 );
             }
             ipred::cfl_mh_pred(
@@ -568,6 +580,7 @@ impl Tile<'_, '_> {
                 cth,
                 &alpha,
                 flags,
+                BitDepth::EIGHT,
             );
         }
     }

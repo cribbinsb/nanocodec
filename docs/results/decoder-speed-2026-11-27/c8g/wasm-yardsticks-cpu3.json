@@ -1,0 +1,845 @@
+{
+ "res": {
+  "bp4-bodycam.libvpx-vp9-cpu7.vp9.ivf|vp9|ours-wasm": {
+   "seconds": [
+    0.6243,
+    0.61305,
+    0.61275,
+    0.62505,
+    0.6273000000000001
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.libvpx-vp9-cpu7.vp9.ivf|vp9|ffmpeg-wasm-simd": {
+   "seconds": [
+    1.131733285,
+    1.116362648,
+    1.115454279,
+    1.129441329,
+    1.125800454
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.libvpx-vp9-cpu7.vp9.ivf|vp9|libvpx-wasm-simd": {
+   "seconds": [
+    1.868049105,
+    1.852446975,
+    1.853979813,
+    1.866408656,
+    1.867360685
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.libvpx-vp9-cpu7.vp9.ivf|vp9|ffmpeg.wasm": {
+   "seconds": [
+    1.691455,
+    1.6423610000000002,
+    1.652811,
+    1.687482,
+    1.7041600000000001
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.svtav1-m10.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    0.6657,
+    0.6518999999999999,
+    0.6493499999999999,
+    0.6687000000000001,
+    0.6633
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.svtav1-m10.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    1.514078732,
+    1.503747765,
+    1.501139783,
+    1.513861441,
+    1.510715753
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.x265-medium.hevc|hevc|ours-wasm": {
+   "seconds": [
+    0.6921,
+    0.6693,
+    0.6680999999999999,
+    0.6895500000000001,
+    0.6939000000000001
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.x265-medium.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.838168509,
+    0.826463084,
+    0.824143835,
+    0.83793088,
+    0.839728293
+   ],
+   "frames": 150
+  },
+  "bp4-bodycam.x265-medium.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    1.808808,
+    1.7986900000000001,
+    1.7982360000000002,
+    1.812763,
+    1.811338
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.libaom-av1-cpu8.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    0.5223000000000001,
+    0.5103,
+    0.51285,
+    0.5224500000000001,
+    0.52305
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.libaom-av1-cpu8.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    1.007465988,
+    1.001607099,
+    0.996394406,
+    1.001252085,
+    1.009594375
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-av1-medium.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    0.42795000000000005,
+    0.41969999999999996,
+    0.4206,
+    0.4275,
+    0.42855
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-av1-medium.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    1.072436727,
+    1.070521401,
+    1.071818008,
+    1.075328925,
+    1.077429186
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-h264-medium.264|h264|ours-wasm": {
+   "seconds": [
+    0.2475,
+    0.24719999999999998,
+    0.25035,
+    0.25185,
+    0.2505
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-h264-medium.264|h264|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.319394074,
+    0.32176264,
+    0.319658449,
+    0.322281023,
+    0.322001179
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-h264-medium.264|h264|ffmpeg.wasm": {
+   "seconds": [
+    0.392551,
+    0.388453,
+    0.391101,
+    0.400263,
+    0.394464
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-hevc-medium.hevc|hevc|ours-wasm": {
+   "seconds": [
+    0.30660000000000004,
+    0.30269999999999997,
+    0.30629999999999996,
+    0.30705,
+    0.30915
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-hevc-medium.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.363006648,
+    0.362518199,
+    0.362123257,
+    0.367704438,
+    0.367714316
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-hevc-medium.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    0.662418,
+    0.664402,
+    0.6695570000000001,
+    0.673765,
+    0.672086
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-vvc-medium.vvc|vvc|ours-wasm": {
+   "seconds": [
+    0.5284500000000001,
+    0.5292,
+    0.5304,
+    0.53865,
+    0.5376000000000001
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.nanocodec-vvc-medium.vvc|vvc|ffmpeg-wasm-simd": {
+   "seconds": [
+    1.190816839,
+    1.188745779,
+    1.189158215,
+    1.210327003,
+    1.212040067
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.x264-medium.264|h264|ours-wasm": {
+   "seconds": [
+    0.31589999999999996,
+    0.3162,
+    0.31215,
+    0.32580000000000003,
+    0.3285
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.x264-medium.264|h264|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.460607342,
+    0.461912267,
+    0.460223862,
+    0.46567055,
+    0.465693129
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.x264-medium.264|h264|ffmpeg.wasm": {
+   "seconds": [
+    0.564269,
+    0.567354,
+    0.55791,
+    0.5772820000000001,
+    0.5751430000000001
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.x265-medium.hevc|hevc|ours-wasm": {
+   "seconds": [
+    0.4173,
+    0.4155,
+    0.41384999999999994,
+    0.42315,
+    0.42464999999999997
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.x265-medium.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.481286888,
+    0.481282498,
+    0.480570225,
+    0.486457118,
+    0.486503331
+   ],
+   "frames": 150
+  },
+  "bp4-crowd.x265-medium.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    0.983374,
+    0.9770059999999999,
+    0.9892340000000001,
+    0.996304,
+    0.9954930000000001
+   ],
+   "frames": 150
+  },
+  "bp4-drone.libaom-av1-cpu8.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    0.55875,
+    0.55635,
+    0.5581499999999999,
+    0.5671499999999999,
+    0.5620499999999999
+   ],
+   "frames": 150
+  },
+  "bp4-drone.libaom-av1-cpu8.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    1.059752664,
+    1.061118628,
+    1.054049945,
+    1.065060079,
+    1.060074271
+   ],
+   "frames": 150
+  },
+  "bp4-drone.x265-medium.hevc|hevc|ours-wasm": {
+   "seconds": [
+    0.5134500000000001,
+    0.5116499999999999,
+    0.5116499999999999,
+    0.53085,
+    0.5313
+   ],
+   "frames": 150
+  },
+  "bp4-drone.x265-medium.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.563872583,
+    0.564637466,
+    0.566811334,
+    0.578986202,
+    0.577670253
+   ],
+   "frames": 150
+  },
+  "bp4-drone.x265-medium.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    1.3886910000000001,
+    1.393524,
+    1.3853659999999999,
+    1.404309,
+    1.408019
+   ],
+   "frames": 150
+  },
+  "bp4-lowlight.libaom-av1-cpu8.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    1.992,
+    1.9998000000000002,
+    2.013,
+    2.0376,
+    2.0423999999999998
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.libaom-av1-cpu8.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    3.999273309,
+    4.024827738,
+    4.009313603,
+    4.022046642,
+    4.032340628
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.libvpx-vp9-cpu7.vp9.ivf|vp9|ours-wasm": {
+   "seconds": [
+    1.5204,
+    1.5162,
+    1.5222,
+    1.5234,
+    1.5443999999999998
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.libvpx-vp9-cpu7.vp9.ivf|vp9|ffmpeg-wasm-simd": {
+   "seconds": [
+    2.794982872,
+    2.79377965,
+    2.797692085,
+    2.814656295,
+    2.815376589
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.libvpx-vp9-cpu7.vp9.ivf|vp9|libvpx-wasm-simd": {
+   "seconds": [
+    4.522814668,
+    4.530106499,
+    4.534359892,
+    4.544780489,
+    4.540607588
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.libvpx-vp9-cpu7.vp9.ivf|vp9|ffmpeg.wasm": {
+   "seconds": [
+    3.695931,
+    3.713765,
+    3.705827,
+    3.731866,
+    3.74423
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.nanocodec-av1-medium.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    1.9944,
+    1.9908,
+    1.9962,
+    1.9962,
+    2.0154
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.nanocodec-av1-medium.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    4.980018994,
+    4.982782736,
+    4.981606448,
+    4.9804354,
+    4.995660575
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.nanocodec-h264-medium.264|h264|ours-wasm": {
+   "seconds": [
+    0.9672000000000001,
+    0.969,
+    0.9672000000000001,
+    0.9648000000000001,
+    0.9762000000000001
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.nanocodec-h264-medium.264|h264|ffmpeg-wasm-simd": {
+   "seconds": [
+    1.41114568,
+    1.413555345,
+    1.414072106,
+    1.416563752,
+    1.419290572
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.nanocodec-h264-medium.264|h264|ffmpeg.wasm": {
+   "seconds": [
+    1.654104,
+    1.650653,
+    1.661754,
+    1.65543,
+    1.672871
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.nanocodec-vvc-medium.vvc|vvc|ours-wasm": {
+   "seconds": [
+    2.1744,
+    2.1635999999999997,
+    2.1774,
+    2.178,
+    2.202
+   ],
+   "frames": 600
+  },
+  "bp4-lowlight.nanocodec-vvc-medium.vvc|vvc|ffmpeg-wasm-simd": {
+   "seconds": [
+    5.114427312,
+    5.115834297,
+    5.118296802,
+    5.118509595,
+    5.206067687
+   ],
+   "frames": 600
+  },
+  "bp4-static.nanocodec-h264-medium.264|h264|ours-wasm": {
+   "seconds": [
+    0.2742,
+    0.27135,
+    0.27015,
+    0.2745,
+    0.27315
+   ],
+   "frames": 150
+  },
+  "bp4-static.nanocodec-h264-medium.264|h264|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.380775177,
+    0.38120713,
+    0.381086615,
+    0.379198422,
+    0.383442717
+   ],
+   "frames": 150
+  },
+  "bp4-static.nanocodec-h264-medium.264|h264|ffmpeg.wasm": {
+   "seconds": [
+    0.458793,
+    0.46271300000000004,
+    0.459793,
+    0.46225099999999997,
+    0.472789
+   ],
+   "frames": 150
+  },
+  "bp4-static.nanocodec-vp9-medium.vp9.ivf|vp9|ours-wasm": {
+   "seconds": [
+    0.34845,
+    0.34515,
+    0.34815,
+    0.34725,
+    0.3564
+   ],
+   "frames": 150
+  },
+  "bp4-static.nanocodec-vp9-medium.vp9.ivf|vp9|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.654409312,
+    0.654513836,
+    0.654768643,
+    0.654905755,
+    0.657839821
+   ],
+   "frames": 150
+  },
+  "bp4-static.nanocodec-vp9-medium.vp9.ivf|vp9|libvpx-wasm-simd": {
+   "seconds": [
+    1.117624577,
+    1.117405907,
+    1.116546472,
+    1.11830246,
+    1.122369022
+   ],
+   "frames": 150
+  },
+  "bp4-static.nanocodec-vp9-medium.vp9.ivf|vp9|ffmpeg.wasm": {
+   "seconds": [
+    1.109508,
+    1.103078,
+    1.10993,
+    1.111623,
+    1.131874
+   ],
+   "frames": 150
+  },
+  "bp4-texture.nanocodec-av1-medium.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    0.2793,
+    0.27914999999999995,
+    0.2796,
+    0.27764999999999995,
+    0.2874
+   ],
+   "frames": 150
+  },
+  "bp4-texture.nanocodec-av1-medium.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    0.556999653,
+    0.547343687,
+    0.547680045,
+    0.54985314,
+    0.555855015
+   ],
+   "frames": 150
+  },
+  "bp4-texture.nanocodec-av2-medium.av2.ivf|av2|ours-wasm": {
+   "seconds": [
+    0.39675,
+    0.39555,
+    0.39615,
+    0.39555,
+    0.40455
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.nanocodec-av1-medium.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    1.1108999999999998,
+    1.1037000000000001,
+    1.104,
+    1.1000999999999999,
+    1.13085
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.nanocodec-av1-medium.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    3.99194863,
+    3.991188849,
+    3.987999178,
+    3.994155853,
+    3.997796501
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.nanocodec-h264-medium.264|h264|ours-wasm": {
+   "seconds": [
+    0.49019999999999997,
+    0.48765,
+    0.48735,
+    0.4848,
+    0.49965
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.nanocodec-h264-medium.264|h264|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.651914397,
+    0.647429731,
+    0.646850763,
+    0.646876561,
+    0.651117304
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.nanocodec-h264-medium.264|h264|ffmpeg.wasm": {
+   "seconds": [
+    0.723368,
+    0.720707,
+    0.719522,
+    0.716222,
+    0.7306860000000001
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.svtav1-m10.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    0.951,
+    0.9477,
+    0.94665,
+    0.94695,
+    0.9615
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.svtav1-m10.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    3.022612631,
+    3.041864684,
+    3.03830972,
+    3.023310862,
+    3.042724805
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.x264-medium.264|h264|ours-wasm": {
+   "seconds": [
+    0.5791499999999999,
+    0.5718,
+    0.58125,
+    0.5925,
+    0.57465
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.x264-medium.264|h264|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.836039873,
+    0.841864715,
+    0.838689021,
+    0.8364913,
+    0.832186971
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.x264-medium.264|h264|ffmpeg.wasm": {
+   "seconds": [
+    0.9472569999999999,
+    0.949061,
+    0.9527960000000001,
+    0.937736,
+    0.9430620000000001
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.x265-medium.hevc|hevc|ours-wasm": {
+   "seconds": [
+    0.7122,
+    0.7194,
+    0.71205,
+    0.717,
+    0.7084499999999999
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.x265-medium.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    1.069814419,
+    1.061685902,
+    1.057135784,
+    1.06585222,
+    1.055703776
+   ],
+   "frames": 150
+  },
+  "bp4-videocall.x265-medium.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    2.0514989999999997,
+    2.0348420000000003,
+    2.039559,
+    2.043297,
+    2.032076
+   ],
+   "frames": 150
+  },
+  "cam150.axis-m5074-720p.hevc|hevc|ours-wasm": {
+   "seconds": [
+    0.27705,
+    0.2793,
+    0.27825,
+    0.2775,
+    0.2763
+   ],
+   "frames": 150
+  },
+  "cam150.axis-m5074-720p.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    0.328517471,
+    0.330007907,
+    0.332751351,
+    0.329207381,
+    0.329322942
+   ],
+   "frames": 150
+  },
+  "cam150.axis-m5074-720p.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    0.47062099999999996,
+    0.471098,
+    0.466304,
+    0.477162,
+    0.47011000000000003
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.ours.av1.ivf|av1|ours-wasm": {
+   "seconds": [
+    1.7541000000000002,
+    1.7756999999999998,
+    1.764,
+    1.7628000000000001,
+    1.74765
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.ours.av1.ivf|av1|dav1d-wasm-simd": {
+   "seconds": [
+    4.144479025,
+    4.153945465,
+    4.135008247,
+    4.114585646,
+    4.108840421
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.ours.hevc.hevc|hevc|ours-wasm": {
+   "seconds": [
+    1.2753,
+    1.314,
+    1.2603,
+    1.27545,
+    1.2537
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.ours.hevc.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    1.569655384,
+    1.579366998,
+    1.566000238,
+    1.571789349,
+    1.545100953
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.ours.hevc.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    2.62513,
+    2.646095,
+    2.628679,
+    2.6224160000000003,
+    2.6123499999999997
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.vpxenc.vp9.ivf|vp9|ours-wasm": {
+   "seconds": [
+    1.31535,
+    1.3443,
+    1.299,
+    1.3119,
+    1.2865499999999999
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.vpxenc.vp9.ivf|vp9|ffmpeg-wasm-simd": {
+   "seconds": [
+    2.504225379,
+    2.52501805,
+    2.509095462,
+    2.503627067,
+    2.481212919
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.vpxenc.vp9.ivf|vp9|libvpx-wasm-simd": {
+   "seconds": [
+    4.388250196,
+    4.383311931,
+    4.399998005,
+    4.382878225,
+    4.375464032
+   ],
+   "frames": 150
+  },
+  "crowd1080.3000k.vpxenc.vp9.ivf|vp9|ffmpeg.wasm": {
+   "seconds": [
+    3.397714,
+    3.379502,
+    3.386882,
+    3.382624,
+    3.361968
+   ],
+   "frames": 150
+  },
+  "crowd_mot17_09.600k.av2.ivf|av2|ours-wasm": {
+   "seconds": [
+    0.6500999999999999,
+    0.6489,
+    0.65205,
+    0.6550499999999999,
+    0.6454500000000001
+   ],
+   "frames": 150
+  },
+  "x265-4k-b.hevc|hevc|ours-wasm": {
+   "seconds": [
+    1.48236,
+    1.47408,
+    1.47396,
+    1.47876,
+    1.47252
+   ],
+   "frames": 120
+  },
+  "x265-4k-b.hevc|hevc|ffmpeg-wasm-simd": {
+   "seconds": [
+    2.224535997,
+    2.223412409,
+    2.240238316,
+    2.226318334,
+    2.221034044
+   ],
+   "frames": 120
+  },
+  "x265-4k-b.hevc|hevc|ffmpeg.wasm": {
+   "seconds": [
+    3.1025050000000003,
+    3.113588,
+    3.114844,
+    3.118757,
+    3.091224
+   ],
+   "frames": 120
+  }
+ },
+ "errors": {}
+}

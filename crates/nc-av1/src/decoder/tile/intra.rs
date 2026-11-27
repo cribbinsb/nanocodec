@@ -109,7 +109,7 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         };
         if block.has_chroma() {
             // `is_cfl_allowed`: up to 32x32, or 4x4 chroma when lossless.
-            let cfl_allowed = if self.header.lossless {
+            let cfl_allowed = if self.block_lossless {
                 chroma_block(block.size) == (MIN_TX_SIDE_LOG2, MIN_TX_SIDE_LOG2)
             } else {
                 block.size.width_log2().max(block.size.height_log2()) <= SMALL_BLOCK_MAX_LOG2

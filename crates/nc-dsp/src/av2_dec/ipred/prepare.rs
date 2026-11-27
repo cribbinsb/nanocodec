@@ -9,18 +9,14 @@
 //! and `src/ipred_prepare.h` (commit 237229e, BSD-2-Clause, see
 //! `docs/licenses/dav2d`).
 
+use nc_common::{BitDepth, Sample};
+
 use super::{
     ANGLE_DIP_FLAG, ANGLE_HAS_LEFT_FLAG, ANGLE_HAS_TOP_FLAG, ANGLE_IBP_FLAG, ANGLE_MASK,
     ANGLE_MULTI_MRL_FLAG, ANGLE_SEQHDR_IBP_FLAG, ANGLE_USE_EDGE_FILTER_FLAG, ImplMode,
     IntraPredMode, SampleRef, mrl_idx,
 };
 
-/// Fill of a missing left edge without a top edge (`(1 << bitdepth) / 2 + 1`).
-const NO_LEFT: u8 = 129;
-/// Fill of a missing top edge without a left edge (`(1 << bitdepth) / 2 - 1`).
-const NO_TOP: u8 = 127;
-/// Fill of the corner without either edge.
-const NO_CORNER: u8 = 128;
 /// Directional angles (degrees) splitting the zones.
 const VERTICAL: i32 = 90;
 /// See [`VERTICAL`].
@@ -195,40 +191,63 @@ fn is_zone(mode: ImplMode) -> bool {
 /// `mrl_idx` and line 0, `stride` apart vertically (0 for the pre-filter
 /// row at a superblock's top, which serves every line).
 #[derive(Clone, Copy)]
-struct TopRows<'a> {
-    line: SampleRef<'a>,
-    line0: SampleRef<'a>,
+struct TopRows<'a, T> {
+    line: SampleRef<'a, T>,
+    line0: SampleRef<'a, T>,
     stride: isize,
 }
 
-/// The edge buffer being written.
-struct EdgeOut<'a> {
-    buf: &'a mut [u8],
-    topleft: usize,
+/// The values of samples no edge provides, around mid-grey at the depth.
+#[derive(Clone, Copy)]
+struct MissingFill<T> {
+    /// A missing left edge without a top edge (`((1 << bitdepth) >> 1) + 1`).
+    left: T,
+    /// A missing top edge without a left edge (`((1 << bitdepth) >> 1) - 1`).
+    top: T,
+    /// The corner without either edge (`(1 << bitdepth) >> 1`).
+    corner: T,
 }
 
-impl EdgeOut<'_> {
+impl<T: Sample> MissingFill<T> {
+    fn new(depth: BitDepth) -> Self {
+        let mid = depth.mid();
+        Self {
+            left: T::from_i32(mid + 1),
+            top: T::from_i32(mid - 1),
+            corner: T::from_i32(mid),
+        }
+    }
+}
+
+/// The edge buffer being written, with the fill of missing samples.
+struct EdgeOut<'a, T> {
+    buf: &'a mut [T],
+    topleft: usize,
+    missing: MissingFill<T>,
+}
+
+impl<T: Sample> EdgeOut<'_, T> {
     fn index(&self, i: isize) -> usize {
         super::index(self.topleft, i)
     }
 
-    fn get(&self, i: isize) -> u8 {
+    fn get(&self, i: isize) -> T {
         self.buf[self.index(i)]
     }
 
-    fn set(&mut self, i: isize, v: u8) {
+    fn set(&mut self, i: isize, v: T) {
         let at = self.index(i);
         self.buf[at] = v;
     }
 
     /// Fills `len` samples from `start` with `v`.
-    fn fill(&mut self, start: isize, len: usize, v: u8) {
+    fn fill(&mut self, start: isize, len: usize, v: T) {
         let at = self.index(start);
         self.buf[at..at + len].fill(v);
     }
 
     /// Copies `src` to the samples from `start`.
-    fn copy(&mut self, start: isize, src: &[u8]) {
+    fn copy(&mut self, start: isize, src: &[T]) {
         let at = self.index(start);
         self.buf[at..at + src.len()].copy_from_slice(src);
     }
@@ -242,15 +261,17 @@ impl EdgeOut<'_> {
 /// The top edges come from `top_sb_edge`, the pre-filter row above a
 /// superblock's top (at the plane's first column), when given, else from
 /// the picture. Edges the returned predictor does not read are left as
-/// they were; unavailable ones are extended as AV2 defines.
-pub fn prepare_intra_edges(
+/// they were; unavailable ones are extended as AV2 defines, around the
+/// mid-grey of `depth`.
+pub fn prepare_intra_edges<T: Sample>(
     req: &EdgeRequest,
-    picture: &[u8],
+    picture: &[T],
     offset: usize,
     stride: usize,
-    top_sb_edge: Option<SampleRef<'_>>,
-    edge: &mut [u8],
+    top_sb_edge: Option<SampleRef<'_, T>>,
+    edge: &mut [T],
     topleft: usize,
+    depth: BitDepth,
 ) -> ImplMode {
     debug_assert!(req.y < req.end_y && req.x < req.end_x);
     let f = Flags::new(req.intra_flags);
@@ -292,13 +313,18 @@ pub fn prepare_intra_edges(
         });
 
     let shape = Shape::new(req, &f, mode, is_dir);
-    let mut out = EdgeOut { buf: edge, topleft };
+    let missing = MissingFill::new(depth.of::<T>());
+    let mut out = EdgeOut {
+        buf: edge,
+        topleft,
+        missing,
+    };
     if needs.left || corner_filter {
         left_edge(&mut out, req, &f, &shape, needs, pic, stride, top);
     } else if needs.bottomleft {
         debug_assert_eq!(mode, ImplMode::SmoothV);
         let value = if !f.have_left {
-            top.map_or(NO_LEFT, |t| t.line.at(0))
+            top.map_or(missing.left, |t| t.line.at(0))
         } else if req.n_bl <= 0 {
             let rows = shape.th.min((req.end_y - req.y) << UNIT_LOG2);
             pic.at(stride * (rows as isize - 1) - 1)
@@ -314,7 +340,7 @@ pub fn prepare_intra_edges(
         debug_assert_eq!(mode, ImplMode::SmoothH);
         let value = match top {
             None if f.have_left => pic.at(-1),
-            None => NO_TOP,
+            None => missing.top,
             Some(t) if req.n_tr <= 0 => {
                 let cols = shape.tw.min((req.end_x - req.x) << UNIT_LOG2);
                 t.line.at(cols as isize - 1)
@@ -381,15 +407,15 @@ impl Shape {
 
 /// The left column and its bottom-left extension, of line `mrl_idx` and,
 /// with multiple reference lines, line 0.
-fn left_edge(
-    out: &mut EdgeOut<'_>,
+fn left_edge<T: Sample>(
+    out: &mut EdgeOut<'_, T>,
     req: &EdgeRequest,
     f: &Flags,
     shape: &Shape,
     needs: EdgeNeeds,
-    pic: SampleRef<'_>,
+    pic: SampleRef<'_, T>,
     stride: isize,
-    top: Option<TopRows<'_>>,
+    top: Option<TopRows<'_, T>>,
 ) {
     let th = shape.th;
     let (sz, sz2) = shape.run(th, shape.tw, needs.left, needs.bottomleft);
@@ -398,13 +424,14 @@ fn left_edge(
     let column = |col: isize, i: i32| pic.at(stride * i as isize + col);
 
     if !f.have_left {
+        let no_left = out.missing.left;
         out.fill(
             left + 1 - sz as isize,
             sz as usize,
-            top.map_or(NO_LEFT, |t| t.line.at(0)),
+            top.map_or(no_left, |t| t.line.at(0)),
         );
         if f.multi_mrl {
-            let v = top.map_or(NO_LEFT, |t| t.line0.at(0));
+            let v = top.map_or(no_left, |t| t.line0.at(0));
             out.fill(left2 + 1 - sz2 as isize, sz2 as usize, v);
         }
         return;
@@ -439,14 +466,14 @@ fn left_edge(
 
 /// The top row and its top-right extension, of line `mrl_idx` and, with
 /// multiple reference lines, line 0.
-fn top_edge(
-    out: &mut EdgeOut<'_>,
+fn top_edge<T: Sample>(
+    out: &mut EdgeOut<'_, T>,
     req: &EdgeRequest,
     f: &Flags,
     shape: &Shape,
     needs: EdgeNeeds,
-    pic: SampleRef<'_>,
-    top: Option<TopRows<'_>>,
+    pic: SampleRef<'_, T>,
+    top: Option<TopRows<'_, T>>,
 ) {
     let tw = shape.tw;
     let (sz, sz2) = shape.run(tw, shape.th, needs.top, needs.topright);
@@ -454,17 +481,18 @@ fn top_edge(
     let start2 = shape.e_stride + 1;
 
     let Some(rows) = top else {
+        let no_top = out.missing.top;
         let v = if f.have_left {
             pic.at(-1 - f.mrl as isize)
         } else {
-            NO_TOP
+            no_top
         };
         out.fill(start, sz as usize, v);
         if f.multi_mrl {
             out.fill(
                 start2,
                 sz2 as usize,
-                if f.have_left { pic.at(-1) } else { NO_TOP },
+                if f.have_left { pic.at(-1) } else { no_top },
             );
         }
         return;
@@ -499,14 +527,15 @@ fn top_edge(
 
 /// The corner samples of line `mrl_idx`, line 0's corner, and the corner
 /// filter.
-fn corner(
-    out: &mut EdgeOut<'_>,
+fn corner<T: Sample>(
+    out: &mut EdgeOut<'_, T>,
     f: &Flags,
     shape: &Shape,
-    pic: SampleRef<'_>,
-    top: Option<TopRows<'_>>,
+    pic: SampleRef<'_, T>,
+    top: Option<TopRows<'_, T>>,
     filter: bool,
 ) {
+    let no_corner = out.missing.corner;
     debug_assert_eq!(shape.diag_mrl, f.mrl);
     let m = f.mrl as isize;
     match top {
@@ -522,7 +551,7 @@ fn corner(
             let v = if f.have_left {
                 pic.at(-(1 + m))
             } else {
-                top.map_or(NO_CORNER, |t| t.line.at(0))
+                top.map_or(no_corner, |t| t.line.at(0))
             };
             out.fill(-m, 2 * f.mrl + 1, v);
         }
@@ -531,16 +560,16 @@ fn corner(
         (true, Some(rows)) => rows.line0.at(-1),
         (true, None) => pic.at(-1),
         (false, Some(rows)) => rows.line0.at(0),
-        (false, None) => NO_CORNER,
+        (false, None) => no_corner,
     };
     out.set(shape.e_stride, corner0);
 
     if filter {
-        let c = u16::from(out.get(0));
-        let sum = c + (u16::from(out.get(-1)) + c + u16::from(out.get(1))) * 5;
+        let c = out.get(0).to_i32();
+        let sum = c + (out.get(-1).to_i32() + c + out.get(1).to_i32()) * 5;
         out.set(
             0,
-            ((sum + (1 << (CORNER_FILTER_BITS - 1))) >> CORNER_FILTER_BITS) as u8,
+            T::from_i32((sum + (1 << (CORNER_FILTER_BITS - 1))) >> CORNER_FILTER_BITS),
         );
     }
 }

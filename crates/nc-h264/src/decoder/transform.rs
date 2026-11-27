@@ -13,7 +13,36 @@ use nc_dsp::Dsp;
 use super::sample::{Coefficient, H264Sample};
 use super::scaling::LevelScale;
 use super::syntax::Coeffs;
-use crate::tables::{ZIGZAG_4X4, ZIGZAG_8X8, chroma_qp};
+use crate::tables::{FIELD_SCAN_4X4, FIELD_SCAN_8X8, ZIGZAG_4X4, ZIGZAG_8X8, chroma_qp};
+
+/// The inverse scans of a frame (zig-zag) or field macroblock (§8.5.6,
+/// §8.5.7): scan position to raster index.
+#[derive(Debug)]
+pub(super) struct Scan {
+    four: [usize; 16],
+    eight: [usize; 64],
+}
+
+impl Scan {
+    const FRAME: Self = Self {
+        four: ZIGZAG_4X4,
+        eight: ZIGZAG_8X8,
+    };
+    const FIELD: Self = Self {
+        four: FIELD_SCAN_4X4,
+        eight: FIELD_SCAN_8X8,
+    };
+
+    /// The scans with the scans `scan`.
+    pub fn of(field: bool) -> &'static Self {
+        if field { &Self::FIELD } else { &Self::FRAME }
+    }
+
+    /// The raster position of each 4x4 scan index.
+    pub fn four(&self) -> &[usize; 16] {
+        &self.four
+    }
+}
 
 /// `QP % 6` period of the scaling factors.
 const QP_PERIOD: i32 = 6;
@@ -131,16 +160,23 @@ impl Dequantiser {
         chroma_qp_at(qp, self.chroma_qp_offset[comp], bd_offset) + bd_offset
     }
 
-    /// `Intra16x16DCLevel`: inverse Hadamard (eq. 8-320) and DC scaling
-    /// (eq. 8-326) into the DC of every luma 4x4 block.
-    pub fn luma_dc<C: Coefficient>(&self, levels: &Coeffs, qp: i32, out: &mut Residual<C>) {
+    /// `Intra16x16DCLevel` with the scans `scan`: inverse
+    /// Hadamard (eq. 8-320) and DC scaling (eq. 8-326) into the DC of
+    /// every luma 4x4 block.
+    pub fn luma_dc<C: Coefficient>(
+        &self,
+        levels: &Coeffs,
+        (qp, scan): (i32, &Scan),
+        out: &mut Residual<C>,
+    ) {
         if levels.count == 0 {
             return;
         }
         let qp = self.luma_qp(qp);
+        let order = &scan.four;
         let mut c = [0i32; 16];
         for (scan, level) in levels.iter() {
-            c[ZIGZAG_4X4[scan]] = level;
+            c[order[scan]] = level;
         }
         let f = hadamard_4x4(&c);
         let scale = self.scale.scale_4x4[LIST_INTRA_Y][(qp % QP_PERIOD) as usize][0];
@@ -156,13 +192,12 @@ impl Dequantiser {
     }
 
     /// A luma 4x4 block (`ac`: Intra16x16 AC, scan from position 1) at
-    /// raster index `block`.
+    /// raster index `block` with the scans `scan`.
     pub fn luma_4x4<C: Coefficient>(
         &self,
         levels: &Coeffs,
-        ac: bool,
-        intra: bool,
-        qp: i32,
+        (ac, intra): (bool, bool),
+        (qp, scan): (i32, &Scan),
         block: usize,
         out: &mut Residual<C>,
     ) {
@@ -170,13 +205,14 @@ impl Dequantiser {
             return;
         }
         let qp = self.luma_qp(qp);
+        let order = &scan.four;
         let list = if intra { LIST_INTRA_Y } else { LIST_INTER_Y };
         let scale = &self.scale.scale_4x4[list][(qp % QP_PERIOD) as usize];
         let first = usize::from(ac);
         let coeffs = &mut out.luma[block];
         let scaler = Scaler::new(qp, 4);
         for (scan, level) in levels.iter() {
-            let pos = ZIGZAG_4X4[scan + first];
+            let pos = order[scan + first];
             coeffs[pos] = scaler.apply(level, scale[pos]);
         }
         out.luma_coded |= 1 << block;
@@ -185,12 +221,12 @@ impl Dequantiser {
         out.luma_ac |= u16::from(!dc_only) << block;
     }
 
-    /// Luma 8x8 block `b8`.
+    /// Luma 8x8 block `b8` with the scans `scan`.
     pub fn luma_8x8<C: Coefficient>(
         &self,
         levels: &Coeffs,
         intra: bool,
-        qp: i32,
+        (qp, scan): (i32, &Scan),
         b8: usize,
         out: &mut Residual<C>,
     ) {
@@ -206,8 +242,9 @@ impl Dequantiser {
         let scale = &self.scale.scale_8x8[list][(qp % QP_PERIOD) as usize];
         let coeffs = &mut out.luma_8x8[b8];
         let scaler = Scaler::new(qp, 6);
+        let order = &scan.eight;
         for (scan, level) in levels.iter() {
-            let pos = ZIGZAG_8X8[scan];
+            let pos = order[scan];
             coeffs[pos] = scaler.apply(level, scale[pos]);
         }
         out.luma_8x8_coded |= 1 << b8;
@@ -248,14 +285,14 @@ impl Dequantiser {
         }
     }
 
-    /// `ChromaACLevel` of block `b` of `comp`.
+    /// `ChromaACLevel` of block `b` of `comp` of a frame or `field`
+    /// macroblock.
     pub fn chroma_ac<C: Coefficient>(
         &self,
         levels: &Coeffs,
         intra: bool,
-        qp: i32,
-        comp: usize,
-        b: usize,
+        (qp, scan): (i32, &Scan),
+        (comp, b): (usize, usize),
         out: &mut Residual<C>,
     ) {
         if levels.count == 0 {
@@ -266,8 +303,9 @@ impl Dequantiser {
         let scale = &self.scale.scale_4x4[list][(qpc % QP_PERIOD) as usize];
         let coeffs = &mut out.chroma[comp][b];
         let scaler = Scaler::new(qpc, 4);
+        let order = &scan.four;
         for (scan, level) in levels.iter() {
-            let pos = ZIGZAG_4X4[scan + 1];
+            let pos = order[scan + 1];
             coeffs[pos] = scaler.apply(level, scale[pos]);
         }
         out.chroma_coded[comp] |= 1 << b;
@@ -485,7 +523,7 @@ mod tests {
         let mut levels = Coeffs::new();
         levels.push(0, 2);
         let mut residual = Residual::<i16>::new();
-        dq.luma_dc(&levels, 28, &mut residual);
+        dq.luma_dc(&levels, (28, Scan::of(false)), &mut residual);
         assert_eq!(residual.luma_coded, u16::MAX);
     }
 }

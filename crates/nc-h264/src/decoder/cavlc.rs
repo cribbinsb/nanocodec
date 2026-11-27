@@ -20,6 +20,8 @@ use crate::tables::cavlc::{
 /// Largest `mb_type` of I slices (Table 7-11), P slices (Table 7-13 + 26)
 /// and B slices (Table 7-14 + 26).
 const MAX_MB_TYPE_I: u32 = 25;
+/// Largest `mb_type` of SI slices (Table 7-12: `SI`, then the I types).
+const MAX_MB_TYPE_SI: u32 = MAX_MB_TYPE_I + 1;
 const MAX_MB_TYPE_P: u32 = 30;
 const MAX_MB_TYPE_B: u32 = 48;
 /// Largest `sub_mb_type` of P slices (Table 7-17) and B slices (Table 7-18).
@@ -141,11 +143,6 @@ impl<'a, 't, T> CavlcSyntax<'a, 't, T> {
             tables,
             sample: PhantomData,
         }
-    }
-
-    /// `mb_skip_run`.
-    pub fn mb_skip_run(&mut self) -> Result<u32> {
-        self.reader.ue()
     }
 
     /// `residual_block_cavlc()` of up to `max_coeffs` coefficients with
@@ -304,6 +301,26 @@ pub(crate) fn block_for_tests(bytes: &[u8], nc: i32, max_coeffs: usize) -> Vec<i
     levels
 }
 
+/// The slice-level elements of a CAVLC `slice_data()` (§7.3.4) beside the
+/// macroblock layer: `mb_skip_run` and the end of the slice data.
+pub(super) trait CavlcSlice: MbSyntax {
+    fn mb_skip_run(&mut self) -> Result<u32>;
+    /// `more_rbsp_data()`.
+    fn more_rbsp_data(&self) -> bool;
+}
+
+impl<T> CavlcSlice for CavlcSyntax<'_, '_, T> {
+    #[inline]
+    fn mb_skip_run(&mut self) -> Result<u32> {
+        self.reader.ue()
+    }
+
+    #[inline]
+    fn more_rbsp_data(&self) -> bool {
+        self.reader.more_rbsp_data()
+    }
+}
+
 /// `nC` of the luma 4x4 block (`x4`, `y4`) of `cur`.
 fn luma_nc(nb: &Neighbours<'_>, cur: &MbState, x4: usize, y4: usize) -> i32 {
     let count = |n: Option<(&MbState, usize, usize)>| n.map(|(m, x, y)| m.total_coeff[y * 4 + x]);
@@ -319,6 +336,7 @@ impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
     fn mb_type(&mut self, slice: SliceType, _nb: &Neighbours<'_>) -> Result<u32> {
         let max = match slice {
             SliceType::I => MAX_MB_TYPE_I,
+            SliceType::Si => MAX_MB_TYPE_SI,
             SliceType::P => MAX_MB_TYPE_P,
             SliceType::B => MAX_MB_TYPE_B,
         };

@@ -5,16 +5,20 @@
 //! the distance scale factor implicit weighted prediction shares
 //! (§8.4.2.3.1).
 //!
-//! The co-located picture is `RefPicList1[0]`; its macroblock states are
-//! kept with it in the DPB ([`RefPicture::motion`]). Frames only: the
-//! co-located macroblock is the current address.
+//! The co-located picture is `RefPicList1[0]` or the frame or field of its
+//! frame that Table 8-6 selects; its macroblock states are kept with it in
+//! the DPB ([`RefPicture::motion`]). Where the two are coded differently
+//! (a field predicting from a frame, or the reverse) Table 8-8 maps the
+//! macroblock and block rows, and temporal prediction rescales the
+//! vertical vector (`vertMvScale`).
 
 use nc_common::Sample;
 use nc_encoder::Mv;
 
-use super::dpb::RefPicture;
+use super::dpb::{FrameMotion, RefPicture};
 use super::mbstate::{LISTS, MbState};
 use super::mvpred::MotionCache;
+use super::structure::{Parity, Structure, frame_of};
 use super::{DecodeError, Result};
 
 /// Clipping range of the order count distances `tb` and `td` (eqs. 8-201,
@@ -38,6 +42,20 @@ pub(super) fn dist_scale_factor(current: i64, poc0: i64, poc1: i64) -> Option<i3
     Some(((tb * tx + 32) >> 6).clamp(-MAX_DIST_SCALE - 1, MAX_DIST_SCALE))
 }
 
+/// How the co-located picture is coded against the current one (Table
+/// 8-8: `vertMvScale`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColLayout {
+    /// Both frames or both fields: the same macroblock (`One_To_One`).
+    Same,
+    /// A field predicting from a frame (`Frm_To_Fld`): two frame
+    /// macroblock rows per field row, vertical vectors halved.
+    FrameToField(Parity),
+    /// A frame predicting from a field (`Fld_To_Frm`): a field macroblock
+    /// row per two frame rows, vertical vectors doubled.
+    FieldToFrame,
+}
+
 /// What direct prediction reads in one B slice.
 #[derive(Debug)]
 pub(super) struct DirectContext<'a> {
@@ -48,6 +66,9 @@ pub(super) struct DirectContext<'a> {
     pub inference_8x8: bool,
     /// The co-located picture's macroblock states.
     col: &'a [MbState],
+    layout: ColLayout,
+    /// `PicWidthInMbs`.
+    width_mbs: usize,
     /// Whether `RefPicList1[0]` is a short-term reference (spatial
     /// colZeroFlag).
     col_short_term: bool,
@@ -105,28 +126,30 @@ impl Spatial {
 }
 
 impl<'a> DirectContext<'a> {
-    /// The context of a B slice with lists `l0` and `l1` (whose first
-    /// entry is the co-located picture) and identities `l0_ids`, in a
-    /// picture with order count `poc`.
+    /// The context of a B slice of picture `current` (with order count
+    /// `poc`, `width_mbs` by `mbs / width_mbs` macroblocks) with lists `l0`
+    /// and `l1` (whose first entry gives the co-located picture) and
+    /// identities `l0_ids`.
     ///
     /// # Errors
     ///
     /// [`DecodeError::MissingReference`] when `RefPicList1[0]` has no
-    /// picture; malformed when its size differs (checked by the caller for
-    /// prediction, here for its macroblock states).
+    /// picture or lacks the field Table 8-6 selects; malformed when its
+    /// size differs (checked by the caller for prediction, here for its
+    /// macroblock states).
     pub fn new<T: Sample>(
-        spatial: bool,
-        inference_8x8: bool,
+        (spatial, inference_8x8): (bool, bool),
         lists: [&'a [Option<RefPicture<T>>]; LISTS],
         l0_ids: &'a [Option<u32>],
-        poc: i64,
-        mbs: usize,
+        (current, poc): (Structure, i64),
+        (width_mbs, mbs): (usize, usize),
     ) -> Result<Self> {
         let col = lists[1]
             .first()
             .and_then(Option::as_ref)
             .ok_or(DecodeError::MissingReference)?;
-        if col.motion.len() != mbs {
+        let (states, layout, col_mbs) = co_located_picture(col, current, poc, mbs)?;
+        if states.len() != col_mbs {
             return Err(DecodeError::Malformed("co-located picture of another size"));
         }
         let scale = if spatial {
@@ -148,7 +171,9 @@ impl<'a> DirectContext<'a> {
         Ok(Self {
             spatial,
             inference_8x8,
-            col: &col.motion,
+            col: states,
+            layout,
+            width_mbs,
             col_short_term: !col.long_term,
             l0_ids,
             scale,
@@ -157,16 +182,35 @@ impl<'a> DirectContext<'a> {
 
     /// The co-located block of 4x4 block (`x4`, `y4`) of macroblock
     /// `addr` (§8.4.1.2.1: the corner block of its 8x8 block under
-    /// `direct_8x8_inference_flag`): its vector and reference index (list
-    /// 0's when it predicts from list 0, else list 1's; -1 and zero for an
-    /// intra block), and the identity of the picture it references.
+    /// `direct_8x8_inference_flag`, its macroblock and row mapped by Table
+    /// 8-8): its vector and reference index (list 0's when it predicts
+    /// from list 0, else list 1's; -1 and zero for an intra block), and the
+    /// identity of the picture it references.
     fn co_located(&self, addr: usize, x4: usize, y4: usize) -> (Mv, i8, u32) {
         let (x4, y4) = if self.inference_8x8 {
             ((x4 / 2) * 3, (y4 / 2) * 3)
         } else {
             (x4, y4)
         };
-        let col = &self.col[addr];
+        let width = self.width_mbs;
+        let (col_addr, y4) = match self.layout {
+            ColLayout::Same => (addr, y4),
+            // mbAddrCol1 = 2 · PicWidthInMbs · (CurrMbAddr / PicWidthInMbs)
+            // + CurrMbAddr % PicWidthInMbs + PicWidthInMbs · (yCol / 8),
+            // yM = (2 · yCol) % 16.
+            ColLayout::FrameToField(_) => (
+                2 * width * (addr / width) + addr % width + width * (y4 / 2),
+                (2 * y4) % 4,
+            ),
+            // mbAddrCol4 = PicWidthInMbs · (CurrMbAddr / (2 · PicWidthInMbs))
+            // + CurrMbAddr % PicWidthInMbs, yM = 8 · ((CurrMbAddr /
+            // PicWidthInMbs) % 2) + 4 · (yCol / 8).
+            ColLayout::FieldToFrame => (
+                width * (addr / (2 * width)) + addr % width,
+                2 * ((addr / width) % 2) + y4 / 2,
+            ),
+        };
+        let col = &self.col[col_addr];
         if col.is_intra() {
             return (Mv::ZERO, -1, 0);
         }
@@ -204,13 +248,32 @@ impl<'a> DirectContext<'a> {
             return Ok(motion);
         }
         // Temporal (§8.4.1.2.3): list 0 names the co-located block's
-        // reference (index 0 for an intra block), list 1 index 0.
+        // reference (index 0 for an intra block) as the current picture
+        // sees it: the field of a frame with the current field's parity,
+        // the frame of a field; list 1 index 0.
+        let (target, mv_col) = match self.layout {
+            ColLayout::Same => (pic_col, mv_col),
+            ColLayout::FrameToField(parity) => (
+                Structure::Field(parity).reference_id(frame_of(pic_col)),
+                Mv {
+                    x: mv_col.x,
+                    y: mv_col.y / 2,
+                },
+            ),
+            ColLayout::FieldToFrame => (
+                Structure::Frame.reference_id(frame_of(pic_col)),
+                Mv {
+                    x: mv_col.x,
+                    y: mv_col.y.saturating_mul(2),
+                },
+            ),
+        };
         let ref_l0 = if ref_col < 0 {
             0
         } else {
             self.l0_ids
                 .iter()
-                .position(|&id| id == Some(pic_col))
+                .position(|&id| id == Some(target))
                 .ok_or(DecodeError::MissingReference)?
         };
         let (mv0, mv1) = match self.scale.get(ref_l0).copied().flatten() {
@@ -237,6 +300,47 @@ impl<'a> DirectContext<'a> {
             mv: [mv0, mv1],
         })
     }
+}
+
+/// The co-located picture of a B picture `current` with order count
+/// `poc` and `mbs` macroblocks whose `RefPicList1[0]` is `first` (Table
+/// 8-6): its macroblock states, how they map, and how many there must be.
+/// A frame predicting from a field pair takes the field nearer in order
+/// count (the bottom one at equal distance).
+fn co_located_picture<'a, T: Sample>(
+    first: &'a RefPicture<T>,
+    current: Structure,
+    poc: i64,
+    mbs: usize,
+) -> Result<(&'a [MbState], ColLayout, usize)> {
+    let field = |fields: &'a [Option<std::sync::Arc<Vec<MbState>>>; 2], parity: Parity| {
+        fields[parity.index()]
+            .as_deref()
+            .map(Vec::as_slice)
+            .ok_or(DecodeError::MissingReference)
+    };
+    Ok(match (&first.motion, current) {
+        (FrameMotion::Frame(states), Structure::Frame) => (states, ColLayout::Same, mbs),
+        (FrameMotion::Frame(states), Structure::Field(parity)) => {
+            (states, ColLayout::FrameToField(parity), 2 * mbs)
+        }
+        (FrameMotion::Fields(fields), Structure::Field(_)) => {
+            let parity = first
+                .structure
+                .parity()
+                .ok_or(DecodeError::Malformed("frame reference of a field"))?;
+            (field(fields, parity)?, ColLayout::Same, mbs)
+        }
+        (FrameMotion::Fields(fields), Structure::Frame) => {
+            let [top, bottom] = first.field_poc.map(|p| (p - poc).abs());
+            let parity = if top < bottom {
+                Parity::Top
+            } else {
+                Parity::Bottom
+            };
+            (field(fields, parity)?, ColLayout::FieldToFrame, mbs / 2)
+        }
+    })
 }
 
 #[cfg(test)]

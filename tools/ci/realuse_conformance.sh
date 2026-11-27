@@ -48,13 +48,17 @@ TIMING_CASES=(
 )
 
 # Frame dropping: a target far below the maximum-quantizer rate, so frames
-# must be dropped (checked in the rate log), flat and layered.
+# must be dropped (checked in the rate log), flat and layered. KBPS is the
+# codec's DROP_KBPS: AV2's inter frames at its maximum quantizer are 22-37
+# bytes on this source, under 8 kbps's 33-byte drain per frame, so at 8 kbps
+# nothing needs dropping (2026-11-27); 4 kbps drops 9-10 of 24.
 DROP_CASES=(
-  "--bitrate 8 --frame-drop"
-  "--bitrate 8 --peak-bitrate 8 --frame-drop"
-  "--bitrate 8 --peak-bitrate 8 --frame-drop --temporal-layers 2"
-  "--bitrate 8 --peak-bitrate 8 --frame-drop --temporal-layers 3"
+  "--bitrate KBPS --frame-drop"
+  "--bitrate KBPS --peak-bitrate KBPS --frame-drop"
+  "--bitrate KBPS --peak-bitrate KBPS --frame-drop --temporal-layers 2"
+  "--bitrate KBPS --peak-bitrate KBPS --frame-drop --temporal-layers 3"
 )
+declare -A DROP_KBPS=([av2]=4)
 
 # Scene cuts: the source cuts to different content at CUT_AT; the key
 # frame must land there (flat and layered).
@@ -67,13 +71,18 @@ SCENE_CASES=(
 # Intra refresh instead of periodic keys, at fixed QP and under rate
 # control (recovery itself is tested in each decoder's unit tests); period 7
 # puts range edges inside superblocks (HEVC splits nodes there). With fixed
-# temporal layers the sweep runs on the base layer; with a long-term
-# reference a recovery frame restarts it.
+# temporal layers the sweep runs on the base layer (layers asked for beside
+# intra refresh are fixed by default, and the stream must carry them: some
+# access unit above layer 0); with a long-term reference a recovery frame
+# restarts it.
 REFRESH_CASES=(
   "--intra-refresh 4"
   "--intra-refresh 3 --bitrate 300"
   "--intra-refresh 7"
   "--intra-refresh 8 --temporal-layers 3 --param layers.adaptive=0"
+  "--intra-refresh 8 --temporal-layers 3"
+  "--intra-refresh 6 --temporal-layers 2 --bitrate 300"
+  "--intra-refresh 6 --scalability L1T3 --bitrate 300"
   "--intra-refresh 6 --ltr-interval 4 --simulate-loss 9 --bitrate 300"
 )
 
@@ -336,12 +345,15 @@ for codec in "${CODECS[@]}"; do
       # shellcheck disable=SC2086 # flags are intentionally word-split
       SRC=$WORK/resize.yuv encode_and_check "$codec" $flags --rate-log "$WORK/rate.csv" >/dev/null
       keys=$(awk -F, '$2 == "Key" { printf "%s ", $1 }' "$WORK/rate.csv")
-      [[ $keys == "0 10 12 18 " ]] || status="FAIL(keys at $keys)"
+      # The switch keys at 10 and 18 restart the 12-frame key schedule (b6d34d473: an
+      # unscheduled key restarts it), so no periodic key falls within the 24 frames.
+      [[ $keys == "0 10 18 " ]] || status="FAIL(keys at $keys)"
     fi
     [[ $status == PASS ]] || failures=$((failures + 1))
     printf '%-5s %-77s %s\n' "$codec" "$flags" "$status"
   done
   for flags in "${DROP_CASES[@]}"; do
+    flags=${flags//KBPS/${DROP_KBPS[$codec]:-8}}
     # shellcheck disable=SC2086 # flags are intentionally word-split
     status=$(encode_and_check "$codec" $flags --rate-log "$WORK/rate.csv")
     dropped=$(grep -c ',Dropped,' "$WORK/rate.csv" || true)
@@ -352,6 +364,12 @@ for codec in "${CODECS[@]}"; do
   for flags in "${refresh_cases[@]}"; do
     # shellcheck disable=SC2086 # flags are intentionally word-split
     status=$(encode_and_check "$codec" $flags)
+    layers=$(sed -n 's/.*--temporal-layers \([0-9]\).*/\1/p; s/.*--scalability L1T\([0-9]\).*/\1/p' <<<"$flags")
+    if [[ $status == PASS && -n $layers ]]; then
+      upper=$("$NANOCODEC" extract --codec "$codec" --input "$stream" --temporal-layers "$layers" \
+        --list | awk '$1 > 0' | wc -l)
+      ((upper > 0)) || status="FAIL(no access unit above layer 0)"
+    fi
     [[ $status == PASS ]] || failures=$((failures + 1))
     printf '%-5s %-77s %s\n' "$codec" "$flags" "$status"
   done

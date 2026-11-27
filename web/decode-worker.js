@@ -43,7 +43,16 @@
 // turned into dB here, off the page's thread. MS-SSIM is scored by a metrics
 // worker this worker starts (metrics-worker.js): the newest shown frame
 // whenever it is free, sent to the page as 'ms-ssim' with its tick.
+// RTP link (config.link, rtp-link.js): the coded frames arrive with their RTP
+// packets, which go through the link's SFU and network emulator to an RTP
+// receiver; what it delivers by the capture's source time is decoded, and the
+// view shows the newest decoded picture. A capture for which nothing decodes
+// shows the last decoded picture again (frozen, `link.frozen`): what the
+// decoder really outputs, no concealment. PSNR is measured only on pictures
+// decoded at that capture, against their own source frame. The receiver's
+// loss feedback goes back to the encode worker on the packet port.
 import { MODULE_URL } from './wasm.js';
+import { RtpLink, rtpTimestamp } from './rtp-link.js';
 import { warmUp } from './warmup.js';
 import { errorMap, errorMapBuffers } from './error-map.js';
 import { tickAt } from './timeline.js';
@@ -61,6 +70,13 @@ let analysisState = 'off';
 let displayColour = 'bt709';
 // Set by the first real packet: start-up warm-up (warmup.js) stops then.
 let realData = false;
+// The RTP link (null for the bitstream link), the packet port (feedback goes back on
+// it), the coded frames sent and not yet decoded or given up, by RTP timestamp, and
+// the last picture shown ({ pixels, format, ...sizes }) for frozen captures.
+let link = null, packetPort = null, lastPicture = null;
+const pending = new Map();
+// Coded frames older than this (ms of source time) are given up: their source is dropped.
+const PENDING_MS = 5000;
 // Returned display buffers kept for reuse: one per frame the page can hold in
 // flight (MAX_FRAMES_IN_FLIGHT, pipeline.js) or on screen, so none is allocated in steady state.
 const MAX_SPARE_PIXELS = 5;
@@ -197,6 +213,78 @@ function decodeAndPost(type, message) {
     spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows,
     analysis, analysisState, errorMap: errors }, transfer);
 }
+/** Copy of the shown picture's pixels (the posted buffer goes to the page). */
+function keepPicture(result, pixels) {
+  lastPicture = { pixels: pixels.slice(), format: result.format, width: result.width, height: result.height,
+    streamWidth: result.streamWidth, streamHeight: result.streamHeight, spatialId: result.spatialId };
+}
+/** Which layer the shown picture is (the link monitor's "On screen"). */
+function layerName(spatialId, spatialLayers) {
+  if (spatialLayers < 2) return 'full picture';
+  return spatialId === spatialLayers - 1 ? `full size (S${spatialId})` : `base layer S${spatialId}, upscaled`;
+}
+/**
+ * One capture over the RTP link: send its coded frames' packets, decode what the
+ * receiver delivers by the capture's time, and post the picture on screen.
+ */
+function receiveOverRtp(message) {
+  const sent = message.coded.filter(c => !c.repeat && c.rtp);
+  for (const coded of message.coded) {
+    if (coded.repeat || !coded.rtp) continue;
+    link.send(coded.rtp, coded.timestamp, coded.key);
+    if (coded.repairing && !coded.key) link.repaired(coded.timestamp);
+    pending.set(rtpTimestamp(coded.timestamp), coded);
+  }
+  const now = message.coded.at(-1).timestamp;
+  // Whether a picture was decoded at this capture, and the coded frame it came from (its source scores it).
+  let decodedNow = false, shown = null, refused = false;
+  const decodedIds = [];
+  for (const { unit, timestamp, frameIds } of link.receive(now)) {
+    const coded = pending.get(timestamp);
+    pending.delete(timestamp);
+    try {
+      decoder.decode(unit);
+    } catch {
+      refused = true;
+      continue;
+    }
+    decodedIds.push(...frameIds);
+    if (!('frame_shown' in decoder) || decoder.frame_shown) { decodedNow = true; shown = coded ?? null; }
+  }
+  for (const [timestamp, coded] of pending) if (coded.timestamp < now - PENDING_MS) pending.delete(timestamp);
+  const items = link.feedback(decodedIds, refused);
+  if (items.length) packetPort.postMessage({ type: 'feedback', items });
+  // The coded frames are the page's record of what was sent (bitrate, download).
+  const record = sent.map(c => ({ ...c, rtp: null, psnr: null, decodeMs: null, source: null }));
+  const transfer = record.map(c => c.packet.buffer);
+  const state = layers => link.state(layerName(decoder.spatial_id, layers));
+  const spatialLayers = link.layers.spatialLayers;
+  if (decodedNow) {
+    const start = performance.now();
+    const psnr = shown?.source && decoder.width > 0 ? decoder.psnr(new Uint8Array(shown.source)) : null;
+    if (shown?.colour) displayColour = shown.colour;
+    const format = message.display === 'i420' ? 'i420' : 'rgba';
+    const pixels = decodedPixels(format, displayColour);
+    const result = { width: decoder.width, height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
+      spatialId: decoder.spatial_id, format };
+    keepPicture(result, pixels);
+    self.postMessage({ type: 'frame', id: message.id, ...result, timestamp: now, key: Boolean(shown?.key), repeat: false, quantizer: shown?.quantizer ?? null,
+      encodeMs: null, psnr, decodeMs: performance.now() - start, decodeStageMs: performance.now() - start, packet: new Uint8Array(0),
+      earlier: record, colour: displayColour, pixels, source: shown?.source, bufferFullness: message.bufferFullness,
+      bufferOverflows: message.bufferOverflows, analysisState, link: state(spatialLayers) }, [pixels.buffer, shown?.source, ...transfer].filter(Boolean));
+    return;
+  }
+  if (!lastPicture) {
+    self.postMessage({ type: 'frame', id: message.id, held: true, earlier: record, link: state(spatialLayers) }, transfer);
+    return;
+  }
+  // Frozen (or between two frames still in flight): the last picture again.
+  const pixels = lastPicture.pixels.slice();
+  self.postMessage({ type: 'frame', id: message.id, ...lastPicture, pixels, timestamp: now, key: false, repeat: true, quantizer: null,
+    encodeMs: null, psnr: null, decodeMs: null, decodeStageMs: 0, packet: new Uint8Array(0), earlier: record, colour: displayColour,
+    bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows, analysisState, link: state(spatialLayers) },
+  [pixels.buffer, ...transfer]);
+}
 /** One frame from the encode worker: decode it and post it to the page. */
 function receivePacket({ data: message }) {
   realData = true;
@@ -205,7 +293,8 @@ function receivePacket({ data: message }) {
       self.postMessage({ type: 'frame', id: message.id, held: true });
       return;
     }
-    decodeAndPost('frame', message);
+    if (link) receiveOverRtp(message);
+    else decodeAndPost('frame', message);
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
@@ -222,6 +311,9 @@ self.onmessage = async ({ data: message }) => {
       pendingOperatingPoint = null;
       if (currentOperatingPoint) decoder.set_operating_point(currentOperatingPoint);
       if (message.analysis) { startAnalysis(); startMetrics(message.wasmModule); }
+      link = message.link && message.link.mode !== 'bitstream'
+        ? new RtpLink(module, message.codec, message.link, message.layers, message.frameMs) : null;
+      packetPort = message.port;
       message.port.onmessage = receivePacket;
       self.postMessage({ type: 'ready' });
       // Not awaited: real packets are handled as they come and stop it.
@@ -239,6 +331,8 @@ self.onmessage = async ({ data: message }) => {
       } else {
         pendingOperatingPoint = message.operatingPoint;
       }
+    } else if (message.type === 'network') {
+      link?.configure(message.network);
     } else if (message.type === 'replay') {
       realData = true;
       decodeAndPost('replayed', message);

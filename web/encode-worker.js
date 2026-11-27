@@ -14,12 +14,20 @@
 // change of colour (the capture path changed) restarts the stream the same
 // way, with a key frame.
 //
+// Over an RTP link (config.link, rtp-link.js) each coded frame is also
+// packetized here (nc-web `RtpSender`) and its packets travel with it; the
+// decode worker's loss feedback comes back on the same port, stamped with the
+// source time it reaches the encoder, and is applied before the first frame
+// captured at or after that time, so the round trip is the emulated one,
+// whatever the machine's speed.
+//
 // The module build (relaxed SIMD or plain SIMD128) is chosen in wasm.js.
 import { MODULE_URL } from './wasm.js';
 // Frame timestamps from the page are in milliseconds; the encoder takes microseconds.
 const MICROSECONDS_PER_MS = 1000;
 import { warmUpEncoder } from './encode-warmup.js';
 import { tickAt } from './timeline.js';
+import { DEPENDENCY_DESCRIPTOR_ID } from './rtp-link.js';
 // The colour of the sample clips (limited-range BT.709): the usual first frame's.
 const DEFAULT_COLOUR = 'bt709';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
@@ -41,6 +49,9 @@ let keyRequested = false, rateApplied = null;
 // The clip loop the previous coded frame was in, for keys "On clip start"
 // (config.loopTicks, view-settings.js `clipStartKeys`).
 let lastLoop = null;
+// The RTP sender over an RTP link (null for the bitstream link), and loss
+// feedback waiting for its arrival time ({ kind, frame, at }, in arrival order).
+let sender = null, feedback = [];
 /**
  * Request a key for the first frame coded in a new loop of the clip (timestamps are
  * source times). A loop of whole frames needs none: its periodic interval is the loop.
@@ -74,6 +85,7 @@ function encodeFrame({ frame, timestamp }) {
   const start = performance.now();
   convert(frame);
   keyAtClipStart(timestamp);
+  const repairing = applyFeedback(timestamp);
   // A live source's frames carry their capture time (some may have been skipped):
   // rate control budgets each for the real time since the previous one.
   const packet = config.timed ? encoder.encode_at(source, timestamp * MICROSECONDS_PER_MS) : encoder.encode(source);
@@ -81,7 +93,39 @@ function encodeFrame({ frame, timestamp }) {
   const requested = keyRequested, rate = rateApplied;
   keyRequested = false; rateApplied = null;
   return { timestamp, source: packed.buffer, colour: source.colour, packet, repeat: encoder.repeat, key: encoder.key, keyRequested: requested, rateApplied: rate,
-    quantizer: encoder.quantizer, encodeMs: performance.now() - start };
+    quantizer: encoder.quantizer, encodeMs: performance.now() - start, rtp: packetize(packet, timestamp), repairing };
+}
+/**
+ * Apply the loss feedback that has reached the encoder by source time `timestamp`
+ * (nc-web `report_lost_frame`, `acknowledge_frame`, `request_keyframe`). Returns
+ * whether any of it asks for a repair, which the frame about to be coded makes.
+ */
+function applyFeedback(timestamp) {
+  let repairing = false;
+  while (feedback.length && feedback[0].at <= timestamp) {
+    const item = feedback.shift();
+    if (item.kind === 'ack') encoder.acknowledge_frame(item.frame);
+    else if (item.kind === 'loss') { encoder.report_lost_frame(item.frame); repairing = true; }
+    else { encoder.request_keyframe(); keyRequested = true; repairing = true; }
+  }
+  return repairing;
+}
+/** Over an RTP link: the coded frame's packets and each one's layer ({ packets, layers }); else null. */
+function packetize(packet, timestamp) {
+  if (!sender) return null;
+  const count = sender.packetize(encoder, packet, timestamp * MICROSECONDS_PER_MS);
+  const packets = [], layers = [];
+  for (let i = 0; i < count; i++) {
+    packets.push(sender.packet(i).buffer);
+    layers.push([sender.packet_spatial_id(i), sender.packet_temporal_id(i)]);
+  }
+  return { packets, layers };
+}
+/** The loss feedback the decode worker sent: kept in arrival order. */
+function receiveFeedback({ data }) {
+  if (data.type !== 'feedback') return;
+  feedback.push(...data.items);
+  feedback.sort((a, b) => a.at - b.at);
 }
 function configureRate(c) {
   if (c.rateMode === 'cbr') encoder.set_rate_control(c.targetKbps, c.peakKbps, c.bufferMs);
@@ -105,7 +149,10 @@ async function receive({ data: message }) {
       config = message.config;
       createEncoder(DEFAULT_COLOUR);
       source = new module.SourceFrame(config.width, config.height);
+      const link = config.link;
+      sender = link && link.mode !== 'bitstream' ? new module.RtpSender(config.codec, link.network.mtu, DEPENDENCY_DESCRIPTOR_ID) : null;
       decoderPort = message.port;
+      decoderPort.onmessage = receiveFeedback;
       message.capturePort.onmessage = receive;
       self.postMessage({ type: 'ready' });
       // Not awaited: real frames are handled as they come and stop it.
@@ -118,6 +165,7 @@ async function receive({ data: message }) {
       // The view's decoder was replaced (analysis switched, pipeline.js
       // `switchDecoders`): packets go to the new one from the next frame on.
       decoderPort = message.port;
+      decoderPort.onmessage = receiveFeedback;
       self.postMessage({ type: 'decoder-connected' });
     } else if (message.type === 'keyframe') {
       encoder.request_keyframe();
@@ -143,7 +191,7 @@ async function receive({ data: message }) {
       }
       coded.push(encodeFrame(message));
       decoderPort.postMessage({ id: message.id, display: message.display, coded, bufferFullness: encoder.buffer_fullness,
-        bufferOverflows: encoder.buffer_overflows }, coded.flatMap(c => [c.packet.buffer, c.source]));
+        bufferOverflows: encoder.buffer_overflows }, coded.flatMap(c => [c.packet.buffer, c.source, ...(c.rtp?.packets ?? [])]));
     }
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });

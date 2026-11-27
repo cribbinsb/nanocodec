@@ -88,6 +88,9 @@ RECLAIM_TESTS = {
                                "the next night; a reclaim is recorded as an error, not a pass)",
     "tools/dev/aws_bake.py": "one-off image bake (unit: one image, minutes): a reclaim leaves "
                              "no image and the next warm box uses the stock image; rerun whole",
+    "tools/release/release.py": "--aarch64-on aws (unit: one aarch64 build and identity "
+                                "check, ~minutes): a reclaim fails the stage and the resume "
+                                "redoes the box's work; no simulated-reclaim test",
     "eval/distill/box_run.py": "the distillation study: Session.pulling copies results off "
                                "as written, a rerun redoes the rest; no simulated-reclaim test",
 }

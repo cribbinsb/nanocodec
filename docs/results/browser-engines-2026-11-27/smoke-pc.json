@@ -1,0 +1,224 @@
+{
+ "commit": "branch browser-engines rebased on main 23d8354c8 (page and test code; module built from the pre-rebase tree)",
+ "host": "PC (Ryzen 9 5950X, Ubuntu 26.04), headless, DISPLAY and WAYLAND_DISPLAY unset",
+ "product_smoke": {
+  "chromium": {
+   "status": "pass",
+   "seconds": 36.4,
+   "summary": {
+    "status": "pass",
+    "max_frames_in_flight": 4,
+    "engine": "chromium",
+    "browser": "148.0.7778.96",
+    "simd": true,
+    "module": "SIMD128 + relaxed SIMD (pkg/relaxed)",
+    "source": "chromium synthetic webcam",
+    "autostart_clip": true,
+    "startup_lookahead": true,
+    "streams": [
+     {
+      "codec": "VP90",
+      "frames": 15,
+      "bytes": 19661
+     },
+     {
+      "codec": "AV02",
+      "frames": 15,
+      "bytes": 28726
+     },
+     {
+      "codec": "VVC",
+      "frames": 10,
+      "bytes": 56162
+     },
+     {
+      "codec": "VVC",
+      "frames": 10,
+      "bytes": 60595
+     }
+    ],
+    "decoded_frames": 46,
+    "repeated_frames": 0,
+    "pause_resume": true,
+    "forced_keys": true,
+    "live_cbr_change": true,
+    "gop_seconds": 30,
+    "resolution_recreation": true,
+    "pre_encoded_view": true,
+    "pause_on_common_instant": true,
+    "webgl2_display": true,
+    "vvc_scene_original_view": true,
+    "zoom": true,
+    "av1_film_grain": true,
+    "advanced_overrides": true,
+    "clip_variants": true,
+    "software_gl_fallback": true,
+    "no_webgl_fallback": true,
+    "context_loss_fallback": true
+   }
+  },
+  "firefox": {
+   "status": "pass",
+   "seconds": 55.2,
+   "summary": {
+    "status": "pass",
+    "max_frames_in_flight": 4,
+    "engine": "firefox",
+    "browser": "150.0.2",
+    "simd": true,
+    "module": "SIMD128 + relaxed SIMD (pkg/relaxed)",
+    "source": "firefox synthetic webcam",
+    "autostart_clip": true,
+    "startup_lookahead": true,
+    "streams": [
+     {
+      "codec": "VP90",
+      "frames": 17,
+      "bytes": 9313
+     },
+     {
+      "codec": "AV02",
+      "frames": 17,
+      "bytes": 10044
+     },
+     {
+      "codec": "VVC",
+      "frames": 13,
+      "bytes": 67990
+     },
+     {
+      "codec": "VVC",
+      "frames": 13,
+      "bytes": 69571
+     }
+    ],
+    "decoded_frames": 45,
+    "repeated_frames": 0,
+    "pause_resume": true,
+    "forced_keys": true,
+    "live_cbr_change": true,
+    "gop_seconds": 30,
+    "resolution_recreation": true,
+    "pre_encoded_view": true,
+    "pause_on_common_instant": true,
+    "webgl2_display": false,
+    "vvc_scene_original_view": true,
+    "zoom": true,
+    "av1_film_grain": true,
+    "advanced_overrides": true,
+    "clip_variants": true,
+    "context_loss_fallback": false
+   }
+  },
+  "webkit": {
+   "status": "pass",
+   "seconds": 68.2,
+   "summary": {
+    "status": "pass",
+    "max_frames_in_flight": 4,
+    "engine": "webkit",
+    "browser": "26.4",
+    "simd": true,
+    "module": "SIMD128 (pkg)",
+    "source": "test scene (no webcam in this engine)",
+    "autostart_clip": true,
+    "startup_lookahead": true,
+    "streams": [
+     {
+      "codec": "VP90",
+      "frames": 21,
+      "bytes": 115639
+     },
+     {
+      "codec": "AV02",
+      "frames": 21,
+      "bytes": 112902
+     },
+     {
+      "codec": "VVC",
+      "frames": 19,
+      "bytes": 88666
+     },
+     {
+      "codec": "VVC",
+      "frames": 19,
+      "bytes": 89955
+     }
+    ],
+    "decoded_frames": 86,
+    "repeated_frames": 0,
+    "pause_resume": true,
+    "forced_keys": true,
+    "live_cbr_change": true,
+    "gop_seconds": 30,
+    "resolution_recreation": true,
+    "pre_encoded_view": true,
+    "pause_on_common_instant": true,
+    "webgl2_display": true,
+    "vvc_scene_original_view": true,
+    "zoom": true,
+    "av1_film_grain": true,
+    "advanced_overrides": true,
+    "clip_variants": true,
+    "context_loss_fallback": true
+   }
+  }
+ },
+ "product_smoke_no_simd": {
+  "chromium": {
+   "status": "pass",
+   "seconds": 44.8,
+   "summary": {
+    "status": "pass",
+    "max_frames_in_flight": 4,
+    "engine": "chromium",
+    "browser": "148.0.7778.96",
+    "simd": false,
+    "module": "scalar, no WebAssembly SIMD (pkg/scalar)",
+    "source": "chromium synthetic webcam",
+    "autostart_clip": true,
+    "startup_lookahead": true,
+    "streams": [
+     {
+      "codec": "VP90",
+      "frames": 17,
+      "bytes": 23853
+     },
+     {
+      "codec": "AV02",
+      "frames": 17,
+      "bytes": 37058
+     },
+     {
+      "codec": "VVC",
+      "frames": 12,
+      "bytes": 63662
+     },
+     {
+      "codec": "VVC",
+      "frames": 12,
+      "bytes": 67623
+     }
+    ],
+    "decoded_frames": 51,
+    "repeated_frames": 0,
+    "pause_resume": true,
+    "forced_keys": true,
+    "live_cbr_change": true,
+    "gop_seconds": 30,
+    "resolution_recreation": true,
+    "pre_encoded_view": true,
+    "pause_on_common_instant": true,
+    "webgl2_display": true,
+    "vvc_scene_original_view": true,
+    "zoom": true,
+    "av1_film_grain": true,
+    "advanced_overrides": true,
+    "clip_variants": true,
+    "software_gl_fallback": true,
+    "no_webgl_fallback": true,
+    "context_loss_fallback": true
+   }
+  }
+ }
+}

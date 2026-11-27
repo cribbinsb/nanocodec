@@ -19,10 +19,12 @@ if [[ "$($bindgen --version)" != 'wasm-bindgen 0.2.105' ]]; then
   echo 'The browser crate requires wasm-bindgen-cli 0.2.105 (matching Cargo.lock).' >&2
   exit 1
 fi
-# Two modules: plain SIMD128, and SIMD128 plus relaxed SIMD in pkg/relaxed/
+# Three modules: plain SIMD128; SIMD128 plus relaxed SIMD in pkg/relaxed/
 # (the page loads it where the engine validates relaxed SIMD; nc-dsp uses
 # only relaxed operations whose results are fully specified, so both give
-# identical output). Each has its own target directory, as the flags differ.
+# identical output); and no SIMD in pkg/scalar/, nc-dsp's scalar reference
+# kernels, for engines without WebAssembly SIMD (web/wasm.js picks it; same
+# output, slower). Each has its own target directory, as the flags differ.
 # Both carry the decoders' analysis records (nc-web `analysis`, switched on
 # at run time by `set_analysis`; web/analysis-view.js): off, they cost one
 # branch per block (decode speed within noise, docs/handoff/browser-demo.md
@@ -36,26 +38,27 @@ pkg_dir=${PKG_DIR:-web/pkg}
 # (tools/ci/browser_smoke.sh) builds without LTO: the same behaviour, a faster
 # rebuild, a larger and slower module.
 profile=${WEB_PROFILE:-web}
-# The two builds run side by side, each with half the jobs: most of a build's
+# The builds run side by side, each with a third of the jobs: most of a build's
 # wall time is its single-threaded LTO and code generation tail.
-jobs=$(( (${BUILD_JOBS:-2} + 1) / 2 ))
+jobs=$(( (${BUILD_JOBS:-3} + 2) / 3 ))
 # --frozen (--locked plus --offline): a build never touches the registry, so it
 # never waits on the package cache lock behind another agent's download; a new
 # dependency fails at once (run `cargo fetch` once).
 build() { # build TARGET_DIR FEATURES OUT_DIR
-  RUSTFLAGS="$base_flags -C target-feature=$2" CARGO_TARGET_DIR=$1 \
+  RUSTFLAGS="$base_flags${2:+ -C target-feature=$2}" CARGO_TARGET_DIR=$1 \
     cargo build --frozen --profile "$profile" -p nanocodec-web --target wasm32-unknown-unknown -j "$jobs" \
     --features analysis
   mkdir -p "$3"
   "$bindgen" "$1/wasm32-unknown-unknown/$profile/nc_web.wasm" --target web --out-dir "$3" --out-name nc_web
 }
 mkdir -p "$target_root"
-printf 'building the SIMD128 and relaxed modules (%s profile; logs %s/web-{simd128,relaxed}.log)\n' "$profile" "$target_root"
+printf 'building the SIMD128, relaxed and scalar modules (%s profile; logs %s/web-{simd128,relaxed,scalar}.log)\n' "$profile" "$target_root"
 began=$SECONDS
 build "$target_root" +simd128 "$pkg_dir" > "$target_root/web-simd128.log" 2>&1 & simd128=$!
 build "$target_root/relaxed-simd" +simd128,+relaxed-simd "$pkg_dir/relaxed" > "$target_root/web-relaxed.log" 2>&1 & relaxed=$!
+build "$target_root/scalar-wasm" '' "$pkg_dir/scalar" > "$target_root/web-scalar.log" 2>&1 & scalar=$!
 failed=0
-for name in simd128 relaxed; do
+for name in simd128 relaxed scalar; do
   if wait "${!name}"; then
     printf 'built the %s module (+%ds)\n' "$name" $((SECONDS - began))
   else
@@ -70,5 +73,5 @@ done
 dirty=false
 git diff --quiet HEAD -- crates web Cargo.toml Cargo.lock || dirty=true
 printf '{"commit": "%s", "dirty": %s, "profile": "%s"}\n' "$(git rev-parse HEAD)" "$dirty" "$profile" > "$pkg_dir/build.json"
-printf 'Built %s and %s/relaxed.' "$pkg_dir" "$pkg_dir"
+printf 'Built %s, %s/relaxed and %s/scalar.' "$pkg_dir" "$pkg_dir" "$pkg_dir"
 printf ' Serve with: python3 -m http.server 8765 --bind 127.0.0.1 --directory web\n'

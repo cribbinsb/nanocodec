@@ -170,6 +170,7 @@ impl Tools {
         poc_bits: u32,
         dimensions: [u32; 2],
         transforms: &Transforms,
+        refers_to_vps: bool,
     ) -> Result<Self> {
         let mut t = Self::default();
         t.sao = r.flag()?;
@@ -178,6 +179,12 @@ impl Tools {
         t.lmcs = r.flag()?;
         t.weighted = [r.flag()?, r.flag()?];
         t.long_term = r.flag()?;
+        // sps_inter_layer_prediction_enabled_flag (§7.3.2.4) is 0 in an
+        // independent layer, as the base layer is (§7.4.3.4); with it set,
+        // reference lists carry inter-layer entries we do not decode.
+        if refers_to_vps && r.flag()? {
+            return Err(DecodeError::Unsupported("VVC inter-layer prediction"));
+        }
         t.idr_rpl = r.flag()?;
         t.rpl1_same = r.flag()?;
         for list in 0..if t.rpl1_same { 1 } else { 2 } {

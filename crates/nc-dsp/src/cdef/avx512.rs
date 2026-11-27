@@ -541,8 +541,8 @@ unsafe fn block4_pair(
 }
 
 /// Install AVX-512 high-bit-depth (`u16`) CDEF kernels over the AVX2 table:
-/// four-row 8x8 luma passes (`I16x32`, two passes per 8x8 block) and single-pass
-/// dual U+V 4x4 interior chroma blocks (adapted from dav1d's
+/// four-row 8x8 luma passes (`I16x32`, two passes per 8x8 block) and paired
+/// U+V 4x4 interior chroma blocks (adapted from dav1d's
 /// `src/x86/cdef16_avx512.asm`, BSD-2-Clause; see `THIRD_PARTY.md`).
 pub(crate) fn install_high(fns: &mut HighCdefFns) {
     fns.border4 = Some(super::avx512_high4::border);
@@ -620,7 +620,6 @@ unsafe fn tap_pair_uv(
     x: I16x32,
     strength: I16x32,
     shift: u32,
-    range: Option<&mut generic::Range<I16x32>>,
 ) -> I16x32 {
     let at = |r: isize, c: isize| {
         (
@@ -637,10 +636,6 @@ unsafe fn tap_pair_uv(
             load_uv_pair4(win.0, win.1, win.2, r1, c1),
         )
     };
-    if let Some(range) = range {
-        range.take(p0);
-        range.take(p1);
-    }
     generic::constrain(p0.sub(x), strength, shift).add(generic::constrain(
         p1.sub(x),
         strength,
@@ -665,7 +660,6 @@ unsafe fn filter_pair4<const USE_PRI: bool, const USE_SEC: bool>(
         &src[i][top..][..(CHROMA_EXTENT - 1) * stride + CHROMA_EXTENT]
     };
     let win = (window(0), window(1), stride);
-    let clip = USE_PRI && USE_SEC;
     let dir = args.dir & 7;
     let pri_dir = DIRECTIONS[dir];
     let sec_dirs = [DIRECTIONS[(dir + 2) & 7], DIRECTIONS[(dir + 6) & 7]];
@@ -673,19 +667,11 @@ unsafe fn filter_pair4<const USE_PRI: bool, const USE_SEC: bool>(
     // 4x4 blocks in U and V planes validated by the band driver.
     unsafe {
         let x = load_uv_pair4(win.0, win.1, stride, CDEF_PADDING, CDEF_PADDING);
-        let mut range = generic::Range { lo: x, hi: x };
         let mut sum = I16x32::splat(0);
         if USE_PRI {
             let pri = I16x32::splat(args.pri);
             for (&step, &weight) in pri_dir.iter().zip(&args.pri_taps) {
-                let taps = tap_pair_uv(
-                    win,
-                    step,
-                    x,
-                    pri,
-                    args.pri_shift,
-                    clip.then_some(&mut range),
-                );
+                let taps = tap_pair_uv(win, step, x, pri, args.pri_shift);
                 sum = sum.add(taps.mul(I16x32::splat(weight)));
             }
         }
@@ -694,22 +680,12 @@ unsafe fn filter_pair4<const USE_PRI: bool, const USE_SEC: bool>(
             let mut sec_sum = [I16x32::splat(0); 2];
             for (k, sec_k) in sec_sum.iter_mut().enumerate() {
                 for dirs in &sec_dirs {
-                    *sec_k = sec_k.add(tap_pair_uv(
-                        win,
-                        dirs[k],
-                        x,
-                        sec,
-                        args.sec_shift,
-                        clip.then_some(&mut range),
-                    ));
+                    *sec_k = sec_k.add(tap_pair_uv(win, dirs[k], x, sec, args.sec_shift));
                 }
             }
             sum = sum.add(sec_sum[0].add(sec_sum[0])).add(sec_sum[1]);
         }
-        let mut y = x.add(sum.add(I16x32::splat(8)).add(sum.sra(15)).sra(4));
-        if clip {
-            y = y.max(range.lo).min(range.hi);
-        }
+        let y = x.add(sum.add(I16x32::splat(8)).add(sum.sra(15)).sra(4));
         let rows_mut = |base: *mut u16| -> [&mut [i16]; 4] {
             let base = base.cast::<i16>();
             [
@@ -723,7 +699,7 @@ unsafe fn filter_pair4<const USE_PRI: bool, const USE_SEC: bool>(
     }
 }
 
-#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vnni")]
 unsafe fn block4_pair_u16(
     src: [&[u16]; 2],
     stride: usize,
@@ -735,7 +711,11 @@ unsafe fn block4_pair_u16(
     // SAFETY: forwards the caller's AVX-512 and slice contracts.
     unsafe {
         match (args.pri != 0, args.sec != 0) {
-            (true, true) => filter_pair4::<true, true>(src, stride, origins, args, dst, dst_stride),
+            (true, true) => {
+                super::avx512_high4::interior_pair_mixed(
+                    src, stride, origins, args, dst, dst_stride,
+                );
+            }
             (true, false) => {
                 filter_pair4::<true, false>(src, stride, origins, args, dst, dst_stride);
             }

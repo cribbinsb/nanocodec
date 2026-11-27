@@ -3,7 +3,8 @@
 //! luma transform size (`LoopfilterTxSizes`; the leaves of an inter
 //! transform tree are recorded as luma-only areas of their own), whether it
 //! is a skipped inter block, whether it carries chroma, and its filter
-//! levels (§7.14.4, with segment-free reference and mode deltas). Chroma
+//! levels (§7.14.4: segment features, superblock deltas, reference and
+//! mode deltas). Chroma
 //! sizes follow from the block size (`get_plane_residual_size`,
 //! `get_tx_size`), so U and V share one record. What a later edge reads
 //! across from an area (the transform side, the area's extent along the
@@ -22,7 +23,9 @@
 //! visited in decoding order.
 use super::block_info::splat_slice;
 use super::block_size::BlockSize;
+use super::frame_header::quant::{MAX_SEGMENTS, SEG_LVL_ALT_LF_Y_V};
 use super::frame_header::{INTRA_FRAME, LoopFilter, TOTAL_REFS};
+use super::subset::Segments;
 use super::transform::{TxSize, chroma_block};
 use nc_common::{Picture, PlaneIndex, PlaneViewMut};
 use nc_dsp::{AV1_EDGE_LINES, Av1EdgeFilter, Av1FilterLength, EdgeRun};
@@ -276,37 +279,63 @@ impl EdgeMap {
     }
 }
 
-/// The levels of every (reference, mode type) pair of a frame (§7.14.4
-/// without segment features or block deltas): dav1d's level table.
+/// The levels of every (segment, reference, mode type) of a frame
+/// without superblock deltas (§7.14.4): dav1d's level table.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LevelTable {
-    levels: [[BlockLevels; 2]; TOTAL_REFS],
+    levels: [[[BlockLevels; 2]; TOTAL_REFS]; MAX_SEGMENTS],
 }
 
 impl LevelTable {
-    pub(super) fn new(lf: &LoopFilter) -> Self {
-        let mut levels = [[[0; 4]; 2]; TOTAL_REFS];
-        for (reference, by_mode) in levels.iter_mut().enumerate() {
-            for (mode_type, out) in by_mode.iter_mut().enumerate() {
-                for (i, level) in out.iter_mut().enumerate() {
-                    *level = filter_level(lf, i, reference, mode_type);
-                }
-            }
-        }
+    pub(super) fn new(lf: &LoopFilter, segments: Option<&Segments>) -> Self {
+        let levels = std::array::from_fn(|segment| {
+            std::array::from_fn(|reference| {
+                std::array::from_fn(|mode_type| {
+                    block_levels(lf, segments, segment as u8, [0; 4], (reference, mode_type))
+                })
+            })
+        });
         Self { levels }
     }
-    /// The levels of a block predicted from `reference` (`INTRA_FRAME` for
-    /// intra blocks); `mode_type` is 1 for inter modes other than
-    /// `GLOBALMV` (`NEARESTMV`, `NEARMV`, `NEWMV`).
-    pub(super) fn get(&self, reference: usize, mode_type: usize) -> BlockLevels {
-        self.levels[reference][mode_type]
+    /// The levels of a block of `segment` predicted from `reference`
+    /// (`INTRA_FRAME` for intra blocks); `mode_type` is 1 for inter modes
+    /// other than `GLOBALMV` (`NEARESTMV`, `NEARMV`, `NEWMV`).
+    pub(super) fn get(&self, segment: u8, reference: usize, mode_type: usize) -> BlockLevels {
+        self.levels[usize::from(segment)][reference][mode_type]
     }
 }
 
+/// The levels of a block of `segment` in a superblock whose loop filter
+/// deltas are `deltas` (`DeltaLF[]` per `loop_filter_level[i]`),
+/// predicted from `reference` with mode type `mode_type` (§7.14.4).
+pub(super) fn block_levels(
+    lf: &LoopFilter,
+    segments: Option<&Segments>,
+    segment: u8,
+    deltas: [i8; 4],
+    (reference, mode_type): (usize, usize),
+) -> BlockLevels {
+    std::array::from_fn(|i| {
+        let offset = segments.and_then(|s| s.feature(segment, SEG_LVL_ALT_LF_Y_V + i));
+        filter_level(lf, i, (deltas[i], offset), reference, mode_type)
+    })
+}
+
 /// `get_filter_level` (§7.14.4) of edge class `i` (luma vertical, luma
-/// horizontal, U, V).
-fn filter_level(lf: &LoopFilter, i: usize, reference: usize, mode_type: usize) -> u8 {
-    let base = i32::from(lf.level[i]).clamp(0, MAX_LEVEL);
+/// horizontal, U, V): the frame's level moved by the superblock's delta
+/// and the segment's offset (each clamped), then by the reference and
+/// mode deltas.
+fn filter_level(
+    lf: &LoopFilter,
+    i: usize,
+    (delta, segment_offset): (i8, Option<i16>),
+    reference: usize,
+    mode_type: usize,
+) -> u8 {
+    let mut base = (i32::from(lf.level[i]) + i32::from(delta)).clamp(0, MAX_LEVEL);
+    if let Some(offset) = segment_offset {
+        base = (base + i32::from(offset)).clamp(0, MAX_LEVEL);
+    }
     if !lf.delta_enabled {
         return base as u8;
     }
@@ -727,12 +756,40 @@ mod tests {
         lf.deltas.modes = [0, -2];
         // Default deltas: INTRA_FRAME +1, LAST 0, GOLDEN -1. Level 40 has
         // nShift 1, so the deltas double.
-        let table = LevelTable::new(&lf);
-        assert_eq!(table.get(INTRA_FRAME, 0), [42, 21, 11, 1]);
-        assert_eq!(table.get(1, 1), [36, 18, 8, 0]);
-        assert_eq!(table.get(4, 0), [38, 19, 9, 0]);
+        let table = LevelTable::new(&lf, None);
+        assert_eq!(table.get(0, INTRA_FRAME, 0), [42, 21, 11, 1]);
+        assert_eq!(table.get(0, 1, 1), [36, 18, 8, 0]);
+        assert_eq!(table.get(0, 4, 0), [38, 19, 9, 0]);
         lf.delta_enabled = false;
-        assert_eq!(LevelTable::new(&lf).get(4, 1), [40, 20, 10, 0]);
+        assert_eq!(LevelTable::new(&lf, None).get(0, 4, 1), [40, 20, 10, 0]);
+    }
+
+    #[test]
+    fn segment_offsets_and_superblock_deltas_move_the_base_level() {
+        use super::super::frame_header::quant::SegmentationFeatures;
+        let lf = LoopFilter {
+            level: [40, 20, 10, 5],
+            ..LoopFilter::default()
+        };
+        let mut features = SegmentationFeatures::default();
+        // Segment 3: luma vertical -50 (clamps to 0), U +60 (clamps to 63).
+        features.enabled[3][SEG_LVL_ALT_LF_Y_V] = true;
+        features.data[3][SEG_LVL_ALT_LF_Y_V] = -50;
+        features.enabled[3][SEG_LVL_ALT_LF_Y_V + 2] = true;
+        features.data[3][SEG_LVL_ALT_LF_Y_V + 2] = 60;
+        let segments = Segments {
+            features,
+            last_active: 3,
+            pre_skip: false,
+            update_map: true,
+            temporal_update: false,
+        };
+        let table = LevelTable::new(&lf, Some(&segments));
+        assert_eq!(table.get(0, 1, 1), [40, 20, 10, 5]);
+        assert_eq!(table.get(3, 1, 1), [0, 20, 63, 5]);
+        // The superblock delta applies (and clamps) before the segment's.
+        let levels = block_levels(&lf, Some(&segments), 3, [30, -30, -20, 0], (1, 1));
+        assert_eq!(levels, [13, 0, 60, 5]);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::simd::I32Lanes;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128"),
+    target_arch = "wasm32",
     test
 ))]
 pub(super) const NARROW_INVERSE_L1_LIMIT: u16 = 23_000;

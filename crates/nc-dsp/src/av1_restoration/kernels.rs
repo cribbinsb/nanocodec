@@ -161,6 +161,11 @@ pub(crate) trait RowKernels<T: Sample> {
     ) -> bool {
         false
     }
+    /// Whether radius-one box rows retain separate outer and centre weights.
+    fn weighted_radius_one(&self) -> bool {
+        false
+    }
+
     /// Compute the active guided filters and project one output row.
     fn sgr_project(
         &self,

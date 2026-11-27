@@ -69,6 +69,18 @@ export class Advanced {
     this.applied = '';
     this.check();
   }
+  /** The temporal-layer control (the panel shows it with the link's resilience options, link-panel.js). */
+  get temporalLayersControl() { return this.element.querySelector('[data-option="temporalLayers"]'); }
+  /** The temporal layer count the toggles ask for (1 where the codec offers none). */
+  temporalLayerCount() { return this.offersLayers ? +this.layers.value : 1; }
+  /**
+   * Whether the temporal-layer control applies: the codec offers layers, or its options are
+   * not loaded yet (the control shows with the link's options before Advanced loads them,
+   * and every codec takes them; setCodec resets it where one would not).
+   */
+  get offersLayers() { return this.supported === null || Boolean(this.supported.temporalLayers); }
+  /** Whether the second reference is asked for. */
+  get secondReference() { return Boolean(this.supported?.secondReference && this.secondRef.checked); }
   /** The engine refuses the second reference with temporal layers. */
   syncToggles() {
     const layered = +this.layers.value > 1;
@@ -106,7 +118,7 @@ export class Advanced {
     const offered = this.supported ?? {};
     const lines = [
       ...(offered.blockQp && this.persist.checked ? PERSISTENCE_AQ : []),
-      ...(offered.temporalLayers ? layerCount(+this.layers.value) : []),
+      ...(this.offersLayers ? layerCount(+this.layers.value) : []),
       ...(offered.secondReference && this.secondRef.checked ? SECOND_REFERENCE : []),
       ...settingLines(this.applied),
     ];

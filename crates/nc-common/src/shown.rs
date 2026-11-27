@@ -32,9 +32,11 @@ impl<'a, T: Sample> ShownPicture<'a, T> {
     /// The `width` x `height` luma window of `picture` at (`left`, `top`),
     /// with the matching chroma windows of its chroma format (an odd width
     /// or height along a subsampled axis takes the chroma column or row its
-    /// last luma one shares, as VP9's odd frame sizes do); `None` if the
-    /// origin is not on a chroma sample, the window is empty or it does
-    /// not fit.
+    /// last luma one shares, as VP9's odd frame sizes do; an origin between
+    /// chroma samples starts at the chroma sample its first luma one shares:
+    /// only 4:0:0 cropping makes one (H.264 `CropUnitX` 1, §7.4.2.1.1), whose
+    /// chroma is flat, so the chroma window keeps its usual size); `None` if
+    /// the window is empty or it does not fit.
     #[must_use]
     pub fn window(
         picture: &'a Picture<T>,
@@ -42,9 +44,7 @@ impl<'a, T: Sample> ShownPicture<'a, T> {
         (width, height): (usize, usize),
     ) -> Option<Self> {
         let format = picture.chroma_format();
-        let (x, y) = format.subsampling();
-        if !left.is_multiple_of(1 << x) || !top.is_multiple_of(1 << y) || width == 0 || height == 0
-        {
+        if width == 0 || height == 0 {
             return None;
         }
         let window = |plane: PlaneIndex| {
@@ -156,9 +156,13 @@ mod tests {
     }
 
     #[test]
-    fn window_rejects_odd_origin_or_outside() {
+    fn window_rejects_empty_or_outside() {
         let picture = numbered(8, 6);
-        assert!(ShownPicture::window(&picture, (1, 0), (4, 2)).is_none());
+        // An odd origin (4:0:0 cropping) covers the chroma its luma shares.
+        let odd = ShownPicture::window(&picture, (1, 1), (4, 3)).unwrap();
+        assert_eq!((odd.width(), odd.height()), (4, 3));
+        assert_eq!(odd.plane(PlaneIndex::U).width(), 2);
+        assert_eq!(odd.plane(PlaneIndex::U).height(), 2);
         assert!(ShownPicture::window(&picture, (6, 0), (4, 2)).is_none());
         assert!(ShownPicture::window(&picture, (0, 0), (0, 2)).is_none());
         let whole = ShownPicture::whole(&picture);

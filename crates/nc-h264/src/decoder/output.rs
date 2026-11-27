@@ -38,7 +38,7 @@ pub(super) struct DecodedFrame<T: Sample = u8> {
 
 impl<T: Sample> DecodedFrame<T> {
     /// The visible (cropped) samples; `None` for a cropping window outside
-    /// the picture or of odd size (rejected when the SPS is parsed).
+    /// the picture (rejected when the SPS is parsed).
     #[cfg(test)]
     pub fn view(&self) -> Option<ShownPicture<'_, T>> {
         ShownPicture::window(&self.picture, self.origin, self.size)

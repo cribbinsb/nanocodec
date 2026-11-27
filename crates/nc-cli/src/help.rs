@@ -135,8 +135,9 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
             opt(
                 "--block",
                 "8|16|32|64",
-                "Fixed leaf block size where the codec's planner uses one (default 16; AV2 8, \
-                 VVC 32).",
+                "Fixed key-frame leaf size (default 16; AV2 8, VVC 32), coded only with the key \
+                 planner off (`planner.intra_plan` 0; H.264 is always 16): refused where the \
+                 planner chooses every block size, as the presets do.",
             ),
         ],
     },
@@ -154,7 +155,7 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "--key-qp-offset",
                 "D",
                 "Code fixed-QP key frames D quantiser steps finer than --qp (default: the codec \
-                 chooses).",
+                 chooses). Refused with --bitrate: rate control sizes key frames itself.",
             ),
         ],
     },
@@ -183,8 +184,16 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                  first frames may send this much ahead of the drain (x264 --vbv-init, \
                  --buf-initial-sz). Default: the whole buffer.",
             ),
-            opt("--min-qp", "Q", "Lowest quantiser rate control may use."),
-            opt("--max-qp", "Q", "Highest quantiser rate control may use."),
+            opt(
+                "--min-qp",
+                "Q",
+                "Lowest quantiser rate control may use, in the --qp scale and range.",
+            ),
+            opt(
+                "--max-qp",
+                "Q",
+                "Highest quantiser rate control may use, in the --qp scale and range.",
+            ),
             opt(
                 "--max-qp-step",
                 "N",
@@ -229,7 +238,9 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "--intra-refresh",
                 "FRAMES",
                 "Intra refresh sweep over this many frames in place of periodic key frames \
-                 (`refresh.period`).",
+                 (`refresh.period`). With --temporal-layers 2|3 or --scalability LxT2/T3 the \
+                 layers are fixed and the sweep runs on the base layer. Not with spatial layers, \
+                 VP9 or AV2.",
             ),
             opt(
                 "--ltr-interval",
@@ -278,7 +289,9 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
             opt(
                 "--timing",
                 "nominal|constant|variable",
-                "Header timing information (default nominal; variable with --timestamps).",
+                "Header timing information (default nominal; variable with --timestamps); constant \
+                 also codes every frame (no frame holds). VP9 and AV2 streams carry no timing, \
+                 so they refuse variable.",
             ),
         ],
     },

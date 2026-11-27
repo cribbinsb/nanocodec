@@ -338,8 +338,7 @@ impl<'a, T: Pixel> Analysis<'a, T> {
         classes.resize(block_rows * self.block_columns, [0; 2]);
         let ctb_columns = self.width.div_ceil(self.ctu);
         let ctb_blocks = self.ctu / BLOCK;
-        let mut grid = Vec::new();
-        let mut column_sums = Vec::new();
+        let mut laplacians = Vec::new();
         for (ctb_row, y0) in (0..self.height).step_by(self.ctu).enumerate() {
             let block_rows = y0 / BLOCK..(y0 + self.ctu).min(self.height).div_ceil(BLOCK);
             let mut column = 0;
@@ -354,43 +353,58 @@ impl<'a, T: Pixel> Analysis<'a, T> {
                 }
                 let blocks = first * ctb_blocks..(column * ctb_blocks).min(self.block_columns);
                 let groups = blocks.len() + 1;
-                // Grid rows 2 · block_rows.start .. 2 · block_rows.end + 2.
-                let grid_rows = 2 * block_rows.start..2 * block_rows.end + 2;
-                grid.resize(groups * grid_rows.len(), [0; 4]);
-                for (j, row) in grid_rows.clone().zip(grid.chunks_exact_mut(groups)) {
-                    self.laplacian_row((self.origin.1 + 2 * j) as isize - 2, blocks.start, row);
+                // Keep the summed pair and the second raw row from each
+                // side of the 4×4 block row. The lower pair becomes the
+                // upper pair of the next block row.
+                laplacians.resize(5 * groups, [0; 4]);
+                let (pairs, column_sums) = laplacians.split_at_mut(4 * groups);
+                let (upper, lower) = pairs.split_at_mut(2 * groups);
+                let mut upper = upper.split_at_mut(groups);
+                let mut lower = lower.split_at_mut(groups);
+                let first_y = (self.origin.1 + BLOCK * block_rows.start) as isize;
+                self.laplacian_row(first_y - 2, blocks.start, upper.0);
+                self.laplacian_row(first_y, blocks.start, upper.1);
+                for (sum, &second) in upper
+                    .0
+                    .as_flattened_mut()
+                    .iter_mut()
+                    .zip(upper.1.as_flattened())
+                {
+                    *sum += second;
                 }
-                column_sums.resize(groups, [0; 4]);
                 for by in block_rows.clone() {
-                    let y = by * BLOCK;
-                    // Laplacian rows y − 2 .. y + 4; next to the virtual
-                    // boundary the three on the block's side.
-                    let rows = match self.boundary_row(self.origin.1 + y) {
-                        -4 => 0..3,
-                        0 => 1..4,
-                        _ => 0..4,
-                    };
-                    // Each group summed over the rows (at most 4 · 2040); the
-                    // kernel classifies each block from its two groups.
-                    column_sums.fill([0; 4]);
-                    let boundary = rows.len() == 3;
-                    for j in rows {
-                        let row = &grid[(y / 2 + j - grid_rows.start) * groups..][..groups];
-                        // Flat, so the adds vectorise.
-                        for (sum, &l) in column_sums
-                            .as_flattened_mut()
-                            .iter_mut()
-                            .zip(row.as_flattened())
-                        {
-                            *sum += l;
-                        }
+                    let y = self.origin.1 + by * BLOCK;
+                    self.laplacian_row(y as isize + 2, blocks.start, lower.0);
+                    self.laplacian_row(y as isize + 4, blocks.start, lower.1);
+
+                    // At a virtual boundary keep only the three grid rows on
+                    // the block's side, as in the scalar four-row sum.
+                    let position = self.boundary_row(y);
+                    let previous = if position == 0 { &*upper.1 } else { &*upper.0 };
+                    for (((sum, lower_sum), &first), &last) in column_sums
+                        .as_flattened_mut()
+                        .iter_mut()
+                        .zip(lower.0.as_flattened_mut())
+                        .zip(previous.as_flattened())
+                        .zip(lower.1.as_flattened())
+                    {
+                        let combined_lower = *lower_sum + last;
+                        *sum = first
+                            + if position == -4 {
+                                *lower_sum
+                            } else {
+                                combined_lower
+                            };
+                        *lower_sum = combined_lower;
                     }
+                    let boundary = position == -4 || position == 0;
                     let start = by * self.block_columns;
                     self.kernels().vvc_alf_classify::<T>(
-                        &column_sums,
+                        column_sums,
                         boundary,
                         &mut classes[start + blocks.start..start + blocks.end],
                     );
+                    core::mem::swap(&mut upper, &mut lower);
                 }
             }
         }

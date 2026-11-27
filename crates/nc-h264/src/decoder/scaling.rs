@@ -55,6 +55,12 @@ const NORM_ADJUST_4X4: [[u16; 3]; QP_PERIOD] = [
     [18, 29, 23],
 ];
 
+/// `normAdjust4x4(m, i, j)` (eq. 8-315) of position class `class` (both
+/// coordinates even, both odd, mixed): the flat-weight scaling of §8.6.
+pub(super) fn norm_adjust_4x4(m: usize, class: usize) -> i32 {
+    i32::from(NORM_ADJUST_4X4[m][class])
+}
+
 /// `normAdjust8x8` (eq. 8-318): `v` per `QP % 6`, six position classes.
 const NORM_ADJUST_8X8: [[u16; 6]; QP_PERIOD] = [
     [20, 18, 32, 19, 25, 24],

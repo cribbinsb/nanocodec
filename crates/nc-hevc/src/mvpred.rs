@@ -8,18 +8,22 @@
 //! candidates from the collocated picture, list 0's first reference
 //! (§8.5.3.2.8).
 //!
-//! Every reference is a short-term picture, so a neighbour pointing at the
-//! other reference gives an AMVP candidate scaled by POC distance, and two
-//! merge candidates are the same motion when their vectors and reference
-//! indices are equal. Both lists holding the same pictures, a reference
-//! index names the same picture in either list. Temporal vectors are
-//! scaled by POC distance when the collocated picture's own reference is at
-//! a different distance (`collocated.rs`). The derivation follows our
-//! decoder's (`dec/mvpred.rs`), which is checked against HM.
+//! A neighbour pointing at the other reference gives an AMVP candidate
+//! scaled by POC distance when both are short-term pictures, and two merge
+//! candidates are the same motion when their vectors and reference indices
+//! are equal. Both lists holding the same pictures, a reference index names
+//! the same picture in either list. Temporal vectors are scaled by POC
+//! distance when the collocated picture's own reference is at a different
+//! distance (`collocated.rs`). A long-term reference (`ltr.interval`'s, the
+//! only reference of a recovery picture) is never scaled, and a candidate
+//! pointing at a long-term picture is unavailable for a short-term target
+//! and the reverse (`LongTermRefPic`, §8.5.3.2.7, §8.5.3.2.8). The
+//! derivation follows our decoder's (`dec/mvpred.rs`), which is checked
+//! against HM.
 
 use nc_encoder::Mv;
 
-use crate::collocated::{Collocated, MAX_REF_IDX, scale_mv};
+use crate::collocated::{Collocated, ListKinds, MAX_REF_IDX, scale_mv};
 use crate::grid::Grid;
 use crate::headers::LOG2_CTB;
 
@@ -118,31 +122,42 @@ impl Motion {
 }
 
 /// The slice's reference list: the POC distance from the current picture
-/// to each `ref_idx_l0` entry (all short-term pictures).
+/// to each `ref_idx_l0` entry, and which entries are long-term pictures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReferenceDistances {
-    distances: [i32; MAX_REF_IDX],
+    kinds: ListKinds,
     count: usize,
 }
 
 impl ReferenceDistances {
-    /// A list of one reference at `distance`.
+    /// A list of one short-term reference at `distance`.
     #[must_use]
     pub fn one(distance: i32) -> Self {
         Self {
-            distances: [distance; MAX_REF_IDX],
+            kinds: ListKinds::short_term([distance; MAX_REF_IDX]),
             count: 1,
         }
     }
 
-    /// A list of two references: `primary` (`ref_idx_l0` 0) and the older
-    /// `secondary`.
+    /// A list of two short-term references: `primary` (`ref_idx_l0` 0) and
+    /// the older `secondary`.
     #[must_use]
     pub fn two(primary: i32, secondary: i32) -> Self {
         Self {
-            distances: [primary, secondary],
+            kinds: ListKinds::short_term([primary, secondary]),
             count: MAX_REF_IDX,
         }
+    }
+
+    /// This list with entry `ref_idx` a long-term picture.
+    #[must_use]
+    pub fn with_long_term(mut self, ref_idx: u8) -> Self {
+        self.kinds.long_term[usize::from(ref_idx)] = true;
+        if self.count == 1 {
+            // Unused entries repeat the first.
+            self.kinds.long_term = [true; MAX_REF_IDX];
+        }
+        self
     }
 
     /// `num_ref_idx_l0_active`.
@@ -154,13 +169,26 @@ impl ReferenceDistances {
     /// The distance to `ref_idx`.
     #[must_use]
     pub fn distance(&self, ref_idx: u8) -> i32 {
-        self.distances[usize::from(ref_idx)]
+        self.kinds.distances[usize::from(ref_idx)]
     }
 
-    /// The distances by `ref_idx_l0` (unused entries repeat the first).
+    /// Whether `ref_idx` is a long-term picture.
     #[must_use]
-    pub fn by_index(&self) -> [i32; MAX_REF_IDX] {
-        self.distances
+    pub fn long_term(&self, ref_idx: u8) -> bool {
+        self.kinds.long_term[usize::from(ref_idx)]
+    }
+
+    /// `ref_idx` as a target of temporal prediction: its distance, and
+    /// whether it is long-term.
+    #[must_use]
+    pub fn target(&self, ref_idx: u8) -> (i32, bool) {
+        (self.distance(ref_idx), self.long_term(ref_idx))
+    }
+
+    /// The entries by `ref_idx_l0` (unused entries repeat the first).
+    #[must_use]
+    pub fn by_index(&self) -> ListKinds {
+        self.kinds
     }
 }
 
@@ -196,10 +224,12 @@ impl Spatial {
 }
 
 /// The temporal candidate of list `list` of the PU at `(x, y)` for a
-/// reference at `cur_distance` (§8.5.3.2.8): the collocated picture's
+/// reference `target` (its POC distance, and whether it is long-term;
+/// §8.5.3.2.8): the collocated picture's
 /// vector at the bottom-right of the PU (if it lies in the picture and in
 /// the same CTB row), otherwise at its centre. `None` if that block is intra
-/// or there is no collocated picture. Every reference precedes the current
+/// or there is no collocated picture, or exactly one of its reference and
+/// `target` is long-term. Every reference precedes the current
 /// picture (`NoBackwardPredFlag` 1, §8.5.3.2.9), so a bi-predicted
 /// collocated block gives list `list`'s vector and a uni-predicted one its
 /// list 0 vector.
@@ -207,19 +237,20 @@ impl Spatial {
 pub fn temporal_candidate(
     collocated: Option<&Collocated<'_>>,
     (x, y, size): (usize, usize, usize),
-    (cur_distance, list): (i32, List),
+    (target, list): ((i32, bool), List),
 ) -> Option<Mv> {
     let collocated = collocated?;
     let col = collocated.grid;
     let at = |cx: usize, cy: usize| {
         let cell = col.at((cx >> COL_LOG2) << COL_LOG2, (cy >> COL_LOG2) << COL_LOG2);
-        (!cell.intra).then(|| {
-            let source = cell.motion().of(list).unwrap_or(ListMotion {
-                mv: cell.mv,
-                ref_idx: cell.ref_idx,
-            });
-            collocated.scale(source.mv, source.ref_idx, cur_distance)
-        })
+        if cell.intra {
+            return None;
+        }
+        let source = cell.motion().of(list).unwrap_or(ListMotion {
+            mv: cell.mv,
+            ref_idx: cell.ref_idx,
+        });
+        collocated.scale(source.mv, source.ref_idx, target)
     };
     let (br_x, br_y) = (x + size, y + size);
     let same_ctb_row = (y >> LOG2_CTB) == (br_y >> LOG2_CTB);
@@ -313,17 +344,17 @@ pub fn candidate_lists(
     // the AMVP list's when it predicts the first reference: derive it once.
     let first_once = std::cell::OnceCell::new();
     let first = || {
-        *first_once.get_or_init(|| temporal_candidate(col, pu, (references.distance(0), List::L0)))
+        *first_once.get_or_init(|| temporal_candidate(col, pu, (references.target(0), List::L0)))
     };
     let amvp_temporal = || {
         if amvp_ref == 0 {
             first()
         } else {
-            temporal_candidate(col, pu, (references.distance(amvp_ref), List::L0))
+            temporal_candidate(col, pu, (references.target(amvp_ref), List::L0))
         }
     };
     let temporal = || {
-        let l1 = || temporal_candidate(col, pu, (references.distance(0), List::L1));
+        let l1 = || temporal_candidate(col, pu, (references.target(0), List::L1));
         first().map(|mv| Motion {
             mv,
             ref_idx: 0,
@@ -351,7 +382,7 @@ pub fn amvp_candidates(
     (list, target): (List, u8),
 ) -> [Mv; AMVP_CANDIDATES] {
     let spatial = Spatial::of(grid, x, y, size);
-    let temporal = || temporal_candidate(col, (x, y, size), (references.distance(target), list));
+    let temporal = || temporal_candidate(col, (x, y, size), (references.target(target), list));
     amvp_list(&spatial, temporal, references, (list, target))
 }
 
@@ -483,16 +514,24 @@ fn amvp_list(
     };
     let lists = |m: &Motion| [m.of(list), m.of(other)].into_iter().flatten();
     // A neighbour pointing at the target picture gives its vector as it
-    // is; one pointing at the other (short-term) reference, its vector
-    // scaled by the two POC distances (eq. 8-179..8-183).
+    // is; one pointing at the other reference, its vector scaled by the two
+    // POC distances when both are short-term (eq. 8-179..8-183), as it is
+    // when both are long-term; none when only one is long-term.
     let same = |m: &Motion| lists(m).find(|l| l.ref_idx == target).map(|l| l.mv);
+    let target_long_term = references.long_term(target);
     let scaled = |m: &Motion| {
-        lists(m).next().map(|l| {
-            scale_mv(
-                l.mv,
-                references.distance(l.ref_idx),
-                references.distance(target),
-            )
+        lists(m).find_map(|l| {
+            if references.long_term(l.ref_idx) != target_long_term {
+                None
+            } else if target_long_term {
+                Some(l.mv)
+            } else {
+                Some(scale_mv(
+                    l.mv,
+                    references.distance(l.ref_idx),
+                    references.distance(target),
+                ))
+            }
         })
     };
     let a = [nb.a0, nb.a1];

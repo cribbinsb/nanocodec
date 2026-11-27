@@ -18,8 +18,12 @@ use nc_common::{
 use nc_dsp::Dsp;
 use std::collections::VecDeque;
 
+mod fallback;
 mod general;
+mod layers;
+use fallback::OwnRecord;
 use general::{Instance, with_general};
+use layers::{LayerFilter, VPS_NUT};
 
 // Four luma samples cover the 8-tap interpolation footprint (two for chroma).
 // Shared Plane border extension lets inter prediction borrow edge windows rather
@@ -42,8 +46,6 @@ const SPS_BITS_BEFORE_CTU_SIZE: usize = 13;
 /// Table 5): the next IRAP picture starts a new coded video sequence.
 const EOS_NUT: u8 = 21;
 const EOB_NUT: u8 = 22;
-/// `nal_unit_type` of video parameter sets.
-const VPS_NUT: u8 = 14;
 
 /// What [`Decoder::push_unit`] made of one NAL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +123,13 @@ pub struct Decoder {
     /// General pictures output before the sequence changed sample type,
     /// ahead of the current instance's.
     earlier: VecDeque<DecodedPicture>,
+    /// The layer decoded and the NAL units ignored (§7.4.2.2).
+    layers: LayerFilter,
+    /// The fast path's units since its last IDR picture, decoded again by
+    /// the general path when the fast path meets a tool it lacks.
+    own_record: OwnRecord,
+    /// General outputs to drop: pictures the fast path showed already.
+    skip_outputs: usize,
     /// Coding-tool analysis, collected only when enabled.
     #[cfg(feature = "analysis")]
     stats: Option<nc_common::stream_stats::StreamStats>,
@@ -182,11 +191,8 @@ impl Decoder {
     }
 
     fn push_unit(&mut self, nal: &[u8]) -> Result<Pushed> {
-        if nal.len() < 2 {
-            return Err(DecodeError::Truncated);
-        }
-        if nal[0] != 0 || nal[1].trailing_zeros() >= 3 {
-            return Err(DecodeError::Unsupported("VVC layer/temporal id"));
+        if !self.layers.keeps(nal)? {
+            return Ok(Pushed::Nothing);
         }
         let kind = nal[1] >> 3;
         if matches!(
@@ -209,12 +215,8 @@ impl Decoder {
             self.end_sequence();
             return Ok(Pushed::Nothing);
         }
-        if !matches!(
-            kind,
-            14..=19 | 0..=3 | 7..=10
-        ) {
-            return Err(DecodeError::Unsupported("VVC NAL type"));
-        }
+        // Every other type is a slice (0..=3, 7..=10) or a parameter set or
+        // picture header (14..=19): `layers` dropped the reserved ones.
         // Bound accumulation independently of any outer transport/framer.
         if nal.len()
             > MAX_PENDING_BYTES
@@ -232,10 +234,12 @@ impl Decoder {
         // The transport already framed the slice: borrow it directly instead
         // of copying and scanning its CABAC payload for Annex-B start codes.
         let result = if parameters.is_empty() {
-            self.decode_units(std::iter::once(nal))
+            self.decode_units(&[nal])
         } else {
-            annex_b_units(&parameters)
-                .and_then(|units| self.decode_units(units.into_iter().chain(std::iter::once(nal))))
+            annex_b_units(&parameters).and_then(|mut units| {
+                units.push(nal);
+                self.decode_units(&units)
+            })
         };
         parameters.clear();
         self.pending = parameters;
@@ -252,9 +256,17 @@ impl Decoder {
     /// Take another general picture released by the streaming decoder, in
     /// display order.
     pub fn next_output(&mut self) -> Option<DecodedPicture> {
-        self.earlier
-            .pop_front()
-            .or_else(|| self.instance.next_output())
+        loop {
+            let picture = self
+                .earlier
+                .pop_front()
+                .or_else(|| self.instance.next_output())?;
+            if self.skip_outputs == 0 {
+                return Some(picture);
+            }
+            // Shown already by the fast path (`fallback`).
+            self.skip_outputs -= 1;
+        }
     }
 
     /// Complete a NAL stream and release delayed pictures through `next_output`.
@@ -321,7 +333,7 @@ impl Decoder {
         // A packet that cannot even be split shows nothing either.
         self.shown = false;
         self.general_shown = None;
-        let completed = self.decode_units(annex_b_units(packet)?)?;
+        let completed = self.decode_units(&annex_b_units(packet)?)?;
         if self.assembling() || (!completed && !self.general) {
             with_general!(&mut self.instance, general => general.abandon());
             return Err(DecodeError::Malformed("VVC access unit without all slices"));
@@ -416,7 +428,7 @@ impl Decoder {
         self.pps = None;
         self.general_picture = None;
         self.picture_header = None;
-        if let Ok(info) = parse_sps(rbsp) {
+        if let Some(info) = parse_sps(rbsp).ok().filter(|_| !self.own_record.disabled()) {
             let changed_profile = self.general;
             if changed_profile {
                 self.general = false;
@@ -556,8 +568,6 @@ impl Decoder {
         }
     }
 
-    /// Decode `units`; `false` when they end inside a general picture whose
-    /// other slices are still to come.
     /// Activate PPS `id` and its SPS for the picture that starts (§7.4.2.4.2):
     /// a different SPS starts a new sequence, without the old references.
     fn activate(&mut self, id: u8) -> Result<()> {
@@ -666,16 +676,76 @@ impl Decoder {
         with_general!(&self.instance, general => general.assembling())
     }
 
-    fn decode_units<'a>(&mut self, units: impl IntoIterator<Item = &'a [u8]>) -> Result<bool> {
+    /// Decode `units`; `false` when they end inside a general picture whose
+    /// other slices are still to come. A fast-path refusal hands the stream
+    /// to the general path (`fallback`).
+    fn decode_units(&mut self, units: &[&[u8]]) -> Result<bool> {
+        let own = !self.general;
+        match self.decode_units_once(units) {
+            Ok(completed) => {
+                if own && !self.general {
+                    self.own_record.accepted(units);
+                }
+                Ok(completed)
+            }
+            // Only a stream the fast path took (an SPS like ours) falls back.
+            Err(refusal)
+                if own
+                    && self.geometry.is_some()
+                    && matches!(refusal, DecodeError::Unsupported(..)) =>
+            {
+                self.fall_back(units, refusal)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Hand a stream the fast path refused in `units` to the general path:
+    /// decode again from the last IDR picture, then `units`. Past the
+    /// record's bound the `refusal` stands.
+    fn fall_back(&mut self, units: &[&[u8]], refusal: DecodeError) -> Result<bool> {
+        let Some((pictures, shown)) = self.own_record.replay() else {
+            return Err(refusal);
+        };
+        let replayed: Vec<Vec<Vec<u8>>> = pictures
+            .iter()
+            .map(|picture| picture.iter().map(|unit| unit.to_vec()).collect())
+            .collect();
+        self.own_record = OwnRecord::disabled_for_stream();
+        self.reset_own_path();
+        self.skip_outputs += shown;
+        for picture in &replayed {
+            let units: Vec<&[u8]> = picture.iter().map(Vec::as_slice).collect();
+            if self.decode_units_once(&units)? {
+                with_general!(&mut self.instance, general => general.queue_output())?;
+            }
+        }
+        self.decode_units_once(units)
+    }
+
+    /// Drop the fast path's state: the general path starts afresh.
+    fn reset_own_path(&mut self) {
+        self.pps = None;
+        self.geometry = None;
+        self.motion = None;
+        if let Some(picture) = self.reference.take() {
+            self.pictures.give(picture);
+        }
+        for (_, picture) in std::mem::take(&mut self.retained) {
+            self.pictures.give(picture);
+        }
+        self.alf_banks = Default::default();
+        self.latest_poc = None;
+        self.shown = false;
+    }
+
+    fn decode_units_once(&mut self, units: &[&[u8]]) -> Result<bool> {
         self.shown = false;
         let mut picture = None;
         let mut general_done = false;
-        for unit in units {
-            if unit.len() < 2 {
-                return Err(DecodeError::Truncated);
-            }
-            if unit[0] != 0 || unit[1].trailing_zeros() >= 3 {
-                return Err(DecodeError::Unsupported("VVC layer/temporal id"));
+        for &unit in units {
+            if !self.layers.keeps(unit)? {
+                continue;
             }
             let rbsp = unescape_rbsp(&unit[2..])?;
             let kind = unit[1] >> 3;
@@ -696,7 +766,8 @@ impl Decoder {
                     }
                 }
                 EOS_NUT | EOB_NUT => self.end_sequence(),
-                // Single-layer streams need nothing from a VPS (§7.4.3.3).
+                // The base layer needs nothing from a VPS beyond its layer
+                // id (§7.4.3.3, `layers`).
                 VPS_NUT if picture.is_none() => {}
                 headers::SPS_NUT if picture.is_none() => {
                     self.accept_sps(&rbsp)?;
@@ -903,7 +974,7 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
         ..headers::Tools::default()
     };
     let mut r = BitReader::new(bytes);
-    r.skip_bits(headers::sps_head(&geometry, transforms).bit_len())?;
+    r.skip_bits(headers::sps_head(&geometry, transforms, None).bit_len())?;
     let chroma_qp = ChromaQpTable::parse(&mut r)?;
     let tools = headers::Tools {
         mts: transforms.mts,
@@ -1220,12 +1291,13 @@ fn parse_slice_header<'a, 'b>(
         r.skip_bits(1)?; // no-output flag
     }
     let (alf, bank) = slice_alf(&mut r, tools, alf_banks)?;
-    let references = crate::references::Syntax {
-        poc_bits: tools.poc_bits,
-        ..if inter_frame {
-            read_reference_lists(&mut r, temporal_mvp == Some(true))?
-        } else {
-            crate::references::Syntax::FLAT
+    let references = if inter_frame {
+        read_reference_lists(&mut r, (poc, tools), temporal_mvp == Some(true))?
+    } else {
+        crate::references::Syntax {
+            poc_bits: tools.poc_bits,
+            long_term_refs: tools.long_term_refs,
+            ..crate::references::Syntax::FLAT
         }
     };
     let qp = 26i64 + i64::from(r.read_se()?);
@@ -1260,25 +1332,51 @@ fn parse_slice_header<'a, 'b>(
     ))
 }
 
-/// A P slice's local RPL0 (up to `references::MAX_LISTED` short-term
-/// entries), empty RPL1, active-reference override and collocated
-/// reference (§7.3.7.1, §7.3.10), as `headers::slice_layered` writes them; the caller checks
+/// A P slice's local RPL0 (up to `references::MAX_LISTED` entries, with
+/// the SPS's `sps_long_term_ref_pics_flag` short- or long-term), the
+/// long-term entries' POC LSBs, empty RPL1, active-reference override and
+/// collocated reference (§7.3.7.1, §7.3.9, §7.3.10) of the picture at POC
+/// LSBs `poc`, as `headers::slice_layered` writes them; the caller checks
 /// the whole header against its canonical form.
 fn read_reference_lists(
     r: &mut BitReader<'_>,
+    (poc, tools): (u16, headers::Tools),
     temporal_mvp: bool,
 ) -> Result<crate::references::Syntax> {
-    let mut syntax = crate::references::Syntax::FLAT;
+    let mut syntax = crate::references::Syntax {
+        poc_bits: tools.poc_bits,
+        long_term_refs: tools.long_term_refs,
+        ..crate::references::Syntax::FLAT
+    };
     let count = r.read_ue()? as usize;
     if !(1..=syntax.distances.len()).contains(&count) {
         return Err(DecodeError::Unsupported("VVC RPL0 size"));
     }
     let mut previous = 0;
-    for distance in &mut syntax.distances[..count] {
+    for index in 0..count {
+        // st_ref_pic_flag; a long-term entry's POC LSBs follow the list.
+        if tools.long_term_refs && !r.read_bit()? {
+            syntax.long_term[index] = true;
+            continue;
+        }
         // Cumulative delta, then strp_entry_sign_flag (earlier pictures).
-        *distance = previous + r.read_ue_max(u32::from(u8::MAX), "abs_delta_poc_st")? + 1;
+        let distance = previous + r.read_ue_max(u32::from(u8::MAX), "abs_delta_poc_st")? + 1;
         r.skip_bits(1)?;
-        previous = *distance;
+        syntax.distances[index] = distance;
+        previous = distance;
+    }
+    let lsb_mask = (1u32 << tools.poc_bits) - 1;
+    for index in (0..count).filter(|&index| syntax.long_term[index]) {
+        let lsb = r.read_bits(tools.poc_bits)?; // poc_lsb_lt
+        if r.read_bit()? {
+            return Err(DecodeError::Unsupported("VVC long-term MSB cycle"));
+        }
+        // Our streams' long-term pictures lie within one LSB cycle.
+        let distance = u32::from(poc).wrapping_sub(lsb) & lsb_mask;
+        if distance == 0 {
+            return Err(DecodeError::Malformed("VVC long-term reference to itself"));
+        }
+        syntax.distances[index] = distance;
     }
     syntax.count = count;
     r.read_ue()?; // RPL1, empty

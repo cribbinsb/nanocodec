@@ -244,7 +244,7 @@ unsafe fn warp8x8_simd128(
 ) {
     // SAFETY: SIMD128 is enabled for the whole module in this build.
     unsafe {
-        warp8x8_lanes::<crate::simd::simd128::I16x8>(window, phases, round1, out, warp_taps_i16)
+        warp8x8_lanes::<crate::simd::simd128::I16x8>(window, phases, round1, out, warp_taps_i16);
     }
 }
 
@@ -260,7 +260,7 @@ pub(crate) unsafe fn warp8x8_av2_simd128(
     unsafe {
         warp8x8_lanes::<crate::simd::simd128::I16x8>(window, phases, round1, out, |phase| {
             crate::av2_dec::warp::taps_i16_unchecked(phase)
-        })
+        });
     }
 }
 

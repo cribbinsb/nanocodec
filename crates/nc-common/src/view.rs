@@ -174,6 +174,26 @@ impl<'a, T: Sample> PlaneView<'a, T> {
         let start = y * self.stride + x;
         Self::new(self.data.get(start..)?, self.stride, width, height)
     }
+
+    /// Rows `first`, `first + 2`, `first + 4`, ... of this view as a view
+    /// of their own (one field of an interlaced frame: `first` 0 the top
+    /// field, 1 the bottom one).
+    ///
+    /// # Panics
+    ///
+    /// If `first` is not 0 or 1.
+    #[must_use]
+    pub fn every_other_row(self, first: usize) -> Self {
+        assert!(first < 2, "a field starts at row 0 or 1");
+        let height = (self.height + 1 - first.min(self.height)) / 2;
+        let data = if height == 0 {
+            &self.data[..0]
+        } else {
+            &self.data[first * self.stride..]
+        };
+        Self::new(data, 2 * self.stride, self.width, height)
+            .expect("every other row lies inside the view")
+    }
 }
 
 /// A mutable window into sample data.
@@ -342,6 +362,25 @@ impl<'a, T: Sample> PlaneViewMut<'a, T> {
         PlaneViewMut::new(self.data.get_mut(start..)?, self.stride, width, height)
     }
 
+    /// Rows `first`, `first + 2`, ... of this view, writable (one field of
+    /// an interlaced frame), as [`PlaneView::every_other_row`].
+    ///
+    /// # Panics
+    ///
+    /// If `first` is not 0 or 1.
+    #[must_use]
+    pub fn every_other_row(self, first: usize) -> Self {
+        assert!(first < 2, "a field starts at row 0 or 1");
+        let height = (self.height + 1 - first.min(self.height)) / 2;
+        let (stride, width) = (self.stride, self.width);
+        let data = if height == 0 {
+            &mut self.data[..0]
+        } else {
+            &mut self.data[first * stride..]
+        };
+        Self::new(data, 2 * stride, width, height).expect("every other row lies inside the view")
+    }
+
     /// Copy `src` into this window. Both must have the same size.
     pub fn copy_from(&mut self, src: &PlaneView<'_, T>) {
         assert_eq!(
@@ -413,6 +452,21 @@ mod tests {
         // An empty height does not waive the stride constraint.
         assert!(PlaneView::<u8>::new(&[], 0, 1, 0).is_none());
         assert!(PlaneViewMut::<u8>::new(&mut [], 0, 1, 0).is_none());
+    }
+
+    #[test]
+    fn every_other_row_takes_one_field() {
+        let mut data: Vec<u8> = (0..20).collect();
+        let view = PlaneView::new(&data, 4, 3, 5).unwrap();
+        let top = view.every_other_row(0);
+        assert_eq!((top.height(), top.row(1)), (3, &[8, 9, 10][..]));
+        let bottom = view.every_other_row(1);
+        assert_eq!((bottom.height(), bottom.row(1)), (2, &[12, 13, 14][..]));
+        let mut field = PlaneViewMut::new(&mut data, 4, 3, 5)
+            .unwrap()
+            .every_other_row(1);
+        field.row_mut(0).fill(0);
+        assert_eq!(&data[4..8], &[0, 0, 0, 7]);
     }
 
     #[test]

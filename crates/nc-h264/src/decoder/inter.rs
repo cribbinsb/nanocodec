@@ -2,6 +2,12 @@
 //! interpolation through the nc-dsp H.264 kernels, bi-prediction and
 //! default, explicit and implicit weighted prediction (§8.4.2.3).
 //!
+//! A reference field is every other row of its frame buffer. Its padded
+//! border is the frame's (an edge extension of frame rows), which is right
+//! beside each row but not above or below a field, so a field's windows
+//! that leave its rows vertically are copied clamped to the field
+//! (§8.4.2.2.1).
+//!
 //! Interpolation is a per-sample process, so a partition is predicted as
 //! any tiling of square blocks with its vector: the whole macroblock when
 //! all its vectors and references agree, else each 8x8 block whole or as
@@ -16,6 +22,7 @@ use super::dpb::RefPicture;
 use super::mbstate::{LISTS, MbKind, MbState, Partition};
 use super::sample::{H264Sample, McKernel};
 use super::slice::{Weight, WeightTable};
+use super::structure::{Parity, Structure};
 use super::{DecodeError, Planes, Result};
 
 /// Fractional bits of a luma vector (quarter samples) and of the same
@@ -84,17 +91,65 @@ impl InterKernels {
 struct Source<'a, T: Sample> {
     padded: PlaneView<'a, T>,
     border: (usize, usize),
-    /// The plane itself, for windows beyond the padding.
-    plane: &'a Plane<T>,
+    /// The visible samples, for windows beyond the padding.
+    visible: PlaneView<'a, T>,
 }
 
 impl<'a, T: Sample> Source<'a, T> {
-    fn new(plane: &'a Plane<T>) -> Self {
+    /// The picture `structure` of a frame's `plane`: the plane, or one
+    /// field's rows with the padding beside them only.
+    fn new(plane: &'a Plane<T>, structure: Structure) -> Self {
+        let Structure::Field(parity) = structure else {
+            return Self {
+                padded: plane.padded_view(),
+                border: (plane.border_x(), plane.border_y()),
+                visible: plane.view(),
+            };
+        };
+        let border_x = plane.border_x();
+        let rows = plane
+            .region(
+                -(border_x as isize),
+                0,
+                plane.width() + 2 * border_x,
+                plane.height(),
+            )
+            .expect("the rows with their side padding lie inside the plane");
         Self {
-            padded: plane.padded_view(),
-            border: (plane.border_x(), plane.border_y()),
-            plane,
+            padded: rows.every_other_row(parity.index()),
+            border: (border_x, 0),
+            visible: plane.view().every_other_row(parity.index()),
         }
+    }
+}
+
+/// One list entry's picture as prediction reads it.
+#[derive(Clone, Copy)]
+struct Reference<'a, T: Sample> {
+    /// Y, Cb and Cr.
+    planes: [Source<'a, T>; 3],
+    /// Vertical offset of chroma vectors in eighth samples (Table 8-10):
+    /// between fields of opposite parity, the half-row shift of their
+    /// chroma sample positions.
+    chroma_dy: i16,
+}
+
+/// Table 8-10: the chroma vector offset of a `current` picture predicting
+/// from a `reference` one.
+fn chroma_offset(current: Structure, reference: Structure) -> i16 {
+    match (current.parity(), reference.parity()) {
+        (Some(Parity::Top), Some(Parity::Bottom)) => -2,
+        (Some(Parity::Bottom), Some(Parity::Top)) => 2,
+        _ => 0,
+    }
+}
+
+/// `mv` with its vertical component moved by `dy` (chroma of fields).
+#[inline]
+fn chroma_mv(mv: Mv, dy: i16) -> Mv {
+    Mv {
+        x: mv.x,
+        y: mv.y.wrapping_add(dy),
     }
 }
 
@@ -122,8 +177,8 @@ type BlockMotion = [Option<(Mv, i8)>; LISTS];
 pub(super) struct InterContext<'a, T: Sample> {
     kernels: &'a InterKernels,
     dsp: &'a Dsp,
-    /// Planes (Y, U, V) of each list entry's picture.
-    refs: [Vec<Option<[Source<'a, T>; 3]>>; LISTS],
+    /// Each list entry's picture.
+    refs: [Vec<Option<Reference<'a, T>>>; LISTS],
     weighting: Weighting<'a>,
     monochrome: bool,
     depths: BitDepths,
@@ -178,9 +233,10 @@ impl Grid for ChromaGrid {
 }
 
 impl<'a, T: H264Sample> InterContext<'a, T> {
+    /// The prediction of a slice of picture `current` from `refs`.
     pub fn new(
         (kernels, dsp): (&'a InterKernels, &'a Dsp),
-        refs: [&'a [Option<RefPicture<T>>]; LISTS],
+        (refs, current): ([&'a [Option<RefPicture<T>>]; LISTS], Structure),
         weighting: Weighting<'a>,
         monochrome: bool,
         depths: BitDepths,
@@ -188,8 +244,11 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         let planes = |list: &'a [Option<RefPicture<T>>]| {
             list.iter()
                 .map(|r| {
-                    r.as_ref()
-                        .map(|r| PlaneIndex::ALL.map(|p| Source::new(r.picture.plane(p))))
+                    r.as_ref().map(|r| Reference {
+                        planes: PlaneIndex::ALL
+                            .map(|p| Source::new(r.picture.plane(p), r.structure)),
+                        chroma_dy: chroma_offset(current, r.structure),
+                    })
                 })
                 .collect()
         };
@@ -299,8 +358,8 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         self.block(dst, motion, pos, shape)
     }
 
-    /// The planes of entry `ref_idx` of list `list`.
-    fn sources(&self, list: usize, ref_idx: i8) -> Result<&[Source<'a, T>; 3]> {
+    /// The picture of entry `ref_idx` of list `list`.
+    fn reference(&self, list: usize, ref_idx: i8) -> Result<&Reference<'a, T>> {
         usize::try_from(ref_idx)
             .ok()
             .and_then(|r| self.refs[list].get(r).and_then(Option::as_ref))
@@ -381,7 +440,8 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         pos: (usize, usize),
         shape: usize,
     ) -> Result<()> {
-        let sources = self.sources(LIST, ref_idx)?;
+        let reference = self.reference(LIST, ref_idx)?;
+        let sources = &reference.planes;
         let weight = match &self.weighting {
             Weighting::Explicit(table) if !table.is_identity(LIST, ref_idx as usize) => {
                 Some((*table, table.weights[LIST][ref_idx as usize]))
@@ -398,6 +458,7 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
             return Ok(());
         }
         let chroma = self.chroma_target(pos, shape);
+        let mv = chroma_mv(mv, reference.chroma_dy);
         if shape == SHAPE_4X4 {
             for (source, plane_dst) in [(&sources[1], &mut *cb_dst), (&sources[2], &mut *cr_dst)] {
                 corner_2x2(&chroma, source, plane_dst, mv);
@@ -428,7 +489,12 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         pos: (usize, usize),
         shape: usize,
     ) -> Result<()> {
-        let sources = [self.sources(0, ref0)?, self.sources(1, ref1)?];
+        let references = [self.reference(0, ref0)?, self.reference(1, ref1)?];
+        let sources = references.map(|r| &r.planes);
+        let chroma_mvs = [
+            chroma_mv(mv0, references[0].chroma_dy),
+            chroma_mv(mv1, references[1].chroma_dy),
+        ];
         let weights = self.bi_weights(ref0 as usize, ref1 as usize);
         let (luma, chroma) = self.targets(pos, shape);
         let mut scratch = Scratch {
@@ -452,15 +518,20 @@ impl<'a, T: H264Sample> InterContext<'a, T> {
         };
         for (comp, plane_dst) in [cb_dst, cr_dst].into_iter().enumerate() {
             if shape == SHAPE_4X4 {
-                corner_2x2(&chroma, &sources[0][1 + comp], plane_dst, mv0);
+                corner_2x2(&chroma, &sources[0][1 + comp], plane_dst, chroma_mvs[0]);
             } else {
-                interpolate::<ChromaGrid, T>(&chroma, &sources[0][1 + comp], plane_dst, mv0);
+                interpolate::<ChromaGrid, T>(
+                    &chroma,
+                    &sources[0][1 + comp],
+                    plane_dst,
+                    chroma_mvs[0],
+                );
             }
             let out = &mut scratch.chroma[comp];
             predict::<ChromaGrid, T>(
                 &kernel_target,
                 &sources[1][1 + comp],
-                mv1,
+                chroma_mvs[1],
                 out,
                 CHROMA_SCRATCH,
             );
@@ -720,19 +791,18 @@ fn predict<G: Grid, T: H264Sample>(
         let size = (target.size.0 + G::TAPS - 1, target.size.1 + G::TAPS - 1);
         let mut buf = [T::default(); MAX_WINDOW * MAX_WINDOW];
         let (left, top) = window.corner;
-        let view = clamped_window(source.plane, left, top, size, &mut buf);
+        let view = clamped_window(&source.visible, left, top, size, &mut buf);
         call(view.data(), view.stride(), out);
     }
 }
 
 fn clamped_window<'a, T: Sample>(
-    source: &Plane<T>,
+    picture: &PlaneView<'_, T>,
     left: isize,
     top: isize,
     (width, height): (usize, usize),
     buf: &'a mut [T],
 ) -> PlaneView<'a, T> {
-    let picture = source.view();
     let (w, h) = (picture.width() as isize, picture.height() as isize);
     for (r, row) in buf.chunks_exact_mut(width).take(height).enumerate() {
         let src = picture.row((top + r as isize).clamp(0, h - 1) as usize);

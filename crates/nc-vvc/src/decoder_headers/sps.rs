@@ -83,13 +83,24 @@ pub(crate) struct Sequence {
     pub field_pictures: bool,
     pub colour: ColourInfo,
 }
+/// The error of an SPS without `profile_tier_level`: a layer whose PTL is
+/// in the VPS is not the base layer (§7.4.3.4); without a VPS it is invalid.
+fn missing_ptl(refers_to_vps: bool) -> DecodeError {
+    if refers_to_vps {
+        DecodeError::Unsupported("VVC SPS of a non-base layer (PTL in the VPS)")
+    } else {
+        DecodeError::Malformed("VVC SPS without PTL or VPS")
+    }
+}
+
 impl Sequence {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let mut r = Reader::new(bytes);
         let id = r.bits(4)? as u8;
-        if r.bits(4)? != 0 {
-            return Err(DecodeError::Unsupported("VVC VPS-dependent SPS"));
-        }
+        // A VPS id above 0 (§7.4.3.4) is a layer of a multi-layer stream;
+        // its base layer still carries its own PTL and DPB parameters (the
+        // flag below), so it decodes as a single-layer stream.
+        let refers_to_vps = r.bits(4)? != 0;
         let max_layer = r.bits(3)? as usize;
         if max_layer > 6 {
             return Err(DecodeError::Malformed("VVC temporal sublayers"));
@@ -104,7 +115,7 @@ impl Sequence {
             return Err(DecodeError::Malformed("VVC CTU size"));
         }
         if !r.flag()? {
-            return Err(DecodeError::Malformed("VVC SPS without PTL or VPS"));
+            return Err(missing_ptl(refers_to_vps));
         }
         let profile = Profile::parse(&mut r, max_layer)?;
         let gdr = r.flag()?;
@@ -142,6 +153,7 @@ impl Sequence {
             poc_bits,
             dimensions,
             &transforms,
+            refers_to_vps,
         )?;
         if r.flag()? {
             vui::hrd(&mut r, max_layer)?;

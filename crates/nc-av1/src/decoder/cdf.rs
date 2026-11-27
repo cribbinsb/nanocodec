@@ -16,14 +16,15 @@ use crate::mvcoding::DecoderMvCdfs;
 use crate::tables::{
     ANGLE_DELTA_CDF, CFL_ALPHA_CDF, CFL_SIGN_CDF, COMP_BWDREF_CDF, COMP_GROUP_IDX_CDF,
     COMP_INTER_CDF, COMP_REF_CDF, COMP_REF_TYPE_CDF, COMPOUND_IDX_CDF, COMPOUND_TYPE_CDF,
-    DELTA_Q_CDF, DRL_CDF, FILTER_INTRA_CDF, FILTER_INTRA_MODE_CDF, INTER_COMPOUND_MODE_CDF,
-    INTERINTRA_CDF, INTERINTRA_MODE_CDF, INTRA_INTER_CDF, INTRABC_CDF, KF_Y_MODE_CDF,
-    MOTION_MODE_CDF, NEWMV_CDF, OBMC_CDF, PALETTE_UV_COLOR_INDEX_CDF, PALETTE_UV_MODE_CDF,
-    PALETTE_UV_SIZE_CDF, PALETTE_Y_COLOR_INDEX_CDF, PALETTE_Y_MODE_CDF, PALETTE_Y_SIZE_CDF,
-    PARTITION_CDF, REFMV_CDF, SEGMENT_PRED_CDF, SGRPROJ_RESTORE_CDF, SINGLE_REF_CDF, SKIP_CDF,
-    SKIP_MODE_CDF, SPATIAL_PRED_SEG_TREE_CDF, SWITCHABLE_INTERP_CDF, SWITCHABLE_RESTORE_CDF,
-    TX_SIZE_CDF, TXFM_PARTITION_CDF, UNI_COMP_REF_CDF, UV_MODE_CDF, WEDGE_IDX_CDF,
-    WEDGE_INTERINTRA_CDF, WIENER_RESTORE_CDF, Y_MODE_CDF, ZEROMV_CDF,
+    DELTA_LF_CDF, DELTA_LF_MULTI_CDF, DELTA_Q_CDF, DRL_CDF, FILTER_INTRA_CDF,
+    FILTER_INTRA_MODE_CDF, INTER_COMPOUND_MODE_CDF, INTERINTRA_CDF, INTERINTRA_MODE_CDF,
+    INTRA_INTER_CDF, INTRABC_CDF, KF_Y_MODE_CDF, MOTION_MODE_CDF, NEWMV_CDF, OBMC_CDF,
+    PALETTE_UV_COLOR_INDEX_CDF, PALETTE_UV_MODE_CDF, PALETTE_UV_SIZE_CDF,
+    PALETTE_Y_COLOR_INDEX_CDF, PALETTE_Y_MODE_CDF, PALETTE_Y_SIZE_CDF, PARTITION_CDF, REFMV_CDF,
+    SEGMENT_PRED_CDF, SGRPROJ_RESTORE_CDF, SINGLE_REF_CDF, SKIP_CDF, SKIP_MODE_CDF,
+    SPATIAL_PRED_SEG_TREE_CDF, SWITCHABLE_INTERP_CDF, SWITCHABLE_RESTORE_CDF, TX_SIZE_CDF,
+    TXFM_PARTITION_CDF, UNI_COMP_REF_CDF, UV_MODE_CDF, WEDGE_IDX_CDF, WEDGE_INTERINTRA_CDF,
+    WIENER_RESTORE_CDF, Y_MODE_CDF, ZEROMV_CDF,
 };
 
 /// Every CDF of a tile.
@@ -104,6 +105,10 @@ pub(super) struct Cdfs {
     pub motion_mode: [Cdf<3>; 22],
     /// `delta_q_abs`.
     pub delta_q: Cdf<4>,
+    /// `delta_lf_abs`: one CDF for a single delta, or one per
+    /// `loop_filter_level[i]` (`delta_lf_multi`).
+    pub delta_lf: Cdf<4>,
+    pub delta_lf_multi: [Cdf<4>; 4],
     /// `segment_id` coded against its spatial prediction, by context.
     pub segment_id: [Cdf<8>; 3],
     /// `seg_id_predicted`, by the above and left blocks' flags.
@@ -173,6 +178,8 @@ impl Cdfs {
             obmc: OBMC_CDF.cdfs(),
             motion_mode: MOTION_MODE_CDF.cdfs(),
             delta_q: Cdf::new(DELTA_Q_CDF),
+            delta_lf: Cdf::new(DELTA_LF_CDF),
+            delta_lf_multi: DELTA_LF_MULTI_CDF.cdfs(),
             segment_id: SPATIAL_PRED_SEG_TREE_CDF.cdfs(),
             segment_predicted: SEGMENT_PRED_CDF.cdfs(),
             palette_y_mode: PALETTE_Y_MODE_CDF.cdfs(),
@@ -230,6 +237,8 @@ impl ResetCounters for Cdfs {
         self.obmc.reset_counters();
         self.motion_mode.reset_counters();
         self.delta_q.reset_counters();
+        self.delta_lf.reset_counters();
+        self.delta_lf_multi.reset_counters();
         self.segment_id.reset_counters();
         self.segment_predicted.reset_counters();
         self.palette_y_mode.reset_counters();

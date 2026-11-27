@@ -89,6 +89,31 @@ def test_in_sample_clips_leave_every_family_and_are_listed(tmp_path):
     assert result["excluded_clips"] == {"a": "worst (2026-11-18)"}  # only the run's own clips
 
 
+def test_a_clip_subset_restricts_every_family(tmp_path):
+    run = make_run(tmp_path, {**{z: 0.0 for z in ZEROS}, "ours": 0.3})
+    subset = tmp_path / "subset.json"
+    subset.write_text(json.dumps({"clips": [{"name": "a"}, {"name": "b"}]}))
+    result = report.report(run, subset=report.clip_subset(subset))
+    rows = result["series"]["c8a"]
+    assert rows["view_clips"] == rows["common_clips"] == 2
+    assert rows["families"]["ours"]["own_clips"] == 2 and result["subset_clips"] == ["a", "b"]
+
+
+def test_a_single_key_family_is_shown_on_its_own_clips(tmp_path):
+    """Procedure section 14: a `~k600` family coded on fewer clips leaves the common set whole."""
+    single = "nanocodec-x@medium~2026-11-20~k600"
+    run = make_run(tmp_path, {**{z: 0.0 for z in ZEROS}, "nanocodec-x": 0.3, single: 0.2})
+    jobs = [j for j in json.loads((run / "jobs.json").read_text())
+            if not (j["family"] == single and j["input"] == "a")]
+    (run / "jobs.json").write_text(json.dumps(jobs))
+    s = report.report(run)["series"]["c8a"]
+    assert s["view_clips"] == s["common_clips"] == 3
+    row = s["families"][single]
+    assert row["clips"] == 2 and row["headline_set"] == "own clips (single-key row)"
+    assert row["bd"]["j"]["mean"] == pytest.approx(-20, abs=0.5)
+    assert single not in s["front"]
+
+
 def test_a_malformed_curve_costs_only_its_own_family_the_clip(tmp_path):
     run = make_run(tmp_path, {**{z: 0.0 for z in ZEROS}, "nanocodec-x": 0.3, "ref": 0.1})
     scores = run / "series" / "c8a" / "scores.jsonl"

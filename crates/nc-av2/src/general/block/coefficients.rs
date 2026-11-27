@@ -313,9 +313,6 @@ const COEFFICIENT_MAX: u32 = 0x7fff;
 /// size context beyond 2).
 const DEQUANT_ROUNDING: u32 = 4;
 const DEQUANT_SHIFT: u32 = 3;
-/// Quantizer matrix weights are in units of 1/32 (32 is flat).
-const MATRIX_SHIFT: u32 = 5;
-const MATRIX_ROUNDING: u32 = 1 << (MATRIX_SHIFT - 1);
 const DEQUANT_SIZE_CONTEXT_FREE: usize = 2;
 /// Level contexts: the coded sum is capped at 63; the DC sign code sits
 /// in bits 6-7 (0 negative, 1 none, 2 positive).
@@ -1456,7 +1453,7 @@ impl Tile<'_, '_> {
 /// coefficient at `position` (dav2d `ac_dq`, `dc_dq`).
 fn weighted(step: u32, matrix: Option<&[u8]>, position: impl FnOnce() -> u16) -> u32 {
     matrix.map_or(step, |matrix| {
-        (step * u32::from(matrix[usize::from(position())]) + MATRIX_ROUNDING) >> MATRIX_SHIFT
+        nc_dsp::quantizer_matrix::weighted_step(step, matrix[usize::from(position())])
     })
 }
 

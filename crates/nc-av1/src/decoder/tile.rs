@@ -16,7 +16,7 @@ use super::motion::{MotionCell, MotionGrid};
 use super::motion_field::MAX_PROJECTION_DISTANCE;
 use super::motion_field::{SavedMotion, TemporalField};
 use super::mv_stack::MvFrame;
-use super::subset::{FrameParameters, SegmentQuantizers};
+use super::subset::{ForcedSyntax, FrameParameters, Segments};
 use crate::backend::{Dsp, FrameKind, HORZ_ALIKE, PlaneIndex, VERT_ALIKE, gather};
 use crate::decoder_range::SymbolReader;
 use crate::segment_id::{MAX_SEGMENTS, SegmentMap, neg_deinterleave};
@@ -135,6 +135,14 @@ pub(super) struct FrameDecoder<'a, T: Pixel> {
     block_steps: [Steps; 3],
     /// The block's qindex (`get_qindex(0, segment_id)`).
     block_q: u32,
+    /// The block's `segment_id`, and whether its segment is lossless
+    /// (`Lossless`) and codes luma transform types (§5.11.47).
+    block_segment: u8,
+    block_lossless: bool,
+    block_tx_types_coded: bool,
+    /// `DeltaLF[]`, which `delta_lf_abs` moves (§5.11.13): one per
+    /// `loop_filter_level[i]`, or entry 0 for all.
+    delta_lf: [i8; FRAME_LF_COUNT],
     /// `CurrentQIndex`, which `delta_q_abs` moves (§5.11.12).
     current_q: u32,
     /// `ReadDeltas`: the superblock's first block codes its deltas.
@@ -217,6 +225,14 @@ const MI_SIZE: usize = 1 << MI_SIZE_LOG2;
 /// escapes to `delta_q_rem_bits` (3 bits) and `delta_q_abs_bits`.
 const DELTA_Q_SMALL: usize = 3;
 const DELTA_Q_REM_BITS: u32 = 3;
+/// `FRAME_LF_COUNT`: loop filter deltas of `delta_lf_multi` (the two luma
+/// directions, U, V); a monochrome frame codes the luma two.
+const FRAME_LF_COUNT: usize = 4;
+const FRAME_LF_COUNT_MONO: usize = 2;
+/// `DELTA_LF_SMALL`: `delta_lf_abs` values coded directly, as `delta_q_abs`.
+const DELTA_LF_SMALL: usize = 3;
+/// The range of `DeltaLF[]` (`MAX_LOOP_FILTER`).
+const MAX_DELTA_LF: i32 = 63;
 /// The range of `CurrentQIndex` (§5.11.12: `Clip3(1, 255, ...)`).
 const MIN_DELTA_QINDEX: i32 = 1;
 const MAX_QINDEX: i32 = 255;
@@ -368,6 +384,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             }
         }
         let base_q_idx = header.base_q_idx;
+        let (lossless, tx_types_coded) = (header.lossless[0], header.tx_types_coded[0]);
         let bit_depth = sequence_tools.bit_depth;
         let depth = depth_of::<T>(bit_depth);
         let plane_steps = header
@@ -378,7 +395,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             .any()
             .then(|| LrUnitReader::new(header.restoration, header.size));
         Self {
-            levels: LevelTable::new(&header.loop_filter),
+            levels: LevelTable::new(&header.loop_filter, header.segments.as_ref()),
             header,
             cdfs,
             maps,
@@ -391,6 +408,10 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             steps: plane_steps,
             block_steps: plane_steps,
             block_q: base_q_idx,
+            block_segment: 0,
+            block_lossless: lossless,
+            block_tx_types_coded: tx_types_coded,
+            delta_lf: [0; FRAME_LF_COUNT],
             current_q: base_q_idx,
             read_deltas: false,
             recon,
@@ -513,6 +534,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             lr.start_tile();
         }
         self.set_q_index(self.header.base_q_idx);
+        self.delta_lf = [0; FRAME_LF_COUNT];
         let side = self.superblock.width_mi();
         // A tile as wide as the frame deblocks its superblock rows in groups
         // (`DEBLOCK_GROUP_LINES`), each once the group below it is decoded,
@@ -668,8 +690,12 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             (false, false) => Partition::Vert,
         }
     }
-    /// One coded block (`decode_block()`, §5.11.5): `skip_mode`, `skip`,
-    /// `cdef_idx`, `is_inter`, then an intra or inter block.
+    /// One coded block (`decode_block()`, §5.11.5; mode info §5.11.6–7,
+    /// §5.11.18): a segment id read before `skip` (`SegIdPreSkip`),
+    /// `skip_mode`, `skip`, the segment id read after it, `cdef_idx`, the
+    /// superblock's quantizer and loop filter deltas, `is_inter`, then an
+    /// intra or inter block. Segment features may infer `skip`,
+    /// `is_inter`, the reference and the mode.
     fn leaf(
         &mut self,
         r: &mut SymbolReader<'_>,
@@ -683,24 +709,42 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             .maps
             .blocks
             .neighbours(mi_col, mi_row, block.available(PlaneIndex::Y));
+        let segments = self.header.segments;
+        let pre_skip = segments.is_some_and(|s| s.pre_skip);
+        let mut segment = 0;
+        if let (Some(segments), true) = (segments, pre_skip) {
+            segment = self.read_segment_id(r, block, false, segments)?;
+        }
+        // Features that infer syntax are pre-skip ones: none without it.
+        let forced = segments
+            .filter(|_| pre_skip)
+            .map_or(ForcedSyntax::default(), |s| s.forced(segment));
         let skip_mode = self.header.skip_mode_frames.is_some()
             && inter_frame
+            && !forced.any()
             && self.read_skip_mode(r, size, near);
-        let skip = skip_mode || r.boolean(&mut self.cdfs.skip[near.skip_context()]);
-        let segment = match self.header.segments {
-            Some(segments) => self.read_segment_id(r, block, skip, segments)?,
-            None => 0,
-        };
+        let skip = skip_mode || forced.skip || r.boolean(&mut self.cdfs.skip[near.skip_context()]);
+        if let (Some(segments), false) = (segments, pre_skip) {
+            segment = self.read_segment_id(r, block, skip, segments)?;
+        }
         if !skip {
             self.read_cdef(r, (mi_col, mi_row), block.units());
         }
         if self.read_deltas {
             self.read_delta_qindex(r, size, skip);
+            self.read_delta_lf(r, size, skip);
             self.read_deltas = false;
         }
-        self.set_block_q(segment);
+        self.set_block_segment(segment);
         let inter = skip_mode
-            || inter_frame && r.boolean(&mut self.cdfs.intra_inter[near.intra_inter_context()]);
+            || inter_frame
+                && match forced.reference {
+                    Some(reference) => reference != INTRA_FRAME as i8,
+                    None => {
+                        forced.global_motion
+                            || r.boolean(&mut self.cdfs.intra_inter[near.intra_inter_context()])
+                    }
+                };
         let intrabc =
             !inter_frame && self.header.allow_intrabc && r.boolean(&mut self.cdfs.intrabc);
         #[cfg(feature = "analysis")]
@@ -708,7 +752,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             self.start_block_record(r, inter || intrabc);
         }
         if inter || intrabc {
-            self.inter_block(r, block, near, skip, skip_mode)
+            self.inter_block(r, block, near, (skip, skip_mode), forced)
         } else {
             self.intra_block(r, block, near, skip)
         }
@@ -756,8 +800,48 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             self.set_q_index(q.clamp(MIN_DELTA_QINDEX, MAX_QINDEX) as u32);
         }
     }
-    /// `intra_segment_id()` / `inter_segment_id()` without pre-skip ids
-    /// (§5.11.8, §5.11.19): a frame that keeps its reference's map copies
+    /// `read_delta_lf()` (§5.11.13) of a superblock's first block: new
+    /// `DeltaLF[]`, one for every `loop_filter_level[i]` or one for all.
+    // Out of line: our own streams code no loop filter deltas.
+    #[cold]
+    #[inline(never)]
+    fn read_delta_lf(&mut self, r: &mut SymbolReader<'_>, size: BlockSize, skip: bool) {
+        let Some(delta_lf) = self.header.delta_lf else {
+            return;
+        };
+        if size == self.superblock && skip {
+            return;
+        }
+        let count = match (delta_lf.multi, self.mono_chrome) {
+            (false, _) => 1,
+            (true, false) => FRAME_LF_COUNT,
+            (true, true) => FRAME_LF_COUNT_MONO,
+        };
+        for i in 0..count {
+            let cdf = if delta_lf.multi {
+                &mut self.cdfs.delta_lf_multi[i]
+            } else {
+                &mut self.cdfs.delta_lf
+            };
+            let mut abs = r.symbol(cdf, DELTA_LF_SMALL + 1) as u32;
+            if abs == DELTA_LF_SMALL as u32 {
+                let rem_bits = r.literal(DELTA_Q_REM_BITS) + 1;
+                abs = r.literal(rem_bits) + (1 << rem_bits) + 1;
+            }
+            if abs != 0 {
+                let reduced = if r.literal(1) == 1 {
+                    -(abs as i32)
+                } else {
+                    abs as i32
+                };
+                let delta = i32::from(self.delta_lf[i]) + (reduced << delta_lf.res);
+                self.delta_lf[i] = delta.clamp(-MAX_DELTA_LF, MAX_DELTA_LF) as i8;
+            }
+        }
+    }
+    /// `intra_segment_id()` / `inter_segment_id()` (§5.11.8, §5.11.19),
+    /// before `skip` (with `skip` false) or after it: a frame that keeps
+    /// its reference's map copies
     /// it (the block takes the smallest id under it); otherwise a block
     /// predicted from the reference's map (`seg_id_predicted`) takes that,
     /// and the others read their id against the spatial prediction
@@ -770,7 +854,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         r: &mut SymbolReader<'_>,
         block: BlockPos,
         skip: bool,
-        segments: SegmentQuantizers,
+        segments: Segments,
     ) -> Result<u8, DecodeError> {
         let (at, units) = ((block.mi_col, block.mi_row), block.units());
         let previous = self.previous_segments.clone();
@@ -828,12 +912,16 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         }
         Ok(id as u8)
     }
-    /// The block's qindex and dequantiser steps: `CurrentQIndex` moved by
-    /// `segment`'s quantizer offset (§7.12.2 `get_qindex(0, segment_id)`).
-    fn set_block_q(&mut self, segment: u8) {
-        let offset = self.header.segments.map_or(0, |segments| {
-            i32::from(segments.alt_q[usize::from(segment)])
-        });
+    /// The block's segment, what follows from it (`Lossless`, whether
+    /// luma transform types are coded), and its qindex and dequantiser
+    /// steps: `CurrentQIndex` moved by the segment's quantizer offset
+    /// (§7.12.2 `get_qindex(0, segment_id)`).
+    fn set_block_segment(&mut self, segment: u8) {
+        let index = usize::from(segment);
+        self.block_segment = segment;
+        self.block_lossless = self.header.lossless[index];
+        self.block_tx_types_coded = self.header.tx_types_coded[index];
+        let offset = self.header.segments.map_or(0, |s| s.alt_q(segment));
         if offset == 0 {
             self.block_q = self.current_q;
             self.block_steps = self.steps;
@@ -846,6 +934,22 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             .header
             .quant_deltas
             .map(|deltas| steps(q, deltas, depth));
+    }
+    /// The deblocking levels of the block being decoded, predicted from
+    /// `reference` with inter mode type `mode_type` (§7.14.4): its
+    /// segment's, moved by the superblock's loop filter deltas.
+    fn block_levels(&self, reference: usize, mode_type: usize) -> deblock::BlockLevels {
+        if self.delta_lf == [0; FRAME_LF_COUNT] {
+            return self.levels.get(self.block_segment, reference, mode_type);
+        }
+        let multi = self.header.delta_lf.is_some_and(|d| d.multi);
+        deblock::block_levels(
+            &self.header.loop_filter,
+            self.header.segments.as_ref(),
+            self.block_segment,
+            std::array::from_fn(|i| self.delta_lf[if multi { i } else { 0 }]),
+            (reference, mode_type),
+        )
     }
     /// Set `CurrentQIndex` and the dequantiser steps that follow it.
     fn set_q_index(&mut self, q_index: u32) {
@@ -883,7 +987,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let edge_block = EdgeBlock {
             size: block.size,
             skipped_inter: false,
-            levels: self.levels.get(INTRA_FRAME, 0),
+            levels: self.block_levels(INTRA_FRAME, 0),
         };
         let luma_tx = (tx.width_log2(), tx.height_log2());
         self.maps
@@ -933,12 +1037,12 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         r: &mut SymbolReader<'_>,
         block: BlockPos,
         near: Neighbours,
-        skip: bool,
-        skip_mode: bool,
+        (skip, skip_mode): (bool, bool),
+        forced: ForcedSyntax,
     ) -> Result<(), DecodeError> {
         // Only intra block copy blocks are decoded here in such frames.
         let intrabc = self.header.allow_intrabc;
-        let modes = self.inter_modes(r, block, near, skip_mode)?;
+        let modes = self.inter_modes(r, block, near, skip_mode, forced)?;
         let at = (block.mi_col, block.mi_row);
         // Recorded first: the chroma of 4-sample-wide blocks reads it.
         self.record_motion(block, modes.cell(block.size));
@@ -946,9 +1050,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         let reference = modes.refs[0] as usize;
         // `GLOBALMV` and `GLOBAL_GLOBALMV` are mode type 0, the other
         // inter modes 1.
-        let levels = self
-            .levels
-            .get(reference, usize::from(!modes.mode.is_global()));
+        let levels = self.block_levels(reference, usize::from(!modes.mode.is_global()));
         let edge_block = EdgeBlock {
             size: block.size,
             skipped_inter: skip,

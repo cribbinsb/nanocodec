@@ -69,7 +69,7 @@ NIGHTLY_UNIT = "nanocodec-verify-nightly"
 #: the WASM suite caught.
 IDENTITY_CLIPS = ("crowd_mot17_09", "static_otw_homes390", "pan_bdd_00c12bd0")
 X86_SYNC = ("work/av2-foreign", "fuzz/round3-2026-11-23", "fuzz/regressions",
-            "conformance/h264/streams", "conformance/h264/supplementary")
+            "conformance/h264/streams", "conformance/h264/supplementary", "conformance/h264/jm")
 #: land.sh --verify's line when a part is already running elsewhere (its heads are
 #: covered by that run, so nothing is recorded here).
 ALREADY_RUNNING = "verifier is already running"

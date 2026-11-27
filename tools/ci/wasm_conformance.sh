@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The official H.264, HEVC, VVC, AV1 and VP9 conformance corpora through the browser
-# module, both builds (web/pkg: SIMD128; web/pkg/relaxed: plus relaxed SIMD),
+# module, all three builds (web/pkg: SIMD128; web/pkg/relaxed: plus relaxed SIMD;
+# web/pkg/scalar: no SIMD, for engines without it),
 # under node, split into per-picture packets (IVF frames, or Annex-B access
 # units) as the page's tools split them
 # (tools/web/conformance-runner.mjs has the comparison). The native corpus runs
@@ -18,19 +19,29 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 DATA=${NC_DATA_ROOT:-$HOME/nanocodec-data}/conformance
 RUNNER=$REPO/tools/web/conformance-runner.mjs
+SUITES=("h264 h264 h264_conformance.json --must-pass $REPO/tools/ci/h264_conformance_passing.txt"
+        "hevc hevc-v1 hevc_conformance_v1.json"
+        "vvc vvc-v1 vvc_conformance_v1.json"
+        "av1 av1-libaom av1_conformance_libaom.json"
+        "vp9 vp9-libvpx vp9_conformance_libvpx.json")
 status=0
-for pkg in "$REPO/web/pkg" "$REPO/web/pkg/relaxed"; do
-    for suite in "h264 h264_conformance.json --must-pass $REPO/tools/ci/h264_conformance_passing.txt" \
-                 "hevc hevc_conformance_v1.json" \
-                 "vvc vvc_conformance_v1.json" \
-                 "av1 av1_conformance_libaom.json" \
-                 "vp9 vp9_conformance_libvpx.json"; do
-        read -r codec manifest extra <<< "$suite"
-        if [[ ! -d $DATA/$codec/streams ]]; then
-            echo "FAILED $codec: no corpus in $DATA/$codec/streams (tools/dev/conformance_fetch.py)" >&2
-            status=1
-            continue
-        fi
+# Each corpus whole and intact first (conformance.py --check-corpus: every manifest
+# stream with its SHA-256); a partial one is reported once and not decoded.
+declare -A intact=()
+for suite in "${SUITES[@]}"; do
+    read -r codec name _ <<< "$suite"
+    if python3 -I "$REPO/tools/ci/conformance.py" --suite "$name" --check-corpus \
+            --streams "$DATA/$codec/streams"; then
+        intact[$codec]=1
+    else
+        echo "FAILED $codec: corpus incomplete in $DATA/$codec/streams" >&2
+        status=1
+    fi
+done
+for pkg in "$REPO/web/pkg" "$REPO/web/pkg/relaxed" "$REPO/web/pkg/scalar"; do
+    for suite in "${SUITES[@]}"; do
+        read -r codec _ manifest extra <<< "$suite"
+        [[ -n ${intact[$codec]:-} ]] || continue
         json=()
         if [[ -n ${JSON_DIR:-} ]]; then
             json=(--json "$JSON_DIR/$(basename "$pkg")-$codec.json")

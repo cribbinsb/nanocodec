@@ -312,11 +312,11 @@ struct PassRings {
 }
 
 impl PassRings {
-    fn reset(&mut self, radius: usize, box_rows: usize, len: usize) {
+    fn reset(&mut self, radius: usize, box_rows: usize, len: usize, ab_len: usize) {
         self.sums.reset(2 * radius + 1, len);
         self.squares.reset(2 * radius + 1, len);
-        self.a.reset(box_rows, len);
-        self.b.reset(box_rows, len);
+        self.a.reset(box_rows, ab_len);
+        self.b.reset(box_rows, ab_len);
         self.next_window_row = 0;
     }
 }
@@ -512,8 +512,13 @@ pub(super) fn self_guided<T: Sample, K: RowKernels<T>>(
     let len = region.box_columns() + AV1_LR_OVERREAD;
     // Radius 2 keeps the box rows either side of an even output row;
     // radius 1 the rows above, on and below.
-    scratch.radius2.reset(2, 2, len);
-    scratch.radius1.reset(1, 3, len);
+    scratch.radius2.reset(2, 2, len, len);
+    let radius1_len = if r1 > 0 && kernels.weighted_radius_one() {
+        2 * len
+    } else {
+        len
+    };
+    scratch.radius1.reset(1, 3, len, radius1_len);
     let SgrScratch {
         radius2,
         radius1,

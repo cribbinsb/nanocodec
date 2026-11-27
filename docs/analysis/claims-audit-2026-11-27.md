@@ -173,7 +173,7 @@ wording. "Unverified" means it was not checked.
     (`FAQ:149-151`).
   - Speed "at a fixed quantizer … on three 720p development clips … not in CBR mode and not on the clips
     the quality is measured on" (`FAQ:180-183`).
-  - "README's [headline](../README.md#headline-results)" (`FAQ:86`): the anchor no longer exists.
+  - "README's `[headline](../README.md#headline-results)`" (`FAQ:86`): the anchor no longer exists.
   - A link to `results/buffer.html` (`FAQ:199`): the page is no longer on the site.
 - **Evidence:**
   - The README's chart is BP-4 (`docs/images/bd-vs-speed-bp4.svg`): "held-out camera clips, common set;

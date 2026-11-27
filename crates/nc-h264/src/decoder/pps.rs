@@ -19,6 +19,8 @@ pub(super) const MAX_CHROMA_QP_OFFSET: i32 = 12;
 /// the SPS's depth).
 const MIN_INIT_QP_MINUS26: i32 = -(26 + 12);
 const MAX_INIT_QP_MINUS26: i32 = 25;
+/// `pic_init_qs_minus26` lower bound (§7.4.2.2: QS is 8-bit only).
+const MIN_INIT_QS_MINUS26: i32 = -26;
 
 /// `weighted_bipred_idc` (§7.4.2.2): the weighting of B slices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub(super) struct Pps {
     pub weighted_pred: bool,
     pub weighted_bipred: BipredWeights,
     pub pic_init_qp: i32,
+    /// `26 + pic_init_qs_minus26`: the initial `QSY` of SP and SI slices.
+    pub pic_init_qs: i32,
     /// `chroma_qp_index_offset` (Cb) and `second_chroma_qp_index_offset` (Cr).
     pub chroma_qp_offset: [i8; 2],
     pub deblocking_filter_control_present: bool,
@@ -89,7 +93,12 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
             MAX_INIT_QP_MINUS26,
             "pic_init_qp_minus26",
         )?;
-    r.se()?; // pic_init_qs_minus26: SP/SI slices only
+    let pic_init_qs = 26
+        + r.se_range(
+            MIN_INIT_QS_MINUS26,
+            MAX_INIT_QP_MINUS26,
+            "pic_init_qs_minus26",
+        )?;
     let chroma_offset = |r: &mut Reader<'_>| {
         r.se_range(
             -MAX_CHROMA_QP_OFFSET,
@@ -112,6 +121,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
         weighted_pred,
         weighted_bipred,
         pic_init_qp,
+        pic_init_qs,
         chroma_qp_offset: [cb_offset; 2],
         deblocking_filter_control_present,
         constrained_intra_pred,

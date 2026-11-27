@@ -114,12 +114,23 @@ const REFINE_PATIENCE: u32 = 8;
 
 /// Whether an encoder for `config` holds frames: `hold.enable`, unless the
 /// stream signals a constant frame rate ([`TimingSignal::Constant`]), which
-/// a frame left out would contradict. Backends whose headers otherwise
-/// claim a fixed rate (H.264 `fixed_frame_rate_flag`) read this.
+/// a frame left out would contradict.
 #[must_use]
 pub fn holds_frames(config: &EncoderConfig) -> bool {
     HoldParams::from_overrides(&config.params).enable >= 0.5
         && config.signal.timing != TimingSignal::Constant
+}
+
+/// The timing `config`'s headers signal, [`TimingSignal::Nominal`] resolved:
+/// a constant rate unless frames may be held, whose gaps a constant picture
+/// interval would contradict. Backends only see the resolved value.
+#[must_use]
+pub fn signalled_timing(config: &EncoderConfig) -> TimingSignal {
+    match config.signal.timing {
+        TimingSignal::Nominal if holds_frames(config) => TimingSignal::Variable,
+        TimingSignal::Nominal => TimingSignal::Constant,
+        timing => timing,
+    }
 }
 
 /// When frames are held (`hold.*` parameters), and the input frames since
@@ -335,6 +346,18 @@ mod tests {
         let mut off = config(TimingSignal::Nominal);
         off.params = ParamOverrides::default().coding_every_frame();
         assert!(!holds_frames(&off));
+    }
+
+    #[test]
+    fn nominal_timing_is_constant_unless_frames_are_held() {
+        let mut off = config(TimingSignal::Nominal);
+        off.params = ParamOverrides::default().coding_every_frame();
+        assert_eq!(signalled_timing(&off), TimingSignal::Constant);
+        let mut on = config(TimingSignal::Nominal);
+        on.params.set("hold.enable", 1.0);
+        assert_eq!(signalled_timing(&on), TimingSignal::Variable);
+        on.signal.timing = TimingSignal::Constant;
+        assert_eq!(signalled_timing(&on), TimingSignal::Constant);
     }
 
     #[test]

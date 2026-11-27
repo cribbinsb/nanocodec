@@ -1,19 +1,22 @@
-//! The frame-level gate in front of the block layer: maps a fully parsed
-//! frame header onto the parameters [`super::tile`] decodes, or names the
-//! first tool it does not decode yet. The names are what
-//! `tools/ci/av1_conformance.sh` reports per vector, so they double as the
-//! conformance gap list.
-use super::frame_header::quant::{MAX_SEGMENTS, SEG_LVL_ALT_Q, SEG_LVL_MAX};
+//! The frame-level step in front of the block layer: maps a fully parsed
+//! frame header onto the parameters [`super::tile`] decodes with (§5.9.2
+//! and the per-segment derivations of §5.9.12–14, §7.12.2). Every Main
+//! profile frame tool is decoded, so it rejects nothing; what the decoder
+//! does not support (other profiles, large scale tile) is refused where it
+//! is parsed, and those names are what `tools/ci/av1_conformance.sh`
+//! reports per vector.
+use super::frame_header::quant::{
+    MAX_SEGMENTS, SEG_LVL_ALT_Q, SEG_LVL_GLOBALMV, SEG_LVL_REF_FRAME, SEG_LVL_SKIP,
+    SegmentationFeatures,
+};
 use super::frame_header::{
     CdefParams, FrameHeader, FrameSize, FrameType, GlobalMotion, LoopFilter, Restoration,
     TOTAL_REFS, TxMode,
 };
 use crate::obu::FrameKind;
-use nc_common::decode::DecodeError;
 
-fn unsupported(tool: &'static str) -> Result<(), DecodeError> {
-    Err(DecodeError::Unsupported(tool))
-}
+/// `NUM_QM_LEVELS - 1`: the flat (unweighted) matrix level.
+const FLAT_QM_LEVEL: u8 = 15;
 
 /// What the block layer decodes a frame with.
 #[derive(Debug, Clone)]
@@ -31,13 +34,24 @@ pub(super) struct FrameParameters {
     pub reduced_tx_set: bool,
     /// `TX_MODE_SELECT`: blocks code their transform sizes.
     pub tx_mode_select: bool,
-    /// `CodedLossless` (segments are never lossless in the subset, so
-    /// every block's `Lossless`): 4x4 Walsh-Hadamard transforms only.
-    pub lossless: bool,
-    /// Segmentation with spatially predicted ids and quantizer offsets
-    /// only (`None`: off).
-    pub segments: Option<SegmentQuantizers>,
+    /// `LosslessArray[segment_id]` (§5.9.2): the segment's blocks use 4x4
+    /// Walsh-Hadamard transforms only. Without segmentation only entry 0
+    /// is read (`CodedLossless`).
+    pub lossless: [bool; MAX_SEGMENTS],
+    /// Whether luma transform types are coded in a segment (§5.11.47:
+    /// `get_qindex(1, segment_id) > 0`, or `base_q_idx > 0` without
+    /// segmentation).
+    pub tx_types_coded: [bool; MAX_SEGMENTS],
+    /// `qm_y`, `qm_u`, `qm_v` when `using_qmatrix`: the matrix level of
+    /// each plane's non-lossless blocks (`SegQMLevel`; lossless segments
+    /// are flat).
+    pub qm: Option<[u8; 3]>,
+    /// Segmentation (`None`: off).
+    pub segments: Option<Segments>,
     pub loop_filter: LoopFilter,
+    /// `delta_lf_res` (a shift) and `delta_lf_multi` when superblocks code
+    /// loop filter deltas (`delta_lf_present`, §5.9.18).
+    pub delta_lf: Option<DeltaLf>,
     pub cdef: CdefParams,
     /// The frame's size, including its superres upscaling.
     pub size: FrameSize,
@@ -62,42 +76,111 @@ pub(super) struct FrameParameters {
     pub allow_intrabc: bool,
 }
 
-/// The segmentation the block layer decodes: ids coded with spatial
-/// prediction (§5.11.9), kept from or temporally predicted by the primary
-/// reference's map (§5.11.19), and segments that differ only in their
-/// quantizer (`SEG_LVL_ALT_Q`, §7.12.2).
+/// `delta_lf_params()` (§5.9.18) of a frame that codes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SegmentQuantizers {
-    /// `FeatureData[segment][SEG_LVL_ALT_Q]` (0 where the feature is off).
-    pub alt_q: [i16; MAX_SEGMENTS],
+pub(super) struct DeltaLf {
+    /// `delta_lf_res`, a shift.
+    pub res: u8,
+    /// `delta_lf_multi`: one delta per `loop_filter_level[i]`, not one for
+    /// all.
+    pub multi: bool,
+}
+
+/// The segmentation the block layer decodes (§5.9.14): ids coded with
+/// spatial prediction (§5.11.9), kept from or temporally predicted by the
+/// primary reference's map (§5.11.19), before the skip flag when a segment
+/// uses a reference, skip or global motion feature (`SegIdPreSkip`), and
+/// each segment's features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Segments {
+    /// `FeatureEnabled[][]` and `FeatureData[][]`.
+    pub features: SegmentationFeatures,
     /// `LastActiveSegId`.
     pub last_active: u8,
+    /// `SegIdPreSkip`.
+    pub pre_skip: bool,
     /// `segmentation_update_map` and `segmentation_temporal_update`.
     pub update_map: bool,
     pub temporal_update: bool,
 }
 
+impl Segments {
+    /// `FeatureData[segment][feature]` when the feature is enabled
+    /// (`seg_feature_active_idx`).
+    pub(super) fn feature(&self, segment: u8, feature: usize) -> Option<i16> {
+        let segment = usize::from(segment);
+        self.features.enabled[segment][feature].then_some(self.features.data[segment][feature])
+    }
+    /// The quantizer offset of `segment` (`SEG_LVL_ALT_Q`; 0 when off).
+    pub(super) fn alt_q(&self, segment: u8) -> i32 {
+        self.feature(segment, SEG_LVL_ALT_Q).map_or(0, i32::from)
+    }
+    /// What `segment`'s reference, skip and global motion features force
+    /// on a block's syntax (§5.11.10, §5.11.11, §5.11.20, §5.11.25,
+    /// §5.11.23).
+    pub(super) fn forced(&self, segment: u8) -> ForcedSyntax {
+        ForcedSyntax {
+            reference: self
+                .feature(segment, SEG_LVL_REF_FRAME)
+                .map(|reference| reference as i8),
+            skip: self.feature(segment, SEG_LVL_SKIP).is_some(),
+            global_motion: self.feature(segment, SEG_LVL_GLOBALMV).is_some(),
+        }
+    }
+}
+
+/// The block syntax a segment's features infer rather than code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct ForcedSyntax {
+    /// `SEG_LVL_REF_FRAME`: the block's only reference (`INTRA_FRAME` for
+    /// an intra block); `is_inter` follows from it.
+    pub reference: Option<i8>,
+    /// `SEG_LVL_SKIP`: the block is skipped, predicted from `LAST_FRAME`
+    /// with `GLOBALMV` when it is inter.
+    pub skip: bool,
+    /// `SEG_LVL_GLOBALMV`: the block is inter, `GLOBALMV` from
+    /// `LAST_FRAME` unless the reference is forced.
+    pub global_motion: bool,
+}
+
+impl ForcedSyntax {
+    /// Whether any feature is forced: `skip_mode` is then not coded
+    /// (§5.11.10).
+    pub(super) fn any(self) -> bool {
+        self.reference.is_some() || self.skip || self.global_motion
+    }
+    /// Whether the inter mode is `GLOBALMV` from `LAST_FRAME` (unless the
+    /// reference is forced): skip or global motion features (§5.11.23,
+    /// §5.11.25).
+    pub(super) fn global_mode(self) -> bool {
+        self.skip || self.global_motion
+    }
+}
+
 /// The block layer's frame parameters for `h`.
-///
-/// # Errors
-/// `Unsupported` naming the first frame-level tool outside the block
-/// layer's subset.
-pub(super) fn frame_parameters(h: &FrameHeader) -> Result<FrameParameters, DecodeError> {
+pub(super) fn frame_parameters(h: &FrameHeader) -> FrameParameters {
     let kind = match h.frame_type {
-        FrameType::Inter => FrameKind::Inter,
+        // Switch frames are inter frames (§6.8.2) whose header infers
+        // error resilience, a frame size override and a full refresh.
+        FrameType::Inter | FrameType::Switch => FrameKind::Inter,
         // The block layer decodes intra-only frames as key frames
         // (`FrameIsIntra`); their references and refresh are the frame
         // header's.
         FrameType::Key | FrameType::IntraOnly => FrameKind::Key,
-        FrameType::Switch => return Err(DecodeError::Unsupported("AV1 switch frames")),
     };
-    check_coding_tools(h)?;
-    let segments = segment_quantizers(h)?;
     let q = &h.quant;
-    if q.qm.is_some() {
-        unsupported("AV1 quantizer matrices")?;
-    }
-    Ok(FrameParameters {
+    let segment_qindex = |segment: usize| h.segmentation.qindex(q.base_q_idx, segment);
+    // `LosslessArray[]` (§5.9.2).
+    let lossless: [bool; MAX_SEGMENTS] =
+        std::array::from_fn(|segment| segment_qindex(segment) == 0 && q.deltas_zero());
+    let segments = h.segmentation.enabled.then_some(Segments {
+        features: h.segmentation.features,
+        last_active: h.segmentation.last_active,
+        pre_skip: h.segmentation.pre_skip,
+        update_map: h.segmentation.update_map,
+        temporal_update: h.segmentation.temporal_update,
+    });
+    FrameParameters {
         kind,
         width: h.size.width,
         height: h.size.height,
@@ -109,9 +192,17 @@ pub(super) fn frame_parameters(h: &FrameHeader) -> Result<FrameParameters, Decod
         ],
         reduced_tx_set: h.reduced_tx_set,
         tx_mode_select: h.tx_mode == TxMode::Select,
-        lossless: h.coded_lossless,
+        lossless,
+        tx_types_coded: std::array::from_fn(|segment| segment_qindex(segment) > 0),
+        qm: q
+            .qm
+            .filter(|levels| levels.iter().any(|&l| l < FLAT_QM_LEVEL)),
         segments,
         loop_filter: h.loop_filter,
+        delta_lf: h.delta.lf_present.then_some(DeltaLf {
+            res: h.delta.lf_res,
+            multi: h.delta.lf_multi,
+        }),
         cdef: h.cdef,
         size: h.size,
         restoration: h.restoration,
@@ -126,47 +217,5 @@ pub(super) fn frame_parameters(h: &FrameHeader) -> Result<FrameParameters, Decod
         delta_q_res: h.delta.q_present.then_some(h.delta.q_res),
         screen_content: h.allow_screen_content_tools,
         allow_intrabc: h.allow_intrabc,
-    })
-}
-
-/// The frame's segmentation, or `Unsupported` for the parts outside the
-/// subset: features other than the quantizer, and lossless segments in a
-/// frame that is not wholly lossless.
-fn segment_quantizers(h: &FrameHeader) -> Result<Option<SegmentQuantizers>, DecodeError> {
-    let s = &h.segmentation;
-    if !s.enabled {
-        return Ok(None);
     }
-    let mut alt_q = [0; MAX_SEGMENTS];
-    for (segment, (enabled, data)) in s.features.enabled.iter().zip(&s.features.data).enumerate() {
-        if (0..SEG_LVL_MAX).any(|feature| feature != SEG_LVL_ALT_Q && enabled[feature]) {
-            unsupported("AV1 segment features other than the quantizer")?;
-        }
-        if enabled[SEG_LVL_ALT_Q] {
-            alt_q[segment] = data[SEG_LVL_ALT_Q];
-        }
-        if s.qindex(h.quant.base_q_idx, segment) == 0 && !h.coded_lossless {
-            unsupported("AV1 lossless segments")?;
-        }
-    }
-    Ok(Some(SegmentQuantizers {
-        alt_q,
-        last_active: s.last_active,
-        update_map: s.update_map,
-        temporal_update: s.temporal_update,
-    }))
-}
-
-/// Prediction and coefficient tools.
-fn check_coding_tools(h: &FrameHeader) -> Result<(), DecodeError> {
-    if !h.size.width.is_multiple_of(2)
-        || !h.size.upscaled_width.is_multiple_of(2)
-        || !h.size.height.is_multiple_of(2)
-    {
-        unsupported("AV1 odd frame size")?;
-    }
-    if h.delta.lf_present {
-        unsupported("AV1 block loop filter deltas")?;
-    }
-    Ok(())
 }

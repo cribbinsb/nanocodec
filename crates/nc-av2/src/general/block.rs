@@ -39,7 +39,6 @@ mod motion_resolution;
 mod palette;
 mod partition;
 pub mod pixels;
-mod quantizer_matrices;
 mod reconstruction;
 pub mod record;
 mod restoration;
@@ -314,7 +313,7 @@ pub fn decode_tile(
         luma_fsc_map: [0; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
         luma_type_map: [0; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
         luma_coefficients: vec![0; COEFFICIENTS],
-        chroma_residuals: ChromaResiduals::default(),
+        chroma_residuals: ChromaResiduals::new(),
         levels: vec![0; LEVELS],
         u_has_coefficients: false,
         planes: Planes::new(geometry.columns, geometry.rows, geometry.superblock_units),
@@ -550,14 +549,9 @@ impl Tile<'_, '_> {
     /// frame weights that plane (dav2d `f->qm[tx][plane]`: the first
     /// set's levels; level 15 is flat).
     fn quantizer_matrix(&self, plane: usize, tx: TxSize) -> Option<&'static [u8]> {
-        use quantizer_matrices::{MATRICES, MAX_SIDE_LOG2, OFFSETS};
         let matrices = self.frame.quantizer.matrices?;
         let level = [matrices.y, matrices.u, matrices.v][plane][0];
-        let tables = MATRICES.get(usize::from(level))?;
-        let (w, h) = (tx.w.min(MAX_SIDE_LOG2), tx.h.min(MAX_SIDE_LOG2));
-        let offset = usize::from(OFFSETS[usize::from(w)][usize::from(h)]);
-        let entries = 1 << (2 * UNIT_LOG2 + u32::from(w + h));
-        Some(&tables[usize::from(plane > 0)][offset..offset + entries])
+        nc_dsp::quantizer_matrix::matrix(level, plane > 0, (tx.w, tx.h))
     }
 
     /// The DC and AC steps of each segment's planes at superblock

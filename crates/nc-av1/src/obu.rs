@@ -412,25 +412,73 @@ pub enum RestorationTool {
     Enabled,
 }
 
+/// Whether a stream's operating points signal no level (`31`) rather than
+/// the Annex A.3 level their size and rate fit: random-decision test
+/// streams, pictures (of the base layer) smaller than
+/// [`MIN_CONSTRAINED_LEVEL_AREA`], and fixed quantizers finer than
+/// [`MIN_CONSTRAINED_LEVEL_QINDEX`], whose frames may miss `MinCompRatio`.
+fn unconstrained_level(
+    base_area: usize,
+    fixed_base_q_idx: Option<u32>,
+    random_decisions: bool,
+) -> bool {
+    random_decisions
+        || base_area < MIN_CONSTRAINED_LEVEL_AREA
+        || fixed_base_q_idx.is_some_and(|q| q < MIN_CONSTRAINED_LEVEL_QINDEX)
+}
+
+/// How a single-layer stream's operating points choose their level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelBasis {
+    /// The fixed `base_q_idx`, `None` under rate control.
+    pub fixed_base_q_idx: Option<u32>,
+    /// Random-decision test streams signal no level.
+    pub random_decisions: bool,
+}
+
 /// Sequence header OBU payload (AV1 §5.5). `width` is the upscaled
-/// (stream) width.
+/// (stream) width. Each operating point signals the lowest Annex A.3 level
+/// its size and picture rate fit (operating point `op` drops the top `op`
+/// dyadic temporal layers, halving the rate each time), as libaom and
+/// SVT-AV1 do, unless [`unconstrained_level`].
 #[must_use]
 pub fn sequence_header(
-    width: usize,
-    height: usize,
+    (width, height): (usize, usize),
     temporal_layers: u8,
     signal: StreamSignal,
     frame_rate: FrameRate,
     tools: SequenceTools,
+    basis: LevelBasis,
 ) -> Vec<u8> {
     let mut w = BitWriter::new();
     write_sequence_header_prefix(&mut w, signal, frame_rate);
     let operating_points = temporal_layers.max(1);
+    let unconstrained = unconstrained_level(
+        width * height,
+        basis.fixed_base_q_idx,
+        basis.random_decisions,
+    );
+    let picture = (width.next_multiple_of(8) * height.next_multiple_of(8)) as u64;
     w.put_bits(u32::from(operating_points - 1), 5); // operating_points_cnt_minus_1
     for op in 0..operating_points {
+        let op_rate = FrameRate {
+            num: frame_rate.num,
+            den: frame_rate.den.max(1) << op,
+        };
+        let pictures_per_sec = u64::from(op_rate.num).div_ceil(u64::from(op_rate.den));
+        let level = select_seq_level_idx(
+            (width, height),
+            op_rate,
+            (picture * u64::from(op_rate.num)).div_ceil(u64::from(op_rate.den)),
+            pictures_per_sec,
+            None,
+            unconstrained,
+        );
         w.put_bits(operating_point_idc(temporal_layers, op), 12); // operating_point_idc[op]
-        w.put_bits(SEQ_LEVEL_MAX_PARAMETERS, 5); // seq_level_idx[op]
-        w.put_bit(false); // seq_tier[op] (present because seq_level_idx > 7)
+        w.put_bits(level, 5); // seq_level_idx[op]
+        if level > LEVEL_WITH_TIER {
+            w.put_bit(false); // seq_tier[op] (present only when seq_level_idx > 7, §5.5.1)
+        }
     }
     write_sequence_header_tail(w, width, height, signal, tools)
 }
@@ -463,9 +511,11 @@ pub fn spatial_sequence_header(
     let mut w = BitWriter::new();
     write_sequence_header_prefix(&mut w, signal, frame_rate);
 
-    let unconstrained = random_decisions
-        || spatial.base_size.0 * spatial.base_size.1 < MIN_CONSTRAINED_LEVEL_AREA
-        || fixed_base_q_idx.is_some_and(|q| q < MIN_CONSTRAINED_LEVEL_QINDEX);
+    let unconstrained = unconstrained_level(
+        spatial.base_size.0 * spatial.base_size.1,
+        fixed_base_q_idx,
+        random_decisions,
+    );
     let fps_num = u64::from(frame_rate.num);
     let fps_den = u64::from(frame_rate.den.max(1));
 
@@ -526,12 +576,9 @@ fn write_sequence_header_prefix(w: &mut BitWriter, signal: StreamSignal, frame_r
     w.put_bits(0, 3); // seq_profile: Main (8/10-bit 4:2:0)
     w.put_bit(false); // still_picture
     w.put_bit(false); // reduced_still_picture_header
-    let timing = signal.timing != TimingSignal::Nominal;
-    w.put_bit(timing); // timing_info_present_flag
-    if timing {
-        write_timing_info(w, signal.timing, frame_rate);
-        w.put_bit(false); // decoder_model_info_present_flag
-    }
+    w.put_bit(true); // timing_info_present_flag
+    write_timing_info(w, signal.timing, frame_rate);
+    w.put_bit(false); // decoder_model_info_present_flag
     w.put_bit(false); // initial_display_delay_present_flag
 }
 

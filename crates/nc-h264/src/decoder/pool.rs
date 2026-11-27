@@ -53,6 +53,15 @@ impl<T: Sample> PicturePool<T> {
         shared
     }
 
+    /// Take back a shared picture for writing, if nothing else holds it.
+    pub fn reclaim(
+        &mut self,
+        picture: Arc<Picture<T>>,
+    ) -> std::result::Result<Picture<T>, Arc<Picture<T>>> {
+        self.shared.retain(|p| !Arc::ptr_eq(p, &picture));
+        Arc::try_unwrap(picture).inspect_err(|shared| self.shared.push(shared.clone()))
+    }
+
     /// Keep a picture nothing else uses.
     pub fn give_back(&mut self, picture: Picture<T>) {
         self.recycler.give(picture);

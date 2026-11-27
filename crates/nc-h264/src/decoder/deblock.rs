@@ -4,6 +4,10 @@
 //!
 //! Boundary strengths (§8.7.2.1) come from the macroblock states; the
 //! sample filters of each edge (§8.7.2.3, §8.7.2.4) are the nc-dsp kernels.
+//! A field picture is filtered as a picture of its own rows; its
+//! macroblocks are field macroblocks, so horizontal intra edges take bS 3,
+//! not 4, and vertical vector differences count in field rows (a
+//! difference of 2 quarter field samples is 4 quarter frame samples).
 //!
 //! The filter runs a macroblock row behind decoding ([`RowDeblocker`]),
 //! while the row is still in cache: filtering row `r` changes samples of
@@ -26,6 +30,8 @@ use crate::tables::{DEBLOCK_ALPHA, DEBLOCK_BETA, DEBLOCK_TC0};
 
 /// Vector difference (quarter samples) from which `bS` is 1 (§8.7.2.1).
 const MV_THRESHOLD: i32 = 4;
+/// The vertical one between field macroblocks (quarter field samples).
+const FIELD_MV_THRESHOLD_Y: i32 = 2;
 /// Largest `indexA` / `indexB` (eqs. 8-461, 8-462).
 const MAX_INDEX: i32 = 51;
 /// Luma and chroma QPs run from `−QpBdOffset` (−12 at 10 bits) to 51; the
@@ -44,6 +50,8 @@ pub(super) struct SliceFilter {
     pub chroma_qp_offset: [i8; 2],
     /// A B slice: its macroblocks may predict from list 1.
     pub b_slice: bool,
+    /// An SP or SI slice: its macroblocks filter as intra ones (§8.7.2.1).
+    pub switching: bool,
     /// `QpBdOffsetC`: chroma QPs start at its negative.
     qp_bd_offset_c: i32,
     /// The thresholds at each average QP (biased by [`QP_BIAS`]), under
@@ -56,12 +64,14 @@ impl SliceFilter {
         control: DeblockControl,
         chroma_qp_offset: [i8; 2],
         b_slice: bool,
+        switching: bool,
         depths: BitDepths,
     ) -> Self {
         Self {
             control,
             chroma_qp_offset,
             b_slice,
+            switching,
             qp_bd_offset_c: 6 * depths.chroma.above_eight() as i32,
             thresholds: core::array::from_fn(|index| {
                 Thresholds::at_average(index as i32 - QP_BIAS, control)
@@ -167,25 +177,36 @@ pub(super) struct DeblockContext<'a> {
     pub slices: &'a [SliceFilter],
     pub monochrome: bool,
     pub depths: BitDepths,
+    /// A field picture.
+    pub field: bool,
 }
 
 /// Filter the macroblock rows `rows` of `picture`: one instance for
-/// pictures with B slices so far, one (list 0 only) for the others.
+/// pictures with B slices so far, one (list 0 only) for the others, each
+/// for frames and fields.
 fn deblock_rows<T: Pixel>(
     ctx: &DeblockContext<'_>,
     planes: &mut Planes<'_, T>,
     rows: Range<usize>,
 ) {
-    if ctx.slices.iter().any(|s| s.b_slice) {
-        deblock_rows_of::<true, T>(ctx, planes, rows);
-    } else {
-        deblock_rows_of::<false, T>(ctx, planes, rows);
+    let b_slice = ctx.slices.iter().any(|s| s.b_slice);
+    let switching = ctx.slices.iter().any(|s| s.switching);
+    match (b_slice, ctx.field, switching) {
+        (true, false, false) => deblock_rows_of::<true, false, false, T>(ctx, planes, rows),
+        (true, false, true) => deblock_rows_of::<true, false, true, T>(ctx, planes, rows),
+        (true, true, false) => deblock_rows_of::<true, true, false, T>(ctx, planes, rows),
+        (true, true, true) => deblock_rows_of::<true, true, true, T>(ctx, planes, rows),
+        (false, false, false) => deblock_rows_of::<false, false, false, T>(ctx, planes, rows),
+        (false, false, true) => deblock_rows_of::<false, false, true, T>(ctx, planes, rows),
+        (false, true, false) => deblock_rows_of::<false, true, false, T>(ctx, planes, rows),
+        (false, true, true) => deblock_rows_of::<false, true, true, T>(ctx, planes, rows),
     }
 }
 
-/// [`deblock_rows`] of a picture with (`BI`) or without B slices.
+/// [`deblock_rows`] of a picture with (`BI`) or without B slices, a field
+/// (`FIELD`) or a frame, and with (`SW`) or without SP / SI slices.
 #[inline(never)]
-fn deblock_rows_of<const BI: bool, T: Pixel>(
+fn deblock_rows_of<const BI: bool, const FIELD: bool, const SW: bool, T: Pixel>(
     ctx: &DeblockContext<'_>,
     planes: &mut Planes<'_, T>,
     rows: Range<usize>,
@@ -198,6 +219,7 @@ fn deblock_rows_of<const BI: bool, T: Pixel>(
         slices,
         monochrome,
         depths,
+        field: _,
     } = *ctx;
     // Folds to the 8-bit constants in the 8-bit instance.
     let depths = depths.of::<T>();
@@ -206,7 +228,8 @@ fn deblock_rows_of<const BI: bool, T: Pixel>(
     }
     let [luma, cb, cr] = planes;
     for addr in rows.start * width_mbs..rows.end * width_mbs {
-        let Some(bs) = strengths::<BI, T>(mbs, width_mbs, (first_slice, slices), addr) else {
+        let Some(bs) = strengths::<BI, FIELD, SW, T>(mbs, width_mbs, (first_slice, slices), addr)
+        else {
             continue;
         };
         let mb = &mbs[addr];
@@ -296,7 +319,7 @@ fn filter_qp(mb: &MbState) -> i32 {
 
 /// The boundary strengths of macroblock `addr`, or `None` when it is not
 /// filtered or every strength is 0.
-fn strengths<const BI: bool, T>(
+fn strengths<const BI: bool, const FIELD: bool, const SW: bool, T>(
     mbs: &[MbState],
     width_mbs: usize,
     (first_slice, slices): (u32, &[SliceFilter]),
@@ -321,22 +344,48 @@ fn strengths<const BI: bool, T>(
     let mut out = [[[0u8; 4]; 4]; 2];
     let q_uniform = is_uniform_inter(mb);
     let [vertical, horizontal] = &mut out;
-    direction_strengths::<0, BI, T>(mb, left, q_uniform, vertical);
-    direction_strengths::<1, BI, T>(mb, above, q_uniform, horizontal);
+    direction_strengths::<0, BI, FIELD, T>(mb, left, q_uniform, vertical);
+    direction_strengths::<1, BI, FIELD, T>(mb, above, q_uniform, horizontal);
+    if SW {
+        switching_strengths::<FIELD>(&mut out, (mb, [left, above]), (first_slice, slices));
+    }
     (out != [[[0; 4]; 4]; 2]).then_some(out)
+}
+
+/// Raise the strengths of a macroblock's edges that have a macroblock of
+/// an SP or SI slice on either side to the intra ones (§8.7.2.1: bS 4 on
+/// macroblock edges, but 3 on the horizontal ones of a field, 3 inside).
+fn switching_strengths<const FIELD: bool>(
+    out: &mut Strengths,
+    (mb, neighbours): (&MbState, [Option<&MbState>; 2]),
+    (first_slice, slices): (u32, &[SliceFilter]),
+) {
+    let switching = |m: &MbState| slices[(m.slice - first_slice) as usize].switching;
+    let inside = switching(mb);
+    for (dir, (edges, neighbour)) in out.iter_mut().zip(neighbours).enumerate() {
+        if inside {
+            for edge in &mut edges[1..] {
+                *edge = [BS_INTRA; 4];
+            }
+        }
+        if neighbour.is_some_and(|n| inside || switching(n)) {
+            let strong = !FIELD || dir == 0;
+            edges[0] = [if strong { BS_INTRA_MB_EDGE } else { BS_INTRA }; 4];
+        }
+    }
 }
 
 /// The strengths of the four luma edges of direction `DIR` (0 vertical) of
 /// `mb`, with `neighbour` across edge 0; only edge 0 when `mb` is a
 /// uniform inter macroblock.
-fn direction_strengths<const DIR: usize, const BI: bool, T>(
+fn direction_strengths<const DIR: usize, const BI: bool, const FIELD: bool, T>(
     mb: &MbState,
     neighbour: Option<&MbState>,
     q_uniform: bool,
     out: &mut [[u8; 4]; 4],
 ) {
     if let Some(p_mb) = neighbour {
-        out[0] = edge_strengths::<DIR, BI, T>(p_mb, mb, 0);
+        out[0] = edge_strengths::<DIR, BI, FIELD, T>(p_mb, mb, 0);
     }
     if q_uniform {
         return;
@@ -345,7 +394,7 @@ fn direction_strengths<const DIR: usize, const BI: bool, T>(
     // block edges and are not filtered (§8.7).
     let step = if mb.transform_8x8 { 2 } else { 1 };
     for edge in (step..4).step_by(step) {
-        out[edge] = edge_strengths::<DIR, BI, T>(mb, mb, edge);
+        out[edge] = edge_strengths::<DIR, BI, FIELD, T>(mb, mb, edge);
     }
 }
 
@@ -365,17 +414,16 @@ fn is_uniform_inter(mb: &MbState) -> bool {
     clippy::extra_unused_type_parameters,
     reason = "one copy per sample type keeps the 8-bit instance inlined (high-bit-depth handoff)"
 )]
-fn edge_strengths<const DIR: usize, const BI: bool, T>(
+fn edge_strengths<const DIR: usize, const BI: bool, const FIELD: bool, T>(
     p_mb: &MbState,
     mb: &MbState,
     edge: usize,
 ) -> [u8; 4] {
     if p_mb.is_intra() || mb.is_intra() {
-        return [if edge == 0 {
-            BS_INTRA_MB_EDGE
-        } else {
-            BS_INTRA
-        }; 4];
+        // bS 4 needs a macroblock edge between frame macroblocks, or a
+        // vertical one.
+        let strong = edge == 0 && (!FIELD || DIR == 0);
+        return [if strong { BS_INTRA_MB_EDGE } else { BS_INTRA }; 4];
     }
     let p_edge = (edge + 3) % 4;
     let coded = if DIR == 0 {
@@ -391,7 +439,7 @@ fn edge_strengths<const DIR: usize, const BI: bool, T>(
     if p_mb.single_motion && mb.single_motion {
         // One motion each side: one motion test for the edge, and the
         // segments combine it with their coded bits arithmetically.
-        let moved = u32::from(motion_differs(p_mb, (0, 0), mb, (0, 0), bi));
+        let moved = u32::from(motion_differs::<FIELD>(p_mb, (0, 0), mb, (0, 0), bi));
         // One byte per segment: bS 2 where coded, else the motion bit.
         let coded = spread_bits(coded);
         let bs =
@@ -407,7 +455,7 @@ fn edge_strengths<const DIR: usize, const BI: bool, T>(
             } else {
                 ((seg, edge), (seg, p_edge))
             };
-            u8::from(motion_differs(p_mb, p, mb, q, bi))
+            u8::from(motion_differs::<FIELD>(p_mb, p, mb, q, bi))
         }
     })
 }
@@ -444,14 +492,15 @@ const COLUMN_GATHER: u32 = 0x249;
 
 /// bS 1 rule of inter blocks without coefficients (§8.7.2.1): different
 /// reference pictures or numbers of vectors, or vectors a sample or more
-/// apart. `bi`: either macroblock predicts from list 1 (else both have one
-/// list 0 vector per block, the inlined common case).
+/// apart (in field rows between field macroblocks, `FIELD`). `bi`: either
+/// macroblock predicts from list 1 (else both have one list 0 vector per
+/// block, the inlined common case).
 #[allow(
     clippy::inline_always,
     reason = "measured: keeps the P path at the base instruction count (callgrind)"
 )]
 #[inline(always)]
-fn motion_differs(
+fn motion_differs<const FIELD: bool>(
     p_mb: &MbState,
     p: (usize, usize),
     q_mb: &MbState,
@@ -459,16 +508,22 @@ fn motion_differs(
     bi: bool,
 ) -> bool {
     if bi {
-        return bi_motion_differs(p_mb, p, q_mb, q);
+        return bi_motion_differs::<FIELD>(p_mb, p, q_mb, q);
     }
     let (p_b8, q_b8) = ((p.1 / 2) * 2 + p.0 / 2, (q.1 / 2) * 2 + q.0 / 2);
     (p_mb.ref_pic[0][p_b8] != q_mb.ref_pic[0][q_b8])
-        | far(p_mb.mvs[0][p.1 * 4 + p.0], q_mb.mvs[0][q.1 * 4 + q.0])
+        | far::<FIELD>(p_mb.mvs[0][p.1 * 4 + p.0], q_mb.mvs[0][q.1 * 4 + q.0])
 }
 
 /// [`motion_differs`] where either side may use both lists.
 #[inline(never)]
-fn bi_motion_differs(p_mb: &MbState, p: (usize, usize), q_mb: &MbState, q: (usize, usize)) -> bool {
+fn bi_motion_differs<const FIELD: bool>(
+    p_mb: &MbState,
+    p: (usize, usize),
+    q_mb: &MbState,
+    q: (usize, usize),
+) -> bool {
+    let far = far::<FIELD>;
     let (p_block, q_block) = (p.1 * 4 + p.0, q.1 * 4 + q.0);
     let (p_b8, q_b8) = ((p.1 / 2) * 2 + p.0 / 2, (q.1 / 2) * 2 + q.0 / 2);
     // Pictures (0: none) and vectors of each side's two lists.
@@ -501,16 +556,22 @@ fn bi_motion_differs(p_mb: &MbState, p: (usize, usize), q_mb: &MbState, q: (usiz
     (far(pv0, qv0) | far(pv1, qv1)) & (far(pv0, qv1) | far(pv1, qv0))
 }
 
-/// Whether two vectors are a sample or more apart in either component.
-/// Bitwise, not short-circuit: no branch per term.
+/// Whether two vectors are a sample or more apart in either component
+/// (vertically a field row between field macroblocks, `FIELD`). Bitwise,
+/// not short-circuit: no branch per term.
 #[allow(
     clippy::inline_always,
     reason = "measured: keeps the P path at the base instruction count (callgrind)"
 )]
 #[inline(always)]
-fn far(a: Mv, b: Mv) -> bool {
+fn far<const FIELD: bool>(a: Mv, b: Mv) -> bool {
+    let limit_y = if FIELD {
+        FIELD_MV_THRESHOLD_Y
+    } else {
+        MV_THRESHOLD
+    };
     ((i32::from(a.x) - i32::from(b.x)).abs() >= MV_THRESHOLD)
-        | ((i32::from(a.y) - i32::from(b.y)).abs() >= MV_THRESHOLD)
+        | ((i32::from(a.y) - i32::from(b.y)).abs() >= limit_y)
 }
 
 #[cfg(test)]

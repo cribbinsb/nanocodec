@@ -1,4 +1,4 @@
-//! The predefined AV2 quantizer matrices (dav2d `dav2d_qm_tbl`): per
+//! The predefined AV1 / AV2 quantizer matrices (dav2d `dav2d_qm_tbl`): per
 //! matrix level and plane type, a weight per coefficient of every
 //! transform shape with sides 4..=32, in dav2d's transposed coefficient
 //! order (64-sample sides use the 32 tables).
@@ -8,14 +8,14 @@
 //! `docs/licenses/dav2d`); do not edit.
 
 /// Matrix levels with tables (level 15 is flat: no matrix).
-pub const LEVELS: usize = 15;
+pub(super) const LEVELS: usize = 15;
 /// Entries of one level and plane type: every shape's table.
-pub const SET_LEN: usize = 3600;
+pub(super) const SET_LEN: usize = 3600;
 /// The largest side log2 (in 4-sample units) with its own tables.
-pub const MAX_SIDE_LOG2: u8 = 3;
+pub(super) const MAX_SIDE_LOG2: u8 = 3;
 /// Where each transform shape's table starts in a set, by the log2 of
 /// its width and height in 4-sample units (0..=3).
-pub const OFFSETS: [[u16; 4]; 4] = [
+pub(super) const OFFSETS: [[u16; 4]; 4] = [
     [0, 16, 48, 112],
     [240, 272, 336, 464],
     [720, 784, 912, 1168],
@@ -23,7 +23,7 @@ pub const OFFSETS: [[u16; 4]; 4] = [
 ];
 /// The tables by level, plane type (luma, chroma) and entry.
 #[rustfmt::skip]
-pub static MATRICES: [[[u8; SET_LEN]; 2]; LEVELS] = [
+pub(super) static MATRICES: [[[u8; SET_LEN]; 2]; LEVELS] = [
     [
         [
             32, 43, 73, 97, 43, 67, 94, 110, 73, 94, 137, 150, 97, 110, 150, 200, 32, 33, 37, 49,
