@@ -1,0 +1,54 @@
+[
+ {
+  "planner.rd_split_stop_bias": -0.274193721066205,
+  "planner.rd_split_stop_cost": 0.5932042017146699,
+  "planner.rd_split_stop_bits": -1.0753836432373918,
+  "planner.rd_split_stop_distortion": -3.3791522789959454,
+  "planner.rd_split_stop_skip": -2.0583358921727397,
+  "planner.rd_split_stop_nonzero": 2.8850461222647175,
+  "planner.rd_split_stop_planned_split": 0.5361435585114087,
+  "planner.rd_split_stop_size": -0.3613289858804624,
+  "planner.rd_split_stop_margin": 0.6501067619441513,
+  "planner.rd_split_stop_neighbours": 0.43668049656947794,
+  "planner.rd_split_stop_co_located": 0.4092306563536526
+ },
+ {
+  "planner.rd_split_stop_bias": 0.7933958393505948,
+  "planner.rd_split_stop_cost": -3.1858198588149724,
+  "planner.rd_split_stop_bits": -1.8070849702425809,
+  "planner.rd_split_stop_distortion": -3.8983542381539156,
+  "planner.rd_split_stop_skip": 1.6228583575317177,
+  "planner.rd_split_stop_nonzero": 2.551340710214096,
+  "planner.rd_split_stop_planned_split": -1.676322632335856,
+  "planner.rd_split_stop_size": -0.2707988884243979,
+  "planner.rd_split_stop_margin": 0.21847963578147944,
+  "planner.rd_split_stop_neighbours": -0.9892065897937086,
+  "planner.rd_split_stop_co_located": -1.1510357305776606
+ },
+ {
+  "planner.rd_split_stop_bias": 1.373408584606272,
+  "planner.rd_split_stop_cost": -1.2840747098521832,
+  "planner.rd_split_stop_bits": -1.409616817202893,
+  "planner.rd_split_stop_distortion": -1.182735839887213,
+  "planner.rd_split_stop_skip": -0.5843031935639227,
+  "planner.rd_split_stop_nonzero": 1.0912623951775142,
+  "planner.rd_split_stop_planned_split": -0.7635680033165954,
+  "planner.rd_split_stop_size": -0.4205570772575559,
+  "planner.rd_split_stop_margin": 0.4367482846344455,
+  "planner.rd_split_stop_neighbours": -0.5384896724222528,
+  "planner.rd_split_stop_co_located": -0.2688442166119107
+ },
+ {
+  "planner.rd_split_stop_bias": -2.412363058242418,
+  "planner.rd_split_stop_cost": -0.6675778249191502,
+  "planner.rd_split_stop_bits": 0.20446322746273535,
+  "planner.rd_split_stop_distortion": -4.316738236848384,
+  "planner.rd_split_stop_skip": 1.0609885540573862,
+  "planner.rd_split_stop_nonzero": 4.856597957152446,
+  "planner.rd_split_stop_planned_split": -1.4236244463889247,
+  "planner.rd_split_stop_size": -0.22541018143307684,
+  "planner.rd_split_stop_margin": 0.4108242050815931,
+  "planner.rd_split_stop_neighbours": -0.17820223963102244,
+  "planner.rd_split_stop_co_located": 0.13211361635014035
+ }
+]

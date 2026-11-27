@@ -12,6 +12,7 @@ pub(crate) fn cdef_fns() -> CdefFns {
         block4,
         block8_interior: super::simd128_interior::block::<8>,
         block4_interior: super::simd128_interior::block::<4>,
+        border: None,
         block4_interior_pair: Some(super::simd128_interior::block4_pair),
     }
 }
@@ -20,6 +21,7 @@ pub(crate) fn cdef_fns() -> CdefFns {
 pub(crate) const HIGH_FNS: HighCdefFns = HighCdefFns {
     find_dir: find_dir_u16,
     edge: [block4_edge_u16, block8_edge_u16],
+    border4: None,
     interior: [block4_interior_u16, block8_interior_u16],
     interior_pair4: Some(block4_pair_u16),
 };

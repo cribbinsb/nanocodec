@@ -21,19 +21,20 @@ use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
     AngleDeltaSearch, Block, BlockDecision, CdefEffort, CodecBackend, ConfigError, EncoderConfig,
     FilterEffort, FlatGate, FramePlan, FrameReferences, FrameType, GateParams, IntraChoice,
-    IntraModeSet, LevelRateModel, LevelStats, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits,
-    PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, SearchEvidence, SlotMask,
-    SpatialConfig, SpatialLayerFrame, StaticSkipTest, TrellisSettings, WorkGate, ZeroLimits,
-    copy_zero_vector_prediction, directions_by_orientation, residual_quantises_to_zero,
-    shortlist_intra, zero_vector_residual_is_zero,
+    IntraModeSet, IntraStage, LevelRateModel, LevelStats, MAX_REFERENCE_SLOTS, Mv, PartitionShape,
+    PlaneZeroLimits, PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, SearchEvidence,
+    ShapeSet, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest, TrellisSettings,
+    WorkGate, ZeroLimits, copy_zero_vector_prediction, directions_by_orientation,
+    residual_quantises_to_zero, shortlist_intra, zero_vector_residual_is_zero,
 };
 
+use crate::block_size::BlockSize as MiSize;
 use crate::cdef::{self, CdefParams};
 use crate::cdef_map::{CdefMap, CdefScratch};
 use crate::cdf::{CdfContext, ResetCounters};
 use crate::cfl::ChromaFromLuma;
 use crate::coeff::trellis::{RateModel, TrellisQuantizer};
-use crate::coeff::{CoeffCdfs, PlaneType, TxbContext, coefficient_scan, eob_table};
+use crate::coeff::{CoeffCdfs, PlaneType, TxbContext, TypeSyntax, coefficient_scan, eob_table};
 use crate::grain::{GrainParams, GrainState};
 use crate::inter;
 use crate::intra::{
@@ -41,14 +42,17 @@ use crate::intra::{
 };
 use crate::loopfilter::{self, LoopFilterParams};
 use crate::mds3;
-use crate::modeinfo::{Av1Mv, BlockMode, InterRefs, MI_LOG2, ModeInfo, ModeInfoGrid};
+use crate::modeinfo::{
+    Av1Mv, BlockMode, InterRefs, Log2Dims, MI_LOG2, MV_UPP, ModeInfo, ModeInfoGrid,
+};
+use crate::mvcoding;
 use crate::mvref::{
     CompoundMvStack, LastOnly, MvStack, SingleRef, find_compound_mv_stack, find_mv_stack,
 };
 use crate::obu::{
     FrameHeader, FrameIdLengths, FrameIds, FrameKind, FrameSizeSyntax, IntraRefresh, ObuType,
-    RestorationTool, SequenceTools, SlotUse, sequence_header, spatial_sequence_header, write_obu,
-    write_obu_layer,
+    RestorationTool, SequenceTools, SlotUse, encoder_info_metadata, sequence_header,
+    spatial_sequence_header, write_obu, write_obu_layer,
 };
 use crate::predict::{FilterIntraMode, IntraMode, dc_value};
 use crate::quant::QuantSteps;
@@ -61,11 +65,12 @@ use crate::tables::{
     UV_DC_PRED, UV_INTRA_MODES_CFL_ALLOWED, UV_INTRA_MODES_CFL_NOT_ALLOWED, coeff_cdf_q_ctx,
 };
 use crate::transform::{
-    ForwardPolicy, TxSize, dequantized_extent, forward_dct_with, inverse_dct_add,
-    inverse_dct_dc_add, quantize_coded, quantize_coded_from,
+    ForwardPolicy, TxSize, dequantized_extent, forward_dct_with, forward_with, inverse_add,
+    inverse_dct_add, inverse_dct_dc_add, quantize_coded, quantize_coded_from,
 };
+use crate::tx_type::{intra_luma_type_count, intra_luma_types};
 use crate::txsize::{self, TxSplit, TxfmContexts};
-use nc_dsp::{Av1Quantizer, BlockSize, CdefSource, Dsp};
+use nc_dsp::{Av1Quantizer, Av1TxType, BlockSize, CdefSource, Dsp};
 use nc_encoder::symbol_cost::symbol_bits;
 
 mod delta_q;
@@ -121,6 +126,11 @@ const MIN_BLOCK_LOG2: u8 = 3;
 /// Largest leaf block: a whole 64x64 superblock (64x64 transform, of which
 /// the top-left 32x32 coefficients are coded).
 const MAX_BLOCK_LOG2: u8 = 6;
+/// Largest leaf whose transform codes every frequency: a 64-point transform
+/// codes only its 32 lowest (AV1 §5.11.39, coefficients at
+/// `Adjusted_Tx_Size`), so the planner confirms larger static leaves
+/// (`CodecBackend::full_spectrum_log2`).
+const FULL_SPECTRUM_LOG2: u8 = 5;
 /// Range of `base_q_idx`; 0 would make frames lossless (a different tool set).
 const QINDEX_MIN: u32 = 1;
 const QINDEX_MAX: u32 = 255;
@@ -142,13 +152,36 @@ const QINDEX_MAX: u32 = 255;
 const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     cadence_scale: 1.4,
     first_key_lookahead: 0.3,
+    first_key: Some(nc_encoder::first_key_model::FirstKeyCalibration {
+        weights: [
+            0.635_606, 0.940_353, 0.14836, 0.841_426, 0.142_821, -1.421_371, 0.475_305, 0.402_741,
+            0.694_098,
+        ],
+        fast_bias: 0.135_586,
+    }),
     ..nc_encoder::RateModel::AC_LOOKUP_QINDEX
 };
 /// Engine vectors are in quarter samples, AV1's in eighths.
 const AV1_MV_PER_ENGINE_MV: i32 = 2;
+/// log2 of the eighths in a whole sample of an AV1 vector.
+const MV_EIGHTHS_LOG2: u32 = 3;
 /// Highest list position NEARMV can name (`RefMvIdx` 1 + two `drl_mode` bits).
 const MAX_NEAR_INDEX: usize = 3;
 const AC_Q_PER_SAMPLE_STEP: f32 = 8.0;
+/// Smallest block side the shared zero-residual test takes (its 8x8
+/// sub-blocks; `nc_encoder::residual_quantises_to_zero`).
+const ZERO_TEST_MIN_SIDE: usize = 8;
+
+/// `limits` raised to an RMS error of `samples` per sample for an
+/// `n`-square block: orthonormal coefficients of that size are a block mean
+/// of `samples` (DC `samples · n`) and an 8x8 sub-block texture of that RMS
+/// (`samples · 8`).
+fn floored_zero_limits(limits: ZeroLimits, n: usize, samples: f32) -> ZeroLimits {
+    ZeroLimits {
+        dc: limits.dc.max(samples * n as f32),
+        ac: limits.ac.max(samples * ZERO_TEST_MIN_SIDE as f32),
+    }
+}
 /// One whole quantiser step in the 1/128-step rounding offsets.
 const ROUNDING_Q7_ONE: f32 = 128.0;
 /// Per-mille representation keeps the default key-step scale exactly equal
@@ -308,6 +341,14 @@ struct CoeffContexts {
 }
 
 impl CoeffContexts {
+    /// The above and left entropy contexts of `span` in `plane`.
+    fn slices(&self, plane: usize, span: ContextSpan) -> (&[u8], &[u8]) {
+        (
+            &self.above[plane][span.x4..span.x4 + span.w4],
+            &self.left[plane][span.y4..span.y4 + span.h4],
+        )
+    }
+
     /// Contexts for a frame `mi_cols` mode-info units wide.
     fn new(mi_cols: usize) -> Self {
         let sb_mi = 1usize << (SUPERBLOCK_LOG2 as usize - MI_LOG2);
@@ -504,11 +545,6 @@ pub struct Av1Backend {
     /// Integer MDS3 controls, converted once at encoder creation.
     shave_min_zero_run: usize,
     chroma_skip_sad_num: u32,
-    /// Registered backend base-frame cadence and this frame's cached flag.
-    base_period: u64,
-    is_base_frame: bool,
-    /// Effective optional pre-transform threshold, selected once per frame.
-    pre_tx_score_this_frame: f32,
     /// CDEF strengths of the frame being coded.
     cdef: CdefParams,
     /// Padded input retained across planes; every fill rewrites samples and borders.
@@ -536,6 +572,9 @@ pub struct Av1Backend {
     /// The block `try_static_skip` accepted (`av1.still_skip`): the next
     /// `encode_block` codes it with no residual.
     still_skipped: Option<(usize, usize)>,
+    /// The encoder information metadata OBU payload written after every
+    /// sequence header (`CodecBackend::set_encoder_info`).
+    encoder_info: Option<Vec<u8>>,
     /// The block [`CodecBackend::encode_block`] last coded as a copy of the
     /// reference's luma (zero motion, no luma residual), by position.
     luma_copy: Option<(usize, usize)>,
@@ -565,9 +604,13 @@ pub struct Av1Backend {
     alternate: Option<Alternate>,
     /// The engine's loop-filter decision for this frame (`filter_effort.rs`).
     filter_effort: FilterEffort,
+    /// Active first-key refinement frame: disables pre-transform & biased skips.
+    r1_refine: bool,
     /// The engine's quantizer gates on the partial forward transform and
     /// the transform-split trial (`gate.*`).
     gates: GateParams,
+    /// The staged intra decision's first cut (`decision.intra_stage_*`).
+    intra_stage: IntraStage,
     /// Film grain signalling (`grain.enable`); `None` when off.
     grain: Option<GrainState>,
     /// Reference currently selected by the engine (`Primary` = `LAST_FRAME`,
@@ -618,12 +661,11 @@ struct TrellisBlock {
     lambda: f32,
     max_states: usize,
     plane: PlaneType,
-    is_inter: bool,
-    intra_mode: usize,
+    syntax: TypeSyntax,
     /// Where the block's `TxbContext` comes from: plane, its 4x4 position
     /// and side in the context arrays, and whether it fills its block.
     /// Derived only for blocks the plain quantiser leaves coded.
-    context: (usize, usize, usize, usize, bool),
+    context: (usize, ContextSpan, bool),
 }
 
 nc_encoder::param_group! {
@@ -655,8 +697,6 @@ nc_encoder::param_group! {
             "P-frame coefficient rounding offset in 1/128 step: higher preserves more small coefficients",
         inter_chroma_rounding_q7: 48.0, [16.0, 64.0],
             "P-frame chroma rounding offset in 1/128 step: higher keeps the colour detail VMAF's chroma feature measures",
-        base_period: 4.0, [1.0, 16.0],
-            "backend base-frame period: higher searches global CDEF and uses the gentler residual margin less often",
         cdef_search_row_step: 4.0, [1.0, 8.0],
             "luma CDEF search row stride: lower samples more distortion rows at extra search cost",
         /// Per-64x64 luma CDEF with the strong candidate (`cdef_local_strong_*`)
@@ -729,6 +769,20 @@ nc_encoder::param_group! {
             "key-frame filter intra: 1 enables the tool in the sequence header and adds its five modes as SATD-ranked candidates on blocks up to 32x32 (AV1 §7.11.2.3)",
         keyframe_directions: 8.0, [1.0, 8.0],
             "key-frame directions predicted for the SATD ranking: the likeliest this many by gradient orientation (8: all allowed); rounded, lower is faster",
+        /// Off by default. libaom's `use_intra_default_tx_only` measured +3.0 %
+        /// J against its full type search and DCT-only +2.3 % (one frame,
+        /// all-intra cpu 3; docs/analysis/key-frame-rdo-2026-11-21.md
+        /// section 2): this is the zero-search end of the type axis.
+        keyframe_mode_tx_type: 0.0, [0.0, 1.0],
+            "key-frame intra luma transform type: 0 DCT_DCT, 1 the type the luma mode implies (AV1 Mode_To_Txfm) on transforms up to 16x16; the leaf search's transform axis (decision.intra_rd_transforms) tries the others",
+        /// Off by default: measured in docs/analysis/key-frame-rdo-2026-11-21.md
+        /// section 10.
+        /// Off by default: built 2026-11-22, docs/analysis/key-frame-rdo-2026-11-21.md
+        /// section 11.
+        key_rect_partitions: 0.0, [0.0, 1.0],
+            "key frames: 1 lets the RD partition search (planner.key_rd_shapes) code 16x16 to 64x64 nodes as two horizontal or vertical halves (AV1 PARTITION_HORZ / VERT)",
+        keyframe_tx_type_search: 0.0, [0.0, 1.0],
+            "key-frame intra luma transform type by estimated cost: 1 ranks the types up to 16x16 by a transform-domain RD estimate (forward, quantise, coefficient bits, remaining error) and codes the cheapest; the leaf search's transform axis then tries the next-ranked",
         keyframe_intra_rd_candidates: 3.0, [1.0, 16.0],
             "SATD-ranked extra key-frame intra candidates (directions, deltas, filter intra) that are also transform-costed; rounded, higher searches more",
         /// Off by default. The cheap key search of the speed rungs (instead of
@@ -792,11 +846,6 @@ nc_encoder::param_group! {
             "pre-transform energy threshold: 100*SSE < energy*area*qindex; higher skips more",
         pre_tx_skip_score: 70.0, [0.0, 250.0],
             "base/inherited pre-transform skip score (0 disables this score); positive nonbase override takes precedence; lower skips more",
-        // TRAIN five-class70base/50nonbase vs uniform70: V1 BD -0.209%,
-        // PSNR BD +1.408%. Host GOP300 instructions body/crowd -2.00/-2.35%;
-        // Jetson150f three-pair median CPU -1.24/-2.18%. Optional tradeoff only.
-        pre_tx_skip_score_nonbase: 0.0, [0.0, 250.0],
-            "when pre_tx_skip is enabled, positive score overrides nonbase frames only; 0 inherits pre_tx_skip_score (fractional values preserved)",
         pre_tx_skip_rd: 50.0, [0.0, 400.0],
             "pre-transform RD threshold: 100*skip_cost < threshold*reference_cost; 0 disables RD signal",
         /// 1 replaces the RD signal's fixed guess at the coded alternative
@@ -824,12 +873,30 @@ nc_encoder::param_group! {
             "minimum zeros before shaving a trailing +/-1 coefficient, rounded to an integer: 0 shaves contiguous ones (including DC), higher preserves more coefficients",
         chroma_skip_sad_num: 5.0, [0.0, 32.0],
             "inter-chroma sampled-SAD threshold numerator over 8, rounded to an integer: 0 disables skipping, higher skips more transforms",
+        /// The sampled SAD alone has no quantizer term and averages over
+        /// the block, so errors on its unsampled rows or in a corner, and
+        /// DC offsets diluted by a large block, stay uncoded frame after
+        /// frame on still backgrounds (scene-sanity one-mover V 57 -> 45.8
+        /// dB over 10 s). The shared zero-residual test vetoes exactly the
+        /// skips whose residual would code something. 4 (with the 1-sample
+        /// floor below), nceval.train against bcc9aece3184, draw 2026-11-22,
+        /// L3 n=108 / 600-frame final check n=39: Default J -0.46 % / -0.57 %,
+        /// Slow -0.70 % / -1.18 %, Slower -0.99 % / -1.28 %, at about +1.7 %
+        /// cycles (graviton4 +1.81 %, zen5 +1.64 %); Fast, Faster and
+        /// Veryfast pin 0 until screened.
+        chroma_skip_zero_scale: 4.0, [0.0, 64.0],
+            "with the inter-chroma SAD skip on, a skip is kept only where the residual also passes the shared zero-residual test (its DC below the chroma DC zero limit, each 8x8 and the block gradient below this many squared AC zero limits; blocks under 8x8 keep the SAD test alone) (0: the SAD test alone): higher skips more",
+        /// At fine quantizers the zero limits are below camera noise, and
+        /// the veto codes chroma noise the skip rightly left (pool lowlight
+        /// clip at 400-800 kbps: qindex +20..30 for +1.4 dB chroma, -1.2
+        /// dB luma). The drift the veto exists for is larger: DC offsets of
+        /// 1.7-2 samples, trails of 4-60. 1 (screened with the scale above).
+        chroma_skip_min_error: 1.0, [0.0, 8.0],
+            "with the zero-residual veto on, the limits it tests are at least this RMS error per sample (a block mean of that many samples, an 8x8 texture of that RMS): higher keeps more skips where the quantizer is fine, vetoing only visible drift",
         residual_rd_max_mv: 8.0, [0.0, 64.0],
             "luma residual RD check only where |vector| ≤ this (1/8 samples): higher checks more blocks",
         skip_bias_pct: 60.0, [40.0, 100.0],
             "biased skip on low-energy blocks: drop the residual if pct% of the skip distortion is below the coded RD cost (SVT lpd1_blk_skip_luma_rd); lower skips more",
-        skip_bias_pct_base: 60.0, [40.0, 100.0],
-            "skip_bias_pct on every 4th frame (SVT flat-IPP pseudo-layer base frames, gentler light-PD1): higher codes more residual there",
         skip_bias_energy: 0.0625, [0.0, 1.0],
             "biased skip applies when the prediction error per sample is below this × λ: higher applies it to more blocks",
         // Default -32 (was -24): staged TRAIN proxy-6 (150f, AV1 Fast)
@@ -902,6 +969,14 @@ nc_encoder::param_group! {
             "1 codes frame ids (frame_id_numbers_present_flag, AV1 §5.9.2) so a decoder can tell a lost reference from the stream alone (receivers without the RTP dependency descriptor); on anyway with ltr.interval; costs idLen + 7 delta lengths per inter frame (23 bits flat or layered, up to 65 with a long-term reference)",
         segment_qp: 0.0, [0.0, 1.0],
             "1 codes block quantizer offsets as 8x8 segment ids with up to seven quantizers a frame (AV1 §5.9.14, §5.11.9, `backend/segments.rs`) instead of one delta per 64x64 superblock: the reuse term's hold and refinements reach single cells; stream-fixed",
+        // AV1 delta_q_res = 2 (step of 4 qindex ≈ 1 QP, §5.9.17/§5.11.12):
+        // lets ±1..±2 QP superblock deltas code directly without escape bits
+        // (~3-4x fewer delta_q bits). Draw 2026-11-26 (`--local`,
+        // `--strict-buffer`): L1 (n=24) J -0.36% [-0.54, -0.18], 0 guards;
+        // formal L3 (n=98, 150 f) J -0.25% [-0.38, -0.15] BETTER, 0 guards,
+        // periodic-key pulse 2 s -0.01 dB, 10 s +0.14 dB; ~0% extra CPU.
+        delta_q_res: 2.0, [0.0, 3.0],
+            "AV1 delta_q_res (0..3, §5.9.17): superblock delta_qindex step is 1 << delta_q_res qindex units (2 = 4 qindex ≈ 1 QP, avoiding escape bits on small deltas)",
         /// Super-resolution (`superres.rs`): fewer coded samples per frame
         /// at starved bitrates, upscaled normatively by the decoder.
         superres_denom: 8.0, [8.0, 16.0],
@@ -935,6 +1010,21 @@ nc_encoder::param_group! {
     }
 }
 
+/// The configured quantizer (qindex) and superblock size are AV1's.
+fn check_quantizer_and_block(config: &EncoderConfig) -> Result<(), ConfigError> {
+    if !(QINDEX_MIN..=QINDEX_MAX).contains(&config.quantizer) {
+        return Err(ConfigError::Quantizer {
+            value: config.quantizer,
+            min: QINDEX_MIN,
+            max: QINDEX_MAX,
+        });
+    }
+    if !(MIN_BLOCK_LOG2..=MAX_BLOCK_LOG2).contains(&config.block_log2) {
+        return Err(ConfigError::BlockSize(config.block_log2));
+    }
+    Ok(())
+}
+
 /// The superres `av1.superres_denom` asks for (`superres.rs`, rounded to
 /// a whole denominator), if any.
 ///
@@ -962,10 +1052,6 @@ fn configured_superres(
     }
     Ok(Some(superres))
 }
-
-/// `av1.base_period`, checked by `new`: the base cadence decides which
-/// frames are base frames.
-const BASE_PERIOD_PARAM: &str = "av1.base_period";
 
 /// `av1.frame_ids`: code frame ids without a long-term reference (a
 /// receiver that sends loss feedback but has no RTP dependency descriptor).
@@ -1008,7 +1094,6 @@ impl CodecBackend for Av1Backend {
     const PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] =
         &[Av1Params::SPECS, GrainParams::SPECS];
     /// Every `av1.*` parameter is read per frame (`set_frame_params`) except
-    /// `av1.base_period`, which `new` rejects as a non-base setting, and
     /// the stream-fixed ones below.
     const FRAME_PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[Av1Params::SPECS];
     /// Frame ids are sequence-header syntax.
@@ -1035,12 +1120,13 @@ impl CodecBackend for Av1Backend {
         "av1.pre_tx_skip",
         "av1.pre_tx_skip_energy",
         "av1.pre_tx_skip_score",
-        "av1.pre_tx_skip_score_nonbase",
         "av1.pre_tx_skip_rd",
         "av1.pre_tx_skip_model",
         "av1.pre_tx_luma_dominant",
         "av1.pre_tx_texture_scale",
         "av1.chroma_skip_sad_num",
+        "av1.chroma_skip_zero_scale",
+        "av1.chroma_skip_min_error",
         "av1.shave_min_zero_run",
         "av1.inter_intra_search",
         "quant.trellis",
@@ -1072,8 +1158,19 @@ impl CodecBackend for Av1Backend {
         }
     }
 
+    /// A frame without `delta_q_present` or segment quantizers codes every
+    /// block at the frame's qindex: the engine is told so, and budgets and
+    /// learns from what was coded.
     fn block_qp_offset(&mut self, requested: i16) -> i16 {
-        self.segments.assign(requested)
+        if self.delta_q.present() || self.segments.active() {
+            self.segments.assign(requested)
+        } else {
+            0
+        }
+    }
+
+    fn coded_bits(&mut self) -> Option<f64> {
+        Some(self.writer.coded_bits())
     }
     /// `begin_frame` starts from committed state (slot CDFs, CDEF memory,
     /// the previous frame's kind); `commit_frame` advances it.
@@ -1082,6 +1179,39 @@ impl CodecBackend for Av1Backend {
     // edge; no temporal motion (`use_ref_frame_mvs` 0).
     const INTRA_REFRESH: bool = true;
     const NODE_TRIALS: bool = true;
+
+    const RECTANGULAR_LEAVES: bool = true;
+
+    /// Key frames' `PARTITION_HORZ` / `VERT` (`av1.key_rect_partitions`),
+    /// on nodes of 16x16 to 64x64 inside the picture: their halves are at
+    /// least 16x8, so no chroma block is below 4x4 (AV1's sub-8x8 chroma
+    /// sharing is not coded).
+    fn partition_shapes(&self, node: &Block) -> ShapeSet {
+        let applies = self.kind == FrameKind::Key
+            && self.params.key_rect_partitions >= 0.5
+            && self.random.is_none()
+            && (MIN_RECT_NODE_LOG2..=SUPERBLOCK_LOG2).contains(&node.log2_size())
+            && node.x + node.width() <= self.grids.width
+            && node.y + node.height() <= self.grids.height;
+        if applies {
+            ShapeSet::of(&[PartitionShape::Horizontal, PartitionShape::Vertical])
+        } else {
+            ShapeSet::EMPTY
+        }
+    }
+
+    fn shape_bits(&self, node: &Block, shape: PartitionShape) -> f32 {
+        match self.partition_symbol(node, shape_partition(shape)) {
+            PartitionSymbol::Full { ctx, .. } => {
+                self.cdfs.partition[ctx].bits(shape_partition(shape) as usize)
+            }
+            PartitionSymbol::Binary(_) | PartitionSymbol::Implied => 0.0,
+        }
+    }
+
+    fn write_shape(&mut self, node: &Block, shape: PartitionShape) {
+        self.write_partition_symbol(node, shape_partition(shape));
+    }
 
     /// The DC-aware intra test stays off for AV1: on VAL-150 (full gate) it
     /// loses VMAF v1 although PSNR gains. With every block also trying intra
@@ -1150,6 +1280,10 @@ impl CodecBackend for Av1Backend {
     // a long-term reference, which the second reference never runs beside.
     const SECOND_REFERENCE_REACH: u64 = nc_encoder::MAX_REFERENCE_AGE - 1;
 
+    /// A vector component lies strictly between `MV_LOW` and `MV_UPP`, ±2048
+    /// samples (AV1 §6.10.25 `is_mv_valid`): [`to_av1_mv`] takes no other.
+    const VECTOR_REACH: usize = (MV_UPP as usize >> MV_EIGHTHS_LOG2) - 1;
+
     // The fixed-QP profile (`--qp`): every high-quality frame of the unified
     // plan carries the second reference (no cadence-strength gate), with the
     // full mode decision against it, a static reference pattern as the
@@ -1158,9 +1292,24 @@ impl CodecBackend for Av1Backend {
     // fixedqp-2026-11-15-second -2.4% [-4.2, -0.8]; each half alone -0.3 to
     // -1.2%. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
     // The other AV1 presets pin the plan off, so the profile is inert there.
+    // It also codes a period-8 QP cadence at base boost 4 (leaf 1, the engine's), no
+    // start-up cadence: medium, 600 f fixed QP, nceval.fixedqp draw
+    // fixedqp-2026-11-22: AV1 adopt draw J -1.34 % [-1.67, -0.99] n 48, VP9
+    // -1.53 % [-1.74, -0.76] n 22, AV2 -1.31 % [-1.62, -0.65] n 24 (quick);
+    // AV1 at 150 f -0.21 %. Slow / slower (quick, 600 f, base 57f355565):
+    // AV1 -0.65 / -1.84 %, VP9 -0.79 / -1.46 %, AV2 -1.10 / -1.74 %, every
+    // interval below zero. The fast rungs and the SVC files, not screened, pin
+    // the old cadence. docs/handoff/vvc.md "Fixed-QP cascade sweep" (VVC, HEVC
+    // and H.264 did not hold).
     const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
         ("structure.secondary_min_depth", 0.0),
         ("refs.second_full", 1.0),
+        ("rate.cadence_period", 8.0),
+        ("rate.cadence_base_boost", 4.0),
+        ("rate.cadence_startup_period", 0.0),
+        // Leaf penalty 2 at fixed QP (600 f J -0.33% [-0.54, -0.12]); the rate-controlled
+        // Default went back to 1 (2026-11-24, benchmark conditions: quick screen vs head, L1 +0.77% [+0.22, +1.22] static +6.1% (deep) and +0.61% [+0.20, +0.86] static +3.0% (leaf 2); coordinator's decision).
+        ("rate.cadence_leaf_penalty", 2.0),
     ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
@@ -1252,6 +1401,27 @@ impl CodecBackend for Av1Backend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 4.0),
         ("rate.cadence_motion_gate", 1.0),
+        // Period-8 QP cadence under rate control too (fixed QP had it already,
+        // `FIXED_QP_PARAMS`): half as many base frames, each inherited by 7
+        // frames. nceval.train against ef812fa30 (draw 2026-11-24, k 0.1412,
+        // c8i front): L3 J -0.51% [-0.79, -0.31], final check (600/900 f)
+        // -0.50% [-1.00, -0.27], both BETTER, no guard; c8i / c8g cycles L3
+        // -0.47 / -0.63%, 1/150 +0.49 / +0.35%, 1/300 -2.13 / -2.43%. Slow and
+        // slower take it unpinned: quick screens J (L1 / 1/150 / 1/300) slow
+        // -0.34 / -1.66 / -0.11%, slower -0.55 / -1.18 / -1.20%; faster,
+        // veryfast and the layered files pin period 4 (veryfast's quick was
+        // +0.19% at 1/300).
+        ("rate.cadence_period", 8.0),
+        // Proactive in-frame rate steering under the strict 1.0-buffer benchmark
+        // conditions (Brief 21, 2026-11-24; docs/analysis/rate-control-bp-conditions-2026-11-24.md):
+        // prevents whole-frame re-codes under --strict-buffer while improving quality
+        // and speed. Draw 2026-11-24 (k 0.1412, c8i/c8g CPU -0.78% / -0.88%, mean -0.83%):
+        // L3 (n=98) quality -0.34% [-0.55, +0.06] -> net J -0.46% [-0.67, -0.06] BETTER,
+        // 0 guards; final check (600 f, 1/150 & 1/300, n=55) quality -0.20% [-0.33, +0.15]
+        // -> net J -0.32%, 0 guards. AV1-only: HEVC and H.264 medium were neutral/pulse-guarded
+        // at L3/FC. Other AV1 presets pin rate.in_frame = 0 (not screened at L3/FC).
+        ("rate.in_frame", 1.0),
+        ("rate.in_frame_proactive", 1.0),
         ("decision.intra_test_dc", 0.0),
         ("planner.depth_removal_min_quantizer", 0.8),
         // The zero-trial split selector at half its fitted shift (engine
@@ -1267,8 +1437,25 @@ impl CodecBackend for Av1Backend {
         // pin it off.
         ("planner.split_selector", 1.0),
         ("planner.split_selector_scale", 0.5),
-        ("quant.trellis_key", 0.0),
-        ("quant.trellis_lambda_scale", 0.6),
+        // Trellis quantisation on key frames: nceval.train against 3ebca4466
+        // (the 0.6.1 hard buffer with the key search; draw 2026-11-22, k
+        // 0.1), L3 J -0.51% [-0.70, -0.33], final check (600 f) -1.06%
+        // [-1.37, -0.79], no guard; Zen 5 cycles +0.39% [-0.05, +0.83]. The
+        // other rungs pin it off (not screened); Slower had it already.
+        ("quant.trellis_key", 1.0),
+        // The trellis trades bits at 0.8 of the mode-decision lambda (was
+        // 0.6): every top trial of the joint medium study ar-av1-medium
+        // (2026-11-23) moved it to 0.74-0.89. nceval.train against bd7aa2af4
+        // (draw 2026-11-23, k 0.1277): L3 J -0.66% [-1.13, -0.17], final
+        // check (600 f, both key shares) -0.99% [-1.21, -0.78], no guard;
+        // cycles 1/150, 1/300: Zen 5 +2.30 / +2.98%, Graviton 3/4 +1.34..1.41
+        // / +2.28..2.30%. 1.0 gained less (quick probe -0.30% against -0.99%).
+        // A codec value, not the engine's 1.0: each codec's trellis prices
+        // levels with its own coefficient-rate model (`coeff_trellis.rs`
+        // here), and the value is measured per codec: HEVC, VVC and AV2
+        // medium did not gain at 0.8 or 1.2 (quick, 2026-11-23). The
+        // presets not yet screened at 0.8 pin 0.6.
+        ("quant.trellis_lambda_scale", 0.8),
         ("av1.keyframe_directional", 1.0),
         ("av1.keyframe_angle_deltas", 1.0),
         ("av1.keyframe_filter_intra", 1.0),
@@ -1303,29 +1490,20 @@ impl CodecBackend for Av1Backend {
         // [-0.49, -0.11] BETTER, no guards.
         ("av1.cdef_search_row_step", 1.0),
         ("av1.keyframe_cfl", 1.0),
+        // Periodic keys planned 3 QP units finer than the inter level, adopted
+        // with the key-frame RD partition search (3ebca4466). The search itself
+        // is off at medium (reverted 2026-11-22): on the published front's chart
+        // timing (150 f, one key) the head cost Zen 5 cycles AV1 +5.3 %, AV2
+        // +9.1 %, VVC +5.9 % against the same head with the search, these finer
+        // keys, the AV1 / AV2 key trellis and H.264's key Intra_8x8 off, which
+        // outweighs its J (L3 -0.33 to -0.55 %). The finer key adds no search
+        // and stays (coordinator decision); a screen of it alone is queued.
+        ("rate.key_level_finer", 3.0),
     ];
 
     fn new(config: &EncoderConfig) -> Result<Self, ConfigError> {
-        if !(QINDEX_MIN..=QINDEX_MAX).contains(&config.quantizer) {
-            return Err(ConfigError::Quantizer {
-                value: config.quantizer,
-                min: QINDEX_MIN,
-                max: QINDEX_MAX,
-            });
-        }
-        if !(MIN_BLOCK_LOG2..=MAX_BLOCK_LOG2).contains(&config.block_log2) {
-            return Err(ConfigError::BlockSize(config.block_log2));
-        }
+        check_quantizer_and_block(config)?;
         let params = Av1Params::from_overrides(&config.params);
-        // The backend's base cadence decides which frames are base, so it
-        // cannot itself change on non-base frames.
-        let (nonbase, _) = config.params.split_prefix(nc_encoder::NONBASE_PREFIX);
-        if nonbase.names().any(|name| name == BASE_PERIOD_PARAM) {
-            return Err(ConfigError::Param(nc_encoder::ParamError::NotPerFrame(
-                format!("{}{BASE_PERIOD_PARAM}", nc_encoder::NONBASE_PREFIX),
-            )));
-        }
-        let base_period = (params.base_period.round() as u64).max(1);
         let superres = configured_superres(&params, config)?;
         let restoration_sequence = params.restoration >= 0.5 && superres.is_none();
         let width = superres
@@ -1352,7 +1530,7 @@ impl CodecBackend for Av1Backend {
             base_q_idx: config.quantizer,
             frame_q_idx: config.quantizer,
             block_q_idx: config.quantizer,
-            delta_q: DeltaQ::default(),
+            delta_q: DeltaQ::with_res(params.delta_q_res.round() as u8),
             segments: SegmentCoding::default(),
             segment_qp: params.segment_qp >= 0.5,
             frame_chroma_delta_q: noise_adapted_chroma_delta(
@@ -1362,9 +1540,6 @@ impl CodecBackend for Av1Backend {
             ),
             rounding_q7: params.keyframe_rounding_q7.round() as i32,
             chroma_rounding_q7: params.keyframe_rounding_q7.round() as i32,
-            base_period,
-            is_base_frame: true,
-            pre_tx_score_this_frame: params.pre_tx_skip_score,
             cdef: CdefParams::default(),
             cdef_input: CdefSource::default(),
             cdef_scratch: CdefScratch::default(),
@@ -1383,6 +1558,7 @@ impl CodecBackend for Av1Backend {
             dsp: Dsp::new(),
             scratch: Scratch::new(),
             still_skipped: None,
+            encoder_info: None,
             luma_copy: None,
             refresh: None,
             shave_min_zero_run: params.shave_min_zero_run.round() as usize,
@@ -1397,7 +1573,9 @@ impl CodecBackend for Av1Backend {
             rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
             alternate: None,
             filter_effort: FilterEffort::FULL,
+            r1_refine: false,
             gates: GateParams::from_overrides(&config.params),
+            intra_stage: IntraStage::from_overrides(&config.params),
             grain: GrainState::new(GrainParams::from_overrides(&config.params)),
             active_ref: ReferenceChoice::Primary,
             spatial: None,
@@ -1420,6 +1598,10 @@ impl CodecBackend for Av1Backend {
 
     fn superblock_log2(&self) -> u8 {
         SUPERBLOCK_LOG2
+    }
+
+    fn full_spectrum_log2(&self) -> u8 {
+        FULL_SPECTRUM_LOG2
     }
 
     fn min_block_log2(&self) -> u8 {
@@ -1650,6 +1832,12 @@ impl CodecBackend for Av1Backend {
         });
     }
 
+    const REUSE_PLANNED_LUMA_STATS: bool = true;
+
+    fn reuse_planned_luma_stats(&mut self, block: &Block, mv: Mv, stats: nc_dsp::Variance) {
+        self.scratch.planned_luma = Some((*block, to_av1_mv(mv), stats));
+    }
+
     fn luma_filter(&self) -> Option<nc_dsp::Filter> {
         Some(nc_dsp::Filter::Av1)
     }
@@ -1739,6 +1927,18 @@ impl CodecBackend for Av1Backend {
         self.node_trial_price(source, recon)
     }
 
+    fn node_trial_parts(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> Option<nc_encoder::NodeTrialParts> {
+        Some(self.node_trial_split_price(source, recon))
+    }
+
+    fn node_trial_summary(&self) -> Option<nc_encoder::NodeTrialSummary> {
+        Some(self.node_trial_coded_summary())
+    }
+
     fn undo_node_trial(&mut self, recon: &mut Picture) {
         self.undo_node(recon);
     }
@@ -1814,13 +2014,16 @@ impl CodecBackend for Av1Backend {
         if self.held_reference().is_some() {
             return false;
         }
+        let still = test.still && self.params.still_skip >= 0.5;
+        let bound_scale = self.params.still_skip_limit_scale;
         let accepted = test.within_noise
-            || (test.still && self.params.still_skip >= 0.5 && {
+            || test.repeat
+            || (still && {
                 let limits = PlaneZeroLimits {
                     luma: self.zero_limits(PlaneIndex::Y),
                     chroma: self.zero_limits(PlaneIndex::U),
                 }
-                .scaled(self.params.still_skip_limit_scale);
+                .scaled(bound_scale);
                 zero_vector_residual_is_zero(&self.dsp, block, source, reference, limits)
             });
         if accepted {
@@ -1851,7 +2054,9 @@ impl CodecBackend for Av1Backend {
                 let intra_inter = intra_inter_context(above, left);
                 let cdfs = &self.cdfs;
                 let filter_flag = if self.codes_filter_intra(block, IntraMode::Dc) {
-                    cdfs.filter_intra[filter_intra_size_context(block.log2_size())].bits(0)
+                    cdfs.filter_intra
+                        [filter_intra_size_context(block.log2_width, block.log2_height)]
+                    .bits(0)
                 } else {
                     0.0
                 };
@@ -1861,6 +2066,12 @@ impl CodecBackend for Av1Backend {
                     + filter_flag
             }
             PredictionMode::Inter(mv) => {
+                // A vector outside AV1's range has no code: a far vector
+                // (a second-reference seed at `VECTOR_REACH`, a neighbour's
+                // in the list) refined a step further out reaches it.
+                let Some(mv) = valid_av1_mv(mv) else {
+                    return f32::INFINITY;
+                };
                 let secondary_ref = self.is_secondary();
                 // Mode decision prices every candidate vector of the block
                 // [`Self::stack_for`] cached: read the cache in place (a
@@ -1868,14 +2079,13 @@ impl CodecBackend for Av1Backend {
                 if let Some(c) = self.current.as_ref().filter(|c| {
                     (c.x, c.y) == (block.x, block.y) && c.secondary_ref == secondary_ref
                 }) {
-                    return c.inter_base_bits
-                        + inter_mode_bits(&self.cdfs, &c.stack, to_av1_mv(mv));
+                    return c.inter_base_bits + inter_mode_bits(&self.cdfs, &c.stack, mv);
                 }
                 let (above, left) = self.neighbours(block);
                 let base_bits = self.cdfs.intra_inter[intra_inter_context(above, left)].bits(1)
                     + self.single_ref_bits(above, left, secondary_ref);
                 let stack = self.single_ref_stack(block, secondary_ref);
-                base_bits + inter_mode_bits(&self.cdfs, &stack, to_av1_mv(mv))
+                base_bits + inter_mode_bits(&self.cdfs, &stack, mv)
             }
         }
     }
@@ -1884,7 +2094,12 @@ impl CodecBackend for Av1Backend {
         let (above, left) = self.neighbours(block);
         let stack =
             find_compound_mv_stack(&self.grids.mode_info, block.x, block.y, block.log2_size());
-        let mvs = [to_av1_mv(primary_mv), to_av1_mv(secondary_mv)];
+        let (Some(primary), Some(secondary)) =
+            (valid_av1_mv(primary_mv), valid_av1_mv(secondary_mv))
+        else {
+            return f32::INFINITY;
+        };
+        let mvs = [primary, secondary];
         self.cdfs.intra_inter[intra_inter_context(above, left)].bits(1)
             + comp_ref_bits(&self.cdfs, above, left)
             + compound_inter_mode_bits(&self.cdfs, &stack, mvs)
@@ -1900,6 +2115,7 @@ impl CodecBackend for Av1Backend {
 
     fn set_frame_params(&mut self, params: &nc_encoder::ParamOverrides) {
         self.gates = GateParams::from_overrides(params);
+        self.intra_stage = IntraStage::from_overrides(params);
         let params = Av1Params::from_overrides(params);
         // Everything `begin_frame` does not re-derive from `self.params`.
         self.shave_min_zero_run = params.shave_min_zero_run.round() as usize;
@@ -1933,6 +2149,16 @@ impl CodecBackend for Av1Backend {
         self.filter_effort = effort;
     }
 
+    fn set_r1_refine(&mut self, active: bool) {
+        self.r1_refine = active;
+    }
+
+    /// A metadata OBU of a private type after every sequence header
+    /// (`obu::encoder_info_metadata`).
+    fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
+        self.encoder_info = payload.map(|payload| encoder_info_metadata(&payload));
+    }
+
     fn coded_skip_share(&self) -> Option<f32> {
         Some(self.grids.mode_info.skip_share())
     }
@@ -1952,7 +2178,6 @@ impl CodecBackend for Av1Backend {
         // What `begin_frame` and `set_frame_params` derive from them.
         self.shave_min_zero_run = self.params.shave_min_zero_run.round() as usize;
         self.chroma_skip_sad_num = self.params.chroma_skip_sad_num.round() as u32;
-        self.pre_tx_score_this_frame = self.pre_tx_score();
     }
 
     fn rate_model(&self) -> nc_encoder::RateModel {
@@ -1977,6 +2202,8 @@ impl CodecBackend for Av1Backend {
         self.active_ref = ReferenceChoice::Primary;
         // The engine uses one immutable reference throughout this frame.
         self.scratch.cached_luma = None;
+        self.scratch.planned_luma = None;
+        self.scratch.key_tx_ranking = None;
         // Key frames start from the default CDFs; inter frames from those
         // `LAST_FRAME` saved (`load_cdfs`, AV1 §5.9.2). No block information
         // crosses frames (no temporal vectors).
@@ -2005,13 +2232,6 @@ impl CodecBackend for Av1Backend {
                     .references
                     .secondary
                     .is_some_and(|link| held(link.slot)));
-        // With real temporal layers the base frames are the T0 frames.
-        self.is_base_frame = if plan.references.position.is_flat() {
-            plan.index.is_multiple_of(self.base_period)
-        } else {
-            plan.references.position.layer == 0
-        };
-        self.pre_tx_score_this_frame = self.pre_tx_score();
         self.set_rounding();
 
         self.frame_chroma_delta_q = noise_adapted_chroma_delta(
@@ -2115,15 +2335,27 @@ impl CodecBackend for Av1Backend {
         if self.kind != FrameKind::Key || self.random.is_some() {
             return IntraChoice::default();
         }
+        let tx =
+            TxSize::new(block.log2_width, block.log2_height).expect("supported transform size");
         let block_q_idx = self.block_qindex(decision.qp_offset);
         self.use_block_qindex(block_q_idx);
-        let ranking = self.rank_key_luma(block, source, recon);
+        let ranking = if tx.is_square() {
+            self.rank_key_luma(block, source, recon)
+        } else {
+            self.rank_rect_key_luma(block, source, recon)
+        };
         let alternatives = ranking.len().saturating_sub(1).min(usize::from(u8::MAX)) as u8;
         self.scratch.key_luma_ranking = Some((*block, ranking));
         IntraChoice {
             luma: alternatives,
+            transform: (intra_luma_type_count(tx) - 1) as u8,
             ..IntraChoice::default()
         }
+    }
+
+    fn intra_alternative_estimate(&self, rank: u8) -> Option<f32> {
+        let (_, ranking) = self.scratch.key_luma_ranking.as_ref()?;
+        Some(ranking.get(usize::from(rank))?.0)
     }
 
     fn encode_block(
@@ -2140,10 +2372,20 @@ impl CodecBackend for Av1Backend {
         let (inter, intra_mode) =
             self.choose_block_prediction(block, decision, source, reference, recon);
         let coded = match inter {
-            None => CodedPrediction::Intra(intra_mode),
+            None => {
+                self.scratch.luma_tx_type = self.key_luma_tx_type(
+                    block,
+                    intra_mode,
+                    decision.intra.transform,
+                    source,
+                    recon,
+                );
+                CodedPrediction::Intra(intra_mode)
+            }
             Some((mv, reference)) => CodedPrediction::Single { reference, mv },
         };
         self.code_block(block, block_q_idx, &coded, source, recon);
+        self.scratch.luma_tx_type = Av1TxType::DctDct;
     }
 
     fn encode_compound_block(
@@ -2238,6 +2480,7 @@ impl CodecBackend for Av1Backend {
             base_q_idx: self.frame_q_idx,
             chroma_delta_q: self.chroma_delta_q(),
             delta_q_present: self.delta_q.present(),
+            delta_q_res: self.delta_q.res(),
             segmentation: self.segments.header(),
             loop_filter: self.loop_filter,
             tx_mode_select: self.tx_mode == TxMode::Select,
@@ -2300,6 +2543,7 @@ impl CodecBackend for Av1Backend {
                     },
                 ),
             );
+            self.write_encoder_info(&mut unit);
         }
         let temporal_id = (self.temporal_layers > 1).then_some(refs.position.layer);
         write_obu(&mut unit, ObuType::Frame, temporal_id, &frame_bytes);
@@ -2316,10 +2560,16 @@ impl CodecBackend for Av1Backend {
         // The refreshed slots now hold this frame's final CDFs (AV1 §7.20);
         // key frames refresh every slot, whereas intra-only frames refresh
         // only their explicit mask.
-        let saved = Rc::new(self.cdfs.saved());
-        for (slot, cdfs) in self.slot_cdfs.iter_mut().enumerate() {
-            if refresh_all || self.references.refresh.contains(slot) {
-                *cdfs = Some(Rc::clone(&saved));
+        // A frame nothing refreshes from (an unreferenced upper-layer frame)
+        // saves none: the copy of the 35 KiB set was made and dropped (0.18 %
+        // of AV1 veryfast's P-frame instructions with its three layers, x86
+        // callgrind 2026-11-25; streams identical).
+        if refresh_all || !self.references.refresh.is_empty() {
+            let saved = Rc::new(self.cdfs.saved());
+            for (slot, cdfs) in self.slot_cdfs.iter_mut().enumerate() {
+                if refresh_all || self.references.refresh.contains(slot) {
+                    *cdfs = Some(Rc::clone(&saved));
+                }
             }
         }
         std::mem::swap(
@@ -2429,11 +2679,9 @@ impl Av1Backend {
         self.write_cdef_index(block, skip);
         self.write_delta_qindex(block, block_q_idx, skip);
         let mut info = ModeInfo {
-            size_log2_mi: block.log2_size() - MI_LOG2 as u8,
             skip,
             mode_detail: intra_mode.mode.symbol() as u8,
-            tx_log2: block.log2_size(),
-            ..ModeInfo::default()
+            ..ModeInfo::block(block.log2_width, block.log2_height)
         };
         self.write_block_mode(
             block,
@@ -2465,7 +2713,7 @@ impl Av1Backend {
             self.grids.mode_info.fill_mv2(
                 block.y >> MI_LOG2,
                 block.x >> MI_LOG2,
-                info.size_mi(),
+                info.width_mi(),
                 compound.mvs[1],
             );
         }
@@ -2624,6 +2872,8 @@ enum CodedPrediction<'a> {
 /// One plane's quantised residual for a block (levels in `Scratch`).
 struct PlaneResidual {
     tx: TxSize,
+    /// Its transform type (not `DCT_DCT` only on intra luma).
+    kind: Av1TxType,
     eob: usize,
     /// Present only for a coded luma residual eligible for the RD check.
     distortion: Option<ResidualDistortion>,
@@ -2635,6 +2885,7 @@ impl PlaneResidual {
     fn uncoded(tx: TxSize) -> Self {
         Self {
             tx,
+            kind: Av1TxType::DctDct,
             eob: 0,
             distortion: None,
             transform_rd_rejected: false,
@@ -2668,6 +2919,8 @@ struct Scratch {
     /// Exact filtered prediction, untouched by forward/inverse transforms.
     luma_prediction: Vec<u8>,
     cached_luma: Option<CachedLuma>,
+    /// Whole-pel primary variance retained from planning, with no pixels.
+    planned_luma: Option<(Block, Av1Mv, nc_dsp::Variance)>,
     /// Residual of the plane being coded, row-major.
     residual: Vec<i16>,
     /// Quantised levels of the block, per plane (libaom layout).
@@ -2690,7 +2943,14 @@ struct Scratch {
     cached_intra: Option<CachedIntraLevels>,
     /// The key-frame luma candidates of the block last asked about by
     /// [`CodecBackend::intra_alternatives`], cheapest estimate first.
-    key_luma_ranking: Option<(Block, Vec<LumaIntra>)>,
+    key_luma_ranking: Option<(Block, Vec<(f32, LumaIntra)>)>,
+    /// The key-frame luma transform types of a block and luma mode by
+    /// estimated cost ([`Av1Backend::rank_key_tx_types`]), kept while the
+    /// leaf search codes that block and mode again.
+    key_tx_ranking: Option<(Block, LumaIntra, Vec<Av1TxType>)>,
+    /// The transform type of the intra luma block being coded
+    /// (`tx_type.rs`); `DCT_DCT` outside [`Av1Backend::code_block`].
+    luma_tx_type: Av1TxType,
     /// Luma prediction residual of a whole block, for the transform-split
     /// decision.
     tree_residual: Vec<i16>,
@@ -2729,8 +2989,29 @@ struct LumaLeaf {
     offset: usize,
 }
 
+/// The non-zero levels of a transform block coded up to `eob` (none past
+/// it: `eob` is one past the last non-zero level in scan order, AV1 §5.11.39).
+fn nonzero_levels(levels: &[i16], eob: usize) -> usize {
+    if eob == 0 {
+        0
+    } else {
+        levels.iter().filter(|&&level| level != 0).count()
+    }
+}
+
 /// Smallest block whose inter transform may split (16x16 into 8x8).
 const MIN_TX_SPLIT_LOG2: u8 = 4;
+/// A transform's place in one plane's entropy-context arrays, in 4x4 units
+/// of the plane: column in the frame, row within the superblock, width and
+/// height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContextSpan {
+    x4: usize,
+    y4: usize,
+    w4: usize,
+    h4: usize,
+}
+
 /// Luma 4x4 units per superblock side (the left context's extent).
 const SB_MI_UNITS: usize = 16;
 
@@ -2756,6 +3037,7 @@ impl Scratch {
         Self {
             luma_prediction: vec![0; MAX_BLOCK_AREA],
             cached_luma: None,
+            planned_luma: None,
             residual: vec![0; MAX_BLOCK_AREA],
             levels: std::array::from_fn(|_| vec![0; MAX_CODED_AREA]),
             dequant: vec![0; MAX_CODED_AREA],
@@ -2765,6 +3047,8 @@ impl Scratch {
             intra_originals: vec![0; MAX_CODED_AREA],
             cached_intra: None,
             key_luma_ranking: None,
+            key_tx_ranking: None,
+            luma_tx_type: Av1TxType::DctDct,
             tree_residual: vec![0; MAX_BLOCK_AREA],
             tree_levels: vec![0; MAX_BLOCK_AREA],
             tree_originals: vec![0; MAX_BLOCK_AREA],
@@ -3002,7 +3286,7 @@ impl Av1Backend {
             return;
         }
         let mut search = None;
-        if self.kind == FrameKind::Key || self.is_base_frame {
+        if self.kind == FrameKind::Key {
             let candidate = luma_model;
             let found = cdef::choose_luma(
                 &self.dsp,
@@ -3094,9 +3378,9 @@ impl Av1Backend {
     /// `read_cdef`), and record a block with a residual as CDEF's to filter.
     fn write_cdef_index(&mut self, block: &Block, skip: bool) {
         if !skip {
-            let units = block.width() >> MI_LOG2;
+            let units = (block.width() >> MI_LOG2, block.height() >> MI_LOG2);
             let position = (block.x >> MI_LOG2, block.y >> MI_LOG2);
-            (self.grids.cdef_map).coded_block::<u8>(position, (units, units));
+            (self.grids.cdef_map).coded_block::<u8>(position, units);
         }
         if self.cdef_frame.per_superblock && !skip {
             let index = block.y / 64 * self.grids.width.div_ceil(64) + block.x / 64;
@@ -3330,6 +3614,15 @@ impl Av1Backend {
         self.spatial = Some(sp);
     }
 
+    /// The encoder information metadata OBU, after a sequence header and
+    /// before the frame (AV1 §7.5: metadata OBUs may follow the sequence
+    /// header); without an extension, it applies to every operating point.
+    fn write_encoder_info(&self, unit: &mut Vec<u8>) {
+        if let Some(metadata) = &self.encoder_info {
+            write_obu(unit, ObuType::Metadata, None, metadata);
+        }
+    }
+
     fn write_spatial_unit(&self, frame_bytes: &[u8]) -> Vec<u8> {
         let sp = self.spatial.as_ref().expect("spatial mode active");
         let layer = sp.current_layer;
@@ -3355,6 +3648,7 @@ impl Av1Backend {
                     self.random.is_some(),
                 );
                 write_obu_layer(&mut unit, ObuType::SequenceHeader, None, &seq);
+                self.write_encoder_info(&mut unit);
             }
         }
         write_obu_layer(
@@ -3453,10 +3747,20 @@ impl Av1Backend {
         intra_mode: usize,
         sse: u64,
     ) -> (f32, u32) {
-        self.residual_cost(tx, plane, is_inter, intra_mode, sse, CoefficientRate::Coded)
+        self.residual_cost(
+            tx,
+            plane,
+            is_inter,
+            intra_mode,
+            sse,
+            CoefficientRate::Coded,
+            None,
+        )
     }
 
     /// [`Self::residual_rd_cost`] with the coefficient bits priced by `rate`.
+    /// Tree trials use a stride and offset in the full luma residual.
+    #[allow(clippy::too_many_arguments)]
     fn residual_cost(
         &mut self,
         tx: TxSize,
@@ -3465,11 +3769,15 @@ impl Av1Backend {
         intra_mode: usize,
         sse: u64,
         rate: CoefficientRate,
+        tree_region: Option<(usize, usize)>,
     ) -> (f32, u32) {
         let n = tx.size();
-        let coded_area = tx.coded_size() * tx.coded_size();
+        let coded_area = tx.coded_area();
         let quantizer = self.plane_quantizer(plane, tx);
         let policy = self.forward_policy(false);
+        // Priced as `code_plane` codes it: past qindex 255 with the planned
+        // step's dead zone.
+        let planned_min_level = (self.lambda_scale > 1.0).then(|| self.planned_min_level(plane));
         let scratch = &mut self.scratch;
         let levels = &mut scratch.levels[plane as usize][..coded_area];
         if scratch.original_coefficients.is_empty() {
@@ -3478,8 +3786,17 @@ impl Av1Backend {
         // The RD cost keeps the unquantised coefficients: transform into
         // them and quantise out of place (no copy).
         let original = &mut scratch.original_coefficients[..coded_area];
-        forward_dct_with(&self.dsp, policy, tx, &scratch.residual, n, original);
-        let nonzero = quantize_coded_from(&self.dsp, policy, tx, original, &quantizer, levels);
+        let (residual, stride) = match tree_region {
+            Some((stride, offset)) => (&scratch.tree_residual[offset..], stride),
+            None => (scratch.residual.as_slice(), n),
+        };
+        forward_dct_with(&self.dsp, policy, tx, residual, stride, original);
+        let mut nonzero = quantize_coded_from(&self.dsp, policy, tx, original, &quantizer, levels);
+        if let Some(min_level) = planned_min_level
+            && nonzero > 0
+        {
+            nonzero = nc_encoder::apply_planned_dead_zone(levels, min_level) as u32;
+        }
         let eob = quantized_eob(&self.dsp, tx, levels, nonzero, policy);
         let plane_type = if plane == PlaneIndex::Y {
             PlaneType::Luma
@@ -3498,9 +3815,14 @@ impl Av1Backend {
         } else if self.kind == FrameKind::Key && (eob as f32) < linear_below {
             self.cdfs.coeff.linear_bits(tx, ctx, eob)
         } else {
-            self.cdfs
-                .coeff
-                .cost(tx, plane_type, is_inter, intra_mode, ctx, levels, eob)
+            self.cdfs.coeff.cost(
+                tx,
+                plane_type,
+                TypeSyntax::dct(is_inter, intra_mode),
+                ctx,
+                levels,
+                eob,
+            )
         };
         // Only the levels the EOB leaves room for can be nonzero: the others
         // dequantise to zero and add nothing to the gain.
@@ -3537,7 +3859,7 @@ impl Av1Backend {
     ) {
         for (plane, residual) in residuals.iter().enumerate() {
             let tx = residual.tx;
-            let (x4, y4, units) = Self::plane_units(block, plane);
+            let span = Self::plane_units(block, plane);
             if plane == 0 && !luma_leaves.is_empty() {
                 self.write_luma_tree(block, luma_leaves);
                 continue;
@@ -3550,21 +3872,33 @@ impl Av1Backend {
                 } else {
                     PlaneType::Chroma
                 };
-                let (above_ctx, left_ctx) = self.context_slices(plane, x4, y4, units);
+                let (above_ctx, left_ctx) = self.context_slices(plane, span);
                 // The transform always covers the whole plane block.
                 let ctx = TxbContext::derive(plane_type, true, above_ctx, left_ctx);
+                let syntax = if info.is_inter() {
+                    TypeSyntax::Inter
+                } else {
+                    TypeSyntax::Intra {
+                        dir: intra_mode.intra_dir(),
+                        kind: residual.kind,
+                    }
+                };
+                let levels = &self.scratch.levels[plane][..tx.coded_area()];
+                self.node_trials.note_coded_block(
+                    (plane == 0).then(|| tx.width_log2().max(tx.height_log2())),
+                    || nonzero_levels(levels, residual.eob),
+                );
                 self.cdfs.coeff.write(
                     &mut self.writer,
                     tx,
                     plane_type,
-                    info.is_inter(),
-                    intra_mode.intra_dir(),
+                    syntax,
                     ctx,
-                    &self.scratch.levels[plane][..tx.coded_size() * tx.coded_size()],
+                    levels,
                     residual.eob,
                 )
             };
-            self.set_contexts(plane, x4, y4, units, value);
+            self.set_contexts(plane, span, value);
         }
     }
 
@@ -3575,9 +3909,15 @@ impl Av1Backend {
         self.grids
             .mode_info
             .fill(block.y >> MI_LOG2, block.x >> MI_LOG2, info);
+        if !tx_split.split {
+            return;
+        }
         for &(dx, dy, tx_log2) in &tx_split.leaves(block.log2_size()) {
             if tx_log2 != block.log2_size() {
-                let leaf = ModeInfo { tx_log2, ..info };
+                let leaf = ModeInfo {
+                    tx: Log2Dims::square(tx_log2),
+                    ..info
+                };
                 let (row, col) = ((block.y + dy) >> MI_LOG2, (block.x + dx) >> MI_LOG2);
                 self.grids
                     .mode_info
@@ -3597,14 +3937,24 @@ impl Av1Backend {
         source: &Picture,
         recon: &mut Picture,
     ) -> (PlaneResidual, TxSplit, Vec<LumaLeaf>) {
-        let split = if is_inter {
+        let (split, prediction_sse) = if is_inter {
             self.choose_tx_split(block, prediction, source, recon)
         } else {
-            TxSplit::NONE
+            (TxSplit::NONE, None)
         };
         if !split.split {
-            let luma = self.code_plane(block, PlaneIndex::Y, prediction, source, recon);
+            let luma = self.code_plane(
+                block,
+                PlaneIndex::Y,
+                prediction,
+                source,
+                recon,
+                prediction_sse,
+            );
             return (luma, split, Vec::new());
+        }
+        if prediction_sse.is_none() {
+            self.predict_plane(block, PlaneIndex::Y, prediction, recon);
         }
         let leaves = self.code_luma_tree(block, prediction, source, recon, split);
         let tx = TxSize::from_log2(block.log2_size()).expect("supported transform size");
@@ -3680,24 +4030,26 @@ impl Av1Backend {
         self.split_past_ceiling(block)
     }
 
+    /// The SSE is present when the trial has already written the luma
+    /// prediction into `recon`, where the following coding step can use it.
     fn choose_tx_split(
         &mut self,
         block: &Block,
         prediction: &Prediction<'_>,
         source: &Picture,
         recon: &mut Picture,
-    ) -> TxSplit {
+    ) -> (TxSplit, Option<u32>) {
         if self.tx_mode != TxMode::Select || block.log2_size() < MIN_TX_SPLIT_LOG2 {
-            return TxSplit::NONE;
+            return (TxSplit::NONE, None);
         }
         if let Some(split) = self.decided_tx_split(block) {
-            return split;
+            return (split, None);
         }
         // Coarse quantizers code too few high frequencies for quarter
         // transforms to pay their syntax (`gate.tx_split_skip_min_quantizer`):
         // such blocks split as with the search off.
         if WorkGate::tx_split_skip(&self.gates).admits_quantizer(self.block_relative_quantizer()) {
-            return self.refined_tx_split(block);
+            return (self.refined_tx_split(block), None);
         }
         let n = block.size();
         self.predict_plane(block, PlaneIndex::Y, prediction, recon);
@@ -3713,9 +4065,12 @@ impl Av1Backend {
         // Blocks whose prediction error is below `inter_tx_split_energy` · λ
         // per sample keep the block transform without trial transforms:
         // their residual quantises to little or nothing at any size.
-        let sse = self.dsp.variance(size, &src, &pred).sse;
+        let sse = self.known_luma_stats(block, prediction).map_or_else(
+            || self.dsp.variance(size, &src, &pred).sse,
+            |stats| stats.sse,
+        );
         if (sse as f32) < self.params.inter_tx_split_energy * self.lambda() * (n * n) as f32 {
-            return TxSplit::NONE;
+            return (TxSplit::NONE, Some(sse));
         }
         // A block whose luma the unsplit path drops before the transform
         // (`code_plane`'s light-PD1 skip) keeps one transform: a split would
@@ -3725,7 +4080,7 @@ impl Av1Backend {
             && self.pre_tx_skip_enabled()
             && self.skip_luma_before_transform(block, *mv, sse, &src, &pred)
         {
-            return TxSplit::NONE;
+            return (TxSplit::NONE, Some(sse));
         }
         // Splitting pays where the error is concentrated in part of the
         // block: quarter transforms code that part and leave the rest
@@ -3735,15 +4090,22 @@ impl Av1Backend {
         if self.params.inter_tx_split_concentration > 0.0
             && !self.error_concentrated(n, &src, &pred)
         {
-            return TxSplit::NONE;
+            return (TxSplit::NONE, Some(sse));
         }
         self.dsp
             .residual(size, &src, &pred, &mut self.scratch.tree_residual, n);
-        let (whole, whole_nonzero) = self.tree_transform_cost(n, (0, 0), block.log2_size());
+        let tx = TxSize::from_log2(block.log2_size()).expect("supported transform size");
+        let (whole, whole_nonzero) = self.residual_cost(
+            tx,
+            PlaneIndex::Y,
+            true,
+            DC_PRED,
+            u64::from(sse),
+            CoefficientRate::Coded,
+            Some((n, 0)),
+        );
         // `code_plane` reuses these levels if the block keeps one transform.
-        let coded = TxSize::from_log2(block.log2_size())
-            .expect("supported transform size")
-            .coded_size();
+        let coded = tx.coded_size();
         let originals = self.trial_coefficients_reusable();
         let scratch = &mut self.scratch;
         scratch.intra_levels[..coded * coded].copy_from_slice(&scratch.levels[0][..coded * coded]);
@@ -3760,11 +4122,52 @@ impl Av1Backend {
         // Where the block transform quantises to nothing, the quarters are not
         // tried: a split only pays for coefficients the block transform
         // cannot code compactly, and most inter blocks have none (skips
-        // four trial transforms on 80-90% of P blocks).
-        if whole_nonzero == 0 {
-            return TxSplit::NONE;
+        // four trial transforms on 80-90% of P blocks). Stage 0 of a staged
+        // decision (`gate.tx_split_min_nonzero`, default 1: that exit
+        // alone): the whole transform's nonzero count ranks the split
+        // before its four exact pricings. What it skips: the quarters of
+        // blocks whose whole transform kept fewer levels. Why safe: those
+        // rarely split; AV1 medium, 4 quick clips x 2 qindex, 31 f
+        // (probe branch staged-md-probe): whole transforms with 1-4
+        // nonzero levels are 22 % of the trials, split in 0.6 % of them and
+        // carry 0.1 % of the split's gain; 5-8 levels 24 % of the trials, 5 %
+        // split, 3 % of the gain. Stream effect: in the commit message.
+        let min_nonzero = self.gates.tx_split_min_nonzero.round().max(1.0) as u32;
+        if whole_nonzero < min_nonzero {
+            return (TxSplit::NONE, Some(sse));
         }
-        let half = block.log2_size() - 1;
+        let (quarters, nonzero) = self.price_tx_quarters(n, block.log2_size() - 1, originals);
+        self.scratch.tree_trial = Some((*block, nonzero, originals));
+        let ctx = txsize::split_context(
+            &self.grids.txfm,
+            block.x >> MI_LOG2,
+            block.y >> MI_LOG2,
+            block.log2_size(),
+            block.log2_size(),
+        );
+        let flag = &self.cdfs.txfm_split[ctx];
+        let split_bits = flag.bits(1) - flag.bits(0);
+        // The unsplit block may also drop its residual (distortion = the
+        // prediction SSE, as the residual RD checks in `code_plane` price
+        // it), so the split must beat the cheaper of coding and not coding.
+        let unsplit = whole.min(sse as f32);
+        let split = if quarters + self.lambda() * split_bits < unsplit {
+            TxSplit {
+                split: true,
+                quadrants: [false; 4],
+            }
+        } else {
+            TxSplit::NONE
+        };
+        (split, Some(sse))
+    }
+
+    /// The four `half`-sized quarter transforms of the residual in
+    /// `scratch.tree_residual` (row stride `n`), priced as
+    /// [`Self::tree_transform_cost`] prices them: their summed cost and
+    /// each one's nonzero count. Their levels (and, with `originals`, their
+    /// coefficients) are kept for `code_luma_tree` if the split wins.
+    fn price_tx_quarters(&mut self, n: usize, half: u8, originals: bool) -> (f32, [u32; 4]) {
         let step = 1 << half;
         let quarter_area = {
             let coded = TxSize::from_log2(half)
@@ -3790,28 +4193,7 @@ impl Av1Backend {
                     .copy_from_slice(&scratch.original_coefficients[..quarter_area]);
             }
         }
-        self.scratch.tree_trial = Some((*block, nonzero, originals));
-        let ctx = txsize::split_context(
-            &self.grids.txfm,
-            block.x >> MI_LOG2,
-            block.y >> MI_LOG2,
-            block.log2_size(),
-            block.log2_size(),
-        );
-        let flag = &self.cdfs.txfm_split[ctx];
-        let split_bits = flag.bits(1) - flag.bits(0);
-        // The unsplit block may also drop its residual (distortion = the
-        // prediction SSE, as the residual RD checks in `code_plane` price
-        // it), so the split must beat the cheaper of coding and not coding.
-        let unsplit = whole.min(sse as f32);
-        if quarters + self.lambda() * split_bits < unsplit {
-            TxSplit {
-                split: true,
-                quadrants: [false; 4],
-            }
-        } else {
-            TxSplit::NONE
-        }
+        (quarters, nonzero)
     }
 
     /// Estimated cost (and nonzero count) of the `tx_log2` inter luma
@@ -3825,21 +4207,30 @@ impl Av1Backend {
     ) -> (f32, u32) {
         let tx = TxSize::from_log2(tx_log2).expect("supported transform size");
         let t = tx.size();
+        let offset = y * stride + x;
         let mut sse = 0_u64;
         for row in 0..t {
-            let from = &self.scratch.tree_residual[(y + row) * stride + x..][..t];
-            self.scratch.residual[row * t..][..t].copy_from_slice(from);
+            let from = &self.scratch.tree_residual[offset + row * stride..][..t];
             sse += from
                 .iter()
                 .map(|&r| u64::from((i32::from(r) * i32::from(r)).unsigned_abs()))
                 .sum::<u64>();
         }
-        self.residual_rd_cost(tx, PlaneIndex::Y, true, DC_PRED, sse)
+        self.residual_cost(
+            tx,
+            PlaneIndex::Y,
+            true,
+            DC_PRED,
+            sse,
+            CoefficientRate::Coded,
+            Some((stride, offset)),
+        )
     }
 
     /// Predict, transform, quantise and reconstruct the luma of an inter
     /// block coded with the transform tree `split`; the leaves' levels go
     /// to `scratch.tree_levels` in coding order.
+    #[allow(clippy::too_many_lines)] // Keep each leaf's quantization and reconstruction together.
     fn code_luma_tree(
         &mut self,
         block: &Block,
@@ -3848,7 +4239,6 @@ impl Av1Backend {
         recon: &mut Picture,
         split: TxSplit,
     ) -> Vec<LumaLeaf> {
-        self.predict_plane(block, PlaneIndex::Y, prediction, recon);
         let policy = self.forward_policy(true);
         // Quarter levels the split decision already quantised, if this tree
         // is exactly its one-level split.
@@ -3859,12 +4249,20 @@ impl Av1Backend {
             .filter(|(b, _, _)| *b == *block && split.quadrants == [false; 4])
             // The trellis needs the unquantised coefficients.
             .filter(|&(_, _, originals)| originals || self.trellis.is_none());
+        // Past qindex 255 the leaves are quantised as if at the planned step,
+        // as `code_plane` quantises a whole block: without it the ceiling
+        // split (`split_past_ceiling`) coded every 64x64 at plain qindex 255,
+        // so bits rose with the planned level and rate control ran to the
+        // top of its headroom (1080p, 150 kbps, Fast with the split search:
+        // level 362, the stream 18 % under its target).
+        let headroom = self.lambda_scale > 1.0;
+        let planned_min_level = self.planned_min_level(PlaneIndex::Y);
         let mut offset = 0;
         let mut leaves = Vec::with_capacity(4);
         for (index, (dx, dy, log2)) in split.leaves(block.log2_size()).into_iter().enumerate() {
             let tx = TxSize::from_log2(log2).expect("supported transform size");
             let t = tx.size();
-            let coded_area = tx.coded_size() * tx.coded_size();
+            let coded_area = tx.coded_area();
             let (x, y) = ((block.x + dx) as isize, (block.y + dy) as isize);
             let size = BlockSize::new(t, t).expect("square transform size");
             let src = source
@@ -3879,7 +4277,7 @@ impl Av1Backend {
             let trellis = self.trellis_block(&leaf, PlaneIndex::Y, prediction, false);
             let scratch = &mut self.scratch;
             let quantizer = self.steps.quantizer(tx, self.rounding_q7);
-            let nonzero = if let Some((_, counts, _)) = trial {
+            let mut eob = if let Some((_, counts, _)) = trial {
                 match trellis {
                     // The split decision's coefficients (a fresh transform
                     // of the same residual under the same forward policy),
@@ -3895,7 +4293,13 @@ impl Av1Backend {
                         &scratch.tree_originals[offset..offset + coded_area],
                         &mut scratch.tree_levels[offset..offset + coded_area],
                     ),
-                    None => counts[index],
+                    None => quantized_eob(
+                        &self.dsp,
+                        tx,
+                        &scratch.tree_levels[offset..offset + coded_area],
+                        counts[index],
+                        policy,
+                    ),
                 }
             } else {
                 self.dsp
@@ -3920,11 +4324,15 @@ impl Av1Backend {
                     )
                 } else {
                     forward_dct_with(&self.dsp, policy, tx, &scratch.residual, t, levels);
-                    quantize_coded(&self.dsp, policy, tx, levels, &quantizer)
+                    let nonzero = quantize_coded(&self.dsp, policy, tx, levels, &quantizer);
+                    quantized_eob(&self.dsp, tx, levels, nonzero, policy)
                 }
             };
             let levels = &mut scratch.tree_levels[offset..offset + coded_area];
-            let mut eob = quantized_eob(&self.dsp, tx, levels, nonzero, policy);
+            if headroom && eob > 0 {
+                let kept = nc_encoder::apply_planned_dead_zone(levels, planned_min_level) as u32;
+                eob = quantized_eob(&self.dsp, tx, levels, kept, policy);
+            }
             if eob > 0 {
                 eob = mds3::shave_trailing_ones(
                     coefficient_scan(tx),
@@ -3934,11 +4342,19 @@ impl Av1Backend {
                 );
             }
             if eob > 0 {
-                let area = dequantized_extent(tx, eob);
+                let area = if eob == 1 {
+                    1
+                } else {
+                    dequantized_extent(tx, eob)
+                };
                 let dequant = &mut scratch.dequant[..coded_area];
                 self.dsp
                     .av1_dequantize(&levels[..area], &quantizer, &mut dequant[..area]);
-                inverse_dct_add(&self.dsp, tx, dequant, eob, &mut dst);
+                if eob == 1 {
+                    inverse_dct_dc_add(&self.dsp, tx, dequant[0], &mut dst, &mut scratch.residual);
+                } else {
+                    inverse_dct_add(&self.dsp, tx, dequant, eob, &mut dst);
+                }
             }
             leaves.push(LumaLeaf {
                 dx,
@@ -4032,24 +4448,29 @@ impl Av1Backend {
     fn write_luma_tree(&mut self, block: &Block, leaves: &[LumaLeaf]) {
         for leaf in leaves {
             let tx = TxSize::from_log2(leaf.log2).expect("supported transform size");
-            let coded_area = tx.coded_size() * tx.coded_size();
+            let coded_area = tx.coded_area();
             let units = tx.size() >> MI_LOG2;
-            let x4 = (block.x + leaf.dx) >> MI_LOG2;
-            let y4 = ((block.y + leaf.dy) >> MI_LOG2) & (SB_MI_UNITS - 1);
-            let (above, left) = self.context_slices(0, x4, y4, units);
+            let span = ContextSpan {
+                x4: (block.x + leaf.dx) >> MI_LOG2,
+                y4: ((block.y + leaf.dy) >> MI_LOG2) & (SB_MI_UNITS - 1),
+                w4: units,
+                h4: units,
+            };
+            let (above, left) = self.context_slices(0, span);
             let ctx = TxbContext::derive(PlaneType::Luma, false, above, left);
             let levels = &self.scratch.tree_levels[leaf.offset..leaf.offset + coded_area];
+            self.node_trials
+                .note_coded_block(Some(leaf.log2), || nonzero_levels(levels, leaf.eob));
             let value = self.cdfs.coeff.write(
                 &mut self.writer,
                 tx,
                 PlaneType::Luma,
-                true,
-                DC_PRED,
+                TypeSyntax::Inter,
                 ctx,
                 levels,
                 leaf.eob,
             );
-            self.set_contexts(0, x4, y4, units, value);
+            self.set_contexts(0, span, value);
         }
     }
 
@@ -4064,9 +4485,123 @@ impl Av1Backend {
         let filter_intra = self.filter_intra_enabled();
         match self.random.as_mut() {
             Some(random) => random.luma_intra(block.log2_size(), filter_intra),
+            None if self.kind == FrameKind::Key && block.log2_width != block.log2_height => {
+                self.choose_rect_key_intra_mode(block, source, recon)
+            }
             None if self.kind == FrameKind::Key => self.choose_key_intra_mode(block, source, recon),
             None => LumaIntra::DC,
         }
+    }
+
+    /// The luma mode of a key-frame rectangle (`PARTITION_HORZ` / `VERT`
+    /// half): every mode at its nominal angle, predicted on the any-shape
+    /// path ranked by prediction SSE plus λ times the mode bits, the best
+    /// few of them and then the winner's angle deltas by the
+    /// transform-domain estimate. Simpler than the squares' search (no
+    /// filter intra, no SATD shortlist), whose estimates are written for
+    /// squares.
+    fn choose_rect_key_intra_mode(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> LumaIntra {
+        self.rank_rect_key_luma(block, source, recon)[0].1
+    }
+
+    /// [`Self::choose_rect_key_intra_mode`]'s candidates, cheapest first
+    /// (the leaf search's luma alternatives of a rectangle): its choice,
+    /// then the other transform-costed candidates by their estimate, each
+    /// with its estimated cost.
+    fn rank_rect_key_luma(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> Vec<(f32, LumaIntra)> {
+        let (width, height) = (block.width(), block.height());
+        let edges = LumaIntra::block_edges(
+            recon.plane(PlaneIndex::Y),
+            (block.x, block.y),
+            (width, height),
+        );
+        let mut ranked: Vec<(f32, LumaIntra)> = IntraMode::ALL
+            .map(LumaIntra::plain)
+            .into_iter()
+            .map(|luma| (self.rect_prediction_cost(block, source, &edges, luma), luma))
+            .collect();
+        ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // The best few by the transform-domain estimate
+        // (`av1.keyframe_intra_rd_candidates`), as the squares' search.
+        let keep = (self.params.keyframe_intra_rd_candidates.round() as usize).max(1);
+        let candidates: Vec<LumaIntra> = ranked.iter().take(keep).map(|&(_, luma)| luma).collect();
+        let mut ranking = self.rect_rd_ranking(block, source, recon, &candidates);
+        if ranking[0].1.mode.nominal_angle().is_some() {
+            // The best direction's angle deltas (`av1.keyframe_angle_deltas`).
+            let reach = self.params.keyframe_angle_deltas.round() as i8;
+            let best = ranking[0].1;
+            let deltas: Vec<LumaIntra> = (-reach..=reach)
+                .map(|angle_delta| LumaIntra {
+                    angle_delta,
+                    ..best
+                })
+                .collect();
+            ranking[0] = self.rect_rd_ranking(block, source, recon, &deltas)[0];
+        }
+        ranking
+    }
+
+    /// `candidates` for rectangle `block`, cheapest first by
+    /// [`Self::luma_residual_rd`] (`DCT_DCT`) plus λ times the mode bits.
+    fn rect_rd_ranking(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+        candidates: &[LumaIntra],
+    ) -> Vec<(f32, LumaIntra)> {
+        let lambda = f64::from(self.lambda());
+        let mut costed: Vec<(f64, LumaIntra)> = candidates
+            .iter()
+            .map(|&luma| {
+                self.predict_plane(block, PlaneIndex::Y, &Prediction::Intra(luma), recon);
+                let sse = self.luma_residual_of(block, source, recon);
+                let (cost, _) = self.luma_residual_rd(block, luma, Av1TxType::DctDct, sse);
+                (
+                    cost + lambda * f64::from(self.key_mode_bits(block, luma)),
+                    luma,
+                )
+            })
+            .collect();
+        // Stable: ties keep the prediction-cost order.
+        costed.sort_by(|a, b| a.0.total_cmp(&b.0));
+        costed
+            .into_iter()
+            .map(|(cost, luma)| (cost as f32, luma))
+            .collect()
+    }
+
+    /// Prediction SSE plus λ times the mode bits of rectangle `block`
+    /// predicted with `luma` from `edges`.
+    fn rect_prediction_cost(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        edges: &nc_dsp::intra_prediction::av1_block::BlockEdges,
+        luma: LumaIntra,
+    ) -> f32 {
+        let (width, height) = (block.width(), block.height());
+        let size = BlockSize::new(width, height).expect("an AV1 block size");
+        let src = source
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, width, height)
+            .expect("blocks lie inside the picture");
+        let prediction = &mut self.scratch.luma_prediction[..width * height];
+        let mut dst = nc_common::PlaneViewMut::new(prediction, width, width, height)
+            .expect("the scratch holds a block");
+        luma.predict_block(&self.dsp, edges, &mut dst);
+        let sse = self.dsp.variance(size, &src, &dst.as_view()).sse as f32;
+        sse + self.lambda() * self.key_mode_bits(block, luma)
     }
 
     /// `CfL` for a block whose luma is reconstructed: key-frame intra blocks
@@ -4119,7 +4654,10 @@ impl Av1Backend {
         source: &Picture,
         recon: &Picture,
     ) -> Option<ChromaFromLuma> {
-        if self.kind != FrameKind::Key || self.params.keyframe_cfl < 0.5 || block.log2_size() > 5 {
+        if self.kind != FrameKind::Key
+            || self.params.keyframe_cfl < 0.5
+            || block.log2_width.max(block.log2_height) > CFL_MAX_LOG2
+        {
             return None;
         }
         let cfl = ChromaFromLuma::search(&self.dsp, block, source, recon);
@@ -4157,18 +4695,51 @@ impl Av1Backend {
         if set == IntraModeSet::DcOnly && self.params.keyframe_satd_modes >= 0.5 {
             return self.choose_key_intra_by_satd(block, source, recon);
         }
-        let shortlist = self.key_intra_shortlist(block, source, recon, set.modes());
-        if set == IntraModeSet::DcOnly && shortlist.is_empty() {
-            return LumaIntra::DC;
+        let candidates = self.key_luma_candidates(block, source, recon, set);
+        match candidates.as_slice() {
+            // A single candidate needs no pricing (the staged cut may leave
+            // one, as SVT-AV1 M8 codes its one SATD winner).
+            [only] if set == IntraModeSet::DcOnly || self.intra_stage.cut(true).is_active() => {
+                *only
+            }
+            _ => {
+                self.rd_best_luma(block, source, recon, &candidates, Self::key_mode_bits)
+                    .1
+            }
         }
+    }
+
+    /// The key-frame luma candidates the transform-costed search prices:
+    /// `set`'s modes and the shortlist ([`Self::key_intra_shortlist`]), cut
+    /// by the staged decision's first stage where it is on
+    /// ([`IntraStage`]: all of them ranked by prediction SATD + √λ · mode
+    /// bits, the survivors kept in that order).
+    fn key_luma_candidates(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+        set: IntraModeSet,
+    ) -> Vec<LumaIntra> {
+        let shortlist = self.key_intra_shortlist(block, source, recon, set.modes());
         let candidates: Vec<LumaIntra> = set
             .modes()
             .iter()
             .map(|&mode| LumaIntra::plain(mode))
             .chain(shortlist)
             .collect();
-        self.rd_best_luma(block, source, recon, &candidates, Self::key_mode_bits)
-            .1
+        let cut = self.intra_stage.cut(true);
+        if !cut.is_active() || candidates.len() <= 1 {
+            return candidates;
+        }
+        let ranked = candidates
+            .into_iter()
+            .map(|luma| (luma, self.key_intra_satd_cost(block, source, recon, luma)))
+            .collect();
+        cut.survivors(ranked)
+            .into_iter()
+            .map(|(luma, _)| luma)
+            .collect()
     }
 
     /// The key-frame luma candidates of `block` by the mode search's own
@@ -4180,17 +4751,15 @@ impl Av1Backend {
         block: &Block,
         source: &Picture,
         recon: &mut Picture,
-    ) -> Vec<LumaIntra> {
+    ) -> Vec<(f32, LumaIntra)> {
         let set = IntraModeSet::from_param(self.params.keyframe_intra_modes);
         if set == IntraModeSet::DcOnly && self.params.keyframe_satd_modes >= 0.5 {
-            return vec![self.choose_key_intra_by_satd(block, source, recon)];
+            // One candidate: its estimate is never compared.
+            return vec![(0.0, self.choose_key_intra_by_satd(block, source, recon))];
         }
-        let shortlist = self.key_intra_shortlist(block, source, recon, set.modes());
-        let mut ranked: Vec<(f32, LumaIntra)> = set
-            .modes()
-            .iter()
-            .map(|&mode| LumaIntra::plain(mode))
-            .chain(shortlist)
+        let mut ranked: Vec<(f32, LumaIntra)> = self
+            .key_luma_candidates(block, source, recon, set)
+            .into_iter()
             .map(|luma| {
                 let cost = self
                     .rd_best_luma(block, source, recon, &[luma], Self::key_mode_bits)
@@ -4200,7 +4769,7 @@ impl Av1Backend {
             .collect();
         // Stable: ties keep the search's order, so its choice stays first.
         ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
-        ranked.into_iter().map(|(_, luma)| luma).collect()
+        ranked
     }
 
     /// Candidate `rank` of the ranking [`CodecBackend::intra_alternatives`]
@@ -4214,11 +4783,156 @@ impl Av1Backend {
             .key_luma_ranking
             .as_ref()
             .filter(|_| self.kind == FrameKind::Key)?;
-        let luma = *ranking
+        let luma = ranking
             .get(usize::from(rank))
-            .filter(|_| ranked_block == block)?;
+            .filter(|_| ranked_block == block)?
+            .1;
         self.scratch.cached_intra = None;
         Some(luma)
+    }
+
+    /// The luma transform type of key-frame intra block `block` predicted
+    /// with `luma`: alternative `choice` of [`intra_luma_types`] (0 its own
+    /// choice, `av1.keyframe_mode_tx_type`). `DCT_DCT` outside key frames.
+    /// With `av1.keyframe_tx_type_search` the alternatives are ranked by
+    /// estimated cost ([`Self::rank_key_tx_types`]), so choice 0 is the
+    /// estimate's best.
+    fn key_luma_tx_type(
+        &mut self,
+        block: &Block,
+        luma: LumaIntra,
+        choice: u8,
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> Av1TxType {
+        if self.kind != FrameKind::Key {
+            return Av1TxType::DctDct;
+        }
+        let tx =
+            TxSize::new(block.log2_width, block.log2_height).expect("supported transform size");
+        let mode_default = self.params.keyframe_mode_tx_type >= 0.5;
+        let mut types = intra_luma_types(tx, luma.mode.symbol(), mode_default);
+        // The estimate is written for square transforms.
+        if types.len() > 1 && tx.is_square() && self.params.keyframe_tx_type_search >= 0.5 {
+            types = match self.scratch.key_tx_ranking.take() {
+                Some((b, l, ranking)) if b == *block && l == luma => ranking,
+                _ => self.rank_key_tx_types(block, luma, &types, source, recon),
+            };
+            self.scratch.key_tx_ranking = Some((*block, luma, types.clone()));
+        }
+        types[usize::from(choice).min(types.len() - 1)]
+    }
+
+    /// `types` for the luma of key-frame block `block` predicted with
+    /// `luma`, cheapest first by an estimate in the transform domain (as
+    /// libaom's and SVT-AV1's intra transform-type searches price them,
+    /// without reconstructing): each type's forward transform, quantised
+    /// as coded, its coefficient bits with the block's real contexts, and
+    /// the prediction error the dequantised coefficients leave
+    /// ([`crate::transform::coefficient_gain`]). One prediction and a
+    /// forward per type, against a whole leaf coding per type in the leaf
+    /// search; none past the first where it quantises to nothing.
+    fn rank_key_tx_types(
+        &mut self,
+        block: &Block,
+        luma: LumaIntra,
+        types: &[Av1TxType],
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> Vec<Av1TxType> {
+        self.predict_plane(block, PlaneIndex::Y, &Prediction::Intra(luma), recon);
+        let sse = self.luma_residual_of(block, source, recon);
+        let mut costed = Vec::with_capacity(types.len());
+        for &kind in types {
+            let (cost, eob) = self.luma_residual_rd(block, luma, kind, sse);
+            // The early exit: where the encoder's own choice quantises to
+            // nothing, the residual is below the step and the other types
+            // are not tried (they would code at best a few levels the
+            // first type's λ judged not worth it).
+            if eob == 0 && costed.is_empty() {
+                return types.to_vec();
+            }
+            costed.push((cost, kind));
+        }
+        // Stable: ties keep the encoder's order, its own choice first.
+        costed.sort_by(|a, b| a.0.total_cmp(&b.0));
+        costed.into_iter().map(|(_, kind)| kind).collect()
+    }
+
+    /// Put the luma residual of key-frame block `block` (its prediction
+    /// already in `recon`) into the scratch residual, row-major at the
+    /// block's width; returns its energy.
+    fn luma_residual_of(&mut self, block: &Block, source: &Picture, recon: &Picture) -> f64 {
+        let (width, height) = (block.width(), block.height());
+        let size = BlockSize::new(width, height).expect("an AV1 block size");
+        let src = source
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, width, height)
+            .expect("blocks lie inside the picture");
+        let pred = recon
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, width, height)
+            .expect("blocks lie inside the picture");
+        self.dsp
+            .residual(size, &src, &pred, &mut self.scratch.residual, width);
+        f64::from(self.dsp.variance(size, &src, &pred).sse)
+    }
+
+    /// The transform-domain RD estimate of coding the scratch residual of
+    /// key-frame intra block `block` (energy `sse`, predicted with `luma`)
+    /// as one `kind` transform: forward, quantised as coded, its
+    /// coefficient bits with the block's real contexts, and the error the
+    /// dequantised coefficients leave ([`crate::transform::coefficient_gain`]),
+    /// as libaom's and SVT-AV1's intra searches price them. Returns the cost
+    /// and the end of block.
+    fn luma_residual_rd(
+        &mut self,
+        block: &Block,
+        luma: LumaIntra,
+        kind: Av1TxType,
+        sse: f64,
+    ) -> (f64, usize) {
+        let tx =
+            TxSize::new(block.log2_width, block.log2_height).expect("supported transform size");
+        let coded_area = tx.coded_area();
+        let (above, left) = self.context_slices(0, Self::plane_units(block, 0));
+        let ctx = TxbContext::derive(PlaneType::Luma, true, above, left);
+        let quantizer = self.plane_quantizer(PlaneIndex::Y, tx);
+        let lambda = f64::from(self.lambda());
+        let scratch = &mut self.scratch;
+        if scratch.original_coefficients.is_empty() {
+            scratch.original_coefficients.resize(MAX_CODED_AREA, 0);
+        }
+        let policy = ForwardPolicy::default();
+        let original = &mut scratch.original_coefficients[..coded_area];
+        let levels = &mut scratch.levels[0][..coded_area];
+        forward_with(
+            &self.dsp,
+            policy,
+            tx,
+            kind,
+            &scratch.residual,
+            block.width(),
+            original,
+        );
+        let nonzero = quantize_coded_from(&self.dsp, policy, tx, original, &quantizer, levels);
+        let eob = quantized_eob(&self.dsp, tx, levels, nonzero, policy);
+        let syntax = TypeSyntax::Intra {
+            dir: luma.intra_dir(),
+            kind,
+        };
+        let bits = self
+            .cdfs
+            .coeff
+            .cost(tx, PlaneType::Luma, syntax, ctx, levels, eob);
+        let gain = if eob == 0 {
+            0.0
+        } else {
+            let dequant = &mut scratch.dequant[..coded_area];
+            self.dsp.av1_dequantize(levels, &quantizer, dequant);
+            crate::transform::coefficient_gain(&self.dsp, tx, original, dequant)
+        };
+        ((sse - gain).max(0.0) + lambda * f64::from(bits), eob)
     }
 
     /// The speed rungs' key-frame luma mode (`av1.keyframe_satd_modes`).
@@ -4497,6 +5211,7 @@ impl Av1Backend {
             luma.intra_dir(),
             sse,
             CoefficientRate::Modelled,
+            None,
         );
         residual + self.lambda() * self.params.intra_rate_scale * self.key_mode_bits(block, luma)
     }
@@ -4571,7 +5286,7 @@ impl Av1Backend {
             bits += self.cdfs.angle_delta[ctx].bits(luma.angle_delta_symbol());
         }
         if self.codes_filter_intra(block, luma.mode) {
-            let ctx = filter_intra_size_context(block.log2_size());
+            let ctx = filter_intra_size_context(block.log2_width, block.log2_height);
             bits += self.cdfs.filter_intra[ctx].bits(usize::from(luma.filter.is_some()));
             if let Some(filter) = luma.filter {
                 bits += self.cdfs.filter_intra_mode.bits(filter.symbol());
@@ -4645,6 +5360,23 @@ impl Av1Backend {
         self.store.held(slot)
     }
 
+    fn known_luma_stats(
+        &self,
+        block: &Block,
+        prediction: &Prediction<'_>,
+    ) -> Option<nc_dsp::Variance> {
+        if let Prediction::Inter { mv, .. } = prediction
+            && let Some((cached, vector, stats)) = self.scratch.planned_luma
+            && *block == cached
+            && *mv == vector
+            && !self.is_secondary()
+            && self.held_reference().is_none()
+        {
+            return Some(stats);
+        }
+        self.cached_luma_stats(block, prediction)
+    }
+
     /// Statistics for the exact cached prediction, if its key matches.
     #[allow(clippy::inline_always)]
     #[inline(always)]
@@ -4702,7 +5434,9 @@ impl Av1Backend {
     ) {
         let shift = usize::from(plane != PlaneIndex::Y);
         let (x, y) = (block.x >> shift, block.y >> shift);
-        let n = 1usize << (block.log2_size() - shift as u8);
+        // The side of a square block (rectangles are intra: the any-shape
+        // path below).
+        let n = block.width() >> shift;
         if plane == PlaneIndex::Y && self.cached_luma_stats(block, prediction).is_some() {
             let cached = PlaneView::new(&self.scratch.luma_prediction[..n * n], n, n, n)
                 .expect("cached prediction is tightly packed");
@@ -4720,7 +5454,16 @@ impl Av1Backend {
                 } else {
                     LumaIntra::DC
                 };
-                if luma == LumaIntra::DC {
+                if block.log2_width != block.log2_height {
+                    // Rectangles take the any-shape path (`intra.rs`).
+                    let size = (block.width() >> shift, block.height() >> shift);
+                    let edges = LumaIntra::block_edges(recon.plane(plane), (x, y), size);
+                    let mut dst = recon
+                        .plane_mut(plane)
+                        .region_mut(x as isize, y as isize, size.0, size.1)
+                        .expect("blocks lie inside the picture");
+                    luma.predict_block(&self.dsp, &edges, &mut dst);
+                } else if luma == LumaIntra::DC {
                     let value = dc_value(recon.plane(plane), x, y, n, y > 0, x > 0);
                     recon
                         .plane_mut(plane)
@@ -4738,9 +5481,10 @@ impl Av1Backend {
             }
             Prediction::ChromaFromLuma(cfl) => {
                 assert_ne!(plane, PlaneIndex::Y);
+                let (width, height) = (block.width() >> shift, block.height() >> shift);
                 let mut dst = recon
                     .plane_mut(plane)
-                    .region_mut(x as isize, y as isize, n, n)
+                    .region_mut(x as isize, y as isize, width, height)
                     .expect("block inside reconstruction");
                 cfl.predict(plane as usize - 1, &mut dst);
             }
@@ -4861,7 +5605,7 @@ impl Av1Backend {
             if skip_residual {
                 self.predict_without_residual(block, plane, prediction, recon)
             } else {
-                self.code_plane(block, plane, prediction, source, recon)
+                self.code_plane(block, plane, prediction, source, recon, None)
             }
         })
     }
@@ -4887,26 +5631,40 @@ impl Av1Backend {
         prediction: &Prediction<'_>,
         source: &Picture,
         recon: &mut Picture,
+        prediction_sse: Option<u32>,
     ) -> PlaneResidual {
         let shift = usize::from(plane != PlaneIndex::Y);
         let (x, y) = (block.x >> shift, block.y >> shift);
-        let log2 = block.log2_size() - shift as u8;
-        let tx = TxSize::from_log2(log2).expect("block sizes map to supported transforms");
-        let n = tx.size();
-        let coded_area = tx.coded_size() * tx.coded_size();
-        let size = BlockSize::new(n, n).expect("square AV1 block size");
-        let policy = self.forward_policy(true);
+        // One transform the size of the plane block: square, or (key
+        // frames' `PARTITION_HORZ` / `VERT` halves) a 2:1 rectangle.
+        let (width, height) = (block.width() >> shift, block.height() >> shift);
+        let tx = TxSize::new(width.ilog2() as u8, height.ilog2() as u8)
+            .expect("block sizes map to supported transforms");
+        let coded_area = tx.coded_area();
+        let size = BlockSize::new(width, height).expect("AV1 block size");
+        let kind = match (plane, prediction) {
+            (PlaneIndex::Y, Prediction::Intra(_)) => self.scratch.luma_tx_type,
+            _ => Av1TxType::DctDct,
+        };
+        // The low-frequency forward approximates the square DCT only.
+        let policy = if kind == Av1TxType::DctDct && tx.is_square() {
+            self.forward_policy(true)
+        } else {
+            ForwardPolicy::default()
+        };
 
         // Prediction goes straight into the reconstruction; the residual is
         // added on top of it.
-        self.predict_plane(block, plane, prediction, recon);
+        if prediction_sse.is_none() {
+            self.predict_plane(block, plane, prediction, recon);
+        }
         let mut dst = recon
             .plane_mut(plane)
-            .region_mut(x as isize, y as isize, n, n)
+            .region_mut(x as isize, y as isize, width, height)
             .expect("blocks lie inside the picture");
         let src = source
             .plane(plane)
-            .region(x as isize, y as isize, n, n)
+            .region(x as isize, y as isize, width, height)
             .expect("blocks lie inside the picture");
         let max_mv = self.params.residual_rd_max_mv as i32;
         // Planned past qindex 255 (`FramePlan::lambda_scale`) every inter
@@ -4929,12 +5687,14 @@ impl Av1Backend {
                 _ => false,
             };
         // Full SSE preserves mean residual energy; variance is unsafe here.
-        let mut pre_tx_sse = if plane == PlaneIndex::Y {
-            self.cached_luma_stats(block, prediction)
-                .map(|stats| stats.sse)
-        } else {
-            None
-        };
+        let mut pre_tx_sse = prediction_sse.or_else(|| {
+            if plane == PlaneIndex::Y {
+                self.known_luma_stats(block, prediction)
+                    .map(|stats| stats.sse)
+            } else {
+                None
+            }
+        });
         let pre_tx_skip = plane == PlaneIndex::Y
             && self.pre_tx_skip_enabled()
             && match prediction {
@@ -4948,15 +5708,19 @@ impl Av1Backend {
             };
         let transform_rd_context =
             (needs_distortion && self.params.transform_rd_skip >= 0.5).then(|| {
-                let (x4, y4, units) = Self::plane_units(block, 0);
-                let (above, left) = self.context_slices(0, x4, y4, units);
+                let span = Self::plane_units(block, 0);
+                let (above, left) = self.context_slices(0, span);
                 TxbContext::derive(PlaneType::Luma, true, above, left)
             });
         let transform_rd_lambda = transform_rd_context.map(|_| self.lambda());
         let quantizer = self.plane_quantizer(plane, tx);
+        let chroma_skip_limits = (plane != PlaneIndex::Y
+            && self.params.chroma_skip_zero_scale > 0.0)
+            .then(|| self.zero_limits(plane));
         let planned_min_level = self.planned_min_level(plane);
         let trellis = self.trellis_block(block, plane, prediction, true);
-        let rd_trim = self.rd_trim_for(plane);
+        // The rate trim is a square-transform tool.
+        let rd_trim = self.rd_trim_for(plane).filter(|_| tx.is_square());
         let scratch = &mut self.scratch;
         let levels = &mut scratch.levels[plane as usize][..coded_area];
         let inter = matches!(
@@ -4968,10 +5732,12 @@ impl Av1Backend {
             return uncoded;
         }
         let cached = match (plane, prediction) {
+            // The mode search's levels are its DCT's.
             (PlaneIndex::Y, Prediction::Intra(mode)) => scratch
                 .cached_intra
                 .take()
-                .filter(|c| c.block == *block && c.mode == Some(*mode)),
+                .filter(|c| c.block == *block && c.mode == Some(*mode))
+                .filter(|_| kind == Av1TxType::DctDct),
             // The transform-RD check needs the unquantised coefficients,
             // which the cache does not keep.
             (PlaneIndex::Y, Prediction::Inter { .. } | Prediction::Compound(_))
@@ -4992,11 +5758,11 @@ impl Av1Backend {
             Some(c) => c.originals.then_some(true),
             None => Some(false),
         };
-        let nonzero = if let Some(cached) = cached {
+        let quantized = if let Some(cached) = cached {
             if let Some(t) = trellis {
                 // The trial's coefficients (a fresh transform: same
                 // residual and forward policy), quantised by the trellis.
-                trellis_quantize(
+                QuantizedBlock::EndOfBlock(trellis_quantize(
                     &self.dsp,
                     (&mut self.cdfs.coeff, &self.grids.contexts),
                     &mut scratch.trellis,
@@ -5006,21 +5772,39 @@ impl Av1Backend {
                     &quantizer,
                     &scratch.intra_originals[..coded_area],
                     levels,
-                )
+                ))
             } else {
                 levels.copy_from_slice(&scratch.intra_levels[..coded_area]);
-                cached.nonzero
+                QuantizedBlock::Count(cached.nonzero)
             }
         } else {
-            self.dsp
-                .residual(size, &src, &dst.as_view(), &mut scratch.residual, n);
-            // SVT light-PD1 shortcut for inter chroma (`mds3` module docs).
+            // SVT light-PD1 shortcut for inter chroma (`mds3` module docs),
+            // decided from the samples before any residual is formed.
             if inter
                 && plane != PlaneIndex::Y
-                && mds3::skip_chroma_residual(&scratch.residual, n, self.chroma_skip_sad_num)
+                && mds3::skip_chroma_residual(
+                    &self.dsp,
+                    &src,
+                    &dst.as_view(),
+                    width,
+                    self.chroma_skip_sad_num,
+                )
+                && chroma_skip_limits.is_none_or(|limits| {
+                    !width.is_multiple_of(ZERO_TEST_MIN_SIDE)
+                        || residual_quantises_to_zero(
+                            &self.dsp,
+                            width,
+                            &src,
+                            &dst.as_view(),
+                            floored_zero_limits(limits, width, self.params.chroma_skip_min_error),
+                            self.params.chroma_skip_zero_scale,
+                        )
+                })
             {
                 return uncoded;
             }
+            self.dsp
+                .residual(size, &src, &dst.as_view(), &mut scratch.residual, width);
             if transform_rd_context.is_some() || trellis.is_some() || rd_trim.is_some() {
                 // The RD paths keep the unquantised coefficients: transform
                 // into them and quantise out of place (no copy).
@@ -5028,9 +5812,17 @@ impl Av1Backend {
                     scratch.original_coefficients.resize(MAX_CODED_AREA, 0);
                 }
                 let original = &mut scratch.original_coefficients[..coded_area];
-                forward_dct_with(&self.dsp, policy, tx, &scratch.residual, n, original);
+                forward_with(
+                    &self.dsp,
+                    policy,
+                    tx,
+                    kind,
+                    &scratch.residual,
+                    width,
+                    original,
+                );
                 match trellis {
-                    Some(t) => trellis_quantize(
+                    Some(t) => QuantizedBlock::EndOfBlock(trellis_quantize(
                         &self.dsp,
                         (&mut self.cdfs.coeff, &self.grids.contexts),
                         &mut scratch.trellis,
@@ -5040,29 +5832,41 @@ impl Av1Backend {
                         &quantizer,
                         original,
                         levels,
-                    ),
-                    None => {
-                        quantize_coded_from(&self.dsp, policy, tx, original, &quantizer, levels)
-                    }
+                    )),
+                    None => QuantizedBlock::Count(quantize_coded_from(
+                        &self.dsp, policy, tx, original, &quantizer, levels,
+                    )),
                 }
             } else {
-                forward_dct_with(&self.dsp, policy, tx, &scratch.residual, n, levels);
+                forward_with(
+                    &self.dsp,
+                    policy,
+                    tx,
+                    kind,
+                    &scratch.residual,
+                    width,
+                    levels,
+                );
                 // Quantization already counts every nonzero level. Avoid
                 // walking the diagonal scan again for all-zero and DC-only
                 // blocks.
-                quantize_coded(&self.dsp, policy, tx, levels, &quantizer)
+                QuantizedBlock::Count(quantize_coded(&self.dsp, policy, tx, levels, &quantizer))
             }
         };
-        let nonzero = if headroom {
-            nc_encoder::apply_planned_dead_zone(levels, planned_min_level) as u32
+        let mut eob = if headroom {
+            let kept = nc_encoder::apply_planned_dead_zone(levels, planned_min_level) as u32;
+            quantized_eob(&self.dsp, tx, levels, kept, policy)
         } else {
-            nonzero
+            match quantized {
+                QuantizedBlock::Count(nonzero) => {
+                    quantized_eob(&self.dsp, tx, levels, nonzero, policy)
+                }
+                QuantizedBlock::EndOfBlock(eob) => eob,
+            }
         };
-        if nonzero == 0 {
+        if eob == 0 {
             return uncoded;
         }
-
-        let mut eob = quantized_eob(&self.dsp, tx, levels, nonzero, policy);
         if inter && eob > 0 {
             eob = mds3::shave_trailing_ones(
                 coefficient_scan(tx),
@@ -5098,7 +5902,11 @@ impl Av1Backend {
             pre_tx_sse.unwrap_or_else(|| self.dsp.variance(size, &src, &dst.as_view()).sse)
         });
         let dequant = &mut scratch.dequant[..coded_area];
-        let dequant_area = if eob == 1 {
+        // The DCT's inverses read only the EOB's extent (its DC alone at
+        // eob 1); the other types' inverse reads the whole coded block.
+        let dequant_area = if kind != Av1TxType::DctDct || !tx.is_square() {
+            coded_area
+        } else if eob == 1 {
             1
         } else {
             dequantized_extent(tx, eob)
@@ -5130,22 +5938,17 @@ impl Av1Backend {
             } else {
                 self.cdfs
                     .coeff
-                    .cost(tx, PlaneType::Luma, true, DC_PRED, ctx, levels, eob)
-                    - self
-                        .cdfs
-                        .coeff
-                        .cost(tx, PlaneType::Luma, true, DC_PRED, ctx, levels, 0)
+                    .cost(tx, PlaneType::Luma, TypeSyntax::Inter, ctx, levels, eob)
+                    - self.cdfs.coeff.uncoded_bits(tx, ctx)
             };
             if self.params.transform_rd_skip < 1.5 {
                 cached_coefficient_bits = Some(bits);
             }
-            let pct = if (predicted as f32) < self.params.skip_bias_energy * lambda * (n * n) as f32
+            let pct = if !self.r1_refine
+                && (predicted as f32)
+                    < self.params.skip_bias_energy * lambda * (width * height) as f32
             {
-                if self.is_base_frame {
-                    self.params.skip_bias_pct_base
-                } else {
-                    self.params.skip_bias_pct
-                }
+                self.params.skip_bias_pct
             } else {
                 100.0
             };
@@ -5159,10 +5962,10 @@ impl Av1Backend {
                 };
             }
         }
-        if eob == 1 {
+        if eob == 1 && kind == Av1TxType::DctDct && tx.is_square() {
             inverse_dct_dc_add(&self.dsp, tx, dequant[0], &mut dst, &mut scratch.residual);
         } else {
-            inverse_dct_add(&self.dsp, tx, dequant, eob, &mut dst);
+            inverse_add(&self.dsp, tx, kind, dequant, eob, &mut dst);
         }
         let distortion = sse_predicted.map(|sse_predicted| ResidualDistortion {
             sse_predicted,
@@ -5170,6 +5973,7 @@ impl Av1Backend {
             coefficient_bits: cached_coefficient_bits,
         });
         PlaneResidual {
+            kind,
             eob,
             distortion,
             ..uncoded
@@ -5181,7 +5985,7 @@ impl Av1Backend {
     /// lambda and syntax CDFs supply the rate-distortion units.
     /// The light-PD1 pre-transform luma skip runs this frame.
     fn pre_tx_skip_enabled(&self) -> bool {
-        self.params.pre_tx_skip > 0.0 && self.pre_tx_score_this_frame > 0.0
+        !self.r1_refine && self.params.pre_tx_skip > 0.0 && self.params.pre_tx_skip_score > 0.0
     }
 
     fn skip_luma_before_transform(
@@ -5229,7 +6033,7 @@ impl Av1Backend {
             rd,
             nc_encoder::QuantizerBand::from_av1_qindex(self.block_q_idx),
             self.params.pre_tx_luma_dominant > 0.0,
-            self.pre_tx_score_this_frame,
+            self.params.pre_tx_skip_score,
         )
     }
 
@@ -5267,7 +6071,7 @@ impl Av1Backend {
         } else {
             PlaneType::Chroma
         };
-        let (x4, y4, units) = Self::plane_units(block, p);
+        let span = Self::plane_units(block, p);
         // λ is per squared luma step; chroma is quantised at its own
         // (delta-q) step, and keeps the quality that step buys only if its
         // λ scales with it (as x264 and HM scale chroma λ by the chroma QP
@@ -5281,18 +6085,23 @@ impl Av1Backend {
             }
         };
         Some(TrellisBlock {
-            lambda: self.lambda() * settings.lambda_scale * plane_scale,
+            lambda: self.lambda()
+                * settings.lambda_scale_for(self.kind == FrameKind::Key)
+                * plane_scale,
             max_states: settings.max_states,
             plane: plane_type,
-            is_inter: matches!(
-                prediction,
-                Prediction::Inter { .. } | Prediction::Compound(_)
-            ),
-            intra_mode: match prediction {
-                Prediction::Intra(luma) => luma.intra_dir(),
-                _ => DC_PRED,
+            syntax: match prediction {
+                Prediction::Intra(luma) => TypeSyntax::Intra {
+                    dir: luma.intra_dir(),
+                    kind: if plane == PlaneIndex::Y {
+                        self.scratch.luma_tx_type
+                    } else {
+                        Av1TxType::DctDct
+                    },
+                },
+                _ => TypeSyntax::Inter,
             },
-            context: (p, x4, y4, units, fills_block),
+            context: (p, span, fills_block),
         })
     }
 
@@ -5300,20 +6109,6 @@ impl Av1Backend {
     /// Whether this frame's symbols adapt their CDFs (`av1.cdf_update`).
     fn adapts_cdfs(&self) -> bool {
         self.params.cdf_update >= 0.5
-    }
-
-    /// The pre-transform skip's score threshold for this frame's blocks:
-    /// non-base inter frames may take their own.
-    fn pre_tx_score(&self) -> f32 {
-        if self.kind == FrameKind::Inter
-            && self.params.pre_tx_skip > 0.0
-            && !self.is_base_frame
-            && self.params.pre_tx_skip_score_nonbase > 0.0
-        {
-            self.params.pre_tx_skip_score_nonbase
-        } else {
-            self.params.pre_tx_skip_score
-        }
     }
 
     fn set_rounding(&mut self) {
@@ -5404,34 +6199,29 @@ impl Av1Backend {
             return;
         };
         let tx = luma.tx;
-        let (x4, y4, units) = Self::plane_units(block, 0);
-        let (above_ctx, left_ctx) = self.context_slices(0, x4, y4, units);
+        let span = Self::plane_units(block, 0);
+        let (above_ctx, left_ctx) = self.context_slices(0, span);
         let ctx = TxbContext::derive(PlaneType::Luma, true, above_ctx, left_ctx);
-        let levels = &self.scratch.levels[0][..tx.coded_size() * tx.coded_size()];
+        let levels = &self.scratch.levels[0][..tx.coded_area()];
         let coefficient_bits = distortion.coefficient_bits.unwrap_or_else(|| {
             if self.params.coeff_rate_linear >= 0.5 {
                 self.cdfs.coeff.eob_linear_bits(tx, ctx, luma.eob)
             } else {
-                self.cdfs
-                    .coeff
-                    .cost(tx, PlaneType::Luma, true, DC_PRED, ctx, levels, luma.eob)
-                    - self
-                        .cdfs
-                        .coeff
-                        .cost(tx, PlaneType::Luma, true, DC_PRED, ctx, levels, 0)
+                self.cdfs.coeff.cost(
+                    tx,
+                    PlaneType::Luma,
+                    TypeSyntax::Inter,
+                    ctx,
+                    levels,
+                    luma.eob,
+                ) - self.cdfs.coeff.uncoded_bits(tx, ctx)
             }
         });
         let lambda = self.lambda();
         let area = (block.size() * block.size()) as f32;
         let skip_distortion = distortion.sse_predicted as f32;
         let pct = if skip_distortion < self.params.skip_bias_energy * lambda * area {
-            // SVT's pseudo-layer cadence: every 4th frame ("base") runs a
-            // gentler light-PD1 level, whose skip margin is wider.
-            if self.is_base_frame {
-                self.params.skip_bias_pct_base
-            } else {
-                self.params.skip_bias_pct
-            }
+            self.params.skip_bias_pct
         } else {
             100.0
         };
@@ -5514,7 +6304,7 @@ impl Av1Backend {
             }
         }
         if self.codes_filter_intra(block, luma.mode) {
-            let ctx = filter_intra_size_context(block.log2_size());
+            let ctx = filter_intra_size_context(block.log2_width, block.log2_height);
             self.writer
                 .write_bool(luma.filter.is_some(), &mut self.cdfs.filter_intra[ctx]);
             if let Some(filter) = luma.filter {
@@ -5536,7 +6326,7 @@ impl Av1Backend {
     fn codes_filter_intra(&self, block: &Block, mode: IntraMode) -> bool {
         self.filter_intra_enabled()
             && mode == IntraMode::Dc
-            && filter_intra_allowed(block.log2_size())
+            && filter_intra_allowed(block.log2_width, block.log2_height)
     }
 
     /// `LAST_FRAME` (`secondary_ref = false`) or `LAST2_FRAME`
@@ -5648,25 +6438,27 @@ impl Av1Backend {
         }
     }
 
-    /// Position (in 4x4 units of the plane) and side length of a block's
-    /// transform: column within the frame, row within the superblock.
-    fn plane_units(block: &Block, plane: usize) -> (usize, usize, usize) {
+    /// Where block `block`'s transform of `plane` sits in the entropy
+    /// context arrays (its whole plane block: one transform per plane).
+    fn plane_units(block: &Block, plane: usize) -> ContextSpan {
         let shift = MI_LOG2 + usize::from(plane > 0);
         let sb_rows_mask = (1usize << (SUPERBLOCK_LOG2 as usize - shift)) - 1;
-        let units = 1usize << (usize::from(block.log2_size()) - shift);
-        (block.x >> shift, (block.y >> shift) & sb_rows_mask, units)
+        let units = |log2: u8| 1usize << (usize::from(log2) - shift);
+        ContextSpan {
+            x4: block.x >> shift,
+            y4: (block.y >> shift) & sb_rows_mask,
+            w4: units(block.log2_width),
+            h4: units(block.log2_height),
+        }
     }
 
-    fn context_slices(&self, plane: usize, x4: usize, y4: usize, units: usize) -> (&[u8], &[u8]) {
-        (
-            &self.grids.contexts.above[plane][x4..x4 + units],
-            &self.grids.contexts.left[plane][y4..y4 + units],
-        )
+    fn context_slices(&self, plane: usize, span: ContextSpan) -> (&[u8], &[u8]) {
+        self.grids.contexts.slices(plane, span)
     }
 
-    fn set_contexts(&mut self, plane: usize, x4: usize, y4: usize, units: usize, value: u8) {
-        self.grids.contexts.above[plane][x4..x4 + units].fill(value);
-        self.grids.contexts.left[plane][y4..y4 + units].fill(value);
+    fn set_contexts(&mut self, plane: usize, span: ContextSpan, value: u8) {
+        self.grids.contexts.above[plane][span.x4..span.x4 + span.w4].fill(value);
+        self.grids.contexts.left[plane][span.y4..span.y4 + span.h4].fill(value);
     }
 
     /// How the `partition` symbol (AV1 §5.11.4) of a square node is coded,
@@ -5679,10 +6471,11 @@ impl Av1Backend {
         let has_rows = mi_row + half < self.grids.mode_info.mi_rows;
         let has_cols = mi_col + half < self.grids.mode_info.mi_cols;
         // Context: whether the above / left neighbours are smaller than this node.
-        let above =
-            mi_row > 0 && self.grids.mode_info.at(mi_row - 1, mi_col).size_log2_mi < size_log2_mi;
-        let left =
-            mi_col > 0 && self.grids.mode_info.at(mi_row, mi_col - 1).size_log2_mi < size_log2_mi;
+        // (AV1 §9.3 `partition` ctx: the above block's width, the left's height.)
+        let above = mi_row > 0
+            && self.grids.mode_info.at(mi_row - 1, mi_col).size_mi.width() < size_log2_mi;
+        let left = mi_col > 0
+            && self.grids.mode_info.at(mi_row, mi_col - 1).size_mi.height() < size_log2_mi;
         let bsl = usize::from(node.log2_size() - MIN_BLOCK_LOG2);
         let ctx = bsl * 4 + usize::from(left) * 2 + usize::from(above);
         let cdf = &self.cdfs.partition[ctx].icdf;
@@ -5739,9 +6532,16 @@ enum PartitionSymbol {
     Implied,
 }
 
+/// The plain quantiser counts nonzeros; the trellis already knows the
+/// last coded scan position.
+enum QuantizedBlock {
+    Count(u32),
+    EndOfBlock(usize),
+}
+
 /// Trellis quantisation (`quant.trellis`) of one transform block's forward
 /// coefficients `coeffs` into `levels`, priced with `cdfs` as they stand.
-/// Returns the number of nonzero levels.
+/// Returns the end of block.
 #[allow(clippy::too_many_arguments)]
 fn trellis_quantize(
     dsp: &Dsp,
@@ -5753,28 +6553,16 @@ fn trellis_quantize(
     quantizer: &Av1Quantizer,
     coeffs: &[i16],
     levels: &mut [i16],
-) -> u32 {
+) -> usize {
     let nonzero = dsp.av1_quantize_from(coeffs, quantizer, levels);
     let eob = quantized_eob(dsp, tx, levels, nonzero, policy);
     if eob == 0 {
         return 0;
     }
-    let (p, x4, y4, units, fills_block) = block.context;
-    let ctx = TxbContext::derive(
-        block.plane,
-        fills_block,
-        &contexts.above[p][x4..x4 + units],
-        &contexts.left[p][y4..y4 + units],
-    );
-    let mut model = RateModel::new(
-        cdfs,
-        tx,
-        block.plane,
-        block.is_inter,
-        block.intra_mode,
-        ctx,
-        coeffs[0] < 0,
-    );
+    let (p, span, fills_block) = block.context;
+    let (above, left) = contexts.slices(p, span);
+    let ctx = TxbContext::derive(block.plane, fills_block, above, left);
+    let mut model = RateModel::new(cdfs, tx, block.plane, block.syntax, ctx, coeffs[0] < 0);
     let (lambda, states) = (block.lambda, block.max_states);
     trellis.quantize(&mut model, coeffs, quantizer, lambda, states, levels, eob)
 }
@@ -5836,9 +6624,21 @@ fn inter_mode_for(stack: &MvStack, mv: Av1Mv) -> InterMode {
     }
 }
 
-/// Bits of the inter mode, `drl_mode` and vector difference for `mv`.
+/// Bits of the inter mode, `drl_mode` and vector difference for `mv`:
+/// infinite where only `NEWMV` denotes `mv` and its difference from the
+/// list vector has no code ([`mvcoding::codable`]), so that mode decision
+/// never chooses a vector the writer cannot signal. The second reference's
+/// scaled seed reaches the picture's size either way; against a predicted
+/// vector of the other sign that passed the ±2048-sample difference range
+/// at 1280x720 (`ControlledBurn`, Slow, `base_q_idx` 160: the stream stopped
+/// decoding one frame later), as VP9 `new_mv_codable` already refused.
 fn inter_mode_bits(cdfs: &CdfContext, stack: &MvStack, mv: Av1Mv) -> f32 {
     let mode = inter_mode_for(stack, mv);
+    if let InterMode::New(index) = mode
+        && !mvcoding::codable(mv, stack.vector(index))
+    {
+        return f32::INFINITY;
+    }
     let mut bits = cdfs.new_mv[stack.new_mv_context()].bits(usize::from(!mode.is_new()));
     if !mode.is_new() {
         bits += cdfs.zero_mv[stack.zero_mv_context()].bits(usize::from(mode != InterMode::Global));
@@ -5892,9 +6692,18 @@ fn compound_inter_mode_for(stack: &CompoundMvStack, mvs: [Av1Mv; 2]) -> Compound
     CompoundInterMode::NewNew(0)
 }
 
-/// Bits of the compound inter mode, `drl_mode` and vector differences for `mvs`.
+/// Bits of the compound inter mode, `drl_mode` and vector differences for
+/// `mvs`: infinite where a difference has no code ([`inter_mode_bits`]).
 fn compound_inter_mode_bits(cdfs: &CdfContext, stack: &CompoundMvStack, mvs: [Av1Mv; 2]) -> f32 {
     let mode = compound_inter_mode_for(stack, mvs);
+    let bases = mode.new_mv_base();
+    let codable = (0..2).all(|list| {
+        bases[list]
+            .is_none_or(|index| mvcoding::codable(mvs[list], stack.new_base_vector(index)[list]))
+    });
+    if !codable {
+        return f32::INFINITY;
+    }
     let mut bits = cdfs.compound_mode[stack.compound_mode_context()].bits(mode.symbol());
     for (position, symbol) in mode
         .drl()
@@ -5903,7 +6712,6 @@ fn compound_inter_mode_bits(cdfs: &CdfContext, stack: &CompoundMvStack, mvs: [Av
     {
         bits += cdfs.drl[stack.drl_context(position)].bits(usize::from(symbol));
     }
-    let bases = mode.new_mv_base();
     for list in 0..2 {
         if let Some(index) = bases[list] {
             bits += cdfs.mv.bits(mvs[list], stack.new_base_vector(index)[list]);
@@ -6061,17 +6869,37 @@ fn ref_count_contexts(above: Option<ModeInfo>, left: Option<ModeInfo>) -> (usize
 /// The `uv_mode` alphabet of a block: `CfL` is allowed for blocks up to
 /// 32x32 (AV1 §5.11.24 `is_cfl_allowed`). Returns the CDF index and the
 /// number of symbols.
+/// The AV1 partition of a rectangular shape (AV1 §6.10.4).
+fn shape_partition(shape: PartitionShape) -> Partition {
+    match shape {
+        PartitionShape::Horizontal => Partition::Horz,
+        PartitionShape::Vertical => Partition::Vert,
+        PartitionShape::HorizontalTriple | PartitionShape::VerticalTriple => {
+            unreachable!("AV1 declares only halves")
+        }
+    }
+}
+
+/// Smallest node (log2 side) that may split into halves on key frames.
+const MIN_RECT_NODE_LOG2: u8 = 4;
+
+/// Largest side (log2) of a block that may use chroma from luma.
+const CFL_MAX_LOG2: u8 = 5;
+
 fn uv_mode_alphabet(block: &Block) -> (usize, usize) {
-    if block.log2_size() <= 5 {
+    // `is_cfl_allowed` (AV1 §5.11.8): both sides at most 32.
+    if block.log2_width.max(block.log2_height) <= CFL_MAX_LOG2 {
         (CFL_ALLOWED, UV_INTRA_MODES_CFL_ALLOWED)
     } else {
         (CFL_NOT_ALLOWED, UV_INTRA_MODES_CFL_NOT_ALLOWED)
     }
 }
 
-/// `size_group_lookup` of a square block (8x8 → 1, 16x16 → 2, 32x32 → 3).
+/// `Size_Group` of a block (AV1 §9.3: 8x8 → 1, 16x16 → 2, 32x32 → 3).
 fn size_group(block: &Block) -> usize {
-    usize::from(block.log2_size() - 2).min(3)
+    MiSize::new(block.log2_width, block.log2_height)
+        .expect("an AV1 block size")
+        .size_group()
 }
 
 /// The position of `block` if it copies the reference's luma: inter (at
@@ -6087,11 +6915,16 @@ fn luma_copy_at(
 }
 
 fn to_av1_mv(mv: Mv) -> Av1Mv {
+    valid_av1_mv(mv).expect("mode decision chooses only vectors within AV1's range")
+}
+
+/// The AV1 vector of an engine vector, or `None` outside AV1's vector range
+/// (§6.10.25 `is_mv_valid`), which mode decision prices at infinity.
+fn valid_av1_mv(mv: Mv) -> Option<Av1Mv> {
     Av1Mv::checked(
         i32::from(mv.y) * AV1_MV_PER_ENGINE_MV,
         i32::from(mv.x) * AV1_MV_PER_ENGINE_MV,
     )
-    .expect("engine vectors stay within AV1's vector range")
 }
 
 /// An AV1 vector in engine units. List vectors in this encoder are always
@@ -6338,12 +7171,10 @@ mod parameter_tests {
     #[test]
     fn pre_transform_controls_are_optional_and_range_checked() {
         assert_eq!(Av1Params::default().pre_tx_skip, 1.0);
-        assert_eq!(Av1Params::default().pre_tx_skip_score_nonbase, 0.0);
         for (name, low, high) in [
             ("av1.pre_tx_skip", 0.0, 1.0),
             ("av1.pre_tx_skip_energy", 0.0, 100.0),
             ("av1.pre_tx_skip_score", 0.0, 250.0),
-            ("av1.pre_tx_skip_score_nonbase", 0.0, 250.0),
             ("av1.pre_tx_skip_rd", 0.0, 400.0),
             ("av1.pre_tx_luma_dominant", 0.0, 1.0),
         ] {
@@ -6376,46 +7207,100 @@ mod parameter_tests {
         .unwrap()
     }
 
-    #[test]
-    fn nonbase_pre_transform_score_inherits_and_preserves_fractional_thresholds() {
+    /// The levels of the split leaves of one 64x64 inter block coded
+    /// at qindex 255 with `lambda_scale`, split from λ scale 1
+    /// (`ceiling_tx_split`), and the planned step's smallest kept level.
+    fn ceiling_leaf_levels(lambda_scale: f32) -> (Vec<i16>, i32) {
+        // A flat reference and a source with two horizontal cosines on top,
+        // per 32-sample leaf: at qindex 255 (32x32 steps of ~228 orthonormal
+        // units) the first codes a level of 1, the second of 3.
+        const FLAT: f32 = 128.0;
+        const LEAF: usize = 32;
+        const WAVES: [(f32, f32); 2] = [(1.0, 12.0), (3.0, 30.0)];
         let mut backend = prediction_backend();
-        backend.params.pre_tx_skip_score = 70.0;
-        backend.params.pre_tx_skip_score_nonbase = 50.25;
-        for enabled in [0.0, 1.0] {
-            backend.params.pre_tx_skip = enabled;
-            for index in 0..8 {
-                backend.begin_frame(&FramePlan {
-                    index,
-                    frame_type: if index == 0 {
-                        FrameType::Key
-                    } else {
-                        FrameType::Inter
-                    },
-                    quantizer: 100,
-                    references: nc_encoder::FrameReferences::FLAT,
-                    lambda_scale: 1.0,
-                    block_qp: false,
-                });
-                let expected = if enabled > 0.0 && index % 4 != 0 {
-                    50.25
-                } else {
-                    70.0
-                };
-                assert_eq!(backend.pre_tx_score_this_frame, expected);
-                let _ = backend.end_frame();
-                backend.commit_frame();
+        backend.params.inter_tx_split = 1.0;
+        backend.params.ceiling_tx_split = 1.0;
+        let plan = |index, frame_type, quantizer, lambda_scale| FramePlan {
+            index,
+            frame_type,
+            quantizer,
+            references: nc_encoder::FrameReferences::FLAT,
+            lambda_scale,
+            block_qp: false,
+        };
+        backend.begin_frame(&plan(0, FrameType::Key, 100, 1.0));
+        let _ = backend.end_frame();
+        backend.commit_frame();
+        backend.begin_frame(&plan(1, FrameType::Inter, 255, lambda_scale));
+        let mut reference = Picture::new(128, 128, 0).unwrap();
+        let mut source = Picture::new(128, 128, 0).unwrap();
+        for (picture, waves) in [(&mut reference, false), (&mut source, true)] {
+            let mut luma = picture.plane_mut(PlaneIndex::Y).view_mut();
+            for y in 0..128 {
+                for (x, sample) in luma.row_mut(y)[..128].iter_mut().enumerate() {
+                    let phase =
+                        core::f32::consts::PI * (2 * (x % LEAF) + 1) as f32 / (2 * LEAF) as f32;
+                    let wave: f32 = WAVES
+                        .iter()
+                        .map(|&(k, amplitude)| amplitude * (k * phase).cos())
+                        .sum();
+                    *sample = (FLAT + if waves { wave } else { 0.0 }).round() as u8;
+                }
             }
         }
-        backend.params.pre_tx_skip_score_nonbase = 0.0;
-        backend.begin_frame(&FramePlan {
-            index: 9,
-            frame_type: FrameType::Inter,
-            quantizer: 100,
-            references: nc_encoder::FrameReferences::FLAT,
-            lambda_scale: 1.0,
-            block_qp: false,
-        });
-        assert_eq!(backend.pre_tx_score_this_frame, 70.0);
+        let mut recon = Picture::new(128, 128, 0).unwrap();
+        let block = Block::square(0, 0, CEILING_SPLIT_LOG2);
+        let prediction = Prediction::Inter {
+            reference: &reference,
+            mv: Av1Mv::ZERO,
+        };
+        let (_, split, leaves) = backend.code_luma(&block, &prediction, true, &source, &mut recon);
+        assert!(split.split, "the ceiling split applies");
+        let levels = leaves
+            .iter()
+            .flat_map(|leaf| {
+                let area = TxSize::from_log2(leaf.log2).unwrap().coded_area();
+                backend.scratch.tree_levels[leaf.offset..leaf.offset + area].to_vec()
+            })
+            .collect();
+        (levels, backend.planned_min_level(PlaneIndex::Y))
+    }
+
+    /// Past qindex 255 the ceiling split's leaves keep the planned step's
+    /// dead zone, as a whole block does: the leaves at the coded step keep
+    /// levels of 1, those planned at twice the step none below its smallest
+    /// kept level. Without it the leaves coded at plain qindex 255, bits rose
+    /// with the planned level and starved CBR ran to the top of its headroom
+    /// (ideas ledger: av1-inter-tx-split-starved-cbr-level-overrun-open-bug).
+    #[test]
+    fn split_leaves_past_the_ceiling_keep_the_planned_dead_zone() {
+        const PLANNED_LAMBDA_SCALE: f32 = 4.0;
+        let nonzero = |levels: &[i16]| {
+            levels
+                .iter()
+                .copied()
+                .filter(|&l| l != 0)
+                .collect::<Vec<_>>()
+        };
+        let (coded, _) = ceiling_leaf_levels(1.0);
+        assert!(
+            coded.iter().any(|&l| l.abs() == 1),
+            "the coded step keeps levels of 1: {:?}",
+            nonzero(&coded)
+        );
+        let (planned, min_level) = ceiling_leaf_levels(PLANNED_LAMBDA_SCALE);
+        assert!(min_level > 1, "the planned step is coarser than qindex 255");
+        assert!(
+            planned
+                .iter()
+                .all(|&l| l == 0 || i32::from(l).abs() >= min_level),
+            "a leaf codes a level below {min_level}: {:?}",
+            nonzero(&planned)
+        );
+        assert!(
+            planned.iter().any(|&l| l != 0),
+            "the planned step still codes the strong wave"
+        );
     }
 
     #[test]
@@ -6442,6 +7327,14 @@ mod parameter_tests {
         backend.cache_exact_luma(&block, mv, nc_dsp::Filter::HevcLuma, &[47; 256], stats);
         assert_eq!(backend.cached_luma_stats(&block, &prediction), None);
         backend.cache_exact_luma(&block, mv, nc_dsp::Filter::Av1, &[47; 256], stats);
+        let whole_pel = Prediction::Inter {
+            reference: &reference,
+            mv: to_av1_mv(Mv::ZERO),
+        };
+        backend.reuse_planned_luma_stats(&block, Mv::ZERO, stats);
+        assert_eq!(backend.known_luma_stats(&block, &whole_pel), Some(stats));
+        assert_eq!(backend.cached_luma_stats(&block, &whole_pel), None);
+        assert_eq!(backend.known_luma_stats(&block, &prediction), Some(stats));
         backend.begin_frame(&FramePlan {
             index: 2,
             frame_type: FrameType::Key,
@@ -6451,6 +7344,7 @@ mod parameter_tests {
             block_qp: false,
         });
         assert_eq!(backend.cached_luma_stats(&block, &prediction), None);
+        assert_eq!(backend.known_luma_stats(&block, &whole_pel), None);
     }
 
     /// The transform-based key-frame leaf cost keeps flat superblocks whole

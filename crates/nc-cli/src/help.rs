@@ -160,6 +160,13 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "MS",
                 "Virtual decoder buffer duration (default 1000 ms).",
             ),
+            opt(
+                "--buffer-initial-ms",
+                "MS",
+                "Decoder buffer fullness when the stream starts, at most the buffer: the \
+                 first frames may send this much ahead of the drain (x264 --vbv-init, \
+                 --buf-initial-sz). Default: the whole buffer.",
+            ),
             opt("--min-qp", "Q", "Lowest quantiser rate control may use."),
             opt("--max-qp", "Q", "Highest quantiser rate control may use."),
             opt(
@@ -172,6 +179,13 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "",
                 "Skip an inter frame that would overflow the buffer even at the highest \
                  quantiser.",
+            ),
+            opt(
+                "--strict-buffer",
+                "",
+                "Never pass one buffer: re-code any frame that would fill it past its \
+                 capacity (a hard VBV). By default a frame may reach 1.15 buffers, as the \
+                 reference encoders' worst points do.",
             ),
             opt(
                 "--rate-change",
@@ -296,6 +310,16 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "JSON of the frame-level filter searches' units by outcome (off, unchanged), by tool and frame role; \"given\": [units, off, unchanged] of the searched units by their own last outcomes (off at the last 1, 2, 4 searches, on, unchanged) and content (quiet: mostly coded without residual).",
             ),
             opt(
+                "--label-dump",
+                "DIR",
+                "Decision labels for learned models: per superblock its inputs and coded cost, per searched node every candidate's coded cost and time, as .npy columns (docs/analysis/nn-dataset-schema.md). The stream is unchanged; encoding is slower.",
+            ),
+            opt(
+                "--label-tool",
+                "NAME:PARAM=VALUE[,...]",
+                "With --label-dump: also code every superblock with these parameters on top of the preset's, the rest of the frame as the preset codes it, recording its J and time (sb/tool_cost, sb/tool_ns); repeatable. Engine decision./planner. parameters, or the codec's per-superblock ones.",
+            ),
+            opt(
                 "--spatial-stats",
                 "FILE",
                 "JSON summary of per-layer bytes, rates and references.",
@@ -310,6 +334,17 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
                 "FILE",
                 "QP offsets per 8x8 luma cell imposed on key frames, by input frame (an oracle: \
                  `frame N`, then one line of offsets per cell row).",
+            ),
+            opt(
+                "--partition-record",
+                "FILE",
+                "Every inter superblock's coded partition (an oracle: the transplant log).",
+            ),
+            opt(
+                "--partition-replay",
+                "FILE",
+                "Code a --partition-record log's partitions in place of the plan, without the RD \
+                 partition search (an oracle: the partition transplant).",
             ),
             opt(
                 "--analysis-log",
@@ -355,6 +390,11 @@ pub const COMMANDS: &[CommandDoc] = &[
                     "--discard",
                     "0|1",
                     "1: decode every frame and write nothing (for timing).",
+                ),
+                opt(
+                    "--bench",
+                    "N",
+                    "Time N in-process decodes of the stream in memory (JSON lines).",
                 ),
                 opt(
                     "--film-grain",
@@ -509,6 +549,7 @@ mod tests {
         include_str!("colour.rs"),
         include_str!("decode.rs"),
         include_str!("extract.rs"),
+        include_str!("label_dump.rs"),
         include_str!("session.rs"),
         include_str!("stat.rs"),
         include_str!("stdio.rs"),

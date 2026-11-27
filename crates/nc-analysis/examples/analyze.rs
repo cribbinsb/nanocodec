@@ -2,8 +2,11 @@
 //!
 //! ```text
 //! cargo run --release -p nanocodec-analysis --example analyze -- \
-//!     clip.yuv WIDTH HEIGHT [--frames N] [--verbose]
+//!     clip.yuv WIDTH HEIGHT [--frames N] [--gate-cell 0|8|16|64] [--gate-scale X] [--verbose]
 //! ```
+//!
+//! `--gate-cell` picks what the zero-vector gates judge (`GateCell::from_side`)
+//! and `--gate-scale` multiplies their thresholds.
 //!
 //! For meaningful timings pin to one core (`taskset -c 3 ...`). Timings are
 //! wall clock per stage, summed over frames 2..N (frame 1 has no motion).
@@ -16,6 +19,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use nc_analysis::effort::MotionEffort;
+use nc_analysis::motion::{GateCell, SearchConfig};
 use nc_analysis::{Analyzer, FrameAnalysis, FrameLink, Stage, StageTimer};
 use nc_common::yuv;
 use nc_dsp::Dsp;
@@ -43,12 +47,15 @@ struct Args {
     width: usize,
     height: usize,
     frames: usize,
+    gate_cell: GateCell,
+    /// Multiple of the default zero-vector gate thresholds.
+    gate_scale: f32,
     verbose: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: analyze clip.yuv WIDTH HEIGHT [--frames N] [--verbose]";
+    let usage = "usage: analyze clip.yuv WIDTH HEIGHT [--frames N] [--gate-cell 0|8|16|64] [--gate-scale X] [--verbose]";
     if raw.len() < 3 {
         return Err(usage.into());
     }
@@ -61,12 +68,24 @@ fn parse_args() -> Result<Args, String> {
         width: number(&raw[1])?,
         height: number(&raw[2])?,
         frames: usize::MAX,
+        gate_cell: GateCell::default(),
+        gate_scale: 1.0,
         verbose: false,
     };
     let mut rest = raw[3..].iter();
     while let Some(flag) = rest.next() {
         match flag.as_str() {
             "--frames" => args.frames = number(rest.next().ok_or(usage)?)?,
+            "--gate-cell" => {
+                args.gate_cell = GateCell::from_side(number(rest.next().ok_or(usage)?)? as f32);
+            }
+            "--gate-scale" => {
+                args.gate_scale = rest
+                    .next()
+                    .ok_or(usage)?
+                    .parse()
+                    .map_err(|_| usage.to_owned())?;
+            }
             "--verbose" => args.verbose = true,
             other => return Err(format!("unknown argument '{other}'\n{usage}")),
         }
@@ -102,6 +121,12 @@ fn run(args: &Args) -> Result<(), String> {
     let mut reader = BufReader::new(file);
     let dsp = Dsp::new();
     let mut analyzer = Analyzer::new(args.width, args.height, dsp).map_err(|e| e.to_string())?;
+    let mut search = SearchConfig::default();
+    search.gates.cell = args.gate_cell;
+    search.gates.static_per_pixel *= args.gate_scale;
+    search.gates.one_position_per_pixel *= args.gate_scale;
+    search.gates.skip_hme_per_pixel *= args.gate_scale;
+    analyzer.set_search_config(search);
     let mut clock = WallClock::default();
     let mut effort = MotionEffort::default();
     let mut sad_8x8_total = 0.0;

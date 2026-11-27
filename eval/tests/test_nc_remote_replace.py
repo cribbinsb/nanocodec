@@ -57,6 +57,9 @@ class FakeAws:
     def state(self, instance_id):
         return self.states.get(instance_id, "gone")
 
+    def security_group(self, _expected_end):
+        return "sg-fake"  # the SSH rule (tests/test_nc_remote_ssh_rule.py)
+
     def reclaimed(self, _instance_id):
         return False
 
@@ -74,7 +77,8 @@ def world(tmp_path, monkeypatch):
     """PC records under tmp_path; SSH, readiness and the ledger faked."""
     for name, path in (("STATE_DIR", tmp_path), ("STATE", tmp_path / "state.json"),
                        ("HISTORY", tmp_path / "history.json"), ("LOCK", tmp_path / "lock"),
-                       ("REPLACING", tmp_path / "replacing"), ("USERS_DIR", tmp_path / "users")):
+                       ("REPLACING", tmp_path / "replacing"), ("USERS_DIR", tmp_path / "users"),
+                       ("OUTPUTS_DIR", tmp_path / "outputs"), ("ORPHANS_DIR", tmp_path / "orphans")):
         monkeypatch.setattr(nc_remote, name, path)
     aws = FakeAws()
     ledger = []

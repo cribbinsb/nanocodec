@@ -115,6 +115,18 @@ pub fn bench_vp9_mc(isas: &[Isa]) -> Vec<BenchResult> {
     results
 }
 
+/// Time only the network inference kernels, as the full suite does.
+#[must_use]
+pub fn bench_nn(isas: &[Isa]) -> Vec<BenchResult> {
+    let mut results = Vec::new();
+    for &isa in isas {
+        if let Some(dsp) = Dsp::with_isa(isa) {
+            crate::bench_nn::bench(&dsp, &mut results);
+        }
+    }
+    results
+}
+
 /// Time only AV1 edge/run filters, using the same cases and timing procedure
 /// as the full suite. This keeps iterative filter tuning bounded.
 #[must_use]
@@ -240,10 +252,13 @@ pub fn bench(isas: &[Isa]) -> Vec<BenchResult> {
         crate::bench_av1_runs::bench(&dsp, &mut results);
         crate::bench_deblock_batches::bench(&dsp, &mut results);
         crate::check_vp9_inverse::bench(&dsp, &mut results);
+        crate::check_av1_forward::bench(&dsp, &mut results);
+        crate::check_cfl_sse::bench(&dsp, &mut results);
         crate::check_av1_inverse::bench(&dsp, &mut results);
         crate::bench_rows::bench_rows(&dsp, &mut results);
         crate::bench_memory::bench(&dsp, &mut results);
         crate::bench_vp9_mc::bench(&dsp, &mut results);
+        crate::bench_nn::bench(&dsp, &mut results);
     }
     results
 }

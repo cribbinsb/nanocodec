@@ -23,8 +23,9 @@ use super::generic::{self, covers};
 use super::{DiffFns, Variance, VarianceEnergy, bilinear_taps};
 use crate::simd::avx512_i16::I16x32;
 use core::arch::x86_64::{
-    __m512i, _mm_loadu_si128, _mm256_castsi128_si256, _mm256_inserti128_si256,
-    _mm256_maskz_loadu_epi8, _mm512_add_epi16, _mm512_add_epi32, _mm512_cvtepu8_epi16,
+    __m256i, __m512i, _mm_loadu_si128, _mm256_avg_epu8, _mm256_castsi128_si256,
+    _mm256_inserti128_si256, _mm256_loadu_si256, _mm256_maskz_loadu_epi8, _mm256_zextsi128_si256,
+    _mm512_add_epi16, _mm512_add_epi32, _mm512_cvtepu8_epi16, _mm512_dpwssd_epi32,
     _mm512_madd_epi16, _mm512_mulhrs_epi16, _mm512_reduce_add_epi32, _mm512_set1_epi16,
     _mm512_setzero_si512, _mm512_shuffle_i64x2, _mm512_sub_epi16,
 };
@@ -33,6 +34,13 @@ use core::arch::x86_64::{
 const LANES: usize = 32;
 
 pub(crate) fn install(table: &mut DiffFns) {
+    table.variance_8x8_row = Some(super::x86_variance_row::icl);
+    table.plane_sse = plane_sse;
+    table.halfpel_cross = Some([
+        halfpel_cross::<16>,
+        halfpel_cross::<32>,
+        halfpel_cross::<64>,
+    ]);
     table.variance[2..].copy_from_slice(&[variance::<16>, variance::<32>, variance::<64>]);
     table.variance_energy[2..].copy_from_slice(&[energy::<16>, energy::<32>, energy::<64>]);
     table.sub_pixel_variance[2..].copy_from_slice(&[
@@ -40,6 +48,70 @@ pub(crate) fn install(table: &mut DiffFns) {
         sub_pixel_variance_wide::<32>,
         sub_pixel_variance_wide::<64>,
     ]);
+}
+
+/// Share the four half-pel averages in byte lanes before widening the
+/// differences. Keep their sums in signed words and square with VNNI.
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl,avx512vnni")]
+unsafe fn halfpel_cross<const W: usize>(
+    src: &[u8],
+    ss: usize,
+    rf: &[u8],
+    rs: usize,
+    h: usize,
+) -> [Variance; 4] {
+    let zero = _mm512_setzero_si512();
+    let mut cross = HalfpelCross::<W> {
+        sum: [zero; 4],
+        squares: [zero; 4],
+    };
+    // SAFETY: the validated source and reference extents are forwarded.
+    unsafe { super::halfpel_cross::measure::<_, W>(&mut cross, src, ss, rf, rs, h) };
+    [
+        reduce(cross.sum[0], cross.squares[0]),
+        reduce(cross.sum[1], cross.squares[1]),
+        reduce(cross.sum[2], cross.squares[2]),
+        reduce(cross.sum[3], cross.squares[3]),
+    ]
+}
+
+struct HalfpelCross<const W: usize> {
+    sum: [__m512i; 4],
+    squares: [__m512i; 4],
+}
+
+impl<const W: usize> super::halfpel_cross::Cross for HalfpelCross<W> {
+    type Pixels = __m256i;
+    const LANES: usize = if W == 16 { 16 } else { 32 };
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    unsafe fn load(ptr: *const u8) -> Self::Pixels {
+        // SAFETY: the wrapper enables AVX2 and validates each load's extent.
+        unsafe {
+            if W == 16 {
+                _mm256_zextsi128_si256(_mm_loadu_si128(ptr.cast()))
+            } else {
+                _mm256_loadu_si256(ptr.cast())
+            }
+        }
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn update(&mut self, source: Self::Pixels, middle: Self::Pixels, taps: [Self::Pixels; 4]) {
+        // SAFETY: only the ICL wrapper uses this. Each word accumulates at
+        // most 2 * 64 differences of magnitude at most 255.
+        unsafe {
+            let source = _mm512_cvtepu8_epi16(source);
+            for (i, tap) in taps.into_iter().enumerate() {
+                let pred = _mm512_cvtepu8_epi16(_mm256_avg_epu8(middle, tap));
+                let difference = _mm512_sub_epi16(source, pred);
+                self.sum[i] = _mm512_add_epi16(self.sum[i], difference);
+                self.squares[i] = _mm512_dpwssd_epi32(self.squares[i], difference, difference);
+            }
+        }
+    }
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -307,4 +379,10 @@ impl PairBlock<'_> {
         }
         reduce(sum, squared)
     }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+unsafe fn plane_sse(a: &nc_common::PlaneView<'_>, b: &nc_common::PlaneView<'_>) -> u64 {
+    // SAFETY: the dispatch verifies the ISA and that both planes match.
+    unsafe { generic::plane_sse::<I16x32>(a, b) }
 }

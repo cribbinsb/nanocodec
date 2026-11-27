@@ -12,8 +12,8 @@
 #[cfg(test)]
 mod reference;
 
-use nc_common::{Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, Filter, H264Predictor, copy_square_view};
+use nc_common::{Picture, Plane, PlaneIndex, PlaneView};
+use nc_dsp::{BlockSize, Dsp, Filter, H264Predictor, copy_square_samples};
 use nc_encoder::Mv;
 
 /// Luma macroblock size.
@@ -116,6 +116,9 @@ impl McKernels {
     }
 }
 
+/// A macroblock's 16x16 luma and two 8x8 chroma blocks as views of a picture.
+pub type MacroblockViews<'a> = (PlaneView<'a>, [PlaneView<'a>; 2]);
+
 /// The prediction of macroblock `(x, y)` with `mv` when it needs no
 /// interpolation: the reference picture's own 16x16 luma and 8x8 chroma
 /// blocks. That holds when `mv` is a whole chroma sample (and so a whole luma
@@ -127,7 +130,7 @@ pub fn whole_sample_macroblock(
     reference: &Picture,
     (x, y): (usize, usize),
     mv: Mv,
-) -> Option<(PlaneView<'_>, [PlaneView<'_>; 2])> {
+) -> Option<MacroblockViews<'_>> {
     let whole = 1 << CHROMA_FRAC_BITS;
     if mv.x % whole != 0 || mv.y % whole != 0 {
         return None;
@@ -204,11 +207,10 @@ fn copy_whole_sample<const N: usize>(
     top: isize,
     out: &mut [u8],
 ) -> bool {
-    let Some(block) = reference.region(left, top, N, N) else {
+    let Some(block) = reference.samples_at(left, top, N, N) else {
         return false;
     };
-    let mut dst = PlaneViewMut::new(out, N, N, N).expect("prediction covers the block");
-    copy_square_view::<N>(&mut dst, &block);
+    copy_square_samples::<N>((out, N), (block, reference.stride()));
     true
 }
 

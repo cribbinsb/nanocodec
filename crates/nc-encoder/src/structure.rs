@@ -200,6 +200,10 @@ pub struct AdaptiveRule {
     /// a single threshold and would otherwise flip structure every few
     /// mini-GOPs (`crowd_mot17_09`, compensable share 0.51–0.80).
     pub enter_ratio: f32,
+    /// Minimum relative quantizer (`0..=1`) for layering; 0 disables the gate.
+    /// Below this (high bitrates), distance-1 flat P frames replace layered
+    /// mini-GOPs (`layers.adaptive_min_quantizer`).
+    pub min_quantizer: f32,
 }
 
 /// One frame's motion, as the adaptive rule reads it.
@@ -275,6 +279,8 @@ pub struct TemporalStructure {
     trend: MotionTrend,
     /// The inheritance loss last reported (`observe_inheritance`).
     inheritance_loss: Option<f32>,
+    /// Moving average of the committed frames' relative quantizer (`observe_quantizer`).
+    quantizer_trend: Option<f32>,
     /// Index of the frame each slot holds (valid once a key frame has been
     /// coded, which refreshes all of them).
     slot_frame: [u64; MAX_REFERENCE_SLOTS],
@@ -297,6 +303,7 @@ impl TemporalStructure {
             hold_flat: false,
             trend: MotionTrend::default(),
             inheritance_loss: None,
+            quantizer_trend: None,
             slot_frame: [0; MAX_REFERENCE_SLOTS],
         }
     }
@@ -389,6 +396,14 @@ impl TemporalStructure {
         trend.seen = true;
     }
 
+    /// Record a committed frame's relative quantizer (`0..=1`) for the
+    /// high-rate layer gate (`AdaptiveRule::min_quantizer`).
+    pub fn observe_quantizer(&mut self, relative_quantizer: f32) {
+        self.quantizer_trend = Some(self.quantizer_trend.map_or(relative_quantizer, |old| {
+            old + TREND_WEIGHT * (relative_quantizer - old)
+        }));
+    }
+
     /// The pattern of the next mini-GOP.
     fn choose_pattern(&self) -> u8 {
         match self.adaptive {
@@ -422,7 +437,11 @@ impl TemporalStructure {
                     && (rule.max_inheritance_loss >= INHERITANCE_LOSS_OFF
                         || self
                             .inheritance_loss
-                            .is_some_and(|loss| loss <= rule.max_inheritance_loss * scale));
+                            .is_some_and(|loss| loss <= rule.max_inheritance_loss * scale))
+                    && (rule.min_quantizer <= 0.0
+                        || self
+                            .quantizer_trend
+                            .is_none_or(|q| q * scale >= rule.min_quantizer));
                 if layered { self.layers } else { 1 }
             }
         }
@@ -653,6 +672,7 @@ mod tests {
             max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
+            min_quantizer: 0.0,
         };
         let still = MotionSignal {
             camera_motion: 0.0,
@@ -687,6 +707,46 @@ mod tests {
     }
 
     #[test]
+    fn high_rates_keep_still_scenes_flat() {
+        let rule = AdaptiveRule {
+            max_camera_motion: 1.0,
+            max_compensable: 0.5,
+            min_still: 0.0,
+            max_repeat_share: 1.0,
+            max_static: 1.0,
+            max_camera_jitter: CAMERA_JITTER_OFF,
+            max_noise_residual: NOISE_RESIDUAL_OFF,
+            max_inheritance_loss: INHERITANCE_LOSS_OFF,
+            noise_compensable: 0.0,
+            enter_ratio: 0.9,
+            min_quantizer: 0.5,
+        };
+        let still = MotionSignal {
+            camera_motion: 0.0,
+            compensable: Some(0.1),
+            still_fraction: 0.0,
+            repeat: None,
+            static_fraction: None,
+            residual: None,
+        };
+        // A still scene layers at a coarse quantizer and stays flat at a fine one.
+        for (quantizer, layered) in [(0.8, true), (0.2, false)] {
+            let mut s = TemporalStructure::adaptive(3, rule);
+            let mut layers = Vec::new();
+            for i in 0..12u64 {
+                layers.push(s.next(i, i == 0).position.layer);
+                s.observe(still);
+                s.observe_quantizer(quantizer);
+            }
+            assert_eq!(
+                layers.iter().any(|&l| l > 0),
+                layered,
+                "quantizer {quantizer}"
+            );
+        }
+    }
+
+    #[test]
     fn noisy_still_scenes_stay_flat() {
         let rule = AdaptiveRule {
             max_camera_motion: 16.0,
@@ -699,6 +759,7 @@ mod tests {
             max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.2,
             enter_ratio: 0.9,
+            min_quantizer: 0.0,
         };
         let layered_after = |compensable: f32, residual: f32| {
             let mut s = TemporalStructure::adaptive(3, rule);
@@ -736,6 +797,7 @@ mod tests {
             max_inheritance_loss: 0.16,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
+            min_quantizer: 0.0,
         };
         let still = MotionSignal {
             camera_motion: 0.0,
@@ -787,6 +849,7 @@ mod tests {
             max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
+            min_quantizer: 0.0,
         };
         let still = MotionSignal {
             camera_motion: 0.0,
@@ -826,6 +889,7 @@ mod tests {
             max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
+            min_quantizer: 0.0,
         };
         let signal = |compensable| MotionSignal {
             camera_motion: 0.0,
@@ -864,6 +928,7 @@ mod tests {
             max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
+            min_quantizer: 0.0,
         };
         // A fixed camera over a crowd: little compensable motion on
         // average, but few still blocks.
@@ -906,6 +971,7 @@ mod tests {
             max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
+            min_quantizer: 0.0,
         };
         // A handheld camera: much compensable motion, few still blocks.
         let handheld = MotionSignal {

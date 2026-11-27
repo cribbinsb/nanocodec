@@ -1,6 +1,73 @@
 {
  "about": "What each result outside the charts was measured on: date, our builds (commit: what it covers, empty for everything), how our binary was built, the machines and the references. Read by eval/nceval/site.py (measured), which writes each page's caption from it; a page whose data has no entry fails python3 -m nceval.site --check.",
  "sources": {
+  "decoder-speed-2026-11-23": {
+   "date": "2026-11-23",
+   "commits": {
+    "f9483e0e": "0.6.0's release commit 207745d7 plus only the decode --bench CLI path of 1da4349e2 and 3ca7f3061 (crates/nc-cli decode.rs, help.rs); no decoder code differs; PGO the release way (tools/dev/pgo_build.sh, 0.6.0's four public derf training clips, 20 frames); decoded frames identical to the shipped 0.6.0 binary"
+   },
+   "build": "PGO",
+   "machines": [
+    "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core (CPU 1), one session, ours and the references one after another; in process on both sides (packets in memory, decode loop only, frames discarded; no start-up, probing, demuxing or output): 5 interleaved rounds x 3 passes, median of 15 (tools/dev/decoder_speed.py)",
+    "Jetson Orin Nano, one Cortex-A78AE core (core 3, clock fixed at 1.728 GHz: scaling min = max), under the board's exclusive timing lock (jetson-timed.sh, 1-minute load settled under 1.5), ours and the references one after another; in process on both sides: 5 interleaved rounds x 3 passes, median of 15 (tools/dev/decoder_speed.py)"
+   ],
+   "references": "FFmpeg n8.0.1 (libavcodec, static, gcc 15.2 -O3, x86 assembly on) through tools/anchors/libavcodec_bench.c; AV1: dav1d 1.5.4 through libavcodec's libdav1d wrapper; VP9: also libvpx v1.16.0 (vpx_bench.c); VVC: VVdeC d261469 (vvdec_bench.c); AV2: AVM v1.0.0 (avm_bench.c) and dav2d 237229e with its assembly (dav2d_bench.c); each in process with one thread"
+  },
+  "decoder-speed-2026-11-23/x86.json": {
+   "date": "2026-11-23",
+   "commits": {
+    "f9483e0e": "0.6.0's release commit 207745d7 plus only the decode --bench CLI path of 1da4349e2 and 3ca7f3061 (crates/nc-cli decode.rs, help.rs); no decoder code differs; PGO the release way (tools/dev/pgo_build.sh, 0.6.0's four public derf training clips, 20 frames); decoded frames identical to the shipped 0.6.0 binary"
+   },
+   "build": "PGO",
+   "machines": [
+    "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core (CPU 1), one session, ours and the references one after another; in process on both sides (packets in memory, decode loop only, frames discarded; no start-up, probing, demuxing or output): 5 interleaved rounds x 3 passes, median of 15 (tools/dev/decoder_speed.py)"
+   ],
+   "references": "FFmpeg n8.0.1 (libavcodec, static, gcc 15.2 -O3, x86 assembly on) through tools/anchors/libavcodec_bench.c; AV1: dav1d 1.5.4 through libavcodec's libdav1d wrapper; VP9: also libvpx v1.16.0 (vpx_bench.c); VVC: VVdeC d261469 (vvdec_bench.c); AV2: AVM v1.0.0 (avm_bench.c) and dav2d 237229e with its assembly (dav2d_bench.c); each in process with one thread"
+  },
+  "decoder-speed-2026-11-23/jetson.json": {
+   "date": "2026-11-23",
+   "commits": {
+    "f9483e0e": "0.6.0's release commit 207745d7 plus only the decode --bench CLI path of 1da4349e2 and 3ca7f3061 (crates/nc-cli decode.rs, help.rs); no decoder code differs; PGO the release way (tools/dev/pgo_build.sh, 0.6.0's four public derf training clips, 20 frames); decoded frames identical to the shipped 0.6.0 binary"
+   },
+   "build": "PGO",
+   "machines": [
+    "Jetson Orin Nano, one Cortex-A78AE core (core 3, clock fixed at 1.728 GHz: scaling min = max), under the board's exclusive timing lock (jetson-timed.sh, 1-minute load settled under 1.5), ours and the references one after another; in process on both sides: 5 interleaved rounds x 3 passes, median of 15 (tools/dev/decoder_speed.py)"
+   ],
+   "references": "FFmpeg n8.0.1 (libavcodec, static, NEON assembly on) through tools/anchors/libavcodec_bench.c; AV1: dav1d 1.5.4 through libavcodec's libdav1d wrapper; VP9: also libvpx v1.16.0 (vpx_bench.c); VVC: VVdeC d261469 (vvdec_bench.c); AV2: AVM v1.0.0 (avm_bench.c) and dav2d 237229e with its assembly (dav2d_bench.c); each in process with one thread"
+  },
+  "decoder-speed-2026-11-23/x86-plain.json": {
+   "date": "2026-11-23",
+   "commits": {
+    "1da4349e": "built as 3d37138a, the same source before rebase"
+   },
+   "build": "plain",
+   "machines": [
+    "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core (CPU 1), one session (2026-11-23, the third of the day), ours and the references one after another; in process on both sides (packets in memory, decode loop only, frames discarded; no start-up, probing, demuxing or output): 5 interleaved rounds x 3 passes, median of 15 (tools/dev/decoder_speed.py)"
+   ],
+   "references": "FFmpeg n8.0.1 (libavcodec, static, gcc 15.2 -O3, x86 assembly on) through tools/anchors/libavcodec_bench.c; AV1: dav1d 1.5.4 through libavcodec's libdav1d wrapper; VP9: also libvpx v1.16.0 (vpx_bench.c); VVC: VVdeC d261469 (vvdec_bench.c); AV2: AVM v1.0.0 (avm_bench.c) and dav2d 237229e with its assembly (dav2d_bench.c; AV2 rows from a later session that day); each in process with one thread"
+  },
+  "decoder-speed-2026-11-23/jetson-plain.json": {
+   "date": "2026-11-23",
+   "commits": {
+    "1da4349e": "the board's own release build"
+   },
+   "build": "plain",
+   "machines": [
+    "Jetson Orin Nano, one Cortex-A78AE core (core 3, clock fixed at 1.728 GHz: scaling min = max), under the board's exclusive timing lock (jetson-timed.sh, 1-minute load settled under 1.5), ours and the references one after another; in process on both sides: 5 interleaved rounds x 3 passes, median of 15 (tools/dev/decoder_speed.py)"
+   ],
+   "references": "FFmpeg n8.0.1 (libavcodec, static, NEON assembly on) through tools/anchors/libavcodec_bench.c; AV1: dav1d 1.5.4 through libavcodec's libdav1d wrapper; VP9: also libvpx v1.16.0 (vpx_bench.c); VVC: VVdeC d261469 (vvdec_bench.c); AV2: AVM v1.0.0 (avm_bench.c) and dav2d 237229e with its assembly (dav2d_bench.c; AV2 rows from a second run that day); each in process with one thread"
+  },
+  "decoder-speed-2026-11-23/x86-pgo-0.4.0.json": {
+   "date": "2026-11-23",
+   "commits": {
+    "fcaa3395": "0.4.0's release commit c9cff89f plus only the decode --bench CLI path (1da4349e2, 3ca7f3061); no decoder code differs; PGO the release way; decoded frames identical to the shipped c9cff89f binary"
+   },
+   "build": "PGO",
+   "machines": [
+    "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core (CPU 1), one session, ours and the references one after another; in process on both sides (packets in memory, decode loop only, frames discarded; no start-up, probing, demuxing or output): 5 interleaved rounds x 3 passes, median of 15 (tools/dev/decoder_speed.py)"
+   ],
+   "references": "FFmpeg n8.0.1 (libavcodec, static, gcc 15.2 -O3, x86 assembly on) through tools/anchors/libavcodec_bench.c; AV1: dav1d 1.5.4 through libavcodec's libdav1d wrapper; VP9: also libvpx v1.16.0 (vpx_bench.c); VVC: VVdeC d261469 (vvdec_bench.c); AV2: AVM v1.0.0 (avm_bench.c) and dav2d 237229e with its assembly (dav2d_bench.c); each in process with one thread"
+  },
   "decoder-speed-2026-11-19": {
    "date": "2026-11-19",
    "commits": {
@@ -118,6 +185,17 @@
    ],
    "references": "x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0"
   },
+  "wasm-yardstick-2026-11-23": {
+   "date": "2026-11-23",
+   "commits": {
+    "1da4349e": "our browser module (relaxed SIMD); built as 3d37138a, the same source before rebase"
+   },
+   "build": "plain",
+   "machines": [
+    "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core (CPU 1), node v22.21.1, both modules in the same 7 interleaved rounds (tools/web/ffmpeg_wasm_yardstick.py); the codec calls alone on both sides (ours the decode() and encode() calls, ffmpeg.wasm its decode_video and encode_video calls by -benchmark_all), no module start-up, probing, demuxing or command parsing; encode at the same rate limits on both sides (600 kbps target, 1200 kbps peak, 600 kbit buffer)"
+   ],
+   "references": "ffmpeg.wasm (@ffmpeg/core 0.12.10: FFmpeg 5.1.4 and x264 under emscripten, one thread, --disable-asm with -O3 -msimd128: compiler-generated SIMD128 only, FFmpeg's and x264's hand-written SIMD off)"
+  },
   "wasm-yardstick-2026-11-19": {
    "date": "2026-11-19",
    "commits": {
@@ -128,6 +206,18 @@
     "AWS c8a.large (AMD EPYC 9R45, Zen 5), one thread pinned to one physical core, quiet (1-minute load under 2), ours and the references in the same session, node v22.21.1, both modules in the same 7 interleaved rounds (tools/web/ffmpeg_wasm_yardstick.py); the Axis 720p camera stream is a 150-frame cut (901 frames on 2026-11-12)"
    ],
    "references": "ffmpeg.wasm (@ffmpeg/core 0.12.10: x264 and FFmpeg's decoders, one thread, no SIMD; its times include module start-up)"
+  },
+  "cbr-buffer-use-2026-11-22": {
+   "date": "2026-11-22",
+   "commits": {
+    "4fc9a1de": "every preset but H.264 Medium and Veryfast",
+    "c9cff89f": "H.264 Medium",
+    "20d31869": "H.264 Veryfast"
+   },
+   "machines": [
+    "No new encodes: the stored frame sizes of the published CBR charts' points (encoded and scored for the 0.6.0 charts) replayed through the buffer"
+   ],
+   "references": "x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3, libvpx v1.16.0, openh264 v2.7.0"
   }
  }
 }

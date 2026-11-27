@@ -87,6 +87,10 @@ pub struct Decoder {
     retained: Vec<(u16, Picture)>,
     /// Whether the last decode succeeded, so `reference` is its picture.
     shown: bool,
+    /// The general stream's picture [`Self::shown`] shows: the first one the
+    /// last [`Self::decode_shown`] access unit output (§C.5.2), shared with
+    /// the DPB.
+    general_shown: Option<DecodedPicture>,
     /// Replaced references, reused as later reconstructions and output copies.
     pictures: PictureRecycler,
     next_poc: Option<u16>,
@@ -302,20 +306,41 @@ impl Decoder {
     }
 
     /// [`Self::decode`] without the output copy: the picture is shown by
-    /// [`Self::shown`] until the next call.
+    /// [`Self::shown`] until the next call. Our own streams show each
+    /// access unit's picture; a general stream shows the first picture the
+    /// access unit outputs (§C.5.2: reordered, `ph_pic_output_flag` and
+    /// `NoOutputOfPriorPicsFlag` honoured), so one that outputs none (a
+    /// skipped RASL picture, a picture held for reordering) shows nothing,
+    /// and further ones wait for [`Self::next_shown`].
     /// # Errors
     /// As [`Self::decode`].
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
         // A packet that cannot even be split shows nothing either.
         self.shown = false;
-        if !self.decode_units(annex_b_units(packet)?)? {
+        self.general_shown = None;
+        let completed = self.decode_units(annex_b_units(packet)?)?;
+        if self.assembling() || (!completed && !self.general) {
             with_general!(&mut self.instance, general => general.abandon());
             return Err(DecodeError::Malformed("VVC access unit without all slices"));
+        }
+        if self.general {
+            if completed {
+                with_general!(&mut self.instance, general => general.queue_output())?;
+            }
+            self.next_shown();
         }
         match self.instance {
             Instance::High(_) => Err(EIGHT_BIT_ONLY),
             Instance::Eight(_) => Ok(()),
         }
+    }
+
+    /// Show the next general picture output but not shown yet (a stream
+    /// that reorders can output several in one access unit); `false`
+    /// (nothing shown) when there is none, always for our own streams.
+    pub fn next_shown(&mut self) -> bool {
+        self.general_shown = self.next_output();
+        self.general_shown.is_some()
     }
 
     /// Decode one access unit at either sample depth without an output copy.
@@ -341,9 +366,9 @@ impl Decoder {
     /// Borrow deep output only; the original eight-bit shown path stays separate.
     #[must_use]
     pub fn shown_high(&self) -> Option<(ShownPicture<'_, u16>, nc_common::BitDepths)> {
-        match &self.instance {
-            Instance::High(core) if self.shown => Some((core.shown()?, core.depths())),
-            _ => None,
+        match self.general_shown.as_ref()? {
+            DecodedPicture::High(picture) => Some((picture.view(), picture.depths)),
+            DecodedPicture::Eight(_) => None,
         }
     }
 
@@ -357,14 +382,14 @@ impl Decoder {
     /// last successful [`Self::decode_shown`] decoded.
     #[must_use]
     pub fn shown(&self) -> Option<ShownPicture<'_>> {
+        if self.general {
+            return match self.general_shown.as_ref()? {
+                DecodedPicture::Eight(picture) => Some(picture.view()),
+                DecodedPicture::High(_) => None,
+            };
+        }
         if !self.shown {
             return None;
-        }
-        if self.general {
-            return match &self.instance {
-                Instance::Eight(general) => general.shown(),
-                Instance::High(_) => None,
-            };
         }
         let picture = self.reference.as_ref()?;
         let geometry = self.geometry?;

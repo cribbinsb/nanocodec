@@ -401,17 +401,18 @@ impl<T: Pixel> Core<T> {
     ///
     /// # Errors
     ///
-    /// As [`Self::decode`].
+    /// As [`Self::decode_and_show`].
     pub(super) fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
         self.decode_and_show(packet).map(|_| ())
     }
 
     /// [`Self::decode_shown`], returning whether `packet` showed a new frame
     /// (`false` when the selected operating point dropped all frames in it).
+    /// Frames of odd size are shown too: the shown view needs no even copy.
     ///
     /// # Errors
     ///
-    /// As [`Self::decode`].
+    /// As [`Self::decode`], except for odd frame sizes.
     pub(super) fn decode_and_show(&mut self, packet: &[u8]) -> Result<bool> {
         let (frame, dropped) = self.decode_frames(packet)?;
         if dropped {
@@ -421,11 +422,6 @@ impl<T: Pixel> Core<T> {
             self.release_shown();
             return Err(DecodeError::Unsupported("VP9 packet without a shown frame"));
         };
-        if !(frame.width.is_multiple_of(2) && frame.height.is_multiple_of(2)) {
-            self.release(frame);
-            self.release_shown();
-            return Err(DecodeError::Unsupported("VP9 odd frame dimensions"));
-        }
         self.release_shown();
         self.last_spatial_id = Some(frame.spatial_id);
         self.shown = Some(frame);

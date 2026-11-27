@@ -10,7 +10,7 @@
 
 use core::cell::Cell;
 
-use nc_common::nal::write_nal_unit;
+use nc_common::nal::{SEI_USER_DATA_UNREGISTERED, sei_rbsp, write_nal_unit};
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_dsp::{BlockSize, Dsp};
 use nc_encoder::chroma_policy::ChromaPolicy;
@@ -25,17 +25,18 @@ use crate::cavlc::CavlcEncoder;
 use crate::chroma_offsets::{ChromaOffsets, pps_id};
 use crate::deblock::{DeblockControl, deblock_picture};
 use crate::intra4x4::{Intra4x4Rdo, Intra4x4Result, ModeRd, code_intra_4x4};
-use crate::intra8x8::{Intra8x8Result, code_intra_8x8};
+use crate::intra8x8::{Intra8x8Rdo, Intra8x8Result, code_intra_8x8};
 use crate::macroblock::{
-    CBP_CHROMA_AC, CBP_CHROMA_NONE, ChromaTrellis, Elimination, IntraModes, IntraNxnLevels,
-    LumaTrellis, MbQuantizers, Prediction, Residual, ResidualKind, ResidualSkip, TrellisSettings,
-    inter_residual_skip, intra_nxn_residual, predict_inter, predict_inter_chroma, predict_intra,
-    reconstruct_macroblock, residual_skip_views, residual_skip_within, transform_macroblock,
-    trellis_chroma_ac, trellis_luma, write_prediction, write_prediction_views,
+    ALL_QUADRANTS, CBP_CHROMA_AC, CBP_CHROMA_NONE, ChromaTrellis, Elimination, IntraModes,
+    IntraNxnLevels, LumaTrellis, MbQuantizers, Prediction, Residual, ResidualKind, ResidualSkip,
+    TrellisSettings, copy_prediction_views, inter_residual_skip, inter_residual_skip_views,
+    intra_nxn_residual, predict_inter, predict_inter_chroma, predict_intra, reconstruct_macroblock,
+    residual_skip_views, residual_skip_within, transform_macroblock, trellis_chroma_ac,
+    trellis_luma, write_prediction, write_prediction_views,
 };
 use crate::mbinfo::{MbInfo, MbPartition, Neighbours};
 use crate::mbqp::QpTracker;
-use crate::mc::{McKernels, whole_sample_macroblock};
+use crate::mc::{MacroblockViews, McKernels, whole_sample_macroblock};
 use crate::mvpred::{predict_16x16, skip_mv_from};
 use crate::params::{
     Entropy, StreamParams, idr_slice_header, p_slice_header, picture_parameter_set,
@@ -46,6 +47,7 @@ use crate::predict::ChromaMode;
 use crate::references::{NAL_REF_IDC_IDR, ReferenceTracker};
 use crate::residual::trellis::TrellisQuantizer;
 use crate::residual_rd::{choose_quadrants, luma_gains, luma_sse, prunable_quadrants};
+use crate::skip_pred::{LumaScreen, NeighbourSads};
 use crate::syntax::{CodedMb, ref_idx_ctx, ref_idx_first_inc, write_macroblock};
 
 mod final_cost;
@@ -173,6 +175,11 @@ nc_encoder::param_group! {
             "static P_Skip luma 4x4 SAD bound, as a multiple of the inter zero bound: higher skips more",
         static_skip_chroma_scale: 1.0, [0.25, 4.0],
             "static P_Skip chroma 4x4 and DC SAD bounds, as a multiple of the inter zero bounds: higher skips more",
+        /// The neighbour screen of the zero-residual luma test (`skip_pred.rs`)
+        /// on the static skip and the 16x16 inter test: a macroblock's luma
+        /// passes or fails as a whole beside its neighbours' SADs.
+        skip_pred_sad: 0.0, [0.0, 8.0],
+            "above 0 passes or fails a macroblock's luma residual as a whole when its 16x16 SAD is well below or above its left/top/top-right neighbours' (the 4x4 zero test decides the rest): higher decides more blocks that way (0: off)",
         /// Rate-distortion pruning of inter luma residuals (`residual_rd`):
         /// sparse luma quadrants are kept only when the squared error they
         /// remove exceeds this multiple of λ times their CABAC bits.
@@ -225,6 +232,27 @@ nc_encoder::param_group! {
             "if > 0, the Intra_4x4 and Intra_8x8 gates scale with sqrt(lambda) (this multiple of their QP 36 values; replaces the fixed gates): lower tries I_NxN more",
         intra8x8_all_modes: 0.0, [0.0, 1.0],
             "1 evaluates all nine Intra_8x8 modes per block instead of the 5-7 mode shortlist: slower, better intra prediction",
+        /// `Intra_8x8` blocks by squared error plus λ times their CABAC bits
+        /// (mode and levels) instead of SATD, as `Intra_4x4` blocks are with
+        /// `intra_rd`: each block codes this many of the modes with the
+        /// lowest SATD cost and keeps the cheapest (`intra8x8::Intra8x8Rdo`).
+        /// In the slices `intra_rd` covers.
+        intra8x8_rd_candidates: 0.0, [0.0, 9.0],
+            "with intra_rd, the Intra_8x8 modes per block (lowest SATD cost first, rounded) coded and priced, 0: by SATD alone; higher is slower, better intra",
+        /// With `quant.trellis` on, also trellis-quantise `Intra_8x8` luma
+        /// blocks (each before the next one predicts from it), in key frames
+        /// only when `quant.trellis_key` is 1.
+        trellis_i8x8: 0.0, [0.0, 1.0],
+            "1 also trellis-quantises Intra_8x8 luma blocks: slower, fewer bits per intra macroblock",
+        /// The intra trellis's λ as a multiple of the inter one
+        /// (`quant.trellis_lambda_scale` times the mode-decision λ): an intra
+        /// block's reconstruction is the prediction of the blocks after it, so
+        /// a level dropped costs more than its own error. Codec reason for a
+        /// local value: at the shared scale (1.3 on H.264) the intra trellis
+        /// loses on keys (one frame, 0.15 share, 23 clips: Intra_8x8 J +3.3 %,
+        /// all three kinds +1.9 %); at 0.4-0.7 of it Intra_8x8 gains -2.1 %.
+        trellis_intra_lambda_ratio: 1.0, [0.1, 2.0],
+            "the intra macroblocks' trellis lambda as a multiple of the inter trellis lambda: lower keeps more intra levels",
         /// A speed lever (H.264 Faster): `disable_deblocking_filter_idc` 1 in P
         /// slices skips the boundary-strength pass and every edge filter of
         /// the frame. Key frames stay filtered: every later frame predicts
@@ -287,6 +315,8 @@ nc_encoder::param_group! {
 /// NAL unit headers (§7.3.1): `nal_ref_idc` and the unit type.
 const NAL_SPS: u8 = 0x67;
 const NAL_PPS: u8 = 0x68;
+/// SEI NAL unit header: `nal_ref_idc` 0, type 6 (§7.4.1, Table 7-1).
+const NAL_SEI: u8 = 0x06;
 /// `nal_unit_type` of IDR and non-IDR slices (Table 7-1).
 const NAL_TYPE_IDR_SLICE: u8 = 5;
 const NAL_TYPE_NON_IDR_SLICE: u8 = 1;
@@ -300,6 +330,13 @@ const NAL_REF_IDC_SHIFT: u8 = 5;
 /// byte-identical, no guard tripped).
 const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     first_key_lookahead: 0.3,
+    first_key: Some(nc_encoder::first_key_model::FirstKeyCalibration {
+        weights: [
+            0.61971, 0.954_124, 0.065_407, 0.513_316, 0.131_066, -0.611_369, -0.043_712, 0.265_619,
+            0.853_049,
+        ],
+        fast_bias: -0.000_356,
+    }),
     ..nc_encoder::RateModel::QP
 };
 
@@ -313,6 +350,13 @@ const SKIP_BITS: f32 = 1.0;
 const INTER_16X16_OVERHEAD_BITS: f32 = 4.0; // skip flag, mb_type, a cheap cbp
 const INTRA_16X16_BITS: f32 = 9.0; // skip flag, prefix, mb_type, chroma mode
 
+#[inline]
+fn inter_mv_bits(mv: Mv, mvp: Mv, overhead: f32) -> f32 {
+    overhead
+        + mvd_bits(i32::from(mv.x) - i32::from(mvp.x))
+        + mvd_bits(i32::from(mv.y) - i32::from(mvp.y))
+}
+
 /// The H.264 backend.
 #[derive(Debug)]
 pub struct H264Backend {
@@ -321,6 +365,8 @@ pub struct H264Backend {
     /// The inter prediction kernels, resolved once from `dsp`.
     mc: McKernels,
     params: StreamParams,
+    /// Cached MV range for `params.level_idc` (avoid recomputing per MV candidate).
+    mv_range: crate::params::MvRange,
     /// The configured QP, used for inter frames.
     rate_control_enabled: bool,
     base_qp: u8,
@@ -378,6 +424,9 @@ pub struct H264Backend {
     /// CABAC bin costs by probability state, for pricing macroblocks.
     bin_costs: BinCosts,
     access_unit: Vec<u8>,
+    /// The encoder information SEI RBSP written after every key frame's
+    /// parameter sets (`CodecBackend::set_encoder_info`), if any.
+    encoder_info: Option<Vec<u8>>,
     /// The motion search's 8x8 vectors of the macroblock about to be coded
     /// (`sub_block_motion`).
     sub_vectors: Option<[Mv; 4]>,
@@ -394,6 +443,8 @@ pub struct H264Backend {
     /// prediction, consumed by its `encode_block`.
     static_skip: Option<(usize, usize)>,
     static_pred: Box<Prediction>,
+    /// The frame's 16x16 luma SADs for `h264.skip_pred_sad`.
+    neighbour_sads: NeighbourSads,
     /// The prediction buffer of the macroblock being coded, reused: every
     /// mode writes all of it, and a fresh zeroed one per macroblock was a
     /// 384-byte memset (crowd QP 36: 1.2M of 689M instructions).
@@ -410,6 +461,9 @@ pub struct H264Backend {
     exact_luma: Cell<Option<ExactLuma>>,
     /// Tunable heuristics.
     tuning: H264Params,
+    /// The settings of the frame's light macroblocks (`effort_class.rs`),
+    /// swapped with `tuning` while a light macroblock is coded.
+    light: Option<LightTuning>,
     /// Intra-refresh window of the current frame (`CodecBackend::set_refresh`).
     refresh: Option<RefreshWindow>,
     /// The current slice's `cabac_init_idc` and deblocking control (0 and
@@ -427,7 +481,7 @@ pub struct H264Backend {
 }
 
 /// The registered trellis controls (`nc_encoder::QuantParams`,
-/// `h264.trellis_i16x16`, `h264.trellis_i4x4`) and the search's buffers. Inter macroblocks' luma,
+/// `h264.trellis_i16x16`, `h264.trellis_i4x4`, `h264.trellis_i8x8`) and the search's buffers. Inter macroblocks' luma,
 /// optionally their chroma AC and intra macroblocks' AC; the DC blocks and
 /// `Intra_4x4` luma (quantised while predicting) keep the plain quantiser.
 #[derive(Debug)]
@@ -436,27 +490,41 @@ struct H264Trellis {
     /// the squared chroma/luma step ratio, and key frames hold only intra
     /// macroblocks.
     settings: nc_encoder::TrellisSettings,
-    /// `I_16x16` and `I_NxN` macroblocks too (`h264.trellis_i16x16`,
-    /// `h264.trellis_i4x4`).
-    intra: [bool; 2],
     search: crate::residual::trellis::TrellisQuantizer,
 }
 
 impl H264Trellis {
-    fn from_params(quant: &QuantParams, tuning: &H264Params) -> Option<Self> {
+    fn from_params(quant: &QuantParams) -> Option<Self> {
         nc_encoder::TrellisSettings::from_params(quant).map(|settings| Self {
             settings,
-            intra: [tuning.trellis_i16x16 >= 0.5, tuning.trellis_i4x4 >= 0.5],
             search: crate::residual::trellis::TrellisQuantizer::default(),
         })
     }
 
+    /// The trellis λ (sample squared error per bit) of macroblocks coded as
+    /// `kind`, from the mode-decision λ `rd_lambda` and the frame's `tuning`.
+    fn lambda(
+        &self,
+        rd_lambda: f32,
+        kind: ResidualKind,
+        slice: SliceKind,
+        tuning: &H264Params,
+    ) -> f32 {
+        let intra = if kind.is_inter() {
+            1.0
+        } else {
+            tuning.trellis_intra_lambda_ratio
+        };
+        rd_lambda * self.settings.lambda_scale_for(slice == SliceKind::I) * intra
+    }
+
     /// Whether macroblocks coded as `kind` in a `slice` are trellised.
-    fn covers(&self, kind: ResidualKind, slice: SliceKind) -> bool {
+    fn covers(&self, kind: ResidualKind, slice: SliceKind, tuning: &H264Params) -> bool {
         let kind_covered = match kind {
             ResidualKind::Inter | ResidualKind::Inter8x8 => true,
-            ResidualKind::Intra16x16 => self.intra[0],
-            ResidualKind::Intra4x4 | ResidualKind::Intra8x8 => self.intra[1],
+            ResidualKind::Intra16x16 => tuning.trellis_i16x16 >= 0.5,
+            ResidualKind::Intra4x4 => tuning.trellis_i4x4 >= 0.5,
+            ResidualKind::Intra8x8 => tuning.trellis_i8x8 >= 0.5,
         };
         kind_covered && self.settings.covers(slice == SliceKind::I)
     }
@@ -473,6 +541,7 @@ struct PredictionCache {
     ref_idx: u8,
     skip: Mv,
     mvp: Option<Mv>,
+    ref_idx_bits: Option<f32>,
 }
 
 /// An exact 6-tap luma prediction the engine already computed while ranking:
@@ -493,6 +562,8 @@ struct PredictedVectors {
     skip: Option<Mv>,
     /// The 16x16 predicted vector for the selected reference index.
     mvp: Mv,
+    /// Cached bit cost of signalling `selected_ref` for this macroblock.
+    ref_idx_bits: f32,
 }
 
 /// How a macroblock is coded once its intra choice is made: the intra
@@ -584,6 +655,38 @@ impl H264Backend {
         (block.x / MB_SIZE, block.y / MB_SIZE)
     }
 
+    /// `zero` with its luma verdict replaced by the neighbour screen's where
+    /// the screen is sure (`h264.skip_pred_sad`), its SAD recorded for the
+    /// macroblocks after it; `zero` unchanged when the screen is off.
+    fn screen_luma(
+        &mut self,
+        (x, y): (usize, usize),
+        zero: ResidualSkip,
+        bound: u32,
+    ) -> ResidualSkip {
+        let strength = self.tuning.skip_pred_sad;
+        if strength <= 0.0 {
+            return zero;
+        }
+        let pos = (x / MB_SIZE, y / MB_SIZE);
+        let verdict = self
+            .neighbour_sads
+            .screen(pos, zero.luma_sad, bound, strength);
+        self.neighbour_sads.record(pos, zero.luma_sad);
+        match verdict {
+            LumaScreen::Pass => ResidualSkip {
+                luma: true,
+                luma_quadrants: ALL_QUADRANTS,
+                ..zero
+            },
+            LumaScreen::Fail => ResidualSkip {
+                luma: false,
+                ..zero
+            },
+            LumaScreen::Unsure => zero,
+        }
+    }
+
     /// The intra prediction of macroblock `(col, row)`: the best
     /// `Intra_16x16` and chroma modes, and `Intra_8x8` or `Intra_4x4` if
     /// they beat them. Trying `I_NxN` reconstructs its luma into `recon` as
@@ -635,7 +738,7 @@ impl H264Backend {
         let mut luma_8x8 = None;
         if try_8x8
             && let Some(i8) =
-                self.code_intra_8x8_mb(source, recon, (col, row), abort_above(best_cost))
+                self.code_intra_8x8_mb(source, recon, (col, row), rd, abort_above(best_cost))
         {
             let cost = if rd {
                 let luma = NxnLuma::Blocks8x8(&i8);
@@ -835,20 +938,23 @@ impl H264Backend {
             && self
                 .trellis
                 .as_ref()
-                .is_some_and(|t| t.covers(ResidualKind::Intra4x4, self.slice));
+                .is_some_and(|t| t.covers(ResidualKind::Intra4x4, self.slice, &self.tuning));
         let cabac = self.cabac.as_ref().filter(|_| covered || rd);
         let bins = cabac.map(|c| c.bit_counter(&self.bin_costs));
         let luma = bins.as_ref().map(|bins| {
             let coded = |m: Option<&MbInfo>, bx: usize, by: usize| {
                 cond_term_flag(m, true, |m| m.luma_block_coded(bx, by))
             };
-            let (lambda_scale, max_states) = self.trellis.as_ref().map_or((1.0, 1), |t| {
-                (t.settings.lambda_scale, t.settings.max_states)
+            let (lambda, max_states) = self.trellis.as_ref().map_or((self.rd_lambda, 1), |t| {
+                (
+                    t.lambda(self.rd_lambda, ResidualKind::Intra4x4, self.slice, &self.tuning),
+                    t.settings.max_states,
+                )
             });
             LumaTrellis {
                 settings: TrellisSettings {
                     bins,
-                    lambda: self.rd_lambda * lambda_scale,
+                    lambda,
                     max_states,
                 },
                 left_coded: std::array::from_fn(|by| coded(nb.left, 3, by)),
@@ -885,19 +991,54 @@ impl H264Backend {
     }
 
     /// Code the luma of macroblock `(col, row)` as `Intra_8x8` into `recon`
-    /// (`None` once its cost reaches `abort_above`, see [`code_intra_8x8`]).
+    /// (`None` once its cost reaches `abort_above`, see [`code_intra_8x8`]),
+    /// each block trellised if the trellis covers `Intra_8x8` and its mode
+    /// chosen by rate-distortion cost if `rd` and
+    /// `h264.intra8x8_rd_candidates` is set.
     // Out of line, so the block loop and its predictors are optimised as
     // one unit: inlined into `choose_intra`, the Intra_4x4 predictor stayed
     // a call and key frames cost 5% more instructions.
     #[inline(never)]
     fn code_intra_8x8_mb(
-        &self,
+        &mut self,
         source: &Picture,
         recon: &mut Picture,
         (col, row): (usize, usize),
+        rd: bool,
         abort_above: f32,
     ) -> Option<Intra8x8Result> {
         let nb = Neighbours::of(&self.mbs, self.params.mb_cols, col, row);
+        let trellis = self
+            .trellis
+            .as_ref()
+            .filter(|t| {
+                self.lambda_scale <= 1.0
+                    && t.covers(ResidualKind::Intra8x8, self.slice, &self.tuning)
+            })
+            .map(|t| {
+                (
+                    t.lambda(self.rd_lambda, ResidualKind::Intra8x8, self.slice, &self.tuning),
+                    t.settings.max_states,
+                )
+            });
+        let candidates = self.tuning.intra8x8_rd_candidates.round() as usize;
+        let mode_rd = (rd && candidates > 0).then_some((self.rd_lambda, candidates));
+        let cabac = self
+            .cabac
+            .as_ref()
+            .filter(|_| trellis.is_some() || mode_rd.is_some());
+        let bins = cabac.map(|c| c.bit_counter(&self.bin_costs));
+        let mut own_search = None;
+        let search = match self.trellis.as_mut() {
+            Some(t) => &mut t.search,
+            None => own_search.get_or_insert_with(TrellisQuantizer::default),
+        };
+        let rdo = bins.as_ref().map(|bins| Intra8x8Rdo {
+            bins,
+            search,
+            trellis,
+            mode_rd,
+        });
         code_intra_8x8(
             &self.dsp,
             source,
@@ -907,6 +1048,7 @@ impl H264Backend {
             self.quantizers.luma_intra(),
             (self.satd_lambda, self.tuning.intra8x8_all_modes >= 0.5),
             |bx, by, own| nb.predicted_intra_4x4_mode(bx, by, own),
+            rdo,
             abort_above,
         )
     }
@@ -1000,7 +1142,7 @@ impl H264Backend {
     /// else the best split; `None` when no split was ranked).
     /// `sub_vectors` are the motion search's 8x8 vectors of the macroblock.
     fn choose_inter(
-        &self,
+        &mut self,
         source: &Picture,
         reference: &Picture,
         (x, y): (usize, usize),
@@ -1025,6 +1167,7 @@ impl H264Backend {
             predict_inter(&self.mc, reference, x, y, &[mv; 4], pred);
         }
         let zero16 = inter_residual_skip(&self.dsp, source, pred, x, y, &self.quantizers);
+        let zero16 = self.screen_luma((x, y), zero16, self.quantizers.inter_zero_luma_limit());
         // P_Skip as early as possible (the reference encoder's order): the
         // skip vector passing all residual thresholds needs no partition search.
         // With threshold scales above 1 this is a deliberate speed/quality tradeoff.
@@ -1415,13 +1558,13 @@ impl H264Backend {
             .mb_pred
             .take()
             .unwrap_or_else(|| Box::new(Prediction::ZERO));
-        let (choice, zero, alternative) = self.choose_macroblock(
-            block,
-            &decision,
-            (source, reference, &mut *recon),
-            sub_vectors,
-            &mut pred,
-        );
+        let pictures = (source, reference, &mut *recon);
+        let chosen = self.choose_coded(block, &decision, pictures, sub_vectors, &mut pred);
+        let Some((choice, zero, alternative)) = chosen else {
+            // Coded and written in full.
+            self.mb_pred = Some(pred);
+            return;
+        };
         let (choice, zero) = self.rd_refine_choice(
             block,
             (choice, zero, alternative),
@@ -1508,6 +1651,101 @@ impl H264Backend {
         self.mb_pred = Some(pred);
     }
 
+    /// The macroblock's choice ([`Self::choose_macroblock`]), or `None`
+    /// when [`Self::choose_whole_sample`] coded and wrote it in full.
+    fn choose_coded(
+        &mut self,
+        block: &Block,
+        decision: &BlockDecision,
+        (source, reference, recon): (&Picture, Option<&Picture>, &mut Picture),
+        sub_vectors: Option<[Mv; 4]>,
+        pred: &mut Prediction,
+    ) -> Option<(MbChoice, ResidualSkip, Option<Motion>)> {
+        let whole_sample = match (decision.mode, reference) {
+            (PredictionMode::Inter(mv), Some(reference)) if self.random.is_none() => {
+                whole_sample_macroblock(reference, (block.x, block.y), mv)
+                    .map(|views| (mv, reference, views))
+            }
+            _ => None,
+        };
+        match whole_sample {
+            Some((mv, reference, views))
+                if self.tuning.partition_search < 0.5
+                    || Some(mv) == self.predicted_vectors(block).skip =>
+            {
+                self.choose_whole_sample(
+                    block,
+                    mv,
+                    (views, source, reference, recon),
+                    sub_vectors,
+                    pred,
+                )
+            }
+            _ => Some(self.choose_macroblock(
+                block,
+                decision,
+                (source, reference, recon),
+                sub_vectors,
+                pred,
+            )),
+        }
+    }
+
+    /// An inter macroblock at whole-sample vector `mv` (`views`: its luma
+    /// and chroma blocks in `reference`, which are its prediction), without
+    /// partition search or at the skip vector. The zero-residual test reads
+    /// the reference directly; with nothing to code (and no RD refinement
+    /// that could move a non-skip vector, `rd_refine_inter`), the reference
+    /// blocks are copied straight into `recon` and the macroblock is
+    /// written: no prediction buffer, transform or reconstruction (Gemini
+    /// agent, 2026-11-23). Returns `None` then; otherwise the choice for the
+    /// rest of [`Self::code_macroblock`], with `pred` holding the
+    /// prediction.
+    fn choose_whole_sample(
+        &mut self,
+        block: &Block,
+        mv: Mv,
+        (views, source, reference, recon): (MacroblockViews<'_>, &Picture, &Picture, &mut Picture),
+        sub_vectors: Option<[Mv; 4]>,
+        pred: &mut Prediction,
+    ) -> Option<(MbChoice, ResidualSkip, Option<Motion>)> {
+        let pos = (block.x, block.y);
+        let (luma, chroma) = views;
+        let predicted = self.predicted_vectors(block);
+        let zero =
+            inter_residual_skip_views(&self.dsp, source, pos, (&luma, &chroma), &self.quantizers);
+        // The exact-ranking cache holds this whole-sample prediction at
+        // best: the reference blocks themselves.
+        self.exact_luma.set(None);
+        let skip = Some(mv) == predicted.skip;
+        if zero.all() && (skip || self.rd_refine_level() == 0) {
+            write_prediction_views(recon, pos, &luma, &chroma);
+            let coded = if skip {
+                CodedMb::Skip(mv)
+            } else {
+                CodedMb::Inter {
+                    partition: MbPartition::P16x16,
+                    mvs: [mv; 4],
+                    ref_idx: self.coded_ref_idx(),
+                    mvp: Some(predicted.mvp),
+                    residual: &Residual::EMPTY_INTER,
+                }
+            };
+            self.write_coded(&coded, Self::mb_index(block));
+            return None;
+        }
+        copy_prediction_views(pred, (&luma, &chroma));
+        if self.tuning.partition_search < 0.5 {
+            let unsplit = MbChoice::Inter {
+                partition: MbPartition::P16x16,
+                mvs: [mv; 4],
+            };
+            return Some((unsplit, zero, None));
+        }
+        // The skip vector with a residual: the split search decides.
+        Some(self.choose_inter(source, reference, pos, mv, sub_vectors, predicted, pred))
+    }
+
     /// Trellis quantisation (`quant.trellis`) of the coded residual in
     /// `self.residual` of the macroblock `block` predicted by `pred`, priced
     /// with the slice's contexts as they stand. Not past the λ-headroom cap,
@@ -1526,7 +1764,7 @@ impl H264Backend {
         let chroma =
             trellis.settings.chroma_scale.is_some() && residual.cbp_chroma == CBP_CHROMA_AC;
         if (luma || chroma)
-            && trellis.covers(kind, self.slice)
+            && trellis.covers(kind, self.slice, &self.tuning)
             && self.lambda_scale <= 1.0
             && self.random.is_none()
         {
@@ -1580,7 +1818,7 @@ impl H264Backend {
         let (col, row) = Self::mb_index(block);
         let nb = Neighbours::of(&self.mbs, self.params.mb_cols, col, row);
         let intra = !kind.is_inter();
-        let lambda = self.rd_lambda * trellis.settings.lambda_scale;
+        let lambda = trellis.lambda(self.rd_lambda, kind, self.slice, &self.tuning);
         let settings = |lambda| TrellisSettings {
             bins: &bins,
             lambda,
@@ -1729,7 +1967,7 @@ impl H264Backend {
         let luma = LumaTrellis {
             settings: TrellisSettings {
                 bins: &bins,
-                lambda: self.rd_lambda * trellis.settings.lambda_scale,
+                lambda: trellis.lambda(self.rd_lambda, self.residual.kind, self.slice, &self.tuning),
                 max_states: trellis.settings.max_states,
             },
             left_coded: std::array::from_fn(|by| {
@@ -1857,7 +2095,9 @@ impl H264Backend {
 
     /// Write the SPS and one PPS per chroma QP offset in use (the
     /// frame's offset alone without per-frame chroma offsets) into the
-    /// access unit, as every key frame repeats them.
+    /// access unit, as every key frame repeats them, then the encoder
+    /// information SEI (§7.4.1.2.3: SEI NAL units precede the picture's
+    /// first slice).
     fn write_parameter_sets(&mut self, entropy: Entropy) {
         write_nal_unit(
             &[NAL_SPS],
@@ -1880,6 +2120,9 @@ impl H264Backend {
                 ),
                 &mut self.access_unit,
             );
+        }
+        if let Some(sei) = &self.encoder_info {
+            write_nal_unit(&[NAL_SEI], sei, &mut self.access_unit);
         }
     }
 
@@ -1952,6 +2195,7 @@ impl H264Backend {
             ref_idx,
             skip,
             mvp: Some(mvp),
+            ref_idx_bits: Some(ref_idx_bits),
         }) = self.predicted.get()
             && cached == index
             && ref_idx == self.selected_ref
@@ -1959,6 +2203,7 @@ impl H264Backend {
             return PredictedVectors {
                 skip: self.usable_skip(skip),
                 mvp,
+                ref_idx_bits,
             };
         }
         self.compute_predicted_vectors(block)
@@ -1999,7 +2244,7 @@ impl H264Backend {
     /// Estimated bits of `ref_idx_l0` of a 16x16 inter macroblock using the
     /// selected reference, from the slice's contexts as they stand; 0 with
     /// one active reference.
-    fn ref_idx_bits(&self, block: &Block) -> f32 {
+    fn ref_idx_bits_from_nb(&self, nb: &Neighbours<'_>) -> f32 {
         if self.active_references <= 1 {
             return 0.0;
         }
@@ -2012,11 +2257,7 @@ impl H264Backend {
         }
         let cabac = self.cabac.as_ref().expect("mode decision outside a frame");
         let counter = cabac.bit_counter(&self.bin_costs);
-        let inc = ref_idx_first_inc(
-            MbPartition::P16x16,
-            self.selected_ref,
-            &self.neighbours(block),
-        );
+        let inc = ref_idx_first_inc(MbPartition::P16x16, self.selected_ref, nb);
         (0..=usize::from(self.selected_ref))
             .map(|bin| {
                 counter.bin_bits(
@@ -2047,6 +2288,7 @@ impl H264Backend {
             ref_idx: 0,
             skip,
             mvp,
+            ref_idx_bits: None,
         }));
         skip
     }
@@ -2062,15 +2304,18 @@ impl H264Backend {
             _ if ref_idx == 0 => skip_mv_from(&nb, || mvp),
             _ => skip_mv_from(&nb, || predict_16x16(&nb, 0)),
         };
+        let ref_idx_bits = self.ref_idx_bits_from_nb(&nb);
         self.predicted.set(Some(PredictionCache {
             index,
             ref_idx,
             skip,
             mvp: Some(mvp),
+            ref_idx_bits: Some(ref_idx_bits),
         }));
         PredictedVectors {
             skip: self.usable_skip(skip),
             mvp,
+            ref_idx_bits,
         }
     }
 
@@ -2079,6 +2324,69 @@ impl H264Backend {
         Neighbours::of(&self.mbs, self.params.mb_cols, col, row)
     }
 }
+
+/// The light macroblocks' settings of a frame with light macroblocks
+/// (`CodecBackend::set_light_params`), and their quantisers: the zero
+/// bounds, rounding and elimination thresholds live in the quantisers.
+#[derive(Debug, Clone)]
+struct LightTuning {
+    tuning: H264Params,
+    quantizer_cache: Vec<Option<MbQuantizers>>,
+    /// Whether the backend's own `tuning` holds these settings.
+    in_use: bool,
+}
+
+/// [`H264Params::MACROBLOCK_SETTINGS`] and the copy of those fields, from
+/// one list.
+macro_rules! macroblock_settings {
+    ($($field:ident),* $(,)?) => {
+        impl H264Params {
+            /// The settings read per macroblock, which light macroblocks
+            /// (`effort_class.rs`) may change: every other one is read per
+            /// frame or is parameter-set syntax.
+            const MACROBLOCK_SETTINGS: &'static [&'static str] =
+                &[$(concat!("h264.", stringify!($field))),*];
+
+            /// These settings with `light`'s values of
+            /// [`Self::MACROBLOCK_SETTINGS`].
+            fn with_macroblock_settings(&self, light: &Self) -> Self {
+                Self {
+                    $($field: light.$field,)*
+                    ..*self
+                }
+            }
+        }
+    };
+}
+
+macroblock_settings!(
+    static_skip,
+    static_skip_luma_scale,
+    static_skip_chroma_scale,
+    partition_search,
+    split_gate_satd,
+    split_gate_lambda,
+    split_uniform_qpel,
+    split_refine_steps,
+    split_refine_mv16,
+    intra4x4_gate_satd,
+    intra8x8_gate_satd,
+    intra_nxn_gate_lambda,
+    inter_intra_dc_only,
+    subpel_skip_variance,
+    subpel_skip_lambda,
+    residual_rd_lambda,
+    rd_refine,
+    rd_refine_steps,
+    rd_refine_square,
+    rd_refine_satd_margin,
+    inter_zero_luma_scale,
+    inter_zero_chroma_scale,
+    inter_rounding_divisor,
+    eliminate_luma_8x8,
+    eliminate_luma_mb,
+    eliminate_chroma_ac,
+);
 
 impl H264Params {
     /// The slice data's entropy coder (`h264.cavlc`).
@@ -2135,29 +2443,34 @@ impl CodecBackend for H264Backend {
     /// Every `h264.*` heuristic is re-read per frame (`set_frame_params`),
     /// so disposable frames can run cheaper ones (`nonbase.h264.*`).
     const FRAME_PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[H264Params::SPECS];
-    /// The chroma QP offset is PPS syntax, and the intra trellis switches
-    /// are read once into [`H264Trellis`].
-    const STREAM_FIXED_PARAMS: &'static [&'static str] = &[
-        "h264.chroma_qp_offset",
-        "h264.trellis_i16x16",
-        "h264.trellis_i4x4",
-        "h264.cavlc",
-    ];
+    /// The chroma QP offset is PPS syntax.
+    const STREAM_FIXED_PARAMS: &'static [&'static str] = &["h264.chroma_qp_offset", "h264.cavlc"];
+    /// Read per macroblock ([`H264Params::with_macroblock_settings`]).
+    const SUPERBLOCK_PARAMS: &'static [&'static str] = H264Params::MACROBLOCK_SETTINGS;
 
     /// The shared decision values of the same joint-search set as the
     /// `H264Params` defaults (measured together; validated for H.264 only).
     // The fixed-QP profile (`--qp`): a coarser odd-position leaf (+2), the
     // gentler cadence (scale 1, not the CBR Default's 1.4), base frames at
-    // 0.8 λ, and the key 8 QP finer than the P frames (6). Fixed QP, matched
-    // QP (nceval.fixedqp, 14-16 pool clips): draw fixedqp-2026-11-14 J -1.9%
-    // [-2.9, -0.8], draw fixedqp-2026-11-14-second -2.9% [-4.6, -1.6]; each
-    // alone -0.4..-1.7%. docs/analysis/fixed-qp-gap-2026-11-14.md
-    // "fixed-QP profile". The Fast presets pin it off.
+    // 0.8 λ, and the key 9 QP finer than the P frames, 7 QP coarser under
+    // camera motion (so a moving camera's key stays 2 finer, as at 8 / 6).
+    // 8 / 6 until 2026-11-24, then 10 / 8 (Brief 20), screened at four
+    // quantizers walked to the ladder's rates; the benchmark's six base
+    // quantizers showed 10 / 8 past the optimum (held-out "ours" Fixed QP,
+    // medium +0.8 % BD-J [+0.4, +1.2], n=97, the evidence, not the tuning
+    // set). Re-screened on those quantizers (nceval.fixedqp ab, BD-J, draw
+    // fixedqp-2026-11-25, n=24) against 10 / 8: 9 / 7 at 150 f medium -0.35 %
+    // [-0.73, -0.07], slow -0.44 % [-0.81, -0.14], slower -0.39 % [-0.79,
+    // -0.09]; at 300 f medium -0.23 % [-0.58, +0.05]. 8 / 6: -0.47 % [-1.31,
+    // +0.14] at 150 f but -0.15 % [-0.93, +0.45] at 300 f; 7 / 5 and 6 / 4
+    // worse. Key frames only: no P-frame work changes. CBR is untouched.
+    // docs/analysis/benchmark-anomalies-2026-11-25.md.
     const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
         ("rate.cadence_leaf_penalty", 2.0),
         ("rate.cadence_scale", 1.0),
         ("decision.base_lambda_scale", 0.8),
-        ("h264.keyframe_qp_offset", 8.0),
+        ("h264.keyframe_qp_offset", 9.0),
+        ("rate.fixed_qp_moving_key", 7.0),
     ];
 
     /// The high-quality picture is the long-term one beside the layer
@@ -2167,6 +2480,24 @@ impl CodecBackend for H264Backend {
     const SECOND_REFERENCE_WITH_LAYERS: bool = true;
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Periodic keys at the engine's `rate.key_cap_buffer` 1.0, the first key at 0.8
+        // (`rate.key_cap_buffer_first`). Cap 1.0 on the first key too passed the train (L3 -0.14 %,
+        // final check -0.77 %) but failed `static_recovery`'s layered H.264 Default check (the
+        // undisturbed stream's larger first key: 3.3 dB over the 2.5 dB bound); with the first key
+        // at 0.8 it passes 13/13. nceval.train at both key shares (base 29f3c5a22, front k): L3
+        // byte-identical (one-key streams keep their first key), final check BETTER at 1/150 and
+        // 1/300 (-1.19 / -0.25 %). Fast and faster set the first key at 1.0 (passed with it).
+        ("rate.key_cap_buffer_first", 0.8),
+        // The residual DC error in the inter vector ranking. Codec reason:
+        // H.264 inter luma codes each 4x4 / 8x8 block's DC as an ordinary
+        // coefficient (only Intra 16x16 and chroma have a separate DC
+        // transform), so a vector that leaves a DC offset pays it in every
+        // block. nceval.train
+        // (draw 2026-11-22, base 57f355565) L3 / final-check J: fast -1.52 /
+        // -0.45 %, faster -0.81 / +0.29 % [-0.01, +0.61] (ambiguous), medium
+        // -0.11 / -0.83 %, slow -1.13 / -0.62 %, slower -1.11 / -0.91 %.
+        // Veryfast was not screened and pins 0.
+        ("decision.rank_dc_weight", 1.0),
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,
@@ -2364,6 +2695,38 @@ impl CodecBackend for H264Backend {
         // per 1000 frames.
         // The other H.264 presets pin it off.
         ("rate.key_still_boost", 6.0),
+        // No key-frame Intra_8x8 RD search or trellis at medium (adopted
+        // 1c9442eaf, reverted 2026-11-22): on the chart timing (150 f, one
+        // key) it cost Zen 5 cycles +2.5 % against the same head with it off,
+        // which outweighs its J. Slow sets its own.
+        // Motion and sub-pel exits as linear threshold shifts (G2,
+        // `linear_threshold.rs`): trial 28 of a two-share 600 f study of the
+        // 19 terms (g3-h264-medium, 30 trials, k 0.1963). Rented-core CPU
+        // (aws_cpu_ab --key-shares, CBR 600, cycles) 1/150 Zen 5 -6.01 %,
+        // Graviton 3 / 4 -5.26 / -5.10 %; 1/300 -6.52 / -5.98 / -5.63 %.
+        // Held out (nceval.train, draw 2026-11-23, k 0.1963): L3 150 f J
+        // -0.75 % [-0.92, -0.56] (n 108); final check 1/150 J -1.13 %
+        // [-1.31, -0.94] (n 36), 1/300 J -1.04 % [-1.33, -0.75] (n 28); no
+        // guard. The other H.264 rungs pin 0 (not screened).
+        ("analysis.window_exit_shift_bias", 0.349_365),
+        ("analysis.window_exit_shift_lambda", -0.079_989_9),
+        ("analysis.window_exit_shift_noise", -0.154_972),
+        ("analysis.window_exit_shift_nonbase", 0.542_458),
+        ("analysis.zero_gate_shift_bias", 0.124_463),
+        ("analysis.zero_gate_shift_lambda", 0.087_152_5),
+        ("analysis.zero_gate_shift_neighbour_mv", -0.221_902),
+        ("analysis.zero_gate_shift_noise", -0.769_533),
+        ("analysis.zero_gate_shift_nonbase", 0.937_521),
+        ("decision.skip_no_refine_shift_bias", -0.028_711_5),
+        ("decision.skip_no_refine_shift_lambda", 0.042_874_7),
+        ("decision.skip_no_refine_shift_noise", -0.070_653_5),
+        ("decision.skip_no_refine_shift_nonbase", -0.052_717_9),
+        ("decision.subpel_seed_shift_bias", 0.086_840_4),
+        ("decision.subpel_seed_shift_lambda", -0.033_041_3),
+        ("decision.subpel_seed_shift_noise", 0.044_922_6),
+        ("decision.subpel_seed_shift_nonbase", 0.134_65),
+        ("decision.subpel_seed_shift_size", -0.014_316_6),
+        ("decision.subpel_seed_shift_zero_mv", 0.170_256),
     ];
 
     fn new(config: &EncoderConfig) -> Result<Self, ConfigError> {
@@ -2394,10 +2757,12 @@ impl CodecBackend for H264Backend {
         let chroma_offset = tuning.chroma_qp_offset();
         Ok(Self {
             tuning,
+            light: None,
             refresh: None,
             mc: McKernels::new(&dsp),
             dsp,
             mbs: vec![None; params.mb_count()],
+            mv_range: params.mv_range(),
             params,
             rate_control_enabled: false,
             base_qp: qp,
@@ -2433,12 +2798,14 @@ impl CodecBackend for H264Backend {
             cavlc: None,
             bin_costs: BinCosts::new(),
             access_unit: Vec::new(),
+            encoder_info: None,
             sub_vectors: None,
             predicted: Cell::new(None),
             residual: Box::new(Residual::empty(ResidualKind::Inter)),
             alt_residual: None,
             static_skip: None,
             static_pred: Box::new(Prediction::ZERO),
+            neighbour_sads: NeighbourSads::default(),
             mb_pred: None,
             rd_pred: None,
             final_pred: None,
@@ -2447,10 +2814,7 @@ impl CodecBackend for H264Backend {
             cabac_init_idc: 0,
             deblock: DeblockControl::DEFAULT,
             random: None,
-            trellis: H264Trellis::from_params(
-                &QuantParams::from_overrides(&config.params),
-                &tuning,
-            ),
+            trellis: H264Trellis::from_params(&QuantParams::from_overrides(&config.params)),
             rd_trim: nc_encoder::RateTrim::from_overrides(&config.params),
         })
     }
@@ -2462,6 +2826,40 @@ impl CodecBackend for H264Backend {
             self.quantizer_cache.fill(None);
         }
         self.tuning = tuning;
+    }
+
+    fn set_light_params(&mut self, params: Option<&nc_encoder::ParamOverrides>) {
+        debug_assert!(
+            self.light.as_ref().is_none_or(|light| !light.in_use),
+            "set between frames, regular settings in use"
+        );
+        self.light = params.map(|overrides| LightTuning {
+            tuning: self
+                .tuning
+                .with_macroblock_settings(&H264Params::from_overrides(overrides)),
+            quantizer_cache: vec![None; QP_MAX as usize + 1],
+            in_use: false,
+        });
+    }
+
+    fn use_light_params(&mut self, light: bool) {
+        let Some(other) = self.light.as_mut().filter(|other| other.in_use != light) else {
+            return;
+        };
+        std::mem::swap(&mut self.tuning, &mut other.tuning);
+        other.in_use = light;
+        if !self.tuning.same_quantizers(&other.tuning) {
+            std::mem::swap(&mut self.quantizer_cache, &mut other.quantizer_cache);
+            self.quantizers = self.quantizers_at(self.mb_qp);
+        }
+    }
+
+    fn coded_bits(&mut self) -> Option<f64> {
+        match (self.cabac.as_ref(), self.cavlc.as_ref()) {
+            (Some(cabac), _) => Some(cabac.coded_bits()),
+            (None, Some(cavlc)) => Some(cavlc.coded_bits()),
+            (None, None) => None,
+        }
     }
 
     fn superblock_log2(&self) -> u8 {
@@ -2542,10 +2940,15 @@ impl CodecBackend for H264Backend {
         (self.tuning.exact_ranking >= 0.5).then_some(nc_dsp::Filter::H264Luma)
     }
 
-    // Exact ranking has already filtered the winning fractional luma; the
-    // macroblock reuses it instead of predicting it again. Only the
-    // `luma_filter` flow calls `cache_exact_luma`, so bilinear ranking is
-    // unaffected.
+    fn exact_luma_filter(&self) -> Option<nc_dsp::Filter> {
+        Some(nc_dsp::Filter::H264Luma)
+    }
+
+    // Exact ranking, or the exact re-ranking of the bilinear ranking's
+    // finalists (`decision.exact_finalists`), has already filtered the winning
+    // fractional luma; the macroblock reuses it instead of predicting it again
+    // (the cache is matched on position, vector and reference, so a stale
+    // entry is ignored).
     const CACHE_EXACT_LUMA: bool = true;
 
     fn cache_exact_luma(
@@ -2600,10 +3003,11 @@ impl CodecBackend for H264Backend {
         test: StaticSkipTest,
     ) -> bool {
         let pos = (block.x, block.y);
-        if test.within_noise {
-            // The engine's noise skip tested the zero vector; P_Skip codes
-            // it only where the skip vector predicted from the neighbours
-            // (H.264 §8.4.1.1) is zero.
+        if test.within_noise || test.repeat {
+            // The engine's noise skip tested the zero vector (a repeat frame
+            // copies it); P_Skip codes it only where the skip vector
+            // predicted from the neighbours (H.264 §8.4.1.1) is zero, as it
+            // is throughout a repeat frame's all-skip picture.
             let skip = self.static_skip_mv(block);
             if skip == Mv::ZERO
                 && let Some((luma, chroma)) = whole_sample_macroblock(reference, pos, skip)
@@ -2626,16 +3030,25 @@ impl CodecBackend for H264Backend {
         // buffer, one copy instead of two.
         let accepted = if let Some((luma, chroma)) = whole_sample_macroblock(reference, pos, skip) {
             let zero = residual_skip_views(&self.dsp, source, pos, &luma, &chroma, limits);
+            let zero = self.screen_luma(pos, zero, limits[0]);
             if zero.all() {
                 write_prediction_views(recon, pos, &luma, &chroma);
             }
             zero.all()
         } else {
-            let pred = &mut self.static_pred;
-            predict_inter(&self.mc, reference, pos.0, pos.1, &[skip; 4], pred);
-            let zero = residual_skip_within(&self.dsp, source, pred, pos.0, pos.1, limits);
+            predict_inter(
+                &self.mc,
+                reference,
+                pos.0,
+                pos.1,
+                &[skip; 4],
+                &mut self.static_pred,
+            );
+            let zero =
+                residual_skip_within(&self.dsp, source, &self.static_pred, pos.0, pos.1, limits);
+            let zero = self.screen_luma(pos, zero, limits[0]);
             if zero.all() {
-                write_prediction(recon, pred, pos.0, pos.1);
+                write_prediction(recon, &self.static_pred, pos.0, pos.1);
             }
             zero.all()
         };
@@ -2670,21 +3083,41 @@ impl CodecBackend for H264Backend {
                 // A vector past the level's range cannot be coded (Table
                 // A-1): wide or tall pictures and scaled second-reference
                 // seeds reach it.
-                if !self
-                    .params
-                    .mv_range()
-                    .contains(i32::from(mv.x), i32::from(mv.y))
-                {
+                if !self.mv_range.contains(i32::from(mv.x), i32::from(mv.y)) {
                     return f32::INFINITY;
                 }
-                let PredictedVectors { skip, mvp } = self.predicted_vectors(block);
+                let PredictedVectors {
+                    skip,
+                    mvp,
+                    ref_idx_bits,
+                } = self.predicted_vectors(block);
                 if Some(mv) == skip {
                     return SKIP_BITS;
                 }
-                INTER_16X16_OVERHEAD_BITS
-                    + self.ref_idx_bits(block)
-                    + mvd_bits(i32::from(mv.x) - i32::from(mvp.x))
-                    + mvd_bits(i32::from(mv.y) - i32::from(mvp.y))
+                inter_mv_bits(mv, mvp, INTER_16X16_OVERHEAD_BITS + ref_idx_bits)
+            }
+        }
+    }
+
+    // Hoisting the predictor and reference lookup saves cycles on
+    // Graviton 4. On x86, the inlined rate loop regresses the Faster
+    // preset, so use the engine's ordinary per-candidate pricing there.
+    #[cfg(target_arch = "aarch64")]
+    fn inter_mode_pricer(&self, block: &Block) -> impl Fn(&Self, &Block, Mv) -> f32 + use<> {
+        let range = self.mv_range;
+        let PredictedVectors {
+            skip,
+            mvp,
+            ref_idx_bits,
+        } = self.predicted_vectors(block);
+        let overhead = INTER_16X16_OVERHEAD_BITS + ref_idx_bits;
+        move |_, _, mv| {
+            if !range.contains(i32::from(mv.x), i32::from(mv.y)) {
+                f32::INFINITY
+            } else if Some(mv) == skip {
+                SKIP_BITS
+            } else {
+                inter_mv_bits(mv, mvp, overhead)
             }
         }
     }
@@ -2719,6 +3152,12 @@ impl CodecBackend for H264Backend {
         self.rate_control_enabled = enabled;
     }
 
+    /// A `user_data_unregistered` SEI (§D.1.7) after the key frames'
+    /// parameter sets.
+    fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
+        self.encoder_info = payload.map(|payload| sei_rbsp(SEI_USER_DATA_UNREGISTERED, &payload));
+    }
+
     fn set_refresh(&mut self, window: Option<&RefreshWindow>) {
         self.refresh = window.cloned();
     }
@@ -2727,6 +3166,10 @@ impl CodecBackend for H264Backend {
         self.access_unit.clear();
         self.predicted.set(None);
         self.exact_luma.set(None);
+        if self.tuning.skip_pred_sad > 0.0 {
+            self.neighbour_sads
+                .reset(self.params.mb_cols, self.params.mb_rows);
+        }
         self.base_qp = plan.quantizer as u8;
         self.qp = match plan.frame_type {
             FrameType::Key if !self.rate_control_enabled => nc_encoder::offset_key_quantizer(
@@ -2746,6 +3189,9 @@ impl CodecBackend for H264Backend {
         };
         if chroma_offset != self.chroma_offset {
             self.quantizer_cache.fill(None);
+            if let Some(light) = self.light.as_mut() {
+                light.quantizer_cache.fill(None);
+            }
         }
         self.chroma_offset = chroma_offset;
         let pps = pps_id(self.params.parameter_set_id, pps_index);
@@ -2829,6 +3275,9 @@ impl CodecBackend for H264Backend {
         self.selected_ref = 0;
         self.use_qp(self.qp);
     }
+
+    // Deblocking only changes reconstruction. Its syntax is in the slice header.
+    const FILTER_BEFORE_END: bool = false;
 
     fn loop_filter_frame(&mut self, recon: &mut Picture) {
         deblock_picture(
@@ -2982,6 +3431,22 @@ fn frame_weights(qp: u8) -> (f32, f32) {
 mod weight_tests {
     use super::*;
     use nc_encoder::{Codec, FrameRate, ParamOverrides};
+
+    #[test]
+    fn light_macroblocks_take_only_their_per_macroblock_settings() {
+        let specs: Vec<&str> = H264Params::SPECS.iter().map(|spec| spec.name).collect();
+        for name in H264Params::MACROBLOCK_SETTINGS {
+            assert!(specs.contains(name), "{name} is not an H.264 parameter");
+        }
+        let regular = H264Params::from_overrides(&ParamOverrides::default());
+        let mut light = ParamOverrides::default();
+        light.set("h264.static_skip_luma_scale", 3.0);
+        light.set("h264.keyframe_qp_offset", 9.0);
+        let mixed = regular.with_macroblock_settings(&H264Params::from_overrides(&light));
+        assert_eq!(mixed.static_skip_luma_scale, 3.0);
+        // A per-frame setting keeps the frame's value.
+        assert_eq!(mixed.keyframe_qp_offset, regular.keyframe_qp_offset);
+    }
 
     #[test]
     fn frame_cache_retains_old_bits_across_key_inter_transitions_and_clipping() {

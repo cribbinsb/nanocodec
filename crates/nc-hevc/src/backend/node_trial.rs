@@ -69,8 +69,23 @@ impl HevcBackend {
     /// `CodecBackend::node_trial_cost`: the price of the innermost trial's
     /// node as coded since it began.
     pub(super) fn node_trial_price(&self, source: &Picture, recon: &Picture) -> f32 {
+        self.node_trial_split_price(source, recon).cost()
+    }
+
+    /// `CodecBackend::node_trial_parts`.
+    pub(super) fn node_trial_split_price(
+        &self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> nc_encoder::NodeTrialParts {
         let snapshot = self.innermost_node_trial();
-        self.coded_cost(&snapshot.block(), snapshot.items(), source, recon)
+        self.coded_parts(&snapshot.block(), snapshot.items(), source, recon)
+    }
+
+    /// `CodecBackend::node_trial_summary`: what the innermost trial's
+    /// node holds as coded since it began.
+    pub(super) fn node_trial_coded_summary(&self) -> nc_encoder::NodeTrialSummary {
+        self.coded_summary(self.innermost_node_trial().items())
     }
 
     /// `CodecBackend::undo_node_trial`: put the innermost trial's state

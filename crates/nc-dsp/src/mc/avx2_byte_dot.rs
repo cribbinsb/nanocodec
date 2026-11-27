@@ -6,10 +6,10 @@
 //! The schedule follows dav1d's AVX2 MC (BSD-2-Clause, see `THIRD_PARTY.md`).
 
 use core::arch::x86_64::{
-    __m128i, __m256i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm_or_si128,
-    _mm_slli_si128, _mm256_add_epi16, _mm256_broadcastsi128_si256, _mm256_castsi128_si256,
-    _mm256_inserti128_si256, _mm256_loadu_si256, _mm256_maddubs_epi16, _mm256_set1_epi16,
-    _mm256_shuffle_epi8,
+    __m128i, __m256i, _mm_cvtsi32_si128, _mm_insert_epi8, _mm_loadl_epi64, _mm_loadu_si128,
+    _mm_or_si128, _mm_slli_si128, _mm256_add_epi16, _mm256_broadcastsi128_si256,
+    _mm256_castsi128_si256, _mm256_inserti128_si256, _mm256_loadu_si256, _mm256_maddubs_epi16,
+    _mm256_set1_epi16, _mm256_shuffle_epi8,
 };
 
 const LANES: usize = 16;
@@ -93,7 +93,8 @@ pub(crate) unsafe fn row_16<const P: usize>(src: *const u8, taps: &[__m256i; P])
 }
 
 /// The `span(N, P)` bytes (7 to 15) of a row at `src`, from two
-/// overlapping 8-byte loads (4-byte loads for 7).
+/// overlapping 8-byte loads (4-byte loads for 7). The nine-byte
+/// H.264 window uses a byte insert to load the final sample.
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn short_row<const P: usize, const N: usize>(src: *const u8) -> __m128i {
@@ -106,9 +107,11 @@ unsafe fn short_row<const P: usize, const N: usize>(src: *const u8) -> __m128i {
             return _mm_or_si128(low, _mm_slli_si128::<3>(high));
         }
         let low = _mm_loadl_epi64(src.cast());
+        if bytes == 9 {
+            return _mm_insert_epi8::<8>(low, i32::from(src.add(8).read()));
+        }
         let high = _mm_loadl_epi64(src.add(bytes - 8).cast());
         let high = match bytes {
-            9 => _mm_slli_si128::<1>(high),
             11 => _mm_slli_si128::<3>(high),
             13 => _mm_slli_si128::<5>(high),
             _ => _mm_slli_si128::<7>(high),

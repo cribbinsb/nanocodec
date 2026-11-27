@@ -1,0 +1,17 @@
+# tune-rest (2026-11-23): searched at the rung's front slope (eval/configs/front_k.json), 600 f at keys
+# every 10 s and 5 s, warm-started from the shipped rung. Each term lies between the rung's value
+# and the next slower rung's (docs/handoff/tuning.md "Fast-end joint retune"); about ten terms.
+# decision.exact_rank_margin stays at 0 or >= 0.8 (a margin under 1 skips most exact predictions).
+# Format (nceval.tune_pool): name [low high] [int|log]
+# AV2 fast (k 0.205) toward medium, plus an effort split (fast codes every superblock regular).
+effort.regular_fraction 0.4 1
+light.planner.lambda_scale 2 2.58125
+av2.cdef 1 2 int
+av2.cdef_check_row_period 4 11 int
+av2.max_drl_bits 2 3 int
+decision.subpel_walk 0 2 int
+layers.propagation 0 1 int
+quant.trellis_key 0 1 int
+nonbase.av2.pre_tx_skip 0 1 int
+nonbase.av2.zero_test_texture_scale 4 8
+rate.key_level_finer 0 2 int

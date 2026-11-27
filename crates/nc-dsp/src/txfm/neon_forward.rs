@@ -25,120 +25,144 @@ use core::mem::MaybeUninit;
 #[derive(Clone, Copy)]
 struct Column(int16x8_t);
 
-impl ForwardLanes for Column {
-    #[inline(always)]
-    fn splat(value: i32) -> Self {
-        // SAFETY: used only from the NEON forward entry point.
-        unsafe { Self(vdupq_n_s16(value as i16)) }
-    }
-    #[inline(always)]
-    fn add(self, other: Self) -> Self {
-        // SAFETY: NEON is enabled; the 8-bit column stages fit i16.
-        unsafe { Self(vaddq_s16(self.0, other.0)) }
-    }
-    #[inline(always)]
-    fn sub(self, other: Self) -> Self {
-        // SAFETY: NEON is enabled; the 8-bit column stages fit i16.
-        unsafe { Self(vsubq_s16(self.0, other.0)) }
-    }
-    #[inline(always)]
-    fn half_btf(w0: i32, a: Self, w1: i32, b: Self, bit: u32) -> Self {
-        // SAFETY: NEON is enabled. Q13 weights fit i16; widened product
-        // sums fit i32, and the rounded column result fits i16.
-        unsafe {
-            // The equal-weight rotations can add/subtract first. For these
-            // low-bit-depth columns that intermediate fits i16 (checked by
-            // the scalar stage tests). Q15 doubling-high multiplication then
-            // performs the exact original Q12/Q13 rounding in one instruction.
-            if (w0 == w1 || w0 == -w1) && w0.abs() < (1 << bit) {
-                let sum = if w0 == w1 {
-                    vaddq_s16(a.0, b.0)
-                } else {
-                    vsubq_s16(a.0, b.0)
-                };
-                return Self(vqrdmulhq_n_s16(sum, (w0 << (15 - bit)) as i16));
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[derive(Clone, Copy)]
+struct Sve2Column(int16x8_t);
+
+// Use the same transform operations in both lane types. Keeping the original
+// Column type preserves its NEON transform profile instantiations.
+macro_rules! column_lanes {
+    ($column:ident, $sve2:literal) => {
+        impl ForwardLanes for $column {
+            #[inline(always)]
+            fn splat(value: i32) -> Self {
+                // SAFETY: used only from the NEON forward entry point.
+                unsafe { Self(vdupq_n_s16(value as i16)) }
             }
-            let low = vmlal_n_s16(
-                vmull_n_s16(vget_low_s16(a.0), w0 as i16),
-                vget_low_s16(b.0),
-                w1 as i16,
-            );
-            let high = vmlal_n_s16(
-                vmull_n_s16(vget_high_s16(a.0), w0 as i16),
-                vget_high_s16(b.0),
-                w1 as i16,
-            );
-            Self(round_narrow(low, high, bit))
-        }
-    }
-}
-
-impl ForwardWords for Column {
-    const LANES: usize = 8;
-    type Norm = uint16x8_t;
-    type Wide = I32x4;
-
-    #[inline(always)]
-    fn load(src: &[i16]) -> Self {
-        let src = &src[..8];
-        // SAFETY: NEON kernels only; one 128-bit load of eight values.
-        unsafe { Self(vld1q_s16(src.as_ptr())) }
-    }
-
-    #[inline(always)]
-    fn store(self, dst: &mut [MaybeUninit<i16>]) {
-        let dst = &mut dst[..8];
-        // SAFETY: NEON kernels only; one 128-bit store of eight values.
-        unsafe { vst1q_s16(dst.as_mut_ptr().cast(), self.0) }
-    }
-
-    #[inline(always)]
-    fn shift_left_2(self) -> Self {
-        // SAFETY: NEON kernels only; register arithmetic.
-        unsafe { Self(vshlq_n_s16::<2>(self.0)) }
-    }
-
-    #[inline(always)]
-    fn round_shift<const SHIFT: u32>(self) -> Self {
-        // The rounding shift computes its offset without overflow. The
-        // forwards shift by 2 or 4; `SHIFT` is a constant, so the match
-        // folds away.
-        // SAFETY: NEON kernels only; register arithmetic.
-        unsafe {
-            match SHIFT {
-                2 => Self(vrshrq_n_s16::<2>(self.0)),
-                4 => Self(vrshrq_n_s16::<4>(self.0)),
-                _ => unreachable!("forward shifts are 2 or 4"),
+            #[inline(always)]
+            fn add(self, other: Self) -> Self {
+                // SAFETY: NEON is enabled; the 8-bit column stages fit i16.
+                unsafe { Self(vaddq_s16(self.0, other.0)) }
+            }
+            #[inline(always)]
+            fn sub(self, other: Self) -> Self {
+                // SAFETY: NEON is enabled; the 8-bit column stages fit i16.
+                unsafe { Self(vsubq_s16(self.0, other.0)) }
+            }
+            #[inline(always)]
+            fn half_btf(w0: i32, a: Self, w1: i32, b: Self, bit: u32) -> Self {
+                // SAFETY: NEON is enabled. Q13 weights fit i16; widened product
+                // sums fit i32, and the rounded column result fits i16.
+                unsafe {
+                    // The equal-weight rotations can add/subtract first. For these
+                    // low-bit-depth columns that intermediate fits i16 (checked by
+                    // the scalar stage tests). Q15 doubling-high multiplication then
+                    // performs the exact original Q12/Q13 rounding in one instruction.
+                    if (w0 == w1 || w0 == -w1) && w0.abs() < (1 << bit) {
+                        let sum = if w0 == w1 {
+                            vaddq_s16(a.0, b.0)
+                        } else {
+                            vsubq_s16(a.0, b.0)
+                        };
+                        return Self(vqrdmulhq_n_s16(sum, (w0 << (15 - bit)) as i16));
+                    }
+                    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+                    if $sve2 {
+                        let (w0, w1) = (vdupq_n_s16(w0 as i16), vdupq_n_s16(w1 as i16));
+                        match bit {
+                            10 => return Self(crate::simd::sve2::rotate::<10>(a.0, b.0, w0, w1)),
+                            12 => return Self(crate::simd::sve2::rotate::<12>(a.0, b.0, w0, w1)),
+                            13 => return Self(crate::simd::sve2::rotate::<13>(a.0, b.0, w0, w1)),
+                            _ => {} // The shared NEON path also supports other shifts.
+                        }
+                    }
+                    let low = vmlal_n_s16(
+                        vmull_n_s16(vget_low_s16(a.0), w0 as i16),
+                        vget_low_s16(b.0),
+                        w1 as i16,
+                    );
+                    let high = vmlal_n_s16(
+                        vmull_n_s16(vget_high_s16(a.0), w0 as i16),
+                        vget_high_s16(b.0),
+                        w1 as i16,
+                    );
+                    Self(round_narrow(low, high, bit))
+                }
             }
         }
-    }
 
-    #[inline(always)]
-    fn transpose(tile: &mut [Self]) {
-        let tile: &mut [Self; 8] = tile.try_into().unwrap();
-        // SAFETY: NEON kernels only; register shuffles.
-        *tile = unsafe { transpose(tile.map(|v| v.0)) }.map(Self);
-    }
+        impl ForwardWords for $column {
+            const LANES: usize = 8;
+            type Norm = uint16x8_t;
+            type Wide = I32x4;
 
-    #[inline(always)]
-    fn norm_zero() -> uint16x8_t {
-        // SAFETY: NEON kernels only.
-        unsafe { vdupq_n_u16(0) }
-    }
+            #[inline(always)]
+            fn load(src: &[i16]) -> Self {
+                let src = &src[..8];
+                // SAFETY: NEON kernels only; one 128-bit load of eight values.
+                unsafe { Self(vld1q_s16(src.as_ptr())) }
+            }
 
-    #[inline(always)]
-    fn accumulate_l1(self, norm: uint16x8_t) -> uint16x8_t {
-        // SAFETY: NEON kernels only; `|i16::MIN|` reads correctly as
-        // unsigned, and the sum saturates.
-        unsafe { vqaddq_u16(norm, vreinterpretq_u16_s16(vabsq_s16(self.0))) }
-    }
+            #[inline(always)]
+            fn store(self, dst: &mut [MaybeUninit<i16>]) {
+                let dst = &mut dst[..8];
+                // SAFETY: NEON kernels only; one 128-bit store of eight values.
+                unsafe { vst1q_s16(dst.as_mut_ptr().cast(), self.0) }
+            }
 
-    #[inline(always)]
-    fn within_limit(norm: uint16x8_t, limit: u16) -> bool {
-        // SAFETY: NEON kernels only.
-        unsafe { vmaxvq_u16(norm) <= limit }
-    }
+            #[inline(always)]
+            fn shift_left_2(self) -> Self {
+                // SAFETY: NEON kernels only; register arithmetic.
+                unsafe { Self(vshlq_n_s16::<2>(self.0)) }
+            }
+
+            #[inline(always)]
+            fn round_shift<const SHIFT: u32>(self) -> Self {
+                // The rounding shift computes its offset without overflow. The
+                // forwards shift by 2 or 4; `SHIFT` is a constant, so the match
+                // folds away.
+                // SAFETY: NEON kernels only; register arithmetic.
+                unsafe {
+                    match SHIFT {
+                        2 => Self(vrshrq_n_s16::<2>(self.0)),
+                        4 => Self(vrshrq_n_s16::<4>(self.0)),
+                        _ => unreachable!("forward shifts are 2 or 4"),
+                    }
+                }
+            }
+
+            #[inline(always)]
+            fn transpose(tile: &mut [Self]) {
+                let tile: &mut [Self; 8] = tile.try_into().unwrap();
+                // SAFETY: NEON kernels only; register shuffles.
+                *tile = unsafe { transpose(tile.map(|v| v.0)) }.map(Self);
+            }
+
+            #[inline(always)]
+            fn norm_zero() -> uint16x8_t {
+                // SAFETY: NEON kernels only.
+                unsafe { vdupq_n_u16(0) }
+            }
+
+            #[inline(always)]
+            fn accumulate_l1(self, norm: uint16x8_t) -> uint16x8_t {
+                // SAFETY: NEON kernels only; `|i16::MIN|` reads correctly as
+                // unsigned, and the sum saturates.
+                unsafe { vqaddq_u16(norm, vreinterpretq_u16_s16(vabsq_s16(self.0))) }
+            }
+
+            #[inline(always)]
+            fn within_limit(norm: uint16x8_t, limit: u16) -> bool {
+                // SAFETY: NEON kernels only.
+                unsafe { vmaxvq_u16(norm) <= limit }
+            }
+        }
+    };
 }
+
+column_lanes!(Column, false);
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+column_lanes!(Sve2Column, true);
 
 /// libaom `round_shift(.., bit)` of two `i32` halves, narrowed to one
 /// `i16` vector (the caller's range keeps the results in 16 bits). The
@@ -228,25 +252,21 @@ pub(crate) unsafe fn hevc_rows<const N: usize>(
                 input[c0 + i] = Column(vshlq_n_s16::<2>(row));
             }
         }
-        let mut dc = Column::splat(0);
-        for value in &input {
-            dc = dc.add(*value);
-        }
-        match N {
-            16 => dct::fdct16::<Column>(
+        let dc = match N {
+            16 => dct::fdct16_with_sum::<Column>(
                 input.as_slice().try_into().unwrap(),
                 output.as_mut_slice().try_into().unwrap(),
                 cospi(12),
                 12,
             ),
-            32 => dct::fdct32::<Column>(
+            32 => dct::fdct32_with_sum::<Column>(
                 input.as_slice().try_into().unwrap(),
                 output.as_mut_slice().try_into().unwrap(),
                 cospi(12),
                 12,
             ),
             _ => unreachable!(),
-        }
+        };
         for k in (0..N).step_by(8) {
             // SAFETY: complete register tile and enabled NEON.
             let tile = unsafe { transpose(core::array::from_fn(|i| output[k + i].0)) };
@@ -566,6 +586,22 @@ pub(crate) unsafe fn forward_32_low(residual: &[i16], stride: usize, out: &mut [
     unsafe { forward_low::<32, { super::low_keep(32) }, false>(residual, stride, out) }
 }
 
+/// [`forward_low`] of a 32x32 block with SVE2 widening rotations.
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn forward_32_low_sve2<const RASTER: bool>(
+    residual: &[i16],
+    stride: usize,
+    out: &mut [i16],
+) {
+    // SAFETY: the table checks SVE2 and the caller validates the buffers.
+    unsafe {
+        narrow_forward::forward::<Sve2Column, 32, RASTER, { super::low_keep(32) }>(
+            residual, stride, out,
+        );
+    }
+}
+
 /// [`forward_low`] of a 16x16 block, raster coefficients.
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn forward_16_low_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
@@ -597,7 +633,28 @@ pub(crate) unsafe fn forward_16_bounded(
 ) -> bool {
     // SAFETY: forwarded contract.
     unsafe {
-        narrow_forward::bounded::<Column, 16>(
+        narrow_forward::bounded_16::<Column>(
+            residual,
+            stride,
+            zero_limit,
+            super::FORWARD_ROW_ROUNDING[0],
+            out,
+        )
+    }
+}
+
+/// The bounded raster 16-point forward with SVE2 widening rotations.
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn forward_16_bounded_sve2(
+    residual: &[i16],
+    stride: usize,
+    zero_limit: u32,
+    out: &mut [i16],
+) -> bool {
+    // SAFETY: the table checks SVE2 and the caller validates the buffers.
+    unsafe {
+        narrow_forward::bounded_16::<Sve2Column>(
             residual,
             stride,
             zero_limit,

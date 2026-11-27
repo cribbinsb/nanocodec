@@ -66,7 +66,8 @@
   "nanocodec-av2@slower": 4,
   "nanocodec-vvc@veryslow": 4,
   "nanocodec-vvc@slower": 4,
-  "nanocodec-vvc@faster": 4
+  "nanocodec-vvc@faster": 4,
+  "x264-medium~psnr": 4
  },
  "nanocodec_version": "nanocodec 0.3.0 b33ba3bb1d2cd1a9934d9bedf535833de744096a",
  "build": "b33ba3bb",
@@ -80,71 +81,75 @@
  "points": {
   "libaom-av1-cpu10": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 8.8604,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 9.1478,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 9.6807,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 10.954,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 12.246,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 10.912,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 11.4808,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 10.2142,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 15.4102,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 13.172,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 11.6604,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 11.256
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 8.0797,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 8.5529,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 9.0294,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 10.7101,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 12.2893,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 10.5136,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 11.7737,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 9.8488,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 14.2109,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 12.2667,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 11.6919,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 10.7272
    },
-   "fps": 89.9
+   "fps": 93.7,
+   "build": "207745d7"
   },
   "libaom-av1-cpu8": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 10.7066,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 11.0124,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 12.0786,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 13.9052,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 16.6038,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 14.4594,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 16.0026,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 13.5773,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 19.7769,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 17.1608,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 16.0099,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 15.3198
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 9.6478,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 10.4272,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 11.0809,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 13.4701,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 16.6414,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 14.0049,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 16.2794,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 13.5736,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 18.0424,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 16.3822,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 16.253,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 14.7117
    },
-   "fps": 69.0
+   "fps": 71.6,
+   "build": "207745d7"
   },
   "libvpx-vp9-cpu7": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 4.2556,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 5.1417,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 4.9879,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 6.4844,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 8.2159,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 6.8286,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 8.0129,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 6.5207,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 10.0301,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 8.9056,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 7.6925,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 8.3222
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 4.1121,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 4.9511,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 4.7398,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 6.4375,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 8.1967,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 6.5885,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 8.3373,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 6.4234,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 9.3093,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 8.4055,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 7.7031,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 8.1912
    },
-   "fps": 144.7
+   "fps": 148.3,
+   "build": "207745d7"
   },
   "libvpx-vp9-cpu9": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 3.1464,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 3.5232,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 3.6559,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 4.6362,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 6.0272,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 5.0019,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 5.8612,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 4.6344,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 6.9107,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 6.0141,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 5.4143,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 5.7811
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 3.0708,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 3.3743,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 3.4527,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 4.547,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 5.9454,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 4.8587,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 6.0439,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 4.5349,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 6.3629,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 5.5787,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 5.2724,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 5.6648
    },
-   "fps": 203.3
+   "fps": 209.9,
+   "build": "207745d7"
   },
   "nanocodec-av1": {
    "ms_per_frame": {
@@ -580,190 +585,201 @@
   },
   "openh264-baseline": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 2.0679,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 2.0278,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 2.175,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 2.5745,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 2.9136,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 2.9534,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.3029,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.1196,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 3.1064,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 2.6091,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 2.345,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.1239
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 2.0943,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 2.0379,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 2.1546,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 2.5709,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 2.8884,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 3.0371,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.3828,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.2015,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 2.9847,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 2.6151,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 2.3029,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.141
    },
-   "fps": 413.7
+   "fps": 411.9,
+   "build": "207745d7"
   },
   "svtav1-m10": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 2.7095,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 3.6586,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 3.425,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 4.4296,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 4.9594,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 5.0222,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 4.5831,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 4.2551,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 5.9678,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 5.1019,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 4.992,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 4.507
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 2.711,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 3.6244,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 3.2785,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 4.3737,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 4.6479,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 4.6365,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 4.5858,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 4.0283,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 5.5296,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 4.7859,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 4.9773,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 4.3768
    },
-   "fps": 228.2
+   "fps": 236.7,
+   "build": "207745d7"
   },
   "svtav1-m12": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 1.8497,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 2.2907,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 2.1218,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 3.0375,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 3.7165,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 3.4832,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.9746,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.7969,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 3.6769,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 2.9368,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 3.4994,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.7604
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 1.844,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 2.2323,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 1.9999,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 2.9627,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 3.5728,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 3.3401,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.8933,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.6362,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 3.3479,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 2.8075,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 3.3993,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.6691
    },
-   "fps": 349.0
+   "fps": 363.3,
+   "build": "207745d7"
   },
   "svtav1-m13": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 1.4965,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 1.9569,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 1.7326,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 2.5465,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 2.9049,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 2.8372,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.5298,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.2711,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 3.3934,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 2.6316,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 2.8883,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.5386
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 1.4868,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 1.9122,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 1.6453,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 2.4538,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 2.7916,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 2.6738,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.4557,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.1385,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 3.0582,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 2.5201,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 2.7798,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.4582
    },
-   "fps": 413.5
+   "fps": 432.0,
+   "build": "207745d7"
   },
   "svtav1-m8": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 6.5069,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 8.742,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 8.2061,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 9.8748,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 8.6354,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 9.9121,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 13.2197,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 9.5904,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 12.8767,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 11.1058,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 10.7367,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 12.9901
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 6.0844,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 8.6617,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 7.5808,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 9.7897,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 9.0786,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 9.3425,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 13.1603,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 9.8724,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 11.9993,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 11.2917,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 11.177,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 12.3132
    },
-   "fps": 100.0
+   "fps": 101.8,
+   "build": "207745d7"
   },
   "x264-medium": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 11.0618,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 8.4727,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 11.2627,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 9.6127,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 12.0959,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 10.3235,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 9.901,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 9.8578,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 14.0318,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 10.4491,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 10.6023,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 8.9334
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 10.3696,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 8.1481,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 10.5766,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 9.7434,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 11.9394,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 10.0616,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 9.7703,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 9.8637,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 12.8365,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 9.9108,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 10.6118,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 8.5927
    },
-   "fps": 95.6
+   "fps": 98.7,
+   "build": "207745d7"
   },
   "x264-ultrafast": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 1.0009,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 0.914,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 1.0252,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 1.0155,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 1.0448,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 1.0321,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 1.0131,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 0.969,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 1.1748,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 1.02,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 1.025,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 1.0029
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 0.9983,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 0.8903,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 0.993,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 0.9972,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 1.0347,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 1.037,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 0.9972,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 0.9339,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 1.1791,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 1.0015,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 1.0141,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 0.9694
    },
-   "fps": 982.1
+   "fps": 998.3,
+   "build": "207745d7"
   },
   "x264-veryfast": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 3.1699,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 2.7407,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 3.5684,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 3.451,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 3.5684,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 3.3396,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.9139,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.6849,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 3.9933,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 3.0326,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 3.5181,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.72
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 3.1531,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 2.72,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 3.521,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 3.453,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 3.4679,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 3.3572,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 2.9934,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 2.7312,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 3.952,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 2.9413,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 3.491,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 2.588
    },
-   "fps": 312.4
+   "fps": 315.1,
+   "build": "207745d7"
   },
   "x265-medium": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 32.1475,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 27.014,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 33.7385,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 31.1532,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 36.2008,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 36.6284,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 32.0286,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 30.1945,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 36.2224,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 30.8749,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 37.8805,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 28.8539
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 31.2025,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 26.3725,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 32.277,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 30.2858,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 36.2426,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 35.5421,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 31.4482,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 29.9058,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 35.1835,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 31.0312,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 37.7626,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 28.0209
    },
-   "fps": 30.7
+   "fps": 31.3,
+   "build": "207745d7"
   },
   "x265-superfast": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 13.4998,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 17.9923,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 16.1462,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 15.5657,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 17.189,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 14.7099,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 16.2079,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 14.6636,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 18.5756,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 14.1169,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 16.0557,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 14.1149
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 12.9769,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 17.4468,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 15.5298,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 15.3407,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 17.1561,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 14.4657,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 16.0542,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 14.5481,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 18.0558,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 14.2916,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 16.0308,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 13.6214
    },
-   "fps": 63.8
+   "fps": 65.0,
+   "build": "207745d7"
   },
   "x265-ultrafast": {
    "ms_per_frame": {
-    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 10.8873,
-    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 12.5859,
-    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 12.4037,
-    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 11.6459,
-    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 13.262,
-    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 11.7939,
-    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 11.6895,
-    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 11.1706,
-    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 13.948,
-    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 10.5051,
-    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 12.892,
-    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 10.8524
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 10.4213,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 12.1739,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 11.8936,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 11.5645,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 13.1733,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 11.6338,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 11.5154,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 11.0012,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 13.4176,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 10.7041,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 12.7479,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 10.4567
    },
-   "fps": 83.8
+   "fps": 85.6,
+   "build": "207745d7"
   },
   "nanocodec-av1@veryfast": {
    "ms_per_frame": {
@@ -961,6 +977,24 @@
     "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 5.1611
    },
    "fps": 192.3,
+   "build": "207745d7"
+  },
+  "x264-medium~psnr": {
+   "ms_per_frame": {
+    "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447": 9.9439,
+    "vc1k_android_indoor_mediummotion_darklight_1280x720_25_3687403076": 8.3963,
+    "vc1k_android_indoor_slowmotion_darklight_720x1280_30_3684302409": 9.7693,
+    "vc1k_android_outdoor_fastmotion_lowlight_720x1280_30_3688962954": 10.58,
+    "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3684302436": 12.2412,
+    "vc1k_ios_indoor_fastmotion_mediumlight_720x1280_30_3685195046": 10.2781,
+    "vc1k_ios_indoor_mediummotion_mediumlight_720x1280_30_3685486318": 9.8541,
+    "vc1k_ios_indoor_slowmotion_mediumlight_720x1280_30_3683837790": 9.705,
+    "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678": 12.8281,
+    "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796": 9.7949,
+    "vc1k_ios_outdoor_mediummotion_lowlight_720x1280_30_3685586878": 11.5443,
+    "vc1k_ios_outdoor_slowmotion_goodlight_720x1280_30_3683837783": 8.6181
+   },
+   "fps": 97.8,
    "build": "207745d7"
   }
  }

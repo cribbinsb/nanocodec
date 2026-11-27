@@ -11,12 +11,13 @@ use super::scalar::{fix_dc, quantize_tail};
 use super::{Av1Quantizer, QuantTerms, Reciprocal, TxfmFns};
 use core::arch::x86_64::{
     __m512i, _mm_cvtsi32_si128, _mm256_maskz_loadu_epi16, _mm512_abs_epi32, _mm512_add_epi32,
-    _mm512_add_epi64, _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask, _mm512_cvtepi16_epi32,
-    _mm512_mask_add_epi32, _mm512_mask_blend_epi32, _mm512_mask_cvtepi32_storeu_epi16,
-    _mm512_mask_storeu_epi32, _mm512_mask_sub_epi32, _mm512_maskz_loadu_epi32, _mm512_min_epi32,
-    _mm512_mul_epi32, _mm512_mul_epu32, _mm512_reduce_add_epi32, _mm512_reduce_add_epi64,
-    _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512, _mm512_sll_epi32,
-    _mm512_slli_epi32, _mm512_slli_epi64, _mm512_srl_epi64, _mm512_srli_epi64, _mm512_sub_epi32,
+    _mm512_add_epi64, _mm512_cmpge_epu32_mask, _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask,
+    _mm512_cvtepi16_epi32, _mm512_mask_add_epi32, _mm512_mask_blend_epi32,
+    _mm512_mask_cvtepi32_storeu_epi16, _mm512_mask_storeu_epi32, _mm512_mask_sub_epi32,
+    _mm512_maskz_loadu_epi32, _mm512_min_epi32, _mm512_mul_epi32, _mm512_mul_epu32,
+    _mm512_reduce_add_epi32, _mm512_reduce_add_epi64, _mm512_set1_epi32, _mm512_set1_epi64,
+    _mm512_setzero_si512, _mm512_sll_epi32, _mm512_slli_epi32, _mm512_slli_epi64, _mm512_srl_epi64,
+    _mm512_srli_epi64, _mm512_sub_epi32,
 };
 
 pub(super) fn install(table: &mut TxfmFns) {
@@ -94,6 +95,7 @@ unsafe fn levels<S: Lanes16, D: Lanes16>(
     let dc = unsafe { (*src).widen() };
     let zero = _mm512_setzero_si512();
     let mut counts = zero;
+    let divisor = _mm512_set1_epi32(q.ac.divisor as i32);
     let input_shift = _mm_cvtsi32_si128(q.input_shift as i32);
     let result_shift = _mm_cvtsi32_si128(reciprocal.shift as i32);
     let multiplier = _mm512_set1_epi64(i64::from(reciprocal.multiplier));
@@ -105,6 +107,13 @@ unsafe fn levels<S: Lanes16, D: Lanes16>(
             _mm512_sll_epi32(_mm512_abs_epi32(c), input_shift),
             _mm512_set1_epi32(q.ac.offset as i32),
         );
+        // An AC group below one step divides to zero. Coefficient zero
+        // still receives its independent DC rule after the vector loop.
+        if _mm512_cmpge_epu32_mask(numerator, divisor) & mask == 0 {
+            // SAFETY: the same mask bounds the store as on the nonzero path.
+            unsafe { D::store16(dst.add(i), mask, zero) };
+            continue;
+        }
         let even = _mm512_srl_epi64(_mm512_mul_epu32(numerator, multiplier), result_shift);
         let odd = _mm512_srl_epi64(
             _mm512_mul_epu32(_mm512_srli_epi64::<32>(numerator), multiplier),

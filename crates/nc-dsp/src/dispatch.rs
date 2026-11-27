@@ -38,7 +38,7 @@ use crate::diff::{
     VarianceFn,
 };
 use crate::mc::{self, ConvolveFn, Filter, McFns, SubBlockMotion};
-use crate::pixel::{self, GridBest, GridRows, PixelFns};
+use crate::pixel::{self, GridBest, GridRows, MacroblockSad, PixelFns};
 use crate::sample::{self, Moments, SampleFns};
 use crate::sao::{self, Rect, SAO_EO_NEIGHBOURS, SaoFns, SaoStats};
 use crate::simd::saturate_i16;
@@ -54,14 +54,15 @@ struct CdefPlane<'a> {
     destination_stride: usize,
     interior: cdef::CdefFn8,
     edge: cdef::CdefFn,
+    border: Option<cdef::CdefBorderFn8>,
 }
 
 impl<'a> CdefPlane<'a> {
     #[inline]
     fn new(dsp: &Dsp, size: usize, source: &'a CdefSource, dst: &PlaneViewMut<'_>) -> Self {
-        let (interior, edge) = match size {
-            8 => (dsp.cdef.block8_interior, dsp.cdef.block8),
-            4 => (dsp.cdef.block4_interior, dsp.cdef.block4),
+        let (interior, edge, index) = match size {
+            8 => (dsp.cdef.block8_interior, dsp.cdef.block8, 1),
+            4 => (dsp.cdef.block4_interior, dsp.cdef.block4, 0),
             _ => panic!("CDEF blocks are 8x8 or 4x4, not {size}"),
         };
         let (width, height) = (source.width(), source.height());
@@ -82,6 +83,7 @@ impl<'a> CdefPlane<'a> {
             destination_stride: dst.stride(),
             interior,
             edge,
+            border: dsp.cdef.border.map(|kernels| kernels[index]),
         }
     }
 
@@ -115,6 +117,10 @@ impl<'a> CdefPlane<'a> {
                     stride,
                 );
             }
+        } else if let Some(filter) = self.border {
+            // SAFETY: the block and the available source halo are covered
+            // above. The selected table matches the current ISA.
+            unsafe { filter(self.source, (x, y), args, out, stride) };
         } else {
             let side = self.size + 2 * reach;
             let window = self.source.padded_window(x, y, self.size);
@@ -152,7 +158,7 @@ pub struct Dsp {
     av2_typed: Av2TypedFns,
     mc: McFns,
     diff: DiffFns,
-    cfl_sse: crate::cfl_sse::SseFn,
+    cfl_sse: crate::cfl_sse::CflSseFns,
     constant_add: crate::constant_add::AddFn,
     end_of_block: crate::end_of_block::EobFn,
     end_of_block_wide: crate::end_of_block::WideEobFn,
@@ -168,6 +174,7 @@ pub struct Dsp {
     vp9_inverse: crate::vp9_inverse::Kernel,
     vp9_inverse_add: crate::vp9_inverse::AddKernel,
     av1_inverse: crate::av1_inverse::Av1InverseFns,
+    av1_forward: crate::av1_forward::Av1ForwardFn,
     vp9_filter: crate::vp9_loop_filter::FilterFn,
     vp9_line: crate::vp9_loop_filter::LineFn,
     av2_intra: crate::av2_intra::Av2IntraFns,
@@ -193,6 +200,8 @@ pub struct Dsp {
     av1_mask_blend: crate::av1_mc::mask_kernels::MaskBlendFn,
     pub(crate) vvc_mts: crate::vvc_mts::Kernels,
     pub(crate) vvc_tx64: crate::vvc_tx64::HalveFn,
+    /// The network inference kernels (`crate::nn`).
+    pub(crate) nn: crate::nn::Kernels,
     /// The `u16` kernels of [`Dsp::at`] (`crate::high_depth`).
     pub(crate) high: crate::high_depth::HighFns,
 }
@@ -205,7 +214,7 @@ impl Default for Dsp {
 
 impl Dsp {
     /// Kernels for the fastest ISA this CPU and build support.
-    /// `NC_DSP_ISA` may force `scalar`, `avx2`, `avx512`, `neon` or `simd128`;
+    /// `NC_DSP_ISA` may force `scalar`, `avx2`, `avx512`, `neon`, `sve2` or `simd128`;
     /// absent or `auto` selects the fastest supported tier. The environment
     /// is read once per table, never in a kernel. [`Self::with_isa`] ignores it.
     ///
@@ -236,6 +245,17 @@ impl Dsp {
         #[cfg(target_arch = "x86_64")]
         if isa == Isa::Avx512 {
             return Self::avx512();
+        }
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        if isa == Isa::Sve2 {
+            let mut dsp = Self::with_isa(Isa::Neon)?;
+            dsp.isa = isa;
+            diff::neon::install_sve2(&mut dsp.diff);
+            txfm::neon::install_sve2(&mut dsp.txfm);
+            dsp.high.av1_mc = crate::av1_mc::high_mc::HighAv1McFns::for_isa(isa);
+            dsp.high.vp9_mc = crate::vp9_mc_high::kernels(isa);
+            dsp.high.install_sve2_mc();
+            return Some(dsp);
         }
         let (pixel, sample, txfm, mc, diff) = match isa {
             Isa::Scalar => (
@@ -293,7 +313,7 @@ impl Dsp {
             av2_typed: av2_typed_fns(isa),
             mc,
             diff,
-            cfl_sse: crate::cfl_sse::kernel(isa),
+            cfl_sse: crate::cfl_sse::kernels(isa),
             constant_add: crate::constant_add::kernel(isa),
             end_of_block: crate::end_of_block::kernel(isa),
             end_of_block_wide: crate::end_of_block::wide_kernel::<true>(isa),
@@ -311,6 +331,7 @@ impl Dsp {
             vp9_inverse: crate::vp9_inverse::kernel(isa),
             vp9_inverse_add: crate::vp9_inverse::add_kernel(isa),
             av1_inverse: crate::av1_inverse::kernels::for_isa(isa),
+            av1_forward: crate::av1_forward::kernel(isa),
             av2_intra: crate::av2_intra::dispatch_fns(isa),
             av1_filter_intra: crate::av1_intra::filter_patches(isa),
             av1_directional: crate::av1_intra::directional(isa),
@@ -334,6 +355,7 @@ impl Dsp {
             av1_mask_blend: crate::av1_mc::mask_kernels::kernel(isa),
             vvc_mts: crate::vvc_mts::kernels(isa),
             vvc_tx64: crate::vvc_tx64::kernel(isa),
+            nn: crate::nn::kernels(isa),
             high: crate::high_depth::HighFns::for_isa(isa),
         })
     }
@@ -344,7 +366,8 @@ impl Dsp {
         let mut dsp = Self::with_isa(Isa::Avx2)?;
         dsp.isa = Isa::Avx512;
         dsp.copies = crate::BlockCopy::with_isa(Isa::Avx512)?;
-        deblock::avx512::install(&mut dsp.deblock);
+        let granite = crate::cpu::granite_rapids();
+        deblock::avx512::install(&mut dsp.deblock, granite);
         dsp.vp9_filter = crate::vp9_loop_filter::kernel(Isa::Avx512);
         dsp.vp9_line = crate::vp9_loop_filter::line_kernel(Isa::Avx512);
         cdef::avx512::install(&mut dsp.cdef);
@@ -355,9 +378,17 @@ impl Dsp {
         diff::avx512::install(&mut dsp.diff);
         txfm::avx512::install(&mut dsp.txfm);
         codec_txfm::avx512::install(&mut dsp.codec_txfm);
-        crate::av1_inverse::avx512::install(&mut dsp.av1_inverse);
+        if granite {
+            dsp.av1_forward = crate::av1_forward_simd::avx512_granite;
+        } else {
+            crate::av1_inverse::avx512::install(&mut dsp.av1_inverse);
+            dsp.av1_forward = crate::av1_forward::kernel(Isa::Avx512);
+        }
+        dsp.cfl_sse = crate::cfl_sse::kernels(Isa::Avx512);
         av2_txfm::avx512::install(&mut dsp.av2_txfm);
+        av2_txfm::avx512::install_typed(&mut dsp.av2_typed);
         dsp.end_of_block = crate::end_of_block::kernel(Isa::Avx512);
+        dsp.av1_grain = crate::av1_film_grain::kernels::kernels(Isa::Avx512);
         dsp.av1_lr = crate::av1_restoration::kernels::kernels(Isa::Avx512);
         dsp.vvc_alf = &crate::vvc_alf::AVX512;
         dsp.hevc_weight = crate::hevc_weight::kernel(Isa::Avx512);
@@ -366,6 +397,7 @@ impl Dsp {
         dsp.vvc_deblock = crate::vvc_deblock::kernels(Isa::Avx512);
         dsp.vvc_refinement = crate::vvc_refinement::kernels(Isa::Avx512);
         dsp.vvc_mts = crate::vvc_mts::kernels(Isa::Avx512);
+        dsp.nn = crate::nn::kernels(Isa::Avx512);
         dsp.high.install_avx512();
         Some(dsp)
     }
@@ -865,21 +897,51 @@ impl Dsp {
         assert!(size.height() >= 8, "row subsampling needs at least 8 rows");
         check_covers(size, src, "source");
         let rf = block_slice(size, reference, position);
+        // SAFETY: both slices cover the block in full (checked above and in
+        // `block_slice`), and it has at least 8 rows (asserted).
+        unsafe {
+            self.sad_even_rows_unchecked(size, (src.data(), src.stride()), (rf, reference.stride()))
+        }
+    }
+
+    /// [`Dsp::sad`] over every other row only (rows 0, 2, 4, ...) of the
+    /// top-left `size` blocks of `src` and `rf`: exactly the SAD of those
+    /// rows, e.g. a sampled residual energy.
+    ///
+    /// # Panics
+    ///
+    /// If `size` is less than 8 rows high, or either view is smaller than
+    /// `size`.
+    #[must_use]
+    pub fn sad_even_rows(&self, size: BlockSize, src: &PlaneView<'_>, rf: &PlaneView<'_>) -> u32 {
+        assert!(size.height() >= 8, "row subsampling needs at least 8 rows");
+        check_covers(size, src, "source");
+        check_covers(size, rf, "reference");
+        // SAFETY: both views cover the block (checked above), and it has at
+        // least 8 rows (asserted).
+        unsafe {
+            self.sad_even_rows_unchecked(size, (src.data(), src.stride()), (rf.data(), rf.stride()))
+        }
+    }
+
+    /// The SAD kernel of `size`'s width over rows 0, 2, ..., h - 2.
+    ///
+    /// # Safety
+    ///
+    /// Both slices must cover a `size` block at their strides, and `size`
+    /// must be at least 8 rows high.
+    unsafe fn sad_even_rows_unchecked(
+        &self,
+        size: BlockSize,
+        (src, src_stride): (&[u8], usize),
+        (rf, rf_stride): (&[u8], usize),
+    ) -> u32 {
         let kernel = self.pixel.sad[size.width_class()];
         // SAFETY: with doubled strides and half the rows, the kernel reads
         // rows 0, 2, ..., h - 2 of blocks that both slices cover in full
-        // (checked above and in `block_slice`). Half of a supported height
-        // (>= 8) is still a supported height (>= 4). The table matches a
-        // supported ISA.
-        unsafe {
-            kernel(
-                src.data(),
-                2 * src.stride(),
-                rf,
-                2 * reference.stride(),
-                size.height() / 2,
-            )
-        }
+        // (caller contract). Half of a supported height (>= 8) is still a
+        // supported height (>= 4). The table matches a supported ISA.
+        unsafe { kernel(src, 2 * src_stride, rf, 2 * rf_stride, size.height() / 2) }
     }
 
     /// SADs of the four 4x4 quadrants of each 8x8 block along a row of
@@ -944,16 +1006,33 @@ impl Dsp {
         luma: (&PlaneView<'_>, &PlaneView<'_>),
         chroma: [(&PlaneView<'_>, &PlaneView<'_>); 2],
     ) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
-        let size = BlockSize::new(16, 16).expect("16x16 is a block size");
-        check_covers(size, luma.0, "source");
-        check_covers(size, luma.1, "reference");
-        for (src, rf) in chroma {
-            check_covers_row(1, src, "source");
-            check_covers_row(1, rf, "reference");
+        let (luma, chroma) = macroblock_pairs(luma, chroma);
+        // SAFETY: the pair extents were checked and the ISA is supported.
+        unsafe { (self.pixel.sad_4x4_macroblock)(luma, chroma) }
+    }
+
+    /// Residual skip summary of the same 4x4 SADs using luma, chroma AC,
+    /// and chroma DC limits. All totals use the grid's own sums.
+    ///
+    /// # Panics
+    ///
+    /// If a luma view is smaller than 16x16 or a chroma view than 8x8.
+    #[must_use]
+    pub fn macroblock_sad(
+        &self,
+        luma: (&PlaneView<'_>, &PlaneView<'_>),
+        chroma: [(&PlaneView<'_>, &PlaneView<'_>); 2],
+        limits: [u32; 3],
+    ) -> MacroblockSad {
+        let (luma, chroma) = macroblock_pairs(luma, chroma);
+        // SAFETY: the pair extents were checked and the ISA is supported.
+        unsafe {
+            if let Some(kernel) = self.pixel.macroblock_sad {
+                kernel(luma, chroma, limits)
+            } else {
+                pixel::summarize_macroblock((self.pixel.sad_4x4_macroblock)(luma, chroma), limits)
+            }
         }
-        // SAFETY: every view covers its block (checked above); the table
-        // matches a supported ISA.
-        unsafe { (self.pixel.sad_4x4_macroblock)(pair(luma), [pair(chroma[0]), pair(chroma[1])]) }
     }
 
     /// The four 4x4 SADs of an 8x8 block, `[top-left, top-right,
@@ -995,8 +1074,25 @@ impl Dsp {
         &self,
         src: &PlaneView<'_>,
         reference: &PlaneView<'_>,
+        position: (usize, usize),
+        out: &mut [u32],
+    ) {
+        self.sad_scan_bounded_16x16_at(src, reference, position, out, u32::MAX);
+    }
+
+    /// As [`Self::sad_scan_16x16_even_rows_at`], with an exclusive SAD bound.
+    /// Costs below the bound are exact. Other costs are at least the bound.
+    ///
+    /// # Panics
+    ///
+    /// Under the same conditions as the unbounded scan.
+    pub fn sad_scan_bounded_16x16_at(
+        &self,
+        src: &PlaneView<'_>,
+        reference: &PlaneView<'_>,
         (x, y): (usize, usize),
         out: &mut [u32],
+        bound: u32,
     ) {
         assert!(!out.is_empty(), "empty SAD scan");
         check_covers(
@@ -1021,6 +1117,13 @@ impl Dsp {
         // rows of `16 + out.len() - 1` samples at its stride (checked above);
         // the table matches a supported ISA.
         unsafe {
+            // Four sampled rows can sum to at most this much.
+            if bound <= 4 * 16 * 255
+                && let Some(scan) = self.pixel.sad_scan_bounded
+            {
+                scan(src.data(), src.stride(), rf, reference.stride(), out, bound);
+                return;
+            }
             (self.pixel.sad_scan_16x16_even_rows)(
                 src.data(),
                 src.stride(),
@@ -1850,6 +1953,49 @@ impl Dsp {
         }
     }
 
+    /// The equal-weight average of two compound predictions that
+    /// [`Self::predict_compound`] made with `filter`, in that filter's
+    /// codec's rounding: AV1's (§7.11.3.15, [`Self::average_compound`]) for
+    /// AV1 filters, default bi-prediction (HEVC eq. 8-251, VVC §8.5.6.7.2;
+    /// [`Self::hevc_weighted_prediction_centered`]) for HEVC filters. Mode
+    /// decision ranks a compound candidate with the sample values its codec
+    /// will reconstruct.
+    ///
+    /// # Panics
+    ///
+    /// If `filter` has no compound precision, a buffer does not cover the
+    /// block, or (HEVC filters) `src_stride` is not the block width.
+    pub fn average_compound_for(
+        &self,
+        filter: Filter,
+        size: BlockSize,
+        (p0, p1): (&[i16], &[i16]),
+        src_stride: usize,
+        dst: &mut PlaneViewMut<'_>,
+    ) {
+        match filter {
+            Filter::HevcLuma | Filter::HevcChroma => {
+                assert_eq!(
+                    src_stride,
+                    size.width(),
+                    "HEVC compound predictions are packed at the block width"
+                );
+                check_covers_i16(size, p0.len(), src_stride, "first compound prediction");
+                check_covers_i16(size, p1.len(), src_stride, "second compound prediction");
+                self.hevc_weighted_prediction_centered(
+                    crate::HevcWeights::DEFAULT_BI_8BIT,
+                    p0,
+                    p1,
+                    dst,
+                );
+            }
+            Filter::Av1 | Filter::Av1Smooth | Filter::Av1Sharp => {
+                self.average_compound(size, (p0, p1), src_stride, dst);
+            }
+            _ => panic!("{filter:?} has no compound precision"),
+        }
+    }
+
     /// A prediction kernel for one H.264 filter and block size, resolved
     /// once (no per-call dispatch, size checks or view construction): for
     /// the per-macroblock hot path.
@@ -2039,26 +2185,57 @@ impl Dsp {
         unsafe { (self.end_of_block)(levels, table) }
     }
 
-    /// Squared error of the square `src` view (side 4, 8 or 16) against
-    /// its AV1 chroma-from-luma (`CfL`) prediction from `ac` (row-major, each
-    /// within `cfl_sse::MAX_AC`), `dc` and `alpha` (within
-    /// `cfl_sse::MAX_ALPHA`) (`cfl_sse` module docs).
+    /// Squared error of the `src` view (any shape in `cfl_sse::SHAPES`:
+    /// squares and 2:1 rectangles with sides 4, 8 or 16) against its AV1
+    /// chroma-from-luma (`CfL`) prediction from `ac` (row-major, each within
+    /// `cfl_sse::MAX_AC`), `dc` and `alpha` (within `cfl_sse::MAX_ALPHA`)
+    /// (`cfl_sse` module docs).
     ///
     /// # Panics
     ///
-    /// If the view is not a square of a supported side, or `ac` is short.
+    /// If the view's shape is not in `cfl_sse::SHAPES`, or `ac` is short.
     #[must_use]
     pub fn cfl_sse(&self, src: &PlaneView<'_>, ac: &[i16], dc: u8, alpha: i8) -> u32 {
-        let side = src.width();
-        assert_eq!(src.height(), side, "CfL blocks are square");
+        let (width, height) = (src.width(), src.height());
+        assert!(
+            crate::cfl_sse::SHAPES.contains(&(width, height)),
+            "CfL shape {width}x{height} is not supported"
+        );
+        assert!(ac.len() >= width * height, "CfL AC slice too short");
         debug_assert!(alpha.unsigned_abs() <= crate::cfl_sse::MAX_ALPHA.unsigned_abs());
         debug_assert!(
-            ac.iter()
+            ac[..width * height]
+                .iter()
                 .all(|a| a.unsigned_abs() <= crate::cfl_sse::MAX_AC.unsigned_abs())
         );
-        // SAFETY: the table matches the checked CPU ISA; the kernel checks
-        // that `src` and `ac` cover the block.
-        unsafe { (self.cfl_sse)(src.data(), src.stride(), ac, side, dc, alpha) }
+        // SAFETY: the table matches the checked CPU ISA; `SHAPES` guarantees
+        // width is 4, 8 or 16 and `src` / `ac` cover `width * height`.
+        unsafe { (self.cfl_sse.sse)(src.data(), src.stride(), ac, width, height, dc, alpha) }
+    }
+
+    /// Fused `CfL` slope search over `0, +1, -1, ..., +MAX_ALPHA, -MAX_ALPHA`
+    /// returning `(dc_sse, best_sse, best_alpha)` with strict `<`
+    /// tie-breaking, matching `cfl_sse` over every slope.
+    ///
+    /// # Panics
+    ///
+    /// If the view's shape is not in `cfl_sse::SHAPES`, or `ac` is short.
+    #[must_use]
+    pub fn cfl_best_alpha(&self, src: &PlaneView<'_>, ac: &[i16], dc: u8) -> (u32, u32, i8) {
+        let (width, height) = (src.width(), src.height());
+        assert!(
+            crate::cfl_sse::SHAPES.contains(&(width, height)),
+            "CfL shape {width}x{height} is not supported"
+        );
+        assert!(ac.len() >= width * height, "CfL AC slice too short");
+        debug_assert!(
+            ac[..width * height]
+                .iter()
+                .all(|a| a.unsigned_abs() <= crate::cfl_sse::MAX_AC.unsigned_abs())
+        );
+        // SAFETY: the table matches the checked CPU ISA; `SHAPES` guarantees
+        // width is 4, 8 or 16 and `src` / `ac` cover `width * height`.
+        unsafe { (self.cfl_sse.best_alpha)(src.data(), src.stride(), ac, width, height, dc) }
     }
 
     /// `dst = clamp(dst + residual, 0, 255)` over the whole view: the
@@ -2157,8 +2334,12 @@ impl Dsp {
         damping: u8,
         dst: &mut PlaneViewMut<'_>,
     ) {
-        let block = CdefBlock { x, y, pri, dir };
-        self.cdef_filter_blocks(size, src, &[block], sec, damping, dst);
+        assert!(
+            pri <= 15 && matches!(sec, 0 | 1 | 2 | 4),
+            "CDEF strength out of range"
+        );
+        let args = CdefArgs::new(pri, sec, dir, damping);
+        CdefPlane::new(self, size, src, dst).filter((x, y), &args, dst.data_mut());
     }
 
     /// [`Dsp::cdef_filter`] on every block of `blocks`, which share `size`,
@@ -3392,6 +3573,52 @@ impl Dsp {
         }
     }
 
+    /// Four bilinear variances at half-pel offsets from one whole-pel
+    /// centre, in left, right, above, below order. Returns `None` for
+    /// other positions, windows outside the reference or a tier without a
+    /// shared cross kernel. The caller can use [`WindowVariance::at_four`].
+    ///
+    /// # Panics
+    /// If a supported cross's source view is smaller than `size`.
+    #[must_use]
+    pub fn halfpel_cross_variance(
+        &self,
+        size: BlockSize,
+        reference: &PlaneView<'_>,
+        src: &PlaneView<'_>,
+        positions: [(usize, usize, usize, usize); 4],
+    ) -> Option<[Variance; 4]> {
+        let width_class = size.width_class().checked_sub(2)?;
+        let kernel = self.diff.halfpel_cross?[width_class];
+        let [
+            (left, y, 4, 0),
+            (x, right_y, 4, 0),
+            (above_x, top, 0, 4),
+            (below_x, below_y, 0, 4),
+        ] = positions
+        else {
+            return None;
+        };
+        let (w, h) = (size.width(), size.height());
+        if y != right_y
+            || y != below_y
+            || x != above_x
+            || x != below_x
+            || x.checked_sub(1) != Some(left)
+            || y.checked_sub(1) != Some(top)
+            || x >= reference.width().saturating_sub(w)
+            || y >= reference.height().saturating_sub(h)
+        {
+            return None;
+        }
+        check_covers(size, src, "source");
+        let stride = reference.stride();
+        let window = &reference.data()[top * stride + left..];
+        // SAFETY: the cross covers (left, top) through (x + w, y + h),
+        // inside the checked reference. The source and ISA are validated.
+        Some(unsafe { kernel(src.data(), src.stride(), window, stride, h) })
+    }
+
     /// Sum and sum of squares of `src - pred` over a `size` block.
     ///
     /// # Panics
@@ -3446,6 +3673,11 @@ impl Dsp {
     ) {
         check_covers_row(out.len(), src, "source");
         check_covers_row(out.len(), pred, "prediction");
+        if let Some(kernel) = self.diff.variance_8x8_row {
+            // SAFETY: the views cover every 8x8 cell and the ISA is supported.
+            unsafe { kernel(src.data(), src.stride(), pred.data(), pred.stride(), out) };
+            return;
+        }
         let block = BlockSize::new(8, 8).expect("8x8 is a block size");
         let kernel = self.diff.variance[block.width_class()];
         for (i, stats) in out.iter_mut().enumerate() {
@@ -3965,6 +4197,51 @@ impl Dsp {
         crate::av1_inverse::wht::inverse_wht_add(coeffs, dst, nc_common::BitDepth::EIGHT);
     }
 
+    /// AV1 forward transform of any size and type (`av1_forward` module):
+    /// the `tx.width() x tx.height()` residual (row-major at `stride`,
+    /// 8-bit residuals) into the coded area of column-major `out`
+    /// (coefficient (row `r`, column `c`) at `c * tx.coded_height() + r`),
+    /// at libaom's scale. Square `DCT_DCT` runs the tuned DCT kernels
+    /// ([`Self::av1_forward_dct`]); every other size and type dispatches to
+    /// the active ISA's SIMD driver (`av1_forward_simd`) or scalar reference.
+    ///
+    /// # Panics
+    ///
+    /// If `kind` does not fit `tx` ([`Av1TxType::fits`]), `residual` does not
+    /// cover the block at `stride` or `out` is shorter than
+    /// `tx.coded_area()`.
+    pub fn av1_forward(
+        &self,
+        tx: Av1TxSize,
+        kind: Av1TxType,
+        residual: &[i16],
+        stride: usize,
+        out: &mut [i16],
+    ) {
+        assert!(kind.fits(tx), "{kind:?} is not defined for {tx:?}");
+        let (width, height) = (tx.width(), tx.height());
+        assert!(
+            stride >= width && residual.len() >= (height - 1) * stride + width,
+            "residual of {} values at stride {stride} does not cover {width}x{height}",
+            residual.len()
+        );
+        assert!(
+            out.len() >= tx.coded_area(),
+            "{} coefficients for a {width}x{height} transform",
+            out.len()
+        );
+        if kind == Av1TxType::DctDct && width == height {
+            match DctSize::from_side(width) {
+                Some(size) => self.av1_forward_dct(size, residual, stride, out),
+                None => self.av1_forward_dct_64(residual, stride, out),
+            }
+            return;
+        }
+        // SAFETY: `self.av1_forward` was chosen for `self.isa` (verified on
+        // the CPU), `kind.fits(tx)` holds, and the slices cover the block.
+        unsafe { (self.av1_forward)(tx, kind, residual, stride, out) };
+    }
+
     /// AV1 forward 64x64 `DCT_DCT` of `residual` (row-major at `stride`),
     /// keeping the top-left 32x32 coefficients, column-major, in
     /// `out[..1024]` (libaom `fwd_txfm2d_c` with `TX_64X64`).
@@ -4142,7 +4419,7 @@ impl Dsp {
         );
         let q = txfm::QuantTerms::with_dc_rounding(q, dc_rounding_q7);
         #[cfg(target_arch = "aarch64")]
-        if self.isa == Isa::Neon {
+        if self.isa != Isa::Scalar {
             // SAFETY: the ISA and every slice's extent were checked above.
             return unsafe { txfm::neon::quantize_wide_eob(coeffs, &q, out, scan) };
         }
@@ -4811,6 +5088,119 @@ impl Dsp {
         unsafe { (self.codec_txfm.h264_forward_quantize_chroma)(residual, stride, q, ac) }
     }
 
+    /// Transform the sixteen raster-order 4x4 blocks of a luma macroblock.
+    ///
+    /// # Panics
+    /// If either pixel view is smaller than 16x16.
+    pub fn h264_forward_luma_pixels(
+        &self,
+        src: &PlaneView<'_>,
+        pred: &PlaneView<'_>,
+        out: &mut [[i16; 16]; 16],
+    ) {
+        let size = BlockSize::new(16, 16).expect("valid H.264 macroblock size");
+        check_covers(size, src, "source");
+        check_covers(size, pred, "prediction");
+        #[cfg(target_arch = "x86_64")]
+        if matches!(self.isa, Isa::Avx2 | Isa::Avx512) {
+            // SAFETY: both pixel regions and the ISA are checked.
+            unsafe { crate::codec_txfm::avx2_h264::h264_forward_luma_pixels(src, pred, out) };
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if matches!(self.isa, Isa::Neon | Isa::Sve2) {
+            // SAFETY: both pixel regions and the ISA are checked.
+            unsafe { crate::codec_txfm::neon::h264_forward_luma_pixels(src, pred, out) };
+            return;
+        }
+        self.h264_forward_luma_split(src, pred, out);
+    }
+
+    /// Keep the portable residual scratch out of the fused call frame.
+    #[inline(never)]
+    fn h264_forward_luma_split(
+        &self,
+        src: &PlaneView<'_>,
+        pred: &PlaneView<'_>,
+        out: &mut [[i16; 16]; 16],
+    ) {
+        let size = BlockSize::new(16, 16).expect("valid H.264 macroblock size");
+        let mut residual = [0; 16 * 16];
+        self.residual(size, src, pred, &mut residual, 16);
+        self.h264_forward_4x4(&residual, 16, 4, out);
+    }
+
+    /// Transform the four raster-order 4x4 blocks of an 8x8 pixel
+    /// difference. The split residual and transform fallback uses the first
+    /// 64 entries of `scratch`.
+    ///
+    /// # Panics
+    /// If either view is smaller than 8x8 or the fallback scratch is short.
+    pub fn h264_forward_chroma_pixels(
+        &self,
+        src: &PlaneView<'_>,
+        pred: &PlaneView<'_>,
+        scratch: &mut [i16],
+        out: &mut [[i16; 16]; 4],
+    ) {
+        let size = BlockSize::new(8, 8).expect("valid H.264 chroma block");
+        #[cfg(target_arch = "x86_64")]
+        if matches!(self.isa, Isa::Avx2 | Isa::Avx512) {
+            check_covers(size, src, "source");
+            check_covers(size, pred, "prediction");
+            // SAFETY: both pixel regions and AVX2 support are checked.
+            unsafe { crate::codec_txfm::avx2_h264::h264_forward_chroma_pixels(src, pred, out) };
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if matches!(self.isa, Isa::Neon | Isa::Sve2) {
+            check_covers(size, src, "source");
+            check_covers(size, pred, "prediction");
+            // SAFETY: both pixel regions and the ISA are checked above.
+            unsafe { crate::codec_txfm::neon::h264_forward_chroma_pixels(src, pred, out) };
+            return;
+        }
+        self.residual(size, src, pred, scratch, 8);
+        self.h264_forward_4x4(scratch, 8, 2, out);
+    }
+
+    /// Transform and quantise the 8x8 difference of two pixel views, with
+    /// the outputs of [`Self::h264_forward_quantize_chroma`]. The split
+    /// residual and transform fallback uses the first 64 entries of `scratch`.
+    ///
+    /// # Panics
+    /// If either view is smaller than 8x8 or the fallback scratch is short.
+    pub fn h264_forward_quantize_chroma_pixels(
+        &self,
+        src: &PlaneView<'_>,
+        pred: &PlaneView<'_>,
+        scratch: &mut [i16],
+        q: &H264Quantizer,
+        ac: &mut [[i16; 16]; 4],
+    ) -> ([i16; 4], u32) {
+        let size = BlockSize::new(8, 8).expect("valid H.264 chroma block");
+        #[cfg(target_arch = "x86_64")]
+        if matches!(self.isa, Isa::Avx2 | Isa::Avx512) {
+            check_covers(size, src, "source");
+            check_covers(size, pred, "prediction");
+            // SAFETY: both pixel regions and AVX2 support are checked.
+            return unsafe {
+                crate::codec_txfm::avx2_h264::h264_forward_quantize_chroma_pixels(src, pred, q, ac)
+            };
+        }
+        #[cfg(target_arch = "aarch64")]
+        if matches!(self.isa, Isa::Neon | Isa::Sve2) {
+            check_covers(size, src, "source");
+            check_covers(size, pred, "prediction");
+            // SAFETY: both pixel regions and the ISA are checked above.
+            return unsafe {
+                crate::codec_txfm::neon::h264_forward_quantize_chroma_pixels(src, pred, q, ac)
+            };
+        }
+        self.residual(size, src, pred, scratch, 8);
+        self.h264_forward_quantize_chroma(scratch, 8, q, ac)
+    }
+
     /// H.264 scaling of 4x4 blocks (§8.5.12.1, flat weights), every
     /// position, saturated into 16 bits as our decoder clamps them;
     /// Intra16x16 and chroma callers replace position 0 with the separately
@@ -5168,6 +5558,20 @@ pub(crate) fn check_covers_i16(size: BlockSize, len: usize, stride: usize, what:
 
 /// A source/reference view pair as a kernel's slices and strides.
 #[inline]
+fn macroblock_pairs<'a>(
+    luma: (&PlaneView<'a>, &PlaneView<'a>),
+    chroma: [(&PlaneView<'a>, &PlaneView<'a>); 2],
+) -> (pixel::BlockPair<'a>, [pixel::BlockPair<'a>; 2]) {
+    let size = BlockSize::new(16, 16).expect("16x16 is a block size");
+    check_covers(size, luma.0, "source");
+    check_covers(size, luma.1, "reference");
+    for (src, rf) in chroma {
+        check_covers_row(1, src, "source");
+        check_covers_row(1, rf, "reference");
+    }
+    (pair(luma), chroma.map(pair))
+}
+
 fn pair<'a>((src, rf): (&PlaneView<'a>, &PlaneView<'a>)) -> crate::pixel::BlockPair<'a> {
     (src.data(), src.stride(), rf.data(), rf.stride())
 }
@@ -5242,12 +5646,6 @@ pub(crate) fn check_covers<T: nc_common::Sample>(
 /// Zero every coefficient of the `side`x`side` block `coeffs` outside its
 /// top-left `keep`x`keep` square (the same in column-major and raster order).
 /// Coefficients of the largest coded AV1 transform block (32x32).
-/// Side of the cells [`Dsp::sse`] sums with the 8x8-cell SSE kernel.
-const SSE_CELL: usize = 8;
-/// Cells per kernel call in [`Dsp::sse`] (a 512-sample-wide strip): the
-/// kernel's output buffer lives on the stack.
-const SSE_CELLS_PER_CALL: usize = 64;
-
 const AV1_MAX_CODED_AREA: usize = crate::AV1_MAX_CODED_SIDE * crate::AV1_MAX_CODED_SIDE;
 
 /// `q` for 16-bit levels: positive steps (asserted) and `max_level` capped
@@ -5450,6 +5848,58 @@ mod tests {
 
     use super::Dsp;
     use crate::{BlockSize, Isa};
+
+    /// `average_compound_for` reconstructs what each codec's decoder does:
+    /// HEVC's fused default bi-prediction, AV1's compound average.
+    #[test]
+    fn compound_average_follows_the_filter_family() {
+        const W: usize = 16;
+        const H: usize = 8;
+        let size = BlockSize::new(W, H).unwrap();
+        let dsp = Dsp::new();
+        for (filter, fracs) in [
+            (crate::Filter::HevcLuma, [(1, 2), (3, 0)]),
+            (crate::Filter::HevcChroma, [(5, 7), (0, 3)]),
+            (crate::Filter::Av1, [(4, 9), (12, 0)]),
+        ] {
+            let span = (W + filter.taps() - 1, H + filter.taps() - 1);
+            let windows: Vec<Vec<u8>> = (0..2u32)
+                .map(|k| {
+                    (0..span.0 * span.1)
+                        .map(|i| ((i as u32 * (37 + 54 * k) + 11 * k) % 256) as u8)
+                        .collect()
+                })
+                .collect();
+            let view = |k: usize| PlaneView::new(&windows[k], span.0, span.0, span.1).unwrap();
+            let mut preds = [vec![0i16; W * H], vec![0i16; W * H]];
+            for (k, pred) in preds.iter_mut().enumerate() {
+                dsp.predict_compound(filter, size, &view(k), fracs[k], pred, W);
+            }
+            let mut got = vec![0u8; W * H];
+            dsp.average_compound_for(
+                filter,
+                size,
+                (&preds[0], &preds[1]),
+                W,
+                &mut nc_common::PlaneViewMut::new(&mut got, W, W, H).unwrap(),
+            );
+            let mut want = vec![0u8; W * H];
+            let mut want_view = nc_common::PlaneViewMut::new(&mut want, W, W, H).unwrap();
+            if filter == crate::Filter::Av1 {
+                dsp.average_compound(size, (&preds[0], &preds[1]), W, &mut want_view);
+            } else {
+                dsp.hevc_predict_bi(
+                    filter,
+                    size,
+                    &view(1),
+                    fracs[1],
+                    (&preds[0], W),
+                    &mut want_view,
+                );
+            }
+            assert_eq!(got, want, "{filter:?}");
+        }
+    }
 
     #[test]
     fn prediction_buffers_reject_overflowing_final_rows() {
@@ -5839,7 +6289,11 @@ fn av2_txfm_fns(isa: Isa) -> Av2TxfmFns {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => av2_txfm::avx2::av2_txfm_fns(),
         #[cfg(target_arch = "aarch64")]
-        Isa::Neon => av2_txfm::neon::av2_txfm_fns(),
+        Isa::Neon => {
+            let mut table = av2_txfm::neon::av2_txfm_fns();
+            av2_txfm::neon::install(&mut table);
+            table
+        }
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         Isa::Simd128 => av2_txfm::simd128::av2_txfm_fns(),
         #[allow(unreachable_patterns)]
@@ -6004,9 +6458,7 @@ impl Dsp {
 }
 
 impl Dsp {
-    /// Sum of squared differences between two equally sized planes (the
-    /// browser demo's PSNR): the 8x8-cell SSE kernel ([`Self::sse_8x8_row`])
-    /// over every whole 8x8 cell, the samples outside them summed here.
+    /// Sum of squared differences between two equally sized planes.
     ///
     /// # Panics
     ///
@@ -6021,34 +6473,9 @@ impl Dsp {
             b.width(),
             b.height()
         );
-        let (width, height) = (a.width(), a.height());
-        let (cells, strips) = (width / SSE_CELL, height / SSE_CELL);
-        let mut cell_sse = [0u32; SSE_CELLS_PER_CALL];
-        let mut sum = 0;
-        for strip in 0..strips {
-            let top = strip * SSE_CELL;
-            for first in (0..cells).step_by(SSE_CELLS_PER_CALL) {
-                let count = (cells - first).min(SSE_CELLS_PER_CALL);
-                let (left, span) = (first * SSE_CELL, count * SSE_CELL);
-                let inside = "whole cells lie inside the plane";
-                let cells_a = a.sub_view(left, top, span, SSE_CELL).expect(inside);
-                let cells_b = b.sub_view(left, top, span, SSE_CELL).expect(inside);
-                self.sse_8x8_row(&cells_a, &cells_b, &mut cell_sse[..count]);
-                sum += cell_sse[..count].iter().map(|&s| u64::from(s)).sum::<u64>();
-            }
-        }
-        // The columns right of the last whole cell, then the rows below.
-        let tail = |y: usize, x0: usize| -> u64 {
-            a.row(y)[x0..]
-                .iter()
-                .zip(&b.row(y)[x0..])
-                .map(|(&p, &q)| u64::from(p.abs_diff(q)).pow(2))
-                .sum()
-        };
-        let covered = strips * SSE_CELL;
-        sum += (0..covered).map(|y| tail(y, cells * SSE_CELL)).sum::<u64>();
-        sum += (covered..height).map(|y| tail(y, 0)).sum::<u64>();
-        sum
+        // SAFETY: the ISA was checked at installation, and both views have
+        // the same dimensions and validate their own coverage.
+        unsafe { (self.diff.plane_sse)(a, b) }
     }
 }
 
@@ -6373,7 +6800,11 @@ impl Dsp {
             out.len(),
             BitDepth::EIGHT,
         );
-        if crate::vvc_intra::square_kernel_fits((width, height)) {
+        let large_core = width == 64
+            && height == 64
+            && self.isa() != Isa::Scalar
+            && !matches!(mode, crate::VvcIntraMode::Angular { .. });
+        if large_core || crate::vvc_intra::square_kernel_fits((width, height)) {
             // SAFETY: dimensions, direction, reference range and all buffer
             // lengths were checked above; the table matches the selected ISA.
             unsafe {
@@ -6970,6 +7401,10 @@ impl Dsp {
     /// [`crate::av1_restoration::Av1LoopRestoration::apply`]).
     pub(crate) fn av1_lr(&self) -> &crate::av1_restoration::kernels::Kernels {
         &self.av1_lr
+    }
+
+    pub(crate) fn av1_grain(&self) -> crate::av1_film_grain::kernels::Kernels {
+        self.av1_grain
     }
 
     /// Apply AV1 grain to a luma row (8-bit grain, `GrainMin..=GrainMax`);

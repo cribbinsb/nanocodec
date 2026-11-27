@@ -196,6 +196,14 @@ unsafe fn horiz_ptr_pair_round<const N: usize, S: SimdSample, L: I16Pairs>(
     shift: u32,
 ) -> L {
     if !L::FAST_PAIR_DOT {
+        if N == 8 && S::BYTES == 2 {
+            let taps: &[i16; 8] = cx.as_slice().try_into().unwrap();
+            // SAFETY: Sample's only two-byte implementation is u16. The caller
+            // checked the readable row, and the SVE2 entry limits depth to 12.
+            if let Some(pred) = unsafe { L::horizontal_dot_8tap(p.cast(), *taps, round, shift) } {
+                return pred;
+            }
+        }
         // SAFETY: caller validated `p` covers `L::LANES + N - 1` readable samples.
         return unsafe { horiz_ptr_acc::<N, S, L>(p, six_x, cx, round, shift) };
     }
@@ -2186,6 +2194,71 @@ isa_high_precision!(
     crate::simd::neon::I16x4,
     "neon"
 );
+
+/// The SVE2 horizontal halfword dot also serves VVC's signed-precision
+/// luma predictor. The existing two-pass driver keeps VVC's scale.
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+pub(crate) mod sve2 {
+    use nc_common::{BitDepth, PlaneView};
+
+    use crate::Filter;
+    use crate::mc::SeparableTaps;
+    use crate::simd::neon::{I16x4, I16x8Sve2};
+
+    use super::{HalfLumaTaps, VvcLumaTaps, interpolate_lanes};
+
+    #[target_feature(enable = "neon")]
+    unsafe fn luma<T: SeparableTaps<8>>(
+        size: (usize, usize),
+        window: &PlaneView<'_, u16>,
+        phases: (usize, usize),
+        out: &mut [i16],
+        depth: BitDepth,
+    ) {
+        interpolate_lanes::<T, 8, u16, I16x8Sve2, I16x8Sve2, I16x8Sve2, I16x4>(
+            size, window, phases, out, depth,
+        );
+    }
+
+    /// # Safety
+    /// The CPU must support SVE2 and the caller must check the windows and phases.
+    pub(crate) unsafe fn high_precision(
+        filter: Filter,
+        size: (usize, usize),
+        window: &PlaneView<'_, u16>,
+        phases: (usize, usize),
+        alternate_half: bool,
+        out: &mut [i16],
+        depth: BitDepth,
+    ) {
+        // SAFETY: the selected table requires SVE2. Guard the halfword sum
+        // range, and let NEON handle the shapes that have no full row dot.
+        unsafe {
+            if filter == Filter::VvcLuma
+                && phases.0 != 0
+                && size.0 >= 8
+                && size.0.is_multiple_of(8)
+                && depth.bits() <= 12
+            {
+                if alternate_half {
+                    luma::<HalfLumaTaps>(size, window, phases, out, depth);
+                } else {
+                    luma::<VvcLumaTaps>(size, window, phases, out, depth);
+                }
+            } else {
+                super::neon::high_precision(
+                    filter,
+                    size,
+                    window,
+                    phases,
+                    alternate_half,
+                    out,
+                    depth,
+                );
+            }
+        }
+    }
+}
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 isa_high_precision!(

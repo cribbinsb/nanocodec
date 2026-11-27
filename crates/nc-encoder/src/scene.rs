@@ -58,7 +58,16 @@ impl FrameCosts {
         let motion = analysis.motion.as_ref()?;
         let blocks = analysis.pre.blocks.cells();
         let samples = BLOCK_SAMPLES * blocks.len() as f64;
-        let inter: f64 = motion.fine.cells().iter().map(|b| f64::from(b.sad)).sum();
+        // Summed as integers: 8x8 SADs are 16-bit (`GridBest::small`), so
+        // their sum stays far below 2^53 over any picture and converts to
+        // the same `f64` the chain of `f64` adds gave; the integer loop
+        // vectorises.
+        let inter = motion
+            .fine
+            .cells()
+            .iter()
+            .map(|b| u64::from(b.sad))
+            .sum::<u64>() as f64;
         let intra: f64 = blocks
             .iter()
             .map(|b| MEAN_ABS_PER_RMS * (BLOCK_SAMPLES * f64::from(b.sum_sq_dev)).sqrt())
@@ -97,10 +106,16 @@ impl SceneDetector {
     /// Updates the history either way.
     pub fn is_cut(&mut self, costs: FrameCosts, distance: u32, since_key: u64) -> bool {
         let unpredictable = costs.inter_per_pixel > self.cut_ratio * costs.intra_per_pixel;
+        // The first frame at a reference distance since the last key has
+        // no history of its own; it is compared with the cheapest distance
+        // seen (shorter distances predict better, so this only makes a jump
+        // easier to show). Without it a cut on such a frame never fired: the
+        // H.264 cadence predicts the third frame after a key from two back,
+        // so a flash's key hid the cut back to the scene three frames later.
+        let nearest = self.history.iter().map(|&(_, h)| h).min_by(f64::total_cmp);
         let entry = self.history.iter_mut().find(|(d, _)| *d == distance);
-        let jump = entry
-            .as_ref()
-            .is_some_and(|(_, h)| costs.inter_per_pixel > self.history_ratio * *h);
+        let reference = entry.as_ref().map(|(_, h)| *h).or(nearest);
+        let jump = reference.is_some_and(|h| costs.inter_per_pixel > self.history_ratio * h);
         let cut = unpredictable && jump && since_key >= self.min_key_interval;
         let value = costs.inter_per_pixel;
         match (cut, entry) {
@@ -151,6 +166,19 @@ mod tests {
             assert!(!d.is_cut(costs(6., 4.), 4, i));
         }
         assert!(d.is_cut(costs(20., 4.), 4, 20));
+    }
+
+    #[test]
+    fn a_new_distance_compares_with_the_history_seen() {
+        let mut params = ParamOverrides::default();
+        params.set("scene.detect", 1.0);
+        params.set("scene.min_key_interval", 1.0);
+        let mut d = SceneDetector::new(&SceneParams::from_overrides(&params)).unwrap();
+        // A key, two still frames at distance 1, then content returns on a
+        // frame predicted from two back (the H.264 cadence after a flash).
+        d.is_cut(costs(0., 1.), 1, 1);
+        d.is_cut(costs(0.1, 1.), 1, 2);
+        assert!(d.is_cut(costs(110., 1.), 2, 3));
     }
 
     #[test]

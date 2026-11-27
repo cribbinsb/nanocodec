@@ -64,9 +64,8 @@ pub enum BlockMode {
 /// State of one 4x4 cell.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModeInfo {
-    /// log2 of the covering block's width/height in 4x4 units (blocks are
-    /// square).
-    pub size_log2_mi: u8,
+    /// log2 of the covering block's width and height in 4x4 units.
+    pub size_mi: Log2Dims,
     /// The block's `skip` flag.
     pub skip: bool,
     /// Prediction mode.
@@ -78,9 +77,45 @@ pub struct ModeInfo {
     pub mode_detail: u8,
     /// The block's vector (inter blocks only; list 0 for compound blocks).
     pub mv: Av1Mv,
-    /// log2 of the luma transform side covering this cell (the block's own
-    /// side unless an inter transform tree split it).
-    pub tx_log2: u8,
+    /// log2 of the width and height in samples of the luma transform
+    /// covering this cell (the block's own unless an inter transform tree
+    /// split it).
+    pub tx: Log2Dims,
+}
+
+/// A width and a height, log2 (each below 16), packed in one byte so a
+/// cell stays small.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Log2Dims(u8);
+
+impl Log2Dims {
+    const HEIGHT_SHIFT: u32 = 4;
+    const WIDTH_MASK: u8 = (1 << Self::HEIGHT_SHIFT) - 1;
+
+    /// `width_log2` x `height_log2`.
+    #[must_use]
+    pub const fn new(width_log2: u8, height_log2: u8) -> Self {
+        debug_assert!(width_log2 <= Self::WIDTH_MASK && height_log2 <= Self::WIDTH_MASK);
+        Self(width_log2 | (height_log2 << Self::HEIGHT_SHIFT))
+    }
+
+    /// A square of side `1 << log2`.
+    #[must_use]
+    pub const fn square(log2: u8) -> Self {
+        Self::new(log2, log2)
+    }
+
+    /// log2 of the width.
+    #[must_use]
+    pub const fn width(self) -> u8 {
+        self.0 & Self::WIDTH_MASK
+    }
+
+    /// log2 of the height.
+    #[must_use]
+    pub const fn height(self) -> u8 {
+        self.0 >> Self::HEIGHT_SHIFT
+    }
 }
 
 /// The reference frames of an inter block (AV1 §5.11.25 `RefFrame[0..2]`).
@@ -118,6 +153,18 @@ impl InterRefs {
 }
 
 impl ModeInfo {
+    /// The cell of a `1 << log2_width` x `1 << log2_height` block coded
+    /// with one transform, otherwise default.
+    #[must_use]
+    pub fn block(log2_width: u8, log2_height: u8) -> Self {
+        let mi = MI_LOG2 as u8;
+        Self {
+            size_mi: Log2Dims::new(log2_width - mi, log2_height - mi),
+            tx: Log2Dims::new(log2_width, log2_height),
+            ..Self::default()
+        }
+    }
+
     /// Inter (predicted from `LAST_FRAME` / `LAST2_FRAME`) rather than intra.
     #[must_use]
     pub fn is_inter(&self) -> bool {
@@ -162,10 +209,16 @@ impl ModeInfo {
         self.mode == BlockMode::New
     }
 
-    /// Side length of the covering block, in 4x4 units.
+    /// Width of the covering block, in 4x4 units.
     #[must_use]
-    pub fn size_mi(&self) -> usize {
-        1 << self.size_log2_mi
+    pub fn width_mi(&self) -> usize {
+        1 << self.size_mi.width()
+    }
+
+    /// Height of the covering block, in 4x4 units.
+    #[must_use]
+    pub fn height_mi(&self) -> usize {
+        1 << self.size_mi.height()
     }
 }
 
@@ -183,7 +236,7 @@ pub struct ModeInfoGrid {
     pub mi_rows: usize,
 }
 
-/// A square of a [`ModeInfoGrid`] noted by [`ModeInfoGrid::save_square`].
+/// A square of a [`ModeInfoGrid`] noted by [`ModeInfoGrid::save_rect`].
 #[derive(Debug, Default)]
 pub struct SavedCells {
     cells: Vec<ModeInfo>,
@@ -244,22 +297,30 @@ impl ModeInfoGrid {
         nc_common::cell_grid::fill_square(&mut self.cells, grid, (row, col), side, info);
     }
 
-    /// Record `info` for the square block of `1 << info.size_log2_mi` cells
-    /// whose top-left cell is (`row`, `col`), clipped to the frame.
+    /// Record `info` for the cells of its block (`info.width_mi()` x
+    /// `info.height_mi()`) whose top-left cell is (`row`, `col`), clipped to
+    /// the frame.
     pub fn fill(&mut self, row: usize, col: usize, info: ModeInfo) {
-        self.fill_square(row, col, info.size_mi(), info);
+        let grid = (self.mi_cols, self.mi_rows);
+        let size = (info.width_mi(), info.height_mi());
+        nc_common::cell_grid::fill_rect(&mut self.cells, grid, (row, col), size, info);
     }
 
     /// Note the `side` x `side` cells from (`row`, `col`), clipped to the
     /// frame, with their secondary vectors (a coding trial,
     /// `backend/node_trial.rs`).
-    pub fn save_square(&self, (row, col): (usize, usize), side: usize, saved: &mut SavedCells) {
+    pub fn save_rect(
+        &self,
+        (row, col): (usize, usize),
+        (width, height): (usize, usize),
+        saved: &mut SavedCells,
+    ) {
         let grid = (self.mi_cols, self.mi_rows);
         nc_common::cell_grid::save_rect(
             &self.cells,
             grid,
             (row, col),
-            (side, side),
+            (width, height),
             &mut saved.cells,
         );
         saved.mv2.clear();
@@ -268,20 +329,25 @@ impl ModeInfoGrid {
                 &self.mv2_cells,
                 grid,
                 (row, col),
-                (side, side),
+                (width, height),
                 &mut saved.mv2,
             );
         }
     }
 
-    /// Put back the cells [`Self::save_square`] noted of the same square.
-    pub fn restore_square(&mut self, (row, col): (usize, usize), side: usize, saved: &SavedCells) {
+    /// Put back the cells [`Self::save_rect`] noted of the same block.
+    pub fn restore_rect(
+        &mut self,
+        (row, col): (usize, usize),
+        (width, height): (usize, usize),
+        saved: &SavedCells,
+    ) {
         let grid = (self.mi_cols, self.mi_rows);
         nc_common::cell_grid::restore_rect(
             &mut self.cells,
             grid,
             (row, col),
-            (side, side),
+            (width, height),
             &saved.cells,
         );
         if !saved.mv2.is_empty() {
@@ -289,16 +355,16 @@ impl ModeInfoGrid {
                 &mut self.mv2_cells,
                 grid,
                 (row, col),
-                (side, side),
+                (width, height),
                 &saved.mv2,
             );
         } else if !self.mv2_cells.is_empty() {
-            // The table was created inside the trial: its square was zero.
-            nc_common::cell_grid::fill_square(
+            // The table was created inside the trial: its block was zero.
+            nc_common::cell_grid::fill_rect(
                 &mut self.mv2_cells,
                 grid,
                 (row, col),
-                side,
+                (width, height),
                 Av1Mv::ZERO,
             );
         }

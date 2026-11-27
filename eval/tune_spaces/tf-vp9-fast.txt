@@ -1,0 +1,25 @@
+# tune-fast (2026-11-23): VP9 fast's effort and decision pins, each between the
+# rung's value and medium's, searched at the rung's front slope (k 0.133, not 0.6).
+# The rung codes every superblock light (effort.regular_fraction 0), so the planner
+# terms are the light ones.
+# Format (nceval.tune_pool): name [low high] [int|log]
+quant.trellis 0 1 int
+quant.rd_trim 0 1 int
+vp9.exact_ranking 0 1 int
+vp9.intra_rd_candidates 1 3 int
+vp9.filter_level_scale 0.6274 1
+structure.unified 0 1 int
+structure.inherited_depth 0 1 int
+persist.reuse_level_price 0 1 int
+planner.split_selector 0 1 int
+effort.regular_fraction 0 1
+light.decision.codec_subpel_seed_lambdas 0 0.1
+light.decision.subpel_quarter_needs_half_move 0 1 int
+light.decision.intra_gate_variance 6.857 64 log
+light.planner.lambda_scale
+light.planner.depth_removal_th_32_16 0 60
+light.planner.depth_removal_th_16_8 0 80
+light.planner.depth_removal_min_quantizer 0 0.86
+nonbase.vp9.partial_forward 0 1 int
+nonbase.vp9.shave_gap 0 8 int
+decision.subpel_quarter_predict 0 1 int

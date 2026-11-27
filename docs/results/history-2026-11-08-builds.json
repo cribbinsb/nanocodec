@@ -1,0 +1,12 @@
+{
+ "base": "hist-2ff69c9ad",
+ "families": {
+  "nanocodec-h264": "hist-2ff69c9ad",
+  "nanocodec-hevc": "hist-2ff69c9ad",
+  "nanocodec-hevc@fast": "hist-2ff69c9ad",
+  "nanocodec-av1": "hist-2ff69c9ad",
+  "nanocodec-av1@fast": "hist-2ff69c9ad",
+  "nanocodec-vp9": "hist-2ff69c9ad",
+  "nanocodec-av2": "hist-2ff69c9ad"
+ }
+}

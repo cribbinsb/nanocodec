@@ -470,6 +470,9 @@ pub(crate) struct IntraSearch {
     pub modes: LumaCandidates,
     /// Intra mode pairs, best by prediction SATD, given full transform RD.
     pub rd_candidates: usize,
+    /// The staged intra decision's first cut (`decision.intra_stage_*`):
+    /// where on, its survivors replace the first `rd_candidates`.
+    pub stage: nc_encoder::IntraCut,
     /// How the best direction's angle deltas are searched.
     pub delta_search: nc_encoder::AngleDeltaSearch,
     /// Leading entries of each chroma list ranked (13: all).
@@ -644,6 +647,8 @@ struct Quantizer {
     /// 720p q180 P −5.1% instructions; on key frames the extra SSE pass
     /// costs more than it saves (+0.4%).
     zero_test: bool,
+    /// Exact SSE cutoffs by plane and transform size at the active qindex.
+    zero_sse: [[u64; TxSize::ALL.len()]; 3],
     /// The frame hides luma DC parities: luma levels are made to conform
     /// ([`coeff::parity::conform`]) at this λ (sample SSE per bit).
     parity_hiding: Option<f64>,
@@ -684,6 +689,7 @@ impl Quantizer {
             trellis: None,
             search: TrellisQuantizer::default(),
             zero_test,
+            zero_sse: [[0; TxSize::ALL.len()]; 3],
             parity_hiding: None,
             tcq: None,
             tcq_search: TcqQuantizer::default(),
@@ -708,6 +714,13 @@ impl Quantizer {
         } = settings;
         let lossy = qindex.luma.ac != 0;
         self.qindex = qindex;
+        if self.zero_test {
+            self.zero_sse = PlaneIndex::ALL.map(|plane| {
+                TxSize::ALL.map(|tx| {
+                    transform::dct_zero_sse_limit(tx, qindex.of(plane), self.rounding.of(plane, tx))
+                })
+            });
+        }
         self.trim = trim.filter(|_| lossy);
         self.trellis = trellis.filter(|_| lossy);
         self.parity_hiding = parity_hiding;
@@ -758,7 +771,8 @@ impl Quantizer {
             None if self.zero_test && tx_type == TxType::DctDct && qindex.ac != 0 => {
                 let sse = prediction_sse
                     .get_or_insert_with(|| self.dsp.variance(block, &source, prediction).sse);
-                self.settles_zero(tx, (qindex, rounding), (&source, prediction), *sse)
+                u64::from(*sse) < self.zero_sse[plane as usize][tx.index()]
+                    || self.texture_zero(tx, (qindex, rounding), (&source, prediction))
             }
             None => false,
         };
@@ -984,21 +998,15 @@ impl Quantizer {
         Ok(())
     }
 
-    /// Whether the residual between `source` and `prediction` provably
-    /// quantizes to zero under a `DCT_DCT` transform of size `tx`: one SSE
-    /// pass, then the texture-aware test on large transforms. Either settles
-    /// the transform without the residual, forward transform and quantizer.
-    fn settles_zero(
+    /// The texture-aware zero test for a `DCT_DCT` residual whose SSE did
+    /// not already settle it.
+    fn texture_zero(
         &self,
         tx: TxSize,
         (qindex, rounding): (Qindices, transform::Rounding),
         (source, prediction): (&PlaneView<'_>, &PlaneView<'_>),
-        sse: u32,
     ) -> bool {
         let side = tx.width();
-        if transform::dct_quantizes_to_zero(tx, qindex, rounding, u64::from(sse)) {
-            return true;
-        }
         self.texture_zero_scale
             .filter(|_| side >= TEXTURE_ZERO_MIN_SIDE)
             .is_some_and(|scale| {
@@ -1094,6 +1102,9 @@ pub(crate) struct BlockCoder {
     node_trials: node_trial::NodeTrials,
     /// The block last coded is an inter block without residual.
     last_inter_skipped: bool,
+    /// The next inter block is coded without a residual: a repeat frame's
+    /// block ([`Self::skip_next_inter`]).
+    skip_next: bool,
 }
 
 /// A symbol the block coder defers until the frame's filters are chosen.
@@ -1193,6 +1204,7 @@ impl BlockCoder {
             deferred: Vec::new(),
             node_trials: node_trial::NodeTrials::default(),
             last_inter_skipped: false,
+            skip_next: false,
         })
     }
 
@@ -1667,6 +1679,10 @@ impl BlockCoder {
     /// λ-weighted mode bits, best first: the engine's shared set plus the
     /// neighbours' modes, or every nominal direction followed by the best
     /// one's angle deltas.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered luma ranking with shared references for both scoring paths"
+    )]
     fn rank_luma(
         &mut self,
         (x, y): (usize, usize),
@@ -1693,16 +1709,6 @@ impl BlockCoder {
                 return vec![(0.0, Mode::Dc)];
             }
         }
-        let list = LumaList::new(context);
-        let bit_cost = self.lambda().sqrt();
-        let luma_cost = |coder: &mut Self, mode: Mode| {
-            let satd = coder.prediction_satd(pictures, 0, (x, y), size, mode);
-            (
-                f64::from(satd)
-                    + bit_cost * f64::from(intra_modes::luma_bits(&list, context, mode)),
-                mode,
-            )
-        };
         let set = match self.options.intra.modes {
             LumaCandidates::Shared(set) => Some(set),
             LumaCandidates::AllDirections => None,
@@ -1717,10 +1723,41 @@ impl BlockCoder {
                 .chain(Direction::ALL.map(Mode::nominal))
                 .collect(),
         };
-        let mut ranked: Vec<(f64, Mode)> = if modes.len() == 1 {
-            // Nothing to rank.
-            vec![(0.0, modes[0])]
-        } else if set.is_some() && !self.lossless() {
+        if modes.len() == 1 {
+            // A lone mode needs no comparison or reference samples.
+            return vec![(0.0, modes[0])];
+        }
+        let (source, recon) = pictures;
+        let position = (x, y);
+        let mut references = intra_edges::TrialReferences::luma(
+            recon.plane(PlaneIndex::Y),
+            &self.state,
+            position,
+            size,
+        );
+        let original = source
+            .plane(PlaneIndex::Y)
+            .view()
+            .sub_view(x, y, size, size)
+            .expect("intra block inside the picture");
+        let block = BlockSize::new(size, size).expect("intra blocks are 4..64 square");
+        let list = LumaList::new(context);
+        let bit_cost = self.lambda().sqrt();
+        let luma_cost = |coder: &mut Self,
+                         references: &mut intra_edges::TrialReferences,
+                         mode: Mode| {
+            let dsp = &coder.quantizer.dsp;
+            let predicted = &mut coder.mode_trial[..size * size];
+            references.predict(mode, dsp, predicted);
+            let predicted = PlaneView::new(predicted, size, size, size).expect("square prediction");
+            let satd = dsp.satd(block, &original, &predicted);
+            (
+                f64::from(satd)
+                    + bit_cost * f64::from(intra_modes::luma_bits(&list, context, mode)),
+                mode,
+            )
+        };
+        let mut ranked: Vec<(f64, Mode)> = if set.is_some() && !self.lossless() {
             // The shared set is ranked as AV1's key search ranks it: by the
             // rate and distortion of each prediction's coded residual.
             let keep = self.options.intra_split != SplitPolicy::Always
@@ -1729,7 +1766,17 @@ impl BlockCoder {
             let mut ranked = Vec::with_capacity(modes.len());
             for mode in modes {
                 let mode_bits = f64::from(intra_modes::luma_bits(&list, context, mode));
-                let (cost, coding) = self.luma_transform_cost(pictures, (x, y), size, mode);
+                references.predict(
+                    mode,
+                    &self.quantizer.dsp,
+                    &mut self.tx_prediction[..size * size],
+                );
+                let (distortion, bits, stats) =
+                    self.tx_prediction_cost(source, position, size, false);
+                let (cost, coding) = (
+                    distortion as f64 + self.lambda() * bits,
+                    stats.map(|s| (s, distortion)),
+                );
                 let cost = cost + self.lambda() * mode_bits;
                 if keep && cost.total_cmp(&best).is_lt() {
                     best = cost;
@@ -1746,14 +1793,18 @@ impl BlockCoder {
         } else {
             modes
                 .into_iter()
-                .map(|mode| luma_cost(self, mode))
+                .map(|mode| luma_cost(self, &mut references, mode))
                 .collect()
         };
         ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
         if let (None, Some(direction)) = (set, ranked[0].1.direction()) {
             let nominal = ranked[0].0;
             let mut try_delta = |coder: &mut Self, delta: i8| {
-                let cost = luma_cost(coder, Mode::Directional { direction, delta });
+                let cost = luma_cost(
+                    coder,
+                    &mut references,
+                    Mode::Directional { direction, delta },
+                );
                 ranked.push(cost);
                 cost.0
             };
@@ -1786,10 +1837,30 @@ impl BlockCoder {
             return vec![(luma, chroma)];
         }
         let ranked = self.rank_luma((x, y), size, context, pictures);
-        let lumas = ranked
-            .iter()
-            .take(self.options.intra.rd_candidates.max(1))
-            .map(|&(_, mode)| mode);
+        let stage = self.options.intra.stage;
+        let count = if stage.is_active() {
+            let by_cost = ranked
+                .iter()
+                .map(|&(cost, mode)| (mode, cost as f32))
+                .collect();
+            stage.survivors(by_cost).len()
+        } else {
+            self.options.intra.rd_candidates.max(1)
+        };
+        let lumas = ranked.iter().take(count).map(|&(_, mode)| mode);
+        if intra_edges::only_synthetic_edges((x, y)) {
+            // Only DC predicts mid-grey there. On flat chroma the other
+            // modes' ±1 prediction leaves a residual the quantizer drops at
+            // high qindex, and every later block (and each inter frame
+            // copying it) inherits the offset: the demo's grey zone plate
+            // coded its whole chroma plane as 127 at `--qp` 230-240 and at
+            // CBR 800 kbps 720p (U/V 60 -> 48 dB, so PSNR-YUV fell as the
+            // rate rose). Local RD, even on the true squared error, accepts
+            // the bias (a few bits against 1 per sample), since it cannot see
+            // the spread; the first block's chroma is DC, for a few bits a
+            // frame.
+            return lumas.map(|mode| (mode, Mode::Dc)).collect();
+        }
         let chroma_candidates = self.options.intra.chroma_candidates;
         if chroma_candidates == 1 {
             return lumas
@@ -1828,25 +1899,6 @@ impl BlockCoder {
                 (luma, chroma)
             })
             .collect()
-    }
-
-    /// Rate and distortion of coding `mode`'s luma prediction of the block
-    /// as one transform (the unsplit layout, DCT): the reconstruction's
-    /// squared error plus λ times the estimated coefficient bits under the
-    /// block's real coefficient contexts. Codes nothing.
-    fn luma_transform_cost(
-        &mut self,
-        (source, recon): (&Picture, &Picture),
-        (x, y): (usize, usize),
-        size: usize,
-        mode: Mode,
-    ) -> (f64, Option<(LevelStats, u64)>) {
-        self.predict_intra_luma(recon, (x, y), size, mode);
-        let (distortion, bits, stats) = self.tx_prediction_cost(source, (x, y), size, false);
-        (
-            distortion as f64 + self.lambda() * bits,
-            stats.map(|s| (s, distortion)),
-        )
     }
 
     /// `mode`'s luma prediction of the block from `recon` as one transform
@@ -2477,6 +2529,12 @@ impl BlockCoder {
     /// dropping the residual when that is cheaper.
     /// # Errors
     /// Propagates prediction and syntax errors.
+    /// Code the next [`Self::encode_inter`] block without a residual (a
+    /// repeat frame's copy of its reference, `hold.rs` "Repeat frames").
+    pub fn skip_next_inter(&mut self) {
+        self.skip_next = true;
+    }
+
     pub fn encode_inter(
         &mut self,
         (x, y): (usize, usize),
@@ -2506,7 +2564,8 @@ impl BlockCoder {
                     < f64::from(per_unit) * self.lambda() * (size * size) as f64
                         / SKIP_ESTIMATE_AREA
             });
-        let best = if random_skip == Some(true) || estimated_skip {
+        let forced_skip = std::mem::take(&mut self.skip_next);
+        let best = if random_skip == Some(true) || estimated_skip || forced_skip {
             None
         } else {
             // Only the residual trials use the pre-transform skip test (its
@@ -2963,12 +3022,7 @@ impl BlockCoder {
                 let qindex = self.quantizer.qindex.of(PlaneIndex::ALL[plane]);
                 tx.log2() == layout.plane_log2(plane)
                     && qindex.ac != 0
-                    && transform::dct_quantizes_to_zero(
-                        tx,
-                        qindex,
-                        self.options.rounding.of(PlaneIndex::ALL[plane], tx),
-                        sse,
-                    )
+                    && sse < self.quantizer.zero_sse[plane][tx.index()]
             })
     }
 
@@ -4107,9 +4161,13 @@ impl BlockCoder {
             )
         };
         let flags = &self.ccso_flags;
-        ccso::filter_picture(recon, deblocked, &self.ccso_params, |plane, x, y| {
-            flags.get(plane, x, y)
-        });
+        ccso::filter_picture_runs(
+            recon,
+            deblocked,
+            &self.ccso_params,
+            ccso::UNIT,
+            |plane, x, y| flags.get(plane, x, y),
+        );
         self.ccso_params
     }
 

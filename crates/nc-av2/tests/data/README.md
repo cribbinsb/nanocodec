@@ -22,3 +22,13 @@ all CDF adaptation time intervals and long carry chains are exercised. The
 native writer produces exactly these bytes. Reproduce by compiling
 `examples/entropy_oracle.c` with original `avm_dsp/{entenc,entdec,entcode}.c`
 against configured pinned headers and writing its stdout to the fixture.
+
+## Fuzz regressions
+
+`fuzz-ccso-band-log2-7-<hash>.fuzz` (three files) are the crash artifacts of
+decoder fuzz round 3 (2026-11-23, `docs/results/fuzzing.md`), whole fuzz
+inputs in the `fuzz/README.md` browser layout (a config byte, then
+`NCPK`-separated packets). Each codes a band-only CCSO filter with
+`max_band_log2` 7, which indexed past the 64-band offset table (a release
+panic); AVM rejects it. `tests/malformed.rs` requires the clean error.
+Originals: `~/nanocodec-data/fuzz/regressions/av2/`.

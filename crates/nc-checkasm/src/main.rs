@@ -6,6 +6,7 @@
 //! nc-checkasm --bench-encoder-wide           forward/intra encoder kernels
 //! nc-checkasm --bench-av1-runs               only AV1 edge/run filters
 //! nc-checkasm --bench-vp9-mc                 only VP9 interpolation
+//! nc-checkasm --bench-nn                     only network inference
 //! ```
 //!
 //! Exits non-zero if any kernel disagrees with its scalar reference.
@@ -19,7 +20,7 @@ use std::process::ExitCode;
 
 use nc_checkasm::{
     BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_cdef, bench_copies,
-    bench_deblock_batches, bench_encoder_wide, bench_vp9_mc, check,
+    bench_deblock_batches, bench_encoder_wide, bench_nn, bench_vp9_mc, check,
 };
 use nc_dsp::Isa;
 
@@ -38,6 +39,7 @@ enum BenchSet {
     Cdef,
     Copies,
     DeblockBatches,
+    Nn,
     Vp9Mc,
 }
 
@@ -56,7 +58,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("nc-checkasm: {message}");
             eprintln!(
-                "usage: nc-checkasm [--bench|--bench-encoder-wide|--bench-av1-inverse|--bench-av1-runs|--bench-deblock-batches|--bench-cdef|--bench-copies|--bench-vp9-mc] [--isa ISA] [--seed N] [--iterations N]"
+                "usage: nc-checkasm [--bench|--bench-encoder-wide|--bench-av1-inverse|--bench-av1-runs|--bench-deblock-batches|--bench-cdef|--bench-copies|--bench-nn|--bench-vp9-mc] [--isa ISA] [--seed N] [--iterations N]"
             );
             return ExitCode::from(2);
         }
@@ -83,6 +85,7 @@ fn main() -> ExitCode {
             BenchSet::Cdef => bench_cdef(isas),
             BenchSet::Copies => bench_copies(isas),
             BenchSet::DeblockBatches => bench_deblock_batches(isas),
+            BenchSet::Nn => bench_nn(isas),
             BenchSet::Vp9Mc => bench_vp9_mc(isas),
         };
         print_bench(&results);
@@ -109,6 +112,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--bench-cdef" => options.bench = Some(BenchSet::Cdef),
             "--bench-copies" => options.bench = Some(BenchSet::Copies),
             "--bench-deblock-batches" => options.bench = Some(BenchSet::DeblockBatches),
+            "--bench-nn" => options.bench = Some(BenchSet::Nn),
             "--bench-vp9-mc" => options.bench = Some(BenchSet::Vp9Mc),
             "--filter-runs" => {
                 options.filter_runs = Some(

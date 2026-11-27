@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  CHART_PRESETS, chartFamily, demoQuery, manifestEncoder, parseDemoQuery, parseResultsQuery, resultsQuery,
+  CHART_PRESETS, chartFamily, demoQuery, manifestEncoder, parseDemoQuery, parseResultsQuery, parseSceneQuery, resultsQuery,
 } from '../deep-link.js';
 
 const web = new URL('../', import.meta.url);
@@ -52,4 +52,16 @@ test('chart reference families find the demo\'s streams of the same encoder', ()
   }
   assert.equal(manifestEncoder('x264-medium~psnr'), 'x264-medium');
   assert.equal(manifestEncoder('nvenc-h264'), null);
+});
+
+test('a demo link names a test scene alone or with the other settings', async () => {
+  const { SCENES, sceneById, DEFAULT_SCENE } = await import('../scene.js');
+  assert.equal(parseSceneQuery('?scene=zone-plate'), 'zone-plate');
+  assert.equal(parseSceneQuery('?codec=av1&scene=crowd'), 'crowd');
+  assert.equal(parseSceneQuery('?scene=Bad%20Id'), null);
+  assert.equal(parseSceneQuery('?codec=av1'), null);
+  assert.equal(new Set(SCENES.map(s => s.id)).size, SCENES.length);
+  assert.ok(SCENES.every(s => s.name && s.tip && s.params && typeof s.draw === 'function'));
+  assert.equal(SCENES[0].id, DEFAULT_SCENE);
+  assert.equal(sceneById('nope').id, DEFAULT_SCENE);
 });

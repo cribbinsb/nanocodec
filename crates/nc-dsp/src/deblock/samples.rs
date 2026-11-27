@@ -61,6 +61,51 @@ unsafe fn run_mut<T>(plane: &mut [T], at: usize, len: usize) -> &mut [T] {
     unsafe { plane.get_unchecked_mut(at..at + len) }
 }
 
+/// The `lines` (fewer than [`LANES`]) samples of `plane` from `at`, zero
+/// padded to a lane row. Half rows (chroma edges) copy a fixed four samples
+/// one by one: a copy of runtime length was a `memcpy` call per position
+/// (VVC Faster x86, 2.2 million calls, 0.3 % of the encode's instructions).
+///
+/// # Safety
+///
+/// As [`run`] for `at..at + lines`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+unsafe fn short_run<T: Copy + Default>(plane: &[T], at: usize, lines: usize) -> [T; LANES] {
+    let mut row = [T::default(); LANES];
+    // SAFETY: caller contract.
+    let samples = unsafe { run(plane, at, lines) };
+    if lines == HALF_LANES {
+        for (to, &from) in row.iter_mut().zip(samples).take(HALF_LANES) {
+            *to = from;
+        }
+    } else {
+        row[..lines].copy_from_slice(samples);
+    }
+    row
+}
+
+/// Store the first `lines` (fewer than [`LANES`]) samples of `row` to
+/// `plane` from `at`: [`short_run`]'s inverse, half rows likewise copied
+/// one by one.
+///
+/// # Safety
+///
+/// As [`run_mut`] for `at..at + lines`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+unsafe fn store_short_run<T: Copy>(plane: &mut [T], at: usize, row: &[T; LANES], lines: usize) {
+    // SAFETY: caller contract.
+    let samples = unsafe { run_mut(plane, at, lines) };
+    if lines == HALF_LANES {
+        for (to, &from) in samples.iter_mut().zip(row).take(HALF_LANES) {
+            *to = from;
+        }
+    } else {
+        samples.copy_from_slice(&row[..lines]);
+    }
+}
+
 /// The 8x8 transpose of `rows` (three rounds of interleaving row `k` with
 /// row `k + 4`).
 #[allow(clippy::inline_always)]
@@ -92,15 +137,8 @@ pub(crate) fn load<V: I16x8Shuffles>(plane: &[u8], e: &Edge) -> [V; POSITIONS] {
                 // SAFETY: position k of the edge's 8 lines (`run`).
                 V::load_u8(unsafe { run(plane, at, LANES) })
             } else {
-                let mut bytes = [0u8; LANES];
-                let lines = if e.lines == HALF_LANES {
-                    HALF_LANES
-                } else {
-                    e.lines
-                };
                 // SAFETY: position k of the edge's lines (`run`).
-                bytes[..lines].copy_from_slice(unsafe { run(plane, at, lines) });
-                V::load_u8(&bytes)
+                V::load_u8(&unsafe { short_run(plane, at, e.lines) })
             };
         }
     } else {
@@ -133,13 +171,8 @@ pub(crate) fn store<V: I16x8Shuffles>(
             } else {
                 let mut bytes = [0u8; LANES];
                 v.store_u8_sat(&mut bytes);
-                let lines = if e.lines == HALF_LANES {
-                    HALF_LANES
-                } else {
-                    e.lines
-                };
                 // SAFETY: tap `from + offset` of the checked short-line footprint.
-                unsafe { run_mut(plane, at, lines) }.copy_from_slice(&bytes[..lines]);
+                unsafe { store_short_run(plane, at, &bytes, e.lines) };
             }
         }
     } else {
@@ -164,15 +197,8 @@ pub(crate) fn load_u16<V: I16x8Shuffles>(plane: &[u16], e: &Edge) -> [V; POSITIO
                 // SAFETY: position k of the edge's 8 lines (`run`).
                 V::load_u16(unsafe { run(plane, at, LANES) })
             } else {
-                let mut words = [0u16; LANES];
-                let lines = if e.lines == HALF_LANES {
-                    HALF_LANES
-                } else {
-                    e.lines
-                };
                 // SAFETY: position k of the edge's lines (`run`).
-                words[..lines].copy_from_slice(unsafe { run(plane, at, lines) });
-                V::load_u16(&words)
+                V::load_u16(&unsafe { short_run(plane, at, e.lines) })
             };
         }
     } else {
@@ -207,13 +233,8 @@ pub(crate) fn store_u16<V: I16x8Shuffles>(
             } else {
                 let mut words = [0u16; LANES];
                 clamped.store_u16(&mut words);
-                let lines = if e.lines == HALF_LANES {
-                    HALF_LANES
-                } else {
-                    e.lines
-                };
                 // SAFETY: tap `from + offset` of the checked short-line footprint.
-                unsafe { run_mut(plane, at, lines) }.copy_from_slice(&words[..lines]);
+                unsafe { store_short_run(plane, at, &words, e.lines) };
             }
         }
     } else {

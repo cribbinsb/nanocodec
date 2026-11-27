@@ -1,0 +1,16 @@
+# The RD partition search's context gate as a linear function of node features
+# (planner.rd_split_{deepen,merge}_shift_*, rd_split.rs ContextShift): all 0 is the
+# shipped gate, so the study's first trial (the preset) is today's rule exactly.
+# For the slow rungs of HEVC and AV1 (context gate on). Format (nceval.tune_pool):
+# name [low high] [int|log]
+planner.rd_split_deepen_shift_bias -1.5 1.5
+planner.rd_split_deepen_shift_neighbours -1 1
+planner.rd_split_deepen_shift_co_located -1 1
+planner.rd_split_deepen_shift_size -1 1
+planner.rd_split_deepen_shift_margin -1.5 1.5
+planner.rd_split_deepen_shift_residual -0.5 0.5
+planner.rd_split_merge_shift_bias -1.5 1.5
+planner.rd_split_merge_shift_neighbours -1 1
+planner.rd_split_merge_shift_co_located -1 1
+planner.rd_split_merge_shift_size -1 1
+planner.rd_split_merge_shift_margin -1.5 1.5

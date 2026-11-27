@@ -38,7 +38,7 @@ REFERENCE_TOOLS = ("TAppEncoder", "EncoderApp", "vvencFFapp")
 def tool_paths(references: Path) -> dict[str, Path]:
     """Every tool and configuration file a staged run may name, by file name."""
     paths = load_paths()
-    tools = {p.name: p for p in (paths.anchors / "bin").iterdir()}
+    tools = planner.anchor_tools(paths)
     tools["nanocodec"] = paths.nanocodec_bin / "nanocodec"
     tools.update({name: references / "bin" / name for name in REFERENCE_TOOLS})
     tools.update({p.name: p for p in (references / "cfg").iterdir()})

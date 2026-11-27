@@ -19,6 +19,10 @@ use core::arch::x86_64::{
     _mm512_storeu_si512, _mm512_sub_epi32, _mm512_unpackhi_epi32, _mm512_unpackhi_epi64,
     _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
 };
+use core::arch::x86_64::{
+    _mm256_castsi256_si128, _mm256_extracti128_si256, _mm512_broadcast_i64x4,
+    _mm512_permutex2var_epi64, _mm512_setr_epi64,
+};
 use core::mem::MaybeUninit;
 
 /// Sixteen signed 32-bit transform lanes.
@@ -27,6 +31,11 @@ pub(crate) struct I32x16(pub(super) __m512i);
 
 impl WordPairLanes for I32x16 {
     type Pairs = WordPairs16;
+
+    #[inline(always)]
+    fn transpose_registers(rows: &[Self], columns: &mut [Self]) {
+        columns.copy_from_slice(&transpose_i32x16(rows).map(Self));
+    }
 
     #[inline(always)]
     fn word_pairs(self, high: Self) -> WordPairs16 {
@@ -418,6 +427,60 @@ impl I32x16 {
                 Self(_mm512_unpacklo_epi64(b, d)),
                 Self(_mm512_unpackhi_epi64(b, d)),
             ]
+        }
+    }
+
+    /// Transpose a separate 8x8 tile in each 256-bit half.
+    #[inline(always)]
+    pub(crate) fn transpose8_pair(rows: &[Self; 8]) -> [Self; 8] {
+        let top = Self::transpose4([rows[0], rows[1], rows[2], rows[3]]);
+        let bottom = Self::transpose4([rows[4], rows[5], rows[6], rows[7]]);
+        // SAFETY: private values exist only inside supported ISA kernels.
+        unsafe {
+            let left = _mm512_setr_epi64(0, 1, 8, 9, 4, 5, 12, 13);
+            let right = _mm512_setr_epi64(2, 3, 10, 11, 6, 7, 14, 15);
+            core::array::from_fn(|i| {
+                let index = if i < 4 { left } else { right };
+                Self(_mm512_permutex2var_epi64(
+                    top[i % 4].0,
+                    index,
+                    bottom[i % 4].0,
+                ))
+            })
+        }
+    }
+
+    /// Widen a row from sixteen already validated signed words.
+    #[inline(always)]
+    pub(crate) unsafe fn load_i16_row(row: *const i16) -> Self {
+        // SAFETY: callers validate the sixteen samples and AVX-512F/BW.
+        unsafe { Self(_mm512_cvtepi16_epi32(_mm256_loadu_si256(row.cast()))) }
+    }
+
+    /// Load one row and repeat it independently in each half.
+    #[inline(always)]
+    pub(crate) fn repeat_eight(row: &[i32; 8]) -> Self {
+        // SAFETY: AVX-512F and AVX2 are enabled and the row holds 32 bytes.
+        unsafe {
+            Self(_mm512_broadcast_i64x4(_mm256_loadu_si256(
+                row.as_ptr().cast(),
+            )))
+        }
+    }
+
+    /// Store eight narrowed levels per half and return all 16 nonzero flags.
+    #[inline(always)]
+    pub(crate) fn store_two_rows(self, left: &mut [i16; 8], right: &mut [i16; 8]) -> u16 {
+        // SAFETY: private values exist only inside supported ISA kernels;
+        // each destination holds the eight narrowed lanes.
+        unsafe {
+            let narrowed = _mm512_cvtsepi32_epi16(self.0);
+            _mm_storeu_si128(left.as_mut_ptr().cast(), _mm256_castsi256_si128(narrowed));
+            _mm_storeu_si128(
+                right.as_mut_ptr().cast(),
+                _mm256_extracti128_si256::<1>(narrowed),
+            );
+            _mm512_cmpneq_epi32_mask(self.0, _mm512_setzero_si512())
         }
     }
 

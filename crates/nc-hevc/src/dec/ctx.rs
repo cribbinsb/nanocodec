@@ -1,13 +1,14 @@
 //! Every CABAC context variable of Main-profile slice data, with the
 //! initial values of all three `initType`s (H.265 §9.3.2.2, Tables 9-5 to
 //! 9-37), kept in one flat array so that WPP and dependent slice segments
-//! can save and restore the whole state (§9.3.2.4, §9.3.2.5).
+//! can save and restore the whole state (§9.3.2.4, §9.3.2.5). The encoder's
+//! contexts (`contexts.rs`) take their initial values from here.
 
 use crate::cabac::Context;
 
 /// One syntax element's run of contexts in the flat array.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Element {
+pub(crate) struct Element {
     /// Index of its first context.
     pub start: usize,
     /// Initial values per `initType` (0: I, 1: P or B with
@@ -26,7 +27,7 @@ macro_rules! elements {
         const ALL: &[Element] = &[$($name),*];
     };
     (@step $start:expr; $name:ident: [$i:expr, $p:expr, $b:expr]; $($rest:tt)*) => {
-        pub(super) const $name: Element = Element { start: $start, init: [&$i, &$p, &$b] };
+        pub(crate) const $name: Element = Element { start: $start, init: [&$i, &$p, &$b] };
         elements!(@step $start + $name.init[0].len(); $($rest)*);
     };
     (@step $start:expr;) => {
@@ -102,7 +103,14 @@ pub(super) const GREATER2_CHROMA: usize = 4;
 /// Offset of the chroma contexts within `CODED_SUB_BLOCK`.
 pub(super) const CODED_SUB_BLOCK_CHROMA: usize = 2;
 /// The `inter_pred_idc` context of its second bin / of 8x4 and 4x8 PUs.
-pub(super) const INTER_PRED_IDC_LAST: usize = 4;
+pub(crate) const INTER_PRED_IDC_LAST: usize = 4;
+
+/// The initial values of `element`'s contexts for `init_type` (0: I, 1: P,
+/// 2: B; §9.3.2.2): the encoder's contexts start from these too.
+#[must_use]
+pub(crate) fn initial_values(element: Element, init_type: usize) -> &'static [u8] {
+    element.init[init_type]
+}
 
 /// The whole context state of one slice segment.
 #[derive(Debug, Clone)]

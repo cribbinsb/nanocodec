@@ -1,0 +1,3 @@
+[
+ {"rate.key_cap_buffer": 1.0, "rate.first_key_full_motion": 3, "rate.first_key_fixed_camera": 1, "rate.recode_fill": 0.97, "rate.recode_first_exponent": 4.0, "rate.recode_max": 3}
+]

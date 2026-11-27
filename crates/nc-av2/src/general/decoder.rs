@@ -145,10 +145,6 @@ pub struct Decoder {
     /// Diagnosis: frames not shown when decoded are output then too (as
     /// dav2d's `--outputinvisible 1`).
     invisible: bool,
-    /// The wedge and inter-intra masks, built at the first general frame.
-    masks: std::cell::OnceCell<InterMasks>,
-    /// Cached diagonal transform scan tables, built at the first general frame.
-    scans: std::cell::OnceCell<Rc<block::Scans>>,
     /// Cached default CDF tables per AVM quantizer category (`0..4`).
     default_cdfs: [std::cell::OnceCell<Rc<Cdfs>>; 4],
 }
@@ -637,7 +633,7 @@ impl Decoder {
         let reused = self.reused_ccso_flags(header)?;
         let motion = self.reference_motion(header);
         let previous_segments = self.previous_segments(header);
-        let copies = self.workspace.filter_parts().0.block_copies();
+        let dsp = self.workspace.filter_parts().0;
         let trace = self.block_trace.0.as_mut().map(|sink| {
             let sink: BlockTrace<'_> = &mut **sink;
             sink
@@ -653,14 +649,12 @@ impl Decoder {
                 })
                 .flatten()
         });
-        let masks = self.masks.get_or_init(InterMasks::new);
-        let scans = self.scans.get_or_init(|| Rc::new(block::Scans::new()));
+        let masks = InterMasks::shared();
         let inputs = block::FrameInputs {
             reused_ccso,
             references,
             masks,
-            scans,
-            copies,
+            dsp,
             motion: &motion,
             previous_segments: previous_segments.as_deref(),
         };
@@ -761,7 +755,13 @@ impl Decoder {
         if header.gdf.mode != 0 {
             let distances = self.reference_distances(header);
             let params = filters::gdf::params(header, &distances);
-            filters::gdf::filter(picture, (&source, deblocked), maps, (header, params));
+            filters::gdf::filter(
+                self.workspace.dsp(),
+                picture,
+                (&source, deblocked),
+                maps,
+                (header, params),
+            );
         }
         if header.lossless.segments != 0 {
             filters::keep_lossless(picture, &source, maps, header, filters::LOSSLESS_UNIT);

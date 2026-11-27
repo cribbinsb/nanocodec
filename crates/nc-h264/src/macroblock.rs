@@ -10,7 +10,7 @@
 //! inverse transforms, so it is exactly what a decoder sees.
 
 use nc_common::{Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, H264Quantizer, copy_square};
+use nc_dsp::{BlockSize, Dsp, H264Quantizer, copy_square, copy_square_samples};
 use nc_encoder::Mv;
 
 use crate::cabac::BitCounter;
@@ -210,6 +210,9 @@ pub struct ResidualSkip {
     pub luma_quadrants: u8,
     /// Every 4x4 block and the DC block of each chroma component.
     pub chroma: [bool; 2],
+    /// The 16x16 luma SAD (the sum of the sixteen 4x4 SADs tested; 0 when
+    /// nothing was measured), for the neighbour screen (`skip_pred.rs`).
+    pub luma_sad: u32,
 }
 
 impl ResidualSkip {
@@ -218,6 +221,7 @@ impl ResidualSkip {
         luma: false,
         luma_quadrants: 0,
         chroma: [false; 2],
+        luma_sad: 0,
     };
 
     /// Nothing at all needs coding.
@@ -239,6 +243,18 @@ pub fn inter_residual_skip(
     quantizers: &MbQuantizers,
 ) -> ResidualSkip {
     residual_skip_within(dsp, source, pred, x, y, quantizers.inter_zero_limits)
+}
+
+/// [`inter_residual_skip`] of a prediction given as views of the
+/// reference (a whole-sample vector's [`crate::mc::MacroblockViews`]).
+pub fn inter_residual_skip_views(
+    dsp: &Dsp,
+    source: &Picture,
+    pos: (usize, usize),
+    (luma, chroma): (&PlaneView<'_>, &[PlaneView<'_>; 2]),
+    quantizers: &MbQuantizers,
+) -> ResidualSkip {
+    residual_skip_views(dsp, source, pos, luma, chroma, quantizers.inter_zero_limits)
 }
 
 /// [`inter_residual_skip`] against explicit `[luma 4x4, chroma 4x4,
@@ -279,32 +295,19 @@ pub fn residual_skip_views(
             .region((x / 2) as isize, (y / 2) as isize, MB_CHROMA, MB_CHROMA)
             .expect("block inside the picture")
     });
-    let (luma_sads, chroma_sads) = dsp.sad_quads_macroblock(
+    let sad = dsp.macroblock_sad(
         (&src_luma, pred_luma),
         [
             (&src_chroma[0], &pred_chroma[0]),
             (&src_chroma[1], &pred_chroma[1]),
         ],
+        [luma_limit, ac_limit, dc_limit],
     );
-    // Luma: a quadrant is selected when its four 4x4 SADs are within the
-    // configured bound.
-    let mut luma_quadrants = 0;
-    for (b8, sads) in luma_sads.iter().enumerate() {
-        if sads.iter().all(|&sad| u32::from(sad) <= luma_limit) {
-            luma_quadrants |= 1 << b8;
-        }
-    }
-    let luma = luma_quadrants == ALL_QUADRANTS;
-    // Chroma: each 4x4 SAD within the AC bound and the 8x8 SAD within the
-    // DC bound.
-    let chroma = chroma_sads.map(|sads| {
-        sads.iter().all(|&sad| u32::from(sad) <= ac_limit)
-            && sads.iter().map(|&sad| u32::from(sad)).sum::<u32>() <= dc_limit
-    });
     ResidualSkip {
-        luma,
-        luma_quadrants,
-        chroma,
+        luma: sad.luma_quadrants == ALL_QUADRANTS,
+        luma_quadrants: sad.luma_quadrants,
+        chroma: sad.chroma,
+        luma_sad: u32::from(sad.luma_sad),
     }
 }
 
@@ -368,12 +371,11 @@ pub struct Residual {
     pub cbp_luma: u8,
     /// `CodedBlockPatternChroma`.
     pub cbp_chroma: u8,
-    /// Scratch for the sample residual `source - pred` of the block being
-    /// transformed. Kept with the reused levels so it is neither zeroed nor
-    /// returned by value per block: those memset/memcpy calls cost about
-    /// 0.42M instructions per 720p crowd P frame. Only the first
-    /// `size * size` entries of the current block are meaningful.
-    samples: [i16; MB * MB],
+    /// Pre-quantization luma for trellis and rate trimming. In the 4x4
+    /// modes these are the forward coefficients in the same raster block
+    /// order as `luma`. In Inter8x8 this holds the pixel residual, since
+    /// that forward kernel already fuses quantization.
+    luma_input: [[i16; 16]; 16],
 }
 
 impl Residual {
@@ -392,6 +394,19 @@ impl Residual {
         self.cbp_chroma = CBP_CHROMA_NONE;
     }
 
+    /// An empty inter residual (`cbp_luma == 0`, `cbp_chroma == NONE`).
+    pub const EMPTY_INTER: Self = Self {
+        kind: ResidualKind::Inter,
+        luma_dc: [0; 16],
+        luma: [[0; 16]; 16],
+        luma_8x8: [[0; 64]; 4],
+        chroma_dc: [[0; 4]; 2],
+        chroma_ac: [[[0; 16]; 4]; 2],
+        cbp_luma: 0,
+        cbp_chroma: CBP_CHROMA_NONE,
+        luma_input: [[0; 16]; 16],
+    };
+
     /// A residual of `kind` with nothing coded.
     pub fn empty(kind: ResidualKind) -> Self {
         Self {
@@ -403,7 +418,7 @@ impl Residual {
             chroma_ac: [[[0; 16]; 4]; 2],
             cbp_luma: 0,
             cbp_chroma: CBP_CHROMA_NONE,
-            samples: [0; MB * MB],
+            luma_input: [[0; 16]; 16],
         }
     }
 
@@ -454,6 +469,11 @@ pub struct MbQuantizers {
 }
 
 impl MbQuantizers {
+    /// The luma 4x4 inter zero-residual SAD bound (see [`inter_residual_skip`]).
+    pub fn inter_zero_luma_limit(&self) -> u32 {
+        self.inter_zero_limits[0]
+    }
+
     /// The inter zero-residual SAD bounds (`[luma 4x4, chroma 4x4, chroma
     /// DC]`, see [`inter_residual_skip`]) with the luma and chroma bounds
     /// scaled by `luma` and `chroma`.
@@ -592,25 +612,15 @@ pub fn transform_luma(
 ) {
     let (luma_q, _) = quantizers.for_kind(kind);
     let min_level = quantizers.planned_min_level(kind);
-    residual_into(
-        dsp,
-        source.plane(PlaneIndex::Y),
-        (x, y),
-        luma,
-        MB,
-        &mut out.samples,
-    );
-    let luma_residual = &out.samples;
+    let (src, pred) = residual_views(source.plane(PlaneIndex::Y), (x, y), luma, MB);
     let nonzero_8x8 = if kind == ResidualKind::Inter8x8 {
+        let size = BlockSize::new(MB, MB).expect("macroblock is a kernel size");
+        let samples = out.luma_input.as_flattened_mut();
+        dsp.residual(size, &src, &pred, samples, MB);
         // Keep the omitted quadrants while dispatching the remaining
         // transforms and quantisation together, once per macroblock.
-        let mut nonzero = dsp.h264_forward_quantize_mb(
-            luma_residual,
-            MB,
-            zero_quadrants,
-            luma_q,
-            &mut out.luma_8x8,
-        );
+        let mut nonzero =
+            dsp.h264_forward_quantize_mb(samples, MB, zero_quadrants, luma_q, &mut out.luma_8x8);
         if min_level > NO_DEAD_ZONE {
             for (block, count) in out.luma_8x8.iter_mut().zip(&mut nonzero) {
                 if *count > 0 {
@@ -621,7 +631,8 @@ pub fn transform_luma(
         }
         nonzero
     } else {
-        dsp.h264_forward_4x4(luma_residual, MB, MB / 4, &mut out.luma);
+        dsp.h264_forward_luma_pixels(&src, &pred, &mut out.luma_input);
+        out.luma = out.luma_input;
         [0; 4]
     };
 
@@ -710,10 +721,21 @@ pub(crate) fn scale_4x4(q: &H264Quantizer) -> BlockScale<'static> {
     }
 }
 
+/// The forward quantiser of `q`'s 8x8 blocks as the trellis needs it.
+pub(crate) fn scale_8x8(q: &H264Quantizer) -> BlockScale<'static> {
+    let step = q.step();
+    let (mf, qbits) = q.forward_scale_8x8();
+    BlockScale {
+        mf,
+        qbits,
+        step_sse: (step * step) as f32,
+    }
+}
+
 /// Trellis-quantise the coded luma blocks of an inter or `I_16x16`
 /// macroblock in `out` (its 4x4, 8x8 or AC levels, after quantisation and
-/// elimination), re-deriving their coefficients from the luma residual `out`
-/// still holds, and update `cbp_luma`. Blocks the plain quantiser left
+/// elimination), using the coefficients or residual `out` still holds,
+/// and update `cbp_luma`. Blocks the plain quantiser left
 /// empty stay empty; `I_16x16` DC levels keep the plain quantiser.
 pub fn trellis_luma(
     dsp: &Dsp,
@@ -730,20 +752,18 @@ pub fn trellis_luma(
         max_states,
     } = trellis.settings;
     if out.kind == ResidualKind::Inter8x8 {
-        let step = luma_q.step();
-        let (mf, qbits) = luma_q.forward_scale_8x8();
-        let scale = BlockScale {
-            mf,
-            qbits,
-            step_sse: (step * step) as f32,
-        };
+        let scale = scale_8x8(luma_q);
         for b8 in 0..4 {
             if (out.cbp_luma >> b8) & 1 == 0 {
                 continue;
             }
             let (qx, qy) = (MB / 2 * (b8 % 2), MB / 2 * (b8 / 2));
             let mut coeffs = [0; 64];
-            dsp.h264_forward_8x8(&out.samples[qy * MB + qx..], MB, &mut coeffs);
+            dsp.h264_forward_8x8(
+                &out.luma_input.as_flattened()[qy * MB + qx..],
+                MB,
+                &mut coeffs,
+            );
             let mut model = RateModel::new(bins, TrellisBlock::Luma8x8);
             let levels = &mut out.luma_8x8[b8];
             if !search.quantize(
@@ -766,8 +786,6 @@ pub fn trellis_luma(
         (BlockCat::Luma4x4, &ZIGZAG_4X4[..])
     };
     let scale = scale_4x4(luma_q);
-    let mut coeffs = [[0; 16]; 16];
-    dsp.h264_forward_4x4(&out.samples, MB, MB / 4, &mut coeffs);
     let coded = |out: &Residual, blk: usize| out.luma[blk].iter().any(|&l| l != 0);
     for b8 in 0..4 {
         if (out.cbp_luma >> b8) & 1 == 0 {
@@ -795,7 +813,7 @@ pub fn trellis_luma(
             let mut model = RateModel::new(bins, block);
             search.quantize(
                 &mut model,
-                &coeffs[blk],
+                &out.luma_input[blk],
                 scan,
                 (scale, lambda, max_states),
                 &mut out.luma[blk],
@@ -815,7 +833,7 @@ pub fn trellis_luma(
 
 /// The shared rate-aware trimming (`quant.rd_trim`, `nc_encoder::trim_levels`)
 /// of the coded luma blocks of an inter macroblock in `out`, the cheap
-/// substitute for [`trellis_luma`]: the same re-derived coefficients and
+/// substitute for [`trellis_luma`]: the same coefficients and
 /// distortion (`Qstep²` per squared level step), λ `lambda` (sample SSE per
 /// bit), a static rate estimate in place of the CABAC model. Updates
 /// `cbp_luma`.
@@ -839,7 +857,11 @@ pub fn rate_trim_luma(
             }
             let (qx, qy) = (MB / 2 * (b8 % 2), MB / 2 * (b8 / 2));
             let mut coeffs = [0; 64];
-            dsp.h264_forward_8x8(&out.samples[qy * MB + qx..], MB, &mut coeffs);
+            dsp.h264_forward_8x8(
+                &out.luma_input.as_flattened()[qy * MB + qx..],
+                MB,
+                &mut coeffs,
+            );
             if trim_block(
                 trim,
                 &mut out.luma_8x8[b8],
@@ -860,13 +882,9 @@ pub fn rate_trim_luma(
         if (out.cbp_luma >> b8) & 1 == 0 {
             continue;
         }
-        // Only the coded quadrants' coefficients are re-derived, in the
-        // raster order of `blocks_of_8x8`.
-        let (qx, qy) = (MB / 2 * (b8 % 2), MB / 2 * (b8 / 2));
-        let mut coeffs = [[0; 16]; 4];
-        dsp.h264_forward_4x4(&out.samples[qy * MB + qx..], MB, 2, &mut coeffs);
         let mut any = false;
-        for (c, blk) in coeffs.iter().zip(blocks_of_8x8(b8)) {
+        for blk in blocks_of_8x8(b8) {
+            let c = &out.luma_input[blk];
             any |= trim_block(
                 trim,
                 &mut out.luma[blk],
@@ -930,21 +948,15 @@ pub fn trellis_chroma_ac(
         if (0..4).all(|blk| !coded(out, blk)) {
             continue;
         }
-        residual_into(
-            dsp,
+        let (src, pred) = residual_views(
             source.plane(plane),
             (x / 2, y / 2),
             &pred.chroma[c],
             MB_CHROMA,
-            &mut out.samples,
         );
         let mut coeffs = [[0; 16]; 4];
-        dsp.h264_forward_4x4(
-            &out.samples[..MB_CHROMA * MB_CHROMA],
-            MB_CHROMA,
-            MB_CHROMA / 4,
-            &mut coeffs,
-        );
+        let mut scratch = [0; MB_CHROMA * MB_CHROMA];
+        dsp.h264_forward_chroma_pixels(&src, &pred, &mut scratch, &mut coeffs);
         for (blk, coeffs) in coeffs.iter().enumerate() {
             if !coded(out, blk) {
                 continue;
@@ -1068,17 +1080,16 @@ fn transform_chroma(
             *ac = [[0; 16]; 4];
             continue;
         }
-        residual_into(
-            dsp,
+        let (src, pred) = residual_views(
             source.plane(plane),
             (x / 2, y / 2),
             &pred.chroma[c],
             MB_CHROMA,
-            &mut out.samples,
         );
-        let (mut dc, ac_levels) = dsp.h264_forward_quantize_chroma(
-            &out.samples[..MB_CHROMA * MB_CHROMA],
-            MB_CHROMA,
+        let (mut dc, ac_levels) = dsp.h264_forward_quantize_chroma_pixels(
+            &src,
+            &pred,
+            out.luma_input.as_flattened_mut(),
             chroma_q,
             ac,
         );
@@ -1231,22 +1242,18 @@ fn block_mut(plane: &mut Plane, pos: (usize, usize), n: usize) -> PlaneViewMut<'
         .expect("block inside the picture")
 }
 
-/// Residual `source - pred` of the `size` x `size` block at `pos` into the
-/// first `size * size` entries of `out`, raster with stride `size`.
-fn residual_into(
-    dsp: &Dsp,
-    source: &Plane,
+/// Source and prediction views of the requested macroblock region.
+fn residual_views<'a>(
+    source: &'a Plane,
     pos: (usize, usize),
-    pred: &[u8],
+    pred: &'a [u8],
     size: usize,
-    out: &mut [i16; MB * MB],
-) {
-    let block = BlockSize::new(size, size).expect("macroblock sizes are kernel sizes");
+) -> (PlaneView<'a>, PlaneView<'a>) {
     let src = source
         .region(pos.0 as isize, pos.1 as isize, size, size)
         .expect("block inside the picture");
     let pred = PlaneView::new(pred, size, size, size).expect("prediction covers the block");
-    dsp.residual(block, &src, &pred, out, size);
+    (src, pred)
 }
 
 /// Copy the `N` x `N` prediction (raster, stride `N`) into the block of
@@ -1281,14 +1288,31 @@ pub fn write_prediction_views(
 }
 
 /// Copy `N` rows of `N` samples (`src` rows `src_stride` apart) into the
-/// block of `plane` at `pos`.
+/// block of `plane` at `pos`: straight into the plane's samples, without a
+/// destination view (every prediction-only macroblock writes three blocks).
 fn copy_rows<const N: usize>(
     plane: &mut Plane,
     pos: (usize, usize),
     src: &[u8],
     src_stride: usize,
 ) {
-    copy_square::<N>(&mut block_mut(plane, pos, N), src, src_stride);
+    let dst_stride = plane.stride();
+    let dst = plane
+        .samples_at_mut(pos.0 as isize, pos.1 as isize, N, N)
+        .expect("block inside the picture");
+    copy_square_samples::<N>((dst, dst_stride), (src, src_stride));
+}
+
+/// Copy the 16x16 luma and 8x8 chroma blocks `src` (views of the
+/// reference) into the prediction buffers.
+pub fn copy_prediction_views(
+    pred: &mut Prediction,
+    (luma, chroma): (&PlaneView<'_>, &[PlaneView<'_>; 2]),
+) {
+    copy_square_samples::<MB>((&mut pred.luma, MB), (luma.data(), luma.stride()));
+    for (out, src) in pred.chroma.iter_mut().zip(chroma) {
+        copy_square_samples::<MB_CHROMA>((out, MB_CHROMA), (src.data(), src.stride()));
+    }
 }
 
 /// Copy the prediction into `recon` unchanged (`P_Skip`).

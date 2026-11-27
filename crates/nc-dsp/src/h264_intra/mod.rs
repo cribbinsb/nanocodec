@@ -18,6 +18,8 @@
 //! every output row is a contiguous slice at a fixed offset; its loops are
 //! over byte arrays, so each ISA's instantiation vectorises them.
 
+mod plane;
+pub use plane::h264_plane;
 mod reference;
 #[cfg(any(
     target_arch = "x86_64",

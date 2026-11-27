@@ -20,7 +20,9 @@ Used in `crates/nc-av1`:
 - `src/cdf.rs`: CDF adaptation (`update_cdf`) and the symbol cost
   approximation (`av1_cost_symbol`).
 - `src/mvcoding.rs`: motion-vector difference coding and default CDFs.
-- `src/coeff.rs`: coefficient coding and context derivation.
+- `src/coeff.rs`: coefficient coding and context derivation, including dense
+  level preparation and raster contexts from `av1_txb_init_levels` and
+  `av1_get_nz_map_contexts`.
 - `src/segment_id.rs`: segment-id spatial prediction and context
   (`av1_get_spatial_seg_pred`) and id interleaving (`av1_neg_interleave`,
   `av1_neg_deinterleave`).
@@ -70,6 +72,11 @@ Used in `crates/nc-dsp`:
   with its per-size row shifts (`av1/common/av1_inv_txfm2d.c`). Golden
   hashes in `crates/nc-checkasm/tests/av1_inverse_golden.rs` come from
   libaom's `av1_inv_txfm2d_add_*_c` and `av1_highbd_iwht4x4_16_add_c`.
+- `src/av1_forward.rs`: the forward ADST4/8/16 butterflies and identity
+  scales (`av1/encoder/av1_fwd_txfm1d.c`), the 2-D column/row driver with its
+  flips, rectangular scale and per-size shifts and cosine precisions
+  (`av1/encoder/av1_fwd_txfm2d.c`), and the 11-bit cosine table
+  (`av1/common/av1_txfm.c`).
 - `src/mc/mod.rs`: the regular `EIGHTTAP` interpolation filters
   (`av1/common/filter.h`); `src/diff/mod.rs`: the bilinear sub-pixel
   variance definition (`aom_dsp/variance.c`).
@@ -209,8 +216,84 @@ Used in `crates/nc-h264`:
   end-of-data check, every code one table lookup, trailing-one signs read
   together, branch-free level arithmetic.
 
+In `crates/nc-dsp/src/codec_txfm/neon.rs`, the H.264 chroma forward path
+uses the fused pixel subtraction and four 4x4 transforms of
+`WelsDctFourT4_AArch64_neon`, implemented with the existing Rust butterfly.
+
+The same module's NEON inverse-add uses the fused predictor addition and
+clipping of `WelsIDctT4Rec_AArch64_neon` with wide intermediate arithmetic.
+
+The four-block x86 chroma forward kernel in
+`crates/nc-dsp/src/codec_txfm/avx2_h264.rs` uses the packed AVX2 schedule of
+`WelsDctFourT4_avx2` from `codec/common/x86/dct.asm`.
+The same module uses the sixteen-word coefficient layout of
+`WelsQuantFour4x4_avx2` in `codec/encoder/core/x86/quant.asm` for 8×8
+macroblock quantisation, with nanocodec's post-product rounding retained.
+
+The x86 inverse-add in `crates/nc-dsp/src/codec_txfm/avx2_h264_inverse.rs`
+fuses the transform and predictor addition after `WelsIDctFourT4Rec_avx2`.
+It keeps independent 32-bit butterflies to handle the complete scaled
+coefficient range.
+
 The licence text is the BSD-2-Clause text reproduced under libaom above,
 with "Cisco Systems" as the copyright holder.
+
+## libavc — Apache-2.0
+
+Copyright (C) 2015 The Android Open Source Project.
+Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore.
+Source: https://github.com/ittiam-systems/libavc (revision
+`4af87ce6aaad5dd222a044758a93c0bdaa1ba107`).
+
+The H.264 NEON plane predictor in `crates/nc-dsp/src/h264_intra/plane.rs`
+adapts the weighted edges and incremental row ramps from
+`common/armv8/ih264_intra_pred_luma_16x16_av8.s`. The Apache License,
+Version 2.0 is at https://www.apache.org/licenses/LICENSE-2.0.
+
+The H.264 CABAC writer in `crates/nc-h264/src/cabac/mod.rs` batches
+bypass bins using the constant-range update described in
+`encoder/ih264e_cabac.c` (`ih264e_cabac_encode_bypass_bins`).
+
+The H.264 8×8 inverse output in
+`crates/nc-dsp/src/codec_txfm/h264_inverse8.rs` applies a signed rounding
+shift before widening the destination bytes, as in
+`common/armv8/ih264_iquant_itrans_recon_av8.s`.
+
+The vertical H.264 half- and quarter-pel interpolation in
+`crates/nc-dsp/src/mc/avx2_h264_vertical.rs` follows the two-row
+byte tap schedule in `common/x86/ih264_inter_pred_filters_ssse3.c`.
+H.264 horizontal and vertical half- and quarter-pel interpolation and the
+diagonal quarter-pel combination in `crates/nc-dsp/src/mc/avx2_h264_vertical.rs`
+follow the two-row byte taps in `common/x86/ih264_inter_pred_filters_ssse3.c`.
+
+The two-axis half-pel and adjacent quarter-pel schedule in
+`crates/nc-dsp/src/mc/avx2_h264_center.rs` follows the horizontal
+byte products and vertical word products in the same libavc file.
+
+## libhevc — Apache-2.0
+
+Copyright (C) 2012 Ittiam Systems Pvt Ltd, Bangalore.
+Source: https://github.com/ittiam-systems/libhevc (revision
+`05da776e6e565546072c39192a7ed190e7f15275`).
+
+The shared HEVC NEON 8×8 inverse and reconstruction in
+`crates/nc-dsp/src/codec_txfm/neon_inverse8.rs` uses the lane-MAC schedule of
+`common/arm64/ihevc_itrans_recon_8x8.s`. The corresponding 4×4 DCT and DST
+in `crates/nc-dsp/src/codec_txfm/neon_inverse4.rs` follow
+`ihevc_itrans_recon_4x4.s` and `ihevc_itrans_recon_4x4_ttype1.s`. The 16×16
+reconstruction in `crates/nc-dsp/src/codec_txfm/neon_inverse16.rs` uses
+the lane MACs and transposed scratch of `ihevc_itrans_recon_16x16.s`. The
+32×32 variant in `crates/nc-dsp/src/codec_txfm/neon_inverse32.rs` follows
+`ihevc_itrans_recon_32x32.s` in the same directory. The shared 10-bit HEVC and VVC luma
+interpolation in `crates/nc-dsp/src/high_depth/luma_mc_neon.rs` follows the
+NEON row schedules in `common/arm/ihevc_hbd_inter_pred_filters_neon_intr.c`.
+The Apache License, Version 2.0 is at
+https://www.apache.org/licenses/LICENSE-2.0.
+The shared HEVC/VVC SAO edge application in `crates/nc-dsp/src/sao`
+adapts the signed byte table, packed word offsets, and vertical
+sign reuse from `common/arm/ihevc_hbd_sao_neon_intr.c` and
+`common/arm64/ihevc_sao_edge_offset_class1.s`.
+
 
 ## SVT-AV1 — BSD-3-Clause-Clear
 
@@ -310,10 +393,23 @@ Ideas only, reimplemented (no code copied):
 AV1 film-grain row scaling, chroma indexing and overlap arithmetic in
 `nc-dsp/src/av1_film_grain/kernels` are independently reimplemented from
 dav1d 1.5.4 `src/filmgrain_tmpl.c` (2018–2025 VideoLAN and dav1d authors).
-The SIMD implementation uses our shared lane framework.
+The SIMD implementation uses our shared lane framework. The template
+generation in `crates/nc-dsp/src/av1_film_grain/mod.rs` follows dav1d
+1.5.4 `src/x86/filmgrain_avx2.asm` by batching successive Gaussian indices
+and keeping the causal autoregression samples in a rolling window.
+The high-depth luma block application in
+`crates/nc-dsp/src/av1_film_grain/kernels/high_x86_blocks.rs` follows the
+template addressing and overlap schedule in dav1d 1.5.4
+`src/x86/filmgrain16_avx2.asm` and `src/x86/filmgrain16_avx512.asm`.
 
 Copyright (c) 2018, VideoLAN and dav1d authors. All rights reserved.
 Source: https://code.videolan.org/videolan/dav1d
+The wide H-only AV1-family AVX-512 ICL interpolation in
+`crates/nc-dsp/src/mc/av1_avx512.rs` follows the shared byte gathers,
+four-tap dot products and pack-first rounding in dav1d 1.5.4
+`src/x86/mc_avx512.asm` (`PUT_8TAP_H` and `PREP_8TAP_H`,
+BSD-2-Clause).
+
 The AV1 AVX2 fused warp module (`crates/nc-dsp/src/av1_mc/warp_avx2/fused.rs`)
 ports the packed-byte vertical transpose, alternating row pairs, scalar phase
 addressing and register schedule of `src/x86/mc_avx2.asm`
@@ -324,6 +420,9 @@ The byte-pair AVX2 interpolation rows in
 `crates/nc-dsp/src/mc/avx2_byte_dot.rs` retain the schedule of dav1d's
 `put_8tap` and `prep_8tap` in `src/x86/mc_avx2.asm`, shared by AV1,
 HEVC, VVC and VP9 with codec-specific rounding.
+The shared wide vertical pass in `crates/nc-dsp/src/mc/` also follows
+the rolling adjacent-row interleaves in dav1d 1.5.4's
+`src/x86/mc_avx2.asm` and `src/x86/mc_avx512.asm` (BSD-2-Clause).
 
 The AV1 self-guided stripe (`crates/nc-dsp/src/av1_restoration/sgr_stripe.rs`,
 its AVX2 arithmetic in `sgr_avx2.rs`) ports dav1d 1.5.4
@@ -336,6 +435,9 @@ difference, over our padded stripe window. Its NEON arithmetic
 `looprestoration_common.S` (`sgr_box35_row_h_8bpc_neon`'s `ext` taps and
 widening sums, `sgr_box5_vert_neon`'s saturating `z` and table lookup of
 `x` in place of a division).
+The Ice Lake variant (`sgr_avx2/icl.rs`) follows
+`src/x86/looprestoration_avx512.asm` for VBMI factor lookup, VNNI
+sum-of-squares accumulation and sixteen-lane projection.
 
 The AV1 AVX2 filter intra patches (`crates/nc-dsp/src/av1_intra/avx2.rs`,
 `filter_patches`) follow the byte-pair multiply-adds of `ipred_filter_8bpc`
@@ -386,9 +488,10 @@ and dav1d authors; Copyright © 2018 Two Orioles, LLC.
 
 The shared eight-tap NEON motion-compensation family
 (`crates/nc-dsp/src/mc/av1_neon.rs`, `av1_neon/horizontal_dot.rs`,
-`av1_neon/vertical_dot.rs`, `neon_dotprod.rs`) reimplements dav1d 1.5.4
+`horizontal_i8mm.rs`, `av1_neon/vertical_dot.rs`, `neon_dotprod.rs`) reimplements dav1d 1.5.4
 `src/arm/64/mc_dotprod.S` and `src/arm/64/mc.S`: packed signed-byte
-horizontal dot products with shared shuffles and folded rounding, transposed
+horizontal dot products with shared shuffles and folded rounding, six-tap
+I8MM horizontal rows using two USMMLA instructions, transposed
 four-row vertical dot products with rolling table updates, and horizontal
 i16 rows accumulated vertically. The same passes serve AV1, HEVC and VVC
 with their own coefficients and rounding. VP9 shares the horizontal
@@ -437,6 +540,8 @@ The AVX2 schedule combines signed byte constraints with paired weighting
 and rounded-high pixel adjustment. The AVX512ICL schedule selects four taps
 per pixel from 8x8 register tables, shifts unsigned byte magnitudes with
 GFNI, and accumulates them with signed weights through VNNI dot products.
+The byte border filter uses the same reference's BITALG availability masks.
+The 8×8 border loads a single twelve-column halo and shares it across quarters.
 Source storage, exact-size row loads and scalar equations use nanocodec's
 shared family contracts. The GFNI matrix builder is also shared with loop
 filters (`simd/gfni.rs`). The full dav1d notice is above and in
@@ -544,7 +649,8 @@ Storsjo, Janne Grunau):
   narrow blocks), 8x8 affine warp, saturating `adds_i16` compound average, and
   shared `u8`/`u16` distance, difference-weighted mask, wedge/mask, inter-intra
   and OBMC blends (`src/mc_tmpl.c`, `src/x86/mc16_avx2.asm`,
-  `src/x86/mc16_avx512.asm`, `src/arm/64/mc16.S`).
+  `src/x86/mc16_avx512.asm`, `src/arm/64/mc16.S`). The SVE2 horizontal eight-tap
+  schedule uses halfword dot products following `src/arm/64/mc16_sve.S`.
 - `src/av1_inverse/high_simd.rs` and `src/av1_inverse/generic.rs`: 10- and
   12-bit SIMD inverse transforms (`I32Lanes` and guarded 10-bit `NarrowPixel`),
   DC-only `eob == 1` fast paths and EOB-bounded row/column sub-band pruning
@@ -564,10 +670,20 @@ Storsjo, Janne Grunau):
   (`pmulhrsw`/`sqrdmulh`) predictors (`src/ipred_tmpl.c`,
   `src/x86/ipred16_avx2.asm`, `src/x86/ipred16_avx512.asm`,
   `src/arm/64/ipred16.S`).
+- `src/cdef/avx512_high4.rs`: paired near and far word taps, two-table
+  permutes and signed multiply-accumulate for 4×4 edge CDEF from
+  `src/x86/cdef16_avx512.asm`.
 - `src/av1_film_grain/high_simd.rs`: 10- and 12-bit interpolated Q15 lookup,
   luma/chroma row synthesis and overlap blending (`src/fg_apply_tmpl.c`,
   `src/x86/filmgrain16_avx2.asm`, `src/x86/filmgrain16_avx512.asm`,
   `src/arm/64/filmgrain16.S`).
+- `src/av1_film_grain/kernels/high_sve2.S`: halfword gathers for the
+  high-depth luma scaling lookup in dav1d's `src/arm/64/filmgrain16.S`
+  application schedule.
+- `src/av1_film_grain/kernels/avx512.rs`: 8-bit two-table byte lookup,
+  paired luma block rows, grain overlap and chroma scaling indices from
+  `src/x86/filmgrain_avx512.asm`. The shared block schedule and NEON
+  application use `src/arm/64/filmgrain.S` and `src/arm/filmgrain.h`.
 
 The browser SIMD128 extensions to `av1_mc/high_mc.rs`, `av1_mc/high_blend.rs`,
 `av1_inverse/high_simd.rs`, `av1_restoration/high_lr.rs`, `deblock/av1_high.rs`
@@ -585,11 +701,19 @@ dav1d 1.5.4 `src/arm/64/cdef.S` (Copyright 2018 VideoLAN/dav1d authors,
 2019 Martin Storsjo) and `cdef_tmpl.S` (2020 Martin Storsjo), BSD-2-Clause:
 compact 16/8-stride padding, the byte and unavailable-edge filters, split
 byte accumulators with halving rounding, and the one-pass direction sums.
-The existing scalar reference and AV1/AV2 shared dispatch are retained.
+The existing scalar reference and AV1/AV2 shared dispatch are retained. The Ice Lake 8×8 interior
+filter also uses dav1d’s shared halo rows for all four quarters.
 
 The AV1 decoder's whole-sample intra block copy in
 `crates/nc-av1/src/decoder/tile/intrabc.rs` follows the direct in-bounds
 prediction path of dav1d 1.5.4 `src/recon_tmpl.c` (`mc`, BSD-2-Clause).
+
+The high-depth AV1 Ice Lake filters in
+`crates/nc-dsp/src/av1_mc/high_mc/{horizontal_icl,vertical_icl,separable_icl}.rs` use word
+dots from dav1d 1.5.4 `src/x86/mc16_avx512.asm` for packed sixteen-wide
+horizontal and vertical pairs, thirty-two-wide rolling vertical windows,
+wide horizontal stripes, and the sixteen- and thirty-two-wide separable
+filters.
 
 ## libyuv — BSD-3-Clause
 
@@ -640,6 +764,15 @@ partition/intra syntax and context evolution checked against
 `nc-dsp/src/vp9_loop_filter/packed/neon.rs` follows the sixteen-line dual
 layout of `vpx_dsp/arm/loopfilter_neon.c` (`vpx_lpf_*_dual_neon`), using
 shared byte-mask arithmetic and paired eight-word smoothing.
+`crates/nc-dsp/src/vp9_mc_simd/vertical_i8mm.rs` uses the sliding
+four-row transpose and merge schedule from
+`vpx_dsp/arm/vpx_convolve8_neon_i8mm.c` at commit
+`0ab8891af8fb3c68f1135f320d551ccc78b8a253`. It retains full-width
+accumulators for the unscaled coefficients and exact-size row loads.
+`crates/nc-dsp/src/vp9_mc_high/sve2.rs` follows the four-row SVE2
+vertical schedule in `vpx_dsp/arm/highbd_vpx_convolve8_sve2.c` at commit
+`98a119c2c67d41f6354281f2cb719c8229c30601`. It uses fixed-size transposes
+and stores within the existing VP9 clipping and averaging contract.
 `tools/codegen/gen_vp9_bool_vector.py` compiles original upstream C routines
 as a temporary external oracle; the resulting test vector is retained.
 `motion.rs` reimplements default-context motion-vector difference coding from
@@ -668,7 +801,8 @@ transform + add (`vp9_inverse/`) follows the eob-class structure of
 `_38`/`_34`/`_135` partial transforms, doubled-cosine `mulhrs` rotations);
 `txfm/sparse_lanes.rs` derives those partial graphs. The AVX2 VP9 vertical
 interpolation (`vp9_mc_simd/avx2.rs`) follows
-`vpx_dsp/x86/vpx_subpixel_8t_intrin_avx2.c` (`vpx_filter_block1d*_v8_avx2`), and
+`vpx_dsp/x86/vpx_subpixel_8t_intrin_avx2.c` (the rolling vertical filters
+and the two-dot `vpx_filter_block1d4_h8_avx2` horizontal filter), and
 the 4-tier high-bit-depth (`u16`, 10- and 12-bit) VP9 kernels in
 `nc-dsp/src/deblock/vp9_high.rs`, `nc-dsp/src/vp9_mc_high.rs` and
 `nc-dsp/src/vp9_inverse/high_simd.rs` follow the transposed vertical-edge
@@ -872,7 +1006,11 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   from `src/decode.c` (`decode_b`'s mask updates, `read_sb_restoration`,
   `read_restoration_info`, `read_wiener_filter`), and
   `crates/nc-dsp/src/av2_dec/gdf.rs` from `src/looprestoration_tmpl.c`
-  (`gdf_prep_c`, `gdf_add_c`); `gdf_tables.rs` is generated from
+  (`gdf_prep_c`, `gdf_add_c`), and its AVX2 preparation kernel in
+  `av2_dec/gdf/avx2.rs` from `src/x86/looprestoration_avx2.asm`
+  (`gdf_prep_8bpc_avx2`, Copyright © 2026, VideoLAN and dav2d authors
+  and Two Orioles, LLC). `av2_dec/gdf/vector8.rs` adapts that schedule to
+  the shared eight-lane kernels. `gdf_tables.rs` is generated from
   `src/gdf_tables.c` by `tools/codegen/gen_av2_gdf_tables.py`;
   `filters/restoration.rs` from `src/lr_apply_tmpl.c`, and
   `crates/nc-dsp/src/av2_dec/wiener.rs` from `src/looprestoration_tmpl.c`
@@ -886,6 +1024,11 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   (`dav2d_apply_grain`); AV2's grain block layout in
   `crates/nc-dsp/src/av1_film_grain/` (`GrainBlocks`) from
   `src/filmgrain_tmpl.c` (`fgy_32x32xn_c`, `fguv_32x32xn_c`).
+
+
+The AV2 secondary transform in `crates/nc-dsp/src/av2_dec/stx/` adapts
+the paired input rows from `src/x86/stx_avx2.asm` and the Ice Lake
+word dot products from `src/x86/stx_avx512.asm`.
 
 ## VVenC — BSD-3-Clause-Clear
 
@@ -1189,6 +1332,8 @@ BSD-2-Clause and AOM Patent License (the libaom notices
 above). Four-wide row packing, exact-size tails and optional prediction/source
 statistics follow our block
 contracts; the scalar reference and NEON/SIMD128 implementations remain independent.
+The AVX2 sixteen-wide variance also follows the same file's
+`variance16_kernel_avx2` memory-operand row inserts and low/high byte pairing.
 
 `crates/nc-dsp/src/sample/avx512.rs` also reviews that file's full-width
 load and widened sum layout. Its pair sums derive from our AVX2 code;
@@ -1225,3 +1370,15 @@ for Open Media. All rights reserved, and specifies BSD-2-Clause and the
 Alliance for Open Media Patent License 1.0. The BSD-2-Clause text is
 reproduced under libaom above. Our implementation retains the shared
 signed sum result and adds a single-row tail for odd block heights.
+
+## rav1e — BSD-2-Clause and Alliance for Open Media Patent License 1.0
+
+Copyright (c) 2019, The rav1e contributors. All rights reserved.
+Source: https://github.com/xiph/rav1e (revision
+`31435de9d76fddd38f6dcc31d4014574cebb2092`).
+Notices: [LICENSE](docs/licenses/rav1e/LICENSE) and
+[PATENTS](docs/licenses/rav1e/PATENTS).
+
+The shared x86 SATD in `crates/nc-dsp/src/pixel/` adapts the packed 4×4
+Hadamard, the 8×8 transform transpose and final absolute-max reduction
+from `src/x86/satd.asm`.

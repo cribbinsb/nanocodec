@@ -133,7 +133,7 @@ impl HevcBackend {
         recon: &Picture,
         mpm: [u8; 3],
         seed: Option<u8>,
-        ranking: Option<&mut Vec<u8>>,
+        ranking: Option<&mut Vec<(u8, f32)>>,
     ) -> (u8, f32) {
         let log2 = log2.min(self.info.max_transform_log2);
         let n = 1usize << log2;
@@ -147,8 +147,6 @@ impl HevcBackend {
         // DC) never needs it, and the scalar transpose of a 32x32 block was
         // the largest part of that path's cost (callgrind, HEVC Fast CBR,
         // docs/analysis/rd-mode-audit-2026-11-19.md).
-        // One source row slice per row, scattered down a column, not a row
-        // lookup per sample.
         let mut src_t_buffer = [0u8; MAX_COEFFS];
         let mut src_t_built = false;
         let sqrt_lambda = self.frame_quantization.sqrt_lambda;
@@ -158,12 +156,7 @@ impl HevcBackend {
             let transposed = search_refs.predict_oriented(&self.dsp, mode, &mut pred);
             let view = PlaneView::new(&pred, n, n, n).expect("prediction covers the block");
             if transposed && !src_t_built {
-                let src_t_block = &mut src_t_buffer[..n * n];
-                for row in 0..n {
-                    for (col, &sample) in src.row(row)[..n].iter().enumerate() {
-                        src_t_block[col * n + row] = sample;
-                    }
-                }
+                nc_dsp::transpose_square(&src, &mut src_t_buffer);
                 src_t_built = true;
             }
             let src_t = PlaneView::new(&src_t_buffer, n, n, n).expect("block buffer");
@@ -172,7 +165,7 @@ impl HevcBackend {
                 + sqrt_lambda * ModeCode::of(mode, mpm).bits()
         };
         let search = match self.slice {
-            SliceKind::Predicted => self.inter_intra,
+            SliceKind::Predicted | SliceKind::Bi => self.inter_intra,
             SliceKind::Intra => self.key_intra,
         };
         if search != InterIntraSearch::Full {
@@ -221,27 +214,56 @@ impl HevcBackend {
                 }
             }
         }
-        let keep = self.intra_rd_candidates;
-        let chosen = if keep > 1 && seed.is_none() && log2 >= LOG2_MIN_RD_TB {
-            let shortlist = nc_encoder::rank_intra(
-                (0..predict::MODES).filter(|&m| tried[usize::from(m)].is_finite()),
-                keep,
-                |m| tried[usize::from(m)],
-            );
-            self.rd_intra_mode(&refs, (&src, n), mpm, &shortlist)
+        let priced = self.intra_rd_candidates > 1 || self.intra_cut().is_active();
+        let chosen = if priced && seed.is_none() && log2 >= LOG2_MIN_RD_TB {
+            self.priced_intra_mode(&refs, (&src, n), mpm, &tried)
         } else {
             (best.1, best.0)
         };
         if let Some(ranking) = ranking {
-            let mut others: Vec<u8> = (0..predict::MODES)
-                .filter(|&m| m != chosen.0 && tried[usize::from(m)].is_finite())
+            let mut others: Vec<(u8, f32)> = (0..predict::MODES)
+                .map(|m| (m, tried[usize::from(m)]))
+                .filter(|&(m, cost)| m != chosen.0 && cost.is_finite())
                 .collect();
-            others.sort_by(|&a, &b| tried[usize::from(a)].total_cmp(&tried[usize::from(b)]));
+            others.sort_by(|a, b| a.1.total_cmp(&b.1));
             ranking.clear();
-            ranking.push(chosen.0);
+            ranking.push((chosen.0, tried[usize::from(chosen.0)]));
             ranking.extend(others);
         }
         chosen
+    }
+
+    /// The staged intra cut of this slice's intra CUs.
+    fn intra_cut(&self) -> nc_encoder::IntraCut {
+        self.intra_stage.cut(self.slice == SliceKind::Intra)
+    }
+
+    /// The luma mode the transform-cost pricing chooses among the modes the
+    /// search `tried` (their SATD + √λ · mode bits; infinite where not
+    /// tried): the `hevc.intra_rd_candidates` cheapest, or the staged
+    /// decision's survivors where its cut is on ([`nc_encoder::IntraStage`];
+    /// a single survivor is taken unpriced). Returns the mode and its SATD
+    /// cost.
+    fn priced_intra_mode(
+        &self,
+        refs: &predict::Refs,
+        (src, n): (&PlaneView<'_>, usize),
+        mpm: [u8; 3],
+        tried: &[f32; predict::MODES as usize],
+    ) -> (u8, f32) {
+        let searched = (0..predict::MODES).filter(|&m| tried[usize::from(m)].is_finite());
+        let cost = |m: u8| tried[usize::from(m)];
+        let cut = self.intra_cut();
+        let shortlist = if cut.is_active() {
+            let all = nc_encoder::rank_intra(searched, usize::from(predict::MODES), cost);
+            cut.survivors(all)
+        } else {
+            nc_encoder::rank_intra(searched, self.intra_rd_candidates, cost)
+        };
+        match shortlist.as_slice() {
+            [only] if cut.is_active() => *only,
+            _ => self.rd_intra_mode(refs, (src, n), mpm, &shortlist),
+        }
     }
 
     /// The luma mode among the SATD-ranked `shortlist` (`hevc.intra_rd_candidates`)
@@ -278,7 +300,7 @@ impl HevcBackend {
     /// Whether P-frame intra CU `block` keeps the DC prediction without a
     /// mode search (`hevc.inter_intra_dc_only`).
     fn inter_intra_dc_only(&self, block: &Block) -> bool {
-        self.slice == SliceKind::Predicted
+        self.slice.is_inter()
             && matches!(self.inter_intra, InterIntraSearch::DcOnly { max_log2, .. } if block.log2_size() <= max_log2)
     }
 
@@ -544,8 +566,8 @@ impl HevcBackend {
         // prediction too: the trials there cost P frames more than the
         // detail they recover (crowd09 QP 42, intra depth 2: P frames
         // +10.9% instructions with trials, +2.0% without).
-        let trials = !dirty_edge
-            && (self.inter_intra == InterIntraSearch::Full || self.slice != SliceKind::Predicted);
+        let trials =
+            !dirty_edge && (self.inter_intra == InterIntraSearch::Full || !self.slice.is_inter());
         let try_quarters = trials && self.tools.intra_nxn && block.log2_size() == LOG2_MIN_CB as u8;
         let try_splits = trials && self.info.intra_transform_depth > 0;
         let costed = try_quarters || try_splits;
@@ -719,15 +741,18 @@ impl HevcBackend {
         // smaller transforms predicted from nearer samples.
         let try_split = tree.try_splits
             && flag_present
-            && self.residual_spread(
-                &source
-                    .plane(PlaneIndex::Y)
-                    .view()
-                    .sub_view(node.x, node.y, n, n)
-                    .expect("block inside the picture"),
-                &PlaneView::new(&pred, n, n, n).expect("prediction covers the block"),
-                n,
-            ) >= self.tools.intra_tu_split_spread;
+            && self
+                .residual_spread(
+                    &source
+                        .plane(PlaneIndex::Y)
+                        .view()
+                        .sub_view(node.x, node.y, n, n)
+                        .expect("block inside the picture"),
+                    &PlaneView::new(&pred, n, n, n).expect("prediction covers the block"),
+                    n,
+                )
+                .0
+                >= self.tools.intra_tu_split_spread;
         let residual = self.code_residual(
             PlaneIndex::Y,
             node.x,

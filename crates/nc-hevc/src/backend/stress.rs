@@ -34,7 +34,9 @@ use crate::mvpred::Motion;
 use crate::predict::{self, CHROMA_DM, ModeCode};
 use crate::sao::{self, BANDS, ComponentSao, CtbSao, MAX_OFFSET, PictureSao, SaoKind, Signal};
 use crate::scan::ScanKind;
-use crate::syntax::{CuKind, IntraLuma, MAX_TUS, PlaneResidual, TransformUnit, TransformUnits};
+use crate::syntax::{
+    AmvpList, CuKind, IntraLuma, MAX_TUS, PlaneResidual, TransformUnit, TransformUnits,
+};
 
 /// `max_transform_hierarchy_depth_inter` / `_intra` of stress streams: the
 /// largest the subset decodes (TUs down to 8x8 in a 32x32 CU, 16 per CU at
@@ -380,7 +382,7 @@ impl HevcBackend {
     ) {
         let predictors = self
             .current
-            .filter(|c| c.of(block, self.active_ref))
+            .get(block, self.active_ref)
             .unwrap_or_else(|| self.predictors(block));
         self.predict_inter_cu(block, mv, reference);
         let (max_log2, depth) = (
@@ -423,16 +425,17 @@ impl HevcBackend {
             });
         }
         let residual = tus.as_slice().iter().any(TransformUnit::coded);
-        let motion = Motion {
-            mv,
-            ref_idx: self.active_ref,
-        };
+        let motion = Motion::uni(mv, self.active_ref);
         let merge_indices: Vec<usize> = (predictors.merge.motions().enumerate())
-            .filter_map(|(i, m)| (m == motion).then_some(i))
+            .filter_map(|(i, m)| (m == motion || m.as_uni() == Some(motion)).then_some(i))
             .collect();
         let rng = self.rng();
+        // A merged unit's motion is its candidate's (both lists of a B
+        // slice's candidate that predicts the same samples).
+        let mut l1 = None;
         let kind = if !merge_indices.is_empty() && !rng.chance(AMVP_ANYWAY_CHANCE) {
             let merge_idx = merge_indices[rng.below(merge_indices.len() as u64) as usize];
+            l1 = predictors.merge.get(merge_idx).l1;
             if residual {
                 CuKind::Merge { merge_idx }
             } else {
@@ -441,10 +444,13 @@ impl HevcBackend {
         } else {
             let mvp_idx = rng.below(predictors.amvp.len() as u64) as usize;
             CuKind::Amvp {
-                mv,
-                ref_idx: (self.reference_list.count() > 1).then_some(self.active_ref),
-                pred: predictors.amvp[mvp_idx],
-                mvp_idx,
+                l0: AmvpList {
+                    mv,
+                    ref_idx: (self.reference_list.count() > 1).then_some(self.active_ref),
+                    pred: predictors.amvp[mvp_idx],
+                    mvp_idx,
+                },
+                l1: None,
             }
         };
         let skip = matches!(kind, CuKind::Skip { .. });
@@ -454,6 +460,7 @@ impl HevcBackend {
                 skip,
                 mv,
                 ref_idx: self.active_ref,
+                l1,
                 ..Cell::default()
             },
             tus.as_slice(),

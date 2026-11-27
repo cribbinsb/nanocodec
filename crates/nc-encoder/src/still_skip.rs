@@ -32,7 +32,7 @@ const TEXTURE_SCALE: f32 = 1.0;
 
 /// What the engine knows about a block it offers for a static skip
 /// ([`crate::CodecBackend::try_static_skip`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct StaticSkipTest {
     /// The stillness detector (`nc_analysis::still`) marks the whole block.
     pub still: bool,
@@ -40,6 +40,12 @@ pub struct StaticSkipTest {
     /// explains (`decision.noise_skip`): the backend should accept it as a
     /// zero-vector skip with no residual whatever its own test says.
     pub within_noise: bool,
+    /// The block belongs to a repeat frame (`hold.code_skip`, `hold.rs`): a
+    /// held frame coded as a copy of its reference. The backend should
+    /// accept it as a zero-vector skip with no residual, in its cheapest
+    /// syntax for that, whatever its own test says; one that cannot code
+    /// such a block declines, and the block is decided as usual.
+    pub repeat: bool,
 }
 
 /// Zero limits of the luma and chroma quantisers of a frame.

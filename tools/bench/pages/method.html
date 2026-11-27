@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec benchmark method</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; }</style>
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="./" aria-current="page">Results</a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="history.html">History</a>
+    <a href="compliance.html">Rate compliance</a>
+    <a href="method.html" aria-current="page">Method</a>
+  </nav>
+  <div class="machine-picker"></div>
+</div>
+<main>
+  <h1>What each view records</h1>
+  <p class="lede">The provenance each benchmark report carries. The procedure itself is docs/benchmark-procedure.md in the repository.</p>
+  <div class="disclaimer results-banner" role="note"></div>
+  <div id="method"></div>
+  <h2>Not carried over from the earlier results pages</h2>
+  <ul class="prose">
+    <li>The earlier pages' figures (an older measurement procedure) are withdrawn and are not shown here.</li>
+    <li>Speed on other machines (Jetson, Zen, Graviton), the browser build and hardware encoders: these reports time one machine.</li>
+    <li>Frames per second: the reports give megapixels per CPU-second over each dataset's own clip sizes.</li>
+    <li>XPSNR, luma-only PSNR, the AOM CTC weighted PSNR and the per-rate-regime BD-J: not in the reports.</li>
+    <li>The Fixed QP standards lens (HM, VTM, the three fixed-QP columns), spatial scalability, history, yardsticks, decoder speed, buffer use and the cost of rate control: not measured by these reports.</li>
+    <li>Per-clip tables, per-class means and AOM-CTC's separate A2 table: the report JSON carries set means only.</li>
+    <li>Command lines per encoder, tool versions and the demo links: the reports carry binaries' hashes; the commands are in the procedure document.</li>
+    <li>Our re-coded share (CBR): not in the report JSON.</li>
+  </ul>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264,
+    Kvazaar and VVenC are its comparison points here. With thanks to all of them.</p>
+</footer>
+<script type="module" src="method.js"></script>
+</body>
+</html>

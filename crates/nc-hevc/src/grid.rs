@@ -13,6 +13,7 @@
 use nc_encoder::{Block, Mv};
 
 use crate::headers::{LOG2_CTB, LOG2_MIN_CB};
+use crate::mvpred::{ListMotion, Motion};
 
 /// log2 of the minimum transform block (4x4), the unit of the z-scan order.
 const LOG2_MIN_TB: usize = 2;
@@ -32,11 +33,14 @@ pub struct Cell {
     pub intra_modes: [u8; 4],
     /// The CU covering the cell is skipped (`cu_skip_flag`).
     pub skip: bool,
-    /// Motion vector of the (single) prediction unit, inter CUs only.
+    /// List 0's motion vector of the (single) prediction unit, inter CUs
+    /// only.
     pub mv: Mv,
     /// `ref_idx_l0` of that prediction unit: 0 for the previous picture, 1
     /// for the second reference (`refs.second`) on slices that have one.
     pub ref_idx: u8,
+    /// List 1's motion of a bi-predicted prediction unit (B slices).
+    pub l1: Option<ListMotion>,
     /// `CtDepth` of the covering CU.
     pub depth: u8,
     /// The luma transform block covering the cell has coefficients.
@@ -51,6 +55,16 @@ pub struct Cell {
 }
 
 impl Cell {
+    /// The motion of the (inter) prediction unit covering the cell.
+    #[must_use]
+    pub fn motion(&self) -> Motion {
+        Motion {
+            mv: self.mv,
+            ref_idx: self.ref_idx,
+            l1: self.l1,
+        }
+    }
+
     /// The luma intra mode at luma sample `(x, y)` of this cell.
     #[must_use]
     pub fn intra_mode_at(&self, x: usize, y: usize) -> u8 {
@@ -121,6 +135,23 @@ impl Grid {
             width,
             height,
             ctb_cols: width.div_ceil(1 << LOG2_CTB),
+        }
+    }
+
+    /// The share of the picture's inter area bi-predicted with two distinct
+    /// halves (B slices; a candidate's equal halves predict as one).
+    #[must_use]
+    pub fn bi_share(&self) -> f32 {
+        let inter = self.cells.iter().filter(|c| !c.intra);
+        let (mut bi, mut all) = (0usize, 0usize);
+        for cell in inter {
+            all += 1;
+            bi += usize::from(cell.motion().as_uni().is_none());
+        }
+        if all == 0 {
+            0.0
+        } else {
+            bi as f32 / all as f32
         }
     }
 

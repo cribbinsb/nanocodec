@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
-use nc_common::{BitDepths, Picture, PlaneIndex, ShownPicture};
+use nc_common::{BitDepths, Picture, PlaneIndex};
 use nc_dsp::Dsp;
 
 use super::cabac::Cabac;
@@ -73,22 +73,6 @@ pub(super) struct Visible<T: H264Sample> {
     pub origin: (usize, usize),
     /// Luma size of the cropping window.
     pub size: (usize, usize),
-}
-
-impl<T: H264Sample> Visible<T> {
-    pub fn view(&self) -> Option<ShownPicture<'_, T>> {
-        ShownPicture::window(&self.picture, self.origin, self.size)
-    }
-
-    /// The window copied into a picture from `pool`.
-    pub fn copy(&self, pool: &mut PicturePool<T>) -> Result<Picture<T>> {
-        let view = self
-            .view()
-            .ok_or(DecodeError::Malformed("frame cropping window"))?;
-        let mut picture = pool.take(view.width(), view.height(), 0)?;
-        view.copy_to(&mut picture);
-        Ok(picture)
-    }
 }
 
 /// A finished picture and what its output order depends on.
@@ -455,9 +439,7 @@ impl<T: H264Sample> Core<T> {
             },
             poc: output_poc,
             new_sequence: header.idr || reset,
-            reorder_depth: sps
-                .max_num_reorder_frames
-                .map_or_else(|| sps.dpb_frames(), |frames| frames as usize),
+            reorder_depth: sps.reorder_frames(),
             depths: sps.depths,
         })
     }

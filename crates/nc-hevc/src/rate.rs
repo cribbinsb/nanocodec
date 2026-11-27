@@ -14,11 +14,17 @@ use crate::cabac::{BinSink, Context};
 /// Context variables: `(pStateIdx << 1) | valMps` for 64 states.
 const CONTEXT_VALUES: usize = 128;
 
-/// Bits of each bin value in each context state.
+/// Rate and next context of each bin value in each context state.
 #[derive(Debug, Clone)]
 pub struct BinCosts {
-    /// `[context value][bin]`.
-    bits: [[f32; 2]; CONTEXT_VALUES],
+    /// Indexed by the packed context state and bin value.
+    bins: [PricedBin; CONTEXT_VALUES * 2],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PricedBin {
+    bits: f32,
+    next: Context,
 }
 
 impl BinCosts {
@@ -26,9 +32,15 @@ impl BinCosts {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            bits: std::array::from_fn(|value| {
-                let ctx = Context(value as u8);
-                [ctx.bits(false), ctx.bits(true)]
+            bins: std::array::from_fn(|index| {
+                let ctx = Context((index >> 1) as u8);
+                let bin = index & 1 != 0;
+                let mut next = ctx;
+                next.update(bin);
+                PricedBin {
+                    bits: ctx.bits(bin),
+                    next,
+                }
             }),
         }
     }
@@ -36,7 +48,13 @@ impl BinCosts {
     /// Bits of `bin` in `ctx`.
     #[must_use]
     pub fn bin(&self, ctx: Context, bin: bool) -> f32 {
-        self.bits[usize::from(ctx.0)][usize::from(bin)]
+        self.priced_bin(ctx, bin).bits
+    }
+
+    #[inline]
+    fn priced_bin(&self, ctx: Context, bin: bool) -> PricedBin {
+        let index = (ctx.0 << 1) | u8::from(bin);
+        self.bins[usize::from(index)]
     }
 }
 
@@ -64,8 +82,9 @@ impl<'a> BitEstimator<'a> {
 
 impl BinSink for BitEstimator<'_> {
     fn encode_bin(&mut self, ctx: &mut Context, bin: bool) {
-        self.bits += self.costs.bin(*ctx, bin);
-        ctx.update(bin);
+        let priced = self.costs.priced_bin(*ctx, bin);
+        self.bits += priced.bits;
+        *ctx = priced.next;
     }
 
     fn encode_bypass(&mut self, _value: u32, count: u32) {
@@ -80,6 +99,23 @@ mod tests {
     use crate::contexts::{Contexts, SliceKind};
     use crate::residual::write_residual;
     use crate::scan::{ScanKind, Scans, coded_sub_blocks};
+
+    #[test]
+    fn priced_bins_match_the_cabac_state_machine() {
+        let costs = BinCosts::new();
+        for state in 0..CONTEXT_VALUES as u8 {
+            for bin in [false, true] {
+                let mut actual = Context(state);
+                let bits = actual.bits(bin);
+                let mut expected = actual;
+                expected.update(bin);
+                let mut estimator = BitEstimator::new(&costs);
+                estimator.encode_bin(&mut actual, bin);
+                assert_eq!(estimator.bits.to_bits(), bits.to_bits());
+                assert_eq!(actual, expected);
+            }
+        }
+    }
 
     /// The estimate of a long residual sequence tracks the bits the
     /// arithmetic coder actually spends on it.

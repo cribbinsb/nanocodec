@@ -204,7 +204,7 @@ impl Vp9Backend {
             } else {
                 &transform::ZERO_LEVELS[..area]
             };
-            sse += transform::coefficient_sse(tx, coefficients, levels, steps);
+            sse += transform::coefficient_sse(tx, coefficients, nonzero.then_some(levels), steps);
             if nonzero {
                 coded = true;
                 let eob = coeff::end_of_block(&self.dsp, levels, tx, ty);

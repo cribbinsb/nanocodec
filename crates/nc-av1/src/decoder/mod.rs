@@ -56,7 +56,7 @@ use std::rc::Rc;
 
 mod availability;
 mod block_info;
-mod block_size;
+use crate::block_size;
 mod cdef;
 mod cdf;
 mod coefficients;

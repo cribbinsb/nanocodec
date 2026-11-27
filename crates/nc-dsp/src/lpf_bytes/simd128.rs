@@ -5,8 +5,8 @@ use crate::simd::simd128::relaxed::{q15_mul_round, select_i16, swizzle_in_bounds
 use core::arch::wasm32::{
     i8x16_add_sat, i8x16_bitmask, i8x16_eq, i8x16_shr, i8x16_shuffle, i8x16_sub_sat, i16x8_add,
     i16x8_extend_low_u8x16, i16x8_shr, i16x8_shuffle, i16x8_splat, i16x8_sub, i32x4_shuffle,
-    i64x2_shuffle, u8x16_add_sat, u8x16_max, u8x16_narrow_i16x8, u8x16_shr, u8x16_splat,
-    u8x16_sub_sat, v128, v128_and, v128_load64_zero, v128_store64_lane, v128_xor,
+    i64x2_shuffle, u8x16_add_sat, u8x16_max, u8x16_narrow_i16x8, u8x16_splat, u8x16_sub_sat,
+    u16x8_shr, v128, v128_and, v128_load64_zero, v128_store64_lane, v128_xor,
 };
 use core::arch::wasm32::{
     i16x8_abs, i16x8_eq, i16x8_gt, i16x8_max, i16x8_min, i16x8_mul, u32x4, v128_andnot,
@@ -87,7 +87,9 @@ impl Bytes for B {
     }
     #[inline(always)]
     fn shr<const N: i32>(self) -> Self {
-        Self(u8x16_shr(self.0, N as u32))
+        // Masked 16-bit shift avoids V8's widened byte-shift lowering (2 ops vs 6).
+        let mask = u8x16_splat((u16::from(u8::MAX) >> N) as u8);
+        Self(v128_and(u16x8_shr(self.0, N as u32), mask))
     }
     #[inline(always)]
     fn signed_shr<const N: i32>(self) -> Self {

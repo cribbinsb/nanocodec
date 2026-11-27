@@ -223,7 +223,7 @@ impl TrellisQuantizer {
     /// entry `levels` holds the plain quantiser's raster levels (rounding
     /// below half a step), some nonzero; the search spans their end of
     /// block, with candidates around each level rounded to the nearest.
-    /// Returns whether any level is left.
+    /// Returns the new end of block.
     pub(crate) fn quantize(
         &mut self,
         dsp: &Dsp,
@@ -231,14 +231,14 @@ impl TrellisQuantizer {
         coefficients: &[i16],
         steps: Steps,
         (lambda, max_states): (f32, usize),
-        levels: &mut [i32],
-    ) -> bool {
+        (levels, plain_eob): (&mut [i32], Option<usize>),
+    ) -> usize {
         let tx = model.tx;
         let shift = tx.dequant_shift();
         // Coefficients are 8x orthonormal (32x32: 4x, `coefficient_sse`).
         let scale_log2 = if tx == TxSize::Tx32 { 2 } else { 3 };
         let to_sse = 1.0 / f64::from(1_u32 << (2 * scale_log2));
-        let eob = model.order.end_of_block(dsp, levels);
+        let eob = plain_eob.unwrap_or_else(|| model.order.end_of_block(dsp, levels));
         let scan = &model.order.scan[..eob];
         self.candidates.clear();
         self.candidates.extend(scan.iter().map(|&p| {
@@ -252,21 +252,19 @@ impl TrellisQuantizer {
             })
         }));
         self.chosen.resize(eob, 0);
-        self.search.quantize(
+        let coded = self.search.quantize(
             model,
             &self.candidates,
             lambda,
             max_states,
             &mut self.chosen,
         );
-        let mut any = false;
         for (&p, &level) in scan.iter().zip(&self.chosen) {
             let p = usize::from(p);
             let level = level as i32;
             levels[p] = if coefficients[p] < 0 { -level } else { level };
-            any |= level != 0;
         }
-        any
+        coded
     }
 }
 

@@ -1,0 +1,1417 @@
+{
+ "codec": "h264",
+ "pkg": "pkg",
+ "manifest": "h264_conformance.json",
+ "manifest_streams": 190,
+ "compared": 113,
+ "passed": 108,
+ "deep_compared": 7,
+ "deep_passed": 7,
+ "required_failing": 0,
+ "skipped": [
+  {
+   "name": "brcm_freh10",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "brcm_freh11",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "brcm_freh4",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "brcm_freh5",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "brcm_freh6",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cabac_mot_fld0_full",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cabac_mot_mbaff0_full",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cabac_mot_picaff0_full",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CABREF3_Sand_D",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAFI1_SVA_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMA1_Sony_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMA1_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cama1_vtc_c",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cama2_vtc_b",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMA3_Sand_E",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cama3_vtc_b",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMACI3_Sony_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMANL1_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMANL2_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMANL3_Sand_E",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMASL3_Sony_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMP_MOT_MBAFF_L30",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAMP_MOT_MBAFF_L31",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CANLMA2_Sony_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CANLMA3_Sony_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAPA1_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CAPAMA3_Sand_F",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cavlc_mot_fld0_full_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cavlc_mot_mbaff0_full_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "cavlc_mot_picaff0_full_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVCANLMA2_Sony_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVFI1_Sony_D",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVFI1_SVA_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVFI2_Sony_H",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVFI2_SVA_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMA1_Sony_D",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMA1_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMANL1_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMANL2_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMAPAQP3_Sony_E",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMAQP2_Sony_G",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMAQP3_Sony_D",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMP_MOT_FLD_L30_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVMP_MOT_FRM_L31_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVNLFI1_Sony_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVNLFI2_Sony_H",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "CVPA1_TOSHIBA_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "FI1_Sony_E",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "freh7_b",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "FREXT01_JVC_D",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "FREXT02_JVC_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "FRExt2_Panasonic_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "FRExt4_Panasonic_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HCAFF1_HHI_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HCAMFF1_HHI_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HCHP3_HHI_A",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HPCAFL_BRCM_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HPCAFLNL_BRCM_C",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HPCAMAPALQ_BRCM_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HPCAMOLQ_BRCM_B",
+   "chroma_format": "4:0:0",
+   "scan": "progressive"
+  },
+  {
+   "name": "HPCVFL_BRCM_A",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HPCVFLNL_BRCM_A",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HPCVMOLQ_BRCM_B",
+   "chroma_format": "4:0:0",
+   "scan": "progressive"
+  },
+  {
+   "name": "HVLCFI0_Sony_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HVLCMFF0_Sony_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "HVLCPFF0_Sony_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "MR6_BT_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "MR7_BT_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "MR8_BT_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "MR9_BT_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "PPH10I6_Panasonic_A",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "PPH10I7_Panasonic_A",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "Sharp_MP_Field_1_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "Sharp_MP_Field_2_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "Sharp_MP_Field_3_B",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "Sharp_MP_PAFF_1r2",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  },
+  {
+   "name": "Sharp_MP_PAFF_2r",
+   "chroma_format": "4:2:0",
+   "scan": "interlaced"
+  }
+ ],
+ "streams": {
+  "alphaconformanceG": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AUD_MW_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BA1_FT_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BA1_Sony_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BA2_Sony_F": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BA3_SVA_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Extended",
+   "required": true,
+   "problem": null
+  },
+  "BA_MW_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BAMQ1_JVC_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BAMQ2_JVC_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BANM_MW_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "BASQP1_Sony_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "brcm_freh3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "brcm_freh8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "brcm_freh9": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "CABA1_Sony_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABA1_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABA2_Sony_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABA2_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABA3_Sony_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABA3_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABA3_TOSHIBA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "cabac_mot_frm0_full": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABACI3_Sony_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABAST3_Sony_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CABASTBR3_Sony_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CACQP3_Sony_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL1_Sony_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL1_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL1_TOSHIBA_G": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL2_Sony_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL2_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL3_Sony_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL3_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CANL4_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAPCM1_Sand_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAPCMNL1_Sand_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAPM3_Sony_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAQP1_Sony_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "cavlc_mot_frm0_full_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAWP1_TOSHIBA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAWP5_TOSHIBA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CI1_FT_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "CI_MW_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "CVBS3_Sony_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVFC1_Sony_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "CVPCMNL1_SVA_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVPCMNL2_SVA_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVSE2_Sony_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "CVSE3_Sony_H": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVSEFDFT3_Sony_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVWP1_TOSHIBA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVWP2_TOSHIBA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVWP3_TOSHIBA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CVWP5_TOSHIBA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "FM1_BT_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Baseline",
+   "required": false,
+   "problem": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 400 pictures"
+  },
+  "FM1_FT_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Baseline",
+   "required": false,
+   "problem": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 119 of 300 pictures"
+  },
+  "FM2_SVA_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Baseline",
+   "required": false,
+   "problem": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 17 pictures"
+  },
+  "FREH10-1": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "High 10",
+   "required": true,
+   "problem": null
+  },
+  "FREH10-2": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "High 10",
+   "required": true,
+   "problem": null
+  },
+  "freh12_b": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "freh1_b": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "freh2_b": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "FRExt1_Panasonic_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "FRExt3_Panasonic_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "FRExt_MMCO4_Sony_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HCAFR1_HHI_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HCAFR2_HHI_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HCAFR3_HHI_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HCAFR4_HHI_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HCBP1_HHI_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "HCBP2_HHI_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "HCHP1_HHI_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HCHP2_HHI_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HCMP1_HHI_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "HPCA_BRCM_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HPCADQ_BRCM_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HPCALQ_BRCM_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HPCANL_BRCM_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HPCAQ2LQ_BRCM_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HPCV_BRCM_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "HPCVNL_BRCM_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "High",
+   "required": true,
+   "problem": null
+  },
+  "LS_SVA_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MIDR_MW_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MPS_MW_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MR1_BT_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MR1_MW_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MR2_MW_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MR2_TANDBERG_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MR3_TANDBERG_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MR4_TANDBERG_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MR5_TANDBERG_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Baseline",
+   "required": true,
+   "problem": null
+  },
+  "MV1_BRCM_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "NL1_Sony_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "NL2_Sony_H": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "NL3_SVA_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "NLMQ1_JVC_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "NLMQ2_JVC_C": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "NRF_MW_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "PPH10I1_Panasonic_A": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "High 10 Intra",
+   "required": true,
+   "problem": null
+  },
+  "PPH10I2_Panasonic_A": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "High 10 Intra",
+   "required": true,
+   "problem": null
+  },
+  "PPH10I3_Panasonic_A": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "High 10 Intra",
+   "required": true,
+   "problem": null
+  },
+  "PPH10I4_Panasonic_A": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "High 10 Intra",
+   "required": true,
+   "problem": null
+  },
+  "PPH10I5_Panasonic_A": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "High 10 Intra",
+   "required": true,
+   "problem": null
+  },
+  "SL1_SVA_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SP1_BT_A": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Extended",
+   "required": false,
+   "problem": "corrupt: unsupported bitstream: H264 SP/SI slices after 6 of 400 pictures"
+  },
+  "sp2_bt_b": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Extended",
+   "required": false,
+   "problem": "corrupt: unsupported bitstream: H264 SP/SI slices after 10 of 400 pictures"
+  },
+  "SVA_BA1_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "SVA_BA2_D": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "SVA_Base_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "SVA_CL1_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "SVA_FM1_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "SVA_NL1_B": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  },
+  "SVA_NL2_E": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Constrained Baseline",
+   "required": true,
+   "problem": null
+  }
+ }
+}

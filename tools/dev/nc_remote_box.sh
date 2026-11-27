@@ -4,8 +4,9 @@
 #   1. the hard lifetime (`shutdown -h +LIFETIME_MINUTES`; the instance's
 #      shutdown behaviour is terminate);
 #   2. the idle watchdog: a systemd timer that, once a minute, shuts the box
-#      down when no job slot is held and nothing has touched the activity
-#      file for IDLE_MINUTES (tools/dev/nc_remote.py, "Lifecycle").
+#      down when no job slot is held, no finished job's outputs wait to be
+#      fetched, and nothing has touched the activity file for IDLE_MINUTES
+#      (nc_remote_idle.sh; tools/dev/nc_remote.py, "Lifecycle").
 # nc_remote.py substitutes the @...@ placeholders before launching.
 set -eu
 
@@ -20,21 +21,10 @@ done
 # The idle clock starts at boot.
 install -o ubuntu -g ubuntu -m 644 /dev/null "$BOX/activity"
 
-cat > /usr/local/sbin/ncbox-idle <<'EOF'
-#!/bin/bash
-# Shut the build box down after @IDLE_MINUTES@ min without a job or a sync.
-BOX=/home/ubuntu/ncbox
-limit=$((@IDLE_MINUTES@ * 60))
-for slot in "$BOX"/slots/*; do
-  flock -n "$slot" true || exit 0   # a job holds this slot
-done
-last=$(stat -c %Y "$BOX/activity" 2>/dev/null || echo 0)
-if [ $(( $(date +%s) - last )) -ge "$limit" ]; then
-  logger -t ncbox-idle "idle for @IDLE_MINUTES@ min: shutting down"
-  rm -rf -- /home/ubuntu/nanocodec-data/clips   # clips never outlive their use
-  shutdown -h now
-fi
-EOF
+# The idle check itself: nc_remote_idle.sh, substituted here.
+cat > /usr/local/sbin/ncbox-idle <<'NCBOX_IDLE_EOF'
+@IDLE_SCRIPT@
+NCBOX_IDLE_EOF
 chmod 755 /usr/local/sbin/ncbox-idle
 
 cat > /etc/systemd/system/ncbox-idle.service <<'EOF'

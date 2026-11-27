@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,8 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 CLIP_DIR = REPO / "web/clips"
-MOT_ROOT = Path("/mldata/downloaded_datasets/other")
+# NC_MOT_ROOT: a copy of the frames with the same layout (e.g. on the build box).
+MOT_ROOT = Path(os.environ.get("NC_MOT_ROOT", "/mldata/downloaded_datasets/other"))
 # The two variants every clip ships in (web/clips.js VARIANT_HEIGHTS).
 VARIANT_HEIGHTS = (360, 720)
 # Every clip plays each source frame once at the page's 30 Hz timeline
@@ -49,10 +51,16 @@ class MotClip:
     crf: tuple[int, int]  # 360p, 720p
 
 
+# The CRFs keep every pre-encoded stream's target at most a third of its file's bitrate
+# and the file at least twice a live view's default 300 kbps (the project codes a clip
+# at most at half its source rate; tools/web/recut-clips.py, web/tests/clips.test.js):
+# 2026-11-22, each the highest CRF reaching 3x the clip's highest stream rate at that
+# height (night crowd 360p 250k, 720p 800k; dense crowd 720p 1500k; mall walk 720p
+# 1000k); the others keep the set's 25 / 28.
 CLIPS = [
-    MotClip("mot17-mall-walk", "MOT17/train/MOT17-11", 601, 300, (25, 28)),
-    MotClip("mot17-night-crowd", "MOT17/train/MOT17-04", 211, 300, (25, 28)),
-    MotClip("mot20-dense-crowd", "MOT20/train/MOT20-05", 2301, 300, (25, 28)),
+    MotClip("mot17-mall-walk", "MOT17/train/MOT17-11", 601, 300, (25, 24)),
+    MotClip("mot17-night-crowd", "MOT17/train/MOT17-04", 211, 300, (20, 21)),
+    MotClip("mot20-dense-crowd", "MOT20/train/MOT20-05", 2301, 300, (25, 21)),
 ]
 
 

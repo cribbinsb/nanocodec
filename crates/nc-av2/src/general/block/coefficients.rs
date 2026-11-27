@@ -342,43 +342,55 @@ const ONE_D_STRIDE: usize = 32;
 /// An up-right diagonal scan of `w` x `h` (coded, at most 32x32)
 /// coefficients, stored column-major (`x * h + y`): every dav2d `scan_*`
 /// table.
-#[must_use]
-pub fn diagonal_scan(w: usize, h: usize) -> Vec<u16> {
-    let mut scan = Vec::with_capacity(w * h);
-    for diagonal in 0..w + h - 1 {
-        for x in 0..=diagonal {
+const fn diagonal_scan<const N: usize>(w: usize, h: usize) -> [u16; N] {
+    assert!(N == w * h);
+    let mut scan = [0; N];
+    let mut index = 0;
+    let mut diagonal = 0;
+    while diagonal < w + h - 1 {
+        let mut x = diagonal.saturating_sub(h - 1);
+        while x < w && x <= diagonal {
             let y = diagonal - x;
-            if x < w && y < h {
-                scan.push((x * h + y) as u16);
-            }
+            scan[index] = (x * h + y) as u16;
+            index += 1;
+            x += 1;
         }
+        diagonal += 1;
     }
     scan
 }
 
 /// Every coded scan, by log2 width and height (0..=3 each).
-#[derive(Debug, Clone)]
-pub struct Scans([[Vec<u16>; 4]; 4]);
+static SCANS: [[&[u16]; 4]; 4] = [
+    [
+        &diagonal_scan::<16>(4, 4),
+        &diagonal_scan::<32>(4, 8),
+        &diagonal_scan::<64>(4, 16),
+        &diagonal_scan::<128>(4, 32),
+    ],
+    [
+        &diagonal_scan::<32>(8, 4),
+        &diagonal_scan::<64>(8, 8),
+        &diagonal_scan::<128>(8, 16),
+        &diagonal_scan::<256>(8, 32),
+    ],
+    [
+        &diagonal_scan::<64>(16, 4),
+        &diagonal_scan::<128>(16, 8),
+        &diagonal_scan::<256>(16, 16),
+        &diagonal_scan::<512>(16, 32),
+    ],
+    [
+        &diagonal_scan::<128>(32, 4),
+        &diagonal_scan::<256>(32, 8),
+        &diagonal_scan::<512>(32, 16),
+        &diagonal_scan::<1024>(32, 32),
+    ],
+];
 
-impl Default for Scans {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Scans {
-    /// Build every scan.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(std::array::from_fn(|w| {
-            std::array::from_fn(|h| diagonal_scan(4 << w, 4 << h))
-        }))
-    }
-
-    fn of(&self, tx: TxSize) -> &[u16] {
-        let (w, h) = tx.coded();
-        &self.0[usize::from(w)][usize::from(h)]
-    }
+fn scan_for(tx: TxSize) -> &'static [u16] {
+    let (w, h) = tx.coded();
+    SCANS[usize::from(w)][usize::from(h)]
 }
 
 /// The TCQ state after a level (dav2d `tcq_next_state`): bits 1-2 shift
@@ -919,8 +931,7 @@ impl Tile<'_, '_> {
                 }
             }
         };
-        let scans = std::rc::Rc::clone(&self.scans);
-        let scan = scans.of(tx);
+        let scan = scan_for(tx);
         let mut tcq_state = if flags.tcq { i32::MIN } else { TCQ_OFF };
         let mut parity: u32 = if flags.parity { 2 } else { 0 };
         let mut hr_average = 0;
@@ -1316,8 +1327,7 @@ impl Tile<'_, '_> {
         let stride = 1 + (4 << slh);
         let mut levels = std::mem::take(&mut self.levels);
         levels[..stride * ((4 << slw) + 1)].fill(0);
-        let scans = std::rc::Rc::clone(&self.scans);
-        let scan = scans.of(tx);
+        let scan = scan_for(tx);
         let size_context = tx.context().min(2);
         let last = (16 << class_context) - 1;
         let bob = last - i32::from(eob);
@@ -1629,9 +1639,9 @@ mod tests {
     #[test]
     fn scans_match_dav2d() {
         assert_eq!(
-            diagonal_scan(4, 4),
+            diagonal_scan::<16>(4, 4),
             [0, 1, 4, 2, 5, 8, 3, 6, 9, 12, 7, 10, 13, 11, 14, 15]
         );
-        assert_eq!(&diagonal_scan(4, 8)[..8], [0, 1, 8, 2, 9, 16, 3, 10]);
+        assert_eq!(&diagonal_scan::<32>(4, 8)[..8], [0, 1, 8, 2, 9, 16, 3, 10]);
     }
 }

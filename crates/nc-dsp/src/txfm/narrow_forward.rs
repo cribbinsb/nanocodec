@@ -227,9 +227,9 @@ pub(crate) unsafe fn forward<
     }
     let mut buf = [MaybeUninit::<i16>::uninit(); BUFFER_CAPACITY];
     // SAFETY: forwarded contract.
-    let columns = unsafe { column_pass::<V, N, KEEP>(residual, stride, &mut buf) };
+    let columns = unsafe { column_pass::<V, N, KEEP>(residual, stride, &mut buf, None) };
     // SAFETY: forwarded contract.
-    unsafe { row_pass::<V, N, RASTER, KEEP>(columns, out) }
+    unsafe { row_pass::<V, N, RASTER, KEEP>(columns, out, None) }
 }
 
 /// The bounded raster forward (`generic::dct_bounded!`) of a full `N`x`N`
@@ -251,7 +251,7 @@ pub(crate) unsafe fn bounded<V: ForwardWords, const N: usize>(
 ) -> bool {
     let mut buf = [MaybeUninit::<i16>::uninit(); BUFFER_CAPACITY];
     // SAFETY: forwarded contract.
-    let columns = unsafe { column_pass::<V, N, N>(residual, stride, &mut buf) };
+    let columns = unsafe { column_pass::<V, N, N>(residual, stride, &mut buf, None) };
     // Saturating u16 norms: a saturated norm (65535) is above every limit
     // tested here (clamped below it).
     let limit = zero_limit
@@ -269,7 +269,43 @@ pub(crate) unsafe fn bounded<V: ForwardWords, const N: usize>(
         return false;
     }
     // SAFETY: forwarded contract.
-    unsafe { row_pass::<V, N, true, N>(columns, &mut out[..N * N]) };
+    unsafe { row_pass::<V, N, true, N>(columns, &mut out[..N * N], None) };
+    true
+}
+
+/// The same bounded transform for the two eight-lane, 16-point column groups.
+/// Accumulate and reuse the L1 bounds while transposing their outputs.
+///
+/// # Safety
+///
+/// As [`bounded`]. `V` has eight lanes.
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[inline(always)]
+pub(crate) unsafe fn bounded_16<V: ForwardWords>(
+    residual: &[i16],
+    stride: usize,
+    zero_limit: u32,
+    rounding: u32,
+    out: &mut [i16],
+) -> bool {
+    const N: usize = 16;
+    let mut buf = [MaybeUninit::<i16>::uninit(); BUFFER_CAPACITY];
+    let norms = &mut [V::norm_zero(); 2];
+    // SAFETY: forwarded contract.
+    let columns = unsafe { column_pass::<V, N, N>(residual, stride, &mut buf, Some(norms)) };
+    // Saturating u16 norms: a saturated norm (65535) is above every limit
+    // tested here (clamped below it).
+    let limit = zero_limit
+        .saturating_sub(rounding)
+        .min(u32::from(u16::MAX) - 1) as u16;
+    if norms.iter().all(|&norm| V::within_limit(norm, limit)) {
+        return false;
+    }
+    // SAFETY: forwarded contract.
+    unsafe { row_pass::<V, N, true, N>(columns, &mut out[..N * N], Some(norms)) };
     true
 }
 
@@ -284,6 +320,7 @@ unsafe fn column_pass<'buf, V: ForwardWords, const N: usize, const KEEP: usize>(
     residual: &[i16],
     stride: usize,
     buf: &'buf mut [MaybeUninit<i16>; BUFFER_CAPACITY],
+    mut norms: Option<&mut [V::Norm]>,
 ) -> &'buf [i16] {
     assert!(
         matches!(N, 16 | 32 | 64)
@@ -306,6 +343,10 @@ unsafe fn column_pass<'buf, V: ForwardWords, const N: usize, const KEEP: usize>(
             // Row i of the tile: column x + i's outputs k..k + LANES.
             V::transpose(tile);
             for (i, row) in tile.iter().enumerate() {
+                if let Some(norms) = norms.as_deref_mut() {
+                    let norm = &mut norms[k / V::LANES];
+                    *norm = row.accumulate_l1(*norm);
+                }
                 row.store(&mut buf[(x + i) * KEEP + k..]);
             }
         }
@@ -326,6 +367,7 @@ unsafe fn column_pass<'buf, V: ForwardWords, const N: usize, const KEEP: usize>(
 unsafe fn row_pass<V: ForwardWords, const N: usize, const RASTER: bool, const KEEP: usize>(
     buf: &[i16],
     out: &mut [i16],
+    norms: Option<&[V::Norm]>,
 ) -> u32 {
     let coded = kept(N);
     let mut input = [V::splat(0); MAX_POINTS];
@@ -336,7 +378,12 @@ unsafe fn row_pass<V: ForwardWords, const N: usize, const RASTER: bool, const KE
         for (c, column) in input[..N].iter_mut().enumerate() {
             let value = V::load(&buf[c * KEEP + r0..]);
             *column = value;
-            l1 = value.accumulate_l1(l1);
+            if norms.is_none() {
+                l1 = value.accumulate_l1(l1);
+            }
+        }
+        if let Some(norms) = norms {
+            l1 = norms[r0 / V::LANES];
         }
         if !V::within_limit(l1, NARROW_ROW_L1_LIMIT as u16) {
             V::wide_rows::<N, RASTER, KEEP>(buf, r0, out);

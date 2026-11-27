@@ -316,6 +316,35 @@ mod tests {
         // docs/handoff/cheap-rdoq.md).
         expected.set("quant.rd_trim", 1.0);
         expected.set("quant.rd_trim_block", 1.0);
+        // Fast keeps keys without the RD search when the Default adopted it
+        // (2026-11-22); it takes the Default's finer periodic keys since keys are
+        // capped at 1.0 buffers (fast-end, 2026-11-22).
+        expected.set("planner.key_rd_split", 0.0);
+        expected.set("quant.trellis_key", 0.0);
+        // Fast keeps the zero-vector gates' superblock average when the engine
+        // default adopted the noise-relative cells (2026-11-22; not screened).
+        expected.set("analysis.zero_gate_cell", 64.0);
+        // Fast takes period 8 (nceval.train, 2026-11-24) and keeps the old
+        // base boost and start-up cadence medium's fixed-QP profile changed
+        // (2026-11-22; not screened on fast).
+        expected.set("rate.cadence_period", 8.0);
+        expected.set("rate.cadence_base_boost", 3.0);
+        expected.set("rate.cadence_startup_period", 8.0);
+        // Fast's fixed-QP-only cadence (2026-11-24): medium's period 8, base
+        // boost 4 and no start-up cadence, under the fixed-QP profile only.
+        expected.set("fixed_qp.rate.cadence_period", 8.0);
+        expected.set("fixed_qp.rate.cadence_base_boost", 4.0);
+        expected.set("fixed_qp.rate.cadence_startup_period", 0.0);
+        // Fast keeps leaf 1 at fixed QP too (the profile's 2 is medium's, 2026-11-24).
+        expected.set("rate.cadence_leaf_penalty", 1.0);
+        // Fast's fixed-QP second reference and moving-key coarsening (Brief 19, 2026-11-24).
+        expected.set("fixed_qp.structure.unified", 1.0);
+        expected.set("fixed_qp.structure.secondary_min_depth", 0.0);
+        expected.set("fixed_qp.rate.fixed_qp_moving_key", 6.0);
+        // Fast takes the first-key overflow guard (2026-11-24).
+        expected.set("rate.first_key_model", 2.0);
+        // Fast pins in-frame steering off (medium adopted it in Brief 21, 2026-11-24).
+        expected.set("rate.in_frame", 0.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected

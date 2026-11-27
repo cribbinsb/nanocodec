@@ -1,0 +1,17 @@
+# tune-rest (2026-11-23): searched at the rung's front slope (eval/configs/front_k.json), 600 f at keys
+# every 10 s and 5 s, warm-started from the shipped rung. Each term lies between the rung's value
+# and the next slower rung's (docs/handoff/tuning.md "Fast-end joint retune"); about ten terms.
+# decision.exact_rank_margin stays at 0 or >= 0.8 (a margin under 1 skips most exact predictions).
+# Format (nceval.tune_pool): name [low high] [int|log]
+# HEVC medium (k 0.170): an effort split. Medium codes every superblock regular; this lets the
+# lowest-benefit share take light settings between medium's and fast's light values.
+effort.regular_fraction 0.4 1
+effort.light_nonbase_only 0 1 int
+light.planner.lambda_scale 2.58 3.54
+light.planner.split_rate_factor 2.26 2.53
+light.decision.codec_subpel_seed_lambdas 0 0.1
+light.decision.skip_no_refine_lambdas 0 0.5
+light.hevc.early_merge_lambdas 0 0.06
+light.hevc.inter_intra_dc_only 0 1 int
+light.hevc.partial_forward 0 1 int
+light.decision.refine_cheap_vector 0 1 int

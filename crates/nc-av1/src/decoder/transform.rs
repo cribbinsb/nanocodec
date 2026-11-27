@@ -9,49 +9,30 @@
 //! BSD-2-Clause, Copyright (c) 2016, Alliance for Open Media; see
 //! `THIRD_PARTY.md`).
 use super::block_size::BlockSize;
-use nc_dsp::{Av1TxSize, Av1TxType};
+use nc_dsp::Av1TxType;
+
+pub(crate) use crate::tx_size::TxSize;
 
 /// log2 of the smallest transform side (`TX_4X4`).
 const MIN_SIDE_LOG2: u8 = 2;
-/// log2 of the largest coded side: 64-point transforms code 32 coefficients.
-const MAX_CODED_SIDE_LOG2: u8 = 5;
 /// `Tx_Size_Sqr_Up` of `TX_32X32`, log2.
 const SIDE_32_LOG2: u8 = 5;
 /// `Tx_Size_Sqr` of `TX_16X16`, log2.
 const SIDE_16_LOG2: u8 = 4;
-/// Transform areas (samples) above which `dqDenom` doubles (AV1 §7.12.3).
-const DEQUANT_AREA_STEPS: [usize; 2] = [256, 1024];
 /// The coefficient CDF sets indexed by `txSzCtx` (`TX_SIZES`).
 pub(super) const TX_SIZE_CONTEXTS: usize = 5;
-/// The transform-type CDF sizes (`EXT_TX_SIZES`: square 4x4 .. 32x32).
-const EXT_TX_SIZES: u8 = 4;
 /// The largest transform side (64), log2.
 const MAX_SIDE_LOG2: u8 = 6;
 
-/// A transform size (`TX_4X4` .. `TX_64X16`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TxSize(Av1TxSize);
-
+/// The sizes of a block's transforms.
 impl TxSize {
-    /// `TX_4X4`, the only transform of lossless blocks.
-    pub(crate) const TX_4X4: Self = Self(Av1TxSize {
-        width_log2: MIN_SIDE_LOG2,
-        height_log2: MIN_SIDE_LOG2,
-    });
-    /// The `width` x `height` transform (log2 sides), if AV1 has it.
-    pub(crate) fn new(width_log2: u8, height_log2: u8) -> Option<Self> {
-        let size = Av1TxSize {
-            width_log2,
-            height_log2,
-        };
-        size.is_valid().then_some(Self(size))
-    }
     /// `Max_Tx_Size_Rect`: the largest transform of a block (64 at most).
     pub(crate) fn largest(block: BlockSize) -> Self {
-        Self(Av1TxSize {
-            width_log2: block.width_log2().min(MAX_SIDE_LOG2),
-            height_log2: block.height_log2().min(MAX_SIDE_LOG2),
-        })
+        Self::new(
+            block.width_log2().min(MAX_SIDE_LOG2),
+            block.height_log2().min(MAX_SIDE_LOG2),
+        )
+        .expect("a block's largest transform is a transform size")
     }
     /// The chroma (4:2:0) transform of a block (`get_tx_size`): the
     /// largest of its chroma block (`get_plane_residual_size`, at least
@@ -65,83 +46,7 @@ impl TxSize {
             (w, h) if w == MAX_SIDE_LOG2 || h == MAX_SIDE_LOG2 => (SIDE_32_LOG2, SIDE_32_LOG2),
             size => size,
         };
-        Self(Av1TxSize {
-            width_log2: w,
-            height_log2: h,
-        })
-    }
-    /// `Split_Tx_Size`: squares split into four, 2:1 rectangles into two
-    /// squares, 4:1 rectangles into two 2:1 halves. `None` for 4x4.
-    pub(crate) fn split(self) -> Option<Self> {
-        let (w, h) = (self.width_log2(), self.height_log2());
-        let (w, h) = match w.cmp(&h) {
-            std::cmp::Ordering::Equal => (w.checked_sub(1)?, h.checked_sub(1)?),
-            _ if w.abs_diff(h) == 1 => (w.min(h), w.min(h)),
-            std::cmp::Ordering::Greater => (w - 1, h),
-            std::cmp::Ordering::Less => (w, h - 1),
-        };
-        Self::new(w, h)
-    }
-    /// The size as the inverse-transform kernels take it.
-    pub(crate) fn dsp(self) -> Av1TxSize {
-        self.0
-    }
-    pub(crate) fn width_log2(self) -> u8 {
-        self.0.width_log2
-    }
-    pub(crate) fn height_log2(self) -> u8 {
-        self.0.height_log2
-    }
-    pub(crate) fn width(self) -> usize {
-        self.0.width()
-    }
-    pub(crate) fn height(self) -> usize {
-        self.0.height()
-    }
-    /// `Tx_Size_Sqr`: the smaller side, log2.
-    pub(crate) fn square_log2(self) -> u8 {
-        self.0.width_log2.min(self.0.height_log2)
-    }
-    /// `Tx_Size_Sqr_Up`: the larger side, log2.
-    pub(crate) fn square_up_log2(self) -> u8 {
-        self.0.width_log2.max(self.0.height_log2)
-    }
-    /// `txSzCtx` (§5.11.39): the coefficient CDF set, the mean of the
-    /// square sizes below and above, rounded up.
-    pub(crate) fn context(self) -> usize {
-        let sqr = usize::from(self.square_log2() - MIN_SIDE_LOG2);
-        let sqr_up = usize::from(self.square_up_log2() - MIN_SIDE_LOG2);
-        (sqr + sqr_up + 1) >> 1
-    }
-    /// log2 of the coded coefficient columns (the width, capped at 32).
-    pub(crate) fn coded_width_log2(self) -> u8 {
-        self.0.width_log2.min(MAX_CODED_SIDE_LOG2)
-    }
-    /// log2 of the coded coefficient rows (the height, capped at 32).
-    pub(crate) fn coded_height_log2(self) -> u8 {
-        self.0.height_log2.min(MAX_CODED_SIDE_LOG2)
-    }
-    /// Coded coefficients.
-    #[cfg(test)]
-    pub(crate) fn coded_area(self) -> usize {
-        self.0.coded_area()
-    }
-    /// `eobMultisize`: which `eob_pt_*` alphabet codes the end of block
-    /// (0 for 16 coefficients .. 6 for 1024).
-    pub(crate) fn eob_alphabet(self) -> usize {
-        usize::from(self.coded_width_log2() + self.coded_height_log2() - 2 * MIN_SIDE_LOG2)
-    }
-    /// `log2(dqDenom)` (§7.12.3): 1 above 256 samples, 2 above 1024.
-    pub(crate) fn dequant_shift(self) -> u32 {
-        let area = self.width() * self.height();
-        DEQUANT_AREA_STEPS
-            .iter()
-            .map(|&step| u32::from(area > step))
-            .sum()
-    }
-    /// The transform-type CDF size index (`txSzSqr`, 4x4 .. 32x32).
-    fn type_cdf_size(self) -> usize {
-        usize::from(self.square_log2().min(MIN_SIDE_LOG2 + EXT_TX_SIZES - 1) - MIN_SIDE_LOG2)
+        Self::new(w, h).expect("a chroma transform is a transform size")
     }
 }
 
@@ -254,17 +159,6 @@ impl TxClass {
             _ => Self::TwoD,
         }
     }
-}
-
-/// The transform type of an intra block's chroma (`Mode_To_Txfm`, libaom
-/// `intra_mode_to_tx_type`), by `UVMode` (`UV_CFL_PRED` as `DC_PRED`).
-pub(crate) fn intra_mode_tx_type(mode: usize) -> Av1TxType {
-    use Av1TxType::{AdstAdst, AdstDct, DctAdst, DctDct};
-    const BY_MODE: [Av1TxType; 13] = [
-        DctDct, AdstDct, DctAdst, DctDct, AdstAdst, AdstDct, DctAdst, DctAdst, AdstDct, AdstAdst,
-        AdstDct, DctAdst, AdstAdst,
-    ];
-    BY_MODE.get(mode).copied().unwrap_or(DctDct)
 }
 
 #[cfg(test)]

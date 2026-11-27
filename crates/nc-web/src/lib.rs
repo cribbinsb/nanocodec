@@ -10,6 +10,8 @@ mod error_map;
 mod options;
 mod pixels;
 mod source;
+#[cfg(test)]
+mod vvc_corpus_tests;
 
 pub use source::SourceFrame;
 
@@ -912,6 +914,40 @@ impl BrowserDecoder {
         self.last_shown
     }
 
+    /// Show the next picture the decoder has output but not shown yet
+    /// (H.264, HEVC and VVC show in output order, so one packet of a
+    /// stream that reorders can output several pictures, and
+    /// [`Self::finish`] outputs the last ones); `false` when there is none,
+    /// as for the other codecs, which show one picture per packet.
+    /// # Errors
+    /// A deep picture without an even 4:2:0 window.
+    pub fn next_frame(&mut self) -> Result<bool, JsValue> {
+        let shown = match &mut self.inner {
+            DecoderKind::H264(d) => d.next_shown(),
+            DecoderKind::Hevc(d) => d.next_shown(),
+            DecoderKind::Vvc(d) => d.next_shown(),
+            DecoderKind::Av1(_) | DecoderKind::Vp9(_) | DecoderKind::Av2(_) => false,
+        };
+        self.present(Ok(shown)).map_err(|e| js_error(e.to_string()))
+    }
+
+    /// The end of the stream: pictures still held for output order are
+    /// output, for [`Self::next_frame`] to show.
+    /// # Errors
+    /// As [`Self::decode`] for the last picture.
+    pub fn finish(&mut self) -> Result<(), JsValue> {
+        let result = match &mut self.inner {
+            DecoderKind::H264(d) => {
+                d.flush();
+                Ok(())
+            }
+            DecoderKind::Hevc(d) => d.flush(),
+            DecoderKind::Vvc(d) => d.flush(),
+            DecoderKind::Av1(_) | DecoderKind::Vp9(_) | DecoderKind::Av2(_) => Ok(()),
+        };
+        result.map_err(|e| js_error(e.to_string()))
+    }
+
     /// One packet through this codec's decoder.
     fn decode_packet(&mut self, packet: &[u8]) -> Result<(), DecodeError> {
         if packet.len() > MAX_PACKET_BYTES {
@@ -920,52 +956,63 @@ impl BrowserDecoder {
                 "packet exceeds the 16 MiB browser limit",
             ));
         }
-        let (shown, deep) = match &mut self.inner {
-            DecoderKind::H264(d) => (
-                d.decode_shown_any_depth(packet).map(|()| true),
-                d.is_high_depth(),
-            ),
-            DecoderKind::Hevc(d) => (
-                d.decode_shown_any_depth(packet).map(|()| true),
-                d.is_high_depth(),
-            ),
-            DecoderKind::Av1(d) => (d.decode_any_depth(packet), d.is_high_depth()),
-            DecoderKind::Vp9(d) => (d.decode_and_show_any_depth(packet), d.is_high_depth()),
-            DecoderKind::Av2(d) => (d.decode_unit(packet).map(|()| d.next_output()), false),
-            DecoderKind::Vvc(d) => (
-                d.decode_shown_any_depth(packet).map(|()| true),
-                d.is_high_depth(),
-            ),
+        let shown = match &mut self.inner {
+            DecoderKind::H264(d) => d
+                .decode_shown_any_depth(packet)
+                .map(|()| d.shown().is_some() || d.shown_high().is_some()),
+            DecoderKind::Hevc(d) => d
+                .decode_shown_any_depth(packet)
+                .map(|()| d.shown().is_some() || d.shown_high().is_some()),
+            DecoderKind::Av1(d) => d.decode_any_depth(packet),
+            DecoderKind::Vp9(d) => d.decode_and_show_any_depth(packet),
+            DecoderKind::Av2(d) => d.decode_unit(packet).map(|()| d.next_output()),
+            DecoderKind::Vvc(d) => d
+                .decode_shown_any_depth(packet)
+                .map(|()| d.shown().is_some() || d.shown_high().is_some()),
         };
-        self.last_shown = matches!(shown, Ok(true));
-        if self.last_shown {
+        self.present(shown).map(|_| ())
+    }
+
+    /// Make the decoder's shown picture (when `shown` says there is a new
+    /// one) the display's, downshifting a deep one; returns whether it did.
+    fn present(&mut self, shown: Result<bool, DecodeError>) -> Result<bool, DecodeError> {
+        self.last_shown = false;
+        if !matches!(shown, Ok(true)) {
+            return shown;
+        }
+        let deep = match &self.inner {
+            DecoderKind::H264(d) => d.is_high_depth(),
+            DecoderKind::Hevc(d) => d.is_high_depth(),
+            DecoderKind::Av1(d) => d.is_high_depth(),
+            DecoderKind::Vp9(d) => d.is_high_depth(),
+            DecoderKind::Av2(_) => false,
+            DecoderKind::Vvc(d) => d.is_high_depth(),
+        };
+        if deep {
             // A rejected display window/allocation must not advertise a frame.
-            self.last_shown = false;
-            if deep {
-                let (picture, depths) = Self::native_high_shown(&self.inner).ok_or(
-                    DecodeError::Unsupported("deep browser output needs an even 4:2:0 window"),
-                )?;
-                let size = (picture.width(), picture.height());
-                if self
-                    .deep_display
-                    .as_ref()
-                    .is_none_or(|p| (p.width(), p.height()) != size)
-                {
-                    self.deep_display = Some(
-                        Picture::new(size.0, size.1, 0)
-                            .map_err(|_| DecodeError::Unsupported("browser display dimensions"))?,
-                    );
-                }
-                pixels::downshift(
-                    picture,
-                    depths,
-                    self.deep_display.as_mut().expect("allocated display"),
+            let (picture, depths) = Self::native_high_shown(&self.inner).ok_or(
+                DecodeError::Unsupported("deep browser output needs an even 4:2:0 window"),
+            )?;
+            let size = (picture.width(), picture.height());
+            if self
+                .deep_display
+                .as_ref()
+                .is_none_or(|p| (p.width(), p.height()) != size)
+            {
+                self.deep_display = Some(
+                    Picture::new(size.0, size.1, 0)
+                        .map_err(|_| DecodeError::Unsupported("browser display dimensions"))?,
                 );
             }
-            self.display_is_deep = deep;
-            self.last_shown = true;
+            pixels::downshift(
+                picture,
+                depths,
+                self.deep_display.as_mut().expect("allocated display"),
+            );
         }
-        shown.map(|_| ())
+        self.display_is_deep = deep;
+        self.last_shown = true;
+        Ok(true)
     }
 
     /// The latest decoded frame's visible samples.

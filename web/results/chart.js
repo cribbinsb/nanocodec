@@ -30,6 +30,15 @@ function svg(tag, attrs = {}) {
   return node;
 }
 
+/** A regular polygon of `sides` corners and radius r, one corner up. */
+function polygon(sides, r) {
+  const corner = (i) => {
+    const a = (2 * Math.PI * i) / sides - Math.PI / 2;
+    return `${(r * Math.cos(a)).toFixed(2)},${(r * Math.sin(a)).toFixed(2)}`;
+  };
+  return `M${Array.from({ length: sides }, (_, i) => corner(i)).join('L')}z`;
+}
+
 /** The path of a marker shape of radius r centred on (0, 0). */
 export function shapePath(shape, r) {
   const t = r * 1.15;
@@ -46,6 +55,8 @@ export function shapePath(shape, r) {
       const a = r * 0.36;
       return `M${-a},${-r}h${2 * a}v${r - a}h${r - a}v${2 * a}h${a - r}v${r - a}h${-2 * a}v${a - r}h${a - r}v${-2 * a}h${r - a}z`;
     }
+    case 'pentagon': return polygon(5, t);
+    case 'hexagon': return polygon(6, t);
     default: return `M${r},0A${r},${r} 0 1,1 ${-r},0A${r},${r} 0 1,1 ${r},0z`;
   }
 }

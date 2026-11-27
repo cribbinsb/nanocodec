@@ -21,11 +21,11 @@ use super::generic::covers;
 use super::{Variance, VarianceEnergy};
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_add_epi32, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_extract_epi32,
-    _mm_insert_epi32, _mm_loadl_epi64, _mm_srli_si128, _mm256_add_epi16, _mm256_add_epi32,
-    _mm256_blend_epi32, _mm256_broadcastq_epi64, _mm256_castsi128_si256, _mm256_castsi256_si128,
-    _mm256_extracti128_si256, _mm256_inserti128_si256, _mm256_madd_epi16, _mm256_maddubs_epi16,
-    _mm256_set1_epi16, _mm256_setzero_si256, _mm256_unpackhi_epi32, _mm256_unpacklo_epi8,
-    _mm256_unpacklo_epi32,
+    _mm_insert_epi32, _mm_loadl_epi64, _mm_loadu_si128, _mm_srli_si128, _mm256_add_epi16,
+    _mm256_add_epi32, _mm256_blend_epi32, _mm256_broadcastq_epi64, _mm256_castsi128_si256,
+    _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_inserti128_si256, _mm256_madd_epi16,
+    _mm256_maddubs_epi16, _mm256_set1_epi16, _mm256_setzero_si256, _mm256_unpackhi_epi8,
+    _mm256_unpackhi_epi32, _mm256_unpacklo_epi8, _mm256_unpacklo_epi32,
 };
 
 /// Unsigned source byte times 1, unsigned prediction byte times -1.
@@ -131,6 +131,49 @@ impl PackedRows for Avx2Rows {
                 _mm256_unpackhi_epi32(squared.0, sum),
             ))
         }
+    }
+}
+
+/// SVT's `variance16_kernel_avx2` forms two complete rows with memory-operand
+/// inserts, then deals with the low and high halves of each row in parallel.
+/// # Safety
+/// AVX2 is enabled, `h` is a block height, and both planes cover `16 × h`.
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn variance_w16(
+    src: &[u8],
+    ss: usize,
+    pred: &[u8],
+    ps: usize,
+    h: usize,
+) -> Variance {
+    debug_assert!(h <= MAX_HEIGHT && h.is_multiple_of(4));
+    debug_assert!(covers(src.len(), ss, h, 16) && covers(pred.len(), ps, h, 16));
+    let zero = Avx2Rows::zero();
+    let weights = _mm256_set1_epi16(DIFFERENCE_WEIGHTS);
+    let (mut sum, mut squares) = (zero, zero);
+    // SAFETY: each pair lies inside the validated spans.
+    unsafe {
+        for pair in 0..h / 2 {
+            let row = 2 * pair;
+            let x = load_pair16(src.as_ptr().add(row * ss), ss);
+            let y = load_pair16(pred.as_ptr().add(row * ps), ps);
+            let lo = Avx2Rows(_mm256_maddubs_epi16(_mm256_unpacklo_epi8(x, y), weights));
+            let hi = Avx2Rows(_mm256_maddubs_epi16(_mm256_unpackhi_epi8(x, y), weights));
+            sum = sum.add_words(lo.add_words(hi));
+            squares = squares.add_squares(lo).add_squares(hi);
+        }
+    }
+    Avx2Rows::reduce(sum, squares)
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn load_pair16(ptr: *const u8, stride: usize) -> __m256i {
+    // SAFETY: the caller supplies two rows of sixteen bytes.
+    unsafe {
+        _mm256_inserti128_si256::<1>(
+            _mm256_castsi128_si256(_mm_loadu_si128(ptr.cast())),
+            _mm_loadu_si128(ptr.add(stride).cast()),
+        )
     }
 }
 

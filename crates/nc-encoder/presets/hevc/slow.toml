@@ -22,3 +22,45 @@ layers.propagation = 1
 layers.propagation_flat = 1
 layers.propagation_grid = 3
 layers.propagation_prekey = 1
+# Key RD search behind a 1.2 gate, one level deeper and two shallower, periodic
+# keys 2 QP units finer (the Default's): nceval.train against 3ebca4466 (draw
+# 2026-11-22, k 0.1), L3 J -1.55% [-2.30, -0.81], final check (600 f) -0.41%
+# [-0.72, -0.10], no guard; Zen 5 cycles +2.18% [+1.82, +2.53].
+planner.key_rd_margin = 1.2
+planner.key_rd_deeper = 1
+planner.key_rd_shallower = 2
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): the noise-relative cells screened
+# L3 J +0.33 % [+0.02, +0.65] WORSE here (final check -0.07 %).
+analysis.zero_gate_cell = 64
+# The key-frame searches medium had (2026-11-22) stay on this rung, which
+# screened them in its own window; medium reverted them (chart-timing cost).
+planner.key_rd_split = 1
+
+# G2 motion / sub-pel exit shifts: HEVC medium's (DEFAULT_PARAMS, 2026-11-22)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0
+
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-1.22 / -0.35 %).
+rate.key_cap_buffer_first = 0.8

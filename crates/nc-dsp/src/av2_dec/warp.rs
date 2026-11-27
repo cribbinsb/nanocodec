@@ -11,6 +11,13 @@
 
 use nc_common::{BitDepth, Sample};
 
+use crate::Dsp;
+#[cfg(target_arch = "x86_64")]
+use crate::av1_mc::warp_avx2::{Target, try_warp8x8};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::av1_mc::warp_kernels::WarpOut;
+use crate::av1_mc::warp_kernels::{WINDOW_STRIDE, WarpPhases};
+
 use super::mc::{Precision, round_shift, store_compound, store_pixels};
 use super::mc_tables::WARP_FILTER;
 use crate::mc::{TAP_CENTRE, TAPS};
@@ -27,6 +34,12 @@ const PHASE_SHIFT: u32 = 10;
 /// Index of offset 0 in [`WARP_FILTER`]: three whole samples of 64 phases
 /// precede it.
 const FILTER_CENTRE: i32 = 3 * 64;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+const PHASE_ROUND: i32 = (FILTER_CENTRE << PHASE_SHIFT) + (1 << (PHASE_SHIFT - 1));
 
 /// The taps at position `position` (1/65536 sample, relative to the
 /// sample being filtered).
@@ -34,6 +47,33 @@ const FILTER_CENTRE: i32 = 3 * 64;
 fn taps(position: i32) -> &'static [i8; TAPS] {
     let index = FILTER_CENTRE + round_shift(position, PHASE_SHIFT);
     &WARP_FILTER[index as usize]
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(crate) unsafe fn taps_unchecked(position: i32) -> &'static [i8; TAPS] {
+    // SAFETY: the caller checked all phases against the AV2 table.
+    unsafe { WARP_FILTER.get_unchecked(((position + PHASE_ROUND) >> PHASE_SHIFT) as usize) }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[allow(unsafe_code)]
+pub(crate) unsafe fn taps_i16_unchecked(position: i32) -> &'static [i16; TAPS] {
+    static FILTERS: [[i16; TAPS]; WARP_FILTER.len()] = {
+        let mut wide = [[0; TAPS]; WARP_FILTER.len()];
+        let mut phase = 0;
+        while phase < WARP_FILTER.len() {
+            let mut tap = 0;
+            while tap < TAPS {
+                wide[phase][tap] = WARP_FILTER[phase][tap] as i16;
+                tap += 1;
+            }
+            phase += 1;
+        }
+        wide
+    };
+    // SAFETY: the caller checked all phases against the AV2 table.
+    unsafe { FILTERS.get_unchecked(((position + PHASE_ROUND) >> PHASE_SHIFT) as usize) }
 }
 
 /// The shear parameters `[alpha, beta, gamma, delta]` (dav2d
@@ -121,6 +161,230 @@ pub fn warp_affine_8x8<T: Sample>(
             .map(|sum| round_shift(sum, WARP_FILTER_BITS + precision.bits));
         store_pixels(&mut line[..SIDE], values, depth);
     }
+}
+
+const _: () = {
+    let mut phase = 0;
+    while phase < WARP_FILTER.len() {
+        let mut tap = 0;
+        let (mut sum, mut absolute) = (0_i32, 0_i32);
+        while tap < TAPS {
+            let weight = WARP_FILTER[phase][tap] as i32;
+            sum += weight;
+            absolute += weight.abs();
+            tap += 1;
+        }
+        assert!(sum == 128 && absolute <= 222);
+        phase += 1;
+    }
+};
+
+/// AV2 phases use the same pairing as the AV1/dav1d AVX2 register
+/// schedule. The extra row covers the final 16-byte coefficient load.
+#[cfg(target_arch = "x86_64")]
+static PAIRED_FILTERS: [[i8; TAPS]; WARP_FILTER.len() + 1] = {
+    let mut paired = [[0; TAPS]; WARP_FILTER.len() + 1];
+    let mut phase = 0;
+    while phase < WARP_FILTER.len() {
+        let row = WARP_FILTER[phase];
+        paired[phase] = [
+            row[0], row[2], row[4], row[6], row[1], row[3], row[5], row[7],
+        ];
+        let mut tap = 0;
+        let (mut even, mut odd) = (0_i32, 0_i32);
+        while tap < TAPS {
+            let weight = row[tap] as i32;
+            if weight > 0 {
+                if tap % 2 == 0 {
+                    even += weight;
+                } else {
+                    odd += weight;
+                }
+            }
+            tap += 1;
+        }
+        assert!(even <= 128 && odd <= 128);
+        phase += 1;
+    }
+    paired
+};
+
+fn warp_input(
+    (src, offset, stride): (&[u8], usize, usize),
+    shear: Shear,
+    (mx, my): (i32, i32),
+) -> Option<((&[u8], usize), WarpPhases)> {
+    if stride < WINDOW_STRIDE {
+        return None;
+    }
+    let before = stride.checked_mul(TAP_CENTRE)?.checked_add(TAP_CENTRE)?;
+    let start = offset.checked_sub(before)?;
+    let window = src.get(start..)?;
+    let [alpha, beta, gamma, delta] = shear.map(i32::from);
+    let x = mx.checked_add(3 * beta)?;
+    let phases = WarpPhases {
+        x: (x, alpha, beta),
+        y: (my, gamma, delta),
+    };
+    Some(((window, stride), phases))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+fn warp8_x86(
+    dsp: &Dsp,
+    src: (&[u8], usize, usize),
+    shear: Shear,
+    phase: (i32, i32),
+    round: u32,
+    out: Target<'_>,
+) -> bool {
+    if !matches!(dsp.isa(), crate::Isa::Avx2 | crate::Isa::Avx512) {
+        return false;
+    }
+    let Some((source, phases)) = warp_input(src, shear, phase) else {
+        return false;
+    };
+    // SAFETY: the tier enables AVX2, and the packed table satisfies
+    // the arithmetic and padding invariants of the shared kernel.
+    unsafe { try_warp8x8(source, &phases, round, out, &PAIRED_FILTERS, PHASE_ROUND) }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+fn warp8_with_dsp(
+    dsp: &Dsp,
+    src: (&[u8], usize, usize),
+    shear: Shear,
+    phase: (i32, i32),
+    round: u32,
+    out: &mut WarpOut,
+) -> bool {
+    let Some(((window, stride), phases)) = warp_input(src, shear, phase) else {
+        return false;
+    };
+    #[cfg(target_arch = "aarch64")]
+    if matches!(dsp.isa(), crate::Isa::Neon | crate::Isa::Sve2)
+        && stride
+            .checked_mul(MID_ROWS - 1)
+            .and_then(|n| n.checked_add(WINDOW_STRIDE))
+            .is_some_and(|span| span <= window.len())
+        && phases.in_table(PHASE_ROUND, PHASE_SHIFT, WARP_FILTER.len())
+    {
+        // SAFETY: both tiers enable NEON and the complete source window
+        // is readable. The warp filter accesses the phase table safely.
+        unsafe { crate::av1_mc::warp_neon::warp8x8_av2((window, stride), &phases, round, out) };
+        return true;
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if dsp.isa() == crate::Isa::Simd128
+        && stride
+            .checked_mul(MID_ROWS - 1)
+            .and_then(|n| n.checked_add(WINDOW_STRIDE))
+            .is_some_and(|span| span <= window.len())
+        && phases.in_table(PHASE_ROUND, PHASE_SHIFT, WARP_FILTER.len())
+    {
+        // SAFETY: SIMD128 is active and the window has the required span.
+        unsafe {
+            crate::av1_mc::warp_kernels::warp8x8_av2_simd128((window, stride), &phases, round, out);
+        }
+        return true;
+    }
+    let _ = (dsp, window, phases, round, out);
+    false
+}
+
+/// Warp an 8-bit block to final pixels using the selected DSP tier.
+///
+/// # Panics
+///
+/// As [`warp_affine_8x8`].
+pub fn warp_affine_8x8_with_dsp(
+    dsp: &Dsp,
+    (dst, offset, stride): (&mut [u8], usize, usize),
+    src: (&[u8], usize, usize),
+    shear: Shear,
+    phase: (i32, i32),
+) {
+    let round = WARP_FILTER_BITS + Precision::of(BitDepth::EIGHT).bits;
+    #[cfg(target_arch = "x86_64")]
+    if warp8_x86(
+        dsp,
+        src,
+        shear,
+        phase,
+        round,
+        Target::Pixels(&mut dst[offset..], stride),
+    ) {
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let mut out = [0_i32; SIDE * SIDE];
+        if warp8_with_dsp(dsp, src, shear, phase, round, &mut out) {
+            for (line, values) in dst[offset..].chunks_mut(stride).zip(out.chunks_exact(SIDE)) {
+                store_pixels(&mut line[..SIDE], values.iter().copied(), BitDepth::EIGHT);
+            }
+            return;
+        }
+    }
+    warp_affine_8x8(
+        dst,
+        offset,
+        stride,
+        src.0,
+        src.1,
+        src.2,
+        shear,
+        phase,
+        BitDepth::EIGHT,
+    );
+}
+
+/// Warp an 8-bit block to compound precision using the selected DSP tier.
+///
+/// # Panics
+///
+/// As [`warp_affine_8x8t`].
+pub fn warp_affine_8x8t_with_dsp(
+    dsp: &Dsp,
+    (tmp, stride): (&mut [i16], usize),
+    src: (&[u8], usize, usize),
+    shear: Shear,
+    phase: (i32, i32),
+) {
+    #[cfg(target_arch = "x86_64")]
+    if warp8_x86(
+        dsp,
+        src,
+        shear,
+        phase,
+        WARP_FILTER_BITS,
+        Target::Compound(tmp, stride),
+    ) {
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let mut out = [0_i32; SIDE * SIDE];
+        if warp8_with_dsp(dsp, src, shear, phase, WARP_FILTER_BITS, &mut out) {
+            let precision = Precision::of(BitDepth::EIGHT);
+            for (line, values) in tmp.chunks_mut(stride).zip(out.chunks_exact(SIDE)) {
+                store_compound(&mut line[..SIDE], values.iter().copied(), precision);
+            }
+            return;
+        }
+    }
+    warp_affine_8x8t(
+        tmp,
+        stride,
+        src.0,
+        src.1,
+        src.2,
+        shear,
+        phase,
+        BitDepth::EIGHT,
+    );
 }
 
 /// [`warp_affine_8x8`] at compound precision into `tmp` (rows

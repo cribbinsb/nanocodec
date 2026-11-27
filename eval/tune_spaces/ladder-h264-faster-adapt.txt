@@ -1,0 +1,16 @@
+# h264-ladder (2026-11-23): H.264 faster at equal speed (--cpu-max 1.02, k 0.1288) with the
+# adaptive tool thresholds (threshold_control.rs) on its sub-pel seed gate and exact
+# ranking's prune margin, the integer probes (off on this rung) with their adaptive gate,
+# and the final stage. ladder-h264-faster (no adaptive gates) found nothing better than
+# the rung in 7 trials.
+# Format (nceval.tune_pool): name [low high] [int|log]
+decision.final_stage 0 1 int
+analysis.window_half_width 2 3 int
+decision.exact_rank_margin 0 4
+adapt.rank 0 1 int
+adapt.rank_target 0.05 0.3
+decision.codec_fullpel_probe 0 1 int
+decision.codec_fullpel_probe_min_lambdas 0 1
+adapt.probe 0 1 int
+adapt.subpel 0 1 int
+adapt.subpel_target 0.1 0.4

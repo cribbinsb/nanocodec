@@ -15,17 +15,21 @@
 //! The 10/12-bit (`u16`) blocks ([`install_high`]) use the shared 16-bit
 //! lane graph (`cdef::generic`) at 32 lanes instead.
 
-use super::{CDEF_PADDING, CdefArgs, CdefFns, DIRECTIONS, HighCdefFns, SEC_TAPS, generic};
+use super::{
+    CDEF_PADDING, CdefArgs, CdefFns, CdefSource, DIRECTIONS, HighCdefFns, SEC_TAPS, generic,
+};
 use crate::simd::I16Lanes;
 use crate::simd::avx512_i16::I16x32;
 use crate::simd::gfni::shift_matrix;
 use core::arch::x86_64::{
-    __m128i, __m512i, _MM_CMPINT_NLE, _mm512_add_epi8, _mm512_add_epi32, _mm512_and_si512,
+    __m128i, __m512i, _MM_CMPINT_NLE, _mm_cvtsi128_si64, _mm_maskz_loadu_epi8, _mm_slli_si128,
+    _mm_srli_si128, _mm_storel_epi64, _mm_unpackhi_epi32, _mm_unpacklo_epi32, _mm512_add_epi8,
+    _mm512_add_epi32, _mm512_and_si512, _mm512_bitshuffle_epi64_mask, _mm512_castsi128_si512,
     _mm512_cmp_epu8_mask, _mm512_cvtepi32_epi8, _mm512_dpbusd_epi32, _mm512_gf2p8affine_epi64_epi8,
-    _mm512_loadu_si512, _mm512_mask_sub_epi8, _mm512_max_epi32, _mm512_max_epu8, _mm512_min_epi32,
-    _mm512_min_epu8, _mm512_permutexvar_epi8, _mm512_set_epi64, _mm512_set1_epi8,
-    _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512, _mm512_srai_epi32,
-    _mm512_srli_epi32, _mm512_sub_epi8, _mm512_subs_epu8,
+    _mm512_inserti32x4, _mm512_loadu_si512, _mm512_mask_mov_epi8, _mm512_mask_sub_epi8,
+    _mm512_max_epi32, _mm512_max_epu8, _mm512_min_epi32, _mm512_min_epu8, _mm512_permutexvar_epi8,
+    _mm512_set_epi64, _mm512_set1_epi8, _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512,
+    _mm512_shuffle_i64x2, _mm512_srai_epi32, _mm512_srli_epi32, _mm512_sub_epi8, _mm512_subs_epu8,
 };
 
 const QUARTER: usize = 4;
@@ -45,9 +49,10 @@ const SHIFTS: [i64; 9] = {
 
 /// The full tier uses the same quarter schedule for luma and chroma.
 pub(crate) fn install(fns: &mut CdefFns) {
-    fns.block8_interior = block::<8>;
+    fns.block8_interior = block8;
     fns.block4_interior = block::<4>;
     fns.block4_interior_pair = Some(block4_pair);
+    fns.border = Some([border4, border8]);
 }
 
 /// Indices of the 4x4 output pixels inside the 8x8 source table. Each
@@ -120,15 +125,21 @@ impl Taps {
     }
 }
 
-#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,gfni,avx512vnni")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512bitalg,gfni,avx512vnni")]
 #[inline]
-unsafe fn accumulate(
+unsafe fn accumulate<const BORDER: bool>(
     table: __m512i,
+    available: __m512i,
     centre: __m512i,
     taps: &Taps,
     sum: __m512i,
 ) -> (__m512i, __m512i) {
-    let pixels = _mm512_permutexvar_epi8(taps.indices, table);
+    let mut pixels = _mm512_permutexvar_epi8(taps.indices, table);
+    if BORDER {
+        let valid = _mm512_bitshuffle_epi64_mask(available, taps.indices);
+        // Unavailable neighbours contribute zero and never widen the clamp.
+        pixels = _mm512_mask_mov_epi8(centre, valid, pixels);
+    }
     let negative = _mm512_cmp_epu8_mask::<{ _MM_CMPINT_NLE }>(centre, pixels);
     let magnitude = _mm512_mask_sub_epi8(_mm512_sub_epi8(pixels, centre), negative, centre, pixels);
     let shifted = _mm512_gf2p8affine_epi64_epi8::<0>(magnitude, taps.shift);
@@ -140,19 +151,49 @@ unsafe fn accumulate(
     (_mm512_dpbusd_epi32(sum, constrained, weights), pixels)
 }
 
-#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,gfni,avx512vnni")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512bitalg,gfni,avx512vnni")]
 #[inline]
-unsafe fn quarter(table: __m512i, centres: __m512i, taps: &[Taps; 3], args: &CdefArgs) -> __m128i {
+unsafe fn quarter<const BORDER: bool>(
+    table: __m512i,
+    available: __m512i,
+    centres: __m512i,
+    taps: &[Taps; 3],
+    args: &CdefArgs,
+) -> __m128i {
+    // SAFETY: same full Ice Lake feature set as the generic strength path.
+    unsafe { quarter_with_strengths::<BORDER, 0>(table, available, centres, taps, args) }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512bitalg,gfni,avx512vnni")]
+#[inline]
+unsafe fn quarter_with_strengths<const BORDER: bool, const MODE: u8>(
+    table: __m512i,
+    available: __m512i,
+    centres: __m512i,
+    taps: &[Taps; 3],
+    args: &CdefArgs,
+) -> __m128i {
     let centre = _mm512_permutexvar_epi8(centres, table);
     let mut low = centre;
     let mut high = centre;
     let mut sum = _mm512_setzero_si512();
-    let clip = args.pri != 0 && args.sec != 0;
+    // The 8×8 interior path resolves this once for all four quarters.
+    let primary = if MODE == 0 {
+        args.pri != 0
+    } else {
+        MODE & 1 != 0
+    };
+    let secondary = if MODE == 0 {
+        args.sec != 0
+    } else {
+        MODE & 2 != 0
+    };
+    let clip = primary && secondary;
     // SAFETY: this function enables every intrinsic feature used by accumulate.
     unsafe {
         for (i, tap) in taps.iter().enumerate() {
-            if (i == 0 && args.pri != 0) || (i != 0 && args.sec != 0) {
-                let (next, pixels) = accumulate(table, centre, tap, sum);
+            if (i == 0 && primary) || (i != 0 && secondary) {
+                let (next, pixels) = accumulate::<BORDER>(table, available, centre, tap, sum);
                 sum = next;
                 if clip {
                     low = _mm512_min_epu8(low, pixels);
@@ -183,7 +224,32 @@ unsafe fn quarter(table: __m512i, centres: __m512i, taps: &[Taps; 3], args: &Cde
     _mm512_cvtepi32_epi8(result)
 }
 
-#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,gfni,avx512vnni,avx2")]
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,gfni")]
+unsafe fn tap_table(args: &CdefArgs, centres: __m512i) -> [Taps; 3] {
+    // SAFETY: this function enables all features of the register setup.
+    unsafe {
+        [
+            Taps::new(args.dir, args.pri_taps, args.pri, args.pri_shift, centres),
+            Taps::new(
+                (args.dir + 2) & 7,
+                SEC_TAPS,
+                args.sec,
+                args.sec_shift,
+                centres,
+            ),
+            Taps::new(
+                (args.dir + 6) & 7,
+                SEC_TAPS,
+                args.sec,
+                args.sec_shift,
+                centres,
+            ),
+        ]
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512bitalg,gfni,avx512vnni,avx2")]
 pub(crate) unsafe fn block<const N: usize>(
     src: &[u8],
     stride: usize,
@@ -203,23 +269,7 @@ pub(crate) unsafe fn block<const N: usize>(
     // the checked window; stores cover only each quarter's four output rows.
     unsafe {
         let centres = _mm512_loadu_si512(CENTRES.as_ptr().cast());
-        let taps = [
-            Taps::new(args.dir, args.pri_taps, args.pri, args.pri_shift, centres),
-            Taps::new(
-                (args.dir + 2) & 7,
-                SEC_TAPS,
-                args.sec,
-                args.sec_shift,
-                centres,
-            ),
-            Taps::new(
-                (args.dir + 6) & 7,
-                SEC_TAPS,
-                args.sec,
-                args.sec_shift,
-                centres,
-            ),
-        ];
+        let taps = tap_table(args, centres);
         for row in (0..N).step_by(QUARTER) {
             for col in (0..N).step_by(QUARTER) {
                 let base = window.as_ptr().add(row * stride + col);
@@ -233,7 +283,224 @@ pub(crate) unsafe fn block<const N: usize>(
                     base.add(stride).cast::<i64>().read_unaligned(),
                     base.cast::<i64>().read_unaligned(),
                 );
-                let result = quarter(table, centres, &taps, args);
+                let result = quarter::<false>(table, _mm512_setzero_si512(), centres, &taps, args);
+                super::avx2_interior::store_4x4(
+                    result,
+                    dst.as_mut_ptr().add(row * dst_stride + col),
+                    dst_stride,
+                );
+            }
+        }
+    }
+}
+
+/// Lay out four twelve-byte halo rows as the left and right groups of
+/// four eight-byte rows. Reuse the middle group for both output halves.
+const SPLIT_HALO: [u8; 64] = {
+    let mut bytes = [0; 64];
+    let mut i = 0;
+    while i < 64 {
+        bytes[i] = (16 * ((i % 32) / 8) + 4 * (i / 32) + i % 8) as u8;
+        i += 1;
+    }
+    bytes
+};
+
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+unsafe fn halo_rows(ptr: *const u8, stride: usize, shuffle: __m512i) -> __m512i {
+    // SAFETY: the caller checked all four reference rows. The masked
+    // loads access only the twelve bytes shared by both quarters.
+    unsafe {
+        let load = |row| _mm_maskz_loadu_epi8(0x0fff, ptr.add(row * stride).cast());
+        let a = _mm512_castsi128_si512(load(0));
+        let b = _mm512_inserti32x4::<1>(a, load(1));
+        let c = _mm512_inserti32x4::<2>(b, load(2));
+        let d = _mm512_inserti32x4::<3>(c, load(3));
+        _mm512_permutexvar_epi8(shuffle, d)
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi,avx512bitalg,gfni,avx512vnni,avx2")]
+unsafe fn block8(
+    src: &[u8],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    const SIDE: usize = 8 + 2 * CDEF_PADDING;
+    let top = origin
+        .checked_sub(CDEF_PADDING * stride + CDEF_PADDING)
+        .expect("interior source");
+    let window = &src[top..][..(SIDE - 1) * stride + SIDE];
+    let dst = &mut dst[..7 * dst_stride + 8];
+    // SAFETY: the source spans twelve 12-byte rows and the stores are
+    // entirely within the validated destination.
+    unsafe {
+        let ptr = window.as_ptr();
+        let shuffle = _mm512_loadu_si512(SPLIT_HALO.as_ptr().cast());
+        let top = halo_rows(ptr, stride, shuffle);
+        let middle = halo_rows(ptr.add(4 * stride), stride, shuffle);
+        let bottom = halo_rows(ptr.add(8 * stride), stride, shuffle);
+        let tl = _mm512_shuffle_i64x2::<0x44>(top, middle);
+        let tr = _mm512_shuffle_i64x2::<0xee>(top, middle);
+        let bl = _mm512_shuffle_i64x2::<0x44>(middle, bottom);
+        let br = _mm512_shuffle_i64x2::<0xee>(middle, bottom);
+        let tables = [tl, tr, bl, br];
+        match (args.pri != 0, args.sec != 0) {
+            (true, false) => write_quarters::<1>(tables, args, dst, dst_stride),
+            (false, true) => write_quarters::<2>(tables, args, dst, dst_stride),
+            (true, true) => write_quarters::<3>(tables, args, dst, dst_stride),
+            (false, false) => write_quarters::<0>(tables, args, dst, dst_stride),
+        }
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512bitalg,gfni,avx512vnni,avx2")]
+#[inline]
+unsafe fn write_quarters<const MODE: u8>(
+    tables: [__m512i; 4],
+    args: &CdefArgs,
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    // SAFETY: the four quarter stores cover the checked eight-by-eight block.
+    unsafe {
+        let centres = _mm512_loadu_si512(CENTRES.as_ptr().cast());
+        let taps = tap_table(args, centres);
+        for (row, &[left, right]) in tables.as_chunks::<2>().0.iter().enumerate() {
+            let zero = _mm512_setzero_si512();
+            let left = quarter_with_strengths::<false, MODE>(left, zero, centres, &taps, args);
+            let right = quarter_with_strengths::<false, MODE>(right, zero, centres, &taps, args);
+            let first = _mm_unpacklo_epi32(left, right);
+            let last = _mm_unpackhi_epi32(left, right);
+            let dst = dst.as_mut_ptr().add(4 * row * dst_stride);
+            _mm_storel_epi64(dst.cast(), first);
+            _mm_storel_epi64(dst.add(dst_stride).cast(), _mm_srli_si128::<8>(first));
+            _mm_storel_epi64(dst.add(2 * dst_stride).cast(), last);
+            _mm_storel_epi64(dst.add(3 * dst_stride).cast(), _mm_srli_si128::<8>(last));
+        }
+    }
+}
+
+/// Read only the available rows and columns of one eight-by-eight table.
+/// Table indices retain the full halo grid, including absent samples.
+#[allow(
+    clippy::inline_always,
+    reason = "keep the byte table and availability in registers"
+)]
+#[inline(always)]
+unsafe fn load_border_table(src: &CdefSource, (x, y): (usize, usize)) -> (__m512i, __m512i) {
+    let reach = CDEF_PADDING;
+    let (left, top) = (reach.saturating_sub(x), reach.saturating_sub(y));
+    let (first_x, first_y) = (x.saturating_sub(reach), y.saturating_sub(reach));
+    let (width, height) = (src.width(), src.height());
+    let columns = (TABLE_SIDE - left).min(width - first_x);
+    let rows = (TABLE_SIDE - top).min(height - first_y);
+    let column_mask = (1_u16 << columns) - 1;
+    let row_mask = u64::from(column_mask) << left;
+    let start = src.index(first_x, first_y);
+    let data = &src.samples()[start..][..(rows - 1) * width + columns];
+    let mut bytes = [0_u64; TABLE_SIDE];
+    let mut valid = 0;
+    for (row, payload) in bytes.iter_mut().enumerate().skip(top).take(rows) {
+        // SAFETY: the span above contains every unmasked byte of these rows.
+        let values = unsafe {
+            let ptr = data.as_ptr().add((row - top) * width);
+            if columns == TABLE_SIDE {
+                ptr.cast::<u64>().read_unaligned()
+            } else {
+                _mm_cvtsi128_si64(_mm_maskz_loadu_epi8(column_mask, ptr.cast())) as u64
+            }
+        };
+        *payload = values << (8 * left);
+        valid |= row_mask << (8 * row);
+    }
+    // SAFETY: bytes is a complete 64-byte table.
+    unsafe {
+        (
+            _mm512_loadu_si512(bytes.as_ptr().cast()),
+            _mm512_set1_epi64(valid as i64),
+        )
+    }
+}
+
+/// dav1d's byte table and availability masks at frame borders. Keep the
+/// same per-pixel GFNI and VNNI graph as the interior kernel.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi,avx512bitalg,gfni,avx512vnni,avx2")]
+unsafe fn border4(
+    src: &CdefSource,
+    (x, y): (usize, usize),
+    args: &CdefArgs,
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    let dst = &mut dst[..3 * dst_stride + QUARTER];
+    // SAFETY: dispatch checks the block and its available halo.
+    unsafe {
+        let centres = _mm512_loadu_si512(CENTRES.as_ptr().cast());
+        let taps = tap_table(args, centres);
+        let (table, available) = load_border_table(src, (x, y));
+        let result = quarter::<true>(table, available, centres, &taps, args);
+        super::avx2_interior::store_4x4(result, dst.as_mut_ptr(), dst_stride);
+    }
+}
+
+/// Load one twelve-by-twelve window. The left and right eight columns
+/// overlap by four pixels and are shared by the upper and lower quarters.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi,avx512bitalg,gfni,avx512vnni,avx2")]
+unsafe fn border8(
+    src: &CdefSource,
+    (x, y): (usize, usize),
+    args: &CdefArgs,
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    const WINDOW: usize = 8 + 2 * CDEF_PADDING;
+    let reach = CDEF_PADDING;
+    let (left, top) = (reach.saturating_sub(x), reach.saturating_sub(y));
+    let (first_x, first_y) = (x.saturating_sub(reach), y.saturating_sub(reach));
+    let (width, height) = (src.width(), src.height());
+    let columns = (WINDOW - left).min(width - first_x);
+    let rows = (WINDOW - top).min(height - first_y);
+    let end = top + rows;
+    let column_mask = (1_u16 << columns) - 1;
+    let valid_columns = column_mask << left;
+    let start = src.index(first_x, first_y);
+    let data = &src.samples()[start..][..(rows - 1) * width + columns];
+    let dst = &mut dst[..7 * dst_stride + 8];
+    let mut halves = [[0_u64; WINDOW]; 2];
+    // SAFETY: each source mask describes bytes in data. The corner tables
+    // are eight consecutive u64s and only the four output rows are stored.
+    unsafe {
+        let [west, east] = &mut halves;
+        let rows = west[top..end].iter_mut().zip(&mut east[top..end]);
+        for (row, (west, east)) in rows.enumerate() {
+            let ptr = data.as_ptr().add(row * width);
+            let pixels = _mm_maskz_loadu_epi8(column_mask, ptr.cast());
+            let pixels = match left {
+                0 => pixels,
+                1 => _mm_slli_si128::<1>(pixels),
+                _ => _mm_slli_si128::<2>(pixels),
+            };
+            *west = _mm_cvtsi128_si64(pixels) as u64;
+            *east = _mm_cvtsi128_si64(_mm_srli_si128::<4>(pixels)) as u64;
+        }
+        let centres = _mm512_loadu_si512(CENTRES.as_ptr().cast());
+        let taps = tap_table(args, centres);
+        for row in [0, QUARTER] {
+            let missing_top = top.saturating_sub(row);
+            let missing_bottom = (row + TABLE_SIDE).saturating_sub(end);
+            let row_mask = (u64::MAX << (8 * missing_top)) & (u64::MAX >> (8 * missing_bottom));
+            for (index, half) in halves.iter().enumerate() {
+                let col = index * QUARTER;
+                let columns = u64::from((valid_columns >> col) as u8);
+                let valid = row_mask & (columns * 0x0101_0101_0101_0101);
+                let table = _mm512_loadu_si512(half.as_ptr().add(row).cast());
+                let available = _mm512_set1_epi64(valid as i64);
+                let result = quarter::<true>(table, available, centres, &taps, args);
                 super::avx2_interior::store_4x4(
                     result,
                     dst.as_mut_ptr().add(row * dst_stride + col),
@@ -245,7 +512,7 @@ pub(crate) unsafe fn block<const N: usize>(
 }
 
 /// Two chroma blocks with independent directions, as in the other tiers.
-#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,gfni,avx512vnni,avx2")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512bitalg,gfni,avx512vnni,avx2")]
 unsafe fn block4_pair(
     src: [&[u8]; 2],
     stride: usize,
@@ -278,6 +545,7 @@ unsafe fn block4_pair(
 /// dual U+V 4x4 interior chroma blocks (adapted from dav1d's
 /// `src/x86/cdef16_avx512.asm`, BSD-2-Clause; see `THIRD_PARTY.md`).
 pub(crate) fn install_high(fns: &mut HighCdefFns) {
+    fns.border4 = Some(super::avx512_high4::border);
     fns.edge[1] = block8_edge_u16;
     fns.interior[1] = block8_interior_u16;
     fns.interior_pair4 = Some(block4_pair_u16);

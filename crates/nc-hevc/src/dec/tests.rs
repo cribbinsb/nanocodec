@@ -886,6 +886,66 @@ mod round_trips {
         assert_eq!(packets, recoded);
     }
 
+    /// Low-delay bi-prediction (`decision.bi_pair`): generalised B slices
+    /// with two-vector bi-prediction from the previous picture, and with the
+    /// second reference compound prediction from both, decoded exactly by
+    /// our decoder, with temporal layers and under the syntax stress test;
+    /// the recode contract holds with it.
+    #[test]
+    fn bi_predicted_streams_decode_exactly() {
+        let config = |bi: f32, second: f32, (layers, identity): (u8, f32)| {
+            let mut settings = super::browser_tests::config(64, 64, 30, false);
+            settings.params.set("structure.unified", 0.);
+            settings.params.set("refs.second", second);
+            settings.params.set("decision.bi_pair", bi);
+            settings.params.set("debug.recode_identity", identity);
+            settings.temporal_layers = layers;
+            settings.intra_period = 12;
+            settings
+        };
+        let decodes = |packets: &[Vec<u8>], recons: &[Picture]| {
+            let mut decoder = Decoder::new();
+            for (packet, recon) in packets.iter().zip(recons) {
+                compare(&decoder.decode(packet).unwrap(), recon);
+            }
+        };
+        for (second, layers) in [(0., 1), (1., 1), (0., 3)] {
+            let (packets, recons, _) =
+                coded_sequence(config(1., second, (layers, 0.)), Some(150_000), 16);
+            decodes(&packets, &recons);
+            let (without, _, _) =
+                coded_sequence(config(0., second, (layers, 0.)), Some(150_000), 16);
+            assert_ne!(packets, without, "B slices change the stream");
+            let (recoded, _, _) =
+                coded_sequence(config(1., second, (layers, 1.)), Some(150_000), 16);
+            assert_eq!(packets, recoded, "second {second} layers {layers}");
+        }
+        // The pair is chosen on this content (the label dump's leaf modes).
+        let mut encoder = Encoder::<HevcBackend>::new(config(1., 0., (1, 0.))).unwrap();
+        encoder
+            .enable_labels(nc_encoder::labels::LabelConfig {
+                clock: || 0,
+                tools: Vec::new(),
+            })
+            .unwrap();
+        for frame in 0..8 {
+            encoder.encode(&moving(64, 64, frame));
+        }
+        let pairs = encoder
+            .take_labels()
+            .iter()
+            .flat_map(|f| &f.leaves)
+            .filter(|leaf| leaf.mode == nc_encoder::labels::MODE_PRIMARY_PAIR)
+            .count();
+        assert!(pairs > 0, "no leaf chose the pair");
+        for seed in 1..=4 {
+            let mut settings = config(1., 1., (1, 0.));
+            settings.params.set("debug.random_decisions", seed as f32);
+            let (packets, recons, _) = coded_sequence(settings, None, 12);
+            decodes(&packets, &recons);
+        }
+    }
+
     #[test]
     fn layered_streams_and_their_sub_layers_decode_exactly() {
         for layers in [2u8, 3] {

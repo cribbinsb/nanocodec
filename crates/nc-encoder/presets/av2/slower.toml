@@ -71,3 +71,17 @@ planner.split_selector = 0
 # Layer propagation (the codec Default's flat-stream form, docs/handoff/temporal-lambda.md)
 # stays off here: the quick gain was below the probe bar (L1 -0.14 %, probe -0.07 %); not queued.
 layers.propagation = 0
+# Key RD search behind a 1.5 gate, two levels each way, key trellis, periodic
+# keys 2 QP units finer (nceval.train against 3ebca4466, draw 2026-11-22, k 0):
+# L3 J -1.31% [-1.56, -1.08], final check (600 f) -0.96% [-1.27, -0.67], no
+# guard.
+planner.key_rd_split = 1
+planner.key_rd_margin = 1.5
+planner.key_rd_deeper = 2
+planner.key_rd_shallower = 2
+quant.trellis_key = 1
+rate.key_level_finer = 2
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-0.81 / -0.35 %).
+rate.key_cap_buffer_first = 0.8

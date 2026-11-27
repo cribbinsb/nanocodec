@@ -58,8 +58,6 @@ impl InterPrediction {
 /// `interintra`; `t->rmv`).
 #[derive(Debug, Clone)]
 pub struct InterScratch {
-    /// Copy dispatch is chosen once per decoder workspace.
-    pub(super) copies: nc_dsp::BlockCopy,
     /// The two predictions before blending.
     pub(super) compound: [Vec<i16>; 2],
     /// A difference or implicit mask, per luma piece and chroma.
@@ -102,11 +100,9 @@ const REFINE_SIDE: usize = (MAX_SIDE + 16) * (MAX_SIDE + 16);
 /// A window of a prediction's reference: the block plus the filter taps.
 const WINDOW_SIDE: usize = MAX_SIDE * 2 + 16;
 
-impl InterScratch {
-    /// Allocate tile inter-prediction scratch using pre-resolved `copies`.
-    pub(super) fn new(copies: nc_dsp::BlockCopy) -> Self {
+impl Default for InterScratch {
+    fn default() -> Self {
         Self {
-            copies,
             compound: [vec![0; MAX_SIDE * MAX_SIDE], vec![0; MAX_SIDE * MAX_SIDE]],
             mask: vec![0; MAX_SIDE * MAX_SIDE],
             refine: [vec![0; REFINE_SIDE], vec![0; REFINE_SIDE]],
@@ -124,12 +120,6 @@ impl InterScratch {
                 (COVERED_SIDE * COVERED_SIDE) as usize
             ],
         }
-    }
-}
-
-impl Default for InterScratch {
-    fn default() -> Self {
-        Self::new(nc_dsp::Dsp::new().block_copies())
     }
 }
 

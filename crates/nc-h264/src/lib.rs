@@ -48,6 +48,7 @@ mod predict;
 mod references;
 mod residual;
 mod residual_rd;
+mod skip_pred;
 mod syntax;
 mod tables;
 

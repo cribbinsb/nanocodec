@@ -34,7 +34,13 @@ use crate::psy::{ac_energy, psy_penalty};
 use crate::quarter_predict::{QuarterPredict, predicted_step};
 use crate::rd_refine::{RdWalk, rd_refine_vector};
 use crate::refresh::RefreshWindow;
-use crate::threshold_control::{Band, BandEvidence, Tool};
+use crate::threshold_control::{Band, FrameEvidence, Tool, Turn};
+use nc_analysis::linear_threshold::{
+    LinearThreshold, block_size_feature, flag_feature, log_lambda_feature,
+};
+
+mod compound;
+pub(crate) use compound::{choose_compound_mode, choose_pair_merge, choose_primary_pair};
 
 // The decision's tunable thresholds are `DecisionParams` (`params.rs`); the
 // notes below explain their hand-tuned defaults.
@@ -97,6 +103,46 @@ fn quarter_predict(params: &DecisionParams) -> QuarterPredict {
         params.subpel_quarter_predict,
         params.subpel_quarter_predict_strength,
     )
+}
+
+/// The adaptive switch of the walk's quarter stage (`threshold_control.rs`,
+/// `adapt.quarter`) as one refinement sees it: asked at each opportunity
+/// (a half stage that did not move), and told what a measured quarter stage
+/// kept of the cost before it.
+trait QuarterSwitch {
+    fn turn(&mut self) -> Turn;
+    fn record(&mut self, before: f32, kept: f32);
+}
+
+/// No switch: the quarter stage runs as the preset says.
+struct PresetQuarter;
+
+impl QuarterSwitch for PresetQuarter {
+    fn turn(&mut self) -> Turn {
+        Turn::Preset
+    }
+
+    fn record(&mut self, _before: f32, _kept: f32) {}
+}
+
+/// The frame's switch, in the decision's gathering instance only: without
+/// `GATHER` it is [`PresetQuarter`], so that instance compiles as before.
+struct FrameQuarter<'a, const GATHER: bool>(&'a mut FrameEvidence);
+
+impl<const GATHER: bool> QuarterSwitch for FrameQuarter<'_, GATHER> {
+    fn turn(&mut self) -> Turn {
+        if GATHER {
+            self.0.quarter_turn()
+        } else {
+            Turn::Preset
+        }
+    }
+
+    fn record(&mut self, before: f32, kept: f32) {
+        if GATHER {
+            self.0.record_quarter(before, kept);
+        }
+    }
 }
 
 /// Area from which `decision.codec_subpel_seed_lambdas_large` applies (32x32).
@@ -375,22 +421,51 @@ pub(crate) struct DecisionScratch {
     candidates: Vec<Mv>,
     /// Refinement-only seeds ([`CodecBackend::mv_seeds`]).
     seeds: Vec<Mv>,
-    prediction: RefCell<Vec<u8>>,
+    measure: MeasureScratch,
     /// Compound `InterRound1 = 7` `i16` prediction buffers reused across blocks.
     compound_a: Vec<i16>,
     compound_b: Vec<i16>,
+    /// Two-hypothesis merge candidates (`CodecBackend::pair_merge_candidates`).
+    pairs: Vec<(Mv, crate::backend::ReferenceChoice)>,
     /// Bilinear distortions already known for ranking candidates (NEW, the
     /// refined cheap vector, the cheap vectors), for `ExactPrune`.
     bilinear: Vec<(Mv, f32)>,
     /// What the gated tools achieved just inside their gates this frame
     /// (`threshold_control.rs`), read by the encoder after the frame.
-    pub(crate) evidence: BandEvidence,
+    pub(crate) evidence: FrameEvidence,
+}
+
+/// What a leaf decision's measurers share ([`Measurer::with_scratch`]).
+#[derive(Debug, Default)]
+pub(crate) struct MeasureScratch {
+    /// The exact-filter prediction of one candidate.
+    prediction: RefCell<Vec<u8>>,
+    /// Block predictions measured by every leaf decision so far: a
+    /// deterministic count of the motion search's work, which the label dump
+    /// (`labels.rs`) and a learned gate read as differences between two
+    /// marks. One per vector measured (whole-sample, sub-sample or a compound
+    /// half), whatever its kernel.
+    positions: Cell<u64>,
+}
+
+impl MeasureScratch {
+    /// Note `count` block predictions measured.
+    #[inline]
+    fn count_positions(&self, count: u64) {
+        self.positions.set(self.positions.get() + count);
+    }
 }
 
 impl DecisionScratch {
     /// The candidate list alone, for decisions that make no measurements.
     pub(crate) fn candidates_mut(&mut self) -> &mut Vec<Mv> {
         &mut self.candidates
+    }
+
+    /// Block predictions the leaf decisions have measured so far.
+    #[inline]
+    pub(crate) fn search_positions(&self) -> u64 {
+        self.measure.positions.get()
     }
 }
 
@@ -400,10 +475,9 @@ impl DecisionScratch {
 /// quarter samples, and fall back to DC intra when even that predicts badly.
 /// `candidates` is scratch space reused across blocks. `planned` holds the
 /// residual statistics the partition planner already measured for this
-/// block (at `search_mv` and the zero vector), if any. `skip_vector` is
-/// the codec's skip-mode vector ([`CodecBackend::skip_vector`]), if any.
-/// `source_moments` is the frame's pre-analysis where its 8x8 moments
-/// cover the block's source samples exactly.
+/// block (at `search_mv` and the zero vector), if any.
+/// `analysis` carries the pre-analysis where its moments cover the
+/// source samples exactly, and the static verdict over the same extent.
 pub(crate) fn choose_inter_mode<B: CodecBackend>(
     dsp: &Dsp,
     backend: &mut B,
@@ -412,8 +486,7 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
     search_mv: Mv,
     planned: Option<&LeafStats>,
     scratch: &mut DecisionScratch,
-    skip_vector: Option<Mv>,
-    source_moments: Option<&PreAnalysis>,
+    analysis: (Option<&PreAnalysis>, bool),
     params: &DecisionParams,
     refresh: Option<&RefreshWindow>,
 ) -> Choice {
@@ -429,8 +502,7 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
             search_mv,
             planned,
             scratch,
-            skip_vector,
-            source_moments,
+            analysis,
             params,
             refresh,
         )
@@ -443,8 +515,7 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
             search_mv,
             planned,
             scratch,
-            skip_vector,
-            source_moments,
+            analysis,
             params,
             refresh,
         )
@@ -462,15 +533,14 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     search_mv: Mv,
     planned: Option<&LeafStats>,
     scratch: &mut DecisionScratch,
-    skip_vector: Option<Mv>,
-    source_moments: Option<&PreAnalysis>,
+    analysis: (Option<&PreAnalysis>, bool),
     params: &DecisionParams,
     refresh: Option<&RefreshWindow>,
 ) -> Choice {
     let DecisionScratch {
         candidates,
         seeds,
-        prediction,
+        measure,
         bilinear,
         evidence,
         ..
@@ -480,9 +550,9 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     bilinear.clear();
     // Unchanged since the previous source frame (noise-aware pre-analysis):
     // its true motion is zero, so a sub-sample walk only fits noise.
-    let static_block = source_moments.is_some_and(|pre| is_static::<B>(pre, block));
+    let (source_moments, static_block) = analysis;
     candidates.push(Mv::ZERO);
-    backend.mv_candidates(block, candidates);
+    let skip_vector = backend.ranking_vectors(block, candidates);
     backend.mv_seeds(block, seeds);
     // `decision.max_cheap_vectors` (default: all) keeps the codec's first
     // few predicted vectors: each costs a measurement, a rate estimate and,
@@ -514,7 +584,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     }
     let measurer = Measurer::new::<B>(dsp, source, reference, block)
         .with_refresh(refresh)
-        .with_prediction_scratch(prediction)
+        .with_scratch(measure)
         .with_prediction_energy(params.psy_strength > 0.0)
         .with_row_step(params.distortion_row_step)
         .with_source_moments(source_moments);
@@ -612,6 +682,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
                 area,
                 params,
                 refine_cost,
+                FrameQuarter::<GATHER>(&mut *evidence),
             )
         } else {
             (start.0, start.1, search_mv)
@@ -625,7 +696,8 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
         // (`threshold_control.rs`), noted before the ranking while a
         // controller gathers it: a refinement or probe wins when the vector
         // only it found wins the ranking.
-        let gates = (GATHER && evidence.band().is_some()).then(|| {
+        let gathers_gates = evidence.gathers(Tool::Subpel) || evidence.gathers(Tool::Probe);
+        let gates = (GATHER && gathers_gates).then(|| {
             GateOutcomes::of(
                 (seed_refined, new, search_mv, integer.map(|(mv, _)| mv)),
                 (start, lambda, area),
@@ -652,6 +724,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
                     area,
                     params,
                     refine_cost,
+                    FrameQuarter::<GATHER>(&mut *evidence),
                 );
                 bilinear.push((refined, refined_distortion));
                 refined
@@ -679,7 +752,10 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
             known_stats(mv).map_or_else(|| measurer.measure_with_energy(mv), |stats| (stats, None))
         };
         let new_rate_scale = params.new_rate_scale;
-        let rank_band = evidence.band().filter(|_| GATHER).map(RankBand::new);
+        let rank_band = evidence
+            .band()
+            .filter(|_| GATHER && evidence.gathers(Tool::Rank))
+            .map(RankBand::new);
         let prune = ExactPrune {
             margin: params.exact_rank_margin,
             known: bilinear,
@@ -690,16 +766,17 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
             rank_cached_exact::<B, GATHER>(
                 backend,
                 block,
-                (&measurer, psy),
+                (&measurer, psy, params.rank_dc_weight),
                 candidates,
                 (cheap, filter, lambda, new_rate_scale),
                 &prune,
                 stats_and_energy,
             )
         } else {
+            let mode_bits = backend.inter_mode_pricer(block);
             let mut best_cost: Option<f32> = None;
             rank_with_stats(candidates, |i, mv| {
-                let bits = backend.mode_bits(block, &PredictionMode::Inter(mv));
+                let bits = mode_bits(backend, block, mv);
                 let scale = if i < cheap { 1.0 } else { new_rate_scale };
                 let rate = lambda * scale * bits;
                 // Isolated legal-rate P probes: HEVC/AV1 −1.2%, parity identical
@@ -708,22 +785,32 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
                 // the planner's search/zero statistics instead of measuring those
                 // same samples again during exact candidate ranking.
                 let exact = !mv.is_full_pel();
-                let stats = if !exact {
-                    stats_of(mv)
-                } else if prune.skips(mv, rate, best_cost) {
+                if exact && prune.skips(mv, rate, best_cost) {
                     return PRUNED;
-                } else {
-                    measurer.measure_exact(mv, filter)
+                }
+                let mut score = |stats, pixels: Option<&[u8]>| {
+                    let distortion = ranking_distortion::<B>(stats, block, params.rank_dc_weight);
+                    let cost = distortion + rate;
+                    if exact {
+                        prune.observe(mv, rate, best_cost, cost);
+                    }
+                    if best_cost.is_none_or(|best| cost < best) {
+                        best_cost = Some(cost);
+                        if let Some(pixels) = pixels {
+                            backend.cache_exact_luma(block, mv, filter, pixels, stats);
+                        }
+                    }
+                    (cost, distortion, stats)
                 };
-                let distortion = n_variance::<B>(stats, block) as f32;
-                let cost = distortion + rate;
-                if exact {
-                    prune.observe(mv, rate, best_cost, cost);
+                if !exact {
+                    score(stats_of(mv), None)
+                } else if B::CACHE_UNWEIGHTED_LUMA && measurer.allows(mv) {
+                    measurer.with_exact_prediction(mv, filter, |stats, pixels, _| {
+                        score(stats, Some(pixels))
+                    })
+                } else {
+                    score(measurer.measure_exact(mv, filter), None)
                 }
-                if best_cost.is_none_or(|best| cost < best) {
-                    best_cost = Some(cost);
-                }
-                (cost, distortion, stats)
             })
         };
         // Neither the codec's skip vector (`decision.winner_walk_keeps_skip`)
@@ -744,7 +831,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
             Some(walk) => walk_winner(
                 backend,
                 block,
-                (&measurer, filter),
+                (&measurer, filter, params.rank_dc_weight),
                 (lambda * new_rate_scale, walk),
                 ((inter_cost, inter_distortion, inter_mv), inter_stats),
             ),
@@ -777,10 +864,11 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     let distortion_of = |mv: Mv| n_variance::<B>(stats_of(mv), block) as f32;
     let distortion_of_four =
         |mvs: [Mv; 4]| stats_of_four(mvs).map(|stats| n_variance::<B>(stats, block) as f32);
+    let mode_bits = backend.inter_mode_pricer(block);
     let mut refine_cost = RateAfterDistortion {
         distortion: &distortion_of,
         distortion_four: &distortion_of_four,
-        rate: |mv: Mv| lambda * backend.mode_bits(block, &PredictionMode::Inter(mv)),
+        rate: |mv: Mv| lambda * mode_bits(backend, block, mv),
     };
     let best = rank(candidates, |mv| refine_cost.cost(mv));
     // Only the winner is refined: refining every candidate (or the search
@@ -789,7 +877,7 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     // The codec's skip vector winning with a negligible residual is final:
     // refining it would cost up to 8 evaluations to move a block that is
     // about to be coded as skip anyway.
-    let negligible = params.skip_no_refine_lambdas * lambda * area;
+    let negligible = effective_skip_no_refine(lambda, params) * lambda * area;
     // The winner is not refined below the codec's variance gate
     // (`CodecBackend::subpel_skip_variance`) nor below the engine's seed gate
     // (`decision.codec_subpel_seed_lambdas`, the exact-filter path's gate on
@@ -803,13 +891,49 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     // (docs/handoff/fast-decision.md).
     let skip_below = backend
         .subpel_skip_variance()
-        .max(seed_gate_threshold(area, params) * lambda)
-        * area;
+        .max(effective_subpel_seed_gate(area, lambda, best.2, params) * lambda)
+        * area
+        * params.winner_refine_gate_scale;
+    let exact_k = (params.exact_finalists.round() as usize).min(MAX_EXACT_FINALISTS);
+    let exact_filter = (exact_k > 0).then(|| backend.exact_luma_filter()).flatten();
+    let mut exact_winner_stats: Option<Variance> = None;
     let (inter_cost, inter_distortion, inter_mv) =
         if Some(best.2) == skip_vector && best.1 < negligible {
             best
+        } else if let Some(filter) = exact_filter {
+            let (refined, finalists, searched) = refine_subpel_finalists(
+                best,
+                skip_below,
+                (
+                    params.subpel_move_bias,
+                    params.subpel_move_bias_nonzero,
+                    params.subpel_fractional_bias,
+                ),
+                (QuarterStage::of(params), quarter_predict(params)),
+                exact_k,
+                refine_cost,
+            );
+            if GATHER && evidence.gathers(Tool::Refine) {
+                evidence.record_saving_above(Tool::Refine, best.1, skip_below, (best.0, refined.0));
+            }
+            if searched {
+                let (reranked, stats) = rerank_exact_finalists::<B>(
+                    backend,
+                    &measurer,
+                    block,
+                    filter,
+                    lambda,
+                    refined.0,
+                    finalists.entries(),
+                    &stats_of,
+                );
+                exact_winner_stats = Some(stats);
+                reranked
+            } else {
+                refined
+            }
         } else {
-            refine_subpel(
+            let refined = refine_subpel(
                 best,
                 skip_below,
                 (
@@ -819,13 +943,20 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
                 ),
                 (QuarterStage::of(params), quarter_predict(params)),
                 refine_cost,
-            )
+            );
+            // What refining a winner just above the gate saved
+            // (`threshold_control.rs`, `adapt.refine`).
+            if GATHER && evidence.gathers(Tool::Refine) {
+                evidence.record_saving_above(Tool::Refine, best.1, skip_below, (best.0, refined.0));
+            }
+            refined
         };
 
     // Only the DC-aware intra decision needs the winner's residual mean:
     // the planner's vectors are cached, others are measured once more.
     let dc = if params.intra_test_dc >= 0.5 {
-        dc_error::<B>(params, stats_of(inter_mv), block)
+        let stats = exact_winner_stats.unwrap_or_else(|| stats_of(inter_mv));
+        dc_error::<B>(params, stats, block)
     } else {
         0.0
     };
@@ -843,8 +974,8 @@ fn choose_inter_mode_with<B: CodecBackend, const GATHER: bool>(
     let finish = Finish {
         pictures: (source, reference, recon),
         skip_vector,
-        filter: None,
-        winner_sse: stats_of(inter_mv).sse as f32,
+        filter: exact_filter.filter(|_| exact_winner_stats.is_some()),
+        winner_sse: exact_winner_stats.unwrap_or_else(|| stats_of(inter_mv)).sse as f32,
     };
     finish.decide(backend, &measurer, block, lambda, params, inter)
 }
@@ -915,7 +1046,8 @@ impl Finish<'_> {
                 InterFinalist {
                     mv,
                     sse: stats.sse as f32,
-                    rank_cost: n_variance::<B>(stats, block) as f32 + lambda * bits,
+                    rank_cost: ranking_distortion::<B>(stats, block, params.rank_dc_weight)
+                        + lambda * bits,
                 }
             });
         let finalists = Finalists {
@@ -981,7 +1113,7 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
 ) -> Option<Choice> {
     let DecisionScratch {
         candidates,
-        prediction,
+        measure,
         ..
     } = scratch;
     candidates.clear();
@@ -995,7 +1127,7 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
     let lambda = backend.lambda() * params.lambda_scale;
     let measurer = Measurer::new::<B>(dsp, source, reference, block)
         .with_refresh(refresh)
-        .with_prediction_scratch(prediction)
+        .with_scratch(measure)
         .with_prediction_energy(params.psy_strength > 0.0)
         .with_row_step(params.distortion_row_step)
         .with_source_moments(source_moments);
@@ -1011,7 +1143,7 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
             rank_cached_exact::<B, false>(
                 backend,
                 block,
-                (&measurer, psy),
+                (&measurer, psy, params.rank_dc_weight),
                 candidates,
                 (cheap, filter, lambda, params.new_rate_scale),
                 &prune,
@@ -1043,6 +1175,7 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
                 one: &one,
                 four: &four,
             },
+            PresetQuarter,
         );
         if refined != mv {
             let stats = match backend.luma_filter() {
@@ -1067,89 +1200,6 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
     }
     cost.is_finite().then_some(Choice {
         mode: DecidedMode::inter(mv),
-        cost,
-        pricing: PricingHint::NONE,
-    })
-}
-
-/// Evaluate the equal-weight compound prediction averaging `primary_reference`
-/// at `primary_mv` and `secondary_reference` at `secondary_mv` (`AV1 §7.11.3.15`).
-///
-/// Called only when both single-reference choices are inter and within
-/// `refs.second_compound_margin` of each other, so compound is tried only on
-/// blocks where the two references are genuinely competitive.
-pub(crate) fn choose_compound_mode<B: CodecBackend>(
-    dsp: &Dsp,
-    backend: &mut B,
-    block: &Block,
-    source: &Picture,
-    primary_reference: &Picture,
-    secondary_reference: &Picture,
-    (primary_mv, secondary_mv, include_dc): (Mv, Mv, bool),
-    scratch: &mut DecisionScratch,
-    (params, source_moments): (&DecisionParams, Option<&PreAnalysis>),
-    refresh: Option<&RefreshWindow>,
-) -> Option<Choice> {
-    if refresh.is_some_and(|w| !w.allows(block, primary_mv) || !w.allows(block, secondary_mv)) {
-        return None;
-    }
-    let DecisionScratch {
-        prediction,
-        compound_a,
-        compound_b,
-        ..
-    } = scratch;
-    let lambda = backend.lambda() * params.lambda_scale;
-    let primary_measurer = Measurer::new::<B>(dsp, source, primary_reference, block)
-        .with_refresh(refresh)
-        .with_prediction_energy_and_rows(params, source_moments);
-    let secondary_measurer = Measurer::new::<B>(dsp, source, secondary_reference, block)
-        .with_refresh(refresh)
-        .with_row_step(params.distortion_row_step);
-    let (w, h) = primary_measurer.extent();
-    let area = w * h;
-    if compound_a.len() < area {
-        compound_a.resize(area, 0);
-    }
-    if compound_b.len() < area {
-        compound_b.resize(area, 0);
-    }
-    let mut pred_buf = prediction.borrow_mut();
-    if pred_buf.len() < area {
-        pred_buf.resize(area, 0);
-    }
-    let pred_slice = &mut pred_buf[..area];
-    // A codec without compound-precision kernels (VP9 averages two 8-bit
-    // predictions) is ranked by AV1's compound prediction, as before it
-    // exposed its filter.
-    let filter = backend
-        .luma_filter()
-        .filter(|filter| filter.has_compound())
-        .unwrap_or(Filter::Av1);
-    primary_measurer.predict_compound_into(filter, primary_mv, &mut compound_a[..area]);
-    secondary_measurer.predict_compound_into(filter, secondary_mv, &mut compound_b[..area]);
-    let mut dst_view = PlaneViewMut::new(pred_slice, w, w, h).expect("block fits");
-    dsp.average_compound(
-        primary_measurer.size,
-        (&compound_a[..area], &compound_b[..area]),
-        w,
-        &mut dst_view,
-    );
-    let psy = Psy::of(params, &primary_measurer);
-    let (stats, penalty) = if let Some(psy) = psy {
-        let (stats, energy) = primary_measurer.stats_and_energy(&dst_view.as_view());
-        (stats, psy.penalty(energy))
-    } else {
-        (primary_measurer.residual_stats(&dst_view.as_view()), 0.0)
-    };
-    let distortion = n_variance::<B>(stats, block) as f32;
-    let bits = backend.compound_mode_bits(block, primary_mv, secondary_mv);
-    let mut cost = distortion + lambda * bits + penalty;
-    if include_dc && cost.is_finite() {
-        cost += dc_error::<B>(params, stats, block);
-    }
-    cost.is_finite().then_some(Choice {
-        mode: DecidedMode::inter(primary_mv),
         cost,
         pricing: PricingHint::NONE,
     })
@@ -1225,12 +1275,13 @@ fn refine_codec_seed(
     area: f32,
     params: &DecisionParams,
     cost: impl RefineCost,
+    quarter: impl QuarterSwitch,
 ) -> (f32, f32, Mv) {
-    let gate = seed_gate_threshold(area, params);
+    let gate = effective_subpel_seed_gate(area, lambda, start.2, params);
     if gate > 0.0 && start.1 < gate * lambda * area {
         start
     } else {
-        refine_codec_subpel(start, params, cost)
+        refine_codec_subpel(start, params, cost, quarter)
     }
 }
 
@@ -1246,6 +1297,46 @@ fn seed_gate_threshold(area: f32, params: &DecisionParams) -> f32 {
     }
 }
 
+/// `seed_gate_threshold` plus its linear shift (`decision.subpel_seed_shift_*`,
+/// `linear_threshold.rs`) at the block's λ, size and whether the seed is the
+/// zero vector, clamped at 0. The frame's constant features are already in
+/// the bias (`DecisionParams::with_frame_shift_features`). With every term 0
+/// it is the fixed gate.
+fn effective_subpel_seed_gate(area: f32, lambda: f32, mv: Mv, params: &DecisionParams) -> f32 {
+    let base = seed_gate_threshold(area, params);
+    let Some(shift) = LinearThreshold::new(
+        params.subpel_seed_shift_bias,
+        [
+            params.subpel_seed_shift_lambda,
+            params.subpel_seed_shift_size,
+            params.subpel_seed_shift_zero_mv,
+        ],
+    ) else {
+        return base;
+    };
+    let features = [
+        log_lambda_feature(lambda),
+        block_size_feature(area),
+        flag_feature(mv == Mv::ZERO),
+    ];
+    (base + shift.at(&features)).max(0.0)
+}
+
+/// `skip_no_refine_lambdas` plus its linear shift
+/// (`decision.skip_no_refine_shift_*`, `linear_threshold.rs`) at the block's
+/// λ, clamped at 0; the frame's constant features are already in the bias.
+/// With every term 0 it is the fixed gate.
+fn effective_skip_no_refine(lambda: f32, params: &DecisionParams) -> f32 {
+    let base = params.skip_no_refine_lambdas;
+    let Some(shift) = LinearThreshold::new(
+        params.skip_no_refine_shift_bias,
+        [params.skip_no_refine_shift_lambda],
+    ) else {
+        return base;
+    };
+    (base + shift.at(&[log_lambda_feature(lambda)])).max(0.0)
+}
+
 /// SVT's quarter-pel loop walks around the updated winner, rather than
 /// evaluating one fixed cross. Its first-move bias is relative to the ME
 /// starting vector, not to absolute zero, and disappears after the first
@@ -1254,6 +1345,7 @@ fn refine_codec_subpel(
     start: (f32, f32, Mv),
     params: &DecisionParams,
     mut cost: impl RefineCost,
+    mut quarter: impl QuarterSwitch,
 ) -> (f32, f32, Mv) {
     if params.subpel_walk < 0.5 {
         return refine_subpel(
@@ -1280,6 +1372,10 @@ fn refine_codec_subpel(
     // distortion pairs rather than running motion compensation a second time.
     // Two legal TRAIN probes: -0.22% P instructions; exact synthetic streams.
     let mut previous_best = start;
+    // The half stage's costs in `CROSS` order, and a measured quarter
+    // stage's cost before it with the step its cheap alternative predicts.
+    let mut half_stage = None;
+    let mut measured = None;
     for step in SUBPEL_STEPS {
         let stage_origin = best.2;
         let old_bias = if stage_origin == Mv::ZERO {
@@ -1287,11 +1383,31 @@ fn refine_codec_subpel(
         } else {
             params.subpel_move_bias_nonzero
         };
-        // The half-sample stage evaluates a cross around a fixed origin: its
-        // four costs are measured up front, in one batch. The quarter-sample
-        // stage walks from the running winner, one vector at a time.
-        let half =
-            (step != 1).then(|| cost.cost_four(cross_around(stage_origin, step, directions)));
+        // The half-sample cross uses the DSP's left, right, above, below
+        // order. The SVT walk still visits the same costs in its own order.
+        let half = (step != 1).then(|| cost.cost_four(cross_around(stage_origin, step, CROSS)));
+        // A quarter stage after a half stage that did not move is the
+        // adaptive switch's opportunity (`adapt.quarter`): run and
+        // measured, or replaced by the step the half stage's costs predict.
+        if step == 1
+            && stage_origin == start.2
+            && let Some(half) = half_stage
+        {
+            let bias = if svt {
+                params.subpel_move_bias
+            } else {
+                old_bias
+            };
+            let predict = quarter_predict(params);
+            match quarter.turn() {
+                Turn::Preset => {}
+                Turn::Cheap => return predicted_quarter(best, (half, bias), predict, &mut cost),
+                Turn::Measure => measured = Some((best.0, predicted_vector(best, half, predict))),
+            }
+        }
+        if let Some(half) = half {
+            half_stage = Some(half);
+        }
         for (i, (dx, dy)) in directions.into_iter().enumerate() {
             let centre = if step == 1 { best.2 } else { stage_origin };
             let mv = Mv {
@@ -1301,7 +1417,7 @@ fn refine_codec_subpel(
             let (c, d) = if mv == previous_best.2 {
                 (previous_best.0, previous_best.1)
             } else if let Some(half) = half {
-                half[i]
+                half[if svt { i ^ 1 } else { i }]
             } else {
                 cost.cost(mv)
             };
@@ -1320,7 +1436,36 @@ fn refine_codec_subpel(
             }
         }
     }
+    // The cheap alternative keeps the whole gain where it predicts the
+    // vector the quarter stage found, and none of it otherwise (it may keep
+    // part: an upper bound of its loss).
+    if let Some((before, predicted)) = measured {
+        let kept = if predicted == Some(best.2) {
+            before
+        } else {
+            best.0
+        };
+        quarter.record(before, kept);
+    }
     best
+}
+
+/// The vector [`predicted_quarter`] would move the unmoved half-stage
+/// winner `best` to under `predict`, before any probe of it.
+fn predicted_vector(
+    best: (f32, f32, Mv),
+    half: [(f32, f32); 4],
+    predict: QuarterPredict,
+) -> Option<Mv> {
+    if predict == QuarterPredict::Off {
+        return None;
+    }
+    let (index, _) = predicted_step(best.1, half.map(|(_, d)| d))?;
+    let (dx, dy) = CROSS[index];
+    Some(Mv {
+        x: best.2.x + dx,
+        y: best.2.y + dy,
+    })
 }
 
 /// Whether `list` holds `mv`. Candidate lists are a few vectors long and
@@ -1522,7 +1667,7 @@ impl GateOutcomes {
     /// Records each tool that ran, won when its vector is `winner`.
     #[cold]
     #[inline(never)]
-    fn record(self, winner: Mv, evidence: &mut BandEvidence) {
+    fn record(self, winner: Mv, evidence: &mut FrameEvidence) {
         for (tool, outcome) in [(Tool::Subpel, self.subpel), (Tool::Probe, self.probe)] {
             if let Some(o) = outcome {
                 evidence.record_above(tool, o.value, o.threshold, o.found == Some(winner));
@@ -1553,7 +1698,7 @@ impl RankBand {
     /// is the band candidate that last took the lead.
     #[cold]
     #[inline(never)]
-    fn report(&self, winner: Mv, evidence: &mut BandEvidence) {
+    fn report(&self, winner: Mv, evidence: &mut FrameEvidence) {
         let runs = self.runs.get();
         if runs > 0 {
             let won = self.leader.get() == Some(winner);
@@ -1581,12 +1726,12 @@ const PRUNED: (f32, f32, Variance) = (f32::INFINITY, f32::INFINITY, FORBIDDEN_ST
 fn consider_exact<B: CodecBackend>(
     backend: &mut B,
     (block, mv, filter): (&Block, Mv, Filter),
-    (measurer, psy): (&Measurer<'_>, Option<Psy>),
+    (measurer, psy, dc_weight): (&Measurer<'_>, Option<Psy>, f32),
     rate: f32,
     cached_best_cost: &mut Option<f32>,
     (stats, pixels, energy): (Variance, Option<&[u8]>, Option<u64>),
 ) -> (f32, f32, Variance) {
-    let distortion = n_variance::<B>(stats, block) as f32;
+    let distortion = ranking_distortion::<B>(stats, block, dc_weight);
     let base = distortion + rate;
     // The penalty is never negative: a candidate already at or above
     // the best cost cannot win, so its prediction energy (a variance
@@ -1617,15 +1762,16 @@ fn consider_exact<B: CodecBackend>(
 fn rank_cached_exact<B: CodecBackend, const GATHER: bool>(
     backend: &mut B,
     block: &Block,
-    (measurer, psy): (&Measurer<'_>, Option<Psy>),
+    (measurer, psy, dc_weight): (&Measurer<'_>, Option<Psy>, f32),
     candidates: &[Mv],
     (cheap, filter, lambda, new_rate_scale): (usize, Filter, f32, f32),
     prune: &ExactPrune<'_>,
     mut stats_and_energy: impl FnMut(Mv) -> (Variance, Option<u64>),
 ) -> ((f32, f32, Mv), Variance) {
+    let mode_bits = backend.inter_mode_pricer(block);
     let mut cached_best_cost = None;
     rank_with_stats(candidates, |i, mv| {
-        let bits = backend.mode_bits(block, &PredictionMode::Inter(mv));
+        let bits = mode_bits(backend, block, mv);
         let scale = if i < cheap { 1.0 } else { new_rate_scale };
         let rate = lambda * scale * bits;
         let exact = !mv.is_full_pel() && measurer.allows(mv);
@@ -1637,7 +1783,7 @@ fn rank_cached_exact<B: CodecBackend, const GATHER: bool>(
             consider_exact(
                 backend,
                 (block, mv, filter),
-                (measurer, psy),
+                (measurer, psy, dc_weight),
                 rate,
                 &mut cached_best_cost,
                 (stats, pixels, energy),
@@ -1685,7 +1831,7 @@ fn winner_walk(params: &DecisionParams) -> Option<RdWalk> {
 fn walk_winner<B: CodecBackend>(
     backend: &mut B,
     block: &Block,
-    (measurer, filter): (&Measurer<'_>, Filter),
+    (measurer, filter, dc_weight): (&Measurer<'_>, Filter, f32),
     (rate_lambda, walk): (f32, RdWalk),
     (start, start_stats): ((f32, f32, Mv), Variance),
 ) -> ((f32, f32, Mv), Variance) {
@@ -1705,7 +1851,7 @@ fn walk_winner<B: CodecBackend>(
                 consider_exact(
                     backend,
                     (block, mv, filter),
-                    (measurer, None),
+                    (measurer, None, dc_weight),
                     rate,
                     &mut cached_best_cost,
                     (stats, pixels, None),
@@ -1718,9 +1864,18 @@ fn walk_winner<B: CodecBackend>(
                     consider(stats, Some(pixels))
                 })
             }
+        } else if B::CACHE_UNWEIGHTED_LUMA && !mv.is_full_pel() {
+            measurer.with_exact_prediction(mv, filter, |stats, pixels, _| {
+                let distortion = ranking_distortion::<B>(stats, block, dc_weight);
+                let cost = distortion + rate;
+                if cost < best.0.0 {
+                    backend.cache_exact_luma(block, mv, filter, pixels, stats);
+                }
+                (cost, distortion, stats)
+            })
         } else {
             let stats = measurer.measure_exact(mv, filter);
-            let distortion = n_variance::<B>(stats, block) as f32;
+            let distortion = ranking_distortion::<B>(stats, block, dc_weight);
             (distortion + rate, distortion, stats)
         };
         if cost < best.0.0 {
@@ -1766,6 +1921,17 @@ struct InterChoice {
     /// `decision.intra_test_dc` is on (else 0).
     dc: f32,
     mv: Mv,
+}
+
+/// The ranking distortion of inter vectors: mean-removed variance plus
+/// `dc_weight` (`decision.rank_dc_weight`) of the residual's DC error.
+/// Variance alone is right between vectors that differ in texture, but on
+/// a moving smooth gradient the zero vector's residual is mostly DC, so it
+/// ranks nearly as well as the true motion; where the codec pays for that DC
+/// (H.264: one DC per 4x4 or 8x8 block), the encoder then codes it.
+fn ranking_distortion<B: CodecBackend>(stats: Variance, block: &Block, dc_weight: f32) -> f32 {
+    let variance = n_variance::<B>(stats, block);
+    variance as f32 + dc_weight * (u64::from(stats.sse) - variance) as f32
 }
 
 /// The residual DC error of `stats` over `block` (`sse - n_variance`, the
@@ -2034,6 +2200,198 @@ fn predicted_quarter(
     }
 }
 
+/// Maximum number of sub-pel finalists re-ranked on the codec's exact filter
+/// (`decision.exact_finalists`).
+const MAX_EXACT_FINALISTS: usize = 4;
+
+/// Fixed-capacity sorted list of unique motion-vector finalists from
+/// [`refine_subpel_finalists`].
+struct FinalistList {
+    scores: [f32; MAX_EXACT_FINALISTS],
+    mvs: [Mv; MAX_EXACT_FINALISTS],
+    len: usize,
+    cap: usize,
+}
+
+impl FinalistList {
+    fn new(cap: usize) -> Self {
+        Self {
+            scores: [f32::INFINITY; MAX_EXACT_FINALISTS],
+            mvs: [Mv::ZERO; MAX_EXACT_FINALISTS],
+            len: 0,
+            cap: cap.clamp(1, MAX_EXACT_FINALISTS),
+        }
+    }
+
+    /// Adds `mv` at `score` (or lowers its score if listed), keeping the list
+    /// sorted by score and at most `cap` long.
+    fn push(&mut self, score: f32, mv: Mv) {
+        let slot = if let Some(pos) = self.mvs[..self.len].iter().position(|&m| m == mv) {
+            if score >= self.scores[pos] {
+                return;
+            }
+            pos
+        } else if self.len < self.cap {
+            self.len += 1;
+            self.len - 1
+        } else if score < self.scores[self.len - 1] {
+            self.len - 1
+        } else {
+            return;
+        };
+        self.scores[slot] = score;
+        self.mvs[slot] = mv;
+        self.sift_up(slot);
+    }
+
+    /// Moves entry `i` towards the front while it scores below its predecessor.
+    fn sift_up(&mut self, mut i: usize) {
+        while i > 0 && self.scores[i] < self.scores[i - 1] {
+            self.scores.swap(i, i - 1);
+            self.mvs.swap(i, i - 1);
+            i -= 1;
+        }
+    }
+
+    /// Ensure the bilinear winner `winner` is present (and at index 0 if `cap == 1`).
+    fn ensure_winner(&mut self, winner: Mv, winner_cost: f32) {
+        if self.cap == 1 {
+            self.scores[0] = winner_cost;
+            self.mvs[0] = winner;
+            self.len = 1;
+            return;
+        }
+        if !self.mvs[..self.len].contains(&winner) {
+            if self.len < self.cap {
+                self.mvs[self.len] = winner;
+                self.scores[self.len] = winner_cost;
+                self.len += 1;
+            } else {
+                self.mvs[self.len - 1] = winner;
+                self.scores[self.len - 1] = winner_cost;
+            }
+        }
+    }
+
+    fn entries(&self) -> (&[f32], &[Mv]) {
+        (&self.scores[..self.len], &self.mvs[..self.len])
+    }
+}
+
+/// Bilinear sub-sample refinement that also collects the top `cap` unique
+/// finalists for exact-filter re-ranking (`decision.exact_finalists`).
+/// Returns `(bilinear_best, finalists, searched)` where `searched` is `false`
+/// when `start_distortion < skip_below`.
+#[inline(never)]
+fn refine_subpel_finalists(
+    (start_cost, start_distortion, start): (f32, f32, Mv),
+    skip_below: f32,
+    (zero_bias, nonzero_bias, fractional_bias): (f32, f32, f32),
+    (quarter, predict): (QuarterStage, QuarterPredict),
+    cap: usize,
+    mut cost: impl RefineCost,
+) -> ((f32, f32, Mv), FinalistList, bool) {
+    let mut best = (start_cost, start_distortion, start);
+    let mut finalists = FinalistList::new(cap);
+    if start_distortion < skip_below {
+        return (best, finalists, false);
+    }
+    finalists.push(start_cost, start);
+    for step in SUBPEL_STEPS {
+        let centre = best.2;
+        if step == 1 && quarter.skips(centre, start) {
+            break;
+        }
+        let move_bias = if centre == Mv::ZERO {
+            zero_bias
+        } else if centre.is_full_pel() {
+            nonzero_bias
+        } else {
+            fractional_bias
+        };
+        let mvs = cross_around(centre, step, CROSS);
+        let costs = cost.cost_four_below(mvs, (best.0, move_bias));
+        for (mv, (c, d)) in mvs.into_iter().zip(costs) {
+            if c * move_bias < best.0 {
+                best = (c, d, mv);
+            }
+            // Even when bilinear `c` was pruned by `move_bias`, keep the best
+            // distortion candidates so exact-filter re-ranking can recover a
+            // sharp half/quarter-pel match that bilinear blurred.
+            let key = if c.is_finite() { c } else { d * move_bias };
+            finalists.push(key, mv);
+        }
+        if predict != QuarterPredict::Off
+            && step != 1
+            && best.2 == centre
+            && quarter.skips(centre, start)
+        {
+            best = predicted_quarter(best, (costs, move_bias), predict, &mut cost);
+            finalists.push(best.0, best.2);
+            finalists.ensure_winner(best.2, best.0);
+            return (best, finalists, true);
+        }
+    }
+    finalists.ensure_winner(best.2, best.0);
+    (best, finalists, true)
+}
+
+/// Maximum bilinear cost ratio (`score / best_bilinear_cost`) for a fractional
+/// runner-up finalist to be re-evaluated on the codec's exact luma filter.
+const EXACT_FINALIST_MARGIN: f32 = 1.15;
+
+/// Re-rank the top bilinear finalists on the codec's exact luma filter and
+/// cache the winning fractional prediction via [`CodecBackend::cache_exact_luma`].
+#[inline(never)]
+fn rerank_exact_finalists<B: CodecBackend>(
+    backend: &mut B,
+    measurer: &Measurer<'_>,
+    block: &Block,
+    filter: Filter,
+    lambda: f32,
+    bilinear_best_cost: f32,
+    (scores, mvs): (&[f32], &[Mv]),
+    stats_of: &impl Fn(Mv) -> Variance,
+) -> ((f32, f32, Mv), Variance) {
+    let cache_luma = B::CACHE_EXACT_LUMA || B::CACHE_UNWEIGHTED_LUMA;
+    let margin_limit = bilinear_best_cost * EXACT_FINALIST_MARGIN;
+    let mut best: Option<(f32, f32, Mv, Variance)> = None;
+    for (idx, (&score, &mv)) in scores.iter().zip(mvs).enumerate() {
+        // Always evaluate the first finalist and any full-pel finalist (free);
+        // prune fractional runner-ups whose bilinear score is far behind the winner.
+        if idx > 0 && !mv.is_full_pel() && score > margin_limit {
+            continue;
+        }
+        let rate = lambda * backend.mode_bits(block, &PredictionMode::Inter(mv));
+        if mv.is_full_pel() {
+            let stats = stats_of(mv);
+            let distortion = n_variance::<B>(stats, block) as f32;
+            let cost = distortion + rate;
+            if best.is_none_or(|(bc, ..)| cost < bc) {
+                best = Some((cost, distortion, mv, stats));
+            }
+        } else if cache_luma && measurer.allows(mv) {
+            measurer.with_exact_prediction(mv, filter, |stats, pixels, _| {
+                let distortion = n_variance::<B>(stats, block) as f32;
+                let cost = distortion + rate;
+                if best.is_none_or(|(bc, ..)| cost < bc) {
+                    backend.cache_exact_luma(block, mv, filter, pixels, stats);
+                    best = Some((cost, distortion, mv, stats));
+                }
+            });
+        } else {
+            let stats = measurer.measure_exact(mv, filter);
+            let distortion = n_variance::<B>(stats, block) as f32;
+            let cost = distortion + rate;
+            if best.is_none_or(|(bc, ..)| cost < bc) {
+                best = Some((cost, distortion, mv, stats));
+            }
+        }
+    }
+    let (c, d, mv, stats) = best.expect("non-empty finalist list");
+    ((c, d, mv), stats)
+}
+
 /// Whole-sample `start` (residual `start_stats`) of `block` refined to sub-sample
 /// precision by residual variance alone: the half- then quarter-sample
 /// cross walk of mode decision ([`refine_subpel`]) without rate, move bias
@@ -2067,7 +2425,13 @@ pub(crate) fn refined_vector<B: CodecBackend>(
 /// `n · variance` of residual statistics over `block`: the sum of squared
 /// residuals minus the squared residual sum over the area.
 pub(crate) fn n_variance<B: CodecBackend>(stats: Variance, block: &Block) -> u64 {
-    u64::from(stats.n_variance(leaf_area::<B>(block) as u32))
+    let log2_width = u32::from(block.log2_width);
+    let log2_height = if B::RECTANGULAR_LEAVES {
+        u32::from(block.log2_height)
+    } else {
+        log2_width
+    };
+    u64::from(stats.n_variance_pow2(log2_width + log2_height))
 }
 
 /// Width and height of leaf `block` of backend `B`: for square-only
@@ -2137,8 +2501,9 @@ pub(crate) struct Measurer<'a> {
     /// Intra refresh: vectors this window forbids measure as
     /// [`FORBIDDEN_STATS`], so no ranking ever picks them.
     refresh: Option<&'a RefreshWindow>,
-    /// Reused buffer for exact predictions; a local one is used without it.
-    prediction: Option<&'a RefCell<Vec<u8>>>,
+    /// The decision's shared scratch: the buffer exact predictions reuse
+    /// (a local one is used without it) and the search position count.
+    scratch: Option<&'a MeasureScratch>,
     /// Exact predictions also report their AC energy ([`crate::psy`]),
     /// measured in the residual variance pass.
     energy: bool,
@@ -2195,7 +2560,7 @@ impl<'a> Measurer<'a> {
             block: *block,
             size,
             refresh: None,
-            prediction: None,
+            scratch: None,
             energy: false,
             even_rows: None,
             source_energy: Cell::new(None),
@@ -2243,10 +2608,20 @@ impl<'a> Measurer<'a> {
         self
     }
 
-    /// Predict exact candidates into `buffer` instead of a fresh one.
-    pub(crate) fn with_prediction_scratch(mut self, buffer: &'a RefCell<Vec<u8>>) -> Self {
-        self.prediction = Some(buffer);
+    /// Predict exact candidates into `scratch`'s buffer instead of a fresh
+    /// one, and count the positions measured in it
+    /// ([`DecisionScratch::search_positions`]).
+    pub(crate) fn with_scratch(mut self, scratch: &'a MeasureScratch) -> Self {
+        self.scratch = Some(scratch);
         self
+    }
+
+    /// Note `count` block predictions measured, where they are counted.
+    #[inline]
+    fn count_positions(&self, count: u64) {
+        if let Some(scratch) = self.scratch {
+            scratch.count_positions(count);
+        }
     }
 
     /// Whether intra refresh allows predicting the block from `mv`.
@@ -2319,6 +2694,7 @@ impl<'a> Measurer<'a> {
         consume: impl FnOnce(Variance, &[u8], Option<u64>) -> R,
     ) -> R {
         debug_assert!(!mv.is_full_pel());
+        self.count_positions(1);
         let (dx, dy) = mv.full_pel();
         let per_unit = filter.positions() as i32 / MV_UNITS_PER_SAMPLE;
         let (phase_x, phase_y) = mv.fraction();
@@ -2332,7 +2708,7 @@ impl<'a> Measurer<'a> {
             self.block.y as isize + dy as isize - before,
         );
         let area = w * h;
-        if let Some(buffer) = self.prediction {
+        if let Some(buffer) = self.scratch.map(|s| &s.prediction) {
             let mut buffer = buffer.borrow_mut();
             if buffer.len() < area {
                 buffer.resize(area, 0);
@@ -2362,15 +2738,28 @@ impl<'a> Measurer<'a> {
     ) -> (Variance, Option<u64>) {
         let (w, h) = self.extent();
         let mut dst = PlaneViewMut::new(pred, w, w, h).expect("block fits");
+        let predict = |window: &PlaneView<'_>, dst: &mut PlaneViewMut<'_>| {
+            // H.264 luma through its phase-specialised kernels (the same samples).
+            if filter == Filter::H264Luma {
+                self.dsp.h264_predictor(filter, self.size).predict(
+                    window.data(),
+                    window.stride(),
+                    fx,
+                    fy,
+                    dst.data_mut(),
+                    w,
+                );
+            } else {
+                self.dsp.predict(filter, self.size, window, fx, fy, dst);
+            }
+        };
         if let Some(window) = self.plane.region(x0, y0, span_w, span_h) {
-            self.dsp
-                .predict(filter, self.size, &window, fx, fy, &mut dst);
+            predict(&window, &mut dst);
         } else {
             let gathered = clamped_window(self.plane, x0, y0, span_w, span_h);
             let window = PlaneView::new(&gathered, span_w, span_w, span_h)
                 .expect("window covers its samples");
-            self.dsp
-                .predict(filter, self.size, &window, fx, fy, &mut dst);
+            predict(&window, &mut dst);
         }
         if self.energy {
             let (stats, energy) = self.stats_and_energy(&dst.as_view());
@@ -2406,6 +2795,7 @@ impl<'a> Measurer<'a> {
         if !self.energy || self.even_rows.is_some() || !self.allows(mv) {
             return (self.measure(mv), None);
         }
+        self.count_positions(1);
         let (w, h) = self.extent();
         let (dx, dy) = mv.full_pel();
         let (x, y) = (
@@ -2478,12 +2868,24 @@ impl<'a> Measurer<'a> {
     /// reference.
     pub(crate) fn measure_four(&self, mvs: [Mv; 4]) -> [Variance; 4] {
         if let [Some(a), Some(b), Some(c), Some(d)] = mvs.map(|mv| self.bilinear_window(mv))
-            && let Some(stats) = self.windows.at_four([a, b, c, d])
+            && let Some(stats) = self
+                .dsp
+                .halfpel_cross_variance(self.size, &self.padded, &self.src, [a, b, c, d])
+                .or_else(|| self.windows.at_four([a, b, c, d]))
         {
+            self.count_positions(4);
             stats
         } else {
-            mvs.map(|mv| self.measure(mv))
+            self.measure_four_fallback(mvs)
         }
+    }
+
+    /// A refresh boundary, sampled whole-pel position or clamped reference
+    /// needs the individual measurement for each vector.
+    #[cold]
+    #[inline(never)]
+    fn measure_four_fallback(&self, mvs: [Mv; 4]) -> [Variance; 4] {
+        mvs.map(|mv| self.measure(mv))
     }
 
     /// The bilinear window `(x, y, fx, fy)` [`Self::measure`] reads in the
@@ -2546,6 +2948,7 @@ impl<'a> Measurer<'a> {
         }
         let size = BlockSize::new(half_w, half_h)?;
         let (x, y) = (x as usize, y as usize);
+        self.count_positions(1);
         Some(
             [(0, 0), (half_w, 0), (0, half_h), (half_w, half_h)].map(|(dx, dy)| {
                 let src = self
@@ -2563,8 +2966,8 @@ impl<'a> Measurer<'a> {
         if !self.allows(mv) {
             return FORBIDDEN_STATS;
         }
+        self.count_positions(1);
         let (w, h) = self.extent();
-        let (dx, dy) = mv.full_pel();
         // Every vector reads a (w + 1) x (h + 1) window: within the padded
         // plane it is measured in place, otherwise from a clamped copy.
         let (x, y, fx, fy) = self.window_of(mv);
@@ -2579,16 +2982,23 @@ impl<'a> Measurer<'a> {
         {
             stats
         } else {
-            let (x0, y0) = (
-                self.block.x as isize + dx as isize,
-                self.block.y as isize + dy as isize,
-            );
-            let gathered = clamped_window(self.plane, x0, y0, w + 1, h + 1);
-            let window =
-                PlaneView::new(&gathered, w + 1, w + 1, h + 1).expect("window covers its samples");
-            self.dsp
-                .prediction_variance(self.size, &window, 0, 0, fx, fy, &self.src)
+            self.measure_clamped(mv, fx, fy)
         }
+    }
+
+    /// Copy the edge samples only when the vector exceeds the padded reference.
+    #[cold]
+    #[inline(never)]
+    fn measure_clamped(&self, mv: Mv, fx: usize, fy: usize) -> Variance {
+        let (w, h) = self.extent();
+        let (dx, dy) = mv.full_pel();
+        let x = self.block.x as isize + dx as isize;
+        let y = self.block.y as isize + dy as isize;
+        let gathered = clamped_window(self.plane, x, y, w + 1, h + 1);
+        let window =
+            PlaneView::new(&gathered, w + 1, w + 1, h + 1).expect("window covers its samples");
+        self.dsp
+            .prediction_variance(self.size, &window, 0, 0, fx, fy, &self.src)
     }
 }
 
@@ -2787,24 +3197,26 @@ mod tests {
         let mut params = DecisionParams::from_overrides(&crate::params::ParamOverrides::default());
         let start = (64.0, 64.0, Mv::ZERO);
         let mut calls = 0;
-        refine_codec_seed(start, 1.0, 64.0, &params, |_| {
+        let mut count = |_| {
             calls += 1;
             (100.0, 100.0)
-        });
+        };
+        refine_codec_seed(start, 1.0, 64.0, &params, &mut count, PresetQuarter);
         assert!(calls > 0);
         params.codec_subpel_seed_lambdas = 2.0;
-        let kept = refine_codec_seed(start, 1.0, 64.0, &params, |_| {
-            panic!("seed should bypass search")
-        });
+        let bypassed = |_| panic!("seed should bypass search");
+        let kept = refine_codec_seed(start, 1.0, 64.0, &params, bypassed, PresetQuarter);
         assert_eq!(kept, start);
         params.codec_subpel_seed_lambdas = 1.0;
         calls = 0;
-        refine_codec_seed(start, 1.0, 64.0, &params, |_| {
+        let mut count = |_| {
             calls += 1;
             (100.0, 100.0)
-        });
+        };
+        refine_codec_seed(start, 1.0, 64.0, &params, &mut count, PresetQuarter);
         assert!(calls > 0);
-        refine_codec_seed(start, 0.0, 64.0, &params, |_| (100.0, 100.0));
+        let flat = |_| (100.0, 100.0);
+        refine_codec_seed(start, 0.0, 64.0, &params, flat, PresetQuarter);
     }
 
     #[test]
@@ -2821,12 +3233,12 @@ mod tests {
         };
         let start = (100.0, 100.0, Mv::ZERO);
         assert_eq!(
-            refine_codec_subpel(start, &params, cost).2,
+            refine_codec_subpel(start, &params, cost, PresetQuarter).2,
             Mv { x: -1, y: 0 }
         );
         params.subpel_walk = 1.0;
         assert_eq!(
-            refine_codec_subpel(start, &params, cost).2,
+            refine_codec_subpel(start, &params, cost, PresetQuarter).2,
             Mv { x: -1, y: -1 }
         );
     }
@@ -2836,7 +3248,7 @@ mod tests {
         let mut params = DecisionParams::from_overrides(&crate::params::ParamOverrides::default());
         params.subpel_walk = 2.0;
         let mut calls = 0;
-        let result = refine_codec_subpel((100.0, 100.0, Mv { x: 4, y: 0 }), &params, |mv: Mv| {
+        let cost = |mv: Mv| {
             calls += 1;
             let value = match (mv.x, mv.y) {
                 (6, 0) => 95.0,
@@ -2847,9 +3259,71 @@ mod tests {
                 _ => 200.0,
             };
             (value, value)
-        });
+        };
+        let start = (100.0, 100.0, Mv { x: 4, y: 0 });
+        let result = refine_codec_subpel(start, &params, cost, PresetQuarter);
         assert_eq!(result, (74.0, 74.0, Mv { x: 5, y: 3 }));
         assert_eq!(calls, 6);
+    }
+
+    /// A switch that always takes one turn, and keeps what it is told.
+    struct FixedTurn {
+        turn: Turn,
+        recorded: Vec<(f32, f32)>,
+    }
+
+    impl QuarterSwitch for &mut FixedTurn {
+        fn turn(&mut self) -> Turn {
+            self.turn
+        }
+
+        fn record(&mut self, before: f32, kept: f32) {
+            self.recorded.push((before, kept));
+        }
+    }
+
+    #[test]
+    fn a_switched_quarter_stage_is_measured_or_replaced_by_the_predicted_step() {
+        let mut params = DecisionParams::from_overrides(&crate::params::ParamOverrides::default());
+        params.subpel_walk = 1.0;
+        params.subpel_move_bias = 1.0;
+        // The half stage does not move; its costs lean towards -x, where the
+        // quarter neighbour is the best vector.
+        let value = |mv: Mv| match (mv.x, mv.y) {
+            (0, 0) => 100.0,
+            (-2, 0) => 120.0,
+            (2, 0) => 300.0,
+            (-1, 0) => 90.0,
+            _ => 400.0,
+        };
+        let start = (100.0, 100.0, Mv::ZERO);
+        let run = |params: &DecisionParams, turn: Turn| {
+            let mut calls = 0;
+            let mut switch = FixedTurn {
+                turn,
+                recorded: Vec::new(),
+            };
+            let cost = |mv: Mv| {
+                calls += 1;
+                (value(mv), value(mv))
+            };
+            let best = refine_codec_subpel(start, params, cost, &mut switch);
+            (best.2, calls, switch.recorded)
+        };
+        let found = Mv { x: -1, y: 0 };
+        // Measured with no prediction: the cheap alternative loses the gain.
+        assert_eq!(run(&params, Turn::Measure), (found, 7, vec![(100.0, 90.0)]));
+        // No step predicted: the cheap turn stops at the half stage.
+        assert_eq!(run(&params, Turn::Cheap), (Mv::ZERO, 4, vec![]));
+        // The parabola predicts the step: one probe finds it, and a
+        // measured turn records that the alternative loses nothing.
+        params.subpel_quarter_predict = 1.0;
+        assert_eq!(run(&params, Turn::Cheap), (found, 5, vec![]));
+        assert_eq!(
+            run(&params, Turn::Measure),
+            (found, 7, vec![(100.0, 100.0)])
+        );
+        assert_eq!(run(&params, Turn::Preset), (found, 7, vec![]));
     }
 
     #[test]
@@ -2946,8 +3420,7 @@ mod tests {
             Mv { x: 4, y: 0 },
             None,
             &mut DecisionScratch::default(),
-            None,
-            None,
+            (None, false),
             &params,
             None,
         );
@@ -2961,5 +3434,28 @@ mod tests {
             assert_eq!(stats, expected_stats);
             assert_eq!(pixels, expected_pixels);
         });
+    }
+
+    #[test]
+    fn subpel_and_skip_shifts_are_exact_at_zero_and_linear_when_active() {
+        let mut params = DecisionParams::from_overrides(&crate::params::ParamOverrides::default());
+        params.codec_subpel_seed_lambdas = 0.03;
+        params.skip_no_refine_lambdas = 0.25;
+        assert_eq!(
+            effective_subpel_seed_gate(256.0, 33.0, Mv::ZERO, &params),
+            0.03
+        );
+        assert_eq!(effective_skip_no_refine(33.0, &params), 0.25);
+
+        params.subpel_seed_shift_bias = 0.02;
+        params.subpel_seed_shift_size = 0.04; // 32x32 (area=1024): (10 - 8)*0.25 = 0.5 -> +0.02
+        params.subpel_seed_shift_zero_mv = 0.01;
+        let g = effective_subpel_seed_gate(1024.0, 33.0, Mv::ZERO, &params);
+        assert!((g - 0.08).abs() < 1e-6, "got {g}");
+        let g_mov = effective_subpel_seed_gate(1024.0, 33.0, Mv { x: 4, y: 0 }, &params);
+        assert!((g_mov - 0.07).abs() < 1e-6, "got {g_mov}");
+
+        params.skip_no_refine_shift_bias = -0.5;
+        assert_eq!(effective_skip_no_refine(33.0, &params), 0.0);
     }
 }

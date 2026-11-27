@@ -625,6 +625,12 @@ def build_entry(suite, streams, directory):
         # kept.
         info = {**info, "frame_bytes": None}
         frames, agrees = [], None
+    elif hashes.size % info["frame_bytes"]:
+        # The same, with only a whole MD5 shipped: the output is no whole
+        # number of first-picture sizes (HEVC VPSSPSPPS_A_MainConcept_1:
+        # six pictures of six sizes were split into 72 pieces of the first).
+        info = {**info, "frame_bytes": None}
+        frames = []
     return directory.name, {
         "name": directory.name, "bitstream": str(path.relative_to(streams)), **info,
         "md5": md5, "frames": len(hashes.frames) if frames else None, "frame_md5": frames,

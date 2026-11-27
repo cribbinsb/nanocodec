@@ -73,9 +73,16 @@ VMAF_V1_MODEL = Path("share/vmaf/model/vmaf_v1.0.16/vmaf_v1.0.16_3d0h.json")
 X264_MODES = {"qp": (False, None), "cbr": (True, None), "psnr-qp": (False, "psnr"),
               "psnr-cbr": (True, "psnr")}
 X264 = "x264-medium"
+#: The fixed-QP x264 curves in a metric tune, by their variant name (`x264_variant`):
+#: x264-medium+psnr is the Fixed QP views' zero line (tools/dev/fixedqp_timing.py
+#: times it from these names).
+X264_TUNED_QP = {f"{X264}+{tune}": mode for mode, (cbr, tune) in X264_MODES.items()
+                 if tune and not cbr}
 MS_PER_SECOND = 1000
-#: The figures `compare` prints, in order.
-FIGURES = ("Weighted", "J", *J_METRICS, *REPORTED_METRICS)
+#: The figures `compare` prints, in order. PSNR-Y is the frame-averaged luma PSNR
+#: (the JVET form's "Y-fa", as HM prints it), shown beside PSNR-YUV, never in J.
+PSNR_Y, PSNR_Y_COLUMN = "PSNR-Y", "Y-fa"
+FIGURES = ("Weighted", "J", *J_METRICS, PSNR_Y, *REPORTED_METRICS)
 #: Written by `local` beside the result records (not *.json: load_points reads those).
 VARIANTS_FILE = "variants.jsonl"
 
@@ -164,7 +171,7 @@ def tool_paths(references: Path | None = None) -> dict[str, Path]:
     """The anchors' tools and ours, plus the reference software's bin/ and cfg/ files
     where `references` is given (the layout `stage --references` takes)."""
     paths = load_paths()
-    tools = {p.name: p for p in (paths.anchors / "bin").iterdir()}
+    tools = planner.anchor_tools(paths)
     tools["nanocodec"] = paths.nanocodec_bin / "nanocodec"
     if references is not None:
         tools.update({p.name: p for d in ("bin", "cfg") for p in (references / d).iterdir()})
@@ -277,6 +284,8 @@ def figures(anchor: list[Point], test: list[Point]) -> dict[str, float | None]:
     for metric in J_METRICS:
         r = bd(anchor, test, metric)
         values[metric] = r.value if r.reliable else None
+    luma = bd(anchor, test, PSNR_Y_COLUMN)
+    values[PSNR_Y] = luma.value if luma.reliable else None
     for metric in REPORTED_METRICS:  # None where either curve was not scored for it
         r = bd(anchor, test, metric) if all(metric in p.quality for p in anchor + test) else None
         values[metric] = r.value if r is not None and r.reliable else None

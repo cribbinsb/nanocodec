@@ -2,7 +2,8 @@
 //! the neighbours allow, every availability combination, random, extreme
 //! and alternating neighbours.
 use crate::{check::CheckReport, rng::Rng};
-use nc_dsp::{Dsp, H264Intra8x8Edges, h264_intra_8x8_mode};
+use nc_common::{BitDepth, Sample};
+use nc_dsp::{Dsp, H264Intra8x8Edges, h264_intra_8x8_mode, h264_plane};
 
 /// Random neighbour sets per availability combination.
 const RANDOM_EDGES: usize = 8;
@@ -58,6 +59,80 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                     ));
                 }
             }
+        }
+    }
+    let rng = &mut rng.clone();
+    check_plane::<u8, 8>(BitDepth::EIGHT, rng, report);
+    check_plane::<u8, 16>(BitDepth::EIGHT, rng, report);
+    check_plane::<u16, 8>(BitDepth::TEN, rng, report);
+    check_plane::<u16, 16>(BitDepth::TEN, rng, report);
+    check_plane::<u16, 8>(BitDepth::new(12).unwrap(), rng, report);
+    check_plane::<u16, 16>(BitDepth::new(12).unwrap(), rng, report);
+}
+
+fn check_plane<T: Sample, const N: usize>(
+    depth: BitDepth,
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    let stride = N + 5;
+    for pattern in 0..16 {
+        let mut edge = |index: usize| {
+            T::from_i32(match pattern {
+                0 => {
+                    if index < N / 2 {
+                        0
+                    } else {
+                        depth.max()
+                    }
+                }
+                1 => {
+                    if index < N / 2 {
+                        depth.max()
+                    } else {
+                        0
+                    }
+                }
+                2 => {
+                    if index.is_multiple_of(2) {
+                        0
+                    } else {
+                        depth.max()
+                    }
+                }
+                _ => rng.below(depth.max() as usize + 1) as i32,
+            })
+        };
+        let above: [T; N] = core::array::from_fn(&mut edge);
+        let left: [T; N] = core::array::from_fn(|i| edge(N - i));
+        let corner = edge(N);
+        let half = N / 2;
+        let k = if N == 16 { 5 } else { 34 };
+        let slope = |values: &[T; N]| {
+            let at = |i| if i == 0 { corner } else { values[i - 1] };
+            let sum: i32 = (1..=half)
+                .map(|i| i as i32 * (at(half + i).to_i32() - at(half - i).to_i32()))
+                .sum();
+            (k * sum + 32) >> 6
+        };
+        let (dx, dy) = (slope(&above), slope(&left));
+        let base = 16 * (above[N - 1].to_i32() + left[N - 1].to_i32());
+        let centre = half as i32 - 1;
+        let mut expected = vec![T::from_i32(123); stride * (N + 1)];
+        let mut actual = expected.clone();
+        for y in 0..N {
+            for x in 0..N {
+                let value = base + dx * (x as i32 - centre) + dy * (y as i32 - centre);
+                expected[y * stride + x + 1] = depth.clip_to((value + 16) >> 5);
+            }
+        }
+        h264_plane(&mut actual[1..], stride, (&above, &left, corner), depth);
+        report.cases += 1;
+        if actual != expected {
+            report.failures.push(format!(
+                "H.264 plane {N}x{N} depth {} pattern {pattern}",
+                depth.bits()
+            ));
         }
     }
 }

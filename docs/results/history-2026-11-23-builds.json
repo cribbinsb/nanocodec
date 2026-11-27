@@ -1,0 +1,51 @@
+{
+ "base": "43033f9e",
+ "families": {
+  "nanocodec-h264@slower": "43033f9e",
+  "nanocodec-h264@slow": "43033f9e",
+  "nanocodec-h264": "43033f9e",
+  "nanocodec-h264@fast": "43033f9e",
+  "nanocodec-h264@faster": "43033f9e",
+  "nanocodec-h264@veryfast": "43033f9e",
+  "nanocodec-hevc@veryslow": "43033f9e",
+  "nanocodec-hevc@slower": "43033f9e",
+  "nanocodec-hevc@slow": "43033f9e",
+  "nanocodec-hevc": "43033f9e",
+  "nanocodec-hevc@fast": "43033f9e",
+  "nanocodec-hevc@faster": "43033f9e",
+  "nanocodec-av1@slower": "43033f9e",
+  "nanocodec-av1@slow": "43033f9e",
+  "nanocodec-av1": "43033f9e",
+  "nanocodec-av1@fast": "43033f9e",
+  "nanocodec-av1@faster": "43033f9e",
+  "nanocodec-av1@veryfast": "43033f9e",
+  "nanocodec-vp9@slower": "43033f9e",
+  "nanocodec-vp9@slow": "43033f9e",
+  "nanocodec-vp9": "43033f9e",
+  "nanocodec-vp9@fast": "43033f9e",
+  "nanocodec-vp9@faster": "43033f9e",
+  "nanocodec-vp9@veryfast": "43033f9e",
+  "nanocodec-av2@slower": "43033f9e",
+  "nanocodec-av2@slow": "43033f9e",
+  "nanocodec-av2": "43033f9e",
+  "nanocodec-av2@fast": "43033f9e",
+  "nanocodec-av2@faster": "43033f9e",
+  "nanocodec-vvc@veryslow": "43033f9e",
+  "nanocodec-vvc@slower": "43033f9e",
+  "nanocodec-vvc@slow": "43033f9e",
+  "nanocodec-vvc": "43033f9e",
+  "nanocodec-vvc@fast": "43033f9e",
+  "nanocodec-vvc@faster": "43033f9e"
+ },
+ "builds": {
+  "43033f9e": "43033f9e (integration head at 05:00, 2026-11-23, plain release)"
+ },
+ "tools": {
+  "x264": "0.165",
+  "x265": "4.2",
+  "svt": "v4.3.0",
+  "libvpx": "v1.16.0",
+  "libaom": "v3.15.3"
+ },
+ "timed_on": {}
+}

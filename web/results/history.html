@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="How nanocodec's encoders moved on the headline chart from 2026-11-07 to 2026-11-20: one build per day, re-measured with one protocol.">
+  <meta name="description" content="How nanocodec's encoders moved on the headline chart from 2026-11-07 to 2026-11-23: one build per day, re-measured with one protocol.">
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
   <title>nanocodec results history</title>
   <link rel="stylesheet" href="../site-header.css">
-  <link rel="stylesheet" href="site.css?v=d3e8960a35">
+  <link rel="stylesheet" href="site.css?v=4d0cf667ce">
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
 <header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
@@ -29,7 +30,7 @@
   <p class="lede">nanocodec's code was written and is maintained by AI coding agents (mostly Anthropic's Claude,
     also OpenAI's Codex and Google's Gemini) under the direction of one person. This page shows its encoders'
     presets on the overview chart and the Pareto frontier they form, one frame per day from 2026-11-07 (the first build with CBR rate
-    control) to 2026-11-20, with the main landings and the git activity since the previous frame. Each frame is that day's last build, measured again now with one protocol, so the frames
+    control) to 2026-11-23, with the main landings and the git activity since the previous frame. Each frame is that day's last build, measured again now with one protocol, so the frames
     compare with each other. The dated charts of those days do not: their clip sets, zero line, timing
     machine and preset names changed during the period.</p>
 
@@ -50,7 +51,7 @@
       <div class="frame-head">
         <p class="chart-title">BD-J vs x264 medium --tune zerolatency,psnr, against single-thread encode speed</p>
         <p class="chart-sub"><span class="frame-day"></span> · every preset · real-time CBR · held-out fresh clips (fixed slice) · bold: our Pareto frontier (over every codec and preset, or one codec's presets: Front of), its presets marked (ringed: a Default) · faint: earlier frames' frontiers · lower is fewer bits, right is faster</p>
-        <p class="chart-sub">nanocodec's buffer is looser than the references' here: see <a href="method.html#buffer">Rate control and the buffer</a>.</p>
+        <p class="chart-sub">How full each encoder's buffer gets in the release charts is measured on <a href="buffer.html">Rate control and the buffer</a>; these frames span builds from before and after its changes.</p>
         <ul class="frame-caption" aria-live="polite"></ul>
         <p class="frame-activity"></p>
         <p class="frame-front"></p>
@@ -65,9 +66,9 @@
       <summary>Every day as a table</summary>
       <div class="table-slot"></div>
     </details>
-    <p class="note">Data: <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-20/history.json"><code>history-2026-11-20/history.json</code></a>
-      (tools/dev/history_chart.py); the animation as <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-20/history.gif">GIF</a>
-      and <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-20/history.mp4">MP4</a>.</p>
+    <p class="note">Data: <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-23/history.json"><code>history-2026-11-23/history.json</code></a>
+      (tools/dev/history_chart.py); the animation as <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-23/history.gif">GIF</a>
+      and <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/history-2026-11-23/history.mp4">MP4</a>.</p>
   </section>
 </main>
 <footer>
@@ -76,6 +77,6 @@
     openh264 are its comparison points. With thanks to all of them.
     <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
 </footer>
-<script type="module" src="history.js?v=d3e8960a35"></script>
+<script type="module" src="history.js?v=4d0cf667ce"></script>
 </body>
 </html>

@@ -7,8 +7,8 @@ use super::av1::Av1EdgeFilter;
 use super::av1_tile::GroupedTile;
 use crate::lpf_bytes::{avx512, gfni};
 
-pub(crate) fn install(table: &mut super::DeblockFns) {
-    table.av1_edge = av1_edge;
+pub(crate) fn install(table: &mut super::DeblockFns, granite: bool) {
+    table.av1_edge = if granite { av1_edge_granite } else { av1_edge };
     table.av1_line = super::av1_line::avx512;
     table.av1_grid = super::av1_grid::avx512;
     table.av1_runs = super::runs::avx512;
@@ -36,6 +36,28 @@ pub(super) unsafe fn av1_edge(
         super::av1_packed::filter_wide::<avx512::B, GroupedTile<avx512::B>, 32>(
             plane, q0, across, along, lines, filter, tail,
         );
+    }
+}
+
+/// Short horizontal four-tap edges ran faster through the AVX2 byte
+/// filter on Granite Rapids. Longer edges still use the wide entry.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,gfni")]
+unsafe fn av1_edge_granite(
+    plane: &mut [u8],
+    q0: usize,
+    across: usize,
+    along: usize,
+    lines: usize,
+    filter: Av1EdgeFilter,
+) {
+    // SAFETY: both entries have the same validated footprint and the
+    // caller selected the AVX-512 tier, which includes AVX2.
+    unsafe {
+        if along == 1 && lines <= 8 && filter.length == super::av1::Av1FilterLength::Four {
+            super::avx2::av1_edge(plane, q0, across, along, lines, filter);
+        } else {
+            av1_edge(plane, q0, across, along, lines, filter);
+        }
     }
 }
 

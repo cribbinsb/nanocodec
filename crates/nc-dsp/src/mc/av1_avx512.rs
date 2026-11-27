@@ -5,7 +5,8 @@
 //!
 //! - Horizontal: one masked load of the row's `span(32, P)` bytes, then one
 //!   `vpermb` (VBMI) per tap pair gathers each lane's byte pairs (lane `k`
-//!   holds outputs `8k..8k+8`), multiplied by `vpmaddubsw`.
+//!   holds outputs `8k..8k+8`), multiplied by `vpmaddubsw`. Wide AV1-family
+//!   one-direction filters instead use VNNI with three shared gathers.
 //! - Vertical, one direction: each 32-byte row is spread once (`vpermq`,
 //!   lane `k` low half = bytes `8k..8k+8`), then a tap pair is one
 //!   `vpunpcklbw` and one `vpmaddubsw`.
@@ -31,11 +32,13 @@ use super::avx2_byte_dot::span;
 use super::{PREP_LAST_ROUND, PREP_LAST_SHIFT, ROUND_2, ROUND_6, Rounding};
 use core::arch::x86_64::{
     __m256i, __m512i, _mm_cvtsi32_si128, _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16,
-    _mm512_add_epi32, _mm512_castsi256_si512, _mm512_castsi512_si256, _mm512_loadu_si512,
-    _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_maskz_loadu_epi8, _mm512_mulhrs_epi16,
-    _mm512_packs_epi32, _mm512_packus_epi16, _mm512_permutexvar_epi8, _mm512_permutexvar_epi64,
-    _mm512_set_epi64, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_sra_epi32,
-    _mm512_storeu_si512, _mm512_unpackhi_epi16, _mm512_unpacklo_epi8, _mm512_unpacklo_epi16,
+    _mm512_add_epi32, _mm512_castsi256_si512, _mm512_castsi512_si256, _mm512_dpbusd_epi32,
+    _mm512_loadu_si512, _mm512_madd_epi16, _mm512_maddubs_epi16, _mm512_maskz_loadu_epi8,
+    _mm512_mulhrs_epi16, _mm512_packs_epi32, _mm512_packus_epi16, _mm512_packus_epi32,
+    _mm512_permutexvar_epi8, _mm512_permutexvar_epi64, _mm512_set_epi64, _mm512_set1_epi16,
+    _mm512_set1_epi32, _mm512_setzero_si512, _mm512_sra_epi32, _mm512_srai_epi16,
+    _mm512_srli_epi16, _mm512_storeu_si512, _mm512_unpackhi_epi16, _mm512_unpacklo_epi8,
+    _mm512_unpacklo_epi16,
 };
 
 /// Outputs of one vector (32 lanes of 16 bits).
@@ -233,8 +236,87 @@ fn vertical_words<R: Rounding, const P: usize>(
     _mm512_packs_epi32(_mm512_sra_epi32(lo, shift), _mm512_sra_epi32(hi, shift))
 }
 
+/// Gather four adjacent tap bytes per output for `vpdpbusd`. The two
+/// output groups share the middle gather. Their lane layout packs back
+/// into the same 32-word order as [`row_32`].
+const fn vnni_gather_indices() -> [[u8; 64]; 3] {
+    let mut indices = [[0; 64]; 3];
+    let mut group = 0;
+    while group < 3 {
+        let mut byte = 0;
+        while byte < 64 {
+            let output = byte / 16 * 8 + byte % 16 / 4;
+            indices[group][byte] = (output + group * 4 + byte % 4) as u8;
+            byte += 1;
+        }
+        group += 1;
+    }
+    indices
+}
+
+const VNNI_GATHERS: [[u8; 64]; 3] = vnni_gather_indices();
+
+/// Dav1d's AVX-512 ICL four-tap dot structure for the wide horizontal
+/// AV1 pass (`mc_avx512.asm`, BSD-2-Clause). Uses the checked exact
+/// footprint and the shared output sinks.
+///
+/// # Safety
+/// The caller enables the ICL tier and checks the source and output.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi,avx512vnni")]
+#[inline]
+unsafe fn horizontal_vnni<const W: usize, const P: usize, S: Sink, const C: usize>(
+    window: Window,
+    lead: usize,
+    out: S,
+    height: usize,
+    taps: [(i16, i16); P],
+) {
+    let mut groups = [0u32; 2];
+    for (i, (a, b)) in taps.into_iter().enumerate() {
+        let pair = u16::from_le_bytes([a as u8, b as u8]);
+        groups[i / 2] |= u32::from(pair) << ((i % 2) * 16);
+    }
+    let weights = [
+        _mm512_set1_epi32(groups[0] as i32),
+        _mm512_set1_epi32(groups[1] as i32),
+    ];
+    // SAFETY: each constant holds the 64 gather bytes.
+    let [g0, g1, g2] = unsafe {
+        [
+            _mm512_loadu_si512(VNNI_GATHERS[0].as_ptr().cast()),
+            _mm512_loadu_si512(VNNI_GATHERS[1].as_ptr().cast()),
+            _mm512_loadu_si512(VNNI_GATHERS[2].as_ptr().cast()),
+        ]
+    };
+    let mask = u64::MAX >> (64 - span(LANES, P));
+    // The two rounded shifts of put are exactly (sum + 34) >> 6.
+    let bias = _mm512_set1_epi32(if S::PREP { 2 } else { 34 });
+    for r in 0..height {
+        for c0 in (0..W).step_by(LANES) {
+            // SAFETY: the input window holds span(32, P) bytes on this row.
+            let pixels =
+                unsafe { _mm512_maskz_loadu_epi8(mask, window.at(r + C, c0 + lead).cast()) };
+            let a = _mm512_permutexvar_epi8(g0, pixels);
+            let b = _mm512_permutexvar_epi8(g1, pixels);
+            let c = _mm512_permutexvar_epi8(g2, pixels);
+            let lo = _mm512_dpbusd_epi32(_mm512_dpbusd_epi32(bias, a, weights[0]), b, weights[1]);
+            let hi = _mm512_dpbusd_epi32(_mm512_dpbusd_epi32(bias, b, weights[0]), c, weights[1]);
+            let words = if S::PREP {
+                // Halved AV1 taps have sum bounds within signed words, with
+                // two points of rounding headroom (their extrema are multiples of 255).
+                _mm512_srai_epi16::<2>(_mm512_packs_epi32(lo, hi))
+            } else {
+                // The byte store clips any negative or oversized result.
+                _mm512_srli_epi16::<6>(_mm512_packus_epi32(lo, hi))
+            };
+            // SAFETY: the caller checked this complete output row segment.
+            unsafe { out.wide(r, c0, words) };
+        }
+    }
+}
+
 /// Horizontal only: a row of 32 outputs per vector.
-#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi,avx512vnni")]
 #[inline]
 unsafe fn horizontal<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
     window: Window,
@@ -243,6 +325,14 @@ unsafe fn horizontal<const W: usize, const P: usize, S: Sink, R: Rounding, const
     h: usize,
     taps: &[i16],
 ) {
+    if R::HALVED && P >= 3 {
+        // SAFETY: ICL dispatch enables VNNI and the same checked footprint
+        // covers the zero-masked gathers for six or eight taps.
+        unsafe {
+            horizontal_vnni::<W, P, S, C>(window, lead, out, h, tap_pairs::<R, P>(taps, lead));
+        }
+        return;
+    }
     let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
     let gathers = gather_vectors::<P>();
     for r in 0..h {
@@ -317,15 +407,19 @@ pub(crate) fn column_32<const P: usize>(
     mut load: impl FnMut(usize) -> __m256i,
     mut store: impl FnMut(usize, __m512i),
 ) {
-    let mut rows = [_mm512_setzero_si512(); 8];
-    for (k, row) in rows.iter_mut().enumerate().take(2 * P - 1) {
-        *row = spread_32(load(k));
-    }
-    for r in 0..h {
-        rows[2 * P - 1] = spread_32(load(r + 2 * P - 1));
-        store(r, vertical_32(&rows, taps));
-        super::slide(&mut rows, 1, 2 * P - 1);
-    }
+    super::byte_column_pairs::<P, _, _>(
+        h,
+        _mm512_setzero_si512(),
+        |i| spread_32(load(i)),
+        |a, b| _mm512_unpacklo_epi8(a, b),
+        |r, pairs| {
+            let mut sum = _mm512_setzero_si512();
+            for (j, weight) in taps.iter().enumerate() {
+                sum = _mm512_add_epi16(sum, _mm512_maddubs_epi16(pairs[2 * j], *weight));
+            }
+            store(r, sum);
+        },
+    );
 }
 
 /// Both directions: rounded horizontal rows of 32 outputs, interleaved in

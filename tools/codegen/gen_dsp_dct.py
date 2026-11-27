@@ -188,6 +188,32 @@ def translate(lines: list[str], rust_name: str, size: int, nonzero: int | None =
     return "\n".join(head + body + ["}"])
 
 
+def forward_sum(full: str, size: int) -> str:
+    """Expose the DC input sum before the first cosine rotation."""
+    dc = re.compile(r"^(    )(?:step|output)\[0\] = V::half_btf\(cospi\[32\], "
+                    r"(step|output)\[0\], cospi\[32\], \2\[1\], cos_bit\);$", re.M)
+    marked, count = dc.subn(
+        lambda m: f"    let sum = {m[2]}[0].add({m[2]}[1]);\n{m[0]}", full)
+    assert count == 1
+    result = marked.replace(") {", ") -> V {", 1)
+    result = result.removesuffix("\n}") + "\n    sum\n}"
+    if size == 32:
+        return result
+    wrapper = """/// Full 16-point transform.
+#[inline(always)]
+pub(crate) fn fdct16<V: super::forward_lanes::ForwardLanes>(
+    input: &[V; 16],
+    output: &mut [V; 16],
+    cospi: &[i32; 64],
+    cos_bit: u32,
+) {
+    fdct16_with_sum(input, output, cospi, cos_bit);
+}
+
+"""
+    return wrapper + result.replace("fn fdct16<", "fn fdct16_with_sum<", 1)
+
+
 def forward_low_half_specialization(full: str, size: int) -> str:
     """Share the full graph, explicitly pruning dependencies of discarded outputs.
 
@@ -222,8 +248,6 @@ def forward_low_half_specialization(full: str, size: int) -> str:
         (f"fdct{size}", "false", f"Full {size}-point graph retained as the scalar/reference implementation."),
         (f"fdct{size}_low{keep}", "true", f"Exact low{keep} outputs; entries{keep}..{size-1} are scratch and must not be consumed."),
     ]:
-        if size == 32 and low == "true":
-            wrappers.append('#[cfg(any(target_arch = "x86_64", all(target_arch = "wasm32", target_feature = "simd128")))]')
         wrappers.append(f"""/// {description}
 #[inline(always)]
 pub(crate) fn {name}<V: super::forward_lanes::ForwardLanes>(
@@ -234,6 +258,18 @@ pub(crate) fn {name}<V: super::forward_lanes::ForwardLanes>(
 ) {{
     fdct{size}_impl::<V, {low}>(input, output, cospi, cos_bit);
 }}
+""")
+    if size == 32:
+        wrappers.append("""/// Full 32-point transform, returning the input sum before DC rounding.
+#[inline(always)]
+pub(crate) fn fdct32_with_sum<V: super::forward_lanes::ForwardLanes>(
+    input: &[V; 32],
+    output: &mut [V; 32],
+    cospi: &[i32; 64],
+    cos_bit: u32,
+) -> V {
+    fdct32_impl::<V, false>(input, output, cospi, cos_bit)
+}
 """)
     return "\n".join(wrappers) + "\n" + full
 
@@ -282,6 +318,8 @@ def main() -> None:
     for source, c_name, rust_name, size in FUNCTIONS:
         text = (libaom / source).read_text()
         translated = translate(function_body(text, c_name), rust_name, size)
+        if rust_name in ("fdct16", "fdct32"):
+            translated = forward_sum(translated, size)
         if rust_name in ("fdct32", "fdct64"):
             translated = forward_low_half_specialization(translated, size)
         parts.append(translated)

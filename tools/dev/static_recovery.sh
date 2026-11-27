@@ -8,9 +8,14 @@
 #
 # Run it for any change to frame structure, references or rate control (CLAUDE.md
 # "Testing"), once for what lands.
+#
+# The gate profile (no LTO) codes byte-identical streams to release, and shares the
+# build with the agent's own `--profile gate` builds on the box; release's fat LTO
+# made this a 4-8 min check (median 249 s, worst 484 s over 40 box runs to 2026-11-25)
+# for no difference in what it checks (docs/analysis/time-audit-2026-11-25.md).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-test=(cargo test --release -p nanocodec-cli --test integration static_recovery)
+test=(cargo test --profile gate -p nanocodec-cli --test integration static_recovery)
 if [[ "${NC_LOCAL:-0}" == 1 || -n "${NC_REMOTE_BOX:-}" ]]; then
     exec "${test[@]}"
 fi

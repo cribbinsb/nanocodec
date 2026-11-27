@@ -1,7 +1,7 @@
 //! Instruction-set selection.
 //!
 //! x86-64 detects AVX2 and the AVX-512 Ice Lake feature set at run time.
-//! `AArch64` always has NEON. WebAssembly has
+//! `AArch64` always has NEON and checks for SVE2 on Linux. WebAssembly has
 //! no run-time detection: SIMD128 is available exactly when the crate was
 //! compiled with `-C target-feature=+simd128`.
 
@@ -21,13 +21,28 @@ pub enum Isa {
     Avx512,
     /// `AArch64` Advanced SIMD.
     Neon,
+    /// `AArch64` SVE2 with NEON fallbacks on Linux.
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    Sve2,
     /// WebAssembly 128-bit SIMD.
     Simd128,
 }
 
 impl Isa {
     /// Every ISA, scalar first.
-    pub const ALL: [Isa; 5] = [Isa::Scalar, Isa::Avx2, Isa::Avx512, Isa::Neon, Isa::Simd128];
+    pub const ALL: [Isa; if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+        6
+    } else {
+        5
+    }] = [
+        Isa::Scalar,
+        Isa::Avx2,
+        Isa::Avx512,
+        Isa::Neon,
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        Isa::Sve2,
+        Isa::Simd128,
+    ];
 
     /// Whether this ISA can run here (this CPU, this build).
     #[must_use]
@@ -37,6 +52,8 @@ impl Isa {
             Isa::Avx2 => avx2_supported(),
             Isa::Avx512 => avx512_supported(),
             Isa::Neon => cfg!(target_arch = "aarch64"),
+            #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+            Isa::Sve2 => sve2_supported(),
             Isa::Simd128 => cfg!(all(target_arch = "wasm32", target_feature = "simd128")),
         }
     }
@@ -44,10 +61,17 @@ impl Isa {
     /// The fastest supported ISA.
     #[must_use]
     pub fn best() -> Isa {
-        [Isa::Avx512, Isa::Avx2, Isa::Neon, Isa::Simd128]
-            .into_iter()
-            .find(|isa| isa.is_supported())
-            .unwrap_or(Isa::Scalar)
+        [
+            Isa::Avx512,
+            Isa::Avx2,
+            #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+            Isa::Sve2,
+            Isa::Neon,
+            Isa::Simd128,
+        ]
+        .into_iter()
+        .find(|isa| isa.is_supported())
+        .unwrap_or(Isa::Scalar)
     }
 
     /// Short lowercase name, for logs and benchmark tables.
@@ -58,6 +82,8 @@ impl Isa {
             Isa::Avx2 => "avx2",
             Isa::Avx512 => "avx512",
             Isa::Neon => "neon",
+            #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+            Isa::Sve2 => "sve2",
             Isa::Simd128 => "simd128",
         }
     }
@@ -67,6 +93,28 @@ impl fmt::Display for Isa {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
+}
+
+/// Granite Rapids server silicon measured on c8i (family 6, model AD).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn granite_rapids() -> bool {
+    use std::arch::x86_64::__cpuid;
+
+    let vendor = __cpuid(0);
+    if vendor.eax < 1
+        || [vendor.ebx, vendor.edx, vendor.ecx]
+            != [
+                u32::from_le_bytes(*b"Genu"),
+                u32::from_le_bytes(*b"ineI"),
+                u32::from_le_bytes(*b"ntel"),
+            ]
+    {
+        return false;
+    }
+    let signature = __cpuid(1).eax;
+    let family = (signature >> 8) & 0xf;
+    let model = ((signature >> 12) & 0xf0) | ((signature >> 4) & 0xf);
+    family == 6 && model == 0xad
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -108,6 +156,12 @@ fn avx512_supported() -> bool {
 #[cfg(not(target_arch = "x86_64"))]
 fn avx512_supported() -> bool {
     false
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+fn sve2_supported() -> bool {
+    // Rust's Linux detector reads HWCAP2_SVE2.
+    std::arch::is_aarch64_feature_detected!("sve2")
 }
 
 impl std::str::FromStr for Isa {

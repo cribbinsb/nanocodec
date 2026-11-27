@@ -15,7 +15,8 @@ use nc_common::{Picture, PlaneIndex};
 use nc_dsp::{Dsp, Filter};
 use nc_encoder::{
     Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType,
-    Mv, PartitionShape, PredictionMode, ReferenceChoice, ShapeSet, holds_second_reference,
+    Mv, PartitionShape, PredictionMode, ReferenceChoice, ShapeSet, StaticSkipTest,
+    copy_zero_vector_prediction, holds_second_reference,
 };
 
 mod alf_search;
@@ -253,6 +254,13 @@ const LAMBDA_AT_QP12: f32 = 0.57;
 const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     max_quantizer: headers::MAX_QP,
     first_key_lookahead: 0.5,
+    first_key: Some(nc_encoder::first_key_model::FirstKeyCalibration {
+        weights: [
+            0.759_462, 0.919_782, 0.125_094, 0.499_735, 0.151_881, -0.856_442, 0.696_318, 0.45091,
+            0.169_008,
+        ],
+        fast_bias: 0.034_557,
+    }),
     ..nc_encoder::RateModel::QP
 };
 /// Fixed-QP key-frame QP offset at the 60-frame reference period
@@ -339,6 +347,9 @@ pub struct VvcBackend {
     /// any: then it uses no temporal candidates.
     refresh: Option<nc_encoder::RefreshWindow>,
     inter: bool,
+    /// The encoder information SEI RBSP written after every key
+    /// picture's parameter sets (`CodecBackend::set_encoder_info`).
+    encoder_info: Option<Vec<u8>>,
     /// The picture's POC (its LSBs are coded) and the next one's.
     poc: u16,
     next_poc: u16,
@@ -351,6 +362,9 @@ pub struct VvcBackend {
     dsp: Dsp,
     motion: MotionGrid,
     items: Vec<syntax::Item>,
+    /// In-frame rate control's running estimate of `items`
+    /// (`CodecBackend::coded_bits`), priced once each.
+    item_pricing: Option<ItemPricing>,
     sao: nc_encoder::sao::PictureSao,
     /// The SPS's optional tools (`vvc.alf`).
     tools: headers::Tools,
@@ -388,6 +402,9 @@ pub struct VvcBackend {
     /// The engine's usage gate for this picture's SAO and ALF statistics
     /// (`filter.usage_*`, `nc_encoder::UsageGate`).
     filter_usage: Option<nc_encoder::UsageGate>,
+    /// The CU of a repeat frame `try_static_skip` accepted
+    /// (`StaticSkipTest::repeat`), coded next with no residual.
+    repeat_block: Option<(usize, usize)>,
     /// Luma direction search of intra CUs in key frames and in P frames.
     key_intra_search: crate::intra::DirectionSearch,
     inter_intra_search: InterIntraSearch,
@@ -417,9 +434,9 @@ pub struct VvcBackend {
     /// Quantiser working memory, one per plane of a chroma pair (luma
     /// uses the first).
     quant_scratch: Box<[recon::QuantScratch; 2]>,
-    /// Quantiser working memory of [`CodecBackend::inter_leaf_cost`], which
-    /// the planner calls through a shared reference.
-    planning_scratch: std::cell::RefCell<Box<recon::QuantScratch>>,
+    /// Prediction and quantiser working memory of luma pricing, which the
+    /// planner calls through a shared reference.
+    planning_scratch: std::cell::RefCell<crate::inter_cost::Scratch>,
     /// The final decision stage's last intra screen (`final_cost.rs`).
     final_screen: final_cost::ScreenedIntra,
     /// Block-level QP (`cu_qp_delta`), once the engine enables it.
@@ -521,25 +538,44 @@ impl VvcParams {
         }
     }
 
-    /// The direction search of key-frame intra leaves.
-    fn key_intra_search(&self) -> crate::intra::DirectionSearch {
+    /// The direction search of key-frame intra leaves; the shared staged
+    /// cut of `overrides` (`decision.intra_stage_*`), where on, in place of
+    /// `vvc.rd_candidates` and `vvc.rd_proxy_margin`.
+    fn key_intra_search(
+        &self,
+        overrides: &nc_encoder::ParamOverrides,
+    ) -> crate::intra::DirectionSearch {
+        let stage = nc_encoder::IntraStage::from_overrides(overrides).cut(true);
+        let (rd_candidates, rd_margin) = if stage.is_active() {
+            (stage.keep(), stage.band_permille())
+        } else {
+            (self.rd_candidates.round() as usize, self.rd_proxy_margin)
+        };
         crate::intra::DirectionSearch::Ranked {
             angular_candidates: self.angular_candidates.round() as usize,
             coarse_step: self.angular_step.round() as u8,
-            rd_candidates: self.rd_candidates.round() as usize,
-            rd_margin_permille: self.rd_proxy_margin.round() as u32,
+            rd_candidates,
+            rd_margin_permille: rd_margin.round() as u32,
         }
     }
 
     /// The direction search of P-picture intra CUs: the ranked search, and
-    /// outside intra-dense pictures the coarse one, if enabled.
-    fn inter_intra_search(&self) -> InterIntraSearch {
+    /// outside intra-dense pictures the coarse one, if enabled; the shared
+    /// staged cut of `overrides` (`decision.inter_intra_stage_*`), where on, in
+    /// place of `vvc.inter_rd_candidates`.
+    fn inter_intra_search(&self, overrides: &nc_encoder::ParamOverrides) -> InterIntraSearch {
+        let stage = nc_encoder::IntraStage::from_overrides(overrides).cut(false);
+        let (rd_candidates, rd_margin) = if stage.is_active() {
+            (stage.keep(), stage.band_permille())
+        } else {
+            (self.inter_rd_candidates.round() as usize, 0.0)
+        };
         InterIntraSearch::new(
             crate::intra::DirectionSearch::Ranked {
                 angular_candidates: self.inter_angular_candidates.round() as usize,
                 coarse_step: self.inter_angular_step.round() as u8,
-                rd_candidates: self.inter_rd_candidates.round() as usize,
-                rd_margin_permille: 0,
+                rd_candidates,
+                rd_margin_permille: rd_margin.round() as u32,
             },
             if self.inter_intra_dc_only >= 0.5 {
                 Some(crate::intra::DirectionSearch::DcOnly)
@@ -613,10 +649,18 @@ impl CodecBackend for VvcBackend {
     // thirds): pan_bdd +0.07 / 0.00 / +0.08 dB, chirla -0.20 / -0.09 /
     // -0.04 dB (YUV -0.06): no drift.
     // The fixed-QP profile (`--qp`): the QP cadence at full strength on every
-    // frame (HEVC's profile). Fixed QP, matched QP (nceval.fixedqp, two pool
-    // draws of 16 clips): J -1.0% [-1.9, -0.1] and -1.0% [-1.6, -0.4]; CPU
-    // unchanged. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
-    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
+    // frame (HEVC's profile), plus full mode decision against the unified
+    // plan's second reference (`refs.second_full`, `structure.secondary_min_depth`,
+    // matching HEVC/AV1/VP9; 2026-11-24, Brief 20). Pool draw fixedqp-2026-11-24
+    // (n=24): medium 150 f J -0.4% [-0.8, -0.2], 600 f -0.4% [-0.6, -0.2] (every
+    // metric and every class improves); c8i/c8g fixed-QP CPU +1.10% / +1.32%
+    // (mean +1.21%; -0.31% J / 1% CPU vs medium front slope -0.088). CBR is untouched.
+    // docs/analysis/fixed-qp-medium-slower-2026-11-24.md.
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
+        ("rate.cadence_static_scaling", 0.0),
+        ("refs.second_full", 1.0),
+        ("structure.secondary_min_depth", 0.0),
+    ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // Start-up QP cadence (period 8, base frames 6 QP finer, for the
@@ -927,6 +971,46 @@ impl CodecBackend for VvcBackend {
         ("layers.propagation_flat", 1.0),
         ("layers.propagation_grid", 3.0),
         ("layers.propagation_prekey", 1.0),
+        // Periodic keys planned 3 QP units finer than the inter level, adopted
+        // with the key-frame RD partition search (3ebca4466). The search itself
+        // is off at medium (reverted 2026-11-22): on the published front's chart
+        // timing (150 f, one key) the head cost Zen 5 cycles AV1 +5.3 %, AV2
+        // +9.1 %, VVC +5.9 % against the same head with the search, these finer
+        // keys, the AV1 / AV2 key trellis and H.264's key Intra_8x8 off, which
+        // outweighs its J (L3 -0.33 to -0.55 %). The finer key adds no search
+        // and stays (coordinator decision); a screen of it alone is queued.
+        ("rate.key_level_finer", 3.0),
+        // Motion and sub-pel exits as linear threshold shifts (G2,
+        // `linear_threshold.rs`): HEVC medium's values (hevc_600f_t15,
+        // docs/analysis/g2-motion-thresholds-2026-11-22.md), which a VVC
+        // medium study (g2y-vvc-medium, 29 trials from them, both key
+        // shares) kept on its front; one shared setting, no VVC reason to
+        // differ. Judged at the front slope k 0.1604 with the smaller CPU
+        // saving of Zen 5 / Graviton 4 per share (1/150 -1.14 %, 1/300
+        // -1.99 %): final check (2026-11-22 draw) 1/150 J -0.25 %
+        // [-0.37, -0.14] (n 39), 1/300 J -0.40 % [-0.59, -0.09] (n 29); L3
+        // 150 f J -0.34 % [-0.70, +0.02] (n 108); quality alone -0.07 /
+        // -0.08 / -0.16 %; key pulse guarded <= +0.00 dB. Fast, Faster,
+        // Slow, Slower and Veryslow pin 0 (not screened).
+        ("analysis.window_exit_shift_bias", -0.103_662),
+        ("analysis.window_exit_shift_lambda", -0.291_233),
+        ("analysis.window_exit_shift_noise", 0.394_298),
+        ("analysis.window_exit_shift_nonbase", 0.444_587),
+        ("analysis.zero_gate_shift_bias", -0.020_961_7),
+        ("analysis.zero_gate_shift_lambda", 0.233_67),
+        ("analysis.zero_gate_shift_neighbour_mv", -0.061_071),
+        ("analysis.zero_gate_shift_noise", -0.521_622),
+        ("analysis.zero_gate_shift_nonbase", 0.749_672),
+        ("decision.skip_no_refine_shift_bias", 0.049_152_1),
+        ("decision.skip_no_refine_shift_lambda", -0.042_977_6),
+        ("decision.skip_no_refine_shift_noise", 0.021_140_3),
+        ("decision.skip_no_refine_shift_nonbase", -0.056_853_5),
+        ("decision.subpel_seed_shift_bias", -0.015_777_7),
+        ("decision.subpel_seed_shift_lambda", -0.028_532),
+        ("decision.subpel_seed_shift_noise", 0.011_911_3),
+        ("decision.subpel_seed_shift_nonbase", 0.046_694_7),
+        ("decision.subpel_seed_shift_size", -0.005_502_83),
+        ("decision.subpel_seed_shift_zero_mv", 0.041_685_9),
     ];
     const PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[
         VvcParams::SPECS,
@@ -949,6 +1033,28 @@ impl CodecBackend for VvcBackend {
         if self.temporal_layers == 1 {
             self.block_qp = Some(block_qp::BlockQp::new());
         }
+    }
+
+    /// An estimate: the slice is entropy coded only at `end_frame`, so the
+    /// recorded items are priced as the coding will adapt its contexts,
+    /// from where the last reading stopped (afresh when a node trial cut
+    /// them back past it).
+    fn coded_bits(&mut self) -> Option<f64> {
+        let mut pricing = self
+            .item_pricing
+            .take()
+            .filter(|p| p.next <= self.items.len())
+            .unwrap_or_else(|| ItemPricing {
+                next: 0,
+                bits: 0.,
+                contexts: self.contexts.clone(),
+            });
+        let added = self.estimated_item_bits(&self.items[pricing.next..], &mut pricing.contexts);
+        pricing.bits += f64::from(added);
+        pricing.next = self.items.len();
+        let bits = pricing.bits;
+        self.item_pricing = Some(pricing);
+        Some(bits)
     }
 
     /// The engine's offset where block QP is coded, else the picture's.
@@ -982,13 +1088,7 @@ impl CodecBackend for VvcBackend {
             unit_zero_rd: params.unit_zero_rd,
             unit_zero_rd_max_levels: params.unit_zero_rd_max_levels,
             forward: forward_mode(&params, trellis.is_some() || params.dep_quant >= 0.5),
-            rounding: Rounding {
-                intra: params.intra_rounding.round() as i32,
-                inter: [
-                    params.inter_rounding.round() as i32,
-                    params.chroma_inter_rounding.round() as i32,
-                ],
-            },
+            rounding: Rounding::of(&params),
             chroma_qp: match nc_encoder::chroma_policy::ChromaPolicy::from_params(&config.params) {
                 Some(policy) => ChromaQpTable::policy(policy),
                 None => ChromaQpTable::hevc(params.chroma_qp_offset.round() as i32),
@@ -1009,8 +1109,9 @@ impl CodecBackend for VvcBackend {
             sao_search: SaoSearch::new(&SaoSearchParams::from_overrides(&config.params)),
             sao_outcome: nc_encoder::OutcomeTracker::default(),
             filter_usage: None,
-            key_intra_search: params.key_intra_search(),
-            inter_intra_search: params.inter_intra_search(),
+            repeat_block: None,
+            key_intra_search: params.key_intra_search(&config.params),
+            inter_intra_search: params.inter_intra_search(&config.params),
             trellis,
             // Used only where dependent quantisation and the trellis are off
             // (`reconstruct_unit`).
@@ -1031,6 +1132,7 @@ impl CodecBackend for VvcBackend {
             planning_scratch: std::cell::RefCell::default(),
             final_screen: final_cost::ScreenedIntra::default(),
             items: Vec::new(),
+            item_pricing: None,
             sao: nc_encoder::sao::PictureSao::default(),
             tools,
             alf: crate::alf::Decision::default(),
@@ -1043,6 +1145,7 @@ impl CodecBackend for VvcBackend {
             rd_best_prediction: std::cell::RefCell::default(),
             contexts: Contexts::new(config.quantizer, false),
             inter: false,
+            encoder_info: None,
             poc: 0,
             next_poc: 0,
             temporal_layers: config.temporal_layers,
@@ -1147,13 +1250,12 @@ impl CodecBackend for VvcBackend {
         mv: Mv,
     ) -> Option<f32> {
         let quant = self.quantizers().plane(PlaneIndex::Y, false);
-        let mut contexts = self.contexts.coeff.clone();
         let (sse, coefficient_bits) = crate::inter_cost::luma_cost(
             &self.dsp,
             source,
             reference,
-            (block, mv),
-            &mut contexts,
+            (block, mv, None),
+            &self.contexts.coeff,
             (quant, self.tools.max_tb_log2()),
             &mut self.planning_scratch.borrow_mut(),
         );
@@ -1234,6 +1336,16 @@ impl CodecBackend for VvcBackend {
     fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
         self.node_trial_price(source, recon)
     }
+    fn node_trial_parts(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> Option<nc_encoder::NodeTrialParts> {
+        Some(self.node_trial_split_price(source, recon))
+    }
+    fn node_trial_summary(&self) -> Option<nc_encoder::NodeTrialSummary> {
+        Some(self.node_trial_coded_summary())
+    }
     fn undo_node_trial(&mut self, recon: &mut Picture) {
         self.undo_node(recon);
     }
@@ -1248,6 +1360,24 @@ impl CodecBackend for VvcBackend {
     }
     fn last_cu_skipped(&self) -> bool {
         self.last_leaf_skipped()
+    }
+    /// Only a repeat frame's CUs (`StaticSkipTest::repeat`): coded at the
+    /// zero vector with no residual, a skip CU where a merge candidate is
+    /// zero (H.266 §7.3.11.5).
+    fn try_static_skip(
+        &mut self,
+        block: &Block,
+        _source: &Picture,
+        reference: &Picture,
+        recon: &mut Picture,
+        test: StaticSkipTest,
+    ) -> bool {
+        if !test.repeat {
+            return false;
+        }
+        copy_zero_vector_prediction(&self.dsp, block, reference, recon);
+        self.repeat_block = Some((block.x, block.y));
+        true
     }
     fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
         let ref_idx = self.active_ref;
@@ -1346,6 +1476,14 @@ impl CodecBackend for VvcBackend {
         self.filter_usage = effort.usage;
     }
 
+    /// A `user_data_unregistered` SEI (ITU-T H.274, payloadType 5) after
+    /// the key pictures' parameter sets.
+    fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
+        self.encoder_info = payload.map(|payload| {
+            nc_common::nal::sei_rbsp(nc_common::nal::SEI_USER_DATA_UNREGISTERED, &payload)
+        });
+    }
+
     fn begin_frame(&mut self, plan: &FramePlan) {
         self.qp = if plan.frame_type == FrameType::Key && !self.rate_control {
             nc_encoder::offset_key_quantizer(plan.quantizer, self.key_qp_offset, 0, headers::MAX_QP)
@@ -1353,6 +1491,7 @@ impl CodecBackend for VvcBackend {
             plan.quantizer
         };
         self.items.clear();
+        self.item_pricing = None;
         self.sao = nc_encoder::sao::PictureSao::default();
         self.sao_search.pending = None;
         self.alf_search.begin_picture();
@@ -1539,6 +1678,7 @@ impl CodecBackend for VvcBackend {
             mts,
         );
         self.current = None;
+        self.repeat_block = None;
         // The next CU's decision starts from the previous picture.
         self.active_ref = PRIMARY_REF_IDX;
     }
@@ -1685,6 +1825,10 @@ impl CodecBackend for VvcBackend {
         let mut out = Vec::new();
         if !self.inter {
             self.write_parameter_sets(&mut out);
+            // Prefix SEI precedes the picture's first slice (H.266 §7.4.2.4.4).
+            if let Some(sei) = &self.encoder_info {
+                headers::nal(headers::PREFIX_SEI_NUT, sei, &mut out);
+            }
         }
         // Each picture carries the bank it uses, so no picture depends on
         // another's APS (a lost picture never breaks a later one).
@@ -1753,6 +1897,19 @@ struct Rounding {
     intra: i32,
     /// Luma, chroma.
     inter: [i32; 2],
+}
+
+impl Rounding {
+    /// The rounding offsets `params` set.
+    fn of(params: &VvcParams) -> Self {
+        Self {
+            intra: params.intra_rounding.round() as i32,
+            inter: [
+                params.inter_rounding.round() as i32,
+                params.chroma_inter_rounding.round() as i32,
+            ],
+        }
+    }
 }
 
 impl VvcBackend {
@@ -1990,6 +2147,10 @@ impl VvcBackend {
                 }
                 None
             }
+            // A repeat CU copies its reference: no merge or affine search.
+            PredictionMode::Inter(mv) if self.repeat_block == Some((block.x, block.y)) => {
+                Some(Motion::Vector(Mv16::from_quarter(mv)))
+            }
             PredictionMode::Inter(mv) => Some(self.choose_motion(
                 block,
                 Mv16::from_quarter(mv),
@@ -2000,7 +2161,8 @@ impl VvcBackend {
     }
 
     /// Code transform unit `unit` of `plane` of CU `block` (`intra` or
-    /// inter): with the MTS search when `searched`, else the DCT-II.
+    /// inter): with the MTS search when `searched`, else the DCT-II; a
+    /// repeat CU's (`try_static_skip`) is its prediction alone.
     /// Returns its levels and the `mts_idx` chosen (0 unless searched).
     fn code_unit(
         &mut self,
@@ -2009,6 +2171,10 @@ impl VvcBackend {
         (unit, prediction): ((usize, usize, usize), &[u8]),
         inputs: (recon::Quant, [f32; 2]),
     ) -> (Vec<i32>, u8) {
+        if self.repeat_block == Some((block.x, block.y)) {
+            let level = self.place_prediction_only(reconstruction, plane, unit, prediction);
+            return (level, 0);
+        }
         if searched {
             let pictures = (source, reconstruction);
             self.reconstruct_luma(pictures, (block, intra), unit, prediction, inputs)
@@ -2017,6 +2183,32 @@ impl VvcBackend {
                 self.reconstruct_unit(source, reconstruction, plane, unit, prediction, inputs);
             (level, 0)
         }
+    }
+
+    /// A repeat CU's transform unit `unit` of `plane`: its prediction as
+    /// the reconstruction, no levels.
+    fn place_prediction_only(
+        &self,
+        reconstruction: &mut Picture,
+        plane: PlaneIndex,
+        (x, y, width): (usize, usize, usize),
+        prediction: &[u8],
+    ) -> Vec<i32> {
+        let height = prediction.len() / width;
+        let mut view = reconstruction
+            .plane_mut(plane)
+            .region_mut(x as isize, y as isize, width, height)
+            .expect("a transform unit lies inside the coded picture");
+        let stride = view.stride();
+        self.dsp.block_copies().copy_rect(
+            prediction,
+            width,
+            view.data_mut(),
+            stride,
+            (width, height),
+            false,
+        );
+        vec![0; prediction.len()]
     }
 
     /// [`Self::reconstruct_unit`] of luma transform unit `unit` of CU
@@ -2580,4 +2772,16 @@ impl VvcBackend {
         }
         levels.iter().any(|&v| v != 0).then_some(levels)
     }
+}
+
+/// In-frame rate control's running estimate of a frame's recorded items
+/// (`CodecBackend::coded_bits`).
+#[derive(Debug)]
+struct ItemPricing {
+    /// The first item not yet priced.
+    next: usize,
+    /// Estimated bits of the items before it.
+    bits: f64,
+    /// The contexts as the items before it left them.
+    contexts: Contexts,
 }

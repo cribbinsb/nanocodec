@@ -1,0 +1,31 @@
+{
+ "base": "hist-da018cbbf",
+ "families": {
+  "nanocodec-h264": "hist-da018cbbf",
+  "nanocodec-h264@slow": "hist-da018cbbf",
+  "nanocodec-h264@fast": "hist-da018cbbf",
+  "nanocodec-h264@faster": "hist-da018cbbf",
+  "nanocodec-h264@veryfast": "hist-da018cbbf",
+  "nanocodec-hevc": "hist-da018cbbf",
+  "nanocodec-hevc@slow": "hist-da018cbbf",
+  "nanocodec-hevc@fast": "hist-da018cbbf",
+  "nanocodec-hevc@faster": "hist-da018cbbf",
+  "nanocodec-vvc": "hist-da018cbbf",
+  "nanocodec-vvc@slow": "hist-da018cbbf",
+  "nanocodec-vvc@fast": "hist-da018cbbf",
+  "nanocodec-av1": "hist-da018cbbf",
+  "nanocodec-av1@slow": "hist-da018cbbf",
+  "nanocodec-av1@fast": "hist-da018cbbf",
+  "nanocodec-av1@faster": "hist-da018cbbf",
+  "nanocodec-av1@veryfast": "hist-da018cbbf",
+  "nanocodec-vp9": "hist-da018cbbf",
+  "nanocodec-vp9@slow": "hist-da018cbbf",
+  "nanocodec-vp9@fast": "hist-da018cbbf",
+  "nanocodec-vp9@faster": "hist-da018cbbf",
+  "nanocodec-vp9@veryfast": "hist-da018cbbf",
+  "nanocodec-av2": "hist-da018cbbf",
+  "nanocodec-av2@slow": "hist-da018cbbf",
+  "nanocodec-av2@fast": "hist-da018cbbf",
+  "nanocodec-av2@faster": "hist-da018cbbf"
+ }
+}

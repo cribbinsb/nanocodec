@@ -1,0 +1,343 @@
+{
+ "commit": "98069a8b3efa222f2d6cdd957cf73323485cbf66",
+ "date": "2026-11-23",
+ "notes": [
+  "Browser VVC re-run 2026-11-23 10:50 with the runner of d010259d0 (verdict by whole-output MD5; per-picture MD5s cut at the first picture's size do not fit resized or field streams) on the same 98069a8b3 modules: 221/221. The first run's runner failed 7 of them on picture count alone (wasm/wasm.log).",
+  "Browser runs of the other codecs used the runner of 55092b606 (verdict by per-picture MD5 where the counts allow)."
+ ],
+ "native": {
+  "h264": {
+   "passed": 110,
+   "run": 190,
+   "manifest": 190,
+   "by_bit_depth": {
+    "8": [
+     103,
+     181
+    ],
+    "10": [
+     7,
+     9
+    ]
+   },
+   "reference": "JM 19 ldecod (whole and per-picture MD5); FFmpeg's whole-output MD5 recorded as a cross-check",
+   "denominator": "ITU-T H.264.1: the AVCv1, FRExt and Professional-profiles (High 10) zips, 193 streams fetched (tools/dev/conformance_fetch.py --suite h264); the 3 FRExt 4:2:2 streams FREXT1-3_TANDBERG_A are not in the manifest; High 4:2:2 / 4:4:4 zips (Hi422, PPH422, PPH444, PPCV444), MVC and SVC are not fetched. Required: tools/ci/h264_conformance_passing.txt",
+   "failing": {
+    "CABREF3_Sand_D": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CAFI1_SVA_C": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CAMA1_Sony_C": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMA1_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMA3_Sand_E": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMACI3_Sony_C": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMANL1_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMANL2_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMANL3_Sand_E": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMASL3_Sony_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMP_MOT_MBAFF_L30": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAMP_MOT_MBAFF_L31": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CANLMA2_Sony_C": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CANLMA3_Sony_C": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CAPA1_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CAPAMA3_Sand_F": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVCANLMA2_Sony_C": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVFI1_SVA_C": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVFI1_Sony_D": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVFI2_SVA_C": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVFI2_Sony_H": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVMA1_Sony_D": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVMA1_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVMANL1_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVMANL2_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVMAPAQP3_Sony_E": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVMAQP2_Sony_G": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVMAQP3_Sony_D": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "CVMP_MOT_FLD_L30_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVMP_MOT_FRM_L31_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVNLFI1_Sony_C": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVNLFI2_Sony_H": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "CVPA1_TOSHIBA_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "FI1_Sony_E": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "FM1_BT_B": "error: nanocodec: unsupported bitstream: H264 slice groups (FMO)",
+    "FM1_FT_E": "error: nanocodec: unsupported bitstream: H264 slice groups (FMO)",
+    "FM2_SVA_C": "error: nanocodec: unsupported bitstream: H264 slice groups (FMO)",
+    "FREXT01_JVC_D": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "FREXT02_JVC_C": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "FRExt2_Panasonic_C": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "FRExt4_Panasonic_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "HCAFF1_HHI_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HCAMFF1_HHI_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "HCHP3_HHI_A": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HPCAFLNL_BRCM_C": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HPCAFL_BRCM_C": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HPCAMAPALQ_BRCM_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "HPCVFLNL_BRCM_A": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HPCVFL_BRCM_A": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HVLCFI0_Sony_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HVLCMFF0_Sony_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "HVLCPFF0_Sony_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "MR6_BT_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "MR7_BT_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "MR8_BT_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "MR9_BT_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "PPH10I6_Panasonic_A": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "PPH10I7_Panasonic_A": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "SP1_BT_A": "error: nanocodec: unsupported bitstream: H264 SP/SI slices",
+    "Sharp_MP_Field_1_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "Sharp_MP_Field_2_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "Sharp_MP_Field_3_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "Sharp_MP_PAFF_1r2": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "Sharp_MP_PAFF_2r": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "brcm_freh10": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "brcm_freh11": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "brcm_freh4": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "brcm_freh5": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "brcm_freh6": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "cabac_mot_fld0_full": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "cabac_mot_mbaff0_full": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "cabac_mot_picaff0_full": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "cama1_vtc_c": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "cama2_vtc_b": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "cama3_vtc_b": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "cavlc_mot_fld0_full_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "cavlc_mot_mbaff0_full_B": "error: nanocodec: unsupported bitstream: H264 MBAFF frames",
+    "cavlc_mot_picaff0_full_B": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "freh7_b": "error: nanocodec: unsupported bitstream: H264 field pictures",
+    "sp2_bt_b": "error: nanocodec: unsupported bitstream: H264 SP/SI slices"
+   },
+   "required": 110,
+   "required_failing": []
+  },
+  "h264-x264": {
+   "passed": 8,
+   "run": 8,
+   "manifest": 8,
+   "by_bit_depth": {
+    "8": [
+     8,
+     8
+    ]
+   },
+   "reference": "JM 19 ldecod; FFmpeg cross-check",
+   "denominator": "8 x264 streams for I/P-only High tools (tools/dev/h264_conformance_supplement.sh), not part of the ITU-T suite",
+   "failing": {}
+  },
+  "hevc": {
+   "passed": 147,
+   "run": 147,
+   "manifest": 147,
+   "by_bit_depth": {
+    "8": [
+     136,
+     136
+    ],
+    "10": [
+     11,
+     11
+    ]
+   },
+   "reference": "HM TAppDecoder (whole and per-picture MD5)",
+   "denominator": "the whole JCT-VC HEVC_v1 set (ITU-T H.265.1): 147 Main, Main 10 and Main Still Picture streams",
+   "failing": {}
+  },
+  "av1": {
+   "passed": 242,
+   "run": 242,
+   "manifest": 242,
+   "by_bit_depth": {
+    "8": [
+     176,
+     176
+    ],
+    "10": [
+     66,
+     66
+    ]
+   },
+   "reference": "aomdec --i420 (libaom v3.15.3)",
+   "denominator": "libaom v3.15.3 Main-profile test vectors: the 176 av1-1-b8-* and 66 av1-1-b10-* (tools/conformance/av1_manifest.txt), film grain applied",
+   "failing": {}
+  },
+  "vp9": {
+   "passed": 305,
+   "run": 305,
+   "manifest": 305,
+   "by_bit_depth": {
+    "8": [
+     303,
+     303
+    ],
+    "10": [
+     1,
+     1
+    ],
+    "12": [
+     1,
+     1
+    ]
+   },
+   "reference": "vpxdec-hbd --i420 (libvpx v1.16.0); FFmpeg cross-check (disagrees on the 64 resize vectors, which FFmpeg scales to the first size: those are checked against vpxdec alone)",
+   "denominator": "libvpx v1.16.0 VP9 test vectors of profile 0 (303 vp90-2-*, 8-bit 4:2:0) and profile 2 (2 vp92-2-*, 10- and 12-bit 4:2:0); profiles 1 and 3 (4:4:4, 4:2:2, 4:4:0) not listed",
+   "failing": {}
+  },
+  "vvc": {
+   "passed": 226,
+   "run": 226,
+   "manifest": 226,
+   "by_bit_depth": {
+    "8": [
+     9,
+     9
+    ],
+    "10": [
+     217,
+     217
+    ]
+   },
+   "reference": "VTM 24.0 DecoderAppStatic (whole and per-picture MD5)",
+   "denominator": "226 of the 283 JVET H.266.1 first-edition streams: Main 10 and Main 10 Still Picture, 4:2:0 or 4:0:0 (9 8-bit, 217 10-bit). Left out: 4:2:2 / 4:4:4, multilayer (OLS, VPS, SPATSCAL, ILRPL), palette, ACT; HRD_B_2 (VTM fails it) and VPS_C_2 (no probe result). STILL_B_1 is scored against VTM's output, which differs from the MD5 shipped in its zip",
+   "failing": {}
+  },
+  "vvc-main8": {
+   "passed": 9,
+   "run": 9,
+   "manifest": 9,
+   "reference": "the MD5 shipped in each official zip",
+   "denominator": "the 9 8-bit Main 4:2:0 streams of H.266.1, checked against the suite's own MD5s",
+   "failing": {}
+  }
+ },
+ "wasm": {
+  "h264": {
+   "manifest": 190,
+   "denominator": "the native suite's 4:2:0 progressive streams of h264_conformance.json (left out: 77 4:0:0 or interlaced)",
+   "pkg": {
+    "passed": 108,
+    "compared": 113,
+    "deeper_than_8_bits": [
+     7,
+     7
+    ],
+    "required_failing": 0,
+    "failing": {
+     "FM1_BT_B": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 400 pictures",
+     "FM1_FT_E": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 119 of 300 pictures",
+     "FM2_SVA_C": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 17 pictures",
+     "SP1_BT_A": "corrupt: unsupported bitstream: H264 SP/SI slices after 6 of 400 pictures",
+     "sp2_bt_b": "corrupt: unsupported bitstream: H264 SP/SI slices after 10 of 400 pictures"
+    }
+   },
+   "relaxed": {
+    "passed": 108,
+    "compared": 113,
+    "deeper_than_8_bits": [
+     7,
+     7
+    ],
+    "required_failing": 0,
+    "failing": {
+     "FM1_BT_B": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 400 pictures",
+     "FM1_FT_E": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 119 of 300 pictures",
+     "FM2_SVA_C": "corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 17 pictures",
+     "SP1_BT_A": "corrupt: unsupported bitstream: H264 SP/SI slices after 6 of 400 pictures",
+     "sp2_bt_b": "corrupt: unsupported bitstream: H264 SP/SI slices after 10 of 400 pictures"
+    }
+   }
+  },
+  "hevc": {
+   "manifest": 147,
+   "denominator": "the native suite's 4:2:0 progressive streams of hevc_conformance_v1.json (left out: 0 4:0:0 or interlaced)",
+   "pkg": {
+    "passed": 147,
+    "compared": 147,
+    "deeper_than_8_bits": [
+     11,
+     11
+    ],
+    "required_failing": 0,
+    "failing": {}
+   },
+   "relaxed": {
+    "passed": 147,
+    "compared": 147,
+    "deeper_than_8_bits": [
+     11,
+     11
+    ],
+    "required_failing": 0,
+    "failing": {}
+   }
+  },
+  "vvc": {
+   "manifest": 226,
+   "denominator": "the native suite's 4:2:0 progressive streams of vvc_conformance_v1.json (left out: 5 4:0:0 or interlaced)",
+   "pkg": {
+    "passed": 221,
+    "compared": 221,
+    "deeper_than_8_bits": [
+     214,
+     214
+    ],
+    "required_failing": 0,
+    "failing": {}
+   },
+   "relaxed": {
+    "passed": 221,
+    "compared": 221,
+    "deeper_than_8_bits": [
+     214,
+     214
+    ],
+    "required_failing": 0,
+    "failing": {}
+   }
+  },
+  "av1": {
+   "manifest": 242,
+   "denominator": "the native suite's 4:2:0 progressive streams of av1_conformance_libaom.json (left out: 2 4:0:0 or interlaced)",
+   "pkg": {
+    "passed": 240,
+    "compared": 240,
+    "deeper_than_8_bits": [
+     65,
+     65
+    ],
+    "required_failing": 0,
+    "failing": {}
+   },
+   "relaxed": {
+    "passed": 240,
+    "compared": 240,
+    "deeper_than_8_bits": [
+     65,
+     65
+    ],
+    "required_failing": 0,
+    "failing": {}
+   }
+  },
+  "vp9": {
+   "manifest": 305,
+   "denominator": "the native suite's 4:2:0 progressive streams of vp9_conformance_libvpx.json (left out: 0 4:0:0 or interlaced)",
+   "pkg": {
+    "passed": 305,
+    "compared": 305,
+    "deeper_than_8_bits": [
+     2,
+     2
+    ],
+    "required_failing": 0,
+    "failing": {}
+   },
+   "relaxed": {
+    "passed": 305,
+    "compared": 305,
+    "deeper_than_8_bits": [
+     2,
+     2
+    ],
+    "required_failing": 0,
+    "failing": {}
+   }
+  }
+ }
+}

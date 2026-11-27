@@ -52,8 +52,9 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import buildinfo, cloud, interval, jreal, levers, pool, singlepoint
-from .cbr import Family, clip_targets
+from . import (buildinfo, cloud, decision_cpu, interval, jreal, key_shares, levers, pool,
+               singlepoint)
+from .cbr import DEFAULT_INTRA_PERIOD, Bench, Family, Point, clip_targets
 from .clips import Clip
 from .codecs import Codec
 from .config import Paths, load_paths
@@ -74,10 +75,12 @@ GPU_SLOTS_ENV = "NC_GPU_SLOTS"
 #: The long-window L3 (coordinator, 2026-11-13): 150 frames with one key reward
 #: an unrepaid first-key loan (the audit's long clips lose 4-9 BD-J points from
 #: 150 to 600 frames), so changes to rate, keys, cadence or key-frame quality,
-#: and the final check of a preset bundle, decide on LONG_FRAMES with a key
-#: every LONG_KEY_SECONDS (`final_frames`); L1, L2 and study trials stay at 150
-#: frames as cheap rankers. Only the L3 clips with LONG_FRAMES frames take part
-#: (`long_clips`: about a third of the pool), from frame 0.
+#: and the final check of a preset bundle, decide on the long window
+#: (`final_frames`): since 2026-11-22 at every key share (nceval.key_shares: 600 f
+#: with a key every 150 f, 900 f with a key every 300 f; `share_level`). L1, L2
+#: and study trials stay at 150 frames as cheap rankers. Only the L3 clips with a
+#: share's window take part (`long_clips`), from frame 0. LONG_FRAMES and
+#: LONG_KEY_SECONDS remain the tuner's long window and the stored results' protocol.
 LONG_FRAMES = 600
 LONG_KEY_SECONDS = 10.0
 
@@ -94,12 +97,12 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
     L1 and L2 are single-point; L3 is single-point when `args.final_estimator`
     says so (small changes), else the full ladder. A single-point level whose deltas
     trend with the rung is re-measured on the full ladder (singlepoint.reshaping).
-    `args.final_frames` (LONG_FRAMES) runs L3 on the long window, keys every
-    LONG_KEY_SECONDS.
+    `args.final_frames` runs L3 on the long window at every key share
+    (`share_level`; `args.key_shares`, default key_shares.KEY_SHARES).
     """
-    levels = levels or getattr(args, "levels", None) or pool.LEVELS[:args.max_level]
+    levels = chosen_levels(args, levels)
     frames = int(args.frames)
-    draw = pool.draw(pool.load_pool(paths, usable), pool.rotation_key(args.rotation), frames)
+    draw = draw_for(paths, args)
     print(f"pool draw {draw.key}: " + ", ".join(
         f"{level} {len(draw.levels[level])} clips" for level in levels), flush=True)
     stages, per_level = [], {}
@@ -111,26 +114,24 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
             continue
         started = time.monotonic()
         long_window = level == pool.FINAL and getattr(args, "final_frames", None)
-        level_frames = args.final_frames if long_window else frames
-        key_seconds = LONG_KEY_SECONDS if long_window else None
-        clips = long_clips(draw.levels[level], level_frames) if long_window \
-            else draw.levels[level]
         if long_window:
-            print(f"{level}: long window on the {len(clips)} of {len(draw.levels[level])} "
-                  f"clips with {level_frames} frames, from frame 0", flush=True)
-        result = measure_level(runner, families, clips, level_frames, level,
-                               estimator_of(level, args), args, key_seconds)
-        result["frames"] = level_frames
-        rows = result["per_clip"]
-        if level == pool.FINAL:
-            pulse = one_per_class(clips)
-            add_periodic_pulse(runner, *families, pulse, frames, result["per_clip"], level)
-        if level == pool.FINAL or result["estimator"] == SINGLE:
-            result["summary"] = jreal.summarise(result["per_clip"])
-            result["verdict"] = jreal.objective(result["summary"], args.dcpu, 0.0, args.k)
-        stats = interval.interval(rows, args.dcpu, args.k)
-        result["interval"] = stats
-        result["decision"] = interval.decide(stats, final=level == pool.FINAL)
+            result = share_level(runner, families, draw.levels[level], level, args)
+            stats = result["interval"]
+        else:
+            level_args = with_dcpu(args, level_dcpu(args, frames, DEFAULT_INTRA_PERIOD))
+            result = measure_level(runner, families, draw.levels[level], frames, level,
+                                   estimator_of(level, args), level_args)
+            result["frames"] = frames
+            if level == pool.FINAL:
+                add_periodic_pulse(runner, *families, one_per_class(draw.levels[level]),
+                                   frames, result["per_clip"], level)
+            if level == pool.FINAL or result["estimator"] == SINGLE:
+                result["summary"] = jreal.summarise(result["per_clip"])
+                result["verdict"] = jreal.objective(result["summary"], level_args.dcpu, 0.0,
+                                                    args.k)
+            stats = interval.interval(result["per_clip"], level_args.dcpu, args.k)
+            result["interval"] = stats
+            result["decision"] = interval.decide(stats, final=level == pool.FINAL)
         pulsing = [g for g in result.get("verdict", {}).get("guards", [])
                    if g.startswith(jreal.PULSE_TERMS)]
         if level == pool.FINAL and "summary" in result:
@@ -147,20 +148,71 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
         stages.append(result)
         if result["estimator"] == LADDER:
             print(format_stage(result), flush=True)
-        print(f"{level} ({result['estimator']}): {interval.describe(stats)}"
-              + (f" ({level_frames} f, keys every {LONG_KEY_SECONDS:g} s)" if long_window
-                 else "")
+        print(f"{level} ({result['estimator']}): "
+              + (key_shares.describe(result["shares"], result["share_decisions"], stats)
+                 if long_window else interval.describe(stats))
               + f" -> {result['decision'].upper()} ({wall / 60:.1f} min)"
               + (f"; guards (judge): {'; '.join(result['verdict']['guards'])}"
                  if result["verdict"]["guards"] else ""), flush=True)
         if result["decision"] == interval.WORSE:
             break
     last = stages[-1]["decision"]
-    decision = last if last in (interval.WORSE, interval.BETTER, interval.AMBIGUOUS) else \
+    decision = last if last in (interval.WORSE, interval.BETTER, interval.AMBIGUOUS,
+                                interval.NEUTRAL) else \
         f"not adopted (stopped after {stages[-1]['stage']})"
     print(f"levels -> {decision.upper()}", flush=True)
     return {"clips": "adopt", "staged": True, "decision": decision, "levels": per_level,
             "draw": draw.record(), "stages": stages}
+
+
+def chosen_levels(args: argparse.Namespace, levels: tuple[str, ...] | None = None
+                  ) -> tuple[str, ...]:
+    """The levels a run measures: `levels`, else args.levels, else up to args.max_level."""
+    return levels or getattr(args, "levels", None) or pool.LEVELS[:args.max_level]
+
+
+def draw_for(paths: Paths, args: argparse.Namespace) -> pool.Draw:
+    """The pool draw the levels run on (args.rotation, else today's)."""
+    return pool.draw(pool.load_pool(paths, usable), pool.rotation_key(args.rotation),
+                     int(args.frames))
+
+
+def rejudge(result: dict, cpu: decision_cpu.Charge, k: float) -> dict:
+    """A recorded levels run (`run`'s result) judged again with `cpu`, the CPU measured
+    on its own encodes, at weight `k`: its per-clip quality rows as recorded, each level
+    (and each key share of a long-window level) charged its own group's dCPU, decided as
+    `run` decides (a periodic-key pulse stays WORSE). Levels after one now WORSE are
+    reported but would not have run. A long-window level whose later shares were not
+    coded (`settled_worse`) and that is no longer WORSE is AMBIGUOUS, with
+    `shares_missing`: it needs those shares measured. Returns {"levels": {level: {...}}, "decision"}."""
+    stages = {s["stage"]: s for s in result["stages"]}
+    out, decision = {}, None
+    for level, recorded in result["levels"].items():
+        stage, final = stages[level], level == pool.FINAL
+        shares = stage.get("share_results")
+        if shares:
+            per_share = {int(p): interval.interval(r["per_clip"], cpu.dcpu(r["frames"],
+                                                                         int(p)), k)
+                         for p, r in shares.items()}
+            choice, stats, by_share = key_shares.judge(per_share, final)
+            stats = {**stats, "shares": {p: {**s, "decision": by_share[p]}
+                                         for p, s in per_share.items()}}
+        else:
+            stats = interval.interval(stage["per_clip"], cpu.dcpu(
+                stage.get("frames") or int(result["frames"]), DEFAULT_INTRA_PERIOD), k)
+            choice = interval.decide(stats, final)
+        if final and any(g.startswith(jreal.PULSE_TERMS) for g in recorded.get("guards", [])):
+            choice = interval.WORSE
+        missing = stage.get("shares_skipped") or []
+        if missing and choice != interval.WORSE:
+            # the run stopped coding shares once it was WORSE (`settled_worse`); with
+            # this CPU it is not, and the shares never measured could decide it
+            choice = interval.AMBIGUOUS
+            stats = {**stats, "shares_missing": missing}
+        out[level] = {**stats, "decision": choice, "recorded": recorded["decision"],
+                      "after_worse": decision == interval.WORSE}
+        decision = choice if decision != interval.WORSE else decision
+    return {"levels": out, "decision": decision, "k": k, "cpu": decision_cpu.record(cpu)}
 
 
 def pulse_report(summary: dict) -> str:
@@ -199,15 +251,90 @@ def estimator_of(level: str, args: argparse.Namespace) -> str:
     return LADDER
 
 
+def level_dcpu(args: argparse.Namespace, frames: int, intra: int) -> float | None:
+    """The CPU change charged to a level coding `frames` frames with a key every `intra`:
+    from `args.cpu` (a decision_cpu.Charge, measured on this decision's own encodes), for
+    exactly that group; None without one (quality only)."""
+    charge = getattr(args, "cpu", None)
+    return None if charge is None else charge.dcpu(frames, intra)
+
+
+def with_dcpu(args: argparse.Namespace, dcpu: float | None) -> argparse.Namespace:
+    """`args` with this level's CPU change as `dcpu` (what the stage code charges)."""
+    return argparse.Namespace(**{**vars(args), "dcpu": dcpu})
+
+
+def share_dcpu(args: argparse.Namespace, share: key_shares.KeyShare) -> float | None:
+    """The CPU change at `share`: its own group of `args.cpu` (level_dcpu)."""
+    return level_dcpu(args, share.window, share.period)
+
+
+def share_level(runner: Runner, families: tuple[Family, Family], drawn: list[Clip],
+                level: str, args: argparse.Namespace) -> dict:
+    """The long-window level at every key share (nceval.key_shares): per share the
+    clips with its window from frame 0, a key every share period, its J + k dCPU at
+    that share's CPU; decided WORSE if any share is, else on the shares' mean. Once a
+    share settles the level WORSE (`settled_worse`) the later shares are not coded: a
+    replay of the 106 stored train final checks with both shares (2026-11-24) found 5
+    settled by the first share, each WORSE in the end, so this saves only the later
+    shares' encodes and scores in those runs and never changes a decision."""
+    chosen = key_shares.parse_periods(getattr(args, "key_shares", None))
+    per_share, results, skipped = {}, {}, []
+    for share in chosen:
+        if any(settled_worse(r, level) for r in results.values()):
+            # A share decided WORSE, or the periodic-key pulse (measured with the first
+            # share), already makes the level WORSE (key_shares.judge, `run`): the rest
+            # cannot change the decision, so they are not coded.
+            skipped.append(share.period)
+            print(f"{level}: key share {share.describe()} not measured: the level is "
+                  f"already WORSE", flush=True)
+            continue
+        clips = long_clips(drawn, share.window)
+        print(f"{level}: key share {share.describe()} on the {len(clips)} of {len(drawn)} "
+              f"clips with {share.window} frames", flush=True)
+        dcpu = share_dcpu(args, share)
+        result = measure_level(runner, families, clips, share.window, level,
+                               estimator_of(level, args), with_dcpu(args, dcpu),
+                               key_frames=share.period)
+        if share is chosen[0]:
+            # the periodic-key pulse passes are their own measurement, once per level
+            add_periodic_pulse(runner, *families, one_per_class(clips), int(args.frames),
+                               result["per_clip"], level)
+        result["summary"] = jreal.summarise(result["per_clip"])
+        result["verdict"] = jreal.objective(result["summary"], dcpu, 0.0, args.k)
+        result.update(frames=share.window, key_period=share.period, dcpu=dcpu,
+                      interval=interval.interval(result["per_clip"], dcpu, args.k))
+        results[share.period], per_share[share.period] = result, result["interval"]
+    decision, combined, decisions = key_shares.judge(per_share, final=level == pool.FINAL)
+    first = results[chosen[0].period]
+    guards = sorted({g for r in results.values() for g in r["verdict"]["guards"]})
+    # the level's rows are the first share's (pulse included); every share is kept
+    return {**first, "verdict": {**first["verdict"], "guards": guards}, "interval": combined,
+            "decision": decision, "shares": per_share, "share_decisions": decisions,
+            "share_results": {p: {k: v for k, v in r.items() if k != "stage"}
+                              for p, r in results.items()},
+            "shares_skipped": skipped}
+
+
+def settled_worse(result: dict, level: str) -> bool:
+    """Whether one measured share already decides the long-window level WORSE: its own
+    interval says WORSE (key_shares.judge: any WORSE share is the level's verdict) or
+    its periodic-key pulse guard tripped (`run` fails the level on it)."""
+    if interval.decide(result["interval"], final=level == pool.FINAL) == interval.WORSE:
+        return True
+    return level == pool.FINAL and any(g.startswith(jreal.PULSE_TERMS)
+                                       for g in result["verdict"]["guards"])
+
+
 def measure_level(runner: Runner, families: tuple[Family, Family], clips: list[Clip],
                   frames: int, level: str, estimator: str, args: argparse.Namespace,
-                  key_seconds: float | None = None) -> dict:
-    """One level's per-clip rows ({"stage", "estimator", "per_clip", ...}); `key_seconds`
-    sets a key period (the long-window L3), else one key."""
+                  key_frames: int | None = None) -> dict:
+    """One level's per-clip rows ({"stage", "estimator", "per_clip", ...}); `key_frames`
+    sets a key period (a key share of the long-window L3), else one key."""
     if estimator == SINGLE:
         rows = singlepoint.single_points(runner, *families, clips,
                                          singlepoint.assign_rungs(clips), frames,
-                                         budgeted=True, key_seconds=key_seconds)
+                                         budgeted=True, key_frames=key_frames)
         change, t_value = singlepoint.rung_trend(rows)
         if not singlepoint.reshaping(rows):
             return {"stage": level, "estimator": SINGLE, "per_clip": rows,
@@ -215,9 +342,9 @@ def measure_level(runner: Runner, families: tuple[Family, Family], clips: list[C
         print(f"{level}: single-point deltas trend with the rung ({change:+.2f}% over the "
               f"ladder, t {t_value:+.1f}): the change reshapes the curve, full ladder",
               flush=True)
-    if key_seconds:
+    if key_frames:
         curves = runner.measure(f"{level} long window", list(families), clips, frames,
-                                key_seconds=key_seconds)
+                                key_frames=key_frames)
         rows = compare(curves, families[0].name, families[1].name, clips, paired=True)
         summary = jreal.summarise(rows)
         return {"stage": level, "estimator": LADDER, "sigma": 0.0, "frames": frames,
@@ -227,6 +354,38 @@ def measure_level(runner: Runner, families: tuple[Family, Family], clips: list[C
     run_step(runner, families, [(track, Stage(level, None, RUNGS[level], 0.0))], frames, True,
              args, early_stop=False, announce=False)
     return {**track.stages[-1], "estimator": LADDER}
+
+
+def quality_jobs(runner: Runner, test: Family, draw: pool.Draw, chosen: tuple[str, ...],
+                 args: argparse.Namespace) -> list[tuple[Bench, Point]]:
+    """The candidate's encodes `run` measures at the `chosen` levels of `draw`: the source
+    of the decision's CPU plan (nceval.decision_cpu). Each branch is the one
+    measure_level / share_level takes; tests/test_decision_cpu.py checks they agree."""
+    jobs = []
+    for level in chosen:
+        clips = draw.levels[level]
+        if not clips:
+            continue
+        if level == pool.FINAL and getattr(args, "final_frames", None):
+            for share in key_shares.parse_periods(getattr(args, "key_shares", None)):
+                jobs += level_points(runner, test, long_clips(clips, share.window),
+                                     share.window, level, args, share.period)
+        else:
+            jobs += level_points(runner, test, clips, int(args.frames), level, args)
+    return jobs
+
+
+def level_points(runner: Runner, test: Family, clips: list[Clip], frames: int, level: str,
+                 args: argparse.Namespace, key_frames: int | None = None
+                 ) -> list[tuple[Bench, Point]]:
+    """The candidate's points of one level (or one key share of it), as measure_level
+    codes them: one assigned rung per clip (single-point), else the level's rungs."""
+    if estimator_of(level, args) == SINGLE:
+        ladder = singlepoint.rung_ladder(singlepoint.assign_rungs(clips))
+        return runner.points([test], clips, frames, None, ladder=ladder, key_frames=key_frames)
+    if key_frames:
+        return runner.points([test], clips, frames, None, key_frames=key_frames)
+    return runner.points([test], clips, frames, RUNGS[level])
 
 
 # --- final-check: two builds on the day's L3 -------------------------------------------
@@ -462,7 +621,8 @@ def final_check(args: argparse.Namespace) -> dict:
                                          max_level=len(pool.LEVELS), dcpu=None,
                                          k=jreal.K_CPU, all_stages=False,
                                          final_estimator=estimator,
-                                         final_frames=args.final_frames or None)
+                                         final_frames=args.final_frames or None,
+                                         key_shares=args.key_shares)
         print(f"== {codec.value}: {args.old} -> {args.new}", flush=True)
         report["codecs"][codec.value] = run(runner, (anchor, test), paths, screen_args,
                                             (pool.FINAL,))
@@ -482,8 +642,11 @@ def main(argv: list[str] | None = None) -> None:
     f.add_argument("--rotation", help="rotation key to reproduce (default: today, UTC)")
     f.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
     f.add_argument("--final-frames", type=int, default=LONG_FRAMES,
-                   help="the bundle's L3 window, keys every LONG_KEY_SECONDS (0: --frames, "
+                   help="non-zero: the bundle's L3 on the long window at every key share "
+                        "(nceval.key_shares; 0: --frames, "
                         "one key)")
+    f.add_argument("--key-shares", help="key periods in frames of the long window "
+                   "(default 150,300: nceval.key_shares, which must include both)")
     f.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     f.add_argument("--over-budget", action="store_true")
     f.add_argument("--estimator", choices=(AUTO, SINGLE, LADDER), default=AUTO,

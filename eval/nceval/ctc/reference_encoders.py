@@ -1,7 +1,10 @@
 """Adapters for the standards yardsticks the existing registry lacks.
 
 HM and VTM run the JVET low-delay P configuration files unchanged
-(`encoder_lowdelay_P_main.cfg`, `encoder_lowdelay_P_vtm.cfg`), VVenC its
+(`encoder_lowdelay_P_main.cfg`, `encoder_lowdelay_P_vtm.cfg`), and for the
+low-delay bi-prediction ceiling their low-delay B twins (`encoder_lowdelay_main.cfg`,
+`encoder_lowdelay_vtm.cfg`: the same GOP, references and QP offsets, B slices
+whose two lists hold only past pictures), VVenC its
 low-delay `faster` file, and libaom the AOM CTC low-delay command line
 (CWG-F384o §4.3) as far as libaom has its options. Every adapter names its
 tool and configuration file relative to the run directory (`bin/`, `cfg/`):
@@ -29,6 +32,8 @@ from ..encoders.base import EncodeJob, EncoderAdapter, fps_fraction
 CFG_DIR = Path("cfg")
 HM_CONFIG = CFG_DIR / "encoder_lowdelay_P_main.cfg"
 VTM_CONFIG = CFG_DIR / "encoder_lowdelay_P_vtm.cfg"
+HM_B_CONFIG = CFG_DIR / "encoder_lowdelay_main.cfg"
+VTM_B_CONFIG = CFG_DIR / "encoder_lowdelay_vtm.cfg"
 VVENC_CONFIG = CFG_DIR / "lowdelay_faster.cfg"
 #: The project codes 8-bit video only (owner decision; CTC files say 10 for VVC).
 CODING_BIT_DEPTH = 8
@@ -78,6 +83,46 @@ class VtmLowDelayP(_JvetSoftware):
     tool = "EncoderApp"
     config = VTM_CONFIG
     extra = (f"--InternalBitDepth={CODING_BIT_DEPTH}",)
+
+
+class HmLowDelayB(HmLowDelayP):
+    """HM-19.0, JCT-VC low-delay B: `hm-ldp` with generalised B slices (both
+    lists past pictures), the syntax-level gain of low-delay bi-prediction."""
+
+    name = "hm-ldb"
+    config = HM_B_CONFIG
+
+
+#: HM's low-delay GOP (both cfg files, `Frame1`..`Frame8`): QPoffset,
+#: QPOffsetModelOff and QPOffsetModelScale of each picture.
+HM_LD_GOP = ((5, "-6.5", "0.2590"), (4, "-6.5", "0.2590"), (5, "-6.5", "0.2590"),
+             (4, "-6.5", "0.2590"), (5, "-6.5", "0.2590"), (4, "-6.5", "0.2590"),
+             (5, "-6.5", "0.2590"), (1, "0.0", "0.0"))
+#: The cfg files' four references per list, nearest first, by GOP position.
+HM_LD_REFERENCES = tuple((-1, -9, -17, -25) if poc == 1 else (-1, -poc, -poc - 8, -poc - 16)
+                         for poc in range(1, 9))
+
+
+class HmLowDelayRefs(HmLowDelayP):
+    """HM low delay with the cfg's GOP restricted to the first `refs`
+    references per list (each reference set explicit; the sets keep every
+    picture a later one names): how much of LD-B's gain over LD-P a 1- or
+    2-reference design can reach (`B`), against LD-P at the same count (`P`)."""
+
+    def __init__(self, slice_type: str, refs: int) -> None:
+        self.name = f"hm-ld{slice_type.lower()}-r{refs}"
+        self.config = HM_B_CONFIG if slice_type == "B" else HM_CONFIG
+        self.extra = tuple(
+            f"--Frame{poc}={slice_type} {poc} {qp} {off} {scale} 0 0 1.0 0 0 0 {refs} {refs} "
+            + " ".join(str(r) for r in HM_LD_REFERENCES[poc - 1][:refs]) + " 0"
+            for poc, (qp, off, scale) in enumerate(HM_LD_GOP, start=1))
+
+
+class VtmLowDelayB(VtmLowDelayP):
+    """VTM-24.0, JVET low-delay B at 8 bits: `vtm-ldp` with B slices."""
+
+    name = "vtm-ldb"
+    config = VTM_B_CONFIG
 
 
 class VvencLowDelay(EncoderAdapter):

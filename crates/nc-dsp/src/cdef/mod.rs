@@ -262,6 +262,10 @@ pub(crate) type CdefPair16Fn = unsafe fn(
     dst_stride: usize,
 );
 
+/// High-depth filter on a source and its available halo at frame borders.
+pub(crate) type CdefBorder16Fn =
+    unsafe fn(&CdefSource<u16>, (usize, usize), &CdefArgs, &mut [u16], usize);
+
 /// High-bit-depth (`u16`) CDEF kernels of one ISA.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HighCdefFns {
@@ -269,6 +273,8 @@ pub(crate) struct HighCdefFns {
     pub find_dir: FindDir16Fn,
     /// Padded-window edge kernels for `[4x4, 8x8]`.
     pub edge: [CdefEdge16Fn; 2],
+    /// Direct 4×4 border filter where the ISA can mask source loads.
+    pub border4: Option<CdefBorder16Fn>,
     /// Interior kernels for `[4x4, 8x8]`.
     pub interior: [CdefInterior16Fn; 2],
     /// Dual U+V 4x4 interior kernel where vectors hold 32 `i16` lanes.
@@ -280,6 +286,7 @@ impl HighCdefFns {
     pub const SCALAR: Self = Self {
         find_dir: scalar::find_dir_u16,
         edge: [scalar::block4_edge_u16, scalar::block8_edge_u16],
+        border4: None,
         interior: [
             scalar::interior_rows::<u16, 4>,
             scalar::interior_rows::<u16, 8>,
@@ -287,6 +294,9 @@ impl HighCdefFns {
         interior_pair4: None,
     };
 }
+
+/// Byte filter on a source and its available halo at frame borders.
+pub(crate) type CdefBorderFn8 = unsafe fn(&CdefSource, (usize, usize), &CdefArgs, &mut [u8], usize);
 
 /// The CDEF kernels of one ISA.
 #[derive(Debug, Clone, Copy)]
@@ -297,6 +307,8 @@ pub(crate) struct CdefFns {
     pub block8: CdefFn,
     /// 4x4 blocks (4:2:0 chroma).
     pub block4: CdefFn,
+    /// Byte border kernels for 4×4 and 8×8 blocks.
+    pub border: Option<[CdefBorderFn8; 2]>,
     /// 8x8 blocks away from the plane's edges, read from 8-bit samples.
     pub block8_interior: CdefFn8,
     /// 4x4 blocks away from the plane's edges, read from 8-bit samples.
@@ -596,3 +608,9 @@ pub(crate) mod simd128_interior;
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 pub(crate) mod avx512;
+#[cfg(target_arch = "x86_64")]
+#[allow(
+    unsafe_code,
+    reason = "Ice Lake intrinsics after checked halo and destination views"
+)]
+mod avx512_high4;

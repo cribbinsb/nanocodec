@@ -1,0 +1,6 @@
+# AV1 key transform type by transform-domain estimate (av1.keyframe_tx_type_search), one-frame fixed-QP ab
+tts: av1.keyframe_tx_type_search=1
+best: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4
+best_txt4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 decision.intra_rd_transforms=4
+best_tts: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 av1.keyframe_tx_type_search=1
+best_tts_txt1: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 quant.trellis_key=1 quant.trellis_states=4 decision.intra_rd_modes=4 av1.keyframe_tx_type_search=1 decision.intra_rd_transforms=1

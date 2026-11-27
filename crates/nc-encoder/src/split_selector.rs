@@ -40,6 +40,9 @@
 
 use nc_dsp::Variance;
 
+use crate::params::PlannerParams;
+use nc_analysis::linear_threshold::LinearThreshold;
+
 /// Coefficients of `h`, in units of the log of the leaf-vs-split cost ratio.
 /// Shared by every codec (fit on HEVC, AV1 and VVC together).
 mod fit {
@@ -88,26 +91,99 @@ pub(crate) struct SplitEvidence {
     pub search_sads: Option<(u32, u32)>,
 }
 
+/// Corrections to `h` tuned on encodes (`planner.split_selector_d_*`,
+/// `linear_threshold.rs`): a delta on each fitted coefficient, plus terms the
+/// fit lacks (a 32x32 node, the frame's λ). All 0 is the fitted selector
+/// exactly (no correction is built). Per frame role through the
+/// `nonbase.planner.split_selector_d_*` overlay (`frame_role.rs`).
+pub(crate) type SelectorTerms = LinearThreshold<SELECTOR_FEATURES>;
+
+/// The correction's features, in [`SplitEvidence::features`] order.
+pub(crate) const SELECTOR_FEATURES: usize = 9;
+/// The node log2 size of the 32x32 term.
+const LOG2_32: u8 = 5;
+
+/// The selector's correction from `params`, `None` while all terms are 0.
+pub(crate) fn selector_terms(params: &PlannerParams) -> Option<SelectorTerms> {
+    LinearThreshold::new(
+        params.split_selector_d_bias,
+        [
+            params.split_selector_d_residual,
+            params.split_selector_d_mean,
+            params.split_selector_d_quadrant_gain,
+            params.split_selector_d_quadrant_imbalance,
+            params.split_selector_d_vector_distance,
+            params.split_selector_d_search_split_gain,
+            params.split_selector_d_node_64,
+            params.split_selector_d_node_32,
+            params.split_selector_d_lambda,
+        ],
+    )
+}
+
 impl SplitEvidence {
-    /// The factor on the parent bias: `e^(scale · h)`.
-    pub fn bias_factor(&self, scale: f32) -> f32 {
-        (scale * self.shift()).exp()
+    /// The factor on the parent bias: `e^(scale · (h + terms))`.
+    pub fn bias_factor(&self, scale: f32, terms: Option<&SelectorTerms>) -> f32 {
+        let h = match terms {
+            None => self.shift(),
+            Some(terms) => self.shift() + terms.at(&self.features()),
+        };
+        (scale * h).exp()
+    }
+
+    /// The fitted terms' features (0 where the fit leaves a term out), then
+    /// the 32x32 flag and `ln λ`.
+    fn features(&self) -> [f32; SELECTOR_FEATURES] {
+        let log2_area = 2 * u32::from(self.log2);
+        let area = (1_u32 << log2_area) as f32;
+        let per_lambda = |energy: f32| energy / area / self.lambda.max(f32::MIN_POSITIVE);
+        let node_var = self.leaf.n_variance_pow2(log2_area) as f32;
+        let mean = (self.leaf.sse as f32 - node_var).max(0.0);
+        let (gain, imbalance) = self.quadrants.map_or((0.0, 0.0), |quadrants| {
+            let log2_quarter = log2_area - 2;
+            let quarter = (1_u32 << log2_quarter) as f32;
+            let vars = quadrants.map(|q| q.n_variance_pow2(log2_quarter) as f32 / quarter);
+            let sum: f32 = vars.iter().map(|v| v * quarter).sum();
+            let (low, high) = vars
+                .iter()
+                .fold((f32::MAX, 0.0f32), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+            (
+                ((sum / area + VARIANCE_FLOOR) / (node_var / area + VARIANCE_FLOOR)).ln(),
+                ((high + IMBALANCE_FLOOR) / (low + IMBALANCE_FLOOR)).ln(),
+            )
+        });
+        let search = self.search_sads.map_or(0.0, |(whole, split)| {
+            ((split as f32 + SAD_FLOOR) / (whole as f32 + SAD_FLOOR)).ln()
+        });
+        [
+            per_lambda(node_var).ln_1p(),
+            per_lambda(mean).ln_1p(),
+            gain,
+            imbalance,
+            (self.vector_distance as f32).ln_1p(),
+            search,
+            f32::from(u8::from(self.log2 >= LOG2_64)),
+            f32::from(u8::from(self.log2 == LOG2_32)),
+            self.lambda.max(f32::MIN_POSITIVE).ln(),
+        ]
     }
 
     /// `h`: positive favours the split.
     fn shift(&self) -> f32 {
-        let area = (1u32 << (2 * self.log2)) as f32;
+        let log2_area = 2 * u32::from(self.log2);
+        let area = (1_u32 << log2_area) as f32;
         let per_lambda = |energy: f32| energy / area / self.lambda.max(f32::MIN_POSITIVE);
-        let node_var = self.leaf.n_variance(area as u32) as f32;
+        let node_var = self.leaf.n_variance_pow2(log2_area) as f32;
         let mean = (self.leaf.sse as f32 - node_var).max(0.0);
         let mut h = fit::INTERCEPT
             + fit::RESIDUAL * per_lambda(node_var).ln_1p()
             + fit::MEAN * per_lambda(mean).ln_1p()
             + fit::VECTOR_DISTANCE * (self.vector_distance as f32).ln_1p();
         if let Some(quadrants) = self.quadrants {
-            let quarter = area as u32 / 4;
-            let vars = quadrants.map(|q| q.n_variance(quarter) as f32 / quarter as f32);
-            let sum: f32 = vars.iter().map(|v| v * quarter as f32).sum();
+            let log2_quarter = log2_area - 2;
+            let quarter = (1_u32 << log2_quarter) as f32;
+            let vars = quadrants.map(|q| q.n_variance_pow2(log2_quarter) as f32 / quarter);
+            let sum: f32 = vars.iter().map(|v| v * quarter).sum();
             let (low, high) = vars
                 .iter()
                 .fold((f32::MAX, 0.0f32), |(lo, hi), &v| (lo.min(v), hi.max(v)));

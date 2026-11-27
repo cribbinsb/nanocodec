@@ -1,0 +1,6 @@
+# staged-md: AV1 transform-split trial gated on the whole transform's nonzero count (gate.tx_split_min_nonzero); 150 f fixed-QP ab
+null: planner.intra_bias=1050
+nz3: gate.tx_split_min_nonzero=3
+nz5: gate.tx_split_min_nonzero=5
+nz9: gate.tx_split_min_nonzero=9
+nz17: gate.tx_split_min_nonzero=17

@@ -22,6 +22,8 @@ use super::coded_snapshot::CodedSnapshot;
 struct NodeTrial {
     before: CodedSnapshot,
     kept: CodedSnapshot,
+    /// The kept syntax is still the live tail, moved on the next undo.
+    kept_items_current: bool,
 }
 
 /// The open node trials, innermost last.
@@ -39,7 +41,9 @@ impl VvcBackend {
         if trials.open == trials.snapshots.len() {
             trials.snapshots.push(NodeTrial::default());
         }
-        self.save_coded(node, recon, &mut trials.snapshots[trials.open].before);
+        let trial = &mut trials.snapshots[trials.open];
+        trial.kept_items_current = false;
+        self.save_coded(node, recon, &mut trial.before);
         trials.open += 1;
         self.node_trials = trials;
     }
@@ -67,15 +71,34 @@ impl VvcBackend {
     /// `CodecBackend::node_trial_cost`: the price of the innermost trial's
     /// node as coded since it began.
     pub(super) fn node_trial_price(&self, source: &Picture, recon: &Picture) -> f32 {
+        self.node_trial_split_price(source, recon).cost()
+    }
+
+    /// `CodecBackend::node_trial_parts`.
+    pub(super) fn node_trial_split_price(
+        &self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> nc_encoder::NodeTrialParts {
         let snapshot = self.innermost_node_trial();
-        self.coded_cost(&snapshot.block(), snapshot.items(), source, recon)
+        self.coded_parts(&snapshot.block(), snapshot.items(), source, recon)
+    }
+
+    /// `CodecBackend::node_trial_summary`: what the innermost trial's
+    /// node holds as coded since it began.
+    pub(super) fn node_trial_coded_summary(&self) -> nc_encoder::NodeTrialSummary {
+        self.coded_summary(self.innermost_node_trial().items())
     }
 
     /// `CodecBackend::undo_node_trial`: put the innermost trial's state
     /// back.
     pub(super) fn undo_node(&mut self, recon: &mut Picture) {
-        let trials = std::mem::take(&mut self.node_trials);
-        self.restore_coded(recon, &trials.snapshots[trials.open - 1].before);
+        let mut trials = std::mem::take(&mut self.node_trials);
+        let trial = &mut trials.snapshots[trials.open - 1];
+        if std::mem::take(&mut trial.kept_items_current) {
+            trial.kept.keep_items(&mut self.items);
+        }
+        self.restore_coded(recon, &mut trial.before);
         self.node_trials = trials;
     }
 
@@ -85,14 +108,17 @@ impl VvcBackend {
         let mut trials = std::mem::take(&mut self.node_trials);
         let trial = &mut trials.snapshots[trials.open - 1];
         self.save_coded_after(&trial.before, recon, &mut trial.kept);
+        trial.kept_items_current = true;
         self.node_trials = trials;
     }
 
     /// `CodecBackend::restore_node_candidate`: put the innermost trial's
     /// kept coding back.
     pub(super) fn restore_kept_node(&mut self, recon: &mut Picture) {
-        let trials = std::mem::take(&mut self.node_trials);
-        self.restore_coded(recon, &trials.snapshots[trials.open - 1].kept);
+        let mut trials = std::mem::take(&mut self.node_trials);
+        let trial = &mut trials.snapshots[trials.open - 1];
+        debug_assert!(!trial.kept_items_current);
+        self.restore_coded(recon, &mut trial.kept);
         self.node_trials = trials;
     }
 

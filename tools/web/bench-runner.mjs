@@ -20,7 +20,9 @@
 // modules with SourceFrame), or, for older modules, from RGBA converted from
 // the clip once (untimed) through the encoder's own RGBA->I420 (also with
 // --rgba-input: the demo's RGBA path, for the test scene);
-// --fast selects the Fast preset (the demo's "Encoder preset"). The encoder's
+// --fast selects the Fast preset (the demo's "Encoder preset"). The encode
+// calls alone are also reported (`encode_ms_per_frame`, the best pass's), the
+// span a reference encoder's own per-call timing covers. The encoder's
 // quantizer argument (under rate control, the seed of the first key frame) is
 // the demo's initial one per codec (web/codecs.js), as the native CLI seeds it:
 // q-index 180 for AV1, VP9 and AV2, QP 32 otherwise.
@@ -161,29 +163,36 @@ async function encode(args) {
     frames.push(planes ? frame : i420ToRgba(frame, width, height));
   }
   const layout = Uint32Array.from([0, width, width * height, width / 2, width * height * 5 / 4, width / 2]);
-  const passes = [];
+  const passes = [], encodeOnly = [];
   let bytes = 0;
   for (let pass = 0; pass < +args.repeat; pass++) {
     const encoder = new module.BrowserEncoder(args.codec, width, height, CODECS[args.codec].quantizer.initial, fps, +args.keySeconds * fps,
       args.fast ? 'fast' : 'medium', undefined, false, planes ? 'bt709' : 'bt601');
     encoder.set_rate_control(+args.kbps, +args.peakKbps, +args.bufferMs);
     const source = 'SourceFrame' in module ? new module.SourceFrame(width, height) : null;
-    const times = [];
+    const times = [], encodeTimes = [];
     bytes = 0;
     for (const frame of frames) {
       const start = performance.now();
       if (planes) source.from_planes(frame, 'I420', 'bt709', width, height, layout);
       else source?.from_rgba(frame);
+      const loaded = performance.now();
       const packet = encoder.encode(source ?? frame);
-      times.push(performance.now() - start);
+      const end = performance.now();
+      times.push(end - start);
+      encodeTimes.push(end - loaded);
       bytes += packet.length;
     }
     encoder.free();
     source?.free();
     passes.push(times);
+    encodeOnly.push(encodeTimes);
   }
+  const totals = passes.map(p => p.reduce((a, b) => a + b, 0));
+  const bestPass = encodeOnly[totals.indexOf(Math.min(...totals))];
   return { mode: 'encode', codec: args.codec, yuv: args.yuv, wasm_sha256: wasmSha256,
-    achieved_kbps: +(bytes * 8 * fps / count / 1000).toFixed(1), ...summarize(passes, count) };
+    achieved_kbps: +(bytes * 8 * fps / count / 1000).toFixed(1),
+    encode_ms_per_frame: +(bestPass.reduce((a, b) => a + b, 0) / count).toFixed(3), ...summarize(passes, count) };
 }
 
 const args = parseArgs(process.argv.slice(2));

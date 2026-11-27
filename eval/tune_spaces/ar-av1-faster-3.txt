@@ -1,0 +1,17 @@
+# av1-retune (2026-11-23): AV1 faster after the adaptive-thresholds overhaul (edd8195bf,
+# ab9a70f08). Faster already adapts sub-pel, rank, probe and motion; this adds the CDEF,
+# depth and quarter-stage controllers, the effort knob (aggression), the sequential rule
+# (confidence), the probe period and the quarter stage's cheap alternative, with the gates
+# the controllers start from. 600-frame windows at both key shares, k 0.204 (front slope).
+# Format (nceval.tune_pool): name [low high] [int|log]
+adapt.cdef 0 1 int
+adapt.depth 0 1 int
+adapt.quarter 0 1 int
+adapt.aggression 0.5 3 log
+adapt.confidence 0 2
+adapt.probe_period 4 32 int
+decision.subpel_quarter_predict 0 2 int
+decision.codec_subpel_seed_lambdas 0.05 0.25 log
+decision.exact_rank_margin 0.8 1.6
+analysis.one_position_sad_per_pixel 0.9 2.2
+light.planner.depth_removal_qp_scale 2 7

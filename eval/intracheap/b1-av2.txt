@@ -1,0 +1,24 @@
+# intra-cheap batch 1: merge-only windows, leaf-first, leaf exit, leaf pass, staged-decision assemblies; one-frame fixed-QP ab
+null: planner.intra_bias=1050
+s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2
+s2_lf: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1
+s2_lf_x30: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=30
+s2_lf_x100: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=100
+s3_lf: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=3 planner.key_rd_leaf_first=1
+krd12_lf: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1
+krd22_lf: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1
+krd22_lf_x30: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=30
+krd22_lf_x100: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=100
+krd22_lf_x300: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=300
+tk: quant.trellis_key=1
+tk_d1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 quant.trellis_key=1
+tk_krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 quant.trellis_key=1
+tk_d1_x100: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 quant.trellis_key=1 planner.key_rd_leaf_exit=100
+tk_d1_x300: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 quant.trellis_key=1 planner.key_rd_leaf_exit=300
+tk_d2_x300: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=0 quant.trellis_key=1 planner.key_rd_leaf_exit=300
+tk_krd11_cc1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 quant.trellis_key=1 av2.intra_chroma_candidates=1
+tk_d1_cheap: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 quant.trellis_key=1 av2.intra_rd_candidates=1 av2.intra_chroma_candidates=1
+cc1: av2.intra_chroma_candidates=1
+rdc1: av2.intra_rd_candidates=1
+tk_rdc3:  quant.trellis_key=1 av2.intra_rd_candidates=3
+tk4:  quant.trellis_key=1 quant.trellis_states=4

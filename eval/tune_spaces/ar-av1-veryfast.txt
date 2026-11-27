@@ -1,0 +1,20 @@
+# av1-retune (2026-11-23): AV1 veryfast's adaptive tool thresholds (nc-encoder
+# threshold_control.rs: on/off and the targets of the motion, CDEF and depth controllers;
+# AV1 faster runs four of them, veryfast none), with the sub-pel seed gate, depth removal,
+# the light pre-transform skip and the periodic-key level, tuned jointly on 600-frame
+# windows at both key shares with k 0.305 (the coordinator's veryfast front slope).
+# The fixed motion exits, exact-rank margin and CDEF period of the first version are
+# left to the controllers.
+# Format (nceval.tune_pool): name [low high] [int|log]
+adapt.subpel 0 1 int
+adapt.rank 0 1 int
+adapt.motion 0 1 int
+adapt.motion_target 0.1 0.4
+adapt.cdef 0 1 int
+adapt.cdef_target 0.02 0.15 log
+adapt.depth 0 1 int
+adapt.depth_target 0.08 0.3
+decision.codec_subpel_seed_lambdas 0.05 0.25 log
+planner.depth_removal_qp_scale 4 8
+light.av1.pre_tx_skip_energy 40 100
+rate.key_level_finer 0 3

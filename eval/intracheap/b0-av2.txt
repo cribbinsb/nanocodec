@@ -1,0 +1,20 @@
+# intra-cheap batch 0: existing settings around the key searches, one-frame fixed-QP ab
+krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1
+krd22: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2
+d1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0
+s1: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=1
+d2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=0
+s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2
+krd22_fs2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.intra_flat_stop=2
+krd22_fs6: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.intra_flat_stop=6
+merge_b1250_s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.intra_bias=1250
+deep_b900_d2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=0 planner.intra_bias=900
+tk: quant.trellis_key=1
+tk_krd22: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 quant.trellis_key=1
+krd22_ze: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_zero_exit=1
+krd22_rdc1: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_rd_candidates=1
+krd22_cc1: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_chroma_candidates=1
+krd22_ds1: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_delta_search=1
+krd22_tt0: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_tx_types=0
+krd22_ct2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.coeff_trim=2
+krd22_cheap: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 av2.intra_rd_candidates=1 av2.intra_chroma_candidates=1 av2.intra_zero_exit=1

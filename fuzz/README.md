@@ -67,6 +67,17 @@ Replay an artifact with `"$BINARY" ARTIFACT`, minimise it with
 `-minimize_crash=1 -runs=N`, fix the cause, and land the minimised input as
 a regression test in the decoder crate.
 
+## Regression corpus
+
+Every finding's inputs are kept in `~/nanocodec-data/fuzz/regressions/<codec>/`
+(`tools/dev/retention.toml`), and the merged corpora of a round in
+`~/nanocodec-data/fuzz/round<N>-<date>/<codec>/{corpus,artifacts}`. Each
+finding's inputs are also checked in under the decoder crate's
+`tests/data/fuzz-*` and run by its `tests/malformed.rs` (no panic, the
+expected error, bounded time), so `cargo test` replays them. Replay the
+regression corpus and the latest round's corpora in the WASM build (below)
+after a decoder change.
+
 ## Replay, natively and as WASM
 
 `replay/` runs inputs through the same drivers without libFuzzer, so the

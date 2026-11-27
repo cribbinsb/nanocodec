@@ -34,6 +34,8 @@ pub enum NalType {
     Sps = 33,
     /// Picture parameter set.
     Pps = 34,
+    /// Prefix SEI message.
+    PrefixSei = 39,
 }
 
 /// `nal_unit_header()` (HEVC §7.3.1.2): layer 0, `temporal_id`.
@@ -553,21 +555,22 @@ pub fn reference_set_index_bits(sets: usize) -> u32 {
     sets.next_power_of_two().trailing_zeros()
 }
 
-/// `slice_segment_header()` of the single P slice of a trailing picture
-/// with POC LSBs `poc_lsb`, predicted through `references`.
-pub fn p_slice_header(
+/// `slice_segment_header()` of the single P slice, or with `bi` the single
+/// generalised B slice (both lists the same past pictures), of a trailing
+/// picture with POC LSBs `poc_lsb`, predicted through `references`.
+pub fn inter_slice_header(
     w: &mut BitWriter,
     (poc_lsb, poc_lsb_bits): (u32, u32),
     references: SliceReferenceSet<'_>,
     qp: SliceQp,
     sao: (bool, bool),
-    temporal_mvp: bool,
+    (temporal_mvp, bi): (bool, bool),
     (references_active, merge_candidates): (usize, usize),
     deblocking: SliceDeblocking,
 ) {
     w.put_bit(true); // first_slice_segment_in_pic_flag
     w.put_ue(0); // slice_pic_parameter_set_id
-    w.put_ue(SLICE_TYPE_P); // slice_type
+    w.put_ue(if bi { SLICE_TYPE_B } else { SLICE_TYPE_P }); // slice_type
     w.put_bits(poc_lsb, poc_lsb_bits); // slice_pic_order_cnt_lsb
     match references {
         SliceReferenceSet::Sps { index, count } => {
@@ -584,17 +587,32 @@ pub fn p_slice_header(
     w.put_bit(temporal_mvp); // slice_temporal_mvp_enabled_flag
     w.put_bit(sao.0); // slice_sao_luma_flag
     w.put_bit(sao.1); // slice_sao_chroma_flag
-    // num_ref_idx_active_override_flag: the PPS default is one reference;
-    // a slice with the second reference (`refs.second`) has two.
+    // num_ref_idx_active_override_flag: the PPS default is one reference
+    // per list; a slice with the second reference (`refs.second`) has two.
     let two_references = references_active > 1;
     w.put_bit(two_references);
     if two_references {
         w.put_ue(references_active as u32 - 1); // num_ref_idx_l0_active_minus1
+        if bi {
+            // List 1 holds the same pictures (generalised B).
+            w.put_ue(references_active as u32 - 1); // num_ref_idx_l1_active_minus1
+        }
     }
-    if temporal_mvp && two_references {
-        // collocated_ref_idx (P slice: from list 0): the first reference.
-        // With one reference it is inferred 0 and not coded.
-        w.put_ue(0);
+    // No ref_pic_lists_modification (`lists_modification_present_flag` 0):
+    // list 1 is initialised as list 0, every reference preceding the
+    // picture (§8.3.4).
+    if bi {
+        w.put_bit(false); // mvd_l1_zero_flag: list 1's differences are coded
+    }
+    if temporal_mvp {
+        if bi {
+            w.put_bit(true); // collocated_from_l0_flag
+        }
+        if two_references {
+            // collocated_ref_idx (from list 0): the first reference. With
+            // one reference it is inferred 0 and not coded.
+            w.put_ue(0);
+        }
     }
     // five_minus_max_num_merge_cand (§7.4.7.1)
     w.put_ue((crate::mvpred::MAX_MERGE_CANDIDATES - merge_candidates) as u32);
@@ -603,6 +621,8 @@ pub fn p_slice_header(
     w.trailing_bits(); // byte_alignment()
 }
 
+/// `slice_type` value of a B slice (HEVC Table 7-7).
+const SLICE_TYPE_B: u32 = 0;
 /// `slice_type` value of a P slice (HEVC Table 7-7).
 const SLICE_TYPE_P: u32 = 1;
 /// `slice_type` value of an I slice (HEVC Table 7-7).

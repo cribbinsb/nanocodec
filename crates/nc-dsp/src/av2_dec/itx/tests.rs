@@ -245,3 +245,41 @@ fn squares_agree_with_av2_txfm() {
         }
     }
 }
+
+#[test]
+fn rectangular_dct_dispatch_matches_scalar() {
+    let dsp = Dsp::new();
+    for size in RectTxSize::ALL {
+        let (width, height) = (size.width(), size.height());
+        if width == height {
+            continue;
+        }
+        let area = size.coded_width() * size.coded_height();
+        let stride = width + 11;
+        let input: Vec<i16> = (0..=area).map(pattern).collect();
+        let prediction: Vec<u8> = (0..stride * (height + 2))
+            .map(|i| pixel(i % stride, i / stride))
+            .collect();
+        let (mut scalar, mut simd) = (prediction.clone(), prediction);
+        let (mut reference, mut coefficients) = (input.clone(), input);
+        inverse_transform_add(
+            &mut scalar,
+            3,
+            stride,
+            &mut reference,
+            size,
+            TxType::DCT_DCT,
+            9,
+        );
+        inverse_transform_add_with_dsp(
+            &dsp,
+            &mut simd,
+            (3, stride),
+            &mut coefficients,
+            (size, TxType::DCT_DCT),
+            9,
+        );
+        assert_eq!(simd, scalar, "{size:?}");
+        assert_eq!(coefficients, reference, "{size:?}");
+    }
+}

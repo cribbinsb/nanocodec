@@ -1,0 +1,43 @@
+[
+ {
+  "decision.codec_subpel_seed_lambdas": 0.016145063744705736,
+  "planner.depth_removal_qp_scale": 0.8248990956959201,
+  "analysis.skip_hme_sad_per_pixel": 1.0672979626738177,
+  "av2.inter_tx_types": 1,
+  "av2.interp_switchable": 3,
+  "av2.intra_rd_candidates": 3
+ },
+ {
+  "planner.depth_removal_qp_scale": 1.4773894590841445,
+  "av2.inter_split_min_nonzero": 2,
+  "av2.interp_switchable": 3,
+  "av2.trial_distortion": 1
+ },
+ {
+  "decision.codec_subpel_seed_lambdas": 0.04797446140148396,
+  "decision.intra_gate_variance": 77.05473354589029,
+  "planner.depth_removal_qp_scale": 1.3672638579487764,
+  "av2.inter_split_min_nonzero": 3,
+  "av2.inter_tx_types": 2,
+  "av2.interp_switchable": 2,
+  "av2.trial_distortion": 1
+ },
+ {
+  "decision.codec_subpel_seed_lambdas": 0.023543237810221187,
+  "planner.split_rate_factor": 2.008103113036882,
+  "av2.inter_split_min_nonzero": 6,
+  "av2.pre_tx_skip_energy": 27.97916382612195,
+  "av2.pre_tx_skip_score": 55.601554085311236,
+  "av2.inter_tx_types": 1,
+  "av2.p_intra_modes": 3
+ },
+ {
+  "decision.intra_gate_variance": 70.82766736538767,
+  "analysis.skip_hme_sad_per_pixel": 2.86441417687497,
+  "av2.interp_search_max_gain": 0.22215039470241385,
+  "av2.zero_test_texture_scale": 4.382115552687579,
+  "av2.inter_tx_types": 1,
+  "av2.interp_switchable": 1,
+  "av2.intra_rd_candidates": 4
+ }
+]

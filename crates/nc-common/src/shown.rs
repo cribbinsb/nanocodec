@@ -10,8 +10,8 @@ use crate::picture::{Picture, PlaneIndex};
 use crate::sample::Sample;
 use crate::view::PlaneView;
 
-/// The visible samples of one decoded 4:2:0 picture: three plane views of
-/// even luma size, borrowed from the decoder (or picture) that owns them.
+/// The visible samples of one decoded 4:2:0 picture: three plane views
+/// (chroma of half the luma size, rounded up), borrowed from the decoder (or picture) that owns them.
 #[derive(Debug, Clone, Copy)]
 pub struct ShownPicture<'a, T: Sample = u8> {
     planes: [PlaneView<'a, T>; 3],
@@ -27,28 +27,26 @@ impl<'a, T: Sample> ShownPicture<'a, T> {
     }
 
     /// The `width` x `height` luma window of `picture` at (`left`, `top`),
-    /// with the matching chroma windows; `None` if a value is odd or the
-    /// window does not fit.
+    /// with the matching chroma windows (an odd width or height takes the
+    /// chroma column or row its last luma one shares, as VP9's odd frame
+    /// sizes do); `None` if the origin is odd, the window is empty or it
+    /// does not fit.
     #[must_use]
     pub fn window(
         picture: &'a Picture<T>,
         (left, top): (usize, usize),
         (width, height): (usize, usize),
     ) -> Option<Self> {
-        let even = [left, top, width, height]
-            .iter()
-            .all(|v| v.is_multiple_of(2));
-        if !even || width == 0 || height == 0 {
+        if !(left.is_multiple_of(2) && top.is_multiple_of(2)) || width == 0 || height == 0 {
             return None;
         }
         let window = |plane: PlaneIndex| {
-            let shift = usize::from(plane != PlaneIndex::Y);
-            picture.plane(plane).view().sub_view(
-                left >> shift,
-                top >> shift,
-                width >> shift,
-                height >> shift,
-            )
+            let view = picture.plane(plane).view();
+            if plane == PlaneIndex::Y {
+                view.sub_view(left, top, width, height)
+            } else {
+                view.sub_view(left / 2, top / 2, width.div_ceil(2), height.div_ceil(2))
+            }
         };
         Some(Self {
             planes: [
@@ -134,7 +132,19 @@ mod tests {
     }
 
     #[test]
-    fn window_rejects_odd_or_outside() {
+    fn odd_window_takes_the_shared_chroma() {
+        let picture = numbered(8, 6);
+        let shown = ShownPicture::window(&picture, (2, 0), (5, 3)).unwrap();
+        assert_eq!((shown.width(), shown.height()), (5, 3));
+        assert_eq!(
+            shown.plane(PlaneIndex::U).row(1),
+            [64 + 8 + 1, 64 + 8 + 2, 64 + 8 + 3]
+        );
+        assert_eq!(shown.packed_frame_len(), 15 + 2 * 6);
+    }
+
+    #[test]
+    fn window_rejects_odd_origin_or_outside() {
         let picture = numbered(8, 6);
         assert!(ShownPicture::window(&picture, (1, 0), (4, 2)).is_none());
         assert!(ShownPicture::window(&picture, (6, 0), (4, 2)).is_none());

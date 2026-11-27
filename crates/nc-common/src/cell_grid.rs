@@ -5,6 +5,23 @@
 
 /// Set the `side` x `side` cells from (`row`, `col`) of the raster grid
 /// `cells` (`cols` cells per row, `rows` rows) to `value`, clipped to the
+/// grid ([`fill_rect`] of a square).
+///
+/// # Panics
+///
+/// If the clipped block does not lie inside `cells`.
+pub fn fill_square<T: Copy>(
+    cells: &mut [T],
+    grid: (usize, usize),
+    at: (usize, usize),
+    side: usize,
+    value: T,
+) {
+    fill_rect(cells, grid, at, (side, side), value);
+}
+
+/// Set the `width` x `height` cells from (`row`, `col`) of the raster grid
+/// `cells` (`cols` cells per row, `rows` rows) to `value`, clipped to the
 /// grid.
 ///
 /// The first row is filled cell by cell and copied whole into the others: a
@@ -15,19 +32,19 @@
 /// # Panics
 ///
 /// If the clipped block does not lie inside `cells`.
-pub fn fill_square<T: Copy>(
+pub fn fill_rect<T: Copy>(
     cells: &mut [T],
     (cols, rows): (usize, usize),
     (row, col): (usize, usize),
-    side: usize,
+    (width, height): (usize, usize),
     value: T,
 ) {
-    let last_row = (row + side).min(rows);
+    let last_row = (row + height).min(rows);
     if row >= last_row {
         return;
     }
     let first = row * cols + col;
-    let width = (col + side).min(cols) - col;
+    let width = (col + width).min(cols) - col;
     cells[first..first + width].fill(value);
     for r in row + 1..last_row {
         cells.copy_within(first..first + width, r * cols + col);

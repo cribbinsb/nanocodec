@@ -161,14 +161,12 @@ fn block_weights(c: &[i16; VVC_ALF_TAPS]) -> ([int8x16_t; GROUPS], i16) {
     (weights, (-2 * sum) as i16)
 }
 
-/// The window of `row` for step `i`, offset to signed bytes (−128).
+/// The 16-byte window at the validated offset, centred on zero.
+#[inline]
 #[target_feature(enable = "neon")]
-fn load_signed(row: &[u8], i: usize) -> int8x16_t {
-    let window: &[u8; WINDOW] = row[i * LANES..i * LANES + WINDOW]
-        .try_into()
-        .expect("window");
-    // SAFETY: NEON is enabled; the load reads exactly `window`.
-    let samples = unsafe { vld1q_u8(window.as_ptr()) };
+unsafe fn load_signed(row: &[u8], offset: usize) -> int8x16_t {
+    // SAFETY: the caller guarantees that the window fits in the tap row.
+    let samples = unsafe { vld1q_u8(row.as_ptr().add(offset)) };
     vreinterpretq_s8_u8(veorq_u8(samples, vdupq_n_u8(0x80)))
 }
 
@@ -213,9 +211,11 @@ pub(super) unsafe fn filter_block_row(
     let vectors = (out[0].len() / LANES).min(loadable);
     let (block_pairs, _) = coefficients.as_chunks::<2>();
     for (i, blocks) in block_pairs.iter().take(vectors).enumerate() {
+        let offset = i * LANES;
         let [(first, first_centre), (second, second_centre)] = blocks.map(|c| block_weights(&c));
         for ((rows, &shift), out) in rows.iter().zip(shifts).zip(out.iter_mut()) {
-            let windows = rows.map(|row| load_signed(row, i));
+            // SAFETY: `loadable` bounds the full window in every tap row.
+            let windows = rows.map(|row| unsafe { load_signed(row, offset) });
             let centre_bytes = vextq_s8::<{ VVC_ALF_REACH as i32 }>(windows[3], windows[3]);
             let centre: int16x8_t = vmovl_s8(vget_low_s8(centre_bytes));
             let shift_right = vdupq_n_s32(-(shift as i32));
@@ -240,11 +240,9 @@ pub(super) unsafe fn filter_block_row(
             );
             let unsigned_centre = vaddq_s16(centre, vdupq_n_s16(128));
             let filtered = vqmovun_s16(vqaddq_s16(unsigned_centre, offsets));
-            let out: &mut [u8; LANES] = (&mut out[i * LANES..(i + 1) * LANES])
-                .try_into()
-                .expect("eight samples");
-            // SAFETY: NEON is enabled; the store writes exactly `out`.
-            unsafe { vst1_u8(out.as_mut_ptr(), filtered) };
+            // SAFETY: NEON is enabled and dispatch checked that the four
+            // output rows have the same length. `vectors` bounds the store.
+            unsafe { vst1_u8(out.as_mut_ptr().add(offset), filtered) };
         }
     }
     filter_block_row_from(rows, coefficients, shifts, out, vectors * LANES);

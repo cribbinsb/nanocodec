@@ -1,0 +1,13 @@
+# The zero-gate network's terms (analysis.zero_gate_net_*, nc_analysis gate_net.rs), added to
+# the zero-vector gates' scale shift on top of the rung's linear G2 shifts. All 0 is the rung
+# as shipped, so the study's first trial is today's encoder.
+# Format (nceval.tune_pool): name [low high] [int|log]
+analysis.zero_gate_net_weight -1.5 1.5
+analysis.zero_gate_net_h0 -1.5 1.5
+analysis.zero_gate_net_h1 -1.5 1.5
+analysis.zero_gate_net_h2 -1.5 1.5
+analysis.zero_gate_net_h3 -1.5 1.5
+analysis.zero_gate_net_h4 -1.5 1.5
+analysis.zero_gate_net_h5 -1.5 1.5
+analysis.zero_gate_net_h6 -1.5 1.5
+analysis.zero_gate_net_h7 -1.5 1.5

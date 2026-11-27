@@ -1,0 +1,20 @@
+# VVC slow (tune-slow, 2026-11-23): the rung's effort and decision parameters, tuned jointly
+# on 600-frame windows at both key shares with k = the rung's front slope. VVC slow ships
+# without the key RD search, so it is in the space.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_deepen_context 0 3 int
+planner.rd_split_merge_context -3 2 int
+planner.rd_split_margin 0 1.5
+planner.rd_split_tail_satd 0 1
+planner.split_selector_scale
+planner.key_rd_split 0 1 int
+planner.key_rd_margin 1.0 2.0
+decision.final_margin_lambdas 0 0.2
+decision.codec_subpel_seed_lambdas
+decision.intra_gate_variance
+vvc.angular_candidates 2 8 int
+vvc.rd_candidates 2 6 int
+vvc.mts_min_levels 1 4 int
+vvc.affine_amvp_gate
+vvc.affine_merge_gate
+vvc.isp 0 1 int

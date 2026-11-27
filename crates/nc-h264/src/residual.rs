@@ -4,7 +4,7 @@
 
 use nc_dsp::Dsp;
 
-use crate::cabac::{BinRun, BinSink};
+use crate::cabac::{BinRun, BinSink, encode_signed_ueg_suffix};
 use crate::tables::{LAST_CTX_INC_8X8, SIGNIFICANT_CTX_INC_8X8, ZIGZAG_4X4, ZIGZAG_8X8};
 
 /// A coefficient scan (H.264 §8.5.6, §8.5.7) prepared for the residual
@@ -57,6 +57,23 @@ impl Scan {
     /// is set when the level at scan index `i` is non-zero, given `nonzero`,
     /// the block's non-zero raster positions ([`Dsp::nonzero_mask`]).
     fn significance(&self, nonzero: u64) -> u64 {
+        if nonzero & self.covered == 0 {
+            return 0;
+        }
+        match self.order.len() {
+            // Chroma DC is already in scan order. The 4x4 AC scan drops
+            // the DC bit after permuting the two raster bytes.
+            4 => nonzero & self.covered,
+            len @ (15 | 16) => {
+                let low = ZIGZAG_MASKS_4X4[0][usize::from(nonzero as u8)];
+                let high = ZIGZAG_MASKS_4X4[1][usize::from((nonzero >> 8) as u8)];
+                u64::from((low | high) >> (16 - len))
+            }
+            _ => self.sparse_significance(nonzero),
+        }
+    }
+
+    fn sparse_significance(&self, nonzero: u64) -> u64 {
         // Only the non-zero positions, few at our rates, are mapped.
         let mut significant = 0;
         let mut rest = nonzero & self.covered;
@@ -68,6 +85,26 @@ impl Scan {
         significant
     }
 }
+
+/// Each byte of a 4x4 raster significance mask, permuted into zig-zag
+/// order. Two loads replace the per-nonzero bit walk during 4x4 RD pricing.
+const ZIGZAG_MASKS_4X4: [[u16; 256]; 2] = {
+    let mut table = [[0; 256]; 2];
+    let mut index = 0;
+    while index < ZIGZAG_4X4.len() {
+        let pos = ZIGZAG_4X4[index];
+        let (byte, bit) = (pos / 8, pos % 8);
+        let mut mask = 0;
+        while mask < 256 {
+            if mask & (1 << bit) != 0 {
+                table[byte][mask] |= 1 << index;
+            }
+            mask += 1;
+        }
+        index += 1;
+    }
+    table
+};
 
 /// The 4x4 frame zig-zag scan (all 16 coefficients).
 pub static SCAN_4X4: Scan = Scan::new(&ZIGZAG_4X4);
@@ -265,21 +302,17 @@ impl<F: Fn(usize) -> usize, G: Fn(usize) -> usize> BinRun for SignificanceAndLev
             cabac.encode_decision(contexts.last + last_inc(last), true);
         }
 
-        let mut num_eq1 = 0usize;
-        let mut num_gt1 = 0usize;
+        // Track the contexts themselves. The first becomes zero after
+        // the first level above one, and the suffix context saturates.
+        let mut first_inc = 1usize;
+        let mut rest_inc = 5usize;
+        let rest_cap = 5 + contexts.gt1_cap;
         let mut rest = significant;
         while rest != 0 {
             let i = (u64::BITS - 1 - rest.leading_zeros()) as usize;
             rest ^= 1 << i;
             let c = levels[scan.position(i)];
             let abs_minus1 = u32::from(c.unsigned_abs()) - 1;
-            let first_inc = if num_gt1 != 0 {
-                0
-            } else {
-                (1 + num_eq1).min(4)
-            };
-            let rest_inc = 5 + num_gt1.min(contexts.gt1_cap);
-
             let prefix = abs_minus1.min(LEVEL_PREFIX_MAX);
             cabac.encode_decision(contexts.level + first_inc, prefix > 0);
             if prefix > 0 {
@@ -289,14 +322,16 @@ impl<F: Fn(usize) -> usize, G: Fn(usize) -> usize> BinRun for SignificanceAndLev
                 }
             }
             if abs_minus1 >= LEVEL_PREFIX_MAX {
-                write_exp_golomb_bypass(cabac, abs_minus1 - LEVEL_PREFIX_MAX);
-            }
-            cabac.encode_bypass(c < 0); // coeff_sign_flag
-
-            if abs_minus1 == 0 {
-                num_eq1 += 1;
+                encode_signed_ueg_suffix(cabac, (abs_minus1 - LEVEL_PREFIX_MAX) as u16, 0, c < 0);
             } else {
-                num_gt1 += 1;
+                cabac.encode_bypass(c < 0);
+            }
+
+            if prefix == 0 {
+                first_inc = (first_inc + usize::from(first_inc != 0)).min(4);
+            } else {
+                first_inc = 0;
+                rest_inc = (rest_inc + 1).min(rest_cap);
             }
         }
     }
@@ -313,20 +348,19 @@ fn significance_ctx_inc(cat: BlockCat, i: usize) -> usize {
     }
 }
 
-/// The k = 0 exp-Golomb suffix of UEG0, all bypass bins (§9.3.2.3).
-fn write_exp_golomb_bypass(cabac: &mut impl BinSink, value: u32) {
-    let mut remaining = value;
-    let mut k = 0u32;
-    while remaining >= (1 << k) {
-        cabac.encode_bypass(true);
-        remaining -= 1 << k;
-        k += 1;
-    }
-    cabac.encode_bypass(false);
-    for bit in (0..k).rev() {
-        cabac.encode_bypass((remaining >> bit) & 1 != 0);
-    }
-}
-
 #[path = "residual_trellis.rs"]
 pub(crate) mod trellis;
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+
+    #[test]
+    fn short_scan_masks_follow_scan_order() {
+        for scan in [&SCAN_CHROMA_DC, &SCAN_4X4, &SCAN_4X4_AC] {
+            for mask in 0..(1 << 16) {
+                assert_eq!(scan.significance(mask), scan.sparse_significance(mask));
+            }
+        }
+    }
+}

@@ -19,3 +19,39 @@ planner.rd_split_deepen_context = 3
 # The Default's filter-search effort by usage (filter.usage_quiet_share, 2026-11-21)
 # is not screened here.
 filter.usage_quiet_share = 0
+# Medium's key RD search and finer periodic keys (2026-11-21) were screened on medium only.
+planner.key_rd_split = 0
+rate.key_level_finer = 0
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-1.33 / -0.45 %).
+rate.key_cap_buffer_first = 0.8
+
+# G2 motion / sub-pel exit shifts: VVC medium's (DEFAULT_PARAMS, 2026-11-23)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0
+
+# Fixed QP only (`fixed_qp.`, 2026-11-24, Brief 20; docs/analysis/fixed-qp-medium-slower-2026-11-24.md):
+# base frames at 0.8 λ on top of VVC's FIXED_QP_PARAMS (`refs.second_full = 1`,
+# `structure.secondary_min_depth = 0`). nceval.fixedqp ab (draw fixedqp-2026-11-24, n=24, 600 f):
+# J -0.5% [-0.8, -0.3] (PSNR -0.5, VMAF -0.6, MS-SSIM -0.6); c8i/c8g fixed-QP CPU +1.64% / +1.36%
+# (mean +1.50%; -0.34% J / 1% CPU vs slow front slope -0.072). CBR streams are byte-identical.
+fixed_qp.decision.base_lambda_scale = 0.8

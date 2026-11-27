@@ -1,0 +1,16 @@
+{
+ "base": "hist-adaa8531b",
+ "families": {
+  "nanocodec-h264": "hist-adaa8531b",
+  "nanocodec-h264@fast": "hist-adaa8531b",
+  "nanocodec-h264@faster": "hist-adaa8531b",
+  "nanocodec-hevc": "hist-adaa8531b",
+  "nanocodec-hevc@fast": "hist-adaa8531b",
+  "nanocodec-vvc": "hist-adaa8531b",
+  "nanocodec-av1": "hist-adaa8531b",
+  "nanocodec-av1@fast": "hist-adaa8531b",
+  "nanocodec-vp9": "hist-adaa8531b",
+  "nanocodec-vp9@fast": "hist-adaa8531b",
+  "nanocodec-av2": "hist-adaa8531b"
+ }
+}

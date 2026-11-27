@@ -1,0 +1,23 @@
+# tune-fast (2026-11-23): H.264 veryfast's effort and decision pins, each between the
+# rung's value and medium's, searched at the rung's front slope (k 0.103, not 0.6).
+# Format (nceval.tune_pool): name [low high] [int|log]
+quant.trellis 0 1 int
+decision.subpel_walk 0 1 int
+decision.codec_fullpel_probe 0 1 int
+decision.refine_cheap_vector 0 1 int
+decision.codec_subpel_seed_lambdas 0 0.1
+decision.skip_no_refine_lambdas 0.05 0.21
+decision.final_stage 0 1 int
+h264.intra4x4_all_modes 0 1 int
+h264.split_gate_satd 33 96
+h264.intra4x4_gate_satd 24 64
+h264.exact_ranking 0 1 int
+h264.partition_search 0 1 int
+h264.intra_rd 0 2 int
+h264.inter_zero_luma_scale 1 2
+analysis.mixed_motion 0 1 int
+analysis.hme_range_x 8 16 int
+analysis.window_half_width 2 3 int
+analysis.skip_hme_sad_per_pixel 0 4
+analysis.static_sad_per_pixel 0 1
+persist.reuse 0 1 int

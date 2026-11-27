@@ -44,26 +44,36 @@ mod chroma_offset;
 pub mod chroma_policy;
 mod coded_groups;
 mod config;
+mod constant_qp;
 mod cu_pricing;
 mod decision;
 mod depth_context;
 mod effort_class;
 mod encoder;
+mod encoder_info;
 mod feedback;
 mod filter_effort;
 mod filter_outcome;
 mod final_stage;
+mod fine_floor;
+pub mod first_key_model;
+mod flip_guide;
+mod flip_trees;
 mod frame_role;
 mod held_slots;
 mod hold;
+mod in_frame_rate;
 mod inheritance;
 mod input;
 mod intra_candidates;
 mod intra_estimate;
+mod intra_stage;
 mod key_clock;
+mod key_interval;
 mod key_oracle;
 mod key_plan;
 mod key_qp;
+pub mod labels;
 mod layer;
 mod layer_propagation;
 mod level_shave;
@@ -110,18 +120,26 @@ mod still_plan;
 mod still_rate;
 mod still_refine;
 mod still_skip;
+mod stop_inputs;
+mod stop_value;
+mod stop_value_weights;
 mod structure;
 pub mod symbol_cost;
 mod threshold_control;
 mod timeline;
+mod transplant;
 mod trellis;
+mod trial_gate;
+mod trial_inputs;
+pub mod trial_pixels;
 pub mod undo_journal;
 mod work_gate;
 mod zero_residual;
 
 pub use backend::{
     BlockDecision, CodecBackend, DEFAULT_LOOP_FILTER_REACH, FinalCandidate, FramePlan, FrameType,
-    IntraAxis, IntraChoice, PredictionMode, ReferenceChoice, SpatialLayerFrame,
+    IntraAxis, IntraChoice, NodeTrialParts, NodeTrialSummary, PredictionMode, ReferenceChoice,
+    SpatialLayerFrame,
 };
 pub use block_error::{block_sse, block_sse_rect, quadrant_sse};
 pub use cdef_model::{
@@ -140,6 +158,7 @@ pub use encoder::{
     EncodedFrame, Encoder, FrameMetadata, LayerFrameMetadata, SpatialReferenceStats,
     validate_params,
 };
+pub use encoder_info::{ENCODER_INFO_UUID, ENCODER_NAME};
 pub use feedback::ReferencedFrames;
 pub use filter_effort::{CdefEffort, FilterEffort, UsageGate, merge_skips};
 pub use filter_outcome::{
@@ -153,6 +172,7 @@ pub use intra_candidates::{
     AngleDeltaSearch, FlatGate, IntraModeSet, LevelRateModel, LevelStats,
     directions_by_orientation, prediction_settles, rank_intra, shortlist_intra, with_neighbours,
 };
+pub use intra_stage::{IntraCut, IntraStage};
 pub use key_oracle::{AnalysisCell, CellAnalysis};
 pub use key_qp::{
     KEY_OFFSET_REFERENCE_PERIOD, fixed_qp_key_offset, offset_key_quantizer, scaled_quantizer,
@@ -167,7 +187,8 @@ pub use nc_common::{ColourDescription, ColourInfo};
 pub use params::{
     AnalysisParams, ChromaParams, DebugParams, DecisionParams, LayerParams, LtrParams, ParamError,
     ParamOverrides, ParamSpec, PersistParams, PlannerParams, QuantParams, RateParams, RefParams,
-    RefreshParams, SceneParams, SpatialParams, StillParams, StructureParams, engine_specs,
+    RefreshParams, SceneParams, SpatialParams, StillParams, StreamParams, StructureParams,
+    engine_specs,
 };
 pub use partition::Block;
 pub use planned_dead_zone::{apply_planned_dead_zone, planned_min_level};
@@ -190,9 +211,10 @@ pub use still_skip::{
 pub use structure::{FrameReferences, MAX_TEMPORAL_LAYERS, reference_slots};
 pub use threshold_control::SearchEvidence;
 pub use timeline::MICROS_PER_SECOND;
+pub use transplant::{PartitionLog, PartitionLogError};
 pub use trellis::{
-    Candidates, CoeffRateModel, ForwardCoeffRateModel, ForwardTrellis, MAX_CANDIDATES, Trellis,
-    TrellisSettings, ZERO_CANDIDATE_MAX_LEVEL,
+    Candidates, CoeffRateModel, ForwardCoeffRateModel, ForwardTrellis, LoneLevel, MAX_CANDIDATES,
+    PackedTrellisDiagonal, Trellis, TrellisSettings, ZERO_CANDIDATE_MAX_LEVEL, lone_level_kept,
 };
 pub use work_gate::{GateInput, GateParams, WorkGate};
 pub use zero_residual::{
@@ -201,7 +223,7 @@ pub use zero_residual::{
 
 pub use rate_control::{
     ForcedQuantizer, RateControlConfig, RateControlError, RateControlStats, RateModel,
-    RatePlanTrace,
+    RatePlanTrace, STRICT_RECODE_CEILING,
 };
 pub use spatial::{
     CombinedCbrBuffer, EnhancementIntra, InterLayerMode, MAX_SPATIAL_LAYERS, OperatingPointSpec,

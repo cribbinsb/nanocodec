@@ -15,12 +15,14 @@ pub(super) struct RateChange {
 
 const RATE_FLAGS: &[&str] = &[
     "--buffer-ms",
+    "--buffer-initial-ms",
     "--peak-bitrate",
     "--min-qp",
     "--max-qp",
     "--max-qp-step",
     "--rate-log",
     "--frame-drop",
+    "--strict-buffer",
     "--rate-change",
 ];
 
@@ -65,6 +67,7 @@ pub(super) fn parse(args: &[String]) -> Result<Option<RateControlConfig>, String
     if let Some(buffer_ms) = number(args, "--buffer-ms")? {
         config.buffer_ms = buffer_ms;
     }
+    config.buffer_initial_ms = number(args, "--buffer-initial-ms")?;
     config.peak_bps = value(args, "--peak-bitrate")?
         .map(|value| bitrate(value, "--peak-bitrate"))
         .transpose()?;
@@ -72,6 +75,7 @@ pub(super) fn parse(args: &[String]) -> Result<Option<RateControlConfig>, String
     config.max_quantizer = number(args, "--max-qp")?;
     config.max_step = number(args, "--max-qp-step")?;
     config.frame_drop = args.iter().any(|arg| arg == "--frame-drop");
+    config.strict_buffer = args.iter().any(|arg| arg == "--strict-buffer");
     // Only the rate log reports the temporal noise statistic.
     config.temporal_noise_stat = args.iter().any(|arg| arg == "--rate-log");
     Ok(Some(config))
@@ -129,6 +133,7 @@ mod tests {
         assert!(parse(&args(&["--qp", "32"])).unwrap().is_none());
         for input in [
             vec!["--buffer-ms", "500"],
+            vec!["--buffer-initial-ms", "500"],
             vec!["--rate-log", "x.csv"],
             vec!["--bitrate"],
             vec!["--bitrate", "NaN"],
@@ -145,6 +150,8 @@ mod tests {
             "250",
             "--buffer-ms",
             "750",
+            "--buffer-initial-ms",
+            "450",
             "--min-qp",
             "12",
             "--max-qp",
@@ -157,6 +164,7 @@ mod tests {
         assert_eq!(config.target_bps, 123_500);
         assert_eq!(config.peak_bps, Some(250_000));
         assert_eq!(config.buffer_ms, 750);
+        assert_eq!(config.buffer_initial_ms, Some(450));
         assert_eq!(config.min_quantizer, Some(12));
         assert_eq!(config.max_quantizer, Some(48));
         assert_eq!(config.max_step, Some(3));

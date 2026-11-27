@@ -14,6 +14,13 @@ below, `aq-mode=3`, keyframe every 2 s) as H.264 High, yuv420p, BT.709, MP4 with
 faststart, for browser playback. H.264 was kept rather than AV1 because Safari
 plays AV1 only on devices with an AV1 hardware decoder.
 
+Re-encoded 2026-11-22 (same masters, segments and processing, lower CRF): the demo
+codes a clip at most at a third of its file's bitrate, so a file lighter than three
+times its heaviest pre-encoded stream, or than twice a live view's default 300 kbps,
+was made again from its master at the highest CRF that reaches that rate
+(`tools/web/recut-clips.py`; MOTChallenge: `tools/web/make-mot-clips.py`). The CRF
+columns below give each file's CRF now. The Netflix files were not re-encoded.
+
 ## Blender Foundation open movies (CC BY 3.0)
 
 Licence: Creative Commons Attribution 3.0,
@@ -24,7 +31,7 @@ timestamps only, no re-encoding (`tools/web/retime-clips.py`).
 
 | Files | Work | Author | Source | Segment | CRF 360p / 720p |
 |---|---|---|---|---|---|
-| `tos-canal-*.mp4` | *Tears of Steel* (2012) | (CC) Blender Foundation, mango.blender.org | <https://download.blender.org/demo/movies/ToS/tears_of_steel_1080p.mov.zip> | 4:18.0–4:30.0 (12 s, 24 fps) | 22 / 24 |
+| `tos-canal-*.mp4` | *Tears of Steel* (2012) | (CC) Blender Foundation, mango.blender.org | <https://download.blender.org/demo/movies/ToS/tears_of_steel_1080p.mov.zip> | 4:18.0–4:30.0 (12 s, 24 fps) | 22 / 22 |
 | `tos-bridge-*.mp4` | *Tears of Steel* (2012) | (CC) Blender Foundation, mango.blender.org | <https://download.blender.org/demo/movies/ToS/tears_of_steel_1080p.mov.zip> | 0:26.0–0:39.0 (13 s, 24 fps) | 22 / 24 |
 | `bbb-tree-*.mp4` | *Big Buck Bunny* (2008) | (c) copyright 2008, Blender Foundation, peach.blender.org | <https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_720p_h264.mov.zip> | 2:07.0–2:21.0 (14 s, 24 fps) | 22 / 24 |
 
@@ -52,7 +59,7 @@ frame dropped (50 → 25 fps), 4:4:4 12-bit converted to 4:2:0 8-bit, then **ret
 |---|---|---|---|---|
 | `svt-waterfall-*.mp4` | waterfall (SDR) | `waterfall_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:20.0 (10 s) | 25 / 28 |
 | `svt-midnight-sun-*.mp4` | midnight_sun (SDR) | `midnight_sun_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:20.0 (10 s) | 25 / 28 |
-| `svt-smoke-sauna-*.mp4` | smoke_sauna (SDR) | `smoke_sauna_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:20.0 (10 s) | 25 / 28 |
+| `svt-smoke-sauna-*.mp4` | smoke_sauna (SDR) | `smoke_sauna_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:20.0 (10 s) | 20 / 21 |
 
 ## Xiph.org derf collection: JCT-VC / Vidyo conferencing sequences (public domain)
 
@@ -68,12 +75,12 @@ not rescaled.
 
 | Files | Sequence | Source file | Segment | CRF 360p / 720p |
 |---|---|---|---|---|
-| `xiph-johnny-*.mp4` | Johnny | `Johnny_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
-| `xiph-kristen-sara-*.mp4` | KristenAndSara | `KristenAndSara_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
-| `xiph-four-people-*.mp4` | FourPeople | `FourPeople_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
-| `xiph-vidyo1-*.mp4` | vidyo1 | `vidyo1_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
-| `xiph-vidyo3-*.mp4` | vidyo3 | `vidyo3_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
-| `xiph-vidyo4-*.mp4` | vidyo4 | `vidyo4_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `xiph-johnny-*.mp4` | Johnny | `Johnny_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 18 / 24 |
+| `xiph-kristen-sara-*.mp4` | KristenAndSara | `KristenAndSara_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 20 / 22 |
+| `xiph-four-people-*.mp4` | FourPeople | `FourPeople_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 21 / 24 |
+| `xiph-vidyo1-*.mp4` | vidyo1 | `vidyo1_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 20 / 24 |
+| `xiph-vidyo3-*.mp4` | vidyo3 | `vidyo3_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 20 / 24 |
+| `xiph-vidyo4-*.mp4` | vidyo4 | `vidyo4_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 20 / 24 |
 
 ## SVT High Definition Multi Format Test Set (2006)
 
@@ -331,9 +338,9 @@ streams made from them, are offered under the same CC BY-NC-SA 3.0 licence
 
 | Files | Sequence | Source frames | CRF 360p / 720p |
 |---|---|---|---|
-| `mot17-mall-walk-*.mp4` | MOT17-11 (moving camera, shopping mall, 1920×1080, 30 fps) | 601–900 (20.0–30.0 s) | 25 / 28 |
-| `mot17-night-crowd-*.mp4` | MOT17-04 (static elevated camera, night street, 1920×1080, 30 fps) | 211–510 (7.0–17.0 s) | 25 / 28 |
-| `mot20-dense-crowd-*.mp4` | MOT20-05 (~200 people, night, 1654×1080, 25 fps) | 2301–2600 (92.0–104.0 s) | 25 / 28 |
+| `mot17-mall-walk-*.mp4` | MOT17-11 (moving camera, shopping mall, 1920×1080, 30 fps) | 601–900 (20.0–30.0 s) | 25 / 24 |
+| `mot17-night-crowd-*.mp4` | MOT17-04 (static elevated camera, night street, 1920×1080, 30 fps) | 211–510 (7.0–17.0 s) | 20 / 21 |
+| `mot20-dense-crowd-*.mp4` | MOT20-05 (~200 people, night, 1654×1080, 25 fps) | 2301–2600 (92.0–104.0 s) | 25 / 21 |
 
 The excerpts are the windows with the most frame-to-frame change times spatial detail
 (`make-mot-clips.py --pick`).
@@ -356,3 +363,14 @@ Only material whose terms allow redistribution is shipped here; the project's
 main evaluation sets (`/mldata`) do not. Johnny and FourPeople are also in the
 small `adv12` screening set (AOM CTC copies); being public domain, they may be
 redistributed.
+
+## Test-scene photograph (CC0)
+
+`web/scenes/room-photo-1280x720.png`, the room behind the demo's "Hand waving at a webcam"
+test scene, is made from *Abbotsford House Study Room* by Michael D Beckwith, dedicated to
+the public domain under CC0 1.0 (<https://creativecommons.org/publicdomain/zero/1.0/>):
+<https://commons.wikimedia.org/wiki/File:Abbotsford_House_Study_Room_(248456373).jpeg>
+(imported from 500px by the Archive Team). Changes (`tools/web/make-scene-photo.py`):
+cropped from 2048×1365 to 16:9 (2048×1152 from row 106), scaled to 1280×720 (Lanczos),
+softened (Gaussian radius 0.45), held to 7 bits a channel, and saved as a PNG with no colour
+chunks. No attribution is required; it is given anyway.

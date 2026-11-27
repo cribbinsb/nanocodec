@@ -6,13 +6,55 @@
 //! The caller hands the second frame over early ([`crate::Encoder::look_ahead`])
 //! and still encodes it in turn; the cost is one frame of start-up latency
 //! in the caller and one extra source analysis, once per stream.
+//! `rate.startup_lookahead` 0 turns it off in every codec and rate mode: the
+//! first frame is then coded as it arrives, as encoders without lookahead
+//! do (benchmark parity).
 
 use nc_analysis::Analyzer;
 use nc_common::Picture;
 use nc_dsp::Dsp;
 
 use crate::config::EncoderConfig;
-use crate::params::AnalysisParams;
+use crate::params::{AnalysisParams, RateParams};
+
+/// The start-up lookahead's state: off (`rate.startup_lookahead` 0), or on,
+/// with the second source frame once the caller has handed it over.
+#[derive(Debug)]
+pub(crate) enum StartupLookahead {
+    Off,
+    On(Option<Box<Picture>>),
+}
+
+impl StartupLookahead {
+    /// The lookahead `params` ask for, holding no frame yet.
+    pub(crate) fn new(params: &RateParams) -> Self {
+        if params.startup_lookahead >= 0.5 {
+            Self::On(None)
+        } else {
+            Self::Off
+        }
+    }
+
+    /// Whether the encoder may ask for the second frame at all.
+    pub(crate) fn is_on(&self) -> bool {
+        matches!(self, Self::On(_))
+    }
+
+    /// Keep `next`, the second source frame (ignored when off).
+    pub(crate) fn hold(&mut self, next: Picture) {
+        if let Self::On(held) = self {
+            *held = Some(Box::new(next));
+        }
+    }
+
+    /// The second source frame, if one was handed over and not yet taken.
+    pub(crate) fn take(&mut self) -> Option<Picture> {
+        match self {
+            Self::Off => None,
+            Self::On(held) => held.take().map(|next| *next),
+        }
+    }
+}
 
 /// Peak camera displacement (`GlobalMotion::peak_displacement`, luma samples)
 /// and stationary block fraction (`PreAnalysis::static_fraction`, `[0.0, 1.0]`)

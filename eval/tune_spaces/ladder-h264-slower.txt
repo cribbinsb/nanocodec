@@ -1,0 +1,18 @@
+# h264-ladder (2026-11-23): a new H.264 slower built from slow. The 2026-11-23 slower
+# (tsl-h264-slower: slow's decisions widened further, intra gates, RD transform size)
+# measured L3 J -0.01 % [-0.67, +0.66] against slow, so this space leaves the intra and
+# transform searches and tries the effort slow does not spend: the held background
+# reference (second reference kept for seconds, VP9/AV1 slower's lever), RD vector
+# refinement, a looser split gate and sub-pel search, and a wider final-stage margin.
+# Searched from slow at k 0.1017 (slow's front slope).
+# Format (nceval.tune_pool): name [low high] [int|log]
+refs.second 0 1 int
+refs.second_hold 0 10
+refs.second_hold_rearm 0 1 int
+h264.rd_refine 0 1 int
+h264.split_gate_lambda 0.2 0.8
+h264.split_refine_mv16 0 1 int
+h264.subpel_skip_variance 4 24
+decision.subpel_walk 1 2 int
+decision.codec_subpel_seed_lambdas 0 0.1
+decision.final_margin_lambdas 0.1 0.4

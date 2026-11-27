@@ -6,7 +6,7 @@
         [--sequences a,b] [--points 27,42] [--thin hm-ldp:27,42] [--rounds 1]
         [--shard-minutes 20]
     python3 tools/dev/fixedqp_timing.py plan-pool --binary BIN --gap GAP.json [--gap ...]
-        --out PLAN.json
+        --out PLAN.json   # gap --clipset or pool-draw runs
     python3 tools/dev/fixedqp_timing.py plan-from --from TIMED.json --machine zen3 --out PLAN.json
         [--encoders a,b] [--binary BIN]
     python3 tools/dev/fixedqp_timing.py run --plan PLAN.json --out DIR
@@ -75,12 +75,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "eval"))
 sys.path.insert(1, str(Path(__file__).resolve().parent))
+from nceval.config import reference_bin  # noqa: E402
 
 DATA = Path.home() / "nanocodec-data"
 DEFAULT_SOURCES = DATA / "work/ctc-improve/src"
-ANCHOR_TOOLS = DATA / "anchors/x86_64/bin"
-#: The Jetson's aarch64 reference builds, copied here (aws_timing.AARCH64_TOOLS).
-AARCH64_TOOLS = DATA / "anchors/aarch64/bin"
+#: The timed reference builds (nceval.config.REFERENCE_BUILDS switches them).
+ANCHOR_TOOLS = reference_bin("x86_64")
+GRAVITON_TOOLS = reference_bin("graviton")
 #: HM and VVenC as the lens ran them (built from source, BSD; nceval.ctc.reference_encoders).
 DEFAULT_REFS = DATA / "work/standards-eval/refs-bin"
 REMOTE_SCRIPT = Path(__file__).resolve().with_name("fixedqp_timing_remote.py")
@@ -139,10 +140,13 @@ def log(line: str) -> None:
 # --- plan -----------------------------------------------------------------------------------
 
 def chart_encoders() -> list[str]:
-    """The lens tests the Fixed QP chart shows (its site data), and our ladder's rungs."""
+    """The lens tests the Fixed QP chart shows (its site data, the tuned zero line
+    included), and our ladder's rungs."""
     from nceval.ctc.conditions import AOM_LD
+    from nceval.ctc.local import X264_TUNED_QP
     shown = {row["test"] for row in json.loads(SITE_LENS.read_text())["rows"]}
-    return [e.name for e in AOM_LD.encoders if e.name in shown or e.own]
+    return ([e.name for e in AOM_LD.encoders if e.name in shown or e.own]
+            + [name for name in X264_TUNED_QP if name in shown])
 
 
 def lens_pixel_rates() -> dict[str, float]:
@@ -157,10 +161,13 @@ def lens_pixel_rates() -> dict[str, float]:
 
 
 def estimate_rate(encoder: str, rates: dict[str, float]) -> float:
-    """A lens test's pixel rate; a rung the lens has not run yet takes its Fast rung's."""
+    """A lens test's pixel rate; a rung the lens has not run yet takes its Fast rung's,
+    a tuned variant (x264-medium+psnr) its encoder's."""
     if encoder in rates:
         return rates[encoder]
-    base = encoder.partition("@")[0]
+    base = encoder.partition("@")[0].partition("+")[0]
+    if base in rates:
+        return rates[base]
     return rates.get(f"{base}@fast") or rates[base]
 
 
@@ -194,14 +201,23 @@ def plan_jobs(encoders: list[str], sequences: list[str] | None,
     from nceval.config import load_paths
     from nceval.ctc import plan as planner
     from nceval.ctc.conditions import CONDITIONS
+    from nceval.ctc.local import X264, X264_TUNED_QP, x264_variant
     condition = CONDITIONS[CONDITION]
+    # a tuned x264 curve (the zero line) is x264's lens jobs in that tune
+    tuned = [X264_TUNED_QP[e] for e in encoders if e in X264_TUNED_QP]
+    coded = set(encoders) | ({X264} if tuned else set())
     condition = replace(
-        condition, encoders=tuple(e for e in condition.encoders if e.name in encoders),
+        condition, encoders=tuple(e for e in condition.encoders if e.name in coded),
         sequences=tuple(s for s in condition.sequences if not sequences or s.name in sequences))
     rates = lens_pixel_rates()
     source_dir = Path("/SOURCES")
     jobs = []
-    for job in planner.jobs_for(condition, load_paths(), source_dir):
+    lens_jobs = planner.jobs_for(condition, load_paths(), source_dir)
+    lens_jobs += [variant for job in lens_jobs if job["encoder"] == X264
+                  for mode in tuned for variant in x264_variant(job, mode)]
+    for job in lens_jobs:
+        if job["encoder"] not in encoders:
+            continue
         if job["kind"] != "qp" or (points and job["point"] not in points):
             continue
         if job["encoder"] in thin and job["point"] not in thin[job["encoder"]]:
@@ -289,54 +305,111 @@ def write_plan(path: Path, plan_data: dict) -> None:
             f"sequences {', '.join(sorted({j['sequence'] for j in own}))}")
 
 
+def gap_clips(result: dict, paths) -> list:
+    """The clips a gap run measured, by the run's own rule: its clip set's (`--clipset`)
+    or its pool draw's level (rotation, level, count), each from the start frame the run
+    coded; a rule that now picks other clips stops the plan."""
+    from nceval.fixedqp import draw_clips, held_out_clips
+    count, frames = len(result["clips"]), result["frames"]
+    if result["clipset"]:
+        clips = held_out_clips(result["clipset"], count, frames)
+    else:
+        clips = draw_clips(paths, result["rotation"], result["level"], count, frames)
+    if [(c.name, c.start_frame) for c in clips] != \
+            [(c["clip"], c["start_frame"]) for c in result["clips"]]:
+        raise SystemExit("the run's clip rule picks other clips than the gap run used")
+    return clips
+
+
+def pool_source(clip, frames: int) -> dict:
+    """Where a clip's measured frames come from: an encoded clip's ffmpeg decode from its
+    start frame (nceval.clipframes.decode_command), a raw clip's bytes from its start."""
+    from nceval.clipframes import decode_command
+    source = {"frame_bytes": clip.frame_bytes,
+              "archive": f"{clip.name}-s{clip.start_frame}" if clip.start_frame else clip.name}
+    if clip.encoded:
+        return {**source, "decode": decode_command(clip, frames)}
+    return {**source, "raw": str(clip.yuv), "offset": clip.start_frame * clip.frame_bytes}
+
+
+def placeholder_argv(argv: list[str], family) -> tuple[list[str], dict, dict]:
+    """A harness command as a timing command: the family's program (cbr.Family.tool) under
+    {BIN} and its other files (VVenC's configuration) under {CFG}, wherever they stand in
+    the command (VVenC runs behind `sh -c` for its standard input), the input as {INPUT}
+    and the bitstream as {OUTPUT}; with the local files the placeholders stand for."""
+    tool, configs = family.tool, family.program_files[1:]
+    fill = {"/IN.yuv": "{INPUT}", "/OUT.bin": "{OUTPUT}",
+            str(tool): "{BIN}/" + tool.name,
+            **{str(c): "{CFG}/" + c.name for c in configs}}
+    return ([fill.get(a, a) for a in argv], {tool.name: str(tool.resolve())},
+            {c.name: str(c.resolve()) for c in configs})
+
+
 def plan_pool(args: argparse.Namespace) -> None:
-    """The fixed-QP encodes of `nceval.fixedqp gap --clipset` results (each family at the
-    quantizers its curve used on each clip), with the harness's own command lines."""
+    """The fixed-QP encodes of `nceval.fixedqp gap` results, on a chart clip set
+    (`--clipset`) or a pool draw (each family at the quantizers its curve used on each
+    clip), with the harness's own command lines."""
     from dataclasses import replace
 
     from nceval.cbr import Point
-    from nceval.clipframes import decode_command
     from nceval.config import load_paths
-    from nceval.fixedqp import Benches, family_of, held_out_clips
+    from nceval.fixedqp import Benches, gap_families
     from nceval.site import LENS_FAMILIES
     results = [json.loads(Path(f).read_text()) for f in args.gap]
-    clipset, frames = results[0]["clipset"], results[0]["frames"]
-    if not clipset or any(r["clipset"] != clipset or r["frames"] != frames for r in results):
-        raise SystemExit("the gap results must share one --clipset run and frame count")
-    clips = {c.name: c for c in held_out_clips(clipset, len(results[0]["clips"]), frames)}
-    if set(clips) != {c["clip"] for c in results[0]["clips"]}:
-        raise SystemExit("the clip set's rule picks other clips than the gap run used")
+    run_keys = ("clipset", "rotation", "level", "frames", "key_share")
+    if any(tuple(r.get(k) for k in run_keys) != tuple(results[0].get(k) for k in run_keys)
+           for r in results):
+        raise SystemExit("the gap results must share one clip rule, frame count and key share")
     paths, binary = load_paths(), Path(args.binary).resolve()
+    first, frames = results[0], results[0]["frames"]
+    clips = {c.name: c for c in gap_clips(first, paths)}
     benches, machine = Benches(paths, frames), MACHINES[args.machine]
     lens_name = {family: test for test, family in LENS_FAMILIES.items()}
     rates = lens_pixel_rates()
     curves = {key: qps for r in results for key, qps in r["quantizers"].items()}
-    jobs = []
+    run_cpu = {key: cpu for r in results for key, cpu in r.get("cpu_s", {}).items()}
+    names = sorted({key.partition("|")[0] for key in curves})
+    families = dict(zip(names, gap_families(names, binary, paths, Path(args.presets_dir),
+                                            first.get("key_share"))))
+    jobs, tools, configs = [], {}, {}
     for key, quantizers in sorted(curves.items()):
         name, _, clip_name = key.partition("|")
-        clip = clips[clip_name]
-        if clip.start_frame:
-            raise SystemExit(f"{clip_name}: a rotated start is not supported here")
-        family = family_of(name, binary, paths, Path(args.presets_dir))
-        estimate_rate_ = estimate_rate(lens_name.get(name, name), rates)
-        for q in quantizers:
+        clip, family = clips[clip_name], families[name]
+        for i, q in enumerate(quantizers):
             argv = benches.of(clip).command(Point(family, replace(clip, yuv=Path("/IN.yuv")),
                                                   qp=q), Path("/OUT.bin"), None)
-            argv = ["{BIN}/" + Path(argv[0]).name,
-                    *({"/IN.yuv": "{INPUT}", "/OUT.bin": "{OUTPUT}"}.get(a, a) for a in argv[1:])]
-            estimate = clip.width * clip.height * frames * machine["over_pc"] / estimate_rate_
+            argv, tool, config = placeholder_argv(argv, family)
+            tools.update(tool)
+            configs.update(config)
+            estimate = run_estimate(run_cpu.get(key), i) or (
+                clip.width * clip.height * frames * machine["over_pc"]
+                / estimate_rate(lens_name.get(name, name), rates))
             jobs.append({"id": f"{name}/{clip_name}/q{q}", "encoder": name,
-                         "sequence": clip_name, "point": q, "frames": frames, "argv": argv,
+                         "sequence": clip_name, "point": q, "frames": bench_frames(clip, frames),
+                         "argv": argv,
                          "estimate_s": round(estimate, 2),
                          "rounds": REPEATED_ROUNDS if estimate < REPEAT_MAX_SECONDS else 1})
-    sources = {c.name: {"decode": decode_command(c, frames),
-                        "frame_bytes": c.width * c.height * 3 // 2} for c in clips.values()}
+    sources = {c.name: pool_source(c, bench_frames(c, frames)) for c in clips.values()}
     version = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
                              check=True).stdout.strip()
+    condition = Path(first["clipset"]).stem if first["clipset"] else \
+        f"{first['rotation']}-{first['level']}"
     write_plan(Path(args.out), {
-        "condition": Path(clipset).stem, "machine": args.machine, "binary": str(binary),
+        "condition": condition, "machine": args.machine, "binary": str(binary),
         "nanocodec_version": version, "sources": sources, "refs_dir": str(DEFAULT_REFS),
+        "tools": tools, "configs": configs,
         "core": machine["core"], "shards": pack(jobs, args.shard_minutes), "jobs": jobs})
+
+
+def bench_frames(clip, frames: int) -> int:
+    """The frames a run codes of a clip: a clip shorter than the run whole (fixedqp.Benches)."""
+    return min(frames, clip.frames)
+
+
+def run_estimate(cpu_s: list[float] | None, index: int) -> float | None:
+    """An encode's time from the gap run's own CPU time of that point (a rented box's core
+    under load: slower than the timing core, so the packing errs on the safe side)."""
+    return cpu_s[index] if cpu_s and index < len(cpu_s) else None
 
 
 def plan_from(args: argparse.Namespace) -> None:
@@ -370,12 +443,15 @@ def plan_from(args: argparse.Namespace) -> None:
 # --- run ------------------------------------------------------------------------------------
 
 def tool_source(name: str, plan_data: dict) -> Path:
-    """A tool's local file: our binary, HM / VVenC from the refs (x86 builds only), or
-    the machine's reference builds; a missing one stops the run before any launch."""
+    """A tool's local file: our binary, the program a pool plan's run used (plan "tools"),
+    HM / VVenC from the refs (x86 builds only), or the machine's reference builds; a
+    missing one stops the run before any launch."""
     if name == "nanocodec":
         return Path(plan_data["binary"])
-    if plan_data["machine"] == "graviton":
-        source = AARCH64_TOOLS / name
+    if name in plan_data.get("tools", {}):
+        source = Path(plan_data["tools"][name])
+    elif plan_data["machine"] == "graviton":
+        source = GRAVITON_TOOLS / name
     else:
         refs = Path(plan_data["refs_dir"]) / "bin" / name
         source = refs if refs.exists() else ANCHOR_TOOLS / name
@@ -385,8 +461,8 @@ def tool_source(name: str, plan_data: dict) -> Path:
 
 
 def sequence_archive(name: str, frames: int, frame_bytes: int, read, cache: Path) -> Path:
-    """A sequence's first `frames` frames (`read(nbytes)` returns them raw), zstd-compressed,
-    cached by name and length. Runs side by side may share the cache (a release times four
+    """A sequence's `frames` frames (`read(nbytes)` returns them raw), zstd-compressed,
+    cached by name (with the start frame, if not 0) and length. Runs side by side may share the cache (a release times four
     machines at once): each writes its own partial file, and the last rename wins with the
     same bytes."""
     cache.mkdir(parents=True, exist_ok=True)
@@ -406,31 +482,38 @@ def archives(plan_data: dict, cache: Path) -> dict[str, Path]:
     """Every planned sequence's archive, by sequence: a lens sequence from its raw file
     in the source directory, one of our clips decoded by the harness's own command
     (plan "decode", nceval.clipframes.decode_command)."""
-    frames = max(j["frames"] for j in plan_data["jobs"])
     out = {}
     for name in sorted({j["sequence"] for j in plan_data["jobs"]}):
+        frames = max(j["frames"] for j in plan_data["jobs"] if j["sequence"] == name)
         source = plan_data["sources"][name]
         if "decode" in source:
             def read(size: int, argv=source["decode"]) -> bytes:
                 return subprocess.run(argv, capture_output=True, check=True).stdout[:size]
         else:
-            def read(size: int, path=source["raw"]) -> bytes:
+            def read(size: int, path=source["raw"], offset=source.get("offset", 0)) -> bytes:
                 with open(path, "rb") as raw:
+                    raw.seek(offset)
                     return raw.read(size)
-        out[name] = sequence_archive(name, frames, source["frame_bytes"], read, cache)
+        out[name] = sequence_archive(source.get("archive", name), frames,
+                                     source["frame_bytes"], read, cache)
     return out
+
+
+def staged(jobs: list[dict], placeholder: str) -> set[str]:
+    """The files the jobs' commands name under a placeholder ({BIN}/ or {CFG}/)."""
+    return {a.removeprefix(placeholder) for j in jobs for a in j["argv"]
+            if a.startswith(placeholder)}
 
 
 def stage(stage_dir: Path, plan_data: dict, jobs: list[dict], cache: Path) -> None:
     for sub in ("bin", "cfg", "clips"):
         (stage_dir / sub).mkdir(parents=True)
-    tools = {j["argv"][0].removeprefix("{BIN}/") for j in jobs}
-    for tool in tools:
+    for tool in staged(jobs, "{BIN}/"):
         (stage_dir / "bin" / tool).symlink_to(tool_source(tool, plan_data).resolve())
-    configs = {a.removeprefix("{CFG}/") for j in jobs for a in j["argv"] if a.startswith("{CFG}/")}
-    for config in configs:
-        (stage_dir / "cfg" / config).symlink_to(
-            (Path(plan_data["refs_dir"]) / "cfg" / config).resolve())
+    for config in staged(jobs, "{CFG}/"):
+        source = plan_data.get("configs", {}).get(config) or \
+            Path(plan_data["refs_dir"]) / "cfg" / config
+        (stage_dir / "cfg" / config).symlink_to(Path(source).resolve())
     ready = archives(plan_data, cache)
     for sequence in sorted({j["sequence"] for j in jobs}):
         (stage_dir / "clips" / f"{sequence}.yuv.zst").symlink_to(ready[sequence])
@@ -465,7 +548,7 @@ def prepare_command(plan_data: dict, jobs: list[dict]) -> str:
         f"sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y {package} > /dev/null; }}; }}"
         for lib, package in RUNTIME_PACKAGES.items())
     ours = ""
-    if any(j["argv"][0] == "{BIN}/nanocodec" for j in jobs):
+    if "nanocodec" in staged(jobs, "{BIN}/"):
         ours = f"test \"$(bin/nanocodec --version)\" = {shlex.quote(plan_data['nanocodec_version'])} && "
     return (f"cd {REMOTE_DIR} && {installs} && ! ldd bin/* | grep 'not found' && {ours}"
             "for c in clips/*.zst; do zstd -d -q --rm \"$c\"; done && mkdir -p out && "
@@ -583,7 +666,7 @@ def run_jetson(args: argparse.Namespace) -> None:
         ids = set(plan_data["shards"][index])
         jobs = [j for j in plan_data["jobs"] if j["id"] in ids]
         work = f"{JETSON_DIR}/shard-{index}"
-        tools = sorted({j["argv"][0].removeprefix("{BIN}/") for j in jobs} - {"nanocodec"})
+        tools = sorted(staged(jobs, "{BIN}/") - {"nanocodec"})
         links = " && ".join([f"ln -sf {plan_data['binary']} bin/nanocodec",
                              *(f"ln -sf {JETSON_TOOLS}/{t} bin/{t}" for t in tools)])
         jetson(f"rm -rf ~/{work} && mkdir -p ~/{work}/bin ~/{work}/out && cd ~/{work} && "
@@ -719,7 +802,7 @@ def main(argv: list[str]) -> None:
     o.add_argument("--index", type=int, required=True)
     o.add_argument("--dry-run", action="store_true")
     o.set_defaults(handler=run_one)
-    q = sub.add_parser("plan-pool", help="plan the encodes of fixedqp gap --clipset results")
+    q = sub.add_parser("plan-pool", help="plan the encodes of fixedqp gap results")
     q.add_argument("--binary", required=True)
     q.add_argument("--gap", action="append", required=True, help="a gap result JSON")
     q.add_argument("--out", required=True)

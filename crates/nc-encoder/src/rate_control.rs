@@ -16,6 +16,7 @@
 //! overflow the buffer even at the maximum quantizer ([`RateController::should_drop`]).
 use crate::FrameRate;
 use crate::layer::LayerPosition;
+use crate::moving_camera::camera_motion_share;
 use crate::params::RateParams;
 use crate::period_ledger::fixed_camera;
 use crate::qp_cadence::{
@@ -39,6 +40,16 @@ pub struct RateControlConfig {
     pub peak_bps: Option<u64>,
     /// Virtual decoder buffer duration in milliseconds.
     pub buffer_ms: u32,
+    /// The decoder buffer's fullness when the stream starts, in
+    /// milliseconds at the target rate (`--buffer-initial-ms`): the receiver
+    /// waits until this much has arrived before it decodes, so the first
+    /// frames may send this much ahead of the drain (x264 `--vbv-init`, SVT,
+    /// libvpx and libaom `--buf-initial-sz`). The encoder's buckets start
+    /// with the rest of the buffer taken, `buffer_ms` less this, and every
+    /// bound on them (the budgets, the re-code ceiling, the first key's cap)
+    /// sees it. `None`: the buffer starts full (the buckets empty), as
+    /// before this setting, which is `Some(buffer_ms)`.
+    pub buffer_initial_ms: Option<u32>,
     /// Minimum actual QP/qindex; `None` uses the codec minimum.
     pub min_quantizer: Option<u32>,
     /// Maximum actual QP/qindex; `None` uses the codec maximum.
@@ -63,6 +74,13 @@ pub struct RateControlConfig {
     /// maximum quantizer would overflow the buffer: the only way to hold an
     /// unreachable target. Off by default.
     pub frame_drop: bool,
+    /// Hold every frame inside one buffer drained at the target, the rule a
+    /// hard VBV keeps: the re-code ceiling becomes [`STRICT_RECODE_CEILING`]
+    /// for keys and inter frames whatever `rate.recode_overflow` says. Off by
+    /// default, where the ceiling tolerates short overflows the way the
+    /// reference encoders' worst points do (docs/handoff/rate-control.md,
+    /// "Buffer as a hard bound (0.6.1)").
+    pub strict_buffer: bool,
     /// Measure each frame's temporal noise (`RateControlStats::residual_sigma`, a
     /// rate-log diagnostic that no decision reads). Off by default: its
     /// median over the frame's 8x8 blocks cost about 1% of an H.264 speed
@@ -84,6 +102,7 @@ impl RateControlConfig {
             target_bps,
             peak_bps: None,
             buffer_ms: DEFAULT_BUFFER_MS,
+            buffer_initial_ms: None,
             min_quantizer: None,
             max_quantizer: None,
             max_step: None,
@@ -94,8 +113,25 @@ impl RateControlConfig {
             initial_key_complexity: 8.,
             initial_bits_per_pixel: None,
             frame_drop: false,
+            strict_buffer: false,
             temporal_noise_stat: false,
         }
+    }
+}
+/// The re-code ceiling of [`RateControlConfig::strict_buffer`], in buffers.
+pub const STRICT_RECODE_CEILING: f64 = 1.;
+/// The re-code ceiling a frame is held to: `ceiling` (a `rate.recode_overflow*`
+/// value, 0 = never re-code), and at most one buffer under `strict`. A
+/// configured ceiling under one buffer stays in force under `strict`: it is
+/// the headroom a stream that lands under its target needs to stay within
+/// one buffer at the rate it achieves (docs/analysis/first-key-2026-11-25.md).
+fn effective_recode_ceiling(ceiling: f64, strict: bool) -> f64 {
+    if !strict {
+        ceiling
+    } else if ceiling > 0. {
+        ceiling.min(STRICT_RECODE_CEILING)
+    } else {
+        STRICT_RECODE_CEILING
     }
 }
 /// A codec's rate-model calibration, from [`crate::CodecBackend::rate_model`]:
@@ -131,6 +167,9 @@ pub struct RateModel {
     /// what the reuse term's distortion model (`reuse.rs`) and the quality
     /// ceiling (`quality_cap.rs`) need.
     pub sample_step_scale: f64,
+    /// Per-codec deadzone survival-curve calibration for the first key frame
+    /// (`rate.first_key_model`; `None` falls back to `bootstrap_step`).
+    pub first_key: Option<crate::first_key_model::FirstKeyCalibration>,
 }
 impl RateModel {
     /// H.264/HEVC QP scale (step doubles every 6 QP).
@@ -142,6 +181,7 @@ impl RateModel {
         cadence_scale: 1.,
         first_key_lookahead: 0.,
         sample_step_scale: H26X_SAMPLE_STEP_AT_QP0,
+        first_key: None,
     };
     /// AV1 and VP9 qindex: both use the same 8-bit AC step table.
     pub const AC_LOOKUP_QINDEX: Self = Self {
@@ -152,6 +192,7 @@ impl RateModel {
         cadence_scale: 1.,
         first_key_lookahead: 0.,
         sample_step_scale: 1. / AC_LOOKUP_PER_SAMPLE_STEP,
+        first_key: None,
     };
 }
 /// H.264/HEVC/VVC quantiser step at QP 0 in sample units (`Qstep(QP) =
@@ -161,18 +202,53 @@ const H26X_SAMPLE_STEP_AT_QP0: f64 = 0.625;
 /// AV1 and VP9 AC quantiser values are in eighths of a sample step (their
 /// transforms scale coefficients by 8 relative to orthonormal).
 const AC_LOOKUP_PER_SAMPLE_STEP: f64 = 8.;
-/// The first-key cap of the start-up lookahead in force (0 = off):
-/// `rate.first_key_lookahead` when set, else the backend's
-/// (`RateModel::first_key_lookahead`); `rate.first_key_lookahead_off`
-/// turns it off.
-pub(crate) fn first_key_lookahead(params: &RateParams, model: &RateModel) -> f64 {
-    let explicit = f64::from(params.first_key_lookahead);
-    if params.first_key_lookahead_off >= 0.5 {
-        0.
-    } else if explicit > 0. {
-        explicit
-    } else {
-        model.first_key_lookahead
+/// The start-up lookahead's first-key cap: `rate.first_key_lookahead` when
+/// set, else the backend's (`RateModel::first_key_lookahead`; 0 = off,
+/// `rate.first_key_lookahead_off` turns it off), and how it eases in with
+/// the camera motion (`rate.first_key_full_motion`,
+/// `rate.first_key_fixed_camera`).
+#[derive(Debug, Clone, Copy)]
+struct FirstKeyLookahead {
+    cap: f64,
+    full_motion: f64,
+    fixed_camera: f64,
+}
+impl FirstKeyLookahead {
+    fn of(params: &RateParams, model: &RateModel) -> Self {
+        let explicit = f64::from(params.first_key_lookahead);
+        let cap = if params.first_key_lookahead_off >= 0.5 {
+            0.
+        } else if explicit > 0. {
+            explicit
+        } else {
+            model.first_key_lookahead
+        };
+        Self {
+            cap,
+            full_motion: f64::from(params.first_key_full_motion),
+            fixed_camera: f64::from(params.first_key_fixed_camera),
+        }
+    }
+
+    /// The first key's buffer share under start-up motion `peak_displacement`
+    /// with `still_share` unchanged blocks (0 = no cap): the cap at full
+    /// motion, easing linearly up to `key_cap_buffer` (the key cap in force
+    /// without it; one buffer when that is off) as the motion falls to one
+    /// sample per frame, and lifted towards it on a fixed camera. The
+    /// defaults are the step: the whole cap from one sample per frame.
+    fn cap_buffers(&self, peak_displacement: f64, still_share: f64, key_cap_buffer: f64) -> f64 {
+        let moving = camera_motion_share(peak_displacement, self.full_motion)
+            * (1. - self.fixed_camera * fixed_camera(still_share));
+        if moving <= 0. {
+            return 0.;
+        }
+        let uncapped = if key_cap_buffer > 0. {
+            key_cap_buffer
+        } else {
+            ONE_BUFFER
+        };
+        // Weighted so full motion gives the cap exactly.
+        moving * self.cap + (1. - moving) * uncapped
     }
 }
 /// The QP cadence rate control plans with: the configured one, scaled for
@@ -298,8 +374,11 @@ pub struct RatePlanTrace {
     /// The buffer capacity in bits (what the correction divides by).
     pub capacity_bits: f64,
     /// Times the frame was coded: 1, plus its re-codes
-    /// (`rate.recode_overflow`, at most `MAX_RECODES`).
+    /// (`rate.recode_overflow`, at most `rate.recode_max`).
     pub codings: u32,
+    /// Coded bits of the first coding attempt (before any re-code; equals the
+    /// committed frame's bits when `codings == 1`).
+    pub first_coding_bits: u64,
 }
 /// A quantizer imposed on the next frame in place of the one rate control
 /// planned ([`crate::Encoder::force_next_quantizer`]): an oracle for
@@ -324,6 +403,7 @@ pub struct ForcedQuantizer {
 struct FrameCoding {
     recodes: u32,
     trial: Option<(f64, f64)>,
+    first_bits: Option<u64>,
     forced: bool,
     /// Whether the key size re-code (`rate.key_recode_miss`) has run.
     key_retargeted: bool,
@@ -384,6 +464,14 @@ impl Settings {
         if config.buffer_ms == 0 || config.buffer_ms > 60_000 {
             return Err(RateControlError("buffer duration outside1..60000ms"));
         }
+        if config
+            .buffer_initial_ms
+            .is_some_and(|ms| ms == 0 || ms > config.buffer_ms)
+        {
+            return Err(RateControlError(
+                "initial buffer fullness outside 1..buffer ms",
+            ));
+        }
         if min < lo || max > hi || min > max || step == 0 || step > hi {
             return Err(RateControlError("invalid codec quantizer bounds or step"));
         }
@@ -418,6 +506,22 @@ impl Settings {
             peak: peak as f64,
             capacity: config.target_bps as f64 * f64::from(config.buffer_ms) / 1000.,
         })
+    }
+
+    /// Bits the decoder buffer holds when the stream starts
+    /// ([`RateControlConfig::buffer_initial_ms`]), if set: what the first
+    /// frames may send ahead of the drain.
+    fn initial_fullness(&self) -> Option<f64> {
+        self.config
+            .buffer_initial_ms
+            .map(|ms| self.config.target_bps as f64 * f64::from(ms) / 1000.)
+    }
+
+    /// The share of the encoder's buckets taken when the stream starts: the
+    /// buffer less its initial fullness (0 when that is unset, a full start).
+    fn initial_occupancy(&self) -> f64 {
+        self.initial_fullness()
+            .map_or(0., |full| (self.capacity - full).max(0.))
     }
 }
 /// Same-frame preanalysis hints. No additional pixel pass is needed.
@@ -489,10 +593,13 @@ const CAP_STEP_FRAMES: u32 = 8;
 const RESIDUAL_SIGMA_SMOOTHING: f64 = 0.25;
 /// Peak camera displacement per frame, in luma samples, from which the
 /// start-up lookahead treats the scene as moving
-/// ([`RateController::observe_startup_motion`]). At frame 1 of the TRAIN and
+/// ([`RateController::observe_startup_scene`]). At frame 1 of the TRAIN and
 /// VAL clips, still cameras (static, crowd) read at most 0.5 samples and
 /// panning, driving or handheld cameras 1.3-12; a stopped car reads 0.
 pub(crate) const STARTUP_CAMERA_MOTION: f64 = 1.0;
+/// The first-key cap a near-still start eases up to when
+/// `rate.key_cap_buffer` is off: the whole buffer (`FirstKeyLookahead::cap_buffers`).
+const ONE_BUFFER: f64 = 1.0;
 /// Range of the debt correction of a frame budget (`budget`): a buffer of
 /// debt quarters it, a buffer of credit doubles it at most.
 const MIN_BUDGET_CORRECTION: f64 = 0.25;
@@ -506,19 +613,58 @@ const MAX_BUDGET_CORRECTION: f64 = 2.;
 /// this many frames; a steady repeat (every other frame) reaches its two
 /// intervals per coded frame within about as many.
 const HELD_TIME_FRAMES: f64 = 8.;
-/// Re-codes `rate.recode_overflow` may spend on one frame.
-pub(crate) const MAX_RECODES: u32 = 2;
-/// Bits-versus-step slope the first re-code of a frame assumes. Static
-/// refinement bursts, which cause most overflows, are steep: VP9
-/// `static_chirla_s000c3_360p` qindex 177 -> 92 took 74 -> 12075 bytes, an
-/// exponent near 4. With the model's 1.1 the re-code came out 26x smaller
-/// than its room (H.264 `static_cam22` frame 4: 52.8 kbit, room 14.9 kbit,
-/// QP 44 -> 54, 2.0 kbit), wasting the refinement.
-pub(crate) const RECODE_FIRST_EXPONENT: f64 = 3.;
+/// The current coding's size bounds ([`RateController::in_frame_bounds`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InFrameBounds {
+    pub predicted: f64,
+    pub room: f64,
+    pub recodable: bool,
+}
 /// Range of the slope a second re-code measures between two codings.
 const RECODE_EXPONENT_RANGE: (f64, f64) = (1., 4.);
-/// Share of the buffer room a re-code aims at, a margin for the slope's error.
-const RECODE_FILL: f64 = 0.9;
+/// When a frame is coded again into the buffer, and how: the ceiling
+/// (`rate.recode_overflow`, as a multiple of the capacity, 0 = off; inter
+/// frames `rate.recode_overflow_inter` when set), the share of the room the
+/// re-code aims at (`rate.recode_fill`), the bits-versus-step slope the
+/// first re-code assumes (`rate.recode_first_exponent`) and the re-codes
+/// one frame may spend (`rate.recode_max`). Under the buffer bound a static
+/// refinement burst is re-coded into its room, and every bit it lands short
+/// of the room is refinement lost (HEVC fast `fit_static_otw283` 600 kbps
+/// frame 8: room about 220 kbit, kept 114 kbit).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RecodeRule {
+    ceiling: f64,
+    ceiling_inter: f64,
+    pub(crate) fill: f64,
+    pub(crate) first_exponent: f64,
+    pub(crate) max: u32,
+}
+impl RecodeRule {
+    pub(crate) fn of(params: &RateParams) -> Self {
+        Self {
+            ceiling: f64::from(params.recode_overflow),
+            ceiling_inter: f64::from(params.recode_overflow_inter),
+            fill: f64::from(params.recode_fill),
+            first_exponent: f64::from(params.recode_first_exponent),
+            // A count, rounded: the tuner searches it as a real.
+            max: params.recode_max.round() as u32,
+        }
+    }
+
+    /// The re-code ceiling of a key or inter frame (0 = off), one buffer
+    /// under `strict` (`effective_recode_ceiling`). Keys are planned loans
+    /// whose size the budget already bounds; inter frames overflow through
+    /// unplanned static refinement bursts, which a backend may hold to a
+    /// tighter ceiling.
+    pub(crate) fn ceiling(&self, key: bool, strict: bool) -> f64 {
+        let ceiling = if key || self.ceiling_inter <= 0. {
+            self.ceiling
+        } else {
+            self.ceiling_inter
+        };
+        effective_recode_ceiling(ceiling, strict)
+    }
+}
 /// Largest debit term, in buffers: the bias it can cancel (frames coming in
 /// a third over their budgets leave the proportional correction a quarter
 /// buffer of excess). Unbounded, the excess of a key's start-up seconds
@@ -589,6 +735,10 @@ pub(crate) struct KeyAnchor {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the rate controller tracks independent coding decisions"
+)]
 pub(crate) struct RateController {
     settings: Settings,
     /// The codec's calibration (quantizer range, step limit, bootstrap).
@@ -679,11 +829,14 @@ pub(crate) struct RateController {
     /// first key at which a second of stillness history exists
     /// (`replan_first_key`).
     first_key_replan_at: Option<u32>,
-    /// `rate.key_cap_buffer` and `rate.key_cap_gop` (`key_bits_cap`).
-    key_cap_buffer: f64,
-    key_cap_gop: f64,
+    /// `rate.key_cap_buffer`, `rate.key_cap_buffer_first` and
+    /// `rate.key_cap_gop` (`key_bits_cap`).
+    key_caps: KeyCaps,
     /// `rate.key_level_mean`: share of `level_mean_offset` a key takes.
     key_level_mean: f64,
+    /// The key settings that follow the key interval (`rate.key_level_finer`,
+    /// `rate.key_boost_ln_interval` and their terms).
+    key_interval: KeyIntervalTerms,
     /// `rate.key_quality_match`: share of `quality_matched_ratio` a key takes.
     key_quality_match: f64,
     /// Step of the last key frame coded (`quality_matched_ratio`).
@@ -691,26 +844,39 @@ pub(crate) struct RateController {
     /// `rate.key_reserve`: share of the next key's empty-buffer room the
     /// inter frames before it keep free (`key_reserve_room`).
     key_reserve: f64,
-    /// Frames from the frame being planned to the next scheduled periodic
-    /// key (1: the next frame is the key); `None` without periodic keys.
-    frames_to_key: Option<u64>,
-    /// `rate.first_key_lookahead`, and the buffer share it caps the first
-    /// GOP's key at once the start-up lookahead saw camera motion (0 = no
-    /// cap; [`RateController::observe_startup_motion`]).
-    first_key_lookahead: f64,
+    /// Where the frame being planned stands against the key schedule.
+    key_schedule: KeySchedule,
+    /// The start-up lookahead's first-key cap, and the buffer share it caps
+    /// the first GOP's key at once the lookahead saw camera motion (0 = no
+    /// cap; [`RateController::observe_startup_scene`]).
+    first_key_lookahead: FirstKeyLookahead,
     first_key_cap_buffer: f64,
-    /// `rate.key_still_boost`, the start-up lookahead's unchanged-block
-    /// share (for the first key), and the boost the key being coded took
-    /// (`key_still_offset`; 0 for inter frames and unboosted keys).
+    /// `rate.first_key_model` and the frame-0 features it predicts from.
+    first_key_model: FirstKeyModel,
+    first_key_keep_loan: f64,
+    first_key_refine_qp: f64,
+    first_key_refine_frame: u64,
+    startup_max_cam: f64,
+    first_key_refine_from: f64,
+    first_key_refine_full: f64,
+    first_key_refine_mv_shoulder: f64,
+    first_key_refine_mv_scale: f64,
+    first_key_refine_cam_shoulder: f64,
+    first_key_refine_cam_scale: f64,
+    first_key_cold_learn_damp: f64,
+    r1_inter_min_3: bool,
+    r1_rd_split: bool,
+    r1_lambda_scale: f64,
+    startup_temporal_ref: f64,
+    last_refine_applied: bool,
+    last_refine_mean_qp: f64,
+    frame_min_quantizer: u32,
+    first_key_loan_credit: f64,
     key_still_boost: f64,
     startup_still_share: f64,
     key_still_applied: f64,
-    /// `rate.recode_overflow`: the buffer fullness re-codes keep frames
-    /// under, as a multiple of the capacity; 0 is off.
-    recode_ceiling: f64,
-    /// `rate.recode_overflow_inter`: the same ceiling for inter frames
-    /// (`recode_ceiling` when 0).
-    recode_ceiling_inter: f64,
+    /// When and how frames are re-coded into the buffer.
+    recode: RecodeRule,
     /// `rate.key_recode_miss`: octaves a key may miss its budget by before
     /// it is coded again at the step the miss implies (0 = off).
     key_recode_miss: f64,
@@ -786,7 +952,34 @@ pub(crate) struct RateController {
     /// Share of unchanged blocks of the frame being coded.
     frame_still_share: f64,
 }
+/// `rate.first_key_model` (0 = off, 1 = full budget + room guard, 2 = room
+/// overflow guard only), `rate.first_key_room_aim`, and the frame-0 luma energy
+/// histograms (with the `fast_key` flag) observed before coding the first key
+/// (`None` once a key has been coded or when off).
+#[derive(Debug, Clone)]
+struct FirstKeyModel {
+    mode: u8,
+    room_aim: f64,
+    trigger: f64,
+    features: Option<(crate::first_key_model::FirstKeyFeatures, bool)>,
+}
+
+impl FirstKeyModel {
+    fn of(params: &RateParams) -> Self {
+        Self {
+            mode: params.first_key_model.round().clamp(0., 2.) as u8,
+            room_aim: f64::from(params.first_key_room_aim),
+            trigger: f64::from(params.first_key_trigger),
+            features: None,
+        }
+    }
+}
+
 impl RateController {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "initialize the rate controller from one validated configuration"
+    )]
     pub fn new(
         config: RateControlConfig,
         calibration: RateModel,
@@ -841,20 +1034,39 @@ impl RateController {
             still_frames: 0,
             phase_repay_seconds: f64::from(params.key_repay_seconds),
             first_key_replan_at: None,
-            key_cap_buffer: f64::from(params.key_cap_buffer),
-            key_cap_gop: f64::from(params.key_cap_gop),
+            key_caps: KeyCaps::of(params),
             key_level_mean: f64::from(params.key_level_mean),
+            key_interval: KeyIntervalTerms::of(params),
             key_quality_match: f64::from(params.key_quality_match),
             last_key_step: None,
             key_reserve: f64::from(params.key_reserve),
-            frames_to_key: None,
-            first_key_lookahead: first_key_lookahead(params, &calibration),
+            key_schedule: KeySchedule::default(),
+            first_key_lookahead: FirstKeyLookahead::of(params, &calibration),
             first_key_cap_buffer: 0.,
+            first_key_model: FirstKeyModel::of(params),
+            first_key_keep_loan: f64::from(params.first_key_keep_loan),
+            first_key_refine_qp: f64::from(params.first_key_refine_qp),
+            first_key_refine_frame: params.first_key_refine_frame.round().clamp(1., 4.) as u64,
+            startup_max_cam: 0.,
+            first_key_refine_from: f64::from(params.first_key_refine_from),
+            first_key_refine_full: f64::from(params.first_key_refine_full),
+            first_key_refine_mv_shoulder: f64::from(params.first_key_refine_mv_shoulder),
+            first_key_refine_mv_scale: f64::from(params.first_key_refine_mv_scale),
+            first_key_refine_cam_shoulder: f64::from(params.first_key_refine_cam_shoulder),
+            first_key_refine_cam_scale: f64::from(params.first_key_refine_cam_scale),
+            first_key_cold_learn_damp: f64::from(params.first_key_cold_learn_damp),
+            r1_inter_min_3: params.r1_inter_min_3 >= 0.5,
+            r1_rd_split: params.r1_rd_split >= 0.5,
+            r1_lambda_scale: f64::from(params.r1_lambda_scale),
+            startup_temporal_ref: f64::from(params.startup_temporal_ref),
+            last_refine_applied: false,
+            last_refine_mean_qp: 0.,
+            frame_min_quantizer: 0,
+            first_key_loan_credit: 0.,
             key_still_boost: f64::from(params.key_still_boost),
             startup_still_share: 0.,
             key_still_applied: 0.,
-            recode_ceiling: f64::from(params.recode_overflow),
-            recode_ceiling_inter: f64::from(params.recode_overflow_inter),
+            recode: RecodeRule::of(params),
             key_recode_miss: f64::from(params.key_recode_miss),
             coding: FrameCoding::default(),
             ladder,
@@ -863,9 +1075,9 @@ impl RateController {
             fullness: s.capacity / 2.,
             scheduled_key_debt: 0.,
             last_index: 0,
-            occupancy: 0.,
-            target_occupancy: 0.,
-            strict_occupancy: 0.,
+            occupancy: s.initial_occupancy(),
+            target_occupancy: s.initial_occupancy(),
+            strict_occupancy: s.initial_occupancy(),
             last_hint: 1.,
             last_inter_hint: None,
             last_budget: 1.,
@@ -1080,37 +1292,76 @@ impl RateController {
     fn loan_inter_budget(&self) -> f64 {
         self.phase_inter_budget(self.loan_boost)
     }
+    /// The key interval feature of the key being planned
+    /// (`key_interval.rs`): every key restarts the schedule, so each serves
+    /// the key period.
+    fn key_ln_interval(&self) -> f64 {
+        crate::key_interval::ln_interval(u64::from(self.period), self.fps)
+    }
+    /// The buffer share the key being planned may take: the first key's
+    /// (`rate.key_cap_buffer_first`) before any frame, every later key's
+    /// (`rate.key_cap_buffer`) after.
+    fn key_cap_buffer(&self) -> f64 {
+        self.key_caps.buffer(self.stats.frames == 0)
+    }
     /// Most bits a key may take (`rate.key_cap_buffer`: a share of the
     /// buffer; `rate.key_cap_gop`: a share of its repayment phase's bits);
     /// unbounded when both are off. Keys plan within it (`key_boost`), and
     /// the key-level floor may not push a key past it (`key_step_floor`).
     fn key_bits_cap(&self) -> f64 {
+        self.key_bits_cap_with(
+            self.key_cap_buffer(),
+            self.first_key_cap_buffer,
+            self.stats.frames == 0,
+        )
+    }
+    fn key_bits_cap_with(
+        &self,
+        cap_buffer: f64,
+        lookahead_cap: f64,
+        apply_first_frames: bool,
+    ) -> f64 {
         let phase = f64::from(self.repay_frames()) * self.uniform_budget();
+        // The stream's first key is planned within the decoder buffer's
+        // initial fullness (`RateControlConfig::buffer_initial_ms`), all
+        // that a receiver holds before it drains anything: the loan and its
+        // repayment then follow the key it can send.
+        let initial = self
+            .settings
+            .initial_fullness()
+            .filter(|_| self.stats.frames == 0)
+            .map_or((0., 0.), |full| (1., full));
+        let first_frames = if apply_first_frames && self.key_caps.first_frames > 0. {
+            (self.key_caps.first_frames, self.uniform_budget())
+        } else {
+            (0., 0.)
+        };
         [
-            (self.key_cap_buffer, self.settings.capacity),
-            (self.first_key_cap_buffer, self.settings.capacity),
-            (self.key_cap_gop, phase),
+            (cap_buffer, self.settings.capacity),
+            (lookahead_cap, self.settings.capacity),
+            (self.key_caps.gop, phase),
+            first_frames,
+            initial,
         ]
         .into_iter()
         .filter(|&(share, _)| share > 0.)
         .map(|(share, whole)| share * whole)
         .fold(self.share.room_bits, f64::min)
     }
-    /// The key budget's multiple of a repayment-phase inter frame: the
-    /// first key's boost or the configured one, lowered so it stays within
-    /// `key_bits_cap`. The loan and the repayment then follow the capped
-    /// key, not bits it never gets. With F repayment frames and uniform
-    /// budget U, a boost b gives the key b·U·F/(F-1+b), which meets a cap C
-    /// at b = C·(F-1)/(U·F - C).
     fn key_boost(&self) -> f64 {
-        let cap = self.key_bits_cap();
+        self.key_boost_for_cap(self.key_bits_cap())
+    }
+    fn key_boost_for_cap(&self, cap: f64) -> f64 {
         let phase_frames = f64::from(self.repay_frames());
         let phase = phase_frames * self.uniform_budget();
-        let boost = if self.stats.frames == 0 {
-            self.first_key_boost
-        } else {
-            self.settings.config.keyframe_boost
-        };
+        let boost = self.key_interval.boost(
+            if self.stats.frames == 0 {
+                self.first_key_boost
+            } else {
+                self.settings.config.keyframe_boost
+            },
+            self.key_ln_interval(),
+        );
         if cap >= phase {
             return boost;
         }
@@ -1263,7 +1514,11 @@ impl RateController {
     /// it keep its room. At least the interval's drain, like any inter
     /// frame: a frame that small does not raise the buckets.
     fn key_reserve_room(&self, key: bool) -> f64 {
-        let Some(frames) = self.frames_to_key.filter(|_| !key && self.key_reserve > 0.) else {
+        let Some(frames) = self
+            .key_schedule
+            .frames_to_key
+            .filter(|_| !key && self.key_reserve > 0.)
+        else {
             return f64::INFINITY;
         };
         let frames = frames as f64;
@@ -1335,11 +1590,7 @@ impl RateController {
     /// overflow through unplanned static refinement bursts, which a backend
     /// may hold to a tighter ceiling (`rate.recode_overflow_inter`).
     fn recode_ceiling(&self, key: bool) -> f64 {
-        if key || self.recode_ceiling_inter <= 0. {
-            self.recode_ceiling
-        } else {
-            self.recode_ceiling_inter
-        }
+        self.recode.ceiling(key, self.settings.config.strict_buffer)
     }
     /// Model slot of a frame: one for keys; one per temporal-layer role in
     /// a layered structure; one per cadence role for flat inter frames, or a
@@ -1449,7 +1700,9 @@ impl RateController {
     fn key_step(&self, budget_step: f64, reuse_offset: f64, hint: f64) -> f64 {
         let finer = step_ratio(-self.key_still_offset());
         let Some(level_step) = self.key_quality_step(reuse_offset) else {
-            return budget_step * finer;
+            let boosted = budget_step * finer;
+            let allowance_step = self.first_key_allowance_step(boosted) / self.block_ratio;
+            return boosted.max(allowance_step);
         };
         let allowance_step = self.key_allowance_step(hint) / self.block_ratio;
         if self.holds_still_key() {
@@ -1460,13 +1713,50 @@ impl RateController {
         (level_step.min(budget_step) * finer).max(allowance_step)
     }
 
+    /// The finest step the first key may take under `rate.first_key_model`
+    /// while staying within `first_key_room_aim * strict_room(true)` (0 when
+    /// off, unconstrained, below `first_key_trigger * strict_room` in mode 2,
+    /// or without frame-0 features).
+    fn first_key_allowance_step(&self, boosted_step: f64) -> f64 {
+        let (Some(cal), Some((features, fast_key))) = (
+            self.calibration.first_key.as_ref(),
+            self.first_key_model.features.as_ref(),
+        ) else {
+            return 0.;
+        };
+        let room = self.strict_room(true);
+        if !room.is_finite() {
+            return 0.;
+        }
+        if self.first_key_model.mode == 2 {
+            let sample_step = boosted_step * self.block_ratio * self.calibration.sample_step_scale;
+            if features.predict_bits(cal, sample_step, *fast_key)
+                <= self.first_key_model.trigger * room
+            {
+                return 0.;
+            }
+        }
+        let aim = (self.first_key_model.room_aim * room).max(1.);
+        features.step_for_bits(
+            cal,
+            self.calibration.sample_step_scale,
+            &self.steps,
+            (self.settings.min, self.settings.max),
+            aim,
+            *fast_key,
+        )
+    }
+
     /// The step at which the key being planned codes as well as the inter
     /// frames before it: the last inter level's, moved by the quality match
     /// (`None` before any inter frame).
     fn key_quality_step(&self, reuse_offset: f64) -> Option<f64> {
         let level = self.last_inter_quantizer?;
         let level_step = self.steps[level as usize]
-            * step_ratio(self.key_level_mean * self.last_level_mean_offset + reuse_offset);
+            * step_ratio(
+                self.key_level_mean * self.last_level_mean_offset + reuse_offset
+                    - self.key_interval.finer(self.key_ln_interval()),
+            );
         Some(
             level_step
                 * self
@@ -1753,6 +2043,7 @@ impl RateController {
         let run_up = self.key_quality_match > 0.
             && (self.last_key
                 || self
+                    .key_schedule
                     .frames_to_key
                     .is_some_and(|frames| frames <= KEY_RUN_UP_FRAMES));
         (self.refinement.enabled() && !self.last_key) || self.still.quiets() || run_up
@@ -1860,11 +2151,23 @@ impl RateController {
     /// codes again (AV1 Default, 600 f still points: 8-20% of the base
     /// bursts' bits fell in the second before a key).
     fn quieted(&self, index: u64, offset: f64) -> f64 {
+        self.still.quieted(
+            self.to_key(index),
+            offset,
+            self.key_quality.quiet_strength(),
+        )
+    }
+
+    /// Frames from frame `index` to the next scheduled key (`None`: none
+    /// scheduled): the encoder's schedule when it told us, else counted from
+    /// the last key (every key restarts the schedule, `key_clock.rs`).
+    fn to_key(&self, index: u64) -> Option<u64> {
+        if let ToldToKey::Frames(told) = self.key_schedule.told {
+            return told;
+        }
         let period = u64::from(self.period);
-        let to_key = (period > 0 && period != u64::from(u32::MAX))
-            .then(|| period - (index - self.last_key_index) % period);
-        self.still
-            .quieted(to_key, offset, self.key_quality.quiet_strength())
+        (period > 0 && self.period != u32::MAX)
+            .then(|| period - index.saturating_sub(self.last_key_index) % period)
     }
 
     /// How far the quiet run-up to a key applies (`KeyQuality::quiet_strength`).
@@ -1885,9 +2188,42 @@ impl RateController {
         }
     }
 
+    /// Whether the controller wants the frame-0 luma plane to predict the
+    /// first key's size (`rate.first_key_model`).
+    pub fn wants_first_key_picture(&self) -> bool {
+        self.first_key_model.mode > 0
+            && self.model[KEY_MODEL].is_none()
+            && self.calibration.first_key.is_some()
+    }
+
+    /// Observe the frame-0 luma plane before planning the first key frame.
+    pub fn observe_first_key_picture(&mut self, y: nc_common::PlaneView<'_, u8>, fast_key: bool) {
+        if self.wants_first_key_picture() {
+            self.first_key_model.features =
+                crate::first_key_model::FirstKeyFeatures::extract(y).map(|f| (f, fast_key));
+        }
+    }
+
     /// Step for a frame with no observed model of its kind: a bits/pixel
-    /// guess at the seed quantizer, scaled by spatial activity.
+    /// guess at the seed quantizer, scaled by spatial activity, or the
+    /// calibrated deadzone survival model on the first key when enabled (`=1`).
     fn bootstrap_step(&self, key: bool, hint: Complexity, budget: f64) -> f64 {
+        if key
+            && self.first_key_model.mode == 1
+            && let (Some(cal), Some((features, fast_key))) = (
+                self.calibration.first_key.as_ref(),
+                self.first_key_model.features.as_ref(),
+            )
+        {
+            return features.step_for_bits(
+                cal,
+                self.calibration.sample_step_scale,
+                &self.steps,
+                (self.settings.min, self.settings.max),
+                budget,
+                *fast_key,
+            );
+        }
         let exponent = self.settings.config.rate_exponent;
         let activity = (hint.spatial / (self.pixels / 64.).max(1.) / 128.).clamp(0.25, 4.);
         let bpp = self
@@ -1895,9 +2231,15 @@ impl RateController {
             .config
             .initial_bits_per_pixel
             .unwrap_or(self.calibration.bootstrap_bits_per_pixel);
+        let temporal_scale = if !key && self.startup_temporal_ref > 0. {
+            (hint.temporal / hint.spatial.max(1.) / self.startup_temporal_ref).clamp(1., 4.)
+        } else {
+            1.
+        };
         let reference_bits = self.pixels
             * bpp
             * activity
+            * temporal_scale
             * if key {
                 self.settings.config.initial_key_complexity
             } else {
@@ -1913,28 +2255,33 @@ impl RateController {
     /// size (`relearn`); the first-frame guess reads the size.
     /// Whether the start-up lookahead is wanted (`rate.first_key_lookahead`).
     pub fn wants_startup_motion(&self) -> bool {
-        self.first_key_lookahead > 0.
-    }
-
-    /// The start-up lookahead's share of unchanged blocks between the first
-    /// two frames: how still the scene is before any inter frame
-    /// (`key_still_offset`).
-    pub fn observe_startup_still(&mut self, still_share: f64) {
-        self.startup_still_share = still_share;
+        self.first_key_lookahead.cap > 0.
     }
 
     /// Before the first frame: the peak camera displacement (luma samples)
-    /// from the first to the second source frame. Camera motion caps the
-    /// first GOP's key at `rate.first_key_lookahead` buffers, through
-    /// `key_bits_cap`, so the loan and its repayment follow the capped key.
-    /// The first key's 2.5x boost (`rate.first_key_boost_scale`) pays where
-    /// the picture persists: static and crowd scenes (a still camera) keep
-    /// it. Under camera motion the picture is replaced within seconds and a
-    /// smaller key (cap 0.2-0.3) won pan by 12-15% in a blanket screen,
-    /// which lost crowd by 2-11% (`rate.key_cap_buffer`).
-    pub fn observe_startup_motion(&mut self, peak_displacement: f64) {
-        if self.stats.frames == 0 && peak_displacement >= STARTUP_CAMERA_MOTION {
-            self.first_key_cap_buffer = self.first_key_lookahead;
+    /// from the first to the second source frame, and their share of
+    /// unchanged blocks (how still the scene is before any inter frame,
+    /// `key_still_offset`). Camera motion caps the first GOP's key at
+    /// `rate.first_key_lookahead` buffers, through `key_bits_cap`, so the
+    /// loan and its repayment follow the capped key. The first key's 2.5x
+    /// boost (`rate.first_key_boost_scale`) pays where the picture persists:
+    /// static and crowd scenes (a still camera) keep it. Under camera motion
+    /// the picture is replaced within seconds and a smaller key (cap
+    /// 0.2-0.3) won pan by 12-15% in a blanket screen, which lost crowd by
+    /// 2-11% (`rate.key_cap_buffer`).
+    ///
+    /// The cap eases in with the motion (`FirstKeyLookahead::cap_buffers`) instead of
+    /// switching at one sample per frame: a near-still dark clip whose
+    /// motion fit read 1.06 samples had its first key halved (HEVC
+    /// `pp22_dark`, 82 kbps).
+    pub fn observe_startup_scene(&mut self, peak_displacement: f64, still_share: f64) {
+        self.startup_still_share = still_share;
+        if self.stats.frames == 0 {
+            self.first_key_cap_buffer = self.first_key_lookahead.cap_buffers(
+                peak_displacement,
+                still_share,
+                self.key_cap_buffer(),
+            );
         }
     }
 
@@ -1986,6 +2333,7 @@ impl RateController {
         self.learn(discarded_bits);
         if self.coding.recodes == 0 {
             self.stats.recoded_frames += 1;
+            self.coding.first_bits = Some(discarded_bits);
         }
         self.coding.recodes += 1;
         self.coding.trial = Some((current_step, size));
@@ -2065,14 +2413,13 @@ impl RateController {
             self.clear_key_loan();
         }
         let period = u64::from(self.period);
-        let to_key = (period > 0 && self.period != u32::MAX)
-            .then(|| period - index.saturating_sub(self.last_key_index) % period);
+        let to_key = self.to_key(index);
         let periodic = period > 0 && self.period != u32::MAX;
         self.still
             .set_loan_spans_period(periodic && self.repay_frames() >= self.period);
         self.still
             .plan_period(self.elapsed, self.ledger_seconds(), self.frame_fps, to_key);
-        self.frames_to_key = to_key;
+        self.key_schedule.frames_to_key = to_key;
         self.share = *share;
     }
 
@@ -2081,6 +2428,10 @@ impl RateController {
     /// the level quantizer, like the flat pseudo-layer cadence).
     /// `share` is the frame's share of a buffer it shares with other frames
     /// of the same instant ([`LayerShare::WHOLE`]: none).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the quantizer decision follows coding order"
+    )]
     pub(crate) fn select(
         &mut self,
         key: bool,
@@ -2152,13 +2503,25 @@ impl RateController {
             nearest_quantizer(&self.steps, (self.settings.min, self.settings.max), step)
         };
         self.quality_capped = q < floor || goal < floor || held || share_capped;
-        let mut q = q.max(self.frame_floor(floor, offset));
-        q = q.max(self.still_refine_floor(key, hint.static_fraction));
+        let mut frame_min_q = self.frame_floor(floor, offset);
+        frame_min_q = frame_min_q.max(self.still_refine_floor(key, hint.static_fraction));
         if let Some(min_q) = share.min_inter_quantizer.filter(|_| !key) {
-            q = q.max(min_q.clamp(self.settings.min, self.settings.max));
+            frame_min_q = frame_min_q.max(min_q.clamp(self.settings.min, self.settings.max));
         }
+        self.frame_min_quantizer = frame_min_q;
+        let q = q.max(frame_min_q);
+        self.last_refine_applied = false;
+        self.last_refine_mean_qp = 0.;
         if key {
-            self.loan_boost = self.key_boost();
+            self.startup_max_cam = 0.;
+            let base_boost = self.key_boost();
+            self.loan_boost = if self.stats.frames == 0 && self.first_key_keep_loan > 0. {
+                let uncapped_cap = self.key_bits_cap_with(self.key_caps.buffer(false), 0., false);
+                let uncapped_boost = self.key_boost_for_cap(uncapped_cap).max(base_boost);
+                base_boost + (uncapped_boost - base_boost) * self.first_key_keep_loan
+            } else {
+                base_boost
+            };
             self.key_still_applied = self.key_still_offset();
             if let Some(seed_offset) = share.key_anchor.and_then(|a| a.seed_inter_offset)
                 && self.last_inter_quantizer.is_none()
@@ -2167,6 +2530,11 @@ impl RateController {
                     Some(q.saturating_add(seed_offset).min(self.settings.max));
             }
         } else {
+            if self.stats.frames <= self.first_key_refine_frame {
+                self.startup_max_cam = self
+                    .startup_max_cam
+                    .max(hint.motion.map_or(0., |m| m.camera_motion));
+            }
             self.last_inter_quantizer = Some(level);
             self.last_level_mean_offset = self.level_mean_offset(layer);
             self.last_inter_hint = Some(h);
@@ -2224,6 +2592,26 @@ impl RateController {
         self.stats.plan.predicted_bits = self.last_predicted;
         q
     }
+    /// What in-frame rate control (`in_frame_rate.rs`) watches the current
+    /// coding against: its predicted bits, the room before its re-code
+    /// ceiling (infinite with no ceiling, and for a forced quantizer, which is
+    /// coded as given), and whether a re-code of it would be granted
+    /// ([`Self::recode_quantizer`] on a frame past its room).
+    pub(crate) fn in_frame_bounds(&self) -> InFrameBounds {
+        let room = if self.coding.forced {
+            f64::INFINITY
+        } else {
+            self.strict_room(self.last_key)
+        };
+        InFrameBounds {
+            predicted: self.last_predicted,
+            room,
+            recodable: room.is_finite()
+                && self.current < self.settings.max
+                && self.coding.recodes < self.recode.max,
+        }
+    }
+
     /// With `rate.recode_overflow`, the coarser quantizer to code the
     /// current frame again at when its `bits` would overflow the buffer
     /// drained at the target rate (what a strict-CBR receiver holds), or
@@ -2234,43 +2622,57 @@ impl RateController {
     /// strict-CBR overruns, but they also buy real quality, so the frame is
     /// re-coded only when the buffer cannot absorb it, and only as much
     /// coarser as it needs: the first re-code assumes the steep slope of
-    /// such bursts (`RECODE_FIRST_EXPONENT`), a second one (rare) the slope
-    /// measured between the two codings. At most `MAX_RECODES` per frame.
+    /// such bursts (`rate.recode_first_exponent`), a later one (rare) the slope
+    /// measured between the last two codings. At most `rate.recode_max` per frame.
     pub fn recode_quantizer(&mut self, bits: u64) -> Option<u32> {
-        self.overflow_recode(bits)
+        self.overflow_recode(bits, true)
             .or_else(|| self.key_size_recode(bits))
+    }
+
+    /// [`Self::recode_quantizer`] of a coding stopped part-way, as if it had
+    /// taken the `bits` projected for it (`rate.recode_early`). A projection
+    /// is not an observation, so the models do not learn from it. (With
+    /// learning, AV1 fast `pool_fit_static_meva_bus506_536p` at 194 kbps: its
+    /// first key, stopped on a projection from equal superblock shares, was
+    /// re-coded at 94 kbit against 201, and the next periodic key was coded
+    /// 25 qindex coarser than without early re-codes.)
+    pub(crate) fn recode_quantizer_projected(&mut self, bits: u64) -> Option<u32> {
+        self.overflow_recode(bits, false)
     }
 
     /// The re-code of a frame that would overflow the strict buffer
     /// ([`Self::recode_quantizer`]).
-    fn overflow_recode(&mut self, bits: u64) -> Option<u32> {
+    fn overflow_recode(&mut self, bits: u64, observed: bool) -> Option<u32> {
         let room = self.strict_room(self.last_key);
         let size = bits as f64;
         if self.coding.forced
             || size <= room
             || self.current >= self.settings.max
-            || self.coding.recodes >= MAX_RECODES
+            || self.coding.recodes >= self.recode.max
         {
             return None;
         }
         let current_step = self.steps[self.current as usize];
-        let exponent = self
-            .coding
-            .trial
-            .map_or(RECODE_FIRST_EXPONENT, |(step, trial_bits)| {
-                ((trial_bits / size).ln() / (current_step / step).ln())
-                    .clamp(RECODE_EXPONENT_RANGE.0, RECODE_EXPONENT_RANGE.1)
-            });
-        let goal = RECODE_FILL * room.max(1.);
+        let exponent =
+            self.coding
+                .trial
+                .map_or(self.recode.first_exponent, |(step, trial_bits)| {
+                    ((trial_bits / size).ln() / (current_step / step).ln())
+                        .clamp(RECODE_EXPONENT_RANGE.0, RECODE_EXPONENT_RANGE.1)
+                });
+        let goal = self.recode.fill * room.max(1.);
         let step = current_step * (size / goal).powf(1. / exponent);
         let quantizer = self.quantizer_for(step).max(self.current + 1);
         // The discarded coding is a real observation at its quantizer:
         // without it the models saw only the cheap re-codes and kept
         // planning frames that overflow (static_london_bus H.264 150 kbps
         // re-coded every frame from 37 on).
-        self.learn(bits);
+        if observed {
+            self.learn(bits);
+        }
         if self.coding.recodes == 0 {
             self.stats.recoded_frames += 1;
+            self.coding.first_bits = Some(bits);
         }
         self.coding.recodes += 1;
         self.coding.trial = Some((current_step, size));
@@ -2292,7 +2694,7 @@ impl RateController {
             || self.key_recode_miss <= 0.
             || self.coding.forced
             || self.coding.key_retargeted
-            || self.coding.recodes >= MAX_RECODES
+            || self.coding.recodes >= self.recode.max
             || bits == 0
         {
             return None;
@@ -2300,7 +2702,7 @@ impl RateController {
         let size = bits as f64;
         let goal = self
             .last_budget
-            .min(RECODE_FILL * self.strict_room(true).max(1.));
+            .min(self.recode.fill * self.strict_room(true).max(1.));
         if (size / goal).log2().abs() <= self.key_recode_miss {
             return None;
         }
@@ -2313,6 +2715,7 @@ impl RateController {
         self.learn(bits);
         if self.coding.recodes == 0 {
             self.stats.recoded_frames += 1;
+            self.coding.first_bits = Some(bits);
         }
         self.coding.recodes += 1;
         self.coding.key_retargeted = true;
@@ -2320,6 +2723,14 @@ impl RateController {
         self.current = quantizer;
         self.last_predicted = goal;
         Some(quantizer)
+    }
+
+    /// Frames from the next frame to the next scheduled key (`None`: none
+    /// scheduled), from the encoder's key schedule (`key_clock.rs`), the one
+    /// source of it: a timestamped stream's keys follow time, not frame
+    /// counts.
+    pub(crate) fn set_frames_to_key(&mut self, frames: Option<u64>) {
+        self.key_schedule.told = ToldToKey::Frames(frames);
     }
 
     /// Frames between scheduled key frames from now on (`u32::MAX`: none,
@@ -2394,9 +2805,24 @@ impl RateController {
     /// for its complexity hint (`fallback` before the slot has a model).
     fn predicted_bits(&self, q: u32, fallback: f64) -> f64 {
         let exponent = self.settings.config.rate_exponent;
-        let content = self.model[self.current_slot].map_or(fallback, |m| {
-            m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent)
-        });
+        let content = self.model[self.current_slot].map_or_else(
+            || {
+                if self.last_key
+                    && let (Some(cal), Some((features, fast_key))) = (
+                        self.calibration.first_key.as_ref(),
+                        self.first_key_model.features.as_ref(),
+                    )
+                {
+                    let sample_step = self.steps[q as usize]
+                        * self.block_ratio
+                        * self.calibration.sample_step_scale;
+                    features.predict_bits(cal, sample_step, *fast_key)
+                } else {
+                    fallback
+                }
+            },
+            |m| m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent),
+        );
         content + self.refinement_price(q)
     }
 
@@ -2475,32 +2901,52 @@ impl RateController {
     /// `bodycam_antare_0815`, an exact repeat after the first key coded the
     /// next frame at QP 27 instead of 30, `J_real` +2.5% H.264, +4.4% AV1).
     pub fn hold_frame(&mut self) {
+        self.held_interval(0.);
+    }
+
+    /// Account for a repeat frame (`hold.rs` "Repeat frames"): a held
+    /// frame's interval ([`Self::hold_frame`]) that also sends `bits`,
+    /// charged to every buffer and to the debt as any coded frame's are.
+    /// The models learn nothing from it: its bits measure the codec's skip
+    /// syntax, not what the content costs.
+    pub fn repeat_frame(&mut self, bits: u64) {
+        self.held_interval(bits as f64);
+        self.stats.total_bits = self.stats.total_bits.saturating_add(bits);
+        self.stats.max_frame_bits = self.stats.max_frame_bits.max(bits);
+        self.stats.actual_bps = self.stats.total_bits as f64 / self.elapsed;
+    }
+
+    /// A held frame's interval that sends `bits` (0: nothing).
+    fn held_interval(&mut self, bits: f64) {
         let budget = self.inter_budget();
         self.held_pending += budget;
-        self.fullness -= self.uniform_budget() - budget;
-        self.drain_interval();
+        self.fullness += bits - (self.uniform_budget() - budget);
+        self.drain_interval(bits);
         self.debit();
     }
 
     /// The current frame's interval passes with no bits coded.
     fn pass_interval(&mut self) {
         self.fullness -= self.uniform_budget();
-        self.drain_interval();
+        self.drain_interval(0.);
         self.debit();
     }
 
-    /// The current frame's interval drains the buffers and the key's loan
-    /// schedule (`pass_interval` without the debt credit).
-    fn drain_interval(&mut self) {
+    /// The current frame's interval, carrying `bits`, drains the buffers
+    /// and the key's loan schedule (`pass_interval` without the debt
+    /// credit).
+    fn drain_interval(&mut self, bits: f64) {
         let uniform = self.uniform_budget();
         let drain = self.channel_drain();
+        let capacity = self.settings.capacity;
         self.scheduled_key_debt =
             (self.scheduled_key_debt - (uniform - self.inter_budget())).max(0.);
         self.frames_since_key = self.frames_since_key.saturating_add(1);
-        self.occupancy = (self.occupancy - self.settings.peak / self.frame_fps).max(0.);
-        self.target_occupancy = (self.target_occupancy - drain).max(0.);
-        self.strict_occupancy = (self.strict_occupancy - drain).max(0.);
-        self.record_window(0., false);
+        self.occupancy =
+            (self.occupancy + bits - self.settings.peak / self.frame_fps).clamp(0., capacity);
+        self.target_occupancy = (self.target_occupancy + bits - drain).clamp(0., capacity);
+        self.strict_occupancy = (self.strict_occupancy + bits - drain).max(0.);
+        self.record_window(bits, false);
         self.elapsed += 1. / self.frame_fps;
         self.stats.key_loan_bits = self.scheduled_key_debt;
         self.stats.buffer_fullness = (self.occupancy / self.settings.capacity).clamp(0., 1.);
@@ -2509,6 +2955,9 @@ impl RateController {
     /// Update the current frame's model slot with `bits` coded at the
     /// current quantizer.
     fn learn(&mut self, bits: u64) {
+        if self.last_refine_applied {
+            return;
+        }
         let class = self.current_slot;
         let content = (bits as f64).max(1.);
         let value = content
@@ -2526,7 +2975,7 @@ impl RateController {
         let hint_ratio =
             (self.last_hint / self.model_hint[class]).max(self.model_hint[class] / self.last_hint);
         let relearn = std::mem::take(&mut self.relearn[class]);
-        let weight = if relearn
+        let mut weight = if relearn
             || (ratio > self.settings.config.scene_change_ratio
                 && hint_ratio >= self.scene_hint_ratio)
         {
@@ -2534,12 +2983,25 @@ impl RateController {
         } else {
             self.settings.config.model_smoothing
         };
+        if !self.last_key
+            && self.key_caps.first_frames > 0.
+            && self.first_key_cold_learn_damp > 0.
+            && (2..=4).contains(&self.stats.frames)
+            && (bits as f64) > self.last_predicted
+            && self.model[class].is_some()
+        {
+            weight *= (1. - self.first_key_cold_learn_damp).max(0.05);
+        }
         self.model[class] =
             Some(self.model[class].map_or(value, |old| old * (1. - weight) + value * weight));
         self.model_hint[class] = self.last_hint;
     }
     pub fn feedback(&mut self, bits: u64) {
-        self.learn(bits);
+        let refined = std::mem::take(&mut self.last_refine_applied);
+        self.last_refine_mean_qp = 0.;
+        if !refined {
+            self.learn(bits);
+        }
         self.refine.observe(
             self.last_key,
             self.steps[self.current as usize],
@@ -2583,6 +3045,22 @@ impl RateController {
             }
             self.scheduled_key_debt =
                 (self.loan_inter_budget() * self.loan_boost - uniform).max(0.);
+            self.first_key_loan_credit = if self.stats.frames == 0 && self.first_key_keep_loan > 0.
+            {
+                (self.scheduled_key_debt - (bits as f64 - uniform).max(0.)).max(0.)
+            } else {
+                0.
+            };
+        } else if refined {
+            let extra = (bits as f64 - uniform).max(0.);
+            let net_extra = (extra - std::mem::take(&mut self.first_key_loan_credit)).max(0.);
+            self.scheduled_key_debt = (self.scheduled_key_debt + net_extra - (uniform - p)).max(0.);
+            let frames = f64::from(self.repay_frames());
+            let remaining = (frames - f64::from(self.frames_since_key)).max(1.);
+            let repayment = self.scheduled_key_debt / remaining;
+            if net_extra > 0. && repayment < uniform {
+                self.loan_boost = (uniform + repayment * (frames - 1.)) / (uniform - repayment);
+            }
         } else {
             self.scheduled_key_debt = (self.scheduled_key_debt - (uniform - p)).max(0.);
         }
@@ -2632,9 +3110,82 @@ impl RateController {
         self.stats.plan.debit_bits = self.debit.unwrap_or(0.);
         self.stats.plan.capacity_bits = self.settings.capacity;
         self.stats.plan.codings = 1 + self.coding.recodes;
+        self.stats.plan.first_coding_bits = self.coding.first_bits.unwrap_or(bits);
+        if self.last_key {
+            self.first_key_model.features = None;
+        }
     }
     pub const fn stats(&self) -> RateControlStats {
         self.stats
+    }
+
+    #[expect(
+        clippy::type_complexity,
+        reason = "the frame planner consumes the refinement parameters together"
+    )]
+    pub(crate) fn first_key_mc_block_refine(
+        &self,
+        quantizer: u32,
+    ) -> Option<(f64, f64, f64, f64, f64, f64, f64, f64, u8)> {
+        if self.last_key || self.first_key_refine_qp <= 0. {
+            return None;
+        }
+        let pass = if self.first_key_refine_frame == 3 {
+            match self.stats.frames {
+                1 => 1,
+                2 => 2,
+                _ => return None,
+            }
+        } else if self.stats.frames == self.first_key_refine_frame {
+            0
+        } else {
+            return None;
+        };
+        if quantizer <= self.frame_min_quantizer {
+            return None;
+        }
+        let key_step = self.last_key_step?;
+        let frame_step = self.steps[quantizer as usize];
+        let min_step = self.steps[self.frame_min_quantizer as usize];
+        let target_step = (key_step * step_ratio(-self.first_key_refine_qp)).max(min_step);
+        let delta_qp = (QP_UNITS_PER_OCTAVE * (frame_step / target_step).log2()).max(0.);
+        (delta_qp > 0.).then_some((
+            delta_qp,
+            self.first_key_refine_from,
+            self.first_key_refine_full,
+            self.first_key_refine_mv_shoulder,
+            self.first_key_refine_mv_scale,
+            self.first_key_refine_cam_shoulder,
+            self.first_key_refine_cam_scale,
+            self.startup_max_cam,
+            pass,
+        ))
+    }
+
+    pub(crate) fn apply_first_key_mc_frame_shift(&mut self, mean_refine_qp: f64) -> u32 {
+        self.last_refine_applied = true;
+        self.last_refine_mean_qp = mean_refine_qp.max(0.);
+        if mean_refine_qp <= 0. {
+            return self.current;
+        }
+        let shifted = self.steps[self.current as usize] * step_ratio(-mean_refine_qp);
+        let q = nearest_quantizer(&self.steps, (self.settings.min, self.settings.max), shifted)
+            .max(self.frame_min_quantizer);
+        if q < self.current {
+            self.current = q;
+        }
+        self.current
+    }
+
+    pub(crate) fn r1_tool_overrides(&self) -> Option<(bool, bool, f64)> {
+        if self.last_refine_applied
+            && self.last_refine_mean_qp >= 0.5
+            && (self.r1_inter_min_3 || self.r1_rd_split || self.r1_lambda_scale > 0.)
+        {
+            Some((self.r1_inter_min_3, self.r1_rd_split, self.r1_lambda_scale))
+        } else {
+            None
+        }
     }
 }
 
@@ -2646,13 +3197,111 @@ pub(crate) fn quantizer_for_step(steps: &[f64], bounds: (u32, u32), step: f64) -
         .unwrap_or(bounds.1)
 }
 
+/// Where the frame being planned stands against the key schedule.
+/// The caps on a key's bits (`key_bits_cap`).
+#[derive(Debug, Clone, Copy)]
+struct KeyCaps {
+    /// `rate.key_cap_buffer`: most buffers any key may take (0 = none).
+    buffer: f64,
+    /// `rate.key_cap_buffer_first`: the first key's (0 = `buffer`).
+    first: f64,
+    /// `rate.key_cap_gop`: most of its repayment phase's bits (0 = none).
+    gop: f64,
+    /// `rate.key_cap_frames_first`: first key cap in mean frames (0 = none).
+    first_frames: f64,
+}
+
+impl KeyCaps {
+    fn of(params: &RateParams) -> Self {
+        Self {
+            buffer: f64::from(params.key_cap_buffer),
+            first: f64::from(params.key_cap_buffer_first),
+            gop: f64::from(params.key_cap_gop),
+            first_frames: f64::from(params.key_cap_frames_first),
+        }
+    }
+
+    /// The buffer cap of the stream's first key (`first`) or a later one.
+    fn buffer(self, first: bool) -> f64 {
+        if first && self.first > 0. {
+            self.first
+        } else {
+            self.buffer
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct KeySchedule {
+    /// The encoder's frames to the next scheduled key for the next frame
+    /// (`RateController::set_frames_to_key`).
+    told: ToldToKey,
+    /// Frames from the frame being planned to the next scheduled periodic
+    /// key (1: the next frame is the key); `None` without periodic keys.
+    frames_to_key: Option<u64>,
+}
+
+/// What the encoder told rate control of its key schedule.
+#[derive(Debug, Clone, Copy, Default)]
+enum ToldToKey {
+    /// Nothing (rate control on its own, as in its unit tests, and spatial
+    /// layers): frames are counted from the last key.
+    #[default]
+    Nothing,
+    /// Frames from the next frame to the next scheduled key (`None`: none
+    /// scheduled).
+    Frames(Option<u64>),
+}
+
+/// Rate control's key settings that follow the key interval
+/// (`key_interval.rs`; every weight 0: the constant settings).
+#[derive(Debug, Clone, Copy)]
+struct KeyIntervalTerms {
+    /// `rate.key_level_finer`: QP units a key's quality requirement is
+    /// finer than the inter level.
+    finer: f64,
+    /// `rate.key_level_finer_ln_interval`: its change per unit of the
+    /// key interval feature.
+    finer_per_ln: f64,
+    /// `rate.key_boost_ln_interval`: the key budget's boost is multiplied
+    /// by (key period / 300 frames) to this power.
+    boost_per_ln: f64,
+}
+
+impl KeyIntervalTerms {
+    fn of(params: &RateParams) -> Self {
+        Self {
+            finer: f64::from(params.key_level_finer),
+            finer_per_ln: f64::from(params.key_level_finer_ln_interval),
+            boost_per_ln: f64::from(params.key_boost_ln_interval),
+        }
+    }
+
+    /// QP units a key is planned finer than its inter level at key
+    /// interval feature `ln`.
+    fn finer(self, ln: f64) -> f64 {
+        crate::key_interval::finer_qp(self.finer, self.finer_per_ln, ln)
+    }
+
+    /// Key budget boost `boost` at key interval feature `ln` (at least 1
+    /// where the term moves it).
+    fn boost(self, boost: f64, ln: f64) -> f64 {
+        if self.boost_per_ln == 0.0 {
+            boost
+        } else {
+            (boost * (self.boost_per_ln * ln).exp()).max(1.)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     /// A controller whose first key gets the normal key budget, so the
     /// key-loan tests see one boost (`rate.first_key_boost_scale` 1), and
     /// whose budgets are not bounded by the strict-buffer ceiling
-    /// (`rate.recode_overflow` 0) or steered by the debit term
+    /// (`rate.recode_overflow` 0) or the key cap (`rate.key_cap_buffer` 0,
+    /// the engine's 0.8 since 0.6.1) or steered by the debit term
     /// (`rate.debit` 0), so they test the loan and the proportional
     /// debt correction alone.
     fn controller(target: u64) -> RateController {
@@ -2663,6 +3312,7 @@ mod tests {
         let mut params = crate::ParamOverrides::default();
         params.set("rate.first_key_boost_scale", 1.);
         params.set("rate.recode_overflow", 0.);
+        params.set("rate.key_cap_buffer", 0.);
         params.set("rate.debit", 0.);
         for &(name, value) in overrides {
             params.set(name, value);
@@ -2679,6 +3329,53 @@ mod tests {
             crate::LayerParams::default().rate_control_ladder(1),
         )
         .unwrap()
+    }
+    /// A controller with the engine's default parameters for `config`.
+    fn controller_for(config: RateControlConfig) -> Result<RateController, RateControlError> {
+        RateController::new(
+            config,
+            RateModel::QP,
+            FrameRate { num: 30, den: 1 },
+            30,
+            32,
+            (0..=51).map(|q| 2f64.powf(f64::from(q) / 6.)).collect(),
+            640 * 360,
+            &RateParams::from_overrides(&crate::ParamOverrides::default()),
+            crate::LayerParams::default().rate_control_ladder(1),
+        )
+    }
+    #[test]
+    fn a_strict_buffer_holds_one_buffer_or_a_tighter_configured_ceiling() {
+        assert_eq!(effective_recode_ceiling(1.15, false), 1.15);
+        assert_eq!(effective_recode_ceiling(1.15, true), STRICT_RECODE_CEILING);
+        assert_eq!(effective_recode_ceiling(0., true), STRICT_RECODE_CEILING);
+        assert_eq!(effective_recode_ceiling(0.9, true), 0.9);
+    }
+    #[test]
+    fn initial_fullness_starts_the_buckets_with_the_rest_of_the_buffer_taken() {
+        let mut config = RateControlConfig::new(500_000);
+        config.strict_buffer = true;
+        let full = controller_for(config).unwrap();
+        assert_eq!(full.strict_occupancy, 0., "unset: the buffer starts full");
+        config.buffer_initial_ms = Some(200);
+        let r = controller_for(config).unwrap();
+        let capacity = r.settings.capacity;
+        for occupancy in [r.occupancy, r.target_occupancy, r.strict_occupancy] {
+            assert!((occupancy - 0.8 * capacity).abs() < 1e-6);
+        }
+        // The first key is planned within the initial fullness, and the
+        // budget a strict buffer allows it is no more.
+        assert!(r.key_bits_cap() <= 0.2 * capacity + 1e-6);
+        assert!(r.budget(true) <= 0.2 * capacity + 1e-6);
+        assert!(full.key_bits_cap() > 0.2 * capacity);
+    }
+    #[test]
+    fn initial_fullness_must_lie_within_the_buffer() {
+        let mut config = RateControlConfig::new(500_000);
+        for (ms, valid) in [(0, false), (1, true), (1000, true), (1001, false)] {
+            config.buffer_initial_ms = Some(ms);
+            assert_eq!(controller_for(config).is_ok(), valid, "{ms} ms");
+        }
     }
     const HINT: Complexity = Complexity {
         spatial: 460_800.,
@@ -3189,11 +3886,23 @@ mod tests {
     fn startup_camera_motion_caps_only_the_first_key() {
         // A binary fraction, exact as the f32 param.
         let cap = 0.25;
-        let mut still = controller_with(500_000, &[("rate.first_key_lookahead", cap as f32)]);
-        let mut moving = controller_with(500_000, &[("rate.first_key_lookahead", cap as f32)]);
+        let mut still = controller_with(
+            500_000,
+            &[
+                ("rate.first_key_lookahead", cap as f32),
+                ("rate.key_cap_frames_first", 0.),
+            ],
+        );
+        let mut moving = controller_with(
+            500_000,
+            &[
+                ("rate.first_key_lookahead", cap as f32),
+                ("rate.key_cap_frames_first", 0.),
+            ],
+        );
         assert!(still.wants_startup_motion());
-        still.observe_startup_motion(STARTUP_CAMERA_MOTION / 2.);
-        moving.observe_startup_motion(STARTUP_CAMERA_MOTION * 2.);
+        still.observe_startup_scene(STARTUP_CAMERA_MOTION / 2., 0.);
+        moving.observe_startup_scene(STARTUP_CAMERA_MOTION * 2., 0.);
         assert!(still.key_bits_cap().is_infinite());
         assert!((moving.key_bits_cap() - cap * moving.settings.capacity).abs() < 1e-6);
         // A later scheduled key starts a GOP of its own, uncapped.
@@ -3201,6 +3910,29 @@ mod tests {
         moving.feedback(10_000);
         moving.select(true, 30, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
         assert!(moving.key_bits_cap().is_infinite());
+    }
+
+    #[test]
+    fn first_key_cap_eases_in_with_camera_motion() {
+        let settings = [
+            ("rate.first_key_lookahead", 0.25),
+            ("rate.key_cap_buffer", 0.75),
+            ("rate.first_key_full_motion", 3.),
+            ("rate.first_key_fixed_camera", 1.),
+        ];
+        let cap_at = |motion: f64, still: f64| {
+            let mut c = controller_with(500_000, &settings);
+            c.observe_startup_scene(motion, still);
+            c.first_key_cap_buffer
+        };
+        assert_eq!(cap_at(STARTUP_CAMERA_MOTION / 2., 0.), 0.);
+        // Halfway from 1 to 3 samples: halfway from 0.75 to 0.25 buffers.
+        assert!((cap_at(2., 0.) - 0.5).abs() < 1e-9);
+        assert_eq!(cap_at(4., 0.), 0.25);
+        // Half a fixed camera lifts it halfway back to the key cap; a wholly
+        // unchanged picture leaves only the key cap itself.
+        assert!((cap_at(4., 0.9) - 0.5).abs() < 1e-9);
+        assert_eq!(cap_at(4., 1.), 0.);
     }
 
     #[test]
@@ -3425,6 +4157,7 @@ mod tests {
             &[
                 ("rate.recode_overflow", 1.4),
                 ("rate.recode_overflow_inter", 1.1),
+                ("rate.startup_temporal_ref", 0.),
             ],
         );
         // A long repayment phase, so the key's loan leaves the inter frames
@@ -3446,7 +4179,10 @@ mod tests {
     }
     #[test]
     fn a_burst_just_before_a_key_is_recoded_to_keep_the_keys_room() {
-        let mut r = controller_with(300_000, &[("rate.key_reserve", 1.)]);
+        let mut r = controller_with(
+            300_000,
+            &[("rate.key_reserve", 1.), ("rate.startup_temporal_ref", 0.)],
+        );
         r.period = 30;
         r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
         r.feedback(r.uniform_budget() as u64);
@@ -3622,5 +4358,81 @@ mod tests {
         upper.select(false, 59, HINT, LayerPosition::FLAT, &share);
         let room = upper.ledger_room(false);
         assert!(room > 12_000., "expected uncrushed ledger room, got {room}");
+    }
+
+    #[test]
+    fn r2_respects_spatial_min_inter_quantizer_and_skips_recode_learning() {
+        let mut r = controller_with(500_000, &[]);
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(120_000);
+        r.select(false, 1, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(15_000);
+        let model_before_r2 = r.model;
+
+        // Spatial layer floor above the refined target must not be bypassed.
+        let share = LayerShare {
+            min_inter_quantizer: Some(36),
+            ..LayerShare::WHOLE
+        };
+        let q2 = r.select(false, 2, HINT, LayerPosition::FLAT, &share);
+        assert!(q2 >= 36);
+        if r.first_key_mc_block_refine(q2).is_some() {
+            let shifted = r.apply_first_key_mc_frame_shift(9.0);
+            assert!(shifted >= 36, "R2 bypassed min_inter_quantizer: {shifted}");
+        }
+
+        // Discarded overflow recode of an R2 frame must not train the inter model.
+        let mut r2 = controller_with(500_000, &[]);
+        r2.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r2.feedback(120_000);
+        r2.select(false, 1, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r2.feedback(15_000);
+        let model_before = r2.model;
+        let q = r2.select(false, 2, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        assert!(r2.first_key_mc_block_refine(q).is_some());
+        r2.apply_first_key_mc_frame_shift(6.0);
+        r2.record_external_recode(q + 4, 400_000);
+        assert_eq!(r2.model, model_before, "R2 recode polluted inter model");
+        r2.feedback(100_000);
+        assert_eq!(r2.model, model_before, "R2 feedback polluted inter model");
+        let _ = model_before_r2;
+    }
+
+    #[test]
+    fn startup_temporal_ref_scales_high_motion_f1_upward_only() {
+        let low = Complexity {
+            spatial: 400_000.,
+            temporal: 40_000., // t/s = 0.10 <= 0.18
+            ..HINT
+        };
+        let high = Complexity {
+            spatial: 400_000.,
+            temporal: 200_000., // t/s = 0.50 > 0.18
+            ..HINT
+        };
+        let mut base_low = controller_with(500_000, &[("rate.startup_temporal_ref", 0.)]);
+        let mut tref_low = controller_with(500_000, &[("rate.startup_temporal_ref", 0.18)]);
+        for r in [&mut base_low, &mut tref_low] {
+            r.select(true, 0, low, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback(120_000);
+        }
+        assert_eq!(
+            base_low.select(false, 1, low, LayerPosition::FLAT, &LayerShare::WHOLE),
+            tref_low.select(false, 1, low, LayerPosition::FLAT, &LayerShare::WHOLE),
+            "low t/s must be unchanged"
+        );
+
+        let mut base_hi = controller_with(500_000, &[("rate.startup_temporal_ref", 0.)]);
+        let mut tref_hi = controller_with(500_000, &[("rate.startup_temporal_ref", 0.18)]);
+        for r in [&mut base_hi, &mut tref_hi] {
+            r.select(true, 0, high, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback(120_000);
+        }
+        let q_base = base_hi.select(false, 1, high, LayerPosition::FLAT, &LayerShare::WHOLE);
+        let q_tref = tref_hi.select(false, 1, high, LayerPosition::FLAT, &LayerShare::WHOLE);
+        assert!(
+            q_tref > q_base,
+            "high t/s must start coarser: {q_tref} vs {q_base}"
+        );
     }
 }

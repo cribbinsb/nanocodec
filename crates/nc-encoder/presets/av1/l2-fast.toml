@@ -94,3 +94,29 @@ persist.reuse_keys = 1
 # The Default's zero-trial split selector (planner.split_selector) stays off
 # here until screened on this rung (docs/handoff/planner-selector.md).
 planner.split_selector = 0
+# Medium's key RD search and finer periodic keys (2026-11-21) and key trellis
+# (2026-11-22) were screened on medium only.
+planner.key_rd_split = 0
+rate.key_level_finer = 0
+quant.trellis_key = 0
+# The inter-chroma skip's zero-residual veto (Default since 2026-11-22) is
+# not screened on this rung yet: off, as before.
+av1.chroma_skip_zero_scale = 0
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): not screened on this rung.
+analysis.zero_gate_cell = 64
+# Pinned before medium's fixed-QP cadence (period 8, base boost 4, no
+# start-up cadence; 2026-11-22): screened on medium, slow and slower only.
+rate.cadence_period = 4
+rate.cadence_base_boost = 3
+rate.cadence_startup_period = 8
+# rate.key_cap_buffer 1.0 (engine default since 2026-11-22) not screened on this rung.
+rate.key_cap_buffer = 0.8
+# Leaf penalty 1 in both modes: the fixed-QP profile codes leaf 2 (screened on medium's
+# fixed QP only, 2026-11-24).
+rate.cadence_leaf_penalty = 1
+
+# Pinned before AV1 medium adopted proactive in-frame steering (Brief 21, 2026-11-24):
+# not screened at L3/FC on this rung.
+rate.in_frame = 0

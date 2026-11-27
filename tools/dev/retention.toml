@@ -79,10 +79,10 @@ evicted_by = ["nceval.sweep", "nceval.svc_chart"]
 [[keep]]
 path = "work/cloud-measure"
 class = "cache"
-reader = "aws_measure.py CLOUD_WORK: cloud-scored points uploaded to seed the next cloud run"
+reader = "aws_measure.py CLOUD_WORK: cloud-scored points uploaded to seed the next cloud run (capped, pruned by its tool: aws_measure.prune_cloud_points, least recently written clips first)"
 regen = "re-scored on the next cloud run (cents to a few dollars)"
-cap_gb = 10
-evicted_by = ["nceval.sweep"]
+cap_gb = 12
+evicted_by = ["nceval.sweep", "aws_measure"]
 
 # --- the engine's own state and records -------------------------------------------------
 
@@ -105,6 +105,19 @@ path = "results"
 class = "durable"
 reader = "nceval.config results.sqlite, the lever ledger's spool (levers.jsonl), train locks"
 regen = "not regenerable (ledger spool, results history)"
+
+[[keep]]
+path = "results/fixedqp-retime-2026-11-23"
+class = "durable"
+reader = "the Fixed QP views re-measured against x264 medium --tune psnr (results audit 2026-11-23, finding 5): the lens's x264-medium+psnr and rel-constant curves, the lens compare, the sample views' gap runs and timing plans/records behind web/results/data/fixed-qp-lens.json and docs/results/fixed-qp-*.json; COMMANDS.md lists builds and commands"
+regen = "lens: 36 nceval.ctc local runs on the build box (~1 h); sample views: two aws_measure gap runs (~$1-3 each); timing: fixedqp_timing.py on c8a, c6a, c8g and the Jetson"
+
+[[keep]]
+path = "results/decoder-speed-2026-11-23"
+class = "durable"
+reader = "docs/results/decoder-speed-2026-11-23 and wasm-yardstick-2026-11-23 (site decoder and browser tables): their input streams (streams/, streams2/: tools/dev/aws_decode_speed.py --streams) each session's raw outputs (session-*/, jetson*/: decoders.json, yardstick.json, platform notes, logs) and the measured PGO binaries with their build logs (builds/: f9483e0e = 0.6.0 + bench CLI, fcaa3395 = 0.4.0 + bench CLI)"
+regen = "streams: copies of the Jetson's ~/speed-audit/streams{,2} (2026-11-10..13 encodes and camera recordings; not regenerable if those go); raw outputs: a c8a session, about 10 min and $0.02"
+require_globs = ["streams/*.hevc", "streams2/*.ivf"]
 
 [[keep]]
 path = "run"
@@ -141,6 +154,13 @@ path = "fuzz"
 class = "durable"
 reader = "decoder fuzz corpora (docs/handoff/*: cargo fuzz runs)"
 regen = "hours of fuzzing to rebuild the seeded corpora"
+
+[[keep]]
+path = "fuzz/regressions"
+class = "durable"
+reader = "decoder fuzz findings, one directory per codec (fuzz/README.md 'Regression corpus'): replayed natively and as WASM (fuzz/replay) after decoder changes; copies checked in as crates/nc-*/tests/data/fuzz-*.fuzz"
+regen = "not regenerable: the inputs of past fuzz findings (round 3, 2026-11-23: AV2 CCSO band count, VP9 picture size)"
+require_globs = ["av2/crash-*", "vp9/timeout-*"]
 
 # --- clips -----------------------------------------------------------------------------
 
@@ -180,6 +200,27 @@ regen = "eval/clipset/select_vc1k.py, reproduced exactly"
 release = true
 
 [[keep]]
+path = "clips/heldout_2026-11-23b"
+class = "durable"
+reader = "heldout_2026-11-23b.json: the re-sealed held-out set (nceval.sealing RELEASE_ONLY_SETS); its other clips live in clips/heldout_2026-11-23"
+regen = "eval/clipset/select_heldout.py redraw, build_pool, grade, finalize-redraw, reproduced exactly"
+release = true
+
+[[keep]]
+path = "clips/aomctc_bp3"
+class = "durable"
+reader = "BP-3 AOM-CTC dataset (eval/clipset/aomctc_bp3.manifest.json): <name>.yuv.zst, 130 I420 8-bit frames each, staged by tools/bench/fleet.py stage --clips (the .y4m sources are not kept)"
+regen = "re-download the 34 sequences from media.xiph.org (~14 GB), check MD5/SHA-256, convert with eval/clipset/aomctc_bp3.py (~20 min)"
+release = true
+
+[[keep]]
+path = "clips/bench_raw"
+class = "durable"
+reader = "BP-3 raw clips for tools/bench/fleet.py stage --clips: vc1k/ and heldout_2026-11-23b/ (<name>.yuv.zst, 150 frames, hashed in eval/clipset/*.manifest.json)"
+regen = "eval/clipset/bench_raw.py from clips/vc1k_2026-11-18 and clips/heldout_2026-11-23*, each file checked against its manifest's decoded_sha256 (~30 min)"
+release = true
+
+[[keep]]
 path = "clips/adv12"
 class = "durable"
 reader = "adv12.json: sealed milestone set (nceval.pool SEALED_SETS)"
@@ -214,6 +255,13 @@ path = "clips/vc1k_dev"
 class = "durable"
 reader = "pool POOL_SETS (VC-1K dev clips)"
 regen = "eval/clipset/select_vc1k.py --dev"
+
+[[keep]]
+path = "clips/heldout_2026-11-23"
+class = "durable"
+reader = "heldout_2026-11-23.json: the sealed held-out chart set (release-only, nceval.sealing)"
+regen = "eval/clipset/select_heldout.py select + build_pool.py + grade.py + finalize"
+release = true
 
 [[keep]]
 path = "clips/independent_long"
@@ -274,7 +322,7 @@ regen = "re-download (nceval.ctc.sequences)"
 [[keep]]
 path = "anchors/*"
 class = "tool"
-reader = "nceval.config Paths.anchors (x264, x265, SVT-AV1, aomenc, ffmpeg, JM, HM, VVdeC, avmdec ...); release.py AARCH64_TOOLS"
+reader = "nceval.config Paths.anchors (x264, x265, SVT-AV1, aomenc, vpxenc, VVenC, ffmpeg, JM, HM, VVdeC, avmdec ...); the timed reference builds anchors/<machine>-opt (nceval.config.REFERENCE_BUILDS, build_anchors.sh --opt)"
 regen = "tools/anchors/build_anchors.sh (~1 h of builds per machine)"
 release = true
 
@@ -404,10 +452,10 @@ evicted_by = ["chart_refresh"]
 [[keep]]
 path = "work/cpu-ab"
 class = "cache"
-reader = "aws_cpu_ab.py WORK (builds by commit, cut clips, runs)"
+reader = "aws_cpu_ab.py WORK (builds by commit, cut clips, runs; capped, pruned by its tool: aws_cpu_ab.prune, least recently used clips first)"
 regen = "a build ~3 min on the build box; clips seconds"
 evicted_by = ["aws_cpu_ab"]
-cap_gb = 5
+cap_gb = 8
 
 [[keep]]
 path = "work/cloud-measure-stage"
@@ -455,7 +503,26 @@ class = "tool"
 reader = "eval/clipset/grade.py (the pool's grading sheets; PROCEDURES.md)"
 regen = "re-grade the pool"
 
+[[keep]]
+path = "charts/timing-cbr"
+class = "durable"
+reader = "the CBR charts' timing sessions (aws_timing.py --out, nceval.chart_timing plans): per session the t-*.json records, summary.json, the merged plan and the builds timed; chart_refresh merge_timing and the coordinator's 0.6.0-vs-head comparison read them"
+regen = "re-time on rented c8a/c6a/c8g boxes: ~1 h wall, a few USD per chart and machine"
+release = true
+
 # --- builds -----------------------------------------------------------------------------
+
+[[keep]]
+path = "charts/history-remeasure"
+class = "durable"
+reader = "tools/dev/history_remeasure.py: each history frame's every-encode timing plan, timing sessions (aws_timing --out), merged timing record and the report the history page is rebuilt from"
+regen = "re-plan on the build box and re-time every frame on rented c8a.large sessions: ~1 h wall, a few USD"
+
+[[keep]]
+path = "work/chart-timing-cbr"
+class = "durable"
+reader = "the 2026-11-23 CBR re-timing (chart-retime agent): the quality fleets' state and logs (heldout_fleet --state), the charts' stream-size indexes (anchor_chart_timing sizes) and the Arm/x86 timing tool dirs"
+regen = "the logs are not regenerable; the sizes from the stream stores in seconds"
 
 [[keep]]
 path = "charts/builds"
@@ -495,15 +562,41 @@ regen = "pgo_build.sh (~20 min per architecture)"
 [[keep]]
 path = "release/pgo-clips"
 class = "tool"
-reader = "release.py TRAINING_CLIPS for PGO profiles"
+reader = "the PGO training set until 2026-11-23 (0.6.0 and earlier releases' profiles; Xiph derf cuts); tools/dev/decoder_yardstick.py DEFAULT_CLIP"
 regen = "cut from the training clips (minutes)"
-release = true
 
 [[keep]]
 path = "release/pgo-clips-zst"
 class = "tool"
-reader = "release.py TRAIN_ZST_DIR (uploaded to the build box)"
+reader = "the PGO training set until 2026-11-23, compressed (aws_reference_builds.py before 2026-11-23)"
 regen = "compress release/pgo-clips"
+
+[[keep]]
+path = "release/pgo-clips-2026-11-23"
+class = "tool"
+reader = "release.py TRAINING_SET / TRAIN_DIR (our PGO profiles) and build_anchors.sh --opt PGO_CLIPS (every reference's PGO profile): BP-3.1 task T5, eval/clipset/pgo_training_2026-11-23.json"
+regen = "release.py prepare_training_clips cuts them from /mldata sources (a minute), SHA-256 checked"
+release = true
+
+[[keep]]
+path = "release/pgo-clips-2026-11-23-zst"
+class = "tool"
+reader = "release.py TRAIN_ZST_DIR and aws_reference_builds.py PGO_CLIPS_ZST (uploaded to build boxes)"
+regen = "release.py prepare_training_clips compresses release/pgo-clips-2026-11-23"
+
+[[keep]]
+path = "anchors/x86_64-opt-bp3"
+class = "durable"
+reader = "BP-3.1 reference store (docs/benchmark-fairness.toml build lines): every reference encoder with LTO + PGO trained on release/pgo-clips-2026-11-23, our PGO build (nanocodec, BUILD.json), SHA256SUMS, build-flags.json, build logs"
+regen = "tools/anchors/build_anchors.sh --opt on the build box (~40 min) plus tools/dev/pgo_build.sh (~25 min)"
+release = true
+
+[[keep]]
+path = "anchors/aarch64-graviton-opt-bp3"
+class = "durable"
+reader = "BP-3 Graviton history leg: the aarch64 twin of anchors/x86_64-opt-bp3 (every reference encoder with LTO + PGO trained on release/pgo-clips-2026-11-23, aomdec/vpxdec/avmdec, our aarch64 PGO build nanocodec with BUILD.json), SHA256SUMS, build-flags.json, build logs"
+regen = "tools/dev/aws_reference_builds.py graviton --install anchors/aarch64-graviton-opt-bp3 --ours COMMIT --no-ab (one c8g.12xlarge, ~1 h)"
+release = true
 
 # --- worktrees and target directories that tools need -----------------------------------
 
@@ -614,3 +707,68 @@ class = "tool"
 reader = "tools/ci/web_tests.py"
 regen = "a cold WASM build"
 marker = false  # cargo owns the directory
+
+# --- the nn dataset (learned encoder models) ---------------------------------------------
+
+[[keep]]
+path = "nn-data"
+class = "durable"
+reader = "nceval.nndata (the only reader; capped at 50 GB, not under work/ whose budget the caches use): nn-lead's policy network, the probe agent's trial gate and controller oracle train and judge on its released versions (docs/analysis/nn-dataset-schema.md)"
+regen = "re-encode every shard with --label-dump on rented boxes (a version's manifest names each shard's clip, preset, rate and commit); trained models name the version they saw, so a lost version cannot be reproduced bit for bit"
+
+[[regenerable]]
+path = "clips/nn-excerpts"
+reader = "nceval.nndata generate: lossless FFV1 excerpts of raw pool clips, sent to the labelling boxes with --clip"
+regen = "nceval.nndata plan rewrites any missing excerpt from its raw clip (seconds each)"
+
+[[regenerable]]
+path = "worktrees/nn-labels/remote-out"
+reader = "nn-labels' own box run outputs (pipe-clean runs, packed parts before assembly)"
+regen = "re-run the nceval.nndata job; released data lives in nn-data/"
+
+[[regenerable]]
+path = "worktrees/nn-labels-run/remote-out"
+reader = "nn-labels' frozen run tree's box outputs (v0/v0.1 parts before assembly, the v0 quality run)"
+regen = "re-run the nceval.nndata job; released data and quality.json live in nn-data/"
+
+[[keep]]
+path = "work/nn-fast"
+class = "durable"
+reader = "docs/analysis/distill-fast-2026-11-22.md: the fast-rung distillation study's measured results (oracle arm screens oracle/*.json, CPU A/B summaries cpu-*-run/summary.json, the partition transplant logs plogs/, the closed-loop A/Bs ab*-*.json and ctx-*.json, the box runs' model results box*/)"
+regen = "the oracle: 48 + 16 L1 screens and three CPU A/B rounds (~$3 on rented boxes, ~1 h); the models: v0 feature extraction and fits (~$4 on demand); about 40 MB"
+evicted_by = []
+
+[[regenerable]]
+path = "work/audit-decoders"
+reader = "nothing: the 2026-11-23 decoder re-measure's working copies (build and session logs, the measured nanocodec binary and browser module, a libavcodec-bench copy); its inputs and raw outputs moved to results/decoder-speed-2026-11-23"
+regen = "the binary and module rebuild from commit 1da4349e (release, tools/web/build.sh); libavcodec-bench is in anchors/*/bin (build_anchors.sh avbench)"
+
+[[keep]]
+path = "bench"
+class = "durable"
+evicted_by = ["tools.bench.fleet"]  # BP-3.5: scored Fixed QP streams, by exact path
+reader = "tools/bench/report.py: each BP-3 run's frozen stage, jobs, manifest, the series' encode and score records and the streams the procedure keeps (docs/benchmark-procedure.md section 13)"
+regen = "re-run the frozen run (tools/bench/fleet.py stage/run/score) on rented boxes: about $100+ for the full plan"
+release = true
+
+[[keep]]
+path = "bench-method-records"
+class = "durable"
+reader = "docs/analysis/benchmark-method-2026-11-23.md and benchmark-procedure-response-2026-11-23.md cite these raw records (per-encode timings, start-up fits, I/O, concatenation, ISA probe, review-response streams' sizes and scores) and the scratch tools that made them"
+regen = "about $2 of AWS and 3 h: the study's sessions (study 'Spend'); cannot be regenerated identically (cloud noise, spot boxes)"
+evicted_by = []
+
+[[keep]]
+path = "aws-cost-records"
+class = "durable"
+reader = "docs/aws-cost-guide.md cites these raw records (small-box timing loops, packed throughput and build times of 2026-11-24) and the scratch tools that made them"
+regen = "$0.24 of AWS and about 30 min; cannot be regenerated identically (cloud noise, spot boxes)"
+evicted_by = []
+
+[[keep]]
+path = "work/aws-clip-cache"
+class = "cache"
+reader = "aws_timing.py CLIP_CACHE: timing sessions' zstd clip archives (capped, pruned by its tool: aws_timing.prune_clip_cache, least recently used first)"
+regen = "decoded and compressed again from the clip (seconds each)"
+evicted_by = ["aws_timing"]
+cap_gb = 10

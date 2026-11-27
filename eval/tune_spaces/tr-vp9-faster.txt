@@ -1,0 +1,17 @@
+# tune-rest (2026-11-23): searched at the rung's front slope (eval/configs/front_k.json), 600 f at keys
+# every 10 s and 5 s, warm-started from the shipped rung. Each term lies between the rung's value
+# and the next slower rung's (docs/handoff/tuning.md "Fast-end joint retune"); about ten terms.
+# decision.exact_rank_margin stays at 0 or >= 0.8 (a margin under 1 skips most exact predictions).
+# Format (nceval.tune_pool): name [low high] [int|log]
+# VP9 faster (k 0.351) toward fast.
+persist.reuse 0 1 int
+vp9.inter_tx_depth 1 2 int
+vp9.inter_max_tx_log2 4 5 int
+vp9.inter_intra_tx_depth 0 3 int
+vp9.intra_mode_search 0 2 int
+vp9.partial_forward 0 1 int
+vp9.shave_gap 0 8 int
+vp9.nonrd_block_test 0 1 int
+planner.lambda_scale 2.052 2.379
+nonbase.vp9.filter_level_scale 0.4404 1
+decision.subpel_quarter_needs_half_move 0 1 int

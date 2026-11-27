@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="nanocodec and reference encoders at fixed QP on the AOM low-delay test conditions, against x264 medium.">
+  <meta name="description" content="nanocodec and reference encoders at fixed quantizers on 12 of the AOM CTC's 8-bit A3–A5 sequences, at the CTC's quantizer points; not its configuration or anchor.">
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
   <title>nanocodec fixed QP</title>
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="site.css">
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
 <header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
@@ -27,9 +28,11 @@
 <main>
   <h1>Fixed QP: the standards lens</h1>
   <p class="lede">The charts elsewhere measure real-time CBR, where each encoder's rate control is part of the
-    result. Here every encoder codes at fixed quantizers on 12 sequences of the AOM common test conditions in low
-    delay, against x264 medium. Rate control is taken out, but each encoder's own searches and decisions are
-    not: this compares encoders, not the coding tools of their formats.</p>
+    result. Here every encoder codes at fixed quantizers on 12 of the AOM CTC's 8-bit A3–A5 sequences (4 A3, 6 A4,
+    2 A5; its 10-bit sequences and classes A2 and B1 are not included), at the CTC's quantizer points, against
+    x264 medium --tune psnr. The CTC's encoder configurations and anchor are not used. Rate control is taken
+    out; frame-level quantizer offsets are not, except in the Constant QP column, and each encoder's own
+    searches and decisions stay: this compares encoders, not the coding tools of their formats.</p>
   <div class="controls mode-switch"></div>
   <div id="fixed-qp">
     <div class="controls"></div>
@@ -37,6 +40,12 @@
     <div class="lens-table"></div>
     <h2>Columns</h2>
     <ul class="prose">
+      <li><strong>Constant QP:</strong> ours with every picture and block at the given quantizer
+        (<code>rate.constant_qp</code>: no QP cadence, layer ladder, key-frame offset or block offsets), as libaom
+        and libvpx are pinned here (<code>--min-q</code> = <code>--max-q</code>, AQ off). x264 and x265 at
+        <code>--qp</code> keep their default finer key frame (<code>--ipratio 1.4</code>), and SVT-AV1 at
+        <code>--rc 0</code> its own. This is the flat row; Strict, Profile and CBR settings vary the quantizer by
+        frame role.</li>
       <li><strong>Strict:</strong> ours on the fully static pattern of the test conditions: a fixed-strength QP
         cadence, no adaptive layers and a fixed rule for the second reference.</li>
       <li><strong>Profile:</strong> ours with its fixed-QP profile (<code>rate.fixed_qp_profile</code>): the

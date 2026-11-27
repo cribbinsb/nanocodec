@@ -1,0 +1,17 @@
+# intra-cheap batch 2: the leaf search's estimate margin (decision.intra_rd_margin), alone, in trials and in the leaf pass
+null: planner.intra_bias=1050
+lrd2: decision.intra_rd_modes=2
+lrd2_m1100: decision.intra_rd_modes=2 decision.intra_rd_margin=1100
+lrd4_m1050: decision.intra_rd_modes=4 decision.intra_rd_margin=1050
+lrd4_m1100: decision.intra_rd_modes=4 decision.intra_rd_margin=1100
+lrd4_m1200: decision.intra_rd_modes=4 decision.intra_rd_margin=1200
+lrd8_m1100: decision.intra_rd_modes=8 decision.intra_rd_margin=1100
+lrd8_m1200: decision.intra_rd_modes=8 decision.intra_rd_margin=1200
+s2_lf_lrd4_m1100: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100
+s2_lf_lrd4_m1100p: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100 planner.key_rd_leaf_pass=1
+s2_lf_lrd8_m1200p: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=8 decision.intra_rd_margin=1200 planner.key_rd_leaf_pass=1
+krd22_lf_lrd4_m1100p: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100 planner.key_rd_leaf_pass=1
+krd22_lf_lrd8_m1200p: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=8 decision.intra_rd_margin=1200 planner.key_rd_leaf_pass=1
+krd22_lf_lrd4_m1100: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100
+rdc2_lrd4_m1100: hevc.intra_rd_candidates=2 decision.intra_rd_modes=4 decision.intra_rd_margin=1100
+s1_lf_lrd4_m1100p: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=1 planner.key_rd_leaf_first=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100 planner.key_rd_leaf_pass=1

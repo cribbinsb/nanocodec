@@ -1,0 +1,5 @@
+# SPSA pilot (nceval.tune_spsa): the two biases of HEVC slow's landed context shift
+# (fc351808e: deepen -0.68, merge +0.29), walked from 0 with the other shift terms as
+# shipped. Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_deepen_shift_bias -1.5 1.5
+planner.rd_split_merge_shift_bias -1.5 1.5

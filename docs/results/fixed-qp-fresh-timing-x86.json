@@ -66,7 +66,8 @@
   "nanocodec-av2@slower": 4,
   "nanocodec-vvc@veryslow": 4,
   "nanocodec-vvc@slower": 4,
-  "nanocodec-vvc@faster": 4
+  "nanocodec-vvc@faster": 4,
+  "x264-medium~psnr": 4
  },
  "nanocodec_version": "nanocodec 0.1.0 67ed090b37745a339888ba56d1c695df819a4af8",
  "build": "b11b2f83",
@@ -80,71 +81,75 @@
  "points": {
   "libaom-av1-cpu10": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 2.6912,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 8.7365,
-    "ind_bwc_videotext_video317": 1.5353,
-    "ind_cctv_uid_vid_00054": 6.7561,
-    "ind_jaad_video_0151": 6.6176,
-    "ind_jaad_video_0318": 6.6622,
-    "ind_mot_mot17_05": 4.3472,
-    "ind_mp4_london": 8.8707,
-    "ind_otw_homes_00310": 2.7861,
-    "ind_personpath22_uid_vid_00026": 6.789,
-    "ind_personpath22_uid_vid_00090": 6.3572,
-    "ind_personpath22_uid_vid_00177": 6.4371
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 2.7166,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 8.671,
+    "ind_bwc_videotext_video317": 1.5436,
+    "ind_cctv_uid_vid_00054": 6.8326,
+    "ind_jaad_video_0151": 6.6778,
+    "ind_jaad_video_0318": 6.8002,
+    "ind_mot_mot17_05": 4.4264,
+    "ind_mp4_london": 8.851,
+    "ind_otw_homes_00310": 2.7306,
+    "ind_personpath22_uid_vid_00026": 6.7641,
+    "ind_personpath22_uid_vid_00090": 6.3605,
+    "ind_personpath22_uid_vid_00177": 6.5205
    },
-   "fps": 195.5
+   "fps": 194.6,
+   "build": "207745d7"
   },
   "libaom-av1-cpu8": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 3.6706,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 11.1959,
-    "ind_bwc_videotext_video317": 1.7859,
-    "ind_cctv_uid_vid_00054": 9.633,
-    "ind_jaad_video_0151": 9.4068,
-    "ind_jaad_video_0318": 9.3117,
-    "ind_mot_mot17_05": 6.2388,
-    "ind_mp4_london": 12.1917,
-    "ind_otw_homes_00310": 3.6473,
-    "ind_personpath22_uid_vid_00026": 9.8271,
-    "ind_personpath22_uid_vid_00090": 8.9471,
-    "ind_personpath22_uid_vid_00177": 9.2584
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 3.6457,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 11.1984,
+    "ind_bwc_videotext_video317": 1.7828,
+    "ind_cctv_uid_vid_00054": 9.795,
+    "ind_jaad_video_0151": 9.7303,
+    "ind_jaad_video_0318": 9.6182,
+    "ind_mot_mot17_05": 6.4221,
+    "ind_mp4_london": 12.122,
+    "ind_otw_homes_00310": 3.6066,
+    "ind_personpath22_uid_vid_00026": 9.9444,
+    "ind_personpath22_uid_vid_00090": 8.8897,
+    "ind_personpath22_uid_vid_00177": 9.3734
    },
-   "fps": 142.7
+   "fps": 141.5,
+   "build": "207745d7"
   },
   "libvpx-vp9-cpu7": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 1.8011,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 5.2878,
-    "ind_bwc_videotext_video317": 1.242,
-    "ind_cctv_uid_vid_00054": 5.309,
-    "ind_jaad_video_0151": 5.3849,
-    "ind_jaad_video_0318": 5.2465,
-    "ind_mot_mot17_05": 3.4283,
-    "ind_mp4_london": 6.5788,
-    "ind_otw_homes_00310": 1.5218,
-    "ind_personpath22_uid_vid_00026": 5.7329,
-    "ind_personpath22_uid_vid_00090": 4.7336,
-    "ind_personpath22_uid_vid_00177": 5.4301
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 1.7736,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 5.2303,
+    "ind_bwc_videotext_video317": 1.2349,
+    "ind_cctv_uid_vid_00054": 5.2383,
+    "ind_jaad_video_0151": 5.4313,
+    "ind_jaad_video_0318": 5.228,
+    "ind_mot_mot17_05": 3.3998,
+    "ind_mp4_london": 6.4762,
+    "ind_otw_homes_00310": 1.4929,
+    "ind_personpath22_uid_vid_00026": 5.6263,
+    "ind_personpath22_uid_vid_00090": 4.7134,
+    "ind_personpath22_uid_vid_00177": 5.3482
    },
-   "fps": 263.4
+   "fps": 266.1,
+   "build": "207745d7"
   },
   "libvpx-vp9-cpu9": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 1.2159,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 3.3786,
-    "ind_bwc_videotext_video317": 0.7832,
-    "ind_cctv_uid_vid_00054": 2.8673,
-    "ind_jaad_video_0151": 3.1199,
-    "ind_jaad_video_0318": 3.1397,
-    "ind_mot_mot17_05": 2.1071,
-    "ind_mp4_london": 3.7258,
-    "ind_otw_homes_00310": 0.9795,
-    "ind_personpath22_uid_vid_00026": 3.5615,
-    "ind_personpath22_uid_vid_00090": 2.9101,
-    "ind_personpath22_uid_vid_00177": 2.8474
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 1.1876,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 3.2505,
+    "ind_bwc_videotext_video317": 0.7672,
+    "ind_cctv_uid_vid_00054": 2.7915,
+    "ind_jaad_video_0151": 3.0496,
+    "ind_jaad_video_0318": 3.0661,
+    "ind_mot_mot17_05": 2.0526,
+    "ind_mp4_london": 3.6031,
+    "ind_otw_homes_00310": 0.9672,
+    "ind_personpath22_uid_vid_00026": 3.4484,
+    "ind_personpath22_uid_vid_00090": 2.8554,
+    "ind_personpath22_uid_vid_00177": 2.8137
    },
-   "fps": 437.2
+   "fps": 447.9,
+   "build": "207745d7"
   },
   "nanocodec-av1": {
    "ms_per_frame": {
@@ -580,190 +585,201 @@
   },
   "openh264-baseline": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.5115,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.4712,
-    "ind_bwc_videotext_video317": 0.2936,
-    "ind_cctv_uid_vid_00054": 1.159,
-    "ind_jaad_video_0151": 1.1131,
-    "ind_jaad_video_0318": 1.09,
-    "ind_mot_mot17_05": 0.8772,
-    "ind_mp4_london": 1.192,
-    "ind_otw_homes_00310": 0.2817,
-    "ind_personpath22_uid_vid_00026": 1.2661,
-    "ind_personpath22_uid_vid_00090": 1.1956,
-    "ind_personpath22_uid_vid_00177": 1.0046
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.5197,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.4567,
+    "ind_bwc_videotext_video317": 0.2991,
+    "ind_cctv_uid_vid_00054": 1.1846,
+    "ind_jaad_video_0151": 1.1298,
+    "ind_jaad_video_0318": 1.1055,
+    "ind_mot_mot17_05": 0.8985,
+    "ind_mp4_london": 1.1862,
+    "ind_otw_homes_00310": 0.2871,
+    "ind_personpath22_uid_vid_00026": 1.2573,
+    "ind_personpath22_uid_vid_00090": 1.2021,
+    "ind_personpath22_uid_vid_00177": 1.0224
    },
-   "fps": 1178.6
+   "fps": 1166.0,
+   "build": "207745d7"
   },
   "svtav1-m10": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 1.0195,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 2.7928,
-    "ind_bwc_videotext_video317": 0.694,
-    "ind_cctv_uid_vid_00054": 2.3479,
-    "ind_jaad_video_0151": 2.523,
-    "ind_jaad_video_0318": 2.493,
-    "ind_mot_mot17_05": 1.857,
-    "ind_mp4_london": 2.6925,
-    "ind_otw_homes_00310": 0.7213,
-    "ind_personpath22_uid_vid_00026": 2.7511,
-    "ind_personpath22_uid_vid_00090": 2.4723,
-    "ind_personpath22_uid_vid_00177": 2.4214
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 1.0066,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 2.7589,
+    "ind_bwc_videotext_video317": 0.6693,
+    "ind_cctv_uid_vid_00054": 2.2985,
+    "ind_jaad_video_0151": 2.4774,
+    "ind_jaad_video_0318": 2.4572,
+    "ind_mot_mot17_05": 1.8099,
+    "ind_mp4_london": 2.6264,
+    "ind_otw_homes_00310": 0.7282,
+    "ind_personpath22_uid_vid_00026": 2.6477,
+    "ind_personpath22_uid_vid_00090": 2.4517,
+    "ind_personpath22_uid_vid_00177": 2.3757
    },
-   "fps": 537.1
+   "fps": 547.2,
+   "build": "207745d7"
   },
   "svtav1-m12": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.6971,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.9003,
-    "ind_bwc_videotext_video317": 0.3771,
-    "ind_cctv_uid_vid_00054": 1.3783,
-    "ind_jaad_video_0151": 1.2717,
-    "ind_jaad_video_0318": 1.344,
-    "ind_mot_mot17_05": 1.1045,
-    "ind_mp4_london": 1.4687,
-    "ind_otw_homes_00310": 0.4433,
-    "ind_personpath22_uid_vid_00026": 1.6743,
-    "ind_personpath22_uid_vid_00090": 1.5142,
-    "ind_personpath22_uid_vid_00177": 1.397
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.6871,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.8751,
+    "ind_bwc_videotext_video317": 0.3672,
+    "ind_cctv_uid_vid_00054": 1.356,
+    "ind_jaad_video_0151": 1.2511,
+    "ind_jaad_video_0318": 1.3239,
+    "ind_mot_mot17_05": 1.0769,
+    "ind_mp4_london": 1.4392,
+    "ind_otw_homes_00310": 0.4389,
+    "ind_personpath22_uid_vid_00026": 1.6297,
+    "ind_personpath22_uid_vid_00090": 1.5043,
+    "ind_personpath22_uid_vid_00177": 1.3854
    },
-   "fps": 912.6
+   "fps": 927.9,
+   "build": "207745d7"
   },
   "svtav1-m13": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.6043,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.592,
-    "ind_bwc_videotext_video317": 0.3511,
-    "ind_cctv_uid_vid_00054": 1.3077,
-    "ind_jaad_video_0151": 1.2129,
-    "ind_jaad_video_0318": 1.2193,
-    "ind_mot_mot17_05": 1.0446,
-    "ind_mp4_london": 1.338,
-    "ind_otw_homes_00310": 0.3848,
-    "ind_personpath22_uid_vid_00026": 1.5694,
-    "ind_personpath22_uid_vid_00090": 1.3793,
-    "ind_personpath22_uid_vid_00177": 1.2954
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.5898,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.5962,
+    "ind_bwc_videotext_video317": 0.3407,
+    "ind_cctv_uid_vid_00054": 1.282,
+    "ind_jaad_video_0151": 1.1852,
+    "ind_jaad_video_0318": 1.1923,
+    "ind_mot_mot17_05": 1.0059,
+    "ind_mp4_london": 1.3123,
+    "ind_otw_homes_00310": 0.3822,
+    "ind_personpath22_uid_vid_00026": 1.5163,
+    "ind_personpath22_uid_vid_00090": 1.3552,
+    "ind_personpath22_uid_vid_00177": 1.2857
    },
-   "fps": 1001.2
+   "fps": 1021.5,
+   "build": "207745d7"
   },
   "svtav1-m8": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 3.4315,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 6.8541,
-    "ind_bwc_videotext_video317": 2.2346,
-    "ind_cctv_uid_vid_00054": 7.6933,
-    "ind_jaad_video_0151": 8.4537,
-    "ind_jaad_video_0318": 8.2359,
-    "ind_mot_mot17_05": 5.6863,
-    "ind_mp4_london": 8.0271,
-    "ind_otw_homes_00310": 1.9794,
-    "ind_personpath22_uid_vid_00026": 8.5436,
-    "ind_personpath22_uid_vid_00090": 7.6143,
-    "ind_personpath22_uid_vid_00177": 7.7851
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 3.4792,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 6.8567,
+    "ind_bwc_videotext_video317": 2.2101,
+    "ind_cctv_uid_vid_00054": 7.683,
+    "ind_jaad_video_0151": 8.5015,
+    "ind_jaad_video_0318": 8.3326,
+    "ind_mot_mot17_05": 5.6371,
+    "ind_mp4_london": 7.9156,
+    "ind_otw_homes_00310": 1.946,
+    "ind_personpath22_uid_vid_00026": 8.4989,
+    "ind_personpath22_uid_vid_00090": 7.5177,
+    "ind_personpath22_uid_vid_00177": 7.7369
    },
-   "fps": 174.1
+   "fps": 174.8,
+   "build": "207745d7"
   },
   "x264-medium": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 2.1341,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 9.6407,
-    "ind_bwc_videotext_video317": 1.1045,
-    "ind_cctv_uid_vid_00054": 4.6084,
-    "ind_jaad_video_0151": 4.7569,
-    "ind_jaad_video_0318": 4.5758,
-    "ind_mot_mot17_05": 3.8659,
-    "ind_mp4_london": 5.0369,
-    "ind_otw_homes_00310": 1.581,
-    "ind_personpath22_uid_vid_00026": 5.3343,
-    "ind_personpath22_uid_vid_00090": 5.1521,
-    "ind_personpath22_uid_vid_00177": 4.2466
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 2.115,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 9.8731,
+    "ind_bwc_videotext_video317": 1.0896,
+    "ind_cctv_uid_vid_00054": 4.5819,
+    "ind_jaad_video_0151": 4.7378,
+    "ind_jaad_video_0318": 4.566,
+    "ind_mot_mot17_05": 3.8574,
+    "ind_mp4_london": 5.0539,
+    "ind_otw_homes_00310": 1.5435,
+    "ind_personpath22_uid_vid_00026": 5.3202,
+    "ind_personpath22_uid_vid_00090": 5.1346,
+    "ind_personpath22_uid_vid_00177": 4.3045
    },
-   "fps": 265.4
+   "fps": 266.0,
+   "build": "207745d7"
   },
   "x264-ultrafast": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.2511,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.0396,
-    "ind_bwc_videotext_video317": 0.1417,
-    "ind_cctv_uid_vid_00054": 0.5715,
-    "ind_jaad_video_0151": 0.5619,
-    "ind_jaad_video_0318": 0.5366,
-    "ind_mot_mot17_05": 0.3985,
-    "ind_mp4_london": 0.8312,
-    "ind_otw_homes_00310": 0.337,
-    "ind_personpath22_uid_vid_00026": 0.5953,
-    "ind_personpath22_uid_vid_00090": 0.5785,
-    "ind_personpath22_uid_vid_00177": 0.5506
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.2497,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 1.0011,
+    "ind_bwc_videotext_video317": 0.138,
+    "ind_cctv_uid_vid_00054": 0.557,
+    "ind_jaad_video_0151": 0.5434,
+    "ind_jaad_video_0318": 0.5195,
+    "ind_mot_mot17_05": 0.3861,
+    "ind_mp4_london": 0.8089,
+    "ind_otw_homes_00310": 0.3321,
+    "ind_personpath22_uid_vid_00026": 0.5789,
+    "ind_personpath22_uid_vid_00090": 0.5628,
+    "ind_personpath22_uid_vid_00177": 0.5364
    },
-   "fps": 2101.3
+   "fps": 2157.5,
+   "build": "207745d7"
   },
   "x264-veryfast": {
    "ms_per_frame": {
     "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 0.6696,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 2.3768,
-    "ind_bwc_videotext_video317": 0.3554,
-    "ind_cctv_uid_vid_00054": 1.4501,
-    "ind_jaad_video_0151": 1.337,
-    "ind_jaad_video_0318": 1.3708,
-    "ind_mot_mot17_05": 1.2753,
-    "ind_mp4_london": 1.6648,
-    "ind_otw_homes_00310": 0.7454,
-    "ind_personpath22_uid_vid_00026": 1.6158,
-    "ind_personpath22_uid_vid_00090": 1.5552,
-    "ind_personpath22_uid_vid_00177": 1.3621
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 2.3623,
+    "ind_bwc_videotext_video317": 0.3507,
+    "ind_cctv_uid_vid_00054": 1.4,
+    "ind_jaad_video_0151": 1.2898,
+    "ind_jaad_video_0318": 1.3181,
+    "ind_mot_mot17_05": 1.2436,
+    "ind_mp4_london": 1.6491,
+    "ind_otw_homes_00310": 0.7286,
+    "ind_personpath22_uid_vid_00026": 1.5935,
+    "ind_personpath22_uid_vid_00090": 1.5009,
+    "ind_personpath22_uid_vid_00177": 1.3248
    },
-   "fps": 839.7
+   "fps": 858.4,
+   "build": "207745d7"
   },
   "x265-medium": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 6.1298,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 25.6857,
-    "ind_bwc_videotext_video317": 2.6992,
-    "ind_cctv_uid_vid_00054": 12.6643,
-    "ind_jaad_video_0151": 10.8188,
-    "ind_jaad_video_0318": 12.3221,
-    "ind_mot_mot17_05": 10.9959,
-    "ind_mp4_london": 15.1101,
-    "ind_otw_homes_00310": 4.2892,
-    "ind_personpath22_uid_vid_00026": 14.2321,
-    "ind_personpath22_uid_vid_00090": 13.8693,
-    "ind_personpath22_uid_vid_00177": 10.7773
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 6.2376,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 25.3863,
+    "ind_bwc_videotext_video317": 2.7336,
+    "ind_cctv_uid_vid_00054": 12.5293,
+    "ind_jaad_video_0151": 10.6998,
+    "ind_jaad_video_0318": 12.2468,
+    "ind_mot_mot17_05": 11.2226,
+    "ind_mp4_london": 14.896,
+    "ind_otw_homes_00310": 4.3606,
+    "ind_personpath22_uid_vid_00026": 13.9937,
+    "ind_personpath22_uid_vid_00090": 13.548,
+    "ind_personpath22_uid_vid_00177": 10.7041
    },
-   "fps": 99.3
+   "fps": 99.6,
+   "build": "207745d7"
   },
   "x265-superfast": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 3.9288,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 15.2222,
-    "ind_bwc_videotext_video317": 1.7171,
-    "ind_cctv_uid_vid_00054": 8.2075,
-    "ind_jaad_video_0151": 6.9016,
-    "ind_jaad_video_0318": 7.739,
-    "ind_mot_mot17_05": 7.2155,
-    "ind_mp4_london": 9.399,
-    "ind_otw_homes_00310": 2.6962,
-    "ind_personpath22_uid_vid_00026": 8.9905,
-    "ind_personpath22_uid_vid_00090": 9.6936,
-    "ind_personpath22_uid_vid_00177": 7.1698
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 4.0682,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 14.8649,
+    "ind_bwc_videotext_video317": 1.7337,
+    "ind_cctv_uid_vid_00054": 8.3404,
+    "ind_jaad_video_0151": 6.8741,
+    "ind_jaad_video_0318": 7.8522,
+    "ind_mot_mot17_05": 7.3537,
+    "ind_mp4_london": 9.2303,
+    "ind_otw_homes_00310": 2.7575,
+    "ind_personpath22_uid_vid_00026": 9.0055,
+    "ind_personpath22_uid_vid_00090": 9.5585,
+    "ind_personpath22_uid_vid_00177": 7.3048
    },
-   "fps": 155.1
+   "fps": 154.2,
+   "build": "207745d7"
   },
   "x265-ultrafast": {
    "ms_per_frame": {
-    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 2.6744,
-    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 10.6986,
-    "ind_bwc_videotext_video317": 1.2577,
-    "ind_cctv_uid_vid_00054": 5.7183,
-    "ind_jaad_video_0151": 4.9183,
-    "ind_jaad_video_0318": 5.2933,
-    "ind_mot_mot17_05": 4.6125,
-    "ind_mp4_london": 7.1654,
-    "ind_otw_homes_00310": 2.0082,
-    "ind_personpath22_uid_vid_00026": 6.2047,
-    "ind_personpath22_uid_vid_00090": 6.4874,
-    "ind_personpath22_uid_vid_00177": 4.8362
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 2.7973,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 10.5551,
+    "ind_bwc_videotext_video317": 1.2714,
+    "ind_cctv_uid_vid_00054": 5.8256,
+    "ind_jaad_video_0151": 5.0599,
+    "ind_jaad_video_0318": 5.4079,
+    "ind_mot_mot17_05": 4.8364,
+    "ind_mp4_london": 7.1351,
+    "ind_otw_homes_00310": 2.1099,
+    "ind_personpath22_uid_vid_00026": 6.3256,
+    "ind_personpath22_uid_vid_00090": 6.5112,
+    "ind_personpath22_uid_vid_00177": 5.0621
    },
-   "fps": 222.2
+   "fps": 217.2,
+   "build": "207745d7"
   },
   "nanocodec-av1@veryfast": {
    "ms_per_frame": {
@@ -961,6 +977,24 @@
     "ind_personpath22_uid_vid_00177": 2.0502
    },
    "fps": 496.6,
+   "build": "207745d7"
+  },
+  "x264-medium~psnr": {
+   "ms_per_frame": {
+    "ind_bdd100k_mot_bdd_00cea101_06f21d5e": 2.1403,
+    "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c": 8.6744,
+    "ind_bwc_videotext_video317": 1.0656,
+    "ind_cctv_uid_vid_00054": 4.4423,
+    "ind_jaad_video_0151": 4.6367,
+    "ind_jaad_video_0318": 4.7121,
+    "ind_mot_mot17_05": 4.0201,
+    "ind_mp4_london": 4.9966,
+    "ind_otw_homes_00310": 1.5218,
+    "ind_personpath22_uid_vid_00026": 5.1779,
+    "ind_personpath22_uid_vid_00090": 4.9928,
+    "ind_personpath22_uid_vid_00177": 4.0559
+   },
+   "fps": 271.8,
    "build": "207745d7"
   }
  }

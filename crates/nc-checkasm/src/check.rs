@@ -102,6 +102,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_display::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_vp9_inverse::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_vp9_inverse::check_add(&candidate, &reference, iterations, &mut rng, &mut report);
+    crate::check_av1_forward::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_av1_inverse::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_av1_conformant::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_filters::check_filters(&candidate, &reference, iterations, &mut rng, &mut report);
@@ -115,6 +116,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_scan_stats::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vvc::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_gram::check(&candidate, &reference, &mut rng, &mut report);
+    crate::check_nn::check(&candidate, &reference, &mut rng.clone(), &mut report);
     crate::check_vvc_angular::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av1_deblock::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av1_grid::check(&candidate, &reference, &mut rng.clone(), &mut report);
@@ -126,6 +128,8 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_av1_grain::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av1_scaled::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_av1_restoration::check(&candidate, &reference, &mut rng, &mut report);
+    crate::check_av2_gdf::check(&candidate, &mut rng, &mut report);
+    crate::check_av2_warp::check(&candidate, &mut rng.clone(), &mut report);
     crate::check_av1_warp::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av1_mask::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_hevc_weight::check(&candidate, &reference, &mut rng, &mut report);
@@ -211,14 +215,7 @@ fn check_case(
         // the reference, up to the scan length the motion search uses.
         let wide = PlaneView::new(&ref_data[rf.start..], rf.stride, rf.count * w, h)
             .expect("test buffer covers every block");
-        let positions = (wide.width() - 16 + 1).min(MAX_SCAN_POSITIONS);
-        for count in [1, 3, 4, 7, 8, 9, 15, 16, 17, 32, positions] {
-            let mut got = vec![0u32; count];
-            let mut want = got.clone();
-            candidate.sad_scan_16x16_even_rows_at(&src_view, &wide, (0, 0), &mut got);
-            reference.sad_scan_16x16_even_rows_at(&src_view, &wide, (0, 0), &mut want);
-            compare("sad_scan_16x16_even_rows", &got, &want);
-        }
+        check_sad_scan(candidate, reference, &src_view, &wide, &mut compare);
     }
     if (w, h) == (64, 64) {
         let wide = PlaneView::new(&ref_data[rf.start..], rf.stride, rf.count * w, h)
@@ -241,6 +238,31 @@ fn check_case(
     }
     if (w, h) == (16, 16) {
         check_quads_16x16(candidate, reference, &src_view, &ref_views, &mut compare);
+    }
+}
+
+fn check_sad_scan(
+    candidate: &Dsp,
+    reference: &Dsp,
+    src: &PlaneView<'_>,
+    wide: &PlaneView<'_>,
+    compare: &mut impl FnMut(&str, &[u32], &[u32]),
+) {
+    let positions = (wide.width() - 16 + 1).min(MAX_SCAN_POSITIONS);
+    for count in [1, 3, 4, 7, 8, 9, 15, 16, 17, 32, positions] {
+        let mut got = vec![0u32; count];
+        let mut want = got.clone();
+        candidate.sad_scan_16x16_even_rows_at(src, wide, (0, 0), &mut got);
+        reference.sad_scan_16x16_even_rows_at(src, wide, (0, 0), &mut want);
+        compare("sad_scan_16x16_even_rows", &got, &want);
+        for bound in [0, 1, want[0], 6000, 8000, 16320, u32::MAX] {
+            candidate.sad_scan_bounded_16x16_at(src, wide, (0, 0), &mut got, bound);
+            compare(
+                "sad_scan_bounded_16x16",
+                &got.iter().map(|&cost| cost.min(bound)).collect::<Vec<_>>(),
+                &want.iter().map(|&cost| cost.min(bound)).collect::<Vec<_>>(),
+            );
+        }
     }
 }
 
@@ -274,6 +296,30 @@ fn check_quads_16x16(
         &widen(got.1.as_flattened()),
         &widen(want.1.as_flattened()),
     );
+    let fields = |sad: nc_dsp::MacroblockSad| {
+        [
+            u32::from(sad.luma_sad),
+            u32::from(sad.luma_quadrants),
+            u32::from(sad.chroma[0]),
+            u32::from(sad.chroma[1]),
+        ]
+    };
+    for limits in [
+        [0; 3],
+        [4080, 4080, 16320],
+        [u32::MAX; 3],
+        [
+            u32::from(want.0[0][0]),
+            u32::from(want.1[0][0]),
+            want.1[0].iter().map(|&sad| u32::from(sad)).sum(),
+        ],
+    ] {
+        compare(
+            "macroblock_sad",
+            &fields(candidate.macroblock_sad((src, &refs[0]), chroma, limits)),
+            &fields(reference.macroblock_sad((src, &refs[0]), chroma, limits)),
+        );
+    }
 }
 
 /// Largest downscale output width tried: covers several full SIMD iterations
@@ -623,7 +669,7 @@ fn check_grid(
             [(0, 0), (1, 0), (2, 0), (3, 0)],
             [(3, 0), (0, 0), (3, 0), (1, 0)],
         ] {
-            let tags = [17, 3, 29, 8];
+            let tags = [0x1234_5678, 0x2345_6789, 0xffff_8000, 0x8765_4321];
             got = start;
             want = start;
             candidate.sad_grid_best_x4_at(s, wide, positions, &visible, rows, &mut got, tags);

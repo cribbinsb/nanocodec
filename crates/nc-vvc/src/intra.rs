@@ -456,18 +456,11 @@ fn shortlist_directions(
     if !by_count && rd_margin_permille == 0 {
         return kept;
     }
-    let mut ranked: Vec<(u8, f32)> = kept.into_iter().map(|m| (m, cost(m))).collect();
-    ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
-    let limit = ranked[0].1 * (1. + rd_margin_permille as f32 / 1000.);
-    let count = if by_count {
-        rd_candidates
-    } else {
-        ranked.len()
-    };
-    ranked
+    let ranked: Vec<(u8, f32)> = kept.into_iter().map(|m| (m, cost(m))).collect();
+    let count = if by_count { rd_candidates } else { 0 };
+    nc_encoder::IntraCut::new(count, rd_margin_permille as f32)
+        .survivors(ranked)
         .into_iter()
-        .take(count)
-        .take_while(|&(_, cost)| rd_margin_permille == 0 || cost <= limit)
         .map(|(m, _)| m)
         .collect()
 }
@@ -612,13 +605,8 @@ impl<'a> DirectionProxy<'a> {
         source: &'a nc_common::PlaneView<'a>,
         lambda: f32,
     ) -> Self {
-        let n = source.width();
         let mut transposed = [0u8; SEARCH_SAMPLES];
-        for (row, out) in transposed[..n * n].chunks_exact_mut(n).enumerate() {
-            for (column, sample) in out.iter_mut().enumerate() {
-                *sample = source.row(column)[row];
-            }
-        }
+        nc_dsp::transpose_square(source, &mut transposed);
         Self {
             dsp,
             references,

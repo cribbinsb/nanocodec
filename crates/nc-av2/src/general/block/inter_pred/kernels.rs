@@ -7,6 +7,7 @@ use nc_dsp::av2_dec::compound::{self, MaskLayout};
 use nc_dsp::av2_dec::mc_8tap::{self, InterpFilter};
 use nc_dsp::av2_dec::wedge::InterMasks;
 use nc_dsp::av2_dec::{bacp, opfl, warp};
+use nc_dsp::{BlockSize, Dsp, Filter};
 
 pub use nc_dsp::av2_dec::opfl::OpflRegressionData as Regression;
 
@@ -29,10 +30,37 @@ fn interp(filter: u8) -> InterpFilter {
     InterpFilter::from_index(filter).unwrap_or(InterpFilter::Regular)
 }
 
+/// The AV1-family entry points take the full eight-tap rectangle even
+/// for a single fractional axis. AV2's edge scratch may contain only the
+/// requested axes. Keep those smaller windows on the reference path.
+#[inline]
+fn shared_translational(
+    filter: InterpFilter,
+    (src, offset, stride): (&[u8], usize, usize),
+    (w, h): (usize, usize),
+) -> Option<(Filter, BlockSize, &[u8])> {
+    let filter = match filter {
+        InterpFilter::Regular => Filter::Av1,
+        InterpFilter::Smooth => Filter::Av1Smooth,
+        InterpFilter::Sharp => Filter::Av1Sharp,
+        InterpFilter::Bilinear => return None,
+    };
+    let size = BlockSize::new(w, h)?;
+    let before = filter.before();
+    let extra = filter.taps() - 1;
+    let col = offset.checked_rem(stride)?;
+    if col < before || col + w + (extra - before) > stride {
+        return None;
+    }
+    let start = offset.checked_sub(before * stride + before)?;
+    let end = start + (h + extra - 1) * stride + w + extra;
+    Some((filter, size, src.get(start..end)?))
+}
+
 /// A translational prediction into 8-bit samples (dav2d `mc[filter]`),
 /// phases in sixteenths.
 pub(super) fn put(
-    copies: &nc_dsp::BlockCopy,
+    dsp: &Dsp,
     filter: u8,
     (dst, dst_offset, dst_stride): (&mut [u8], usize, usize),
     (src, src_offset, src_stride): (&[u8], usize, usize),
@@ -40,7 +68,7 @@ pub(super) fn put(
     phase: (i32, i32),
 ) {
     if phase == (0, 0) {
-        copies.copy_rect(
+        dsp.block_copies().copy_rect(
             &src[src_offset..],
             src_stride,
             &mut dst[dst_offset..],
@@ -50,23 +78,27 @@ pub(super) fn put(
         );
         return;
     }
+    let filter = interp(filter);
+    if let Some((family, block, window)) =
+        shared_translational(filter, (src, src_offset, src_stride), size)
+    {
+        dsp.predict_samples(
+            family,
+            block,
+            (window, src_stride),
+            (phase.0 as usize, phase.1 as usize),
+            (&mut dst[dst_offset..], dst_stride),
+        );
+        return;
+    }
     mc_8tap::put_8tap(
-        dst,
-        dst_offset,
-        dst_stride,
-        src,
-        src_offset,
-        src_stride,
-        size,
-        phase,
-        interp(filter),
-        DEPTH,
+        dst, dst_offset, dst_stride, src, src_offset, src_stride, size, phase, filter, DEPTH,
     );
 }
 
 /// A translational prediction into an intermediate (dav2d `mct[filter]`).
 pub(super) fn prep(
-    copies: &nc_dsp::BlockCopy,
+    dsp: &Dsp,
     filter: u8,
     (tmp, tmp_offset, tmp_stride): (&mut [i16], usize, usize),
     (src, src_offset, src_stride): (&[u8], usize, usize),
@@ -74,13 +106,26 @@ pub(super) fn prep(
     phase: (i32, i32),
 ) {
     if phase == (0, 0) {
-        copies.prep_rect(
+        dsp.block_copies().prep_rect(
             &src[src_offset..],
             src_stride,
             &mut tmp[tmp_offset..],
             tmp_stride,
             size,
             (4, 0),
+        );
+        return;
+    }
+    let filter = interp(filter);
+    if let Some((family, block, window)) =
+        shared_translational(filter, (src, src_offset, src_stride), size)
+    {
+        dsp.predict_compound_samples(
+            family,
+            block,
+            (window, src_stride),
+            (phase.0 as usize, phase.1 as usize),
+            (&mut tmp[tmp_offset..], tmp_stride),
         );
         return;
     }
@@ -92,40 +137,31 @@ pub(super) fn prep(
         src_stride,
         size,
         phase,
-        interp(filter),
+        filter,
         DEPTH,
     );
 }
 
 /// An 8x8 warp into samples (dav2d `warp8x8`).
 pub(super) fn warp(
-    (dst, dst_offset, dst_stride): (&mut [u8], usize, usize),
-    (src, src_offset, src_stride): (&[u8], usize, usize),
+    dsp: &Dsp,
+    dst: (&mut [u8], usize, usize),
+    src: (&[u8], usize, usize),
     shear: [i16; 4],
     phase: (i32, i32),
 ) {
-    warp::warp_affine_8x8(
-        dst, dst_offset, dst_stride, src, src_offset, src_stride, shear, phase, DEPTH,
-    );
+    warp::warp_affine_8x8_with_dsp(dsp, dst, src, shear, phase);
 }
 
 /// An 8x8 warp into an intermediate (dav2d `warp8x8t`).
 pub(super) fn warp_prep(
+    dsp: &Dsp,
     (tmp, tmp_offset, tmp_stride): (&mut [i16], usize, usize),
-    (src, src_offset, src_stride): (&[u8], usize, usize),
+    src: (&[u8], usize, usize),
     shear: [i16; 4],
     phase: (i32, i32),
 ) {
-    warp::warp_affine_8x8t(
-        &mut tmp[tmp_offset..],
-        tmp_stride,
-        src,
-        src_offset,
-        src_stride,
-        shear,
-        phase,
-        DEPTH,
-    );
+    warp::warp_affine_8x8t_with_dsp(dsp, (&mut tmp[tmp_offset..], tmp_stride), src, shear, phase);
 }
 
 /// A 4x4 warp sub-block into samples (dav2d `ext_warp4x4`).
@@ -300,4 +336,77 @@ pub(super) fn inter_intra_mask(masks: &InterMasks, size: (usize, usize), mode: u
         _ => Av1InterIntraMode::Smooth,
     };
     masks.interintra(size, mode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_translational_matches_av2_reference() {
+        let dsp = Dsp::new();
+        for (w, h) in [(4, 4), (4, 8), (8, 4), (8, 8), (16, 32), (64, 64)] {
+            let stride = w + 7;
+            let origin = 3 * (stride + 1);
+            let src: Vec<_> = (0..stride * (h + 7))
+                .map(|i| ((i * 43) ^ (i * i * 71)) as u8)
+                .collect();
+            let mut pixels = vec![97_u8; (w + 4) * h];
+            let mut intermediates = vec![-97_i16; pixels.len()];
+            let out_stride = w + 4;
+            for filter in 0..3 {
+                for mx in 0..16 {
+                    for my in 0..16 {
+                        let mut ref_pixels = pixels.clone();
+                        let mut ref_intermediates = intermediates.clone();
+                        let (size, phase) = ((w, h), (mx, my));
+                        put(
+                            &dsp,
+                            filter,
+                            (&mut pixels, 2, out_stride),
+                            (&src, origin, stride),
+                            size,
+                            phase,
+                        );
+                        prep(
+                            &dsp,
+                            filter,
+                            (&mut intermediates, 2, out_stride),
+                            (&src, origin, stride),
+                            size,
+                            phase,
+                        );
+                        mc_8tap::put_8tap(
+                            &mut ref_pixels,
+                            2,
+                            out_stride,
+                            &src,
+                            origin,
+                            stride,
+                            size,
+                            phase,
+                            interp(filter),
+                            DEPTH,
+                        );
+                        mc_8tap::prep_8tap(
+                            &mut ref_intermediates[2..],
+                            out_stride,
+                            &src,
+                            origin,
+                            stride,
+                            size,
+                            phase,
+                            interp(filter),
+                            DEPTH,
+                        );
+                        assert_eq!(pixels, ref_pixels, "{size:?} {filter} {phase:?}");
+                        assert_eq!(
+                            intermediates, ref_intermediates,
+                            "{size:?} {filter} {phase:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

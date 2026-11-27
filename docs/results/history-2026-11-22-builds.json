@@ -1,0 +1,51 @@
+{
+ "base": "e84ef02c",
+ "families": {
+  "nanocodec-h264@slower": "e84ef02c",
+  "nanocodec-h264@slow": "e84ef02c",
+  "nanocodec-h264": "e84ef02c",
+  "nanocodec-h264@fast": "e84ef02c",
+  "nanocodec-h264@faster": "e84ef02c",
+  "nanocodec-h264@veryfast": "e84ef02c",
+  "nanocodec-hevc@veryslow": "e84ef02c",
+  "nanocodec-hevc@slower": "e84ef02c",
+  "nanocodec-hevc@slow": "e84ef02c",
+  "nanocodec-hevc": "e84ef02c",
+  "nanocodec-hevc@fast": "e84ef02c",
+  "nanocodec-hevc@faster": "e84ef02c",
+  "nanocodec-av1@slower": "e84ef02c",
+  "nanocodec-av1@slow": "e84ef02c",
+  "nanocodec-av1": "e84ef02c",
+  "nanocodec-av1@fast": "e84ef02c",
+  "nanocodec-av1@faster": "e84ef02c",
+  "nanocodec-av1@veryfast": "e84ef02c",
+  "nanocodec-vp9@slower": "e84ef02c",
+  "nanocodec-vp9@slow": "e84ef02c",
+  "nanocodec-vp9": "e84ef02c",
+  "nanocodec-vp9@fast": "e84ef02c",
+  "nanocodec-vp9@faster": "e84ef02c",
+  "nanocodec-vp9@veryfast": "e84ef02c",
+  "nanocodec-av2@slower": "e84ef02c",
+  "nanocodec-av2@slow": "e84ef02c",
+  "nanocodec-av2": "e84ef02c",
+  "nanocodec-av2@fast": "e84ef02c",
+  "nanocodec-av2@faster": "e84ef02c",
+  "nanocodec-vvc@veryslow": "e84ef02c",
+  "nanocodec-vvc@slower": "e84ef02c",
+  "nanocodec-vvc@slow": "e84ef02c",
+  "nanocodec-vvc": "e84ef02c",
+  "nanocodec-vvc@fast": "e84ef02c",
+  "nanocodec-vvc@faster": "e84ef02c"
+ },
+ "builds": {
+  "e84ef02c": "e84ef02c (crates of the integration head 991a6e85f, 2026-11-22, after the key-cap landing; plain release)"
+ },
+ "tools": {
+  "x264": "0.165",
+  "x265": "4.2",
+  "svt": "v4.3.0",
+  "libvpx": "v1.16.0",
+  "libaom": "v3.15.3"
+ },
+ "timed_on": {}
+}

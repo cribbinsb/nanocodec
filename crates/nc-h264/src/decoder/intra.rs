@@ -477,30 +477,31 @@ fn horizontal_up<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
 }
 
 /// Plane prediction (§8.3.3.4 luma `n` 16, §8.3.4.4 4:2:0 chroma `n` 8).
-#[allow(
-    clippy::many_single_char_names,
-    reason = "a, b, c, H and V are the standard's names"
-)]
 fn plane_prediction<T: Sample>(plane: &mut PlaneViewMut<'_, T>, at: (usize, usize), e: &Edge<T>) {
-    let n = e.n as isize;
-    let half = n / 2;
-    let (mut h, mut v) = (0i32, 0i32);
-    for k in 0..half {
-        let weight = k as i32 + 1;
-        h += weight * (e.t(half + k) as i32 - e.t(half - 2 - k) as i32);
-        v += weight * (e.l(half + k) as i32 - e.l(half - 2 - k) as i32);
+    match e.n {
+        8 => plane_prediction_size::<T, 8>(plane, at, e),
+        16 => plane_prediction_size::<T, 16>(plane, at, e),
+        _ => unreachable!("H.264 plane prediction supports 8 or 16 samples"),
     }
-    // Luma: b = (5H + 32) >> 6; 4:2:0 chroma: b = (34H + 32) >> 6.
-    let scale = if n == 16 { 5 } else { 34 };
-    let a = 16 * (e.l(n - 1) as i32 + e.t(n - 1) as i32);
-    let b = (scale * h + 32) >> 6;
-    let c = (scale * v + 32) >> 6;
-    let centre = half as i32 - 1;
-    // Folds to the constant 8 in the 8-bit instance.
-    let depth = e.depth.of::<T>();
-    fill(plane, at, e.n, |x, y| {
-        depth.clip_to((a + b * (x as i32 - centre) + c * (y as i32 - centre) + 16) >> 5)
-    });
+}
+
+fn plane_prediction_size<T: Sample, const N: usize>(
+    plane: &mut PlaneViewMut<'_, T>,
+    (x, y): (usize, usize),
+    edges: &Edge<T>,
+) {
+    let top: &[T; N] = (&edges.line[N + 1..=2 * N]).try_into().expect("top edge");
+    let left = core::array::from_fn(|i| edges.line[N - 1 - i]);
+    let mut view = plane
+        .sub_view_mut(x, y, N, N)
+        .expect("plane prediction block");
+    let stride = view.stride();
+    nc_dsp::h264_plane(
+        view.data_mut(),
+        stride,
+        (top, &left, edges.line[N]),
+        edges.depth,
+    );
 }
 
 /// `Intra_16x16` prediction of the macroblock at (`x0`, `y0`) (§8.3.3).

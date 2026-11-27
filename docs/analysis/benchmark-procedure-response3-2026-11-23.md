@@ -1,0 +1,21 @@
+# Response to the third hostile review (2026-11-23): BP-3.1
+
+> **Superseded by BP-3.10** ([benchmark-procedure.md](../benchmark-procedure.md), 2026-11-24). This dated response is kept as the record of its review; where it differs from the current procedure, the procedure governs.
+
+This answers [benchmark-procedure-review3-2026-11-23.md](benchmark-procedure-review3-2026-11-23.md)
+("review 3") with the coordinator's decisions, made under the owner's delegation. The procedure
+is now BP-3.1 ([docs/benchmark-procedure.md](../benchmark-procedure.md)), with its fairness record
+([docs/benchmark-fairness.toml](../benchmark-fairness.toml)).
+
+| # | Finding | Decision and change |
+|---|---|---|
+| C3 | BLOCKER: 23b is not unseen | **Accepted.** Sealed-log entries 1b and 1c (logged late) record two things: the 0.6.0 audit measured all 100 clips of the first set with every chart family, and response 2's clip-count analysis read those per-clip results. Entry 3 relabels 23b: 84 clips are **"audited once, never tuned on"**, and only the 13 redrawn clips are unseen. The manifest is committed (`eval/clipset/heldout_2026-11-23b.manifest.json`, with each clip's decoded-frame SHA-256 and status). No further design analysis reads the set. `plan.py --sealed` now also needs the set's sealed-log entry, a frozen commit and a clean tree. Not done: a storage-enforced seal (results written only by a frozen run id) is left as a proposal. |
+| C1 | Compliance marker | **The 90 % line and marker are dropped.** Compliance is published as continuous figures only, under one rule with a stated denominator (BP §7): frames and points over the bucket, worst excess, 95th-percentile peak and rate over target. Ours is printed "compliant by re-coding" with its re-coded share and time. libvpx, libaom and openh264 get labelled `+drop` rows with their own frame dropping on, CBR only, with dropped frames shown as the previous picture and counted. |
+| C2 | Ladder | The owner's rule is kept and stated as **the owner's real-time judgement, with no outside source claimed**. The bits-per-pixel spread is in BP §4 and goes beside every headline: ours 0.011-0.023 bpp at the bottom rung; VC-1K 0.011-0.012; A2 0.006-0.025 across the ladder. A2 is reported separately. The regime text is removed. Not decided: the upper-range 2400/4000 figure that review 3 asks for. |
+| C4 | libaom | **libaom's CBR rows run its own real-time example program** (`svc_encoder_rtc`, one layer, frame dropping off), which is the project's real-time configuration (decision 4). Its fixed bucket matches the final phase (600 ms initial). In the interim phase the difference is stated. It has no `--tune`, so libaom's SSIM twin is Fixed QP only. libaom's and libvpx's Fixed QP commands now carry the examples' real-time controls. libvpx keeps its example's max-q 52, with its `+drop` row. The CLI's 9-14 % gap to the example is **not attributed**: reference-limiting flags do not close it (response 2, N6, T14 measured). It is stated on libaom's Fixed QP rows. |
+| C5 | SVT `--aq-mode 0` vs ours | Not in the decisions; open for the coordinator. The record keeps SVT in true CQP. `rate.constant_qp=1` stays the labelled sensitivity row for ours. |
+| C6 | `plan.py` | Fixed: every stream is decoded by its codec's standard decoder, ours included (AV2: avmdec). A clip without `source_kbps` is refused. Fixed QP plans the six base quantizers of BP §4. A sealed run has the checks above. Tests: `eval/tests/test_bench_plan.py`. |
+| C7 | 23b's clips and classes | Stated in BP §3: 85 clips have four legal rungs; there is no pan class; 59 of 97 are Wikimedia Commons. |
+| C8 | Machines | **The headline machine is c8a (Zen 5)**, stated in BP §5 and §15. c6a is the second AMD generation. c6a.large's harness shares the encoder's physical core. **Measured (T15):** a harness-like sampler on the sibling made the same encodes 7.6 % slower (4-12 % by encoder). So c6a runs on c6a.xlarge with the sibling idle (+$22), and `box.py` refuses to put the harness on the timing core. |
+| C9 | Stale text | Fixed: status block, §2 families and versions, §3 table, §5, §8 regimes, §15 scope. |
+| C10 | Open tasks | Unchanged, and listed in BP §18. T10 is in progress: `box.py` (encode side) and `score.py` (score side) are landed with tests; the fleet driver and `report.py` are next. |

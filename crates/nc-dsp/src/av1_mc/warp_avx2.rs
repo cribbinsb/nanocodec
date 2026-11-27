@@ -19,6 +19,7 @@
 #[path = "warp_avx2/fused.rs"]
 mod fused;
 pub(super) use fused::warp8x8;
+pub(crate) use fused::{Target, try_warp8x8};
 
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm256_add_epi32,

@@ -77,9 +77,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import buildinfo, cloud, levers, pool, tune
+from . import baseline_state, buildinfo, checkrun, cloud, decision_cpu, front_k, levers, pool, tune
 from .bdrate import bd_rate
 from .codecs import Codec
+from .encoders.nanocodec import MEDIUM
 from .config import load_paths
 from .fingerprint import measurement_fingerprint
 from .budget import (MAX_MINUTES, OverBudget, check as check_budget, estimate_minutes,
@@ -87,7 +88,6 @@ from .budget import (MAX_MINUTES, OverBudget, check as check_budget, estimate_mi
 from .cachefile import identity_cached, read_json
 from .gatepolicy import (EVALUATION_GATE, GatePolicy, PointCheck, gate_arguments,
                          uniform_check)
-from .jreal import K_CPU
 from .stages import (ALL_FOUR, MARGIN_SIGMAS, METRICS, PART_FILL, STAGES, VAL_STAGES, Stage,
                      balanced_parts, cache_root, calibrated_plan, decide, history_path)
 from .sweep import payload_bytes
@@ -237,6 +237,47 @@ def parse_params(pairs: list[str]) -> dict[str, float]:
             raise SystemExit(f"--param needs name=value, got {pair!r}")
         overrides[name] = float(value)
     return overrides
+
+
+#: Set when the --param / --anchor-param lists already hold the rung's preset values
+#: (nceval.train passes them itself; the cloud offload passes them expanded).
+RUNG_PARAMS_FLAG = "--rung-params-included"
+
+
+def rung_params(binary: Path, codec: Codec, rung: str | None) -> list[str]:
+    """`rung`'s preset values for `binary`, from the presets of its own build (the
+    `presets/` beside a tools/dev/binary_for.sh build, as nceval.quick reads them), as
+    name=value pairs ([] for medium, the engine defaults). A binary without them is
+    refused: a screen of a rung must encode that rung on both sides, never medium."""
+    if not rung or rung == MEDIUM:
+        return []
+    presets = checkrun.presets_beside(binary.resolve())
+    return checkrun.pairs(checkrun.preset_params(presets, codec.value, rung))
+
+
+def missing_pairs(given: list[str], rung_pairs: list[str]) -> list[str]:
+    """The rung's pairs the caller did not set (the caller's values win)."""
+    named = {pair.partition("=")[0] for pair in given}
+    return [p for p in rung_pairs if p.partition("=")[0] not in named]
+
+
+def apply_rung(args: argparse.Namespace) -> list[str]:
+    """Both sides encode `--preset`'s rung: its preset values go under each side's
+    --param / --anchor-param (each side from its own build's presets). Returns the
+    arguments to add to the command line for a re-run (the offload)."""
+    if args.rung_params_included or not args.preset or args.preset == MEDIUM:
+        return []
+    codec = Codec(args.codec)
+    test = missing_pairs(args.param, rung_params(Path(args.binary), codec, args.preset))
+    anchor = missing_pairs(args.anchor_param, rung_params(
+        Path(args.anchor_binary or args.binary), codec, args.preset))
+    args.param = test + args.param
+    args.anchor_param = anchor + args.anchor_param
+    args.rung_params_included = True
+    print(f"rung {args.preset}: {len(test)} preset parameters added to the candidate, "
+          f"{len(anchor)} to the anchor", flush=True)
+    return ([x for p in test for x in ("--param", p)]
+            + [x for p in anchor for x in ("--anchor-param", p)] + [RUNG_PARAMS_FLAG])
 
 
 class Screen:
@@ -403,6 +444,65 @@ def pool_levels(spec: str) -> tuple[str, ...]:
     return tuple(level for level in pool.LEVELS if level in wanted)
 
 
+def cpu_charge(args: argparse.Namespace) -> tuple[float, str]:
+    """The CPU weight k and its source: without a CPU measurement none is charged; else
+    --k, or --preset's front slope."""
+    if args.cpu_summary is None and args.cpu_charge is None:
+        return args.k or 0.0, "no CPU measured: no CPU charge"
+    if args.k is None and args.preset is None:
+        raise SystemExit("a CPU charge needs --preset RUNG (its front slope prices the CPU) "
+                         "or an explicit --k")
+    return front_k.resolve(args.codec, args.preset, args.k)
+
+
+#: The screen's decision name in its CPU plan and aws_cpu_ab summary (--cpu-decision:
+#: nceval.train names each arm's screens in one plan).
+CPU_DECISION = "screen"
+
+
+def cpu_plan_entry(args: argparse.Namespace) -> dict:
+    """The screen's CPU plan (nceval.decision_cpu): the candidate's encodes at the levels
+    it runs on its draw, as levels.run measures them."""
+    from . import levels, realuse  # realuse builds on this module's stages
+    if args.mode != "real" or (args.clips or realuse.ADOPT) != realuse.ADOPT:
+        raise SystemExit("a CPU charge is for the adoption levels (--mode real --clips "
+                         "adopt); fixed clip sets rank ideas on quality alone")
+    anchor, test = realuse.screen_families(args)
+    realuse.set_final_estimator(args)
+    paths = load_paths()
+    runner = realuse.Runner(paths, EVALUATION_GATE, 1, over_budget=True)
+    draw = levels.draw_for(paths, args)
+    jobs = levels.quality_jobs(runner, test, draw, levels.chosen_levels(args), args)
+    return decision_cpu.plan_entry(args.cpu_decision, args.codec, args.preset, draw.key, jobs,
+                                   anchor, test, decision_cpu.build_of(anchor.tool),
+                                   decision_cpu.build_of(test.tool))
+
+
+def resolve_cpu(args: argparse.Namespace) -> list[str]:
+    """Write the CPU plan (--cpu-plan), or verify the CPU measurement (--cpu-summary,
+    or the compact --cpu-charge an offloaded screen receives) against this screen's own
+    encodes and set `args.cpu`; returns the arguments that carry it to a box."""
+    args.cpu, args.dcpu = None, None
+    if args.cpu_summary:
+        found = decision_cpu.load_charge(Path(args.cpu_summary), args.cpu_decision)
+        rotation = decision_cpu.plan_rotation(Path(args.cpu_summary), args.cpu_decision)
+        if args.rotation and args.rotation != rotation:
+            raise decision_cpu.CpuMismatch(f"--rotation {args.rotation}: the CPU was measured "
+                                           f"on draw {rotation}")
+        args.rotation = rotation
+        print(f"CPU measured on draw {rotation}: the screen runs on it", flush=True)
+    elif args.cpu_charge:
+        found = decision_cpu.parse(args.cpu_charge)
+    else:
+        if args.cpu_plan:
+            decision_cpu.write_plan(Path(args.cpu_plan), [cpu_plan_entry(args)])
+            sys.exit(0)
+        return []
+    args.cpu = decision_cpu.verify(found, cpu_plan_entry(args)["digest"], "nceval.screen")
+    print(f"dCPU per group: {decision_cpu.describe(args.cpu)}", flush=True)
+    return ["--cpu-charge", args.cpu.text(), "--rotation", args.rotation]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="python3 -m nceval.screen", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -427,10 +527,10 @@ def main() -> None:
                         "full ladder (default: single for a parameter-only change, i.e. "
                         "one binary; ladder for code changes and anything reshaping the curve)")
     p.add_argument("--final-frames", type=int, nargs="?", const=600,
-                   help="--clips adopt: L3 on this long window (600 when given without a "
-                        "value; keys every 10 s): for changes to rate, "
-                        "keys, cadence or key-frame quality and a preset bundle's final check "
-                        "(nceval.levels.LONG_FRAMES)")
+                   help="--clips adopt: L3 on the long window at every key share "
+                        "(nceval.key_shares: 600 f with keys every 150, 900 f with keys every "
+                        "300): for changes to rate, keys, cadence or key-frame quality and a "
+                        "preset bundle's final check")
     p.add_argument("--rotation",
                    help="--clips adopt: the pool rotation key (default: today's UTC date); "
                         "only to reproduce a recorded run")
@@ -452,19 +552,46 @@ def main() -> None:
                         "always runs here)")
     p.add_argument("--mode", choices=("real", "cqp"), default="real",
                    help="real: CBR ladder judged by J_real (default); cqp: the fixed-QP proxy")
-    p.add_argument("--dcpu", type=float,
-                   help="real mode: the candidate's CPU change in %% (callgrind), folded "
-                        "into J_real as k * dCPU")
-    p.add_argument("--k", type=float, default=K_CPU,
-                   help=f"real mode: the CPU weight k of J_real (default {K_CPU}, Fast and "
-                        "engine changes; 0.1 for Default quality arms, PROCEDURES "
-                        "\"Preset roles\")")
+    p.add_argument("--cpu-plan",
+                   help="write this screen's CPU plan here and exit: its own encodes' declared "
+                        "subset (nceval.decision_cpu), for tools/dev/aws_cpu_ab.py "
+                        "--decision-plan")
+    p.add_argument("--cpu-summary",
+                   help="aws_cpu_ab.py's summary of this screen's CPU plan: each level is "
+                        "charged k * dCPU of its own encodes (refused if measured on others); "
+                        "the screen runs on the plan's draw")
+    p.add_argument("--cpu-charge", help=argparse.SUPPRESS)  # a verified --cpu-summary, boxed
+    p.add_argument("--cpu-decision", default=CPU_DECISION,
+                   help="this screen's decision name in a plan or summary of several "
+                        f"(default {CPU_DECISION}; nceval.train names each arm's screens)")
+    p.add_argument("--key-shares",
+                   help="key periods in frames of the long-window L3 (default 150,300: "
+                        "nceval.key_shares, which must include both)")
+    p.add_argument("--preset",
+                   help="the rung screened: both sides encode its preset parameters (each "
+                        "from the presets/ beside its binary, under --param / --anchor-param), "
+                        "and in real mode its front slope (nceval.front_k) is the CPU weight "
+                        "k of J_real")
+    p.add_argument(RUNG_PARAMS_FLAG, action="store_true",
+                   help="the --param / --anchor-param lists already hold --preset's values "
+                        "(nceval.train, the cloud offload): do not add them again")
+    p.add_argument("--k", type=float,
+                   help="real mode: an explicit CPU weight k of J_real in place of the rung's "
+                        "front slope (warned about loudly)")
     p.add_argument("--expect-commit",
                    help="fail at once unless --binary was built from this commit "
                         f"(also ${buildinfo.EXPECT_ENV}; nceval.buildinfo)")
     args = p.parse_args()
+    rung_argv = apply_rung(args)
+    cpu_argv = resolve_cpu(args)
+    args.k, args.k_source = cpu_charge(args)
+    print(f"k {args.k:.4g}: {args.k_source}", flush=True)
+    if args.mode == "real" and (cold := baseline_state.notice()):
+        print(cold, flush=True)
     if args.mode == "real" and not cloud.runs_here(args.local):
-        cloud.offload("nceval.screen", sys.argv[1:], args.json, cloud.default_json("screen"))
+        argv = decision_cpu.without_local_cpu(sys.argv[1:]) if cpu_argv else sys.argv[1:]
+        cloud.offload("nceval.screen", argv + rung_argv + cpu_argv, args.json,
+                      cloud.default_json("screen"))
     builds = {"candidate": buildinfo.check(Path(args.binary), "candidate", args.expect_commit)}
     if args.anchor_binary:
         builds["anchor"] = buildinfo.check(Path(args.anchor_binary), "anchor", measured=False)
@@ -486,7 +613,8 @@ def main() -> None:
     except BaseException as error:
         write({"status": "error", "reason": f"{type(error).__name__}: {error}"})
         raise
-    write({"status": "done", **result, "build_info": builds})
+    write({"status": "done", **result, "k_source": args.k_source, "build_info": builds,
+           "cpu": decision_cpu.record(args.cpu)})
     levers.record(levers.screen_rows({**result, "build_info": builds},
                                      args.json or "nceval.screen"), "nceval.screen")
 

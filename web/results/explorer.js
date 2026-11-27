@@ -18,10 +18,18 @@ const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1'
 const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (Zen 5) core', zen3: 'AMD EPYC 7R13 (Zen 3, no AVX-512) core', graviton: 'AWS Graviton4 (Neoverse V2) core' };
 const PLATFORM_SHORT = { jetson: 'Jetson', x86: 'Zen 5', zen3: 'Zen 3', graviton: 'Graviton4' };
 const PLATFORMS = Object.keys(PLATFORM_LABELS);
-// The fixed-QP chart's extra metric (the standards' weighted PSNR); the rest are common.js's.
+// The fixed-QP charts' extra metric (the lens's AOM CTC weighted PSNR), the CBR charts' rate
+// regimes (nceval.chart RATE_REGIMES, data.rate_regimes) and luma PSNR; the rest are common.js's.
 // XPSNR is recorded beside J (never part of it) where a view's points have it.
-const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)', xpsnr: 'BD-XPSNR-YUV (not part of J)' };
-const SHORT = { ...METRIC_SHORT, weighted: 'Weighted', xpsnr: 'XPSNR' };
+const NAMES = {
+  ...METRIC_NAMES, weighted: 'BD-rate, AOM CTC weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)', xpsnr: 'BD-XPSNR-YUV (not part of J)',
+  psnr_y: 'BD-PSNR-Y (luma only; not part of J)', j_low: 'BD-J at the qualities of the rungs up to 600 kbps (720p30, scaled)',
+  j_upper: 'BD-J at the qualities of the rungs 600 kbps–4 Mbps (720p30, scaled; clips with room for 2400 kbps)',
+};
+const SHORT = { ...METRIC_SHORT, weighted: 'Weighted', xpsnr: 'XPSNR', psnr_y: 'PSNR-Y', j_low: 'J ≤600k', j_upper: 'J 600k–4M' };
+// Each rate mode's metric when it opens: J for CBR; for Fixed QP the standards' PSNR-YUV
+// (6:1:1, each view's first metric, nceval.site QP_METRICS), with J beside it.
+const DEFAULT_METRIC = { cbr: 'j', qp: 'psnr' };
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
 const PIN_NOTE = 'points beyond the axes are pinned to the edge (arrow)';
@@ -115,7 +123,8 @@ function detail(data, view, family) {
     ...view.metrics.map((m) => [NAMES[m], metricCell(v, m)]),
     v.iqr && v.iqr[0] !== null && family !== view.zero ? ['Per-clip spread (J)', `${pct(v.iqr[0])} to ${pct(v.iqr[1])} (interquartile)`] : null,
     v.clips_scored ? ['Clips scored', String(v.clips_scored)] : null,
-    v.rate_invalid_points ? ['Rate-invalid points', `${v.rate_invalid_points} (kept on their curves)`] : null,
+    v.rate_points ? ['Rate checks (same rule for every encoder)', `${v.over_buffer_points}/${v.rate_points} points over one buffer, ${v.over_target_points} more than 10% over target (kept on their curves)`] : null,
+    v.rate_invalid_points ? ['Rate-invalid points (old rule)', `${v.rate_invalid_points} (kept on their curves)`] : null,
     v.chained ? ['Chained clips', `${v.chained} (through one intermediate encoder)`] : null,
     ['Encode speed', PLATFORMS.filter((m) => v.fps[m]).map((m) => `${fps(v.fps[m])} fps on one ${PLATFORM_LABELS[m]}`).join(', ') || 'not timed'],
   ].filter(Boolean);
@@ -125,7 +134,7 @@ function detail(data, view, family) {
       el('code', { class: 'command' }, p.cbr_command));
   }
   if (p.timing) {
-    commands.push(el('p', { class: 'note' }, `Timing command (fixed QP chosen for about ${data.timing_rung_kbps} kbps, shown on ${p.timing.clip})${p.timing_is_twin ? ', the default-tuned twin: this variant is not timed itself' : ''}:`),
+    commands.push(el('p', { class: 'note' }, `Timing command (the same CBR encode as a quality point: ${p.timing.kbps} kbps on ${p.timing.clip})${p.timing_is_twin ? ', the default-tuned twin: this variant is not timed itself' : ''}:`),
       el('code', { class: 'command' }, p.timing.command));
   }
   return el('section', { class: 'detail', 'aria-live': 'polite' },
@@ -164,10 +173,10 @@ function fillDemoLink(data, family, root) {
 
 function viewNote(data, view) {
   if (view.rate_mode === 'qp' && view.clipset === 'ctc') {
-    return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), ${view.measured.quality} ${qpSpeedNote(view)} ${view.measured.dated}`;
+    return `Bits: BD-rate against ${ZERO_NAMES[view.zero]} at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; every column on the Fixed QP page, where Constant QP is ours at one quantizer for every picture and block), ${view.measured.quality} ${qpSpeedNote(view)} ${view.measured.dated}`;
   }
   if (view.rate_mode === 'qp') {
-    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of ${QP_SAMPLE_RULES[view.clipset] || data.datasets[view.clipset].sample_rule}, ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. ${view.measured.quality} ${qpSpeedNote(view)} ${view.measured.dated}${datasetNote(data, view)}`;
+    return `Bits: BD-rate against ${ZERO_NAMES[view.zero]} at fixed QP on ${view.clips} clips of ${QP_SAMPLE_RULES[view.clipset] || data.datasets[view.clipset].sample_rule}, ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. ${view.measured.quality} ${qpSpeedNote(view)} ${view.measured.dated}${datasetNote(data, view)}`;
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
@@ -220,7 +229,7 @@ function oursBuilds(data, view) {
 
 function render(data, root) {
   const view = data.views.find((v) => v.id === viewId(data));
-  if (!view.metrics.includes(state.metric)) state.metric = 'j';
+  if (!view.metrics.includes(state.metric)) state.metric = view.metrics[0];
   // A Fixed QP sample view is timed on fewer machines than the CTC lens (VC-1K and
   // fresh: x86 only): show it on a machine it has, and disable the others.
   const timed = view.rate_mode === 'qp' ? Object.keys(view.speed || {}) : null;
@@ -266,11 +275,11 @@ function render(data, root) {
   });
   const chart = root.querySelector('.chart');
   const title = root.querySelector('.chart-title');
-  const zero = view.rate_mode === 'qp' ? 'x264 medium at fixed QP' : ZERO_NAMES[view.zero];
+  const zero = view.rate_mode === 'qp' ? `${ZERO_NAMES[view.zero]} at fixed QP` : ZERO_NAMES[view.zero];
   title.textContent = `${NAMES[state.metric]} vs ${zero}, against single-thread encode speed`;
   root.querySelector('.chart-sub').textContent = view.rate_mode === 'qp'
-    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} clips of ${data.clipsets[view.clipset].split(':')[0]}`}, build ${view.build_commit.split(' ')[0]} · lower is fewer bits, right is faster`
-    : `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
+    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} clips of ${data.clipsets[view.clipset].split(':')[0]}`}, build ${view.build_commit.split(' ')[0]} · lower is fewer bits, right is faster · bars: per-clip interquartile range, not a confidence interval`
+    : `Low-delay CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster · bars: per-clip interquartile range, not a confidence interval`;
   let pinned = [];
   if (!points.length) {
     chart.replaceChildren(el('p', { class: 'note' }, 'No points match these filters.'));
@@ -368,7 +377,7 @@ function controls(data, root) {
     // Fixed QP: the standards lens at the chart's build, on the same axes.
     control('Rate mode', segmented('Rate mode', [
       { value: 'cbr', label: 'CBR' }, { value: 'qp', label: 'Fixed QP' },
-    ], state.mode, (v) => { state.mode = v; rerender(); })),
+    ], state.mode, (v) => { state.mode = v; state.metric = DEFAULT_METRIC[v]; rerender(); })),
     control('Metric', withData('metric', segmented('Metric', Object.keys(SHORT).map((m) => ({ value: m, label: SHORT[m] })),
       state.metric, (v) => { state.metric = v; rerender(); }))),
     control('Speed on', withData('platform', segmented('Platform', [

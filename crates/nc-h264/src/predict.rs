@@ -192,49 +192,13 @@ impl ChromaMode {
 /// top row and left column; `scale` is 5 for luma and 34 for 8-wide chroma.
 fn plane<const N: usize, const AREA: usize>(edges: &Edges<N>) -> [u8; AREA] {
     const { assert!(AREA == N * N) };
-    let half = N / 2;
-    // p[i, -1] and p[-1, j] for i, j in -1..N: the corner, then the edge.
-    let top = |i: usize| {
-        i32::from(if i == 0 {
-            edges.corner
-        } else {
-            edges.above[i - 1]
-        })
-    };
-    let left = |j: usize| {
-        i32::from(if j == 0 {
-            edges.corner
-        } else {
-            edges.left[j - 1]
-        })
-    };
-    // H' and V' of eqs. 8-117/8-118 (luma) and 8-140/8-141 (chroma), with
-    // indices shifted by one so that -1 is 0.
-    let (mut grad_h, mut grad_v) = (0i32, 0i32);
-    for k in 0..half {
-        let (far, near) = (half + k + 1, half - 1 - k);
-        grad_h += (k as i32 + 1) * (top(far) - top(near));
-        grad_v += (k as i32 + 1) * (left(far) - left(near));
-    }
-    let scale = if N == 16 { 5 } else { 34 };
-    let base = 16 * (left(N) + top(N)); // a
-    let slope_x = (scale * grad_h + 32) >> 6; // b
-    let slope_y = (scale * grad_v + 32) >> 6; // c
-    let centre = half as i32 - 1;
-    // The formula per sample (eq. 8-119 / 8-142) with the row's terms
-    // hoisted and the column term a fixed ramp: independent samples, so the
-    // row loop vectorises, in 16 bits: |b|, |c| <= (34 * 2550 + 32) >> 6 =
-    // 1355 (chroma; luma (5 * 9180 + 32) >> 6 = 718), so a + 16 plus eight
-    // steps of each slope stays within 16 * 510 + 16 + 16 * 1355 < 2^15.
-    let narrow = |v: i32| i16::try_from(v).expect("plane prediction terms fit 16 bits");
-    let ramp: [i16; N] = core::array::from_fn(|i| narrow(slope_x * i as i32));
-    let mut out = [0u8; AREA];
-    for (row, line) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
-        let start = narrow(base + slope_y * (row as i32 - centre) - slope_x * centre + 16);
-        for (sample, &step) in line.iter_mut().zip(&ramp) {
-            *sample = ((start + step) >> 5).clamp(0, 255) as u8;
-        }
-    }
+    let mut out = [0; AREA];
+    nc_dsp::h264_plane(
+        &mut out,
+        N,
+        (&edges.above, &edges.left, edges.corner),
+        nc_common::BitDepth::EIGHT,
+    );
     out
 }
 

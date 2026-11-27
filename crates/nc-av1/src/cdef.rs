@@ -297,24 +297,31 @@ pub fn choose_superblocks(
         let blocks = width.div_ceil(FILTER_BLOCK_SIZE) * height.div_ceil(FILTER_BLOCK_SIZE);
         return LumaChoices::from_gains(vec![0; blocks]);
     }
-    // The luma is filtered with the model in place; `storage` keeps the
-    // unfiltered samples, which the choice compares against and which are
-    // put back in the filter blocks that keep luma off. That costs no
-    // whole-plane copy beyond the filter's own input.
-    let selected = {
-        let mut luma = recon.plane_mut(PlaneIndex::Y).view_mut();
-        storage.fill_from(&luma.as_view());
-        filter_plane(dsp, storage, &mut luma, &units.list, params, PlaneIndex::Y);
-        let choices = LumaChoices::from_gains(local_luma_gains(
-            &source.plane(PlaneIndex::Y).view(),
-            &storage.view(),
-            &luma.as_view(),
-            &units.list,
-            row_step,
-        ));
-        restore_unselected(&storage.view(), &mut luma, &units.list, &choices.selected);
-        choices
-    };
+    let columns = width.div_ceil(FILTER_BLOCK_SIZE);
+    let mut gains = vec![0; columns * height.div_ceil(FILTER_BLOCK_SIZE)];
+    let original = source.plane(PlaneIndex::Y).view();
+    let mut luma = recon.plane_mut(PlaneIndex::Y).view_mut();
+    filter_plane_bands(
+        dsp,
+        storage,
+        &mut luma,
+        &units.list,
+        params,
+        PlaneIndex::Y,
+        |band, filtered, blocks| {
+            let row = blocks[0].y / FILTER_BLOCK_SIZE;
+            let band_gains = &mut gains[row * columns..(row + 1) * columns];
+            add_luma_gains(
+                &original,
+                band,
+                &filtered.as_view(),
+                blocks,
+                row_step,
+                band_gains,
+            );
+            restore_unselected(band, filtered, blocks, band_gains);
+        },
+    );
     // Chroma shares one modeled strength, and uses the same unfiltered-luma
     // directions irrespective of which luma option won in a filter block.
     if !params.chroma_off() {
@@ -323,7 +330,7 @@ pub fn choose_superblocks(
             filter_plane_in_place(dsp, storage, &mut out, &units.list, params, plane);
         }
     }
-    selected
+    LumaChoices::from_gains(gains)
 }
 
 /// Reapply a cached local choice: luma with `params` in the filter blocks
@@ -368,58 +375,73 @@ fn band_strengths(params: CdefParams) -> nc_dsp::CdefStrengths {
 /// Outside the active 8x8 filter units, model and off samples are identical.
 /// Their SSE terms cancel exactly. Accumulate only those units, retaining the
 /// original sampling phase relative to each 64x64 filter block.
-fn local_luma_gains(
+fn add_luma_gains(
     source: &PlaneView<'_>,
-    unfiltered: &PlaneView<'_>,
+    band: &CdefSource,
     filtered: &PlaneView<'_>,
-    units: &[Unit],
+    blocks: &[CdefBlock],
     row_step: usize,
-) -> Vec<i64> {
-    let (width, height) = (unfiltered.width(), unfiltered.height());
-    let columns = width.div_ceil(FILTER_BLOCK_SIZE);
-    let mut improvements = vec![0_i64; columns * height.div_ceil(FILTER_BLOCK_SIZE)];
-    for unit in units {
-        let phase = (unit.y % FILTER_BLOCK_SIZE) % row_step;
-        let first = unit.y + (row_step - phase) % row_step;
-        let right = (unit.x + FILTER_UNIT_SIZE).min(width);
+    gains: &mut [i64],
+) {
+    let (width, height) = (filtered.width(), filtered.height());
+    let unfiltered = band.view();
+    let first_row = band.first_row();
+    for block in blocks {
+        let phase = (block.y % FILTER_BLOCK_SIZE) % row_step;
+        let first = block.y + (row_step - phase) % row_step;
+        let right = (block.x + FILTER_UNIT_SIZE).min(width);
         // One unit's gain is at most 64 * 255^2 in magnitude: exact in i32.
         let mut gain = 0_i32;
-        for y in (first..(unit.y + FILTER_UNIT_SIZE).min(height)).step_by(row_step) {
-            gain += source.row(y)[unit.x..right]
-                .iter()
-                .zip(&unfiltered.row(y)[unit.x..right])
-                .zip(&filtered.row(y)[unit.x..right])
-                .map(|((&original, &off), &model)| {
-                    let off_error = i32::from(original) - i32::from(off);
-                    let model_error = i32::from(original) - i32::from(model);
-                    off_error * off_error - model_error * model_error
-                })
-                .sum::<i32>();
+        for y in (first..(block.y + FILTER_UNIT_SIZE).min(height)).step_by(row_step) {
+            gain += row_gain(
+                &source.row(y)[block.x..right],
+                &unfiltered.row(y - first_row)[block.x..right],
+                &filtered.row(y)[block.x..right],
+            );
         }
-        improvements[unit.y / FILTER_BLOCK_SIZE * columns + unit.x / FILTER_BLOCK_SIZE] +=
-            i64::from(gain);
+        gains[block.x / FILTER_BLOCK_SIZE] += i64::from(gain);
     }
-    improvements
 }
 
-/// Put the `unfiltered` samples back into the units of `luma` whose 64x64
-/// filter block keeps luma off (`selected` false). Only listed units were
-/// filtered, so the rest of the plane already holds them.
+/// Squared error against `original` of `off` minus that of `model`, over
+/// one row of a unit. A whole unit's row (fixed width) compiles to a few
+/// vector operations; a row cut by the frame edge takes the general loop.
+fn row_gain(original: &[u8], off: &[u8], model: &[u8]) -> i32 {
+    fn unit_row(samples: &[u8]) -> Option<&[u8; FILTER_UNIT_SIZE]> {
+        samples.try_into().ok()
+    }
+    let gain = |((&original, &off), &model): ((&u8, &u8), &u8)| {
+        let off_error = i32::from(original) - i32::from(off);
+        let model_error = i32::from(original) - i32::from(model);
+        off_error * off_error - model_error * model_error
+    };
+    match (unit_row(original), unit_row(off), unit_row(model)) {
+        (Some(original), Some(off), Some(model)) => {
+            original.iter().zip(off).zip(model).map(gain).sum()
+        }
+        _ => original.iter().zip(off).zip(model).map(gain).sum(),
+    }
+}
+
+/// Restore the units of filter blocks that keep luma off, while their
+/// unfiltered samples are still in the line buffer.
 fn restore_unselected(
-    unfiltered: &PlaneView<'_>,
+    band: &CdefSource,
     luma: &mut PlaneViewMut<'_>,
-    units: &[Unit],
-    selected: &[bool],
+    blocks: &[CdefBlock],
+    gains: &[i64],
 ) {
     let (width, height) = (luma.width(), luma.height());
-    let columns = width.div_ceil(FILTER_BLOCK_SIZE);
-    for unit in units {
-        if selected[unit.y / FILTER_BLOCK_SIZE * columns + unit.x / FILTER_BLOCK_SIZE] {
+    let unfiltered = band.view();
+    let first_row = band.first_row();
+    for block in blocks {
+        if gains[block.x / FILTER_BLOCK_SIZE] > 0 {
             continue;
         }
-        let right = (unit.x + FILTER_UNIT_SIZE).min(width);
-        for y in unit.y..(unit.y + FILTER_UNIT_SIZE).min(height) {
-            luma.row_mut(y)[unit.x..right].copy_from_slice(&unfiltered.row(y)[unit.x..right]);
+        let right = (block.x + FILTER_UNIT_SIZE).min(width);
+        for y in block.y..(block.y + FILTER_UNIT_SIZE).min(height) {
+            luma.row_mut(y)[block.x..right]
+                .copy_from_slice(&unfiltered.row(y - first_row)[block.x..right]);
         }
     }
 }
@@ -576,6 +598,18 @@ fn filter_plane_in_place(
     params: CdefParams,
     plane: PlaneIndex,
 ) {
+    filter_plane_bands(dsp, storage, plane_view, units, params, plane, |_, _, _| {});
+}
+
+fn filter_plane_bands(
+    dsp: &Dsp,
+    storage: &mut CdefSource,
+    plane_view: &mut PlaneViewMut<'_>,
+    units: &[Unit],
+    params: CdefParams,
+    plane: PlaneIndex,
+    mut finish_band: impl FnMut(&CdefSource, &mut PlaneViewMut<'_>, &[CdefBlock]),
+) {
     let (filter, blocks) = plane_blocks(units, params, plane);
     // One filter-block row of this plane (64 luma rows, 32 chroma rows).
     let band = FILTER_BLOCK_SIZE * filter.size / FILTER_UNIT_SIZE;
@@ -587,8 +621,11 @@ fn filter_plane_in_place(
         let (now, later) = rest.split_at(rest.partition_point(|block| block.y < band_end));
         // The band's blocks read up to CDEF_PADDING rows below it; rows
         // above it were copied, still unfiltered, with the previous band.
-        storage.drop_rows_before(band_start.saturating_sub(CDEF_PADDING));
-        storage.fill_rows_to(&plane_view.as_view(), band_end + CDEF_PADDING);
+        storage.drop_rows_before(first.y.saturating_sub(CDEF_PADDING));
+        let last = now
+            .last()
+            .expect("the current band includes its first block");
+        storage.fill_rows_to(&plane_view.as_view(), last.y + filter.size + CDEF_PADDING);
         dsp.cdef_filter_blocks(
             filter.size,
             storage,
@@ -597,6 +634,7 @@ fn filter_plane_in_place(
             filter.damping,
             plane_view,
         );
+        finish_band(storage, plane_view, now);
         rest = later;
     }
 }
@@ -1096,19 +1134,18 @@ mod tests {
             .flatten()
             .copied()
             .collect();
-        let units = Units::of(&Dsp::new(), &unfiltered, &map_of(&grid), true);
-        let filtered_view = PlaneView::new(&filtered, width, width, height).unwrap();
+        let map = map_of(&grid);
         for row_step in 1..=8 {
-            let sparse: Vec<bool> = local_luma_gains(
-                &original,
-                &unfiltered,
-                &filtered_view,
-                &units.list,
+            let sparse = choose_superblocks(
+                &Dsp::new(),
+                &source,
+                &mut recon.clone(),
+                &map,
+                params,
                 row_step,
+                &mut CdefSource::new(),
             )
-            .into_iter()
-            .map(|gain| gain > 0)
-            .collect();
+            .selected;
             let mut dense = Vec::new();
             for top in (0..height).step_by(FILTER_BLOCK_SIZE) {
                 for left in (0..width).step_by(FILTER_BLOCK_SIZE) {

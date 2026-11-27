@@ -1,0 +1,11 @@
+# HEVC slower (gate8x8, 2026-11-23): 8x8 inter CUs behind the fine-floor gate
+# (planner.fine_floor_*, fine_floor.rs), with the RD search's margin gate that
+# tsl-hevc-slower-joint t1 moved beside 8x8 (1.254). See slow-hevc-finefloor.txt.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.inter_min_log2 3 3 int
+planner.fine_floor_bias -2 3
+planner.fine_floor_camera -3 0.5
+planner.fine_floor_static -1 3
+planner.fine_floor_motion_gain -2 2
+planner.fine_floor_residual -2 2
+planner.rd_split_margin 0 1.5

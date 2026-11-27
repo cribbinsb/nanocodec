@@ -30,7 +30,7 @@
 mod cabac;
 mod core;
 mod ctu;
-mod ctx;
+pub(crate) mod ctx;
 mod deblock;
 mod loop_filter;
 mod mc;
@@ -148,12 +148,14 @@ impl Decoder {
         with_core!(&mut self.instance, core => core.corrupt_references(value));
     }
 
-    /// Decode one access unit of Annex-B data and return its picture in
-    /// decoding order (the low-delay use: each packet is one picture).
-    /// A decoder used this way queues nothing for [`Decoder::next_output`].
+    /// Decode one access unit of Annex-B data and return the first picture
+    /// it outputs (C.5.2 bumping; the low-delay use: in a stream without
+    /// reordering each packet outputs its own picture). Further pictures it
+    /// outputs wait for [`Decoder::next_shown`] or [`Decoder::next_output`].
     /// # Errors
     /// Rejects malformed or truncated data, syntax outside the Main and
-    /// Main 10 profiles, and streams of more than 8 bits (8-bit output).
+    /// Main 10 profiles, streams of more than 8 bits (8-bit output) and an
+    /// access unit that outputs no picture.
     pub fn decode(&mut self, packet: &[u8]) -> Result<Picture, DecodeError> {
         self.decode_shown(packet)?;
         match &mut self.instance {
@@ -163,9 +165,12 @@ impl Decoder {
     }
 
     /// [`Decoder::decode`] without the output copy: the picture is shown
-    /// by [`Decoder::shown`] until the next call.
+    /// by [`Decoder::shown`] until the next call; an access unit that
+    /// outputs none (a skipped RASL picture, `PicOutputFlag` 0, a reserved NAL
+    /// type, a picture held for reordering) shows nothing and is no error.
     /// # Errors
-    /// As [`Decoder::decode`].
+    /// As [`Decoder::decode`], except for an access unit without output;
+    /// [`DecodeError::MissingKey`] before the first IRAP picture.
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<(), DecodeError> {
         with_core!(&mut self.instance, core => core.begin_shown());
         self.push(packet)?;
@@ -174,6 +179,13 @@ impl Decoder {
             Instance::Eight(_) => Ok(()),
             Instance::High(_) => Err(EIGHT_BIT_ONLY),
         }
+    }
+
+    /// Show the next picture the last [`Self::decode_shown`] access unit
+    /// output, when it output several (a stream that reorders, at an IRAP
+    /// picture or a full DPB); `false` (nothing shown) when there is none.
+    pub fn next_shown(&mut self) -> bool {
+        with_core!(&mut self.instance, core => core.next_shown())
     }
 
     /// Decode one access unit at either sample depth without an output copy.

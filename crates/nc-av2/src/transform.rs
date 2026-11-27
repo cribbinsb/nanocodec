@@ -439,7 +439,15 @@ pub fn dct_quantizes_to_zero(
     rounding: Rounding,
     sse: u64,
 ) -> bool {
-    let qindex = qindex.into();
+    sse * DCT_ROW_NORM_SQUARED_Q8[size.index()] < dct_zero_bound(size, qindex.into(), rounding)
+}
+
+/// The first SSE that does not meet the DCT zero bound.
+pub(crate) fn dct_zero_sse_limit(size: TxSize, qindex: Qindices, rounding: Rounding) -> u64 {
+    dct_zero_bound(size, qindex, rounding).div_ceil(DCT_ROW_NORM_SQUARED_Q8[size.index()])
+}
+
+fn dct_zero_bound(size: TxSize, qindex: Qindices, rounding: Rounding) -> u64 {
     let unit_shift = ROUNDING_Q7_ONE.ilog2() + QUANT_BITS + dequant_shift(size);
     let unit = 1i64 << unit_shift;
     let first_nonzero = |qindex, rounding_q7| {
@@ -450,11 +458,9 @@ pub fn dct_quantizes_to_zero(
     };
     let zero_below = first_nonzero(qindex.dc, rounding.dc_q7)
         .min(first_nonzero(qindex.ac, rounding.ac_q7)) as u64;
-    let Some(room) = zero_below.checked_sub(DCT_ROUNDING_SLACK) else {
-        return false;
-    };
+    let room = zero_below.saturating_sub(DCT_ROUNDING_SLACK);
     // ‖row‖·‖residual‖ < room, squared and in 1/256.
-    sse * DCT_ROW_NORM_SQUARED_Q8[size.index()] < (room * room) << 8
+    (room * room) << 8
 }
 
 /// The dequantized magnitude of a level of one (as [`dequantize`]), in

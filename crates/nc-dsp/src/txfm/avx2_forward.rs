@@ -145,8 +145,17 @@ impl ForwardWords for Column {
 
     #[inline(always)]
     fn transpose(tile: &mut [Self]) {
+        // Plain loops, not `array::map`: its closure can be compiled as a
+        // function of its own, outside the AVX2 context of the kernel
+        // (tools/ci/check_outlined_simd.py).
         let tile: &mut [Self; LANES] = tile.try_into().unwrap();
-        *tile = transpose16(tile.map(|v| v.0)).map(Self);
+        let mut rows = [Self::norm_zero(); LANES];
+        for (row, column) in rows.iter_mut().zip(tile.iter()) {
+            *row = column.0;
+        }
+        for (column, row) in tile.iter_mut().zip(transpose16(rows)) {
+            *column = Self(row);
+        }
     }
 
     #[inline(always)]
@@ -349,22 +358,21 @@ pub(crate) unsafe fn hevc_rows<const N: usize>(
             }
         }
         // The scaled inputs sum to at most 32 · 4 · 255 = 32640: i16.
-        let dc = input.iter().fold(Column::splat(0), |sum, &v| sum.add(v));
-        match N {
-            16 => dct::fdct16::<Column>(
+        let dc = match N {
+            16 => dct::fdct16_with_sum::<Column>(
                 input.as_slice().try_into().unwrap(),
                 output.as_mut_slice().try_into().unwrap(),
                 cospi(STAGED_COS_BIT),
                 STAGED_COS_BIT,
             ),
-            32 => dct::fdct32::<Column>(
+            32 => dct::fdct32_with_sum::<Column>(
                 input.as_slice().try_into().unwrap(),
                 output.as_mut_slice().try_into().unwrap(),
                 cospi(STAGED_COS_BIT),
                 STAGED_COS_BIT,
             ),
             _ => unreachable!(),
-        }
+        };
         for k in (0..N).step_by(LANES) {
             let tile = transpose16(core::array::from_fn(|i| output[k + i].0));
             for (i, row) in tile.into_iter().enumerate() {

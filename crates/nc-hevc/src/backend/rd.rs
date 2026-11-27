@@ -115,21 +115,22 @@ impl HevcBackend {
     /// How unevenly the residual `src − pred` of an `n`-square block (n ≥ 8)
     /// spreads over its four quadrants: 4 · (largest quadrant energy) /
     /// (total energy), from 1 (even) to 4 (all in one quadrant); 1 when
-    /// there is no residual.
+    /// there is no residual. Returns the spread and total SSE.
     pub(super) fn residual_spread(
         &self,
         src: &PlaneView<'_>,
         pred: &PlaneView<'_>,
         n: usize,
-    ) -> f32 {
+    ) -> (f32, u64) {
         let quadrants = nc_encoder::quadrant_sse(&self.dsp, src, pred, n);
         let largest = quadrants.into_iter().max().unwrap_or(0);
         let total: u64 = quadrants.iter().sum();
-        if total == 0 {
+        let spread = if total == 0 {
             1.0
         } else {
             (4 * largest) as f32 / total as f32
-        }
+        };
+        (spread, total)
     }
 }
 

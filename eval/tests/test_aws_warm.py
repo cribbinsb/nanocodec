@@ -123,18 +123,30 @@ def test_on_the_box_and_with_local_a_command_runs_where_it_is(monkeypatch):
     assert cloud.runs_here(False)
 
 
-def test_a_tree_behind_the_integration_branch_in_the_cloud_tools_is_refused(monkeypatch):
+def test_only_another_measurement_protocol_on_the_integration_branch_is_refused(monkeypatch):
+    """A tools landing that keeps MEASUREMENT_PROTOCOL refuses no job; a bumped protocol
+    refuses a tree at the old one (its results would not be comparable)."""
     monkeypatch.delenv(cloud.ON_BOX_ENV, raising=False)
+    monkeypatch.delenv(cloud.STALE_ENV, raising=False)
+    monkeypatch.delenv(cloud.PINNED_ENV, raising=False)
     monkeypatch.setattr(cloud, "REPO", Path(__file__).resolve().parents[2])
     if not (cloud.REPO / ".git").exists():
         pytest.skip("no git checkout (the build box's copy)")
-    monkeypatch.delenv(cloud.STALE_ENV, raising=False)
-    behind = type("Done", (), {"returncode": 0, "stdout": "abc1234 aws: fix\n"})()
-    monkeypatch.setattr(cloud.subprocess, "run", lambda *a, **k: behind)
+    monkeypatch.setattr(cloud, "integration_protocol", lambda: cloud.MEASUREMENT_PROTOCOL)
+    cloud.check_fresh()  # tools commits at the same protocol: runs on its own tree
+    monkeypatch.delenv(cloud.PINNED_ENV, raising=False)
+    monkeypatch.setattr(cloud, "integration_protocol", lambda: cloud.MEASUREMENT_PROTOCOL + 1)
     with pytest.raises(SystemExit, match="rebase variance-integration"):
         cloud.check_fresh()
     monkeypatch.setenv(cloud.STALE_ENV, "1")
     cloud.check_fresh()  # allowed on request
+
+
+def test_the_protocol_on_a_branch_is_read_from_its_cloud_module(monkeypatch):
+    listing = "x = 1\nMEASUREMENT_PROTOCOL = 7\n"
+    monkeypatch.setattr(cloud.subprocess, "run", lambda *a, **k: type(
+        "Done", (), {"returncode": 0, "stdout": listing})())
+    assert cloud.integration_protocol() == 7
 
 
 def test_a_checkpoint_skips_other_jobs_temp_files_and_vanished_ones(tmp_path):
@@ -290,23 +302,19 @@ def test_no_draining_while_the_home_region_was_full_at_the_last_launch(registry)
     assert box.instance_id == "i-9" and not fresh
 
 
-def test_a_started_job_pins_its_tools_and_its_slices_are_not_checked_again(monkeypatch):
+def test_a_started_job_pins_its_protocol_and_its_slices_are_not_checked_again(monkeypatch):
     monkeypatch.delenv(cloud.ON_BOX_ENV, raising=False)
     monkeypatch.delenv(cloud.STALE_ENV, raising=False)
     monkeypatch.delenv(cloud.PINNED_ENV, raising=False)
     monkeypatch.setattr(cloud, "REPO", Path(__file__).resolve().parents[2])
     if not (cloud.REPO / ".git").exists():
         pytest.skip("no git checkout (the build box's copy)")
-    state = {"behind": ""}
-    monkeypatch.setattr(cloud.subprocess, "run", lambda *a, **k: type(
-        "Done", (), {"returncode": 0, "stdout": state["behind"]})())
-    cloud.check_fresh()  # the start: fresh, so pinned
+    state = {"protocol": cloud.MEASUREMENT_PROTOCOL}
+    monkeypatch.setattr(cloud, "integration_protocol", lambda: state["protocol"])
+    cloud.check_fresh()  # the start: same protocol, so pinned
     assert cloud.os.environ[cloud.PINNED_ENV] == cloud.tools_version()
-    state["behind"] = "abc1234 aws: a landing meanwhile\n"
-    cloud.check_fresh()  # a later slice from the same tree: not refused
-    monkeypatch.setattr(cloud, "tools_version", lambda: "changed")  # the tree's tools moved
-    with pytest.raises(SystemExit, match="behind variance-integration"):
-        cloud.check_fresh()
+    state["protocol"] += 1
+    cloud.check_fresh()  # a later slice of the same job: not refused mid-run
 
 
 def test_a_study_resumed_at_its_recorded_tool_version_is_not_checked(monkeypatch):
@@ -315,11 +323,44 @@ def test_a_study_resumed_at_its_recorded_tool_version_is_not_checked(monkeypatch
     monkeypatch.delenv(cloud.ON_BOX_ENV, raising=False)
     monkeypatch.delenv(cloud.STALE_ENV, raising=False)
     monkeypatch.setattr(cloud, "tools_version", lambda: "v1")
-    monkeypatch.setattr(cloud.subprocess, "run", lambda *a, **k: type(
-        "Done", (), {"returncode": 0, "stdout": "abc1234 aws: fix\n"})())
+    monkeypatch.setattr(cloud, "integration_protocol", lambda: cloud.MEASUREMENT_PROTOCOL + 1)
     if not (cloud.REPO / ".git").exists():
         pytest.skip("no git checkout (the build box's copy)")
     tune_pool.check_started("v1")  # the same tree and tools the study started with
     monkeypatch.delenv(cloud.PINNED_ENV)
     with pytest.raises(SystemExit):
         tune_pool.check_started("v0")  # tools changed since: checked, and behind
+
+
+def test_graviton_boxes_are_arm_and_never_take_an_x86_job(registry):
+    """aws_measure --arch aarch64 asks for family c8g (docs/aws-cost-guide.md)."""
+    assert aws_warm.ami_arch("c8g.16xlarge") == "arm64" and aws_warm.ami_arch("c7gn.large") == "arm64"
+    assert aws_warm.ami_arch("c7i.24xlarge") == "amd64" and aws_warm.ami_arch("c6g.large") == "arm64"
+    spec = aws_warm.warm_spec("eu-north-1", 10, "c8g")
+    assert spec.arch == "arm64" and spec.instance_type == "c8g.16xlarge"
+    pricey_box(registry, "i-arm", price=0.35, region="eu-north-1")
+    record = json.loads((registry / "i-arm.json").read_text())
+    record["spec"]["instance_type"] = "c8g.16xlarge"
+    (registry / "i-arm.json").write_text(json.dumps(record))
+    box, _, fresh = aws_warm.acquire("x86-job", SPEC, lambda s: None)
+    assert fresh and box.instance_id != "i-arm"  # an x86 job launched its own box
+    box, _, fresh = aws_warm.acquire("arm-job", SPEC, lambda s: None, family="c8g")
+    assert box.instance_id == "i-arm" and not fresh
+
+
+def test_a_job_planned_for_a_big_box_never_takes_a_smaller_one(registry):
+    """2026-11-24: a train batch sized for 64 vCPU landed on a 32-vCPU warm box and stopped
+    at the run cap; `min_vcpus` keeps it to boxes of its planned size."""
+    assert [aws_warm.type_vcpus(t) for t in ("c8g.8xlarge", "c8g.12xlarge", "c7i.24xlarge",
+                                             "c7i.xlarge", "c7i.large")] == [32, 48, 96, 4, 2]
+    spec = aws_warm.warm_spec("eu-north-1", 10, "c8g", min_vcpus=48)
+    assert (spec.instance_type, *spec.fallback_types) == ("c8g.16xlarge", "c8g.12xlarge")
+    pricey_box(registry, "i-small", price=0.24, region="eu-north-1")
+    record = json.loads((registry / "i-small.json").read_text())
+    record["spec"]["instance_type"], record["vcpus"] = "c8g.8xlarge", 32
+    (registry / "i-small.json").write_text(json.dumps(record))
+    box, _, fresh = aws_warm.acquire("big-job", spec, lambda s: None, family="c8g",
+                                     min_vcpus=48)
+    assert fresh and box.instance_id != "i-small"
+    box, _, fresh = aws_warm.acquire("small-job", spec, lambda s: None, family="c8g")
+    assert box.instance_id == "i-small" and not fresh

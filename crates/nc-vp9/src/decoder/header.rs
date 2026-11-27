@@ -34,6 +34,13 @@ pub(super) const FRAME_CONTEXTS: usize = 4;
 pub(super) const MAX_LOOP_FILTER: i32 = 63;
 /// `MAXQ`.
 const MAX_Q: i32 = 255;
+/// Largest coded picture accepted, in luma samples: the highest VP9 level's
+/// (6.2, libvpx `vp9_level_defs` `max_luma_picture_size`). VP9 signals no
+/// level, so only the area is bounded: the libvpx vector
+/// `vp90-2-13-largescaling` is 19200 wide, beyond level 6.2's longer side
+/// (16832). The 16-bit size fields alone admit 65536x65536 pictures, whose
+/// buffers and decoding time a stranger's stream must not command.
+const MAX_PICTURE_SIZE: usize = 35_651_584;
 /// Loop-filter reference deltas (intra, LAST, GOLDEN, ALTREF) and mode
 /// deltas (ZEROMV, other inter modes).
 const REF_DELTAS: usize = 4;
@@ -271,7 +278,7 @@ impl FrameHeader {
             read_sync_code(&mut bits)?;
             header.bit_depth = Some(read_color_config(&mut bits, profile)?);
             header.refresh = 0xff;
-            (header.width, header.height) = read_frame_size(&mut bits)?;
+            (header.width, header.height) = read_coded_size(&mut bits)?;
             skip_render_size(&mut bits)?;
         } else {
             header.intra_only = !header.show_frame && bits.read_bit()?;
@@ -288,7 +295,7 @@ impl FrameHeader {
                     read_color_config(&mut bits, profile)?
                 });
                 header.refresh = bits.read_bits(8)? as u8;
-                (header.width, header.height) = read_frame_size(&mut bits)?;
+                (header.width, header.height) = read_coded_size(&mut bits)?;
                 skip_render_size(&mut bits)?;
             } else {
                 header.refresh = bits.read_bits(8)? as u8;
@@ -429,6 +436,16 @@ fn read_frame_size(bits: &mut BitReader<'_>) -> Result<(usize, usize)> {
     Ok((width, height))
 }
 
+/// `frame_size` of the picture to decode, within the level 6.2 area
+/// ([`MAX_PICTURE_SIZE`]).
+fn read_coded_size(bits: &mut BitReader<'_>) -> Result<(usize, usize)> {
+    let (width, height) = read_frame_size(bits)?;
+    if width * height > MAX_PICTURE_SIZE {
+        return Err(DecodeError::Unsupported("VP9 frame size beyond level 6.2"));
+    }
+    Ok((width, height))
+}
+
 /// `setup_render_size`: the render size is display metadata only.
 fn skip_render_size(bits: &mut BitReader<'_>) -> Result<()> {
     if bits.read_bit()? {
@@ -457,7 +474,7 @@ fn read_size_with_refs(
     }
     let size = match size {
         Some(size) => size,
-        None => read_frame_size(bits)?,
+        None => read_coded_size(bits)?,
     };
     let valid = header
         .ref_slots
@@ -790,6 +807,52 @@ mod tests {
     use super::*;
     use crate::probs::CoefUpdates;
     use crate::segmentation::{SegmentFeatures, Segmentation as WrittenSegmentation};
+
+    /// A key frame header the encoder writes, declaring `width` x `height`.
+    fn key_header(width: usize, height: usize) -> Vec<u8> {
+        let written = crate::header::FrameHeader {
+            key: true,
+            show_frame: true,
+            error_resilient: false,
+            context_index: 0,
+            refresh_context: true,
+            width,
+            height,
+            ref_slots: [0; 3],
+            size_from_ref: None,
+            refresh: 0xff,
+            filter_level: 0,
+            sharpness: 0,
+            interp_filter: None,
+            allow_hp: false,
+            base_q_idx: 99,
+            segmentation: WrittenSegmentation::disabled(SegmentFeatures::default()),
+            chroma_delta_q: 0,
+            colour: crate::header::ColourSpace::default(),
+        };
+        written.write(1)
+    }
+
+    /// Pictures within level 6.2's area pass the size check, whatever their
+    /// shape (they may fail later header fields this one-tile writer does not
+    /// set); larger ones fail it.
+    #[test]
+    fn picture_size_is_capped_at_level_6_2() {
+        let state = HeaderState {
+            slot_sizes: [None; SLOTS],
+            loop_filter: LoopFilter::default(),
+            segmentation: Segmentation::default(),
+        };
+        let too_large = DecodeError::Unsupported("VP9 frame size beyond level 6.2");
+        for (width, height) in [(8192, 4352), (19200, 108), (65536, 544), (544, 65536)] {
+            let parsed = FrameHeader::parse(&key_header(width, height), &state);
+            assert_ne!(parsed.err(), Some(too_large.clone()), "{width}x{height}");
+        }
+        for (width, height) in [(8192, 4353), (65536, 545), (4081, 53478), (2896, 65536)] {
+            let parsed = FrameHeader::parse(&key_header(width, height), &state);
+            assert_eq!(parsed.err(), Some(too_large.clone()), "{width}x{height}");
+        }
+    }
 
     /// Headers the encoder writes parse back to the same fields: key and
     /// error-resilient inter frames, and (`layered`) a spatial layer's

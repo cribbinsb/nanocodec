@@ -34,11 +34,17 @@ impl Bins for CabacWriter {
         Ok(value)
     }
 }
+#[allow(
+    clippy::inline_always,
+    reason = "coefficient decoding otherwise calls a CABAC wrapper for each bin"
+)]
 impl Bins for Reader<'_> {
     const READS: bool = true;
+    #[inline(always)]
     fn bin(&mut self, c: &mut Context, _: bool) -> Result<bool> {
         self.bin(c)
     }
+    #[inline(always)]
     fn bypass(&mut self, _: u32, bits: u32) -> Result<u32> {
         self.bypass_bits(bits)
     }
@@ -211,20 +217,21 @@ const PAD: usize = 2;
 /// on a grid `PAD` wider and taller than the block whose padding stays zero: every
 /// position's [`TEMPLATE`] lies inside it, so it is read without bounds
 /// tests. `AREA` is the padded grid's area (one instance per block size).
-struct Levels<const AREA: usize> {
+struct Levels<const SIDE: usize, const AREA: usize> {
     values: [i32; AREA],
-    /// Row stride, log2 of the block width, and its height.
-    stride: usize,
+    /// First-pass magnitudes and nonzero flags, packed as in the source grid.
+    first_pass: [u8; AREA],
     log2: u32,
     height: usize,
 }
 
-impl<const AREA: usize> Levels<AREA> {
+impl<const SIDE: usize, const AREA: usize> Levels<SIDE, AREA> {
     fn new(width: usize, height: usize) -> Self {
-        debug_assert!((width + PAD) * (height + PAD) <= AREA);
+        const { assert!(AREA == padded_area(SIDE)) };
+        debug_assert!(width <= SIDE && height <= SIDE);
         Self {
             values: [0; AREA],
-            stride: width + PAD,
+            first_pass: [0; AREA],
             log2: width.ilog2(),
             height,
         }
@@ -232,7 +239,7 @@ impl<const AREA: usize> Levels<AREA> {
 
     /// The grid index of raster position `pos` of the block.
     fn index(&self, pos: usize) -> usize {
-        (pos >> self.log2) * self.stride + (pos & ((1 << self.log2) - 1))
+        (pos >> self.log2) * (SIDE + PAD) + (pos & ((1 << self.log2) - 1))
     }
 }
 
@@ -250,7 +257,7 @@ trait LevelValues {
     }
 }
 
-impl<const AREA: usize> LevelValues for Levels<AREA> {
+impl<const SIDE: usize, const AREA: usize> LevelValues for Levels<SIDE, AREA> {
     fn get(&self, pos: usize) -> i32 {
         self.values[self.index(pos)]
     }
@@ -258,16 +265,21 @@ impl<const AREA: usize> LevelValues for Levels<AREA> {
     fn set(&mut self, pos: usize, value: i32) {
         let index = self.index(pos);
         self.values[index] = value;
+        self.first_pass[index] = packed_first_pass(value.unsigned_abs());
     }
 
     /// The magnitudes at `pos`'s [`TEMPLATE`] positions (zero outside).
     fn template(&self, pos: usize) -> [u32; TEMPLATE.len()] {
-        let index = self.index(pos);
-        TEMPLATE.map(|(dx, dy)| self.values[index + dy * self.stride + dx].unsigned_abs())
+        let reach = template_span::<SIDE, _>(&self.values, self.index(pos));
+        TEMPLATE.map(|(dx, dy)| reach[dy * (SIDE + PAD) + dx].unsigned_abs())
+    }
+
+    fn pass_one_template(&self, pos: usize) -> (u32, u32) {
+        first_pass_template::<SIDE>(&self.first_pass, self.index(pos))
     }
 }
 
-impl<const AREA: usize> Levels<AREA> {
+impl<const SIDE: usize, const AREA: usize> Levels<SIDE, AREA> {
     /// The block's levels in raster order into `levels`, when given.
     fn collect(&self, levels: Option<&mut Vec<i32>>) {
         let Some(levels) = levels else {
@@ -276,7 +288,7 @@ impl<const AREA: usize> Levels<AREA> {
         let width = 1 << self.log2;
         levels.clear();
         levels.reserve_exact(width * self.height);
-        for row in self.values.chunks_exact(self.stride).take(self.height) {
+        for row in self.values.chunks_exact(SIDE + PAD).take(self.height) {
             levels.extend_from_slice(&row[..width]);
         }
     }
@@ -314,10 +326,6 @@ struct SourceLevels<'a, const SIDE: usize, const AREA: usize> {
 impl<'a, const SIDE: usize, const AREA: usize> SourceLevels<'a, SIDE, AREA> {
     /// The grid's row stride.
     const STRIDE: usize = SIDE + PAD;
-    /// The span from a position to its farthest [`TEMPLATE`] neighbour,
-    /// inclusive: [`PAD`] rows down.
-    const REACH: usize = PAD * Self::STRIDE + 1;
-
     fn new(source: &'a [i32], width: usize, height: usize) -> Self {
         const { assert!(AREA == padded_area(SIDE)) };
         debug_assert!(width <= SIDE && height <= SIDE);
@@ -344,8 +352,7 @@ impl<const SIDE: usize, const AREA: usize> LevelValues for SourceLevels<'_, SIDE
     fn set(&mut self, pos: usize, value: i32) {
         let magnitude = value.unsigned_abs();
         let index = self.index(pos);
-        self.first_pass[index] =
-            (pass_one_magnitude(magnitude) | u32::from(magnitude != 0) << NONZERO_SHIFT) as u8;
+        self.first_pass[index] = packed_first_pass(magnitude);
     }
 
     fn template(&self, pos: usize) -> [u32; TEMPLATE.len()] {
@@ -360,14 +367,30 @@ impl<const SIDE: usize, const AREA: usize> LevelValues for SourceLevels<'_, SIDE
     }
 
     fn pass_one_template(&self, pos: usize) -> (u32, u32) {
-        let reach = &self.first_pass[self.index(pos)..][..Self::REACH];
-        // At most 5 x 5 below the shift, 5 above it: no carry between them.
-        let packed: u32 = TEMPLATE
-            .iter()
-            .map(|&(dx, dy)| u32::from(reach[dy * Self::STRIDE + dx]))
-            .sum();
-        (packed & PASS_ONE_MASK, packed >> NONZERO_SHIFT)
+        first_pass_template::<SIDE>(&self.first_pass, self.index(pos))
     }
+}
+
+/// Check one span for the five neighbours, whose offsets are then constants.
+#[inline]
+fn template_span<const SIDE: usize, T>(grid: &[T], index: usize) -> &[T] {
+    let span = PAD * (SIDE + PAD) + 1;
+    &grid[index..][..span]
+}
+
+fn packed_first_pass(magnitude: u32) -> u8 {
+    (pass_one_magnitude(magnitude) | u32::from(magnitude != 0) << NONZERO_SHIFT) as u8
+}
+
+#[inline]
+fn first_pass_template<const SIDE: usize>(grid: &[u8], index: usize) -> (u32, u32) {
+    let reach = template_span::<SIDE, _>(grid, index);
+    // At most 5 x 5 below the shift, 5 above it.
+    let packed: u32 = TEMPLATE
+        .iter()
+        .map(|&(dx, dy)| u32::from(reach[dy * (SIDE + PAD) + dx]))
+        .sum();
+    (packed & PASS_ONE_MASK, packed >> NONZERO_SHIFT)
 }
 
 /// A neighbour's magnitude as the first pass knows it: its flags imply at
@@ -472,7 +495,8 @@ fn last_position<B: Bins>(
     (ch, sides): (usize, (usize, usize)),
     (scan, last): (&[usize], usize),
 ) -> Result<usize> {
-    let (x, y) = (scan[last] % width, scan[last] / width);
+    let pos = scan[last];
+    let (x, y) = (pos & (width - 1), pos >> width.ilog2());
     let gx = last_prefix(io, &mut c.last_x[ch], x, sides.0, ch)?;
     let gy = last_prefix(io, &mut c.last_y[ch], y, sides.1, ch)?;
     let x = last_suffix(io, gx, x)?;
@@ -604,6 +628,29 @@ pub(crate) fn emit_rect(
         .expect("an encoder's levels are valid");
 }
 
+/// A transform block with only its DC coded. The last position is
+/// `(0, 0)`, the significant flag is inferred, and the magnitude's
+/// context and Rice parameter are zero. Its single sign is always coded.
+fn emit_dc(
+    io: &mut impl Bins,
+    c: &mut CoeffContexts,
+    dc: i32,
+    (ch, (width, height)): (usize, (usize, usize)),
+) -> Result<()> {
+    last_prefix(io, &mut c.last_x[ch], 0, width, ch)?;
+    last_prefix(io, &mut c.last_y[ch], 0, height, ch)?;
+    let c = c.channel(ch);
+    let abs = dc.unsigned_abs();
+    if io.bin(&mut c.gt1[0], abs > 1)? {
+        io.bin(&mut c.parity[0], abs & 1 != 0)?;
+        if io.bin(&mut c.gt2[0], abs > 3)? {
+            remainder(io, (abs - 4) >> 1, 0)?;
+        }
+    }
+    io.bypass(u32::from(dc < 0), 1)?;
+    Ok(())
+}
+
 /// [`walk`] of the coded region of channel `ch`'s transform block of
 /// `size` on the smallest grid holding it (zeroing a 32x32 grid for every
 /// 4x4 block cost more than the walk); the levels as coded into `levels`
@@ -629,6 +676,9 @@ fn walk_sized<B: Bins>(
         0
     };
     if !B::READS && levels.is_none() {
+        if last == 0 && (1..=32767).contains(&source[0].unsigned_abs()) {
+            return emit_dc(io, c, source[0], block);
+        }
         // A writer or pricer knows every magnitude up front: the source grid
         // ([`SourceLevels`], one byte a position) gives the contexts the
         // reconstructed one would, without clearing an `i32` grid per block.
@@ -649,10 +699,19 @@ fn walk_sized<B: Bins>(
         };
     }
     match coded.0.max(coded.1) {
-        1..=4 => walk_grid::<{ padded_area(4) }, _>(io, c, (source, last), coded, block, levels),
-        5..=8 => walk_grid::<{ padded_area(8) }, _>(io, c, (source, last), coded, block, levels),
-        9..=16 => walk_grid::<{ padded_area(16) }, _>(io, c, (source, last), coded, block, levels),
-        _ => walk_grid::<{ padded_area(MAX_SIDE) }, _>(io, c, (source, last), coded, block, levels),
+        1..=4 => walk_grid::<4, { padded_area(4) }, _>(io, c, (source, last), coded, block, levels),
+        5..=8 => walk_grid::<8, { padded_area(8) }, _>(io, c, (source, last), coded, block, levels),
+        9..=16 => {
+            walk_grid::<16, { padded_area(16) }, _>(io, c, (source, last), coded, block, levels)
+        }
+        _ => walk_grid::<MAX_SIDE, { padded_area(MAX_SIDE) }, _>(
+            io,
+            c,
+            (source, last),
+            coded,
+            block,
+            levels,
+        ),
     }
 }
 
@@ -670,7 +729,7 @@ const fn padded_area(side: usize) -> usize {
 }
 
 /// The reconstructed grid used by writing, decoding, or a caller collecting levels.
-fn walk_grid<const AREA: usize, B: Bins>(
+fn walk_grid<const SIDE: usize, const AREA: usize, B: Bins>(
     io: &mut B,
     c: &mut CoeffContexts,
     source: (&[i32], usize),
@@ -678,7 +737,7 @@ fn walk_grid<const AREA: usize, B: Bins>(
     block: (usize, (usize, usize)),
     levels: Option<&mut Vec<i32>>,
 ) -> Result<()> {
-    let mut values = Levels::<AREA>::new(coded.0, coded.1);
+    let mut values = Levels::<SIDE, AREA>::new(coded.0, coded.1);
     walk(io, c, source, coded, block, &mut values)?;
     values.collect(levels);
     Ok(())
@@ -711,6 +770,8 @@ fn walk<B: Bins>(
     let last = last_position(io, c, (width, height), (ch, sides), (scan, last))?;
     let groups = crate::scan::rect_groups(width, height);
     let (columns, rows) = crate::scan::group_grid(width, height);
+    let last_row_start = (rows - 1) * columns;
+    let last_group = last / GROUP_SIZE;
     // Bit `g` set: group `g` (raster order of the group grid) is coded.
     let mut significant = 0u64;
     let mut budget = context_bin_budget(width * height);
@@ -726,17 +787,23 @@ fn walk<B: Bins>(
             *state = next_state(*state, level);
         }
     };
-    for g in (0..=last / GROUP_SIZE).rev() {
+    for g in (0..=last_group).rev() {
         let first = g * GROUP_SIZE;
         let end = (first + GROUP_SIZE - 1).min(last);
         let gp = groups[g];
-        let ctx = usize::from(
-            (gp % columns + 1 < columns && significant >> (gp + 1) & 1 != 0)
-                || (gp / columns + 1 < rows && significant >> (gp + columns) & 1 != 0),
-        );
-        let present = !B::READS && scan[first..=end].iter().any(|&p| source[p] != 0);
-        if g != 0 && g != last / GROUP_SIZE && !io.bin(&mut c.group[ctx], present)? {
-            continue;
+        if g != 0 && g != last_group {
+            // The group grid is power-of-two wide. The first and last
+            // groups have inferred flags and need neither a context nor
+            // a scan of the source to decide whether the flag is set.
+            let column = gp & (columns - 1);
+            let ctx = usize::from(
+                (column + 1 < columns && significant >> (gp + 1) & 1 != 0)
+                    || (gp < last_row_start && significant >> (gp + columns) & 1 != 0),
+            );
+            let present = !B::READS && scan[first..=end].iter().any(|&p| source[p] != 0);
+            if !io.bin(&mut c.group[ctx], present)? {
+                continue;
+            }
         }
         significant |= 1 << gp;
         let mut nonzero = GroupPositions::default();
@@ -865,6 +932,40 @@ mod tests {
                 source,
                 "hidden {expect_hidden}"
             );
+        }
+    }
+
+    #[test]
+    fn dc_shortcut_prices_and_adapts_like_the_full_walk() {
+        let dsp = Dsp::new();
+        for size in [(4, 4), (1, 16), (16, 2), (32, 32), (64, 64)] {
+            let coded = (coded_side(size.0), coded_side(size.1));
+            for ch in [0, 1] {
+                let mut expected_cdf = CoeffContexts::new(37, true);
+                let mut actual_cdf = expected_cdf.clone();
+                for dc in [1, -2, 3, -4, 5, -13, 32767] {
+                    let mut source = vec![0; coded.0 * coded.1];
+                    source[0] = dc;
+                    let mut expected = BitCost(117.25);
+                    let mut actual = BitCost(expected.0);
+                    walk_grid::<32, { padded_area(32) }, _>(
+                        &mut expected,
+                        &mut expected_cdf,
+                        (&source, 0),
+                        coded,
+                        (ch, size),
+                        None,
+                    )
+                    .unwrap();
+                    emit_rect(&mut actual, &mut actual_cdf, &dsp, &source, size, ch);
+                    assert_eq!(
+                        actual.0.to_bits(),
+                        expected.0.to_bits(),
+                        "{size:?} {ch} {dc}"
+                    );
+                    assert_eq!(actual_cdf, expected_cdf);
+                }
+            }
         }
     }
 

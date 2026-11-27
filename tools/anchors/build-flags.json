@@ -1,0 +1,495 @@
+{
+ "builds": {
+  "graviton": {
+   "compiler": {
+    "cc": "gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "cmake": "cmake version 4.2.3",
+    "cxx": "g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+   },
+   "platform": "aarch64",
+   "profile": "opt",
+   "tools": {
+    "avm": {
+     "commit": "966a7d7cd6fcf60360caf5dc413b2aeeb65e144d",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c11",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "compile_source": "av2/encoder/encoder.c",
+     "configure": [
+      "cmake -S /home/ubuntu/refbuild/prefix/src/avm-v1.0.0 -B /home/ubuntu/refbuild/prefix/build/avm-v1.0.0 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/refbuild/prefix -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_EXAMPLES=ON -DENABLE_TOOLS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_POLICY_DEFAULT_CMP0069=NEW"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c++17",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "lto": "CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+     "pgo": "no (AVM documents no PGO route)",
+     "ref": "v1.0.0"
+    },
+    "harness": {
+     "commit": "745b016620c7922c0e374e67c338a8d18670bc13-1bca62311e447fd9c39fc93de2c4b96cd5ce971c",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=gnu11",
+      "-O2"
+     ],
+     "compile_source": "openh264_harness.c",
+     "configure": [
+      "cmake -S /home/ubuntu/refbuild/tools/openh264-harness -B /home/ubuntu/refbuild/prefix/build/harness-local -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/refbuild/prefix -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DOPENH264_PREFIX=/home/ubuntu/refbuild/prefix"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG"
+     ],
+     "lto": "no (a thin driver; the encoder is libopenh264.a)",
+     "pgo": "no",
+     "ref": "local"
+    },
+    "libaom": {
+     "commit": "b141d9c45db236335351c8a4b2a14b3ade27c937",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c11",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fPIC"
+     ],
+     "compile_source": "av1/encoder/encoder.c",
+     "configure": [
+      "cmake -S /home/ubuntu/refbuild/prefix/src/libaom-v3.15.3 -B /home/ubuntu/refbuild/prefix/build/libaom-v3.15.3 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/refbuild/prefix -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_EXAMPLES=ON -DENABLE_TOOLS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_POLICY_DEFAULT_CMP0069=NEW"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c++17",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "lto": "CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+     "pgo": "no (libaom documents no PGO route)",
+     "ref": "v3.15.3"
+    },
+    "libvpx": {
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6",
+     "compile_flags": [
+      "-march=armv8-a",
+      "-fprofile-use=/home/ubuntu/refbuild/prefix/build/libvpx-v1.16.0/pgo",
+      "-DNDEBUG",
+      "-O3",
+      "-fPIC",
+      "-std=gnu99"
+     ],
+     "compile_source": "vp9/encoder/vp9_encoder.c",
+     "configure": [
+      "/home/ubuntu/refbuild/prefix/src/libvpx-v1.16.0/configure --prefix=/home/ubuntu/refbuild/prefix --disable-shared --enable-static --disable-vp8 --enable-vp9 --disable-unit-tests --disable-docs --disable-webm-io --extra-cflags=-fprofile-generate=/home/ubuntu/refbuild/prefix/build/libvpx-v1.16.0/pgo",
+      "/home/ubuntu/refbuild/prefix/src/libvpx-v1.16.0/configure --prefix=/home/ubuntu/refbuild/prefix --disable-shared --enable-static --disable-vp8 --enable-vp9 --disable-unit-tests --disable-docs --disable-webm-io --use-profile=/home/ubuntu/refbuild/prefix/build/libvpx-v1.16.0/pgo"
+     ],
+     "link_flags": [
+      "-fprofile-use=/home/ubuntu/refbuild/prefix/build/libvpx-v1.16.0/pgo"
+     ],
+     "lto": "no (its configure offers none)",
+     "pgo": "libvpx configure --use-profile; training: --rt --end-usage=cbr --target-bitrate=600 --lag-in-frames=0 --threads=1, --cpu-used 7 and 9; clips: 720p50_parkrun_ter.yuv ducks_take_off_420_720p50.yuv in_to_tree_420_720p50.yuv old_town_cross_420_720p50.yuv (30 frames each)",
+     "ref": "v1.16.0"
+    },
+    "openh264": {
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-fno-strict-aliasing",
+      "-fPIC",
+      "-fstack-protector-all",
+      "-march=armv8-a"
+     ],
+     "compile_source": "codec/encoder/core/src/encoder.cpp",
+     "configure": [],
+     "link_flags": [],
+     "lto": "no (its Makefile offers none)",
+     "pgo": "no (none offered)",
+     "ref": "v2.7.0"
+    },
+    "svtav1": {
+     "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe",
+     "compile_flags": [
+      "-fno-stack-clash-protection",
+      "-fno-lax-vector-conversions",
+      "-ffp-contract=off",
+      "-fprofile-use=/home/ubuntu/refbuild/prefix/build/svtav1-v4.3.0/pgo",
+      "-fprofile-correction",
+      "-fprofile-partial-training",
+      "-fstack-protector-strong",
+      "-O3",
+      "-DNDEBUG",
+      "-std=gnu99",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fPIC",
+      "-fvisibility=hidden"
+     ],
+     "compile_source": "Source/Lib/Globals/enc_handle.c",
+     "configure": [
+      "cmake -S /home/ubuntu/refbuild/prefix/src/svtav1-v4.3.0 -B /home/ubuntu/refbuild/prefix/build/svtav1-v4.3.0 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/refbuild/prefix -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DCMAKE_OUTPUT_DIRECTORY=/home/ubuntu/refbuild/prefix/build/svtav1-v4.3.0/Bin -DSVT_AV1_LTO=ON -DSVT_AV1_PGO=ON -DSVT_AV1_PGO_DIR=/home/ubuntu/refbuild/prefix/build/svtav1-v4.3.0/pgo"
+     ],
+     "link_flags": [
+      "-fno-stack-clash-protection",
+      "-fno-lax-vector-conversions",
+      "-ffp-contract=off",
+      "-fprofile-use=/home/ubuntu/refbuild/prefix/build/svtav1-v4.3.0/pgo",
+      "-fprofile-correction",
+      "-fprofile-partial-training",
+      "-fstack-protector-strong",
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fprofile-use=/home/ubuntu/refbuild/prefix/build/svtav1-v4.3.0/pgo",
+      "-fprofile-correction",
+      "-fprofile-partial-training"
+     ],
+     "lto": "SVT-AV1 SVT_AV1_LTO=ON (its default with gcc >= 9)",
+     "pgo": "SVT-AV1 SVT_AV1_PGO (PGOCompileGen/PGOCompileUse); training: --rtc 1 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 600 --lp 1, presets 8 10 12 13; clips: 720p50_parkrun_ter.yuv ducks_take_off_420_720p50.yuv in_to_tree_420_720p50.yuv old_town_cross_420_720p50.yuv (30 frames each)",
+     "ref": "v4.3.0"
+    },
+    "vvenc": {
+     "commit": "9428ea8636ae7f443ecde89999d16b2dfc421524",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=gnu++14",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fPIC",
+      "-fvisibility=hidden",
+      "-fvisibility-inlines-hidden",
+      "-fdiagnostics-show-option"
+     ],
+     "compile_source": "source/Lib/EncoderLib/EncLib.cpp",
+     "configure": [
+      "cmake -S /home/ubuntu/refbuild/prefix/build/vvenc-v1.14.0/tree -B /home/ubuntu/refbuild/prefix/build/vvenc-v1.14.0 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/refbuild/prefix -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DVVENC_ENABLE_LINK_TIME_OPT=ON"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-flto=auto"
+     ],
+     "lto": "VVenC VVENC_ENABLE_LINK_TIME_OPT=ON (its default)",
+     "pgo": "no (VVenC documents no PGO route)",
+     "ref": "v1.14.0"
+    },
+    "x264": {
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+     "compile_flags": [
+      "-O3",
+      "-ffast-math",
+      "-std=gnu99",
+      "-fomit-frame-pointer",
+      "-flto",
+      "-fno-tree-vectorize",
+      "-fvisibility=hidden",
+      "-fprofile-use"
+     ],
+     "compile_source": "encoder/encoder.c",
+     "configure": [
+      "/home/ubuntu/refbuild/prefix/src/x264-stable/configure --prefix=/home/ubuntu/refbuild/prefix --enable-static --disable-opencl --disable-lavf --disable-swscale --disable-ffms --disable-gpac --disable-lsmash --enable-lto"
+     ],
+     "link_flags": [
+      "-O3",
+      "-flto",
+      "-fprofile-use"
+     ],
+     "lto": "x264 configure --enable-lto",
+     "pgo": "x264 make fprofiled (its OPT0-OPT7 option sets, --threads 1); clips: 720p50_parkrun_ter.yuv ducks_take_off_420_720p50.yuv in_to_tree_420_720p50.yuv old_town_cross_420_720p50.yuv (30 frames each)",
+     "ref": "stable"
+    },
+    "x265": {
+     "commit": "e444744c03978c1fb4e037168967020cf2648427",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-std=gnu++98",
+      "-fPIC",
+      "-O3",
+      "-fPIC",
+      "-ffast-math",
+      "-fno-exceptions"
+     ],
+     "compile_source": "encoder/encoder.cpp",
+     "configure": [
+      "cmake -S /home/ubuntu/refbuild/prefix/src/x265-4.2/source -B /home/ubuntu/refbuild/prefix/build/x265-4.2 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/refbuild/prefix -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DENABLE_SHARED=OFF -DENABLE_CLI=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_POLICY_DEFAULT_CMP0069=NEW"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "lto": "CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+     "pgo": "no (x265 documents no PGO route)",
+     "ref": "4.2"
+    }
+   }
+  },
+  "x86_64": {
+   "compiler": {
+    "cc": "gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "cmake": "cmake version 4.2.3",
+    "cxx": "g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+   },
+   "platform": "x86_64",
+   "profile": "opt",
+   "tools": {
+    "avm": {
+     "commit": "966a7d7cd6fcf60360caf5dc413b2aeeb65e144d",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c11",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "compile_source": "av2/encoder/encoder.c",
+     "configure": [
+      "cmake -S /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/src/avm-v1.0.0 -B /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/avm-v1.0.0 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_EXAMPLES=ON -DENABLE_TOOLS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_POLICY_DEFAULT_CMP0069=NEW"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c++17",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "lto": "CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+     "pgo": "no (AVM documents no PGO route)",
+     "ref": "v1.0.0"
+    },
+    "harness": {
+     "commit": "745b016620c7922c0e374e67c338a8d18670bc13-1bca62311e447fd9c39fc93de2c4b96cd5ce971c",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=gnu11",
+      "-O2"
+     ],
+     "compile_source": "openh264_harness.c",
+     "configure": [
+      "cmake -S /home/ubuntu/ncbox/jobs/audit-builds2/src/tools/openh264-harness -B /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/harness-local -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DOPENH264_PREFIX=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG"
+     ],
+     "lto": "no (a thin driver; the encoder is libopenh264.a)",
+     "pgo": "no",
+     "ref": "local"
+    },
+    "libaom": {
+     "commit": "b141d9c45db236335351c8a4b2a14b3ade27c937",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c11",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fPIC"
+     ],
+     "compile_source": "av1/encoder/encoder.c",
+     "configure": [
+      "cmake -S /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/src/libaom-v3.15.3 -B /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/libaom-v3.15.3 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_EXAMPLES=ON -DENABLE_TOOLS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_POLICY_DEFAULT_CMP0069=NEW"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=c++17",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "lto": "CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+     "pgo": "no (libaom documents no PGO route)",
+     "ref": "v3.15.3"
+    },
+    "libvpx": {
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6",
+     "compile_flags": [
+      "-m64",
+      "-fprofile-use=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/libvpx-v1.16.0/pgo",
+      "-DNDEBUG",
+      "-O3",
+      "-fPIC",
+      "-std=gnu99"
+     ],
+     "compile_source": "vp9/encoder/vp9_encoder.c",
+     "configure": [
+      "/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/src/libvpx-v1.16.0/configure --prefix=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt --disable-shared --enable-static --disable-vp8 --enable-vp9 --disable-unit-tests --disable-docs --disable-webm-io --extra-cflags=-fprofile-generate=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/libvpx-v1.16.0/pgo",
+      "/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/src/libvpx-v1.16.0/configure --prefix=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt --disable-shared --enable-static --disable-vp8 --enable-vp9 --disable-unit-tests --disable-docs --disable-webm-io --use-profile=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/libvpx-v1.16.0/pgo"
+     ],
+     "link_flags": [
+      "-m64",
+      "-fprofile-use=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/libvpx-v1.16.0/pgo"
+     ],
+     "lto": "no (its configure offers none)",
+     "pgo": "libvpx configure --use-profile; training: --rt --end-usage=cbr --target-bitrate=600 --lag-in-frames=0 --threads=1, --cpu-used 7 and 9; clips: 720p50_parkrun_ter.yuv ducks_take_off_420_720p50.yuv in_to_tree_420_720p50.yuv old_town_cross_420_720p50.yuv (30 frames each)",
+     "ref": "v1.16.0"
+    },
+    "openh264": {
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-m64",
+      "-m64",
+      "-fno-strict-aliasing",
+      "-fPIC",
+      "-fstack-protector-all"
+     ],
+     "compile_source": "codec/encoder/core/src/encoder.cpp",
+     "configure": [],
+     "link_flags": [
+      "-m64",
+      "-m64"
+     ],
+     "lto": "no (its Makefile offers none)",
+     "pgo": "no (none offered)",
+     "ref": "v2.7.0"
+    },
+    "svtav1": {
+     "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe",
+     "compile_flags": [
+      "-fno-stack-clash-protection",
+      "-fprofile-use=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/svtav1-v4.3.0/pgo",
+      "-fprofile-correction",
+      "-fprofile-partial-training",
+      "-fstack-protector-strong",
+      "-mno-avx",
+      "-O3",
+      "-DNDEBUG",
+      "-std=gnu99",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fPIC",
+      "-fvisibility=hidden"
+     ],
+     "compile_source": "Source/Lib/Globals/enc_handle.c",
+     "configure": [
+      "cmake -S /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/src/svtav1-v4.3.0 -B /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/svtav1-v4.3.0 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DCMAKE_OUTPUT_DIRECTORY=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/svtav1-v4.3.0/Bin -DSVT_AV1_LTO=ON -DSVT_AV1_PGO=ON -DSVT_AV1_PGO_DIR=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/svtav1-v4.3.0/pgo"
+     ],
+     "link_flags": [
+      "-fno-stack-clash-protection",
+      "-fprofile-use=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/svtav1-v4.3.0/pgo",
+      "-fprofile-correction",
+      "-fprofile-partial-training",
+      "-fstack-protector-strong",
+      "-mno-avx",
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fprofile-use=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/svtav1-v4.3.0/pgo",
+      "-fprofile-correction",
+      "-fprofile-partial-training"
+     ],
+     "lto": "SVT-AV1 SVT_AV1_LTO=ON (its default with gcc >= 9)",
+     "pgo": "SVT-AV1 SVT_AV1_PGO (PGOCompileGen/PGOCompileUse); training: --rtc 1 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 600 --lp 1, presets 8 10 12 13; clips: 720p50_parkrun_ter.yuv ducks_take_off_420_720p50.yuv in_to_tree_420_720p50.yuv old_town_cross_420_720p50.yuv (30 frames each)",
+     "ref": "v4.3.0"
+    },
+    "vvenc": {
+     "commit": "9428ea8636ae7f443ecde89999d16b2dfc421524",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=gnu++14",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-fPIC",
+      "-fvisibility=hidden",
+      "-fvisibility-inlines-hidden",
+      "-fdiagnostics-show-option"
+     ],
+     "compile_source": "source/Lib/EncoderLib/EncLib.cpp",
+     "configure": [
+      "cmake -S /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/vvenc-v1.14.0/tree -B /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/vvenc-v1.14.0 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DVVENC_ENABLE_LINK_TIME_OPT=ON"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-flto=auto"
+     ],
+     "lto": "VVenC VVENC_ENABLE_LINK_TIME_OPT=ON (its default)",
+     "pgo": "no (VVenC documents no PGO route)",
+     "ref": "v1.14.0"
+    },
+    "x264": {
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+     "compile_flags": [
+      "-O3",
+      "-ffast-math",
+      "-m64",
+      "-std=gnu99",
+      "-mpreferred-stack-boundary=6",
+      "-fomit-frame-pointer",
+      "-flto",
+      "-fno-tree-vectorize",
+      "-fvisibility=hidden",
+      "-fprofile-use"
+     ],
+     "compile_source": "encoder/encoder.c",
+     "configure": [
+      "/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/src/x264-stable/configure --prefix=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt --enable-static --disable-opencl --disable-lavf --disable-swscale --disable-ffms --disable-gpac --disable-lsmash --enable-lto"
+     ],
+     "link_flags": [
+      "-m64",
+      "-O3",
+      "-flto",
+      "-fprofile-use"
+     ],
+     "lto": "x264 configure --enable-lto",
+     "pgo": "x264 make fprofiled (its OPT0-OPT7 option sets, --threads 1); clips: 720p50_parkrun_ter.yuv ducks_take_off_420_720p50.yuv in_to_tree_420_720p50.yuv old_town_cross_420_720p50.yuv (30 frames each)",
+     "ref": "stable"
+    },
+    "x265": {
+     "commit": "e444744c03978c1fb4e037168967020cf2648427",
+     "compile_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects",
+      "-std=gnu++98",
+      "-fPIC",
+      "-fPIC",
+      "-ffast-math",
+      "-mstackrealign",
+      "-fno-exceptions"
+     ],
+     "compile_source": "encoder/encoder.cpp",
+     "configure": [
+      "cmake -S /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/src/x265-4.2/source -B /home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt/build/x265-4.2 -G Unix Makefiles -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/home/ubuntu/nanocodec-data/scratch/audit-builds/x86_64-opt -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DENABLE_SHARED=OFF -DENABLE_CLI=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_POLICY_DEFAULT_CMP0069=NEW"
+     ],
+     "link_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=auto",
+      "-fno-fat-lto-objects"
+     ],
+     "lto": "CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+     "pgo": "no (x265 documents no PGO route)",
+     "ref": "4.2"
+    }
+   }
+  }
+ },
+ "policy": "Each reference encoder is built by tools/anchors/build_anchors.sh --opt with the link-time (LTO) and profile-guided (PGO) optimisation its own build system offers and nothing else: its own release flags, no -march, its shipped runtime ISA dispatch; PGO trains on the release's four public Xiph clips (never a chart clip)."
+}

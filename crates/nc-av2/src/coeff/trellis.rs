@@ -30,7 +30,7 @@
 //! region's saturation (nearly all at the low rates we target).
 
 use nc_encoder::symbol_cost::COST_UNITS_PER_BIT;
-use nc_encoder::{Candidates, CoeffRateModel, Trellis};
+use nc_encoder::{Candidates, CoeffRateModel, PackedTrellisDiagonal, Trellis};
 
 use super::levels::{
     self, BASE_CONTEXTS, CONTEXT_LEVEL_CAP, LOW_RANGE_CONTEXTS, MAP_STRIDE, MAX_BASE_SYMBOLS,
@@ -48,14 +48,17 @@ use crate::transform::{self, Qindices};
 /// Diagonals the context state holds: the current one and the two its
 /// contexts read.
 const STATE_DIAGONALS: usize = 3;
-/// The [`ContextState`] slots of the two diagonals after each diagonal
-/// (`(d + 1) % 3`, `(d + 2) % 3`), looked up rather than divided.
-const SLOT_AFTER: [[usize; 2]; 2 * MAP_STRIDE] = {
-    let mut slots = [[0; 2]; 2 * MAP_STRIDE];
-    let mut d = 0;
-    while d < slots.len() {
-        slots[d] = [(d + 1) % STATE_DIAGONALS, (d + 2) % STATE_DIAGONALS];
-        d += 1;
+/// The current and next two anti-diagonals' slots by diagonal.
+const DIAGONAL_SLOTS: [[u8; STATE_DIAGONALS]; 2 * MAP_STRIDE] = {
+    let mut slots = [[0; STATE_DIAGONALS]; 2 * MAP_STRIDE];
+    let mut diagonal = 0;
+    while diagonal < slots.len() {
+        slots[diagonal] = [
+            (diagonal % STATE_DIAGONALS) as u8,
+            ((diagonal + 1) % STATE_DIAGONALS) as u8,
+            ((diagonal + 2) % STATE_DIAGONALS) as u8,
+        ];
+        diagonal += 1;
     }
     slots
 };
@@ -173,31 +176,43 @@ impl TrellisQuantizer {
     }
 }
 
-/// The levels of the last [`STATE_DIAGONALS`] anti-diagonals by row,
-/// saturated at [`CONTEXT_LEVEL_CAP`]. Rows run to [`MAP_STRIDE`] (the
-/// largest coded side plus the template's reach), so neighbours below the
-/// block read zeros without a test; neighbours right of it lie on rows of a
-/// diagonal no coded position fills, which are zero too. Diagonals after
-/// the last coded level are zero.
+/// The saturated levels of the current anti-diagonal and the two beyond
+/// it. The shared nibble layout also represents zero neighbors past row 31.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContextState {
-    /// Anti-diagonal of the last coded level.
     diagonal: u16,
-    /// Diagonal `d` lives in slot `d % STATE_DIAGONALS`.
-    levels: [[u8; MAP_STRIDE]; STATE_DIAGONALS],
+    levels: [PackedTrellisDiagonal; STATE_DIAGONALS],
 }
 
+const _: () = assert!(CONTEXT_LEVEL_CAP <= 15);
+
 impl ContextState {
-    /// The template neighbours of `at`, as `LevelMap::neighbours` gives
-    /// them to the coder.
+    /// The template neighbors, in the order `LevelMap::neighbours` reads
+    /// them. The first two are on the next diagonal, the rest on the one
+    /// after.
     fn neighbours(&self, at: ScanPosition) -> Neighbours {
-        let (row, diagonal) = (at.row(), at.diagonal());
-        // NEIGHBOURS in order: two on the next diagonal (rows r, r + 1),
-        // three on the one after (rows r + 1, r, r + 2); one slice of each
-        // bounds-checks them all.
-        let next = &self.levels[SLOT_AFTER[diagonal][0]][row..row + 2];
-        let after = &self.levels[SLOT_AFTER[diagonal][1]][row..row + 3];
-        [next[0], next[1], after[1], after[0], after[2]]
+        let shift = (at.row() * 4) as u8;
+        let [_, next, after] = DIAGONAL_SLOTS[at.diagonal()];
+        let next = self.levels[usize::from(next)].window(shift);
+        let after = self.levels[usize::from(after)].window(shift);
+        [
+            (next & 15) as u8,
+            ((next >> 4) & 15) as u8,
+            ((after >> 4) & 15) as u8,
+            (after & 15) as u8,
+            ((after >> 8) & 15) as u8,
+        ]
+    }
+
+    #[inline]
+    fn enter(&mut self, at: ScanPosition) -> &mut PackedTrellisDiagonal {
+        let diagonal = at.diagonal();
+        let slot = &mut self.levels[usize::from(DIAGONAL_SLOTS[diagonal][0])];
+        if usize::from(self.diagonal) != diagonal {
+            *slot = PackedTrellisDiagonal::EMPTY;
+            self.diagonal = diagonal as u16;
+        }
+        slot
     }
 }
 
@@ -503,7 +518,7 @@ impl CoeffRateModel for RateModel<'_> {
     fn initial_state(&self) -> ContextState {
         ContextState {
             diagonal: NO_DIAGONAL,
-            levels: [[0; MAP_STRIDE]; STATE_DIAGONALS],
+            levels: [PackedTrellisDiagonal::EMPTY; STATE_DIAGONALS],
         }
     }
 
@@ -589,21 +604,15 @@ impl CoeffRateModel for RateModel<'_> {
         let region = at.region(plane);
         let base_context = levels::base_context(state.neighbours(at), at, region, plane);
         let q9 = self.base_cost(BaseFamily::plain(region, false), base_context, 0);
-        self.advance(state, scan_pos, 0);
+        state.enter(at);
         q9 as f32 / COST_UNITS_PER_BIT as f32
     }
 
     fn advance(&self, state: &mut ContextState, scan_pos: usize, level: u32) {
         let at = self.positions[scan_pos];
-        let diagonal = at.diagonal();
-        let slot = &mut state.levels[diagonal % STATE_DIAGONALS];
-        if usize::from(state.diagonal) != diagonal {
-            // Entering a new diagonal: its slot held the one three further
-            // on, which no remaining context reads.
-            slot.fill(0);
-            state.diagonal = diagonal as u16;
-        }
-        slot[at.row()] = level.min(CONTEXT_LEVEL_CAP) as u8;
+        state
+            .enter(at)
+            .insert((at.row() * 4) as u8, level.min(CONTEXT_LEVEL_CAP));
     }
 
     fn empty_rate(&mut self) -> f32 {

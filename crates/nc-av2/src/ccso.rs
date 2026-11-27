@@ -53,7 +53,8 @@ pub const SUPPORTS: u8 = 7;
 /// Width of `max_band_log2` with and without edge classes.
 const BAND_ONLY_BITS: u32 = 3;
 const EDGE_BAND_BITS: u32 = 2;
-/// Largest band count (`CCSO_BAND_NUM`), as a power of two.
+/// Largest band count (`CCSO_BAND_NUM`), as a power of two: AVM rejects a
+/// band-only `max_band_log2` of 7 ("Invalid CCSO Band number").
 const MAX_BAND_LOG2: u8 = 6;
 /// Largest band count with edge classes (two bits of `max_band_log2`).
 const MAX_EDGE_BAND_LOG2: u8 = (1 << EDGE_BAND_BITS) - 1;
@@ -204,7 +205,10 @@ impl PlaneFilter {
         }
     }
 
-    fn is_valid(&self) -> bool {
+    /// Whether every field lies in its syntax range (an all-zero filter's
+    /// check covers its shape: bands and edge classes).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
         let edge_ok = if self.band_only {
             self.quant == 0
                 && self.support == 0
@@ -614,6 +618,19 @@ pub fn filter_picture(
     params: &CcsoParams,
     flag: impl Fn(PlaneIndex, usize, usize) -> bool,
 ) {
+    filter_picture_runs(picture, source, params, 1, flag);
+}
+
+/// The frame flag is constant across each aligned span of `flag_width`
+/// luma samples. Sample it once for that span, as dav2d does per filter
+/// block and lossless sub-block.
+pub(crate) fn filter_picture_runs(
+    picture: &mut Picture,
+    source: &CcsoSource,
+    params: &CcsoParams,
+    flag_width: usize,
+    flag: impl Fn(PlaneIndex, usize, usize) -> bool,
+) {
     for plane in PlaneIndex::ALL {
         let Some(filter) = params.plane(plane) else {
             continue;
@@ -621,16 +638,20 @@ pub fn filter_picture(
         let lut = filter.lut();
         let classifier = filter.classifier();
         let shift = usize::from(plane != PlaneIndex::Y);
+        let span = (flag_width >> shift).max(1);
         let mut view = picture.plane_mut(plane).view_mut();
         for y in 0..view.height() {
+            let ly = y << shift;
             let row = view.row_mut(y);
-            for (x, sample) in row.iter_mut().enumerate() {
-                let (lx, ly) = (x << shift, y << shift);
-                if !flag(plane, lx, ly) {
+            for (run, output) in row.chunks_mut(span).enumerate() {
+                let left = run * span;
+                if !flag(plane, left << shift, ly) {
                     continue;
                 }
-                let offset = i32::from(lut[source.lut_index(&classifier, lx, ly)]);
-                *sample = (i32::from(*sample) + offset).clamp(0, MAX_SAMPLE) as u8;
+                for (x, sample) in (left..).zip(output) {
+                    let offset = i32::from(lut[source.lut_index(&classifier, x << shift, ly)]);
+                    *sample = (i32::from(*sample) + offset).clamp(0, MAX_SAMPLE) as u8;
+                }
             }
         }
     }
@@ -728,6 +749,37 @@ mod tests {
         assert_eq!(c.class(-64), 1);
         assert_eq!(c.class(200), 1);
         assert_eq!(c.lut_index(200, 100, 200), (3 << 4) | 1);
+    }
+
+    #[test]
+    fn aligned_flag_spans_match_pixel_flags() {
+        let mut original = Picture::new(264, 72, 0).unwrap();
+        for plane in PlaneIndex::ALL {
+            let mut view = original.plane_mut(plane).view_mut();
+            for y in 0..view.height() {
+                for (x, sample) in view.row_mut(y).iter_mut().enumerate() {
+                    *sample = ((31 * x + 49 * y + 7 * x * y) & 255) as u8;
+                }
+            }
+        }
+        let mut source = CcsoSource::default();
+        source.fill_from(&original.plane(PlaneIndex::Y).view());
+        let params = CcsoParams::new([Some(filter()); 3]).unwrap();
+        for width in [4, 64, UNIT] {
+            let mut expected = original.clone();
+            let mut actual = original.clone();
+            let flag = |plane: PlaneIndex, x: usize, y: usize| {
+                !(x / width + y / 4 + plane as usize).is_multiple_of(3)
+            };
+            filter_picture(&mut expected, &source, &params, flag);
+            filter_picture_runs(&mut actual, &source, &params, width, flag);
+            for plane in PlaneIndex::ALL {
+                let (a, b) = (actual.plane(plane).view(), expected.plane(plane).view());
+                for y in 0..a.height() {
+                    assert_eq!(a.row(y), b.row(y), "span {width}, {plane:?}, row {y}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub(crate) mod scalar;
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 pub(crate) mod avx2;
+#[cfg(target_arch = "x86_64")]
+mod satd_x86;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
@@ -165,6 +167,9 @@ pub(crate) type SatdQuadsFn =
 
 /// SADs of a 16x16 source block, rows 0, 2, ..., 14, against reference
 /// blocks at `out.len()` consecutive x positions starting at `rf`.
+pub(crate) type SadScanBoundedFn = unsafe fn(&[u8], usize, &[u8], usize, &mut [u32], u32);
+
+/// Unbounded SAD scan.
 pub(crate) type SadScan16x16Fn =
     unsafe fn(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize, out: &mut [u32]);
 
@@ -323,6 +328,29 @@ pub(crate) fn grid_costs<P: PairwiseU16>(
     GridCosts { small, large }
 }
 
+/// Scale, mask, and aggregate the four candidate grids directly into
+/// caller-owned storage. Every byte of each cost is filled before use.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::inline_always, unsafe_code)]
+#[inline(always)]
+pub(crate) fn grid_costs_x4<'a, P: PairwiseU16>(
+    storage: &'a mut core::mem::MaybeUninit<[GridCosts; 4]>,
+    grids: &[[u16; 64]; 4],
+    visible: &[u16; 64],
+    scale: u16,
+) -> &'a [GridCosts; 4] {
+    let out = storage.as_mut_ptr().cast::<GridCosts>();
+    for (candidate, grid) in grids.iter().enumerate() {
+        // SAFETY: each candidate writes its own entry of this four-entry array.
+        unsafe {
+            out.add(candidate)
+                .write(grid_costs::<P>(grid, visible, scale));
+        }
+    }
+    // SAFETY: the loop wrote all four entries.
+    unsafe { storage.assume_init_ref() }
+}
+
 /// Four grid positions, folded in input order to preserve ties.
 pub(crate) type SadGridBestX4Fn = unsafe fn(
     src: &[u8],
@@ -334,6 +362,41 @@ pub(crate) type SadGridBestX4Fn = unsafe fn(
     tags: [u32; 4],
 );
 
+/// A macroblock's 4x4 SAD grid reduced to the H.264 residual skip tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MacroblockSad {
+    /// The sum of all sixteen luma 4x4 SADs, at most 256 * 255.
+    pub luma_sad: u16,
+    /// One bit per 8x8 luma quadrant whose four 4x4 cells passed the bound.
+    pub luma_quadrants: u8,
+    /// Each 8x8 chroma plane meets its four AC bounds and whole-plane DC bound.
+    pub chroma: [bool; 2],
+}
+
+pub(crate) type MacroblockSadFn =
+    unsafe fn(luma: BlockPair<'_>, chroma: [BlockPair<'_>; 2], limits: [u32; 3]) -> MacroblockSad;
+
+/// Scalar reduction over the exact grid, also used by tiers without a fused reduction.
+pub(crate) fn summarize_macroblock(
+    (luma, chroma): ([[u16; 4]; 4], [[u16; 4]; 2]),
+    [luma_limit, ac_limit, dc_limit]: [u32; 3],
+) -> MacroblockSad {
+    let mut luma_quadrants = 0;
+    for (q, cells) in luma.iter().enumerate() {
+        if cells.iter().all(|&sad| u32::from(sad) <= luma_limit) {
+            luma_quadrants |= 1 << q;
+        }
+    }
+    MacroblockSad {
+        luma_sad: luma.into_iter().flatten().sum(),
+        luma_quadrants,
+        chroma: chroma.map(|cells| {
+            cells.iter().all(|&sad| u32::from(sad) <= ac_limit)
+                && cells.iter().map(|&sad| u32::from(sad)).sum::<u32>() <= dc_limit
+        }),
+    }
+}
+
 /// One ISA's implementations of every pixel kernel.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PixelFns {
@@ -343,11 +406,13 @@ pub(crate) struct PixelFns {
     pub sad_x4: [SadX4Fn; 5],
     pub sad_quads_8x8_row: SadQuads8x8RowFn,
     pub sad_scan_16x16_even_rows: SadScan16x16Fn,
+    pub sad_scan_bounded: Option<SadScanBoundedFn>,
     /// Indexed by `GridRows` (every row, every other row).
     pub sad_grid_best_64x64: [SadGridBestFn; 2],
     pub sad_grid_best_x4: Option<[SadGridBestX4Fn; 2]>,
     pub sad_quads_16x16: SadQuadsFn,
     pub sad_4x4_macroblock: SadMacroblockFn,
+    pub macroblock_sad: Option<MacroblockSadFn>,
     pub satd_4x4: SatdFn,
     pub satd_8x8: SatdFn,
     pub satd_8x8_quads: Option<SatdQuadsFn>,

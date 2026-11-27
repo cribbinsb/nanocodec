@@ -142,6 +142,11 @@ impl<const TRACK_PARTS: bool> BinSink for BitCounter<'_, TRACK_PARTS> {
         self.add(COST_UNITS_PER_BIT as u32);
     }
 
+    #[inline]
+    fn encode_bypass_bits(&mut self, _bits: u32, count: u32) {
+        self.add(count * COST_UNITS_PER_BIT as u32);
+    }
+
     fn encode_terminate(&mut self, bin: bool) {
         // A 1 ends the slice (flush: about 7 bits); a 0 costs ~2/510 bit.
         const FLUSH_BITS: u32 = 7;
@@ -196,6 +201,11 @@ impl BinSink for RunCounter<'_> {
     #[inline]
     fn encode_bypass(&mut self, _bin: bool) {
         self.units += COST_UNITS_PER_BIT as u32;
+    }
+
+    #[inline]
+    fn encode_bypass_bits(&mut self, _bits: u32, count: u32) {
+        self.units += count * COST_UNITS_PER_BIT as u32;
     }
 
     fn encode_terminate(&mut self, _bin: bool) {

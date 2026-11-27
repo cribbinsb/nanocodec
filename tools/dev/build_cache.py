@@ -6,6 +6,7 @@ minutes on fresh-target release builds just to measure a landed commit).
     build_cache.py store COMMIT GATE_DIR [--since EPOCH]   (land.sh --verify)
     build_cache.py for COMMIT                               (tools/dev/binary_for.sh)
     build_cache.py prune
+    build_cache.py pin COMMIT [COMMIT ...]                  (an open re-judge's builds)
 
 The cache is the chart builds directory, in chart_refresh.py's layout:
 ~/nanocodec-data/charts/builds/<8-hex commit>/ holds `nanocodec` (the gate build:
@@ -27,12 +28,19 @@ the result. Never a local compile.
 records (docs/results, web/results/data) or holding files the cache did not write
 (a chart refresh adopted it). Builds made by chart_refresh or the release are never
 touched here; chart_refresh removes its own.
+
+Pinned builds are never pruned either: those named in PIN_FILE (one 8-hex build name per
+line, `#` comments; `build_cache.py pin COMMIT...` adds them, for an open re-judge) and
+those a train bundle from the last PIN_BUNDLE_DAYS days names as its `binary` or
+`anchor_binary` (a re-judge re-times the very builds its screen scored).
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import json
+import time
 import os
 import shutil
 import subprocess
@@ -64,6 +72,12 @@ KEEP_NEWEST = 20
 INTEGRATION = os.environ.get("NC_LAND_TARGET", "variance-integration")
 #: Results records whose naming of a build keeps it.
 RECORDS = ("docs/results", "web/results/data")
+#: Builds pinned by hand (`pin`): never pruned.
+PIN_FILE = CACHE.parent / "builds-pins.txt"
+#: Train bundles (screen results) whose builds are pinned while this recent.
+TRAIN_BUNDLES = DATA / "results" / "train" / "bundles"
+PIN_BUNDLE_DAYS = 7
+BUNDLE_RESULTS = ("L3.json", "final-check.json")
 #: Same-sources donors searched among the integration branch's last commits.
 DONOR_DEPTH = 200
 #: The worktree a missing build is checked out in and sent to the build box from.
@@ -145,12 +159,42 @@ def referenced(names: list[str]) -> set[str]:
     return found
 
 
+def pinned() -> set[str]:
+    """Build names in PIN_FILE and in the recent train bundles' screen results."""
+    names = set()
+    if PIN_FILE.is_file():
+        names |= {line.split("#")[0].strip() for line in PIN_FILE.read_text().splitlines()}
+    cutoff = time.time() - PIN_BUNDLE_DAYS * 86400
+    for result in (TRAIN_BUNDLES.glob(f"*/{name}") for name in BUNDLE_RESULTS):
+        for path in result:
+            if path.stat().st_mtime < cutoff:
+                continue
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            names |= {Path(record[key]).parent.name for key in ("binary", "anchor_binary")
+                      if record.get(key)}
+    return names - {""}
+
+
+def pin(commits: list[str]) -> None:
+    """Add COMMITs' build names to PIN_FILE."""
+    have = pinned()
+    with cache_lock(), PIN_FILE.open("a") as out:
+        for commit in commits:
+            name = short(git("rev-parse", f"{commit}^{{commit}}"))
+            if name not in have:
+                out.write(f"{name}\n")
+                have.add(name)
+
+
 def prune_locked() -> None:
     made = [d for d in CACHE.iterdir() if (d / CACHE_MARKER).is_file()]
     made.sort(key=lambda d: (d / CACHE_MARKER).stat().st_mtime, reverse=True)
     candidates = [d for d in made[KEEP_NEWEST:]
                   if {p.name for p in d.iterdir()} <= OWN_FILES]
-    keep = referenced([d.name for d in candidates])
+    keep = referenced([d.name for d in candidates]) | pinned()
     for directory in candidates:
         if directory.name not in keep and retention.guard(directory, "build_cache") is None:
             print(f"build cache: pruned {directory}")
@@ -224,11 +268,15 @@ def main() -> None:
     found = sub.add_parser("for", help="print COMMIT's build directory (build on the box if missing)")
     found.add_argument("commit")
     sub.add_parser("prune", help="drop old cache-made builds")
+    pins = sub.add_parser("pin", help="never prune these commits' builds (an open re-judge)")
+    pins.add_argument("commit", nargs="+")
     args = parser.parse_args()
     if args.command == "store":
         store(args.commit, args.gate_dir, args.since)
     elif args.command == "for":
         print(binary_for(args.commit))
+    elif args.command == "pin":
+        pin(args.commit)
     else:
         prune()
 

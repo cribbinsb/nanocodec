@@ -57,6 +57,7 @@ pub(crate) fn diff_fns() -> DiffFns {
             block_sums_w32,
             block_sums_w64,
         ],
+        halfpel_cross: None,
         sub_pixel_variance: [
             sub_pixel_variance_w4,
             sub_pixel_variance_w8,
@@ -65,9 +66,18 @@ pub(crate) fn diff_fns() -> DiffFns {
             sub_pixel_variance_w64,
         ],
         sse_8x8_row,
+        plane_sse,
+        variance_8x8_row: None,
     };
     if std::arch::is_aarch64_feature_detected!("dotprod") {
         functions.sse_8x8_row = super::neon_sse::sse_8x8_row;
+        functions.plane_sse = super::neon_sse::plane_sse;
+        functions.variance_8x8_row = Some(super::neon_sse::variance_8x8_row);
+        functions.halfpel_cross = Some([
+            super::neon_dotprod::halfpel_cross::<16>,
+            super::neon_dotprod::halfpel_cross::<32>,
+            super::neon_dotprod::halfpel_cross::<64>,
+        ]);
         functions.variance[1] = super::neon_dotprod::variance_w8;
         functions.variance[2..].copy_from_slice(&[
             super::neon_dotprod::variance::<16>,
@@ -91,6 +101,32 @@ pub(crate) fn diff_fns() -> DiffFns {
         ]);
     }
     functions
+}
+
+/// Install SVE2 dot accumulation for eight-wide sub-pixel variance.
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+pub(crate) fn install_sve2(table: &mut DiffFns) {
+    table.sub_pixel_variance[1] = subpel_8_sve2;
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[target_feature(enable = "neon")]
+unsafe fn subpel_8_sve2(
+    rf: &[u8],
+    ref_stride: usize,
+    x_offset: usize,
+    y_offset: usize,
+    src: &[u8],
+    src_stride: usize,
+    h: usize,
+) -> Variance {
+    // SAFETY: runtime dispatch verified SVE2. The generic driver starts
+    // with zero accumulators. At most 8x64 terms of 255^2 fit in i32.
+    unsafe {
+        generic::sub_pixel_variance::<crate::simd::neon::I16x8Sve2, 8>(
+            rf, ref_stride, x_offset, y_offset, src, src_stride, h,
+        )
+    }
 }
 
 /// Defines the four kernels of one width on one lane type.
@@ -287,4 +323,10 @@ unsafe fn sse_8x8_row(
         }
         *last = vaddvq_u32(acc);
     }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn plane_sse(a: &nc_common::PlaneView<'_>, b: &nc_common::PlaneView<'_>) -> u64 {
+    // SAFETY: the dispatch verifies the ISA and that both planes match.
+    unsafe { generic::plane_sse::<I16x8>(a, b) }
 }

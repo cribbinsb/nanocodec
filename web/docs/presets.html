@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="../results/site.css">
   <link rel="stylesheet" href="docs.css">
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
 <header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="../results/">Results</a><a href="../results/method.html">Method</a><a href="./" aria-current="page">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
@@ -36,7 +37,7 @@
       <code>--preset</code>: the codec's own parameter defaults, with no overrides. It is the quality point of the
       ladder, tuned on low-delay real-time encodes for PSNR-YUV, VMAF and MS-SSIM in equal thirds.</li>
     <li>The faster rungs switch off or narrow coding tools and searches, each one saving CPU for some compression.
-      How much, per codec and machine, is on the <a href="../results/speed.html">speed results</a>.</li>
+      How much, per codec and machine, is on the <a href="../results/codecs.html">results by codec</a>.</li>
     <li>The names are relative to our own Default for each codec: our <code>veryfast</code> is not as fast as
       x264's, nor our <code>medium</code> as slow as x264's.</li>
     <li>The slowest rung (<code>veryslow</code> for HEVC, <code>slower</code> for the others; 0.5.0 named it

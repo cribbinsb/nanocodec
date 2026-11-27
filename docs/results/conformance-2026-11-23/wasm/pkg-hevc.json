@@ -1,0 +1,1337 @@
+{
+ "codec": "hevc",
+ "pkg": "pkg",
+ "manifest": "hevc_conformance_v1.json",
+ "manifest_streams": 147,
+ "compared": 147,
+ "passed": 147,
+ "deep_compared": 11,
+ "deep_passed": 11,
+ "required_failing": 0,
+ "skipped": [],
+ "streams": {
+  "AMP_A_Samsung_7": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AMP_B_Samsung_7": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AMP_D_Hisilicon_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AMP_E_Hisilicon_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AMP_F_Hisilicon_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AMVP_A_MTK_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AMVP_B_MTK_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "AMVP_C_Samsung_7": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "BUMPING_A_ericsson_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_A_SHARP_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_B_SHARP_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_C_SHARP_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_D_SHARP_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_E_SHARP_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_F_SHARP_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_G_SHARP_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CAINIT_H_SHARP_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CIP_A_Panasonic_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "cip_B_NEC_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CIP_C_Panasonic_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "CONFWIN_A_Sony_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_A_MAIN10_VIXS_4": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_A_SONY_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_B_SONY_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_C_SONY_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_D_VIXS_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_E_VIXS_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_F_VIXS_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DBLK_G_VIXS_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DELTAQP_A_BRCM_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DELTAQP_B_SONY_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DELTAQP_C_SONY_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DSLICE_A_HHI_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DSLICE_B_HHI_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "DSLICE_C_HHI_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "ENTP_A_QUALCOMM_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "ENTP_B_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "ENTP_C_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "EXT_A_ericsson_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "FILLER_A_Sony_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "HRD_A_Fujitsu_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "INITQP_A_Sony_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "INITQP_B_Main10_Sony_1": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "ipcm_A_NEC_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "ipcm_B_NEC_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "ipcm_C_NEC_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "ipcm_D_NEC_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "ipcm_E_NEC_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "IPRED_A_docomo_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "IPRED_B_Nokia_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main Still Picture",
+   "required": true,
+   "problem": null
+  },
+  "IPRED_C_Mitsubishi_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "LS_A_Orange_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "LS_B_Orange_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "LTRPSPS_A_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MAXBINS_A_TI_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MAXBINS_B_TI_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MAXBINS_C_TI_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MERGE_A_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MERGE_B_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MERGE_C_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MERGE_D_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MERGE_E_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MERGE_F_MTK_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MERGE_G_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MVCLIP_A_qualcomm_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MVDL1ZERO_A_docomo_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "MVEDGE_A_qualcomm_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "NoOutPrior_A_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "NoOutPrior_B_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "NUT_A_ericsson_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "OPFLAG_A_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "OPFLAG_B_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "OPFLAG_C_Qualcomm_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PICSIZE_A_Bossen_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PICSIZE_B_Bossen_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PICSIZE_C_Bossen_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PICSIZE_D_Bossen_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PMERGE_A_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PMERGE_B_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PMERGE_C_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PMERGE_D_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PMERGE_E_TI_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "POC_A_Bossen_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PPS_A_qualcomm_7": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "PS_B_VIDYO_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RAP_A_docomo_6": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RAP_B_Bossen_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPLM_A_qualcomm_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPLM_B_qualcomm_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPS_A_docomo_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPS_B_qualcomm_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPS_C_ericsson_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPS_D_ericsson_6": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPS_E_qualcomm_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RPS_F_docomo_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RQT_A_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RQT_B_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RQT_C_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RQT_D_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RQT_E_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RQT_F_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "RQT_G_HHI_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_A_MediaTek_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_B_MediaTek_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_C_Samsung_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_D_Samsung_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_E_Canon_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_F_Canon_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_G_Canon_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAO_H_Parabola_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAODBLK_A_MainConcept_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SAODBLK_B_MainConcept_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SDH_A_Orange_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SLICES_A_Rovi_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SLIST_A_Sony_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SLIST_B_Sony_9": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SLIST_C_Sony_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SLIST_D_Sony_9": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "SLPPLP_A_VIDYO_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "STRUCT_A_Samsung_7": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "STRUCT_B_Samsung_7": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "TILES_A_Cisco_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "TILES_B_Cisco_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "TMVP_A_MS_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "TSCL_A_VIDYO_5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "TSCL_B_VIDYO_4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "TSKIP_A_MS_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "TSUNEQBD_A_MAIN10_Technicolor_2": {
+   "bit_depth": [
+    10,
+    9
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "TUSIZE_A_Samsung_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "VPSID_A_VIDYO_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "VPSSPSPPS_A_MainConcept_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WP_A_MAIN10_Toshiba_3": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WP_A_Toshiba_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WP_B_Toshiba_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WP_MAIN10_B_Toshiba_3": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WPP_A_ericsson_MAIN10_2": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WPP_A_ericsson_MAIN_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WPP_B_ericsson_MAIN10_2": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WPP_B_ericsson_MAIN_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WPP_C_ericsson_MAIN10_2": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WPP_C_ericsson_MAIN_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WPP_D_ericsson_MAIN10_2": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WPP_D_ericsson_MAIN_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WPP_E_ericsson_MAIN10_2": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WPP_E_ericsson_MAIN_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  },
+  "WPP_F_ericsson_MAIN10_2": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Main 10",
+   "required": true,
+   "problem": null
+  },
+  "WPP_F_ericsson_MAIN_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Main",
+   "required": true,
+   "problem": null
+  }
+ }
+}

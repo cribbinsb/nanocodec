@@ -24,7 +24,9 @@ const CELL_LOG2: u8 = 3;
 const UNKNOWN: u8 = 0;
 
 /// The leaf-size maps of the current and the last committed frame.
-#[derive(Debug, Default)]
+/// `Clone`: the label dump's tool trials save the whole context and put it back
+/// (`labels.rs`; a trial may be the coding that first sizes the maps).
+#[derive(Debug, Default, Clone)]
 pub(crate) struct DepthContext {
     cols: usize,
     rows: usize,
@@ -37,6 +39,15 @@ pub(crate) struct DepthContext {
     held: bool,
     /// Frames committed so far (the gate's refresh rotation).
     frames: u64,
+}
+
+/// A node's cells of the current map and the record flag, saved before a
+/// coding the label dump undoes (`rd_split.rs`).
+#[derive(Debug)]
+pub(crate) struct DepthSnapshot {
+    cols: usize,
+    cells: Vec<u8>,
+    recorded: bool,
 }
 
 /// What the maps say around one node.
@@ -85,6 +96,56 @@ impl DepthContext {
             self.current[row * self.cols + col0..row * self.cols + col_end].fill(value);
         }
         self.recorded = true;
+    }
+
+    /// `node`'s cells and the record flag, for a coding the label dump undoes
+    /// inside the search (the maps are sized by then; an unsized map saves
+    /// and restores nothing).
+    pub fn save(&self, node: &Block) -> DepthSnapshot {
+        let mut cells = Vec::new();
+        self.for_rows(node, |range| cells.extend_from_slice(&self.current[range]));
+        DepthSnapshot {
+            cols: self.cols,
+            cells,
+            recorded: self.recorded,
+        }
+    }
+
+    /// Put back what [`DepthContext::save`] saved of `node`; nothing if the
+    /// maps were resized since.
+    pub fn restore(&mut self, node: &Block, snapshot: &DepthSnapshot) {
+        if snapshot.cols != self.cols {
+            return;
+        }
+        let mut offset = 0;
+        let mut ranges = Vec::new();
+        self.for_rows(node, |range| ranges.push(range));
+        for range in ranges {
+            let len = range.len();
+            self.current[range].copy_from_slice(&snapshot.cells[offset..offset + len]);
+            offset += len;
+        }
+        self.recorded = snapshot.recorded;
+    }
+
+    /// The index range of each row of cells `node` covers.
+    fn for_rows(&self, node: &Block, mut each: impl FnMut(std::ops::Range<usize>)) {
+        let (col0, row0) = (node.x >> CELL_LOG2, node.y >> CELL_LOG2);
+        if col0 >= self.cols || row0 >= self.rows {
+            return;
+        }
+        let cells = 1usize << node.log2_size().saturating_sub(CELL_LOG2);
+        let col_end = (col0 + cells).min(self.cols);
+        for row in row0..(row0 + cells).min(self.rows) {
+            each(row * self.cols + col0..row * self.cols + col_end);
+        }
+    }
+
+    /// Forget what the frame being coded recorded (the label dump's map
+    /// starts each coding of a frame empty).
+    pub fn clear_current(&mut self) {
+        self.current.fill(UNKNOWN);
+        self.recorded = false;
     }
 
     /// Keep the co-located record through the frame being coded: an inter

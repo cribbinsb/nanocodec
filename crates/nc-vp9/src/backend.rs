@@ -17,10 +17,10 @@ use std::rc::Rc;
 
 use nc_common::{Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
-    Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType,
-    InterLayerMode, MAX_REFERENCE_SLOTS, MAX_SPATIAL_LAYERS, Mv as EngineMv, PredictionMode,
-    QuantParams, ReferenceChoice, SlotMask, SpatialConfig, SpatialLayerFrame,
-    spatial::layer_slot_offset,
+    Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FilterEffort, FramePlan,
+    FrameType, InterLayerMode, MAX_REFERENCE_SLOTS, MAX_SPATIAL_LAYERS, Mv as EngineMv,
+    PredictionMode, QuantParams, ReferenceChoice, SlotMask, SpatialConfig, SpatialLayerFrame,
+    StaticSkipTest, copy_zero_vector_prediction, spatial::layer_slot_offset,
 };
 
 use crate::bool_coder::BitSink;
@@ -114,6 +114,13 @@ const CODED_INTRA_MODES: [IntraMode; 10] = [
 const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     cadence_scale: 1.2,
     first_key_lookahead: 0.3,
+    first_key: Some(nc_encoder::first_key_model::FirstKeyCalibration {
+        weights: [
+            0.512_549, 0.948_092, 0.126_744, 0.605_836, 0.144_182, -0.910_492, 0.286_988,
+            0.403_286, 0.581_013,
+        ],
+        fast_bias: 0.016_524,
+    }),
     ..nc_encoder::RateModel::AC_LOOKUP_QINDEX
 };
 /// Lowest and highest `base_q_idx`.
@@ -678,6 +685,33 @@ struct BlockRefs {
     reference_bits: f32,
 }
 
+/// The matching, unscaled luma prediction already filtered during ranking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RankedLuma {
+    origin: (usize, usize),
+    side: usize,
+    reference: ReferenceChoice,
+    mv: Mv,
+    filter: nc_dsp::Vp9Filter,
+}
+
+impl RankedLuma {
+    fn for_block(
+        position: &BlockPosition,
+        reference: ReferenceChoice,
+        mv: Mv,
+        filter: nc_dsp::Vp9Filter,
+    ) -> Self {
+        Self {
+            origin: (position.col * MI_SIZE, position.row * MI_SIZE),
+            side: position.size * MI_SIZE,
+            reference,
+            mv,
+            filter,
+        }
+    }
+}
+
 /// VP9 encoder backend.
 pub struct Vp9Backend {
     /// The frame's [`FramePlan::lambda_scale`], applied to every λ.
@@ -694,6 +728,10 @@ pub struct Vp9Backend {
     /// `GOLDEN_FRAME`) during mode evaluation and block coding.
     active_ref: ReferenceChoice,
     params: Vp9Params,
+    /// The staged intra decision's first cut (`decision.intra_stage_*`).
+    intra_stage: nc_encoder::IntraStage,
+    /// Shared quantizer gates (`gate.partial_transform_min_quantizer`).
+    gates: nc_encoder::GateParams,
     /// Whether block quantizers are enabled (`enable_block_qp`).
     block_qp_enabled: bool,
     /// Block quantizers through segmentation, on frames whose blocks may
@@ -726,6 +764,8 @@ pub struct Vp9Backend {
     /// Reference vectors of the block being decided, cached per position and
     /// reference (`(row, col, log2_size, secondary_ref)`).
     refs: Option<BlockRefs>,
+    ranked_luma: Option<RankedLuma>,
+    ranked_luma_samples: Vec<u8>,
     scratch: Scratch,
     buffers: Box<recon::ResidualBuffers>,
     /// Inter prediction scratch.
@@ -746,6 +786,12 @@ pub struct Vp9Backend {
     /// Whether the block last coded is an inter block without residual
     /// predicted from a candidate vector (`CodecBackend::last_cu_skipped`).
     last_block_skipped: bool,
+    /// The block of a repeat frame `try_static_skip` accepted
+    /// (`StaticSkipTest::repeat`), coded next with no residual.
+    repeat_block: Option<(usize, usize)>,
+    /// The engine's loop-filter decision for this frame (`filter_effort.rs`;
+    /// VP9 reads whether an inter frame is deblocked).
+    filter_effort: FilterEffort,
 }
 
 /// log2 of the 4x4-sample units of the entropy contexts.
@@ -764,15 +810,15 @@ impl Vp9Trellis {
     /// an inter or intra block) from its `coefficients`, starting from the
     /// plain quantiser's `levels` (some nonzero) and priced with the
     /// frame's probabilities and the neighbours' nonzero contexts as they
-    /// stand. Returns whether any level is left.
+    /// stand. Returns the new end of block.
     fn quantize(
         &mut self,
         dsp: &nc_dsp::Dsp,
         (fc, contexts, tx_block, inter): (&FrameContext, &EntropyContexts, &TxBlock, bool),
         ty: transform::TxType,
         (lambda, coefficients, steps): (f32, &[i16], transform::Steps),
-        levels: &mut [i32],
-    ) -> bool {
+        levels: (&mut [i32], Option<usize>),
+    ) -> usize {
         let model = Model::of(tx_block.plane, tx_block.tx, ty, inter);
         let probs = &fc.coef[model.tx as usize][model.plane as usize][usize::from(model.inter)];
         let ctx = contexts.coefficient(
@@ -831,6 +877,10 @@ impl CodecBackend for Vp9Backend {
     /// `begin_frame` continues from committed state only (probability
     /// context, segment map and features, previous grid, last key);
     /// `commit_frame` adapts and advances it.
+    /// A vector component lies strictly within ±2048 samples (libvpx
+    /// `is_mv_valid`: `MV_LOW` < component < `MV_UPP`, 14 bits of eighths; a
+    /// decoder marks the frame corrupt otherwise).
+    const VECTOR_REACH: usize = 2047;
     const RECODE: bool = true;
     // No intra refresh: backward-adapted frame contexts (VP9 §8.4.2) and
     // `use_prev_frame_mvs` carry a lost frame's state into every later
@@ -887,6 +937,13 @@ impl CodecBackend for Vp9Backend {
     /// 720p 20 f CBR 400, callgrind): +1.7%, +0.1%, +0.8%. VP9 Fast keeps
     /// the engine values.
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Periodic keys at the engine's `rate.key_cap_buffer` 1.0, the first key at 0.8
+        // (`rate.key_cap_buffer_first`): cap 1.0 on the first key too was ejected on L3 at medium
+        // and faster (+0.10 / +0.23 %, the larger first key at 150 f with one key). nceval.train at
+        // both key shares (base 29f3c5a22, front k): L3 byte-identical (one-key streams keep their
+        // first key), final check BETTER at 1/150 and 1/300: medium -0.99 / -0.38 %, faster -1.09 /
+        // -0.39 %. VP9 fast sets the first key at 1.0 (passed).
+        ("rate.key_cap_buffer_first", 0.8),
         // Key intra modes by coded cost among the SATD-best three, trials
         // without the trellis: all-intra PSNR-YUV BD -3.00 % at +43 % key
         // instructions (CBR 150 f +1.7-1.9 %). Pool (k 0.1, dCPU 1.8, draw
@@ -1038,6 +1095,15 @@ impl CodecBackend for Vp9Backend {
         // Kept unwalked, fixed QP (draw fixedqp-2026-11-20, quick): VP9
         // Default J +0.3 % [+0.1, +0.4], n 22.
         ("decision.winner_walk_keeps_skip", 0.0),
+        // Periodic keys planned 2 QP units finer than the inter level, adopted
+        // with the key-frame RD partition search (3ebca4466). The search itself
+        // is off at medium (reverted 2026-11-22): on the published front's chart
+        // timing (150 f, one key) the head cost Zen 5 cycles AV1 +5.3 %, AV2
+        // +9.1 %, VVC +5.9 % against the same head with the search, these finer
+        // keys, the AV1 / AV2 key trellis and H.264's key Intra_8x8 off, which
+        // outweighs its J (L3 -0.33 to -0.55 %). The finer key adds no search
+        // and stays (coordinator decision); a screen of it alone is queued.
+        ("rate.key_level_finer", 2.0),
     ];
 
     // The fixed-QP profile (`--qp`): every high-quality frame of the unified
@@ -1048,9 +1114,21 @@ impl CodecBackend for Vp9Backend {
     // fixedqp-2026-11-15-second -1.4% [-2.6, -0.3]; each half alone -0.2 to
     // -1.0%. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
     // The other VP9 presets pin the plan off, so the profile is inert there.
+    // It also codes a period-8 QP cadence at base boost 4 (leaf 1, the engine's), no
+    // start-up cadence: medium, 600 f fixed QP, nceval.fixedqp draw
+    // fixedqp-2026-11-22: AV1 adopt draw J -1.34 % [-1.67, -0.99] n 48, VP9
+    // -1.53 % [-1.74, -0.76] n 22, AV2 -1.31 % [-1.62, -0.65] n 24 (quick);
+    // AV1 at 150 f -0.21 %. Slow / slower (quick, 600 f, base 57f355565):
+    // AV1 -0.65 / -1.84 %, VP9 -0.79 / -1.46 %, AV2 -1.10 / -1.74 %, every
+    // interval below zero. The fast rungs and the SVC files, not screened, pin
+    // the old cadence. docs/handoff/vvc.md "Fixed-QP cascade sweep" (VVC, HEVC
+    // and H.264 did not hold).
     const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
         ("structure.secondary_min_depth", 0.0),
         ("refs.second_full", 1.0),
+        ("rate.cadence_period", 8.0),
+        ("rate.cadence_base_boost", 4.0),
+        ("rate.cadence_startup_period", 0.0),
     ];
 
     fn new(config: &EncoderConfig) -> Result<Self, ConfigError> {
@@ -1089,6 +1167,8 @@ impl CodecBackend for Vp9Backend {
             spatial: None,
             active_ref: ReferenceChoice::Primary,
             params: Vp9Params::from_overrides(&config.params),
+            intra_stage: nc_encoder::IntraStage::from_overrides(&config.params),
+            gates: nc_encoder::GateParams::from_overrides(&config.params),
             block_qp_enabled: false,
             block_qp: None,
             coding_q_idx: qindex,
@@ -1123,6 +1203,8 @@ impl CodecBackend for Vp9Backend {
             counts: Box::default(),
             writer: TileRecorder::default(),
             refs: None,
+            ranked_luma: None,
+            ranked_luma_samples: Vec::new(),
             scratch: Scratch {
                 levels: vec![0; MAX_TX_BLOCKS * 16],
                 coded: Vec::with_capacity(MAX_TX_BLOCKS),
@@ -1147,6 +1229,8 @@ impl CodecBackend for Vp9Backend {
             dsp: nc_dsp::Dsp::new(),
             node_trials: node_trial::NodeTrials::default(),
             last_block_skipped: false,
+            repeat_block: None,
+            filter_effort: FilterEffort::FULL,
         })
     }
 
@@ -1291,6 +1375,10 @@ impl CodecBackend for Vp9Backend {
         if self.params.exact_ranking < 0.5 {
             return None;
         }
+        self.exact_luma_filter()
+    }
+
+    fn exact_luma_filter(&self) -> Option<nc_dsp::Filter> {
         Some(match self.header.interp_filter {
             Some(nc_dsp::Vp9Filter::Smooth) => nc_dsp::Filter::Vp9Smooth,
             Some(nc_dsp::Vp9Filter::Sharp) => nc_dsp::Filter::Vp9Sharp,
@@ -1299,6 +1387,49 @@ impl CodecBackend for Vp9Backend {
                 nc_dsp::Filter::Vp9
             }
         })
+    }
+
+    const CACHE_UNWEIGHTED_LUMA: bool = true;
+
+    fn cache_exact_luma(
+        &mut self,
+        block: &Block,
+        mv: EngineMv,
+        filter: nc_dsp::Filter,
+        prediction: &[u8],
+        _stats: nc_dsp::Variance,
+    ) {
+        // Spatial references can be resampled proxies, and near the edge
+        // the engine and the bitstream predictor may extend different crops.
+        if self.spatial.is_some() || self.random.is_some() {
+            return;
+        }
+        let filter = match filter {
+            nc_dsp::Filter::Vp9 => nc_dsp::Vp9Filter::Regular,
+            nc_dsp::Filter::Vp9Smooth => nc_dsp::Vp9Filter::Smooth,
+            nc_dsp::Filter::Vp9Sharp => nc_dsp::Vp9Filter::Sharp,
+            _ => return,
+        };
+        let (dx, dy) = mv.full_pel();
+        let before = nc_dsp::VP9_TAPS_BEFORE as isize;
+        let width = (block.size() + nc_dsp::VP9_TAPS - 1) as isize;
+        let x = block.x as isize + dx as isize - before;
+        let y = block.y as isize + dy as isize - before;
+        if x < 0
+            || y < 0
+            || x + width > self.grids.width as isize
+            || y + width > self.grids.height as isize
+        {
+            return;
+        }
+        self.ranked_luma = Some(RankedLuma::for_block(
+            &self.position(block),
+            self.active_ref,
+            to_vp9_mv(mv),
+            filter,
+        ));
+        self.ranked_luma_samples.clear();
+        self.ranked_luma_samples.extend_from_slice(prediction);
     }
 
     /// At the current block's quantizer inside `encode_block` (the engine
@@ -1330,6 +1461,8 @@ impl CodecBackend for Vp9Backend {
 
     fn set_frame_params(&mut self, params: &nc_encoder::ParamOverrides) {
         self.params = Vp9Params::from_overrides(params);
+        self.intra_stage = nc_encoder::IntraStage::from_overrides(params);
+        self.gates = nc_encoder::GateParams::from_overrides(params);
     }
 
     fn rate_model(&self) -> nc_encoder::RateModel {
@@ -1424,6 +1557,8 @@ impl CodecBackend for Vp9Backend {
         // differs from the reconstruction's by transform rounding alone;
         // it skips the inverse transform of every planned leaf.
         let transform_domain = self.params.leaf_cost_transform_domain >= 0.5 && !self.lossless;
+        // Priced as the leaf is coded (`trim_levels`'s planned dead zone).
+        let min_level = transform::planned_min_level(Rounding::Intra, self.lambda_scale);
         for plane in PlaneIndex::ALL {
             let plane_tx = if plane == PlaneIndex::Y || self.lossless {
                 tx
@@ -1467,13 +1602,13 @@ impl CodecBackend for Vp9Backend {
                     coefficients,
                 );
                 let levels = &mut scratch.levels[..area];
-                let nonzero = transform::quantize(
+                let nonzero = transform::quantize_planned(
                     &self.dsp,
                     plane_tx,
                     self.lossless,
                     coefficients,
                     steps,
-                    (Rounding::Intra, 1),
+                    (Rounding::Intra, min_level),
                     levels,
                 );
                 let levels = if nonzero {
@@ -1481,10 +1616,19 @@ impl CodecBackend for Vp9Backend {
                 } else {
                     &transform::ZERO_LEVELS[..area]
                 };
-                let eob = coeff::end_of_block(&self.dsp, levels, plane_tx, model.ty);
+                let eob = if nonzero {
+                    coeff::end_of_block(&self.dsp, levels, plane_tx, model.ty)
+                } else {
+                    0
+                };
                 bits += coeff::cost((levels, eob), model, probs, 0);
                 if transform_domain {
-                    sse += transform::coefficient_sse(plane_tx, coefficients, levels, steps);
+                    sse += transform::coefficient_sse(
+                        plane_tx,
+                        coefficients,
+                        nonzero.then_some(levels),
+                        steps,
+                    );
                     continue;
                 }
                 let reconstructed =
@@ -1509,6 +1653,28 @@ impl CodecBackend for Vp9Backend {
     /// VP9 takes no static skips (the default would offer the skip vector).
     fn static_skip_vector(&mut self, _block: &Block) -> Option<EngineMv> {
         None
+    }
+
+    /// Only a repeat frame's blocks (`StaticSkipTest::repeat`): coded at
+    /// the zero vector with no residual, a skip block (VP9 §6.4.6).
+    fn try_static_skip(
+        &mut self,
+        block: &Block,
+        _source: &Picture,
+        reference: &Picture,
+        recon: &mut Picture,
+        test: StaticSkipTest,
+    ) -> bool {
+        if !test.repeat || self.random.is_some() {
+            return false;
+        }
+        copy_zero_vector_prediction(&self.dsp, block, reference, recon);
+        self.repeat_block = Some((block.x, block.y));
+        true
+    }
+
+    fn set_filter_effort(&mut self, effort: FilterEffort) {
+        self.filter_effort = effort;
     }
 
     fn final_intra_screen(
@@ -1665,6 +1831,7 @@ impl CodecBackend for Vp9Backend {
         self.grids.contexts.reset_frame();
         self.writer = TileRecorder::default();
         self.refs = None;
+        self.ranked_luma = None;
         self.active_ref = ReferenceChoice::Primary;
         if past_independent {
             // `vp9_setup_past_independence` resets every context.
@@ -1765,10 +1932,12 @@ impl CodecBackend for Vp9Backend {
         let intra_modes = inter
             .is_none()
             .then(|| self.intra_modes(block, tx, source, recon));
-        let drop_residual = self
-            .random
-            .as_mut()
-            .is_some_and(RandomSyntax::drop_residual);
+        let repeat = self.repeat_block.take() == Some((block.x, block.y));
+        let drop_residual = repeat
+            || self
+                .random
+                .as_mut()
+                .is_some_and(RandomSyntax::drop_residual);
         // An inter block's prediction is already saved in
         // `scratch.prediction` (predicted there, then copied into `recon`).
         let (tx, known_bits) = if inter.is_some() && !drop_residual {
@@ -1836,6 +2005,7 @@ impl CodecBackend for Vp9Backend {
         self.last_block_skipped =
             skip && info.inter.is_some_and(|(mode, _)| mode != InterMode::New);
         self.refs = None;
+        self.ranked_luma = None;
         self.active_ref = ReferenceChoice::Primary;
         self.coding_q_idx = self.header.base_q_idx;
     }
@@ -1850,6 +2020,14 @@ impl CodecBackend for Vp9Backend {
 
     fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
         self.node_trial_price(source, recon)
+    }
+
+    fn node_trial_parts(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> Option<nc_encoder::NodeTrialParts> {
+        Some(self.node_trial_split_price(source, recon))
     }
 
     fn undo_node_trial(&mut self, recon: &mut Picture) {
@@ -1984,7 +2162,16 @@ impl CodecBackend for Vp9Backend {
         }
         self.grids.committed_segment_features = self.header.segmentation.features;
         self.grids.last_key = key;
-        self.grids.previous = Some(self.grids.grid.clone());
+        // The finished grid becomes the last frame's by a swap, not a copy
+        // (a 720p grid is 345 KB): the grid then holds an older frame's
+        // entries, which are stale either way ([`ModeInfoGrid`]: readers
+        // only look at blocks already coded in the current frame).
+        match &mut self.grids.previous {
+            Some(previous) if previous.same_shape(&self.grids.grid) => {
+                std::mem::swap(previous, &mut self.grids.grid);
+            }
+            previous => *previous = Some(self.grids.grid.clone()),
+        }
     }
 }
 
@@ -2445,26 +2632,37 @@ impl Vp9Backend {
             if skip_sharp && filter == nc_dsp::Vp9Filter::Sharp {
                 continue;
             }
-            let prediction = &mut self.scratch.filter_trial[..side * side];
-            inter_pred::predict_with_ref_size(
-                &self.dsp,
-                reference,
-                ref_size,
-                PlaneIndex::Y,
-                position,
-                mv,
-                filter,
-                &mut self.inter.window,
-                prediction,
-            );
+            let key = RankedLuma::for_block(position, self.active_ref, mv, filter);
+            let cached = unscaled && self.ranked_luma == Some(key);
+            let prediction = if cached {
+                &self.ranked_luma_samples[..side * side]
+            } else {
+                let trial = &mut self.scratch.filter_trial[..side * side];
+                inter_pred::predict_with_ref_size(
+                    &self.dsp,
+                    reference,
+                    ref_size,
+                    PlaneIndex::Y,
+                    position,
+                    mv,
+                    filter,
+                    &mut self.inter.window,
+                    trial,
+                );
+                trial
+            };
             let pred = PlaneView::new(prediction, side, side, side).expect("prediction block");
             let cost = self.dsp.variance(size, &src, &pred).sse as f32 + lambda * symbol_bits;
             if cost < best.0 {
                 best = (cost, filter);
-                std::mem::swap(
-                    &mut self.scratch.filter_trial,
-                    &mut self.scratch.filter_best,
-                );
+                if cached {
+                    self.scratch.filter_best[..side * side].copy_from_slice(prediction);
+                } else {
+                    std::mem::swap(
+                        &mut self.scratch.filter_trial,
+                        &mut self.scratch.filter_best,
+                    );
+                }
             }
         }
         (best.1, true)
@@ -2524,8 +2722,9 @@ impl Vp9Backend {
     }
 
     /// The `keep` cheapest luma modes of an intra block by the measure of
-    /// [`Self::choose_intra_modes`], cheapest first, each with its cheapest
-    /// chroma mode (conditioned on that luma mode) and its luma cost.
+    /// [`Self::choose_intra_modes`] (of those, the staged cut's survivors
+    /// where it is on), cheapest first, each with its cheapest chroma mode
+    /// (conditioned on that luma mode) and its luma cost.
     fn intra_mode_candidates(
         &self,
         block: &Block,
@@ -2612,7 +2811,15 @@ impl Vp9Backend {
         } else {
             uv_tx_size(block.log2_size(), tx)
         };
-        rank(PlaneIndex::Y, tx, y_costs, keep)
+        let lumas = rank(PlaneIndex::Y, tx, y_costs, keep);
+        // The staged cut's survivors only get a chroma mode.
+        let cut = self.intra_stage.cut(self.header.key);
+        let lumas = if cut.is_active() {
+            cut.survivors(lumas)
+        } else {
+            lumas
+        };
+        lumas
             .into_iter()
             .map(|(y, cost)| {
                 (
@@ -2635,7 +2842,12 @@ impl Vp9Backend {
         if let Some(random) = &mut self.random {
             return random.intra_modes(&CODED_INTRA_MODES);
         }
-        let keep = self.params.intra_rd_candidates.round().max(1.0) as usize;
+        // The staged cut ranks every luma mode and codes its survivors.
+        let keep = if self.intra_stage.cut(self.header.key).is_active() {
+            INTRA_MODES
+        } else {
+            self.params.intra_rd_candidates.round().max(1.0) as usize
+        };
         if keep > 1 && !self.lossless {
             self.rd_intra_modes(block, tx, source, recon, keep)
         } else {
@@ -3276,7 +3488,7 @@ impl Vp9Backend {
                 self.block_steps(plane).ac as f32 / self.block_steps(PlaneIndex::Y).ac as f32;
             trellis.settings.chroma_scale? * ratio * ratio
         };
-        Some(self.lambda() * trellis.settings.lambda_scale * scale)
+        Some(self.lambda() * trellis.settings.lambda_scale_for(self.header.key) * scale)
     }
 
     /// The rounding and planned minimum level (past qindex 255) of the
@@ -3376,6 +3588,7 @@ impl Vp9Backend {
             },
             filter_level: match (&mut self.random, self.lossless) {
                 (_, true) => 0,
+                (None, false) if !key && !self.filter_effort.deblock => 0,
                 (Some(random), false) => random.filter_level(),
                 (None, false) => filter_level(
                     qindex,
@@ -3464,13 +3677,21 @@ impl Vp9Backend {
         let (filter, luma_ready) = self.choose_filter(source, (ref_pic, ref_size), position, mv);
         let side = block.size();
         let scratch = &mut self.scratch;
+        let key = RankedLuma::for_block(position, self.active_ref, mv, filter);
+        let luma = if luma_ready {
+            Some(&scratch.filter_best[..side * side])
+        } else if ref_size == (position.width, position.height) && self.ranked_luma == Some(key) {
+            Some(&self.ranked_luma_samples[..side * side])
+        } else {
+            None
+        };
         recon::predict_inter(
             &self.dsp,
             &mut self.inter,
             &mut scratch.prediction,
             (ref_pic, ref_size, position),
             (mv, filter),
-            luma_ready.then_some(&scratch.filter_best[..side * side]),
+            luma,
         );
         copy_block_in(
             &self.dsp,
@@ -3550,19 +3771,24 @@ impl Vp9Backend {
                     continue;
                 }
                 let side = plane_tx.side();
-                if let Some(quads) = quads {
-                    let sad = quads.tx_sad(&self.scratch.quad_sads, &tx_block, side);
-                    if ty == transform::TxType::DctDct
-                        && quantization.dct_levels_are_zero(sad, shortcuts.zero_scale)
-                    {
-                        self.scratch
-                            .coded
-                            .push(CodedTx::uncoded(&tx_block, ty, offset));
-                        offset += area;
-                        continue;
-                    }
+                // Exact shortcut: the zero proof takes the SAD alone (from
+                // the quad pass, else one SAD kernel call), so a block it
+                // drops forms no residual (nor, from the quads, any views);
+                // a kept block's residual is then formed without its SAD.
+                // Intra blocks and blocks past the real-time skip test
+                // (`vp9.nonrd_skip_scale`) seldom prove zero, so they form
+                // residual and SAD in one pass as before (SAD first for every
+                // block: VP9 Faster +0.4 % x86 instructions, Veryfast -1.2 %).
+                let provable = ty == transform::TxType::DctDct && !self.lossless;
+                let proven_zero =
+                    |sad: u32| quantization.dct_levels_are_zero(sad, shortcuts.zero_scale);
+                let quad_sad = quads.map(|q| q.tx_sad(&self.scratch.quad_sads, &tx_block, side));
+                let uncoded = CodedTx::uncoded(&tx_block, ty, offset);
+                if provable && quad_sad.is_some_and(proven_zero) {
+                    self.scratch.coded.push(uncoded);
+                    offset += area;
+                    continue;
                 }
-                let residual = &mut self.scratch.residual[..area];
                 let (bx, by) = (tx_block.x as isize, tx_block.y as isize);
                 let src = source
                     .plane(plane)
@@ -3573,21 +3799,33 @@ impl Vp9Backend {
                     .region(bx, by, side, side)
                     .expect("block inside the picture");
                 let size = nc_dsp::BlockSize::new(side, side).expect("square VP9 transform block");
-                let sad = self.dsp.residual_sad(size, &src, &rec, residual, side);
+                let unproven = provable && quad_sad.is_none();
+                let fused = unproven && (intra.is_some() || shortcuts.nonrd_scale > 0.0);
+                if unproven && !fused && proven_zero(self.dsp.sad(size, &src, &rec)) {
+                    self.scratch.coded.push(uncoded);
+                    offset += area;
+                    continue;
+                }
+                let residual = &mut self.scratch.residual[..area];
+                if fused {
+                    if proven_zero(self.dsp.residual_sad(size, &src, &rec, residual, side)) {
+                        self.scratch.coded.push(uncoded);
+                        offset += area;
+                        continue;
+                    }
+                } else {
+                    self.dsp.residual(size, &src, &rec, residual, side);
+                }
                 let coefficients = &mut self.scratch.coefficients[..area];
                 let levels = &mut self.scratch.levels[offset..offset + area];
-                let certainly_zero = ty == transform::TxType::DctDct
-                    && !self.lossless
-                    && quantization.dct_levels_are_zero(sad, shortcuts.zero_scale);
                 let zero_limit = quantization.zero_limit();
-                let transformed = !certainly_zero
-                    && transform_residual(
-                        &self.dsp,
-                        (plane_tx, ty, self.lossless, shortcuts.partial_forward),
-                        residual,
-                        zero_limit,
-                        coefficients,
-                    );
+                let transformed = transform_residual(
+                    &self.dsp,
+                    (plane_tx, ty, self.lossless, shortcuts.partial_forward),
+                    residual,
+                    zero_limit,
+                    coefficients,
+                );
                 let nonzero = transformed
                     && quantization.quantize(&self.dsp, self.lossless, coefficients, levels);
                 let trimmed_eob = if nonzero {
@@ -3596,7 +3834,7 @@ impl Vp9Backend {
                     Some(0)
                 };
                 let nonzero = trimmed_eob != Some(0);
-                let (nonzero, known_eob) = match (&mut self.trellis, trellis_lambda) {
+                let eob = match (&mut self.trellis, trellis_lambda) {
                     (Some(trellis), Some(lambda)) if nonzero => {
                         let block = (
                             &self.context,
@@ -3604,36 +3842,27 @@ impl Vp9Backend {
                             &tx_block,
                             intra.is_none(),
                         );
-                        let nonzero = trellis.quantize(
+                        trellis.quantize(
                             &self.dsp,
                             block,
                             ty,
                             (lambda, coefficients, steps),
-                            levels,
-                        );
-                        // The trellis can change the last coefficient.
-                        (nonzero, None)
+                            (levels, trimmed_eob),
+                        )
                     }
                     _ => match rd_trim {
-                        Some((trim, lambda)) if nonzero => {
-                            let eob = coeff::rate_trim(
-                                &self.dsp,
-                                &trim,
-                                (levels, coefficients),
-                                (plane_tx, ty),
-                                steps,
-                                lambda,
-                            );
-                            (eob != 0, Some(eob))
-                        }
-                        _ => (nonzero, trimmed_eob),
+                        Some((trim, lambda)) if nonzero => coeff::rate_trim(
+                            &self.dsp,
+                            &trim,
+                            (levels, coefficients),
+                            (plane_tx, ty),
+                            steps,
+                            lambda,
+                        ),
+                        _ => trimmed_eob.unwrap_or_else(|| {
+                            coeff::end_of_block(&self.dsp, levels, plane_tx, ty)
+                        }),
                     },
-                };
-                let eob = if nonzero {
-                    known_eob
-                        .unwrap_or_else(|| coeff::end_of_block(&self.dsp, levels, plane_tx, ty))
-                } else {
-                    0
                 };
                 if eob != 0 {
                     self.buffers.add_residual(
@@ -3674,7 +3903,11 @@ impl Vp9Backend {
         // An enhancement picture coded from the upscaled base only keeps every
         // frequency too (`coding_from_base_only`).
         let exact = self.refining_block() || self.coding_from_base_only();
-        let partial_forward = self.params.partial_forward >= 0.5 && !self.lossless && !exact;
+        let partial_forward = self.params.partial_forward >= 0.5
+            && !self.lossless
+            && !exact
+            && nc_encoder::WorkGate::partial_transform(&self.gates)
+                .admits_quantizer(f32::from(self.coding_q_idx) / QINDEX_MAX as f32);
         // Speed heuristic (`vp9.pre_transform_zero_scale`): inter residual
         // within a multiple of the zero proof's limit is dropped untransformed.
         // Intra blocks and refined blocks keep the exact proof (a refined

@@ -81,6 +81,8 @@ pub(crate) struct BlockAq {
     layer_offset: Vec<f64>,
     /// The cells of `offset` that are not zero.
     nonzero: Vec<usize>,
+    /// Cells already refined on R1 (masked out on R2 in split mode).
+    r1_refined: Vec<bool>,
     /// Whether any cell of the planned frame has a non-zero offset.
     active: bool,
     /// Sum of `bit_weight` over the frame.
@@ -116,6 +118,7 @@ impl BlockAq {
             reuse_offset: Vec::new(),
             layer_offset: Vec::new(),
             nonzero: Vec::new(),
+            r1_refined: Vec::new(),
             active: false,
             total_weight: 0.,
             bit_weight: Vec::new(),
@@ -167,14 +170,10 @@ impl BlockAq {
         // Gathered first, then the square roots on their own: that loop
         // vectorises (in one pass it cost ~20 instructions per cell). f32
         // is ample for a weight and halves the passes' memory.
-        self.bit_weight.extend(
-            pre.blocks
-                .cells()
-                .iter()
-                .map(|b| b.sad_prev.map_or(b.sum_sq_dev, u32::from) as f32),
-        );
+        self.bit_weight
+            .extend(pre.blocks.cells().iter().map(cell_activity));
         for weight in &mut self.bit_weight {
-            *weight = 1. + weight.sqrt();
+            *weight = bits_weight(*weight);
         }
         self.total_weight = self.bit_weight.iter().map(|&w| f64::from(w)).sum();
         self.offset.clear();
@@ -314,6 +313,298 @@ impl BlockAq {
         self.total_weight = total;
     }
 
+    /// Zero-centered per-block MC-residual first-key refinement offsets on R1/R2.
+    /// `pass`: `0` = single-shot, `1` = split R1 (certain zero-MV blocks only, records mask),
+    /// `2` = split R2 (skips cells already refined in pass 1).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_first_key_mc_refine(
+        &mut self,
+        pre: &PreAnalysis,
+        motion: &MotionAnalysis,
+        refine_qp: f64,
+        from: f64,
+        full: f64,
+        mv_shoulder: f64,
+        mv_scale: f64,
+        cam_shoulder: f64,
+        cam_scale: f64,
+        camera_motion: f64,
+        pass: u8,
+    ) -> Option<f64> {
+        let pre_cells = pre.blocks.cells();
+        let fine_cells = motion.fine.cells();
+        if pre_cells.len() != fine_cells.len() || pre_cells.is_empty() || refine_qp <= 0. {
+            return None;
+        }
+        let n = pre_cells.len();
+        if pass == 1 {
+            self.r1_refined.clear();
+            self.r1_refined.resize(n, false);
+            if camera_motion > 0.5 {
+                return None;
+            }
+        }
+        let cam_decay = if cam_scale > 0. {
+            let excess = (camera_motion - cam_shoulder).max(0.);
+            (-excess / cam_scale).exp()
+        } else {
+            1.0
+        };
+        if cam_decay * refine_qp < 0.1 {
+            return None;
+        }
+        self.cols = pre.blocks.cols();
+        if !self.active || self.offset.len() != n {
+            self.offset.clear();
+            self.offset.resize(n, 0.);
+            self.nonzero.clear();
+        }
+        let span = full - from;
+        let mut refine = vec![0.0f64; n];
+        let mut any = false;
+        for i in 0..n {
+            if pass == 2 && self.r1_refined.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            let mv_mag = f64::from(fine_cells[i].mv.x).hypot(f64::from(fine_cells[i].mv.y));
+            if pass == 1 && mv_mag > 0.5 {
+                continue;
+            }
+            let sigma = (f64::from(pre_cells[i].sum_sq_dev) / CELL_SAMPLES).sqrt();
+            let mc_mae = f64::from(fine_cells[i].sad) / CELL_SAMPLES;
+            let good = if sigma < 4.0 {
+                if mc_mae <= 1.0 { 1.0 } else { 0.0 }
+            } else {
+                (1.0 - mc_mae / sigma).clamp(0.0, 1.0)
+            };
+            if pass == 1 && good < full {
+                continue;
+            }
+            let mc_weight = if span > 0. {
+                ((good - from) / span).clamp(0.0, 1.0)
+            } else if good >= full {
+                1.0
+            } else {
+                0.0
+            };
+            let mv_decay = if mv_scale > 0. {
+                let excess = (mv_mag - mv_shoulder).max(0.);
+                (-excess / mv_scale).exp()
+            } else {
+                1.0
+            };
+            let weight = mc_weight * mv_decay * cam_decay;
+            if weight * refine_qp >= 0.1 {
+                refine[i] = -refine_qp * weight;
+                any = true;
+                if pass == 1 {
+                    self.r1_refined[i] = true;
+                }
+            }
+        }
+        if !any {
+            return None;
+        }
+        if self.unit_log2 > CELL_LOG2 {
+            pool_units(&mut refine, self.cols, self.unit_log2);
+        }
+        let mean_delta = refine.iter().sum::<f64>() / n as f64;
+        for (dst, &delta) in self.offset.iter_mut().zip(&refine) {
+            let centered = delta - mean_delta;
+            if centered.abs() > 1e-6 {
+                *dst += centered;
+            }
+        }
+        self.nonzero.clear();
+        self.nonzero
+            .extend((0..self.offset.len()).filter(|&cell| self.offset[cell] != 0.));
+        self.active = !self.nonzero.is_empty();
+        Some(-mean_delta)
+    }
+
+    /// Zero-centered per-block MC-confidence QP concentration on cadence base
+    /// frames: shifts high-MC-confidence, low-MV blocks finer and unpredictable
+    /// blocks coarser at ~zero net bit change.
+    pub fn apply_base_mc_concentration(
+        &mut self,
+        pre: &PreAnalysis,
+        motion: &MotionAnalysis,
+        strength_qp: f64,
+        camera_motion: f64,
+    ) {
+        let pre_cells = pre.blocks.cells();
+        let fine_cells = motion.fine.cells();
+        if pre_cells.len() != fine_cells.len() || pre_cells.is_empty() || strength_qp <= 0. {
+            return;
+        }
+        let cam_decay = (-(camera_motion - 1.0).max(0.) / 2.0).exp();
+        let eff_qp = strength_qp * cam_decay;
+        if eff_qp < 0.25 {
+            return;
+        }
+        let n = pre_cells.len();
+        self.cols = pre.blocks.cols();
+        if !self.active || self.offset.len() != n {
+            self.offset.clear();
+            self.offset.resize(n, 0.);
+            self.nonzero.clear();
+        }
+        if self.bit_weight.len() != n {
+            self.bit_weight.clear();
+            self.bit_weight.resize(n, 0.);
+        }
+        let mut w = vec![0.0_f64; n];
+        let mut sum_w = 0.0_f64;
+        let span = 0.35_f64; // 0.50 -> 0.85
+        for i in 0..n {
+            let b = &pre_cells[i];
+            let m = &fine_cells[i];
+            let sigma = (f64::from(b.sum_sq_dev) / 64.0).sqrt();
+            let mc_mae = f64::from(m.sad) / 64.0;
+            let mv_mag = (f64::from(m.mv.x).powi(2) + f64::from(m.mv.y).powi(2)).sqrt();
+            let good = if sigma < 4.0 {
+                if mc_mae <= 1.0 { 1.0 } else { 0.0 }
+            } else {
+                (1.0 - mc_mae / sigma).clamp(0.0, 1.0)
+            };
+            let mc_w = ((good - 0.50) / span).clamp(0.0, 1.0);
+            let mv_decay = (-(mv_mag - 1.0).max(0.) / 3.0).exp();
+            let wi = mc_w * mv_decay;
+            w[i] = wi;
+            sum_w += wi;
+        }
+        let mean_w = sum_w / n as f64;
+        // Skip if frame is uniform (all still or all chaotic).
+        let mut deltas = vec![0.0_f64; n];
+        let mut any = false;
+        for i in 0..n {
+            let d = -eff_qp * (w[i] - mean_w);
+            if d.abs() >= 0.1 {
+                deltas[i] = d;
+                any = true;
+            }
+        }
+        if !any {
+            return;
+        }
+        if self.unit_log2 > CELL_LOG2 {
+            pool_units(&mut deltas, self.cols, self.unit_log2);
+        }
+        let mean_d = deltas.iter().sum::<f64>() / n as f64;
+        for i in 0..n {
+            let raw = (deltas[i] - mean_d).clamp(-self.max_offset, self.max_offset);
+            let centered = self
+                .offset_step
+                .map_or(raw, |step| (raw / step).round() * step);
+            if centered.abs() > 1e-6 {
+                self.offset[i] += centered;
+                if self.bit_weight[i] == 0. {
+                    self.bit_weight[i] = bit_weight(&pre_cells[i]);
+                }
+            }
+        }
+        self.nonzero.clear();
+        self.nonzero
+            .extend((0..self.offset.len()).filter(|&cell| self.offset[cell] != 0.));
+        self.active = !self.nonzero.is_empty();
+    }
+
+    /// Zero-centered per-block temporal-persistence QP concentration on
+    /// non-initial (periodic) key frames (`key && index > 0`): uses each 8x8
+    /// cell's frame-to-frame temporal similarity (`1 - sad_prev / (64*sigma)`)
+    /// and still run length (`still.runs`) to concentrate intra bits onto
+    /// persistent background blocks while coarsening fast-changing blocks at
+    /// ~zero net bit change.
+    pub fn apply_periodic_key_aq(
+        &mut self,
+        pre: &PreAnalysis,
+        still: &nc_analysis::still::StillMap,
+        strength_qp: f64,
+        last_camera_motion: f64,
+    ) {
+        let pre_cells = pre.blocks.cells();
+        let runs = still.runs.cells();
+        if pre_cells.is_empty() || pre_cells.len() != runs.len() || strength_qp <= 0. {
+            return;
+        }
+        // Require temporal sad_prev to be present (not frame 0).
+        if pre_cells[0].sad_prev.is_none() {
+            return;
+        }
+        let cam_decay = (-(last_camera_motion - 1.0).max(0.) / 2.0).exp();
+        let eff_qp = strength_qp * cam_decay;
+        if eff_qp < 0.25 {
+            return;
+        }
+        let n = pre_cells.len();
+        self.cols = pre.blocks.cols();
+        if !self.active || self.offset.len() != n {
+            self.offset.clear();
+            self.offset.resize(n, 0.);
+            self.nonzero.clear();
+        }
+        if self.bit_weight.len() != n {
+            self.bit_weight.clear();
+            self.bit_weight.resize(n, 0.);
+        }
+        let mut w = vec![0.0_f64; n];
+        let mut sum_w = 0.0_f64;
+        let span = 0.35_f64; // 0.50 -> 0.85
+        for i in 0..n {
+            let b = &pre_cells[i];
+            let sigma = (f64::from(b.sum_sq_dev) / 64.0).sqrt();
+            let mae = f64::from(b.sad_prev.unwrap_or(0)) / 64.0;
+            let good = if sigma < 4.0 {
+                if mae <= 1.0 { 1.0 } else { 0.0 }
+            } else {
+                (1.0 - mae / sigma).clamp(0.0, 1.0)
+            };
+            let temp_w = ((good - 0.50) / span).clamp(0.0, 1.0);
+            let run_w = (f64::from(runs[i]) / 8.0).clamp(0.0, 1.0);
+            let wi = temp_w.max(run_w);
+            w[i] = wi;
+            sum_w += wi;
+        }
+        let mean_w = sum_w / n as f64;
+        // Skip scene cuts (nearly everything changed) or uniform static scenes.
+        if !(0.05..=0.95).contains(&mean_w) {
+            return;
+        }
+        let mut deltas = vec![0.0_f64; n];
+        let mut any = false;
+        for i in 0..n {
+            let d = -eff_qp * (w[i] - mean_w);
+            if d.abs() >= 0.1 {
+                deltas[i] = d;
+                any = true;
+            }
+        }
+        if !any {
+            return;
+        }
+        if self.unit_log2 > CELL_LOG2 {
+            pool_units(&mut deltas, self.cols, self.unit_log2);
+        }
+        let mean_d = deltas.iter().sum::<f64>() / n as f64;
+        let max_pos = self.max_offset.min(2.0);
+        for i in 0..n {
+            let raw = (deltas[i] - mean_d).clamp(-self.max_offset, max_pos);
+            let centered = self
+                .offset_step
+                .map_or(raw, |step| (raw / step).round() * step);
+            if centered.abs() > 1e-6 {
+                self.offset[i] += centered;
+                if self.bit_weight[i] == 0. {
+                    self.bit_weight[i] = bit_weight(&pre_cells[i]);
+                }
+            }
+        }
+        self.nonzero.clear();
+        self.nonzero
+            .extend((0..self.offset.len()).filter(|&cell| self.offset[cell] != 0.));
+        self.active = !self.nonzero.is_empty();
+    }
+
     /// Whether the planned frame has any non-zero offset.
     pub fn active(&self) -> bool {
         self.active
@@ -450,6 +741,20 @@ fn heuristic_offset_step(max_offset: f32, max_offsets: usize) -> Option<f64> {
     (per_side > 0).then(|| f64::from(max_offset) / per_side as f64)
 }
 
+/// A cell's activity: its motion error against the reference where the
+/// analysis has one, else its sum of squared deviations.
+#[inline]
+pub(crate) fn cell_activity(b: &BlockStats) -> f32 {
+    b.sad_prev.map_or(b.sum_sq_dev, u32::from) as f32
+}
+
+/// The expected-bits weight of a cell of `activity` ([`cell_activity`]):
+/// bits grow about with the residual's magnitude, its square root.
+#[inline]
+pub(crate) fn bits_weight(activity: f32) -> f32 {
+    1. + activity.sqrt()
+}
+
 pub(crate) fn native_offset(steps: &[f64], bounds: (u32, u32), quantizer: u32, offset: f64) -> i16 {
     if offset == 0. {
         return 0;
@@ -558,5 +863,117 @@ mod tests {
             assert!((leaf(x, y) - square).abs() < 1e-9);
         }
         assert!(leaf(0, 0) < leaf(16, 0));
+    }
+
+    #[test]
+    fn r2_clears_stale_inactive_offsets_before_adding_deltas() {
+        let mut o = ParamOverrides::default();
+        o.set("rate.aq_strength", 0.);
+        o.set("persist.reuse", 1.);
+        let mut aq = BlockAq::new(&o, 3, usize::MAX).unwrap();
+        let pre = PreAnalysis {
+            blocks: Grid::from_cells(
+                2,
+                1,
+                vec![
+                    BlockStats {
+                        sum_sq_dev: 100 * 64,
+                        ..BlockStats::default()
+                    },
+                    BlockStats {
+                        sum_sq_dev: 100 * 64,
+                        ..BlockStats::default()
+                    },
+                ],
+            ),
+            static_fraction: 1.,
+            mean_luma: 128.,
+        };
+        // Frame 1: reuse sets a non-zero offset on cell 0.
+        aq.plan(&pre, None, Some(&[-8.0, 0.0]));
+        assert!(aq.active());
+        assert!((aq.offset_qp(&Block::square(0, 0, 3)) + 8.0).abs() < 1e-6);
+        // Frame 2: no reuse offsets -> AQ becomes inactive, leaving stale array behind.
+        aq.plan(&pre, None, None);
+        assert!(!aq.active());
+        // R2 adds zero-centered deltas on frame 2; stale -8.0 must not reappear.
+        let mut analyzer = nc_analysis::Analyzer::new(16, 8, nc_dsp::Dsp::new()).unwrap();
+        let pic = nc_common::Picture::new(16, 8, 128).unwrap();
+        let _ = analyzer.analyze(&pic);
+        let f2 = analyzer.analyze(&pic);
+        let motion = f2.motion.as_ref().expect("second frame has motion");
+        let mean_qp =
+            aq.apply_first_key_mc_refine(&pre, motion, 6.0, 0.5, 0.85, 1.0, 3.0, 1.0, 2.0, 0.0, 0);
+        assert!(mean_qp.is_some());
+        // Both cells are identical -> zero-centered R2 deltas must be 0, not -8.0!
+        assert!(aq.offset_qp(&Block::square(0, 0, 3)).abs() < 1e-6);
+        assert!(aq.offset_qp(&Block::square(8, 0, 3)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn base_mc_concentration_respects_camera_motion_and_offset_step() {
+        let mut o = ParamOverrides::default();
+        o.set("rate.aq_strength", 0.);
+        o.set("rate.aq_max_offset", 6.);
+        o.set("persist.reuse", 1.);
+        let mut aq = BlockAq::new(&o, 3, 8).unwrap(); // 8-segment grid (like VP9)
+        let mut analyzer = nc_analysis::Analyzer::new(128, 64, nc_dsp::Dsp::new()).unwrap();
+        let mut p0 = nc_common::Picture::new(128, 64, 128).unwrap();
+        let mut p1 = nc_common::Picture::new(128, 64, 128).unwrap();
+        // Left 64x64 SB: static smooth gradient (high MC confidence, sad == 0).
+        // Right 64x64 SB: scrambled texture in frame 1 (low MC confidence).
+        for y in 0..64 {
+            for x in 0..128 {
+                let v0 = (60 + (x % 64) * 2 + y) as u8;
+                p0.plane_mut(nc_common::PlaneIndex::Y).view_mut().row_mut(y)[x] = v0;
+                p1.plane_mut(nc_common::PlaneIndex::Y).view_mut().row_mut(y)[x] = if x < 64 {
+                    v0
+                } else {
+                    ((x * 37 + y * 59) % 200 + 20) as u8
+                };
+            }
+        }
+        let _ = analyzer.analyze(&p0);
+        let f1 = analyzer.analyze(&p1);
+        let motion = f1.motion.as_ref().unwrap();
+        // High camera motion shuts it off cleanly.
+        aq.apply_base_mc_concentration(&f1.pre, motion, 6.0, 10.0);
+        assert!(!aq.active());
+        // Still camera concentrates finer QP on left (high MC) vs right (low MC).
+        aq.apply_base_mc_concentration(&f1.pre, motion, 6.0, 0.0);
+        assert!(aq.offset_qp(&Block::square(0, 0, 3)) < aq.offset_qp(&Block::square(80, 0, 3)));
+    }
+
+    #[test]
+    fn periodic_key_aq_concentrates_on_persistent_blocks_and_caps_coarsening() {
+        let mut o = ParamOverrides::default();
+        o.set("rate.aq_strength", 0.);
+        o.set("rate.aq_max_offset", 6.);
+        o.set("persist.reuse", 1.);
+        let mut aq = BlockAq::new(&o, 3, usize::MAX).unwrap();
+        let mut analyzer = nc_analysis::Analyzer::new(128, 64, nc_dsp::Dsp::new()).unwrap();
+        let mut p0 = nc_common::Picture::new(128, 64, 128).unwrap();
+        let mut p1 = nc_common::Picture::new(128, 64, 128).unwrap();
+        for y in 0..64 {
+            for x in 0..128 {
+                let v0 = (60 + (x % 64) * 2 + y) as u8;
+                p0.plane_mut(nc_common::PlaneIndex::Y).view_mut().row_mut(y)[x] = v0;
+                p1.plane_mut(nc_common::PlaneIndex::Y).view_mut().row_mut(y)[x] = if x < 64 {
+                    v0
+                } else {
+                    ((x * 37 + y * 59) % 200 + 20) as u8
+                };
+            }
+        }
+        let _ = analyzer.analyze(&p0);
+        let f1 = analyzer.analyze(&p1);
+        // High camera motion shuts it off cleanly.
+        aq.apply_periodic_key_aq(&f1.pre, &f1.still, 4.0, 10.0);
+        assert!(!aq.active());
+        // Still camera sharpens persistent left half and caps right-half coarsening <= +2.0.
+        aq.apply_periodic_key_aq(&f1.pre, &f1.still, 4.0, 0.0);
+        let left = aq.offset_qp(&Block::square(0, 0, 3));
+        let right = aq.offset_qp(&Block::square(80, 0, 3));
+        assert!(left < 0.0 && right > 0.0 && right <= 2.0 + 1e-6, "left={left} right={right}");
     }
 }

@@ -139,11 +139,31 @@ struct Random(u16);
 
 impl Random {
     /// `get_random_number(bits)`: a 16-bit LFSR with taps 0, 1, 3, 12.
+    #[inline]
     fn next(&mut self, bits: u32) -> usize {
         let r = self.0;
         let bit = (r ^ (r >> 1) ^ (r >> 3) ^ (r >> 12)) & 1;
         self.0 = (r >> 1) | (bit << 15);
         usize::from(self.0 >> (16 - bits)) & ((1 << bits) - 1)
+    }
+
+    /// Sixteen successive Gaussian indices from a single register.
+    /// As in dav1d's batched grain generator, compute feedback in parallel.
+    /// Feedback reaches taps 12, 3 and 1 after 4, 13 and 15 steps.
+    /// The two doubling folds account for repeated four-step feedback.
+    #[inline]
+    fn gaussian16(&mut self) -> [usize; 16] {
+        let state = u32::from(self.0);
+        let feedback = state ^ (state >> 1) ^ (state >> 3) ^ (state >> 12);
+        let feedback = feedback ^ (feedback << 4);
+        let feedback = feedback ^ (feedback << 8);
+        let feedback = (feedback ^ (feedback << 13) ^ (feedback << 15)) & 0xffff;
+        let extended = state | (feedback << 16);
+        self.0 = (extended >> 16) as u16;
+        let shift = (u16::BITS - GAUSSIAN_BITS) as usize;
+        core::array::from_fn(|i| {
+            ((extended >> (i + 1 + shift)) as usize) & (GAUSSIAN_SEQUENCE.len() - 1)
+        })
     }
 }
 
@@ -192,6 +212,7 @@ impl GrainBlocks {
 
     /// The next block's (column, row) offset into the template, in units
     /// of two luma samples.
+    #[inline]
     fn offsets(self, random: &mut Random) -> (usize, usize) {
         match self {
             Self::Av1 => {
@@ -268,18 +289,51 @@ fn white_noise<G: Grain>(
     shift: u32,
     enabled: bool,
 ) -> Template<G> {
-    let mut values = [G::default(); MAX_TEMPLATE_SAMPLES];
-    if enabled {
-        let round = if shift == 0 { 0 } else { 1 << (shift - 1) };
-        for out in &mut values[..rows * columns] {
-            let g = i32::from(GAUSSIAN_SEQUENCE[random.next(GAUSSIAN_BITS)]);
-            *out = G::from_i32((g + round) >> shift);
-        }
-    }
-    Template {
+    let mut template = Template {
         rows,
         columns,
-        values,
+        values: [G::default(); MAX_TEMPLATE_SAMPLES],
+    };
+    if enabled {
+        fill_gaussian(random, &mut template.values[..rows * columns], shift);
+    }
+    template
+}
+
+// Every normative shift is in 0..=7. One table is active for a given
+// frame, so the inner generator is a lookup and store with no rounding work.
+static ROUNDED_GAUSSIAN: [[i16; GAUSSIAN_SEQUENCE.len()]; 8] = {
+    let mut tables = [[0; GAUSSIAN_SEQUENCE.len()]; 8];
+    let mut shift = 0;
+    while shift < tables.len() {
+        let mut i = 0;
+        while i < GAUSSIAN_SEQUENCE.len() {
+            let round = if shift == 0 { 0 } else { 1i32 << (shift - 1) };
+            tables[shift][i] = ((GAUSSIAN_SEQUENCE[i] as i32 + round) >> shift) as i16;
+            i += 1;
+        }
+        shift += 1;
+    }
+    tables
+};
+
+#[inline(never)]
+fn fill_gaussian<G: Grain>(random: &mut Random, values: &mut [G], shift: u32) {
+    if let Some(table) = ROUNDED_GAUSSIAN.get(shift as usize) {
+        let (groups, tail) = values.as_chunks_mut::<16>();
+        for group in groups {
+            for (out, index) in group.iter_mut().zip(random.gaussian16()) {
+                *out = G::from_i32(i32::from(table[index]));
+            }
+        }
+        for out in tail {
+            *out = G::from_i32(i32::from(table[random.next(GAUSSIAN_BITS)]));
+        }
+    } else {
+        for out in values {
+            let g = i32::from(GAUSSIAN_SEQUENCE[random.next(GAUSSIAN_BITS)]);
+            *out = G::from_i32(round2(g, shift));
+        }
     }
 }
 
@@ -309,8 +363,8 @@ fn auto_regress<G: Grain>(
     let (rows, columns) = (template.rows, template.columns);
     let mut above = [(0isize, 0isize, 0i32); MAX_AR_ABOVE];
     let mut above_len = 0;
-    let mut left = [(0isize, 0i32); MAX_AR_LEFT];
-    let mut left_len = 0;
+    let mut left = [0; MAX_AR_LEFT];
+    let mut reach = 0;
     for ((row, column), &value) in ar_positions(lag).zip(coefficients) {
         let coefficient = i32::from(value) - 128;
         if coefficient == 0 {
@@ -320,12 +374,18 @@ fn auto_regress<G: Grain>(
             above[above_len] = (row, column, coefficient);
             above_len += 1;
         } else {
-            left[left_len] = (column, coefficient);
-            left_len += 1;
+            let distance = column.unsigned_abs();
+            left[distance - 1] = coefficient;
+            reach = reach.max(distance);
         }
     }
     let above = &above[..above_len];
-    let left = &left[..left_len];
+    let finish = match reach {
+        0 => finish_ar_row::<G, 0>,
+        1 => finish_ar_row::<G, 1>,
+        2 => finish_ar_row::<G, 2>,
+        _ => finish_ar_row::<G, 3>,
+    };
     let (first, last) = (AR_PADDING, columns - AR_PADDING);
     let shaped = last - first;
     let round = if shift == 0 { 0 } else { 1 << (shift - 1) };
@@ -342,12 +402,38 @@ fn auto_regress<G: Grain>(
         }
         extra(y, sums);
         let row = &mut template.values[y * columns..(y + 1) * columns];
-        for (x, &partial) in (first..last).zip(sums.iter()) {
-            let mut sum = partial;
-            for &(column, coefficient) in left {
-                sum += coefficient * row[(x as isize + column) as usize].into();
-            }
-            row[x] = G::from_i32((row[x].into() + ((sum + round) >> shift)).clamp(min, max));
+        finish(row, sums, left, (shift, round), (min, max));
+    }
+}
+
+/// The causal part of one AR row. The one to three previously shaped
+/// samples stay in a short rolling window, as in dav1d's grain generator.
+fn finish_ar_row<G: Grain, const REACH: usize>(
+    row: &mut [G],
+    sums: &[i32],
+    weights: [i32; MAX_AR_LEFT],
+    (shift, round): (u32, i32),
+    (min, max): (i32, i32),
+) {
+    let mut previous = [0; MAX_AR_LEFT];
+    for (i, sample) in previous[..REACH].iter_mut().enumerate() {
+        *sample = row[AR_PADDING - 1 - i].into();
+    }
+    for (sample, &partial) in row[AR_PADDING..].iter_mut().zip(sums) {
+        let mut sum = partial;
+        for i in 0..REACH {
+            sum += weights[i] * previous[i];
+        }
+        let shaped = ((*sample).into() + ((sum + round) >> shift)).clamp(min, max);
+        *sample = G::from_i32(shaped);
+        if REACH >= 3 {
+            previous[2] = previous[1];
+        }
+        if REACH >= 2 {
+            previous[1] = previous[0];
+        }
+        if REACH >= 1 {
+            previous[0] = shaped;
         }
     }
 }
@@ -369,7 +455,9 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
         shift,
         p.y_points.count > 0,
     );
-    if p.y_points.count > 0 {
+    // The initial Gaussian samples are already in range. Luma lag zero
+    // has no active AR taps, so proceed directly to the chroma template.
+    if p.y_points.count > 0 && lag != 0 {
         auto_regress(&mut luma, lag, &p.ar_coeffs_y_plus_128, ar, |_, _| {});
     }
     let cb_enabled = p.cb_points.count > 0 || p.chroma_scaling_from_luma;
@@ -402,6 +490,9 @@ fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<
         }
         let luma_coefficient = i32::from(coefficients[luma_coeff_idx]) - 128;
         let use_luma = with_luma && luma_coefficient != 0;
+        if lag == 0 && !use_luma {
+            return grain;
+        }
         auto_regress(&mut grain, lag, coefficients, ar, |y, sums| {
             if !use_luma {
                 return;
@@ -531,6 +622,19 @@ mod tests {
                     assert!((delta_y.min(0)..=delta_y.max(0)).contains(&step));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn gaussian_batch_covers_every_seed() {
+        for seed in 0..=u16::MAX {
+            let mut scalar = Random(seed);
+            let mut batch = Random(seed);
+            assert_eq!(
+                batch.gaussian16(),
+                core::array::from_fn(|_| scalar.next(GAUSSIAN_BITS))
+            );
+            assert_eq!(batch.0, scalar.0);
         }
     }
 }

@@ -233,3 +233,46 @@ fn hostile_framing_layers_dimensions_and_post_picture_errors_are_transactional()
         &fixture.expected,
     );
 }
+
+/// The packets of a fuzz input in the browser layout (`fuzz/README.md`,
+/// config byte `& 3` 0): a config byte, then packets separated by `NCPK`.
+fn browser_packets(input: &[u8]) -> Vec<&[u8]> {
+    const SEPARATOR: &[u8] = b"NCPK";
+    let (config, mut rest) = input.split_first().expect("a config byte");
+    assert_eq!(config & 3, 0, "browser layout");
+    let mut packets = Vec::new();
+    while let Some(at) = rest.windows(SEPARATOR.len()).position(|w| w == SEPARATOR) {
+        packets.push(&rest[..at]);
+        rest = &rest[at + SEPARATOR.len()..];
+    }
+    packets.push(rest);
+    packets
+}
+
+/// Fuzz round 3 (2026-11-23): band-only CCSO with `max_band_log2` 7 indexed
+/// past the 64-band offset table (a release panic). AVM rejects more than
+/// `CCSO_BAND_NUM` (64) bands; so must we, as a clean error.
+#[test]
+fn ccso_band_only_beyond_64_bands_is_rejected() {
+    let inputs: [&[u8]; 3] = [
+        include_bytes!("data/fuzz-ccso-band-log2-7-41d9886b.fuzz"),
+        include_bytes!("data/fuzz-ccso-band-log2-7-806ca71f.fuzz"),
+        include_bytes!("data/fuzz-ccso-band-log2-7-be893bda.fuzz"),
+    ];
+    for input in inputs {
+        let mut decoder = Decoder::default();
+        let mut errors = Vec::new();
+        for packet in browser_packets(input) {
+            match decoder.decode_unit(packet) {
+                Ok(()) => while decoder.next_output() {},
+                Err(error) => errors.push(error),
+            }
+        }
+        assert!(
+            errors.contains(&nc_common::decode::DecodeError::Malformed(
+                "AV2 CCSO band count"
+            )),
+            "{errors:?}"
+        );
+    }
+}

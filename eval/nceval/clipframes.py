@@ -49,16 +49,17 @@ from __future__ import annotations
 
 import collections
 import errno
+import functools
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 
 from .clips import Clip
-from .config import find_tool
 from .slots import low_priority
 
 #: Back-off while a FIFO's reader has not opened it yet.
@@ -82,6 +83,15 @@ WINDOW_FRAMES = 8
 STALL_SECONDS = 2.0
 #: How often a decode blocked on a full window re-checks for a stall.
 STALL_POLL_SECONDS = 0.05
+#: The ffmpeg release that decodes encoded clips into the reference frames every metric
+#: compares against. Pinned because the reference is part of every stored point while the
+#: point cache does not key on the decoder: ffmpeg 7.1.1 decodes 3 of 38 sampled clips
+#: (VC-1K phone clips) to other frames than 8.0.1, scoring the same streams up to 30.7
+#: VMAF lower; every stored chart point checked matches 8.0.1
+#: (docs/results/metric-validation-2026-11-23.md).
+CLIP_DECODER_VERSION = "8.0.1"
+#: Where the clip decoder is looked for, in order, before $PATH's ffmpegs.
+CLIP_DECODER_CANDIDATES = (Path("/usr/bin/ffmpeg"),)
 
 
 class ClipFrames:
@@ -222,7 +232,7 @@ class ClipFrames:
                 return None
             process = subprocess.Popen(low_priority(decode_command(self.clip, self.frames)),
                                        stdin=subprocess.DEVNULL, stdout=stdout,
-                                       stderr=subprocess.PIPE)
+                                       stderr=subprocess.PIPE, env=decoder_environment())
             self._processes.append(process)
             return process
 
@@ -436,11 +446,52 @@ def frames_command(clip: Clip, frames: int) -> list[str]:
     return decode_command(clip, frames)
 
 
+def decoder_environment() -> dict[str, str]:
+    """This process's environment without the Python installation's library directories
+    on LD_LIBRARY_PATH: importing cv2 (nceval.framepipe) puts a conda prefix's lib/ first,
+    and the system ffmpeg then fails to load (libopenmpt against conda's libmpg123), so
+    the harness used to fall back to conda's own, other-release ffmpeg."""
+    environment = dict(os.environ)
+    kept = [d for d in environment.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+            if d and not d.startswith(sys.prefix)]
+    environment["LD_LIBRARY_PATH"] = os.pathsep.join(kept)
+    return environment
+
+
+def decoder_version(binary: Path) -> str:
+    """The `ffmpeg -version` banner's first line ("" when it cannot run)."""
+    try:
+        result = subprocess.run([str(binary), "-version"], capture_output=True, text=True,
+                                timeout=30, check=False, env=decoder_environment())
+    except OSError:
+        return ""
+    return result.stdout.split("\n", 1)[0]
+
+
+@functools.cache
+def clip_decoder() -> Path:
+    """The pinned clip decoder (CLIP_DECODER_VERSION): the first ffmpeg of that release
+    among CLIP_DECODER_CANDIDATES and $PATH's ffmpegs; it fails loudly otherwise, never
+    decoding a clip with another release."""
+    on_path = [Path(d) / "ffmpeg" for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    seen = []
+    for binary in (*CLIP_DECODER_CANDIDATES, *on_path):
+        if binary in seen or not (binary.is_file() and os.access(binary, os.X_OK)):
+            continue
+        seen.append(binary)
+        banner = decoder_version(binary)
+        if banner.startswith("ffmpeg version") and CLIP_DECODER_VERSION in banner.split()[2]:
+            return binary
+    raise FileNotFoundError(f"no ffmpeg {CLIP_DECODER_VERSION} to decode clips (checked "
+                            f"{', '.join(map(str, seen)) or 'nothing'}): the reference frames "
+                            "must come from that release")
+
+
 def decode_command(clip: Clip, frames: int) -> list[str]:
     """ffmpeg decoding `frames` frames of an encoded clip from its start frame."""
     seek = []
     if clip.start_frame:
         seek = ["-ss", f"{(clip.start_frame - SEEK_BACKOFF_FRAMES) / clip.fps:.6f}"]
-    return [str(find_tool("ffmpeg")), "-nostdin", "-v", "error", "-threads", "1", *seek,
+    return [str(clip_decoder()), "-nostdin", "-v", "error", "-threads", "1", *seek,
             "-i", str(clip.yuv), "-frames:v", str(frames), "-f", "rawvideo",
             "-pix_fmt", "yuv420p", "pipe:1"]

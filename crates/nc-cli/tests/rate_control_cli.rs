@@ -66,12 +66,15 @@ fn bitrate_without_qp_logs_dynamic_actual_qp_and_decodes_exactly() {
                 "30".into(),
                 "--intra-period".into(),
                 "10".into(),
+                // The source is noise: at 25 kbps every frame, the key
+                // included, sits at the largest quantizer once the buffer is
+                // a hard bound (rate.recode_overflow 1), so nothing adapts.
                 "--bitrate".into(),
-                "25".into(),
+                "50".into(),
                 "--buffer-ms".into(),
                 "500".into(),
                 "--peak-bitrate".into(),
-                "50".into(),
+                "100".into(),
                 "--min-qp".into(),
                 min.to_string(),
                 "--max-qp".into(),
@@ -106,7 +109,7 @@ fn bitrate_without_qp_logs_dynamic_actual_qp_and_decodes_exactly() {
             rows.iter().all(|row| row[2] == row[3]),
             "RC metadata and actual QP differ {codec}"
         );
-        assert!(rows.iter().all(|row| row[9] == "25000"));
+        assert!(rows.iter().all(|row| row[9] == "50000"));
         let result = Command::new(env!("CARGO_BIN_EXE_nanocodec"))
             .args([
                 "decode",

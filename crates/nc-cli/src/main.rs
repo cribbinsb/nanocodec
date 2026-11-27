@@ -38,6 +38,8 @@ mod framing;
 mod help;
 mod input;
 mod key_oracle;
+mod label_columns;
+mod label_dump;
 mod md5;
 #[cfg(test)]
 mod outcome_tests;
@@ -56,6 +58,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
+
+use label_dump::LabelDump;
 
 use crate::framing::IvfWriter;
 use crate::spatial_stats::SpatialTelemetry;
@@ -92,6 +96,7 @@ const ENCODE_INPUT_FLAGS: &[&str] = &[
     "--params",
     "--qp-replay",
     "--key-offsets",
+    "--partition-replay",
 ];
 /// `encode`/`session` path options written, any one of which may be stdout (`-`).
 const ENCODE_OUTPUT_FLAGS: &[&str] = &[
@@ -104,6 +109,7 @@ const ENCODE_OUTPUT_FLAGS: &[&str] = &[
     "--sse-log",
     "--rate-log",
     "--analysis-log",
+    "--partition-record",
     "--timestamps-out",
     "--display",
 ];
@@ -124,6 +130,10 @@ struct EncodeArgs {
     spatial_stats: Option<PathBuf>,
     /// `--filter-stats`: JSON of the filter searches' outcomes by tool and role.
     filter_stats: Option<PathBuf>,
+    /// `--label-dump`: the shard directory of the encoder's decision labels.
+    label_dump: Option<PathBuf>,
+    /// `--label-tool NAME:PARAM=VALUE[,...]`: the tools labelled per superblock.
+    label_tools: Vec<nc_encoder::labels::LabelTool>,
     /// `--sse-log` and its `--sse-reference`: the shown pictures' errors.
     sse_log: Option<(PathBuf, PathBuf)>,
     width: usize,
@@ -155,6 +165,8 @@ struct EncodeArgs {
     key_offsets: Option<key_oracle::KeyOffsets>,
     /// `--analysis-log`: every frame's analysis per 8x8 cell (`key_oracle.rs`).
     analysis_log: Option<PathBuf>,
+    /// `--partition-record` / `--partition-replay`: the transplant oracle.
+    transplant: Transplant,
     /// Input frame times (`--timestamps`), microseconds.
     timestamps: Option<Vec<i64>>,
     timestamps_out: Option<PathBuf>,
@@ -337,6 +349,8 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         layer_md5: get("--layer-md5").map(PathBuf::from),
         spatial_stats: get("--spatial-stats").map(PathBuf::from),
         filter_stats: get("--filter-stats").map(PathBuf::from),
+        label_dump: get("--label-dump").map(PathBuf::from),
+        label_tools: label_dump::tools_from_args(args)?,
         sse_log: match (get("--sse-log"), get("--sse-reference")) {
             (Some(log), Some(reference)) => Some((log.into(), reference.into())),
             (None, None) => None,
@@ -379,12 +393,42 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         qp_replay,
         key_offsets,
         analysis_log: get("--analysis-log").map(PathBuf::from),
+        transplant: parse_transplant(get("--partition-record"), get("--partition-replay"))?,
         timestamps,
         timestamps_out: get("--timestamps-out").map(PathBuf::from),
         simulate_loss: get("--simulate-loss")
             .as_deref()
             .map(parse_simulate_loss)
             .transpose()?,
+    })
+}
+
+/// The partition transplant oracle's options (`nc_encoder::PartitionLog`).
+#[derive(Debug, Default)]
+struct Transplant {
+    /// `--partition-record`: where the inter superblocks' coded partitions go.
+    record: Option<PathBuf>,
+    /// `--partition-replay`: partitions coded in place of the plan.
+    replay: Option<nc_encoder::PartitionLog>,
+}
+
+/// `--partition-record FILE` and `--partition-replay FILE` (a log the first wrote).
+fn parse_transplant(record: Option<String>, replay: Option<String>) -> Result<Transplant, String> {
+    if record.is_some() && replay.is_some() {
+        return Err("--partition-record and --partition-replay are exclusive".into());
+    }
+    let replay = replay
+        .map(|path| {
+            let mut bytes = Vec::new();
+            stdio::open(Path::new(&path))?
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("{path}: {e}"))?;
+            nc_encoder::PartitionLog::from_bytes(&bytes).map_err(|e| format!("{path}: {e}"))
+        })
+        .transpose()?;
+    Ok(Transplant {
+        record: record.map(PathBuf::from),
+        replay,
     })
 }
 
@@ -664,7 +708,7 @@ fn write_rate_row(
     };
     writeln!(
         log,
-        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height},{:.0},{:.0},{},{:.3},{:.4},{:.0},{:.0},{:.0},{},{encode_us},{:.1},{:.1},{:.3},{:.4}",
+        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height},{:.0},{:.0},{},{:.3},{:.4},{:.0},{:.0},{:.0},{},{encode_us},{:.1},{:.1},{:.3},{:.4},{}",
         frame.metadata.quantizer,
         stats.current_quantizer,
         frame.data.len(),
@@ -688,7 +732,8 @@ fn write_rate_row(
         stats.plan.spatial_hint,
         stats.plan.temporal_hint,
         stats.plan.camera_motion,
-        stats.plan.compensable
+        stats.plan.compensable,
+        stats.plan.first_coding_bits
     )
 }
 
@@ -807,20 +852,28 @@ impl ReconOutputs {
     /// picture coded smaller than the `stream` size (adaptive resolution)
     /// goes to `--recon` as decoded and to `--display-recon` as a player
     /// shows it, scaled to the stream size (`display.rs`).
-    fn write(
+    fn write<B: CodecBackend>(
         &mut self,
         index: u32,
-        picture: &Picture,
-        stream: (usize, usize),
+        frame: &EncodedFrame,
+        encoder: &Encoder<B>,
         coded: bool,
         lost: bool,
     ) -> Result<(), String> {
-        if let (true, Some(out)) = (coded, self.coded.as_mut()) {
-            yuv::write_frame(out, picture).map_err(|e| e.to_string())?;
-        }
-        if lost || (self.shown.is_none() && self.sse.is_none()) {
+        let coded = self.coded.as_mut().filter(|_| coded);
+        let display = !lost && (self.shown.is_some() || self.sse.is_some());
+        if coded.is_none() && !display {
             return Ok(());
         }
+        let picture =
+            last_layer_reconstruction(frame, encoder).unwrap_or_else(|| encoder.reconstruction());
+        if let Some(out) = coded {
+            yuv::write_frame(out, picture).map_err(|e| e.to_string())?;
+        }
+        if !display {
+            return Ok(());
+        }
+        let stream = (encoder.config().width, encoder.config().height);
         let shown = self.display.shown(picture, stream)?;
         if let Some(out) = self.shown.as_mut() {
             yuv::write_frame(out, shown).map_err(|e| e.to_string())?;
@@ -889,21 +942,62 @@ impl ReconOutputs {
     }
 }
 
-/// Encode every input frame with backend `B` into `sink`.
-fn run<B: CodecBackend, S: FrameSink>(
+/// The encoder of `args` (rate control and, with `--label-dump`, the label
+/// dump on).
+fn start_encoder<B: CodecBackend>(
     args: &EncodeArgs,
     config: EncoderConfig,
-    mut sink: S,
-) -> Result<(), String> {
+) -> Result<(Encoder<B>, Option<LabelDump>), String> {
     let mut encoder = Encoder::<B>::new(config).map_err(|e| e.to_string())?;
     if let Some(rate_control) = args.rate_control {
         encoder
             .set_rate_control(rate_control)
             .map_err(|error| error.to_string())?;
     }
+    if args.transplant.record.is_some() {
+        encoder.record_partitions();
+    }
+    if let Some(log) = &args.transplant.replay {
+        encoder.replay_partitions(log.clone());
+    }
+    let labels = LabelDump::start(args.label_dump.as_deref(), &args.label_tools, &mut encoder)?;
+    Ok((encoder, labels))
+}
+
+/// `--partition-record`: the transplant log of the encode (`nc_encoder::PartitionLog`).
+fn write_partition_log<B: CodecBackend>(
+    args: &EncodeArgs,
+    encoder: &mut Encoder<B>,
+) -> Result<(), String> {
+    if let (Some(path), Some(log)) = (&args.transplant.record, encoder.take_partition_log()) {
+        let mut out = stdio::create(path)?;
+        out.write_all(&log.to_bytes())
+            .and_then(|()| out.flush())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn last_layer_reconstruction<'a, B: CodecBackend>(
+    frame: &EncodedFrame,
+    encoder: &'a Encoder<B>,
+) -> Option<&'a Picture> {
+    frame
+        .layers
+        .last()
+        .and_then(|layer| encoder.layer_reconstruction(layer.spatial_id))
+}
+
+/// Encode every input frame with backend `B` into `sink`.
+fn run<B: CodecBackend, S: FrameSink>(
+    args: &EncodeArgs,
+    config: EncoderConfig,
+    mut sink: S,
+) -> Result<(), String> {
+    let (mut encoder, labels) = start_encoder::<B>(args, config)?;
     let mut rate_log = args.rate_log.as_deref().map(stdio::create).transpose()?;
     if let Some(log) = &mut rate_log {
-        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height,budget_bits,predicted_bits,level_q,cadence_offset,static_fraction,excess_bits,debit_bits,capacity_bits,codings,encode_us,spatial_hint,temporal_hint,camera_motion,compensable").map_err(|error|error.to_string())?;
+        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height,budget_bits,predicted_bits,level_q,cadence_offset,static_fraction,excess_bits,debit_bits,capacity_bits,codings,encode_us,spatial_hint,temporal_hint,camera_motion,compensable,first_coding_bits").map_err(|error|error.to_string())?;
     }
     let mut analysis_log = args
         .analysis_log
@@ -958,24 +1052,25 @@ fn run<B: CodecBackend, S: FrameSink>(
             out.write(frame.metadata.timestamp_us)
                 .map_err(|e| e.to_string())?;
         }
-        let shown_pic = frame
-            .layers
-            .last()
-            .and_then(|l| encoder.layer_reconstruction(l.spatial_id))
-            .unwrap_or_else(|| encoder.reconstruction());
         if let Some(log) = &mut rate_log {
             let stats = encoder
                 .rate_control_stats()
                 .ok_or("rate statistics unavailable")?;
-            let size = (shown_pic.width(), shown_pic.height());
+            let size = last_layer_reconstruction(&frame, &encoder).map_or_else(
+                || encoder.reconstruction_size(),
+                |picture| (picture.width(), picture.height()),
+            );
             write_rate_row(log, index, &frame, &stats, size, encode_us)
                 .map_err(|error| error.to_string())?;
         }
-        if let (Some(log), Some(analysis)) = (&mut analysis_log, encoder.last_cell_analysis()) {
+        // The cell analysis is built only for the log: reading it out costs
+        // about 1 % of a veryfast encode.
+        if let Some(log) = &mut analysis_log
+            && let Some(analysis) = encoder.last_cell_analysis()
+        {
             key_oracle::write_record(log, index, &analysis).map_err(|error| error.to_string())?;
         }
-        let stream = (encoder.config().width, encoder.config().height);
-        recon_out.write(index, shown_pic, stream, coded, lost)?;
+        recon_out.write(index, &frame, &encoder, coded, lost)?;
     }
     if let Some(log) = &mut analysis_log {
         log.flush().map_err(|error| error.to_string())?;
@@ -989,6 +1084,8 @@ fn run<B: CodecBackend, S: FrameSink>(
     if let Some(path) = args.filter_stats.as_deref() {
         write_filter_stats(path, encoder.filter_outcome_stats())?;
     }
+    write_partition_log(args, &mut encoder)?;
+    labels.map_or(Ok(()), |dump| dump.finish(&mut encoder, args.codec))?;
     recon_out.finish()?;
     if let Some(out) = timestamps_out {
         out.finish().map_err(|e| e.to_string())?;

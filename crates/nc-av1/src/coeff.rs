@@ -11,20 +11,27 @@
 //! `entropy_coding.c` / `rd_cost.c` (BSD-3-Clause-Clear; `THIRD_PARTY.md`).
 //! AV2 uses different base contexts, parity and Rice remainder syntax.
 //!
-//! Only `DCT_DCT` (transform class 2D) and square sizes are supported;
-//! 64x64 transforms code their top-left 32x32 as a 32x32 block.
+//! Only transform class 2D (`DCT_DCT`, and on intra blocks `ADST_DCT`,
+//! `DCT_ADST`, `ADST_ADST` and `IDTX`) is supported, at the square sizes
+//! and the 2:1 rectangles; 64-sample sides code their lowest 32
+//! frequencies (64x64 as a 32x32 block).
 
 use crate::cdf::{Cdf, CdfState, FromDefaults, ResetCounters};
-use crate::range_coder::SymbolSink;
+use crate::range_coder::{MAX_LITERAL_RUN, SymbolSink};
 use crate::tables::{
     COEFF_BASE_CDF, COEFF_BASE_EOB_CDF, COEFF_BR_CDF, DC_SIGN_CDF, DEFAULT_SCAN_4X4,
-    DEFAULT_SCAN_8X8, DEFAULT_SCAN_16X16, DEFAULT_SCAN_32X32, EOB_EXTRA_CDF, EOB_PT_16_CDF,
-    EOB_PT_64_CDF, EOB_PT_256_CDF, EOB_PT_1024_CDF, INTER_EXT_TX_CDF, INTRA_EXT_TX_CDF,
-    INTRA_MODES, NZ_MAP_CTX_OFFSET_4X4, NZ_MAP_CTX_OFFSET_8X8, NZ_MAP_CTX_OFFSET_16X16,
-    NZ_MAP_CTX_OFFSET_32X32, TXB_SKIP_CDF,
+    DEFAULT_SCAN_4X8, DEFAULT_SCAN_8X4, DEFAULT_SCAN_8X8, DEFAULT_SCAN_8X16, DEFAULT_SCAN_16X8,
+    DEFAULT_SCAN_16X16, DEFAULT_SCAN_16X32, DEFAULT_SCAN_32X16, DEFAULT_SCAN_32X32, EOB_EXTRA_CDF,
+    EOB_PT_16_CDF, EOB_PT_32_CDF, EOB_PT_64_CDF, EOB_PT_128_CDF, EOB_PT_256_CDF, EOB_PT_512_CDF,
+    EOB_PT_1024_CDF, INTER_EXT_TX_CDF, INTRA_EXT_TX_CDF, INTRA_MODES, NZ_MAP_CTX_OFFSET_4X4,
+    NZ_MAP_CTX_OFFSET_4X8, NZ_MAP_CTX_OFFSET_8X8, NZ_MAP_CTX_OFFSET_8X16, NZ_MAP_CTX_OFFSET_16X4,
+    NZ_MAP_CTX_OFFSET_16X16, NZ_MAP_CTX_OFFSET_16X32, NZ_MAP_CTX_OFFSET_32X8,
+    NZ_MAP_CTX_OFFSET_32X16, NZ_MAP_CTX_OFFSET_32X32, NZ_MAP_CTX_OFFSET_32X64,
+    NZ_MAP_CTX_OFFSET_64X32, TXB_SKIP_CDF,
 };
 use crate::transform::TxSize;
 use nc_common::eob::{GROUP_START as EOB_GROUP_START, group as eob_group};
+use nc_dsp::Av1TxType;
 use nc_encoder::journaled_fields;
 use nc_encoder::symbol_cost::BitCounter;
 
@@ -52,8 +59,58 @@ const CUL_LEVEL_MASK: u8 = 7;
 const DC_SIGN_SHIFT: u32 = 3;
 /// Extra bits after each `eob_pt` (libaom `av1_eob_offset_bits`).
 const EOB_OFFSET_BITS: [u32; 12] = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-/// `DCT_DCT`'s symbol in both intra transform sets (libaom `av1_ext_tx_ind`).
-const DCT_DCT_SYMBOL: usize = 1;
+/// The intra transform sets in symbol order (AV1 §6.10.19
+/// `Tx_Type_Intra_Inv_Set1` / `Set2`; libaom `av1_ext_tx_inv`).
+const INTRA_SET_1: [Av1TxType; 7] = [
+    Av1TxType::Idtx,
+    Av1TxType::DctDct,
+    Av1TxType::VDct,
+    Av1TxType::HDct,
+    Av1TxType::AdstAdst,
+    Av1TxType::AdstDct,
+    Av1TxType::DctAdst,
+];
+const INTRA_SET_2: [Av1TxType; 5] = [
+    Av1TxType::Idtx,
+    Av1TxType::DctDct,
+    Av1TxType::AdstAdst,
+    Av1TxType::AdstDct,
+    Av1TxType::DctAdst,
+];
+
+/// How a luma transform block signals its type (AV1 §5.11.47): the
+/// alphabet differs for inter and intra blocks, and an intra block's CDF
+/// depends on its prediction direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeSyntax {
+    /// An inter block (always `DCT_DCT` in this encoder).
+    Inter,
+    /// An intra block of luma direction `dir` (`intra_dir`, with filter
+    /// intra mapped to its direction) coding transform type `kind`, one of
+    /// transform class 2D: the coefficient scan and contexts below are
+    /// those of `DCT_DCT`.
+    Intra {
+        /// `intra_dir` of the CDF.
+        dir: usize,
+        /// The transform type.
+        kind: Av1TxType,
+    },
+}
+
+impl TypeSyntax {
+    /// `DCT_DCT` in an inter block, or in an intra block of direction `dir`.
+    #[must_use]
+    pub fn dct(is_inter: bool, dir: usize) -> Self {
+        if is_inter {
+            Self::Inter
+        } else {
+            Self::Intra {
+                dir,
+                kind: Av1TxType::DctDct,
+            }
+        }
+    }
+}
 
 /// Luma or chroma: selects the coefficient CDF set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,47 +203,68 @@ fn luma_skip_context(top: u8, left: u8) -> usize {
     }
 }
 
-/// Scan order (coefficient index for each scan position). 64x64 transforms
-/// code their top-left 32x32 with the 32x32 scan and contexts.
-#[must_use]
-pub fn coefficient_scan(tx: TxSize) -> &'static [u16] {
-    scan(tx)
-}
-
 /// End-of-block tables of the default scans (`nc_dsp::eob_table`).
 const EOB_4X4: [u16; 16] = nc_dsp::eob_table(&DEFAULT_SCAN_4X4);
 const EOB_8X8: [u16; 64] = nc_dsp::eob_table(&DEFAULT_SCAN_8X8);
 const EOB_16X16: [u16; 256] = nc_dsp::eob_table(&DEFAULT_SCAN_16X16);
 const EOB_32X32: [u16; 1024] = nc_dsp::eob_table(&DEFAULT_SCAN_32X32);
+const EOB_4X8: [u16; 32] = nc_dsp::eob_table(&DEFAULT_SCAN_4X8);
+const EOB_8X4: [u16; 32] = nc_dsp::eob_table(&DEFAULT_SCAN_8X4);
+const EOB_8X16: [u16; 128] = nc_dsp::eob_table(&DEFAULT_SCAN_8X16);
+const EOB_16X8: [u16; 128] = nc_dsp::eob_table(&DEFAULT_SCAN_16X8);
+const EOB_16X32: [u16; 512] = nc_dsp::eob_table(&DEFAULT_SCAN_16X32);
+const EOB_32X16: [u16; 512] = nc_dsp::eob_table(&DEFAULT_SCAN_32X16);
+
+/// The coded shape of `tx` (width and height log2, each capped at 32), for
+/// the shapes this coder supports: the squares and the 2:1 rectangles.
+fn coded_shape(tx: TxSize) -> (u8, u8) {
+    let shape = (tx.coded_width_log2(), tx.coded_height_log2());
+    debug_assert!(
+        shape.0.abs_diff(shape.1) <= 1,
+        "{tx:?}: 4:1 transforms are not coded"
+    );
+    shape
+}
 
 /// The end-of-block table of `tx`'s scan (`Dsp::end_of_block`): for each
 /// coded position, its scan index plus one.
 #[must_use]
 pub fn eob_table(tx: TxSize) -> &'static [u16] {
-    match tx {
-        TxSize::Tx4x4 => &EOB_4X4,
-        TxSize::Tx8x8 => &EOB_8X8,
-        TxSize::Tx16x16 => &EOB_16X16,
-        TxSize::Tx32x32 | TxSize::Tx64x64 => &EOB_32X32,
+    match coded_shape(tx) {
+        (2, 2) => &EOB_4X4,
+        (3, 3) => &EOB_8X8,
+        (4, 4) => &EOB_16X16,
+        (2, 3) => &EOB_4X8,
+        (3, 2) => &EOB_8X4,
+        (3, 4) => &EOB_8X16,
+        (4, 3) => &EOB_16X8,
+        (4, 5) => &EOB_16X32,
+        (5, 4) => &EOB_32X16,
+        _ => &EOB_32X32,
     }
 }
 
+/// libaom's 2-D (default) scan of `tx`'s coded shape.
 fn scan(tx: TxSize) -> &'static [u16] {
-    match tx {
-        TxSize::Tx4x4 => &DEFAULT_SCAN_4X4,
-        TxSize::Tx8x8 => &DEFAULT_SCAN_8X8,
-        TxSize::Tx16x16 => &DEFAULT_SCAN_16X16,
-        TxSize::Tx32x32 | TxSize::Tx64x64 => &DEFAULT_SCAN_32X32,
+    match coded_shape(tx) {
+        (2, 2) => &DEFAULT_SCAN_4X4,
+        (3, 3) => &DEFAULT_SCAN_8X8,
+        (4, 4) => &DEFAULT_SCAN_16X16,
+        (2, 3) => &DEFAULT_SCAN_4X8,
+        (3, 2) => &DEFAULT_SCAN_8X4,
+        (3, 4) => &DEFAULT_SCAN_8X16,
+        (4, 3) => &DEFAULT_SCAN_16X8,
+        (4, 5) => &DEFAULT_SCAN_16X32,
+        (5, 4) => &DEFAULT_SCAN_32X16,
+        _ => &DEFAULT_SCAN_32X32,
     }
 }
 
-fn nz_map_ctx_offset(tx: TxSize) -> &'static [u8] {
-    match tx {
-        TxSize::Tx4x4 => &NZ_MAP_CTX_OFFSET_4X4,
-        TxSize::Tx8x8 => &NZ_MAP_CTX_OFFSET_8X8,
-        TxSize::Tx16x16 => &NZ_MAP_CTX_OFFSET_16X16,
-        TxSize::Tx32x32 | TxSize::Tx64x64 => &NZ_MAP_CTX_OFFSET_32X32,
-    }
+/// Scan order (coefficient index for each scan position). 64x64 transforms
+/// code their top-left 32x32 with the 32x32 scan and contexts.
+#[must_use]
+pub fn coefficient_scan(tx: TxSize) -> &'static [u16] {
+    scan(tx)
 }
 
 /// End of block: one past the last non-zero level in scan order (the
@@ -228,6 +306,33 @@ fn context_byte(sum: u32, dc: i16) -> u8 {
     cul | (dc_category << DC_SIGN_SHIFT)
 }
 
+/// Run `$body` with `$map` a fresh level map for `tx`: the small squares'
+/// own (a small block clears and touches only its own few bytes), the
+/// largest for every other shape.
+macro_rules! with_level_map {
+    ($tx:expr, $map:ident => $body:expr) => {{
+        let column = 1_usize << $tx.coded_height_log2();
+        match ($tx.width_log2(), $tx.height_log2()) {
+            (2, 2) => {
+                let $map = &mut LevelMap4::new(column);
+                $body
+            }
+            (3, 3) => {
+                let $map = &mut LevelMap8::new(column);
+                $body
+            }
+            (4, 4) => {
+                let $map = &mut LevelMap16::new(column);
+                $body
+            }
+            _ => {
+                let $map = &mut FullLevelMap::new(column);
+                $body
+            }
+        }
+    }};
+}
+
 /// The magnitudes of one transform block, and what their contexts need:
 /// [`Self::write`] codes their `coeff_base_eob`, `coeff_base` and
 /// `coeff_br` symbols, [`Self::cost`] prices them.
@@ -235,6 +340,8 @@ struct Magnitudes<'a> {
     /// The scan's steps up to the end of block.
     steps: ScanSteps<'a>,
     levels: &'a [i16],
+    /// Coded coefficients of the transform (`coeff_base_eob`'s context).
+    area: usize,
 }
 
 /// The `coeff_base_eob`, `coeff_base` and `coeff_br` CDFs of a transform
@@ -245,7 +352,16 @@ type MagnitudeCdfs<'a> = (
     &'a mut [Cdf<{ BR_CDF_SIZE as usize }>; LEVEL_CONTEXTS],
 );
 
-impl Magnitudes<'_> {
+impl<'a> Magnitudes<'a> {
+    /// The magnitudes of `tx`'s levels up to end of block `eob` (at least 1).
+    fn of(tx: TxSize, eob: usize, levels: &'a [i16]) -> Self {
+        Self {
+            steps: scan_steps(tx, eob),
+            levels,
+            area: tx.coded_area(),
+        }
+    }
+
     /// The level of the coefficient at `pos` and its magnitude.
     fn level(&self, pos: usize) -> (i32, i32) {
         let v = i32::from(self.levels[pos]);
@@ -257,31 +373,36 @@ impl Magnitudes<'_> {
     /// block clears and touches only its own few bytes. The last one
     /// (`eob - 1`) is non-zero by definition and codes `coeff_base_eob`
     /// instead of `coeff_base`; the DC's `coeff_base` context is 0.
-    fn write<W: SymbolSink, const STRIDE: usize, const SIZE: usize>(
+    fn write<W: SymbolSink, const STRIDE: usize, const SIZE: usize, const PREPARED: bool>(
         &self,
         w: &mut W,
         (base_eob_cdfs, base_cdfs, range_cdfs): MagnitudeCdfs<'_>,
         map: &mut LevelMap<STRIDE, SIZE>,
+        contexts: &[u8],
     ) {
         let last = self.steps.last();
         let (pos, at, _) = self.steps.step(last);
         let (_, level) = self.level(pos);
         w.write_symbol(
             (level.min(3) - 1) as usize,
-            &mut base_eob_cdfs[base_eob_context(last, STRIDE - CONTEXT_REACH)],
+            &mut base_eob_cdfs[base_eob_context(last, self.area)],
             BASE_EOB_SYMBOLS,
         );
-        map.code_level(w, range_cdfs, self.levels, pos, at, level);
+        map.code_level::<W, PREPARED>(w, range_cdfs, self.levels, pos, at, level);
         for (pos, at, offset) in self.steps.ac_before(last) {
             let (_, level) = self.level(pos);
-            let ctx = ac_base_context(map.base_sum(at), offset);
+            let ctx = if PREPARED {
+                usize::from(contexts[pos] + offset)
+            } else {
+                ac_base_context(map.base_sum(at), offset)
+            };
             w.write_symbol(level.min(3) as usize, &mut base_cdfs[ctx], BASE_SYMBOLS);
-            map.code_level(w, range_cdfs, self.levels, pos, at, level);
+            map.code_level::<W, PREPARED>(w, range_cdfs, self.levels, pos, at, level);
         }
         if last > 0 {
             let (_, level) = self.level(0);
             w.write_symbol(level.min(3) as usize, &mut base_cdfs[0], BASE_SYMBOLS);
-            map.code_level(w, range_cdfs, self.levels, 0, 0, level);
+            map.code_level::<W, PREPARED>(w, range_cdfs, self.levels, 0, 0, level);
         }
     }
 
@@ -290,12 +411,13 @@ impl Magnitudes<'_> {
     /// (`dc_sign` for the DC) and Exp-Golomb remainder are counted where its
     /// magnitude is. The `coeff_base` costs add up in a local (integer
     /// costs, so the order of the sum does not matter).
-    fn cost<const STRIDE: usize, const SIZE: usize>(
+    fn cost<const STRIDE: usize, const SIZE: usize, const PREPARED: bool>(
         &self,
         counter: &mut BitCounter,
         (base_eob_cdfs, base_cdfs, range_cdfs): MagnitudeCdfs<'_>,
         dc_sign: &mut Cdf<2>,
         map: &mut LevelMap<STRIDE, SIZE>,
+        contexts: &[u8],
     ) {
         // A nonzero AC level's sign is one bypass bit; any level's remainder
         // past the coded range is Exp-Golomb bypass bits (`write_golomb`).
@@ -308,10 +430,9 @@ impl Magnitudes<'_> {
         let (pos, at, _) = self.steps.step(last);
         let (v, level) = self.level(pos);
         counter.add_q9(
-            base_eob_cdfs[base_eob_context(last, STRIDE - CONTEXT_REACH)]
-                .cost_q9((level.min(3) - 1) as usize),
+            base_eob_cdfs[base_eob_context(last, self.area)].cost_q9((level.min(3) - 1) as usize),
         );
-        map.code_level(counter, range_cdfs, self.levels, pos, at, level);
+        map.code_level::<_, PREPARED>(counter, range_cdfs, self.levels, pos, at, level);
         if last == 0 {
             counter.add_q9(dc_sign.cost_q9(usize::from(v < 0)));
         } else {
@@ -321,11 +442,15 @@ impl Magnitudes<'_> {
         let mut base_q9 = 0;
         for (pos, at, offset) in self.steps.ac_before(last) {
             let (_, level) = self.level(pos);
-            base_q9 +=
-                base_cdfs[ac_base_context(map.base_sum(at), offset)].cost_q9(level.min(3) as usize);
+            let ctx = if PREPARED {
+                usize::from(contexts[pos] + offset)
+            } else {
+                ac_base_context(map.base_sum(at), offset)
+            };
+            base_q9 += base_cdfs[ctx].cost_q9(level.min(3) as usize);
             // A zero level leaves the map as it was (zero).
             if level != 0 {
-                map.code_level(counter, range_cdfs, self.levels, pos, at, level);
+                map.code_level::<_, PREPARED>(counter, range_cdfs, self.levels, pos, at, level);
                 counter.add_bypass(1);
                 remainder(counter, level);
             }
@@ -334,7 +459,7 @@ impl Magnitudes<'_> {
             let (v, level) = self.level(0);
             base_q9 += base_cdfs[0].cost_q9(level.min(3) as usize);
             if level != 0 {
-                map.code_level(counter, range_cdfs, self.levels, 0, 0, level);
+                map.code_level::<_, PREPARED>(counter, range_cdfs, self.levels, 0, 0, level);
                 counter.add_q9(dc_sign.cost_q9(usize::from(v < 0)));
                 remainder(counter, level);
             }
@@ -354,26 +479,41 @@ struct ScanWalk<const AREA: usize> {
     pos: [u16; AREA],
     at: [u16; AREA],
     nz_offset: [u8; AREA],
+    trellis: [trellis::Position; AREA],
 }
 
 impl<const AREA: usize> ScanWalk<AREA> {
     /// The walk of a square transform with `scan` and `nz_map_ctx_offset`
     /// table `offsets`, for the level map sized to it ([`map_stride`]).
-    const fn new(scan: &[u16; AREA], offsets: &[u8; AREA]) -> Self {
-        let log2 = AREA.ilog2() / 2;
-        let side = 1 << log2;
+    const fn new(scan: &[u16; AREA], offsets: &[u8]) -> Self {
+        let side = 1 << (AREA.ilog2() / 2);
+        Self::with_map(scan, offsets, side, map_stride(side))
+    }
+
+    /// The walk of a transform of coded height `height` with `scan` and
+    /// `nz_map_ctx_offset` table `offsets` (at least `AREA` entries), for a
+    /// level map of stride `stride`.
+    const fn with_map(scan: &[u16; AREA], offsets: &[u8], height: usize, stride: usize) -> Self {
+        let log2 = height.ilog2();
         let mut walk = Self {
             pos: [0; AREA],
             at: [0; AREA],
             nz_offset: [0; AREA],
+            trellis: [trellis::Position::DC; AREA],
         };
         let mut c = 0;
         while c < AREA {
             let pos = scan[c] as usize;
             walk.pos[c] = scan[c];
             // The column times the map stride plus the row.
-            walk.at[c] = (pos + (pos >> log2) * (map_stride(side) - side)) as u16;
+            walk.at[c] = (pos + (pos >> log2) * (stride - height)) as u16;
             walk.nz_offset[c] = offsets[pos];
+            let previous = if c + 1 < AREA {
+                scan[c + 1] as usize
+            } else {
+                pos
+            };
+            walk.trellis[c] = trellis::Position::new(c, AREA, pos, previous, log2, offsets[pos]);
             c += 1;
         }
         walk
@@ -393,14 +533,60 @@ const WALK_4X4: ScanWalk<16> = ScanWalk::new(&DEFAULT_SCAN_4X4, &NZ_MAP_CTX_OFFS
 const WALK_8X8: ScanWalk<64> = ScanWalk::new(&DEFAULT_SCAN_8X8, &NZ_MAP_CTX_OFFSET_8X8);
 const WALK_16X16: ScanWalk<256> = ScanWalk::new(&DEFAULT_SCAN_16X16, &NZ_MAP_CTX_OFFSET_16X16);
 const WALK_32X32: ScanWalk<1024> = ScanWalk::new(&DEFAULT_SCAN_32X32, &NZ_MAP_CTX_OFFSET_32X32);
+/// The rectangles' walks, for the largest map ([`FullLevelMap`]): they are
+/// coded far less often than squares, so one map type serves them all.
+/// Shorter rectangles use the matching prefix of the wider offset table.
+const fn rect_walk<const AREA: usize>(
+    scan: &[u16; AREA],
+    offsets: &[u8],
+    height: usize,
+) -> ScanWalk<AREA> {
+    ScanWalk::with_map(scan, offsets, height, MAP_STRIDE)
+}
+const WALK_4X8: ScanWalk<32> = rect_walk(&DEFAULT_SCAN_4X8, &NZ_MAP_CTX_OFFSET_4X8, 8);
+const WALK_8X4: ScanWalk<32> = rect_walk(&DEFAULT_SCAN_8X4, &NZ_MAP_CTX_OFFSET_16X4, 4);
+const WALK_8X16: ScanWalk<128> = rect_walk(&DEFAULT_SCAN_8X16, &NZ_MAP_CTX_OFFSET_8X16, 16);
+const WALK_16X8: ScanWalk<128> = rect_walk(&DEFAULT_SCAN_16X8, &NZ_MAP_CTX_OFFSET_32X8, 8);
+const WALK_16X32: ScanWalk<512> = rect_walk(&DEFAULT_SCAN_16X32, &NZ_MAP_CTX_OFFSET_16X32, 32);
+const WALK_32X16: ScanWalk<512> = rect_walk(&DEFAULT_SCAN_32X16, &NZ_MAP_CTX_OFFSET_32X16, 16);
+const WALK_32X64: ScanWalk<1024> = rect_walk(&DEFAULT_SCAN_32X32, &NZ_MAP_CTX_OFFSET_32X64, 32);
+const WALK_64X32: ScanWalk<1024> = rect_walk(&DEFAULT_SCAN_32X32, &NZ_MAP_CTX_OFFSET_64X32, 32);
 
 /// The first `eob` (at least 1) steps of `tx`'s scan walk.
 fn scan_steps(tx: TxSize, eob: usize) -> ScanSteps<'static> {
-    match tx {
-        TxSize::Tx4x4 => WALK_4X4.steps(eob),
-        TxSize::Tx8x8 => WALK_8X8.steps(eob),
-        TxSize::Tx16x16 => WALK_16X16.steps(eob),
-        TxSize::Tx32x32 | TxSize::Tx64x64 => WALK_32X32.steps(eob),
+    match (tx.width_log2(), tx.height_log2()) {
+        (2, 2) => WALK_4X4.steps(eob),
+        (3, 3) => WALK_8X8.steps(eob),
+        (4, 4) => WALK_16X16.steps(eob),
+        (5, 5) | (6, 6) => WALK_32X32.steps(eob),
+        (2, 3) => WALK_4X8.steps(eob),
+        (3, 2) => WALK_8X4.steps(eob),
+        (3, 4) => WALK_8X16.steps(eob),
+        (4, 3) => WALK_16X8.steps(eob),
+        (4, 5) => WALK_16X32.steps(eob),
+        (5, 4) => WALK_32X16.steps(eob),
+        (5, 6) => WALK_32X64.steps(eob),
+        (6, 5) => WALK_64X32.steps(eob),
+        _ => unreachable!("{tx:?}: 4:1 transforms are not coded"),
+    }
+}
+
+/// The scan positions with their prepared trellis context coordinates.
+fn trellis_positions(tx: TxSize) -> &'static [trellis::Position] {
+    match (tx.width_log2(), tx.height_log2()) {
+        (2, 2) => &WALK_4X4.trellis,
+        (3, 3) => &WALK_8X8.trellis,
+        (4, 4) => &WALK_16X16.trellis,
+        (5, 5) | (6, 6) => &WALK_32X32.trellis,
+        (2, 3) => &WALK_4X8.trellis,
+        (3, 2) => &WALK_8X4.trellis,
+        (3, 4) => &WALK_8X16.trellis,
+        (4, 3) => &WALK_16X8.trellis,
+        (4, 5) => &WALK_16X32.trellis,
+        (5, 4) => &WALK_32X16.trellis,
+        (5, 6) => &WALK_32X64.trellis,
+        (6, 5) => &WALK_64X32.trellis,
+        _ => unreachable!("{tx:?}: 4:1 transforms are not coded"),
     }
 }
 
@@ -463,6 +649,10 @@ const BASE_EOB_SYMBOLS: usize = 3;
 const BASE_SYMBOLS: usize = 4;
 /// Square transform sizes with transform-type CDFs (`EXT_TX_SIZES`).
 const EXT_TX_SIZES: usize = 4;
+/// log2 of the sides that decide the transform sets (AV1 §5.11.48
+/// `get_tx_set`): 16 (`Tx_Size_Sqr`) and 32 (`Tx_Size_Sqr_Up`).
+const SIDE_16_LOG2: u8 = 4;
+const SIDE_32_LOG2: u8 = 5;
 /// Transform-type CDF slot width (`TX_TYPES`).
 const TX_TYPES: usize = 16;
 /// Intra and inter transform-type sets (`EXT_TX_SETS_INTRA` / `_INTER`).
@@ -479,8 +669,11 @@ pub struct CoeffCdfs {
     inter_tx_type: [[Cdf<TX_TYPES>; EXT_TX_SIZES]; EXT_TX_SETS_INTER],
     txb_skip: [[Cdf<2>; TXB_SKIP_CONTEXTS]; TX_SIZES],
     eob_pt_16: [[Cdf<5>; EOB_MULTI_CONTEXTS]; PLANE_TYPES],
+    eob_pt_32: [[Cdf<6>; EOB_MULTI_CONTEXTS]; PLANE_TYPES],
     eob_pt_64: [[Cdf<7>; EOB_MULTI_CONTEXTS]; PLANE_TYPES],
+    eob_pt_128: [[Cdf<8>; EOB_MULTI_CONTEXTS]; PLANE_TYPES],
     eob_pt_256: [[Cdf<9>; EOB_MULTI_CONTEXTS]; PLANE_TYPES],
+    eob_pt_512: [[Cdf<10>; EOB_MULTI_CONTEXTS]; PLANE_TYPES],
     eob_pt_1024: [[Cdf<11>; EOB_MULTI_CONTEXTS]; PLANE_TYPES],
     eob_extra: [[[Cdf<2>; EOB_COEF_CONTEXTS]; PLANE_TYPES]; TX_SIZES],
     base_eob: [[[Cdf<BASE_EOB_SYMBOLS>; SIG_COEF_CONTEXTS_EOB]; PLANE_TYPES]; TX_SIZES],
@@ -498,8 +691,11 @@ impl CoeffCdfs {
             inter_tx_type: INTER_EXT_TX_CDF.cdfs(),
             txb_skip: TXB_SKIP_CDF[q_ctx].cdfs(),
             eob_pt_16: EOB_PT_16_CDF[q_ctx].cdfs(),
+            eob_pt_32: EOB_PT_32_CDF[q_ctx].cdfs(),
             eob_pt_64: EOB_PT_64_CDF[q_ctx].cdfs(),
+            eob_pt_128: EOB_PT_128_CDF[q_ctx].cdfs(),
             eob_pt_256: EOB_PT_256_CDF[q_ctx].cdfs(),
+            eob_pt_512: EOB_PT_512_CDF[q_ctx].cdfs(),
             eob_pt_1024: EOB_PT_1024_CDF[q_ctx].cdfs(),
             eob_extra: EOB_EXTRA_CDF[q_ctx].cdfs(),
             base_eob: COEFF_BASE_EOB_CDF[q_ctx].cdfs(),
@@ -519,24 +715,19 @@ impl CoeffCdfs {
         w: &mut W,
         tx: TxSize,
         plane: PlaneType,
-        is_inter: bool,
-        intra_mode: usize,
+        syntax: TypeSyntax,
         ctx: TxbContext,
         levels: &[i16],
         eob: usize,
     ) -> u8 {
-        let txs = tx.index();
+        let txs = tx.context();
         let pt = plane as usize;
         w.write_bool(eob == 0, &mut self.txb_skip[txs][ctx.skip]);
         if eob == 0 {
             return 0;
         }
         if plane == PlaneType::Luma {
-            if is_inter {
-                self.write_inter_tx_type_dct(w, tx);
-            } else {
-                self.write_intra_tx_type_dct(w, tx, intra_mode);
-            }
+            self.write_tx_type(w, tx, syntax);
         }
         self.write_eob(w, tx, pt, eob);
 
@@ -544,42 +735,52 @@ impl CoeffCdfs {
             return self.write_dc(w, tx, pt, ctx.dc_sign, levels[0]);
         }
         let scan = &scan(tx)[..eob];
-        let magnitudes = Magnitudes {
-            steps: scan_steps(tx, eob),
-            levels,
-        };
+        let magnitudes = Magnitudes::of(tx, eob, levels);
         let cdfs = (
             &mut self.base_eob[txs][pt],
             &mut self.base[txs][pt],
             &mut self.br[txs.min(3)][pt],
         );
-        match tx {
-            TxSize::Tx4x4 => magnitudes.write(w, cdfs, &mut LevelMap4::new()),
-            TxSize::Tx8x8 => magnitudes.write(w, cdfs, &mut LevelMap8::new()),
-            TxSize::Tx16x16 => magnitudes.write(w, cdfs, &mut LevelMap16::new()),
-            TxSize::Tx32x32 | TxSize::Tx64x64 => {
-                magnitudes.write(w, cdfs, &mut FullLevelMap::new());
+        with_level_map!(tx, map => {
+            if levels.len() >= tx.coded_area() && dense_square(tx, eob) {
+                let base = map.prepare_dense(tx, levels, eob);
+                magnitudes.write::<_, _, _, true>(w, cdfs, map, &base);
+            } else {
+                magnitudes.write::<_, _, _, false>(w, cdfs, map, &[]);
+            }
+        });
+
+        // Pack the equiprobable AC signs as a run. DC sign still adapts,
+        // and each Golomb remainder follows its own sign in scan order.
+        let dc = i32::from(levels[0]);
+        let mut sum = dc.unsigned_abs();
+        if dc != 0 {
+            w.write_bool(dc < 0, &mut self.dc_sign[pt][ctx.dc_sign]);
+            if sum >= MAX_BASE_BR_RANGE as u32 {
+                write_golomb(w, sum - MAX_BASE_BR_RANGE as u32);
             }
         }
-
-        // Signs and Exp-Golomb remainders in scan order, adding up the
-        // magnitudes for the entropy context on the way.
-        let mut sum = 0_u32;
-        for (c, &p) in scan.iter().enumerate() {
+        let mut signs = 0;
+        let mut sign_count = 0;
+        for &p in &scan[1..] {
             let v = i32::from(levels[usize::from(p)]);
             if v == 0 {
                 continue;
             }
-            sum += v.unsigned_abs();
-            if c == 0 {
-                w.write_bool(v < 0, &mut self.dc_sign[pt][ctx.dc_sign]);
-            } else {
-                w.write_literal_bit(v < 0);
-            }
-            if v.abs() > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
-                write_golomb(w, (v.abs() - MAX_BASE_BR_RANGE) as u32);
+            let mag = v.unsigned_abs();
+            sum += mag;
+            signs = (signs << 1) | u32::from(v < 0);
+            sign_count += 1;
+            if mag >= MAX_BASE_BR_RANGE as u32 {
+                w.write_literal(signs, sign_count);
+                sign_count = 0;
+                write_golomb(w, mag - MAX_BASE_BR_RANGE as u32);
+            } else if sign_count == MAX_LITERAL_RUN {
+                w.write_literal(signs, sign_count);
+                sign_count = 0;
             }
         }
+        w.write_literal(signs, sign_count);
         context_byte(sum, levels[0])
     }
 
@@ -595,25 +796,20 @@ impl CoeffCdfs {
         &mut self,
         tx: TxSize,
         plane: PlaneType,
-        is_inter: bool,
-        intra_mode: usize,
+        syntax: TypeSyntax,
         ctx: TxbContext,
         levels: &[i16],
         eob: usize,
     ) -> f32 {
         let mut counter = BitCounter::default();
-        let txs = tx.index();
+        let txs = tx.context();
         let pt = plane as usize;
         counter.add_q9(self.txb_skip[txs][ctx.skip].cost_q9(usize::from(eob == 0)));
         if eob == 0 {
             return counter.bits();
         }
         if plane == PlaneType::Luma {
-            if is_inter {
-                self.write_inter_tx_type_dct(&mut counter, tx);
-            } else {
-                self.write_intra_tx_type_dct(&mut counter, tx, intra_mode);
-            }
+            self.write_tx_type(&mut counter, tx, syntax);
         }
         self.write_eob(&mut counter, tx, pt, eob);
 
@@ -622,26 +818,21 @@ impl CoeffCdfs {
             return counter.bits();
         }
 
-        let magnitudes = Magnitudes {
-            steps: scan_steps(tx, eob),
-            levels,
-        };
+        let magnitudes = Magnitudes::of(tx, eob, levels);
         let cdfs = (
             &mut self.base_eob[txs][pt],
             &mut self.base[txs][pt],
             &mut self.br[txs.min(3)][pt],
         );
         let dc_sign = &mut self.dc_sign[pt][ctx.dc_sign];
-        match tx {
-            TxSize::Tx4x4 => magnitudes.cost(&mut counter, cdfs, dc_sign, &mut LevelMap4::new()),
-            TxSize::Tx8x8 => magnitudes.cost(&mut counter, cdfs, dc_sign, &mut LevelMap8::new()),
-            TxSize::Tx16x16 => {
-                magnitudes.cost(&mut counter, cdfs, dc_sign, &mut LevelMap16::new());
+        with_level_map!(tx, map => {
+            if levels.len() >= tx.coded_area() && dense_square(tx, eob) {
+                let base = map.prepare_dense(tx, levels, eob);
+                magnitudes.cost::<_, _, true>(&mut counter, cdfs, dc_sign, map, &base);
+            } else {
+                magnitudes.cost::<_, _, false>(&mut counter, cdfs, dc_sign, map, &[]);
             }
-            TxSize::Tx32x32 | TxSize::Tx64x64 => {
-                magnitudes.cost(&mut counter, cdfs, dc_sign, &mut FullLevelMap::new());
-            }
-        }
+        });
         counter.bits()
     }
 
@@ -660,11 +851,11 @@ impl CoeffCdfs {
         let level = i32::from(value).abs();
         w.write_symbol(
             (level.min(3) - 1) as usize,
-            &mut self.base_eob[tx.index()][pt][0],
+            &mut self.base_eob[tx.context()][pt][0],
             BASE_EOB_SYMBOLS,
         );
         if level > NUM_BASE_LEVELS {
-            write_range(w, &mut self.br[tx.index().min(3)][pt][0], level);
+            write_range(w, &mut self.br[tx.context().min(3)][pt][0], level);
         }
         w.write_bool(value < 0, &mut self.dc_sign[pt][dc_sign_ctx]);
         if level > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
@@ -678,8 +869,7 @@ impl CoeffCdfs {
     /// than none, from the end of block alone plus the live skip-flag rate.
     /// No per-coefficient CDF walk; it ignores the levels' magnitudes.
     pub fn eob_linear_bits(&self, tx: TxSize, ctx: TxbContext, eob: usize) -> f32 {
-        let n = tx.size();
-        let slope = if eob < n * n / EOB_LINEAR_DENSE_DIVISOR {
+        let slope = if eob < tx.width() * tx.height() / EOB_LINEAR_DENSE_DIVISOR {
             EOB_LINEAR_SPARSE_SLOPE
         } else {
             EOB_LINEAR_DENSE_SLOPE
@@ -691,7 +881,7 @@ impl CoeffCdfs {
     /// [`Self::eob_linear_bits`] as a whole block's bits: the all-zero
     /// skip flag's rate, plus the linear estimate where `eob` is not 0.
     pub fn linear_bits(&self, tx: TxSize, ctx: TxbContext, eob: usize) -> f32 {
-        let none = self.txb_skip[tx.index()][ctx.skip].bits(1);
+        let none = self.txb_skip[tx.context()][ctx.skip].bits(1);
         if eob == 0 {
             none
         } else {
@@ -699,9 +889,30 @@ impl CoeffCdfs {
         }
     }
 
+    /// Exact Q9 cost of the skip flag for an empty transform block.
+    pub(crate) fn uncoded_bits(&mut self, tx: TxSize, ctx: TxbContext) -> f32 {
+        let q9 = self.txb_skip[tx.context()][ctx.skip].cost_q9(1);
+        q9 as f32 / nc_encoder::symbol_cost::COST_UNITS_PER_BIT as f32
+    }
+
     /// Current nonzero-vs-zero transform skip-flag rate, in literal bits.
     pub fn skip_rate_delta(&self, tx: TxSize, ctx: TxbContext) -> f32 {
-        self.txb_skip[tx.index()][ctx.skip].bits(0) - self.txb_skip[tx.index()][ctx.skip].bits(1)
+        self.txb_skip[tx.context()][ctx.skip].bits(0)
+            - self.txb_skip[tx.context()][ctx.skip].bits(1)
+    }
+
+    /// Cost in 1/512 bit of `eob_pt` symbol `symbol` of a `tx` transform in
+    /// plane type `pt` (the trellis's end-of-block rate).
+    pub(crate) fn eob_pt_cost_q9(&mut self, tx: TxSize, pt: usize, symbol: usize) -> u32 {
+        match tx.eob_alphabet() {
+            0 => self.eob_pt_16[pt][0].cost_q9(symbol),
+            1 => self.eob_pt_32[pt][0].cost_q9(symbol),
+            2 => self.eob_pt_64[pt][0].cost_q9(symbol),
+            3 => self.eob_pt_128[pt][0].cost_q9(symbol),
+            4 => self.eob_pt_256[pt][0].cost_q9(symbol),
+            5 => self.eob_pt_512[pt][0].cost_q9(symbol),
+            _ => self.eob_pt_1024[pt][0].cost_q9(symbol),
+        }
     }
 
     /// `eob_pt_*` and `eob_extra` (AV1 §5.11.39).
@@ -710,38 +921,73 @@ impl CoeffCdfs {
         let extra = eob - usize::from(EOB_GROUP_START[eob_pt]);
         let symbol = eob_pt - 1;
         // `eob_multi_ctx` is 0 for transform class 2D.
-        match tx {
-            TxSize::Tx4x4 => w.write_symbol(symbol, &mut self.eob_pt_16[pt][0], 5),
-            TxSize::Tx8x8 => w.write_symbol(symbol, &mut self.eob_pt_64[pt][0], 7),
-            TxSize::Tx16x16 => w.write_symbol(symbol, &mut self.eob_pt_256[pt][0], 9),
-            TxSize::Tx32x32 | TxSize::Tx64x64 => {
-                w.write_symbol(symbol, &mut self.eob_pt_1024[pt][0], 11);
-            }
+        // The alphabet grows with the coded area (`eobMultisize`).
+        match tx.eob_alphabet() {
+            0 => w.write_symbol(symbol, &mut self.eob_pt_16[pt][0], 5),
+            1 => w.write_symbol(symbol, &mut self.eob_pt_32[pt][0], 6),
+            2 => w.write_symbol(symbol, &mut self.eob_pt_64[pt][0], 7),
+            3 => w.write_symbol(symbol, &mut self.eob_pt_128[pt][0], 8),
+            4 => w.write_symbol(symbol, &mut self.eob_pt_256[pt][0], 9),
+            5 => w.write_symbol(symbol, &mut self.eob_pt_512[pt][0], 10),
+            _ => w.write_symbol(symbol, &mut self.eob_pt_1024[pt][0], 11),
         }
         let bits = EOB_OFFSET_BITS[eob_pt];
         if bits > 0 {
             let top = (extra >> (bits - 1)) & 1 != 0;
-            w.write_bool(top, &mut self.eob_extra[tx.index()][pt][eob_pt - 3]);
+            w.write_bool(top, &mut self.eob_extra[tx.context()][pt][eob_pt - 3]);
             for i in (0..bits - 1).rev() {
                 w.write_literal_bit((extra >> i) & 1 != 0);
             }
         }
     }
 
-    /// `intra_tx_type` for `DCT_DCT` and the luma mode (AV1 §5.11.47; libaom
-    /// `av1_write_tx_type`). Square sizes below 16x16 use the 7-type set
-    /// (`ext_tx_set` 1), 16x16 the 5-type set (`ext_tx_set` 2); 32x32 and up
-    /// allow `DCT_DCT` only, so nothing is coded.
-    fn write_intra_tx_type_dct<W: SymbolSink>(&mut self, w: &mut W, tx: TxSize, mode: usize) {
-        let (set, nsyms) = match tx {
-            TxSize::Tx32x32 | TxSize::Tx64x64 => return,
-            TxSize::Tx16x16 => (2, 5),
-            TxSize::Tx4x4 | TxSize::Tx8x8 => (1, 7),
+    /// The luma transform type (AV1 §5.11.47 `transform_type`; libaom
+    /// `av1_write_tx_type`), whose set depends on the size and on whether
+    /// the block is inter (`get_tx_set`, `reduced_tx_set = 0`).
+    pub(crate) fn write_tx_type<W: SymbolSink>(
+        &mut self,
+        w: &mut W,
+        tx: TxSize,
+        syntax: TypeSyntax,
+    ) {
+        match syntax {
+            TypeSyntax::Inter => self.write_inter_tx_type_dct(w, tx),
+            TypeSyntax::Intra { dir, kind } => self.write_intra_tx_type(w, tx, dir, kind),
+        }
+    }
+
+    /// `intra_tx_type` of `kind` for luma direction `dir`. Square sizes
+    /// below 16x16 use the 7-type set (`TX_SET_INTRA_1`, CDF set 1), 16x16
+    /// the 5-type set (`TX_SET_INTRA_2`, CDF set 2); 32x32 and up allow
+    /// `DCT_DCT` only, so nothing is coded. The symbol is the type's index
+    /// in its set (§6.10.19 `Tx_Type_Intra_Inv_Set1/2`).
+    fn write_intra_tx_type<W: SymbolSink>(
+        &mut self,
+        w: &mut W,
+        tx: TxSize,
+        dir: usize,
+        kind: Av1TxType,
+    ) {
+        let (set, inverse): (usize, &[Av1TxType]) = if tx.square_up_log2() >= SIDE_32_LOG2 {
+            debug_assert_eq!(
+                kind,
+                Av1TxType::DctDct,
+                "sides of 32 and up are DCT_DCT only"
+            );
+            return;
+        } else if tx.square_log2() == SIDE_16_LOG2 {
+            (2, &INTRA_SET_2)
+        } else {
+            (1, &INTRA_SET_1)
         };
+        let symbol = inverse
+            .iter()
+            .position(|&t| t == kind)
+            .expect("intra transform type outside its set");
         w.write_symbol(
-            DCT_DCT_SYMBOL,
-            &mut self.intra_tx_type[set][tx.index()][mode],
-            nsyms,
+            symbol,
+            &mut self.intra_tx_type[set][tx.type_cdf_size()][dir],
+            inverse.len(),
         );
     }
 
@@ -752,20 +998,27 @@ impl CoeffCdfs {
     /// (`EXT_TX_SET_DCT_IDTX`, inter set index 3), and 64x64 `DCT_DCT` only (not
     /// coded); `DCT_DCT`'s symbol in each comes from libaom `av1_ext_tx_ind`.
     fn write_inter_tx_type_dct<W: SymbolSink>(&mut self, w: &mut W, tx: TxSize) {
-        let (set, symbol, nsyms) = match tx {
-            TxSize::Tx64x64 => return,
-            TxSize::Tx32x32 => (3, 1, 2),
-            TxSize::Tx16x16 => (2, 3, 12),
-            TxSize::Tx4x4 | TxSize::Tx8x8 => (1, 7, 16),
+        let (set, symbol, nsyms) = if tx.square_up_log2() > SIDE_32_LOG2 {
+            return;
+        } else if tx.square_up_log2() == SIDE_32_LOG2 {
+            (3, 1, 2)
+        } else if tx.square_log2() == SIDE_16_LOG2 {
+            (2, 3, 12)
+        } else {
+            (1, 7, 16)
         };
-        w.write_symbol(symbol, &mut self.inter_tx_type[set][tx.index()], nsyms);
+        w.write_symbol(
+            symbol,
+            &mut self.inter_tx_type[set][tx.type_cdf_size()],
+            nsyms,
+        );
     }
 }
 
 // The level tables first: most coefficient symbols are theirs.
 journaled_fields!(CoeffCdfs, CdfState;
-    base, br, txb_skip, base_eob, eob_extra, dc_sign, eob_pt_16, eob_pt_64, eob_pt_256,
-    eob_pt_1024, inter_tx_type, intra_tx_type,
+    base, br, txb_skip, base_eob, eob_extra, dc_sign, eob_pt_16, eob_pt_32, eob_pt_64,
+    eob_pt_128, eob_pt_256, eob_pt_512, eob_pt_1024, inter_tx_type, intra_tx_type,
 );
 
 impl ResetCounters for CoeffCdfs {
@@ -774,8 +1027,11 @@ impl ResetCounters for CoeffCdfs {
         self.inter_tx_type.reset_counters();
         self.txb_skip.reset_counters();
         self.eob_pt_16.reset_counters();
+        self.eob_pt_32.reset_counters();
         self.eob_pt_64.reset_counters();
+        self.eob_pt_128.reset_counters();
         self.eob_pt_256.reset_counters();
+        self.eob_pt_512.reset_counters();
         self.eob_pt_1024.reset_counters();
         self.eob_extra.reset_counters();
         self.base_eob.reset_counters();
@@ -787,8 +1043,7 @@ impl ResetCounters for CoeffCdfs {
 
 /// Context of `coeff_base_eob` from the scan position (libaom
 /// `get_lower_levels_ctx_eob`).
-fn base_eob_context(scan_idx: usize, n: usize) -> usize {
-    let area = n * n;
+const fn base_eob_context(scan_idx: usize, area: usize) -> usize {
     if scan_idx == 0 {
         0
     } else if scan_idx <= area / 8 {
@@ -810,6 +1065,14 @@ const MAP_STRIDE: usize = map_stride(32);
 const MAP_SIZE: usize = MAP_STRIDE * MAP_STRIDE;
 /// Magnitude saturation in the `coeff_base` context sum.
 const BASE_CONTEXT_LEVEL_MAX: u8 = 3;
+
+fn dense_square(tx: TxSize, eob: usize) -> bool {
+    let side = tx.width_log2();
+    cfg!(target_arch = "x86_64")
+        && side == tx.height_log2()
+        && side <= 4
+        && eob >= if side == 2 { 12 } else { tx.coded_area() / 2 }
+}
 
 /// The map for the largest coded transform.
 type FullLevelMap = LevelMap<MAP_STRIDE, MAP_SIZE>;
@@ -837,10 +1100,14 @@ type LevelMap16 = LevelMap<{ map_stride(16) }, { map_stride(16) * map_stride(16)
 /// saturation, which libaom's `get_nz_mag` does with `clip_max3`), and only
 /// the rare coefficients above the base levels look further.
 ///
-/// `STRIDE` is the coded side of the blocks it serves plus the reach, and
-/// `SIZE` its square, so that neighbour offsets are constants.
+/// `STRIDE` is at least the coded height of the blocks it serves plus the
+/// reach, and `SIZE` its square, so that neighbour offsets are constants:
+/// the small squares have maps of their own, everything else the largest
+/// ([`with_level_map`]).
 struct LevelMap<const STRIDE: usize, const SIZE: usize> {
     magnitudes: [u8; SIZE],
+    /// The coded height: one column's step in the block's levels.
+    column: usize,
 }
 
 impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
@@ -853,11 +1120,12 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
     /// (row + 2, col).
     const FAR_BASE_NEIGHBOURS: [usize; 2] = [2 * STRIDE, 2];
 
-    /// An all-zero map.
-    fn new() -> Self {
-        debug_assert_eq!(STRIDE * STRIDE, SIZE);
+    /// An all-zero map for a transform of coded height `column`.
+    fn new(column: usize) -> Self {
+        debug_assert!(column + CONTEXT_REACH <= STRIDE);
         Self {
             magnitudes: [0; SIZE],
+            column,
         }
     }
 
@@ -870,7 +1138,7 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
         reason = "called per coefficient from two sites; as a call it cost +0.8..+1.0 % AV1 Faster instructions"
     )]
     #[inline(always)]
-    fn code_level<W: SymbolSink>(
+    fn code_level<W: SymbolSink, const PREPARED: bool>(
         &mut self,
         w: &mut W,
         range_cdfs: &mut [Cdf<{ BR_CDF_SIZE as usize }>; LEVEL_CONTEXTS],
@@ -884,7 +1152,41 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
             let ctx = br_context(pos, row, col, self.range_sum(at, levels, pos));
             write_range(w, &mut range_cdfs[ctx], level);
         }
-        self.magnitudes[at] = level.min(i32::from(BASE_CONTEXT_LEVEL_MAX)) as u8;
+        if !PREPARED {
+            self.magnitudes[at] = level.min(i32::from(BASE_CONTEXT_LEVEL_MAX)) as u8;
+        }
+    }
+
+    /// Prepare the dense padded level map and raster base contexts before
+    /// scanning, as in libaom's `av1_txb_init_levels` and
+    /// `av1_get_nz_map_contexts`. The EOB table masks the uncoded tail.
+    fn prepare_dense(&mut self, tx: TxSize, levels: &[i16], eob: usize) -> [u8; SIZE] {
+        let side = STRIDE - CONTEXT_REACH;
+        debug_assert_eq!(self.column, side);
+        let area = side * side;
+        let mut contexts = [0; SIZE];
+        let eob = eob as u16;
+        let levels = levels[..area].chunks_exact(side);
+        let order = eob_table(tx)[..area].chunks_exact(side);
+        for ((column, scan), padded) in levels
+            .zip(order)
+            .zip(self.magnitudes.as_chunks_mut::<STRIDE>().0)
+        {
+            for ((out, &level), &index) in padded[..side].iter_mut().zip(column).zip(scan) {
+                let magnitude = level.unsigned_abs().min(u16::from(BASE_CONTEXT_LEVEL_MAX)) as u8;
+                *out = if index <= eob { magnitude } else { 0 };
+            }
+        }
+
+        let columns = self.magnitudes.as_chunks::<STRIDE>().0;
+        for (x, base) in contexts[..area].chunks_exact_mut(side).enumerate() {
+            let [column, next, far] = [&columns[x], &columns[x + 1], &columns[x + 2]];
+            for (y, ctx) in base.iter_mut().enumerate() {
+                let count = column[y + 1] + column[y + 2] + next[y] + next[y + 1] + far[y];
+                *ctx = ((count + 1) >> 1).min(4);
+            }
+        }
+        contexts
     }
 
     /// The context neighbourhood of the coefficient at map index `at`.
@@ -912,8 +1214,7 @@ impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
     /// `levels`).
     fn range_sum(&self, at: usize, levels: &[i16], pos: usize) -> u32 {
         let near = self.near(at);
-        let side = STRIDE - CONTEXT_REACH;
-        let in_levels = [side, 1, side + 1];
+        let in_levels = [self.column, 1, self.column + 1];
         Self::SHARED_NEIGHBOURS
             .iter()
             .zip(in_levels)
@@ -977,10 +1278,7 @@ fn write_range<W: SymbolSink>(w: &mut W, cdf: &mut Cdf<{ BR_CDF_SIZE as usize }>
 fn write_golomb<W: SymbolSink>(w: &mut W, value: u32) {
     let x = value + 1;
     let length = 32 - x.leading_zeros();
-    for _ in 0..length - 1 {
-        w.write_literal_bit(false);
-    }
-    w.write_literal(x, length);
+    w.write_literal(x, 2 * length - 1);
 }
 
 /// Bypass bits [`write_golomb`] spends on `value`.
@@ -996,6 +1294,14 @@ pub(crate) mod trellis;
 mod tests {
     use super::*;
 
+    /// Every shape the coder supports: the squares and the 2:1 rectangles.
+    fn coded_shapes() -> Vec<TxSize> {
+        (2..=6)
+            .flat_map(|w: u8| (2..=6).filter_map(move |h: u8| TxSize::new(w, h)))
+            .filter(|tx| tx.width_log2().abs_diff(tx.height_log2()) <= 1)
+            .collect()
+    }
+
     /// `cost` prices exactly what `write` codes: random blocks of every size
     /// and plane, dense and sparse, levels past the Exp-Golomb threshold,
     /// both signs of the DC, after the CDFs adapted to earlier blocks.
@@ -1009,19 +1315,16 @@ mod tests {
         let mut cdfs = CoeffCdfs::new(2);
         let mut writer = crate::range_coder::SymbolWriter::new();
         for round in 0..200 {
-            let tx = [
-                TxSize::Tx4x4,
-                TxSize::Tx8x8,
-                TxSize::Tx16x16,
-                TxSize::Tx32x32,
-                TxSize::Tx64x64,
-            ][round % 5];
+            let tx = {
+                let shapes = coded_shapes();
+                shapes[round % shapes.len()]
+            };
             let plane = if round % 3 == 0 {
                 PlaneType::Chroma
             } else {
                 PlaneType::Luma
             };
-            let area = tx.coded_size() * tx.coded_size();
+            let area = tx.coded_area();
             let reach = [1, 4, 40, area][(next() % 4) as usize].min(area);
             let mut levels = vec![0_i16; area];
             for &p in &scan(tx)[..reach] {
@@ -1037,16 +1340,17 @@ mod tests {
             let eob = end_of_block(tx, &levels);
             let ctx = TxbContext::derive(plane, true, &[(next() % 64) as u8], &[0x3]);
             let (is_inter, mode) = (round % 2 == 0, (next() % 13) as usize);
+            let syntax = TypeSyntax::dct(is_inter, mode);
             let mut counter = BitCounter::default();
             cdfs.clone()
-                .write(&mut counter, tx, plane, is_inter, mode, ctx, &levels, eob);
-            let cost = cdfs.cost(tx, plane, is_inter, mode, ctx, &levels, eob);
+                .write(&mut counter, tx, plane, syntax, ctx, &levels, eob);
+            let cost = cdfs.cost(tx, plane, syntax, ctx, &levels, eob);
             assert_eq!(
                 cost.to_bits(),
                 counter.bits().to_bits(),
                 "{tx:?} round {round}"
             );
-            cdfs.write(&mut writer, tx, plane, is_inter, mode, ctx, &levels, eob);
+            cdfs.write(&mut writer, tx, plane, syntax, ctx, &levels, eob);
         }
     }
 
@@ -1056,13 +1360,7 @@ mod tests {
     fn dc_shortcut_matches_general_coefficient_walk() {
         let mut cdfs = CoeffCdfs::new(2);
         let mut adaptation = crate::range_coder::SymbolWriter::new();
-        for tx in [
-            TxSize::Tx4x4,
-            TxSize::Tx8x8,
-            TxSize::Tx16x16,
-            TxSize::Tx32x32,
-            TxSize::Tx64x64,
-        ] {
+        for tx in coded_shapes() {
             for plane in [PlaneType::Luma, PlaneType::Chroma] {
                 for is_inter in [false, true] {
                     for value in [
@@ -1090,62 +1388,31 @@ mod tests {
                     ] {
                         for dc_sign in 0..DC_SIGN_CONTEXTS {
                             let ctx = TxbContext { skip: 0, dc_sign };
-                            let mut levels = vec![0; tx.coded_size().pow(2)];
+                            let mut levels = vec![0; tx.coded_area()];
                             levels[0] = value;
                             let mut reference = cdfs.clone();
                             let mut counter = BitCounter::default();
-                            let (txs, pt) = (tx.index(), plane as usize);
+                            let (txs, pt) = (tx.context(), plane as usize);
                             counter.add_q9(reference.txb_skip[txs][ctx.skip].cost_q9(0));
+                            let syntax = TypeSyntax::dct(is_inter, 0);
                             if plane == PlaneType::Luma {
-                                if is_inter {
-                                    reference.write_inter_tx_type_dct(&mut counter, tx);
-                                } else {
-                                    reference.write_intra_tx_type_dct(&mut counter, tx, 0);
-                                }
+                                reference.write_tx_type(&mut counter, tx, syntax);
                             }
                             reference.write_eob(&mut counter, tx, pt, 1);
-                            let magnitudes = Magnitudes {
-                                steps: scan_steps(tx, 1),
-                                levels: &levels,
-                            };
+                            let magnitudes = Magnitudes::of(tx, 1, &levels);
                             let contexts = (
                                 &mut reference.base_eob[txs][pt],
                                 &mut reference.base[txs][pt],
                                 &mut reference.br[txs.min(3)][pt],
                             );
                             let sign = &mut reference.dc_sign[pt][dc_sign];
-                            match tx {
-                                TxSize::Tx4x4 => magnitudes.cost(
-                                    &mut counter,
-                                    contexts,
-                                    sign,
-                                    &mut LevelMap4::new(),
-                                ),
-                                TxSize::Tx8x8 => magnitudes.cost(
-                                    &mut counter,
-                                    contexts,
-                                    sign,
-                                    &mut LevelMap8::new(),
-                                ),
-                                TxSize::Tx16x16 => magnitudes.cost(
-                                    &mut counter,
-                                    contexts,
-                                    sign,
-                                    &mut LevelMap16::new(),
-                                ),
-                                TxSize::Tx32x32 | TxSize::Tx64x64 => magnitudes.cost(
-                                    &mut counter,
-                                    contexts,
-                                    sign,
-                                    &mut FullLevelMap::new(),
-                                ),
-                            }
+                            with_level_map!(tx, map => magnitudes.cost::<_, _, false>(&mut counter, contexts, sign, map, &[]));
                             assert_eq!(
-                                cdfs.cost(tx, plane, is_inter, 0, ctx, &levels, 1).to_bits(),
+                                cdfs.cost(tx, plane, syntax, ctx, &levels, 1).to_bits(),
                                 counter.bits().to_bits(),
                                 "{tx:?} {plane:?} inter={is_inter} dc={value} sign_ctx={dc_sign}",
                             );
-                            cdfs.write(&mut adaptation, tx, plane, is_inter, 0, ctx, &levels, 1);
+                            cdfs.write(&mut adaptation, tx, plane, syntax, ctx, &levels, 1);
                         }
                     }
                 }
@@ -1156,35 +1423,29 @@ mod tests {
     #[test]
     fn eob_is_one_past_last_nonzero_in_scan_order() {
         let mut levels = vec![0i16; 16];
-        assert_eq!(end_of_block(TxSize::Tx4x4, &levels), 0);
+        assert_eq!(end_of_block(TxSize::TX_4X4, &levels), 0);
         levels[0] = 3;
-        assert_eq!(end_of_block(TxSize::Tx4x4, &levels), 1);
+        assert_eq!(end_of_block(TxSize::TX_4X4, &levels), 1);
         levels[4] = -1; // scan position 1 in libaom's 4x4 default scan
-        assert_eq!(end_of_block(TxSize::Tx4x4, &levels), 2);
+        assert_eq!(end_of_block(TxSize::TX_4X4, &levels), 2);
     }
 
     #[test]
     fn entropy_context_saturates_and_records_dc_sign() {
         let mut levels = vec![0i16; 16];
         levels[0] = -20;
-        assert_eq!(entropy_context(TxSize::Tx4x4, &levels, 1), 7 | (1 << 3));
+        assert_eq!(entropy_context(TxSize::TX_4X4, &levels, 1), 7 | (1 << 3));
         levels[0] = 2;
-        assert_eq!(entropy_context(TxSize::Tx4x4, &levels, 1), 2 | (2 << 3));
+        assert_eq!(entropy_context(TxSize::TX_4X4, &levels, 1), 2 | (2 << 3));
     }
 
     #[test]
     fn uncoded_coefficients_do_not_read_stale_levels() {
         use crate::range_coder::SymbolWriter;
-        for tx in [
-            TxSize::Tx4x4,
-            TxSize::Tx8x8,
-            TxSize::Tx16x16,
-            TxSize::Tx32x32,
-            TxSize::Tx64x64,
-        ] {
+        for tx in coded_shapes() {
             // Empty levels deliberately prove the EOB-zero contract used by
             // backend scratch reuse; poisoned old coefficients must also be inert.
-            let poisoned = vec![i16::MIN; tx.coded_size() * tx.coded_size()];
+            let poisoned = vec![i16::MIN; tx.coded_area()];
             for plane in [PlaneType::Luma, PlaneType::Chroma] {
                 for inter in [false, true] {
                     let ctx = TxbContext::derive(plane, true, &[0], &[0]);
@@ -1192,9 +1453,17 @@ mod tests {
                     let mut costs = Vec::new();
                     for levels in [&[][..], poisoned.as_slice()] {
                         let mut cdfs = CoeffCdfs::new(2);
-                        costs.push(cdfs.cost(tx, plane, inter, 0, ctx, levels, 0));
+                        costs.push(cdfs.cost(tx, plane, TypeSyntax::dct(inter, 0), ctx, levels, 0));
                         let mut writer = SymbolWriter::new();
-                        cdfs.write(&mut writer, tx, plane, inter, 0, ctx, levels, 0);
+                        cdfs.write(
+                            &mut writer,
+                            tx,
+                            plane,
+                            TypeSyntax::dct(inter, 0),
+                            ctx,
+                            levels,
+                            0,
+                        );
                         bytes.push(writer.finish());
                         assert_eq!(entropy_context(tx, levels, 0), 0);
                     }

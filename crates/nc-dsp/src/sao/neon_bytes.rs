@@ -35,6 +35,18 @@ impl Bytes for Lanes {
         unsafe { Self(vcgtq_u8(self.0, b.0)) }
     }
     #[inline(always)]
+    fn table(values: [u8; 16]) -> Self {
+        // SAFETY: the NEON entry is active, and the table is a full 16 bytes.
+        unsafe { Self(vld1q_u8(values.as_ptr())) }
+    }
+
+    #[inline(always)]
+    fn lookup(self, table: Self) -> Self {
+        // SAFETY: inlined into the NEON entry.
+        unsafe { Self(core::arch::aarch64::vqtbl1q_u8(table.0, self.0)) }
+    }
+
+    #[inline(always)]
     fn and(self, b: Self) -> Self {
         // SAFETY: inlined only into the corresponding target-feature entry.
         unsafe { Self(vandq_u8(self.0, b.0)) }

@@ -127,6 +127,8 @@ from typing import Sequence
 
 import numpy as np
 
+from . import bdj
+from .bdj import ms_ssim_db
 from .bdrate import BdResult, bd_rate
 
 #: The metrics J_real averages, in equal thirds (owner decision, 2026-11-11). VMAF v1
@@ -134,9 +136,11 @@ from .bdrate import BdResult, bd_rate
 #: (adm_enhn_gain_limit 1.0) and it has no VIF.
 HEADLINE_METRICS = ("psnr_yuv", "vmaf_v1", "ms_ssim")
 #: Metrics measured on request (final checks, results) and reported as BD-rates
-#: beside J, never part of J, a guard or a decision (owner, 2026-11-17): XPSNR.
+#: beside J, never part of J, a guard or a decision (owner, 2026-11-17): XPSNR, and
+#: luma PSNR beside the 6:1:1 PSNR-YUV (results audit 2026-11-23, finding 7: the chroma
+#: weight favours some encoders' allocation, so the luma figure is always shown).
 #: A clip's term is None unless every point of both curves carries the metric.
-REPORTED_METRICS = ("xpsnr_yuv",)
+REPORTED_METRICS = ("xpsnr_yuv", "psnr_y")
 WORST_METRICS = ("worst_psnr_y", "worst_vmaf_v1")
 #: The per-frame worst-1% metrics, reported only.
 WORST_FRAME_METRICS = ("worst_frame_psnr_y", "worst_frame_vmaf_v1")
@@ -181,6 +185,9 @@ CEILING_MARGIN_PCT = 0.25
 CEILING_LONG_MARGIN_PCT = 0.5
 #: Rate-controlled curves have 4 ladder points; a staged proxy keeps 3.
 BD_MIN_POINTS = 3
+#: A rung's target is the scaled ladder value rounded to whole kbps (cbr.clip_targets):
+#: a regime's band ends take that rounding (relative) so its end rungs stay inside.
+BAND_ROUNDING = 0.01
 #: A point whose leaky bucket peaks above this multiple of the buffer
 #: violates it outright (a receiver with the shared 1 s buffer would stall
 #: for over half a second), as opposed to brushing its edge.
@@ -190,11 +197,6 @@ MATCHED_RATE_SAMPLES = 5
 MARGIN_SIGMAS = 2.0
 #: P frames before a periodic key that define its neighbours' level.
 PULSE_NEIGHBOURS = 8
-
-
-def ms_ssim_db(value: float) -> float:
-    """MS-SSIM linearised for BD-rate interpolation (it saturates near 1)."""
-    return -10.0 * math.log10(max(1e-10, 1.0 - value))
 
 
 BD_TRANSFORMS = {"ms_ssim": ms_ssim_db}
@@ -318,24 +320,45 @@ def periodic_pulse(psnr_y: Sequence[float], keys: Sequence[bool],
     return sum(jumps) / len(jumps) if jumps else None
 
 
+def axes_points(points: list[dict], metric: str, transform) -> tuple[list[float], list[dict]]:
+    """A curve's (transformed qualities, points) by rate, dominated points (more bits, no
+    more quality, which say nothing) dropped."""
+    usable = sorted((p for p in points if p.get(metric) is not None), key=lambda p: p["kbps"])
+    qualities, kept = [], []
+    for point in usable:
+        quality = transform(point[metric])
+        if not qualities or quality > qualities[-1]:
+            qualities.append(quality)
+            kept.append(point)
+    return qualities, kept
+
+
 def curve_bd_result(anchor: list[dict], test: list[dict], metric: str, low_half: bool = False,
-                    min_points: int = BD_MIN_POINTS) -> BdResult | None:
-    """BD-rate of `metric` on achieved-rate curves with its overlap; None when unusable."""
+                    min_points: int = BD_MIN_POINTS,
+                    band: tuple[float, float] | None = None) -> BdResult | None:
+    """BD-rate of `metric` on achieved-rate curves with its overlap; None when unusable.
+
+    `band` (target kbps, ends included): integrate only over the quality range the
+    test's rungs with targets in the band span (a rate regime, regime_terms); None when
+    fewer than `min_points` of them."""
     transform = BD_TRANSFORMS.get(metric, lambda x: x)
 
     def axes(points: list[dict]) -> tuple[list[float], list[float]]:
-        usable = sorted((p for p in points if p.get(metric) is not None), key=lambda p: p["kbps"])
-        rates, qualities = [], []
-        for point in usable:  # dominated points (more bits, no more quality) say nothing
-            quality = transform(point[metric])
-            if not qualities or quality > qualities[-1]:
-                rates.append(point["kbps"])
-                qualities.append(quality)
-        return rates, qualities
+        qualities, kept = axes_points(points, metric, transform)
+        return [p["kbps"] for p in kept], qualities
     a_rate, a_q = axes(anchor)
     t_rate, t_q = axes(test)
+    quality_range = None
+    if band is not None:
+        inside = [q for q, p in zip(*axes_points(test, metric, transform))
+                  if band[0] * (1 - BAND_ROUNDING) <= p["target_kbps"]
+                  <= band[1] * (1 + BAND_ROUNDING)]
+        if len(inside) < min_points:
+            return None
+        quality_range = (min(inside), max(inside))
     try:
-        return bd_rate(a_rate, a_q, t_rate, t_q, min_points=min_points, low_half=low_half)
+        return bd_rate(a_rate, a_q, t_rate, t_q, min_points=min_points, low_half=low_half,
+                       quality_range=quality_range)
     except ValueError:  # too few points, or quality not increasing with rate
         return None
 
@@ -381,9 +404,10 @@ def point_quality(anchor: list[dict], point: dict) -> float | None:
 
 
 def curve_bd(anchor: list[dict], test: list[dict], metric: str, low_half: bool = False,
-             min_points: int = BD_MIN_POINTS) -> float | None:
+             min_points: int = BD_MIN_POINTS,
+             band: tuple[float, float] | None = None) -> float | None:
     """BD-rate of `metric` on achieved-rate curves; None when unusable or unreliable."""
-    result = curve_bd_result(anchor, test, metric, low_half, min_points)
+    result = curve_bd_result(anchor, test, metric, low_half, min_points, band)
     return result.bd_rate_percent if result and result.reliable else None
 
 
@@ -412,8 +436,12 @@ def matched_delta(anchor: list[dict], test: list[dict], key, samples: int = MATC
 
 
 def compare_clip(anchor: list[dict], test: list[dict], min_points: int = BD_MIN_POINTS,
-                 reference_flicker: float | None = None) -> dict[str, float | None]:
+                 reference_flicker: float | None = None,
+                 regimes: dict[str, tuple[float, float]] | None = None
+                 ) -> dict[str, float | None]:
     """Every J_real term of one clip (see the module docstring).
+
+    `regimes` ({name: (low, high) target kbps at this clip's scale}) adds regime_terms.
 
     `reference_flicker`: the clip's calibrated real-time reference window
     flicker (nceval.flicker_reference); the guarded flicker delta is reduced
@@ -450,6 +478,9 @@ def compare_clip(anchor: list[dict], test: list[dict], min_points: int = BD_MIN_
         terms[f"d_{field}"] = (matched_delta(anchor, test, lambda p: p[field])
                                if all(field in p for p in anchor + test) else None)
     terms.update(headline_quality(terms))
+    terms["bd_j"] = bdj.bd_j(bdj_curve(test), bdj_curve(anchor))
+    for name, band in (regimes or {}).items():
+        terms.update(regime_terms(anchor, test, name, band, min_points))
     terms["base_quality"] = base_quality(anchor, test, min_points)
     for side, points in (("test", test), ("anchor", anchor)):
         terms[f"{side}_overruns"] = sum(p.get("overruns", 0) for p in points)
@@ -457,6 +488,11 @@ def compare_clip(anchor: list[dict], test: list[dict], min_points: int = BD_MIN_
         terms.update(ceiling_terms(side, points))
     terms["test_long_over_points"] = long_ceiling_failures(anchor, test)
     return terms
+
+
+def bdj_curve(points: list[dict]) -> list[tuple[float, dict[str, float]]]:
+    """A screen's curve as nceval.bdj takes it: achieved rate and the three metrics."""
+    return [(p["kbps"], {m: p[m] for m in bdj.METRICS}) for p in points]
 
 
 def base_quality(anchor: list[dict], test: list[dict],
@@ -476,6 +512,26 @@ def point_base_quality(anchor: list[dict], point: dict) -> float | None:
     if not anchor or "base" not in point or not all("base" in p for p in anchor):
         return None
     return point_quality([p["base"] for p in anchor], point["base"])
+
+
+def regime_terms(anchor: list[dict], test: list[dict], name: str, band: tuple[float, float],
+                 min_points: int = BD_MIN_POINTS) -> dict[str, float | None]:
+    """One rate regime's BD terms (the results charts', docs/PROCEDURES.md "Results
+    charts"): `<name>_<metric>` for the headline and reported metrics, each the BD-rate
+    of the whole curves integrated over the quality range that the test's rungs with
+    TARGETS in `band` (kbps, ends included) span (curve_bd_result `band`), and
+    `<name>_quality`, their J quality (the headline metrics' plain mean; None unless all
+    three exist). Both curves keep every point (the same fits as the full BD, so the
+    zero line scores exactly 0); the band picks where to integrate, by the test's own
+    encodes, never by the anchor's achieved rate (x264 undershoots by up to 2.5x)."""
+    terms = {}
+    for metric in HEADLINE_METRICS + REPORTED_METRICS:
+        measured = all(metric in p for p in anchor + test)
+        terms[f"{name}_{metric}"] = (curve_bd(anchor, test, metric, min_points=min_points,
+                                              band=band) if measured else None)
+    values = [terms[f"{name}_{m}"] for m in HEADLINE_METRICS]
+    terms[f"{name}_quality"] = None if None in values else sum(values) / len(values)
+    return terms
 
 
 def headline_quality(terms: dict[str, float | None]) -> dict[str, float | None]:

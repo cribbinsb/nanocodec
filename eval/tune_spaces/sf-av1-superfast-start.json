@@ -1,0 +1,17 @@
+[
+ {"analysis.window_half_width": 2, "analysis.window_half_height": 1, "analysis.hme_level1": 1,
+  "analysis.window_exit_sad_per_pixel": 2, "analysis.skip_hme_sad_per_pixel": 2,
+  "decision.codec_subpel_seed_lambdas": 0.3, "decision.static_zero_vector": 1,
+  "decision.max_cheap_vectors": 2, "decision.codec_fullpel_probe": 1, "av1.near_count": 1,
+  "planner.inter_min_log2": 5, "planner.intra_plan": 2, "planner.depth_removal_th_32_16": 25},
+ {"analysis.window_half_width": 1, "analysis.window_half_height": 0, "analysis.hme_level1": 0,
+  "analysis.window_exit_sad_per_pixel": 4, "analysis.skip_hme_sad_per_pixel": 2,
+  "decision.codec_subpel_seed_lambdas": 0.5, "decision.static_zero_vector": 1,
+  "decision.max_cheap_vectors": 2, "decision.codec_fullpel_probe": 1, "av1.near_count": 1,
+  "planner.inter_min_log2": 5, "planner.intra_plan": 1, "planner.depth_removal_th_32_16": 25},
+ {"analysis.window_half_width": 1, "analysis.window_half_height": 1, "analysis.hme_level1": 1,
+  "analysis.window_exit_sad_per_pixel": 2, "analysis.skip_hme_sad_per_pixel": 2,
+  "decision.codec_subpel_seed_lambdas": 0.5, "decision.static_zero_vector": 1,
+  "decision.max_cheap_vectors": 2, "decision.codec_fullpel_probe": 1, "av1.near_count": 1,
+  "planner.inter_min_log2": 5, "planner.intra_plan": 1, "planner.depth_removal_th_32_16": 25}
+]

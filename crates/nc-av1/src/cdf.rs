@@ -160,6 +160,14 @@ impl<const N: usize> Journaled for Cdf<N> {
         assert_eq!(offset, 0, "a journal entry names a CDF's start");
         self.swap_state(state);
     }
+
+    #[inline]
+    fn restore_at(&mut self, offset: usize, state: &mut CdfState) {
+        assert_eq!(offset, 0, "a journal entry names a CDF's start");
+        self.icdf.copy_from_slice(&state.icdf[..N]);
+        self.count = state.count;
+        self.costs.copy_prefix(&state.costs);
+    }
 }
 
 /// The adaptation rate of a CDF with counter `count` over an `nsyms`-symbol

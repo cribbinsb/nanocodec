@@ -4,6 +4,8 @@ import math
 import unittest
 from types import SimpleNamespace
 
+import pytest
+
 from nceval import jreal, singlepoint, tune_pool
 
 SPECS = {"a.x": (2.0, 0.0, 64.0), "a.n": (3.0, 0.0, 3.0), "a.z": (0.0, 0.0, 10.0)}
@@ -128,7 +130,6 @@ def test_svc_base_guard_is_a_constraint_only_for_two_layer_rows():
 
 
 def test_a_study_on_another_cpu_family_is_refused_unless_re_anchored(monkeypatch):
-    import pytest
     from nceval import cloud
     monkeypatch.setattr(cloud, "cpu_family", lambda: "c7i")
     assert tune_pool.check_family(None, "study s", False) is False  # nothing recorded
@@ -139,14 +140,16 @@ def test_a_study_on_another_cpu_family_is_refused_unless_re_anchored(monkeypatch
     assert cloud.box_family("host:pc") is None and cloud.box_family("c7a") == "c7a"
 
 
-def test_a_finalists_dcpu_weighs_arm_and_x86_equally_with_callgrind_standing_in():
-    both = tune_pool.combined_dcpu(-3.0, {"arm": -4.0, "x86": -2.0, "targets": {}})
-    assert both["dcpu"] == -3.0 and both["dcpu_x86"] == -2.0
-    assert both["dcpu_x86_how"] == "zen5" and both["dcpu_callgrind"] == -3.0
-    arm_only = tune_pool.combined_dcpu(-3.0, {"arm": -5.0, "x86": None})
-    assert arm_only["dcpu"] == -4.0 and arm_only["dcpu_x86_how"] == "callgrind"
-    none = tune_pool.combined_dcpu(-3.0, None)
-    assert none["dcpu"] == -3.0 and none["dcpu_arm"] is None
+def test_a_finalists_cpu_fields_come_from_its_l3s_own_encodes():
+    from nceval import decision_cpu
+    found = decision_cpu.Charge("d", {"f600-k150": -3.0, "f900-k300": -1.0}, "s",
+                                {"f600-k150": {"x86": -2.0, "arm": -4.0},
+                                 "f900-k300": {"x86": -1.0, "arm": -1.0}})
+    fields = tune_pool.cpu_fields(found)
+    assert fields["dcpu"] == -2.0 and fields["dcpu_x86"] == -1.5 and fields["dcpu_arm"] == -2.5
+    assert fields["dcpu_x86_how"] == "graniterapids"
+    assert decision_cpu.from_record(fields["cpu"]) == found
+    assert tune_pool.cpu_fields(None)["dcpu"] is None
 
 
 def two_rung_study(slow_j, slow_cpu, k=0.5, explicit=False):
@@ -197,23 +200,27 @@ def test_an_explicit_k_above_the_chord_is_kept_but_warned_and_a_rung_that_buys_n
 def test_a_study_from_a_binary_path_records_its_commit_and_finalists_need_rented_core_cpu(
         tmp_path, monkeypatch):
     import optuna
-    import pytest
     from nceval import buildinfo
     binary = tmp_path / "nanocodec"
     binary.write_text("elf")
     (tmp_path / "COMMIT").write_text("f" * 40 + "\n")
     monkeypatch.setattr(buildinfo, "build_info", lambda b: {"commit": None, "dirty": False})
-    assert tune_pool.binary_commit(binary) == "f" * 40  # the cached copy's COMMIT
+    assert buildinfo.clean_commit(binary) == "f" * 40  # the cached copy's COMMIT
     monkeypatch.setattr(buildinfo, "build_info", lambda b: {"commit": "a" * 40, "dirty": False})
-    assert tune_pool.binary_commit(binary) == "a" * 40  # the stamp first
+    assert buildinfo.clean_commit(binary) == "a" * 40  # the stamp first
     monkeypatch.setattr(buildinfo, "build_info", lambda b: {"commit": "a" * 40, "dirty": True})
-    assert tune_pool.binary_commit(binary) is None  # a dirty build is no commit's
+    assert buildinfo.clean_commit(binary) is None  # a dirty build is no commit's
     study = optuna.create_study(directions=["minimize", "minimize"])
     study.set_user_attr("commit", "")
     monkeypatch.setattr(tune_pool, "finalist_todo", lambda s, c, k: {"3": None})
     monkeypatch.setattr(tune_pool, "study_k", lambda attrs: (0.1, "k"))
-    with pytest.raises(SystemExit, match="#3 have no rented-core CPU"):
-        tune_pool.require_box_cpu(study, 5, None, callgrind_only=False)
-    tune_pool.require_box_cpu(study, 5, None, callgrind_only=True)
-    study.set_user_attr("finalist_cpu", {"3": {"arm": 0.0, "x86": None}})
-    tune_pool.require_box_cpu(study, 5, None, callgrind_only=False)  # 0.0 is a measurement
+    with pytest.raises(SystemExit, match="#3 have no CPU measured on their L3s' own encodes"):
+        tune_pool.require_box_cpu(study, 5, None)
+    study.set_user_attr("finalist_cpu", {"3": {"arm": 0.0, "x86": None}})  # before 11-23
+    with pytest.raises(SystemExit, match="#3"):
+        tune_pool.require_box_cpu(study, 5, None)
+    study.set_user_attr("finalist_cpu", {"3": {"digest": "d", "groups": {"key1": 0.0},
+                                               "source": "s"}})
+    tune_pool.require_box_cpu(study, 5, None)
+
+

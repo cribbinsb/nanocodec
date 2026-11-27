@@ -125,6 +125,19 @@ impl Sps {
         )
     }
 
+    /// Frames that may precede a frame in decoding order but follow it in
+    /// output order: the VUI's `max_num_reorder_frames`; else none for
+    /// `pic_order_cnt_type` 2, whose output order is the decoding order
+    /// (§8.2.1.3), so its pictures leave at once (openh264 signals no VUI
+    /// restriction); else the DPB size (§C.4.5.3).
+    pub fn reorder_frames(&self) -> usize {
+        match (self.max_num_reorder_frames, &self.poc) {
+            (Some(frames), _) => frames as usize,
+            (None, PocType::FrameNum) => 0,
+            (None, _) => self.dpb_frames(),
+        }
+    }
+
     /// The DPB size in frames (§A.3.1 item h: `MaxDpbMbs` divided by the
     /// frame size in macroblocks, at most 16), or the VUI's
     /// `max_dec_frame_buffering`.

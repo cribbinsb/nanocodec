@@ -31,6 +31,69 @@ const MAX_CODED_AREA: usize = MAX_CODED_SIDE * MAX_CODED_SIDE;
 pub(super) const RESIDUAL_MIN: i32 = -256;
 pub(super) const RESIDUAL_MAX: i32 = 255;
 
+/// Inverse of a decoded 2:1 DCT rectangle. Decode stores its coefficients
+/// column-major, so a group of neighbouring rows is already in the lane
+/// order of the shared row butterfly.
+///
+/// # Safety
+/// V's ISA is enabled, its lane count divides both dimensions, and
+/// `rows` bounds the nonzero rows of the active coefficient scan.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[inline(always)]
+pub(crate) unsafe fn inverse_rect_from_columns<
+    V: I32Lanes,
+    const W: usize,
+    const H: usize,
+    const AREA: usize,
+    const NORMALIZE: bool,
+>(
+    coefficients: &[i16; AREA],
+    rows: usize,
+    shifts: (u32, u32),
+    residual: &mut [i16; AREA],
+) {
+    use crate::av2_dec::itx::{RECT2_SCALE, RECT2_SHIFT};
+    const { assert!(AREA == W * H) };
+    let mut intermediate = [0i16; AREA];
+    let zero = V::splat(0);
+    let scale = V::splat(RECT2_SCALE);
+    let mut horizontal = [zero; W];
+    let mut horizontal_out = [zero; W];
+    for row in (0..rows).step_by(V::LANES) {
+        for (x, lane) in horizontal.iter_mut().enumerate() {
+            let coefficient = V::load_i16(&coefficients[x * H + row..]);
+            *lane = if NORMALIZE {
+                coefficient.mul(scale).round_shift(RECT2_SHIFT)
+            } else {
+                coefficient
+            };
+        }
+        inverse_dct::<Av2Basis, V, W>(&horizontal, W, &mut horizontal_out);
+        for lane in &mut horizontal_out {
+            *lane = lane.round_shift(shifts.0);
+        }
+        store_pass_sat16::<V>(&horizontal_out, row, W, as_uninit(&mut intermediate));
+    }
+
+    let (low, high) = (V::splat(RESIDUAL_MIN), V::splat(RESIDUAL_MAX));
+    let mut vertical = [zero; H];
+    let mut vertical_out = [zero; H];
+    for x in (0..W).step_by(V::LANES) {
+        for (row, lane) in vertical.iter_mut().enumerate().take(rows) {
+            *lane = V::load_i16(&intermediate[row * W + x..]);
+        }
+        inverse_dct::<Av2Basis, V, H>(&vertical, rows, &mut vertical_out);
+        for (row, lane) in vertical_out.iter().enumerate() {
+            let sample = lane.round_shift(shifts.1).max(low).min(high);
+            sample.store_sat16(&mut residual[row * W + x..]);
+        }
+    }
+}
+
 /// AV2's basis ([`DCT_BASIS`], up to 64 points) for the shared butterflies.
 pub(super) struct Av2Basis;
 
@@ -183,10 +246,16 @@ pub(crate) unsafe fn inverse64<V: I32Lanes>(
     shifts: (u32, u32),
     out: &mut [i16],
 ) {
-    const SIDE: usize = 2 * MAX_CODED_SIDE;
     let mut coded = [0; MAX_CODED_AREA];
     // SAFETY: forwarded contract.
     unsafe { inverse::<V, MAX_CODED_SIDE>(coeffs, nonzero, shifts, &mut coded) };
+    repeat_inverse64(&coded, out);
+}
+
+/// Expand the coded inverse's samples to the 64x64 reconstruction grid.
+#[inline(always)]
+pub(super) fn repeat_inverse64(coded: &[i16; MAX_CODED_AREA], out: &mut [i16]) {
+    const SIDE: usize = 2 * MAX_CODED_SIDE;
     let (pairs, _) = out[..SIDE * SIDE].as_chunks_mut::<{ 2 * SIDE }>();
     let (rows, _) = coded.as_chunks::<MAX_CODED_SIDE>();
     for (pair, row) in pairs.iter_mut().zip(rows) {
@@ -230,14 +299,26 @@ pub(crate) unsafe fn forward<V: I32Lanes, const N: usize, const C: usize>(
     }
     // SAFETY: rows x0..x0 + LANES of `g` were written for every x0.
     let g = unsafe { written(&g, N * C) };
+    forward_rows::<V, N, C>(g, &mut x, &mut y, shifts.1, out);
+}
+
+/// Complete the wide row pass from the shared column-major layout.
+#[inline(always)]
+pub(super) fn forward_rows<V: I32Lanes, const N: usize, const C: usize>(
+    columns: &[i32],
+    x: &mut [V; N],
+    y: &mut [V; N],
+    shift: u32,
+    out: &mut [i32],
+) {
     let out = as_uninit(&mut out[..C * C]);
-    for k0 in (0..C).step_by(lanes) {
+    for k0 in (0..C).step_by(V::LANES) {
         for (column, lane) in x.iter_mut().enumerate() {
-            *lane = V::load(&g[column * C + k0..]);
+            *lane = V::load(&columns[column * C + k0..]);
         }
-        forward_dct::<Av2Basis, V, N>(&x, &mut y, C);
+        forward_dct::<Av2Basis, V, N>(x, y, C);
         for lane in &mut y[..C] {
-            *lane = lane.round_shift(shifts.1);
+            *lane = lane.round_shift(shift);
         }
         store_pass::<V>(&y[..C], k0, C, out);
     }

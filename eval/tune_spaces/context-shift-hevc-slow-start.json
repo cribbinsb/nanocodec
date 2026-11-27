@@ -1,0 +1,54 @@
+[
+ {
+  "planner.rd_split_deepen_shift_bias": -0.7357656525857685,
+  "planner.rd_split_deepen_shift_neighbours": -0.8544280461511904,
+  "planner.rd_split_deepen_shift_co_located": -0.4918744174280705,
+  "planner.rd_split_deepen_shift_size": 0.47771851048930325,
+  "planner.rd_split_deepen_shift_margin": 0.7540049697590206,
+  "planner.rd_split_deepen_shift_residual": -0.39035757141991745,
+  "planner.rd_split_merge_shift_bias": 0.7104844458152774,
+  "planner.rd_split_merge_shift_neighbours": 0.06384204331050151,
+  "planner.rd_split_merge_shift_co_located": 0.8651045484632345,
+  "planner.rd_split_merge_shift_size": -0.821678594767381,
+  "planner.rd_split_merge_shift_margin": 1.196687807767825
+ },
+ {
+  "planner.rd_split_deepen_shift_bias": 0.8014728874438859,
+  "planner.rd_split_deepen_shift_neighbours": 0.7866340851152702,
+  "planner.rd_split_deepen_shift_co_located": -0.22038238595773185,
+  "planner.rd_split_deepen_shift_size": 0.0,
+  "planner.rd_split_deepen_shift_margin": 0.0,
+  "planner.rd_split_deepen_shift_residual": 0.0,
+  "planner.rd_split_merge_shift_bias": 0.0,
+  "planner.rd_split_merge_shift_neighbours": 0.0,
+  "planner.rd_split_merge_shift_co_located": 0.2148759925705206,
+  "planner.rd_split_merge_shift_size": 0.0,
+  "planner.rd_split_merge_shift_margin": 0.0
+ },
+ {
+  "planner.rd_split_deepen_shift_bias": 0.0,
+  "planner.rd_split_deepen_shift_neighbours": 0.0,
+  "planner.rd_split_deepen_shift_co_located": -0.3346096292797418,
+  "planner.rd_split_deepen_shift_size": 0.0,
+  "planner.rd_split_deepen_shift_margin": 0.6644532227498052,
+  "planner.rd_split_deepen_shift_residual": 0.21119176969527964,
+  "planner.rd_split_merge_shift_bias": 0.0,
+  "planner.rd_split_merge_shift_neighbours": 0.0,
+  "planner.rd_split_merge_shift_co_located": 0.0,
+  "planner.rd_split_merge_shift_size": -0.7582200803883872,
+  "planner.rd_split_merge_shift_margin": 0.0
+ },
+ {
+  "planner.rd_split_deepen_shift_bias": -0.6816864171496523,
+  "planner.rd_split_deepen_shift_neighbours": -0.5568251644248439,
+  "planner.rd_split_deepen_shift_co_located": -0.30548114377870444,
+  "planner.rd_split_deepen_shift_size": 0.8384618335939729,
+  "planner.rd_split_deepen_shift_margin": 0.6373921701977311,
+  "planner.rd_split_deepen_shift_residual": -0.061664871717571235,
+  "planner.rd_split_merge_shift_bias": 0.2895173103199771,
+  "planner.rd_split_merge_shift_neighbours": 0.20901518951084927,
+  "planner.rd_split_merge_shift_co_located": -0.7633823100604733,
+  "planner.rd_split_merge_shift_size": -0.7548546360312878,
+  "planner.rd_split_merge_shift_margin": 1.5024001421520876
+ }
+]

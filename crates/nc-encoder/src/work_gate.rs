@@ -39,6 +39,8 @@ param_group! {
             "relative quantizer (0 finest, 1 coarsest; above 1 never) from which a codec's partial forward transform (AV1 `av1.partial_forward`) applies: higher keeps the exact transform at more quantizers, at more transform work",
         tx_split_skip_min_quantizer: 1.1, [0.0, 1.1],
             "relative quantizer from which the transform-split trial is skipped (above 1: tried at every quantizer): lower skips it at more quantizers, faster",
+        tx_split_min_nonzero: 1.0, [1.0, 64.0],
+            "the transform-split trial prices the quarter transforms only where the whole block's transform quantised to at least this many nonzero levels (rounded; 1: wherever it codes any): higher is faster, fewer split trials",
     }
 }
 

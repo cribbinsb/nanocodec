@@ -411,6 +411,57 @@ def sweep(apply: bool, root: Path | None = None, now: float | None = None,
 # --- release pre-flight ---------------------------------------------------------------
 
 
+def entry_bytes(path: Path) -> int:
+    """A file's size, or a directory's files' sizes (symlinks not followed)."""
+    if path.is_symlink() or path.is_file():
+        return path.lstat().st_size
+    return sum(os.lstat(os.path.join(d, f)).st_size for d, _, files in os.walk(path)
+               for f in files)
+
+
+def last_use(path: Path) -> float:
+    """When an entry was last used: its newest access or change time (a directory's own,
+    which moves when an entry is added or removed in it)."""
+    info = path.lstat()
+    return max(info.st_atime, info.st_mtime)
+
+
+def prune_to_cap(entries: list[Path], cap_bytes: int, owner: str,
+                 fixed_bytes: int = 0, min_idle_s: float = 0.0) -> tuple[int, int]:
+    """A capped cache's eviction, for the tool that owns it (its manifest entry's
+    `evicted_by` and `cap_gb`): the least recently used of `entries` (files or
+    directories) go, each through `guard(path, owner)`, until they and `fixed_bytes`
+    (what the cache holds beside them) total at most `cap_bytes`. An entry used within
+    `min_idle_s` is kept, judged again just before its removal (another process may be
+    using it: aws_measure's seed). Returns (bytes freed, entries removed); an entry guard
+    refuses is kept and skipped."""
+    sized = sorted(((last_use(e), entry_bytes(e), e) for e in entries), key=lambda t: t[0])
+    total = fixed_bytes + sum(size for _, size, _ in sized)
+    freed = removed = 0
+    for _, size, path in sized:
+        if total - freed <= cap_bytes:
+            break
+        if guard(path, owner) is not None:
+            continue
+        try:
+            if time.time() - last_use(path) < min_idle_s:
+                continue
+            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+        except FileNotFoundError:  # removed by another process meanwhile
+            continue
+        freed += size
+        removed += 1
+    return freed, removed
+
+
+def cap_bytes(path: Path, root: Path | None = None) -> int | None:
+    """The manifest's cap for the cache entry rooted at `path` (None: no cap)."""
+    for entry, how in covering(path, root):
+        if how == "root" and entry.cap_gb is not None:
+            return int(entry.cap_gb * (1 << 30))
+    return None
+
+
 def verify_release(root: Path | None = None) -> list[str]:
     """One line per missing or empty durable store a release needs (empty: all there)."""
     root = root or data_root()

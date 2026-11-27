@@ -23,13 +23,18 @@
 #![forbid(unsafe_code)]
 
 mod analyzer;
+pub mod cell_stats;
 pub mod effort;
+pub mod gate_net;
+mod gate_net_weights;
 pub mod global;
 pub mod grain;
 pub mod grid;
+pub mod linear_threshold;
 pub mod link;
 pub mod motion;
 pub mod mv;
+pub mod net_inputs;
 pub mod noise;
 pub mod preanalysis;
 pub mod pyramid;

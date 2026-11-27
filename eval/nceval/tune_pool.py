@@ -8,9 +8,10 @@ Pareto front of two objectives, both minimised, both relative to the preset:
      metrics, equal thirds; nceval.jreal), class-balanced over the study's
      clips, from the same streamed CBR points as `nceval.screen`
      (nceval.realuse Runner);
-  2. CPU: x86 callgrind instructions per frame on nceval.tune.COST_CLIPS (key
-     + 12 P frames at fixed QP, amortised over the 300-frame key period),
-     as a ratio: exact and cheap on a loaded machine.
+  2. CPU: x86 callgrind instructions of the trial's own stage-1 encodes (their
+     declared subset, nceval.steering_cpu: the same CBR commands, clips, rungs,
+     frames and key period as the quality), as a ratio to the preset's: exact on a
+     loaded machine, for steering only (finalists are timed on rented cores).
 
 Overfitting is the main risk of tuning on a fixed clip set (owner,
 2026-11-11), so the protocol trades depth for breadth:
@@ -90,8 +91,9 @@ flicker and pulse guards are full-curve terms left to L3.
 Finalists: the top FINALISTS of the front by J + k * dCPU (k: --k, J_real's
 K_CPU by default; 0.1 for Default quality arms), among those that beat the
 preset on it (score below -RECHECK_MIN_GAIN), get a CPU A/B on rented single
-cores (box_cpu: Graviton 3 and 4 for Arm, Zen 5 for x86, equal weight; it
-replaced the Jetson on 2026-11-21) and L3 (nceval.levels, single-point over the
+cores of their L3s' own encodes (measure_l3_cpu, nceval.decision_cpu: Graviton 3
+and 4 for Arm, Zen 5 for x86, equal weight; since 2026-11-23 the same commands
+as the L3's quality, each level and key share at its own CPU) and L3 (nceval.levels, single-point over the
 whole disjoint L3 pool, escalated to the full ladder when the change reshapes
 the curve; candidate vs preset, J with that combined dCPU); only BETTER passes.
 A finalist that moves a rate-control or structure parameter (rate.*, layers.*,
@@ -125,7 +127,6 @@ import os
 import random
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -135,17 +136,18 @@ from pathlib import Path
 import numpy as np
 import optuna
 
-from . import checkrun, cloud, interval, jreal, levels, levers, pool, realuse, slots
+from . import (buildinfo, checkrun, cloud, decision_cpu, interval, jreal, levels, levers, pool,
+               realuse, steering_cpu)
 from .singlepoint import (RESHAPE_PCT, RESHAPE_T, assign_rungs, balanced_j, base_constraint,
                           ceiling_constraint, rung_trend, single_points, worst_constraint)
-from .cbr import DEFAULT_INTRA_PERIOD, Family
+from .cbr import Family
 from .clips import Clip, load_clipset
 from .codecs import Codec
 from .config import load_paths
 from .encoders.nanocodec import MEDIUM, preset_values
 from .fingerprint import measurement_fingerprint
 from .gatepolicy import EVALUATION_GATE, file_sha256
-from .tune import (REPO_ROOT, TUNING_DIR, instruction_cost,
+from .tune import (REPO_ROOT, TUNING_DIR,
                    serialize_trial_acquisition, specs_of, study_storage)
 
 #: Cloud studies (cloud_search): a box job of SLICE_MINUTES of trials, plus the margin
@@ -180,13 +182,9 @@ AGREE_MIN_MOVE = 0.02
 FINALISTS = 5
 PARALLEL_TRIALS = 2
 MAX_WORKERS = 8
-#: A finalist's dCPU: the Arm targets' mean and the x86 one, equal weight (owner: the
-#: Jetson step replaced by rented cores, 2026-11-21; tools/dev/aws_cpu_ab.py).
-ARM_WEIGHT = 1.0
-ARM_TARGETS = ("graviton3", "graviton4")
-X86_TARGET = "zen5"
-#: The finalists' CPU A/B (aws_cpu_ab's defaults: 4 clips, 150 frames, 600 kbit/s).
-CPU_AB_ROUNDS = 5
+#: How a finalist's x86 change is named in its result (levers.finalist_rows): the
+#: rented x86 target of nceval.decision_cpu (the benchmark's c8i.2xlarge).
+X86_TARGET = "graniterapids"
 TPE_STARTUP_TRIALS = 10
 #: Share of the parameters each start-up trial moves (sparse_moves).
 SPARSE_SHARE = 1 / 3
@@ -332,6 +330,22 @@ def warm_start_point(domains: dict[str, dict], preset: dict[str, float],
     return point
 
 
+def start_points(path: str | None, domains: dict[str, dict]) -> list[dict[str, float]]:
+    """The parameter points of `path` (a JSON list of {name: value}; none without
+    one), each clamped to the study's domains: warm starts carried over from an
+    earlier study, e.g. a 150-frame study's front into a long-window one."""
+    if not path:
+        return []
+    points = []
+    for point in json.loads(Path(path).read_text()):
+        unknown = sorted(set(point) - set(domains))
+        if unknown:
+            raise SystemExit(f"--start-points {path}: not in the space: {', '.join(unknown)}")
+        points.append({name: min(max(value, domains[name]["low"]), domains[name]["high"])
+                       for name, value in point.items()})
+    return points
+
+
 def sparse_moves(domains: dict[str, dict], count: int, seed: int) -> list[dict[str, float]]:
     """Random points of the trust region, each moving a random SPARSE_SHARE of the
     parameters (the rest stay at the preset).
@@ -453,13 +467,28 @@ def class_constraints(rows: dict[str, dict]) -> list[float]:
             float(sum(row.get("noncompliant", 0) for row in rows.values()))]
 
 
-def cpu_cost(binary: Path, codec: Codec, values: dict[str, float]) -> float:
-    """Millions of x86 instructions per frame (one CPU slot while callgrind runs)."""
-    work_root = load_paths().work
-    work_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="tune-cost-", dir=work_root) as work, \
-            slots.cpu_slots(1):
-        return instruction_cost(binary, codec, values, Path(work)).per_frame(DEFAULT_INTRA_PERIOD)
+def steering_set(runner: realuse.Runner, binary: Path, anchor: Family, clips: list[Clip],
+                 rungs: dict[str, int], frames: int, shares: dict[str, float | None]) -> dict:
+    """A study's steering CPU sets (nceval.steering_cpu): per key share (its key period in
+    seconds, None: one key), the stage-1 encodes' declared subset and the anchor's counts."""
+    by_name = {c.name: c for c in clips}
+    out = {}
+    for share, seconds in shares.items():
+        jobs = steering_cpu.jobs_of(runner, anchor, clips, rungs, frames, seconds)
+        out[share] = steering_cpu.record(
+            jobs, steering_cpu.instructions(binary, anchor.extra, jobs, by_name))
+    return out
+
+
+def recount_steering(setting: "Study") -> dict:
+    """The study's steering anchor counted again on this CPU family (same jobs)."""
+    if not setting.steering:
+        raise SystemExit(f"study {setting.study.study_name} has no own-command steering CPU "
+                         f"(counted before 2026-11-23): start a new study")
+    by_name = {c.name: c for c in setting.clips}
+    return {share: steering_cpu.record(steering_cpu.jobs_from(stored), steering_cpu.instructions(
+        setting.binary, setting.anchor.extra, steering_cpu.jobs_from(stored), by_name))
+        for share, stored in setting.steering.items()}
 
 
 # --- the study ----------------------------------------------------------------------
@@ -487,7 +516,14 @@ class Study:
         self.stage_1_clips: int = attrs.get("stage_1_clips", STAGE_1_CLIPS)
         #: Stop a trial whose stage-1 J trails the best full trial by more than this.
         self.reach_pct: float | None = attrs.get("reach_pct")
-        self.anchor_cost: float = attrs["anchor_cost"]
+        #: The steering CPU's commands and the anchor's counts per key share ("first",
+        #: "second"): callgrind on the trials' own stage-1 encodes (nceval.steering_cpu);
+        #: None in a study counted before 2026-11-23 (fixed QP on other clips).
+        self.steering: dict | None = attrs.get("steering")
+        #: A second key share every trial is also measured at (--second-key-share
+        #: SECONDS): quality and CPU with keys every SECONDS; J and CPU are the two
+        #: shares' means, and the point may lose at neither (None: one share).
+        self.second_share: dict | None = attrs.get("second_key_share")
         self.k: float = study_k(attrs)[0]
         self.workers: int = attrs["workers"]
         #: CPU-capped study: maximise J subject to x86 CPU <= cpu_max (a ratio).
@@ -497,6 +533,20 @@ class Study:
 
     def runner(self, workers: int) -> realuse.Runner:
         return realuse.Runner(load_paths(), EVALUATION_GATE, workers, over_budget=False)
+
+    def steering_cpu(self, values: dict[str, float], share: str = "first") -> float:
+        """`values`' CPU over the preset's on the trials' own stage-1 encodes at `share`
+        (callgrind; nceval.steering_cpu)."""
+        stored = (self.steering or {}).get(share)
+        if not stored or stored.get("protocol") != steering_cpu.PROTOCOL:
+            raise SystemExit(f"study {self.study.study_name} counted its trials' CPU at a "
+                             f"fixed QP on other clips (before 2026-11-23); its trials cannot "
+                             f"be combined with CPU of their own encodes: start a new study")
+        test = family(self.codec, self.binary, values, "steering")
+        counts = steering_cpu.instructions(self.binary, test.extra,
+                                           steering_cpu.jobs_from(stored),
+                                           {c.name: c for c in self.clips})
+        return steering_cpu.ratio(counts, stored["anchor"])
 
     def check_binary(self) -> None:
         if file_sha256(self.binary) != self.study.user_attrs["binary_sha256"]:
@@ -530,10 +580,10 @@ class Study:
         started = time.monotonic()
         stage_1, stage_2 = self.clips[:self.stage_1_clips], self.clips[self.stage_1_clips:]
         with ThreadPoolExecutor(1) as background:
-            cost = background.submit(cpu_cost, self.binary, self.codec, values)
+            cost = background.submit(self.steering_cpu, values)
             rows = single_points(runner, self.anchor, test, stage_1, self.rungs, self.frames,
                                  key_seconds=self.key_seconds)
-            cpu = cost.result() / self.anchor_cost
+            cpu = cost.result()
         stats = interval.interval(rows, None, 0.0)
         trial.set_user_attr("stage_1", {"j": stats["mean"], "lo": stats["lo"],
                                         "hi": stats["hi"], "n": stats["n"],
@@ -560,6 +610,10 @@ class Study:
         if j is None:
             raise ValueError("no J_real quality on any clip")
         constraint = class_constraints(rows) + base_constraint(rows) + ceiling_constraint(rows)
+        # One entry whenever the study has a second share (Optuna needs equal lengths).
+        shares = [] if self.second_share is None else [0.0]
+        if self.second_share is not None and fidelity == FULL:
+            j, cpu, shares = self.both_shares(trial, runner, test, values, (j, cpu))
         if self.short_guard_pct is not None:
             # A long-window study also guards the worst frames (worst-1%): a deeper QP
             # cadence bought J there and failed the long-horizon guard (H.264 #2:
@@ -574,7 +628,7 @@ class Study:
         if fidelity == FULL and abs(change) > RESHAPE_PCT and abs(t_value) > RESHAPE_T:
             fidelity = LADDER
             j, constraint = self.ladder_j(runner, test)
-        constraint = constraint + cap
+        constraint = constraint + cap + shares
         trial.set_user_attr(FIDELITY_ATTR, fidelity)
         trial.set_user_attr(CONSTRAINT_ATTR, constraint)
         trial.set_user_attr("cpu", cpu)
@@ -587,6 +641,27 @@ class Study:
               f"{time.monotonic() - started:.0f} s", flush=True)
         self.record(trial, values, j, cpu)
         return j if self.cpu_max is not None else (j, cpu)
+
+    def both_shares(self, trial: optuna.Trial, runner: realuse.Runner, test: Family,
+                    values: dict[str, float], first: tuple[float, float]
+                    ) -> tuple[float, float, list[float]]:
+        """J and CPU as the means over the study's key share and its second one
+        (--second-key-share), and the constraint that the point loses at neither:
+        each share's J + k dCPU at most 0 (owner, 2026-11-22: a key setting must be
+        right at 1 key in 150 frames and at 1 in 300, weighted equally)."""
+        share = self.second_share
+        rows = single_points(runner, self.anchor, test, self.clips, self.rungs, self.frames,
+                             key_seconds=share["seconds"])
+        j2 = balanced_j(rows)
+        if j2 is None:
+            raise ValueError("no J_real quality at the second key share")
+        cpu2 = self.steering_cpu(values, "second")
+        (j1, cpu1), k = first, self.k
+        trial.set_user_attr("shares", {"first": [j1, cpu1], "second": [j2, cpu2]})
+        print(f"trial {trial.number}: key shares J {j1:+.2f} / {j2:+.2f}%, "
+              f"CPU x{cpu1:.3f} / x{cpu2:.3f}", flush=True)
+        scores = [jj + k * 100 * (cc - 1) for jj, cc in ((j1, cpu1), (j2, cpu2))]
+        return (j1 + j2) / 2, (cpu1 + cpu2) / 2, [max(scores)]
 
     def record(self, trial: optuna.Trial, values: dict[str, float], j: float,
                cpu: float) -> None:
@@ -808,13 +883,21 @@ def create(args: argparse.Namespace) -> optuna.Study:
     # The re-check clips' anchor curves are measured at the first re-check.
     runner.measure("tune anchor curves", [anchor], clips, frames, None, key_seconds,
                    budgeted=False)
-    anchor_cost = cpu_cost(binary, codec, preset)
+    stage_1 = clips[:WINDOW_STAGE_1_PER_CLASS * len(WINDOW_STAGE_1_CLASSES) if window
+                    else STAGE_1_CLIPS]
+    second_share = None
+    shares = {"first": key_seconds}
+    if getattr(args, "second_key_share", None):
+        second_share = {"seconds": float(args.second_key_share)}
+        shares["second"] = second_share["seconds"]
+    steering = steering_set(runner, binary, anchor, stage_1, assign_rungs(clips), frames,
+                            shares)
     study = optuna.create_study(study_name=args.study, storage=study_storage(args.study),
                                 directions=["minimize"] if args.cpu_max else ["minimize", "minimize"],
                                 sampler=sampler(args.seed))
     attrs = {"protocol": PROTOCOL, "codec": codec.value, "preset": args.preset,
              "preset_values": preset, "binary": str(binary),
-             "binary_sha256": file_sha256(binary), "commit": commit or args.commit or binary_commit(binary) or "",
+             "binary_sha256": file_sha256(binary), "commit": commit or args.commit or buildinfo.clean_commit(binary) or "",
              "domains": domains, "rotation": key, "half": args.half,
              "clips": clip_record(clips), "recheck_clips": clip_record(recheck),
              "rungs": assign_rungs(clips), "frames": frames, "key_seconds": key_seconds,
@@ -829,7 +912,8 @@ def create(args: argparse.Namespace) -> optuna.Study:
              if getattr(args, "seed_preset", []) else [],
              "workers": workers, "measurement": measurement_fingerprint(),
              "cpu_max": args.cpu_max, "j_max": args.j_max,
-             "anchor_cost": anchor_cost, "cpu_family": cloud.cpu_family(),
+             "steering": steering, "second_key_share": second_share,
+             "cpu_family": cloud.cpu_family(),
              "cpu_families": [{"family": cloud.cpu_family(), "from_trial": 0}]}
     for name, value in attrs.items():
         study.set_user_attr(name, value)
@@ -845,6 +929,9 @@ def create(args: argparse.Namespace) -> optuna.Study:
         if sweep and sweep.exists() else []
     for moves in seeds:
         study.enqueue_trial({**start, **moves}, user_attrs={"warm_start": "sensitivity"})
+    # Points carried over from an earlier study of the same space (--start-points).
+    for moves in start_points(getattr(args, "start_points", None), domains):
+        study.enqueue_trial({**start, **moves}, user_attrs={"warm_start": "start points"})
     for moves in sparse_moves(domains, max(0, TPE_STARTUP_TRIALS - 1 - len(seeds)), args.seed):
         study.enqueue_trial({**start, **moves}, user_attrs={"warm_start": "sparse"})
     return study
@@ -922,10 +1009,9 @@ def pin_study_family(study: optuna.Study, re_anchor: bool) -> None:
         print(f"{study.study_name}: no CPU family recorded (older study): pinned to {here}",
               flush=True)
     elif check_family(attrs["cpu_family"], f"study {study.study_name}", re_anchor):
-        Study(study).check_binary()
-        codec = Codec(attrs["codec"])
-        study.set_user_attr("anchor_cost", cpu_cost(Path(attrs["binary"]), codec,
-                                                    attrs["preset_values"]))
+        setting = Study(study)
+        setting.check_binary()
+        study.set_user_attr("steering", recount_steering(setting))
     else:
         return
     history = [*attrs.get("cpu_families", []),
@@ -962,7 +1048,7 @@ def cloud_search(args: argparse.Namespace) -> None:
     check_started(stored_attrs(args.study).get("tools_version"))
     binary = cloud_binary(args.binary)
     passed = drop_options(sys.argv[2:] if sys.argv[1:2] == ["search"] else sys.argv[1:],
-                          ("--binary", "--timeout", "--finalists", "--json"), ("--local",))
+                          ("--binary", "--timeout", "--finalists", "--json", "--commit"), ("--local",))
     spent_usd, started = 0.0, time.monotonic()
     done = local_completed(args.study)
     print(f"cloud study {args.study}: {done} of {args.trials} trials done; slices of "
@@ -1002,28 +1088,13 @@ def cloud_search(args: argparse.Namespace) -> None:
           f"then `tune finalists --study {args.study}` (rented-core CPU and L3)", flush=True)
 
 
-def binary_commit(binary: Path) -> str | None:
-    """The commit a clean build was made from: its `--version` stamp, else the COMMIT
-    file of the cached copy it sits in (None: a dirty or unstamped build, which the
-    rented-core CPU step cannot rebuild)."""
-    from . import buildinfo
-    try:
-        info = buildinfo.build_info(binary)
-    except (OSError, subprocess.SubprocessError):
-        info = {}
-    if info.get("commit") and not info.get("dirty"):
-        return info["commit"]
-    marker = binary.parent / "COMMIT"
-    return marker.read_text().strip() or None if marker.is_file() and not info.get("dirty") \
-        else None
-
-
 def pin_commit(study: optuna.Study, given: str | None) -> None:
     """Record the study's commit (the rented-core CPU step builds it): `given`
-    (--commit), else the binary's own (binary_commit); a given commit that the
+    (--commit), else the binary's own (buildinfo.clean_commit); a given commit that the
     binary's stamp contradicts is refused."""
     attrs = study.user_attrs
-    stamped = binary_commit(Path(attrs["binary"])) if Path(attrs["binary"]).is_file() else None
+    binary = Path(attrs["binary"])
+    stamped = buildinfo.clean_commit(binary) if binary.is_file() else None
     if given:
         resolved = levels.git(REPO_ROOT, "rev-parse", f"{given}^{{commit}}")
         if stamped and stamped != resolved:
@@ -1148,10 +1219,16 @@ def sensitivity(args: argparse.Namespace) -> None:
         return write_sensitivity(out, domains, preset, specs, done, args)
     started = time.monotonic()
     anchor = family(codec, binary, preset, f"nanocodec-{codec.value}")
+    if "_anchor_cost" in done:
+        raise SystemExit(f"{store}: its values' CPU was counted at a fixed QP on other clips "
+                         f"(before 2026-11-23): start a new sensitivity directory")
     if check_family(done.get("_cpu_family"), f"sensitivity {out.name}", args.re_anchor):
-        done.pop("_anchor_cost", None)
-    anchor_cost = done.get("_anchor_cost") or cpu_cost(binary, codec, preset)
-    done["_anchor_cost"] = anchor_cost
+        done.pop("_steering", None)
+    if "_steering" not in done:  # callgrind on these values' own encodes (steering_cpu)
+        done["_steering"] = steering_set(
+            realuse.Runner(load_paths(), EVALUATION_GATE, 1, over_budget=False), binary,
+            anchor, clips, rungs, FRAMES, {"first": None})["first"]
+    steering = done["_steering"]
     done["_cpu_family"] = cloud.cpu_family()
     print(f"sensitivity {codec.value} {args.preset}: {len(domains)} parameters, "
           f"{len(jobs)} values to measure on {len(clips)} clips (rotation {key})", flush=True)
@@ -1167,10 +1244,12 @@ def sensitivity(args: argparse.Namespace) -> None:
                                 max(1, args.workers // PARALLEL_TRIALS), over_budget=False)
         try:
             with ThreadPoolExecutor(1) as background:
-                cost = background.submit(cpu_cost, binary, codec, values)
+                cost = background.submit(steering_cpu.instructions, binary, test.extra,
+                                         steering_cpu.jobs_from(steering),
+                                         {c.name: c for c in clips})
                 stats = interval.interval(single_points(runner, anchor, test, clips, rungs),
                                           None, 0.0)
-                cpu = cost.result() / anchor_cost
+                cpu = steering_cpu.ratio(cost.result(), steering["anchor"])
         except (ValueError, RuntimeError) as error:  # not stored: a rerun measures it again
             print(f"{name} = {value:g}: failed ({error})", flush=True)
             return
@@ -1280,83 +1359,69 @@ def write_sensitivity(out: Path, domains: dict[str, dict], preset: dict[str, flo
 
 # --- finalists, L3 and agreement ----------------------------------------------------
 
-def box_cpu(commit: str, codec: Codec, preset: str, start: dict[str, float],
-            candidates: dict[str, dict[str, float]]) -> dict[str, dict]:
-    """Per candidate, its CPU change against the preset on rented single cores
-    (tools/dev/aws_cpu_ab.py: ARM_TARGETS and X86_TARGET, the same box measuring both
-    in interleaved rounds): {number: {"arm", "x86", "targets"}} in percent, {} when it
-    cannot be measured (the finalists then take callgrind's x86 alone)."""
-    if not commit:
-        print("no commit recorded (bare --binary): callgrind x86 CPU only", flush=True)
-        return {}
-    plan = [{"name": f"t{number}", "base": {"build": commit},
-             "cand": {"build": commit, "params": [f"{n}={v!r}" for n, v in sorted(values.items())
-                                                  if start.get(n) != v]},
-             "rungs": [f"{codec.value}:{preset}"]} for number, values in candidates.items()]
-    work = load_paths().work / "cpu-ab"
-    work.mkdir(parents=True, exist_ok=True)
+def l3_args(setting: "Study", long_window: bool) -> argparse.Namespace:
+    """The L3 of the study's draw as a finalist is checked: single-point (a
+    parameter-only change; the full ladder if it reshapes the curve), on the long window
+    at every key share when `long_window` (a rate, key, cadence or structure move)."""
+    return argparse.Namespace(frames=FRAMES, rotation=setting.study.user_attrs["rotation"],
+                              max_level=len(pool.LEVELS), dcpu=None, cpu=None, k=setting.k,
+                              all_stages=False, final_estimator=levels.SINGLE,
+                              final_frames=levels.LONG_FRAMES if long_window else None,
+                              key_shares=None)
+
+
+def l3_plan(setting: "Study", values: dict[str, float], name: str, long_window: bool) -> dict:
+    """The CPU plan of a candidate's L3 (nceval.decision_cpu): its own encodes."""
+    args = l3_args(setting, long_window)
+    test = family(setting.codec, setting.binary, values,
+                  f"nanocodec-{setting.codec.value}@{settings_label(values)}")
+    draw = levels.draw_for(load_paths(), args)
+    jobs = levels.quality_jobs(setting.runner(1), test, draw, (pool.FINAL,), args)
+    build = setting.study.user_attrs.get("commit") or str(setting.binary)
+    return decision_cpu.plan_entry(name, setting.codec.value, setting.study.user_attrs["preset"],
+                                   draw.key, jobs, setting.anchor, test, build, build)
+
+
+def measure_l3_cpu(setting: "Study", candidates: dict[str, tuple[dict[str, float], bool]],
+                   purpose: str) -> dict[str, dict]:
+    """Per candidate {name: (values, long_window)}, its CPU charge on its L3's own encodes
+    (a decision_cpu record), timed on the rented targets in one aws_cpu_ab run."""
+    if not setting.study.user_attrs.get("commit"):
+        raise SystemExit("no commit recorded (bare --binary): give --commit, so that the "
+                         "rented targets can build it")
+    entries = {name: l3_plan(setting, values, name, long)
+               for name, (values, long) in candidates.items()}
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    plan_file, out = work / f"tune-plan-{stamp}.json", work / f"tune-summary-{stamp}.json"
-    plan_file.write_text(json.dumps(plan, indent=1) + "\n")
-    targets = (*ARM_TARGETS, X86_TARGET)
-    print(f"finalists' CPU: {len(plan)} candidates on {', '.join(targets)} "
-          f"(tools/dev/aws_cpu_ab.py)", flush=True)
-    code = subprocess.call([sys.executable, str(REPO_ROOT / "tools/dev/aws_cpu_ab.py"),
-                            "--plan", str(plan_file), "--targets", ",".join(targets),
-                            "--rounds", str(CPU_AB_ROUNDS), "--purpose", "tune-finalists",
-                            "--json", str(out)])
-    plan_file.unlink(missing_ok=True)
-    if not out.exists():
-        print(f"aws_cpu_ab failed (exit {code}): callgrind x86 CPU only", flush=True)
-        return {}
-    rows = json.loads(out.read_text())["rows"]
-    measured: dict[str, dict] = {}
-    for row in rows:
-        if row["change_pct"]:
-            measured.setdefault(row["pair"].removeprefix("t"), {})[row["target"]] = \
-                row["change_pct"][0]
-    result = {}
-    for number, by_target in measured.items():
-        arm = [by_target[t] for t in ARM_TARGETS if t in by_target]
-        result[number] = {"arm": sum(arm) / len(arm) if arm else None,
-                          "x86": by_target.get(X86_TARGET), "targets": by_target,
-                          "summary": str(out)}
-    return result
+    summary = decision_cpu.measure(list(entries.values()),
+                                   load_paths().work / "cpu-ab" / f"{purpose}-{stamp}", purpose)
+    return {name: decision_cpu.record(decision_cpu.load_charge(summary, name))
+            for name in entries}
 
 
-def combined_dcpu(callgrind_x86: float, measured: dict | None) -> dict:
-    """A finalist's dCPU fields (percent): the rented cores' Arm and x86 changes at
-    equal weight (ARM_WEIGHT), callgrind's x86 standing in for a side not measured."""
-    measured = measured or {}
-    arm, x86 = measured.get("arm"), measured.get("x86")
-    x86_used = callgrind_x86 if x86 is None else x86
-    dcpu = x86_used if arm is None else (ARM_WEIGHT * arm + x86_used) / (ARM_WEIGHT + 1)
-    return {"dcpu_x86": x86_used, "dcpu_x86_how": "callgrind" if x86 is None else X86_TARGET,
-            "dcpu_callgrind": callgrind_x86, "dcpu_arm": arm,
-            "cpu_targets": measured.get("targets"), "dcpu": dcpu}
+def cpu_fields(found: decision_cpu.Charge | None) -> dict:
+    """A finalist result's CPU fields (levers.finalist_rows): the combined change and its
+    x86 and Arm parts, each the mean over the L3's groups (key shares)."""
+    if found is None:
+        return {"dcpu": None, "dcpu_x86": None, "dcpu_arm": None, "cpu": None}
+    return {"dcpu": found.mean(), "dcpu_x86": found.mean("x86"), "dcpu_arm": found.mean("arm"),
+            "dcpu_x86_how": X86_TARGET, "cpu": decision_cpu.record(found)}
 
 
-def l3_check(setting: Study, values: dict[str, float], label: str, x86_ratio: float,
-             measured: dict | None, workers: int, long_window: bool = False) -> dict:
-    """L3 of the study's draw for one candidate: single-point (a parameter-only change;
-    the full ladder if it reshapes the curve), J with the combined dCPU (combined_dcpu
-    of callgrind's `x86_ratio` and the rented cores' `measured`). `long_window`
-    (a rate, key, cadence or structure move: rate_or_structure) decides on the
-    long-window L3 (levels.LONG_FRAMES, keys every levels.LONG_KEY_SECONDS)."""
-    cpu = combined_dcpu(100 * (x86_ratio - 1), measured)
-    dcpu = cpu["dcpu"]
+def l3_check(setting: Study, values: dict[str, float], label: str, cpu: dict | None,
+             workers: int, long_window: bool = False) -> dict:
+    """L3 of the study's draw for one candidate (l3_args), J + k dCPU with `cpu`, the
+    charge measured on this L3's own encodes (measure_l3_cpu; refused if measured on
+    others), each level and key share at its own group's CPU."""
     test = family(setting.codec, setting.binary, values, f"nanocodec-{setting.codec.value}@{label}")
-    check_args = argparse.Namespace(frames=FRAMES, rotation=setting.study.user_attrs["rotation"],
-                                    max_level=len(pool.LEVELS), dcpu=dcpu, k=setting.k,
-                                    all_stages=False, final_estimator=levels.SINGLE,
-                                    final_frames=levels.LONG_FRAMES if long_window else None)
-    arm = cpu["dcpu_arm"]
-    print(f"== {label}: dCPU {dcpu:+.1f}% (x86 {cpu['dcpu_x86']:+.1f}% {cpu['dcpu_x86_how']}"
-          + (f", Arm {arm:+.1f}%" if arm is not None else ", Arm not measured") + "); L3",
-          flush=True)
+    check_args = l3_args(setting, long_window)
+    found = decision_cpu.from_record(cpu)
+    if found is not None:
+        expected = l3_plan(setting, values, label, long_window)["digest"]
+        check_args.cpu = decision_cpu.verify(found, expected, f"finalist {label}")
+    print(f"== {label}: dCPU {decision_cpu.describe(found)}; L3", flush=True)
     level = levels.run(setting.runner(workers), (setting.anchor, test), load_paths(),
                        check_args, (pool.FINAL,))["levels"].get(pool.FINAL)
-    return {**cpu, "k": setting.k, "l3": level,
+    return {**cpu_fields(found), "k": setting.k, "l3": level,
             "passed": bool(level) and level["decision"] == interval.BETTER}
 
 
@@ -1375,36 +1440,44 @@ def finalist_todo(study: optuna.Study, count: int,
     return {str(t.number): t for t in picks if str(t.number) not in results}
 
 
+def finalist_long_window(setting: Study, trial: optuna.trial.FrozenTrial) -> bool:
+    """Whether a finalist's L3 is the long window at every key share: a long-window
+    study, or a rate, key, cadence or structure move."""
+    start = setting.study.trials[0].params
+    moved = [n for n, v in trial.params.items() if start.get(n) != v]
+    return setting.key_seconds is not None or any(rate_or_structure(n) for n in moved)
+
+
 def measure_finalist_cpu(study: optuna.Study, count: int, k: float | None) -> None:
-    """The rented cores' CPU for the finalists still to check (box_cpu), kept in the
-    study (`finalist_cpu`) for run_finalists, wherever that runs."""
+    """The CPU of the finalists still to check, on their L3s' own encodes
+    (measure_l3_cpu), kept in the study (`finalist_cpu`) for run_finalists, wherever
+    that runs."""
     setting = Study(study)
     todo = finalist_todo(study, count, setting.k if k is None else k)
     stored: dict = dict(study.user_attrs.get("finalist_cpu", {}))
-    missing = {n: {**setting.preset, **t.params} for n, t in todo.items() if n not in stored}
+    missing = {n: ({**setting.preset, **t.params}, finalist_long_window(setting, t))
+               for n, t in todo.items() if not (stored.get(n) or {}).get("digest")}
     if not missing:
         return
-    stored.update(box_cpu(study.user_attrs["commit"], setting.codec, study.user_attrs["preset"],
-                          {**setting.preset, **study.trials[0].params}, missing))
-    study.set_user_attr("finalist_cpu", stored)
+    stored.update(measure_l3_cpu(setting, {f"t{n}": v for n, v in missing.items()},
+                                 "tune-finalists"))
+    study.set_user_attr("finalist_cpu", {n.removeprefix("t"): v for n, v in stored.items()})
 
 
-def require_box_cpu(study: optuna.Study, count: int, k: float | None,
-                    callgrind_only: bool) -> None:
-    """Refuse to rank finalists whose CPU the rented cores did not measure (callgrind's
-    x86 alone), unless `callgrind_only` (--callgrind-only) says so."""
+def require_box_cpu(study: optuna.Study, count: int, k: float | None) -> None:
+    """Refuse to rank finalists whose CPU was not measured on their L3s' own encodes."""
     stored = study.user_attrs.get("finalist_cpu", {})
     todo = finalist_todo(study, count, study_k(study.user_attrs)[0] if k is None else k)
-    missing = [n for n in todo if (stored.get(n) or {}).get("arm") is None
-               and (stored.get(n) or {}).get("x86") is None]
-    if missing and not callgrind_only:
-        raise SystemExit(f"finalists {', '.join('#' + n for n in missing)} have no rented-core "
-                         f"CPU (study commit {study.user_attrs.get('commit') or 'none'}): give "
-                         f"--commit, or --callgrind-only to rank them on callgrind's x86 alone")
+    missing = [n for n in todo if not (stored.get(n) or {}).get("digest")]
+    if missing:
+        raise SystemExit(f"finalists {', '.join('#' + n for n in missing)} have no CPU "
+                         f"measured on their L3s' own encodes (study commit "
+                         f"{study.user_attrs.get('commit') or 'none'}): run `tune finalists` "
+                         f"from the PC, with --commit if the study has none")
 
 
 def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None = None,
-                  timeout_minutes: float | None = None, callgrind_only: bool = False) -> dict:
+                  timeout_minutes: float | None = None) -> dict:
     """The rented cores' CPU (measured first where this can rent them, else as stored),
     then L3, for the best `count` front points (resumable); `k` re-weights CPU for
     another role (e.g. 0.1: a quality arm for Default). `timeout_minutes`: start no
@@ -1415,7 +1488,7 @@ def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None
     setting.k = setting.k if k is None else k
     if not os.environ.get(cloud.ON_BOX_ENV):
         measure_finalist_cpu(study, count, setting.k)
-    require_box_cpu(study, count, setting.k, callgrind_only)
+    require_box_cpu(study, count, setting.k)
     results: dict = dict(study.user_attrs.get("finalists", {}))
     todo = finalist_todo(study, count, setting.k)
     values = {n: {**setting.preset, **t.params} for n, t in todo.items()}
@@ -1433,14 +1506,11 @@ def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None
             print(f"#{number}: long-horizon guard failed: {'; '.join(long_guard['guards'])}",
                   flush=True)
             results[number] = {"j": trial_j(trial),
-                               **combined_dcpu(100 * (trial_cpu(trial) - 1),
-                                               box_measured.get(number)),
+                               **cpu_fields(decision_cpu.from_record(box_measured.get(number))),
                                "l3": None, "passed": False, "long_horizon": long_guard}
         else:
-            result = l3_check(setting, values[number], f"t{number}", trial_cpu(trial),
-                              box_measured.get(number), workers,
-                              long_window=setting.key_seconds is not None
-                              or any(rate_or_structure(n) for n in moved))
+            result = l3_check(setting, values[number], f"t{number}", box_measured.get(number),
+                              workers, long_window=finalist_long_window(setting, trial))
             results[number] = {"j": trial_j(trial), **result,
                                **({"long_horizon": long_guard} if long_guard else {})}
         study.set_user_attr("finalists", results)
@@ -1532,8 +1602,7 @@ def finalists(args: argparse.Namespace) -> None:
     repin_binary(study, args.binary)
     if not os.environ.get(cloud.ON_BOX_ENV):
         pin_commit(study, args.commit)
-    results = run_finalists(study, args.count, args.workers, args.k, args.timeout,
-                            args.callgrind_only)
+    results = run_finalists(study, args.count, args.workers, args.k, args.timeout)
     if args.json:
         todo = finalist_todo(study, args.count, study_k(study.user_attrs)[0]
                              if args.k is None else args.k)
@@ -1543,7 +1612,7 @@ def finalists(args: argparse.Namespace) -> None:
 
 
 def cloud_finalists(args: argparse.Namespace) -> None:
-    """The finalists' CPU on rented single cores from here (box_cpu: it rents its own
+    """The finalists' CPU on rented single cores from here (measure_l3_cpu: it rents its own
     boxes, which a measurement box cannot), then their long-horizon guards and L3s on
     warm boxes, a slice at a time (each SLICE_MINUTES; the study goes up and comes back,
     resuming), until none is left or the study has cost --max-usd."""
@@ -1557,7 +1626,7 @@ def cloud_finalists(args: argparse.Namespace) -> None:
     Study(study).check_binary()
     pin_commit(study, args.commit)
     measure_finalist_cpu(study, args.count, args.k)
-    require_box_cpu(study, args.count, args.k, args.callgrind_only)
+    require_box_cpu(study, args.count, args.k)
     passed = drop_options(sys.argv[2:] if sys.argv[1:2] == ["finalists"] else sys.argv[1:],
                           ("--binary", "--timeout", "--json", "--max-usd", "--commit"),
                           ("--local",))
@@ -1661,13 +1730,11 @@ def agree(args: argparse.Namespace) -> None:
     report = {"studies": args.studies, "points": points, "moves": moves}
     if moves:
         values = {**first.preset, **moves}
-        x86 = cpu_cost(first.binary, first.codec, values) / first.anchor_cost
-        measured = box_cpu(studies[0].user_attrs["commit"], first.codec,
-                           studies[0].user_attrs["preset"], first.preset,
-                           {"agreed": values}).get("agreed")
-        report |= {"values": values, "x86_ratio": x86,
-                   **l3_check(first, values, "agreed", x86, measured, args.workers,
-                              long_window=any(rate_or_structure(n) for n in moves))}
+        long_window = any(rate_or_structure(n) for n in moves)
+        measured = measure_l3_cpu(first, {"agreed": (values, long_window)}, "tune-agree")
+        report |= {"values": values,
+                   **l3_check(first, values, "agreed", measured["agreed"], args.workers,
+                              long_window=long_window)}
     path = TUNING_DIR / f"agree-{'-'.join(s.study_name for s in studies)}.json"
     path.write_text(json.dumps(report, indent=1, default=str) + "\n")
     print(f"wrote {path}" + (f"; L3 {report['l3'] and report['l3']['decision']}"
@@ -1707,6 +1774,15 @@ def print_front(study: optuna.Study) -> None:
         print(f"  #{t.number:3d}  J {trial_j(t):+6.2f}%  CPU x{trial_cpu(t):.3f}  "
               f"score {score(t, k):+6.2f}  {versus}"
               + ", ".join(f"{n}={v:.4g}" for n, v in sorted(t.params.items())))
+    print(WINNERS_CURSE_NOTE)
+
+
+#: Printed under every front: the best of many noisy trials overstates its gain
+#: (docs/PROCEDURES.md "Tunable parameters and tuning").
+WINNERS_CURSE_NOTE = ("note: trial-clip J and x86 callgrind CPU are selection estimates, not "
+                      "results: re-measure a finalist on fresh clips (tune finalists / the "
+                      "long-window L3) and its CPU on rented graniterapids and graviton4 "
+                      "(aws_cpu_ab) before quoting or landing it")
 
 
 def front(args: argparse.Namespace) -> None:
@@ -1829,7 +1905,9 @@ def cloud_options(parser, what: str) -> None:
 
 
 def add_commands(sub) -> None:
-    """The protocol's subcommands on nceval.tune's parser."""
+    """The protocol's subcommands on nceval.tune's parser (and nceval.tune_spsa's)."""
+    from . import tune_spsa
+    tune_spsa.add_commands(sub)
     s = sub.add_parser("search", help="run or resume a study (J_real vs CPU, pool clips)")
     s.add_argument("--study", required=True)
     s.add_argument("--codec", choices=[c.value for c in Codec])
@@ -1862,6 +1940,13 @@ def add_commands(sub) -> None:
                         f"{jreal.K_CPU:g}; with --seed-preset, the slope of the chord between "
                         f"the two rungs once both are measured; 0.1: Default quality arms)")
     s.add_argument("--seed", type=int, default=1)
+    s.add_argument("--second-key-share", metavar="SECONDS",
+                   help="also measure every full trial with keys every SECONDS (quality, and "
+                        "CPU on those encodes); J and CPU are the means of both shares and a "
+                        "point may lose at neither (e.g. 5 beside a long-window study's 10 s)")
+    s.add_argument("--start-points", metavar="JSON",
+                   help="also start from these points (a JSON list of {parameter: value}), "
+                        "e.g. an earlier study's front")
     s.add_argument("--seed-preset", action="append", default=[], metavar="RUNG",
                    help="also start from this rung's values (a study of the gap between "
                         "--preset and RUNG); repeatable")
@@ -1893,8 +1978,6 @@ def add_commands(sub) -> None:
     n.add_argument("--binary", help="the study's build at another path (a box's)")
     n.add_argument("--commit", help="the study's commit, when it has none recorded (the "
                                     "rented-core CPU step builds it)")
-    n.add_argument("--callgrind-only", action="store_true",
-                   help="rank finalists the rented cores could not measure on callgrind's x86")
     n.set_defaults(func=finalists)
     w = sub.add_parser("write-presets", help="candidate preset files and the study report")
     w.add_argument("--study", required=True)

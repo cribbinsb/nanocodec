@@ -114,6 +114,7 @@ main() {
         if [[ -z "$checked_base" ]]; then
             printf '== land %s on %s %s\n' "$branch" "$target" "${base:0:9}"
             revert_guard "$base"
+            train_guard "$base"
             pre_land_checks "$base"
         elif touches_same_files "$checked_base" "$base"; then
             printf '== %s moved in files %s changes: checking again\n' "$target" "$branch"
@@ -123,12 +124,27 @@ main() {
         if git update-ref -m "land.sh: $branch" "refs/heads/$target" HEAD "$base" 2>/dev/null; then
             printf '== landed %s on %s in %ds (verify beside: land.sh --verify)\n' \
                 "$(git log --oneline -1 HEAD)" "$target" $((SECONDS - began))
+            conditions_notice "$base"
             sync_integration_tree
             exit 0
         fi
         printf '== %s moved (attempt %d): rebasing again\n' "$target" "$attempt"
     done
     die "$target kept moving: gave up after $MAX_ATTEMPTS attempts"
+}
+
+# Our benchmark conditions changed (the lock moved): every dev baseline point is stale.
+# Re-encode them once, centrally, now, instead of the next screen paying mid-task (owner,
+# 2026-11-25; tools/dev/rebaseline.py).
+conditions_notice() {
+    if ! git diff --quiet "$1" HEAD -- eval/tests/test_conditions_lock.py; then
+        printf '\n!!! this landing changes our locked benchmark conditions\n'
+        printf '!!! run NOW: systemd-run --user --scope -p MemoryMax=2G python3 tools/dev/rebaseline.py\n'
+        printf '!!! (re-encodes every dev baseline point once; until then every screen re-encodes them)\n\n'
+    fi
+    # a failed or missing rebaseline is never silent (nceval.baseline_state)
+    (cd eval && python3 -c 'from nceval import baseline_state as b; n = b.notice(); n and print(n)') ||
+        true
 }
 
 # Put a `cargo` on PATH that runs every cargo call through
@@ -193,13 +209,29 @@ revert_guard() {
     die "refused: this commit reverts other agents' work (above); see the fix"
 }
 
+# A preset change whose nceval.train verdict tripped a guard (PASS-GUARD) lands only
+# with a `Guard-justification:` line in its commit message (tools/dev/land_train_guards.py;
+# 2026-11-23: a tripped worst-1 % guard went unread and H.264 veryfast was reverted).
+train_guard() {
+    local found status=0
+    found=$(python3 tools/dev/land_train_guards.py "$1" 2>&1 >/dev/null) || status=$?
+    ((status == 0)) && return 0
+    if [[ $found != *"Fix: "* ]]; then  # the check itself failed
+        printf '%s\n== WARNING: land_train_guards.py failed (exit %s): guards unchecked\n' \
+            "$found" "$status" >&2
+        return 0
+    fi
+    printf '%s\n' "$found" >&2
+    die "refused: nceval.train guards tripped without a justification (above)"
+}
+
 #: Author of the commits land.sh makes on a lander's branch (regenerated files).
 SITE_AUTHOR="land.sh <land.sh@nanocodec>"
 SITE_SUBJECT="site: regenerate the generated results data (python3 -m nceval.site)"
 #: What eval/nceval/site.py writes.
-SITE_OUTPUTS=(web/results/data web/docs/examples README.md)
+SITE_OUTPUTS=(web/results/data web/docs/examples)
 
-# The generated site data and README block (eval/nceval/site.py), rewritten
+# The generated site data (eval/nceval/site.py), rewritten
 # and committed on top of the branch when the branch changes one of their
 # inputs since base $1: they are generated at landing, never left stale for
 # the verifier to find (2026-11-15: a stale chart.json failed a 56-min verify).
@@ -266,6 +298,16 @@ pre_land_checks() {
         done
         timed "unit tests ${tested[*]}" cargo test --profile gate --quiet $lib --bins "${tested[@]}" ||
             die "unit tests failed: not landed"
+    fi
+    # Kernel changes: no SIMD outlined from its #[target_feature] context. The
+    # verifier ran this alone, so a closure in a kernel (2a1aacb7f, 2026-11-24) failed
+    # every verify after it until fixed forward.
+    if [[ " ${plan[touched]:-} " == *" nanocodec-dsp "* ]]; then
+        timed "build nc-checkasm (gate)" cargo build --profile gate --quiet -p nc-checkasm ||
+            die "nc-checkasm build failed: not landed"
+        timed "outlined SIMD (nc-checkasm)" python3 tools/ci/check_outlined_simd.py \
+            "${CARGO_TARGET_DIR:-target}/gate/nc-checkasm" ||
+            die "SIMD code outside its #[target_feature] context: not landed"
     fi
     if [[ $mode == full ]]; then
         printf '== NC_LAND_MODE=full: every check, in this tree (target %s)\n' "$CARGO_TARGET_DIR"

@@ -43,22 +43,24 @@ pub fn dc_value(
     have_above: bool,
     have_left: bool,
 ) -> u8 {
-    let view = plane.view();
     let log2 = size.trailing_zeros();
-    let above_sum = || -> u32 {
-        view.row(y - 1)[x..x + size]
-            .iter()
-            .map(|&v| u32::from(v))
-            .sum()
-    };
-    // One slice of the left column's rows and a strided walk: indexing a
-    // row per sample cost 1.5% of AV1 key-frame instructions (callgrind,
-    // 720p crowd, three key frames: 1.567G -> 1.544G; streams identical).
-    let left_sum = || -> u32 {
-        let stride = view.stride();
-        let column = &view.data()[y * stride + x - 1..(y + size - 1) * stride + x];
-        column.iter().step_by(stride).map(|&v| u32::from(v)).sum()
-    };
+    // One window of the plane: the block with the row above and the column
+    // to the left that exist, so the bounds are checked once for both edges
+    // (with the edge sums below: 215 -> 183 instructions a call, AV1
+    // veryfast key frame -0.7 %, x86 callgrind 2026-11-25; streams
+    // identical).
+    let (left, above) = (usize::from(have_left), usize::from(have_above));
+    let window = plane
+        .region(
+            (x - left) as isize,
+            (y - above) as isize,
+            size + left,
+            size + above,
+        )
+        .expect("the block and its edges lie inside the plane");
+    let (data, stride) = (window.data(), window.stride());
+    let above_sum = || -> u32 { row_sum(&data[left..left + size]) };
+    let left_sum = || -> u32 { column_sum(&data[above * stride..], stride, size) };
     let half = (size / 2) as u32;
     match (have_above, have_left) {
         // (w + h) = 2 * size, so the spec's division is an exact shift here.
@@ -67,6 +69,37 @@ pub fn dc_value(
         (false, true) => ((left_sum() + half) >> log2) as u8,
         (false, false) => DC_NO_NEIGHBOURS,
     }
+}
+
+/// The sum of a row of edge samples. The AV1 block sides each get a loop of
+/// constant length (a few vector operations): the key-frame planner asks for
+/// the DC of every node of every plane, mostly 4 to 16 samples a side, where
+/// a loop of unknown length spends more on its set-up than on the sum.
+fn row_sum(row: &[u8]) -> u32 {
+    fn fixed<const N: usize>(row: &[u8]) -> u32 {
+        row.first_chunk::<N>()
+            .map_or(0, |row| row.iter().map(|&v| u32::from(v)).sum())
+    }
+    match row.len() {
+        4 => fixed::<4>(row),
+        8 => fixed::<8>(row),
+        16 => fixed::<16>(row),
+        32 => fixed::<32>(row),
+        64 => fixed::<64>(row),
+        _ => row.iter().map(|&v| u32::from(v)).sum(),
+    }
+}
+
+/// The sum of the `size` samples of a column: every `stride`th sample of
+/// `data` from its first. One length check covers the walk.
+fn column_sum(data: &[u8], stride: usize, size: usize) -> u32 {
+    let column = &data[..=(size - 1) * stride];
+    let (mut sum, mut at) = (0, 0);
+    while at < column.len() {
+        sum += u32::from(column[at]);
+        at += stride;
+    }
+    sum
 }
 
 /// The supported AV1 luma intra modes, with their standard symbol values.

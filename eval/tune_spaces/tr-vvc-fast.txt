@@ -1,0 +1,17 @@
+# tune-rest (2026-11-23): searched at the rung's front slope (eval/configs/front_k.json), 600 f at keys
+# every 10 s and 5 s, warm-started from the shipped rung. Each term lies between the rung's value
+# and the next slower rung's (docs/handoff/tuning.md "Fast-end joint retune"); about ten terms.
+# decision.exact_rank_margin stays at 0 or >= 0.8 (a margin under 1 skips most exact predictions).
+# Format (nceval.tune_pool): name [low high] [int|log]
+# VVC fast (k 0.194) toward medium.
+decision.final_stage 0 1 int
+decision.exact_rank_margin 0.8 1
+decision.codec_subpel_seed_lambdas 0.05 0.3
+decision.refine_cheap_vector 0 1 int
+decision.lambda_scale 0.8 0.9125
+planner.split_selector 0 1 int
+layers.propagation 0 1 int
+vvc.merge_candidates 2 6 int
+vvc.rd_candidates 2 4 int
+vvc.angular_candidates 1 3 int
+vvc.isp 0 1 int

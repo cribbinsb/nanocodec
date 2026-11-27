@@ -1,0 +1,15 @@
+# intra-cheap batch 0: existing settings around the key searches, one-frame fixed-QP ab
+rd_c2: h264.intra_rd_candidates=2
+rd_c9: h264.intra_rd_candidates=9
+rd_off: h264.intra_rd=0
+i8_off: h264.intra8x8=0
+i8_all: h264.intra8x8_all_modes=1
+i8_gate0: h264.intra8x8_gate_satd=0
+i4_gate0: h264.intra4x4_gate_satd=0
+gates0: h264.intra8x8_gate_satd=0 h264.intra4x4_gate_satd=0
+gate_l1: h264.intra_nxn_gate_lambda=1
+gate_l05: h264.intra_nxn_gate_lambda=0.5
+tls07: quant.trellis_lambda_scale=0.7
+tk0: quant.trellis_key=0
+lam08: decision.lambda_scale=0.8
+gates0_c9_i8all: h264.intra8x8_gate_satd=0 h264.intra4x4_gate_satd=0 h264.intra_rd_candidates=9 h264.intra8x8_all_modes=1

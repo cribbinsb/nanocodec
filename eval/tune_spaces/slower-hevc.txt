@@ -1,0 +1,21 @@
+# HEVC slower (tune-slow, 2026-11-23): the rung's effort and decision parameters, tuned
+# jointly on 600-frame windows at both key shares with k = the rung's front slope.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_context 0 1 int
+planner.rd_split_deepen_context -3 2 int
+planner.rd_split_merge_context -3 2 int
+planner.rd_split_margin 0 1.5
+planner.rd_split_tail_satd 0 1
+planner.split_selector_scale 0 1
+planner.inter_min_log2 3 4 int
+decision.winner_walk_steps 0 3 int
+decision.final_margin_lambdas 0 0.3
+decision.codec_subpel_seed_lambdas 0 0.1
+decision.intra_gate_variance 0 16
+hevc.intra_rd_candidates 3 8 int
+hevc.intra_nxn_min_cost 0 2
+quant.trellis_states 1 4 int
+quant.trellis_chroma 0 1
+planner.key_rd_margin 1.0 2.0
+planner.key_rd_deeper 1 3 int
+hevc.sao_search_interval 1 8 int

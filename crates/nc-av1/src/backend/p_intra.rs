@@ -110,7 +110,9 @@ impl Av1Backend {
     }
 
     /// The best `av1.inter_intra_rd_candidates` of [`CANDIDATES`] by
-    /// prediction SATD + √λ · mode bits (the engine's shared ranking).
+    /// prediction SATD + √λ · mode bits (the engine's shared ranking), or
+    /// the survivors of the staged decision's first cut where it is on
+    /// (`decision.inter_intra_stage_*`, [`nc_encoder::IntraStage`]).
     fn inter_frame_shortlist(
         &self,
         block: &Block,
@@ -118,15 +120,23 @@ impl Av1Backend {
         recon: &mut Picture,
     ) -> Vec<LumaIntra> {
         let bit_cost = (self.lambda() * self.params.intra_rate_scale).sqrt();
-        let keep = self.params.inter_intra_rd_candidates.round().max(1.0) as usize;
+        let cut = self.intra_stage.cut(false);
+        let keep = if cut.is_active() {
+            CANDIDATES.len()
+        } else {
+            self.params.inter_intra_rd_candidates.round().max(1.0) as usize
+        };
         let candidates = CANDIDATES.iter().map(|&mode| LumaIntra::plain(mode));
-        nc_encoder::rank_intra(candidates, keep, |luma| {
+        let ranked = nc_encoder::rank_intra(candidates, keep, |luma| {
             self.intra_prediction_satd(block, source, recon, luma)
                 + bit_cost * self.inter_frame_intra_bits(block, luma)
-        })
-        .into_iter()
-        .map(|(luma, _)| luma)
-        .collect()
+        });
+        let ranked = if cut.is_active() {
+            cut.survivors(ranked)
+        } else {
+            ranked
+        };
+        ranked.into_iter().map(|(luma, _)| luma).collect()
     }
 
     /// Bits of intra luma `luma` in an inter frame: `is_inter`, `y_mode`

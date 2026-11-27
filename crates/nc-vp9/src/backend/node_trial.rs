@@ -77,6 +77,9 @@ struct NodeTrial {
     // The starting state until undo, then the first candidate's state.
     other_contexts: Option<EntropyContexts>,
     other_counts: Option<Box<Counts>>,
+    /// Whether the trial was undone once: the swap restores the starting
+    /// state only at the first undo, so a second is refused.
+    undone: bool,
 }
 
 impl NodeTrial {
@@ -161,6 +164,7 @@ impl Vp9Backend {
     pub(super) fn open_node_trial(&mut self, node: &Block, recon: &Picture) {
         let mut trials = std::mem::take(&mut self.node_trials);
         let trial = trials.push();
+        trial.undone = false;
         self.save_state(node, recon, &mut trial.before);
         match &mut trial.other_contexts {
             Some(contexts) => contexts.copy_from(&self.grids.contexts),
@@ -191,6 +195,15 @@ impl Vp9Backend {
     /// `CodecBackend::node_trial_cost`: the price of the innermost trial's
     /// node as coded since it began.
     pub(super) fn node_trial_price(&self, source: &Picture, recon: &Picture) -> f32 {
+        self.node_trial_split_price(source, recon).cost()
+    }
+
+    /// `CodecBackend::node_trial_parts`.
+    pub(super) fn node_trial_split_price(
+        &self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> nc_encoder::NodeTrialParts {
         let before = &self.node_trials.innermost().before;
         let node = before.node();
         let distortion: f32 = PlaneIndex::ALL
@@ -203,7 +216,11 @@ impl Vp9Backend {
             })
             .sum();
         // Outside `encode_block` λ is the frame quantizer's.
-        distortion + self.lambda() * self.writer.estimated_bits_since(before.recorder)
+        nc_encoder::NodeTrialParts {
+            distortion,
+            bits: self.writer.estimated_bits_since(before.recorder),
+            lambda: self.lambda(),
+        }
     }
 
     /// `CodecBackend::undo_node_trial`: put the innermost trial's state
@@ -211,6 +228,10 @@ impl Vp9Backend {
     pub(super) fn undo_node(&mut self, recon: &mut Picture) {
         let mut trials = std::mem::take(&mut self.node_trials);
         let trial = &mut trials.trials[trials.open - 1];
+        debug_assert!(
+            !std::mem::replace(&mut trial.undone, true),
+            "one undo per VP9 node trial: a second would restore the first candidate's state"
+        );
         trial.swap_entropy(self);
         self.restore_state(recon, &trial.before);
         self.node_trials = trials;

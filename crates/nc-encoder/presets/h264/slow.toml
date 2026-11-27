@@ -16,3 +16,38 @@ h264.final_chroma = 1
 decision.winner_walk_steps = 3
 decision.winner_walk_square = 1
 decision.winner_walk_min_lambdas = 0
+# The Default's key-frame Intra_8x8 search (coded-cost modes, gate 4, Intra_8x8
+# trellis) is inherited: nceval.train 2026-11-22 (k 0.1, base 292f0b725) L3 J -1.00 %
+# [-1.59, -0.43] n=108, final-check -1.54 % [-1.82, -1.26] n=39, no guard.
+# The key-frame searches medium had (2026-11-22) stay on this rung, which
+# screened them in its own window; medium reverted them (chart-timing cost).
+key.h264.intra8x8_rd_candidates = 3
+key.h264.intra8x8_gate_satd = 4
+key.h264.trellis_i8x8 = 1
+key.h264.trellis_intra_lambda_ratio = 0.4
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-1.22 / -0.45 %).
+rate.key_cap_buffer_first = 0.8
+
+# G2 motion / sub-pel exit shifts: H.264 medium's (DEFAULT_PARAMS, 2026-11-23)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0

@@ -81,6 +81,55 @@ pub struct FramePlan {
     pub block_qp: bool,
 }
 
+/// What the coding since the innermost node trial began coded
+/// (`CodecBackend::node_trial_summary`): the transform blocks that carry
+/// coefficients, over every plane. A cheap per-candidate effort and content
+/// summary for a learned gate (`labels.rs`), read from the coded state, so an
+/// undone candidate leaves nothing in the next one's.
+///
+/// `u16` holds every count of one node: the largest (a 128x128 superblock)
+/// has 128 · 128 · 3/2 = 24 576 coefficients in 4:2:0, and at most that many
+/// transform blocks; the counts saturate rather than wrap where a backend
+/// carries them past a node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeTrialSummary {
+    /// Non-zero coefficient levels.
+    pub nonzero_levels: u16,
+    /// Transform blocks with at least one non-zero level (each plane's
+    /// block counts once).
+    pub coded_blocks: u16,
+    /// log2 of the longer side of the largest coded luma transform block;
+    /// 0 where no luma block is coded.
+    pub max_luma_tx_log2: u8,
+}
+
+impl NodeTrialSummary {
+    /// Note one coded transform block of `nonzero` levels (`luma_log2`: its
+    /// longer side's log2 when it is a luma block).
+    pub fn add_block(&mut self, luma_log2: Option<u8>, nonzero: usize) {
+        if nonzero == 0 {
+            return;
+        }
+        self.nonzero_levels = self
+            .nonzero_levels
+            .saturating_add(u16::try_from(nonzero).unwrap_or(u16::MAX));
+        self.coded_blocks = self.coded_blocks.saturating_add(1);
+        if let Some(log2) = luma_log2 {
+            self.max_luma_tx_log2 = self.max_luma_tx_log2.max(log2);
+        }
+    }
+
+    /// This summary followed by `later`'s coding.
+    #[must_use]
+    pub fn merged(self, later: Self) -> Self {
+        Self {
+            nonzero_levels: self.nonzero_levels.saturating_add(later.nonzero_levels),
+            coded_blocks: self.coded_blocks.saturating_add(later.coded_blocks),
+            max_luma_tx_log2: self.max_luma_tx_log2.max(later.max_luma_tx_log2),
+        }
+    }
+}
+
 /// How a block is predicted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PredictionMode {
@@ -88,6 +137,26 @@ pub enum PredictionMode {
     IntraDc,
     /// Motion-compensated from the previous frame with this vector.
     Inter(Mv),
+}
+
+/// A node trial's coded cost in its parts (`CodecBackend::node_trial_parts`):
+/// `distortion + lambda · bits` is the cost.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodeTrialParts {
+    /// The codec's weighted squared error over the node, all planes.
+    pub distortion: f32,
+    /// The entropy-coded (or estimated) bits of the node's syntax.
+    pub bits: f32,
+    /// The λ the bits are priced at.
+    pub lambda: f32,
+}
+
+impl NodeTrialParts {
+    /// The cost these parts make, in the codec's own order of operations.
+    #[must_use]
+    pub fn cost(self) -> f32 {
+        self.distortion + self.lambda * self.bits
+    }
 }
 
 /// Which of the frame's references an inter block predicts from.
@@ -106,6 +175,15 @@ pub enum ReferenceChoice {
         /// The vector into the secondary reference.
         secondary_mv: Mv,
     },
+    /// Low-delay bi-prediction from the primary reference alone: the
+    /// equal-weight average of its prediction at [`PredictionMode::Inter`]'s
+    /// vector and at `second_mv` (generalised B: both reference lists hold
+    /// past pictures; HEVC §8.5.3.3.4.2, VVC §8.5.6.7). Only codecs declaring
+    /// `CodecBackend::supports_primary_pair` are given it.
+    PrimaryPair {
+        /// The second vector into the primary reference.
+        second_mv: Mv,
+    },
 }
 
 impl ReferenceChoice {
@@ -115,17 +193,24 @@ impl ReferenceChoice {
     ///
     /// # Panics
     ///
-    /// For [`ReferenceChoice::Compound`], which only codecs declaring
-    /// `CodecBackend::supports_compound_reference` are given.
+    /// For [`ReferenceChoice::Compound`] and [`ReferenceChoice::PrimaryPair`],
+    /// which only codecs declaring `CodecBackend::supports_compound_reference`
+    /// or `CodecBackend::supports_primary_pair` are given.
     #[must_use]
     pub fn single_index(self) -> u8 {
         match self {
             Self::Primary => 0,
             Self::Secondary => 1,
-            Self::Compound { .. } => {
-                unreachable!("compound prediction in a single-reference codec")
+            Self::Compound { .. } | Self::PrimaryPair { .. } => {
+                unreachable!("two-hypothesis prediction in a single-reference codec")
             }
         }
+    }
+
+    /// Whether the block predicts (in part) from the secondary reference.
+    #[must_use]
+    pub fn uses_secondary(self) -> bool {
+        matches!(self, Self::Secondary | Self::Compound { .. })
     }
 }
 
@@ -317,6 +402,17 @@ pub trait CodecBackend {
     /// second reference (`refs.second_hold`) is refreshed at this age.
     const SECOND_REFERENCE_REACH: u64 = crate::second_reference::MAX_DISTANCE;
 
+    /// Largest vector component, in whole luma samples, the backend's syntax
+    /// can signal whatever the block and its predicted vectors. The engine
+    /// keeps the vectors it makes up itself within it (the second
+    /// reference's scaled seed, the stress test's far vectors); the search
+    /// stays far inside. The default is the engine vector's own range
+    /// (HEVC, VVC and AV2 code at least that). A limit that depends on the
+    /// stream (H.264's level, Table A-1) or on the predicted vector (a
+    /// difference with no code) is refused per vector instead, with infinite
+    /// [`CodecBackend::mode_bits`].
+    const VECTOR_REACH: usize = (i16::MAX as usize) / (crate::mv::MV_UNITS_PER_SAMPLE as usize);
+
     /// Whether the backend codes [`BlockDecision::qp_offset`] with block-level
     /// QP syntax. The engine sends non-zero offsets only to backends that do.
     const SUPPORTS_BLOCK_QP: bool = false;
@@ -370,6 +466,15 @@ pub trait CodecBackend {
         requested
     }
 
+    /// Bits the current frame's block data has taken so far, exact or
+    /// estimated to within a few bytes (a deferred coder may price its
+    /// logged symbols), read between superblock rows by in-frame rate
+    /// control (`rate.in_frame`). `None`: not reported, and the frame is
+    /// not steered.
+    fn coded_bits(&mut self) -> Option<f64> {
+        None
+    }
+
     /// Create a backend for `config`, rejecting anything the codec (or this
     /// implementation of it) cannot code.
     ///
@@ -399,6 +504,15 @@ pub trait CodecBackend {
         let _ = previous;
     }
 
+    /// The encoder information message (`encoder_info.rs`): `payload` is
+    /// `uuid_iso_iec_11578` followed by the settings text, written in the
+    /// codec's informative syntax with the sequence headers of every key
+    /// frame from now on (`None`: none). It must not change decoding. The
+    /// default writes nothing (VP9 has no such syntax).
+    fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
+        let _ = payload;
+    }
+
     /// Whether this backend codes an inter frame predicted from any
     /// reference slot and refreshing any set of slots, as the long-term
     /// reference needs (`ltr.rs`: slot 1 beside a flat chain's slot 0).
@@ -421,6 +535,49 @@ pub trait CodecBackend {
     /// and [`ReferenceChoice::Secondary`]; `AV1 §5.11.25`, `AV1 §7.11.3.15`).
     fn supports_compound_reference(&self) -> bool {
         false
+    }
+
+    /// Whether the current inter frame supports low-delay bi-prediction from
+    /// the primary reference at two vectors ([`ReferenceChoice::PrimaryPair`];
+    /// HEVC/VVC generalised B slices). The engine tries it only with
+    /// `decision.bi_pair`.
+    fn supports_primary_pair(&self) -> bool {
+        false
+    }
+
+    /// The two-hypothesis merge candidates of `block` (the codec signals
+    /// their motion in a few bits): each as its first vector, into the
+    /// primary reference, and its second half, a
+    /// [`ReferenceChoice::PrimaryPair`] or [`ReferenceChoice::Compound`].
+    /// Only called when [`CodecBackend::supports_primary_pair`] is true.
+    fn pair_merge_candidates(&mut self, block: &Block, out: &mut Vec<(Mv, ReferenceChoice)>) {
+        let _ = (block, out);
+    }
+
+    /// The coded luma cost (as [`CodecBackend::final_coded_cost`]) of
+    /// `block` predicted by `pair` ([`ReferenceChoice::PrimaryPair`] or
+    /// [`ReferenceChoice::Compound`]) with first vector `first_mv` into
+    /// `references[0]` and its second half into `references[1]`; `None`
+    /// when the backend cannot price it.
+    fn pair_coded_cost(
+        &mut self,
+        source: &Picture,
+        references: [&Picture; 2],
+        block: &Block,
+        (first_mv, pair): (Mv, ReferenceChoice),
+    ) -> Option<f32> {
+        let _ = (source, references, block, first_mv, pair);
+        None
+    }
+
+    /// Estimated bits to signal [`ReferenceChoice::PrimaryPair`] prediction
+    /// of `block` at `first_mv` and `second_mv` (prediction direction,
+    /// reference indices, both vector differences; residual excluded). Used
+    /// by `decision/compound.rs` when [`CodecBackend::supports_primary_pair`]
+    /// is true.
+    fn primary_pair_mode_bits(&mut self, block: &Block, first_mv: Mv, second_mv: Mv) -> f32 {
+        let _ = (block, first_mv, second_mv);
+        0.0
     }
 
     /// Estimated bits to signal compound inter prediction of `block` from
@@ -501,6 +658,13 @@ pub trait CodecBackend {
     /// such a mapping keep their own filters (the default no-op).
     fn set_filter_effort(&mut self, effort: crate::FilterEffort) {
         let _ = effort;
+    }
+
+    /// Whether the frame being coded is an active first-key refinement frame
+    /// (`rate.r1_*`): backends may disable aggressive pre-transform/biased skips
+    /// on this single reference-building frame.
+    fn set_r1_refine(&mut self, active: bool) {
+        let _ = active;
     }
 
     /// The share of the last coded frame's area coded with no residual
@@ -708,9 +872,19 @@ pub trait CodecBackend {
         None
     }
 
+    /// The codec's exact luma interpolation filter for finalist re-ranking
+    /// (`decision.exact_finalists`) when [`Self::luma_filter`] is `None`.
+    fn exact_luma_filter(&self) -> Option<nc_dsp::Filter> {
+        self.luma_filter()
+    }
+
     /// Preserve exact fractional luma candidates for the following block encode.
     /// Other backends retain their existing prediction path at compile time.
     const CACHE_EXACT_LUMA: bool = false;
+
+    /// Preserve exact candidate pixels in the unweighted ranking path,
+    /// whose distortion intentionally has no prediction-energy penalty.
+    const CACHE_UNWEIGHTED_LUMA: bool = false;
 
     /// Save an improving codec-filter candidate, tightly packed at block width.
     /// The reference picture stays unchanged through `encode_block`. Implementors
@@ -724,6 +898,13 @@ pub trait CodecBackend {
         _stats: nc_dsp::Variance,
     ) {
     }
+
+    /// Whether final coding uses full-resolution luma statistics from the
+    /// partition planner for a matching whole-pel primary prediction.
+    const REUSE_PLANNED_LUMA_STATS: bool = false;
+
+    /// Save the exact planner statistics for a whole-pel primary reference.
+    fn reuse_planned_luma_stats(&mut self, _block: &Block, _mv: Mv, _stats: nc_dsp::Variance) {}
 
     /// Lagrange multiplier at the frame's quantiser: squared-error units per
     /// bit, used to trade prediction error against signalling cost when the
@@ -740,6 +921,15 @@ pub trait CodecBackend {
     /// [`CodecBackend::encode_block`] of that same block.
     fn mv_candidates(&mut self, block: &Block, out: &mut Vec<Mv>) {
         let _ = (block, out);
+    }
+
+    /// The skip-mode vector and cheaply signalled candidates for one
+    /// full inter decision. Backends that derive them from the same motion
+    /// list can build that list once.
+    fn ranking_vectors(&mut self, block: &Block, out: &mut Vec<Mv>) -> Option<Mv> {
+        let skip = self.skip_vector(block);
+        self.mv_candidates(block, out);
+        skip
     }
 
     /// Further predicted vectors that only seed sub-sample refinement: the
@@ -953,6 +1143,16 @@ pub trait CodecBackend {
         IntraChoice::default()
     }
 
+    /// The backend's own estimate of luma candidate `rank` (0: its choice,
+    /// `k`: its `k`-th alternative) of the leaf last asked about with
+    /// [`CodecBackend::intra_alternatives`], in the units it ranked them by
+    /// (`leaf_rd.rs`, `decision.intra_rd_margin`); `None` where it keeps
+    /// none (the default).
+    fn intra_alternative_estimate(&self, rank: u8) -> Option<f32> {
+        let _ = rank;
+        None
+    }
+
     /// Whether the codec implements node trials
     /// ([`CodecBackend::begin_node_trial`] and the calls after it), which
     /// the RD partition search (`planner.rd_split`) needs. Without them the
@@ -1008,6 +1208,23 @@ pub trait CodecBackend {
 
     /// End the innermost node trial, keeping what is coded.
     fn end_node_trial(&mut self) {}
+
+    /// The innermost node trial's cost in its two parts, as
+    /// [`CodecBackend::node_trial_cost`] combines them (`None` where the
+    /// backend does not split it): what a learned gate reads after the first
+    /// candidate (`labels.rs`).
+    fn node_trial_parts(&mut self, source: &Picture, recon: &Picture) -> Option<NodeTrialParts> {
+        let _ = (source, recon);
+        None
+    }
+
+    /// What the coding since the innermost node trial (or pricing) began
+    /// coded ([`NodeTrialSummary`]), as the trial's state holds it: after an
+    /// undo it starts again from nothing, after a restore it is the kept
+    /// candidate's. `None` where the backend keeps none (the default).
+    fn node_trial_summary(&self) -> Option<NodeTrialSummary> {
+        None
+    }
 
     /// Whether the CU last coded is a skip CU (no residual, predicted from
     /// a signalled candidate): the partition search then tries nothing
@@ -1105,6 +1322,13 @@ pub trait CodecBackend {
         0.0
     }
 
+    /// Prepare the part of inter-mode pricing shared by all candidates of a
+    /// block. Caching a candidate's prediction can still mutate the backend
+    /// while ranking, so the returned estimator owns any prepared state.
+    fn inter_mode_pricer(&self, _block: &Block) -> impl Fn(&Self, &Block, Mv) -> f32 + use<Self> {
+        |backend, block, mv| backend.mode_bits(block, &PredictionMode::Inter(mv))
+    }
+
     /// Whether frame quantizers are owned by rate control rather than fixed-QP boosts.
     fn set_rate_control_enabled(&mut self, _enabled: bool) {}
 
@@ -1146,10 +1370,14 @@ pub trait CodecBackend {
         recon: &mut Picture,
     );
 
-    /// Code one compound-predicted leaf block (`decision.reference` is
-    /// [`ReferenceChoice::Compound`]), averaging `primary_reference` (at
-    /// `decision.mode`) and `secondary_reference` (at its `secondary_mv`). Only called when
-    /// [`CodecBackend::supports_compound_reference`] is true.
+    /// Code one two-hypothesis leaf block, averaging `primary_reference` (at
+    /// `decision.mode`) and `secondary_reference` at the second vector:
+    /// `decision.reference` is [`ReferenceChoice::Compound`] (its
+    /// `secondary_mv`; only called when
+    /// [`CodecBackend::supports_compound_reference`] is true) or
+    /// [`ReferenceChoice::PrimaryPair`] (its `second_mv`, with
+    /// `secondary_reference` the primary reference again; only when
+    /// [`CodecBackend::supports_primary_pair`] is true).
     fn encode_compound_block(
         &mut self,
         block: &Block,
@@ -1163,8 +1391,13 @@ pub trait CodecBackend {
         self.encode_block(block, decision, source, Some(primary_reference), recon);
     }
 
+    /// Whether frame filtering must precede bitstream finalisation. A
+    /// reconstruction-only filter can run once on the accepted coding,
+    /// after the rate controller has inspected the finished bitstream.
+    const FILTER_BEFORE_END: bool = true;
+
     /// In-loop filtering of the finished picture, called after the last
-    /// block and before [`CodecBackend::end_frame`]. `recon` holds the
+    /// block. `recon` holds the
     /// unfiltered reconstruction of every block (intra prediction inside
     /// the frame must see unfiltered samples); the backend filters it in
     /// place, so the filtered picture becomes the next frame's reference

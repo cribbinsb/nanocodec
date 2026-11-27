@@ -17,7 +17,9 @@ use nc_common::{Picture, PlaneIndex};
 use nc_dsp::Dsp;
 
 use crate::grid::{Cell, Grid};
+use crate::mvpred::Motion;
 use crate::quant::chroma_qp;
+use nc_encoder::Mv;
 
 /// Luma edges are on this grid (`8x8`).
 const EDGE_SPACING: usize = 8;
@@ -189,13 +191,38 @@ fn strength(p: &Cell, q: &Cell) -> u8 {
     if transform_edge && (p.luma_coded || q.luma_coded) {
         return 1;
     }
-    // One vector per prediction unit (P slices): the motion differs when
-    // the reference pictures do (distinct `ref_idx_l0` entries are distinct
-    // pictures) or a vector component differs by a whole sample.
-    let differs = p.ref_idx != q.ref_idx
-        || (i32::from(p.mv.x) - i32::from(q.mv.x)).abs() >= MV_DIFF_THRESHOLD
-        || (i32::from(p.mv.y) - i32::from(q.mv.y)).abs() >= MV_DIFF_THRESHOLD;
-    u8::from(prediction_edge && differs)
+    u8::from(prediction_edge && motion_differs(&p.motion(), &q.motion()))
+}
+
+/// The prediction part of §8.7.2.4: different reference pictures or vector
+/// counts, or a vector difference of a whole sample or more. Both lists
+/// hold the same pictures, so a reference index names one picture in
+/// either list (distinct indices are distinct pictures).
+fn motion_differs(p: &Motion, q: &Motion) -> bool {
+    let far = |a: Mv, b: Mv| {
+        (i32::from(a.x) - i32::from(b.x)).abs() >= MV_DIFF_THRESHOLD
+            || (i32::from(a.y) - i32::from(b.y)).abs() >= MV_DIFF_THRESHOLD
+    };
+    match (p.l1, q.l1) {
+        // One vector each (every P-slice unit).
+        (None, None) => p.ref_idx != q.ref_idx || far(p.mv, q.mv),
+        (Some(p1), Some(q1)) => {
+            let (p0, q0) = (p.ref_idx, q.ref_idx);
+            if !((p0 == q0 && p1.ref_idx == q1.ref_idx) || (p0 == q1.ref_idx && p1.ref_idx == q0)) {
+                return true;
+            }
+            if p0 == p1.ref_idx {
+                // Both vectors refer to one picture: either pairing may match.
+                (far(p.mv, q.mv) || far(p1.mv, q1.mv)) && (far(p.mv, q1.mv) || far(p1.mv, q.mv))
+            } else if p0 == q0 {
+                far(p.mv, q.mv) || far(p1.mv, q1.mv)
+            } else {
+                far(p.mv, q1.mv) || far(p1.mv, q.mv)
+            }
+        }
+        // Different numbers of vectors.
+        _ => true,
+    }
 }
 
 /// Parallel edges on HEVC's eight-sample grid have disjoint p3..q3

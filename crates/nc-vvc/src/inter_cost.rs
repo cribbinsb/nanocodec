@@ -6,7 +6,7 @@
 //! contexts as they stand, exactly as `encode_block` would code it, but
 //! without touching the coded state: the engine compares a square leaf with
 //! a rectangular shape on the costs the codec will actually pay.
-use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_common::{Picture, PlaneIndex, PlaneView};
 use nc_dsp::{BlockSize, Dsp};
 use nc_encoder::{Block, Mv};
 
@@ -14,41 +14,57 @@ use crate::coeff::{BitCost, emit_rect};
 use crate::coeff_contexts::CoeffContexts;
 use crate::{inter, recon, transform_tree};
 
+/// Temporary samples and coefficients reused between pricing trials.
+#[derive(Debug, Default)]
+pub(crate) struct Scratch {
+    prediction: Vec<u8>,
+    reconstructed: Vec<u8>,
+    quant: Box<recon::QuantScratch>,
+}
+
 /// Luma reconstruction squared error and coefficient bits of CU `cu`
 /// predicted from `reference` at `mv` (quarter samples). `contexts` adapt
-/// as the units are priced: pass a copy.
+/// within the trial. Copy them only if a unit has coded coefficients.
+/// A cached prediction may be supplied when the engine already made it
+/// at this vector and reference.
 pub(crate) fn luma_cost(
     dsp: &Dsp,
     source: &Picture,
     reference: &Picture,
-    (cu, mv): (&Block, Mv),
-    contexts: &mut CoeffContexts,
+    (cu, mv, cached): (&Block, Mv, Option<&[u8]>),
+    contexts: &CoeffContexts,
     (quant, max_tb_log2): (recon::Quant, u8),
-    scratch: &mut recon::QuantScratch,
+    scratch: &mut Scratch,
 ) -> (u64, f32) {
-    let (w, h) = (cu.width(), cu.height());
-    // Sized to the CU: zeroing a 64x64 buffer for every 16x8 leaf cost
-    // more than its prediction.
-    let mut prediction = vec![0u8; w * h];
-    let luma = reference.plane(PlaneIndex::Y);
-    let mv = crate::motion::Mv16::from_quarter(mv);
-    let mut out = inter::packed(&mut prediction, (w, h));
-    inter::predict_luma(
-        dsp.at(nc_common::BitDepth::EIGHT),
-        luma,
-        (cu.x, cu.y),
-        (w, h),
-        mv,
-        &mut out,
-    );
-    residual_cost(
+    let Scratch {
+        prediction,
+        reconstructed,
+        quant: coefficients,
+    } = scratch;
+    let prediction = cached.unwrap_or_else(|| {
+        let (w, h) = (cu.width(), cu.height());
+        prediction.resize(w * h, 0);
+        let luma = reference.plane(PlaneIndex::Y);
+        let mv = crate::motion::Mv16::from_quarter(mv);
+        let mut out = inter::packed(prediction, (w, h));
+        inter::predict_luma(
+            dsp.at(nc_common::BitDepth::EIGHT),
+            luma,
+            (cu.x, cu.y),
+            (w, h),
+            mv,
+            &mut out,
+        );
+        prediction
+    });
+    cost(
         dsp,
         source,
         cu,
-        &prediction,
+        prediction,
         contexts,
         (quant, max_tb_log2),
-        scratch,
+        (reconstructed, coefficients),
     )
 }
 
@@ -60,38 +76,66 @@ pub(crate) fn residual_cost(
     source: &Picture,
     cu: &Block,
     prediction: &[u8],
-    contexts: &mut CoeffContexts,
+    contexts: &CoeffContexts,
     (quant, max_tb_log2): (recon::Quant, u8),
-    scratch: &mut recon::QuantScratch,
+    scratch: &mut Scratch,
+) -> (u64, f32) {
+    cost(
+        dsp,
+        source,
+        cu,
+        prediction,
+        contexts,
+        (quant, max_tb_log2),
+        (&mut scratch.reconstructed, &mut scratch.quant),
+    )
+}
+
+fn cost(
+    dsp: &Dsp,
+    source: &Picture,
+    cu: &Block,
+    prediction: &[u8],
+    contexts: &CoeffContexts,
+    (quant, max_tb_log2): (recon::Quant, u8),
+    (reconstructed, scratch): (&mut Vec<u8>, &mut recon::QuantScratch),
 ) -> (u64, f32) {
     let mut bits = BitCost::default();
-    let mut unit = Vec::new();
+    let mut trial_contexts = None;
     let mut sse = 0;
+    let (w, h) = (cu.width(), cu.height());
+    let prediction = PlaneView::new(prediction, w, w, h).expect("prediction covers the CU");
+    let source = source.plane(PlaneIndex::Y);
     for tu in transform_tree::units(cu, max_tb_log2) {
-        transform_tree::extract(prediction, cu, &tu, 0, &mut unit);
         let (tw, th) = (tu.width(), tu.height());
-        let levels = recon::quantize_rect(
-            dsp,
-            source,
-            PlaneIndex::Y,
-            (tu.x, tu.y, tw),
-            &unit,
-            quant,
-            None,
-            scratch,
-        );
-        if !levels.is_empty() {
-            emit_rect(&mut bits, contexts, dsp, levels, (tw, th), 0);
-        }
-        let mut reconstructed = PlaneViewMut::new(&mut unit, tw, tw, th).expect("unit buffer");
-        recon::add(dsp, &mut reconstructed, levels, quant.scaling());
+        let prediction = prediction
+            .sub_view(tu.x - cu.x, tu.y - cu.y, tw, th)
+            .expect("TU inside prediction");
         let original = source
-            .plane(PlaneIndex::Y)
             .region(tu.x as isize, tu.y as isize, tw, th)
             .expect("planned CUs lie inside the coded picture");
-        let reconstructed = PlaneView::new(&unit, tw, tw, th).expect("unit buffer");
         let size = BlockSize::new(tw, th).expect("transform units are kernel sizes");
-        sse += u64::from(dsp.variance(size, &original, &reconstructed).sse);
+        let levels = recon::quantize_view(dsp, &original, &prediction, quant, None, scratch);
+        let recon = if levels.is_empty() {
+            prediction
+        } else {
+            emit_rect(
+                &mut bits,
+                trial_contexts.get_or_insert_with(|| contexts.clone()),
+                dsp,
+                levels,
+                (tw, th),
+                0,
+            );
+            reconstructed.clear();
+            for row in 0..th {
+                reconstructed.extend_from_slice(prediction.row(row));
+            }
+            let mut dest = inter::packed(reconstructed, (tw, th));
+            recon::add(dsp, &mut dest, levels, quant.scaling());
+            PlaneView::new(reconstructed, tw, tw, th).expect("unit buffer")
+        };
+        sse += u64::from(dsp.variance(size, &original, &recon).sse);
     }
     (sse, bits.0)
 }

@@ -790,27 +790,50 @@ pub(crate) unsafe fn hevc<V: I16Lanes, const N: usize>(
             }
         }
         (_, 0) => {
+            if h == 0 {
+                return;
+            }
+            check_plane(src, src_stride, w + N - 1, h + centre);
+            check_plane(dst, dst_stride, w, h);
+            assert!(w.is_multiple_of(V::LANES), "partial prediction vector");
             for r in 0..h {
-                let row = &src[(r + centre) * src_stride..];
-                for c0 in (0..w).step_by(V::LANES) {
-                    filter_row::<V>(row, c0, fx)
-                        .add(V::splat(32))
-                        .sra(6)
-                        .store_u8_sat(&mut dst[r * dst_stride + c0..]);
+                // SAFETY: the checked rows cover every tap and every output lane.
+                unsafe {
+                    let row = src.as_ptr().add((r + centre) * src_stride);
+                    let out = dst.as_mut_ptr().add(r * dst_stride);
+                    for c in (0..w).step_by(V::LANES) {
+                        store_hevc_sample::<V>(filter_row_at::<V>(row.add(c), fx), out.add(c));
+                    }
                 }
             }
         }
         (0, _) => {
-            for r in 0..h {
-                for c0 in (0..w).step_by(V::LANES) {
-                    let mut sum = V::splat(0);
-                    for (t, &tap) in fy.iter().enumerate() {
-                        let s = V::load_u8(&src[(r + t) * src_stride + c0 + centre..]);
-                        sum = sum.add(s.mul(V::splat(tap)));
+            if h == 0 {
+                return;
+            }
+            check_plane(src, src_stride, w + centre, h + N - 1);
+            check_plane(dst, dst_stride, w, h);
+            assert!(w.is_multiple_of(V::LANES), "partial prediction vector");
+            for c in (0..w).step_by(V::LANES) {
+                // SAFETY: all N taps fit in the checked source rows and
+                // each output vector fits in the checked destination.
+                unsafe {
+                    let col = src.as_ptr().add(c + centre);
+                    let out = dst.as_mut_ptr().add(c);
+                    let mut window = [V::splat(0); N];
+                    for (i, sample) in window.iter_mut().enumerate().take(N - 1) {
+                        *sample = V::load_u8_at(col.add(i * src_stride));
                     }
-                    sum.add(V::splat(32))
-                        .sra(6)
-                        .store_u8_sat(&mut dst[r * dst_stride + c0..]);
+                    for r in 0..h {
+                        window[N - 1] = V::load_u8_at(col.add((r + N - 1) * src_stride));
+                        let mut sum = V::splat(0);
+                        for i in 0..N {
+                            sum = sum.add(window[i].mul(V::splat(fy[i])));
+                        }
+                        store_hevc_sample::<V>(sum, out.add(r * dst_stride));
+                        // Reuse the overlapping rows just like the shared two-pass driver.
+                        window.copy_within(1..N, 0);
+                    }
                 }
             }
         }
@@ -829,15 +852,12 @@ pub(crate) unsafe fn hevc<V: I16Lanes, const N: usize>(
     }
 }
 
-/// Unrounded filter sum of `V::LANES` outputs from column `c0` of a row.
-#[cfg(target_arch = "aarch64")] // x86 and SIMD128 run the byte multiply-add kernels
+/// Round and clip one vector of single-pass HEVC/VVC prediction.
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn filter_row<V: I16Lanes>(row: &[u8], c0: usize, taps: &[i16]) -> V {
-    let mut sum = V::splat(0);
-    for (t, &tap) in taps.iter().enumerate() {
-        sum = sum.add(V::load_u8(&row[c0 + t..]).mul(V::splat(tap)));
-    }
-    sum
+unsafe fn store_hevc_sample<V: I16Lanes>(sum: V, dst: *mut u8) {
+    // SAFETY: the caller validated all output lanes at this pointer.
+    unsafe { sum.add(V::splat(32)).sra(6).store_u8_sat_at(dst) }
 }
 
 /// H.264's six-tap `[1, -5, 20, 20, -5, 1]` filter, unrounded, of six

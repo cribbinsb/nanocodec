@@ -128,6 +128,9 @@ mod av1_neon;
 
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
+mod horizontal_i8mm;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
 mod neon_h264;
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -363,14 +366,49 @@ pub(crate) fn slide<T: Copy, const N: usize>(window: &mut [T; N], step: usize, k
         ($step:literal; $($j:literal)*) => {{ $( window[$j] = window[$j + $step]; )* }};
     }
     match (step, keep) {
+        (1, 0) => {}
         (1, 2) => moves!(1; 0 1),
         (1, 3) => moves!(1; 0 1 2),
+        (1, 4) => moves!(1; 0 1 2 3),
         (1, 5) => moves!(1; 0 1 2 3 4),
+        (1, 6) => moves!(1; 0 1 2 3 4 5),
         (1, 7) => moves!(1; 0 1 2 3 4 5 6),
         (2, 3) => moves!(2; 0 1 2),
         (2, 5) => moves!(2; 0 1 2 3 4),
         (2, 7) => moves!(2; 0 1 2 3 4 5 6),
         _ => window.copy_within(step..step + keep, 0),
+    }
+}
+
+/// Interleave each adjacent byte row pair once, as in dav1d's x86 8-tap
+/// vertical loop. Output row r consumes pairs r, r + 2, and so on. Keeping
+/// both parities shares the interleaves between consecutive output pairs.
+///
+/// `load` provides exactly `height + 2 * P - 1` accessible rows.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn byte_column_pairs<const P: usize, T: Copy, V: Copy>(
+    height: usize,
+    zero: V,
+    mut load: impl FnMut(usize) -> T,
+    mut pack: impl FnMut(T, T) -> V,
+    mut store: impl FnMut(usize, &[V; 7]),
+) {
+    let keep = 2 * P - 2;
+    let mut window = [zero; 7];
+    let mut previous = load(0);
+    for (i, pair) in window.iter_mut().enumerate().take(keep) {
+        let next = load(i + 1);
+        *pair = pack(previous, next);
+        previous = next;
+    }
+    for row in 0..height {
+        let next = load(row + 2 * P - 1);
+        window[keep] = pack(previous, next);
+        store(row, &window);
+        slide(&mut window, 1, keep);
+        previous = next;
     }
 }
 

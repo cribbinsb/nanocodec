@@ -32,6 +32,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod block_size;
 mod cdef;
 mod cdef_map;
 mod cdf;
@@ -58,6 +59,8 @@ mod segment_id;
 mod superres;
 mod tables;
 mod transform;
+mod tx_size;
+mod tx_type;
 mod txsize;
 
 pub use backend::decoder::{

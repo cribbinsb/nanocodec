@@ -10,8 +10,8 @@ as the slowest one.
 Selection (`--since REV`, the changed paths since REV; no REV: all tests):
 every test whose own file or whose listed page files changed runs. The whole
 set runs when anything shared changed: the module and the crates it embeds,
-the build, wasm.js, index.html, the shared site header, this runner. Any other changed
-file under web/ runs the demo-page tests (they all load the whole page).
+the build, wasm.js, index.html, the shared site header and page-view counter,
+this runner. Any other changed file under web/ runs the demo-page tests (they all load the whole page).
 The product smoke always runs.
 
     python3 tools/ci/web_tests.py [--since REV] [--workers N] [--list | --needs-native]
@@ -48,7 +48,7 @@ FAILURE_TAIL = 40
 SHARED = (
     "crates/", "Cargo.toml", "Cargo.lock", "tools/web/build.sh",
     "tools/ci/browser_smoke.sh", "tools/ci/web_tests.py",
-    "web/wasm.js", "web/site-header.css", "web/index.html",
+    "web/wasm.js", "web/site-header.css", "web/page-views.js", "web/index.html",
 )
 
 
@@ -71,6 +71,7 @@ TESTS = (
     PageTest("browser-product-smoke.py"),
     PageTest("warmup-interrupt.py", ("web/warmup.js", "web/tests/warmup-interrupt.html")),
     PageTest("source-switch.py", ("web/scene.js", "web/clip-source.js")),
+    PageTest("test-scenes.py", ("web/scene.js", "web/deep-link.js", "web/exact-source.js", "web/capture.js")),
     PageTest("reference-psnr.py", ("web/reference.js", "web/streams.js", "web/streams-ref/")),
     PageTest("exact-source.py", ("web/exact-source.js", "web/clip-source.js"), timed=True),
     PageTest("clip-pauses.py", ("web/clip-source.js", "web/exact-source.js", "web/clips/"), timed=True),
@@ -86,6 +87,7 @@ TESTS = (
     PageTest("svc-operating-points.py", native=True),
     PageTest("debug-report.py", ("web/debug-report.js", "tools/web/replay-debug-report.py"), native=True),
     PageTest("still-camera.py", ("web/debug-report.js",), native=True),
+    PageTest("clip-start-keys.py", ("web/encode-worker.js", "web/options.js", "tools/web/replay-debug-report.py"), native=True),
     PageTest("original-view.py", ("web/original-worker.js",), native=True),
     PageTest("auto-restart.py"),
     PageTest("view-layout.py", ("web/layout.js", "web/view-zoom.js", "web/view-settings.js", "web/analysis-view.js")),

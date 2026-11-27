@@ -14,7 +14,7 @@ use nc_common::BitWriter;
 use nc_encoder::{Block, CodedGroups, Mv};
 
 use crate::cabac::{BinSink, CabacWriter};
-use crate::contexts::{Contexts, SliceKind};
+use crate::contexts::{Contexts, INTER_PRED_IDC_LAST, SliceKind};
 use crate::grid::Grid;
 use crate::headers::{LOG2_CTB, LOG2_MIN_CB, LOG2_MIN_TB, SIGN_DATA_HIDING};
 use crate::predict::{CHROMA_DM, ModeCode};
@@ -220,17 +220,41 @@ pub enum CuKind {
         /// Merge candidate index.
         merge_idx: usize,
     },
-    /// AMVP: `mv` coded as a difference to AMVP candidate `mvp_idx` (`pred`).
+    /// AMVP: list 0's vector, and in a B slice optionally list 1's
+    /// (`PRED_BI`), each coded as a difference to an AMVP candidate.
     Amvp {
-        /// The vector.
-        mv: Mv,
-        /// `ref_idx_l0`, coded only in slices with two references.
-        ref_idx: Option<u8>,
-        /// The predictor it is coded against.
-        pred: Mv,
-        /// `mvp_l0_flag`.
-        mvp_idx: usize,
+        /// List 0.
+        l0: AmvpList,
+        /// List 1 of a bi-predicted unit (B slices only); `None` codes
+        /// `PRED_L0` there.
+        l1: Option<AmvpList>,
     },
+}
+
+/// One reference list's motion of an AMVP prediction unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AmvpList {
+    /// The vector.
+    pub mv: Mv,
+    /// `ref_idx_lX`, coded only in slices with two references.
+    pub ref_idx: Option<u8>,
+    /// The predictor it is coded against.
+    pub pred: Mv,
+    /// `mvp_lX_flag`.
+    pub mvp_idx: usize,
+}
+
+impl AmvpList {
+    /// `ref_idx_lX`, `mvd_coding` and `mvp_lX_flag` (§7.3.8.6).
+    fn write<W: CuSink>(&self, w: &mut W, ctx: &mut Contexts) {
+        if let Some(ref_idx) = self.ref_idx {
+            // ref_idx_lX (§7.3.8.6): truncated rice with cMax
+            // `num_ref_idx_lX_active_minus1` = 1, one context-coded bin.
+            w.encode_bin(&mut ctx.ref_idx, ref_idx == 1);
+        }
+        write_mvd(w, ctx, self.mv, self.pred);
+        w.encode_bin(&mut ctx.mvp_flag, self.mvp_idx == 1);
+    }
 }
 
 /// Most units: a 64x64 CU holds sixteen 16x16 transforms, an 8x8 or 16x16
@@ -505,14 +529,14 @@ fn write_cu<W: CuSink>(
     qp: &mut Option<CuQp<'_>>,
 ) {
     let block = &cu.block;
-    if slice == SliceKind::Predicted {
+    if slice.is_inter() {
         let skip = matches!(cu.kind, CuKind::Skip { .. });
         w.encode_bin(&mut ctx.cu_skip_flag[skip_ctx_inc(grid, block)], skip);
     }
     match cu.kind {
         CuKind::Skip { merge_idx } => write_merge_idx(w, ctx, merge_idx, tables.merge_candidates),
         CuKind::Intra { luma, chroma } => {
-            if slice == SliceKind::Predicted {
+            if slice.is_inter() {
                 w.encode_bin(&mut ctx.pred_mode_flag, true); // MODE_INTRA
             }
             if block.log2_size() == LOG2_MIN_CB as u8 {
@@ -546,22 +570,18 @@ fn write_cu<W: CuSink>(
                 qp,
             );
         }
-        CuKind::Amvp {
-            mv,
-            ref_idx,
-            pred,
-            mvp_idx,
-        } => {
+        CuKind::Amvp { l0, l1 } => {
             w.encode_bin(&mut ctx.pred_mode_flag, false); // MODE_INTER
             w.encode_bin(&mut ctx.part_mode, true); // PART_2Nx2N
             w.encode_bin(&mut ctx.merge_flag, false);
-            if let Some(ref_idx) = ref_idx {
-                // ref_idx_l0 (§7.3.8.6): truncated rice with cMax
-                // `num_ref_idx_l0_active_minus1` = 1, one context-coded bin.
-                w.encode_bin(&mut ctx.ref_idx, ref_idx == 1);
+            if slice == SliceKind::Bi {
+                write_inter_pred_idc(w, ctx, block, l1.is_some());
             }
-            write_mvd(w, ctx, mv, pred);
-            w.encode_bin(&mut ctx.mvp_flag, mvp_idx == 1);
+            l0.write(w, ctx);
+            if let Some(l1) = l1 {
+                // `mvd_l1_zero_flag` is 0: list 1's difference is coded.
+                l1.write(w, ctx);
+            }
             let residual = cu.tus.units(tables.units).iter().any(TransformUnit::coded);
             w.encode_bin(&mut ctx.rqt_root_cbf, residual);
             if residual {
@@ -576,6 +596,17 @@ fn write_cu<W: CuSink>(
                 );
             }
         }
+    }
+}
+
+/// `inter_pred_idc` of a 2Nx2N prediction unit of `block` (§9.3.4.2.2,
+/// Table 9-41): bin 0 (context `CtDepth`) is 1 for `PRED_BI`; otherwise bin
+/// 1 (the last context) is 0 for `PRED_L0`, the only uni-prediction coded.
+fn write_inter_pred_idc<W: CuSink>(w: &mut W, ctx: &mut Contexts, block: &Block, bi: bool) {
+    let ct_depth = LOG2_CTB as usize - usize::from(block.log2_size());
+    w.encode_bin(&mut ctx.inter_pred_idc[ct_depth], bi);
+    if !bi {
+        w.encode_bin(&mut ctx.inter_pred_idc[INTER_PRED_IDC_LAST], false);
     }
 }
 
@@ -887,8 +918,9 @@ impl CuSink for BitEstimator<'_> {
     }
 }
 
-/// Estimated bits of CU `cu` written at contexts `ctx` (which adapt),
-/// without `cu_qp_delta`: the CU writer run on a [`BitEstimator`].
+/// Estimated bits of CU `cu` of a `slice` slice written at contexts `ctx`
+/// (which adapt), without `cu_qp_delta`: the CU writer run on a
+/// [`BitEstimator`].
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn estimate_cu_bits(
@@ -897,7 +929,7 @@ pub fn estimate_cu_bits(
     grid: &Grid,
     (levels, units): (&LevelStore, &[TransformUnit]),
     transform: TransformSyntax<'_>,
-    merge_candidates: usize,
+    (merge_candidates, slice): (usize, SliceKind),
     cu: &CuRecord,
 ) -> f32 {
     let tables = Tables {
@@ -907,15 +939,7 @@ pub fn estimate_cu_bits(
         merge_candidates,
     };
     let mut estimate = BitEstimator::new(costs);
-    write_cu(
-        &mut estimate,
-        ctx,
-        grid,
-        &tables,
-        SliceKind::Predicted,
-        cu,
-        &mut None,
-    );
+    write_cu(&mut estimate, ctx, grid, &tables, slice, cu, &mut None);
     estimate.bits
 }
 

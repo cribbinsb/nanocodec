@@ -1,0 +1,12 @@
+pass     x264_cabac_8x8_jvtcqm_wp                    0.10s
+pass     x264_cabac_constrained_intra                0.09s
+pass     x264_cabac_crop_l41_vui                     0.61s
+pass     x264_cabac_mono                             0.09s
+pass     x264_cavlc_8x8_customcqm                    0.09s
+pass     x264_cavlc_constrained_intra                0.09s
+pass     x264_cavlc_crop_l41                         0.60s
+pass     x264_cavlc_mono_customcqm                   0.09s
+
+High                     progressive  8/8
+
+h264-x264: 8/8 streams match the reference decoder (8-bit 8/8) [High 8/8]

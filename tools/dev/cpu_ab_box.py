@@ -13,12 +13,18 @@ kernel offers them (EVENTS, per architecture; a VM without a PMU gets none) and
 always the child's CPU and wall time. One JSON line per run goes to `--out`, and one
 progress line per job to stdout (the session's stall watch reads it).
 
+Placement is the benchmark's (docs/benchmark-procedure.md section 6, tools/bench/pinning.py):
+the encodes run on `--core` (vCPU 1), this harness on a CPU of another physical core, never
+on the timed CPU's SMT sibling; a box without one is refused.
+
 `--probe FILE` finds what this machine counts without multiplexing: a VM's PMU may
 offer fewer counters than its core has (2026-11-21, c6g/c7g/c8g.large: cycles,
 instructions and one more event; seven at once left every count partial), so every
 run counts BASE_EVENTS and the remaining counters take the supported extra events in
 turn, round by round (`schedule`). It writes the schedule to FILE, which `--events`
-reads. `--limit` measures only the first N jobs (the pipe-cleaner).
+reads. `--limit` measures only the first N jobs (the pipe-cleaner). `--skip FILE` (a JSON
+list of job ids) leaves out the jobs a reclaimed box already finished: its retry measures
+only the rest (docs/aws-cost-guide.md, spot reclaims).
 """
 
 from __future__ import annotations
@@ -31,6 +37,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# pinning.py is shipped beside this file on the box; in the repository it is tools/bench's.
+sys.path.insert(1, str(Path(__file__).resolve().parents[1] / "bench"))
+from pinning import pin_harness  # noqa: E402
 from jperf import CYCLES, INSTRUCTIONS, PERF_TYPE_HARDWARE, PERF_TYPE_RAW, measure  # noqa: E402
 
 #: Generic hardware event numbers (linux/perf_event.h) used on x86.
@@ -51,12 +60,25 @@ EVENTS = {
                "branch_mispred": (PERF_TYPE_HARDWARE, HW_BRANCH_MISSES)},
 }
 DEFAULT_CORE = 1
+#: Frames the event probe encodes per run. Which counters the PMU counts together does
+#: not depend on the encode's length, and the probe runs the encode once per event set:
+#: at the job's own 900 frames a slow-rung probe ran for over five minutes without output
+#: and failed the box (2026-11-24).
+PROBE_FRAMES = 8
 DEFAULT_ROUNDS = 5
 
 
 def counts_together(argv: list[str], core: int, events: dict, names: list[str]) -> bool:
     run = measure(argv, core, {n: events[n] for n in names})
     return all(run.counts[n] is not None for n in names)
+
+
+def short_encode(argv: list[str]) -> list[str]:
+    """`argv` encoding only PROBE_FRAMES frames (its `--frames` value capped)."""
+    if "--frames" not in argv:
+        return argv
+    at = argv.index("--frames") + 1
+    return [*argv[:at], str(min(int(argv[at]), PROBE_FRAMES)), *argv[at + 1:]]
 
 
 def probe_events(argv: list[str], core: int, events: dict) -> dict:
@@ -123,14 +145,20 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--core", type=int, default=DEFAULT_CORE)
     parser.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
     parser.add_argument("--limit", type=int, help="only the first N jobs")
+    parser.add_argument("--skip", type=Path, help="JSON list of job ids already measured")
+    parser.add_argument("--single-cpu", action="store_true",
+                        help="a one-vCPU box: the harness shares --core (pinning.pin_harness)")
     parser.add_argument("--probe", type=Path, help="write the events counted together, exit")
     parser.add_argument("--events", type=Path, help="the events to count (a --probe file)")
     args = parser.parse_args(argv)
     plan = json.loads(args.plan.read_text())
     events = EVENTS[platform.machine()]
     jobs = plan["jobs"][:args.limit] if args.limit else plan["jobs"]
+    skipped = set(json.loads(args.skip.read_text())) if args.skip and args.skip.is_file() else set()
+    jobs = [job for job in jobs if job["id"] not in skipped]
     if args.probe:
-        found = probe_events(next(iter(jobs[0]["variants"].values())), args.core, events)
+        found = probe_events(short_encode(next(iter(jobs[0]["variants"].values()))),
+                             args.core, events)
         args.probe.write_text(json.dumps({"machine": platform.machine(), **found}))
         print(f"counted on every run: {', '.join(found['base']) or 'none'}; extras "
               f"{', '.join(found['extras']) or 'none'}, {found['slots']} at a time", flush=True)
@@ -140,6 +168,8 @@ def main(argv: list[str]) -> None:
         "extras": [n for n in events if n not in BASE_EVENTS], "slots": len(events)}
     if args.out is None:
         parser.error("--out is required")
+    harness = pin_harness(args.core, args.single_cpu)
+    print(f"harness on CPU {harness}, encodes on CPU {args.core}", flush=True)
     with args.out.open("a") as out:
         for number, job in enumerate(jobs, 1):
             records = run_job(job, args.rounds, args.core, events, probe)

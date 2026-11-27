@@ -50,6 +50,8 @@ pub enum ObuType {
     SequenceHeader = 1,
     /// `OBU_TEMPORAL_DELIMITER`.
     TemporalDelimiter = 2,
+    /// `OBU_METADATA`.
+    Metadata = 5,
     /// `OBU_FRAME`: frame header plus tile group.
     Frame = 6,
 }
@@ -92,6 +94,29 @@ pub fn write_obu_layer(
 /// `obu_extension_header()` carrying `temporal_id` (spatial id 0) if given.
 pub fn write_obu(out: &mut Vec<u8>, obu_type: ObuType, temporal_id: Option<u8>, payload: &[u8]) {
     write_obu_layer(out, obu_type, temporal_id.map(|t| (t, 0)), payload);
+}
+
+/// The `metadata_type` of the encoder information message: the first of
+/// the "unregistered user private" values 6..=31 (AV1 §6.7.1, Table in
+/// `metadata_type` semantics). AV1 has no `user_data_unregistered`, and
+/// ITU-T T.35 (type 4) needs a registered country and provider code; the
+/// payload's leading UUID tells nanocodec's message from other private
+/// uses of the value. libaom and dav1d skip private types (libaom checks
+/// the trailing bits).
+const METADATA_TYPE_UNREGISTERED_USER_PRIVATE: u64 = 6;
+
+/// `trailing_bits()` after a byte-aligned OBU payload (AV1 §5.3.4).
+const TRAILING_ONE_BYTE: u8 = 0x80;
+
+/// The payload of a `metadata_obu()` (AV1 §5.8.1) carrying the encoder
+/// information `payload` (UUID then text) under the private metadata type,
+/// with its trailing bits.
+#[must_use]
+pub fn encoder_info_metadata(payload: &[u8]) -> Vec<u8> {
+    let mut obu = leb128(METADATA_TYPE_UNREGISTERED_USER_PRIVATE);
+    obu.extend_from_slice(payload);
+    obu.push(TRAILING_ONE_BYTE);
+    obu
 }
 
 /// `seq_level_idx` 31: no level constraints signalled (AV1 Annex A.3).
@@ -650,6 +675,8 @@ pub struct FrameHeader {
     pub chroma_delta_q: i32,
     /// `delta_q_present`: superblocks code `delta_qindex` (§5.11.12).
     pub delta_q_present: bool,
+    /// `delta_q_res` (0..=3): shift applied to coded `delta_qindex`.
+    pub delta_q_res: u8,
     /// `segmentation_params()` (§5.9.14): `SEG_LVL_ALT_Q` of segments 1..7
     /// (segment 0 codes none), every block coding its id; `None`:
     /// segmentation off.
@@ -933,7 +960,7 @@ impl FrameHeader {
         // delta_q_params() (coded because base_q_idx > 0), §5.9.17.
         w.put_bit(self.delta_q_present);
         if self.delta_q_present {
-            w.put_bits(0, 2); // delta_q_res: deltas in qindex units
+            w.put_bits(u32::from(self.delta_q_res & 3), 2); // delta_q_res
             // delta_lf_params(), §5.9.18: allow_intrabc is 0, so
             // delta_lf_present is coded; the loop filter stays frame-level.
             w.put_bit(false);

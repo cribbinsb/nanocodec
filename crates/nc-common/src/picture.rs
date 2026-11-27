@@ -53,6 +53,29 @@ pub struct Picture<T: Sample = u8> {
     planes: [Plane<T>; 3],
 }
 
+/// Read-only access to a picture with more of its replicated border visible.
+/// Dropping the guard restores the dimensions without moving any samples.
+#[derive(Debug)]
+pub struct ExtendedPicture<'a, T: Sample> {
+    picture: &'a mut Picture<T>,
+    original: (usize, usize),
+}
+
+impl<T: Sample> core::ops::Deref for ExtendedPicture<'_, T> {
+    type Target = Picture<T>;
+
+    fn deref(&self) -> &Self::Target {
+        self.picture
+    }
+}
+
+impl<T: Sample> Drop for ExtendedPicture<'_, T> {
+    fn drop(&mut self) {
+        self.picture
+            .set_size_in_storage(self.original.0, self.original.1);
+    }
+}
+
 impl<T: Sample> Picture<T> {
     /// A zeroed `width` x `height` I420 picture with at least `luma_border`
     /// samples of luma padding (and half that for chroma).
@@ -138,6 +161,45 @@ impl<T: Sample> Picture<T> {
     pub fn extend_borders(&mut self) {
         for plane in &mut self.planes {
             plane.extend_borders();
+        }
+    }
+
+    /// Whether all three planes can expose the requested area in their right
+    /// and bottom borders.
+    #[must_use]
+    pub fn can_extend_to(&self, width: usize, height: usize) -> bool {
+        width.is_multiple_of(2)
+            && height.is_multiple_of(2)
+            && self.planes[0].can_extend_to(width, height)
+            && self.planes[1..]
+                .iter()
+                .all(|p| p.can_extend_to(width / 2, height / 2))
+    }
+
+    /// Expose the right and bottom edges already written by
+    /// [`Self::extend_borders`] as coding samples. Use this only after extending
+    /// the borders of the current visible picture.
+    ///
+    /// # Panics
+    ///
+    /// If the requested size does not fit ([`Self::can_extend_to`]).
+    pub fn extended(&mut self, width: usize, height: usize) -> ExtendedPicture<'_, T> {
+        assert!(
+            self.can_extend_to(width, height),
+            "the coding area fits in the border"
+        );
+        let original = (self.width(), self.height());
+        self.set_size_in_storage(width, height);
+        ExtendedPicture {
+            picture: self,
+            original,
+        }
+    }
+
+    fn set_size_in_storage(&mut self, width: usize, height: usize) {
+        self.planes[0].set_size_in_storage(width, height);
+        for chroma in &mut self.planes[1..] {
+            chroma.set_size_in_storage(width / 2, height / 2);
         }
     }
 

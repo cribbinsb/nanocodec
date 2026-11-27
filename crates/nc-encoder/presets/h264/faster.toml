@@ -51,8 +51,7 @@ rate.cadence_scale = 1
 analysis.static_sad_per_pixel = 1
 analysis.one_position_sad_per_pixel = 1.3333334
 analysis.skip_hme_sad_per_pixel = 2
-# H.264 Default's fixed-QP profile (2026-11-15) stays off here: pinned, byte-identical.
-rate.fixed_qp_profile = 0
+# H.264 Default's fixed-QP profile is unpinned (2026-11-24, Brief 19 Step 4; CBR stays byte-identical).
 # The Default's split search without the uniform-vector exit (2026-11-15),
 # pinned so this preset's streams do not move with the Default.
 h264.split_uniform_qpel = 4
@@ -80,3 +79,61 @@ rate.fixed_qp_moving_key = 0
 # winner walk -2.1% / +9.8%, trellis -2.1% / +26.6%, integer probes -1.8% / +6.6%.
 h264.intra8x8 = 1
 h264.intra_rd = 1
+# Pinned before the Default's key-frame Intra_8x8 search (coded-cost modes, gate 4,
+# Intra_8x8 trellis; 2026-11-21): not screened for this preset.
+key.h264.intra8x8_rd_candidates = 0
+key.h264.intra8x8_gate_satd = 9.6
+key.h264.trellis_i8x8 = 0
+key.h264.trellis_intra_lambda_ratio = 1
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): not screened on this rung.
+analysis.zero_gate_cell = 64
+# The first key at rate.key_cap_buffer 1.0 too, over H.264's first-key 0.8 (backend
+# DEFAULT_PARAMS): nceval.train at both key shares (base df1506a5, k front slope) passed
+# with it (docs/handoff/rate-control.md "Key distance").
+rate.key_cap_buffer_first = 1.0
+
+# G2 motion / sub-pel exit shifts: H.264 medium's (DEFAULT_PARAMS, 2026-11-23)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0
+
+# Bilinear ranking with the exact re-ranking of its two best sub-pel finalists
+# (decision.exact_finalists 2, h264.exact_ranking 0 in place of exact ranking of every
+# candidate; h264-ladder 2026-11-23, Gemini brief 13). nceval.train (unit d1f2b52064, base
+# da9ac3b8c, k 0.2435 the CBR front slope, CPU on its own encodes, zen5 + Graviton 3/4):
+# dCPU final check -3.82 / -4.12 % at 1/150 / 1/300; L3 J -0.22 % [-0.81, +0.40]
+# AMBIGUOUS (no loss), final check (full ladder) J -1.25 % [-1.58, -0.93] BETTER, no guard.
+decision.exact_finalists = 2
+h264.exact_ranking = 0
+
+# Fixed QP only (`fixed_qp.`, 2026-11-24, Brief 19 Step 4; docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# unpinning `rate.fixed_qp_profile`, coarser moving keys (`rate.fixed_qp_moving_key = 6`),
+# and relaxing the low-QP inter zero luma scales (1.0 base / 2.0 non-base). nceval.fixedqp ab
+# (draw fixedqp-2026-11-24, n=24): 150 f J -4.3% [-5.0, -3.0], 600 f J -3.7% [-4.1, -2.9];
+# fixed-QP CPU (aws_cpu_ab, c8i / c8g): +3.04% / +3.09% (mean +3.07%; -1.21% J / 1% CPU vs
+# front slope -0.209). CBR streams are byte-identical.
+fixed_qp.rate.fixed_qp_moving_key = 6
+fixed_qp.h264.inter_zero_luma_scale = 1
+fixed_qp.nonbase.h264.inter_zero_luma_scale = 2
+# The fixed-QP profile's key offset as screened here (8): the profile's 9 (2026-11-25;
+# 10 on 2026-11-24, Brief 20) was screened on medium/slow/slower only.
+fixed_qp.h264.keyframe_qp_offset = 8

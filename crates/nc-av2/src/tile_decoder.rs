@@ -183,6 +183,11 @@ impl Default for Workspace {
 }
 
 impl Workspace {
+    /// Kernels selected for this decoder.
+    pub(crate) fn dsp(&self) -> &Dsp {
+        &self.dsp
+    }
+
     /// The decoder's kernels and the loop filters' scratch: CDEF's line
     /// buffers and CCSO's deblocked luma.
     pub(crate) fn filter_parts(
@@ -331,10 +336,11 @@ pub(crate) fn decode(
         &mut work.cdef_source,
     );
     if params.ccso.is_on() {
-        ccso::filter_picture(
+        ccso::filter_picture_runs(
             &mut decoder.recon,
             &work.ccso_source,
             &params.ccso,
+            ccso::UNIT,
             |plane, x, y| decoder.ccso_flags.get(plane, x, y),
         );
     }

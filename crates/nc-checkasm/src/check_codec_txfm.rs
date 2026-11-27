@@ -6,7 +6,7 @@ use nc_dsp::{
     HevcTransform, VvcQuantizer,
 };
 
-use nc_common::PlaneViewMut;
+use nc_common::{PlaneView, PlaneViewMut};
 
 use crate::check::{CheckReport, MAX_EXTRA_STRIDE};
 use crate::check_codec::record;
@@ -437,6 +437,27 @@ fn check_h264_mb(
     let isa = candidate.isa();
     let stride_mb = 16 + rng.below(MAX_EXTRA_STRIDE + 1);
     let input_mb = residual(15 * stride_mb + 16, stride_mb, mode, rng);
+    let pred_stride = stride_mb + 7;
+    let mut src = vec![0u8; 15 * stride_mb + 16];
+    let mut pred = vec![0u8; 15 * pred_stride + 16];
+    for y in 0..16 {
+        for x in 0..16 {
+            let r = input_mb[y * stride_mb + x];
+            let common = rng.below(256 - usize::from(r.unsigned_abs())) as u8;
+            src[y * stride_mb + x] = common + r.max(0) as u8;
+            pred[y * pred_stride + x] = common + (-r).max(0) as u8;
+        }
+    }
+    let src = PlaneView::new(&src, stride_mb, 16, 16).unwrap();
+    let pred = PlaneView::new(&pred, pred_stride, 16, 16).unwrap();
+    let mut staged = [[0; 16]; 16];
+    let mut pixels = [[99; 16]; 16];
+    reference.h264_forward_4x4(&input_mb, stride_mb, 4, &mut staged);
+    candidate.h264_forward_luma_pixels(&src, &pred, &mut pixels);
+    record(report, isa, pixels == staged, || {
+        format!("h264_forward_luma_pixels mode={mode} stride={stride_mb}/{pred_stride}")
+    });
+
     let zero_mask = rng.below(16) as u8;
     let q_mb = H264Quantizer::with_rounding_divisor(qp, 2 + rng.below(15) as u8);
     let mut fused = [[99; 64]; 4];
@@ -551,16 +572,58 @@ fn check_h264(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut Chec
     record(report, isa, same, || format!("h264_dequantize qp={qp}"));
     check_h264_add_inverse(candidate, reference, (&q, qp), rng, report);
 
+    check_h264_chroma(candidate, reference, (&q, qp, intra, mode), rng, report);
+}
+
+fn check_h264_chroma(
+    candidate: &Dsp,
+    reference: &Dsp,
+    (q, qp, intra, mode): (&H264Quantizer, u8, bool, usize),
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    let isa = candidate.isa();
     let stride_c = 8 + rng.below(MAX_EXTRA_STRIDE + 1);
     let input_c = residual(7 * stride_c + 8, stride_c, mode, rng);
     let chroma = |dsp: &Dsp| {
         let mut ac = [[99; 16]; 4];
-        let (dc, count) = dsp.h264_forward_quantize_chroma(&input_c, stride_c, &q, &mut ac);
+        let (dc, count) = dsp.h264_forward_quantize_chroma(&input_c, stride_c, q, &mut ac);
         (ac, dc, count)
     };
     let same = chroma(candidate) == chroma(reference);
     record(report, isa, same, || {
         format!("h264_forward_quantize_chroma qp={qp} intra={intra} mode={mode} stride={stride_c}")
+    });
+
+    let pred_stride = stride_c + 3;
+    let mut src = vec![0u8; 7 * stride_c + 8];
+    let mut pred = vec![0u8; 7 * pred_stride + 8];
+    for y in 0..8 {
+        for x in 0..8 {
+            let r = input_c[y * stride_c + x];
+            // Offset both pixels by the same amount so their difference
+            // still covers the entire signed residual range.
+            let common = rng.below(256 - usize::from(r.unsigned_abs())) as u8;
+            src[y * stride_c + x] = common + r.max(0) as u8;
+            pred[y * pred_stride + x] = common + (-r).max(0) as u8;
+        }
+    }
+    let src = PlaneView::new(&src, stride_c, 8, 8).unwrap();
+    let pred = PlaneView::new(&pred, pred_stride, 8, 8).unwrap();
+    let mut scratch = [0; 64];
+    let mut ac = [[99; 16]; 4];
+    let (dc, count) =
+        candidate.h264_forward_quantize_chroma_pixels(&src, &pred, &mut scratch, q, &mut ac);
+    record(report, isa, (ac, dc, count) == chroma(reference), || {
+        format!("h264_forward_quantize_chroma_pixels qp={qp} intra={intra} mode={mode}")
+    });
+
+    let mut coeffs = [[99; 16]; 4];
+    let mut expected = [[0; 16]; 4];
+    candidate.h264_forward_chroma_pixels(&src, &pred, &mut scratch, &mut coeffs);
+    reference.h264_forward_4x4(&input_c, stride_c, 2, &mut expected);
+    record(report, isa, coeffs == expected, || {
+        format!("h264_forward_chroma_pixels mode={mode} stride={stride_c}/{pred_stride}")
     });
 }
 

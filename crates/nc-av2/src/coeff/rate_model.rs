@@ -62,31 +62,46 @@ pub(super) fn features(
     eob: usize,
     context: &mut EntropyContext,
 ) -> Features {
+    // Four u16 counts fit in one register, with a shift to select the
+    // field. The largest coded transform has only 1024 coefficients.
+    const FIELD_BITS: u32 = u16::BITS;
+    const FIELD_MASK: u64 = u16::MAX as u64;
     let mut counts = [0; FEATURES];
     let mut counted_q9 = 0;
-    for &at in &levels::scan_positions(block.tx)[..eob] {
-        let value = levels[at.pos()];
-        let level = value.unsigned_abs();
-        let region = at.region(block.ctx.plane);
-        let slot = match region {
-            Region::LumaLow | Region::ChromaLow => LOW_REGION,
-            Region::LumaDefault | Region::ChromaDefault => DEFAULT_REGION,
-        };
-        counts[slot + level.min(COUNTED_LEVELS) as usize] += 1;
-        if level == 0 {
-            continue;
-        }
-        context.add(at.pos(), value);
-        counted_q9 += COST_UNITS_PER_BIT;
+    let mut low_range = 0;
+    let (low_end, low, default) = Region::frequency_regions(block.ctx.plane);
+    let scan = &levels::scan(block.tx)[..eob];
+    let (low_scan, default_scan) = scan.split_at(low_end.min(eob));
+    for (region, scan, slot) in [
+        (low, low_scan, LOW_REGION),
+        (default, default_scan, DEFAULT_REGION),
+    ] {
+        let mut histogram = 0u64;
         let base_limit = region.base_levels() + 1;
-        if region.has_low_range() && level > base_limit {
-            counts[LOW_RANGE] += (level - base_limit).min(MAX_LOW_RANGE);
-        }
         let saturation = region.saturation();
-        if level >= saturation {
-            counted_q9 += high_range_bits(level - saturation, 0) * COST_UNITS_PER_BIT;
+        for &pos in scan {
+            let pos = usize::from(pos);
+            let value = levels[pos];
+            let level = value.unsigned_abs();
+            histogram += 1 << (level.min(COUNTED_LEVELS) * FIELD_BITS);
+            if level == 0 {
+                continue;
+            }
+            context.add(pos, value);
+            if region.has_low_range() && level > base_limit {
+                low_range += (level - base_limit).min(MAX_LOW_RANGE);
+            }
+            if level >= saturation {
+                counted_q9 += high_range_bits(level - saturation, 0) * COST_UNITS_PER_BIT;
+            }
+        }
+        for (i, count) in counts[slot..slot + 4].iter_mut().enumerate() {
+            *count = ((histogram >> (i as u32 * FIELD_BITS)) & FIELD_MASK) as u32;
         }
     }
+    counts[LOW_RANGE] = low_range;
+    let nonzero = eob as u32 - counts[LOW_REGION] - counts[DEFAULT_REGION];
+    counted_q9 += nonzero * COST_UNITS_PER_BIT;
     counts[CONSTANT] = 1;
     Features { counts, counted_q9 }
 }
@@ -188,3 +203,38 @@ const WEIGHTS: [[[[f32; FEATURES]; QUANTIZER_CATEGORIES]; PLANE_TYPES]; SIZES] =
         ],
     ],
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_counts_match_the_scan_with_a_full_histogram_field() {
+        let tx = TxSize::Tx64;
+        let kind = super::super::Kind::DCT_ONLY;
+        for plane in [0, 1, 2] {
+            let ctx = super::super::Context {
+                plane,
+                ..Default::default()
+            };
+            let block = Block::new(tx, ctx, 120, (kind.set, kind.levels));
+            let (low_end, low, default) = Region::frequency_regions(plane);
+            let positions = levels::scan_positions(tx);
+            assert_eq!(positions[..low_end].last().unwrap().region(plane), low);
+            assert_eq!(positions[low_end].region(plane), default);
+            for value in [1, -2, 3, -6, 15, -117] {
+                let levels = vec![value; tx.coded_len()];
+                let mut context = EntropyContext::default();
+                let all = features(block, &levels, levels.len(), &mut context);
+                let slot = value.unsigned_abs().min(COUNTED_LEVELS) as usize;
+                assert_eq!(all.counts[LOW_REGION + slot], low_end as u32);
+                assert_eq!(
+                    all.counts[DEFAULT_REGION + slot],
+                    (levels.len() - low_end) as u32
+                );
+                assert_eq!(all.counts[..8].iter().sum::<u32>(), levels.len() as u32);
+                assert_eq!(context.value(), super::super::entropy_context(&levels));
+            }
+        }
+    }
+}

@@ -42,6 +42,7 @@ from pathlib import Path
 from .clips import Clip, load_clipset
 from .config import Paths
 from .ctc.sequences import SEALED_FAMILIES as CTC_SEALED_FAMILIES
+from .sealing import RELEASE_ONLY_SETS
 
 #: Clip sets the pool takes its clips from (hires: 1080p/5MP copies of TRAIN
 #: sources; quick/smoke: duplicates). vc1k_dev: VC-1K phone video calls
@@ -53,8 +54,9 @@ POOL_SETS = ("main", "broad_independent_v1", "layergate_fit", "layergate_fit2", 
 #: (eval/clipset/select_independent.py: 150 never-used sources, 2026-11-13) is the
 #: independent test's fresh set and the candidate main chart; vc1k_2026-11-18 is
 #: the VC-1K measurement set (its dev clips are disjoint by selection, and this
-#: keeps any later copy of one of its sources out of the pool too).
-SEALED_SETS = ("adv12", "independent", "vc1k_2026-11-18")
+#: keeps any later copy of one of its sources out of the pool too). The release-only
+#: sets (nceval.sealing: the 2026-11-23 held-out chart set) are sealed here as well.
+SEALED_SETS = ("adv12", "independent", "vc1k_2026-11-18", *sorted(RELEASE_ONLY_SETS))
 #: The standards lens's sequences (nceval.ctc.sequences, 2026-11-14) are
 #: sealed by family: they are downloaded on rented machines only, so there is
 #: no clip set file here, but a copy of the same source in the pool (the
@@ -103,7 +105,8 @@ def load_pool(paths: Paths, usable: Callable[[Clip], bool] = lambda clip: True) 
 
     The screens pass "has enough ladder rungs under its 50% cap for a BD"."""
     sealed_families, chosen = set(SEALED_FAMILIES), {}
-    sets = {name: load_clipset(paths.clips / f"{name}.json", paths.data_root).clips
+    sets = {name: load_clipset(paths.clips / f"{name}.json", paths.data_root,
+                               exclusion_only=name in SEALED_SETS).clips
             for name in (*POOL_SETS, *SEALED_SETS) if (paths.clips / f"{name}.json").exists()}
     for name, clips in sets.items():
         sealed_families |= {family_key(c.family) for c in clips

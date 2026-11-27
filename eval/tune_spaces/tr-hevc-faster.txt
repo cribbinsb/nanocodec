@@ -1,0 +1,17 @@
+# tune-rest (2026-11-23): searched at the rung's front slope (eval/configs/front_k.json), 600 f at keys
+# every 10 s and 5 s, warm-started from the shipped rung. Each term lies between the rung's value
+# and the next slower rung's (docs/handoff/tuning.md "Fast-end joint retune"); about ten terms.
+# decision.exact_rank_margin stays at 0 or >= 0.8 (a margin under 1 skips most exact predictions).
+# Format (nceval.tune_pool): name [low high] [int|log]
+# HEVC faster (k 0.464): the terms HEVC fast's retune (759ed7f4c) moved, plus fast's still-block exit.
+hevc.intra_tu_depth 0 1 int
+hevc.intra_leaf_cost 0 1 int
+hevc.merge_candidates 2 4 int
+planner.lambda_scale 2.58 3.54
+planner.split_rate_factor 2 2.6
+planner.split_selector 0 1 int
+decision.codec_subpel_seed_lambdas 0.068 0.3
+decision.refine_cheap_vector 0 1 int
+decision.exact_rank_margin 0.8 1.5
+decision.static_zero_vector 0 1 int
+filter.usage_quiet_share 0 0.5

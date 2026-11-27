@@ -1,0 +1,5 @@
+# staged-md: staged intra cut per frame kind, 150 f fixed-QP ab
+null: planner.intra_bias=1050
+kb100: decision.intra_stage_band=100
+kb200: decision.intra_stage_band=200
+pb100: decision.inter_intra_stage_band=100

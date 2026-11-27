@@ -146,7 +146,7 @@ CHARTS_LAND_MINUTES = 1
 #: chains depend on N, the families whose streams changed since their recorded builds
 #: (chart_refresh's verify; 0.3.0: 6), and are priced at N = 14 (0.4.0's commit subjects:
 #: H.264 Default, HEVC and VVC (shared SAO), AV2, AV1 Faster), with the scoring sessions
-#: of CLIPSET_CLOUD_REGIONS:
+#: of 0.3.0's sessions:
 #: - all held out, then fresh (its clips cached): coding ~8, scoring 11 of session
 #:   overhead + 1.7 c7a.metal-min per family on 1 session (0.3.0: 3,232 points of
 #:   ~0.3 Mpx in 6 min), renders ~8, the fresh refresh and renders ~9: 38 + 1.7 N;
@@ -165,8 +165,14 @@ CHARTS_LAND_MINUTES = 1
 #: box time; a 3-family scan 19 s on the build box): the main chain after the PGO builds
 #: is the scan, both timings (the Jetson's ~25) and the render (its quality ~20 min runs
 #: from the release commit, MAIN_BEFORE_PGO), and each Fixed QP gap part one box.
-CHART_CHAIN_MINUTES = {"main": 45, "heldout-independent_2026-11-13": 185,
-                       "heldout-vc1k_2026-11-18": 121, "cbr-zen3": 37,
+#: The clip-set chains measure in a fleet (heldout_fleet.py, CLIPSET_CLOUD_BOXES boxes),
+#: at its rates from 0.6.0's run (1,300 encodes and 150 points per box-minute at 720p):
+#: all held out (209 clips at 0.64 of 720p; 39,468 encodes of ours, ~15,900 tuned side
+#: points, every one scored at worst) ~27 encode and ~236 scoring box-min, on 4 boxes
+#: ~66 min with the sessions' overhead, then renders that only read (~10) and the fresh
+#: set (cached): ~90; VC-1K (100 clips at 1.0) ~60 measure, ~75 in all.
+CHART_CHAIN_MINUTES = {"main": 45, "heldout-independent_2026-11-13": 90,
+                       "heldout-vc1k_2026-11-18": 75, "cbr-zen3": 37,
                        "cbr-graviton": 30, "lens-x86": 34, "lens-zen3": 44,
                        "lens-graviton": 44, "lens-jetson": 39, "qp-vc1k": 35,
                        "qp-fresh": 30, "lens-quality": 29}
@@ -234,24 +240,22 @@ SPEED_NOTE = (
 
 # --- PGO ----------------------------------------------------------------------------------
 
-#: Public 1280x720 50 fps sequences (Xiph derf; 4:2:0, 8-bit) the PGO builds train on.
-#: None is a chart or lens clip (the CBR chart times private clips, the Fixed QP lens
-#: the AOM CTC set), so the timed content never shaped the profile; they are kept on
-#: this PC and the Jetson only, as raw cuts, never redistributed.
-DERF = "https://media.xiph.org/video/derf/y4m"
-TRAINING_CLIPS = ("720p50_parkrun_ter", "old_town_cross_420_720p50",
-                  "in_to_tree_420_720p50", "ducks_take_off_420_720p50")
-TRAIN_WIDTH, TRAIN_HEIGHT = 1280, 720
-TRAIN_FRAME_BYTES = TRAIN_WIDTH * TRAIN_HEIGHT * 3 // 2
-#: Frames cut from each sequence, from TRAIN_START (past any title leader), and the
-#: frames pgo_build.sh encodes of each.
-TRAIN_START, TRAIN_FRAMES = 50, 30
+#: The PGO training cuts (BP-3.1 task T5, 2026-11-23): public-domain camera footage (NASA,
+#: NOAA) from collections no dataset, tuning set or CTC class uses, so the timed content
+#: never shaped the profile (eval/tests/test_content_id.py checks it). The set's manifest
+#: names each source, start and SHA-256; the cuts are kept on this PC, the build box and
+#: the Jetson only, never redistributed.
+TRAINING_SET = REPO / "eval/clipset/pgo_training_2026-11-23.json"
+TRAINING = json.loads(TRAINING_SET.read_text())
+TRAINING_CLIPS = tuple(clip["name"] for clip in TRAINING["clips"])
+TRAIN_WIDTH, TRAIN_HEIGHT, TRAIN_FRAMES = TRAINING["width"], TRAINING["height"], TRAINING["frames"]
+#: The frames pgo_build.sh encodes of each cut.
 PGO_FRAMES = 20
 #: The pipe-clean trains on one codec's presets (the build covers every codec still).
 PIPE_CLEAN_CODECS = "av1"
-TRAIN_DIR = RELEASE_ROOT / "pgo-clips"
+TRAIN_DIR = RELEASE_ROOT / TRAINING["name"].replace("pgo_training_", "pgo-clips-")
 #: The same cuts zstd-compressed for the build box (nc-remote never syncs *.yuv files).
-TRAIN_ZST_DIR = RELEASE_ROOT / "pgo-clips-zst"
+TRAIN_ZST_DIR = TRAIN_DIR.with_name(TRAIN_DIR.name + "-zst")
 #: The x86 build: a job on the remote build box, its outputs fetched into the worktree.
 REMOTE_JOB = "release-pgo"
 REMOTE_OUT = "remote-out/release"
@@ -294,30 +298,19 @@ JETSON_PGO_BINARY = "nanocodec-pgo"
 ZERO_LINES = ("x264-medium", "x264-medium~psnr")
 #: The held-out charts are also rendered against this zero line (chart_refresh.py).
 HELDOUT_TUNED_ANCHOR = "x264-medium~psnr"
-#: Each held-out chart's prebuilt streams (chart_refresh.CLIPSET_STREAMS).
-HELDOUT_STREAMS = DATA / "work" / "heldout-chart" / "streams-{stem}"
-#: A held-out zero-line session's spending cap, USD, and hard lifetime, minutes (the
-#: cap prices the whole lifetime; coding or scoring two families takes ~5-15 min)
-ZERO_LINE_BUDGET = 2.0
-ZERO_LINE_LIFETIME = 40
-#: Each clip-set chart's scoring sessions, one per region listed (chart_refresh
-#: --cloud-regions). Both chains score at once, and each region's spot quota holds two
-#: c7a.metal-48xl, each chain's encode session and then one scoring session at a time in
-#: eu-north-1: VC-1K (0.92 Mpx, ~5.1 metal-min a family) gets three, the held-out sets
-#: (~0.3 Mpx, ~1.7) one, so both chains take ~32-38 + 1.7 N min (two each: VC-1K
-#: 32 + 2.6 N, the release's longest chain past N = 18).
-CLIPSET_CLOUD_REGIONS = {"vc1k_2026-11-18": "eu-central-1,eu-north-1,eu-central-1"}
-HELDOUT_CLOUD_REGIONS = "eu-north-1,eu-north-1"
-#: c7a.metal-48xl (192 vCPU) sessions each region's spot quota holds at once (2026-11-21:
-#: eu-north-1 raised to 1,200 vCPU; the others 512), with the main chart's two scoring
-#: sessions (chart_refresh.CLOUD_REGIONS) beside the clip-set chains'.
-METAL_SESSIONS_PER_REGION = {"eu-north-1": 6}
-DEFAULT_METAL_SESSIONS = 2
+#: Rented sessions side by side per chart (chart_refresh --cloud-boxes, heldout_fleet.py:
+#: lanes of ~10 box-minutes on c7a.24xlarge, 96 vCPU). The main chart and the two clip-set
+#: chains measure at once, within eu-north-1's 1,200 spot vCPU less the build box's 96
+#: (aws_session.BUILD_BOX_VCPUS): 3 + 4 + 4 boxes; anything past that spills to another
+#: region with room (aws_session.SPILL_REGIONS) or waits a minute and tries again.
+MAIN_CLOUD_BOXES = 3
+CLIPSET_CLOUD_BOXES = 4
+FLEET_BOX_VCPUS = 96
+HOME_SPOT_VCPUS = 1200
+BUILD_BOX_VCPUS = 96
 #: The main chain's commands that need no PGO build (quality only, on rented machines):
 #: they start with the release commit, the rest of the chain after the PGO builds.
 MAIN_BEFORE_PGO = ("main-build", "main-quality")
-#: The main chart's scoring sessions (chart_refresh --cloud-regions).
-MAIN_CLOUD_REGIONS = "eu-north-1,eu-north-1"
 #: Fixed QP lens: per machine its timing record and how our build is named there.
 LENS_MACHINES = {"x86": "fixed-qp-timing-x86.json", "zen3": "fixed-qp-timing-zen3.json",
                  "graviton": "fixed-qp-timing-graviton.json",
@@ -334,7 +327,6 @@ CBR_SERIES = {"zen3": ("c6a.large", "bd-vs-speed-timing-zen3.json",
                        "AWS c6a.large, Zen 3, one pair at a time"),
               "graviton": ("c8g.large", "bd-vs-speed-timing-graviton.json",
                            "AWS c8g.large, one pair at a time")}
-AARCH64_TOOLS = DATA / "anchors" / "aarch64" / "bin"
 #: The pipe-clean's single encoder and sequence (Fixed QP) and family (Jetson CBR).
 PIPE_CLEAN_ENCODER = "nanocodec-av1@fast"
 PIPE_CLEAN_SEQUENCE = "Johnny_1280x720_60"
@@ -729,7 +721,7 @@ class Release:
         return results
 
     def training_env(self) -> str:
-        clips = " ".join(f"$HOME/nanocodec-data/release/pgo-clips/{c}.yuv" for c in TRAINING_CLIPS)
+        clips = " ".join(f"$HOME/{(TRAIN_DIR / c).relative_to(Path.home())}.yuv" for c in TRAINING_CLIPS)
         codecs = f" PGO_CODECS={PIPE_CLEAN_CODECS}" if self.pipe_clean else ""
         return f'PGO_CAPI=1 PGO_FRAMES={PGO_FRAMES} PGO_CLIPS="{clips}"{codecs}'
 
@@ -845,8 +837,9 @@ class Release:
 
     def build_on_jetson(self, remote: str, host: str) -> None:
         self.jetson_sources(remote)
-        jetson("mkdir -p ~/nanocodec-data/release/pgo-clips")
-        run(["rsync", "-a", f"{TRAIN_DIR}/", f"{host}:nanocodec-data/release/pgo-clips/"])
+        clips = TRAIN_DIR.relative_to(Path.home())
+        jetson(f"mkdir -p ~/{clips}")
+        run(["rsync", "-a", f"{TRAIN_DIR}/", f"{host}:{clips}/"])
         build = (
             f"cd ~/{remote}/src && ~/.cargo/bin/rustup component add llvm-tools >/dev/null && "
             f"mkdir -p ~/{remote}/pgo ~/{remote}/plain && "
@@ -924,7 +917,7 @@ class Release:
         ours = [f for f in self.lens_encoders() if f.startswith("nanocodec-")]
         refresh = ["python3", "tools/dev/chart_refresh.py", self.binary_short]
         main_refresh = [*refresh, *(["--local"] if self.args.local_charts else
-                                    ["--cloud-regions", MAIN_CLOUD_REGIONS])]
+                                    ["--cloud-boxes", str(MAIN_CLOUD_BOXES)])]
         record = json.loads((tree / BUILDS_RECORD).read_text())
         base = CHART_BUILDS / record["base"]
         # the zero lines first, with XPSNR (a cached point lacking it is scored again), so
@@ -948,32 +941,23 @@ class Release:
                         ("main-quality", [*main_refresh, "--families", families,
                                           "--metrics-only"])]
         commands.append(("chart-refresh", [*main_refresh, "--families", families, "--pgo"]))
-        # each clip-set chart (every site chart view's, chart_refresh.clipset_chains): its
-        # zero lines coded where missing and scored on rented machines (cached: no
-        # machine), then the refresh as chart_refresh --heldout runs it (refresh_heldout),
-        # one command each so that a resumed stage does not redo a finished one
-        heldout_tool = ["python3", "tools/dev/aws_heldout_chart.py"]
-        session = ["--budget", str(ZERO_LINE_BUDGET), "--lifetime", str(ZERO_LINE_LIFETIME)]
+        # each clip-set chart (every site chart view's, chart_refresh.clipset_chains): the
+        # refresh as chart_refresh --heldout runs it (refresh_heldout; its measure codes
+        # and scores every point the render reads, the zero lines and references with
+        # ours, in small sessions side by side), one command each so that a resumed stage
+        # does not redo a finished one
         for clipset in [path for chain in clip_chains() for path in chain]:
-            zero = ["--clipset", str(clipset), "--families", ",".join(ZERO_LINES),
-                    "--build", str(CHART_BUILDS / self.binary_short),
-                    "--streams", str(HELDOUT_STREAMS).format(stem=clipset.stem), *session]
             held_out = [*refresh, "--clipset", str(clipset), "--families", families,
-                        "--cloud-regions",
-                        CLIPSET_CLOUD_REGIONS.get(clipset.stem, HELDOUT_CLOUD_REGIONS)]
+                        "--cloud-boxes", str(CLIPSET_CLOUD_BOXES)]
             name = f"heldout-{clipset.stem}"
             commands += [
-                (f"{name}-zero-line", [*heldout_tool, "run", *zero,
-                                       "--purpose", "release-zero-line"]),
-                (f"{name}-zero-line-score", [*heldout_tool, "score-cloud", *zero,
-                                             "--purpose", "release-zero-line-score"]),
                 (name, [*held_out, "--metrics-only"]),
                 (f"{name}-psnr", [*held_out, "--from", "render",
                                   "--anchor", HELDOUT_TUNED_ANCHOR])]
         x86 = self.builds("x86_64") / "nanocodec"
         arm = self.builds("aarch64") / "nanocodec"
         for machine, (instance, record_file, wording) in CBR_SERIES.items():
-            binary = ["--binary", str(arm), "--tools-dir", str(AARCH64_TOOLS),
+            binary = ["--binary", str(arm),
                       "--expect-version", self.version_line()] if machine == "graviton" \
                 else ["--binary", str(x86)]
             out = self.root / f"cbr-{machine}"
@@ -1140,8 +1124,7 @@ class Release:
         for machine, (instance, _, _) in CBR_SERIES.items():
             arm = machine == "graviton"
             binary = self.builds("aarch64" if arm else "x86_64") / "nanocodec"
-            extra = ["--tools-dir", str(AARCH64_TOOLS), "--expect-version",
-                     self.version_line()] if arm else []
+            extra = ["--expect-version", self.version_line()] if arm else []
             run(["python3", "tools/dev/aws_timing.py", "--instance-type", instance,
                  "--binary", str(binary), *extra, "--repeats", "1", "--points",
                  PIPE_CLEAN_FAMILY, "--dry-run"], log=self.log(f"charts-cbr-{machine}-dry-run"))
@@ -1604,7 +1587,7 @@ def chart_tool_paths() -> list[Path]:
     sys.path.insert(0, str(REPO / "eval"))
     from nceval.realuse import OPENH264_HARNESS
     timing = load_module("fixedqp_timing", REPO / "tools/dev/fixedqp_timing.py")
-    return [OPENH264_HARNESS, timing.DEFAULT_SOURCES, timing.ANCHOR_TOOLS, timing.AARCH64_TOOLS]
+    return [OPENH264_HARNESS, timing.DEFAULT_SOURCES, timing.ANCHOR_TOOLS, timing.GRAVITON_TOOLS]
 
 
 def charts_preflight(work: Path = DATA / "work", tools: list[Path] | None = None,
@@ -1679,38 +1662,26 @@ def build_notes(version: str) -> str:
 
 
 def prepare_training_clips() -> None:
-    """The public training cuts (TRAINING_CLIPS) as raw I420, fetched once by HTTP range:
-    TRAIN_FRAMES frames from TRAIN_START of each sequence."""
+    """The training cuts (TRAINING_SET) as raw I420, cut once from their local sources by
+    the pinned clip decoder; each must match its recorded SHA-256."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.clipframes import clip_decoder, decoder_environment
     TRAIN_DIR.mkdir(parents=True, exist_ok=True)
-    manifest = TRAIN_DIR / "manifest.json"
-    known = json.loads(manifest.read_text()) if manifest.is_file() else {}
-    for clip in TRAINING_CLIPS:
-        raw = TRAIN_DIR / f"{clip}.yuv"
-        if raw.is_file() and known.get(clip) == sha256(raw):
-            continue
-        url = f"{DERF}/{clip}.y4m"
-        header = subprocess.run(["curl", "-fsS", "-A", "nanocodec-release-script", "-r", "0-255",
-                                 url], check=True, capture_output=True).stdout
-        line = header.split(b"\n", 1)[0]
-        fields = line.decode().split()
-        size = (int(fields[1][1:]), int(fields[2][1:]))
-        colour = next((f for f in fields if f.startswith("C")), "C420jpeg")
-        if size != (TRAIN_WIDTH, TRAIN_HEIGHT) or not colour.startswith("C420"):
-            sys.exit(f"{clip}: {line!r} is not 1280x720 8-bit 4:2:0")
-        frame = len(b"FRAME\n") + TRAIN_FRAME_BYTES
-        first = len(line) + 1 + TRAIN_START * frame
-        last = first + TRAIN_FRAMES * frame - 1
-        data = subprocess.run(["curl", "-fsS", "-A", "nanocodec-release-script", "-r",
-                               f"{first}-{last}", url], check=True, capture_output=True).stdout
-        with raw.open("wb") as out:
-            for index in range(TRAIN_FRAMES):
-                chunk = data[index * frame:(index + 1) * frame]
-                if not chunk.startswith(b"FRAME"):
-                    sys.exit(f"{clip}: no frame marker at frame {TRAIN_START + index}")
-                out.write(chunk[chunk.index(b"\n") + 1:])
-        known[clip] = sha256(raw)
-        say(f"training clip {clip}: {TRAIN_FRAMES} frames")
-    manifest.write_text(json.dumps(known, indent=1) + "\n")
+    frame_bytes = TRAIN_WIDTH * TRAIN_HEIGHT * 3 // 2
+    for clip in TRAINING["clips"]:
+        raw = TRAIN_DIR / f"{clip['name']}.yuv"
+        if not (raw.is_file() and sha256(raw) == clip["sha256"]):
+            subprocess.run([str(clip_decoder()), "-nostdin", "-v", "error", "-y",
+                            "-ss", str(clip["start"]), "-i", clip["source"],
+                            "-frames:v", str(TRAIN_FRAMES), "-an",
+                            "-vf", f"scale={TRAIN_WIDTH}:{TRAIN_HEIGHT}", "-pix_fmt", "yuv420p",
+                            "-f", "rawvideo", str(raw)], check=True, env=decoder_environment())
+            if raw.stat().st_size != TRAIN_FRAMES * frame_bytes:
+                sys.exit(f"{raw}: not {TRAIN_FRAMES} frames of {TRAIN_WIDTH}x{TRAIN_HEIGHT}")
+            if sha256(raw) != clip["sha256"]:
+                sys.exit(f"{raw}: SHA-256 {sha256(raw)}, the set records {clip['sha256']!r}")
+            say(f"training clip {clip['name']}: {TRAIN_FRAMES} frames")
+    shutil.copy2(TRAINING_SET, TRAIN_DIR / "manifest.json")
     TRAIN_ZST_DIR.mkdir(exist_ok=True)
     for clip in TRAINING_CLIPS:
         packed = TRAIN_ZST_DIR / f"{clip}.yuv.zst"

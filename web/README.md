@@ -10,6 +10,10 @@ too: plain SVG charts and tables drawn from `web/results/data/*.json`, which
 edit the JSON by hand. `web/tests/results-pages.py` checks every figure they
 show against that data.
 
+Every published page loads `page-views.js`: it counts page views with GoatCounter
+(the path only, without query string or fragment; no events) and adds the footer
+line saying so. On localhost it fetches nothing.
+
 The demo and the results pages share one header (`site-header.css`: Demo ·
 Results · Method · GitHub) and link to each other (`deep-link.js`, checked by
 `tests/deep-link.test.js` and `tests/deep-links.py`):

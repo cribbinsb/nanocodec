@@ -5,21 +5,26 @@
 use super::{MAX_SIDE, PlanarEdges};
 use crate::simd::I16Lanes;
 
-/// Planar (eq. 8-48) on 16-bit lanes: every term is at most `32 · 255` and
-/// their sum below 2^15.
+/// Planar (eq. 8-48) on 16-bit lanes, also used for 64x64 VVC luma.
+/// The two axis sums plus rounding are at most `2 * 64 * 255 + 64`,
+/// which fits signed 16-bit lanes.
 ///
 /// # Safety
 ///
 /// `V`'s ISA must be available; the edges hold `n` samples, `out` `n * n`,
-/// and `V::LANES` divides `n`.
+/// and `V::LANES` divides `n`. The side is at most `CAPACITY` and 64.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-pub(crate) unsafe fn planar<V: I16Lanes>(edges: &PlanarEdges<'_>, n: usize, out: &mut [u8]) {
+pub(crate) unsafe fn planar<V: I16Lanes, const CAPACITY: usize>(
+    edges: &PlanarEdges<'_>,
+    n: usize,
+    out: &mut [u8],
+) {
     let shift = n.trailing_zeros() + 1;
     let side = n as i16;
     // Column weights of the left sample (n − 1 − x) and of top-right (x + 1).
-    let mut left_weight = [0i16; MAX_SIDE];
-    let mut right_weight = [0i16; MAX_SIDE];
+    let mut left_weight = [0i16; CAPACITY];
+    let mut right_weight = [0i16; CAPACITY];
     for x in 0..n {
         left_weight[x] = side - 1 - x as i16;
         right_weight[x] = x as i16 + 1;

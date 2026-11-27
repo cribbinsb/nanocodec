@@ -17,7 +17,7 @@ import csv
 import sys
 from pathlib import Path
 
-from .chart import X86, ChartPoint, pareto, svg_chart
+from .chart import X86, ChartPoint, RateCounts, pareto, svg_chart
 
 HEADING = "Held-out clips: bitrate vs single-threaded encode speed"
 NOTE = ("BD-J on 71 held-out clips (no tuning, screen or chart decision used them); speed as "
@@ -36,7 +36,7 @@ def heldout_points(heldout_csv: Path, x86_csv: Path) -> list[ChartPoint]:
             bd_j=float(row["bd_j_heldout_pct"]), bd_psnr=float(row["bd_psnr_heldout_pct"]),
             bd_vmaf=float(row["bd_vmaf_heldout_pct"]), iqr=None,
             scored=int(row["clips_scored"]), clips=int(row["clips"]), missing_classes=(),
-            rate_invalid=0, refused=0, fps=fps,
+            rate=RateCounts(), refused=0, fps=fps,
             speed=float(timed["speed_vs_anchor"]) if timed.get("speed_vs_anchor") else None))
     return points
 

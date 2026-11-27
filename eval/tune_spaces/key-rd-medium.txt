@@ -1,0 +1,14 @@
+# The medium key RD partition search's cheap form (coordinator, 2026-11-22): the search
+# on or off, its margin gate (higher: fewer nodes searched), its depth window and the
+# key's finer level. For AV1, HEVC and AV2 medium, long-window studies with the key's
+# CPU at the chart's share (--cpu-intra-period 150) and the rung's front-slope k.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.key_rd_split 0 1 int
+planner.key_rd_margin 1.0 2.0
+planner.key_rd_deeper 0 2 int
+planner.key_rd_shallower 0 2 int
+rate.key_level_finer 0 4
+# The key-interval terms (key_interval.rs, owner 2026-11-22): measured at two key
+# shares (--second-key-share), one point that is right at both.
+rate.key_level_finer_ln_interval -3 3
+planner.key_rd_margin_ln_interval -1 1

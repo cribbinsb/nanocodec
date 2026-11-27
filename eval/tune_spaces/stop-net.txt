@@ -1,0 +1,25 @@
+# The post-trial stop's network terms (planner.rd_split_stop_net_*, stop_value.rs) on top of
+# the best linear stop point (av1-slow-stop-w1 trial 15, 600-frame windows: J -0.70 % at
+# CPU x0.985). The linear terms are held at that point (bias free: it is the score's
+# constant); the network's readouts start at 0, so the first trial is the linear point.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_stop_bias -0.429886 1.570114
+planner.rd_split_stop_cost 0.160562 0.160562
+planner.rd_split_stop_bits -0.469711 -0.469711
+planner.rd_split_stop_distortion 0.145212 0.145212
+planner.rd_split_stop_skip -1.570399 -1.570399
+planner.rd_split_stop_nonzero 0.427942 0.427942
+planner.rd_split_stop_planned_split -1.723533 -1.723533
+planner.rd_split_stop_size -0.325607 -0.325607
+planner.rd_split_stop_margin 0.200127 0.200127
+planner.rd_split_stop_neighbours -0.213851 -0.213851
+planner.rd_split_stop_co_located 0.546321 0.546321
+planner.rd_split_stop_net_weight -2 2
+planner.rd_split_stop_net_h0 -2 2
+planner.rd_split_stop_net_h1 -2 2
+planner.rd_split_stop_net_h2 -2 2
+planner.rd_split_stop_net_h3 -2 2
+planner.rd_split_stop_net_h4 -2 2
+planner.rd_split_stop_net_h5 -2 2
+planner.rd_split_stop_net_h6 -2 2
+planner.rd_split_stop_net_h7 -2 2

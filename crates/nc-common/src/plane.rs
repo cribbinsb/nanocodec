@@ -49,6 +49,7 @@ pub struct Plane<T: Sample = u8> {
     stride: usize,
     pad_x: usize,
     pad_y: usize,
+    rows: usize,
 }
 
 impl<T: Sample> Plane<T> {
@@ -92,6 +93,7 @@ impl<T: Sample> Plane<T> {
             stride,
             pad_x,
             pad_y,
+            rows,
         })
     }
 
@@ -113,16 +115,32 @@ impl<T: Sample> Plane<T> {
         self.stride
     }
 
-    /// Padding available on the left and right of every row (≥ the requested border).
+    /// Padding available on both sides of each row.
     #[must_use]
     pub fn border_x(&self) -> usize {
-        self.pad_x
+        self.pad_x.min(self.stride - self.pad_x - self.width)
     }
 
-    /// Padding rows available above and below the visible area.
+    /// Padding rows available both above and below the visible area.
     #[must_use]
     pub fn border_y(&self) -> usize {
-        self.pad_y
+        self.pad_y.min(self.rows - self.pad_y - self.height)
+    }
+
+    /// Whether the requested visible size lies inside the current samples
+    /// and their right and bottom borders.
+    pub(crate) fn can_extend_to(&self, width: usize, height: usize) -> bool {
+        width >= self.width
+            && height >= self.height
+            && width <= self.stride - self.pad_x
+            && height <= self.rows - self.pad_y
+    }
+
+    /// Change the visible size without changing the origin or storage.
+    pub(crate) fn set_size_in_storage(&mut self, width: usize, height: usize) {
+        debug_assert!(width <= self.stride - self.pad_x && height <= self.rows - self.pad_y);
+        self.width = width;
+        self.height = height;
     }
 
     /// The visible area.
@@ -162,14 +180,10 @@ impl<T: Sample> Plane<T> {
     /// this view directly instead of creating one view per candidate.
     #[must_use]
     pub fn padded_view(&self) -> PlaneView<'_, T> {
-        let (width, height) = (self.width + 2 * self.pad_x, self.height + 2 * self.pad_y);
-        self.region(
-            -(self.pad_x as isize),
-            -(self.pad_y as isize),
-            width,
-            height,
-        )
-        .expect("the padded area is the whole plane")
+        let (pad_x, pad_y) = (self.border_x(), self.border_y());
+        let (width, height) = (self.width + 2 * pad_x, self.height + 2 * pad_y);
+        self.region(-(pad_x as isize), -(pad_y as isize), width, height)
+            .expect("the padded area is the whole plane")
     }
 
     /// The `width` x `height` window whose top-left sample is at (`x`, `y`)
@@ -308,7 +322,7 @@ impl<T: Sample> Plane<T> {
     fn offset_of(&self, x: isize, y: isize, width: usize, height: usize) -> Option<usize> {
         let col = usize::try_from(x + self.pad_x as isize).ok()?;
         let row = usize::try_from(y + self.pad_y as isize).ok()?;
-        let fits = col + width <= self.stride && row + height <= self.height + 2 * self.pad_y;
+        let fits = col + width <= self.stride && row + height <= self.rows;
         fits.then_some(row * self.stride + col)
     }
 }

@@ -4,11 +4,10 @@
 
 A refresh that changes a family's code but not its streams (an exact speed-up) only
 needs the family re-timed: its quality points, cached by binary identity, stay valid
-on its recorded build. This checks that claim on the streams the chart rests on:
-the timing plan's fixed-QP encodes on the three timing clips (the speed axis: its
-quantizers, each build's own `--preset`) and a CBR stream per timing clip at the
-timing rung (the chart's quality mode, with the build's preset values), each
-compared by SHA-256 between the old and the new build.
+on its recorded build. This checks that claim on the streams the chart's speed axis
+times: the family's timing encodes (nceval.chart_timing: its own CBR quality encodes on
+the plan's timing clips, each build with its own preset values), compared by SHA-256
+between the old and the new build.
 
     python3 tools/dev/stream_check.py FAMILY OLD_BUILD_DIR NEW_BUILD_DIR
 """
@@ -25,41 +24,37 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 PLAN_FILE = REPO / "docs/results/bd-vs-speed-plan.json"
-#: The chart's real-use encode length and key interval, and the CBR rung checked.
-FRAMES = 150
-INTRA_PERIOD = 300
-CBR_KBPS = 600
 #: Concurrent encodes (each one core, a few seconds).
 JOBS = 4
 
 Build = tuple[Path, Path]  # (scoring binary, presets directory)
 
 
-def stream_sha(cmd: list[str], out: Path) -> str:
-    run = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+def stream_sha(bench, point, out: Path) -> str:
+    """One timing encode (its clip's frames served as its quality point reads them)."""
+    with bench.frames_of(point.clip) as frames:
+        cmd = bench.command(point, out, None, source=frames)
+        run = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if run.returncode:
         raise SystemExit(f"encode failed: {' '.join(cmd[:4])} ...: {run.stderr[-300:]}")
     return hashlib.sha256(out.read_bytes()).hexdigest()
 
 
-def encodes(family: str, build: Build, plan: dict, tmp: Path) -> list[tuple[list[str], Path]]:
-    """The checked encodes of `family` on `build`: (command, the stream it writes)."""
+def encodes(family: str, build: Build, plan: dict, tmp: Path) -> list[tuple]:
+    """The checked encodes of `family` on `build`: (bench, point, the stream it writes)."""
     sys.path.insert(0, str(REPO / "eval"))
-    from anchor_chart_timing import plan_family
+    from nceval.chart import chart_clips
+    from nceval.chart_timing import plan_jobs
     from nceval.config import load_paths
-    from nceval.realuse import main_clips, own_family
+    from nceval.gatepolicy import EVALUATION_GATE
+    from nceval.realuse import Runner, own_family
 
     binary, presets = build
-    clips = main_clips(load_paths())
-    own = own_family(family, binary, presets)
+    runner = Runner(load_paths(), EVALUATION_GATE, workers=1, over_budget=True)
     jobs = []
-    for clip, entry in plan["points"][family].items():
-        fixed_qp, cbr = tmp / f"{clip}-qp.bin", tmp / f"{clip}-cbr.bin"
-        planned = plan_family(own, presets)
-        jobs.append((planned.command(clips[clip], FRAMES, INTRA_PERIOD, fixed_qp, None,
-                                     qp=entry["qp"]), fixed_qp))
-        jobs.append((own.command(clips[clip], FRAMES, INTRA_PERIOD, cbr, None, kbps=CBR_KBPS),
-                     cbr))
+    for bench, point in plan_jobs(runner, [own_family(family, binary, presets)],
+                                  chart_clips(plan["clipset"]), plan):
+        jobs.append((bench, point, tmp / f"{point.clip.name}-{point.kbps}.bin"))
     return jobs
 
 
@@ -67,7 +62,8 @@ def build_shas(family: str, build: Build, plan: dict) -> list[str]:
     """The checked streams' SHA-256s of `family` on `build`, cached beside the build's
     binary (a build directory never changes): every refresh compared each family's
     recorded build again, encoding the same streams each time."""
-    key = hashlib.sha256(json.dumps([plan["points"][family], FRAMES, INTRA_PERIOD, CBR_KBPS],
+    key = hashlib.sha256(json.dumps([plan["rate_mode"], plan["frames"], plan["clipset"],
+                                     plan["clips"], plan.get("low_clips")],
                                     sort_keys=True).encode()).hexdigest()[:16]
     cache = build[0].parent / f"stream-shas-{family}-{key}.json"
     if cache.is_file():
@@ -81,7 +77,10 @@ def build_shas(family: str, build: Build, plan: dict) -> list[str]:
 
 
 def identical(family: str, old: Build, new: Build, plan_file: Path = PLAN_FILE) -> bool:
-    plan = json.loads(plan_file.read_text())
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.chart_timing import load_plan
+
+    plan = load_plan(plan_file)
     return build_shas(family, old, plan) == build_shas(family, new, plan)
 
 

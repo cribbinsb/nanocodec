@@ -5,8 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
 import { CLIPS } from '../clips.js';
-import { fetchStream, framesToDecode, pickerGroups, referenceStream, streamFrameAtTick, streamGroups } from '../reference.js';
-import { matchProblems, matchingSettings } from '../view-settings.js';
+import { fetchStream, framesToDecode, keyCadence, pickerGroups, referenceStream, streamFrameAtTick, streamGroups } from '../reference.js';
+import { KEY_AT_CLIP_START, clipStartKeys, matchProblems, matchingSettings } from '../view-settings.js';
 import { tickStep } from '../timeline.js';
 
 const directory = new URL('../streams-ref/', import.meta.url);
@@ -32,6 +32,15 @@ test('every manifest stream exists, is described and can be matched live', () =>
     total += entry.bytes;
   }
   assert.ok(total < MAX_SET_BYTES, `${total} bytes`);
+});
+
+test('a pane shows when a stream keys: every loop start, and its interval inside a longer loop', () => {
+  const one = { frames: 300, fps: 30, loopTicks: 300, keyInterval: 300 };
+  assert.equal(keyCadence(one), 'key at each clip start, every 10 s');
+  assert.equal(keyCadence({ frames: 168, fps: 15, loopTicks: 336, keyInterval: 150 }),
+    'key every 10 s, restarting at each clip start (every 11.2 s)');
+  assert.equal(keyCadence({ frames: 125, fps: 15, loopTicks: 250, keyInterval: 150 }), 'key at each clip start, every 8.3 s');
+  for (const entry of manifest.streams) assert.match(keyCadence(entry), /^key /, entry.id);
 });
 
 test('the set is varied: content groups, encoders, sizes, frame rates and rates', () => {
@@ -65,8 +74,18 @@ test('matching sets the stream\'s size, rate, buffer and key interval', () => {
   assert.equal(settings.width, entry.width); assert.equal(settings.fps, entry.fps);
   assert.equal(settings.targetKbps, entry.targetKbps); assert.equal(settings.rateMode, 'cbr');
   assert.equal(settings.codec, entry.codec);
+  // A one-key stream keys at each clip start, as a live view "On clip start" does.
+  assert.equal(settings.gop, entry.keyInterval >= entry.frames ? KEY_AT_CLIP_START : entry.keyInterval / entry.fps);
+  assert.equal(matchingSettings({ ...entry, frames: 300, keyInterval: 300, fps: 30 }).gop, KEY_AT_CLIP_START);
+  assert.equal(matchingSettings({ ...entry, frames: 336, keyInterval: 300, fps: 30 }).gop, 10);
   assert.ok(matchProblems({ ...entry, fps: 25 }, [entry.clip]).includes('25 fps is not offered'));
   assert.deepEqual(matchProblems({ ...entry, clip: 'netflix-tango' }, [entry.clip]), ['clip netflix-tango is not a hosted sample clip']);
+});
+
+test('keys "On clip start": one loop of whole frames is the period, else requested at each loop', () => {
+  assert.deepEqual(clipStartKeys(300, 2, 15, 400), { keyInterval: 150, extraSeconds: null, requested: [] });
+  // 250 ticks at every 3rd: loops start on ticks 250 and 500, first coded at ticks 252 and 501.
+  assert.deepEqual(clipStartKeys(250, 3, 10, 200), { keyInterval: 300, extraSeconds: 30, requested: [84, 167] });
 });
 
 test('a stream shows its frame for each tick it codes and catches up on skipped ones', () => {

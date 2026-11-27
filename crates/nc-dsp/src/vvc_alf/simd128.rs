@@ -14,14 +14,14 @@ use super::{
     filter_block_row_from, laplacians_from, vvc_alf_gram_index,
 };
 use core::arch::wasm32::{
-    i8x16_swizzle, i16x8_abs, i16x8_add, i16x8_add_sat, i16x8_narrow_i32x4, i16x8_shuffle,
-    i16x8_sub, i32x4_add, i32x4_dot_i16x8, i32x4_extract_lane, i32x4_mul, i32x4_shl, i32x4_shr,
-    i32x4_shuffle, i32x4_splat, i32x4_sub, i64x2_add, i64x2_extmul_high_i32x4,
+    i8x16_shuffle, i8x16_swizzle, i16x8_abs, i16x8_add, i16x8_add_sat, i16x8_narrow_i32x4,
+    i16x8_shuffle, i16x8_sub, i32x4_add, i32x4_dot_i16x8, i32x4_extract_lane, i32x4_mul, i32x4_shl,
+    i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub, i64x2_add, i64x2_extmul_high_i32x4,
     i64x2_extmul_low_i32x4, i64x2_extract_lane, i64x2_splat, u8x16_narrow_i16x8, u8x16_shuffle,
     u16x8_extend_high_u8x16, u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, u16x8_narrow_i32x4,
     u32x4_extend_high_u16x8, u32x4_extend_low_u16x8, u32x4_gt, u32x4_max, u32x4_min, u32x4_shr,
-    u32x4_splat, u64x2_shuffle, v128, v128_and, v128_bitselect, v128_load, v128_or, v128_store,
-    v128_store64_lane,
+    u32x4_splat, u64x2_shuffle, v128, v128_and, v128_bitselect, v128_load, v128_load16_lane,
+    v128_load64_zero, v128_or, v128_store, v128_store64_lane,
 };
 
 /// Samples per vector.
@@ -128,22 +128,100 @@ fn pair_sums(a: v128, b: v128) -> v128 {
     )
 }
 
-/// SIMD128 [`super::LaplacianFn`]: two groups (eight columns) per step.
+/// Load 10 bytes (`row[at..at + 10]`) into lanes `0..10` once per row.
+#[target_feature(enable = "simd128")]
+fn load10(row: &[u8], at: usize) -> v128 {
+    let slice: &[u8; 10] = row[at..at + 10].try_into().expect("ten samples");
+    // SAFETY: SIMD128 is enabled; `slice` has 10 bytes (`0..8` and `8..10`).
+    unsafe {
+        let lo = v128_load64_zero(slice.as_ptr().cast());
+        v128_load16_lane::<4>(lo, slice.as_ptr().add(8).cast())
+    }
+}
+
+/// Interleave even columns of `a` with odd columns of `b` at byte offset `0`,
+/// `1` or `2` and widen to `i16x8` (replaces 2 widening loads + 1 word shuffle).
+#[target_feature(enable = "simd128")]
+fn pick_pair(a: v128, b: v128) -> [v128; 3] {
+    let p0 = u16x8_extend_low_u8x16(i8x16_shuffle::<
+        0,
+        17,
+        2,
+        19,
+        4,
+        21,
+        6,
+        23,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    >(a, b));
+    let p1 = u16x8_extend_low_u8x16(i8x16_shuffle::<
+        1,
+        18,
+        3,
+        20,
+        5,
+        22,
+        7,
+        24,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    >(a, b));
+    let p2 = u16x8_extend_low_u8x16(i8x16_shuffle::<
+        2,
+        19,
+        4,
+        21,
+        6,
+        23,
+        8,
+        25,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    >(a, b));
+    [p0, p1, p2]
+}
+
+/// SIMD128 [`super::LaplacianFn`]: two groups (eight columns) per step,
+/// loading each of the four rows once instead of 18 widening loads.
 #[target_feature(enable = "simd128")]
 pub(super) unsafe fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
     let (steps, _) = out.as_chunks_mut::<2>();
     let whole = steps.len() * 2;
     for (step, out) in steps.iter_mut().enumerate() {
-        let x = 8 * step + 1;
-        // Even columns are centred on row 1, odd ones on row 2.
-        let pick = |row: usize, at: usize| {
-            i16x8_shuffle::<0, 9, 2, 11, 4, 13, 6, 15>(load(rows[row], at), load(rows[row + 1], at))
-        };
-        let [up, centre, down] = [0, 1, 2].map(|row| [x - 1, x, x + 1].map(|at| pick(row, at)));
+        let base = 8 * step;
+        let r0 = load10(rows[0], base);
+        let r1 = load10(rows[1], base);
+        let r2 = load10(rows[2], base);
+        let r3 = load10(rows[3], base);
+        let up = pick_pair(r0, r1);
+        let centre = pick_pair(r1, r2);
+        let down = pick_pair(r2, r3);
         let twice = i16x8_add(centre[1], centre[1]);
-        let laplacian = |a, b| i16x8_abs(i16x8_sub(twice, i16x8_add(a, b)));
-        let straight = pair_sums(laplacian(up[1], down[1]), laplacian(centre[0], centre[2]));
-        let diagonal = pair_sums(laplacian(up[0], down[2]), laplacian(down[0], up[2]));
+        let v = i16x8_abs(i16x8_sub(twice, i16x8_add(up[1], down[1])));
+        let h = i16x8_abs(i16x8_sub(twice, i16x8_add(centre[0], centre[2])));
+        let d0 = i16x8_abs(i16x8_sub(twice, i16x8_add(up[0], down[2])));
+        let d1 = i16x8_abs(i16x8_sub(twice, i16x8_add(down[0], up[2])));
+        let straight = pair_sums(v, h);
+        let diagonal = pair_sums(d0, d1);
         // [v0, v1, h0, h1, d0_0, d0_1, d1_0, d1_1] into [v0, h0, d0_0, d1_0, v1, ...].
         let sums = pair_sums(straight, diagonal);
         let groups = i16x8_shuffle::<0, 2, 4, 6, 1, 3, 5, 7>(sums, sums);

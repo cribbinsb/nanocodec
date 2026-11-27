@@ -1,0 +1,20 @@
+# intra-cheap batch 6: the key margin gate per direction (planner.key_rd_margin for deepening, key_rd_merge_margin for merging)
+null: planner.intra_bias=1050
+k12_d1.2: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 quant.trellis_key=1
+k12_d1.5: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 quant.trellis_key=1
+k12_d1.1_m1.5: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.1 planner.key_rd_merge_margin=1.5 quant.trellis_key=1
+k12_d1.1_m2.0: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.1 planner.key_rd_merge_margin=2.0 quant.trellis_key=1
+k12_d1.2_m2.0: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 planner.key_rd_merge_margin=2.0 quant.trellis_key=1
+k12_d1.05_m1.5: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.05 planner.key_rd_merge_margin=1.5 quant.trellis_key=1
+k12_d1.5_m1.1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 planner.key_rd_merge_margin=1.1 quant.trellis_key=1
+k12_d1.5_m1.2: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 planner.key_rd_merge_margin=1.2 quant.trellis_key=1
+k12_d2.0_m1.1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=2.0 planner.key_rd_merge_margin=1.1 quant.trellis_key=1
+k22_d1.2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 quant.trellis_key=1
+k22_d1.5: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 quant.trellis_key=1
+k22_d1.1_m1.5: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.1 planner.key_rd_merge_margin=1.5 quant.trellis_key=1
+k22_d1.1_m2.0: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.1 planner.key_rd_merge_margin=2.0 quant.trellis_key=1
+k22_d1.2_m2.0: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 planner.key_rd_merge_margin=2.0 quant.trellis_key=1
+k22_d1.05_m1.5: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.05 planner.key_rd_merge_margin=1.5 quant.trellis_key=1
+k22_d1.5_m1.1: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 planner.key_rd_merge_margin=1.1 quant.trellis_key=1
+k22_d1.5_m1.2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 planner.key_rd_merge_margin=1.2 quant.trellis_key=1
+k22_d2.0_m1.1: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=2.0 planner.key_rd_merge_margin=1.1 quant.trellis_key=1

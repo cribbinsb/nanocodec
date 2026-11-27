@@ -1,0 +1,117 @@
+{
+ "_comment": "Clips that may never enter a sealed measurement again (docs/benchmark-procedure.md section 12; tools/bench/plan.py --sealed refuses them). Each entry says when, by whom and why it was seen.",
+ "clips": [
+  {
+   "name": "ho_caltech_set02_v003",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_caltech_set07_v008",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_epic_kitchens_p01_107",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_epic_kitchens_p02_116",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_stock_sea_waves_01_4k",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_wm_texture_2019_06_05_orage_belfort",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_ucf_crimes_burglary050_x264",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_ucf_crimes_fighting043_x264",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_vcd2_152a0f0f03bf772831b34f3b3fd3019d",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_vcd2_32981336f7abd4c3fe5590f75d7af7ae",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_wm_drone_3_26_2025_drone_2",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_wm_drone_3_29_2025_drone_dji_20250329110642_0004_",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_wm_festivals_brem_art_festival_des_tambours_edition_2",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_wm_festivals_mariachi_azteca_de_praga_festival_ambasa",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_wm_night_adygea_night",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  },
+  {
+   "name": "ho_wm_night_canmore_fireworks",
+   "set": "heldout_2026-11-23",
+   "seen": "2026-11-23",
+   "by": "bench-method (BP-2 review response measurements)",
+   "why": "coded and scored by every encoder and variant to design BP-2 (docs/analysis/benchmark-procedure-response-2026-11-23.md)"
+  }
+ ]
+}

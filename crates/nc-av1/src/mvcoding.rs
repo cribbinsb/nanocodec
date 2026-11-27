@@ -132,6 +132,13 @@ impl<const N: usize> Journaled for PricedCdf<N> {
         self.cdf
             .swap_at(offset - std::mem::offset_of!(Self, cdf), state);
     }
+
+    #[inline]
+    fn restore_at(&mut self, offset: usize, state: &mut CdfState) {
+        self.bits.take();
+        self.cdf
+            .restore_at(offset - std::mem::offset_of!(Self, cdf), state);
+    }
 }
 
 journaled_fields!(ComponentCdfs, CdfState; bits, class, class0, class0_fr, fr, sign);
@@ -183,6 +190,23 @@ fn joint([row, col]: [i32; 2]) -> usize {
     }
 }
 
+/// Largest magnitude of a coded difference component, in 1/8 samples: where
+/// `MV_CLASS_10`, the last class, ends (AV1 §5.11.33 `read_mv_component`:
+/// `mag = CLASS0_SIZE << (mv_class + 2)` plus ten `mv_bit`s, the fraction
+/// and one). A larger difference has no code: its top bit would be dropped.
+pub(crate) const MAX_DIFFERENCE: i32 = CLASS0_SIZE << (MV_CLASS_10 + 3);
+
+/// Whether `mv - pred` can be coded ([`MAX_DIFFERENCE`]). Two valid vectors
+/// (each within ±2048 samples, §6.10.25 `is_mv_valid`) can lie further
+/// apart than that: a vector and a predicted vector of opposite sign on
+/// pictures wider than 1024 samples.
+#[must_use]
+pub(crate) fn codable(mv: Av1Mv, pred: Av1Mv) -> bool {
+    difference(mv, pred)
+        .iter()
+        .all(|d| (-MAX_DIFFERENCE..=MAX_DIFFERENCE).contains(d))
+}
+
 /// The symbols that code one non-zero component (`comp` in 1/8 samples).
 struct ComponentSymbols {
     sign: bool,
@@ -196,6 +220,10 @@ struct ComponentSymbols {
 impl ComponentSymbols {
     fn of(comp: i32) -> Self {
         debug_assert_ne!(comp, 0);
+        debug_assert!(
+            comp.abs() <= MAX_DIFFERENCE,
+            "difference {comp} has no code: mode decision offers NEWMV only where `codable`"
+        );
         let z = comp.unsigned_abs() - 1;
         // libaom `av1_get_mv_class`: class = floor(log2(z >> 3)), class 0
         // for z < 16, capped at 10.
@@ -320,6 +348,33 @@ mod tests {
 
     /// A write drops the cached costs: prices after it equal those of
     /// twin CDFs that never priced before the write.
+    #[test]
+    fn the_largest_difference_fills_the_last_class() {
+        let s = ComponentSymbols::of(MAX_DIFFERENCE);
+        assert_eq!(
+            (s.class, s.int_part, s.fr),
+            (MV_CLASS_10, (1 << MV_CLASS_10) - 1, 3)
+        );
+        let far = Av1Mv {
+            row: 5760,
+            col: 10240,
+        };
+        let near = Av1Mv {
+            row: -2176,
+            col: -6528,
+        };
+        // 10240 + 6528 = 16768 eighths: 48 past the last class.
+        assert!(!codable(far, near));
+        assert!(codable(
+            far,
+            Av1Mv {
+                row: -2176,
+                col: -6144
+            }
+        ));
+        assert!(codable(near, near));
+    }
+
     #[test]
     fn cached_costs_follow_writes() {
         let vectors = [(0, 8), (-24, 16), (512, -4), (3, 0), (-1024, 2040)];

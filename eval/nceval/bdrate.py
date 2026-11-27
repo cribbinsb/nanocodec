@@ -15,6 +15,9 @@ Herglotz et al., "The Bjøntegaard Bible" (IEEE TIP 2024):
 
 - `low_half=True` restricts the integral to the lower-rate half of the
   overlap (J_real's low-rate term, docs/PROCEDURES.md).
+- `quality_range=(lo, hi)` restricts it to those qualities (the charts' rate
+  regimes: the range one encoder's rungs in a band span, docs/PROCEDURES.md
+  "Results charts"); every point still shapes the curves.
 
 Result: average % bitrate change of `test` vs `anchor` at equal quality.
 Negative means the test codec needs fewer bits.
@@ -28,7 +31,10 @@ from typing import Sequence
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 
-# Below this fraction of either curve's quality span the result is unreliable.
+# Below this fraction of the smaller curve's quality span the result is flagged unreliable.
+# The flag is the caller's to use: the benchmark's BD-J (nceval.bdj) has not excluded on it
+# since BP-3.14 (owner, 2026-11-25: a BD over whatever range the curves share, the thin
+# overlaps counted beside the figure); the J_real terms, the CTC tables and the tune still do.
 MIN_OVERLAP_FRACTION = 0.5
 
 
@@ -39,20 +45,25 @@ class BdResult:
     reliable: bool
 
 
-# Reported BD-rates use four or more points. Staged screens use three outer
+# The default for a caller that does not state its own minimum. The benchmark's BD-J states
+# 2 (nceval.bdj.MIN_POINTS: owner, 2026-11-25, BP-3.14); staged screens use three outer
 # points in their first stage; the error that adds was measured (nceval.screen).
 MIN_POINTS = 4
 
 
 def bd_rate(anchor_kbps: Sequence[float], anchor_quality: Sequence[float],
             test_kbps: Sequence[float], test_quality: Sequence[float],
-            min_points: int = MIN_POINTS, low_half: bool = False) -> BdResult:
+            min_points: int = MIN_POINTS, low_half: bool = False,
+            quality_range: tuple[float, float] | None = None) -> BdResult:
     """BD-rate over the curves' overlapping quality range.
 
     `low_half` integrates only the lower-rate half of that overlap (the
     anchor's log-rate midpoint; see `_low_half_ceiling`): the low-bitrate
     region the encoder is built for. It uses every point for the curve
     shape, so it needs no extra encodes. Reliability is the full overlap's.
+
+    `quality_range` integrates only over its part of the overlap; then the result is
+    reliable when that part is at least MIN_OVERLAP_FRACTION of the range.
     """
     a_q, a_lr = _sorted_curve(anchor_kbps, anchor_quality, min_points)
     t_q, t_lr = _sorted_curve(test_kbps, test_quality, min_points)
@@ -68,6 +79,12 @@ def bd_rate(anchor_kbps: Sequence[float], anchor_quality: Sequence[float],
     test = PchipInterpolator(t_q, t_lr)
     if low_half:
         hi = _low_half_ceiling(anchor, lo, hi)
+    if quality_range is not None:
+        wanted = quality_range[1] - quality_range[0]
+        lo, hi = max(lo, quality_range[0]), min(hi, quality_range[1])
+        if hi <= lo or wanted <= 0:
+            return BdResult(bd_rate_percent=None, overlap_fraction=0.0, reliable=False)
+        overlap = (hi - lo) / wanted
     mean_log_diff = (test.integrate(lo, hi) - anchor.integrate(lo, hi)) / (hi - lo)
     percent = (10.0 ** mean_log_diff - 1.0) * 100.0
     return BdResult(bd_rate_percent=float(percent), overlap_fraction=float(overlap),

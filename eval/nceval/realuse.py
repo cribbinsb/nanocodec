@@ -1,8 +1,9 @@
 """Real-use evaluation: rate-controlled curves judged by J_real (the default screen).
 
 Our encoders are used in CBR, so that is how they are judged. Each clip is
-coded at a target ladder (LADDER_KBPS at 720p30, scaled by pixel rate and
-capped at half the source bitrate, cbr.clip_targets); the anchors run their
+coded at a target ladder (LADDER_KBPS at 720p30, scaled per clip and capped at
+half the source bitrate exactly as the benchmark's BP-3.10 rungs: nceval.rate_ladder,
+cbr.clip_targets); the anchors run their
 own best real-time rate control at the same targets (cbr.anchor_families:
 openh264 RC, SVT M12 --rtc CBR, x264 veryfast / x265 superfast ABR+VBV with
 --tune zerolatency, no B-frames, their default AQ). BD-rate is over the
@@ -11,7 +12,7 @@ breaks the strict leaky bucket, or overshoots its target (ours net of the key
 loan) by more than 10% + buffer/window (rate_valid), is a rate-control
 failure and is reported as such, but against external anchors its point stays
 on the curve: it is a real (rate, quality) point, usually the encoder's rate
-floor (openh264 RC and our H.264 cannot reach 150 kbps on fast 720p pans).
+floor (openh264 RC and our H.264 cannot reach the lowest rungs on fast 720p pans).
 
 Every point is streamed through cbr.Bench (no YUV written; bitstream deleted
 after its packet sizes are read) with the real-use metric set
@@ -21,7 +22,7 @@ curves are measured once per anchor build. The terms and the objective are
 nceval.jreal; docs/PROCEDURES.md ("Adoption rule: J_real") is the spec.
 
     # candidate vs baseline (nceval.screen's default mode calls this)
-    python3 -m nceval.screen --codec h264 --binary BIN --param a.b=1 [--dcpu PCT] \
+    python3 -m nceval.screen --codec h264 --binary BIN --param a.b=1 [--cpu-summary S] \
         [--clips adopt|train|val|a,b]
     # the J_real scoreboard: one row per run keeps each run under 30 min
     python3 -m nceval.realuse board --binary BIN --rows nanocodec-h264 [--phase anchors]
@@ -45,6 +46,7 @@ import datetime
 import json
 import math
 import os
+import statistics
 import sys
 import threading
 from collections import Counter
@@ -53,28 +55,30 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import jreal, retention
+from . import fairness, gpuscore, jreal, rate_ladder, retention
 from .budget import MAX_MINUTES, OverBudget, check as check_budget, estimate_minutes, \
     point_cpu_seconds
 from .cbr import (BUFFER_MS, DEFAULT_INTRA_PERIOD, Bench, Family, Point, anchor_families,
-                  clip_targets, curve_points, overshoot)
+                  clip_targets, curve_points, overshoot, rate_scale)
 from .cachefile import get_or_create, read_json, sibling_temp, write_atomic
-from .cbr_stats import replay_buffer
+from .cbr_stats import own_rate_fullness, replay_buffer
+from .diskguard import DiskBudgetExceeded
 from .earlystop import StageScope, certain_worse
 from .framepipe import ProcessFailed
 from .framestats import coded_frames, probe_frames, with_held_frames
 from .clips import Clip, load_clipset
 from .flicker_reference import REFERENCE_WINDOW_FLICKER_DB
 from .codecs import Codec
-from .config import Paths, find_tool, load_paths
+from .config import Paths, find_tool, load_paths, openh264_harness
 from .encoders.nanocodec import PRESETS_DIR, param_text, preset_values, recorded_values
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .rows import ROWS, Row
 from .stages import (ALL_FOUR, PART_FILL, STAGES, TRAIN_PROXY, VAL_PROXY, VAL_STAGES, Stage,
                      balanced_parts, calibrated_plan, cache_root)
 
-#: Target ladder at 720p30 (kbps): the low-bitrate region we are built for.
-LADDER_KBPS = (150, 300, 600, 1200)
+#: Target ladder at 720p30 (kbps): the benchmark's BP-3.10 rungs, one definition
+#: (nceval.rate_ladder).
+LADDER_KBPS = rate_ladder.LADDER_720P30_KBPS
 #: CPU of a real-use point relative to budget.point_cpu_seconds (a VMAF v1
 #: point): MS-SSIM on every 4th frame adds 4.7 CPU-s to the ~10 of a 720p
 #: 150-frame point (measured 2026-11-11: 13-15 CPU-s in all, ~23 priced
@@ -87,7 +91,7 @@ DEFAULT_WORKERS = 8
 #: Raises the cap on a run's workers (default DEFAULT_WORKERS, the shared PC's share): a
 #: rented measurement box (tools/dev/aws_measure.py) sets it to its own cores' worth.
 MAX_WORKERS_ENV = "NC_MAX_WORKERS"
-OPENH264_HARNESS = Path.home() / "nanocodec-data/work/ratecontrol/bin/openh264-harness"
+OPENH264_HARNESS = openh264_harness()
 #: Context anchors per codec on the board (the bars are the scoreboard rows').
 CONTEXT_ANCHORS = {Codec.H264: ("x264-veryfast",), Codec.HEVC: ("x265-superfast",)}
 STAGE_TERMS = ("j_real",)
@@ -105,20 +109,55 @@ def max_workers() -> int:
     return count
 
 
+class MissingPoints(SystemExit):
+    """Points a cached-only run (Runner.cached_only) would have to measure: it fails
+    loudly with them instead, so a render never codes or scores on this PC."""
+
+    #: The points listed by name in the message (the rest are counted).
+    SHOWN = 40
+
+    def __init__(self, jobs: list):
+        self.points = [p for _, p in jobs]
+        lines = [f"  {p.family.name} {p.clip.name} {p.label}" for p in self.points[:self.SHOWN]]
+        more = len(self.points) - len(lines)
+        super().__init__(
+            f"{len(self.points)} points are not in the store (render measures nothing; "
+            "measure them on rented machines: chart_refresh.py --from measure, or render "
+            "--measure-missing for a local chart):\n" + "\n".join(lines)
+            + (f"\n  ... and {more} more" if more else ""))
+
+
 class Runner:
     """Benches per frame count, budgeted measurement, curves and comparisons."""
 
     def __init__(self, paths: Paths, policy: GatePolicy, workers: int, over_budget: bool,
                  stored_ms_ssim: bool = False, prebuilt: Path | None = None,
-                 xpsnr: bool = False, stored_xpsnr: bool = False):
+                 xpsnr: bool = False, stored_xpsnr: bool = False, cached_only: bool = False,
+                 may_measure: frozenset[str] = frozenset(), skip_missing: bool = False):
         """`stored_ms_ssim`: reuse stored results of an older MS-SSIM protocol
         (cbr.Bench.stored_ms_ssim); `prebuilt`: score streams encoded elsewhere
         (cbr.Bench.prebuilt); `xpsnr`: also score XPSNR (cbr.Bench.xpsnr), and with
-        `stored_xpsnr` reuse stored results without it (cbr.Bench.stored_xpsnr)."""
+        `stored_xpsnr` reuse stored results without it (cbr.Bench.stored_xpsnr);
+        `cached_only`: measure nothing but the families in `may_measure`, raising
+        MissingPoints with every other point not in the store (a chart render), or with
+        `skip_missing` leaving those points out of the curves (counted in `skipped`; a
+        report over stored points, nceval.buffer_use)."""
+        self.cached_only, self.may_measure = cached_only, may_measure
+        self.skip_missing, self.skipped = skip_missing, 0
         self.paths, self.policy = paths, policy
         self.stored_ms_ssim, self.prebuilt, self.xpsnr = stored_ms_ssim, prebuilt, xpsnr
         self.stored_xpsnr = stored_xpsnr
         self.workers, self.over_budget = min(workers, max_workers()), over_budget
+        if fairness.conditions() == fairness.SHIPPED_DEFAULTS:
+            print(f"!!! {fairness.CONDITIONS_ENV}={fairness.SHIPPED_DEFAULTS}: our encoder runs "
+                  f"at its shipped defaults, NOT the benchmark's conditions (a study of the "
+                  f"defaults; its points never mix with benchmark-condition ones)",
+                  file=sys.stderr, flush=True)
+        # Encode on boxes, score on the PC's GPU (nceval.gpuscore): set by aws_measure's
+        # environment, here (the rounds) and on the box (encode-only).
+        self.encode_only = gpuscore.encode_only()
+        self.prebuilt = self.prebuilt or gpuscore.prebuilt_dir()
+        self.rounds = gpuscore.EncodeRounds.from_env(paths.work)
         self._benches: dict[int, Bench] = {}
         #: Points that are not rate-valid (rate_valid: buffer broken, or average
         #: rate too far over the target, e.g. openh264 RC's floor on fast pans).
@@ -137,18 +176,23 @@ class Runner:
                                                    metric_set="real",
                                                    stored_ms_ssim=self.stored_ms_ssim,
                                                    prebuilt=self.prebuilt, xpsnr=self.xpsnr,
-                                                   stored_xpsnr=self.stored_xpsnr)
+                                                   stored_xpsnr=self.stored_xpsnr,
+                                                   encode_only=self.encode_only)
         return self._benches[(frames, intra)]
 
     def points(self, families: list[Family], clips: list[Clip], frames: int,
                indices: tuple[int, ...] | None,
                key_seconds: float | None = None,
-               ladder: Callable[[Clip], list[int]] | None = None) -> list[tuple[Bench, Point]]:
+               ladder: Callable[[Clip], list[int]] | None = None,
+               key_frames: int | None = None) -> list[tuple[Bench, Point]]:
         """Every point to measure; `ladder` gives other targets per clip (clip kbps)
-        than the real-use LADDER_KBPS (e.g. the chart's anchor extension)."""
+        than the real-use LADDER_KBPS (e.g. the chart's anchor extension). The key
+        period is `key_frames` frames (a key share, nceval.key_shares), else
+        `key_seconds`, else one key (DEFAULT_INTRA_PERIOD)."""
         jobs = []
         for clip in clips:
-            intra = round(key_seconds * clip.fps) if key_seconds else DEFAULT_INTRA_PERIOD
+            intra = key_frames or (round(key_seconds * clip.fps) if key_seconds
+                                   else DEFAULT_INTRA_PERIOD)
             bench = self.bench(min(frames, clip.frames), intra)
             targets = ladder(clip) if ladder else clip_targets(clip, LADDER_KBPS, indices)
             for family in families:
@@ -165,17 +209,18 @@ class Runner:
                 indices: tuple[int, ...] | None = None,
                 key_seconds: float | None = None, budgeted: bool = True,
                 ladder: Callable[[Clip], list[int]] | None = None,
-                on_clip: ClipCallback | None = None) -> dict:
+                on_clip: ClipCallback | None = None, key_frames: int | None = None) -> dict:
         """{(family, clip): [point terms]}, run in class-balanced parts if over budget.
 
-        `key_seconds` sets a key period (default: one key, DEFAULT_INTRA_PERIOD).
+        `key_frames` (frames) or `key_seconds` sets a key period (default: one key,
+        DEFAULT_INTRA_PERIOD).
         `budgeted` False skips the wall-time check and split: a tune trial is
         one unit of a study whose slices are bounded by `tune --timeout`.
         `on_clip(clip, curves)` is called as each clip's last point arrives
         (clips are measured in the order given); a reason it returns cancels
         the points not yet started, which are then missing from the curves.
         """
-        jobs = self.points(families, clips, frames, indices, key_seconds, ladder)
+        jobs = self.points(families, clips, frames, indices, key_seconds, ladder, key_frames)
         minutes = estimate_minutes(self.price(jobs)) if budgeted else 0.0
         if len(clips) > 1 and minutes > MAX_MINUTES:
             count = min(len(clips), math.ceil(minutes / (MAX_MINUTES * PART_FILL)))
@@ -191,7 +236,8 @@ class Runner:
                     break
                 print(f"{label}: part {index}/{count} ({len(part)} clips)", flush=True)
                 curves.update(self.measure(label, families, part, frames, indices,
-                                           key_seconds, ladder=ladder, on_clip=note_stop))
+                                           key_seconds, ladder=ladder, on_clip=note_stop,
+                                           key_frames=key_frames))
             return curves
         if budgeted:
             check_budget(f"{label} ({len(clips)} clips, {len(jobs)} points)", self.price(jobs),
@@ -239,6 +285,16 @@ class Runner:
         scheduled (with the callback on the caller's thread, a free worker
         kept starting new points until that thread ran).
         """
+        skip: set[int] = set()
+        if self.cached_only:
+            skip = {i for i, (b, p) in enumerate(jobs)
+                    if p.family.name not in self.may_measure and not b.cached(p)}
+            if skip and not self.skip_missing:
+                raise MissingPoints([jobs[i] for i in sorted(skip)])
+            self.skipped += len(skip)
+        if self.rounds is not None:
+            self.rounds.ensure(jobs, lambda batch: [
+                (b, p) for b, p in batch if not b.cached(p) and not b.has_prebuilt(p)])
         offsets = offsets or [0, len(jobs)]
         group = lambda index: next(g for g in range(len(offsets) - 1) if index < offsets[g + 1])
         key = lambda index: (group(index), jobs[index][1].clip.name)
@@ -248,10 +304,12 @@ class Runner:
         stop = threading.Event()
 
         def measure(index: int) -> None:
-            if stop.is_set():
+            # encode-only (on a box): every point of the batch, whatever the early
+            # stops on its missing results say (the PC decides; gpuscore)
+            if stop.is_set() and not self.encode_only:
                 return
             try:
-                result = self._measure_one(jobs[index])
+                result = None if index in skip else self._measure_one(jobs[index])
             except BaseException:
                 stop.set()  # the run fails: start nothing more
                 raise
@@ -267,8 +325,15 @@ class Runner:
                                                  [results[i] for i in members])):
                     stop.set()
 
-        with ThreadPoolExecutor(self.workers) as pool:
-            list(pool.map(measure, range(len(jobs))))
+        try:
+            with ThreadPoolExecutor(self.workers) as pool:
+                list(pool.map(measure, range(len(jobs))))
+        except DiskBudgetExceeded as error:
+            if self.rounds is None:
+                raise
+            # GPU-scored (nceval.gpuscore): a local guard, so the command goes to the
+            # CPU path instead of failing (its encoded streams are kept for a retry)
+            raise gpuscore.GpuUnavailable(f"disk floor: {error}") from error
         return results
 
     def curves(self, jobs: list[tuple[Bench, Point]], results: list[dict | None]) -> dict:
@@ -288,6 +353,8 @@ class Runner:
         bench, point = job
         try:
             result = bench.measure(point)
+            if result is not None and self.rounds is not None:
+                self.rounds.note(bench.result_path(point))
         except ProcessFailed as refusal:
             if not point.family.own:
                 raise
@@ -331,12 +398,30 @@ def rate_valid(result: dict, window_seconds: float) -> bool:
     return not jreal.noncompliant(result) and overshoot(result) <= allowance
 
 
+def key_buffer_terms(result: dict) -> dict:
+    """The first key frame's size in buffers at the target (the 1 s buffer, BUFFER_MS) and
+    the worst one-second window over the target (cbr_stats.replay_buffer), as every
+    encoder's buffer facts report them (nceval.buffer_use); empty without a target."""
+    if not result.get("target_kbps"):
+        return {}
+    key = result["frame_key"].index(True) if True in result.get("frame_key", []) else 0
+    capacity_bits = result["target_kbps"] * BUFFER_MS
+    return {"key_buffers": result["frame_bits"][key] / capacity_bits,
+            "max_window_ratio": result["max_window_ratio"]}
+
+
 def point_terms(result: dict, window_seconds: float) -> dict:
     """One CBR point as J_real sees it: achieved rate, sequence and temporal quality."""
     terms = {key: result[key] for key in ("kbps", "psnr_yuv", "vmaf_v1", "ms_ssim",
                                           "overruns", "max_fullness", "target_kbps")}
     terms.update({m: result[m] for m in jreal.REPORTED_METRICS if m in result})
+    if result.get("frame_psnr_y"):  # sequence PSNR-Y, the per-frame mean (metrics.psnr_measurement)
+        terms["psnr_y"] = statistics.fmean(result["frame_psnr_y"])
     terms["rate_valid"] = rate_valid(result, window_seconds)
+    if result.get("frame_bits"):  # the buffer at the point's own rate (nceval.buffer_use)
+        terms["own_rate_fullness"] = own_rate_fullness(
+            result["frame_bits"], len(result["frame_bits"]) / window_seconds, BUFFER_MS)
+        terms.update(key_buffer_terms(result))
     terms["window_seconds"] = window_seconds  # the ceiling guard judges long windows absolutely
     terms.update(jreal.temporal_stats(result["frame_psnr_y"], result["frame_vmaf_v1"],
                                       result["frame_key"]))
@@ -346,11 +431,14 @@ def point_terms(result: dict, window_seconds: float) -> dict:
 
 
 def compare(curves: dict, anchor: str, test: str, clips: list[Clip],
-            min_points: int = jreal.BD_MIN_POINTS, paired: bool = False) -> dict[str, dict]:
+            min_points: int = jreal.BD_MIN_POINTS, paired: bool = False,
+            regimes: dict[str, tuple[int, int]] | None = None) -> dict[str, dict]:
     """Per-clip J_real terms of `test` vs `anchor`.
 
     `paired` (ours vs ours: screens, and board rows whose bar is our own
     encoder) drops the rungs either arm overshot (jreal.pair_rungs).
+    `regimes` ({name: (low, high) 720p30 kbps}) adds each rate regime's terms
+    (jreal.regime_terms), its band scaled to each clip like the ladder (cbr.rate_scale).
     """
     rows = {}
     for clip in clips:
@@ -358,7 +446,10 @@ def compare(curves: dict, anchor: str, test: str, clips: list[Clip],
         wins = losses = 0
         if paired:
             a, t, wins, losses = jreal.pair_rungs(a, t)
-        terms = jreal.compare_clip(a, t, min_points, REFERENCE_WINDOW_FLICKER_DB.get(clip.name))
+        scale = rate_scale(clip)
+        bands = {name: (low * scale, high * scale) for name, (low, high) in (regimes or {}).items()}
+        terms = jreal.compare_clip(a, t, min_points, REFERENCE_WINDOW_FLICKER_DB.get(clip.name),
+                                   bands)
         names = jreal.pulse_companions(jreal.PULSE_TERMS[0])
         # a curve with periodic keys (a long-window level): the guarded pulse is the
         # key-attributed one, the raw change kept beside it (as add_periodic_pulse)
@@ -615,6 +706,29 @@ def combined_decision(decisions: list[str]) -> str:
     return "ambiguous" if "ambiguous" in decisions else "neutral"
 
 
+def screen_families(args: argparse.Namespace) -> tuple[Family, Family]:
+    """A screen's (anchor, candidate): our encoder in CBR, each with its arguments."""
+    codec = Codec(args.codec)
+    binary = Path(args.binary).resolve()
+    anchor_binary = Path(args.anchor_binary).resolve() if args.anchor_binary else binary
+    test = Family(f"nanocodec-{codec.value}@candidate", codec, binary, param_args(args.param),
+                  own=True, cqp=False)
+    anchor = Family(f"nanocodec-{codec.value}", codec, anchor_binary,
+                    param_args(args.anchor_param), own=True, cqp=False)
+    if (test.tool, test.extra) == (anchor.tool, anchor.extra):
+        raise SystemExit("candidate and anchor are identical")
+    return anchor, test
+
+
+def set_final_estimator(args: argparse.Namespace) -> None:
+    """L3 per clip: single-point for a parameter-only change (one binary), the full
+    ladder for a code change, unless --final-estimator says."""
+    from . import levels
+    anchor, test = screen_families(args)
+    args.final_estimator = getattr(args, "final_estimator", None) or (
+        levels.SINGLE if test.tool == anchor.tool else levels.LADDER)
+
+
 def screen(args: argparse.Namespace) -> dict:
     """Candidate vs anchor build, both in CBR on the ladder, staged, decided by J_real.
 
@@ -625,24 +739,15 @@ def screen(args: argparse.Namespace) -> dict:
     """
     paths = load_paths()
     codec = Codec(args.codec)
-    binary = Path(args.binary).resolve()
-    anchor_binary = Path(args.anchor_binary).resolve() if args.anchor_binary else binary
-    test = Family(f"nanocodec-{codec.value}@candidate", codec, binary, param_args(args.param),
-                  own=True, cqp=False)
-    anchor = Family(f"nanocodec-{codec.value}", codec, anchor_binary,
-                    param_args(args.anchor_param), own=True, cqp=False)
-    if (test.tool, test.extra) == (anchor.tool, anchor.extra):
-        raise SystemExit("candidate and anchor are identical")
+    anchor, test = screen_families(args)
+    binary, anchor_binary = test.tool, anchor.tool
     if args.frames == "full":
         raise SystemExit("real-use screens take a frame count (e.g. --frames 150)")
     gate = GatePolicy(args.gate or EVALUATION_GATE.value)
     runner = Runner(paths, gate, args.workers, args.over_budget)
     if args.clips == ADOPT:
         from . import levels  # the pool levels build on this module's runner
-        # L3 per clip: single-point for a parameter-only change (one binary), the
-        # full ladder for a code change, unless --final-estimator says.
-        args.final_estimator = getattr(args, "final_estimator", None) or (
-            levels.SINGLE if binary == anchor_binary else levels.LADDER)
+        set_final_estimator(args)
         return {"mode": "real", "codec": codec.value, "binary": str(binary),
                 "params": args.param, "anchor_binary": str(anchor_binary),
                 "anchor_params": args.anchor_param, "frames": args.frames,

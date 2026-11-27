@@ -10,7 +10,7 @@
 //! moving camera (pan, driving, handheld) replaces or resamples the picture
 //! within a second, and the extra bits are lost. Rate control already sizes
 //! the first key this way from the start-up lookahead
-//! (`RateController::observe_startup_motion`) and scales its cadence by the
+//! (`RateController::observe_startup_scene`) and scales its cadence by the
 //! still-block share; this is the same test, by the same threshold, at
 //! fixed QP.
 //!
@@ -35,6 +35,22 @@ use crate::rate_control::STARTUP_CAMERA_MOTION;
 /// shake changes frame by frame, and the structure follows the scene, not
 /// one frame.
 const CAMERA_MOTION_SMOOTHING: f64 = 0.25;
+
+/// How much of a moving camera `motion` (luma samples per frame) is, `[0, 1]`:
+/// none below [`STARTUP_CAMERA_MOTION`], rising linearly to all of it at
+/// `full_motion`. A `full_motion` at or below the threshold is a step there.
+/// Shared by the fixed-QP key offset here and the start-up lookahead's
+/// first-key cap (`RateController::observe_startup_scene`).
+pub(crate) fn camera_motion_share(motion: f64, full_motion: f64) -> f64 {
+    if full_motion <= STARTUP_CAMERA_MOTION {
+        return if motion >= STARTUP_CAMERA_MOTION {
+            1.
+        } else {
+            0.
+        };
+    }
+    ((motion - STARTUP_CAMERA_MOTION) / (full_motion - STARTUP_CAMERA_MOTION)).clamp(0., 1.)
+}
 
 /// The camera motion of a fixed-QP stream and what its structure does
 /// under it.
@@ -103,9 +119,9 @@ impl MovingCamera {
         let Some((motion, still_share)) = self.scene else {
             return 0.;
         };
-        let span = (self.full_motion - STARTUP_CAMERA_MOTION).max(f64::EPSILON);
-        let moving = ((motion - STARTUP_CAMERA_MOTION) / span).clamp(0., 1.);
-        self.key_coarser * moving * (1. - fixed_camera(still_share))
+        self.key_coarser
+            * camera_motion_share(motion, self.full_motion)
+            * (1. - fixed_camera(still_share))
     }
 
     /// Whether the frame being planned scales its cadence by the

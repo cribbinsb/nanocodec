@@ -1,0 +1,1061 @@
+{
+ "_comment": "BP-3 history subset (docs/benchmark-procedure.md section 14), drawn once by eval/clipset/history_select.py select. Fixed: never redrawn.",
+ "seed": "history-2026-11-23",
+ "rule": {
+  "per_dataset": 10,
+  "max_per_class": 3,
+  "max_per_source": 2,
+  "coverage_share": 0.1,
+  "feature_step": 5,
+  "low_light_luma": 60,
+  "noisy_quantile": 0.75
+ },
+ "not_applied": {
+  "rate_behaviour": "no per-clip BD-J in the published 0.6.0 chart data",
+  "ours_si_ti_luma": "heldout_2026-11-23b is sealed: its content is not analysed"
+ },
+ "clips": [
+  {
+   "name": "ToddlerFountain_1920x1080_2997fps_10bit_420",
+   "dataset": "aomctc",
+   "class": "A2",
+   "cells": {
+    "class": "aomctc:A2",
+    "resolution": "1080p",
+    "fps": "29.97-30",
+    "si": "high",
+    "ti": "high",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "vc1k_android_indoor_slowmotion_darklight_720x1280_25_3686179205",
+   "dataset": "vc1k",
+   "class": "slow/dark/indoor",
+   "cells": {
+    "class": "vc1k:slow/dark/indoor",
+    "resolution": "720p",
+    "fps": "24-25",
+    "si": "low",
+    "ti": "low",
+    "noisy": false,
+    "low_light": true,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "vc1k_android_outdoor_mediummotion_darklight_720x1280_30_3688962952",
+   "dataset": "vc1k",
+   "class": "medium/dark/outdoor",
+   "cells": {
+    "class": "vc1k:medium/dark/outdoor",
+    "resolution": "720p",
+    "fps": "other",
+    "si": "mid",
+    "ti": "mid",
+    "noisy": false,
+    "low_light": false,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "ho_wm_texture_amtrak_cascades_airo_venture_trainset_pu",
+   "dataset": "ours",
+   "class": "texture",
+   "cells": {
+    "class": "ours:texture",
+    "resolution": "540p",
+    "fps": "29.97-30",
+    "noisy": true,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "FourPeople_480x270_60",
+   "dataset": "aomctc",
+   "class": "A5",
+   "cells": {
+    "class": "aomctc:A5",
+    "resolution": "270p/240p",
+    "fps": ">=50",
+    "si": "high",
+    "ti": "low",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "hob_wm_festivals_canada_day_music_festival_2021_vanier_pa",
+   "dataset": "ours",
+   "class": "crowd",
+   "cells": {
+    "class": "ours:crowd",
+    "resolution": "360p",
+    "fps": "29.97-30",
+    "noisy": false,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "hob_vcd2_983b4a77468a28343780ef95ebf54a28",
+   "dataset": "ours",
+   "class": "videocall",
+   "cells": {
+    "class": "ours:videocall",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "noisy": false,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "ho_wm_drone_deutsche_welle_daily_drone_rapsfeld",
+   "dataset": "ours",
+   "class": "drone",
+   "cells": {
+    "class": "ours:drone",
+    "resolution": "540p",
+    "fps": "24-25",
+    "noisy": false,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "vc1k_ios_outdoor_mediummotion_mediumlight_720x1280_30_3685144696",
+   "dataset": "vc1k",
+   "class": "medium/medium/outdoor",
+   "cells": {
+    "class": "vc1k:medium/medium/outdoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "low",
+    "ti": "mid",
+    "noisy": false,
+    "low_light": false,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "ho_ucf_crimes_normal_videos283_x264",
+   "dataset": "ours",
+   "class": "static",
+   "cells": {
+    "class": "ours:static",
+    "resolution": "270p/240p",
+    "fps": "29.97-30",
+    "noisy": true,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "ho_ugc_vlog_vlog_1080p_21f5_crf_10_ss_00_t_20_0",
+   "dataset": "ours",
+   "class": "bodycam",
+   "cells": {
+    "class": "ours:bodycam",
+    "resolution": "540p",
+    "fps": "29.97-30",
+    "noisy": true,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "vc1k_android_outdoor_slowmotion_mediumlight_720x1280_30_3684302397",
+   "dataset": "vc1k",
+   "class": "slow/medium/outdoor",
+   "cells": {
+    "class": "vc1k:slow/medium/outdoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "low",
+    "ti": "low",
+    "noisy": false,
+    "low_light": false,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "vc1k_ios_indoor_slowmotion_lowlight_720x1280_30_3685486350",
+   "dataset": "vc1k",
+   "class": "slow/low/indoor",
+   "cells": {
+    "class": "vc1k:slow/low/indoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "low",
+    "ti": "low",
+    "noisy": false,
+    "low_light": true,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "vc1k_android_outdoor_slowmotion_lowlight_720x1280_30_3688244631",
+   "dataset": "vc1k",
+   "class": "slow/low/outdoor",
+   "cells": {
+    "class": "vc1k:slow/low/outdoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "low",
+    "ti": "mid",
+    "noisy": false,
+    "low_light": true,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "vc1k_android_indoor_fastmotion_goodlight_1280x720_30_3687971805",
+   "dataset": "vc1k",
+   "class": "fast/good/indoor",
+   "cells": {
+    "class": "vc1k:fast/good/indoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "mid",
+    "ti": "high",
+    "noisy": false,
+    "low_light": false,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "vc1k_ios_outdoor_slowmotion_goodlight_1280x720_30_3687533665",
+   "dataset": "vc1k",
+   "class": "slow/good/outdoor",
+   "cells": {
+    "class": "vc1k:slow/good/outdoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "high",
+    "ti": "mid",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "ho_wm_night_mccs_okinawa_hosts_2025_mma_fight_night_",
+   "dataset": "ours",
+   "class": "lowlight",
+   "cells": {
+    "class": "ours:lowlight",
+    "resolution": "540p",
+    "fps": "29.97-30",
+    "noisy": false,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "vc1k_android_outdoor_mediummotion_goodlight_1280x720_30_3688089392",
+   "dataset": "vc1k",
+   "class": "medium/good/outdoor",
+   "cells": {
+    "class": "vc1k:medium/good/outdoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "high",
+    "ti": "high",
+    "noisy": false,
+    "low_light": false,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "vc1k_ios_outdoor_mediummotion_lowlight_1280x720_30_3687663171",
+   "dataset": "vc1k",
+   "class": "medium/low/outdoor",
+   "cells": {
+    "class": "vc1k:medium/low/outdoor",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "mid",
+    "ti": "mid",
+    "noisy": false,
+    "low_light": true,
+    "dataset": "vc1k"
+   }
+  },
+  {
+   "name": "Stockholm_640x360_5994",
+   "dataset": "aomctc",
+   "class": "A4",
+   "cells": {
+    "class": "aomctc:A4",
+    "resolution": "360p",
+    "fps": ">=50",
+    "si": "high",
+    "ti": "mid",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "ControlledBurn_1280x720p30_420",
+   "dataset": "aomctc",
+   "class": "A3",
+   "cells": {
+    "class": "aomctc:A3",
+    "resolution": "720p",
+    "fps": "29.97-30",
+    "si": "high",
+    "ti": "low",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "ho_caltech_set08_v005",
+   "dataset": "ours",
+   "class": "pan",
+   "cells": {
+    "class": "ours:pan",
+    "resolution": "540p",
+    "fps": "24-25",
+    "noisy": false,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "hob_wm_festivals_mariachi_azteca_de_praga_festival_ambasa",
+   "dataset": "ours",
+   "class": "crowd",
+   "cells": {
+    "class": "ours:crowd",
+    "resolution": "540p",
+    "fps": "29.97-30",
+    "noisy": false,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "ho_wm_texture_limestone_outcrops_and_mountain_scrub_on",
+   "dataset": "ours",
+   "class": "texture",
+   "cells": {
+    "class": "ours:texture",
+    "resolution": "360p",
+    "fps": "29.97-30",
+    "noisy": false,
+    "dataset": "ours"
+   }
+  },
+  {
+   "name": "DinnerSceneCropped_1920x1080_2997fps_10bit_420",
+   "dataset": "aomctc",
+   "class": "A2",
+   "cells": {
+    "class": "aomctc:A2",
+    "resolution": "1080p",
+    "fps": "29.97-30",
+    "si": "low",
+    "ti": "low",
+    "noisy": true,
+    "low_light": true,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "PedestrianArea_1920x1080p25",
+   "dataset": "aomctc",
+   "class": "A2",
+   "cells": {
+    "class": "aomctc:A2",
+    "resolution": "1080p",
+    "fps": "24-25",
+    "si": "mid",
+    "ti": "mid",
+    "noisy": false,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "SnowMountain_640x360_2997",
+   "dataset": "aomctc",
+   "class": "A4",
+   "cells": {
+    "class": "aomctc:A4",
+    "resolution": "360p",
+    "fps": "29.97-30",
+    "si": "high",
+    "ti": "low",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "Vertical_Bayshore_270x480_2997",
+   "dataset": "aomctc",
+   "class": "A5",
+   "cells": {
+    "class": "aomctc:A5",
+    "resolution": "270p/240p",
+    "fps": "29.97-30",
+    "si": "high",
+    "ti": "high",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "KristenAndSara_1280x720_60",
+   "dataset": "aomctc",
+   "class": "A3",
+   "cells": {
+    "class": "aomctc:A3",
+    "resolution": "720p",
+    "fps": ">=50",
+    "si": "high",
+    "ti": "low",
+    "noisy": false,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  },
+  {
+   "name": "BlueSky_360p25_v2",
+   "dataset": "aomctc",
+   "class": "A4",
+   "cells": {
+    "class": "aomctc:A4",
+    "resolution": "360p",
+    "fps": "24-25",
+    "si": "high",
+    "ti": "high",
+    "noisy": true,
+    "low_light": false,
+    "dataset": "aomctc"
+   }
+  }
+ ],
+ "coverage": [
+  {
+   "stratum": "class",
+   "cell": "aomctc:A2",
+   "full": 22,
+   "full_share": 0.095,
+   "subset": 3,
+   "subset_share": 0.1
+  },
+  {
+   "stratum": "class",
+   "cell": "aomctc:A3",
+   "full": 4,
+   "full_share": 0.017,
+   "subset": 2,
+   "subset_share": 0.067
+  },
+  {
+   "stratum": "class",
+   "cell": "aomctc:A4",
+   "full": 6,
+   "full_share": 0.026,
+   "subset": 3,
+   "subset_share": 0.1
+  },
+  {
+   "stratum": "class",
+   "cell": "aomctc:A5",
+   "full": 2,
+   "full_share": 0.009,
+   "subset": 2,
+   "subset_share": 0.067
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:bodycam",
+   "full": 15,
+   "full_share": 0.065,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:crowd",
+   "full": 12,
+   "full_share": 0.052,
+   "subset": 2,
+   "subset_share": 0.067
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:drone",
+   "full": 13,
+   "full_share": 0.056,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:lowlight",
+   "full": 11,
+   "full_share": 0.048,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:pan",
+   "full": 1,
+   "full_share": 0.004,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:static",
+   "full": 15,
+   "full_share": 0.065,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:texture",
+   "full": 15,
+   "full_share": 0.065,
+   "subset": 2,
+   "subset_share": 0.067
+  },
+  {
+   "stratum": "class",
+   "cell": "ours:videocall",
+   "full": 15,
+   "full_share": 0.065,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/dark/indoor",
+   "full": 1,
+   "full_share": 0.004,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/dark/outdoor",
+   "full": 1,
+   "full_share": 0.004,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/good/indoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/good/outdoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/low/indoor",
+   "full": 4,
+   "full_share": 0.017,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/low/outdoor",
+   "full": 2,
+   "full_share": 0.009,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/medium/indoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:fast/medium/outdoor",
+   "full": 4,
+   "full_share": 0.017,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/dark/indoor",
+   "full": 1,
+   "full_share": 0.004,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/dark/outdoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/good/indoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/good/outdoor",
+   "full": 6,
+   "full_share": 0.026,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/low/indoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/low/outdoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/medium/indoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:medium/medium/outdoor",
+   "full": 4,
+   "full_share": 0.017,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/dark/indoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/dark/outdoor",
+   "full": 1,
+   "full_share": 0.004,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/good/indoor",
+   "full": 6,
+   "full_share": 0.026,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/good/outdoor",
+   "full": 6,
+   "full_share": 0.026,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/low/indoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/low/outdoor",
+   "full": 3,
+   "full_share": 0.013,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/medium/indoor",
+   "full": 6,
+   "full_share": 0.026,
+   "subset": 0,
+   "subset_share": 0.0
+  },
+  {
+   "stratum": "class",
+   "cell": "vc1k:slow/medium/outdoor",
+   "full": 5,
+   "full_share": 0.022,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "dataset",
+   "cell": "aomctc",
+   "full": 34,
+   "full_share": 0.147,
+   "subset": 10,
+   "subset_share": 0.333
+  },
+  {
+   "stratum": "dataset",
+   "cell": "ours",
+   "full": 97,
+   "full_share": 0.42,
+   "subset": 10,
+   "subset_share": 0.333
+  },
+  {
+   "stratum": "dataset",
+   "cell": "vc1k",
+   "full": 100,
+   "full_share": 0.433,
+   "subset": 10,
+   "subset_share": 0.333
+  },
+  {
+   "stratum": "fps",
+   "cell": "24-25",
+   "full": 34,
+   "full_share": 0.147,
+   "subset": 5,
+   "subset_share": 0.167
+  },
+  {
+   "stratum": "fps",
+   "cell": "29.97-30",
+   "full": 160,
+   "full_share": 0.693,
+   "subset": 21,
+   "subset_share": 0.7
+  },
+  {
+   "stratum": "fps",
+   "cell": ">=50",
+   "full": 13,
+   "full_share": 0.056,
+   "subset": 3,
+   "subset_share": 0.1
+  },
+  {
+   "stratum": "fps",
+   "cell": "other",
+   "full": 24,
+   "full_share": 0.104,
+   "subset": 1,
+   "subset_share": 0.033
+  },
+  {
+   "stratum": "low_light",
+   "cell": "False",
+   "full": 107,
+   "full_share": 0.799,
+   "subset": 15,
+   "subset_share": 0.75
+  },
+  {
+   "stratum": "low_light",
+   "cell": "True",
+   "full": 27,
+   "full_share": 0.201,
+   "subset": 5,
+   "subset_share": 0.25
+  },
+  {
+   "stratum": "noisy",
+   "cell": "False",
+   "full": 173,
+   "full_share": 0.749,
+   "subset": 18,
+   "subset_share": 0.6
+  },
+  {
+   "stratum": "noisy",
+   "cell": "True",
+   "full": 58,
+   "full_share": 0.251,
+   "subset": 12,
+   "subset_share": 0.4
+  },
+  {
+   "stratum": "resolution",
+   "cell": "1080p",
+   "full": 22,
+   "full_share": 0.095,
+   "subset": 3,
+   "subset_share": 0.1
+  },
+  {
+   "stratum": "resolution",
+   "cell": "270p/240p",
+   "full": 12,
+   "full_share": 0.052,
+   "subset": 3,
+   "subset_share": 0.1
+  },
+  {
+   "stratum": "resolution",
+   "cell": "360p",
+   "full": 38,
+   "full_share": 0.165,
+   "subset": 5,
+   "subset_share": 0.167
+  },
+  {
+   "stratum": "resolution",
+   "cell": "540p",
+   "full": 51,
+   "full_share": 0.221,
+   "subset": 6,
+   "subset_share": 0.2
+  },
+  {
+   "stratum": "resolution",
+   "cell": "720p",
+   "full": 108,
+   "full_share": 0.468,
+   "subset": 13,
+   "subset_share": 0.433
+  },
+  {
+   "stratum": "si",
+   "cell": "high",
+   "full": 45,
+   "full_share": 0.336,
+   "subset": 10,
+   "subset_share": 0.5
+  },
+  {
+   "stratum": "si",
+   "cell": "low",
+   "full": 45,
+   "full_share": 0.336,
+   "subset": 6,
+   "subset_share": 0.3
+  },
+  {
+   "stratum": "si",
+   "cell": "mid",
+   "full": 44,
+   "full_share": 0.328,
+   "subset": 4,
+   "subset_share": 0.2
+  },
+  {
+   "stratum": "ti",
+   "cell": "high",
+   "full": 44,
+   "full_share": 0.328,
+   "subset": 5,
+   "subset_share": 0.25
+  },
+  {
+   "stratum": "ti",
+   "cell": "low",
+   "full": 45,
+   "full_share": 0.336,
+   "subset": 8,
+   "subset_share": 0.4
+  },
+  {
+   "stratum": "ti",
+   "cell": "mid",
+   "full": 45,
+   "full_share": 0.336,
+   "subset": 7,
+   "subset_share": 0.35
+  }
+ ],
+ "ours_extension": {
+  "_comment": "History subset of the 'ours' set extended from 10 to 21 clips (owner, 2026-11-25: the ten made our front look closer to the references than the full 97 do). The ten are kept.",
+  "date": "2026-11-25",
+  "rule": "Clips are added one at a time. Each step takes the clip that brings the FIXED reference encoders' BD-J on the subset (each on its own anchor-valid clips, CBR and Fixed QP, rms over the reference families) closest to their figures on the full set's common clips, among the clips whose content class is still under its share of the 97 (ceil(share x size)). No result of our encoder enters the choice; our families' error and the gap between the two fronts are the validation.",
+  "data": "per-clip BD tables of the main benchmark runs (BP-3.14 report code, tools commit 22c3e3c54): references and 74aaa1fcd from bp3-ours-{cbr,qp}-c8i-report, 889309c99 from bp3r-ours-{cbr,qp}-c8i-report",
+  "size": "21: the largest size whose re-measure of all 19 daily builds fits the $6.00 envelope (11 clips; our families only, the zero line of the added clips comes from the main record's runs)",
+  "validation": {
+   "_comment": "subset minus full set, BD-J points: mean over our families ('ours'), mean over the reference families ('refs'), and the change in the fronts' gap at matched speed ('gap': our front minus the references' front, log-linear between front points, 12 speeds from 20 to 250 Mpx/CPU-s; positive = our front looks closer to the references on the subset)",
+   "10": {
+    "74aaa1fcd cbr": {
+     "ours": 3.43,
+     "refs": -3.3,
+     "gap": 7.1
+    },
+    "74aaa1fcd qp": {
+     "ours": 4.62,
+     "refs": -0.54,
+     "gap": 2.21
+    },
+    "889309c99 cbr": {
+     "ours": 3.64,
+     "refs": -2.97,
+     "gap": 6.49
+    },
+    "889309c99 qp": {
+     "ours": 4.76,
+     "refs": -0.54,
+     "gap": 2.42
+    }
+   },
+   "21": {
+    "74aaa1fcd cbr": {
+     "ours": -0.0,
+     "refs": -0.07,
+     "gap": -1.36
+    },
+    "74aaa1fcd qp": {
+     "ours": -0.08,
+     "refs": -0.2,
+     "gap": -0.78
+    },
+    "889309c99 cbr": {
+     "ours": 0.21,
+     "refs": 0.26,
+     "gap": -1.24
+    },
+    "889309c99 qp": {
+     "ours": -0.12,
+     "refs": -0.2,
+     "gap": -0.88
+    }
+   }
+  },
+  "scripts": "~/nanocodec-data/bench/history-days/subset-2026-11-25/ (dump.py, lib.py, meta.py, hsel.py, hsel2.py, yard.py)",
+  "clips": [
+   {
+    "name": "ho_wm_texture_rain_in_houston_texas_during_hurricane_h",
+    "dataset": "ours",
+    "class": "texture",
+    "width": 960,
+    "height": 540,
+    "fps": "30000/1001",
+    "difficulty_tercile": "mid"
+   },
+   {
+    "name": "ho_wm_night_late_night_celebration",
+    "dataset": "ours",
+    "class": "lowlight",
+    "width": 960,
+    "height": 540,
+    "fps": "25/1",
+    "difficulty_tercile": "mid"
+   },
+   {
+    "name": "ho_wm_drone_drone_video_of_j_rva_jaani_july_2021",
+    "dataset": "ours",
+    "class": "drone",
+    "width": 960,
+    "height": 540,
+    "fps": "30000/1001",
+    "difficulty_tercile": "easy"
+   },
+   {
+    "name": "hob_vcd2_fb8462836f87987983f542020df7158c",
+    "dataset": "ours",
+    "class": "videocall",
+    "width": 960,
+    "height": 540,
+    "fps": "30/1",
+    "difficulty_tercile": "easy"
+   },
+   {
+    "name": "ho_epic_kitchens_p09_105",
+    "dataset": "ours",
+    "class": "bodycam",
+    "width": 640,
+    "height": 360,
+    "fps": "25/1",
+    "difficulty_tercile": "hard"
+   },
+   {
+    "name": "ho_vcd2_fac675bc4591ea68efda419845af84de",
+    "dataset": "ours",
+    "class": "videocall",
+    "width": 640,
+    "height": 360,
+    "fps": "30/1",
+    "difficulty_tercile": "easy"
+   },
+   {
+    "name": "hob_wm_music_ululation",
+    "dataset": "ours",
+    "class": "crowd",
+    "width": 960,
+    "height": 540,
+    "fps": "30/1",
+    "difficulty_tercile": "easy"
+   },
+   {
+    "name": "ho_wm_city_2025_01_10_st_johannes_der_t_ufer_gerchs",
+    "dataset": "ours",
+    "class": "static",
+    "width": 304,
+    "height": 540,
+    "fps": "30000/1001",
+    "difficulty_tercile": "mid"
+   },
+   {
+    "name": "ho_ucf_crimes_shooting053_x264",
+    "dataset": "ours",
+    "class": "static",
+    "width": 320,
+    "height": 240,
+    "fps": "30/1",
+    "difficulty_tercile": "mid"
+   },
+   {
+    "name": "ho_wm_drone_point_of_the_mountain_drone_flight",
+    "dataset": "ours",
+    "class": "drone",
+    "width": 960,
+    "height": 540,
+    "fps": "30000/1001",
+    "difficulty_tercile": "easy"
+   },
+   {
+    "name": "ho_vcd2_4833396856d9e8505e39dc9b4d60d570",
+    "dataset": "ours",
+    "class": "videocall",
+    "width": 640,
+    "height": 360,
+    "fps": "28/1",
+    "difficulty_tercile": "easy"
+   }
+  ]
+ }
+}

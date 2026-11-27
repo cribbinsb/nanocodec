@@ -74,6 +74,7 @@ from pathlib import Path
 
 from .config import load_paths
 from .encoders.nanocodec import preset_values
+from .interval import ADOPT_MIN_GAIN_PCT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER = REPO_ROOT / "eval" / "results" / "levers.jsonl"
@@ -86,6 +87,8 @@ FIELDS = ("id", "codec", "base", "base_params", "base_values", "rate", "override
 KEY_FIELDS = ("codec", "base", "base_params", "rate", "overrides", "change", "level", "draw",
               "commit")
 MEDIUM = "medium"
+#: The level of a CPU-only row that does not name the encodes it timed.
+COST_LEVEL = "cost"
 #: Percent values are kept to 1e-4 (a thousandth of the smallest decision margin).
 MEASURED = ("j", "lo", "hi", "psnr", "vmaf", "msssim", "xpsnr", "weighted", "x86_pct",
             "jetson_pct")
@@ -96,10 +99,6 @@ EVIDENCE = ("L3", "final-check", "L2", "tune-ladder", "tune-f2", "L1", "sensitiv
             "tune-f1", "fixedqp", "lens")
 #: ARM and x86 CPU changes count equally (owner, 2026-11-21: no target is special).
 JETSON_WEIGHT = 1.0
-#: Replay decision, as nceval.interval decides L3: adopt below -ADOPT_MIN_GAIN_PCT
-#: with the upper bound at most ADOPT_UPPER_PCT; reject when the bound is above 0.
-ADOPT_MIN_GAIN_PCT = 0.05
-ADOPT_UPPER_PCT = 0.3
 #: A CPU change smaller than this (percent) counts as free: its break-even k is noise.
 CPU_NOISE_PCT = 0.05
 #: Values closer than this are the same setting (float round trips in JSON/TOML).
@@ -180,8 +179,17 @@ def append(rows: list[dict], path: Path | None = None) -> int:
     return len(new)
 
 
+#: Where the run measuring the rows was scored (aws_measure sets it for GPU-scored runs);
+#: appended to each row's `source`, beside the CPU path's own "(aws ..., CPU metrics)".
+SCORED_ON_ENV = "NC_SCORED_ON"
+
+
 def record(rows: list[dict], what: str) -> None:
     """Live append from a measuring tool: never fails the run, but says so loudly."""
+    scored = os.environ.get(SCORED_ON_ENV)
+    if scored:
+        rows = [{**row, "source": f"{row.get('source') or what}; scored on {scored}"}
+                for row in rows]
     try:
         added = append(rows)
         print(f"levers: {added} new row(s) of {what} in {spool_path()}", flush=True)
@@ -490,11 +498,16 @@ def fixedqp_ab_rows(result: dict, source: str, kind: str = "live",
 
 def cost_rows(codec: str, base: str, costs: dict[str, tuple[dict, float]], how: str,
               commit: str | None, source: str, kind: str = "live",
-              date: str | None = None, rate: str = "cqp") -> list[dict]:
-    """CPU-only rows: {label: (overrides, dCPU percent)} measured against `base`."""
+              date: str | None = None, rate: str = "cqp",
+              encodes: tuple[str, str] | None = None) -> list[dict]:
+    """CPU-only rows: {label: (overrides, dCPU percent)} measured against `base`.
+    `encodes` = (level, draw) names the quality rows whose very encodes were timed (e.g.
+    ("lens", CONDITION): the lens's own command lines); without it the rows say what
+    they cost, but no quality row takes their CPU (`resolved`)."""
+    level, draw = encodes or (COST_LEVEL, None)
     return [make_row(codec=codec, base=base, rate=rate, overrides=overrides, change=label,
-                     level="cost", x86_pct=dcpu, x86_how=how, commit=commit, date=date,
-                     source=source, kind=kind)
+                     level=level, draw=draw, x86_pct=dcpu, x86_how=how, commit=commit,
+                     date=date, source=source, kind=kind)
             for label, (overrides, dcpu) in costs.items() if overrides or label != "anchor"]
 
 
@@ -523,7 +536,8 @@ def lens_row(codec: str, base: str, base_params: dict[str, float], overrides: di
 
 def timing_cost_rows(summary: dict, codec: str, base: str, base_point: str,
                      points: dict[str, dict[str, float]], how: str, commit: str | None,
-                     source: str, rate: str, date: str | None = None) -> list[dict]:
+                     source: str, rate: str, date: str | None = None,
+                     encodes: tuple[str, str] | None = None) -> list[dict]:
     """Cost rows from a timing session's summary ({point: {repeat-N: {fps}}}, as
     tools/dev/aws_timing.py writes it): each point's time against `base_point`'s, in
     percent, with the mean fps over the repeats. `points` maps point -> its overrides."""
@@ -536,7 +550,8 @@ def timing_cost_rows(summary: dict, codec: str, base: str, base_point: str,
     base_fps = fps(base_point)
     costs = {point: (overrides, (base_fps / fps(point) - 1) * 100)
              for point, overrides in points.items()}
-    return cost_rows(codec, base, costs, how, commit, source, date=date, rate=rate)
+    return cost_rows(codec, base, costs, how, commit, source, date=date, rate=rate,
+                     encodes=encodes)
 
 
 def preset_stem(name: str | None, codec: str) -> str:
@@ -596,7 +611,8 @@ def finalist_rows(attrs: dict, finalists: dict, trials: dict[int, dict], start: 
 
 
 #: How a finalist's x86 change was measured (tune_pool.combined_dcpu's dcpu_x86_how).
-X86_HOW = {"callgrind": CALLGRIND_TUNE, "zen5": "aws_cpu_ab zen5 (c8a) cycles"}
+X86_HOW = {"callgrind": CALLGRIND_TUNE, "zen5": "aws_cpu_ab zen5 (c8a) cycles",
+           "graniterapids": "aws_cpu_ab graniterapids (c8i.2xlarge) cycles"}
 
 
 def arm_pct(result: dict) -> float | None:
@@ -605,7 +621,7 @@ def arm_pct(result: dict) -> float | None:
 
 def arm_how(result: dict) -> str | None:
     if result.get("dcpu_arm") is not None:
-        return "aws_cpu_ab graviton3+graviton4 cycles (tune_pool.box_cpu)"
+        return "aws_cpu_ab graviton4 (c8g.2xlarge) cycles on the L3's own encodes (decision_cpu)"
     if result.get("dcpu_jetson") is not None:
         return "Jetson cycles (tune_pool.jetson_ratios)"
     return None
@@ -647,19 +663,32 @@ def combined_cpu(row: dict) -> float | None:
     return (JETSON_WEIGHT * jet + x86) / (JETSON_WEIGHT + 1)
 
 
+def encodes_key(row: dict) -> tuple | None:
+    """What a row's numbers were measured on: rate mode, clips (the draw or condition, at
+    the level's clips), frames and key structure (the level names the long-window and
+    key-share protocols). None when the row does not say (no draw): it lends or takes
+    no CPU."""
+    if row.get("draw") is None or row.get("level") in (None, COST_LEVEL):
+        return None
+    return (row["rate"], row["draw"], row["level"], row.get("frames"))
+
+
 def resolved(rows: list[dict]) -> list[dict]:
-    """J rows with CPU joined from another row of the same change: a cost-only row or
-    any measured CPU of the same overrides on the same base (nearest date). The CPU of
-    a parameter set does not depend on the rate mode or clips that judged its J."""
+    """J rows with CPU joined from another row of the same change measured on the SAME
+    encodes (owner, 2026-11-23: never combine measurements of different things): same
+    rate mode, draw, level and frames (`encodes_key`), nearest date. A J row whose
+    encodes no CPU row timed keeps its CPU missing; until 2026-11-23 any CPU of the same
+    overrides was joined, whatever rate mode, clips or frames measured it."""
     costs: dict[tuple, list[dict]] = {}
     for row in rows:
         if row.get("x86_pct") is not None and row["overrides"] and "joined" not in str(
-                row.get("x86_how")):
-            costs.setdefault(change_key(row), []).append(row)
+                row.get("x86_how")) and encodes_key(row) is not None:
+            costs.setdefault((change_key(row), encodes_key(row)), []).append(row)
     out = []
     for row in rows:
-        if row["j"] is not None and combined_cpu(row) is None and change_key(row) in costs:
-            match = min(costs[change_key(row)], key=lambda c: abs(
+        key = (change_key(row), encodes_key(row))
+        if row["j"] is not None and combined_cpu(row) is None and key in costs:
+            match = min(costs[key], key=lambda c: abs(
                 datetime.fromisoformat(c["date"]) - datetime.fromisoformat(row["date"])))
             row = {**row, "x86_pct": match["x86_pct"],
                    "x86_how": f"joined: {match['x86_how']} ({match['source']})"}
@@ -713,7 +742,8 @@ def decide(row: dict, k: float) -> str:
         return "no-cpu"
     if lo is None or hi is None:
         return "lead" if j < -ADOPT_MIN_GAIN_PCT else "trail" if j > ADOPT_MIN_GAIN_PCT else "flat"
-    if j < -ADOPT_MIN_GAIN_PCT and hi <= ADOPT_UPPER_PCT:
+    # As nceval.interval decides L3: adopt only when the whole interval is below 0.
+    if j < -ADOPT_MIN_GAIN_PCT and hi < 0:
         return "better"
     return "worse" if lo > 0 else "ambiguous"
 
@@ -860,9 +890,10 @@ def record_timing(args: argparse.Namespace) -> None:
     for spec in args.point:
         name, _, path = spec.partition("=")
         points[name] = param_file(path)
+    encodes = (args.level, args.draw) if args.draw else None
     record(timing_cost_rows(json.loads(Path(args.summary).read_text()), args.codec, args.base,
                             args.base_point, points, args.how, args.commit, args.summary,
-                            args.rate), "timing costs")
+                            args.rate, encodes=encodes), "timing costs")
 
 
 def sync(_: argparse.Namespace) -> None:
@@ -904,7 +935,12 @@ def main(argv: list[str] | None = None) -> None:
     cost.add_argument("--how", required=True, help="what was timed, e.g. 'c8a.large chart "
                       "path (aws_timing), mean fps of 2 repeats'")
     cost.add_argument("--rate", default="lens", choices=("cbr", "cqp", "lens"),
-                      help="the rows' rate mode (CPU joins across modes on read)")
+                      help="the rows' rate mode")
+    cost.add_argument("--draw", help="the timed encodes are these quality rows' own: their "
+                      "draw or condition (e.g. a lens condition, aom-ld); without it no "
+                      "quality row takes this CPU")
+    cost.add_argument("--level", default="lens",
+                      help="with --draw: the quality rows' level (default lens)")
     cost.add_argument("--commit", help="the timed build's commit")
     levers_ideas.register(sub)
     backfill = sub.add_parser("backfill", help="nceval.levers_backfill: every old result")

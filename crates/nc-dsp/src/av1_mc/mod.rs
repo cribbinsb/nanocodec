@@ -43,10 +43,10 @@ pub mod scale;
 pub(crate) mod scaled;
 pub mod warp;
 #[cfg(target_arch = "x86_64")]
-mod warp_avx2;
+pub(crate) mod warp_avx2;
 pub(crate) mod warp_kernels;
 #[cfg(target_arch = "aarch64")]
-mod warp_neon;
+pub(crate) mod warp_neon;
 
 /// `FILTER_BITS`: precision of every interpolation and warp filter tap.
 pub(crate) const FILTER_BITS: u32 = 7;

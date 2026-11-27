@@ -86,9 +86,14 @@ impl ReferencePool {
 
     /// Finish the current picture: extend its borders for prediction, make
     /// it the reference of every slot in `refresh`, and pick a free picture
-    /// for the next frame.
+    /// for the next frame. A picture no slot takes (an unreferenced
+    /// upper-layer frame) is never predicted from, so its borders are left
+    /// as they are: [`Self::last`] then holds its visible area only, which
+    /// is all its readers copy.
     pub(crate) fn finish(&mut self, refresh: SlotMask) {
-        self.pictures[self.current].extend_borders();
+        if !refresh.is_empty() {
+            self.pictures[self.current].extend_borders();
+        }
         for slot in 0..self.slot_count {
             if refresh.contains(slot) {
                 self.slots[slot] = self.current;
@@ -123,7 +128,8 @@ impl ReferencePool {
             .expect("one picture more than slots, so one is always free");
     }
 
-    /// The most recently finished picture.
+    /// The most recently finished picture (borders extended only if it
+    /// became a reference, [`Self::finish`]).
     pub(crate) fn last(&self) -> &Picture {
         &self.pictures[self.last]
     }

@@ -1,0 +1,14 @@
+# intra-cheap batch 5: cheap settings that pay for the gated key search (stacks)
+null: planner.intra_bias=1050
+s1: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=1 planner.key_rd_margin=1.2
+krd12: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2
+krd12_g110: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.1
+s2_noisp: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vvc.isp=0
+krd12_ispgate: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vvc.isp_residual_gate=1
+ispgate: vvc.isp_residual_gate=1
+rdc3_krd12: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vvc.rd_candidates=3
+ang2: vvc.angular_candidates=2
+ang2_krd12: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vvc.angular_candidates=2
+tu: vvc.tx64=1
+fs6_krd12: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 planner.intra_flat_stop=6
+fs6: planner.intra_flat_stop=6

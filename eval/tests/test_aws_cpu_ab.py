@@ -1,5 +1,6 @@
 """tools/dev/aws_cpu_ab.py: CPU A/B jobs, staging, one box on a fake session that runs
 the box's commands here (nothing is rented), and the summary."""
+import contextlib
 import dataclasses
 import json
 import math
@@ -14,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "dev"))
 import aws_cpu_ab  # noqa: E402
 import cpu_ab_box  # noqa: E402
+import cpu_ab_shard  # noqa: E402
 import jperf  # noqa: E402
 
 WIDTH, HEIGHT = 16, 8
@@ -103,23 +105,36 @@ class LocalSession:
     def download(self, remote_dir, local_dir):
         shutil.copytree(self.home / remote_dir.removeprefix("~/"), local_dir, dirs_exist_ok=True)
 
+    @contextlib.contextmanager
+    def pulling(self, remote_dir, local_dir, marker):
+        self.commands.append(f"pulling {remote_dir}")
+        try:
+            yield
+        finally:
+            self.download(remote_dir, local_dir)
+
 
 def test_one_box_runs_readiness_the_pipe_cleaner_and_the_rounds(data, tmp_path):
     _, encoder = data
     clips = aws_cpu_ab.load_clips({"a", "b"})
     jobs = aws_cpu_ab.jobs_for([pair(encoder)], clips)
     stage = tmp_path / "stage"
-    aws_cpu_ab.stage(stage, jobs, {aws_cpu_ab.build_key(str(encoder)): encoder}, clips)
+    frames = pair(encoder).frames
+    files = {aws_cpu_ab.clip_file(n, frames): aws_cpu_ab.cached_clip(clips[n], frames)
+             for n in clips}
+    aws_cpu_ab.stage(stage, jobs, {aws_cpu_ab.build_key(str(encoder)): encoder}, files)
     sessions = []
-    out = tmp_path / "out" / "graviton2-1"
+    out = tmp_path / "out" / "graviton4-1"
     # vCPU 0 here: the build machines' CPU 1 may be offline
-    target = dataclasses.replace(aws_cpu_ab.TARGETS["graviton2"], timed_cpu=0)
-    aws_cpu_ab.run_shard(stage, target, out, 3, False, "test",
-                         lambda spec: sessions.append(LocalSession(spec, tmp_path / "box"))
-                         or sessions[-1])
+    target = dataclasses.replace(cpu_ab_shard.TARGETS["graviton4"], timed_cpu=0)
+    cpu_ab_shard.run_shard(stage, target, out, 3, False, "test",
+                           lambda spec: sessions.append(LocalSession(spec, tmp_path / "box"))
+                           or sessions[-1])
     session = sessions[0]
-    assert session.spec.instance_type == "c6g.large" and session.commands[-1] == "terminated"
-    assert "--limit 1" in session.commands[1] and "--rounds 3" in session.commands[2]
+    assert session.spec.instance_type == "c8g.2xlarge" and not session.spec.spill
+    assert session.commands[-1] == "terminated"
+    assert "--limit 1" in session.commands[1] and session.commands[2].startswith("pulling")
+    assert "--rounds 3" in session.commands[3] and "--skip done.json" in session.commands[3]
     # the clip went up cut to the pair's frames, compressed, and was unpacked there
     assert (tmp_path / "box/cpuab/clips/a-2f.yuv").stat().st_size == 2 * FRAME_BYTES
     runs = [json.loads(line) for line in (out / "runs.jsonl").read_text().splitlines()]
@@ -174,6 +189,13 @@ def test_the_probe_keeps_the_events_that_count_together(monkeypatch):
     probe = cpu_ab_box.probe_events(["enc"], 1, events)
     assert probe == {"base": ["cycles", "instructions"], "extras": [], "slots": 0}
     assert cpu_ab_box.schedule(probe, 3) == ["cycles", "instructions"]
+
+
+def test_the_probe_encodes_a_few_frames_only():
+    argv = ["nanocodec", "encode", "--frames", "900", "--start-frame", "30"]
+    assert cpu_ab_box.short_encode(argv) == ["nanocodec", "encode", "--frames",
+                                             str(cpu_ab_box.PROBE_FRAMES), "--start-frame", "30"]
+    assert cpu_ab_box.short_encode(["enc"]) == ["enc"]
 
 
 def test_the_extra_events_take_the_free_counters_in_turn():
@@ -269,3 +291,17 @@ def test_prune_keeps_the_newest_builds_and_recent_clips_and_runs(tmp_path, monke
     aws_cpu_ab.prune(now)
     assert sorted(p.name for p in (tmp_path / "builds/x86_64").iterdir()) == ["c0", "c1"]
     assert [p.name for p in (tmp_path / "clips").iterdir()] == ["new.zst"]
+
+
+def test_key_shares_measure_each_pair_at_every_share_and_print_the_screens_dcpu(data):
+    _, encoder = data
+    pairs = aws_cpu_ab.at_key_shares([pair(encoder)], "150,300")
+    assert [(p.name, p.frames, p.intra_period) for p in pairs] == [
+        ("lever@k150", 600, 150), ("lever@k300", 900, 300)]
+    job = aws_cpu_ab.jobs_for(pairs[1:], aws_cpu_ab.load_clips({"a", "b"}))[0]
+    argv = job["variants"]["base"]
+    assert argv[argv.index("--intra-period") + 1] == "300" and "--bitrate" in argv  # CBR
+    row = lambda name, change: {"pair": name, "rung": "hevc:fast", "target": "zen5",
+                                "change_pct": (change, change - 1, change + 1)}
+    summary = {"rows": [row("lever@k150", 3.0), row("lever@k300", 1.5), row("plain", 9.0)]}
+    assert aws_cpu_ab.share_dcpu(summary) == {("lever", "hevc:fast", "zen5"): "150=3.00,300=1.50"}

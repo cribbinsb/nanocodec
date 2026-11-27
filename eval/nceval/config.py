@@ -78,10 +78,48 @@ def find_tool(name: str, paths: Paths | None = None) -> Path:
     )
 
 
+#: The reference-encoder builds the speed charts time, per timing machine, relative to
+#: the data root: tools/anchors/build_anchors.sh --opt installs (each encoder with the
+#: LTO and PGO its own build offers; docs/PROCEDURES.md "Reference builds"). This is the
+#: one place that switches every timing tool (aws_timing.py, fixedqp_timing.py,
+#: release.py) to another build. The Jetson keeps the board's own build (its gcc
+#: predates x265's SVE2 kernels, which its Cortex-A78AE lacks anyway). Quality encodes
+#: (on x86) run QUALITY_MACHINE's build too (cbr.anchor_tool, `openh264_harness`), so a
+#: reference's quality and speed come from one binary (owner rule, 2026-11-23: the
+#: timed x86 build codes other bytes for x264 medium than the 2026-11-06 one).
+REFERENCE_BUILDS = {"x86_64": Path("anchors/x86_64-opt"),
+                    "graviton": Path("anchors/aarch64-graviton-opt"),
+                    "jetson": Path("anchors/aarch64")}
+#: The machine whose reference build the quality encodes run (they run on x86 boxes).
+QUALITY_MACHINE = "x86_64"
+#: The openh264 driver with --bitrate where QUALITY_MACHINE's build has none.
+OPENH264_HARNESS = Path("work/ratecontrol/bin/openh264-harness")
+
+
+def reference_bin(machine: str, data_root: Path | None = None) -> Path:
+    """The `bin` directory of the reference build timed on `machine` (REFERENCE_BUILDS)."""
+    root = data_root or Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
+    return root / REFERENCE_BUILDS[machine] / "bin"
+
+
+def quality_reference(name: str, data_root: Path | None = None) -> Path | None:
+    """Reference program `name` in QUALITY_MACHINE's timed build, if that build has it."""
+    candidate = reference_bin(QUALITY_MACHINE, data_root) / name
+    return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+
+def openh264_harness(data_root: Path | None = None) -> Path:
+    """The CBR charts' openh264 driver: the timed build's (`quality_reference`), else
+    OPENH264_HARNESS under the data root."""
+    root = data_root or Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
+    return quality_reference("openh264-harness", root) or root / OPENH264_HARNESS
+
+
 #: The build_anchors.sh tool that installs an anchor binary, where the names differ.
 ANCHOR_BUILD_TOOLS = {"ffmpeg-decode": "ffmpeg", "TAppDecoder": "hm", "ldecod": "jm",
                       "vvdecapp": "vvdec", "aomdec": "libaom", "aomenc": "libaom",
-                      "vpxdec": "libvpx", "vpxenc": "libvpx", "avmdec": "avm",
+                      "vpxdec": "libvpx", "vpxenc": "libvpx", "avmdec": "avm", "avmenc": "avm",
+                      "vvencFFapp": "vvenc",
                       "SvtAv1EncApp": "svtav1", "openh264-harness": "harness"}
 
 

@@ -114,7 +114,8 @@ pub(crate) unsafe fn add_scaled_8x8(coeffs: &[i16; 64], dst: &mut [u8], stride: 
 ///
 /// # Safety
 ///
-/// `V`'s ISA must be available (`codec_txfm` module docs); `V::LANES == 8`.
+/// `V`'s ISA must be available (`codec_txfm` module docs) and have eight
+/// lanes. `dst` must cover eight rows of eight samples at `stride`.
 #[inline(always)]
 pub(crate) unsafe fn add_scaled_8x8_lanes<V: I16x8Shuffles>(
     coeffs: &[i16; 64],
@@ -137,11 +138,13 @@ pub(crate) unsafe fn add_scaled_8x8_lanes<V: I16x8Shuffles>(
             )
         };
         let rows: [V; N] = core::array::from_fn(|r| V::load(&coeffs[r * N..]));
-        let one = V::splat(1);
-        pass(transpose(pass(transpose(rows)))).map(|h| h.sra(FIRST_SHIFT).add(one).sra(1))
+        pass(transpose(pass(transpose(rows)))).map(V::rounded_shr::<6>)
     };
+    let base = dst.as_mut_ptr();
     for (r, h) in residual.into_iter().enumerate() {
-        let row = &mut dst[r * stride..][..N];
+        // SAFETY: the dispatcher validated one 8x8 destination at stride.
+        // The eight-byte row borrow ends before the next iteration.
+        let row = unsafe { core::slice::from_raw_parts_mut(base.add(r * stride), N) };
         h.add(V::load_u8(row)).store_u8_sat(row);
     }
 }

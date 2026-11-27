@@ -5,15 +5,17 @@
 //! Kernel contract: see the `diff` module docs.
 
 use core::arch::x86_64::{
-    __m256i, _mm256_add_epi32, _mm256_hadd_epi32, _mm256_loadu_si256, _mm256_madd_epi16,
-    _mm256_max_epu8, _mm256_min_epu8, _mm256_setr_epi64x, _mm256_setzero_si256,
-    _mm256_storeu_si256, _mm256_sub_epi8, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
+    __m128i, __m256i, _mm_avg_epu8, _mm_loadu_si128, _mm256_add_epi16, _mm256_add_epi32,
+    _mm256_cvtepu8_epi16, _mm256_hadd_epi32, _mm256_loadu_si256, _mm256_madd_epi16,
+    _mm256_max_epu8, _mm256_min_epu8, _mm256_set1_epi16, _mm256_setr_epi64x, _mm256_setzero_si256,
+    _mm256_storeu_si256, _mm256_sub_epi8, _mm256_sub_epi16, _mm256_unpackhi_epi8,
+    _mm256_unpacklo_epi8,
 };
 
 use super::x86_narrow::Avx2Rows;
 use super::{DiffFns, Prediction, ResidualRows, Variance, VarianceEnergy};
 use super::{generic, x86_narrow};
-use crate::simd::avx2::{I16x4, I16x8, I16x16};
+use crate::simd::avx2::{I16x4, I16x8, I16x16, sum_i32x8};
 
 /// The residual table.
 ///
@@ -64,6 +66,11 @@ pub(crate) unsafe fn diff_fns() -> DiffFns {
             block_sums_w32,
             block_sums_w64,
         ],
+        halfpel_cross: Some([
+            halfpel_cross::<16>,
+            halfpel_cross::<32>,
+            halfpel_cross::<64>,
+        ]),
         sub_pixel_variance: [
             sub_pixel_variance_w4,
             sub_pixel_variance_w8,
@@ -72,6 +79,86 @@ pub(crate) unsafe fn diff_fns() -> DiffFns {
             sub_pixel_variance_w64,
         ],
         sse_8x8_row,
+        plane_sse,
+        variance_8x8_row: Some(super::x86_variance_row::avx2),
+    }
+}
+
+/// Measure the four half-pel candidates with the same rolling byte
+/// loads and rounded averages as the Ice Lake tier.
+#[target_feature(enable = "avx2")]
+unsafe fn halfpel_cross<const W: usize>(
+    src: &[u8],
+    ss: usize,
+    rf: &[u8],
+    rs: usize,
+    h: usize,
+) -> [Variance; 4] {
+    let zero = _mm256_setzero_si256();
+    let mut cross = HalfpelCross::<W> {
+        sum: [zero; 4],
+        squares: [zero; 4],
+    };
+    // SAFETY: the caller validated both the block and its half-pel window.
+    unsafe { super::halfpel_cross::measure::<_, W>(&mut cross, src, ss, rf, rs, h) };
+    [
+        reduce_cross::<W>(cross.sum[0], cross.squares[0]),
+        reduce_cross::<W>(cross.sum[1], cross.squares[1]),
+        reduce_cross::<W>(cross.sum[2], cross.squares[2]),
+        reduce_cross::<W>(cross.sum[3], cross.squares[3]),
+    ]
+}
+
+#[target_feature(enable = "avx2")]
+fn reduce_cross<const W: usize>(sum: __m256i, squares: __m256i) -> Variance {
+    // Widths 16 and 32 add at most 2 * 64 signed byte differences per lane.
+    let sum = if W < 64 {
+        _mm256_madd_epi16(sum, _mm256_set1_epi16(1))
+    } else {
+        sum
+    };
+    Variance {
+        sum: sum_i32x8(sum) as i32,
+        sse: sum_i32x8(squares) as u32,
+    }
+}
+
+struct HalfpelCross<const W: usize> {
+    sum: [__m256i; 4],
+    squares: [__m256i; 4],
+}
+
+impl<const W: usize> super::halfpel_cross::Cross for HalfpelCross<W> {
+    type Pixels = __m128i;
+    const LANES: usize = 16;
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    unsafe fn load(ptr: *const u8) -> Self::Pixels {
+        // SAFETY: the AVX2 wrapper validates the window for 16-byte loads.
+        unsafe { _mm_loadu_si128(ptr.cast()) }
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn update(&mut self, source: Self::Pixels, middle: Self::Pixels, taps: [Self::Pixels; 4]) {
+        // SAFETY: only the AVX2 wrapper uses this. The 64-wide block
+        // widens each paired sum before accumulating its four stripes.
+        unsafe {
+            let source = _mm256_cvtepu8_epi16(source);
+            for (i, tap) in taps.into_iter().enumerate() {
+                let pred = _mm256_cvtepu8_epi16(_mm_avg_epu8(middle, tap));
+                let difference = _mm256_sub_epi16(source, pred);
+                self.sum[i] = if W < 64 {
+                    _mm256_add_epi16(self.sum[i], difference)
+                } else {
+                    let pairs = _mm256_madd_epi16(difference, _mm256_set1_epi16(1));
+                    _mm256_add_epi32(self.sum[i], pairs)
+                };
+                self.squares[i] =
+                    _mm256_add_epi32(self.squares[i], _mm256_madd_epi16(difference, difference));
+            }
+        }
     }
 }
 
@@ -117,16 +204,20 @@ macro_rules! width_kernels {
         }
 
         #[target_feature(enable = "avx2")]
-        unsafe fn $variance(
+        pub(super) unsafe fn $variance(
             src: &[u8],
             src_stride: usize,
             pred: &[u8],
             pred_stride: usize,
             h: usize,
         ) -> Variance {
-            // SAFETY: AVX2 is enabled for this function.
+            // SAFETY: AVX2 is enabled and dispatch validates the block.
             unsafe {
-                $stats::variance::<$stats_lanes, $width>(src, src_stride, pred, pred_stride, h)
+                if $width == 16 {
+                    x86_narrow::variance_w16(src, src_stride, pred, pred_stride, h)
+                } else {
+                    $stats::variance::<$stats_lanes, $width>(src, src_stride, pred, pred_stride, h)
+                }
             }
         }
 
@@ -341,4 +432,10 @@ unsafe fn sse_8x8(src: &[u8], src_stride: usize, pred: &[u8], pred_stride: usize
     // SAFETY: `lanes` is 32 bytes.
     unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), total) };
     lanes.iter().sum()
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn plane_sse(a: &nc_common::PlaneView<'_>, b: &nc_common::PlaneView<'_>) -> u64 {
+    // SAFETY: the dispatch verifies the ISA and that both planes match.
+    unsafe { generic::plane_sse::<I16x16>(a, b) }
 }

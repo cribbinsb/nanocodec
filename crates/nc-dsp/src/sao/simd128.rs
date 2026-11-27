@@ -52,8 +52,6 @@ unsafe fn band(
 ) {
     // SAFETY: dispatch checked the rectangle and exemption mask; this enables the ISA.
     unsafe {
-        super::bytes::band::<super::simd128_bytes::Lanes>(
-            plane, stride, rect, position, offsets, exempt,
-        );
+        super::simd128_bytes::band(plane, stride, rect, position, offsets, exempt);
     }
 }

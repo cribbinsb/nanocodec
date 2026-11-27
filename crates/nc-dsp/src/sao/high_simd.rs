@@ -105,8 +105,35 @@ unsafe fn band_lanes<V: I16FilterLanes>(
     }
 }
 
+/// libhevc's packed edge-offset lookup indexed by the sum of signs.
+pub(crate) struct WordOffsets;
+
+pub(crate) trait SaoWordLanes: I16FilterLanes {
+    fn offset_table(offsets: [i16; 4]) -> Self;
+    fn select_offset(self, table: Self) -> Self;
+}
+
+pub(crate) fn offset_words([a, b, c, d]: [i16; 4]) -> [i16; 8] {
+    [a, b, 0, c, d, 0, 0, 0]
+}
+
+impl<V: SaoWordLanes> super::generic::OffsetSelection<V> for WordOffsets {
+    type Table = V;
+    const ROLL_VERTICAL: bool = true;
+
+    #[inline(always)]
+    fn table(offsets: [i16; 4]) -> V {
+        V::offset_table(offsets)
+    }
+
+    #[inline(always)]
+    fn adjust<T: super::generic::SaoSample>(value: V, class: V, table: &V) -> V {
+        T::offset_add(value, class.select_offset(*table))
+    }
+}
+
 macro_rules! isa_sao_u16 {
-    ($mod_name:ident, $lanes:ty, $feature:literal) => {
+    ($mod_name:ident, $lanes:ty, $feature:literal, $selection:ty) => {
         pub(crate) mod $mod_name {
             use nc_common::BitDepth;
 
@@ -114,6 +141,7 @@ macro_rules! isa_sao_u16 {
             use super::band_lanes;
 
             #[target_feature(enable = $feature)]
+            #[inline(never)]
             pub(crate) unsafe fn apply(
                 input: &[u16],
                 in_stride: usize,
@@ -126,7 +154,7 @@ macro_rules! isa_sao_u16 {
             ) {
                 // SAFETY: caller enables `$feature` and checked rectangle/neighbours.
                 unsafe {
-                    super::super::generic::apply_at::<$lanes, u16>(
+                    super::super::generic::apply_at::<$lanes, u16, $selection>(
                         input, in_stride, out, out_stride, offs, offsets, rect, depth,
                     );
                 }
@@ -152,17 +180,87 @@ macro_rules! isa_sao_u16 {
 }
 
 #[cfg(target_arch = "x86_64")]
-isa_sao_u16!(avx2, crate::simd::avx2::I16x16, "avx2");
+isa_sao_u16!(
+    avx2,
+    crate::simd::avx2::I16x16,
+    "avx2",
+    crate::sao::high_simd::WordOffsets
+);
 
 #[cfg(target_arch = "x86_64")]
 isa_sao_u16!(
     avx512,
     crate::simd::avx512_i16::I16x32,
-    "avx512f,avx512bw,avx512vl"
+    "avx2,avx512f,avx512bw,avx512vl",
+    crate::sao::generic::CompareOffsets
 );
 
 #[cfg(target_arch = "aarch64")]
-isa_sao_u16!(neon, crate::simd::neon::I16x8, "neon");
+isa_sao_u16!(
+    neon,
+    crate::simd::neon::I16x8,
+    "neon",
+    crate::sao::high_simd::WordOffsets
+);
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-isa_sao_u16!(simd128, crate::simd::simd128::I16x8, "simd128");
+isa_sao_u16!(
+    simd128,
+    crate::simd::simd128::I16x8,
+    "simd128",
+    crate::sao::high_simd::WordOffsets
+);
+
+/// Keep full 32-lane loops separate from the 16-lane tail schedule.
+///
+/// # Safety
+/// The caller has selected Ice Lake and checked both source neighbours
+/// and the destination rectangle.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+pub(crate) unsafe fn apply_icl(
+    input: &[u16],
+    in_stride: usize,
+    out: &mut [u16],
+    out_stride: usize,
+    offs: (isize, isize),
+    offsets: [i16; 4],
+    rect: Rect,
+    depth: BitDepth,
+) {
+    let width = rect.x1 - rect.x0;
+    let rest = width % 32;
+    // SAFETY: splitting the valid rectangle preserves all of its checked
+    // neighbours and each ISA is available on the selected tier.
+    unsafe {
+        if rest >= 16 && depth.bits() < i16::BITS {
+            let middle = rect.x1 - rest;
+            if middle != rect.x0 {
+                avx512::apply(
+                    input,
+                    in_stride,
+                    out,
+                    out_stride,
+                    offs,
+                    offsets,
+                    Rect { x1: middle, ..rect },
+                    depth,
+                );
+            }
+            avx2::apply(
+                input,
+                in_stride,
+                out,
+                out_stride,
+                offs,
+                offsets,
+                Rect { x0: middle, ..rect },
+                depth,
+            );
+        } else {
+            avx512::apply(
+                input, in_stride, out, out_stride, offs, offsets, rect, depth,
+            );
+        }
+    }
+}

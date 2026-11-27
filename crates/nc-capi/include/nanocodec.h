@@ -56,6 +56,7 @@ typedef struct nc_encoder_config {
     uint32_t peak_kbps;         /* 0 = twice the target */
     uint32_t buffer_ms;         /* 0 = 1000 ms */
     uint8_t frame_drop;         /* drop frames rather than overflow the buffer */
+    uint8_t strict_buffer;      /* never pass one buffer (re-code at 1.0, a hard VBV) */
     uint8_t colour[3];          /* primaries, transfer, matrix (ISO/IEC 23091-2); 0,0,0 = unsignalled */
     uint8_t full_range;         /* full-range samples */
     uint8_t timing;             /* header timing: 0 nominal, 1 constant, 2 variable rate */

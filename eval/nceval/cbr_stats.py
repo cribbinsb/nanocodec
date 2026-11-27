@@ -50,6 +50,16 @@ def replay_buffer(frame_bits: Sequence[int], target_bps: float, fps: float,
                         max_window_ratio=worst_window / target_bps)
 
 
+def own_rate_fullness(frame_bits: Sequence[int], fps: float, buffer_ms: float) -> float:
+    """Peak occupancy (in buffers) of the same bucket drained at the stream's own average
+    rate and holding `buffer_ms` of it. A point is plotted at its achieved rate: at the
+    target, a stream that undershoots has a larger buffer than `buffer_ms` at the rate it
+    is plotted at (half the target: two seconds), so this is the measure that judges every
+    encoder alike (owner, 2026-11-22; the results site's buffer page)."""
+    achieved_bps = sum(frame_bits) * fps / len(frame_bits)
+    return replay_buffer(frame_bits, achieved_bps, fps, buffer_ms).max_fullness
+
+
 def worst_quality(per_frame: Sequence[float]) -> float:
     """1st-percentile frame quality: what the worst moments look like."""
     return float(np.percentile(np.asarray(per_frame, dtype=float), WORST_PERCENTILE))

@@ -8,6 +8,7 @@
   <title>nanocodec results</title>
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="site.css">
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
 <header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
@@ -28,8 +29,8 @@
   <h1>Bits against speed</h1>
   <p class="lede">Every nanocodec preset and every reference encoder, each in its own real-time rate control on
     one CPU core, compared with one zero line. Lower is fewer bits for the same quality; right is faster.
-    Pick the clip set, the rate mode, the metric and the machine. In the CBR charts nanocodec's buffer is
-    looser than the references': see <a href="method.html#buffer">Rate control and the buffer</a>.</p>
+    Pick the clip set, the rate mode, the metric and the machine. How full each encoder's buffer gets in the CBR
+    charts, ours and the references', is measured on <a href="buffer.html">Rate control and the buffer</a>.</p>
 
   <div class="disclaimer">
     <strong>Our own measurements.</strong> The score is BD-rate on PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds
@@ -63,9 +64,9 @@
     <a class="card" href="codecs.html"><strong>By codec</strong><span>Each format's presets beside the references for that format.</span></a>
     <a class="card" href="speed.html"><strong>Speed</strong><span>Encode on Arm and x86, the browser build, hardware encoders.</span></a>
     <a class="card" href="rate-control.html"><strong>Rate control</strong><span>Coding efficiency at fixed QP against what real-time CBR costs.</span></a>
-    <a class="card" href="fixed-qp.html"><strong>Fixed QP</strong><span>Every encoder at fixed quantizers on the AOM low-delay test conditions, the standards' way.</span></a>
+    <a class="card" href="fixed-qp.html"><strong>Fixed QP</strong><span>Every encoder at fixed quantizers on 12 of the AOM CTC's 8-bit sequences, at its quantizer points.</span></a>
     <a class="card" href="svc.html"><strong>Spatial scalability</strong><span>AV1 and VP9 SVC against simulcast and libaom / libvpx.</span></a>
-    <a class="card" href="history.html"><strong>History</strong><span>Our presets and Pareto frontier on this chart, one build per day from 2026-11-07 to 2026-11-20, re-measured with one protocol.</span></a>
+    <a class="card" href="history.html"><strong>History</strong><span>Our presets and Pareto frontier on this chart, one build per day from 2026-11-07 to 2026-11-23, re-measured with one protocol.</span></a>
     <a class="card" href="method.html"><strong>Method</strong><span>Clips, settings, versions, command lines, window length.</span></a>
     <a class="card" href="yardsticks.html"><strong>Yardsticks</strong><span>Which independent implementation each speed claim is checked against.</span></a>
   </div>

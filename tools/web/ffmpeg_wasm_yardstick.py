@@ -6,16 +6,23 @@ wasm_yardstick_data) read the record this writes. Method (docs/results/competito
 "Method"): one PC core, the same node, interleaved rounds (the order reversed every other round),
 the best round counts.
 
-- Encode: crowd_mot17_09 at 720p, 150 frames, CBR 600 kbps with a 1 s buffer. Ours through
-  tools/web/bench-runner.mjs (the demo's BrowserEncoder.encode, H.264 Medium and Fast, HEVC
-  Fast, VP9 Medium, AV1 Fast); ffmpeg.wasm's x264 at veryfast and ultrafast at the chart's
-  real-time settings (zero latency, no B-frames, no lookahead).
-- Decode: the five streams of WASM_DECODE_STREAMS (site.py), ours through bench-runner.mjs
-  (decode and display hand-off timed per frame), ffmpeg.wasm with `-f null -`.
+- Encode: crowd_mot17_09 at 720p, 150 frames, 600 kbps with the same rate limits on both
+  sides (ENCODE_SETTINGS, kept in the record): a 1 s buffer (600 kbit) and a peak of twice the
+  target (the demo's), x264's -maxrate / -bufsize. Ours through tools/web/bench-runner.mjs
+  (the demo's BrowserEncoder.encode, H.264 Medium and Fast, HEVC Fast, VP9 Medium, AV1 Fast);
+  ffmpeg.wasm's x264 at veryfast and ultrafast at real-time settings (zero latency, no
+  B-frames, no lookahead).
+- Decode: the streams of WASM_DECODE_STREAMS (site.py), ours through bench-runner.mjs
+  (`decode_ms_per_frame`: the BrowserDecoder.decode calls; the display hand-off is reported
+  beside it), ffmpeg.wasm with `-f null -`.
 
-ffmpeg.wasm's time is its whole run (module start-up included, the input copy into its file
-system excluded: tools/web/ffmpeg-wasm-runner.cjs), ours is per frame; site.py divides theirs by
-the frames.
+Both compare the codec calls alone on both sides. Encode: ours the encode() calls
+(`encode_ms_per_frame`; loading the frame into a SourceFrame is reported beside it, in
+`ms_per_frame`), ffmpeg.wasm the sum of its encode_video calls (`encode_ms`). Decode: ours the decode() calls, ffmpeg.wasm the
+sum of its decode_video calls as FFmpeg's -benchmark_all logs them (`decode_ms`), so neither
+is charged module start-up, probing, demuxing or command parsing; site.py divides by the
+frames. ffmpeg.wasm's start-up (`startup_ms`) and whole run (`ms`) are recorded beside it
+(tools/web/ffmpeg-wasm-runner.cjs).
 
     tools/dev/host-timed.sh python3 tools/web/ffmpeg_wasm_yardstick.py --pkg PKG/relaxed \\
         --core ~/nanocodec-data/work/ffmpeg-wasm-yardstick/node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js \\
@@ -38,8 +45,16 @@ FFMPEG_RUNNER = HERE / "ffmpeg-wasm-runner.cjs"
 OURS, FFMPEG = "ours-wasm", "ffmpeg.wasm"
 WIDTH, HEIGHT, FPS, FRAMES = 1280, 720, 30, 150
 KBPS, BUFFER_MS, KEY_SECONDS = 600, 1000, 30
-#: The demo's peak rate over its target (tools/web/bench.py PEAK_FACTOR).
+#: The demo's peak rate over its target (tools/web/bench.py PEAK_FACTOR), given to both.
 PEAK_FACTOR = 2
+#: Both encoders' rate limits, written into the record for the page to state.
+ENCODE_SETTINGS = {
+    "fps": FPS, "frames": FRAMES, "target_kbps": KBPS, "peak_kbps": PEAK_FACTOR * KBPS, "buffer_kbit": KBPS * BUFFER_MS // 1000,
+    "ours": f"set_rate_control({KBPS}, {PEAK_FACTOR * KBPS}, {BUFFER_MS}): target kbps, peak kbps, "
+            "buffer ms",
+    "x264": f"-b:v {KBPS}k -maxrate {PEAK_FACTOR * KBPS}k -bufsize {KBPS * BUFFER_MS // 1000}k "
+            "-tune zerolatency -bf 0 -rc-lookahead 0",
+}
 #: Our encode runs: name -> (codec, Fast preset).
 OUR_ENCODES = {"h264": ("h264", False), "h264-fast": ("h264", True), "hevc-fast": ("hevc", True),
                "vp9": ("vp9", False), "av1-fast": ("av1", True)}
@@ -61,7 +76,8 @@ def x264_args(preset: str) -> list[str]:
     return ["-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{WIDTH}x{HEIGHT}", "-r", str(FPS), "-i", "in",
             "-frames:v", str(FRAMES), "-c:v", "libx264", "-preset", preset, "-tune", "zerolatency",
             "-bf", "0", "-rc-lookahead", "0", "-g", str(KEY_SECONDS * FPS),
-            "-b:v", rate, "-maxrate", rate, "-bufsize", f"{KBPS * BUFFER_MS // 1000}k", "-f", "h264", "out.264"]
+            "-b:v", rate, "-maxrate", f"{PEAK_FACTOR * KBPS}k", "-bufsize", f"{KBPS * BUFFER_MS // 1000}k",
+            "-f", "h264", "out.264"]
 
 
 def jobs(args) -> list[tuple[str, list[str]]]:
@@ -103,7 +119,7 @@ def main() -> None:
     record: dict = {"date": datetime.date.today().isoformat(), "ffmpeg_core": core_version,
                     "node": subprocess.run(["node", "--version"], check=True, capture_output=True,
                                            text=True).stdout.strip(),
-                    "cpu": args.cpu, "rounds": args.rounds, "load_start": list(os.getloadavg()), "res": {}}
+                    "cpu": args.cpu, "rounds": args.rounds, "encode_settings": ENCODE_SETTINGS, "load_start": list(os.getloadavg()), "res": {}}
     for index in range(args.rounds):
         for key, cmd in (todo if index % 2 == 0 else todo[::-1]):
             result = run_json(cmd, args.cpu)

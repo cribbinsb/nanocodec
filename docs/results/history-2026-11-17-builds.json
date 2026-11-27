@@ -1,0 +1,30 @@
+{
+ "base": "hist-1f85eff44",
+ "families": {
+  "nanocodec-h264": "hist-1f85eff44",
+  "nanocodec-h264@slow": "hist-1f85eff44",
+  "nanocodec-h264@fast": "hist-1f85eff44",
+  "nanocodec-h264@faster": "hist-1f85eff44",
+  "nanocodec-h264@veryfast": "hist-1f85eff44",
+  "nanocodec-hevc": "hist-1f85eff44",
+  "nanocodec-hevc@slow": "hist-1f85eff44",
+  "nanocodec-hevc@fast": "hist-1f85eff44",
+  "nanocodec-hevc@faster": "hist-1f85eff44",
+  "nanocodec-vvc": "hist-1f85eff44",
+  "nanocodec-vvc@slow": "hist-1f85eff44",
+  "nanocodec-vvc@fast": "hist-1f85eff44",
+  "nanocodec-av1": "hist-1f85eff44",
+  "nanocodec-av1@slow": "hist-1f85eff44",
+  "nanocodec-av1@fast": "hist-1f85eff44",
+  "nanocodec-av1@faster": "hist-1f85eff44",
+  "nanocodec-av1@veryfast": "hist-1f85eff44",
+  "nanocodec-vp9": "hist-1f85eff44",
+  "nanocodec-vp9@slow": "hist-1f85eff44",
+  "nanocodec-vp9@fast": "hist-1f85eff44",
+  "nanocodec-vp9@faster": "hist-1f85eff44",
+  "nanocodec-vp9@veryfast": "hist-1f85eff44",
+  "nanocodec-av2": "hist-1f85eff44",
+  "nanocodec-av2@slow": "hist-1f85eff44",
+  "nanocodec-av2@fast": "hist-1f85eff44"
+ }
+}

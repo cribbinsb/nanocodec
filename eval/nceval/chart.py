@@ -3,14 +3,22 @@
 An AOM/MSU-style chart. Every encoder (our codecs and presets, openh264,
 SVT-AV1, x264, x265) runs its own real-time rate control on the real-use CBR
 ladder (nceval.realuse: 150/300/600/1200 kbps at 720p30, pixel-rate scaled,
-1 s buffer, one key frame, 150 frames, natural VAL clips; our streams scored
+plus the upper rungs 2400/4000 (`UPPER_LADDER_KBPS`) where the clip's 50 %-of-source
+cap allows them, 1 s buffer, one key frame, 150 frames, natural VAL clips; our streams scored
 on the reconstruction of a build that passed the landing conformance check). Each is compared with ONE neutral anchor, x264 `--preset medium
 --tune zerolatency` without B-frames, by class-balanced BD-rate on the
 achieved-rate curves:
 
-  - BD-J: the J_real quality composite, (CB(Q_full) + CB(Q_low)) / 2 with
-    Q = mean BD-rate over PSNR-YUV, VMAF v1 and MS-SSIM (nceval.jreal);
-  - BD-PSNR, BD-VMAF v1: the same with PSNR-YUV or VMAF v1 alone;
+  - BD-J: CB(Q) with Q = the mean of the BD-rates on PSNR-YUV (6:1:1), VMAF v1 and
+    MS-SSIM (equal thirds) over each clip's full curve overlap, CB the class-balanced
+    mean over clips. No extra weight on the low half (results audit 2026-11-23,
+    finding 2; the screens' J_real still averages in its low half, nceval.jreal);
+  - BD-PSNR-YUV, BD-PSNR-Y, BD-VMAF v1, BD-MS-SSIM: the same on one metric alone;
+  - per rate regime (`RATE_REGIMES`): the same terms integrated over the qualities the
+    point's own rungs in the regime's band span, over the clips that have it;
+  - rate checks, one rule for every encoder (`RateCounts`): points whose
+    one-second buffer peaks over one buffer, and points more than
+    `OVER_TARGET_TOLERANCE` over their target;
   - spread: the interquartile range of the per-clip BD-J;
   - on clips where some curve has no reliable overlap with the anchor's
     (bdrate.MIN_OVERLAP_FRACTION), every encoder gets extra low rungs
@@ -24,8 +32,10 @@ achieved-rate curves:
     extrapolated.
 
 Speed comes from a timing file (tools/dev/anchor_chart_timing.py: Jetson
-core 3, single thread, rate-matched to the 600 kbps rung), as frames per
-second and as speed relative to the anchor. A second timing file from the
+core 3, single thread), as frames per second and as speed relative to the anchor. It
+times a subset of the chart's own quality encodes (nceval.chart_timing: each encoder's
+real-time CBR on three of the chart's clips, one rung each); a timing file from before
+2026-11-23 timed fixed-QP encodes instead, and the page says so (`speed_text`). A second timing file from the
 PC (`--timing-x86`) gives the same chart with x86 speed (`-x86` outputs).
 
     python3 -m nceval.chart measure --binary BIN [--points a,b] [--part I/N]
@@ -57,13 +67,14 @@ import json
 import math
 import statistics
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from . import buildinfo, jreal, plotted
+from . import buildinfo, fairness, jreal, plotted
 from . import buffer_note
 from .budget import MAX_MINUTES, estimate_minutes
-from .cbr import METRIC_TUNES, PROFILE_SEPARATOR, Family, anchor_families, clip_targets
+from .cbr import (METRIC_TUNES, PROFILE_SEPARATOR, Family, anchor_families, clip_targets,
+                  rate_scale)
 from .clips import Clip
 from .codecs import Codec
 from .config import load_paths
@@ -143,6 +154,43 @@ PARTIAL_MARK = "†"
 #: rungs bring every curve down into its quality range. The 50 % source cap
 #: does not limit rates below the ladder. Two rungs, halving like the ladder.
 LOW_LADDER_KBPS = (40, 75)
+#: Rungs above the real-use ladder (720p30 kbps, scaled like it, each within the clip's
+#: 50 %-of-source cap) for EVERY encoder on every clip: they give the upper rate regime
+#: its points (results audit 2026-11-23, finding 2: the ladder alone stops at 1200).
+UPPER_LADDER_KBPS = (2400, 4000)
+
+
+@dataclass(frozen=True)
+class RateRegime:
+    """A band of target rates (720p30 kbps, scaled to each clip like the ladder) whose BD
+    the charts report on its own: the BD of the whole curves integrated over the
+    qualities the point's own rungs with targets in the band (ends included) span
+    (jreal.regime_terms)."""
+    key: str
+    label: str
+    low_kbps: int
+    high_kbps: int
+
+    @property
+    def term(self) -> str:
+        """The per-clip term prefix (jreal.regime_terms)."""
+        return f"regime_{self.key}"
+
+
+#: The charts' rate regimes (results audit 2026-11-23, finding 2): the low rates the
+#: encoder is built for (the 150 / 300 / 600 rungs, and 40 / 75 where a clip has them),
+#: and 600 kbps to 4 Mbps (600 / 1200 / 2400 / 4000). The 600 rung belongs to both: a
+#: regime needs three rungs (jreal.BD_MIN_POINTS), so the upper regime only has the
+#: clips whose cap allows 2400 kbps. The band picks, by the point's own targets, which
+#: qualities to integrate over; both curves keep every point.
+RATE_REGIMES = (RateRegime("low", "up to 600 kbps", 0, 600),
+                RateRegime("upper", "600 kbps–4 Mbps", 600, 4000))
+#: A point is "over target" when its average rate exceeds its target by more than this
+#: (the same for every encoder: no key-loan deduction, no buffer allowance).
+OVER_TARGET_TOLERANCE = 0.10
+#: A point is "over one buffer" when its one-second leaky bucket, drained at the
+#: target, peaks above this many buffers (cbr_stats.replay_buffer, every encoder alike).
+ONE_BUFFER = 1.0
 #: Marks a point with clips chained through an intermediate encoder.
 CHAIN_MARK = "‡"
 #: Codec lineages: a chained clip prefers an intermediate of the point's own
@@ -153,7 +201,8 @@ LINEAGES = (frozenset({Codec.H264}), frozenset({Codec.HEVC, Codec.VVC}),
 #: The per-metric BD terms composed through the intermediate: the inputs of
 #: BD-J (jreal.headline_quality), of each metric's BD-rate, and of the reported
 #: metrics' (XPSNR; None unless both legs carry it).
-CHAINED_TERMS = tuple(f"{prefix}{metric}" for prefix in ("bd_", "low_")
+CHAINED_TERMS = tuple(f"{prefix}{metric}"
+                      for prefix in ("bd_", *(f"{r.term}_" for r in RATE_REGIMES))
                       for metric in jreal.HEADLINE_METRICS + jreal.REPORTED_METRICS)
 OUTPUT_STEM = "bd-vs-speed"
 #: Direct comparisons shown under the chart: (ours, reference), each BD on the
@@ -172,33 +221,64 @@ class ChainedClip:
 
 
 @dataclass(frozen=True)
+class RegimeBd:
+    """One point's BD terms in one rate regime (class-balanced over the clips that
+    reach the regime; `clips` counts them)."""
+    j: float | None
+    psnr_yuv: float | None
+    psnr_y: float | None
+    vmaf: float | None
+    msssim: float | None
+    clips: int
+
+
+@dataclass(frozen=True)
+class RateCounts:
+    """One point's rate checks over its chart clips, the same rule for every encoder:
+    `over_buffer` points peak above ONE_BUFFER, `over_target` points average more than
+    OVER_TARGET_TOLERANCE over their target, of `points` measured."""
+    over_buffer: int = 0
+    over_target: int = 0
+    points: int = 0
+
+    def text(self) -> str:
+        return (f"{self.over_buffer}/{self.points} pts over 1 buffer, {self.over_target} "
+                f"over target +{100 * OVER_TARGET_TOLERANCE:g}%")
+
+
+@dataclass(frozen=True)
 class ChartPoint:
     family: str
     label: str
     ours: bool
     bd_j: float | None
     bd_psnr: float | None
-    #: BD-rate on VMAF v1 alone, the same (full + low) / 2 as bd_j and bd_psnr.
+    #: BD-rate on VMAF v1 alone, over the same overlap as bd_j and bd_psnr.
     bd_vmaf: float | None
     iqr: tuple[float, float] | None
     scored: int
     clips: int
     missing_classes: tuple[str, ...]
-    rate_invalid: int
+    rate: RateCounts
     refused: int
     fps: float | None = None
     speed: float | None = None  # relative to the anchor (anchor = 1)
     chained: tuple[ChainedClip, ...] = ()
     #: BD-J over the directly compared clips only (equal to bd_j without chained clips).
     direct_bd_j: float | None = None
-    #: BD-rate on MS-SSIM alone, the same (full + low) / 2 as bd_j.
+    #: BD-rate on MS-SSIM alone, over the same overlap as bd_j.
     bd_msssim: float | None = None
     #: The fps is its default-tuned twin's (a metric-tuned point not yet timed itself).
     fps_borrowed: bool = False
-    #: BD-rate on XPSNR-YUV alone, the same (full + low) / 2, over the `xpsnr_clips`
-    #: of BD-J's clips where it can be computed (reported_pair; never part of BD-J).
+    #: BD-rate on XPSNR-YUV alone, over the `xpsnr_clips` of BD-J's clips where it can
+    #: be computed (reported_bd; never part of BD-J).
     bd_xpsnr: float | None = None
     xpsnr_clips: int = 0
+    #: BD-rate on luma PSNR alone (reported_bd), beside the 6:1:1 BD-PSNR-YUV.
+    bd_psnr_y: float | None = None
+    psnr_y_clips: int = 0
+    #: Each RATE_REGIMES key's terms.
+    regimes: dict[str, RegimeBd] = field(default_factory=dict)
 
     @property
     def flagged(self) -> bool:
@@ -230,8 +310,11 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
     # any other requested reference is a preset anchor by name (cbr.preset_anchor),
     # e.g. the independent test's x264-faster
     own_names = {n for n, _ in OURS}
-    built_in_profile = {n for n in wanted if tuned_base(n) in BUILT_IN_ANCHORS and n != tuned_base(n)}
-    extra = list(dict.fromkeys(n for n in [*(n for n, _ in REFERENCES + HARDWARE), *wanted]
+    listed = [*(n for n, _ in REFERENCES + HARDWARE), *wanted]
+    # a reference may itself be a profile of a built-in anchor (openh264-baseline~cabac)
+    built_in_profile = {n for n in listed if tuned_base(n) in BUILT_IN_ANCHORS
+                        and n != tuned_base(n)}
+    extra = list(dict.fromkeys(n for n in listed
                                if n not in BUILT_IN_ANCHORS and n not in own_names
                                and n not in built_in_profile))
     anchors = {f.name: f for f in anchor_families(paths, OPENH264_HARNESS, extra=extra)}
@@ -243,8 +326,11 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
     # a family on its recorded build (`presets_for`, a chart's record) is the one its points
     # were measured as: its name in that build's own preset files (a rung renamed since,
     # e.g. 0.5.0's `slow`, is today's `slower`; nanocodec.recorded_values)
-    ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets),
-                             recorded=name in presets_for)
+    # the pre-BP-3 charts coded ours at its shipped defaults (site.CHART_CONDITIONS)
+    ours = {name: replace(own_family(name, binaries.get(name, binary),
+                                     presets_for.get(name, presets),
+                                     recorded=name in presets_for),
+                          conditions=fairness.SHIPPED_DEFAULTS)
             for name, _ in OURS if name in wanted}
     unknown = [n for n in wanted if n not in anchors and n not in ours]
     if unknown:
@@ -260,6 +346,34 @@ def chart_clips(clipset: str | None) -> list[Clip]:
 
 def low_ladder(clip: Clip) -> list[int]:
     return clip_targets(clip, LOW_LADDER_KBPS)
+
+
+def upper_ladder(clip: Clip) -> list[int]:
+    return clip_targets(clip, UPPER_LADDER_KBPS)
+
+
+def chart_jobs(runner: Runner, families: list[Family], clips: list[Clip], frames: int,
+               rungs: tuple[int, ...] | None, low_clips: list[Clip]) -> list:
+    """Every encode of a chart's points: the real-use ladder (`rungs`: those indices),
+    the low rungs on `low_clips` and the upper rungs on every clip. The ONE job list:
+    the quality measurement and the timing plan (nceval.chart_timing) both take it."""
+    return (runner.points(families, clips, frames, rungs)
+            + runner.points(families, low_clips, frames, None, ladder=low_ladder)
+            + runner.points(families, clips, frames, None, ladder=upper_ladder))
+
+
+def with_extra_rungs(runner: Runner, label: str, curves: dict, families: list[Family],
+                     clips: list[Clip], low_clips: list[Clip], frames: int) -> dict:
+    """`curves` (the real-use ladder) with the low rungs on `low_clips` and the upper
+    rungs on every clip added (chart_jobs)."""
+    curves = dict(curves)
+    for extra in (runner.measure(f"{label} low rungs", families, low_clips, frames,
+                                 ladder=low_ladder) if low_clips else {},
+                  runner.measure(f"{label} upper rungs", families, clips, frames,
+                                 ladder=upper_ladder)):
+        for key, points in extra.items():
+            curves[key] = curves.get(key, []) + points
+    return curves
 
 
 def low_rung_clips(curves: dict, families: list[Family], clips: list[Clip]) -> list[Clip]:
@@ -281,11 +395,7 @@ def chart_curves(runner: Runner, families: list[Family], clips: list[Clip], fram
     rungs, so it re-uses the same points instead of asking for new ones."""
     curves = runner.measure(label, families, clips, frames, rungs)
     low = low_rung_clips(curves, judge or families, clips)
-    if low:
-        extra = runner.measure(f"{label} low rungs", families, low, frames, ladder=low_ladder)
-        for key, points in extra.items():
-            curves[key] = curves[key] + points
-    return curves, low
+    return with_extra_rungs(runner, label, curves, families, clips, low, frames), low
 
 
 def measure(args: argparse.Namespace) -> None:
@@ -301,21 +411,21 @@ def measure(args: argparse.Namespace) -> None:
     # the measured families record XPSNR: a stored point without it is re-measured
     runner = Runner(load_paths(), EVALUATION_GATE, args.workers, args.over_budget,
                     stored_ms_ssim=not args.rescore, prebuilt=args.prebuilt, xpsnr=True)
-    jobs = runner.points(families, clips, args.frames, args.rungs)
+    # Which clips need low rungs is judged on the stored curves of every family
+    # (any MS-SSIM protocol: the decision is about rate overlap), even on --rescore.
+    judge = Runner(load_paths(), EVALUATION_GATE, args.workers, args.over_budget,
+                   stored_ms_ssim=True, prebuilt=args.prebuilt)
+    low = expected_low_rung_clips(args, judge, families, clips)
+    jobs = chart_jobs(runner, families, clips, args.frames, args.rungs, low)
     minutes = estimate_minutes(runner.price(jobs))
     print(f"chart measure: {len(clips)} clips, {len(families)} families, {len(jobs)} points, "
           f"~{minutes:.0f} min", flush=True)
     if minutes > MAX_MINUTES and not args.over_budget:
         raise SystemExit(f"over the {MAX_MINUTES:g}-min budget: split with --part I/N "
                          f"(N >= {math.ceil(minutes / MAX_MINUTES)}) or fewer --points")
-    # Which clips need low rungs is judged on the stored curves of every family
-    # (any MS-SSIM protocol: the decision is about rate overlap), even on --rescore.
-    judge = Runner(load_paths(), EVALUATION_GATE, args.workers, args.over_budget,
-                   stored_ms_ssim=True, prebuilt=args.prebuilt)
-    low = expected_low_rung_clips(args, judge, families, clips)
     if low:  # one pool: the low rungs fill the ladder's drain instead of following it
         print(f"low rungs expected on {', '.join(c.name for c in low)}", flush=True)
-    runner.run_jobs(jobs + runner.points(families, low, args.frames, None, ladder=low_ladder))
+    runner.run_jobs(jobs)
     measure_low_rungs(args, runner, judge, families, clips)
     print("refused:", {k: sorted(v) for k, v in runner.refused.items()} or "none")
 
@@ -369,29 +479,49 @@ def binary_overrides(pairs: list[str]) -> dict[str, Path]:
 # --- quality ---------------------------------------------------------------------------
 
 def per_clip_j(row: dict) -> float | None:
-    """One clip's BD-J: the mean of its full-overlap and low-rate quality BD."""
-    if row.get("quality") is None or row.get("quality_low") is None:
-        return None
-    return (row["quality"] + row["quality_low"]) / 2
+    """One clip's BD-J: its full-overlap J quality (jreal.headline_quality `quality`)."""
+    return row.get("quality")
 
 
-def balanced_pair(per_clip: dict, full: str, low: str) -> float | None:
-    """(CB(full) + CB(low)) / 2, CB = class-balanced mean (jreal.aggregate)."""
-    values = [jreal.aggregate(per_clip, term)["balanced"] for term in (full, low)]
-    return None if None in values else sum(values) / 2
+def balanced(per_clip: dict, term: str) -> float | None:
+    """The class-balanced mean of one per-clip term (jreal.aggregate)."""
+    return jreal.aggregate(per_clip, term)["balanced"]
 
 
-def reported_pair(per_clip: dict, metric: str) -> tuple[float | None, int]:
-    """`balanced_pair` of a reported metric over the clips BD-J scores on which the
-    metric's BD can be computed, and how many those are (owner, 2026-11-18: on a few
-    clips a strong encoder's XPSNR curve does not overlap the zero line's at all; the
-    figure is shown with its clip count, so it is never silently another clip set).
-    BD-J itself stays over all its clips."""
-    usable = {clip: row for clip, row in per_clip.items() if row.get("j") is not None
-              and row.get(f"bd_{metric}") is not None and row.get(f"low_{metric}") is not None}
+def reported_bd(per_clip: dict, term: str) -> tuple[float | None, int]:
+    """`balanced` of a term over the clips BD-J scores on which it can be computed, and
+    how many those are (owner, 2026-11-18: on a few clips a strong encoder's XPSNR
+    curve does not overlap the zero line's at all; the figure is shown with its clip
+    count, so it is never silently another clip set). BD-J itself stays over all its
+    clips."""
+    usable = {clip: row for clip, row in per_clip.items()
+              if row.get("j") is not None and row.get(term) is not None}
     if not usable:
         return None, 0
-    return balanced_pair(usable, f"bd_{metric}", f"low_{metric}"), len(usable)
+    return balanced(usable, term), len(usable)
+
+
+def regime_bd(per_clip: dict, regime: RateRegime) -> RegimeBd:
+    """One point's terms in one rate regime, over the clips of BD-J's set that reach it
+    (its J quality is present)."""
+    reached = {clip: row for clip, row in per_clip.items()
+               if row.get("j") is not None and row.get(f"{regime.term}_quality") is not None}
+    if not reached:
+        return RegimeBd(None, None, None, None, None, 0)
+    value = lambda metric: balanced(reached, f"{regime.term}_{metric}")  # noqa: E731
+    luma = reported_bd(reached, f"{regime.term}_psnr_y")[0]
+    return RegimeBd(value("quality"), value("psnr_yuv"), luma, value("vmaf_v1"), value("ms_ssim"),
+                    len(reached))
+
+
+def rate_counts(curves: dict, family: str, clips: list[Clip]) -> RateCounts:
+    """RateCounts of `family`'s points on `clips` (every rung, the same rule for all)."""
+    points = [p for c in clips for p in curves.get((family, c.name), ()) if p.get("target_kbps")]
+    return RateCounts(
+        over_buffer=sum(1 for p in points if p["max_fullness"] > ONE_BUFFER),
+        over_target=sum(1 for p in points
+                        if p["kbps"] / p["target_kbps"] - 1 > OVER_TARGET_TOLERANCE),
+        points=len(points))
 
 
 def interquartile(values: list[float]) -> tuple[float, float] | None:
@@ -404,7 +534,8 @@ def interquartile(values: list[float]) -> tuple[float, float] | None:
 def per_clip_rows(curves: dict, anchor: str, test: str, clips: list[Clip],
                   paired: bool = False) -> dict[str, dict]:
     """compare's per-clip terms of `test` vs `anchor`, each with its BD-J (`j`)."""
-    rows = compare(curves, anchor, test, clips, paired=paired)
+    rows = compare(curves, anchor, test, clips, paired=paired,
+                   regimes={r.term: (r.low_kbps, r.high_kbps) for r in RATE_REGIMES})
     for row in rows.values():
         row["j"] = per_clip_j(row)
     return rows
@@ -418,15 +549,18 @@ def compose(first: float | None, second: float | None) -> float | None:
 
 
 def chained_row(to_intermediate: dict, intermediate_to_anchor: dict) -> dict:
-    """One clip's BD terms vs the anchor through an intermediate: every headline
-    metric's full and low-rate BD composed, then BD-J from them as for a direct row.
+    """One clip's BD terms vs the anchor through an intermediate: every metric's full and
+    per-regime BD composed, then BD-J from them as for a direct row.
 
-    Each leg's low-rate half is that leg's own (its anchor's lower log-rate half),
-    so the chained low-rate term approximates the direct one."""
+    Each leg's regime band is placed on that leg's own anchor's curve, so a chained
+    regime term approximates the direct one."""
     row = {"class": to_intermediate["class"]}
     for term in CHAINED_TERMS:
         row[term] = compose(to_intermediate.get(term), intermediate_to_anchor.get(term))
-    row.update(jreal.headline_quality(row))
+    for prefix in ("bd", *(r.term for r in RATE_REGIMES)):
+        values = [row[f"{prefix}_{m}"] for m in jreal.HEADLINE_METRICS]
+        quality = "quality" if prefix == "bd" else f"{prefix}_quality"
+        row[quality] = None if None in values else sum(values) / len(values)
     row["j"] = per_clip_j(row)
     return row
 
@@ -471,7 +605,10 @@ def chain_clip(curves: dict, anchor: str, test: Family, clip: Clip, families: li
         if family.name in (anchor, test.name) or direct[family.name][clip.name]["j"] is None:
             continue
         a, t = curves[(family.name, clip.name)], curves[(test.name, clip.name)]
-        leg = {"class": clip.content_class, **jreal.compare_clip(a, t)}
+        scale = rate_scale(clip)
+        leg = {"class": clip.content_class, **jreal.compare_clip(
+            a, t, regimes={r.term: (r.low_kbps * scale, r.high_kbps * scale)
+                           for r in RATE_REGIMES})}
         leg["j"] = per_clip_j(leg)
         overlap = min(jreal.curve_overlap(a, t),
                       jreal.curve_overlap(curves[(anchor, clip.name)], a))
@@ -488,27 +625,31 @@ def chain_clip(curves: dict, anchor: str, test: Family, clip: Clip, families: li
 
 
 def chart_point(test: Family, label: str, per_clip: dict[str, dict], clips: list[Clip],
-                runner: Runner, chained: dict[str, tuple[ChainedClip, dict]] | None = None
-                ) -> ChartPoint:
-    """One chart point from its direct per-clip rows and any chained clips' rows."""
+                runner: Runner, curves: dict,
+                chained: dict[str, tuple[ChainedClip, dict]] | None = None) -> ChartPoint:
+    """One chart point from its direct per-clip rows and any chained clips' rows; its rate
+    checks from its own points on `clips` (`curves`)."""
     chained = chained or {}
     rows = {clip: chained[clip][1] if clip in chained else row for clip, row in per_clip.items()}
-    bd_xpsnr, xpsnr_clips = reported_pair(rows, "xpsnr_yuv")
+    bd_xpsnr, xpsnr_clips = reported_bd(rows, "bd_xpsnr_yuv")
+    bd_psnr_y, psnr_y_clips = reported_bd(rows, "bd_psnr_y")
     scored = [row["j"] for row in rows.values() if row["j"] is not None]
     scored_classes = {row["class"] for row in rows.values() if row["j"] is not None}
     return ChartPoint(
         family=test.name, label=label, ours=test.own,
-        bd_j=balanced_pair(rows, "quality", "quality_low"),
-        bd_psnr=balanced_pair(rows, "bd_psnr_yuv", "low_psnr_yuv"),
-        bd_vmaf=balanced_pair(rows, "bd_vmaf_v1", "low_vmaf_v1"),
-        bd_msssim=balanced_pair(rows, "bd_ms_ssim", "low_ms_ssim"),
+        bd_j=balanced(rows, "quality"),
+        bd_psnr=balanced(rows, "bd_psnr_yuv"),
+        bd_vmaf=balanced(rows, "bd_vmaf_v1"),
+        bd_msssim=balanced(rows, "bd_ms_ssim"),
         bd_xpsnr=bd_xpsnr, xpsnr_clips=xpsnr_clips,
+        bd_psnr_y=bd_psnr_y, psnr_y_clips=psnr_y_clips,
+        regimes={r.key: regime_bd(rows, r) for r in RATE_REGIMES},
         iqr=interquartile(scored), scored=len(scored), clips=len(clips),
         missing_classes=tuple(sorted({c.content_class for c in clips} - scored_classes)),
-        rate_invalid=len(runner.unreachable.get(test.name, ())),
+        rate=rate_counts(curves, test.name, clips),
         refused=len(runner.refused.get(test.name, ())),
         chained=tuple(chained[clip][0] for clip in sorted(chained)),
-        direct_bd_j=balanced_pair(per_clip, "quality", "quality_low"))
+        direct_bd_j=balanced(per_clip, "quality"))
 
 
 def versus(curves: dict, anchor: str, test: Family, clips: list[Clip], runner: Runner,
@@ -516,7 +657,7 @@ def versus(curves: dict, anchor: str, test: Family, clips: list[Clip], runner: R
     """`test` vs `anchor` on the cached curves, directly, as one chart point
     (`paired`: ours vs ours, so rungs either arm overshot are dropped, as on the board)."""
     return chart_point(test, label, per_clip_rows(curves, anchor, test.name, clips, paired),
-                       clips, runner)
+                       clips, runner, curves)
 
 
 @dataclass(frozen=True)
@@ -569,7 +710,8 @@ def anchor_points(curves: dict, families: list[Family], clips: list[Clip], runne
         chained = {clip: links[family.name] for clip, links in rescued.items()
                    if family.name in links}
         rows = {c.name: direct[family.name][c.name] for c in used}
-        points.append(chart_point(family, labels[family.name], rows, used, runner, chained))
+        points.append(chart_point(family, labels[family.name], rows, used, runner, curves,
+                                  chained))
     excluded = [Excluded(c.name, c.content_class,
                          tuple(f.name for f in families if direct[f.name][c.name]["j"] is None),
                          tuple((f.name, direct[f.name][c.name]["j"]) for f in families[1:]))
@@ -618,13 +760,10 @@ def side_points(runner: Runner, quality: Quality, families: list[Family],
     through the chart's own families, as for a rescued clip (chain_clip); they never
     change the chart's clip set. Returns the points and every curve (chart's and side's)."""
     anchor = families[0].name
-    curves = {**quality.curves, **runner.measure("chart side points", side, clips, frames,
-                                                 rungs)}
-    if quality.low_rungs:
-        extra = runner.measure("chart side points low rungs", side, quality.low_rungs,
-                               frames, ladder=low_ladder)
-        for key, points in extra.items():
-            curves[key] = curves[key] + points
+    curves = {**quality.curves, **with_extra_rungs(
+        runner, "chart side points", runner.measure("chart side points", side, clips, frames,
+                                                    rungs),
+        side, clips, quality.low_rungs, frames)}
     direct = {f.name: per_clip_rows(curves, anchor, f.name, clips) for f in families}
     points = []
     for family in side:
@@ -636,7 +775,7 @@ def side_points(runner: Runner, quality: Quality, families: list[Family],
                 if link:
                     chained[clip.name] = link
         points.append(chart_point(family, labels[family.name], rows, quality.used, runner,
-                                  chained))
+                                  curves, chained))
     return points, curves
 
 
@@ -713,18 +852,22 @@ def second_anchor_points(runner: Runner, quality: Quality, curves: dict,
     the chart's clip set and rungs; a clip without a direct overlap is left out of
     that point (its clip count says so)."""
     return [chart_point(f, labels[f.name], per_clip_rows(curves, anchor, f.name, quality.used),
-                        quality.used, runner)
+                        quality.used, runner, curves)
             for f in families if f.name != anchor]
 
 
 def pairs_table(pairs: list[tuple[str, ChartPoint]]) -> str:
-    lines = ["| nanocodec | vs | BD-J | BD-PSNR-YUV | BD-VMAF v1 | per-clip IQR (BD-J) | clips |",
-             "|---|---|---:|---:|---:|---|---:|"]
+    regime_head = "".join(f" BD-J {r.label} (clips) |" for r in RATE_REGIMES)
+    lines = [f"| nanocodec | vs | BD-J |{regime_head} BD-PSNR-YUV | BD-PSNR-Y | BD-VMAF v1 "
+             "| BD-MS-SSIM | per-clip IQR (BD-J) | clips |",
+             "|---|---|---:|" + "---:|" * len(RATE_REGIMES) + "---:|---:|---:|---:|---|---:|"]
     for reference, p in pairs:
         iqr = f"{p.iqr[0]:+.1f} … {p.iqr[1]:+.1f}" if p.iqr else "n/a"
         mark = PARTIAL_MARK if p.partial else ""
-        lines.append(f"| {p.label} | {reference} | {fmt(p.bd_j)}{mark} | {fmt(p.bd_psnr)} | "
-                     f"{fmt(p.bd_vmaf)} | {iqr} | {p.scored}/{p.clips} |")
+        regimes = "".join(f"{regime_cell(p, r)} | " for r in RATE_REGIMES)
+        lines.append(f"| {p.label} | {reference} | {fmt(p.bd_j)}{mark} | {regimes}"
+                     f"{fmt(p.bd_psnr)} | {fmt(p.bd_psnr_y)} | {fmt(p.bd_vmaf)} | "
+                     f"{fmt(p.bd_msssim)} | {iqr} | {p.scored}/{p.clips} |")
     return "\n".join(lines) + "\n"
 
 
@@ -743,8 +886,27 @@ class SpeedPlatform:
 JETSON = SpeedPlatform("", "fps_jetson", "single-thread encode fps, 720p, one Jetson Orin "
                        "Nano core (log scale; faster →)",
                        "one Arm Cortex-A78AE core (NVIDIA Jetson Orin Nano)")
-X86 = SpeedPlatform("-x86", "fps_x86", "single-thread encode fps, 720p, one Ryzen 9 5950X "
-                    "core (log scale; faster →)", "one x86-64 core (AMD Ryzen 9 5950X)")
+X86 = SpeedPlatform("-x86", "fps_x86", "single-thread encode fps, one x86-64 core "
+                    "(log scale; faster →)", "one x86-64 core")
+
+
+def x86_platform(timing: dict) -> SpeedPlatform:
+    """X86 named by the machine the timing file says it was timed on."""
+    machine = timing.get("platform", "").split(",")[0].split(" (")[0].strip()
+    return replace(X86, axis=f"single-thread encode fps, one {machine} core (log scale; "
+                   "faster →)", core=f"one x86-64 core ({machine})") if machine else X86
+
+
+def speed_text(timing: dict) -> str:
+    """What a timing file timed, in one sentence."""
+    if timing.get("rate_mode") == "cbr":
+        clips = ", ".join(f"{c} at {k} kbps" for c, k in timing["clips"].items())
+        return (f"each encoder's own real-time CBR, the same encodes its quality points "
+                f"score, on {len(timing['clips'])} of the chart's clips ({clips}), "
+                f"{timing['frames']} frames, one key frame")
+    return (f"fixed-QP encodes (a quantizer per encoder landing near {timing.get('rung_kbps')} "
+            f"kbps) on {', '.join(timing.get('clips', []))}: a different encoder mode and "
+            "clips from the quality points (timing from before 2026-11-23)")
 
 
 def geomean(values: list[float]) -> float:
@@ -825,13 +987,36 @@ def fmt(value: float | None, spec: str = "+.1f", unit: str = "%") -> str:
     return "n/a" if value is None else f"{value:{spec}}{unit}"
 
 
+#: The CSV's rate-check columns (RateCounts).
+RATE_COLUMNS = ("over_buffer_points", "over_target_points", "rate_points")
+#: Per RATE_REGIMES key, its terms (RegimeBd) as CSV columns.
+REGIME_FIELDS = (("bd_j", "j"), ("bd_psnr_yuv", "psnr_yuv"), ("bd_psnr_y", "psnr_y"),
+                 ("bd_vmaf_v1", "vmaf"), ("bd_ms_ssim", "msssim"))
+REGIME_COLUMNS = tuple(column for r in RATE_REGIMES
+                       for column in (*(f"{name}_{r.key}_pct" for name, _ in REGIME_FIELDS),
+                                      f"clips_{r.key}"))
+
+
+def rate_values(p: ChartPoint) -> tuple[int, int, int]:
+    return p.rate.over_buffer, p.rate.over_target, p.rate.points
+
+
+def regime_values(p: ChartPoint) -> list[str | int]:
+    values: list[str | int] = []
+    for regime in RATE_REGIMES:
+        bd = p.regimes.get(regime.key, RegimeBd(None, None, None, None, None, 0))
+        values += ["" if getattr(bd, f) is None else f"{getattr(bd, f):.2f}"
+                   for _, f in REGIME_FIELDS] + [bd.clips]
+    return values
+
+
 def hardware_csv(points: list[ChartPoint], speeds: dict[str, HardwareSpeed]) -> str:
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     writer.writerow(["family", "label", "bd_j_pct", "bd_psnr_yuv_pct", "bd_vmaf_v1_pct",
                      "iqr_low_pct", "iqr_high_pct", "clips_scored", "clips",
                      "fps_aggregate", "aggregate_streams", "fps_encode_1stream",
-                     "fps_ffmpeg_pipeline", "flagged", "rate_invalid_points", "clips_chained",
+                     "fps_ffmpeg_pipeline", "flagged", *RATE_COLUMNS, "clips_chained",
                      "bd_j_direct_pct"])
     num = (lambda v, d: "" if v is None else f"{v:.{d}f}")
     for p in points:
@@ -841,7 +1026,7 @@ def hardware_csv(points: list[ChartPoint], speeds: dict[str, HardwareSpeed]) -> 
                          num(p.iqr and p.iqr[1], 2), p.scored, p.clips,
                          num(speed and speed.aggregate, 1), speed.streams if speed else "",
                          num(speed and speed.encode, 1), num(speed and speed.pipeline, 1),
-                         int(p.flagged), p.rate_invalid, len(p.chained),
+                         int(p.flagged), *rate_values(p), len(p.chained),
                          num(p.direct_bd_j, 2)])
     return out.getvalue()
 
@@ -852,18 +1037,21 @@ def csv_text(points: list[ChartPoint], front: list[ChartPoint],
     writer = csv.writer(out, lineterminator="\n")
     writer.writerow(["family", "label", "ours", "bd_j_pct", "bd_psnr_yuv_pct", "bd_vmaf_v1_pct", "iqr_low_pct",
                      "iqr_high_pct", "clips_scored", "clips", platform.column,
-                     "speed_vs_anchor", "pareto", "flagged", "rate_invalid_points",
+                     "speed_vs_anchor", "pareto", "flagged", *RATE_COLUMNS,
                      "clips_chained", "bd_j_direct_pct", "chained", "bd_xpsnr_yuv_pct",
-                     "xpsnr_clips"])
+                     "xpsnr_clips", "bd_psnr_y_pct", "psnr_y_clips", "bd_ms_ssim_pct",
+                     *REGIME_COLUMNS])
     for p in points:
         num = (lambda v, d: "" if v is None else f"{v:.{d}f}")
         chained = ";".join(f"{c.clip}:{c.intermediate}:{c.j:.2f}" for c in p.chained)
         writer.writerow([p.family, p.label, int(p.ours), num(p.bd_j, 2), num(p.bd_psnr, 2), num(p.bd_vmaf, 2),
                          num(p.iqr and p.iqr[0], 2), num(p.iqr and p.iqr[1], 2), p.scored,
                          p.clips, num(p.fps, 2), num(p.speed, 3), int(p in front),
-                         int(p.flagged), p.rate_invalid, len(p.chained),
+                         int(p.flagged), *rate_values(p), len(p.chained),
                          num(p.direct_bd_j, 2), chained, num(p.bd_xpsnr, 2),
-                         p.xpsnr_clips if p.bd_xpsnr is not None else ""])
+                         p.xpsnr_clips if p.bd_xpsnr is not None else "",
+                         num(p.bd_psnr_y, 2), p.psnr_y_clips if p.bd_psnr_y is not None else "",
+                         num(p.bd_msssim, 2), *regime_values(p)])
     return out.getvalue()
 
 
@@ -874,11 +1062,15 @@ def markdown_table(points: list[ChartPoint], front: list[ChartPoint],
     x86_front = {p.family for p in pareto(x86 or [])}
     x86_head = " fps (x86, 1 core) | x86 speed vs x264 medium |" if x86 else ""
     chains = any(p.chained for p in points)  # the direct-only column only beside chains
+    regime_head = "".join(f" BD-J {r.label} (clips) |" for r in RATE_REGIMES)
     lines = ["| Encoder | BD-J |" + (" BD-J direct only |" if chains else "")
-             + " BD-PSNR-YUV | BD-VMAF v1 | per-clip IQR (BD-J) "
-             f"| fps (Jetson, 1 core) | speed vs x264 medium |{x86_head} clips | notes |",
-             "|---|---:|" + ("---:|" if chains else "") + "---:|---:|---|---:|---:|"
-             + ("---:|---:|" if x86 else "") + "---:|---|"]
+             + f"{regime_head} BD-PSNR-YUV | BD-PSNR-Y | BD-VMAF v1 | BD-MS-SSIM "
+             "| per-clip IQR (BD-J) "
+             f"| fps (Jetson, 1 core) | speed vs x264 medium |{x86_head} clips | rate checks "
+             "| notes |",
+             "|---|---:|" + ("---:|" if chains else "") + "---:|" * len(RATE_REGIMES)
+             + "---:|---:|---:|---:|---|---:|---:|"
+             + ("---:|---:|" if x86 else "") + "---:|---|---|"]
     for p in sorted(points, key=lambda p: (p.bd_j is None, p.bd_j or 0)):
         name = f"**{p.label}**" if p.ours else p.label
         iqr = f"{p.iqr[0]:+.1f} … {p.iqr[1]:+.1f}" if p.iqr else "n/a"
@@ -894,20 +1086,25 @@ def markdown_table(points: list[ChartPoint], front: list[ChartPoint],
                          f"reliable overlap: mean over the other classes")
         if p.chained:
             notes.append(f"{CHAIN_MARK} {chained_count(p)}")
-        if p.rate_invalid:
-            notes.append(f"{p.rate_invalid} rate-invalid pts")
         if p.refused:
             notes.append(f"{p.refused} pts refused")
         if p.fps_borrowed:
             notes.append("fps of the default-tuned run; re-timing pending")
         direct = (fmt(p.direct_bd_j) if p.chained else "") + " | " if chains else ""
+        regimes = "".join(f"{regime_cell(p, r)} | " for r in RATE_REGIMES)
         lines.append(f"| {name} | {fmt(p.bd_j)}{CHAIN_MARK if p.chained else ''} | {direct}"
-                     f"{fmt(p.bd_psnr)} | {fmt(p.bd_vmaf)} | {iqr} | "
+                     f"{regimes}{fmt(p.bd_psnr)} | {fmt(p.bd_psnr_y)} | {fmt(p.bd_vmaf)} | "
+                     f"{fmt(p.bd_msssim)} | {iqr} | "
                      f"{fmt(p.fps, '.1f', '')} | {fmt(p.speed, '.2f', '×')} | "
                      + (f"{fmt(on_x86[p.family].fps, '.1f', '')} | "
                         f"{fmt(on_x86[p.family].speed, '.2f', '×')} | " if x86 else "")
-                     + f"{p.scored}/{p.clips} | {'; '.join(notes)} |")
+                     + f"{p.scored}/{p.clips} | {p.rate.text()} | {'; '.join(notes)} |")
     return "\n".join(lines) + "\n"
+
+
+def regime_cell(p: ChartPoint, regime: RateRegime) -> str:
+    bd = p.regimes.get(regime.key)
+    return "n/a" if bd is None or bd.j is None else f"{fmt(bd.j)} ({bd.clips})"
 
 
 def hardware_table(points: list[ChartPoint], speeds: dict[str, HardwareSpeed],
@@ -925,22 +1122,22 @@ def hardware_table(points: list[ChartPoint], speeds: dict[str, HardwareSpeed],
              "read-convert-upload pipeline (the earlier figure, bound by that pipeline). "
              "The x86 chart plots the aggregate, never on the Pareto front; the Jetson "
              "chart leaves them out.\n",
-             "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | per-clip IQR (BD-J) "
+             "| Encoder | BD-J | BD-PSNR-YUV | BD-PSNR-Y | BD-VMAF v1 | per-clip IQR (BD-J) "
              "| aggregate fps (N streams) | 1-stream encode fps | 1-stream fps via ffmpeg "
              "pipeline | clips | notes |",
-             "|---|---:|---:|---:|---|---:|---:|---:|---:|---|"]
+             "|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---|"]
     for p in sorted(points, key=lambda p: (p.bd_j is None, p.bd_j or 0)):
         iqr = f"{p.iqr[0]:+.1f} … {p.iqr[1]:+.1f}" if p.iqr else "n/a"
         notes = [f"{CHAIN_MARK} {chained_count(p)}"] if p.chained else []
         if p.flagged:
             notes.append("FLAGGED: too little curve overlap")
-        if p.rate_invalid:
-            notes.append(f"{p.rate_invalid} rate-invalid pts")
+        notes.append(p.rate.text())
         speed = speeds.get(p.family)
         rates = (f"{speed.aggregate:.0f} ({speed.streams}) | {speed.encode:.0f} | "
                  f"{fmt(speed.pipeline, '.0f', '')}" if speed else "n/a | n/a | n/a")
         lines.append(f"| {p.label} | {fmt(p.bd_j)}{CHAIN_MARK if p.chained else ''} | "
-                     f"{fmt(p.bd_psnr)} | {fmt(p.bd_vmaf)} | {iqr} | {rates} | "
+                     f"{fmt(p.bd_psnr)} | {fmt(p.bd_psnr_y)} | {fmt(p.bd_vmaf)} | {iqr} | "
+                     f"{rates} | "
                      f"{p.scored}/{p.clips} | {'; '.join(notes)} |")
     return "\n".join(lines) + "\n"
 
@@ -988,9 +1185,9 @@ def tuned_table(tuned: list[ChartPoint], defaults: list[ChartPoint],
              "nothing there (x264 ultrafast already runs without psy and AQ; x265 ultrafast "
              "and superfast give identical results at both tunes; openh264's harness codes "
              "the same bytes with adaptive quantisation on).\n",
-             "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips "
+             "| Encoder | BD-J | BD-PSNR-YUV | BD-PSNR-Y | BD-VMAF v1 | BD-MS-SSIM | clips "
              "| BD-J vs its charted setting (direct, 95% interval) |",
-             "|---|---:|---:|---:|---:|---:|---|"]
+             "|---|---:|---:|---:|---:|---:|---:|---|"]
     for base in dict.fromkeys(tuned_base(p.family) for p in tuned):
         rows = [by_family.get(base)] + [p for p in tuned if tuned_base(p.family) == base]
         for p in rows:
@@ -1003,7 +1200,8 @@ def tuned_table(tuned: list[ChartPoint], defaults: list[ChartPoint],
                 else " worse" if gain.low is not None and gain.low > 0
                 else " not distinguishable")
             lines.append(f"| {p.label}{mark} | {fmt(p.bd_j)} | {fmt(p.bd_psnr)} | "
-                         f"{fmt(p.bd_vmaf)} | {fmt(p.bd_msssim)} | {p.scored}/{p.clips} | "
+                         f"{fmt(p.bd_psnr_y)} | {fmt(p.bd_vmaf)} | {fmt(p.bd_msssim)} | "
+                         f"{p.scored}/{p.clips} | "
                          f"{verdict} |")
     return "\n".join(lines) + "\n"
 
@@ -1014,12 +1212,12 @@ def second_anchor_table(points: list[ChartPoint], anchor_label: str) -> str:
              f"The same points with {anchor_label} as the zero line instead of the chart's "
              "own: direct BD-rate on the chart's clips and rungs (a clip "
              "without a direct overlap is left out of that row).\n",
-             "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips |",
-             "|---|---:|---:|---:|---:|---:|"]
+             "| Encoder | BD-J | BD-PSNR-YUV | BD-PSNR-Y | BD-VMAF v1 | BD-MS-SSIM | clips |",
+             "|---|---:|---:|---:|---:|---:|---:|"]
     for p in sorted(points, key=lambda p: (p.bd_j is None, p.bd_j or 0)):
         name = f"**{p.label}**" if p.ours else p.label
-        lines.append(f"| {name} | {fmt(p.bd_j)} | {fmt(p.bd_psnr)} | {fmt(p.bd_vmaf)} | "
-                     f"{fmt(p.bd_msssim)} | {p.scored}/{p.clips} |")
+        lines.append(f"| {name} | {fmt(p.bd_j)} | {fmt(p.bd_psnr)} | {fmt(p.bd_psnr_y)} | "
+                     f"{fmt(p.bd_vmaf)} | {fmt(p.bd_msssim)} | {p.scored}/{p.clips} |")
     return "\n".join(lines) + "\n"
 
 
@@ -1286,7 +1484,7 @@ def updated_line(meta: dict, date: str) -> str:
 
 
 #: The chart's footnote on what its bars and markers show.
-BARS_NOTE = ("Bars: interquartile range of per-clip BD. Every point is averaged over the same "
+BARS_NOTE = ("Bars: interquartile range of per-clip BD, not a confidence interval. Every point is averaged over the same "
              "clips (see the table for excluded clips). Hollow: flagged.")
 
 
@@ -1496,11 +1694,10 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
 
 #: The methodology's x86 speed paragraph (with --timing-x86).
 X86_NOTE = """
-- **x86 speed (`{stem}-x86.svg`, `.csv`):** the same streams (same quantizers and
-  binaries' x86 builds) on a Ryzen 9 5950X, a shared machine, so each run is pinned
-  to one logical CPU (one per physical core) and every point is paired with an x264
-  medium run on the same CPU in interleaved rounds (machine load slows both); the
-  minimum of {rounds} rounds per clip, after a warm-up."""
+- **x86 speed (`{stem}-x86.svg`, `.csv`):** the same encodes on a rented x86 machine
+  (the timing file's platform), each run pinned to one physical core and paired with
+  x264 medium and SVT-AV1 M13 on the same core in interleaved rounds; per clip the
+  median per-round time ratio, up to {rounds} rounds, after a warm-up."""
 
 METHODOLOGY = """\
 ## Method
@@ -1511,30 +1708,44 @@ METHODOLOGY = """\
 - **Points:** every encoder in its own real-time rate control at the same targets:
   ours in CBR (`--bitrate`, 1 s buffer; build {commit}, its presets), openh264
   realtime (medium complexity, CAVLC), SVT-AV1 {svt} `--rtc --rc 2` (CBR, 1 s buffer),
-  x264 / x265 {x265} as the anchor (zero latency, no B-frames, one thread / no pools),
+  x264 / x265 {x265} as the anchor (zero latency, no B-frames, one thread / no pools;
+  x265 at its default AVX2 dispatch, AVX-512 off by its own default: `--asm avx512`
+  changes its stream on AVX-512 machines, so the same command would code different
+  streams on the quality and timing machines),
   libvpx {libvpx} VP9 and libaom {libaom} AV1 in realtime CBR (`--rt --end-usage=cbr
-  --lag-in-frames=0 --threads=1`, `--cpu-used` as named, 1 s buffer, frame dropping off).
-  A point is counted as rate-invalid (it stays on its curve) when its 1 s leaky bucket,
-  drained at the target, peaks above 1.5x the buffer, or its average rate exceeds the
-  target by more than 10% plus the buffer's share of the window (+30% at 150 frames);
-  ours are judged without the first key frame's outstanding loan (up to about 1.4
-  buffers, repaid over the following seconds), the references with a strict 1 s VBV.
-  The BD axis uses every bit. No encoder here drops frames; ours do not code input
+  --lag-in-frames=0 --threads=1 --aq-mode=3`, `--cpu-used` as named, 1 s buffer, frame
+  dropping off).
+- **Rate checks, one rule for every encoder:** the "rate checks" column counts, over a
+  point's chart clips and every rung, the points whose 1 s leaky bucket (drained at the
+  target, every bit counted, nothing deducted for anyone's key frame) peaks above
+  {one_buffer:g} buffer, and the points whose average rate is more than
+  {over_target:.0%} over the target. Every point stays on its curve; the BD axis uses
+  every bit. No encoder here drops frames; ours do not code input
   frames that would not change the picture (holds: no bits, scored as the repeated
   picture), the references code every frame.
-- **Ladder and clips:** 150 / 300 / 600 / 1200 kbps at 720p30, scaled by pixel rate and
-  capped at half the source bitrate; {clips} natural VAL clips in {classes} content
+- **Ladder and clips:** 150 / 300 / 600 / 1200 kbps at 720p30 and the upper rungs
+  {upper} kbps, scaled by (pixel rate / 720p30)^0.75 and capped at half the source
+  bitrate (a rung over the cap is not coded); {clips} natural VAL clips in {classes} content
   classes, {frames} frames, one key frame. Metrics are scored on our encoder's
   reconstruction (the references' on their standard-decoded output); the build passed
   the landing conformance check (short streams of every shipped preset decoded by two
   standard decoders and ours, bit-exact with the reconstruction); the chart streams
   themselves are not each decoded.
-- **Quality axis:** BD-rate on the achieved-rate curves (PCHIP, reliable-overlap rule).
-  BD-J = (CB(Q_full) + CB(Q_low)) / 2, Q = mean BD-rate over PSNR-YUV, VMAF v1 and MS-SSIM,
-  CB = mean over content classes of the class means, Q_low = the lower-rate half of
-  the overlap (the J_real quality composite, eval/nceval/jreal.py). BD-PSNR-YUV and BD-VMAF v1 are the
-  same with PSNR-YUV or VMAF v1 alone. The bars are the interquartile
-  range of the per-clip BD-J. **Low rungs:** x264 medium undershoots its targets and has
+- **Quality axis:** BD-rate on the achieved-rate curves (PCHIP, reliable-overlap rule),
+  over each clip's whole overlap with the zero line. BD-J = CB(Q), Q = the mean of the
+  BD-rates on PSNR-YUV (6:1:1), VMAF v1 and MS-SSIM (equal thirds), CB = mean over
+  content classes of the class means; no part of the rate range is counted twice.
+  BD-PSNR-YUV, BD-PSNR-Y (luma alone), BD-VMAF v1 and BD-MS-SSIM are the same on one
+  metric. VMAF is model vmaf_v1.0.16_3d0h on every frame at each clip's own size (not
+  the 1080p protocol of published VMAF figures). The bars are the interquartile range of
+  the per-clip BD-J.
+- **Rate regimes:** {regimes}: each the same BD terms on the same curves, integrated
+  only over the qualities that the encoder's own rungs with targets in the band span
+  (720p30 kbps, scaled per clip like the ladder; the 600 kbps rung is in both): the bits
+  saved at the qualities the encoder reaches in that band. A regime needs three of the
+  encoder's rungs in it, so the upper
+  regime has only the clips whose cap allows the 2400 kbps rung; each regime's clip count
+  is in its column. **Low rungs:** x264 medium undershoots its targets and has
   lower quality than most points at a given rate, so on some clips (static,
   bodycam_airport) their whole curves lay above its quality range, with no reliable
   overlap. On every clip where some point has no reliable overlap on the ladder above,
@@ -1554,15 +1765,13 @@ METHODOLOGY = """\
 - **Speed axis:** {platform}, encode CPU time per frame (rusage), median of three
   rotated rounds after a warm-up, the anchor timed in the same lock window as the point
   or, since the core's clock is locked and the anchor repeats within ~0.3 ms/frame
-  across lock windows, one fresh anchor timing reused for several points; fixed
-  quantizer chosen on the PC to land each encoder at about {rung} kbps
-  (150 frames, 720p) on lowlight_city_night, crowd_mot17_09 and bodycam_bc1;
+  across lock windows, one fresh anchor timing reused for several points; timed:
+  {speed};
   fps = 1000 / geometric-mean ms per frame; speed = geometric mean of the per-clip
   anchor / point time ratios.{x86_note}
 - **Caveats:** our VVC and AV2 are young (rate control and quality work are
   ongoing); the main speed axis is single-core on one ARM core (x86 ratios differ,
-  mostly in SIMD coverage); fixed-QP timing switches x264/x265 adaptive quantisation off
-  (cheaper than their CBR mode by a few percent); the quality axis is 11 short clips,
+  mostly in SIMD coverage); the quality axis is 11 short clips,
   so differences of a few percent are within the per-clip spread, and these VAL clips
   were also used to rank our candidate changes (see heldout-chart-*.md for 71 other
   clips); the reference encoders' real-time modes are tuned for latency, not for these
@@ -1581,7 +1790,7 @@ METHODOLOGY = """\
   values set by hand, decoded pictures identical); every other setting as above. Only
   x264 and x265 run at visually tuned defaults on this chart: SVT-AV1 `--rtc` already
   runs its PSNR tune (it offers no other in low delay), libaom and libvpx default to
-  `--tune psnr` with AQ off, and openh264 and NVENC run with adaptive quantisation off. They are scored on the chart's clip set and rungs and never change
+  `--tune psnr` (with cyclic-refresh AQ, their real-time setting), and openh264 and NVENC run with adaptive quantisation off. They are scored on the chart's clip set and rungs and never change
   it. The libaom and libvpx `--tune ssim` and openh264 adaptive-quantisation variants
   are measured the same way. A variant is plotted only where it is distinguishably
   better for its encoder than the charted setting: its direct paired BD-J against that
@@ -1599,10 +1808,8 @@ METHODOLOGY = """\
 """
 
 
-#: Under a chart on another clip set (render --clipset): where its speed axis comes from.
-CLIPSET_SPEED_NOTE = ("Quality on the {clips} clips of `{clipset}`. Speed is the main chart's: "
-                      "timed on its three timing clips (lowlight_city_night, crowd_mot17_09, "
-                      "bodycam_bc1; tools/dev/anchor_chart_timing.py), not on these clips.\n")
+#: Under a chart on another clip set (render --clipset): its clips and what was timed.
+CLIPSET_SPEED_NOTE = "Quality on the {clips} clips of `{clipset}`. Speed timed: {speed}.\n"
 
 
 def weighting_table(quality: Quality, families: list[Family], labels: dict[str, str]) -> str:
@@ -1650,9 +1857,14 @@ def render(args: argparse.Namespace) -> None:
     clips = chart_clips(args.clipset)
     # untouched families keep their stored numbers; a point measured here (a low rung
     # the measuring session did not know a clip needed) records XPSNR like the rest
+    # and nothing else is measured here unless --measure-missing: the measure step codes
+    # and scores every point on rented machines, and this PC carries no compute (owner,
+    # 2026-11-21: 0.6.0's held-out render coded 15,878 tuned-reference points here,
+    # serially, ~45 min); the hardware encoders run only on this PC's GPU
     runner = Runner(load_paths(), EVALUATION_GATE, args.workers, args.over_budget,
                     stored_ms_ssim=True, prebuilt=args.prebuilt, xpsnr=True,
-                    stored_xpsnr=True)
+                    stored_xpsnr=True, cached_only=not args.measure_missing,
+                    may_measure=HARDWARE_FAMILIES)
     quality = quality_points(runner, families, clips, args.frames, args.rungs, judge)
     points, pairs, excluded = quality.points, quality.pairs, quality.excluded
     tuned_names = [n for n in (args.tuned.split(",") if args.tuned else [name for name, _ in TUNED])
@@ -1710,17 +1922,19 @@ def render(args: argparse.Namespace) -> None:
         stem.with_name(stem.name + "-hardware.csv").write_text(hardware_csv(hardware, speeds))
     meta = json.loads(Path(args.meta).read_text()) if args.meta else {}
     stamp = updated_line(meta, args.date or datetime.date.today().isoformat())
-    subtitle = args.subtitle or (f"quality: {len(clips)} clips of {Path(args.clipset).stem}; "
-                                 "speed: the main chart's timing clips" if args.clipset else "")
-    speed_note = ([CLIPSET_SPEED_NOTE.format(clips=len(clips), clipset=Path(args.clipset).stem)]
-                  if args.clipset else [])
+    timing = json.loads(Path(args.timing).read_text()) if args.timing else {}
+    subtitle = args.subtitle or (f"quality: {len(clips)} clips of {Path(args.clipset).stem}"
+                                 if args.clipset else "")
+    speed_note = ([CLIPSET_SPEED_NOTE.format(clips=len(clips), clipset=Path(args.clipset).stem,
+                                             speed=speed_text(timing))]
+                  if args.clipset else [f"Speed timed: {speed_text(timing)}.\n"] if timing else [])
     zero_note = ([f"**Zero line: {zero_label}** (the default-tuned x264 medium is a row of its "
                   "own). The low rungs are the default chart's, so the points are the same.\n"]
                  if zero != ANCHOR else [])
     page = [f"# {args.title}\n", f"<sub>{stamp}</sub>\n", *zero_note, *speed_note,
             f"![bitrate vs speed]({stem.name}.svg)\n",
-            f"**{buffer_note.HEADING}.** {buffer_note.STATEMENT}\n",
-            *([f"The same on x86 (one Ryzen 9 5950X core):\n\n"
+            f"**{buffer_note.HEADING}.** {buffer_note.statement()}\n",
+            *([f"The same on x86 ({x86_platform(x86_timing).core}):\n\n"
                f"![bitrate vs x86 speed]({stem.name}{X86.suffix}.svg)\n"] if x86 else []),
             markdown_table(points, front, x86), coverage_note(quality),
             weighting_table(quality, families, dict(OURS + REFERENCES)),
@@ -1732,15 +1946,21 @@ def render(args: argparse.Namespace) -> None:
             *([excluded_table(excluded, points, zero, zero_label)] if excluded else []),
             "## Selected pairs\n\nDirect BD-rate of our encoders against the reference "
             "encoders and against each other, on the same points (no anchor in between; "
-            "ours vs ours drops the rungs either arm overshot, as on the board).\n", pairs_table(pairs)]
+            "ours vs ours drops the rungs either arm overshot, as on the board). Each reference "
+            "here is at its default tuning, not the metric tuning (`--tune psnr` / `ssim`) the chart "
+            "also plots where it scores better: against a metric-tuned twin our saving is smaller "
+            "(the chart's own rows give both). Bars and the IQR column are the per-clip "
+            "interquartile range, not a confidence interval.\n", pairs_table(pairs)]
     if meta:
-        timing = json.loads(Path(args.timing).read_text()) if args.timing else {}
         page.append(METHODOLOGY.format(
             clips=len(clips), classes=len({c.content_class for c in clips}),
             frames=args.frames, min_scored=MIN_SCORED_FRACTION,
             low=" / ".join(map(str, LOW_LADDER_KBPS)),
+            upper=" / ".join(map(str, UPPER_LADDER_KBPS)),
+            regimes="; ".join(f"{r.label} ({r.key})" for r in RATE_REGIMES),
+            one_buffer=ONE_BUFFER, over_target=OVER_TARGET_TOLERANCE,
             tuned_summary=tuned_summary(twins, gains),
-            platform=timing.get("platform", "n/a"), rung=timing.get("rung_kbps", "n/a"),
+            platform=timing.get("platform", "n/a"), speed=speed_text(timing),
             x86_note=(X86_NOTE.format(stem=stem.name, rounds=X86_ROUNDS)
                       + meta.get("x86_timing_note", "")) if x86 else "",
             **meta))
@@ -1752,7 +1972,8 @@ def render(args: argparse.Namespace) -> None:
         x86_stem = stem.with_name(stem.name + X86.suffix)
         x86_front = pareto(x86)
         x86_stem.with_suffix(".csv").write_text(csv_text(x86, x86_front, X86))
-        x86_stem.with_suffix(".svg").write_text(svg_chart(x86, x86_front, subtitle, X86,
+        x86_stem.with_suffix(".svg").write_text(svg_chart(x86, x86_front, subtitle,
+                                                          x86_platform(x86_timing),
                                                           stamp, hardware=hardware,
                                                           hardware_footnote=hardware_note(speeds),
                                                           anchor_label=zero_label))
@@ -1803,6 +2024,9 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--tuned", help="comma-separated tuned reference families to show "
                    "(default: every one in TUNED)")
     r.add_argument("--out", default="../docs/results")
+    r.add_argument("--measure-missing", action="store_true",
+                   help="measure points missing from the store here (a local chart); by "
+                        "default render refuses, listing them (realuse.MissingPoints)")
     r.add_argument("--subtitle", default="")
     r.add_argument("--title", default="Bitrate vs encode speed")
     r.add_argument("--date", help="the date in the outputs' Updated line (default: today)")

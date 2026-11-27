@@ -1,0 +1,8 @@
+# intra-cheap batch 7: batch 5's stacks again with their key CPU (batch 5 ran past the run cap)
+null: planner.intra_bias=1050
+x: hevc.intra_nxn=0 hevc.intra_tu_depth=0
+x_krd12: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 hevc.intra_nxn=0 hevc.intra_tu_depth=0
+x_krd12_lrd4_m1100: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 hevc.intra_nxn=0 hevc.intra_tu_depth=0 decision.intra_rd_modes=4 decision.intra_rd_margin=1100
+x_krd12_lrd8_m1100: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 hevc.intra_nxn=0 hevc.intra_tu_depth=0 decision.intra_rd_modes=8 decision.intra_rd_margin=1100
+x_krd22_g150_lrd8_m1200: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 hevc.intra_nxn=0 hevc.intra_tu_depth=0 decision.intra_rd_modes=8 decision.intra_rd_margin=1200
+x_krd12_rdc2: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 hevc.intra_nxn=0 hevc.intra_tu_depth=0 hevc.intra_rd_candidates=2

@@ -13,8 +13,8 @@ another, so each table's ours and references share one quiet session:
   prepare      node (the official v22.21.1 build), readiness: every binary loads, version
                stamps, the CPU model, its SIMD flags and the pinning;
   pipe-clean   decoder_speed.py one round on two streams;
-  decoders     tools/dev/decoder_speed.py (the site's decoder table: our PGO build
-               against FFmpeg, dav1d, vpxdec, VVdeC and avmdec), --decoder-rounds rounds;
+  decoders     tools/dev/decoder_speed.py (our --pgo build against FFmpeg's decoders and
+               dav1d through libavcodec, both timed in process), --decoder-rounds rounds;
   yardstick    tools/web/ffmpeg_wasm_yardstick.py (our browser module against
                ffmpeg.wasm), --yardstick-rounds rounds; then, with --compare-pkg, the
                same module encodes of each compared module interleaved with --pkg's;
@@ -46,8 +46,9 @@ from aws_timing import (INSTANCES, TIMING_MACHINE, isa_command,  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 DATA = Path.home() / "nanocodec-data"
 ANCHORS = DATA / "anchors/x86_64/bin"
-#: The reference decoders decoder_speed.py runs (from the x86 anchors).
-DECODERS = ("ffmpeg-decode", "dav1d", "vpxdec", "vvdecapp", "avmdec")
+#: The x86 anchors the jobs run: decoder_speed.py's libavcodec-bench, bench.py's decoders.
+DECODERS = ("libavcodec-bench", "vpx-bench", "vvdec-bench", "avm-bench", "dav2d-bench",
+            "ffmpeg-decode", "dav1d", "vpxdec", "vvdecapp", "avmdec")
 #: bench.py finds dav1d on PATH; its `ffmpeg ... -f null -` goes to the pinned decode-only
 #: FFmpeg (no null muxer) through FFMPEG_WRAPPER, writing rawvideo to /dev/null instead.
 PATH_NAMES = {"dav1d": "dav1d"}
@@ -86,7 +87,7 @@ def cut(source: Path, frames: int, frame_bytes: int, target: Path) -> None:
             raise SystemExit(f"zstd failed on {source}")
 
 
-def stage(stage_dir: Path, args) -> None:
+def stage(stage_dir: Path, args, clip_sets: dict[str, tuple[str, ...]]) -> None:
     """The upload: bin/ (ours and the references), repo/ (the scripts at their repository
     paths), data/ (bench.py's NC_DATA_ROOT: clip sets and 150-frame cuts), pkg/ (each
     module), core/ (@ffmpeg/core's dist/umd) and streams/."""
@@ -115,7 +116,7 @@ def stage(stage_dir: Path, args) -> None:
     (stage_dir / "streams").mkdir()
     for directory in args.streams:
         (stage_dir / "streams" / directory.name).symlink_to(directory.resolve())
-    for setname, names in CLIP_SETS.items():
+    for setname, names in clip_sets.items():
         index = {c["name"]: c for c in json.loads((DATA / f"clips/{setname}.json").read_text())["clips"]}
         clips = [{**index[n], "yuv": f"clips/{setname}/{n}.yuv"} for n in names]
         (stage_dir / "data/clips" / setname).mkdir(parents=True)
@@ -134,7 +135,7 @@ def jobs(args) -> list[tuple[str, str]]:
     pin = f"taskset -c {CPU}"
     streams = " ".join(f"streams/{d.name}" for d in args.streams)
     decoder = (f"python3 repo/tools/dev/decoder_speed.py {{rounds}} {{out}} --nanocodec bin/nanocodec-pgo "
-               f"--anchors bin --streams {{streams}}")
+               f"--anchors bin --repeats {args.decoder_repeats} --streams {{streams}}")
     yuv = "data/clips/{0}/{1}.yuv".format(*YARDSTICK_CLIP)
     yardstick = (f"{pin} python3 repo/tools/web/ffmpeg_wasm_yardstick.py --pkg {{pkg}}/relaxed "
                  f"--core core/dist/umd/ffmpeg-core.js --streams streams/all --yuv {yuv} --cpu {CPU} "
@@ -179,7 +180,7 @@ def jobs(args) -> list[tuple[str, str]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--pgo", type=Path, required=True, help="our x86 PGO CLI (decoder table)")
+    parser.add_argument("--pgo", type=Path, required=True, help="our x86 CLI timed in the decoder table")
     parser.add_argument("--plain", type=Path, required=True, help="our x86 plain CLI (browser table)")
     parser.add_argument("--pkg", type=Path, required=True, help="tools/web/build.sh output dir")
     parser.add_argument("--compare-pkg", type=lambda s: tuple(s.split("=", 1)), action="append",
@@ -187,7 +188,8 @@ def main() -> None:
     parser.add_argument("--streams", type=Path, nargs="+", required=True)
     parser.add_argument("--ffmpeg-core", type=Path, required=True, help="the @ffmpeg/core package directory")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--decoder-rounds", type=int, default=7)
+    parser.add_argument("--decoder-rounds", type=int, default=5)
+    parser.add_argument("--decoder-repeats", type=int, default=3, help="timed passes per process")
     parser.add_argument("--yardstick-rounds", type=int, default=7)
     parser.add_argument("--table-rounds", type=int, default=3)
     parser.add_argument("--skip", default="", help="comma list of jobs to leave out")
@@ -205,7 +207,9 @@ def main() -> None:
         return
     if args.stage_dir.exists() and any(args.stage_dir.iterdir()):
         sys.exit(f"{args.stage_dir} is not empty")
-    stage(args.stage_dir, args)
+    # the browser table reads every clip set, the yardstick only its clip
+    tables = any(name.startswith("table") for name, _ in todo)
+    stage(args.stage_dir, args, CLIP_SETS if tables else {YARDSTICK_CLIP[0]: YARDSTICK_CLIP[1:]})
     region, arch = INSTANCES[TIMING_MACHINE]
     spec = SessionSpec(region=region, instance_type=TIMING_MACHINE, arch=arch,
                        purpose="decoder and browser speed tables (results site)",

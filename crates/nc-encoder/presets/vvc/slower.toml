@@ -37,3 +37,42 @@ vvc.sao_search_interval = 1
 # Layer propagation (the Default's flat-stream form, docs/handoff/temporal-lambda.md)
 # stays off: this rung was measured without it (on ff40ad7bf, before it reached slow).
 layers.propagation = 0
+# Key RD search behind a 1.5 gate, two levels each way, periodic keys 3 QP
+# units finer (nceval.train against 3ebca4466, draw 2026-11-22, k 0): L3 J
+# -1.25% [-1.71, -0.81], final check (600 f) -0.76% [-1.00, -0.51], no guard.
+planner.key_rd_split = 1
+planner.key_rd_margin = 1.5
+planner.key_rd_deeper = 2
+planner.key_rd_shallower = 2
+rate.key_level_finer = 3
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-0.67 / -0.34 %).
+rate.key_cap_buffer_first = 0.8
+
+# G2 motion / sub-pel exit shifts: VVC medium's (DEFAULT_PARAMS, 2026-11-23)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0
+
+# The second reference by the cheap ranking at fixed QP, as before: VVC's fixed-QP profile
+# took the full decision (`refs.second_full = 1`, 2026-11-24, Brief 20) screened on medium
+# and slow only; this rung is not yet screened with it.
+fixed_qp.refs.second_full = 0

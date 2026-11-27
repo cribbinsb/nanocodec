@@ -63,5 +63,9 @@
  "2026-11-21": [
   "Release 0.6.0. Every codec gains a slow rung between the Default and the former slow (now slower; veryslow on HEVC and VVC), the Default plus a gated RD partition search; VVC gains a fast rung (the former fast is now faster), and H.264's fast end is re-pointed along the front (the former fast is now faster, the former faster retired).",
   "The zero-trial split selector on most Defaults and fast rungs; temporal layer propagation on flat streams (HEVC slow/veryslow, VVC Default/slow, AV1 slow/slower, AV2 Default); loop-filter search effort by usage; rate-aware coefficient trimming (quant.rd_trim) on the fast rungs; a held second reference (AV1 and VP9 slow)."
+ ],
+ "2026-11-22": [
+  "Key frames: finer periodic keys and the key trellis (AV1, AV2) on the medium rungs; key-frame RD partition searches on the slow and slower rungs (VVC veryslow L3 J -1.27 %, AV2 slower -1.31 %), HEVC medium in a cheap form (margin gate 1.85). The medium key RD search adopted earlier in the day was reverted (8b77a4e89) for its cost at this chart's one key in 150 frames. Rate control: one buffer is a hard bound (re-code ceiling 1.15); the key cap at a full buffer where it passed at both key shares (e84ef02c7).",
+  "H.264: DC-aware inter vector ranking on fast to slower (L3 J -0.11 to -1.52 %); AV1: the inter-chroma skip's zero-residual veto (Default L3 -0.46 %, Slow -0.70 %); noise-relative zero-vector gates by default; at fixed QP only (not this chart), a period-8 QP cadence for AV1, VP9 and AV2 medium to slower (-0.65 to -1.84 %)."
  ]
 }

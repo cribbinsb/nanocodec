@@ -270,13 +270,12 @@ impl VvcBackend {
             &predicted[..]
         };
         let quant = self.quantizers().plane(PlaneIndex::Y, false);
-        let mut contexts = self.contexts.coeff.clone();
         let (sse, coefficient_bits) = crate::inter_cost::residual_cost(
             &self.dsp,
             s.frame.source,
             cu,
             prediction,
-            &mut contexts,
+            &self.contexts.coeff,
             (quant, self.tools.max_tb_log2()),
             &mut self.planning_scratch.borrow_mut(),
         );

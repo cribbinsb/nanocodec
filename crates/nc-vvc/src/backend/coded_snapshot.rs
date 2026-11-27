@@ -22,9 +22,11 @@
 
 use nc_common::{Picture, PlaneIndex};
 use nc_encoder::Block;
+use nc_encoder::trial_pixels::TrialPixels;
 
 use super::VvcBackend;
 use crate::coeff::BitCost;
+use crate::contexts::Contexts;
 use crate::inter_intra::InterIntraSearch;
 use crate::motion::{CuSnapshot, Predictors};
 use crate::quant_group::QuantGroup;
@@ -34,11 +36,11 @@ use crate::syntax;
 #[derive(Debug, Default)]
 pub(super) struct CodedSnapshot {
     block: Option<Block>,
-    planes: [Vec<u8>; 3],
+    pixels: TrialPixels,
     grid: CuSnapshot,
     items: usize,
     /// The items recorded since the snapshot this one follows (a snapshot
-    /// taken after a trial, [`VvcBackend::save_coded_after`]).
+    /// taken after a trial, moved out when the kept coding is undone).
     added_items: Vec<syntax::Item>,
     group: Option<QuantGroup>,
     /// The block-QP map's cells over the rectangle (with block QP).
@@ -56,6 +58,12 @@ impl CodedSnapshot {
     /// The number of items recorded when the snapshot was taken.
     pub(super) fn items(&self) -> usize {
         self.items
+    }
+
+    /// Move the current winner's syntax aside before undoing it.
+    pub(super) fn keep_items(&mut self, items: &mut Vec<syntax::Item>) {
+        debug_assert!(self.added_items.is_empty());
+        self.added_items.extend(items.drain(self.items..));
     }
 
     /// Note only `block` and the number of `items` recorded: what a
@@ -93,14 +101,11 @@ impl VvcBackend {
         recon: &Picture,
         snapshot: &mut CodedSnapshot,
     ) {
-        for (plane, saved) in PlaneIndex::ALL.into_iter().zip(&mut snapshot.planes) {
-            let (x, y, w, h) = plane_rect(plane, block);
-            let view = recon.plane(plane).view();
-            saved.clear();
-            for row in 0..h {
-                saved.extend_from_slice(&view.row(y + row)[x..x + w]);
-            }
-        }
+        snapshot.pixels.save(
+            &self.dsp,
+            recon,
+            (block.x, block.y, block.width(), block.height()),
+        );
         self.motion.save_cu(block, &mut snapshot.grid);
         snapshot.block = Some(*block);
         snapshot.items = self.items.len();
@@ -124,22 +129,16 @@ impl VvcBackend {
         snapshot: &mut CodedSnapshot,
     ) {
         let block = before.block();
-        for (plane, saved) in PlaneIndex::ALL.into_iter().zip(&mut snapshot.planes) {
-            let (x, y, w, h) = plane_rect(plane, &block);
-            let view = recon.plane(plane).view();
-            saved.clear();
-            for row in 0..h {
-                saved.extend_from_slice(&view.row(y + row)[x..x + w]);
-            }
-        }
+        snapshot.pixels.save(
+            &self.dsp,
+            recon,
+            (block.x, block.y, block.width(), block.height()),
+        );
         self.motion
             .save_cu_after(&block, &before.grid, &mut snapshot.grid);
         snapshot.block = Some(block);
         snapshot.items = before.items;
         snapshot.added_items.clear();
-        snapshot
-            .added_items
-            .extend_from_slice(&self.items[before.items..]);
         snapshot.group = self.quant_group();
         self.save_qp_cells(&block, &mut snapshot.qp_cells);
         snapshot.current = self.current;
@@ -147,18 +146,16 @@ impl VvcBackend {
     }
 
     /// Put back the coded state `snapshot` noted.
-    pub(super) fn restore_coded(&mut self, recon: &mut Picture, snapshot: &CodedSnapshot) {
+    pub(super) fn restore_coded(&mut self, recon: &mut Picture, snapshot: &mut CodedSnapshot) {
         let block = snapshot.block();
-        for (plane, saved) in PlaneIndex::ALL.into_iter().zip(&snapshot.planes) {
-            let (x, y, w, _) = plane_rect(plane, &block);
-            let mut view = recon.plane_mut(plane).view_mut();
-            for (row, samples) in saved.chunks_exact(w).enumerate() {
-                view.row_mut(y + row)[x..x + w].copy_from_slice(samples);
-            }
-        }
+        snapshot.pixels.restore(
+            &self.dsp,
+            recon,
+            (block.x, block.y, block.width(), block.height()),
+        );
         self.motion.restore_cu(&block, &snapshot.grid);
         self.items.truncate(snapshot.items);
-        self.items.extend_from_slice(&snapshot.added_items);
+        self.items.append(&mut snapshot.added_items);
         self.restore_quant_group(snapshot.group);
         if let Some(block_qp) = self.block_qp.as_mut() {
             block_qp.map.restore(&block, &snapshot.qp_cells);
@@ -178,9 +175,68 @@ impl VvcBackend {
         source: &Picture,
         recon: &Picture,
     ) -> f32 {
-        let mut contexts = self.contexts.clone();
+        self.coded_parts(block, first, source, recon).cost()
+    }
+
+    /// What the CUs recorded from item `first` on code
+    /// (`CodecBackend::node_trial_summary`): read from the recorded levels,
+    /// which an undo truncates with the items, so it holds only the coding in
+    /// place.
+    pub(super) fn coded_summary(&self, first: usize) -> nc_encoder::NodeTrialSummary {
+        let mut summary = nc_encoder::NodeTrialSummary::default();
+        let max_tb_log2 = self.tools.max_tb_log2();
+        let codings = self.items[first..].iter().filter_map(|item| match item {
+            syntax::Item::Leaf { coding, .. } => Some(coding),
+            syntax::Item::Ctu { .. } | syntax::Item::Split { .. } => None,
+        });
+        for coding in codings {
+            let units = crate::transform_tree::coded_units(
+                &coding.cu,
+                coding.isp,
+                &coding.levels,
+                max_tb_log2,
+            );
+            let luma_samples = |tu: &Block| match coding.isp {
+                Some(_) => tu.area(),
+                None => crate::transform_tree::plane_samples(tu, 0),
+            };
+            for (index, (tu, coded)) in units.as_slice().iter().enumerate() {
+                for (plane, &flag) in coded.iter().enumerate() {
+                    if !flag {
+                        continue;
+                    }
+                    let levels = match (plane, coding.isp) {
+                        (0, _) => crate::transform_tree::unit_levels(
+                            &coding.levels[0],
+                            index,
+                            luma_samples(tu),
+                        ),
+                        // ISP's chroma is one block, coded with the last part.
+                        (_, Some(_)) => &coding.levels[plane][..],
+                        (_, None) => crate::transform_tree::unit_levels(
+                            &coding.levels[plane],
+                            index,
+                            crate::transform_tree::plane_samples(tu, plane),
+                        ),
+                    };
+                    let nonzero = levels.iter().filter(|&&level| level != 0).count();
+                    let luma_log2 = tu.log2_width.max(tu.log2_height);
+                    summary.add_block((plane == 0).then_some(luma_log2), nonzero);
+                }
+            }
+        }
+        summary
+    }
+
+    /// The estimated bits of `items` (CTU markers cost nothing here),
+    /// priced with `contexts`, which they adapt.
+    pub(super) fn estimated_item_bits(
+        &self,
+        items: &[syntax::Item],
+        contexts: &mut Contexts,
+    ) -> f32 {
         let mut bits = BitCost::default();
-        for item in &self.items[first..] {
+        for item in items {
             match item {
                 &syntax::Item::Split {
                     allowed,
@@ -201,21 +257,38 @@ impl VvcBackend {
                     coding,
                 } => syntax::block(
                     &mut bits,
-                    &mut contexts,
+                    contexts,
                     &self.dsp,
                     (self.inter, self.references.syntax.active, self.tools),
                     neighbours,
                     coding,
                 ),
-                syntax::Item::Ctu { .. } => unreachable!("a trial lies inside one CTU"),
+                syntax::Item::Ctu { .. } => {}
             }
         }
+        bits.0
+    }
+
+    /// [`Self::coded_cost`] in its distortion and bits.
+    pub(super) fn coded_parts(
+        &self,
+        block: &Block,
+        first: usize,
+        source: &Picture,
+        recon: &Picture,
+    ) -> nc_encoder::NodeTrialParts {
+        let mut contexts = self.contexts.clone();
+        let bits = self.estimated_item_bits(&self.items[first..], &mut contexts);
         let [luma, cb, cr] = PlaneIndex::ALL.map(|plane| {
             let (x, y, w, h) = plane_rect(plane, block);
             nc_encoder::block_sse_rect(&self.dsp, (source, recon), plane, (x, y, w, h)) as f32
         });
         let lambda = self.lambda;
         let chroma_weight = lambda / self.quantizers().chroma_lambda(lambda);
-        luma + chroma_weight * (cb + cr) + lambda * bits.0
+        nc_encoder::NodeTrialParts {
+            distortion: luma + chroma_weight * (cb + cr),
+            bits,
+            lambda,
+        }
     }
 }

@@ -173,3 +173,18 @@ def _git(*args: str) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return done.stdout.strip() if done.returncode == 0 else None
+
+
+def clean_commit(binary: Path) -> str | None:
+    """The commit a clean build was made from: its `--version` stamp, else the COMMIT
+    file of the cached copy it sits in (None: a dirty or unstamped build, which the
+    rented-core CPU step cannot rebuild)."""
+    try:
+        info = build_info(binary)
+    except (OSError, subprocess.SubprocessError):
+        info = {}
+    if info.get("commit") and not info.get("dirty"):
+        return info["commit"]
+    marker = binary.parent / "COMMIT"
+    return marker.read_text().strip() or None if marker.is_file() and not info.get("dirty") \
+        else None

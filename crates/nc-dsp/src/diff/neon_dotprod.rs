@@ -229,6 +229,68 @@ pub(super) unsafe fn block_sums<const W: usize>(
     }
 }
 
+/// Compute the half-pel cross with one shared source sum and separate
+/// prediction sums and squared differences.
+///
+/// # Safety
+/// The caller validates the source, the complete cross window and dotprod.
+#[target_feature(enable = "neon,dotprod")]
+pub(super) unsafe fn halfpel_cross<const W: usize>(
+    src: &[u8],
+    ss: usize,
+    rf: &[u8],
+    rs: usize,
+    h: usize,
+) -> [Variance; 4] {
+    let zero = vdupq_n_u32(0);
+    let mut cross = HalfpelCross {
+        source_sum: zero,
+        pred_sum: [zero; 4],
+        squares: [zero; 4],
+    };
+    // SAFETY: the validated source and reference extents are forwarded.
+    unsafe { super::halfpel_cross::measure::<_, W>(&mut cross, src, ss, rf, rs, h) };
+    let source_sum = vaddvq_u32(cross.source_sum) as i32;
+    core::array::from_fn(|i| Variance {
+        sse: vaddvq_u32(cross.squares[i]),
+        sum: source_sum - vaddvq_u32(cross.pred_sum[i]) as i32,
+    })
+}
+
+struct HalfpelCross {
+    source_sum: uint32x4_t,
+    pred_sum: [uint32x4_t; 4],
+    squares: [uint32x4_t; 4],
+}
+
+impl super::halfpel_cross::Cross for HalfpelCross {
+    type Pixels = uint8x16_t;
+    const LANES: usize = 16;
+
+    #[inline]
+    #[target_feature(enable = "neon")]
+    unsafe fn load(ptr: *const u8) -> Self::Pixels {
+        // SAFETY: the kernel contract covers these 16 bytes.
+        unsafe { vld1q_u8(ptr) }
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn update(&mut self, source: Self::Pixels, middle: Self::Pixels, taps: [Self::Pixels; 4]) {
+        // SAFETY: this accumulator is used only by the dotprod wrapper.
+        unsafe {
+            let ones = vdupq_n_u8(1);
+            self.source_sum = dot(self.source_sum, source, ones);
+            for (i, tap) in taps.into_iter().enumerate() {
+                let pred = vrhaddq_u8(middle, tap);
+                let difference = vabdq_u8(source, pred);
+                self.squares[i] = dot(self.squares[i], difference, difference);
+                self.pred_sum[i] = dot(self.pred_sum[i], pred, ones);
+            }
+        }
+    }
+}
+
 /// The checked reference window holds W+1 bytes per row for h+1 rows;
 /// source holds W bytes per row for h rows. W is16,32 or64.
 #[target_feature(enable = "neon,dotprod")]

@@ -19,6 +19,10 @@ const BPS_PER_KBPS: u64 = 1000;
 
 /// Everything needed to create a session (the C `nc_encoder_config`).
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one field per independent C API flag"
+)]
 pub struct SessionConfig {
     /// Output format.
     pub codec: Codec,
@@ -46,6 +50,8 @@ pub struct SessionConfig {
     pub buffer_ms: u32,
     /// Drop frames that would overflow the buffer at the maximum quantizer.
     pub frame_drop: bool,
+    /// Never pass one buffer (`RateControlConfig::strict_buffer`).
+    pub strict_buffer: bool,
     /// Colour and timing signalling.
     pub signal: StreamSignal,
     /// AV1 film grain synthesis (`nc_av1::enable_film_grain`); other codecs
@@ -78,6 +84,7 @@ impl SessionConfig {
             peak_kbps: 0,
             buffer_ms: 0,
             frame_drop: false,
+            strict_buffer: false,
             signal: StreamSignal::default(),
             film_grain: false,
             film_grain_strength: None,
@@ -97,6 +104,7 @@ impl SessionConfig {
                 config.buffer_ms = self.buffer_ms;
             }
             config.frame_drop = self.frame_drop;
+            config.strict_buffer = self.strict_buffer;
             config
         })
     }

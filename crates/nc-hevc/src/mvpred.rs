@@ -1,17 +1,21 @@
-//! Motion vector prediction for P slices with one or two reference
-//! pictures (the second is `refs.second`'s high-quality frame): the merge
-//! candidate list of `MaxNumMergeCand` entries (HEVC §8.5.3.2.2–8.5.3.2.5)
-//! and the AMVP predictor list (§8.5.3.2.6–8.5.3.2.7) of a 2Nx2N prediction
-//! unit, with temporal (TMVP) candidates from the collocated picture, the
-//! slice's first reference (§8.5.3.2.8).
+//! Motion vector prediction for P slices and generalised B slices (both
+//! reference lists hold the same past pictures, in the same order) with one
+//! or two reference pictures (the second is `refs.second`'s high-quality
+//! frame): the merge candidate list of `MaxNumMergeCand` entries (HEVC
+//! §8.5.3.2.2–8.5.3.2.5, with B slices' combined bi-predictive and
+//! two-list zero candidates) and the AMVP predictor list of either list
+//! (§8.5.3.2.6–8.5.3.2.7) of a 2Nx2N prediction unit, with temporal (TMVP)
+//! candidates from the collocated picture, list 0's first reference
+//! (§8.5.3.2.8).
 //!
 //! Every reference is a short-term picture, so a neighbour pointing at the
 //! other reference gives an AMVP candidate scaled by POC distance, and two
 //! merge candidates are the same motion when their vectors and reference
-//! indices are equal. Temporal vectors are scaled by POC distance when the
-//! collocated picture's own reference is at a different distance
-//! (`collocated.rs`). The derivation follows our decoder's
-//! (`dec/mvpred.rs`), which is checked against HM.
+//! indices are equal. Both lists holding the same pictures, a reference
+//! index names the same picture in either list. Temporal vectors are
+//! scaled by POC distance when the collocated picture's own reference is at
+//! a different distance (`collocated.rs`). The derivation follows our
+//! decoder's (`dec/mvpred.rs`), which is checked against HM.
 
 use nc_encoder::Mv;
 
@@ -30,12 +34,87 @@ pub const MAX_MERGE_CANDIDATES: usize = 5;
 pub const DEFAULT_MERGE_CANDIDATES: usize = 2;
 /// AMVP lists always have two entries.
 pub const AMVP_CANDIDATES: usize = 2;
+/// `l0CandIdx` / `l1CandIdx` of combined bi-predictive merge candidates
+/// (§8.5.3.2.4, Table 8-6), as many as `numOrigMergeCand` allows.
+const COMBINATIONS: [(usize, usize); 12] = [
+    (0, 1),
+    (1, 0),
+    (0, 2),
+    (2, 0),
+    (1, 2),
+    (2, 1),
+    (0, 3),
+    (3, 0),
+    (1, 3),
+    (3, 1),
+    (2, 3),
+    (3, 2),
+];
 
-/// The motion of a P-slice prediction unit: its vector and `ref_idx_l0`.
+/// Reference list 0 or 1 (`X` of `mvLX`, `refIdxLX`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum List {
+    /// `L0`.
+    L0,
+    /// `L1` (B slices).
+    L1,
+}
+
+/// One list's motion: a vector and its reference index.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListMotion {
+    pub mv: Mv,
+    pub ref_idx: u8,
+}
+
+/// The motion of a prediction unit: list 0's vector and `ref_idx_l0` (every
+/// inter unit coded here predicts from list 0), and list 1's of a
+/// bi-predicted unit in a B slice.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Motion {
     pub mv: Mv,
     pub ref_idx: u8,
+    /// List 1's motion (`PRED_BI`); `None` for `PRED_L0`.
+    pub l1: Option<ListMotion>,
+}
+
+impl Motion {
+    /// Uni-prediction from list 0 at `mv` into reference `ref_idx`.
+    #[must_use]
+    pub fn uni(mv: Mv, ref_idx: u8) -> Self {
+        Self {
+            mv,
+            ref_idx,
+            l1: None,
+        }
+    }
+
+    /// This motion as uni-prediction from list 0, when it predicts the same
+    /// samples: itself, or a bi-predicted unit whose two halves are the same
+    /// picture and vector (default bi-prediction of two equal predictions,
+    /// `(2a + 64) >> 7`, is uni-prediction's `(a + 32) >> 6`, HEVC eq.
+    /// 8-250 and 8-251 at 8 bits).
+    #[must_use]
+    pub fn as_uni(self) -> Option<Self> {
+        let uni = Self::uni(self.mv, self.ref_idx);
+        match self.l1 {
+            None => Some(self),
+            Some(l1) if l1.mv == self.mv && l1.ref_idx == self.ref_idx => Some(uni),
+            Some(_) => None,
+        }
+    }
+
+    /// The motion of `list`, if the unit predicts from it.
+    #[must_use]
+    pub fn of(&self, list: List) -> Option<ListMotion> {
+        match list {
+            List::L0 => Some(ListMotion {
+                mv: self.mv,
+                ref_idx: self.ref_idx,
+            }),
+            List::L1 => self.l1,
+        }
+    }
 }
 
 /// The slice's reference list: the POC distance from the current picture
@@ -103,10 +182,7 @@ impl Spatial {
         let motion = |xn: isize, yn: isize| {
             grid.reference_cell(&availability, xn, yn)
                 .filter(|c| !c.intra)
-                .map(|c| Motion {
-                    mv: c.mv,
-                    ref_idx: c.ref_idx,
-                })
+                .map(crate::grid::Cell::motion)
         };
         let (xi, yi, s) = (x as isize, y as isize, size as isize);
         Self {
@@ -119,22 +195,31 @@ impl Spatial {
     }
 }
 
-/// The temporal candidate of the PU at `(x, y)` for a reference at
-/// `cur_distance` (§8.5.3.2.8): the collocated picture's vector at the
-/// bottom-right of the PU (if it lies in the picture and in the same CTB
-/// row), otherwise at its centre. `None` if that block is intra or there is
-/// no collocated picture.
+/// The temporal candidate of list `list` of the PU at `(x, y)` for a
+/// reference at `cur_distance` (§8.5.3.2.8): the collocated picture's
+/// vector at the bottom-right of the PU (if it lies in the picture and in
+/// the same CTB row), otherwise at its centre. `None` if that block is intra
+/// or there is no collocated picture. Every reference precedes the current
+/// picture (`NoBackwardPredFlag` 1, §8.5.3.2.9), so a bi-predicted
+/// collocated block gives list `list`'s vector and a uni-predicted one its
+/// list 0 vector.
 #[must_use]
 pub fn temporal_candidate(
     collocated: Option<&Collocated<'_>>,
     (x, y, size): (usize, usize, usize),
-    cur_distance: i32,
+    (cur_distance, list): (i32, List),
 ) -> Option<Mv> {
     let collocated = collocated?;
     let col = collocated.grid;
     let at = |cx: usize, cy: usize| {
         let cell = col.at((cx >> COL_LOG2) << COL_LOG2, (cy >> COL_LOG2) << COL_LOG2);
-        (!cell.intra).then(|| collocated.scale(cell.mv, cell.ref_idx, cur_distance))
+        (!cell.intra).then(|| {
+            let source = cell.motion().of(list).unwrap_or(ListMotion {
+                mv: cell.mv,
+                ref_idx: cell.ref_idx,
+            });
+            collocated.scale(source.mv, source.ref_idx, cur_distance)
+        })
     };
     let (br_x, br_y) = (x + size, y + size);
     let same_ctb_row = (y >> LOG2_CTB) == (br_y >> LOG2_CTB);
@@ -145,17 +230,18 @@ pub fn temporal_candidate(
 }
 
 /// A PU's merge candidate list: the first `len` entries (`MaxNumMergeCand`,
-/// the slice header's value), vectors and reference indices kept apart so
-/// that the vectors alone are a slice (the engine's candidate vectors).
+/// the slice header's value), list 0's vectors kept apart so that they
+/// alone are a slice (the engine's candidate vectors).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MergeList {
     vectors: [Mv; MAX_MERGE_CANDIDATES],
     ref_indices: [u8; MAX_MERGE_CANDIDATES],
+    second: [Option<ListMotion>; MAX_MERGE_CANDIDATES],
     len: usize,
 }
 
 impl MergeList {
-    /// The candidates' vectors, in `merge_idx` order.
+    /// The candidates' list 0 vectors, in `merge_idx` order.
     #[must_use]
     pub fn vectors(&self) -> &[Mv] {
         &self.vectors[..self.len]
@@ -167,129 +253,247 @@ impl MergeList {
         Motion {
             mv: self.vectors[index],
             ref_idx: self.ref_indices[index],
+            l1: self.second[index],
         }
     }
 
-    /// The first index whose candidate is `motion`.
+    /// The first index whose candidate predicts the same samples as
+    /// `motion` ([`Motion::as_uni`] for uni-prediction: B slices' zero and
+    /// temporal candidates predict from both lists), with that candidate.
     #[must_use]
     #[inline]
-    pub fn index_of(&self, motion: Motion) -> Option<usize> {
-        (0..self.len).find(|&i| self.get(i) == motion)
+    pub fn predicting(&self, motion: Motion) -> Option<(usize, Motion)> {
+        (0..self.len)
+            .map(|i| (i, self.get(i)))
+            .find(|&(_, candidate)| {
+                candidate == motion || (motion.l1.is_none() && candidate.as_uni() == Some(motion))
+            })
     }
 
     /// The candidates, in `merge_idx` order.
     pub fn motions(&self) -> impl Iterator<Item = Motion> + '_ {
         (0..self.len).map(|i| self.get(i))
     }
+
+    fn set(&mut self, index: usize, motion: Motion) {
+        self.vectors[index] = motion.mv;
+        self.ref_indices[index] = motion.ref_idx;
+        self.second[index] = motion.l1;
+    }
 }
 
-/// The merge list and the AMVP list for reference `amvp_ref` of the 2Nx2N
-/// PU at `(x, y)`, sharing one derivation of the spatial neighbours.
-/// Exact; with region availability in `Spatial::of`, HEVC Fast P frames
-/// fell 1.2% in instructions (callgrind, crowd09 QP 47).
+/// What the candidate lists of one slice depend on beyond the picture's
+/// motion: `MaxNumMergeCand`, the reference list and the slice type.
+#[derive(Debug, Clone, Copy)]
+pub struct SliceLists<'a> {
+    /// `MaxNumMergeCand`.
+    pub merge_len: usize,
+    /// The POC distances of the (shared) reference list.
+    pub references: &'a ReferenceDistances,
+    /// A generalised B slice (combined bi-predictive and two-list
+    /// candidates).
+    pub bi: bool,
+}
+
+/// The merge list and the AMVP list for reference `amvp_ref` of list 0 of
+/// the 2Nx2N PU at `(x, y)`, sharing one derivation of the spatial
+/// neighbours. Exact; with region availability in `Spatial::of`, HEVC Fast
+/// P frames fell 1.2% in instructions (callgrind, crowd09 QP 47).
 #[must_use]
 pub fn candidate_lists(
     grid: &Grid,
     col: Option<&Collocated<'_>>,
     (x, y, size): (usize, usize, usize),
-    (merge_len, references, amvp_ref): (usize, &ReferenceDistances, u8),
+    (slice, amvp_ref): (SliceLists<'_>, u8),
 ) -> (MergeList, [Mv; AMVP_CANDIDATES]) {
     let spatial = Spatial::of(grid, x, y, size);
     let pu = (x, y, size);
-    // The merge list's temporal candidate is for `ref_idx` 0; so is the AMVP
-    // list's when it predicts the first reference: derive it once.
+    let references = slice.references;
+    // The merge list's list 0 temporal candidate is for `ref_idx` 0; so is
+    // the AMVP list's when it predicts the first reference: derive it once.
     let first_once = std::cell::OnceCell::new();
-    let first = || *first_once.get_or_init(|| temporal_candidate(col, pu, references.distance(0)));
+    let first = || {
+        *first_once.get_or_init(|| temporal_candidate(col, pu, (references.distance(0), List::L0)))
+    };
     let amvp_temporal = || {
         if amvp_ref == 0 {
             first()
         } else {
-            temporal_candidate(col, pu, references.distance(amvp_ref))
+            temporal_candidate(col, pu, (references.distance(amvp_ref), List::L0))
         }
     };
+    let temporal = || {
+        let l1 = || temporal_candidate(col, pu, (references.distance(0), List::L1));
+        first().map(|mv| Motion {
+            mv,
+            ref_idx: 0,
+            l1: slice
+                .bi
+                .then(l1)
+                .flatten()
+                .map(|mv| ListMotion { mv, ref_idx: 0 }),
+        })
+    };
     (
-        merge_list(&spatial, first, (merge_len, references.count())),
-        amvp_list(&spatial, amvp_temporal, references, amvp_ref),
+        merge_list(&spatial, temporal, slice),
+        amvp_list(&spatial, amvp_temporal, references, (List::L0, amvp_ref)),
     )
 }
 
+/// The AMVP list of reference `target` of `list` for the 2Nx2N PU at
+/// `(x, y)` (list 1's half of a bi-predicted unit).
+#[must_use]
+pub fn amvp_candidates(
+    grid: &Grid,
+    col: Option<&Collocated<'_>>,
+    (x, y, size): (usize, usize, usize),
+    references: &ReferenceDistances,
+    (list, target): (List, u8),
+) -> [Mv; AMVP_CANDIDATES] {
+    let spatial = Spatial::of(grid, x, y, size);
+    let temporal = || temporal_candidate(col, (x, y, size), (references.distance(target), list));
+    amvp_list(&spatial, temporal, references, (list, target))
+}
+
 /// The merge candidate list: spatial candidates A1, B1, B0, A0, B2 with
-/// the specification's pruning, the temporal candidate (`ref_idx` 0), then
-/// zero candidates (§8.5.3.2.5; the combined bi-predictive candidates are
-/// B-slice only).
+/// the specification's pruning, the temporal candidate (`ref_idx` 0), in a
+/// B slice the combined bi-predictive candidates, then zero candidates
+/// (§8.5.3.2.2–8.5.3.2.5).
 fn merge_list(
     n: &Spatial,
-    temporal: impl FnOnce() -> Option<Mv>,
-    (len, references): (usize, usize),
+    temporal: impl FnOnce() -> Option<Motion>,
+    slice: SliceLists<'_>,
 ) -> MergeList {
+    let len = slice.merge_len;
     debug_assert!((1..=MAX_MERGE_CANDIDATES).contains(&len));
-    // §8.5.3.2.3: B1 is pruned against A1, B0 against B1, A0 against A1,
-    // and B2 against A1 and B1 (and dropped when the other four exist).
-    let differs = |c: Option<Motion>, other: Option<Motion>| c.filter(|&v| Some(v) != other);
-    let a1 = n.a1;
-    let b1 = differs(n.b1, n.a1);
-    let b0 = differs(n.b0, n.b1);
-    let a0 = differs(n.a0, n.a1);
-    let four = [a1, b1, b0, a0].iter().filter(|c| c.is_some()).count() == 4;
-    let b2 = if four {
-        None
-    } else {
-        differs(differs(n.b2, n.a1), n.b1)
-    };
-    // The temporal candidate matters only when the spatial ones leave room
-    // in the list (§8.5.3.2.2: it follows them and is not pruned).
-    let spatial = [a1, b1, b0, a0, b2];
-    let room = spatial.iter().flatten().count() < len;
-    let temporal = if room {
-        temporal().map(|mv| Motion { mv, ref_idx: 0 })
-    } else {
-        None
-    };
-    // Entries past the spatial and temporal candidates are zero candidates
-    // (§8.5.3.2.5), whose reference index steps through the list
-    // (`zeroIdx`) and then stays 0: zero vectors on `ref_idx` 0 when the
-    // slice has one reference.
     let mut list = MergeList {
         vectors: [Mv::ZERO; MAX_MERGE_CANDIDATES],
         ref_indices: [0; MAX_MERGE_CANDIDATES],
+        second: [None; MAX_MERGE_CANDIDATES],
         len,
     };
     let mut filled = 0;
-    for ((mv, ref_idx), motion) in list.vectors[..len]
-        .iter_mut()
-        .zip(&mut list.ref_indices)
-        .zip(spatial.into_iter().chain([temporal]).flatten())
+    let mut push = |candidate| {
+        if let Some(motion) = candidate {
+            list.set(filled, motion);
+            filled += 1;
+        }
+        filled == len
+    };
+
+    // §8.5.3.2.3: B1 is pruned against A1, B0 against B1, A0 against A1,
+    // and B2 against A1 and B1. Once the list is full, candidates beyond
+    // that point cannot change its contents.
+    let differs = |c: Option<Motion>, other: Option<Motion>| c.filter(|&v| Some(v) != other);
+    if push(n.a1)
+        || push(differs(n.b1, n.a1))
+        || push(differs(n.b0, n.b1))
+        || push(differs(n.a0, n.a1))
     {
-        (*mv, *ref_idx) = (motion.mv, motion.ref_idx);
+        return list;
+    }
+    if filled < 4
+        && let Some(b2) = differs(differs(n.b2, n.a1), n.b1)
+    {
+        list.set(filled, b2);
         filled += 1;
     }
-    for (zero, ref_idx) in list.ref_indices[filled..len]
-        .iter_mut()
-        .enumerate()
-        .take(references)
+    // The temporal candidate follows the spatial ones, without pruning.
+    if filled < len
+        && let Some(motion) = temporal()
     {
-        *ref_idx = zero as u8;
+        list.set(filled, motion);
+        filled += 1;
+    }
+    if slice.bi {
+        filled = combined(&mut list, filled);
+    }
+    // Entries past these are zero candidates (§8.5.3.2.5), whose reference
+    // index steps through the list (`zeroIdx`) and then stays 0: zero
+    // vectors on `ref_idx` 0 when the slice has one reference. In a B
+    // slice they predict from both lists.
+    if !slice.bi && slice.references.count() == 1 {
+        // A one-reference P slice's zero candidates are already in the list.
+        return list;
+    }
+    for (zero, index) in (filled..len).enumerate() {
+        let ref_idx = if zero < slice.references.count() {
+            zero as u8
+        } else {
+            0
+        };
+        list.set(
+            index,
+            Motion {
+                mv: Mv::ZERO,
+                ref_idx,
+                l1: slice.bi.then_some(ListMotion {
+                    mv: Mv::ZERO,
+                    ref_idx,
+                }),
+            },
+        );
     }
     list
 }
 
-/// The AMVP list of reference `target` (§8.5.3.2.6, §8.5.3.2.7).
+/// Append B slices' combined bi-predictive candidates (§8.5.3.2.4) to the
+/// `original` candidates of `list`: list 0 of one candidate with list 1 of
+/// another, unless both name the same picture with the same vector (one
+/// reference index names the same picture in either list). Returns the new
+/// candidate count.
+fn combined(list: &mut MergeList, original: usize) -> usize {
+    let mut n = original;
+    if original < 2 || original >= list.len {
+        return n;
+    }
+    for &(i0, i1) in COMBINATIONS.iter().take(original * (original - 1)) {
+        let (c0, c1) = (list.get(i0), list.get(i1));
+        if let Some(l1) = c1.l1
+            && (c0.ref_idx != l1.ref_idx || c0.mv != l1.mv)
+        {
+            list.set(
+                n,
+                Motion {
+                    mv: c0.mv,
+                    ref_idx: c0.ref_idx,
+                    l1: Some(l1),
+                },
+            );
+            n += 1;
+        }
+        if n == list.len {
+            break;
+        }
+    }
+    n
+}
+
+/// The AMVP list of reference `target` of `list` (§8.5.3.2.6, §8.5.3.2.7).
 fn amvp_list(
     nb: &Spatial,
     temporal: impl FnOnce() -> Option<Mv>,
     references: &ReferenceDistances,
-    target: u8,
+    (list, target): (List, u8),
 ) -> [Mv; AMVP_CANDIDATES] {
+    // A neighbour's motion in list X, then in list Y (eq. 8-170..8-172).
+    let other = match list {
+        List::L0 => List::L1,
+        List::L1 => List::L0,
+    };
+    let lists = |m: &Motion| [m.of(list), m.of(other)].into_iter().flatten();
     // A neighbour pointing at the target picture gives its vector as it
     // is; one pointing at the other (short-term) reference, its vector
     // scaled by the two POC distances (eq. 8-179..8-183).
-    let same = |m: &Motion| (m.ref_idx == target).then_some(m.mv);
+    let same = |m: &Motion| lists(m).find(|l| l.ref_idx == target).map(|l| l.mv);
     let scaled = |m: &Motion| {
-        Some(scale_mv(
-            m.mv,
-            references.distance(m.ref_idx),
-            references.distance(target),
-        ))
+        lists(m).next().map(|l| {
+            scale_mv(
+                l.mv,
+                references.distance(l.ref_idx),
+                references.distance(target),
+            )
+        })
     };
     let a = [nb.a0, nb.a1];
     let b = [nb.b0, nb.b1, nb.b2];
@@ -297,11 +501,11 @@ fn amvp_list(
     // the first available scaled; B the first of B0, B1, B2 pointing at the
     // target. When neither A0 nor A1 is available (isScaledFlag 0), A takes
     // B's vector and B is re-derived allowing scaled candidates.
-    let (mv_a, mv_b) = if references.count() == 1 {
-        // Every neighbour points at the one reference: A and B are the first
-        // available of each group, and B re-derived equals B. (The general
-        // path gives the same; this one keeps single-reference slices as
-        // cheap as before the second reference existed.)
+    let (mv_a, mv_b) = if references.count() == 1 && list == List::L0 {
+        // Every neighbour predicts from list 0 at the one reference: A and B
+        // are the first available of each group, and B re-derived equals B.
+        // (The general path gives the same; this one keeps single-reference
+        // slices as cheap as before the second reference existed.)
         let mv_b = nb.b0.or(nb.b1).or(nb.b2).map(|m| m.mv);
         (nb.a0.or(nb.a1).map(|m| m.mv).or(mv_b), mv_b)
     } else {
@@ -359,12 +563,20 @@ mod tests {
         }
     }
 
+    fn p_slice(merge_len: usize, references: &ReferenceDistances) -> SliceLists<'_> {
+        SliceLists {
+            merge_len,
+            references,
+            bi: false,
+        }
+    }
+
     fn on_first(mv: Mv) -> Motion {
-        Motion { mv, ref_idx: 0 }
+        Motion::uni(mv, 0)
     }
 
     fn lists(g: &Grid, at: (usize, usize, usize), len: usize) -> (MergeList, [Mv; 2]) {
-        candidate_lists(g, None, at, (len, &ReferenceDistances::one(1), 0))
+        candidate_lists(g, None, at, (p_slice(len, &ReferenceDistances::one(1)), 0))
     }
 
     #[test]
@@ -393,7 +605,7 @@ mod tests {
         let long = lists(&g, (8, 8, 8), MAX_MERGE_CANDIDATES - 1);
         let expected = [left, above, corner, Mv::ZERO].map(on_first);
         assert_eq!(long.0.motions().collect::<Vec<_>>(), expected);
-        assert_eq!(long.0.index_of(on_first(corner)), Some(2));
+        assert_eq!(long.0.predicting(on_first(corner)).map(|(i, _)| i), Some(2));
         // Two candidates keep the first two.
         let short = lists(&g, (8, 8, 8), DEFAULT_MERGE_CANDIDATES);
         assert_eq!(
@@ -440,18 +652,15 @@ mod tests {
         g.fill(0, 8, 8, inter_ref(v, 1));
         g.fill(8, 0, 8, inter_ref(v, 0));
         let refs = ReferenceDistances::two(1, 8);
-        let (merge, _) = candidate_lists(&g, None, (8, 8, 8), (5, &refs, 0));
-        let zero = |ref_idx| Motion {
-            mv: Mv::ZERO,
-            ref_idx,
-        };
+        let (merge, _) = candidate_lists(&g, None, (8, 8, 8), (p_slice(5, &refs), 0));
+        let zero = |ref_idx| Motion::uni(Mv::ZERO, ref_idx);
         // A1, B1, then B2 (the decoded zero-motion cell above-left), then
         // the zero candidates with zeroIdx 0 and 1.
         assert_eq!(
             merge.motions().collect::<Vec<_>>(),
             [
-                Motion { mv: v, ref_idx: 1 },
-                Motion { mv: v, ref_idx: 0 },
+                Motion::uni(v, 1),
+                Motion::uni(v, 0),
                 zero(0),
                 zero(0),
                 zero(1)
@@ -467,9 +676,89 @@ mod tests {
         let refs = ReferenceDistances::two(1, 4);
         // For ref_idx 0 (1 picture back) its vector is scaled by 1/4; for
         // ref_idx 1 it is used as it is.
-        let (_, first) = candidate_lists(&g, None, (8, 8, 8), (2, &refs, 0));
+        let (_, first) = candidate_lists(&g, None, (8, 8, 8), (p_slice(2, &refs), 0));
         assert_eq!(first, [Mv { x: 4, y: -2 }, Mv::ZERO]);
-        let (_, second) = candidate_lists(&g, None, (8, 8, 8), (2, &refs, 1));
+        let (_, second) = candidate_lists(&g, None, (8, 8, 8), (p_slice(2, &refs), 1));
         assert_eq!(second, [Mv { x: 16, y: -8 }, Mv::ZERO]);
+    }
+
+    fn bi(l0: (Mv, u8), l1: (Mv, u8)) -> Motion {
+        Motion {
+            mv: l0.0,
+            ref_idx: l0.1,
+            l1: Some(ListMotion {
+                mv: l1.0,
+                ref_idx: l1.1,
+            }),
+        }
+    }
+
+    #[test]
+    fn b_slices_combine_candidates_and_pad_with_two_list_zeros() {
+        let mut g = Grid::new(64, 64);
+        let (left, above) = (Mv { x: 4, y: 0 }, Mv { x: 0, y: 4 });
+        g.fill(0, 8, 8, inter(left));
+        let mut bi_above = inter(above);
+        bi_above.l1 = Some(ListMotion {
+            mv: left,
+            ref_idx: 0,
+        });
+        g.fill(8, 0, 8, bi_above);
+        let refs = ReferenceDistances::one(1);
+        let slice = SliceLists {
+            merge_len: 5,
+            references: &refs,
+            bi: true,
+        };
+        let (merge, _) = candidate_lists(&g, None, (8, 8, 8), (slice, 0));
+        // A1 (uni), B1 (bi), then B2 (the zero-motion cell above-left, uni):
+        // combination (0, 1) takes A1's list 0 and B1's list 1, which are the
+        // same picture and vector, so it is skipped; (1, 0) and (0, 2) need
+        // a list 1 on A1 / B2 and are skipped too; (2, 0) likewise; (1, 2)
+        // and (2, 1): only B1 has list 1, so (2, 1) gives B2's list 0 with
+        // B1's list 1. Then two-list zero candidates.
+        assert_eq!(
+            merge.motions().collect::<Vec<_>>(),
+            [
+                Motion::uni(left, 0),
+                bi((above, 0), (left, 0)),
+                Motion::uni(Mv::ZERO, 0),
+                bi((Mv::ZERO, 0), (left, 0)),
+                bi((Mv::ZERO, 0), (Mv::ZERO, 0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_one_amvp_prefers_neighbours_list_one() {
+        let mut g = Grid::new(64, 64);
+        let mut left = inter(Mv { x: 8, y: 0 });
+        left.l1 = Some(ListMotion {
+            mv: Mv { x: -4, y: 4 },
+            ref_idx: 0,
+        });
+        g.fill(0, 8, 8, left);
+        let refs = ReferenceDistances::one(1);
+        let l1 = amvp_candidates(&g, None, (8, 8, 8), &refs, (List::L1, 0));
+        assert_eq!(l1, [Mv { x: -4, y: 4 }, Mv::ZERO]);
+        let l0 = amvp_candidates(&g, None, (8, 8, 8), &refs, (List::L0, 0));
+        assert_eq!(l0, [Mv { x: 8, y: 0 }, Mv::ZERO]);
+    }
+
+    #[test]
+    fn uni_motion_merges_with_a_candidate_of_two_equal_halves() {
+        let g = Grid::new(64, 64);
+        let refs = ReferenceDistances::one(1);
+        let slice = SliceLists {
+            merge_len: 2,
+            references: &refs,
+            bi: true,
+        };
+        // No neighbours: the zero candidates predict from both lists.
+        let (merge, _) = candidate_lists(&g, None, (0, 0, 8), (slice, 0));
+        let zero = bi((Mv::ZERO, 0), (Mv::ZERO, 0));
+        assert_eq!(merge.get(0), zero);
+        assert_eq!(merge.predicting(Motion::uni(Mv::ZERO, 0)), Some((0, zero)));
+        assert_eq!(merge.predicting(Motion::uni(Mv { x: 4, y: 0 }, 0)), None);
     }
 }

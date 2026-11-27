@@ -1,0 +1,31 @@
+# intra-cheap batch 5: cheap settings that pay for the gated key search (stacks)
+null: planner.intra_bias=1050
+fast_tk: av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1
+fast_tk_s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1
+fast_tk_krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1
+fast_tk_d1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 planner.key_rd_margin=1.2 av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1
+fast_tk_fg: av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1 av1.keyframe_flat_gate=150 av1.keyframe_flat_gate_size_scale=3
+fast_tk_m7: av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1 av1.keyframe_model_candidates=7
+fast_tk4: av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1 quant.trellis_states=4
+fast_tk_notr: av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1 quant.trellis=0
+sd: av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=3 av1.keyframe_model_candidates=6 av1.keyframe_intra_rd_candidates=3 quant.trellis_key=1
+sd_s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=3 av1.keyframe_model_candidates=6 av1.keyframe_intra_rd_candidates=3 quant.trellis_key=1
+sd_krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=3 av1.keyframe_model_candidates=6 av1.keyframe_intra_rd_candidates=3 quant.trellis_key=1
+sd_tk4: av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=3 av1.keyframe_model_candidates=6 av1.keyframe_intra_rd_candidates=3 quant.trellis_key=1 quant.trellis_states=4
+c1: av1.keyframe_intra_rd_candidates=1 quant.trellis_key=1
+c1_s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 av1.keyframe_intra_rd_candidates=1 quant.trellis_key=1
+c1_krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 av1.keyframe_intra_rd_candidates=1 quant.trellis_key=1
+c1_tk4_krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 av1.keyframe_intra_rd_candidates=1 quant.trellis_key=1 quant.trellis_states=4
+c1_krd22_g150: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 av1.keyframe_intra_rd_candidates=1 quant.trellis_key=1
+tk4_krd22_g150_c8_d2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 quant.trellis_key=1 quant.trellis_states=4 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2
+tk4_krd11_c8_d2: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 quant.trellis_key=1 quant.trellis_states=4 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2
+tk4_krd22_g150_c8_d2_lam: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 quant.trellis_key=1 quant.trellis_states=4 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 av1.lambda_per_step_squared=0.09
+tk4_krd22_g150_c8_d2_lrd4_m1100: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 quant.trellis_key=1 quant.trellis_states=4 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 decision.intra_rd_modes=4 decision.intra_rd_margin=1100
+fast_tk_cdef: av1.keyframe_directional=0 av1.keyframe_angle_deltas=0 av1.keyframe_filter_intra=0 av1.keyframe_intra_modes=0 av1.keyframe_satd_modes=4 av1.keyframe_intra_rd_candidates=1 av1.keyframe_cfl=0 quant.trellis_key=1 av1.cdef_search_row_step=4
+mtx_tk: av1.keyframe_mode_tx_type=1 quant.trellis_key=1
+mtx_tk_t2: av1.keyframe_mode_tx_type=1 decision.intra_rd_transforms=2 quant.trellis_key=1
+mtx_tk_t4: av1.keyframe_mode_tx_type=1 decision.intra_rd_transforms=4 quant.trellis_key=1
+tk_t4: decision.intra_rd_transforms=4 quant.trellis_key=1
+mtx_tk_krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 av1.keyframe_mode_tx_type=1 quant.trellis_key=1
+mtx_tk_t4_krd11: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 av1.keyframe_mode_tx_type=1 decision.intra_rd_transforms=4 quant.trellis_key=1
+mtx_tk4_t4_krd22_g150_c8_d2: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 quant.trellis_key=1 quant.trellis_states=4 av1.keyframe_intra_rd_candidates=8 av1.keyframe_angle_deltas=2 av1.keyframe_mode_tx_type=1 decision.intra_rd_transforms=4

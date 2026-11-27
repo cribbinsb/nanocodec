@@ -1,0 +1,22 @@
+# G1 of docs/analysis/decision-inventory-2026-11-22.md: the planner's depth decision at
+# medium. The split selector's fitted h gets tuned corrections
+# (planner.split_selector_d_*, all 0 = the fitted selector), tuned jointly with the
+# planner's own depth parameters (each in the trust region around the preset).
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.split_selector_d_bias -0.5 0.5
+planner.split_selector_d_residual -0.3 0.3
+planner.split_selector_d_mean -0.3 0.3
+planner.split_selector_d_quadrant_gain -0.4 0.4
+planner.split_selector_d_quadrant_imbalance -0.2 0.2
+planner.split_selector_d_vector_distance -0.2 0.2
+planner.split_selector_d_search_split_gain -0.4 0.4
+planner.split_selector_d_node_64 -0.4 0.4
+planner.split_selector_d_node_32 -0.4 0.4
+planner.split_selector_d_lambda -0.1 0.1
+planner.split_selector_scale
+planner.lambda_scale
+planner.bias_base
+planner.bias_q_slope
+planner.distortion_cap_per_lambda
+planner.high_8x8_cost_variance
+planner.depth_removal_min_quantizer

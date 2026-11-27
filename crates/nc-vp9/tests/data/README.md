@@ -20,3 +20,12 @@ IVF stream whose corrupt coefficients overflowed the 4x4 inverse DCT's
 32-bit products (a debug-build panic; 123 of the campaign's 125 artifacts).
 `tests/malformed.rs` decodes it and requires no panic. SHA-256:
 `b7c281ef0d776e8550e105e363fddd1a09f40008f866fa5e2507ac4085f21c79`.
+
+`fuzz-large-picture-<hash>.fuzz` (five files) are the libFuzzer timeout
+artifacts of decoder fuzz round 3 (2026-11-23, `docs/results/fuzzing.md`),
+whole fuzz inputs in the `fuzz/README.md` layout (a config byte, then
+`NCPK`-separated packets or, for `220c4518`, an IVF file). Their key frames
+declare pictures beyond VP9 level 6.2 (such as 2896x65536 and 4081x53478)
+and took 6-26 s each under the sanitizer; the decoder now rejects them at
+the header. `tests/malformed.rs` requires the size error and a bounded run.
+Originals: `~/nanocodec-data/fuzz/regressions/vp9/`.

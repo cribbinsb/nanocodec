@@ -1274,7 +1274,7 @@ def lower_points(curves: dict, clips: list[Clip], points: list[SvcPoint], anchor
     for p in points:
         family = Family(p.name, p.codec, Path(), own=p.ours)
         rows = per_clip_rows(curves, anchor(p), p.name, clips)
-        out.append(chart_point(family, p.label, rows, clips, runner))
+        out.append(chart_point(family, p.label, rows, clips, runner, curves))
     return out
 
 

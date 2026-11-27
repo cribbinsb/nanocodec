@@ -1,0 +1,8 @@
+# intra-cheap batch 2: the leaf search's estimate margin (decision.intra_rd_margin), alone, in trials and in the leaf pass
+null: planner.intra_bias=1050
+tk: quant.trellis_key=1
+tk_lrd2_m1050: quant.trellis_key=1 decision.intra_rd_modes=2 decision.intra_rd_margin=1050
+tk_lrd4_m1100: quant.trellis_key=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100
+tk_krd11_lrd4_m1100p: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 quant.trellis_key=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100 planner.key_rd_leaf_pass=1
+tk_d1_lrd4_m1100p: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 quant.trellis_key=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100 planner.key_rd_leaf_pass=1
+tk_krd11_lrd4_m1100: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 quant.trellis_key=1 decision.intra_rd_modes=4 decision.intra_rd_margin=1100

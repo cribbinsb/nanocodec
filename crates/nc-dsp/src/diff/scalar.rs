@@ -46,6 +46,7 @@ pub(crate) fn diff_fns() -> DiffFns {
             block_sums::<32>,
             block_sums::<64>,
         ],
+        halfpel_cross: None,
         sub_pixel_variance: [
             sub_pixel_variance::<4>,
             sub_pixel_variance::<8>,
@@ -54,6 +55,8 @@ pub(crate) fn diff_fns() -> DiffFns {
             sub_pixel_variance::<64>,
         ],
         sse_8x8_row,
+        plane_sse,
+        variance_8x8_row: None,
     }
 }
 
@@ -216,4 +219,13 @@ pub(crate) fn sse_8x8_row(
             })
             .sum();
     }
+}
+
+/// Total squared error, in raster order, between same-sized planes.
+fn plane_sse(a: &nc_common::PlaneView<'_>, b: &nc_common::PlaneView<'_>) -> u64 {
+    a.rows()
+        .zip(b.rows())
+        .flat_map(|(a, b)| a.iter().zip(b))
+        .map(|(&a, &b)| u64::from(a.abs_diff(b)).pow(2))
+        .sum()
 }

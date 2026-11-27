@@ -1,0 +1,23 @@
+{
+ "base": "hist-f29b59338",
+ "families": {
+  "nanocodec-h264": "hist-f29b59338",
+  "nanocodec-h264@fast": "hist-f29b59338",
+  "nanocodec-h264@faster": "hist-f29b59338",
+  "nanocodec-h264@veryfast": "hist-f29b59338",
+  "nanocodec-hevc": "hist-f29b59338",
+  "nanocodec-hevc@fast": "hist-f29b59338",
+  "nanocodec-hevc@faster": "hist-f29b59338",
+  "nanocodec-vvc": "hist-f29b59338",
+  "nanocodec-vvc@fast": "hist-f29b59338",
+  "nanocodec-av1": "hist-f29b59338",
+  "nanocodec-av1@fast": "hist-f29b59338",
+  "nanocodec-av1@faster": "hist-f29b59338",
+  "nanocodec-vp9": "hist-f29b59338",
+  "nanocodec-vp9@fast": "hist-f29b59338",
+  "nanocodec-vp9@faster": "hist-f29b59338",
+  "nanocodec-vp9@veryfast": "hist-f29b59338",
+  "nanocodec-av2": "hist-f29b59338",
+  "nanocodec-av2@fast": "hist-f29b59338"
+ }
+}

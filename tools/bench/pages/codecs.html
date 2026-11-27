@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec results by codec</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; }</style>
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="./" aria-current="page">Results</a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html" aria-current="page">By codec</a>
+    <a href="history.html">History</a>
+    <a href="compliance.html">Rate compliance</a>
+    <a href="method.html">Method</a>
+  </nav>
+  <div class="machine-picker"></div>
+</div>
+<main>
+  <h1>Results by codec</h1>
+  <p class="lede">Each format's presets beside the reference encoders for that format, in every dataset reported on the chosen timing machine. Negative is fewer bits than the zero line for the same quality.</p>
+  <div class="disclaimer results-banner" role="note"></div>
+  <div id="codecs">
+    <div class="controls"></div>
+    <div class="codec-tables"></div>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264,
+    Kvazaar and VVenC are its comparison points here. With thanks to all of them.</p>
+</footer>
+<script type="module" src="codecs.js"></script>
+</body>
+</html>

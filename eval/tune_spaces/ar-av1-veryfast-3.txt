@@ -1,0 +1,19 @@
+# av1-retune (2026-11-23): AV1 veryfast's adaptive tool thresholds after the overhaul
+# (edd8195bf, ab9a70f08): which tools adapt (sub-pel seed, exact rank, motion exits, CDEF
+# interval, depth removal, the walk's quarter stage), the one effort knob (aggression), the
+# sequential rule (confidence), the switched tools' probe period and the quarter stage's cheap
+# alternative, with the sub-pel seed gate and depth removal they move. 600-frame windows at
+# both key shares, k 0.305 (the coordinator's veryfast front slope).
+# Format (nceval.tune_pool): name [low high] [int|log]
+adapt.subpel 0 1 int
+adapt.rank 0 1 int
+adapt.motion 0 1 int
+adapt.cdef 0 1 int
+adapt.depth 0 1 int
+adapt.quarter 0 1 int
+adapt.aggression 0.5 3 log
+adapt.confidence 0 2
+adapt.probe_period 4 32 int
+decision.subpel_quarter_predict 0 2 int
+decision.codec_subpel_seed_lambdas 0.05 0.25 log
+planner.depth_removal_qp_scale 4 8

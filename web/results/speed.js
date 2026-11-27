@@ -4,7 +4,7 @@
 // ffmpeg.wasm and its encode speed against quality: data/wasm-yardstick.json)
 // and the hardware encoders
 // (data/hardware.json).
-import { drawRatioBars, drawScatter } from './chart.js';
+import { drawRatioBars } from './chart.js';
 import { CODEC_NAMES, control, el, fail, fps, loadData, measuredNote, pct, ratio, segmented, sources, table } from './common.js';
 
 const SPEED_VIEW = 'fresh-psnr'; // every view carries the same timing record
@@ -60,7 +60,8 @@ function decodeRows(native, browser) {
     if (decodeState.platform !== 'wasm') {
       const v = r[decodeState.platform];
       return { r, reference: r.reference, ours: v?.ours_ms ?? null, ref: v?.ref_ms ?? null, ratio: v?.ratio ?? null,
-        second: v?.second_ratio != null ? `vs ${r.second_reference} ${v.second_ratio.toFixed(2)}` : '' };
+        second: v?.second_ratio != null ? `vs ${r.second_reference} ${v.second_ratio.toFixed(2)}`
+          : (r.second_reference ? `vs ${r.second_reference}: ${native.not_measured}` : '') };
     }
     const w = browser.decode.find((d) => d.codec === r.codec && d.stream === r.stream);
     return { r, reference: 'ffmpeg.wasm', ours: w?.ours_ms ?? null, ref: w?.ref_ms ?? null, ratio: w?.ratio ?? null, second: '' };
@@ -74,14 +75,16 @@ function decodeRows(native, browser) {
 
 function decoders(native, browser, root) {
   const rows = decodeRows(native, browser);
-  const ms = (v) => (v === null ? 'no data' : `${v.toFixed(2)} ms`);
+  // Native cells without an in-process time say so (data/decoders.json not_measured).
+  const missing = decodeState.platform === 'wasm' ? 'no data' : native.not_measured;
+  const ms = (v) => (v === null ? missing : `${v.toFixed(2)} ms`);
   root.querySelector('.decoder-note').textContent = decodeState.platform === 'wasm'
-    ? `Browser: our module and ffmpeg.wasm, one x86 core, same session. ffmpeg.wasm has no SIMD and no AV1, VVC or AV2 decoder; streams it was not run on show no data. ${browser.measured.caption}`
+    ? `Browser: our module and ffmpeg.wasm, one x86 core, same session. ffmpeg.wasm 0.12.10 is built with --disable-asm (compiler SIMD128 only, no hand-written SIMD kernels) and has no AV1, VVC or AV2 decoder; streams it was not run on show no data. ${browser.measured.caption}`
     : `${DECODE_PLATFORMS[decodeState.platform]}, every decoder single-threaded. ${native.measured_by_platform[decodeState.platform].caption}`;
   drawRatioBars(root.querySelector('.ratio-chart'), rows.map((x) => ({
     label: `${CODEC_NAMES[x.r.codec]} · ${x.r.stream}`, ratio: x.ratio,
     tip: x.ratio === null ? '' : `${CODEC_NAMES[x.r.codec]} ${x.r.stream}: ours ${ms(x.ours)}, ${x.reference} ${ms(x.ref)}`,
-  })), { axisLabel: 'our decode time ÷ the reference\u2019s (below 1: ours took less time)', missingText: 'no data' });
+  })), { axisLabel: 'our decode time ÷ the reference\u2019s (below 1: ours took less time)', missingText: missing });
   root.querySelector('.decoders').replaceChildren(table([
     { label: 'Codec', cell: (x) => CODEC_NAMES[x.r.codec] },
     { label: 'Stream', cell: (x) => x.r.stream },
@@ -93,29 +96,15 @@ function decoders(native, browser, root) {
 }
 
 function wasmEncode(data, root) {
-  const chart = root.querySelector('.wasm-encode-chart');
+  // Speed only: these encodes have no quality measure of their own (data/wasm-yardstick.json).
   const ours = (r) => r.module !== 'ffmpeg.wasm';
-  const draw = () => drawScatter(chart, data.encode.map((r) => ({
-    id: r.name, x: r.fps, y: r.j, iqr: null, kind: ours(r) ? 'ours' : 'ref', shape: ours(r) ? 'circle' : 'square',
-    label: ours(r) ? r.label.replace(/^nanocodec /, '') : `${r.label} (ffmpeg.wasm)`, flagged: false, twin: null,
-    priority: ours(r) ? 2 : 1, aria: `${r.label}: ${fps(r.fps)} fps`,
-  })), {
-    xLabel: 'browser encode fps, 720p, one x86 core (log scale)', yLabel: 'BD-J of the same encoder (lower is better)',
-    ariaLabel: 'Browser encode speed against quality', selected: null, onSelect: () => {},
-    describe: (p) => {
-      const r = data.encode.find((e) => e.name === p.id);
-      return el('div', {}, el('strong', {}, `${r.label} · ${ours(r) ? 'our module' : 'ffmpeg.wasm (no SIMD)'}`),
-        el('div', {}, el('span', { class: 'value' }, `${fps(r.fps)} fps`), ` (${r.ms.toFixed(2)} ms per frame)`),
-        el('div', {}, `${pct(r.j)} BD-J: the chart's native point`));
-    },
-  });
-  draw();
-  new ResizeObserver(draw).observe(chart.parentElement);
+  root.querySelector('.wasm-encode-chart').replaceChildren();
   root.querySelector('.wasm-encode-table').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${ours(r) ? 'ours' : 'ref'}` }), r.label] },
-    { label: 'Module', cell: (r) => (ours(r) ? 'ours' : 'ffmpeg.wasm, no SIMD') },
+    { label: 'Module', cell: (r) => (ours(r) ? 'ours' : 'ffmpeg.wasm, --disable-asm') },
     { label: 'fps', num: true, cell: (r) => fps(r.fps) },
-    { label: 'BD-J (native chart point)', num: true, cell: (r) => pct(r.j) },
+    { label: 'ms per frame', num: true, cell: (r) => r.ms.toFixed(2) },
+    { label: 'achieved kbps', num: true, cell: (r) => String(r.achieved_kbps) },
   ], data.encode, (r) => (ours(r) ? 'ours' : '')), measuredNote(data.measured.caption), sources(data.source));
 }
 

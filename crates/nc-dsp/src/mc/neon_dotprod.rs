@@ -57,6 +57,62 @@ pub(super) unsafe fn dot_lane<const LANE: usize>(
     sum
 }
 
+/// Four rows packed as four adjacent tap bytes per column. Signed-dot
+/// kernels flip the input high bit as part of this transpose.
+#[inline]
+#[target_feature(enable = "neon")]
+pub(crate) fn transpose_four_rows<const SIGNED: bool>(rows: [uint8x16_t; 4]) -> [uint8x16_t; 4] {
+    use core::arch::aarch64::{
+        vreinterpretq_u8_u16, vreinterpretq_u16_u8, vzip1q_u8, vzip1q_u16, vzip2q_u8, vzip2q_u16,
+    };
+
+    let a = vreinterpretq_u16_u8(vzip1q_u8(rows[0], rows[1]));
+    let b = vreinterpretq_u16_u8(vzip1q_u8(rows[2], rows[3]));
+    let c = vreinterpretq_u16_u8(vzip2q_u8(rows[0], rows[1]));
+    let d = vreinterpretq_u16_u8(vzip2q_u8(rows[2], rows[3]));
+    let mut groups = [
+        vreinterpretq_u8_u16(vzip1q_u16(a, b)),
+        vreinterpretq_u8_u16(vzip2q_u16(a, b)),
+        vreinterpretq_u8_u16(vzip1q_u16(c, d)),
+        vreinterpretq_u8_u16(vzip2q_u16(c, d)),
+    ];
+    if SIGNED {
+        let bias = vdupq_n_u8(128);
+        for group in &mut groups {
+            *group = veorq_u8(*group, bias);
+        }
+    }
+    groups
+}
+
+/// Unsigned pixels times signed filter bytes. Each lane selects four taps.
+///
+/// # Safety
+///
+/// I8MM must be available.
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "keep signed dot products in the caller"
+)]
+pub(crate) unsafe fn unsigned_dot_lane<const LANE: usize>(
+    mut sum: int32x4_t,
+    bytes: uint8x16_t,
+    taps: core::arch::aarch64::int8x8_t,
+) -> int32x4_t {
+    // SAFETY: I8MM is enabled and this instruction only uses registers.
+    unsafe {
+        core::arch::asm!(
+            ".arch_extension i8mm",
+            "usdot {sum:v}.4s, {bytes:v}.16b, {taps:v}.4b[{lane}]",
+            sum = inout(vreg) sum, bytes = in(vreg) bytes,
+            taps = in(vreg_low16) taps, lane = const LANE,
+            options(pure, nomem, nostack, preserves_flags),
+        );
+    }
+    sum
+}
+
 /// The kernels of 8-tap table `T` by width class (HEVC's and VVC's
 /// eight-tap luma coefficients fit signed bytes and sum to 64).
 pub(crate) fn separable_fns<T: SeparableTaps<8>>() -> [ConvolveFn; 5] {
@@ -78,6 +134,12 @@ pub(crate) struct DotFilter {
 }
 
 impl DotFilter {
+    /// The eight signed weights, in tap order.
+    #[inline]
+    pub(crate) const fn coefficients(&self) -> int8x8_t {
+        self.coefficients
+    }
+
     #[target_feature(enable = "neon,dotprod")]
     pub(crate) unsafe fn new(taps: &[i16; 8]) -> Self {
         // SAFETY: the table contains eight coefficients and each mask sixteen bytes.

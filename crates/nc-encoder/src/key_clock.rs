@@ -12,6 +12,15 @@
 //!
 //! A frame counts as at a boundary from half a nominal interval before it, so
 //! jitter around the nominal spacing never moves a key by a frame.
+//!
+//! A requested or scene-cut key restarts the schedule: the next scheduled key
+//! comes `intra_period` after it, not at the old boundary (x264 `keyint`,
+//! SVT-AV1 and libaom `kf_max_dist` also count from the last key). Why: a
+//! scheduled key a few frames after a forced one refreshes a picture just
+//! refreshed, and its bits buy nothing. A scheduled key keeps the time grid,
+//! so late captures do not drift it. This is the one source of the frames to
+//! the next key: the encoder's frame types, its run-up to a key and rate
+//! control's key planning all read it (`Encoder::frames_to_next_key`).
 
 /// Where frames stand against the schedule.
 #[derive(Debug, Clone)]
@@ -22,6 +31,8 @@ pub(crate) struct KeyClock {
     origin_us: Option<i64>,
     /// The period the previous coded frame fell in.
     last_period: u64,
+    /// The frame index of the last key: untimed frames count periods from it.
+    origin_index: u64,
 }
 
 impl KeyClock {
@@ -30,6 +41,7 @@ impl KeyClock {
             nominal_us,
             origin_us: None,
             last_period: 0,
+            origin_index: 0,
         }
     }
 
@@ -49,14 +61,24 @@ impl KeyClock {
         u64::try_from((time_us - origin + self.nominal_us / 2).max(0) / span).unwrap_or(0)
     }
 
-    /// Whether the next coded frame, at `time_us`, is a scheduled key: the
-    /// first frame, or the first in a later period.
-    pub fn is_due(&self, time_us: i64, period_frames: u64) -> bool {
-        self.origin_us.is_none() || self.period_of(time_us, period_frames) > self.last_period
+    /// Whether the next coded frame, `index` (at `time_us` when timed), is a
+    /// scheduled key: the first frame, or the first in a later period.
+    pub fn is_due(&self, index: u64, time_us: Option<i64>, period_frames: u64) -> bool {
+        match time_us {
+            Some(time_us) => {
+                self.origin_us.is_none()
+                    || self.period_of(time_us, period_frames) > self.last_period
+            }
+            None => (index - self.origin_index).is_multiple_of(period_frames),
+        }
     }
 
-    /// Nominal frames from the frame at `time_us` to the next scheduled key.
-    pub fn frames_to_next(&self, time_us: i64, period_frames: u64) -> u64 {
+    /// Nominal frames from frame `index` (at `time_us` when timed) to the
+    /// next scheduled key.
+    pub fn frames_to_next(&self, index: u64, time_us: Option<i64>, period_frames: u64) -> u64 {
+        let Some(time_us) = time_us else {
+            return period_frames - (index - self.origin_index) % period_frames;
+        };
         let origin = self.origin_us.unwrap_or(time_us);
         let elapsed = u64::try_from(
             ((time_us - origin) + self.nominal_us / 2).max(0) / self.nominal_us.max(1),
@@ -69,6 +91,16 @@ impl KeyClock {
     pub fn coded(&mut self, time_us: i64, period_frames: u64) {
         self.last_period = self.period_of(time_us, period_frames);
         self.origin_us.get_or_insert(time_us);
+    }
+
+    /// Frame `index` (at `time_us` when timed) was coded as a key that was
+    /// not scheduled (requested, a scene cut): the schedule restarts from it.
+    pub fn restart(&mut self, index: u64, time_us: Option<i64>) {
+        self.origin_index = index;
+        if let Some(time_us) = time_us {
+            self.origin_us = Some(time_us);
+            self.last_period = 0;
+        }
     }
 }
 
@@ -86,7 +118,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .filter_map(|(i, t)| {
-                let due = clock.is_due(t, PERIOD);
+                let due = clock.is_due(i as u64, Some(t), PERIOD);
                 clock.coded(t, PERIOD);
                 due.then_some(i)
             })
@@ -125,7 +157,27 @@ mod tests {
     fn frames_to_next_counts_nominal_frames() {
         let mut clock = KeyClock::new(NOMINAL_US);
         clock.coded(0, PERIOD);
-        assert_eq!(clock.frames_to_next(0, PERIOD), 30);
-        assert_eq!(clock.frames_to_next(10 * NOMINAL_US, PERIOD), 20);
+        assert_eq!(clock.frames_to_next(0, Some(0), PERIOD), 30);
+        assert_eq!(clock.frames_to_next(10, Some(10 * NOMINAL_US), PERIOD), 20);
+    }
+
+    #[test]
+    fn a_forced_key_restarts_the_schedule() {
+        let clock = KeyClock::new(NOMINAL_US);
+        assert!(clock.is_due(30, None, PERIOD));
+        let mut forced = clock.clone();
+        forced.restart(40, None);
+        assert!(!forced.is_due(60, None, PERIOD));
+        assert!(forced.is_due(70, None, PERIOD));
+        assert_eq!(forced.frames_to_next(45, None, PERIOD), 25);
+        // Timed: a key requested at frame 40 moves the next one to frame 70.
+        let mut timed = KeyClock::new(NOMINAL_US);
+        for i in 0..=40 {
+            timed.coded(i * NOMINAL_US, PERIOD);
+        }
+        timed.restart(40, Some(40 * NOMINAL_US));
+        assert!(!timed.is_due(60, Some(60 * NOMINAL_US), PERIOD));
+        assert!(timed.is_due(70, Some(70 * NOMINAL_US), PERIOD));
+        assert_eq!(timed.frames_to_next(45, Some(45 * NOMINAL_US), PERIOD), 25);
     }
 }

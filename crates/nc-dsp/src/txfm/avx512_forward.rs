@@ -406,13 +406,11 @@ pub(crate) unsafe fn hevc_rows32(src: &[i16], stride: usize, out: &mut [MaybeUni
         *value = unsafe { Column(_mm512_loadu_si512(row.as_ptr().cast())) };
     }
     let mut input = transpose(loaded);
-    let mut dc = Column::splat(0);
     for value in &mut input {
         value.0 = _mm512_slli_epi16::<{ INPUT_SHIFT as u32 }>(value.0);
-        dc = dc.add(*value);
     }
     let mut output = [Column::splat(0); SIDE];
-    dct::fdct32(&input, &mut output, cospi(COS_BITS), COS_BITS);
+    let dc = dct::fdct32_with_sum(&input, &mut output, cospi(COS_BITS), COS_BITS);
     let rows = transpose(output);
     let shift = _mm_cvtsi32_si128(SIDE.ilog2() as i32 + INPUT_SHIFT);
     let round = _mm512_set1_epi32(1 << (SIDE.ilog2() as i32 + INPUT_SHIFT - 1));

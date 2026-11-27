@@ -1,0 +1,23 @@
+[
+ {
+  "analysis.window_exit_shift_bias": -0.103662,
+  "analysis.window_exit_shift_lambda": -0.291233,
+  "analysis.window_exit_shift_noise": 0.394298,
+  "analysis.window_exit_shift_nonbase": 0.444587,
+  "analysis.zero_gate_shift_bias": -0.0209617,
+  "analysis.zero_gate_shift_lambda": 0.23367,
+  "analysis.zero_gate_shift_neighbour_mv": -0.061071,
+  "analysis.zero_gate_shift_noise": -0.521622,
+  "analysis.zero_gate_shift_nonbase": 0.749672,
+  "decision.skip_no_refine_shift_bias": 0.0491521,
+  "decision.skip_no_refine_shift_lambda": -0.0429776,
+  "decision.skip_no_refine_shift_noise": 0.0211403,
+  "decision.skip_no_refine_shift_nonbase": -0.0568535,
+  "decision.subpel_seed_shift_bias": -0.0157777,
+  "decision.subpel_seed_shift_lambda": -0.028532,
+  "decision.subpel_seed_shift_noise": 0.0119113,
+  "decision.subpel_seed_shift_nonbase": 0.0466947,
+  "decision.subpel_seed_shift_size": -0.00550283,
+  "decision.subpel_seed_shift_zero_mv": 0.0416859
+ }
+]

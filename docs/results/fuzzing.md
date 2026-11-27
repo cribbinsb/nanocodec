@@ -86,6 +86,72 @@ and all 15 triaged crash inputs replayed in the wasm32 build (SIMD128)
 without a trap. As a control, a WASM build from before the HEVC fix traps
 on that crash's input.
 
+### Round 3 (2026-11-23, at 0.6.0: 10-bit and foreign seeds, 64 KiB inputs, eight workers per decoder)
+
+Commit 98069a8b3 (nanocodec 0.6.0 plus later integration work), built
+with the round 1 and 2 settings (AddressSanitizer, debug assertions,
+overflow checks). Every decoder has gained code since round 2: HEVC Main 10,
+AV1 10-bit and film grain, VP9 profile 2, H.264 High 10, the general VVC
+decoder (Main 10, 226 conformance streams) and the general AV2 decoder.
+
+- **Seeds** (`fuzz/build_seeds.py --max-len 65536 --max-frames 3 --headers`):
+  the leading frames of every stream in each codec's conformance manifest that
+  fit in 64 KiB, plus header-only and truncated seeds of every one of them
+  (H.264 190 streams with 9 High 10 / High 10 Intra, HEVC 147 with 11 Main 10,
+  VVC 226 with 217 10-bit, AV1 242 with 66 10-bit and the film-grain vectors,
+  VP9 305 with the profile 2 10- and 12-bit vectors); `web/streams-ref`
+  (openh264, x264, x265, SVT-AV1, aom, libvpx, NVENC); ffmpeg encodes of a
+  synthetic picture at 64x64, 66x34 and 176x144 (x264 8-bit and High 10, x265
+  Main and Main 10, libaom 10-bit with grain synthesis, SVT-AV1 10-bit with
+  film grain, libvpx-vp9 profile 0 and profile 2); and our own encodes of the
+  same pictures at every preset, plain, L1T3 and with a 2-frame key period
+  (54 per codec, 45 for AV2). AV2 has no official or foreign streams here.
+  Seeds: H.264 1,968, HEVC 1,200, VVC 1,812, AV1 2,667, VP9 2,813, AV2 301.
+- **Run**: one 25-minute session per decoder, all six at once, each in its own
+  8-vCPU slot of a 96-vCPU AWS box (`nc-remote`), `-fork=8`; 10 s per input,
+  2 GiB RSS and 2 GiB per allocation per worker, `-max_len=65536`, the codec's
+  dictionary; crashes, OOMs and timeouts recorded and the session continued.
+
+| Decoder | Workers | Worker-hours | Executions | Exec/s per worker | Edges covered | Corpus (inputs) | Findings |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| H.264 | 8 | 3.4 | 388,339 | 32 | 16,020 | 3,113 | none |
+| HEVC | 8 | 3.4 | 243,225 | 20 | 17,574 | 3,468 | none |
+| VVC | 8 | 3.4 | 165,540 | 14 | 42,360 | 3,710 | none |
+| AV1 | 8 | 3.4 | 125,117 | 10 | 38,477 | 4,296 | none |
+| VP9 | 8 | 3.4 | 180,120 | 15 | 13,490 | 3,317 | none (5 timeouts on large declared pictures, below) |
+| AV2 | 8 | 3.4 | 192,916 | 16 | 23,755 | 2,910 | 3 crashes, one cause (open) |
+
+Executions, edges and corpus are libFuzzer's final fork-mode totals. Edge
+counts are not comparable with rounds 1 and 2: the binaries hold much more
+code. In all, round 3 ran about 1.3 million executions in 20 worker-hours.
+
+- **AV2, fixed**: a CCSO band-only filter with `max_band_log2` 7 (3 bits read,
+  128 bands) overran the 72-entry `PlaneFilter` offset table
+  (`crates/nc-av2/src/ccso.rs:131`), an index-out-of-bounds panic (release
+  builds too) reached through `general::filters::ccso_params` from
+  `Decoder::filter_decoded_planes`. AVM v1.0.0 rejects more than
+  `CCSO_BAND_NUM` (64) bands ("Invalid CCSO Band number", `decodeframe.c`), so
+  the general header parser now rejects 7 as a clean error, and
+  `ccso_params` checks each filter's shape before filling its table.
+- **VP9 timeouts, fixed**: the five inputs (one, `220c4518`, also logged as a
+  slow unit) replayed in 6-26 s each under the sanitizer; their key frames
+  declare pictures such as 2896x65536 and 4081x53478. The decoder now rejects
+  coded pictures larger than the highest level's area, 6.2 (libvpx
+  `vp9_level_defs`: 35,651,584 samples), as AV1 caps at its level 6.3
+  (`e0336751`). VP9 signals no level, so the side is not capped: the libvpx
+  vector `vp90-2-13-largescaling` is 19200x108, beyond 6.2's 16832.
+- **Regression inputs** live in `~/nanocodec-data/fuzz/regressions/{av2,vp9}`
+  (retained), checked in as `crates/nc-{av2,vp9}/tests/data/fuzz-*.fuzz` and
+  run by each crate's `tests/malformed.rs` (the expected error; VP9 within
+  10 s). The round's corpora and artifacts are kept in
+  `~/nanocodec-data/fuzz/round3-2026-11-23`.
+- **WASM** (2026-11-23, after the fixes): every round-3 corpus input and
+  artifact replayed in the wasm32-wasip1 build (SIMD128) under node 22.22.1
+  without a trap: H.264 1,968, HEVC 1,200, VVC 1,812, AV1 2,667, VP9 2,819,
+  AV2 304. Control: the same replay at the commit before the fixes traps on
+  each of the three AV2 crash inputs (`ccso.rs:131`) and on nothing else in
+  AV2 or VP9.
+
 ## Findings and fixes
 
 | Decoder | Class | Cause | Fix |
@@ -97,6 +163,8 @@ on that crash's input.
 | H.264 | arithmetic overflow on 32-bit (by reading) | crop offsets were doubled and summed before the size check; on a 32-bit `usize` (WASM) they wrap into a window outside the picture | `17778a70`: bounded as read; 65/65 conformance streams pass |
 | HEVC | arithmetic overflow (by reading) | about twenty `ue(v)` values (log2 sizes, POC bits, DPB and RPS counts and deltas, tiles, merge level, entry-point length, conformance window) were used in `+ n`, shifts or sums before their range check | `fec88cbf`: each read with its §7.4 range (`read_ue_max`); 136/136 HEVC conformance streams match HM |
 | VVC | arithmetic overflow (by reading) | the chroma QP table start was biased before its range check | `d0bb84bf`: checked first (§7.4.3.4); 9/9 VVC Main vectors match |
+| AV2 | index out of bounds (panic in release builds too; 3 inputs, one cause) | band-only CCSO `max_band_log2` 7 (128 bands) indexed past the 64-band offset table | general header rejects more than 64 bands, as AVM does; `ccso_params` checks the filter shape first |
+| VP9 | unbounded picture size (5 timeouts) | the 16-bit size fields admit pictures up to 65536x65536 | coded pictures beyond level 6.2's area (35,651,584 samples) are a clean error; sides uncapped (the libvpx vectors include 19200x108) |
 
 Timeouts seen while merging seeds were valid multi-frame streams decoding
 slowly under the sanitizer (decode time in proportion to picture area); they
@@ -106,8 +174,11 @@ are not findings.
 
 - Inputs longer than 64 KiB, so long sequences, large pictures and
   long-GOP reference state are reached only through short prefixes.
-- 10-bit and other profiles the decoders reject early (only the rejection is
-  exercised).
+- 10-bit was seeded only in round 3 (2026-11-23: 25 minutes, eight workers
+  per decoder), from the official 10-bit vectors' leading frames within
+  64 KiB and small foreign encodes; profiles the decoders reject (H.264
+  4:2:2 / 4:4:4, interlaced H.264, VP9 profiles 1 and 3, VVC 4:2:2 / 4:4:4
+  and multilayer) are exercised only up to the rejection.
 - Fuzzing inside the WASM build: the WASM decoders were only replayed on
   the corpora, not fuzzed there; the JavaScript glue and WebCodecs paths
   are not covered. `nc-web`'s own conversion code (RGBA, I420 packing) is

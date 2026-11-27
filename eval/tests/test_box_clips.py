@@ -62,7 +62,7 @@ def test_the_box_command_copies_a_raw_clip_byte_for_byte(tmp_path):
     """prepare_command's own decode line, run here on a raw clip."""
     tool = heldout_tool()
     clip = raw_clip(tmp_path)
-    command = tool.prepare_command("v", [], [clip], 3)
+    command = tool.prepare_command("v", [], [clip], 3, "decoded.sha256")
     decode = command.split("bash -c ", 1)[1].split(" _ < decode.txt", 1)[0]
     (tmp_path / "clips").mkdir()
     (tmp_path / "clips" / "c.yuv").write_bytes(clip.yuv.read_bytes())

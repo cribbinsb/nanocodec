@@ -13,13 +13,18 @@ chart_refresh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chart_refresh)
 
 
+#: The timing clips' CBR targets in these records.
+KBPS = {"a": 300, "b": 600}
+
+
 def timing_record(tmp_path, point, point_ms, anchor_ms, time_ratio=None):
     """A timing file as `time` (Jetson) writes it, or with `time_ratio` (per clip,
     per anchor) as `time-host` (x86) writes it."""
     path = tmp_path / f"t-{point}.json"
-    path.write_text(json.dumps({"point": point, "anchor": "x264-medium", "clips": {
+    path.write_text(json.dumps({"point": point, "anchor": "x264-medium", "rate_mode": "cbr",
+                                "frames": 150, "clips": {
         clip: {"ms_per_frame": {"point": point_ms[clip], "anchor": anchor_ms[clip]},
-               "budget_fraction": 1.0,
+               "kbps": KBPS[clip], "rate_fraction": 1.0,
                **({"time_ratio": time_ratio[clip]} if time_ratio else {})}
         for clip in point_ms}}))
     return path
@@ -28,7 +33,8 @@ def timing_record(tmp_path, point, point_ms, anchor_ms, time_ratio=None):
 @pytest.fixture
 def stored(tmp_path):
     path = tmp_path / "timing.json"
-    path.write_text(json.dumps({"anchor": "x264-medium", "points": {
+    path.write_text(json.dumps({"anchor": "x264-medium", "rate_mode": "cbr", "frames": 150,
+                                "clips": KBPS, "points": {
         "x264-medium": {"ms_per_frame": {"a": 20.0, "b": 40.0}},
         "x265-medium": {"ms_per_frame": {"a": 80.0, "b": 90.0}},
         "nanocodec-h264": {"ms_per_frame": {"a": 1.0, "b": 1.0}}}}))
@@ -169,14 +175,6 @@ def test_a_complete_build_keeps_its_presets_and_a_new_one_gets_them_whole(tmp_pa
     assert refresh.record["builds"] == {refresh.commit: refresh.commit}
 
 
-def test_scoring_sessions_grow_with_the_streams_one_region_at_a_time():
-    gib = 1 << 30
-    per = chart_refresh.CLOUD_SESSION_STREAM_GB * gib
-    assert chart_refresh.score_sessions(["a", "b"], 0) == ["a", "b"]
-    assert chart_refresh.score_sessions(["a"], per + 1) == ["a", "a"]
-    assert chart_refresh.score_sessions(["a", "b"], 3 * per) == ["a", "b", "a"]
-
-
 def test_a_replaced_builds_streams_go_with_its_points(tmp_path):
     """2026-11-20: 41 GiB of rented encodes of builds no chart showed filled work/."""
     from types import SimpleNamespace
@@ -195,3 +193,25 @@ def test_a_replaced_builds_streams_go_with_its_points(tmp_path):
     refresh.args = argparse.Namespace(dry_run=False)
     refresh.delete_streams(runner, [SimpleNamespace(name="nanocodec-av1")], [])
     assert sorted(p.name for p in clip.iterdir()) == ["cbr600-new.ivf"]
+
+
+def test_a_point_timed_in_clip_split_sessions_is_one_record():
+    part = {"point": "p", "anchor": "x264-medium", "rate_mode": "cbr", "frames": 150}
+    joined = chart_refresh.combined_records([{**part, "clips": {"a@1": 1}},
+                                             {**part, "clips": {"b@1": 2}}])
+    assert [r["clips"] for r in joined] == [{"a@1": 1, "b@1": 2}]
+    with pytest.raises(SystemExit):
+        chart_refresh.combined_records([{**part, "clips": {"a@1": 1}},
+                                        {**part, "clips": {"a@1": 2}}])
+
+
+def test_merge_refuses_a_point_whose_timed_stream_is_not_the_scored_one(tmp_path, stored):
+    record = timing_record(tmp_path, "nanocodec-h264", {"a": 9.0, "b": 18.0},
+                           {"a": 20.0, "b": 40.0},
+                           time_ratio={"a": {"x264-medium": 0.5}, "b": {"x264-medium": 0.5}})
+    data = json.loads(record.read_text())
+    data["clips"]["a"]["streams"] = {"point": {"bytes": 10, "sha256": "x", "planned_bytes": 11,
+                                               "planned_sha256": "y"}}
+    record.write_text(json.dumps(data))
+    with pytest.raises(SystemExit, match="nanocodec-h264 a"):
+        chart_refresh.merge_timing(stored, [record], rescale=True, build="abc")

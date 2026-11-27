@@ -16,12 +16,12 @@
 
 use nc_dsp::Av1Quantizer;
 use nc_encoder::symbol_cost::{BitCounter, COST_UNITS_PER_BIT};
-use nc_encoder::{Candidates, CoeffRateModel, Trellis};
+use nc_encoder::{Candidates, CoeffRateModel, MAX_CANDIDATES, PackedTrellisDiagonal, Trellis};
 
 use super::{
     BASE_EOB_SYMBOLS, BR_CDF_SIZE, COEFF_BASE_RANGE, CoeffCdfs, EOB_GROUP_START, EOB_OFFSET_BITS,
-    MAP_STRIDE, MAX_BASE_BR_RANGE, NUM_BASE_LEVELS, PlaneType, TxbContext, base_context,
-    base_eob_context, br_context, eob_group, nz_map_ctx_offset, scan,
+    MAX_BASE_BR_RANGE, NUM_BASE_LEVELS, PlaneType, TxbContext, TypeSyntax, base_context,
+    base_eob_context, eob_group, scan, trellis_positions,
 };
 use crate::transform::TxSize;
 
@@ -45,7 +45,7 @@ impl TrellisQuantizer {
     /// `max_states` survivors per scan position. On entry `levels` holds
     /// the plain quantiser's levels (`quantizer`, whose rounding is at most
     /// half a step) and `eob` their end of block; on return the chosen
-    /// levels. Each coefficient's candidates sit around its level rounded
+    /// levels and their end of block. Each coefficient's candidates sit around its level rounded
     /// to the nearest. The search spans the plain end of block only: a
     /// coefficient past it is under the plain rounding threshold, and coding
     /// it as the new last level rarely pays for the longer end of block,
@@ -61,11 +61,12 @@ impl TrellisQuantizer {
         max_states: usize,
         levels: &mut [i16],
         eob: usize,
-    ) -> u32 {
+    ) -> usize {
         let scan = &scan(model.tx)[..eob];
         let log_scale = quantizer.log_scale;
         // Coefficient-domain squared error to sample SSE.
         let to_sse = 1.0 / f64::from(1_u32 << (COEFFICIENT_GAIN_LOG2 - 2 * log_scale));
+        model.beam_rates = None;
         self.candidates.clear();
         self.candidates.extend(scan.iter().map(|&p| {
             let pos = usize::from(p);
@@ -95,53 +96,121 @@ impl TrellisQuantizer {
             max_states,
             &mut self.chosen,
         );
-        let mut nonzero = 0;
-        for (i, &p) in scan.iter().enumerate() {
+        // The search writes zeros beyond its chosen end of block.
+        for (&p, &level) in scan.iter().zip(&self.chosen) {
             let pos = usize::from(p);
             // Candidates never exceed the nearest level, which the capped
             // `max_level` keeps within 16 bits (`QuantSteps::quantizer`).
-            let level = if i < coded { self.chosen[i] as i16 } else { 0 };
+            let level = level as i16;
             levels[pos] = if coeffs[pos] < 0 { -level } else { level };
-            nonzero += u32::from(level != 0);
         }
-        nonzero
+        coded
     }
 }
 
 /// Diagonals the context state holds: the current one and the two its
 /// contexts read.
 const STATE_DIAGONALS: usize = 3;
-/// `diagonal` of a state in which no level is coded yet.
-const NO_DIAGONAL: u16 = u16::MAX;
 
-/// Saturated magnitudes (at `MAX_BASE_BR_RANGE`, as in `LevelMap`) of the
-/// last [`STATE_DIAGONALS`] anti-diagonals, by row. Rows run to
-/// `MAP_STRIDE` (the largest coded side plus the context reach), so
-/// neighbours past the block read zeros without a test. Diagonals after the
-/// last coded level are zero.
+/// The scan's geometry and context offsets, prepared with the encoder's
+/// magnitude walk. Slot 0 is the current anti-diagonal's storage.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Position {
+    slots: [u8; STATE_DIAGONALS],
+    starts_diagonal: bool,
+    shift: u8,
+    base_offset: u8,
+    range_offset: u8,
+    eob_context: u8,
+}
+
+impl Position {
+    pub(super) const DC: Self = Self::new(0, 16, 0, 1, 2, 0);
+
+    pub(super) const fn new(
+        scan: usize,
+        area: usize,
+        pos: usize,
+        previous_pos: usize,
+        height: u32,
+        base_offset: u8,
+    ) -> Self {
+        let row = pos & ((1 << height) - 1);
+        let col = pos >> height;
+        let diagonal = row + col;
+        let previous_diagonal = (previous_pos & ((1 << height) - 1)) + (previous_pos >> height);
+        let slots = [
+            (diagonal % STATE_DIAGONALS) as u8,
+            ((diagonal + 1) % STATE_DIAGONALS) as u8,
+            ((diagonal + 2) % STATE_DIAGONALS) as u8,
+        ];
+        let range_offset = if pos == 0 {
+            0
+        } else if row < 2 && col < 2 {
+            7
+        } else {
+            14
+        };
+        Self {
+            slots,
+            starts_diagonal: previous_diagonal != diagonal,
+            shift: (row * 4) as u8,
+            base_offset,
+            range_offset,
+            eob_context: base_eob_context(scan, area) as u8,
+        }
+    }
+}
+
+/// Saturated magnitudes (at `MAX_BASE_BR_RANGE = 15`, 4 bits per row) of the
+/// last [`STATE_DIAGONALS`] anti-diagonals, packed 32 rows into one `u128`
+/// per diagonal. Shifting right by `row * 4` naturally zero-extends past row
+/// 31, avoids `MAP_STRIDE` padding, halves state copies, and replaces the
+/// 108-byte `memcmp` in `Trellis::select_survivors` with three integer
+/// comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextState {
-    /// Anti-diagonal (`row + col`) of the last coded level.
-    diagonal: u16,
-    /// Diagonal `d` lives in slot `d % STATE_DIAGONALS`.
-    magnitudes: [[u8; MAP_STRIDE]; STATE_DIAGONALS],
+    /// Diagonal `d` lives in slot `d % STATE_DIAGONALS`; row `r` (`0..32`)
+    /// occupies bits `4 * r .. 4 * r + 4`.
+    magnitudes: [PackedTrellisDiagonal; STATE_DIAGONALS],
 }
+
+const _: () = assert!(MAX_BASE_BR_RANGE <= 15);
 
 impl ContextState {
     /// `(coeff_base sum, coeff_br sum)` of the coefficient at `row` on
     /// `diagonal`, as `LevelMap::base_sum` and
     /// `LevelMap::range_sum`.
-    fn neighbour_sums(&self, row: usize, diagonal: usize) -> (u32, u32) {
-        let next = &self.magnitudes[(diagonal + 1) % STATE_DIAGONALS];
-        let after = &self.magnitudes[(diagonal + 2) % STATE_DIAGONALS];
+    #[inline]
+    fn neighbour_sums(&self, at: Position) -> (u32, u32) {
+        const _: () = assert!(super::BASE_CONTEXT_LEVEL_MAX == 3);
+        let next = self.magnitudes[usize::from(at.slots[1])].window(at.shift);
+        let after = self.magnitudes[usize::from(at.slots[2])].window(at.shift);
         // (r, c+1), (r+1, c) on the next diagonal; (r+1, c+1) on the one
         // after; and the farther (r, c+2), (r+2, c) read by `coeff_base`.
-        let near = [next[row], next[row + 1], after[row + 1]].map(u32::from);
-        let far = [after[row], after[row + 2]].map(u32::from);
-        let cap = |m: u32| m.min(u32::from(super::BASE_CONTEXT_LEVEL_MAX));
-        let base = near.iter().chain(&far).map(|&m| cap(m)).sum();
-        let br = near.iter().sum();
+        let next = next & 0xFF;
+        let five = next | ((after & 0xFFF) << 8);
+        // A nibble with either upper bit set saturates to 3. A multiplier
+        // with one bit in each nibble sums these five capped magnitudes
+        // into the fifth nibble without any carry (5 * 3 <= 15).
+        let above_three = ((five >> 2) | (five >> 3)) & 0x11111;
+        let saturated = (five | (above_three * 3)) & 0x33333;
+        let base = (saturated.wrapping_mul(0x11111) >> 16) & 15;
+        let br = (next & 15) + (next >> 4) + ((after >> 4) & 15);
         (base, br)
+    }
+
+    /// Enter the coefficient's diagonal, clearing the one that fell out
+    /// of the context window, and return the current slot.
+    #[inline]
+    fn enter(&mut self, at: Position) -> &mut PackedTrellisDiagonal {
+        let slot = &mut self.magnitudes[usize::from(at.slots[0])];
+        // Paths visit every position after starting, and a new path
+        // starts with all slots empty even if it starts mid-diagonal.
+        if at.starts_diagonal {
+            *slot = PackedTrellisDiagonal::EMPTY;
+        }
+        slot
     }
 }
 
@@ -156,9 +225,10 @@ pub struct RateModel<'a> {
     /// `dc_sign` cost of the DC coefficient's sign (context coded), in
     /// 1/512 bit: the same for every candidate, so priced once.
     dc_sign_q9: u32,
-    /// The transform's scan and `nz_map_ctx_offset`, looked up once.
-    scan: &'static [u16],
-    nz_offsets: &'static [u8],
+    context: usize,
+    positions: &'static [Position],
+    /// Rates for the most recently priced path context within this block.
+    beam_rates: Option<(u32, [f32; MAX_CANDIDATES])>,
 }
 
 impl<'a> RateModel<'a> {
@@ -169,20 +239,15 @@ impl<'a> RateModel<'a> {
         cdfs: &'a mut CoeffCdfs,
         tx: TxSize,
         plane: PlaneType,
-        is_inter: bool,
-        intra_mode: usize,
+        syntax: TypeSyntax,
         ctx: TxbContext,
         dc_negative: bool,
     ) -> Self {
         let mut counter = BitCounter::default();
-        let txs = tx.index();
+        let txs = tx.context();
         counter.add_q9(cdfs.txb_skip[txs][ctx.skip].cost_q9(0));
         if plane == PlaneType::Luma {
-            if is_inter {
-                cdfs.write_inter_tx_type_dct(&mut counter, tx);
-            } else {
-                cdfs.write_intra_tx_type_dct(&mut counter, tx, intra_mode);
-            }
+            cdfs.write_tx_type(&mut counter, tx, syntax);
         }
         let dc_sign_q9 =
             cdfs.dc_sign[plane as usize][ctx.dc_sign].cost_q9(usize::from(dc_negative));
@@ -193,22 +258,15 @@ impl<'a> RateModel<'a> {
             ctx,
             coded_block_bits: counter.bits(),
             dc_sign_q9,
-            scan: scan(tx),
-            nz_offsets: nz_map_ctx_offset(tx),
+            context: txs,
+            positions: trellis_positions(tx),
+            beam_rates: None,
         }
-    }
-
-    /// Coefficient index, row and column of scan position `scan_pos`.
-    fn coordinates(&self, scan_pos: usize) -> (usize, usize, usize) {
-        let pos = usize::from(self.scan[scan_pos]);
-        let row = pos & (self.tx.coded_size() - 1);
-        let col = pos >> self.tx.coded_log2();
-        (pos, row, col)
     }
 
     /// `coeff_br` symbols of `level` (> `NUM_BASE_LEVELS`), in 1/512 bit.
     fn range_cost_q9(&mut self, br_ctx: usize, level: u32) -> u32 {
-        let cdf = &mut self.cdfs.br[self.tx.index().min(3)][self.plane as usize][br_ctx];
+        let cdf = &mut self.cdfs.br[self.context.min(3)][self.plane as usize][br_ctx];
         let base_range = level as i32 - 1 - NUM_BASE_LEVELS;
         let mut cost = 0;
         let mut idx = 0;
@@ -221,6 +279,44 @@ impl<'a> RateModel<'a> {
             idx += BR_CDF_SIZE - 1;
         }
         cost
+    }
+
+    #[inline]
+    fn contexts(&self, state: &ContextState, scan_pos: usize) -> (usize, usize) {
+        let at = self.positions[scan_pos];
+        let (base_sum, br_sum) = state.neighbour_sums(at);
+        let base = base_context(scan_pos, base_sum, at.base_offset);
+        let br = (((br_sum + 1) >> 1).min(6) as usize) + usize::from(at.range_offset);
+        (base, br)
+    }
+
+    fn price_levels(
+        &mut self,
+        scan_pos: usize,
+        base_ctx: usize,
+        br: usize,
+        levels: &[u32],
+        bits: &mut [f32],
+    ) {
+        let (txs, pt) = (self.context, self.plane as usize);
+        let dc = scan_pos == 0;
+        for (i, &level) in levels.iter().enumerate() {
+            let base_symbol = level.min(3) as usize;
+            let mut cost = self.cdfs.base[txs][pt][base_ctx].cost_q9(base_symbol);
+            if level == 0 {
+                bits[i] = q9_to_bits(cost);
+                continue;
+            }
+            if level as i32 > NUM_BASE_LEVELS {
+                cost += self.range_cost_q9(br, level);
+            }
+            cost += if dc {
+                self.dc_sign_q9
+            } else {
+                COST_UNITS_PER_BIT
+            };
+            bits[i] = q9_to_bits(cost) + golomb_bits(level) as f32;
+        }
     }
 }
 
@@ -242,8 +338,7 @@ impl CoeffRateModel for RateModel<'_> {
 
     fn initial_state(&self) -> ContextState {
         ContextState {
-            diagonal: NO_DIAGONAL,
-            magnitudes: [[0; MAP_STRIDE]; STATE_DIAGONALS],
+            magnitudes: [PackedTrellisDiagonal::EMPTY; STATE_DIAGONALS],
         }
     }
 
@@ -256,16 +351,11 @@ impl CoeffRateModel for RateModel<'_> {
         let pt = self.plane as usize;
         let symbol = eob_pt - 1;
         // `eob_multi_ctx` is 0 for transform class 2D.
-        let mut cost = match self.tx {
-            TxSize::Tx4x4 => self.cdfs.eob_pt_16[pt][0].cost_q9(symbol),
-            TxSize::Tx8x8 => self.cdfs.eob_pt_64[pt][0].cost_q9(symbol),
-            TxSize::Tx16x16 => self.cdfs.eob_pt_256[pt][0].cost_q9(symbol),
-            TxSize::Tx32x32 | TxSize::Tx64x64 => self.cdfs.eob_pt_1024[pt][0].cost_q9(symbol),
-        };
+        let mut cost = self.cdfs.eob_pt_cost_q9(self.tx, pt, symbol);
         let bits = EOB_OFFSET_BITS[eob_pt];
         if bits > 0 {
             let top = ((eob - usize::from(EOB_GROUP_START[eob_pt])) >> (bits - 1)) & 1;
-            cost += self.cdfs.eob_extra[self.tx.index()][pt][eob_pt - 3].cost_q9(top);
+            cost += self.cdfs.eob_extra[self.context][pt][eob_pt - 3].cost_q9(top);
             cost += (bits - 1) * COST_UNITS_PER_BIT;
         }
         self.coded_block_bits + q9_to_bits(cost)
@@ -278,39 +368,53 @@ impl CoeffRateModel for RateModel<'_> {
         levels: &[u32],
         bits: &mut [f32],
     ) {
-        let (pos, row, col) = self.coordinates(scan_pos);
-        let (txs, pt) = (self.tx.index(), self.plane as usize);
-        let last = state.diagonal == NO_DIAGONAL;
-        // The contexts are shared by every candidate.
-        let (base_ctx, br_sum) = if last {
-            // The last coded level: `coeff_base_eob`, no neighbours.
-            (base_eob_context(scan_pos, self.tx.coded_size()), 0)
+        let (base, br) = self.contexts(state, scan_pos);
+        self.price_levels(scan_pos, base, br, levels, bits);
+    }
+
+    fn beam_level_rates(
+        &mut self,
+        state: &ContextState,
+        scan_pos: usize,
+        levels: &[u32],
+        bits: &mut [f32; MAX_CANDIDATES],
+    ) {
+        const _: () = assert!(super::SIG_COEF_CONTEXTS <= 64 && super::LEVEL_CONTEXTS <= 32);
+        let (base, br) = self.contexts(state, scan_pos);
+        let key = ((scan_pos as u32) << 11) | ((base as u32) << 5) | br as u32;
+        if let Some((cached_key, cached)) = self.beam_rates
+            && cached_key == key
+        {
+            *bits = cached;
         } else {
-            let (base_sum, br_sum) = state.neighbour_sums(row, row + col);
-            let offset = self.nz_offsets[pos];
-            (base_context(pos, base_sum, offset), br_sum)
+            self.price_levels(scan_pos, base, br, levels, bits);
+            self.beam_rates = Some((key, *bits));
+        }
+    }
+
+    fn last_level_rates(
+        &mut self,
+        _initial: &ContextState,
+        scan_pos: usize,
+        levels: &[u32],
+        bits: &mut [f32],
+    ) {
+        let at = self.positions[scan_pos];
+        let pt = self.plane as usize;
+        let sign = if scan_pos == 0 {
+            self.dc_sign_q9
+        } else {
+            COST_UNITS_PER_BIT
         };
-        for (i, &level) in levels.iter().enumerate() {
-            let base_symbol = level.min(3) as usize;
-            let mut cost = if last {
-                debug_assert!((1..=BASE_EOB_SYMBOLS).contains(&base_symbol));
-                self.cdfs.base_eob[txs][pt][base_ctx].cost_q9(base_symbol - 1)
-            } else {
-                self.cdfs.base[txs][pt][base_ctx].cost_q9(base_symbol)
-            };
-            if level == 0 {
-                bits[i] = q9_to_bits(cost);
-                continue;
-            }
+        for (&level, bits) in levels.iter().zip(bits) {
+            let symbol = level.min(3) as usize;
+            debug_assert!((1..=BASE_EOB_SYMBOLS).contains(&symbol));
+            let mut cost = self.cdfs.base_eob[self.context][pt][usize::from(at.eob_context)]
+                .cost_q9(symbol - 1);
             if level as i32 > NUM_BASE_LEVELS {
-                cost += self.range_cost_q9(br_context(pos, row, col, br_sum), level);
+                cost += self.range_cost_q9(usize::from(at.range_offset), level);
             }
-            cost += if pos == 0 {
-                self.dc_sign_q9
-            } else {
-                COST_UNITS_PER_BIT
-            };
-            bits[i] = q9_to_bits(cost) + golomb_bits(level) as f32;
+            *bits = q9_to_bits(cost + sign) + golomb_bits(level) as f32;
         }
     }
 
@@ -318,30 +422,25 @@ impl CoeffRateModel for RateModel<'_> {
     /// the survivor's context: a survivor has coded a level, so its state is
     /// never the initial one), then [`Self::advance`].
     fn zero_step(&mut self, state: &mut ContextState, scan_pos: usize) -> f32 {
-        debug_assert_ne!(state.diagonal, NO_DIAGONAL);
-        let (pos, row, col) = self.coordinates(scan_pos);
-        let (base_sum, _) = state.neighbour_sums(row, row + col);
-        let ctx = base_context(pos, base_sum, self.nz_offsets[pos]);
-        let cost = self.cdfs.base[self.tx.index()][self.plane as usize][ctx].cost_q9(0);
-        self.advance(state, scan_pos, 0);
+        let at = self.positions[scan_pos];
+        let (base_sum, _) = state.neighbour_sums(at);
+        let ctx = base_context(scan_pos, base_sum, at.base_offset);
+        let cost = self.cdfs.base[self.context][self.plane as usize][ctx].cost_q9(0);
+        // A scan visits a row only once per diagonal. This nibble is
+        // already zero, including after a slot is cleared on entry.
+        state.enter(at);
         q9_to_bits(cost)
     }
 
     fn advance(&self, state: &mut ContextState, scan_pos: usize, level: u32) {
-        let (_, row, col) = self.coordinates(scan_pos);
-        let diagonal = row + col;
-        let slot = &mut state.magnitudes[diagonal % STATE_DIAGONALS];
-        if usize::from(state.diagonal) != diagonal {
-            // Entering a new diagonal: its slot held the one three further
-            // on, which no remaining context reads.
-            slot.fill(0);
-            state.diagonal = diagonal as u16;
-        }
-        slot[row] = level.min(MAX_BASE_BR_RANGE as u32) as u8;
+        let at = self.positions[scan_pos];
+        state
+            .enter(at)
+            .insert(at.shift, level.min(MAX_BASE_BR_RANGE as u32));
     }
 
     fn empty_rate(&mut self) -> f32 {
-        self.cdfs.txb_skip[self.tx.index()][self.ctx.skip].bits(1)
+        self.cdfs.txb_skip[self.context][self.ctx.skip].bits(1)
     }
 }
 
@@ -380,19 +479,27 @@ pub(crate) fn rate_trim(
 mod tests {
     use super::*;
 
+    /// The 2:1 rectangles (the coder's other shapes).
+    fn rectangles() -> Vec<TxSize> {
+        (2..=6_u8)
+            .flat_map(|w| [w + 1, w.wrapping_sub(1)].map(|h| TxSize::new(w, h)))
+            .flatten()
+            .collect()
+    }
+
     const SIZES: [TxSize; 5] = [
-        TxSize::Tx4x4,
-        TxSize::Tx8x8,
-        TxSize::Tx16x16,
-        TxSize::Tx32x32,
-        TxSize::Tx64x64,
+        TxSize::TX_4X4,
+        TxSize::TX_8X8,
+        TxSize::TX_16X16,
+        TxSize::TX_32X32,
+        TxSize::TX_64X64,
     ];
 
     /// The state is only exact if scans visit anti-diagonals in order.
     #[test]
     fn default_scans_visit_anti_diagonals_in_order() {
-        for tx in SIZES {
-            let n = tx.coded_size();
+        for tx in SIZES.into_iter().chain(rectangles()) {
+            let n = 1 << tx.coded_height_log2();
             let diagonals: Vec<usize> = scan(tx)
                 .iter()
                 .map(|&p| usize::from(p) % n + usize::from(p) / n)
@@ -409,9 +516,9 @@ mod tests {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
             seed >> 16
         };
-        for tx in SIZES {
+        for tx in SIZES.into_iter().chain(rectangles()) {
             for plane in [PlaneType::Luma, PlaneType::Chroma] {
-                let area = tx.coded_size() * tx.coded_size();
+                let area = tx.coded_area();
                 let mut levels = vec![0_i16; area];
                 for &p in &scan(tx)[..area.min(40)] {
                     let v = match next() % 8 {
@@ -426,14 +533,19 @@ mod tests {
                 let eob = super::super::end_of_block(tx, &levels);
                 let ctx = TxbContext::derive(plane, true, &[0x9], &[0x3]);
                 let mut cdfs = CoeffCdfs::new(1);
-                let expected = cdfs.cost(tx, plane, true, 0, ctx, &levels, eob);
-                let mut model = RateModel::new(&mut cdfs, tx, plane, true, 0, ctx, levels[0] < 0);
+                let expected = cdfs.cost(tx, plane, TypeSyntax::Inter, ctx, &levels, eob);
+                let mut model =
+                    RateModel::new(&mut cdfs, tx, plane, TypeSyntax::Inter, ctx, levels[0] < 0);
                 let mut bits = model.eob_rate(eob - 1);
                 let mut state = model.initial_state();
                 for c in (0..eob).rev() {
                     let level = u32::from(levels[usize::from(scan(tx)[c])].unsigned_abs());
                     let mut level_bits = [0.0];
-                    model.level_rates(&state, c, &[level], &mut level_bits);
+                    if c == eob - 1 {
+                        model.last_level_rates(&state, c, &[level], &mut level_bits);
+                    } else {
+                        model.level_rates(&state, c, &[level], &mut level_bits);
+                    }
                     bits += level_bits[0];
                     model.advance(&mut state, c, level);
                 }
@@ -441,8 +553,8 @@ mod tests {
                     (bits - expected).abs() < 0.05,
                     "{tx:?} {plane:?}: {bits} vs {expected}"
                 );
-                let empty = cdfs.cost(tx, plane, true, 0, ctx, &levels, 0);
-                let mut model = RateModel::new(&mut cdfs, tx, plane, true, 0, ctx, false);
+                let empty = cdfs.cost(tx, plane, TypeSyntax::Inter, ctx, &levels, 0);
+                let mut model = RateModel::new(&mut cdfs, tx, plane, TypeSyntax::Inter, ctx, false);
                 assert!((model.empty_rate() - empty).abs() < 0.01);
             }
         }

@@ -1,0 +1,23 @@
+# tune-fast (2026-11-23): AV1 faster's effort and decision pins, each between the
+# rung's value and medium's, searched at the rung's front slope (k 0.201, not 0.6).
+# Format (nceval.tune_pool): name [low high] [int|log]
+light.decision.refine_cheap_vector 0 1 int
+light.decision.seed_refine_ratio 0 1.1
+light.av1.pre_tx_skip_model 0 1 int
+light.av1.partial_forward 0 2 int
+light.av1.pre_tx_skip_energy 15 100
+light.planner.depth_removal_th_32_16 0 25
+light.planner.depth_removal_th_16_8 0 50
+light.planner.depth_removal_qp_scale 2 4
+av1.inter_tx_split 0 1 int
+av1.transform_rd_skip 0 2 int
+av1.cdef_search_row_step 2 8 int
+av1.cdef_local_search_period 1 4 int
+av1.inter_intra_search 0 1 int
+decision.subpel_walk 0 2 int
+decision.intra_directional 0 1 int
+decision.exact_rank_margin 0.8 1.5  # (0, 0.56] costs +7 to +13 % J (medium tuner, 2026-11-23): stay near the shipped 1.1
+nonbase.av1.loop_filter 0 1 int
+quant.rd_trim 0 1 int
+effort.regular_fraction 0 0.5
+adapt.motion 0 1 int

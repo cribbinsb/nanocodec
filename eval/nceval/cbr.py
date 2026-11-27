@@ -59,30 +59,33 @@ from .cbr_stats import flicker, replay_buffer, weighted_yuv_per_frame, worst_qua
 from .clipframes import ClipFrames
 from .clips import Clip, load_clipset
 from .codecs import Codec
-from .config import Paths, find_tool, load_paths
-from .conformance import gate_stream
+from .config import Paths, find_tool, load_paths, openh264_harness, quality_reference
+from .conformance import GateResult, gate_stream
 from .encoders.nanocodec import preset_cli_args
-from . import svcbase
+from . import fairness, gpuscore, rate_ladder, svcbase
 from .infosei import strip_info_sei
 from .gatepolicy import (EVALUATION_GATE, GatePolicy, PointCheck, anchor_check, combination_key,
                          gate_arguments, level_satisfies, point_check)
 from .diskguard import check_disk
 from .encoders.base import fps_fraction
 from .fingerprint import measurement_fingerprint
-from .framepipe import PSNR_CAP_DB, ProcessFailed
+from .framepipe import PSNR_CAP_DB, FrameHashSink, ProcessFailed
 from .framestats import coded_at_times, probe_frames, with_held_frames
 from .metrics import (REAL_METRICS_REVISION, REAL_MS_SSIM_REVISION, REAL_XPSNR_REVISION, MetricSession,
-                      PsnrMetric, StreamSpec, gpu_slot_need, real_metrics, vmaf_v1_and_ms_ssim)
-from .point import coded_format, run_point
+                      EncoderPsnrMetric, Measurement, PsnrMetric, StreamSpec, gpu_slot_need,
+                      metrics_backend, real_metrics, vmaf_v1_and_ms_ssim)
+from .point import coded_format, encode_streamed, run_point, writes_sse_log
 from .slots import cpu_slots, gpu_slots, nvenc_slots
 from .stages import STAGES, decide
-from .sweep import PIXEL_RATE_EXPONENT, REFERENCE_PIXELS_PER_SECOND, payload_bytes
+from .sweep import payload_bytes
 from .yuv import YuvFormat
 
 #: Target bitrates for a 1280x720 30 fps clip; other clips scale by pixel rate.
 REFERENCE_TARGETS_KBPS = (200, 350, 600, 1000, 1500)
 #: Receiver buffer for every encoder, and the strict-CBR replay.
 BUFFER_MS = 1000
+#: A prebuilt point's squared-error log (our encoder's --sse-log, Bench.encode_prebuilt).
+SSE_LOG = ".sse.csv"
 #: SVT's starting and steady-state buffer levels (its RTC CBR examples use 60%).
 SVT_BUFFER_LEVEL_MS = 600
 DEFAULT_FRAMES = 150
@@ -139,17 +142,32 @@ ANCHOR_PRESET_PREFIXES = {"svt": "svtav1-m", "x264": "x264-", "x265": "x265-",
 #:   ssim       libvpx / libaom --tune=ssim instead of their default --tune=psnr
 #:   aq         openh264 with its adaptive quantisation on (its default); NVENC
 #:              with spatial AQ on (-spatial-aq 1; off by default)
+#:   cabac      openh264 at its best real-time setting: CABAC on and high complexity
+#:              (the baseline family is CAVLC at medium complexity)
 #:   allintra   libaom --allintra (its still-image / all-intra usage) at good-quality
 #:              speeds, and `good` for libaom: the strong intra references of the
 #:              key-frame headroom study (docs/analysis/key-frame-rdo-2026-11-21.md)
 #:   still, ra  SVT-AV1 without --rtc: `still` is its still-picture mode (--avif 1),
 #:              `ra` its default (random access) settings; one-frame runs only
+#:   cfg        VVenC's low-delay configuration file as it is: the profile that takes
+#:              `+Option=value` switches after it (`vvenc-ld-faster~cfg+MaxMTTDepth=1`),
+#:              to value its tools one at a time (vvencFFapp's later option wins)
+#:   flat,      VVenC with our fixed-QP picture structure in place of its GOP-8 QP
+#:   flat4      cascade: every inter picture at the base QP, from the previous picture
+#:              (flat) or the four previous ones (flat4); a second configuration file
+#:              (VVENC_STRUCTURES), and `+Option=value` switches after it as with cfg
 ANCHOR_PROFILES = {"x264": ("lookahead", "threads4", "psnr", "ssim"),
                    "x265": ("lookahead", "threads4", "psnr", "ssim"),
                    "svt": ("hier", "still", "ra"), "vpx": ("webrtc", "good", "ssim"),
-                   "aom": ("webrtc", "ssim", "good", "allintra"), "openh264": ("aq",), "nvenc": ("aq",)}
+                   "aom": ("webrtc", "ssim", "good", "allintra"), "openh264": ("aq", "cabac"), "nvenc": ("aq",),
+                   "vvenc": ("cfg", "flat", "flat4")}
 WEBRTC_VPX_AOM = ("--aq-mode=3", "--max-q=52", "--min-q=2", "--undershoot-pct=50",
                   "--overshoot-pct=50")
+#: libvpx's / libaom's real-time CBR families code with cyclic-refresh AQ, as WebRTC
+#: runs them (owner, 2026-11-23); until then their CBR points coded with AQ off.
+RT_CYCLIC_AQ = "--aq-mode=3"
+#: A CBR point's label prefix (`Point.label`: cbr600; a fixed-QP point's is qp27).
+CBR_LABEL = "cbr"
 PROFILE_THREADS = "4"
 #: Metric tunes (Family.profile) that replace x264's / x265's psycho-visual defaults.
 METRIC_TUNES = ("psnr", "ssim")
@@ -159,9 +177,10 @@ PROFILE_SEPARATOR = "~"
 #: appended to the preset's: ablations that attribute a slow preset's lead to its
 #: tools (docs/analysis/fixed-qp-gap-2026-11-14.md). A bare name is a flag (`+no-rect`).
 OPTION_SEPARATOR = "+"
-OPTION_KINDS = ("x264", "x265", "aom", "svt")
-#: Kinds whose programs take a long option's value only as `--key=value` (aomenc).
-JOINED_OPTION_KINDS = ("aom",)
+OPTION_KINDS = ("x264", "x265", "aom", "svt", "vvenc")
+#: Kinds whose programs take a long option's value only as `--key=value` (aomenc; vvencFFapp
+#: reads `--Option value` too, but a negative value would be taken for an option).
+JOINED_OPTION_KINDS = ("aom", "vvenc")
 #: SVT-AV1 profiles that are not real-time (no --rtc, no low-delay structure).
 SVT_OFFLINE_PROFILES = ("still", "ra")
 #: libaom profiles that replace its --rt deadline, with the option of each.
@@ -173,17 +192,25 @@ ANCHOR_CODECS = {"svt": Codec.AV1, "x264": Codec.H264, "x265": Codec.HEVC, "vpx"
 #: Fixed-QP-only references for the newer formats (nceval.fixedqp): VVenC with
 #: its low-delay configuration files (`vvenc-ld-faster`: cfg/experimental/
 #: lowdelay_faster.cfg, B slices from past pictures only, 4 references, GOP-8 QP
-#: offsets) and the AVM AV2 reference (`avm-ld-s<cpu-used>`, good deadline, no
-#: lag). Neither is installed by build_anchors.sh's default x86 prefix, so each
-#: has an environment override and a known fallback location.
-REFERENCE_TOOL_ENV = {"vvenc": "NC_VVENC_APP", "avm": "NC_AVMENC"}
-REFERENCE_TOOL_FALLBACK = {
-    "vvenc": Path("work/h266/vvenc/bin/release-static/vvencFFapp"),
-    "avm": Path("anchors/vp9-av2/bin/avmenc"),
-}
-#: VVenC's configuration files, relative to its install root (the tool's
-#: grandparent's parent: <root>/bin/release-static/vvencFFapp).
-VVENC_CONFIG_DIR = Path("cfg/experimental")
+#: offsets; `--frames 1` codes the preset's key picture alone) and the AVM AV2
+#: reference (`avm-ld-s<cpu-used>`, good deadline, no lag). VVenC is an anchor
+#: (build_anchors.sh vvenc); avmenc is not installed in the default x86 prefix,
+#: so it has an environment override and a known fallback location.
+REFERENCE_TOOL_ENV = {"avm": "NC_AVMENC"}
+REFERENCE_TOOL_FALLBACK = {"avm": Path("anchors/vp9-av2/bin/avmenc")}
+#: VVenC's low-delay configuration files, relative to the anchors prefix that
+#: holds bin/vvencFFapp (build_anchors.sh installs its cfg/ as share/vvenc/cfg).
+VVENC_CONFIG_DIR = Path("share/vvenc/cfg/experimental")
+#: The VVenC profiles' picture-structure files (tools/anchors/vvenc, installed beside
+#: VVenC's own by build_anchors.sh), read after the preset's file, by profile.
+VVENC_STRUCTURE_DIR = Path("share/vvenc/cfg/nanocodec")
+VVENC_STRUCTURES = {"flat": "structure-flat.cfg", "flat4": "structure-flat4.cfg"}
+#: The NTSC-style rates' denominator (30000/1001 ...), and how near a clip's stored
+#: rate (29.97) must be to one for VVenC to be given it.
+NTSC_SCALE = 1001
+VVENC_NTSC_TOLERANCE = 0.01
+#: Runs VVenC (`$@`) with the input file (`$0`) as its standard input (`-i -`).
+VVENC_STDIN_SCRIPT = 'exec "$@" <"$0"'
 #: VVenC and AVM code 8 bits here, like every encoder in the project.
 REFERENCE_BIT_DEPTH = 8
 #: NVIDIA NVENC through ffmpeg: fixed-function GPU hardware, a chart reference on the
@@ -239,6 +266,13 @@ class Family:
     #: Anchors: False drops the program's information SEI from the stream
     #: (nceval.infosei: one-frame key studies, where it is a large share).
     info_sei: bool = True
+    #: Ours: the conditions it is coded under, fairness.BENCHMARK or SHIPPED_DEFAULTS
+    #: ("" = fairness.conditions(), the dev default). The pre-BP-3 charts were measured
+    #: at the shipped defaults and keep them.
+    conditions: str = ""
+
+    def own_conditions(self) -> str:
+        return self.conditions or fairness.conditions()
 
     @property
     def hardware(self) -> bool:
@@ -255,8 +289,7 @@ class Family:
         num, den = fps_fraction(clip.fps)
         common = {"w": str(clip.width), "h": str(clip.height), "n": str(frames)}
         if self.own:
-            mode = ["--bitrate", str(kbps), "--buffer-ms", str(BUFFER_MS)] if kbps else \
-                ["--qp", str(qp)]
+            mode = own_mode(kbps, qp, self.own_conditions())
             cmd = [str(self.tool), "encode", "--codec", self.codec.value, "--input",
                    str(clip.yuv), "--width", common["w"], "--height", common["h"],
                    "--fps", f"{num}/{den}", "--frames", common["n"], "--intra-period",
@@ -296,8 +329,9 @@ class Family:
         mode = ["--bitrate", str(kbps)] if kbps else ["--qp", str(qp)]
         return [str(self.tool), "--input", str(clip.yuv), "--output", str(out),
                 "--width", common["w"], "--height", common["h"], "--fps", f"{clip.fps:g}",
-                "--frames", common["n"], "--usage", "camera-realtime", "--complexity", "medium",
-                "--cabac", "0", *mode, "--intra-period", str(intra), "--temporal-layers", str(layers),
+                "--frames", common["n"], "--usage", "camera-realtime",
+                "--complexity", "high" if self.profile == "cabac" else "medium",
+                "--cabac", "1" if self.profile == "cabac" else "0", *mode, "--intra-period", str(intra), "--temporal-layers", str(layers),
                 "--adaptive-quant", "1" if self.profile == "aq" else "0",
                 "--scene-change", "0", "--background-detection", "1",
                 "--denoise", "0", "--ltr", "0", "--frame-skip", "0", "--threads", "1"]
@@ -356,7 +390,8 @@ class Family:
         deadline = "--good" if self.profile == "good" else "--rt"
         codec = ["--codec=vp9", deadline] if self.kind == "vpx" else \
             [AOM_DEADLINES.get(self.profile, "--rt")]
-        profile = WEBRTC_VPX_AOM if self.profile == "webrtc" and kbps else ()
+        profile = WEBRTC_VPX_AOM if self.profile == "webrtc" and kbps else \
+            (RT_CYCLIC_AQ,) if kbps and rt_cyclic_aq(self.kind, self.profile) else ()
         profile += ("--tune=ssim",) if self.profile == "ssim" else ()
         return [str(self.tool), *codec, "--passes=1", "--lag-in-frames=0",
                 "--error-resilient=0", "--threads=1", f"--cpu-used={self.preset}", *mode,
@@ -377,8 +412,13 @@ class Family:
         num, den = fps_fraction(clip.fps)
         depth = str(REFERENCE_BIT_DEPTH)
         if self.kind == "vvenc":
-            config = self.tool.parents[2] / VVENC_CONFIG_DIR / f"lowdelay_{self.preset}.cfg"
-            return [str(self.tool), "-c", str(config), "-i", str(clip.yuv),
+            num, den = vvenc_frame_rate(clip.fps)
+            # vvencFFapp opens its input file twice (to size it, then to read), and a
+            # FIFO (nceval.clipframes) serves its frames once: the second open waited
+            # forever or failed (2026-11-22). Its standard input is opened once.
+            return ["sh", "-c", VVENC_STDIN_SCRIPT, str(clip.yuv), str(self.tool),
+                    *(a for c in self.vvenc_configs for a in ("-c", str(c))),
+                    *self.extra, "-i", "-",
                     "-s", f"{clip.width}x{clip.height}", "--FrameRate", str(num),
                     "--FrameScale", str(den), "-f", str(frames), "-q", str(qp),
                     f"--InputBitDepth={depth}", f"--OutputBitDepth={depth}",
@@ -419,6 +459,21 @@ class Family:
                 "-f", NVENC_MUXERS[self.codec], "-y", str(out)]
 
     @property
+    def vvenc_configs(self) -> tuple[Path, ...]:
+        """A VVenC family's configuration files, beside its program, in the order it
+        reads them: its preset's low-delay file, then its profile's picture structure."""
+        prefix = self.tool.parent.parent
+        structure = VVENC_STRUCTURES.get(self.profile)
+        return (prefix / VVENC_CONFIG_DIR / f"lowdelay_{self.preset}.cfg",
+                *((prefix / VVENC_STRUCTURE_DIR / structure,) if structure else ()))
+
+    @property
+    def program_files(self) -> tuple[Path, ...]:
+        """The files the program needs besides its input: itself, and VVenC's
+        configuration files (staged with it to a measuring box)."""
+        return (self.tool, *self.vvenc_configs) if self.kind == "vvenc" else (self.tool,)
+
+    @property
     def quantizer_grid(self) -> range:
         if self.own or self.kind in ("vvenc", "avm"):
             return COARSE_GRIDS[self.codec]
@@ -440,7 +495,7 @@ class Point:
 
     @property
     def label(self) -> str:
-        return f"cbr{self.kbps}" if self.kbps else f"qp{self.qp}"
+        return f"{CBR_LABEL}{self.kbps}" if self.kbps else f"qp{self.qp}"
 
 
 @dataclass
@@ -481,6 +536,16 @@ class Bench:
     #: With `xpsnr`: reuse a stored result without it (score XPSNR only on the points
     #: this run measures anyway: a chart render, whose missing points must not lack it).
     stored_xpsnr: bool = False
+    #: Encode only (nceval.gpuscore, on a rented box): an uncached point is encoded into
+    #: `prebuilt` and `measure` returns None; nothing is scored. Points the scoring PC
+    #: already holds (gpuscore.HAVE_FILE) are not encoded again.
+    encode_only: bool = False
+    _have_keys: set[str] | None = field(default=None, repr=False)
+    #: Scoring prebuilt streams: each clip window's live frames, shared by its points
+    #: in flight ({key: [ClipFrames, users]}; `scoring_frames`).
+    _shared_frames: dict = field(default_factory=dict, repr=False)
+    #: Points whose scores came from an identical, already-scored stream (`reused_scores`).
+    scores_reused: int = 0
 
     def tool_hash(self, family: Family) -> str:
         with self.lock:
@@ -514,6 +579,10 @@ class Bench:
                 parts.append("x265-tune")
         if not family.info_sei:
             parts.append("no-info-sei")
+        if family.own and family.own_conditions() == fairness.BENCHMARK:
+            parts.append(conditions_tag())  # 2026-11-24: dev codes ours as the benchmark does
+        if label.startswith(CBR_LABEL) and rt_cyclic_aq(family.kind, family.profile):
+            parts.append("rt-aq3")  # never the CBR points coded with AQ off
         if self.spatial(family):  # their results carry the base layer too
             parts.append("svc-base")
         if scored:
@@ -534,11 +603,61 @@ class Bench:
 
     def has_prebuilt(self, point: Point) -> bool:
         """Whether `prebuilt` holds the point's stream (or its refusal)."""
+        if self.encode_only and self.prebuilt_key(point) in self._have():
+            return True
         base = self.prebuilt_base(point)
         suffix = point.family.codec.bitstream_suffix
         # .done without its stream: scored once, the stream deleted since; encode here
         return (Path(f"{base}.done").exists() and Path(f"{base}{suffix}").exists()) \
             or Path(f"{base}.failed").exists()
+
+    def _have(self) -> set[str]:
+        with self.lock:
+            if self._have_keys is None:
+                self._have_keys = gpuscore.have_keys(self.prebuilt)
+            return self._have_keys
+
+    def encode_prebuilt(self, point: Point) -> None:
+        """Encode one point into `prebuilt` (encode-only mode): the stream, our encoder's
+        rate log, coded times and squared-error log against the reference (`--sse-log`,
+        builds that have it: the scoring PC then takes PSNR from it, not from the frames in
+        Python), and its reconstruction's per-frame digests (yuv.FRAME_HASH), each written
+        under a temporary name and `.done` last; a refusal writes `.failed` (as
+        tools/dev/remote_jobs.py does)."""
+        family, base = point.family, self.prebuilt_base(point)
+        base.parent.mkdir(parents=True, exist_ok=True)
+        suffix = family.codec.bitstream_suffix
+        outputs = {name: Path(f"{base}{name}.partial")
+                   for name in (suffix, ".rate.csv", ".times.txt", ".recon.txt", SSE_LOG)}
+        fmt = YuvFormat(point.clip.width, point.clip.height)
+        try:
+            with self.frames_of(point.clip) as source:
+                if family.own:
+                    rate_log = outputs[".rate.csv"] if point.kbps else None
+                    hashes = FrameHashSink()
+                    reference = point.clip.clean_reference or source
+                    sse = (["--sse-log", str(outputs[SSE_LOG]), "--sse-reference",
+                            str(reference if isinstance(reference, Path) else reference.reader())]
+                           if writes_sse_log(str(family.tool)) else [])
+                    with cpu_slots(1):
+                        frames = encode_streamed(lambda recon: self.command(
+                            point, outputs[suffix], recon, rate_log, outputs[".times.txt"],
+                            source) + sse, fmt, [hashes])
+                    if frames != self.frames:
+                        raise ProcessFailed(f"encoder reconstructed {frames} frames, "
+                                            f"expected {self.frames}")
+                    outputs[".recon.txt"].write_text("".join(f"{d}\n" for d in hashes.digests))
+                else:
+                    self.encode(point, outputs[suffix], source=source)
+        except (ProcessFailed if family.own else RuntimeError) as error:  # a refusal
+            Path(f"{base}.failed").write_text(json.dumps(
+                {"status": 1, "stderr": str(error).splitlines()[-4:]}) + "\n")
+            return
+        finally:
+            for name, partial in outputs.items():
+                if partial.exists():
+                    partial.rename(f"{base}{name}")
+        Path(f"{base}.done").touch()
 
     def point_dir(self, family: Family, clip: Clip) -> Path:
         # The cache keys on the family's name, not its codec (`identity`), so an
@@ -554,6 +673,40 @@ class Bench:
     def frames_of(self, clip: Clip) -> ClipFrames:
         """The point's input frames (nceval.clipframes: one decode, any readers)."""
         return ClipFrames(clip, self.frames, self.work / "frames")
+
+    @contextlib.contextmanager
+    def scoring_frames(self, clip: Clip):
+        """A point's input frames. Scoring prebuilt streams (the GPU path, nceval.gpuscore),
+        the points of one clip window in flight at once share one ClipFrames, so a reader
+        that opens while the current decode still holds its first frame joins it: the
+        source decode was the largest share of that path's PC CPU (1.28 of 3.16 CPU-s per
+        150-frame point, 2026-11-24), once per point. A reader that comes later starts the
+        next decode (ClipFrames), so the frames are the same either way; the window holds
+        at most clipframes.WINDOW_FRAMES frames whatever the readers."""
+        if self.prebuilt is None or self.encode_only:
+            with self.frames_of(clip) as source:
+                yield source
+            return
+        key = (clip.name, str(clip.yuv), clip.start_frame, self.frames)
+        with self.lock:
+            entry = self._shared_frames.get(key)
+            if entry is None:
+                entry = self._shared_frames[key] = [self.frames_of(clip), 0]
+            entry[1] += 1
+        failed = False
+        try:
+            yield entry[0]
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            with self.lock:
+                entry[1] -= 1
+                last = entry[1] == 0
+                if last:
+                    del self._shared_frames[key]
+            if last:
+                entry[0].close(raise_errors=not failed)
 
     @staticmethod
     def spatial(family: Family) -> bool:
@@ -652,6 +805,10 @@ class Bench:
         cached = self._reusable(point, result_path)
         if cached is not None:
             return cached
+        if self.encode_only:
+            if not self.spatial(point.family) and not self.has_prebuilt(point):
+                self.encode_prebuilt(point)
+            return None
         with entry_lock(result_path):
             cached = self._reusable(point, result_path)
             if cached is not None:
@@ -689,7 +846,7 @@ class Bench:
         spatial = self.spatial(family)
         if spatial and self.prebuilt is not None:
             raise ValueError(f"{family.name}: prebuilt streams carry no layer log")
-        with self.frames_of(clip) as source, \
+        with self.scoring_frames(clip) as source, \
                 sibling_temp(result_path, family.codec.bitstream_suffix) as stream, \
                 sibling_temp(result_path, ".rate.csv") as rate_csv, \
                 sibling_temp(result_path, ".times.txt") as coded_times, \
@@ -738,6 +895,8 @@ class Bench:
                            [f["vmaf_v1"] for f in measured.per_frame])
         if loan_bits is not None:
             add_loan_adjusted_rate(result, loan_bits, point.clip.fps)
+        if gate.reason == self.REUSED_REASON:
+            result["scores_reused"] = True
         keys = [f.frame_type == "I" for f in frames]
         if self.metric_set == "real":
             add_real_series(result, measured, keys)
@@ -797,7 +956,16 @@ class Bench:
             if rate_log:
                 shutil.copyfile(f"{base}.rate.csv", rate_log)
             expected = Path(f"{base}.recon.txt").read_text().split()
+        key = self.score_key(point, stream, Path(f"{base}.recon.txt") if family.own else None,
+                             coded_times if family.own else None)
+        reused = self.reused_scores(key)
+        if reused is not None:
+            return reused
         components = self.components(spec)
+        sse_log = Path(f"{base}{SSE_LOG}")
+        if family.own and sse_log.exists():  # PSNR from the encoder's log (encode_prebuilt)
+            components = [EncoderPsnrMetric(spec, sse_log) if type(m) is PsnrMetric else m
+                          for m in components]
         # GPU slots before the gate's CPU slots (nceval.slots).
         with gpu_slots(gpu_slot_need(components)), MetricSession(spec, components) as session:
             # frames coded below the stream size (adaptive resolution) are compared
@@ -809,7 +977,62 @@ class Bench:
                                else None,
                                **gate_arguments(point.check, family.tool if family.own
                                                 else None))
-            return gate, session.result(self.frames) if gate.passed else None
+            measured = session.result(self.frames) if gate.passed else None
+        if measured is not None:
+            self.store_scores(key, gate, measured)
+        return gate, measured
+
+    # Scores by pictures (owner, 2026-11-25): a point whose command changed but whose decoded
+    # pictures are identical to an already-scored point's reuses those scores exactly: every
+    # metric is computed from the pictures against the same source. Its encode still runs (its
+    # bits and rate are its own); only the scoring, the expensive part, is skipped. Our
+    # encoder's points key on their reconstruction's per-frame digests (encode_prebuilt's
+    # .recon.txt, which the gate checks against the decode): a condition change that alters
+    # only header bits (hold, 2026-11-25: H.264's fixed_frame_rate_flag, byte 24 of every
+    # stream, pictures identical) reuses them; other encoders' points key on the stream's
+    # SHA-256. The key also holds everything else the scores depend on: the clip window, the
+    # frame count, the measurement protocol and metric set, XPSNR, the gate level, the scorer
+    # backend and the encoder's coded-frame times (held frames). It lives in the point cache's
+    # work directory, beside the per-point results.
+    SCORES_BY_STREAM = "scores-by-pictures"
+    #: The reused gate's reason, recorded in the point's result (`scores_reused`).
+    REUSED_REASON = "scores reused from identical, already-scored pictures"
+
+    def score_key(self, point: Point, stream: Path, recon: Path | None,
+                  coded_times: Path | None) -> str:
+        clip = point.clip
+        pictures = (["recon", hashlib.sha256(recon.read_bytes()).hexdigest()]
+                    if recon is not None and recon.exists()
+                    else ["stream", hashlib.sha256(stream.read_bytes()).hexdigest()])
+        parts = [*pictures, point.family.codec.value,
+                 clip.name, str(clip.yuv), clip.yuv.stat().st_size, clip.start_frame,
+                 self.frames, self.measurement, self.metric_set, REAL_METRICS_REVISION,
+                 REAL_MS_SSIM_REVISION, bool(self.xpsnr), REAL_XPSNR_REVISION,
+                 str(point.check), metrics_backend(),
+                 coded_times.read_text() if coded_times is not None and coded_times.exists()
+                 else None]
+        return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+
+    def scores_path(self, key: str) -> Path:
+        return self.work / self.SCORES_BY_STREAM / key[:2] / f"{key}.json"
+
+    def reused_scores(self, key: str):
+        """(gate, measurement) of an already-scored identical stream, or None."""
+        record = read_json(self.scores_path(key))
+        if record is None:
+            return None
+        with self.lock:
+            self.scores_reused += 1
+        gate = GateResult(passed=True, reason=self.REUSED_REASON, level=record["level"],
+                          coded=record.get("coded"))
+        return gate, Measurement(record["summary"], record["per_frame"])
+
+    def store_scores(self, key: str, gate, measured) -> None:
+        path = self.scores_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(path, json.dumps({"level": gate.level, "reason": gate.reason,
+                                       "coded": gate.coded, "summary": measured.summary,
+                                       "per_frame": measured.per_frame}))
 
     def rate_kbps_from_sizes(self, point: Point, sizes: list[int]) -> float:
         if len(sizes) != self.frames:
@@ -944,16 +1167,40 @@ def summarize(point: Point, kbps: float, sizes: list[int], psnr_yuv: float,
     return result
 
 
+def own_mode(kbps: int | None, qp: int | None, conditions: str) -> list[str]:
+    """Our encoder's rate (or quantizer) and conditions: the benchmark record's
+    (fairness.own_conditions), or the shipped defaults at the shared buffer."""
+    if conditions == fairness.SHIPPED_DEFAULTS:
+        return ["--bitrate", str(kbps), "--buffer-ms", str(BUFFER_MS)] if kbps else \
+            ["--qp", str(qp)]
+    mode = "cbr" if kbps else "qp"
+    flags = [a.replace("{KBPS}", str(kbps)) for a in fairness.own_conditions(mode)]
+    return (["--bitrate", str(kbps)] if kbps else ["--qp", str(qp)]) + flags
+
+
+def conditions_tag() -> str:
+    """Our benchmark-condition points' identity part: the record's flags, so a change to
+    them never reuses another condition's points. Shipped-default points add none: they keep
+    the identities they were measured under before 2026-11-24."""
+    flags = fairness.own_conditions("cbr") + ["|"] + fairness.own_conditions("qp")
+    return "conditions=" + hashlib.sha256(json.dumps(flags).encode()).hexdigest()[:12]
+
+
+def rate_scale(clip: Clip) -> float:
+    """The factor from 720p30 kbps to the clip's own (nceval.rate_ladder: BP-3.10's scaling)."""
+    return rate_ladder.scale(clip.width, clip.height, clip.fps)
+
+
 def clip_targets(clip: Clip, reference: tuple[int, ...] = REFERENCE_TARGETS_KBPS,
                  indices: tuple[int, ...] | None = None) -> list[int]:
-    """`reference` targets (720p30 kbps) scaled to the clip's pixel rate, within its cap.
+    """`reference` targets (720p30 kbps) scaled to the clip like the benchmark's rungs
+    (nceval.rate_ladder), within its cap.
 
     `indices` keeps a staged subset of the clip's own legal targets (e.g. the
     outer three of four); a clip with fewer legal targets keeps them all.
     """
-    scale = (clip.width * clip.height * clip.fps / REFERENCE_PIXELS_PER_SECOND) \
-        ** PIXEL_RATE_EXPONENT
-    legal = [round(t * scale) for t in reference if clip.allows_kbps(t * scale)]
+    scaled = (rate_ladder.scaled_kbps(t, clip.width, clip.height, clip.fps) for t in reference)
+    legal = [k for k in scaled if clip.allows_kbps(k)]
     if indices is None or len(legal) < len(reference):
         return legal
     return [legal[i] for i in indices]
@@ -1000,7 +1247,7 @@ def anchor_families(paths: Paths, openh264_harness: Path, cqp: bool = False,
     name (preset_anchor; the board's context anchors are x264-veryfast and
     x265-superfast)."""
     families = [
-        Family("svtav1-m12", Codec.AV1, find_tool("SvtAv1EncApp", paths), cqp=cqp, kind="svt",
+        Family("svtav1-m12", Codec.AV1, anchor_tool("svt", paths), cqp=cqp, kind="svt",
                compares=(Codec.AV1, Codec.HEVC)),
         Family("openh264-baseline", Codec.H264, openh264_harness, cqp=cqp, kind="openh264",
                compares=(Codec.H264,)),
@@ -1038,6 +1285,12 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False,
                      f"{', '.join(p + '<preset>' for p in ANCHOR_PRESET_PREFIXES.values())}")
 
 
+def rt_cyclic_aq(kind: str | None, profile: str | None) -> bool:
+    """Whether a libvpx / libaom family's CBR command adds RT_CYCLIC_AQ: the real-time
+    ones (`--rt`), except `webrtc`, whose WEBRTC_VPX_AOM settings carry it already."""
+    return kind in ("vpx", "aom") and profile not in ("webrtc", "good", "allintra")
+
+
 def option_args(options: list[str], joined: bool = False) -> tuple[str, ...]:
     """`ref=1` -> `--ref 1` (`joined`: `--ref=1`); `no-rect` -> `--no-rect`."""
     args: list[str] = []
@@ -1050,12 +1303,30 @@ def option_args(options: list[str], joined: bool = False) -> tuple[str, ...]:
     return tuple(args)
 
 
+def vvenc_frame_rate(fps: float) -> tuple[int, int]:
+    """A clip's rate as VVenC takes it: it refuses a non-standard rate (2026-11-22,
+    "Detected non-standard Frame Rate 29970/1000" for a clip stored as 29.97 fps), so a
+    rate within VVENC_NTSC_TOLERANCE of an N*1000/1001 rate is given as that rate. Any
+    other non-integer rate (29.68 fps, 2026-11-22: every point of that clip refused) is
+    given as the nearest integer rate: VVenC runs at fixed QP only here, without rate
+    control, so the rate is only the stream's timing information."""
+    num = round(fps * NTSC_SCALE / 1000) * 1000
+    if num and abs(fps - num / NTSC_SCALE) < VVENC_NTSC_TOLERANCE:
+        return num, NTSC_SCALE
+    num, den = fps_fraction(fps)
+    return (num, den) if num % den == 0 else (max(1, round(fps)), 1)
+
+
 def anchor_tool(kind: str, paths: Paths) -> Path:
-    """An anchor kind's program: the environment override (REFERENCE_TOOL_ENV),
-    then the usual search (find_tool), then the known fallback location."""
+    """An anchor kind's program: the environment override (REFERENCE_TOOL_ENV), then
+    the timed reference build's (config.quality_reference: quality and speed from one
+    binary), then the usual search (find_tool), then the known fallback location."""
     override = os.environ.get(REFERENCE_TOOL_ENV.get(kind, ""))
     if override:
         return Path(override)
+    timed = quality_reference(ANCHOR_TOOLS[kind], paths.data_root if paths else None)
+    if timed:
+        return timed
     try:
         return find_tool(ANCHOR_TOOLS[kind], paths)
     except FileNotFoundError:
@@ -1317,8 +1588,7 @@ def main(argv: list[str] | None = None) -> None:
                         help="measure our encoder's fixed-QP curves (controller cost)")
     parser.add_argument("--anchor-cqp", action=argparse.BooleanOptionalAction, default=False,
                         help="also measure the anchors' fixed-QP curves (diagnostic)")
-    parser.add_argument("--openh264-harness", default=str(
-        Path.home() / "nanocodec-data/work/ratecontrol/bin/openh264-harness"),
+    parser.add_argument("--openh264-harness", default=str(openh264_harness()),
         help="openh264-harness build with --bitrate support")
     args = parser.parse_args(argv)
     if not 1 <= args.workers <= 8:

@@ -141,24 +141,55 @@ pub(crate) fn predict(
     output: &mut [u8],
 ) {
     let view = recon.view();
-    let (x, y) = target.tx;
-    let side = target.side;
-    let (n_top, n_left) = neighbour_counts((x, y), side, (view.width(), view.height()));
+    let neighbours = neighbour_counts(target.tx, target.side, (view.width(), view.height()));
     let needs = Needs::of(mode);
-    let above_ref = |i: usize| view.row(y - 1)[x + i];
-    let left_ref = |i: usize| view.row(y + i)[x - 1];
-    if (!needs.above && n_left == 0) || (!needs.left && n_top == 0) {
-        let value = if needs.left {
-            if n_top > 0 { above_ref(0) } else { BASE + 1 }
-        } else if n_left > 0 {
-            left_ref(0)
-        } else {
-            BASE - 1
-        };
+    let (x, y) = target.tx;
+    if let Some(value) = missing_edge_prediction(
+        needs,
+        neighbours,
+        (|| view.row(y - 1)[x], || view.row(y)[x - 1]),
+    ) {
         output.fill(value);
         return;
     }
     *edges = Av2IntraEdges::new();
+    prepare_edges(recon, state, target, (&view, neighbours), needs, edges);
+    dsp.av2_intra_predict(
+        edges,
+        predictor(mode, target.plane == 0, neighbours),
+        target.side,
+        output,
+    );
+}
+
+#[inline]
+fn missing_edge_prediction(
+    needs: Needs,
+    (n_top, n_left): (usize, usize),
+    (above, left): (impl FnOnce() -> u8, impl FnOnce() -> u8),
+) -> Option<u8> {
+    if !needs.above && n_left == 0 {
+        Some(if n_top > 0 { above() } else { BASE + 1 })
+    } else if !needs.left && n_top == 0 {
+        Some(if n_left > 0 { left() } else { BASE - 1 })
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn prepare_edges(
+    recon: &Plane,
+    state: &BlockState,
+    target: IntraTarget,
+    (view, (n_top, n_left)): (&PlaneView<'_>, (usize, usize)),
+    needs: Needs,
+    edges: &mut Av2IntraEdges,
+) {
+    let (x, y) = target.tx;
+    let side = target.side;
+    let above_ref = |i: usize| view.row(y - 1)[x + i];
+    let left_ref = |i: usize| view.row(y + i)[x - 1];
     if needs.left {
         let below_left = if needs.below_left() {
             Extension::Samples(below_left_samples(recon, state, target))
@@ -177,7 +208,7 @@ pub(crate) fn predict(
                     Extension::Samples(n) => n,
                     Extension::Unused => 0,
                 };
-            copy_left_column(&view, (x, y), &mut left[..available]);
+            copy_left_column(view, (x, y), &mut left[..available]);
             let last = left[available - 1];
             left[available..].fill(last);
         } else if n_top > 0 {
@@ -221,7 +252,11 @@ pub(crate) fn predict(
             (false, false) => BASE,
         });
     }
-    let predictor = match mode {
+}
+
+#[inline]
+fn predictor(mode: Mode, luma: bool, (n_top, n_left): (usize, usize)) -> Av2Predictor {
+    match mode {
         Mode::Dc => Av2Predictor::Dc {
             above: n_top > 0,
             left: n_left > 0,
@@ -232,10 +267,81 @@ pub(crate) fn predict(
         Mode::Paeth => Av2Predictor::Paeth,
         Mode::Directional { .. } => Av2Predictor::Directional {
             angle: mode.angle().expect("directional"),
-            luma: target.plane == 0,
+            luma,
         },
-    };
-    dsp.av2_intra_predict(edges, predictor, side, output);
+    }
+}
+
+/// Fully prepared luma neighbours for mode trials that read the same
+/// reconstruction. Luma directional prediction can overwrite the first
+/// extension sample in each edge when padding its two inner tap ranges.
+pub(crate) struct TrialReferences {
+    edges: Av2IntraEdges,
+    neighbours: (usize, usize),
+    side: usize,
+}
+
+impl TrialReferences {
+    pub(crate) fn luma(
+        recon: &Plane,
+        state: &BlockState,
+        position: (usize, usize),
+        side: usize,
+    ) -> Self {
+        let target = IntraTarget {
+            plane: 0,
+            block: position,
+            block_size: side,
+            tx: position,
+            side,
+        };
+        let view = recon.view();
+        let neighbours = neighbour_counts(position, side, (view.width(), view.height()));
+        let mut edges = Av2IntraEdges::new();
+        prepare_edges(
+            recon,
+            state,
+            target,
+            (&view, neighbours),
+            Needs::of(Mode::Smooth),
+            &mut edges,
+        );
+        Self {
+            edges,
+            neighbours,
+            side,
+        }
+    }
+
+    pub(crate) fn predict(&mut self, mode: Mode, dsp: &Dsp, output: &mut [u8]) {
+        let needs = Needs::of(mode);
+        let (n_top, n_left) = self.neighbours;
+        if (!needs.above && n_left == 0) || (!needs.left && n_top == 0) {
+            // Reading the first sample is only needed on a picture border.
+            let above = self.edges.above_mut()[0];
+            let left = self.edges.left_mut()[0];
+            if let Some(value) =
+                missing_edge_prediction(needs, self.neighbours, (|| above, || left))
+            {
+                output.fill(value);
+                return;
+            }
+        }
+        let predictor = predictor(mode, true, self.neighbours);
+        let inner_taps = matches!(predictor, Av2Predictor::Directional { angle, .. }
+            if angle > VERTICAL_ANGLE && angle < HORIZONTAL_ANGLE);
+        let extension = inner_taps.then(|| {
+            (
+                self.edges.above_mut()[self.side],
+                self.edges.left_mut()[self.side],
+            )
+        });
+        dsp.av2_intra_predict(&mut self.edges, predictor, self.side, output);
+        if let Some((above, left)) = extension {
+            self.edges.above_mut()[self.side] = above;
+            self.edges.left_mut()[self.side] = left;
+        }
+    }
 }
 
 /// Copy the column left of `(x, y)` in `view`, from row `y` down, into
@@ -252,6 +358,16 @@ fn copy_left_column(view: &PlaneView<'_>, (x, y): (usize, usize), left: &mut [u8
     for (sample, &value) in left.iter_mut().zip(column) {
         *sample = value;
     }
+}
+
+/// Whether a block at (`x`, `y`) predicts from synthetic edges only: with no
+/// sample above and none to the left, every mode but DC fills its edges with
+/// 127 above and 129 left (`BASE` ∓ 1, AV1 §7.11.2), a constant bias. Anywhere else
+/// a missing edge copies the real neighbour on the other side, so in a
+/// one-tile frame this is the first block alone.
+#[must_use]
+pub fn only_synthetic_edges((x, y): (usize, usize)) -> bool {
+    (x, y) == (0, 0)
 }
 
 /// How many samples above and left of the `side`-wide transform at
@@ -354,4 +470,60 @@ fn below_left_samples(recon: &Plane, state: &BlockState, target: IntraTarget) ->
         .take_while(|&i| row + i * MI < SUPERBLOCK && state.is_coded(column, start_y + i * MI))
         .count();
     ((coded * MI) >> ss).min(common)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mv_refs::ListConfig;
+
+    #[test]
+    fn luma_trials_preserve_extension_samples_between_modes() {
+        let mut plane = Plane::new(192, 192, 0).unwrap();
+        for y in 0..192 {
+            for (x, sample) in plane.view_mut().row_mut(y).iter_mut().enumerate() {
+                *sample = u8::try_from((x * 37 + y * 53 + x * y * 7) % 251).unwrap();
+            }
+        }
+        let state = BlockState::new(192, 192, ListConfig::BASIC).unwrap();
+        let dsp = Dsp::new();
+        for side in [8, 16, 32, 64] {
+            for position in [
+                (0, 0),
+                (64, 0),
+                (0, 64),
+                (64, 64),
+                (64, 72),
+                (192 - side, 192 - side),
+            ] {
+                let target = IntraTarget {
+                    plane: 0,
+                    block: position,
+                    block_size: side,
+                    tx: position,
+                    side,
+                };
+                let mut prepared = TrialReferences::luma(&plane, &state, position, side);
+                let mut ordinary = Av2IntraEdges::new();
+                let mut reference = vec![0; side * side];
+                let mut actual = vec![0; side * side];
+                let reversed = (0..crate::intra_modes::LUMA_MODES)
+                    .rev()
+                    .map(Mode::from_joint);
+                for mode in Mode::all_luma().chain(reversed) {
+                    predict(
+                        &plane,
+                        &state,
+                        target,
+                        mode,
+                        &dsp,
+                        &mut ordinary,
+                        &mut reference,
+                    );
+                    prepared.predict(mode, &dsp, &mut actual);
+                    assert_eq!(actual, reference, "{position:?}, {side}, {mode:?}");
+                }
+            }
+        }
+    }
 }

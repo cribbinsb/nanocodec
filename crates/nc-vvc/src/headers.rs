@@ -29,6 +29,8 @@ pub(crate) const SPS_NUT: u8 = 15;
 pub(crate) const PPS_NUT: u8 = 16;
 /// Prefix adaptation parameter set (ALF filters, `alf_aps.rs`).
 pub(crate) const PREFIX_APS_NUT: u8 = 17;
+/// Prefix SEI (H.266 Table 5).
+pub(crate) const PREFIX_SEI_NUT: u8 = 23;
 pub(crate) const IDR_N_LP: u8 = 8;
 pub(crate) const TRAIL_NUT: u8 = 0;
 const MAIN_10_PROFILE: u32 = 1;

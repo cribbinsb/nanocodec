@@ -14,15 +14,27 @@ use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 /// The row kernels the synthesis driver calls, on samples `T` with grain
 /// stored as `G`: [`Dsp`]'s 8-bit table, [`HighRows`] (`u16` SIMD), or [`DeepRows`].
-trait GrainRows<T, G> {
+trait GrainRows<T: Sample, G> {
     /// Per-plane scaling lookup table prepared once per frame.
-    type Scaling: Clone;
+    type Scaling;
     /// The samples' depth.
     fn depth(&self) -> BitDepth;
     /// Prepare the plane's scaling lookup table once per frame.
     fn prepare_scaling(&self, lut: &[u8; 256], shift: u8) -> Self::Scaling;
     /// Blend the overlap row `old` into `new`.
     fn blend_row(&self, old: &[G], new: &mut [G], weights: [i16; 2]);
+    /// Apply luma directly from the template when the ISA has a block kernel.
+    fn try_luma_plane(
+        &self,
+        _grain: (&Av1FilmGrainParams, GrainBlocks),
+        _template: &Template<G>,
+        _scaling: &Self::Scaling,
+        _bounds: [i32; 2],
+        _views: (&PlaneView<'_, T>, &mut PlaneViewMut<'_, T>),
+        _size: (usize, usize),
+    ) -> bool {
+        false
+    }
     /// Luma grain of one row, clipped to `bounds`.
     fn luma_row(
         &self,
@@ -56,6 +68,32 @@ impl GrainRows<u8, i8> for Dsp {
     }
     fn blend_row(&self, old: &[i8], new: &mut [i8], weights: [i16; 2]) {
         self.av1_grain_blend_row(old, new, weights);
+    }
+    #[allow(
+        unsafe_code,
+        reason = "plane kernel selected for this CPU and checked geometry"
+    )]
+    fn try_luma_plane(
+        &self,
+        grain: (&Av1FilmGrainParams, GrainBlocks),
+        template: &Template<i8>,
+        scaling: &Av1GrainScaling,
+        bounds: [i32; 2],
+        views: (&PlaneView<'_>, &mut PlaneViewMut<'_>),
+        size: (usize, usize),
+    ) -> bool {
+        // SAFETY: the kernel table matches this CPU, and synthesis checked
+        // the input and output geometry.
+        self.av1_grain().luma_plane.is_some_and(|plane| unsafe {
+            plane(
+                grain,
+                template,
+                scaling,
+                bounds.map(|v| v as u8),
+                views,
+                size,
+            )
+        })
     }
     fn luma_row(
         &self,
@@ -96,6 +134,18 @@ impl GrainRows<u16, i16> for HighRows<'_> {
     fn blend_row(&self, old: &[i16], new: &mut [i16], weights: [i16; 2]) {
         self.0
             .av1_grain_high_blend_row(old, new, weights, grain_range(self.1));
+    }
+    fn try_luma_plane(
+        &self,
+        grain: (&Av1FilmGrainParams, GrainBlocks),
+        template: &Template<i16>,
+        scaling: &Self::Scaling,
+        bounds: [i32; 2],
+        views: (&PlaneView<'_, u16>, &mut PlaneViewMut<'_, u16>),
+        size: (usize, usize),
+    ) -> bool {
+        self.0
+            .av1_grain_high_luma_plane(grain, template, scaling, bounds, views, size)
     }
     fn luma_row(
         &self,
@@ -259,21 +309,19 @@ fn add_film_grain<T: Sample, G: Grain, R: GrainRows<T, G>>(
     output: [&mut PlaneViewMut<'_, T>; 3],
 ) {
     let shift = params.grain_scaling_minus_8 + 8;
-    let luma_lut = scaling_lut(&params.y_points);
-    let luma = rows.prepare_scaling(&luma_lut, shift);
-    let chroma = if params.chroma_scaling_from_luma {
-        [luma.clone(), luma.clone()]
-    } else {
-        [
-            rows.prepare_scaling(&scaling_lut(&params.cb_points), shift),
-            rows.prepare_scaling(&scaling_lut(&params.cr_points), shift),
-        ]
-    };
+    let luma = (params.y_points.count != 0 || params.chroma_scaling_from_luma)
+        .then(|| rows.prepare_scaling(&scaling_lut(&params.y_points), shift));
+    let chroma_points = [&params.cb_points, &params.cr_points];
     for (plane, destination) in output.into_iter().enumerate() {
+        let chroma;
         let table = if plane == 0 {
-            &luma
+            luma.as_ref().filter(|_| params.y_points.count != 0)
+        } else if params.chroma_scaling_from_luma {
+            luma.as_ref()
         } else {
-            &chroma[plane - 1]
+            let points = chroma_points[plane - 1];
+            chroma = (points.count != 0).then(|| rows.prepare_scaling(&scaling_lut(points), shift));
+            chroma.as_ref()
         };
         synthesize_plane(
             rows,
@@ -293,29 +341,19 @@ fn synthesize_plane<T: Sample, G: Grain, R: GrainRows<T, G>>(
     template: &Template<G>,
     plane: usize,
     (input, output): ([&PlaneView<'_, T>; 3], &mut PlaneViewMut<'_, T>),
-    scaling: &R::Scaling,
+    scaling: Option<&R::Scaling>,
     (width, height): (usize, usize),
 ) {
     let sub = usize::from(plane != 0);
     let (plane_w, plane_h) = ((width + sub) >> sub, (height + sub) >> sub);
     assert!(input[plane].width() >= plane_w && input[plane].height() >= plane_h);
     assert!(output.width() >= plane_w && output.height() >= plane_h);
-    let points = [
-        params.y_points.count,
-        params.cb_points.count,
-        params.cr_points.count,
-    ][plane];
-    if points == 0 && !(plane != 0 && params.chroma_scaling_from_luma) {
+    let Some(scaling) = scaling else {
         for y in 0..plane_h {
             output.row_mut(y)[..plane_w].copy_from_slice(&input[plane].row(y)[..plane_w]);
         }
         return;
-    }
-    let block = blocks.luma_side() >> sub;
-    let reach = OVERLAP >> sub;
-    let stride = plane_w.div_ceil(block) * block + reach;
-    let mut current = vec![G::default(); (block + reach) * stride];
-    let mut previous = vec![G::default(); current.len()];
+    };
     let depth = rows.depth();
     let bits = depth.above_eight();
     let bounds = if params.clip_to_restricted_range {
@@ -330,6 +368,23 @@ fn synthesize_plane<T: Sample, G: Grain, R: GrainRows<T, G>>(
     } else {
         [0, depth.max()]
     };
+    if plane == 0
+        && rows.try_luma_plane(
+            (params, blocks),
+            template,
+            scaling,
+            bounds,
+            (input[0], output),
+            (plane_w, plane_h),
+        )
+    {
+        return;
+    }
+    let block = blocks.luma_side() >> sub;
+    let reach = OVERLAP >> sub;
+    let stride = plane_w.div_ceil(block) * block + reach;
+    let mut current = vec![G::default(); (block + reach) * stride];
+    let mut previous = vec![G::default(); current.len()];
     let coefficients = if params.chroma_scaling_from_luma {
         [0, 64, 0]
     } else {

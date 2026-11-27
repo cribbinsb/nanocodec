@@ -360,3 +360,27 @@ def test_better_p_and_a_worse_key_count_only_the_key_part():
     terms, guarded = pulse_terms(40.0, 39.8, 40.3, 39.5)
     assert terms["d_periodic_pulse_psnr_y"] == pytest.approx(0.6)
     assert guarded == pytest.approx(0.3)  # the key's 0.3 dB, not the raw 0.6
+
+
+def test_regime_terms_and_luma_are_reported_beside_the_headline():
+    anchor, test = curve(), curve(scale=0.8)
+    for points in (anchor, test):
+        for p, target in zip(points, RATES):
+            p["psnr_y"] = p["psnr_yuv"] - 1.0
+            p["target_kbps"] = target
+    test[-1]["kbps"] = 600.0  # the 1200 rung (outside the regime) is 50 % cheaper
+    terms = jreal.compare_clip(anchor, test, regimes={"regime_low": (0.0, 600.0)})
+    full = terms["bd_psnr_yuv"]
+    # the regime integrates up to the 600 rung's quality only: it is close to the -20 %
+    # of the rungs inside it, the full BD further (it also sees the cheap 1200 rung)
+    assert terms["regime_low_psnr_yuv"] == pytest.approx(-20.0, abs=1.5)
+    assert full < terms["regime_low_psnr_yuv"] - 3
+    assert terms["bd_psnr_y"] == pytest.approx(full, abs=1e-9)  # luma is PSNR-YUV - 1 here
+    itself = jreal.compare_clip(anchor, anchor, regimes={"regime_low": (0.0, 600.0)})
+    assert itself["regime_low_quality"] == pytest.approx(0.0, abs=1e-9)
+    upper = jreal.compare_clip(anchor, test, regimes={"regime_upper": (600.0, 4000.0)})
+    assert upper["regime_upper_quality"] is None  # two rungs: no BD
+    assert terms["regime_low_quality"] == pytest.approx(
+        sum(terms[f"regime_low_{m}"] for m in jreal.HEADLINE_METRICS) / 3)
+    without = jreal.compare_clip(anchor, test)
+    assert not any(k.startswith("regime_") for k in without)

@@ -18,7 +18,6 @@
 //! 8x8 grid does not keep.
 
 use nc_common::{Picture, PlaneIndex, PlaneView};
-use nc_dsp::BlockSize;
 use nc_encoder::Block;
 
 use super::rd::SavedSquare;
@@ -140,8 +139,10 @@ impl HevcBackend {
         // gate goes before the spread there. Exact; per P frame HEVC Fast
         // instructions -0.11 % / -0.25 % (callgrind, `WestWindEasy` / `Johnny`, QP 37).
         let splittable = flag_present && node.log2_size() > MIN_INTER_TU_LOG2 && tu.luma.coded;
-        let spread =
-            || self.luma_residual_spread(cu, &node, source) >= self.tools.inter_tu_split_spread;
+        let split_sse = || {
+            let (spread, total) = self.luma_residual_spread(cu, &node, source);
+            (spread >= self.tools.inter_tu_split_spread).then_some(total)
+        };
         let flag_bits = |split| self.split_transform_bits(node.log2_size(), flag_present, split);
         let leaf_cost = || {
             self.inter_luma_cost(&tu, depth, source, recon) + self.rd_lambda() * flag_bits(false)
@@ -149,24 +150,29 @@ impl HevcBackend {
         let samples = (node.size() * node.size()) as f32;
         let detailed =
             |cost: f32| cost >= self.tools.inter_tu_split_min_cost * self.rd_lambda() * samples;
-        let (leaf_cost, split) = if costed {
+        let (leaf_cost, split_sse) = if costed {
             let cost = leaf_cost();
-            (cost, splittable && detailed(cost) && spread())
-        } else if splittable && spread() {
+            let sse = if splittable && detailed(cost) {
+                split_sse()
+            } else {
+                None
+            };
+            (cost, sse)
+        } else if splittable && let Some(sse) = split_sse() {
             let cost = leaf_cost();
-            (cost, detailed(cost))
+            (cost, detailed(cost).then_some(sse))
         } else {
-            (0.0, false)
+            (0.0, None)
         };
-        if !split {
+        let Some(sse) = split_sse else {
             tus.push(tu);
             return leaf_cost;
-        }
-        // The split must also beat leaving the node's luma uncoded
-        // (prediction only), so it never pays to code noise the whole
-        // node's cost would rather drop.
-        let uncoded_cost = self.inter_luma_uncoded_cost(cu, &node, depth, source)
-            + self.rd_lambda() * flag_bits(false);
+        };
+        // Squared error is additive over the four quadrants. The spread
+        // already measured the prediction-only distortion for this trial.
+        let uncoded_bits = self.bin_bits(self.contexts.cbf_luma[usize::from(depth == 0)], false);
+        let uncoded_cost =
+            (sse as f32 + self.rd_lambda() * uncoded_bits) + self.rd_lambda() * flag_bits(false);
         let saved = SavedSquare::save(
             recon,
             PlaneIndex::Y,
@@ -218,29 +224,6 @@ impl HevcBackend {
         }
     }
 
-    /// Luma `SSE + λ · bits` of `node` coded without residual: the
-    /// prediction's error and a zero luma coded-block flag.
-    fn inter_luma_uncoded_cost(
-        &self,
-        cu: &Block,
-        node: &Block,
-        depth: usize,
-        source: &Picture,
-    ) -> f32 {
-        let n = node.size();
-        let start = (node.y - cu.y) * cu.size() + node.x - cu.x;
-        let pred = PlaneView::new(&self.inter_pred[0][start..], cu.size(), n, n)
-            .expect("prediction covers the node");
-        let src = source.plane(PlaneIndex::Y).view();
-        let src = src
-            .sub_view(node.x, node.y, n, n)
-            .expect("node inside the picture");
-        let size = BlockSize::new(n, n).expect("transform sizes 8..32");
-        let distortion = self.dsp.variance(size, &src, &pred).sse;
-        let bits = self.bin_bits(self.contexts.cbf_luma[usize::from(depth == 0)], false);
-        distortion as f32 + self.rd_lambda() * bits
-    }
-
     /// Luma `SSE + λ · bits` of a coded inter transform unit at `depth`.
     fn inter_luma_cost(
         &self,
@@ -263,7 +246,7 @@ impl HevcBackend {
     }
 
     /// [`HevcBackend::residual_spread`] of `node`'s luma inter residual.
-    fn luma_residual_spread(&self, cu: &Block, node: &Block, source: &Picture) -> f32 {
+    fn luma_residual_spread(&self, cu: &Block, node: &Block, source: &Picture) -> (f32, u64) {
         let n = node.size();
         let start = (node.y - cu.y) * cu.size() + node.x - cu.x;
         let pred = PlaneView::new(&self.inter_pred[0][start..], cu.size(), n, n)

@@ -1,0 +1,660 @@
+{
+ "name": "heldout_2026-11-23b",
+ "_comment": "Replacements and the pan/crowd top-up for heldout_2026-11-23b (select_heldout.py redraw, seed heldout_2026-11-23b): quotas {'bodycam': 2, 'crowd': 4, 'drone': 2, 'lowlight': 4, 'pan': 11, 'static': 2, 'texture': 2, 'videocall': 3} plus 10 reserve per class, from 2569 candidates of families heldout_2026-11-23 never drew.",
+ "sealed": "release-only (nceval.sealing)",
+ "quotas": {
+  "bodycam": 2,
+  "crowd": 4,
+  "drone": 2,
+  "lowlight": 4,
+  "pan": 11,
+  "static": 2,
+  "texture": 2,
+  "videocall": 3
+ },
+ "clips": [
+  {
+   "name": "hob_epic_kitchens_p04_103",
+   "source": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P04/P04_103.MP4",
+   "start": 49.9,
+   "seconds": 6.6,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P04",
+   "height": 360,
+   "draw": 2
+  },
+  {
+   "name": "hob_epic_kitchens_p06_110",
+   "source": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P06/P06_110.MP4",
+   "start": 55.1,
+   "seconds": 6.6,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P06",
+   "height": 540,
+   "draw": 6
+  },
+  {
+   "name": "hob_epic_kitchens_p26_113",
+   "source": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P26/P26_113.MP4",
+   "start": 52.2,
+   "seconds": 6.6,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P26",
+   "height": 540,
+   "draw": 0
+  },
+  {
+   "name": "hob_epic_kitchens_p37_103",
+   "source": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P37/P37_103.MP4",
+   "start": 332.9,
+   "seconds": 6.6,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/epic_kitchens_100_slice/P37",
+   "height": 540,
+   "draw": 4
+  },
+  {
+   "name": "hob_ucf_crimes_normal_videos187_x264",
+   "source": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Training_Normal_Videos_Anomaly/Normal_Videos187_x264.mp4",
+   "start": 279.8,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Training_Normal_Videos_Anomaly/Normal_Videos187_x264.mp4",
+   "height": 240,
+   "draw": 10
+  },
+  {
+   "name": "hob_ucf_crimes_normal_videos188_x264",
+   "source": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Training_Normal_Videos_Anomaly/Normal_Videos188_x264.mp4",
+   "start": 238.2,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Training_Normal_Videos_Anomaly/Normal_Videos188_x264.mp4",
+   "height": 240,
+   "draw": 2
+  },
+  {
+   "name": "hob_ucf_crimes_normal_videos613_x264",
+   "source": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Training_Normal_Videos_Anomaly/Normal_Videos613_x264.mp4",
+   "start": 184.4,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Training_Normal_Videos_Anomaly/Normal_Videos613_x264.mp4",
+   "height": 240,
+   "draw": 6
+  },
+  {
+   "name": "hob_ucf_crimes_normal_videos_927_x264",
+   "source": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Testing_Normal_Videos_Anomaly/Normal_Videos_927_x264.mp4",
+   "start": 34.1,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Testing_Normal_Videos_Anomaly/Normal_Videos_927_x264.mp4",
+   "height": 240,
+   "draw": 0
+  },
+  {
+   "name": "hob_ucf_crimes_shoplifting019_x264",
+   "source": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Shoplifting/Shoplifting019_x264.mp4",
+   "start": 4.2,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Shoplifting/Shoplifting019_x264.mp4",
+   "height": 240,
+   "draw": 8
+  },
+  {
+   "name": "hob_ucf_crimes_vandalism044_x264",
+   "source": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Vandalism/Vandalism044_x264.mp4",
+   "start": 69.0,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/UCF_Crimes/UCF_Crimes/Videos/Vandalism/Vandalism044_x264.mp4",
+   "height": 240,
+   "draw": 4
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_1080p_010b_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-010b_crf_10_ss_00_t_20.0.mp4",
+   "start": 11.6,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-010b_crf_10_ss_00_t_20.0.mp4",
+   "height": 540,
+   "draw": 3
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_1080p_1df9_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-1df9_crf_10_ss_00_t_20.0.mp4",
+   "start": 7.6,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-1df9_crf_10_ss_00_t_20.0.mp4",
+   "height": 540,
+   "draw": 10
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_1080p_2394_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-2394_crf_10_ss_00_t_20.0.mp4",
+   "start": 7.2,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-2394_crf_10_ss_00_t_20.0.mp4",
+   "height": 540,
+   "draw": 1
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_1080p_26dc_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-26dc_crf_10_ss_00_t_20.0.mp4",
+   "start": 7.7,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_1080P-26dc_crf_10_ss_00_t_20.0.mp4",
+   "height": 360,
+   "draw": 11
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_2160p_059c_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_2160P-059c_crf_10_ss_00_t_20.0.mp4",
+   "start": 9.7,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_2160P-059c_crf_10_ss_00_t_20.0.mp4",
+   "height": 720,
+   "draw": 9
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_720p_03d5_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_720P-03d5_crf_10_ss_00_t_20.0.mp4",
+   "start": 9.0,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_720P-03d5_crf_10_ss_00_t_20.0.mp4",
+   "height": 360,
+   "draw": 5
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_720p_03f9_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_720P-03f9_crf_10_ss_00_t_20.0.mp4",
+   "start": 6.0,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_720P-03f9_crf_10_ss_00_t_20.0.mp4",
+   "height": 540,
+   "draw": 7
+  },
+  {
+   "name": "hob_ugc_vlog_vlog_720p_329f_crf_10_ss_00_t_20_0",
+   "source": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_720P-329f_crf_10_ss_00_t_20.0.mp4",
+   "start": 10.8,
+   "seconds": 5.5,
+   "content_class": "bodycam",
+   "family": "/mldata/downloaded_datasets/other/youtube_ugc/original_videos_h264/Vlog_720P-329f_crf_10_ss_00_t_20.0.mp4",
+   "height": 360,
+   "draw": 8
+  },
+  {
+   "name": "hob_vcd2_197f89c37d3d74aa052519efbbc439a6",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/197f89c37d3d74aa052519efbbc439a6.mkv",
+   "start": 2.6,
+   "seconds": 11.0,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/197f89c37d3d74aa052519efbbc439a6.mkv",
+   "source_fps": 15,
+   "height": 540,
+   "draw": 4
+  },
+  {
+   "name": "hob_vcd2_362b59f42340a6b599720e9ffece30bf",
+   "source": "/mldata/downloaded_datasets/other/vcd2/362b59f42340a6b599720e9ffece30bf.mkv",
+   "start": 3.2,
+   "seconds": 9.8,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2/362b59f42340a6b599720e9ffece30bf.mkv",
+   "source_fps": 17,
+   "height": 360,
+   "draw": 8
+  },
+  {
+   "name": "hob_vcd2_3d93a3cb694f94bb1769e725fde2b27b",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/3d93a3cb694f94bb1769e725fde2b27b.mkv",
+   "start": 8.3,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/3d93a3cb694f94bb1769e725fde2b27b.mkv",
+   "source_fps": 30,
+   "height": 720,
+   "draw": 9
+  },
+  {
+   "name": "hob_vcd2_6c7cfeb106a4c39b1a571f0627deaea5",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/6c7cfeb106a4c39b1a571f0627deaea5.mkv",
+   "start": 6.5,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/6c7cfeb106a4c39b1a571f0627deaea5.mkv",
+   "source_fps": 30,
+   "height": 360,
+   "draw": 11
+  },
+  {
+   "name": "hob_vcd2_70fb74add2264b3c37d519a9e21e16c4",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/70fb74add2264b3c37d519a9e21e16c4.mkv",
+   "start": 4.2,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/70fb74add2264b3c37d519a9e21e16c4.mkv",
+   "source_fps": 30,
+   "height": 540,
+   "draw": 6
+  },
+  {
+   "name": "hob_vcd2_71e22a082b3094b1eaeef6d76a99774e",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/71e22a082b3094b1eaeef6d76a99774e.mkv",
+   "start": 8.2,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/71e22a082b3094b1eaeef6d76a99774e.mkv",
+   "source_fps": 30,
+   "height": 720,
+   "draw": 0
+  },
+  {
+   "name": "hob_vcd2_7b688897b5bb4eeb7f64b96c72bf5733",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/7b688897b5bb4eeb7f64b96c72bf5733.mkv",
+   "start": 8.2,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/7b688897b5bb4eeb7f64b96c72bf5733.mkv",
+   "source_fps": 30,
+   "height": 360,
+   "draw": 5
+  },
+  {
+   "name": "hob_vcd2_8c9971ac840b90501b93d7415fe2913d",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/8c9971ac840b90501b93d7415fe2913d.mkv",
+   "start": 3.5,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/8c9971ac840b90501b93d7415fe2913d.mkv",
+   "source_fps": 30,
+   "height": 360,
+   "draw": 2
+  },
+  {
+   "name": "hob_vcd2_983b4a77468a28343780ef95ebf54a28",
+   "source": "/mldata/downloaded_datasets/other/vcd2/983b4a77468a28343780ef95ebf54a28.mkv",
+   "start": 6.6,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2/983b4a77468a28343780ef95ebf54a28.mkv",
+   "source_fps": 30,
+   "height": 720,
+   "draw": 3
+  },
+  {
+   "name": "hob_vcd2_b7f93b4e98e2bf7fbcd0a68b2af23568",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/b7f93b4e98e2bf7fbcd0a68b2af23568.mkv",
+   "start": 7.3,
+   "seconds": 6.2,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/b7f93b4e98e2bf7fbcd0a68b2af23568.mkv",
+   "source_fps": 27,
+   "height": 720,
+   "draw": 12
+  },
+  {
+   "name": "hob_vcd2_df18153ce06f86b0dc37600c850ebc72",
+   "source": "/mldata/downloaded_datasets/other/vcd2/df18153ce06f86b0dc37600c850ebc72.mkv",
+   "start": 9.3,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2/df18153ce06f86b0dc37600c850ebc72.mkv",
+   "source_fps": 30,
+   "height": 540,
+   "draw": 1
+  },
+  {
+   "name": "hob_vcd2_fb8462836f87987983f542020df7158c",
+   "source": "/mldata/downloaded_datasets/other/vcd2_more/fb8462836f87987983f542020df7158c.mkv",
+   "start": 3.2,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2_more/fb8462836f87987983f542020df7158c.mkv",
+   "source_fps": 30,
+   "height": 540,
+   "draw": 7
+  },
+  {
+   "name": "hob_vcd2_fc092a2b4eac23c5ed79e9b2a7b2f2f3",
+   "source": "/mldata/downloaded_datasets/other/vcd2/fc092a2b4eac23c5ed79e9b2a7b2f2f3.mkv",
+   "start": 8.1,
+   "seconds": 5.5,
+   "content_class": "videocall",
+   "family": "/mldata/downloaded_datasets/other/vcd2/fc092a2b4eac23c5ed79e9b2a7b2f2f3.mkv",
+   "source_fps": 30,
+   "height": 540,
+   "draw": 10
+  },
+  {
+   "name": "hob_wm_city_09_scooter_matvey_demchuk_karelian_jam_2",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/09_Scooter_Matvey_Demchuk_Karelian_Jam_2021.webm",
+   "start": 65.7,
+   "seconds": 6.6,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/09_Scooter_Matvey_Demchuk_Karelian_Jam_2021.webm",
+   "height": 360,
+   "draw": 5
+  },
+  {
+   "name": "hob_wm_city_50_street_video_vc",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/50_Street_video_vc.ogv",
+   "start": 9.9,
+   "seconds": 6.6,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/50_Street_video_vc.ogv",
+   "height": 540,
+   "draw": 9
+  },
+  {
+   "name": "hob_wm_city_eastbound_view_of_the_u_s_route_20_and_i",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/Eastbound_View_of_the_U.S._Route_20_and_IL-59_Interchange_Bartlett_Illinois_January_2026_Video_2_.webm",
+   "start": 69.7,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/Eastbound_View_of_the_U.S._Route_20_and_IL-59_Interchange_Bartlett_Illinois_January_2026_Video_2_.webm",
+   "height": 720,
+   "draw": 3
+  },
+  {
+   "name": "hob_wm_city_fox_theatre_interior_2024_st_louis_mo",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/Fox_Theatre_interior_2024_St_Louis_MO.webm",
+   "start": 5.8,
+   "seconds": 5.6,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/Fox_Theatre_interior_2024_St_Louis_MO.webm",
+   "height": 540,
+   "draw": 1
+  },
+  {
+   "name": "hob_wm_city_motorized_unicycle_moscow_street_2023_10",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/Motorized_unicycle_Moscow_street_2023-10.webm",
+   "start": 9.1,
+   "seconds": 5.5,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/Motorized_unicycle_Moscow_street_2023-10.webm",
+   "height": 540,
+   "draw": 7
+  },
+  {
+   "name": "hob_wm_city_the_bellabot_at_st_catharines_public_lib",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/The_BellaBot_at_St._Catharines_Public_Library.webm",
+   "start": 11.3,
+   "seconds": 5.6,
+   "content_class": "static",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/city_traffic/The_BellaBot_at_St._Catharines_Public_Library.webm",
+   "height": 360,
+   "draw": 11
+  },
+  {
+   "name": "hob_wm_festivals_canada_day_music_festival_2021_vanier_pa",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/festivals/Canada_Day_Music_Festival_2021_Vanier_Park_-_51284507706.webm",
+   "start": 12.3,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/festivals/Canada_Day_Music_Festival_2021_Vanier_Park_-_51284507706.webm",
+   "height": 360,
+   "draw": 2
+  },
+  {
+   "name": "hob_wm_festivals_mariachi_azteca_de_praga_festival_ambasa",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/festivals/Mariachi_Azteca_de_Praga_Festival_Ambasad_2024.webm",
+   "start": 20.8,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/festivals/Mariachi_Azteca_de_Praga_Festival_Ambasad_2024.webm",
+   "height": 540,
+   "draw": 0
+  },
+  {
+   "name": "hob_wm_music_1st_armored_division_band_plays_concert_",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/1st_Armored_Division_Band_plays_concert_with_the_Polish_11th_Armored_Cavalry_Division_Band_956127_.webm",
+   "start": 13.2,
+   "seconds": 6.9,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/1st_Armored_Division_Band_plays_concert_with_the_Polish_11th_Armored_Cavalry_Division_Band_956127_.webm",
+   "height": 360,
+   "draw": 5
+  },
+  {
+   "name": "hob_wm_music_1st_infantry_division_band_supports_tabl",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/1st_Infantry_Division_Band_Supports_Table_Tennis_Event_in_Poland_1022909_.webm",
+   "start": 25.5,
+   "seconds": 5.5,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/1st_Infantry_Division_Band_Supports_Table_Tennis_Event_in_Poland_1022909_.webm",
+   "height": 540,
+   "draw": 7
+  },
+  {
+   "name": "hob_wm_music_1tempelhofer_feld_2022",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/1Tempelhofer_Feld_2022.webm",
+   "start": 65.7,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/1Tempelhofer_Feld_2022.webm",
+   "height": 540,
+   "draw": 6
+  },
+  {
+   "name": "hob_wm_music_7th_fleet_band_plays_with_the_yokosuka_s",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/7th_Fleet_Band_Plays_With_The_Yokosuka_Symphony_Orchestra_1024058_.webm",
+   "start": 27.9,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/7th_Fleet_Band_Plays_With_The_Yokosuka_Symphony_Orchestra_1024058_.webm",
+   "height": 360,
+   "draw": 8
+  },
+  {
+   "name": "hob_wm_music_bryce_vine_performs_for_12_cab_and_4_2cr",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Bryce_Vine_Performs_for_12_CAB_and_4-2CR_967749_.webm",
+   "start": 21.4,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Bryce_Vine_Performs_for_12_CAB_and_4-2CR_967749_.webm",
+   "height": 720,
+   "draw": 12
+  },
+  {
+   "name": "hob_wm_music_celkilt_aux_anthinoises_29",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Celkilt_aux_Anthinoises_-_29.webm",
+   "start": 39.9,
+   "seconds": 6.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Celkilt_aux_Anthinoises_-_29.webm",
+   "height": 540,
+   "draw": 1
+  },
+  {
+   "name": "hob_wm_music_danny_montell_rock_concert_vilnius",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Danny_Montell_rock_Concert_Vilnius.webm",
+   "start": 4.3,
+   "seconds": 5.5,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Danny_Montell_rock_Concert_Vilnius.webm",
+   "height": 540,
+   "draw": 10
+  },
+  {
+   "name": "hob_wm_music_earth_to_space_a_national_symphony_orche",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Earth_to_Space-_A_National_Symphony_Orchestra_Concert_SVS14802_-_milton100819_v02_.webm",
+   "start": 37.4,
+   "seconds": 5.5,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Earth_to_Space-_A_National_Symphony_Orchestra_Concert_SVS14802_-_milton100819_v02_.webm",
+   "height": 360,
+   "draw": 11
+  },
+  {
+   "name": "hob_wm_music_freedom_250_u_s_tri_mission_hosts_americ",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Freedom_250-_U_S_Tri-Mission_Hosts_America_s_Semiquincentennial_in_Brussels_1013807_.webm",
+   "start": 28.0,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Freedom_250-_U_S_Tri-Mission_Hosts_America_s_Semiquincentennial_in_Brussels_1013807_.webm",
+   "height": 540,
+   "draw": 13
+  },
+  {
+   "name": "hob_wm_music_freedom_fest_2026_1013903",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Freedom_Fest_2026_1013903_.webm",
+   "start": 17.2,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Freedom_Fest_2026_1013903_.webm",
+   "height": 720,
+   "draw": 3
+  },
+  {
+   "name": "hob_wm_music_ululation",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Ululation_.webm",
+   "start": 12.7,
+   "seconds": 5.5,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Ululation_.webm",
+   "height": 540,
+   "draw": 4
+  },
+  {
+   "name": "hob_wm_music_whitemargin_unicornfish_naso_annulatus",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Whitemargin_unicornfish_Naso_annulatus_.webm",
+   "start": 25.4,
+   "seconds": 5.6,
+   "content_class": "crowd",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/music_dance/Whitemargin_unicornfish_Naso_annulatus_.webm",
+   "height": 540,
+   "draw": 9
+  },
+  {
+   "name": "hob_wm_texture_10th_mountain_division_soldier_delves_in",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/10th_Mountain_Division_Soldier_delves_into_the_operation_of_the_Infantry_Squad_Vehicle_during_Combine_Resolve_25-1_950087_.webm",
+   "start": 21.0,
+   "seconds": 5.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/10th_Mountain_Division_Soldier_delves_into_the_operation_of_the_Infantry_Squad_Vehicle_during_Combine_Resolve_25-1_950087_.webm",
+   "height": 360,
+   "draw": 11
+  },
+  {
+   "name": "hob_wm_texture_a_week_of_combat_readiness_passed_in_the",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/A_week_of_combat_readiness_passed_in_the_200th_Motorized_Rifle_Brigade_02-02-2021_.webm",
+   "start": 28.8,
+   "seconds": 6.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/A_week_of_combat_readiness_passed_in_the_200th_Motorized_Rifle_Brigade_02-02-2021_.webm",
+   "height": 360,
+   "draw": 5
+  },
+  {
+   "name": "hob_wm_texture_amtrak_cascades_airo_venture_trainset_pu",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/water/Amtrak_Cascades_Airo_Venture_trainset_pushed_by_ALC-42E_7001_crossing_the_bridge_in_Jefferson.webm",
+   "start": 8.4,
+   "seconds": 5.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/water/Amtrak_Cascades_Airo_Venture_trainset_pushed_by_ALC-42E_7001_crossing_the_bridge_in_Jefferson.webm",
+   "height": 360,
+   "draw": 2
+  },
+  {
+   "name": "hob_wm_texture_heavy_rain_at_chengdu_shuangliu_airport",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Heavy_rain_at_Chengdu_Shuangliu_Airport.webm",
+   "start": 5.2,
+   "seconds": 5.5,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Heavy_rain_at_Chengdu_Shuangliu_Airport.webm",
+   "height": 720,
+   "draw": 9
+  },
+  {
+   "name": "hob_wm_texture_heavy_rain_at_iowa_state_university_pxl_",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Heavy_rain_at_Iowa_State_University_PXL_20230601_212257714.webm",
+   "start": 4.8,
+   "seconds": 5.5,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Heavy_rain_at_Iowa_State_University_PXL_20230601_212257714.webm",
+   "height": 540,
+   "draw": 3
+  },
+  {
+   "name": "hob_wm_texture_heavy_rain_in_shenzhen_20250306",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Heavy_rain_in_Shenzhen_20250306_.webm",
+   "start": 3.4,
+   "seconds": 5.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Heavy_rain_in_Shenzhen_20250306_.webm",
+   "height": 540,
+   "draw": 10
+  },
+  {
+   "name": "hob_wm_texture_minnehaha_falls_minneapolis",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/water/Minnehaha_Falls_Minneapolis.webm",
+   "start": 10.0,
+   "seconds": 5.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/water/Minnehaha_Falls_Minneapolis.webm",
+   "height": 540,
+   "draw": 0
+  },
+  {
+   "name": "hob_wm_texture_rainingwebm",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/RainingWebm.webm",
+   "start": 22.2,
+   "seconds": 5.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/RainingWebm.webm",
+   "height": 360,
+   "draw": 8
+  },
+  {
+   "name": "hob_wm_texture_riva_ridge_mt_belvedere_maj_sherrod_9974_974e78",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/Riva_Ridge_Mt_Belvedere_MAJ_Sherrod_997458_.webm",
+   "start": 8.2,
+   "seconds": 5.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/Riva_Ridge_Mt_Belvedere_MAJ_Sherrod_997458_.webm",
+   "height": 540,
+   "draw": 7
+  },
+  {
+   "name": "hob_wm_texture_riva_ridge_mt_belvedere_maj_sherrod_9974_a8efd9",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/Riva_Ridge_Mt_Belvedere_MAJ_Sherrod_997446_.webm",
+   "start": 15.5,
+   "seconds": 5.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/landscape_mountain/Riva_Ridge_Mt_Belvedere_MAJ_Sherrod_997446_.webm",
+   "height": 540,
+   "draw": 1
+  },
+  {
+   "name": "hob_wm_texture_sailing_by_niagara_falls",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/water/Sailing_by_Niagara_Falls.webm",
+   "start": 91.1,
+   "seconds": 6.9,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/water/Sailing_by_Niagara_Falls.webm",
+   "height": 540,
+   "draw": 4
+  },
+  {
+   "name": "hob_wm_texture_wasserkreislauf_im_regenwald",
+   "source": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Wasserkreislauf_im_Regenwald.webm",
+   "start": 20.5,
+   "seconds": 6.6,
+   "content_class": "texture",
+   "family": "/mldata/downloaded_datasets/other/wikimedia_commons_videos/weather/Wasserkreislauf_im_Regenwald.webm",
+   "height": 540,
+   "draw": 6
+  }
+ ]
+}

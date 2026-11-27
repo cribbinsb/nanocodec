@@ -1,0 +1,476 @@
+# Benchmark fairness record (BP-2): every encoder's exact command, and why.
+#
+# The benchmark scripts build every command line from this file (`nceval.fairness.command`),
+# and `python3 -m nceval.fairness render` writes the tables in docs/benchmark-procedure.md
+# section 17 from it. `eval/tests/test_fairness_record.py` fails when:
+# - a command breaks a shared constraint;
+# - a flag has no explanation;
+# - the document's tables differ from the render.
+# So the document, the record and the runs cannot drift apart.
+#
+# Placeholders: {BIN} tool directory, {INPUT} raw I420 source, {OUTPUT} stream,
+# {W} {H} picture size, {FPS_NUM} {FPS_DEN} frame rate, {FPS_FLOAT} the same as a decimal,
+# {N} frames, {KEYINT} key interval (frames > N: one key per clip), {KBPS} target,
+# {QP} quantizer in the encoder's own scale, {PRESET} the family's preset or speed.
+# Measured effects cite docs/analysis/benchmark-procedure-response-2026-11-23.md ("response")
+# and docs/analysis/benchmark-method-2026-11-23.md ("study").
+
+version = "BP-3.10"
+
+# The one initial fullness (owner, 2026-11-25, BP-4.0): the buffer starts full, 1.0 s, for every
+# encoder. The 600 ms "final" phase is dropped. `current` names the one phase; the commands take its
+# values.
+[phase]
+current = "full-start"
+[phase.full-start]
+INIT_MS = "1000"
+VBV_INIT = "1.0"
+
+[shared]
+# The one constraint set every encoder is configured to, as far as its options allow.
+rate_kbps = "the only ladder: 300 / 500 / 800 / 1200 kbps at 720p30, target = rung x (pixels / 1280x720)^0.75 x (fps / 30)^0.5, capped at half the source bitrate (owner, 2026-11-23)"
+buffer_ms = 1000
+initial_level_ms = "1000: the buffer starts full for every encoder (owner, 2026-11-25)"
+optimal_level_ms = 600
+peak = "equal to the target (no encoder gets a higher drain rate)"
+frames = "150 (\"ours\", VC-1K); 130 (AOM-CTC, the CTC's count)"
+keyint = 300
+bframes = "0: no picture references a later one (no reordering, past references only); VVenC's low-delay B slices reference past pictures only (verified, VVenC entry)"
+lookahead_frames = 0
+scene_cut = "off"
+threads = 1
+frame_skip = "off on every main row (no encoder sends nothing for a frame); libvpx and libaom also have labelled +drop rows with their own frame dropping on (CBR only); ours codes a held frame as an all-skip frame (engine task T1; until it lands, hold off)"
+resize = "allowed where it is the encoder's own recommended real-time setting: ours on (AV1), the references as their projects' real-time examples set it (off); size-changed frames are scored after one pinned upscale (nceval.display, bilinear centre-aligned) for all"
+sei = "every stream loses its SEI NAL units (H.264 6, HEVC 39/40, VVC 23/24), AV1 metadata OBUs (5) and AV2 metadata OBUs (8/9) after the timed encode (nceval.streamstrip); decoded frames are checked identical in both standard decoders and ours; bytes removed recorded per point; x265 also runs --no-info"
+zero_line = "x264 medium in its best tune for each metric (owner, 2026-11-25): BD-PSNR and BD-VMAF and the composite BD-J against --tune zerolatency,psnr, BD-MS-SSIM against --tune zerolatency,ssim; every chart names its zero's tune"
+validity = "one external replay: 1 s bucket, initial decoder fullness 1000 ms, drain at the target, every counted bit; published per encoder as continuous compliance figures beside the BD (all points count in the BD; procedure section 8)"
+
+[[encoder]]
+family = "nanocodec-{codec}@{preset}"
+tool = "nanocodec"
+version = "the run's commit (manifest), one binary for every rung"
+build = "release, fat LTO, -C target-cpu=x86-64-v3 (workspace .cargo/config.toml); PGO only for a release, trained on clips disjoint from every dataset (nceval.content_id). Measured on 0.6.0: the plain build takes 0.984-1.031x the PGO build's time (response M3). The BP-3 run's PGO build: anchors/x86_64-opt-bp3/nanocodec (BUILD.json: commit, SHA-256, training on eval/clipset/pgo_training_2026-11-23.json)"
+cbr = ["{BIN}/nanocodec", "encode", "--codec", "{CODEC}", "--input", "{INPUT}", "--width", "{W}", "--height", "{H}", "--fps", "{FPS_NUM}/{FPS_DEN}", "--frames", "{N}", "--intra-period", "{KEYINT}", "--temporal-layers", "1", "--output", "{OUTPUT}", "--bitrate", "{KBPS}", "--buffer-ms", "1000", "--peak-bitrate", "{KBPS}", "--strict-buffer", "--param", "rate.first_key_lookahead_off=1", "--param", "hold.enable=1", "--param", "hold.code_skip=1", "--param", "stream.encoder_info=0", "{PRESET_ARGS}"]
+qp = ["{BIN}/nanocodec", "encode", "--codec", "{CODEC}", "--input", "{INPUT}", "--width", "{W}", "--height", "{H}", "--fps", "{FPS_NUM}/{FPS_DEN}", "--frames", "{N}", "--intra-period", "{KEYINT}", "--temporal-layers", "1", "--output", "{OUTPUT}", "--qp", "{QP}", "--param", "hold.enable=0", "--param", "stream.encoder_info=0", "{PRESET_ARGS}"]
+[[encoder.why]]
+flags = "--bitrate --buffer-ms 1000 --peak-bitrate {KBPS}"
+controls = "CBR target; 1 s buffer; drain at the target"
+value = "the shared rate, buffer and peak"
+fair = "the default peak is 2x the target (rate_control.rs); BP-2 sets it to the target, as x264/x265 --vbv-maxrate"
+remaining = "none known"
+[[encoder.why]]
+flags = "--strict-buffer"
+controls = "never pass one buffer (re-codes a frame that would); the key cap stays at its default, one buffer (params.rs)"
+value = "the shared 1 s buffer, held"
+fair = "owner, 2026-11-25 (final): ours holds the 1 s buffer strictly, even though x264, x265 and SVT-AV1 merely stay inside it by their own rate control and libaom, libvpx, openh264 and Kvazaar exceed it on 11-14 % of points (2026-11-24 report). It may cost ours a little; it removes the argument. Supersedes the 1.15 default bound of 2026-11-22 and option 5a"
+remaining = "none"
+[[encoder.why]]
+flags = "--param rate.first_key_lookahead_off=1"
+controls = "the start-up lookahead (frame 1 read before frame 0 is coded) no longer sizes the first key"
+value = "off"
+fair = "every reference runs with zero lookahead (--rc-lookahead 0, --lag-in-frames=0)"
+remaining = "the CLI still reads frame 1 early (I/O only); measured effect of the cap: response B2"
+[[encoder.why]]
+flags = "--param hold.enable=1 --param hold.code_skip=1"
+controls = "frame hold with all-skip output: a near-exact repeat of the last coded frame is coded as a frame whose every block copies it (no residual); every input frame is still coded"
+value = "our default hold, with all-skip output (owner, 2026-11-25, D21)"
+fair = "every frame is coded, as on every main row. Repeats exist in the benchmark sets: held-out 20 of 97 clips (2.4 % of frames, mostly static CCTV and video calls), VC-1K 10 of 100 (0.2 %) (sealed log 23). Conformance: 725/725 streams bit-exact in every standard decoder and ours"
+remaining = "none"
+[[encoder.why]]
+flags = "(adaptive coded resolution: default, on for AV1)"
+controls = "AV1 codes at half size per dimension at very low rates (standard reference scaling, no key frame)"
+value = "on (owner, 2026-11-23: an allowed coding tool in standard syntax)"
+fair = "each reference uses resize where its project's recommended real-time configuration does: libvpx's and libaom's real-time examples set it off (vpx_temporal_svc_encoder.c rc_resize_allowed = 0; svc_encoder_rtc.cc rc_resize_mode = 0), SVT's RTC default is off; scoring upscales any size-changed frame with one pinned filter for all (section 6)"
+remaining = "measured: response Q3 (how often ours switches, its BD effect, and the references with dynamic resize on)"
+[[encoder.why]]
+flags = "--intra-period {KEYINT} --temporal-layers 1"
+controls = "one key frame per clip; flat P"
+value = "the shared key interval and structure"
+fair = "same as every reference (--keyint, --kf-max-dist, -k)"
+remaining = "none"
+[[encoder.why]]
+flags = "--preset {PRESET}"
+controls = "the rung"
+value = "every shipped single-layer rung"
+fair = "the references are charted at several presets each"
+remaining = "35 rungs against 2-4 per reference: a front through few reference points is interpolation (review M10)"
+[[encoder.why]]
+flags = "(no thread flag)"
+controls = "threads"
+value = "our encoder is single-threaded"
+fair = "every reference runs one thread"
+remaining = "none"
+[[encoder.why]]
+flags = "(DSP tier: runtime dispatch)"
+controls = "SIMD tier"
+value = "AVX-512 on the timing CPU, recorded; tiers are bit-exact (tools/ci/isa_identity.sh)"
+fair = "every reference uses its own best runtime dispatch on the same CPU (x265 --asm avx512, below)"
+remaining = "none known"
+[[encoder.why]]
+flags = "--qp {QP}"
+controls = "Fixed QP = no rate control, a fixed base QP; ours keeps its own frame-level cadence, key offset and block offsets (rate.constant_qp off)"
+value = "the codec's base-QP table (procedure section 5)"
+fair = "owner, 2026-11-23: every encoder keeps its own frame- and block-level QP behaviour in fixed-QP mode (x264/x265 --ipratio, SVT and the others as listed in their tables)"
+remaining = "measured key-frame offsets per encoder: response M4"
+
+[[encoder]]
+family = "x264-{preset}[~{tune}]" # presets ultrafast, superfast, veryfast, faster, fast, medium
+tool = "x264"
+version = "0.165 (anchors build_anchors.sh, X264_COMMIT in tools/anchors/versions.env)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): -O3, LTO (x264 configure --enable-lto), PGO through x264's own CFLAGSPROF/LDFLAGSPROF hooks (gcc -fprofile-generate / -fprofile-use -fprofile-partial-training), trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Measured on the earlier x86_64-opt build (its own fprofiled training): the plain build takes 1.051 / 1.058 / 1.014x the time (medium / veryfast / ultrafast; response M3)"
+cbr = ["{BIN}/x264", "--preset", "{PRESET}", "--tune", "{TUNE}", "--bframes", "0", "--rc-lookahead", "0", "--keyint", "{KEYINT}", "--bitrate", "{KBPS}", "--vbv-maxrate", "{KBPS}", "--vbv-bufsize", "{KBPS}", "--vbv-init", "{VBV_INIT}", "--input-res", "{W}x{H}", "--fps", "{FPS_NUM}/{FPS_DEN}", "--frames", "{N}", "--threads", "1", "--output", "{OUTPUT}", "{INPUT}"]
+qp = ["{BIN}/x264", "--preset", "{PRESET}", "--tune", "{TUNE}", "--bframes", "0", "--rc-lookahead", "0", "--no-scenecut", "--keyint", "{KEYINT}", "--min-keyint", "{KEYINT}", "--qp", "{QP}", "--input-res", "{W}x{H}", "--fps", "{FPS_NUM}/{FPS_DEN}", "--frames", "{N}", "--threads", "1", "--output", "{OUTPUT}", "{INPUT}"]
+[[encoder.why]]
+flags = "--tune zerolatency[,psnr|,ssim]"
+controls = "low-delay settings (no B-frames, no lookahead, no mb-tree, sliced-threads off at 1 thread); the twins turn psycho-visual tuning to the metric"
+value = "x264's own real-time tune (x264 --fullhelp: 'zerolatency'); twins as x264 documents for metric runs"
+fair = "the twin that suits each metric is charted (review M9: the rule per metric is fixed in the manifest)"
+remaining = "--tune psnr disables AQ, which is not x264's best for VMAF/MS-SSIM: the default-tune family is charted beside it"
+[[encoder.why]]
+flags = "--bitrate --vbv-maxrate {KBPS} --vbv-bufsize {KBPS} --vbv-init {VBV_INIT}"
+controls = "ABR inside a VBV: peak = target, 1 s buffer, decoder buffer {VBV_INIT} full at start"
+value = "the shared bucket: 1 s, starting full"
+fair = "same bucket as everyone; x264's default --vbv-init is 0.9"
+remaining = "measured: 0.9 -> 0.6 costs x264 medium 1.4 % BD-PSNR-YUV (response B3); 0.9 -> 1.0 not measured"
+[[encoder.why]]
+flags = "--bframes 0 --rc-lookahead 0 --keyint {KEYINT}"
+controls = "no B-frames, no lookahead (zerolatency's own values, restated); one key at the start, later keys x264's own choice"
+value = "rule 2 (no added latency) and rule 3 (one key at the start of the test window)"
+fair = "procedure section 3 (BP-4.0): scene-cut keys are x264's own choice (rule 4; default scenecut threshold 40, common/base.c:388), so --no-scenecut and --min-keyint {KEYINT} are dropped from the CBR command; x264's scene-cut detection runs without lookahead (encoder/encoder.c:1618, slicetype.c:1523). Audit: docs/analysis/reference-fair-config-2026-11-25.md"
+remaining = "the Fixed QP command keeps --no-scenecut and --min-keyint; BP-4 measures no Fixed QP"
+[[encoder.why]]
+flags = "--threads 1"
+controls = "one thread (also no lookahead thread)"
+value = "the shared thread count"
+fair = "same for all"
+remaining = "x264 is designed around threads (review M10): stated"
+[[encoder.why]]
+flags = "(SEI, post-processing)"
+controls = "x264 writes a ~0.6 kB user-data SEI with its options; x264 0.165 has no switch to omit it (x264 --fullhelp)"
+value = "every SEI NAL is stripped after the timed encode (nceval.streamstrip), the decoded frames checked identical, the bytes removed recorded"
+fair = "the same post-processing strips SEI and metadata from every encoder's stream, ours included. Ours runs with --param stream.encoder_info=0 (its encoder-information SEI/metadata, about 135 B per key since 117de821a, is charged by our rate control), as x265 runs --no-info. Asymmetry, stated: x264 cannot omit its SEI, so its rate control may spend bits on it that are then stripped; measured (response 2) 662 B median per stream, 0.8 % of the stream median, up to 15 % on the smallest streams"
+remaining = "none"
+[[encoder.why]]
+flags = "--qp {QP}"
+controls = "CQP: no rate control, fixed base QP; key frame at QP - 6 log2(ipratio 1.4) = about 3 QP finer; AQ and MB-tree are switched off by x264 itself in CQP"
+value = "x264's own CQP mode"
+fair = "Fixed QP = each encoder's no-rate-control mode with its own frame and block QP behaviour (procedure section 5)"
+remaining = "verified in x264 source at the pinned commit (encoder/encoder.c lines 951-966: i_aq_mode = 0, b_mb_tree = 0; qp_i = qp_p - 6*log2f(f_ip_factor)) and measured (key QP 29 at --qp 32, response M4). Ours keeps block offsets where x264 has none in this mode: stated"
+
+[[encoder]]
+family = "x265-{preset}[~{tune}]"
+tool = "x265"
+version = "4.2 (X265_COMMIT)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): LTO (CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION), PGO by gcc's generic -fprofile-generate / -fprofile-use -fprofile-partial-training (x265 documents no route), trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Measured on the earlier LTO-only build: the plain build takes 1.017x the time (response M3); plain vs this PGO build not yet measured"
+cbr = ["{BIN}/x265", "--preset", "{PRESET}", "--tune", "{TUNE}", "{TUNE_EXTRA}", "--bframes", "0", "--rc-lookahead", "0", "--no-scenecut", "--keyint", "{KEYINT}", "--min-keyint", "{KEYINT}", "--bitrate", "{KBPS}", "--vbv-maxrate", "{KBPS}", "--vbv-bufsize", "{KBPS}", "--vbv-init", "{VBV_INIT}", "--input-res", "{W}x{H}", "--fps", "{FPS_NUM}/{FPS_DEN}", "--frames", "{N}", "--frame-threads", "1", "--pools", "none", "--no-wpp", "--no-info", "--input-depth", "8", "--input", "{INPUT}", "--output", "{OUTPUT}"]
+qp = ["{BIN}/x265", "--preset", "{PRESET}", "--tune", "{TUNE}", "{TUNE_EXTRA}", "--bframes", "0", "--rc-lookahead", "0", "--no-scenecut", "--keyint", "{KEYINT}", "--min-keyint", "{KEYINT}", "--qp", "{QP}", "--input-res", "{W}x{H}", "--fps", "{FPS_NUM}/{FPS_DEN}", "--frames", "{N}", "--frame-threads", "1", "--pools", "none", "--no-wpp", "--no-info", "--input-depth", "8", "--input", "{INPUT}", "--output", "{OUTPUT}"]
+[[encoder.why]]
+flags = "--tune psnr / --tune ssim at ultrafast and superfast"
+controls = "x265's metric tunes"
+value = "measured (30 frames, 600 kbps, superfast): the two tunes code byte-identical streams; x265 reports AQ strength 0.0 for --tune ssim at these presets. The first BP-3 run's BDs agree (ultrafast -4.77 % both, superfast -21.28 % both)"
+fair = "at these two presets the PSNR and SSIM twins are one encoder, shown once and labelled"
+remaining = "none"
+[[encoder.why]]
+flags = "--tune zerolatency|psnr|ssim (+ --no-cutree with a metric tune)"
+controls = "low delay; metric twins (x265 takes one tune, so --no-cutree restores the rest of zerolatency)"
+value = "x265's own real-time tune"
+fair = "as x264"
+remaining = "as x264"
+[[encoder.why]]
+flags = "--vbv-maxrate {KBPS} --vbv-bufsize {KBPS} --vbv-init {VBV_INIT}"
+controls = "the shared bucket"
+value = "as x264"
+fair = "as x264"
+remaining = "measured: response B3"
+[[encoder.why]]
+flags = "--frame-threads 1 --pools none --no-wpp"
+controls = "one thread"
+value = "the shared thread count (rule 3)"
+fair = "WPP and frame threads exist only for parallelism; with one thread they would cost coding efficiency for nothing, so they are off (procedure section 3 rule 3)"
+remaining = "x265 is designed around WPP threads: stated"
+[[encoder.why]]
+flags = "--no-info"
+controls = "drops x265's 1.5-2.4 kB user-data SEI"
+value = "off"
+fair = "SEI is not counted for any encoder anyway; this removes it from the stream too"
+remaining = "none"
+[[encoder.why]]
+flags = "(no --asm flag: x265's own runtime dispatch)"
+controls = "x265 picks its SIMD tier itself; its default leaves AVX-512 off on x86_64 (source/common/cpu.cpp:158-226: cpu_detect adds AVX-512 only when asked) and uses NEON/SVE on aarch64"
+value = "x265's default"
+fair = "procedure section 3 rule 4 (BP-4.0): a speed flag is not a shared constraint, so the earlier --asm avx512 on x86_64 is dropped (audit, docs/analysis/reference-fair-config-2026-11-25.md). Output is unchanged by design; speed may move"
+remaining = "the x86_64 speed effect of the change is measured by the first BP-4 timing run"
+[[encoder.why]]
+flags = "--qp {QP}"
+controls = "CQP: fixed base QP, key about 3 QP finer (ipratio); AQ, hevc-aq, AQ-motion and CU-tree switched off by x265 itself in CQP"
+value = "x265's own CQP mode"
+fair = "as x264"
+remaining = "verified in x265 source at the pinned commit (source/encoder/encoder.cpp lines 4049-4056; ratecontrol.cpp 345-350) and measured (key QP 29 at --qp 32)"
+
+[[encoder]]
+family = "openh264-baseline[~cabac][+drop]"
+tool = "openh264-harness (tools/openh264-harness, SHA-256 in the manifest; the harness source is published)"
+version = "openh264 v2.7.0 (OPENH264_COMMIT 1bca6231, tools/anchors/versions.env); harness commit 745b0166 (tools/openh264-harness), SHA-256 recorded in the manifest; the T16 harness (2026-11-25) adds --coded-frames and continues past a skip on the +drop row, main-row streams byte-identical (2 pool clips checked), and is rebuilt into the anchor stores before the next run"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): libopenh264.a -O3 with gcc -flto=auto (archived with gcc-ar; the harness, -O2, links with -flto) and gcc's generic -fprofile-generate / -fprofile-use -fprofile-partial-training (its Makefile offers neither), trained through the harness, trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Plain vs PGO not yet measured Plain-vs-PGO speed not measurable: the plain harness predates --bitrate"
+cbr = ["{BIN}/openh264-harness", "--input", "{INPUT}", "--output", "{OUTPUT}", "--width", "{W}", "--height", "{H}", "--fps", "{FPS_FLOAT}", "--frames", "{N}", "--usage", "camera-realtime", "--complexity", "{COMPLEXITY}", "--cabac", "{CABAC}", "--bitrate", "{KBPS}", "--intra-period", "{KEYINT}", "--temporal-layers", "1", "--adaptive-quant", "{AQ}", "--scene-change", "1", "--background-detection", "1", "--denoise", "0", "--ltr", "0", "--frame-skip", "{SKIP}", "{SKIP_ARGS}", "--threads", "1"]
+qp = ["{BIN}/openh264-harness", "--input", "{INPUT}", "--output", "{OUTPUT}", "--width", "{W}", "--height", "{H}", "--fps", "{FPS_FLOAT}", "--frames", "{N}", "--usage", "camera-realtime", "--complexity", "{COMPLEXITY}", "--cabac", "{CABAC}", "--qp", "{QP}", "--intra-period", "{KEYINT}", "--temporal-layers", "1", "--adaptive-quant", "{AQ}", "--scene-change", "0", "--background-detection", "1", "--denoise", "0", "--ltr", "0", "--frame-skip", "0", "--threads", "1"]
+[[encoder.why]]
+flags = "--usage camera-realtime --complexity medium|high --cabac 0|1"
+controls = "openh264's real-time camera mode; CAVLC (baseline) or CABAC (~cabac twin)"
+value = "openh264's own usage type for live camera; both entropy coders charted"
+fair = "the CABAC twin is about 17 % better (audit finding 3) and is the H.264-to-H.264 comparison"
+remaining = "none"
+[[encoder.why]]
+flags = "--adaptive-quant 1 --scene-change 1"
+controls = "openh264's adaptive quantisation and scene-change detection"
+value = "the library defaults (codec/api/wels/param_svc.h:166 bEnableSceneChangeDetect = true, :168 bEnableAdaptiveQuant = true); --background-detection 1 --denoise 0 --ltr 0 --temporal-layers 1 also equal the defaults (param_svc.h:165, 167, 170)"
+fair = "procedure section 3 rule 4 (BP-4.0): defaults unless a shared constraint needs otherwise. AQ 1 codes byte-identical streams to AQ 0 in this mode (84/84 in the audit), so the former ~aq twin is gone; scene-change on: median BD-J unchanged, 3 of 23 streams gained keys (audit, docs/analysis/reference-fair-config-2026-11-25.md)"
+remaining = "the Fixed QP command keeps --scene-change 0; BP-4 measures no Fixed QP"
+[[encoder.why]]
+flags = "--bitrate {KBPS}"
+controls = "openh264's rate control"
+value = "the shared rate"
+fair = "openh264 exposes no buffer size, initial level or peak: it is judged by the same replay"
+remaining = "its buffer cannot be set to the shared bucket: stated; measured compliance: response B3"
+[[encoder.why]]
+flags = "--frame-skip {SKIP} {SKIP_ARGS}"
+controls = "openh264's frame skipping; on the '+drop' row the harness also lists the input frame of each coded picture (--coded-frames {OUTPUT}.frames)"
+value = "0 on the main rows; 1 on the labelled 'openh264-baseline+drop' row, the library default (codec/api/wels/param_svc.h:169 bEnableFrameSkip = true)"
+fair = "the main rows code every frame, as every encoder's (procedure section 3, measurement condition). The '+drop' row is the configuration openh264 is designed for: its rate control cannot hold the rate without skipping (its own warning: 'bitrate can't be controlled ... without enabling skip frame'). Annex B has no timestamps, so the harness's coded-frame list places each picture: a skipped frame shows the previous picture and is counted, and its slot carries 0 bytes in the rate and the buffer replay, as the libvpx and libaom '+drop' rows (tools/bench/score.py drop_slots, bytes_per_slot)"
+remaining = "none"
+
+[[encoder]]
+family = "svtav1-m{PRESET}"
+tool = "SvtAv1EncApp"
+version = "v4.3.0 (SVTAV1_COMMIT)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): LTO (SVT_AV1_LTO, its default) + PGO by SVT's own route (SVT_AV1_PGO: PGOCompileGen / PGOCompileUse), trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Measured on the earlier x86_64-opt build: the plain build takes 1.045 / 1.047x the time (M12 / M13)"
+cbr = ["{BIN}/SvtAv1EncApp", "--rtc", "1", "--preset", "{PRESET}", "--pred-struct", "1", "--rc", "2", "--tbr", "{KBPS}", "--buf-sz", "1000", "--buf-initial-sz", "{INIT_MS}", "--buf-optimal-sz", "600", "--keyint", "{KEYINT}", "--scd", "0", "--lp", "1", "--fps-num", "{FPS_NUM}", "--fps-denom", "{FPS_DEN}", "-w", "{W}", "-h", "{H}", "-n", "{N}", "-i", "{INPUT}", "-b", "{OUTPUT}"]
+qp = ["{BIN}/SvtAv1EncApp", "--rtc", "1", "--preset", "{PRESET}", "--pred-struct", "1", "--hierarchical-levels", "0", "--rc", "0", "--qp", "{QP}", "--keyint", "{KEYINT}", "--scd", "0", "--lp", "1", "--fps-num", "{FPS_NUM}", "--fps-denom", "{FPS_DEN}", "-w", "{W}", "-h", "{H}", "-n", "{N}", "-i", "{INPUT}", "-b", "{OUTPUT}"]
+[[encoder.why]]
+flags = "--rtc 1 --pred-struct 1"
+controls = "SVT's real-time mode, low-delay prediction, with SVT's own CBR structure"
+value = "SVT-AV1's documented RTC configuration (Docs/Parameters.md --rtc); low-delay CBR defaults to 2 hierarchical levels and is capped at 2 (Source/Lib/Globals/enc_handle.c:4570-4589); all references are past pictures (verified in the streams)"
+fair = "procedure section 3 rule 4 (BP-4.0): the encoder's own real-time structure, temporal layers included, so the earlier --hierarchical-levels 0 is dropped from the CBR command. Measured +4.2 to +7.2 % BD-J against flat P at M8-M13 (worse; compliance unchanged): the default is what the rule requires, not what scores best (audit, docs/analysis/reference-fair-config-2026-11-25.md)"
+remaining = "the Fixed QP command keeps --hierarchical-levels 0; BP-4 measures no Fixed QP"
+[[encoder.why]]
+flags = "--rc 2 --tbr --buf-sz 1000 --buf-initial-sz {INIT_MS} --buf-optimal-sz 600"
+controls = "CBR with the shared bucket"
+value = "the shared bucket"
+fair = "same as all"
+remaining = "SVT has no peak setting separate from the target: CBR drains at the target"
+[[encoder.why]]
+flags = "--lp 1"
+controls = "one thread"
+value = "shared"
+fair = "same for all"
+remaining = "none"
+[[encoder.why]]
+flags = "--scd 0 --keyint {KEYINT}"
+controls = "no scene-change keys; one key"
+value = "shared"
+fair = "same for all"
+remaining = "none"
+
+[[encoder.why]]
+flags = "--rc 0 --qp {QP}"
+controls = "SVT's fixed base quantizer with its own default adaptation (--aq-mode at its default 2; SVT's own key and layer qindex assignment)"
+value = "coordinator decision on review 3 C5: in Fixed QP every encoder keeps its own default block adaptation. SVT's help calls --rc 0 with AQ on 'CRF'; in --rtc mode its AQ is inactive: --qp 40 with and without --aq-mode 0 gives byte-identical streams at M12 and M8 (measured, 30 frames of a 720p clip; aom-inspect shows no delta-q in either)"
+fair = "Fixed QP = each encoder's no-rate-control mode with its own frame and block behaviour"
+remaining = "key offset measured in response 2 (N3): key qindex 67 against 160"
+
+[[encoder]]
+family = "libvpx-vp9-cpu{PRESET}[~ssim][+drop]"
+tool = "vpxenc"
+version = "v1.16.0 (LIBVPX_COMMIT)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): no LTO (its configure offers none), PGO by libvpx's own route (configure --use-profile after a -fprofile-generate build), trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Measured on the earlier x86_64-opt build: the plain build takes 1.034 / 1.018x the time (rt 9 / 7)"
+cbr = ["{BIN}/vpxenc", "--codec=vp9", "--rt", "--passes=1", "--lag-in-frames=0", "--error-resilient=0", "--threads=1", "--cpu-used={PRESET}", "--end-usage=cbr", "--target-bitrate={KBPS}", "--buf-sz=1000", "--buf-initial-sz={INIT_MS}", "--buf-optimal-sz=600", "--undershoot-pct=50", "--min-q=2", "--max-q={MAX_Q}", "--overshoot-pct=50", "--max-intra-rate=1000", "--aq-mode=3", "{TUNE_EXTRA}", "--noise-sensitivity=0", "--static-thresh=1", "--gf-cbr-boost=0", "--frame-boost=0", "--resize-allowed=0", "--drop-frame={DROP}", "--kf-min-dist={KEYINT}", "--kf-max-dist={KEYINT}", "--i420", "--width={W}", "--height={H}", "--fps={FPS_NUM}/{FPS_DEN}", "--limit={N}", "--ivf", "-o", "{OUTPUT}", "{INPUT}"]
+qp = ["{BIN}/vpxenc", "--codec=vp9", "--rt", "--passes=1", "--lag-in-frames=0", "--error-resilient=0", "--threads=1", "--cpu-used={PRESET}", "--end-usage=q", "--cq-level={QP}", "{TUNE_EXTRA}", "--noise-sensitivity=0", "--static-thresh=1", "--frame-boost=0", "--resize-allowed=0", "--kf-min-dist={KEYINT}", "--kf-max-dist={KEYINT}", "--i420", "--width={W}", "--height={H}", "--fps={FPS_NUM}/{FPS_DEN}", "--limit={N}", "--ivf", "-o", "{OUTPUT}", "{INPUT}"]
+[[encoder.why]]
+flags = "--rt --cpu-used --aq-mode=3 --noise-sensitivity=0 --static-thresh=1 --gf-cbr-boost=0 --frame-boost=0 --undershoot-pct=50 --overshoot-pct=50"
+controls = "libvpx's real-time controls"
+value = "as libvpx's own real-time example sets them (examples/vpx_temporal_svc_encoder.c, VP9 branch: AQ 3, denoiser off, static threshold 1, GF CBR boost 0, periodic boost 0, 50/50 under/overshoot)"
+fair = "procedure section 3 rule 1 (BP-4.0, owner 2026-11-25): libvpx runs its project's own shipped real-time configuration, the example's settings (examples/vpx_temporal_svc_encoder.c lines 812-943, quoted in docs/analysis/reference-fair-config-2026-11-25.md section 4). Without them (vpxenc --rt defaults) it measures +10-11 % BD-J, mostly from AQ 3"
+remaining = "every example setting, kept or dropped (examples/vpx_temporal_svc_encoder.c): KEPT with the example's value: undershoot/overshoot 50, buffer 1000 / initial and optimal levels (the shared bucket's), VP8E_SET_MAX_INTRA_BITRATE_PCT 1000 (lines 939-943), CPUUSED, AQ_MODE 3, GF_CBR_BOOST_PCT 0, FRAME_PERIODIC_BOOST 0, NOISE_SENSITIVITY off, STATIC_THRESHOLD 1, resize off (rc_resize_allowed 0); DEFAULT already: FRAME_PARALLEL_DECODING 0, TUNE_CONTENT 0, DISABLE_LOOPFILTER 0, DISABLE_OVERSHOOT_MAXQ_CBR 0, ROW_MT 0 at one thread; KEPT: rc_min_quantizer 2 (line 812); rc_max_quantizer 52 only on the +drop rows (see --max-q); DROPPED: rc_dropframe_thresh (frame dropping off for every encoder), POSTENCODE_DROP (a drop mechanism), TILE_COLUMNS (log2 of threads = 0 at one thread), SVC (one layer)"
+[[encoder.why]]
+flags = "--max-q={MAX_Q}"
+controls = "the largest quantizer"
+value = "63 (libvpx's full range, its default) on the main rows; 52 (the example's, examples/vpx_temporal_svc_encoder.c:814) on the '+drop' rows"
+fair = "owner decision, 2026-11-25 (procedure section 3 rule 1): the example's 52 presupposes frame dropping, which the main rows forbid; without dropping the 52 clamp overshoots the bottom rung (1.5-1.9x the target in the audit) and drops clips from the common set (BD on 18-19 of 24 clips against 23 with 63; points over one buffer 44 -> 14 of 84). Audit: docs/analysis/reference-fair-config-2026-11-25.md"
+remaining = "on the clips the clamp keeps, 63 measures 2-4 % worse BD-J: the clamp's extra bits, not efficiency"
+[[encoder.why]]
+flags = "--end-usage=cbr --target-bitrate --buf-sz=1000 --buf-initial-sz={INIT_MS} --buf-optimal-sz=600"
+controls = "CBR with the shared bucket"
+value = "the shared bucket: 1 s, starting full (the example uses 1000/600/600; the optimal level stays 600 ms, the rate controller's target level)"
+fair = "same as all"
+remaining = "none"
+[[encoder.why]]
+flags = "--drop-frame={DROP} --resize-allowed=0"
+controls = "frame dropping (buffer-level threshold, %), no dynamic resize"
+value = "drop 0 on the main rows; 30 on the labelled '+drop' row: the threshold libvpx's own example test passes (libvpx v1.16.0 test/vpx_temporal_svc_encoder.sh:43 frame_drop_thresh=30, read as rc_dropframe_thresh by examples/vpx_temporal_svc_encoder.c:810); resize off"
+fair = "the main rows match every encoder; the '+drop' row is the configuration its authors ship, dropped frames shown as the previous picture and counted"
+remaining = "ours holds the bucket by re-coding: its re-coded share and time are printed beside it"
+[[encoder.why]]
+flags = "--threads=1 --lag-in-frames=0 --passes=1"
+controls = "one thread, no lookahead, one pass"
+value = "shared"
+fair = "same for all"
+remaining = "none"
+[[encoder.why]]
+flags = "(file reader)"
+controls = "vpxenc reads the input with 4 KB stdio reads"
+value = "as shipped"
+fair = "the CLI is the program a user runs"
+remaining = "up to about 4 % of its time is input reading (study section 5): stated"
+
+[[encoder.why]]
+flags = "--end-usage=q --cq-level={QP}"
+controls = "libvpx's own constant-quality mode: a base quantizer with its own key and golden-frame offsets, no bitrate target"
+value = "libvpx's native fixed-quality mode (review 2, N3: BP-2's min = max pin removed its offsets)"
+fair = "Fixed QP = each encoder's no-rate-control mode with its own frame behaviour"
+remaining = "key offset: measured in the BP-3 response (N3)"
+
+[[encoder]]
+family = "libaom-av1-cpu{PRESET}[~ssim]"
+tool = "aomenc"
+version = "v3.15.3 (LIBAOM_COMMIT)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): LTO (CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION), PGO by gcc's generic -fprofile-generate / -fprofile-use -fprofile-partial-training (libaom documents no route), one profile for svc_encoder_rtc and aomenc, trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Measured on the earlier LTO-only aomenc: the plain build takes 1.031 / 1.028x the time (rt 10 / 8) Measured (BP-3.1, c8a.large, 3 clips x 5 rounds, the record's CBR command at the 800 rung): the PGO build takes 0.937x the plain build's time"
+cbr = ["{BIN}/aomenc", "--rt", "--passes=1", "--lag-in-frames=0", "--threads=1", "--cpu-used={PRESET}", "{TUNE_EXTRA}", "--end-usage=cbr", "--target-bitrate={KBPS}", "--buf-sz=1000", "--buf-initial-sz={INIT_MS}", "--buf-optimal-sz=600", "--undershoot-pct=50", "--overshoot-pct=50", "--min-q=2", "--max-q=63", "--aq-mode=3", "--gf-cbr-boost=0", "--max-intra-rate=300", "--enable-cdef=1", "--loopfilter-control=1", "--enable-warped-motion=0", "--enable-obmc=0", "--enable-global-motion=0", "--enable-order-hint=0", "--enable-tpl-model=0", "--deltaq-mode=0", "--coeff-cost-upd-freq=3", "--mode-cost-upd-freq=3", "--mv-cost-upd-freq=3", "--dv-cost-upd-freq=3", "--cdf-update-mode=1", "--enable-cfl-intra=0", "--enable-smooth-intra=0", "--enable-angle-delta=0", "--enable-filter-intra=0", "--use-intra-default-tx-only=1", "--drop-frame=0", "--kf-min-dist={KEYINT}", "--kf-max-dist={KEYINT}", "--i420", "--width={W}", "--height={H}", "--fps={FPS_NUM}/{FPS_DEN}", "--limit={N}", "--ivf", "-o", "{OUTPUT}", "{INPUT}"]
+qp = ["{BIN}/aomenc", "--rt", "--passes=1", "--lag-in-frames=0", "--error-resilient=0", "--threads=1", "--cpu-used={PRESET}", "--end-usage=q", "--cq-level={QP}", "{TUNE_EXTRA}", "--enable-cdef=1", "--enable-warped-motion=0", "--enable-obmc=0", "--enable-global-motion=0", "--enable-order-hint=0", "--enable-tpl-model=0", "--deltaq-mode=0", "--coeff-cost-upd-freq=3", "--mode-cost-upd-freq=3", "--mv-cost-upd-freq=3", "--dv-cost-upd-freq=3", "--enable-cfl-intra=0", "--enable-smooth-intra=0", "--enable-angle-delta=0", "--enable-filter-intra=0", "--use-intra-default-tx-only=1", "--cdf-update-mode=1", "--loopfilter-control=1", "--resize-mode=0", "--kf-min-dist={KEYINT}", "--kf-max-dist={KEYINT}", "--i420", "--width={W}", "--height={H}", "--fps={FPS_NUM}/{FPS_DEN}", "--limit={N}", "--ivf", "-o", "{OUTPUT}", "{INPUT}"]
+[[encoder.why]]
+flags = "(CBR) aomenc --rt with the example's real-time settings: --min-q=2 --undershoot-pct=50 --overshoot-pct=50 --buf-optimal-sz=600 --max-intra-rate=300 --aq-mode=3 --gf-cbr-boost=0 --enable-cdef=1 --loopfilter-control=1 --enable-warped-motion=0 --enable-obmc=0 --enable-global-motion=0 --enable-order-hint=0 --enable-tpl-model=0 --deltaq-mode=0 --*-cost-upd-freq=3 --cdf-update-mode=1 --enable-cfl-intra=0 --enable-smooth-intra=0 --enable-angle-delta=0 --enable-filter-intra=0 --use-intra-default-tx-only=1"
+controls = "libaom's real-time configuration on the main rows and the ~ssim twins"
+value = "the settings of libaom's own real-time example (examples/svc_encoder_rtc.cc: min-q 2 1907, under/overshoot 50 1909-1910, optimal level 600 1912, max intra 300 % 1720, AQ 3 from -aq 1 2037, GF CBR boost 0 2038, CDEF on 2039, loop-filter control 1 2040, warped/OBMC/global motion/order hint/TPL off 2041-2045, deltaq 0 2046, cost updates 3 2053-2056, CDF update mode 1 2058, CfL/smooth/angle-delta/filter intra off and default-tx-only intra 2061-2065; reference tree b2347b8), carried to the CLI"
+fair = "procedure section 3 rule 1 (BP-4.0, owner 2026-11-25): libaom runs its project's own shipped real-time configuration. The example program itself hard-codes a 600 ms initial buffer (svc_encoder_rtc.cc:1911) and max-q 52 (1908), which break the shared full-start buffer and, without dropping, overshoot; so the main rows run the same settings through aomenc with the shared bucket. Measured -0.5 % (cpu8) / -1.0 % (cpu10) BD-J against the example; clips with a BD 18 -> 23 of 24; points over one buffer 35-36 -> 10 of 84 (audit, docs/analysis/reference-fair-config-2026-11-25.md). With aomenc, --tune=ssim exists in CBR, so the ~ssim twin is charted in CBR too"
+remaining = "the CLI's reference set is wider than the example's: 6-11 % slower with the same flags (BP-3 response 2, N6); the BP-4 timing run measures it on this command. The PGO profile was trained on the BP-3 commands (example for CBR, aomenc for Fixed QP)"
+[[encoder.why]]
+flags = "--buf-sz=1000 --buf-initial-sz={INIT_MS} --max-q=63 --drop-frame=0"
+controls = "the shared bucket, starting full; the full quantizer range; no frame dropping"
+value = "rules 2 and 3; max-q 63 is libaom's default"
+fair = "owner decision, 2026-11-25: the example's max-q 52 presupposes frame dropping, which the main rows forbid; the '+drop' rows keep the example as shipped"
+remaining = "none"
+[[encoder.why]]
+flags = "(Fixed QP) aomenc --end-usage=q --cq-level={QP} with the example's real-time tool flags"
+controls = "libaom's constant-quality mode with the real-time controls of the example (review 3 C4)"
+value = "the example has no fixed-quality mode, so the CLI is used with the example's tool set: --enable-cdef=1 --enable-warped-motion=0 --enable-obmc=0 --enable-global-motion=0 --enable-order-hint=0 --enable-tpl-model=0 --deltaq-mode=0 --*-cost-upd-freq=3 --enable-cfl-intra=0 --enable-smooth-intra=0 --enable-angle-delta=0 --enable-filter-intra=0 --use-intra-default-tx-only=1 --cdf-update-mode=1 --loopfilter-control=1 --resize-mode=0"
+fair = "the same tool set as the CBR rows"
+remaining = "the CLI's reference set is wider than the example's (6-11 % slower in CBR): stated on the Fixed QP rows"
+[[encoder.why]]
+flags = "(file reader)"
+controls = "aomenc reads with 4 KB stdio reads"
+value = "as shipped"
+fair = "as libvpx"
+remaining = "stated"
+[[encoder.why]]
+flags = "--end-usage=q --cq-level={QP}"
+controls = "libaom's own constant-quality mode, as libvpx"
+value = "libaom's native fixed-quality mode"
+fair = "as libvpx"
+remaining = "key offset: measured in the BP-3 response (N3)"
+
+[[encoder]]
+family = "libaom-av1-cpu{PRESET}+drop"
+tool = "svc_encoder_rtc (libaom's real-time example program, as shipped)"
+modes = ["cbr"]  # the '+drop' rows are CBR only
+version = "v3.15.3 (LIBAOM_COMMIT)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): LTO (CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION), PGO by gcc's generic -fprofile-generate / -fprofile-use -fprofile-partial-training (libaom documents no route), one profile for svc_encoder_rtc and aomenc, trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Measured on the earlier LTO-only aomenc: the plain build takes 1.031 / 1.028x the time (rt 10 / 8) Measured (BP-3.1, c8a.large, 3 clips x 5 rounds, the record's CBR command at the 800 rung): the PGO build takes 0.937x the plain build's time"
+cbr = ["{BIN}/svc_encoder_rtc", "-w", "{W}", "-h", "{H}", "-t", "{FPS_DEN}/{FPS_NUM}", "-b", "{KBPS}", "-bl", "{KBPS}", "-sl", "1", "-tl", "1", "-lm", "0", "-k", "{KEYINT}", "-sp", "{PRESET}", "-aq", "1", "-th", "1", "--drop-frame={DROP}", "--error-resilient=0", "-o", "{OUTPUT}", "{INPUT}"]
+[[encoder.why]]
+flags = "(CBR) svc_encoder_rtc -sl 1 -tl 1 -lm 0 -sp {PRESET} -aq 1 -th 1 -k {KEYINT}"
+controls = "libaom's own real-time example program, one spatial and one temporal layer (layering mode 0: LAST is the only reference)"
+value = "review 3 C4 / coordinator decision 4: the libaom project's own real-time configuration is its example, used as it is except frame dropping. Its settings (examples/svc_encoder_rtc.cc lines 1907-1913, 2036-2085): min/max q 2/52, undershoot/overshoot 50, buffer 1000 ms with initial and optimal level 600 ms, CDEF on, warped/OBMC/global motion/order hint/TPL off, deltaq 0, cost updates every 3, CfL/smooth/angle-delta/filter intra off, default-tx-only intra, CDF update mode 1, loop-filter control 1, auto tiles, AQ 3, GF CBR boost 0, max intra rate 300 %"
+fair = "the '+drop' rows (BP-4.0): the program the libaom project ships as its real-time reference, as shipped (its 600 ms start and max-q 52 included); the main rows run its settings through aomenc. The CLI with the same flags was measured 6-11 % slower (response 2, N6; the stream inspection attributes it to the CLI's wider reference set)"
+remaining = "the example fixes its own bucket: initial and optimal level 600 ms, so on the '+drop' rows it starts with less credit than the shared full 1000 ms: stated. It is given the exact timebase (-t {FPS_DEN}/{FPS_NUM}), but its rate control uses the integer rate den/num (examples/svc_encoder_rtc.cc:1985: 29 for 30000/1001), so on NTSC clips it budgets about 3.4 % more bits per frame than the target; the replay uses the clip's true rate for every encoder, and the excess shows in its rate over target. Its -f frame count is refused with these arguments, so the box feeds it exactly N frames (box.py refuses an input of any other size). It has no --tune, so the '+drop' rows have no SSIM twin"
+[[encoder.why]]
+flags = "--drop-frame={DROP}"
+controls = "the example's frame dropping (buffer-level threshold, %)"
+value = "0 on the main rows; 30 on the labelled '+drop' row: the threshold libaom's own real-time SVC rate tests use (test/svc_datarate_test.cc:1376, cfg_.rc_dropframe_thresh = 30, in the reference tree at b2347b8); the example itself defaults to 0 (examples/svc_encoder_rtc.cc:407-408 sets it only from --drop-frame)"
+fair = "the main rows match every encoder (no drops); the '+drop' row is the configuration its authors ship, dropped frames shown as the previous picture and counted"
+remaining = "ours holds the bucket by re-coding instead: its re-coded share and time are printed beside it"
+
+[[encoder]]
+family = "kvazaar-{PRESET}"
+tool = "kvazaar"
+version = "v2.3.2 (KVAZAAR_COMMIT 6040962b, tools/anchors/versions.env)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): LTO (CMake CMAKE_INTERPROCEDURAL_OPTIMIZATION), PGO by gcc's generic -fprofile-generate / -fprofile-use -fprofile-partial-training (Kvazaar documents no route), trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Plain vs PGO not yet measured"
+cbr = ["{BIN}/kvazaar", "--preset", "{PRESET}", "-i", "{INPUT}", "--input-res", "{W}x{H}", "--input-fps", "{FPS_NUM}/{FPS_DEN}", "-n", "{N}", "--gop", "lp-g8d4t1", "--period", "{KEYINT}", "--no-open-gop", "--bitrate", "{KBPS}000", "--threads", "0", "--owf", "0", "--no-wpp", "--no-psnr", "--no-info", "-o", "{OUTPUT}"]
+qp = ["{BIN}/kvazaar", "--preset", "{PRESET}", "-i", "{INPUT}", "--input-res", "{W}x{H}", "--input-fps", "{FPS_NUM}/{FPS_DEN}", "-n", "{N}", "--gop", "0", "--period", "{KEYINT}", "--no-open-gop", "--qp", "{QP}", "--threads", "0", "--owf", "0", "--no-wpp", "--no-psnr", "--no-info", "-o", "{OUTPUT}"]
+[[encoder.why]]
+flags = "--preset ultrafast|superfast|veryfast"
+controls = "Kvazaar's speed presets"
+value = "its real-time range (coordinator, 2026-11-23: the real-time HEVC reference)"
+fair = "Kvazaar is a real-time HEVC encoder; its fast presets are its live-encoding settings"
+remaining = "not yet measured in this procedure"
+[[encoder.why]]
+flags = "--gop lp-g8d4t1 --period {KEYINT} --no-open-gop"
+controls = "Kvazaar's low-delay P GOP: 8 pictures, 4 layers, every picture decodable (t1), references past pictures only; one key at the start"
+value = "rule 2 (no added latency) needs an override: Kvazaar's default GOP is a 16-picture random-access pyramid with reordering (src/cfg.c:137-138, kvz_gop_ra16). Kvazaar has no default low-delay GOP; its low-delay family is lp-g{G}d{D}t{T} (README 'LP-GOP syntax'). d4: the deepest its CBR rate control supports (src/encoder.c 4-layer low-delay weights; 5 layers refused at encoder.c:800, all 252 audit encodes of lp-g16d5t1 failed); g8: the shortest GOP holding 4 layers (cfg.c:1445-1461); t1: no reference skipping (cfg.c:1464-1491). QP offsets are Kvazaar's own (+1 to +4 by layer, cfg.c:1466)"
+fair = "procedure section 3 rules 2 and 4 (BP-4.0): the encoder's own low-delay structure, no reordering. Measured -6.1 to -8.6 % BD-J against --gop 0 (audit, docs/analysis/reference-fair-config-2026-11-25.md). The Fixed QP command keeps --gop 0; BP-4 measures no Fixed QP"
+remaining = "the choice of d and g within Kvazaar's low-delay family is resolved from its source as above, not a Kvazaar default"
+[[encoder.why]]
+flags = "--bitrate {KBPS}000"
+controls = "Kvazaar's rate control (lambda domain); its unit is bits per second (kvazaar --help: 'N: Target N bits per second')"
+value = "the shared rate. Until BP-3.1's pipe-clean run (2026-11-23) the record passed kbps, a target 1000x too low: every Kvazaar CBR point measured before then (response 2's N1 table, 75-100 % valid) undershot by construction and is void"
+fair = "Kvazaar has no VBV size, initial level or peak option: judged by the same replay, like openh264"
+remaining = "its buffer cannot be set to the shared bucket: stated"
+[[encoder.why]]
+flags = "--threads 0 --owf 0 --no-wpp --no-psnr --no-info"
+controls = "no worker threads or frame parallelism; no wavefront substreams (as x265 --no-wpp); no PSNR computed inside the timed run (Kvazaar's --psnr is on by default); no information SEI"
+value = "one thread, no in-encoder metric pass"
+fair = "same for all: no other encoder computes a metric while timed"
+remaining = "none"
+[[encoder.why]]
+flags = "--qp {QP}"
+controls = "Fixed base QP with Kvazaar's own frame/block behaviour"
+value = "its defaults in CQP"
+fair = "owner rule: every encoder keeps its own frame/block QP behaviour"
+remaining = "key offset not measured"
+
+[[encoder]]
+family = "vvenc-{PRESET}"
+modes = ["qp"]  # coordinator, 2026-11-23: its one-pass rate control needs a look-ahead
+tool = "vvencFFapp"
+version = "v1.14.0 (VVENC_COMMIT 9428ea86, tools/anchors/versions.env; the build the CTC run used)"
+build = "x86_64: anchors/x86_64-opt-bp3 (built 2026-11-23 by tools/anchors/build_anchors.sh --opt on the build box, gcc 15.2; SHA-256s in its SHA256SUMS, flags in its build-flags.json): LTO (VVENC_ENABLE_LINK_TIME_OPT, its default), PGO by gcc's generic -fprofile-generate / -fprofile-use -fprofile-partial-training (VVenC documents no route), trained on the PGO training set eval/clipset/pgo_training_2026-11-23.json (NASA/NOAA, disjoint from every dataset, nceval.content_id) with this record's own commands, every family but the +drop rows, CBR 600 kbps and Fixed QP at the middle of the tool's CTC table (tools/anchors/pgo_train.py). Plain vs PGO not yet measured"
+cbr = ["{BIN}/vvencFFapp", "-c", "{CFG}/experimental/lowdelay_{PRESET}.cfg", "-c", "{CFG}/rc1p.cfg", "--LookAhead=1", "-i", "{INPUT}", "-s", "{W}x{H}", "--FrameRate", "{FPS_NUM}", "--FrameScale", "{FPS_DEN}", "--TicksPerSecond", "{VVENC_TICKS}", "-f", "{N}", "--IntraPeriod", "{KEYINT}", "--TargetBitrate", "{KBPS}000", "--MaxBitrate", "{KBPS_X1500}", "--InputBitDepth=8", "--OutputBitDepth=8", "--InternalBitDepth=8", "--ConformanceWindowMode=1", "--Threads=1", "--MaxParallelFrames=0", "-b", "{OUTPUT}", "-o", "/dev/null"]
+qp = ["{BIN}/vvencFFapp", "-c", "{CFG}/experimental/lowdelay_{PRESET}.cfg", "-i", "{INPUT}", "-s", "{W}x{H}", "--FrameRate", "{FPS_NUM}", "--FrameScale", "{FPS_DEN}", "--TicksPerSecond", "{VVENC_TICKS}", "-f", "{N}", "--IntraPeriod", "{KEYINT}", "-q", "{QP}", "--InputBitDepth=8", "--OutputBitDepth=8", "--InternalBitDepth=8", "--ConformanceWindowMode=1", "--Threads=1", "--MaxParallelFrames=0", "-b", "{OUTPUT}", "-o", "/dev/null"]
+[[encoder.why]]
+flags = "--TicksPerSecond {VVENC_TICKS}"
+controls = "VVenC's timing clock; it must be a multiple of the frame rate (vvencFFapp: 'TicksPerSecond must be a multiple of FrameRate/Framescale')"
+value = "the largest multiple of the rate's numerator not above 27000000: 27000000 itself for NTSC (VVenC's own advice), and a valid clock for any rate num/den. Found by the first BP-3 Fixed QP run: VCD2 webcams at 17, 23 and 28 fps and Wikimedia uploads at 24.39, 29.089 and 29.833 fps were refused with the default"
+fair = "timing metadata only: the coded pictures are unchanged"
+remaining = "none"
+[[encoder.why]]
+flags = "-c experimental/lowdelay_faster.cfg | lowdelay_fast.cfg"
+controls = "VVenC's low-delay configuration at its fastest presets"
+value = "VVenC's own low-delay configs (cfg/experimental/ in the v1.14.0 tree, as the CTC lens used: nceval.ctc.reference_encoders VVENC_CONFIG); the fastest two"
+fair = "the coordinator's VVC reference (2026-11-23); the same build as the AOM-CTC run"
+remaining = "the low-delay configs are marked experimental in v1.14.0; low delay codes B slices (no P-only mode); VVenC has no real-time speed class: stated"
+[[encoder.why]]
+flags = "(coding order and references; evidence)"
+controls = "whether the low-delay configs reorder pictures or reference future ones"
+value = "verified on v1.14.0 streams, 2026-11-23: with lowdelay_faster and lowdelay_fast (cfg/experimental, PicReordering 0, GOPSize 8, every RPL entry a positive POC delta), at fixed QP and with single-pass rate control. The encoder's per-picture log (--Verbosity=6) shows coding order = display order (POC 0, 1, 2, ... for 24 of 24 pictures) and every L0/L1 entry a past picture (GPB: L1 = L0). Its temporal filter (MCTF, BIM) is set to past pictures only (MCTFFutureReference 0). Logs and configs: bench-method-records/vvenc-lowdelay/"
+fair = "no picture reordering and no future reference, like every other encoder"
+remaining = "none in the stream structure"
+[[encoder.why]]
+flags = "-c rc1p.cfg --LookAhead=1 --TargetBitrate {KBPS}000 --MaxBitrate {KBPS_X1500}"
+controls = "VVenC's single-pass rate control: a VBR controller with a pre-analysis look-ahead (its log: 'VBR single-pass', 'LookAhead:1')"
+value = "the shared rate (bits/s). VVenC refuses one-pass rate control without the look-ahead ('Look-ahead encoding must be used with one-pass rate control')"
+fair = "the only single-pass rate control VVenC offers. --MaxBitrate ('approximate maximum instantaneous bitrate', vvencFFapp --fullhelp) is set to 1.5x the target, the lowest VVenC accepts ('MaxBitrate must be at least 1.5*TargetBitrate', tested 2026-11-23); every other peak is the target. VVenC has no buffer size or initial level, so it is judged by the same replay"
+remaining = "VVenC's CBR points have a rate-control look-ahead and no buffer model, an advantage to VVenC that no other encoder has (depth not measured): stated beside every VVC comparison. VVenC's fixed-QP view has none"
+[[encoder.why]]
+flags = "--Threads=1 --MaxParallelFrames=0"
+controls = "one thread, no frame parallelism"
+value = "one thread"
+fair = "same for all"
+remaining = "VVenC is designed around threads: stated"
+[[encoder.why]]
+flags = "--IntraPeriod {KEYINT}"
+controls = "one intra picture per clip"
+value = "the shared structure; tested with GOPSize 8: v1.14.0 accepts 300 (its log: 'Intra period (keyframe): 300'), as it does 296 and 304, and codes one intra picture (bench-method-records/vvenc-lowdelay)"
+fair = "same as all"
+remaining = "none"
+
+# AV2 has no real-time reference: AVM (the AV2 reference software) is a coding-efficiency
+# reference at fixed QP only (eval/nceval/cbr.py _reference_command), far from real-time speed.
+# Our AV2 rungs are compared only with other codecs' encoders in CBR. uvg266 (real-time VVC) has
+# no pinned build in tools/anchors/versions.env; it is not charted until one is (task T9).

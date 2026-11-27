@@ -224,6 +224,11 @@ impl SegmentStats {
         }
     }
 
+    /// Every explicit ID visits the root of the segment tree.
+    pub(crate) fn has_ids(&self) -> bool {
+        self.branches[0] != [0, 0]
+    }
+
     /// The segment-tree node probabilities (of the 0 branch) these counts
     /// give, each inside 1..=255; a node no id reached is `MAX_PROB`, which
     /// costs nothing to send.

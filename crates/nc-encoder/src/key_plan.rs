@@ -75,8 +75,8 @@ pub(crate) struct KeyPlanner<'a, B: CodecBackend> {
 impl<B: CodecBackend> KeyPlanner<'_, B> {
     /// Plan the key-frame superblock `sb`, with how decisively each node was
     /// planned (the key RD search's margin gate, `planner.key_rd_margin`).
-    pub fn plan(&mut self, sb: Block) -> (Partition, NodeMargins) {
-        let mut margins = NodeMargins::new(&sb);
+    pub fn plan(&mut self, sb: Block) -> (Partition, Box<NodeMargins>) {
+        let mut margins = Box::new(NodeMargins::new(&sb, false));
         let partition = self.plan_node(sb, &mut margins).1;
         (partition, margins)
     }
@@ -91,7 +91,9 @@ impl<B: CodecBackend> KeyPlanner<'_, B> {
         }
     }
 
-    fn leaf_cost(&mut self, node: &Block) -> f32 {
+    /// The leaf's cost, its distortion estimate noted for the fitted
+    /// key-trial gate.
+    fn leaf_cost(&mut self, node: &Block, margins: &mut NodeMargins) -> f32 {
         let distortion = match self.mode {
             KeyPlanMode::Transform => self
                 .backend
@@ -99,6 +101,7 @@ impl<B: CodecBackend> KeyPlanner<'_, B> {
                 .expect("transform planning is resolved only for supporting backends"),
             _ => source_variance::<B>(self.dsp, self.source, node) as f32,
         };
+        margins.note_estimate(node, distortion);
         distortion + self.lambda() * self.backend.partition_bits(node, false)
     }
 
@@ -121,7 +124,7 @@ impl<B: CodecBackend> KeyPlanner<'_, B> {
         // Uncapped: with the inter cap (λ/8 per sample) every textured
         // superblock looked as cheap as a flat one and stayed 64x64 (AV1
         // low-light key frame: −6.5 dB for −24% bytes).
-        let leaf_cost = may_be_leaf.then(|| self.leaf_cost(&node));
+        let leaf_cost = may_be_leaf.then(|| self.leaf_cost(&node, margins));
         if !can_split || leaf_cost.is_some_and(|cost| self.is_flat(&node, cost)) {
             return (leaf_cost.unwrap_or(0.0), Partition::Leaf(None));
         }

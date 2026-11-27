@@ -21,6 +21,7 @@ mod bench_deblock_batches;
 mod bench_encoder_wide;
 mod bench_extra;
 mod bench_filters;
+mod bench_nn;
 mod bench_rows;
 mod bench_vp9_filter;
 mod bench_vp9_line;
@@ -29,6 +30,7 @@ pub mod check;
 mod check_analysis_stats;
 mod check_av1_conformant;
 mod check_av1_deblock;
+mod check_av1_forward;
 mod check_av1_grain;
 mod check_av1_grid;
 mod check_av1_intra;
@@ -38,8 +40,10 @@ mod check_av1_restoration;
 mod check_av1_scaled;
 mod check_av1_symbol;
 mod check_av1_warp;
+mod check_av2_gdf;
 mod check_av2_intra;
 mod check_av2_typed;
+mod check_av2_warp;
 mod check_cdef_interior;
 mod check_cfl_sse;
 mod check_codec;
@@ -54,6 +58,7 @@ mod check_hevc_put32;
 mod check_hevc_weight;
 mod check_high_depth;
 mod check_lane_filters;
+mod check_nn;
 mod check_raster_dct;
 #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
 mod check_relaxed_dot;
@@ -82,7 +87,7 @@ pub mod rng;
 
 pub use bench::{
     BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_cdef, bench_copies,
-    bench_deblock_batches, bench_encoder_wide, bench_vp9_mc,
+    bench_deblock_batches, bench_encoder_wide, bench_nn, bench_vp9_mc,
 };
 pub use check::{CheckReport, check};
 

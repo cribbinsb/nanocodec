@@ -1,10 +1,13 @@
 //! AV1 grain row exactness: clipped extremes, signed rounding, tails and guards.
 use crate::{check::CheckReport, rng::Rng};
+use nc_common::{PlaneView, PlaneViewMut};
 use nc_dsp::Dsp;
-use nc_dsp::av1_film_grain::Av1GrainScaling;
+use nc_dsp::av1_film_grain::{Av1FilmGrainParams, Av1GrainScaling};
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
-    for len in [0usize, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 65] {
+    for len in [
+        0usize, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129,
+    ] {
         for pattern in 0..5 {
             let source: Vec<u8> = (0..=len)
                 .map(|i| match pattern {
@@ -89,6 +92,54 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                 }
             }
             check_blend(candidate, reference, &grain, len, rng, report);
+        }
+    }
+    check_luma_planes(candidate, reference, rng, report);
+}
+
+fn check_luma_planes(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
+    // Multiple stripes, partial bottom stripes, and a right-edge fallback.
+    for (width, height) in [(32usize, 2usize), (96, 34), (65, 35)] {
+        let y_stride = width + 19;
+        let y: Vec<_> = (0..y_stride * height).map(|_| rng.byte()).collect();
+        let y = PlaneView::new(&y, y_stride, width, height).expect("valid luma");
+        let c_width = width.div_ceil(2);
+        let c_height = height.div_ceil(2);
+        let uv = vec![134; c_width * c_height];
+        let uv = PlaneView::new(&uv, c_width, c_width, c_height).expect("valid chroma");
+        for (codec, overlap) in [(0, false), (0, true), (1, true), (2, true)] {
+            let mut params = Av1FilmGrainParams {
+                grain_seed: 47641,
+                overlap,
+                clip_to_restricted_range: overlap,
+                ..Default::default()
+            };
+            params.y_points.count = 2;
+            params.y_points.value[1] = 255;
+            params.y_points.scaling[..2].copy_from_slice(&[21, 52]);
+            let apply = |dsp: &Dsp| {
+                let mut pixels = vec![0xa5; y_stride * height + 1];
+                let mut cb = vec![0xa5; c_width * c_height];
+                let mut cr = cb.clone();
+                let output = [
+                    &mut PlaneViewMut::new(&mut pixels, y_stride, width, height).unwrap(),
+                    &mut PlaneViewMut::new(&mut cb, c_width, c_width, c_height).unwrap(),
+                    &mut PlaneViewMut::new(&mut cr, c_width, c_width, c_height).unwrap(),
+                ];
+                if codec == 0 {
+                    dsp.av1_add_film_grain(&params, [&y, &uv, &uv], (width, height), output);
+                } else {
+                    dsp.av2_add_film_grain(
+                        &params,
+                        codec == 1,
+                        [&y, &uv, &uv],
+                        (width, height),
+                        output,
+                    );
+                }
+                pixels
+            };
+            compare(&apply(candidate), &apply(reference), "luma plane", report);
         }
     }
 }

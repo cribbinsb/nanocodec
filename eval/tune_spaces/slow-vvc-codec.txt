@@ -1,0 +1,15 @@
+# VVC slow, codec effort only (tune-slow, 2026-11-23): the first VVC slow space and the
+# AV1/AV2/VP9 slow spaces, which also moved the RD partition search's gates, the selector
+# scale and the exact-rank margin, lost 5-17 % J at stage 1 on almost every trial (30 of 32
+# stopped on AV1 slow), so this space leaves the planner as shipped and tunes VVC's own
+# search widths and the key RD search, which VVC slow ships without.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.key_rd_split 0 1 int
+planner.key_rd_margin 1.0 2.0
+decision.final_margin_lambdas 0 0.2
+vvc.angular_candidates 2 8 int
+vvc.rd_candidates 2 6 int
+vvc.mts_min_levels 1 4 int
+vvc.affine_amvp_gate
+vvc.affine_merge_gate
+vvc.isp 0 1 int

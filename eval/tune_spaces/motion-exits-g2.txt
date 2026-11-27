@@ -1,0 +1,32 @@
+# Group G2: Motion search and sub-pel early exits as linear functions of coarse
+# frame/block/neighbour features (`decision.{subpel_seed,skip_no_refine}_shift_*`,
+# `analysis.{zero_gate,window_exit}_shift_*`). All 0 is the exact shipped preset,
+# so trial 0 is today's heuristic byte-identically.
+# Format (nceval.tune_pool): name [low high] [int|log]
+
+# 1. Sub-pel seed gate (`decision.codec_subpel_seed_lambdas`)
+decision.subpel_seed_shift_bias -0.05 0.15
+decision.subpel_seed_shift_nonbase -0.05 0.15
+decision.subpel_seed_shift_lambda -0.05 0.10
+decision.subpel_seed_shift_noise -0.05 0.10
+decision.subpel_seed_shift_size -0.05 0.10
+decision.subpel_seed_shift_zero_mv -0.05 0.15
+
+# 2. Skip-vector no-refine gate (`decision.skip_no_refine_lambdas`)
+decision.skip_no_refine_shift_bias -0.15 0.25
+decision.skip_no_refine_shift_nonbase -0.15 0.25
+decision.skip_no_refine_shift_lambda -0.15 0.15
+decision.skip_no_refine_shift_noise -0.15 0.15
+
+# 3. Zero-vector motion gates (`analysis.{static,one_position,skip_hme}_sad_per_pixel`)
+analysis.zero_gate_shift_bias -0.8 1.2
+analysis.zero_gate_shift_nonbase -0.8 1.2
+analysis.zero_gate_shift_lambda -0.6 0.8
+analysis.zero_gate_shift_noise -0.6 1.2
+analysis.zero_gate_shift_neighbour_mv -1.0 0.8
+
+# 4. Full-pel window early exit (`analysis.window_exit_sad_per_pixel`)
+analysis.window_exit_shift_bias -0.5 2.0
+analysis.window_exit_shift_nonbase -0.5 2.0
+analysis.window_exit_shift_lambda -0.5 1.5
+analysis.window_exit_shift_noise -0.5 1.5

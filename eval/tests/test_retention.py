@@ -196,3 +196,69 @@ def test_the_shipped_manifest_loads_and_keeps_the_release_stores(monkeypatch):
                    "clips/layergate_fit", "run", "anchors/*", "conformance/*"):
         assert needed in kept, needed
     assert retention.guard(root / "work/realuse/f150-ip300", root=root) is not None
+
+
+CAPPED = """
+[[keep]]
+path = "work/cache-a"
+class = "cache"
+reader = "a tool's capped cache"
+regen = "seconds"
+evicted_by = ["tool-a"]
+cap_gb = 0.000003
+
+[[keep]]
+path = "work/cache-a/pinned"
+class = "durable"
+reader = "something kept inside it"
+regen = "not regenerable"
+"""
+
+
+def test_a_capped_cache_loses_its_least_recently_used_entries_first(tmp_path, monkeypatch):
+    """docs/aws-cost-guide.md, 2026-11-24: work/ over its budget blocked every GPU-scored
+    quick; each owning tool now keeps its cache within the manifest's cap_gb."""
+    manifest = tmp_path / "retention.toml"
+    manifest.write_text(CAPPED)
+    monkeypatch.setenv(retention.MANIFEST_ENV, str(manifest))
+    root = tmp_path / "data"
+    monkeypatch.setenv(retention.DATA_ROOT_ENV, str(root))
+    cache = root / "work/cache-a"
+    cache.mkdir(parents=True)
+    entries = []
+    for index, age_s in enumerate((300, 100, 200, 10)):  # 1 KiB each, used age_s ago
+        entry = cache / f"clip{index}.zst"
+        entry.write_bytes(b"x" * 1024)
+        age(entry, age_s)
+        entries.append(entry)
+    (cache / "pinned").mkdir()
+    (cache / "pinned/x").write_bytes(b"y" * 1024)
+    age(cache / "pinned", 1000)  # the oldest, but kept by the manifest
+    cap = retention.cap_bytes(cache, root)
+    assert cap == int(0.000003 * (1 << 30))  # 3221 bytes: three of the four clips
+    freed, removed = retention.prune_to_cap([*entries, cache / "pinned"], cap, "tool-a")
+    assert (freed, removed) == (2048, 2)
+    assert not entries[0].exists() and not entries[2].exists()  # the two oldest clips
+    assert entries[1].exists() and entries[3].exists() and (cache / "pinned/x").exists()
+    # another tool may not evict it
+    entries[1].write_bytes(b"x" * 4096)
+    assert retention.prune_to_cap([entries[1]], 0, "tool-b") == (0, 0) and entries[1].exists()
+
+
+def test_a_capped_cache_spares_entries_in_use(tmp_path, monkeypatch):
+    """2026-11-24: a prune removed a cloud point directory while another job was staging
+    it as its seed; an entry used within min_idle_s stays, however old it was listed."""
+    manifest = tmp_path / "retention.toml"
+    manifest.write_text(CAPPED)
+    monkeypatch.setenv(retention.MANIFEST_ENV, str(manifest))
+    root = tmp_path / "data"
+    monkeypatch.setenv(retention.DATA_ROOT_ENV, str(root))
+    cache = root / "work/cache-a"
+    cache.mkdir(parents=True)
+    old, claimed = cache / "old.zst", cache / "claimed.zst"
+    for path in (old, claimed):
+        path.write_bytes(b"x" * 4096)
+        age(path, 7200)
+    os.utime(claimed)  # a staging job just claimed it
+    freed, removed = retention.prune_to_cap([old, claimed], 0, "tool-a", min_idle_s=3600)
+    assert (freed, removed) == (4096, 1) and claimed.exists() and not old.exists()

@@ -1,7 +1,7 @@
 //! End-to-end checks of the analysis pipeline on synthetic sequences whose
 //! true motion is known exactly.
 
-use nc_analysis::motion::SearchConfig;
+use nc_analysis::motion::{GateCell, SearchConfig};
 use nc_analysis::{Analyzer, FrameAnalysis, Mv};
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::Dsp;
@@ -287,4 +287,51 @@ fn seeded_disposable_frames_track_a_pan_and_can_become_references() {
             analyzer.refresh_current(SlotMask::ALL);
         }
     }
+}
+
+#[test]
+fn a_small_mover_on_a_still_background_is_searched() {
+    // A faint 16x16 patch moves 3 samples right over a still textured picture:
+    // its superblock's average zero-vector SAD per sample stays under the
+    // gates (1.0-2.0), its worst cell does not, so with the cell gates the
+    // patch's blocks are searched and found (motion.rs, step 1).
+    const SIZE: f64 = 16.0;
+    let mover = |left: f64| {
+        move |x: f64, y: f64| {
+            let inside = (left..left + SIZE).contains(&x) && (200.0..200.0 + SIZE).contains(&y);
+            if inside {
+                120.0 + 0.1 * noise(x - left, y)
+            } else {
+                smooth(x, y)
+            }
+        }
+    };
+    let (first, second) = (picture(mover(197.0)), picture(mover(200.0)));
+    // The 8x8 blocks wholly inside the patch at its new place (x 200..216, y 200..216).
+    let patch = [(25, 25), (26, 25), (25, 26), (26, 26)];
+    for cell in [GateCell::Block8, GateCell::Block16, GateCell::Noise] {
+        let mut analyzer = Analyzer::new(WIDTH, HEIGHT, Dsp::new()).unwrap();
+        let mut search = SearchConfig::default();
+        search.gates.cell = cell;
+        analyzer.set_search_config(search);
+        analyzer.analyze(&first);
+        let analysis = analyzer.analyze(&second).clone();
+        let fine = &analysis.motion.as_ref().unwrap().fine;
+        for (col, row) in patch {
+            let block = fine.get(col, row);
+            assert_eq!(
+                (block.mv, block.sad),
+                (Mv::new(-3, 0), 0),
+                "{cell:?} block ({col}, {row})"
+            );
+        }
+    }
+    // The superblock average (the default) misses it: the zero vector, unsearched.
+    let analysis = analyze_pair(&first, &second);
+    let fine = &analysis.motion.as_ref().unwrap().fine;
+    assert!(
+        patch
+            .iter()
+            .all(|&(col, row)| fine.get(col, row).mv == Mv::ZERO)
+    );
 }

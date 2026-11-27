@@ -51,6 +51,9 @@ class Reference:
 #: The reference encoders every view plots (the explicit half of "what we plot").
 REFERENCES = (
     Reference("openh264-baseline", "openh264", ((Codec.AV1, (MEDIUM, "fast")),)),
+    # openh264 at its best real-time setting (CABAC, high complexity) beside the
+    # CAVLC medium-complexity baseline (owner, 2026-11-23)
+    Reference("openh264-baseline~cabac", "openh264 CABAC high"),
     Reference("x264-ultrafast", "x264 ultrafast", ((Codec.H264, ("faster", "veryfast")),)),
     Reference("x264-veryfast", "x264 veryfast", ((Codec.H264, (MEDIUM, "fast")),)),
     Reference("x264-medium", "x264 medium", ((Codec.H264, (MEDIUM,)),)),

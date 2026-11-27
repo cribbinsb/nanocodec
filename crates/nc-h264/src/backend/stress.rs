@@ -29,7 +29,7 @@ use crate::deblock::{
 };
 use crate::intra_nxn::MODE_COUNT;
 use crate::intra4x4::code_intra_4x4_with;
-use crate::intra8x8::code_intra_8x8_with;
+use crate::intra8x8::{code_block, code_intra_8x8_with};
 use crate::macroblock::{
     ALL_QUADRANTS, IntraModes, Prediction, ResidualKind, ResidualSkip, predict_inter,
 };
@@ -213,19 +213,19 @@ impl H264Backend {
             }
         };
         if intra_8x8 {
+            let quantizer = self.quantizers.luma_intra();
             let i8 = code_intra_8x8_with(
-                &self.dsp,
                 source,
                 recon,
                 (x, y),
                 top_right_mb,
-                self.quantizers.luma_intra(),
                 |bx, by, own| nb.predicted_intra_4x4_mode(bx, by, own),
-                |_, refs, predicted| {
+                |src, refs, predicted| {
                     let mode = pick_mode(&|m| refs.allows(m), predicted);
                     let mut pred = [0; 64];
                     self.dsp.h264_intra_8x8(refs, mode, &mut pred);
-                    (mode, pred, 0.0)
+                    let coded = code_block(&self.dsp, src, &pred, quantizer, |_, _| {});
+                    (mode, 0.0, coded)
                 },
                 f32::INFINITY,
             )

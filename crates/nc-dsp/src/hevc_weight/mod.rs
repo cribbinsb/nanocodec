@@ -55,6 +55,20 @@ pub struct HevcWeights {
     pub shift: u32,
 }
 
+impl HevcWeights {
+    /// Default (equal-weight) bi-prediction of 8-bit samples (HEVC eq.
+    /// 8-251, `shift2 = 15 − BitDepth`; VVC §8.5.6.7.2 is the same at 8 bits).
+    pub const DEFAULT_BI_8BIT: Self = Self {
+        w0: 1,
+        w1: 1,
+        round: 1 << (DEFAULT_BI_SHIFT_8BIT - 1),
+        shift: DEFAULT_BI_SHIFT_8BIT,
+    };
+}
+
+/// `shift2 = 15 − BitDepth` of default bi-prediction at 8 bits.
+const DEFAULT_BI_SHIFT_8BIT: u32 = 7;
+
 /// Weighted prediction of a `w`x`h` block: `a` and `b` are row-major at
 /// stride `w`, `dst` at `dst_stride`.
 pub(crate) type WeightFn = unsafe fn(

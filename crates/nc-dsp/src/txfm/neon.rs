@@ -74,6 +74,15 @@ pub(crate) fn txfm_fns() -> TxfmFns {
     }
 }
 
+/// Install the SVE2 transforms and out-of-place quantization.
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+pub(crate) fn install_sve2(table: &mut TxfmFns) {
+    table.quantize_from = quantize_from_i16_sve2;
+    table.forward_dct_raster_bounded[0] = super::neon_forward::forward_16_bounded_sve2;
+    table.forward_dct_low[1] = Some(super::neon_forward::forward_32_low_sve2::<false>);
+    table.forward_dct_raster_low[1] = Some(super::neon_forward::forward_32_low_sve2::<true>);
+}
+
 macro_rules! neon_sizes {
     ($($forward:ident, $inverse:ident);*) => {$(
         #[target_feature(enable = "neon")]
@@ -247,7 +256,7 @@ fn ac_zero_limit(q: &QuantTerms) -> Option<u32> {
 /// `src` and `dst` hold `len` values; they are either disjoint or equal
 /// (in place): each vector is loaded before its levels are stored.
 #[target_feature(enable = "neon")]
-unsafe fn quantize_levels_i16<D: Lanes>(
+unsafe fn quantize_levels_i16<D: Lanes, const SVE2: bool>(
     src: *const i16,
     dst: *mut D,
     len: usize,
@@ -263,11 +272,11 @@ unsafe fn quantize_levels_i16<D: Lanes>(
     }
     let Some(limit) = ac_zero_limit(q) else {
         // SAFETY: forwarded contract.
-        return unsafe { quantize_levels(src, dst, len, q) };
+        return unsafe { quantize_levels::<i16, D>(src, dst, len, q) };
     };
     if q.ac.cap > i32::from(i16::MAX) || len > usize::from(u16::MAX) * 8 {
         // SAFETY: forwarded contract.
-        return unsafe { quantize_levels(src, dst, len, q) };
+        return unsafe { quantize_levels::<i16, D>(src, dst, len, q) };
     }
     // SAFETY: `len >= 1`; read before the vector pass overwrites it.
     let dc = unsafe { i32::from(*src) };
@@ -287,8 +296,8 @@ unsafe fn quantize_levels_i16<D: Lanes>(
         }
         let n0 = ac.numerator_abs(vmovl_u16(vget_low_u16(mag)));
         let n1 = ac.numerator_abs(vmovl_high_u16(mag));
-        let q0 = ac.quotient(n0);
-        let q1 = ac.quotient(n1);
+        let q0 = ac.quotient::<SVE2>(n0);
+        let q1 = ac.quotient::<SVE2>(n1);
         let narrowed = vqmovn_high_u32(vqmovn_u32(q0), q1);
         let level = vreinterpretq_s16_u16(vminq_u16(narrowed, max_level));
         let sign = vshrq_n_s16::<15>(raw);
@@ -307,7 +316,7 @@ unsafe fn quantize_levels_i16<D: Lanes>(
             vdupq_n_s32(0)
         } else {
             let numerators = ac.numerator_abs(mags);
-            let levels = ac.level(numerators, coeffs);
+            let levels = ac.level::<SVE2>(numerators, coeffs);
             nonzero += vaddvq_u32(count_nonzero(vdupq_n_u32(0), levels));
             levels
         };
@@ -368,7 +377,7 @@ unsafe fn quantize_levels<S: Lanes, D: Lanes>(
             continue;
         }
         let (n0, n1) = (ac.numerator_abs(a0), ac.numerator_abs(a1));
-        let levels = (ac.level(n0, c0), ac.level(n1, c1));
+        let levels = (ac.level::<false>(n0, c0), ac.level::<false>(n1, c1));
         nonzero_lanes = count_nonzero(count_nonzero(nonzero_lanes, levels.0), levels.1);
         // SAFETY: `i + 8 <= len`.
         unsafe { D::store8(dst.add(i), levels) };
@@ -381,7 +390,7 @@ unsafe fn quantize_levels<S: Lanes, D: Lanes>(
         let level = if zero_limit.is_some_and(|limit| vmaxvq_u32(a) <= limit) {
             vdupq_n_s32(0)
         } else {
-            let l = ac.level(ac.numerator_abs(a), c);
+            let l = ac.level::<false>(ac.numerator_abs(a), c);
             nonzero_lanes = count_nonzero(nonzero_lanes, l);
             l
         };
@@ -406,7 +415,7 @@ unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
     let (len, coeffs) = (coeffs.len(), coeffs.as_mut_ptr());
     // SAFETY: source and destination are the same slice; every value is
     // read before its level is written (`quantize_levels_i16`).
-    unsafe { quantize_levels_i16(coeffs.cast_const(), coeffs, len, q) }
+    unsafe { quantize_levels_i16::<i16, false>(coeffs.cast_const(), coeffs, len, q) }
 }
 
 /// [`quantize_levels_i16`] from `coeffs` into `out`, which keeps `coeffs`.
@@ -414,7 +423,15 @@ unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
 unsafe fn quantize_from_i16<D: Lanes>(coeffs: &[i16], q: &QuantTerms, out: &mut [D]) -> u32 {
     let out = &mut out[..coeffs.len()];
     // SAFETY: both slices hold `coeffs.len()` values.
-    unsafe { quantize_levels_i16(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
+    unsafe { quantize_levels_i16::<D, false>(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[target_feature(enable = "neon")]
+unsafe fn quantize_from_i16_sve2(coeffs: &[i16], q: &QuantTerms, out: &mut [i16]) -> u32 {
+    let out = &mut out[..coeffs.len()];
+    // SAFETY: the table checks SVE2 and both slices hold `coeffs.len()` values.
+    unsafe { quantize_levels_i16::<i16, true>(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
 }
 
 /// [`quantize_levels`] from `coeffs` into `out`, which keeps `coeffs`.
@@ -422,7 +439,7 @@ unsafe fn quantize_from_i16<D: Lanes>(coeffs: &[i16], q: &QuantTerms, out: &mut 
 unsafe fn quantize_from<S: Lanes, D: Lanes>(coeffs: &[S], q: &QuantTerms, out: &mut [D]) -> u32 {
     let out = &mut out[..coeffs.len()];
     // SAFETY: both slices hold `coeffs.len()` values.
-    unsafe { quantize_levels(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
+    unsafe { quantize_levels::<S, D>(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
 }
 
 /// Fold the last nonzero position into quantization. The vector loop uses
@@ -464,8 +481,8 @@ pub(crate) unsafe fn quantize_wide_eob(
                 i32::store8_zero(dst.as_mut_ptr());
                 continue;
             }
-            let l0 = ac.level(ac.numerator_abs(a0), c0);
-            let l1 = ac.level(ac.numerator_abs(a1), c1);
+            let l0 = ac.level::<false>(ac.numerator_abs(a0), c0);
+            let l1 = ac.level::<false>(ac.numerator_abs(a1), c1);
             i32::store8(dst.as_mut_ptr(), (l0, l1));
             let mask = core::arch::aarch64::vcombine_u16(
                 core::arch::aarch64::vmovn_u32(vtstq_s32(l0, l0)),
@@ -543,7 +560,17 @@ impl AcQuantizer {
 
     /// Unsigned quotient `(n * m) >> shift` = `((n * m) >> 32) >> (shift - 32)`.
     #[inline(always)]
-    fn quotient(&self, numerator: uint32x4_t) -> uint32x4_t {
+    fn quotient<const SVE2: bool>(&self, numerator: uint32x4_t) -> uint32x4_t {
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        if SVE2 {
+            // SAFETY: the SVE2 wrappers are installed after runtime detection.
+            return unsafe {
+                vshlq_u32(
+                    crate::simd::sve2::mul_high(numerator, self.multiplier),
+                    self.high_shift,
+                )
+            };
+        }
         // SAFETY: NEON kernels only.
         unsafe {
             let low = vreinterpretq_u32_u64(vmull_u32(
@@ -557,10 +584,10 @@ impl AcQuantizer {
 
     /// The signed level of `c` from its numerator.
     #[inline(always)]
-    fn level(&self, numerator: uint32x4_t, c: int32x4_t) -> int32x4_t {
+    fn level<const SVE2: bool>(&self, numerator: uint32x4_t, c: int32x4_t) -> int32x4_t {
         // SAFETY: NEON kernels only.
         unsafe {
-            let quotient = self.quotient(numerator);
+            let quotient = self.quotient::<SVE2>(numerator);
             let level = vreinterpretq_s32_u32(vminq_u32(quotient, self.max_level));
             // Negate where c < 0: (level ^ m) - m with m = c >> 31.
             let sign = vshrq_n_s32::<31>(c);

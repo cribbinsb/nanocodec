@@ -1,0 +1,24 @@
+# intra-cheap batch 4: the key plan's directional correction (planner.intra_plan_direction), staged-decision assemblies, cheap codec settings
+null: planner.intra_bias=1050
+dir25: planner.intra_plan_direction=0.25
+dir50: planner.intra_plan_direction=0.5
+dir75: planner.intra_plan_direction=0.75
+dir100: planner.intra_plan_direction=1.0
+dir50_b1000: planner.intra_plan_direction=0.5 planner.intra_bias=1000
+dir50_b1100: planner.intra_plan_direction=0.5 planner.intra_bias=1100
+dir50_s2_g120: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 planner.intra_plan_direction=0.5
+dir50_krd11_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 planner.intra_plan_direction=0.5
+krd11_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2
+s2_g120: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2
+nonxn: hevc.intra_nxn=0
+tu1: hevc.intra_tu_depth=1
+s2_lf_rdc2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 hevc.intra_rd_candidates=2
+nonxn_tu1: hevc.intra_nxn=0 hevc.intra_tu_depth=1
+nonxn_tu0: hevc.intra_nxn=0 hevc.intra_tu_depth=0
+krd12_g120_lrd4_m1100p: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 decision.intra_rd_modes=4 decision.intra_rd_margin=1100 planner.key_rd_leaf_pass=1
+krd12_g120_lrd8_m1100p: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 decision.intra_rd_modes=8 decision.intra_rd_margin=1100 planner.key_rd_leaf_pass=1
+krd12_g120_lrd8_m1100: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 decision.intra_rd_modes=8 decision.intra_rd_margin=1100
+krd12_g120_nonxn_tu1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 hevc.intra_nxn=0 hevc.intra_tu_depth=1
+krd12_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2
+lrd4: decision.intra_rd_modes=4
+lrd8_m1100: decision.intra_rd_modes=8 decision.intra_rd_margin=1100

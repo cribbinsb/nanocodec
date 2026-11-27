@@ -181,12 +181,12 @@ impl ReferenceGrid {
     fn derive_skip_candidates(&self, x: usize, y: usize, size: usize) -> Result<SkipCandidates> {
         self.check_block(x, y, size)?;
         let (px, py) = (x as i32, y as i32);
-        self.check_neighbours_coded(px, py)?;
+        let spatial = self.scan(x, y, size)?;
         let limit = self.config.entries();
         let mut stack = Pruned::<Pair, MAX_STACK>::new(MAX_PRUNE_COMPARISONS);
         let mut derived = Pruned::<Pair, DERIVED_CAPACITY>::new(DERIVED_PRUNE_COMPARISONS);
         let mut singles = Pruned::<Vector, DERIVED_CAPACITY>::new(DERIVED_PRUNE_COMPARISONS);
-        for entry in self.scan(x, y, size).into_iter().flatten() {
+        for entry in spatial.entries.into_iter().flatten() {
             // AVM `scan_blk_mbmi` stops looking once the list is full.
             if stack.count >= MAX_STACK {
                 continue;

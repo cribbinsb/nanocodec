@@ -57,6 +57,10 @@ pub(crate) mod simd128;
 #[allow(unsafe_code)]
 pub(crate) mod neon_dot;
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[allow(unsafe_code)]
+pub(crate) mod sve2;
+
 /// A vector of `LANES` signed 32-bit lanes (transform arithmetic).
 pub(crate) trait I32Lanes: Copy {
     /// Lanes per vector.
@@ -622,6 +626,26 @@ pub(crate) trait I16Lanes: Copy {
     fn acc_round_shift_narrow(acc: Self::Acc, round: i32, shift: u32) -> Self;
     /// Sum of every accumulator.
     fn acc_sum(acc: Self::Acc) -> i64;
+    /// Eight-tap horizontal interpolation when this ISA can do four
+    /// halfword products per dot-product lane.
+    ///
+    /// # Safety
+    /// The caller enables this type's ISA. `src` covers `Self::LANES + 7`
+    /// signed samples and the rounded dot sums fit in i32.
+    #[allow(
+        unsafe_code,
+        reason = "this optional SIMD leaf requires a checked row pointer"
+    )]
+    #[inline]
+    unsafe fn horizontal_dot_8tap(
+        _src: *const i16,
+        _taps: [i16; 8],
+        _round: i32,
+        _shift: u32,
+    ) -> Option<Self> {
+        None
+    }
+
     /// True when [`Self::horiz_taps_acc`] provides an ISA-specific fast path
     /// that extracts shifted windows from two loads (`p[0..LANES]` and
     /// `p[N - 1..LANES + N - 1]`) and multiplies by indexed tap lanes.
@@ -1034,6 +1058,14 @@ pub(crate) trait I16x8Shuffles: I16Lanes {
     /// Four 32-bit lanes.
     type Wide: I32Lanes;
 
+    /// Signed rounding right shift, with `SHIFT` in 1..=15. Q15 rounding
+    /// by the corresponding power of two is exact for every signed word.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn rounded_shr<const SHIFT: i32>(self) -> Self {
+        self.mul_q15_round(Self::splat(1 << (15 - SHIFT)))
+    }
+
     /// Byte `i` of the result is byte `pattern[i]` of `self`, or zero where
     /// `pattern[i]` is 0x80 (every entry is below 16 or 0x80).
     fn shuffle_bytes(self, pattern: &[u8; 16]) -> Self;
@@ -1085,6 +1117,9 @@ pub(crate) trait I16x8Shuffles: I16Lanes {
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
 pub(crate) trait WordPairLanes: I32Lanes {
+    /// Transpose a square of `LANES` input vectors into `LANES` outputs.
+    fn transpose_registers(rows: &[Self], columns: &mut [Self]);
+
     /// One 16-bit pair per lane.
     type Pairs: Copy;
     /// Lane `i` holds (`self[i]`, `high[i]`) truncated to 16 bits each:

@@ -1,0 +1,441 @@
+{
+ "source": "/home/mark/nanocodec-data/bench/bp3-ours-cbr-c8i-report/report.json",
+ "date": "2026-11-24",
+ "commit": "74aaa1fcd",
+ "basis": "BP-3.10 benchmark report, series c8i: BD-J vs x264 medium on the series' common clip set and speed (Mpx per CPU-s, reference-normalised; in the fps fields) of every shipped rung, from the same CBR encodes; k = -dJ / ((1 + J_rung/100) * 100 * dln CPU) on the codec's front (nceval.front_k)",
+ "timing_rate_mode": "cbr",
+ "rungs": {
+  "av1": {
+   "medium": {
+    "k": 0.1412,
+    "chord": [
+     "av1@slow",
+     "av1@fast"
+    ],
+    "on_front": true,
+    "j": -40.64,
+    "fps": 92.63108226537997,
+    "toward_slower": 0.0898,
+    "toward_faster": 0.1937
+   },
+   "fast": {
+    "k": 0.1518,
+    "chord": [
+     "av1",
+     "av1@faster"
+    ],
+    "on_front": true,
+    "j": -35.79,
+    "fps": 141.22346970173285,
+    "toward_slower": 0.1791,
+    "toward_faster": 0.0817
+   },
+   "faster": {
+    "k": 0.4275,
+    "chord": [
+     "av1@fast",
+     "av1@veryfast"
+    ],
+    "on_front": true,
+    "j": -34.93,
+    "fps": 166.3871575446471,
+    "toward_slower": 0.0806,
+    "toward_faster": 0.6648
+   },
+   "slow": {
+    "k": 0.0823,
+    "chord": [
+     "av1@slower",
+     "av1"
+    ],
+    "on_front": true,
+    "j": -42.94,
+    "fps": 60.17564027263053,
+    "toward_slower": 0.0749,
+    "toward_faster": 0.0934
+   },
+   "slower": {
+    "k": 0.0787,
+    "chord": [
+     "av1@slower",
+     "av1@slow"
+    ],
+    "on_front": true,
+    "j": -45.7,
+    "fps": 31.55377738439996,
+    "toward_slower": null,
+    "toward_faster": 0.0787
+   },
+   "veryfast": {
+    "k": 0.5734,
+    "chord": [
+     "av1@faster",
+     "av1@veryfast"
+    ],
+    "on_front": true,
+    "j": -24.56,
+    "fps": 211.46080283648652,
+    "toward_slower": 0.5734,
+    "toward_faster": null
+   }
+  },
+  "av2": {
+   "medium": {
+    "k": 0.125,
+    "chord": [
+     "av2@slow",
+     "av2@fast"
+    ],
+    "on_front": true,
+    "j": -43.99,
+    "fps": 75.6742800596443,
+    "toward_slower": 0.0413,
+    "toward_faster": 0.2149
+   },
+   "fast": {
+    "k": 0.1872,
+    "chord": [
+     "av2",
+     "av2@faster"
+    ],
+    "on_front": true,
+    "j": -41.23,
+    "fps": 95.17858185018096,
+    "toward_slower": 0.2048,
+    "toward_faster": 0.1762
+   },
+   "faster": {
+    "k": 0.1655,
+    "chord": [
+     "av2@fast",
+     "av2@faster"
+    ],
+    "on_front": true,
+    "j": -37.43,
+    "fps": 137.37095273753525,
+    "toward_slower": 0.1655,
+    "toward_faster": null
+   },
+   "slow": {
+    "k": 0.0504,
+    "chord": [
+     "av2@slower",
+     "av2"
+    ],
+    "on_front": true,
+    "j": -44.56,
+    "fps": 59.14360888639109,
+    "toward_slower": 0.0516,
+    "toward_faster": 0.0417
+   },
+   "slower": {
+    "k": 0.0567,
+    "chord": [
+     "av2@slower",
+     "av2@slow"
+    ],
+    "on_front": true,
+    "j": -49.52,
+    "fps": 10.454760035143037,
+    "toward_slower": null,
+    "toward_faster": 0.0567
+   }
+  },
+  "h264": {
+   "medium": {
+    "k": 0.2184,
+    "chord": [
+     "h264@slow",
+     "h264@fast"
+    ],
+    "on_front": true,
+    "j": -25.88,
+    "fps": 137.95105388611455,
+    "toward_slower": 0.1291,
+    "toward_faster": 0.306
+   },
+   "fast": {
+    "k": 0.2763,
+    "chord": [
+     "h264",
+     "h264@faster"
+    ],
+    "on_front": true,
+    "j": -19.43,
+    "fps": 183.33486564869332,
+    "toward_slower": 0.2815,
+    "toward_faster": 0.2716
+   },
+   "faster": {
+    "k": 0.2853,
+    "chord": [
+     "h264@fast",
+     "h264@veryfast"
+    ],
+    "on_front": true,
+    "j": -12.6,
+    "fps": 250.50511850979646,
+    "toward_slower": 0.2503,
+    "toward_faster": 0.3658
+   },
+   "slow": {
+    "k": 0.0933,
+    "chord": [
+     "h264@slower",
+     "h264"
+    ],
+    "on_front": true,
+    "j": -28.55,
+    "fps": 104.36830262910327,
+    "toward_slower": 0.012,
+    "toward_faster": 0.134
+   },
+   "slower": {
+    "k": 0.012,
+    "chord": [
+     "h264@slower",
+     "h264@slow"
+    ],
+    "on_front": true,
+    "j": -28.67,
+    "fps": 90.76038533891472,
+    "toward_slower": null,
+    "toward_faster": 0.012
+   },
+   "veryfast": {
+    "k": 0.3486,
+    "chord": [
+     "h264@faster",
+     "h264@veryfast"
+    ],
+    "on_front": true,
+    "j": -8.27,
+    "fps": 286.8324507454669,
+    "toward_slower": 0.3486,
+    "toward_faster": null
+   }
+  },
+  "hevc": {
+   "medium": {
+    "k": 0.1058,
+    "chord": [
+     "hevc@slow",
+     "hevc@fast"
+    ],
+    "on_front": true,
+    "j": -38.88,
+    "fps": 100.30144680368758,
+    "toward_slower": 0.0954,
+    "toward_faster": 0.1166
+   },
+   "fast": {
+    "k": 0.2516,
+    "chord": [
+     "hevc",
+     "hevc@faster"
+    ],
+    "on_front": true,
+    "j": -36.76,
+    "fps": 135.0456271837056,
+    "toward_slower": 0.1127,
+    "toward_faster": 0.3523
+   },
+   "faster": {
+    "k": 0.3078,
+    "chord": [
+     "hevc@fast",
+     "hevc@faster"
+    ],
+    "on_front": true,
+    "j": -27.62,
+    "fps": 203.55012915163235,
+    "toward_slower": 0.3078,
+    "toward_faster": null
+   },
+   "slow": {
+    "k": 0.0643,
+    "chord": [
+     "hevc@slower",
+     "hevc"
+    ],
+    "on_front": true,
+    "j": -40.68,
+    "fps": 73.67163703365296,
+    "toward_slower": 0.0404,
+    "toward_faster": 0.0983
+   },
+   "slower": {
+    "k": 0.0965,
+    "chord": [
+     "hevc@veryslow",
+     "hevc@slow"
+    ],
+    "on_front": true,
+    "j": -41.73,
+    "fps": 47.520807558881415,
+    "toward_slower": 0.1314,
+    "toward_faster": 0.0411
+   },
+   "veryslow": {
+    "k": 0.1446,
+    "chord": [
+     "hevc@veryslow",
+     "hevc@slower"
+    ],
+    "on_front": true,
+    "j": -47.07,
+    "fps": 23.65702458570565,
+    "toward_slower": null,
+    "toward_faster": 0.1446
+   }
+  },
+  "vp9": {
+   "medium": {
+    "k": 0.1645,
+    "chord": [
+     "vp9@slow",
+     "vp9@fast"
+    ],
+    "on_front": true,
+    "j": -38.14,
+    "fps": 80.26044627231336,
+    "toward_slower": 0.1143,
+    "toward_faster": 0.1965
+   },
+   "fast": {
+    "k": 0.1729,
+    "chord": [
+     "vp9",
+     "vp9@faster"
+    ],
+    "on_front": true,
+    "j": -31.57,
+    "fps": 137.81449397460497,
+    "toward_slower": 0.1776,
+    "toward_faster": 0.163
+   },
+   "faster": {
+    "k": 0.2794,
+    "chord": [
+     "vp9@fast",
+     "vp9@veryfast"
+    ],
+    "on_front": true,
+    "j": -28.7,
+    "fps": 178.2649871535888,
+    "toward_slower": 0.1564,
+    "toward_faster": 0.4469
+   },
+   "slow": {
+    "k": 0.0914,
+    "chord": [
+     "vp9@slower",
+     "vp9"
+    ],
+    "on_front": true,
+    "j": -40.57,
+    "fps": 56.91654623301809,
+    "toward_slower": 0.0789,
+    "toward_faster": 0.119
+   },
+   "slower": {
+    "k": 0.0839,
+    "chord": [
+     "vp9@slower",
+     "vp9@slow"
+    ],
+    "on_front": true,
+    "j": -44.11,
+    "fps": 26.74122600796948,
+    "toward_slower": null,
+    "toward_faster": 0.0839
+   },
+   "veryfast": {
+    "k": 0.4121,
+    "chord": [
+     "vp9@faster",
+     "vp9@veryfast"
+    ],
+    "on_front": true,
+    "j": -22.68,
+    "fps": 215.33632342232184,
+    "toward_slower": 0.4121,
+    "toward_faster": null
+   }
+  },
+  "vvc": {
+   "medium": {
+    "k": 0.1836,
+    "chord": [
+     "vvc@slow",
+     "vvc@fast"
+    ],
+    "on_front": true,
+    "j": -45.32,
+    "fps": 60.98029601684394,
+    "toward_slower": 0.0948,
+    "toward_faster": 0.2485
+   },
+   "fast": {
+    "k": 0.1716,
+    "chord": [
+     "vvc",
+     "vvc@faster"
+    ],
+    "on_front": true,
+    "j": -40.22,
+    "fps": 88.74962892700458,
+    "toward_slower": 0.2273,
+    "toward_faster": 0.1039
+   },
+   "faster": {
+    "k": 0.1006,
+    "chord": [
+     "vvc@fast",
+     "vvc@faster"
+    ],
+    "on_front": true,
+    "j": -38.3,
+    "fps": 120.90674545831655,
+    "toward_slower": 0.1006,
+    "toward_faster": null
+   },
+   "slow": {
+    "k": 0.1075,
+    "chord": [
+     "vvc@slower",
+     "vvc"
+    ],
+    "on_front": true,
+    "j": -46.74,
+    "fps": 46.362232638212014,
+    "toward_slower": 0.1146,
+    "toward_faster": 0.0973
+   },
+   "slower": {
+    "k": 0.1005,
+    "chord": [
+     "vvc@veryslow",
+     "vvc@slow"
+    ],
+    "on_front": true,
+    "j": -49.13,
+    "fps": 31.341320011292066,
+    "toward_slower": 0.0819,
+    "toward_faster": 0.12
+   },
+   "veryslow": {
+    "k": 0.0847,
+    "chord": [
+     "vvc@veryslow",
+     "vvc@slower"
+    ],
+    "on_front": true,
+    "j": -50.83,
+    "fps": 20.839752015383425,
+    "toward_slower": null,
+    "toward_faster": 0.0847
+   }
+  }
+ }
+}

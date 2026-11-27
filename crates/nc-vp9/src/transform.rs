@@ -232,6 +232,23 @@ pub(crate) fn quantize(
     PlaneQuantization::new(tx, steps, quantization).quantize(dsp, lossless, coefficients, levels)
 }
 
+/// [`quantize`], then the planned step's dead zone ([`apply_planned_dead_zone`])
+/// past qindex 255 (`quantization.1` > 1): the levels as the coding path leaves
+/// them, for estimates priced like the block is coded.
+pub(crate) fn quantize_planned(
+    dsp: &nc_dsp::Dsp,
+    tx: TxSize,
+    lossless: bool,
+    coefficients: &[i16],
+    steps: Steps,
+    quantization: (Rounding, i32),
+    levels: &mut [i32],
+) -> bool {
+    let min_level = quantization.1;
+    quantize(dsp, tx, lossless, coefficients, steps, quantization, levels)
+        && (min_level <= 1 || apply_planned_dead_zone(tx, min_level, levels))
+}
+
 /// One plane's quantization of one transform size: its steps, rounding and
 /// dead zone with every per-block constant (the zero tests' thresholds and
 /// the DC and AC quantizers) derived once. A plane of a block codes up to
@@ -339,21 +356,49 @@ pub(crate) fn dequantize_level(tx: TxSize, index: usize, level: i32, steps: Step
 pub(crate) fn coefficient_sse(
     tx: TxSize,
     coefficients: &[i16],
-    levels: &[i32],
+    levels: Option<&[i32]>,
     steps: Steps,
 ) -> u64 {
     let area = tx.area();
-    let error: u64 = coefficients[..area]
-        .iter()
-        .zip(&levels[..area])
-        .enumerate()
-        .map(|(index, (&c, &level))| {
-            let d = i64::from(dequantize_level(tx, index, level, steps));
-            (i64::from(c) - d).unsigned_abs().pow(2)
-        })
-        .sum();
+    let coefficients = &coefficients[..area];
+    let shift = tx.dequant_shift();
+    let error = match levels {
+        None => coefficients
+            .iter()
+            .map(|&c| u64::from((i32::from(c) * i32::from(c)) as u32))
+            .sum(),
+        Some(levels) => {
+            // The DC step applies once. The tail has a uniform step and
+            // one compile-time dequant shift, so it can widen and square
+            // without a per-lane DC test or magnitude conversion.
+            let dc =
+                i64::from(i32::from(coefficients[0]) - dequantize_level(tx, 0, levels[0], steps));
+            let ac = (&coefficients[1..], &levels[1..area]);
+            (dc * dc) as u64
+                + if shift == 0 {
+                    ac_sse::<false>(ac, steps.ac)
+                } else {
+                    ac_sse::<true>(ac, steps.ac)
+                }
+        }
+    };
     let scale_log2 = if tx == TxSize::Tx32 { 2 } else { 3 };
     error >> (2 * scale_log2)
+}
+
+/// The coded 8-bit VP9 levels and quantizer steps produce signed 32-bit
+/// differences. Divide a half-step toward zero, as sign-after-shift does.
+fn ac_sse<const HALF: bool>((coefficients, levels): (&[i16], &[i32]), step: i32) -> u64 {
+    coefficients
+        .iter()
+        .zip(levels)
+        .map(|(&c, &level)| {
+            let product = level * step;
+            let dequantized = if HALF { product / 2 } else { product };
+            let error = i64::from(i32::from(c) - dequantized);
+            (error * error) as u64
+        })
+        .sum()
 }
 
 /// `cospi_16_64` and the DCT's 14-bit fixed point.

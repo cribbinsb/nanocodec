@@ -43,6 +43,11 @@ pub trait Journaled {
     /// If no CDF starts at `offset`: the journal recorded a place that is
     /// not one of this context's CDFs.
     fn swap_at(&mut self, offset: usize, state: &mut Self::State);
+
+    /// Restore a discarded entry. Its state need not hold the replaced CDF.
+    fn restore_at(&mut self, offset: usize, state: &mut Self::State) {
+        self.swap_at(offset, state);
+    }
 }
 
 impl<T: Journaled, const M: usize> Journaled for [T; M] {
@@ -52,6 +57,12 @@ impl<T: Journaled, const M: usize> Journaled for [T; M] {
     fn swap_at(&mut self, offset: usize, state: &mut T::State) {
         let size = size_of::<T>();
         self[offset / size].swap_at(offset % size, state);
+    }
+
+    #[inline]
+    fn restore_at(&mut self, offset: usize, state: &mut T::State) {
+        let size = size_of::<T>();
+        self[offset / size].restore_at(offset % size, state);
     }
 }
 
@@ -67,20 +78,24 @@ macro_rules! journaled_fields {
 
             #[inline]
             fn swap_at(&mut self, offset: usize, state: &mut $state) {
-                $(
-                    let start = ::core::mem::offset_of!($ty, $field);
-                    let size = ::core::mem::size_of_val(&self.$field);
-                    if let Some(inner) = offset.checked_sub(start).filter(|&inner| inner < size) {
-                        return $crate::undo_journal::Journaled::swap_at(
-                            &mut self.$field,
-                            inner,
-                            state,
-                        );
-                    }
-                )+
-                panic!("no CDF of {} at offset {offset}", stringify!($ty));
+                $crate::journaled_fields!(@lookup swap_at, self, offset, state, $ty; $($field),+);
+            }
+
+            #[inline]
+            fn restore_at(&mut self, offset: usize, state: &mut $state) {
+                $crate::journaled_fields!(@lookup restore_at, self, offset, state, $ty; $($field),+);
             }
         }
+    };
+    (@lookup $method:ident, $this:ident, $offset:ident, $saved:ident, $ty:ty; $($field:ident),+) => {
+        $(
+            let start = ::core::mem::offset_of!($ty, $field);
+            let size = ::core::mem::size_of_val(&$this.$field);
+            if let Some(inner) = $offset.checked_sub(start).filter(|&inner| inner < size) {
+                return $crate::undo_journal::Journaled::$method(&mut $this.$field, inner, $saved);
+            }
+        )+
+        panic!("no CDF of {} at {}", stringify!($ty), $offset);
     };
 }
 
@@ -177,7 +192,10 @@ impl<S> UndoJournal<S> {
     /// Put `context`'s CDFs back as they were at `mark`, forgetting the
     /// writes after it.
     pub fn undo<T: Journaled<State = S>>(&mut self, mark: usize, context: &mut T) {
-        self.exchange_newest_first(mark, context);
+        self.check_context(context);
+        for entry in self.entries[mark..].iter_mut().rev() {
+            context.restore_at(entry.offset as usize, &mut entry.state);
+        }
         self.entries.truncate(mark);
     }
 
@@ -198,9 +216,10 @@ impl<S> UndoJournal<S> {
     /// (so they can be undone in turn), and empty `kept`.
     pub fn redo<T: Journaled<State = S>>(&mut self, kept: &mut KeptRun<S>, context: &mut T) {
         self.check_context(context);
-        for mut entry in kept.entries.drain(..) {
+        let start = self.entries.len();
+        self.entries.append(&mut kept.entries);
+        for entry in &mut self.entries[start..] {
             context.swap_at(entry.offset as usize, &mut entry.state);
-            self.entries.push(entry);
         }
     }
 

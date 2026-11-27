@@ -1,20 +1,23 @@
 // Fixed QP on the standards lens (fixed-qp.html): every encoder at fixed quantizers on
-// the AOM low-delay common test conditions, against x264 medium, in the Strict,
-// Profile and CBR-settings columns (fixed-qp.html says what each is). Data: data/fixed-qp-lens.json (the fixed-QP lens run; rows
-// {test, column, anchor, weighted, j, psnr_yuv, vmaf, ms_ssim, xpsnr?, n}), backed by a
+// the AOM low-delay common test conditions, against the lens's zero line, in the Constant
+// QP, Strict, Profile and CBR-settings columns (fixed-qp.html says what each is; Constant QP
+// is the flat one). Data: data/fixed-qp-lens.json (the fixed-QP lens run; rows
+// {test, column, anchor, weighted, j, psnr_yuv, psnr_y?, vmaf, ms_ssim, xpsnr?, n}), backed by a
 // docs/results CSV.
 import { NOT_MEASURED, control, el, fail, loadData, pct, segmented, sources, table } from './common.js';
 
-const COLUMNS = { strict: 'Strict', profile: 'Profile', cbr_settings: 'CBR settings' };
+const COLUMNS = { constant: 'Constant QP', strict: 'Strict', profile: 'Profile', cbr_settings: 'CBR settings' };
+// The first is the default: the standards' PSNR-YUV (6:1:1, nceval.metrics), J beside it.
 const METRICS = {
-  weighted: 'Weighted (0.92 Y + 0.04 Cb + 0.04 Cr PSNR)',
+  psnr_yuv: 'PSNR-YUV (6 Y : 1 Cb : 1 Cr)',
   j: 'J (PSNR-YUV, VMAF v1, MS-SSIM)',
-  psnr_yuv: 'PSNR-YUV',
+  psnr_y: 'PSNR-Y (luma only)',
+  weighted: 'Weighted (AOM CTC: 0.92 Y + 0.04 Cb + 0.04 Cr of the per-plane BD-rates)',
   vmaf: 'VMAF v1',
   ms_ssim: 'MS-SSIM',
   xpsnr: 'XPSNR-YUV (not part of J)',
 };
-const state = { metric: 'weighted' };
+const state = { metric: Object.keys(METRICS)[0] };
 
 /** The rate-mode switch shared with the CBR overview: this page is the fixed-QP side. */
 function modeSwitch(root) {
@@ -27,7 +30,7 @@ function render(data, names, root) {
   const tests = [...new Set(data.rows.map((r) => r.test))];
   const find = (test, column) => data.rows.find((r) => r.test === test && r.column === column);
   const ours = (t) => t.startsWith('nanocodec-');
-  const key = (t) => Object.keys(COLUMNS).map((c) => find(t, c)).find(Boolean)[state.metric] ?? Infinity;
+  const key = (t) => Object.keys(COLUMNS).map((c) => find(t, c)).find(Boolean)?.[state.metric] ?? Infinity;
   tests.sort((a, b) => (ours(b) - ours(a)) || (key(a) - key(b)));
   root.querySelector('.lens-table').replaceChildren(
     el('p', { class: 'note' }, `${METRICS[state.metric]}, BD-rate against ${data.rows[0].anchor}; negative is fewer bits. Sequences in brackets.`),

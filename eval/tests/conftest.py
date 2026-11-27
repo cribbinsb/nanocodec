@@ -35,3 +35,13 @@ def measure_here(monkeypatch):
     one: tests run them here, as if on the box; tests of the offload unset it."""
     from nceval import cloud
     monkeypatch.setenv(cloud.ON_BOX_ENV, "1")
+
+
+@pytest.fixture(autouse=True)
+def pinned_clip_decoder(monkeypatch):
+    """Clip decodes name the pinned ffmpeg without probing this machine's (machines without
+    ffmpeg 8.0.1 still run the suite); tests/test_clipframes.py tests the probe itself."""
+    from pathlib import Path
+
+    from nceval import clipframes
+    monkeypatch.setattr(clipframes, "clip_decoder", lambda: Path("/usr/bin/ffmpeg"))

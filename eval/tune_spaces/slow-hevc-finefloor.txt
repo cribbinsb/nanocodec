@@ -1,0 +1,14 @@
+# HEVC slow (gate8x8, 2026-11-23): 8x8 inter CUs behind the fine-floor gate
+# (planner.fine_floor_*, fine_floor.rs) with the context gate's two biases, which
+# last night's lead loosened beside 8x8 (tsl-hevc-slow-ctx-loosen). Diagnosis: 8x8
+# loses on moving-camera content (videocall, handheld bodycam) even at fixed QP
+# and gains where the camera is still; the gate reads camera motion first.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.inter_min_log2 3 3 int
+planner.fine_floor_bias -2 3
+planner.fine_floor_camera -3 0.5
+planner.fine_floor_static -1 3
+planner.fine_floor_motion_gain -2 2
+planner.fine_floor_residual -2 2
+planner.rd_split_deepen_shift_bias -0.7 1.5
+planner.rd_split_merge_shift_bias -2 0.3

@@ -25,6 +25,7 @@
 use crate::cdf::Cdf;
 use crate::range_coder::SymbolWriter;
 use crate::segment_id::{MAX_SEGMENTS, SegmentMap, neg_interleave};
+use nc_encoder::Block;
 use nc_encoder::segment_quantizers::SegmentQuantizers;
 
 /// Smallest and largest qindex a segment codes (qindex 0 would make the
@@ -129,21 +130,21 @@ impl SegmentCoding {
 
     /// Note the segment ids of the `side`-sample square at luma (`x`, `y`)
     /// while the frame codes them (a coding trial).
-    pub(super) fn save_square(&self, (x, y): (usize, usize), side: usize, saved: &mut Vec<u8>) {
+    pub(super) fn save_rect(&self, block: &Block, saved: &mut Vec<u8>) {
         saved.clear();
         if let Some(frame) = &self.frame {
             frame
                 .map
-                .save_square((x >> MI_LOG2, y >> MI_LOG2), side >> MI_LOG2, saved);
+                .save_rect(units_of(block).0, units_of(block).1, saved);
         }
     }
 
-    /// Put back what [`Self::save_square`] noted of the same square.
-    pub(super) fn restore_square(&mut self, (x, y): (usize, usize), side: usize, saved: &[u8]) {
+    /// Put back what [`Self::save_rect`] noted of the same block.
+    pub(super) fn restore_rect(&mut self, block: &Block, saved: &[u8]) {
         if let Some(frame) = &mut self.frame {
             frame
                 .map
-                .restore_square((x >> MI_LOG2, y >> MI_LOG2), side >> MI_LOG2, saved);
+                .restore_rect(units_of(block).0, units_of(block).1, saved);
         }
     }
 
@@ -155,6 +156,14 @@ impl SegmentCoding {
         let data = frame.quantizers.feature_data(false);
         Some(std::array::from_fn(|segment| data[segment].unwrap_or(0)))
     }
+}
+
+/// The 4x4 units of `block`: its top-left unit and its width and height.
+fn units_of(block: &Block) -> ((usize, usize), (usize, usize)) {
+    (
+        (block.x >> MI_LOG2, block.y >> MI_LOG2),
+        (block.width() >> MI_LOG2, block.height() >> MI_LOG2),
+    )
 }
 
 #[cfg(test)]

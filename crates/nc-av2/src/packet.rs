@@ -10,6 +10,19 @@ const TEMPORAL_DELIMITER: u8 = 2;
 const SEQUENCE_HEADER: u8 = 1;
 /// OBU type of a regular (non-key) frame.
 const REGULAR_FRAME: u8 = 7;
+/// `OBU_METADATA_SHORT`: one metadata unit (AVM v1.0.0 `avm_codec.h`).
+const METADATA_SHORT: u8 = 8;
+/// `metadata_type` `OBU_METADATA_TYPE_USER_DATA_UNREGISTERED`: a 16-byte
+/// UUID then free bytes (AVM v1.0.0 `avm_codec.h`,
+/// `read_metadata_user_data_unregistered` in `av2/decoder/obu.c`).
+const METADATA_TYPE_USER_DATA_UNREGISTERED: u64 = 10;
+/// The short metadata header byte (`metadata_is_suffix` 0, `muh_layer_idc`
+/// 0 = unspecified, `muh_cancel_flag` 0, `muh_persistence_idc` 0 = global:
+/// the message describes the whole sequence). Read as AV1 syntax, as dav2d
+/// still does, the byte is metadata type 0, which it skips.
+const METADATA_SHORT_HEADER: u8 = 0;
+/// `trailing_bits()` after a byte-aligned payload.
+const TRAILING_ONE_BYTE: u8 = 0x80;
 /// Order-hint bits signalled in the sequence header.
 /// `order_hint_bits_minus_1 + 1`: references within half the hint range
 /// (127 frames) reach the engine's 64-frame second reference.
@@ -96,13 +109,18 @@ fn delimiter(packet: &mut Vec<u8>) -> Result<()> {
 }
 
 /// A closed-loop key picture of `sequence` (base temporal layer), preceded
-/// by the sequence header.
+/// by the sequence header and, if given, the encoder information message
+/// (`nc_encoder` `encoder_info.rs`: UUID then text) as a short
+/// user-data-unregistered metadata OBU, which in a temporal unit follows
+/// the sequence header as frame-unit data (AVM
+/// `check_temporal_unit_structure`).
 /// # Errors
 /// Propagates header and framing errors.
 pub fn key(
     sequence: &sequence::SequenceHeader,
     header: frame_header::KeyframeHeader,
     tile: &[u8],
+    encoder_info: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
     let mut payload = frame_header::write_keyframe(sequence, header)?;
     payload.extend_from_slice(tile);
@@ -113,6 +131,13 @@ pub fn key(
         &sequence::write(sequence)?,
         &mut packet,
     )?;
+    if let Some(info) = encoder_info {
+        let mut metadata = vec![METADATA_SHORT_HEADER];
+        metadata.extend(nc_common::leb128(METADATA_TYPE_USER_DATA_UNREGISTERED));
+        metadata.extend_from_slice(info);
+        metadata.push(TRAILING_ONE_BYTE);
+        obu::write(base_header(METADATA_SHORT), &metadata, &mut packet)?;
+    }
     obu::write(
         base_header(frame_header::CLOSED_LOOP_KEY),
         &payload,

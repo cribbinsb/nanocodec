@@ -181,11 +181,26 @@ fn forward_bound(log2_area: u32, abs_sum: u64) -> u64 {
     ((MAX_BASIS * MAX_BASIS * abs_sum) >> (log2_area + 5)) + 4
 }
 
+/// A VVC forward quantizer depends on QP, rounding, and the area exponent
+/// (H.266 §8.7.3). Its square/rectangular scale row is set by that exponent.
+const MAX_FORWARD_LOG2_AREA: usize = 2 * LARGE_SIDE.ilog2() as usize;
+const FORWARD_AREAS: usize = MAX_FORWARD_LOG2_AREA - MIN_FORWARD_LOG2_AREA + 1;
+const MIN_FORWARD_LOG2_AREA: usize = 4;
+
+#[derive(Clone, Copy)]
+struct ForwardQuant {
+    qp: u8,
+    rounding: i32,
+    quantizer: VvcQuantizer,
+    zero_limit: u32,
+}
+
 /// Working memory of [`quantize`] sized for the largest transform block,
 /// owned by its caller and reused: the residual, coefficients and levels are
 /// fully overwritten for each block, so no call zeroes or allocates them
 /// (zeroing them per call was 1.4% of a crowd P frame, x86 callgrind).
 pub(crate) struct QuantScratch {
+    forward: [Option<ForwardQuant>; FORWARD_AREAS],
     residual: [i16; MAX_SAMPLES],
     coefficients: [i16; MAX_SAMPLES],
     levels: [i32; MAX_SAMPLES],
@@ -194,6 +209,7 @@ pub(crate) struct QuantScratch {
 impl Default for QuantScratch {
     fn default() -> Self {
         Self {
+            forward: [None; FORWARD_AREAS],
             residual: [0; MAX_SAMPLES],
             coefficients: [0; MAX_SAMPLES],
             levels: [0; MAX_SAMPLES],
@@ -201,7 +217,34 @@ impl Default for QuantScratch {
     }
 }
 
-/// Scratch contents carry no state between blocks.
+impl QuantScratch {
+    /// Reuse the recent forward parameters of this area. Different AQ QPs
+    /// and intra/inter rounding select their own exact arithmetic on misses.
+    #[inline]
+    fn forward_quant(&mut self, quant: Quant, width_log2: u8, height_log2: u8) -> ForwardQuant {
+        let area = usize::from(width_log2 + height_log2);
+        let slot = &mut self.forward[area - MIN_FORWARD_LOG2_AREA];
+        let qp = quant.qp as u8;
+        let rounding = quant.rounding_512ths;
+        if let Some(cached) = *slot
+            && cached.qp == qp
+            && cached.rounding == rounding
+        {
+            return cached;
+        }
+        let quantizer = VvcQuantizer::rect_with_rounding(qp, width_log2, height_log2, rounding);
+        let params = ForwardQuant {
+            qp,
+            rounding,
+            quantizer,
+            zero_limit: quantizer.largest_zero_coefficient(),
+        };
+        *slot = Some(params);
+        params
+    }
+}
+
+/// Temporary samples and coefficients are overwritten per block.
 impl std::fmt::Debug for QuantScratch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QuantScratch").finish_non_exhaustive()
@@ -259,8 +302,22 @@ pub(crate) fn quantize_rect<'a>(
         .region(x as isize, y as isize, width, height)
         .unwrap();
     let prediction = PlaneView::new(pred, width, width, height).unwrap();
-    if quantize_into(dsp, &source, &prediction, quant, search, scratch) {
-        &scratch.levels[..crate::transform_tree::coded_samples(width, height)]
+    quantize_view(dsp, &source, &prediction, quant, search, scratch)
+}
+
+/// Quantize from plane views so a pricing trial can read a transform unit
+/// directly out of the larger prediction.
+pub(crate) fn quantize_view<'a>(
+    dsp: &nc_dsp::Dsp,
+    source: &PlaneView<'_>,
+    prediction: &PlaneView<'_>,
+    quant: Quant,
+    search: Option<LevelSearch<'_>>,
+    scratch: &'a mut QuantScratch,
+) -> &'a [i32] {
+    if quantize_into(dsp, source, prediction, quant, search, scratch) {
+        let samples = crate::transform_tree::coded_samples(prediction.width(), prediction.height());
+        &scratch.levels[..samples]
     } else {
         &[]
     }
@@ -336,12 +393,9 @@ fn quantize_into(
     scratch: &mut QuantScratch,
 ) -> bool {
     let (width, height) = (prediction.width(), prediction.height());
-    let quantizer = VvcQuantizer::rect_with_rounding(
-        quant.qp as u8,
-        width.ilog2() as u8,
-        height.ilog2() as u8,
-        quant.rounding_512ths,
-    );
+    let (log2_w, log2_h) = (width.ilog2(), height.ilog2());
+    let params = scratch.forward_quant(quant, log2_w as u8, log2_h as u8);
+    let zero_limit = params.zero_limit;
     // Most inter blocks are proven zero from the residual's SAD alone, before
     // any residual or transform work (HEVC's `pre_transform_zero_limit`);
     // narrow intra sub-partitions have no SAD kernel. A 64x64 block's
@@ -349,10 +403,9 @@ fn quantize_into(
     // 2x2 means sum to a quarter of the SAD, give or take their rounding,
     // and its 32-point forward shifts two bits less.
     if let Some(size) = BlockSize::new(width, height) {
-        let zero_limit = u64::from(quantizer.largest_zero_coefficient());
         let sad = u64::from(dsp.sad(size, source, prediction));
-        if forward_bound(width.ilog2() + height.ilog2(), sad) * 100
-            <= zero_limit * u64::from(quant.zero_bound_percent)
+        if forward_bound(log2_w + log2_h, sad) * 100
+            <= u64::from(zero_limit) * u64::from(quant.zero_bound_percent)
         {
             return false;
         }
@@ -361,18 +414,26 @@ fn quantize_into(
         && texture_quantises_to_zero(
             dsp,
             (source, prediction),
-            &quantizer,
+            zero_limit,
             quant.zero_texture_percent,
         )
     {
         return false;
     }
     let coded = if width == LARGE_SIDE {
-        forward_large(dsp, (source, prediction), quant, &quantizer, scratch)
+        forward_large(dsp, (source, prediction), quant, zero_limit, scratch)
     } else {
-        forward(dsp, (source, prediction), quant, &quantizer, scratch)
+        forward(dsp, (source, prediction), quant, zero_limit, scratch)
     };
-    coded && choose_levels(dsp, quant, &quantizer, search, (width, height), scratch)
+    coded
+        && choose_levels(
+            dsp,
+            quant,
+            &params.quantizer,
+            search,
+            (width, height),
+            scratch,
+        )
 }
 
 /// Square sides the texture zero test takes: whole 8x8 sub-blocks, without
@@ -414,7 +475,7 @@ const TEXTURE_GROWTH_SIDE: usize = 16;
 fn texture_quantises_to_zero(
     dsp: &nc_dsp::Dsp,
     (source, prediction): (&PlaneView<'_>, &PlaneView<'_>),
-    quantizer: &VvcQuantizer,
+    zero_limit: u32,
     percent: u32,
 ) -> bool {
     let side = prediction.width();
@@ -422,7 +483,7 @@ fn texture_quantises_to_zero(
         return false;
     }
     let gain = TRANSFORM_GAIN_NUMERATOR / side as f32;
-    let limit = quantizer.largest_zero_coefficient() as f32 / gain;
+    let limit = zero_limit as f32 / gain;
     let limits = nc_encoder::ZeroLimits {
         dc: limit,
         ac: limit,
@@ -446,7 +507,7 @@ fn forward_large(
     dsp: &nc_dsp::Dsp,
     (source, prediction): (&PlaneView<'_>, &PlaneView<'_>),
     quant: Quant,
-    quantizer: &VvcQuantizer,
+    zero_limit: u32,
     scratch: &mut QuantScratch,
 ) -> bool {
     debug_assert_eq!(
@@ -456,7 +517,7 @@ fn forward_large(
     dsp.vvc_forward64(
         source,
         prediction,
-        quantizer.largest_zero_coefficient(),
+        zero_limit,
         quant.forward,
         &mut scratch.coefficients,
     )
@@ -469,7 +530,7 @@ fn forward(
     dsp: &nc_dsp::Dsp,
     (source, prediction): (&PlaneView<'_>, &PlaneView<'_>),
     quant: Quant,
-    quantizer: &VvcQuantizer,
+    zero_limit: u32,
     scratch: &mut QuantScratch,
 ) -> bool {
     let (width, height) = (prediction.width(), prediction.height());
@@ -487,7 +548,6 @@ fn forward(
     // Exact: when every coefficient provably quantises to zero the forward
     // transform stops after its first pass and the levels stay zero.
     let coefficients = &mut scratch.coefficients[..samples];
-    let limit = quantizer.largest_zero_coefficient();
     if quant.transform != crate::mts::Selection::Dct2 {
         forward_selected(
             dsp,
@@ -505,12 +565,12 @@ fn forward(
             tx(),
             residual,
             side,
-            limit,
+            zero_limit,
             quant.forward,
             coefficients,
         )
     } else {
-        dsp.hevc_forward_unless_zero(tx(), residual, side, limit, coefficients)
+        dsp.hevc_forward_unless_zero(tx(), residual, side, zero_limit, coefficients)
     }
 }
 
@@ -538,10 +598,12 @@ fn choose_levels(
             VvcQuantizer::rect(quant.qp as u8, sides.0.ilog2() as u8, sides.1.ilog2() as u8);
         return crate::dep_quant::quantize(search, coefficients, &nearest, quant.qp, levels, sides);
     }
-    if dsp.vvc_quantize_from(coefficients, quantizer, levels) == 0 {
-        return false;
-    }
-    let mut coded = coded_groups(levels, size);
+    let mut coded = match dsp.vvc_quantize_from(coefficients, quantizer, levels) {
+        0 => return false,
+        // As in HEVC, the quantizer already counted all nonzero levels.
+        1 if levels[0] != 0 => CodedGroups::FIRST,
+        _ => coded_groups(levels, size),
+    };
     if quant.shave_gap > 0 && !shave_isolated_ones(levels, size, coded, quant.shave_gap) {
         return false;
     }
@@ -653,11 +715,7 @@ pub(crate) fn hide_signs(
     let spans = crate::scan::rect_positions(width, height)
         .as_chunks::<GROUP_SIZE>()
         .0;
-    for (index, span) in spans.iter().enumerate() {
-        // Most groups of a coded block are empty.
-        if !coded.contains(index) {
-            continue;
-        }
+    for span in coded.iter().map(|index| &spans[index]) {
         let nonzero = |n: &usize| levels[span[*n]] != 0;
         let (Some(first), Some(last)) = (
             (0..GROUP_SIZE).find(nonzero),

@@ -60,7 +60,6 @@ use super::references::MAX_REFERENCES;
 use super::sequence::{MAX_SEGMENTS, SequenceHeader};
 use crate::entropy::{Cdf, Reader};
 use coefficients::LEVELS;
-pub(super) use coefficients::Scans;
 use context::{AboveCache, Contexts};
 use frame_refs::FrameReferences;
 use inter_pred::{InterPrediction, InterScratch};
@@ -121,10 +120,11 @@ struct Bounds {
 /// where the current block is.
 #[allow(clippy::struct_excessive_bools, reason = "the tile's running flags")]
 struct Tile<'a, 't> {
+    dsp: &'a nc_dsp::Dsp,
     frame: &'a FrameHeader,
     sequence: &'a SequenceHeader,
     reader: Reader<'a>,
-    cdfs: Rc<Cdfs>,
+    cdfs: Option<&'a mut Cdfs>,
     /// The models adapt (`disable_cdf_update` 0).
     adapt: bool,
     contexts: Contexts,
@@ -174,7 +174,6 @@ struct Tile<'a, 't> {
     luma_coefficients: Vec<i16>,
     chroma_residuals: ChromaResiduals,
     levels: Vec<i8>,
-    scans: Rc<Scans>,
     /// Whether the last U transform had coefficients (V's skip context).
     u_has_coefficients: bool,
     /// The frame being reconstructed.
@@ -237,9 +236,8 @@ pub struct FrameInputs<'a> {
     /// The wedge and inter-intra masks.
     pub masks: &'a InterMasks,
     /// Cached diagonal transform scan tables.
-    pub scans: &'a Rc<Scans>,
-    /// Pre-dispatched SIMD block-copy kernels.
-    pub copies: nc_dsp::BlockCopy,
+    /// Pre-dispatched pixel kernels.
+    pub dsp: &'a nc_dsp::Dsp,
     /// The references' motion: display orders and temporal fields.
     pub motion: &'a [ReferenceMotion; REFERENCES],
     /// The primary reference's segment map, where the frame predicts
@@ -262,9 +260,9 @@ pub fn decode_tile(
     if frame.tiles.columns() * frame.tiles.rows() != 1 {
         return Err(DecodeError::Unsupported("AV2 multiple tiles"));
     }
-    if frame.tip.mode != TIP_FRAME_MODE {
-        Rc::make_mut(&mut cdfs);
-    }
+    // A coded tile borrows its unique working models for the entire
+    // decode. A TIP frame has no symbols and keeps the inherited models.
+    let models = (frame.tip.mode != TIP_FRAME_MODE).then(|| Rc::make_mut(&mut cdfs));
     let units = |size: u32| ((size + 7) >> 3) << 1;
     let root = BlockSize::superblock(frame.superblock_log2);
     let geometry = Geometry {
@@ -279,6 +277,7 @@ pub fn decode_tile(
     let previous_segments =
         SegmentMaps::predicting(filters.segments.as_ref(), inputs.previous_segments);
     let mut tile = Tile {
+        dsp: inputs.dsp,
         frame,
         sequence,
         // TIP frames code no symbols: their reader is never read.
@@ -287,7 +286,7 @@ pub fn decode_tile(
         } else {
             data
         })?,
-        cdfs,
+        cdfs: models,
         adapt: !frame.disable_cdf_update,
         contexts: Contexts::new(geometry.columns as usize),
         geometry,
@@ -317,7 +316,6 @@ pub fn decode_tile(
         luma_coefficients: vec![0; COEFFICIENTS],
         chroma_residuals: ChromaResiduals::default(),
         levels: vec![0; LEVELS],
-        scans: Rc::clone(inputs.scans),
         u_has_coefficients: false,
         planes: Planes::new(geometry.columns, geometry.rows, geometry.superblock_units),
         palette_map: Vec::with_capacity(palette::MAX_SIDE * palette::MAX_SIDE),
@@ -343,7 +341,7 @@ pub fn decode_tile(
         reference_pictures: inputs.references,
         masks: inputs.masks,
         inter_prediction: None,
-        inter_scratch: InterScratch::new(inputs.copies),
+        inter_scratch: InterScratch::default(),
         sub_pu_level: super::filters::edges::NO_SUB_PU,
         above_cache: AboveCache::default(),
         trace,
@@ -357,7 +355,7 @@ pub fn decode_tile(
     Ok(DecodedTile {
         planes: tile.planes,
         filters: tile.filters,
-        cdfs: tile.cdfs,
+        cdfs,
         motion_field,
     })
 }
@@ -447,7 +445,11 @@ impl Tile<'_, '_> {
         &mut self,
         select: impl FnOnce(&mut Cdfs) -> &mut Cdf<N>,
     ) -> Result<usize> {
-        let cdf = select(Rc::make_mut(&mut self.cdfs));
+        let models = self
+            .cdfs
+            .as_deref_mut()
+            .ok_or(DecodeError::Malformed("AV2 TIP frame has coded symbols"))?;
+        let cdf = select(models);
         if self.adapt {
             self.reader.symbol(cdf)
         } else {

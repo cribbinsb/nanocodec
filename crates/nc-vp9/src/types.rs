@@ -189,6 +189,11 @@ impl ModeInfoGrid {
         }
     }
 
+    /// Whether `other` has this grid's dimensions.
+    pub(crate) fn same_shape(&self, other: &Self) -> bool {
+        (self.cols, self.rows) == (other.cols, other.rows)
+    }
+
     pub(crate) fn at(&self, row: usize, col: usize) -> &ModeInfo {
         &self.cells[row * self.cols + col]
     }

@@ -244,7 +244,7 @@ fn check_residuals(
     let isa = candidate.isa();
     let pattern = PATTERNS[rng.below(PATTERNS.len())];
     let src = TestBlock::new(w, h, 1, rng);
-    let pred = TestBlock::new(w + 1, h + 1, 1, rng);
+    let pred = TestBlock::new(w + 3, h + 3, 1, rng);
     let (src_data, pred_data) = fill(pattern, &src, &pred, rng);
     let (s, p) = (src.view(&src_data, 0), pred.view(&pred_data, 0));
 
@@ -331,6 +331,22 @@ fn check_residuals(
             "sub_pixel_variance {w}x{h} {pattern:?} offsets=({xo},{yo}): got {got:?}, want {want:?}"
         )
     });
+
+    for centre in [1, 2] {
+        let cross = [
+            (centre - 1, centre, 4, 0),
+            (centre, centre, 4, 0),
+            (centre, centre - 1, 0, 4),
+            (centre, centre, 0, 4),
+        ];
+        let got = candidate
+            .halfpel_cross_variance(size, &p, &s, cross)
+            .or_else(|| candidate.window_variance(size, &p, &s).at_four(cross));
+        let want = reference.window_variance(size, &p, &s).at_four(cross);
+        record(report, isa, got.is_some() && got == want, || {
+            format!("half-pel cross {w}x{h} {pattern:?} at {centre}: got {got:?}, want {want:?}")
+        });
+    }
 }
 
 fn check_transforms(

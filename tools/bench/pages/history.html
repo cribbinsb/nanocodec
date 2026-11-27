@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec front history</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; } .day-control label > span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .day-control { min-width: 0; } html { overflow-y: scroll; }</style>
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="./" aria-current="page">Results</a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="history.html" aria-current="page">History</a>
+    <a href="compliance.html">Rate compliance</a>
+    <a href="method.html">Method</a>
+  </nav>
+  <div class="machine-picker"></div>
+</div>
+<main>
+  <h1>History of the front</h1>
+  <p class="lede">Our encoders' presets and the Pareto frontier they form, one frame per day's last build, each
+    measured again under the benchmark procedure on the same timing machines as the other pages, against one zero line.</p>
+  <div class="disclaimer results-banner" role="note"></div>
+  <div class="disclaimer">
+    <strong>What this measures.</strong>
+    <ul class="history-notes"></ul>
+  </div>
+
+  <p class="disclaimer history-absent" role="note" hidden></p>
+  <section id="history" aria-label="History animation">
+    <div class="controls">
+      <button type="button" class="play" aria-pressed="false">Play</button>
+      <label class="control ladder-control"><span>Show every preset</span><input type="checkbox" class="all-toggle" aria-label="Show every preset, not only those on the frontier"></label>
+      <div class="control day-control"><label><span>Frame <output class="day-label"></output></span><input type="range" min="0" max="0" step="1" value="0" aria-label="Frame"></label><div class="day-ticks" aria-hidden="true"></div></div>
+    </div>
+    <div class="chart-card">
+      <div class="frame-head">
+        <p class="chart-title">BD-J vs <span class="zero-name"></span>, against encode speed</p>
+        <p class="chart-sub"><span class="frame-day"></span> · common set · bold: our Pareto frontier that day (over every codec and preset, or one codec's: Front of), bars its 95 % bootstrap intervals over clips · orange: references, the same report and clips, dashed: their front · faint: earlier frames' frontiers · lower is fewer bits, right is faster</p>
+        <p class="chart-sub frame-presets"></p>
+        <p class="chart-sub frame-compliance"></p>
+        <ul class="frame-caption" aria-live="polite"></ul>
+      </div>
+      <div class="chart"></div>
+      <div class="tooltip" role="tooltip" hidden></div>
+    </div>
+    <details class="table-view" open>
+      <summary>Every frame as a table</summary>
+      <div class="table-slot"></div>
+    </details>
+    <p class="note history-source"></p>
+    <p class="note">The captions are the earlier history page's structural landings per day (commit and what landed); its measured figures, from the withdrawn procedure, are not repeated.</p>
+  </section>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264,
+    Kvazaar and VVenC are its comparison points here. With thanks to all of them.</p>
+</footer>
+<script type="module" src="history.js"></script>
+</body>
+</html>

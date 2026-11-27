@@ -191,6 +191,22 @@ const QUANTIZABLE: u32 = 2048;
 /// Each code octave holds 16 steps.
 const OCTAVE_LOG2: u32 = 4;
 
+// The reference's code expansion depends on one byte and has a 512-byte
+// working set. Each projected unit otherwise expands both components.
+const DEQUANTIZED_COMPONENT: [i16; 256] = {
+    let mut values = [0; 256];
+    let mut index = 0;
+    while index < values.len() {
+        let code = index as i8;
+        let magnitude = code.unsigned_abs() as i32;
+        let bits = (magnitude >> OCTAVE_LOG2) - (magnitude >= 16) as i32;
+        let value = ((magnitude - (bits << OCTAVE_LOG2)) << bits) as i16;
+        values[index] = if code < 0 { -value } else { value };
+        index += 1;
+    }
+    values
+};
+
 impl QuantizedMv {
     /// No vector (dav2d `INVALID_TRAJ`).
     pub const INVALID: Self = Self { x: -128, y: -128 };
@@ -230,15 +246,9 @@ impl QuantizedMv {
         if !self.is_valid() {
             return TemporalMv::INVALID;
         }
-        let component = |v: i8| {
-            let magnitude = i32::from(v.unsigned_abs());
-            let bits = (magnitude >> OCTAVE_LOG2) - i32::from(magnitude >= 16);
-            let value = ((magnitude - (bits << OCTAVE_LOG2)) << bits) as i16;
-            if v < 0 { -value } else { value }
-        };
         TemporalMv {
-            y: component(self.y),
-            x: component(self.x),
+            y: DEQUANTIZED_COMPONENT[self.y as u8 as usize],
+            x: DEQUANTIZED_COMPONENT[self.x as u8 as usize],
         }
     }
 }

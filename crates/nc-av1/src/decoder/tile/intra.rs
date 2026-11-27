@@ -7,7 +7,7 @@ use super::super::transform::chroma_block;
 use super::{BlockPos, FrameDecoder};
 use crate::backend::{ANGLE_DELTA_SYMBOLS, INTRA_MODES, UV_CFL_PRED};
 use crate::decoder_range::SymbolReader;
-use crate::intra::{FILTER_INTRA_MODES, LumaIntra, MAX_ANGLE_DELTA};
+use crate::intra::{FILTER_INTRA_MODES, LumaIntra, MAX_ANGLE_DELTA, intra_kind};
 use crate::predict::{FilterIntraMode, IntraMode};
 use crate::tables::{
     CFL_ALLOWED, CFL_NOT_ALLOWED, UV_INTRA_MODES_CFL_ALLOWED, UV_INTRA_MODES_CFL_NOT_ALLOWED,
@@ -27,8 +27,6 @@ const CFL_ALPHA_SYMBOLS: usize = 16;
 /// Sign classes of a joint sign: zero, negative, positive.
 const CFL_SIGN_CLASSES: usize = 3;
 const CFL_SIGN_NEGATIVE: usize = 1;
-/// Degrees per angle-delta step (`ANGLE_STEP`).
-const ANGLE_STEP: i16 = 3;
 /// Largest side of a palette block (`MAX_PALETTE_BLOCK_WIDTH`).
 const PALETTE_MAX_BLOCK: usize = 64;
 
@@ -285,23 +283,4 @@ fn region<T: Pixel>(
 /// `MiSize` of `BLOCK_8X8`: smaller blocks code no angle deltas.
 fn block_size_8x8_index() -> usize {
     super::super::block_size::BlockSize::BLOCK_8X8.index()
-}
-
-/// The prediction of `mode` with angle delta `delta` (§7.11.2.4: `pAngle`
-/// is the nominal angle plus `3 * delta`).
-fn intra_kind(mode: IntraMode, delta: i8, edge_filter: Option<EdgeFilterCtx>) -> IntraKind {
-    match mode {
-        IntraMode::Dc => IntraKind::Dc,
-        IntraMode::Smooth => IntraKind::Smooth,
-        IntraMode::SmoothVertical => IntraKind::SmoothVertical,
-        IntraMode::SmoothHorizontal => IntraKind::SmoothHorizontal,
-        IntraMode::Paeth => IntraKind::Paeth,
-        directional => {
-            let nominal = directional.nominal_angle().expect("a directional mode");
-            IntraKind::Directional {
-                angle: (nominal as i16 + ANGLE_STEP * i16::from(delta)) as u16,
-                edge_filter,
-            }
-        }
-    }
 }

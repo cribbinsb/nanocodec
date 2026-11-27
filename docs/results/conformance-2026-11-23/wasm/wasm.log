@@ -1,0 +1,34 @@
+fail (not required) FM1_BT_B: corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 400 pictures
+fail (not required) FM1_FT_E: corrupt: unsupported bitstream: H264 slice groups (FMO) after 119 of 300 pictures
+fail (not required) FM2_SVA_C: corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 17 pictures
+fail (not required) SP1_BT_A: corrupt: unsupported bitstream: H264 SP/SI slices after 6 of 400 pictures
+fail (not required) sp2_bt_b: corrupt: unsupported bitstream: H264 SP/SI slices after 10 of 400 pictures
+h264 WASM (pkg): 108/113 streams match the reference (deeper than 8 bits 7/7; 77 of the manifest's 190 not 4:2:0 progressive), 0 required failing
+hevc WASM (pkg): 147/147 streams match the reference (deeper than 8 bits 11/11; 0 of the manifest's 147 not 4:2:0 progressive)
+FAIL BOUNDARY_A_3: 1280 pictures, the reference has 1950
+FAIL FIELD_A_4: 10 pictures, the reference has 20
+FAIL FIELD_B_2: 1 pictures, the reference has 2
+FAIL RPR_A_4: 4 pictures, the reference has 10
+FAIL RPR_B_3: 4 pictures, the reference has 2
+FAIL RPR_C_3: 4 pictures, the reference has 2
+FAIL RPR_D_1: 8 pictures, the reference has 5
+vvc WASM (pkg): 214/221 streams match the reference (deeper than 8 bits 207/214; 5 of the manifest's 226 not 4:2:0 progressive)
+av1 WASM (pkg): 240/240 streams match the reference (deeper than 8 bits 65/65; 2 of the manifest's 242 not 4:2:0 progressive)
+vp9 WASM (pkg): 305/305 streams match the reference (deeper than 8 bits 2/2; 0 of the manifest's 305 not 4:2:0 progressive)
+fail (not required) FM1_BT_B: corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 400 pictures
+fail (not required) FM1_FT_E: corrupt: unsupported bitstream: H264 slice groups (FMO) after 119 of 300 pictures
+fail (not required) FM2_SVA_C: corrupt: unsupported bitstream: H264 slice groups (FMO) after 0 of 17 pictures
+fail (not required) SP1_BT_A: corrupt: unsupported bitstream: H264 SP/SI slices after 6 of 400 pictures
+fail (not required) sp2_bt_b: corrupt: unsupported bitstream: H264 SP/SI slices after 10 of 400 pictures
+h264 WASM (relaxed): 108/113 streams match the reference (deeper than 8 bits 7/7; 77 of the manifest's 190 not 4:2:0 progressive), 0 required failing
+hevc WASM (relaxed): 147/147 streams match the reference (deeper than 8 bits 11/11; 0 of the manifest's 147 not 4:2:0 progressive)
+FAIL BOUNDARY_A_3: 1280 pictures, the reference has 1950
+FAIL FIELD_A_4: 10 pictures, the reference has 20
+FAIL FIELD_B_2: 1 pictures, the reference has 2
+FAIL RPR_A_4: 4 pictures, the reference has 10
+FAIL RPR_B_3: 4 pictures, the reference has 2
+FAIL RPR_C_3: 4 pictures, the reference has 2
+FAIL RPR_D_1: 8 pictures, the reference has 5
+vvc WASM (relaxed): 214/221 streams match the reference (deeper than 8 bits 207/214; 5 of the manifest's 226 not 4:2:0 progressive)
+av1 WASM (relaxed): 240/240 streams match the reference (deeper than 8 bits 65/65; 2 of the manifest's 242 not 4:2:0 progressive)
+vp9 WASM (relaxed): 305/305 streams match the reference (deeper than 8 bits 2/2; 0 of the manifest's 305 not 4:2:0 progressive)

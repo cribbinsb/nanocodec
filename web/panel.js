@@ -7,12 +7,12 @@ import { CODECS, DEFAULT_PRESET, LAYERED_PRESETS, PRESETS, streamExtension } fro
 import { createRenderer } from './renderer.js';
 import { Advanced } from './advanced.js';
 import { cliCommand } from './options.js';
-import { FRAME_RATES, tickAt, tickMs, tickStep } from './timeline.js';
-import { fetchStream, loadManifest, pickerGroups, referenceStream, streamTitle } from './reference.js';
+import { FRAME_RATES, SOURCE_FPS, tickAt, tickMs, tickStep } from './timeline.js';
+import { fetchStream, keyCadence, loadManifest, secondsLabel, pickerGroups, referenceStream, streamTitle } from './reference.js';
 import { trace } from './trace.js';
 import { CHART_PRESETS, resultsQuery } from './deep-link.js';
 import { BITRATE_FORMULA, PSNR_FORMULA, shownNumbers } from './debug-report.js';
-import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, PEAK_TO_TARGET, RATE_LIMITS_KBPS, RESOLUTIONS } from './view-settings.js';
+import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, KEY_AT_CLIP_START, PEAK_TO_TARGET, RATE_LIMITS_KBPS, RESOLUTIONS, clipStartKeys, overSourceShare } from './view-settings.js';
 
 // Statistics cover this many recent coded frames.
 const HISTORY_FRAMES = 90;
@@ -24,18 +24,34 @@ const DEBUG_LOG_FRAMES = 900;
 // Headless Chromium, default page, 3 interleaved loads: Panel.frame 0.72 ->
 // 0.56 ms mean (median 0.6 -> 0.4 ms) per view per frame on the page thread.
 const METRICS_INTERVAL_MS = 250;
+// The key interval of a live view on a source that does not loop (on a clip: KEY_AT_CLIP_START).
 const DEFAULT_GOP_SECONDS = 30, DEFAULT_BUFFER_MS = 1000;
+// The page source that loops (app.js `kind`), the only one offered KEY_AT_CLIP_START.
+const LOOPING_SOURCE = 'clip';
 const DEFAULT_TARGET_KBPS = 300;
 // An Original view keeps only this many recent pictures for the debug report's
 // hashes (a 720p picture is 1.4 MB; coded frames keep DEBUG_LOG_FRAMES).
 const ORIGINAL_LOG_FRAMES = 10;
 const SOURCES = { live: 'live', reference: 'reference', original: 'original' };
-const STILL_CAMERA_TIP = 'For live nanocodec encodes: blocks a still camera only changes by sensor noise are skipped, and frames that are mostly skipped get a smaller budget, so still noisy scenes need fewer bits. Off in the engine\'s presets (--still-camera); on AV1 a long still stream can run slightly over its target.';
+const STILL_CAMERA_TIP = 'For live nanocodec encodes: blocks a still camera only changes by sensor noise are skipped, and frames that are mostly skipped get a smaller budget, so still noisy scenes need fewer bits. On by default for the webcam only, off for clips, the test scene and files (as in the engine\'s presets: --still-camera); on AV1 a long still stream can run slightly over its target.';
+// The page source whose live encodes get the still-camera noise handling by default (app.js `kind`).
+const STILL_CAMERA_SOURCE = 'camera';
+const onOff = on => (on ? 'on' : 'off');
+const bufferLabel = ms => (ms < 1000 ? `${ms} ms` : `${ms / 1000} s`);
 // Spatial layers (SVC) are a mode beside the speed preset: one layer, or a full-size
 // layer over a half-size one (and a quarter-size one), each an operating point.
 const SPATIAL_LAYERS = [[1, '1 · full size only'], [2, '2 · full + half size'], [3, '3 · full, half and quarter size']];
 const presetLabel = preset => PRESETS.find(([value]) => value === preset)[1].replace(' (default)', '');
 const ORIGINAL_STATUS = 'Uncompressed source · nothing is coded';
+// Why a control does not apply (it stays in place, disabled: both views keep one layout).
+const RATE_ONLY_TIP = 'For target bitrate rate control (Advanced, Rate control)';
+const QUANTIZER_ONLY_TIP = 'For fixed quantizer rate control (Advanced, Rate control)';
+/** Disable `controls` inside `box` (kept in place, dimmed, with `why` as its tooltip) or enable them. */
+function inapplicable(box, controls, off, why) {
+  for (const control of controls) control.disabled = off;
+  box.classList.toggle('inapplicable', off);
+  box.title = off ? why : '';
+}
 const escapeHtml = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const options = (items, selected) => items.map(([value, label]) => `<option value="${value}"${String(value) === String(selected) ? ' selected' : ''}>${label}</option>`).join('');
 const rateInput = (name, value) => `<input class="${name}" type="number" required min="${RATE_LIMITS_KBPS.min}" max="${RATE_LIMITS_KBPS.max}" step="${RATE_LIMITS_KBPS.step}" value="${value}">`;
@@ -61,7 +77,7 @@ export class Panel {
       <p class="source-unavailable" hidden>Pre-encoded reference streams exist for the sample clips only.</p>
       <div class="viewport"><canvas aria-label="Version ${letter} picture"></canvas><div class="empty-overlay"><div class="empty-symbol">◉</div><strong>The picture appears here</strong><span>Starting the comparison…</span></div><span class="frame-badge">STARTING</span></div>
       <div class="metrics"><div class="metric"><span>Bitrate</span><p><b data-metric="bitrate">—</b><small>kbps</small></p></div><div class="metric"><span>Encode</span><p><b data-metric="encode">—</b><small>ms</small></p></div><div class="metric"><span>Decode</span><p><b data-metric="decode">—</b><small>ms</small></p></div><div class="metric"><span>PSNR-YUV</span><p><b data-metric="psnr">—</b><small>dB</small></p></div></div>
-      <div class="picture-options"><label class="compact-control live-only">Codec<select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label class="compact-control live-only">Preset<select class="preset">${options(PRESETS, DEFAULT_PRESET)}</select></label><label class="compact-control live-only spatial-layers-control">Spatial layers<select class="spatial-layers">${options(SPATIAL_LAYERS, 1)}</select></label><label class="compact-control">Resolution<select class="resolution">${options(RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), DEFAULT_RESOLUTION.join('x'))}</select></label><label class="compact-control">Frame rate<select class="fps">${options(FRAME_RATES.map(fps => [fps, `${fps} fps`]), DEFAULT_FPS)}</select></label><label class="compact-control live-only target-option">Bitrate (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><div class="quality-option live-only" hidden><label class="quality-label" for="qp-${letter}">Fixed quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div></div>
+      <div class="picture-options"><label class="compact-control live-only">Codec<select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label class="compact-control live-only">Preset<select class="preset">${options(PRESETS, DEFAULT_PRESET)}</select></label><label class="compact-control live-only spatial-layers-control">Spatial layers<select class="spatial-layers">${options(SPATIAL_LAYERS, 1)}</select></label><label class="compact-control">Resolution<select class="resolution">${options(RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), DEFAULT_RESOLUTION.join('x'))}</select></label><label class="compact-control">Frame rate<select class="fps">${options(FRAME_RATES.map(fps => [fps, `${fps} fps`]), DEFAULT_FPS)}</select></label><label class="compact-control live-only target-option">Bitrate (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><div class="quality-option live-only"><label class="quality-label" for="qp-${letter}">Fixed quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div></div>
       <p class="compare-link live-only"><a href="results/">How does this preset compare?</a></p>
       <div class="reference-options" hidden><label class="compact-control">Stream (encoder · codec · size · rate · bitrate)<select class="stream-picker"></select></label><p class="reference-hint" hidden>This clip has no reference streams: the list shows other sample clips’ streams, and choosing one switches the page to that clip.</p><p class="reference-status" role="status"></p><button type="button" class="match">Match nanocodec to this stream</button><p class="match-note">Sets the other version to live nanocodec at this stream’s codec, size, frame rate and bitrate.</p><details class="reference-about"><summary>About this stream</summary><p class="reference-label"></p><dl class="reference-facts"></dl><p class="reference-version"></p></details></div>
       <p class="original-note" hidden>The source pictures at this size and frame rate, uncompressed: exactly what the encoders are given. Nothing is coded, so there is no bitrate or quality to show.</p>
@@ -70,7 +86,7 @@ export class Panel {
       <div class="reproduce"><span class="reproduce-label">CLI</span><code class="cli"></code><button type="button" class="copy-command" aria-label="Copy the command line">Copy</button></div>`;
     // The Advanced section's general encoder settings; the codec's own options follow them (advanced.js).
     const general = document.createElement('div'); general.className = 'advanced-general';
-    general.innerHTML = `<label class="compact-control">Rate control<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="peak-options"><label class="compact-control">Peak rate (kbps)${rateInput('peak-rate', DEFAULT_TARGET_KBPS * PEAK_TO_TARGET)}</label><label class="compact-control">Rate buffer<select class="buffer-ms">${options(BUFFER_CHOICES_MS.map(ms => [ms, ms < 1000 ? `${ms} ms` : `${ms / 1000} second${ms > 1000 ? 's' : ''}`]), DEFAULT_BUFFER_MS)}</select></label></div><label class="compact-control">Keyframe interval<select class="gop">${options(GOP_SECONDS.map(s => [s, `${s} second${s > 1 ? 's' : ''}`]), DEFAULT_GOP_SECONDS)}</select></label><label class="compact-control layer-control" hidden>Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Half size (operating point 1)</option><option value="2">Quarter size (operating point 2)</option></select></label><label class="toggle" title="${escapeHtml(STILL_CAMERA_TIP)}"><input class="still-camera" type="checkbox" checked>Still-camera noise handling</label>`;
+    general.innerHTML = `<label class="compact-control">Rate control<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="peak-options"><label class="compact-control">Peak rate (kbps)${rateInput('peak-rate', DEFAULT_TARGET_KBPS * PEAK_TO_TARGET)}</label><label class="compact-control">Rate buffer<select class="buffer-ms">${options(BUFFER_CHOICES_MS.map(ms => [ms, ms < 1000 ? `${ms} ms` : `${ms / 1000} second${ms > 1000 ? 's' : ''}`]), DEFAULT_BUFFER_MS)}</select></label></div><label class="compact-control">Keyframe interval<select class="gop">${options([[KEY_AT_CLIP_START, 'On clip start'], ...GOP_SECONDS.map(s => [s, `${s} second${s > 1 ? 's' : ''}`])], KEY_AT_CLIP_START)}</select></label><label class="compact-control layer-control">Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Half size (operating point 1)</option><option value="2">Quarter size (operating point 2)</option></select></label><label class="toggle" title="${escapeHtml(STILL_CAMERA_TIP)}"><input class="still-camera" type="checkbox">Still-camera noise handling</label>`;
     container.append(this.element);
     const $ = selector => this.element.querySelector(selector);
     // Live nanocodec or a reference encoder's stream (SOURCES), chosen with the buttons.
@@ -84,11 +100,16 @@ export class Panel {
     this.effective = document.createElement('p'); this.effective.className = 'effective';
     this.advanced.element.append(this.effective);
     this.stillCamera = $('.still-camera');
-    this.stillCamera.addEventListener('change', () => changed());
+    // The toggle follows the page source (setSourceKind) until the visitor sets it.
+    this.stillCameraSet = false;
+    this.stillCamera.addEventListener('change', () => { this.stillCameraSet = true; changed(); });
     this.resolution = $('.resolution'); this.fps = $('.fps');
     this.streamPicker = $('.stream-picker');
     this.qp = $('input[type=range]'); this.preset = $('.preset'); this.spatialLayers = $('.spatial-layers');
     this.gop = $('.gop');
+    // The key interval follows the page source (setSourceKind) until the visitor sets it.
+    this.gopSet = false;
+    this.gop.addEventListener('change', () => { this.gopSet = true; });
     // Which SVC operating point this view decodes: switched while running, without
     // restarting the encoder (pipeline.js passes it to the decode worker).
     this.operatingPoint = $('.operating-point');
@@ -163,6 +184,17 @@ export class Panel {
     this.element.querySelector('.source-unavailable').hidden = Boolean(clip);
     if (this.streams.length) this.fillStreamPicker();
   }
+  /**
+   * The page source is now `kind` (app.js: 'clip', 'scene', 'camera' or 'file'): the
+   * still-camera noise handling defaults on for the webcam only, and keys "On clip start"
+   * (offered for a clip only) on a clip and every DEFAULT_GOP_SECONDS elsewhere, unless the visitor set them.
+   */
+  setSourceKind(kind) {
+    if (!this.stillCameraSet) this.stillCamera.checked = kind === STILL_CAMERA_SOURCE;
+    const loops = kind === LOOPING_SOURCE, clipStart = this.gop.querySelector(`option[value="${KEY_AT_CLIP_START}"]`);
+    clipStart.hidden = clipStart.disabled = !loops;
+    if (!this.gopSet || (!loops && this.gop.value === KEY_AT_CLIP_START)) this.gop.value = String(loops ? KEY_AT_CLIP_START : DEFAULT_GOP_SECONDS);
+  }
   /** The stream picker: the current clip's streams by encoder, then other clips' (choosing one switches the clip). */
   fillStreamPicker() {
     const option = (entry, text) => `<option value="${entry.id}">${escapeHtml(text)}</option>`;
@@ -220,7 +252,7 @@ export class Panel {
       Clip: this.clipTitle(entry.clip), Size: `${entry.width} × ${entry.height}`, 'Frame rate': `${entry.fps} fps`,
       Bitrate: `target ${entry.targetKbps} kbps · actual ${entry.actualKbps} kbps`,
       ...(entry.rateControl ? { 'Rate control': entry.rateControl } : {}),
-      'Key frames': entry.keyFrames === 1 ? `one, for the whole ${entry.frames}-frame clip` : `every ${entry.keyInterval} frames`,
+      'Key frames': `${entry.keyFrames === 1 ? `one, at the start of the ${entry.frames}-frame clip` : `every ${entry.keyInterval} frames`} · shown: ${keyCadence(entry)}`,
       Source: entry.sourceFile,
       ...(entry.notice ? { Licence: entry.notice } : {}),
     };
@@ -305,7 +337,7 @@ export class Panel {
     this.resolution.value = `${settings.width}x${settings.height}`; this.fps.value = String(settings.fps);
     if (this.codec.value !== settings.codec) { this.codec.value = settings.codec; this.updateCodec(); }
     this.rateMode.value = settings.rateMode; this.targetRate.value = settings.targetKbps; this.peakRate.value = settings.peakKbps;
-    this.bufferMs.value = String(settings.bufferMs); this.gop.value = String(settings.gopSeconds);
+    this.bufferMs.value = String(settings.bufferMs); this.gop.value = String(settings.gop); this.gopSet = true;
     this.peakSet = false;
     this.showRateMode();
   }
@@ -328,20 +360,23 @@ export class Panel {
       this.showRateMode();
     }
   }
-  /** The link to this codec and preset on the results overview (spatial layers: the SVC page). */
+  /** The link to this codec and preset on the results overview (spatial layers: the overview itself). */
   updateCompareLink() {
     const preset = this.preset.value;
     this.compareLink.href = +this.spatialLayers.value === 1 && CHART_PRESETS.includes(preset)
-      ? `results/${resultsQuery({ codec: this.codec.value, preset })}` : 'results/svc.html';
+      ? `results/${resultsQuery({ codec: this.codec.value, preset })}` : 'results/index.html';
   }
   /** Show the original source in this view (a demo link's view A). */
   showOriginal() { this.sourceChoice = SOURCES.original; this.showSource(); }
-  /** A bitrate target, or the fixed quantizer's slider, by the rate control chosen under Advanced. */
+  /**
+   * The bitrate target (with peak and buffer) or the fixed quantizer's slider, by the rate
+   * control chosen under Advanced: the other stays in place, disabled, saying why.
+   */
   showRateMode() {
     const cbr = this.rateMode.value === 'cbr';
-    this.element.querySelector('.target-option').hidden = !cbr;
-    this.element.querySelector('.peak-options').hidden = !cbr;
-    this.element.querySelector('.quality-option').hidden = cbr;
+    inapplicable(this.element.querySelector('.target-option'), [this.targetRate], !cbr, RATE_ONLY_TIP);
+    inapplicable(this.element.querySelector('.peak-options'), [this.peakRate, this.bufferMs], !cbr, RATE_ONLY_TIP);
+    inapplicable(this.element.querySelector('.quality-option'), [this.qp], cbr, QUANTIZER_ONLY_TIP);
   }
   updateCodec() {
     const { presets, spatialLayers, quantizer } = CODECS[this.codec.value];
@@ -370,14 +405,15 @@ export class Panel {
       option.hidden = count > 1 && !spatialLayers.includes(count);
       option.disabled = option.hidden || (count > 1 && !layerable);
     }
-    this.element.querySelector('.spatial-layers-control').hidden = spatialLayers.length === 0;
+    inapplicable(this.element.querySelector('.spatial-layers-control'), [this.spatialLayers], spatialLayers.length === 0,
+      `${CODECS[this.codec.value].label} has no spatial layers here: AV1 and VP9 do`);
     this.updateLayers();
   }
   /** The shown-layer picker shows with spatial layers only (other streams have one operating point);
    * the quarter-size operating point exists in three-layer streams only. */
   updateLayers() {
     const layered = +this.spatialLayers.value > 1, threeLayers = +this.spatialLayers.value === 3;
-    this.element.querySelector('.layer-control').hidden = !layered;
+    inapplicable(this.element.querySelector('.layer-control'), [this.operatingPoint], !layered, 'Choose 2 or 3 spatial layers to pick the layer shown');
     this.operatingPoint.querySelector('option[value="2"]').disabled = !threeLayers;
     if (!layered || (!threeLayers && this.operatingPoint.value === '2')) this.operatingPoint.value = '0';
   }
@@ -395,8 +431,21 @@ export class Panel {
     const [width, height] = this.resolution.value.split('x').map(Number), fps = +this.fps.value;
     if (this.showsOriginal) return { source: SOURCES.original, width, height, fps, step: tickStep(fps) };
     return { source: SOURCES.live, codec: this.codec.value, width, height, fps, step: tickStep(fps), qp: +this.qp.value,
-      preset: this.preset.value, spatialLayers: +this.spatialLayers.value, ...this.advanced.settings(), keyInterval: +this.gop.value * fps, ...this.rateSettings(),
+      preset: this.preset.value, spatialLayers: +this.spatialLayers.value, ...this.advanced.settings(), ...this.keySettings(fps), ...this.rateSettings(),
       stillCamera: this.stillCamera.checked };
+  }
+  /**
+   * The key interval: seconds, or KEY_AT_CLIP_START (`keyAtClipStart`), whose interval is
+   * known once the clip's loop is (`atLoop`; until then DEFAULT_GOP_SECONDS, which no encoder starts with).
+   */
+  keySettings(fps) {
+    if (this.gop.value !== KEY_AT_CLIP_START) return { keyInterval: +this.gop.value * fps, keyAtClipStart: false, loopTicks: null };
+    return { keyInterval: DEFAULT_GOP_SECONDS * fps, keyAtClipStart: true, loopTicks: null };
+  }
+  /** A live view's settings once the clip's loop is known (`loopTicks` ticks): keys at each clip start. */
+  atLoop(config, loopTicks) {
+    if (config.source !== SOURCES.live || !config.keyAtClipStart) return config;
+    return { ...config, loopTicks, keyInterval: clipStartKeys(loopTicks, config.step, config.fps).keyInterval };
   }
   /** The live rate settings, which change without a restart. */
   rateSettings() {
@@ -414,8 +463,8 @@ export class Panel {
     // The rate settings the run started with (`current` follows live rate changes).
     this.initialRate = { rateMode: config.rateMode, targetKbps: config.targetKbps, peakKbps: config.peakKbps, bufferMs: config.bufferMs };
     this.element.querySelector('.rate-status').textContent = config.source === SOURCES.original ? ORIGINAL_STATUS
-      : config.source === SOURCES.reference ? 'Pre-encoded offline · waiting for frames'
-        : config.rateMode === 'cbr' ? `Target ${config.targetKbps} kbps · waiting for frames` : 'Fixed quantizer';
+      : (config.source === SOURCES.reference ? 'Pre-encoded offline · waiting for frames'
+        : config.rateMode === 'cbr' ? `Target ${config.targetKbps} kbps · waiting for frames` : 'Fixed quantizer') + this.settingsNote();
     this.shown = false; this.element.classList.remove('error'); this.downloadButton.disabled = true;
     this.canvas.width = config.width; this.canvas.height = config.height;
     this.element.querySelector('.empty-overlay').hidden = false;
@@ -495,10 +544,32 @@ export class Panel {
   }
   rateStatus(result) {
     if (this.current.source === SOURCES.original) return ORIGINAL_STATUS;
-    const quantizer = CODECS[this.current.codec].quantizer.name;
-    if (this.current.entry) return `Pre-encoded offline · target ${this.current.entry.targetKbps} kbps · whole stream ${this.current.entry.actualKbps} kbps`;
-    if (this.current.rateMode !== 'cbr') return `Fixed ${quantizer} ${this.current.qp}`;
-    return `Target ${this.current.targetKbps} kbps · ${quantizer} ${result.quantizer} · buffer ${(result.bufferFullness * 100).toFixed(0)}%${result.bufferOverflows ? ` · ${result.bufferOverflows} buffer overruns` : ''}`;
+    const quantizer = CODECS[this.current.codec].quantizer.name, note = this.settingsNote();
+    if (this.current.entry) return `Pre-encoded offline · target ${this.current.entry.targetKbps} kbps · whole stream ${this.current.entry.actualKbps} kbps${note}`;
+    if (this.current.rateMode !== 'cbr') return `Fixed ${quantizer} ${this.current.qp}${note}`;
+    return `Target ${this.current.targetKbps} kbps · ${quantizer} ${result.quantizer} · buffer ${(result.bufferFullness * 100).toFixed(0)}%${result.bufferOverflows ? ` · ${result.bufferOverflows} buffer overruns` : ''}${note}`;
+  }
+  /**
+   * The settings a live and a pre-encoded view could otherwise differ in unseen, for
+   * the rate line: when key frames come, the rate buffer (and a live view's peak) and
+   * the still-camera noise handling. Size, frame rate and codec are in the summary line.
+   */
+  settingsNote() {
+    const c = this.current;
+    const target = c.entry ? c.entry.targetKbps : c.rateMode === 'cbr' ? c.targetKbps : null;
+    const source = target !== null && overSourceShare(target, c.sourceKbps)
+      ? ` · over half the clip file's ${c.sourceKbps.toFixed(0)} kbps: its own coding may show` : '';
+    if (c.entry) return ` · ${keyCadence(c.entry)} · ${bufferLabel(c.entry.bufferMs)} buffer · still-camera n/a${source}`;
+    const rate = c.rateMode === 'cbr' ? ` · peak ${c.peakKbps} kbps, ${bufferLabel(c.bufferMs)} buffer` : '';
+    return ` · ${this.liveKeys()}${rate} · still-camera ${onOff(c.stillCamera)}${source}`;
+  }
+  /** When a live view's keys come, as its rate line says. */
+  liveKeys() {
+    const c = this.current;
+    if (!c.keyAtClipStart) return `key every ${c.keyInterval / c.fps} s`;
+    if (!c.loopTicks) return 'key at each clip start';
+    const { extraSeconds } = clipStartKeys(c.loopTicks, c.step, c.fps);
+    return `key at each clip start, every ${secondsLabel(c.loopTicks / SOURCE_FPS)}${extraSeconds ? ` (and every ${extraSeconds} s: the loop is not a whole number of frames at ${c.fps} fps)` : ''}`;
   }
   /**
    * Kilobits per second of source time over the recent frames: their bytes over
@@ -621,7 +692,8 @@ export class Panel {
       + `${config.filmGrain ? ' · film grain' : ''} · overrides: ${overrides}. The CLI command below the view takes an I420 file of the`
       + ` ${frames} recorded frames (for a sample clip, ffmpeg's decode of its file at this size); after a live rate change it shows the latest.`;
     cli.title = '';
-    cli.textContent = cliCommand(config, frames);
+    // The colour of the frames the encoder last coded (the source decides it, colour.js).
+    cli.textContent = cliCommand(config, frames, this.log.findLast(frame => frame.colour)?.colour);
   }
   save() {
     if (this.current.entry) {

@@ -45,7 +45,11 @@ pub(crate) struct I32x4(int32x4_t);
 
 /// Eight `i16` lanes.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I16x8(int16x8_t);
+pub(crate) struct I16x8Kernel<const SVE2: bool>(int16x8_t);
+
+pub(crate) type I16x8 = I16x8Kernel<false>;
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+pub(crate) type I16x8Sve2 = I16x8Kernel<true>;
 
 /// Four `i16` lanes (a 64-bit register).
 #[derive(Debug, Clone, Copy)]
@@ -414,7 +418,7 @@ fn round_shift_narrow_pair(lo: int32x4_t, hi: int32x4_t, round: i32, shift: u32)
     }
 }
 
-impl I16Lanes for I16x8 {
+impl<const SVE2: bool> I16Lanes for I16x8Kernel<SVE2> {
     const LANES: usize = 8;
     type Acc = [int32x4_t; 2];
 
@@ -639,6 +643,14 @@ impl I16Lanes for I16x8 {
 
     #[inline(always)]
     fn acc_add_sq(acc: Self::Acc, a: Self) -> Self::Acc {
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        if SVE2 {
+            // SAFETY: the SVE2 caller selected this lane type after detection.
+            // Its SSE accumulator starts at zero and holds squared byte
+            // differences for an 8×64 block at most. Each low word remains
+            // below i32::MAX and the other words stay zero.
+            return [unsafe { super::sve2::add_squares(acc[0], a.0) }, acc[1]];
+        }
         // SAFETY: NEON kernels only (module docs).
         unsafe {
             [
@@ -737,6 +749,23 @@ impl I16Lanes for I16x8 {
                     [lo, hi]
                 }
             }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    #[inline(always)]
+    unsafe fn horizontal_dot_8tap(
+        src: *const i16,
+        taps: [i16; 8],
+        round: i32,
+        shift: u32,
+    ) -> Option<Self> {
+        if SVE2 {
+            // SAFETY: the SVE2 table was selected and the caller checked the row.
+            let (lo, hi) = unsafe { crate::simd::sve2::horizontal_8tap(src, &taps) };
+            Some(Self::acc_round_shift_narrow([lo, hi], round, shift))
+        } else {
+            None
         }
     }
 }
@@ -925,7 +954,7 @@ impl I16Lanes for I16x4 {
 
 // ------------------------------------------------------- filter lanes ----
 
-impl I16FilterLanes for I16x8 {
+impl<const SVE2: bool> I16FilterLanes for I16x8Kernel<SVE2> {
     #[inline(always)]
     fn load_halves(lo: &[i16], hi: &[i16]) -> Self {
         let (lo, hi) = (&lo[..4], &hi[..4]);
@@ -1081,7 +1110,52 @@ impl I16FilterLanes for I16x8 {
     }
 }
 
-impl I16Pairs for I16x8 {
+impl I16x8 {
+    /// Products for a forward-transform column group, split into the low
+    /// and high four lines. The caller's transform bounds keep sums in i32.
+    #[inline(always)]
+    pub(crate) fn matrix_dot<const H: usize>(input: &[Self; H], weights: &[i16; H]) -> [I32x4; 2] {
+        // SAFETY: NEON kernels only. The weights cover each group of four.
+        unsafe {
+            if H == 1 {
+                return input[0].mul_wide(weights[0]);
+            }
+            let (quads, tail) = input.as_chunks::<4>();
+            let (weight_quads, tail_weights) = weights.as_chunks::<4>();
+            let (mut lo, mut hi) = (vdupq_n_s32(0), vdupq_n_s32(0));
+            for (x, c) in quads.iter().zip(weight_quads) {
+                let c = vld1_s16(c.as_ptr());
+                lo = vmlal_lane_s16::<0>(lo, vget_low_s16(x[0].0), c);
+                hi = vmlal_high_lane_s16::<0>(hi, x[0].0, c);
+                lo = vmlal_lane_s16::<1>(lo, vget_low_s16(x[1].0), c);
+                hi = vmlal_high_lane_s16::<1>(hi, x[1].0, c);
+                lo = vmlal_lane_s16::<2>(lo, vget_low_s16(x[2].0), c);
+                hi = vmlal_high_lane_s16::<2>(hi, x[2].0, c);
+                lo = vmlal_lane_s16::<3>(lo, vget_low_s16(x[3].0), c);
+                hi = vmlal_high_lane_s16::<3>(hi, x[3].0, c);
+            }
+            for (x, &w) in tail.iter().zip(tail_weights) {
+                lo = vmlal_n_s16(lo, vget_low_s16(x.0), w);
+                hi = vmlal_high_n_s16(hi, x.0, w);
+            }
+            [I32x4(lo), I32x4(hi)]
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn mul_wide(self, weight: i16) -> [I32x4; 2] {
+        // SAFETY: NEON kernels only.
+        unsafe {
+            let weights = vdupq_n_s16(weight);
+            [
+                I32x4(vmull_s16(vget_low_s16(self.0), vget_low_s16(weights))),
+                I32x4(vmull_high_s16(self.0, weights)),
+            ]
+        }
+    }
+}
+
+impl<const SVE2: bool> I16Pairs for I16x8Kernel<SVE2> {
     const FAST_PAIR_DOT: bool = false;
     type Pairs = I32x4;
 
@@ -1126,6 +1200,12 @@ impl I16Pairs for I16x8 {
 
 impl I16x8Shuffles for I16x8 {
     type Wide = I32x4;
+
+    #[inline(always)]
+    fn rounded_shr<const SHIFT: i32>(self) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { Self(core::arch::aarch64::vrshrq_n_s16::<SHIFT>(self.0)) }
+    }
 
     #[inline(always)]
     fn lanes_up(self, n: usize) -> Self {
@@ -1237,19 +1317,23 @@ impl I16x8Shuffles for I16x8 {
 /// Register transpose shared by residual stores and fused reconstruction.
 #[inline(always)]
 fn transpose_i32x4(rows: &[I32x4]) -> [I32x4; 4] {
-    let r = [rows[0], rows[1], rows[2], rows[3]];
-    // SAFETY: NEON kernels only (module docs).
-    let out = unsafe {
-        let t01 = vtrnq_s32(r[0].0, r[1].0);
-        let t23 = vtrnq_s32(r[2].0, r[3].0);
+    transpose_i32x4_vectors([rows[0].0, rows[1].0, rows[2].0, rows[3].0]).map(I32x4)
+}
+
+/// Transpose a 4x4 tile held in four NEON registers.
+#[inline(always)]
+pub(crate) fn transpose_i32x4_vectors([a, b, c, d]: [int32x4_t; 4]) -> [int32x4_t; 4] {
+    // SAFETY: called from NEON kernels.
+    unsafe {
+        let ab = vtrnq_s32(a, b);
+        let cd = vtrnq_s32(c, d);
         [
-            vcombine_s32(vget_low_s32(t01.0), vget_low_s32(t23.0)),
-            vcombine_s32(vget_low_s32(t01.1), vget_low_s32(t23.1)),
-            vcombine_s32(vget_high_s32(t01.0), vget_high_s32(t23.0)),
-            vcombine_s32(vget_high_s32(t01.1), vget_high_s32(t23.1)),
+            vcombine_s32(vget_low_s32(ab.0), vget_low_s32(cd.0)),
+            vcombine_s32(vget_low_s32(ab.1), vget_low_s32(cd.1)),
+            vcombine_s32(vget_high_s32(ab.0), vget_high_s32(cd.0)),
+            vcombine_s32(vget_high_s32(ab.1), vget_high_s32(cd.1)),
         ]
-    };
-    out.map(I32x4)
+    }
 }
 
 /// Two 8x8 byte transposes at once: byte `j` of the low (high) half of
@@ -1350,6 +1434,30 @@ impl I16x8 {
             for (i, row) in rows.into_iter().enumerate() {
                 vst1q_u8(data.as_mut_ptr().add(origin + i * stride), row);
             }
+        }
+    }
+}
+
+impl crate::sao::high_simd::SaoWordLanes for I16x8 {
+    #[inline(always)]
+    fn offset_table(offsets: [i16; 4]) -> Self {
+        Self::load(&crate::sao::high_simd::offset_words(offsets))
+    }
+
+    #[inline(always)]
+    fn select_offset(self, table: Self) -> Self {
+        use core::arch::aarch64::{
+            vaddq_s16, vdupq_n_s16, vmulq_n_s16, vqtbl1q_u8, vreinterpretq_s16_u8,
+            vreinterpretq_u8_s16,
+        };
+        // SAFETY: called from the NEON SAO entry. Each sign sum -2..2
+        // selects both bytes of a word in its consecutive table slot.
+        unsafe {
+            let index = vaddq_s16(vmulq_n_s16(self.0, 0x0202), vdupq_n_s16(0x0504));
+            Self(vreinterpretq_s16_u8(vqtbl1q_u8(
+                vreinterpretq_u8_s16(table.0),
+                vreinterpretq_u8_s16(index),
+            )))
         }
     }
 }

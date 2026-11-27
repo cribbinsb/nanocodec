@@ -96,8 +96,6 @@ const MIN_EXTENSION_SIDE: usize = 64;
 /// The combination candidates in AVM order: (row source, column source)
 /// list indices (`setup_ref_mv_list`, "Add (`0_y`, `1_x`)" and so on).
 const EXTENSION_PAIRS: [(usize, usize); 6] = [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)];
-/// Spatial positions a list scans ([`ReferenceGrid::scan`]).
-const SCAN_POSITIONS: usize = 9;
 /// AVM `REF_MV_BANK_SIZE`.
 const BANK_SIZE: usize = 4;
 /// AVM `MAX_RMB_SB_HITS`: bank updates per superblock.
@@ -222,6 +220,22 @@ enum Cell {
         column: u16,
         motion: Option<Entry>,
     },
+}
+
+impl Cell {
+    fn motion(self) -> Option<Entry> {
+        match self {
+            Self::Coded { motion, .. } => motion,
+            Self::Uncoded => None,
+        }
+    }
+}
+
+/// Neighbours in AVM scan order, with the top-left above entry that the
+/// mode context always reads even when the ordered scan skips it.
+struct Spatial {
+    entries: [Option<Entry>; 9],
+    above_left: Option<Entry>,
 }
 
 /// How an inter block's vector is signalled (AVM `inter_single_mode`).
@@ -511,20 +525,10 @@ impl ReferenceGrid {
         self.cells[y as usize / CELL * (self.width / CELL) + x as usize / CELL]
     }
 
-    fn get(&self, x: i32, y: i32) -> Option<Entry> {
-        match self.cell(x, y) {
-            Cell::Coded { motion, .. } => motion,
-            Cell::Uncoded => None,
-        }
-    }
-
     /// The non-adjacent left candidate in `row`, if it belongs to a block
     /// other than the left neighbour's (AVM `is_valid_candidate`).
-    fn non_adjacent(&self, x: i32, row: i32) -> Option<Entry> {
-        match (
-            self.cell(x - NON_ADJACENT_COLUMN, row),
-            self.cell(x - 1, row),
-        ) {
+    fn non_adjacent(&self, x: i32, row: i32, left: Cell) -> Option<Entry> {
+        match (self.cell(x - NON_ADJACENT_COLUMN, row), left) {
             (Cell::Coded { column, motion }, Cell::Coded { column: inner, .. })
                 if column != inner =>
             {
@@ -636,43 +640,38 @@ impl ReferenceGrid {
         Ok(candidates)
     }
 
-    /// Reject a block whose left or above neighbour is not yet coded.
-    #[inline]
-    fn check_neighbours_coded(&self, px: i32, py: i32) -> Result<()> {
-        if px > 0 && self.cell(px - 1, py) == Cell::Uncoded
-            || py > 0 && self.cell(px, py - 1) == Cell::Uncoded
+    fn scan(&self, x: usize, y: usize, size: usize) -> Result<Spatial> {
+        let (px, py, last) = (x as i32, y as i32, size as i32 - 1);
+        let left_top = self.cell(px - 1, py);
+        let above_left = self.cell(px, py - 1);
+        if px > 0 && matches!(left_top, Cell::Uncoded)
+            || py > 0 && matches!(above_left, Cell::Uncoded)
         {
             return Err(DecodeError::Malformed("AV2 motion grid coding order"));
         }
-        Ok(())
-    }
-
-    /// The spatial candidates of the block of side `size` at `(x, y)` in
-    /// AVM scan order (`setup_ref_mv_list`): the adjacent positions (left
-    /// at the bottom row, above at the last column, left, above,
-    /// bottom-left, top-right, top-left), then the non-adjacent column at
-    /// the bottom and top rows; `None` for intra, unavailable or unscanned
-    /// positions. (An array, not an iterator chain: the scan runs for every
-    /// list the engine prices, and the chain cost ~0.5% of P frames.)
-    #[inline]
-    fn scan(&self, x: usize, y: usize, size: usize) -> [Option<Entry>; SCAN_POSITIONS] {
-        let (px, py, last) = (x as i32, y as i32, size as i32 - 1);
-        // On a superblock's top row an 8-wide block has no second above
-        // position (`get_row_smvp_states`, `BLOCK_WIDTH_8`): its first one
-        // already stands for the whole 8×8 cell above. Inside the superblock
-        // both are scanned, and the second costs a duplicate comparison.
+        let (left_bottom, above_right) = if size == CELL {
+            (left_top, above_left)
+        } else {
+            (self.cell(px - 1, py + last), self.cell(px + last, py - 1))
+        };
+        // At the top of a superblock an 8-wide block's first above
+        // position already represents the whole cell.
         let above_first_scanned = size > CELL || !y.is_multiple_of(SUPERBLOCK);
-        [
-            self.get(px - 1, py + last),
-            self.get(px + last, py - 1),
-            self.get(px - 1, py),
-            above_first_scanned.then(|| self.get(px, py - 1)).flatten(),
-            self.get(px - 1, py + last + 1),
-            self.get(px + last + 1, py - 1),
-            self.get(px - 1, py - 1),
-            self.non_adjacent(px, py + last),
-            self.non_adjacent(px, py),
-        ]
+        let above_left = above_left.motion();
+        Ok(Spatial {
+            entries: [
+                left_bottom.motion(),
+                above_right.motion(),
+                left_top.motion(),
+                above_left.filter(|_| above_first_scanned),
+                self.cell(px - 1, py + last + 1).motion(),
+                self.cell(px + last + 1, py - 1).motion(),
+                self.cell(px - 1, py - 1).motion(),
+                self.non_adjacent(px, py + last, left_bottom),
+                self.non_adjacent(px, py, left_top),
+            ],
+            above_left,
+        })
     }
 
     fn derive_candidates(
@@ -685,19 +684,19 @@ impl ReferenceGrid {
         // The block may cross the picture's right or bottom edge: its
         // neighbour positions outside the picture are simply unavailable.
         self.check_origin(x, y, size)?;
-        let (px, py, last) = (x as i32, y as i32, size as i32 - 1);
-        self.check_neighbours_coded(px, py)?;
+        let (px, py) = (x as i32, y as i32);
+        let spatial = self.scan(x, y, size)?;
         // AVM `av2_find_mode_ctx` counts neighbours on the block's
         // reference only.
         let on_reference = |entry: Option<Entry>| entry.filter(|e| e.reference == reference);
-        let left = [self.get(px - 1, py + last), self.get(px - 1, py)].map(on_reference);
-        let above = [self.get(px + last, py - 1), self.get(px, py - 1)].map(on_reference);
+        let left = [spatial.entries[0], spatial.entries[2]].map(on_reference);
+        let above = [spatial.entries[1], spatial.above_left].map(on_reference);
         let matched = |side: &[Option<Entry>; 2]| u8::from(side.iter().any(Option::is_some));
         let new = left.iter().chain(&above).flatten().any(|e| e.is_new);
         let mode_context = matched(&left) + matched(&above) + 2 * u8::from(new);
         let mut stack = Stack::default();
         let mut derived = Pruned::<Vector, DERIVED_CAPACITY>::new(DERIVED_PRUNE_COMPARISONS);
-        for entry in self.scan(x, y, size).into_iter().flatten() {
+        for entry in spatial.entries.into_iter().flatten() {
             // AVM `scan_blk_mbmi` adds nothing, projected vectors included,
             // once the list is full.
             if stack.count >= MAX_STACK {

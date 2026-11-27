@@ -2,7 +2,7 @@
 """The bitrate chart re-measured on a large held-out clip set: encodes rented, scoring here.
 
     python3 tools/dev/aws_heldout_chart.py select --clipset FILE [--count 72]
-    python3 tools/dev/aws_heldout_chart.py run --clipset FILE [--instance-type c7a.metal-48xl]
+    python3 tools/dev/aws_heldout_chart.py run --clipset FILE [--instance-type c7i.24xlarge]
         [--no-fallback]
     python3 tools/dev/aws_heldout_chart.py score --clipset FILE [--minutes 25]
     python3 tools/dev/aws_heldout_chart.py page --clipset FILE --out docs/results/heldout-chart-DATE
@@ -82,19 +82,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))
-from aws_session import THROUGHPUT_X86_TYPES, fallbacks_after, say  # noqa: E402
+from aws_session import (THROUGHPUT_X86_TYPES, BudgetExceeded, NoCapacity,  # noqa: E402
+                         fallbacks_after, say)
 from nceval import retention  # noqa: E402
 from nceval.cbr import Bench, Point  # noqa: E402
 from nceval.cbr import Family  # noqa: E402
 from nceval.encoders.nanocodec import MEDIUM  # noqa: E402
 from nceval.plotted import own_families  # noqa: E402
 from nceval.chart import (ANCHOR, OURS, REFERENCES, chart_families, low_ladder,  # noqa: E402
-                          low_rung_clips, quality_points)
+                          low_rung_clips, quality_points, upper_ladder)
 from nceval.clipframes import frames_command  # noqa: E402
 from nceval.clips import Clip, load_clipset  # noqa: E402
 from nceval.config import load_paths  # noqa: E402
 from nceval.gatepolicy import EVALUATION_GATE  # noqa: E402
 from nceval.pool import POOL_SETS, SEALED_SETS, clean_source, family_key, load_pool  # noqa: E402
+from nceval.sealing import remote_env  # noqa: E402
 from nceval.realuse import (DEFAULT_FRAMES, LADDER_KBPS, Runner,  # noqa: E402
                             clipset_clips)
 from nceval.cbr import (ANCHOR_PRESET_PREFIXES, PROFILE_SEPARATOR, clip_targets,  # noqa: E402
@@ -119,10 +121,10 @@ MIN_RUNGS = 3
 #: The sessions' default region and instance type; a session falls back through the
 #: throughput ladder after the type asked for (aws_session.THROUGHPUT_X86_TYPES:
 #: 2026-11-20, no c7a.metal-48xl in any eu-north-1 zone for two hours). The small type
-#: is for pipe-cleaners.
+#: is for pipe-cleaners. The guide's packed x86 box (docs/aws-cost-guide.md).
 REGION = "eu-north-1"
-DEFAULT_INSTANCE = "c7a.metal-48xl"
-PIPE_CLEAN_INSTANCE = "c7a.4xlarge"
+DEFAULT_INSTANCE = "c7i.24xlarge"
+PIPE_CLEAN_INSTANCE = "c7i.4xlarge"
 #: Encode workers: the launched machine's CPUs minus two (for SSH and the job runner),
 #: counted there, since a fallback type may have fewer.
 REMOTE_WORKERS = "$(( $(nproc) - 2 ))"
@@ -133,6 +135,12 @@ REMOTE_WORKERS = "$(( $(nproc) - 2 ))"
 ROOT_SYSTEM_GB = 12
 ROOT_DATA_MARGIN = 1.25
 REMOTE_DIR = "heldout"
+#: The marker of `run`'s incremental stream pulls (aws_session.Session.pulling), in out/.
+PULL_MARKER = ".pulled"
+#: The exit status of a session that never launched (no spot room within its launch
+#: wait, or no type within its budget): heldout_fleet.py launches it again later, where
+#: any other failure is a lost session, relaunched at once.
+EXIT_NO_LAUNCH = 75
 #: The decoded sources live in a tmpfs of their own (the instance's RAM, never its disk):
 #: not /dev/shm, whose files logind removes when the user's last SSH session ends.
 REMOTE_CLIPS = "/mnt/clips"
@@ -221,7 +229,8 @@ def select(args: argparse.Namespace) -> None:
     for name in (*RAW_SETS, *SEALED_SETS):
         if name != source and (paths.clips / f"{name}.json").exists():
             excluded |= {family_key(c.family) for c in
-                         load_clipset(paths.clips / f"{name}.json", paths.data_root).clips}
+                         load_clipset(paths.clips / f"{name}.json", paths.data_root,
+                                      exclusion_only=True).clips}
     usable = lambda clip: len(clip_targets(clip, LADDER_KBPS)) >= MIN_RUNGS  # noqa: E731
     clips = load_pool(paths, usable) if source == SOURCE_SET else \
         [c for c in load_clipset(paths.clips / f"{source}.json", paths.data_root).clips
@@ -333,9 +342,12 @@ class Setup:
     #: The clips that get low rungs, fixed in advance (`--low-clips`: the history page's
     #: frozen basis); None: judged by the chart's rule on the ladder (`low_rung_clips`).
     fixed_low: frozenset[str] | None = None
+    #: A key every this many frames (a key share, nceval.key_shares; before key_seconds).
+    key_frames: int | None = None
 
-    def low_rung_clips(self, curves: dict) -> list[Clip]:
-        return low_rung_clips(curves, self.judges or self.families, self.clips)
+    def low_rung_clips(self, curves: dict, clips: list[Clip] | None = None) -> list[Clip]:
+        return low_rung_clips(curves, self.judges or self.families,
+                              self.clips if clips is None else clips)
 
     def low_clips(self, rungs: tuple[int, ...] | None) -> list[Clip]:
         """The clips whose low rungs this run measures: `fixed_low`, else the chart's rule
@@ -344,15 +356,46 @@ class Setup:
             return [c for c in self.clips if c.name in self.fixed_low]
         return self.low_rung_clips(self.judge_ladder(rungs))
 
-    def judge_ladder(self, rungs: tuple[int, ...] | None) -> dict:
-        """The judges' cached ladder curves on the run's clips."""
-        return self.runner.measure("held-out ladder", self.judges or self.families, self.clips,
-                                   self.frames, rungs, self.key_seconds, budgeted=False)
+    def judge_ladder(self, rungs: tuple[int, ...] | None,
+                     clips: list[Clip] | None = None) -> dict:
+        """The judges' cached ladder curves on the run's clips (or `clips`)."""
+        return self.runner.measure("held-out ladder", self.judges or self.families,
+                                   self.clips if clips is None else clips,
+                                   self.frames, rungs, self.key_seconds, budgeted=False,
+                                   key_frames=self.key_frames)
+
+    def encode_low_clips(self, rungs: tuple[int, ...] | None) -> list[Clip]:
+        """The clips whose low rungs `run` encodes: `fixed_low`; else, clip by clip, those
+        the chart's rule puts on low rungs where the judges' whole ladder on the clip is
+        scored, and every clip where it is not (only known once scored: 2026-11-18,
+        VC-1K's scored zero lines would have rented a machine for 162 low-rung encodes no
+        score uses)."""
+        if self.fixed_low is not None:
+            return self.low_clips(rungs)
+        judges = self.judges or self.families
+        known = [c for c in self.clips
+                 if all(b.cached(p) for b, p in self.points(judges, [c], rungs))]
+        judged = {c.name for c in self.low_rung_clips(self.judge_ladder(rungs, known), known)} \
+            if known else set()
+        known_names = {c.name for c in known}
+        return [c for c in self.clips if c.name in judged or c.name not in known_names]
+
+    def predicted_low(self) -> list[Clip]:
+        """The clips whose low rungs are scored with the ladder rather than after it:
+        `fixed_low`, else those where the anchor (release-independent) has low rungs
+        already, an earlier build's judgement. Only the rest wait for their ladder to be
+        judged, so a clip's two rounds become one where the guess holds; a wrong guess
+        costs only its points' scoring (`run` coded their streams anyway)."""
+        if self.fixed_low is not None:
+            return [c for c in self.clips if c.name in self.fixed_low]
+        anchor = self.families[:1]
+        return [c for c in self.clips
+                if any(b.cached(p) for b, p in self.points(anchor, [c], ladder=low_ladder))]
 
     def points(self, families: list[Family], clips: list[Clip], rungs=None,
                ladder=None) -> list:
         return self.runner.points(families, clips, self.frames, rungs, self.key_seconds,
-                                  ladder=ladder)
+                                  ladder=ladder, key_frames=self.key_frames)
 
     def extras(self) -> list:
         """The variants' ladder and low rungs, and every family's high rungs, on the
@@ -365,7 +408,12 @@ class Setup:
                               ladder=high_ladder))
 
     def ladder(self, rungs: tuple[int, ...] | None, clips: list[Clip] | None = None) -> list:
-        return self.points(self.families, self.clips if clips is None else clips, rungs)
+        """The real-use ladder (`rungs`: those indices) and, on the whole ladder, the upper
+        rungs: every clip's points as nceval.chart.chart_jobs lists them (the low rungs are
+        `low_rungs`, on the clips the chart's rule picks)."""
+        clips = self.clips if clips is None else clips
+        upper = self.points(self.families, clips, ladder=upper_ladder) if rungs is None else []
+        return self.points(self.families, clips, rungs) + upper
 
     def low_rungs(self, clips: list[Clip] | None = None) -> list:
         return self.points(self.families, self.clips if clips is None else clips,
@@ -401,6 +449,10 @@ def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
     all_clips = clipset_clips(args.clipset, load_paths())
     clips = all_clips[:args.clips]
     extra_clips = extras_subset(clips, args.extras) if args.extras else []
+    if getattr(args, "clip_list", None):  # named clips (a fleet lane's: heldout_fleet.py)
+        named = set(clip_names(args.clip_list))
+        clips = [c for c in clips if c.name in named]
+        extra_clips = [c for c in extra_clips if c in clips]
     if getattr(args, "session", None):  # scoring sessions' clips (I/N, comma-separated)
         parts = [tuple(int(x) for x in part.split("/")) for part in args.session.split(",")]
         chosen = {c.name for index, count in parts for c in clips[index - 1::count]}
@@ -419,7 +471,15 @@ def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
                  extra_clips, extra_families(families) if args.extras else [],
                  getattr(args, "frames", None) or DEFAULT_FRAMES,
                  getattr(args, "key_seconds", None), judges,
-                 frozenset(args.low_clips.split(",")) if args.low_clips else None)
+                 frozenset(args.low_clips.split(",")) if args.low_clips else None,
+                 getattr(args, "key_frames", None))
+
+
+def clip_names(text: str) -> list[str]:
+    """`--clip-list`: comma-separated clip names, or @FILE with one name a line."""
+    if text.startswith("@"):
+        return Path(text[1:]).read_text().split()
+    return [name for name in text.split(",") if name]
 
 
 def remote_job(bench: Bench, point: Point) -> dict:
@@ -493,7 +553,8 @@ def unstage(stage_dir: Path) -> None:
     stage_dir.rmdir()
 
 
-def prepare_command(version: str, tools: list[str], clips: list[Clip], frames: int) -> str:
+def prepare_command(version: str, tools: list[str], clips: list[Clip], frames: int,
+                    decoded: str) -> str:
     """Readiness: ffmpeg and xxhash installed, every tool runs (our version stamp
     matches), every clip's frames land (in parallel, in RAM) at exactly their size: a raw
     clip's first frames copied as they are, an encoded clip decoded (decode_line)."""
@@ -514,8 +575,8 @@ def prepare_command(version: str, tools: list[str], clips: list[Clip], frames: i
         f"sudo mkdir -p {REMOTE_CLIPS}",
         f"sudo mount -t tmpfs -o size={tmpfs_mb(clips, frames)}m,mode=1777 tmpfs {REMOTE_CLIPS}",
         f"xargs -P $(nproc) -L 1 bash -c {shlex.quote(decode)} _ < decode.txt "
-        "> out/decoded.sha256",
-        "echo decoded $(wc -l < out/decoded.sha256) of $(wc -l < decode.txt) clips",
+        f"> out/{decoded}",
+        f"echo decoded $(wc -l < out/{decoded}) of $(wc -l < decode.txt) clips",
         "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs | tee out/platform.txt",
     ])
 
@@ -545,14 +606,14 @@ def encoded_bytes(jobs: list) -> int:
     (rate-controlled, so its target bounds it), the low rungs included; QP points
     (no rate) at the ladder's top rung."""
     top = max(LADDER_KBPS)
-    return sum(int((point.kbps or top) * 1000 / 8 * min(DEFAULT_FRAMES, point.clip.frames)
-                   / point.clip.fps) for _, point in jobs)
+    return sum(int((point.kbps or top) * 1000 / 8 * min(bench.frames, point.clip.frames)
+                   / point.clip.fps) for bench, point in jobs)
 
 
-def check_decodes(streams: Path, clips: list[Clip], frames: int) -> None:
+def check_decodes(streams: Path, clips: list[Clip], frames: int, decoded: str) -> None:
     """The remote frames of the first DECODE_CHECKS clips equal the frames read here."""
     remote = {Path(line.split()[1]).stem: line.split()[0]
-              for line in (streams / "decoded.sha256").read_text().splitlines()}
+              for line in (streams / decoded).read_text().splitlines()}
     for clip in clips[:DECODE_CHECKS]:
         command = frames_command(clip, min(frames, clip.frames))
         local = hashlib.sha256(subprocess.run(command, capture_output=True, check=True)
@@ -562,41 +623,43 @@ def check_decodes(streams: Path, clips: list[Clip], frames: int) -> None:
     say(f"remote decodes of {DECODE_CHECKS} clips equal local decodes")
 
 
+def encode_todo(run_setup: Setup, rungs: tuple[int, ...] | None, streams: Path) -> list:
+    """The encodes a run still needs: the ladder, the low rungs (Setup.encode_low_clips)
+    and the extras, less every point scored here or whose encode came back already (a
+    rerun encodes only what an earlier, stopped session did not bring back)."""
+    jobs = (run_setup.ladder(rungs) + run_setup.low_rungs(run_setup.encode_low_clips(rungs))
+            + run_setup.extras())
+    todo = [j for j in jobs if not j[0].cached(j[1])
+            and not Path(f"{streams / j[0].prebuilt_key(j[1])}.done").exists()]
+    if len(todo) < len(jobs):
+        say(f"{len(jobs) - len(todo)} of {len(jobs)} encodes scored or already here: skipped")
+    return todo
+
+
 def run(args: argparse.Namespace) -> None:
     from aws_session import Session, SessionSpec  # boto3: only where sessions start
 
     run_setup = setup(args)
     clips = run_setup.clips
-    # every clip's low rungs too: which clips need them is only known once scored here;
-    # once the whole ladder is scored, only the clips that need them (score-cloud's rule:
-    # 2026-11-18, VC-1K's scored zero lines would have rented a machine for 162 low-rung
-    # encodes no score uses)
-    ladder = run_setup.ladder(args.rungs)
-    low = (run_setup.low_rungs(run_setup.low_clips(args.rungs))
-           if run_setup.fixed_low is not None or all(bench.cached(point) for bench, point in ladder)
-           else run_setup.low_rungs())
-    jobs = ladder + low + run_setup.extras()
     streams = Path(args.streams)
-    # a rerun encodes only what an earlier, stopped session did not bring back
-    # neither a point already scored here nor one whose encode came back is encoded again
-    todo = [j for j in jobs if not j[0].cached(j[1])
-            and not Path(f"{streams / j[0].prebuilt_key(j[1])}.done").exists()]
-    if len(todo) < len(jobs):
-        say(f"{len(jobs) - len(todo)} of {len(jobs)} encodes scored or already here: skipped")
-        jobs = todo
+    jobs = encode_todo(run_setup, args.rungs, streams)
     if not jobs:  # nothing to encode: no instance (2026-11-15, one was rented for none)
         return
     tools = {p.family.tool.name: p.family.tool for _, p in jobs}
     version = subprocess.run([str(tools["nanocodec"]), "--version"], capture_output=True,
                              text=True, check=True).stdout.strip() if "nanocodec" in tools else ""
-    stage_dir = streams.parent / f"stage-{time.strftime('%Y%m%d-%H%M%S')}"
+    # the pid too: a fleet's lanes start their sessions in the same second
+    stage_dir = streams.parent / f"stage-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    # the session's own decode hashes: a fleet's lanes share one streams directory
+    decoded = f"decoded-{stage_dir.name}.sha256"
     stage(stage_dir, jobs, clips, tools, run_setup.frames)
     try:
         upload_mb = sum(p.resolve().stat().st_size for p in stage_dir.rglob("*")
                         if p.is_symlink() or p.is_file()) / 1e6
         say(f"{len(jobs)} encodes, {len(clips)} clips, {len(tools)} tools, "
             f"upload {upload_mb:.0f} MB")
-        stages = [("prepare", prepare_command(version, list(tools), clips, run_setup.frames), PREPARE_MINUTES, 0),
+        stages = [("prepare", prepare_command(version, list(tools), clips, run_setup.frames,
+                                              decoded), PREPARE_MINUTES, 0),
                   ("pipe-cleaner", f"cd ~/{REMOTE_DIR} && python3 remote_jobs.py --jobs "
                    f"pipe.json --workers {REMOTE_WORKERS}", PIPE_MINUTES, 0),
                   ("encode", f"cd ~/{REMOTE_DIR} && python3 remote_jobs.py --jobs jobs.json "
@@ -611,28 +674,26 @@ def run(args: argparse.Namespace) -> None:
         spec = SessionSpec(region=args.region or REGION, instance_type=args.instance_type,
                            arch="amd64", purpose=args.purpose or "heldout-chart",
                            lifetime_minutes=args.lifetime, budget_usd=args.budget,
-                           root_gb=root, fallback_types=fallbacks(args))
+                           root_gb=root, fallback_types=fallbacks(args),
+                           launch_wait_minutes=args.launch_wait, on_demand=args.on_demand)
         timings = {}
         with Session(spec) as session:
             started = time.monotonic()
             session.upload(stage_dir, f"~/{REMOTE_DIR}")
             timings["upload"] = time.monotonic() - started
-            try:
+            # finished encodes come back as they finish, and the rest on the way out
+            # (a lost box keeps what came back: its rerun skips those encodes)
+            with session.pulling(f"~/{REMOTE_DIR}/out", streams, PULL_MARKER):
                 for name, command, minutes, max_errors in stages:
                     started = time.monotonic()
                     say(f"remote: {name}")
                     session.run_detached(command, f"~/{REMOTE_DIR}/{name}.log", minutes,
                                          max_errors=max_errors)
                     timings[name] = time.monotonic() - started
-            finally:  # whatever finished comes back before the instance goes
-                started = time.monotonic()
-                session.download(f"~/{REMOTE_DIR}/out", streams)
-                timings["download"] = time.monotonic() - started
-                say("stage minutes: " + ", ".join(f"{k} {v / 60:.1f}"
-                                                  for k, v in timings.items()))
+            say("stage minutes: " + ", ".join(f"{k} {v / 60:.1f}" for k, v in timings.items()))
     finally:
         unstage(stage_dir)
-    check_decodes(streams, clips, run_setup.frames)
+    check_decodes(streams, clips, run_setup.frames, decoded)
     failed = sorted(streams.rglob("*.failed"))
     say(f"{len(failed)} failed encodes" + "".join(f"\n  {p.relative_to(streams)}"
                                                   for p in failed[:20]))
@@ -650,6 +711,9 @@ def score(args: argparse.Namespace) -> None:
     for phase in args.phases.split(","):
         if phase == "ladder":
             todo = uncached(run.ladder(args.rungs))
+            if "low" in args.phases:  # the predicted low rungs ride along (predicted_low)
+                todo += [j for j in uncached(run.low_rungs(run.predicted_low()))
+                         if j[0].has_prebuilt(j[1])]
         elif phase == "extras":
             todo = uncached(run.extras())
         elif uncached(run.ladder(args.rungs)):
@@ -690,7 +754,8 @@ def score_cloud(args: argparse.Namespace) -> None:
     and only the result files come back, into this machine's point cache."""
     from aws_session import Session, SessionSpec  # boto3: only where sessions start
 
-    CLOUD_RESULTS.mkdir(parents=True, exist_ok=True)  # the seed (none on a first session)
+    results = Path(args.cloud_results)
+    results.mkdir(parents=True, exist_ok=True)  # the seed (none on a first session)
     run = setup(args)
     pending = [j for j in run.ladder(args.rungs) + run.extras() if not j[0].cached(j[1])]
     if not pending:  # the ladder is all here: are its low rungs too? (score's rule)
@@ -704,7 +769,7 @@ def score_cloud(args: argparse.Namespace) -> None:
                       capture_output=True, text=True, check=True).stdout.strip():
         raise SystemExit("commit eval/ and tools/ first: the remote runs this repository's HEAD")
     stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"  # sessions run side by side
-    stage_dir = DATA / "work/heldout-chart" / f"score-stage-{stamp}"
+    stage_dir = Path(args.streams).parent / f"score-stage-{stamp}"
     try:
         # the judges too: they decide the low rungs, so their builds and tools go up
         judged = run.families + [f for f in run.judges or [] if f not in run.families]
@@ -713,7 +778,9 @@ def score_cloud(args: argparse.Namespace) -> None:
         unstage_score(stage_dir)
         raise
     remote_clipset = f"~/nanocodec-data/clips/{Path(args.clipset).name}"
-    score_command = (f"cd ~/repo && {METRICS_ENV} python3 tools/dev/aws_heldout_chart.py score "
+    # a release measurement of a sealed set (nceval.sealing) is one on the box as well
+    score_command = (f"cd ~/repo && {remote_env()}{METRICS_ENV} python3 "
+                     "tools/dev/aws_heldout_chart.py score "
                      f"--clipset {remote_clipset} --streams ~/nanocodec-data/{STREAMS_REL}"
                      + remote_options(args))
     shards = min(len(run.clips), MAX_SHARDS)
@@ -762,35 +829,30 @@ def score_cloud(args: argparse.Namespace) -> None:
     spec = SessionSpec(region=args.region or REGION, instance_type=args.instance_type,
                        arch="amd64", purpose=args.purpose or "heldout-score",
                        lifetime_minutes=args.lifetime, budget_usd=args.budget, root_gb=root,
-                       fallback_types=fallbacks(args))
-    results = CLOUD_RESULTS
-    results.mkdir(parents=True, exist_ok=True)
+                       fallback_types=fallbacks(args), launch_wait_minutes=args.launch_wait,
+                       on_demand=args.on_demand)
     retention.ensure_entry_marker(results)
     timings = {}
-    brought: list[Path] = []  # this session's result files, as they come back
+    cache = load_paths().work / RESULTS_REL
     try:
         with Session(spec) as session:
             started = time.monotonic()
             session.upload(stage_dir, "~")
             timings["upload"] = time.monotonic() - started
-            try:
+            # each result comes back and into this PC's point cache within a minute of
+            # being scored (Session.pulling), so a lost box loses minutes, not a round
+            with session.pulling(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER,
+                                 lambda files: merge_results(results, cache, files)):
                 for name, command, minutes in stages:
                     started = time.monotonic()
                     say(f"remote: {name}")
                     session.run_detached(command, f"~/{name}.log", minutes,
                                          stall_minutes=SCORE_STALL_MINUTES)
                     timings[name] = time.monotonic() - started
-                score_rounds(session, score_round, args.minutes, results, run.frames, brought)
-            finally:
-                started = time.monotonic()
-                session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER,
-                                     brought)
-                timings["download"] = time.monotonic() - started
-                say("stage minutes: " + ", ".join(f"{k} {v / 60:.1f}" for k, v in
-                                                  timings.items()))
+                score_rounds(session, score_round, args.minutes, run.frames)
+            say("stage minutes: " + ", ".join(f"{k} {v / 60:.1f}" for k, v in timings.items()))
     finally:
         unstage_score(stage_dir)
-    merge_results(results, load_paths().work / RESULTS_REL, brought)
 
 
 def fallbacks(args: argparse.Namespace) -> tuple[str, ...]:
@@ -798,26 +860,20 @@ def fallbacks(args: argparse.Namespace) -> tuple[str, ...]:
     return () if args.no_fallback else fallbacks_after(args.instance_type)
 
 
-def score_rounds(session, command: str, minutes: float, results: Path, frames: int,
-                 brought: list[Path]) -> None:
-    """Score in rounds until no shard has points left or `minutes` have passed, each
-    round's new results brought back and merged here (a checkpoint). A round ends when
-    its shards finish the points they started, so its limit allows for the longest
-    point (ROUND_GRACE_MINUTES per 150 frames)."""
+def score_rounds(session, command: str, minutes: float, frames: int) -> None:
+    """Score in rounds until no shard has points left or `minutes` have passed (the
+    results come back as they land: Session.pulling). A round ends when its shards
+    finish the points they started, so its limit allows for the longest point
+    (ROUND_GRACE_MINUTES per 150 frames)."""
     started = time.monotonic()
     limit = CHECKPOINT_MINUTES + ROUND_GRACE_MINUTES * max(1.0, frames / DEFAULT_FRAMES)
     for round_index in itertools.count(1):
         log = f"~/score-{round_index}.log"
         say(f"remote: score round {round_index}")
         session.run_detached(command, log, limit, stall_minutes=SCORE_STALL_MINUTES)
-        back: list[Path] = []
-        moved = session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER,
-                                     back)
-        brought.extend(back)
-        merge_results(results, load_paths().work / RESULTS_REL, back)
         left = session.ssh(f"grep -c 'run score again' {log} || true", quiet=True,
                            check=False).stdout.strip()
-        say(f"round {round_index}: {moved / 1e6:.0f} MB back, {left or 0} shard phases unfinished")
+        say(f"round {round_index}: {left or 0} shard phases unfinished")
         if left in ("", "0") or time.monotonic() - started > minutes * 60:
             return
 
@@ -839,12 +895,16 @@ def remote_options(args: argparse.Namespace) -> str:
         options += f" --extras {args.extras}"
     if args.session:
         options += f" --session {args.session}"
+    if args.clip_list:
+        options += f" --clip-list {shlex.quote(','.join(clip_names(args.clip_list)))}"
     if args.low_clips:
         options += f" --low-clips {shlex.quote(args.low_clips)}"
     if args.frames != DEFAULT_FRAMES:
         options += f" --frames {args.frames}"
     if args.key_seconds:
         options += f" --key-seconds {args.key_seconds:g}"
+    if getattr(args, "key_frames", None):
+        options += f" --key-frames {args.key_frames}"
     return options
 
 
@@ -853,7 +913,11 @@ def stage_score(stage_dir: Path, args: argparse.Namespace, clips: list[Clip],
     """The remote home: repo.tar (this repository at HEAD: eval code, this tool, the
     chart's records, the anchors' pinned versions) and, as symlinks, ~/nanocodec-data
     (clip set, stored clips, anchor tools, the families' builds, and the streams and
-    seed results of this session's clips only)."""
+    seed results of this session's clips and families only). The seed is this PC's
+    point cache, the store itself: a point scored here by any earlier run (a local
+    render's reference, a cloud session's result merged in) is cached there too, so it
+    is neither scored again nor judged without (the cloud results alone missed every
+    point measured here, and a missing one has no stream to score from there)."""
     data = stage_dir / "nanocodec-data"
     stage_dir.mkdir(parents=True)
     subprocess.run(["git", "-C", str(REPO), "archive", "-o", str(stage_dir / REPO_ARCHIVE),
@@ -865,14 +929,18 @@ def stage_score(stage_dir: Path, args: argparse.Namespace, clips: list[Clip],
     streams = Path(args.streams)
     links.update({data / STREAMS_REL / p.name: p for p in streams.iterdir() if p.is_file()})
     (data / SEED_REL).mkdir(parents=True)  # the seed may hold none of these clips
+    cache = load_paths().work / RESULTS_REL
+    windows = [w for w in cache.iterdir() if w.is_dir()] if cache.is_dir() else []
     for clip in clips:
         links[data / clip.yuv.relative_to(DATA)] = clip.yuv
         if (streams / clip.name).is_dir():
             links[data / STREAMS_REL / clip.name] = streams / clip.name
-        # the seed's results by window, then clip (cbr.Bench.point_dir)
-        for window in CLOUD_RESULTS.iterdir():
-            if (window / clip.name).is_dir():
-                links[data / SEED_REL / window.name / clip.name] = window / clip.name
+        # the cached results by window, clip, then family (cbr.Bench.point_dir)
+        for window in windows:
+            for family in families:
+                found = window / clip.name / family.name
+                if found.is_dir():
+                    links[data / SEED_REL / window.name / clip.name / family.name] = found
     for build in {family.tool.parent for family in families if family.own}:
         # each family's build (`--build` or the record's) where the remote looks for it
         for part in (SCORING_BINARY, "presets"):
@@ -1035,7 +1103,7 @@ def page_text(rows: list[dict], clips: list[Clip], quality, args, common: float)
     return "\n".join(lines)
 
 
-def main(argv: list[str]) -> None:
+def main_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     s = sub.add_parser("select")
@@ -1065,8 +1133,13 @@ def main(argv: list[str]) -> None:
                        help="frames per point (a longer window than the chart's 150)")
         p.add_argument("--key-seconds", type=float,
                        help="a key every this many seconds (default: one key, the chart's)")
+        p.add_argument("--key-frames", type=int,
+                       help="a key every this many frames (a key share, nceval.key_shares; "
+                            "before --key-seconds)")
         p.add_argument("--low-clips", help="comma-separated clips that get the low rungs, "
                        "instead of the chart's rule (the history page's frozen basis)")
+        p.add_argument("--clip-list", help="only these clips of the set: comma-separated "
+                       "names or @FILE (a fleet lane's, tools/dev/heldout_fleet.py)")
     for name in ("run", "score-cloud"):
         cloud = sub.choices[name]
         cloud.add_argument("--instance-type", default=DEFAULT_INSTANCE, choices=sorted(
@@ -1076,6 +1149,12 @@ def main(argv: list[str]) -> None:
                                 "it when it has no capacity)")
         cloud.add_argument("--region", help="another region than the default (a second "
                            "region's spot quota lets more sessions run side by side)")
+        cloud.add_argument("--on-demand", action="store_true",
+                           help="on-demand instances (no spot quota wait; a release or an "
+                                "urgent re-measure, at the on-demand price)")
+        cloud.add_argument("--launch-wait", type=float, default=90.0,
+                           help="minutes to wait for spot quota before failing (exit "
+                                f"{EXIT_NO_LAUNCH})")
     r = sub.choices["run"]
     r.add_argument("--budget", type=float, default=15.0)
     r.add_argument("--lifetime", type=int, default=90, help="hard instance lifetime, min")
@@ -1101,11 +1180,21 @@ def main(argv: list[str]) -> None:
                    "Ith (and Jth) (sessions run side by side)")
     c.add_argument("--minutes", type=float, default=RUN_MINUTES,
                    help="each shard starts no point after this long (resumable)")
+    c.add_argument("--cloud-results", default=str(CLOUD_RESULTS),
+                   help="where the result files land as they come back (and the seed)")
     sub.choices["page"].add_argument("--out", required=True,
                                      help="output stem (OUT.md, OUT.csv)")
-    args = parser.parse_args(argv)
-    {"select": select, "run": run, "score": score, "score-cloud": score_cloud,
-     "page": page}[args.command](args)
+    return parser
+
+
+def main(argv: list[str]) -> None:
+    args = main_parser().parse_args(argv)
+    try:
+        {"select": select, "run": run, "score": score, "score-cloud": score_cloud,
+         "page": page}[args.command](args)
+    except (NoCapacity, BudgetExceeded) as error:  # nothing was rented
+        say(f"NO LAUNCH: {error}")
+        sys.exit(EXIT_NO_LAUNCH)
 
 
 if __name__ == "__main__":

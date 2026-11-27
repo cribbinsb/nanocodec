@@ -182,30 +182,77 @@ pub(crate) fn inverse_dct<B: DctBasis, V: I32Lanes, const N: usize>(
     }
 }
 
+/// Arithmetic of an exact forward butterfly. The folded inputs and the
+/// multiply-accumulators can have different widths.
+pub(crate) trait ForwardLanes<B: DctBasis>: Copy {
+    type Output: Copy;
+    type Weight: Copy;
+    const ODD2: [[Self::Weight; 1]; 1];
+    const ODD4: [[Self::Weight; 2]; 2];
+    const ODD8: [[Self::Weight; 4]; 4];
+    const ODD16: [[Self::Weight; 8]; 8];
+    const ODD32: [[Self::Weight; 16]; 16];
+    const ODD64: Option<[[Self::Weight; 32]; 32]>;
+    fn zero() -> Self;
+    fn fold(self, other: Self) -> (Self, Self);
+    fn dot<const H: usize>(input: &[Self; H], weights: &[Self::Weight; H]) -> Self::Output;
+    fn dc(self) -> Self::Output;
+}
+
+impl<B: DctBasis, V: I32Lanes> ForwardLanes<B> for V {
+    type Output = Self;
+    type Weight = i32;
+    const ODD2: [[i32; 1]; 1] = B::ODD2;
+    const ODD4: [[i32; 2]; 2] = B::ODD4;
+    const ODD8: [[i32; 4]; 4] = B::ODD8;
+    const ODD16: [[i32; 8]; 8] = B::ODD16;
+    const ODD32: [[i32; 16]; 16] = B::ODD32;
+    const ODD64: Option<[[i32; 32]; 32]> = B::ODD64;
+
+    #[inline(always)]
+    fn zero() -> Self {
+        Self::splat(0)
+    }
+
+    #[inline(always)]
+    fn fold(self, other: Self) -> (Self, Self) {
+        (self.add(other), self.sub(other))
+    }
+
+    #[inline(always)]
+    fn dot<const H: usize>(input: &[Self; H], weights: &[i32; H]) -> Self {
+        dot(input, weights)
+    }
+
+    #[inline(always)]
+    fn dc(self) -> Self {
+        self.mul_scalar(B::DC)
+    }
+}
+
 /// One level of [`forward_dct`]: fold the `2H` working values into the sums
 /// `x[i] + x[2H − 1 − i]` (the next, half-size level's input) and the
 /// differences, whose products with the odd basis vectors are the outputs at
 /// odd multiples of `step` below `outputs`.
 #[inline(always)]
-fn forward_level<V: I32Lanes, const H: usize>(
-    odd_matrix: &[[i32; H]; H],
+fn forward_level<B: DctBasis, V: ForwardLanes<B>, const H: usize>(
+    odd_matrix: &[[V::Weight; H]; H],
     sums: &mut [V],
     step: usize,
     outputs: usize,
-    y: &mut [V],
+    y: &mut [V::Output],
 ) {
-    let mut differences = [V::splat(0); H];
+    let mut differences = [V::zero(); H];
     for (i, difference) in differences.iter_mut().enumerate() {
         let (a, b) = (sums[i], sums[2 * H - 1 - i]);
-        sums[i] = a.add(b);
-        *difference = a.sub(b);
+        (sums[i], *difference) = a.fold(b);
     }
     for (r, row) in odd_matrix.iter().enumerate() {
         let k = (2 * r + 1) * step;
         if k >= outputs {
             break;
         }
-        y[k] = dot(&differences, row);
+        y[k] = V::dot(&differences, row);
     }
 }
 
@@ -213,30 +260,30 @@ fn forward_level<V: I32Lanes, const H: usize>(
 /// `y[..outputs]` are computed (the rest are left unchanged): levels from
 /// `N` points down to two, then the DC.
 #[inline(always)]
-pub(crate) fn forward_dct<B: DctBasis, V: I32Lanes, const N: usize>(
+pub(crate) fn forward_dct<B: DctBasis, V: ForwardLanes<B>, const N: usize>(
     x: &[V; N],
-    y: &mut [V; N],
+    y: &mut [V::Output; N],
     outputs: usize,
 ) {
     let mut sums = *x;
     if N >= 64 {
-        let Some(odd64) = &B::ODD64 else {
+        let Some(odd64) = &V::ODD64 else {
             unreachable!("no 64-point DCT in this basis")
         };
-        forward_level(odd64, &mut sums, N / 64, outputs, y);
+        forward_level::<B, V, _>(odd64, &mut sums, N / 64, outputs, y);
     }
     if N >= 32 {
-        forward_level(&B::ODD32, &mut sums, N / 32, outputs, y);
+        forward_level::<B, V, _>(&V::ODD32, &mut sums, N / 32, outputs, y);
     }
     if N >= 16 {
-        forward_level(&B::ODD16, &mut sums, N / 16, outputs, y);
+        forward_level::<B, V, _>(&V::ODD16, &mut sums, N / 16, outputs, y);
     }
     if N >= 8 {
-        forward_level(&B::ODD8, &mut sums, N / 8, outputs, y);
+        forward_level::<B, V, _>(&V::ODD8, &mut sums, N / 8, outputs, y);
     }
     if N >= 4 {
-        forward_level(&B::ODD4, &mut sums, N / 4, outputs, y);
+        forward_level::<B, V, _>(&V::ODD4, &mut sums, N / 4, outputs, y);
     }
-    forward_level(&B::ODD2, &mut sums, N / 2, outputs, y);
-    y[0] = sums[0].mul_scalar(B::DC);
+    forward_level::<B, V, _>(&V::ODD2, &mut sums, N / 2, outputs, y);
+    y[0] = sums[0].dc();
 }

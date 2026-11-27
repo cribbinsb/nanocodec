@@ -61,8 +61,7 @@ RATIO_TOLERANCE = 0.20
 #: medium, the Default), with the quality-first rungs (slower, slow) before it:
 #: nceval.encoders.nanocodec.LADDER reversed.
 PRESET_ORDER = ("veryslow", "slower", "slow", "", "fast", "faster", "veryfast")
-#: The instruction check's clip and length (crowd: the timing set's middle clip).
-CALLGRIND_CLIP = "crowd_mot17_09"
+#: The instruction check's length, on one plan entry (its middle one: a mid-ladder rung).
 CALLGRIND_FRAMES = 30
 #: Concurrent callgrind runs (each one core; ~30 s per preset).
 CALLGRIND_JOBS = 4
@@ -137,16 +136,20 @@ def callgrind_instructions(argv: list[str], binary: Path, clip: Path) -> int:
 def instruction_flags(fps: dict[str, tuple[float, float]],
                       groups: dict[str, list[str]]) -> tuple[list[str], dict[str, int]]:
     sys.path.insert(0, str(REPO / "eval"))
-    from nceval.config import load_paths
-    from nceval.realuse import main_clips
+    from nceval.chart import chart_clips
+    from nceval.chart_timing import load_plan
 
-    clip = main_clips(load_paths())[CALLGRIND_CLIP].yuv
-    plan = json.loads(PLAN_FILE.read_text())["points"]
+    stored = load_plan(PLAN_FILE)
+    keys = list(stored["clips"])
+    name = keys[len(keys) // 2]
+    clip_name = stored["inputs"][name]
+    clip = next(c for c in chart_clips(stored["clipset"]) if c.name == clip_name).yuv
+    plan = stored["points"]
     record = json.loads(BUILDS_FILE.read_text())
     families = [f for fs in groups.values() for f in fs]
     with ThreadPoolExecutor(CALLGRIND_JOBS) as pool:
         counts = dict(zip(families, pool.map(
-            lambda f: callgrind_instructions(plan[f][CALLGRIND_CLIP]["argv"],
+            lambda f: callgrind_instructions(plan[f][name]["argv"],
                                              timed_binary(f, record), clip), families)))
     flags = []
     for members in groups.values():
@@ -183,7 +186,7 @@ def check(codecs: set[str] | None, instructions: bool = True) -> list[str]:
         instruction_list, counts = instruction_flags(fps, groups)
         flags += instruction_list
         for family, count in counts.items():
-            print(f"  {family:30s} {count / 1e9:6.2f}G instructions ({CALLGRIND_CLIP}, "
+            print(f"  {family:30s} {count / 1e9:6.2f}G instructions (the plan's middle entry, "
                   f"{CALLGRIND_FRAMES} frames), x86 {fps[family][1]:.1f}, "
                   f"Jetson {fps[family][0]:.1f} fps", flush=True)
     return flags

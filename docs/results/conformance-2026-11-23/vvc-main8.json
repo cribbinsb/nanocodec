@@ -1,0 +1,65 @@
+{
+  "8b400_A_2": {
+    "bytes": 19568640,
+    "error": "",
+    "expected_md5": "87e14541c2b6568a109a5505c73950db",
+    "md5": "87e14541c2b6568a109a5505c73950db",
+    "status": "pass"
+  },
+  "8b400_B_2": {
+    "bytes": 101606400,
+    "error": "",
+    "expected_md5": "7fc9d86c78d08a8cdcaf097367ad2754",
+    "md5": "7fc9d86c78d08a8cdcaf097367ad2754",
+    "status": "pass"
+  },
+  "8b420_A_2": {
+    "bytes": 29352960,
+    "error": "",
+    "expected_md5": "da63784a3f1adb4eb171a0207e7c8d0f",
+    "md5": "da63784a3f1adb4eb171a0207e7c8d0f",
+    "status": "pass"
+  },
+  "8b420_B_2": {
+    "bytes": 152409600,
+    "error": "",
+    "expected_md5": "8bf6496f8768b68d8aa1106a89d3e38a",
+    "md5": "8bf6496f8768b68d8aa1106a89d3e38a",
+    "status": "pass"
+  },
+  "CodingToolsSets_A_2": {
+    "bytes": 299520,
+    "error": "",
+    "expected_md5": "fda2476f1f0ca046c0b3428689db314c",
+    "md5": "fda2476f1f0ca046c0b3428689db314c",
+    "status": "pass"
+  },
+  "CodingToolsSets_B_2": {
+    "bytes": 1347840,
+    "error": "",
+    "expected_md5": "ef5596c9a128c97b9511c215a12dbc35",
+    "md5": "ef5596c9a128c97b9511c215a12dbc35",
+    "status": "pass"
+  },
+  "LOSSLESS_A_3": {
+    "bytes": 14976000,
+    "error": "",
+    "expected_md5": "b2b6a0a09e171c00b9df9c620cf47b7d",
+    "md5": "b2b6a0a09e171c00b9df9c620cf47b7d",
+    "status": "pass"
+  },
+  "QUANT_C_2": {
+    "bytes": 4147200,
+    "error": "",
+    "expected_md5": "1451088ca92ef66af7cb03f13d7e11ad",
+    "md5": "1451088ca92ef66af7cb03f13d7e11ad",
+    "status": "pass"
+  },
+  "QUANT_D_4": {
+    "bytes": 1797120,
+    "error": "",
+    "expected_md5": "08dc6d75369d466436b179ba13de71b3",
+    "md5": "08dc6d75369d466436b179ba13de71b3",
+    "status": "pass"
+  }
+}

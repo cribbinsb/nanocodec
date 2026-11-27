@@ -1,0 +1,13 @@
+# intra-cheap batch 5: cheap settings that pay for the gated key search (stacks)
+null: planner.intra_bias=1050
+x: vp9.intra_tx_depth=0
+x_s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vp9.intra_tx_depth=0
+x_s1: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 vp9.intra_tx_depth=0
+x_s2_tr: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vp9.intra_tx_depth=0 vp9.intra_rd_trellis=1
+s2_tr: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vp9.intra_rd_trellis=1
+tr: vp9.intra_rd_trellis=1
+tx1: vp9.intra_tx_depth=1
+tx1_s2_tr: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vp9.intra_tx_depth=1 vp9.intra_rd_trellis=1
+x_krd12: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vp9.intra_tx_depth=0
+s3_tr: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=3 planner.key_rd_margin=1.2 vp9.intra_rd_trellis=1
+x_s2_g150_tr_rdc5: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 vp9.intra_tx_depth=0 vp9.intra_rd_trellis=1 vp9.intra_rd_candidates=5

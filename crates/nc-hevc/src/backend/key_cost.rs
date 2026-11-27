@@ -21,7 +21,6 @@ use super::{HevcBackend, Scratch, transform_units};
 use crate::headers::LOG2_MIN_CB;
 use crate::predict::{self, ModeCode};
 use crate::scan::{ScanKind, coded_sub_blocks};
-use crate::transform::forward_bound;
 
 /// The forward transform's coefficients are `2^(7 − log2 n)` times the
 /// orthonormal ones (HM scaling, 8-bit: `15 − BitDepth − log2 n`).
@@ -84,7 +83,7 @@ impl HevcBackend {
     /// coefficients (`Σ (c − c′)²` scaled back to samples by the forward
     /// transform's gain): HEVC's DCT is orthogonal to within rounding, and
     /// this saves the inverse transform. An inter residual the SAD bound
-    /// proves zero (`pre_transform_zero_limit`, as `code_residual`) is not
+    /// proves zero (`pre_transform_sad_limit`, as `code_residual`) is not
     /// transformed.
     pub(super) fn luma_residual_cost(
         &self,
@@ -109,9 +108,7 @@ impl HevcBackend {
         } = &mut *scratch;
         let area = n * n;
         let abs_sum = self.dsp.residual_sad(size, src, pred, &mut residual[..], n);
-        if mode.is_none()
-            && forward_bound(log2, u64::from(abs_sum)) <= quantization.pre_transform_zero_limit
-        {
+        if mode.is_none() && abs_sum < quantization.pre_transform_sad_limit {
             return LumaCost {
                 distortion: residual[..area]
                     .iter()
@@ -123,9 +120,7 @@ impl HevcBackend {
         }
         self.dsp
             .hevc_forward(transform, &residual[..area], n, &mut coeffs[..area]);
-        let nonzero = self
-            .dsp
-            .hevc_quantize_from(&coeffs[..area], quantizer, &mut levels[..area]);
+        let nonzero = quantization.quantize(&self.dsp, &coeffs[..area], &mut levels[..area]);
         let mut bits = self.bin_bits(self.contexts.cbf_luma[1], nonzero > 0);
         let gain_shift = 2 * (FORWARD_GAIN_LOG2 - u32::from(log2));
         let error = if nonzero == 0 {

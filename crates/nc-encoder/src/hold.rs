@@ -56,6 +56,44 @@
 //! reuse term (`reuse.rs`) refines still content only in coded frames, and
 //! holding would freeze the poor picture. Upper-layer and cadence frames are
 //! coarser by design and do not count.
+//!
+//! **Spare-budget refinement** (`hold.refine_fullness`, rate control only).
+//! A scene that becomes exactly still after motion (a webcam whose subject
+//! stops or leaves) is otherwise held at the quality it had while it moved,
+//! with the budget of every held frame unspent: the inter level does not
+//! move while nothing is coded, so the coarser-key test above never fires
+//! (scene-sanity 2026-11-22, the demo's waving-hand scene, 854x480 CBR
+//! 400 kbps: the still room stayed at 35-37 dB luma for its 2.5 s, against
+//! 42-43 dB with every frame coded, at 348-354 against 400 kbps). With it, a
+//! repeat that would be held, and that repeats a repeat (the source has
+//! stopped; a repeat source alternates new and repeated frames and keeps
+//! its holds), is coded instead, as an ordinary inter frame
+//! that rate control budgets (the held time's budget included) and the reuse
+//! term refines, while the receiver's buffer is below that share of its
+//! capacity, so the bits stay under the CBR ceiling. The first refinement
+//! frames cost little: rate control lowers the inter level only as cheap
+//! frames leave budget unspent, and over several frames. So refinement ends
+//! after [`REFINE_PATIENCE`] refinement frames in a row each take under
+//! [`REFINE_DONE_SHARE`] of an inter budget without the inter level getting
+//! finer (the level floor or the quality cap reached): the repeats after
+//! them are held until a frame that is not a repeat is coded.
+//!
+//! **Repeat frames** (`hold.code_skip`). Encoders that code every input
+//! frame (the reference encoders of the benchmark procedure) are compared
+//! with streams that carry one picture per input frame. With it on, a held
+//! frame is coded instead as a repeat frame: an ordinary inter frame in the
+//! structure (it takes a frame index, a layer place and a key-period place,
+//! refreshes its reference slots and rate control charges its bits), every
+//! block of which the backend codes as its skip at the zero vector on the
+//! primary reference, with no residual (H.264 `P_Skip`, HEVC/VVC skip CUs,
+//! AV1/AV2/VP9 skip blocks), at the largest leaf size, with the in-loop
+//! filters off, so its picture is a copy of the reference and it costs the
+//! codec's frame header plus a few bits a block. A frame is coded as a
+//! repeat only where its reference is the frame just before it (a flat
+//! chain, or a layered frame one frame on from its reference) and intra
+//! refresh is off; elsewhere the held frame is coded as usual, so the
+//! decoder never shows an older picture. A repeat frame is not a
+//! refinement frame: it leaves spare-budget refinement where it was.
 
 use nc_analysis::preanalysis::PreAnalysis;
 
@@ -64,6 +102,15 @@ use crate::params::HoldParams;
 
 /// Samples of a pre-analysis block (8x8).
 const BLOCK_SAMPLES: f64 = 64.;
+/// Share of an inter budget under which a refinement frame counts as having
+/// nothing left to refine (module doc, "Spare-budget refinement"): a still
+/// frame coded at the level it was already refined to is little more than
+/// its skip flags.
+const REFINE_DONE_SHARE: f64 = 0.1;
+/// Cheap refinement frames in a row at an unchanged level that end
+/// refinement (module doc): rate control's level follows unspent budget over
+/// a few frames, and a cheap frame costs little more than its skip flags.
+const REFINE_PATIENCE: u32 = 8;
 
 /// Whether an encoder for `config` holds frames: `hold.enable`, unless the
 /// stream signals a constant frame rate ([`TimingSignal::Constant`]), which
@@ -91,6 +138,32 @@ pub(crate) struct FrameHold {
     recur_frames: u32,
     /// Input frames since the last repeat (`None` before the first).
     since_repeat: Option<u32>,
+    /// Buffer fullness below which a held repeat is coded as a refinement
+    /// (`hold.refine_fullness`; 0: never).
+    refine_fullness: f64,
+    /// Whether the last refinement frame still gained (or none was coded
+    /// since the last frame that was not a repeat).
+    refine_gaining: bool,
+    /// Whether the frame being coded is a held repeat coded as a refinement.
+    refining: bool,
+    /// Whether the last input repeated the one before it too (a still
+    /// source, not a repeat source alternating new and repeated frames).
+    still_run: bool,
+    /// The inter level after the last refinement frame (`None`: none yet).
+    refine_level: Option<u32>,
+    /// Cheap refinement frames in a row at an unchanged level.
+    refine_idle: u32,
+    /// What a held frame becomes (`hold.code_skip`).
+    held_as: HeldAs,
+}
+
+/// What a held frame becomes in the stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeldAs {
+    /// Nothing is sent.
+    Nothing,
+    /// A repeat frame (module doc, "Repeat frames").
+    Repeat,
 }
 
 /// What a frame is compared with: the last coded frame's pre-analysis, and
@@ -113,7 +186,57 @@ impl FrameHold {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             recur_frames: params.recur_frames.round() as u32,
             since_repeat: None,
+            refine_fullness: f64::from(params.refine_fullness),
+            refine_gaining: true,
+            refining: false,
+            still_run: false,
+            refine_level: None,
+            refine_idle: 0,
+            held_as: if params.code_skip >= 0.5 {
+                HeldAs::Repeat
+            } else {
+                HeldAs::Nothing
+            },
         })
+    }
+
+    /// Whether a held frame is coded as a repeat frame instead of sending
+    /// nothing (module doc, "Repeat frames").
+    pub fn emits_repeats(&self) -> bool {
+        self.held_as == HeldAs::Repeat
+    }
+
+    /// Whether a repeat that [`Self::holds`] is coded instead as a
+    /// refinement frame, at the receiver's buffer `fullness` (share of its
+    /// capacity; `None` without rate control): module doc, "Spare-budget
+    /// refinement". Call once per held repeat, before it is coded or held.
+    pub fn refine_instead(&mut self, fullness: Option<f64>) -> bool {
+        self.refining = self.still_run
+            && self.refine_gaining
+            && fullness.is_some_and(|f| f < self.refine_fullness);
+        self.refining
+    }
+
+    /// Note a coded frame: its bits as a share of an inter budget and rate
+    /// control's inter level for it. A frame that is not a refinement
+    /// re-arms refinement; [`REFINE_PATIENCE`] cheap refinements in a row at
+    /// an unchanged level end it.
+    pub fn coded(&mut self, budget_share: f64, level: Option<u32>) {
+        if self.refining {
+            let finer = match (level, self.refine_level) {
+                (Some(now), Some(before)) => now < before,
+                _ => true,
+            };
+            let idle = budget_share < REFINE_DONE_SHARE && !finer;
+            self.refine_idle = if idle { self.refine_idle + 1 } else { 0 };
+            self.refine_gaining = self.refine_idle < REFINE_PATIENCE;
+            self.refine_level = level;
+        } else {
+            self.refine_gaining = true;
+            self.refine_level = None;
+            self.refine_idle = 0;
+        }
+        self.refining = false;
     }
 
     /// Whether to hold an input frame that is (`repeat`) or is not a repeat
@@ -122,6 +245,9 @@ impl FrameHold {
     pub fn holds(&mut self, repeat: bool) -> bool {
         let since = self.since_repeat.map(|n| n.saturating_add(1));
         self.since_repeat = if repeat { Some(0) } else { since };
+        // A repeat right after a repeat: the source has stopped (a repeat
+        // source alternates new and repeated frames).
+        self.still_run = repeat && since == Some(1);
         repeat && since.is_some_and(|n| n <= self.recur_frames)
     }
 
@@ -259,6 +385,53 @@ mod tests {
         assert!(hold.holds(true));
         assert!(!hold.holds(false));
         assert!(hold.holds(true));
+    }
+
+    #[test]
+    fn spare_budget_refinement_codes_repeats_until_they_stop_gaining() {
+        assert!(!policy().refine_instead(Some(0.)), "off by default");
+        let mut on = config(TimingSignal::Nominal);
+        on.params.set("hold.refine_fullness", 0.5);
+        let mut hold = FrameHold::new(&on).unwrap();
+        // A repeat source (every other input) keeps its holds.
+        hold.holds(true);
+        hold.holds(false);
+        assert!(hold.holds(true));
+        assert!(!hold.refine_instead(Some(0.2)), "a repeat source is held");
+        // A still source: a repeat of a repeat.
+        assert!(hold.holds(true));
+        assert!(!hold.refine_instead(Some(0.5)), "the buffer has no room");
+        assert!(
+            !hold.refine_instead(None),
+            "fixed QP has no budget to spend"
+        );
+        assert!(hold.refine_instead(Some(0.2)));
+        hold.coded(0.05, Some(40));
+        assert!(
+            hold.refine_instead(Some(0.2)),
+            "the first refinement starts a run"
+        );
+        hold.coded(0.05, Some(38));
+        assert!(
+            hold.refine_instead(Some(0.2)),
+            "cheap, but the level got finer"
+        );
+        hold.coded(0.4, Some(38));
+        assert!(hold.refine_instead(Some(0.2)), "still spending");
+        for _ in 1..REFINE_PATIENCE {
+            hold.coded(0.05, Some(38));
+            assert!(
+                hold.refine_instead(Some(0.2)),
+                "patient while cheap at one level"
+            );
+        }
+        hold.coded(0.05, Some(38));
+        assert!(
+            !hold.refine_instead(Some(0.2)),
+            "cheap at an unchanged level: done"
+        );
+        hold.coded(0.05, Some(38));
+        assert!(hold.refine_instead(Some(0.2)), "a coded change re-arms it");
     }
 
     #[test]

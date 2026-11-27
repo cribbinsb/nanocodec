@@ -37,6 +37,12 @@ const NEAR_RANGE_SAMPLES: i32 = 8;
 const FAR_RANGE_SAMPLES: i32 = 96;
 /// Chance (in 1/256) that a random vector is "far".
 const FAR_CHANCE: u64 = 32;
+/// Chance (in 1/256) that a leaf's random vector reaches as far as the
+/// picture's size in either direction (the reach a long-held second
+/// reference's scaled seed has): wholly into the padding, at the codec's
+/// vector range on wide pictures, and with a neighbour of the other sign past
+/// the largest difference some codecs code (AV1 and VP9: ±2048 samples).
+const PICTURE_FAR_CHANCE: u64 = 24;
 /// Largest block quantizer offset, native units; keeps H.264 `mb_qp_delta`
 /// between neighbours inside its ±26 range.
 const QP_OFFSET_SPAN: i32 = 12;
@@ -114,19 +120,23 @@ impl RandomDecisions {
     }
 
     /// The mode of an inter-frame leaf: intra, one of the codec's cheap
-    /// vectors (`candidates`, zero first), or a random quarter-sample vector.
-    /// `allows` rejects vectors the frame forbids (intra refresh); those
-    /// leaves fall back to intra.
+    /// vectors (`candidates`, zero first), or a random quarter-sample vector,
+    /// now and then as far as `reach` whole samples (x, y). `allows` rejects
+    /// vectors the frame forbids (intra refresh) or the codec cannot signal
+    /// for this block; those leaves fall back to intra.
     pub(crate) fn inter_mode(
         &mut self,
         candidates: &[Mv],
-        allows: impl Fn(Mv) -> bool,
+        reach: (i32, i32),
+        mut allows: impl FnMut(Mv) -> bool,
     ) -> PredictionMode {
         if self.chance(INTRA_CHANCE) {
             return PredictionMode::IntraDc;
         }
         let mv = if !candidates.is_empty() && self.chance(CANDIDATE_CHANCE) {
             candidates[(self.next() % candidates.len() as u64) as usize]
+        } else if self.chance(PICTURE_FAR_CHANCE) {
+            self.picture_far_vector(reach)
         } else {
             self.vector()
         };
@@ -148,6 +158,23 @@ impl RandomDecisions {
         Mv {
             x: self.symmetric(span) as i16,
             y: self.symmetric(span) as i16,
+        }
+    }
+
+    /// A whole-sample vector anywhere within `reach` samples (x, y), often
+    /// at the reach itself, where a clamped seed lands.
+    fn picture_far_vector(&mut self, (reach_x, reach_y): (i32, i32)) -> Mv {
+        let mut component = |reach: i32| {
+            let samples = if self.chance(128) {
+                if self.chance(128) { reach } else { -reach }
+            } else {
+                self.symmetric(reach)
+            };
+            (samples * MV_UNITS_PER_SAMPLE) as i16
+        };
+        Mv {
+            x: component(reach_x),
+            y: component(reach_y),
         }
     }
 
@@ -200,7 +227,7 @@ mod tests {
         let (mut splits, mut intra, mut sub_pel, mut far) = (0, 0, 0, 0);
         for _ in 0..4096 {
             splits += usize::from(r.split());
-            match r.inter_mode(&[Mv::ZERO], |_| true) {
+            match r.inter_mode(&[Mv::ZERO], (0, 0), |_| true) {
                 PredictionMode::IntraDc => intra += 1,
                 PredictionMode::Inter(mv) => {
                     sub_pel += usize::from(!mv.is_full_pel());
@@ -213,6 +240,22 @@ mod tests {
         assert!(intra > 400, "{intra}");
         assert!(sub_pel > 1000, "{sub_pel}");
         assert!(far > 50, "{far}");
+    }
+
+    #[test]
+    fn picture_far_vectors_reach_the_picture_size_on_both_sides() {
+        let mut r = RandomDecisions::from_seed(5.0).unwrap();
+        let reach = (1884, 720); // both past the other classes' 96 samples
+        let (mut left, mut right) = (0, 0);
+        for _ in 0..4096 {
+            if let PredictionMode::Inter(mv) = r.inter_mode(&[], reach, |_| true) {
+                assert!(i32::from(mv.x).abs() <= reach.0 * MV_UNITS_PER_SAMPLE);
+                assert!(i32::from(mv.y).abs() <= reach.1 * MV_UNITS_PER_SAMPLE);
+                left += usize::from(i32::from(mv.x) == -reach.0 * MV_UNITS_PER_SAMPLE);
+                right += usize::from(i32::from(mv.x) == reach.0 * MV_UNITS_PER_SAMPLE);
+            }
+        }
+        assert!(left > 20 && right > 20, "{left} {right}");
     }
 
     #[test]
@@ -233,7 +276,7 @@ mod tests {
     fn forbidden_vectors_fall_back_to_intra() {
         let mut r = RandomDecisions::from_seed(9.0).unwrap();
         for _ in 0..200 {
-            if let PredictionMode::Inter(_) = r.inter_mode(&[Mv::ZERO], |_| false) {
+            if let PredictionMode::Inter(_) = r.inter_mode(&[Mv::ZERO], (64, 64), |_| false) {
                 panic!("a forbidden vector was chosen");
             }
         }

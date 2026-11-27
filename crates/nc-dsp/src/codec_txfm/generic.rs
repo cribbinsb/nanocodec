@@ -1202,6 +1202,47 @@ fn hevc_scale<V: I32Lanes>(levels: V, q: &HevcQuantizer) -> V {
 
 // ----------------------------------------------------------------- H.264
 
+/// Fused subtraction and transform of the four 4x4 blocks in an 8x8 tile.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+type H264ForwardFourPixels =
+    unsafe fn((*const u8, usize), (*const u8, usize), [&mut [[i16; 16]; 2]; 2]);
+
+/// Apply the four-block kernel to each quadrant, storing the outputs in
+/// macroblock raster order so the same indexing serves luma DC and trellis.
+///
+/// # Safety
+/// Both views cover 16x16 and the kernel's ISA is available.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline(always)]
+pub(super) unsafe fn h264_forward_luma_pixels(
+    src: &nc_common::PlaneView<'_>,
+    pred: &nc_common::PlaneView<'_>,
+    out: &mut [[i16; 16]; 16],
+    kernel: H264ForwardFourPixels,
+) {
+    let (s, p) = (src.data().as_ptr(), pred.data().as_ptr());
+    let (ss, ps) = (src.stride(), pred.stride());
+    for (i, band) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+        let [top_left, top_right, bottom_left, bottom_right] =
+            <&mut [_; 4]>::try_from(band.as_chunks_mut::<2>().0).expect("eight blocks");
+        let y = i * 8;
+        // SAFETY: each pointer is at the origin of one 8x8 tile inside
+        // the checked 16x16 views.
+        unsafe {
+            kernel(
+                (s.add(y * ss), ss),
+                (p.add(y * ps), ps),
+                [top_left, bottom_left],
+            );
+            kernel(
+                (s.add(y * ss + 8), ss),
+                (p.add(y * ps + 8), ps),
+                [top_right, bottom_right],
+            );
+        }
+    }
+}
+
 /// H.264 4x4 forward core transform rows of `Cf`.
 pub(crate) struct H264Fdct4;
 impl<V: I32Lanes> Line<V> for H264Fdct4 {
@@ -1218,17 +1259,22 @@ impl<V: I32Lanes> Line<V> for H264Fdct4 {
 
 /// H.264 4x4 inverse transform (eq. 8-338..8-353).
 pub(crate) struct H264Idct4;
+
+impl H264Idct4 {
+    #[inline(always)]
+    pub(crate) fn butterfly<V: I32Lanes>([c0, c1, c2, c3]: [V; 4]) -> [V; 4] {
+        let e0 = c0.add(c2);
+        let e1 = c0.sub(c2);
+        let e2 = c1.sra(1).sub(c3);
+        let e3 = c1.add(c3.sra(1));
+        [e0.add(e3), e1.add(e2), e1.sub(e2), e0.sub(e3)]
+    }
+}
+
 impl<V: I32Lanes> Line<V> for H264Idct4 {
     #[inline(always)]
     fn apply(c: &[V], y: &mut [V]) {
-        let e0 = c[0].add(c[2]);
-        let e1 = c[0].sub(c[2]);
-        let e2 = c[1].sra(1).sub(c[3]);
-        let e3 = c[1].add(c[3].sra(1));
-        y[0] = e0.add(e3);
-        y[1] = e1.add(e2);
-        y[2] = e1.sub(e2);
-        y[3] = e0.sub(e3);
+        y[..4].copy_from_slice(&Self::butterfly([c[0], c[1], c[2], c[3]]));
     }
 }
 
@@ -1252,29 +1298,80 @@ pub(crate) struct H264Fdct8;
 impl<V: I32Lanes> Line<V> for H264Fdct8 {
     #[inline(always)]
     fn apply(x: &[V], y: &mut [V]) {
-        let s: [V; 4] = [
-            x[0].add(x[7]),
-            x[1].add(x[6]),
-            x[2].add(x[5]),
-            x[3].add(x[4]),
-        ];
-        let d: [V; 4] = [
-            x[0].sub(x[7]),
-            x[1].sub(x[6]),
-            x[2].sub(x[5]),
-            x[3].sub(x[4]),
-        ];
-        let (e0, e1) = (s[0].add(s[3]), s[1].add(s[2]));
-        let (e2, e3) = (s[0].sub(s[3]), s[1].sub(s[2]));
-        y[0] = e0.add(e1).shl(3);
-        y[4] = e0.sub(e1).shl(3);
-        y[2] = e2.shl(3).add(e3.shl(2));
-        y[6] = e2.shl(2).sub(e3.shl(3));
-        y[1] = dot4(&d, [12, 10, 6, 3]);
-        y[3] = dot4(&d, [10, -3, -12, -6]);
-        y[5] = dot4(&d, [6, -12, 3, 10]);
-        y[7] = dot4(&d, [3, -6, 10, -12]);
+        let d = h264_fdct8_even(x, y);
+        y[1] = dot4(&d, H264_FDCT8_ODD[0]);
+        y[3] = dot4(&d, H264_FDCT8_ODD[1]);
+        y[5] = dot4(&d, H264_FDCT8_ODD[2]);
+        y[7] = dot4(&d, H264_FDCT8_ODD[3]);
     }
+}
+
+const H264_FDCT8_ODD: [[i32; 4]; 4] = [
+    [12, 10, 6, 3],
+    [10, -3, -12, -6],
+    [6, -12, 3, 10],
+    [3, -6, 10, -12],
+];
+
+/// The same transform with two signed-word dot products per odd output.
+/// Both the input samples and first pass coefficients are bounded by
+/// 16320 in magnitude, so their pairwise differences fit signed words.
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct H264Fdct8Paired;
+
+#[cfg(target_arch = "x86_64")]
+impl<V: crate::simd::WordPairLanes> Line<V> for H264Fdct8Paired {
+    #[inline(always)]
+    fn apply(x: &[V], y: &mut [V]) {
+        // Written out, not a closure or `array::map`: those are outlined from the
+        // caller's `#[target_feature]` context (the verifier's outlined-SIMD check).
+        let d = h264_fdct8_even(x, y);
+        let low = V::word_pairs(d[0], d[1]);
+        let high = V::word_pairs(d[2], d[3]);
+        y[1] = paired_dot4::<V>(low, high, H264_FDCT8_ODD[0]);
+        y[3] = paired_dot4::<V>(low, high, H264_FDCT8_ODD[1]);
+        y[5] = paired_dot4::<V>(low, high, H264_FDCT8_ODD[2]);
+        y[7] = paired_dot4::<V>(low, high, H264_FDCT8_ODD[3]);
+    }
+}
+
+/// `Σ w[i] · d[i]` as two signed-word pair dot products: `low` holds the word pairs
+/// (d0, d1), `high` (d2, d3).
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn paired_dot4<V: crate::simd::WordPairLanes>(
+    low: V::Pairs,
+    high: V::Pairs,
+    [w0, w1, w2, w3]: [i32; 4],
+) -> V {
+    use crate::simd::packed_pair;
+    V::pair_dot(low, packed_pair(w0 as i16, w1 as i16))
+        .add(V::pair_dot(high, packed_pair(w2 as i16, w3 as i16)))
+}
+
+/// The 8-point forward transform's even outputs (`y[0, 2, 4, 6]`), returning the odd
+/// half's inputs `d[i] = x[i] - x[7 - i]` for the caller's odd outputs.
+#[inline(always)]
+fn h264_fdct8_even<V: I32Lanes>(x: &[V], y: &mut [V]) -> [V; 4] {
+    let s = [
+        x[0].add(x[7]),
+        x[1].add(x[6]),
+        x[2].add(x[5]),
+        x[3].add(x[4]),
+    ];
+    let d = [
+        x[0].sub(x[7]),
+        x[1].sub(x[6]),
+        x[2].sub(x[5]),
+        x[3].sub(x[4]),
+    ];
+    let (e0, e1) = (s[0].add(s[3]), s[1].add(s[2]));
+    let (e2, e3) = (s[0].sub(s[3]), s[1].sub(s[2]));
+    y[0] = e0.add(e1).shl(3);
+    y[4] = e0.sub(e1).shl(3);
+    y[2] = e2.shl(3).add(e3.shl(2));
+    y[6] = e2.shl(2).sub(e3.shl(3));
+    d
 }
 
 /// `Σ w[i] · d[i]`.
@@ -1514,6 +1611,46 @@ fn add_block<V: I32Lanes>(block: &[i32], n: usize, dst: &mut [u8], stride: usize
     }
 }
 
+/// Inverse and add one already-scaled H.264 4x4 block containing AC.
+type H264AddAc4Fn = unsafe fn(&[i16; 16], &mut [u8], usize);
+type H264AddAcPairFn = unsafe fn([&[i16; 16]; 2], &mut [u8], usize);
+
+/// The register inverse and optional two-block kernel for already-scaled AC.
+#[derive(Clone, Copy)]
+pub(crate) struct H264AddAc4 {
+    pub single: H264AddAc4Fn,
+    pub pair: Option<H264AddAcPairFn>,
+}
+
+impl H264AddAc4 {
+    pub(crate) const fn single(kernel: H264AddAc4Fn) -> Self {
+        Self {
+            single: kernel,
+            pair: None,
+        }
+    }
+}
+
+#[inline(always)]
+fn has_ac(block: &[i16; 16]) -> bool {
+    block[1..].iter().fold(0, |any, &c| any | c) != 0
+}
+
+#[inline(always)]
+unsafe fn h264_scaled_ac<V: I32Lanes>(
+    block: &[i16; 16],
+    scale: (&[i32; 16], i32),
+    dc: Option<i16>,
+) -> [i16; 16] {
+    let mut scaled = [0; 16];
+    // SAFETY: forwarded ISA contract.
+    unsafe { h264_dequantize::<V>(block, scale.0, scale.1, &mut scaled) };
+    if let Some(d) = dc {
+        scaled[0] = d;
+    }
+    scaled
+}
+
 /// H.264 residual reconstruction of 4x4 blocks in place: each block of
 /// `levels` (raster order, `blocks_wide` per row of blocks) is scaled
 /// (§8.5.12.1 as [`h264_dequantize`] with `ls` and `shift`), its position 0
@@ -1525,24 +1662,27 @@ fn add_block<V: I32Lanes>(block: &[i32], n: usize, dst: &mut [u8], stride: usize
 ///
 /// # Safety
 ///
-/// `V`'s ISA must be available (module docs); `V::LANES <= 4`.
+/// `V` and `S`'s ISA must be available (module docs); `V::LANES <= 4`.
 #[inline(always)]
-pub(crate) unsafe fn h264_add_inverse_4x4<V: I32Lanes>(
+pub(crate) unsafe fn h264_add_inverse_4x4<V: I32Lanes, S: I32Lanes>(
     levels: &[[i16; 16]],
     dc: &[i16],
-    (ls, shift): (&[i32; 16], i32),
+    scale: (&[i32; 16], i32),
     blocks_wide: usize,
     dst: &mut [u8],
     stride: usize,
+    add_ac: H264AddAc4,
 ) {
-    for (b, block) in levels.iter().enumerate() {
-        let origin = (b / blocks_wide) * 4 * stride + (b % blocks_wide) * 4;
+    let mut blocks = levels.iter().enumerate();
+    while let Some((b, block)) = blocks.next() {
+        let col = b % blocks_wide;
+        let origin = (b / blocks_wide) * 4 * stride + col * 4;
         let dst = &mut dst[origin..];
-        let ac = block[1..].iter().fold(0, |any, &l| any | l);
         let dc_level = dc.get(b).copied();
-        if ac == 0 {
-            let d = dc_level
-                .unwrap_or_else(|| i16::saturate(scale_level(i32::from(block[0]), ls[0], shift)));
+        if !has_ac(block) {
+            let d = dc_level.unwrap_or_else(|| {
+                i16::saturate(scale_level(i32::from(block[0]), scale.0[0], scale.1))
+            });
             if d != 0 {
                 add_constant::<V>(
                     I32Lanes::round_shift(i32::from(d), ROUND_6.shift),
@@ -1553,14 +1693,19 @@ pub(crate) unsafe fn h264_add_inverse_4x4<V: I32Lanes>(
             }
             continue;
         }
-        let mut scaled = [0i16; 16];
-        // SAFETY: forwarded contract.
+        // SAFETY: forwarded ISA and destination contract.
         unsafe {
-            h264_dequantize::<V>(block, ls, shift, &mut scaled);
-            if let Some(d) = dc_level {
-                scaled[0] = d;
+            let scaled = h264_scaled_ac::<S>(block, scale, dc_level);
+            if let Some(pair) = add_ac.pair
+                && col + 1 < blocks_wide
+                && has_ac(&levels[b + 1])
+            {
+                let right = h264_scaled_ac::<S>(&levels[b + 1], scale, dc.get(b + 1).copied());
+                blocks.next();
+                pair([&scaled, &right], dst, stride);
+                continue;
             }
-            add_inverse_4x4::<V, i16>(&scaled, dst, stride);
+            (add_ac.single)(&scaled, dst, stride);
         }
     }
 }
@@ -1579,11 +1724,14 @@ pub(crate) unsafe fn h264_add_scaled_4x4<V: I32Lanes>(
     blocks_wide: usize,
     dst: &mut [u8],
     stride: usize,
+    add_ac: H264AddAc4,
 ) {
-    for (b, block) in coeffs.iter().enumerate() {
-        let origin = (b / blocks_wide) * 4 * stride + (b % blocks_wide) * 4;
+    let mut blocks = coeffs.iter().enumerate();
+    while let Some((b, block)) = blocks.next() {
+        let col = b % blocks_wide;
+        let origin = (b / blocks_wide) * 4 * stride + col * 4;
         let dst = &mut dst[origin..];
-        if block[1..].iter().fold(0, |any, &c| any | c) == 0 {
+        if !has_ac(block) {
             if block[0] != 0 {
                 add_constant::<V>(
                     I32Lanes::round_shift(i32::from(block[0]), ROUND_6.shift),
@@ -1594,8 +1742,18 @@ pub(crate) unsafe fn h264_add_scaled_4x4<V: I32Lanes>(
             }
             continue;
         }
-        // SAFETY: forwarded contract.
-        unsafe { add_inverse_4x4::<V, i16>(block, dst, stride) };
+        // SAFETY: forwarded ISA and destination contract.
+        unsafe {
+            if let Some(pair) = add_ac.pair
+                && col + 1 < blocks_wide
+                && has_ac(&coeffs[b + 1])
+            {
+                blocks.next();
+                pair([block, &coeffs[b + 1]], dst, stride);
+            } else {
+                (add_ac.single)(block, dst, stride);
+            }
+        }
     }
 }
 
@@ -1617,6 +1775,7 @@ pub(crate) unsafe fn h264_add_scaled_mb<V: I32Lanes>(
     (coded, ac): (u16, u16),
     dst: &mut [u8],
     stride: usize,
+    add_ac: H264AddAc4,
 ) {
     let mut remaining = coded;
     while remaining != 0 {
@@ -1632,8 +1791,18 @@ pub(crate) unsafe fn h264_add_scaled_mb<V: I32Lanes>(
                 stride,
             );
         } else {
-            // SAFETY: forwarded contract.
-            unsafe { add_inverse_4x4::<V, i16>(&coeffs[b], dst, stride) };
+            // SAFETY: both blocks of a pair lie on this destination row.
+            unsafe {
+                if let Some(pair) = add_ac.pair
+                    && b % 4 != 3
+                    && (remaining & ac) & (2 << b) != 0
+                {
+                    remaining &= !(2 << b);
+                    pair([&coeffs[b], &coeffs[b + 1]], dst, stride);
+                } else {
+                    (add_ac.single)(&coeffs[b], dst, stride);
+                }
+            }
         }
     }
 }
@@ -1644,15 +1813,15 @@ pub(crate) unsafe fn h264_add_scaled_mb<V: I32Lanes>(
 ///
 /// As [`h264_add_inverse_4x4`].
 #[inline(always)]
-unsafe fn add_inverse_4x4<V: I32Lanes, E: Element>(
-    scaled: &[E; 16],
+pub(crate) unsafe fn add_inverse_4x4<V: I32Lanes>(
+    scaled: &[i16; 16],
     dst: &mut [u8],
     stride: usize,
 ) {
     let mut residual = [0i32; 16];
     // SAFETY: forwarded contract.
     unsafe {
-        rows_then_columns::<V, E, H264Idct4, H264Idct4, _, 4>(
+        rows_then_columns::<V, i16, H264Idct4, H264Idct4, _, 4>(
             scaled,
             4,
             NO_ROUNDING,
@@ -1695,6 +1864,20 @@ pub(crate) unsafe fn h264_forward_quantize_chroma<V4: I32Lanes, V: I32Lanes>(
 ) -> ([i16; 4], u32) {
     // SAFETY: forwarded contract.
     unsafe { h264_forward_4x4::<V4>(residual, stride, 2, ac) };
+    // SAFETY: forwarded contract.
+    unsafe { h264_quantize_chroma::<V>(q, ac) }
+}
+
+/// Quantise the four raster-order 4x4 blocks of an already transformed
+/// 8x8 chroma residual, with their DC terms coded separately.
+///
+/// # Safety
+/// V's ISA is enabled. The transform coefficients are from 8-bit pixels.
+#[inline(always)]
+pub(crate) unsafe fn h264_quantize_chroma<V: I32Lanes>(
+    q: &H264Quantizer,
+    ac: &mut [[i16; 16]; 4],
+) -> ([i16; 4], u32) {
     // Each block's DC is at most 16 · 255 = 4080, so their 2x2 Hadamard
     // is at most 16320 and the DC levels fit 16 bits.
     let c: [i16; 4] = core::array::from_fn(|b| ac[b][0]);
@@ -2072,7 +2255,7 @@ macro_rules! codec_txfm_kernels {
             stride: usize,
         ) {
             // SAFETY: see the module docs.
-            unsafe { g::h264_add_inverse_4x4::<$v4>(levels, dc, scale, blocks_wide, dst, stride) }
+            unsafe { g::h264_add_inverse_4x4::<$v4, $v4>(levels, dc, scale, blocks_wide, dst, stride, g::H264AddAc4::single(g::add_inverse_4x4::<$v4>)) }
         }
 
         $(#[$attr])*
@@ -2094,7 +2277,7 @@ macro_rules! codec_txfm_kernels {
             stride: usize,
         ) {
             // SAFETY: see the module docs.
-            unsafe { g::h264_add_scaled_4x4::<$v4>(coeffs, blocks_wide, dst, stride) }
+            unsafe { g::h264_add_scaled_4x4::<$v4>(coeffs, blocks_wide, dst, stride, g::H264AddAc4::single(g::add_inverse_4x4::<$v4>)) }
         }
 
         $(#[$attr])*
@@ -2105,7 +2288,7 @@ macro_rules! codec_txfm_kernels {
             stride: usize,
         ) {
             // SAFETY: see the module docs.
-            unsafe { g::h264_add_scaled_mb::<$v4>(coeffs, masks, dst, stride) }
+            unsafe { g::h264_add_scaled_mb::<$v4>(coeffs, masks, dst, stride, g::H264AddAc4::single(g::add_inverse_4x4::<$v4>)) }
         }
 
         $(#[$attr])*

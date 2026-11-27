@@ -25,17 +25,30 @@ const COMPONENT_BASE_BITS: f32 = 2.0;
 /// Eighth-sample difference units per quarter sample.
 const EIGHTHS_PER_QUARTER: u32 = 2;
 
+/// Quarter-sample magnitudes below 128 pixels along either axis.
+const COMMON_COMPONENTS: usize = 512;
+static COMPONENT_BITS: std::sync::LazyLock<[f32; COMMON_COMPONENTS]> =
+    std::sync::LazyLock::new(|| std::array::from_fn(|magnitude| component_bits(magnitude as u32)));
+
+fn component_bits(magnitude: u32) -> f32 {
+    COMPONENT_BASE_BITS + 2.0 * (magnitude as f32 + 1.0).log2()
+}
+
 /// Approximate bits of coding `vector` (eighth-pel row, column) as a
 /// difference from `predictor`, for ranking predictors and modes.
 #[must_use]
 pub fn difference_bits(vector: (i32, i32), predictor: (i32, i32)) -> f32 {
-    [vector.0 - predictor.0, vector.1 - predictor.1]
-        .iter()
-        .map(|delta| {
-            COMPONENT_BASE_BITS
-                + 2.0 * ((delta.unsigned_abs() / EIGHTHS_PER_QUARTER) as f32 + 1.0).log2()
-        })
-        .sum()
+    // Price common magnitudes with the same target's floating-point
+    // formula. More distant predictors still use it directly.
+    let prices = &*COMPONENT_BITS;
+    let component = |delta: i32| {
+        let magnitude = delta.unsigned_abs() / EIGHTHS_PER_QUARTER;
+        prices
+            .get(magnitude as usize)
+            .copied()
+            .unwrap_or_else(|| component_bits(magnitude))
+    };
+    component(vector.0 - predictor.0) + component(vector.1 - predictor.1)
 }
 
 fn write_uniform(writer: &mut Writer, count: u32, value: u32) -> Result<()> {

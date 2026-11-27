@@ -1,6 +1,5 @@
-//! AVX2 kernels: the generic code on 4 lanes for 4x4 and for the 64x64
-//! inverse (the 32x32 inverse repeated, rarely used); every other size runs
-//! the 16-bit-pair butterflies of [`super::paired`] on 8 lanes.
+//! AVX2 kernels: the generic code on four lanes for 4x4 and the
+//! 16-bit-pair butterflies of [`super::paired`] on eight lanes otherwise.
 
 use super::generic as g;
 use super::{Av2TxSize, Av2TxfmFns, paired, size_of_side};
@@ -61,5 +60,5 @@ unsafe fn inverse<const C: usize>(coeffs: &[i16], nonzero: usize, out: &mut [i16
 #[target_feature(enable = "avx2")]
 unsafe fn inverse64(coeffs: &[i16], nonzero: usize, out: &mut [i16]) {
     // SAFETY: AVX2 is enabled for this function.
-    unsafe { g::inverse64::<I32x8>(coeffs, nonzero, Av2TxSize::Tx64.inverse_shifts(), out) }
+    unsafe { paired::inverse64::<I32x8>(coeffs, nonzero, Av2TxSize::Tx64.inverse_shifts(), out) }
 }

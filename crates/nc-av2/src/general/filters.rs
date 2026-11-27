@@ -25,13 +25,13 @@ pub mod restoration;
 pub mod stripes;
 
 use edges::EdgeMap;
-use nc_common::decode::Result;
+use nc_common::decode::{DecodeError, Result};
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::Dsp;
 
 use super::block::segmentation::SegmentMaps;
 use super::frame_header::FrameHeader;
-use super::frame_header::filters::CcsoPlane;
+use super::frame_header::filters::{CCSO_BAND_STRIDE, CCSO_CLASS_STRIDE, CcsoPlane};
 use super::frame_header::restoration::{MAX_CLASSES, Taps};
 use crate::ccso::{self, CcsoParams, CcsoSource, PlaneFilter};
 use crate::cdef::{self, CdefParams, PictureFilterScratch};
@@ -40,11 +40,6 @@ use crate::cdef::{self, CdefParams, PictureFilterScratch};
 const PLANES: usize = 3;
 /// Luma samples per 4x4 unit, as a shift.
 const UNIT_LOG2: u32 = 2;
-/// Edge classes per axis in the frame header's CCSO offset layout (dav2d
-/// `filter_off`: `class0 << 5 | class1 << 3 | band`).
-const CCSO_CLASS_STRIDE: usize = 4;
-/// Bands per class in that layout.
-const CCSO_BAND_STRIDE: usize = 8;
 
 /// Side of the luma units CDEF filters or leaves alone.
 const CDEF_LUMA_UNIT: usize = 8;
@@ -191,14 +186,15 @@ pub fn ccso_params(header: &FrameHeader) -> Result<CcsoParams> {
     let mut planes = [None; PLANES];
     for (plane, coded) in planes.iter_mut().zip(&header.ccso.planes) {
         if coded.enabled {
-            *plane = Some(ccso_filter(coded));
+            *plane = Some(ccso_filter(coded)?);
         }
     }
     CcsoParams::new(planes)
 }
 
-/// One plane's CCSO filter from its header fields.
-fn ccso_filter(coded: &CcsoPlane) -> PlaneFilter {
+/// One plane's CCSO filter from its header fields, its shape checked
+/// before its offsets fill the filter's table.
+fn ccso_filter(coded: &CcsoPlane) -> Result<PlaneFilter> {
     let mut filter = PlaneFilter::zero(
         coded.band_only,
         coded.scale_index,
@@ -207,6 +203,9 @@ fn ccso_filter(coded: &CcsoPlane) -> PlaneFilter {
         coded.edge_classifier,
         coded.max_band_log2,
     );
+    if !filter.is_valid() {
+        return Err(DecodeError::Malformed("AV2 CCSO parameter out of range"));
+    }
     for class0 in 0..filter.intervals() {
         for class1 in 0..filter.intervals() {
             for band in 0..filter.bands() {
@@ -216,7 +215,7 @@ fn ccso_filter(coded: &CcsoPlane) -> PlaneFilter {
             }
         }
     }
-    filter
+    Ok(filter)
 }
 
 /// CDEF, then CCSO classifying on the deblocked luma (dav2d
@@ -257,7 +256,12 @@ pub(crate) fn cdef_and_ccso(
         keep_lossless(picture, deblocked, maps, header, CDEF_LUMA_UNIT);
     }
     if ccso.is_on() {
-        ccso::filter_picture(picture, ccso_source, &ccso, |plane, x, y| {
+        let flag_width = if lossless {
+            LOSSLESS_UNIT
+        } else {
+            1 << (UNITS64_LOG2 + UNIT_LOG2)
+        };
+        ccso::filter_picture_runs(picture, ccso_source, &ccso, flag_width, |plane, x, y| {
             let chroma = plane != PlaneIndex::Y;
             // (x, y) is in luma samples: the plane's unit is a shift less.
             let at = |luma: usize| luma >> (UNIT_LOG2 + u32::from(chroma));

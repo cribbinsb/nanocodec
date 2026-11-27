@@ -38,6 +38,16 @@ both standard decoders and our own (nceval.conformance.gate_stream):
     layers   three temporal layers in CBR, keys interrupting the mini-GOPs
     refresh  intra refresh instead of periodic keys, in CBR (not VP9/AV2)
     large    `main` on a few 720-line frames (largest blocks, long vectors)
+    farqp    fixed quantizer, one key, on a generated fixed-camera picture over
+             1024 wide whose windows flicker (FLICKER): the key stays the held
+             second reference, its scaled seed reaches the picture's size in
+             both directions, and the difference between two such vectors
+             passes what AV1 and VP9 can code (±2048 samples). AV1 Slow wrote
+             one in the 2026-11-24 benchmark (ControlledBurn, fixed in
+             f5e4eff99); this case mismatches on the build before it
+    widefarqp  `farqp` on a picture over 2048 wide: the same seed passes the
+             largest vector AV1 and VP9 can code (the AV1 backend aborted on it
+             before `CodecBackend::VECTOR_REACH`)
     timed    capture timestamps with skipped captures (a live sender that cannot
              keep up, `--timestamps`), three temporal layers, keys every
              TIMED_KEY_PERIOD nominal frames of capture time (medium preset)
@@ -123,6 +133,11 @@ class Shape:
     def fmt(self) -> YuvFormat:
         return YuvFormat(self.width, self.height)
 
+    @property
+    def generated(self) -> bool:
+        """Whether the clip is made here (`flicker_clip`), not cut from a source."""
+        return not self.source
+
 
 # Not a multiple of 8 in either dimension.
 SMALL = Shape(330, 186, 30, "clips/main/crowd_mot17_09.yuv", (1280, 720), (400, 260), 12, 8)
@@ -130,6 +145,23 @@ SMALL = Shape(330, 186, 30, "clips/main/crowd_mot17_09.yuv", (1280, 720), (400, 
 LARGE = Shape(1282, 720, 6, "clips/main/crowd_mot20_06.yuv", (1884, 720), (300, 0))
 # Unaligned in both dimensions, and so is its half size (235x131 rounds up to 236x132).
 SWITCH = Shape(470, 262, 41, "clips/main/crowd_mot20_06.yuv", (1884, 720), (300, 200))
+# The generated flicker picture (`flicker_clip`): wider than the 1024 samples at
+# which two opposed picture-size vectors pass a 2048-sample difference, and
+# FLICKER_FRAMES long (the unfixed build's first uncodable difference came at
+# frame 24, once the held key was 23 frames back).
+FLICKER_FRAMES = 40
+FLICKER = Shape(1282, 362, FLICKER_FRAMES, "", (1282, 362), (0, 0))
+# The same picture wider than a 2048-sample vector range.
+FLICKER_WIDE = Shape(2562, 362, FLICKER_FRAMES, "", (2562, 362), (0, 0))
+# Its windows: their size, the column they start at (far vectors to the left
+# must reach from here), the share showing noise each frame, and the dark
+# border (the padding a far vector predicts from).
+FLICKER_WINDOW = (96, 64)
+FLICKER_LEFT, FLICKER_TOP = 800, 16
+FLICKER_NOISE_PERCENT = 50
+FLICKER_BORDER = 8
+FLICKER_SEED = 1
+FLICKER_DARK, FLICKER_NOISE = 16, (120, 235)
 # Direct 1280x720 slices read in place from clips/main/ (no extra YUV files on disk).
 SVC_PAN = Shape(1280, 720, 16, "clips/main/pan_jaad_0101.yuv", (1280, 720), (0, 0))
 SVC_LOWLIGHT = Shape(1280, 720, 16, "clips/main/lowlight_city_night.yuv", (1280, 720), (0, 0))
@@ -210,12 +242,13 @@ class Case:
             clip_tag = self.kind.split("-")[2]
             return SPATIAL_SHAPES[clip_tag]
         return {"large": LARGE, "switch": SWITCH, "still": STILL,
-                "stillqp": STILL}.get(self.kind, SMALL)
+                "stillqp": STILL, "farqp": FLICKER,
+                "widefarqp": FLICKER_WIDE}.get(self.kind, SMALL)
 
     @property
     def rate_controlled(self) -> bool:
         """Every case codes in CBR but the fixed-QP one (`--qp`, no rate log)."""
-        return self.kind not in ("fixedqp", "stillqp")
+        return self.kind not in ("fixedqp", "stillqp", "farqp", "widefarqp")
 
     @property
     def is_spatial(self) -> bool:
@@ -273,6 +306,11 @@ class Case:
                        *(arg for pair in SWITCH_PARAMS for arg in ("--param", pair))],
             "fixedqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
                         "--intra-period", str(KEY_PERIOD)],
+            "farqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
+                      *one_key],
+            "widefarqp": ["--qp",
+                          str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
+                          *one_key],
             "still": ["--bitrate", kbps(STARVED_BPP), "--intra-period", str(STILL_KEY_PERIOD),
                       *STILL_PARAMS],
             "stillqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
@@ -321,7 +359,8 @@ def fixed_temporal_layers(codec: Codec, preset: str) -> bool:
 
 
 def cases(codecs: list[Codec]) -> list[Case]:
-    kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp", "still", "stillqp")
+    kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp", "still", "stillqp",
+             "farqp", "widefarqp")
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(codec, preset) == 1
             for kind in kinds
@@ -372,13 +411,49 @@ def cases(codecs: list[Codec]) -> list[Case]:
     return base
 
 
+def flicker_clip(shape: Shape) -> bytes:
+    """A fixed camera on a smooth bright picture inside a dark border; from the
+    second frame its right part is a grid of windows, each dark or fresh noise
+    anew every frame. The smooth key codes better than any later frame, so it
+    stays the held second reference; a window gone dark is predicted best from
+    the padding, which a vector scaled by the key's distance reaches on either
+    side."""
+    rng = np.random.default_rng(FLICKER_SEED)
+    width, height = shape.width, shape.height
+    xx, yy = np.meshgrid(np.arange(width), np.arange(height))
+    still = (140 + 70 * np.sin(xx / 50.0) * np.sin(yy / 40.0)).astype(np.uint8)
+    edge = FLICKER_BORDER
+    still[:edge] = still[-edge:] = FLICKER_DARK
+    still[:, :edge] = still[:, -edge:] = FLICKER_DARK
+    window_w, window_h = FLICKER_WINDOW
+    chroma = bytes([128]) * (width // 2 * (height // 2) * 2)
+    out = bytearray()
+    for frame in range(shape.frames):
+        luma = still.copy()
+        if frame:
+            for top in range(FLICKER_TOP, height - window_h - edge, window_h):
+                for left in range(FLICKER_LEFT, width - window_w - edge, window_w):
+                    noise = rng.integers(0, 100) < FLICKER_NOISE_PERCENT
+                    luma[top:top + window_h, left:left + window_w] = (
+                        rng.integers(*FLICKER_NOISE, (window_h, window_w), dtype=np.uint8)
+                        if noise else FLICKER_DARK)
+        out += luma.tobytes() + chroma
+    return bytes(out)
+
+
 def source_clip(shape: Shape, paths: Paths, directory: Path) -> Path:
     """The shape's crop as a small YUV file (cached; a few MB), or the source
     file itself when read uncropped at full frame size."""
-    if (shape.width, shape.height) == shape.source_size and shape.freeze_frames == 0:
+    if not shape.generated and ((shape.width, shape.height) == shape.source_size
+                                and shape.freeze_frames == 0):
         return paths.data_root / shape.source
     path = directory / f"landing_{shape.width}x{shape.height}_{shape.frames}f.yuv"
     if path.is_file():
+        return path
+    if shape.generated:
+        temporary = path.with_suffix(".partial")
+        temporary.write_bytes(flicker_clip(shape))
+        temporary.replace(path)
         return path
     sw, sh = shape.source_size
     frame_bytes = sw * sh * 3 // 2
@@ -521,7 +596,8 @@ def main(argv: list[str] | None = None) -> int:
         paths = load_paths()
         shapes = dict.fromkeys([SMALL, LARGE, *(c.shape for c in cases(
             [Codec(c) for c in args.codecs.split(",")]))])
-        print("\n".join(sorted({str(paths.data_root / s.source) for s in shapes})))
+        print("\n".join(sorted({str(paths.data_root / s.source) for s in shapes
+                                if not s.generated})))
         return 0
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers must be 1..{MAX_WORKERS}")

@@ -66,3 +66,17 @@ persist.reuse_keys = 1
 # The Default's zero-trial split selector (planner.split_selector) stays off
 # here (docs/handoff/planner-selector.md).
 planner.split_selector = 0
+# Medium's key RD search and finer periodic keys (2026-11-21) were screened on medium only.
+planner.key_rd_split = 0
+rate.key_level_finer = 0
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): not screened on this rung.
+analysis.zero_gate_cell = 64
+# Pinned before medium's fixed-QP cadence (period 8, base boost 4, no
+# start-up cadence; 2026-11-22): screened on medium, slow and slower only.
+rate.cadence_period = 4
+rate.cadence_base_boost = 3
+rate.cadence_startup_period = 8
+# rate.key_cap_buffer 1.0 for periodic keys (VP9 / AV2 default since 2026-11-22) not screened on this rung.
+rate.key_cap_buffer = 0.8

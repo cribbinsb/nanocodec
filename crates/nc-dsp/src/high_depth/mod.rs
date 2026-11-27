@@ -27,6 +27,8 @@
 pub(crate) mod av1;
 mod h264;
 mod inverse;
+#[cfg(target_arch = "aarch64")]
+mod luma_mc_neon;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -310,6 +312,13 @@ mod scalar {
 }
 
 impl HighFns {
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    pub(crate) fn install_sve2_mc(&mut self) {
+        self.prep[family(Filter::HevcLuma)] = vector::sve2::HEVC_LUMA_PREP;
+        self.av1_grain = crate::av1_film_grain::high_simd::HighAv1GrainFns::for_isa(Isa::Sve2);
+        self.high_precision = crate::mc::precision_simd::sve2::high_precision;
+    }
+
     /// Replace the inherited AVX2 kernels that have an AVX-512 version
     /// (`Dsp::avx512` starts from the AVX2 table, as for every other table).
     #[cfg(target_arch = "x86_64")]
@@ -325,7 +334,7 @@ impl HighFns {
         self.add_residual = crate::vvc_recon::high_simd::avx512::add_residual_strided;
         self.hevc_deblock_luma = crate::deblock::hevc_high::luma_kernel(Isa::Avx512);
         self.hevc_deblock_chroma = crate::deblock::hevc_high::chroma_kernel(Isa::Avx512);
-        self.sao_apply = crate::sao::high_simd::avx512::apply;
+        self.sao_apply = crate::sao::high_simd::apply_icl;
         self.sao_band = crate::sao::high_simd::avx512::band;
         self.high_precision = crate::mc::precision_simd::avx512::high_precision;
         self.vvc_geometric_blend = crate::vvc_geo::high_simd::avx512::blend;
@@ -428,6 +437,8 @@ impl HighFns {
     #[cfg(target_arch = "aarch64")]
     fn install_neon(&mut self) {
         self.predict = vector::neon::PREDICT;
+        self.predict[family(Filter::HevcLuma)] = luma_mc_neon::HEVC;
+        self.predict[family(Filter::VvcLuma)] = luma_mc_neon::VVC;
         self.prep = vector::neon::PREP;
         self.bi = vector::neon::BI;
         self.hevc_angular = crate::hevc_intra::high_simd::neon::angular;

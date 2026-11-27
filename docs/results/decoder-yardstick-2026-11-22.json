@@ -1,0 +1,1205 @@
+{
+  "date": "2026-11-22",
+  "commit": "038043e0f",
+  "method": "Single-thread decode (`tools/dev/decoder_speed.py`, pinned to CPU 1 via `taskset -c 1`, 5 interleaved forward/reverse rounds, best process wall time, null output / `--noblit`).",
+  "rounds": 5,
+  "streams": [
+    {
+      "file": "otc720p_medium_av1.av1.ivf",
+      "codec": "av1",
+      "group": "ours-medium",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, medium, qp=110)",
+      "bytes": 599525
+    },
+    {
+      "file": "otc720p_slower_av1.av1.ivf",
+      "codec": "av1",
+      "group": "ours-slower",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, slower, qp=110)",
+      "bytes": 562894
+    },
+    {
+      "file": "otc720p_medium_vp9.vp9.ivf",
+      "codec": "vp9",
+      "group": "ours-medium",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, medium, qp=110)",
+      "bytes": 592926
+    },
+    {
+      "file": "otc720p_slower_vp9.vp9.ivf",
+      "codec": "vp9",
+      "group": "ours-slower",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, slower, qp=110)",
+      "bytes": 577606
+    },
+    {
+      "file": "otc720p_medium_h264.264",
+      "codec": "h264",
+      "group": "ours-medium",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, medium, qp=26)",
+      "bytes": 401235
+    },
+    {
+      "file": "otc720p_slower_h264.264",
+      "codec": "h264",
+      "group": "ours-slower",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, slower, qp=26)",
+      "bytes": 400343
+    },
+    {
+      "file": "otc720p_medium_hevc.hevc",
+      "codec": "hevc",
+      "group": "ours-medium",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, medium, qp=26)",
+      "bytes": 1229579
+    },
+    {
+      "file": "otc720p_slower_hevc.hevc",
+      "codec": "hevc",
+      "group": "ours-slower",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, slower, qp=26)",
+      "bytes": 1243461
+    },
+    {
+      "file": "otc720p_medium_vvc.vvc",
+      "codec": "vvc",
+      "group": "ours-medium",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, medium, qp=26)",
+      "bytes": 879127
+    },
+    {
+      "file": "otc720p_slower_vvc.vvc",
+      "codec": "vvc",
+      "group": "ours-slower",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, slower, qp=26)",
+      "bytes": 865844
+    },
+    {
+      "file": "conf_av1_av1-1-b8-02-allintra.av1.ivf",
+      "codec": "av1",
+      "group": "conformance",
+      "source": "av1/streams/av1-1-b8-02-allintra/av1-1-b8-02-allintra.ivf",
+      "bytes": 1488725
+    },
+    {
+      "file": "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf",
+      "codec": "av1",
+      "group": "conformance",
+      "source": "av1/streams/av1-1-b8-16-intra_only-intrabc-extreme-dv/av1-1-b8-16-intra_only-intrabc-extreme-dv.ivf",
+      "bytes": 339274
+    },
+    {
+      "file": "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf",
+      "codec": "vp9",
+      "group": "conformance",
+      "source": "vp9/streams/vp90-2-02-size-lf-1920x1080/vp90-2-02-size-lf-1920x1080.ivf",
+      "bytes": 5785851
+    },
+    {
+      "file": "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf",
+      "codec": "vp9",
+      "group": "conformance",
+      "source": "vp9/streams/vp90-2-09-subpixel-00/vp90-2-09-subpixel-00.ivf",
+      "bytes": 2030969
+    },
+    {
+      "file": "conf_h264_src19td_IBP.264",
+      "codec": "h264",
+      "group": "conformance",
+      "source": "h264/streams/MV1_BRCM_D/src19td.IBP.264",
+      "bytes": 9286871
+    },
+    {
+      "file": "conf_hevc_DELTAQP_B_SONY_3.hevc",
+      "codec": "hevc",
+      "group": "conformance",
+      "source": "hevc/streams/DELTAQP_B_SONY_3/DELTAQP_B_SONY_3.bit",
+      "bytes": 5372548
+    },
+    {
+      "file": "conf_hevc_ENTP_A_Qualcomm_1.hevc",
+      "codec": "hevc",
+      "group": "conformance",
+      "source": "hevc/streams/ENTP_A_QUALCOMM_1/ENTP_A_Qualcomm_1.bit",
+      "bytes": 2623324
+    },
+    {
+      "file": "conf_vvc_8b420_B_2.vvc",
+      "codec": "vvc",
+      "group": "conformance",
+      "source": "vvc/streams/8b420_B_2/8b420_B_2.bit",
+      "bytes": 160232
+    },
+    {
+      "file": "conf_vvc_8b420_A_2.vvc",
+      "codec": "vvc",
+      "group": "conformance",
+      "source": "vvc/streams/8b420_A_2/8b420_A_2.bit",
+      "bytes": 49995
+    },
+    {
+      "file": "otc720p_medium_av2.av2.ivf",
+      "codec": "av2",
+      "group": "ours-medium",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, medium, qp=110)",
+      "bytes": 626420
+    },
+    {
+      "file": "otc720p_slower_av2.av2.ivf",
+      "codec": "av2",
+      "group": "ours-slower",
+      "source": "old_town_cross_420_720p50.yuv (1280x720, 30f, slower, qp=110)",
+      "bytes": 566885
+    }
+  ],
+  "machines": {
+    "graviton3": {
+      "target": "graviton3",
+      "description": "AWS Graviton3 (Neoverse V1, NEON)",
+      "instance_type": "c7g.large",
+      "region": "eu-west-1",
+      "arch": "arm64",
+      "cpu_model": "Neoverse-V1",
+      "kernel": "7.0.0-1018-aws",
+      "nanocodec_version": "nanocodec 0.6.0 038043e0fc8c74ab2730be53e0dfa55dd69005eb",
+      "anchors": {
+        "dav1d": "1.5.4-0-g54706fc",
+        "ffmpeg": "ffmpeg version n8.0.1 Copyright (c) 2000-2025 the FFmpeg developers",
+        "vvdecapp": "vvdecapp version 3.3.0-dev"
+      }
+    },
+    "graviton4": {
+      "target": "graviton4",
+      "description": "AWS Graviton4 (Neoverse V2, NEON)",
+      "instance_type": "c8g.large",
+      "region": "eu-west-1",
+      "arch": "arm64",
+      "cpu_model": "Neoverse-V2",
+      "kernel": "7.0.0-1018-aws",
+      "nanocodec_version": "nanocodec 0.6.0 038043e0fc8c74ab2730be53e0dfa55dd69005eb",
+      "anchors": {
+        "dav1d": "1.5.4-0-g54706fc",
+        "ffmpeg": "ffmpeg version n8.0.1 Copyright (c) 2000-2025 the FFmpeg developers",
+        "vvdecapp": "vvdecapp version 3.3.0-dev"
+      }
+    },
+    "zen5": {
+      "target": "zen5",
+      "description": "AMD EPYC 9R45 (Zen 5, AVX-512)",
+      "instance_type": "c8a.large",
+      "region": "eu-west-1",
+      "arch": "amd64",
+      "cpu_model": "AMD EPYC 9R45",
+      "kernel": "7.0.0-1018-aws",
+      "nanocodec_version": "nanocodec 0.6.0 038043e0fc8c74ab2730be53e0dfa55dd69005eb",
+      "anchors": {
+        "dav1d": "1.5.4-0-g54706fc",
+        "ffmpeg": "ffmpeg version n8.0.1 Copyright (c) 2000-2025 the FFmpeg developers",
+        "vvdecapp": "vvdecapp version 3.3.0-dev"
+      }
+    }
+  },
+  "results": {
+    "graviton3": {
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|ours": {
+        "t": 0.21248590899999442,
+        "rss": 17644
+      },
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|dav1d": {
+        "t": 0.1562230300000067,
+        "rss": 17644
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|ours": {
+        "t": 0.06254329200000086,
+        "rss": 17644
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|dav1d": {
+        "t": 0.046083691000006866,
+        "rss": 17644
+      },
+      "conf_h264_src19td_IBP.264|h264|ours": {
+        "t": 2.3185444909999973,
+        "rss": 17644
+      },
+      "conf_h264_src19td_IBP.264|h264|ffmpeg": {
+        "t": 2.2757414780000005,
+        "rss": 25416
+      },
+      "conf_hevc_DELTAQP_B_SONY_3.hevc|hevc|ours": {
+        "t": 0.4184234830000122,
+        "rss": 17644
+      },
+      "conf_hevc_DELTAQP_B_SONY_3.hevc|hevc|ffmpeg": {
+        "t": 0.5348739679999994,
+        "rss": 25404
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|ours": {
+        "t": 0.745133366000001,
+        "rss": 17644
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|ffmpeg": {
+        "t": 0.6712050969999979,
+        "rss": 35036
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|ours": {
+        "t": 2.3793920219999976,
+        "rss": 30044
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|ffmpeg": {
+        "t": 2.2930393969999976,
+        "rss": 42596
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|vpxdec": {
+        "t": 2.1618322300000017,
+        "rss": 24000
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|ours": {
+        "t": 0.16565691400000304,
+        "rss": 17644
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.21003563100001088,
+        "rss": 18416
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|vpxdec": {
+        "t": 0.18653359299999295,
+        "rss": 17644
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|ours": {
+        "t": 0.27468535099999514,
+        "rss": 24772
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|vvdec": {
+        "t": 0.23172194699999693,
+        "rss": 61316
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|ffmpeg": {
+        "t": 0.34511419199999693,
+        "rss": 46532
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|ours": {
+        "t": 1.410181503000004,
+        "rss": 72100
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|vvdec": {
+        "t": 1.0743642540000025,
+        "rss": 191492
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|ffmpeg": {
+        "t": 1.6413789329999986,
+        "rss": 115344
+      },
+      "otc720p_medium_av1.av1.ivf|av1|ours": {
+        "t": 0.1840717289999958,
+        "rss": 17644
+      },
+      "otc720p_medium_av1.av1.ivf|av1|dav1d": {
+        "t": 0.16235358700000546,
+        "rss": 17644
+      },
+      "otc720p_medium_h264.264|h264|ours": {
+        "t": 0.07865202900000412,
+        "rss": 17644
+      },
+      "otc720p_medium_h264.264|h264|ffmpeg": {
+        "t": 0.12598259000000667,
+        "rss": 34448
+      },
+      "otc720p_medium_hevc.hevc|hevc|ours": {
+        "t": 0.2098084060000005,
+        "rss": 17644
+      },
+      "otc720p_medium_hevc.hevc|hevc|ffmpeg": {
+        "t": 0.30922259499999427,
+        "rss": 28628
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|ours": {
+        "t": 0.12460485999999804,
+        "rss": 17644
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.16054250599999875,
+        "rss": 25164
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|vpxdec": {
+        "t": 0.1163684419999953,
+        "rss": 17644
+      },
+      "otc720p_medium_vvc.vvc|vvc|ours": {
+        "t": 0.3200921449999896,
+        "rss": 18896
+      },
+      "otc720p_medium_vvc.vvc|vvc|vvdec": {
+        "t": 0.42521786100000725,
+        "rss": 73836
+      },
+      "otc720p_medium_vvc.vvc|vvc|ffmpeg": {
+        "t": 0.7654813950000019,
+        "rss": 55736
+      },
+      "otc720p_slower_av1.av1.ivf|av1|ours": {
+        "t": 0.17724551500000274,
+        "rss": 17644
+      },
+      "otc720p_slower_av1.av1.ivf|av1|dav1d": {
+        "t": 0.1541955810000033,
+        "rss": 17644
+      },
+      "otc720p_slower_h264.264|h264|ours": {
+        "t": 0.08212113999999815,
+        "rss": 17644
+      },
+      "otc720p_slower_h264.264|h264|ffmpeg": {
+        "t": 0.12681080600000882,
+        "rss": 33960
+      },
+      "otc720p_slower_hevc.hevc|hevc|ours": {
+        "t": 0.20006454599999302,
+        "rss": 17644
+      },
+      "otc720p_slower_hevc.hevc|hevc|ffmpeg": {
+        "t": 0.30376479899999254,
+        "rss": 28980
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|ours": {
+        "t": 0.11782314100000235,
+        "rss": 17644
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.15554733700000156,
+        "rss": 25020
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|vpxdec": {
+        "t": 0.109158493999999,
+        "rss": 17644
+      },
+      "otc720p_slower_vvc.vvc|vvc|ours": {
+        "t": 0.3392461189999949,
+        "rss": 18292
+      },
+      "otc720p_slower_vvc.vvc|vvc|vvdec": {
+        "t": 0.45592812099999946,
+        "rss": 75128
+      },
+      "otc720p_slower_vvc.vvc|vvc|ffmpeg": {
+        "t": 0.7968169609999975,
+        "rss": 54904
+      }
+    },
+    "graviton4": {
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|ours": {
+        "t": 0.17482843699998796,
+        "rss": 17416
+      },
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|dav1d": {
+        "t": 0.13504873200000134,
+        "rss": 17416
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|ours": {
+        "t": 0.05248962699999993,
+        "rss": 17416
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|dav1d": {
+        "t": 0.03963215199999581,
+        "rss": 17416
+      },
+      "conf_h264_src19td_IBP.264|h264|ours": {
+        "t": 1.953414273000007,
+        "rss": 17416
+      },
+      "conf_h264_src19td_IBP.264|h264|ffmpeg": {
+        "t": 1.97534340899999,
+        "rss": 25220
+      },
+      "conf_hevc_DELTAQP_B_SONY_3.hevc|hevc|ours": {
+        "t": 0.3648005399999974,
+        "rss": 17416
+      },
+      "conf_hevc_DELTAQP_B_SONY_3.hevc|hevc|ffmpeg": {
+        "t": 0.44261193400000565,
+        "rss": 24768
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|ours": {
+        "t": 0.5870642640000021,
+        "rss": 17416
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|ffmpeg": {
+        "t": 0.536692305999992,
+        "rss": 36040
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|ours": {
+        "t": 2.0083554880000065,
+        "rss": 29668
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|ffmpeg": {
+        "t": 1.8654412309999984,
+        "rss": 37960
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|vpxdec": {
+        "t": 1.739180465000004,
+        "rss": 24308
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|ours": {
+        "t": 0.14970535200001223,
+        "rss": 17416
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.18557016100000112,
+        "rss": 19108
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|vpxdec": {
+        "t": 0.1651564010000044,
+        "rss": 17416
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|ours": {
+        "t": 0.23428192400000114,
+        "rss": 24544
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|vvdec": {
+        "t": 0.1931625529999934,
+        "rss": 60376
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|ffmpeg": {
+        "t": 0.2866679780000041,
+        "rss": 46708
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|ours": {
+        "t": 1.1898611080000023,
+        "rss": 70704
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|vvdec": {
+        "t": 0.8830355189999892,
+        "rss": 190448
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|ffmpeg": {
+        "t": 1.3573150819999995,
+        "rss": 112188
+      },
+      "otc720p_medium_av1.av1.ivf|av1|ours": {
+        "t": 0.15638869200000016,
+        "rss": 18268
+      },
+      "otc720p_medium_av1.av1.ivf|av1|dav1d": {
+        "t": 0.137673036999999,
+        "rss": 17416
+      },
+      "otc720p_medium_h264.264|h264|ours": {
+        "t": 0.06764450800000077,
+        "rss": 17416
+      },
+      "otc720p_medium_h264.264|h264|ffmpeg": {
+        "t": 0.10977150599999419,
+        "rss": 37056
+      },
+      "otc720p_medium_hevc.hevc|hevc|ours": {
+        "t": 0.17762284100000159,
+        "rss": 17416
+      },
+      "otc720p_medium_hevc.hevc|hevc|ffmpeg": {
+        "t": 0.25604550599999953,
+        "rss": 29176
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|ours": {
+        "t": 0.1068777090000026,
+        "rss": 17416
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.13718087000000878,
+        "rss": 24636
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|vpxdec": {
+        "t": 0.09681836800000099,
+        "rss": 17416
+      },
+      "otc720p_medium_vvc.vvc|vvc|ours": {
+        "t": 0.261985082999999,
+        "rss": 18704
+      },
+      "otc720p_medium_vvc.vvc|vvc|vvdec": {
+        "t": 0.35095646700000316,
+        "rss": 73992
+      },
+      "otc720p_medium_vvc.vvc|vvc|ffmpeg": {
+        "t": 0.638497013999995,
+        "rss": 54156
+      },
+      "otc720p_slower_av1.av1.ivf|av1|ours": {
+        "t": 0.1538789899999955,
+        "rss": 17416
+      },
+      "otc720p_slower_av1.av1.ivf|av1|dav1d": {
+        "t": 0.13219283999998765,
+        "rss": 17416
+      },
+      "otc720p_slower_h264.264|h264|ours": {
+        "t": 0.07042183999999452,
+        "rss": 17416
+      },
+      "otc720p_slower_h264.264|h264|ffmpeg": {
+        "t": 0.11087797100000785,
+        "rss": 34144
+      },
+      "otc720p_slower_hevc.hevc|hevc|ours": {
+        "t": 0.17157625699999812,
+        "rss": 17416
+      },
+      "otc720p_slower_hevc.hevc|hevc|ffmpeg": {
+        "t": 0.25318255699999526,
+        "rss": 28808
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|ours": {
+        "t": 0.10061254699999722,
+        "rss": 17416
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.13300942099999702,
+        "rss": 24500
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|vpxdec": {
+        "t": 0.09159443599999406,
+        "rss": 17416
+      },
+      "otc720p_slower_vvc.vvc|vvc|ours": {
+        "t": 0.27666633100000126,
+        "rss": 18684
+      },
+      "otc720p_slower_vvc.vvc|vvc|vvdec": {
+        "t": 0.37418713800000347,
+        "rss": 74512
+      },
+      "otc720p_slower_vvc.vvc|vvc|ffmpeg": {
+        "t": 0.6621115610000174,
+        "rss": 55500
+      }
+    },
+    "zen5": {
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|ours": {
+        "t": 0.12065353999999928,
+        "rss": 16300
+      },
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|dav1d": {
+        "t": 0.09595034700000582,
+        "rss": 16300
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|ours": {
+        "t": 0.03484437800000251,
+        "rss": 16560
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|dav1d": {
+        "t": 0.0278566050000002,
+        "rss": 16300
+      },
+      "conf_h264_src19td_IBP.264|h264|ours": {
+        "t": 1.3222340670000001,
+        "rss": 16300
+      },
+      "conf_h264_src19td_IBP.264|h264|ffmpeg": {
+        "t": 0.9651009520000002,
+        "rss": 16396
+      },
+      "conf_hevc_DELTAQP_B_SONY_3.hevc|hevc|ours": {
+        "t": 0.24580808100000695,
+        "rss": 16300
+      },
+      "conf_hevc_DELTAQP_B_SONY_3.hevc|hevc|ffmpeg": {
+        "t": 0.3546330070000039,
+        "rss": 18144
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|ours": {
+        "t": 0.4327823809999991,
+        "rss": 16300
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|ffmpeg": {
+        "t": 0.42574539400000333,
+        "rss": 28612
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|ours": {
+        "t": 1.1748723400000003,
+        "rss": 29100
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|ffmpeg": {
+        "t": 1.1249763670000021,
+        "rss": 30704
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|vpxdec": {
+        "t": 1.04499529200001,
+        "rss": 24556
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|ours": {
+        "t": 0.1039665330000048,
+        "rss": 16300
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.12545761399999833,
+        "rss": 16300
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|vpxdec": {
+        "t": 0.1272593230000041,
+        "rss": 16300
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|ours": {
+        "t": 0.11583968299999015,
+        "rss": 24092
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|vvdec": {
+        "t": 0.10053925399999741,
+        "rss": 59072
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|ffmpeg": {
+        "t": 0.13325125100000434,
+        "rss": 37776
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|ours": {
+        "t": 0.6077469880000024,
+        "rss": 69608
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|vvdec": {
+        "t": 0.5363930609999983,
+        "rss": 186280
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|ffmpeg": {
+        "t": 0.7075410050000102,
+        "rss": 105088
+      },
+      "otc720p_medium_av1.av1.ivf|av1|ours": {
+        "t": 0.08821967800000152,
+        "rss": 16940
+      },
+      "otc720p_medium_av1.av1.ivf|av1|dav1d": {
+        "t": 0.07784450100000129,
+        "rss": 16300
+      },
+      "otc720p_medium_h264.264|h264|ours": {
+        "t": 0.044500648000003196,
+        "rss": 16300
+      },
+      "otc720p_medium_h264.264|h264|ffmpeg": {
+        "t": 0.06851295100000243,
+        "rss": 24316
+      },
+      "otc720p_medium_hevc.hevc|hevc|ours": {
+        "t": 0.11663692099999423,
+        "rss": 16300
+      },
+      "otc720p_medium_hevc.hevc|hevc|ffmpeg": {
+        "t": 0.18620755500000286,
+        "rss": 22780
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|ours": {
+        "t": 0.06717250100000172,
+        "rss": 16300
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.0922138480000001,
+        "rss": 16828
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|vpxdec": {
+        "t": 0.06524342099999814,
+        "rss": 16300
+      },
+      "otc720p_medium_vvc.vvc|vvc|ours": {
+        "t": 0.18478277200000548,
+        "rss": 18648
+      },
+      "otc720p_medium_vvc.vvc|vvc|vvdec": {
+        "t": 0.2484675689999989,
+        "rss": 72840
+      },
+      "otc720p_medium_vvc.vvc|vvc|ffmpeg": {
+        "t": 0.37472616200000175,
+        "rss": 44220
+      },
+      "otc720p_slower_av1.av1.ivf|av1|ours": {
+        "t": 0.0807414200000025,
+        "rss": 16840
+      },
+      "otc720p_slower_av1.av1.ivf|av1|dav1d": {
+        "t": 0.07134589700000049,
+        "rss": 16300
+      },
+      "otc720p_slower_h264.264|h264|ours": {
+        "t": 0.046525475999999344,
+        "rss": 16300
+      },
+      "otc720p_slower_h264.264|h264|ffmpeg": {
+        "t": 0.07010418500000526,
+        "rss": 27328
+      },
+      "otc720p_slower_hevc.hevc|hevc|ours": {
+        "t": 0.10834629800000073,
+        "rss": 16300
+      },
+      "otc720p_slower_hevc.hevc|hevc|ffmpeg": {
+        "t": 0.18240525899999938,
+        "rss": 21168
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|ours": {
+        "t": 0.06203382000000346,
+        "rss": 16300
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|ffmpeg": {
+        "t": 0.08656876599999919,
+        "rss": 18168
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|vpxdec": {
+        "t": 0.06035412099999604,
+        "rss": 16300
+      },
+      "otc720p_slower_vvc.vvc|vvc|ours": {
+        "t": 0.1973391780000071,
+        "rss": 18488
+      },
+      "otc720p_slower_vvc.vvc|vvc|vvdec": {
+        "t": 0.2663634610000045,
+        "rss": 73604
+      },
+      "otc720p_slower_vvc.vvc|vvc|ffmpeg": {
+        "t": 0.3856123959999991,
+        "rss": 44100
+      },
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|wasm-simd128": {
+        "t": 0.195702,
+        "frames": 39,
+        "decode_fps": 199.28,
+        "total_fps": 197.58
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|wasm-simd128": {
+        "t": 0.047654,
+        "frames": 2,
+        "decode_fps": 41.97,
+        "total_fps": 39.29
+      },
+      "conf_h264_src19td_IBP.264|h264|wasm-simd128": {
+        "t": 2.1148529999999996,
+        "frames": 257,
+        "decode_fps": 121.52,
+        "total_fps": 119.93
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|wasm-simd128": {
+        "t": 0.7152959999999999,
+        "frames": 24,
+        "decode_fps": 33.55,
+        "total_fps": 32.7
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|wasm-simd128": {
+        "t": 1.9271770000000001,
+        "frames": 217,
+        "decode_fps": 112.6,
+        "total_fps": 104.58
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|wasm-simd128": {
+        "t": 0.12397999999999999,
+        "frames": 20,
+        "decode_fps": 161.32,
+        "total_fps": 160.77
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|wasm-simd128": {
+        "t": 0.194334,
+        "frames": 49,
+        "decode_fps": 252.14,
+        "total_fps": 244.57
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|wasm-simd128": {
+        "t": 1.023806,
+        "frames": 49,
+        "decode_fps": 47.86,
+        "total_fps": 46.21
+      },
+      "otc720p_medium_av1.av1.ivf|av1|wasm-simd128": {
+        "t": 0.13782000000000003,
+        "frames": 30,
+        "decode_fps": 217.68,
+        "total_fps": 204.46
+      },
+      "otc720p_medium_h264.264|h264|wasm-simd128": {
+        "t": 0.06846000000000001,
+        "frames": 30,
+        "decode_fps": 438.21,
+        "total_fps": 390.1
+      },
+      "otc720p_medium_hevc.hevc|hevc|wasm-simd128": {
+        "t": 0.18243,
+        "frames": 30,
+        "decode_fps": 164.45,
+        "total_fps": 156.99
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|wasm-simd128": {
+        "t": 0.09617999999999999,
+        "frames": 30,
+        "decode_fps": 311.92,
+        "total_fps": 285.52
+      },
+      "otc720p_medium_vvc.vvc|vvc|wasm-simd128": {
+        "t": 0.27267,
+        "frames": 30,
+        "decode_fps": 110.02,
+        "total_fps": 106.28
+      },
+      "otc720p_slower_av1.av1.ivf|av1|wasm-simd128": {
+        "t": 0.12672,
+        "frames": 30,
+        "decode_fps": 236.74,
+        "total_fps": 221.65
+      },
+      "otc720p_slower_h264.264|h264|wasm-simd128": {
+        "t": 0.07386,
+        "frames": 30,
+        "decode_fps": 406.17,
+        "total_fps": 364.19
+      },
+      "otc720p_slower_hevc.hevc|hevc|wasm-simd128": {
+        "t": 0.1692,
+        "frames": 30,
+        "decode_fps": 177.3,
+        "total_fps": 168.85
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|wasm-simd128": {
+        "t": 0.09366,
+        "frames": 30,
+        "decode_fps": 320.31,
+        "total_fps": 293.22
+      },
+      "otc720p_slower_vvc.vvc|vvc|wasm-simd128": {
+        "t": 0.30146999999999996,
+        "frames": 30,
+        "decode_fps": 99.51,
+        "total_fps": 96.38
+      },
+      "conf_av1_av1-1-b8-02-allintra.av1.ivf|av1|wasm-relaxed": {
+        "t": 0.19090499999999996,
+        "frames": 39,
+        "decode_fps": 204.29,
+        "total_fps": 202.79
+      },
+      "conf_av1_av1-1-b8-16-intra_only-intrabc-extreme-dv.av1.ivf|av1|wasm-relaxed": {
+        "t": 0.047481999999999996,
+        "frames": 2,
+        "decode_fps": 42.12,
+        "total_fps": 39.37
+      },
+      "conf_h264_src19td_IBP.264|h264|wasm-relaxed": {
+        "t": 2.14338,
+        "frames": 257,
+        "decode_fps": 119.9,
+        "total_fps": 118.41
+      },
+      "conf_hevc_ENTP_A_Qualcomm_1.hevc|hevc|wasm-relaxed": {
+        "t": 0.70872,
+        "frames": 24,
+        "decode_fps": 33.86,
+        "total_fps": 33
+      },
+      "conf_vp9_vp90-2-02-size-lf-1920x1080.vp9.ivf|vp9|wasm-relaxed": {
+        "t": 1.792854,
+        "frames": 217,
+        "decode_fps": 121.04,
+        "total_fps": 111.93
+      },
+      "conf_vp9_vp90-2-09-subpixel-00.vp9.ivf|vp9|wasm-relaxed": {
+        "t": 0.12555999999999998,
+        "frames": 20,
+        "decode_fps": 159.29,
+        "total_fps": 158.68
+      },
+      "conf_vvc_8b420_A_2.vvc|vvc|wasm-relaxed": {
+        "t": 0.19570600000000002,
+        "frames": 49,
+        "decode_fps": 250.38,
+        "total_fps": 242.82
+      },
+      "conf_vvc_8b420_B_2.vvc|vvc|wasm-relaxed": {
+        "t": 1.016799,
+        "frames": 49,
+        "decode_fps": 48.19,
+        "total_fps": 46.52
+      },
+      "otc720p_medium_av1.av1.ivf|av1|wasm-relaxed": {
+        "t": 0.14154,
+        "frames": 30,
+        "decode_fps": 211.95,
+        "total_fps": 199.49
+      },
+      "otc720p_medium_h264.264|h264|wasm-relaxed": {
+        "t": 0.06969,
+        "frames": 30,
+        "decode_fps": 430.48,
+        "total_fps": 383.92
+      },
+      "otc720p_medium_hevc.hevc|hevc|wasm-relaxed": {
+        "t": 0.18228,
+        "frames": 30,
+        "decode_fps": 164.58,
+        "total_fps": 157.23
+      },
+      "otc720p_medium_vp9.vp9.ivf|vp9|wasm-relaxed": {
+        "t": 0.09219,
+        "frames": 30,
+        "decode_fps": 325.41,
+        "total_fps": 297.91
+      },
+      "otc720p_medium_vvc.vvc|vvc|wasm-relaxed": {
+        "t": 0.27597,
+        "frames": 30,
+        "decode_fps": 108.71,
+        "total_fps": 105.06
+      },
+      "otc720p_slower_av1.av1.ivf|av1|wasm-relaxed": {
+        "t": 0.12866999999999998,
+        "frames": 30,
+        "decode_fps": 233.15,
+        "total_fps": 218.01
+      },
+      "otc720p_slower_h264.264|h264|wasm-relaxed": {
+        "t": 0.07326,
+        "frames": 30,
+        "decode_fps": 409.5,
+        "total_fps": 366.69
+      },
+      "otc720p_slower_hevc.hevc|hevc|wasm-relaxed": {
+        "t": 0.17103,
+        "frames": 30,
+        "decode_fps": 175.41,
+        "total_fps": 166.43
+      },
+      "otc720p_slower_vp9.vp9.ivf|vp9|wasm-relaxed": {
+        "t": 0.08544,
+        "frames": 30,
+        "decode_fps": 351.12,
+        "total_fps": 319.38
+      },
+      "otc720p_slower_vvc.vvc|vvc|wasm-relaxed": {
+        "t": 0.30255,
+        "frames": 30,
+        "decode_fps": 99.16,
+        "total_fps": 95.45
+      },
+      "otc720p_medium_av2.av2.ivf|av2|ours": {
+        "t": 0.14206757099999834,
+        "rss": 16308
+      },
+      "otc720p_medium_av2.av2.ivf|av2|dav2d": {
+        "t": 0.31134411800000095,
+        "rss": 16308
+      },
+      "otc720p_medium_av2.av2.ivf|av2|avmdec": {
+        "t": 0.2850293069999985,
+        "rss": 140720
+      },
+      "otc720p_slower_av2.av2.ivf|av2|ours": {
+        "t": 0.1392230750000003,
+        "rss": 16308
+      },
+      "otc720p_slower_av2.av2.ivf|av2|dav2d": {
+        "t": 0.29516849499999864,
+        "rss": 16308
+      },
+      "otc720p_slower_av2.av2.ivf|av2|avmdec": {
+        "t": 0.260049145,
+        "rss": 140812
+      },
+      "otc720p_medium_av2.av2.ivf|av2|wasm-simd128": {
+        "t": 0.19737000000000002,
+        "frames": 30,
+        "decode_fps": 152.0,
+        "total_fps": 145.85
+      },
+      "otc720p_medium_av2.av2.ivf|av2|wasm-relaxed": {
+        "t": 0.20061,
+        "frames": 30,
+        "decode_fps": 149.54,
+        "total_fps": 143.5
+      },
+      "otc720p_slower_av2.av2.ivf|av2|wasm-simd128": {
+        "t": 0.19434,
+        "frames": 30,
+        "decode_fps": 154.37,
+        "total_fps": 147.97
+      },
+      "otc720p_slower_av2.av2.ivf|av2|wasm-relaxed": {
+        "t": 0.19578,
+        "frames": 30,
+        "decode_fps": 153.23,
+        "total_fps": 146.88
+      }
+    }
+  },
+  "summary": {
+    "graviton3": {
+      "av1 vs dav1d": {
+        "all": 1.245,
+        "conformance": 1.359,
+        "ours-720p": 1.142
+      },
+      "h264 vs ffmpeg": {
+        "all": 0.744,
+        "conformance": 1.019,
+        "ours-720p": 0.636
+      },
+      "hevc vs ffmpeg": {
+        "all": 0.789,
+        "conformance": 0.932,
+        "ours-720p": 0.668
+      },
+      "vp9 vs ffmpeg": {
+        "all": 0.833,
+        "conformance": 0.905,
+        "ours-720p": 0.767
+      },
+      "vp9 vs vpxdec": {
+        "all": 1.031,
+        "conformance": 0.989,
+        "ours-720p": 1.075
+      },
+      "vvc vs ffmpeg": {
+        "all": 0.591,
+        "conformance": 0.827,
+        "ours-720p": 0.422
+      },
+      "vvc vs vvdec": {
+        "all": 0.966,
+        "conformance": 1.247,
+        "ours-720p": 0.748
+      }
+    },
+    "graviton4": {
+      "av1 vs dav1d": {
+        "all": 1.227,
+        "conformance": 1.309,
+        "ours-720p": 1.15
+      },
+      "h264 vs ffmpeg": {
+        "all": 0.729,
+        "conformance": 0.989,
+        "ours-720p": 0.626
+      },
+      "hevc vs ffmpeg": {
+        "all": 0.807,
+        "conformance": 0.95,
+        "ours-720p": 0.686
+      },
+      "vp9 vs ffmpeg": {
+        "all": 0.846,
+        "conformance": 0.932,
+        "ours-720p": 0.768
+      },
+      "vp9 vs vpxdec": {
+        "all": 1.061,
+        "conformance": 1.023,
+        "ours-720p": 1.101
+      },
+      "vvc vs ffmpeg": {
+        "all": 0.592,
+        "conformance": 0.846,
+        "ours-720p": 0.414
+      },
+      "vvc vs vvdec": {
+        "all": 0.975,
+        "conformance": 1.278,
+        "ours-720p": 0.743
+      }
+    },
+    "zen5": {
+      "av1 vs dav1d": {
+        "all": 1.192,
+        "conformance": 1.254,
+        "ours-720p": 1.132
+      },
+      "av1 wasm-relaxed / native": {
+        "all": 1.532,
+        "conformance": 1.468,
+        "ours-720p": 1.599
+      },
+      "av1 wasm-simd128 / native": {
+        "all": 1.527,
+        "conformance": 1.489,
+        "ours-720p": 1.566
+      },
+      "av2 vs avmdec": {
+        "all": 0.517,
+        "ours-720p": 0.517
+      },
+      "av2 vs dav2d": {
+        "all": 0.464,
+        "ours-720p": 0.464
+      },
+      "av2 wasm-relaxed / native": {
+        "all": 1.409,
+        "ours-720p": 1.409
+      },
+      "av2 wasm-simd128 / native": {
+        "all": 1.393,
+        "ours-720p": 1.393
+      },
+      "h264 vs ffmpeg": {
+        "all": 0.839,
+        "conformance": 1.37,
+        "ours-720p": 0.657
+      },
+      "h264 wasm-relaxed / native": {
+        "all": 1.587,
+        "conformance": 1.621,
+        "ours-720p": 1.57
+      },
+      "h264 wasm-simd128 / native": {
+        "all": 1.575,
+        "conformance": 1.599,
+        "ours-720p": 1.563
+      },
+      "hevc vs ffmpeg": {
+        "all": 0.716,
+        "conformance": 0.839,
+        "ours-720p": 0.61
+      },
+      "hevc wasm-relaxed / native": {
+        "all": 1.593,
+        "conformance": 1.638,
+        "ours-720p": 1.571
+      },
+      "hevc wasm-simd128 / native": {
+        "all": 1.592,
+        "conformance": 1.653,
+        "ours-720p": 1.563
+      },
+      "vp9 vs ffmpeg": {
+        "all": 0.82,
+        "conformance": 0.93,
+        "ours-720p": 0.722
+      },
+      "vp9 vs vpxdec": {
+        "all": 0.993,
+        "conformance": 0.958,
+        "ours-720p": 1.029
+      },
+      "vp9 wasm-relaxed / native": {
+        "all": 1.366,
+        "conformance": 1.358,
+        "ours-720p": 1.375
+      },
+      "vp9 wasm-simd128 / native": {
+        "all": 1.434,
+        "conformance": 1.399,
+        "ours-720p": 1.47
+      },
+      "vvc vs ffmpeg": {
+        "all": 0.659,
+        "conformance": 0.864,
+        "ours-720p": 0.502
+      },
+      "vvc vs vvdec": {
+        "all": 0.921,
+        "conformance": 1.143,
+        "ours-720p": 0.742
+      },
+      "vvc wasm-relaxed / native": {
+        "all": 1.595,
+        "conformance": 1.681,
+        "ours-720p": 1.513
+      },
+      "vvc wasm-simd128 / native": {
+        "all": 1.589,
+        "conformance": 1.681,
+        "ours-720p": 1.501
+      }
+    }
+  }
+}

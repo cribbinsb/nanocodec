@@ -20,13 +20,14 @@ use crate::pre_tx_skip::PreTxSkip;
 use crate::prediction::InterpFilter;
 use crate::sequence::{Layering, SequenceHeader, TcqFrames};
 use crate::transform::{self, PlaneQindex, QuantDeltas};
-use crate::tx_size::TxSize;
+use crate::tx_size::{MAX_CODED_LOG2, TxSize};
 use crate::tx_type::{TxSetMode, TxType};
 use crate::{motion, packet};
 use nc_common::Picture;
 use nc_encoder::{
-    Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FlatGate, FramePlan,
-    FrameReferences, FrameType, IntraModeSet, Mv, PredictionMode, QuantParams, ReferenceChoice,
+    Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FilterEffort, FlatGate,
+    FramePlan, FrameReferences, FrameType, IntraModeSet, Mv, PredictionMode, QuantParams,
+    ReferenceChoice, StaticSkipTest, copy_zero_vector_prediction,
 };
 use std::rc::Rc;
 
@@ -225,10 +226,15 @@ impl InterTxTypes {
     reason = "independent per-stream and per-frame switches"
 )]
 pub struct Av2Backend {
+    /// The encoder information message written after every sequence
+    /// header (`CodecBackend::set_encoder_info`).
+    encoder_info: Option<Vec<u8>>,
     /// Coded picture size: the visible size padded to whole 8x8 blocks.
     coded_width: usize,
     coded_height: usize,
     params: ToolParams,
+    /// The staged intra decision's first cut (`decision.intra_stage_*`).
+    intra_stage: nc_encoder::IntraStage,
     /// `quant.trellis`: trellis quantisation of the coded transforms.
     trellis: Option<nc_encoder::TrellisSettings>,
     /// `quant.rd_trim`: the shared rate-aware trimming, in place of
@@ -262,6 +268,9 @@ pub struct Av2Backend {
     coder: Option<BlockCoder>,
     /// The current frame's deblocking, chosen in `filter_frame`.
     deblock: DeblockParams,
+    /// The engine's loop-filter decision for this frame (`filter_effort.rs`;
+    /// AV2 reads whether an inter frame is deblocked).
+    filter_effort: FilterEffort,
     /// The current frame's CDEF, chosen in `filter_frame`.
     cdef: CdefParams,
     /// The current frame's CCSO, chosen in `filter_frame`.
@@ -475,6 +484,22 @@ fn reference_lists(params: &ToolParams) -> ListConfig {
     }
 }
 
+#[inline]
+fn inter_mode_bits(type_bits: f32, candidates: Option<mv_refs::Candidates>, mv: Mv) -> f32 {
+    let Some(candidates) = candidates else {
+        return type_bits;
+    };
+    let target = to_av2(mv);
+    let Some((signal, index)) = block_coder::choose_signalling(candidates, target) else {
+        return f32::INFINITY;
+    };
+    let mut bits = type_bits + mv_refs::mode_bits(candidates, signal, index);
+    if signal == InterMode::New {
+        bits += motion::difference_bits(target, candidates.vectors[index]);
+    }
+    bits
+}
+
 fn to_av2(mv: Mv) -> (i32, i32) {
     (
         i32::from(mv.y) * EIGHTHS_PER_QUARTER,
@@ -515,6 +540,13 @@ fn to_engine((row, col): (i32, i32)) -> Mv {
 const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     bootstrap_bits_per_pixel: 0.016,
     first_key_lookahead: 0.5,
+    first_key: Some(nc_encoder::first_key_model::FirstKeyCalibration {
+        weights: [
+            0.6161, 0.932_962, 0.102_032, 0.594_097, 0.134_361, -0.958_692, 0.387_916, 0.567_124,
+            0.336_787,
+        ],
+        fast_bias: 0.115_878,
+    }),
     // `rate_control_quantizer_step` divides out the table's Q3 precision
     // (`QUANT_TABLE_BITS`), leaving AV1's scale: eighths of a sample step,
     // AV1's `sample_step_scale`. At 1 the reuse term (`nc_encoder`
@@ -772,6 +804,7 @@ impl Av2Backend {
                 LumaCandidates::Shared(IntraModeSet::from_param(modes))
             },
             rd_candidates: rd_candidates.round() as usize,
+            stage: self.intra_stage.cut(self.key),
             delta_search: nc_encoder::AngleDeltaSearch::from_param(delta_search),
             chroma_candidates: chroma_candidates.round() as usize,
             layouts_per_candidate: p.intra_layouts_per_candidate >= 0.5,
@@ -844,27 +877,33 @@ impl CodecBackend for Av2Backend {
     /// overrun frames 49 vs 13, no non-compliant point. 3.5 was −2.7% but
     /// bodycam +1.1% and 138 overrun frames. Long GOP (600 f, one key):
     /// within ±0.05 dB, no drift.
-    ///
-    /// Inter re-code ceiling `rate.recode_overflow_inter` 1.1 buffers (keys
-    /// keep the engine's 1.4): AV2's static refinement bursts (15-17x a
-    /// frame's budget, 0.5-0.6 buffers) overran a strict 1 s CBR buffer on
-    /// 107 board frames against our AV1's 40, nearly all on
-    /// `static_london_bus`, peaking at 1.34-1.37 buffers, under the 1.4
-    /// re-code. `J_real` VAL (11 clips, full gate) vs 1.4: overrun frames 66
-    /// -> 12, `J_real` +0.4% (`static_london_bus` +5.1%, `homes390` +0.2%,
-    /// every other clip byte-identical), no guard; TRAIN identical (no TRAIN
-    /// clip bursts past 1.1). The refinement given up is the price of
-    /// compliance, as for the 1.4 ceiling itself. Long GOP (one key):
-    /// `long_static_chirla_s024c2` 150 kbps YUV per 200 f -0.39/-0.35/-0.15
-    /// dB at equal rate (overrun frames 43 -> 2), 300 kbps -0.04..-0.08 dB;
-    /// `static_london_bus` 300 f the first 100 f -0.2..-0.4 dB, then level.
     // The fixed-QP profile (`--qp`): the QP cadence at full strength on every
     // frame (HEVC's and VVC's profile). Fixed QP, matched QP (nceval.fixedqp,
     // two pool draws of 16 clips): J -0.7% [-1.6, +0.1] and -2.4% [-3.7,
     // -1.2]. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
-    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
+    // It also codes a period-8 QP cadence at base boost 4 (leaf 1, the engine's), no
+    // start-up cadence: medium, 600 f fixed QP, nceval.fixedqp draw
+    // fixedqp-2026-11-22: AV1 adopt draw J -1.34 % [-1.67, -0.99] n 48, VP9
+    // -1.53 % [-1.74, -0.76] n 22, AV2 -1.31 % [-1.62, -0.65] n 24 (quick);
+    // AV1 at 150 f -0.21 %. Slow / slower (quick, 600 f, base 57f355565):
+    // AV1 -0.65 / -1.84 %, VP9 -0.79 / -1.46 %, AV2 -1.10 / -1.74 %, every
+    // interval below zero. The fast rungs and the SVC files, not screened, pin
+    // the old cadence. docs/handoff/vvc.md "Fixed-QP cascade sweep" (VVC, HEVC
+    // and H.264 did not hold).
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
+        ("rate.cadence_static_scaling", 0.0),
+        ("rate.cadence_period", 8.0),
+        ("rate.cadence_base_boost", 4.0),
+        ("rate.cadence_startup_period", 0.0),
+    ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // Periodic keys at the engine's `rate.key_cap_buffer` 1.0, the first key at 0.8
+        // (`rate.key_cap_buffer_first`): cap 1.0 on the first key too was ejected on L3 at medium,
+        // fast and faster. nceval.train at both key shares (base 29f3c5a22, front k): L3 byte-
+        // identical (one-key streams keep their first key), final check BETTER at 1/150 and 1/300:
+        // medium -1.34 / -0.31 %, fast -0.98 / -0.40 %, faster -1.05 / -0.34 %.
+        ("rate.key_cap_buffer_first", 0.8),
         // Where the winner walk runs (Slow), it also walks a winner at the
         // skip vector (the first reference vector,
         // `decision.winner_walk_keeps_skip` 0). Codec reason: H.264 P_Skip
@@ -903,9 +942,13 @@ impl CodecBackend for Av2Backend {
         ("planner.split_selector_scale", 0.5),
         ("av2.lambda_per_step_squared", 0.125),
         ("av2.chroma_delta_q_coarse", -12.0),
-        ("quant.trellis_key", 0.0),
+        // Trellis quantisation on key frames, measured alone (without the
+        // key-frame RD search) at both key shares, 600 f from frame 0, final
+        // level n 39, front k 0.1328 (2026-11-22): keys every 5 s J -0.38 %
+        // [-0.72, -0.07], every 10 s -0.45 % [-0.75, -0.17], no guard; Zen 5
+        // cycles with periodic keys +0.98 % (a key in 150 f), +0.45 % (in 300).
+        ("quant.trellis_key", 1.0),
         ("rate.first_key_boost_scale", 3.0),
-        ("rate.recode_overflow_inter", 1.1),
         // Start-up QP cadence (period 8, base frames 5 QP finer before AV2's
         // 0.7 cadence scale, for the first 100 frames after a key) and the
         // cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,
@@ -1028,6 +1071,15 @@ impl CodecBackend for Av2Backend {
         ("layers.propagation_flat", 1.0),
         ("layers.propagation_grid", 3.0),
         ("layers.propagation_prekey", 1.0),
+        // Periodic keys planned 2 QP units finer than the inter level, adopted
+        // with the key-frame RD partition search (3ebca4466). The search itself
+        // is off at medium (reverted 2026-11-22): on the published front's chart
+        // timing (150 f, one key) the head cost Zen 5 cycles AV1 +5.3 %, AV2
+        // +9.1 %, VVC +5.9 % against the same head with the search, these finer
+        // keys, the AV1 / AV2 key trellis and H.264's key Intra_8x8 off, which
+        // outweighs its J (L3 -0.33 to -0.55 %). The finer key adds no search
+        // and stays (coordinator decision); a screen of it alone is queued.
+        ("rate.key_level_finer", 2.0),
     ];
 
     // AV1's motion-decision quality point is the engine default (see
@@ -1078,9 +1130,11 @@ impl CodecBackend for Av2Backend {
             .validate(&[nc_encoder::engine_specs(), Self::PARAM_SPECS.to_vec()].concat())
             .map_err(ConfigError::Param)?;
         Ok(Self {
+            encoder_info: None,
             coded_width,
             coded_height,
             params: ToolParams::from_overrides(&config.params),
+            intra_stage: nc_encoder::IntraStage::from_overrides(&config.params),
             trellis: nc_encoder::TrellisSettings::from_params(&QuantParams::from_overrides(
                 &config.params,
             )),
@@ -1103,6 +1157,7 @@ impl CodecBackend for Av2Backend {
             key_qindex_offset: config.key_qp_offset,
             coder: None,
             deblock: DeblockParams::OFF,
+            filter_effort: FilterEffort::FULL,
             cdef: CdefParams::OFF,
             ccso: CcsoParams::OFF,
             ccso_source: CcsoSource::new(),
@@ -1144,6 +1199,12 @@ impl CodecBackend for Av2Backend {
 
     fn superblock_log2(&self) -> u8 {
         SUPERBLOCK_LOG2
+    }
+
+    // A 64-point transform codes only its 32x32 lowest frequencies
+    // (`TxSize::coded_log2`, AVM `get_txb_wide`).
+    fn full_spectrum_log2(&self) -> u8 {
+        MAX_CODED_LOG2 as u8
     }
 
     fn min_block_log2(&self) -> u8 {
@@ -1245,15 +1306,22 @@ impl CodecBackend for Av2Backend {
     }
 
     fn mv_candidates(&mut self, block: &Block, out: &mut Vec<Mv>) {
+        self.ranking_vectors(block, out);
+    }
+
+    fn ranking_vectors(&mut self, block: &Block, out: &mut Vec<Mv>) -> Option<Mv> {
         let ranked = self.ranked_drl_entries();
-        if let Ok(candidates) = self.coder().candidates(block.x, block.y, block.size()) {
-            let derived = candidates.derived();
-            out.extend(
-                derived[..ranked.min(derived.len())]
-                    .iter()
-                    .map(|&v| to_engine(v)),
-            );
-        }
+        let candidates = self
+            .coder()
+            .candidates(block.x, block.y, block.size())
+            .ok()?;
+        let derived = candidates.derived();
+        out.extend(
+            derived[..ranked.min(derived.len())]
+                .iter()
+                .map(|&v| to_engine(v)),
+        );
+        Some(derived.first().map_or(Mv::ZERO, |&v| to_engine(v)))
     }
 
     /// The first derived reference vector (`NEARMV` at index 0), else the
@@ -1275,6 +1343,28 @@ impl CodecBackend for Av2Backend {
     /// AV2 takes no static skips (the default would offer the skip vector).
     fn static_skip_vector(&mut self, _block: &Block) -> Option<Mv> {
         None
+    }
+
+    /// Only a repeat frame's blocks (`StaticSkipTest::repeat`): coded at
+    /// the zero vector with no residual, a skipped block.
+    fn try_static_skip(
+        &mut self,
+        block: &Block,
+        _source: &Picture,
+        reference: &Picture,
+        recon: &mut Picture,
+        test: StaticSkipTest,
+    ) -> bool {
+        if !test.repeat || self.random.is_some() {
+            return false;
+        }
+        copy_zero_vector_prediction(&self.dsp, block, reference, recon);
+        self.coder().skip_next_inter();
+        true
+    }
+
+    fn set_filter_effort(&mut self, effort: FilterEffort) {
+        self.filter_effort = effort;
     }
 
     fn final_intra_screen(
@@ -1346,18 +1436,26 @@ impl CodecBackend for Av2Backend {
         let PredictionMode::Inter(mv) = *mode else {
             return type_bits;
         };
-        let Ok(candidates) = coder.candidates(block.x, block.y, block.size()) else {
-            return type_bits;
-        };
-        let target = to_av2(mv);
-        let Some((signal, index)) = block_coder::choose_signalling(candidates, target) else {
-            return f32::INFINITY;
-        };
-        let mut bits = type_bits + mv_refs::mode_bits(candidates, signal, index);
-        if signal == InterMode::New {
-            bits += motion::difference_bits(target, candidates.vectors[index]);
-        }
-        bits
+        inter_mode_bits(
+            type_bits,
+            coder.candidates(block.x, block.y, block.size()).ok(),
+            mv,
+        )
+    }
+
+    fn inter_mode_pricer(&self, block: &Block) -> impl Fn(&Self, &Block, Mv) -> f32 + use<> {
+        let (type_bits, candidates) = self.coder.as_ref().map_or((0.0, None), |coder| {
+            let type_bits = if self.key {
+                0.0
+            } else {
+                coder.prediction_type_bits(block.x, block.y, block.size(), true)
+            };
+            (
+                type_bits,
+                coder.candidates(block.x, block.y, block.size()).ok(),
+            )
+        });
+        move |_, _, mv| inter_mode_bits(type_bits, candidates, mv)
     }
 
     fn supports_intra_leaf_cost(&self) -> bool {
@@ -1406,8 +1504,13 @@ impl CodecBackend for Av2Backend {
         self.rate_control = enabled;
     }
 
+    fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
+        self.encoder_info = payload;
+    }
+
     fn set_frame_params(&mut self, params: &nc_encoder::ParamOverrides) {
         self.params = ToolParams::from_overrides(params);
+        self.intra_stage = nc_encoder::IntraStage::from_overrides(params);
     }
 
     fn set_noise_sigma(&mut self, sigma: f32) {
@@ -1501,7 +1604,10 @@ impl CodecBackend for Av2Backend {
                 min_nonzero: self.params.inter_tx_min_nonzero.round() as usize,
             },
             trim: self.trim_options(),
-            trellis: self.trellis.filter(|t| t.covers(self.key)),
+            trellis: self.trellis.filter(|t| t.covers(self.key)).map(|mut t| {
+                t.lambda_scale = t.lambda_scale_for(self.key);
+                t
+            }),
             pre_tx_skip: (self.params.pre_tx_skip >= 0.5).then_some(PreTxSkip {
                 energy: self.params.pre_tx_skip_energy,
                 score: self.params.pre_tx_skip_score,
@@ -1550,6 +1656,14 @@ impl CodecBackend for Av2Backend {
 
     fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
         self.coder().node_trial_cost(source, recon)
+    }
+
+    fn node_trial_parts(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> Option<nc_encoder::NodeTrialParts> {
+        Some(self.coder().node_trial_parts(source, recon))
     }
 
     fn undo_node_trial(&mut self, recon: &mut Picture) {
@@ -1606,7 +1720,7 @@ impl CodecBackend for Av2Backend {
     /// becomes the reference); CDEF strengths are measured against `source`.
     fn filter_frame(&mut self, source: &Picture, recon: &mut Picture) {
         let delta = self.params.deblock_delta.round() as i8;
-        self.deblock = if self.params.deblock < 0.5 {
+        self.deblock = if self.params.deblock < 0.5 || (!self.key && !self.filter_effort.deblock) {
             DeblockParams::OFF
         } else if self.params.deblock_chroma < 0.5 {
             DeblockParams::from_qindex(self.qindex)
@@ -1690,6 +1804,7 @@ impl CodecBackend for Av2Backend {
                     delta_q: self.frame_delta_q(),
                 },
                 &tile,
+                self.encoder_info.as_deref(),
             )
         } else {
             let (reference, refresh_flags) = self.slot_signalling();

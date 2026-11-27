@@ -76,6 +76,9 @@ pub(super) struct AlfSearch {
     /// Banks derived so far: tells a reused bank from a new one.
     banks: usize,
     scratch: Box<DecideScratch>,
+    /// Edge-padded luma and the classification grid, reused each picture.
+    samples: Vec<u8>,
+    classes: Vec<[u8; 2]>,
 }
 
 /// A picture's luma ALF bank kept for reuse (`vvc.alf_bank_interval`).
@@ -107,6 +110,8 @@ impl AlfSearch {
             outcome: nc_encoder::OutcomeTracker::default(),
             banks: 0,
             scratch: Box::default(),
+            samples: Vec::new(),
+            classes: Vec::new(),
         };
         search.configure(params);
         search
@@ -192,9 +197,14 @@ impl AlfSearch {
         let previous_on = reuse.filter(|_| self.reuse_on_only).map(|held| &held.on);
         let is_skipped =
             |ctb: usize| skipped.is_some_and(|s| s[ctb]) || previous_on.is_some_and(|on| !on[ctb]);
-        let analysis = Analysis::new((dsp, nc_common::BitDepth::EIGHT), recon, ctu, |ctb| {
-            !is_skipped(ctb)
-        });
+        let analysis = Analysis::new_with_scratch(
+            (dsp, nc_common::BitDepth::EIGHT),
+            recon,
+            ctu,
+            |ctb| !is_skipped(ctb),
+            std::mem::take(&mut self.samples),
+            std::mem::take(&mut self.classes),
+        );
         let decision = analysis.decide(
             source,
             lambda * self.lambda_scale,
@@ -205,6 +215,7 @@ impl AlfSearch {
             &mut self.scratch,
         );
         analysis.apply_decided(recon, &decision, self.options, &self.scratch);
+        (self.samples, self.classes) = analysis.into_scratch();
         // A reused bank keeps the held one's number; a new one takes the next.
         let bank = self.banks + usize::from(reuse.is_none());
         self.outcome.observe(

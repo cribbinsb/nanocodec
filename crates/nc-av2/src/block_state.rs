@@ -11,6 +11,8 @@
 //! contexts come from [`coeff::Context::derive`] (AVM `get_txb_ctx`).
 //! It also collects the deblocking edge grid ([`EdgeGrid`]) of the tile and
 //! answers CDEF's per-8×8 skip question.
+use std::cell::Cell;
+
 use crate::coeff::{self, TxSize};
 use crate::deblock::{BlockEdges, EdgeGrid};
 use crate::interp_filter;
@@ -49,6 +51,9 @@ pub(crate) struct BlockInfo {
     pub reference: u8,
 }
 
+/// A block's position and side, the key of a memoised neighbour lookup.
+type LineKey = (usize, usize, usize);
+
 /// AVM `REF_CONTEXTS`: contexts of the single-reference symbols.
 pub(crate) const REFERENCE_CONTEXTS: usize = 3;
 
@@ -58,6 +63,10 @@ pub(crate) struct BlockState {
     width: usize,
     height: usize,
     info: Vec<Option<BlockInfo>>,
+    /// The last [`Self::line_neighbours`] answer and its block, until `info`
+    /// changes: mode decision prices every candidate of a block with the
+    /// same `is_inter` context (as `ReferenceGrid` memoises its candidates).
+    last_line_neighbours: Cell<Option<(LineKey, [Option<BlockInfo>; 2])>>,
     pub motion: ReferenceGrid,
     /// Transform and skip information of every coded block, for deblocking.
     pub edges: EdgeGrid,
@@ -91,6 +100,7 @@ impl BlockState {
             width,
             height,
             info: vec![None; width / INFO_UNIT * (height / INFO_UNIT)],
+            last_line_neighbours: Cell::new(None),
             motion: ReferenceGrid::new(width, height, lists)?,
             edges: EdgeGrid::new(width, height),
             coefficients,
@@ -108,7 +118,15 @@ impl BlockState {
     /// (AVM `fetch_spatial_neighbors_with_line_buffer`); a neighbour may
     /// appear twice.
     fn line_neighbours(&self, x: usize, y: usize, size: usize) -> [Option<BlockInfo>; 2] {
-        self.first_neighbours(x, y, size, true)
+        let key = (x, y, size);
+        if let Some((cached, neighbours)) = self.last_line_neighbours.get()
+            && cached == key
+        {
+            return neighbours;
+        }
+        let neighbours = self.first_neighbours(x, y, size, true);
+        self.last_line_neighbours.set(Some((key, neighbours)));
+        neighbours
     }
 
     /// As [`Self::line_neighbours`], but above-right and above are not
@@ -279,6 +297,7 @@ impl BlockState {
 
     /// Record a coded block covering `size` x `size` samples at `(x, y)`.
     pub fn record(&mut self, x: usize, y: usize, size: usize, info: BlockInfo) {
+        self.last_line_neighbours.set(None);
         let stride = self.width / INFO_UNIT;
         for row in (y..(y + size).min(self.height)).step_by(INFO_UNIT) {
             for col in (x..(x + size).min(self.width)).step_by(INFO_UNIT) {
@@ -438,6 +457,7 @@ impl BlockState {
 
     /// Put back what [`Self::save_square`] noted of the same square.
     pub fn restore_square(&mut self, (x, y): (usize, usize), size: usize, saved: &SavedSquare) {
+        self.last_line_neighbours.set(None);
         let grid = (self.width / INFO_UNIT, self.height / INFO_UNIT);
         let cells = size / INFO_UNIT;
         nc_common::cell_grid::restore_rect(

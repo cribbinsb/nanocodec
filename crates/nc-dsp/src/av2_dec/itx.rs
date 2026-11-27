@@ -21,7 +21,10 @@
 //! the first `cw * ch` entries (16 for the WHT), so the caller's buffer is
 //! clean for the next block, as in dav2d.
 
+use nc_common::PlaneViewMut;
+
 use super::itx_1d::{self, MAX_POINTS, Transform1d};
+use crate::{Av2TxSize, BlockSize, Dsp, Isa};
 
 /// Largest coded side ([`MAX_POINTS`]); also the intermediate block's side.
 const MAX_CODED: usize = MAX_POINTS;
@@ -31,8 +34,16 @@ const PIXEL_MAX: i32 = 255;
 
 /// `1 / sqrt(2)` in 8 fractional bits: the extra input scale of a 2:1
 /// rectangle, whose 1-D gains multiply to `sqrt(2)` times a square's.
-const RECT2_SCALE: i32 = 181;
-const RECT2_SHIFT: u32 = 8;
+pub(crate) const RECT2_SCALE: i32 = 181;
+pub(crate) const RECT2_SHIFT: u32 = 8;
+
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code)]
+mod rect_simd;
 
 /// The DC-only shortcut folds the two DCT passes' DC gain, `64 · 64 =
 /// 2^12`, into one shift (dav2d `inv_txfm_add_c`).
@@ -246,8 +257,8 @@ impl RectTxSize {
         self.info().ddt_mask
     }
 
-    /// Whether the sides differ by a factor of two (an odd log2 area),
-    /// which scales the input by `1 / sqrt(2)`.
+    /// Whether the area has an odd log2 (a 2:1 or 8:1 rectangle).
+    /// These shapes scale the input by `1 / sqrt(2)`.
     fn is_rect2(self) -> bool {
         (self.log2_width4() + self.log2_height4()) & 1 == 1
     }
@@ -477,6 +488,97 @@ pub fn inverse_transform_add(
     }
 }
 
+/// Add decoder residuals, using the shared square DCT and reconstruction
+/// kernels for plain 8-bit `DCT_DCT` on SIMD targets.
+///
+/// # Panics
+/// As for [`inverse_transform_add`].
+pub fn inverse_transform_add_with_dsp(
+    dsp: &Dsp,
+    dst: &mut [u8],
+    (offset, stride): (usize, usize),
+    coeffs: &mut [i16],
+    (size, tx_type): (RectTxSize, TxType),
+    eob: u16,
+) {
+    let square = match size {
+        RectTxSize::Tx4x4 => Some(Av2TxSize::Tx4),
+        RectTxSize::Tx8x8 => Some(Av2TxSize::Tx8),
+        RectTxSize::Tx16x16 => Some(Av2TxSize::Tx16),
+        RectTxSize::Tx32x32 => Some(Av2TxSize::Tx32),
+        RectTxSize::Tx64x64 => Some(Av2TxSize::Tx64),
+        _ => None,
+    };
+    if tx_type == TxType::DCT_DCT
+        && dsp.isa() != Isa::Scalar
+        && let Some(square) = square
+    {
+        let width = size.width();
+        let mut view = PlaneViewMut::new(&mut dst[offset..], stride, width, width)
+            .expect("AV2 transform block outside its plane");
+        if eob == 0 {
+            let dc = square.inverse_dc_residual(core::mem::take(&mut coeffs[0]));
+            dsp.add_constant(&mut view, i32::from(dc));
+        } else {
+            let rows = first_pass_rows(size, TxClass::TwoD, eob);
+            match square {
+                Av2TxSize::Tx4 => inverse_square_add::<0, 16, 16>(dsp, coeffs, rows, &mut view),
+                Av2TxSize::Tx8 => inverse_square_add::<1, 64, 64>(dsp, coeffs, rows, &mut view),
+                Av2TxSize::Tx16 => inverse_square_add::<2, 256, 256>(dsp, coeffs, rows, &mut view),
+                Av2TxSize::Tx32 => {
+                    inverse_square_add::<3, 1024, 1024>(dsp, coeffs, rows, &mut view);
+                }
+                Av2TxSize::Tx64 => {
+                    inverse_square_add::<4, 1024, 4096>(dsp, coeffs, rows, &mut view);
+                }
+            }
+        }
+    } else {
+        #[cfg(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ))]
+        if tx_type == TxType::DCT_DCT
+            && eob != 0
+            && rect_simd::try_add(dsp, dst, (offset, stride), coeffs, size, eob)
+        {
+            return;
+        }
+        inverse_transform_add(dst, offset, stride, coeffs, size, tx_type, eob);
+    }
+}
+
+#[inline(never)]
+fn inverse_square_add<const TX: usize, const C: usize, const A: usize>(
+    dsp: &Dsp,
+    coeffs: &mut [i16],
+    rows: usize,
+    dst: &mut PlaneViewMut<'_>,
+) {
+    let size = Av2TxSize::ALL[TX];
+    const {
+        assert!(C == Av2TxSize::ALL[TX].coded_area());
+        assert!(A == Av2TxSize::ALL[TX].side() * Av2TxSize::ALL[TX].side());
+    };
+    let coded = size.coded_side();
+    let coeffs = &mut coeffs[..C];
+    let mut raster = [0; C];
+    // The decoder's input is column-major. Its scan bounds the rows that
+    // can contain data. Everything outside those rows stays zero.
+    for (x, col) in coeffs.chunks_exact(coded).enumerate() {
+        for (y, &c) in col[..rows].iter().enumerate() {
+            raster[y * coded + x] = c;
+        }
+    }
+    coeffs.fill(0);
+    let width = size.side();
+    let shape = BlockSize::new(width, width).expect("supported AV2 block size");
+    let mut residual = [0; A];
+    dsp.av2_inverse(size, &raster, &mut residual);
+    dsp.add_residual(shape, dst, &residual, width);
+}
+
 /// The destination of one transform block.
 struct Block<'a> {
     dst: &'a mut [u8],
@@ -566,7 +668,7 @@ fn inverse_dc_add(block: Block, coeffs: &mut [i16], size: RectTxSize) {
     block.add(Dpcm::None, |_, _| dc);
 }
 
-/// dav2d's `1 / sqrt(2)` input scaling of 2:1 rectangles.
+/// dav2d's `1 / sqrt(2)` input scaling for rectangles with odd log2 area.
 fn rect2_scale(c: i32) -> i32 {
     (c * RECT2_SCALE + (1 << (RECT2_SHIFT - 1))) >> RECT2_SHIFT
 }

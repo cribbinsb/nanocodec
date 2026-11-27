@@ -60,3 +60,18 @@ def test_low_half_equals_full_for_a_uniform_gain():
     test = [r * 0.9 for r in rates]
     low = bd_rate(rates, quality, test, quality, low_half=True).bd_rate_percent
     assert low == pytest.approx(-10.0, abs=0.01)
+
+
+
+def test_a_quality_range_integrates_only_that_part_of_the_overlap():
+    rates = [100.0, 150.0, 220.0, 320.0, 470.0, 680.0, 1000.0, 1500.0, 2200.0]
+    quality = [30.0 + 4.0 * math.log2(r / 150.0) for r in rates]
+    test = [r * (0.7 if r < 400 else 0.9) for r in rates]  # 30 % cheaper low, 10 % high
+    low = bd_rate(rates, quality, test, quality, quality_range=(quality[1], quality[3]))
+    high = bd_rate(rates, quality, test, quality, quality_range=(quality[5], quality[8]))
+    assert low.reliable and low.bd_rate_percent == pytest.approx(-30.0, abs=1.0)
+    assert high.reliable and high.bd_rate_percent == pytest.approx(-10.0, abs=1.0)
+    same = bd_rate(rates, quality, rates, quality, quality_range=(quality[1], quality[3]))
+    assert same.bd_rate_percent == pytest.approx(0.0, abs=1e-9)
+    outside = bd_rate(rates, quality, test, quality, quality_range=(60.0, 70.0))
+    assert outside.bd_rate_percent is None and not outside.reliable

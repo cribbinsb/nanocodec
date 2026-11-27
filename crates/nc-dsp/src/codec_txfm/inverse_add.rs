@@ -42,7 +42,7 @@ pub(super) fn dc<V: I32Lanes, const N: usize>(coefficient: i16, dst: &mut [u8], 
     )),
     allow(dead_code, reason = "u16 SIMD kernels target vector ISAs")
 )]
-fn dc_u16<V: I32Lanes, const N: usize>(
+pub(super) fn dc_u16<V: I32Lanes, const N: usize>(
     coefficient: i16,
     dst: &mut [u16],
     stride: usize,

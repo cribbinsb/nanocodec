@@ -215,7 +215,7 @@ enum Engage {
 /// Coded area of the frame being coded: all of it, and the part predicted
 /// from the second reference.
 #[derive(Debug, Clone, Copy, Default)]
-struct Usage {
+pub(crate) struct Usage {
     total: u64,
     secondary: u64,
 }
@@ -398,6 +398,17 @@ impl SecondReference {
         if secondary {
             self.hold.usage.secondary += area;
         }
+    }
+
+    /// The frame's usage so far (the label dump saves it around its own
+    /// codings, `rd_split.rs`).
+    pub(crate) fn usage(&self) -> Usage {
+        self.hold.usage
+    }
+
+    /// Put back a usage [`Self::usage`] returned.
+    pub(crate) fn set_usage(&mut self, usage: Usage) {
+        self.hold.usage = usage;
     }
 
     /// Start counting a frame (again, when it is re-coded).

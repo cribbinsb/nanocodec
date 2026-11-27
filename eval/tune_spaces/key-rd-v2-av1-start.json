@@ -1,0 +1,20 @@
+[
+ {
+  "planner.key_rd_split": 0,
+  "planner.key_rd_margin": 1.1709657736549448,
+  "planner.key_rd_deeper": 2,
+  "planner.key_rd_shallower": 1,
+  "rate.key_level_finer": 3.310694895696578,
+  "rate.key_level_finer_ln_interval": -2.5285679810071953,
+  "planner.key_rd_margin_ln_interval": 0.35201514678225454
+ },
+ {
+  "planner.key_rd_split": 0,
+  "planner.key_rd_margin": 1.0,
+  "planner.key_rd_deeper": 1,
+  "planner.key_rd_shallower": 1,
+  "rate.key_level_finer": 3.0,
+  "rate.key_level_finer_ln_interval": 0.0,
+  "planner.key_rd_margin_ln_interval": 0.0
+ }
+]

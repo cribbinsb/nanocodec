@@ -159,7 +159,8 @@ pub(crate) fn read_annex_b<R: BufRead>(
         let vcl = match codec {
             Codec::H264 => match nal[0] & 31 {
                 1 | 5 => true,
-                7 | 8 => false,
+                // SPS, PPS and the encoder information SEI.
+                6..=8 => false,
                 _ => return Err("unsupported H264 NAL type outside emitted subset".into()),
             },
             Codec::Hevc => {
@@ -170,7 +171,8 @@ pub(crate) fn read_annex_b<R: BufRead>(
                 // and CRA_NUT for later ones (nc-hevc backend) carry a picture.
                 match (nal[0] >> 1) & 63 {
                     0 | 1 | 19 | 21 => true,
-                    32..=34 => false,
+                    // VPS, SPS, PPS and the encoder information prefix SEI.
+                    32..=34 | 39 => false,
                     _ => return Err("unsupported HEVC NAL type outside emitted subset".into()),
                 }
             }
@@ -179,10 +181,11 @@ pub(crate) fn read_annex_b<R: BufRead>(
                     return Err("truncated VVC NAL header".into());
                 }
                 // H.266 Table 5 NAL unit types: TRAIL_NUT 0 and IDR_N_LP 8
-                // carry a picture; SPS/PPS and prefix APS precede it.
+                // carry a picture; SPS/PPS, prefix APS and the encoder
+                // information prefix SEI precede it.
                 match nal[1] >> 3 {
                     0 | 8 => true,
-                    15..=17 => false,
+                    15..=17 | 23 => false,
                     _ => return Err("unsupported VVC NAL type outside emitted subset".into()),
                 }
             }

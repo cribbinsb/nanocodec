@@ -231,31 +231,33 @@ fn check_references(top: &[i32], left: &[i32], corner: i32, depth: BitDepth) {
 #[allow(unsafe_code)]
 mod avx2 {
     use crate::simd::avx2::{I16x4, I16x8, I16x16};
-    super::generic::kernels!(#[target_feature(enable = "avx2")]; crate::intra_runs::avx2::Avx2Runs; I16x4, I16x8, I16x16);
+    super::generic::kernels!(#[target_feature(enable = "avx2")]; crate::intra_runs::avx2::Avx2Runs; I16x4, I16x8, I16x16, I16x16);
 }
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 mod avx512 {
     use crate::simd::avx2::{I16x4, I16x8, I16x16};
+    use crate::simd::avx512_i16::I16x32;
     super::generic::kernels!(
-        #[target_feature(enable = "avx512f,avx512bw,avx512vl")];
+        #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq")];
         crate::intra_runs::avx2::Avx2Runs;
         I16x4,
         I16x8,
-        I16x16
+        I16x16,
+        I16x32
     );
 }
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 mod neon {
     use crate::simd::neon::{I16x4, I16x8};
-    super::generic::kernels!(#[target_feature(enable = "neon")]; crate::intra_runs::neon::NeonRuns; I16x4, I16x8, I16x8);
+    super::generic::kernels!(#[target_feature(enable = "neon")]; crate::intra_runs::neon::NeonRuns; I16x4, I16x8, I16x8, I16x8);
 }
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]
 mod simd128 {
     use crate::simd::simd128::{I16x4, I16x8};
-    super::generic::kernels!(#[target_feature(enable = "simd128")]; crate::intra_runs::simd128::Simd128Runs; I16x4, I16x8, I16x8);
+    super::generic::kernels!(#[target_feature(enable = "simd128")]; crate::intra_runs::simd128::Simd128Runs; I16x4, I16x8, I16x8, I16x8);
 }
 
 #[cfg(test)]

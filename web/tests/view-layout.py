@@ -12,6 +12,11 @@ layout (side by side, stacked, A large, B large), analysis off and on:
   whole picture (no transform, chips hidden);
 - the debug report (no streams) records the layout and the zoom.
 
+Both live views (H.264 in A, AV1 in B) show the same controls in the same places: a
+control that does not apply to a view (spatial layers on H.264, the shown layer with
+one layer, the quantizer slider under a bitrate target) stays in place, disabled, with
+a tooltip, and switching the rate control or the codec moves nothing.
+
 Also: the layout is remembered across a reload (localStorage), a narrow
 window with nothing remembered opens stacked, and a page whose storage throws
 still works side by side.
@@ -33,6 +38,43 @@ COMPARED = "parseInt(document.querySelector('#session-stats').textContent) || 0"
 TRANSFORMS = "[...document.querySelectorAll('.viewport canvas:not(.analysis-layer)')].map(c => c.style.transform)"
 AT_FIT = ("[...document.querySelectorAll('.zoom-chip')].every(c => c.hidden)"
           " && [...document.querySelectorAll('.viewport canvas:not(.analysis-layer)')].every(c => !c.style.transform)")
+
+# Each view's controls in its picture options and Advanced general settings: class, offset
+# from the view's top-left, and whether it is enabled.
+CONTROLS = """[...document.querySelectorAll('.version')].map(view => {
+  const origin = view.getBoundingClientRect();
+  return [...view.querySelectorAll('.picture-options > *, .advanced-general > *, .advanced-general .peak-options > *')].map(c => {
+    const box = c.getBoundingClientRect(), input = c.querySelector('select, input');
+    return [c.className.replace(' inapplicable', ''), Math.round(box.left - origin.left), Math.round(box.top - origin.top), Math.round(box.width), input ? !input.disabled : null, c.title];
+  });
+})"""
+
+
+def same_controls(page) -> dict:
+    """The two live views' controls match in kind and place, whatever applies to each."""
+    for summary in page.locator('details.advanced > summary').all():
+        summary.click()
+    a, b = page.evaluate(CONTROLS)
+    assert [c[:4] for c in a] == [c[:4] for c in b], (a, b)
+    layers = {c[0]: c for c in a}['compact-control live-only spatial-layers-control']
+    assert layers[4] is False and 'no spatial layers' in layers[5], layers  # A is H.264
+    assert {c[0]: c for c in b}['compact-control live-only spatial-layers-control'][4] is True  # B is AV1
+    # A rate-control change moves nothing: the slider and the bitrate swap enabled, in place.
+    before = page.evaluate(CONTROLS)
+    page.locator('.rate-mode').nth(0).select_option('qp')
+    after = page.evaluate(CONTROLS)
+    assert [c[:4] for c in after[0]] == [c[:4] for c in before[0]], (before[0], after[0])
+    enabled = {c[0]: c[4] for c in after[0]}
+    assert enabled['quality-option live-only'] is True and enabled['compact-control live-only target-option'] is False, enabled
+    page.locator('.rate-mode').nth(0).select_option('cbr')
+    # A codec change moves nothing either (H.264 -> VP9 enables its spatial layers in place).
+    page.locator('.codec-picker').nth(0).select_option('vp9')
+    again = page.evaluate(CONTROLS)
+    assert [c[:4] for c in again[0]] == [c[:4] for c in before[0]], (before[0], again[0])
+    page.locator('.codec-picker').nth(0).select_option('h264')
+    for summary in page.locator('details.advanced > summary').all():
+        summary.click()
+    return {'controls': len(a)}
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -117,6 +159,8 @@ def main():
             page.goto(url)
             assert page.locator('#layout').input_value() == 'side'
             page.wait_for_function(f'{COMPARED} >= 5', timeout=120000)
+            controls = same_controls(page)
+            page.wait_for_function(f'{COMPARED} >= 5', timeout=120000)
             for analysis in (False, True):
                 if analysis:
                     page.locator('#analysis-toggle').click()
@@ -145,7 +189,7 @@ def main():
     finally:
         server.shutdown()
     assert not errors, errors
-    print(json.dumps({'status': 'pass', 'layouts': LAYOUTS, 'analysis': [False, True]}))
+    print(json.dumps({'status': 'pass', **controls, 'layouts': LAYOUTS, 'analysis': [False, True]}))
 
 
 if __name__ == '__main__':

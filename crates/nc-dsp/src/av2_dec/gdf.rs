@@ -12,6 +12,19 @@
 
 use nc_common::{BitDepth, Sample};
 
+use crate::Dsp;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx2;
+
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+mod vector8;
+
 /// Rows and columns of context the window holds on each side of the
 /// block.
 pub const GDF_BORDER: usize = 6;
@@ -219,11 +232,84 @@ fn table_index(values: [i32; 3], scale: i32) -> usize {
 /// larger than [`GDF_MAX_SIDE`] or not a multiple of 8, or `error` is too
 /// short.
 pub fn gdf_error(window: &GdfWindow<'_>, params: &GdfParams, error: &mut [i8]) {
+    validate_error_window(window, error);
+    gdf_error_scalar(window, params, error);
+}
+
+/// Compute the block corrections using the selected DSP tier.
+///
+/// # Panics
+///
+/// If the window or output falls outside the requirements of [`gdf_error`].
+#[allow(unsafe_code)]
+pub fn gdf_error_with_dsp(dsp: &Dsp, window: &GdfWindow<'_>, params: &GdfParams, error: &mut [i8]) {
+    validate_error_window(window, error);
+    #[cfg(target_arch = "x86_64")]
+    if matches!(dsp.isa(), crate::Isa::Avx2 | crate::Isa::Avx512)
+        && window.width != 0
+        && window.height != 0
+        && vector_params(params)
+    {
+        // SAFETY: the DSP tier enables AVX2. The window has the documented
+        // 10-bit samples, and its geometry, the output and LUT are checked.
+        unsafe {
+            if !window.width.is_multiple_of(16) {
+                vector8::error::<crate::simd::avx2::I16x8>(window, params, error);
+            } else if dsp.isa() == crate::Isa::Avx512 {
+                avx2::error::<true>(window, params, error);
+            } else {
+                avx2::error::<false>(window, params, error);
+            }
+        }
+        return;
+    }
+    #[cfg(any(
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
+    if dsp.isa() != crate::Isa::Scalar
+        && window.width != 0
+        && window.height != 0
+        && vector_params(params)
+    {
+        #[cfg(target_arch = "aarch64")]
+        type Lanes = crate::simd::neon::I16x8;
+        #[cfg(target_arch = "wasm32")]
+        type Lanes = crate::simd::simd128::I16x8;
+        // SAFETY: the DSP tier enables the architecture's baseline SIMD.
+        // The stripe and LUT are checked and its samples are in 10 bits.
+        unsafe { vector8::error::<Lanes>(window, params, error) };
+        return;
+    }
+    let _ = dsp;
+    gdf_error_scalar(window, params, error);
+}
+
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+fn vector_params(params: &GdfParams) -> bool {
+    matches!(params.scale, 5 | 8)
+        && params.error_lut.len() >= (2 * usize::from(params.scale)).pow(3)
+        && params.alpha.iter().flatten().all(|&cap| cap <= 511)
+        && params.gradient_alpha.iter().all(|&cap| cap <= 511)
+}
+
+fn validate_error_window(window: &GdfWindow<'_>, error: &[i8]) {
     let (width, height) = (window.width, window.height);
     assert!(width <= GDF_MAX_SIDE && height <= GDF_MAX_SIDE);
     assert!(width.is_multiple_of(8) && height.is_multiple_of(8));
     assert!(window.stride >= width + 2 * GDF_BORDER);
-    assert!(window.samples.len() >= (height + 2 * GDF_BORDER) * window.stride);
+    assert!(window.samples.len() / window.stride >= height + 2 * GDF_BORDER);
+    if width != 0 && height != 0 {
+        assert!(error.len() >= (height - 1) * GDF_ERROR_STRIDE + width);
+    }
+}
+
+fn gdf_error_scalar(window: &GdfWindow<'_>, params: &GdfParams, error: &mut [i8]) {
+    let (width, height) = (window.width, window.height);
     let scale = i32::from(params.scale);
     for y in (0..height).step_by(2) {
         for x in (0..width).step_by(2) {
@@ -260,6 +346,156 @@ pub fn gdf_add<T: Sample>(
             let diff = i32::from(e) * scale;
             let correction = ((diff.abs() + round) >> shift) * diff.signum();
             *sample = depth.clip_to::<T>(sample.to_i32() + correction);
+        }
+    }
+}
+
+/// Apply guided detail corrections to 8-bit pixels using the selected tier.
+///
+/// # Panics
+///
+/// As [`gdf_add`].
+#[allow(unsafe_code)]
+pub fn gdf_add_with_dsp(
+    dsp: &Dsp,
+    dst: &mut [u8],
+    stride: usize,
+    error: &[i8],
+    (width, height): (usize, usize),
+    scale: i32,
+) {
+    let size = (width, height);
+    if width != 0
+        && height != 0
+        && width <= GDF_MAX_SIDE
+        && width.is_multiple_of(8)
+        && (1..=4).contains(&scale)
+    {
+        #[cfg(target_arch = "x86_64")]
+        if matches!(dsp.isa(), crate::Isa::Avx2 | crate::Isa::Avx512) {
+            // SAFETY: the selected tier enables AVX2. Rows check their spans.
+            unsafe {
+                if width == 32 {
+                    add_avx2_bytes::<32>(dst, stride, error, height, scale);
+                } else if width == 64 {
+                    add_avx2_bytes::<64>(dst, stride, error, height, scale);
+                } else if width.is_multiple_of(16) {
+                    add_lanes::<crate::simd::avx2::I16x16>(dst, stride, error, size, scale);
+                } else {
+                    add_lanes::<crate::simd::avx2::I16x8>(dst, stride, error, size, scale);
+                }
+            }
+            return;
+        }
+        #[cfg(any(
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ))]
+        if dsp.isa() != crate::Isa::Scalar {
+            #[cfg(target_arch = "aarch64")]
+            type Lanes = crate::simd::neon::I16x8;
+            #[cfg(target_arch = "wasm32")]
+            type Lanes = crate::simd::simd128::I16x8;
+            // SAFETY: the selected tier enables baseline SIMD and rows
+            // check their spans.
+            unsafe { add_lanes::<Lanes>(dst, stride, error, size, scale) };
+            return;
+        }
+    }
+    let _ = dsp;
+    gdf_add(dst, stride, error, size, scale, BitDepth::EIGHT);
+}
+
+/// Apply one vector of corrections at a time. Unlike dav2d's lossless
+/// mask in the SIMD loop, the caller supplies corrections for a whole
+/// non-lossless block. This uses the same rounded result with signed
+/// words, for any i8 correction and scale 1..4.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code)]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+unsafe fn add_lanes<V: crate::simd::I16Lanes>(
+    dst: &mut [u8],
+    stride: usize,
+    error: &[i8],
+    (width, height): (usize, usize),
+    scale: i32,
+) {
+    const SHIFT: u32 = CORRECTION_BITS - 8;
+    let round = V::splat(1 << (SHIFT - 1));
+    let scale = V::splat(scale as i16);
+    for y in 0..height {
+        let row = &mut dst[y * stride..y * stride + width];
+        let err = &error[y * GDF_ERROR_STRIDE..y * GDF_ERROR_STRIDE + width];
+        for (pixels, errors) in row
+            .chunks_exact_mut(V::LANES)
+            .zip(err.chunks_exact(V::LANES))
+        {
+            let diff = V::load_i8(errors).mul(scale);
+            // Negative values subtract one before half-up rounding, giving
+            // round(abs(diff)) with its original sign, including ties.
+            let correction = diff.add(round).add(diff.sra(15)).sra(SHIFT);
+            V::load_u8(pixels).add(correction).store_u8_sat(pixels);
+        }
+    }
+}
+
+/// The byte correction schedule of dav2d `gdf_add_8bpc_avx2`
+/// (BSD-2-Clause, see `THIRD_PARTY.md`). The non-lossless block needs no
+/// lossless-mask blend. The Q15 factors keep the magnitude of -128
+/// representable and give exactly round(abs(error) * scale / 16).
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[target_feature(enable = "avx2")]
+unsafe fn add_avx2_bytes<const WIDTH: usize>(
+    dst: &mut [u8],
+    stride: usize,
+    error: &[i8],
+    height: usize,
+    scale: i32,
+) {
+    use core::arch::x86_64::{
+        _mm256_abs_epi8, _mm256_adds_epu8, _mm256_blendv_epi8, _mm256_loadu_si256,
+        _mm256_mulhrs_epi16, _mm256_packus_epi16, _mm256_set1_epi16, _mm256_setzero_si256,
+        _mm256_slli_epi16, _mm256_storeu_si256, _mm256_subs_epu8, _mm256_unpackhi_epi8,
+        _mm256_unpacklo_epi8,
+    };
+    let dst_end = stride
+        .checked_mul(height - 1)
+        .and_then(|n| n.checked_add(WIDTH));
+    let error_end = GDF_ERROR_STRIDE
+        .checked_mul(height - 1)
+        .and_then(|n| n.checked_add(WIDTH));
+    assert!(dst_end.is_some_and(|n| n <= dst.len()));
+    assert!(error_end.is_some_and(|n| n <= error.len()));
+    let multiplier = _mm256_set1_epi16((scale as i16) << 4);
+    let zero = _mm256_setzero_si256();
+    // SAFETY: the caller selected AVX2 and a multiple-of-32 width. Each
+    // indexed load and store stays within one of the checked row spans.
+    unsafe {
+        for y in 0..height {
+            let row = dst.as_mut_ptr().add(y * stride);
+            let err = error.as_ptr().add(y * GDF_ERROR_STRIDE);
+            for x in (0..WIDTH).step_by(32) {
+                let signed = _mm256_loadu_si256(err.add(x).cast());
+                let samples = _mm256_loadu_si256(row.add(x).cast());
+                let absolute = _mm256_abs_epi8(signed);
+                let lo = _mm256_slli_epi16::<7>(_mm256_unpacklo_epi8(absolute, zero));
+                let hi = _mm256_slli_epi16::<7>(_mm256_unpackhi_epi8(absolute, zero));
+                let correction = _mm256_packus_epi16(
+                    _mm256_mulhrs_epi16(lo, multiplier),
+                    _mm256_mulhrs_epi16(hi, multiplier),
+                );
+                let result = _mm256_blendv_epi8(
+                    _mm256_adds_epu8(samples, correction),
+                    _mm256_subs_epu8(samples, correction),
+                    signed,
+                );
+                _mm256_storeu_si256(row.add(x).cast(), result);
+            }
         }
     }
 }

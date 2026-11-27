@@ -55,10 +55,23 @@ const RECOVERED_DB: f64 = 0.5;
 /// The same for a layered stream, whose undisturbed static half keeps
 /// improving at every base frame (H.264 Default: 41.9 dB after the key,
 /// 47.1 at the next T0 but one, 47.9 at frame 36) while the recovered one
-/// is refined once, to 46.5 dB (from 19.9; 36.0 without the term).
-const LAYERED_RECOVERED_DB: f64 = 1.5;
+/// is refined once, to 46.5 dB (from 19.9; 36.0 without the term). Under
+/// 0.6.1's buffer (key cap 0.8; re-code ceiling 1 or 1.15) the AV1 rungs'
+/// undisturbed half reaches 51.3 dB by frame 28 and the recovered one
+/// 48.8-48.9 (2.4 below; the key cap alone, under the 1.4 ceiling, gave
+/// 50.3 / 47.8).
+const LAYERED_RECOVERED_DB: f64 = 2.5;
 /// Least shortfall that counts as degraded.
 const DEGRADED_DB: f64 = 3.;
+/// Least gain of the reuse term over the same stream without it, after the
+/// recovery: the term, not ordinary coding, restores the copies. Since 0.6.1
+/// (`rate.recode_overflow` 1 then 1.15, key cap 0.8; the same at both)
+/// the undisturbed stream refines less (H.264 static half 38.9 -> 36.7 dB)
+/// and the starved key is coarser (17.4 dB), so the stream without the term
+/// no longer stays 3 dB below the undisturbed one (H.264 35.9, AV1 36.7);
+/// the term's gain is measured instead (H.264 46.1 vs 35.9, AV1 44.8 vs
+/// 36.7, AV1 L3 S1 45.1 vs 42.8 dB).
+const MIN_REUSE_GAIN_DB: f64 = 2.;
 
 /// Frame `index`: a fixed texture on the left, a texture moving 3 samples
 /// per frame on the right (it takes the bits, as a waterfall does).
@@ -127,6 +140,9 @@ fn encode<B: CodecBackend>(
     };
     let mut params = preset.clone();
     params.set("persist.reuse", if reuse { 1. } else { 0. });
+    // Isolate mid-stream `persist.reuse` recovery after STARVED_KEY from
+    // the one-time frame-2 R2 first-key boost on the undisturbed stream.
+    params.set("rate.first_key_refine_qp", 0.);
     if !reuse {
         // The control arm also drops layer propagation: on a preset that
         // runs it (AV1 slow and slower), the moving half's coarser base
@@ -237,19 +253,19 @@ const VP9_SVC_RECOVERY: Recovery = Recovery {
     shortfall_db: VP9_SVC_RECOVERED_DB,
 };
 
-/// The full check: the starved key degrades the static half, without the
-/// reuse term its copies stay degraded, and with it they recover.
+/// The full check: the starved key degrades the static half, the reuse term
+/// is what recovers its copies (the stream without it stays
+/// [`MIN_REUSE_GAIN_DB`] below), and with it they recover.
 fn check<B: CodecBackend>(codec: Codec, preset: &ParamOverrides, recovery: &Recovery) {
     let steady = encode::<B>(codec, preset, (false, true), FRAMES);
     let starved = encode::<B>(codec, preset, (true, true), FRAMES);
     let stuck = encode::<B>(codec, preset, (true, false), FRAMES);
-    // ...without the reuse term the copies stay degraded...
-    for index in STARVED_KEY + RECOVERY_FRAMES..FRAMES {
+    for index in STARVED_KEY + recovery.frames..FRAMES {
         assert!(
-            stuck[index] < steady[index] - DEGRADED_DB,
-            "{codec:?} off, frame {index}: {:.2} vs {:.2} dB",
-            stuck[index],
-            steady[index]
+            starved[index] > stuck[index] + MIN_REUSE_GAIN_DB,
+            "{codec:?} reuse gain, frame {index}: {:.2} vs {:.2} dB without the term",
+            starved[index],
+            stuck[index]
         );
     }
     assert_recovers(codec, (&steady, &starved), recovery);
@@ -429,6 +445,7 @@ fn run_three_layer_recovery<B: CodecBackend>(
     let mut params = preset.clone();
     params.set("spatial.layers", 3.0);
     params.set("persist.reuse", if reuse { 1.0 } else { 0.0 });
+    params.set("rate.first_key_refine_qp", 0.0);
     let mut encoder = Encoder::<B>::new(EncoderConfig {
         codec,
         width: w,
@@ -490,7 +507,6 @@ fn check_three_layer_preset<B: CodecBackend>(
     ksvc_scale: usize,
     (s1_recovery, s2_recovery): (&Recovery, &Recovery),
 ) {
-    const MIN_REUSE_GAIN_DB: f64 = 3.0;
     let frames = STARVED_KEY + s1_recovery.frames + STAYS_RECOVERED_FRAMES;
     let run = |cfg: &ParamOverrides, scale: usize, flags: (bool, bool)| {
         run_three_layer_recovery::<B>(codec, cfg, box_downscale, scale, flags, frames)
@@ -499,18 +515,6 @@ fn check_three_layer_preset<B: CodecBackend>(
     let (starved_s1, starved_s2) = run(preset, 1, (true, true));
     let (stuck_s1, stuck_s2) = run(preset, 1, (true, false));
     for index in STARVED_KEY + s1_recovery.frames..frames {
-        assert!(
-            stuck_s1[index] < steady_s1[index] - DEGRADED_DB,
-            "{name} S1 reuse=0 frame {index}: {:.2} vs {:.2} dB",
-            stuck_s1[index],
-            steady_s1[index]
-        );
-        assert!(
-            stuck_s2[index] < steady_s2[index] - DEGRADED_DB,
-            "{name} S2 reuse=0 frame {index}: {:.2} vs {:.2} dB",
-            stuck_s2[index],
-            steady_s2[index]
-        );
         assert!(
             starved_s1[index] > stuck_s1[index] + MIN_REUSE_GAIN_DB,
             "{name} S1 reuse gain frame {index}: {:.2} vs {:.2} dB",

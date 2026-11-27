@@ -23,8 +23,8 @@ use crate::backend::{
 };
 use crate::config::{ConfigError, EncoderConfig, FrameRate};
 use crate::encoder::{
-    EncodedFrame, Encoder, FrameInputs, FrameMetadata, FramePictures, LayerState, Padding,
-    bit_count, check_dimensions, configured_cadence, copy_padded, copy_visible, frame_buffers,
+    EncodedFrame, Encoder, FrameInputs, FrameMetadata, FramePictures, LayerState, analyzed_frame,
+    bit_count, check_dimensions, coded_source, configured_cadence, copy_visible, frame_buffers,
     max_quantizer, motion_signal, on_reuse_chain, source_analyzer,
 };
 use crate::feedback::ReferencedFrames;
@@ -33,8 +33,8 @@ use crate::inheritance::Inheritance;
 use crate::noise_skip::NoiseMap;
 use crate::params::{LayerParams, PersistParams, RateParams, RefParams, StructureParams};
 use crate::rate_control::{
-    LayerShare, MAX_RECODES, RECODE_FIRST_EXPONENT, RateControlConfig, RateControlError,
-    RateControlStats, RateController, RateModel, quantizer_for_step,
+    LayerShare, RateControlConfig, RateControlError, RateControlStats, RateController, RateModel,
+    RecodeRule, quantizer_for_step,
 };
 use crate::reuse::{ReuseFrame, ReuseTerm};
 use crate::second_reference::{SecondReference, TierPlan};
@@ -198,8 +198,7 @@ pub(super) struct SpatialSession {
     /// Start-up `(full_res_peak_displacement, static_fraction)` measured once on
     /// `TU 0` from `S0`'s lookahead pair.
     startup_profile: Option<(f64, f32)>,
-    recode_ceiling: f64,
-    recode_ceiling_inter: f64,
+    recode: RecodeRule,
     pub(super) step_ref_stats: [SpatialReferenceStats; MAX_SPATIAL_LAYERS - 1],
 }
 
@@ -267,6 +266,9 @@ fn spatial_layer_state<B: CodecBackend>(
         aq,
         reuse,
         reuse_last_frame: None,
+        base_mc_aq_qp: 0.0,
+        key_aq_qp: 0.0,
+        last_camera_motion: 0.0,
         ladder: layer_params.fixed_ladder(temporal_layers),
         rate_control_ladder: layer_params.rate_control_ladder(temporal_layers),
         cadence: configured_cadence(&layer_cfg, backend),
@@ -474,8 +476,7 @@ impl SpatialSession {
             current_tu_carry_to_s2: 0.0,
             current_tu_interval: None,
             startup_profile: None,
-            recode_ceiling: f64::from(rate_params.recode_overflow),
-            recode_ceiling_inter: f64::from(rate_params.recode_overflow_inter),
+            recode: RecodeRule::of(&rate_params),
             step_ref_stats: [SpatialReferenceStats::default(); MAX_SPATIAL_LAYERS - 1],
         };
         Ok((session, top_state))
@@ -620,11 +621,8 @@ impl SpatialSession {
     }
 
     fn recode_ceiling(&self, key: bool) -> f64 {
-        if key || self.recode_ceiling_inter <= 0.0 {
-            self.recode_ceiling
-        } else {
-            self.recode_ceiling_inter
-        }
+        let strict = self.rate_config.is_some_and(|c| c.strict_buffer);
+        self.recode.ceiling(key, strict)
     }
 
     pub(super) fn combined_recode_step(
@@ -635,7 +633,7 @@ impl SpatialSession {
         rate_steps: &[f64],
         max_q: u32,
     ) -> Option<u32> {
-        if codings > MAX_RECODES || plan.quantizer >= max_q {
+        if codings > self.recode.max || plan.quantizer >= max_q {
             return None;
         }
         let cbr = self.combined_cbr.as_ref()?;
@@ -651,7 +649,7 @@ impl SpatialSession {
         }
         let current_step = rate_steps[plan.quantizer as usize];
         let target_step =
-            current_step * (layer_bits as f64 / room_layer).powf(1.0 / RECODE_FIRST_EXPONENT);
+            current_step * (layer_bits as f64 / room_layer).powf(1.0 / self.recode.first_exponent);
         Some(quantizer_for_step(
             rate_steps,
             (plan.quantizer + 1, max_q),
@@ -829,7 +827,11 @@ impl<B: CodecBackend> Encoder<B> {
         let stats = &mut spatial.step_ref_stats[step];
         let area = area as u64;
         match mode {
-            None | Some((PredictionMode::Inter(_), ReferenceChoice::Primary)) => {
+            None
+            | Some((
+                PredictionMode::Inter(_),
+                ReferenceChoice::Primary | ReferenceChoice::PrimaryPair { .. },
+            )) => {
                 stats.temporal_blocks += 1;
                 stats.temporal_area += area;
             }
@@ -885,8 +887,7 @@ impl<B: CodecBackend> Encoder<B> {
             .expect("spatial mode")
             .structure
             .next_tu_index();
-        let scheduled_key =
-            self.force_keyframe || !self.backend.supports_inter() || self.periodic_key(tu_index);
+        let scheduled_key = self.spatial_key_due(tu_index);
         let mut top_written = false;
         if self.spatial_hold_due(tu_index, scheduled_key, full_src, &mut top_written) {
             if let Some(full) = own_full {
@@ -994,6 +995,21 @@ impl<B: CodecBackend> Encoder<B> {
             .max()
             .unwrap_or(tu_plan.base.temporal_id);
         let tu_bits = bit_count(&data);
+        if let Some(hold) = self.hold.as_mut() {
+            // The refinement test (`hold.rs`) of the whole unit: its bits
+            // against every layer's inter budget, at the output layer's level.
+            let spatial = self.spatial.as_ref().expect("spatial mode");
+            let (mut budget, mut level) = (0.0, None);
+            for sid in 0..spatial.config.layers {
+                if let Some(rc) = spatial.layer(&self.layer, sid).rate_control.as_ref() {
+                    budget += rc.inter_frame_budget();
+                    if sid == output_spatial_id {
+                        level = rc.inter_level();
+                    }
+                }
+            }
+            hold.coded(tu_bits as f64 / budget.max(1.), level);
+        }
         let spatial = self.spatial.as_mut().expect("spatial mode");
         spatial.output_spatial_id = output_spatial_id;
         if let Some(cbr) = spatial.combined_cbr.as_mut() {
@@ -1177,7 +1193,7 @@ impl<B: CodecBackend> Encoder<B> {
                 .reset(index, layer_plan.references)
         } else {
             let analysis = analyzer.as_deref().and_then(Analyzer::analysis);
-            let depth = analysis.map(|a| self.cadence_depth(a, &layer_plan.references));
+            let depth = analysis.map(|a| self.cadence_depth(index, a, &layer_plan.references));
             let references = self.with_second(index, layer_plan.references, (false, depth));
             if let Some(second) = self.layer.second.as_mut() {
                 second.coded(index, &references);
@@ -1325,8 +1341,7 @@ impl<B: CodecBackend> Encoder<B> {
             &next_base,
         ) {
             if let Some(rc) = self.layer.rate_control.as_mut() {
-                rc.observe_startup_motion(peak);
-                rc.observe_startup_still(f64::from(static_fraction));
+                rc.observe_startup_scene(peak, f64::from(static_fraction));
             }
             self.spatial.as_mut().expect("spatial mode").startup_profile =
                 Some((peak * scale_x, static_fraction));
@@ -1550,9 +1565,8 @@ impl<B: CodecBackend> Encoder<B> {
                 .map_or(self.layer.width, |s| s.config.full_size.0)
                 .max(1);
             let layer_peak = full_peak * (self.layer.width as f64 / full_w as f64);
-            rc.observe_startup_motion(layer_peak);
             // The still share is a fraction of blocks: the same at every layer.
-            rc.observe_startup_still(f64::from(still));
+            rc.observe_startup_scene(layer_peak, f64::from(still));
         }
         analyzer
     }
@@ -1639,7 +1653,7 @@ impl<B: CodecBackend> Encoder<B> {
         &mut self,
         key_unit: bool,
         layer_plan: &SpatialLayerPlan,
-        analyzer: Option<Analyzer>,
+        mut analyzer: Option<Analyzer>,
         visible_out: &mut Picture,
     ) -> (Vec<u8>, u32) {
         let own_input = self.layer.input.take();
@@ -1650,12 +1664,7 @@ impl<B: CodecBackend> Encoder<B> {
             self.layer.last_key_index = index;
         }
         let from_lower_key = rc_key && layer_plan.predicts_from_lower;
-        let analysis = analyzer.as_ref().and_then(Analyzer::analysis);
-        let source = match (analyzer.as_ref(), own_input.as_ref()) {
-            (Some(a), _) => a.frame(),
-            (None, Some(buf)) => buf,
-            (None, None) => unreachable!("layer owns analyzer or input"),
-        };
+        let (analyzed, analysis) = analyzed_frame(analyzer.as_mut());
         // On an inter-layer key/repair TU, enhancement layers (`S1`, `S2`) predict
         // from the same instant's lower layer: no motion is searched against their
         // own previous picture (`uses_temporal_motion`), only the stillness run is
@@ -1684,13 +1693,13 @@ impl<B: CodecBackend> Encoder<B> {
         self.frame_quantizer = plan.quantizer;
 
         let mut padding = self.layer.padding.take();
-        let coded_source = match padding.as_mut() {
-            Some(p) => {
-                copy_padded(source, &mut p.source);
-                &p.source
-            }
-            None => source,
-        };
+        let source_for_coding = coded_source(
+            analyzed,
+            own_input.as_ref(),
+            padding.as_mut(),
+            (self.layer.coded_width, self.layer.coded_height),
+        );
+        let coded_source = &*source_for_coding;
         let secondary_ratio = layer_plan.references.secondary.map(|link| {
             link.distance as f32 / layer_plan.references.reference.distance.max(1) as f32
         });
@@ -1702,7 +1711,7 @@ impl<B: CodecBackend> Encoder<B> {
         });
         let role = self.frame_role(index, &layer_plan.references, rc_key);
         let (mut decision_params, planner_params) =
-            self.frame_params(index, &layer_plan.references, role, analysis);
+            self.frame_params(index, &layer_plan.references, (role, rc_key), analysis);
         self.gate_enhancement_intra(layer_plan, &mut decision_params);
         self.frame_decision_params = decision_params;
         let layer_ctx = self.prepare_spatial_backend(
@@ -1738,10 +1747,11 @@ impl<B: CodecBackend> Encoder<B> {
             (coded_source, recon),
             &data,
         );
+        drop(source_for_coding);
         self.layer.analyzer = analyzer;
         self.layer.input = own_input;
         pool.finish(layer_plan.references.refresh);
-        copy_layer_visible_recon(&self.dsp, padding.as_mut(), pool.last(), visible_out);
+        copy_visible(&self.dsp, pool.last(), visible_out);
         self.layer.references = Some(pool);
         self.layer.padding = padding;
         (data, final_plan.quantizer)
@@ -1805,7 +1815,7 @@ impl<B: CodecBackend> Encoder<B> {
         };
         let first = self.identity_trial(plan).unwrap_or(plan);
         self.frame_quantizer = first.quantizer;
-        let mut data = self.code_picture(&first, pictures, inter, planner_params);
+        let mut data = self.code_whole_picture(&first, pictures, inter, planner_params);
         let mut codings = 1;
         while let Some(recode) = self.spatial_recode_plan(plan, bit_count(&data), codings) {
             codings += 1;
@@ -1819,7 +1829,7 @@ impl<B: CodecBackend> Encoder<B> {
                 secondary,
                 recon: &mut *recon,
             };
-            data = self.code_picture(&plan, pictures, inter, planner_params);
+            data = self.code_whole_picture(&plan, pictures, inter, planner_params);
         }
         (data, plan)
     }
@@ -1837,7 +1847,7 @@ impl<B: CodecBackend> Encoder<B> {
         let Some(analysis) = analysis else {
             return (reuse_frame, 0.0);
         };
-        let depth = (!rc_key).then(|| self.cadence_depth(analysis, &layer_plan.references));
+        let depth = (!rc_key).then(|| self.cadence_depth(index, analysis, &layer_plan.references));
         let share = self.layer_share(index, rc_key, from_lower_key, Some(&analysis.pre));
         let key_bound = rc_key && self.reuse_key_bound(index, &analysis.pre, &share);
         let rframe = ReuseFrame {
@@ -1974,7 +1984,7 @@ impl<B: CodecBackend> Encoder<B> {
         bits: u64,
         codings: u32,
     ) -> Option<FramePlan> {
-        if let Some(next) = self.recode_plan(plan, bits, codings) {
+        if let Some(next) = self.recode_plan(plan, (bits, false), codings) {
             if let Some(rc) = self.layer.rate_control.as_mut() {
                 rc.sync_inter_level_after_recode();
             }
@@ -2003,6 +2013,18 @@ impl<B: CodecBackend> Encoder<B> {
             lambda_scale,
             ..plan
         })
+    }
+
+    /// Whether temporal unit `tu_index` is a key unit: scheduled, requested,
+    /// or every unit of an intra-only backend. A requested key restarts the
+    /// schedule (`key_clock.rs`).
+    fn spatial_key_due(&mut self, tu_index: u64) -> bool {
+        let periodic = self.periodic_key(tu_index);
+        let key = self.force_keyframe || !self.backend.supports_inter() || periodic;
+        if key && !periodic {
+            self.key_clock.restart(tu_index, None);
+        }
+        key
     }
 
     fn spatial_frames_to_next_key(&self, spatial_id: u8) -> Option<u64> {
@@ -2065,6 +2087,12 @@ impl<B: CodecBackend> Encoder<B> {
                 self.sample_step(layer.last_quantizer),
             )
         };
+        // The stream's buffer as a receiver of every layer sees it.
+        let fullness = self
+            .spatial
+            .as_ref()
+            .and_then(|s| s.combined_rate_control_stats(&self.layer))
+            .map(|stats| stats.buffer_fullness);
         let (Some(hold), Some(spatial)) = (self.hold.as_mut(), self.spatial.as_mut()) else {
             return false;
         };
@@ -2095,7 +2123,9 @@ impl<B: CodecBackend> Encoder<B> {
             ),
             _ => false,
         };
-        hold.holds(repeat)
+        // A held repeat may be coded as a refinement (`hold.rs`,
+        // "Spare-budget refinement"), as for a single layer.
+        hold.holds(repeat) && !hold.refine_instead(fullness)
     }
 
     fn hold_spatial_tu(&mut self, tu_index: u64, timestamp_us: Option<i64>) -> EncodedFrame {
@@ -2277,20 +2307,6 @@ fn union_tu_references(layers: &[LayerFrameMetadata]) -> ReferencedFrames {
         }
     }
     ReferencedFrames::from_pair(deps[0], deps[1])
-}
-
-fn copy_layer_visible_recon(
-    dsp: &nc_dsp::Dsp,
-    padding: Option<&mut Padding>,
-    coded_last: &Picture,
-    out: &mut Picture,
-) {
-    if let Some(p) = padding {
-        copy_visible(dsp, coded_last, &mut p.visible_recon);
-        copy_visible(dsp, &p.visible_recon, out);
-    } else {
-        copy_visible(dsp, coded_last, out);
-    }
 }
 
 /// The picture a layer's next source is written into: its analyzer's next

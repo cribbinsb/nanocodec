@@ -1,0 +1,26 @@
+# intra-cheap batch 1: merge-only windows, leaf-first, leaf exit, leaf pass, staged-decision assemblies; one-frame fixed-QP ab
+null: planner.intra_bias=1050
+s2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2
+s2_lf: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1
+s2_lf_x30: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=30
+s2_lf_x100: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=100
+s3_lf: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=3 planner.key_rd_leaf_first=1
+krd12_lf: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1
+krd22_lf: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1
+krd22_lf_x30: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=30
+krd22_lf_x100: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=100
+krd22_lf_x300: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_leaf_exit=300
+s2_lf_rdc2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 hevc.intra_rd_candidates=2
+s2_lf_lrd2p: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=2 planner.key_rd_leaf_pass=1
+s2_lf_lrd4p: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=4 planner.key_rd_leaf_pass=1
+s2_lf_lrd1p: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=1 planner.key_rd_leaf_pass=1
+krd22_lf_lrd2p: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=2 planner.key_rd_leaf_pass=1
+krd22_lf_lrd4p: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=4 planner.key_rd_leaf_pass=1
+krd22_lrd4: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 decision.intra_rd_modes=4
+s2_lf_lrd2: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 decision.intra_rd_modes=2
+s2_lf_b1150: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.intra_bias=1150
+coarse: hevc.key_intra_coarse=1
+s2_lf_coarse: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 hevc.key_intra_coarse=1
+nonxn: hevc.intra_nxn=0
+tu1: hevc.intra_tu_depth=1
+s2_lf_tu1: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 hevc.intra_tu_depth=1

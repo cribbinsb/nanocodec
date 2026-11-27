@@ -19,3 +19,17 @@ refs.second = 2
 refs.second_hold = 5
 refs.second_hold_rearm = 1
 refs.second_hold_moving = 1
+# Key frames: medium's key RD search (its 1.1 gate, one level each way) and periodic keys 2 QP
+# units finer. With the search pinned off this rung coded cheaper, worse keys than medium (key
+# ladder inverted). nceval.train against 038043e0f (draw 2026-11-22, idea key-search-on-rungs-
+# above-medium): L3 J -0.39% [-1.05, +0.27] (k 0.1, Zen 5 cycles +2.56 % charged), final check
+# (600 f) -0.24% [-0.41, -0.06], no guard. One-frame key BD-J -5.0 %.
+planner.key_rd_split = 1
+rate.key_level_finer = 2
+# The key-frame searches medium had (2026-11-22) stay on this rung, which
+# screened them in its own window; medium reverted them (chart-timing cost).
+planner.key_rd_margin = 1.1
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-0.82 / -0.25 %).
+rate.key_cap_buffer_first = 0.8

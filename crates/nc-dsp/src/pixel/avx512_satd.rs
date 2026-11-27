@@ -1,17 +1,27 @@
 //! Four independent 8x8 Hadamard tiles in AVX-512's 128-bit sublanes.
-//! Uses the existing AVX2 vertical-butterfly design; horizontal butterflies
-//! use lane shuffles and masked subtraction instead of unavailable 512-bit
-//! horizontal-add instructions. Every coefficient fits i16 (64*255=16320).
+//! Shares the AVX2 butterfly and reduces the last stage by absolute maxima.
 
 use core::arch::x86_64::{
     __m512i, _mm_loadu_si128, _mm256_loadu_si256, _mm256_set_m128i, _mm256_setr_epi64x,
-    _mm512_abs_epi16, _mm512_add_epi16, _mm512_add_epi32, _mm512_cvtepu8_epi16, _mm512_madd_epi16,
-    _mm512_mask_sub_epi16, _mm512_set1_epi16, _mm512_setzero_si512, _mm512_shuffle_epi32,
-    _mm512_shufflehi_epi16, _mm512_shufflelo_epi16, _mm512_storeu_si512, _mm512_sub_epi16,
+    _mm512_cvtepu8_epi16, _mm512_madd_epi16, _mm512_set1_epi16, _mm512_setzero_si512,
+    _mm512_storeu_si512, _mm512_sub_epi16,
 };
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
 pub(super) unsafe fn tiles(src: &[u8], ss: usize, rf: &[u8], rs: usize, w: usize, h: usize) -> u32 {
+    if w == 16 && h >= 16 {
+        // SAFETY: each iteration covers one checked 16x16 group.
+        return unsafe {
+            (0..h)
+                .step_by(16)
+                .map(|y| {
+                    quads(&src[y * ss..], ss, &rf[y * rs..], rs)
+                        .into_iter()
+                        .sum::<u32>()
+                })
+                .sum()
+        };
+    }
     // Narrow tile gathering loses on Zen 5 / SPR (0.46–0.75x at 16x16/8x32).
     if w < 32 || w * h < 256 {
         // SAFETY: the same block contract, and AVX2 is part of this tier.
@@ -98,34 +108,15 @@ pub(super) unsafe fn quads(src: &[u8], ss: usize, rf: &[u8], rs: usize) -> [u32;
 }
 
 /// Shared Hadamard graph; normalization remains independent per tile.
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "the linked AVX-512 callers inline the register array"
+)]
 #[inline]
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn transform_quads(mut rows: [__m512i; 8]) -> [u32; 4] {
-    for half in [1, 2, 4] {
-        for start in (0..8).step_by(2 * half) {
-            for i in start..start + half {
-                let (a, b) = (rows[i], rows[i + half]);
-                rows[i] = _mm512_add_epi16(a, b);
-                rows[i + half] = _mm512_sub_epi16(a, b);
-            }
-        }
-    }
-    let mut sum = _mm512_setzero_si512();
-    for row in rows {
-        let adjacent = _mm512_shufflehi_epi16::<0xb1>(_mm512_shufflelo_epi16::<0xb1>(row));
-        let row =
-            _mm512_mask_sub_epi16(_mm512_add_epi16(row, adjacent), 0xaaaa_aaaa, adjacent, row);
-        let adjacent = _mm512_shufflehi_epi16::<0x4e>(_mm512_shufflelo_epi16::<0x4e>(row));
-        let row =
-            _mm512_mask_sub_epi16(_mm512_add_epi16(row, adjacent), 0xcccc_cccc, adjacent, row);
-        let adjacent = _mm512_shuffle_epi32::<0x4e>(row);
-        let row =
-            _mm512_mask_sub_epi16(_mm512_add_epi16(row, adjacent), 0xf0f0_f0f0, adjacent, row);
-        sum = _mm512_add_epi32(
-            sum,
-            _mm512_madd_epi16(_mm512_abs_epi16(row), _mm512_set1_epi16(1)),
-        );
-    }
+unsafe fn transform_quads(rows: [__m512i; 8]) -> [u32; 4] {
+    let half = super::satd_x86::satd_half(rows.map(crate::simd::avx512_i16::I16x32)).0;
+    let sum = _mm512_madd_epi16(half, _mm512_set1_epi16(2));
     let mut partial = [0u32; 16];
     // SAFETY: partial holds 64 writable bytes.
     unsafe { _mm512_storeu_si512(partial.as_mut_ptr().cast(), sum) };

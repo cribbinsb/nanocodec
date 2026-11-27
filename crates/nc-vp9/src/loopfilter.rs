@@ -52,12 +52,55 @@ fn filter_edge(
 }
 
 /// Edges of one 8x8 unit (in plane samples) in one direction.
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct UnitEdges {
     /// Filter at the unit's left/top edge, if any.
     edge: Option<Width>,
     /// 4-wide filter at the internal edge 4 samples in (4x4 transforms).
     internal: bool,
+}
+
+/// A unit's edges in one direction and its segment, packed into one byte:
+/// the edge runs compare keys, a byte rather than three fields (with the
+/// plane-unit loops below, VP9 Faster x86 instructions -1.3 to -1.5 %).
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+struct EdgeKey(u8);
+
+impl EdgeKey {
+    /// Bits of the edge's filter width (0: no edge).
+    const WIDTH_MASK: u8 = 0b11;
+    /// The internal 4-wide edge.
+    const INTERNAL: u8 = 1 << 2;
+    /// The segment id's first bit.
+    const SEGMENT_SHIFT: u32 = 3;
+
+    fn new(edges: UnitEdges, segment: u8) -> Self {
+        let width = match edges.edge {
+            None => 0,
+            Some(Width::Four) => 1,
+            Some(Width::Eight) => 2,
+            Some(Width::Sixteen) => 3,
+        };
+        let internal = if edges.internal { Self::INTERNAL } else { 0 };
+        Self(width | internal | (segment << Self::SEGMENT_SHIFT))
+    }
+
+    fn edge(self) -> Option<Width> {
+        match self.0 & Self::WIDTH_MASK {
+            0 => None,
+            1 => Some(Width::Four),
+            2 => Some(Width::Eight),
+            _ => Some(Width::Sixteen),
+        }
+    }
+
+    fn internal(self) -> bool {
+        self.0 & Self::INTERNAL != 0
+    }
+
+    fn segment(self) -> usize {
+        usize::from(self.0 >> Self::SEGMENT_SHIFT)
+    }
 }
 
 /// Masks of one direction for a unit, as `vp9_filter_block_plane_non420`
@@ -142,109 +185,83 @@ fn filter_superblock(
     (levels, limits): (&[u8; MAX_SEGMENTS], &[Limits; MAX_SEGMENTS]),
 ) {
     let ss = usize::from(index != PlaneIndex::Y);
-    let step = 1 << ss;
-    let rows = (0..MI_PER_SUPERBLOCK)
-        .step_by(step)
-        .filter(|&r| sb_row + r < grid.rows);
-    let cols = || {
-        (0..MI_PER_SUPERBLOCK)
-            .step_by(step)
-            .filter(move |&c| sb_col + c < grid.cols)
-    };
-    // Masks per (r, c) in mode-info units relative to the superblock.
-    let mut vertical = [[UnitEdges::default(); MI_PER_SUPERBLOCK]; MI_PER_SUPERBLOCK];
+    // The superblock's plane 8x8 units inside the frame; unit (i, j) takes
+    // the mode info of mode-info unit (i << ss, j << ss).
+    let rows = (grid.rows - sb_row)
+        .min(MI_PER_SUPERBLOCK)
+        .div_ceil(1 << ss);
+    let cols = (grid.cols - sb_col)
+        .min(MI_PER_SUPERBLOCK)
+        .div_ceil(1 << ss);
+    // Packed keys, vertical edges by column (`[j][i]`) and horizontal ones
+    // by row (`[i][j]`), so each run search reads one contiguous slice.
+    // A level-0 block filters none of its edges (`build_masks` / the
+    // non-420 path) and keeps the empty key.
+    let mut vertical = [[EdgeKey::default(); MI_PER_SUPERBLOCK]; MI_PER_SUPERBLOCK];
     let mut horizontal = vertical;
-    let mut segment = [[0u8; MI_PER_SUPERBLOCK]; MI_PER_SUPERBLOCK];
-    for r in rows.clone() {
-        for c in cols() {
-            let (row, col) = (sb_row + r, sb_col + c);
+    for i in 0..rows {
+        let row = sb_row + (i << ss);
+        let skip_row = ss == 1 && row == grid.rows - 1;
+        for j in 0..cols {
+            let col = sb_col + (j << ss);
             let info = grid.at(row, col);
-            if levels[usize::from(info.segment_id)] == 0 {
-                // `build_masks` / the non-420 path: a level-0 block filters
-                // none of its edges.
+            let segment = info.segment_id;
+            if levels[usize::from(segment)] == 0 {
                 continue;
             }
-            segment[r][c] = info.segment_id;
             let units = 1usize << (info.size_log2 - 3);
             let tx = if ss == 0 {
                 info.tx_size
             } else {
                 uv_tx_size(info.size_log2, info.tx_size)
             };
-            let block_left = col % units == 0;
-            let block_top = row % units == 0;
             let skip_col = ss == 1 && col == grid.cols - 1;
-            let skip_row = ss == 1 && row == grid.rows - 1;
-            vertical[r][c] = unit_edges(info, tx, c >> ss, block_left, skip_col);
-            horizontal[r][c] = unit_edges(info, tx, r >> ss, block_top, skip_row);
+            let column_edges = unit_edges(info, tx, j, col % units == 0, skip_col);
+            let mut row_edges = unit_edges(info, tx, i, row % units == 0, skip_row);
             // The internal 4x4 edges of both directions follow the column
             // rule of the source (`mask_4x4_int`), then the row border.
-            horizontal[r][c].internal = vertical[r][c].internal && !skip_row;
+            row_edges.internal = column_edges.internal && !skip_row;
+            vertical[j][i] = EdgeKey::new(column_edges, segment);
+            horizontal[i][j] = EdgeKey::new(row_edges, segment);
         }
     }
-    let to_plane = |units: usize| (units * MI_SIZE) >> ss;
-    // Fixed arrays, not vectors: this runs per superblock and plane.
-    let (row_units, row_count) = collect_units(rows);
-    let (col_units, col_count) = collect_units(cols());
-    let (rows, cols) = (&row_units[..row_count], &col_units[..col_count]);
+    let (x0, y0) = ((sb_col * MI_SIZE) >> ss, (sb_row * MI_SIZE) >> ss);
     // Exact batching: the pixels of an 8-line stripe are only touched by
     // that stripe's edges, filtered left to right (vertical) or top to
     // bottom (horizontal); so a run of identical edges along the other
     // axis is one kernel call, in the same per-line order.
-    let key = |edges: &[[UnitEdges; MI_PER_SUPERBLOCK]; MI_PER_SUPERBLOCK], r: usize, c: usize| {
-        (edges[r][c].edge, edges[r][c].internal, segment[r][c])
-    };
-    for &c in cols {
-        let x = to_plane(sb_col + c);
-        for run in runs(rows, |&r| key(&vertical, r, c)) {
-            let (r, units) = (run[0], run.len());
-            let y = to_plane(sb_row + r);
-            let edges = vertical[r][c];
-            let limits = limits[usize::from(segment[r][c])];
-            if let Some(width) = edges.edge
+    for (j, column) in vertical[..cols].iter().enumerate() {
+        let x = x0 + j * MI_SIZE;
+        let mut i = 0;
+        for run in column[..rows].chunk_by(|a, b| a == b) {
+            let (key, units, y) = (run[0], run.len(), y0 + i * MI_SIZE);
+            i += units;
+            let limits = limits[key.segment()];
+            if let Some(width) = key.edge()
                 && x != 0
             {
                 filter_edge(dsp, plane, (x, y), (true, units), width, limits);
             }
-            if edges.internal {
+            if key.internal() {
                 filter_edge(dsp, plane, (x + 4, y), (true, units), Width::Four, limits);
             }
         }
     }
-    for &r in rows {
-        let y = to_plane(sb_row + r);
-        for run in runs(cols, |&c| key(&horizontal, r, c)) {
-            let (c, units) = (run[0], run.len());
-            let x = to_plane(sb_col + c);
-            let edges = horizontal[r][c];
-            let limits = limits[usize::from(segment[r][c])];
-            if let Some(width) = edges.edge
+    for (i, row) in horizontal[..rows].iter().enumerate() {
+        let y = y0 + i * MI_SIZE;
+        let mut j = 0;
+        for run in row[..cols].chunk_by(|a, b| a == b) {
+            let (key, units, x) = (run[0], run.len(), x0 + j * MI_SIZE);
+            j += units;
+            let limits = limits[key.segment()];
+            if let Some(width) = key.edge()
                 && y != 0
             {
                 filter_edge(dsp, plane, (x, y), (false, units), width, limits);
             }
-            if edges.internal {
+            if key.internal() {
                 filter_edge(dsp, plane, (x, y + 4), (false, units), Width::Four, limits);
             }
         }
     }
-}
-/// The mode-info unit offsets of `units` (at most a superblock's) in a
-/// fixed array, with their count.
-fn collect_units(units: impl Iterator<Item = usize>) -> ([usize; MI_PER_SUPERBLOCK], usize) {
-    let mut out = [0; MI_PER_SUPERBLOCK];
-    let mut count = 0;
-    for unit in units {
-        out[count] = unit;
-        count += 1;
-    }
-    (out, count)
-}
-
-/// Maximal runs of consecutive `items` with equal `key`.
-fn runs<'a, T, K: PartialEq>(
-    items: &'a [T],
-    key: impl Fn(&T) -> K + 'a,
-) -> impl Iterator<Item = &'a [T]> + 'a {
-    items.chunk_by(move |a, b| key(a) == key(b))
 }

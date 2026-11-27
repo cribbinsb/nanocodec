@@ -1,0 +1,1492 @@
+{
+ "AUD_MW_E": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "e96fe5054de0329a8868d06003375cdb",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "BA1_FT_C": {
+  "bytes": 45467136,
+  "error": "",
+  "md5": "4f2da01d1d1ae7b99bea3fe1fb9e8ef4",
+  "seconds": 0.47,
+  "status": "pass"
+ },
+ "BA1_Sony_D": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "114d1cf94a2fcaffda0cf1b49964bf3d",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "BA2_Sony_F": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "124d28307b05702812a374cfc9aad615",
+  "seconds": 0.15,
+  "status": "pass"
+ },
+ "BA3_SVA_C": {
+  "bytes": 1254528,
+  "error": "",
+  "md5": "7518b0f80c079db0a51aa4e0c84aea95",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "BAMQ1_JVC_C": {
+  "bytes": 1140480,
+  "error": "",
+  "md5": "bad372deef52c08fc1e384ecd1a43137",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "BAMQ2_JVC_C": {
+  "bytes": 1140480,
+  "error": "",
+  "md5": "e3f5d5b0774b55370745f2d04f009575",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "BANM_MW_D": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "e637d38ed004df3540218e3d84b43e42",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "BASQP1_Sony_C": {
+  "bytes": 152064,
+  "error": "",
+  "md5": "9e9c06cfc882a3f618b6ad40811c1331",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "BA_MW_D": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "7d5d351ad061640294bf43a43150fbca",
+  "seconds": 0.06,
+  "status": "pass"
+ },
+ "CABA1_SVA_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "2f5cabd5bb4954c0386cafd8a9aa782a",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "CABA1_Sony_D": {
+  "bytes": 1900800,
+  "error": "",
+  "md5": "24b155a400dc10d11d45a3aadf61ae25",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "CABA2_SVA_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "6d4277a7fc70ed1fbe3c5f10b0a70671",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "CABA2_Sony_E": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "3731f0f1ace3ad9176093a7b46347cea",
+  "seconds": 0.13,
+  "status": "pass"
+ },
+ "CABA3_SVA_B": {
+  "bytes": 1254528,
+  "error": "",
+  "md5": "63a0f8fdcbb87b0dff330acdd10905c0",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "CABA3_Sony_C": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "28c778fdcf189aff70095db52572456b",
+  "seconds": 0.18,
+  "status": "pass"
+ },
+ "CABA3_TOSHIBA_E": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "13651d01c5b533e6b7aa132bae7669ed",
+  "seconds": 0.13,
+  "status": "pass"
+ },
+ "CABACI3_Sony_B": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "095fc22b46f0822be4699dcc47d912c1",
+  "seconds": 0.23,
+  "status": "pass"
+ },
+ "CABAST3_Sony_E": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "e95f27c3779af519c1a317adb2f699a5",
+  "seconds": 0.16,
+  "status": "pass"
+ },
+ "CABASTBR3_Sony_B": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "71d8c963c6c5216d75567b3b47d054d6",
+  "seconds": 0.16,
+  "status": "pass"
+ },
+ "CABREF3_Sand_D": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/50",
+  "seconds": 0.06,
+  "status": "error"
+ },
+ "CACQP3_Sony_D": {
+  "bytes": 1900800,
+  "error": "",
+  "md5": "dfc2c76e559e61c0e3e2922005dc805e",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "CAFI1_SVA_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/33",
+  "seconds": 0.08,
+  "status": "error"
+ },
+ "CAMA1_Sony_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/5",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "CAMA1_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.16,
+  "status": "error"
+ },
+ "CAMA3_Sand_E": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/50",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "CAMACI3_Sony_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "CAMANL1_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.18,
+  "status": "error"
+ },
+ "CAMANL2_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.18,
+  "status": "error"
+ },
+ "CAMANL3_Sand_E": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/50",
+  "seconds": 0.07,
+  "status": "error"
+ },
+ "CAMASL3_Sony_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "CAMP_MOT_MBAFF_L30": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.2,
+  "status": "error"
+ },
+ "CAMP_MOT_MBAFF_L31": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "CANL1_SVA_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "b02defcb741c0e982313c5749f2008ed",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "CANL1_Sony_E": {
+  "bytes": 1900800,
+  "error": "",
+  "md5": "27f1d5d389e110fc320788bf78006db0",
+  "seconds": 0.06,
+  "status": "pass"
+ },
+ "CANL1_TOSHIBA_G": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "afa072746b16bd96f3152b45e2f2881e",
+  "seconds": 0.27,
+  "status": "pass"
+ },
+ "CANL2_SVA_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "b02defcb741c0e982313c5749f2008ed",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "CANL2_Sony_E": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "3a28438e3e0795deaed795fcfefbc833",
+  "seconds": 0.17,
+  "status": "pass"
+ },
+ "CANL3_SVA_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "04a6de984ef88d1b8c1b26fc8f33a425",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "CANL3_Sony_C": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "d8ce9d2faa54ce3294ad1553c440cde9",
+  "seconds": 0.2,
+  "status": "pass"
+ },
+ "CANL4_SVA_B": {
+  "bytes": 1254528,
+  "error": "",
+  "md5": "cf398be00ac522c5d35b11869a05ef35",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "CANLMA2_Sony_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.15,
+  "status": "error"
+ },
+ "CANLMA3_Sony_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.1,
+  "status": "error"
+ },
+ "CAPA1_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.08,
+  "status": "error"
+ },
+ "CAPAMA3_Sand_F": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/50",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "CAPCM1_Sand_E": {
+  "bytes": 4561920,
+  "error": "",
+  "md5": "ca073ca106e70d5cd51f67485846a5b1",
+  "seconds": 0.2,
+  "status": "pass"
+ },
+ "CAPCMNL1_Sand_E": {
+  "bytes": 4561920,
+  "error": "",
+  "md5": "ee9968eeefe935f045c6b70be51691eb",
+  "seconds": 0.18,
+  "status": "pass"
+ },
+ "CAPM3_Sony_D": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "9ecc3bf5ff7cac9a068a5ba57bc87cb7",
+  "seconds": 0.14,
+  "status": "pass"
+ },
+ "CAQP1_Sony_B": {
+  "bytes": 1900800,
+  "error": "",
+  "md5": "cac07eaabd141764d64cf9de0230a92e",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "CAWP1_TOSHIBA_E": {
+  "bytes": 13685760,
+  "error": "",
+  "md5": "87946607d1d774c2da8ec8632710c84a",
+  "seconds": 0.36,
+  "status": "pass"
+ },
+ "CAWP5_TOSHIBA_E": {
+  "bytes": 13685760,
+  "error": "",
+  "md5": "9663da55e5ef516c8bf0ca0bcc0abbb8",
+  "seconds": 0.37,
+  "status": "pass"
+ },
+ "CI1_FT_B": {
+  "bytes": 44250624,
+  "error": "",
+  "md5": "6832762976b6d48719bb6cb603acd988",
+  "seconds": 0.34,
+  "status": "pass"
+ },
+ "CI_MW_D": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "037becca5bc836b869aba825293d39a3",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "CVBS3_Sony_C": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "e3c1632988100491e8431c3c88ed4096",
+  "seconds": 0.13,
+  "status": "pass"
+ },
+ "CVCANLMA2_Sony_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "CVFC1_Sony_C": {
+  "bytes": 3780000,
+  "error": "",
+  "md5": "9fdb17e17d332b5d9752362c9c7ff9b0",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "CVFI1_SVA_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/7",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "CVFI1_Sony_D": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "CVFI2_SVA_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/13",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "CVFI2_Sony_H": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.12,
+  "status": "error"
+ },
+ "CVMA1_Sony_D": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/5",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "CVMA1_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.24,
+  "status": "error"
+ },
+ "CVMANL1_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.15,
+  "status": "error"
+ },
+ "CVMANL2_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.22,
+  "status": "error"
+ },
+ "CVMAPAQP3_Sony_E": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/8",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "CVMAQP2_Sony_G": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "CVMAQP3_Sony_D": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "CVMP_MOT_FLD_L30_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.08,
+  "status": "error"
+ },
+ "CVMP_MOT_FRM_L31_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "CVNLFI1_Sony_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "CVNLFI2_Sony_H": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.14,
+  "status": "error"
+ },
+ "CVPA1_TOSHIBA_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/90",
+  "seconds": 0.16,
+  "status": "error"
+ },
+ "CVPCMNL1_SVA_C": {
+  "bytes": 4561920,
+  "error": "",
+  "md5": "5c1fd0f68e875200711febf1d683e58f",
+  "seconds": 0.11,
+  "status": "pass"
+ },
+ "CVPCMNL2_SVA_C": {
+  "bytes": 2764800,
+  "error": "",
+  "md5": "af1f1dbe1dd6569cb02271f053217d88",
+  "seconds": 0.05,
+  "status": "pass"
+ },
+ "CVSE2_Sony_B": {
+  "bytes": 10568448,
+  "error": "",
+  "md5": "dd660fb407feb42ecd3af06b42fda90d",
+  "seconds": 0.12,
+  "status": "pass"
+ },
+ "CVSE3_Sony_H": {
+  "bytes": 10568448,
+  "error": "",
+  "md5": "66ab90e408e469bdb9814e9e741d60de",
+  "seconds": 0.16,
+  "status": "pass"
+ },
+ "CVSEFDFT3_Sony_E": {
+  "bytes": 7603200,
+  "error": "",
+  "md5": "f44e4059d056aa3796f384a11c894821",
+  "seconds": 0.1,
+  "status": "pass"
+ },
+ "CVWP1_TOSHIBA_E": {
+  "bytes": 13685760,
+  "error": "",
+  "md5": "e8868ca5e934ad779132cdb3c71be000",
+  "seconds": 0.26,
+  "status": "pass"
+ },
+ "CVWP2_TOSHIBA_E": {
+  "bytes": 13685760,
+  "error": "",
+  "md5": "7616ccc1e4cc89805cf5ae11e4437533",
+  "seconds": 0.26,
+  "status": "pass"
+ },
+ "CVWP3_TOSHIBA_E": {
+  "bytes": 13685760,
+  "error": "",
+  "md5": "8eb5c239e3ea1da0b5c9220593a46674",
+  "seconds": 0.25,
+  "status": "pass"
+ },
+ "CVWP5_TOSHIBA_E": {
+  "bytes": 13685760,
+  "error": "",
+  "md5": "9663da55e5ef516c8bf0ca0bcc0abbb8",
+  "seconds": 0.25,
+  "status": "pass"
+ },
+ "FI1_Sony_E": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.1,
+  "status": "error"
+ },
+ "FM1_BT_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 slice groups (FMO)",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/400",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "FM1_FT_E": {
+  "bytes": 4523904,
+  "error": "nanocodec: unsupported bitstream: H264 slice groups (FMO)",
+  "first_wrong_picture": 119,
+  "md5": "c97818c73521091ef8f3a214ca74f795",
+  "pictures": "119/300",
+  "seconds": 0.04,
+  "status": "error"
+ },
+ "FM2_SVA_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 slice groups (FMO)",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/17",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "FREH10-1": {
+  "bytes": 2256076800,
+  "error": "",
+  "md5": "87071917ba18e58e314e40e76fecafa4",
+  "seconds": 35.06,
+  "status": "pass"
+ },
+ "FREH10-2": {
+  "bytes": 2243543040,
+  "error": "",
+  "md5": "853ed99f2badd6a8daea0c687e0c9e31",
+  "seconds": 38.26,
+  "status": "pass"
+ },
+ "FREXT01_JVC_D": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/16",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "FREXT02_JVC_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/16",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "FRExt1_Panasonic_D": {
+  "bytes": 1216512,
+  "error": "",
+  "md5": "f7023a3a93cc98c0c8d83c1deaf11048",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "FRExt2_Panasonic_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/15",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "FRExt3_Panasonic_E": {
+  "bytes": 1672704,
+  "error": "",
+  "md5": "231e4f3105f75a3602161ec484bbd8e3",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "FRExt4_Panasonic_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/10",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "FRExt_MMCO4_Sony_B": {
+  "bytes": 9123840,
+  "error": "",
+  "md5": "b10b53b906890855c0d8c36b58791957",
+  "seconds": 0.18,
+  "status": "pass"
+ },
+ "HCAFF1_HHI_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/10",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "HCAFR1_HHI_C": {
+  "bytes": 1520640,
+  "error": "",
+  "md5": "a8720257ffe53ce4bb0861e3ae72dbf2",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "HCAFR2_HHI_A": {
+  "bytes": 1520640,
+  "error": "",
+  "md5": "2cf79df7dd8b0d9796250e0e219fdebb",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "HCAFR3_HHI_A": {
+  "bytes": 1520640,
+  "error": "",
+  "md5": "06471784550ffe7d8aae9a274db35b5c",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "HCAFR4_HHI_A": {
+  "bytes": 1520640,
+  "error": "",
+  "md5": "e590be1546b7093ea3bdcc5978d7594d",
+  "seconds": 0.1,
+  "status": "pass"
+ },
+ "HCAMFF1_HHI_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/10",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "HCBP1_HHI_A": {
+  "bytes": 38016000,
+  "error": "",
+  "md5": "13022e7970d78f1de4aaf1f7bd0e440b",
+  "seconds": 0.48,
+  "status": "pass"
+ },
+ "HCBP2_HHI_A": {
+  "bytes": 38016000,
+  "error": "",
+  "md5": "6c689d1541f97dcc1a17f5bdb6569cf1",
+  "seconds": 0.28,
+  "status": "pass"
+ },
+ "HCHP1_HHI_B": {
+  "bytes": 38016000,
+  "error": "",
+  "md5": "4e507bfebb3893259ba94dc53c5ea1e3",
+  "seconds": 0.6,
+  "status": "pass"
+ },
+ "HCHP2_HHI_A": {
+  "bytes": 38016000,
+  "error": "",
+  "md5": "e0a122b8b531a046dbb2f9e454c95162",
+  "seconds": 0.4,
+  "status": "pass"
+ },
+ "HCHP3_HHI_A": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/250",
+  "seconds": 0.2,
+  "status": "error"
+ },
+ "HCMP1_HHI_A": {
+  "bytes": 38016000,
+  "error": "",
+  "md5": "adb6ad8345fd8a8f90330f1fa2f5a17f",
+  "seconds": 0.31,
+  "status": "pass"
+ },
+ "HPCADQ_BRCM_B": {
+  "bytes": 45619200,
+  "error": "",
+  "md5": "41d1fba4e8f8c9b56c172dbe6d6bea23",
+  "seconds": 0.76,
+  "status": "pass"
+ },
+ "HPCAFLNL_BRCM_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/300",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "HPCAFL_BRCM_C": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/300",
+  "seconds": 0.15,
+  "status": "error"
+ },
+ "HPCALQ_BRCM_B": {
+  "bytes": 45619200,
+  "error": "",
+  "md5": "41d1fba4e8f8c9b56c172dbe6d6bea23",
+  "seconds": 0.77,
+  "status": "pass"
+ },
+ "HPCAMAPALQ_BRCM_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/300",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "HPCAMOLQ_BRCM_B": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "7c6f597211ece8ac869f139094a165a8",
+  "seconds": 0.34,
+  "status": "pass"
+ },
+ "HPCANL_BRCM_C": {
+  "bytes": 45619200,
+  "error": "",
+  "md5": "b1660f91e5047adaae5204a5309d57b8",
+  "seconds": 0.58,
+  "status": "pass"
+ },
+ "HPCAQ2LQ_BRCM_B": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "cf81785c89930d5b1c191a1ef4cb9e83",
+  "seconds": 0.42,
+  "status": "pass"
+ },
+ "HPCA_BRCM_C": {
+  "bytes": 45619200,
+  "error": "",
+  "md5": "5eafc104844211893e1d8af0b8b66ed6",
+  "seconds": 0.67,
+  "status": "pass"
+ },
+ "HPCVFLNL_BRCM_A": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/300",
+  "seconds": 0.14,
+  "status": "error"
+ },
+ "HPCVFL_BRCM_A": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/300",
+  "seconds": 0.16,
+  "status": "error"
+ },
+ "HPCVMOLQ_BRCM_B": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "360eac5edfd332e46197deaa578d7b9a",
+  "seconds": 0.21,
+  "status": "pass"
+ },
+ "HPCVNL_BRCM_A": {
+  "bytes": 45619200,
+  "error": "",
+  "md5": "b1660f91e5047adaae5204a5309d57b8",
+  "seconds": 0.48,
+  "status": "pass"
+ },
+ "HPCV_BRCM_A": {
+  "bytes": 45619200,
+  "error": "",
+  "md5": "5eafc104844211893e1d8af0b8b66ed6",
+  "seconds": 0.54,
+  "status": "pass"
+ },
+ "HVLCFI0_Sony_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/19",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "HVLCMFF0_Sony_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/19",
+  "seconds": 0.1,
+  "status": "error"
+ },
+ "HVLCPFF0_Sony_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/19",
+  "seconds": 0.06,
+  "status": "error"
+ },
+ "LS_SVA_D": {
+  "bytes": 64627200,
+  "error": "",
+  "md5": "9c53be4b1dedcd4598d30293f01c7bfe",
+  "seconds": 0.5,
+  "status": "pass"
+ },
+ "MIDR_MW_D": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "d87bff88b2c5b96ccb291ef68a45bbc2",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "MPS_MW_A": {
+  "bytes": 5702400,
+  "error": "",
+  "md5": "88bb5a513bd7f3cc8190c7c03688ab22",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "MR1_BT_A": {
+  "bytes": 2356992,
+  "error": "",
+  "md5": "6ea31a214aadd8bdc8e7d37195d91c81",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "MR1_MW_A": {
+  "bytes": 5702400,
+  "error": "",
+  "md5": "8c03b4a5b27a6f594d917d6fee1d86e6",
+  "seconds": 0.07,
+  "status": "pass"
+ },
+ "MR2_MW_A": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "20e66bac06e537fb1d2fa949b28046cd",
+  "seconds": 0.12,
+  "status": "pass"
+ },
+ "MR2_TANDBERG_E": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "d154bf9264960fecc6d2cf72be4cf8cc",
+  "seconds": 0.12,
+  "status": "pass"
+ },
+ "MR3_TANDBERG_B": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "dd1091f75ac15d3ae70485295b0a116e",
+  "seconds": 0.11,
+  "status": "pass"
+ },
+ "MR4_TANDBERG_C": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "5f5f14beca549172487bb74c4d3ba8f9",
+  "seconds": 0.13,
+  "status": "pass"
+ },
+ "MR5_TANDBERG_C": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "5f5f14beca549172487bb74c4d3ba8f9",
+  "seconds": 0.13,
+  "status": "pass"
+ },
+ "MR6_BT_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/60",
+  "seconds": 0.06,
+  "status": "error"
+ },
+ "MR7_BT_B": {
+  "bytes": 368640,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 10,
+  "md5": "b57b32e60e56460d7eb28cd303d08c3c",
+  "pictures": "10/60",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "MR8_BT_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/58",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "MR9_BT_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/58",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "MV1_BRCM_D": {
+  "bytes": 133228800,
+  "error": "",
+  "md5": "8e6fd7278f458c16b0af78e9581dcd64",
+  "seconds": 4.33,
+  "status": "pass"
+ },
+ "NL1_Sony_D": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "d4bb8d980c1377ee45515763ae7989fd",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "NL2_Sony_H": {
+  "bytes": 11404800,
+  "error": "",
+  "md5": "48d8380cdb7eff52116c1aaddbc583f5",
+  "seconds": 0.11,
+  "status": "pass"
+ },
+ "NL3_SVA_E": {
+  "bytes": 1254528,
+  "error": "",
+  "md5": "c90ce3fa732df9f7e25f110233f0f466",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "NLMQ1_JVC_C": {
+  "bytes": 1140480,
+  "error": "",
+  "md5": "5c4a2f6b39385805f480a3a4432873b2",
+  "seconds": 0.04,
+  "status": "pass"
+ },
+ "NLMQ2_JVC_C": {
+  "bytes": 1140480,
+  "error": "",
+  "md5": "90b70fbaa5ca679ec9bf5e011ddba8f9",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "NRF_MW_E": {
+  "bytes": 3801600,
+  "error": "",
+  "md5": "a8635615b50c5a16decc555a3c6c81c8",
+  "seconds": 0.03,
+  "status": "pass"
+ },
+ "PPH10I1_Panasonic_A": {
+  "bytes": 27648000,
+  "error": "",
+  "md5": "074c5b47578cb72bef0db3930f00303f",
+  "seconds": 0.68,
+  "status": "pass"
+ },
+ "PPH10I2_Panasonic_A": {
+  "bytes": 27648000,
+  "error": "",
+  "md5": "8e82308fe0f3b9a8fdacf8af038ca135",
+  "seconds": 0.69,
+  "status": "pass"
+ },
+ "PPH10I3_Panasonic_A": {
+  "bytes": 27648000,
+  "error": "",
+  "md5": "9fc6af89080ffbf9a5cd181696dbbdd2",
+  "seconds": 0.65,
+  "status": "pass"
+ },
+ "PPH10I4_Panasonic_A": {
+  "bytes": 62208000,
+  "error": "",
+  "md5": "764b5f9cea0ab2e59a609aa03c216151",
+  "seconds": 1.06,
+  "status": "pass"
+ },
+ "PPH10I5_Panasonic_A": {
+  "bytes": 62208000,
+  "error": "",
+  "md5": "77a1bddad3a0c09b610e561911526343",
+  "seconds": 1.46,
+  "status": "pass"
+ },
+ "PPH10I6_Panasonic_A": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/10",
+  "seconds": 0.23,
+  "status": "error"
+ },
+ "PPH10I7_Panasonic_A": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/10",
+  "seconds": 0.25,
+  "status": "error"
+ },
+ "SL1_SVA_B": {
+  "bytes": 1254528,
+  "error": "",
+  "md5": "acd9cb061e651a37839eb5683fbe811a",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "SP1_BT_A": {
+  "bytes": 228096,
+  "error": "nanocodec: unsupported bitstream: H264 SP/SI slices",
+  "first_wrong_picture": 6,
+  "md5": "ab634caa891b300749febbcbe7a65d00",
+  "pictures": "6/400",
+  "seconds": 0.01,
+  "status": "error"
+ },
+ "SVA_BA1_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "dab92aa2145ab44abab2beb2868dd326",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "SVA_BA2_D": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "66130b14295574bf35b725a8eaded3ae",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "SVA_Base_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "180dda3234bcbe57fc45587dac7d43fb",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "SVA_CL1_E": {
+  "bytes": 1900800,
+  "error": "",
+  "md5": "5723a1518de9fadca7499c5ba34da7c4",
+  "seconds": 0.02,
+  "status": "pass"
+ },
+ "SVA_FM1_E": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "7f7eaf6107852b871a3894a950e3647e",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "SVA_NL1_B": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "b5626983ac0877497fff9a4b10d2f1d4",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "SVA_NL2_E": {
+  "bytes": 646272,
+  "error": "",
+  "md5": "b47e932d436288013b8453d9a1d0f60d",
+  "seconds": 0.01,
+  "status": "pass"
+ },
+ "Sharp_MP_Field_1_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/15",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "Sharp_MP_Field_2_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/15",
+  "seconds": 0.08,
+  "status": "error"
+ },
+ "Sharp_MP_Field_3_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/15",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "Sharp_MP_PAFF_1r2": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/15",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "Sharp_MP_PAFF_2r": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/15",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "alphaconformanceG": {
+  "bytes": 31334400,
+  "error": "",
+  "md5": "661772a357c4163dce1c5373786fc24f",
+  "seconds": 0.48,
+  "status": "pass"
+ },
+ "brcm_freh10": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/100",
+  "seconds": 0.07,
+  "status": "error"
+ },
+ "brcm_freh11": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/100",
+  "seconds": 0.06,
+  "status": "error"
+ },
+ "brcm_freh3": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "6f1772152386e2897b539956a5e66c6e",
+  "seconds": 0.18,
+  "status": "pass"
+ },
+ "brcm_freh4": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/100",
+  "seconds": 0.08,
+  "status": "error"
+ },
+ "brcm_freh5": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/100",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "brcm_freh6": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/100",
+  "seconds": 0.12,
+  "status": "error"
+ },
+ "brcm_freh8": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "611587da4a5bcbe01724572980520cf4",
+  "seconds": 0.16,
+  "status": "pass"
+ },
+ "brcm_freh9": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "71e874caa1acb2dc1c2b4b169bc24335",
+  "seconds": 0.18,
+  "status": "pass"
+ },
+ "cabac_mot_fld0_full": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "cabac_mot_frm0_full": {
+  "bytes": 15552000,
+  "error": "",
+  "md5": "1b518423b2136df333f33124b574fb94",
+  "seconds": 0.3,
+  "status": "pass"
+ },
+ "cabac_mot_mbaff0_full": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.19,
+  "status": "error"
+ },
+ "cabac_mot_picaff0_full": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.11,
+  "status": "error"
+ },
+ "cama1_vtc_c": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/4",
+  "seconds": 0.0,
+  "status": "error"
+ },
+ "cama2_vtc_b": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/4",
+  "seconds": 0.06,
+  "status": "error"
+ },
+ "cama3_vtc_b": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/4",
+  "seconds": 0.08,
+  "status": "error"
+ },
+ "cavlc_mot_fld0_full_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.11,
+  "status": "error"
+ },
+ "cavlc_mot_frm0_full_B": {
+  "bytes": 15552000,
+  "error": "",
+  "md5": "efa256f7c334b65a9c74b638a6b94667",
+  "seconds": 0.16,
+  "status": "pass"
+ },
+ "cavlc_mot_mbaff0_full_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 MBAFF frames",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "cavlc_mot_picaff0_full_B": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/30",
+  "seconds": 0.09,
+  "status": "error"
+ },
+ "freh12_b": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "b0f76e8d4d7ee32ac2e755416eb50dd8",
+  "seconds": 0.18,
+  "status": "pass"
+ },
+ "freh1_b": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "db518876d19957db06d0558a5ed06415",
+  "seconds": 0.17,
+  "status": "pass"
+ },
+ "freh2_b": {
+  "bytes": 15206400,
+  "error": "",
+  "md5": "29a932cf3b6bcdfa3280bdea3d29e683",
+  "seconds": 0.21,
+  "status": "pass"
+ },
+ "freh7_b": {
+  "bytes": 0,
+  "error": "nanocodec: unsupported bitstream: H264 field pictures",
+  "first_wrong_picture": 0,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "pictures": "0/100",
+  "seconds": 0.05,
+  "status": "error"
+ },
+ "sp2_bt_b": {
+  "bytes": 380160,
+  "error": "nanocodec: unsupported bitstream: H264 SP/SI slices",
+  "first_wrong_picture": 10,
+  "md5": "02b41330c16d060d3e21409fc4aa8c20",
+  "pictures": "10/400",
+  "seconds": 0.01,
+  "status": "error"
+ }
+}

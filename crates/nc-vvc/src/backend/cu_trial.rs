@@ -67,8 +67,8 @@ impl VvcBackend {
 
     /// `CodecBackend::undo_cu_trial`: put the noted state back.
     pub(super) fn restore_cu_trial(&mut self, recon: &mut Picture) {
-        let trial = std::mem::take(&mut self.cu_trial);
-        self.restore_coded(recon, &trial.snapshot);
+        let mut trial = std::mem::take(&mut self.cu_trial);
+        self.restore_coded(recon, &mut trial.snapshot);
         self.cu_trial = trial;
     }
 

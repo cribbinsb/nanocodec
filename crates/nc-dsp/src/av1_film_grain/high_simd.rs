@@ -13,13 +13,17 @@
     allow(dead_code, unused_imports)
 )]
 
-use nc_common::BitDepth;
+use nc_common::{BitDepth, PlaneView, PlaneViewMut};
 
-use super::Av1GrainScaling;
-use super::kernels::{blend_at, chroma_at, luma_at, scale_lut};
+use super::kernels::{blend_at, chroma_at, luma_at};
+use super::{Av1FilmGrainParams, Av1GrainScaling, GrainBlocks, Template};
 use crate::Isa;
 use crate::av1_mc::high_blend::BlendSample;
 use crate::simd::{HIGH_LOOKUP_TABLE, I16Lanes};
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[path = "kernels/high_sve2.rs"]
+mod sve2;
 
 /// Pre-interpolated Q15 grain scaling lookup for one plane at `depth` (`<= 12` bpc).
 #[derive(Debug, Clone)]
@@ -36,15 +40,36 @@ impl HighGrainScaling {
         let mut q15 = [0i16; HIGH_LOOKUP_TABLE];
         if depth.bits() <= 12 {
             let bits = depth.above_eight();
-            let max_index = (256usize << bits) - 1;
+            let step = 1usize << bits;
+            let rounding = (step / 2) as i32;
             let up = 15 - shift;
-            for (i, slot) in q15[..=max_index].iter_mut().enumerate() {
-                *slot = (scale_lut(lut, i, bits) as i16) << up;
+            let end = 255 * step;
+            for (group, pair) in q15[..end].chunks_exact_mut(step).zip(lut.windows(2)) {
+                let start = i32::from(pair[0]);
+                let delta = i32::from(pair[1]) - start;
+                for (fraction, slot) in group.iter_mut().enumerate() {
+                    let value = start + ((delta * fraction as i32 + rounding) >> bits);
+                    *slot = (value as i16) << up;
+                }
             }
+            q15[end..end + step].fill(i16::from(lut[255]) << up);
         }
         Box::new(Self { base, q15, depth })
     }
 }
+
+type HighLumaPlaneFn = unsafe fn(
+    (&Av1FilmGrainParams, GrainBlocks),
+    &Template<i16>,
+    &HighGrainScaling,
+    [i32; 2],
+    (&PlaneView<'_, u16>, &mut PlaneViewMut<'_, u16>),
+    (usize, usize),
+) -> bool;
+
+#[cfg(target_arch = "x86_64")]
+#[path = "kernels/high_x86_blocks.rs"]
+mod high_x86_blocks;
 
 pub(crate) type HighLumaRowFn = unsafe fn(
     source: &[u16],
@@ -71,6 +96,7 @@ pub(crate) type HighBlendRowFn =
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HighAv1GrainFns {
     pub luma: HighLumaRowFn,
+    luma_plane: Option<HighLumaPlaneFn>,
     pub chroma: HighChromaRowFn,
     pub blend: HighBlendRowFn,
 }
@@ -119,6 +145,7 @@ fn scalar_blend(old: &[i16], new: &mut [i16], weights: [i16; 2], range: (i32, i3
 impl HighAv1GrainFns {
     pub const SCALAR: Self = Self {
         luma: scalar_luma,
+        luma_plane: None,
         chroma: scalar_chroma,
         blend: scalar_blend,
     };
@@ -126,17 +153,44 @@ impl HighAv1GrainFns {
     pub fn for_isa(isa: Isa) -> Self {
         match isa {
             #[cfg(target_arch = "x86_64")]
-            Isa::Avx2 => x86_avx2::FNS,
+            Isa::Avx2 => Self {
+                luma_plane: Some(high_x86_blocks::avx2),
+                ..x86_avx2::FNS
+            },
             #[cfg(target_arch = "x86_64")]
-            Isa::Avx512 => x86_avx512::FNS,
+            Isa::Avx512 => Self {
+                luma_plane: Some(high_x86_blocks::avx512),
+                ..x86_avx512::FNS
+            },
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => neon_high::FNS,
+            #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+            Isa::Sve2 => Self {
+                luma: sve2::luma,
+                ..neon_high::FNS
+            },
             _ => Self::SCALAR,
         }
     }
 }
 
 impl crate::Dsp {
+    pub(super) fn av1_grain_high_luma_plane(
+        &self,
+        grain: (&Av1FilmGrainParams, GrainBlocks),
+        template: &Template<i16>,
+        scaling: &HighGrainScaling,
+        bounds: [i32; 2],
+        views: (&PlaneView<'_, u16>, &mut PlaneViewMut<'_, u16>),
+        size: (usize, usize),
+    ) -> bool {
+        // SAFETY: the DSP selected this CPU's kernel and synthesis checked the views.
+        self.high
+            .av1_grain
+            .luma_plane
+            .is_some_and(|f| unsafe { f(grain, template, scaling, bounds, views, size) })
+    }
+
     pub(super) fn av1_grain_high_luma_row(
         &self,
         source: &[u16],
@@ -368,6 +422,7 @@ macro_rules! high_grain_isa {
 
             pub(super) const FNS: HighAv1GrainFns = HighAv1GrainFns {
                 luma,
+                luma_plane: None,
                 chroma,
                 blend,
             };

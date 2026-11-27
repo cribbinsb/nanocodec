@@ -5,8 +5,7 @@
 //! reference) exactly; only the product grouping differs, which is exact
 //! because every product sum stays in `i32` and each paired value fits `i16`
 //! (ranges below). Passes whose inputs can exceed `i16` keep 32-bit
-//! products. The inverse serves AVX2 and SIMD128; the forward, AVX2 only so
-//! far (the SIMD128 forward is the generic one).
+//! products. Both transforms serve AVX2 and SIMD128.
 //!
 //! # Ranges (16-bit pairs)
 //!
@@ -31,7 +30,10 @@ use crate::codec_txfm::generic::written;
 use crate::simd::WordPairLanes;
 use crate::txfm::generic::store_pass_sat16;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 pub(crate) use forward_pass::forward;
 
 /// Each level's odd matrix (`codec_txfm::butterfly`).
@@ -194,27 +196,20 @@ unsafe fn inverse_within<V: WordPairLanes, const C: usize>(
     let lanes = V::LANES;
     let mut x = [V::splat(0); C];
     let mut y = [V::splat(0); C];
-    let mut t = [MaybeUninit::<i16>::uninit(); MAX_CODED_AREA];
-    for r0 in (0..C).step_by(lanes) {
-        for k0 in (0..C).step_by(lanes) {
-            for (i, lane) in x[..lanes].iter_mut().enumerate() {
-                *lane = if r0 < nonzero && k0 < nonzero {
-                    V::load_i16(&coeffs[(r0 + i) * C + k0..])
-                } else {
-                    V::splat(0)
-                };
-            }
-            V::store_transposed_sat16(&x[..lanes], &mut t[k0 * C + r0..], C);
-        }
-    }
-    // SAFETY: every (r0, k0) tile of the C x C buffer was written above.
-    let t = unsafe { written(&t, C * C) };
     // Clamped to 16 bits by the saturating store (AVM `clamp_buf`).
     let mut m = [MaybeUninit::<i16>::uninit(); MAX_CODED_AREA];
     for r0 in (0..C).step_by(lanes) {
         if r0 < nonzero {
-            for (k, lane) in x.iter_mut().enumerate() {
-                *lane = V::load_i16(&t[k * C + r0..]);
+            // Load only the present coefficient tiles of this row band.
+            // The transpose feeds the first pass directly, avoiding a
+            // complete second coefficient plane between load and transform.
+            let mut tile = [V::splat(0); 16];
+            let tile = &mut tile[..lanes];
+            for k0 in (0..nonzero).step_by(lanes) {
+                for (row, lane) in tile.iter_mut().enumerate() {
+                    *lane = V::load_i16(&coeffs[(r0 + row) * C + k0..]);
+                }
+                V::transpose_registers(tile, &mut x[k0..k0 + lanes]);
             }
             inverse_dct(&x, inputs, &mut y);
             for lane in &mut y {
@@ -240,8 +235,29 @@ unsafe fn inverse_within<V: WordPairLanes, const C: usize>(
     }
 }
 
-/// The forward DCT on pairs (AVX2 only so far).
-#[cfg(target_arch = "x86_64")]
+/// 64x64 inverse via the 32x32 paired transform at the 64x64 scale.
+///
+/// # Safety
+///
+/// As [`inverse`] for the retained 32x32 input and an output of 64x64 samples.
+#[inline(always)]
+pub(crate) unsafe fn inverse64<V: WordPairLanes>(
+    coeffs: &[i16],
+    nonzero: usize,
+    shifts: (u32, u32),
+    out: &mut [i16],
+) {
+    let mut coded = [0; MAX_CODED_AREA];
+    // SAFETY: the input covers the retained coefficients; V's ISA is enabled.
+    unsafe { inverse::<V, MAX_CODED_SIDE>(coeffs, nonzero, shifts, &mut coded) };
+    super::generic::repeat_inverse64(&coded, out);
+}
+
+/// The forward DCT with paired products in the column pass.
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 mod forward_pass {
     use core::mem::MaybeUninit;
 

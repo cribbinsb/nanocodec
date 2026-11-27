@@ -94,6 +94,14 @@ pub(crate) mod avx2;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
+pub(crate) mod avx2_h264;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx2_h264_inverse;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
 pub(crate) mod avx512;
 
 #[cfg(target_arch = "x86_64")]
@@ -107,6 +115,18 @@ mod avx2_paired;
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(crate) mod neon_inverse16;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(crate) mod neon_inverse32;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(crate) mod neon_inverse4;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(crate) mod neon_inverse8;
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]
@@ -258,8 +278,10 @@ impl HevcQuantizer {
     /// [`crate::Dsp::hevc_forward_unless_zero`].
     #[must_use]
     pub fn largest_zero_coefficient(&self) -> u32 {
-        let limit = ((1i64 << self.qbits) - i64::from(self.offset) - 1) / i64::from(self.scale);
-        u32::try_from(limit.max(0)).unwrap_or(u32::MAX)
+        // Forward constructors keep qbits at most 29, offset in
+        // 0..2^qbits, and the quantizer scale positive.
+        let remaining = (1_u32 << self.qbits) - self.offset as u32 - 1;
+        remaining / self.scale as u32
     }
 }
 

@@ -16,7 +16,7 @@ use crate::global::{self, GlobalMotion};
 use crate::grid::Grid;
 use crate::link::{self, DistanceRatio, FrameLink, MAX_REFERENCE_SLOTS, SlotMask};
 use crate::motion::{
-    self, AggregatedField, BLOCK, MotionBlock, MotionInputs, SB, SbStats, SearchConfig,
+    self, AggregatedField, BLOCK, MotionBlock, MotionInputs, SB, SbStats, SearchConfig, SeedField,
 };
 use crate::mv::Mv;
 use crate::noise;
@@ -523,6 +523,13 @@ impl Analyzer {
         &self.frames[self.current].picture
     }
 
+    /// Borrow the last analysed source and its independent analysis. The
+    /// encoder may expose the source's existing border as coding samples
+    /// while consuming the analysis of its original visible area.
+    pub fn frame_and_analysis(&mut self) -> (&mut Picture, Option<&FrameAnalysis>) {
+        (&mut self.frames[self.current].picture, self.last.as_ref())
+    }
+
     /// The analysis of the most recently analysed frame, if any.
     #[must_use]
     pub fn analysis(&self) -> Option<&FrameAnalysis> {
@@ -642,6 +649,7 @@ impl Analyzer {
                 last_16x16: seeds.map(|s| s.field_16x16),
                 last_global: seeds.map_or(GlobalMotion::NONE, |s| s.global),
                 config: self.search,
+                noise_sigma: noise_hint,
             };
             let mut effort = MotionEffort::default();
             let fields = timed(timer, Stage::Motion, || {
@@ -696,13 +704,14 @@ impl Analyzer {
 }
 
 /// Last frame's motion used to seed this frame's search: borrowed as is
-/// when the reference distance is unchanged, rescaled otherwise.
+/// when the reference distance is unchanged, rescaled otherwise (the 16x16
+/// field where the search reads it, [`SeedField`]).
 enum TemporalSeeds<'a> {
     Borrowed(&'a MotionAnalysis),
     Rescaled {
         hme: Grid<Mv>,
         field_32x32: AggregatedField,
-        field_16x16: AggregatedField,
+        field_16x16: SeedField<'a>,
         global: GlobalMotion,
     },
 }
@@ -712,7 +721,7 @@ enum TemporalSeeds<'a> {
 struct SeedView<'a> {
     hme: &'a Grid<Mv>,
     field_32x32: &'a AggregatedField,
-    field_16x16: &'a AggregatedField,
+    field_16x16: SeedField<'a>,
     global: GlobalMotion,
 }
 
@@ -724,7 +733,10 @@ impl<'a> TemporalSeeds<'a> {
         Self::Rescaled {
             hme: link::scale_mv_grid(&motion.hme, ratio),
             field_32x32: link::scale_field(&motion.aggregated[1], ratio),
-            field_16x16: link::scale_field(&motion.aggregated[0], ratio),
+            field_16x16: SeedField {
+                field: &motion.aggregated[0],
+                ratio,
+            },
             global: link::scale_global(motion.global, ratio),
         }
     }
@@ -734,7 +746,10 @@ impl<'a> TemporalSeeds<'a> {
             Self::Borrowed(m) => SeedView {
                 hme: &m.hme,
                 field_32x32: &m.aggregated[1],
-                field_16x16: &m.aggregated[0],
+                field_16x16: SeedField {
+                    field: &m.aggregated[0],
+                    ratio: DistanceRatio::new(1, 1),
+                },
                 global: m.global,
             },
             Self::Rescaled {
@@ -745,7 +760,7 @@ impl<'a> TemporalSeeds<'a> {
             } => SeedView {
                 hme,
                 field_32x32,
-                field_16x16,
+                field_16x16: *field_16x16,
                 global: *global,
             },
         }

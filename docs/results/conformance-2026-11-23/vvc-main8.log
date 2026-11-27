@@ -1,0 +1,10 @@
+pass     8b400_A_2: 
+pass     CodingToolsSets_A_2: 
+pass     CodingToolsSets_B_2: 
+pass     8b420_A_2: 
+pass     QUANT_C_2: 
+pass     QUANT_D_4: 
+pass     LOSSLESS_A_3: 
+pass     8b400_B_2: 
+pass     8b420_B_2: 
+VVC 8-bit Main: 9/9 match official output MD5

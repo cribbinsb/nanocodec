@@ -158,6 +158,11 @@ impl QpCadence {
             || (self.base_boost == 0. && self.startup_base_boost == 0. && self.leaf_penalty == 0.)
     }
 
+    /// Whether `distance` frames from the last key falls inside the start-up cadence stretch.
+    pub(crate) fn in_startup(&self, distance: u64) -> bool {
+        self.startup_end > 0 && distance <= self.startup_end
+    }
+
     /// The period in force at `distance` frames after the last key, and
     /// the distance its cycles count from.
     fn period_at(&self, distance: u64) -> (u64, u64) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a staged standards-lens run (eval/nceval/ctc) on one rented spot instance.
 
-    python3 tools/dev/aws_ctc.py --run-dir DIR --results DIR --instance-type c7a.metal-48xl \
+    python3 tools/dev/aws_ctc.py --run-dir DIR --results DIR --instance-type c7i.24xlarge \
         --lifetime 150 --budget 4 --minutes 130 [--workers 96] [--purpose ctc-full] [--dry-run]
 
 `--run-dir` is a directory written by `python3 -m nceval.ctc stage` (with

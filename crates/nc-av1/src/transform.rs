@@ -1,4 +1,5 @@
-//! AV1 `DCT_DCT` transforms for 4x4 to 64x64.
+//! AV1 square transforms for 4x4 to 64x64: `DCT_DCT` at every size, and
+//! the other transform types where they exist (intra blocks up to 16x16).
 //!
 //! Every size runs on nc-dsp's kernels (SIMD, bit-exact with libaom's
 //! `av1_fwd_txfm2d.c` / `av1_inv_txfm2d.c`). The inverse is normative (AV1
@@ -12,89 +13,14 @@
 //! Coefficient layout follows libaom throughout this crate: coefficient
 //! (row `r`, column `c`) of an `n`×`n` block is stored at `c * n + r`.
 
-use nc_dsp::{Av1Quantizer, BlockSize, DctSize, Dsp};
+use nc_dsp::{Av1Quantizer, Av1TxType, DctSize, Dsp};
 
 /// AV1's 12-bit `cospi[32]`, used once in each DC-only inverse pass.
 const INVERSE_COS_PI_OVER_FOUR: i32 = 2896;
 const INVERSE_COS_BITS: u32 = 12;
 const INVERSE_COLUMN_SHIFT: u32 = 4;
 
-/// Square transform sizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TxSize {
-    /// 4x4.
-    Tx4x4,
-    /// 8x8.
-    Tx8x8,
-    /// 16x16.
-    Tx16x16,
-    /// 32x32.
-    Tx32x32,
-    /// 64x64 (only the top-left 32x32 coefficients are coded).
-    Tx64x64,
-}
-
-impl TxSize {
-    /// The transform for an `n`×`n` block, `n = 1 << log2`.
-    #[must_use]
-    pub fn from_log2(log2: u8) -> Option<Self> {
-        match log2 {
-            2 => Some(Self::Tx4x4),
-            3 => Some(Self::Tx8x8),
-            4 => Some(Self::Tx16x16),
-            5 => Some(Self::Tx32x32),
-            6 => Some(Self::Tx64x64),
-            _ => None,
-        }
-    }
-
-    /// log2 of the side length.
-    #[must_use]
-    pub fn log2(self) -> u8 {
-        match self {
-            Self::Tx4x4 => 2,
-            Self::Tx8x8 => 3,
-            Self::Tx16x16 => 4,
-            Self::Tx32x32 => 5,
-            Self::Tx64x64 => 6,
-        }
-    }
-
-    /// Side length in samples.
-    #[must_use]
-    pub fn size(self) -> usize {
-        1 << self.log2()
-    }
-
-    /// Index of the square size in AV1's `TX_SIZES` order (`TX_4X4` = 0):
-    /// also the transform-size context of the coefficient CDFs.
-    #[must_use]
-    pub fn index(self) -> usize {
-        usize::from(self.log2() - 2)
-    }
-
-    /// Side length of the coded coefficient array: 64x64 transforms code
-    /// only their top-left 32x32 (libaom `av1_get_adjusted_tx_size`).
-    #[must_use]
-    pub fn coded_size(self) -> usize {
-        self.size().min(32)
-    }
-
-    /// log2 of [`TxSize::coded_size`].
-    #[must_use]
-    pub fn coded_log2(self) -> u8 {
-        self.log2().min(5)
-    }
-
-    /// Dequantisation shift (AV1 `dqDenom` = 1, 2, 4; libaom
-    /// `av1_get_tx_scale`): transforms of more than 256 coefficients are
-    /// scaled down by the forward transform and back up here.
-    #[must_use]
-    pub fn dequant_shift(self) -> u32 {
-        let pels = self.size() * self.size();
-        u32::from(pels > 256) + u32::from(pels > 1024)
-    }
-}
+pub use crate::tx_size::TxSize;
 
 /// Forward 2-D DCT of the `n`×`n` residual (row-major at `stride`) into
 /// `out` in libaom's column-major layout. For 64x64 only the coded
@@ -120,9 +46,13 @@ pub struct ForwardPolicy {
 }
 
 impl ForwardPolicy {
-    /// Whether `tx` uses the low-frequency forward.
+    /// Whether `tx` uses the low-frequency forward (a square DCT
+    /// approximation: never on rectangles).
     #[must_use]
     pub fn low(self, tx: TxSize) -> bool {
+        if !tx.is_square() {
+            return false;
+        }
         match tx.size() {
             32 | 64 => self.large,
             16 => self.medium,
@@ -136,11 +66,10 @@ impl ForwardPolicy {
     /// [`nc_dsp::av1_low_keep`] lines (the later ones transform to zero).
     #[must_use]
     pub fn coded_prefix(self, tx: TxSize) -> usize {
-        let coded = tx.coded_size();
         if self.low(tx) {
-            nc_dsp::av1_low_keep(tx.size()) * coded
+            nc_dsp::av1_low_keep(tx.size()) * tx.coded_size()
         } else {
-            coded * coded
+            tx.coded_area()
         }
     }
 }
@@ -182,11 +111,10 @@ pub fn quantize_coded_from(
 /// [`coefficient_gain`] either.
 #[must_use]
 pub fn dequantized_extent(tx: TxSize, eob: usize) -> usize {
-    let coded = tx.coded_size();
-    if matches!(tx, TxSize::Tx32x32 | TxSize::Tx64x64) {
-        nc_dsp::av1_dct_nonzero_side(eob) * coded
+    if matches!(tx, TxSize::TX_32X32 | TxSize::TX_64X64) {
+        nc_dsp::av1_dct_nonzero_side(eob) * tx.coded_size()
     } else {
-        coded * coded
+        tx.coded_area()
     }
 }
 
@@ -206,6 +134,44 @@ pub fn forward_dct_with(
     }
 }
 
+/// Forward transform of type `kind`: [`forward_dct_with`] for a square
+/// `DCT_DCT`, the full forward of the size and type otherwise (the
+/// low-frequency forward of `policy` is a square-DCT approximation only).
+pub fn forward_with(
+    dsp: &Dsp,
+    policy: ForwardPolicy,
+    tx: TxSize,
+    kind: Av1TxType,
+    residual: &[i16],
+    stride: usize,
+    out: &mut [i16],
+) {
+    if kind == Av1TxType::DctDct && tx.is_square() {
+        forward_dct_with(dsp, policy, tx, residual, stride, out);
+    } else {
+        dsp.av1_forward(tx.dsp(), kind, residual, stride, out);
+    }
+}
+
+/// Inverse transform of type `kind` added to the prediction in `dst`, as
+/// [`inverse_dct_add`] for a square `DCT_DCT`; other sizes and types run
+/// the normative inverse of every type (`Dsp::av1_inverse_add_i16`), which
+/// may zero `coeffs`.
+pub fn inverse_add(
+    dsp: &Dsp,
+    tx: TxSize,
+    kind: Av1TxType,
+    coeffs: &mut [i16],
+    eob: usize,
+    dst: &mut nc_common::PlaneViewMut<'_>,
+) {
+    if kind == Av1TxType::DctDct && tx.is_square() {
+        inverse_dct_add(dsp, tx, coeffs, eob, dst);
+    } else {
+        dsp.av1_inverse_add_i16(tx.dsp(), kind, coeffs, eob, dst);
+    }
+}
+
 /// Inverse 2-D DCT of `coeffs` (dequantised, 16-bit as AV1 §7.12.3
 /// clamps them, `coded_size()²`, libaom layout) whose nonzero values all
 /// lie in the first `eob` scan positions, added to the prediction already
@@ -222,7 +188,7 @@ pub fn inverse_dct_add(
     eob: usize,
     dst: &mut nc_common::PlaneViewMut<'_>,
 ) {
-    if matches!(tx, TxSize::Tx16x16 | TxSize::Tx32x32 | TxSize::Tx64x64) {
+    if matches!(tx, TxSize::TX_16X16 | TxSize::TX_32X32 | TxSize::TX_64X64) {
         let limit = nc_dsp::av1_dct_nonzero_side(eob).min(tx.size());
         dsp.av1_inverse_dct_add_sparse(tx.size(), coeffs, limit, dst);
     } else {
@@ -246,30 +212,32 @@ pub fn coefficient_gain(dsp: &Dsp, tx: TxSize, original: &[i16], dequantized: &[
 /// input clamps and each rounding step, then use the existing SIMD add.
 /// Isolated legal-rate probes: AV1 P instructions −2.3%, key −1.5%;
 /// byte-identical parity gives zero BD-rate change.
-/// `scratch` must hold `tx.size()²` residual samples.
+/// The shared constant-add kernel writes only the transform's square.
 pub fn inverse_dct_dc_add(
     dsp: &Dsp,
     tx: TxSize,
     dc: i16,
     dst: &mut nc_common::PlaneViewMut<'_>,
-    scratch: &mut [i16],
+    _scratch: &mut [i16],
 ) {
     let n = tx.size();
-    let residual = &mut scratch[..n * n];
-    residual.fill(inverse_dc_value(tx, dc));
-    dsp.add_residual(
-        BlockSize::new(n, n).expect("transform size is a block size"),
-        dst,
-        residual,
-        n,
-    );
+    let residual = i32::from(inverse_dc_value(tx, dc));
+    if dst.width() == n && dst.height() == n {
+        dsp.add_constant(dst, residual);
+    } else {
+        let mut block = dst
+            .sub_view_mut(0, 0, n, n)
+            .expect("transform inside destination");
+        dsp.add_constant(&mut block, residual);
+    }
 }
 
 fn inverse_dc_value(tx: TxSize, dc: i16) -> i16 {
-    let row_shift = match tx {
-        TxSize::Tx4x4 => 0,
-        TxSize::Tx8x8 => 1,
-        TxSize::Tx16x16 | TxSize::Tx32x32 | TxSize::Tx64x64 => 2,
+    // The square inverses' row shift (§7.13.3, `Transform_Row_Shift`).
+    let row_shift = match tx.log2() {
+        2 => 0,
+        3 => 1,
+        _ => 2,
     };
     // Each pass's input is 16-bit (the second clamped). Products then fit
     // i32, and the final residual is within ±1024, safely inside
@@ -348,7 +316,7 @@ mod tests {
                 );
             }
         }
-        let tx = TxSize::Tx64x64;
+        let tx = TxSize::TX_64X64;
         let residual: Vec<i16> = (0..4096)
             .map(|i| if (i / 64 + i % 64) % 2 == 0 { 20 } else { -20 })
             .collect();
@@ -383,7 +351,7 @@ mod tests {
         use nc_dsp::Isa;
         let scalar = Dsp::with_isa(Isa::Scalar).unwrap();
         let extremes: [i16; 7] = [i16::MIN, -32_767, -1, 0, 1, 32_766, i16::MAX];
-        for tx in [TxSize::Tx32x32, TxSize::Tx64x64] {
+        for tx in [TxSize::TX_32X32, TxSize::TX_64X64] {
             let n = tx.size();
             let stride = n + 7;
             let prediction: Vec<u8> = (0..stride * n + 16).map(|i| (i * 37 + 53) as u8).collect();
@@ -562,13 +530,13 @@ mod tests {
             .map(|i| ((i / 64) as i16 - 32) / 2 + ((i % 64) as i16 - 32) / 4)
             .collect();
         let mut coeffs = vec![0i16; 32 * 32];
-        forward_dct(&Dsp::new(), TxSize::Tx64x64, &residual, 64, &mut coeffs);
+        forward_dct(&Dsp::new(), TxSize::TX_64X64, &residual, 64, &mut coeffs);
         let mut plane = Plane::new(64, 64, 0).unwrap();
         plane.view_mut().fill(128);
         let eob = coeffs.len();
         inverse_dct_add(
             &Dsp::new(),
-            TxSize::Tx64x64,
+            TxSize::TX_64X64,
             &coeffs,
             eob,
             &mut plane.view_mut(),
@@ -591,7 +559,7 @@ mod tests {
         plane.view_mut().fill(100);
         inverse_dct_add(
             &Dsp::new(),
-            TxSize::Tx8x8,
+            TxSize::TX_8X8,
             &coeffs,
             1,
             &mut plane.view_mut(),

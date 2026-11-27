@@ -25,15 +25,34 @@ def test_screen_rows_keep_quality_j_without_the_cpu_term():
     assert row["x86_pct"] == 2.0 and row["psnr"] == -1.0 and row["commit"] == "abc"
 
 
-def test_append_dedups_and_cpu_joins_from_a_cost_row(tmp_path):
+def test_append_dedups_and_a_cost_row_of_other_encodes_lends_no_cpu(tmp_path):
     [row] = levers.screen_rows(adopt_result(), "x.json")
+    # callgrind at fixed QP on its own clips: not the screen's CBR encodes
     cost = levers.cost_rows("hevc", "medium", {"r100": ({"hevc.inter_rounding": 100.0}, 3.0)},
                             levers.CALLGRIND_P, "abc", "c.json")
     path = tmp_path / "l.jsonl"
     assert levers.append([row, row] + cost, path) == 2
     assert levers.append([row], path) == 0
     joined = [r for r in levers.resolved(levers.read_rows(path)) if r["j"] is not None]
-    assert joined[0]["x86_pct"] == 3.0 and "joined" in joined[0]["x86_how"]
+    assert joined[0]["x86_pct"] is None  # reported missing, never borrowed
+
+
+def test_cpu_joins_only_from_a_row_of_the_same_encodes(tmp_path):
+    """Same change: CPU measured on L3 of the same draw lends; another draw, another level
+    (the long window's key shares) or another rate mode does not."""
+    [quality] = levers.screen_rows(adopt_result(), "q.json")
+    [timed] = levers.screen_rows(adopt_result(dcpu=2.0), "t.json")
+    timed = {**timed, "date": "2026-11-20", "commit": "def"}
+    other_draw = {**timed, "draw": "2026-11-14", "x86_pct": 5.0}
+    long_window = {**timed, "level": "final-check", "frames": 600, "x86_pct": 7.0}
+    fixed_qp = {**timed, "rate": "cqp", "x86_pct": 9.0}
+    rows = [levers.make_row(**{k: v for k, v in r.items() if k != "id"})
+            for r in (quality, other_draw, long_window, fixed_qp)]
+    resolved = lambda given: {r["id"]: r for r in levers.resolved(given)}[rows[0]["id"]]
+    assert resolved(rows)["x86_pct"] is None  # CPU missing, not borrowed
+    same = levers.make_row(**{k: v for k, v in timed.items() if k != "id"})
+    joined = resolved(rows + [same])
+    assert joined["x86_pct"] == 2.0 and "joined" in joined["x86_how"]
 
 
 def test_staleness_and_replay_verdicts():
@@ -54,9 +73,14 @@ def test_lens_rows_join_the_cpu_of_a_timing_session(tmp_path):
                            "abc", "results")
     summary = {"nanocodec-av1@faster": {"repeat-1": {"fps": 300.0}, "repeat-2": {"fps": 300.0}},
                "nanocodec-av1@cdef8": {"repeat-1": {"fps": 330.0}, "repeat-2": {"fps": 270.0}}}
+    unnamed = levers.timing_cost_rows(summary, "av1", "faster", "nanocodec-av1@faster",
+                                      {"nanocodec-av1@cdef8": change}, "c8a", "abc", "s.json",
+                                      "lens")
+    [alone] = [r for r in levers.resolved([lens] + unnamed) if r["j"] is not None]
+    assert alone["x86_pct"] is None  # a timing that does not name the lens's encodes
     costs = levers.timing_cost_rows(summary, "av1", "faster", "nanocodec-av1@faster",
                                     {"nanocodec-av1@cdef8": change}, "c8a", "abc", "s.json",
-                                    "lens")
+                                    "lens", encodes=("lens", "aom-ld"))
     path = tmp_path / "l.jsonl"
     levers.append([lens] + costs, path)
     [row] = [r for r in levers.resolved(levers.read_rows(path)) if r["j"] is not None]

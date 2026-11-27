@@ -182,6 +182,20 @@ pub fn forward_bound(log2: u8, abs_sum: u64) -> u64 {
     ((MAX_BASIS * MAX_BASIS * abs_sum) >> shift) + 4
 }
 
+/// An exclusive SAD limit equivalent to `forward_bound(log2, sad) <= limit`
+/// for the supported 4x4 through 32x32 residuals.
+pub(crate) fn forward_zero_sad_limit(log2: u8, limit: u64) -> u32 {
+    if limit < 4 {
+        return 0;
+    }
+    let shift = 2 * u32::from(log2) + BIT_DEPTH - 3;
+    // The first SAD that fails the old test has a shifted product of
+    // at least limit - 4 + 1. Round its inverse up to an integer SAD.
+    let first_rejected =
+        (u128::from(limit - 3) << shift).div_ceil(u128::from(MAX_BASIS * MAX_BASIS));
+    first_rejected.min(u128::from(u32::MAX)) as u32
+}
+
 #[cfg(test)]
 /// Forward 2-D DCT of a `2^log2`-square residual block (row-major), as in
 /// the HM encoder: rows first with shift `log2 + BitDepth − 9`, then

@@ -15,10 +15,12 @@ use crate::Vp9Filter;
 use crate::mc::avx2_byte_dot::{byte_pairs, one_narrow_row, row_16, two_rows};
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_avg_epu8, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_loadl_epi64,
-    _mm_loadu_si128, _mm_packus_epi16, _mm_srli_si128, _mm_storel_epi64, _mm_storeu_si128,
-    _mm_unpackhi_epi8, _mm_unpacklo_epi8, _mm256_add_epi16, _mm256_castsi128_si256,
-    _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_inserti128_si256,
-    _mm256_maddubs_epi16, _mm256_packus_epi16, _mm256_set1_epi16, _mm256_srli_epi16,
+    _mm_loadu_si128, _mm_packs_epi16, _mm_packus_epi16, _mm_srli_si128, _mm_storel_epi64,
+    _mm_storeu_si128, _mm_unpackhi_epi8, _mm_unpacklo_epi8, _mm256_add_epi16, _mm256_adds_epi16,
+    _mm256_broadcastsi128_si256, _mm256_castsi128_si256, _mm256_castsi256_si128,
+    _mm256_extracti128_si256, _mm256_hadds_epi16, _mm256_inserti128_si256, _mm256_loadu_si256,
+    _mm256_maddubs_epi16, _mm256_packus_epi16, _mm256_set1_epi16, _mm256_setzero_si256,
+    _mm256_shuffle_epi8, _mm256_shuffle_epi32, _mm256_srai_epi16, _mm256_srli_epi16,
     _mm256_subs_epu16, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
 };
 
@@ -28,6 +30,46 @@ pub(super) const OFFSET_UNITS: i16 = 128;
 pub(super) const OFFSET: i16 = OFFSET_UNITS << SHIFT;
 
 struct Avx2;
+
+struct Filters {
+    pairs: [__m256i; 4],
+    centre: __m256i,
+    quad: [__m256i; 2],
+}
+
+/// Four horizontally adjacent outputs share two products in each dword.
+/// libvpx's `vpx_filter_block1d4_h8_avx2` uses two shuffles and two dots.
+/// The next-to-last add is exact for these tables. The final signed
+/// saturation is equivalent after the seven-bit shift and byte clipping.
+#[inline(always)]
+unsafe fn horizontal_four(front: __m256i, back: __m256i, filters: &Filters) -> __m128i {
+    const LOW: [u8; 32] = four_mask(0);
+    const HIGH: [u8; 32] = four_mask(1);
+    const fn four_mask(start: u8) -> [u8; 32] {
+        let mut mask = [0; 32];
+        let mut i = 0;
+        while i < 32 {
+            mask[i] = start + (i % 16 / 4 + i % 4) as u8;
+            i += 1;
+        }
+        mask
+    }
+    // SAFETY: AVX2 is enabled. The front register holds bytes 0..8 and
+    // the back register holds bytes 3..11 from each row.
+    unsafe {
+        let lo = _mm256_shuffle_epi8(front, _mm256_loadu_si256(LOW.as_ptr().cast()));
+        let hi = _mm256_shuffle_epi8(back, _mm256_loadu_si256(HIGH.as_ptr().cast()));
+        let lo = _mm256_maddubs_epi16(lo, filters.quad[0]);
+        let hi = _mm256_maddubs_epi16(hi, filters.quad[1]);
+        let sum = _mm256_adds_epi16(_mm256_add_epi16(lo, _mm256_set1_epi16(ROUND / 2)), hi);
+        let rounded =
+            _mm256_srai_epi16::<{ SHIFT as i32 }>(_mm256_hadds_epi16(sum, _mm256_setzero_si256()));
+        _mm_packus_epi16(
+            _mm256_castsi256_si128(rounded),
+            _mm256_extracti128_si256::<1>(rounded),
+        )
+    }
+}
 
 #[inline(always)]
 unsafe fn load<const N: usize>(p: *const u8) -> __m128i {
@@ -83,14 +125,14 @@ unsafe fn finish(sum: __m256i) -> __m128i {
 
 /// The 8-tap sum of four sliding tap-pair vectors (see [`column_sliding`]).
 #[inline(always)]
-unsafe fn tap_sum(pairs: &[__m256i; 4], f: &([__m256i; 4], __m256i)) -> __m256i {
+unsafe fn tap_sum(pairs: &[__m256i; 4], f: &Filters) -> __m256i {
     // SAFETY: the ISA entry enables AVX2.
     unsafe {
         add_pairs([
-            _mm256_maddubs_epi16(pairs[0], f.0[0]),
-            _mm256_maddubs_epi16(pairs[1], f.0[1]),
-            _mm256_maddubs_epi16(pairs[2], f.0[2]),
-            _mm256_maddubs_epi16(pairs[3], f.0[3]),
+            _mm256_maddubs_epi16(pairs[0], f.pairs[0]),
+            _mm256_maddubs_epi16(pairs[1], f.pairs[1]),
+            _mm256_maddubs_epi16(pairs[2], f.pairs[2]),
+            _mm256_maddubs_epi16(pairs[3], f.pairs[3]),
         ])
     }
 }
@@ -109,7 +151,7 @@ unsafe fn column_sliding<const N: usize, const LAYOUT: u8, const AVG: bool>(
     stride: usize,
     (dst, dst_stride): (*mut u8, usize),
     h: usize,
-    f: &([__m256i; 4], __m256i),
+    f: &Filters,
 ) {
     // SAFETY: the caller provides h + 7 readable rows of N bytes and h
     // writable (and, for AVG, readable) rows of N bytes.
@@ -188,7 +230,7 @@ unsafe fn lanes(low: __m128i, high: __m128i) -> __m256i {
 }
 
 impl RowKernel for Avx2 {
-    type Filters = ([__m256i; 4], __m256i);
+    type Filters = Filters;
     type Row = __m128i;
     const LANES: usize = 16;
     const COPY_ISA: crate::Isa = crate::Isa::Avx2;
@@ -199,10 +241,16 @@ impl RowKernel for Avx2 {
     unsafe fn prepare<const LAYOUT: u8>(taps: &[i16; 8]) -> Self::Filters {
         // SAFETY: the entry enables AVX2 and the nonidentity taps fit i8.
         unsafe {
-            (
-                byte_pairs(core::array::from_fn(|p| (taps[2 * p], taps[2 * p + 1]))),
-                byte_pairs([(taps[3], taps[4])])[0],
-            )
+            let words = _mm_loadu_si128(taps.as_ptr().cast());
+            let packed = _mm256_broadcastsi128_si256(_mm_packs_epi16(words, words));
+            Filters {
+                pairs: byte_pairs(core::array::from_fn(|p| (taps[2 * p], taps[2 * p + 1]))),
+                centre: byte_pairs([(taps[3], taps[4])])[0],
+                quad: [
+                    _mm256_shuffle_epi32::<0x00>(packed),
+                    _mm256_shuffle_epi32::<0x55>(packed),
+                ],
+            }
         }
     }
     #[inline(always)]
@@ -235,11 +283,15 @@ impl RowKernel for Avx2 {
         // the last tap, with no overread.
         unsafe {
             let sum = if LAYOUT == layout::BILINEAR {
-                _mm256_maddubs_epi16(pair(load::<N>(src.add(3)), load::<N>(src.add(4))), f.1)
+                _mm256_maddubs_epi16(pair(load::<N>(src.add(3)), load::<N>(src.add(4))), f.centre)
             } else if N == 16 {
-                row_16::<4>(src, &f.0)
+                row_16::<4>(src, &f.pairs)
+            } else if N == 4 {
+                let load =
+                    |offset| _mm256_broadcastsi128_si256(_mm_loadl_epi64(src.add(offset).cast()));
+                return horizontal_four(load(0), load(3), f);
             } else {
-                one_narrow_row::<N>(src, &f.0)
+                one_narrow_row::<N>(src, &f.pairs)
             };
             finish(sum)
         }
@@ -252,15 +304,15 @@ impl RowKernel for Avx2 {
         // SAFETY: the ISA entry enables AVX2.
         unsafe {
             let sum = if LAYOUT == layout::BILINEAR {
-                _mm256_maddubs_epi16(pair(rows[3], rows[4]), f.1)
+                _mm256_maddubs_epi16(pair(rows[3], rows[4]), f.centre)
             } else {
                 // An explicit array, not `[0, 1, 2, 3].map(..)`: `array::map`
                 // stayed out of line without AVX2 and called each intrinsic.
                 add_pairs([
-                    _mm256_maddubs_epi16(pair(rows[0], rows[1]), f.0[0]),
-                    _mm256_maddubs_epi16(pair(rows[2], rows[3]), f.0[1]),
-                    _mm256_maddubs_epi16(pair(rows[4], rows[5]), f.0[2]),
-                    _mm256_maddubs_epi16(pair(rows[6], rows[7]), f.0[3]),
+                    _mm256_maddubs_epi16(pair(rows[0], rows[1]), f.pairs[0]),
+                    _mm256_maddubs_epi16(pair(rows[2], rows[3]), f.pairs[1]),
+                    _mm256_maddubs_epi16(pair(rows[4], rows[5]), f.pairs[2]),
+                    _mm256_maddubs_epi16(pair(rows[6], rows[7]), f.pairs[3]),
                 ])
             };
             finish(sum)
@@ -286,9 +338,18 @@ impl RowKernel for Avx2 {
                     _mm_unpacklo_epi8(load::<N>(src.add(3)), load::<N>(src.add(4))),
                     _mm_unpacklo_epi8(load::<N>(next.add(3)), load::<N>(next.add(4))),
                 );
-                _mm256_maddubs_epi16(pairs, f.1)
+                _mm256_maddubs_epi16(pairs, f.centre)
+            } else if N == 4 {
+                let load = |offset| {
+                    lanes(
+                        _mm_loadl_epi64(src.add(offset).cast()),
+                        _mm_loadl_epi64(next.add(offset).cast()),
+                    )
+                };
+                let bytes = horizontal_four(load(0), load(3), f);
+                return [bytes, bytes];
             } else {
-                two_rows::<4, N>(src, next, &f.0)
+                two_rows::<4, N>(src, next, &f.pairs)
             };
             // Row 0's outputs in bytes 0..N, row 1's in bytes 8..8 + N.
             let bytes = finish(sum);
@@ -315,14 +376,14 @@ impl RowKernel for Avx2 {
                 ];
             }
             let sum = if LAYOUT == layout::BILINEAR {
-                _mm256_maddubs_epi16(tap_pair(3), f.1)
+                _mm256_maddubs_epi16(tap_pair(3), f.centre)
             } else {
                 // Explicit, as in `vertical`.
                 add_pairs([
-                    _mm256_maddubs_epi16(tap_pair(0), f.0[0]),
-                    _mm256_maddubs_epi16(tap_pair(2), f.0[1]),
-                    _mm256_maddubs_epi16(tap_pair(4), f.0[2]),
-                    _mm256_maddubs_epi16(tap_pair(6), f.0[3]),
+                    _mm256_maddubs_epi16(tap_pair(0), f.pairs[0]),
+                    _mm256_maddubs_epi16(tap_pair(2), f.pairs[1]),
+                    _mm256_maddubs_epi16(tap_pair(4), f.pairs[2]),
+                    _mm256_maddubs_epi16(tap_pair(6), f.pairs[3]),
                 ])
             };
             let bytes = finish(sum);
@@ -404,6 +465,20 @@ mod tests {
                     let (positive, negative) = magnitudes(pair);
                     assert!(positive * 255 <= i32::from(i16::MAX), "{kind:?} {taps:?}");
                     assert!(-negative * 255 >= i32::from(i16::MIN), "{kind:?} {taps:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn four_wide_partial_sums_fit_i16() {
+        for kind in [Vp9Filter::Regular, Vp9Filter::Smooth, Vp9Filter::Sharp] {
+            for taps in &kind.kernel()[1..] {
+                for group in [[0, 1, 4, 5], [2, 3, 6, 7]] {
+                    let coeffs = group.map(|i| taps[i]);
+                    let (positive, negative) = magnitudes(&coeffs);
+                    assert!(positive * 255 + i32::from(ROUND / 2) <= i32::from(i16::MAX));
+                    assert!(-negative * 255 >= i32::from(i16::MIN));
                 }
             }
         }

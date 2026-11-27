@@ -169,6 +169,14 @@ impl<const N: usize> SymbolCosts<N> {
         self.costs.swap_with_slice(&mut wider.costs[..N]);
     }
 
+    /// Restore the first `N` symbols saved in a wider journal entry.
+    #[inline]
+    pub fn copy_prefix<const M: usize>(&mut self, wider: &SymbolCosts<M>) {
+        const { assert!(N <= M) };
+        self.valid = wider.valid;
+        self.costs.copy_from_slice(&wider.costs[..N]);
+    }
+
     /// Drop the cached costs: the owner's probabilities changed.
     pub fn invalidate(&mut self) {
         self.valid = false;

@@ -71,11 +71,9 @@ def run(port, share, still_camera=False):
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(HOOK % {'period': 1000 / (FPS * share)})
         page.goto(f'http://127.0.0.1:{port}/?views=live')
-        # The settings first (each restarts the clip comparison), then the webcam: one start on it.
+        # The settings first (each restarts the clip comparison), then the webcam, then its still-camera choice.
         for summary in page.locator('details.advanced > summary').all():
             summary.click()
-        for toggle in page.locator('.still-camera').all():
-            toggle.set_checked(still_camera)
         for picker in page.locator('.resolution').all():
             picker.select_option('640x360')
         for picker in page.locator('.fps').all():
@@ -85,6 +83,9 @@ def run(port, share, still_camera=False):
                 box.fill(str(kbps))
                 box.dispatch_event('change')
         page.locator('[data-source="camera"]').click()
+        # The webcam turns the still-camera handling on by default (panel.js setSourceKind).
+        for toggle in page.locator('.still-camera').all():
+            toggle.set_checked(still_camera)
         page.wait_for_function('window.__x.coded.every(v => v.length > 5)', timeout=120000)
         time.sleep(WARM_S + MEASURE_S)
         # Paused, the frames in flight complete and nothing more arrives: the counts settle.

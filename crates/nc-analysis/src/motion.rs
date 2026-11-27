@@ -15,6 +15,14 @@
 //!    Pre-analysis's static map is kept alongside SVT's 1-per-pixel test:
 //!    sensor noise alone often exceeds 1 per pixel on camera content, where
 //!    the noise-aware map still recognises still blocks.
+//!
+//!    With [`GateCell`] other than the SB (`analysis.zero_gate_cell`), an SB
+//!    whose average passes a gate is judged by its worst cell instead (the
+//!    zero-vector grid, which the static and one-position paths need anyway,
+//!    computed first), so a small mover on a still background is not averaged
+//!    away by the still area around it and one motion gets one verdict
+//!    whatever the SB size (scene-sanity 2026-11-22: 160 small movers over
+//!    still paving gave many movers the zero vector unsearched).
 //! 2. **Hierarchical search (HME)**: at quarter resolution the SB (16x16
 //!    there) is searched exhaustively over [`HME_RANGE_X`] x [`HME_RANGE_Y`]
 //!    (by default; [`SearchConfig`] can narrow it) around the centre, on
@@ -43,8 +51,11 @@ use nc_dsp::{
 };
 
 use crate::effort::MotionEffort;
+use crate::gate_net::{GateEvidence, GateInputs, GateNetConfig};
 use crate::global::GlobalMotion;
 use crate::grid::Grid;
+use crate::linear_threshold::{LinearThreshold, noise_feature};
+use crate::link::DistanceRatio;
 use crate::mv::Mv;
 use crate::preanalysis::PreAnalysis;
 
@@ -54,6 +65,9 @@ pub const SB: usize = 64;
 pub const BLOCK: usize = 8;
 /// 8x8 blocks per SB edge.
 const BLOCKS_PER_SB: usize = SB / BLOCK;
+/// `SB` as a power of two.
+const SB_LOG2: u8 = 6;
+const _: () = assert!(1 << SB_LOG2 == SB);
 /// Pyramid scale of the HME level (quarter resolution).
 pub const HME_SCALE: i16 = 4;
 /// SB edge at the HME level.
@@ -134,7 +148,26 @@ pub struct SearchConfig {
     pub zero_sads: ZeroSads,
     /// zz SAD gates choosing each SB's search path.
     pub gates: ZeroVectorGates,
+    /// The linear shift (`linear_threshold.rs`) on the scale of `gates`:
+    /// each gate is multiplied by `max(0, 1 + shift)`, with features
+    /// [`ZERO_GATE_FEATURES`]; frame-constant terms are in its bias.
+    /// `None` is the fixed gates.
+    pub zero_gate_shift: Option<LinearThreshold<ZERO_GATE_FEATURES>>,
+    /// The linear shift added to `window_exit_sad_per_pixel` (clamped at
+    /// 0), with features [`WINDOW_EXIT_FEATURES`]; frame-constant terms are
+    /// in its bias. `None` is the fixed exit.
+    pub window_exit_shift: Option<LinearThreshold<WINDOW_EXIT_FEATURES>>,
+    /// The zero-gate network's settings (`gate_net.rs`).
+    pub gate_net: GateNetConfig,
 }
+
+/// Features of [`SearchConfig::zero_gate_shift`]: the source noise
+/// ([`noise_feature`]) and the share of the SB's causal neighbours whose
+/// vector is not zero (in [0, 1]).
+pub const ZERO_GATE_FEATURES: usize = 2;
+/// Features of [`SearchConfig::window_exit_shift`]: the source noise
+/// ([`noise_feature`]).
+pub const WINDOW_EXIT_FEATURES: usize = 1;
 
 /// Where the motion search's zero-vector SADs come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -161,6 +194,9 @@ impl Default for SearchConfig {
             hme_from_seed: false,
             zero_sads: ZeroSads::Measured,
             gates: ZeroVectorGates::default(),
+            zero_gate_shift: None,
+            window_exit_shift: None,
+            gate_net: GateNetConfig::default(),
         }
     }
 }
@@ -201,6 +237,8 @@ pub struct ZeroVectorGates {
     pub one_position_per_pixel: f32,
     /// Below this HME is skipped and the window centres on zero.
     pub skip_hme_per_pixel: f32,
+    /// What the thresholds judge: the SB average or its worst cell.
+    pub cell: GateCell,
 }
 
 impl Default for ZeroVectorGates {
@@ -209,6 +247,53 @@ impl Default for ZeroVectorGates {
             static_per_pixel: STATIC_SAD_PER_PIXEL,
             one_position_per_pixel: ONE_POSITION_SAD_PER_PIXEL,
             skip_hme_per_pixel: SKIP_HME_SAD_PER_PIXEL,
+            cell: GateCell::default(),
+        }
+    }
+}
+
+impl ZeroVectorGates {
+    /// Scale the three thresholds by `factor` (the linear gate shift).
+    fn scale(&mut self, factor: f32) {
+        self.static_per_pixel *= factor;
+        self.one_position_per_pixel *= factor;
+        self.skip_hme_per_pixel *= factor;
+    }
+}
+
+/// What the zero-vector gates judge (module doc, step 1). A cell's verdict
+/// does not depend on the SB size: an SB-wide average dilutes a small mover
+/// with the still area around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GateCell {
+    /// The SB's average zz SAD per pixel (SVT-AV1's 64x64 test).
+    #[default]
+    Superblock,
+    /// The worst 16x16 block's.
+    Block16,
+    /// The worst 8x8 block's.
+    Block8,
+    /// The worst 8x8 block's among those pre-analysis finds moving: its
+    /// noise-relative test (`preanalysis.rs`: the SAD against the difference
+    /// noise alone gives, each 4x4 quarter and chroma block on its own), so
+    /// camera noise does not read as motion and a small mover does; an SB
+    /// with no moving block is static.
+    Noise,
+}
+
+impl GateCell {
+    /// The cell for `analysis.zero_gate_cell`: a side of 8 or 16 samples,
+    /// 64 (or more) for the SB, below 8 the noise-relative blocks.
+    #[must_use]
+    pub fn from_side(side: f32) -> Self {
+        if side >= 64.0 {
+            Self::Superblock
+        } else if side >= 16.0 {
+            Self::Block16
+        } else if side >= 8.0 {
+            Self::Block8
+        } else {
+            Self::Noise
         }
     }
 }
@@ -293,12 +378,18 @@ pub struct SbStats {
     pub zz_sad: u32,
     /// Which search path the SB took.
     pub search: SbSearch,
+    /// The zz SAD per pixel the gates judged: the SB average, or its worst
+    /// cell's ([`GateCell`]).
+    pub gated_per_pixel: f32,
     /// Best total SAD at each block size [8x8, 16x16, 32x32, 64x64]: the
     /// sum over the SB of each block's own best SAD (SVT's `me_dist`).
     pub me_dist: [u32; 4],
     /// Variance of the SB's 64 best 8x8 SADs (SVT's `me_8x8_cost_variance`):
     /// high means the SB mixes well- and badly-predicted areas.
     pub cost_variance_8x8: f32,
+    /// The zero-gate network's inputs, where recorded
+    /// ([`GateNetConfig::record_inputs`]).
+    pub gate_inputs: Option<GateInputs>,
 }
 
 /// The motion fields of one frame.
@@ -341,12 +432,15 @@ pub struct MotionInputs<'a> {
     /// Last frame's 32x32 field, if any (temporal full-pel candidates).
     pub last_32x32: Option<&'a AggregatedField>,
     /// Last frame's 16x16 field, if any (candidates for mixed motion).
-    pub last_16x16: Option<&'a AggregatedField>,
+    pub last_16x16: Option<SeedField<'a>>,
     /// Last frame's camera motion (global seed; `GlobalMotion::NONE` if
     /// none).
     pub last_global: GlobalMotion,
     /// How much to search.
     pub config: SearchConfig,
+    /// The running source noise estimate (luma sigma, `noise.rs`): a
+    /// feature of the linear exit shifts.
+    pub noise_sigma: f32,
 }
 
 /// Search every SB of the frame.
@@ -598,6 +692,58 @@ struct SbSearchContext<'a, 'b> {
 }
 
 impl SbSearchContext<'_, '_> {
+    /// The share of the already-searched neighbours whose 64x64 vector is
+    /// not zero (0 with none): motion around an SB makes it likelier to move.
+    fn moving_neighbour_share(&self) -> f32 {
+        let searched = self.neighbours.iter().flatten();
+        let (count, moving) = searched.fold((0u8, 0u8), |(count, moving), &mv| {
+            (count + 1, moving + u8::from(mv != Mv::ZERO))
+        });
+        if count == 0 {
+            0.0
+        } else {
+            f32::from(moving) / f32::from(count)
+        }
+    }
+
+    /// What the zero-gate network reads at this SB (`gate_net.rs`).
+    fn gate_evidence(&self, zero_sad_per_pixel: f32) -> GateEvidence {
+        let length = |mv: &Mv| f32::from(mv.x.unsigned_abs()) + f32::from(mv.y.unsigned_abs());
+        let mean = |lengths: &[f32]| {
+            (!lengths.is_empty()).then(|| lengths.iter().sum::<f32>() / lengths.len() as f32)
+        };
+        let neighbours: Vec<f32> = self.neighbours.iter().flatten().map(length).collect();
+        let temporal: Vec<f32> = self.temporal.iter().flatten().map(length).collect();
+        let blocks = &self.inputs.pre.blocks;
+        let (c0, r0) = (self.sb_col * BLOCKS_PER_SB, self.sb_row * BLOCKS_PER_SB);
+        let (c1, r1) = (
+            (c0 + BLOCKS_PER_SB).min(blocks.cols()),
+            (r0 + BLOCKS_PER_SB).min(blocks.rows()),
+        );
+        let inside = (c1.saturating_sub(c0) * r1.saturating_sub(r0)) as f32;
+        let still = (r0..r1)
+            .flat_map(|r| (c0..c1).map(move |c| (c, r)))
+            .filter(|&(c, r)| blocks.get(c, r).is_static)
+            .count() as f32;
+        let variance = self
+            .inputs
+            .pre
+            .luma_energy(self.sb_col * SB, self.sb_row * SB, SB_LOG2)
+            .map_or(0.0, |energy| energy as f32 / (SB * SB) as f32);
+        GateEvidence {
+            zero_sad_per_pixel,
+            noise_sigma: self.inputs.noise_sigma,
+            moving_share: self.moving_neighbour_share(),
+            neighbour_length: mean(&neighbours).unwrap_or(0.0),
+            temporal_length: mean(&temporal),
+            static_share: if inside > 0.0 { still / inside } else { 0.0 },
+            variance_per_pixel: variance,
+            visible_share: inside / (BLOCKS_PER_SB * BLOCKS_PER_SB) as f32,
+            frame: self.inputs.config.gate_net.frame,
+            frame_static_share: self.inputs.pre.static_fraction,
+        }
+    }
+
     /// Search the SB: its statistics, HME centre and per-block bests.
     fn run(&self, effort: &mut MotionEffort) -> (SbStats, Mv, SbBest) {
         let (x, y) = ((self.sb_col * SB) as isize, (self.sb_row * SB) as isize);
@@ -614,12 +760,46 @@ impl SbSearchContext<'_, '_> {
         };
         let per_pixel = zz_sad as f32 / (SB * SB) as f32;
 
-        let gates = self.inputs.config.gates;
-        let (search, centre) = if per_pixel < gates.static_per_pixel || self.all_static() {
+        let config = self.inputs.config;
+        let gate_inputs = (config.gate_net.record_inputs || config.gate_net.network.is_some())
+            .then(|| GateInputs::new(&self.gate_evidence(per_pixel)));
+        let mut gates = config.gates;
+        if config.zero_gate_shift.is_some() || config.gate_net.network.is_some() {
+            let features = [
+                noise_feature(self.inputs.noise_sigma),
+                self.moving_neighbour_share(),
+            ];
+            let linear = config
+                .zero_gate_shift
+                .map_or(0.0, |shift| shift.at(&features));
+            let learned = config
+                .gate_net
+                .network
+                .zip(gate_inputs.as_ref())
+                .map_or(0.0, |(network, inputs)| network.shift(self.dsp, inputs));
+            gates.scale((1.0 + linear + learned).max(0.0));
+        }
+        // Judged by its worst cell, an SB whose average passes a gate has its
+        // zero-vector grid first (the static and one-position paths reuse it).
+        let zero_grid = (gates.cell != GateCell::Superblock
+            && per_pixel < gates.skip_hme_per_pixel)
+            .then(|| self.zero_grid(&src, from_pre));
+        let (gated, still) = match &zero_grid {
+            Some(grid) => {
+                let worst = self.worst_cell_per_pixel(grid, gates.cell);
+                let noise_still = gates.cell != GateCell::Noise && self.all_static();
+                (worst, worst < gates.static_per_pixel || noise_still)
+            }
+            None => (
+                per_pixel,
+                per_pixel < gates.static_per_pixel || self.all_static(),
+            ),
+        };
+        let (search, centre) = if still {
             (SbSearch::Static, Mv::ZERO)
-        } else if per_pixel < gates.one_position_per_pixel {
+        } else if gated < gates.one_position_per_pixel {
             (SbSearch::OnePosition, Mv::ZERO)
-        } else if per_pixel < gates.skip_hme_per_pixel {
+        } else if gated < gates.skip_hme_per_pixel {
             (SbSearch::WindowAtZero, Mv::ZERO)
         } else {
             (SbSearch::Hierarchical, self.hme_or_seed(effort))
@@ -627,25 +807,54 @@ impl SbSearchContext<'_, '_> {
         effort.record_sb(search);
 
         let best = match search {
+            // One grid at zero: the SADs of the still blocks.
             SbSearch::Static | SbSearch::OnePosition => {
-                // One grid at zero: the SADs of the still blocks.
-                if from_pre {
-                    self.zero_grid_from_pre()
-                } else {
-                    let mut best = SbBest::default();
-                    self.evaluate(&src, Mv::ZERO, &self.visible(), &mut best);
-                    best
-                }
+                zero_grid.unwrap_or_else(|| self.zero_grid(&src, from_pre))
             }
             SbSearch::WindowAtZero | SbSearch::Hierarchical => self.full_pel(&src, centre, effort),
         };
         let stats = SbStats {
             zz_sad,
             search,
+            gated_per_pixel: gated,
             me_dist: best.me_dist(),
             cost_variance_8x8: best.cost_variance_8x8(),
+            gate_inputs: gate_inputs.filter(|_| config.gate_net.record_inputs),
         };
         (stats, centre, best)
+    }
+
+    /// The SB's zero-vector grid: from pre-analysis' 8x8 SADs, or measured.
+    fn zero_grid(&self, src: &PlaneView<'_>, from_pre: bool) -> SbBest {
+        if from_pre {
+            self.zero_grid_from_pre()
+        } else {
+            let mut grid = SbBest::default();
+            self.evaluate(src, Mv::ZERO, &self.visible(), &mut grid);
+            grid
+        }
+    }
+
+    /// The largest zz SAD per pixel of `grid`'s `cell` blocks (grid SADs are
+    /// full-scale: even-row grids double theirs); with [`GateCell::Noise`]
+    /// only of the 8x8 blocks pre-analysis finds moving (0 when none does).
+    fn worst_cell_per_pixel(&self, grid: &SbBest, cell: GateCell) -> f32 {
+        let per_pixel = |sad: u16, side: usize| f32::from(sad) / (side * side) as f32;
+        let largest = |sads: &[u16]| sads.iter().copied().max().unwrap_or(0);
+        match cell {
+            GateCell::Superblock => grid.0.sad(AT_64) as f32 / (SB * SB) as f32,
+            GateCell::Block16 => per_pixel(largest(&grid.0.small[AT_16..AT_32]), 2 * BLOCK),
+            GateCell::Block8 => per_pixel(largest(&grid.0.small[..AT_16]), BLOCK),
+            GateCell::Noise => {
+                let blocks = &self.inputs.pre.blocks;
+                let (c0, r0) = (self.sb_col * BLOCKS_PER_SB, self.sb_row * BLOCKS_PER_SB);
+                let moving = (0..AT_16).filter(|&i| {
+                    let (c, r) = (c0 + i % BLOCKS_PER_SB, r0 + i / BLOCKS_PER_SB);
+                    c < blocks.cols() && r < blocks.rows() && !blocks.get(c, r).is_static
+                });
+                per_pixel(moving.map(|i| grid.0.small[i]).max().unwrap_or(0), BLOCK)
+            }
+        }
     }
 
     /// Mask of the SB's 64 8x8 blocks inside the picture (`u16::MAX`) or
@@ -852,22 +1061,31 @@ impl SbSearchContext<'_, '_> {
             inside(self.sb_row, q.cur.height()) as isize,
         );
         let src = q.source(x, y, HME_BLOCK);
-        let centre = self.hme_centre(&src, x, y, effort);
+        let (centre, cost) = self.hme_centre(&src, x, y, effort);
         let config = self.inputs.config;
         let (range_x, range_y) = (config.hme_range_x, config.hme_range_y);
         let mut positions = [0u32; HME_ROW_POSITIONS];
         let row = &mut positions[..=2 * range_x as usize];
         let rows = 2 * range_y as usize + 1;
-        let mut best = (u32::MAX, 0, 0);
+        let mut best = (cost, range_x as usize, range_y as usize);
         for iy in 0..rows {
+            // The seed's SAD is already known. An equal cost can replace it
+            // only at an earlier raster position, matching the full scan.
+            let bound = best.0 + u32::from(iy <= best.2);
+            if bound == 0 {
+                break;
+            }
             // `hme_centre` keeps the centre far enough inside the border.
             let left = Mv::new(centre.x - range_x, centre.y - range_y + iy as i16);
-            self.dsp
-                .sad_scan_16x16_even_rows_at(&src, &q.reference, q.position(x, y, left), row);
-            // The row minimum is a vectorisable reduction; the position of
-            // it is looked up only when it beats the best so far.
+            self.dsp.sad_scan_bounded_16x16_at(
+                &src,
+                &q.reference,
+                q.position(x, y, left),
+                row,
+                bound,
+            );
             let row_min = row.iter().copied().min().unwrap_or(u32::MAX);
-            if row_min < best.0 {
+            if row_min < bound {
                 let ix = row.iter().position(|&sad| sad == row_min).unwrap_or(0);
                 best = (row_min, ix, iy);
             }
@@ -959,7 +1177,13 @@ impl SbSearchContext<'_, '_> {
 
     /// The HME window centre: zero, or a seed candidate if it matches better
     /// (quarter-resolution vector).
-    fn hme_centre(&self, src: &PlaneView<'_>, x: isize, y: isize, effort: &mut MotionEffort) -> Mv {
+    fn hme_centre(
+        &self,
+        src: &PlaneView<'_>,
+        x: isize,
+        y: isize,
+        effort: &mut MotionEffort,
+    ) -> (Mv, u32) {
         let q = self.quarter;
         let mut seeds = [None; 2];
         if SEED_CANDIDATES.temporal {
@@ -991,7 +1215,7 @@ impl SbSearchContext<'_, '_> {
             }
         }
         effort.hme_seeds += tried - 1;
-        best.1
+        (best.1, best.0)
     }
 
     /// The 8x3 full-pel window around `centre`, every block keeping its own
@@ -1005,12 +1229,18 @@ impl SbSearchContext<'_, '_> {
         // the window only when the centre leaves a large residual. What it
         // skips: up to 23 grid positions per SB whose motion the HME result
         // already matches; measured effect in `AnalysisParams`.
-        let centre_only = config.window_exit_sad_per_pixel > 0.0 && {
+        let window_exit = match config.window_exit_shift {
+            None => config.window_exit_sad_per_pixel,
+            Some(shift) => (config.window_exit_sad_per_pixel
+                + shift.at(&[noise_feature(self.inputs.noise_sigma)]))
+            .max(0.0),
+        };
+        let centre_only = window_exit > 0.0 && {
             let start = centre.clamped(FINE_LIMIT);
             self.evaluate(src, start, &visible, &mut best);
             positions += 1;
             let pixels = visible.iter().filter(|&&v| v != 0).count() * BLOCK * BLOCK;
-            (best.0.sad(AT_64) as f32) < config.window_exit_sad_per_pixel * pixels as f32
+            (best.0.sad(AT_64) as f32) < window_exit * pixels as f32
         };
         if !centre_only {
             let skip_centre = positions > 0;
@@ -1086,11 +1316,33 @@ impl SbSearchContext<'_, '_> {
     }
 }
 
+/// A field of last frame's vectors, read as candidates at this frame's
+/// reference distance. The vectors are rescaled where they are read: only
+/// the superblocks with mixed motion read their sixteen, so rescaling the
+/// whole field for every frame whose distance changed (most frames of a
+/// layered stream) was nearly all unread work (0.3 % of AV1 veryfast's
+/// P-frame instructions, x86 callgrind 2026-11-25; streams identical).
+#[derive(Debug, Clone, Copy)]
+pub struct SeedField<'a> {
+    /// The field as last frame's search left it.
+    pub field: &'a AggregatedField,
+    /// Last frame's reference distance to this frame's.
+    pub ratio: DistanceRatio,
+}
+
+impl SeedField<'_> {
+    /// The rescaled vector of block (`col`, `row`), if it is in the field.
+    fn vector(&self, col: usize, row: usize) -> Option<Mv> {
+        let block = self.field.blocks.try_get(col as isize, row as isize)?;
+        Some(self.ratio.scale_mv(block.mv))
+    }
+}
+
 /// Candidate vectors for an SB with mixed motion: last frame's 16x16 vectors
 /// of this SB and this frame's 32x32 vectors next to it (left SB's right
 /// column, top SB's bottom row).
 fn mixed_candidates(
-    last_16x16: Option<&AggregatedField>,
+    last_16x16: Option<SeedField<'_>>,
     fields: &Fields,
     sb_col: usize,
     sb_row: usize,
@@ -1098,8 +1350,7 @@ fn mixed_candidates(
     let mut out = [None; 20];
     if let Some(f) = last_16x16 {
         for (i, slot) in out[..16].iter_mut().enumerate() {
-            let (c, r) = (4 * sb_col + i % 4, 4 * sb_row + i / 4);
-            *slot = f.blocks.try_get(c as isize, r as isize).map(|b| b.mv);
+            *slot = f.vector(4 * sb_col + i % 4, 4 * sb_row + i / 4);
         }
     }
     let (c, r) = (2 * sb_col as isize, 2 * sb_row as isize);

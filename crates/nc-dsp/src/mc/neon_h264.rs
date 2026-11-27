@@ -1,4 +1,4 @@
-//! NEON H.264 luma prediction for blocks a multiple of 16 wide.
+//! NEON H.264 luma prediction, including eight-wide I8MM blocks.
 //!
 //! The generic kernel (`generic::h264_luma`) widens every tap of the six-tap
 //! filter to 16 bits separately: six widening loads and seven 16-bit
@@ -17,11 +17,14 @@
 //! `c0 + 21 <= w + 5`.
 
 use core::arch::aarch64::{
-    int16x8_t, uint8x8_t, uint8x16_t, vaddl_u8, vaddq_s16, vcombine_u8, vcombine_u16,
-    vget_high_s16, vget_high_u8, vget_low_s16, vget_low_u8, vld1q_u8, vmlal_n_s16, vmlaq_n_u16,
-    vmlsl_n_s16, vmlsq_n_u16, vmovl_s16, vqmovn_u16, vqrshrun_n_s16, vqrshrun_n_s32,
-    vreinterpretq_s16_u16, vrhaddq_u8, vst1q_u8,
+    int16x8_t, uint8x8_t, uint8x16_t, vaddl_u8, vaddq_s16, vcombine_u8, vcombine_u16, vdupq_n_s32,
+    vdupq_n_u32, vext_u8, vget_high_s16, vget_high_u8, vget_low_s16, vget_low_u8, vgetq_lane_u32,
+    vld1_u8, vld1q_s8, vld1q_u8, vmlal_n_s16, vmlaq_n_u16, vmlsl_n_s16, vmlsq_n_u16, vmovl_s16,
+    vqmovn_u16, vqrshrun_n_s16, vqrshrun_n_s32, vreinterpretq_s16_u16, vreinterpretq_u8_u32,
+    vreinterpretq_u32_u8, vrhaddq_u8, vst1_u8, vst1q_u8,
 };
+
+use super::horizontal_i8mm::{SAMPLES, matrix_sum};
 
 /// Output columns per step: one 16-byte vector.
 const CHUNK: usize = 16;
@@ -102,35 +105,137 @@ fn centre_half(s: [int16x8_t; 6]) -> uint8x8_t {
     ))
 }
 
-/// Six overlapping loads at `p`: taps 0..6 of 16 consecutive outputs.
+/// Six overlapping loads at `p`: taps 0..6 of eight or 16 outputs.
 ///
 /// # Safety
 ///
-/// `p` must be valid for reading 21 bytes.
+/// `p` must be valid for reading 13 bytes at W=8, otherwise 21 bytes.
 #[target_feature(enable = "neon")]
 #[inline]
-unsafe fn taps_at(p: *const u8) -> [uint8x16_t; 6] {
-    // SAFETY: the caller guarantees 21 readable bytes from `p`.
+unsafe fn taps_at<const W: usize>(p: *const u8) -> [uint8x16_t; 6] {
+    // SAFETY: the caller guarantees the complete overlapping loads.
     unsafe {
         [
-            vld1q_u8(p),
-            vld1q_u8(p.add(1)),
-            vld1q_u8(p.add(2)),
-            vld1q_u8(p.add(3)),
-            vld1q_u8(p.add(4)),
-            vld1q_u8(p.add(5)),
+            load_luma::<W>(p),
+            load_luma::<W>(p.add(1)),
+            load_luma::<W>(p.add(2)),
+            load_luma::<W>(p.add(3)),
+            load_luma::<W>(p.add(4)),
+            load_luma::<W>(p.add(5)),
         ]
     }
 }
 
-/// H.264 luma prediction of a `W`-wide block (`W` a multiple of 16).
+/// The second load starts five bytes in, so all 21 bytes of the exact
+/// window are readable. Its output starts three positions further in:
+/// an out-of-range table index selects zero only for a zero-weight lane.
+const RIGHT_SAMPLES: [[u8; 16]; 2] = {
+    let mut masks = SAMPLES;
+    let mut lane = 0;
+    while lane < 16 {
+        masks[0][lane] += 3;
+        masks[1][lane] += 3;
+        lane += 1;
+    }
+    masks
+};
+
+const MATRIX_TAPS: [i8; 16] = {
+    let mut columns = [0; 16];
+    let mut tap = 0;
+    while tap < super::H264_TAPS.len() {
+        columns[tap] = super::H264_TAPS[tap] as i8;
+        columns[9 + tap] = columns[tap];
+        tap += 1;
+    }
+    columns
+};
+
+/// Horizontal unrounded sums within the exact input window.
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn horizontal_sums<const W: usize, const I8MM: bool>(
+    row: *const u8,
+) -> (int16x8_t, int16x8_t) {
+    // SAFETY: the caller checked the input window and, when selected, I8MM.
+    unsafe {
+        if I8MM {
+            let taps = vld1q_s8(MATRIX_TAPS.as_ptr());
+            let bias = vdupq_n_s32(0);
+            let left_pixels = if W == 8 {
+                // Read exactly 13 source bytes. Table indices past byte 12
+                // feed padding coefficients, which are zero.
+                let tail = vld1_u8(row.add(5));
+                vcombine_u8(vld1_u8(row), vext_u8::<3>(tail, tail))
+            } else {
+                vld1q_u8(row)
+            };
+            let left = matrix_sum(
+                left_pixels,
+                [vld1q_u8(SAMPLES[0].as_ptr()), vld1q_u8(SAMPLES[1].as_ptr())],
+                taps,
+                bias,
+            );
+            if W == 8 {
+                (left, left)
+            } else {
+                (
+                    left,
+                    matrix_sum(
+                        vld1q_u8(row.add(5)),
+                        [
+                            vld1q_u8(RIGHT_SAMPLES[0].as_ptr()),
+                            vld1q_u8(RIGHT_SAMPLES[1].as_ptr()),
+                        ],
+                        taps,
+                        bias,
+                    ),
+                )
+            }
+        } else {
+            six_tap(taps_at::<W>(row))
+        }
+    }
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn load_luma<const W: usize>(src: *const u8) -> uint8x16_t {
+    // SAFETY: the preceding window check covers four, eight or sixteen bytes.
+    unsafe {
+        if W == 4 {
+            vreinterpretq_u8_u32(vdupq_n_u32(src.cast::<u32>().read_unaligned()))
+        } else if W == 8 {
+            let bytes = vld1_u8(src);
+            vcombine_u8(bytes, bytes)
+        } else {
+            vld1q_u8(src)
+        }
+    }
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn store_luma<const W: usize>(dst: *mut u8, value: uint8x16_t) {
+    // SAFETY: the preceding window check covers four, eight or sixteen bytes.
+    unsafe {
+        if W == 4 {
+            let word = vgetq_lane_u32::<0>(vreinterpretq_u32_u8(value));
+            dst.cast::<u32>().write_unaligned(word);
+        } else if W == 8 {
+            vst1_u8(dst, vget_low_u8(value));
+        } else {
+            vst1q_u8(dst, value);
+        }
+    }
+}
+
+/// Select the I8MM row on calls with horizontal filtering.
 ///
 /// # Safety
 ///
-/// NEON must be available (always on `AArch64`); the slices satisfy the
-/// kernel contract (checked once here).
-#[target_feature(enable = "neon")]
-pub(crate) unsafe fn h264_luma<const W: usize>(
+/// I8MM must be available and the slices must satisfy the kernel contract.
+pub(crate) unsafe fn h264_luma_i8mm<const W: usize>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [u8],
@@ -139,7 +244,36 @@ pub(crate) unsafe fn h264_luma<const W: usize>(
     frac_x: usize,
     frac_y: usize,
 ) {
-    const { assert!(W.is_multiple_of(CHUNK)) };
+    // SAFETY: the dispatch table checked I8MM. Both entries check the windows.
+    unsafe {
+        if frac_x == 0 && W == 8 {
+            super::neon::h264_luma_w8(src, src_stride, dst, dst_stride, h, frac_x, frac_y);
+        } else if frac_x == 0 {
+            h264_luma::<W, false>(src, src_stride, dst, dst_stride, h, frac_x, frac_y);
+        } else {
+            h264_luma::<W, true>(src, src_stride, dst, dst_stride, h, frac_x, frac_y);
+        }
+    }
+}
+
+/// H.264 luma prediction at four, eight or a multiple of sixteen columns.
+///
+/// # Safety
+///
+/// NEON and, if selected, I8MM must be available. The slices satisfy the
+/// kernel contract (checked once here).
+#[inline(never)]
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn h264_luma<const W: usize, const I8MM: bool>(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    h: usize,
+    frac_x: usize,
+    frac_y: usize,
+) {
+    const { assert!((W == 4 && !I8MM) || W == 8 || W.is_multiple_of(CHUNK)) };
     super::generic::check_h264_window(src, src_stride, dst, dst_stride, (W, h, 5));
     let (s, d) = (src.as_ptr(), dst.as_mut_ptr());
     // SAFETY: every load below is inside rows 0..h + 5, columns 0..W + 5 of
@@ -159,23 +293,23 @@ pub(crate) unsafe fn h264_luma<const W: usize>(
             (_, 0) => {
                 for r in 0..h {
                     let row = s.add((r + 2) * src_stride);
-                    for c0 in (0..W).step_by(CHUNK) {
-                        let b = half(six_tap(taps_at(row.add(c0))));
+                    for c0 in (0..W).step_by(W.min(CHUNK)) {
+                        let b = half(horizontal_sums::<W, I8MM>(row.add(c0)));
                         let value = match frac_x {
-                            1 => vrhaddq_u8(vld1q_u8(row.add(c0 + 2)), b),
-                            3 => vrhaddq_u8(vld1q_u8(row.add(c0 + 3)), b),
+                            1 => vrhaddq_u8(load_luma::<W>(row.add(c0 + 2)), b),
+                            3 => vrhaddq_u8(load_luma::<W>(row.add(c0 + 3)), b),
                             _ => b,
                         };
-                        vst1q_u8(d.add(r * dst_stride + c0), value);
+                        store_luma::<W>(d.add(r * dst_stride + c0), value);
                     }
                 }
             }
             (0, _) => {
-                for c0 in (0..W).step_by(CHUNK) {
+                for c0 in (0..W).step_by(W.min(CHUNK)) {
                     let col = s.add(c0 + 2);
-                    let mut rows = [vld1q_u8(col); 6];
+                    let mut rows = [load_luma::<W>(col); 6];
                     for (t, row) in rows.iter_mut().enumerate() {
-                        *row = vld1q_u8(col.add(t * src_stride));
+                        *row = load_luma::<W>(col.add(t * src_stride));
                     }
                     for r in 0..h {
                         let hv = half(six_tap(rows));
@@ -184,15 +318,15 @@ pub(crate) unsafe fn h264_luma<const W: usize>(
                             3 => vrhaddq_u8(rows[3], hv),
                             _ => hv,
                         };
-                        vst1q_u8(d.add(r * dst_stride + c0), value);
+                        store_luma::<W>(d.add(r * dst_stride + c0), value);
                         if r + 1 < h {
                             rows.copy_within(1..6, 0);
-                            rows[5] = vld1q_u8(col.add((r + 6) * src_stride));
+                            rows[5] = load_luma::<W>(col.add((r + 6) * src_stride));
                         }
                     }
                 }
             }
-            _ => two_dimensional::<W>(s, src_stride, d, dst_stride, h, frac_x, frac_y),
+            _ => two_dimensional::<W, I8MM>(s, src_stride, d, dst_stride, h, frac_x, frac_y),
         }
     }
 }
@@ -207,7 +341,7 @@ pub(crate) unsafe fn h264_luma<const W: usize>(
 ///
 /// As for [`h264_luma`], with the window checked.
 #[target_feature(enable = "neon")]
-unsafe fn two_dimensional<const W: usize>(
+unsafe fn two_dimensional<const W: usize, const I8MM: bool>(
     s: *const u8,
     src_stride: usize,
     d: *mut u8,
@@ -216,6 +350,13 @@ unsafe fn two_dimensional<const W: usize>(
     frac_x: usize,
     frac_y: usize,
 ) {
+    if frac_x != 2 && frac_y != 2 {
+        // SAFETY: the same checked footprints cover both one-axis filters.
+        unsafe {
+            odd_quarter::<W, I8MM>(s, src_stride, d, dst_stride, h, frac_x >> 1, frac_y >> 1);
+        }
+        return;
+    }
     let vertical_dx = match frac_x {
         1 => Some(0),
         3 => Some(1),
@@ -224,33 +365,71 @@ unsafe fn two_dimensional<const W: usize>(
     // SAFETY: rows 0..h + 5, columns 0..W + 5 of the window and the h x W
     // destination, as the caller guarantees.
     unsafe {
-        for c0 in (0..W).step_by(CHUNK) {
+        for c0 in (0..W).step_by(W.min(CHUNK)) {
             let col = s.add(c0 + 2 + vertical_dx.unwrap_or(0));
-            let mut sums = [six_tap(taps_at(s.add(c0))); 6];
-            let mut samples = [vld1q_u8(col); 6];
+            let mut sums = [horizontal_sums::<W, I8MM>(s.add(c0)); 6];
+            let mut samples = [load_luma::<W>(col); 6];
             for t in 0..6 {
-                sums[t] = six_tap(taps_at(s.add(t * src_stride + c0)));
+                sums[t] = horizontal_sums::<W, I8MM>(s.add(t * src_stride + c0));
                 if vertical_dx.is_some() {
-                    samples[t] = vld1q_u8(col.add(t * src_stride));
+                    samples[t] = load_luma::<W>(col.add(t * src_stride));
                 }
             }
             for r in 0..h {
                 let value = match (frac_x, frac_y) {
-                    (1 | 3, 1) => vrhaddq_u8(half(sums[2]), half(six_tap(samples))),
-                    (1 | 3, 3) => vrhaddq_u8(half(six_tap(samples)), half(sums[3])),
                     (2, 1) => vrhaddq_u8(half(sums[2]), centre(&sums)),
                     (2, 3) => vrhaddq_u8(centre(&sums), half(sums[3])),
                     (1 | 3, 2) => vrhaddq_u8(half(six_tap(samples)), centre(&sums)),
                     _ => centre(&sums),
                 };
-                vst1q_u8(d.add(r * dst_stride + c0), value);
+                store_luma::<W>(d.add(r * dst_stride + c0), value);
                 if r + 1 < h {
                     sums.copy_within(1..6, 0);
-                    sums[5] = six_tap(taps_at(s.add((r + 6) * src_stride + c0)));
+                    sums[5] = horizontal_sums::<W, I8MM>(s.add((r + 6) * src_stride + c0));
                     if vertical_dx.is_some() {
                         samples.copy_within(1..6, 0);
-                        samples[5] = vld1q_u8(col.add((r + 6) * src_stride));
+                        samples[5] = load_luma::<W>(col.add((r + 6) * src_stride));
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The positions with two odd quarters average one horizontal and one
+/// vertical half sample. Only the centre positions use an unrounded
+/// horizontal window, so these positions need one horizontal row per output.
+#[inline(never)]
+#[target_feature(enable = "neon")]
+unsafe fn odd_quarter<const W: usize, const I8MM: bool>(
+    src: *const u8,
+    src_stride: usize,
+    dst: *mut u8,
+    dst_stride: usize,
+    height: usize,
+    dx: usize,
+    dy: usize,
+) {
+    // SAFETY: the parent checked w + 5 bytes in each source row and all h + 5 rows.
+    unsafe {
+        for col in (0..W).step_by(W.min(CHUNK)) {
+            let column = src.add(col + 2 + dx);
+            let row = src.add((2 + dy) * src_stride + col);
+            let mut vertical = [
+                load_luma::<W>(column),
+                load_luma::<W>(column.add(src_stride)),
+                load_luma::<W>(column.add(2 * src_stride)),
+                load_luma::<W>(column.add(3 * src_stride)),
+                load_luma::<W>(column.add(4 * src_stride)),
+                load_luma::<W>(column.add(5 * src_stride)),
+            ];
+            for line in 0..height {
+                let horizontal = half(horizontal_sums::<W, I8MM>(row.add(line * src_stride)));
+                let filtered = vrhaddq_u8(horizontal, half(six_tap(vertical)));
+                store_luma::<W>(dst.add(line * dst_stride + col), filtered);
+                if line + 1 < height {
+                    super::slide(&mut vertical, 1, 5);
+                    vertical[5] = load_luma::<W>(column.add((line + 6) * src_stride));
                 }
             }
         }

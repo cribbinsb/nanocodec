@@ -49,7 +49,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import buildinfo, cloud, interval, levers, plotted, pool
+from . import bdj, buildinfo, cloud, interval, jreal, levers, plotted, pool
+from .ctc.conditions import ours_points
 from .cbr import CQP_SPAN_MARGIN, Bench, Family, clip_targets, curve_points, preset_anchor
 from .clips import Clip
 from .codecs import Codec
@@ -80,7 +81,10 @@ KEY_ARGS = ("--key-qp-offset", "0")
 #: `--key-share` runs: the reference encoders whose streams open with an information
 #: SEI (x264, x265), dropped from their one-frame streams (nceval.infosei).
 INFO_SEI_CODECS = (Codec.H264, Codec.HEVC)
-TERMS = ("full", "low", "psnr_yuv", "vmaf_v1", "ms_ssim", "xpsnr_yuv")
+TERMS = ("full", "low", "psnr_yuv", "vmaf_v1", "ms_ssim", "xpsnr_yuv", "psnr_y")
+#: PSNR-Y, reported beside J (never in it): the frame average of a point's per-frame
+#: luma PSNR (cached with every real-use point, each frame under the PSNR cap).
+LUMA, FRAME_LUMA = "psnr_y", "frame_psnr_y"
 
 
 def default_rotation() -> str:
@@ -224,11 +228,16 @@ def measure(benches: Benches, families: list[Family], clips: list[Clip],
                          for f in families for c in clips
                          if not quantizers or (f.name, c.name) not in quantizers})
         grids |= quantizers or {}
-        results = collect({(f.name, c.name, p.qp): executor.submit(benches.of(c).measure, p)
-                           for f in families for c in clips if (f.name, c.name) in grids
-                           and (f.name, c.name) not in failed
-                           for p in curve_points(benches.of(c), f, c, EVALUATION_GATE,
-                                                 quantizers=grids[(f.name, c.name)])})
+        points = [(benches.of(c), p) for f in families for c in clips
+                  if (f.name, c.name) in grids and (f.name, c.name) not in failed
+                  for p in curve_points(benches.of(c), f, c, EVALUATION_GATE,
+                                        quantizers=grids[(f.name, c.name)])]
+        rounds = benches.runner.rounds
+        if rounds is not None:  # GPU-scored: the streams this PC lacks, from a box
+            rounds.ensure(points, lambda jobs: [(b, p) for b, p in jobs
+                                                if not b.cached(p) and not b.has_prebuilt(p)])
+        results = collect({(p.family.name, p.clip.name, p.qp): executor.submit(bench.measure, p)
+                           for bench, p in points})
     for (family, clip), reason in sorted(failed.items()):
         print(f"failed: {family} {clip}: {reason}", flush=True)
     curves: dict[tuple[str, str], list[dict]] = {}
@@ -245,11 +254,22 @@ def pair_rows(curves: dict, clips: list[Clip], anchor: str, test: str) -> dict[s
     for clip in clips:
         if (anchor, clip.name) not in curves or (test, clip.name) not in curves:
             continue
-        terms = clip_terms(curves[(anchor, clip.name)], curves[(test, clip.name)])
+        a, t = curves[(anchor, clip.name)], curves[(test, clip.name)]
+        terms = {**clip_terms(a, t), LUMA: luma_bd(a, t)}
         rows[clip.name] = {"class": clip.content_class, "quality": terms["full"],
                            "quality_low": terms["low"],
+                           "bd_j": bdj.bd_j(jreal.bdj_curve(t), jreal.bdj_curve(a)),
                            **{m: terms[m] for m in TERMS[2:]}}
     return rows
+
+
+def luma_bd(anchor: list[dict], test: list[dict]) -> float | None:
+    """BD-rate on PSNR-Y (LUMA), or None unless every point carries its frames."""
+    points = anchor + test
+    if not all(p.get(FRAME_LUMA) for p in points):
+        return None
+    luma = lambda curve: [{**p, LUMA: sum(p[FRAME_LUMA]) / len(p[FRAME_LUMA])} for p in curve]
+    return jreal.curve_bd(luma(anchor), luma(test), LUMA)
 
 
 def summary(rows: dict[str, dict]) -> dict:
@@ -285,16 +305,24 @@ def probe_cpu(benches: Benches, families: list[Family], clips: list[Clip],
         return {f"{f.name}|{c.name}": t for (f, c), t in zip(jobs, executor.map(times, jobs))}
 
 
+def gap_families(names: list[str], binary: Path, paths: Paths, presets: Path,
+                 key_share: float | None) -> list[Family]:
+    """The families of a gap run as it codes them (also tools/dev/fixedqp_timing.py's,
+    which times a run's own encodes): with `key_share`, ours code the key at the walk's
+    quantizer (as `ab --key-share`)."""
+    families = [family_of(n, binary, paths, presets) for n in names]
+    if not key_share:
+        return families
+    return [replace(f, extra=f.extra + KEY_ARGS) if f.name.startswith(OWN_PREFIX)
+            else replace(f, info_sei=f.codec not in INFO_SEI_CODECS) for f in families]
+
+
 def gap(args: argparse.Namespace) -> dict:
     paths, binary = load_paths(), Path(args.binary)
     names = args.families.split(",") if args.families else plotted.plotted_names()
-    families = [family_of(n, binary, paths, Path(args.presets_dir)) for n in names]
-    if args.key_share:  # ours code the key at the walk's quantizer (as `ab --key-share`)
-        if args.frames != 1:
-            raise SystemExit("--key-share sizes one-frame runs: give --frames 1")
-        families = [replace(f, extra=f.extra + KEY_ARGS) if f.name.startswith(OWN_PREFIX)
-                    else replace(f, info_sei=f.codec not in INFO_SEI_CODECS)
-                    for f in families]
+    if args.key_share and args.frames != 1:
+        raise SystemExit("--key-share sizes one-frame runs: give --frames 1")
+    families = gap_families(names, binary, paths, Path(args.presets_dir), args.key_share)
     if args.clipset:
         clips = held_out_clips(args.clipset, args.clips, args.frames)
         print(f"clip set {args.clipset}: {len(clips)} clips; {len(families)} families",
@@ -315,6 +343,7 @@ def gap(args: argparse.Namespace) -> dict:
               flush=True)
     return {"rotation": None if args.clipset else args.rotation, "clipset": args.clipset,
             "level": None if args.clipset else args.level, "frames": args.frames,
+            "key_share": args.key_share,
             "clips": [{"clip": c.name, "start_frame": c.start_frame, "class": c.content_class}
                       for c in clips],
             "binary_commit": buildinfo.info_of(binary).get("commit"),
@@ -363,14 +392,21 @@ def ab(args: argparse.Namespace) -> dict:
     benches = Benches(paths, args.frames)
     if args.key_share and args.frames != 1:
         raise SystemExit("--key-share sizes one-frame runs: give --frames 1")
-    chooser = Quantizers(benches, args.key_share)
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        jobs = {(anchor.name, c.name): executor.submit(chooser.choose, anchor, c)
-                for c in clips}
-        grids = {}
-        for count, (key, job) in enumerate(jobs.items(), 1):
-            grids[key] = job.result()
-            print(f"  quantizers {count}/{len(jobs)}", flush=True)
+    if benches.runner.rounds is not None:
+        # GPU-scored (nceval.gpuscore): the box codes the rate probes that choose the
+        # quantizers, and the points, before any of them is coded here
+        benches.runner.rounds.prefetch()
+    if args.key_share:  # one-frame key studies: quantizers walked to the key's rates
+        chooser = Quantizers(benches, args.key_share)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            jobs = {(anchor.name, c.name): executor.submit(chooser.choose, anchor, c)
+                    for c in clips}
+            grids = {}
+            for count, (key, job) in enumerate(jobs.items(), 1):
+                grids[key] = job.result()
+                print(f"  quantizers {count}/{len(jobs)}", flush=True)
+    else:  # the benchmark's six base quantizers (dev matches the benchmark, 2026-11-24)
+        grids = {(anchor.name, c.name): list(ours_points(codec)) for c in clips}
     grids |= {(test.name, clip): q for test in tests for (_, clip), q in grids.items()}
     curves = measure(benches, [anchor, *tests], clips, grids, args.workers)
     results = []
@@ -438,26 +474,42 @@ def record_levers(args: argparse.Namespace, result: dict) -> None:
                       "nceval.fixedqp cost")
 
 
+def common_clips(pairs: dict[str, dict], clips: list[str]) -> tuple[list[str], dict]:
+    """The clips on which every pair has a BD-J (one clip set for the whole view, as the
+    CBR charts: nceval.chart.common_clips), and for each other clip the tests without one."""
+    def scored(value: dict, clip: str) -> bool:
+        row = value["per_clip"].get(clip)
+        return row is not None and interval.clip_j(row, None, 0.0) is not None
+    unscored = {clip: sorted(pair.partition(" vs ")[0] for pair, value in pairs.items()
+                             if not scored(value, clip)) for clip in clips}
+    return [c for c in clips if not unscored[c]], {c: t for c, t in unscored.items() if t}
+
+
 def site_record(args: argparse.Namespace) -> dict:
     """A results site Fixed QP view on a clip-set sample (nceval.site SAMPLE_QP_VIEWS) from `gap
     --clipset` results sharing one clip set and anchor: each family's BD-rates against
-    the anchor, its interval and clip count, and the clips."""
+    the anchor, its interval and clip count, and the clips. Every family is scored on
+    the same clips (common_clips); the clips left out for all are listed with the
+    tests that had no BD-J there."""
     from .chart import chart_clips
     results = [json.loads(Path(f).read_text()) for f in args.gap]
     clipset = results[0]["clipset"]
     if not clipset or any(r["clipset"] != clipset for r in results):
         raise SystemExit("the gap results must share one --clipset")
     sizes = {c.name: (c.width, c.height) for c in chart_clips(clipset)}
+    pairs = {pair: value for result in results for pair, value in result["pairs"].items()}
+    used, excluded = common_clips(pairs, [c["clip"] for c in results[0]["clips"]])
+    if not used:
+        raise SystemExit("no clip on which every family has a BD-J")
     families, anchors = {}, set()
-    for result in results:
-        for pair, value in result["pairs"].items():
-            test, _, anchor = pair.partition(" vs ")
-            anchors.add(anchor)
-            row = value["summary"]
-            families[test] = {"j": round(row["j"], 2), "lo": round(row["lo"], 2),
-                              "hi": round(row["hi"], 2), "n": row["n"],
-                              **{m: None if row.get(m) is None else round(row[m], 2)
-                                 for m in TERMS[2:]}}
+    for pair, value in pairs.items():
+        test, _, anchor = pair.partition(" vs ")
+        anchors.add(anchor)
+        row = summary({c: value["per_clip"][c] for c in used})
+        families[test] = {"j": round(row["j"], 2), "lo": round(row["lo"], 2),
+                          "hi": round(row["hi"], 2), "n": row["n"],
+                          **{m: None if row.get(m) is None else round(row[m], 2)
+                             for m in TERMS[2:]}}
     if len(anchors) != 1:
         raise SystemExit(f"one anchor expected, got {sorted(anchors)}")
     commits = {r["binary_commit"] for r in results} - {None}
@@ -465,7 +517,8 @@ def site_record(args: argparse.Namespace) -> dict:
               "frames": results[0]["frames"], "points": CURVE_POINTS,
               "build_commit": args.build or ",".join(sorted(commits)),
               "clips": [{**c, "width": sizes[c["clip"]][0], "height": sizes[c["clip"]][1]}
-                        for c in results[0]["clips"]],
+                        for c in results[0]["clips"] if c["clip"] in used],
+              "excluded": [{"clip": c, "unscored": tests} for c, tests in excluded.items()],
               "families": families}
     if args.keep_references:
         keep_references(record, json.loads(Path(args.keep_references).read_text()))

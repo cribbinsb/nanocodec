@@ -264,7 +264,8 @@ distance-weighted compound until it is written (decoder supports all three).
 | TCQ | USED Slow | `av2.tcq` | Default -2.27 at +40.9 % | - |
 | Parity hiding | USED | | | - |
 | Skip mode | USED Slow | `av2.skip_mode` | -0.3 at +12-17 % | - |
-| Compound (two past refs) | USED Slow | `refs.second` | Default held -1.46 L3 at +6.5 % | - |
+| Second reference (single-reference blocks from rank 0 or 1) | USED Slow (HQ frames) | `refs.second` | Default held -1.46 L3 at +6.5 % | - |
+| Compound (two past refs) | NI (2026-11-24 correction: the backend codes no compound, `backend.rs`; the row said USED) | | none | QUEUE (low) |
 | Masked/wedge compound, CWP, inter-intra | NI | | none | QUEUE (low) |
 | Warp variants, global motion | NI | | none (VVC affine analogue -0.7) | QUEUE (low) |
 | OPFL, refine-MV, TIP | NI | | bi-directional tools (AVM slides) | EX (likely) |

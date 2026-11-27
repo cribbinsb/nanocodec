@@ -6,7 +6,9 @@
 //! discarded coding leaks changes real streams. (2026-11-20: the reuse
 //! term kept the discarded coding's blocks; H.264 and AV1, whose backends
 //! report copied blocks, changed from frame 58 / 21 of a 720p crowd clip at
-//! fixed QP.)
+//! fixed QP.) A coding stopped part-way (`debug.stop_identity`: halfway,
+//! as an early re-code, `rate.recode_early`, stops one) skips the rest of
+//! the frame, its filters and `end_frame`; the next coding must not see it.
 use nc_common::{Picture, PlaneIndex};
 use nc_encoder::{
     Codec, CodecBackend, Encoder, EncoderConfig, FrameRate, ParamOverrides, RateControlConfig,
@@ -59,9 +61,16 @@ enum Mode {
     Cbr,
 }
 
+/// The two ways of coding every frame twice that must change nothing.
+const IDENTITY_MODES: [&str; 2] = ["debug.recode_identity", "debug.stop_identity"];
+
 /// The stream and reconstructions of `codec`'s Default coded in `mode`,
-/// every frame once or (`identity`) twice.
-fn coded<B: CodecBackend>(codec: Codec, mode: Mode, identity: bool) -> (Vec<u8>, Vec<Picture>) {
+/// every frame once or, under an `identity` mode, twice.
+fn coded<B: CodecBackend>(
+    codec: Codec,
+    mode: Mode,
+    identity: Option<&str>,
+) -> (Vec<u8>, Vec<Picture>) {
     let quantizer = match (mode, codec) {
         (Mode::Coarsest, Codec::Av1 | Codec::Vp9 | Codec::Av2) => 255,
         (Mode::Coarsest, Codec::Vvc) => 63,
@@ -75,7 +84,9 @@ fn coded<B: CodecBackend>(codec: Codec, mode: Mode, identity: bool) -> (Vec<u8>,
         _ => 4,
     };
     let mut params = ParamOverrides::default();
-    params.set("debug.recode_identity", if identity { 1. } else { 0. });
+    if let Some(name) = identity {
+        params.set(name, 1.);
+    }
     let mut encoder = Encoder::<B>::new(EncoderConfig {
         codec,
         width: WIDTH,
@@ -113,18 +124,24 @@ fn same(a: &Picture, b: &Picture) -> bool {
 }
 
 fn check<B: CodecBackend>(codec: Codec) {
-    for mode in [Mode::Fixed, Mode::Coarsest, Mode::Cbr] {
-        let (once, once_recons) = coded::<B>(codec, mode, false);
-        let (twice, twice_recons) = coded::<B>(codec, mode, true);
+    for (mode, identity) in [Mode::Fixed, Mode::Coarsest, Mode::Cbr]
+        .into_iter()
+        .flat_map(|mode| IDENTITY_MODES.map(|identity| (mode, identity)))
+    {
+        let (once, once_recons) = coded::<B>(codec, mode, None);
+        let (twice, twice_recons) = coded::<B>(codec, mode, Some(identity));
         let first_difference = once_recons
             .iter()
             .zip(&twice_recons)
             .position(|(a, b)| !same(a, b));
         assert_eq!(
             first_difference, None,
-            "{codec:?} {mode:?}: reconstruction differs from frame"
+            "{codec:?} {mode:?} {identity}: reconstruction differs from frame"
         );
-        assert!(once == twice, "{codec:?} {mode:?}: streams differ");
+        assert!(
+            once == twice,
+            "{codec:?} {mode:?} {identity}: streams differ"
+        );
     }
 }
 

@@ -1,8 +1,8 @@
-//! WebAssembly SIMD128 kernels on 4 lanes: the generic forward DCTs, and
-//! the inverse DCTs on the 16-bit-pair butterflies of [`super::paired`]
-//! (`i32x4.dot_i16x8_s`; the 64x64 inverse, the 32x32 one repeated, rarely
-//! used, stays generic). This module only exists in builds with SIMD128
-//! enabled, so its kernels need no run-time check.
+//! WebAssembly SIMD128 kernels on four lanes. The small forward transforms
+//! use the generic butterfly. The other forward transforms and the inverse
+//! transforms share the paired butterflies of [`super::paired`]
+//! (`i32x4.dot_i16x8_s`). This
+//! module only exists in builds with SIMD128 enabled.
 
 use super::generic as g;
 use super::{Av2TxSize, Av2TxfmFns, paired, size_of_side};
@@ -16,9 +16,9 @@ pub(crate) fn av2_txfm_fns() -> Av2TxfmFns {
         forward: [
             forward::<4, 4>,
             forward::<8, 8>,
-            forward::<16, 16>,
-            forward::<32, 32>,
-            forward::<64, 32>,
+            paired_forward::<16, 16>,
+            paired_forward::<32, 32>,
+            paired_forward::<64, 32>,
         ],
         inverse: [
             inverse::<4>,
@@ -40,6 +40,17 @@ unsafe fn forward<const N: usize, const C: usize>(
     unsafe { g::forward::<I32x4, N, C>(residual, stride, shifts, out) }
 }
 
+unsafe fn paired_forward<const N: usize, const C: usize>(
+    residual: &[i16],
+    stride: usize,
+    out: &mut [i32],
+) {
+    let shifts = const { size_of_side(N) }.forward_shifts();
+    // SAFETY: SIMD128 is enabled for this whole module, and the coded side
+    // is at least four coefficients wide for every entry above.
+    unsafe { paired::forward::<I32x4, N, C>(residual, stride, shifts, out) }
+}
+
 unsafe fn inverse<const C: usize>(coeffs: &[i16], nonzero: usize, out: &mut [i16]) {
     let shifts = const { size_of_side(C) }.inverse_shifts();
     // SAFETY: SIMD128 is enabled for this whole module.
@@ -48,5 +59,5 @@ unsafe fn inverse<const C: usize>(coeffs: &[i16], nonzero: usize, out: &mut [i16
 
 unsafe fn inverse64(coeffs: &[i16], nonzero: usize, out: &mut [i16]) {
     // SAFETY: SIMD128 is enabled for this whole module.
-    unsafe { g::inverse64::<I32x4>(coeffs, nonzero, Av2TxSize::Tx64.inverse_shifts(), out) }
+    unsafe { paired::inverse64::<I32x4>(coeffs, nonzero, Av2TxSize::Tx64.inverse_shifts(), out) }
 }

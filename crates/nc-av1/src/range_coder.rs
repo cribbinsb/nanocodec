@@ -37,6 +37,8 @@ const PROB_SHIFT: u32 = 6;
 const MIN_PROB: u32 = 4;
 /// Probability of a literal bit being 1, as used by `L(1)` (AV1 §8.2.3).
 const HALF: u32 = PROB_TOP / 2;
+/// Maximum literal bits in one deferred log record.
+pub(crate) const MAX_LITERAL_RUN: u32 = 24;
 /// `cnt` of a fresh encoder: it crosses zero once a byte plus a carry bit
 /// have accumulated in `low`.
 const CNT_START: i32 = -9;
@@ -83,6 +85,10 @@ impl SymbolSink for BitCounter {
     fn write_literal_bit(&mut self, _bit: bool) {
         self.add_bypass(1);
     }
+
+    fn write_literal(&mut self, _value: u32, n: u32) {
+        self.add_bypass(n);
+    }
 }
 
 impl SymbolSink for SymbolWriter {
@@ -98,6 +104,21 @@ impl SymbolSink for SymbolWriter {
     #[inline]
     fn write_literal_bit(&mut self, bit: bool) {
         SymbolWriter::write_literal_bit(self, bit);
+    }
+
+    #[inline]
+    fn write_literal(&mut self, value: u32, n: u32) {
+        if self.deferred && (2..=MAX_LITERAL_RUN).contains(&n) {
+            self.recording.intervals.push(Interval::literals(value, n));
+        } else if !self.deferred && (2..=MAX_LITERAL_RUN).contains(&n) {
+            let (low, range, count) = (self.coder.low, self.coder.rng, self.coder.cnt);
+            let (low, range, count) = self.coder.encode_literals(value, n, low, range, count);
+            (self.coder.low, self.coder.rng, self.coder.cnt) = (low, range, count);
+        } else {
+            for i in (0..n).rev() {
+                self.write_literal_bit((value >> i) & 1 != 0);
+            }
+        }
     }
 }
 
@@ -150,16 +171,79 @@ impl SymbolTail {
 /// two-symbol alphabet, and an omitted literal the whole range of a
 /// one-symbol alphabet, which leaves the coder exactly as it was.
 #[derive(Debug, Clone, Copy)]
-struct Interval {
-    /// Upper edge (inverse CDF of symbol `s - 1`), [`PROB_TOP`] for `s` 0.
-    fl: u16,
-    /// Lower edge (inverse CDF of symbol `s`).
-    fh: u16,
-    /// Symbols above this one, `nsyms - 1 - s`.
-    remaining: u16,
-}
+struct Interval(u32);
 
 impl Interval {
+    // Store the bits that range coding consumes in the low 25 bits. Pricing
+    // also needs the difference of the discarded six-bit tails, in [-63, 63].
+    const UPPER_BITS: u32 = 10; // includes PROB_TOP >> PROB_SHIFT
+    const LOWER_BITS: u32 = 9; // a lower edge is strictly below PROB_TOP
+    const REMAINING_BITS: u32 = 6; // AV1 alphabets have at most 16 symbols
+    const REMAINING_SHIFT: u32 = Self::UPPER_BITS + Self::LOWER_BITS;
+    const TAIL_SHIFT: u32 = Self::REMAINING_SHIFT + Self::REMAINING_BITS;
+
+    // The two top bits of the upper edge are never both set for a
+    // probability (0..=512). A literal run uses that pair as its tag,
+    // and the top six bits as the run length.
+    const LITERAL_TAG: u32 = 0b11 << 8;
+    const LITERAL_LENGTH: u32 = 26;
+
+    #[inline]
+    fn literals(value: u32, n: u32) -> Self {
+        let bits = value & ((1 << n) - 1);
+        Self(Self::LITERAL_TAG | (bits & 0xff) | ((bits >> 8) << 10) | (n << Self::LITERAL_LENGTH))
+    }
+
+    #[inline]
+    fn is_literal_run(self) -> bool {
+        self.0 & Self::LITERAL_TAG == Self::LITERAL_TAG
+    }
+
+    #[inline]
+    fn literal_count(self) -> u32 {
+        self.0 >> Self::LITERAL_LENGTH
+    }
+
+    #[inline]
+    fn literal_bits(self) -> u32 {
+        (self.0 & 0xff) | (((self.0 >> 10) & 0xffff) << 8)
+    }
+
+    #[inline]
+    const fn new(fl: u32, fh: u32, remaining: u32) -> Self {
+        debug_assert!(fh <= fl && fl <= PROB_TOP && fh < PROB_TOP);
+        debug_assert!(remaining < (1 << Self::REMAINING_BITS));
+        let mask = (1 << PROB_SHIFT) - 1;
+        let tail = (fl & mask).wrapping_sub(fh & mask);
+        Self(
+            (fl >> PROB_SHIFT)
+                | ((fh >> PROB_SHIFT) << Self::UPPER_BITS)
+                | (remaining << Self::REMAINING_SHIFT)
+                | (tail << Self::TAIL_SHIFT),
+        )
+    }
+
+    #[inline]
+    fn upper(self) -> u32 {
+        self.0 & ((1 << Self::UPPER_BITS) - 1)
+    }
+
+    #[inline]
+    fn lower(self) -> u32 {
+        (self.0 >> Self::UPPER_BITS) & ((1 << Self::LOWER_BITS) - 1)
+    }
+
+    #[inline]
+    fn reserve(self) -> u32 {
+        ((self.0 >> Self::REMAINING_SHIFT) & ((1 << Self::REMAINING_BITS) - 1)) * MIN_PROB
+    }
+
+    #[inline]
+    fn width(self) -> usize {
+        let tail = self.0 as i32 >> Self::TAIL_SHIFT;
+        (((self.upper() - self.lower()) << PROB_SHIFT) as i32 + tail) as usize
+    }
+
     /// Symbol `s` of an alphabet of `nsyms` with inverse CDF `icdf`.
     #[inline]
     fn symbol(s: usize, icdf: &[u16], nsyms: usize) -> Self {
@@ -170,11 +254,7 @@ impl Interval {
         } else {
             PROB_TOP
         };
-        Self {
-            fl: fl as u16,
-            fh: icdf[s],
-            remaining: (nsyms - 1 - s) as u16,
-        }
+        Self::new(fl, u32::from(icdf[s]), (nsyms - 1 - s) as u32)
     }
 
     /// `bit` of a two-symbol alphabet whose inverse CDF starts at `f`
@@ -182,32 +262,24 @@ impl Interval {
     #[inline]
     fn binary(bit: bool, f: u16) -> Self {
         if bit {
-            Self {
-                fl: f,
-                fh: 0,
-                remaining: 0,
-            }
+            Self::new(u32::from(f), 0, 0)
         } else {
-            Self {
-                fl: PROB_TOP as u16,
-                fh: f,
-                remaining: 1,
-            }
+            Self::new(PROB_TOP, u32::from(f), 1)
         }
     }
 
     /// The only symbol of a one-symbol alphabet: the whole range, so coding
     /// it changes nothing (an omitted literal).
-    const NOTHING: Self = Self {
-        fl: PROB_TOP as u16,
-        fh: 0,
-        remaining: 0,
-    };
+    const NOTHING: Self = Self::new(PROB_TOP, 0, 0);
 
     /// An equiprobable bit, `L(1)`.
     #[inline]
     fn literal(bit: bool) -> Self {
-        Self::binary(bit, HALF as u16)
+        if bit {
+            Self::new(HALF, 0, 0)
+        } else {
+            Self::new(PROB_TOP, HALF, 1)
+        }
     }
 }
 
@@ -248,10 +320,10 @@ impl Recording {
 }
 
 /// `r_hi` (the range's top eight bits) times probability `f` at the coder's
-/// resolution.
+/// resolution. Probability `f` has already dropped its low bits.
 #[inline]
 fn scale(r_hi: u32, f: u32) -> u32 {
-    (r_hi * (f >> PROB_SHIFT)) >> (7 - PROB_SHIFT)
+    (r_hi * f) >> (7 - PROB_SHIFT)
 }
 
 /// The arithmetic core: interval state and the bytes it has finished.
@@ -279,15 +351,15 @@ impl RangeEncoder {
     fn encode(&mut self, iv: Interval) {
         let r = self.rng;
         let r_hi = r >> 8;
-        let reserve = MIN_PROB * u32::from(iv.remaining);
-        let fl = u32::from(iv.fl);
-        let (low, upper) = if fl < PROB_TOP {
+        let reserve = iv.reserve();
+        let fl = iv.upper();
+        let (low, upper) = if fl < PROB_TOP >> PROB_SHIFT {
             let u = scale(r_hi, fl) + reserve + MIN_PROB;
             (self.low + u64::from(r - u), u)
         } else {
             (self.low, r)
         };
-        self.normalize(low, upper - (scale(r_hi, u32::from(iv.fh)) + reserve));
+        self.normalize(low, upper - (scale(r_hi, iv.lower()) + reserve));
     }
 
     /// Code `bit` of a two-symbol alphabet whose inverse CDF starts at `f`
@@ -296,13 +368,60 @@ impl RangeEncoder {
     #[inline]
     fn encode_bool(&mut self, bit: bool, f: u32) {
         let r = self.rng;
-        let v = scale(r >> 8, f) + MIN_PROB;
+        let v = scale(r >> 8, f >> PROB_SHIFT) + MIN_PROB;
         let (low, rng) = if bit {
             (self.low + u64::from(r - v), v)
         } else {
             (self.low, r - v)
         };
         self.normalize(low, rng);
+    }
+
+    /// Code a run of L(1) from an arbitrary range. Once the low byte of
+    /// the range is 8, the two subranges are equal and normalization
+    /// restores the same range. The first 1 bit always gets us there.
+    #[inline(never)]
+    fn encode_literals(
+        &mut self,
+        value: u32,
+        mut bits: u32,
+        mut low: u64,
+        mut range: u32,
+        mut count: i32,
+    ) -> (u64, u32, i32) {
+        while bits != 0 {
+            if range & 255 == 8 {
+                let take = bits.min((FLUSH_BITS - count - 1) as u32);
+                bits -= take;
+                let prefix = (value >> bits) & ((1 << take) - 1);
+                low = (low << take) + u64::from(range) * u64::from(prefix);
+                count += take as i32;
+                if bits == 0 {
+                    break;
+                }
+            }
+
+            bits -= 1;
+            let half = ((range >> 8) << 7) + MIN_PROB;
+            let lower = range - half;
+            let next = if value >> bits & 1 == 0 {
+                lower
+            } else {
+                low += u64::from(lower);
+                half
+            };
+            let shift = next.leading_zeros() as i32 - 16;
+            if count + shift >= FLUSH_BITS {
+                self.cnt = count;
+                self.flush(low, next, shift);
+                (low, range, count) = (self.low, self.rng, self.cnt);
+            } else {
+                low <<= shift;
+                range = next << shift;
+                count += shift;
+            }
+        }
+        (low, range, count)
     }
 
     /// Renormalise `rng` back into [32768, 65536), flushing `low` when it
@@ -393,6 +512,9 @@ pub struct SymbolWriter {
     /// The node trials' record of the CDF context's adaptations
     /// (`backend/node_trial.rs`; inactive outside trials).
     journal: CdfJournal,
+    /// [`Self::coded_bits`] of a deferred frame: logged symbols priced so
+    /// far, and their bits.
+    priced: (usize, f64),
 }
 
 /// What coding a symbol does to its CDF.
@@ -420,6 +542,7 @@ impl SymbolWriter {
     pub fn new() -> Self {
         Self {
             coder: RangeEncoder::new(),
+            priced: (0, 0.),
             recording: Recording::default(),
             deferred: false,
             adaptation: Adaptation::Adapt,
@@ -445,6 +568,7 @@ impl SymbolWriter {
     pub fn restart(&mut self, deferred: bool, adapt: bool) {
         self.coder.reset();
         self.recording.clear();
+        self.priced = (0, 0.);
         if deferred && self.recording.intervals.capacity() == 0 {
             self.recording.intervals.reserve(INITIAL_CAPACITY);
         }
@@ -648,10 +772,39 @@ impl SymbolWriter {
                 .map(|width| top - (width.max(1) as f32).log2())
                 .collect()
         });
-        self.recording.intervals[mark..]
-            .iter()
-            .map(|iv| costs[usize::from(iv.fl - iv.fh)])
-            .sum()
+        let mut bits = 0.;
+        for &iv in &self.recording.intervals[mark..] {
+            if iv.is_literal_run() {
+                // Keep rounding at every symbol, as before packing the run.
+                for _ in 0..iv.literal_count() {
+                    bits += 1.;
+                }
+            } else {
+                bits += costs[iv.width()];
+            }
+        }
+        bits
+    }
+
+    /// Bits the tile holds so far: the bytes the coder finished and the bits
+    /// pending in it, plus any logged symbols priced ([`Self::bits_since`]):
+    /// a deferred frame logs all of them, a node trial those after it began.
+    /// Each logged symbol is priced once (in-frame rate control reads this
+    /// after every superblock) unless the log was cut back past the last
+    /// reading (a superblock undone), when it is priced afresh. Spans filled
+    /// in later are not in it.
+    pub fn coded_bits(&mut self) -> f64 {
+        let pending = (self.coder.cnt - CNT_START).max(0);
+        let finished = (self.coder.out.len() * 8) as f64 + f64::from(pending);
+        let logged = self.recording.intervals.len();
+        let (from, bits) = if self.priced.0 <= logged {
+            self.priced
+        } else {
+            (0, 0.)
+        };
+        let bits = bits + f64::from(self.bits_since(from));
+        self.priced = (logged, bits);
+        finished + bits
     }
 
     /// Code what a deferred frame logged, flush, and return the tile's
@@ -697,16 +850,21 @@ impl RangeEncoder {
     fn encode_run(&mut self, intervals: &[Interval]) {
         let (mut low, mut rng, mut cnt) = (self.low, self.rng, self.cnt);
         for iv in intervals {
+            if iv.is_literal_run() {
+                (low, rng, cnt) =
+                    self.encode_literals(iv.literal_bits(), iv.literal_count(), low, rng, cnt);
+                continue;
+            }
             let r_hi = rng >> 8;
-            let reserve = MIN_PROB * u32::from(iv.remaining);
-            let fl = u32::from(iv.fl);
-            let upper = if fl < PROB_TOP {
+            let reserve = iv.reserve();
+            let fl = iv.upper();
+            let upper = if fl < PROB_TOP >> PROB_SHIFT {
                 scale(r_hi, fl) + reserve + MIN_PROB
             } else {
                 rng
             };
             low += u64::from(rng - upper);
-            let next = upper - (scale(r_hi, u32::from(iv.fh)) + reserve);
+            let next = upper - (scale(r_hi, iv.lower()) + reserve);
             debug_assert!((1..=0xffff).contains(&next));
             let d = next.leading_zeros() as i32 - 16;
             if cnt + d >= FLUSH_BITS {
@@ -726,6 +884,22 @@ impl RangeEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_interval_preserves_the_range_edges_and_full_width() {
+        for base in [0, 64, 4032, 32_704] {
+            for fl in base..=base + 64 {
+                for fh in base..=fl.min(PROB_TOP - 1) {
+                    let interval = Interval::new(fl, fh, 15);
+                    assert_eq!(interval.upper(), fl >> PROB_SHIFT);
+                    assert_eq!(interval.lower(), fh >> PROB_SHIFT);
+                    assert_eq!(interval.reserve(), 15 * MIN_PROB);
+                    assert_eq!(interval.width(), (fl - fh) as usize);
+                }
+            }
+        }
+        assert_eq!(Interval::NOTHING.width(), PROB_TOP as usize);
+    }
 
     #[test]
     fn empty_stream_flushes_to_minimal_bytes() {
@@ -811,6 +985,48 @@ mod tests {
         deferred.span(last).write_bool(true, &mut deferred_cdf);
         assert_eq!(direct_cdf.icdf, deferred_cdf.icdf);
         assert_eq!(direct.finish(), deferred.finish());
+    }
+
+    #[test]
+    fn literal_runs_preserve_bytes_and_pricing() {
+        let mut immediate = SymbolWriter::new();
+        let mut run_now = SymbolWriter::new();
+        let mut loose = SymbolWriter::new_deferred();
+        let mut packed = SymbolWriter::new_deferred();
+        let fixed = [24321, 16769, 8837, 0];
+        let mut state = 7u32;
+        for i in 0..100_000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let len = 1 + (state >> 24) % 32;
+            let value = match i % 4 {
+                0 => 0,
+                1 => 1,
+                2 => u32::MAX,
+                _ => state,
+            };
+            let symbol = (state >> 16) as usize & 3;
+            for writer in [&mut immediate, &mut run_now, &mut loose, &mut packed] {
+                writer.write_fixed(symbol, &fixed, 4);
+            }
+            for writer in [&mut immediate, &mut loose] {
+                for j in (0..len).rev() {
+                    writer.write_literal_bit(value >> j & 1 != 0);
+                }
+            }
+            run_now.write_literal(value, len);
+            packed.write_literal(value, len);
+            if i % 30 == 0 {
+                assert_eq!(loose.coded_bits().to_bits(), packed.coded_bits().to_bits());
+            }
+        }
+        assert_eq!(
+            loose.bits_since(0).to_bits(),
+            packed.bits_since(0).to_bits()
+        );
+        let expected = immediate.finish();
+        assert_eq!(run_now.finish(), expected);
+        assert_eq!(loose.finish(), expected);
+        assert_eq!(packed.finish(), expected);
     }
 
     #[test]

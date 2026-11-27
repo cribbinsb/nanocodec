@@ -89,8 +89,9 @@ av1.inter_intra_search = 0
 light.av1.partial_forward = 2
 # More blocks skip luma before the transform (+2.3 / -4.3%).
 light.av1.pre_tx_skip_energy = 100
-# Sub-pel refinement skipped below Fast's 0.1 lambda of seed residual.
-decision.codec_subpel_seed_lambdas = 0.1
+# Sub-pel refinement skipped below 0.2333 lambda of seed residual (was Fast's 0.1;
+# 2026-11-23 retune, with the depth and quarter-stage controllers below).
+decision.codec_subpel_seed_lambdas = 0.2333
 # CDEF distortion sampled on every 8th row (+0.5 / -0.7%).
 av1.cdef_search_row_step = 8
 # The per-superblock CDEF choice searched on every 4th frame (+2.0 / -2.0%).
@@ -211,8 +212,23 @@ adapt.probe = 1
 # handoff): against the Faster above, x86 callgrind x0.995 (chart clips, CBR
 # 600); L1 quality J -0.81 %; L3 (78 clips, dCPU -0.5 % at k 0.6) J -0.59 %
 # [-0.83, -0.36] BETTER; lens Weighted / J -6.1 / -18.4 -> -6.2 / -18.3.
-# Depth removal's adaptation (`adapt.depth`) was level at +1.1 % CPU.
 adapt.motion = 1
+# Depth removal and the walk's quarter stage adapt too, the quarter stage's cheap
+# alternative the probed step (decision.subpel_quarter_predict 1), with the seed gate
+# above at 0.2333 (study ar-av1-faster-3 t5, 2026-11-23; idea
+# av1-faster-adaptive-depth-and-quarter; docs/handoff/tuning.md "AV1 joint retune").
+# nceval.train vs 7c1c5334f, re-judged at the CBR front slope (k 0.4499) with CPU on its
+# own encodes (key1 -0.98 %, 1/150 -0.87 %, 1/300 -0.37 %): L3 J -0.43 % [-0.67, -0.18],
+# final check -0.66 % [-0.89, -0.42]. Not carried to Fast (quick L1 +1.39 %).
+adapt.depth = 1
+adapt.quarter = 1
+# The switch at target 0.02 with the unmeasured parabola step (predict 2), as on Veryfast: it
+# takes the step nearly everywhere (docs/analysis/adaptive-thresholds-2026-11-23.md).
+# nceval.train 2026-11-23 vs fa55faa23 at k 0.4499, CPU on its own encodes (key1 -1.24 %,
+# 1/150 -0.60 %, 1/300 -0.58 %): L3 J -0.49 % [-0.71, -0.28], final check -0.15 % [-0.32, +0.02],
+# both BETTER.
+adapt.quarter_target = 0.02
+decision.subpel_quarter_predict = 2
 # Layer propagation (`layer_propagation.rs`, docs/handoff/block-aq.md "Layer propagation retry"):
 # on layered mini-GOPs, T0 blocks the last period reused little go towards the top layer's
 # quantizer, rounded to a 3-QP grid, stopping in the run-up to a scheduled key (`prekey`; without
@@ -244,3 +260,49 @@ rate.still_level_damping = 0.5
 # -0.18] n=34; cycles +0.2 / 0.0 / +0.9 % (Graviton 3 / 4, Zen 5).
 quant.rd_trim = 1
 quant.rd_trim_block = 1
+# Medium's key RD search and finer periodic keys (2026-11-21) and key trellis
+# (2026-11-22) were screened on medium only.
+planner.key_rd_split = 0
+rate.key_level_finer = 0
+quant.trellis_key = 0
+
+# Period-8 QP cadence under rate control (the Default's since 2026-11-24): nceval.train
+# against 3928c5f16 (draw 2026-11-24, k 0.4275), L3 J -0.62% [-0.76, -0.06] BETTER,
+# final check -0.18% [-0.39, +0.03] AMBIGUOUS (not worse); cycles on its own encodes
+# 1/150 -0.71%, 1/300 +0.38%, L3 -0.30%. Base boost and start-up cadence stay pinned as
+# before medium's fixed-QP cadence (2026-11-22), and fixed QP keeps period 4 here: not
+# screened at fixed QP on this rung.
+rate.cadence_period = 8
+fixed_qp.rate.cadence_period = 4
+rate.cadence_base_boost = 3
+rate.cadence_startup_period = 8
+# Periodic keys at rate.key_cap_buffer 1.0, the first key at 0.8: nceval.train at both key shares (base 29f3c5a22, front k): L3 byte-identical (one-key streams: only the first key, unchanged), final check BETTER at 1/150 and 1/300
+# (-0.78 / -0.31 %). Cap 1.0 on the first key too was ejected on L3 (2026-11-22).
+rate.key_cap_buffer_first = 0.8
+# The zero-vector gates judge each superblock's worst 16x16 cell (2026-11-23; the
+# value maps 16..63 to the 16x16 cell), between the noise-relative cells (0, unpinned
+# in 245937f4b) and the superblock average (64, which cost the drone class +3.9 %).
+# nceval.train vs 445eae64b at the CBR front slope k 0.4499, CPU on its own encodes
+# (key1 +0.10 %, 1/150 -1.32 %, 1/300 -2.05 %): L3 J -0.08 % [-0.28, +0.12] (neutral),
+# final check -0.84 % [-0.95, -0.74], no guard.
+analysis.zero_gate_cell = 32
+# Leaf penalty 2 under rate control (the Default's): nceval.train against 268be2ddc (draw
+# 2026-11-24, k 0.4275; the first train scored on the PC's GPU), final check J -0.61%
+# [-0.77, -0.49] BETTER, L3 -0.30% [-0.51, +0.03] AMBIGUOUS, not worse (the medium
+# rule); cycles 1/150 -0.69%, 1/300 -0.77%, L3 -0.2%. Fixed QP keeps leaf 1: not
+# screened on this rung.
+rate.cadence_leaf_penalty = 2
+fixed_qp.rate.cadence_leaf_penalty = 1
+
+# Fixed QP only (`fixed_qp.`, 2026-11-24, Brief 19 Step 4; docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# coarser moving keys (`rate.fixed_qp_moving_key = 6`) and fine-quantizer depth-removal floor
+# on light frames (`light.planner.depth_removal_min_quantizer = 0.8`). nceval.fixedqp ab
+# (draw fixedqp-2026-11-24, n=24): 150 f J -5.0% [-5.7, -3.6], 600 f J -3.7% [-4.3, -2.8];
+# fixed-QP CPU (aws_cpu_ab, c8i / c8g): +4.13% / +3.15% (mean +3.64%; -1.02% J / 1% CPU vs
+# front slope -0.074). CBR streams are byte-identical.
+fixed_qp.rate.fixed_qp_moving_key = 6
+fixed_qp.light.planner.depth_removal_min_quantizer = 0.8
+
+# Pinned before AV1 medium adopted proactive in-frame steering (Brief 21, 2026-11-24):
+# not screened at L3/FC on this rung.
+rate.in_frame = 0

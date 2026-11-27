@@ -1,0 +1,22 @@
+# AV1 slow (tune-slow, 2026-11-23): the rung's effort and decision parameters, tuned jointly
+# on 600-frame windows at both key shares with k = the rung's front slope.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_deeper 0 2 int
+planner.rd_split_shallower 0 2 int
+planner.rd_split_deepen_context -3 2 int
+planner.rd_split_merge_context -3 2 int
+planner.rd_split_margin 0 1.5
+planner.rd_split_tail_satd 0 1
+planner.rd_split_merge_skipped 0 1 int
+planner.split_selector_scale
+planner.key_rd_margin 1.0 2.0
+planner.key_rd_deeper 0 2 int
+decision.codec_subpel_seed_lambdas
+decision.exact_rank_margin
+decision.refine_cheap_min_lambdas
+decision.intra_gate_variance
+av1.inter_tx_split_energy
+av1.pre_tx_skip_energy
+av1.transform_rd_gain_scale
+av1.near_count int
+av1.cdef_local_search_period 1 4 int

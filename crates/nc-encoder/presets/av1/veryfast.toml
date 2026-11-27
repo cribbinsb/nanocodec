@@ -98,9 +98,14 @@ layers.count = 3
 av1.inter_rounding_q7 = 32
 light.av1.skip_bias_energy = 0.25
 decision.seed_refine_ratio = 0
-rate.period_ceiling = 0
+# VP9 veryfast's key moves (2026-11-23, idea av1-veryfast-vp9-key-moves): the
+# key-period ceiling, a gentle key still boost (1.33) and key planning 2 (below).
+# nceval.train (a950812b53, base 00f777521, CPU on its own encodes: L3 +0.55 %, 1/150
+# +1.59 %, 1/300 +0.27 %), re-decided at the CBR front slope (k 0.4074): L3 J -0.51 %
+# [-0.86, -0.16], final check -0.44 % [-0.76, -0.10]; static_recovery passes.
+rate.period_ceiling = 1
 structure.unified = 0
-rate.key_still_boost = 0
+rate.key_still_boost = 1.33
 structure.inherited_depth = 0
 planner.depth_removal_th_32_16 = 25
 planner.depth_removal_th_16_8 = 50
@@ -125,9 +130,9 @@ planner.depth_removal_qp_scale = 8
 light.av1.near_count = 1
 # No integer-neighbour probes: -3.0% / -2.0% / +2.6% / +1.4, +1.2.
 light.decision.codec_fullpel_probe = 0
-# Key frames planned by source variance (not the RD key planner): -5.4% /
-# -4.4% / +1.8% / +3.1, +2.9.
-planner.intra_plan = 1
+# Key frames planned as medium plans them (2026-11-23 with the key moves above; was 1,
+# by source variance: -5.4% / -4.4% / +1.8% / +3.1, +2.9).
+planner.intra_plan = 2
 #
 # Fixed layers. Three temporal layers on every stream, not Faster's gated
 # ones: -6.7% c8a chart-path time
@@ -179,6 +184,11 @@ planner.inter_min_log2 = 4
 av1.near_count = 3
 decision.codec_fullpel_probe = 1
 av1.chroma_skip_sad_num = 5
+# The inter-chroma skip's zero-residual veto off again (2026-11-23; on since 6896a4222,
+# adopted at k 0.6 on CPU from other encodes). nceval.train vs 6b8a0c177 at the CBR front
+# slope k 0.4074, CPU on its own encodes (key1 -2.8..-3.9 %, 1/150 -2.3..-3.3 %, 1/300
+# -2.2..-3.3 %): L3 J -0.74 % [-0.95, -0.55], final check -0.61 % [-0.75, -0.48].
+av1.chroma_skip_zero_scale = 0
 av1.pre_tx_skip_model = 1
 av1.pre_tx_skip_rd = 50
 av1.pre_tx_skip_energy = 15
@@ -208,3 +218,58 @@ analysis.zero_sads_from_pre = 1
 # +0.10] n=34; cycles -0.7 / -0.6 / -0.1 % (Graviton 3 / 4, Zen 5).
 quant.rd_trim = 1
 quant.rd_trim_block = 1
+# Medium's key RD search and finer periodic keys (2026-11-21) and key trellis
+# (2026-11-22) were screened on medium only.
+planner.key_rd_split = 0
+rate.key_level_finer = 0
+quant.trellis_key = 0
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): not screened on this rung.
+analysis.zero_gate_cell = 64
+# Pinned before medium's fixed-QP cadence (period 8, base boost 4, no
+# start-up cadence; 2026-11-22): screened on medium, slow and slower only.
+rate.cadence_period = 4
+rate.cadence_base_boost = 3
+rate.cadence_startup_period = 8
+# rate.key_cap_buffer 1.0 for periodic keys (the first key at 0.8) passed nceval.train here
+# (2026-11-23, base 764c45048: final check -1.53 / -0.97 % at 1/150 / 1/300, L3 identical) but
+# failed static_recovery's layered AV1 Veryfast check (frame 28: the starved key's static half
+# 47.65 dB against the undisturbed stream's 51.27, bound 2.5 dB): held at 0.8.
+rate.key_cap_buffer = 0.8
+
+# The walk's quarter stage after an unmoved half stage is replaced by the step a parabola
+# through the half stage's costs predicts (adapt.quarter, a switch probing the stage one
+# opportunity in 8; at target 0.02 it takes the parabola nearly everywhere, which is where the
+# gain comes from: docs/analysis/adaptive-thresholds-2026-11-23.md). nceval.train 2026-11-23
+# (base 00f777521, CPU on its own encodes): dCPU L3 -0.64 %, final -1.54 / -1.20 % at
+# 1/150 / 1/300; quality alone 0.00 %; at the CBR front slope k 0.4074 L3 J -0.27 %
+# [-0.40, -0.11], final check -0.58 % [-0.71, -0.41].
+adapt.quarter = 1
+adapt.quarter_target = 0.02
+decision.subpel_quarter_predict = 2
+
+# Fixed QP only (`fixed_qp.`, 2026-11-24, Brief 19 Step 4; docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# coarser moving keys (`rate.fixed_qp_moving_key = 6`) and fine-quantizer depth-removal floor
+# (`planner.depth_removal_min_quantizer = 0.8`). nceval.fixedqp ab (draw fixedqp-2026-11-24, n=24):
+# 150 f J -8.9% [-10.4, -6.9], 600 f J -9.7% [-11.2, -7.5]; fixed-QP CPU (aws_cpu_ab, c8i / c8g):
+# +11.74% / +8.68% (mean +10.21%; -0.95% J / 1% CPU vs front slope -0.117). CBR streams are byte-identical.
+fixed_qp.rate.fixed_qp_moving_key = 6
+fixed_qp.planner.depth_removal_min_quantizer = 0.8
+# Leaf penalty 1 in both modes: the fixed-QP profile codes leaf 2 (screened on medium's
+# fixed QP only, 2026-11-24).
+rate.cadence_leaf_penalty = 1
+
+# Pinned before AV1 medium adopted proactive in-frame steering (Brief 21, 2026-11-24):
+# not screened at L3/FC on this rung.
+rate.in_frame = 0
+
+# The partial forward transform only at coarse quantizers (shared gate): with
+# av1.partial_forward 2 and av1.inter_tx_split 0, large inter blocks could code no
+# high frequencies at any quantizer, so P frames stopped at 28-34 dB where the key
+# reaches 37-39 (first-key study, docs/analysis/first-key-2026-11-25.md on branch
+# first-key). Quick on this rung (draw 2026-11-25, L1 24 clips, benchmark CBR
+# conditions): J -2.05% [-4.14, -0.38]; long probes 1/150 +0.28%, 1/300 -0.76%;
+# cycles -0.4 to +0.6% (c8i.2xlarge / c8g.2xlarge). Landed on the owner's order of
+# 2026-11-25 with the L3, final-check and Fixed QP screens curtailed.
+gate.partial_transform_min_quantizer = 0.5

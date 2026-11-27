@@ -1,0 +1,16 @@
+# The RD partition search's post-trial stop (planner.rd_split_stop_*, rd_split.rs
+# FirstTrialStop): once a planned inter node's planned candidate is coded, its other
+# candidates are skipped where bias + w . features > 0. All 0 never stops (the shipped
+# search), so the study's first trial is today's encoder. Slow rungs (search on).
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_stop_bias -4 2
+planner.rd_split_stop_cost -2 2
+planner.rd_split_stop_bits -2 2
+planner.rd_split_stop_distortion -2 2
+planner.rd_split_stop_skip -3 3
+planner.rd_split_stop_nonzero -2 2
+planner.rd_split_stop_planned_split -3 3
+planner.rd_split_stop_size -2 2
+planner.rd_split_stop_margin -2 2
+planner.rd_split_stop_neighbours -2 2
+planner.rd_split_stop_co_located -2 2

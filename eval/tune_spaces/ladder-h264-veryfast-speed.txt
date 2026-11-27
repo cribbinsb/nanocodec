@@ -1,0 +1,15 @@
+# h264-ladder (2026-11-23, owner priority): a faster H.264 veryfast. On the 2026-11-23
+# chart veryfast runs ~430 fps at BD-J -16 % against x264 medium, openh264 ~520 fps.
+# Best J at x86 CPU <= 0.83x the rung (--cpu-max 0.83): its motion-search, sub-pel and
+# intra effort, each between veryfast's value and the cheapest setting.
+# Format (nceval.tune_pool): name [low high] [int|log]
+analysis.window_half_width 1 2 int
+analysis.window_half_height 0 1 int
+analysis.hme_level1 0 1 int
+analysis.hme_range_x 4 8 int
+analysis.skip_hme_sad_per_pixel 4 8
+decision.subpel_half_only 0 1 int
+decision.skip_no_refine_lambdas 0.105 0.4
+decision.codec_subpel_seed_lambdas 0 0.3
+h264.intra4x4_gate_satd 40 64
+h264.intra8x8 0 1 int

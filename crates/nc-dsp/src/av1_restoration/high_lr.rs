@@ -120,6 +120,9 @@ impl HighLrFns {
             Isa::Avx512 => x86_avx512::FNS,
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => neon_high::FNS,
+            // As for 8 bits ([`super::kernels::kernels`]): SVE2 runs the NEON rows.
+            #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+            Isa::Sve2 => neon_high::FNS,
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
             Isa::Simd128 => simd128_high::FNS,
             _ => Self::SCALAR,
@@ -1096,9 +1099,7 @@ mod avx512_sgr {
             on,
             around,
             blend,
-            // The AVX-512 tier keeps its sixteen-lane rows until the AVX2
-            // stripe is measured there.
-            sgr_stripe: None,
+            sgr_stripe: Some(super::super::sgr_avx2::sgr_stripe_icl),
             ..base
         }
     }

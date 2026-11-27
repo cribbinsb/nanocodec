@@ -5537,54 +5537,6 @@
     "left_out_reason": null
    },
    {
-    "name": "ind_bwc_videotext_video317",
-    "dataset": "bwc-videotext",
-    "width": 424,
-    "height": 240,
-    "fps": 30.0,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "bodycam",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
-    "name": "ind_cctv_uid_vid_00054",
-    "dataset": "cctv",
-    "width": 960,
-    "height": 540,
-    "fps": 29.97,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "crowd",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
-    "name": "ind_jaad_video_0151",
-    "dataset": "JAAD",
-    "width": 960,
-    "height": 540,
-    "fps": 30.0,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "pan",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
-    "name": "ind_jaad_video_0318",
-    "dataset": "JAAD",
-    "width": 960,
-    "height": 540,
-    "fps": 30.0,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "pan",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
     "name": "ind_mot_mot17_05",
     "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 640,
@@ -5621,31 +5573,7 @@
     "left_out_reason": null
    },
    {
-    "name": "ind_personpath22_uid_vid_00026",
-    "dataset": "PersonPath22",
-    "width": 960,
-    "height": 540,
-    "fps": 23.976,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "lowlight",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
     "name": "ind_personpath22_uid_vid_00090",
-    "dataset": "PersonPath22",
-    "width": 960,
-    "height": 540,
-    "fps": 29.97,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "crowd",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
-    "name": "ind_personpath22_uid_vid_00177",
     "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
@@ -5660,18 +5588,6 @@
   "qp-vc1k": [
    {
     "name": "vc1k_android_indoor_fastmotion_darklight_720x1280_30_3683766447",
-    "dataset": "VC-1K (Meta, CC BY-NC 4.0)",
-    "width": 720,
-    "height": 1280,
-    "fps": 30.0,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "videocall",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
-    "name": "vc1k_ios_outdoor_fastmotion_goodlight_720x1280_30_3685144678",
     "dataset": "VC-1K (Meta, CC BY-NC 4.0)",
     "width": 720,
     "height": 1280,
@@ -5712,18 +5628,6 @@
     "width": 1280,
     "height": 720,
     "fps": 25.0,
-    "start_frame": 0,
-    "frames": 150,
-    "class": "videocall",
-    "scored": true,
-    "left_out_reason": null
-   },
-   {
-    "name": "vc1k_ios_outdoor_mediummotion_goodlight_720x1280_30_3686106796",
-    "dataset": "VC-1K (Meta, CC BY-NC 4.0)",
-    "width": 720,
-    "height": 1280,
-    "fps": 29.97,
     "start_frame": 0,
     "frames": 150,
     "class": "videocall",
@@ -6017,13 +5921,13 @@
    "left_out": 0
   },
   "qp-fresh": {
-   "clips": 12,
-   "scored": 12,
+   "clips": 6,
+   "scored": 6,
    "left_out": 0
   },
   "qp-vc1k": {
-   "clips": 12,
-   "scored": 12,
+   "clips": 10,
+   "scored": 10,
    "left_out": 0
   },
   "ctc": {

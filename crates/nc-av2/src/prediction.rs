@@ -210,7 +210,18 @@ pub fn predict_into(
         let block = reference
             .region(source_x as isize, source_y as isize, side, side)
             .expect("visible reference block");
-        destination.copy_from(&block);
+        // The shared dispatched block copy (as VVC's `recon::store`): the
+        // row-by-row view copy cost about 575 instructions a block here
+        // (AV2 Faster x86, 235K whole-sample predictions in 150 frames).
+        let stride = destination.stride();
+        dsp.block_copies().copy_rect(
+            block.data(),
+            block.stride(),
+            destination.data_mut(),
+            stride,
+            (side, side),
+            false,
+        );
         return Ok(());
     }
     let before = kernel.before() as i32;

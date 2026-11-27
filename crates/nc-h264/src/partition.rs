@@ -51,21 +51,48 @@ pub struct SplitSearch {
     /// past it.
     pub range: MvRange,
 }
-/// Estimated bits of one `mvd` component (UEG3 binarization with sign):
-/// `|d| + 1` prefix bins below `uCoff` 9, else 9 prefix bins and a 3rd-order
-/// Exp-Golomb suffix of `2 · log2((|d| - 9) / 8 + 1) + 4` bins; plus the
-/// sign. Small whole numbers, so counted in integers.
-pub fn mvd_bits(d: i32) -> f32 {
-    const PREFIX_MAX: u32 = 9;
-    let a = d.unsigned_abs();
-    let bins = if a == 0 {
+/// `uCoff` of the `mvd` UEG3 binarization (§9.3.2.3).
+const MVD_PREFIX_MAX: u32 = 9;
+/// `|mvd|` values whose bits [`mvd_bits`] reads from [`MVD_BITS`]: the
+/// engine's candidates nearly all lie this close to their predictor.
+const MVD_TABLE_SIZE: usize = 64;
+
+/// Bins of one `mvd` component of magnitude `a` (UEG3 binarization with
+/// sign): `|d| + 1` prefix bins below `uCoff` 9, else 9 prefix bins and a
+/// 3rd-order Exp-Golomb suffix of `2 · log2((|d| - 9) / 8 + 1) + 4` bins;
+/// plus the sign.
+const fn mvd_bins(a: u32) -> u32 {
+    if a == 0 {
         1
-    } else if a < PREFIX_MAX {
+    } else if a < MVD_PREFIX_MAX {
         a + 2
     } else {
-        PREFIX_MAX + 2 * ((a - PREFIX_MAX) / 8 + 1).ilog2() + 4 + 1
-    };
-    bins as f32
+        MVD_PREFIX_MAX + 2 * ((a - MVD_PREFIX_MAX) / 8 + 1).ilog2() + 4 + 1
+    }
+}
+
+/// [`mvd_bins`] of the small magnitudes, as bits: mode decision prices
+/// several vectors per macroblock (a table read instead of the branches and
+/// the logarithm; Gemini agent, 2026-11-23).
+const MVD_BITS: [f32; MVD_TABLE_SIZE] = {
+    let mut table = [0.0; MVD_TABLE_SIZE];
+    let mut a = 0;
+    while a < MVD_TABLE_SIZE {
+        table[a] = mvd_bins(a as u32) as f32;
+        a += 1;
+    }
+    table
+};
+
+/// Estimated bits of one `mvd` component ([`mvd_bins`]). Small whole
+/// numbers, so counted in integers.
+#[inline]
+pub fn mvd_bits(d: i32) -> f32 {
+    let a = d.unsigned_abs();
+    match MVD_BITS.get(a as usize) {
+        Some(&bits) => bits,
+        None => mvd_bins(a) as f32,
+    }
 }
 
 /// Bits of vector `mv` predicted by `pred`.

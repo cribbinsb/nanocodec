@@ -3,7 +3,7 @@
 //! The short fallback and independent tile transposes are shared with HEVC.
 #![allow(unsafe_code, clippy::inline_always)]
 
-use super::inplace::{derivative, long_derivative, long_middle, spread};
+use super::inplace::{derivative, long_blend, long_derivative, long_middle, spread};
 use super::{VvcLumaEdge, long_limits, long_weights};
 use crate::deblock::batch::{self, Geometry, Tiles};
 use crate::simd::I16x8Tiles;
@@ -45,7 +45,7 @@ pub(crate) unsafe fn tiles<V: I16x8Tiles>(
     let batch = Tiles::new::<V, TAPS>(data.len(), edges);
     // SAFETY: the tile bounds were checked above, the caller enables V's ISA.
     let values = unsafe { batch.load::<V, TAPS>(data) };
-    if let Some(out) = filter(values, beta, tc, lengths) {
+    if let Some(out) = filter::<V, false>(values, beta, tc, lengths) {
         // SAFETY: bounds were checked above and the caller established disjointness.
         unsafe { batch.store(data, out) };
     }
@@ -58,7 +58,7 @@ fn max_at_ends<V: I16x8Tiles>(v: V) -> V {
 }
 
 #[inline(always)]
-fn filter<V: I16x8Tiles>(
+pub(super) fn filter<V: I16x8Tiles, const PARTIAL: bool>(
     values: [V; TAPS],
     beta: V,
     tc: V,
@@ -103,17 +103,28 @@ fn filter<V: I16x8Tiles>(
             spread::<V, true>(&p, lengths[0]).add(spread::<V, true>(&q, lengths[1])),
         )));
     let zero = V::splat(0);
-    let all_long = !long.eq_mask(zero).any_nonzero();
+    const { assert!(!PARTIAL || V::LANES == 8) };
+    // Every lane of a four-line segment has the same decision. A partial
+    // tile disables its second segment with zero tC.
+    let all_long = if PARTIAL {
+        long.any_nonzero()
+    } else {
+        !long.eq_mask(zero).any_nonzero()
+    };
     let mut out = values;
     if !all_long {
         let short_inputs = [p3, p2, p1, p0, q0, q1, q2, q3];
         if let Some(short) = batch::filter::<V, true>(short_inputs, beta, long.blend(zero, tc)) {
             out[4..12].copy_from_slice(&short);
-        } else if !long.any_nonzero() {
+        } else if PARTIAL || !long.any_nonzero() {
             return None;
         }
     }
-    if long.any_nonzero() {
+    if if PARTIAL {
+        all_long
+    } else {
+        long.any_nonzero()
+    } {
         let middle = long_middle::<V, true>(&p, &q, lengths);
         let (p_out, q_out) = out.split_at_mut(SIDE);
         match lengths[0] {
@@ -143,10 +154,7 @@ fn side<'a, V: I16x8Tiles + 'a, const LENGTH: usize>(
     let far = near.add(side[LENGTH]).add(V::splat(1)).sra(1);
     let difference = middle.sub(far);
     for (i, dst) in out.take(LENGTH).enumerate() {
-        // far + (((middle - far) * w + 32) >> 6), using an exact Q15
-        // multiply with w scaled by 2^9. The signed difference fits i16.
-        let weight = V::splat((long_weights(LENGTH)[i] as i16) << 9);
-        let value = far.add(difference.mul_q15_round(weight));
+        let value = long_blend(far, difference, long_weights(LENGTH)[i]);
         let multiple = long_limits(LENGTH)[i] as i16;
         let limit = tc.mul(V::splat(multiple)).sra(1);
         let original = side[i];

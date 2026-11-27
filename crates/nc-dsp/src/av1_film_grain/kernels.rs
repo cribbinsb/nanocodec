@@ -4,8 +4,12 @@
 //! dav1d 1.5.4 `filmgrain_tmpl.c` arithmetic; see `THIRD_PARTY.md`.
 
 #![allow(unsafe_code)]
+use super::{Av1FilmGrainParams, GrainBlocks, Template};
 use crate::Isa;
 use crate::simd::LOOKUP_TABLE;
+use nc_common::{PlaneView, PlaneViewMut};
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(super) mod blocks;
 mod generic;
 
 /// A plane's scaling function for one frame (AV1 §7.18.3.4): the lookup
@@ -16,13 +20,13 @@ mod generic;
 /// shifted per sample.
 #[derive(Debug, Clone)]
 pub struct Av1GrainScaling {
-    lut: [u8; 256],
+    pub(super) lut: [u8; 256],
     #[cfg_attr(
         target_arch = "aarch64",
         allow(dead_code, reason = "NEON looks up `lut`")
     )]
     q15: [i16; LOOKUP_TABLE],
-    shift: u8,
+    pub(super) shift: u8,
 }
 
 /// The Q15 multiply's precision.
@@ -44,6 +48,8 @@ impl Av1GrainScaling {
         }
     }
 }
+#[cfg(target_arch = "x86_64")]
+mod avx512;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -54,18 +60,29 @@ mod x86;
 type LumaFn = unsafe fn(&[u8], &[i8], &Av1GrainScaling, [u8; 2], &mut [u8]);
 type ChromaFn = unsafe fn(&[u8], &[u8], &[i8], &Av1GrainScaling, [u8; 2], [i16; 3], &mut [u8]);
 type BlendFn = unsafe fn(&[i8], &mut [i8], [i16; 2]);
+type LumaPlaneFn = unsafe fn(
+    (&Av1FilmGrainParams, GrainBlocks),
+    &Template<i8>,
+    &Av1GrainScaling,
+    [u8; 2],
+    (&PlaneView<'_>, &mut PlaneViewMut<'_>),
+    (usize, usize),
+) -> bool;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
     pub luma: LumaFn,
     pub chroma: ChromaFn,
     pub blend: BlendFn,
+    pub(super) luma_plane: Option<LumaPlaneFn>,
 }
 
 pub(crate) fn kernels(isa: Isa) -> Kernels {
     match isa {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => x86::KERNELS,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::KERNELS,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::KERNELS,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -74,6 +91,7 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
             luma,
             chroma,
             blend,
+            luma_plane: None,
         },
     }
 }

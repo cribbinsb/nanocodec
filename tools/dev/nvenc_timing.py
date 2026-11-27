@@ -4,8 +4,8 @@
 NVENC is fixed-function GPU hardware, so its speed is not comparable with the
 chart's single-core CPU fps: it is shown beside the CPU encoders, never on
 their Pareto front. Every family is timed with the chart's own encoder
-arguments (cbr.Family.command: low-delay CBR) at the CPU timing's rung, 720p,
-on its clips (anchor_chart_timing RUNG_KBPS, CLIPS), the stream discarded.
+arguments (cbr.Family.command: low-delay CBR) on the CPU timing's clips, each at
+its timed rung (nceval.chart_timing), the stream discarded.
 Three measures (`--measure`):
 
   pipeline   the earlier figure: one ffmpeg process reads the raw clip, converts
@@ -43,7 +43,9 @@ import time
 from dataclasses import replace
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from anchor_chart_timing import CLIPS, FRAMES, INTRA_PERIOD, RUNG_KBPS  # noqa: E402
+sys.path.insert(1, str(pathlib.Path(__file__).resolve().parents[2] / "eval"))
+from nceval.cbr import DEFAULT_INTRA_PERIOD as INTRA_PERIOD  # noqa: E402
+from nceval.realuse import DEFAULT_FRAMES as FRAMES  # noqa: E402
 
 ROUNDS = 3
 MEASURES = ("pipeline", "encode", "aggregate")
@@ -54,7 +56,7 @@ LONG_LOOPS, SHORT_LOOPS = 21, 1
 SETUP_FRAMES = 1
 #: Parallel streams of the aggregate measure, and its clip.
 STREAMS = (1, 2, 4, 8)
-AGGREGATE_CLIP = "crowd_mot17_09"
+AGGREGATE_CLASS = "crowd"
 #: The 1080p sanity check: encoders, presets, tunes and rate (the 720p rung scaled).
 REFERENCE_ENCODERS = ("nvenc-h264", "nvenc-hevc")  # their codec's encoder
 REFERENCE_PRESETS = ("p1", "p5", "p7")
@@ -160,9 +162,10 @@ def platform() -> str:
 
 def main() -> None:
     from nceval.chart import HARDWARE
-    from nceval.cbr import clip_targets, nvenc_family
+    from nceval.cbr import nvenc_family
+    from nceval.chart import chart_clips
+    from nceval.chart_timing import timing_kbps, timing_rungs
     from nceval.config import load_paths
-    from nceval.realuse import main_clips
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, help="timing JSON for chart render "
@@ -175,15 +178,18 @@ def main() -> None:
     args = parser.parse_args()
     measures = args.measure.split(",") if args.measure else []
     paths = load_paths()
-    clips = {name: main_clips(paths)[name] for name in CLIPS}
+    chart = chart_clips(None)
+    rungs = timing_rungs(chart)
+    clips = {c.name: c for c in chart if c.name in rungs}
+    rate = {name: timing_kbps(clip, rungs[name]) for name, clip in clips.items()}
+    aggregate = next(n for n, c in clips.items() if c.content_class == AGGREGATE_CLASS)
     names = args.points.split(",") if args.points else [name for name, _ in HARDWARE]
     out = pathlib.Path(args.out)
     timing = json.loads(out.read_text()) if out.is_file() else {"points": {}}
-    timing.update(platform=platform(), rung_kbps=RUNG_KBPS, frames=FRAMES, rounds=ROUNDS,
-                  aggregate_clip=AGGREGATE_CLIP)
+    timing.update(platform=platform(), clips=rate, frames=FRAMES, rounds=ROUNDS,
+                  aggregate_clip=aggregate)
     for name in names:
         family, entry = nvenc_family(name, paths), timing["points"].setdefault(name, {})
-        rate = {c: clip_targets(clip, (RUNG_KBPS,))[0] for c, clip in clips.items()}
         if "pipeline" in measures:
             entry["pipeline_fps"] = {c: round(pipeline_fps(family, clip, rate[c]), 1)
                                      for c, clip in clips.items()}
@@ -191,14 +197,13 @@ def main() -> None:
             entry["encode_fps"] = {c: round(encode_fps(chart_command(family, clip, rate[c])), 1)
                                    for c, clip in clips.items()}
         if "aggregate" in measures:
-            clip = clips[AGGREGATE_CLIP]
-            command = chart_command(family, clip, rate[AGGREGATE_CLIP])
+            command = chart_command(family, clips[aggregate], rate[aggregate])
             entry["aggregate_fps"] = {str(n): round(encode_fps(command, n), 1) for n in STREAMS}
         print(name, {k: v for k, v in entry.items()}, flush=True)
         out.write_text(json.dumps(timing, indent=1) + "\n")
     if args.reference:
         timing["reference_1080p"] = {"kbps": REFERENCE_KBPS, "fps": reference_1080p(
-            paths, clips[AGGREGATE_CLIP])}
+            paths, clips[aggregate])}
         out.write_text(json.dumps(timing, indent=1) + "\n")
 
 

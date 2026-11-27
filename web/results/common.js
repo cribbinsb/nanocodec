@@ -89,9 +89,12 @@ export function sources(paths) {
 
 /** The "Measured on" line of a table or chart: the date, our builds with their released
  * crate versions, the machines and the references (nceval.site writes the caption from
- * docs/results/provenance.json and the charts' build records). */
-export function measuredNote(caption) {
-  return el('p', { class: 'note measured' }, caption);
+ * docs/results/provenance.json and the charts' build records); `bufferNote` (a CBR chart's
+ * {caption, link, href}) adds the buffer line, its heading linked to the buffer page. */
+export function measuredNote(caption, bufferNote = null) {
+  return el('p', { class: 'note measured' }, caption,
+    bufferNote && [` ${bufferNote.caption.slice(0, -bufferNote.link.length - 1)}`,
+      el('a', { href: bufferNote.href }, bufferNote.link), '.']);
 }
 
 /** Report a page that could not load its data, instead of failing silently. */

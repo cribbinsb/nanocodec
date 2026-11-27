@@ -23,9 +23,9 @@ unsafe fn planar(edges: &PlanarEdges<'_>, n: usize, out: &mut [u8]) {
     // SAFETY: as for `angular`.
     unsafe {
         if n == 4 {
-            lanes::planar::<I16x4>(edges, n, out);
+            lanes::planar::<I16x4, { super::MAX_SIDE }>(edges, n, out);
         } else {
-            lanes::planar::<I16x8>(edges, n, out);
+            lanes::planar::<I16x8, { super::MAX_SIDE }>(edges, n, out);
         }
     }
 }

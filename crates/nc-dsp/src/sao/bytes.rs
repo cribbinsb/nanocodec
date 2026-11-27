@@ -11,11 +11,14 @@ pub(super) trait Bytes: Copy {
     fn splat(v: u8) -> Self;
     fn eq(self, b: Self) -> Self;
     fn gt(self, b: Self) -> Self;
+    fn table(values: [u8; 16]) -> Self;
+    fn lookup(self, table: Self) -> Self;
     fn and(self, b: Self) -> Self;
     fn add(self, b: Self) -> Self;
     fn sub(self, b: Self) -> Self;
     fn add_sat(self, b: Self) -> Self;
     fn sub_sat(self, b: Self) -> Self;
+    #[cfg(not(target_arch = "wasm32"))]
     fn band(self) -> Self;
 }
 
@@ -53,6 +56,7 @@ fn adjust<V: Bytes>(c: V, index: V, cats: [V; 4], pos: [V; 4], neg: [V; 4], enab
     c.add_sat(plus).sub_sat(minus)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[inline(always)]
 pub(super) unsafe fn band<V: Bytes>(
     plane: &mut [u8],
@@ -115,8 +119,13 @@ pub(super) unsafe fn edge<V: Bytes, Half: crate::simd::I16FilterLanes>(
         }
         return;
     }
-    let (pos, neg) = offsets::<V>(off);
-    let cats = [V::splat(254), V::splat(255), V::splat(1), V::splat(2)];
+    let table = |values: [u8; 4]| {
+        let [a, b, c, d] = values;
+        [a, b, 0, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    };
+    let plus = V::table(table(off.map(|v| v.max(0) as u8)));
+    let minus = V::table(table(off.map(|v| v.min(0).unsigned_abs())));
+    let bias = V::splat(2);
     // SAFETY: dispatch validates both neighbouring samples of every point in
     // the rectangle and the destination. Vector runs never cross its rows.
     unsafe {
@@ -129,8 +138,10 @@ pub(super) unsafe fn edge<V: Bytes, Half: crate::simd::I16FilterLanes>(
                 let n0 = V::load(src.add(x).offset(a));
                 let n1 = V::load(src.add(x).offset(b));
                 // Comparisons are 0xff, so reversed subtraction gives sign(c-n).
-                let index = n0.gt(c).sub(c.gt(n0)).add(n1.gt(c).sub(c.gt(n1)));
-                adjust(c, index, cats, pos, neg, V::splat(255)).store(dst.add(x));
+                let index = n0.gt(c).sub(c.gt(n0)).add(n1.gt(c).sub(c.gt(n1))).add(bias);
+                c.add_sat(index.lookup(plus))
+                    .sub_sat(index.lookup(minus))
+                    .store(dst.add(x));
                 x += V::LANES;
             }
         }

@@ -483,9 +483,9 @@ fn read_tx_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coeff::{CoeffCdfs, end_of_block};
+    use crate::coeff::{CoeffCdfs, TypeSyntax, end_of_block};
     use crate::range_coder::SymbolWriter;
-    use crate::transform::TxSize as EncoderTxSize;
+    use crate::tx_type::intra_luma_types;
 
     /// The dequantised value of `level` at unit steps (§7.12.3).
     fn dequantized(level: i32, shift: u32) -> i32 {
@@ -494,24 +494,30 @@ mod tests {
         (if level < 0 { -magnitude } else { magnitude }).clamp(-COEFF_MAX_8 - 1, COEFF_MAX_8)
     }
 
-    /// Whatever the encoder's square `DCT_DCT` coefficient writer codes,
-    /// the decoder's general reader reads back, with the same adaptation.
+    /// Whatever the encoder's coefficient writer codes (the squares and the
+    /// 2:1 rectangles; `DCT_DCT`, and on intra blocks each type it may
+    /// code), the decoder's general reader reads back, with the same
+    /// adaptation.
     #[test]
-    fn square_dct_blocks_round_trip_with_the_encoder() {
-        let sizes = [
-            EncoderTxSize::Tx4x4,
-            EncoderTxSize::Tx8x8,
-            EncoderTxSize::Tx16x16,
-            EncoderTxSize::Tx32x32,
-            EncoderTxSize::Tx64x64,
-        ];
+    fn blocks_of_every_coded_shape_and_type_round_trip_with_the_encoder() {
+        let sizes: Vec<TxSize> = (2..=6)
+            .flat_map(|w: u8| (2..=6).filter_map(move |h: u8| TxSize::new(w, h)))
+            .filter(|tx| tx.width_log2().abs_diff(tx.height_log2()) <= 1)
+            .collect();
         for q in 0..4 {
-            for encoder_tx in sizes {
-                let tx = TxSize::new(encoder_tx.log2(), encoder_tx.log2()).unwrap();
+            for &tx in &sizes {
                 let mut encoder = CoeffCdfs::new(q);
                 let mut decoder = CoefficientCdfs::new(q);
                 let mut buffer = CoefficientBuffer::<i16>::new();
-                for inter in [false, true] {
+                let syntaxes = intra_luma_types(tx, 0, false)
+                    .into_iter()
+                    .map(|kind| TypeSyntax::Intra { dir: 0, kind })
+                    .chain([TypeSyntax::Inter]);
+                for syntax in syntaxes {
+                    let (inter, kind) = match syntax {
+                        TypeSyntax::Inter => (true, Av1TxType::DctDct),
+                        TypeSyntax::Intra { kind, .. } => (false, kind),
+                    };
                     for pattern in 0..4 {
                         let n = tx.coded_area();
                         // The encoder's levels are 16-bit: its extremes.
@@ -524,7 +530,7 @@ mod tests {
                                 _ => 0,
                             })
                             .collect();
-                        let eob = end_of_block(encoder_tx, &levels);
+                        let eob = end_of_block(tx, &levels);
                         // A full-block luma transform (skip context 0) with a
                         // negative DC neighbour (DC sign context 1).
                         let above = [DC_NEGATIVE];
@@ -539,16 +545,7 @@ mod tests {
                         };
                         assert_eq!(TxbContext::derive(PlaneType::Luma, true, &above, &[0]), ctx);
                         let mut writer = SymbolWriter::new();
-                        encoder.write(
-                            &mut writer,
-                            encoder_tx,
-                            PlaneType::Luma,
-                            inter,
-                            0,
-                            ctx,
-                            &levels,
-                            eob,
-                        );
+                        encoder.write(&mut writer, tx, PlaneType::Luma, syntax, ctx, &levels, eob);
                         let bytes = writer.finish();
                         let mut reader = SymbolReader::new(&bytes);
                         let set = TxSet::of(tx, inter, false);
@@ -572,7 +569,9 @@ mod tests {
                             },
                         };
                         let coded = read(&mut decoder, &mut reader, &mut buffer, request).unwrap();
-                        assert_eq!((coded.eob, coded.kind), (eob, Av1TxType::DctDct));
+                        // An empty block codes no type.
+                        let kind = if eob == 0 { Av1TxType::DctDct } else { kind };
+                        assert_eq!((coded.eob, coded.kind), (eob, kind));
                         let expected: Vec<i32> = levels
                             .iter()
                             .map(|&l| dequantized(i32::from(l), tx.dequant_shift()))

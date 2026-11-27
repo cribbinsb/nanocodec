@@ -519,17 +519,6 @@ impl<T: Pixel> General<T> {
         ));
     }
 
-    /// Depths of the latest decoded picture, including monochrome output.
-    pub fn depths(&self) -> BitDepths {
-        self.depths
-    }
-
-    /// The visible samples of the latest decoded picture.
-    pub fn shown(&self) -> Option<ShownPicture<'_, T>> {
-        let (origin, size) = self.window;
-        ShownPicture::window(&self.latest.as_ref()?.0, origin, size)
-    }
-
     /// Queue a zero-copy view of the visible samples of the latest picture
     /// for output in display order (the DPB's reorder rules, §C.5.2).
     pub fn queue_output(&mut self) -> Result<()> {

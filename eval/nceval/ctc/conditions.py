@@ -32,7 +32,9 @@ from ..encoders.nanocodec import MEDIUM, nanocodec_encoders, nanocodec_with_pres
 from ..encoders.openh264 import BASELINE, Openh264
 from ..plotted import own_rungs
 from . import sequences
-from .reference_encoders import HmLowDelayP, LibaomGoodLowDelay, VtmLowDelayP, VvencLowDelay
+from .reference_encoders import (HmLowDelayB, HmLowDelayP, HmLowDelayRefs, LibaomGoodLowDelay,
+                                 VtmLowDelayB,
+                                 VtmLowDelayP, VvencLowDelay)
 
 
 class Scale(str, Enum):
@@ -55,6 +57,7 @@ class Group(str, Enum):
     STANDARDS = "standards"   # reference software at CTC settings (exhaustive by design)
     PRACTICAL = "practical"   # real-time encoders, low delay, fixed QP, one thread
     SLOW = "slow"             # the same formats' slow settings, low delay (fixed-QP headroom)
+    CEILING = "ceiling"       # reference-software variants that size a tool's gain; named runs only
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,12 @@ class CtcEncoder:
 _QINDEX_CODECS = (Codec.AV1, Codec.VP9, Codec.AV2)
 
 
+def ours_points(codec: Codec) -> tuple[int, ...]:
+    """Our base quantizers at Fixed QP (the benchmark's and the dev screens'): qindex for
+    AV1, VP9 and AV2, the QP scale for the rest."""
+    return POINTS[Scale.QINDEX if codec in _QINDEX_CODECS else Scale.QP]
+
+
 def _ours() -> list[CtcEncoder]:
     """Every shipped single-layer preset of every codec (nceval.plotted), Medium first."""
     encoders = []
@@ -98,6 +107,13 @@ def _ours() -> list[CtcEncoder]:
 STANDARDS = (CtcEncoder(HmLowDelayP(), Group.STANDARDS, Scale.QP),
              CtcEncoder(VtmLowDelayP(), Group.STANDARDS, Scale.QP),
              CtcEncoder(LibaomGoodLowDelay(), Group.STANDARDS, Scale.Q63))
+#: Low-delay bi-prediction's ceiling (docs: ldb-ceiling-2026-11-23): LD-B against
+#: LD-P, with the cfg's four references per list and with one or two. Staged only
+#: when named (`--encoders`), never in a full run.
+CEILINGS = (CtcEncoder(HmLowDelayB(), Group.CEILING, Scale.QP),
+            CtcEncoder(VtmLowDelayB(), Group.CEILING, Scale.QP),
+            *(CtcEncoder(HmLowDelayRefs(t, n), Group.CEILING, Scale.QP)
+              for t in ("B", "P") for n in (1, 2)))
 PRACTICAL = (CtcEncoder(X264("medium"), Group.PRACTICAL, Scale.QP),
              CtcEncoder(X265("medium"), Group.PRACTICAL, Scale.QP),
              CtcEncoder(Openh264("openh264-baseline", BASELINE), Group.PRACTICAL, Scale.QP),
@@ -123,7 +139,7 @@ SPEED_RANGE = (CtcEncoder(X264("ultrafast"), Group.PRACTICAL, Scale.QP),
                CtcEncoder(LibaomRealtime(10), Group.PRACTICAL, Scale.Q63),
                CtcEncoder(LibvpxRealtime(9), Group.PRACTICAL, Scale.Q63))
 OURS = tuple(_ours())
-ALL_ENCODERS = OURS + STANDARDS + PRACTICAL + SLOW + SPEED_RANGE
+ALL_ENCODERS = OURS + STANDARDS + PRACTICAL + SLOW + SPEED_RANGE + CEILINGS
 
 
 @dataclass(frozen=True)
@@ -154,8 +170,8 @@ class Condition:
 #: running (owner rule: 30 min per run, ExpectedEnd within 40 min), so VTM runs
 #: on A5 only and libaom speed 0 on A4/A5 (~14 min at 360p); A3 keeps HM as its
 #: standards anchor. JVET_E (720p) is against HM alone.
-_SLOW_FOR_LONG = ("vtm-ldp", "aom-good-s0-ld")
-_LIMITED = (("vtm-ldp", ("A5",)), ("aom-good-s0-ld", ("A4", "A5")))
+_SLOW_FOR_LONG = ("vtm-ldp", "vtm-ldb", "aom-good-s0-ld")
+_LIMITED = (("vtm-ldp", ("A5",)), ("vtm-ldb", ("A5",)), ("aom-good-s0-ld", ("A4", "A5")))
 
 AOM_LD = Condition("aom-ld", "AOM CTC v8 low delay, classes A3-A5 (8-bit)", sequences.AOM_LD,
                    130, ALL_ENCODERS, ("aom-good-s0-ld", "hm-ldp", "vtm-ldp", "x264-medium"),

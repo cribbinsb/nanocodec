@@ -13,7 +13,7 @@
 //! `numDecodAbsLevelGt1`): that is the whole state, which merges exactly,
 //! as in x264's CABAC trellis.
 
-use nc_encoder::{Candidates, CoeffRateModel, Trellis};
+use nc_encoder::{Candidates, CoeffRateModel, LoneLevel, Trellis, lone_level_kept};
 
 use super::{
     BlockCat, CODED_BLOCK_FLAG_OFFSET, COEFF_ABS_LEVEL_8X8_OFFSET, COEFF_ABS_LEVEL_OFFSET,
@@ -229,6 +229,51 @@ pub(crate) struct TrellisQuantizer {
     search: Trellis<LevelState>,
     candidates: Vec<Candidates>,
     chosen: Vec<u32>,
+    /// A lone level's zero distortions ([`Self::lone_level`]).
+    zero_distortion: Vec<f32>,
+}
+
+/// A block's coefficients against its quantiser: each one's level rounded
+/// to the nearest and the distortion of each candidate level.
+struct Rounding<'a> {
+    scale: BlockScale<'a>,
+    /// 2^-qbits: exact, so multiplying equals dividing by 2^qbits.
+    unit: f64,
+    half: i64,
+}
+
+impl<'a> Rounding<'a> {
+    fn of(scale: BlockScale<'a>) -> Self {
+        Self {
+            scale,
+            unit: 1.0 / f64::from(1_u32 << scale.qbits),
+            half: 1_i64 << (scale.qbits - 1),
+        }
+    }
+
+    /// `|c| · mf` of the coefficient at raster position `p`: below 2^53, so
+    /// its value in levels is exact and rounding it to the nearest (half
+    /// away from zero) is this integer rounding.
+    fn scaled(&self, coeffs: &[i16], p: usize) -> i64 {
+        i64::from(coeffs[p].unsigned_abs()) * i64::from(self.scale.mf[p])
+    }
+
+    /// The level nearest a coefficient of `scaled` ([`Self::scaled`]), at
+    /// least its plain level `plain`.
+    fn nearest(&self, scaled: i64, plain: i16) -> u32 {
+        (((scaled + self.half) >> self.scale.qbits) as u32).max(u32::from(plain.unsigned_abs()))
+    }
+
+    /// The coefficient's exact value in levels.
+    fn value(&self, scaled: i64) -> f64 {
+        scaled as f64 * self.unit
+    }
+
+    /// The distortion of coding a coefficient of `value` levels as `level`.
+    fn distortion(&self, value: f64, level: u32) -> f32 {
+        let error = value - f64::from(level);
+        (error * error) as f32 * self.scale.step_sse
+    }
 }
 
 impl TrellisQuantizer {
@@ -250,20 +295,73 @@ impl TrellisQuantizer {
         let Some(last) = scan.iter().rposition(|&p| levels[p] != 0) else {
             return false;
         };
-        // 2^-qbits: exact, so multiplying equals dividing by 2^qbits.
-        let unit = 1.0 / f64::from(1_u32 << scale.qbits);
-        let half = 1_i64 << (scale.qbits - 1);
+        let rounding = Rounding::of(scale);
+        if let Some(lone) = self.lone_level(coeffs, scan, &rounding, last, levels) {
+            let kept = lone_level_kept(model, lone, lambda);
+            if !kept {
+                levels[scan[last]] = 0;
+            }
+            return kept;
+        }
+        self.full_search(
+            model,
+            coeffs,
+            (scan, last),
+            (&rounding, lambda, max_states),
+            levels,
+        )
+    }
+
+    /// The [`LoneLevel`] of a block whose plain levels are one ±1 at scan
+    /// position `last` and whose every other coefficient rounds to zero
+    /// (its candidates are zero alone), else `None`: the search's only
+    /// choice is then keeping or dropping that level.
+    fn lone_level(
+        &mut self,
+        coeffs: &[i16],
+        scan: &[usize],
+        rounding: &Rounding<'_>,
+        last: usize,
+        levels: &[i16],
+    ) -> Option<LoneLevel<'_>> {
+        let p = scan[last];
+        let scaled = rounding.scaled(coeffs, p);
+        if levels[p].unsigned_abs() != 1 || rounding.nearest(scaled, levels[p]) != 1 {
+            return None;
+        }
+        self.zero_distortion.clear();
+        for &q in &scan[..last] {
+            let scaled = rounding.scaled(coeffs, q);
+            if rounding.nearest(scaled, levels[q]) != 0 {
+                return None;
+            }
+            self.zero_distortion
+                .push(rounding.distortion(rounding.value(scaled), 0));
+        }
+        let value = rounding.value(scaled);
+        self.zero_distortion.push(rounding.distortion(value, 0));
+        Some(LoneLevel {
+            pos: last,
+            zero_distortion: &self.zero_distortion,
+            level_distortion: rounding.distortion(value, 1),
+        })
+    }
+
+    /// [`Self::quantize`] by the shared trellis search.
+    fn full_search(
+        &mut self,
+        model: &mut RateModel<'_>,
+        coeffs: &[i16],
+        (scan, last): (&[usize], usize),
+        (rounding, lambda, max_states): (&Rounding<'_>, f32, usize),
+        levels: &mut [i16],
+    ) -> bool {
         self.candidates.clear();
         self.candidates.extend(scan[..=last].iter().map(|&p| {
-            // |c| · mf < 2^53, so `value` is exact and rounding it to the
-            // nearest (half away from zero) is this integer rounding.
-            let scaled = i64::from(coeffs[p].unsigned_abs()) * i64::from(scale.mf[p]);
-            let value = scaled as f64 * unit;
-            let nearest =
-                (((scaled + half) >> scale.qbits) as u32).max(u32::from(levels[p].unsigned_abs()));
-            Candidates::around(nearest, |level| {
-                let error = value - f64::from(level);
-                (error * error) as f32 * scale.step_sse
+            let scaled = rounding.scaled(coeffs, p);
+            let value = rounding.value(scaled);
+            Candidates::around(rounding.nearest(scaled, levels[p]), |level| {
+                rounding.distortion(value, level)
             })
         }));
         self.chosen.resize(last + 1, 0);
@@ -295,6 +393,106 @@ mod tests {
     use crate::tables::{ZIGZAG_4X4, ZIGZAG_8X8};
     use nc_common::BitWriter;
     use nc_dsp::Dsp;
+
+    /// The lone-level fast path decides as the full search on every block
+    /// it takes: many random blocks near the quantiser's thresholds, 4x4 and
+    /// 8x8, at several QPs, λs and beam widths.
+    #[test]
+    fn lone_level_equals_the_full_search() {
+        let costs = BinCosts::new();
+        let cabac = CabacEncoder::new(BitWriter::new(), SliceKind::P, 0, 30);
+        let bins = cabac.bit_counter(&costs);
+        let mut seed = 7_u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            seed >> 16
+        };
+        let mut search = TrellisQuantizer::default();
+        let mut taken = 0;
+        for qp in [18_u8, 28, 36, 44, 51] {
+            let quantizer = nc_dsp::H264Quantizer::new(qp, false);
+            for (block, scale, scan) in [
+                (
+                    TrellisBlock::Luma8x8,
+                    crate::macroblock::scale_8x8(&quantizer),
+                    &ZIGZAG_8X8[..],
+                ),
+                (
+                    TrellisBlock::Small {
+                        cat: BlockCat::Luma4x4,
+                        cbf_ctx_inc: 1,
+                    },
+                    crate::macroblock::scale_4x4(&quantizer),
+                    &ZIGZAG_4X4[..],
+                ),
+            ] {
+                let n = scan.len();
+                let deadzone = (1_i64 << scale.qbits) / 6;
+                for _ in 0..4000 {
+                    // Coefficients mostly below half a step, one near a step.
+                    let step = (1_i64 << scale.qbits) as f64;
+                    let mut coeffs = vec![0_i16; n];
+                    let lone = scan[next() as usize % n];
+                    for (p, c) in coeffs.iter_mut().enumerate() {
+                        let mf = f64::from(scale.mf[p]);
+                        let fraction = if p == lone {
+                            0.6 + f64::from(next() % 100) / 120.0
+                        } else {
+                            f64::from(next() % 100) / 210.0
+                        };
+                        let magnitude = (fraction * step / mf) as i16;
+                        *c = if next() % 2 == 0 {
+                            magnitude
+                        } else {
+                            -magnitude
+                        };
+                    }
+                    let plain: Vec<i16> = (0..n)
+                        .map(|p| {
+                            let scaled =
+                                i64::from(coeffs[p].unsigned_abs()) * i64::from(scale.mf[p]);
+                            let level = ((scaled + deadzone) >> scale.qbits) as i16;
+                            if coeffs[p] < 0 { -level } else { level }
+                        })
+                        .collect();
+                    let Some(last) = scan.iter().rposition(|&p| plain[p] != 0) else {
+                        continue;
+                    };
+                    let lambda = [0.3_f32, 1.0, 4.0][next() as usize % 3]
+                        * 0.85
+                        * 2f32.powf((f32::from(qp) - 12.0) / 3.0);
+                    let max_states = [1_usize, 4][next() as usize % 2];
+                    let rounding = Rounding::of(scale);
+                    if search
+                        .lone_level(&coeffs, scan, &rounding, last, &plain)
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    taken += 1;
+                    let (mut fast, mut full) = (plain.clone(), plain.clone());
+                    let mut model = RateModel::new(&bins, block);
+                    let kept_fast = search.quantize(
+                        &mut model,
+                        &coeffs,
+                        scan,
+                        (scale, lambda, max_states),
+                        &mut fast,
+                    );
+                    let mut model = RateModel::new(&bins, block);
+                    let kept_full = search.full_search(
+                        &mut model,
+                        &coeffs,
+                        (scan, last),
+                        (&rounding, lambda, max_states),
+                        &mut full,
+                    );
+                    assert_eq!((kept_fast, &fast), (kept_full, &full), "qp {qp} {block:?}");
+                }
+            }
+        }
+        assert!(taken > 2000, "only {taken} lone blocks drawn");
+    }
 
     /// Summed rates equal the bit counter's price of the written block.
     #[test]

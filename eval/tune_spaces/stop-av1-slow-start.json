@@ -1,0 +1,67 @@
+[
+ {
+  "planner.rd_split_stop_bias": 0.0,
+  "planner.rd_split_stop_cost": 0.0,
+  "planner.rd_split_stop_bits": -0.6692192585594836,
+  "planner.rd_split_stop_distortion": 0.8447670787811186,
+  "planner.rd_split_stop_skip": -2.2746602411651615,
+  "planner.rd_split_stop_nonzero": 0.0,
+  "planner.rd_split_stop_planned_split": 0.0,
+  "planner.rd_split_stop_size": 0.0,
+  "planner.rd_split_stop_margin": 0.0,
+  "planner.rd_split_stop_neighbours": 0.0,
+  "planner.rd_split_stop_co_located": 0.8859376303330735
+ },
+ {
+  "planner.rd_split_stop_bias": -1.5141160041953543,
+  "planner.rd_split_stop_cost": 0.0,
+  "planner.rd_split_stop_bits": 0.0,
+  "planner.rd_split_stop_distortion": 0.0,
+  "planner.rd_split_stop_skip": 0.0,
+  "planner.rd_split_stop_nonzero": -1.3079703936837963,
+  "planner.rd_split_stop_planned_split": 0.0,
+  "planner.rd_split_stop_size": 1.1896169902172113,
+  "planner.rd_split_stop_margin": 0.0,
+  "planner.rd_split_stop_neighbours": -1.0290401058277294,
+  "planner.rd_split_stop_co_located": 0.0
+ },
+ {
+  "planner.rd_split_stop_bias": -2.242037587868362,
+  "planner.rd_split_stop_cost": -0.22630861585057815,
+  "planner.rd_split_stop_bits": -0.6455484230362932,
+  "planner.rd_split_stop_distortion": -2.4193359233650273,
+  "planner.rd_split_stop_skip": 0.18712611313398878,
+  "planner.rd_split_stop_nonzero": -1.4073292662592016,
+  "planner.rd_split_stop_planned_split": 0.527212108733408,
+  "planner.rd_split_stop_size": 0.9941192767152458,
+  "planner.rd_split_stop_margin": -0.05216193670428093,
+  "planner.rd_split_stop_neighbours": -0.9359080993708282,
+  "planner.rd_split_stop_co_located": 0.078780519704135
+ },
+ {
+  "planner.rd_split_stop_bias": -0.6937324896242062,
+  "planner.rd_split_stop_cost": 0.17059948395614954,
+  "planner.rd_split_stop_bits": -0.5909606308717738,
+  "planner.rd_split_stop_distortion": -1.7775393140725517,
+  "planner.rd_split_stop_skip": 1.9173143982215852,
+  "planner.rd_split_stop_nonzero": -0.9572397079328108,
+  "planner.rd_split_stop_planned_split": 0.8384512588039159,
+  "planner.rd_split_stop_size": 0.6490555931645396,
+  "planner.rd_split_stop_margin": 0.40181256371578306,
+  "planner.rd_split_stop_neighbours": -0.5859761478262824,
+  "planner.rd_split_stop_co_located": -0.3226568705671305
+ },
+ {
+  "planner.rd_split_stop_bias": -0.7102284880346827,
+  "planner.rd_split_stop_cost": 0.7449716866584958,
+  "planner.rd_split_stop_bits": 0.17872995945540537,
+  "planner.rd_split_stop_distortion": -1.3141986048647487,
+  "planner.rd_split_stop_skip": 0.34479487174845863,
+  "planner.rd_split_stop_nonzero": -1.8153875691887311,
+  "planner.rd_split_stop_planned_split": -0.47832372676022583,
+  "planner.rd_split_stop_size": 0.5175241749683224,
+  "planner.rd_split_stop_margin": 0.43803215244908467,
+  "planner.rd_split_stop_neighbours": -0.6967339906931247,
+  "planner.rd_split_stop_co_located": -0.2496036500247586
+ }
+]

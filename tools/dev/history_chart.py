@@ -21,10 +21,16 @@ they were written (nanocodec.RUNG_RENAMES), so each series stays one ladder posi
           fresh chart measures the slice's ladder) are neither encoded nor scored again.
   time    the new frame's x86 fps: the plain release build (--binary, the kind every frame
           was timed as) on the chart's timing plan, as chart_refresh's time-x86 does
-          (TIMING_SESSIONS c8a.large sessions, one repeat).
+          (TIMING_SESSIONS c8a.large sessions, one repeat). With --baseline PLAIN (the
+          previous frame's commit built the same way), each point is timed paired with
+          that build on the same core (aws_timing.py --baseline-binary), and the frame's
+          fps is the previous frame's times this build's speed over the baseline's: the
+          day-to-day change is the code's alone, not the sessions' or the builds' (owner,
+          2026-11-22, after a 6-11 % frame-to-frame drop was two thirds code).
   report  the stored frames plus the new one into web/results/data/history.json and
           docs/results/history-<last day>/ (history.json, README.md); `--out DIR` writes a
-          scratch copy instead. Fails when a point is missing, the basis would change, or
+          scratch copy instead; also regenerates the screens' front slopes (nceval.front_k,
+          eval/configs/front_k.json). Fails when a point is missing, the basis would change, or
           the references (recomputed from the store) differ from the stored ones.
   frames  PNG per day, GIF and MP4 from the page.
   add-day points, time, report and frames in order (each skips what is done).
@@ -58,7 +64,9 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "eval"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from nceval import chart  # noqa: E402
+from aws_cpu_ab import SHARE_SUFFIX, shard_runs  # noqa: E402
+from aws_timing import BASELINE_SUFFIX  # noqa: E402
+from nceval import chart, front_k, key_shares  # noqa: E402
 from nceval.cbr import Family  # noqa: E402
 from nceval.clips import Clip  # noqa: E402
 from nceval.config import load_paths  # noqa: E402
@@ -224,10 +232,11 @@ def time_cmd(args: argparse.Namespace) -> None:
         out = timing_out(args.commit, index)
         if not part or (out / "summary.json").is_file():
             continue
+        baseline = ["--baseline-binary", str(args.baseline)] if args.baseline else []
         command = [sys.executable, str(REPO / "tools/dev/aws_timing.py"), "--points",
                    ",".join(part), "--binary", str(args.binary), "--plan", str(args.plan),
                    "--repeats", "1", "--purpose", "history-timing", "--budget", "1",
-                   "--out", str(out)] + (["--dry-run"] if args.dry_run else [])
+                   "--out", str(out), *baseline] + (["--dry-run"] if args.dry_run else [])
         TIMING_DIR.mkdir(parents=True, exist_ok=True)
         log = (TIMING_DIR / f"x86-{args.commit}-{index + 1}.log").open("w")
         sessions.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
@@ -236,18 +245,239 @@ def time_cmd(args: argparse.Namespace) -> None:
         raise SystemExit(f"{len(failed)} timing sessions failed: see {TIMING_DIR}/x86-{args.commit}-*.log")
 
 
-def timed_fps(commit: str, family: str, anchor_ms: dict[str, float]) -> float | None:
+def timed_fps(commit: str, family: str, anchor_ms: dict[str, float],
+              previous_fps: float | None = None) -> tuple[float | None, bool]:
     """The chart's x86 fps of `family` at `commit` (`time`): the median over its repeats of
     the time ratio to x264 medium in the same session, times x264 medium's stored time per
-    clip (`anchor_ms`, as every stored frame's), as the chart."""
+    clip (`anchor_ms`, as every stored frame's), as the chart. Timed paired with the
+    previous frame's build (`time --baseline`), it is `previous_fps` over the median of
+    this build's time over the baseline's. The flag says the fps is chained so (its
+    absolute level is the previous frame's)."""
     for index in range(TIMING_SESSIONS):
         summary = timing_out(commit, index) / "summary.json"
-        entry = json.loads(summary.read_text()).get(family) if summary.is_file() else None
+        rows = json.loads(summary.read_text()) if summary.is_file() else {}
+        paired = rows.get(f"{family}{BASELINE_SUFFIX}") or {}
+        over_base = [v for k, v in paired.items() if re.fullmatch(r"repeat-\d+-over-base", k)]
+        if over_base and previous_fps:
+            return previous_fps / statistics.median(over_base), True
+        entry = rows.get(family)
         ratios = [v["ratio_x264_medium"] for k, v in (entry or {}).items()
                   if re.fullmatch(r"repeat-\d+", k)]
         if ratios:
-            return 1000.0 / (statistics.median(ratios) * chart.geomean(list(anchor_ms.values())))
-    return None
+            return 1000.0 / (statistics.median(ratios) * chart.geomean(list(anchor_ms.values()))), \
+                False
+    return None, False
+
+
+# --- the 1-in-300 key-share view ---------------------------------------------------------
+#
+# The owner's key-share rule (2026-11-22, eval/nceval/key_shares.py; docs/PROCEDURES.md
+# "Key shares"): the frames above are 150 f with one key, which never shows a periodic
+# key. From 2026-11-22 each frame also carries the 1-in-300 share: 900 f from frame 0, a
+# key every 300 f, our families of the frame's build and of the baseline build (0.6.0)
+# both scored and both timed, in the same sessions. The fresh slice has no clip that long
+# (164-168 f), so this view's clips are the long clips of SHARE_SOURCE, SHARE_PER_CLASS a
+# class: tuning-pool clips, not held out. Its speed is CPU time on SHARE_TIMING_TARGET
+# (aws_cpu_ab.py: base and candidate on the same core in interleaved rounds, CBR 600 on
+# its three 900-frame clips), so `fps_x86` here is not the chart's timing.
+
+SHARE = key_shares.KeyShare(300)
+SHARE_KEY = "key_share_300"
+SHARE_SOURCE = "heldout_chart_2026-11-12.json"
+SHARE_PER_CLASS = 2
+SHARE_CLIPSET = WORK / "share300-clipset.json"
+SHARE_TIMING_DIR = WORK / "share300-timing"
+SHARE_TIMING_TARGET = "zen5"
+SHARE_TIMING_BOXES = 8
+SHARE_TIMING_ROUNDS = 3
+#: The pair name aws_cpu_ab gives its one --base/--cand pair (`<pair>@k<period>`).
+SHARE_PAIR = "ab"
+
+
+def share_clip_entries(record: dict) -> list[dict]:
+    """The view's clips as SHARE_SOURCE entries: the stored view's, else the long-enough
+    clips, SHARE_PER_CLASS of each class by name."""
+    source = json.loads((load_paths().clips / SHARE_SOURCE).read_text())["clips"]
+    stored = record.get(SHARE_KEY, {}).get("clips")
+    if stored:
+        by_name = {c["name"]: c for c in source}
+        return [by_name[n] for n in stored]
+    chosen, per_class = [], {}
+    for clip in sorted((c for c in source if c["frames"] >= SHARE.window),
+                       key=lambda c: (c["content_class"], c["name"])):
+        if per_class.get(clip["content_class"], 0) < SHARE_PER_CLASS:
+            per_class[clip["content_class"]] = per_class.get(clip["content_class"], 0) + 1
+            chosen.append(clip)
+    return chosen
+
+
+def write_share_clipset(record: dict) -> Path:
+    SHARE_CLIPSET.parent.mkdir(parents=True, exist_ok=True)
+    SHARE_CLIPSET.write_text(json.dumps({"name": SHARE_CLIPSET.stem,
+                                         "clips": share_clip_entries(record)}, indent=1) + "\n")
+    return SHARE_CLIPSET
+
+
+def share_window_args(clips: list[dict]) -> list[str]:
+    """aws_heldout_chart.py's window: the share's frames and key period, low rungs on
+    every clip (one basis for both builds, fixed in advance)."""
+    return ["--frames", str(SHARE.window), "--key-frames", str(SHARE.period),
+            "--low-clips", ",".join(c["name"] for c in clips)]
+
+
+def share_points_cmd(args: argparse.Namespace) -> None:
+    """The view's points of the frame's build and of the baseline build (`--record`,
+    `--baseline-record`) on rented machines, encoded, then scored."""
+    record = stored_record(PAGE_DATA)
+    clipset = write_share_clipset(record)
+    clips = share_clip_entries(record)
+    tool = [sys.executable, str(REPO / "tools/dev/aws_heldout_chart.py")]
+    for record_file in (args.record, args.baseline_record):
+        families = ",".join(f.name for f in [*reference_families(),
+                                             *record_families(record_file)])
+        for command in ("run", "score-cloud"):
+            extra = ["--dry-run"] if args.dry_run else []
+            subprocess.run([*tool, command, "--clipset", str(clipset), "--record",
+                            str(record_file), "--families", families, *share_window_args(clips),
+                            "--purpose", f"history-share-{command}", "--budget",
+                            str(args.budget), *extra], check=True)
+
+
+def family_rung(name: str) -> str:
+    """`nanocodec-h264@fast` -> `h264:fast` (the Default, unsuffixed, is `medium`)."""
+    codec, _, preset = name.removeprefix("nanocodec-").partition("@")
+    return f"{codec}:{preset or 'medium'}"
+
+
+def share_rungs(*record_files: Path) -> list[str]:
+    """The rungs every record has (a rung new tonight has no baseline to pair with)."""
+    sets = [{family_rung(f.name) for f in record_families(r)} for r in record_files]
+    return sorted(set.intersection(*sets))
+
+
+def share_timing_out(commit: str) -> Path:
+    return SHARE_TIMING_DIR / f"{SHARE_TIMING_TARGET}-{commit}"
+
+
+def share_time_cmd(args: argparse.Namespace) -> None:
+    """The frame's build (`--binary`) paired with the baseline build (`--baseline`) on the
+    same core, at every key share (aws_cpu_ab.py --key-shares; the view reads 1/300)."""
+    out = share_timing_out(args.commit)
+    if (out / "summary.json").is_file():
+        return
+    rungs = share_rungs(args.record, args.baseline_record)
+    command = [sys.executable, str(REPO / "tools/dev/aws_cpu_ab.py"), "--base",
+               str(args.baseline), "--cand", str(args.binary), "--rungs", ",".join(rungs),
+               "--key-shares", "--targets", SHARE_TIMING_TARGET,
+               "--boxes", str(SHARE_TIMING_BOXES), "--rounds", str(SHARE_TIMING_ROUNDS),
+               "--purpose", "history-share-timing", "--out", str(out)]
+    subprocess.run(command + (["--dry-run"] if args.dry_run else []), check=True)
+
+
+def share_fps(run_dir: Path, period: int) -> dict[str, dict[str, float]]:
+    """Per rung, each side's CPU-time fps at the share: the geometric mean over the clips
+    of the frames over the median CPU time of the rounds (aws_cpu_ab's runs)."""
+    times: dict[tuple[str, str], dict[str, list[float]]] = {}
+    pair = f"{SHARE_PAIR}{SHARE_SUFFIX}{period}"
+    # a shard's runs may span a reclaimed box and its retry (aws_cpu_ab.keep_finished)
+    for runs in (f for files in shard_runs(run_dir).values() for f in files):
+        for line in runs.read_text().splitlines():
+            run = json.loads(line)
+            name, rung, clip = run["job"].split("|")
+            if name == pair and run["user_s"]:
+                times.setdefault((rung, run["variant"]), {}).setdefault(clip, []).append(
+                    run["user_s"])
+    window = key_shares.KeyShare(period).window
+    fps: dict[str, dict[str, float]] = {}
+    for (rung, side), clips in times.items():
+        per_clip = [window / statistics.median(v) for v in clips.values()]
+        fps.setdefault(rung, {})[side] = chart.geomean(per_clip)
+    return fps
+
+
+def share_quality(clips: list[Clip], families: list[Family]) -> dict[str, dict]:
+    """`families`' BD-J against the zero line on the view's clips at the share, from the
+    store (the `share-points` step measures them; nothing is measured here)."""
+    run = runner()
+    every = [*reference_families(), *families]
+    jobs = (run.points(every, clips, SHARE.window, None, key_frames=SHARE.period)
+            + run.points(every, clips, SHARE.window, None, ladder=chart.low_ladder,
+                         key_frames=SHARE.period))
+    missing = [p for bench, p in jobs if not bench.cached(p)]
+    if missing:
+        raise SystemExit(f"{len(missing)} of {len(jobs)} share points are not in the store "
+                         f"(first: {missing[0].family.name} {missing[0].clip.name}): run "
+                         f"share-points first")
+    curves = run.measure("share", every, clips, SHARE.window, budgeted=False,
+                         key_frames=SHARE.period)
+    low = run.measure("share low rungs", every, clips, SHARE.window, budgeted=False,
+                      ladder=chart.low_ladder, key_frames=SHARE.period)
+    for key, points in low.items():
+        curves[key] = curves[key] + points
+    points, excluded = chart.anchor_points(curves, every, clips, run,
+                                           {f.name: f.name for f in every})
+    by_name = {p.family: p for p in points}
+    return {"values": {f.name: bd_values(by_name[f.name]) for f in every},
+            "excluded": sorted(e.clip for e in excluded)}
+
+
+def share_day(record: dict, args: argparse.Namespace) -> dict:
+    """The view's frame: our families of the build and of the baseline at 1/300, each with
+    its BD-J and CPU-time fps, and the build's front against the baseline's."""
+    clips = chart.chart_clips(str(write_share_clipset(record)))
+    timing = share_timing_out(args.commit)
+    fps = {p: share_fps(timing, p) for p in key_shares.REQUIRED_PERIODS}
+    sides = {}
+    for side, record_file, timed in (("build", args.record, "cand"),
+                                     ("baseline", args.baseline_record, "base")):
+        quality = share_quality(clips, record_families(record_file))
+        values = {}
+        for family in record_families(record_file):
+            rung = family_rung(family.name)
+            values[family.name.removeprefix("nanocodec-")] = {
+                **quality["values"][family.name],
+                "fps_x86": rounded((fps[SHARE.period].get(rung) or {}).get(timed)),
+                # the same pairing at the other share, for the record
+                "fps_1in150": rounded((fps[150].get(rung) or {}).get(timed))}
+        sides[side] = {"values": values, "excluded": quality["excluded"],
+                       "references": {f.name: quality["values"][f.name]
+                                      for f in reference_families()}}
+    build = {"date": args.day, "values": sides["build"]["values"]}
+    baseline = {"date": args.baseline_label, "values": sides["baseline"]["values"]}
+    for day in (build, baseline):
+        day["frontier"] = pareto_front(day["values"])
+    return {"date": args.day, "commit": args.commit, "baseline": args.baseline_label,
+            "values": build["values"], "baseline_values": baseline["values"],
+            "excluded": sides["build"]["excluded"],
+            "references": sides["build"]["references"],
+            "frontier": build["frontier"], "baseline_frontier": baseline["frontier"],
+            "front_vs_baseline": front_change(build, baseline)}
+
+
+def share_report_cmd(args: argparse.Namespace) -> None:
+    """The view's frame into the page's data (history.json `key_share_300`)."""
+    record = stored_record(PAGE_DATA)
+    view = record.setdefault(SHARE_KEY, {
+        "share": {"period": SHARE.period, "window": SHARE.window},
+        "clips": [c["name"] for c in share_clip_entries(record)],
+        "clip_rule": f"{SHARE_SOURCE}: clips with {SHARE.window} frames or more, "
+                     f"{SHARE_PER_CLASS} per class by name (tuning-pool clips, not held out)",
+        "timing": f"aws_cpu_ab.py on {SHARE_TIMING_TARGET}, CBR, {SHARE_TIMING_ROUNDS} "
+                  "rounds, base and build on one core; CPU-time fps",
+        "days": []})
+    day = share_day(record, args)
+    view["days"] = sorted([d for d in view["days"] if d["date"] != args.day] + [day],
+                          key=lambda d: d["date"])
+    change = day["front_vs_baseline"]
+    print(f"1/{SHARE.period} view {args.day}: front against {args.baseline_label} "
+          f"J {change['j_points']} points, speed x{change['speed_factor']}", flush=True)
+    text = json.dumps(record, indent=1) + "\n"
+    outs = [Path(args.out) / "history.json"] if args.out else [
+        RESULTS / f"history-{record['days'][-1]['date']}" / "history.json", PAGE_DATA]
+    for out in outs:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        print(f"{SHARE_KEY} -> {out}")
 
 
 # --- activity --------------------------------------------------------------------------
@@ -445,7 +675,7 @@ def frame_quality(record: dict, families: list[Family]):
         rows = chart.per_clip_rows(curves, ZERO, family.name, used)
         chained = {c.name: link for c in used if rows[c.name]["j"] is None
                    and (link := chart.chain_clip(curves, ZERO, family, c, core, direct))}
-        points.append(chart.chart_point(family, family.name, rows, used, run, chained))
+        points.append(chart.chart_point(family, family.name, rows, used, run, curves, chained))
         print(f"{family.name}: no direct overlap with the zero line on "
               f"{sorted(c.name for c in used if rows[c.name]['j'] is None)}: chained "
               f"({len(chained)} clips)", flush=True)
@@ -466,16 +696,25 @@ def new_day(record: dict, args: argparse.Namespace) -> dict:
     """The frame of `args.day`: our record families' BD-J and fps on the record's basis."""
     families = record_families(args.record)
     anchor_ms = record["timing"]["x264_medium_ms_per_frame"]
-    values = {}
-    for point in frame_quality(record, families):
-        fps = timed_fps(args.commit, point.family, anchor_ms)
-        values[point.family.removeprefix("nanocodec-")] = {**bd_values(point),
-                                                           "fps_x86": rounded(fps)}
-    captions = json.loads(CAPTIONS.read_text()) if CAPTIONS.is_file() else {}
+    values, chained = {}, False
     previous = [d for d in record["days"] if d["date"] < args.day]
+    last = previous[-1]["values"] if previous else {}
+    for point in frame_quality(record, families):
+        short = point.family.removeprefix("nanocodec-")
+        fps, paired = timed_fps(args.commit, point.family, anchor_ms,
+                                (last.get(short) or {}).get("fps_x86"))
+        chained |= paired
+        values[short] = {**bd_values(point), "fps_x86": rounded(fps)}
+    captions = json.loads(CAPTIONS.read_text()) if CAPTIONS.is_file() else {}
     since = FIRST_COMMIT_DAY if not previous else day_after(previous[-1]["date"])
     day = {"date": args.day, "commit": args.commit, "values": values,
-           "caption": captions.get(args.day, []), "activity": activity(args.day, args.commit, since)}
+           "caption": captions.get(args.day, []), "activity": activity(args.day, args.commit, since),
+           # what the fps time (nceval.front_k refuses slopes from any other timing than
+           # the screens' CBR, owner 2026-11-23): the plan's rate mode, and the frame whose
+           # absolute fps a paired timing is chained to
+           front_k.TIMING_MODE_KEY: json.loads(args.plan.read_text()).get("rate_mode")}
+    if chained:
+        day[front_k.CHAINED_KEY] = previous[-1]["date"]
     if args.label:
         day["release"] = args.label
     if args.note:
@@ -524,6 +763,9 @@ def report_cmd(args: argparse.Namespace) -> None:
     if not args.out:
         PAGE_DATA.write_text(text)
         stamp_page()
+        # the acceptance screens' CPU charge follows the page's newest front
+        front_k.TABLE.write_text(json.dumps(front_k.generate(PAGE_DATA), indent=1) + "\n")
+        print(f"front slopes -> {front_k.TABLE} (commit it with the frame)")
     print(f"history: {len(days)} frames, {args.day} new -> {out / 'history.json'}"
           + ("" if args.out else f", {PAGE_DATA}"))
 
@@ -602,8 +844,12 @@ def markdown(record: dict) -> str:
         + (f" (left out: {', '.join(e['clip'] for e in record['excluded'])})"
            if record["excluded"] else "") + ".",
         "- **Speed:** fps timed on AWS c8a (Zen 5), one core, by the chart's own timing "
-        "(`aws_timing.py`): the chart's timing commands (three 720p clips, 150 frames, fixed QP "
-        f"found per build for about {record['timing_rung_kbps']} kbps), each run back to back "
+        "(`aws_timing.py`): every stored frame was timed with the chart's former timing "
+        "commands (three 720p training clips, 150 frames, fixed QP found per build for about "
+        f"{record['timing_rung_kbps']} kbps): a different encoder mode and other clips than the "
+        "CBR quality points, so these fps are not the speed of the encodes scored (since "
+        "2026-11-23 chart timing re-runs the quality encodes themselves, nceval.chart_timing; "
+        "these frames are being re-timed that way), each run back to back "
         "with x264 medium, the median of its time ratios to x264 medium times the chart's stored "
         "x264 medium time; every frame is a plain release build (the overview's are PGO). The "
         "frames to 2026-11-20 were timed in one c8a.large per preset holding that preset's build "
@@ -755,6 +1001,9 @@ def main() -> None:
         p.add_argument("--day", required=name in ("report", "add-day"), help="the frame's date")
         p.add_argument("--binary", type=Path, required=name in ("time", "add-day"),
                        help="the commit's plain release build (timed)")
+        p.add_argument("--baseline", type=Path,
+                       help="the previous frame's commit as a plain release build, built the "
+                            "same way as --binary: fps timed paired with it (see `time`)")
         p.add_argument("--plan", type=Path, default=TIMING_PLAN,
                        help="the chart's timing plan, scanned at the frame's build (default: "
                             "this tree's; a release's charts tree before it lands)")
@@ -762,9 +1011,25 @@ def main() -> None:
         p.add_argument("--note", help="how the frame was measured, where it differs")
         p.add_argument("--budget", type=float, default=2.0, help="each points session's cap, USD")
         p.add_argument("--dry-run", action="store_true", help="print the sessions; launch none")
+    for name in ("share-points", "share-time", "share-report"):
+        p = sub.add_parser(name, help=f"the 1-in-{SHARE.period} key-share view's {name[6:]}")
+        p.add_argument("--record", type=Path, required=True, help="the frame's build record")
+        p.add_argument("--baseline-record", type=Path, required=True,
+                       help="the baseline's (0.6.0's) build record")
+        p.add_argument("--commit", required=name != "share-points")
+        p.add_argument("--binary", type=Path, required=name == "share-time",
+                       help="the commit's plain release build (x86, timed)")
+        p.add_argument("--baseline", type=Path, required=name == "share-time",
+                       help="the baseline's plain release build (x86, timed beside it)")
+        p.add_argument("--baseline-label", default="0.6.0")
+        p.add_argument("--day", required=name == "share-report")
+        p.add_argument("--out", help="a scratch directory for the report")
+        p.add_argument("--budget", type=float, default=3.0, help="each points session's cap, USD")
+        p.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     {"points": points_cmd, "time": time_cmd, "report": report_cmd, "frames": frames_cmd,
-     "add-day": add_day_cmd}[args.command](args)
+     "add-day": add_day_cmd, "share-points": share_points_cmd, "share-time": share_time_cmd,
+     "share-report": share_report_cmd}[args.command](args)
 
 
 if __name__ == "__main__":

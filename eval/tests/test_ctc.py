@@ -232,3 +232,19 @@ def test_staging_with_the_xpsnr_scorer_keeps_its_library_layout(tmp_path, fake_p
     assert (run / worker.XPSNR_SCORER).read_text() == "tool"
     assert all((run / "vmafx" / "src" / name).read_text() == name for name in plan.XPSNR_LIBRARIES)
     assert json.loads((run / "jobs.json").read_text())[0]["xpsnr"] is True
+
+
+def test_anchor_tools_take_the_timed_reference_build(tmp_path):
+    """A lens reference codes with the program its timing runs (config.REFERENCE_BUILDS);
+    a program only the anchors prefix has stays from there."""
+    from nceval.config import QUALITY_MACHINE, REFERENCE_BUILDS, Paths
+    from nceval.ctc.plan import anchor_tools
+    anchors, timed = tmp_path / "anchors", tmp_path / REFERENCE_BUILDS[QUALITY_MACHINE] / "bin"
+    (anchors / "bin").mkdir(parents=True)
+    timed.mkdir(parents=True)
+    for directory, name in ((anchors / "bin", "x264"), (anchors / "bin", "ldecod"),
+                            (timed, "x264")):
+        (directory / name).write_text("")
+    tools = anchor_tools(Paths(data_root=tmp_path, anchors=anchors, nanocodec_bin=tmp_path))
+    assert tools["x264"] == timed / "x264"
+    assert tools["ldecod"] == anchors / "bin" / "ldecod"

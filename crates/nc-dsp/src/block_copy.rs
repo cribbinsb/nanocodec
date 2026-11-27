@@ -55,6 +55,8 @@ impl BlockCopy {
         if !isa.is_supported() {
             return None;
         }
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        let isa = if isa == Isa::Sve2 { Isa::Neon } else { isa };
         Some(match isa {
             #[cfg(target_arch = "x86_64")]
             Isa::Avx512 => Self::table::<avx512::Avx512>(
@@ -182,19 +184,18 @@ impl BlockCopy {
     }
 }
 
-// A full usize product plus one row width fits twice the pointer width.
-// wasm32 has native i64 arithmetic; using u128 there emits software calls.
-#[cfg(target_pointer_width = "32")]
-type Extent = u64;
-#[cfg(target_pointer_width = "64")]
-type Extent = u128;
-
-/// A nonempty rectangle's exclusive tail must fit its sample slice. Widen
-/// before the multiply and addition so neither can wrap. With N-bit inputs,
-/// `(h - 1) * stride + w <= (2^N - 1)^2`, which fits the 2N-bit extent.
+/// A nonempty rectangle's exclusive tail must fit its sample slice. The
+/// tail is computed with overflow checks: a tail past `usize::MAX` cannot
+/// fit any slice. (A widened `u128` product, the former form, cost about
+/// as much as the 8x8 copies it guarded: ~1 % of H.264 Veryfast's x86
+/// instructions over the macroblock prediction copies.)
 #[inline]
 pub(crate) fn covers_rect(len: usize, stride: usize, w: usize, h: usize) -> bool {
-    stride >= w && (h - 1) as Extent * stride as Extent + w as Extent <= len as Extent
+    stride >= w
+        && (h - 1)
+            .checked_mul(stride)
+            .and_then(|tail| tail.checked_add(w))
+            .is_some_and(|end| end <= len)
 }
 
 /// Empty rectangles access no memory; all others validate their full tail
@@ -239,15 +240,31 @@ pub(crate) use scalar::prep_samples;
 #[inline]
 pub fn copy_square<const N: usize>(dst: &mut PlaneViewMut<'_>, src: &[u8], src_stride: usize) {
     assert!(
-        N != 0 && covers_rect(src.len(), src_stride, N, N),
-        "source does not cover {N}x{N}"
-    );
-    assert!(
         dst.width() >= N && dst.height() >= N,
         "destination smaller than {N}x{N}"
     );
     let dst_stride = dst.stride();
-    let dst = dst.data_mut();
+    copy_square_samples::<N>((dst.data_mut(), dst_stride), (src, src_stride));
+}
+
+/// [`copy_square`] between sample buffers: `dst` and `src` start at the
+/// blocks' top-left samples, rows their strides apart. One footprint check
+/// per side replaces building a destination view, for per-macroblock
+/// copies straight into a plane (`nc_common::Plane::samples_at_mut`).
+///
+/// # Panics
+///
+/// If either stride is below `N` or either buffer does not cover `N` rows
+/// of `N` samples.
+#[inline]
+pub fn copy_square_samples<const N: usize>(
+    (dst, dst_stride): (&mut [u8], usize),
+    (src, src_stride): (&[u8], usize),
+) {
+    assert!(
+        N != 0 && covers_rect(src.len(), src_stride, N, N),
+        "source does not cover {N}x{N}"
+    );
     assert!(covers_rect(dst.len(), dst_stride, N, N), "destination rows");
     // SAFETY: both N-square footprints were checked above. This static
     // convenience API shares the portable row driver without ISA detection.

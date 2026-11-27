@@ -299,6 +299,28 @@ impl Region {
         }
     }
 
+    /// The two frequency regions and the length of the low-frequency
+    /// prefix of their diagonal scan for this plane.
+    pub(super) fn frequency_regions(plane: u8) -> (usize, Self, Self) {
+        let (diagonals, low, default) = if plane == PLANE_Y {
+            (
+                LUMA_LOW_FREQUENCY_DIAGONALS,
+                Self::LumaLow,
+                Self::LumaDefault,
+            )
+        } else {
+            (
+                CHROMA_LOW_FREQUENCY_DIAGONALS,
+                Self::ChromaLow,
+                Self::ChromaDefault,
+            )
+        };
+        // The smallest transform is 4x4. These diagonals are complete
+        // in every size, so the prefix has the same length for all sizes.
+        const { assert!(LUMA_LOW_FREQUENCY_DIAGONALS <= 4 && CHROMA_LOW_FREQUENCY_DIAGONALS <= 4) };
+        (diagonals * (diagonals + 1) / 2, low, default)
+    }
+
     /// Levels coded by the base symbol before the low range takes over.
     pub(super) fn base_levels(self) -> u32 {
         match self {
@@ -425,12 +447,31 @@ impl LevelMap {
     }
 }
 
-/// Half the sum of the first `template` neighbours clipped at `clip`,
-/// rounded up.
-fn magnitude(neighbours: Neighbours, template: usize, clip: u32) -> usize {
-    let sum: u32 = neighbours[..template]
+/// AVM `clip_max3`/`clip_max5`: a level uses one context-limit lookup
+/// independently of the full magnitude stored in the padded map.
+const fn clip_table(cap: u32) -> [u8; 256] {
+    let mut clip = [0; 256];
+    let mut level = 0;
+    while level < clip.len() {
+        clip[level] = if level as u32 > cap {
+            cap as u8
+        } else {
+            level as u8
+        };
+        level += 1;
+    }
+    clip
+}
+
+static DEFAULT_LEVELS: [u8; 256] = clip_table(DEFAULT_CLIP);
+static LOW_FREQUENCY_LEVELS: [u8; 256] = clip_table(LOW_FREQUENCY_CLIP);
+static LOW_RANGE_LEVELS: [u8; 256] = clip_table(LOW_RANGE_CLIP);
+
+/// Half the sum of the first `N` clipped neighbours, rounded up.
+fn magnitude<const N: usize>(neighbours: Neighbours, clips: &[u8; 256]) -> usize {
+    let sum: u32 = neighbours[..N]
         .iter()
-        .map(|&level| u32::from(level).min(clip))
+        .map(|&level| u32::from(clips[usize::from(level)]))
         .sum();
     sum.div_ceil(2) as usize
 }
@@ -439,7 +480,7 @@ fn magnitude(neighbours: Neighbours, template: usize, clip: u32) -> usize {
 /// sum of its five template neighbours clipped at three, rounded up, at
 /// most four.
 pub(super) fn hidden_dc_context(neighbours: Neighbours) -> usize {
-    magnitude(neighbours, LUMA_TEMPLATE, DEFAULT_CLIP).min(HIDDEN_DC_MAX)
+    magnitude::<LUMA_TEMPLATE>(neighbours, &DEFAULT_LEVELS).min(HIDDEN_DC_MAX)
 }
 
 /// Base-symbol context of a coefficient other than the last one at `at`, in
@@ -453,11 +494,11 @@ pub(super) fn base_context(
     match region {
         Region::ChromaLow | Region::ChromaDefault => {
             let clip = if region == Region::ChromaLow {
-                LOW_FREQUENCY_CLIP
+                &LOW_FREQUENCY_LEVELS
             } else {
-                DEFAULT_CLIP
+                &DEFAULT_LEVELS
             };
-            magnitude(neighbours, SMALL_TEMPLATE, clip).min(CHROMA_MAX)
+            magnitude::<SMALL_TEMPLATE>(neighbours, clip).min(CHROMA_MAX)
                 + usize::from(plane == PLANE_V) * CHROMA_V_OFFSET
         }
         Region::LumaLow | Region::LumaDefault => {
@@ -477,11 +518,11 @@ pub(super) fn luma_base_magnitude(
     region: Region,
 ) -> usize {
     let clip = if region == Region::LumaLow {
-        LOW_FREQUENCY_CLIP
+        &LOW_FREQUENCY_LEVELS
     } else {
-        DEFAULT_CLIP
+        &DEFAULT_LEVELS
     };
-    magnitude(neighbours, LUMA_TEMPLATE, clip).min(usize::from(at.luma_base_cap))
+    magnitude::<LUMA_TEMPLATE>(neighbours, clip).min(usize::from(at.luma_base_cap))
 }
 
 /// Largest [`luma_base_magnitude`] (the DC's cap).
@@ -518,7 +559,7 @@ const fn luma_base_layout(pos: usize, diagonal: usize) -> (usize, usize) {
 /// Low-range context of the coefficient at `at` in its `region`, from its
 /// template `neighbours`.
 pub(super) fn low_range_context(neighbours: Neighbours, at: ScanPosition, region: Region) -> usize {
-    let magnitude = magnitude(neighbours, SMALL_TEMPLATE, LOW_RANGE_CLIP);
+    let magnitude = magnitude::<SMALL_TEMPLATE>(neighbours, &LOW_RANGE_LEVELS);
     match region {
         Region::LumaLow if at.pos != 0 => {
             magnitude.min(LOW_RANGE_MAX) + LOW_FREQUENCY_AC_LOW_RANGE_OFFSET

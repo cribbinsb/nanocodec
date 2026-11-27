@@ -5,7 +5,9 @@ import { drawScatter } from './chart.js';
 import { control, el, fail, fps, loadData, measuredNote, pct, segmented, sources, table } from './common.js';
 
 const SHAPES = { libaom: 'plus', libvpx: 'cross', x264: 'square' };
-const PLATFORMS = { jetson: 'Jetson Orin Nano core', x86: 'Ryzen 9 5950X core' };
+// x86: time ratios to x264 medium measured on a Ryzen 9 5950X, multiplied by x264 medium's fps on an
+// AMD EPYC 9R45 (docs/results/svc-chart.csv, provenance.json): the fps of neither machine.
+const PLATFORMS = { jetson: 'Jetson Orin Nano core', x86: 'x86 core (5950X time ratio to x264 medium × its EPYC 9R45 fps)' };
 const state = { platform: 'jetson', selected: null };
 
 function shapeOf(row) {

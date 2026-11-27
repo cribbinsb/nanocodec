@@ -15,12 +15,13 @@
 //! Only blocks just inside the gate inform the threshold: those whose gate
 //! value lies in the margin band between the threshold and `adapt.band`
 //! times it, on the side where the tool runs. Each is a *run*, and a *win*
-//! when the tool's work changed the decision. Per tool and frame role a
-//! multiplier on the preset's threshold (above 1: the tool skips more) moves
-//! at the end of each cycle of `adapt.period` coded inter frames, once the
-//! role has `adapt.min_runs` band runs: by `adapt.step` towards less work
-//! when the band's win rate is below the tool's target over
-//! `adapt.hysteresis`, towards more work when above the target times it.
+//! when the tool's work changed the decision (`evidence.rs`). Per tool and
+//! frame role a multiplier on the preset's threshold (above 1: the tool
+//! skips more) moves at the end of each cycle of `adapt.period` coded inter
+//! frames, once the role has `adapt.min_runs` band runs: by `adapt.step`
+//! towards less work when the band's win rate is below the tool's target
+//! over `adapt.hysteresis`, towards more work when above the target times
+//! it (`rule.rs`).
 //! Raising a threshold moves the band to blocks where the tool wins more
 //! often, so the multiplier settles where the marginal win rate meets the
 //! target: the preset's price for that tool's work. Bounds keep it near the
@@ -29,17 +30,30 @@
 //! bound keeps reporting). Counts of coding decisions, updated between
 //! frames in coding order: the same input gives the same stream.
 //!
-//! The decision's tools record their band evidence in `decision.rs`
-//! ([`BandEvidence`]); a codec's tool reports through
+//! The controller is one update shared by every tool; what differs per tool
+//! is listed in `tool.rs`. The decision's tools record their band evidence
+//! in `decision.rs` ([`FrameEvidence`]); a codec's tool reports through
 //! [`CodecBackend::filter_search_evidence`]. The design and measurements
-//! are in `docs/handoff/light-pipeline.md` ("Adaptive tool thresholds").
+//! are in `docs/handoff/light-pipeline.md` ("Adaptive tool thresholds") and
+//! `docs/analysis/adaptive-thresholds-2026-11-23.md`.
 //!
 //! [`CodecBackend::filter_search_evidence`]: crate::CodecBackend::filter_search_evidence
+
+mod evidence;
+mod rule;
+mod tool;
 
 use crate::frame_role::FrameRole;
 use nc_analysis::motion::SearchConfig;
 
 use crate::params::{AdaptParams, DecisionParams, PlannerParams};
+
+pub(crate) use evidence::{Band, FrameEvidence, Switch, Turn};
+pub(crate) use tool::Tool;
+
+use evidence::Evidence;
+use rule::{PATIENCE, Rule, Travel, Verdict};
+use tool::{Actuator, SWITCHED, TOOL_COUNT};
 
 /// What one search of a codec's choices changed against the choices the
 /// frame would have reused without it, weighted by what each choice is
@@ -53,126 +67,35 @@ pub struct SearchEvidence {
     pub total: u64,
 }
 
-/// The tools the controller adapts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Tool {
-    /// The sub-sample refinement of the search seed
-    /// (`decision.codec_subpel_seed_lambdas`).
-    Subpel,
-    /// The exact-filter ranking's prune margin (`decision.exact_rank_margin`).
-    Rank,
-    /// The integer-neighbour probes (`decision.codec_fullpel_probe_min_lambdas`).
-    Probe,
-    /// The interval between CDEF searches on non-base frames.
-    Cdef,
-    /// The planner's depth removal (`planner.depth_removal_qp_scale`).
-    Depth,
-    /// The motion search's zero-vector exits (`analysis.static_sad_per_pixel`,
-    /// `one_position_sad_per_pixel`, `skip_hme_sad_per_pixel`, together).
-    Motion,
-}
-
-const TOOL_COUNT: usize = 6;
-const TOOLS: [Tool; TOOL_COUNT] = [
-    Tool::Subpel,
-    Tool::Rank,
-    Tool::Probe,
-    Tool::Cdef,
-    Tool::Depth,
-    Tool::Motion,
-];
-/// The tools whose evidence the encoder gathers block by block.
-const BAND_TOOLS: [Tool; 5] = [
-    Tool::Subpel,
-    Tool::Rank,
-    Tool::Probe,
-    Tool::Depth,
-    Tool::Motion,
-];
+const ROLES: [FrameRole; ROLE_COUNT] = [FrameRole::Base, FrameRole::NonBase];
 const ROLE_COUNT: usize = 2;
 
 /// The multiplier at which a tool runs as the preset sets it.
 const PRESET_SCALE: f32 = 1.0;
 
-/// A tool's band runs and wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Evidence {
-    runs: u64,
-    wins: u64,
-}
-
-impl Evidence {
-    fn add(&mut self, other: Self) {
-        self.runs = self.runs.saturating_add(other.runs);
-        self.wins = self.wins.saturating_add(other.wins);
-    }
-}
-
-/// The margin band (`adapt.band`): how far inside its gate a block still
-/// informs the gate's threshold, as a multiple of the threshold. A
-/// threshold of 0 (the gate off) has no band.
+/// One tool's state on the frames of one role: its multiplier and the
+/// evidence gathered since the multiplier was last judged.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Band(f32);
-
-impl Band {
-    /// Whether gate value `value` of a tool that runs where it is at least
-    /// `threshold` lies in the band above the threshold.
-    pub fn above(self, value: f32, threshold: f32) -> bool {
-        threshold > 0.0 && value >= threshold && value < self.0 * threshold
-    }
-
-    /// Whether gate value `value` of a tool that runs where it is at most
-    /// `threshold` lies in the band below the threshold.
-    pub fn below(self, value: f32, threshold: f32) -> bool {
-        threshold > 0.0 && value <= threshold && value > threshold / self.0
-    }
+struct Gate {
+    scale: f32,
+    evidence: Evidence,
 }
 
-/// The decision's band evidence for one coding of a frame, gathered block
-/// by block while a controller wants it (`band` set); otherwise every
-/// record is a single test, so default encodes pay nothing measurable.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct BandEvidence {
-    band: Option<Band>,
-    tools: [Evidence; TOOL_COUNT],
-}
-
-impl BandEvidence {
-    /// A tool that runs where its gate value `value` is at least
-    /// `threshold`: a run when `value` is in the band, won or not.
-    pub fn record_above(&mut self, tool: Tool, value: f32, threshold: f32, won: bool) {
-        if self.band.is_some_and(|band| band.above(value, threshold)) {
-            self.add(tool, 1, u64::from(won));
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            scale: PRESET_SCALE,
+            evidence: Evidence::default(),
         }
     }
-
-    /// Adds `runs` band runs of `tool`, `wins` of them won.
-    pub fn add(&mut self, tool: Tool, runs: u64, wins: u64) {
-        self.tools[tool as usize].add(Evidence { runs, wins });
-    }
-
-    /// The band this evidence is gathered in, `None` while none is.
-    pub fn band(&self) -> Option<Band> {
-        self.band
-    }
-
-    /// Starts a frame's (or a recoding's) evidence afresh, gathered in
-    /// `band` (`None`: not gathered).
-    pub fn clear(&mut self, band: Option<Band>) {
-        *self = Self {
-            band,
-            tools: [Evidence::default(); TOOL_COUNT],
-        };
-    }
 }
 
-/// The controller: a multiplier per tool and frame role, and the evidence
-/// gathered since each last moved.
+/// The controller: per tool and frame role, a multiplier and the evidence
+/// gathered since it was last judged.
 #[derive(Debug, Clone)]
 pub(crate) struct ThresholdControl {
     params: AdaptParams,
-    scales: [[f32; TOOL_COUNT]; ROLE_COUNT],
-    evidence: [[Evidence; TOOL_COUNT]; ROLE_COUNT],
+    gates: [[Gate; TOOL_COUNT]; ROLE_COUNT],
     frames: u32,
 }
 
@@ -181,11 +104,10 @@ impl ThresholdControl {
     pub fn new(params: AdaptParams) -> Option<Self> {
         let control = Self {
             params,
-            scales: [[PRESET_SCALE; TOOL_COUNT]; ROLE_COUNT],
-            evidence: [[Evidence::default(); TOOL_COUNT]; ROLE_COUNT],
+            gates: [[Gate::default(); TOOL_COUNT]; ROLE_COUNT],
             frames: 0,
         };
-        TOOLS
+        Tool::ALL
             .iter()
             .any(|&tool| control.adapts(tool))
             .then_some(control)
@@ -196,31 +118,23 @@ impl ThresholdControl {
         Band(self.params.band)
     }
 
-    fn adapts(&self, tool: Tool) -> bool {
-        let switch = match tool {
-            Tool::Subpel => self.params.subpel,
-            Tool::Rank => self.params.rank,
-            Tool::Probe => self.params.probe,
-            Tool::Cdef => self.params.cdef,
-            Tool::Depth => self.params.depth,
-            Tool::Motion => self.params.motion,
-        };
-        switch >= 0.5
+    /// The tools whose evidence the controller reads.
+    pub fn adapted_tools(&self) -> impl Iterator<Item = Tool> + '_ {
+        Tool::ALL.into_iter().filter(|&tool| self.adapts(tool))
     }
 
-    fn target(&self, tool: Tool) -> f32 {
-        match tool {
-            Tool::Subpel => self.params.subpel_target,
-            Tool::Rank => self.params.rank_target,
-            Tool::Probe => self.params.probe_target,
-            Tool::Cdef => self.params.cdef_target,
-            Tool::Depth => self.params.depth_target,
-            Tool::Motion => self.params.motion_target,
-        }
+    fn adapts(&self, tool: Tool) -> bool {
+        tool.setting(&self.params).on
     }
 
     fn scale(&self, role: FrameRole, tool: Tool) -> f32 {
-        self.scales[role_index(role)][tool as usize]
+        self.gates[role_index(role)][tool as usize].scale
+    }
+
+    /// The multiplier of `tool` on frames of `role`, while the controller
+    /// adapts the tool.
+    fn adapted(&self, role: FrameRole, tool: Tool) -> Option<f32> {
+        self.adapts(tool).then(|| self.scale(role, tool))
     }
 
     /// `decision` and `planner` with this role's thresholds: each adapted
@@ -231,34 +145,49 @@ impl ThresholdControl {
         decision: &mut DecisionParams,
         planner: &mut PlannerParams,
     ) {
-        if self.adapts(Tool::Depth) {
-            planner.depth_removal_qp_scale *= self.scale(role, Tool::Depth);
+        if let Some(scale) = self.adapted(role, Tool::Depth) {
+            planner.depth_removal_qp_scale *= scale;
         }
-        if self.adapts(Tool::Subpel) {
-            let scale = self.scale(role, Tool::Subpel);
+        if let Some(scale) = self.adapted(role, Tool::Subpel) {
             decision.codec_subpel_seed_lambdas *= scale;
             decision.codec_subpel_seed_lambdas_large *= scale;
         }
-        if self.adapts(Tool::Probe) {
-            decision.codec_fullpel_probe_min_lambdas *= self.scale(role, Tool::Probe);
+        if let Some(scale) = self.adapted(role, Tool::Probe) {
+            decision.codec_fullpel_probe_min_lambdas *= scale;
+        }
+        if let Some(scale) = self.adapted(role, Tool::Refine) {
+            decision.winner_refine_gate_scale *= scale;
         }
         // The margin's excess over 1 is what prunes: a margin of 1 already
         // measures only candidates whose estimate beats the best.
-        if self.adapts(Tool::Rank) && decision.exact_rank_margin > 1.0 {
+        if let Some(scale) = self.adapted(role, Tool::Rank)
+            && decision.exact_rank_margin > 1.0
+        {
             let excess = decision.exact_rank_margin - 1.0;
-            decision.exact_rank_margin = 1.0 + excess / self.scale(role, Tool::Rank);
+            decision.exact_rank_margin = 1.0 + excess / scale;
         }
     }
 
     /// `search` with this role's zero-vector exits, when the controller
     /// adapts them: all three move together, keeping their order.
     pub fn apply_search(&self, role: FrameRole, search: &mut SearchConfig) {
-        if self.adapts(Tool::Motion) {
-            let scale = self.scale(role, Tool::Motion);
+        if let Some(scale) = self.adapted(role, Tool::Motion) {
             let gates = &mut search.gates;
             gates.static_per_pixel *= scale;
             gates.one_position_per_pixel *= scale;
             gates.skip_hme_per_pixel *= scale;
+        }
+    }
+
+    /// How frames of `role` run the walk's quarter stage after a half
+    /// stage that did not move.
+    pub fn quarter(&self, role: FrameRole) -> Switch {
+        match self.adapted(role, Tool::Quarter) {
+            None => Switch::Preset,
+            Some(scale) if scale > PRESET_SCALE => Switch::Cheap {
+                period: self.params.probe_period.round() as u32,
+            },
+            Some(_) => Switch::Full,
         }
     }
 
@@ -271,25 +200,32 @@ impl ThresholdControl {
     /// before the next search, when the controller adapts CDEF: 0 while the
     /// multiplier is below 1.5, so the preset's searches stand.
     pub fn cdef_reuse_frames(&self) -> Option<u32> {
-        self.adapts(Tool::Cdef)
-            .then(|| (self.scale(FrameRole::NonBase, Tool::Cdef).round() as u32).saturating_sub(1))
+        self.adapted(FrameRole::NonBase, Tool::Cdef)
+            .map(|scale| (scale.round() as u32).saturating_sub(1))
     }
 
-    /// After coding an inter frame of `role`: its band evidence, and what a
-    /// codec search on it changed. The CDEF interval is a non-base setting,
-    /// and every searched frame measures it; its runs are the search's
-    /// weighted total and its wins the changed part, so its win rate is the
-    /// share of the choices' value that reusing them would have lost.
-    pub fn observe(&mut self, role: FrameRole, band: &BandEvidence, cdef: Option<SearchEvidence>) {
-        let evidence = &mut self.evidence[role_index(role)];
-        for tool in BAND_TOOLS {
-            evidence[tool as usize].add(band.tools[tool as usize]);
-        }
+    /// After coding an inter frame of `role`: its evidence, and what a
+    /// codec search on it changed. A CDEF search's runs are its weighted
+    /// total and its wins the changed part, so its win rate is the share of
+    /// the choices' value that reusing them would have lost.
+    pub fn observe(
+        &mut self,
+        role: FrameRole,
+        frame: &FrameEvidence,
+        cdef: Option<SearchEvidence>,
+    ) {
+        let mut evidence = frame.tools;
         if let Some(search) = cdef {
-            self.evidence[role_index(FrameRole::NonBase)][Tool::Cdef as usize].add(Evidence {
+            evidence[Tool::Cdef as usize].add(Evidence {
                 runs: search.total,
                 wins: search.changed,
+                samples: 1,
             });
+        }
+        for tool in Tool::ALL {
+            self.gates[role_index(tool.informs(role))][tool as usize]
+                .evidence
+                .add(evidence[tool as usize]);
         }
         self.frames += 1;
         if self
@@ -300,37 +236,57 @@ impl ThresholdControl {
         }
     }
 
-    /// Moves each multiplier that has enough evidence, and restarts that
-    /// evidence.
+    /// Judges each multiplier that has enough evidence, and restarts that
+    /// evidence unless the rule waits for more.
     fn end_cycle(&mut self) {
-        for role in [FrameRole::Base, FrameRole::NonBase] {
-            let max = match role {
-                FrameRole::Base => self.params.max_scale,
-                FrameRole::NonBase => self.params.nonbase_max_scale,
-            };
-            for tool in TOOLS {
-                let r = role_index(role);
-                let t = tool as usize;
-                let evidence = self.evidence[r][t];
-                if !self.adapts(tool) || (evidence.runs as f32) < self.params.min_runs {
+        for role in ROLES {
+            for tool in Tool::ALL {
+                let setting = tool.setting(&self.params);
+                let gate = self.gates[role_index(role)][tool as usize];
+                if !setting.on || gate.evidence.size(tool.size()) < self.params.min_runs {
                     continue;
                 }
-                let rate = evidence.wins as f32 / evidence.runs as f32;
-                let target = self.target(tool);
-                let scale = &mut self.scales[r][t];
-                if rate < target / self.params.hysteresis {
-                    *scale *= self.params.step;
-                } else if rate > target * self.params.hysteresis {
-                    *scale /= self.params.step;
-                }
-                // The CDEF interval cannot fall below one search a frame.
-                let min = match tool {
-                    Tool::Cdef => PRESET_SCALE,
-                    _ => self.params.min_scale,
+                let rule = Rule {
+                    target: setting.target,
+                    hysteresis: self.params.hysteresis,
+                    confidence: self.params.confidence,
+                    patience: PATIENCE * self.params.min_runs,
                 };
-                *scale = scale.clamp(min, max);
-                self.evidence[r][t] = Evidence::default();
+                let verdict = rule.judge(gate.evidence);
+                self.gates[role_index(role)][tool as usize] = Gate {
+                    scale: self.travel(role, tool).moved(gate.scale, verdict),
+                    evidence: match verdict {
+                        Verdict::Wait => gate.evidence,
+                        Verdict::Less | Verdict::Hold | Verdict::More => Evidence::default(),
+                    },
+                };
             }
+        }
+    }
+
+    /// How the multiplier of `tool` moves on frames of `role`.
+    fn travel(&self, role: FrameRole, tool: Tool) -> Travel {
+        let max = match role {
+            FrameRole::Base => self.params.max_scale,
+            FrameRole::NonBase => self.params.nonbase_max_scale,
+        };
+        match tool.actuator() {
+            Actuator::Threshold => Travel {
+                step: self.params.step,
+                min: self.params.min_scale,
+                max,
+            },
+            Actuator::Interval => Travel {
+                step: self.params.step,
+                min: PRESET_SCALE,
+                max,
+            },
+            // One step either way: the tool or its cheap alternative.
+            Actuator::Switch => Travel {
+                step: SWITCHED,
+                min: PRESET_SCALE,
+                max: SWITCHED,
+            },
         }
     }
 }
@@ -355,9 +311,9 @@ mod tests {
         }
     }
 
-    fn band_with(wins: u32, runs: u32) -> BandEvidence {
-        let mut band = BandEvidence::default();
-        band.clear(Some(Band(2.0)));
+    fn band_with(wins: u32, runs: u32) -> FrameEvidence {
+        let mut band = FrameEvidence::default();
+        band.clear(Some(Band(2.0)), Tool::ALL, Switch::Preset);
         for i in 0..runs {
             band.record_above(Tool::Subpel, 1.5, 1.0, i < wins);
         }
@@ -367,27 +323,6 @@ mod tests {
     #[test]
     fn every_tool_off_needs_no_controller() {
         assert!(ThresholdControl::new(AdaptParams::default()).is_none());
-    }
-
-    #[test]
-    fn only_the_band_above_the_threshold_counts() {
-        let mut band = BandEvidence::default();
-        band.record_above(Tool::Subpel, 1.2, 1.0, true);
-        assert_eq!(band.tools[Tool::Subpel as usize], Evidence::default());
-        band.clear(Some(Band(2.0)));
-        band.record_above(Tool::Subpel, 0.9, 1.0, true);
-        band.record_above(Tool::Subpel, 2.5, 1.0, true);
-        band.record_above(Tool::Subpel, 1.0, 0.0, true);
-        band.record_above(Tool::Subpel, 1.2, 1.0, false);
-        assert_eq!(
-            band.tools[Tool::Subpel as usize],
-            Evidence { runs: 1, wins: 0 }
-        );
-        let band = Band(2.0);
-        assert!(band.below(0.08, 0.1));
-        assert!(!band.below(0.04, 0.1));
-        assert!(!band.below(0.12, 0.1));
-        assert!(!band.below(0.0, 0.0));
     }
 
     #[test]
@@ -421,6 +356,99 @@ mod tests {
     }
 
     #[test]
+    fn a_confident_controller_keeps_undecided_evidence() {
+        let mut control = ThresholdControl::new(AdaptParams {
+            confidence: 2.0,
+            ..params()
+        })
+        .expect("subpel adapts");
+        // 1 win in 20 at target 0.15 is under the band (0.1..0.225), but
+        // not by two standard errors until 80 runs agree.
+        control.observe(FrameRole::Base, &band_with(1, 20), None);
+        control.observe(FrameRole::Base, &band_with(0, 20), None);
+        control.observe(FrameRole::Base, &band_with(0, 20), None);
+        assert_eq!(control.scale(FrameRole::Base, Tool::Subpel), 1.0);
+        control.observe(FrameRole::Base, &band_with(0, 20), None);
+        assert_eq!(control.scale(FrameRole::Base, Tool::Subpel), 1.25);
+    }
+
+    #[test]
+    fn aggression_scales_every_target() {
+        let mut control = ThresholdControl::new(AdaptParams {
+            aggression: 2.0,
+            ..params()
+        })
+        .expect("subpel adapts");
+        // At the target 0.15 x 2 the band is 0.2..0.45: 3 wins in 20
+        // tighten, and 5 in 20 hold where the plain target would loosen
+        // (above 0.225).
+        control.observe(FrameRole::Base, &band_with(3, 20), None);
+        assert_eq!(control.scale(FrameRole::Base, Tool::Subpel), 1.25);
+        control.observe(FrameRole::Base, &band_with(5, 20), None);
+        assert_eq!(control.scale(FrameRole::Base, Tool::Subpel), 1.25);
+    }
+
+    #[test]
+    fn a_cost_weighted_tool_needs_its_observations_not_its_weight() {
+        let mut control = ThresholdControl::new(AdaptParams {
+            refine: 1.0,
+            min_runs: 3.0,
+            period: 1.0,
+            ..AdaptParams::default()
+        })
+        .expect("refine adapts");
+        let mut frame = FrameEvidence::default();
+        frame.clear(Some(Band(2.0)), Tool::ALL, Switch::Preset);
+        frame.record_saving_above(Tool::Refine, 1.5, 1.0, (1000.0, 999.0));
+        frame.record_saving_above(Tool::Refine, 1.5, 1.0, (1000.0, 1000.0));
+        control.observe(FrameRole::Base, &frame, None);
+        assert_eq!(control.scale(FrameRole::Base, Tool::Refine), 1.0);
+        control.observe(FrameRole::Base, &frame, None);
+        assert_eq!(control.scale(FrameRole::Base, Tool::Refine), 1.25);
+        let mut decision = DecisionParams::default();
+        control.apply(
+            FrameRole::Base,
+            &mut decision,
+            &mut PlannerParams::default(),
+        );
+        assert_eq!(decision.winner_refine_gate_scale, 1.25);
+    }
+
+    #[test]
+    fn a_switched_tool_goes_cheap_while_it_saves_little_and_back_when_probes_pay() {
+        let mut control = ThresholdControl::new(AdaptParams {
+            quarter: 1.0,
+            quarter_target: 0.01,
+            probe_period: 4.0,
+            min_runs: 2.0,
+            period: 1.0,
+            ..AdaptParams::default()
+        })
+        .expect("quarter adapts");
+        assert_eq!(control.quarter(FrameRole::Base), Switch::Full);
+        let frame = |kept: f32| {
+            let mut frame = FrameEvidence::default();
+            frame.clear(Some(Band(2.0)), Tool::ALL, Switch::Full);
+            frame.record_quarter(1000.0, kept);
+            frame.record_quarter(1000.0, kept);
+            frame
+        };
+        control.observe(FrameRole::Base, &frame(999.0), None);
+        assert_eq!(
+            control.quarter(FrameRole::Base),
+            Switch::Cheap { period: 4 }
+        );
+        assert_eq!(control.quarter(FrameRole::NonBase), Switch::Full);
+        control.observe(FrameRole::Base, &frame(990.0), None);
+        assert_eq!(
+            control.quarter(FrameRole::Base),
+            Switch::Cheap { period: 4 }
+        );
+        control.observe(FrameRole::Base, &frame(900.0), None);
+        assert_eq!(control.quarter(FrameRole::Base), Switch::Full);
+    }
+
+    #[test]
     fn multipliers_stay_in_their_bounds() {
         let mut control = ThresholdControl::new(params()).expect("subpel adapts");
         for _ in 0..50 {
@@ -445,7 +473,7 @@ mod tests {
             total: 240,
         };
         for _ in 0..4 {
-            control.observe(FrameRole::Base, &BandEvidence::default(), Some(still));
+            control.observe(FrameRole::Base, &FrameEvidence::default(), Some(still));
         }
         assert_eq!(control.cdef_reuse_frames(), Some(1));
         let moving = SearchEvidence {
@@ -453,7 +481,7 @@ mod tests {
             total: 240,
         };
         for _ in 0..8 {
-            control.observe(FrameRole::Base, &BandEvidence::default(), Some(moving));
+            control.observe(FrameRole::Base, &FrameEvidence::default(), Some(moving));
         }
         assert_eq!(control.cdef_reuse_frames(), Some(0));
     }
@@ -465,7 +493,7 @@ mod tests {
             ..AdaptParams::default()
         })
         .expect("rank adapts");
-        control.scales[role_index(FrameRole::Base)][Tool::Rank as usize] = 2.0;
+        control.gates[role_index(FrameRole::Base)][Tool::Rank as usize].scale = 2.0;
         let mut decision = DecisionParams {
             exact_rank_margin: 1.1,
             ..DecisionParams::default()

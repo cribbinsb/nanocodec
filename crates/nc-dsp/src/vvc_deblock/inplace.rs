@@ -3,9 +3,8 @@
 //! segments per full call. Both segments share `β`, `tC` and filter lengths;
 //! each still decides its own filter from its lines 0 and 3 (§8.8.3.6.2:
 //! the per-line terms on lanes, then the scalar [`super::decide`]). Up to 10
-//! bits, every decision and short-filter value fits 16 bits, and the long
-//! filter's `middle * w + far * (64 - w)` blend uses 32-bit pairwise
-//! accumulation (`acc_mul_add2`) before rounding back to 16 bits.
+//! bits, decisions and filter values fit 16 bits. The long filter uses
+//! an exact Q15 weighted difference to keep the blend in 16-bit lanes.
 //!
 //! Short-only edges keep p3..q3 in the shared HEVC/VVC sample layout,
 //! following the separate short/long arithmetic in VVenC/VVdeC `LoopFilterX86`
@@ -14,10 +13,10 @@
 
 use nc_common::BitDepth;
 
-use super::{EDGE_LINES, LUMA_REACH, LumaFilter, VvcLumaEdge};
+use super::{EDGE_LINES, LUMA_REACH, LumaFilter, VvcLumaEdge, long_limits, long_weights};
 use crate::deblock::samples::transpose;
 use crate::deblock::{samples, short_luma};
-use crate::simd::{I16FilterLanes, I16x8Shuffles};
+use crate::simd::{I16FilterLanes, I16Lanes, I16x8Shuffles};
 
 /// Lines per call, one per lane.
 const LANES: usize = 8;
@@ -54,17 +53,22 @@ fn slab(e: &VvcLumaEdge, start: usize) -> samples::Edge {
 }
 
 #[inline(always)]
-fn load<V: I16x8Shuffles>(plane: &[u8], e: &VvcLumaEdge) -> [V; POSITIONS] {
+fn load<V: I16x8Shuffles>(plane: &[u8], e: &VvcLumaEdge, extent: usize) -> [V; POSITIONS] {
     let mut out = [V::splat(0); POSITIONS];
-    for start in (LUMA_REACH - reach(e)..LUMA_REACH + reach(e)).step_by(LANES) {
+    for start in (LUMA_REACH - extent..LUMA_REACH + extent).step_by(LANES) {
         out[start..start + LANES].copy_from_slice(&samples::load::<V>(plane, &slab(e, start)));
     }
     out
 }
 
 #[inline(always)]
-fn store<V: I16x8Shuffles>(plane: &mut [u8], e: &VvcLumaEdge, values: &[V; POSITIONS]) {
-    for start in (LUMA_REACH - reach(e)..LUMA_REACH + reach(e)).step_by(LANES) {
+fn store<V: I16x8Shuffles>(
+    plane: &mut [u8],
+    e: &VvcLumaEdge,
+    extent: usize,
+    values: &[V; POSITIONS],
+) {
+    for start in (LUMA_REACH - extent..LUMA_REACH + extent).step_by(LANES) {
         let block = values[start..start + LANES]
             .try_into()
             .expect("eight positions");
@@ -436,6 +440,16 @@ fn compute_short_edge<V: I16x8Shuffles + I16FilterLanes>(
     })
 }
 
+#[inline(always)]
+fn filter_long_tail<V: crate::simd::I16x8Tiles>(
+    values: [V; POSITIONS],
+    edge: &VvcLumaEdge,
+) -> Option<[V; POSITIONS]> {
+    let tc = V::splat_segments(&[edge.tc as i16, 0, 0, 0, 0, 0, 0, 0]);
+    let beta = V::splat(edge.beta as i16);
+    super::long_luma::filter::<V, true>(values, beta, tc, edge.lengths)
+}
+
 /// # Safety
 /// V's ISA is enabled (dispatch contract); every index is bounds checked.
 #[inline(always)]
@@ -459,21 +473,29 @@ pub(super) unsafe fn luma<
         }
         return;
     }
-    if LINES == LANES && reach(e) == LUMA_REACH {
-        // SAFETY: the caller enables V's ISA and the checked tile is one edge.
-        unsafe { super::long_luma::single::<V>(plane, e) };
+    let extent = reach(e);
+    if extent == LUMA_REACH {
+        if LINES == LANES {
+            // SAFETY: the caller enables V's ISA and the checked tile is one edge.
+            unsafe { super::long_luma::single::<V>(plane, e) };
+        } else {
+            let values = load::<V>(plane, e, LUMA_REACH);
+            if let Some(filtered) = filter_long_tail(values, e) {
+                store(plane, e, LUMA_REACH, &filtered);
+            }
+        }
         return;
     }
     let values = if LINES == LANES {
         load_full::<V>(plane, e, checked_origin(plane, e))
     } else {
-        load::<V>(plane, e)
+        load::<V>(plane, e, extent)
     };
     if let Some(out) = compute_luma::<V, LINES, EXTENDED>(&values, e) {
         if LINES == LANES {
             store_full(plane, e, checked_origin(plane, e), &out);
         } else {
-            store(plane, e, &out);
+            store(plane, e, extent, &out);
         }
     }
 }
@@ -482,7 +504,7 @@ pub(super) unsafe fn luma<
 /// V's ISA is enabled (dispatch contract); every index is bounds checked.
 #[inline(always)]
 pub(super) unsafe fn luma_u16<
-    V: I16x8Shuffles + I16FilterLanes,
+    V: I16x8Shuffles + I16FilterLanes + crate::simd::I16x8Tiles,
     const LINES: usize,
     const EXTENDED: bool,
 >(
@@ -504,6 +526,12 @@ pub(super) unsafe fn luma_u16<
         };
         if let Some(out) = compute_short_edge::<V>(samples::load_u16::<V>(plane, &edge), e) {
             samples::store_u16(plane, &edge, out, (1, samples::POSITIONS - 1), max_val);
+        }
+        return;
+    }
+    if LINES == SEGMENT && reach(e) == LUMA_REACH {
+        if let Some(out) = filter_long_tail(load_u16::<V>(plane, e), e) {
+            store_u16(plane, e, &out, max_val);
         }
         return;
     }
@@ -652,6 +680,14 @@ pub(super) fn long_middle<V: I16FilterLanes, const EXTENDED: bool>(
     }
 }
 
+/// `(middle * weight + far * (64 - weight) + 32) >> 6`, with
+/// `difference = middle - far`. The difference fits in signed i16 at
+/// all supported depths, and the largest Q15 weight is 59 * 512.
+#[inline(always)]
+pub(super) fn long_blend<V: I16Lanes>(far: V, difference: V, weight: i32) -> V {
+    far.add(difference.mul_q15_round(V::splat((weight as i16) << 9)))
+}
+
 #[inline(always)]
 fn long<V: I16FilterLanes, const EXTENDED: bool>(
     p: &[V; 8],
@@ -665,16 +701,10 @@ fn long<V: I16FilterLanes, const EXTENDED: bool>(
     for (which, side) in [p, q].into_iter().enumerate() {
         let length = lengths[which];
         let far = round(side[length - 1].add(side[length]), 1);
-        let (weights, limits): (&[i16], &[i32]) = if length == 7 {
-            (&[59, 50, 41, 32, 23, 14, 5], &[6, 5, 4, 3, 2, 1, 1])
-        } else if EXTENDED && length == 5 {
-            (&[58, 45, 32, 19, 6], &[6, 5, 4, 3, 2])
-        } else {
-            (&[53, 32, 11], &[6, 4, 2])
-        };
+        let difference = middle.sub(far);
+        let (weights, limits) = (long_weights(length), long_limits(length));
         for i in 0..length {
-            let acc = V::acc_mul_add2(V::acc_zero(), middle, weights[i], far, 64 - weights[i]);
-            let value = V::acc_round_shift_narrow(acc, 32, 6);
+            let value = long_blend(far, difference, weights[i]);
             out[if which == 0 { 7 - i } else { 8 + i }] =
                 clip(value, side[i], (tc * limits[i]) >> 1);
         }

@@ -23,7 +23,8 @@ Record schema (kind "idea"; absent values are left out when stored):
     codecs presets  where it was tried (lists)
     branch commits  where the code is or was (commits: list)
     params    registered parameters involved (list)
-    outcome   adopted | rejected | held | partial | unclear
+    outcome   adopted | rejected | held | partial | unclear (overall)
+    rungs     per-rung outcomes a tool recorded, "codec@preset=outcome" (latest per rung)
     reason    one line with the key numbers
     docs      doc sections, "path#section"
     rows      ledger measurement row ids this idea covers
@@ -42,11 +43,11 @@ from . import levers
 KIND = "idea"
 OUTCOMES = ("adopted", "rejected", "held", "partial", "unclear")
 FIELDS = ("id", "kind", "idea", "name", "what", "first", "last", "codecs", "presets", "branch",
-          "commits", "params", "outcome", "reason", "docs", "rows", "date", "source")
-LISTS = ("codecs", "presets", "commits", "params", "docs", "rows")
+          "commits", "params", "outcome", "rungs", "reason", "docs", "rows", "date", "source")
+LISTS = ("codecs", "presets", "commits", "params", "docs", "rows", "rungs")
 #: Fields `search` matches against (all words must occur, case-insensitive).
 SEARCHED = ("idea", "name", "what", "codecs", "presets", "branch", "commits", "params",
-            "outcome", "reason", "docs")
+            "outcome", "rungs", "reason", "docs")
 #: Ledger rows linked by one --link before `add` refuses as too broad.
 MAX_LINKED = 400
 NAME_WIDTH = 38
@@ -146,7 +147,7 @@ def add(args: argparse.Namespace) -> None:
     fields = {f: (previous or {}).get(f) for f in FIELDS if f not in ("id", "date", "source")}
     given = {"name": args.name, "what": args.what, "first": args.first, "last": args.last,
              "branch": args.branch, "outcome": args.outcome, "reason": args.reason,
-             **{name: split(getattr(args, name)) for name in LISTS}}
+             **{name: split(getattr(args, name, None)) for name in LISTS}}
     for name, value in given.items():
         if value is None:
             continue
@@ -172,16 +173,46 @@ def add(args: argparse.Namespace) -> None:
           f"in {levers.spool_path()}")
 
 
+def rung_outcomes(idea: dict) -> dict[str, str]:
+    """{"codec@preset": outcome} of the idea's per-rung records (the latest per rung)."""
+    return dict(entry.split("=", 1) for entry in idea.get("rungs") or [])
+
+
+def other_rungs(idea: dict, rung: str) -> bool:
+    """Whether the idea covers a rung besides `rung`: a per-rung record of another rung,
+    or codecs or presets naming another codec or preset."""
+    codec, preset = rung.split("@", 1)
+    return (any(r != rung for r in rung_outcomes(idea))
+            or any(c != codec for c in idea.get("codecs") or [])
+            or any(p != preset for p in idea.get("presets") or []))
+
+
 def revise(key: str, rows: list[str], reason: str, source: str,
-           outcome: str | None = None) -> dict:
-    """A revision of idea `key` that links `rows` and states `reason` (and `outcome`,
-    else the previous one): how a tool records its verdict on an existing idea."""
+           outcome: str | None = None, rung: str | None = None) -> dict:
+    """A revision of idea `key` that links `rows` and states `reason`: how a tool records
+    its verdict on an existing idea.
+
+    With `rung` ("codec@preset"), `outcome` is that rung's: it is stored per rung, and it
+    becomes the overall outcome only when the idea covers no other rung. An idea adopted
+    on one rung and failing on another stays as it was (2026-11-23: a train fail on H.264
+    faster turned an idea in eight presets into "rejected"). Without `rung`, `outcome`
+    (else the previous one) is the overall outcome."""
     previous = next((i for i in load_ideas() if i["idea"] == key), None)
     if previous is None:
         raise SystemExit(f"no idea {key!r} in the ledger (record it with `ideas add`)")
     fields = {f: previous.get(f) for f in FIELDS if f not in ("id", "date", "source")}
+    overall = outcome or previous["outcome"]
+    if rung is not None:
+        if outcome:
+            rungs = {**rung_outcomes(previous), rung: outcome}
+            fields["rungs"] = [f"{r}={o}" for r, o in sorted(rungs.items())]
+        if other_rungs(previous, rung):
+            overall = previous["outcome"]
+        codec, preset = rung.split("@", 1)
+        fields["codecs"] = (previous.get("codecs") or []) + [codec]
+        fields["presets"] = (previous.get("presets") or []) + [preset]
     fields.update(rows=(previous.get("rows") or []) + rows, reason=reason, last=levers.today(),
-                  outcome=outcome or previous["outcome"])
+                  outcome=overall)
     idea = make_idea(**fields, source=source)
     levers.append([idea])
     return idea

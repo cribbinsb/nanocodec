@@ -57,6 +57,7 @@ pub(crate) fn diff_fns() -> DiffFns {
             block_sums_w32,
             block_sums_w64,
         ],
+        halfpel_cross: None,
         sub_pixel_variance: [
             sub_pixel_variance_w4,
             sub_pixel_variance_w8,
@@ -65,6 +66,8 @@ pub(crate) fn diff_fns() -> DiffFns {
             sub_pixel_variance_w64,
         ],
         sse_8x8_row,
+        plane_sse,
+        variance_8x8_row: None,
     }
 }
 
@@ -252,4 +255,9 @@ unsafe fn sse_8x8_row(
         ];
         *sse = lanes.iter().sum::<i32>() as u32;
     }
+}
+
+unsafe fn plane_sse(a: &nc_common::PlaneView<'_>, b: &nc_common::PlaneView<'_>) -> u64 {
+    // SAFETY: the dispatch verifies the ISA and that both planes match.
+    unsafe { generic::plane_sse::<I16x8>(a, b) }
 }

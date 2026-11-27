@@ -23,6 +23,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .clipframes import decoder_environment
 from .config import Paths, find_tool
 
 
@@ -47,8 +48,9 @@ def probe_frames(bitstream: Path, paths: Paths, picture_types: bool = False) -> 
     cmd = [str(find_tool("ffprobe", paths)), "-v", "error",
            "-show_entries", "frame=pkt_size,pict_type,key_frame:packet=flags", "-of", "json",
            str(bitstream)]
+    # the system ffprobe fails to load (exit 127) under the conda library path cv2 sets
     proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                          check=True)
+                          check=True, env=decoder_environment())
     # Asking for both sections interleaves them in one list, tagged by type.
     entries = json.loads(proc.stdout).get("packets_and_frames", [])
     frames = [e for e in entries if e.get("type") == "frame"]
@@ -63,8 +65,9 @@ def _packet_frames(bitstream: Path, paths: Paths) -> list[FrameInfo]:
     streams and the anchors' carry one packet per shown frame, in display order."""
     cmd = [str(find_tool("ffprobe", paths)), "-v", "error",
            "-show_entries", "packet=size,flags", "-of", "json", str(bitstream)]
+    # the system ffprobe fails to load (exit 127) under the conda library path cv2 sets
     proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                          check=True)
+                          check=True, env=decoder_environment())
     return [FrameInfo(bytes=int(p["size"]),
                       frame_type="I" if KEY_PACKET_FLAG in p.get("flags", "") else "P")
             for p in json.loads(proc.stdout).get("packets", [])]

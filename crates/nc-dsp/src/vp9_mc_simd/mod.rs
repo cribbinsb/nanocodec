@@ -20,6 +20,8 @@ mod neon;
 mod simd128;
 #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
 mod simd128_dot;
+#[cfg(target_arch = "aarch64")]
+mod vertical_i8mm;
 
 pub(crate) const MAX_SIDE: usize = 64;
 
@@ -34,8 +36,12 @@ pub(crate) fn kernel(isa: Isa) -> ConvolveFn {
         Isa::Avx512 => avx512::convolve,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => {
-            if std::arch::is_aarch64_feature_detected!("dotprod") {
-                neon::convolve_dotprod
+            if std::arch::is_aarch64_feature_detected!("i8mm")
+                && std::arch::is_aarch64_feature_detected!("dotprod")
+            {
+                neon::convolve_i8mm
+            } else if std::arch::is_aarch64_feature_detected!("dotprod") {
+                neon::convolve_dotprod::<false>
             } else {
                 neon::convolve
             }
@@ -87,10 +93,17 @@ impl Entry for NeonEntry {
 }
 
 #[cfg(target_arch = "aarch64")]
+struct NeonI8mmEntry;
+#[cfg(target_arch = "aarch64")]
+impl Entry for NeonI8mmEntry {
+    const CONVOLVE: ConvolveFn = neon::convolve_i8mm;
+}
+
+#[cfg(target_arch = "aarch64")]
 struct NeonDotprodEntry;
 #[cfg(target_arch = "aarch64")]
 impl Entry for NeonDotprodEntry {
-    const CONVOLVE: ConvolveFn = neon::convolve_dotprod;
+    const CONVOLVE: ConvolveFn = neon::convolve_dotprod::<false>;
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -162,7 +175,11 @@ pub(crate) fn families(isa: Isa) -> [[crate::mc::ConvolveFn; 5]; 3] {
         Isa::Avx512 => families_of::<Avx512Entry>(),
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => {
-            if std::arch::is_aarch64_feature_detected!("dotprod") {
+            if std::arch::is_aarch64_feature_detected!("i8mm")
+                && std::arch::is_aarch64_feature_detected!("dotprod")
+            {
+                families_of::<NeonI8mmEntry>()
+            } else if std::arch::is_aarch64_feature_detected!("dotprod") {
                 families_of::<NeonDotprodEntry>()
             } else {
                 families_of::<NeonEntry>()

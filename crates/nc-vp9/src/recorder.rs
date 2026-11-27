@@ -340,9 +340,14 @@ impl TileRecorder {
     /// until the frame ends), segment ids at the tree probabilities of the
     /// ids written so far.
     pub(crate) fn estimated_bits_since(&self, mark: RecorderMark) -> f32 {
+        let bits = &self.bits[mark.bits..];
+        if !self.segment_ids.has_ids() {
+            // Fixed and context-coded bits already carry their probabilities.
+            // Keep the same sequential floating-point sum for the RD ties.
+            return bits.iter().map(|r| bit_cost(r.bit, r.prob)).sum();
+        }
         let segment_probs = self.segment_ids.tree_probs();
-        self.bits[mark.bits..]
-            .iter()
+        bits.iter()
             .map(|recorded| {
                 let prob = match recorded.slot {
                     slot if (SEGMENT_TREE_SLOT..MODE_SLOT_BASE).contains(&slot) => {

@@ -666,10 +666,12 @@ fn lost_marks_and_keys_are_refused_in_a_flat_chain() {
 }
 #[test]
 fn lost_keys_in_layered_long_term_streams_are_refused() {
-    // Keys at 16 and 32 are lost: the T0 pictures after them name the key
+    // Keys at 16 and 35 are lost: the T0 pictures after them name the key
     // as long-term index 0, which the receiver holds from frame 0 or 16
-    // unless the gap through frame_num 0 drops it.
-    lost_marks_and_keys_are_refused(3, &[16, 17, 18, 32]);
+    // unless the gap through frame_num 0 drops it. The loss of 16, reported
+    // at 19, is answered by a key there, which restarts the key schedule
+    // (`key_clock.rs`): the next scheduled key is 35, not 32.
+    lost_marks_and_keys_are_refused(3, &[16, 17, 18, 35]);
 }
 #[test]
 fn lost_marks_and_keys_are_refused_with_three_layers() {
@@ -875,9 +877,25 @@ fn disposable_overlay_changes_only_disposable_frames_and_decodes() {
 }
 #[test]
 fn stream_fixed_parameters_are_not_per_frame() {
-    for name in ["nonbase.h264.chroma_qp_offset", "nonbase.h264.trellis_i4x4"] {
+    for name in ["nonbase.h264.chroma_qp_offset", "nonbase.h264.cavlc"] {
         let mut params = ParamOverrides::default();
         params.set(name, 1.0);
         assert!(Encoder::<crate::H264Backend>::new(config(32, 32, 30, params)).is_err());
     }
+}
+#[test]
+fn startup_lookahead_switch_turns_the_lookahead_off() {
+    // H.264 asks for the second frame under rate control (its backend's
+    // first-key cap); `rate.startup_lookahead` 0 asks for none, so the CLI
+    // and capture loops code the first frame at once.
+    let wants = |params: ParamOverrides| {
+        let mut enc = Encoder::<crate::H264Backend>::new(config(64, 64, 30, params)).unwrap();
+        enc.set_rate_control(nc_encoder::RateControlConfig::new(200_000))
+            .unwrap();
+        enc.wants_look_ahead()
+    };
+    assert!(wants(ParamOverrides::default()));
+    let mut off = ParamOverrides::default();
+    off.set("rate.startup_lookahead", 0.);
+    assert!(!wants(off));
 }

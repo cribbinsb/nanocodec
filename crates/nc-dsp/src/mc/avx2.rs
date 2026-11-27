@@ -4,6 +4,9 @@
 //!
 //! Kernel contract: see the `mc` module docs.
 
+#[path = "avx2_h264_vertical.rs"]
+mod h264_vertical;
+
 use super::generic::{self, h264_chroma_classes, h264_luma_phases};
 use super::{
     BiFn, CompoundFns, ConvolveFn, H264_CHROMA_BOTH, H264_CHROMA_COPY, H264_CHROMA_HORIZONTAL,
@@ -195,7 +198,25 @@ macro_rules! width_kernels {
             fy: usize,
         ) {
             // SAFETY: AVX2 is enabled for this function.
-            unsafe { generic::h264_luma::<$lanes>(src, ss, dst, ds, $width, h, fx, fy) }
+            unsafe {
+                if $width <= 16 && fx == 0 && fy != 0 && h.is_multiple_of(2) {
+                    h264_vertical::predict::<$width>(src, ss, dst, ds, h, fy);
+                } else if $width <= 8 && fy == 0 && fx != 0 && h.is_multiple_of(2) {
+                    h264_vertical::horizontal::<$width>(src, ss, dst, ds, h, fx);
+                } else if $width <= 8 && fx & fy & 1 != 0 && h.is_multiple_of(2) {
+                    h264_vertical::diagonal::<$width>(src, ss, dst, ds, h, (fx, fy));
+                } else if $width <= 8
+                    && fx != 0
+                    && fy != 0
+                    && (fx == 2 || fy == 2)
+                    && h <= 16
+                    && h.is_multiple_of(2)
+                {
+                    h264_vertical::center::<$width, 0, 0>(src, ss, dst, ds, h, (fx, fy));
+                } else {
+                    generic::h264_luma::<$lanes>(src, ss, dst, ds, $width, h, fx, fy);
+                }
+            }
         }
 
         #[target_feature(enable = "avx2")]
@@ -261,7 +282,19 @@ unsafe fn h264_luma_phase<
 ) {
     debug_assert_eq!((h, fx, fy), (H, FX, FY));
     // SAFETY: AVX2 is enabled for this function.
-    unsafe { generic::h264_luma::<V>(src, ss, dst, ds, W, H, FX, FY) }
+    unsafe {
+        if FX == 0 && FY != 0 {
+            h264_vertical::predict::<W>(src, ss, dst, ds, H, FY);
+        } else if W <= 8 && FY == 0 && FX != 0 {
+            h264_vertical::horizontal::<W>(src, ss, dst, ds, H, FX);
+        } else if W <= 8 && FX & FY & 1 != 0 {
+            h264_vertical::diagonal::<W>(src, ss, dst, ds, H, (FX, FY));
+        } else if W <= 8 && FX != 0 && FY != 0 && (FX == 2 || FY == 2) {
+            h264_vertical::center::<W, FX, FY>(src, ss, dst, ds, H, (FX, FY));
+        } else {
+            generic::h264_luma::<V>(src, ss, dst, ds, W, H, FX, FY);
+        }
+    }
 }
 
 /// H.264 chroma of a `W`x`H` block whose offsets are in class `CLASS`

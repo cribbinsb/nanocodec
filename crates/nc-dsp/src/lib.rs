@@ -20,6 +20,15 @@ mod analysis_stats;
 pub use analysis_stats::{AnalysisBlock, AnalysisChanges, AnalysisSummary};
 
 pub mod av1_film_grain;
+#[allow(unsafe_code)]
+mod av1_forward;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(unsafe_code)]
+mod av1_forward_simd;
 mod av1_intra;
 mod av1_inverse;
 pub mod av1_mc;
@@ -60,6 +69,8 @@ mod intra_runs;
 mod lpf_bytes;
 mod mc;
 pub mod ms_ssim;
+#[allow(unsafe_code)]
+mod nn;
 mod pixel;
 #[allow(unsafe_code)]
 mod prefetch;
@@ -68,6 +79,7 @@ pub mod reversible_wht4;
 mod sample;
 mod sao;
 mod simd;
+mod transpose;
 mod txfm;
 mod vp9_deblock;
 mod vp9_intra;
@@ -90,7 +102,7 @@ pub use gram::{
     GRAM_MAX_MAGNITUDE, GRAM_MAX_ROWS, GRAM_ROW_ALIGN, GRAM_ROW_MAX_LEN, gram_index, gram_terms,
 };
 pub use h264_intra::{
-    H264_INTRA_8X8_SIDE, H264Intra8x8Edges, H264Intra8x8Refs, h264_intra_8x8_mode,
+    H264_INTRA_8X8_SIDE, H264Intra8x8Edges, H264Intra8x8Refs, h264_intra_8x8_mode, h264_plane,
 };
 pub use hevc_intra::PlanarEdges as HevcPlanarEdges;
 pub use hevc_weight::HevcWeights;
@@ -117,7 +129,7 @@ pub use av1_inverse::{
 pub use av2_txfm::Av2TxSize;
 pub use av2_txfm::typed::{Av2Kernel, Av2TxType};
 pub use block::BlockSize;
-pub use block_copy::{BlockCopy, copy_square, copy_square_view};
+pub use block_copy::{BlockCopy, copy_square, copy_square_samples, copy_square_view};
 pub use cdef::band::{
     CDEF_MAX_SETS, CdefLines, CdefSets, CdefStrengths, CdefUnit, cdef_adjust_strength,
 };
@@ -142,7 +154,13 @@ pub use dispatch::{
 pub use mc::{
     Filter, SubBlockMotion, VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock, vvc_predict_scaled,
 };
-pub use pixel::{GRID_BLOCKS, GRID_LARGE_BLOCKS, GRID_SMALL_BLOCKS, GridBest, GridRows};
+pub use nn::{
+    NN_ACCUMULATOR_ALIGN, NN_ACTIVATION_MAX, NN_DENSE_INPUT_ALIGN, NN_MAX_ACCUMULATOR_SHIFT,
+    NN_MAX_DENSE_SHIFT, nn_dense_max_bias,
+};
+pub use pixel::{
+    GRID_BLOCKS, GRID_LARGE_BLOCKS, GRID_SMALL_BLOCKS, GridBest, GridRows, MacroblockSad,
+};
 pub use prefetch::prefetch_block;
 pub use resample::PlaneResampler;
 pub use sample::Moments;
@@ -150,6 +168,7 @@ pub use sao::{
     MAX_BAND_SAMPLES, SAO_BANDS, SAO_EO_NEIGHBOURS, SaoBandStats, SaoCtb, SaoLimits, SaoStats,
     sao_edge_restricted,
 };
+pub use transpose::transpose_square;
 pub use txfm::low_keep as av1_low_keep;
 pub use txfm::{Av1Quantizer, DctSize};
 pub use vp9_loop_filter::{VP9_EDGE_LINES, Vp9EdgeFilter};

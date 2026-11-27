@@ -8,6 +8,7 @@
   <title>nanocodec speed</title>
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="site.css">
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
 <header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
@@ -36,7 +37,10 @@
       land near the chart's middle rung on three development clips; real-time CBR costs our encoders slightly more.
       The Jetson core's clock is locked; on x86 (a rented AMD EPYC 9R45, Zen 5, and a rented AMD EPYC 7R13, Zen 3,
       which has no AVX-512, so every encoder runs its AVX2 code) and on server Arm (a rented AWS Graviton4, Neoverse
-      V2) each run is paired with an x264 run in the same round, one pair at a time.</p>
+      V2) each run is paired with an x264 run in the same round, one pair at a time. Our times are then scaled per
+clip to an earlier session's x264 medium time, and the references keep the times of their own earlier sessions,
+so points from different sessions share one axis. The timing clips are not the clips the charts' quality is
+measured on.</p>
     <p class="note platforms"></p>
     <div class="encode"></div>
     <h2 id="browser">In the browser (WebAssembly)</h2>
@@ -46,25 +50,33 @@
       build's on the same streams. Fast only where the demo offers it.</p>
     <div class="wasm"></div>
     <h3 id="wasm-encode">Browser encode against ffmpeg.wasm</h3>
-    <p class="prose">Encode speed of our browser module and of the official single-thread ffmpeg.wasm
-      (x264), on one x86 core in the same session: one 720p clip at the chart's middle rung. <strong>ffmpeg.wasm is
-      a generic build without SIMD</strong>, so it is a weak yardstick for what a SIMD port of x264 would reach;
-      no estimate of such a port is plotted. Quality is the chart's point for the same encoder and preset (the
-      held-out fresh clips against x264 --tune psnr, native builds); the browser runs were not scored themselves.
-      Lower is fewer bits, right is faster.</p>
+    <p class="prose">Encode speed of our browser module and of the official single-thread ffmpeg.wasm <span class="version">0.12.10</span>
+      (x264), on one x86 core in the same session, one 720p clip at one rate: the chart's middle-rung target, a
+      peak of twice the target and a one-second buffer, the same on both sides; each encode's achieved rate is in
+      the table. Both sides time their encode calls alone (ffmpeg.wasm's own per-call encode times; its module
+      start-up is excluded). These are speed figures only: the browser encodes are single-rate encodes of one
+      clip and were not scored, so no quality is shown for them. <strong>ffmpeg.wasm <span class="version">0.12.10</span> is FFmpeg <span class="version">5.1.4</span>
+      built with <code>--disable-asm</code></strong>: the compiler emits WASM SIMD128, but x264's and FFmpeg's
+      hand-written SIMD kernels are off, so it is a weak yardstick for what a hand-vectorised port would reach.</p>
     <div class="chart-card">
       <div class="chart wasm-encode-chart"></div>
       <div class="tooltip" role="tooltip" hidden></div>
     </div>
     <div class="wasm-encode-table"></div>
     <h2 id="decoders">Decoders against the established ones</h2>
-    <p class="prose">Our decoders' time per frame against FFmpeg (H.264, HEVC; also VP9 in brackets), dav1d
-      (AV1), vpxdec (VP9), VVdeC (VVC) and avmdec (AV2, a research reference decoder not built for speed) natively,
-      and in the browser against ffmpeg.wasm (no SIMD; it has no AV1, VVC or AV2 decoder), every
-      decoder with one thread, though the references are normally run multi-threaded and are faster that way.
-      Streams: ours, and third-party ones (x264, openh264, x265 with B-frames, IP cameras, SVT-AV1, libaom,
-      vpxenc). Below 1 means ours took less time. Ours and the references ran in the same session on each
-      machine; the caption under the chart says which machine, build and rounds.</p>
+    <p class="prose">Our decoders' time per frame, natively on one x86 core (AWS c8a.large, AMD EPYC 9R45) and on
+      one Jetson Orin Nano core (Cortex-A78AE at a fixed clock), against FFmpeg's decoders (H.264, HEVC),
+      libvpx (VP9) and VVdeC (VVC), each with FFmpeg's decoder beside it, dav1d through libavcodec (AV1), and
+      AVM (AV2, a research reference decoder not built for speed) with dav2d (<span class="version">237229e</span>,
+      with its assembly) beside it; on x86 dav2d decodes both of our AV2 streams in less time than ours. Every reference is timed in process with
+      the decode alone: packets already in memory, decoder open, probing and output excluded (our side includes
+      building the decoder and scanning the container framing in memory). In the browser, against ffmpeg.wasm
+      <span class="version">0.12.10</span> (FFmpeg <span class="version">5.1.4</span> built with <code>--disable-asm</code>: compiler-generated SIMD128 only; it has no
+      AV1, VVC or AV2 decoder), timing the decode calls alone on both sides. Every decoder runs with one thread,
+      though the references are normally run multi-threaded and are faster that way. Streams: ours, and third-party ones (x264,
+      openh264, x265 with B-frames, IP cameras, SVT-AV1, libaom, vpxenc). Below 1 means ours took less time.
+      Ours is release 0.6.0's PGO build (its decoder unchanged, plus only the in-process timing option); the
+      caption under the chart says which machine, build and rounds.</p>
     <div class="controls decoder-controls"></div>
     <p class="note decoder-note"></p>
     <div class="chart-card"><div class="chart ratio-chart"></div></div>

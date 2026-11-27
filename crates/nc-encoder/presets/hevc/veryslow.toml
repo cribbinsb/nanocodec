@@ -71,3 +71,39 @@ layers.propagation = 1
 layers.propagation_flat = 1
 layers.propagation_grid = 3
 layers.propagation_prekey = 1
+# Key frames: VVC slower's key RD search shape (1.5 gate, two levels each way) and periodic
+# keys 2 QP units finer (HEVC medium's). With the search pinned off this rung coded cheaper,
+# worse keys than medium (key ladder inverted). nceval.train against 038043e0f (draw
+# 2026-11-22, idea key-search-on-rungs-above-medium): L3 J -1.30% [-1.83, -0.79], final check
+# (600 f) -0.59% [-1.00, -0.19], no guard. One-frame key BD-J -7.3 %.
+planner.key_rd_split = 1
+planner.key_rd_margin = 1.5
+planner.key_rd_deeper = 2
+planner.key_rd_shallower = 2
+rate.key_level_finer = 2
+
+# G2 motion / sub-pel exit shifts: HEVC medium's (DEFAULT_PARAMS, 2026-11-22)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-1.21 / -0.28 %).
+rate.key_cap_buffer_first = 0.8

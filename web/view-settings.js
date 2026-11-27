@@ -16,6 +16,13 @@ export const RATE_LIMITS_KBPS = { min: 10, max: 100000, step: 10 };
 export const PEAK_TO_TARGET = 2;
 /** Keyframe interval choices, in seconds. */
 export const GOP_SECONDS = [1, 2, 5, 10, 30];
+/**
+ * The key-interval choice "On clip start": a key frame where a sample clip loops, as a
+ * pre-encoded stream (one loop of its clip, replayed from its key frame) keys. A live
+ * view's default on a clip (owner, 2026-11-22: the views keyed at different times,
+ * unseen); a source that does not loop (webcam, scene, file) is not offered it.
+ */
+export const KEY_AT_CLIP_START = 'clip-start';
 /** Rate-control buffer choices, in milliseconds. */
 export const BUFFER_CHOICES_MS = [250, 500, 1000, 2000];
 /** The page's own colour handling: 8-bit 4:2:0, which every stream must also be. */
@@ -30,7 +37,7 @@ export function matchingSettings(entry) {
   return {
     width: entry.width, height: entry.height, fps: entry.fps, codec: entry.codec, rateMode: 'cbr',
     targetKbps: entry.targetKbps, peakKbps: entry.targetKbps * PEAK_TO_TARGET, bufferMs: entry.bufferMs,
-    gopSeconds: entry.keyInterval / entry.fps,
+    gop: entry.keyInterval >= entry.frames ? KEY_AT_CLIP_START : entry.keyInterval / entry.fps,
   };
 }
 
@@ -45,7 +52,36 @@ export function matchProblems(entry, clipIds) {
     if (rate < RATE_LIMITS_KBPS.min || rate > RATE_LIMITS_KBPS.max || rate % RATE_LIMITS_KBPS.step) problems.push(`${rate} kbps is outside the rate inputs`);
   }
   if (!BUFFER_CHOICES_MS.includes(settings.bufferMs)) problems.push(`a ${settings.bufferMs} ms buffer is not offered`);
-  if (!GOP_SECONDS.includes(settings.gopSeconds)) problems.push(`a ${settings.gopSeconds} s key interval is not offered`);
+  if (settings.gop !== KEY_AT_CLIP_START && !GOP_SECONDS.includes(settings.gop)) problems.push(`a ${settings.gop} s key interval is not offered`);
   if (entry.bitDepth !== PIXEL_FORMAT.bitDepth || entry.chroma !== PIXEL_FORMAT.chroma) problems.push('not 8-bit 4:2:0');
   return problems;
+}
+
+/**
+ * Whether a view codes a clip at more than half its source file's bitrate: the source's
+ * own coding then shows in the comparison (the project codes a clip at most at half its
+ * source bitrate, CLAUDE.md "Testing"). Unknown (null) source rates are not flagged.
+ */
+export const SOURCE_RATE_SHARE = 0.5;
+export function overSourceShare(targetKbps, sourceKbps) {
+  return Number.isFinite(sourceKbps) && targetKbps > SOURCE_RATE_SHARE * sourceKbps;
+}
+
+/** The longest periodic key interval a live encoder takes (nc-web BrowserEncoder), in seconds. */
+const MAX_KEY_SECONDS = 30;
+
+/**
+ * Keys "On clip start" for a view coding every `step`th tick of a `loopTicks`-tick clip
+ * loop: the encode worker requests a key at the first frame it codes in each new loop
+ * (encode-worker.js), and the periodic interval is one loop of frames when the loop is a
+ * whole number of them (its keys fall on those same frames, so `--intra-period` alone
+ * reproduces the stream), else the longest the encoder takes, which then adds a key every
+ * MAX_KEY_SECONDS (`extraSeconds`; shown in the view). `requested`: the frames the
+ * worker requests keys at, for the first `frames` frames.
+ */
+export function clipStartKeys(loopTicks, step, fps, frames = 0) {
+  const whole = loopTicks % step === 0;
+  const requested = [];
+  for (let loop = 1; Math.ceil(loop * loopTicks / step) < frames; loop++) requested.push(Math.ceil(loop * loopTicks / step));
+  return { keyInterval: whole ? loopTicks / step : MAX_KEY_SECONDS * fps, extraSeconds: whole ? null : MAX_KEY_SECONDS, requested: whole ? [] : requested };
 }

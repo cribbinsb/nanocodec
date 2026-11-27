@@ -19,8 +19,13 @@
 //!   costs). It needs SVT's own λ scale to be safe; revisit with the
 //!   rate–distortion λ calibration.
 
+use nc_common::PlaneView;
+use nc_dsp::{BlockSize, Dsp};
+
 /// Chroma sampled-SAD denominator; the tunable numerator defaults to SVT's 5.
 const CHROMA_SKIP_SAD_DEN: u32 = 8;
+/// Fewest rows the even-row SAD kernel takes ([`Dsp::sad_even_rows`]).
+const SAMPLED_SAD_MIN_ROWS: usize = 8;
 
 /// Drop trailing ±1 levels preceded by at least `min_zero_run` zeros in scan
 /// order. Zero also removes contiguous trailing ones, including a lone DC one.
@@ -50,19 +55,34 @@ pub fn shave_trailing_ones(
     eob
 }
 
-/// Whether a chroma residual (`n`x`n`, row-major) is too weak to code.
+/// Whether an `n`x`n` chroma residual is too weak to code, from the source
+/// block `src` and its prediction `pred` (SVT samples every other row).
+/// Blocks of 8 rows or more take the SAD kernel over the even rows, before
+/// any residual is formed; a 4x4 block's two sampled rows are summed here.
 #[must_use]
-pub fn skip_chroma_residual(residual: &[i16], n: usize, numerator: u32) -> bool {
+pub fn skip_chroma_residual(
+    dsp: &Dsp,
+    src: &PlaneView<'_>,
+    pred: &PlaneView<'_>,
+    n: usize,
+    numerator: u32,
+) -> bool {
     if numerator == 0 {
         return false;
     }
-    // A row sums in 16 bits: an 8-bit residual is at most 255 in magnitude
-    // and a chroma row at most 32 wide (8160).
-    let sad: u32 = residual[..n * n]
-        .chunks_exact(n)
-        .step_by(2)
-        .map(|row| u32::from(row.iter().map(|&v| v.unsigned_abs()).sum::<u16>()))
-        .sum();
+    let sad = match BlockSize::new(n, n).filter(|size| size.height() >= SAMPLED_SAD_MIN_ROWS) {
+        Some(size) => dsp.sad_even_rows(size, src, pred),
+        None => (0..n)
+            .step_by(2)
+            .map(|y| {
+                src.row(y)[..n]
+                    .iter()
+                    .zip(&pred.row(y)[..n])
+                    .map(|(&s, &p)| u32::from(s.abs_diff(p)))
+                    .sum::<u32>()
+            })
+            .sum(),
+    };
     sad * CHROMA_SKIP_SAD_DEN < numerator * (n * n) as u32
 }
 
@@ -87,18 +107,52 @@ mod tests {
         assert_eq!(shave_trailing_ones(&scan, &mut levels, 1, 0), 0);
     }
 
+    /// `skip_chroma_residual` on an `n`x`n` source over a flat prediction.
+    fn skips(source: &[u8], n: usize, numerator: u32) -> bool {
+        let pred = vec![100u8; n * n];
+        skip_chroma_residual(
+            &Dsp::new(),
+            &PlaneView::new(source, n, n, n).expect("source covers the block"),
+            &PlaneView::new(&pred, n, n, n).expect("prediction covers the block"),
+            n,
+            numerator,
+        )
+    }
+
     #[test]
     fn chroma_threshold_samples_alternate_rows_and_zero_disables() {
-        let mut residual = vec![0i16; 16];
-        residual[0] = 9;
-        residual[4..8].fill(255); // This row is not sampled.
-        assert!(skip_chroma_residual(&residual, 4, 5)); // 9*8 < 5*16.
-        residual[0] = 10;
-        assert!(!skip_chroma_residual(&residual, 4, 5)); // Strict boundary.
-        assert!(skip_chroma_residual(&residual, 4, 6));
-        residual.fill(0);
-        assert!(skip_chroma_residual(&residual, 4, 5));
-        assert!(!skip_chroma_residual(&residual, 4, 0));
+        let mut source = vec![100u8; 16];
+        source[0] = 109;
+        source[4..8].fill(255); // This row is not sampled.
+        assert!(skips(&source, 4, 5)); // 9*8 < 5*16.
+        source[0] = 90;
+        assert!(!skips(&source, 4, 5)); // Strict boundary.
+        assert!(skips(&source, 4, 6));
+        source.fill(100);
+        assert!(skips(&source, 4, 5));
+        assert!(!skips(&source, 4, 0));
+    }
+
+    #[test]
+    fn chroma_threshold_kernel_rows_match_the_sampled_sum() {
+        for n in [8, 16, 32] {
+            let mut source = vec![100u8; n * n];
+            // Odd rows are not sampled; even rows carry a SAD of exactly
+            // the bound (n * n * 5 / 8), which is not below it.
+            for y in (1..n).step_by(2) {
+                source[y * n..][..n].fill(0);
+            }
+            let mut remaining = n * n * 5 / 8;
+            for v in source.chunks_exact_mut(n).step_by(2).flatten() {
+                let step = remaining.min(100);
+                *v = 100 + step as u8;
+                remaining -= step;
+            }
+            assert_eq!(remaining, 0);
+            assert!(!skips(&source, n, 5), "{n}x{n} at the bound");
+            source[0] -= 1;
+            assert!(skips(&source, n, 5), "{n}x{n} one below the bound");
+        }
     }
 
     #[test]

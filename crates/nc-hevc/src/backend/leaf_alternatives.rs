@@ -54,6 +54,14 @@ impl HevcBackend {
         }
     }
 
+    /// [`nc_encoder::CodecBackend::intra_alternative_estimate`]: the SATD
+    /// cost (with √λ · mode bits) the mode search gave candidate `rank` of
+    /// the ranking left by [`Self::key_intra_alternatives`].
+    pub(super) fn key_alternative_estimate(&self, rank: u8) -> Option<f32> {
+        let (_, ranking) = self.key_luma_ranking.as_ref()?;
+        Some(ranking.get(usize::from(rank))?.1)
+    }
+
     /// The luma mode and `intra_chroma_pred_mode` that `choice` names for
     /// `block`: the ranking left by [`Self::key_intra_alternatives`] (or
     /// `searched`, the mode search's own result, without one) and the
@@ -70,7 +78,7 @@ impl HevcBackend {
             .key_luma_ranking
             .as_ref()
             .filter(|(ranked, _)| ranked == block && self.slice == SliceKind::Intra)
-            .and_then(|(_, ranking)| ranking.get(usize::from(choice.luma)).copied())
+            .and_then(|(_, ranking)| Some(ranking.get(usize::from(choice.luma))?.0))
             .or(searched);
         let chroma = match choice.chroma {
             0 => predict::CHROMA_DM,

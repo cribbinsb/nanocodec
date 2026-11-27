@@ -70,6 +70,8 @@ def main() -> int:
     parser.add_argument("selection", type=Path)
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
+    parser.add_argument("--workers", type=int, default=PARALLEL_ENCODES,
+                        help="parallel encodes (each ENCODE_THREADS threads)")
     args = parser.parse_args()
     selection = json.loads(args.selection.read_text())
     inventory = {r["path"]: r for r in json.loads(args.inventory.read_text())["clips"]}
@@ -80,6 +82,11 @@ def main() -> int:
     previous = ({c["name"]: c for c in json.loads(set_path.read_text())["clips"]}
                 if set_path.exists() else {})
     jobs = [job for spec in selection["clips"] for job in forms(spec)]
+    names = [job["name"] for job in jobs]
+    if len(names) != len(set(names)):
+        # two parallel encodes into one file corrupt it (2026-11-23)
+        raise SystemExit("duplicate clip names: "
+                         f"{sorted({n for n in names if names.count(n) > 1})}")
 
     def build(job: dict) -> dict | None:
         out = out_dir / f"{job['name']}.mp4"
@@ -88,7 +95,7 @@ def main() -> int:
             return old
         return encode(job, out, inventory, clips_root.parent)
 
-    with ThreadPoolExecutor(PARALLEL_ENCODES) as pool:
+    with ThreadPoolExecutor(args.workers) as pool:
         entries = [e for e in pool.map(build, jobs) if e is not None]
     # the selection's own notes (strata, licence, samples) travel with the clip set
     notes = {k: v for k, v in selection.items() if k not in ("name", "clips")}
@@ -137,7 +144,9 @@ def encode(job: dict, out: Path, inventory: dict, data_root: Path,
            seconds: float | None = None) -> dict | None:
     source = probe(job["source"])
     width, height = output_size(source["width"], source["height"], job["max_height"])
-    fps = source["fps"] / 2 if source["fps"] > MAX_FPS else source["fps"]
+    # a variable-rate capture's real rate, counted by its selection (select_heldout.py)
+    native = job.get("source_fps", source["fps"])
+    fps = native / 2 if native > MAX_FPS else native
     seconds = seconds or job.get("seconds")
     keyint = round(fps)
     filters = ([f"fps={fps:g}"] if fps != source["fps"] else []) + \

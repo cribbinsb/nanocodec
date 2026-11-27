@@ -839,6 +839,13 @@ const PADDING_BITS: usize = 15;
 #[derive(Debug)]
 pub struct Reader<'a> {
     models: Option<Box<TileCdfs>>,
+    state: SymbolReader<'a>,
+}
+
+/// The range state and input window. Keep these separate from the model
+/// storage so decoding can borrow one CDF in place.
+#[derive(Debug)]
+struct SymbolReader<'a> {
     /// The tile's data not yet in the window.
     data: &'a [u8],
     /// The value in the top [`VALUE_BITS`], then the next stream bits.
@@ -858,14 +865,14 @@ impl<'a> Reader<'a> {
     #[cfg(feature = "analysis")]
     #[must_use]
     pub(crate) fn bits_consumed(&self) -> usize {
-        self.consumed
+        self.state.consumed
     }
 
     /// The arithmetic decoder's range (block traces print it, as dav2d's
     /// `DEBUG_BLOCK_INFO` prints `rng`).
     #[must_use]
     pub(crate) fn range(&self) -> u32 {
-        self.range
+        self.state.range
     }
 
     /// Start one tile. At most 15 implicit zero bits may follow its final byte.
@@ -875,8 +882,7 @@ impl<'a> Reader<'a> {
         if data.is_empty() {
             return Err(DecodeError::Truncated);
         }
-        let mut reader = Self {
-            models: None,
+        let mut state = SymbolReader {
             data,
             window: 0,
             bits: -INIT_BITS,
@@ -884,8 +890,11 @@ impl<'a> Reader<'a> {
             limit: data.len() * 8 + PADDING_BITS,
             range: TOP,
         };
-        reader.refill();
-        Ok(reader)
+        state.refill();
+        Ok(Self {
+            models: None,
+            state,
+        })
     }
 
     /// Enable normative within-tile adaptation before reading syntax symbols.
@@ -913,42 +922,78 @@ impl<'a> Reader<'a> {
         fixed: &[u16],
         select: impl FnOnce(&mut TileCdfs) -> &mut Cdf<N>,
     ) -> Result<usize> {
-        let Some(mut models) = self.models.take() else {
-            return self.fixed(fixed);
-        };
-        let result = self.symbol(select(&mut models));
-        self.models = Some(models);
-        result
+        if let Some(models) = self.models.as_deref_mut() {
+            self.state.symbol(select(models))
+        } else {
+            self.state.fixed(fixed)
+        }
     }
 
-    /// Fill the window below its valid bits with whole bytes. Past the
-    /// data the window's zero bits are the implicit padding, so it only
-    /// counts as full.
+    /// Read one symbol with fixed probabilities.
+    /// # Errors
+    /// Rejects malformed CDFs, invalid intervals and exhausted input.
+    pub fn fixed(&mut self, cdf: &[u16]) -> Result<usize> {
+        self.state.fixed(cdf)
+    }
+
+    /// Read a symbol and apply final AV2's trained-rate adaptation.
+    /// # Errors
+    /// Rejects invalid intervals and exhausted input.
+    pub fn symbol<const N: usize>(&mut self, cdf: &mut Cdf<N>) -> Result<usize> {
+        self.state.symbol(cdf)
+    }
+
+    /// Read true bypass bits with no probability scaling or adaptation.
+    /// # Errors
+    /// Rejects widths above 32 and exhausted input.
+    pub fn literal(&mut self, bits: u32) -> Result<u32> {
+        self.state.literal(bits)
+    }
+}
+
+impl SymbolReader<'_> {
+    /// Load whole bytes below the current value. At the end of the tile
+    /// the zero-filled window is valid only through the permitted padding.
+    #[cold]
     #[inline(never)]
     fn refill(&mut self) {
         let mut shift = VALUE_SHIFT - 8 - self.bits;
-        while shift >= 0 {
-            let Some((&byte, rest)) = self.data.split_first() else {
-                shift = -8;
-                break;
-            };
-            self.data = rest;
-            self.window |= u64::from(byte) << shift;
-            shift -= 8;
+        if let Some(word) = self.data.first_chunk::<8>() {
+            let bytes = (shift / 8 + 1) as usize;
+            let bits = 8 * bytes as i32;
+            self.window |= (u64::from_be_bytes(*word) >> (WINDOW_BITS - bits)) << (shift & 7);
+            self.data = &self.data[bytes..];
+            shift -= bits;
+        } else {
+            while shift >= 0 {
+                let Some((&byte, rest)) = self.data.split_first() else {
+                    shift = -8;
+                    break;
+                };
+                self.data = rest;
+                self.window |= u64::from(byte) << shift;
+                shift -= 8;
+            }
         }
-        self.bits = VALUE_SHIFT - 8 - shift;
+        let buffered = VALUE_SHIFT - 8 - shift;
+        let remaining = self
+            .limit
+            .saturating_sub(self.consumed)
+            .min(VALUE_SHIFT as usize);
+        self.bits = buffered.min(remaining as i32);
     }
 
-    /// Shift `count` stream bits into the value.
+    /// Shift `count` stream bits into the value. A nonnegative window
+    /// counter guarantees this stays within the tile plus its padding.
     #[inline]
     fn shift_in(&mut self, count: u32) -> Result<()> {
         self.window <<= count;
         self.bits -= count as i32;
         self.consumed += count as usize;
-        if self.consumed > self.limit {
-            return Err(DecodeError::Truncated);
-        }
         if self.bits < 0 {
+            if self.consumed > self.limit {
+                return Err(DecodeError::Truncated);
+            }
             self.refill();
         }
         Ok(())
@@ -968,10 +1013,7 @@ impl<'a> Reader<'a> {
         self.shift_in(shift)
     }
 
-    /// Read one symbol with fixed probabilities.
-    /// # Errors
-    /// Rejects malformed CDFs, invalid intervals and exhausted input.
-    pub fn fixed(&mut self, cdf: &[u16]) -> Result<usize> {
+    fn fixed(&mut self, cdf: &[u16]) -> Result<usize> {
         validate_cdf(cdf)?;
         self.read_valid(cdf)
     }
@@ -995,29 +1037,84 @@ impl<'a> Reader<'a> {
         Err(DecodeError::Malformed("AV2 entropy symbol"))
     }
 
-    /// Read a symbol and apply final AV2's trained-rate adaptation.
-    /// # Errors
-    /// Rejects invalid intervals and exhausted input.
-    pub fn symbol<const N: usize>(&mut self, cdf: &mut Cdf<N>) -> Result<usize> {
+    /// Four-level coefficient models often land in the first interval.
+    /// Keep that comparison and its fixed three-entry update inline.
+    #[inline]
+    fn read_four<const N: usize>(&mut self, cdf: &mut Cdf<N>) -> Result<usize> {
+        let range = self.range;
+        let value = self.value();
+        let first = range - scaled(cdf.inverse[0], range, 0, 4);
+        if value < first {
+            self.range = first;
+            self.normalize()?;
+            cdf.adapt(0);
+            return Ok(0);
+        }
+
+        let second = range - scaled(cdf.inverse[1], range, 1, 4);
+        let (symbol, lower, upper) = if value < second {
+            (1, first, second)
+        } else {
+            let third = range - scaled(cdf.inverse[2], range, 2, 4);
+            if value < third {
+                (2, second, third)
+            } else if value < range {
+                (3, third, range)
+            } else {
+                return Err(DecodeError::Malformed("AV2 entropy symbol"));
+            }
+        };
+        self.window -= u64::from(lower) << VALUE_SHIFT;
+        self.range = upper - lower;
+        self.normalize()?;
+        cdf.adapt(symbol);
+        Ok(symbol)
+    }
+
+    fn symbol<const N: usize>(&mut self, cdf: &mut Cdf<N>) -> Result<usize> {
+        if N == 4 {
+            return self.read_four(cdf);
+        }
         let symbol = self.read_valid(&cdf.inverse)?;
         cdf.adapt(symbol);
         Ok(symbol)
     }
 
-    /// Read true bypass bits with no probability scaling or adaptation.
-    /// # Errors
-    /// Rejects widths above 32 and exhausted input.
-    pub fn literal(&mut self, bits: u32) -> Result<u32> {
+    fn literal(&mut self, bits: u32) -> Result<u32> {
         if bits > 32 {
             return Err(DecodeError::Malformed("AV2 bypass width exceeds 32"));
+        }
+        // A longer bypass literal is long division by the unchanged
+        // range. As in the CABAC bypass engine, divide the current value
+        // followed by all the requested bits, then retain the remainder.
+        // Short literals use the inlined comparisons. The serial path
+        // also preserves how far a failed read consumes at tile end.
+        if bits >= 5 && self.consumed + bits as usize <= self.limit {
+            if self.bits < bits as i32 {
+                self.refill();
+            }
+            let dividend = self.window >> (VALUE_SHIFT - bits as i32);
+            let (value, remainder) = if bits <= u32::BITS - VALUE_BITS as u32 {
+                let dividend = dividend as u32;
+                let quotient = dividend / self.range;
+                (quotient, u64::from(dividend - quotient * self.range))
+            } else {
+                let range = u64::from(self.range);
+                let quotient = dividend / range;
+                (quotient as u32, dividend - quotient * range)
+            };
+            let lower = (1_u64 << VALUE_SHIFT) - 1;
+            self.window = (remainder << VALUE_SHIFT) | ((self.window << bits) & lower);
+            self.bits -= bits as i32;
+            self.consumed += bits as usize;
+            return Ok(value);
         }
         let mut result = 0;
         for _ in 0..bits {
             self.shift_in(1)?;
             let bit = self.value() >= self.range;
-            if bit {
-                self.window -= u64::from(self.range) << VALUE_SHIFT;
-            }
+            let bound = u64::from(self.range) << VALUE_SHIFT;
+            self.window -= if bit { bound } else { 0 };
             result = (result << 1) | u32::from(bit);
         }
         Ok(result)

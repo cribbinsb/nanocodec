@@ -71,7 +71,7 @@ impl HevcBackend {
     /// predicts from the primary reference (`cu_skip_flag` with
     /// `merge_idx` 0, HEVC §7.3.8.5).
     pub(super) fn first_merge_vector(&mut self, block: &Block) -> Option<Mv> {
-        let first = self.predictors(block).merge.get(0);
+        let first = self.predictors(block).merge.get(0).as_uni()?;
         (first.ref_idx == 0).then_some(first.mv)
     }
 }

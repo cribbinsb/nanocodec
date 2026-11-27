@@ -15,7 +15,7 @@
 //! (§8.7.2.3, §8.7.2.4) is `nc_dsp::Dsp::h264_deblock_mb_luma` /
 //! `h264_deblock_mb_chroma`, one call per macroblock.
 
-use nc_common::{Picture, PlaneIndex};
+use nc_common::Picture;
 use nc_dsp::{Dsp, H264EdgeParams, H264MbEdges};
 use nc_encoder::Mv;
 
@@ -98,42 +98,37 @@ pub fn deblock_picture(
     if !control.filters() {
         return;
     }
-    // Boundary strengths of every macroblock first (`None`: all zero), then
-    // each plane type filtered in one pass, one call per macroblock. Planes
-    // do not interact, and within a plane the order (macroblocks in raster
-    // order, vertical edges before horizontal ones) is the standard's.
-    let strengths: Vec<Option<MbStrengths>> = (0..mbs.len())
-        .map(|index| mb_strengths(mbs, mb_cols, index))
-        .collect();
     let thresholds = ThresholdTable::new(control, chroma_offset);
-    let mut luma = recon.plane_mut(PlaneIndex::Y).view_mut();
-    for (index, (bs, mb)) in strengths.iter().zip(mbs).enumerate() {
-        let (Some(bs), Some(mb)) = (bs, mb) else {
-            continue;
-        };
-        let edges = luma_edges(
-            bs,
-            mb.qp,
-            |dir| edge_qps(mbs, mb_cols, index, dir, 0),
-            &thresholds,
-        );
-        if edges.mask != 0 {
-            let (col, row) = (index % mb_cols, index / mb_cols);
-            dsp.h264_deblock_mb_luma(&mut luma, (col * MB_SIZE, row * MB_SIZE), &edges);
-        }
-    }
-    let [_, u, v] = recon.planes_mut();
-    let (mut u, mut v) = (u.view_mut(), v.view_mut());
-    for (index, (bs, mb)) in strengths.iter().zip(mbs).enumerate() {
-        let (Some(bs), Some(mb)) = (bs, mb) else {
-            continue;
-        };
-        let neighbour_qps = |dir| edge_qps(mbs, mb_cols, index, dir, 0);
-        let edges = chroma_edges(bs, mb.qp, neighbour_qps, &thresholds);
-        if edges.mask != 0 {
-            let (col, row) = (index % mb_cols, index / mb_cols);
-            let pos = (col * MB_CHROMA_SIZE, row * MB_CHROMA_SIZE);
-            dsp.h264_deblock_mb_chroma(&mut u, &mut v, pos, &edges);
+    let mb_rows = mbs.len() / mb_cols;
+    let [y_plane, u_plane, v_plane] = recon.planes_mut();
+    let (mut luma, mut u, mut v) = (y_plane.view_mut(), u_plane.view_mut(), v_plane.view_mut());
+    // Planes do not interact, and within each plane raster order (vertical
+    // edges before horizontal ones) is preserved without allocating a
+    // per-frame strength buffer or dividing `index` by `mb_cols`.
+    for row in 0..mb_rows {
+        let row_base = row * mb_cols;
+        let y_pos = row * MB_SIZE;
+        let uv_y = row * MB_CHROMA_SIZE;
+        for col in 0..mb_cols {
+            let index = row_base + col;
+            let Some(mb) = mbs[index].as_ref() else {
+                continue;
+            };
+            let left = (col > 0).then(|| mbs[index - 1].as_ref()).flatten();
+            let above = (row > 0).then(|| mbs[index - mb_cols].as_ref()).flatten();
+            let Some(bs) = mb_strengths_with(mb, left, above) else {
+                continue;
+            };
+            let left_qp = left.map_or(mb.qp, |n| n.qp);
+            let above_qp = above.map_or(mb.qp, |n| n.qp);
+            let l_edges = luma_edges(&bs, mb.qp, (left_qp, above_qp), &thresholds);
+            if l_edges.mask != 0 {
+                dsp.h264_deblock_mb_luma(&mut luma, (col * MB_SIZE, y_pos), &l_edges);
+            }
+            let c_edges = chroma_edges(&bs, mb.qp, (left_qp, above_qp), &thresholds);
+            if c_edges.mask != 0 {
+                dsp.h264_deblock_mb_chroma(&mut u, &mut v, (col * MB_CHROMA_SIZE, uv_y), &c_edges);
+            }
         }
     }
 }
@@ -151,21 +146,19 @@ const MB_CHROMA_SIZE: usize = 8;
 fn luma_edges(
     bs: &MbStrengths,
     qp: u8,
-    edge0_qps: impl Fn(Direction) -> (u8, u8),
+    (left_qp, above_qp): (u8, u8),
     thresholds: &ThresholdTable,
 ) -> H264MbEdges {
     let internal = thresholds.at(qp);
     let mut edges = H264MbEdges::default();
-    for (d, dir) in [Direction::Vertical, Direction::Horizontal]
-        .into_iter()
-        .enumerate()
-    {
+    let nb_qps = [left_qp, above_qp];
+    for d in 0..2 {
         for (e, &edge_bs) in bs[d].iter().enumerate() {
             if edge_bs == [0; 4] {
                 continue;
             }
             let t = if e == 0 {
-                thresholds.at(average_qp(edge0_qps(dir)))
+                thresholds.at(average_qp((nb_qps[d], qp)))
             } else {
                 internal
             };
@@ -183,26 +176,21 @@ fn luma_edges(
 fn chroma_edges(
     bs: &MbStrengths,
     qp: u8,
-    edge0_qps: impl Fn(Direction) -> (u8, u8),
+    (left_qp, above_qp): (u8, u8),
     thresholds: &ThresholdTable,
 ) -> H264MbEdges {
-    let internal = thresholds.at(thresholds.chroma_qp(qp));
+    let q_chroma = thresholds.chroma_qp(qp);
+    let internal = thresholds.at(q_chroma);
     let mut edges = H264MbEdges::default();
-    for (d, dir) in [Direction::Vertical, Direction::Horizontal]
-        .into_iter()
-        .enumerate()
-    {
+    let nb_qps = [left_qp, above_qp];
+    for d in 0..2 {
         for e in [0, 2] {
             let edge_bs = bs[d][e];
             if edge_bs == [0; 4] {
                 continue;
             }
             let t = if e == 0 {
-                let (p, q) = edge0_qps(dir);
-                thresholds.at(average_qp((
-                    thresholds.chroma_qp(p),
-                    thresholds.chroma_qp(q),
-                )))
+                thresholds.at(average_qp((thresholds.chroma_qp(nb_qps[d]), q_chroma)))
             } else {
                 internal
             };
@@ -213,27 +201,8 @@ fn chroma_edges(
     edges
 }
 
-/// `QP_Y` of the p and q sides of luma edge `edge` of macroblock `index`:
-/// the neighbouring macroblock's across the macroblock edge (edge 0), the
-/// macroblock's own inside it.
-fn edge_qps(
-    mbs: &[Option<MbInfo>],
-    mb_cols: usize,
-    index: usize,
-    dir: Direction,
-    edge: usize,
-) -> (u8, u8) {
-    let qp_of = |i: usize| mbs[i].as_ref().map_or(0, |mb| mb.qp);
-    let q = qp_of(index);
-    let p_index = match (edge, dir) {
-        (0, Direction::Vertical) if !index.is_multiple_of(mb_cols) => index - 1,
-        (0, Direction::Horizontal) if index >= mb_cols => index - mb_cols,
-        _ => index, // internal edge, or a picture edge (never filtered)
-    };
-    (qp_of(p_index), q)
-}
-
 /// `qPav = (qPp + qPq + 1) >> 1` (§8.7.2.2).
+#[inline]
 fn average_qp((p, q): (u8, u8)) -> u8 {
     ((u16::from(p) + u16::from(q) + 1) >> 1) as u8
 }
@@ -242,14 +211,13 @@ fn average_qp((p, q): (u8, u8)) -> u8 {
 /// then horizontal), per luma edge, per 4-sample segment.
 type MbStrengths = [[[u8; 4]; 4]; 2];
 
-/// [`MbStrengths`] of macroblock `index`, or `None` when every one is zero.
-fn mb_strengths(mbs: &[Option<MbInfo>], mb_cols: usize, index: usize) -> Option<MbStrengths> {
-    let mb = mbs[index]
-        .as_ref()
-        .expect("every macroblock is coded before deblocking");
-    let (col, row) = (index % mb_cols, index / mb_cols);
-    let left = (col > 0).then(|| mbs[index - 1].as_ref()).flatten();
-    let above = (row > 0).then(|| mbs[index - mb_cols].as_ref()).flatten();
+/// [`MbStrengths`] of `mb` with pre-fetched `left` and `above` neighbours,
+/// or `None` when every boundary strength is zero.
+fn mb_strengths_with(
+    mb: &MbInfo,
+    left: Option<&MbInfo>,
+    above: Option<&MbInfo>,
+) -> Option<MbStrengths> {
     let uniform_inter = is_uniform_inter(mb);
     // A uniform inter macroblock whose left and top neighbours are uniform
     // inter with the same vector (or absent) has bS 0 on every edge: most

@@ -174,10 +174,10 @@ tap-pair gather in `mc/avx2_byte_dot.rs`. In the wide AVX-512 tier VP9
 also uses the 32-output gather and sliding byte column in `mc/av1_avx512.rs`.
 VP9's 4- and 8-wide AVX2 rows pair two output rows in the same vector.
 VP9 uses signed SDOT sums from `mc/neon_dotprod.rs` for eight-tap
-horizontal filtering on capable AArch64 cores. Vertical VP9 consumes
-byte-clipped rows with widening products of each tap's magnitude.
-The scalar oracle and the plain NEON fallback cover those arithmetic
-and dispatch cases.
+horizontal filtering on capable AArch64 cores. The vertical I8MM tier
+uses the same rolling four-row transpose for vertical-only and two-axis VP9.
+For two-axis blocks the input to that pass is the byte-clipped horizontal
+prediction. The widening-multiply NEON path covers other shapes and CPUs.
 
 The relaxed SIMD128 filters share the source window, pair masks, byte
 gather, vertical interleave and dot in `mc/simd128_byte_dot.rs`. A VP9
@@ -203,6 +203,30 @@ The shared rows matched 306/306 preset streams. Native checkasm passed
 2,909,101 cases on each x86 tier and 3,064,091 on NEON. Plain and relaxed
 SIMD128 passed 2,909,101 and 3,171,245 cases. The outlined-SIMD checks found
 zero functions. Measurements are under `work/astra-kernels-20261119/`.
+
+### AArch64 high-bit-depth eight-tap rows (2026-11-26)
+
+AV1 sharp and VP9 full-tap interpolation share the eight-output halfword
+SDOT row in `simd/sve2.rs`. In VP9, libvpx's rolling four-row vertical
+schedule consumes the horizontally clipped samples. The vertical pass
+clips again before the optional rounded average. On Graviton4 the
+SVE2 tier cut 10-bit VP9 whole-decode time by 1.34% on crowd and 1.04% on pan,
+with identical frame hashes. NEON and SVE2 each passed 4,758,064 Checkasm
+cases.
+
+HEVC Main 10 luma preparation uses the same halfword row for horizontal
+and two-axis widths of 8 through 64. The shared separable driver keeps the
+HEVC intermediate scale and output bias. On Graviton4 the fractional
+prep kernel was 6–21% faster across 10- and 12-bit test fixtures. Decode of
+the Main 10 weighted-prediction conformance stream was 2.73% faster. The
+two 90-frame general clips stayed within 0.4% of baseline, with identical
+decoded frame hashes in all three.
+
+VVC Main 10 also uses this row for its six-fractional-bit luma predictor,
+including alternate half-pel coefficients. The shared separable passes
+keep VVC's uncentred intermediate. On Graviton4, whole decode was 2.53%
+faster on DMVR_A_3 and 1.00% faster on the 90-frame VVenC crowd stream,
+with identical decoded frame hashes.
 
 ## 6. Loop filters
 
@@ -457,6 +481,29 @@ the merges above; hot shares are section 0's.
 | Variance 4/8 wide (`diff/x86_narrow.rs`) | 16 word lanes AVX2 (2/4 rows), 32 ICL (4/8 rows) | all codecs | SVT packed-byte source/prediction pairs, one `pmaddubsw` difference, bounded i16 sums and paired square products; ICL VNNI square accumulation. Variance, energy and block sums share one graph. The earlier scalar-gather widening trial remains rejected; this port uses memory-operand row loads/inserts. Residual and narrow sub-pixel paths keep their existing layout. |
 | AV1/HEVC/VVC MC put (`mc/av1_avx2.rs`) | 256-bit; 512-bit rows of 32 at widths 32 and 64 (2026-11-16) | AV1 2-3, HEVC 9, VVC 5 | Ice Lake (box, `nc-checkasm --bench`, ns/call AVX2 -> AVX-512): AV1 2-D 32x32 257 -> 187, 64x64 959 -> 688; HEVC luma 2-D 32x32 300 -> 224 (the old AVX-512 path took 410), 64x64 1149 -> 829 (old 1555); horizontal-only 3-9 % |
 | Sub-pixel variance 16 wide | already one row per 256-bit vector (AVX2 `I16x16`) and two rows per 512-bit vector (AVX-512) | | nothing 128-bit to widen at 16 (2026-11-16 check) |
+
+## Network inference (2026-11-22)
+
+`nn/` (`Dsp::nn_*`): the integer inference kernels of a small NNUE-style
+network. A new family with one implementation for every codec and for the
+engine; nothing in it is codec arithmetic. Exact integers, so every tier
+returns the scalar reference's result and a network decides the same on x86,
+Arm and WebAssembly (`nc-checkasm` `check_nn`).
+
+| Kernel | Tiers | Pattern |
+|---|---|---|
+| `nn_add_columns_i16`, `nn_sub_columns_i16` (accumulator ± feature columns) | S A2 A5 N W | 64 sums held in registers across the row list (4 A2, 2 A5, 8 N/W vectors); a width that is not a multiple of 64 finishes a vector at a time |
+| `nn_clip_i16_to_u8` (accumulator activation) | S A2 A5 N W | arithmetic shift, signed-saturating narrow to a byte (which caps at 127), maximum with zero |
+| `nn_dense_linear` (`bias + Σ w·x`, `i8` weights, 7-bit inputs) | S A2 A5 N W | four outputs per input load and one shared reduction. A2 `vpmaddubsw` + `vpmaddwd`; A5 VNNI `vpdpbusd`; N `smull`/`smlal2` + `sadalp`; W `extmul` low + high, `extadd_pairwise` |
+| `nn_dense_clipped` | as above | the linear kernel into a stack block of 64 sums, then the 32-bit activation kernel: one dot product per tier |
+
+The 16-bit pair stage of the A2, N and W dot products is exact because inputs
+are at most 127: a pair sums to at most 2 · 127 · 128 = 32512 in magnitude
+(`nn::MAX_PAIR_SUM`). Section 5's MC byte-dot rows use the same instruction
+(`vpmaddubsw`, samples against signed taps) but are convolutions: a few fixed
+taps slid along gathered sample pairs, where this is one long weight row per
+output, so the two do not share a kernel. Not built: an Arm dot-product
+(`sdot`) tier, which would follow `simd/neon_dot.rs`.
 
 ## Stays separate (and why)
 

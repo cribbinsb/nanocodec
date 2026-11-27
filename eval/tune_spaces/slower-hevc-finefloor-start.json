@@ -1,0 +1,3 @@
+[{"planner.inter_min_log2": 3, "planner.fine_floor_bias": 1.0, "planner.fine_floor_camera": -1.0, "planner.rd_split_margin": 1.254},
+ {"planner.inter_min_log2": 3, "planner.fine_floor_bias": 0.5, "planner.fine_floor_camera": -1.0, "planner.fine_floor_static": 1.0, "planner.rd_split_margin": 1.254},
+ {"planner.inter_min_log2": 3, "planner.fine_floor_bias": 1.0, "planner.fine_floor_camera": -1.0}]

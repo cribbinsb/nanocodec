@@ -8,8 +8,8 @@ page's CPU throttled CPU_SLOWDOWN x (DevTools emulation), so starts are slow
 and overlap the next change. Every start makes one capture worker, so their
 count is the number of starts. Checks:
 
-- each option of the top box restarts on its own: the Test scene, Webcam and
-  Sample clip buttons, the clip picker, a video file (Video file + its chooser);
+- each option of the top box restarts on its own: the Test scene button and its
+  scene picker, the Webcam and Sample clip buttons, the clip picker, a video file (Video file + its chooser);
   so does a view's resolution; each time the new comparison shows frames;
 - a rate change applies live: no restart;
 - a burst of BURST changes under RESTART_DELAY_MS apart (clip, sizes, frame
@@ -77,7 +77,8 @@ def main():
                 assert not notice.is_visible(), (name, notice.inner_text())
                 restarts[name] = page.evaluate('window.__starts') - before
 
-            restarts_on('test scene', lambda: page.locator('[data-source="scene"]').click(), "document.querySelector('#source-name').textContent.startsWith('Moving shapes')")
+            restarts_on('test scene', lambda: page.locator('[data-source="scene"]').click(), "document.querySelector('#source-name').textContent.startsWith('Motion study')")
+            restarts_on('scene picker', lambda: page.locator('#scene').select_option('crowd'), "document.querySelector('#source-name').textContent.startsWith('Many small movers')")
             restarts_on('webcam', lambda: page.locator('[data-source="camera"]').click(), "document.querySelector('#source-name').textContent === 'Webcam'")
             restarts_on('sample clip', lambda: page.locator('[data-source="clip"]').click(), "document.querySelector('#summary').textContent.includes('on the clip')")
             restarts_on('clip picker', lambda: page.locator('#clip').select_option('svt-waterfall'), "document.querySelector('#clip').value === 'svt-waterfall'")

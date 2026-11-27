@@ -114,8 +114,6 @@ rate.period_ceiling = 1
 rate.key_still_boost = 4
 structure.unified = 1
 structure.inherited_depth = 1
-# HEVC Default's fixed-QP profile (2026-11-14) stays off here: pinned, byte-identical.
-rate.fixed_qp_profile = 0
 # The Default's sub-sample refinement gates before 2026-11-15, pinned so this
 # preset's streams do not move with the Default.
 decision.skip_no_refine_lambdas = 0.25
@@ -151,3 +149,49 @@ planner.split_selector = 0
 # The Default's filter-search effort by usage (filter.usage_quiet_share, 2026-11-21)
 # is not screened here.
 filter.usage_quiet_share = 0
+# Medium's key RD search (2026-11-21) was screened on medium only. Medium's finer periodic
+# keys (rate.key_level_finer 2) are not pinned since periodic keys are capped at 1.0 buffers
+# here (764c45048): under the 0.8 cap they sat at the cap and the finer level could not
+# reach them (fast-end, 2026-11-22; docs/handoff/rate-control.md "The fast end under the
+# bound").
+planner.key_rd_split = 0
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): not screened on this rung.
+analysis.zero_gate_cell = 64
+
+# G2 motion / sub-pel exit shifts: HEVC medium's (DEFAULT_PARAMS, 2026-11-22)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0
+# Periodic keys at rate.key_cap_buffer 1.0, the first key at 0.8: nceval.train at both key shares (base 29f3c5a22, front k): L3 byte-identical (one-key streams: only the first key, unchanged), final check BETTER at 1/150 and 1/300
+# (-1.02 / -0.42 %). Cap 1.0 on the first key too was ejected on L3 (2026-11-22).
+rate.key_cap_buffer_first = 0.8
+
+# Fixed QP only (`fixed_qp.`; Brief 19, docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# restore full cadence (`cadence_static_scaling=0`) when `inherited_depth` turns off at
+# fixed QP, enable moving-key (+6), and restore low-QP partition depth (`depth_removal_min_quantizer=0.86`).
+# Pool `nceval.fixedqp ab`, draw `fixedqp-2026-11-24`, n=24: 600 f J -7.3% [-8.5, -5.5]
+# (PSNR -8.6%, VMAF -6.3%, MS-SSIM -8.5%); c8i / c8g fixed-QP cycles +17.91 / +15.42%
+# (slope -0.44%/1% vs ladder -0.384%). CBR unchanged.
+fixed_qp.refs.second_full = 0
+fixed_qp.rate.cadence_static_scaling = 0
+fixed_qp.rate.fixed_qp_moving_key = 6
+fixed_qp.planner.depth_removal_min_quantizer = 0.86

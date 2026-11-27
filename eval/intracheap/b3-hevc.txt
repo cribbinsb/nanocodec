@@ -1,0 +1,15 @@
+# intra-cheap batch 3: the margin gate (planner.key_rd_margin) with direction windows and leaf-first
+null: planner.intra_bias=1050
+krd11_g110: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.1
+krd11_lf_g110: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.1
+krd11_lf_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.2
+krd22_lf_g110: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.1
+krd22_lf_g120: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.2
+krd22_lf_g150: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.5
+s2_lf_g110: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.1
+s2_lf_g120: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.2
+s2_lf_g150: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.5
+d1_g110: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 planner.key_rd_margin=1.1
+d1_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 planner.key_rd_margin=1.2
+d2_g120: planner.key_rd_split=1 planner.key_rd_deeper=2 planner.key_rd_shallower=0 planner.key_rd_margin=1.2
+krd12_lf_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 planner.key_rd_margin=1.2

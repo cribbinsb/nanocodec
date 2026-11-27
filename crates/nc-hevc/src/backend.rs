@@ -47,13 +47,13 @@ use crate::grid::{Cell, Grid};
 use crate::headers::ReferenceSet;
 use crate::headers::{
     CraPoc, LOG2_CTB, LOG2_MAX_TB, LOG2_MIN_CB, LONG_POC_LSB_BITS, NalType, POC_LSB_BITS,
-    SIGN_DATA_HIDING, SliceDeblocking, SliceQp, SliceReferenceSet, StreamInfo, irap_slice_header,
-    level_idc, nal_header, p_slice_header, pps, sps, vps,
+    SIGN_DATA_HIDING, SliceDeblocking, SliceQp, SliceReferenceSet, StreamInfo, inter_slice_header,
+    irap_slice_header, level_idc, nal_header, pps, sps, vps,
 };
-use crate::inter::{predict_chroma, predict_luma};
+use crate::inter::{predict_bi_into, predict_chroma, predict_luma, predict_samples};
 use crate::mvpred::{
-    AMVP_CANDIDATES, DEFAULT_MERGE_CANDIDATES, MAX_MERGE_CANDIDATES, MergeList, Motion,
-    ReferenceDistances, candidate_lists,
+    AMVP_CANDIDATES, DEFAULT_MERGE_CANDIDATES, List, ListMotion, MAX_MERGE_CANDIDATES, MergeList,
+    Motion, ReferenceDistances, SliceLists, amvp_candidates, candidate_lists,
 };
 use crate::predict::{Refs, Sides, most_probable};
 use crate::quant;
@@ -66,8 +66,9 @@ use crate::residual_trellis::{BlockQuantizer, RateModel, TrellisQuantizer};
 use crate::sao::{self, Candidates, CtbTypes, PictureSao};
 use crate::scan::{Scan, ScanKind, Scans, coded_sub_blocks};
 use crate::syntax::{
-    CuKind, CuRecord, Item, LevelStore, MAX_TUS, MVD_EG_ORDER, PlaneResidual, TransformSyntax,
-    TransformUnit, TransformUnits, TuRange, split_ctx_inc, split_flag_present, write_slice_data,
+    AmvpList, CuKind, CuRecord, Item, LevelStore, MAX_TUS, MVD_EG_ORDER, PlaneResidual,
+    TransformSyntax, TransformUnit, TransformUnits, TuRange, split_ctx_inc, split_flag_present,
+    write_slice_data,
 };
 use crate::transform::{MAX_COEFFS, forward_bound, inverse_dc};
 
@@ -116,6 +117,13 @@ const MAX_BLOCK_LOG2: u8 = LOG2_CTB as u8;
 const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     cadence_scale: 1.2,
     first_key_lookahead: 0.5,
+    first_key: Some(nc_encoder::first_key_model::FirstKeyCalibration {
+        weights: [
+            0.640_684, 0.926_629, 0.12901, 0.476_181, 0.152_473, -0.77976, 0.420_794, 0.455_062,
+            0.398_692,
+        ],
+        fast_bias: 0.000_763,
+    }),
     ..nc_encoder::RateModel::QP
 };
 /// QP range of 8-bit HEVC.
@@ -141,6 +149,10 @@ mod cost {
     pub const FLAG: f32 = 1.0;
     /// DC intra: MPM flag and index, chroma mode.
     pub const INTRA_DC: f32 = 4.0;
+    /// `inter_pred_idc` of a B-slice AMVP unit: one bin for `PRED_BI`, two
+    /// for `PRED_L0` (§9.3.4.2.2).
+    pub const INTER_PRED_IDC_BI: f32 = 1.0;
+    pub const INTER_PRED_IDC_UNI: f32 = 2.0;
     /// `ref_idx_l0` of a slice with two references (§9.3.3.2 truncated
     /// rice, cMax 1): one context-coded bin.
     pub const REF_IDX: f32 = 1.0;
@@ -170,6 +182,51 @@ impl Predictors {
     }
 }
 
+/// The predictor lists of the block being decided, one per reference
+/// index: the engine switches references within a block
+/// (`CodecBackend::select_reference`) and back, and each switch would
+/// otherwise derive the lists again.
+#[derive(Debug, Clone, Copy, Default)]
+struct PredictorCache {
+    entries: [Option<Predictors>; crate::collocated::MAX_REF_IDX],
+    /// The reference index last stored.
+    last: Option<u8>,
+}
+
+impl PredictorCache {
+    /// The lists of `block` for `ref_idx`, if cached.
+    fn get(&self, block: &Block, ref_idx: u8) -> Option<Predictors> {
+        self.entries[usize::from(ref_idx)].filter(|p| p.of(block, ref_idx))
+    }
+
+    /// As [`Self::get`], by reference.
+    fn get_ref(&self, block: &Block, ref_idx: u8) -> Option<&Predictors> {
+        self.entries[usize::from(ref_idx)]
+            .as_ref()
+            .filter(|p| p.of(block, ref_idx))
+    }
+
+    /// The lists last stored.
+    fn latest(&self) -> Option<Predictors> {
+        self.last.and_then(|r| self.entries[usize::from(r)])
+    }
+
+    /// Keep `p`; lists of another block are dropped.
+    fn set(&mut self, p: Predictors) {
+        for entry in &mut self.entries {
+            if entry.is_some_and(|e| (e.x, e.y, e.log2) != (p.x, p.y, p.log2)) {
+                *entry = None;
+            }
+        }
+        self.entries[usize::from(p.ref_idx)] = Some(p);
+        self.last = Some(p.ref_idx);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Frame-constant quantisation and decision weights. A plane has one QP;
 /// intra/inter dead zones and four transform sizes are prepared once.
 /// Exact bodycam/crowd P instruction savings:0.23%/0.33% at QP28/39.
@@ -193,13 +250,28 @@ struct PlaneQuantization {
 struct TransformQuantization {
     quantizer: HevcQuantizer,
     zero_limit: u64,
-    pre_transform_zero_limit: u64,
+    pre_transform_sad_limit: u32,
     column_zero_limit: u32,
     /// Smallest level kept: 1 normally; past QP 51 the smallest level a
     /// quantiser at the planned step (`headroom_step` times the coded one,
     /// `FramePlan::lambda_scale`) would keep, `ceil((1 − rounding) ·
     /// headroom_step)`.
     planned_min_level: i32,
+}
+
+impl TransformQuantization {
+    /// Quantise `coeffs` into `levels` with the dead zone of the planned
+    /// step (past QP 51); returns the number of non-zero levels. The coding
+    /// path and the key-frame cost estimate share it, so decisions are
+    /// priced as blocks are coded.
+    fn quantize(&self, dsp: &Dsp, coeffs: &[i16], levels: &mut [i16]) -> u32 {
+        let nonzero = dsp.hevc_quantize_from(coeffs, &self.quantizer, levels);
+        if self.planned_min_level > 1 && nonzero > 0 {
+            nc_encoder::apply_planned_dead_zone(levels, self.planned_min_level) as u32
+        } else {
+            nonzero
+        }
+    }
 }
 
 impl FrameQuantization {
@@ -253,11 +325,14 @@ impl FrameQuantization {
                             column_zero_limit: (zero_limit as f32 * column_zero_scale) as u32,
                             quantizer: HevcQuantizer::with_rounding(qp as u8, log2, rounding),
                             zero_limit,
-                            pre_transform_zero_limit: if intra == 0 {
-                                (zero_limit as f64 * f64::from(pre_transform_zero_scale)) as u64
-                            } else {
-                                zero_limit
-                            },
+                            pre_transform_sad_limit: crate::transform::forward_zero_sad_limit(
+                                log2,
+                                if intra == 0 {
+                                    (zero_limit as f64 * f64::from(pre_transform_zero_scale)) as u64
+                                } else {
+                                    zero_limit
+                                },
+                            ),
                         }
                     })
                 }),
@@ -299,6 +374,72 @@ fn nonbase_params(config: &EncoderConfig) -> HevcParams {
 }
 
 /// `hevc.still_skip_limit_scale` while `hevc.still_skip` is on, else 0.
+/// How inter pictures are coded: generalised B slices when the engine tries
+/// low-delay bi-prediction (`decision.bi_pair`), else P slices.
+fn inter_slice_of(params: &nc_encoder::ParamOverrides) -> SliceKind {
+    if nc_encoder::DecisionParams::from_overrides(params).bi_pair >= 0.5 {
+        SliceKind::Bi
+    } else {
+        SliceKind::Predicted
+    }
+}
+
+/// The per-picture slice type of a stream with B slices (`hevc.b_slice_*`):
+/// P pictures where bi-prediction did not pay in the last B picture.
+#[derive(Debug, Clone, Copy)]
+struct BSchedule {
+    min_share: f32,
+    retry: u32,
+    /// P pictures still to code before the next B picture.
+    p_left: u32,
+}
+
+impl BSchedule {
+    fn new(params: &HevcParams) -> Self {
+        let mut schedule = Self {
+            min_share: 0.0,
+            retry: 0,
+            p_left: 0,
+        };
+        schedule.configure(params);
+        schedule
+    }
+
+    fn configure(&mut self, params: &HevcParams) {
+        self.min_share = params.b_slice_min_share;
+        self.retry = params.b_slice_retry.round() as u32;
+    }
+
+    /// The next inter picture's slice type, for a stream coding `inter`.
+    fn slice(&self, inter: SliceKind) -> SliceKind {
+        if inter == SliceKind::Bi && self.p_left > 0 {
+            SliceKind::Predicted
+        } else {
+            inter
+        }
+    }
+
+    /// An inter picture of a B stream was committed as `slice`, with
+    /// `bi_share` of its inter area bi-predicted.
+    fn coded(&mut self, slice: SliceKind, bi_share: f32) {
+        if slice == SliceKind::Bi {
+            if bi_share < self.min_share {
+                self.p_left = self.retry;
+            }
+        } else {
+            self.p_left = self.p_left.saturating_sub(1);
+        }
+    }
+}
+
+/// List 1's AMVP list of one block and reference index.
+#[derive(Debug, Clone, Copy)]
+struct L1Amvp {
+    /// The block's `(x, y, log2)` and `ref_idx_l1`.
+    key: (usize, usize, u8, u8),
+    list: [Mv; AMVP_CANDIDATES],
+}
+
 fn still_skip_limit_scale(params: &HevcParams) -> f32 {
     if params.still_skip >= 0.5 {
         params.still_skip_limit_scale
@@ -412,6 +553,9 @@ pub struct HevcBackend {
     contexts: Contexts,
     /// The slice data recorded so far.
     items: Vec<Item>,
+    /// In-frame rate control's running estimate of `items`
+    /// (`CodecBackend::coded_bits`), priced once each.
+    item_pricing: Option<ItemPricing>,
     /// SAO decision of the current picture (made in `filter_frame`).
     sao: Option<PictureSao>,
     /// Per-CTB SAO types of the last committed SAO search frame, for reuse.
@@ -436,6 +580,18 @@ pub struct HevcBackend {
     /// `ref_idx_l0` the engine is deciding or coding the current CU with
     /// (`CodecBackend::select_reference`).
     active_ref: u8,
+    /// How inter pictures are coded: P slices, or with `decision.bi_pair`
+    /// generalised B slices (both lists the same past pictures), so the
+    /// engine may code low-delay bi-prediction
+    /// ([`ReferenceChoice::PrimaryPair`], and [`ReferenceChoice::Compound`]
+    /// with a second reference).
+    inter_slice: SliceKind,
+    /// When inter pictures fall back to P slices (`hevc.b_slice_*`).
+    b_schedule: BSchedule,
+    /// List 1's AMVP list of the block last priced for bi-prediction.
+    l1_amvp: Option<L1Amvp>,
+    /// List 0's centred 14-bit prediction of a bi-predicted CU (reused).
+    bi_first: Vec<i16>,
     /// POC of the picture each reference slot holds (checks the SPS
     /// reference picture sets against the engine's structure).
     slot_poc: [u32; MAX_REFERENCE_SLOTS],
@@ -443,7 +599,7 @@ pub struct HevcBackend {
     long_term_slot: usize,
     next_cu: u32,
     next_tu: u32,
-    current: Option<Predictors>,
+    current: PredictorCache,
     /// Key frames are coded this many QP finer than P frames.
     rate_control_enabled: bool,
     key_qp_offset: i32,
@@ -470,7 +626,7 @@ pub struct HevcBackend {
     cached_luma: Option<CachedLuma>,
     /// The luma modes of the key-frame CU last asked about by
     /// [`CodecBackend::intra_alternatives`], the mode search's choice first.
-    key_luma_ranking: Option<(Block, Vec<u8>)>,
+    key_luma_ranking: Option<(Block, Vec<(u8, f32)>)>,
     early_merge_lambdas: f32,
     /// How P-frame intra CUs choose their luma mode
     /// (`hevc.coarse_inter_intra`, `hevc.inter_intra_dc_only`).
@@ -484,6 +640,9 @@ pub struct HevcBackend {
     /// The CU `try_static_skip` accepted: the next `encode_block` codes it
     /// with no residual.
     still_skipped: Option<(usize, usize)>,
+    /// The encoder information SEI RBSP written after every IRAP
+    /// picture's parameter sets (`CodecBackend::set_encoder_info`).
+    encoder_info: Option<Vec<u8>>,
     /// Transform-block scratch (allocated once; only the `n * n` prefix a
     /// block uses is touched, so no per-block clearing of 32x32 buffers).
     scratch: RefCell<Scratch>,
@@ -525,6 +684,11 @@ pub struct HevcBackend {
     /// `hevc.intra_rd_candidates`: luma modes of the full intra search
     /// priced by transform cost (1: the SATD-best is taken).
     intra_rd_candidates: usize,
+    /// The staged intra decision's first cut (`decision.intra_stage_*`):
+    /// where on, it replaces `intra_rd_candidates`.
+    intra_stage: nc_encoder::IntraStage,
+    /// Shared quantizer gates (`gate.partial_transform_min_quantizer`).
+    gates: nc_encoder::GateParams,
 }
 
 /// The settings HEVC reads per CU, swapped between light and regular
@@ -805,6 +969,14 @@ nc_encoder::param_group! {
         /// slices override the PPS (`deblocking_filter_override_flag`,
         /// `slice_deblocking_filter_disabled_flag`, §7.3.6.1); key frames
         /// keep it.
+        /// Per-picture slice type under `decision.bi_pair`: a B slice
+        /// whose bi-predicted share falls below this sends the next
+        /// `hevc.b_slice_retry` inter pictures as P slices (no
+        /// `inter_pred_idc` on uni units), then B again.
+        b_slice_min_share: 0.0, [0.0, 1.0],
+            "with decision.bi_pair: a B picture whose bi-predicted inter area share is below this codes the next hevc.b_slice_retry inter pictures as P (0: every inter picture B)",
+        b_slice_retry: 8.0, [1.0, 64.0],
+            "with hevc.b_slice_min_share: P pictures before B slices are tried again",
         deblock_inter: 1.0, [0.0, 1.0],
             "1 deblocks P slices; 0 switches the filter off on them (faster, blockier P frames)",
         lambda_scale: 1.0, [0.25, 4.0],
@@ -1117,6 +1289,25 @@ impl CodecBackend for HevcBackend {
         // after the final-check showed HEVC keys pulsing at +1.61 dB).
         // The other HEVC presets pin it off.
         ("rate.key_still_boost", 4.0),
+        // Variance AQ (`rate.aq_strength`, `nc-encoder` `aq.rs`): gentle
+        // 0.25 QP/octave per-64x64-CTU redistribution from detailed to flat
+        // blocks. HEVC CABAC-codes `cu_qp_delta` only on non-zero-CBF blocks
+        // and adapts deblocking per CU. Pool draw 2026-11-26 (`--local`,
+        // `--strict-buffer`): L1 (n=24) J -1.30% [-1.73, -0.57], 0 guards;
+        // formal L3 (n=98, 150 f) J -0.40% [-0.76, -0.03] BETTER, unweighted
+        // -0.54%, 0 guards (drone -2.03%, pan -1.86%, static -0.98%, crowd
+        // -0.89%, bodycam +0.29%, videocall +0.29%); periodic-key pulse 2 s
+        // -0.20 dB, 10 s +0.14 dB; ~0% extra CPU.
+        ("rate.aq_strength", 0.25),
+        // Key-frame trellis λ scaling (`quant.trellis_key_lambda_scale`, as
+        // VVC's `vvc.trellis_key_lambda_scale = 0.5`): keeps more key-frame
+        // detail for subsequent inter frames to inherit. Pool draw 2026-11-27
+        // (`--local`, `--strict-buffer`): L1 (n=24) J -0.22% [-0.47, +0.02],
+        // 0 guards; formal L3 (n=98, 150 f) J -0.22% [-0.58, +0.16],
+        // unweighted -0.29%, 0 guards (static -1.28%, drone -0.26%, lowlight
+        // -0.19%, pan -0.14%); periodic-key pulse 2 s -0.01 dB, 10 s +0.00 dB;
+        // ~0% extra CPU.
+        ("quant.trellis_key_lambda_scale", 0.5),
         // The unified structure's reference plan (`structure.unified`,
         // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
         // (key, cadence base) also predict from the high-quality frame before
@@ -1272,6 +1463,47 @@ impl CodecBackend for HevcBackend {
         // -0.36 % (docs/handoff/filter-effort.md). Fast, Faster, Slow,
         // Slower and Veryslow pin 0.
         ("filter.usage_quiet_share", 0.75),
+        // Periodic keys planned 2 QP units finer than the inter level, adopted
+        // with the key-frame RD partition search (3ebca4466). The search itself
+        // is off at medium (reverted 2026-11-22): on the published front's chart
+        // timing (150 f, one key) the head cost Zen 5 cycles AV1 +5.3 %, AV2
+        // +9.1 %, VVC +5.9 % against the same head with the search, these finer
+        // keys, the AV1 / AV2 key trellis and H.264's key Intra_8x8 off, which
+        // outweighs its J (L3 -0.33 to -0.55 %). The finer key adds no search
+        // and stays (coordinator decision); a screen of it alone is queued.
+        ("rate.key_level_finer", 2.0),
+        // Motion and sub-pel exits as linear threshold shifts (G2,
+        // `linear_threshold.rs`; docs/analysis/g2-motion-thresholds-2026-11-22.md):
+        // exits looser on non-base frames, zero-vector seeds and noisy
+        // sources, base frames slightly stricter. Tuned for HEVC medium on
+        // 600 f windows (trial hevc_600f_t15); other codecs: AV1 medium's
+        // tuned point was flat (held-out L3 +0.01 %, 600 f -0.05 %). Judged
+        // at the front slope k 0.1827, with Zen 5 cycles (Graviton 4 saves
+        // more: -2.32 / -1.65 %): CPU 1/150 -1.96 %, 1/300 -1.19 %; final
+        // check (2026-11-22 draw) 1/150 J -0.42 % [-0.65, -0.19] (n 39),
+        // 1/300 J -0.27 % [-0.54, -0.01] (n 29); L3 150 f J -0.40 %
+        // [-0.68, -0.13] (n 108); quality alone -0.06 / -0.05 / -0.04 %; key
+        // pulse guarded <= +0.03 dB. Fast, Faster, Slow, Slower and Veryslow
+        // pin 0 (not screened).
+        ("analysis.window_exit_shift_bias", -0.103_662),
+        ("analysis.window_exit_shift_lambda", -0.291_233),
+        ("analysis.window_exit_shift_noise", 0.394_298),
+        ("analysis.window_exit_shift_nonbase", 0.444_587),
+        ("analysis.zero_gate_shift_bias", -0.020_961_7),
+        ("analysis.zero_gate_shift_lambda", 0.233_67),
+        ("analysis.zero_gate_shift_neighbour_mv", -0.061_071),
+        ("analysis.zero_gate_shift_noise", -0.521_622),
+        ("analysis.zero_gate_shift_nonbase", 0.749_672),
+        ("decision.skip_no_refine_shift_bias", 0.049_152_1),
+        ("decision.skip_no_refine_shift_lambda", -0.042_977_6),
+        ("decision.skip_no_refine_shift_noise", 0.021_140_3),
+        ("decision.skip_no_refine_shift_nonbase", -0.056_853_5),
+        ("decision.subpel_seed_shift_bias", -0.015_777_7),
+        ("decision.subpel_seed_shift_lambda", -0.028_532),
+        ("decision.subpel_seed_shift_noise", 0.011_911_3),
+        ("decision.subpel_seed_shift_nonbase", 0.046_694_7),
+        ("decision.subpel_seed_shift_size", -0.005_502_83),
+        ("decision.subpel_seed_shift_zero_mv", 0.041_685_9),
     ];
 
     // A flat field-by-field initialisation of the backend's state.
@@ -1308,6 +1540,7 @@ impl CodecBackend for HevcBackend {
             scans: Scans::new(),
             contexts: Contexts::for_slice(SliceKind::Intra, qp),
             items: Vec::new(),
+            item_pricing: None,
             sao: None,
             sao_classes: Vec::new(),
             pending_sao_classes: None,
@@ -1326,11 +1559,14 @@ impl CodecBackend for HevcBackend {
             references: FrameReferences::FLAT,
             reference_list: ReferenceDistances::one(1),
             active_ref: 0,
+            inter_slice: inter_slice_of(&config.params),
+            l1_amvp: None,
+            bi_first: Vec::new(),
             slot_poc: [0; MAX_REFERENCE_SLOTS],
             long_term_slot: long_term_slot(config.temporal_layers),
             next_cu: 0,
             next_tu: 0,
-            current: None,
+            current: PredictorCache::default(),
             rate_control_enabled: false,
             key_qp_offset: config.key_qp_offset.unwrap_or_else(|| {
                 nc_encoder::fixed_qp_key_offset(config.intra_period, KEY_QP_OFFSET_AT_REFERENCE)
@@ -1361,11 +1597,13 @@ impl CodecBackend for HevcBackend {
             early_merge: None,
             still_skip_limit_scale: still_skip_limit_scale(&params),
             still_skipped: None,
+            encoder_info: None,
             scratch: RefCell::default(),
             level_store: RefCell::default(),
             tu_store: Vec::new(),
             deblocking: SliceDeblocking::Fixed,
             deblock_inter: params.deblock_inter >= 0.5,
+            b_schedule: BSchedule::new(&params),
             random: None,
             final_scratch: final_cost::FinalScratch::default(),
             bin_costs: BinCosts::new(),
@@ -1377,6 +1615,8 @@ impl CodecBackend for HevcBackend {
             node_trials: node_trial::NodeTrials::default(),
             trial_intra_search: (params.trial_full_intra >= 0.5).then_some(InterIntraSearch::Full),
             intra_rd_candidates: params.intra_rd_candidates.round().max(1.0) as usize,
+            intra_stage: nc_encoder::IntraStage::from_overrides(&config.params),
+            gates: nc_encoder::GateParams::from_overrides(&config.params),
         })
     }
 
@@ -1415,6 +1655,28 @@ impl CodecBackend for HevcBackend {
         self.block_qp = Some(BlockQp::new());
     }
 
+    /// An estimate: the slice is entropy coded only at `end_frame`, so the
+    /// recorded items are priced as the coding will adapt its contexts,
+    /// from where the last reading stopped (afresh when a node trial cut
+    /// them back past it).
+    fn coded_bits(&mut self) -> Option<f64> {
+        let mut pricing = self
+            .item_pricing
+            .take()
+            .filter(|p| p.next <= self.items.len())
+            .unwrap_or_else(|| ItemPricing {
+                next: 0,
+                bits: 0.,
+                contexts: self.contexts.clone(),
+            });
+        let added = self.estimated_item_bits(&self.items[pricing.next..], &mut pricing.contexts);
+        pricing.bits += f64::from(added);
+        pricing.next = self.items.len();
+        let bits = pricing.bits;
+        self.item_pricing = Some(pricing);
+        Some(bits)
+    }
+
     /// Slices then carry explicit reference picture sets keeping the
     /// long-term picture (`long_term_set`).
     fn supports_long_term_reference(&self) -> bool {
@@ -1430,6 +1692,94 @@ impl CodecBackend for HevcBackend {
 
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
         self.active_ref = reference.single_index();
+    }
+
+    /// Generalised B slices code bi-prediction from the previous picture at
+    /// two vectors (list 0 and list 1 `ref_idx` 0).
+    fn supports_primary_pair(&self) -> bool {
+        self.slice == SliceKind::Bi
+    }
+
+    /// In a generalised B slice with the second reference, list 0's first
+    /// picture and list 1's second (`ref_idx_l1` 1) average.
+    fn supports_compound_reference(&self) -> bool {
+        self.slice == SliceKind::Bi && self.reference_list.count() > 1
+    }
+
+    /// The merge list's genuinely bi-predicted candidates whose list 0 half
+    /// is the first reference: list 1 at `ref_idx` 0 is a primary pair, at
+    /// 1 (the second reference) a compound.
+    fn pair_merge_candidates(&mut self, block: &Block, out: &mut Vec<(Mv, ReferenceChoice)>) {
+        let merge = self
+            .current
+            .get(block, 0)
+            .unwrap_or_else(|| self.predictors_for(block, 0))
+            .merge;
+        for candidate in merge.motions() {
+            let Some(l1) = candidate.l1.filter(|_| candidate.as_uni().is_none()) else {
+                continue;
+            };
+            let second = match (candidate.ref_idx, l1.ref_idx) {
+                (0, 0) => ReferenceChoice::PrimaryPair { second_mv: l1.mv },
+                (0, 1) => ReferenceChoice::Compound {
+                    secondary_mv: l1.mv,
+                },
+                _ => continue,
+            };
+            out.push((candidate.mv, second));
+        }
+    }
+
+    fn pair_coded_cost(
+        &mut self,
+        source: &Picture,
+        references: [&Picture; 2],
+        block: &Block,
+        pair: (Mv, ReferenceChoice),
+    ) -> Option<f32> {
+        self.price_pair(source, references, block, pair)
+    }
+
+    fn primary_pair_mode_bits(&mut self, block: &Block, first_mv: Mv, second_mv: Mv) -> f32 {
+        self.bi_mode_bits(block, bi_motion(first_mv, (second_mv, 0)))
+    }
+
+    fn compound_mode_bits(&mut self, block: &Block, primary_mv: Mv, secondary_mv: Mv) -> f32 {
+        self.bi_mode_bits(block, bi_motion(primary_mv, (secondary_mv, 1)))
+    }
+
+    fn encode_compound_block(
+        &mut self,
+        block: &Block,
+        decision: &BlockDecision,
+        source: &Picture,
+        primary_reference: &Picture,
+        secondary_reference: &Picture,
+        recon: &mut Picture,
+    ) {
+        let (second_mv, l1_ref) = match decision.reference {
+            ReferenceChoice::PrimaryPair { second_mv } => (second_mv, 0),
+            ReferenceChoice::Compound { secondary_mv } => (secondary_mv, 1),
+            ReferenceChoice::Primary | ReferenceChoice::Secondary => {
+                unreachable!("the engine codes single-reference blocks with encode_block")
+            }
+        };
+        let PredictionMode::Inter(first_mv) = decision.mode else {
+            unreachable!("two-hypothesis blocks are inter")
+        };
+        self.begin_block_qp(decision.qp_offset);
+        self.active_ref = 0;
+        self.encode_bi_cu(
+            block,
+            bi_motion(first_mv, (second_mv, l1_ref)),
+            source,
+            [primary_reference, secondary_reference],
+            recon,
+        );
+        self.end_block_qp();
+        self.current.clear();
+        self.cached_luma = None;
+        self.early_merge = None;
     }
 
     /// Rank inter candidates with HEVC's own 8-tap luma filter (the engine's
@@ -1457,17 +1807,16 @@ impl CodecBackend for HevcBackend {
         self.inter_pred[0][..area].copy_from_slice(prediction);
         self.cached_luma = Some(CachedLuma {
             block: *block,
-            motion: Motion {
-                mv,
-                ref_idx: self.active_ref,
-            },
+            motion: Motion::uni(mv, self.active_ref),
             filter,
             frame_index: self.frame_index,
         });
     }
 
-    fn set_frame_params(&mut self, params: &nc_encoder::ParamOverrides) {
-        let params = HevcParams::from_overrides(params);
+    fn set_frame_params(&mut self, overrides: &nc_encoder::ParamOverrides) {
+        self.intra_stage = nc_encoder::IntraStage::from_overrides(overrides);
+        self.gates = nc_encoder::GateParams::from_overrides(overrides);
+        let params = HevcParams::from_overrides(overrides);
         // The frame's quantisation is derived from these in `begin_frame`.
         self.rounding = rounding_of(&params);
         self.lambda_scale = params.lambda_scale;
@@ -1482,6 +1831,8 @@ impl CodecBackend for HevcBackend {
         // Switching the filter off needs the PPS override flag, which
         // `stream_info` sets when any frame's settings do.
         self.deblock_inter = params.deblock_inter >= 0.5;
+        self.b_schedule.configure(&params);
+        self.inter_slice = inter_slice_of(overrides);
     }
 
     fn set_light_params(&mut self, params: Option<&nc_encoder::ParamOverrides>) {
@@ -1529,14 +1880,14 @@ impl CodecBackend for HevcBackend {
         lambda: f32,
     ) -> bool {
         self.early_merge = None;
-        let motion = Motion {
-            mv,
-            ref_idx: self.active_ref,
-        };
+        let motion = Motion::uni(mv, self.active_ref);
         if self.early_merge_lambdas <= 0.0
-            || self.slice != SliceKind::Predicted
+            || !self.slice.is_inter()
             || !mv.is_full_pel()
-            || self.current.is_none_or(|p| p.merge.get(0) != motion)
+            || self
+                .current
+                .latest()
+                .is_none_or(|p| p.merge.get(0).as_uni() != Some(motion))
         {
             return false;
         }
@@ -1601,6 +1952,18 @@ impl CodecBackend for HevcBackend {
 
     fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
         self.node_trial_price(source, recon)
+    }
+
+    fn node_trial_parts(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> Option<nc_encoder::NodeTrialParts> {
+        Some(self.node_trial_split_price(source, recon))
+    }
+
+    fn node_trial_summary(&self) -> Option<nc_encoder::NodeTrialSummary> {
+        Some(self.node_trial_coded_summary())
     }
 
     fn undo_node_trial(&mut self, recon: &mut Picture) {
@@ -1681,6 +2044,7 @@ impl CodecBackend for HevcBackend {
             return false;
         }
         let accepted = test.within_noise
+            || test.repeat
             || (test.still && self.still_skip_limit_scale > 0.0 && {
                 let [luma, chroma] =
                     self.frame_quantization
@@ -1701,13 +2065,22 @@ impl CodecBackend for HevcBackend {
     }
 
     fn mv_candidates(&mut self, block: &Block, out: &mut Vec<Mv>) {
+        self.ranking_vectors(block, out);
+    }
+
+    fn ranking_vectors(&mut self, block: &Block, out: &mut Vec<Mv>) -> Option<Mv> {
         let p = self.predictors(block);
-        self.current = Some(p);
+        self.current.set(p);
         // Merge candidates cost almost nothing to signal; AMVP predictors
         // cost only a zero vector difference. With a second reference, a
         // merge vector of the other reference is still a likely vector:
         // `mode_bits` prices it as AMVP.
         out.extend(p.merge.vectors().iter().chain(&p.amvp).copied());
+        p.merge
+            .get(0)
+            .as_uni()
+            .filter(|first| first.ref_idx == self.active_ref)
+            .map(|first| first.mv)
     }
 
     fn mode_bits(&self, block: &Block, mode: &PredictionMode) -> f32 {
@@ -1719,15 +2092,15 @@ impl CodecBackend for HevcBackend {
                 cost::SKIP_FLAG + cost::MODE_AND_PART + cost::INTRA_DC + part
             }
             PredictionMode::Inter(mv) => {
-                let p = self
-                    .current
-                    .filter(|c| c.of(block, self.active_ref))
-                    .unwrap_or_else(|| self.predictors(block));
-                let motion = Motion {
-                    mv,
-                    ref_idx: self.active_ref,
+                let fallback;
+                let p = if let Some(p) = self.current.get_ref(block, self.active_ref) {
+                    p
+                } else {
+                    fallback = self.predictors(block);
+                    &fallback
                 };
-                if let Some(idx) = p.merge.index_of(motion) {
+                let motion = Motion::uni(mv, self.active_ref);
+                if let Some((idx, _)) = p.merge.predicting(motion) {
                     // Skip, or merge with residual.
                     cost::SKIP_FLAG + cost::merge_idx(idx, self.info.merge_candidates)
                 } else {
@@ -1739,6 +2112,7 @@ impl CodecBackend for HevcBackend {
                     cost::SKIP_FLAG
                         + cost::MODE_AND_PART
                         + 2.0 * cost::FLAG
+                        + self.uni_inter_pred_idc_bits()
                         + self.ref_idx_bits()
                         + mvd
                 }
@@ -1756,6 +2130,13 @@ impl CodecBackend for HevcBackend {
 
     fn set_filter_effort(&mut self, effort: nc_encoder::FilterEffort) {
         self.sao_usage = effort.usage;
+    }
+
+    /// A `user_data_unregistered` SEI (§D.2.7) after the IRAP pictures'
+    /// parameter sets.
+    fn set_encoder_info(&mut self, payload: Option<Vec<u8>>) {
+        self.encoder_info =
+            payload.map(|payload| nal::sei_rbsp(nal::SEI_USER_DATA_UNREGISTERED, &payload));
     }
 
     fn begin_frame(&mut self, plan: &FramePlan) {
@@ -1778,7 +2159,7 @@ impl CodecBackend for HevcBackend {
                 self.reference_list = ReferenceDistances::one(1);
             }
             FrameType::Inter => {
-                self.slice = SliceKind::Predicted;
+                self.slice = self.b_schedule.slice(self.inter_slice);
                 self.poc = self.picture_order_count(plan.index);
                 self.reference_list = self.slice_reference_list();
             }
@@ -1809,20 +2190,22 @@ impl CodecBackend for HevcBackend {
         // Contexts are initialised at the start of every slice (§9.3.2.2).
         self.contexts = Contexts::for_slice(self.slice, self.qp);
         self.items.clear();
+        self.item_pricing = None;
         self.level_store.get_mut().clear();
         self.tu_store.clear();
         self.sao = None;
         self.grid.reset();
         self.next_cu = 0;
         self.next_tu = 0;
-        self.current = None;
+        self.current.clear();
+        self.l1_amvp = None;
         self.early_merge = None;
         if let Some(random) = self.random.as_mut() {
             self.deblocking = random.slice_deblocking();
         } else if !self.deblock_inter {
             self.deblocking = match self.slice {
                 SliceKind::Intra => SliceDeblocking::Inherited,
-                SliceKind::Predicted => SliceDeblocking::Override {
+                SliceKind::Predicted | SliceKind::Bi => SliceDeblocking::Override {
                     disabled: true,
                     beta_offset_div2: 0,
                     tc_offset_div2: 0,
@@ -1854,6 +2237,10 @@ impl CodecBackend for HevcBackend {
         recon: &mut Picture,
     ) -> IntraChoice {
         self.key_intra_alternatives(block, source, recon)
+    }
+
+    fn intra_alternative_estimate(&self, rank: u8) -> Option<f32> {
+        self.key_alternative_estimate(rank)
     }
 
     fn encode_block(
@@ -1888,7 +2275,7 @@ impl CodecBackend for HevcBackend {
             }
         }
         self.end_block_qp();
-        self.current = None;
+        self.current.clear();
         self.cached_luma = None;
         self.early_merge = None;
         // The next CU's decision starts on the structure's reference.
@@ -1924,7 +2311,7 @@ impl CodecBackend for HevcBackend {
         } else {
             Candidates::Reuse(&self.sao_classes)
         };
-        let predicted = self.slice == SliceKind::Predicted;
+        let predicted = self.slice.is_inter();
         let skip_shares = self.grid.skip_shares_ctbs();
         let usage = self.sao_usage.filter(|_| predicted).map(|gate| {
             self.sao_outcome
@@ -2006,7 +2393,7 @@ impl CodecBackend for HevcBackend {
                     NalType::Cra
                 }
             }
-            SliceKind::Predicted => {
+            SliceKind::Predicted | SliceKind::Bi => {
                 let lsb = self.poc & ((1 << self.info.poc_lsb_bits) - 1);
                 let sets = self.info.reference_sets();
                 let explicit = if self.info.long_term {
@@ -2025,13 +2412,13 @@ impl CodecBackend for HevcBackend {
                         count: sets.len(),
                     }
                 };
-                p_slice_header(
+                inter_slice_header(
                     &mut header,
                     (lsb, self.info.poc_lsb_bits),
                     references,
                     qp,
                     self.slice_sao(),
-                    self.temporal_mvp(),
+                    (self.temporal_mvp(), self.slice == SliceKind::Bi),
                     (self.reference_list.count(), self.info.merge_candidates),
                     self.deblocking,
                 );
@@ -2051,6 +2438,10 @@ impl CodecBackend for HevcBackend {
             nal::write_nal_unit(&nal_header(NalType::Vps, 0), &vps(&self.info), &mut unit);
             nal::write_nal_unit(&nal_header(NalType::Sps, 0), &sps(&self.info), &mut unit);
             nal::write_nal_unit(&nal_header(NalType::Pps, 0), &pps(&self.info), &mut unit);
+            // A prefix SEI precedes the picture's first slice (§7.4.2.4.4).
+            if let Some(sei) = &self.encoder_info {
+                nal::write_nal_unit(&nal_header(NalType::PrefixSei, 0), sei, &mut unit);
+            }
         }
         nal::write_nal_unit(&nal_header(nal_type, temporal_id), &rbsp, &mut unit);
         unit
@@ -2063,6 +2454,9 @@ impl CodecBackend for HevcBackend {
         self.sao_outcome.commit();
         if self.slice == SliceKind::Intra && self.idr {
             self.sequence_sets = Some(self.sequence_set_bytes());
+        }
+        if self.inter_slice == SliceKind::Bi && self.slice.is_inter() {
+            self.b_schedule.coded(self.slice, self.grid.bi_share());
         }
         // The picture's motion becomes the collocated motion of the slots
         // it refreshed (the grid is reset for the next picture).
@@ -2139,6 +2533,11 @@ impl HevcBackend {
     }
 
     fn predictors(&self, block: &Block) -> Predictors {
+        self.predictors_for(block, self.active_ref)
+    }
+
+    /// The merge list of `block` and its list 0 AMVP list for `ref_idx`.
+    fn predictors_for(&self, block: &Block, ref_idx: u8) -> Predictors {
         let size = block.size();
         // The collocated picture is `ref_idx_l0` 0 (`collocated_ref_idx` 0).
         let collocated = self.motion.collocated(self.references.reference.slot);
@@ -2147,20 +2546,70 @@ impl HevcBackend {
             &self.grid,
             collocated,
             (block.x, block.y, size),
-            (
-                self.info.merge_candidates,
-                &self.reference_list,
-                self.active_ref,
-            ),
+            (self.slice_lists(), ref_idx),
         );
         Predictors {
             x: block.x,
             y: block.y,
             log2: block.log2_size(),
-            ref_idx: self.active_ref,
+            ref_idx,
             merge,
             amvp,
         }
+    }
+
+    /// What the current slice's candidate lists depend on.
+    fn slice_lists(&self) -> SliceLists<'_> {
+        SliceLists {
+            merge_len: self.info.merge_candidates,
+            references: &self.reference_list,
+            bi: self.slice == SliceKind::Bi,
+        }
+    }
+
+    /// List 1's AMVP list of `block` for reference `ref_idx` (cached for the
+    /// block being priced).
+    fn l1_amvp(&mut self, block: &Block, ref_idx: u8) -> [Mv; AMVP_CANDIDATES] {
+        let key = (block.x, block.y, block.log2_size(), ref_idx);
+        if let Some(cached) = self.l1_amvp.filter(|c| c.key == key) {
+            return cached.list;
+        }
+        let collocated = self.motion.collocated(self.references.reference.slot);
+        let list = amvp_candidates(
+            &self.grid,
+            self.temporal_mvp().then_some(&collocated),
+            (block.x, block.y, block.size()),
+            &self.reference_list,
+            (List::L1, ref_idx),
+        );
+        self.l1_amvp = Some(L1Amvp { key, list });
+        list
+    }
+
+    /// Estimated bits of a bi-predicted unit of `block` with `motion`:
+    /// merge where a candidate is that motion, else AMVP of both lists.
+    fn bi_mode_bits(&mut self, block: &Block, motion: Motion) -> f32 {
+        let l1 = motion.l1.expect("bi-predicted motion");
+        let p = self
+            .current
+            .get(block, motion.ref_idx)
+            .unwrap_or_else(|| self.predictors_for(block, motion.ref_idx));
+        if let Some((idx, _)) = p.merge.predicting(motion) {
+            return cost::SKIP_FLAG + cost::merge_idx(idx, self.info.merge_candidates);
+        }
+        let best = |mv: Mv, list: &[Mv]| {
+            list.iter()
+                .map(|&pred| mvd_bits(mv, pred))
+                .fold(f32::INFINITY, f32::min)
+        };
+        let l1_amvp = self.l1_amvp(block, l1.ref_idx);
+        cost::SKIP_FLAG
+            + cost::MODE_AND_PART
+            + cost::FLAG
+            + cost::INTER_PRED_IDC_BI
+            + 2.0 * (cost::FLAG + self.ref_idx_bits())
+            + best(motion.mv, &p.amvp)
+            + best(l1.mv, &l1_amvp)
     }
 
     /// The reference list of the current P slice: the structure's reference,
@@ -2172,6 +2621,16 @@ impl HevcBackend {
         match self.references.secondary {
             Some(second) => ReferenceDistances::two(primary, distance(second.slot)),
             None => ReferenceDistances::one(primary),
+        }
+    }
+
+    /// Estimated bits of a uni-predicted AMVP unit's `inter_pred_idc` (B
+    /// slices only).
+    fn uni_inter_pred_idc_bits(&self) -> f32 {
+        if self.slice == SliceKind::Bi {
+            cost::INTER_PRED_IDC_UNI
+        } else {
+            0.0
         }
     }
 
@@ -2227,10 +2686,7 @@ impl HevcBackend {
     /// Consume only a matching exact luma prediction. The one-reference frame
     /// contract guarantees its reference pixels stay unchanged until this CU.
     fn predict_inter_cu(&mut self, block: &Block, mv: Mv, reference: &Picture) {
-        let motion = Motion {
-            mv,
-            ref_idx: self.active_ref,
-        };
+        let motion = Motion::uni(mv, self.active_ref);
         let reuse_luma = self.cached_luma.take().is_some_and(|cached| {
             cached.block == *block
                 && cached.motion == motion
@@ -2270,12 +2726,9 @@ impl HevcBackend {
     ) {
         let predictors = self
             .current
-            .filter(|c| c.of(block, self.active_ref))
+            .get(block, self.active_ref)
             .unwrap_or_else(|| self.predictors(block));
-        let motion = Motion {
-            mv,
-            ref_idx: self.active_ref,
-        };
+        let motion = Motion::uni(mv, self.active_ref);
         if self.still_skipped.take() == Some((block.x, block.y)) {
             // `try_static_skip` wrote the reconstruction (the co-located
             // reference samples); only the syntax remains.
@@ -2295,12 +2748,14 @@ impl HevcBackend {
             // quiet luma does not imply quiet colour residuals. A failed UV
             // check retains normal residual coding for the early-selected MV.
             self.place_prediction(block, recon);
+            let merged = predictors.merge.get(0);
             self.record_cu(
                 block,
                 Cell {
                     skip: true,
                     mv,
                     ref_idx: self.active_ref,
+                    l1: merged.l1,
                     tu: u32::MAX,
                     ..Cell::default()
                 },
@@ -2309,7 +2764,44 @@ impl HevcBackend {
             self.push_cu(block, CuKind::Skip { merge_idx: 0 }, &[]);
             return;
         }
-        let tus = if self.tools.inter_tu_split {
+        let tus = self.code_inter_residual(block, source, recon);
+        self.record_inter_cu(block, motion, &predictors, &tus);
+    }
+
+    /// A bi-predicted CU (B slices): `motion`'s list 0 half from
+    /// `references[0]`, its list 1 half from `references[1]`.
+    fn encode_bi_cu(
+        &mut self,
+        block: &Block,
+        motion: Motion,
+        source: &Picture,
+        references: [&Picture; 2],
+        recon: &mut Picture,
+    ) {
+        let predictors = self
+            .current
+            .get(block, motion.ref_idx)
+            .unwrap_or_else(|| self.predictors_for(block, motion.ref_idx));
+        predict_bi_cu(
+            &self.dsp,
+            block,
+            motion,
+            references,
+            (&mut self.bi_first, &mut self.inter_pred),
+        );
+        let tus = self.code_inter_residual(block, source, recon);
+        self.record_inter_cu(block, motion, &predictors, &tus);
+    }
+
+    /// Code the residual of an inter CU from its prediction (`inter_pred`)
+    /// and write its reconstruction.
+    fn code_inter_residual(
+        &mut self,
+        block: &Block,
+        source: &Picture,
+        recon: &mut Picture,
+    ) -> TransformUnits {
+        if self.tools.inter_tu_split {
             self.code_inter_tree(block, source, recon)
         } else {
             // The whole CU's prediction is copied once (long rows); its
@@ -2322,8 +2814,7 @@ impl HevcBackend {
                 tus.push(self.code_inter_tu(block, position, source, recon));
             }
             tus
-        };
-        self.record_inter_cu(block, motion, &predictors, &tus);
+        }
     }
 
     /// The transform units of an inter CU coded with no residual (as the
@@ -2355,37 +2846,51 @@ impl HevcBackend {
     ) {
         debug_assert_eq!(predictors.ref_idx, motion.ref_idx);
         let residual = tus.as_slice().iter().any(TransformUnit::coded);
-        let merge_idx = predictors.merge.index_of(motion);
-        let Motion { mv, ref_idx } = motion;
-
+        // A merge candidate predicting the same samples is coded instead,
+        // and its motion is the unit's (what later units derive from).
+        let (merge_idx, motion) = match predictors.merge.predicting(motion) {
+            Some((index, candidate)) => (Some(index), candidate),
+            None => (None, motion),
+        };
         let kind = match merge_idx {
             Some(merge_idx) if !residual => CuKind::Skip { merge_idx },
             Some(merge_idx) => CuKind::Merge { merge_idx },
             None => {
-                let (mvp_idx, pred) = predictors
-                    .amvp
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .min_by(|a, b| mvd_bits(mv, a.1).total_cmp(&mvd_bits(mv, b.1)))
-                    .expect("two AMVP candidates");
-                CuKind::Amvp {
-                    mv,
-                    ref_idx: (self.reference_list.count() > 1).then_some(ref_idx),
-                    pred,
-                    mvp_idx,
-                }
+                let l0 = self.amvp_choice(motion.mv, motion.ref_idx, &predictors.amvp);
+                let l1 = motion.l1.map(|l1| {
+                    let candidates = self.l1_amvp(block, l1.ref_idx);
+                    self.amvp_choice(l1.mv, l1.ref_idx, &candidates)
+                });
+                CuKind::Amvp { l0, l1 }
             }
         };
         let skip = matches!(kind, CuKind::Skip { .. });
         let cell = Cell {
             skip,
-            mv,
-            ref_idx,
+            mv: motion.mv,
+            ref_idx: motion.ref_idx,
+            l1: motion.l1,
             ..Cell::default()
         };
         self.record_cu(block, cell, tus.as_slice());
         self.push_cu(block, kind, tus.as_slice());
+    }
+
+    /// One list's AMVP syntax for `mv` into reference `ref_idx`: the
+    /// candidate of `candidates` with the cheapest difference.
+    fn amvp_choice(&self, mv: Mv, ref_idx: u8, candidates: &[Mv]) -> AmvpList {
+        let (mvp_idx, pred) = candidates
+            .iter()
+            .copied()
+            .enumerate()
+            .min_by(|a, b| mvd_bits(mv, a.1).total_cmp(&mvd_bits(mv, b.1)))
+            .expect("two AMVP candidates");
+        AmvpList {
+            mv,
+            ref_idx: (self.reference_list.count() > 1).then_some(ref_idx),
+            pred,
+            mvp_idx,
+        }
     }
 
     /// Copy the inter prediction of `block` (all planes) into `recon`.
@@ -2539,7 +3044,10 @@ impl HevcBackend {
         let n = transform.side();
         // Intra residuals and block-QP refinements (the reuse term restoring
         // the detail a degraded reference lost) keep every frequency.
-        let partial = !intra && !self.refining_block();
+        let partial = !intra
+            && !self.refining_block()
+            && nc_encoder::WorkGate::partial_transform(&self.gates)
+                .admits_quantizer(self.qp as f32 / QP_MAX as f32);
         let mode = self.fast_forward.mode(n, partial);
         if mode.staging != HevcForwardStaging::Exact || mode.low_frequencies {
             self.dsp
@@ -2592,7 +3100,7 @@ impl HevcBackend {
         // over natural TRAIN; these are joint, not isolated, threshold results.
         // See docs/handoff/overnight.md (control-fulltrain).
         let abs_sum = self.dsp.sad(size, &src_block, &pred_block);
-        if forward_bound(log2, u64::from(abs_sum)) <= quantization.pre_transform_zero_limit {
+        if abs_sum < quantization.pre_transform_sad_limit {
             if predicted != Predicted::InterInPlace {
                 let mut out = recon.plane_mut(plane).view_mut();
                 copy_square(&mut out, (x, y), n, pred, pred_stride);
@@ -2697,13 +3205,7 @@ impl HevcBackend {
         scan: &Scan,
         quantisation: Quantisation,
     ) -> (u32, CodedGroups) {
-        let mut nonzero = self
-            .dsp
-            .hevc_quantize_from(coeffs, &quantization.quantizer, levels);
-        if quantization.planned_min_level > 1 {
-            nonzero =
-                nc_encoder::apply_planned_dead_zone(levels, quantization.planned_min_level) as u32;
-        }
+        let mut nonzero = quantization.quantize(&self.dsp, coeffs, levels);
         if nonzero == 0 {
             return (0, CodedGroups::default());
         }
@@ -2854,8 +3356,9 @@ impl HevcBackend {
             .as_ref()
             .filter(|t| t.settings.covers(self.slice == SliceKind::Intra))?;
         let settings = &trellis.settings;
+        let base_scale = settings.lambda_scale_for(self.slice == SliceKind::Intra);
         let scale = if plane == PlaneIndex::Y {
-            settings.lambda_scale
+            base_scale
         } else if self.info.chroma_policy.is_some() {
             // The policy weighs chroma error by the squared step ratio,
             // 2^((QPy - QPc)/3) (as HM): chroma λ is luma's over it.
@@ -2864,11 +3367,11 @@ impl HevcBackend {
                 .planes
                 .each_ref()
                 .map(|plane| plane.qp);
-            settings.lambda_scale
+            base_scale
                 * settings.chroma_scale?
                 * 2f32.powf((chroma - luma) as f32 / QP_PER_LAMBDA_DOUBLING)
         } else {
-            settings.lambda_scale * settings.chroma_scale?
+            base_scale * settings.chroma_scale?
         };
         Some((trellis, scale))
     }
@@ -3048,27 +3551,37 @@ fn plane_rect(plane: PlaneIndex, x: usize, y: usize, log2: u8) -> (usize, usize,
     (x >> shift, y >> shift, 1 << (usize::from(log2) - shift))
 }
 
-/// Bits of `mvd_coding()` for `mv − pred` (exact count of its bins).
+/// A coded vector difference component lies in −2^15..2^15 − 1 quarter
+/// samples (HEVC §7.4.9.9, `lMvd`).
+const MVD_RANGE: std::ops::RangeInclusive<i32> = -(1 << 15)..=(1 << 15) - 1;
+
+/// Bits of `mvd_coding()` for `mv − pred` (exact count of its bins):
+/// infinite where a component is outside [`MVD_RANGE`], so that no mode
+/// decision chooses a difference the syntax cannot carry. Two engine vectors
+/// lie that far apart only on a picture over 4096 samples wide or tall (a
+/// second-reference seed at the picture's size against a predicted vector
+/// of the other sign; AV1's narrower range was passed at 1280 wide).
 fn mvd_bits(mv: Mv, pred: Mv) -> f32 {
+    let difference = [
+        i32::from(mv.x) - i32::from(pred.x),
+        i32::from(mv.y) - i32::from(pred.y),
+    ];
+    if difference.iter().any(|d| !MVD_RANGE.contains(d)) {
+        return f32::INFINITY;
+    }
     let component = |d: i32| -> u32 {
         match d.unsigned_abs() {
             0 => 1,
             1 => 3, // greater0, greater1, sign
             a => {
-                let mut value = a - 2;
-                let mut k = MVD_EG_ORDER;
-                let mut bins = 0;
-                while value >= (1 << k) {
-                    value -= 1 << k;
-                    k += 1;
-                    bins += 1;
-                }
-                3 + bins + 1 + k
+                // The order-k tail adds two bins for every doubling of
+                // the quotient, as in VVC's order-one MVD estimate.
+                let prefix = (((a - 2) >> MVD_EG_ORDER) + 1).ilog2();
+                3 + 2 * prefix + 1 + MVD_EG_ORDER
             }
         }
     };
-    (component(i32::from(mv.x) - i32::from(pred.x))
-        + component(i32::from(mv.y) - i32::from(pred.y))) as f32
+    (component(difference[0]) + component(difference[1])) as f32
 }
 
 /// Motion-compensated prediction of all three planes of `block` from
@@ -3104,6 +3617,54 @@ fn predict_cu(
             n,
             mv,
             &mut pred[..n * n],
+        );
+    }
+}
+
+/// Bi-prediction from list 0's first reference at `first_mv` and list 1's
+/// reference `ref_idx` at `mv`.
+fn bi_motion(first_mv: Mv, (mv, ref_idx): (Mv, u8)) -> Motion {
+    Motion {
+        mv: first_mv,
+        ref_idx: 0,
+        l1: Some(ListMotion { mv, ref_idx }),
+    }
+}
+
+/// Default-weight bi-prediction (HEVC eq. 8-251) of all three planes of
+/// `block`: list 0's half from `references[0]` at `motion.mv`, list 1's
+/// from `references[1]`, into `planes` (as [`predict_cu`]); `first` holds
+/// list 0's centred 14-bit samples (reused across CUs).
+fn predict_bi_cu(
+    dsp: &Dsp,
+    block: &Block,
+    motion: Motion,
+    references: [&Picture; 2],
+    (first, planes): (&mut Vec<i16>, &mut [Vec<u8>; 3]),
+) {
+    let l1 = motion.l1.expect("bi-predicted motion");
+    let kernels = dsp.at(nc_common::BitDepth::EIGHT);
+    for (plane, pred) in PlaneIndex::ALL.into_iter().zip(planes) {
+        let (x, y, n) = plane_rect(plane, block.x, block.y, block.log2_size());
+        let chroma = plane != PlaneIndex::Y;
+        predict_samples(
+            kernels,
+            references[0].plane(plane),
+            (x, y),
+            (n, n),
+            motion.mv,
+            chroma,
+            first,
+        );
+        let mut dst = PlaneViewMut::new(&mut pred[..n * n], n, n, n).expect("CU prediction");
+        predict_bi_into(
+            kernels,
+            references[1].plane(plane),
+            (x, y),
+            l1.mv,
+            chroma,
+            &first[..n * n],
+            &mut dst,
         );
     }
 }
@@ -3177,6 +3738,37 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamI
     }
 }
 
+/// In-frame rate control's running estimate of a frame's recorded items
+/// (`CodecBackend::coded_bits`).
+#[derive(Debug)]
+struct ItemPricing {
+    /// The first item not yet priced.
+    next: usize,
+    /// Estimated bits of the items before it.
+    bits: f64,
+    /// The contexts as the items before it left them.
+    contexts: Contexts,
+}
+
+#[cfg(test)]
+mod mvd_range_tests {
+    use super::{Mv, mvd_bits};
+
+    #[test]
+    fn a_difference_past_the_coded_range_costs_infinite_bits() {
+        // 4100 samples right against 4100 samples left: 32800 quarters.
+        let right = Mv { x: 16_400, y: 0 };
+        let left = Mv { x: -16_400, y: 0 };
+        assert!(mvd_bits(right, left).is_infinite());
+        assert!(mvd_bits(left, right).is_infinite());
+        // The ends of the range itself are coded.
+        let pred = Mv { x: -16_384, y: 0 };
+        assert!(mvd_bits(Mv { x: 16_383, y: 0 }, pred).is_finite());
+        assert!(mvd_bits(pred, Mv { x: 16_384, y: 0 }).is_finite());
+        assert!(mvd_bits(Mv { x: 0, y: 16_384 }, Mv { x: 0, y: -16_384 }).is_infinite());
+    }
+}
+
 #[cfg(test)]
 mod frame_quantization_tests {
     use super::{
@@ -3191,18 +3783,31 @@ mod frame_quantization_tests {
                 let scaled = FrameQuantization::new(qp, -3, [(171, 128); 2], 1.0, 1.0, scale, 1.0);
                 for (a, b) in exact.planes.iter().zip(&scaled.planes) {
                     for intra in 0..2 {
-                        for (x, y) in a.transforms[intra].iter().zip(&b.transforms[intra]) {
+                        for (index, (x, y)) in a.transforms[intra]
+                            .iter()
+                            .zip(&b.transforms[intra])
+                            .enumerate()
+                        {
                             assert_eq!(x.zero_limit, y.zero_limit);
                             assert_eq!(x.column_zero_limit, y.column_zero_limit);
                             assert_eq!(x.quantizer, y.quantizer);
-                            assert_eq!(x.pre_transform_zero_limit, x.zero_limit);
-                            if intra == 1 {
-                                assert_eq!(x.pre_transform_zero_limit, y.pre_transform_zero_limit);
+                            let log2 = index as u8 + 2;
+                            let limit = if intra == 1 {
+                                x.zero_limit
                             } else {
-                                assert_eq!(
-                                    y.pre_transform_zero_limit,
-                                    (x.zero_limit as f64 * f64::from(scale)) as u64
-                                );
+                                (x.zero_limit as f64 * f64::from(scale)) as u64
+                            };
+                            for (threshold, limit) in [
+                                (x.pre_transform_sad_limit, x.zero_limit),
+                                (y.pre_transform_sad_limit, limit),
+                            ] {
+                                for sad in [0, threshold.saturating_sub(1), threshold] {
+                                    assert_eq!(
+                                        sad < threshold,
+                                        crate::transform::forward_bound(log2, u64::from(sad))
+                                            <= limit,
+                                    );
+                                }
                             }
                         }
                     }
@@ -3648,19 +4253,12 @@ mod early_merge_tests {
         backend.early_merge_lambdas = 0.25;
         assert!(backend.prefer_cached_inter(&block, Mv::ZERO, stats, 4.0));
         let hint = backend.early_merge.unwrap();
-        let on_first = |mv| Motion { mv, ref_idx: 0 };
+        let on_first = |mv| Motion::uni(mv, 0);
         assert!(hint.matches(1, &block, on_first(Mv::ZERO)));
         assert!(!hint.matches(2, &block, on_first(Mv::ZERO)));
         assert!(!hint.matches(1, &Block { x: 16, ..block }, on_first(Mv::ZERO)));
         assert!(!hint.matches(1, &block, on_first(Mv { x: 4, y: 0 })));
-        assert!(!hint.matches(
-            1,
-            &block,
-            Motion {
-                mv: Mv::ZERO,
-                ref_idx: 1
-            }
-        ));
+        assert!(!hint.matches(1, &block, Motion::uni(Mv::ZERO, 1)));
         assert!(!backend.prefer_cached_inter(
             &block,
             Mv::ZERO,

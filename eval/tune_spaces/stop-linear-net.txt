@@ -1,0 +1,24 @@
+# The post-trial stop's linear terms and its network's terms together (rd_split.rs
+# FirstTrialStop, stop_value.rs), from today's search (all 0: the first trial is the
+# preset). For rungs that ship no stop (AV1 slower: the ungated search).
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_stop_bias -4 2
+planner.rd_split_stop_cost -2 2
+planner.rd_split_stop_bits -2 2
+planner.rd_split_stop_distortion -2 2
+planner.rd_split_stop_skip -3 3
+planner.rd_split_stop_nonzero -2 2
+planner.rd_split_stop_planned_split -3 3
+planner.rd_split_stop_size -2 2
+planner.rd_split_stop_margin -2 2
+planner.rd_split_stop_neighbours -2 2
+planner.rd_split_stop_co_located -2 2
+planner.rd_split_stop_net_weight -2 2
+planner.rd_split_stop_net_h0 -2 2
+planner.rd_split_stop_net_h1 -2 2
+planner.rd_split_stop_net_h2 -2 2
+planner.rd_split_stop_net_h3 -2 2
+planner.rd_split_stop_net_h4 -2 2
+planner.rd_split_stop_net_h5 -2 2
+planner.rd_split_stop_net_h6 -2 2
+planner.rd_split_stop_net_h7 -2 2

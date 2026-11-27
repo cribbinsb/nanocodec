@@ -13,10 +13,11 @@ rotated rounds, the median per-round time ratio kept (the same pairing as
 
 Uploaded (one tar stream, a few hundred MB): our chart timing build (the x86
 release build, chart_refresh's `nanocodec-timed-release`, of the build the chart's
-build record names), the reference encoders the points name (from
-~/nanocodec-data/anchors/x86_64/bin), anchor_chart_timing.py, the chart's
-timing plan, and the three timing clips cut to the chart length (150 frames)
-and zstd-compressed (cached under WORK_DIR/cache). The plan gains one derived
+build record names), the reference encoders the points name (the timed reference
+build, nceval.config.reference_bin: X86_TOOLS, GRAVITON_TOOLS), anchor_chart_timing.py, the chart's
+timing plan (CBR: a subset of the chart's own quality encodes, nceval.chart_timing),
+and its timing clips cut to the plan's frames (decoded where stored encoded) and
+zstd-compressed (cached under WORK_DIR/cache). The plan gains one derived
 point on x86, `svtav1-m13@asm-avx2` (M13 with `--asm avx2`): against M13's
 default (`--asm max`, AVX-512 where the CPU has it) it is the speed of SVT's
 AVX-512 paths.
@@ -25,9 +26,9 @@ The whole set is timed `--repeats` times in a row (the spread between
 repeats is the session's own noise). Results (the per-point records and a
 summary.json with fps and ratios beside the stored chart's x86 ratios) land
 in --out. Instances, costs and rules: tools/dev/aws_session.py; for Graviton
-(GRAVITON_MACHINE, the site's server Arm series, or c8g.metal-24xl) pass aarch64
-builds with --binary, --tools-dir and --expect-version (the Jetson's chart build
-and AARCH64_TOOLS, copied from the board).
+(GRAVITON_MACHINE, the site's server Arm series, or c8g.metal-24xl) pass our aarch64
+build with --binary and --expect-version; the references default to GRAVITON_TOOLS,
+their native Graviton build (x265 with SVE/SVE2), --tools-dir to time others.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import shlex
 import statistics
@@ -48,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))  # nceval (clip paths)
 import anchor_chart_timing as act  # noqa: E402
 from aws_session import STALL_MINUTES, WORK_DIR, Session, SessionSpec, say  # noqa: E402
+from nceval.config import reference_bin  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 DATA = Path.home() / "nanocodec-data"
@@ -56,13 +59,19 @@ BUILDS_FILE = REPO / "docs/results/bd-vs-speed-builds.json"
 LOCAL_TIMING_FILE = REPO / "docs/results/bd-vs-speed-timing-x86.json"
 BUILDS_ROOT = DATA / "charts/builds"
 TIMED_BINARY = "nanocodec-timed-release"
-X86_TOOLS = DATA / "anchors/x86_64/bin"
-CLIP_CACHE = WORK_DIR / "cache"
-#: Known timing boxes: (region, AMI architecture). The AMD 7th/8th-generation sizes
+#: The timed reference encoders (nceval.config.REFERENCE_BUILDS switches them). Their
+#: openh264-harness has --bitrate (the plain anchors' 2026-11-06 copy had none, which
+#: X86_OWN_TOOLS worked around until 2026-11-23).
+X86_TOOLS = reference_bin("x86_64")
+#: The timing sessions' clip archives (clip_archive): a capped cache of its own
+#: (tools/dev/retention.toml work/aws-clip-cache, pruned by prune_clip_cache), outside
+#: work/aws, which holds the durable ledger (until 2026-11-24 they sat in work/aws/cache:
+#: 21 GiB that no tool could prune).
+CLIP_CACHE = WORK_DIR.parent / "aws-clip-cache"
+#: Known timing boxes: (region, AMI architecture); no c7a (owner: double-pumped AVX-512,
+#: docs/aws-cost-guide.md). The AMD 8th-generation sizes
 #: have no SMT (a vCPU is a physical core), so even a .large is alone on its cores.
 INSTANCES = {"c7i.metal-24xl": ("eu-north-1", "amd64"),  # Sapphire Rapids, AVX-512 full width
-             "c7a.large": ("eu-north-1", "amd64"),  # Zen 4 (AVX-512 on 256-bit units), 2 cores
-             "c7a.metal-48xl": ("eu-north-1", "amd64"),  # Zen 4, bare metal
              "c8a.large": ("eu-west-1", "amd64"),  # Zen 5, AVX-512 full width, 2 cores
              "c8a.4xlarge": ("eu-west-1", "amd64"),  # Zen 5, 16 cores: the x86 timing machine
              "c8a.metal-24xl": ("eu-west-1", "amd64"),  # Zen 5, bare metal
@@ -84,10 +93,10 @@ GRAVITON_MACHINE = "c8g.large"
 #: method as TIMING_MACHINE, except that its two vCPUs are the SMT threads of one core: the
 #: timed thread's sibling is the system's (the platform note says so, `pinning_command`).
 ZEN3_MACHINE = "c6a.large"
-#: Reference encoders for an arm64 instance: the Jetson's own builds
-#: (~/nanocodec-data/anchors/aarch64/bin on the board, copied here), so both Arm
-#: series time the same reference binaries.
-AARCH64_TOOLS = DATA / "anchors/aarch64/bin"
+#: Reference encoders for an arm64 instance: their native Graviton build
+#: (tools/dev/aws_reference_builds.py graviton; until 2026-11-23 the Jetson's builds,
+#: with x265's SVE/SVE2 kernels left out).
+GRAVITON_TOOLS = reference_bin("graviton")
 #: Cores left to the system before the timed ones: two on a big box (time-cloud's
 #: default), one on a 2-core .large (its other core times the pairs one after another).
 #: The first timed core is also the quiet core of the kernel benchmarks and profiles.
@@ -113,6 +122,8 @@ ZSTD_LEVEL = 12
 #: repeat on c8g.large (105 pairs; 30 stopped it at pair 86 of 105), inside the 90-min lifetime.
 REPEAT_TIMEOUT_MINUTES = 50
 PREPARE_MINUTES = 5
+#: Plan entries the pipe-cleaner times within one PREPARE_MINUTES (a 3-clip plan's).
+PIPE_CLEANER_ENTRIES = 3
 CHECKASM_MINUTES = 20
 PERF_MINUTES = 10
 #: A repeat prints once per (point, clip) pair, after all its rounds: one pair of a slow
@@ -138,37 +149,24 @@ def chart_points() -> list[str]:
     return [*from_builds, *DEFAULT_REFERENCES]
 
 
-#: Each timed point again in CBR at the plan's rung (`--cbr-variants`), as `<point>@cbr`:
-#: the chart times fixed QP; this measures what real-use CBR (rate control, re-codes)
-#: costs on top. Our points take the harness's CBR arguments, x264 its ABR + VBV.
-CBR_VARIANT_SUFFIX = "@cbr"
 #: Each of our points run by an earlier build (`--baseline-binary`), as `<point>@base`,
 #: paired with the point in the same rounds on the same core: a before/after speed
 #: comparison of two builds. Only the variants are timed (the point is their partner).
 BASELINE_SUFFIX = "@base"
 BASELINE_BINARY = "nanocodec-base"
-CBR_BUFFER_MS = 1000
-
-
-def cbr_argv(argv: list[str], kbps: int) -> list[str]:
-    """`argv` with its `--qp N` replaced by the harness's CBR arguments at `kbps`."""
-    at = argv.index("--qp")
-    if "{BIN}/nanocodec" in argv[0]:
-        rate = ["--bitrate", str(kbps), "--buffer-ms", str(CBR_BUFFER_MS)]
-    elif argv[0].endswith("/x264"):
-        rate = ["--bitrate", str(kbps), "--vbv-maxrate", str(kbps), "--vbv-bufsize",
-                str(round(kbps * CBR_BUFFER_MS / 1000))]
-    else:
-        raise ValueError(f"no CBR form for {argv[0]}")
-    return [*argv[:at], *rate, *argv[at + 2:]]
 
 
 def cloud_plan(points: list[str], arch: str, plan_file: Path, isa_variants: bool,
-               cbr_variants: bool = False, baseline: bool = False) -> dict:
+               baseline: bool = False, inputs: set[str] | None = None) -> dict:
     """The plan's entries for `points` (and both anchors), plus the AVX2-only M13 and,
     with `isa_variants`, each of our points again on our AVX2 tier (ISA_VARIANT); with
-    `baseline`, each of our points again on the baseline build (BASELINE_SUFFIX)."""
-    plan = json.loads(plan_file.read_text())
+    `baseline`, each of our points again on the baseline build (BASELINE_SUFFIX). With
+    `inputs`, only the entries that encode those clips (`input_subset`)."""
+    from nceval.chart_timing import load_plan
+
+    plan = load_plan(plan_file)
+    if inputs is not None:
+        plan = input_subset(plan, inputs)
     keep = {*points, plan["anchor"], act.SECOND_ANCHOR}
     entries = {n: v for n, v in plan["points"].items() if n in keep}
     if arch == "amd64":
@@ -186,15 +184,31 @@ def cloud_plan(points: list[str], arch: str, plan_file: Path, isa_variants: bool
                 clip: {**entry, "argv": [f"{{BIN}}/{BASELINE_BINARY}", *entry["argv"][1:]],
                        "pair_with": name}
                 for clip, entry in entries[name].items()}
-    if cbr_variants:
-        for name in [n for n in entries if n.startswith("nanocodec") or n == plan["anchor"]]:
-            entries[f"{name}{CBR_VARIANT_SUFFIX}"] = {
-                clip: {**entry, "argv": cbr_argv(entry["argv"], round(
-                    entry["target_bytes"] * 8 * entry["fps"] / plan["frames"] / 1000)),
-                       "pair_with": name}
-                for clip, entry in entries[name].items()}
-    return {"anchor": plan["anchor"], "rung_kbps": plan["rung_kbps"], "frames": plan["frames"],
-            "points": entries}
+    return {**{k: v for k, v in plan.items() if k != "points"}, "points": entries}
+
+
+def isolated(function, *args):
+    """`function(*args)` in a child process: the plan and the clip staging import the eval
+    package (~100 MB, nceval.chart), which this process, waiting on its session for hours
+    and run tens at a time, should not hold (the PC's memory, 2026-11-23)."""
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+
+    with ProcessPoolExecutor(1, mp_context=get_context("spawn")) as child:
+        return child.submit(function, *args).result()
+
+
+def input_subset(plan: dict, inputs: set[str]) -> dict:
+    """`plan` restricted to the entries that encode the clips `inputs`: an every-encode
+    plan split by clip over many sessions, so each uploads only its own clips and every
+    entry's points are paired with the anchor in one session."""
+    keys = [k for k in act.plan_clips(plan) if act.plan_input(plan, k) in inputs]
+    missing = inputs - {act.plan_input(plan, k) for k in keys}
+    if missing:
+        raise SystemExit(f"--inputs not in the plan: {sorted(missing)}")
+    return {**plan, "clips": {k: plan["clips"][k] for k in keys},
+            "inputs": {k: plan["inputs"][k] for k in keys},
+            "points": {n: {k: e[k] for k in keys if k in e} for n, e in plan["points"].items()}}
 
 
 def slowest_first(points: list[str]) -> list[str]:
@@ -219,7 +233,7 @@ def chart_binaries(plan: dict) -> dict[str, Path]:
     for name, clips in plan["points"].items():
         if not name.startswith("nanocodec"):
             continue
-        family = name.split(ISA_VARIANT_SUFFIX)[0].split(CBR_VARIANT_SUFFIX)[0]
+        family = name.split(ISA_VARIANT_SUFFIX)[0]
         build = timed_on.get(family, record["families"][family])
         staged[f"nanocodec-{build}"] = BUILDS_ROOT / build / TIMED_BINARY
         for entry in clips.values():
@@ -227,24 +241,48 @@ def chart_binaries(plan: dict) -> dict[str, Path]:
     return staged
 
 
-def clip_archive(clip: str, frame_bytes: int) -> Path:
-    """The clip's first FRAMES frames, zstd-compressed, cached by clip name and length."""
-    from nceval.config import load_paths
-    from nceval.realuse import main_clips
+def prune_clip_cache() -> int:
+    """The archives, least recently used first, until the cache is within its cap
+    (retention.toml), after the partials of sessions that died writing them; returns
+    bytes freed. A live session's partial is left alone."""
+    from nceval import retention
+    cap = retention.cap_bytes(CLIP_CACHE, DATA)
+    if cap is None or not CLIP_CACHE.is_dir():
+        return 0
+    freed = 0
+    for partial in sorted(CLIP_CACHE.glob("*.partial-*")):  # a session that died writing it
+        pid = partial.name.rsplit("-", 1)[-1]
+        if pid.isdigit() and not Path(f"/proc/{pid}").exists() and \
+                retention.guard(partial, "aws_timing") is None:
+            freed += partial.lstat().st_size
+            partial.unlink()
+    return freed + retention.prune_to_cap(sorted(CLIP_CACHE.glob("*.yuv.zst")), cap,
+                                          "aws_timing")[0]
+
+
+def clip_archive(clip, frames: int) -> Path:
+    """The clip's measured frames (from its start frame, decoded where it is stored
+    encoded: nceval.clipframes, as its quality points read it), zstd-compressed, cached by
+    clip name, start and length."""
+    from nceval.clipframes import ClipFrames
 
     CLIP_CACHE.mkdir(parents=True, exist_ok=True)
-    archive = CLIP_CACHE / f"{clip}-{act.FRAMES}f.yuv.zst"
-    if not archive.is_file():
-        source = main_clips(load_paths())[clip].yuv
-        partial = archive.with_suffix(".partial")
-        with open(source, "rb") as raw:
+    archive = CLIP_CACHE / f"{clip.name}-s{clip.start_frame}-{frames}f.yuv.zst"
+    if archive.is_file():
+        os.utime(archive)  # in use: the cache's eviction is least recently used first
+    else:
+        # one partial per process: sessions started side by side stage the same clips
+        partial = archive.with_suffix(f".partial-{os.getpid()}")
+        with ClipFrames(clip, frames, CLIP_CACHE) as source, open(source.reader(), "rb") as raw:
             subprocess.run(["zstd", "-q", "-T8", f"-{ZSTD_LEVEL}", "-f", "-o", str(partial)],
-                           input=raw.read(frame_bytes * act.FRAMES), check=True)
+                           stdin=raw, check=True)
         partial.rename(archive)
     return archive
 
 
 def stage(stage_dir: Path, plan: dict, ours: dict[str, Path], tools_dir: Path) -> None:
+    from nceval.chart import chart_clips
+
     (stage_dir / "bin").mkdir(parents=True)
     (stage_dir / "clips").mkdir()
     names = {e["argv"][0].removeprefix("{BIN}/") for p in plan["points"].values()
@@ -252,12 +290,10 @@ def stage(stage_dir: Path, plan: dict, ours: dict[str, Path], tools_dir: Path) -
     for name in names:
         source = ours.get(name, tools_dir / name)
         (stage_dir / "bin" / name).symlink_to(source.resolve())
-    width, height = map(int, plan["points"][plan["anchor"]][act.CLIPS[0]]["argv"][
-        plan["points"][plan["anchor"]][act.CLIPS[0]]["argv"].index("--input-res") + 1]
-        .split("x"))
-    for clip in act.CLIPS:
-        (stage_dir / "clips" / f"{clip}.yuv.zst").symlink_to(
-            clip_archive(clip, width * height * 3 // 2))
+    clips = {c.name: c for c in chart_clips(plan["clipset"])}
+    for name in sorted({act.plan_input(plan, key) for key in act.plan_clips(plan)}):
+        (stage_dir / "clips" / f"{name}.yuv.zst").symlink_to(
+            clip_archive(clips[name], act.input_frames(plan, name)))
     (stage_dir / "anchor_chart_timing.py").symlink_to(Path(act.__file__).resolve())
     (stage_dir / "plan.json").write_text(json.dumps(plan, indent=1) + "\n")
 
@@ -347,7 +383,8 @@ def runtime_libraries() -> str:
 def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict[str, str],
                     plan: dict, checkasm: bool, perf_points: list[str],
                     system_cores: int = DEFAULT_SYSTEM_CORES,
-                    arch: str = "amd64", timed_cpus: str | None = None) -> list[RemoteJob]:
+                    arch: str = "amd64", timed_cpus: str | None = None,
+                    repeat_minutes: float = REPEAT_TIMEOUT_MINUTES) -> list[RemoteJob]:
     """The remote stages, fail-fast first: readiness checks (minutes), a pipe-cleaner
     (one of our points, its AVX2-tier variant and the AVX2 M13, one round), the kernel
     benchmarks when asked for (before the timing, on a quiet machine), one job per
@@ -375,8 +412,15 @@ def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict
     cleaner = base + [p for p in points if p == AVX2_VARIANT or
                       (base and p == f"{base[0]}{ISA_VARIANT_SUFFIX}")]
     cleaner = cleaner or points[:1]  # a session of references only
+    cleaner_minutes = PREPARE_MINUTES * math.ceil(len(plan["clips"]) / PIPE_CLEANER_ENTRIES)
     jobs = [RemoteJob("prepare", prepare, PREPARE_MINUTES),
-            RemoteJob("pipe-cleaner", timing("pipe-cleaner", cleaner, 1), PREPARE_MINUTES)]
+            # one round of each cleaner point on every entry, after the anchors' ratio on
+            # each: an every-encode plan's 50 entries took ~4 min of a 5-min limit, so the
+            # limit grows with the entries (PIPE_CLEANER_ENTRIES a PREPARE_MINUTES)
+            # (it prints nothing before the anchors' ratio on every entry is done, so its
+            # stall limit is its time limit: 60 entries passed 5 silent minutes, 2026-11-23)
+            RemoteJob("pipe-cleaner", timing("pipe-cleaner", cleaner, 1), cleaner_minutes,
+                      stall_minutes=cleaner_minutes)]
     if checkasm:
         jobs.append(RemoteJob("checkasm", cd + " && ".join(
             f"taskset -c {timed_cpus or system_cores} bin/nc-checkasm --bench --isa {isa} "
@@ -386,7 +430,7 @@ def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict
         # the pipe-cleaner proved every stage: a few failed pairs are recorded and
         # reported, more stop the session
         jobs.append(RemoteJob(f"repeat-{repeat}", timing(f"repeat-{repeat}", points, rounds),
-                              REPEAT_TIMEOUT_MINUTES, MAX_FAILED_PAIRS,
+                              repeat_minutes, MAX_FAILED_PAIRS,
                               stall_minutes=REPEAT_STALL_MINUTES))
     if perf_points:  # last: a profiling problem never costs the timing
         jobs.append(RemoteJob("perf", perf_command(plan, perf_points,
@@ -405,10 +449,10 @@ def perf_command(plan: dict, names: list[str], cpu: int) -> str:
              "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y "
              "linux-tools-$(uname -r) > /dev/null"]
     for name in names:
-        for clip in act.CLIPS[:PERF_CLIPS]:
+        for clip in act.plan_clips(plan)[:PERF_CLIPS]:
             label = f"perf-{name.replace('@', '_')}-{clip}"
             argv = [f"bin/{a.removeprefix('{BIN}/')}" if i == 0 else
-                    f"clips/{clip}.yuv" if a == "{INPUT}" else
+                    f"clips/{act.plan_input(plan, clip)}.yuv" if a == "{INPUT}" else
                     "scratch/perf.bin" if a == "{OUTPUT}" else a
                     for i, a in enumerate(plan["points"][name][clip]["argv"])]
             steps += [f"mkdir -p scratch && sudo perf record -q -g -o scratch/{label}.data -- "
@@ -423,10 +467,15 @@ def geomean(values) -> float:
     return statistics.geometric_mean(list(values))
 
 
-def summarize(out: Path, points: list[str], repeats: int, anchor: str) -> dict:
+def summarize(out: Path, points: list[str], repeats: int, plan: dict) -> dict:
     """Per point and repeat: fps (geometric mean over the clips) and the per-round time
     ratios to x264 medium and M13; beside them, the stored chart's x86 ratios."""
-    local = json.loads(LOCAL_TIMING_FILE.read_text())["points"]
+    stored_record = json.loads(LOCAL_TIMING_FILE.read_text())
+    # a stored record of other clips or another rate mode is no comparison
+    comparable = (stored_record.get("rate_mode") == plan["rate_mode"]
+                  and stored_record.get("clips") == plan["clips"])
+    local = stored_record["points"] if comparable else {}
+    anchor = plan["anchor"]
     summary = {}
     for name in points:
         row: dict = {}
@@ -449,7 +498,8 @@ def summarize(out: Path, points: list[str], repeats: int, anchor: str) -> dict:
         stored = local.get(name)
         if stored:
             row["local"] = {"ratio_x264_medium": geomean(
-                stored["ms_per_frame"][c] / local[anchor]["ms_per_frame"][c] for c in act.CLIPS)}
+                stored["ms_per_frame"][c] / local[anchor]["ms_per_frame"][c]
+                for c in act.plan_clips(plan))}
             if "same_session_time_ratio" in stored:
                 row["local"]["ratio_m13"] = geomean(
                     stored["same_session_time_ratio"][act.SECOND_ANCHOR].values())
@@ -484,6 +534,8 @@ def main(argv: list[str]) -> None:
                         "(spot capacity and prices move; stay within check.sh's regions)")
     parser.add_argument("--points", help="comma-separated plan points (default: our chart "
                         "families and " + ", ".join(DEFAULT_REFERENCES) + ")")
+    parser.add_argument("--inputs", help="comma-separated clips: only the plan's entries that "
+                        "encode them (an every-encode plan split by clip over sessions)")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--rounds", type=int, default=act.HOST_ROUNDS)
     parser.add_argument("--binary", type=Path, help="our build for the instance's architecture "
@@ -493,11 +545,12 @@ def main(argv: list[str]) -> None:
                              "commands name ({BIN}/NAME): one session times them side by "
                              "side (each checked by its own --version line)")
     parser.add_argument("--tools-dir", type=Path,
-                        help=f"reference encoders (default for x86: {X86_TOOLS})")
+                        help=f"reference encoders (default: x86 {X86_TOOLS}, "
+                             f"arm64 {GRAVITON_TOOLS})")
     parser.add_argument("--expect-version", help="our binary's `--version` line (default: "
                         "run it here; needed for a binary of another architecture)")
     parser.add_argument("--plan", type=Path, default=PLAN_FILE,
-                        help="timing plan (anchor_chart_timing.py scan; default: the chart's)")
+                        help="timing plan (anchor_chart_timing.py plan; default: the chart's)")
     parser.add_argument("--isa-variants", action="store_true",
                         help=f"also time each of our points with {ISA_VARIANT_ENV}")
     parser.add_argument("--checkasm", type=Path,
@@ -505,8 +558,9 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--baseline-binary", type=Path,
                         help="an earlier build of ours (with --binary): each of our points "
                         "is timed against it in the same rounds on the same core")
-    parser.add_argument("--cbr-variants", action="store_true",
-                        help="each of our points (and the anchor) again in CBR at the rung")
+    parser.add_argument("--repeat-minutes", type=float, default=REPEAT_TIMEOUT_MINUTES,
+                        help="a repeat's time limit (an every-encode plan's session times "
+                             "more pairs; raise --lifetime with it)")
     parser.add_argument("--perf", help="comma-separated plan points to profile with perf")
     parser.add_argument("--purpose", default="x86-timing", help="the session's Purpose tag")
     parser.add_argument("--budget", type=float, default=5.0, help="session budget, USD")
@@ -515,24 +569,24 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--dry-run", action="store_true",
                         help="stage the upload and print the plan; launch nothing")
     args = parser.parse_args(argv)
+    freed = prune_clip_cache()
+    if freed:
+        say(f"clip cache over its cap: {freed / 1e9:.1f} GB of the least recently used freed")
 
     region, arch = INSTANCES[args.instance_type]
     region = args.region or region
-    if arch == "arm64" and not (args.binary and args.tools_dir and args.expect_version):
-        raise SystemExit("an arm64 instance needs aarch64 builds: --binary, --tools-dir and "
+    if arch == "arm64" and not (args.binary and args.expect_version):
+        raise SystemExit("an arm64 instance needs our aarch64 build: --binary and "
                          "--expect-version (the binary's `--version` line)")
     if args.baseline_binary and not args.binary:
         raise SystemExit("--baseline-binary compares with --binary: give both")
     points = args.points.split(",") if args.points else chart_points()
-    plan = cloud_plan(points, arch, args.plan, args.isa_variants, args.cbr_variants,
-                      bool(args.baseline_binary))
+    plan = isolated(cloud_plan, points, arch, args.plan, args.isa_variants,
+                    bool(args.baseline_binary), set(args.inputs.split(",")) if args.inputs else None)
     if arch == "amd64":
         points = [*points, AVX2_VARIANT]
     if args.isa_variants:
         points += [f"{p}{ISA_VARIANT_SUFFIX}" for p in points if p.startswith("nanocodec")]
-    if args.cbr_variants:
-        points += [f"{p}{CBR_VARIANT_SUFFIX}" for p in points
-                   if p.startswith("nanocodec") or p == plan["anchor"]]
     if args.baseline_binary:  # the variants' partners are the points themselves
         points = [f"{p}{BASELINE_SUFFIX}" if p.startswith("nanocodec") else p
                   for p in points]
@@ -554,7 +608,8 @@ def main(argv: list[str]) -> None:
     versions = {name: args.expect_version if args.expect_version is not None else subprocess.run(
         [str(path), "--version"], capture_output=True, text=True, check=not named).stdout.strip()
         for name, path in ours.items()}
-    stage(stage_dir, plan, ours, args.tools_dir or X86_TOOLS)
+    isolated(stage, stage_dir, plan, ours,
+             args.tools_dir or (GRAVITON_TOOLS if arch == "arm64" else X86_TOOLS))
     if args.checkasm:
         (stage_dir / "bin/nc-checkasm").symlink_to(args.checkasm.resolve())
     try:
@@ -564,7 +619,7 @@ def main(argv: list[str]) -> None:
                                args.perf.split(",") if args.perf else [],
                                SYSTEM_CORES.get(args.instance_type.split(".")[1],
                                                 DEFAULT_SYSTEM_CORES), arch,
-                               TIMED_CPUS.get(args.instance_type))
+                               TIMED_CPUS.get(args.instance_type), args.repeat_minutes)
         if args.dry_run:
             subprocess.run(["du", "-shL", str(stage_dir)], check=True)
             for job in jobs:
@@ -590,7 +645,7 @@ def main(argv: list[str]) -> None:
         say(f"session wall time {(time.monotonic() - started) / 60:.1f} min")
     finally:
         unstage(stage_dir)
-    summary = summarize(out, points, args.repeats, plan["anchor"])
+    summary = summarize(out, points, args.repeats, plan)
     (out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     print_summary(summary, args.repeats)
     say(f"results in {out}")

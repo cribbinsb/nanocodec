@@ -1,0 +1,17 @@
+# HEVC slow (tune-slow, 2026-11-23): how far to loosen the landed context gate (fc351808e),
+# its two biases and margin terms with the RD search's margin, priced at the rung's front
+# slope; beside them the moves HEVC slower's study found (8x8 inter CUs, final-stage and
+# intra gates, the key search's depth). Coordinator lead: both biases 1.5 looser than
+# shipped measured quick J -1.62 % L1 for about 2.1x the inter trials. Kept to ten terms:
+# the 19-term slow spaces lost at stage 1 on almost every TPE trial.
+# Format (nceval.tune_pool): name [low high] [int|log]
+planner.rd_split_deepen_shift_bias -1.0 2.5
+planner.rd_split_merge_shift_bias -2.5 0.6
+planner.rd_split_deepen_shift_margin -0.5 2.0
+planner.rd_split_merge_shift_margin 0 3
+planner.rd_split_margin 0 1.5
+planner.inter_min_log2 3 4 int
+decision.final_margin_lambdas 0 0.2
+decision.intra_gate_variance 0 16
+hevc.intra_nxn_min_cost 0.5 1.5
+planner.key_rd_deeper 1 3 int

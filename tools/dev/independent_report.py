@@ -239,7 +239,8 @@ def chart_method(runner: Runner, families: list[Family], clips: list, out: Path)
             rows.append({"family": p.family, "group": group, "bd_j_pct": num(p.bd_j),
                          "bd_psnr_yuv_pct": num(p.bd_psnr), "bd_vmaf_pct": num(p.bd_vmaf),
                          "clips_scored": p.scored, "clips": p.clips,
-                         "chained": len(p.chained), "rate_invalid_points": p.rate_invalid,
+                         "chained": len(p.chained), "over_buffer_points": p.rate.over_buffer,
+                         "over_target_points": p.rate.over_target, "rate_points": p.rate.points,
                          "excluded_clips": len(quality.excluded)})
     write_csv(out / "chart_method.csv", rows)
 

@@ -18,10 +18,16 @@
 
 use super::{Av1TxSize, Av1TxType, DirectI16Fn, Kernel1d};
 
+// One vendored file per object format (tools/dev/vendor_dav1d_itx.sh): ELF, and Mach-O on
+// Apple targets, whose symbols carry a leading underscore.
+#[cfg(not(target_vendor = "apple"))]
 core::arch::global_asm!(include_str!("dav1d_itx_neon.s"), options(raw));
+#[cfg(target_vendor = "apple")]
+core::arch::global_asm!(include_str!("dav1d_itx_neon_macho.s"), options(raw));
 
 // The functions' addresses, in [`SIZES`] order. `.data.rel.ro`: the table
 // needs load-time relocations in a position-independent binary.
+#[cfg(not(target_vendor = "apple"))]
 core::arch::global_asm!(
     r#"
     .macro nc_itx_entry w, h, t
@@ -47,6 +53,62 @@ core::arch::global_asm!(
     .global nc_dav1d_itx_table
     .hidden nc_dav1d_itx_table
 nc_dav1d_itx_table:
+    nc_itx_all 4, 4
+    nc_itx_all 8, 8
+    nc_itx_all 4, 8
+    nc_itx_all 8, 4
+    nc_itx_all 4, 16
+    nc_itx_all 16, 4
+    nc_itx_all 8, 16
+    nc_itx_all 16, 8
+    nc_itx_two_d 16, 16
+    nc_itx_dct_identity 32, 32
+    nc_itx_dct_identity 16, 32
+    nc_itx_dct_identity 32, 16
+    nc_itx_dct_identity 8, 32
+    nc_itx_dct_identity 32, 8
+    nc_itx_entry 64, 64, dct_dct
+    nc_itx_entry 32, 64, dct_dct
+    nc_itx_entry 64, 32, dct_dct
+    nc_itx_entry 16, 64, dct_dct
+    nc_itx_entry 64, 16, dct_dct
+    .purgem nc_itx_entry
+    .purgem nc_itx_all
+    .purgem nc_itx_two_d
+    .purgem nc_itx_dct_identity
+    .text
+"#,
+    options(raw)
+);
+
+// The same table for Mach-O: underscored symbols, `__DATA,__const` (relocated at load),
+// `.private_extern` for ELF's `.hidden`.
+#[cfg(target_vendor = "apple")]
+core::arch::global_asm!(
+    r#"
+    .macro nc_itx_entry w, h, t
+        .quad _nc_dav1d_inv_txfm_add_\t\()_\w\()x\h\()_8bpc_neon
+    .endm
+    .macro nc_itx_all w, h
+        .irp t, dct_dct, identity_identity, dct_adst, dct_flipadst, dct_identity, adst_dct, adst_adst, adst_flipadst, flipadst_dct, flipadst_adst, flipadst_flipadst, identity_dct, adst_identity, flipadst_identity, identity_adst, identity_flipadst
+            nc_itx_entry \w, \h, \t
+        .endr
+    .endm
+    .macro nc_itx_two_d w, h
+        .irp t, dct_dct, identity_identity, dct_adst, dct_flipadst, dct_identity, adst_dct, adst_adst, adst_flipadst, flipadst_dct, flipadst_adst, flipadst_flipadst, identity_dct
+            nc_itx_entry \w, \h, \t
+        .endr
+    .endm
+    .macro nc_itx_dct_identity w, h
+        .irp t, dct_dct, identity_identity
+            nc_itx_entry \w, \h, \t
+        .endr
+    .endm
+    .section __DATA,__const
+    .balign 8
+    .global _nc_dav1d_itx_table
+    .private_extern _nc_dav1d_itx_table
+_nc_dav1d_itx_table:
     nc_itx_all 4, 4
     nc_itx_all 8, 8
     nc_itx_all 4, 8

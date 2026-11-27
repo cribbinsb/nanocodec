@@ -62,12 +62,22 @@ pub(crate) fn mc_fns() -> McFns {
         h264_phases: None,
         av1_mixed: None,
     };
-    // H.264 luma at widths 16..64: byte-vector six-tap (`neon_h264`).
+    // The byte-vector six-tap also improves exact four-byte rows.
+    functions.h264_luma[0] = super::neon_h264::h264_luma::<4, false>;
     functions.h264_luma[2..].copy_from_slice(&[
-        super::neon_h264::h264_luma::<16>,
-        super::neon_h264::h264_luma::<32>,
-        super::neon_h264::h264_luma::<64>,
+        super::neon_h264::h264_luma::<16, false>,
+        super::neon_h264::h264_luma::<32, false>,
+        super::neon_h264::h264_luma::<64, false>,
     ]);
+    let i8mm = std::arch::is_aarch64_feature_detected!("i8mm");
+    if i8mm {
+        functions.h264_luma[1..].copy_from_slice(&[
+            super::neon_h264::h264_luma_i8mm::<8>,
+            super::neon_h264::h264_luma_i8mm::<16>,
+            super::neon_h264::h264_luma_i8mm::<32>,
+            super::neon_h264::h264_luma_i8mm::<64>,
+        ]);
+    }
     if std::arch::is_aarch64_feature_detected!("dotprod") {
         functions.av1 = super::av1_neon::put_fns::<Regular>();
         functions.av1_smooth = super::av1_neon::put_fns::<Smooth>();
@@ -82,6 +92,11 @@ pub(crate) fn mc_fns() -> McFns {
         functions.vvc_luma = super::neon_dotprod::separable_fns::<VvcLumaTaps>();
         functions.vvc_affine_luma = super::neon_dotprod::separable_fns::<VvcAffineLumaTaps>();
         functions.av1_mixed = Some(super::av1_neon::mixed_fns());
+        if i8mm {
+            (functions.av1, functions.compound.prep[0]) = super::av1_neon::i8mm_fns::<Regular>();
+            (functions.av1_smooth, functions.compound.prep[1]) =
+                super::av1_neon::i8mm_fns::<Smooth>();
+        }
     }
     functions
 }
@@ -263,7 +278,7 @@ macro_rules! width_kernels {
         }
 
         #[target_feature(enable = "neon")]
-        unsafe fn $h264_luma(
+        pub(super) unsafe fn $h264_luma(
             src: &[u8],
             ss: usize,
             dst: &mut [u8],
@@ -273,7 +288,13 @@ macro_rules! width_kernels {
             fy: usize,
         ) {
             // SAFETY: NEON is enabled for this function.
-            unsafe { generic::h264_luma::<$lanes>(src, ss, dst, ds, $width, h, fx, fy) }
+            unsafe {
+                if $width == 8 && fx & fy & 1 != 0 {
+                    super::neon_h264::h264_luma::<8, false>(src, ss, dst, ds, h, fx, fy);
+                } else {
+                    generic::h264_luma::<$lanes>(src, ss, dst, ds, $width, h, fx, fy);
+                }
+            }
         }
 
         #[target_feature(enable = "neon")]

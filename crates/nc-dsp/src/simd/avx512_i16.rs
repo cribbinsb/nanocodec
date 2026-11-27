@@ -34,7 +34,7 @@ use core::arch::x86_64::{
 
 /// Thirty-two signed words, private to AVX-512 kernels.
 #[derive(Clone, Copy)]
-pub(crate) struct I16x32(__m512i);
+pub(crate) struct I16x32(pub(crate) __m512i);
 
 impl I16x32 {
     /// Load two 4x4 word blocks (`u` in lanes `0..16`, `v` in lanes `16..32`).

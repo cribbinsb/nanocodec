@@ -28,7 +28,7 @@ PAGES = {"index.html": ("chart",), "codecs.html": ("chart",),
          "speed.html": ("chart", "wasm", "decoders", "wasm-yardstick", "hardware"), "rate-control.html": ("rc-cost",),
          "fixed-qp.html": ("fixed-qp-lens", "chart"), "clips.html": ("clips",),
          "svc.html": ("svc",), "method.html": ("chart", "window"), "yardsticks.html": (),
-         "history.html": ("history",)}
+         "history.html": ("history",), "buffer.html": ("buffer",)}
 VIEWPORTS = {"desktop": (1280, 900), "phone": (400, 860)}
 # Numbers that the pages' prose uses as names or setup facts, not results:
 # resolutions and formats (720p, 4:2:0, 8-bit, 10-bit), product names
@@ -88,10 +88,11 @@ def check_page(page, url: str, allowed: set[str], problems: list[str], label: st
     page.wait_for_load_state("networkidle")
 
     def scan(state: str) -> None:
-        # Chart axes carry tick values, not results: everything else is checked.
+        # Chart axes carry tick values, not results, and a <span class="version"> names a tool
+        # version (libvmaf 3.2.1), not a figure: everything else is checked.
         text = page.evaluate("""() => {
             const main = document.querySelector('main').cloneNode(true);
-            main.querySelectorAll('svg').forEach((s) => s.remove());
+            main.querySelectorAll('svg, .version').forEach((s) => s.remove());
             document.body.append(main);
             const text = main.innerText;
             main.remove();
@@ -104,6 +105,8 @@ def check_page(page, url: str, allowed: set[str], problems: list[str], label: st
                 problems.append(f"{label} [{state}]: figure {token!r} is not in the data")
 
     scan("default")
+    if page.locator("footer .page-views-note").count() != 1:
+        problems.append(f"{label}: no page-view notice in the footer (page-views.js)")
     # The fixed-QP page's rate-mode switch links back to the overview: each page is
     # checked on its own (the overview's own Fixed QP mode is an in-page chart).
     groups = [g for g in page.query_selector_all("main .segmented")

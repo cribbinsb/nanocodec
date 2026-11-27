@@ -12,7 +12,7 @@
 // rendition boundary have one exact source each (`ViewSources`), advanced on
 // the same ticks.
 import { ClipSource } from './clip-source.js';
-import { drawScene } from './scene.js';
+import { DEFAULT_SCENE, drawScene, prepareScene } from './scene.js';
 import { snapshot } from './capture.js';
 import { frameAtTick, loopTicks, tickMs } from './timeline.js';
 
@@ -22,18 +22,22 @@ export class ExactSource {
    * `fps`, `loops`: whether it repeats); null when the browser cannot decode the file
    * frame by frame (the page then samples the playing video).
    */
-  static async open(kind, { url, fps, loops } = {}) {
-    if (kind === 'scene') return new ExactSource(null, Infinity);
+  static async open(kind, { url, fps, loops, scene } = {}) {
+    if (kind === 'scene') { await prepareScene(scene); return new ExactSource(null, Infinity, scene); }
     const clip = await ClipSource.open(url, fps);
     return clip && new ExactSource(clip, loops ? loopTicks(clip.frameCount, fps) : Infinity);
   }
-  constructor(clip, loopLength) {
+  constructor(clip, loopLength, scene = DEFAULT_SCENE) {
     this.clip = clip;
+    /** The test scene drawn when there is no clip (scene.js SCENES id). */
+    this.scene = scene;
     /** Ticks in one loop of the clip (Infinity for the scene and files, which do not loop). */
     this.loopLength = loopLength;
     this.surface = document.createElement('canvas');
     this.surfaceContext = this.surface.getContext('2d', { willReadFrequently: true });
   }
+  /** The clip file's video bitrate in kbps (null for the scene). */
+  get sourceKbps() { return this.clip?.kbps ?? null; }
   /** Whether `tick` is past the end of a file that does not loop. */
   ended(tick) { return Boolean(this.clip) && !Number.isFinite(this.loopLength) && frameAtTick(tick, this.clip.fps) >= this.clip.frameCount; }
   /**
@@ -44,7 +48,7 @@ export class ExactSource {
   async picture(tick, width, height) {
     if (!this.clip) {
       if (this.surface.width !== width || this.surface.height !== height) { this.surface.width = width; this.surface.height = height; }
-      drawScene(this.surfaceContext, width, height, tickMs(tick) / 1000);
+      drawScene(this.surfaceContext, width, height, tickMs(tick) / 1000, this.scene);
       return { picture: snapshot(this.surface), element: this.surface, width, height };
     }
     const local = Number.isFinite(this.loopLength) ? tick % this.loopLength : tick;
@@ -65,9 +69,9 @@ export class ViewSources {
    * when the browser cannot decode one of them frame by frame (the page then
    * samples the playing video).
    */
-  static async open(kind, urls, { fps, loops }) {
+  static async open(kind, urls, { fps, loops, scene }) {
     const distinct = [...new Set(urls)];
-    const sources = await Promise.all(distinct.map(url => ExactSource.open(kind, { url, fps, loops })));
+    const sources = await Promise.all(distinct.map(url => ExactSource.open(kind, { url, fps, loops, scene })));
     if (sources.some(source => !source)) { for (const source of sources) source?.close(); return null; }
     const lengths = new Set(sources.map(source => source.loopLength));
     if (lengths.size > 1) throw new Error(`The clip's renditions differ in length (${[...lengths].join(', ')} ticks)`);
@@ -77,6 +81,8 @@ export class ViewSources {
   /** Ticks in one loop (every source has the same). */
   get loopLength() { return this.entries[0].source.loopLength; }
   ended(tick) { return this.entries[0].source.ended(tick); }
+  /** The video bitrate in kbps of the file view `view` codes from (null for the scene). */
+  sourceKbps(view) { return this.entries.find(entry => entry.views.includes(view)).source.sourceKbps; }
   /**
    * The pictures of `tick` for the views that code it (`coding`): one shot
    * (ExactSource.picture, plus `views`, the view indices it is for) per source

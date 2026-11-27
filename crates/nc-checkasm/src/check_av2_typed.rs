@@ -2,6 +2,7 @@
 //! the scalar reference, on random, extreme and alternating inputs, with
 //! guarded outputs.
 use crate::{check::CheckReport, rng::Rng};
+use nc_dsp::av2_dec::itx::{self, RectTxSize, TxType};
 use nc_dsp::{Av2Kernel, Av2TxSize, Av2TxType, Dsp};
 
 /// Guard value around outputs, to catch out-of-range writes.
@@ -33,6 +34,7 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
             }
         }
     }
+    check_decoder_square(candidate, reference, rng, report);
 }
 
 fn check_type(
@@ -100,6 +102,48 @@ fn check_type(
                 "{} av2_inverse_typed {n}x{n} {tx_type:?}",
                 candidate.isa()
             ));
+        }
+    }
+}
+
+/// The decoder uses column order, keeps unused coefficients outside the
+/// transform, and clears the input as part of reconstruction.
+fn check_decoder_square(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
+    for size in [
+        RectTxSize::Tx4x4,
+        RectTxSize::Tx8x8,
+        RectTxSize::Tx16x16,
+        RectTxSize::Tx32x32,
+        RectTxSize::Tx64x64,
+    ] {
+        let side = size.width();
+        let coded = size.coded_width();
+        let area = coded * coded;
+        let stride = side + 7;
+        let offset = stride + 1;
+        for eob in [0, 1, (area - 1) as u16] {
+            let coeffs: Vec<i16> = (0..area + 2).map(|_| rng.next_u64() as i16).collect();
+            let pixels: Vec<u8> = (0..(side + 2) * stride).map(|_| rng.byte()).collect();
+            let run = |dsp: &Dsp| {
+                let mut pixels = pixels.clone();
+                let mut coeffs = coeffs.clone();
+                itx::inverse_transform_add_with_dsp(
+                    dsp,
+                    &mut pixels,
+                    (offset, stride),
+                    &mut coeffs[1..],
+                    (size, TxType::DCT_DCT),
+                    eob,
+                );
+                (pixels, coeffs)
+            };
+            report.cases += 1;
+            if run(candidate) != run(reference) {
+                report.failures.push(format!(
+                    "{} AV2 decoder square {size:?}, eob {eob} and stride {stride}",
+                    candidate.isa()
+                ));
+            }
         }
     }
 }

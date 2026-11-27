@@ -3,7 +3,7 @@
 // drawn in the overview chart's style with fixed axes, the reference encoders fixed,
 // a play / pause button (autoplays on a loop) and a day slider. ?frame=N&still=1 shows one frame without
 // controls (the GIF and MP4 frames are screenshots of it).
-// Data: data/history.json (docs/results/history-2026-11-20/history.json).
+// Data: data/history.json (docs/results/history-2026-11-23/history.json).
 import { paretoFront, frontierLine } from './frontier.js';
 import { drawScatter } from './chart.js';
 import { plotDomain } from './domain.js';

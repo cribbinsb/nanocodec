@@ -1,0 +1,29 @@
+[
+ {
+  "decision.subpel_move_bias": 1.0375599775108177,
+  "decision.intra_gate_variance": 125.43221667613393,
+  "vvc.inter_rounding": 71,
+  "vvc.sao_luma_lambda_scale": 2.649309339110646,
+  "vvc.alf_lambda_scale": 0.9262390500409222,
+  "vvc.affine_amvp_gate": 0.7803261641656176,
+  "vvc.affine_merge_gate": 0.18652775884081302
+ },
+ {
+  "decision.subpel_move_bias": 1.0316587431687039,
+  "decision.intra_gate_variance": 68.59560681806839,
+  "planner.lambda_scale": 5.021021803460037,
+  "planner.split_rate_factor": 2.0434830964331714,
+  "analysis.skip_hme_sad_per_pixel": 1.0672979626738177,
+  "vvc.inter_rounding": 59,
+  "vvc.rd_proxy_margin": 64.97981913918402
+ },
+ {
+  "decision.subpel_move_bias": 1.063622618084692,
+  "decision.intra_gate_variance": 61.618824985062176,
+  "planner.lambda_scale": 4.342138084367378,
+  "vvc.inter_rounding": 113,
+  "vvc.angular_candidates": 4,
+  "vvc.rd_proxy_margin": 173.4527715897553,
+  "vvc.pre_transform_zero_scale": 1.9723881269927217
+ }
+]

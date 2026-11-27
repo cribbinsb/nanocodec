@@ -99,15 +99,6 @@ impl<T: Pixel> Frame<T> {
             depths: self.depths,
         })
     }
-
-    /// The cropped output picture, in a buffer from `recycler` (every
-    /// sample is written).
-    fn output(&self, recycler: &mut PictureRecycler<T>) -> Result<Picture<T>, DecodeError> {
-        let visible = self.visible()?;
-        let mut out = recycler.take(visible.width(), visible.height(), 0)?;
-        visible.copy_to(&mut out);
-        Ok(out)
-    }
 }
 
 /// The reference picture set of the current picture, as DPB indices
@@ -172,14 +163,10 @@ pub(super) struct Core<T: Pixel> {
     current: Option<Current<T>>,
     /// Pictures bumped out of the DPB, in output order.
     output: VecDeque<OutputPicture<T>>,
-    /// The id of the last picture finished in decoding-order use, which
-    /// [`super::Decoder::shown`] shows: every picture stays in the DPB at least
-    /// until the next picture's reference picture set (§8.3.2), so it
-    /// outlives the decode that produced it.
-    shown: Option<u64>,
-    /// Set by [`super::Decoder::decode_shown`]: pictures are shown in decoding
-    /// order and none are queued for output order.
-    decoding_order: bool,
+    /// The picture [`super::Decoder::shown`] shows: in per-access-unit use
+    /// ([`super::Decoder::decode_shown`]), the first picture the access unit
+    /// output, shared with the DPB.
+    shown: Option<OutputPicture<T>>,
     sequence: Sequence,
     next_id: u64,
     /// Buffers of pictures that left the DPB, for new ones.
@@ -217,7 +204,6 @@ impl<T: Pixel> Core<T> {
             current: None,
             output: VecDeque::new(),
             shown: None,
-            decoding_order: false,
             sequence: Sequence {
                 new_cvs: true,
                 ..Sequence::default()
@@ -245,7 +231,6 @@ impl<T: Pixel> Core<T> {
         next.pps = std::mem::take(&mut previous.pps);
         next.sequence = std::mem::take(&mut previous.sequence);
         next.next_id = previous.next_id;
-        next.decoding_order = previous.decoding_order;
         next.colour = previous.colour;
         #[cfg(feature = "analysis")]
         {
@@ -323,8 +308,11 @@ impl<T: Pixel> Core<T> {
     /// that lost a frame would hold wrong references.
     #[cfg(test)]
     pub fn corrupt_references(&mut self, value: u8) {
+        // The shown and queued pictures share the references' buffers.
+        self.shown = None;
+        self.output.clear();
         for frame in &mut self.dpb {
-            let samples = Arc::get_mut(&mut frame.samples).expect("no output queued in tests");
+            let samples = Arc::get_mut(&mut frame.samples).expect("no picture shown or queued");
             for plane in PlaneIndex::ALL {
                 samples
                     .plane_mut(plane)
@@ -335,31 +323,40 @@ impl<T: Pixel> Core<T> {
         }
     }
 
-    /// Start a decoding-order access unit ([`super::Decoder::decode_shown`]):
-    /// nothing is queued for output order, and the picture is shown.
+    /// Start an access unit of per-access-unit use
+    /// ([`super::Decoder::decode_shown`]): nothing is shown until it ends.
     pub fn begin_shown(&mut self) {
-        self.decoding_order = true;
         self.shown = None;
     }
 
-    /// Finish the decoding-order access unit begun with
-    /// [`Self::begin_shown`] and fed with [`Self::push_nal`].
+    /// Finish the access unit begun with [`Self::begin_shown`] and fed with
+    /// [`Self::push_nal`], and show the first picture it output (C.5.2:
+    /// pictures with `PicOutputFlag` 0 or discarded by
+    /// `NoOutputOfPriorPicsFlag` are never output). A stream without
+    /// reordering outputs each picture as it is decoded; an access unit that
+    /// outputs none (a skipped RASL picture, a reserved NAL type, a picture
+    /// held for reordering) shows nothing, and one that outputs several
+    /// leaves the rest for [`Self::next_shown`].
     ///
     /// # Errors
-    /// As [`Self::push_nal`]; [`DecodeError::MissingKey`] before the first
-    /// IRAP picture.
+    /// As [`Self::push_nal`]; [`DecodeError::MissingKey`] when nothing has
+    /// been decoded because no IRAP picture has arrived yet.
     pub fn end_shown(&mut self) -> Result<(), DecodeError> {
         self.finish_picture()?;
-        if self.shown.is_none() {
+        if !self.sequence.seen_irap {
             // Pictures before the first IRAP are not decodable (§8.1.3):
             // the key frame that starts the stream was lost.
-            return Err(if self.sequence.seen_irap {
-                DecodeError::Malformed("packet has no picture")
-            } else {
-                DecodeError::MissingKey
-            });
+            return Err(DecodeError::MissingKey);
         }
+        self.next_shown();
         Ok(())
+    }
+
+    /// Show the next picture output but not shown yet; `false` (nothing
+    /// shown) when there is none.
+    pub fn next_shown(&mut self) -> bool {
+        self.shown = self.output.pop_front();
+        self.shown.is_some()
     }
 
     /// The shown picture ([`Self::end_shown`]) copied into a buffer of its
@@ -368,14 +365,19 @@ impl<T: Pixel> Core<T> {
     /// # Errors
     /// If no picture is shown.
     pub fn shown_copy(&mut self) -> Result<Picture<T>, DecodeError> {
-        shown_frame(&self.dpb, self.shown)
+        let shown = self
+            .shown
+            .as_ref()
             .ok_or(DecodeError::Malformed("packet has no picture"))?
-            .output(&mut self.outputs)
+            .view();
+        let mut out = self.outputs.take(shown.width(), shown.height(), 0)?;
+        shown.copy_to(&mut out);
+        Ok(out)
     }
 
     /// The visible samples of the shown picture ([`Self::end_shown`]).
     pub fn shown(&self) -> Option<ShownPicture<'_, T>> {
-        shown_frame(&self.dpb, self.shown)?.visible().ok()
+        self.shown.as_ref().map(OutputPicture::view)
     }
 
     /// Signal the end of the stream: the last picture is finished and every
@@ -784,9 +786,7 @@ impl<T: Pixel> Core<T> {
         else {
             return false;
         };
-        if !self.decoding_order
-            && let Ok(picture) = self.dpb[index].shared()
-        {
+        if let Ok(picture) = self.dpb[index].shared() {
             self.output.push_back(picture);
         }
         self.dpb[index].needed_for_output = false;
@@ -850,10 +850,6 @@ impl<T: Pixel> Core<T> {
             needed_for_output: output,
             crop: sps.crop,
         };
-        if self.decoding_order {
-            frame.visible()?;
-            self.shown = Some(id);
-        }
         self.dpb.push(frame);
         let (_, reorder, _) = sps.dpb[sps.max_sub_layers - 1];
         while self.waiting() > reorder {
@@ -861,12 +857,6 @@ impl<T: Pixel> Core<T> {
         }
         Ok(())
     }
-}
-
-/// The DPB picture with id `shown`.
-fn shown_frame<T: Pixel>(dpb: &[Frame<T>], shown: Option<u64>) -> Option<&Frame<T>> {
-    let id = shown?;
-    dpb.iter().find(|f| f.id == id)
 }
 
 /// A reference picture set by picture id (ids survive DPB removals).

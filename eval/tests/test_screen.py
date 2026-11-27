@@ -217,3 +217,45 @@ def test_over_budget_proxy_stage_also_runs_in_parts(world):
         result, _ = run(world[0], 0.995)
     assert all("(1 clips)" in c for c in calls if c.startswith("screen stage proxy-6"))
     assert len(result["stages"][1]["per_clip"]) == 6
+
+
+def _build_dir(root: Path, name: str, fast_text: str) -> Path:
+    """A binary_for.sh-like build directory: the binary and its presets/."""
+    build = root / name
+    (build / "presets" / "hevc").mkdir(parents=True)
+    (build / "presets" / "hevc" / "fast.toml").write_text(fast_text)
+    (build / "nanocodec").write_text("")
+    return build / "nanocodec"
+
+
+def _args(**fields) -> argparse.Namespace:
+    base = {"codec": "hevc", "param": [], "anchor_param": [], "anchor_binary": None,
+            "preset": "fast", "rung_params_included": False}
+    return argparse.Namespace(**{**base, **fields})
+
+
+def test_preset_screens_the_rung_on_both_sides_from_each_build(tmp_path):
+    """--preset fast encodes fast on both sides (2026-11-22: it encoded medium)."""
+    new = _build_dir(tmp_path, "new", "planner.lambda_scale = 2\nquant.trellis = 0\n")
+    old = _build_dir(tmp_path, "old", "planner.lambda_scale = 3\n")
+    args = _args(binary=str(new), anchor_binary=str(old), param=["quant.trellis=1"])
+    rerun = screen.apply_rung(args)
+    assert args.param == ["planner.lambda_scale=2", "quant.trellis=1"]
+    assert args.anchor_param == ["planner.lambda_scale=3"]
+    assert rerun == ["--param", "planner.lambda_scale=2", "--anchor-param",
+                     "planner.lambda_scale=3", screen.RUNG_PARAMS_FLAG]
+    assert screen.apply_rung(args) == []  # applied once
+
+
+def test_preset_medium_or_already_included_adds_nothing(tmp_path):
+    new = _build_dir(tmp_path, "new", "planner.lambda_scale = 2\n")
+    for args in (_args(binary=str(new), preset="medium"),
+                 _args(binary=str(new), rung_params_included=True)):
+        assert screen.apply_rung(args) == [] and args.param == []
+
+
+def test_preset_without_the_builds_presets_is_refused(tmp_path):
+    binary = tmp_path / "nanocodec"
+    binary.write_text("")
+    with pytest.raises(SystemExit, match="presets"):
+        screen.apply_rung(_args(binary=str(binary)))

@@ -69,7 +69,7 @@ pub use colour::{ColourDescription, ColourInfo};
 pub use error::{Error, Result};
 pub use fnv::{FNV1A_OFFSET, fnv1a, fnv1a_step};
 pub use output::{DecodedPicture, OutputPicture, ShownFrame};
-pub use picture::{ChromaFormat, Picture, PlaneIndex};
+pub use picture::{ChromaFormat, ExtendedPicture, Picture, PlaneIndex};
 pub use plane::{Plane, ROW_ALIGNMENT};
 pub use range_carry::propagate_carry;
 pub use raw_frame::{NV12_CHROMA_BYTES, RawFrame, chroma_len};

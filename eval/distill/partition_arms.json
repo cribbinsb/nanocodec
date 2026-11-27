@@ -1,0 +1,117 @@
+[
+ {
+  "codec": "av1",
+  "rung": "medium",
+  "arm": "partition",
+  "params": [
+   "planner.rd_split=1",
+   "planner.split_selector=0"
+  ]
+ },
+ {
+  "codec": "av1",
+  "rung": "fast",
+  "arm": "partition",
+  "params": [
+   "planner.rd_split=1",
+   "planner.split_selector=0"
+  ]
+ },
+ {
+  "codec": "av1",
+  "rung": "faster",
+  "arm": "partition",
+  "params": [
+   "light.planner.depth_removal_min_quantizer=0.8",
+   "light.planner.depth_removal_qp_scale=2",
+   "light.planner.depth_removal_th_16_8=0",
+   "light.planner.depth_removal_th_32_16=0",
+   "planner.rd_split=1",
+   "planner.split_selector=0"
+  ]
+ },
+ {
+  "codec": "av1",
+  "rung": "veryfast",
+  "arm": "partition",
+  "params": [
+   "light.planner.inter_min_log2=4",
+   "planner.depth_removal_min_quantizer=0.8",
+   "planner.depth_removal_qp_scale=2",
+   "planner.depth_removal_th_16_8=0",
+   "planner.depth_removal_th_32_16=0",
+   "planner.rd_split=1",
+   "planner.split_selector=0"
+  ]
+ },
+ {
+  "codec": "hevc",
+  "rung": "medium",
+  "arm": "partition",
+  "params": [
+   "planner.inter_min_log2=3",
+   "planner.rd_split=1",
+   "planner.split_selector=0"
+  ]
+ },
+ {
+  "codec": "hevc",
+  "rung": "fast",
+  "arm": "partition",
+  "params": [
+   "light.planner.depth_removal_min_quantizer=0.86",
+   "planner.inter_min_log2=3",
+   "planner.rd_split=1"
+  ]
+ },
+ {
+  "codec": "hevc",
+  "rung": "faster",
+  "arm": "partition",
+  "params": [
+   "planner.depth_removal_min_quantizer=0.86",
+   "planner.depth_removal_qp_scale=2",
+   "planner.depth_removal_th_16_8=0",
+   "planner.depth_removal_th_32_16=0",
+   "planner.inter_min_log2=3",
+   "planner.lambda_scale=2.58125",
+   "planner.rd_split=1",
+   "planner.split_rate_factor=2.2625"
+  ]
+ },
+ {
+  "codec": "vvc",
+  "rung": "medium",
+  "arm": "partition",
+  "params": [
+   "planner.inter_min_log2=3",
+   "planner.rd_split=1",
+   "planner.rect_rd=1",
+   "planner.split_selector=0"
+  ]
+ },
+ {
+  "codec": "vvc",
+  "rung": "fast",
+  "arm": "partition",
+  "params": [
+   "planner.depth_removal_th_16_8=0",
+   "planner.depth_removal_th_32_16=0",
+   "planner.inter_min_log2=3",
+   "planner.rd_split=1",
+   "planner.rect_rd=1"
+  ]
+ },
+ {
+  "codec": "vvc",
+  "rung": "faster",
+  "arm": "partition",
+  "params": [
+   "planner.depth_removal_th_16_8=0",
+   "planner.depth_removal_th_32_16=0",
+   "planner.inter_min_log2=3",
+   "planner.rd_split=1",
+   "planner.rect_rd=1"
+  ]
+ }
+]

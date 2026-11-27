@@ -6,7 +6,7 @@
 //! while its entropy-model identity stays its own.
 
 /// Largest coded side: AVM zeroes the high-frequency half of 64-point transforms.
-const MAX_CODED_LOG2: u32 = 5;
+pub(crate) const MAX_CODED_LOG2: u32 = 5;
 /// Side of the smallest transform and of one entropy-context unit, in pixels.
 const UNIT_LOG2: u32 = 2;
 

@@ -62,6 +62,16 @@ impl FilterEffort {
         cdef: CdefEffort::Search,
         usage: None,
     };
+
+    /// A repeat frame's (`hold.rs` "Repeat frames"), which must stay a copy
+    /// of its reference: no deblocking, no CDEF search (a superblock whose
+    /// every block skips is not CDEF-filtered, AV1 §5.11.56 `read_cdef`), and
+    /// every unit's SAO / ALF off without statistics.
+    pub const REPEAT: Self = Self {
+        deblock: false,
+        cdef: CdefEffort::Reuse,
+        usage: Some(UsageGate::EVERY_UNIT),
+    };
 }
 
 /// Filter-search effort by usage, for one inter frame: which units (CTBs)
@@ -85,18 +95,27 @@ pub struct UsageGate {
     pub quiet_share: f32,
     /// Searches that must have ended off in a row before a unit may skip.
     pub off_runs: u8,
-    /// Every unit searches once per this many frames.
+    /// Every unit searches once per this many frames (0: never).
     pub refresh: u64,
     /// The frame's index (the refresh phase).
     pub frame: u64,
 }
 
 impl UsageGate {
+    /// Every unit skips, on every frame.
+    pub const EVERY_UNIT: Self = Self {
+        quiet_share: 0.,
+        off_runs: 0,
+        refresh: 0,
+        frame: 0,
+    };
+
     /// Whether unit `unit`, with `residual_free` share of its area coded
     /// without residual and its last `off_run` searches off, skips.
     #[must_use]
     pub fn skips(&self, unit: usize, residual_free: f32, off_run: Option<u8>) -> bool {
-        let refreshing = (self.frame + unit as u64).is_multiple_of(self.refresh.max(1));
+        let refreshing =
+            self.refresh > 0 && (self.frame + unit as u64).is_multiple_of(self.refresh);
         let off_enough = self.off_runs == 0 || off_run.is_some_and(|run| run >= self.off_runs);
         !refreshing && off_enough && residual_free >= self.quiet_share
     }
@@ -141,6 +160,17 @@ pub(crate) fn usage_gate(params: &FilterParams, role: FrameRole, frame: u64) -> 
     })
 }
 
+/// Whether [`decide`] reads [`FrameActivity::previous_skip_share`]: only
+/// with the skip-share test on (`filter.deblock_skip_share` below 1). The
+/// engine asks the backend for the share only then: AV1 counts it over
+/// every 4x4 cell of the frame (0.58 % of AV1 veryfast's P-frame
+/// instructions with the test off, x86 callgrind 2026-11-25; streams
+/// identical).
+#[must_use]
+pub(crate) fn reads_skip_share(params: &FilterParams) -> bool {
+    params.deblock_skip_share < 1.0
+}
+
 /// The loop-filter effort of an inter frame with `activity`.
 pub(crate) fn decide(params: &FilterParams, activity: FrameActivity) -> FilterEffort {
     let nonbase = activity.role == FrameRole::NonBase;
@@ -151,9 +181,10 @@ pub(crate) fn decide(params: &FilterParams, activity: FrameActivity) -> FilterEf
     // keep it on the skip-share test (later frames lean on them), and the
     // share and proxy fall as soon as content moves. Effect: measured in
     // `docs/handoff/light-pipeline.md`.
-    let skipped_reference = activity
-        .previous_skip_share
-        .is_some_and(|share| share >= params.deblock_skip_share && params.deblock_skip_share < 1.0);
+    let skipped_reference = reads_skip_share(params)
+        && activity
+            .previous_skip_share
+            .is_some_and(|share| share >= params.deblock_skip_share);
     let deblock = !((nonbase && skipped_reference) || well_predicted(params.deblock_skip_proxy));
     // What it skips: the CDEF strength search of a well-predicted non-base
     // frame, which keeps the strengths chosen last (SVT's leaf frames).

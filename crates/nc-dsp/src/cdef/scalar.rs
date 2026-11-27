@@ -19,6 +19,7 @@ pub(crate) fn cdef_fns() -> CdefFns {
         block4,
         block8_interior,
         block4_interior,
+        border: None,
         block4_interior_pair: None,
     }
 }

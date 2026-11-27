@@ -102,6 +102,11 @@ pub struct CavlcEncoder {
 }
 
 impl CavlcEncoder {
+    /// Bits of the slice written so far (header and macroblocks).
+    pub fn coded_bits(&self) -> f64 {
+        self.out.bit_len() as f64
+    }
+
     /// Start a slice of `kind` after `header` (not aligned: CAVLC slice data
     /// follows the header directly) in a picture of `mb_count` macroblocks,
     /// `mb_cols` wide.

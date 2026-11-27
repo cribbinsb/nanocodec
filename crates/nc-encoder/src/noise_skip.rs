@@ -119,6 +119,8 @@ pub(crate) struct NoiseMap {
     cells: Grid<Cell>,
     /// Scratch for the frame median.
     samples: Vec<f32>,
+    /// Scratch: each cell's still zero-motion SAD this frame, raster order.
+    still: Vec<Option<u32>>,
 }
 
 impl NoiseMap {
@@ -126,6 +128,7 @@ impl NoiseMap {
         Self {
             cells: Grid::filled(0, 0, Cell::default()),
             samples: Vec::new(),
+            still: Vec::new(),
         }
     }
 
@@ -150,18 +153,21 @@ impl NoiseMap {
             self.cells = Grid::filled(blocks.cols(), blocks.rows(), Cell::default());
         }
         let sigma = |sad: u32| sad as f32 / CELL_SAMPLES / MEAN_ABS_DIFF_PER_SIGMA;
-        let still_sad = |col: usize, row: usize| {
-            let zero = u32::from(blocks.get(col, row).sad_prev?);
-            let best = fine.try_get(col as isize, row as isize)?;
-            zero_explains(zero, best.sad).then_some(zero)
-        };
+        // Each cell's still zero-motion SAD, found once per frame in raster
+        // order (a row at a time: no per-cell position iterator).
+        self.still.clear();
+        for row in 0..blocks.rows() {
+            let pre_row = blocks.row_run(0, row, blocks.cols());
+            self.still
+                .extend(pre_row.iter().enumerate().map(|(col, block)| {
+                    let zero = u32::from(block.sad_prev?);
+                    let best = fine.try_get(col as isize, row as isize)?;
+                    zero_explains(zero, best.sad).then_some(zero)
+                }));
+        }
         self.samples.clear();
-        self.samples.extend(
-            blocks
-                .positions()
-                .filter_map(|(col, row)| still_sad(col, row))
-                .map(sigma),
-        );
+        self.samples
+            .extend(self.still.iter().filter_map(|&zero| zero).map(sigma));
         if self.samples.is_empty() {
             self.cells = Grid::filled(blocks.cols(), blocks.rows(), Cell::default());
             return;
@@ -169,21 +175,23 @@ impl NoiseMap {
         let middle = self.samples.len() / 2;
         let (_, &mut median, _) = self.samples.select_nth_unstable_by(middle, f32::total_cmp);
         let cap = CAP_TO_MEDIAN * median.max(MIN_SIGMA);
-        for (col, row) in blocks.positions() {
-            let zero = still_sad(col, row);
-            let cell = self.cells.get_mut(col, row);
-            match zero {
-                Some(sad) => {
-                    let s = sigma(sad).clamp(MIN_SIGMA, cap);
-                    let sample = s * s;
-                    cell.variance = if cell.run == 0 {
-                        sample
-                    } else {
-                        cell.variance + SMOOTHING * (sample - cell.variance)
-                    };
-                    cell.run = cell.run.saturating_add(1).min(MIN_RUN);
+        let cols = blocks.cols();
+        for row in 0..blocks.rows() {
+            let still = &self.still[row * cols..(row + 1) * cols];
+            for (cell, &zero) in self.cells.row_mut(row).iter_mut().zip(still) {
+                match zero {
+                    Some(sad) => {
+                        let s = sigma(sad).clamp(MIN_SIGMA, cap);
+                        let sample = s * s;
+                        cell.variance = if cell.run == 0 {
+                            sample
+                        } else {
+                            cell.variance + SMOOTHING * (sample - cell.variance)
+                        };
+                        cell.run = cell.run.saturating_add(1).min(MIN_RUN);
+                    }
+                    None => *cell = Cell::default(),
                 }
-                None => *cell = Cell::default(),
             }
         }
     }
@@ -226,6 +234,16 @@ impl NoiseMap {
         if cols > MAX_COLS || !self.trusts(block) {
             return false;
         }
+        // Every cell must carry codable noise (the luma test below): a cell
+        // below it fails the block before any residual is measured.
+        if (0..rows).any(|r| {
+            self.cells
+                .row_run(col0, row0 + r, cols)
+                .iter()
+                .any(|c| c.variance < codable)
+        }) {
+            return false;
+        }
         let mut buffer = [Variance::default(); MAX_COLS];
         let sse = &mut buffer[..cols];
         let luma_ok = (0..rows).all(|r| {
@@ -236,9 +254,9 @@ impl NoiseMap {
                 row_view(reference, PlaneIndex::Y, block.x, y, width),
             );
             dsp.variance_8x8_row(&src, &rf, sse);
-            run.iter().zip(sse.iter()).all(|(c, v)| {
-                c.variance >= codable && v.sse as f32 <= scale * c.variance * CELL_SAMPLES
-            })
+            run.iter()
+                .zip(sse.iter())
+                .all(|(c, v)| v.sse as f32 <= scale * c.variance * CELL_SAMPLES)
         });
         if !luma_ok {
             return false;

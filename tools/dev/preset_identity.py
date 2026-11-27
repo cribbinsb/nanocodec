@@ -25,6 +25,19 @@ not compared, and the count of checked encodes leaves it out.
 `--added STEM` (repeatable): a rung the new tree adds (`slow`, 2026-11-21) is listed as
 new and not compared, as above.
 
+`--old-env K=V` / `--new-env K=V` (repeatable): environment for one side only. With the
+same binary on both sides this checks that DSP tiers code identical streams
+(tools/ci/isa_identity.sh: `NC_DSP_ISA=scalar` against `avx2`, `avx2` against `avx512`;
+`neon` on aarch64), which every timing machine relies on (docs/benchmark-procedure.md).
+
+`--strip-metadata`: each stream loses its SEI NAL units and metadata OBUs
+(`nceval.streamstrip`, as the benchmark strips every encoder's) before it is
+hashed, so a change that adds or alters only informative units (the encoder
+information message) is shown to leave the picture data identical; the bytes
+removed are summed per codec and side. `--new-param NAME=VALUE` (repeatable)
+adds `--param NAME=VALUE` to NEW_BINARY's encodes only (e.g.
+`stream.encoder_info=0`).
+
 `--clip-dir`: where the clips are (`<clip>.yuv`, 1280x720 I420), for a machine
 without the PC's clip sets (the Jetson keeps crowd_mot17_09 in clips/quick).
 A clip missing there is left out, and the count of checked encodes says so.
@@ -50,7 +63,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from nceval import tempdirs  # noqa: E402
+from nceval import streamstrip, tempdirs  # noqa: E402
+from nceval.codecs import Codec  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 NC_REMOTE = Path.home() / "nanocodec-data/bin/nc-remote"
@@ -121,15 +135,20 @@ def commands(codec: str, preset: list[str], frames: int,
     return out
 
 
-def stream_hash(binary: Path, args: list[str], work: Path) -> str:
-    """SHA-256 of the stream `binary` encodes with `args` (or the failure)."""
+def stream_hash(binary: Path, args: list[str], work: Path,
+                env: dict[str, str] | None = None,
+                strip: Codec | None = None) -> tuple[str, int]:
+    """SHA-256 of the stream `binary` encodes with `args` (and `env` added), or the
+    failure, and the bytes `strip` removed (its SEI / metadata units, before hashing)."""
     out = Path(tempfile.mkstemp(dir=work, suffix=".bin")[1])
     try:
         cmd = [str(binary), *args, "--output", str(out)]
-        run = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        run = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                             env={**os.environ, **(env or {})})
         if run.returncode:
-            return "FAILED: " + run.stderr.strip()[-200:]
-        return hashlib.sha256(out.read_bytes()).hexdigest()
+            return "FAILED: " + run.stderr.strip()[-200:], 0
+        removed = streamstrip.strip(out, strip) if strip else 0
+        return hashlib.sha256(out.read_bytes()).hexdigest(), removed
     finally:
         out.unlink(missing_ok=True)
 
@@ -147,7 +166,11 @@ def on_build_box(a: argparse.Namespace) -> int:
                "--clip-dir", box(a.clip_dir.resolve()), "--local",
                *(["--old-names"] if a.old_names else []),
                *[x for r in a.renamed for x in ("--renamed", r)],
-               *[x for r in a.added for x in ("--added", r)]]
+               *[x for r in a.added for x in ("--added", r)],
+               *[x for e in a.old_env for x in ("--old-env", e)],
+               *[x for e in a.new_env for x in ("--new-env", e)],
+               *[x for p in a.new_param for x in ("--new-param", p)],
+               *(["--strip-metadata"] if a.strip_metadata else [])]
     print("preset_identity on the build box (nc-remote; --local runs it here)", flush=True)
     return subprocess.call([str(NC_REMOTE), "run", "--worktree", str(REPO),
                             "--name", f"preset-identity-{REPO.name}",
@@ -170,6 +193,14 @@ def main() -> int:
                     help="a rung renamed between the builds: OLD_BINARY codes NEW as OLD")
     ap.add_argument("--added", action="append", default=[], metavar="STEM",
                     help="a rung the new tree adds: listed, not compared")
+    ap.add_argument("--old-env", action="append", default=[], metavar="K=V",
+                    help="environment for OLD_BINARY's encodes only (e.g. NC_DSP_ISA=scalar)")
+    ap.add_argument("--new-env", action="append", default=[], metavar="K=V",
+                    help="environment for NEW_BINARY's encodes only")
+    ap.add_argument("--new-param", action="append", default=[], metavar="NAME=VALUE",
+                    help="a --param for NEW_BINARY's encodes only")
+    ap.add_argument("--strip-metadata", action="store_true",
+                    help="strip SEI / metadata units (nceval.streamstrip) before hashing")
     ap.add_argument("--clip-dir", type=Path, default=CLIP_DIR,
                     help="the clips' directory (default: the PC's main set)")
     ap.add_argument("--local", action="store_true",
@@ -179,6 +210,8 @@ def main() -> int:
         return on_build_box(a)
 
     renamed = dict(r.split("=", 1) for r in a.renamed)
+    old_env = dict(e.split("=", 1) for e in a.old_env)
+    new_env = dict(e.split("=", 1) for e in a.new_env)
     jobs = []  # (name, old arguments, new arguments)
     added = []  # new rungs OLD_BINARY does not have (`--renamed`, `--added`)
     new_rungs = {*renamed, *a.added}
@@ -190,15 +223,22 @@ def main() -> int:
             old_stem = renamed_stem(stem, renamed)
             old_args = old_preset_args(codec, old_stem) if a.old_names else preset_args(old_stem)
             old = commands(codec, old_args, a.frames, a.clip_dir)
-            new = commands(codec, preset_args(stem), a.frames, a.clip_dir)
+            new_params = [x for p in a.new_param for x in ("--param", p)]
+            new = commands(codec, [*preset_args(stem), *new_params], a.frames, a.clip_dir)
             for (label, o), (_, n) in zip(old, new):
-                jobs.append((f"{codec} {stem or 'medium'} {label}", o, n))
+                jobs.append((f"{codec} {stem or 'medium'} {label}", o, n, codec))
     with tempdirs.temp_dir("preset-identity") as tmp:
         work = Path(tmp)
         with ThreadPoolExecutor(a.jobs) as pool:
-            old = pool.map(lambda j: stream_hash(a.old, j[1], work), jobs)
-            new = pool.map(lambda j: stream_hash(a.new, j[2], work), jobs)
-            pairs = list(zip(jobs, old, new))
+            strip = (lambda codec: Codec(codec)) if a.strip_metadata else (lambda _: None)
+            old = pool.map(lambda j: stream_hash(a.old, j[1], work, old_env, strip(j[3])), jobs)
+            new = pool.map(lambda j: stream_hash(a.new, j[2], work, new_env, strip(j[3])), jobs)
+            hashed = list(zip(jobs, old, new))
+    pairs = [(job, o, n) for job, (o, _), (n, _) in hashed]
+    if a.strip_metadata:
+        for codec in a.codecs.split(","):
+            sides = [sum(r[side][1] for r in hashed if r[0][3] == codec) for side in (1, 2)]
+            print(f"{codec}: metadata bytes stripped old {sides[0]}, new {sides[1]}")
     if not pairs:
         print(f"no clip of {', '.join(CLIPS)} in {a.clip_dir}: nothing checked")
         return 1

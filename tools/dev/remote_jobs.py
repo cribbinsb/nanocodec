@@ -17,7 +17,11 @@ picture without any video coming back.
 
 Each job prints one progress line (`job k/n ok|FAILED id: elapsed, ETA`); a
 failed job writes out/<id>.failed with its exit status and stderr tail and
-the others go on. A job whose outputs are complete (out/<id>.done) is
+the others go on. Each job's encoder CPU time (user and system, from its own exit
+status) goes into out/<id>.cpu.json: measured under this machine's full parallel load
+(and, for ours, with the reconstruction written), it is never a chart speed, only the
+evidence for how far such a measure is from the dedicated timing (aws_timing.py) of the
+same command. A job whose outputs are complete (out/<id>.done) is
 skipped, so a rerun resumes. Jobs run in the order given (the launcher puts
 the slowest first).
 """
@@ -71,7 +75,9 @@ def run_job(job: dict, out: Path) -> None:
     if recon:
         os.close(write_fd)
         digests = hash_frames(read_fd, recon["frame_bytes"])
-    _, stderr = process.communicate()
+    stderr = process.stderr.read()
+    _, status, usage = os.wait4(process.pid, 0)
+    process.returncode = os.waitstatus_to_exitcode(status)
     if process.returncode != 0:
         tail = stderr.decode(errors="replace").strip().splitlines()[-STDERR_TAIL_LINES:]
         Path(f"{base}.failed").write_text(json.dumps(
@@ -81,6 +87,8 @@ def run_job(job: dict, out: Path) -> None:
         if len(digests) != recon["frames"]:
             raise RuntimeError(f"{len(digests)} reconstructed frames, expected {recon['frames']}")
         Path(f"{base}.recon.txt").write_text("\n".join(digests) + "\n")
+    Path(f"{base}.cpu.json").write_text(json.dumps(
+        {"user_s": usage.ru_utime, "sys_s": usage.ru_stime, "machine_cpus": os.cpu_count()}) + "\n")
     Path(f"{base}.done").touch()
 
 

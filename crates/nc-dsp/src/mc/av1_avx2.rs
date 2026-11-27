@@ -854,26 +854,35 @@ unsafe fn vertical_narrow<const W: usize, const P: usize, S: Sink, R: Rounding, 
     let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
     // SAFETY: rows lead.. at the centre column (see `put`).
     let load = |k: usize| unsafe { load_pixels::<W>(window.at(lead + k, C)) };
-    // Rows r..r + 2P of the step (2P + 1 rows).
-    let mut rows: [__m128i; 9] = [_mm_cvtsi32_si128(0); 9];
-    for (k, row) in rows.iter_mut().enumerate().take(2 * P - 1) {
-        *row = load(k);
+    // Each vector pairs the rows for two successive outputs. Keep that
+    // interleave when it becomes the next group's earlier tap pair.
+    let pair = |a, b, c| {
+        _mm256_inserti128_si256::<1>(
+            _mm256_castsi128_si256(_mm_unpacklo_epi8(a, b)),
+            _mm_unpacklo_epi8(b, c),
+        )
+    };
+    let mut previous = load(0);
+    let mut pairs = [_mm256_set1_epi16(0); P];
+    for (j, dst) in pairs.iter_mut().enumerate().take(P - 1) {
+        let middle = load(2 * j + 1);
+        let next = load(2 * j + 2);
+        *dst = pair(previous, middle, next);
+        previous = next;
     }
     for r in (0..h).step_by(2) {
-        rows[2 * P - 1] = load(r + 2 * P - 1);
-        rows[2 * P] = load(r + 2 * P);
+        let middle = load(r + 2 * P - 1);
+        let next = load(r + 2 * P);
+        pairs[P - 1] = pair(previous, middle, next);
         let mut sum = _mm256_set1_epi16(0);
-        for (j, weight) in taps.iter().enumerate() {
-            let pairs = _mm256_inserti128_si256::<1>(
-                _mm256_castsi128_si256(_mm_unpacklo_epi8(rows[2 * j], rows[2 * j + 1])),
-                _mm_unpacklo_epi8(rows[2 * j + 1], rows[2 * j + 2]),
-            );
-            sum = _mm256_add_epi16(sum, _mm256_maddubs_epi16(pairs, *weight));
+        for (pixels, weight) in pairs.iter().zip(&taps) {
+            sum = _mm256_add_epi16(sum, _mm256_maddubs_epi16(*pixels, *weight));
         }
         let words = round(sum, if S::PREP { ROUND_2 } else { ROUND_6 });
         // SAFETY: output rows r and r + 1 (see `put`).
         unsafe { out.two::<W>(r, words) };
-        slide(&mut rows, 2, 2 * P - 1);
+        slide(&mut pairs, 1, P - 1);
+        previous = next;
     }
 }
 
@@ -890,29 +899,27 @@ unsafe fn vertical_wide<const W: usize, const P: usize, S: Sink, R: Rounding, co
 ) {
     let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
     for c0 in (0..W).step_by(LANES) {
-        // SAFETY: rows lead.. at columns c0 + 3.. (see `put`).
-        let load = |k: usize| unsafe { load_pixels::<LANES>(window.at(lead + k, c0 + C)) };
-        let mut rows: [__m128i; 8] = [_mm_cvtsi32_si128(0); 8];
-        for (k, row) in rows.iter_mut().enumerate().take(2 * P - 1) {
-            *row = load(k);
-        }
-        for r in 0..h {
-            rows[2 * P - 1] = load(r + 2 * P - 1);
-            let mut sum = _mm256_set1_epi16(0);
-            for (j, weight) in taps.iter().enumerate() {
-                let (a, b) = (rows[2 * j], rows[2 * j + 1]);
-                let pairs = _mm256_inserti128_si256::<1>(
-                    _mm256_castsi128_si256(_mm_unpacklo_epi8(a, b)),
-                    _mm_unpackhi_epi8(a, b),
-                );
-                sum = _mm256_add_epi16(sum, _mm256_maddubs_epi16(pairs, *weight));
-            }
-            // The byte pairs put outputs 0..8 in the low lane and 8..16 in
-            // the high one: the order `wide` takes.
-            let words = round(sum, if S::PREP { ROUND_2 } else { ROUND_6 });
-            // SAFETY: output row r, columns c0..c0 + 16 (see `put`).
-            unsafe { out.wide(r, c0, words) };
-            slide(&mut rows, 1, 2 * P - 1);
+        // SAFETY: the entry point checked these rows and the output strip.
+        unsafe {
+            super::byte_column_pairs::<P, _, _>(
+                h,
+                _mm256_set1_epi16(0),
+                |k| load_pixels::<LANES>(window.at(lead + k, c0 + C)),
+                |a, b| {
+                    _mm256_inserti128_si256::<1>(
+                        _mm256_castsi128_si256(_mm_unpacklo_epi8(a, b)),
+                        _mm_unpackhi_epi8(a, b),
+                    )
+                },
+                |r, pairs| {
+                    let mut sum = _mm256_set1_epi16(0);
+                    for (j, weight) in taps.iter().enumerate() {
+                        sum = _mm256_add_epi16(sum, _mm256_maddubs_epi16(pairs[2 * j], *weight));
+                    }
+                    let words = round(sum, if S::PREP { ROUND_2 } else { ROUND_6 });
+                    out.wide(r, c0, words);
+                },
+            );
         }
     }
 }

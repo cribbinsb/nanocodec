@@ -9,12 +9,11 @@
 )]
 
 use super::{Output, TAP_CENTRE};
-use crate::mc::neon_dotprod::{DOT_PIXEL_BIAS, dot_lane};
+use crate::mc::neon_dotprod::{DOT_PIXEL_BIAS, dot_lane, transpose_four_rows};
 use core::arch::aarch64::{
-    int8x16_t, int8x16x2_t, uint8x16_t, vcombine_u8, vcreate_u8, vdupq_n_s32, vdupq_n_u8, veorq_u8,
-    vld1_u8, vld1q_s16, vld1q_u8, vmovn_s16, vqtbl2q_s8, vreinterpretq_s8_u8,
-    vreinterpretq_s16_s32, vreinterpretq_u8_u16, vreinterpretq_u16_u8, vuzp1q_s16, vzip1q_u8,
-    vzip1q_u16, vzip2q_u8, vzip2q_u16,
+    uint8x16_t, uint8x16x2_t, vcombine_u8, vcreate_u8, vdupq_n_s32, vdupq_n_u8, veorq_u8, vld1_u8,
+    vld1q_s16, vld1q_u8, vmovn_s16, vqtbl2q_u8, vreinterpretq_s8_u8, vreinterpretq_s16_s32,
+    vuzp1q_s16,
 };
 
 /// Shift one row within each transposed four-column group.
@@ -44,24 +43,6 @@ unsafe fn load<const W: usize>(src: *const u8) -> uint8x16_t {
     }
 }
 
-#[inline(always)]
-unsafe fn transpose(rows: [uint8x16_t; 4]) -> [int8x16_t; 4] {
-    // SAFETY: register-only interleaving packs four rows per four columns.
-    unsafe {
-        let a = vreinterpretq_u16_u8(vzip1q_u8(rows[0], rows[1]));
-        let b = vreinterpretq_u16_u8(vzip1q_u8(rows[2], rows[3]));
-        let c = vreinterpretq_u16_u8(vzip2q_u8(rows[0], rows[1]));
-        let d = vreinterpretq_u16_u8(vzip2q_u8(rows[2], rows[3]));
-        let bias = vdupq_n_u8(128);
-        [
-            vreinterpretq_s8_u8(veorq_u8(vreinterpretq_u8_u16(vzip1q_u16(a, b)), bias)),
-            vreinterpretq_s8_u8(veorq_u8(vreinterpretq_u8_u16(vzip2q_u16(a, b)), bias)),
-            vreinterpretq_s8_u8(veorq_u8(vreinterpretq_u8_u16(vzip1q_u16(c, d)), bias)),
-            vreinterpretq_s8_u8(veorq_u8(vreinterpretq_u8_u16(vzip2q_u16(c, d)), bias)),
-        ]
-    }
-}
-
 /// Eight signed-byte coefficients sum to 64. Pixel high-bit flipping adds
 /// a constant -8192 to their dot product; the initial accumulator restores it.
 #[inline]
@@ -88,13 +69,13 @@ pub(super) unsafe fn filter<const W: usize, O: Output>(
         }
         for col in (0..W).step_by(W.min(16)) {
             let origin = src.add(TAP_CENTRE + col);
-            let mut first = transpose([
+            let mut first = transpose_four_rows::<true>([
                 load::<W>(origin),
                 load::<W>(origin.add(ss)),
                 load::<W>(origin.add(2 * ss)),
                 load::<W>(origin.add(3 * ss)),
             ]);
-            let mut last = transpose([
+            let mut last = transpose_four_rows::<true>([
                 load::<W>(origin.add(4 * ss)),
                 load::<W>(origin.add(5 * ss)),
                 load::<W>(origin.add(6 * ss)),
@@ -103,8 +84,8 @@ pub(super) unsafe fn filter<const W: usize, O: Output>(
             for row in 0..h {
                 let mut sums = [vdupq_n_s32(DOT_PIXEL_BIAS); 4];
                 for g in 0..groups {
-                    sums[g] = dot_lane::<0>(sums[g], first[g], coefficients);
-                    sums[g] = dot_lane::<1>(sums[g], last[g], coefficients);
+                    sums[g] = dot_lane::<0>(sums[g], vreinterpretq_s8_u8(first[g]), coefficients);
+                    sums[g] = dot_lane::<1>(sums[g], vreinterpretq_s8_u8(last[g]), coefficients);
                 }
                 let low = vuzp1q_s16(
                     vreinterpretq_s16_s32(sums[0]),
@@ -120,13 +101,10 @@ pub(super) unsafe fn filter<const W: usize, O: Output>(
                 }
                 // Avoid dav1d's padded-read assumption at the final row.
                 if row + 1 < h {
-                    let next = vreinterpretq_s8_u8(veorq_u8(
-                        load::<W>(origin.add((row + 8) * ss)),
-                        vdupq_n_u8(128),
-                    ));
+                    let next = veorq_u8(load::<W>(origin.add((row + 8) * ss)), vdupq_n_u8(128));
                     for g in 0..groups {
-                        first[g] = vqtbl2q_s8(int8x16x2_t(first[g], last[g]), shift);
-                        last[g] = vqtbl2q_s8(int8x16x2_t(last[g], next), append[g]);
+                        first[g] = vqtbl2q_u8(uint8x16x2_t(first[g], last[g]), shift);
+                        last[g] = vqtbl2q_u8(uint8x16x2_t(last[g], next), append[g]);
                     }
                 }
             }

@@ -16,7 +16,7 @@
 // slow machine: ~550 samples and as many unclosed 720p VideoFrames, and the
 // decoder then stalled for 1-9 s at a time (the demo's periodic pauses;
 // tests/clip-pauses.py).
-import { readMp4 } from './mp4.js';
+import { readMp4, trackKbps } from './mp4.js';
 
 const MICROSECONDS_PER_SECOND = 1e6;
 // The most samples in the decoder at once: H.264's largest DPB (16 frames, Annex
@@ -49,6 +49,8 @@ export class ClipSource {
   }
   constructor(bytes, track, config, fps) {
     this.bytes = bytes; this.config = config; this.fps = fps; this.timescale = track.timescale;
+    /** The file's video bitrate as it plays (mp4.js `trackKbps`), for the views' over-half-the-source note. */
+    this.kbps = trackKbps(track, fps);
     // Decode order, each with its presentation index.
     this.samples = track.samples.map(sample => ({ ...sample, index: Math.round(sample.pts * fps / track.timescale) }));
     this.frameCount = this.samples.length;

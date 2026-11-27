@@ -7,18 +7,32 @@ use core::arch::x86_64::{
     _mm256_storeu_si256, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_xor_si256,
 };
 #[derive(Clone, Copy)]
-pub(super) struct Lanes(__m256i);
-impl Bytes for Lanes {
-    const LANES: usize = 32;
+pub(super) struct Lanes<const SAMPLES: usize = 32>(__m256i);
+impl<const SAMPLES: usize> Bytes for Lanes<SAMPLES> {
+    const LANES: usize = SAMPLES;
     #[inline(always)]
     unsafe fn load(p: *const u8) -> Self {
         // SAFETY: called only within the ISA entry; pointers cover LANES bytes.
-        unsafe { Self(_mm256_loadu_si256(p.cast())) }
+        unsafe {
+            if SAMPLES == 16 {
+                use core::arch::x86_64::{_mm_loadu_si128, _mm256_castsi128_si256};
+                Self(_mm256_castsi128_si256(_mm_loadu_si128(p.cast())))
+            } else {
+                Self(_mm256_loadu_si256(p.cast()))
+            }
+        }
     }
     #[inline(always)]
     unsafe fn store(self, p: *mut u8) {
         // SAFETY: called only within the ISA entry; pointers cover LANES bytes.
-        unsafe { _mm256_storeu_si256(p.cast(), self.0) }
+        unsafe {
+            if SAMPLES == 16 {
+                use core::arch::x86_64::{_mm_storeu_si128, _mm256_castsi256_si128};
+                _mm_storeu_si128(p.cast(), _mm256_castsi256_si128(self.0));
+            } else {
+                _mm256_storeu_si256(p.cast(), self.0);
+            }
+        }
     }
     #[inline(always)]
     fn splat(v: u8) -> Self {
@@ -40,6 +54,23 @@ impl Bytes for Lanes {
             ))
         }
     }
+    #[inline(always)]
+    fn table(values: [u8; 16]) -> Self {
+        use core::arch::x86_64::{_mm_loadu_si128, _mm256_broadcastsi128_si256};
+        // SAFETY: the AVX2 entry is active, and the table is a full 16 bytes.
+        unsafe {
+            Self(_mm256_broadcastsi128_si256(_mm_loadu_si128(
+                values.as_ptr().cast(),
+            )))
+        }
+    }
+
+    #[inline(always)]
+    fn lookup(self, table: Self) -> Self {
+        // SAFETY: inlined into the AVX2 entry; the low byte indices are 0..4.
+        unsafe { Self(core::arch::x86_64::_mm256_shuffle_epi8(table.0, self.0)) }
+    }
+
     #[inline(always)]
     fn and(self, b: Self) -> Self {
         // SAFETY: inlined only into the corresponding target-feature entry.

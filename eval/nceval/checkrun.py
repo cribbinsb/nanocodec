@@ -4,7 +4,7 @@ The three-stage checks (docs/PROCEDURES.md "Three-stage checks") judge a
 preset-level parameter set on one binary: the head build from the
 landed-commit cache (tools/dev/binary_for.sh), anchor = the preset as it is,
 candidate = the preset plus the change. This module holds what both stages
-need: that binary, the preset's values and CPU charge k, the combined CPU
+need: that binary, the preset's values and CPU charge k (its front slope), the combined CPU
 estimate, the stage plan's price, and a deadline that aborts a stage loudly
 instead of letting it hang.
 """
@@ -19,28 +19,21 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import jreal, levers, singlepoint
+from . import front_k, levers, singlepoint
 from .budget import MAX_MINUTES, estimate_minutes
 from .cbr import Family, clip_targets
 from .clips import Clip
 from .codecs import Codec
-from .encoders.nanocodec import MEDIUM, param_text, preset_values
+from .encoders.nanocodec import param_text, preset_values
 from .realuse import LADDER_KBPS, Runner, param_args
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_CACHE = REPO / "tools" / "dev" / "build_cache.py"
-#: The CPU charge k of each preset's J (PROCEDURES "Preset roles"): Default is the
-#: quality point (0.1), and so is Slow (its gated RD search was screened at the
-#: Default's k, docs/handoff/presets.md "The ladder"); Slower is judged on J at k 0
-#: inside its budget, every speed rung (fast, faster, veryfast) at the engine k
-#: (jreal.K_CPU, 0.6).
-PRESET_K = {MEDIUM: 0.1, "slow": 0.1, "slower": 0.0, "veryslow": 0.0}
-#: Exit status of a stage aborted by its deadline.
-DEADLINE_EXIT = 3
-
-
-def preset_k(preset: str) -> float:
-    return PRESET_K.get(preset, jreal.K_CPU)
+def preset_k(codec: str, preset: str, explicit: float | None = None) -> tuple[float, str]:
+    """The CPU charge k of a change at `codec`'s `preset` and its source: the rung's
+    front slope (nceval.front_k: accepted only if it improves the front, owner
+    2026-11-22), or an explicit --k, said loudly."""
+    return front_k.resolve(codec, preset, explicit)
 
 
 def landed_binary(commit: str = "HEAD") -> Path:
@@ -74,12 +67,25 @@ def pairs(values: dict[str, float]) -> list[str]:
     return [f"{name}={param_text(value)}" for name, value in sorted(values.items())]
 
 
+#: Overlay prefixes of a registered parameter (nc-encoder `frame_role.rs` non-base and key
+#: frame values, `effort_class.rs` light-superblock values): `light.x` is known when `x` is.
+OVERLAY_PREFIXES = ("nonbase.", "key.", "light.")
+
+
+def base_name(name: str) -> str:
+    """The registered parameter an overlay name (`light.planner.lambda_scale`) sets."""
+    for prefix in OVERLAY_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
 def check_known(binary: Path, codec: str, params: dict[str, float]) -> None:
     """Refuse parameter names the binary does not register (a typo or unlanded code)."""
     known = levers.codec_defaults(binary, codec)
     if known is None:
         raise SystemExit(f"{binary}: cannot list its parameters (`nanocodec params`)")
-    unknown = [n for n in params if n.removeprefix("nonbase.").removeprefix("key.") not in known]
+    unknown = [n for n in params if base_name(n) not in known]
     if unknown:
         raise SystemExit(f"{codec}: {binary} has no parameter {', '.join(unknown)} (land the "
                          f"code default-off first)")
@@ -110,19 +116,19 @@ def rungs(indices) -> Callable[[Clip], list[int]]:
 
 def single_rung(clips: list[Clip]) -> Callable[[Clip], list[int]]:
     """The single-point levels' one target per clip (singlepoint.assign_rungs)."""
-    assigned = singlepoint.assign_rungs(clips)
-    return lambda clip: [clip_targets(clip, LADDER_KBPS)[assigned[clip.name]]]
+    return singlepoint.rung_ladder(singlepoint.assign_rungs(clips))
 
 
 def price(runner: Runner, anchor: Family, test: Family, clips: list[Clip], frames: int,
           anchor_ladder=None, test_ladder=None,
-          key_seconds: float | None = None) -> tuple[float, int]:
+          key_seconds: float | None = None, key_frames: int | None = None) -> tuple[float, int]:
     """(CPU-seconds, points) not yet cached for one measurement: the anchor on
     `anchor_ladder` (default the full ladder), the candidate on `test_ladder`
     (default the anchor's)."""
-    jobs = (runner.points([anchor], clips, frames, None, key_seconds, ladder=anchor_ladder)
+    jobs = (runner.points([anchor], clips, frames, None, key_seconds, ladder=anchor_ladder,
+                          key_frames=key_frames)
             + runner.points([test], clips, frames, None, key_seconds,
-                            ladder=test_ladder or anchor_ladder))
+                            ladder=test_ladder or anchor_ladder, key_frames=key_frames))
     return runner.price(jobs), sum(1 for bench, p in jobs if not bench.cached(p))
 
 

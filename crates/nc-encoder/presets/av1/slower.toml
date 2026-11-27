@@ -25,7 +25,6 @@ decision.intra_gate_variance = 16
 # Every residual reaches the transform: no pre-transform skip, no biased skip.
 av1.pre_tx_skip = 0
 av1.skip_bias_pct = 100
-av1.skip_bias_pct_base = 100
 # Trellis on key frames too, with four survivors.
 quant.trellis_key = 1
 quant.trellis_states = 4
@@ -48,3 +47,30 @@ layers.propagation = 1
 layers.propagation_flat = 1
 layers.propagation_grid = 3
 layers.propagation_prekey = 1
+# Key frames: AV1 slow's key RD search (1.2 gate, one level each way) and periodic keys 3 QP
+# units finer (AV1 medium's). With the search pinned off this rung coded cheaper, worse keys
+# than medium (key ladder inverted). nceval.train against 038043e0f (draw 2026-11-22, idea
+# key-search-on-rungs-above-medium): L3 J -0.21% [-0.53, +0.10], final check (600 f) -0.15%
+# [-0.54, +0.25], no guard. VVC slower's 1.5/2/2 shape was killed at stage 1 (static
+# pool_chad_3_086 +6.3 %).
+planner.key_rd_split = 1
+planner.key_rd_margin = 1.2
+planner.key_rd_deeper = 1
+planner.key_rd_shallower = 1
+rate.key_level_finer = 3
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-0.78 / -0.37 %).
+rate.key_cap_buffer_first = 0.8
+# Cadence depth above 1 (structure.depth_max 1.35, noise cap 0.75): kept on this rung when
+# medium dropped it (2026-11-24): re-validated under the benchmark's conditions, quick J
+# (L1 / 1/150 / 1/300) slow -0.50 / -0.73 / 0.00%, slower -0.40 / -0.77 / -0.80%.
+structure.depth_max = 1.35
+structure.depth_deep_max_noise = 0.75
+# Leaf penalty 1 in both modes: the fixed-QP profile codes leaf 2 (screened on medium's
+# fixed QP only, 2026-11-24).
+rate.cadence_leaf_penalty = 1
+
+# Inherits rate.in_frame = 1 and rate.in_frame_proactive = 1 from AV1 Default
+# (draw 2026-11-26, L3 n=98: J -0.40% [-0.58, +0.09], 40/98 worse,
+# 0 guards, periodic-key pulse 2 s -0.03 dB / 10 s -0.02 dB).

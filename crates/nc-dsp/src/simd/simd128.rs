@@ -146,6 +146,11 @@ impl WordPairLanes for I32x4 {
     type Pairs = WordPairs4;
 
     #[inline(always)]
+    fn transpose_registers(rows: &[Self], columns: &mut [Self]) {
+        columns.copy_from_slice(&transpose_i32x4(rows).map(Self));
+    }
+
+    #[inline(always)]
     fn word_pairs(self, high: Self) -> WordPairs4 {
         // The low (even) word of each lane from `self`, the odd word from
         // the low word of `high`'s lane.
@@ -1128,4 +1133,18 @@ fn transpose_i32x4(rows: &[I32x4]) -> [v128; 4] {
         i64x2_shuffle::<0, 2>(t1, t3),
         i64x2_shuffle::<1, 3>(t1, t3),
     ]
+}
+
+impl crate::sao::high_simd::SaoWordLanes for I16x8 {
+    #[inline(always)]
+    fn offset_table(offsets: [i16; 4]) -> Self {
+        Self::load(&crate::sao::high_simd::offset_words(offsets))
+    }
+
+    #[inline(always)]
+    fn select_offset(self, table: Self) -> Self {
+        use core::arch::wasm32::{i8x16_swizzle, i16x8_add, i16x8_mul, i16x8_splat};
+        let index = i16x8_add(i16x8_mul(self.0, i16x8_splat(0x0202)), i16x8_splat(0x0504));
+        Self(i8x16_swizzle(table.0, index))
+    }
 }

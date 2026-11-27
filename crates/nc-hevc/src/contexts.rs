@@ -1,11 +1,13 @@
-//! The CABAC context variables used by I and P slices, with their initial
-//! values (HEVC §9.3.2.2, Tables 9-5 to 9-37). `cabac_init_flag` is never
-//! set, so I slices use `initType` 0 and P slices `initType` 1.
+//! The CABAC context variables used by I, P and B slices, with their
+//! initial values (HEVC §9.3.2.2, Tables 9-5 to 9-37). `cabac_init_flag` is
+//! never set, so I slices use `initType` 0, P slices 1 and B slices 2.
 //!
-//! Initial values as tabulated in kvazaar's `context.c` (BSD-3-Clause, see
-//! `THIRD_PARTY.md`), which follows the specification.
+//! The initial values are the decoder's table (`dec/ctx.rs`), one table for
+//! both directions.
 
 use crate::cabac::Context;
+pub(crate) use crate::dec::ctx::INTER_PRED_IDC_LAST;
+use crate::dec::ctx::{self as table, Element};
 
 /// Slice type, which selects the initialisation table (`initType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,89 +16,27 @@ pub enum SliceKind {
     Intra,
     /// P slice: `initType` 1.
     Predicted,
+    /// B slice whose two reference lists hold the same past pictures
+    /// (generalised B, low-delay bi-prediction): `initType` 2.
+    Bi,
 }
 
-/// Initial values per `initType` (index 0: I slice, 1: P slice).
-struct InitTable {
-    sao_merge_flag: u8,
-    sao_type_idx: [u8; 2],
-    split_cu_flag: [[u8; 3]; 2],
-    cu_skip_flag: [u8; 3],
-    pred_mode_flag: u8,
-    part_mode: [u8; 2],
-    prev_intra_luma_pred_flag: [u8; 2],
-    intra_chroma_pred_mode: [u8; 2],
-    merge_flag: u8,
-    merge_idx: u8,
-    ref_idx: u8,
-    mvp_flag: u8,
-    rqt_root_cbf: u8,
-    cu_qp_delta_abs: u8,
-    abs_mvd_greater0: u8,
-    abs_mvd_greater1: u8,
-    transform_split: [[u8; 3]; 2],
-    cbf_luma: [[u8; 2]; 2],
-    cbf_chroma: [[u8; 4]; 2],
-    last_sig_coeff_prefix: [[u8; 18]; 2],
-    coded_sub_block_flag: [[u8; 4]; 2],
-    sig_coeff_flag: [[u8; 42]; 2],
-    greater1_flag: [[u8; 24]; 2],
-    greater2_flag: [[u8; 6]; 2],
-}
+impl SliceKind {
+    /// Whether the slice codes inter prediction (P or B).
+    #[must_use]
+    pub fn is_inter(self) -> bool {
+        self != Self::Intra
+    }
 
-/// Values of syntax elements that exist only in P slices are listed once
-/// (their `initType` 1 values).
-#[rustfmt::skip]
-const INIT: InitTable = InitTable {
-    sao_merge_flag: 153,
-    sao_type_idx: [200, 185],
-    split_cu_flag: [[139, 141, 157], [107, 139, 126]],
-    cu_skip_flag: [197, 185, 201],
-    pred_mode_flag: 149,
-    part_mode: [184, 154],
-    prev_intra_luma_pred_flag: [184, 154],
-    intra_chroma_pred_mode: [63, 152],
-    merge_flag: 110,
-    merge_idx: 122,
-    // `ref_idx_l0` (§9.3.2.2, its initValue table): 153 for both contexts
-    // of every initType; with at most two references only the first bin is
-    // coded.
-    ref_idx: 153,
-    mvp_flag: 168,
-    rqt_root_cbf: 79,
-    // Table 9-24: the same value for both contexts and every initType.
-    cu_qp_delta_abs: 154,
-    abs_mvd_greater0: 140,
-    abs_mvd_greater1: 198,
-    transform_split: [[153, 138, 138], [124, 138, 94]],
-    cbf_luma: [[111, 141], [153, 111]],
-    cbf_chroma: [[94, 138, 182, 154], [149, 107, 167, 154]],
-    // 15 luma contexts, then 3 chroma contexts.
-    last_sig_coeff_prefix: [
-        [110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127, 111, 79, 108, 123, 63],
-        [125, 110, 94, 110, 95, 79, 125, 111, 110, 78, 110, 111, 111, 95, 94, 108, 123, 108],
-    ],
-    // 2 luma, then 2 chroma.
-    coded_sub_block_flag: [[91, 171, 134, 141], [121, 140, 61, 154]],
-    // 27 luma, then 15 chroma.
-    sig_coeff_flag: [
-        [111, 111, 125, 110, 110, 94, 124, 108, 124, 107, 125, 141, 179, 153, 125, 107, 125, 141,
-         179, 153, 125, 107, 125, 141, 179, 153, 125, 140, 139, 182, 182, 152, 136, 152, 136, 153,
-         136, 139, 111, 136, 139, 111],
-        [155, 154, 139, 153, 139, 123, 123, 63, 153, 166, 183, 140, 136, 153, 154, 166, 183, 140,
-         136, 153, 154, 166, 183, 140, 136, 153, 154, 170, 153, 123, 123, 107, 121, 107, 121, 167,
-         151, 183, 140, 151, 183, 140],
-    ],
-    // 16 luma, then 8 chroma.
-    greater1_flag: [
-        [140, 92, 137, 138, 140, 152, 138, 139, 153, 74, 149, 92, 139, 107, 122, 152, 140, 179,
-         166, 182, 140, 227, 122, 197],
-        [154, 196, 196, 167, 154, 152, 167, 182, 182, 134, 149, 136, 153, 121, 136, 137, 169, 194,
-         166, 167, 154, 167, 137, 182],
-    ],
-    // 4 luma, then 2 chroma.
-    greater2_flag: [[138, 153, 136, 167, 152, 152], [107, 167, 91, 122, 107, 167]],
-};
+    /// `initType` (§9.3.2.2, eq. 9-7 with `cabac_init_flag` 0).
+    fn init_type(self) -> usize {
+        match self {
+            Self::Intra => 0,
+            Self::Predicted => 1,
+            Self::Bi => 2,
+        }
+    }
+}
 
 /// Number of luma `sig_coeff_flag` contexts; chroma contexts follow them.
 pub const SIG_CHROMA_OFFSET: usize = 27;
@@ -109,7 +49,7 @@ pub const GREATER2_CHROMA_OFFSET: usize = 4;
 /// Number of luma `coded_sub_block_flag` contexts.
 pub const CODED_SUB_BLOCK_CHROMA_OFFSET: usize = 2;
 
-/// Every context variable of an I or P slice segment.
+/// Every context variable of an I, P or B slice segment.
 #[derive(Debug, Clone)]
 pub struct Contexts {
     /// `sao_merge_left_flag` and `sao_merge_up_flag` (shared).
@@ -132,9 +72,12 @@ pub struct Contexts {
     pub merge_flag: Context,
     /// `merge_idx` bin 0.
     pub merge_idx: Context,
-    /// `ref_idx_l0` bin 0.
+    /// `inter_pred_idc` (B slices): bin 0 by `CtDepth`, then the second
+    /// bin's context ([`INTER_PRED_IDC_LAST`]).
+    pub inter_pred_idc: [Context; INTER_PRED_IDC_CONTEXTS],
+    /// `ref_idx_l0` / `ref_idx_l1` bin 0.
     pub ref_idx: Context,
-    /// `mvp_l0_flag`.
+    /// `mvp_l0_flag` / `mvp_l1_flag`.
     pub mvp_flag: Context,
     /// `rqt_root_cbf`.
     pub rqt_root_cbf: Context,
@@ -168,42 +111,56 @@ impl Contexts {
     /// All contexts initialised for a slice of `kind` at `slice_qp`.
     #[must_use]
     pub fn for_slice(kind: SliceKind, slice_qp: i32) -> Self {
-        let t = match kind {
-            SliceKind::Intra => 0,
-            SliceKind::Predicted => 1,
+        let t = kind.init_type();
+        // Elements absent from I slices start there from their P-slice
+        // values: nothing codes them, but key-frame CUs are priced as P ones
+        // (`backend/coded_snapshot.rs`) and these states are what that
+        // pricing reads.
+        let inter = match kind {
+            SliceKind::Intra => SliceKind::Predicted.init_type(),
+            SliceKind::Predicted | SliceKind::Bi => t,
         };
-        let one = |v: u8| Context::new(v, slice_qp);
+        let one = |e: Element| Context::new(table::initial_values(e, t)[0], slice_qp);
+        let inter_one = |e: Element| Context::new(table::initial_values(e, inter)[0], slice_qp);
         Self {
-            sao_merge_flag: one(INIT.sao_merge_flag),
-            sao_type_idx: one(INIT.sao_type_idx[t]),
-            split_cu_flag: init(&INIT.split_cu_flag[t], slice_qp),
-            cu_skip_flag: init(&INIT.cu_skip_flag, slice_qp),
-            pred_mode_flag: one(INIT.pred_mode_flag),
-            part_mode: one(INIT.part_mode[t]),
-            prev_intra_luma_pred_flag: one(INIT.prev_intra_luma_pred_flag[t]),
-            intra_chroma_pred_mode: one(INIT.intra_chroma_pred_mode[t]),
-            merge_flag: one(INIT.merge_flag),
-            merge_idx: one(INIT.merge_idx),
-            ref_idx: one(INIT.ref_idx),
-            mvp_flag: one(INIT.mvp_flag),
-            rqt_root_cbf: one(INIT.rqt_root_cbf),
-            cu_qp_delta_abs: [one(INIT.cu_qp_delta_abs); 2],
-            abs_mvd_greater0: one(INIT.abs_mvd_greater0),
-            abs_mvd_greater1: one(INIT.abs_mvd_greater1),
-            transform_split: init(&INIT.transform_split[t], slice_qp),
-            cbf_luma: init(&INIT.cbf_luma[t], slice_qp),
-            cbf_chroma: init(&INIT.cbf_chroma[t], slice_qp),
-            last_x_prefix: init(&INIT.last_sig_coeff_prefix[t], slice_qp),
-            last_y_prefix: init(&INIT.last_sig_coeff_prefix[t], slice_qp),
-            coded_sub_block_flag: init(&INIT.coded_sub_block_flag[t], slice_qp),
-            sig_coeff_flag: init(&INIT.sig_coeff_flag[t], slice_qp),
-            greater1_flag: init(&INIT.greater1_flag[t], slice_qp),
-            greater2_flag: init(&INIT.greater2_flag[t], slice_qp),
+            sao_merge_flag: one(table::SAO_MERGE),
+            sao_type_idx: one(table::SAO_TYPE),
+            split_cu_flag: init(table::initial_values(table::SPLIT_CU, t), slice_qp),
+            cu_skip_flag: init(table::initial_values(table::SKIP, inter), slice_qp),
+            pred_mode_flag: inter_one(table::PRED_MODE),
+            part_mode: one(table::PART_MODE),
+            prev_intra_luma_pred_flag: one(table::PREV_INTRA_LUMA),
+            intra_chroma_pred_mode: one(table::CHROMA_PRED),
+            merge_flag: inter_one(table::MERGE_FLAG),
+            merge_idx: inter_one(table::MERGE_IDX),
+            inter_pred_idc: init(
+                table::initial_values(table::INTER_PRED_IDC, inter),
+                slice_qp,
+            ),
+            ref_idx: inter_one(table::REF_IDX),
+            mvp_flag: inter_one(table::MVP_FLAG),
+            rqt_root_cbf: inter_one(table::RQT_ROOT_CBF),
+            cu_qp_delta_abs: init(table::initial_values(table::CU_QP_DELTA, t), slice_qp),
+            abs_mvd_greater0: inter_one(table::ABS_MVD_GT0),
+            abs_mvd_greater1: inter_one(table::ABS_MVD_GT1),
+            transform_split: init(table::initial_values(table::SPLIT_TRANSFORM, t), slice_qp),
+            cbf_luma: init(table::initial_values(table::CBF_LUMA, t), slice_qp),
+            cbf_chroma: init(table::initial_values(table::CBF_CHROMA, t), slice_qp),
+            last_x_prefix: init(table::initial_values(table::LAST_X, t), slice_qp),
+            last_y_prefix: init(table::initial_values(table::LAST_Y, t), slice_qp),
+            coded_sub_block_flag: init(table::initial_values(table::CODED_SUB_BLOCK, t), slice_qp),
+            sig_coeff_flag: init(table::initial_values(table::SIG_COEFF, t), slice_qp),
+            greater1_flag: init(table::initial_values(table::GREATER1, t), slice_qp),
+            greater2_flag: init(table::initial_values(table::GREATER2, t), slice_qp),
         }
     }
 }
 
-/// Initialise a table of contexts.
-fn init<const N: usize>(values: &[u8; N], slice_qp: i32) -> [Context; N] {
-    values.map(|v| Context::new(v, slice_qp))
+/// `inter_pred_idc` contexts: four `CtDepth` contexts and the second bin's.
+pub const INTER_PRED_IDC_CONTEXTS: usize = 5;
+
+/// The first `N` contexts of an element's initial values (Main 4:2:0 uses
+/// fewer `cbf_cb`/`cbf_cr` contexts than the table lists).
+fn init<const N: usize>(values: &[u8], slice_qp: i32) -> [Context; N] {
+    std::array::from_fn(|i| Context::new(values[i], slice_qp))
 }

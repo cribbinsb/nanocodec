@@ -24,12 +24,14 @@
 //! Kernel contract: see the `pixel` module docs.
 
 use core::arch::aarch64::{
-    uint8x16_t, uint16x8_t, uint32x4_t, vabdq_u8, vaddvq_u32, vdupq_n_u8, vdupq_n_u32, vld1q_u8,
-    vmovn_high_u32, vmovn_u32, vpaddq_u32, vst1q_u16, vst1q_u32,
+    uint8x16_t, uint16x8_t, uint32x4_t, vabdq_u8, vadd_u32, vaddq_u16, vaddvq_u32, vandq_u16,
+    vbslq_u32, vcltq_u32, vdupq_n_u8, vdupq_n_u32, vget_high_u32, vget_low_u32, vld1q_u8,
+    vld1q_u16, vld1q_u32, vminq_u32, vminvq_u32, vmovn_high_u32, vmovn_u32, vpaddlq_u16,
+    vpaddq_u16, vpaddq_u32, vshlq_n_u16, vst1_u32, vst1q_u16, vst1q_u32,
 };
 
-use super::GridBest;
-use super::neon::MAX_COLUMNS;
+use super::neon::{GridTags, MAX_COLUMNS};
+use super::{GRID_SMALL_BLOCKS, GridBest};
 use crate::simd::neon_dot::udot;
 
 /// Positions of a scan measured together: two four-result pairwise trees
@@ -66,13 +68,40 @@ pub(super) unsafe fn sad_scan_16x16_even_rows(
     ref_stride: usize,
     out: &mut [u32],
 ) {
+    // SAFETY: dispatch validates the scan inputs and the dot-product tier.
+    unsafe { scan::<false>(src, src_stride, rf, ref_stride, out, 0) }
+}
+
+#[target_feature(enable = "neon,dotprod")]
+pub(super) unsafe fn sad_scan_bounded(
+    src: &[u8],
+    src_stride: usize,
+    rf: &[u8],
+    ref_stride: usize,
+    out: &mut [u32],
+    bound: u32,
+) {
+    // SAFETY: dispatch validates the scan inputs and the dot-product tier.
+    unsafe { scan::<true>(src, src_stride, rf, ref_stride, out, bound) }
+}
+
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn scan<const BOUNDED: bool>(
+    src: &[u8],
+    src_stride: usize,
+    rf: &[u8],
+    ref_stride: usize,
+    out: &mut [u32],
+    bound: u32,
+) {
     let mut a = [vdupq_n_u8(0); 8];
     for (k, reg) in a.iter_mut().enumerate() {
         // SAFETY: row 2k (16 bytes) is inside the block.
         *reg = unsafe { vld1q_u8(src.as_ptr().add(2 * k * src_stride)) };
     }
     let batches = out.len() / SCAN_BATCH;
-    for (batch, sads) in out[..batches * SCAN_BATCH]
+    'batch: for (batch, sads) in out[..batches * SCAN_BATCH]
         .as_chunks_mut::<SCAN_BATCH>()
         .0
         .iter_mut()
@@ -86,6 +115,14 @@ pub(super) unsafe fn sad_scan_16x16_even_rows(
                 // reference (kernel contract: 16 + n - 1 columns).
                 let b = unsafe { vld1q_u8(rf.as_ptr().add(2 * k * ref_stride + dx)) };
                 *sums = sad_acc(*sums, reg, b);
+            }
+            if BOUNDED && k == 3 {
+                let left = vpaddq_u32(vpaddq_u32(acc[0], acc[1]), vpaddq_u32(acc[2], acc[3]));
+                let right = vpaddq_u32(vpaddq_u32(acc[4], acc[5]), vpaddq_u32(acc[6], acc[7]));
+                if vminvq_u32(vminq_u32(left, right)) >= bound {
+                    sads.fill(bound);
+                    continue 'batch;
+                }
             }
         }
         for (group, out) in acc
@@ -213,8 +250,8 @@ pub(super) unsafe fn sad_grid_best_64x64<const STEP: usize>(
 /// Reuse each source load across four candidate grids. Four columns per
 /// candidate keep independent dot-product chains; reductions remain ordered
 /// so equal costs retain exactly the same vector as the single-position path.
-/// Jetson locked paired timings: four even-row candidates 711 → 615 ns,
-/// exact rows 1063 → 897 ns. The accumulation loop has no register spills.
+/// Fold each completed block row immediately to avoid materializing the
+/// four candidate grids and the corresponding arrays of costs.
 #[target_feature(enable = "neon,dotprod")]
 pub(super) unsafe fn sad_grid_best_x4<const STEP: usize>(
     src: &[u8],
@@ -225,34 +262,99 @@ pub(super) unsafe fn sad_grid_best_x4<const STEP: usize>(
     best: &mut GridBest,
     tags: [u32; 4],
 ) {
-    let mut grids = [[0u16; 64]; 4];
+    let winners = GridTags::new(tags);
+    let mut large = [[0u32; 4]; 4];
+    let mut previous = [core::arch::aarch64::vdupq_n_u16(0); 4];
+    let mut previous_pair = previous;
     for block_row in 0..8 {
-        let mut acc = [[vdupq_n_u32(0); 4]; 4];
-        for y in (8 * block_row..8 * block_row + 8).step_by(STEP) {
-            for (column, sums) in acc.iter_mut().enumerate() {
-                // SAFETY: each source row covers all 64 pixels.
-                let source = unsafe { vld1q_u8(src.as_ptr().add(y * src_stride + 16 * column)) };
-                for candidate in 0..4 {
-                    // SAFETY: each reference covers a complete 64x64 block.
-                    let reference = unsafe {
-                        vld1q_u8(refs[candidate].as_ptr().add(y * ref_stride + 16 * column))
-                    };
-                    sums[candidate] = sad_acc(sums[candidate], source, reference);
-                }
+        // SAFETY: the block row lies inside the validated windows.
+        let row =
+            unsafe { grid_row_x4::<STEP>(src, src_stride, &refs, ref_stride, visible, block_row) };
+        // SAFETY: the eight current 8x8 entries and their tags are in bounds.
+        unsafe { winners.keep_row(best, 8 * block_row, row) };
+        if block_row % 2 == 0 {
+            previous = row;
+            continue;
+        }
+        let pair = core::array::from_fn(|i| vaddq_u16(row[i], previous[i]));
+        if block_row % 4 == 1 {
+            previous_pair = pair;
+            continue;
+        }
+        let band = block_row / 4;
+        let s16 = core::array::from_fn(|i| {
+            let rows = vpaddq_u16(previous_pair[i], pair[i]);
+            let sums = vpaddlq_u16(rows);
+            let s32 = vadd_u32(vget_low_u32(sums), vget_high_u32(sums));
+            // SAFETY: each band writes its two consecutive 32x32 costs.
+            unsafe { vst1_u32(large[i].as_mut_ptr().add(2 * band), s32) };
+            rows
+        });
+        // SAFETY: this band owns eight of the 16 small 16x16 blocks.
+        unsafe { winners.keep_row(best, 64 + 8 * band, s16) };
+    }
+    keep_large_x4(best, &large, tags);
+}
+
+/// Four 32x32 blocks fit one vector. Keep their values and tags
+/// together across all candidates, then update the single 64x64 block.
+#[inline]
+#[target_feature(enable = "neon")]
+fn keep_large_x4(best: &mut GridBest, costs: &[[u32; 4]; 4], tags: [u32; 4]) {
+    // SAFETY: the first four large costs and tags are the 32x32 blocks.
+    unsafe {
+        let mut values = vld1q_u32(best.large.as_ptr());
+        let tag_ptr = best.tag.as_mut_ptr().add(GRID_SMALL_BLOCKS);
+        let mut winners = vld1q_u32(tag_ptr);
+        for (cost, tag) in costs.iter().zip(tags) {
+            let next = vld1q_u32(cost.as_ptr());
+            winners = vbslq_u32(vcltq_u32(next, values), vdupq_n_u32(tag), winners);
+            values = vminq_u32(values, next);
+            let total = vaddvq_u32(next);
+            if total < best.large[4] {
+                best.large[4] = total;
+                best.tag[GRID_SMALL_BLOCKS + 4] = tag;
             }
         }
-        for candidate in 0..4 {
-            let out = &mut grids[candidate][8 * block_row..8 * block_row + 8];
-            let sums = acc.map(|column| column[candidate]);
-            // SAFETY: this block row has eight writable u16 entries.
-            unsafe { vst1q_u16(out.as_mut_ptr(), block_sads(sums)) };
+        vst1q_u32(best.large.as_mut_ptr(), values);
+        vst1q_u32(tag_ptr, winners);
+    }
+}
+
+/// Produce one row (eight 8x8 blocks) for each candidate. Use the masked
+/// sums immediately for both the minima and the parent blocks.
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn grid_row_x4<const STEP: usize>(
+    src: &[u8],
+    src_stride: usize,
+    refs: &[&[u8]; 4],
+    ref_stride: usize,
+    visible: &[u16; 64],
+    block_row: usize,
+) -> [uint16x8_t; 4] {
+    let mut acc = [[vdupq_n_u32(0); 4]; 4];
+    for y in (8 * block_row..8 * block_row + 8).step_by(STEP) {
+        for (column, sums) in acc.iter_mut().enumerate() {
+            // SAFETY: each row covers all 64 pixels, and each column reads 16.
+            let source = unsafe { vld1q_u8(src.as_ptr().add(y * src_stride + 16 * column)) };
+            for candidate in 0..4 {
+                // SAFETY: each reference covers a complete 64x64 block.
+                let reference =
+                    unsafe { vld1q_u8(refs[candidate].as_ptr().add(y * ref_stride + 16 * column)) };
+                sums[candidate] = sad_acc(sums[candidate], source, reference);
+            }
         }
     }
-    for (grid, tag) in grids.iter().zip(tags) {
-        super::neon::keep_min(
-            best,
-            &super::grid_costs::<super::neon::Pairs>(grid, visible, STEP as u16),
-            tag,
-        );
-    }
+    // SAFETY: the current block row has eight visibility entries.
+    let mask = unsafe { vld1q_u16(visible.as_ptr().add(8 * block_row)) };
+    core::array::from_fn(|candidate| {
+        let sums = block_sads(acc.map(|column| column[candidate]));
+        let scaled = if STEP == 2 {
+            vshlq_n_u16::<1>(sums)
+        } else {
+            sums
+        };
+        vandq_u16(scaled, mask)
+    })
 }

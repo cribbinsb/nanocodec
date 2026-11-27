@@ -209,9 +209,12 @@ fn key_offset_matches_direct_quantizer_and_clamps() {
     for (qp, offset, effective) in [(37, 9, 28), (0, i32::MAX, 0), (63, i32::MIN, 63)] {
         let mut cfg = config(32, 32, qp);
         cfg.key_qp_offset = Some(offset);
+        // The encoder information message names the configured quantizer.
+        cfg.params.set("stream.encoder_info", 0.);
         let mut adjusted = Encoder::<VvcBackend>::new(cfg).unwrap();
         let mut direct_cfg = config(32, 32, effective);
         direct_cfg.key_qp_offset = Some(0);
+        direct_cfg.params.set("stream.encoder_info", 0.);
         let mut direct = Encoder::<VvcBackend>::new(direct_cfg).unwrap();
         let picture = source(32, 32, 2);
         assert_eq!(adjusted.encode(&picture).data, direct.encode(&picture).data);

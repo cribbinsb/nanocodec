@@ -2,8 +2,9 @@
 """nc-remote: run heavy agent work (builds, tests, clippy, callgrind, conformance,
 fuzzing) on one shared AWS build box instead of the PC.
 
-    nc-remote run [--worktree DIR] [--name NAME] [--sync PATH ...] [--fetch PATH ...]
-                  [--fetch-to DIR] [--env KEY=VALUE ...] [--jobs N] -- COMMAND ...
+    nc-remote run [--worktree DIR] [--name NAME] [--sync PATH ...] [--data PATH ...]
+                  [--fetch PATH ...] [--fetch-to DIR] [--env KEY=VALUE ...] [--jobs N]
+                  -- COMMAND ...
     nc-remote status | stop | reap | bake | ssh
 
 `run` starts the box if it is not up, rsyncs the worktree (tracked and
@@ -16,8 +17,13 @@ included, or `~/...` for the same path under both homes) and exits with the
 command's status. One argument is a shell command line; several are quoted
 as one command. `--sync` mirrors extra paths under the PC's home to the same
 place under the box's home (e.g. `~/nanocodec-data/anchors/x86_64/bin`);
-paths with private clips are refused. NAME defaults to the worktree's
-directory name.
+paths with private clips are refused. `--data` uploads a file or directory
+as it is, whatever its size (the worktree sync leaves out files over
+SYNC_MAX_SIZE, raw video and ignored files): a path in the worktree lands at
+the same place in the job's tree, any other path under ~ at the same place
+under the box's home; `--fetch` the same path to bring it back. A command
+that names a path the sync left out gets a warning. NAME defaults to the
+worktree's directory name.
 
 Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
 - One persistent box from an instant EC2 Fleet over INSTANCE_TYPES x every zone of
@@ -38,6 +44,14 @@ Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
   drains: no new jobs, its running ones (and their --fetch) finish as before,
   and `reap` ends it once no `run` uses it and no slot is held. A box with no
   job is simply ended (the next `run` launches its successor).
+- Finished outputs leave the box before any planned stop (2026-11-24: 19 finished
+  PGO builds were lost with an idle box). A job's `--fetch` paths are recorded on
+  the box when it ends (nc_remote_job.py UNFETCHED) and where they go on the PC
+  (OUTPUTS_DIR, held by the run until its fetch is done). `run` fetches them and
+  drops the marker; if it has gone (killed, PC restart, dropped link), `reap`
+  fetches them to the same place. Until then the box's idle watchdog keeps the box
+  up, reap, replace and `stop` do not end it (reap and stop fetch first), and only
+  `stop --force`, the budget or the hard lifetime end it, naming what is lost.
 - Budget: the day's estimate (instance hours x price + volume + IPv4,
   per UTC day) must stay under DAILY_BUDGET_USD: no start once it is passed,
   and a running box is stopped.
@@ -93,8 +107,10 @@ MAX_USD_PER_HOUR = 1.50
 #: (2026-11-16: c7a.8xlarge $0.23/h against $0.89/h).
 #: 96 vCPU only since 2026-11-21 (coordinator: the 64-vCPU box's 8 slots queued verify,
 #: identity, callgrind and agents' jobs); a running 64-vCPU box drains (make before break).
-TYPE_VCPUS = {"c7a.24xlarge": 96, "c7i.24xlarge": 96, "c6i.24xlarge": 96,
-              "m7a.24xlarge": 96, "m7i.24xlarge": 96, "m6i.24xlarge": 96}
+#: The cost guide's x86 pair, cheapest per vCPU first (docs/aws-cost-guide.md; coordinator,
+#: 2026-11-24: the box relaunched as c7a.24xlarge at $0.63/h, $6.54 per 1000 vCPU-h, against
+#: c6i $4.55 and c7i $5.85; m7a/m7i $9.79-10.74). No c7a (owner: double-pumped AVX-512).
+TYPE_VCPUS = {"c6i.24xlarge": 96, "c7i.24xlarge": 96}
 INSTANCE_TYPES = tuple(TYPE_VCPUS)
 MIN_VCPUS = 96
 #: One heavy job per 8 vCPU (the box makes nproc / JOBS_PER_SLOT slots); each job gets
@@ -105,13 +121,16 @@ ROOT_GB = 200
 LIFETIME_MINUTES = 12 * 60
 #: The pool this process manages: "" the build box, OVERFLOW the second box that `run`
 #: starts when every slot of the first has been busy for OVERFLOW_AFTER_SECONDS
-#: (coordinator, 2026-11-21); each has its own state, key pair, history and idle limit.
+#: (coordinator, 2026-11-21); each has its own state, key pair and history.
 POOL_ENV = "NC_REMOTE_POOL"
 OVERFLOW = "overflow"
 POOL = os.environ.get(POOL_ENV, "")
 OVERFLOW_AFTER_SECONDS = 120
 OVERFLOW_POLL_SECONDS = 10
-IDLE_MINUTES = 20 if POOL == OVERFLOW else 10
+#: 30 min (time audit, 2026-11-25): at 10, 42 of 124 relaunches in 10 days came 2-30 min
+#: after an idle end, each paying ~1-3 min to start plus cold builds from the baked image;
+#: the 20 extra idle minutes cost ~$0.15-0.20 an end (c6i/c7i.24xlarge spot, ~$0.44-0.56/h).
+IDLE_MINUTES = 30
 #: A busy box this close to its hard lifetime is replaced (make before break),
 #: so jobs started from then on do not die with it at the hard end; the jobs
 #: already on it have this long to finish.
@@ -131,6 +150,10 @@ DAILY_BUDGET_USD = 40.0
 SPOT, ON_DEMAND = "spot", "on-demand"
 RECLAIM_WINDOW = datetime.timedelta(hours=2)
 RECLAIMED_TYPES_FOR_ON_DEMAND = 3
+#: Owner, 2026-11-26: spot only, never on-demand ("don't spend 10x more"). With no spot
+#: capacity anywhere, the launch fails and is retried later; the rules above that would
+#: choose on-demand are kept for the record but never act while this is False.
+ON_DEMAND_ALLOWED = False
 WINDOW_TEXT = f"{RECLAIM_WINDOW.total_seconds() / 3600:g} h"
 SPOT_RECLAIM_CODE = "Server.SpotInstanceTermination"
 #: The Price List API is served from us-east-1 (prices are still REGION's).
@@ -154,27 +177,60 @@ AMI_EXPECTED_END = "2026-12-31T00:00:00Z"
 STATE_DIR = WORK_DIR / ("buildbox" + (f"-{POOL}" if POOL else ""))
 STATE = STATE_DIR / "state.json"
 HISTORY = STATE_DIR / "history.json"
+#: Every finished job's slot record (nc_remote_job.OCCUPANCY_LOG on the box), copied here by
+#: `reap` and before a box is terminated, with the box's id and type; `occupancy` sums it up.
+OCCUPANCY = STATE_DIR / "occupancy.jsonl"
+#: Per box: the bytes of its log already copied.
+OCCUPANCY_OFFSETS = STATE_DIR / "occupancy-offsets.json"
 LOCK = STATE_DIR / "lock"
 #: Held (flock) while a replacement box starts; holds that box's instance id.
 REPLACING = STATE_DIR / "replacing"
 #: One flock'd file per `run` and the box it uses (BoxUse).
 USERS_DIR = STATE_DIR / "users"
+#: Per `run` with --fetch: where its outputs go on the PC (OutputsClaim), flock'd by the
+#: run until it has fetched them; `reap` fetches the outputs of a run that has gone.
+OUTPUTS_DIR = STATE_DIR / "outputs"
+#: Where outputs go whose run left no record (e.g. its STATE_DIR was lost).
+ORPHANS_DIR = STATE_DIR / "orphans"
 KEY = STATE_DIR / "key.pem"
 SSH_USER = "ubuntu"
+#: ssh's own exit status for a failure to connect or authenticate (any other
+#: status is the remote command's).
+SSH_FAILED = 255
 BOX_HOME = f"/home/{SSH_USER}"
 SSH_READY_SECONDS = 10 * 60
+#: ssh's multiplexing sockets, shared by every pool (`%C` hashes the host, so
+#: pools never collide). A Unix socket path holds at most 107 bytes, and ssh
+#: adds a 17-byte temporary suffix to the 40-hex `%C` while it binds: under a
+#: pool's own STATE_DIR the path ran over (buildbox-overflow 113 bytes,
+#: buildbox-nndata-hevc 116), every master failed with "too long for Unix
+#: domain socket", and no named pool's box ever became ready (2026-11-22).
+CONTROL_DIR = WORK_DIR / "mux"
+CONTROL_PATH = CONTROL_DIR / "%C"
+UNIX_SOCKET_PATH_MAX = 107
+CONTROL_SOCKET_EXTRA = len("0" * 40 + ".0123456789abcdef") - len("%C")
+#: Lines of the box's setup log quoted when it is not ready in time.
+SETUP_LOG_LINES = 20
 #: Paths never synced by --sync: the private clips and their copies. Clips the
 #: job needs go up with --clip instead (owner, 2026-11-20: clips may go to our AWS
 #: boxes and are deleted there afterwards): the box deletes CLIP_ROOT before it
 #: shuts itself down (nc_remote_box.sh), and `stop` before it terminates the box.
 PRIVATE_PATHS = ("/mldata", str(Path.home() / "nanocodec-data/clips"),
-                 str(WORK_DIR / "cache"))
+                 str(WORK_DIR.parent / "aws-clip-cache"))
 CLIP_ROOT = Path.home() / "nanocodec-data/clips"
 #: Clips keep their size and time (data, not build inputs), so one already there
 #: is not sent again.
 CLIP_MODE = ("-a",)
-RSYNC_EXCLUDES = ("--exclude=/target", "--exclude=/.git", "--exclude=*.yuv",
-                  "--exclude=*.y4m", "--exclude=__pycache__", "--max-size=64m")
+#: Larger files stay out of the worktree sync (they are data, not sources);
+#: `--data` uploads one on request.
+SYNC_MAX_BYTES = 64 * 1024 * 1024
+RAW_VIDEO_SUFFIXES = (".yuv", ".y4m")
+RSYNC_EXCLUDES = ("--exclude=/target", "--exclude=/.git",
+                  *(f"--exclude=*{suffix}" for suffix in RAW_VIDEO_SUFFIXES),
+                  "--exclude=__pycache__", f"--max-size={SYNC_MAX_BYTES // (1024 * 1024)}m")
+#: --data keeps size and time (data, not build inputs: nothing already there is
+#: sent again) and keeps a partial transfer, so an interrupted upload resumes.
+DATA_MODE = ("-a", "--partial")
 
 
 @dataclass
@@ -315,6 +371,133 @@ def box_in_use(box: Box) -> bool:
         else:
             path.unlink(missing_ok=True)
     return in_use
+
+
+class OutputsClaim:
+    """A `run`'s record of where its --fetch outputs go (OUTPUTS_DIR/NAME.RUN_ID.json),
+    written before the job starts and flock'd until the run has fetched them. A record
+    nobody holds belongs to a run that has gone: `reap` fetches its outputs."""
+
+    def __init__(self, name: str, fetch_to: Path):
+        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        self.run_id = f"{utc_now():%Y%m%dT%H%M%S}-{os.getpid()}-{os.urandom(3).hex()}"
+        self.path = outputs_record(name, self.run_id)
+        self.handle = open(self.path, "w")
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+        self.handle.write(json.dumps({"name": name, "run_id": self.run_id,
+                                      "fetch_to": str(fetch_to), "written": iso(utc_now())}))
+        self.handle.flush()
+
+    def release(self, fetched: bool) -> None:
+        """Forget the record once the outputs are on the PC and the box's marker is gone;
+        otherwise leave it, unheld, for `reap`."""
+        if fetched:
+            self.path.unlink(missing_ok=True)
+        self.handle.close()
+
+
+def outputs_record(name: str, run_id: str) -> Path:
+    return OUTPUTS_DIR / f"{name}.{run_id}.json"
+
+
+def prune_output_records() -> None:
+    """Drop records no run holds that are older than a box's whole life: their box has
+    ended, and its outputs with it."""
+    if not OUTPUTS_DIR.exists():
+        return
+    oldest = utc_now() - datetime.timedelta(minutes=LIFETIME_MINUTES) - REPLACE_BEFORE_END
+    for path in OUTPUTS_DIR.glob("*.json"):
+        if not flock_held(path) and \
+                datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc) < oldest:
+            path.unlink(missing_ok=True)
+
+
+def unfetched(box: Box, name: str = "") -> list[dict]:
+    """The box's markers of finished jobs whose outputs are not on the PC yet (all jobs,
+    or `name`'s). Raises when the box cannot be asked."""
+    job = (HERE / "nc_remote_job.py").read_text()
+    out = ssh(box, shlex.join(["python3", "-c", job, "--unfetched"]), capture_output=True,
+              text=True, timeout=120)
+    if out.returncode != 0:
+        raise RuntimeError(f"{box.instance_id}: cannot list unfetched outputs: "
+                           f"{out.stderr.strip()}")
+    markers = [json.loads(line) for line in (out.stdout or "").splitlines() if line.strip()]
+    return [m for m in markers if not name or m["name"] == name]
+
+
+def fetch_marked(box: Box, marker: dict) -> bool:
+    """Fetch one finished job's outputs to where its run asked, then drop its marker.
+    False when a live run still owns them (it fetches them itself)."""
+    record = outputs_record(marker["name"], marker["run_id"])
+    if record.exists():
+        handle = open(record, "r+")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return False
+        fetch_to = Path(json.loads(record.read_text() or "{}").get("fetch_to")
+                        or ORPHANS_DIR / marker["name"] / marker["run_id"])
+    else:
+        handle = None
+        fetch_to = ORPHANS_DIR / marker["name"] / marker["run_id"]
+        say(f"{marker['name']} ({marker['run_id']}): no record of its run's --fetch-to on "
+            f"this PC; its outputs go to {fetch_to}")
+    try:
+        say(f"fetching the outputs of {marker['name']} (run {marker['run_id']}, ended "
+            f"{marker['ended']}, exit {marker['status']}): its caller has gone")
+        fetch(box, marker["name"], marker["paths"], fetch_to)
+        ssh(box, shlex.join(["python3", "-c", (HERE / "nc_remote_job.py").read_text(),
+                             "--fetched", marker["name"], marker["run_id"]]),
+            check=True, capture_output=True, timeout=120)
+        record.unlink(missing_ok=True)
+    finally:
+        if handle:
+            handle.close()
+    return True
+
+
+def fetch_unfetched(box: Box, name: str = "") -> list[dict]:
+    """Fetch every finished job's outputs that no live run is fetching (all jobs, or
+    `name`'s); return the markers still on the box (a live run's, or a failed fetch's).
+    Best effort: an unreachable box returns []."""
+    try:
+        markers = unfetched(box, name)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        say(f"{box.instance_id}: {error}")
+        return []
+    left = []
+    for marker in markers:
+        try:
+            if fetch_marked(box, marker):
+                continue
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+            say(f"{box.instance_id}: fetching {marker['name']} ({marker['run_id']}) failed: "
+                f"{error}; kept on the box, the next reap tries again")
+        left.append(marker)
+    return left
+
+
+def report_lost(box: Box) -> None:
+    """Say loudly which finished outputs end with the box (stop --force, budget, hard end)."""
+    with contextlib.suppress(Exception):
+        for marker in unfetched(box):
+            say(f"LOST: {box.instance_id} ends with the unfetched outputs of {marker['name']} "
+                f"(run {marker['run_id']}, ended {marker['ended']}): "
+                f"{', '.join(marker['paths'])}")
+
+
+def idle_script() -> str:
+    """The box's idle check (nc_remote_idle.sh) with this pool's idle limit."""
+    return (HERE / "nc_remote_idle.sh").read_text().replace("@IDLE_MINUTES@", str(IDLE_MINUTES))
+
+
+def idle_check(box: Box) -> subprocess.CompletedProcess:
+    """Install this version of the idle check on the box (a box launched by an older
+    nc-remote then keeps unfetched outputs too) and run it."""
+    return ssh(box, "sudo tee /usr/local/sbin/ncbox-idle >/dev/null && "
+                    "sudo chmod 755 /usr/local/sbin/ncbox-idle && sudo /usr/local/sbin/ncbox-idle",
+               input=idle_script().encode(), capture_output=True)
 
 
 class Replacing:
@@ -475,6 +658,7 @@ class Aws:
         key, group = self.key_pair(expected_end), self.security_group(expected_end)
         image_id, root_device = self.image()
         user_data = (HERE / "nc_remote_box.sh").read_text() \
+            .replace("@IDLE_SCRIPT@", idle_script().rstrip("\n")) \
             .replace("@LIFETIME_MINUTES@", str(LIFETIME_MINUTES)) \
             .replace("@IDLE_MINUTES@", str(IDLE_MINUTES)).replace("@JOBS_PER_SLOT@", str(JOBS_PER_SLOT))
         template = self.ec2.create_launch_template(
@@ -625,12 +809,23 @@ def key_path(region: str) -> Path:
     return KEY if region == REGION else STATE_DIR / f"key-{region}.pem"
 
 
+def control_path() -> Path:
+    """The ssh ControlPath, its directory made and its length checked: an
+    over-long socket path fails every ssh call, not just multiplexing."""
+    length = len(str(CONTROL_PATH)) + CONTROL_SOCKET_EXTRA
+    if length > UNIX_SOCKET_PATH_MAX:
+        raise RuntimeError(f"ssh ControlPath {CONTROL_PATH} would be {length} bytes, "
+                           f"over the {UNIX_SOCKET_PATH_MAX}-byte Unix socket limit")
+    CONTROL_DIR.mkdir(parents=True, exist_ok=True)
+    return CONTROL_PATH
+
+
 def ssh_options(box: Box) -> list[str]:
     return ["-i", str(key_path(box.region)), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=6",
             "-o", f"UserKnownHostsFile={STATE_DIR / ('known_hosts-' + box.instance_id)}",
             "-o", "StrictHostKeyChecking=accept-new", "-o", "ControlMaster=auto",
-            "-o", f"ControlPath={STATE_DIR / 'cm-%C'}", "-o", "ControlPersist=120"]
+            "-o", f"ControlPath={control_path()}", "-o", "ControlPersist=120"]
 
 
 def ssh(box: Box, command: str, **kwargs) -> subprocess.CompletedProcess:
@@ -644,6 +839,11 @@ def ssh(box: Box, command: str, **kwargs) -> subprocess.CompletedProcess:
 #: that build's outputs, and the next run reused the stale binary (2026-11-16).
 FETCH_MODE = ("-a",)
 UPLOAD_MODE = ("-rlpD", "--checksum")
+#: `--sync` paths (anchor tool directories, builds) go up as real files: a link is
+#: copied as its target (`-L`). Kept as links, the PC's absolute links (anchors/x86_64/bin
+#: vpxdec, avmdec and dav2d -> /home/mark/...) landed dangling on the build box on
+#: 2026-11-23 09:48 and every decode through them failed ("tool 'vpxdec' not found").
+SYNC_MODE = ("-rLpD", "--checksum")
 
 
 def rsync(box: Box, mode: tuple[str, ...], *args: str) -> None:
@@ -656,13 +856,24 @@ def remote(box: Box, path: str) -> str:
 
 
 def wait_for_ssh(box: Box) -> None:
+    """Wait until the box accepts SSH and its user-data has made ncbox/activity.
+    On timeout the error carries the real reason: ssh's last error, or, when
+    SSH worked but the setup did not finish, the tail of the box's setup log."""
     deadline = time.monotonic() + SSH_READY_SECONDS
+    last = None
     while time.monotonic() < deadline:
-        if ssh(box, "test -f ncbox/activity", capture_output=True).returncode == 0:
+        last = ssh(box, "test -f ncbox/activity", capture_output=True, text=True)
+        if last.returncode == 0:
             return
         time.sleep(5)
+    if last is not None and last.returncode == SSH_FAILED:
+        reason = f"ssh failed: {last.stderr.strip() or 'no error text'}"
+    else:
+        log = ssh(box, f"sudo tail -n {SETUP_LOG_LINES} /var/log/cloud-init-output.log",
+                  capture_output=True, text=True)
+        reason = f"ncbox/activity missing; setup log tail:\n{log.stdout or log.stderr}"
     raise RuntimeError(f"{box.instance_id}: SSH and the box setup not ready in "
-                       f"{SSH_READY_SECONDS // 60} min")
+                       f"{SSH_READY_SECONDS // 60} min: {reason}")
 
 
 def pc_toolchains() -> dict[str, str]:
@@ -724,7 +935,7 @@ def reclaimed_types(boxes: list[Box], now: datetime.datetime) -> set[str]:
 def plan_market(boxes: list[Box], now: datetime.datetime) -> MarketPlan:
     """The next launch's market and fleet types, given the box history."""
     excluded = reclaimed_types(boxes, now)
-    if len(excluded) >= RECLAIMED_TYPES_FOR_ON_DEMAND:
+    if ON_DEMAND_ALLOWED and len(excluded) >= RECLAIMED_TYPES_FOR_ON_DEMAND:
         return MarketPlan(ON_DEMAND, INSTANCE_TYPES,
                           f"on-demand: spot reclaimed {len(excluded)} types within "
                           f"{WINDOW_TEXT} ({', '.join(sorted(excluded))})")
@@ -793,7 +1004,7 @@ def launch_anywhere(aws: Aws, plan: MarketPlan, on_demand_fallback: bool) -> Box
             refusals.append(missing)
     # On-demand only when some region had quota room but no spot capacity.
     every_quota = all(r.quota for r in refusals)
-    if on_demand_fallback and not every_quota:
+    if ON_DEMAND_ALLOWED and on_demand_fallback and not every_quota:
         return aws.launch(MarketPlan(ON_DEMAND, INSTANCE_TYPES, "on-demand: no spot capacity "
                                      "in any region"), on_demand_fallback=False)
     raise NoCapacity("no spot box in any of " + ", ".join(SPILL_REGIONS) + ": "
@@ -838,8 +1049,16 @@ def ensure_box(aws: Aws) -> BoxUse:
             stop_all(aws)
             check_budget()
         else:
+            admit_this_host(aws, box)
             provision(box)  # a no-op unless the PC's toolchains changed
         return BoxUse(box)
+
+
+def admit_this_host(aws: Aws, box: Box) -> None:
+    """Point the box's SSH rule at this PC's current public address. The rule is set at
+    launch; a reused box kept the old one, so after the PC's address changed (a reboot,
+    2026-11-24) every run timed out on SSH until someone edited the group by hand."""
+    aws.regional(box.region).security_group(box.expected_end)
 
 
 def ends_soon(box: Box, now: datetime.datetime) -> bool:
@@ -855,10 +1074,29 @@ def replacement_reason(box: Box, plan: MarketPlan, now: datetime.datetime) -> st
     if box.market == ON_DEMAND and plan.market == SPOT:
         return "on-demand while spot is allowed"
     if box.instance_type not in INSTANCE_TYPES:
-        # A type no longer listed (the 64-vCPU boxes, 2026-11-21) keeps serving until a
-        # listed type has started on spot: make before break, never on-demand for this.
-        return f"{box.instance_type} is no longer a build box type"
+        return delisted_reason(box)
     return ""
+
+
+END, REPLACE = "end", "replace"
+
+
+def reap_action(reason: str, delisted: bool, idle: bool) -> str:
+    """What reap does to the current box given its replacement reason: END it when idle (the
+    next run launches a listed type); REPLACE it (make before break) when busy, except a
+    delisted type, which keeps serving its jobs until it idles (coordinator, 2026-11-24: a
+    type change never replaces a box under running jobs); "" otherwise."""
+    if not reason:
+        return ""
+    if idle:
+        return END
+    return "" if delisted else REPLACE
+
+
+def delisted_reason(box: Box) -> str:
+    """A type no longer listed keeps serving its jobs and ends once idle (cmd_reap), never
+    replaced under running jobs; the next launch takes a listed type."""
+    return f"{box.instance_type} is no longer a build box type"
 
 
 def unused(box: Box) -> bool:
@@ -896,7 +1134,8 @@ def replace(aws: Aws, old: Box, reason: str) -> None:
             save_state(new)
             say(f"{new.instance_id} is now the current box; {old.instance_id} drains (no new "
                 "jobs, its running jobs finish; reap ends it once none is left)")
-            if old.instance_id in {b.instance_id for b in unended()} and unused(old):
+            if old.instance_id in {b.instance_id for b in unended()} and \
+                    not fetch_unfetched(old) and unused(old):
                 say(f"{old.instance_id}: drained")
                 stop_box(aws, old)
 
@@ -907,7 +1146,38 @@ def stop_all(aws: Aws) -> None:
         stop_box(aws, box)
 
 
+def collect_occupancy(box: Box) -> None:
+    """Copy the box's new job records (nc_remote_job.OCCUPANCY_LOG) to OCCUPANCY. Best
+    effort: an unreachable box loses at most the jobs since the last reap."""
+    offsets = json.loads(OCCUPANCY_OFFSETS.read_text()) if OCCUPANCY_OFFSETS.exists() else {}
+    done = offsets.get(box.instance_id, 0)
+    try:
+        out = ssh(box, f"tail -c +{done + 1} ncbox/occupancy.jsonl 2>/dev/null || true",
+                  capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return
+    if out.returncode != 0 or not out.stdout:
+        return
+    whole = out.stdout[:out.stdout.rfind(b"\n") + 1]  # a line being written waits
+    with OCCUPANCY.open("a") as log:
+        for line in whole.decode().splitlines():
+            record = json.loads(line)
+            log.write(json.dumps({**record, "instance_id": box.instance_id,
+                                  "instance_type": box.instance_type, "pool": POOL or "main"})
+                      + "\n")
+    offsets[box.instance_id] = done + len(whole)
+    OCCUPANCY_OFFSETS.write_text(json.dumps(offsets))
+
+
 def stop_box(aws: Aws, box: Box) -> None:
+    """Terminate `box` after copying off its job records and any finished outputs no live
+    run is fetching; outputs still there are named as lost. Callers that must lose
+    nothing check `unused` first (it counts unfetched outputs as use)."""
+    with contextlib.suppress(Exception):
+        collect_occupancy(box)
+    with contextlib.suppress(Exception):
+        fetch_unfetched(box)
+    report_lost(box)
     # The clips leave the box before it is terminated (owner, 2026-11-20).
     with contextlib.suppress(Exception):
         ssh(box, f"rm -rf -- {BOX_HOME}/{CLIP_ROOT.relative_to(Path.home())}", check=False,
@@ -935,19 +1205,86 @@ def checked_clip_path(path: str) -> Path:
     return resolved
 
 
+def checked_data_path(path: str, worktree: Path) -> Path:
+    resolved = (worktree / Path(path).expanduser()).resolve()
+    checked_sync_path(str(resolved))  # the same private-clip and home rules as --sync
+    if not resolved.exists():
+        raise SystemExit(f"nc-remote: --data {path} does not exist")
+    return resolved
+
+
+def data_destination(path: Path, worktree: Path, name: str) -> str:
+    """Where a --data path lands on the box: the same place in the job's tree
+    for a worktree path, else the same place under the box's home."""
+    if path.is_relative_to(worktree):
+        return f"ncbox/jobs/{name}/src/{path.relative_to(worktree)}"
+    return str(path.relative_to(Path.home()))
+
+
+def sync_exclusion(path: Path, worktree: Path) -> str | None:
+    """Why the worktree sync leaves `path` out, or None when it goes up (or is
+    not the sync's business: outside the worktree, or target/)."""
+    if not path.is_relative_to(worktree) or path == worktree:
+        return None
+    relative = path.relative_to(worktree)
+    if relative.parts[0] in ("target", ".git"):
+        return None
+    if path.suffix in RAW_VIDEO_SUFFIXES:
+        return "raw video"
+    if path.is_file() and path.stat().st_size > SYNC_MAX_BYTES:
+        return f"over {SYNC_MAX_BYTES // (1024 * 1024)} MB"
+    ignored = subprocess.run(["git", "-C", str(worktree), "check-ignore", "-q", str(relative)])
+    return "ignored by git" if ignored.returncode == 0 else None
+
+
+def warn_excluded(command: str, worktree: Path, data: list[Path]) -> None:
+    """Warn about each existing path the command names that the worktree sync
+    leaves out and no --data uploads (the job would fail at once on a box
+    that has never seen it)."""
+    try:
+        words = shlex.split(command)
+    except ValueError:  # unbalanced quotes: bash will say so on the box
+        return
+    for word in {piece for w in words for piece in w.split("=")}:
+        path = (worktree / Path(word).expanduser()).resolve()
+        if any(path.is_relative_to(d) for d in data):
+            continue
+        try:
+            reason = path.exists() and sync_exclusion(path, worktree)
+        except OSError:  # a word too long or odd to be a path
+            continue
+        if reason:
+            say(f"warning: {word} is not synced ({reason}); upload it with --data {word}")
+
+
 def sync(box: Box, worktree: Path, name: str, extra: list[Path],
-         clips: tuple[Path, ...] = ()) -> None:
+         clips: tuple[Path, ...] = (), data: tuple[Path, ...] = ()) -> None:
     started = time.monotonic()
     rsync(box, UPLOAD_MODE, "-z", "--delete", *RSYNC_EXCLUDES, "--filter=:- .gitignore",
           f"{worktree}/", remote(box, f"ncbox/jobs/{name}/src/"))
     for path in extra:
         relative = path.relative_to(Path.home())
         suffix = "/" if path.is_dir() else ""
-        rsync(box, UPLOAD_MODE, "-z", *RSYNC_EXCLUDES, f"{path}{suffix}",
+        keep = [f"--exclude=/{name}" for name in box_links(box, str(relative))] if suffix else []
+        rsync(box, SYNC_MODE, "-z", *RSYNC_EXCLUDES, *keep, f"{path}{suffix}",
               remote(box, f"{relative}{suffix}"))
     for clip in clips:
         rsync(box, CLIP_MODE, str(clip), remote(box, str(clip.relative_to(Path.home()))))
+    for path in data:
+        suffix = "/" if path.is_dir() else ""
+        rsync(box, DATA_MODE, f"{path}{suffix}",
+              remote(box, data_destination(path, worktree, name) + suffix))
     say(f"synced in {time.monotonic() - started:.0f} s")
+
+
+def box_links(box: Box, directory: str) -> list[str]:
+    """The names in the box's `directory` that are working links of the box's own (e.g.
+    anchors/x86_64/bin/clang-format -> the box's venv): a `--sync` never replaces them.
+    A dangling link (a PC path) is replaced by the real file."""
+    found = ssh(box, f"test -d {shlex.quote(directory)} && find {shlex.quote(directory)} "
+                     f"-mindepth 1 -maxdepth 1 -type l ! -xtype l -printf '%f\\n' || true",
+                capture_output=True, text=True, check=True)
+    return sorted(line for line in found.stdout.splitlines() if line.strip())
 
 
 def fetch(box: Box, name: str, paths: list[str], fetch_to: Path) -> None:
@@ -1006,12 +1343,24 @@ def run_on(box: Box, args, worktree: Path, name: str, commit: str, dirty: str) -
     gone = note_job(name, worktree)
     if gone:  # their directories on the box go too (targets: GBs each)
         ssh(box, shlex.join(["python3", "-c", job, "--drop", *gone]))
+    # A finished job of this name whose caller went away: its outputs come back before this
+    # job's sync and run can overwrite them.
+    fetch_unfetched(box, name)
+    data = tuple(checked_data_path(p, worktree) for p in args.data)
+    warn_excluded(job_command(args.command), worktree, list(data))
     sync(box, worktree, name, [checked_sync_path(p) for p in args.sync],
-         tuple(checked_clip_path(p) for p in getattr(args, "clip", [])))
+         tuple(checked_clip_path(p) for p in getattr(args, "clip", [])), data)
     # NC_BUILD_DIRTY stamps a build of local changes as such (build_stamp.py);
     # always set, so an empty value marks a clean tree.
     argv = ["python3", "-c", job, name, commit, str(args.jobs), job_command(args.command),
             f"NC_BUILD_DIRTY={dirty}", *args.env]
+    claim = None
+    if args.fetch:
+        # Where the outputs go is on record before the job starts, and the box records
+        # them as unfetched when it ends, so they come back even if this run does not
+        # live to fetch them (reap does).
+        claim = OutputsClaim(name, args.fetch_to or worktree)
+        argv[3:3] = ["--outputs", claim.run_id, json.dumps(args.fetch)]
     started = time.monotonic()
     # stdin stays open (and unused) for the job's life: its EOF tells the box
     # that this caller has gone (nc_remote_job.py kills the job then).
@@ -1019,8 +1368,11 @@ def run_on(box: Box, args, worktree: Path, name: str, commit: str, dirty: str) -
                                 shlex.join(argv)], stdin=subprocess.PIPE)
     status = job_ssh.wait()
     say(f"exit {status} after {time.monotonic() - started:.0f} s")
-    if args.fetch:
+    if claim:
         fetch(box, name, args.fetch, args.fetch_to or worktree)
+        dropped = ssh(box, shlex.join(["python3", "-c", job, "--fetched", name, claim.run_id]),
+                      capture_output=True, timeout=120)
+        claim.release(dropped.returncode == 0)
     return status
 
 
@@ -1041,11 +1393,33 @@ def cmd_run(args) -> int:
         return subprocess.call([sys.executable, __file__, *sys.argv[1:]],
                                env={**os.environ, POOL_ENV: OVERFLOW})
     status, box = run_once(aws, args, worktree, name, commit, dirty)
-    if status == 255 and aws.regional(box.region).state(box.instance_id) not in ("pending",
-                                                                                "running"):
+
+    def state() -> str:
+        return aws.regional(box.region).state(box.instance_id)
+    if status == STATUS_SPOT_NOTICE:
+        say("the box has a spot interruption notice: waiting for it to go, then running the "
+            "command on a new box")
+        deadline = time.monotonic() + NOTICE_WAIT_S
+        while state() in LIVE_STATES and time.monotonic() < deadline:
+            time.sleep(OVERFLOW_POLL_SECONDS)
+    if retry_after(status, state()):
         say("the box went away during the job (spot reclaim or limit): restarting, retrying once")
         status, _ = run_once(aws, args, worktree, name, commit, dirty)
     return status
+
+
+#: The box-side refusal of a job on a box with a spot interruption notice
+#: (nc_remote_job.STATUS_SPOT_NOTICE), and how long `run` waits for that box to go.
+STATUS_SPOT_NOTICE = 254
+NOTICE_WAIT_S = 5 * 60
+LIVE_STATES = ("pending", "running")
+
+
+def retry_after(status: int, state: str) -> bool:
+    """Whether a `run` goes again on a new box: its box went away under the job (SSH broke
+    and the box is no longer live), or refused it on a spot notice and has gone since. The
+    command is the unit: it runs once more, whole."""
+    return status in (SSH_FAILED, STATUS_SPOT_NOTICE) and state not in LIVE_STATES
 
 
 def main_box_full(aws: Aws) -> bool:
@@ -1108,11 +1482,15 @@ def cmd_stop(args) -> int:
         boxes = unended()
         if not boxes:
             say("no box running")
-        busy = [box for box in boxes if not args.force and not unused(box)]
+        # Finished outputs leave first; a box still holding some (a live run's, or a
+        # failed fetch) is in use.
+        busy = [box for box in boxes if not args.force and (fetch_unfetched(box)
+                                                           or not unused(box))]
         if busy:
             for box in busy:
-                say(f"{box.instance_id}: other jobs are running; left up (the idle check "
-                    f"stops it when they finish; --force terminates now)")
+                say(f"{box.instance_id}: other jobs are running or their outputs are not "
+                    f"fetched yet; left up (the idle check stops it when they finish; "
+                    f"--force terminates now and loses them)")
             return 0
         stop_all(aws)
     return 0
@@ -1124,6 +1502,12 @@ def cmd_reap(_args) -> int:
     before break), and run the idle check on every live box."""
     aws = Aws()
     replacement = None
+    # Finished outputs whose run has gone come back first, outside the lock (a fetch can
+    # take minutes; runs need the lock to start), so nothing below ends a box holding them.
+    for box in unended():
+        if box.host and aws.regional(box.region).state(box.instance_id) in LIVE_STATES:
+            fetch_unfetched(box)
+    prune_output_records()
     with Locked():
         current = live_box(aws)
         prune_images(aws)
@@ -1143,16 +1527,19 @@ def cmd_reap(_args) -> int:
                 continue
             if role(box, current) == "current":
                 reason = replacement_reason(box, market_now(), utc_now())
-            if reason and unused(box) and box.instance_type in INSTANCE_TYPES:
+            action = reap_action(reason, reason == delisted_reason(box),
+                                 bool(reason) and unused(box))
+            if action == END:
                 say(f"{box.instance_id}: {reason} and no job runs: ending it")
                 stop_box(aws, box)
                 continue
-            if reason:
+            if action == REPLACE:
                 replacement = (box, reason)
-            if ssh(box, "sudo /usr/local/sbin/ncbox-idle", capture_output=True).returncode != 0:
+            if idle_check(box).returncode != 0:
                 note_unreachable(aws, box)
             else:
                 unreachable_marker(box).unlink(missing_ok=True)
+                collect_occupancy(box)
     if replacement:
         replace(aws, *replacement)
     if not POOL:  # the overflow box's records, budget and idle check too
@@ -1190,12 +1577,14 @@ QUIET_SECONDS = 120
 
 
 def between_jobs(box: Box) -> bool:
-    """No job slot is held, no job is waiting on the box, and none has ended in
-    the last QUIET_SECONDS."""
+    """No job slot is held, no job is waiting on the box, no finished job's outputs
+    wait to be fetched, and none has ended in the last QUIET_SECONDS."""
     probe = ("for s in ncbox/slots/*; do flock -n \"$s\" true || exit 1; done; "
              # a waiting record from before this boot (baked, or a reclaim) is no job
              "[ -z \"$(find ncbox/jobs -maxdepth 2 -name waiting.json -newermt "
              "@$(awk '/^btime/ {print $2}' /proc/stat))\" ] && "
+             "[ -z \"$(find ncbox/jobs -mindepth 3 -maxdepth 3 -path '*/unfetched/*.json' "
+             "-newermt @$(awk '/^btime/ {print $2}' /proc/stat))\" ] && "
              f"[ $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) -ge {QUIET_SECONDS} ]")
     return ssh(box, probe, capture_output=True).returncode == 0
 
@@ -1220,6 +1609,44 @@ def prune_images(aws: Aws) -> None:
         ledger_row(f"{image['ImageId']} (AMI + snapshot)", "removed", "—", iso(utc_now()),
                    "$0.00", SessionSpec(region=REGION, instance_type="—", purpose=PURPOSE))
         say(f"removed the older image {image['ImageId']}")
+
+
+def cmd_occupancy(args) -> int:
+    """The job records of the last --hours (both pools): jobs, waits, and the share of
+    time each number of agent slots was busy (docs/aws-cost-guide.md, build box)."""
+    paths = [WORK_DIR / "buildbox" / OCCUPANCY.name, WORK_DIR / f"buildbox-{OVERFLOW}" / OCCUPANCY.name]
+    since = time.time() - args.hours * 3600
+    records = [json.loads(line) for path in paths if path.exists()
+               for line in path.read_text().splitlines()]
+    records = [r for r in records if r["ended"] >= since]
+    print(occupancy_summary(records, since, time.time()))
+    return 0
+
+
+def occupancy_summary(records: list[dict], start: float, end: float) -> str:
+    """Jobs, wait percentiles, and the time-weighted share of each count of running
+    agent jobs (verifier-* jobs apart) over [start, end) on the main pool."""
+    if not records:
+        return "no job records in the window"
+    waits = sorted(r["wait_s"] for r in records)
+    pick = lambda q: waits[min(len(waits) - 1, int(q * len(waits)))]  # noqa: E731
+    lines = [f"{len(records)} jobs; wait p50 {pick(0.5):.0f} s, p90 {pick(0.9):.0f} s, "
+             f"max {waits[-1]:.0f} s; {sum(w > 0 for w in waits)} waited at all; "
+             f"{sum(r.get('pool') == OVERFLOW for r in records)} on the overflow box"]
+    events = sorted((t, d) for r in records
+                    if r.get("pool", "main") == "main" and not r["name"].startswith("verifier-")
+                    for t, d in ((max(r["started"], start), 1), (min(r["ended"], end), -1))
+                    if r["ended"] > start)
+    share: dict[int, float] = {}
+    running, last = 0, start
+    for t, step in events:
+        share[running] = share.get(running, 0.0) + max(0.0, t - last)
+        running, last = running + step, max(last, t)
+    share[running] = share.get(running, 0.0) + max(0.0, end - last)
+    total = sum(share.values())
+    lines.append("agent jobs running at once (main box), share of the window: " + ", ".join(
+        f"{k}: {100 * v / total:.1f} %" for k, v in sorted(share.items()) if v > 0))
+    return "\n".join(lines)
 
 
 def cmd_bake(_args) -> int:
@@ -1259,6 +1686,9 @@ def main() -> int:
     run.add_argument("--worktree", default=".", help="the agent's worktree (default: cwd)")
     run.add_argument("--name", help="job directory on the box (default: the worktree's name)")
     run.add_argument("--sync", action="append", default=[], help="extra path under ~ to mirror")
+    run.add_argument("--data", action="append", default=[],
+                     help="a file or directory to upload as it is, whatever its size "
+                          "(worktree-relative or under ~); --fetch it to bring it back")
     run.add_argument("--clip", action="append", default=[],
                      help="a clip file under ~/nanocodec-data/clips the job reads (deleted on "
                           "the box before it stops)")
@@ -1276,6 +1706,9 @@ def main() -> int:
                                 ("reap", cmd_reap, "the PC's periodic check (cron)"),
                                 ("bake", cmd_bake, "image the box for fast restarts")):
         commands.add_parser(name, help=text).set_defaults(handler=handler)
+    occupancy = commands.add_parser("occupancy", help="job slots and waits over a window")
+    occupancy.add_argument("--hours", type=float, default=24.0)
+    occupancy.set_defaults(handler=cmd_occupancy)
     shell = commands.add_parser("ssh", help="a shell (or a command) on the box")
     shell.add_argument("command", nargs=argparse.REMAINDER)
     shell.set_defaults(handler=cmd_ssh)

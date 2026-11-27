@@ -9,18 +9,20 @@
 use core::arch::aarch64::{
     int16x4_t, int16x8_t, int32x4_t, uint16x8_t, uint32x4_t, vabsq_s16, vaddl_s16, vaddlvq_u16,
     vaddq_s16, vaddq_s32, vaddq_u16, vaddv_u8, vandq_u8, vceqzq_s16, vcombine_s16, vcombine_u8,
-    vdupq_n_s16, vdupq_n_s32, vdupq_n_u16, vdupq_n_u32, veorq_s16, vget_high_s16, vget_high_u8,
-    vget_low_s16, vget_low_u8, vget_low_u16, vld1q_s16, vld1q_u8, vld1q_u16, vmaxq_s32, vmaxvq_u16,
-    vminq_s32, vminq_u16, vmlal_high_n_u16, vmlal_high_u16, vmlal_n_s16, vmlal_n_u16, vmlal_u16,
-    vmlaq_n_s16, vmovl_high_s16, vmovl_s16, vmovn_u16, vmull_n_s16, vmulq_n_s16, vmulq_s32,
-    vqmovn_high_u32, vqmovn_s32, vqmovn_u32, vqshlq_s32, vreinterpretq_s16_s32,
+    vcreate_u8, vdupq_n_s16, vdupq_n_s32, vdupq_n_u16, vdupq_n_u32, veorq_s16, vget_high_s16,
+    vget_high_u8, vget_lane_u32, vget_low_s16, vget_low_u8, vget_low_u16, vld1_u8, vld1q_s16,
+    vld1q_u8, vld1q_u16, vld4_s16, vmaxq_s32, vmaxvq_u16, vminq_s32, vminq_u16, vmlal_high_n_u16,
+    vmlal_high_u16, vmlal_n_s16, vmlal_n_u16, vmlal_u16, vmlaq_n_s16, vmovl_high_s16, vmovl_s16,
+    vmovl_u8, vmovn_u16, vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_high_u32, vqmovn_s32,
+    vqmovn_u32, vqmovun_s16, vqshlq_s32, vreinterpret_u32_u8, vreinterpretq_s16_s32,
     vreinterpretq_s16_s64, vreinterpretq_s16_u16, vreinterpretq_s32_s16, vreinterpretq_s64_s16,
-    vreinterpretq_u16_s16, vrshlq_s32, vrshrq_n_s32, vshlq_n_s16, vshlq_n_s32, vshlq_u32,
-    vshrq_n_s16, vst1q_s16, vst1q_s32, vsubl_s16, vsubq_s16, vsubq_s32, vsubq_u16, vtrn1q_s16,
-    vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64, vzip2q_s64,
+    vreinterpretq_u16_s16, vrshlq_s32, vrshrn_high_n_s32, vrshrn_n_s32, vrshrq_n_s32, vshlq_n_s16,
+    vshlq_n_s32, vshlq_u32, vshrq_n_s16, vshrq_n_s32, vst1q_s16, vst1q_s32, vsubl_s16, vsubl_u8,
+    vsubq_s16, vsubq_s32, vsubq_u16, vtrn1q_s16, vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s16,
+    vzip1q_s64, vzip2q_s64,
 };
 
-use super::generic::{Element, HEVC_DEQUANT_LEVEL_LIMIT};
+use super::generic::{Element, H264AddAc4, HEVC_DEQUANT_LEVEL_LIMIT};
 use super::{
     H264_MAX_LEVEL, H264Quantizer, HEVC_MAX_LEVEL, HevcForwardMode, HevcForwardStaging,
     HevcQuantizer, QUANT_MF_4X4_POS, QUANT_MF_8X8_POS,
@@ -39,10 +41,18 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     let mut table = wide::codec_txfm_fns();
     table.vvc_forward_dct = super::vvc_forward_simd::neon;
     wide::install_bounded_inverse(&mut table);
-    table.hevc_inverse_add[super::HevcTransform::Dct16 as usize] =
-        inverse_add_buffered::<super::generic::HevcIdct16, 16>;
-    table.hevc_inverse_add[super::HevcTransform::Dct32 as usize] =
-        inverse_add_buffered::<super::generic::HevcIdct32, 32>;
+    table.hevc_inverse[super::HevcTransform::Dct8 as usize] = super::neon_inverse8::inverse;
+    table.hevc_inverse[super::HevcTransform::Dct16 as usize] = super::neon_inverse16::inverse;
+    table.hevc_inverse[super::HevcTransform::Dst4 as usize] = super::neon_inverse4::inverse::<true>;
+    table.hevc_inverse[super::HevcTransform::Dct4 as usize] =
+        super::neon_inverse4::inverse::<false>;
+    table.hevc_inverse_add[super::HevcTransform::Dst4 as usize] =
+        super::neon_inverse4::add_u8::<true>;
+    table.hevc_inverse_add[super::HevcTransform::Dct4 as usize] =
+        super::neon_inverse4::add_u8::<false>;
+    table.hevc_inverse_add[super::HevcTransform::Dct8 as usize] = super::neon_inverse8::add_u8;
+    table.hevc_inverse_add[super::HevcTransform::Dct16 as usize] = super::neon_inverse16::add_u8;
+    table.hevc_inverse_add[super::HevcTransform::Dct32 as usize] = hevc_add_dct32;
     table.hevc_forward_bounded[2] = staged16_bounded;
     table.hevc_forward_bounded[3] = staged32_bounded;
     table.hevc_dequantize = hevc_dequantize;
@@ -53,9 +63,130 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.h264_forward_4x4 = h264_forward_4x4;
     table.h264_forward_quantize_mb = h264_forward_quantize_mb;
     table.h264_forward_quantize_chroma = h264_forward_quantize_chroma;
+    table.h264_add_inverse_4x4 = h264_add_inverse_4x4;
+    table.h264_add_scaled_4x4 = h264_add_scaled_4x4;
+    table.h264_add_scaled_mb = h264_add_scaled_mb;
     table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
     table.nonzero_mask = nonzero_mask;
     table
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn h264_add_inverse_4x4(
+    levels: &[[i16; 16]],
+    dc: &[i16],
+    scale: (&[i32; 16], i32),
+    blocks_wide: usize,
+    dst: &mut [u8],
+    stride: usize,
+) {
+    // SAFETY: the dispatcher provides the destination region and selects NEON.
+    unsafe {
+        super::generic::h264_add_inverse_4x4::<I32x4, I32x4>(
+            levels,
+            dc,
+            scale,
+            blocks_wide,
+            dst,
+            stride,
+            H264AddAc4::single(h264_inverse_add_ac),
+        );
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn h264_add_scaled_4x4(
+    coeffs: &[[i16; 16]],
+    blocks_wide: usize,
+    dst: &mut [u8],
+    stride: usize,
+) {
+    // SAFETY: the dispatcher provides the destination region and selects NEON.
+    unsafe {
+        super::generic::h264_add_scaled_4x4::<I32x4>(
+            coeffs,
+            blocks_wide,
+            dst,
+            stride,
+            H264AddAc4::single(h264_inverse_add_ac),
+        );
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn h264_add_scaled_mb(
+    coeffs: &[[i16; 16]; 16],
+    masks: (u16, u16),
+    dst: &mut [u8],
+    stride: usize,
+) {
+    // SAFETY: the dispatcher provides the destination region and selects NEON.
+    unsafe {
+        super::generic::h264_add_scaled_mb::<I32x4>(
+            coeffs,
+            masks,
+            dst,
+            stride,
+            H264AddAc4::single(h264_inverse_add_ac),
+        );
+    }
+}
+
+/// One H.264 inverse butterfly, on four parallel 32-bit lines.
+#[inline]
+#[target_feature(enable = "neon")]
+fn h264_idct4(c: [int32x4_t; 4]) -> [int32x4_t; 4] {
+    let e0 = vaddq_s32(c[0], c[2]);
+    let e1 = vsubq_s32(c[0], c[2]);
+    let e2 = vsubq_s32(vshrq_n_s32::<1>(c[1]), c[3]);
+    let e3 = vaddq_s32(c[1], vshrq_n_s32::<1>(c[3]));
+    [
+        vaddq_s32(e0, e3),
+        vaddq_s32(e1, e2),
+        vsubq_s32(e1, e2),
+        vsubq_s32(e0, e3),
+    ]
+}
+
+/// Keep the two H.264 inverse passes and predictor addition in registers.
+/// Fused reconstruction follows `OpenH264`'s `WelsIDctT4Rec_AArch64_neon`
+/// (BSD-2-Clause, see `THIRD_PARTY.md`). Wide butterflies preserve the full
+/// signed 16-bit range of the scaled coefficient input.
+///
+/// # Safety
+/// NEON is enabled and the destination covers a 4x4 block at `stride`.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn h264_inverse_add_ac(coeffs: &[i16; 16], dst: &mut [u8], stride: usize) {
+    use crate::simd::neon::transpose_i32x4_vectors;
+
+    // SAFETY: LD4 reads all 16 coefficients into four column vectors.
+    let c = unsafe { vld4_s16(coeffs.as_ptr()) };
+    let columns = [
+        vmovl_s16(c.0),
+        vmovl_s16(c.1),
+        vmovl_s16(c.2),
+        vmovl_s16(c.3),
+    ];
+    let residual = h264_idct4(transpose_i32x4_vectors(h264_idct4(columns)));
+    let dst = dst.as_mut_ptr();
+    for (r, [upper, lower]) in residual.as_chunks::<2>().0.iter().enumerate() {
+        // SAFETY: the checked destination has four readable and writable bytes
+        // in each row. Byte arrays have alignment one.
+        unsafe {
+            let top = dst.add(2 * r * stride).cast::<[u8; 4]>();
+            let bottom = dst.add((2 * r + 1) * stride).cast::<[u8; 4]>();
+            let a = u64::from(u32::from_le_bytes(top.read()));
+            let b = u64::from(u32::from_le_bytes(bottom.read()));
+            let samples = vreinterpretq_s16_u16(vmovl_u8(vcreate_u8(a | (b << 32))));
+            // Each butterfly expands magnitudes by at most 4. The shift
+            // brings every residual back within +/-8192 before adding u8.
+            let delta = vrshrn_high_n_s32::<6>(vrshrn_n_s32::<6>(*upper), *lower);
+            let clipped = vreinterpret_u32_u8(vqmovun_s16(vaddq_s16(samples, delta)));
+            top.write(vget_lane_u32::<0>(clipped).to_le_bytes());
+            bottom.write(vget_lane_u32::<1>(clipped).to_le_bytes());
+        }
+    }
 }
 
 /// The H.264 8x8 decoder inverse in eight 16-bit lanes (`h264_inverse8`).
@@ -243,31 +374,91 @@ unsafe fn h264_forward_4x4(
             // SAFETY: NEON is enabled here; `row` holds 8 values.
             unsafe { vld1q_s16(row.as_ptr()) }
         });
-        // Lanes are (block, column): the vertical pass, then (block,
-        // vertical frequency) after the transpose: the horizontal pass;
-        // the second transpose puts each coefficient row in its lanes.
-        let coefficients = transpose4(h264_fdct4(transpose4(h264_fdct4(rows))));
-        let [left, right] = blocks;
-        // Two coefficient rows per 128-bit store: the quantiser loads eight
-        // coefficients at a time, and a load spanning two 64-bit stores
-        // cannot be forwarded from them.
-        for (u, pair) in coefficients.as_chunks::<2>().0.iter().enumerate() {
-            let (upper, lower) = (
-                vreinterpretq_s64_s16(pair[0]),
-                vreinterpretq_s64_s16(pair[1]),
+        h264_forward_4x4_pair(rows, blocks);
+    }
+}
+
+/// Transform two adjacent blocks. Lanes are (block, column) before the
+/// vertical pass, then (block, vertical frequency) before the horizontal
+/// pass. The last transpose restores raster coefficient order.
+#[inline]
+#[target_feature(enable = "neon")]
+fn h264_forward_4x4_pair(rows: [int16x8_t; 4], [left, right]: &mut [[i16; 16]; 2]) {
+    let coefficients = transpose4(h264_fdct4(transpose4(h264_fdct4(rows))));
+    // Two coefficient rows per 128-bit store, for the quantiser's loads.
+    for (u, pair) in coefficients.as_chunks::<2>().0.iter().enumerate() {
+        let (upper, lower) = (
+            vreinterpretq_s64_s16(pair[0]),
+            vreinterpretq_s64_s16(pair[1]),
+        );
+        // SAFETY: NEON is enabled here; each destination holds 8 values.
+        unsafe {
+            vst1q_s16(
+                left[2 * BLOCK4 * u..][..2 * BLOCK4].as_mut_ptr(),
+                vreinterpretq_s16_s64(vzip1q_s64(upper, lower)),
             );
-            // SAFETY: NEON is enabled here; each destination holds 8 values.
-            unsafe {
-                vst1q_s16(
-                    left[2 * BLOCK4 * u..][..2 * BLOCK4].as_mut_ptr(),
-                    vreinterpretq_s16_s64(vzip1q_s64(upper, lower)),
-                );
-                vst1q_s16(
-                    right[2 * BLOCK4 * u..][..2 * BLOCK4].as_mut_ptr(),
-                    vreinterpretq_s16_s64(vzip2q_s64(upper, lower)),
-                );
-            }
+            vst1q_s16(
+                right[2 * BLOCK4 * u..][..2 * BLOCK4].as_mut_ptr(),
+                vreinterpretq_s16_s64(vzip2q_s64(upper, lower)),
+            );
         }
+    }
+}
+
+/// Subtract pixels and transform the four 4x4 blocks of an 8x8 region.
+/// Fuses the widening loads with the existing two-block butterfly, as in
+/// `OpenH264`'s `WelsDctFourT4_AArch64_neon` (BSD-2-Clause, see `THIRD_PARTY.md`).
+///
+/// # Safety
+/// NEON must be available. Each view contains an 8x8 region.
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn h264_forward_chroma_pixels(
+    src: &nc_common::PlaneView<'_>,
+    pred: &nc_common::PlaneView<'_>,
+    out: &mut [[i16; 16]; 4],
+) {
+    let [top, bottom] = <&mut [_; 2]>::try_from(out.as_chunks_mut::<2>().0).expect("four blocks");
+    // SAFETY: both views cover 8x8 and NEON is enabled.
+    unsafe {
+        forward_four_pixels(
+            (src.data().as_ptr(), src.stride()),
+            (pred.data().as_ptr(), pred.stride()),
+            [top, bottom],
+        );
+    }
+}
+
+/// Subtract and transform the luma macroblock's sixteen 4x4 blocks.
+///
+/// # Safety
+/// Both views cover 16x16 and NEON is enabled.
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn h264_forward_luma_pixels(
+    src: &nc_common::PlaneView<'_>,
+    pred: &nc_common::PlaneView<'_>,
+    out: &mut [[i16; 16]; 16],
+) {
+    // SAFETY: forwarded ISA and view contracts.
+    unsafe { super::generic::h264_forward_luma_pixels(src, pred, out, forward_four_pixels) };
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn forward_four_pixels(
+    (s, ss): (*const u8, usize),
+    (p, ps): (*const u8, usize),
+    out: [&mut [[i16; 16]; 2]; 2],
+) {
+    for (band, blocks) in out.into_iter().enumerate() {
+        let rows = core::array::from_fn(|row| {
+            let y = band * BLOCK4 + row;
+            // SAFETY: the caller provides eight readable bytes on each of
+            // the eight rows of both views.
+            unsafe {
+                vreinterpretq_s16_u16(vsubl_u8(vld1_u8(s.add(y * ss)), vld1_u8(p.add(y * ps))))
+            }
+        });
+        h264_forward_4x4_pair(rows, blocks);
     }
 }
 
@@ -411,6 +602,28 @@ unsafe fn h264_forward_quantize_chroma(
 ) -> ([i16; 4], u32) {
     // SAFETY: NEON is enabled; caller covers the 8x8 chroma block.
     unsafe { h264_forward_4x4(residual, stride, 2, ac) };
+    h264_quantize_chroma(q, ac)
+}
+
+/// Forward transform of an 8x8 pixel pair followed by chroma quantisation.
+///
+/// # Safety
+/// As for [`h264_forward_chroma_pixels`].
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn h264_forward_quantize_chroma_pixels(
+    src: &nc_common::PlaneView<'_>,
+    pred: &nc_common::PlaneView<'_>,
+    q: &H264Quantizer,
+    ac: &mut [[i16; 16]; 4],
+) -> ([i16; 4], u32) {
+    // SAFETY: forwarded contract.
+    unsafe { h264_forward_chroma_pixels(src, pred, ac) };
+    h264_quantize_chroma(q, ac)
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+fn h264_quantize_chroma(q: &H264Quantizer, ac: &mut [[i16; 16]; 4]) -> ([i16; 4], u32) {
     let c: [i16; 4] = core::array::from_fn(|b| ac[b][0]);
     let mut dc = [
         c[0] + c[1] + c[2] + c[3],
@@ -697,47 +910,32 @@ unsafe fn staged32_bounded(
     }
 }
 
-/// On NEON the bounded inverse plus contiguous eight-pixel reconstruction
-/// beats fused four-lane transposed stores for 16/32-point blocks. Keep that
-/// architecture choice behind the same shared inverse/add entry point.
+/// Reconstruct the DCT32 block from the paired packed column passes.
+/// # Safety
+/// NEON available, coefficient and destination spans cover the block.
 #[target_feature(enable = "neon")]
-unsafe fn inverse_add_buffered<T: super::generic::BoundedLine, const N: usize>(
-    coeffs: &[i16],
-    extent: (usize, usize),
-    dst: &mut [u8],
-    stride: usize,
-) {
-    use super::generic as g;
-    use core::arch::aarch64::{
-        vld1_u8, vmovl_u8, vqaddq_s16, vqmovun_s16, vreinterpretq_s16_u16, vst1_u8,
-    };
+unsafe fn hevc_add_dct32(coeffs: &[i16], extent: (usize, usize), dst: &mut [u8], stride: usize) {
+    use core::arch::aarch64::{vqaddq_s16, vqmovun_s16, vst1_u8};
+
     if extent.0 == 0 || extent.1 == 0 {
         return;
     }
     if extent == (1, 1) {
-        super::inverse_add::dc::<I32x4, N>(coeffs[0], dst, stride);
+        super::inverse_add::dc::<I32x4, 32>(coeffs[0], dst, stride);
         return;
     }
-    let mut residual = [0; g::MAX_AREA];
-    // SAFETY: NEON is enabled; the dispatcher checked the coefficient block.
-    unsafe { g::hevc_inverse_extent::<I32x4, T, N>(coeffs, &mut residual, extent) };
-    for row in 0..N {
-        let output = &mut dst[row * stride..][..N];
-        let residual = &residual[row * N..][..N];
-        for (output, residual) in output
-            .as_chunks_mut::<8>()
-            .0
-            .iter_mut()
-            .zip(residual.as_chunks::<8>().0)
-        {
-            // SAFETY: each chunk contains eight pixels/residuals, and NEON
-            // is enabled. The saturating add preserves the u8 clip.
-            unsafe {
-                let pred = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(output.as_ptr())));
-                let sum = vqaddq_s16(vld1q_s16(residual.as_ptr()), pred);
-                vst1_u8(output.as_mut_ptr(), vqmovun_s16(sum));
-            }
-        }
+    // SAFETY: the dispatcher validated the destination and enabled NEON.
+    unsafe {
+        super::neon_inverse32::reconstruct_extent::<12, _>(
+            coeffs,
+            extent,
+            dst,
+            stride,
+            |out, raw| {
+                let pred = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(out)));
+                vst1_u8(out, vqmovun_s16(vqaddq_s16(raw, pred)));
+            },
+        );
     }
 }
 

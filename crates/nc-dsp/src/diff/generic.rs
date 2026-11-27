@@ -586,3 +586,52 @@ fn q15_weight<V: I16Lanes>(f1: i16) -> V {
 fn bilinear_blend<V: I16Lanes>(a: V, b: V, w: V) -> V {
     a.add(b.sub(a).mul_q15_round(w))
 }
+
+/// Total squared error. Accumulate across a row before reducing, since
+/// callers of this entry need only the plane sum.
+///
+/// # Safety
+///
+/// The planes have the same dimensions and the CPU supports `V`.
+#[inline(always)]
+pub(crate) unsafe fn plane_sse<V: I16Lanes>(
+    a: &nc_common::PlaneView<'_>,
+    b: &nc_common::PlaneView<'_>,
+) -> u64 {
+    // Even the complete sum of this many largest differences is within i32.
+    const MAX_SAMPLES: usize = 32 * 1024;
+    let mut sum = 0;
+    for (a, b) in a.rows().zip(b.rows()) {
+        for (a, b) in a.chunks(MAX_SAMPLES).zip(b.chunks(MAX_SAMPLES)) {
+            let pairs = a.len() / (2 * V::LANES) * (2 * V::LANES);
+            let mut lo = V::acc_zero();
+            let mut hi = V::acc_zero();
+            for x in (0..pairs).step_by(2 * V::LANES) {
+                // SAFETY: the loop covers complete pairs of vectors in both rows.
+                let (a0, b0, a1, b1) = unsafe {
+                    (
+                        V::load_u8_at(a.as_ptr().add(x)),
+                        V::load_u8_at(b.as_ptr().add(x)),
+                        V::load_u8_at(a.as_ptr().add(x + V::LANES)),
+                        V::load_u8_at(b.as_ptr().add(x + V::LANES)),
+                    )
+                };
+                lo = V::acc_add_sq(lo, a0.sub(b0));
+                hi = V::acc_add_sq(hi, a1.sub(b1));
+            }
+            let mut tail = pairs;
+            if a.len() - tail >= V::LANES {
+                let difference = V::load_u8(&a[tail..]).sub(V::load_u8(&b[tail..]));
+                lo = V::acc_add_sq(lo, difference);
+                tail += V::LANES;
+            }
+            sum += (V::acc_sum(lo) + V::acc_sum(hi)) as u64;
+            sum += a[tail..]
+                .iter()
+                .zip(&b[tail..])
+                .map(|(&a, &b)| u64::from(a.abs_diff(b)).pow(2))
+                .sum::<u64>();
+        }
+    }
+    sum
+}

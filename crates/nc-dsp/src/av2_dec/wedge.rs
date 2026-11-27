@@ -13,7 +13,9 @@
 //! are generated here; the inter-intra masks are AV1's
 //! ([`av1_interintra_smooth_mask`]: dav2d's 64-entry weight table is
 //! AV1's 128-entry one at even positions, with the same per-size step).
-//! The decoder builds one [`InterMasks`] and keeps it; nothing is global.
+//! Decoders share immutable mask data generated on the first request.
+
+use std::sync::OnceLock;
 
 use crate::av1_mc::mask::{Av1InterIntraMode, av1_interintra_smooth_mask};
 
@@ -159,22 +161,22 @@ fn side_index(side: usize, min: usize, count: usize) -> usize {
     (side / min).trailing_zeros() as usize
 }
 
-/// The wedge, temporal-summary and inter-intra masks of every block size
-/// (dav2d `Dav2dMasks`, built by `dav2d_init_ii_wedge_masks`).
+/// The full-resolution wedges of a single block size and the derived
+/// chroma and temporal masks, built independently when requested.
+#[derive(Debug, Clone)]
+struct WedgeSize {
+    full: Vec<u8>,
+    half: OnceLock<Vec<u8>>,
+    quarter: OnceLock<Vec<u8>>,
+    tmvp: OnceLock<Vec<u8>>,
+}
+
+/// AV2 wedge, temporal-summary and inter-intra masks by block size.
 #[derive(Debug, Clone)]
 pub struct InterMasks {
-    /// Wedge masks per layout (4:4:4, 4:2:2, 4:2:0): for each size in
-    /// [`Self::wedge_size_index`] order, the 68 shapes of that size.
-    wedge: [Vec<u8>; 3],
-    /// Start of each size's shapes in the 4:4:4 masks (4:2:2 and 4:2:0
-    /// start at this divided by 2 and 4).
-    wedge_offsets: [usize; WEDGE_SIDES * WEDGE_SIDES],
-    /// Per-8x8 summaries of the 4:4:4 shapes, size by size.
-    tmvp: Vec<u8>,
-    tmvp_offsets: [usize; WEDGE_SIDES * WEDGE_SIDES],
-    /// Inter-intra masks: for each size from 4x4 to 64x64, the four modes.
-    interintra: Vec<u8>,
-    interintra_offsets: [usize; II_SIDES * II_SIDES],
+    masters: [OnceLock<Vec<u8>>; 2],
+    wedge: [OnceLock<WedgeSize>; WEDGE_SIDES * WEDGE_SIDES],
+    interintra: [OnceLock<Vec<u8>>; II_SIDES * II_SIDES],
 }
 
 impl Default for InterMasks {
@@ -184,108 +186,49 @@ impl Default for InterMasks {
 }
 
 impl InterMasks {
-    /// Total 4:4:4 sample count across every wedge block size and shape.
-    const WEDGE_FULL_LEN: usize = {
-        let mut side_sum = 0;
-        let mut i = 0;
-        while i < WEDGE_SIDES {
-            side_sum += WEDGE_MIN_SIDE << i;
-            i += 1;
-        }
-        WEDGE_TYPES * side_sum * side_sum
-    };
-
-    /// Total sample count across every inter-intra block size and mode.
-    const II_FULL_LEN: usize = {
-        let mut side_sum = 0;
-        let mut i = 0;
-        while i < II_SIDES {
-            side_sum += II_MIN_SIDE << i;
-            i += 1;
-        }
-        II_MODES * side_sum * side_sum
-    };
-
-    /// Generate every mask.
+    /// Start with an empty mask cache. Each entry is built on its first use.
     #[must_use]
-    pub fn new() -> Self {
-        let mut masks = Self {
-            wedge: [
-                Vec::with_capacity(Self::WEDGE_FULL_LEN),
-                Vec::with_capacity(Self::WEDGE_FULL_LEN / 2),
-                Vec::with_capacity(Self::WEDGE_FULL_LEN / 4),
-            ],
-            wedge_offsets: [0; WEDGE_SIDES * WEDGE_SIDES],
-            tmvp: Vec::with_capacity(Self::WEDGE_FULL_LEN / (TMVP_CELL * TMVP_CELL)),
-            tmvp_offsets: [0; WEDGE_SIDES * WEDGE_SIDES],
-            interintra: Vec::with_capacity(Self::II_FULL_LEN),
-            interintra_offsets: [0; II_SIDES * II_SIDES],
-        };
-        masks.build_wedges();
-        masks.build_interintra();
-        masks
+    pub const fn new() -> Self {
+        Self {
+            masters: [const { OnceLock::new() }; 2],
+            wedge: [const { OnceLock::new() }; WEDGE_SIDES * WEDGE_SIDES],
+            interintra: [const { OnceLock::new() }; II_SIDES * II_SIDES],
+        }
     }
 
-    /// Each wedge block size, by index.
-    fn wedge_sizes() -> impl Iterator<Item = (usize, usize)> {
-        (0..WEDGE_SIDES * WEDGE_SIDES).map(|i| {
-            (
-                WEDGE_MIN_SIDE << (i / WEDGE_SIDES),
-                WEDGE_MIN_SIDE << (i % WEDGE_SIDES),
-            )
-        })
+    /// The process-wide immutable masks. Instances decoding different
+    /// streams can reuse them because they depend only on block geometry.
+    #[must_use]
+    pub fn shared() -> &'static Self {
+        static MASKS: InterMasks = InterMasks::new();
+        &MASKS
     }
 
-    /// The index of wedge block size `w` x `h`.
-    fn wedge_size_index((w, h): (usize, usize)) -> usize {
-        side_index(w, WEDGE_MIN_SIDE, WEDGE_SIDES) * WEDGE_SIDES
-            + side_index(h, WEDGE_MIN_SIDE, WEDGE_SIDES)
-    }
-
-    fn build_wedges(&mut self) {
-        let sharp = master_set(SHARP_SLOPE);
-        let soft = master_set(SOFT_SLOPE);
-        let plane = MASTER * MASTER;
-        for (index, (w, h)) in Self::wedge_sizes().enumerate() {
-            self.wedge_offsets[index] = self.wedge[0].len();
-            self.tmvp_offsets[index] = self.tmvp.len();
-            let masters = if w <= SHARP_MAX_SIDE && h <= SHARP_MAX_SIDE {
-                &sharp
-            } else {
-                &soft
-            };
+    fn wedge_size(&self, (w, h): (usize, usize)) -> &WedgeSize {
+        let index = side_index(w, WEDGE_MIN_SIDE, WEDGE_SIDES) * WEDGE_SIDES
+            + side_index(h, WEDGE_MIN_SIDE, WEDGE_SIDES);
+        self.wedge[index].get_or_init(|| {
+            let soft = w > SHARP_MAX_SIDE || h > SHARP_MAX_SIDE;
+            let masters = self.masters[usize::from(soft)]
+                .get_or_init(|| master_set(if soft { SOFT_SLOPE } else { SHARP_SLOPE }));
+            let plane = MASTER * MASTER;
+            let mut full = Vec::with_capacity(WEDGE_TYPES * w * h);
             for &(direction, x_offset, y_offset) in &CODEBOOK {
-                let [w444, w422, w420] = &mut self.wedge;
-                let start = w444.len();
-                let dir_master = &masters[direction as usize * plane..][..plane];
-                append_crop(dir_master, (w, h), (x_offset.into(), y_offset.into()), w444);
-                let full = &w444[start..];
-                append_subsample_422(full, w, w422);
-                append_subsample_420(full, w, w420);
-                append_tmvp_summary(full, (w, h), &mut self.tmvp);
+                let master = &masters[direction as usize * plane..][..plane];
+                append_crop(
+                    master,
+                    (w, h),
+                    (x_offset.into(), y_offset.into()),
+                    &mut full,
+                );
             }
-        }
-    }
-
-    fn build_interintra(&mut self) {
-        const MODES: [Av1InterIntraMode; II_MODES] = [
-            Av1InterIntraMode::Dc,
-            Av1InterIntraMode::Vertical,
-            Av1InterIntraMode::Horizontal,
-            Av1InterIntraMode::Smooth,
-        ];
-        for index in 0..II_SIDES * II_SIDES {
-            let (w, h) = (
-                II_MIN_SIDE << (index / II_SIDES),
-                II_MIN_SIDE << (index % II_SIDES),
-            );
-            self.interintra_offsets[index] = self.interintra.len();
-            for mode in MODES {
-                let start = self.interintra.len();
-                self.interintra.resize(start + w * h, 0);
-                av1_interintra_smooth_mask(mode, (w, h), &mut self.interintra[start..]);
+            WedgeSize {
+                full,
+                half: OnceLock::new(),
+                quarter: OnceLock::new(),
+                tmvp: OnceLock::new(),
             }
-        }
+        })
     }
 
     /// The wedge mask `index` (0 to 67) of a `w` x `h` luma block (8 to
@@ -300,14 +243,32 @@ impl InterMasks {
     #[must_use]
     pub fn wedge(&self, (w, h): (usize, usize), index: usize, layout: MaskLayout) -> &[u8] {
         assert!(index < WEDGE_TYPES);
-        let (plane, scale) = match layout {
-            MaskLayout::I444 => (0, 1),
-            MaskLayout::I422 => (1, 2),
-            MaskLayout::I420 => (2, 4),
+        let size = self.wedge_size((w, h));
+        let full_area = w * h;
+        let (masks, area) = match layout {
+            MaskLayout::I444 => (&size.full, full_area),
+            MaskLayout::I422 => (
+                size.half.get_or_init(|| {
+                    let mut out = Vec::with_capacity(size.full.len() / 2);
+                    for mask in size.full.chunks_exact(full_area) {
+                        append_subsample_422(mask, w, &mut out);
+                    }
+                    out
+                }),
+                full_area / 2,
+            ),
+            MaskLayout::I420 => (
+                size.quarter.get_or_init(|| {
+                    let mut out = Vec::with_capacity(size.full.len() / 4);
+                    for mask in size.full.chunks_exact(full_area) {
+                        append_subsample_420(mask, w, &mut out);
+                    }
+                    out
+                }),
+                full_area / 4,
+            ),
         };
-        let area = w * h / scale;
-        let start = self.wedge_offsets[Self::wedge_size_index((w, h))] / scale + index * area;
-        &self.wedge[plane][start..start + area]
+        &masks[index * area..][..area]
     }
 
     /// The temporal-field summary of wedge `index` of a `w` x `h` luma
@@ -321,9 +282,16 @@ impl InterMasks {
     #[must_use]
     pub fn wedge_tmvp(&self, (w, h): (usize, usize), index: usize) -> &[u8] {
         assert!(index < WEDGE_TYPES);
+        let size = self.wedge_size((w, h));
         let area = (w / TMVP_CELL) * (h / TMVP_CELL);
-        let start = self.tmvp_offsets[Self::wedge_size_index((w, h))] + index * area;
-        &self.tmvp[start..start + area]
+        let masks = size.tmvp.get_or_init(|| {
+            let mut out = Vec::with_capacity(WEDGE_TYPES * area);
+            for mask in size.full.chunks_exact(w * h) {
+                append_tmvp_summary(mask, (w, h), &mut out);
+            }
+            out
+        });
+        &masks[index * area..][..area]
     }
 
     /// The inter-intra mask of `mode` for a `w` x `h` plane block (4 to 64
@@ -335,10 +303,23 @@ impl InterMasks {
     /// If a size is out of range.
     #[must_use]
     pub fn interintra(&self, (w, h): (usize, usize), mode: Av1InterIntraMode) -> &[u8] {
+        const MODES: [Av1InterIntraMode; II_MODES] = [
+            Av1InterIntraMode::Dc,
+            Av1InterIntraMode::Vertical,
+            Av1InterIntraMode::Horizontal,
+            Av1InterIntraMode::Smooth,
+        ];
         let index =
             side_index(w, II_MIN_SIDE, II_SIDES) * II_SIDES + side_index(h, II_MIN_SIDE, II_SIDES);
-        let start = self.interintra_offsets[index] + mode as usize * w * h;
-        &self.interintra[start..start + w * h]
+        let area = w * h;
+        let masks = self.interintra[index].get_or_init(|| {
+            let mut out = vec![0; II_MODES * area];
+            for (output, mode) in out.chunks_exact_mut(area).zip(MODES) {
+                av1_interintra_smooth_mask(mode, (w, h), output);
+            }
+            out
+        });
+        &masks[mode as usize * area..][..area]
     }
 }
 

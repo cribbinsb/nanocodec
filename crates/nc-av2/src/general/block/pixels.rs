@@ -316,7 +316,14 @@ impl Tile<'_, '_> {
         if extra != 0 {
             let intra = record.intra && !record.intrabc;
             let transpose = !(intra && UNTRANSPOSED_MODES.contains(&y_mode));
-            eob = stx::apply_secondary(&mut coefficients, size, extra, transpose, eob);
+            eob = stx::apply_secondary_with_dsp(
+                self.dsp,
+                &mut coefficients,
+                size,
+                extra,
+                transpose,
+                eob,
+            );
         }
         let mut kind = TxType(residual.tx_type & tx_type::TYPE_MASK);
         if self.lossless() && record.intra && !record.intrabc && modes.dpcm[0] {
@@ -327,13 +334,12 @@ impl Tile<'_, '_> {
         }
         let offset = self.planes.offset(0, self.row, self.column);
         let stride = self.planes.stride[0];
-        itx::inverse_transform_add(
+        itx::inverse_transform_add_with_dsp(
+            self.dsp,
             &mut self.planes.data[0],
-            offset,
-            stride,
+            (offset, stride),
             &mut coefficients,
-            size,
-            kind,
+            (size, kind),
             eob,
         );
         self.luma_coefficients = coefficients;
@@ -687,13 +693,12 @@ impl Tile<'_, '_> {
             }
             let offset = self.planes.offset(plane + 1, row, column);
             let stride = self.planes.stride[plane + 1];
-            itx::inverse_transform_add(
+            itx::inverse_transform_add_with_dsp(
+                self.dsp,
                 &mut self.planes.data[plane + 1],
-                offset,
-                stride,
+                (offset, stride),
                 &mut store.coefficients[plane][start..],
-                size,
-                kind,
+                (size, kind),
                 eob,
             );
         }

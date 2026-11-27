@@ -1,0 +1,24 @@
+# VVC medium effort and decision space (tune-medium, 2026-11-23): 20 of vvc-sensitivity.txt
+# (the study takes at most 20; 19 now), trust region around the rung.
+# decision.exact_rank_margin is left out: every ge-vvc-medium trial that moved it off 0
+# (0.015-0.56, trials 1 and 10-29) cost +7.0 to +13.2 % J (by its description, a margin
+# under 1 skips most exact predictions); likewise on AV2 medium.
+decision.codec_subpel_seed_lambdas
+decision.subpel_move_bias
+decision.intra_gate_variance
+decision.lambda_scale
+planner.lambda_scale
+planner.split_rate_factor
+planner.depth_removal_qp_scale
+analysis.skip_hme_sad_per_pixel
+vvc.inter_rounding int
+vvc.rd_candidates int
+vvc.coarse_rd_candidates int
+vvc.angular_candidates int
+vvc.rd_proxy_margin
+vvc.pre_transform_zero_scale
+vvc.sao_luma_lambda_scale
+vvc.alf_lambda_scale
+vvc.affine_amvp_gate
+vvc.affine_merge_gate
+vvc.mts_lambda_scale

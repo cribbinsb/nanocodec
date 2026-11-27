@@ -11,16 +11,17 @@ use crate::hevc_intra::PlanarEdges;
 use crate::simd::I16Lanes;
 
 /// Largest side of the square kernels.
-const MAX_SIDE: usize = 32;
+pub(super) const MAX_SIDE: usize = 32;
 /// PDPC weights are `32 >> ((2 d) >> scale)`: zero from `d = 3 << scale`.
 const PDPC_REACH: usize = 3;
 /// PDPC rounding: `(w · d + 32) >> 6`.
 const PDPC_SHIFT: u32 = 6;
 
 /// # Safety
-/// Called only with V's ISA enabled and a supported side divisible by its lanes.
+/// Called only with V's ISA enabled and a supported side divisible by its
+/// lanes, no wider than CAPACITY.
 #[inline(always)]
-pub(super) unsafe fn predict<V: I16Lanes>(
+pub(super) unsafe fn predict<V: I16Lanes, const CAPACITY: usize>(
     n: usize,
     mode: VvcIntraMode,
     top: &[i32],
@@ -34,12 +35,12 @@ pub(super) unsafe fn predict<V: I16Lanes>(
         mode => mode,
     };
     // References are 8-bit samples (`check_square`): narrowing is exact.
-    let mut above = [0u8; MAX_SIDE + 1];
-    let mut side = [0u8; MAX_SIDE + 1];
-    for (narrow, &wide) in above.iter_mut().zip(&top[..=n]) {
+    let mut above = [0u8; CAPACITY];
+    let mut side = [0u8; CAPACITY];
+    for (narrow, &wide) in above.iter_mut().zip(&top[..n]) {
         *narrow = wide as u8;
     }
-    for (narrow, &wide) in side.iter_mut().zip(&left[..=n]) {
+    for (narrow, &wide) in side.iter_mut().zip(&left[..n]) {
         *narrow = wide as u8;
     }
     let out = &mut out[..n * n];
@@ -49,11 +50,11 @@ pub(super) unsafe fn predict<V: I16Lanes>(
             let edges = PlanarEdges {
                 above: &above[..n],
                 left: &side[..n],
-                top_right: above[n],
-                bottom_left: side[n],
+                top_right: top[n] as u8,
+                bottom_left: left[n] as u8,
             };
             // SAFETY: forwarded contract.
-            unsafe { crate::hevc_intra::lanes::planar::<V>(&edges, n, out) };
+            unsafe { crate::hevc_intra::lanes::planar::<V, CAPACITY>(&edges, n, out) };
         }
         VvcIntraMode::Dc => {
             let sum: u32 = above[..n]
@@ -75,7 +76,7 @@ pub(super) unsafe fn predict<V: I16Lanes>(
         }
     }
     // SAFETY: forwarded contract.
-    unsafe { pdpc::<V>(n, mode, &above, &side, corner as i16, out) };
+    unsafe { pdpc::<V, CAPACITY>(n, mode, &above, &side, corner as i16, out) };
 }
 
 /// PDPC (§8.4.5.2.15) over the predicted `out`: `v + ((wL · (left − v) +
@@ -86,7 +87,7 @@ pub(super) unsafe fn predict<V: I16Lanes>(
 /// # Safety
 /// V's ISA is enabled and its lane count divides `n`.
 #[inline(always)]
-unsafe fn pdpc<V: I16Lanes>(
+unsafe fn pdpc<V: I16Lanes, const CAPACITY: usize>(
     n: usize,
     mode: VvcIntraMode,
     above: &[u8],
@@ -96,11 +97,11 @@ unsafe fn pdpc<V: I16Lanes>(
 ) {
     let scale = (2 * n.ilog2() - 2) >> 2;
     let reach = (PDPC_REACH << scale).min(n);
-    let mut weights = [0i16; MAX_SIDE];
+    let mut weights = [0i16; CAPACITY];
     for (d, weight) in weights[..reach].iter_mut().enumerate() {
         *weight = 32 >> ((2 * d) >> scale);
     }
-    let mut top = [0i16; MAX_SIDE];
+    let mut top = [0i16; CAPACITY];
     for (wide, &narrow) in top.iter_mut().zip(&above[..n]) {
         *wide = i16::from(narrow);
     }
@@ -141,7 +142,7 @@ unsafe fn pdpc<V: I16Lanes>(
 /// (`$runs`), every mode's arithmetic on i16 lanes as wide as the block
 /// side allows (`$a4`, `$a8`, `$a16`).
 macro_rules! kernels {
-    ($(#[$attr:meta])*; $runs:ty; $a4:ty, $a8:ty, $a16:ty) => {
+    ($(#[$attr:meta])*; $runs:ty; $a4:ty, $a8:ty, $a16:ty, $wide:ty) => {
         $(#[$attr])*
         pub(super) unsafe fn predict(n: usize, mode: super::VvcIntraMode, top: &[i32], left: &[i32], corner: i32, transposed_ok: bool, out: &mut [u8]) -> bool {
             use super::VvcIntraMode::Angular;
@@ -156,9 +157,10 @@ macro_rules! kernels {
                     },
                     _ => {
                         match n {
-                            4 => super::generic::predict::<$a4>(n, mode, top, left, corner, out),
-                            8 => super::generic::predict::<$a8>(n, mode, top, left, corner, out),
-                            _ => super::generic::predict::<$a16>(n, mode, top, left, corner, out),
+                            4 => super::generic::predict::<$a4, { super::generic::MAX_SIDE }>(n, mode, top, left, corner, out),
+                            8 => super::generic::predict::<$a8, { super::generic::MAX_SIDE }>(n, mode, top, left, corner, out),
+                            64 => super::generic::predict::<$wide, 64>(64, mode, top, left, corner, out),
+                            _ => super::generic::predict::<$a16, { super::generic::MAX_SIDE }>(n, mode, top, left, corner, out),
                         }
                         false
                     }

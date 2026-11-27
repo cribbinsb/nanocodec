@@ -113,8 +113,9 @@ def test_one_clip_per_class_is_not_a_zero_width_interval():
 
 
 def test_identical_builds_are_not_better():
+    # Identical builds are neutral at L3 (346f03ee6): never BETTER, never adopted.
     same = interval.interval(rows([("crowd", -1e-12), ("pan", 0.0)]), None, 0.6)
-    assert interval.decide(same, final=True) == interval.AMBIGUOUS
+    assert interval.decide(same, final=True) == interval.NEUTRAL
 
 
 def test_dcpu_shifts_every_clip():

@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import measure_image  # noqa: E402
 from aws_session import (PROJECT_TAG, SPILL_REGIONS, Session, SessionSpec,  # noqa: E402
                          instance_vcpus, say, utc_now)
 
@@ -53,13 +54,20 @@ REGISTRY = DATA / "run" / "warm-boxes"
 #: Box defaults: 96 vCPU (aws_measure's largest auto size), the smaller sizes when the
 #: quota has no room for it; a root volume for the whole pool's clips (it grows job by
 #: job); the hard lifetime, and the idle time after which the box stops itself.
-WARM_TYPES = ("c7a.24xlarge", "c7i.24xlarge", "m7a.24xlarge", "c7a.16xlarge",
-              "c7i.16xlarge", "m7a.16xlarge", "c7a.12xlarge", "c7i.12xlarge")
+#: The guide's packed x86 pair (docs/aws-cost-guide.md; acquire takes the cheapest per vCPU).
+WARM_TYPES = ("c7i.24xlarge", "c6i.24xlarge", "c7i.16xlarge", "c6i.16xlarge",
+              "c7i.12xlarge", "c6i.12xlarge")
 #: The sizes of an instance family WARM_TYPES does not list (a study pinned to it).
 WARM_SIZES = ("24xlarge", "16xlarge", "12xlarge")
+#: Families with their own sizes: Graviton4 (aws_measure --arch, docs/aws-cost-guide.md),
+#: whose spot price per vCPU was lowest at 8xlarge-16xlarge (c8g.24xlarge 1.8x c8g.8xlarge's).
+FAMILY_TYPES = {"c8g": ("c8g.16xlarge", "c8g.8xlarge", "c8g.12xlarge")}
 WARM_ROOT_GB = 120
 LIFETIME_MINUTES = 240
-IDLE_MINUTES = 20
+#: The orphan guard only: a run's broker holds its box between rounds and stops it at the run's
+#: end (gpuscore.RoundBroker.serve). 30 min covers a PC scoring pass (10-15 min) between rounds
+#: (owner, 2026-11-25: a box dying mid-run cost ~7 min of setup per round; was 10, 20 before).
+IDLE_MINUTES = 30
 #: The CPU one job is counted as (a box of V vCPUs takes V // JOB_CPUS jobs at once).
 JOB_CPUS = 32
 #: A box with less lifetime left than this takes no new job (a job's 30-min budget,
@@ -73,8 +81,11 @@ WAIT_SECONDS = 15
 NOMINAL_JOBS = 3
 #: The fleet-wide cap on the warm boxes' cost, $/h over every region (coordinator,
 #: 2026-11-21; NC_WARM_SPEND_CAP or --warm-spend-cap), the cost assumed for a box still
-#: being launched, and the root volume and IPv4 on top of an instance's price.
-SPEND_CAP_USD_PER_HOUR = float(os.environ.get("NC_WARM_SPEND_CAP", "6"))
+#: being launched, and the root volume and IPv4 on top of an instance's price. $12/h, was
+#: $6/h (coordinator, 2026-11-25): new boxes queued up to 13.5 min behind $6/h, which cost
+#: more agent time than the cap saved (docs/analysis/time-audit-2026-11-25.md); the
+#: account's budget stop still applies.
+SPEND_CAP_USD_PER_HOUR = float(os.environ.get("NC_WARM_SPEND_CAP", "12"))
 NEW_BOX_RATE_ESTIMATE = 1.0
 BOX_OVERHEAD = 1.03
 #: Draining: a box costing more than DRAIN_FACTOR times a home-region box per vCPU takes
@@ -128,6 +139,23 @@ class Box:
 
 def path_of(instance_id: str) -> Path:
     return REGISTRY / f"{instance_id}.json"
+
+
+def sync_lock_path(instance_id: str) -> Path:
+    return REGISTRY / f".sync-{instance_id}.lock"
+
+
+@contextmanager
+def sync_lock(instance_id: str):
+    """One upload at a time to a box. The jobs packed onto one box share most of their
+    clips; synced at once, each rsync found every clip missing and sent the whole set
+    again (2026-11-22, buffer-061's train3: 14 jobs on 5 boxes each sent the draw's
+    8.1 GB, ~10 MB/s apiece over the PC's shared uplink, 11-15 min before the run). In
+    turn, a box gets the set once and the later jobs send only what they add."""
+    REGISTRY.mkdir(parents=True, exist_ok=True)
+    with sync_lock_path(instance_id).open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def save(box: Box) -> None:
@@ -198,11 +226,13 @@ def reap() -> None:
             + ("stopped itself" if ended else "abandoned while being set up") + "; cleaning up")
         session.cleanup(ended_at=ended)
         path_of(box.instance_id).unlink(missing_ok=True)
+        sync_lock_path(box.instance_id).unlink(missing_ok=True)
 
 
 def acquire(job: str, spec: SessionSpec, setup,
             spend_cap: float = SPEND_CAP_USD_PER_HOUR,
-            avoid: set[str] = frozenset(), family: str | None = None) -> tuple[Box, Session, bool]:
+            avoid: set[str] = frozenset(), family: str | None = None,
+            min_vcpus: int = 0) -> tuple[Box, Session, bool]:
     """A warm box for `job`, the job registered on it. In order: a ready box with a free
     job slot; a box being set up, or a launch in progress, with a free slot (queued jobs
     pack onto it: on 2026-11-21 six waiters each launched a box within a minute, $8-10/h
@@ -210,14 +240,17 @@ def acquire(job: str, spec: SessionSpec, setup,
     `setup(session)`, unless the warm boxes together already cost `spend_cap` $/h (then
     the job waits, saying so). Boxes in `avoid` (one that would not take a sync) are not
     used. `family` (an instance family, e.g. c7a): only boxes of it, and only launches
-    asked for it (a tune study pinned to one CPU). The lock is never held across a
-    launch or a setup. Returns (box, session, fresh)."""
+    asked for it (a tune study pinned to one CPU). `min_vcpus`: only boxes at least this
+    big (the job's planned size: 2026-11-24, a train's 964-point batch sized for 64 vCPU
+    landed on a 32-vCPU box and stopped at the run cap); `spec` launches only such types
+    (`warm_spec`). The lock is never held across a launch or a setup. Returns (box,
+    session, fresh)."""
     waited = 0.0
     while True:
         capped = False
         with registry_lock():
             reap()
-            found = registered(job) or place(job, avoid, family)
+            found = registered(job) or place(job, avoid, family, min_vcpus)
             if isinstance(found, Box) and found.record.get("prepared"):
                 return found, found.session(), False
             if found is None:
@@ -277,17 +310,22 @@ def registered(job: str):
     return None
 
 
-def place(job: str, avoid: set[str] = frozenset(), family: str | None = None):
+def place(job: str, avoid: set[str] = frozenset(), family: str | None = None,
+          min_vcpus: int = 0):
     """Count `job` on a ready box, a box being set up, or a launch in progress with a
-    free slot (in that order; of `family` only, when given): the box or "launch" it
-    went to, else None."""
+    free slot (in that order; of `family` only, when given; with `min_vcpus`, only a box
+    that big and no launch, whose size is not known yet): the box or "launch" it went
+    to, else None."""
     every = boxes()
     reference = home_rate(every)
     drain = not recently_spilled()
     usable = []
+    arch = ami_arch(family_types(family)[0])  # a job runs on its own machine's boxes only
     for box in every:
-        if box.instance_id in avoid or (family is not None and not of_family(
-                box.record["spec"]["instance_type"], family)):
+        kind = box.record["spec"]["instance_type"]
+        if box.instance_id in avoid or ami_arch(kind) != arch or (
+                family is not None and not of_family(kind, family)) or \
+                box.record.get("vcpus", 0) < min_vcpus:
             continue
         if drain and box.per_vcpu() > DRAIN_FACTOR * reference:
             if not box.record.get("draining"):
@@ -314,7 +352,7 @@ def place(job: str, avoid: set[str] = frozenset(), family: str | None = None):
             save(box)
             say(f"joining warm box {box.instance_id}, being set up")
             return box
-    for marker in launching():
+    for marker in launching() if not min_vcpus else ():
         state = json.loads(marker.read_text())
         if len(state["jobs"]) < NOMINAL_JOBS and (family is None
                                                   or state.get("family") == family):
@@ -383,16 +421,36 @@ def family_types(family: str | None) -> tuple[str, ...]:
     """WARM_TYPES, or those of `family` (its WARM_SIZES when WARM_TYPES has none)."""
     if family is None:
         return WARM_TYPES
-    return tuple(t for t in WARM_TYPES if of_family(t, family)) or \
+    return FAMILY_TYPES.get(family) or tuple(t for t in WARM_TYPES if of_family(t, family)) or \
         tuple(f"{family}.{size}" for size in WARM_SIZES)
 
 
-def warm_spec(region: str, budget: float, family: str | None = None) -> SessionSpec:
-    types = family_types(family)
-    return SessionSpec(region=region, instance_type=types[0], arch="amd64",
+def ami_arch(instance_type: str) -> str:
+    """aws_session's AMI architecture of a type: Graviton families (c7g, c8g, m8g, ...)
+    carry a "g" after their generation."""
+    family = instance_type.split(".")[0]
+    return "arm64" if re.fullmatch(r"[a-z]+\d+g[a-z]*", family) else "amd64"
+
+
+def type_vcpus(instance_type: str) -> int:
+    """vCPUs of a c-family size by its name (`8xlarge` 32, `xlarge` 4, `large` 2)."""
+    size = instance_type.split(".")[1]
+    count = size.removesuffix("xlarge")
+    return 2 if size == "large" else 4 * int(count or 1)
+
+
+def warm_spec(region: str, budget: float, family: str | None = None,
+              min_vcpus: int = 0) -> SessionSpec:
+    """A new warm box's spec: the family's types, those of at least `min_vcpus` only (the
+    largest when none is)."""
+    every = family_types(family)
+    types = tuple(t for t in every if type_vcpus(t) >= min_vcpus) or \
+        (max(every, key=type_vcpus),)
+    return SessionSpec(region=region, instance_type=types[0], arch=ami_arch(types[0]),
                        purpose=WARM_PURPOSE, lifetime_minutes=LIFETIME_MINUTES,
                        budget_usd=budget, root_gb=WARM_ROOT_GB,
-                       fallback_types=types[1:])
+                       fallback_types=types[1:],
+                       image_tags=measure_image.image_tags(ami_arch(types[0])))
 
 
 def idle_watch_command(cleanup: str, idle_minutes: int = IDLE_MINUTES) -> str:
@@ -452,6 +510,47 @@ def stop(_: argparse.Namespace) -> None:
             say(f"stopping warm box {box.instance_id}")
             box.session().cleanup()
             path_of(box.instance_id).unlink(missing_ok=True)
+            sync_lock_path(box.instance_id).unlink(missing_ok=True)
+
+
+def stop_if_idle(instance_id: str) -> bool:
+    """Stop one warm box now if no job is on it (a GPU-scored run's broker, done with its
+    rounds, ends the box's idle tail: 2026-11-24, the 10-min tail cost more than the
+    6-quick batch it served). Under the registry lock, so no job can be placed on it
+    meanwhile. Returns whether it was stopped."""
+    with registry_lock():
+        current = path_of(instance_id)
+        if not current.exists():
+            return False
+        box = Box(json.loads(current.read_text()))
+        if box.jobs or not box.record.get("prepared"):
+            return False
+        say(f"stopping idle warm box {instance_id}")
+        box.session().cleanup()
+        current.unlink(missing_ok=True)
+        sync_lock_path(instance_id).unlink(missing_ok=True)
+        return True
+
+
+def hold(instance_id: str) -> bool:
+    """Renew one warm box's idle timer (its BUSY_FILE) without placing a job on it: a
+    GPU-scored run's broker holds its round's box while the PC still scores, for the next
+    level's round (2026-11-25: a box that idled out mid-run cost a fresh box's ~7 min).
+    Returns whether the box was found and renewed."""
+    with registry_lock():
+        current = path_of(instance_id)
+        if not current.exists():
+            return False
+        box = Box(json.loads(current.read_text()))
+    return box.session().ssh(f"touch {BUSY_FILE}", check=False, quiet=True).returncode == 0
+
+
+def hold_command(args: argparse.Namespace) -> None:
+    sys.exit(0 if hold(args.instance_id) else 1)
+
+
+def stop_idle_command(args: argparse.Namespace) -> None:
+    sys.exit(0 if stop_if_idle(args.instance_id) else 1)
 
 
 def reap_command(_: argparse.Namespace) -> None:
@@ -470,6 +569,12 @@ def main(argv: list[str]) -> None:
     sub.add_parser("status").set_defaults(run=status)
     sub.add_parser("stop").set_defaults(run=stop)
     sub.add_parser("reap").set_defaults(run=reap_command)
+    idle = sub.add_parser("stop-if-idle", help="stop one box now if no job is on it")
+    idle.add_argument("instance_id")
+    idle.set_defaults(run=stop_idle_command)
+    held = sub.add_parser("hold", help="renew one box's idle timer (no job placed on it)")
+    held.add_argument("instance_id")
+    held.set_defaults(run=hold_command)
     args = p.parse_args(argv)
     args.run(args)
 

@@ -159,6 +159,25 @@ unsafe fn pair_squares(a: __m256i, b: __m256i) -> [__m256i; 2] {
     }
 }
 
+/// Accumulate both halves of a word-pair sum of squares. Ice Lake's
+/// VNNI fuses each pair of products and the running square sum.
+#[inline(always)]
+unsafe fn add_squares<const ICL: bool>(acc: [__m256i; 2], a: __m256i, b: __m256i) -> [__m256i; 2] {
+    // SAFETY: called in the selected complete-stripe target feature.
+    unsafe {
+        if ICL {
+            let lo = _mm256_unpacklo_epi16(a, b);
+            let hi = _mm256_unpackhi_epi16(a, b);
+            [
+                core::arch::x86_64::_mm256_dpwssd_epi32(acc[0], lo, lo),
+                core::arch::x86_64::_mm256_dpwssd_epi32(acc[1], hi, hi),
+            ]
+        } else {
+            add_pairs(acc, pair_squares(a, b))
+        }
+    }
+}
+
 /// The centre tap's square (at most `255²`, exact in 16 bits), widened.
 #[inline(always)]
 unsafe fn centre_square(t: __m256i) -> [__m256i; 2] {
@@ -196,20 +215,20 @@ unsafe fn middle_tap(t0: __m256i, t4: __m256i) -> __m256i {
 
 /// Radius-1 sums of one step (taps 1 to 3).
 #[inline(always)]
-unsafe fn sums3(taps: Taps, bytes: __m256i) -> Sums {
+unsafe fn sums3<const ICL: bool>(taps: Taps, bytes: __m256i) -> Sums {
     // SAFETY: AVX2 is enabled in the calling kernel.
     unsafe {
         let (t1, t2, t3) = (taps.tap(bytes, 1), taps.tap(bytes, 2), taps.tap(bytes, 3));
         Sums {
             sum: _mm256_add_epi16(_mm256_add_epi16(t1, t2), t3),
-            squares: add_pairs(pair_squares(t1, t3), centre_square(t2)),
+            squares: add_squares::<ICL>(centre_square(t2), t1, t3),
         }
     }
 }
 
 /// Radius-1 and radius-2 sums of one step from one set of taps.
 #[inline(always)]
-unsafe fn sums35(taps: Taps, bytes: __m256i) -> (Sums, Sums) {
+unsafe fn sums35<const ICL: bool>(taps: Taps, bytes: __m256i) -> (Sums, Sums) {
     // SAFETY: AVX2 is enabled in the calling kernel.
     unsafe {
         let (t0, t4) = (taps.tap(bytes, 0), taps.tap(bytes, 4));
@@ -217,11 +236,11 @@ unsafe fn sums35(taps: Taps, bytes: __m256i) -> (Sums, Sums) {
         let t2 = middle_tap(t0, t4);
         let three = Sums {
             sum: _mm256_add_epi16(_mm256_add_epi16(t1, t2), t3),
-            squares: add_pairs(pair_squares(t1, t3), centre_square(t2)),
+            squares: add_squares::<ICL>(centre_square(t2), t1, t3),
         };
         let five = Sums {
             sum: _mm256_add_epi16(three.sum, _mm256_add_epi16(t0, t4)),
-            squares: add_pairs(three.squares, pair_squares(t0, t4)),
+            squares: add_squares::<ICL>(three.squares, t0, t4),
         };
         (three, five)
     }
@@ -229,7 +248,7 @@ unsafe fn sums35(taps: Taps, bytes: __m256i) -> (Sums, Sums) {
 
 /// Radius-2 sums of one step.
 #[inline(always)]
-unsafe fn sums5(taps: Taps, bytes: __m256i) -> Sums {
+unsafe fn sums5<const ICL: bool>(taps: Taps, bytes: __m256i) -> Sums {
     // SAFETY: AVX2 is enabled in the calling kernel.
     unsafe {
         let (t0, t4) = (taps.tap(bytes, 0), taps.tap(bytes, 4));
@@ -238,10 +257,7 @@ unsafe fn sums5(taps: Taps, bytes: __m256i) -> Sums {
         let outer = _mm256_add_epi16(_mm256_add_epi16(t0, t4), _mm256_add_epi16(t1, t3));
         Sums {
             sum: _mm256_add_epi16(outer, t2),
-            squares: add_pairs(
-                add_pairs(pair_squares(t0, t4), pair_squares(t1, t3)),
-                centre_square(t2),
-            ),
+            squares: add_squares::<ICL>(add_squares::<ICL>(centre_square(t2), t1, t3), t0, t4),
         }
     }
 }
@@ -632,10 +648,12 @@ unsafe fn single_row(
     }
 }
 
-/// The AVX2 lanes of [`super::sgr_stripe`].
-struct Avx2;
+mod icl;
 
-impl StripeLanes for Avx2 {
+/// The shared x86 lanes of [`super::sgr_stripe`].
+struct X86<const ICL: bool>;
+
+impl<const ICL: bool> StripeLanes for X86<ICL> {
     type Sums = Sums;
     type Stats = Statistics;
 
@@ -677,25 +695,32 @@ impl StripeLanes for Avx2 {
     #[inline(always)]
     unsafe fn sums3(src: *const u8) -> Sums {
         // SAFETY: AVX2 is enabled; the caller's row holds 24 bytes.
-        unsafe { sums3(Taps::new(), Taps::bytes(src)) }
+        unsafe { sums3::<ICL>(Taps::new(), Taps::bytes(src)) }
     }
 
     #[inline(always)]
     unsafe fn sums5(src: *const u8) -> Sums {
         // SAFETY: as `sums3`.
-        unsafe { sums5(Taps::new(), Taps::bytes(src)) }
+        unsafe { sums5::<ICL>(Taps::new(), Taps::bytes(src)) }
     }
 
     #[inline(always)]
     unsafe fn sums35(src: *const u8) -> (Sums, Sums) {
         // SAFETY: as `sums3`.
-        unsafe { sums35(Taps::new(), Taps::bytes(src)) }
+        unsafe { sums35::<ICL>(Taps::new(), Taps::bytes(src)) }
     }
 
     #[inline(always)]
     unsafe fn store_packed(stats: Statistics, sums: Sums, dst: *mut i32, k: usize) {
-        // SAFETY: AVX2 is enabled; the step is inside the row.
-        unsafe { store_packed(dst, k, stats.packed(sums)) }
+        // SAFETY: the step lies inside the row and the appropriate x86
+        // features are enabled by the stripe entry point.
+        unsafe {
+            if ICL {
+                icl::store_packed(stats, sums, dst.add(k * STEP));
+            } else {
+                store_packed(dst, k, stats.packed(sums));
+            }
+        }
     }
 
     #[inline(always)]
@@ -719,7 +744,13 @@ impl StripeLanes for Avx2 {
         weights: [i32; 2],
     ) {
         // SAFETY: as the function's contract.
-        unsafe { mix_row::<BETWEEN>(src, dst, five, three, weights) }
+        unsafe {
+            if ICL {
+                icl::mix_row::<BETWEEN>(src, dst, five, three, weights);
+            } else {
+                mix_row::<BETWEEN>(src, dst, five, three, weights);
+            }
+        }
     }
 
     #[inline(always)]
@@ -730,7 +761,13 @@ impl StripeLanes for Avx2 {
         neighbourhood: (Single, *const i32, Kept),
     ) {
         // SAFETY: as the function's contract.
-        unsafe { single_row(src, dst, weight, neighbourhood) }
+        unsafe {
+            if ICL {
+                icl::single_row(src, dst, weight, neighbourhood);
+            } else {
+                single_row(src, dst, weight, neighbourhood);
+            }
+        }
     }
 }
 
@@ -748,5 +785,17 @@ pub(super) unsafe fn sgr_stripe(
     dst: (&mut PlaneViewMut<'_>, usize, usize),
 ) {
     // SAFETY: AVX2 is enabled (this function's target feature).
-    unsafe { super::sgr_stripe::run::<Avx2>(params, window, size, scratch, dst) }
+    unsafe { super::sgr_stripe::run::<X86<false>>(params, window, size, scratch, dst) }
+}
+
+#[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl,avx512vbmi,avx512vnni")]
+pub(super) unsafe fn sgr_stripe_icl(
+    params: SgrStripe,
+    window: (&[u8], usize),
+    size: (usize, usize),
+    scratch: &mut SgrStripeScratch,
+    dst: (&mut PlaneViewMut<'_>, usize, usize),
+) {
+    // SAFETY: this entry enables the instructions of the complete stripe.
+    unsafe { super::sgr_stripe::run::<X86<true>>(params, window, size, scratch, dst) }
 }

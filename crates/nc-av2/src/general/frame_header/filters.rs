@@ -32,13 +32,26 @@ const CCSO_SUPPORT_BITS: u32 = 3;
 const CCSO_RESERVED_SUPPORT: u8 = 7;
 const CCSO_BAND_ONLY_BITS: u32 = 3;
 const CCSO_BAND_BITS: u32 = 2;
+/// Largest band-only `max_band_log2`: its 3 bits could code 7, but AVM
+/// rejects more than `CCSO_BAND_NUM` (64) bands ("Invalid CCSO Band
+/// number", `read_ccso` in AVM v1.0.0 `av2/decoder/decodeframe.c`).
+const CCSO_MAX_BAND_ONLY_LOG2: u8 = 6;
 /// Largest CCSO offset index (unary code, 3 bits of magnitude-sign).
 const CCSO_MAX_OFFSET: u8 = 7;
 /// Edge classes per axis of the three-class classifier.
 const CCSO_EDGE_CLASSES: usize = 3;
-/// Offsets of one CCSO plane: 128 bands (band-only) or 3×3 edge classes
-/// of up to 8 bands (stride 4 classes × 8 bands).
-pub const CCSO_OFFSETS: usize = 128;
+/// Edge classes per axis in the offset layout (dav2d `filter_off`:
+/// `class0 << 5 | class1 << 3 | band`).
+pub const CCSO_CLASS_STRIDE: usize = 4;
+/// Bands per class in that layout: two bits of `max_band_log2`.
+pub const CCSO_BAND_STRIDE: usize = 1 << ((1 << CCSO_BAND_BITS) - 1);
+/// Offsets of one CCSO plane: the larger of 64 bands (band-only) and 3×3
+/// edge classes of up to 8 bands in the layout above (88 entries).
+pub const CCSO_OFFSETS: usize = {
+    let band_only = 1 << CCSO_MAX_BAND_ONLY_LOG2;
+    let edge = ((CCSO_EDGE_CLASSES - 1) * CCSO_CLASS_STRIDE + CCSO_EDGE_CLASSES) * CCSO_BAND_STRIDE;
+    if band_only > edge { band_only } else { edge }
+};
 /// CCSO quantization step per scale and quantizer index; zero has no edge
 /// classifier choice (dav2d `dav2d_ccso_quant_sz`).
 const CCSO_QUANT_SIZE: [[u16; 4]; 4] = [
@@ -126,7 +139,7 @@ pub struct CcsoPlane {
     /// log2 of the band count.
     pub max_band_log2: u8,
     /// Offset index of each class and band: `band` when band-only, else
-    /// `(row_class * 4 + column_class) * 8 + band`.
+    /// `(row * CCSO_CLASS_STRIDE + column) * CCSO_BAND_STRIDE + band`.
     pub offsets: [u8; CCSO_OFFSETS],
 }
 
@@ -379,6 +392,9 @@ fn ccso_plane(
     p.scale_index = bits.read_bits(CCSO_SCALE_BITS)? as u8;
     if p.band_only {
         p.max_band_log2 = bits.read_bits(CCSO_BAND_ONLY_BITS)? as u8;
+        if p.max_band_log2 > CCSO_MAX_BAND_ONLY_LOG2 {
+            return Err(DecodeError::Malformed("AV2 CCSO band count"));
+        }
     } else {
         p.quant_index = bits.read_bits(CCSO_QUANT_BITS)? as u8;
         p.filter_support = bits.read_bits(CCSO_SUPPORT_BITS)? as u8;
@@ -403,7 +419,7 @@ fn ccso_plane(
                 while offset < CCSO_MAX_OFFSET && bits.read_bit()? {
                     offset += 1;
                 }
-                p.offsets[(row * 4 + column) * 8 + band] = offset;
+                p.offsets[(row * CCSO_CLASS_STRIDE + column) * CCSO_BAND_STRIDE + band] = offset;
             }
         }
     }

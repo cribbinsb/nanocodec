@@ -195,7 +195,7 @@ impl Tile<'_, '_> {
             Target::Picture(offset) => {
                 let stride = self.planes.stride[plane.index()];
                 kernels::put(
-                    &self.inter_scratch.copies,
+                    self.dsp,
                     filter,
                     (&mut self.planes.data[plane.index()], offset, stride),
                     (src, src_offset, src_stride),
@@ -209,7 +209,7 @@ impl Tile<'_, '_> {
                 stride,
             } => {
                 kernels::prep(
-                    &self.inter_scratch.copies,
+                    self.dsp,
                     filter,
                     (&mut self.inter_scratch.compound[index], offset, stride),
                     (src, src_offset, src_stride),
@@ -228,7 +228,7 @@ impl Tile<'_, '_> {
                     w - REFINE_TAIL
                 };
                 kernels::put(
-                    &self.inter_scratch.copies,
+                    self.dsp,
                     filter,
                     (dst, 0, stride),
                     (src, src_offset, src_stride),
@@ -237,7 +237,7 @@ impl Tile<'_, '_> {
                 );
                 if head != w {
                     kernels::put(
-                        &self.inter_scratch.copies,
+                        self.dsp,
                         filter,
                         (dst, head, stride),
                         (src, src_offset + head, src_stride),
@@ -456,7 +456,7 @@ impl Tile<'_, '_> {
                 if ext {
                     kernels::ext_warp(dst, (src, src_offset, src_stride), (mx, my));
                 } else {
-                    kernels::warp(dst, (src, src_offset, src_stride), abcd, (mx, my));
+                    kernels::warp(self.dsp, dst, (src, src_offset, src_stride), abcd, (mx, my));
                 }
             }
             Target::Compound {
@@ -472,7 +472,13 @@ impl Tile<'_, '_> {
                 if ext {
                     kernels::ext_warp_prep(dst, (src, src_offset, src_stride), (mx, my));
                 } else {
-                    kernels::warp_prep(dst, (src, src_offset, src_stride), abcd, (mx, my));
+                    kernels::warp_prep(
+                        self.dsp,
+                        dst,
+                        (src, src_offset, src_stride),
+                        abcd,
+                        (mx, my),
+                    );
                 }
             }
             Target::Refine { .. } => unreachable!("refinement windows are not warped"),

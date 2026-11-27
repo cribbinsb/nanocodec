@@ -1,0 +1,5 @@
+# intra-cheap batch 7: batch 5's stacks again with their key CPU (batch 5 ran past the run cap)
+null: planner.intra_bias=1050
+s2_tr: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 vp9.intra_rd_trellis=1
+x_s2_g150_tr_rdc5: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.5 vp9.intra_tx_depth=0 vp9.intra_rd_trellis=1 vp9.intra_rd_candidates=5
+s3_tr: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=3 planner.key_rd_margin=1.2 vp9.intra_rd_trellis=1

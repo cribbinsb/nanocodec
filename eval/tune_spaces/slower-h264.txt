@@ -1,0 +1,23 @@
+# H.264 slower (tune-slow, 2026-11-23): the rung's effort and decision parameters, tuned
+# jointly on 600-frame windows at both key shares with k = the rung's front slope. The
+# 2026-11-22 front had slower off the front (below slow's J at less speed); the key-frame
+# Intra_8x8 search slow inherits is pinned off here, so it is in the space.
+# Format (nceval.tune_pool): name [low high] [int|log]
+h264.intra_rd_candidates 3 9 int
+h264.intra8x8_all_modes 0 1 int
+h264.intra4x4_gate_satd 0 24
+h264.intra8x8_gate_satd 0 24
+decision.winner_walk_steps 0 3 int
+decision.winner_walk_min_lambdas 0 0.5
+decision.final_margin_lambdas 0 0.3
+h264.transform_size_rd 0 1 int
+h264.residual_rd_lambda 0 0.8
+h264.rd_refine 0 2 int
+h264.rd_refine_satd_margin 0.5 2
+refs.second 0 2 int
+key.h264.intra8x8_rd_candidates 0 6 int
+key.h264.intra8x8_gate_satd 0 24
+key.h264.trellis_i8x8 0 1 int
+key.h264.trellis_intra_lambda_ratio 0.3 1
+decision.intra_gate_variance 4 32
+h264.split_gate_satd 10 50

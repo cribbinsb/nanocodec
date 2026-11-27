@@ -1,7 +1,7 @@
 //! The guided detail filter of the general decoder (dav2d `lr_apply_tmpl.c`
 //! `lr_stripe`'s GDF part, `gdf_prep_c`'s input rules): luma only, in the
 //! loop-restoration stripes, block by 64x64 block where the block layer's
-//! flag is set, with nc-dsp's [`gdf_error`] and [`gdf_add`].
+//! flag is set, with nc-dsp's [`gdf_error_with_dsp`] and [`gdf_add`].
 //!
 //! Each block's window is the frame after CDEF and CCSO, except outside
 //! its stripe: there the two rows next to the stripe come from the
@@ -9,10 +9,11 @@
 //! of them, and at the frame's top and bottom the stripe's own edge row
 //! repeats. Columns outside the frame repeat its edge columns.
 
-use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView};
+use nc_common::{Picture, PlaneIndex, PlaneView};
+use nc_dsp::Dsp;
 use nc_dsp::av2_dec::gdf::{
-    GDF_BORDER, GDF_ERROR_STRIDE, GDF_INPUT_BITS, GDF_MAX_SIDE, GdfParams, GdfWindow, gdf_add,
-    gdf_error,
+    GDF_BORDER, GDF_ERROR_STRIDE, GDF_INPUT_BITS, GDF_MAX_SIDE, GdfParams, GdfWindow,
+    gdf_add_with_dsp, gdf_error_with_dsp,
 };
 use nc_dsp::av2_dec::gdf_tables::{INTER, INTRA};
 
@@ -53,6 +54,7 @@ pub fn params(header: &FrameHeader, distances: &[u32]) -> &'static GdfParams {
 /// the block layer set GDF flags, from `source` (the frame after CDEF and
 /// CCSO, before restoration) and `deblocked` (the frame before CDEF).
 pub fn filter(
+    dsp: &Dsp,
     picture: &mut Picture,
     (source, deblocked): (&Picture, &Picture),
     maps: &FilterMaps,
@@ -91,16 +93,16 @@ pub fn filter(
                 width: w,
                 height: stripe.height(),
             };
-            gdf_error(&view, params, &mut error);
+            gdf_error_with_dsp(dsp, &view, params, &mut error);
             let out_stride = output.stride();
             let start = stripe.top * out_stride + left;
-            gdf_add(
+            gdf_add_with_dsp(
+                dsp,
                 &mut output.data_mut()[start..],
                 out_stride,
                 &error,
                 (w, stripe.height()),
                 scale,
-                BitDepth::EIGHT,
             );
         }
     }
@@ -117,6 +119,11 @@ fn fill_window(
 ) {
     let up = GDF_INPUT_BITS - 8;
     let frame_width = source.width();
+    let first = left.saturating_sub(GDF_BORDER);
+    let pre = GDF_BORDER.saturating_sub(left);
+    let end = (left + width + GDF_BORDER).min(frame_width);
+    let middle = end - first;
+    let row_width = width + 2 * GDF_BORDER;
     let rows = stripe.height() + 2 * GDF_BORDER;
     for (j, out) in window.chunks_exact_mut(stride).take(rows).enumerate() {
         let offset = j as isize - GDF_BORDER as isize;
@@ -124,9 +131,12 @@ fn fill_window(
             (y, false) => source.row(y),
             (y, true) => deblocked.row(y),
         };
-        for (i, sample) in out[..width + 2 * GDF_BORDER].iter_mut().enumerate() {
-            let x = (left + i).saturating_sub(GDF_BORDER).min(frame_width - 1);
-            *sample = u16::from(row[x]) << up;
+        let (prefix, out) = out[..row_width].split_at_mut(pre);
+        let (pixels, suffix) = out.split_at_mut(middle);
+        prefix.fill(u16::from(row[0]) << up);
+        for (dst, &src) in pixels.iter_mut().zip(&row[first..end]) {
+            *dst = u16::from(src) << up;
         }
+        suffix.fill(u16::from(row[frame_width - 1]) << up);
     }
 }

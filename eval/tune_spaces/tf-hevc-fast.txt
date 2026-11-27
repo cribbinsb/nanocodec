@@ -1,0 +1,25 @@
+# tune-fast (2026-11-23): HEVC fast's effort and decision pins, each between the
+# rung's value and medium's, searched at the rung's front slope (k 0.259, not 0.6).
+# The rung codes every superblock light (effort.regular_fraction 0), so the planner
+# terms are the light ones.
+# Format (nceval.tune_pool): name [low high] [int|log]
+hevc.intra_nxn 0 1 int
+hevc.intra_tu_depth 0 2 int
+hevc.sao_chroma 0 1 int
+hevc.intra_leaf_cost 0 1 int
+light.hevc.partial_forward 0 1 int
+light.hevc.early_merge_lambdas 0 0.06
+light.decision.codec_subpel_seed_lambdas 0 0.1
+light.decision.refine_cheap_vector 0 1 int
+light.decision.skip_no_refine_lambdas 0 0.5
+light.planner.lambda_scale
+light.planner.split_rate_factor
+nonbase.hevc.merge_candidates 2 4 int
+nonbase.hevc.pre_transform_zero_scale 2 4
+quant.trellis 0 1 int
+planner.split_selector 0 1 int
+effort.regular_fraction 0 1
+adapt.subpel 0 1 int
+filter.usage_quiet_share 0 0.75
+decision.cu_price_intra_lambdas 0 0.1
+decision.static_zero_vector 0 1 int

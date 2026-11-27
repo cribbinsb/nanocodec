@@ -15,18 +15,22 @@
 //! loads need `unsafe`.
 
 use core::arch::aarch64::{
-    int16x8_t, uint8x8_t, uint16x8_t, vabal_u8, vabdq_u8, vabsq_s16, vaddlvq_u16, vaddq_s16,
-    vaddq_u16, vaddvq_u32, vbslq_u32, vcltq_u16, vcombine_s16, vcreate_u8, vdupq_n_u8, vdupq_n_u16,
-    vdupq_n_u32, vextq_u32, vget_low_s16, vget_low_u16, vgetq_lane_u32, vld1_u8, vld1q_u8,
-    vld1q_u16, vld1q_u32, vminq_u16, vmovl_high_s16, vmovl_s16, vpadalq_u8, vpadalq_u16,
-    vpaddlq_u16, vpaddq_u16, vpmaxq_u16, vreinterpretq_s16_u16, vreinterpretq_u16_s16,
+    int16x8_t, uint8x8_t, uint8x16_t, uint16x4_t, uint16x8_t, vabal_u8, vabdq_u8, vabsq_s16,
+    vaddlvq_u16, vaddq_s16, vaddq_u16, vaddv_u16, vaddvq_u16, vaddvq_u32, vand_u16, vbslq_u32,
+    vcle_u16, vcltq_u16, vcombine_s16, vcreate_u8, vcreate_u16, vdup_n_u16, vdupq_n_u8,
+    vdupq_n_u16, vdupq_n_u32, vextq_u32, vget_low_s16, vget_low_u16, vgetq_lane_u32, vld1_u8,
+    vld1q_u8, vld1q_u16, vld1q_u32, vmaxv_u16, vminq_u16, vmovl_high_s16, vmovl_s16, vpadalq_u8,
+    vpadalq_u16, vpaddlq_u16, vpaddq_u16, vpmaxq_u16, vreinterpretq_s16_u16, vreinterpretq_u16_s16,
     vreinterpretq_u16_u32, vreinterpretq_u32_s32, vreinterpretq_u32_u16, vst1_u16, vst1q_u16,
     vst1q_u32, vsubl_u8, vsubq_s16, vuzp1q_s16, vuzp2q_s16, vzip1q_u32,
 };
 
 use super::{
-    GRID_SMALL_BLOCKS, GridBest, GridCosts, PairwiseU16, PixelFns, normalise_satd_4x4,
-    normalise_satd_8x8,
+    BlockPair, GRID_SMALL_BLOCKS, GridBest, GridCosts, MacroblockSad, PairwiseU16, PixelFns,
+    normalise_satd_4x4, normalise_satd_8x8,
+};
+use core::arch::aarch64::{
+    vaddq_u8, vbslq_u16, vqtbx1q_u8, vreinterpretq_u8_u16, vst1q_u8, vzip1q_u16, vzip2q_u16,
 };
 
 /// The NEON kernel table. NEON is always available on `AArch64`.
@@ -48,7 +52,9 @@ pub(crate) fn pixel_fns() -> PixelFns {
         ],
         sad_quads_8x8_row,
         sad_4x4_macroblock,
+        macroblock_sad: Some(macroblock_sad),
         sad_scan_16x16_even_rows,
+        sad_scan_bounded: None,
         sad_grid_best_64x64: [sad_grid_best_64x64::<1>, sad_grid_best_64x64::<2>],
         sad_grid_best_x4: None,
         sad_quads_16x16,
@@ -60,6 +66,7 @@ pub(crate) fn pixel_fns() -> PixelFns {
         use super::neon_dotprod as dot;
         functions.sad_grid_best_x4 = Some([dot::sad_grid_best_x4::<1>, dot::sad_grid_best_x4::<2>]);
         functions.sad_scan_16x16_even_rows = dot::sad_scan_16x16_even_rows;
+        functions.sad_scan_bounded = Some(dot::sad_scan_bounded);
         functions.sad_x4[2] = dot::sad_x4_wide::<16>;
         functions.sad_x4[3] = dot::sad_x4_wide::<32>;
         functions.sad_x4[4] = dot::sad_x4_wide::<64>;
@@ -349,6 +356,22 @@ pub(super) unsafe fn sad_quads_8x8(
     rf: &[u8],
     ref_stride: usize,
 ) -> [u16; 4] {
+    // SAFETY: the wrapper forwards the validated 8x8 slices.
+    let lanes = unsafe { chroma_sad_lanes(src, src_stride, rf, ref_stride) };
+    let mut quads = [0u16; 4];
+    // SAFETY: quads contains four writable u16s.
+    unsafe { vst1_u16(quads.as_mut_ptr(), lanes) };
+    quads
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn chroma_sad_lanes(
+    src: &[u8],
+    src_stride: usize,
+    rf: &[u8],
+    ref_stride: usize,
+) -> uint16x4_t {
     let mut halves = [vdupq_n_u16(0); 2];
     for y in 0..8 {
         // SAFETY: row y (8 bytes) is inside the 8x8 blocks.
@@ -362,10 +385,7 @@ pub(super) unsafe fn sad_quads_8x8(
     }
     // Two pairwise adds: [top left, top right, bottom left, bottom right].
     let pairs = vpaddq_u16(halves[0], halves[1]);
-    let mut quads = [0u16; 4];
-    // SAFETY: `quads` holds four u16.
-    unsafe { vst1_u16(quads.as_mut_ptr(), vget_low_u16(vpaddq_u16(pairs, pairs))) };
-    quads
+    vget_low_u16(vpaddq_u16(pairs, pairs))
 }
 
 /// Quadrant SADs of a 16x16 block. `vpadalq_u8` of a 16-byte row's
@@ -536,6 +556,61 @@ pub(super) fn keep_min(best: &mut GridBest, cost: &GridCosts, tag: u32) {
         }
     }
     super::scalar::keep_min_large(best, cost, tag);
+}
+
+/// Resolve four ordered candidates with u16 lane indices and a byte table
+/// so the u32 tags only need to be loaded and stored once.
+pub(super) struct GridTags {
+    table: uint8x16_t,
+    offsets: uint8x16_t,
+}
+
+impl GridTags {
+    #[inline]
+    #[target_feature(enable = "neon")]
+    pub(super) fn new(tags: [u32; 4]) -> Self {
+        const TAG_BYTES: [u8; 16] = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3];
+        // SAFETY: both arrays occupy exactly 16 initialized bytes.
+        unsafe {
+            Self {
+                table: vld1q_u8(tags.as_ptr().cast()),
+                offsets: vld1q_u8(TAG_BYTES.as_ptr()),
+            }
+        }
+    }
+
+    /// # Safety
+    /// The eight small costs and tags starting at `i` must be in bounds.
+    #[inline]
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn keep_row(&self, best: &mut GridBest, i: usize, costs: [uint16x8_t; 4]) {
+        let tag_indices = [
+            vdupq_n_u16(0x0000),
+            vdupq_n_u16(0x0404),
+            vdupq_n_u16(0x0808),
+            vdupq_n_u16(0x0c0c),
+        ];
+        // SAFETY: the caller provides eight valid small costs and tags.
+        unsafe {
+            let small = best.small.as_mut_ptr().add(i);
+            let mut values = vld1q_u16(small);
+            // An out-of-range byte index keeps the existing tag in TBX.
+            let mut winners = vdupq_n_u16(0x8080);
+            for (candidate, index) in costs.into_iter().zip(tag_indices) {
+                let lower = vcltq_u16(candidate, values);
+                winners = vbslq_u16(lower, index, winners);
+                values = vminq_u16(values, candidate);
+            }
+            vst1q_u16(small, values);
+            let indices = [vzip1q_u16(winners, winners), vzip2q_u16(winners, winners)];
+            for (half, index) in indices.into_iter().enumerate() {
+                let tags = best.tag.as_mut_ptr().add(i + 4 * half).cast();
+                let old = vld1q_u8(tags);
+                let lookup = vaddq_u8(vreinterpretq_u8_u16(index), self.offsets);
+                vst1q_u8(tags, vqtbx1q_u8(old, self.table, lookup));
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------- SATD ----
@@ -719,6 +794,26 @@ unsafe fn sad_4x4_macroblock(
     (src, src_stride, rf, ref_stride): super::BlockPair<'_>,
     [u, v]: [super::BlockPair<'_>; 2],
 ) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
+    // SAFETY: the wrapper forwards the validated 16x16 slice pair.
+    let lanes = unsafe { luma_sad_lanes((src, src_stride, rf, ref_stride)) };
+    let mut luma = [[0u16; 4]; 4];
+    for (lanes, pair) in lanes.into_iter().zip(luma.as_chunks_mut::<2>().0) {
+        // SAFETY: pair is eight writable u16s.
+        unsafe { vst1q_u16(pair.as_mut_ptr().cast(), lanes) };
+    }
+    // SAFETY: each chroma pair covers its 8x8 block (kernel contract).
+    let chroma = unsafe {
+        [
+            sad_quads_8x8(u.0, u.1, u.2, u.3),
+            sad_quads_8x8(v.0, v.1, v.2, v.3),
+        ]
+    };
+    (luma, chroma)
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn luma_sad_lanes((src, src_stride, rf, ref_stride): BlockPair<'_>) -> [uint16x8_t; 2] {
     let mut bands = [vdupq_n_u16(0); 4];
     for (band, sums) in bands.iter_mut().enumerate() {
         for y in 4 * band..4 * band + 4 {
@@ -733,21 +828,39 @@ unsafe fn sad_4x4_macroblock(
             *sums = vpadalq_u8(*sums, vabdq_u8(a, b));
         }
     }
-    let mut luma = [[0u16; 4]; 4];
-    for (half, quadrants) in luma.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-        // [band 2h blocks 0..4, band 2h + 1 blocks 0..4]; as u32 pairs, zip
-        // into [quadrant 2h, quadrant 2h + 1] (each 4x4 SAD at most 4080).
-        let sums = vreinterpretq_u32_u16(vpaddq_u16(bands[2 * half], bands[2 * half + 1]));
-        let ordered = vreinterpretq_u16_u32(vzip1q_u32(sums, vextq_u32::<2>(sums, sums)));
-        // SAFETY: the two quadrants are eight writable u16.
-        unsafe { vst1q_u16(quadrants.as_mut_ptr().cast(), ordered) };
+    [0, 2].map(|band| {
+        let sums = vreinterpretq_u32_u16(vpaddq_u16(bands[band], bands[band + 1]));
+        vreinterpretq_u16_u32(vzip1q_u32(sums, vextq_u32::<2>(sums, sums)))
+    })
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn macroblock_sad(
+    luma: BlockPair<'_>,
+    chroma: [BlockPair<'_>; 2],
+    [luma_limit, ac_limit, dc_limit]: [u32; 3],
+) -> MacroblockSad {
+    // SAFETY: Dsp validated all three input pairs.
+    let [top, bottom] = unsafe { luma_sad_lanes(luma) };
+    let pair_max = vpmaxq_u16(top, bottom);
+    let maxima = vget_low_u16(vpmaxq_u16(pair_max, pair_max));
+    let passed = vcle_u16(maxima, vdup_n_u16(luma_limit.min(4080) as u16));
+    let luma_quadrants = vaddv_u16(vand_u16(passed, vcreate_u16(0x0008_0004_0002_0001))) as u8;
+    let luma_sad = vaddvq_u16(vaddq_u16(top, bottom));
+    // SAFETY: both pairs cover the validated chroma planes.
+    let chroma = chroma.map(|pair| unsafe { chroma_skip(pair, ac_limit, dc_limit) });
+    MacroblockSad {
+        luma_sad,
+        luma_quadrants,
+        chroma,
     }
-    // SAFETY: each chroma pair covers its 8x8 block (kernel contract).
-    let chroma = unsafe {
-        [
-            sad_quads_8x8(u.0, u.1, u.2, u.3),
-            sad_quads_8x8(v.0, v.1, v.2, v.3),
-        ]
-    };
-    (luma, chroma)
+}
+
+/// Complete one plane before allocating registers for the other plane.
+#[inline(never)]
+#[target_feature(enable = "neon")]
+unsafe fn chroma_skip((src, ss, pred, ps): BlockPair<'_>, ac_limit: u32, dc_limit: u32) -> bool {
+    // SAFETY: the wrapper forwards one validated 8x8 plane.
+    let sad = unsafe { chroma_sad_lanes(src, ss, pred, ps) };
+    u32::from(vmaxv_u16(sad)) <= ac_limit && u32::from(vaddv_u16(sad)) <= dc_limit
 }

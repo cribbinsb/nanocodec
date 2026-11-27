@@ -53,6 +53,10 @@ pub(crate) mod avx512;
 #[allow(unsafe_code)]
 pub(crate) mod x86_narrow;
 
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod x86_variance_row;
+
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon;
@@ -65,11 +69,16 @@ mod neon_dotprod;
 #[allow(unsafe_code)]
 mod neon_sse;
 
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+mod halfpel_cross;
+
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]
 pub(crate) mod simd128;
 
 /// Sum and sum of squares of the differences `src - pred` over a block.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Variance {
     /// Sum of squared differences (at most `4096 * 255^2` for 64x64).
@@ -85,6 +94,14 @@ impl Variance {
     pub fn n_variance(self, area: u32) -> u32 {
         let sum = i64::from(self.sum);
         self.sse - ((sum * sum) / i64::from(area)) as u32
+    }
+
+    /// The same variance when the area is exactly `1 << log2_area` samples.
+    #[must_use]
+    #[inline]
+    pub fn n_variance_pow2(self, log2_area: u32) -> u32 {
+        let sum = i64::from(self.sum);
+        self.sse - ((sum * sum) >> log2_area) as u32
     }
 }
 
@@ -178,10 +195,28 @@ pub(crate) type SubpelVarianceFn = unsafe fn(
     h: usize,
 ) -> Variance;
 
+/// Left, right, above, and below half-pel residual statistics. The
+/// reference starts one column and one row before the full-pel centre
+/// and covers `W + 2` columns and `h + 2` rows.
+pub(crate) type HalfpelCrossFn = unsafe fn(
+    src: &[u8],
+    src_stride: usize,
+    rf: &[u8],
+    ref_stride: usize,
+    h: usize,
+) -> [Variance; 4];
+
 /// Sum of squared differences of each 8x8 block along a row of `src` and
 /// `pred` (block i covers columns 8i..8i+8 of 8 rows) into `out`.
 pub(crate) type Sse8x8RowFn =
     unsafe fn(src: &[u8], src_stride: usize, pred: &[u8], pred_stride: usize, out: &mut [u32]);
+
+/// Total squared error over two planes of the same size.
+pub(crate) type PlaneSseFn = unsafe fn(&nc_common::PlaneView<'_>, &nc_common::PlaneView<'_>) -> u64;
+
+/// Residual sums and squares of separate 8x8 cells along eight rows.
+pub(crate) type Variance8x8RowFn =
+    unsafe fn(src: &[u8], src_stride: usize, pred: &[u8], pred_stride: usize, out: &mut [Variance]);
 
 /// One ISA's residual kernels, indexed by width class (4..64).
 #[derive(Debug, Clone, Copy)]
@@ -193,5 +228,8 @@ pub(crate) struct DiffFns {
     pub variance_energy: [VarianceEnergyFn; 5],
     pub block_sums: [BlockSumsFn; 5],
     pub sub_pixel_variance: [SubpelVarianceFn; 5],
+    pub halfpel_cross: Option<[HalfpelCrossFn; 3]>,
     pub sse_8x8_row: Sse8x8RowFn,
+    pub plane_sse: PlaneSseFn,
+    pub variance_8x8_row: Option<Variance8x8RowFn>,
 }

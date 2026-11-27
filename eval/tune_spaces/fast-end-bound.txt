@@ -1,0 +1,14 @@
+# fast-end (2026-11-22): the fast rungs' rate control under the buffer bound (re-code
+# ceiling 1.15, owner). What acts inside it: the key cap, the first-key lookahead cap's
+# ease-in with camera motion, how a burst is re-coded into its room, the key reserve,
+# the key budget's distance term. Long-window, two key shares, the rung's front k.
+# Format (nceval.tune_pool): name [low high] [int|log]
+rate.key_cap_buffer 0.5 1.0
+rate.first_key_full_motion 0 4
+rate.first_key_fixed_camera 0 1
+rate.recode_fill 0.75 1.0
+rate.recode_first_exponent 1.5 5
+rate.recode_max 2 3 int
+rate.key_reserve 0 1
+rate.key_boost_ln_interval -2 2
+rate.key_level_finer 0 4

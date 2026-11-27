@@ -175,3 +175,55 @@ rate.still_level_damping = 0.5
 # trellis here: CBR L1 -2.77 % at +10-17 % cycles.
 quant.rd_trim = 1
 quant.rd_trim_block = 1
+# Medium's key RD search (2026-11-21) and key trellis (2026-11-22) were screened on
+# medium only. Medium's finer periodic keys (rate.key_level_finer 3) are not pinned
+# since keys are capped at 1.0 buffers here (e84ef02c7): under the 0.8 cap periodic
+# keys sat at the cap and the finer level could not reach them (fast-end, 2026-11-22;
+# docs/handoff/rate-control.md "The fast end under the bound").
+planner.key_rd_split = 0
+quant.trellis_key = 0
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): not screened on this rung.
+analysis.zero_gate_cell = 64
+# Period-8 QP cadence (rate.cadence_period, the Default's since 2026-11-24):
+# nceval.train against ef812fa30 (draw 2026-11-24, k 0.1518), L3 J -0.29%
+# [-0.52, -0.11], final check -0.49% [-0.92, -0.25], both BETTER, no guard;
+# c8i / c8g cycles L3 +0.12 / +0.19%, 1/150 -1.02 / -1.23%, 1/300 +0.87 /
+# +0.60%. Base boost and start-up cadence stay pinned as before medium's
+# fixed-QP cadence (base boost 4, no start-up cadence; 2026-11-22), which was
+# screened on medium, slow and slower only.
+rate.cadence_period = 8
+rate.cadence_base_boost = 3
+rate.cadence_startup_period = 8
+# Fixed QP only (`fixed_qp.`): medium's fixed-QP cadence, period 8, base boost 4,
+# no start-up cadence. nceval.fixedqp ab, 600 f, draw fixedqp-2026-11-24, n=24, vs
+# the pins above at period 4: J -1.36% [-1.66, -0.73] (PSNR-YUV -1.55%,
+# VMAF -0.81%, MS-SSIM -1.72%); 150 f -0.18% [-0.28, -0.10].
+fixed_qp.rate.cadence_period = 8
+fixed_qp.rate.cadence_base_boost = 4
+fixed_qp.rate.cadence_startup_period = 0
+# Fixed QP only (`fixed_qp.`; Brief 19, docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# enable second reference (`structure.unified=1`, `secondary_min_depth=0`) and moving-key (+6)
+# at fixed QP, resolving the AV1 fast vs faster fixed-QP inversion. Pool `nceval.fixedqp ab`,
+# draw `fixedqp-2026-11-24`, n=24: 600 f J -2.9% [-3.3, -2.3] (PSNR -3.2%, VMAF -1.8%,
+# MS-SSIM -3.6%); c8i / c8g fixed-QP cycles +5.00 / +5.66% (slope -0.54%/1% vs ladder -0.140%).
+# CBR unchanged.
+fixed_qp.structure.unified = 1
+fixed_qp.structure.secondary_min_depth = 0
+fixed_qp.rate.fixed_qp_moving_key = 6
+
+# The first-key size model's overflow guard (rate.first_key_model 2, trigger 1.10, room aim
+# 0.92; fa8f526d8 / 4b1da4f5e): a first key predicted past 1.10 of its strict room is
+# clamped before coding, sparing most whole-frame first-key re-codes. nceval.train vs the
+# 2026-11-24 head, c8i front k 0.152, CPU on its own encodes: L3 dCPU -1.41 %, J -0.33 %
+# [-0.44, -0.20] n=98; final check dCPU -0.08 / -0.56 % (1/150 / 1/300), J -0.04 %
+# [-0.17, +0.03] n=55; no guard (worst clip pool_otw_lots_064 +2.2 %, periodic pulse +0.28 dB).
+rate.first_key_model = 2
+# Leaf penalty 1 in both modes: the fixed-QP profile codes leaf 2 (screened on medium's
+# fixed QP only, 2026-11-24).
+rate.cadence_leaf_penalty = 1
+
+# Pinned before AV1 medium adopted proactive in-frame steering (Brief 21, 2026-11-24):
+# not screened at L3/FC on this rung.
+rate.in_frame = 0

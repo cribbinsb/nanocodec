@@ -1,0 +1,2759 @@
+{
+ "codec": "vp9",
+ "pkg": "pkg",
+ "manifest": "vp9_conformance_libvpx.json",
+ "manifest_streams": 305,
+ "compared": 305,
+ "passed": 305,
+ "deep_compared": 2,
+ "deep_passed": 2,
+ "required_failing": 0,
+ "skipped": [],
+ "streams": {
+  "vp90-2-00-quantizer-00": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-01": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-02": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-03": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-04": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-05": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-06": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-07": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-09": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-11": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-12": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-13": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-14": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-15": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-17": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-19": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-20": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-21": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-22": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-23": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-24": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-25": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-26": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-27": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-28": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-29": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-30": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-31": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-33": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-35": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-36": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-37": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-38": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-39": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-40": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-41": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-42": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-43": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-44": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-45": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-46": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-47": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-48": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-49": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-50": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-51": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-52": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-53": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-54": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-55": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-56": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-57": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-58": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-59": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-60": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-61": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-62": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-00-quantizer-63": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-01-sharpness-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-01-sharpness-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-01-sharpness-3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-01-sharpness-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-01-sharpness-5": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-01-sharpness-6": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-01-sharpness-7": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-08x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-10x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-130x132": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-132x130": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-132x132": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-16x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-178x180": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-180x178": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-180x180": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-18x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-32x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-34x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-64x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x08": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x10": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x18": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x32": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x34": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x64": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-66x66": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-02-size-lf-1920x1080": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-deltaq": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-196x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-198x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-200x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-202x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-208x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-210x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-224x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x196": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x198": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x200": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x202": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x208": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x210": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x224": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-226x226": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-03-size-352x288": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-05-resize": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-06-bilinear": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-07-frame_parallel": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile-4x1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile-4x4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile_1x2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile_1x2_frame_parallel": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile_1x4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile_1x4_frame_parallel": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile_1x8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-08-tile_1x8_frame_parallel": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-09-aq2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-09-lf_deltas": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-09-subpixel-00": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-10-show-existing-frame": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-10-show-existing-frame2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-11-size-351x287": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-11-size-351x288": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-11-size-352x287": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-12-droppable_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-12-droppable_2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-12-droppable_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-13-largescaling": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-1-2-4-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-1-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-1-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-2-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-2-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-2-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-4-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-4-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-4-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-8-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-8-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-8-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-10frames-fp-tiles-8-4-2-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-1-16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-1-2-4-8-16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-1-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-1-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-16-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-16-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-16-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-16-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-16-8-4-2-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-2-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-2-16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-2-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-2-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-4-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-4-16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-4-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-4-8": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-8-1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-8-16": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-8-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-14-resize-fp-tiles-8-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-15-segkey": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-15-segkey_adpq": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-16-intra-only": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-17-show-existing-frame": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-18-resize": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-19-skip": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-19-skip-01": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-19-skip-02": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-20-big_superframe-01": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-20-big_superframe-02": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1280x720_5_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1280x720_5_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1280x720_7_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1280x720_7_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1920x1080_5_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1920x1080_5_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1920x1080_7_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_1920x1080_7_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x180_5_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x180_5_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x180_7_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x180_7_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x240_5_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x240_5_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x240_7_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_320x240_7_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x360_5_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x360_5_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x360_7_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x360_7_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x480_5_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x480_5_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x480_7_1-2": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-21-resize_inter_640x480_7_3-4": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-22-svc_1280x720_1": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp90-2-22-svc_1280x720_3": {
+   "bit_depth": [
+    8,
+    8
+   ],
+   "profile": "Profile 0",
+   "required": true,
+   "problem": null
+  },
+  "vp92-2-20-10bit-yuv420": {
+   "bit_depth": [
+    10,
+    10
+   ],
+   "profile": "Profile 2",
+   "required": true,
+   "problem": null
+  },
+  "vp92-2-20-12bit-yuv420": {
+   "bit_depth": [
+    12,
+    12
+   ],
+   "profile": "Profile 2",
+   "required": true,
+   "problem": null
+  }
+ }
+}

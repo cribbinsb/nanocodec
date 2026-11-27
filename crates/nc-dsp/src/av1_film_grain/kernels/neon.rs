@@ -5,20 +5,28 @@
 //! Q15 multiply of `generic` (exact for shifts 8..=11). Rows shorter than
 //! 16 samples, and the last partial group, take the scalar reference.
 #![allow(unsafe_code)]
-use super::{Av1GrainScaling, Kernels, generic};
+use super::{
+    Av1FilmGrainParams, Av1GrainScaling, GrainBlocks, Kernels, PlaneView, PlaneViewMut, Template,
+    blocks, generic,
+};
 use crate::simd::neon::I16x8;
 use core::arch::aarch64::{
-    int16x8_t, uint8x16_t, uint8x16x4_t, vaddq_s16, vaddq_s32, vcombine_u8, vcombine_u16,
-    vdupq_n_s16, vdupq_n_s32, vdupq_n_u8, vget_high_s16, vget_high_u8, vget_low_s16, vget_low_u8,
-    vld1_s8, vld1q_u8, vld1q_u8_x4, vld2q_u8, vmaxq_s16, vminq_s16, vmlal_s16, vmovl_s8, vmovl_u8,
-    vmull_s16, vqmovn_u16, vqmovun_s16, vqmovun_s32, vqrdmulhq_s16, vqtbl4q_u8, vqtbx4q_u8,
-    vreinterpretq_s16_u16, vrhaddq_u8, vshlq_s16, vshrq_n_s32, vst1q_u8, vsubq_u8,
+    int8x16_t, int16x8_t, uint8x16_t, uint8x16x4_t, vaddq_s16, vaddq_s32, vcombine_u8,
+    vcombine_u16, vcreate_s8, vdupq_n_s8, vdupq_n_s16, vdupq_n_s32, vdupq_n_u8, vget_high_s16,
+    vget_high_u8, vget_lane_s16, vget_low_s8, vget_low_s16, vget_low_u8, vld1_s8, vld1q_s8,
+    vld1q_u8, vld1q_u8_x4, vld2q_u8, vmaxq_s16, vmaxq_u8, vminq_s16, vminq_u8, vmlal_high_s8,
+    vmlal_s8, vmlal_s16, vmovl_high_s8, vmovl_high_u8, vmovl_s8, vmovl_u8, vmull_high_s8, vmull_s8,
+    vmull_s16, vmulq_s16, vqmovn_u16, vqmovun_high_s16, vqmovun_s16, vqmovun_s32, vqrdmulhq_s16,
+    vqrshrn_high_n_s16, vqrshrn_n_s16, vqtbl4q_u8, vqtbx4q_u8, vreinterpret_s16_s8,
+    vreinterpretq_s8_s16, vreinterpretq_s16_s8, vreinterpretq_s16_u16, vrhaddq_u8, vrshlq_s16,
+    vsetq_lane_s16, vshlq_s16, vshrq_n_s32, vst1q_u8, vsubq_u8,
 };
 
 pub(super) const KERNELS: Kernels = Kernels {
     luma,
     chroma,
     blend,
+    luma_plane: Some(luma_plane),
 };
 
 /// Samples per vector group.
@@ -190,4 +198,142 @@ unsafe fn chroma(
 unsafe fn blend(old: &[i8], new: &mut [i8], weights: [i16; 2]) {
     // SAFETY: this wrapper enables the lane ISA.
     unsafe { generic::blend::<I16x8>(old, new, weights) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn luma_plane(
+    (params, layout): (&Av1FilmGrainParams, GrainBlocks),
+    template: &Template<i8>,
+    scaling: &Av1GrainScaling,
+    bounds: [u8; 2],
+    views: (&PlaneView<'_>, &mut PlaneViewMut<'_>),
+    size: (usize, usize),
+) -> bool {
+    if !blocks::whole_blocks(layout, size) {
+        return false;
+    }
+    let scales = table(scaling);
+    let shift = vdupq_n_s16(-i16::from(scaling.shift));
+    let clip = bounds.map(|value| vdupq_n_u8(value));
+    blocks::visit((params, layout), template, views, size, |block| {
+        // SAFETY: synthesis and whole_blocks checked the views. The
+        // shared block offsets keep each 32-column row within the template.
+        unsafe { apply_block(block, &scales, shift, clip) };
+    });
+    true
+}
+
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn apply_block(
+    block: blocks::LumaBlock,
+    table: &[uint8x16x4_t; 4],
+    shift: int16x8_t,
+    [lower, upper]: [uint8x16_t; 2],
+) {
+    let (src, ss) = block.source;
+    let (dst, ds) = block.output;
+    let (grain, gs) = block.noise;
+    let add = |pixels: uint8x16_t, noise: int8x16_t| {
+        let scales = lookup(table, pixels);
+        let lo = vmulq_s16(
+            vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(scales))),
+            vmovl_s8(vget_low_s8(noise)),
+        );
+        let hi = vmulq_s16(
+            vreinterpretq_s16_u16(vmovl_high_u8(scales)),
+            vmovl_high_s8(noise),
+        );
+        let lo = vaddq_s16(
+            vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(pixels))),
+            vrshlq_s16(lo, shift),
+        );
+        let hi = vaddq_s16(
+            vreinterpretq_s16_u16(vmovl_high_u8(pixels)),
+            vrshlq_s16(hi, shift),
+        );
+        let pixels = vqmovun_high_s16(vqmovun_s16(lo), hi);
+        vminq_u8(vmaxq_u8(pixels, lower), upper)
+    };
+    // SAFETY: every visited row has 32 visible bytes. Overlap reads two
+    // valid bytes from left and two valid 32-byte rows from above.
+    unsafe {
+        let write = |y, a, b| {
+            let s = src.add(y * ss);
+            let d = dst.add(y * ds);
+            vst1q_u8(d, add(vld1q_u8(s), a));
+            vst1q_u8(d.add(GROUP), add(vld1q_u8(s.add(GROUP)), b));
+        };
+        let first = if let Some((top, top_left)) = block.above {
+            for y in 0..2 {
+                let mut cur = vld1q_s8(grain.add(y * gs));
+                let mut prev = vld1q_s8(top.add(y * gs));
+                if let Some(left) = block.left {
+                    cur = blend_left(cur, left.add(y * gs));
+                }
+                if let Some(left) = top_left {
+                    prev = blend_left(prev, left.add(y * gs));
+                }
+                let w0 = vdupq_n_s8(if y == 0 { 27 } else { 17 });
+                let w1 = vdupq_n_s8(if y == 0 { 17 } else { 27 });
+                let a = blend_above(prev, cur, w0, w1);
+                let b = blend_above(
+                    vld1q_s8(top.add(y * gs + GROUP)),
+                    vld1q_s8(grain.add(y * gs + GROUP)),
+                    w0,
+                    w1,
+                );
+                write(y, a, b);
+            }
+            2
+        } else {
+            0
+        };
+        if let Some(left) = block.left {
+            for y in first..block.rows {
+                let a = blend_left(vld1q_s8(grain.add(y * gs)), left.add(y * gs));
+                write(y, a, vld1q_s8(grain.add(y * gs + GROUP)));
+            }
+        } else {
+            for y in first..block.rows {
+                write(
+                    y,
+                    vld1q_s8(grain.add(y * gs)),
+                    vld1q_s8(grain.add(y * gs + GROUP)),
+                );
+            }
+        }
+    }
+}
+
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn blend_left(current: int8x16_t, left: *const i8) -> int8x16_t {
+    // SAFETY: the scheduler leaves two overlap samples from the left block.
+    let old = u16::from_le(unsafe { left.cast::<u16>().read_unaligned() });
+    let old = vcreate_s8(u64::from(old));
+    let previous = vmull_s8(old, vcreate_s8(0x111b));
+    let mixed = vmlal_s8(previous, vget_low_s8(current), vcreate_s8(0x1b11));
+    let mixed = vreinterpret_s16_s8(vqrshrn_n_s16::<5>(mixed));
+    vreinterpretq_s8_s16(vsetq_lane_s16::<0>(
+        vget_lane_s16::<0>(mixed),
+        vreinterpretq_s16_s8(current),
+    ))
+}
+
+#[target_feature(enable = "neon")]
+#[inline]
+fn blend_above(
+    old: int8x16_t,
+    new: int8x16_t,
+    previous: int8x16_t,
+    current: int8x16_t,
+) -> int8x16_t {
+    let low = vmlal_s8(
+        vmull_s8(vget_low_s8(old), vget_low_s8(previous)),
+        vget_low_s8(new),
+        vget_low_s8(current),
+    );
+    let high = vmlal_high_s8(vmull_high_s8(old, previous), new, current);
+    vqrshrn_high_n_s16::<5>(vqrshrn_n_s16::<5>(low), high)
 }

@@ -93,7 +93,7 @@ pub(crate) fn fdct8<V: super::forward_lanes::ForwardLanes>(
     output[7] = step[7];
 }
 
-/// libaom `av1_fdct16` on every lane (GENERATED; see module docs).
+/// Full 16-point transform.
 #[inline(always)]
 pub(crate) fn fdct16<V: super::forward_lanes::ForwardLanes>(
     input: &[V; 16],
@@ -101,6 +101,17 @@ pub(crate) fn fdct16<V: super::forward_lanes::ForwardLanes>(
     cospi: &[i32; 64],
     cos_bit: u32,
 ) {
+    fdct16_with_sum(input, output, cospi, cos_bit);
+}
+
+/// libaom `av1_fdct16` on every lane (GENERATED; see module docs).
+#[inline(always)]
+pub(crate) fn fdct16_with_sum<V: super::forward_lanes::ForwardLanes>(
+    input: &[V; 16],
+    output: &mut [V; 16],
+    cospi: &[i32; 64],
+    cos_bit: u32,
+) -> V {
     let mut step = [V::splat(0); 16];
     // stage 0;
     // stage 1;
@@ -155,6 +166,7 @@ pub(crate) fn fdct16<V: super::forward_lanes::ForwardLanes>(
     output[14] = step[14].add(step[13]);
     output[15] = step[15].add(step[12]);
     // stage 4
+    let sum = output[0].add(output[1]);
     step[0] = V::half_btf(cospi[32], output[0], cospi[32], output[1], cos_bit);
     step[1] = V::half_btf(-cospi[32], output[1], cospi[32], output[0], cos_bit);
     step[2] = V::half_btf(cospi[48], output[2], cospi[16], output[3], cos_bit);
@@ -222,6 +234,7 @@ pub(crate) fn fdct16<V: super::forward_lanes::ForwardLanes>(
     output[13] = step[11];
     output[14] = step[7];
     output[15] = step[15];
+    sum
 }
 
 /// Full 32-point graph retained as the scalar/reference implementation.
@@ -246,6 +259,17 @@ pub(crate) fn fdct32_low16<V: super::forward_lanes::ForwardLanes>(
     fdct32_impl::<V, true>(input, output, cospi, cos_bit);
 }
 
+/// Full 32-point transform, returning the input sum before DC rounding.
+#[inline(always)]
+pub(crate) fn fdct32_with_sum<V: super::forward_lanes::ForwardLanes>(
+    input: &[V; 32],
+    output: &mut [V; 32],
+    cospi: &[i32; 64],
+    cos_bit: u32,
+) -> V {
+    fdct32_impl::<V, false>(input, output, cospi, cos_bit)
+}
+
 /// libaom `av1_fdct32` on every lane (GENERATED; see module docs).
 #[inline(always)]
 fn fdct32_impl<V: super::forward_lanes::ForwardLanes, const LOW16: bool>(
@@ -253,7 +277,7 @@ fn fdct32_impl<V: super::forward_lanes::ForwardLanes, const LOW16: bool>(
     output: &mut [V; 32],
     cospi: &[i32; 64],
     cos_bit: u32,
-) {
+) -> V {
     let mut step = [V::splat(0); 32];
     // stage 0;
     // stage 1;
@@ -389,6 +413,7 @@ fn fdct32_impl<V: super::forward_lanes::ForwardLanes, const LOW16: bool>(
     step[30] = output[30];
     step[31] = output[31];
     // stage 5
+    let sum = step[0].add(step[1]);
     output[0] = V::half_btf(cospi[32], step[0], cospi[32], step[1], cos_bit);
     if !LOW16 {
         output[1] = V::half_btf(-cospi[32], step[1], cospi[32], step[0], cos_bit);
@@ -615,6 +640,7 @@ fn fdct32_impl<V: super::forward_lanes::ForwardLanes, const LOW16: bool>(
         output[30] = step[15];
         output[31] = step[31];
     }
+    sum
 }
 
 /// Full 64-point graph retained as the scalar/reference implementation.

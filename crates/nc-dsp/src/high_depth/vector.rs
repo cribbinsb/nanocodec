@@ -101,6 +101,60 @@ pub(crate) mod neon {
     );
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+pub(super) mod sve2 {
+    use nc_common::BitDepth;
+
+    use crate::high_depth::Prep16Fn;
+    use crate::mc::HevcLumaTaps;
+    use crate::mc::separable_u16_simd::prep_lanes;
+    use crate::simd::neon::{I16x4, I16x8Sve2};
+
+    #[target_feature(enable = "neon")]
+    #[inline(never)]
+    unsafe fn prep_horizontal<const W: usize>(
+        src: &[u16],
+        ss: usize,
+        dst: &mut [i16],
+        ds: usize,
+        h: usize,
+        frac: (usize, usize),
+        depth: BitDepth,
+    ) {
+        prep_lanes::<HevcLumaTaps, 8, W, I16x8Sve2, I16x8Sve2, I16x8Sve2, I16x4>(
+            src, ss, dst, ds, h, frac, depth,
+        );
+    }
+
+    unsafe fn prep<const W: usize>(
+        src: &[u16],
+        ss: usize,
+        dst: &mut [i16],
+        ds: usize,
+        h: usize,
+        frac: (usize, usize),
+        depth: BitDepth,
+    ) {
+        // SAFETY: the dispatcher checks SVE2 and the caller checks the footprint.
+        // The dot expects signed halfword samples with sums fitting in i32.
+        unsafe {
+            if frac.0 != 0 && depth.bits() <= 12 {
+                prep_horizontal::<W>(src, ss, dst, ds, h, frac, depth);
+            } else {
+                super::neon::prep::<HevcLumaTaps, 8, W>(src, ss, dst, ds, h, frac, depth);
+            }
+        }
+    }
+
+    pub(in crate::high_depth) const HEVC_LUMA_PREP: [Prep16Fn; 5] = [
+        super::neon::prep::<HevcLumaTaps, 8, 4>,
+        prep::<8>,
+        prep::<16>,
+        prep::<32>,
+        prep::<64>,
+    ];
+}
+
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 pub(crate) mod simd128 {
     vectorised!(

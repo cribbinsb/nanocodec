@@ -4,16 +4,23 @@
     python3 tools/dev/aws_cpu_ab.py --base COMMIT|BINARY --cand COMMIT|BINARY \\
         [--base-param k=v ...] [--cand-param k=v ...] --rungs hevc:fast,av1:faster \\
         [--clips crowd_mot17_09,bodycam_airport,...] [--frames 150] [--bitrate 600 | --qp Q] \\
-        [--rounds 5] [--targets graviton3,graviton4,zen5] [--boxes 1] [--json OUT] [--dry-run]
+        [--rounds 5] [--targets graniterapids,graviton4[,zen5]] [--boxes 1] [--json OUT]
+        [--dry-run]
+        [--key-shares [150,300]]
     python3 tools/dev/aws_cpu_ab.py --plan PAIRS.json ...     # several pairs in one run
     python3 tools/dev/aws_cpu_ab.py summarize --runs DIR [--json OUT]
 
-The everyday CPU targets (docs/PROCEDURES.md "CPU A/B on rented cores"): one .large
-instance per target and shard, base and candidate measured on the same core of the
-same box in interleaved rounds (tools/dev/cpu_ab_box.py: A B, B A, ...), every target
-and shard on its own box at the same time. A target is a CPU, not a judge: where two
-targets disagree on a change, that is a fact about the change on those CPUs (as AVX2
-against AVX-512 is), and the change is judged on the whole set.
+The CPU targets are the benchmark's timing machines (BP-3.10, docs/benchmark-procedure.md
+section 2; tools/dev/cpu_ab_shard.py TARGETS): c8i.2xlarge (Granite Rapids) and c8g.2xlarge
+(Graviton 4), eu-north-1 spot, with c8a.2xlarge (Zen 5, on demand) as an optional third. Each
+target and shard gets its own box, all at the same time, placed as the benchmark's boxes are:
+encodes on vCPU 1, the harness on another physical core (tools/bench/pinning.py). Base and
+candidate are measured on that same core in interleaved rounds (tools/dev/cpu_ab_box.py:
+A B, B A, ...), so the box's level (the benchmark's 1.4-1.5 % spread between c8i boxes) and its
+drift cancel in each pair; the benchmark's timing references (section 6), which correct jobs
+that are compared across time on a box, would cancel out of these paired ratios. A target is
+a CPU, not a judge: where two targets disagree on a change, that is a fact about the change on
+those CPUs (as AVX2 against AVX-512 is), and the change is judged on the whole set.
 
 Each run counts user-space hardware events where the instance offers them (Graviton:
 cycles, instructions, cache refills, backend stalls; most x86 VMs: none) and always
@@ -31,11 +38,18 @@ commits run side by side in BUILD_DIRS warm target directories per architecture 
 box; only requests for the same (commit, architecture) wait for each other. A pair that
 differs only in `--param` values needs one build.
 
-Boxes. tools/dev/aws_session.py: spot (on demand with `--on-demand`, and for a shard's
-one retry after a reclaim), a budget cap and a hard lifetime per box, quota-aware
+Boxes. tools/dev/aws_session.py: spot (on demand with `--on-demand`; a failed shard's
+retries stay on spot unless `--retry-on-demand`), a budget cap and a hard lifetime per box, quota-aware
 (a session waits in line for spot quota), terminated and verified on every exit, the
 ledger written. Clips are cut to `--frames`, zstd-compressed (cached in CLIP_CACHE),
 uploaded and deleted with the box.
+
+Key shares. `--key-shares` measures every pair at each key share of the acceptance
+screens (eval/nceval/key_shares.py: a key every 150 frames on 600, every 300 on 900,
+from frame 0), in the rate mode given (CBR by default, as the screens' quality), on
+KEY_SHARE_CLIPS (the long clips with 900 frames); each pair becomes `<pair>@k<period>`
+and the summary prints, per rung and target, the `--dcpu 150=X,300=Y` that
+nceval.quick, nceval.train and nceval.screen take.
 """
 
 from __future__ import annotations
@@ -59,8 +73,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))
-from aws_session import Session, SessionSpec, say  # noqa: E402
-from nceval import retention  # noqa: E402
+from aws_session import say  # noqa: E402
+from cpu_ab_shard import (DONE_FILE, BOX_BUDGET_USD, DEFAULT_TARGETS, MAX_RUN_VCPUS, TARGET_VCPUS, TARGETS,  # noqa: E402
+                          box_command, prepare_command)
+from nceval import decision_cpu, key_shares, retention  # noqa: E402
+from nceval.clipframes import ClipFrames  # noqa: E402
+from nceval.clips import Clip  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
@@ -69,39 +87,23 @@ BUILD_CACHE = WORK / "builds"
 CLIP_CACHE = WORK / "clips"
 CLIPSET = DATA / "clips/quick.json"
 NC_REMOTE = DATA / "bin/nc-remote"
-REMOTE_DIR = "cpuab"
-BOX_FILES = ("cpu_ab_box.py", "jperf.py")
+#: The box side: the runner, its counter and the benchmark's CPU placement (one definition).
+BOX_FILES = (REPO / "tools/dev/cpu_ab_box.py", REPO / "tools/dev/jperf.py",
+             REPO / "tools/bench/pinning.py")
+SHARD_SCRIPT = Path(__file__).resolve().parent / "cpu_ab_shard.py"
 COMMIT_MARKER = "COMMIT"
 
 
-@dataclass(frozen=True)
-class Target:
-    """One CPU target: the instance that has it, alone on a physical core."""
-    instance_type: str
-    region: str
-    ami_arch: str  # aws_session's AMI architecture
-    machine: str  # what the binaries must be built for (uname -m)
-    cpu: str
-    #: The timed CPU: vCPU 1 (vCPU 0 keeps the system). On Graviton and AMD .large every
-    #: vCPU is a physical core; on Intel .large the two vCPUs are one core's SMT threads.
-    timed_cpu: int = 1
-
-
-TARGETS = {
-    "graviton2": Target("c6g.large", "eu-west-1", "arm64", "aarch64", "Graviton2, Neoverse N1"),
-    "graviton3": Target("c7g.large", "eu-west-1", "arm64", "aarch64", "Graviton3, Neoverse V1"),
-    "graviton4": Target("c8g.large", "eu-west-1", "arm64", "aarch64", "Graviton4, Neoverse V2"),
-    "zen5": Target("c8a.large", "eu-west-1", "amd64", "x86_64", "EPYC Turin, Zen 5"),
-    "intel": Target("c7i.large", "eu-west-1", "amd64", "x86_64",
-                    "Xeon Sapphire Rapids (one core, its SMT sibling runs the system)"),
-}
-#: The everyday pair (docs/results/cpu-targets-2026-11-21.md): the two lowest-noise Arm
-#: cores; add zen5 for x86 when the builds are commits (a binary serves one architecture).
-DEFAULT_TARGETS = ("graviton3", "graviton4")
 DEFAULT_CLIPS = ("crowd_mot17_09", "bodycam_airport", "pan_jaad_0117", "lowlight_pp22_004")
 DEFAULT_FRAMES = 150
 DEFAULT_KBPS = 600
 DEFAULT_ROUNDS = 5
+#: `--key-shares`' clips: raw 720p clips of three classes with the 1/300 share's window
+#: (900 frames) in clips/long.json.
+KEY_SHARE_CLIPSET = DATA / "clips/long.json"
+KEY_SHARE_CLIPS = ("long_static_chirla_s024c2", "long_crowd_mot20_02", "long_pan_bdd_00c12bd0")
+#: The pair-name suffix of a key share's pair (`<pair>@k150`).
+SHARE_SUFFIX = "@k"
 #: ELF e_machine values (offset 18) of the two architectures we build.
 ELF_MACHINES = {0xB7: "aarch64", 0x3E: "x86_64"}
 RUST_TRIPLES = {"aarch64": "aarch64-unknown-linux-gnu", "x86_64": "x86_64-unknown-linux-gnu"}
@@ -119,14 +121,14 @@ BUILD_DIRS = 4
 PROGRESS_SECONDS = 60
 #: A shard's wall limit: its box's lifetime, plus a wait for spot quota and the download.
 SHARD_WALL_MINUTES = 75 + 20
-#: Per box: budget cap and hard lifetime (a .large is a few cents an hour).
-BOX_BUDGET_USD = 1.0
-BOX_LIFETIME_MINUTES = 75
-PREPARE_MINUTES = 8
-#: The full run's limit: this many times the pipe-cleaner's estimate, plus a margin.
-RUN_TIMEOUT_FACTOR = 2.5
-RUN_TIMEOUT_MARGIN_MINUTES = 10
-SHARD_ATTEMPTS = 2
+#: Tries per shard, all on spot in the target's region (aws_session tries every zone) unless
+#: --on-demand, or --retry-on-demand for the retries (coordinator, 2026-11-24: the automatic
+#: on-demand retry cost c8g.2xlarge $0.05 a box against $0.01 spot; docs/aws-cost-guide.md
+#: rule 6). One shard
+#: that fails every try loses the whole run's charge, so a third try (2026-11-23: Zen 5
+#: boxes failed twice in a row on spot capacity and a dropped upload, and a 9-box
+#: re-judge of slow rungs was lost).
+SHARD_ATTEMPTS = 3
 #: Two-sided 95 % Student t quantiles by degrees of freedom (larger: the normal's).
 T975 = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306,
         9: 2.262, 10: 2.228, 12: 2.179, 15: 2.131, 20: 2.086, 30: 2.042, 60: 2.000}
@@ -137,12 +139,27 @@ NORMAL_975 = 1.960
 
 @dataclass(frozen=True)
 class Side:
-    """One side of a pair: a build (commit or binary path) and its extra arguments."""
+    """One side of a pair: a build (commit or binary path) and its extra arguments.
+
+    `inputs` (a --plan side only): a local directory of per-job files the side's encodes
+    read, staged on the box; `job_args` are encoder arguments in which `{inputs}`,
+    `{codec}`, `{preset}` and `{clip}` name that directory on the box and the job, e.g.
+    `["--partition-replay", "{inputs}/{codec}-{preset}/{clip}.plog"]`."""
     build: str
     params: tuple[str, ...] = ()
+    inputs: str | None = None
+    job_args: tuple[str, ...] = ()
 
-    def argv_tail(self) -> list[str]:
-        return [a for p in self.params for a in ("--param", p)]
+    def argv_tail(self, codec: str = "", preset: str = "", clip: str = "") -> list[str]:
+        fields = {"inputs": f"inputs/{self.inputs_key()}", "codec": codec, "preset": preset,
+                  "clip": clip}
+        return [a for p in self.params for a in ("--param", p)] + [
+            a.format(**fields) for a in self.job_args]
+
+    def inputs_key(self) -> str | None:
+        if self.inputs is None:
+            return None
+        return hashlib.sha1(str(Path(self.inputs).resolve()).encode()).hexdigest()[:10]
 
 
 @dataclass(frozen=True)
@@ -154,36 +171,51 @@ class Pair:
     clips: tuple[str, ...]
     frames: int
     rate: tuple[str, ...]  # ("--bitrate", "600") or ("--qp", "32")
+    #: A key every this many frames (a key share); None: the encoder's default.
+    intra_period: int | None = None
 
 
 def pairs_from_args(args) -> list[Pair]:
     rate = ("--qp", str(args.qp)) if args.qp is not None else ("--bitrate", str(args.bitrate))
     if args.plan:
-        return [pair_from_json(entry, args, rate) for entry in json.loads(args.plan.read_text())]
-    if not (args.base and args.cand and args.rungs):
+        pairs = [pair_from_json(entry, args, rate) for entry in json.loads(args.plan.read_text())]
+    elif not (args.base and args.cand and args.rungs):
         raise SystemExit("give --base, --cand and --rungs, or --plan")
-    return [Pair("ab", Side(args.base, tuple(args.base_param)), Side(args.cand, tuple(args.cand_param)),
-                 tuple(args.rungs.split(",")), tuple(args.clips.split(",")), args.frames, rate)]
+    else:
+        pairs = [Pair("ab", Side(args.base, tuple(args.base_param)),
+                      Side(args.cand, tuple(args.cand_param)), tuple(args.rungs.split(",")),
+                      tuple(args.clips.split(",")), args.frames, rate)]
+    return at_key_shares(pairs, args.key_shares) if getattr(args, "key_shares", None) else pairs
+
+
+def at_key_shares(pairs: list[Pair], periods: str) -> list[Pair]:
+    """Each pair once per key share (nceval.key_shares): its window, a key every period."""
+    return [dataclasses.replace(p, name=f"{p.name}{SHARE_SUFFIX}{s.period}", frames=s.window,
+                                intra_period=s.period)
+            for p in pairs for s in key_shares.parse_periods(periods)]
 
 
 def pair_from_json(entry: dict, args, rate: tuple[str, ...]) -> Pair:
-    """A --plan entry: {"name", "base": {"build", "params"}, "cand": {...}, "rungs",
+    """A --plan entry: {"name", "base": {"build", "params", optional "inputs" and
+    "job_args" (Side)}, "cand": {...}, "rungs",
     optional "clips", "frames", "bitrate" / "qp"} (missing fields: the command line's)."""
     if "qp" in entry:
         rate = ("--qp", str(entry["qp"]))
     elif "bitrate" in entry:
         rate = ("--bitrate", str(entry["bitrate"]))
-    return Pair(entry["name"], Side(entry["base"]["build"], tuple(entry["base"].get("params", ()))),
-                Side(entry["cand"]["build"], tuple(entry["cand"].get("params", ()))),
+    side = lambda s: Side(s["build"], tuple(s.get("params", ())), s.get("inputs"),
+                          tuple(s.get("job_args", ())))
+    return Pair(entry["name"], side(entry["base"]), side(entry["cand"]),
                 tuple(entry["rungs"]), tuple(entry.get("clips", args.clips.split(","))),
                 int(entry.get("frames", args.frames)), rate)
 
 
-def load_clips(names: set[str]) -> dict[str, dict]:
-    known = {c["name"]: c for c in json.loads(CLIPSET.read_text())["clips"]}
+def load_clips(names: set[str], clipset: Path | None = None) -> dict[str, dict]:
+    clipset = clipset or CLIPSET  # read at call time: tests point CLIPSET elsewhere
+    known = {c["name"]: c for c in json.loads(clipset.read_text())["clips"]}
     missing = sorted(names - set(known))
     if missing:
-        raise SystemExit(f"not in {CLIPSET}: {missing}")
+        raise SystemExit(f"not in {clipset}: {missing}")
     return {n: known[n] for n in names}
 
 
@@ -216,10 +248,65 @@ def jobs_for(pairs: list[Pair], clips: dict[str, dict]) -> list[dict]:
                           "--width", str(clip["width"]), "--height", str(clip["height"]),
                           "--fps", f"{clip['fps']:g}", "--frames", str(pair.frames),
                           *pair.rate, "--output", "/dev/null"]
-                jobs.append({"id": f"{pair.name}|{rung}|{name}", "variants": {
-                    side: [f"bin/{build_key(getattr(pair, side).build)}/nanocodec", *common,
-                           *getattr(pair, side).argv_tail()] for side in ("base", "cand")}})
+                if pair.intra_period:
+                    common += ["--intra-period", str(pair.intra_period)]
+                variants = {}
+                for side in ("base", "cand"):
+                    this = getattr(pair, side)
+                    variants[side] = [f"bin/{build_key(this.build)}/nanocodec", *common,
+                                      *this.argv_tail(codec, preset, name)]
+                inputs = {f"inputs/{s.inputs_key()}": str(Path(s.inputs).resolve())
+                          for s in (pair.base, pair.cand) if s.inputs}
+                jobs.append({"id": f"{pair.name}|{rung}|{name}", "variants": variants,
+                             **({"inputs": inputs} if inputs else {})})
     return jobs
+
+
+def decision_jobs(plan: dict) -> list[dict]:
+    """The box jobs of a --decision-plan (nceval.decision_cpu): each decision's own
+    commands, the binary, clip and stream filled in, each side's arguments appended; the
+    pair is `<decision>@<group>` (decision_cpu.GROUP_MARK), one per protocol group."""
+    jobs = []
+    for decision in plan["decisions"]:
+        rung = f"{decision['codec']}:{decision['rung']}"
+        for record in decision["jobs"]:
+            job = decision_cpu.CpuJob.from_record(record)
+            pair = f"{decision['name']}{decision_cpu.GROUP_MARK}{job.group}"
+            clip = f"clips/{decision_clip_file(job)}"
+            variants = {}
+            for side in ("base", "cand"):
+                this = decision[side]
+                fill = {decision_cpu.BIN: f"bin/{build_key(this['build'])}/nanocodec",
+                        decision_cpu.INPUT: clip, decision_cpu.OUTPUT: "/dev/null"}
+                variants[side] = [*(fill.get(a, a) for a in job.argv), *this["extra"]]
+            jobs.append({"id": f"{pair}|{rung}|{job.clip}-{job.kbps}k", "variants": variants})
+    return jobs
+
+
+def decision_clip_file(job: "decision_cpu.CpuJob") -> str:
+    return f"{job.clip}-s{job.start_frame}-{job.frames}f.yuv"
+
+
+def decision_clips(plan: dict) -> dict[str, Path]:
+    """{clip file: its compressed frames} for every job of a --decision-plan."""
+    files = {}
+    for decision in plan["decisions"]:
+        for record in decision["jobs"]:
+            job = decision_cpu.CpuJob.from_record(record)
+            source = decision["clips"][job.clip]
+            files[decision_clip_file(job)] = cached_frames(
+                Clip(**{**source, "yuv": Path(source["yuv"])}, start_frame=job.start_frame),
+                job.frames, decision_clip_file(job))
+    return files
+
+
+def decisions_record(plan: dict) -> dict:
+    """The summary's record of what each decision measured (decision_cpu.charge reads it)."""
+    return {d["name"]: {"digest": d["digest"], "rotation": d["rotation"], "codec": d["codec"],
+                        "rung": d["rung"], "base": d["base"], "cand": d["cand"],
+                        "groups": sorted({decision_cpu.CpuJob.from_record(j).group
+                                          for j in d["jobs"]})}
+            for d in plan["decisions"]}
 
 
 def input_of(job: dict) -> str:
@@ -254,6 +341,13 @@ def elf_machine(path: Path) -> str | None:
 #: rebuild 3 min on the build box), and clips and run directories used in KEEP_DAYS.
 KEEP_BUILDS = 12
 KEEP_DAYS = 3
+#: The cache's size cap (tools/dev/retention.toml `cap_gb` of work/cpu-ab): past it, the
+#: least recently used cut clips go first (one is re-cut in seconds; 114 of 119 had been
+#: read within a day on 2026-11-24, 16 GiB in all).
+CACHE_CAP_ENTRY = "work/cpu-ab"
+#: A build's temporary worktree and fetch directory (build_on_box: `tree-` / `fetch-`
+#: MACHINE-COMMIT-PID) left by a process that is gone.
+LEFTOVER_PREFIXES = ("tree-", "fetch-")
 
 
 def prune(now: float | None = None) -> int:
@@ -276,7 +370,36 @@ def prune(now: float | None = None) -> int:
         files = [path] if path.is_file() else [f for f in path.rglob("*") if f.is_file()]
         freed += sum(f.stat().st_size for f in files)
         shutil.rmtree(path) if path.is_dir() else path.unlink()
+    freed += remove_leftovers()
+    return freed + cap_clips()
+
+
+def remove_leftovers() -> int:
+    """Builds' temporary worktrees and fetch directories whose process is gone (a build
+    stopped before its cleanup); a worktree is unregistered from the repository too."""
+    freed = 0
+    for path in sorted(WORK.glob("*-*-*-*")) if WORK.is_dir() else ():
+        pid = path.name.rsplit("-", 1)[-1]
+        if not (path.name.startswith(LEFTOVER_PREFIXES) and pid.isdigit() and path.is_dir()) \
+                or Path(f"/proc/{pid}").exists() or retention.guard(path, "aws_cpu_ab"):
+            continue
+        freed += retention.entry_bytes(path)
+        if path.name.startswith("tree-"):
+            subprocess.run(["git", "-C", str(REPO), "worktree", "remove", "--force", str(path)],
+                           check=False, capture_output=True)
+        if path.exists():
+            shutil.rmtree(path)
     return freed
+
+
+def cap_clips() -> int:
+    """The cut clips, least recently used first, until the cache is within its cap."""
+    cap = retention.cap_bytes(DATA / CACHE_CAP_ENTRY, DATA)
+    if cap is None or not CLIP_CACHE.is_dir():
+        return 0
+    clips = sorted(CLIP_CACHE.glob("*.zst"))
+    others = retention.entry_bytes(WORK) - sum(retention.entry_bytes(c) for c in clips)
+    return retention.prune_to_cap(clips, cap, "aws_cpu_ab", fixed_bytes=others)[0]
 
 
 def locked(path: Path) -> bool:
@@ -385,21 +508,23 @@ def build_on_box(commit: str, machine: str, name: str, binary: Path) -> None:
     """Build `commit` for `machine` as build-box job `name` (its target directory);
     the binary to `binary`."""
     tree = WORK / f"tree-{machine}-{commit[:12]}-{os.getpid()}"
+    fetched = WORK / f"fetch-{machine}-{commit[:12]}-{os.getpid()}"
     subprocess.run(["git", "-C", str(REPO), "worktree", "add", "--detach", str(tree), commit],
                    check=True, capture_output=True)
     try:
         path = f"target/{RUST_TRIPLES[machine]}/release/nanocodec"
-        fetched = WORK / f"fetch-{machine}-{commit[:12]}-{os.getpid()}"
         what = f"building {commit[:12]} for {machine} on the build box ({name})"
         say(what)
         run_watched([str(NC_REMOTE), "run", "--name", name, "--fetch", path,
                      "--fetch-to", str(fetched), "--", build_command(machine)],
                     what, BUILD_TIMEOUT_S, cwd=tree)
         shutil.move(str(fetched / path), binary)
-        shutil.rmtree(fetched)
     finally:
-        subprocess.run(["git", "-C", str(REPO), "worktree", "remove", str(tree)],
+        # --force: the build leaves untracked files (the target link) that a plain remove
+        # refuses, and 30 trees (7.5 GiB) had piled up by 2026-11-24
+        subprocess.run(["git", "-C", str(REPO), "worktree", "remove", "--force", str(tree)],
                        check=False)
+        shutil.rmtree(fetched, ignore_errors=True)
 
 
 def wait_for_lock(lock, what: str, limit_s: float = LOCK_WAIT_S) -> None:
@@ -470,105 +595,80 @@ def cached_clip(clip: dict, frames: int) -> Path:
     frame_bytes = clip["width"] * clip["height"] * 3 // 2
     if source.stat().st_size < frames * frame_bytes:
         raise SystemExit(f"{source} has fewer than {frames} frames")
+    with source.open("rb") as raw:
+        return compressed(raw.read(frames * frame_bytes), out)
+
+
+def cached_frames(clip: Clip, frames: int, file: str) -> Path:
+    """`frames` frames of a decision's clip from its start frame, as its quality encodes
+    read them (nceval.clipframes: raw or decoded), zstd-compressed, made once."""
+    out = CLIP_CACHE / f"{file}.zst"
+    if out.is_file():
+        out.touch()
+        return out
+    with ClipFrames(clip, frames, CLIP_CACHE / "decode") as served:
+        with Path(served.reader()).open("rb") as frames_in:
+            data = frames_in.read(frames * clip.frame_bytes)
+    if len(data) != frames * clip.frame_bytes:
+        raise SystemExit(f"{clip.name}: fewer than {frames} frames from {clip.start_frame}")
+    return compressed(data, out)
+
+
+def compressed(data: bytes, out: Path) -> Path:
     CLIP_CACHE.mkdir(parents=True, exist_ok=True)
     partial = out.with_suffix(f".part{os.getpid()}")
-    with source.open("rb") as raw:
-        subprocess.run(["zstd", "-q", "-3", "-T4", "-o", str(partial)], input=raw.read(
-            frames * frame_bytes), check=True)
+    subprocess.run(["zstd", "-q", "-3", "-T4", "-o", str(partial)], input=data, check=True)
     partial.rename(out)
     return out
 
 
 def stage(stage_dir: Path, jobs: list[dict], binaries: dict[str, Path],
-          clips: dict[str, dict]) -> None:
+          clip_files: dict[str, Path]) -> None:
     """Symlinks for one box: the binaries its jobs name, their clips, the plan, the runner."""
     (stage_dir / "out").mkdir(parents=True)
     for key in sorted({j["variants"][s][0].split("/")[1] for j in jobs for s in j["variants"]}):
         (stage_dir / "bin" / key).mkdir(parents=True)
         (stage_dir / "bin" / key / "nanocodec").symlink_to(binaries[key])
+    for job in jobs:
+        for name, source in job.get("inputs", {}).items():
+            link = stage_dir / name
+            if not link.exists():
+                link.parent.mkdir(exist_ok=True)
+                link.symlink_to(source)
     (stage_dir / "clips").mkdir()
     for job in jobs:
         for argv in job["variants"].values():
             file = argv[argv.index("--input") + 1].removeprefix("clips/")
             link = stage_dir / "clips" / f"{file}.zst"
             if not link.exists():
-                name, frames = file.removesuffix(".yuv").rsplit("-", 1)
-                link.symlink_to(cached_clip(clips[name], int(frames.removesuffix("f"))))
+                link.symlink_to(clip_files[file])
     (stage_dir / "plan.json").write_text(json.dumps({"jobs": jobs}, indent=1) + "\n")
-    for name in BOX_FILES:
-        (stage_dir / name).symlink_to(Path(__file__).resolve().parent / name)
-
-
-# --- one box ---------------------------------------------------------------------------
-
-def prepare_command(cpu: int) -> str:
-    """Readiness: clips unpacked and read once (page cache), counters allowed, every
-    binary runs, the CPU and the counted events recorded."""
-    return (f"set -o pipefail; cd ~/{REMOTE_DIR} && for c in clips/*.zst; do zstd -d -q --rm \"$c\"; done && "
-            # counters for a user process (a box without sudo just counts nothing)
-            "{ sudo -n sysctl -q kernel.perf_event_paranoid=1 || true; } && "
-            "for b in bin/*/nanocodec; do echo \"$b $($b --version)\"; done | tee out/versions.txt && "
-            "lscpu > out/lscpu.txt && grep -m1 'Model name' out/lscpu.txt && "
-            "cat clips/* > /dev/null && "
-            f"python3 cpu_ab_box.py --plan plan.json --probe out/events.json --core {cpu}")
-
-
-def box_command(cpu: int, rounds: int, out: str, limit: int | None = None) -> str:
-    return (f"cd ~/{REMOTE_DIR} && python3 cpu_ab_box.py --plan plan.json --out {out} "
-            f"--events out/events.json --core {cpu} --rounds {rounds}" + (f" --limit {limit}" if limit else ""))
-
-
-def run_timeout_minutes(pipe_runs: Path, jobs: int, rounds: int) -> float:
-    """The full run's limit from the pipe-cleaner (one round of the first job)."""
-    seconds = sum(json.loads(line)["wall_s"] for line in pipe_runs.read_text().splitlines())
-    return RUN_TIMEOUT_FACTOR * seconds * jobs * rounds / 60 + RUN_TIMEOUT_MARGIN_MINUTES
-
-
-def run_shard(stage_dir: Path, target: Target, out: Path, rounds: int, on_demand: bool,
-              purpose: str, session_for=Session) -> None:
-    """One box: upload, readiness, pipe-cleaner, the rounds, results back."""
-    jobs = len(json.loads((stage_dir / "plan.json").read_text())["jobs"])
-    spec = SessionSpec(region=target.region, instance_type=target.instance_type,
-                       arch=target.ami_arch, purpose=purpose, on_demand=on_demand,
-                       lifetime_minutes=BOX_LIFETIME_MINUTES, budget_usd=BOX_BUDGET_USD,
-                       root_gb=16)
-    remote_out = f"~/{REMOTE_DIR}/out"
-    started = time.monotonic()
-    with session_for(spec) as session:
-        session.upload(stage_dir, f"~/{REMOTE_DIR}")
-        try:
-            session.run_detached(prepare_command(target.timed_cpu), f"{remote_out}/prepare.log",
-                                 PREPARE_MINUTES)
-            session.run_detached(box_command(target.timed_cpu, 1, "out/pipe.jsonl", 1),
-                                 f"{remote_out}/pipe.log", PREPARE_MINUTES)
-            session.download(remote_out, out)
-            timeout = min(run_timeout_minutes(out / "pipe.jsonl", jobs, rounds),
-                          BOX_LIFETIME_MINUTES - PREPARE_MINUTES)
-            say(f"{jobs} jobs x {rounds} rounds, limit {timeout:.0f} min")
-            session.run_detached(box_command(target.timed_cpu, rounds, "out/runs.jsonl"),
-                                 f"{remote_out}/runs.log", timeout)
-        finally:
-            session.download(remote_out, out)
-    (out / "session.json").write_text(json.dumps({
-        "instance_type": target.instance_type, "region": target.region,
-        "minutes": round((time.monotonic() - started) / 60, 2), "on_demand": on_demand,
-        "jobs": jobs, "rounds": rounds}) + "\n")
+    for path in BOX_FILES:
+        (stage_dir / path.name).symlink_to(path)
 
 
 def launch_shards(stage_dirs: dict[str, Path], run_dir: Path, rounds: int, on_demand: bool,
-                  purpose: str) -> list[str]:
+                  purpose: str, box_budget: float, retry_on_demand: bool = False,
+                  start_shard=None) -> list[str]:
     """Every shard in its own process (aws_session's signal handling needs a main thread),
-    all at once; a failed shard is retried once on demand. Returns the shards that failed."""
+    all at once, each a light cpu_ab_shard.py (about 24 MB, not this module's ~110 MB with
+    nceval: 13 runs of 9 shards once filled the PC's memory); a failed shard is retried on spot
+    (on demand only with `retry_on_demand`). Returns the shards that failed.
+    `start_shard(label, attempt, demand)` replaces the process start in tests."""
     def start(label: str, attempt: int, demand: bool) -> subprocess.Popen:
         target = label.split("-")[0]
         log = (run_dir / f"{label}.attempt{attempt}.log").open("w")
         say(f"{label}: box {TARGETS[target].instance_type} (log {log.name})")
         return subprocess.Popen(
-            [sys.executable, __file__, "shard", "--stage", str(stage_dirs[label]),
+            [sys.executable, str(SHARD_SCRIPT), "--stage", str(stage_dirs[label]),
              "--target", target, "--out", str(run_dir / label), "--rounds", str(rounds),
-             "--purpose", purpose] + (["--on-demand"] if demand else []),
+             "--purpose", purpose, "--budget", str(box_budget)]
+            + (["--on-demand"] if demand else []),
             stdout=log, stderr=subprocess.STDOUT)
 
+    start = start_shard or start
+    retry_market = "on demand (--retry-on-demand)" if on_demand or retry_on_demand else \
+        "spot in its region, every zone"
     running = {label: (start(label, 1, on_demand), 1) for label in stage_dirs}
     started = {label: time.monotonic() for label in stage_dirs}
     failed, last = [], time.monotonic()
@@ -595,14 +695,58 @@ def launch_shards(stage_dirs: dict[str, Path], run_dir: Path, rounds: int, on_de
             if process.returncode == 0:
                 say(f"{label}: done")
             elif attempt < SHARD_ATTEMPTS:
-                say(f"{label}: failed (exit {process.returncode}), retrying on demand")
-                shutil.rmtree(run_dir / label, ignore_errors=True)
-                running[label] = (start(label, attempt + 1, True), attempt + 1)
+                done = keep_finished(run_dir / label, stage_dirs[label], attempt, rounds)
+                say(f"{label}: failed (exit {process.returncode}), retrying on {retry_market}; "
+                    f"{done} finished job(s) kept, the rest measured again")
+                running[label] = (start(label, attempt + 1, on_demand or retry_on_demand),
+                                  attempt + 1)
                 started[label] = time.monotonic()
             else:
-                say(f"{label}: failed twice; see its logs in {run_dir}")
+                say(f"{label}: failed {attempt} times on {retry_market}; see its logs in "
+                    f"{run_dir}" + ("" if on_demand or retry_on_demand else
+                                    "; --retry-on-demand allows on-demand retries (about 5x "
+                                    "the spot price), only with a stated reason"))
                 failed.append(label)
     return failed
+
+
+def keep_finished(out: Path, stage_dir: Path, attempt: int, rounds: int) -> int:
+    """Before a shard's retry: the lost box's finished jobs (every variant at every round,
+    pulled while it ran) are kept as runs-attempt<N>.jsonl and their ids staged in
+    DONE_FILE for the next box to skip; the rest of `out` goes. Returns the jobs kept."""
+    runs = out / "runs.jsonl"
+    records = [json.loads(line) for line in runs.read_text().splitlines()] if runs.is_file() else []
+    finished = finished_jobs(records, rounds)
+    kept = [r for r in records if r["job"] in finished]
+    if kept:
+        (out.parent / f"{out.name}.attempt{attempt}-runs.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in kept))
+    shutil.rmtree(out, ignore_errors=True)
+    done = stage_dir / DONE_FILE
+    earlier = set(json.loads(done.read_text())) if done.is_file() else set()
+    done.write_text(json.dumps(sorted(earlier | finished)) + "\n")
+    return len(finished)
+
+
+def finished_jobs(records: list[dict], rounds: int) -> set[str]:
+    """The jobs whose every variant ran every round."""
+    seen: dict[str, set[tuple[str, int]]] = {}
+    for r in records:
+        seen.setdefault(r["job"], set()).add((r["variant"], r["round"]))
+    return {job for job, runs in seen.items()
+            if len({v for v, _ in runs}) * rounds == len(runs)
+            and {i for _, i in runs} == set(range(rounds))}
+
+
+def shard_runs(run_dir: Path) -> dict[str, list[Path]]:
+    """Each shard's record files: the last box's runs.jsonl and the finished jobs kept from
+    boxes lost before it (keep_finished)."""
+    files: dict[str, list[Path]] = {}
+    for path in sorted(run_dir.glob("*/runs.jsonl")):
+        files.setdefault(path.parent.name, []).append(path)
+    for path in sorted(run_dir.glob("*.attempt*-runs.jsonl")):
+        files.setdefault(path.name.split(".attempt")[0], []).append(path)
+    return files
 
 
 def last_line(log: Path) -> str:
@@ -661,9 +805,9 @@ def summarize(run_dir: Path) -> dict:
     """Per pair, rung and target: the headline metric's and the instructions' change with
     intervals, each clip's change, and the rounds' noise (sd of the paired log ratios)."""
     records: dict[tuple[str, str, str], dict[str, list[dict]]] = {}
-    for shard in sorted(p for p in run_dir.iterdir() if (p / "runs.jsonl").is_file()):
-        target = shard.name.split("-")[0]
-        for line in (shard / "runs.jsonl").read_text().splitlines():
+    for shard, files in sorted(shard_runs(run_dir).items()):
+        target = shard.split("-")[0]
+        for line in (line for f in files for line in f.read_text().splitlines()):
             run = json.loads(line)
             pair, rung, clip = run["job"].split("|")
             records.setdefault((pair, rung, target), {}).setdefault(clip, []).append(run)
@@ -701,6 +845,21 @@ def print_summary(summary: dict) -> None:
         sd = f"{row['round_sd_pct']:.2f}%" if row["round_sd_pct"] is not None else "-"
         print(f"{row['pair']:16s} {row['rung']:16s} {row['target']:10s} {row['metric']:7s} "
               f"{cell(row['change_pct']):28s} {cell(row['instructions_pct']):28s} {sd}")
+    for (pair, rung, target), text in share_dcpu(summary).items():
+        print(f"{pair} {rung} {target}: --dcpu {text}")
+
+
+def share_dcpu(summary: dict) -> dict[tuple[str, str, str], str]:
+    """Per pair, rung and target measured at key shares (`<pair>@k<period>` rows): the
+    change at each share as the screens' `--dcpu 150=X,300=Y`."""
+    found: dict[tuple[str, str, str], dict[int, float]] = {}
+    for row in summary["rows"]:
+        pair, suffix, period = row["pair"].rpartition(SHARE_SUFFIX)
+        if suffix and period.isdigit() and row["change_pct"]:
+            found.setdefault((pair, row["rung"], row["target"]), {})[int(period)] = \
+                row["change_pct"][0]
+    return {key: ",".join(f"{p}={v:.2f}" for p, v in sorted(shares.items()))
+            for key, shares in found.items()}
 
 
 # --- entry points ----------------------------------------------------------------------
@@ -712,24 +871,40 @@ def main_ab(args) -> None:
         raise SystemExit(f"unknown targets {unknown}; known: {sorted(TARGETS)}")
     freed = prune()
     if freed:
-        say(f"pruned old builds, clips and runs from {WORK}: {freed / 1e9:.2f} GB")
-    pairs = pairs_from_args(args)
-    clips = load_clips({c for p in pairs for c in p.clips})
-    jobs = jobs_for(pairs, clips)
-    builds = sorted({side.build for p in pairs for side in (p.base, p.cand)})
+        say(f"pruned old builds, clips, runs and leftovers from {WORK}: {freed / 1e9:.2f} GB")
+    if args.key_shares and args.clips is None:
+        args.clips = ",".join(KEY_SHARE_CLIPS)
+        args.clipset = args.clipset or KEY_SHARE_CLIPSET
+    if args.decision_plan:
+        plan = json.loads(args.decision_plan.read_text())
+        jobs, clip_files = decision_jobs(plan), decision_clips(plan)
+        builds = sorted({d[s]["build"] for d in plan["decisions"] for s in ("base", "cand")})
+        described = {"decision_plan": str(args.decision_plan), **plan}
+    else:
+        args.clips = args.clips or ",".join(DEFAULT_CLIPS)
+        pairs = pairs_from_args(args)
+        clips = load_clips({c for p in pairs for c in p.clips}, args.clipset)
+        jobs = jobs_for(pairs, clips)
+        clip_files = {clip_file(n, p.frames): cached_clip(clips[n], p.frames)
+                      for p in pairs for n in p.clips}
+        builds = sorted({side.build for p in pairs for side in (p.base, p.cand)})
+        described = {"pairs": [dataclasses.asdict(p) for p in pairs]}
+    spot_vcpus = TARGET_VCPUS * args.boxes * sum(not TARGETS[t].on_demand for t in targets)
+    if spot_vcpus > MAX_RUN_VCPUS and not args.on_demand:
+        raise SystemExit(f"{spot_vcpus} spot vCPUs asked for, over the run cap {MAX_RUN_VCPUS} "
+                         f"(the region's quota is shared with the benchmark): fewer --boxes")
     machines = sorted({TARGETS[t].machine for t in targets})
     binaries = all_builds(builds, machines)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_dir = args.out or WORK / f"run-{stamp}-{os.getpid()}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "pairs.json").write_text(json.dumps([dataclasses.asdict(p) for p in pairs],
-                                                   indent=1) + "\n")
+    (run_dir / "pairs.json").write_text(json.dumps(described, indent=1) + "\n")
     stage_dirs = {}
     for target in targets:
         for index, part in enumerate(shards(jobs, args.boxes), 1):
             label = f"{target}-{index}"
             stage_dirs[label] = run_dir / "stage" / label
-            stage(stage_dirs[label], part, binaries[TARGETS[target].machine], clips)
+            stage(stage_dirs[label], part, binaries[TARGETS[target].machine], clip_files)
     say(f"{len(jobs)} jobs x {args.rounds} rounds on {len(stage_dirs)} boxes "
         f"({', '.join(f'{t} {TARGETS[t].instance_type}' for t in targets)}); results in {run_dir}")
     if args.dry_run:
@@ -739,11 +914,14 @@ def main_ab(args) -> None:
         print(box_command(1, args.rounds, "out/runs.jsonl"))
         return
     try:
-        failed = launch_shards(stage_dirs, run_dir, args.rounds, args.on_demand, args.purpose)
+        failed = launch_shards(stage_dirs, run_dir, args.rounds, args.on_demand, args.purpose,
+                               args.box_budget, retry_on_demand=args.retry_on_demand)
     finally:
         shutil.rmtree(run_dir / "stage", ignore_errors=True)
     summary = summarize(run_dir)
     summary["failed_shards"] = failed
+    if args.decision_plan:
+        summary["decisions"] = decisions_record(plan)
     (args.json or run_dir / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     print_summary(summary)
     if failed:
@@ -751,17 +929,6 @@ def main_ab(args) -> None:
 
 
 def main(argv: list[str]) -> None:
-    if argv[:1] == ["shard"]:  # one box, started by launch_shards
-        p = argparse.ArgumentParser()
-        p.add_argument("--stage", type=Path, required=True)
-        p.add_argument("--target", required=True, choices=sorted(TARGETS))
-        p.add_argument("--out", type=Path, required=True)
-        p.add_argument("--rounds", type=int, required=True)
-        p.add_argument("--purpose", required=True)
-        p.add_argument("--on-demand", action="store_true")
-        a = p.parse_args(argv[1:])
-        run_shard(a.stage, TARGETS[a.target], a.out, a.rounds, a.on_demand, a.purpose)
-        return
     if argv[:1] == ["summarize"]:
         p = argparse.ArgumentParser()
         p.add_argument("--runs", type=Path, required=True)
@@ -779,15 +946,31 @@ def main(argv: list[str]) -> None:
     p.add_argument("--cand-param", action="append", default=[], metavar="K=V")
     p.add_argument("--rungs", help="comma-separated codec:preset")
     p.add_argument("--plan", type=Path, help="JSON list of pairs (see pair_from_json)")
-    p.add_argument("--clips", default=",".join(DEFAULT_CLIPS), help=f"names in {CLIPSET}")
+    p.add_argument("--decision-plan", type=Path,
+                   help="a decision's own CPU plan (nceval.decision_cpu; nceval.screen / quick "
+                        "--cpu-plan, nceval.train run): its encodes, both sides; the summary "
+                        "is what that decision's --cpu-summary takes")
+    p.add_argument("--clips", help=f"names in --clipset (default {','.join(DEFAULT_CLIPS)}; "
+                   f"with --key-shares {','.join(KEY_SHARE_CLIPS)} in {KEY_SHARE_CLIPSET})")
+    p.add_argument("--clipset", type=Path,
+                   help=f"the clip set the names are in (default {CLIPSET}; clips/main.json "
+                        "holds the chart's timing clips)")
     p.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
     p.add_argument("--bitrate", type=int, default=DEFAULT_KBPS, help="CBR kbit/s")
     p.add_argument("--qp", type=int, help="fixed QP instead of CBR")
+    p.add_argument("--key-shares", nargs="?", const=",".join(map(str, key_shares.KEY_SHARES)),
+                   help="measure at each key share (default 150,300; nceval.key_shares): "
+                        "the CPU the screens charge per share")
     p.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
     p.add_argument("--targets", default=",".join(DEFAULT_TARGETS),
                    help=f"comma-separated, of {', '.join(sorted(TARGETS))}")
     p.add_argument("--boxes", type=int, default=1, help="boxes per target (jobs split)")
     p.add_argument("--on-demand", action="store_true", help="on-demand boxes, not spot")
+    p.add_argument("--retry-on-demand", action="store_true",
+                   help="retry a failed shard on demand (default: spot again; about 5x the "
+                        "price, only with a stated reason: docs/aws-cost-guide.md rule 6)")
+    p.add_argument("--box-budget", type=float, default=BOX_BUDGET_USD,
+                   help=f"per-box cost cap, USD (default {BOX_BUDGET_USD})")
     p.add_argument("--purpose", default="cpu-ab")
     p.add_argument("--out", type=Path, help="run directory (default under WORK)")
     p.add_argument("--json", type=Path, help="summary file (default RUN/summary.json)")

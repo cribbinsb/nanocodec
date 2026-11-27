@@ -16,6 +16,14 @@
 //! transform block.
 
 use super::itx::RectTxSize;
+use crate::{Dsp, Isa};
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx2;
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx512;
 use super::stx_tables::{COEFF8X8_MAPPING, COEFF8X8_MAPPING_IDX, STX4_KERNELS, STX8_KERNELS};
 
 /// Inputs of the 4x4 kernels.
@@ -67,11 +75,10 @@ const STX_SET_MASK: u8 = 0xf;
 /// dav2d `stxfm_c`: the matrix product of the first `eob + 1` inputs with a
 /// kernel of `N` outputs, each rounded half away from zero and clamped to
 /// 16 bits (8-bit video: `±128 · 256`).
-fn matrix_product<const N: usize>(cf: &[i16], kernel: &[i8], eob: u16) -> [i16; N] {
-    let inputs = usize::from(eob) + 1;
+fn matrix_product<const N: usize>(cf: &[i16], kernel: &[i8]) -> [i16; N] {
     let mut out = [0; N];
     for (x, o) in out.iter_mut().enumerate() {
-        let sum: i32 = cf[..inputs]
+        let sum: i32 = cf
             .iter()
             .zip(kernel[x..].iter().step_by(N))
             .map(|(&c, &k)| i32::from(c) * i32::from(k))
@@ -94,9 +101,20 @@ pub fn secondary4(
     kernel: &[i8; STX4_INPUTS * STX4_OUTPUTS],
     eob: u16,
 ) {
+    secondary4_for_isa(Isa::Scalar, cf, stride, transpose, kernel, eob);
+}
+
+fn secondary4_for_isa(
+    isa: Isa,
+    cf: &mut [i16],
+    stride: usize,
+    transpose: bool,
+    kernel: &[i8; STX4_INPUTS * STX4_OUTPUTS],
+    eob: u16,
+) {
     check_stride(stride, SIDE4);
     assert!(usize::from(eob) < STX4_INPUTS, "4x4 IST end of block {eob}");
-    let sums: [i16; STX4_OUTPUTS] = matrix_product(cf, kernel, eob);
+    let sums = secondary_matrix::<STX4_OUTPUTS, 1>(isa, &cf[..=usize::from(eob)], kernel);
     cf[SIDE4..STX4_INPUTS].fill(0);
     for (n, &sum) in sums.iter().enumerate() {
         let (y, x) = (n / SIDE4, n % SIDE4);
@@ -122,9 +140,28 @@ pub fn secondary8(
     kernel: &[i8; STX8_INPUTS * STX8_OUTPUTS],
     eob: u16,
 ) {
+    secondary8_for_isa(Isa::Scalar, cf, stride, (transpose, map_idx), kernel, eob);
+}
+
+#[allow(unsafe_code)]
+fn secondary8_for_isa(
+    isa: Isa,
+    cf: &mut [i16],
+    stride: usize,
+    (transpose, map_idx): (bool, usize),
+    kernel: &[i8; STX8_INPUTS * STX8_OUTPUTS],
+    eob: u16,
+) {
     check_stride(stride, SIDE8);
     assert!(usize::from(eob) < STX8_INPUTS, "8x8 IST end of block {eob}");
-    let sums: [i16; STX8_OUTPUTS] = matrix_product(cf, kernel, eob);
+    let inputs = usize::from(eob) + 1;
+    #[cfg(target_arch = "x86_64")]
+    if isa == Isa::Avx512 {
+        // SAFETY: the dispatch validated the full Ice Lake feature set.
+        unsafe { avx512::secondary8(cf, stride, (transpose, map_idx), kernel, inputs) };
+        return;
+    }
+    let sums = secondary_matrix::<STX8_OUTPUTS, 3>(isa, &cf[..inputs], kernel);
     cf[..STX8_INPUTS].fill(0);
     for (&raster, &sum) in COEFF8X8_MAPPING[map_idx].iter().zip(&sums) {
         let (y, x) = (usize::from(raster) / SIDE8, usize::from(raster) % SIDE8);
@@ -135,6 +172,21 @@ pub fn secondary8(
         };
         cf[position] = sum;
     }
+}
+
+#[allow(unsafe_code)]
+fn secondary_matrix<const N: usize, const GROUPS: usize>(
+    isa: Isa,
+    cf: &[i16],
+    kernel: &[i8],
+) -> [i16; N] {
+    #[cfg(target_arch = "x86_64")]
+    if matches!(isa, Isa::Avx2 | Isa::Avx512) {
+        // SAFETY: both tiers include AVX2 and were validated by Dsp.
+        return unsafe { avx2::matrix::<N, GROUPS>(cf, kernel) };
+    }
+    let _ = isa;
+    matrix_product::<N>(cf, kernel)
 }
 
 fn check_stride(stride: usize, side: usize) {
@@ -190,6 +242,31 @@ pub fn apply_secondary(
     transpose: bool,
     eob: u16,
 ) -> u16 {
+    apply_secondary_for_isa(Isa::Scalar, cf, size, stx, transpose, eob)
+}
+
+/// As [`apply_secondary`], with the secondary transform of the selected ISA.
+/// # Panics
+/// As [`apply_secondary`].
+pub fn apply_secondary_with_dsp(
+    dsp: &Dsp,
+    cf: &mut [i16],
+    size: RectTxSize,
+    stx: u8,
+    transpose: bool,
+    eob: u16,
+) -> u16 {
+    apply_secondary_for_isa(dsp.isa(), cf, size, stx, transpose, eob)
+}
+
+fn apply_secondary_for_isa(
+    isa: Isa,
+    cf: &mut [i16],
+    size: RectTxSize,
+    stx: u8,
+    transpose: bool,
+    eob: u16,
+) -> u16 {
     let ty = usize::from(stx & STX_TYPE_MASK)
         .checked_sub(1)
         .expect("IST type 0 is no secondary transform");
@@ -197,10 +274,10 @@ pub fn apply_secondary(
     let stride = size.coded_height();
     if size.width() >= SIDE8 && size.height() >= SIDE8 {
         let (kernel, map_idx) = kernel8(set, ty);
-        secondary8(cf, stride, transpose, map_idx, kernel, eob);
+        secondary8_for_isa(isa, cf, stride, (transpose, map_idx), kernel, eob);
         EOB_AFTER_STX8
     } else {
-        secondary4(cf, stride, transpose, kernel4(set, ty), eob);
+        secondary4_for_isa(isa, cf, stride, transpose, kernel4(set, ty), eob);
         EOB_AFTER_STX4
     }
 }

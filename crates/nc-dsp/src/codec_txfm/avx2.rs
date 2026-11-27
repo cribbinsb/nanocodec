@@ -32,6 +32,8 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.hevc_forward_bounded[2] = staged16_bounded;
     table.hevc_forward_bounded[3] = staged32_bounded;
     table.nonzero_mask = nonzero_mask;
+    super::avx2_h264_inverse::install(&mut table);
+    super::avx2_h264::install(&mut table);
     table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
     table
 }

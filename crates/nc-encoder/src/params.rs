@@ -21,6 +21,10 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use nc_analysis::linear_threshold::{
+    LinearThreshold, flag_feature, log_lambda_feature, noise_feature,
+};
+
 /// One tunable parameter.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParamSpec {
@@ -253,6 +257,18 @@ macro_rules! param_group {
                     $( $field: overrides.value(specs.next().expect("one spec per field")), )*
                 }
             }
+
+            /// These values with `overrides` on top: only the parameters it
+            /// names change.
+            #[must_use]
+            pub fn with_overrides(self, overrides: &$crate::params::ParamOverrides) -> Self {
+                let mut specs = Self::SPECS.iter();
+                Self {
+                    $( $field: overrides
+                        .get(specs.next().expect("one spec per field").name)
+                        .unwrap_or(self.$field), )*
+                }
+            }
         }
 
         impl Default for $name {
@@ -322,6 +338,29 @@ param_group! {
         /// inter blocks, 5 stops at 32x32.
         inter_min_log2: 4.0, [3.0, 5.0],
             "smallest planned inter block inside the frame (log2, rounded): lower splits finer at extra planning and mode-decision work",
+        /// The fine-floor gate (`fine_floor.rs`): all 0 (off) keeps the
+        /// floor on every superblock, byte-identical.
+        fine_floor_bias: 0.0, [-4.0, 4.0],
+            "the fine-floor gate's score where every feature is 0: per inter superblock the floor `planner.inter_min_log2` holds where the score (with the other `fine_floor_*` terms) is at least 0, else it is one level higher (all terms 0: off, the floor everywhere): higher allows the smallest blocks on more superblocks, at more planning and trial work",
+        fine_floor_camera: 0.0, [-4.0, 4.0],
+            "fine-floor score per unit of ln(1 + the frame's camera motion, luma samples per frame, from the global motion fit)",
+        fine_floor_static: 0.0, [-4.0, 4.0],
+            "fine-floor score per unit of the frame's static-block share (pre-analysis, 0..1)",
+        fine_floor_motion_gain: 0.0, [-4.0, 4.0],
+            "fine-floor score per unit of ln(best 16x16 motion-search SAD sum / best 8x8 SAD sum) over the superblock: what finer vectors predict better",
+        fine_floor_residual: 0.0, [-4.0, 4.0],
+            "fine-floor score per unit of ln(1 + best 16x16 motion-search SAD per sample / quantizer step): the residual left at 16x16",
+        /// Rows of screen text at a pitch that is not a multiple of 16 jump
+        /// by whole samples on different frames, so one 16x16 holds rows
+        /// with different motion (`partition_plan.rs` "Motion-gated floor").
+        /// 0 (off) by default.
+        inter_floor_motion_gate: 0.0, [0.0, 16.0],
+            "a block at the inter floor (`planner.inter_min_log2`) whose quadrants' motion-search vectors differ by at least this many whole samples may also be split one level below it (0: off): lower opens the floor more often, at more planning work",
+        /// Camera content rarely has quadrants that each match exactly at
+        /// their own vector; text that moved by whole samples does. The
+        /// vector test alone opened the floor on natural clips too.
+        inter_floor_sad_ratio: 1.0, [0.0, 1.0],
+            "with the motion-gated floor on, it opens only where the quadrants' own motion-search SADs sum to at most this fraction of the block's (1: no SAD test): lower opens it only where the quadrants' own vectors predict them much better",
         /// 2 vs fixed 16x16 (with `av1.keyframe_chroma_scaled`), AV1 TRAIN6
         /// 150f: PSNR-YUV/V1 BD −3.78%/−5.04%, every clip better on both;
         /// about +110–215M instructions per 720p key frame.
@@ -366,6 +405,34 @@ param_group! {
             "1 shifts the inter planner's parent bias at each node by a fitted function of its residual, quadrant and motion-search evidence (`split_selector.rs`), 0 compares the plain variance costs: 1 follows the coded cost's split decisions more closely at no coding work",
         split_selector_scale: 1.0, [0.0, 3.0],
             "multiple of the split selector's fitted bias shift (`planner.split_selector`): 0 is the plain planner, higher trusts the selector more",
+        /// Tuned corrections to the selector's fitted `h` (`split_selector.rs`
+        /// `SelectorTerms`): all 0 is the fitted selector exactly.
+        split_selector_d_bias: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to the selector's intercept (positive favours the split; 0: the fitted selector)",
+        split_selector_d_residual: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to its coefficient of ln(1 + residual variance per sample / λ) (positive favours the split; 0: the fitted selector)",
+        split_selector_d_mean: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to its coefficient of ln(1 + mean residual energy per sample / λ) (positive favours the split; 0: the fitted selector)",
+        split_selector_d_quadrant_gain: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to its coefficient of ln(quadrant variance sum / node variance) (positive favours the split; 0: the fitted selector)",
+        split_selector_d_quadrant_imbalance: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to its coefficient of ln(largest / smallest quadrant variance) (positive favours the split; 0: the fitted selector)",
+        split_selector_d_vector_distance: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to its coefficient of ln(1 + quadrant vector distance) (positive favours the split; 0: the fitted selector)",
+        split_selector_d_search_split_gain: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to its coefficient of ln(split SAD / whole SAD) (positive favours the split; 0: the fitted selector)",
+        split_selector_d_node_64: 0.0, [-2.0, 2.0],
+            "with the split selector on, added to its 64x64-node term (positive favours the split; 0: the fitted selector)",
+        split_selector_d_node_32: 0.0, [-2.0, 2.0],
+            "with the split selector on, a 32x32-node term (the fit has none) (positive favours the split; 0: the fitted selector)",
+        split_selector_d_lambda: 0.0, [-2.0, 2.0],
+            "with the split selector on, a term per unit of ln λ (the fit has none) (positive favours the split; 0: the fitted selector)",
+        /// The distilled flip guide (`flip_guide.rs`): an oracle-grade
+        /// experiment, default off.
+        flip_tree: 0.0, [0.0, 8.0],
+            "k > 0 has the inter planner take the other choice of leaf or quad split wherever the k-th generated decision tree (`flip_trees.rs`, distilled from the RD partition search) says the search would, without a trial; 0 keeps the planner's choice",
+        flip_direction: 0.0, [0.0, 2.0],
+            "with the flip guide on (`planner.flip_tree`), which flips it may make (rounded): 0 both, 1 only a planned split coded as its leaf, 2 only a planned leaf split",
         rect_rd: 0.0, [0.0, 1.0],
             "1 has the backend's inter rate-distortion cost (sub-sample vector, transform, quantisation, coefficient and mode bits) confirm each shape the variance model plans against the square plan, 0 trusts the variance model: 1 rejects shapes that cost more to code, at a coded-cost trial per planned shape",
         /// The RD partition search (`rd_split.rs`): inter-picture nodes
@@ -400,6 +467,80 @@ param_group! {
             "with the RD partition search on, 1 has a planned split try the leaf only where every leaf of its coded split is a skip: faster",
         rd_split_context_period: 0.0, [0.0, 64.0],
             "with the context gate on, one superblock in this many (rotating by frame; 0: none) is searched without the gate, so a partition the gated context keeps agreeing with is still re-checked: lower is slower",
+        /// The context gate's thresholds as linear functions of the node's
+        /// features (`rd_split.rs` `ContextShift`, `linear_threshold.rs`):
+        /// all 0 is the fixed thresholds above exactly. Tuned on encodes.
+        rd_split_deepen_shift_bias: 0.0, [-3.0, 3.0],
+            "with the context gate on, added to `rd_split_deepen_context` (with the other deepen shift terms): higher tries the split at more planned leaves",
+        rd_split_deepen_shift_neighbours: 0.0, [-3.0, 3.0],
+            "deepen threshold shift per level of the neighbours' leaf log2 relative to the node (clamped to +-2)",
+        rd_split_deepen_shift_co_located: 0.0, [-3.0, 3.0],
+            "deepen threshold shift per level of the last frame's co-located leaf log2 relative to the node (clamped to +-2)",
+        rd_split_deepen_shift_size: 0.0, [-3.0, 3.0],
+            "deepen threshold shift per level of the node's log2 size above 16x16",
+        rd_split_deepen_shift_margin: 0.0, [-3.0, 3.0],
+            "deepen threshold shift per unit of ln(planner margin) (clamped to [0, 2]; the planner then records its margins)",
+        rd_split_deepen_shift_residual: 0.0, [-3.0, 3.0],
+            "deepen threshold shift per unit of log2(the planned leaf's residual variance per sample / λ) (clamped to +-4)",
+        rd_split_merge_shift_bias: 0.0, [-3.0, 3.0],
+            "with the context gate on, added to `rd_split_merge_context` (with the other merge shift terms): higher tries the leaf at fewer planned splits",
+        rd_split_merge_shift_neighbours: 0.0, [-3.0, 3.0],
+            "merge threshold shift per level of the neighbours' leaf log2 relative to the node (clamped to +-2)",
+        rd_split_merge_shift_co_located: 0.0, [-3.0, 3.0],
+            "merge threshold shift per level of the last frame's co-located leaf log2 relative to the node (clamped to +-2)",
+        rd_split_merge_shift_size: 0.0, [-3.0, 3.0],
+            "merge threshold shift per level of the node's log2 size above 16x16",
+        rd_split_merge_shift_margin: 0.0, [-3.0, 3.0],
+            "merge threshold shift per unit of ln(planner margin) (clamped to [0, 2]; the planner then records its margins)",
+        /// The post-trial stop (`rd_split.rs` `FirstTrialStop`): a planned
+        /// inter node skips its alternatives where `bias + w · features` of
+        /// its planned candidate's coding is above 0; all 0 never stops.
+        rd_split_stop_bias: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term the score's constant: a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_cost: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of ln(1 + the planned candidate's coded cost per sample / λ): a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_bits: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of ln(1 + its bits per 8x8): a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_distortion: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of ln(1 + its distortion per sample / λ): a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_skip: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term for a planned leaf coded as a skip CU: a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_nonzero: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of ln(1 + its non-zero levels per 8x8): a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_planned_split: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term for a planned split (0: a planned leaf): a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_size: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per level of the node's log2 size above 16x16: a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_margin: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of ln(planner margin) (clamped to [0, 2]; the planner then records its margins): a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_neighbours: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per level of the neighbours' leaf log2 relative to the node (clamped to +-2): a positive score skips the planned node's other candidates (all 0: never)",
+        rd_split_stop_co_located: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per level of the co-located leaf log2 relative to the node (clamped to +-2): a positive score skips the planned node's other candidates (all 0: never)",
+        /// The stop network's terms (`stop_value.rs`), added to the post-trial
+        /// stop's score: `Σ net_h{j} · h_j − net_weight · value`, the network's
+        /// last hidden activations (in [0, 1]) and its predicted value of the
+        /// alternatives (the stop's bias is the constant). All 0: the network
+        /// is not run (the linear stop exactly). Tuned on encodes; the hidden
+        /// layers are fitted offline.
+        rd_split_stop_net_weight: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of minus the stop network's predicted log value of the planned node's other candidates: a positive score skips them (all net terms 0: the network is off)",
+        rd_split_stop_net_h0: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 0 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
+        rd_split_stop_net_h1: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 1 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
+        rd_split_stop_net_h2: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 2 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
+        rd_split_stop_net_h3: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 3 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
+        rd_split_stop_net_h4: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 4 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
+        rd_split_stop_net_h5: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 5 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
+        rd_split_stop_net_h6: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 6 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
+        rd_split_stop_net_h7: 0.0, [-8.0, 8.0],
+            "with the RD partition search on, the post-trial stop's term per unit of the stop network's last hidden activation 7 (in [0, 1]): a positive score skips the planned node's other candidates (all net terms 0: the network is off)",
         rd_split_tt_margin: 0.05, [0.0, 1.0],
             "with the RD partition search on, a ternary shape is tried only where the binary shape of its direction cost at most this fraction more than the best so far (1: always): lower is faster",
         rd_split_tail_satd: 0.0, [0.0, 1.0],
@@ -410,6 +551,10 @@ param_group! {
         /// docs/analysis/key-frame-rdo-2026-11-21.md.
         key_rd_split: 0.0, [0.0, 1.0],
             "key frames: 1 decides each node's partition by coding the leaf and the quad split near the key plan and keeping the cheaper coded one, 0 codes the planned partition: 1 is much slower on key frames only, better key partitions",
+        /// Off by default: AV1 key rectangles (`av1.key_rect_partitions`),
+        /// docs/analysis/key-frame-rdo-2026-11-21.md section 11.
+        key_rd_shapes: 0.0, [0.0, 1.0],
+            "key frames, with the key RD partition search on: 1 also tries the backend's rectangular partitions wherever a leaf is a candidate (each coded by coded cost)",
         key_rd_deeper: 1.0, [0.0, 3.0],
             "with the key-frame RD partition search on, quad splits are tried up to this many levels below the planned leaves (rounded): higher is slower, finer key partitions on offer",
         key_rd_shallower: 1.0, [0.0, 3.0],
@@ -419,6 +564,27 @@ param_group! {
         /// margins. Measured in docs/analysis/intra-selection-2026-11-21.md.
         key_rd_margin: 0.0, [0.0, 4.0],
             "with the key-frame RD partition search on, a planned key node is also coded the other way only where the key plan's cost of that alternative is below this multiple of its choice's (0: everywhere): lower is faster, searches only the nodes the transform estimate nearly tied",
+        key_rd_merge_margin: 0.0, [0.0, 4.0],
+            "with the key-frame RD partition search on, the margin gate's value for planned splits trying the leaf (0: `planner.key_rd_margin` for both directions): a plan that over-splits can search its merges wider than its splits",
+        /// The key margins as a function of the key interval
+        /// (`key_interval.rs`): 0 is the constant margins.
+        key_rd_margin_ln_interval: 0.0, [-2.0, 2.0],
+            "with the key RD search's margin gate on (`key_rd_margin` above 0), added to its margins per unit of ln(key period / 300 frames): positive searches more nodes on long GOPs, fewer on short ones (0: constant)",
+        /// The fitted key-trial gate (`trial_gate.rs`): replaces the margin
+        /// thresholds above where set. Measured in
+        /// docs/analysis/learned-decisions-2026-11-22.md.
+        key_rd_gate: 0.0, [0.0, 10000.0],
+            "with the key-frame RD partition search on, above 0 a planned key node is also coded the other way only where the fitted trial gate predicts at least this gain per sample (1e-4 λ units; replaces `planner.key_rd_margin` and `planner.key_rd_merge_margin`): higher is faster, trials only the nodes worth most per sample",
+        /// `key_rd_gate` as a function of the key interval
+        /// (`key_interval.rs`): 0 is the constant gate.
+        key_rd_gate_ln_interval: 0.0, [-2.0, 2.0],
+            "with the fitted key-trial gate on (`key_rd_gate` above 0), the gate is divided by (key period / 300 frames) to this power (open-ended GOPs count as 10 s): positive trials more nodes on long GOPs, fewer on short ones, since a trial's gain is inherited by every frame up to the next key (0: constant)",
+        key_rd_leaf_first: 0.0, [0.0, 1.0],
+            "with the key-frame RD partition search on, 1 codes the leaf before a planned split where both are tried, so the split stops at the leaf's cost (same streams but for exact cost ties): faster where the plan over-splits",
+        /// The leaf pass (`rd_split.rs` "Key frames, the leaf pass"): measured
+        /// in docs/analysis/intra-cheap-2026-11-21.md.
+        key_rd_leaf_pass: 0.0, [0.0, 1.0],
+            "with the key-frame RD partition search and the key-frame leaf search (`decision.intra_rd_*`) on, 1 runs the leaf search only in a second coding of the chosen partition, not inside each partition trial: much faster, the partition is chosen with the backend's own modes",
     }
 }
 
@@ -430,6 +596,17 @@ param_group! {
         /// `effort_class.rs`) codes them from the primary reference alone.
         second_reference: 1.0, [0.0, 1.0],
             "1 tries the frame's second reference (and compound) for each inter leaf; 0 predicts from the primary reference only: 0 saves a mode decision per leaf",
+        /// Low-delay bi-prediction from the primary reference at two
+        /// vectors (`ReferenceChoice::PrimaryPair`, `decision/compound.rs`),
+        /// for backends that code it (generalised B slices).
+        bi_pair: 0.0, [0.0, 1.0],
+            "1 tries, for each inter leaf whose primary choice is inter, the average of the primary reference at that vector and at a searched second vector (low-delay bi-prediction, backends that code it); 0 never: 1 costs about 13 block predictions per tried leaf plus 4 per refinement step",
+        bi_pair_rd: 0.0, [0.0, 1.0],
+            "with `decision.bi_pair`: 1 confirms a two-hypothesis winner on coded luma cost (transform, quantisation, residual bits) against the single-reference choice, as the reference encoders decide; 0 keeps the prediction-variance ranking",
+        bi_pair_psy: 0.0, [0.0, 4.0],
+            "with `decision.bi_pair`: blur term of two-hypothesis candidates, in squared error per unit of the AC energy the averaged prediction loses against the single-reference one (0 off): higher keeps more texture (VMAF, MS-SSIM) at a little PSNR",
+        bi_pair_steps: 2.0, [0.0, 8.0],
+            "with `decision.bi_pair`: quarter-sample refinement crosses of the second vector after its candidates are ranked (each 4 block predictions; stops early when a cross finds nothing cheaper): higher is slower",
         intra_gate_variance: 64.0, [0.0, 1024.0],
             "residual variance/sample above which DC intra is tried: lower tries intra more (slower)",
         /// A fixed variance gate admits the same blocks at every QP and
@@ -447,6 +624,15 @@ param_group! {
         // Holds over whole single-key clips. See docs/handoff/hevc.md.
         intra_test_dc: 1.0, [0.0, 1.0],
             "1 adds the best inter residual's DC error to the intra gate and the intra-vs-inter cost (brightness changes, flashes, fades): more intra",
+        /// Weight of the residual's DC error (`sse - n_variance`) in the
+        /// ranking of inter vectors (`decision::ranking_distortion`); 0 ranks
+        /// by mean-removed variance alone, which cannot tell a zero vector on
+        /// a moving gradient (a mostly-DC residual) from the true motion.
+        /// A6 (synthetic global motion, 720p, QP 51): H.264 -14% bits at equal
+        /// PSNR with 1; HEVC unchanged there, and quick-screened worse on the
+        /// pool (Medium J +1.23%), so the engine default stays 0.
+        rank_dc_weight: 0.0, [0.0, 1.0],
+            "weight of the residual DC error in the exact ranking of inter vectors (0: mean-removed variance only): higher prefers vectors that match brightness, not only texture",
         intra_directional: 0.0, [0.0, 1.0],
             "1 also prices intra by a cheap directional estimate (best of DC, vertical, horizontal and the two diagonals per sub-block, from source neighbours; `intra_estimate.rs`), not DC alone: textured blocks with a direction reach the codec's intra search (slower where the intra gate opens)",
         intra_directional_dc_ratio: 4.0, [1.0, 16.0],
@@ -455,6 +641,14 @@ param_group! {
             "bits charged per sub-block direction in the directional intra estimate: higher sends fewer blocks to intra",
         skip_no_refine_lambdas: 0.25, [0.0, 1.0],
             "skip-vector residual (λ/sample) below which sub-pel refinement is skipped: higher is faster",
+        skip_no_refine_shift_bias: 0.0, [-0.5, 0.5],
+            "linear shift added to `skip_no_refine_lambdas` (all 0 is the fixed gate)",
+        skip_no_refine_shift_nonbase: 0.0, [-0.5, 0.5],
+            "linear shift on `skip_no_refine_lambdas` for non-base frames (frame role)",
+        skip_no_refine_shift_lambda: 0.0, [-0.5, 0.5],
+            "linear shift on `skip_no_refine_lambdas` per (ln(λ) - 3.5) / 4",
+        skip_no_refine_shift_noise: 0.0, [-0.5, 0.5],
+            "linear shift on `skip_no_refine_lambdas` per `noise_sigma` / 5",
         /// The ranking's winner walked over its quarter-sample neighbours
         /// by exact distortion + λ · bits (`decision::walk_winner`, which
         /// explains why it pays); only winners whose residual is at least
@@ -517,6 +711,22 @@ param_group! {
             "skip sub-pel refinement (exact-filter ranking: of the NEW seed; bilinear ranking: of the winner) when its residual variance/sample is below this lambda multiple (0 disables)",
         codec_subpel_seed_lambdas_large: 0.0, [0.0, 64.0],
             "the seed gate for blocks of 32x32 and larger (the larger of this and the general seed gate): higher refines fewer large blocks (faster)",
+        winner_refine_gate_scale: 1.0, [0.0625, 64.0],
+            "multiplies the gate below which the bilinear ranking does not refine its winner to sub-sample precision (the larger of the codec's variance gate and `decision.codec_subpel_seed_lambdas`): higher refines fewer winners (faster)",
+        exact_finalists: 0.0, [0.0, 4.0],
+            "bilinear-ranking codecs: re-rank the top N (1..4) sub-pel finalists on the codec's exact luma filter where sub-pel search runs and cache the winner's prediction for reuse; 0 disables",
+        subpel_seed_shift_bias: 0.0, [-0.5, 0.5],
+            "linear shift added to `codec_subpel_seed_lambdas` (all 0 is the fixed gate)",
+        subpel_seed_shift_nonbase: 0.0, [-0.5, 0.5],
+            "linear shift on `codec_subpel_seed_lambdas` for non-base frames (frame role)",
+        subpel_seed_shift_lambda: 0.0, [-0.5, 0.5],
+            "linear shift on `codec_subpel_seed_lambdas` per (ln(λ) - 3.5) / 4",
+        subpel_seed_shift_noise: 0.0, [-0.5, 0.5],
+            "linear shift on `codec_subpel_seed_lambdas` per `noise_sigma` / 5",
+        subpel_seed_shift_size: 0.0, [-0.5, 0.5],
+            "linear shift on `codec_subpel_seed_lambdas` per (log2(area) - 8) / 4",
+        subpel_seed_shift_zero_mv: 0.0, [-0.5, 0.5],
+            "linear shift on `codec_subpel_seed_lambdas` when the seed vector is (0, 0)",
         subpel_quarter_needs_half_move: 0.0, [0.0, 1.0],
             "1 skips the quarter-sample stage when no half-sample move won (four of the eight refinement evaluations): faster, fewer quarter-sample vectors",
         // A disposable-frame lever (h264-faster3): stopping after the
@@ -551,6 +761,8 @@ param_group! {
         // frame, so cheap settings there cost no propagated quality.
         nonbase_disposable_only: 0.0, [0.0, 1.0],
             "frames the nonbase.* settings apply to: 0 every non-base frame of the cadence, 1 only frames no later frame references (the top temporal layer)",
+        nonbase_min_quantizer: 0.0, [0.0, 1.0],
+            "minimum relative quantizer for nonbase.* cheap settings (0 = always allow): below this (high bitrates), non-base frames use base settings",
         refine_cheap_vector: 1.0, [0.0, 1.0],
             "exact-filter codecs: 1 also refines the best cheap (NEAREST/NEAR) vector to sub-sample precision and ranks it as a NEW candidate; 0 refines only the search seed",
         refine_cheap_min_lambdas: 0.05, [0.0, 64.0],
@@ -585,6 +797,26 @@ param_group! {
         /// docs/analysis/key-frame-rdo-2026-11-21.md.
         intra_rd_modes: 0.0, [0.0, 16.0],
             "key frames: each leaf is also coded with up to this many of the backend's next-ranked luma intra modes and keeps the cheapest by coded cost (rounded; 0: the backend's own choice): higher is slower on key frames only, better modes",
+        intra_rd_margin: 0.0, [0.0, 4000.0],
+            "with `decision.intra_rd_modes`, a next-ranked luma mode is coded only while the backend's own estimate of it is within this many per mille of its best estimate (0: every one; 1150: within 15 %): lower is faster on key frames, coding only modes the ranking left close",
+        /// `intra_rd_margin` as a function of the key interval
+        /// (`key_interval.rs`): 0 is the constant margin.
+        intra_rd_margin_ln_interval: 0.0, [-2.0, 2.0],
+            "with `decision.intra_rd_margin` above 0, the margin is multiplied by (key period / 300 frames) to this power (open-ended GOPs count as 10 s): positive codes more alternatives on long GOPs, fewer on short ones (0: constant)",
+        /// The leaf search's counts as a function of the key interval
+        /// (`key_interval.rs`): 0 is the constant counts.
+        intra_rd_count_ln_interval: 0.0, [-4.0, 4.0],
+            "added to each key leaf search count that is on (`decision.intra_rd_modes`, `intra_rd_transforms`, `intra_rd_chroma`; at least 1) per unit of ln(key period / 300 frames) (open-ended GOPs count as 10 s): positive codes more alternatives on long GOPs, fewer on short ones (0: constant)",
+        /// The staged intra decision's first cut (`intra_stage.rs`): off by
+        /// default, each codec's own candidate count applies.
+        intra_stage_keep: 0.0, [0.0, 16.0],
+            "key-frame intra leaves: rank every luma candidate by prediction SATD + √λ · mode bits and pass at most this many (rounded; 0: the codec's own count) to the transform-costed estimate: lower is faster, fewer modes priced",
+        intra_stage_band: 0.0, [0.0, 4000.0],
+            "with the staged intra cut, pass only candidates whose SATD estimate is within this many per mille above the best (0: no band; 200: within 20 %) to the transform-costed estimate: lower is faster",
+        inter_intra_stage_keep: 0.0, [0.0, 16.0],
+            "`decision.intra_stage_keep` for the intra blocks of inter frames (0: the codec's own count)",
+        inter_intra_stage_band: 0.0, [0.0, 4000.0],
+            "`decision.intra_stage_band` for the intra blocks of inter frames (0: no band)",
         intra_rd_transforms: 0.0, [0.0, 8.0],
             "key frames: each leaf is also coded with up to this many of the backend's alternative transform layouts (size, split, type) for its mode and keeps the cheapest by coded cost (rounded; 0: off): higher is slower on key frames only",
         intra_rd_chroma: 0.0, [0.0, 8.0],
@@ -640,6 +872,14 @@ param_group! {
         // -0.13%, mixed motion off -0.23%. Quality: docs/handoff/engine-cpu.md.
         window_exit_sad_per_pixel: 0.0, [0.0, 8.0],
             "full-pel window stops after its centre when the 64x64 SAD per pixel there is below this (0 = never): higher is faster, worse vectors",
+        window_exit_shift_bias: 0.0, [-4.0, 4.0],
+            "linear shift added to `window_exit_sad_per_pixel` (all 0 is the fixed exit)",
+        window_exit_shift_nonbase: 0.0, [-4.0, 4.0],
+            "linear shift on `window_exit_sad_per_pixel` for non-base frames (frame role)",
+        window_exit_shift_lambda: 0.0, [-4.0, 4.0],
+            "linear shift on `window_exit_sad_per_pixel` per (ln(λ) - 3.5) / 4",
+        window_exit_shift_noise: 0.0, [-4.0, 4.0],
+            "linear shift on `window_exit_sad_per_pixel` per `noise_sigma` / 5",
         hme_range_x: 16.0, [1.0, 16.0],
             "HME window half-width in quarter-resolution samples (x4 luma): lower is faster, misses fast motion until it is seeded",
         hme_range_y: 4.0, [0.0, 4.0],
@@ -652,6 +892,50 @@ param_group! {
             "below this zero-vector SAD per pixel the full-pel search is the zero vector alone: higher is faster",
         skip_hme_sad_per_pixel: nc_analysis::motion::SKIP_HME_SAD_PER_PIXEL, [0.0, 8.0],
             "below this zero-vector SAD per pixel HME is skipped and the window centres on zero: higher is faster",
+        zero_gate_shift_bias: 0.0, [-1.0, 2.0],
+            "linear scale shift on the three zero-vector motion gates (`scale = (1 + shift).max(0)`; all 0 is the fixed gates)",
+        zero_gate_shift_nonbase: 0.0, [-1.0, 2.0],
+            "linear scale shift on the three zero-vector motion gates for non-base frames (frame role)",
+        zero_gate_shift_lambda: 0.0, [-1.0, 2.0],
+            "linear scale shift on the three zero-vector motion gates per (ln(λ) - 3.5) / 4",
+        zero_gate_shift_noise: 0.0, [-1.0, 2.0],
+            "linear scale shift on the three zero-vector motion gates per `noise_sigma` / 5",
+        zero_gate_shift_neighbour_mv: 0.0, [-1.0, 2.0],
+            "linear scale shift on the three zero-vector motion gates per moving-neighbour SB fraction [0, 1]",
+        /// The zero-gate network's terms (`nc_analysis::gate_net`), added to
+        /// the zero gates' scale shift: `Σ net_h{j} · h_j − net_weight · value`,
+        /// its last hidden activations (in [0, 1]) and its predicted log gain of
+        /// the full search per pixel. All 0: the network is not run. Tuned on
+        /// encodes; the hidden layers are fitted offline.
+        zero_gate_net_weight: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of minus the zero-gate network's predicted log gain of the full search (all net terms 0: the network is off)",
+        zero_gate_net_h0: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 0 (in [0, 1]; all net terms 0: the network is off)",
+        zero_gate_net_h1: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 1 (in [0, 1]; all net terms 0: the network is off)",
+        zero_gate_net_h2: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 2 (in [0, 1]; all net terms 0: the network is off)",
+        zero_gate_net_h3: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 3 (in [0, 1]; all net terms 0: the network is off)",
+        zero_gate_net_h4: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 4 (in [0, 1]; all net terms 0: the network is off)",
+        zero_gate_net_h5: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 5 (in [0, 1]; all net terms 0: the network is off)",
+        zero_gate_net_h6: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 6 (in [0, 1]; all net terms 0: the network is off)",
+        zero_gate_net_h7: 0.0, [-4.0, 4.0],
+            "scale shift on the three zero-vector motion gates per unit of the zero-gate network's last hidden activation 7 (in [0, 1]; all net terms 0: the network is off)",
+        // Below 8: the noise-relative cells (worst moving 8x8 block, scene-sanity
+        // 2026-11-22). nceval.train against 64 (base 05225aed19dd, draw 2026-11-22),
+        // L3 / final check J: HEVC medium -0.06 / -0.36, slower -0.24 / -0.01;
+        // VVC medium -0.27 / -0.10, slow -0.10 / +0.20, slower -0.08 / -0.50;
+        // AV1 medium -0.41 / -0.40, slow -0.11 / -0.48, slower -0.42 / -0.49;
+        // VP9 medium -0.10 / -0.73, slow -0.09 / +0.07; AV2 medium +0.06 / -0.53,
+        // slow -0.41 / -0.31, slower -0.36 / +0.12 %. Cycles +0.5..+3.0 %. The
+        // demo's small-movers scene: BD-J -7.5 (HEVC, VVC) to -10.5 % (AV1).
+        // Rungs not screened (and HEVC slow, L3 +0.33 %) pin 64.
+        zero_gate_cell: 0.0, [0.0, 64.0],
+            "what the three zero-vector gates judge (`motion.rs` step 1): 64 the superblock's average zero-vector SAD per pixel, 8 or 16 its worst cell of that side, below 8 its worst 8x8 block among those pre-analysis' noise-relative test finds moving: the cells see a small mover the superblock average hides, at more motion search",
         // A disposable-frame lever (`nonbase.analysis.hme_from_seed` with
         // `decision.nonbase_disposable_only`): such a frame then builds no
         // pyramid either. Measured in docs/handoff/h264-faster.md.
@@ -819,6 +1103,8 @@ param_group! {
             "layer propagation: 1 plans no offsets in the last `rate.prekey_quiet` seconds before a scheduled periodic key, so the inter level the key is planned from is the ladder's own (with them the key was planned finer: long-window key pulse +0.40 dB on AV1 Faster); 0 keeps them to the key",
         propagation_gate: 0.0, [0.0, 8.0],
             "layer propagation: forecast error (QP units, moving average of the offsets planned against those the measured propagation implies) at which the offsets fade to 0 (0 = no gate): lower falls back to the static ladder sooner on unpredictable content",
+        adaptive_min_quantizer: 0.0, [0.0, 1.0],
+            "minimum relative quantizer for adaptive temporal layering (0 = always allow): below this (high bitrates), the adaptive gate falls back to flat distance-1 P frames",
     }
 }
 
@@ -852,7 +1138,35 @@ impl LayerParams {
             max_inheritance_loss: self.adaptive_max_inheritance_loss,
             noise_compensable: self.adaptive_noise_compensable,
             enter_ratio: self.adaptive_enter_ratio,
+            min_quantizer: self.adaptive_min_quantizer,
         })
+    }
+}
+
+impl DecisionParams {
+    /// The sub-pel exits' linear shifts (`decision.subpel_seed_shift_*`,
+    /// `decision.skip_no_refine_shift_*`) with a frame's constant features
+    /// (whether it is a `nonbase` frame, its source `noise_sigma`) folded
+    /// into their biases, so the block decision computes only the per-block
+    /// features (`decision.rs` `effective_subpel_seed_gate`).
+    #[must_use]
+    pub fn with_frame_shift_features(mut self, nonbase: bool, noise_sigma: f32) -> Self {
+        let frame = [flag_feature(nonbase), noise_feature(noise_sigma)];
+        let fold = |bias: f32, weights: [f32; 2]| {
+            LinearThreshold::new(bias, weights).map_or(bias, |shift| shift.at(&frame))
+        };
+        self.subpel_seed_shift_bias = fold(
+            self.subpel_seed_shift_bias,
+            [self.subpel_seed_shift_nonbase, self.subpel_seed_shift_noise],
+        );
+        self.skip_no_refine_shift_bias = fold(
+            self.skip_no_refine_shift_bias,
+            [
+                self.skip_no_refine_shift_nonbase,
+                self.skip_no_refine_shift_noise,
+            ],
+        );
+        self
     }
 }
 
@@ -903,9 +1217,91 @@ impl AnalysisParams {
                 static_per_pixel: self.static_sad_per_pixel,
                 one_position_per_pixel: self.one_position_sad_per_pixel,
                 skip_hme_per_pixel: self.skip_hme_sad_per_pixel,
+                cell: nc_analysis::motion::GateCell::from_side(self.zero_gate_cell),
             },
+            // Frame-dependent: set per frame by `with_motion_shifts`.
+            zero_gate_shift: None,
+            window_exit_shift: None,
+            gate_net: nc_analysis::gate_net::GateNetConfig::default(),
         }
         .clamped()
+    }
+
+    /// Whether the motion exits carry linear shifts
+    /// (`analysis.{zero_gate,window_exit}_shift_*`), which make the search
+    /// settings differ from frame to frame.
+    #[must_use]
+    pub fn has_motion_shifts(&self) -> bool {
+        [
+            self.zero_gate_shift_bias,
+            self.zero_gate_shift_nonbase,
+            self.zero_gate_shift_lambda,
+            self.zero_gate_shift_noise,
+            self.zero_gate_shift_neighbour_mv,
+            self.window_exit_shift_bias,
+            self.window_exit_shift_nonbase,
+            self.window_exit_shift_lambda,
+            self.window_exit_shift_noise,
+        ]
+        .iter()
+        .any(|&term| term != 0.0)
+            || self.zero_gate_network().is_some()
+    }
+
+    /// The zero-gate network's terms (`analysis.zero_gate_net_*`), `None`
+    /// while all are 0.
+    #[must_use]
+    pub fn zero_gate_network(&self) -> Option<nc_analysis::gate_net::ZeroGateNetwork> {
+        nc_analysis::gate_net::ZeroGateNetwork::new(
+            self.zero_gate_net_weight,
+            [
+                self.zero_gate_net_h0,
+                self.zero_gate_net_h1,
+                self.zero_gate_net_h2,
+                self.zero_gate_net_h3,
+                self.zero_gate_net_h4,
+                self.zero_gate_net_h5,
+                self.zero_gate_net_h6,
+                self.zero_gate_net_h7,
+            ],
+        )
+    }
+
+    /// `search` with the motion exits' linear shifts of a frame: its
+    /// constant terms (whether it is a `nonbase` frame, its λ) folded into
+    /// each shift's bias, leaving the per-SB features to the search.
+    pub fn with_motion_shifts(
+        &self,
+        search: &mut nc_analysis::motion::SearchConfig,
+        nonbase: bool,
+        lambda: f32,
+    ) {
+        let frame = [flag_feature(nonbase), log_lambda_feature(lambda)];
+        let frame_bias = |bias: f32, weights: [f32; 2]| {
+            LinearThreshold::new(bias, weights).map_or(bias, |shift| shift.at(&frame))
+        };
+        search.zero_gate_shift = LinearThreshold::new(
+            frame_bias(
+                self.zero_gate_shift_bias,
+                [self.zero_gate_shift_nonbase, self.zero_gate_shift_lambda],
+            ),
+            [
+                self.zero_gate_shift_noise,
+                self.zero_gate_shift_neighbour_mv,
+            ],
+        );
+        search.window_exit_shift = LinearThreshold::new(
+            frame_bias(
+                self.window_exit_shift_bias,
+                [
+                    self.window_exit_shift_nonbase,
+                    self.window_exit_shift_lambda,
+                ],
+            ),
+            [self.window_exit_shift_noise],
+        );
+        search.gate_net.network = self.zero_gate_network();
+        search.gate_net.frame = nc_analysis::gate_net::GateFrame { lambda, nonbase };
     }
 }
 
@@ -937,10 +1333,61 @@ param_group! {
             "rate control: when the caller hands over the second frame before the first (`Encoder::look_ahead`) and it shows camera motion, the first key takes at most this many buffers of bits (0 = the backend's value): lower starts moving scenes coarser and spends the bits on the frames that follow",
         first_key_lookahead_off: 0.0, [0.0, 1.0],
             "1 turns the start-up lookahead's first-key cap off whatever the backend's value",
-        // Off: H.264 J_real proxy-4 at 0.3 -2.9% but crowd +5.6% (guard),
-        // at 0.2 -2.2%, crowd +9.2% (pan -12..-14%).
-        key_cap_buffer: 0.0, [0.0, 4.0],
+        first_key_full_motion: 0.0, [0.0, 16.0],
+            "camera motion (luma samples per frame) at which the start-up lookahead's first-key cap takes its whole value: from 1 sample per frame up to it the cap eases down from `rate.key_cap_buffer` (one buffer when that is off); at most 1 (0 = today) switches the whole cap on at 1 sample per frame",
+        first_key_fixed_camera: 0.0, [0.0, 1.0],
+            "how far a fixed camera (the start-up lookahead's share of unchanged blocks above 0.8) lifts the first-key cap back towards `rate.key_cap_buffer`, whatever the motion fit reads: 1 lifts it wholly on a fully unchanged picture, 0 ignores the share",
+        first_key_model: 0.0, [0.0, 2.0],
+            "1 predicts the first key frame's bits from frame-0 luma energy histograms (deadzone survival curve, calibrated per codec) instead of `bootstrap_step` and clamps to `rate.first_key_room_aim` of `strict_room`; 2 keeps `bootstrap_step` and clamps only first keys predicted to pass `rate.first_key_trigger` of `strict_room` (overflow guard; 0 = off)",
+        first_key_room_aim: 0.92, [0.5, 1.0],
+            "with `rate.first_key_model`, share of the first key's strict buffer room (`strict_room`) the predicted size aims at when clamping on the first coding",
+        first_key_trigger: 1.10, [0.5, 2.0],
+            "with `rate.first_key_model=2`, multiple of `strict_room` the predicted first-key size must exceed before the overflow guard clamps the quantizer (avoids false positives on keys that already fit)",
+        startup_lookahead: 1.0, [0.0, 1.0],
+            "1 lets the encoder ask for the second source frame before coding the first (`Encoder::wants_look_ahead`: the first key's rate-control cap and the fixed-QP moving-camera offset read it); 0 asks for none in any codec or rate mode, so the first frame is coded as soon as it arrives (benchmarks against encoders run without lookahead)",
+        // 0.8, chosen under the 1.0 re-code ceiling (`rate.recode_overflow`,
+        // now 1.15; 1.0 is `RateControlConfig::strict_buffer`): the key's
+        // share of the buffer is ours. rc_oracle, medium, draw 2026-11-21 quick (24 clips
+        // x 4 rungs, 150 f), J against 0.6.0 (cap off, ceiling 1.4) for cap
+        // 0.30 / 0.60 / 0.80 / 1.0 / off: AV1 +4.35 / +1.74 / +1.53 / +1.52
+        // / +1.61 %, HEVC +5.03 / +1.75 / +1.39 / +1.36 / +1.45, H.264 +4.71
+        // / +2.17 / +1.90 / +1.92 / +1.93. Past 0.8 nothing gains and AV1
+        // passes one buffer (peak 1.02; 0.8: 1.00, 0 of 94 points over;
+        // H.264's peak 1.04 is one 10 fps 720p clip at 66-132 kbps whose
+        // frames sit at QP 51). docs/handoff/rate-control.md "Buffer as a
+        // hard bound (0.6.1)".
+        // 1.0 since 2026-11-22 (under the 1.15 ceiling; docs/handoff/
+        // rate-control.md "Key distance"): with periodic keys the static,
+        // crowd and drone keys sat at the 0.8 cap. nceval.train at both key
+        // shares (base df1506a5, each rung's front k), L3 150 f / final check
+        // 600-900 f at 1/150 and 1/300: H.264 medium -0.14 / -0.77 %, fast
+        // -0.37 / -0.87, faster -0.25 / -0.93; HEVC medium -0.53 / -1.14;
+        // VVC medium -0.43 / -0.78, fast -0.07 / -0.97, faster -0.12 / -0.73;
+        // AV1 medium -0.15 / -0.72, fast -0.13 / -0.65; VP9 fast -0.25 /
+        // -1.14. Ejected on L3 (the first key's cost at 150 f with one key;
+        // the final check BETTER on every one, -0.58..-0.79 %) and pinned
+        // 0.8 there: HEVC fast and faster, AV1 faster, VP9 medium and
+        // faster, AV2 medium, fast and faster; unscreened rungs pinned 0.8;
+        // H.264 medium held at 0.8 for `static_recovery` (nc-h264
+        // DEFAULT_PARAMS).
+        // Long single-key runs (1200 f, 3 clips x 4 rungs): AV1 J -1.10 %,
+        // H.264 -1.44 %, peak <= 1.15 buffers, no drift.
+        key_cap_buffer: 1.0, [0.0, 4.0],
             "rate control: most bits any key may take, as a multiple of the buffer (0 = none): lower keeps the first key from filling the receiver's buffer, at a coarser start",
+        /// The first key apart (off by default: 0 is `key_cap_buffer`). Why
+        /// the first key and not a key-distance term: the first key has no
+        /// inter level to plan against, takes the start-up boost
+        /// (`rate.first_key_boost_scale`) and sets the start-up delay; the
+        /// 150-frame one-key L3 sees only it, and there `key_cap_buffer` 1.0
+        /// cost J on eight rungs whose periodic keys gained at both key
+        /// shares (docs/handoff/rate-control.md "Key distance").
+        key_cap_buffer_first: 0.0, [0.0, 4.0],
+            "rate control: most bits the stream's first key may take, as a multiple of the buffer (0 = `rate.key_cap_buffer`): lower starts coarser and quicker, apart from the periodic keys' cap",
+        // Causal R2 first-key refinement (L3 n=98, 150f, --strict-buffer, 2026-11-26):
+        // H.264 J -1.15% [-1.40, -0.33], VVC -0.83% [-1.15, -0.27], AV1 -0.50% [-0.84, -0.10]
+        // (0 guards); HEVC -0.97% [-1.37, -0.28] (1-clip 10s pulse f=450 1-QP boundary flip).
+        key_cap_frames_first: 12.0, [0.0, 60.0],
+            "rate control: most bits the stream's first key may take, in mean frames (0 = off)",
         // Off: CBR GOP 60 (2 s), 150 f, 6 TRAIN clips, 0.3 vs off,
         // PSNR/VMAF BD: H.264 +1.8/+1.4% (overrun frames 7 -> 17), VP9
         // +2.5/+1.5% (60 -> 4); lowlight_city_night +6..+11%. Since
@@ -970,6 +1417,22 @@ param_group! {
         // +0.00]; no guard in either.
         key_quality_match: 1.0, [0.0, 1.0],
             "rate control: share of the way a key's quality requirement moves from the inter level's step toward the step that would bring the last key to the inter frames' running PSNR-Y (6.02 dB per octave of step; in the running unchanged-block share in full, in the rest only finer and bounded by that gain; never coarser than the level) (0 = off); measures the keys' and the last 16 inter frames' distortion where nothing else does; the buffers still bound it",
+        // Off by default. Screened with the key RD search's gate
+        // (docs/analysis/intra-selection-2026-11-21.md "Rate control"):
+        // periodic keys sit at the inter level, so a cheaper-coding key
+        // keeps its quantizer and banks nothing.
+        key_level_finer: 0.0, [0.0, 6.0],
+            "rate control: QP units finer than the quality requirement (the inter level) a key with an inter level is planned at; the buffers still bound it (0 = off): higher invests more in the periodic keys later frames inherit",
+        /// `key_level_finer` as a function of the key interval
+        /// (`key_interval.rs`): 0 is the constant offset.
+        key_level_finer_ln_interval: 0.0, [-4.0, 4.0],
+            "rate control: added to `rate.key_level_finer` per unit of ln(key period / 300 frames) (open-ended GOPs count as 10 s): positive invests more in keys that more frames predict from (0: constant)",
+        /// The key budget as a function of the key interval
+        /// (`key_interval.rs`): today's budget repays the key over
+        /// `rate.key_repay_seconds` (5 s) whatever the period, so keys every
+        /// 150 and every 300 frames get the same budget. 0 is that.
+        key_boost_ln_interval: 0.0, [-2.0, 2.0],
+            "rate control: the key budget's boost (the first key's and the periodic one) multiplied by (key period / 300 frames) to this power (open-ended GOPs count as 10 s), at least 1 and within the key caps: positive gives keys that more frames predict from a larger budget (0: constant)",
         // The key's room is the physical buffer's, so the run-up keeps it
         // rather than the key borrowing: AV1 Fast base-only on
         // `pool_external_meva_admin_720p_536p` (194k, keys every 300) lost
@@ -994,6 +1457,48 @@ param_group! {
             "rate control, with `rate.key_repay_still_seconds`: share of unchanged 8x8 blocks below which a key repays over `rate.key_repay_seconds`",
         key_repay_still_full: 0.9, [0.0, 1.0],
             "rate control, with `rate.key_repay_still_seconds`: share of unchanged 8x8 blocks from which a key repays over the still horizon",
+        first_key_keep_loan: 1.0, [0.0, 1.0],
+            "rate control, with `rate.key_cap_frames_first`: share of uncapped first-key loan to keep scheduled so saved frame-0 bits flow to early inter frames",
+        first_key_refine_qp: 9.0, [0.0, 18.0],
+            "rate control: causal frame-1 per-block MC refinement QP budget relative to capped frame 0 (0 = off)",
+        first_key_refine_frame: 2.0, [1.0, 4.0],
+            "rate control, with `rate.first_key_refine_qp`: refinement schedule (1 = R1 only, 2 = R2 only after normal P1, 3 = split: certain blocks in R1, remaining consistent blocks in R2)",
+        first_key_refine_from: 0.5, [0.0, 1.0],
+            "rate control, with `rate.first_key_refine_qp`: per-block MC goodness below which refinement weight is 0",
+        first_key_refine_full: 0.85, [0.0, 1.0],
+            "rate control, with `rate.first_key_refine_qp`: per-block MC goodness at which refinement weight reaches 1",
+        first_key_refine_mv_shoulder: 1.0, [0.0, 16.0],
+            "rate control, with `rate.first_key_refine_qp`: per-block `|mv|` (px) below which no displacement decay is applied",
+        first_key_refine_mv_scale: 3.0, [0.0, 32.0],
+            "rate control, with `rate.first_key_refine_qp`: exponential decay scale (px) for `|mv|` above shoulder (0 = off)",
+        first_key_refine_cam_shoulder: 1.0, [0.0, 16.0],
+            "rate control, with `rate.first_key_refine_qp`: `camera_motion` (px/frame) below which no global decay is applied",
+        first_key_refine_cam_scale: 2.0, [0.0, 32.0],
+            "rate control, with `rate.first_key_refine_qp`: exponential decay scale (px/frame) for `camera_motion` above shoulder (0 = off)",
+        first_key_cold_learn_damp: 0.7, [0.0, 1.0],
+            "rate control, with `rate.key_cap_frames_first`: damp cold-start inter model `learn()` weight on frames 2..4 when bits overshoot prediction after a capped first key",
+        r1_inter_min_3: 1.0, [0.0, 1.0],
+            "rate control, with `rate.first_key_refine_qp`: when 1, allow 8x8 inter partitions (`planner.inter_min_log2=3`) on frame 1 when refining",
+        r1_rd_split: 1.0, [0.0, 1.0],
+            "rate control, with `rate.first_key_refine_qp`: when 1, enable RD partition search (`planner.rd_split=1`) on frame 1 when refining",
+        r1_lambda_scale: 0.7, [0.0, 1.0],
+            "rate control, with `rate.first_key_refine_qp`: multiply frame 1 decision/planner `lambda_scale` by this when refining (0 = off)",
+        // Upward-only cold-start temporal scaling (L3 n=98, 150f, --strict-buffer, 2026-11-26):
+        // H.264 J -0.28% [-0.47, -0.10], AV1 -0.32% [-0.55, -0.13],
+        // HEVC -0.24% [-0.43, -0.11], VVC -0.18% [-0.35, -0.03] (0 guards on all 4).
+        startup_temporal_ref: 0.18, [0.0, 1.0],
+            "rate control: when > 0, scale frame-1 inter `bootstrap_step` `reference_bits` upward by `(temporal_hint / spatial_hint / this).clamp(1.0, 4.0)` so high-motion starts do not overshoot",
+        // Zero-centered MC-confidence concentration on cadence base frames (L3 n=98,
+        // 150f, --strict-buffer, 2026-11-26): HEVC -0.82%, VP9 -0.69%, AV1 -0.45%,
+        // AV2 -0.30%, H.264 -0.27%, VVC -0.09% (0 guards on 5/6; HEVC 1-clip 10s pulse).
+        base_mc_aq_qp: 4.0, [0.0, 12.0],
+            "rate control: zero-centered per-block MC-confidence QP concentration on cadence base frames (f > 2, 0 = off)",
+        // Zero-centered temporal-persistence QP concentration on non-initial keys
+        // (2s periodic keys, 180f, --strict-buffer, 2026-11-26): improves quality
+        // (+0.004..+0.020 dB) and cuts periodic-key pulse (-0.03..-0.08 dB) across
+        // all 6 codecs at ~0% CPU and zero extra key bits.
+        key_aq_qp: 4.0, [0.0, 12.0],
+            "rate control: zero-centered per-block temporal-persistence QP concentration on non-initial key frames (key && f > 0, 0 = off)",
         // The horizon 10 -> 5 s with the debit term: 600-frame long clips
         // (keys every 10 s) AV1 J +0.12% at 5 s, +0.15% at 10 s against
         // the proportional controller; at 150 frames 5 s leaves 3-12 of
@@ -1029,20 +1534,79 @@ param_group! {
             "rate control may plan this many octaves of step past the codec's largest quantizer: frames stay coded at the largest, the decision lambda grows with the squared step (0 = off): higher reaches lower targets",
         scene_hint_ratio: 1.5, [1.0, 10.0],
             "rate control: a packet far off its prediction resets the rate model only if the frame's complexity hint also changed by this ratio (1 = any miss resets): higher ignores misses on unchanged content",
-        // J_real VAL (H.264, 11 clips, CBR ladder, 150 f) 1.4 vs 0: J_real
-        // +0.2% (full +0.1%, low +0.2%), no guard; non-compliant points
-        // 2 -> 0, overrun frames 184 -> 99; only static_london_bus changes
-        // (J +1.7/+3.2%, worst-1% -1.1/-1.6%), the other 10 clips are
-        // byte-identical (no re-code). At 1, static_cam22 cost +3.5%.
-        recode_overflow: 1.4, [0.0, 2.0],
+        // 1.15 (owner, 2026-11-22): about the tighter references' worst
+        // points (x265 medium 1.16, SVT-AV1 M12 1.17 buffers at 150 f,
+        // docs/analysis/frame-allocation-2026-11-21.md section 5);
+        // `RateControlConfig::strict_buffer` (`--strict-buffer`) holds one
+        // buffer instead. rc_oracle, medium, draw 2026-11-22 (150 f, 24
+        // clips x 4 rungs), J against strict 1.0 at 1.1 / 1.15 / 1.2: AV1
+        // -0.92 / -1.08 / -1.36 %, HEVC -0.95 / -1.03 / -0.74, VVC -0.76 /
+        // -0.49 / -0.89, VP9 -0.76 / -0.96 / -1.09, AV2 -1.31 / -1.39 /
+        // -1.56, H.264 -0.33 / -0.70 / -0.62; 600 f (keys every 10 s, 6
+        // clips) at 1.15: -0.26..-1.64. Peak buffer at 1.15: max 1.15,
+        // p95 1.11-1.14 (0.6.0's 1.4: p95 1.27-1.39).
+        recode_overflow: 1.15, [0.0, 2.0],
             "rate control: codes a frame again, coarser, when it would fill a buffer drained at the target rate (a strict-CBR receiver, 1 s by default) past this multiple of its capacity, for backends that support re-coding (0 = never): 1 keeps the buffer, higher tolerates short overflows and re-codes less",
         // Off: under a hard key budget a first key misses its target by log2
         // SD 0.38-0.47, 9-11 % of them by 2x (docs/analysis/
-        // key-frame-study-2026-11-21.md section 4); measured there.
+        // key-frame-study-2026-11-21.md section 4); measured there. On the
+        // hard-bound base (re-code ceiling 1) 0.5 cost J at every key cap
+        // (rc_oracle, medium, 24 clips, 150 f; cap 0.6: AV1 +0.36, HEVC
+        // +1.82, H.264 +0.36 %): the ceiling already bounds the key, and the
+        // re-code only shrinks keys that overshot a budget inside it.
         key_recode_miss: 0.0, [0.0, 2.0],
             "rate control: codes a key frame once more when its size misses its budget by more than this many octaves either way, at the step the miss implies (0 = never): lower hits the key budget closer, at one more key coding",
+        /// Off by default. With the key RD searches on, a re-code codes the
+        /// key twice with them; this codes the plan first (no search,
+        /// about a fifth of a searched key's time) and the searched key
+        /// once, at the step the plan's size, scaled by the last learned
+        /// searched-to-plan ratio, implies.
+        key_plan_first: 0.0, [0.0, 1.0],
+            "rate control, with the key size re-code on: a key frame with RD searches (partition or leaf) is coded first without them to learn its size, then once with them at the step rate control settles (1 = on): fewer searched codings of a key",
+        // The first exponent: static refinement bursts, which cause most
+        // overflows, are steep (VP9 `static_chirla_s000c3_360p` qindex 177 ->
+        // 92 took 74 -> 12075 bytes, an exponent near 4); with the model's 1.1
+        // the re-code came out 26x smaller than its room (H.264 `static_cam22`
+        // frame 4: 52.8 kbit, room 14.9 kbit, QP 44 -> 54, 2.0 kbit).
+        recode_fill: 0.9, [0.5, 1.0],
+            "rate control: share of the buffer room a re-code aims at, a margin for the slope's error: higher keeps more of a re-coded refinement burst, at more frames re-coded twice",
+        recode_first_exponent: 3.0, [1.0, 6.0],
+            "rate control: bits-versus-step slope the first re-code of a frame assumes (later ones measure it between the last two codings): higher re-codes less coarse, landing nearer its room on steep static bursts",
+        recode_max: 2.0, [1.0, 4.0],
+            "rate control: re-codes one frame may spend (rounded): more lands a burst nearer its room, at more codings of it",
         recode_overflow_inter: 0.0, [0.0, 2.0],
             "rate control: the re-code ceiling of inter frames, as a multiple of the buffer (0 = the main re-code ceiling): lower keeps static refinement bursts inside a strict-CBR receiver's buffer, at the refinement they would have bought",
+        /// Off by default (`in_frame_rate.rs`).
+        in_frame: 0.0, [0.0, 1.0],
+            "rate control: steers the block quantizer superblock by superblock while a frame is coded, from its bits so far against a per-row prediction, so a frame that would pass the re-code ceiling lands inside it without a re-code (1 = on; backends with block QP syntax)",
+        in_frame_aim: 0.9, [0.5, 1.0],
+            "in-frame rate control: share of the re-code room the projected frame must stay under: lower steers earlier, re-codes less, at more frames coded coarser",
+        in_frame_max_qp: 12.0, [1.0, 24.0],
+            "in-frame rate control: largest block offset it adds, in QP units: higher absorbs larger bursts without a re-code",
+        in_frame_step_qp: 1.0, [0.25, 12.0],
+            "in-frame rate control: largest change of its offset after one superblock, in QP units: higher reacts faster, at less even quality across the frame",
+        in_frame_exponent: 2.0, [1.0, 4.0],
+            "in-frame rate control: bits-versus-step slope that turns a projected overshoot into QP units: higher steers more gently",
+        in_frame_history: 0.5, [0.0, 1.0],
+            "in-frame rate control: weight of the last frame's actual bits per superblock against the analysis' complexity per superblock in the prediction",
+        in_frame_windback: 0.0, [0.0, 4.0],
+            "in-frame rate control, with `rate.in_frame`: a superblock that takes the projected frame past this multiple of the aim is undone and coded again at the raised offset (0 = never; backends with node trials)",
+        /// Off: a key is a planned loan the key cap sizes near its room. With
+        /// keys watched, the first screens (AV1 fast, nceval.quick
+        /// 2026-11-23) had a 1/300 periodic-key pulse of +0.5..+0.7 dB.
+        in_frame_keys: 0.0, [0.0, 1.0],
+            "in-frame rate control and early re-codes watch key frames too (1 = on): off leaves keys to the whole-frame re-code",
+        in_frame_proactive: 0.0, [0.0, 1.0],
+            "in-frame rate control, with `rate.in_frame`: also predicts the frame's size from the last frame of its kind (bits per complexity per superblock) and starts the whole frame evenly coarser where it would pass the aim, superblocks correcting it by at most `rate.in_frame_correct_qp` (1 = on)",
+        in_frame_correct_qp: 2.0, [0.0, 12.0],
+            "proactive in-frame rate control: how far superblocks may move the frame's starting offset either way, in QP units",
+        /// Off by default (`in_frame_rate.rs`).
+        recode_early: 0.0, [0.0, 1.0],
+            "rate control: stops coding a frame that has spent its re-code room, or projects past `rate.recode_early_margin` rooms, at the end of a superblock and re-codes it whole at once (1 = on; backends that report their bits mid-frame): the re-code's result for less of the discarded coding's time",
+        recode_early_share: 0.25, [0.05, 1.0],
+            "early re-code: predicted share of the frame coded before a projection may stop it: higher waits for surer projections",
+        recode_early_margin: 1.5, [1.0, 4.0],
+            "early re-code: multiple of the room a projection must pass to stop the coding: higher stops only clear overflows",
         aq_max_offset: 8.0, [1.0, 12.0],
             "variance AQ: largest block offset either way, in QP units: higher allows stronger per-block redistribution",
         aq_strength: 0.0, [0.0, 3.0],
@@ -1126,6 +1690,8 @@ param_group! {
             "1 also applies the cadence at fixed QP; 0 keeps fixed-QP frames flat (the cadence then only shapes rate control)",
         fixed_qp_profile: 0.0, [0.0, 1.0],
             "1 applies the codec's fixed-QP profile (`CodecBackend::FIXED_QP_PARAMS`: its static frame-level pattern for coding without rate control) beneath the caller's settings; the CLI sets it for --qp without --bitrate, a preset may pin 0",
+        constant_qp: 0.0, [0.0, 1.0],
+            "fixed QP: 1 codes every picture and block at the configured quantizer, as libaom and libvpx are pinned for quantizer-point comparisons (min-q = max-q, AQ off) (`constant_qp.rs`: no cadence, layer ladder, key-frame offset or block offsets, whatever else is set); 0 keeps the codec's fixed-QP pattern",
         // 6 in every codec's Default (the VC-1K phone-call diagnosis,
         // docs/handoff/hevc.md "VC-1K phone video calls"). Fixed QP, matched
         // QP, pool adopt level, J: HEVC -0.8 [-1.4, -0.4] (draw
@@ -1138,6 +1704,12 @@ param_group! {
             "fixed QP: QP units coarser a key frame is coded under camera motion (growing from 1 luma sample per frame to `rate.cadence_max_camera_motion`, less as the still-block share passes 0.8: the start-up lookahead's for the first key, the running values of the inter frames for later ones; 0 = off): a moving camera replaces the picture before later frames inherit a fine key",
         fixed_qp_moving_cadence: 0.0, [0.0, 1.0],
             "fixed QP: 1 scales the QP cadence by the still-block share under camera motion (as `rate.fixed_qp_moving_key` measures it) whatever `rate.cadence_static_scaling` says: a fixed-QP profile's full cadence then holds for still cameras only",
+        /// The fixed-QP key quantizer as a function of the key interval
+        /// (`key_interval.rs`), on top of each backend's key offset (HEVC
+        /// and VVC derive theirs from the intra period already,
+        /// `key_qp.rs`; H.264, AV1, VP9 and AV2 use a constant). 0 is that.
+        fixed_qp_key_ln_interval: 0.0, [-6.0, 6.0],
+            "fixed QP: QP units finer a key frame is coded per unit of ln(key period / 300 frames) (open-ended GOPs count as 10 s; not with an explicit key QP offset): positive codes keys that more frames predict from finer (0: constant)",
         key_still_boost: 0.0, [0.0, 18.0],
             "QP units finer a key frame is coded on a fixed camera (scaled by how still the scene is: the running unchanged-block share, or the start-up lookahead's for the first key, from 0.8 to 1), its loan repaid on schedule by the frames after it (0 = off): higher invests more in the picture a still scene's later frames inherit",
         key_hold_still: 0.0, [0.0, 4.0],
@@ -1198,6 +1770,10 @@ param_group! {
             "a repeat is held only if another repeat came at most this many input frames before it (a repeat source); an isolated repeat (a duplicated first frame, one stall) is coded: it costs a near-empty frame, while holding it shifts rate control (held-out AV1 `J_real` -0.6..-6.3% when coded); 0 holds no frame",
         refine_octaves: 1.0, [0.0, 8.0],
             "octaves the last coded frame's step may exceed the current inter level's for a hold: a coarser last frame (a starved key) is coded so the encoder can refine it",
+        refine_fullness: 0.5, [0.0, 1.0],
+            "rate control: a repeat that would be held is coded as a refinement frame while the receiver's buffer is below this share of its capacity, until a refinement frame takes under a tenth of an inter budget (`hold.rs` \"Spare-budget refinement\"; 0 = off): higher spends more of a still scene's unspent budget on its quality",
+        code_skip: 0.0, [0.0, 1.0],
+            "1 codes a held frame as a repeat frame instead of sending nothing: an inter frame whose every block copies its reference (each codec's skip at the zero vector, no residual, in-loop filters off), so the decoder outputs one picture per input frame and rate control charges its bits (`hold.rs` \"Repeat frames\"; benchmark parity with encoders that code every frame); 0 sends nothing",
     }
 }
 
@@ -1236,6 +1812,18 @@ param_group! {
             "with `structure.inherited_depth`: inheritance loss (luma dB per QP unit) up to which the cadence has full strength: higher keeps the full cadence on noisier scenes",
         depth_zero_loss: 0.75, [0.0, 4.0],
             "with `structure.inherited_depth`: inheritance loss at which the cadence strength reaches its floor (a quarter, so the loss stays measurable): lower removes the cadence from noisy scenes sooner",
+        depth_max: 1.0, [1.0, 2.0],
+            "with `structure.inherited_depth`: maximum cadence strength on fully inherited scenes (1.0 = today's cap; e.g. 1.5 allows 1.5x cadence offsets on still, low-noise, long-GOP scenes)",
+        depth_deep_loss: 0.10, [0.0, 0.5],
+            "with `structure.depth_max > 1`: inheritance loss (luma dB per QP unit) at which the cadence strength reaches `structure.depth_max`",
+        depth_deep_min_period: 150.0, [0.0, 600.0],
+            "with `structure.depth_max > 1`: shortest key period (frames) at which the cadence strength may exceed 1.0",
+        depth_deep_max_motion: 1.0, [0.0, 16.0],
+            "with `structure.depth_max > 1`: camera displacement (luma samples per frame) at which the depth above 1.0 backs off to 0 (ramps down from half this value; 0 disables the motion gate)",
+        depth_deep_max_noise: 1.5, [0.0, 16.0],
+            "with `structure.depth_max > 1`: sensor noise sigma at which the depth above 1.0 backs off to 0 (ramps down from half this value; 0 disables the noise gate)",
+        depth_model: 0.0, [0.0, 1.0],
+            "with `structure.inherited_depth`: enable the 8-feature linear cadence-depth chooser (0 = off, uses hand thresholds; 1 = replaces `depth_deep_*` thresholds with a smooth linear model over bpp, key period, GOP position, startup, static share, camera motion, dark block share, and mean luma)",
     }
 }
 
@@ -1250,7 +1838,7 @@ param_group! {
         second_full: 0.0, [0.0, 1.0],
             "1 runs the full mode decision (sub-sample refinement, intra trial) against the second reference; 0 ranks its zero, predicted and scaled-seed vectors only: 0 is faster",
         second_compound_margin: 0.15, [0.0, 4.0],
-            "compound inter trial gate: try the equal-weight average of primary and secondary inter winners only when the worse single-reference cost is within this fraction of the better one (0 = off when neither ties; higher tries compound on more blocks)",
+            "compound inter trial gate: try the equal-weight average of primary and secondary inter winners only when the worse single-reference cost is within this fraction of the better one (0 = off when neither ties; higher tries compound on more blocks). Acts only where the backend codes compound: AV1 (HEVC only in B slices, which no preset enables); inert for H.264, VVC, VP9 and AV2",
         second_hold: 0.0, [0.0, 10.0],
             "seconds a high-quality frame stays the second reference before the next one replaces it (0: every high-quality frame replaces it): a long-lived reference keeps the background a passing object has since covered, at the cost of older detail; the reference distance limit refreshes it sooner",
         second_hold_rearm: 0.0, [0.0, 1.0],
@@ -1319,6 +1907,20 @@ param_group! {
             "1 adapts the motion search's zero-vector exits (`analysis.static_sad_per_pixel`, `one_position_sad_per_pixel`, `skip_hme_sad_per_pixel`, scaled together) per clip and frame role",
         motion_target: 0.2, [0.0, 1.0],
             "share of superblocks just above the one-position exit whose search must find a 64x64 prediction clearly better than the zero vector for the exits to stay where they are: higher searches fewer superblocks (faster)",
+        refine: 0.0, [0.0, 1.0],
+            "1 adapts the gate below which the bilinear ranking does not refine its winner (`decision.winner_refine_gate_scale`; the codecs and rungs that rank on bilinear predictions) per clip and frame role",
+        refine_target: 0.01, [0.0, 1.0],
+            "share of the cost of the winners just above that gate that their refinement must save for the gate to stay where it is: higher refines fewer winners (faster)",
+        quarter: 0.0, [0.0, 1.0],
+            "1 switches the sub-sample walk's quarter stage after a half stage that did not move (`decision.subpel_walk` above 0) per clip and frame role between running it and the step the half stage's costs predict (`decision.subpel_quarter_predict`; 0: no step)",
+        quarter_target: 0.005, [0.0, 1.0],
+            "share of the cost of the refinements whose half stage did not move that the quarter stage must save over its cheap alternative to keep running: higher runs it on fewer clips (faster)",
+        probe_period: 8.0, [1.0, 256.0],
+            "while a switched tool's cheap alternative runs, one opportunity in this many runs the tool itself as a probe: lower notices sooner that the tool pays again, saves less",
+        aggression: 1.0, [0.25, 8.0],
+            "multiplies every adapted tool's target (the rung's one effort knob for its adaptive tools): higher lets every tool skip more (faster), lower spends more where tools pay",
+        confidence: 0.0, [0.0, 4.0],
+            "standard errors by which a tool's evidence must clear the hysteresis band before its multiplier moves, waiting for more evidence otherwise (0: every cycle with `adapt.min_runs` runs is judged as it stands): higher moves less often on noise",
         band: 2.0, [1.1, 16.0],
             "the margin band: a block informs its tool's threshold when its gate value lies between the threshold and this multiple of it, on the side where the tool runs",
         step: 1.25, [1.0, 4.0],
@@ -1352,6 +1954,8 @@ param_group! {
             "share of each key frame's superblocks, those with the most source texture (8x8 luma standard deviation per sample, in quantizer steps), coded with the regular settings; the rest take the light.* settings (1: every key superblock regular): lower spends the key frame's intra search on fewer superblocks",
         key_regular_proxy: 0.0, [0.0, 16.0],
             "a key superblock whose texture proxy (steps) is at least this is regular whatever its rank (0: rank only)",
+        key_regular_fraction_ln_interval: 0.0, [-1.0, 1.0],
+            "with `effort.key_regular_fraction` below 1, added to it per unit of ln(key period / 300 frames) (open-ended GOPs count as 10 s; within 0..1): positive codes more of a long GOP's key with the regular settings, less of a short one's (0: constant)",
         light_nonbase_only: 0.0, [0.0, 1.0],
             "1 keeps every superblock of base frames (key, cadence base) regular, as SVT runs regular PD1 on its base frames",
     }
@@ -1378,6 +1982,8 @@ param_group! {
             "multiple of the trellis λ for chroma (0 leaves chroma to the plain quantiser): lower keeps more chroma levels",
         trellis_key: 1.0, [0.0, 1.0],
             "1 also trellises key frames (0: P frames only): 0 keeps the key frame every later frame predicts from at the plain quantiser's quality",
+        trellis_key_lambda_scale: 1.0, [0.1, 2.0],
+            "with quant.trellis and quant.trellis_key, further multiple of trellis λ on key frames (1 = same as inter; lower keeps more key levels for subsequent frames to inherit)",
         trellis_states: 1.0, [1.0, 16.0],
             "entropy-context states kept per scan position: higher searches more level combinations",
         // Off: the cheap trellis substitute for rungs without the trellis
@@ -1500,12 +2106,23 @@ param_group! {
 }
 
 param_group! {
+    /// Informative stream content (`encoder_info.rs`): never changes the
+    /// decoded pictures.
+    pub struct StreamParams ("stream") {
+        encoder_info: 1.0, [0.0, 1.0],
+            "1 writes the encoder information message (name, release and settings: H.264/HEVC/VVC `user_data_unregistered` SEI, AV1/AV2 metadata OBU; VP9 has no syntax for it) with the sequence headers of every key frame; 0 writes none",
+    }
+}
+
+param_group! {
     /// Test-only modes (`random_decisions.rs`); never set in real encodes.
     pub struct DebugParams ("debug") {
         random_decisions: 0.0, [0.0, 16_777_215.0],
             "nonzero: seed for random legal partition/mode/vector/block-QP choices (syntax-coverage stress test; compression is meaningless); 0 = normal decisions",
         recode_identity: 0.0, [0.0, 1.0],
             "1 codes every frame of a backend that supports re-coding twice, first at the other end of the quantizer range, keeping the second (the recode contract's test: the stream must be byte-identical to 0)",
+        stop_identity: 0.0, [0.0, 1.0],
+            "1 stops the first coding of every frame of a backend that supports re-coding halfway (as an early re-code would) and codes it again at the same plan (the stopped coding's contract test: the stream must be byte-identical to 0)",
     }
 }
 
@@ -1534,6 +2151,7 @@ pub fn engine_specs() -> Vec<&'static [ParamSpec]> {
         ChromaParams::SPECS,
         ResolutionParams::SPECS,
         SpatialParams::SPECS,
+        StreamParams::SPECS,
         DebugParams::SPECS,
     ]
 }

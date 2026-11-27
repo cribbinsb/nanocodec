@@ -1,0 +1,15 @@
+# intra-cheap batch 4: the key plan's directional correction (planner.intra_plan_direction), staged-decision assemblies, cheap codec settings
+null: planner.intra_bias=1050
+dir25: planner.intra_plan_direction=0.25
+dir50: planner.intra_plan_direction=0.5
+dir75: planner.intra_plan_direction=0.75
+dir100: planner.intra_plan_direction=1.0
+dir50_b1000: planner.intra_plan_direction=0.5 planner.intra_bias=1000
+dir50_b1100: planner.intra_plan_direction=0.5 planner.intra_bias=1100
+dir50_s2_g120: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2 planner.intra_plan_direction=0.5
+dir50_krd11_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2 planner.intra_plan_direction=0.5
+krd11_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 planner.key_rd_margin=1.2
+s2_g120: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_margin=1.2
+s2_lf_tr: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 planner.key_rd_leaf_first=1 vp9.intra_rd_trellis=1
+tx0: vp9.intra_tx_depth=0
+s3_lf: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=3 planner.key_rd_leaf_first=1

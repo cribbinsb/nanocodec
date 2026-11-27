@@ -1,0 +1,39 @@
+# fast-front (2026-11-25): single-lever ablation of AV1 veryfast toward a faster rung
+# ("superfast", aimed at SVT-AV1 M13's speed and beyond). Each lever from veryfast's value to
+# its cheaper side only. Format (nceval.tune_pool): name [low high] [int|log]
+planner.intra_plan 1 2 int
+effort.light_nonbase_only 0 1 int
+av1.loop_filter 0 1 int
+av1.cdef_per_superblock 0 1 int
+av1.cdef_local_search_period 4 16 int
+av1.cdef_local_strong_luma 0 1 int
+analysis.hme_level1 0 1 int
+analysis.window_half_width 1 4 int
+analysis.window_half_height 0 1 int
+analysis.hme_range_x 4 16 int
+analysis.hme_range_y 0 4 int
+analysis.skip_hme_sad_per_pixel 2 8
+analysis.window_exit_sad_per_pixel 0 4
+analysis.one_position_sad_per_pixel 1.3333334 6
+analysis.preanalysis_rows 0 1 int
+analysis.hme_from_seed 0 1 int
+decision.max_cheap_vectors 2 16 int
+decision.intra_gate_variance 64 512
+decision.intra_frame_skip_me_dist 0 10000
+decision.static_zero_vector 0 1 int
+decision.codec_subpel_seed_lambdas 0.1 0.5
+decision.distortion_row_step 1 2 int
+decision.codec_fullpel_probe 0 1 int
+av1.pre_tx_skip_energy 15 100
+av1.pre_tx_skip_score 30 70
+av1.skip_bias_energy 0.0625 0.5
+av1.near_count 1 3 int
+av1.chroma_skip_sad_num 5 16 int
+light.av1.chroma_skip_sad_num 7 16 int
+av1.partial_forward16_min_q 0 256 int
+av1.keyframe_satd_modes 0 4 int
+av1.keyframe_flat_gate 150 1200
+planner.depth_removal_th_32_16 25 100
+planner.depth_removal_th_16_8 50 200
+planner.inter_min_log2 4 5 int
+layers.adaptive_max_camera_jitter 8 64

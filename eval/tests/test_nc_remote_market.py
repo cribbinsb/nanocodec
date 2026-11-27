@@ -45,21 +45,13 @@ def test_a_reclaim_older_than_the_window_no_longer_excludes():
     assert plan.types == nc_remote.INSTANCE_TYPES
 
 
-def test_two_reclaimed_types_stay_on_spot_three_go_on_demand():
-    two = [box("c7a.24xlarge", "2026-11-20T09:00:00Z"),
-           box("c6i.24xlarge", "2026-11-20T09:30:00Z")]
-    assert nc_remote.plan_market(two, NOW).market == nc_remote.SPOT
-    three = two + [box("c7i.24xlarge", "2026-11-20T09:40:00Z")]
-    plan = nc_remote.plan_market(three, NOW)
-    assert plan.market == nc_remote.ON_DEMAND
-    assert "3 types" in plan.reason
-
-
-def test_on_demand_ends_once_the_window_passes():
+def test_reclaimed_types_never_send_the_box_on_demand():
+    """Owner, 2026-11-26: spot only. However many types spot reclaimed, the next box is spot
+    (the reclaimed types left out while their window lasts)."""
     three = [box(t, "2026-11-20T09:40:00Z")
              for t in ("c7a.24xlarge", "c6i.24xlarge", "c7i.24xlarge")]
+    assert nc_remote.plan_market(three, NOW).market == nc_remote.SPOT
     later = nc_remote.parse("2026-11-20T09:40:00Z") + nc_remote.RECLAIM_WINDOW
-    assert nc_remote.plan_market(three, later).market == nc_remote.ON_DEMAND
     assert nc_remote.plan_market(three, later + datetime.timedelta(seconds=1)).market \
         == nc_remote.SPOT
 
@@ -95,23 +87,23 @@ def fake_aws(capacity):
     return aws
 
 
-def spot_without_c7a():
-    return nc_remote.plan_market([box("c7a.24xlarge", "2026-11-20T09:36:10Z")], NOW)
+def spot_without_c7i():
+    return nc_remote.plan_market([box("c7i.24xlarge", "2026-11-20T09:36:10Z")], NOW)
 
 
 def test_the_spot_fleet_offers_no_pool_of_a_reclaimed_type():
-    aws = fake_aws({nc_remote.SPOT: {"c7a.24xlarge", "c6i.24xlarge"}})
-    instance, market = aws.fleet_instance("lt-1", spot_without_c7a(), "end")
+    aws = fake_aws({nc_remote.SPOT: {"c7i.24xlarge", "c6i.24xlarge"}})
+    instance, market = aws.fleet_instance("lt-1", spot_without_c7i(), "end")
     assert (instance, market) == ("i-spot-c6i.24xlarge", nc_remote.SPOT)
     [(_, offered)] = aws.ec2.requests
-    assert "c7a.24xlarge" not in offered
+    assert "c7i.24xlarge" not in offered
     assert len(offered) == 2 * (len(nc_remote.INSTANCE_TYPES) - 1)  # every zone
 
 
 def test_no_spot_capacity_in_any_remaining_pool_falls_back_to_on_demand():
-    aws = fake_aws({nc_remote.SPOT: {"c7a.24xlarge"},
+    aws = fake_aws({nc_remote.SPOT: {"c7i.24xlarge"},
                     nc_remote.ON_DEMAND: set(nc_remote.INSTANCE_TYPES)})
-    instance, market = aws.fleet_instance("lt-1", spot_without_c7a(), "end")
+    instance, market = aws.fleet_instance("lt-1", spot_without_c7i(), "end")
     assert market == nc_remote.ON_DEMAND
     assert [m for m, _ in aws.ec2.requests] == [nc_remote.SPOT, nc_remote.ON_DEMAND]
 
@@ -176,3 +168,35 @@ def test_a_pool_above_the_price_cap_is_not_offered_and_the_fleet_is_capped():
     aws.create_fleet("lt-1", nc_remote.SPOT, nc_remote.INSTANCE_TYPES, "end")
     subnets = {o["SubnetId"] for o in seen[0]["LaunchTemplateConfigs"][0]["Overrides"]}
     assert subnets == {"subnet-a"} and seen[0]["SpotOptions"]["MaxTotalPrice"] == "1.5000"
+
+
+def test_a_delisted_box_is_never_replaced_under_running_jobs():
+    """2026-11-24: the build box relaunched as c7a after c7a left the list; it serves its
+    jobs and ends once idle, while other reasons still replace a busy box."""
+    act = nc_remote.reap_action
+    assert act("c7a.24xlarge is no longer a build box type", True, idle=False) == ""
+    assert act("c7a.24xlarge is no longer a build box type", True, idle=True) == nc_remote.END
+    assert act("on-demand while spot is allowed", False, idle=False) == nc_remote.REPLACE
+    assert act("", False, idle=True) == ""
+
+
+def test_a_job_lost_to_a_reclaim_or_refused_on_a_notice_runs_again_on_a_new_box():
+    retry = nc_remote.retry_after
+    assert retry(nc_remote.SSH_FAILED, "shutting-down") and retry(nc_remote.SSH_FAILED, "terminated")
+    assert retry(nc_remote.STATUS_SPOT_NOTICE, "terminated")
+    assert not retry(nc_remote.SSH_FAILED, "running")  # a broken link, the box still up
+    assert not retry(1, "terminated")  # the command failed: no retry
+
+
+def test_the_box_side_names_the_same_notice_status():
+    import nc_remote_job
+    assert nc_remote_job.STATUS_SPOT_NOTICE == nc_remote.STATUS_SPOT_NOTICE
+
+
+def test_a_running_job_is_told_once_when_its_box_gets_a_notice(capsys, monkeypatch):
+    import nc_remote_job
+    monkeypatch.setattr(nc_remote_job.time, "sleep", lambda s: None)
+    polls = iter([None, None, '{"action": "terminate"}'])
+    process = type("P", (), {"poll": lambda self: None})()
+    nc_remote_job.warn_on_notice(process, notice=lambda: next(polls))
+    assert capsys.readouterr().err.count("SPOT INTERRUPTION NOTICE") == 1

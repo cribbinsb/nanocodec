@@ -29,6 +29,7 @@
 //! Kernel contract: see the `mc` module docs.
 
 mod horizontal_dot;
+use super::horizontal_i8mm;
 mod vertical_dot;
 
 use super::neon_dotprod::{DOT_PIXEL_BIAS, DotFilter};
@@ -65,6 +66,27 @@ pub(crate) fn prep_fns<F: Av1Family>() -> [PrepFn; 5] {
         prep::<F, 32>,
         prep::<F, 64>,
     ]
+}
+
+/// Six-tap families keep the same passes and use I8MM for the horizontal rows.
+pub(super) fn i8mm_fns<F: Av1Family>() -> ([ConvolveFn; 5], [PrepFn; 5]) {
+    debug_assert!(F::OUTER_ZERO);
+    (
+        [
+            put::<F, 4>,
+            put_i8mm::<F, 8>,
+            put_i8mm::<F, 16>,
+            put_i8mm::<F, 32>,
+            put_i8mm::<F, 64>,
+        ],
+        [
+            prep::<F, 4>,
+            prep_i8mm::<F, 8>,
+            prep_i8mm::<F, 16>,
+            prep_i8mm::<F, 32>,
+            prep_i8mm::<F, 64>,
+        ],
+    )
 }
 
 /// Where one pass's vectors of up to 8 outputs go.
@@ -289,6 +311,89 @@ unsafe fn prep<F: Av1Family, const W: usize>(
     unsafe { filter::<W, _, F, true>(src, ss, h, (fx, fy), taps, &mut out) };
 }
 
+#[target_feature(enable = "neon,dotprod,i8mm")]
+unsafe fn put_i8mm<F: Av1Family, const W: usize>(
+    src: &[u8],
+    ss: usize,
+    dst: &mut [u8],
+    ds: usize,
+    h: usize,
+    fx: usize,
+    fy: usize,
+) {
+    // SAFETY: the table requires I8MM and the caller supplies complete footprints.
+    unsafe {
+        if fx == 0 {
+            put::<F, W>(src, ss, dst, ds, h, fx, fy);
+        } else {
+            let mut out = Put::<W> { dst, stride: ds };
+            filter_i8mm::<F, W, _>(src, ss, h, (fx, fy), &mut out);
+        }
+    }
+}
+
+#[target_feature(enable = "neon,dotprod,i8mm")]
+unsafe fn prep_i8mm<F: Av1Family, const W: usize>(
+    src: &[u8],
+    ss: usize,
+    dst: &mut [i16],
+    ds: usize,
+    h: usize,
+    fx: usize,
+    fy: usize,
+) {
+    // SAFETY: the table requires I8MM and the caller supplies complete footprints.
+    unsafe {
+        if fx == 0 {
+            prep::<F, W>(src, ss, dst, ds, h, fx, fy);
+        } else {
+            let mut out = Prep::<W> { dst, stride: ds };
+            filter_i8mm::<F, W, _>(src, ss, h, (fx, fy), &mut out);
+        }
+    }
+}
+
+#[inline]
+#[target_feature(enable = "neon,dotprod,i8mm")]
+unsafe fn filter_i8mm<F: Av1Family, const W: usize, O: Output>(
+    src: &[u8],
+    ss: usize,
+    h: usize,
+    (fx, fy): (usize, usize),
+    out: &mut O,
+) {
+    if h == 0 {
+        return;
+    }
+    check_window::<W>(src, ss, h);
+    out.check(W, h);
+    // SAFETY: the source has seven extra rows. Both passes leave a trailing
+    // row, so unused lanes in each 16-byte load stay inside the source slice.
+    unsafe {
+        let horizontal = horizontal_i8mm::SixTap::new(&halved(F::taps(W, fx)));
+        if fy == 0 {
+            let bias = vdupq_n_s32(O::HORIZONTAL_BIAS - DOT_PIXEL_BIAS);
+            for row in 0..h {
+                let source = src.as_ptr().add((row + TAP_CENTRE) * ss + 1);
+                for col in (0..W).step_by(LANES) {
+                    out.horizontal(row, col, horizontal.sum(source.add(col), bias));
+                }
+            }
+        } else {
+            let vertical = halved(F::taps(h, fy));
+            let bias = vdupq_n_s32(2);
+            both_rows_with::<W, 6, _>(
+                src.as_ptr().add(ss + 1),
+                ss,
+                h,
+                |row| vshrq_n_s16::<2>(horizontal.sum(row, bias)),
+                six_taps(&vertical),
+                out,
+            );
+        }
+    }
+}
+
 /// [`put`] with the caller's taps per direction.
 #[target_feature(enable = "neon,dotprod")]
 unsafe fn put_mixed<const W: usize>(
@@ -442,6 +547,14 @@ fn coefficients<const AV1: bool>(taps: &[i16; TAPS]) -> [i16; TAPS] {
     if AV1 { halved(taps) } else { *taps }
 }
 
+#[inline]
+fn check_window<const W: usize>(src: &[u8], ss: usize, h: usize) {
+    assert!(
+        crate::block_copy::covers_rect(src.len(), ss, W + TAPS - 1, h + TAPS - 1),
+        "AV1 prediction window too small"
+    );
+}
+
 /// The four passes of a `W`x`h` block (module table) with the taps `taps`
 /// gives (asked only when the block is filtered), into `out`; `Z` says whether the vertical taps'
 /// outer ones are zero.
@@ -458,10 +571,7 @@ unsafe fn filter<'t, const W: usize, O: Output, Z: OuterTaps, const AV1: bool>(
     if h == 0 {
         return;
     }
-    assert!(
-        crate::block_copy::covers_rect(src.len(), ss, W + TAPS - 1, h + TAPS - 1),
-        "AV1 prediction window too small"
-    );
+    check_window::<W>(src, ss, h);
     out.check(W, h);
     // SAFETY: every row and column read lies inside the
     // window checked above; the outputs' slices are bounds-checked.
@@ -551,7 +661,8 @@ unsafe fn both<const W: usize, const N: usize, O: Output, const AV1: bool, const
 /// Six-tap 2-D filtering, two output rows per iteration. Only N-1 row
 /// vectors move after the pair, rather than after each output. Wider
 /// eight-tap passes use the measured paired-column schedule.
-#[inline]
+/// Keep a shared NEON entry point for both filter families and I8MM fallback.
+#[inline(never)]
 #[target_feature(enable = "neon,dotprod")]
 unsafe fn both_rows<const W: usize, const N: usize, O: Output, const AV1: bool>(
     src: *const u8,
@@ -561,10 +672,36 @@ unsafe fn both_rows<const W: usize, const N: usize, O: Output, const AV1: bool>(
     v_taps: &[i16; N],
     out: &mut O,
 ) {
+    // SAFETY: the caller supplies the full source and destination windows.
+    unsafe {
+        both_rows_with::<W, N, O>(
+            src,
+            ss,
+            h,
+            |row| h_taps.row::<W, AV1, true>(row),
+            v_taps,
+            out,
+        );
+    }
+}
+
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "keep horizontal rows in the caller's SIMD context"
+)]
+unsafe fn both_rows_with<const W: usize, const N: usize, O: Output>(
+    src: *const u8,
+    ss: usize,
+    h: usize,
+    horizontal: impl Fn(*const u8) -> int16x8_t,
+    v_taps: &[i16; N],
+    out: &mut O,
+) {
     for c in (0..W).step_by(W.min(LANES)) {
         let row = |r: usize| {
             // SAFETY: the complete source footprint covers this filter row.
-            unsafe { h_taps.row::<W, AV1, true>(src.add(r * ss + c)) }
+            horizontal(unsafe { src.add(r * ss + c) })
         };
         let mut rows = [row(0); TAPS + 1];
         for (r, value) in rows.iter_mut().enumerate().take(N - 1).skip(1) {

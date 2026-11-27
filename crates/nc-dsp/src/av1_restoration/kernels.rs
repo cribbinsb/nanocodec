@@ -109,6 +109,11 @@ pub(crate) const SCALAR: Kernels = Kernels {
 };
 
 /// The kernels of `isa` (AVX-512 inherits AVX2 Wiener and upgrades SGR to 16 lanes).
+/// SVE2 has no restoration kernels of its own and runs the NEON ones, as
+/// [`crate::Dsp::with_isa`] builds its table from the NEON table: asked for
+/// directly it must not fall through to the scalar table, whose rows write
+/// exactly `n` values where every SIMD row pads to its lane count (the two
+/// `sgr_lanes` tests over every ISA failed on Graviton 4 on that difference).
 pub(crate) fn kernels(isa: Isa) -> Kernels {
     match isa {
         #[cfg(target_arch = "x86_64")]
@@ -117,6 +122,8 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
         Isa::Avx512 => super::high_lr::avx512_u8_kernels(super::avx2::KERNELS),
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => super::neon::KERNELS,
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        Isa::Sve2 => super::neon::KERNELS,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         Isa::Simd128 => super::simd128::KERNELS,
         _ => SCALAR,

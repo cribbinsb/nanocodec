@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec benchmark results</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; }</style>
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="./" aria-current="page">Results</a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./" aria-current="page">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="history.html">History</a>
+    <a href="compliance.html">Rate compliance</a>
+    <a href="method.html">Method</a>
+  </nav>
+  <div class="machine-picker"></div>
+</div>
+<main>
+  <h1>Bits against speed</h1>
+  <p class="lede">Every nanocodec preset and every reference encoder of the benchmark procedure, each timed at half load on one machine (x86 or Arm), compared with one zero line, in CBR. Lower is fewer bits for the same quality; right is faster. Pick the timing machine, the dataset and the metric.</p>
+  <div class="disclaimer results-banner" role="note"></div>
+  <div class="disclaimer">
+    <strong>Our own measurements.</strong> BD-J is the mean of the BD-rates on PSNR-YUV, VMAF v1 and MS-SSIM, each
+    against x264 medium (--tune zerolatency) tuned for that metric: --tune psnr for PSNR-YUV, VMAF v1 and BD-J,
+    --tune ssim for MS-SSIM (the reports' zero line); no subjective test was run. Every BD averages every family over the
+    same clips (the common set), except the +drop rows, each over its own clips; the table also gives each
+    family's own anchor-valid clip count. The references are measured only at
+    the low-delay, one-thread settings of the procedure; their other modes may do better.
+  </div>
+
+  <section id="explorer" aria-label="Results explorer">
+    <div class="controls"></div>
+    <p class="view-note" aria-live="polite"></p>
+    <div class="chart-card">
+      <p class="chart-title"></p>
+      <p class="chart-sub"></p>
+      <div class="chart"></div>
+      <div class="legend" aria-label="Show or hide projects"></div>
+      <div class="tooltip" role="tooltip" hidden></div>
+    </div>
+    <div class="detail-slot"></div>
+    <details class="table-view" open>
+      <summary>This view as a table</summary>
+      <div class="table-slot"></div>
+    </details>
+  </section>
+
+  <h2>More detail</h2>
+  <div class="cards">
+    <a class="card" href="codecs.html"><strong>By codec</strong><span>Each format's presets beside the references for that format, in every view.</span></a>
+    <a class="card" href="compliance.html"><strong>Rate compliance</strong><span>Every encoder against the one bucket, and the exclusion check.</span></a>
+    <a class="card" href="method.html"><strong>Method</strong><span>What each report records: commits, phase, clips, zero lines, refusals, binaries.</span></a>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264,
+    Kvazaar and VVenC are its comparison points here. With thanks to all of them.</p>
+</footer>
+<script type="module" src="explorer.js"></script>
+</body>
+</html>

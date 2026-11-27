@@ -22,7 +22,8 @@
 # clips of ~/nanocodec-data/clips/main; a release trains on public clips,
 # tools/release/release.py), PGO_FRAMES (default 20), PGO_CODECS (default
 # every codec; fewer only for a pipe-clean), PGO_CAPI, JOBS (cargo -j,
-# default 8).
+# default 8). PGO_CODEC_LAYOUT=1 selects aligned codec text groups for the
+# Linux CLI final link.
 set -euo pipefail
 if [ $# -ne 3 ]; then
   sed -n "2,27p" "$0"; exit 2
@@ -51,9 +52,9 @@ mkdir -p "$work/profiles" "$work/streams"
 # replace those, so a caller's RUSTFLAGS move into the same list.
 read -r -a extra_flags <<< "${RUSTFLAGS:-}"
 unset RUSTFLAGS
-rustflags_config() {  # the --config value: target.<host>.rustflags = [extra flags, $1]
+rustflags_config() {  # the --config value: target.<host>.rustflags = [extra flags, stage flags]
   local items="" flag
-  for flag in "${extra_flags[@]}" "$1"; do items+="\"$flag\", "; done
+  for flag in "${extra_flags[@]}" "$@"; do items+="\"$flag\", "; done
   echo "target.$host.rustflags=[${items%, }]"
 }
 generate_flags=$(rustflags_config "-Cprofile-generate=$work/profiles")
@@ -81,26 +82,50 @@ for codec in sys.argv[3:]:
   for codec in "${codecs[@]}"; do
     echo "$codec default"
     for file in presets/"$codec"-*.toml; do
-      [ -e "$file" ] && echo "$codec $(basename "$file" .toml) --preset $(basename "$file" .toml)"
+      # (a codec without flat presets must not end the function on a failed test: set -e)
+      if [ -e "$file" ]; then echo "$codec $(basename "$file" .toml) --preset $(basename "$file" .toml)"; fi
     done
   done
 }
 shipped_presets > "$work/presets.txt"
+# a build from before the decoder had a CLI (the history page's early frames) trains on
+# its encoder alone
+can_decode=1
+"$instrumented" decode --help > /dev/null 2>&1 || can_decode=0
+# a build from before CBR (2026-11-06, the history page's first day) trains at a fixed QP
+rate_args=(--bitrate 600 --buffer-ms 1000)
+"$instrumented" encode --help 2>&1 | grep -q -- --bitrate || rate_args=(--qp 30)
 while read -r codec preset preset_args; do
   read -r -a preset_args <<< "$preset_args"
   case $codec in h264) ext=264 ;; hevc) ext=hevc ;; vvc) ext=vvc ;; *) ext=ivf ;; esac
   for clip in "${clips[@]}"; do
     stream=$work/streams/$codec-$preset-$(basename "$clip" .yuv).$ext
     "$instrumented" encode --codec "$codec" --input "$clip" --width 1280 --height 720 \
-      --fps 30 --frames "$frames" --intra-period 300 --bitrate 600 --buffer-ms 1000 \
+      --fps 30 --frames "$frames" --intra-period 300 "${rate_args[@]}" \
       "${preset_args[@]}" --output "$stream" > /dev/null
-    "$instrumented" decode --codec "$codec" --input "$stream" --frame-md5 /dev/null > /dev/null
+    [ "$can_decode" = 0 ] ||
+      "$instrumented" decode --codec "$codec" --input "$stream" --frame-md5 /dev/null > /dev/null
   done
 done < "$work/presets.txt"
 
 "$profdata" merge -o "$work/merged.profdata" "$work/profiles"
-use_flags=$(rustflags_config "-Cprofile-use=$work/merged.profdata")
-CARGO_TARGET_DIR=$target "$cargo" build --config "$use_flags" --release -j"$jobs" --bin nanocodec
+profile_use="-Cprofile-use=$work/merged.profdata"
+use_flags=$(rustflags_config "$profile_use")
+if [[ "${PGO_CODEC_LAYOUT:-0}" == 1 ]]; then
+  case "$host" in
+    x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+    *) echo "pgo_build: codec text layout needs a native Linux build" >&2; exit 2 ;;
+  esac
+  codec_flags=$(rustflags_config "$profile_use" "-Clinker=$root/tools/dev/pgo_codec_layout.py")
+  NC_PGO_GCC_LD="$sysroot/lib/rustlib/$host/bin/gcc-ld" CARGO_TARGET_DIR=$target \
+    "$cargo" build --config "$codec_flags" --release -j"$jobs" --bin nanocodec
+  if ! readelf -WS "$target/release/nanocodec" | awk '$2 == ".text.nc_h264" { found=1 } END { exit !found }'; then
+    echo "pgo_build: expected codec text groups in the CLI" >&2
+    exit 1
+  fi
+else
+  CARGO_TARGET_DIR=$target "$cargo" build --config "$use_flags" --release -j"$jobs" --bin nanocodec
+fi
 if [ "$out" != "$target/release/nanocodec" ]; then
   mkdir -p "$(dirname "$out")"
   cp "$target/release/nanocodec" "$out"

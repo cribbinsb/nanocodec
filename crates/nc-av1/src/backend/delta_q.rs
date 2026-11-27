@@ -35,6 +35,8 @@ pub(super) struct DeltaQ {
     enabled: bool,
     /// `delta_q_present` of the frame being coded.
     present: bool,
+    /// `delta_q_res` (0..=3): coded deltas are shifted left by `res` qindex units.
+    res: u8,
     /// `CurrentQIndex`: the quantizer of the block being coded.
     current: u32,
     /// `ReadDeltas`: the superblock's first block is still to be coded.
@@ -42,6 +44,14 @@ pub(super) struct DeltaQ {
 }
 
 impl DeltaQ {
+    /// Create a `DeltaQ` with the configured `delta_q_res` shift (`0..=3`).
+    pub(super) fn with_res(res: u8) -> Self {
+        Self {
+            res: res.min(3),
+            ..Self::default()
+        }
+    }
+
     /// Code `delta_q_present` = 1 from now on in frames whose blocks may
     /// carry offsets.
     pub(super) fn enable(&mut self) {
@@ -51,6 +61,21 @@ impl DeltaQ {
     /// `delta_q_present` of the frame header.
     pub(super) fn present(&self) -> bool {
         self.present
+    }
+
+    /// `delta_q_res` of the frame header (`0..=3`).
+    pub(super) fn res(&self) -> u8 {
+        self.res
+    }
+
+    fn delta_steps(&self, target: i32) -> i32 {
+        let step = 1_i32 << self.res;
+        let diff = target - self.current as i32;
+        if diff >= 0 {
+            (diff + step / 2) / step
+        } else {
+            (diff - step / 2) / step
+        }
     }
 
     /// A tile starts at the frame's `base_q_idx` (§5.11.1); `block_qp`:
@@ -66,11 +91,14 @@ impl DeltaQ {
         self.pending = self.present;
     }
 
-    /// The quantizer of the next block: `frame_q_idx + offset` for a
-    /// superblock's first block, else the superblock's.
+    /// The quantizer of the next block: `frame_q_idx + offset` rounded to the
+    /// nearest `1 << delta_q_res` step from `CurrentQIndex` for a superblock's
+    /// first block, else the superblock's.
     pub(super) fn block_qindex(&self, frame_q_idx: u32, offset: i16) -> u32 {
         if self.pending {
-            (frame_q_idx as i32 + i32::from(offset)).clamp(MIN_QINDEX, MAX_QINDEX) as u32
+            let target = (frame_q_idx as i32 + i32::from(offset)).clamp(MIN_QINDEX, MAX_QINDEX);
+            let delta = self.delta_steps(target);
+            (self.current as i32 + (delta << self.res)).clamp(MIN_QINDEX, MAX_QINDEX) as u32
         } else {
             self.current
         }
@@ -89,8 +117,7 @@ impl DeltaQ {
         if !std::mem::take(&mut self.pending) || whole_superblock_skip {
             return;
         }
-        // delta_q_res = 0: deltas are coded in qindex units.
-        let delta = qindex as i32 - self.current as i32;
+        let delta = self.delta_steps(qindex as i32);
         let abs = delta.unsigned_abs();
         writer.write_symbol((abs as usize).min(DELTA_Q_SMALL), cdf, DELTA_Q_SMALL + 1);
         if abs as usize >= DELTA_Q_SMALL {
@@ -102,7 +129,8 @@ impl DeltaQ {
         if abs != 0 {
             writer.write_literal_bit(delta < 0); // delta_q_sign_bit
         }
-        self.current = qindex;
+        self.current =
+            (self.current as i32 + (delta << self.res)).clamp(MIN_QINDEX, MAX_QINDEX) as u32;
     }
 }
 

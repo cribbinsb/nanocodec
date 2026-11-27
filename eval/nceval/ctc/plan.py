@@ -20,12 +20,12 @@ from pathlib import Path
 
 from ..clips import Clip
 from ..codecs import Codec
-from ..config import Paths
+from ..config import QUALITY_MACHINE, Paths, reference_bin
 from ..conformance import DECODERS
 from ..dav2d_crop import CODED_MULTIPLE, dav2d_command
 from ..encoders.base import CodingStructure, EncodeJob
-from .conditions import CONDITIONS, POINTS, Condition, CtcEncoder
-from .reference_encoders import HM_CONFIG, VTM_CONFIG, VVENC_CONFIG
+from .conditions import CONDITIONS, POINTS, Condition, CtcEncoder, Group
+from .reference_encoders import HM_B_CONFIG, HM_CONFIG, VTM_B_CONFIG, VTM_CONFIG, VVENC_CONFIG
 from .sequences import Sequence, by_name
 
 #: Raw sources on the worker (a tmpfs the worker mounts).
@@ -36,12 +36,12 @@ STREAMS = Path("streams")
 #: The CBR extra's buffer, the project's evaluation setting (eval/nceval/cbr.py BUFFER_MS).
 CBR_BUFFER_MS = 1000
 DAV2D_CROP_SCRIPT = "dav2d_crop.py"
-JVET_CONFIG_FILES = (HM_CONFIG, VTM_CONFIG, VVENC_CONFIG)
+JVET_CONFIG_FILES = (HM_CONFIG, VTM_CONFIG, HM_B_CONFIG, VTM_B_CONFIG, VVENC_CONFIG)
 #: Relative CPU per pixel-frame of a job (encode + scoring), a fast encoder = 1:
 #: measured at 270p on our PC (2026-11-14: VMAF ~17 s per 130 frames, HM ~180 s,
 #: VTM and libaom speed 0 ~4 s per frame). Used to start the slowest jobs first
 #: and to balance shards.
-COST = {"vtm-ldp": 41.0, "aom-good-s0-ld": 39.0, "hm-ldp": 10.0, "vvenc-faster-ld": 2.0,
+COST = {"vtm-ldp": 41.0, "vtm-ldb": 41.0, "aom-good-s0-ld": 39.0, "hm-ldp": 10.0, "hm-ldb": 10.0, "hm-ldb-r1": 4.0, "hm-ldb-r2": 6.0, "hm-ldp-r1": 4.0, "hm-ldp-r2": 6.0, "vvenc-faster-ld": 2.0,
         "x265-medium": 1.3, "kvazaar-medium": 1.2}
 DEFAULT_COST = 1.0
 
@@ -143,6 +143,9 @@ def plan(condition_names: list[str], paths: Paths, source_dir: Path = SOURCE_DIR
         if encoders:
             condition = replace(condition, encoders=tuple(
                 e for e in condition.encoders if e.name in encoders))
+        else:  # ceiling variants run only when named
+            condition = replace(condition, encoders=tuple(
+                e for e in condition.encoders if e.group != Group.CEILING))
         jobs += jobs_for(condition, paths, source_dir)
     if points is not None:
         jobs = [j for j in jobs if _point_rank(j) < points]
@@ -207,6 +210,18 @@ def source_manifest(jobs: list[dict]) -> list[dict]:
 #: libraries its RUNPATH ($ORIGIN/../src) finds (worker.XPSNR_SCORER).
 XPSNR_TOOL = Path("vmafx/tools/vmaf")
 XPSNR_LIBRARIES = ("libvmaf.so.3", "libvmafx.so.1")
+
+
+def anchor_tools(paths: Paths) -> dict[str, Path]:
+    """The anchors' programs by file name, each from the timed reference build
+    (config.REFERENCE_BUILDS[QUALITY_MACHINE]) where that build has it, else the
+    anchors prefix: a reference's lens quality and its timing (fixedqp_timing) are one
+    binary (owner rule 2026-11-23, as cbr.anchor_tool for the charts)."""
+    tools = {p.name: p for p in (paths.anchors / "bin").iterdir()}
+    timed = reference_bin(QUALITY_MACHINE, paths.data_root)
+    if timed.is_dir():
+        tools.update({p.name: p for p in timed.iterdir() if p.is_file()})
+    return tools
 
 
 def stage(run_dir: Path, jobs: list[dict], tool_paths: dict[str, Path],

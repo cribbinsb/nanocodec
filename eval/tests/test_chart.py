@@ -13,7 +13,7 @@ from nceval import cbr, chart
 def point(name, bd, fps=None, scored=11, ours=False, missing=()):
     return chart.ChartPoint(family=name, label=name, ours=ours, bd_j=bd, bd_psnr=bd, bd_vmaf=bd,
                             iqr=(bd - 2, bd + 2) if bd is not None else None, scored=scored,
-                            clips=11, missing_classes=missing, rate_invalid=0, refused=0,
+                            clips=11, missing_classes=missing, rate=chart.RateCounts(), refused=0,
                             fps=fps, speed=fps and fps / 10)
 
 
@@ -70,9 +70,10 @@ def test_pareto_front_skips_flagged_and_dominated_points():
     assert flagged.flagged and partial.partial and not partial.flagged
 
 
-def test_per_clip_bd_j_needs_both_terms():
-    assert chart.per_clip_j({"quality": -10.0, "quality_low": -20.0}) == -15.0
-    assert chart.per_clip_j({"quality": -10.0, "quality_low": None}) is None
+def test_per_clip_bd_j_is_the_full_overlap_only():
+    """No double weight on the low half (results audit 2026-11-23, finding 2)."""
+    assert chart.per_clip_j({"quality": -10.0, "quality_low": -20.0}) == -10.0
+    assert chart.per_clip_j({"quality": None, "quality_low": -20.0}) is None
 
 
 def test_speed_uses_the_paired_anchor_runs():
@@ -101,9 +102,17 @@ def test_x86_outputs_name_their_platform():
         "clips,fps_x86")
     table = chart.markdown_table(points, chart.pareto(points), x86)
     assert "fps (x86, 1 core)" in table and "| 120.0 | 12.00× |" in table
-    svg = chart.svg_chart(x86, chart.pareto(x86), "test", chart.X86)
-    assert "single-threaded encode speed: one x86-64 core (AMD Ryzen 9 5950X)<" in svg
+    platform = chart.x86_platform({"platform": "AMD EPYC 9R45 (SIMD: avx2), one thread"})
+    svg = chart.svg_chart(x86, chart.pareto(x86), "test", platform)
+    assert "single-threaded encode speed: one x86-64 core (AMD EPYC 9R45)<" in svg
     assert "core (NVIDIA Jetson Orin Nano)<" in chart.svg_chart(points, chart.pareto(points), "t")
+
+
+def test_speed_text_says_what_was_timed():
+    cbr = chart.speed_text({"rate_mode": "cbr", "frames": 150, "clips": {"a": 300, "b": 600}})
+    assert "real-time CBR" in cbr and "a at 300 kbps" in cbr
+    old = chart.speed_text({"rung_kbps": 600, "clips": ["a"]})
+    assert "fixed-QP" in old and "before 2026-11-23" in old
 
 
 def test_pairs_table_marks_partial_pairs():
@@ -133,7 +142,7 @@ def test_labels_avoid_bars():
 def terms(value):
     """A clip's BD terms, all `value` (None: no reliable overlap)."""
     row = {term: value for term in chart.CHAINED_TERMS}
-    row.update(quality=value, quality_low=value)
+    row.update(quality=value)
     return row
 
 
@@ -149,9 +158,10 @@ def test_chained_row_composes_every_metric_then_bd_j():
     leg["bd_psnr_yuv"] = -40.0  # one metric differs: quality is the mean of the composed ones
     row = chart.chained_row(leg, {"class": "static", **terms(-50.0)})
     assert row["class"] == "static" and row["bd_psnr_yuv"] == pytest.approx(-70.0)
-    assert row["low_psnr_yuv"] == pytest.approx(-60.0)
+    assert row["regime_low_psnr_yuv"] == pytest.approx(-60.0)
     assert row["quality"] == pytest.approx((-70.0 - 60.0 - 60.0) / 3)
-    assert row["j"] == pytest.approx((row["quality"] + row["quality_low"]) / 2)
+    assert row["regime_low_quality"] == pytest.approx(-60.0)
+    assert row["j"] == pytest.approx(row["quality"])
     assert chart.chained_row(leg, {"class": "static", **terms(None)})["j"] is None
 
 
@@ -178,7 +188,8 @@ def test_intermediate_prefers_lineage_then_side_then_overlap():
 def test_chains_never_take_more_than_one_hop():
     """P reaches the anchor only via C -> B -> anchor (C has no direct BD): no chain.
     With a direct leg P -> B it chains through B."""
-    clip = type("Clip", (), {"name": "c", "content_class": "static"})()
+    clip = type("Clip", (), {"name": "c", "content_class": "static", "width": 1280,
+                             "height": 720, "fps": 30.0})()
     fam = lambda name: cbr.Family(name, cbr.Codec.AV1, Path("/" + name))  # noqa: E731
     anchor, p, b, c = fam("x264-medium"), fam("P"), fam("B"), fam("C")
     curves = {(f.name, "c"): f.name for f in (anchor, p, b, c)}
@@ -187,7 +198,7 @@ def test_chains_never_take_more_than_one_hop():
               "C": {"c": {"j": None}}}
 
     def run(legs):
-        compare_clip = lambda a, t: terms(legs.get((t, a)))  # noqa: E731
+        compare_clip = lambda a, t, **_: terms(legs.get((t, a)))  # noqa: E731
         with patch.object(chart.jreal, "compare_clip", side_effect=compare_clip), \
                 patch.object(chart.jreal, "curve_overlap", return_value=0.8):
             return chart.chain_clip(curves, anchor.name, p, clip, [anchor, p, b, c], direct)
@@ -207,7 +218,8 @@ def test_chained_points_report_both_means_and_their_clips():
     assert "| -47.0%‡ | -44.0% |" in table and "‡ 1 clip chained" in table
     assert "| static_cam29 | nanocodec-av1 | -10.0% | -40.0% | -46.0% |" in chart.chained_table([p])
     assert chart.csv_text([p], front).splitlines()[1].endswith(
-        ",1,-44.00,static_cam29:nanocodec-av1:-46.00,,")  # no XPSNR: its two columns empty
+        ",1,-44.00,static_cam29:nanocodec-av1:-46.00,,,,,,,,,,,0,,,,,,0")
+    # no XPSNR, PSNR-Y or regime terms: those columns empty, their clip counts 0
     assert chart.chart_label(p) == "nanocodec-av2"  # marked in the table only
 
 
@@ -322,6 +334,38 @@ def test_reported_pair_averages_the_clips_it_can_and_counts_them():
     rows = {"a": {"class": "c", "j": -10.0, "bd_xpsnr_yuv": -20.0, "low_xpsnr_yuv": -20.0},
             "b": {"class": "c", "j": -12.0, "bd_xpsnr_yuv": None, "low_xpsnr_yuv": None},
             "c": {"class": "c", "j": None, "bd_xpsnr_yuv": -50.0, "low_xpsnr_yuv": -50.0}}
-    value, clips = chart.reported_pair(rows, "xpsnr_yuv")
+    value, clips = chart.reported_bd(rows, "bd_xpsnr_yuv")
     assert clips == 1 and abs(value - -20.0) < 1e-9
-    assert chart.reported_pair({"b": rows["b"]}, "xpsnr_yuv") == (None, 0)
+    assert chart.reported_bd({"b": rows["b"]}, "bd_xpsnr_yuv") == (None, 0)
+
+
+def test_rate_checks_are_one_rule_for_every_encoder():
+    """Results audit 2026-11-23, finding 9: no key-loan deduction for anyone."""
+    clip = type("Clip", (), {"name": "a"})()
+    pts = [{"kbps": 100, "target_kbps": 100, "max_fullness": 1.05},  # over one buffer
+           {"kbps": 112, "target_kbps": 100, "max_fullness": 0.9},  # over target
+           {"kbps": 109, "target_kbps": 100, "max_fullness": 1.0}]  # within both
+    for family in ("nanocodec-av1", "x264-medium"):
+        counts = chart.rate_counts({(family, "a"): pts}, family, [clip])
+        assert counts == chart.RateCounts(over_buffer=1, over_target=1, points=3)
+    assert counts.text() == "1/3 pts over 1 buffer, 1 over target +10%"
+
+
+def test_regimes_average_only_the_clips_that_reach_them():
+    rows = {"a": {"class": "c", "j": -10.0, "regime_upper_quality": -5.0,
+                  **{f"regime_upper_{m}": -5.0 for m in ("psnr_yuv", "psnr_y", "vmaf_v1",
+                                                          "ms_ssim")}},
+            "b": {"class": "c", "j": -20.0, "regime_upper_quality": None}}
+    upper = chart.regime_bd(rows, chart.RATE_REGIMES[1])
+    assert upper.clips == 1 and upper.j == pytest.approx(-5.0) and upper.psnr_y == -5.0
+    assert chart.regime_bd(rows, chart.RATE_REGIMES[0]).clips == 0
+
+
+def test_upper_rungs_sit_above_the_ladder_within_the_source_cap(tmp_path):
+    from nceval.clips import Clip
+    roomy = Clip(name="a", yuv=tmp_path / "a.yuv", width=1280, height=720, fps=30.0,
+                 frames=150, source_kbps=20000.0, content_class="c", split="val")
+    tight = Clip(name="b", yuv=tmp_path / "b.yuv", width=1280, height=720, fps=30.0,
+                 frames=150, source_kbps=5000.0, content_class="c", split="val")
+    assert chart.upper_ladder(roomy) == [2400, 4000]
+    assert chart.upper_ladder(tight) == [2400]  # 4000 is over half the source

@@ -23,9 +23,11 @@
 
 use nc_common::{Picture, PlaneIndex};
 use nc_encoder::Block;
+use nc_encoder::trial_pixels::TrialPixels;
 
-use super::{EarlyMergeHint, HevcBackend, Predictors, plane_rect};
+use super::{EarlyMergeHint, HevcBackend, PredictorCache, plane_rect};
 use crate::cabac::BinSink;
+use crate::contexts::{Contexts, SliceKind};
 use crate::grid::Cell;
 use crate::quant_group::QuantGroup;
 use crate::rate::BitEstimator;
@@ -38,7 +40,7 @@ use crate::syntax::{
 #[derive(Debug, Default)]
 pub(super) struct CodedSnapshot {
     block: Option<Block>,
-    planes: [Vec<u8>; 3],
+    pixels: TrialPixels,
     cells: Vec<Cell>,
     items: usize,
     tus: usize,
@@ -51,7 +53,7 @@ pub(super) struct CodedSnapshot {
     next_cu: u32,
     next_tu: u32,
     group: Option<QuantGroup>,
-    current: Option<Predictors>,
+    current: PredictorCache,
     early_merge: Option<EarlyMergeHint>,
 }
 
@@ -77,14 +79,11 @@ impl CodedSnapshot {
 impl HevcBackend {
     /// Note the reconstruction and grid cells of `block` in `snapshot`.
     fn save_square(&self, block: &Block, recon: &Picture, snapshot: &mut CodedSnapshot) {
-        for (plane, saved) in PlaneIndex::ALL.into_iter().zip(&mut snapshot.planes) {
-            let (x, y, n) = plane_rect(plane, block.x, block.y, block.log2_size());
-            let view = recon.plane(plane).view();
-            saved.clear();
-            for row in 0..n {
-                saved.extend_from_slice(&view.row(y + row)[x..x + n]);
-            }
-        }
+        snapshot.pixels.save(
+            &self.dsp,
+            recon,
+            (block.x, block.y, block.width(), block.height()),
+        );
         self.grid.save_square(block, &mut snapshot.cells);
         snapshot.block = Some(*block);
         snapshot.next_cu = self.next_cu;
@@ -144,13 +143,11 @@ impl HevcBackend {
     /// Put back the coded state `snapshot` noted.
     pub(super) fn restore_coded(&mut self, recon: &mut Picture, snapshot: &CodedSnapshot) {
         let block = snapshot.block();
-        for (plane, saved) in PlaneIndex::ALL.into_iter().zip(&snapshot.planes) {
-            let (x, y, n) = plane_rect(plane, block.x, block.y, block.log2_size());
-            let mut view = recon.plane_mut(plane).view_mut();
-            for (row, samples) in saved.chunks_exact(n).enumerate() {
-                view.row_mut(y + row)[x..x + n].copy_from_slice(samples);
-            }
-        }
+        snapshot.pixels.restore(
+            &self.dsp,
+            recon,
+            (block.x, block.y, block.width(), block.height()),
+        );
         self.grid.restore_square(&block, &snapshot.cells);
         self.items.truncate(snapshot.items);
         self.items.extend_from_slice(&snapshot.added_items);
@@ -177,9 +174,48 @@ impl HevcBackend {
         source: &Picture,
         recon: &Picture,
     ) -> f32 {
-        let mut contexts = self.contexts.clone();
+        self.coded_parts(block, first, source, recon).cost()
+    }
+
+    /// What the CUs recorded from item `first` on code
+    /// (`CodecBackend::node_trial_summary`): read from the recorded units and
+    /// levels, which an undo truncates, so it holds only the coding in place.
+    pub(super) fn coded_summary(&self, first: usize) -> nc_encoder::NodeTrialSummary {
+        let mut summary = nc_encoder::NodeTrialSummary::default();
+        let levels = self.level_store.borrow();
+        let cus = self.items[first..].iter().filter_map(|item| match item {
+            Item::Cu(cu) => Some(cu),
+            Item::Ctu { .. } | Item::Split { .. } => None,
+        });
+        for cu in cus {
+            for tu in cu.tus.units(&self.tu_store) {
+                for (plane, residual) in [tu.luma, tu.cb, tu.cr].into_iter().enumerate() {
+                    if residual.coded {
+                        let (coded, _) = residual.coded_levels(&levels);
+                        let nonzero = coded.iter().filter(|&&level| level != 0).count();
+                        summary.add_block((plane == 0).then_some(tu.log2), nonzero);
+                    }
+                }
+            }
+        }
+        summary
+    }
+
+    /// The estimated bits of `items` (CTU markers cost nothing here),
+    /// priced with `contexts`, which they adapt.
+    /// The slice kind CU estimates are written for: B slices as themselves,
+    /// every other slice as a P slice (key-frame CUs have always been
+    /// priced with the P slice's skip and mode flags).
+    fn estimate_slice(&self) -> SliceKind {
+        match self.slice {
+            SliceKind::Bi => SliceKind::Bi,
+            SliceKind::Intra | SliceKind::Predicted => SliceKind::Predicted,
+        }
+    }
+
+    pub(super) fn estimated_item_bits(&self, items: &[Item], contexts: &mut Contexts) -> f32 {
         let mut bits = 0.0;
-        for item in &self.items[first..] {
+        for item in items {
             match item {
                 Item::Split { node, split } => {
                     if split_flag_present(&self.grid, node) {
@@ -192,7 +228,7 @@ impl HevcBackend {
                 Item::Cu(cu) => {
                     bits += estimate_cu_bits(
                         &self.bin_costs,
-                        &mut contexts,
+                        contexts,
                         &self.grid,
                         (&self.level_store.borrow(), &self.tu_store),
                         TransformSyntax {
@@ -201,18 +237,35 @@ impl HevcBackend {
                             inter_depth: self.info.inter_transform_depth,
                             intra_depth: self.info.intra_transform_depth,
                         },
-                        self.info.merge_candidates,
+                        (self.info.merge_candidates, self.estimate_slice()),
                         cu,
                     );
                 }
-                Item::Ctu { .. } => unreachable!("a trial lies inside one CTU"),
+                Item::Ctu { .. } => {}
             }
         }
+        bits
+    }
+
+    /// [`Self::coded_cost`] in its distortion and bits.
+    pub(super) fn coded_parts(
+        &self,
+        block: &Block,
+        first: usize,
+        source: &Picture,
+        recon: &Picture,
+    ) -> nc_encoder::NodeTrialParts {
+        let mut contexts = self.contexts.clone();
+        let bits = self.estimated_item_bits(&self.items[first..], &mut contexts);
         let [luma, cb, cr] = PlaneIndex::ALL.map(|plane| {
             let rect = plane_rect(plane, block.x, block.y, block.log2_size());
             self.reconstruction_sse(source, recon, plane, rect) as f32
         });
         let chroma_weight = (1.0 / self.chroma_lambda_ratio()) as f32;
-        luma + chroma_weight * (cb + cr) + self.rd_lambda() * bits
+        nc_encoder::NodeTrialParts {
+            distortion: luma + chroma_weight * (cb + cr),
+            bits,
+            lambda: self.rd_lambda(),
+        }
     }
 }

@@ -132,6 +132,41 @@ fn flush<V: I16FilterLanes>(
     partial.steps = 0;
 }
 
+/// Select one of the four signed edge offsets. The fifth class is zero.
+pub(crate) trait OffsetSelection<V: I16FilterLanes> {
+    type Table;
+    const ROLL_VERTICAL: bool = false;
+
+    fn table(offsets: [i16; 4]) -> Self::Table;
+    fn adjust<T: SaoSample>(value: V, class: V, table: &Self::Table) -> V;
+}
+
+pub(crate) struct CompareOffsets;
+
+impl<V: I16FilterLanes> OffsetSelection<V> for CompareOffsets {
+    type Table = [(V, V); 4];
+
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn table(offsets: [i16; 4]) -> Self::Table {
+        [
+            (V::splat(-2), V::splat(offsets[0])),
+            (V::splat(-1), V::splat(offsets[1])),
+            (V::splat(1), V::splat(offsets[2])),
+            (V::splat(2), V::splat(offsets[3])),
+        ]
+    }
+
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn adjust<T: SaoSample>(mut value: V, class: V, table: &Self::Table) -> V {
+        for &(category, offset) in table {
+            value = T::offset_add(value, offset.and(class.eq_mask(category)));
+        }
+        value
+    }
+}
+
 /// Sample adapters keep the edge-classification graph shared at both depths.
 pub(crate) trait SaoSample: Sample {
     unsafe fn load<V: I16FilterLanes>(row: &[Self]) -> V;
@@ -190,7 +225,7 @@ pub(crate) unsafe fn apply<V: I16FilterLanes>(
 ) {
     // SAFETY: inherited complete-vector, extent and ISA contracts.
     unsafe {
-        apply_at::<V, u8>(
+        apply_at::<V, u8, CompareOffsets>(
             input,
             in_stride,
             out,
@@ -208,7 +243,7 @@ pub(crate) unsafe fn apply<V: I16FilterLanes>(
 /// saturating offset add preserves Clip1 even for an extreme i16 offset.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-pub(crate) unsafe fn apply_at<V: I16FilterLanes, T: SaoSample>(
+pub(crate) unsafe fn apply_at<V: I16FilterLanes, T: SaoSample, O: OffsetSelection<V>>(
     input: &[T],
     in_stride: usize,
     out: &mut [T],
@@ -231,18 +266,21 @@ pub(crate) unsafe fn apply_at<V: I16FilterLanes, T: SaoSample>(
         );
         return;
     }
-    let values = [
-        V::splat(EDGE_VALUES[0]),
-        V::splat(EDGE_VALUES[1]),
-        V::splat(EDGE_VALUES[2]),
-        V::splat(EDGE_VALUES[3]),
-    ];
-    let offset_vectors = [
-        V::splat(offsets[0]),
-        V::splat(offsets[1]),
-        V::splat(offsets[2]),
-        V::splat(offsets[3]),
-    ];
+    let table = O::table(offsets);
+    if O::ROLL_VERTICAL
+        && off_b == in_stride as isize
+        && off_a == -off_b
+        && rect.x1 - rect.x0 >= V::LANES
+        && rect.y0 < rect.y1
+    {
+        // SAFETY: the checked rectangle includes both adjacent source rows.
+        unsafe {
+            apply_vertical::<V, T, O>(
+                input, in_stride, out, out_stride, offsets, rect, depth, &table,
+            );
+        }
+        return;
+    }
     let zero = V::splat(0);
     let maximum = V::splat(depth.max() as i16);
     for y in rect.y0..rect.y1 {
@@ -259,24 +297,90 @@ pub(crate) unsafe fn apply_at<V: I16FilterLanes, T: SaoSample>(
             // SAFETY: neighbours have exactly the same validated row extent.
             let (left, right) = unsafe { (T::load::<V>(&a[x..]), T::load::<V>(&b[x..])) };
             let class = edge(centre, left, right);
-            let mut value = centre;
-            for (&offset, &category) in offset_vectors.iter().zip(&values) {
-                value = T::offset_add(value, offset.and(class.eq_mask(category)));
-            }
+            let value = O::adjust::<T>(centre, class, &table);
             // SAFETY: output covers the vector; clipping is to 0..depth.max.
             unsafe { T::store::<V>(value, zero, maximum, &mut dst[x..]) };
             x += V::LANES;
         }
-        super::scalar::apply_row_at(
-            input,
-            in_stride,
-            out,
-            out_stride,
-            (off_a, off_b),
-            offsets,
-            y,
-            (rect.x0 + x, rect.x1),
-            depth,
-        );
+        if !O::ROLL_VERTICAL || x < current.len() {
+            super::scalar::apply_row_at(
+                input,
+                in_stride,
+                out,
+                out_stride,
+                (off_a, off_b),
+                offsets,
+                y,
+                (rect.x0 + x, rect.x1),
+                depth,
+            );
+        }
+    }
+}
+
+/// libhevc's vertical schedule reuses each adjacent-row sign vector with
+/// opposite polarity for the next line.
+#[inline(always)]
+#[allow(clippy::inline_always)]
+unsafe fn apply_vertical<V: I16FilterLanes, T: SaoSample, O: OffsetSelection<V>>(
+    input: &[T],
+    in_stride: usize,
+    out: &mut [T],
+    out_stride: usize,
+    offsets: [i16; 4],
+    rect: Rect,
+    depth: BitDepth,
+    table: &O::Table,
+) {
+    let zero = V::splat(0);
+    let max = V::splat(depth.max() as i16);
+    let (lo, hi) = (V::splat(-1), V::splat(1));
+    let end = rect.x0 + (rect.x1 - rect.x0) / V::LANES * V::LANES;
+    // SAFETY: the dispatcher validates the whole rectangle, both neighbour
+    // rows, and the selected SIMD ISA. A column strip always holds V::LANES
+    // complete samples of its three rows.
+    unsafe {
+        let source = input.as_ptr().add(rect.y0 * in_stride);
+        let destination = out.as_mut_ptr().add(rect.y0 * out_stride);
+        let rows = rect.y1 - rect.y0;
+        let load = |p: *const T| T::load::<V>(core::slice::from_raw_parts(p, V::LANES));
+        for x in (rect.x0..end).step_by(V::LANES) {
+            let p = source.add(x);
+            let mut output = destination.add(x);
+            let mut below = p.add(in_stride);
+            let mut current = load(p);
+            let mut previous_sign = current.sub(load(p.sub(in_stride))).max(lo).min(hi);
+            for _ in 0..rows {
+                let next = load(below);
+                let next_sign = current.sub(next).max(lo).min(hi);
+                let class = previous_sign.add(next_sign);
+                let value = O::adjust::<T>(current, class, table);
+                T::store(
+                    value,
+                    zero,
+                    max,
+                    core::slice::from_raw_parts_mut(output, V::LANES),
+                );
+                current = next;
+                previous_sign = zero.sub(next_sign);
+                below = below.wrapping_add(in_stride);
+                output = output.wrapping_add(out_stride);
+            }
+        }
+    }
+    if end < rect.x1 {
+        for y in rect.y0..rect.y1 {
+            super::scalar::apply_row_at(
+                input,
+                in_stride,
+                out,
+                out_stride,
+                (-(in_stride as isize), in_stride as isize),
+                offsets,
+                y,
+                (end, rect.x1),
+                depth,
+            );
+        }
     }
 }

@@ -1,0 +1,19 @@
+# intra-cheap batch 4: the key plan's directional correction (planner.intra_plan_direction), staged-decision assemblies, cheap codec settings
+null: planner.intra_bias=1050
+dir25: quant.trellis_key=1 planner.intra_plan_direction=0.25
+dir50: quant.trellis_key=1 planner.intra_plan_direction=0.5
+dir75: quant.trellis_key=1 planner.intra_plan_direction=0.75
+dir100: quant.trellis_key=1 planner.intra_plan_direction=1.0
+dir50_b1000: quant.trellis_key=1 planner.intra_plan_direction=0.5 planner.intra_bias=1000
+dir50_b1100: quant.trellis_key=1 planner.intra_plan_direction=0.5 planner.intra_bias=1100
+dir50_s2_g120: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 quant.trellis_key=1 planner.key_rd_margin=1.2 planner.intra_plan_direction=0.5
+dir50_krd11_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 quant.trellis_key=1 planner.key_rd_margin=1.2 planner.intra_plan_direction=0.5
+krd11_g120: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 quant.trellis_key=1 planner.key_rd_margin=1.2
+s2_g120: planner.key_rd_split=1 planner.key_rd_deeper=0 planner.key_rd_shallower=2 quant.trellis_key=1 planner.key_rd_margin=1.2
+tk: quant.trellis_key=1
+tk_krd11_cc1: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=1 quant.trellis_key=1 av2.intra_chroma_candidates=1
+tk_d1_cheap: planner.key_rd_split=1 planner.key_rd_deeper=1 planner.key_rd_shallower=0 quant.trellis_key=1 av2.intra_rd_candidates=1 av2.intra_chroma_candidates=1
+cc1: av2.intra_chroma_candidates=1
+rdc1: av2.intra_rd_candidates=1
+tk_rdc3: quant.trellis_key=1 av2.intra_rd_candidates=3
+tk4: quant.trellis_key=1 quant.trellis_states=4

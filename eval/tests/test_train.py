@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from nceval import levers, levers_ideas, train
+from nceval import front_k, levers, levers_ideas, train, train_guards
 from nceval.config import Paths
 
 CLASSES = ("static", "lowlight", "crowd", "pan")
@@ -26,13 +26,20 @@ def world(tmp_path, monkeypatch):
     (presets / "h264" / "fast.toml").write_text("# fast\nquant.trellis = 0\na.x = 1  # why\n")
     for name in ("idea-a", "idea-b", "idea-c"):
         levers.append([levers_ideas.make_idea(idea=name, name=name, outcome="held")])
+    table = tmp_path / "front_k.json"
+    table.write_text(json.dumps({  # a front slope from CBR timing (nceval.front_k)
+        "source": "history.json", "date": "2026-11-23", "commit": "abc",
+        front_k.TIMING_MODE_KEY: "cbr",
+        "rungs": {"h264": {"fast": {"k": 0.2, "chord": ["h264", "h264@faster"]}}}}))
+    monkeypatch.setattr(front_k, "TABLE", table)
     base = train.Base(tmp_path / "nanocodec", "abc123", presets, "r1")
     return tmp_path, base
 
 
 def quick_report(tmp_path, name, params, l1=-0.5, classes=None, pulse=0.0, verdict="CONTINUE"):
     report = {"status": "done", "codec": "h264", "preset": "fast", "params": params,
-              "verdict": verdict, "reasons": [], "rotation": "r1",
+              "verdict": verdict, "reasons": [], "rotation": "r1", "dcpu": -1.0,
+              "cpu": {"digest": "d", "groups": {"key1": -1.0}, "source": "test"},
               "l1": {"mean": l1, "lo": l1 - 0.5, "hi": l1 + 0.5, "n": 24, "quality": l1,
                      "classes": classes or {}},
               "probe": {"mean": l1, "lo": l1 - 1, "hi": l1 + 1, "n": 6, "quality": l1,
@@ -45,7 +52,7 @@ def quick_report(tmp_path, name, params, l1=-0.5, classes=None, pulse=0.0, verdi
 def queue(tmp_path, idea, params, mechanism="subpel", **stage1):
     pairs = [f"{k}={v}" for k, v in params.items()]
     args = argparse.Namespace(codec="h264", preset="fast", param=pairs, idea=idea,
-                              mechanism=mechanism, dcpu=-1.0, dcpu_jetson=None, force=False,
+                              mechanism=mechanism, force=False,
                               quick_json=str(quick_report(tmp_path, idea, params, **stage1)))
     return train.add(args)
 
@@ -96,7 +103,7 @@ def test_add_and_list_show_stage1_numbers(world, capsys):
 def test_add_refuses_a_kill_an_unknown_idea_and_a_mismatched_report(world):
     tmp_path, _ = world
     args = argparse.Namespace(codec="h264", preset="fast", param=["a.x=2"], idea="idea-a",
-                              mechanism="m", dcpu=None, dcpu_jetson=None, force=False,
+                              mechanism="m", force=False,
                               quick_json=str(quick_report(tmp_path, "k", {"a.x": 2.0},
                                                           verdict="KILL")))
     with pytest.raises(SystemExit, match="KILL"):
@@ -138,7 +145,7 @@ def test_alternatives_run_alone_and_only_the_best_net_j_passes(world, capsys):
         assert len(ideas) == 1, "alternatives must never be bundled"
         return ("better", "better", [-0.4] * 4 if "idea-a" in ideas else [-0.8] * 4, [])
     measure = fake(scenario)
-    outcomes = train.run_units(train.prepare([a, b], cloud=True), base, measure, cloud=True,
+    outcomes = train.run_units(train.prepare([a, b], cloud=True, base=base), base, measure, cloud=True,
                                rounds=3)
     status = {c.id: c.status for c in train.load_queue()}
     assert status == {a.id: train.QUEUED, b.id: train.PASSED}
@@ -170,6 +177,18 @@ def test_a_passing_unit_is_marked_recorded_and_printed(world, capsys):
     assert {r["level"] for r in levers.load()} == {"L3"}
 
 
+def test_an_identical_l3_defers_to_a_better_final_check(world):
+    # A change only periodic keys see leaves the one-key L3 byte-identical
+    # (NEUTRAL): the final check at both key shares decides, and must be BETTER.
+    tmp_path, base = world
+    a = queue(tmp_path, "idea-a", {"a.x": 2.0})
+    passing = fake(lambda ideas: ("neutral", "better", [-0.5, -0.4, -0.6, -0.3], []))
+    assert train.run_unit([a], base, passing, cloud=True, rounds=3)["passed"]
+    b = queue(tmp_path, "idea-b", {"b.x": 2.0})
+    flat = fake(lambda ideas: ("neutral", "ambiguous", [-0.1, 0.1, 0.0, 0.0], []))
+    assert not train.run_unit([b], base, flat, cloud=True, rounds=3)["passed"]
+
+
 def test_local_failure_ejects_the_member_matching_the_failing_class(world, capsys):
     tmp_path, base = world
     a = queue(tmp_path, "idea-a", {"a.x": 2.0}, classes={"lowlight": 0.2})
@@ -183,6 +202,26 @@ def test_local_failure_ejects_the_member_matching_the_failing_class(world, capsy
     assert len(measure.calls) == 2 and outcome["passed"]
     rejected = next(i for i in levers_ideas.load_ideas() if i["idea"] == "idea-b")
     assert rejected["outcome"] == "rejected" and "lowlight" in rejected["reason"]
+
+
+def test_a_fail_on_one_rung_keeps_a_multi_rung_ideas_outcome(world):
+    # 2026-11-23: an H.264 Faster fail turned an idea landed on eight rungs into
+    # "rejected". A rung's fail is recorded for that rung; the overall outcome changes
+    # only for an idea that covers no other rung.
+    tmp_path, base = world
+    levers.append([levers_ideas.make_idea(idea="idea-c", name="idea-c", outcome="adopted",
+                                          codecs=["vp9", "h264"], presets=["faster"])])
+    c = queue(tmp_path, "idea-c", {"c.x": 2.0})
+    a = queue(tmp_path, "idea-a", {"a.x": 2.0})
+    failing = fake(lambda ideas: ("ambiguous", "better", [0.1, -0.1, 0.0, 0.0], []))
+    for candidate in (c, a):
+        assert not train.run_unit([candidate], base, failing, cloud=True, rounds=3)["passed"]
+    ideas = {i["idea"]: i for i in levers_ideas.load_ideas()}
+    assert ideas["idea-c"]["outcome"] == "adopted"
+    assert levers_ideas.rung_outcomes(ideas["idea-c"]) == {"h264@fast": "rejected"}
+    assert "h264@fast" in ideas["idea-c"]["reason"]
+    assert ideas["idea-a"]["outcome"] == "rejected"  # its only rung
+    assert levers_ideas.rung_outcomes(ideas["idea-a"]) == {"h264@fast": "rejected"}
 
 
 def test_an_ambiguous_failure_bisects_and_defers_the_weaker_half(world, capsys):
@@ -224,8 +263,72 @@ def test_screen_commands_run_any_preset_as_params(world):
     fc = train.screen_command(arm, base, train.FINAL_CHECK, tmp_path / "fc.json")
     l3 = train.screen_command(arm, base, train.L3, tmp_path / "l3.json")
     assert fc[fc.index("--levels") + 1] == "final" and "--final-frames" in fc
-    assert "--dcpu" not in fc and l3[l3.index("--dcpu") + 1] == "-1.0000"
+    assert "--cpu-charge" not in fc  # no CPU measured on these screens' encodes yet
+    assert fc[fc.index("--preset") + 1] == arm.preset
     assert "a.x=2" in l3 and "quant.trellis=0" in l3 and "a.x=1" in l3  # test and anchor
+    assert l3[l3.index("--preset") + 1] == arm.preset and "--k" not in l3  # its front slope
+    # the final check is always the full ladder: only it computes the worst-1 % and flicker
+    # guards; L3 stays single-point
+    assert fc[fc.index("--final-estimator") + 1] == "ladder"
+    assert l3[l3.index("--final-estimator") + 1] == "single"
+
+
+def test_a_pass_with_a_tripped_guard_is_pass_guard_and_needs_a_justification(world, capsys):
+    tmp_path, base = world
+    a = queue(tmp_path, "idea-a", {"a.x": 2.0})
+    guard = "bd_worst_psnr_y +3.19 > +2.00"
+    measure = fake(lambda ideas: ("better", "better", [-0.5, -0.4, -0.6, -0.3], [guard]))
+    assert train.run_unit([a], base, measure, cloud=True, rounds=3)["passed"]
+    out = capsys.readouterr().out
+    assert "\nPASS-GUARD " in out
+    message = out.split("--- commit message ---\n", 1)[1]
+    assert f"{train.TRAIN_GUARD_LINE} final-check: {guard}" in message
+    assert train_guards.unjustified(message)  # the placeholder is not a justification
+    assert not train_guards.unjustified(
+        message + "\nGuard-justification: the worst frames are a +0.1 dB key on one clip\n")
+    clean = fake(lambda ideas: ("better", "better", [-0.5, -0.4, -0.6, -0.3], []))
+    b = queue(tmp_path, "idea-b", {"b.x": 2.0})
+    assert train.run_unit([b], base, clean, cloud=True, rounds=3)["passed"]
+    out = capsys.readouterr().out
+    assert "\nPASS " in out and "PASS-GUARD" not in out
+    assert not train_guards.unjustified(out.split("--- commit message ---\n", 1)[1])
+
+
+def test_each_screen_is_charged_the_cpu_of_its_own_encodes(world, monkeypatch):
+    tmp_path, base = world
+    a = queue(tmp_path, "idea-a", {"a.x": 2.0})
+    assert a.dcpu == -1.0  # stage 1's, on L1's own encodes: ranking only
+    [arm] = train.arms_of([a], cloud=True)
+    train.freeze(arm, base.presets, tmp_path / "frozen")
+    commands = []
+
+    def run_logged(command, log, limit):
+        commands.append(command)
+        name = command[command.index("--cpu-decision") + 1]
+        Path(command[command.index("--cpu-plan") + 1]).write_text(json.dumps(
+            {"decisions": [{"name": name, "digest": name, "rotation": "r1", "jobs": []}]}))
+
+    def measure(entries, directory, purpose):
+        rows = [{"pair": f"{d['name']}@{g}", "rung": "h264:fast", "target": t,
+                 "change_pct": [v, v, v]}
+                for d, (g, v) in zip(entries, [("f600-k150", 3.0), ("key1", 1.0)])
+                for t in ("graniterapids", "graviton4")]
+        summary = directory / "summary.json"
+        summary.write_text(json.dumps({"rows": rows, "decisions": {d["name"]: {
+            "digest": d["digest"], "rotation": "r1",
+            "groups": [r["pair"].split("@")[1] for r in rows
+                       if r["pair"].startswith(d["name"])][:1]} for d in entries}}))
+        return summary
+    monkeypatch.setattr(train, "run_logged", run_logged)
+    monkeypatch.setattr(train.decision_cpu, "measure", measure)
+    train.measure_cpu([arm], base)
+    plans = [c for c in commands if "--cpu-plan" in c]
+    assert [c[c.index("--levels") + 1] for c in plans] == ["final", "final"]
+    assert "--final-frames" in plans[0] and "--final-frames" not in plans[1]
+    assert arm.dcpu == pytest.approx(1.0)  # L3's own (150 f, one key)
+    fc = train.screen_command(arm, base, train.FINAL_CHECK, tmp_path / "fc.json")
+    assert fc[fc.index("--cpu-charge") + 1] == arm.cpu[train.FINAL_CHECK].text()
+    assert arm.cpu[train.FINAL_CHECK].dcpu(600, 150) == pytest.approx(3.0)
 
 
 def test_a_rounds_screens_are_packed_and_one_targets_anchor_counted_once(world):
@@ -252,7 +355,7 @@ def test_a_failed_box_fails_only_its_units_after_one_retry(world, monkeypatch, c
     a = queue(tmp_path, "idea-a", {"a.x": 2.0}, mechanism="m1")
     b = queue(tmp_path, "idea-b", {"b.y": 1.0}, mechanism="m2")
     c = queue(tmp_path, "idea-c", {"c.z": 1.0}, mechanism="m3")
-    units_ = [u for g in train.units([a, b, c]) for u in train.prepare(g, cloud=True)]
+    units_ = [u for g in train.units([a, b, c]) for u in train.prepare(g, cloud=True, base=base)]
     arms = [arm for u in units_ for arm in u.arms]
     for arm in arms:
         train.freeze(arm, base.presets, tmp_path / "frozen")
@@ -260,6 +363,7 @@ def test_a_failed_box_fails_only_its_units_after_one_retry(world, monkeypatch, c
         train.Box(screens=[(arm, check) for check in (train.FINAL_CHECK, train.L3)])
         for arm in arms_])
     monkeypatch.setattr(train, "screen_sizes", lambda base_: {})
+    monkeypatch.setattr(train, "measure_cpu", lambda arms_, base_: None)
     runs = []
 
     def run_logged(command, log, limit):
@@ -271,6 +375,7 @@ def test_a_failed_box_fails_only_its_units_after_one_retry(world, monkeypatch, c
             if b in arm.members:
                 raise RuntimeError("FAILED (exit 1): rsync to the warm box failed")
             out.write_text(json.dumps({**result(arm, "better", [-0.5] * 4), "status": "done",
+                                       "binary": str(base.binary),
                                        "cloud": {"estimated_usd": 0.1}}))
     monkeypatch.setattr(train, "run_logged", run_logged)
     monkeypatch.setattr(train, "plan_minutes", lambda *_: "")
@@ -281,3 +386,39 @@ def test_a_failed_box_fails_only_its_units_after_one_retry(world, monkeypatch, c
     status = {x.id: x.status for x in train.load_queue()}
     assert status == {a.id: train.PASSED, b.id: train.QUEUED, c.id: train.PASSED}
     assert sum(1 for name in runs if "retry" in name) == 1  # the failed box, once more
+
+
+def test_a_rerun_after_the_driver_died_reuses_only_its_own_bases_results(tmp_path):
+    """A screen's result counts as finished for the base it was measured on, so a rerun of
+    the round fetches nothing again, and a round on another base measures afresh."""
+    base = train.Base(tmp_path / "a/nanocodec", "abc123", tmp_path, "r1")
+    other = train.Base(tmp_path / "b/nanocodec", "def456", tmp_path, "r1")
+    path = tmp_path / "L3.json"
+    path.write_text(json.dumps({"status": "done", "levels": [], "binary": str(base.binary)}))
+    assert train.finished(path, base) and not train.finished(path, other)
+    path.write_text(json.dumps({"status": "running", "levels": [], "binary": str(base.binary)}))
+    assert not train.finished(path, base)
+
+
+def test_a_rounds_cpu_summary_is_found_again_and_reused_only_when_complete(tmp_path):
+    base = train.Base(tmp_path / "nanocodec", "abc123def0", tmp_path, "r1")
+    candidate = train.Candidate("c1", "av1", "medium", {"a.b": 1.0}, "idea", "tag", {}, "now")
+    arm = train.Arm("av1", "medium", [candidate], "single")
+    arm.directory = tmp_path / "bundles" / arm.key
+    directory = train.cpu_directory([arm], base)
+    assert directory == train.cpu_directory([arm], base)  # the same round, the same place
+    elsewhere = train.Base(base.binary, "fff", tmp_path, "r1")
+    assert directory != train.cpu_directory([arm], elsewhere)
+    summary = directory / train.CPU_SUMMARY
+    assert not train.reusable_cpu(summary, [arm])  # nothing measured yet
+    directory.mkdir(parents=True)
+    summary.write_text(json.dumps({"rows": [], "decisions": {}}))
+    assert not train.reusable_cpu(summary, [arm])  # measured, but not this arm
+
+
+def test_a_box_run_waits_its_planned_time_times_the_margin_plus_quota_and_setup():
+    """The driver's limit per box comes from the box's plan, not a fixed number."""
+    small, big = train.Box(points=100), train.Box(points=4000)
+    assert train.box_limit_minutes(big) - train.box_limit_minutes(small) == pytest.approx(
+        train.BOX_LIMIT_MARGIN * (train.box_minutes(4000) - train.box_minutes(100)))
+    assert train.box_limit_minutes(small) > train.QUOTA_WAIT_MINUTES + train.CLOUD_FIXED_MINUTES

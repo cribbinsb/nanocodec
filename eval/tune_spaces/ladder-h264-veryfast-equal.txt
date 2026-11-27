@@ -1,0 +1,16 @@
+# h264-ladder (2026-11-23, owner priority): better H.264 veryfast at its own speed
+# (--cpu-max 1.0). tf-h264-veryfast's t12 bought -3.3 % quality for +23 % CPU and then
+# measured worse than faster (quick L1 quality +1.88 %): here its levers (exact ranking,
+# RD intra, zero bound, HME range) and the final stage must be paid for by the motion
+# search and sub-pel savings.
+# Format (nceval.tune_pool): name [low high] [int|log]
+h264.exact_ranking 0 1 int
+h264.intra_rd 0 1 int
+decision.final_stage 0 1 int
+h264.inter_zero_luma_scale 1.25 2
+analysis.window_half_height 0 1 int
+analysis.hme_level1 0 1 int
+analysis.hme_range_x 4 10 int
+decision.skip_no_refine_lambdas 0.105 0.4
+decision.codec_subpel_seed_lambdas 0 0.3
+h264.intra8x8 0 1 int

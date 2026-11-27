@@ -54,7 +54,8 @@ quant.trellis = 0
 quant.trellis_key = 0
 vp9.shave_gap = 8
 planner.depth_removal_min_quantizer = 0
-vp9.intra_mode_estimate = 0
+# The P-frame intra mode estimate is on (2026-11-23 retune, end of file).
+vp9.intra_mode_estimate = 1
 # QP cadence 1.4x the engine's (the Default takes 1.2; 2026-11-11): J_real
 # (k 0.6) vs 1, TRAIN -1.9%, VAL -1.7%, no guard.
 rate.cadence_scale = 1.4
@@ -99,9 +100,10 @@ planner.intra_plan = 1
 # Pre-analysis on even rows of a decimated half level (h264-faster's).
 analysis.preanalysis_rows = 1
 analysis.pyramid_downsample = 2
-# HME: range 8, no level 1, skipped below SAD 8 per pixel (the HME trio).
+# HME: range 8, skipped below SAD 8 per pixel; level 1 back on (2026-11-23 retune, end
+# of file).
 analysis.hme_range_x = 8
-analysis.hme_level1 = 0
+analysis.hme_level1 = 1
 analysis.skip_hme_sad_per_pixel = 8
 # Half-sample vectors only.
 decision.subpel_half_only = 1
@@ -148,7 +150,8 @@ vp9.intra_rd_candidates = 1
 # -6.46] BETTER, no guard. Not taken: the rate set (-0.59, but its rate
 # ceiling guard: 0.68% mean over target), the intra mode estimate (+0.27).
 decision.intra_gate_variance = 6.857
-vp9.chroma_delta_q = -14
+# -11 since the 2026-11-23 retune (end of file).
+vp9.chroma_delta_q = -11
 vp9.chroma_delta_gap_slope = 3
 planner.lambda_scale = 2.379
 
@@ -189,3 +192,56 @@ quant.rd_trim = 1
 quant.rd_trim_block = 1
 quant.rd_trim_interior_bits = 4
 quant.rd_trim_interior_hf_bits = 8
+# Medium's key RD search and finer periodic keys (2026-11-21) were screened on medium only.
+planner.key_rd_split = 0
+rate.key_level_finer = 0
+# Pinned before medium's fixed-QP cadence (period 8, base boost 4, no
+# start-up cadence; 2026-11-22): screened on medium, slow and slower only.
+rate.cadence_period = 4
+rate.cadence_base_boost = 3
+rate.cadence_startup_period = 8
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-1.04 / -0.66 %).
+rate.key_cap_buffer_first = 0.8
+
+# Joint retune at the rung's front slope (2026-11-23, tune-rest; study tr-vp9-veryfast t22,
+# eval/tune_spaces/tr-vp9-veryfast.txt) without its key moves (key planning 2, key-period
+# ceiling, key still boost: with them the first key of static CCTV clips lost up to 3 dB,
+# reverted 6962faa87): HME level 1, the P-frame intra mode estimate, the quarter step
+# predicted from the half stage, residual bits 3.7 per level, chroma -11 (values above and
+# below). nceval.train vs 1e17861a3, CBR front k 0.4503, CPU timed on the screens' own
+# encodes (Zen 5 + Graviton 3/4): L3 dCPU -3.03 %, J -4.24 % [-4.89, -3.56] n=108; final
+# check (full ladder) dCPU -1.53 / -0.67 % (1/150 / 1/300), J -2.15 % [-2.49, -1.85] n=64;
+# no guard; first-key pulse at most +0.43 dB (pool_otw_homes_00015).
+decision.subpel_quarter_predict = 1
+vp9.residual_bits_per_level = 3.7
+
+# The best 2 bilinear sub-pel finalists re-ranked on VP9's exact 8-tap luma filter
+# (decision.exact_finalists, da9ac3b8c; this rung ranks bilinear, vp9.exact_ranking 0).
+# nceval.train vs e682b6d3e, CBR front k 0.4503, CPU timed on the screens' own encodes:
+# L3 dCPU +4.46 %, J -0.58 % [-1.11, -0.04] n=108; final check (full ladder) dCPU +4.86 /
+# +4.77 % (1/150 / 1/300), J -0.52 % [-0.81, -0.25] n=64; no guard, first-key pulse at most
+# +0.14 dB. VP9 faster with the same value: final check WORSE (+0.38 %), not taken.
+decision.exact_finalists = 2
+
+# Fixed QP only (`fixed_qp.`, 2026-11-24, Brief 19 Step 4; docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# period-8 fixed-QP cadence (base boost 4, no start-up cadence) and coarser moving keys
+# (`rate.fixed_qp_moving_key = 6`): nceval.fixedqp ab (draw fixedqp-2026-11-24, n=24) 150 f
+# J -1.0% [-1.6, -0.6], 600 f -2.1% [-2.3, -1.6]; fixed-QP CPU (c8i / c8g) -0.66% / -1.00%.
+# CBR streams are byte-identical.
+# The fine-quantizer depth-removal floor (`fixed_qp.planner.depth_removal_min_quantizer = 0.86`)
+# that landed with them was removed on 2026-11-25: it sat under this rung's front slope. On
+# the benchmark's six quantizers (nceval.fixedqp ab, BD-J, draw fixedqp-2026-11-25, n=24,
+# 150 f) the floor was worth J -3.7% [-4.5, -2.9]; its CPU (aws_cpu_ab, cycles, c8i / c8g)
+# at qindex 110 / 160 / 210 was +17.9 / +13.1 / +4.8% and +14.5 / +11.4 / +2.9%, about
+# +11.5 / +9% of the six quantizers' time (interpolated): 0.3-0.4% J per 1% CPU against
+# 0.46-0.6 to VP9 faster, and it left the rung at 1.13x faster's speed in the benchmark's
+# Fixed QP views (1.2x under rate control). Floors 0.5 / 0.6 / 0.7 cost J +2.9 / +1.6 /
+# +0.7% against 0.86: the same line, no knee. VP9 faster keeps its floor (J -2.4% [-3.2,
+# -1.6] for about +6-7.5% CPU, over its 0.13-0.19 slope).
+# docs/analysis/benchmark-anomalies-2026-11-25.md.
+fixed_qp.rate.cadence_period = 8
+fixed_qp.rate.cadence_base_boost = 4
+fixed_qp.rate.cadence_startup_period = 0
+fixed_qp.rate.fixed_qp_moving_key = 6

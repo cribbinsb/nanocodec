@@ -41,6 +41,8 @@ use crate::params::QuantParams;
 pub struct TrellisSettings {
     /// Multiple of the mode-decision λ (`quant.trellis_lambda_scale`).
     pub lambda_scale: f32,
+    /// Further multiple of λ on key frames (`quant.trellis_key_lambda_scale`).
+    pub key_lambda_scale: f32,
     /// Further multiple of λ for chroma (`quant.trellis_chroma`); `None`
     /// leaves chroma to the plain quantiser.
     pub chroma_scale: Option<f32>,
@@ -56,10 +58,21 @@ impl TrellisSettings {
     pub fn from_params(quant: &QuantParams) -> Option<Self> {
         (quant.trellis >= 0.5).then(|| Self {
             lambda_scale: quant.trellis_lambda_scale,
+            key_lambda_scale: quant.trellis_key_lambda_scale,
             chroma_scale: (quant.trellis_chroma > 0.0).then_some(quant.trellis_chroma),
             key_frames: quant.trellis_key >= 0.5,
             max_states: quant.trellis_states.round() as usize,
         })
+    }
+
+    /// Effective λ multiple for a key (`true`) or inter (`false`) frame.
+    #[must_use]
+    pub fn lambda_scale_for(&self, key: bool) -> f32 {
+        if key {
+            self.lambda_scale * self.key_lambda_scale
+        } else {
+            self.lambda_scale
+        }
     }
 
     /// Whether a frame that is a key frame (`key`) or not is trellised.
@@ -132,6 +145,32 @@ impl Candidates {
     }
 }
 
+/// Up to 32 saturated coefficient magnitudes on one anti-diagonal of a
+/// trellis context. Each row is written once as the reverse scan reaches it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PackedTrellisDiagonal(u128);
+
+impl PackedTrellisDiagonal {
+    /// A zero-initialized diagonal.
+    pub const EMPTY: Self = Self(0);
+
+    /// The low nibbles beginning at row `shift / 4`. Neighbors past row
+    /// 31 are zero by construction.
+    #[inline]
+    #[must_use]
+    pub fn window(self, shift: u8) -> u32 {
+        (self.0 >> shift) as u32
+    }
+
+    /// Write a previously empty nibble at row `shift / 4`.
+    #[inline]
+    pub fn insert(&mut self, shift: u8, magnitude: u32) {
+        debug_assert!(magnitude <= 15);
+        debug_assert_eq!(self.0 & (0xF_u128 << shift), 0);
+        self.0 |= u128::from(magnitude) << shift;
+    }
+}
+
 /// A codec's coefficient rate in a given entropy-context state. Positions
 /// are scan indices; levels are magnitudes. Methods take `&mut self` so a
 /// model can fill lazy cost caches of its adaptive tables.
@@ -151,9 +190,8 @@ pub trait CoeffRateModel {
 
     /// Bits of coding each of `levels` at `scan_pos` in `state`, sign
     /// included, into `bits` (one call per position and state, so a model
-    /// derives its contexts once for all candidates). From
-    /// [`Self::initial_state`] the position is the last coded one and the
-    /// levels are nonzero.
+    /// derives its contexts once for all candidates). The search calls
+    /// [`Self::last_level_rates`] separately for paths that start here.
     fn level_rates(
         &mut self,
         state: &Self::State,
@@ -161,6 +199,30 @@ pub trait CoeffRateModel {
         levels: &[u32],
         bits: &mut [f32],
     );
+
+    /// Price one beam survivor. All survivors at this position share the
+    /// same coefficient candidates.
+    fn beam_level_rates(
+        &mut self,
+        state: &Self::State,
+        scan_pos: usize,
+        levels: &[u32],
+        bits: &mut [f32; MAX_CANDIDATES],
+    ) {
+        self.level_rates(state, scan_pos, levels, bits);
+    }
+
+    /// Price the candidates for the last coded position. The state is
+    /// the initial one and the levels are nonzero.
+    fn last_level_rates(
+        &mut self,
+        initial: &Self::State,
+        scan_pos: usize,
+        levels: &[u32],
+        bits: &mut [f32],
+    ) {
+        self.level_rates(initial, scan_pos, levels, bits);
+    }
 
     /// Move `state` past `level` coded at `scan_pos`.
     fn advance(&self, state: &mut Self::State, scan_pos: usize, level: u32);
@@ -182,6 +244,66 @@ pub trait CoeffRateModel {
 
     /// Bits of signalling an all-zero block.
     fn empty_rate(&mut self) -> f32;
+}
+
+/// A block whose only choice is one level of one (a "lone ±1": at scan
+/// position `pos` the candidates are 1 and 0, [`Candidates::around`]`(1, ..)`,
+/// and every other position of the block can only be zero), described by its
+/// distortions: of zero at each scan position (`zero_distortion`, one per
+/// position of the trellised slice, `pos` included) and of the level at `pos`.
+#[derive(Debug, Clone, Copy)]
+pub struct LoneLevel<'a> {
+    /// Scan position of the level.
+    pub pos: usize,
+    /// Distortion of a zero at each scan position, in sample-SSE units.
+    pub zero_distortion: &'a [f32],
+    /// Distortion of the level at `pos`.
+    pub level_distortion: f32,
+}
+
+/// Whether [`Trellis::quantize`] keeps the level of `block` (a block with
+/// that single choice): the same costs, summed in the same order, so the
+/// decision is the full search's bit for bit, at any `max_states`. The block
+/// either codes the level, ending at `pos` (its rate from `model`: the end of
+/// block, the level, the zeros below it, the final rate) or is empty.
+///
+/// Why: blocks the plain quantiser leaves with one ±1 are about half of the
+/// trellis calls on still and low-rate content (H.264: 35-50% on a videocall
+/// and a pan, 2026-11-22; HEVC and VVC 44-47%), and the search's candidate
+/// and survivor bookkeeping is most of their cost.
+pub fn lone_level_kept<M: CoeffRateModel>(
+    model: &mut M,
+    block: LoneLevel<'_>,
+    lambda: f32,
+) -> bool {
+    let LoneLevel {
+        pos,
+        zero_distortion,
+        level_distortion,
+    } = block;
+    let lambda = f64::from(lambda);
+    // The all-zero tail down to `pos`, accumulated in reverse scan order.
+    let mut tail = zero_distortion[pos + 1..]
+        .iter()
+        .rev()
+        .fold(0.0_f64, |t, &d| t + f64::from(d));
+    // The level starts the path at `pos` (`Trellis::price_tail`'s order).
+    let eob = model.eob_rate(pos);
+    let mut state = model.initial_state();
+    let mut rate = [0.0; 1];
+    model.last_level_rates(&state, pos, &[1], &mut rate);
+    let mut cost = tail + f64::from(level_distortion) + lambda * f64::from(rate[0] + eob);
+    tail += f64::from(zero_distortion[pos]);
+    model.advance(&mut state, pos, 1);
+    for (q, &d) in zero_distortion[..pos].iter().enumerate().rev() {
+        let d = f64::from(d);
+        cost += d + lambda * f64::from(model.zero_step(&mut state, q));
+        tail += d;
+    }
+    let cost = cost + lambda * f64::from(model.final_rate(&state));
+    let empty = tail + lambda * f64::from(model.empty_rate());
+    // The full search returns the empty block on a tie.
+    empty > cost
 }
 
 /// Marks a node that started at its own position (no earlier decision).
@@ -286,7 +408,7 @@ impl<S: Clone + PartialEq> Trellis<S> {
             self.extensions.clear();
             let mut rates = [0.0; MAX_CANDIDATES];
             for (from, node) in self.nodes.iter().enumerate() {
-                model.level_rates(&node.state, pos, &cands.levels[..cands.count], &mut rates);
+                model.beam_level_rates(&node.state, pos, &cands.levels[..cands.count], &mut rates);
                 for ((level, distortion), &rate) in cands.iter().zip(&rates) {
                     let cost = node.cost + f64::from(distortion) + lambda * f64::from(rate);
                     self.extensions.push(Extension {
@@ -302,7 +424,7 @@ impl<S: Clone + PartialEq> Trellis<S> {
                 let nonzero = cands.levels[..cands.count].partition_point(|&l| l > 0);
                 if nonzero > 0 {
                     let eob = model.eob_rate(pos);
-                    model.level_rates(&initial, pos, &cands.levels[..nonzero], &mut rates);
+                    model.last_level_rates(&initial, pos, &cands.levels[..nonzero], &mut rates);
                     rates[..nonzero].iter_mut().for_each(|r| *r += eob);
                 }
                 for ((level, distortion), &rate) in cands.iter().zip(&rates).take(nonzero) {
@@ -458,7 +580,7 @@ impl<S: Clone + PartialEq> Trellis<S> {
         }
         let state = model.initial_state();
         let mut rates = [0.0; MAX_CANDIDATES];
-        model.level_rates(&state, pos, &cands.levels[..nonzero], &mut rates);
+        model.last_level_rates(&state, pos, &cands.levels[..nonzero], &mut rates);
         rates[..nonzero].iter_mut().for_each(|r| *r += eob);
         Some((state, rates))
     }

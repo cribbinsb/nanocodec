@@ -746,27 +746,15 @@ fn filter_units(
     strength: impl Fn(&Unit) -> Strength,
 ) {
     let chroma = plane != PlaneIndex::Y;
-    let shift = usize::from(chroma);
-    let size = UNIT >> shift;
+    let size = UNIT >> usize::from(chroma);
     let damping = damping - u8::from(chroma);
     // The blocks of each coded secondary strength.
     let mut by_secondary: [Vec<CdefBlock>; SECONDARY_STRENGTHS as usize] = Default::default();
     for unit in units {
         let strength = strength(unit);
-        let primary = if chroma {
-            strength.primary
-        } else {
-            nc_dsp::cdef_adjust_strength(strength.primary, unit.var)
-        };
-        if primary == 0 && strength.secondary == 0 {
-            continue; // the output already holds the unfiltered samples
+        if let Some(block) = trial_block(unit, strength, chroma) {
+            by_secondary[usize::from(strength.secondary)].push(block);
         }
-        by_secondary[usize::from(strength.secondary)].push(CdefBlock {
-            x: unit.x >> shift,
-            y: unit.y >> shift,
-            pri: primary,
-            dir: if strength.primary == 0 { 0 } else { unit.dir },
-        });
     }
     for (secondary, blocks) in (0..SECONDARY_STRENGTHS).zip(&by_secondary) {
         if !blocks.is_empty() {
@@ -778,6 +766,22 @@ fn filter_units(
             dsp.cdef_filter_blocks(size, input, blocks, secondary, damping, output);
         }
     }
+}
+
+/// The filter's block description, absent when it leaves every sample alone.
+fn trial_block(unit: &Unit, strength: Strength, chroma: bool) -> Option<CdefBlock> {
+    let shift = usize::from(chroma);
+    let pri = if chroma {
+        strength.primary
+    } else {
+        nc_dsp::cdef_adjust_strength(strength.primary, unit.var)
+    };
+    (pri != 0 || strength.secondary != 0).then_some(CdefBlock {
+        x: unit.x >> shift,
+        y: unit.y >> shift,
+        pri,
+        dir: if strength.primary == 0 { 0 } else { unit.dir },
+    })
 }
 
 /// AC steps (AV1 `ac_qlookup` scale) from which the damping grows by one:
@@ -1017,6 +1021,8 @@ pub(crate) struct CdefScratch {
     /// and only grown, so a frame does not zero-fill a new plane-sized
     /// buffer per plane (~0.6% of x86 instructions in `memset`).
     trial: Vec<u8>,
+    /// The blocks to filter at one candidate's strength.
+    trial_blocks: Vec<CdefBlock>,
     /// [`filter_picture`]'s buffers.
     picture: PictureFilterScratch,
 }
@@ -1146,10 +1152,16 @@ fn unit_errors(
     scratch: &mut CdefScratch,
 ) -> Vec<u64> {
     let mut errors = vec![0; rows * candidates.len()];
-    // Only a single error row may sum neighbouring luma units as one strip.
-    let luma_runs: Vec<_> = if rows == 1 && planes == [PlaneIndex::Y] {
+    let error_rows: Vec<_> = units.iter().map(row).collect();
+    let mut first = 0;
+    let luma_runs: Vec<_> = if planes == [PlaneIndex::Y] {
         units
             .chunk_by(|left, right| left.y == right.y && left.x + UNIT == right.x)
+            .map(|run| {
+                let offset = first;
+                first += run.len();
+                (offset, run)
+            })
             .collect()
     } else {
         Vec::new()
@@ -1157,6 +1169,7 @@ fn unit_errors(
     let CdefScratch {
         unfiltered: unfiltered_planes,
         trial,
+        trial_blocks,
         ..
     } = scratch;
     for &plane in planes {
@@ -1195,17 +1208,39 @@ fn unit_errors(
                 }
                 let mut out = PlaneViewMut::new(filtered, width, width, height)
                     .expect("a plane-sized buffer");
-                filter_units(dsp, storage, &mut out, units, damping, plane, |_| candidate);
+                let chroma = plane != PlaneIndex::Y;
+                trial_blocks.clear();
+                trial_blocks.extend(
+                    units
+                        .iter()
+                        .filter_map(|unit| trial_block(unit, candidate, chroma)),
+                );
+                if !trial_blocks.is_empty() {
+                    dsp.cdef_filter_blocks(
+                        side,
+                        storage,
+                        trial_blocks,
+                        candidate.secondary_value(),
+                        damping - u8::from(chroma),
+                        &mut out,
+                    );
+                }
                 PlaneView::new(filtered, width, width, height).expect("a plane-sized buffer")
             };
             if luma_runs.is_empty() {
-                for unit in units {
-                    errors[row(unit) * candidates.len() + index] +=
+                for (unit, &row) in units.iter().zip(&error_rows) {
+                    errors[row * candidates.len() + index] +=
                         unit_sse(dsp, (&original, &measured), unit, side, plane);
                 }
             } else {
-                for run in &luma_runs {
-                    errors[index] += luma_run_sse(dsp, (&original, &measured), run);
+                for &(first, run) in &luma_runs {
+                    let rows = &error_rows[first..][..run.len()];
+                    add_luma_run_errors(
+                        dsp,
+                        (&original, &measured),
+                        (run, rows),
+                        (&mut errors, candidates.len(), index),
+                    );
                 }
             }
         }
@@ -1213,26 +1248,35 @@ fn unit_errors(
     errors
 }
 
-/// Sum a strip with the shared 8x8 SSE row kernel. Short runs use the
-/// existing block kernel.
-fn luma_run_sse(
+/// Score a contiguous luma run with the shared row kernel, keeping
+/// each 8x8 score in its own filter block's error row.
+fn add_luma_run_errors(
     dsp: &Dsp,
     (original, measured): (&PlaneView<'_>, &PlaneView<'_>),
-    run: &[Unit],
-) -> u64 {
+    (run, rows): (&[Unit], &[usize]),
+    (errors, stride, index): (&mut [u64], usize, usize),
+) {
     const CELLS_PER_VECTOR: usize = 4;
+    const CELLS_PER_CALL: usize = 32;
     if run.len() < CELLS_PER_VECTOR {
-        return run
-            .iter()
-            .map(|unit| unit_sse(dsp, (original, measured), unit, UNIT, PlaneIndex::Y))
-            .sum();
+        for (unit, &row) in run.iter().zip(rows) {
+            errors[row * stride + index] +=
+                unit_sse(dsp, (original, measured), unit, UNIT, PlaneIndex::Y);
+        }
+        return;
     }
-    let (x, y) = (run[0].x, run[0].y);
-    let width = run.len() * UNIT;
-    let inside = "CDEF units lie inside the plane";
-    let original = original.sub_view(x, y, width, UNIT).expect(inside);
-    let measured = measured.sub_view(x, y, width, UNIT).expect(inside);
-    dsp.sse(&original, &measured)
+    let mut scores = [0u32; CELLS_PER_CALL];
+    for (run, rows) in run.chunks(CELLS_PER_CALL).zip(rows.chunks(CELLS_PER_CALL)) {
+        let (x, y) = (run[0].x, run[0].y);
+        let width = run.len() * UNIT;
+        let inside = "CDEF units lie inside the plane";
+        let original = original.sub_view(x, y, width, UNIT).expect(inside);
+        let measured = measured.sub_view(x, y, width, UNIT).expect(inside);
+        dsp.sse_8x8_row(&original, &measured, &mut scores[..run.len()]);
+        for (&score, &row) in scores.iter().zip(rows) {
+            errors[row * stride + index] += u64::from(score);
+        }
+    }
 }
 
 /// The rows of `plane` that the blocks of `units` (raster order, `side`

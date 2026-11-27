@@ -31,6 +31,7 @@ use crate::cfl::ChromaFromLuma;
 use crate::intra::{LumaIntra, MAX_ANGLE_DELTA, filter_intra_allowed};
 use crate::loopfilter::{LoopFilterParams, MAX_LOOP_FILTER};
 use crate::modeinfo::Av1Mv;
+use crate::mvcoding::codable;
 use crate::mvref::{CompoundMvStack, MvStack};
 use crate::predict::{FilterIntraMode, IntraMode};
 use crate::tables::CFL_ALLOWED;
@@ -112,7 +113,7 @@ impl RandomSyntax {
         }
         if filter_intra
             && mode == IntraMode::Dc
-            && filter_intra_allowed(log2_size)
+            && filter_intra_allowed(log2_size, log2_size)
             && self.rng.below(2) == 0
         {
             let filters = FilterIntraMode::ALL;
@@ -125,8 +126,10 @@ impl RandomSyntax {
     pub(super) fn inter_mode(&mut self, stack: &MvStack, mv: Av1Mv) -> InterMode {
         // NEWMV reaches list position k when the stack holds more than k
         // vectors; NEARMV position 1 always, positions 2 and 3 likewise.
+        // Past position 0 only where the difference from that position has
+        // a code (mode decision saw to position 0, `inter_mode_bits`).
         let mut options: Vec<InterMode> = (0..=MAX_NEW_INDEX)
-            .filter(|&k| k == 0 || stack.count > k)
+            .filter(|&k| k == 0 || stack.count > k && codable(mv, stack.vector(k)))
             .map(InterMode::New)
             .collect();
         if mv == stack.vector(0) {
@@ -149,8 +152,12 @@ impl RandomSyntax {
         stack: &CompoundMvStack,
         mvs: [Av1Mv; 2],
     ) -> CompoundInterMode {
+        let codable_from = |k: usize| {
+            let base = stack.new_base_vector(k);
+            codable(mvs[0], base[0]) && codable(mvs[1], base[1])
+        };
         let mut options: Vec<CompoundInterMode> = (0..=MAX_NEW_INDEX)
-            .filter(|&k| k == 0 || stack.count > k)
+            .filter(|&k| k == 0 || stack.count > k && codable_from(k))
             .map(CompoundInterMode::NewNew)
             .collect();
         let v0 = stack.vector(0);

@@ -1,0 +1,37 @@
+{
+ "name": "pgo_training_2026-11-23",
+ "_comment": "The PGO training cuts of ours and every reference (BP-3.1 task T5): public-domain camera footage from two collections no dataset, tuning set or CTC class uses (NASA Image and Video Library, NOAA Ocean Exploration; licences in each source directory's LICENCE.txt). Each cut is 'frames' frames from 'start' seconds, scaled to 1280x720 I420 by the pinned clip decoder (ffmpeg 8.0.1, nceval.clipframes) with its default (bicubic) scaler, no scene cut inside (ffmpeg scdet, threshold 8, on the source from 5 s to 45 s: the nearest cut is at least 2 s from each excerpt). tools/release/release.py prepare_training_clips cuts them into ~/nanocodec-data/release/pgo-clips-2026-11-23 and checks 'sha256'; eval/tests/test_content_id.py checks the set is disjoint from every dataset.",
+ "width": 1280,
+ "height": 720,
+ "frames": 30,
+ "clips": [
+  {
+   "name": "nasa_crs22_launch_view",
+   "source": "/mldata/downloaded_datasets/other/nasa_videos/KSC-20210603-MH-AJW01-0001-SpaceX_CRS_22_Isolated_Launch_Views_4K_WON_3276923~orig.mp4",
+   "start": 15.0,
+   "motion": "static camera, wind-blown flag, fine distant detail",
+   "sha256": "df24f9025f9643644027462494ba6125cb6e08574ed70aade037c868706f5619"
+  },
+  {
+   "name": "nasa_x59_taxi_broll",
+   "source": "/mldata/downloaded_datasets/other/nasa_videos/AFRC_2025_14531_X59_Taxi_Broll~orig.mp4",
+   "start": 12.0,
+   "motion": "slow pan along an aircraft, people walking",
+   "sha256": "a741f913b447b9f8110a4a20d6171151b7d9dff186238a24e604a963dd528ea7"
+  },
+  {
+   "name": "nasa_solar_energy_center",
+   "source": "/mldata/downloaded_datasets/other/nasa_videos/KSC-20210527-MH-GEB01-0001-Discovery_Solar_Energy_Center-3276334~orig.mp4",
+   "start": 20.0,
+   "motion": "forward motion from a moving vehicle, sky and panels",
+   "sha256": "f870d38e0e66b75db265a7c7a05cae644acbd482c38f9f25695d279902554bb4"
+  },
+  {
+   "name": "noaa_ex2605_iridogorgia",
+   "source": "/mldata/downloaded_datasets/other/noaa_ocean_exploration/ex2605-dive02-iridogorgia-hd.mp4",
+   "start": 20.0,
+   "motion": "slow underwater camera drift, dark, textured rock",
+   "sha256": "016cfbdd4f4f3d36a170c1cb4fc32468098d441ed341cf4686ce4e2eee271159"
+  }
+ ]
+}

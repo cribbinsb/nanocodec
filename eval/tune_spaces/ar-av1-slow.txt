@@ -1,0 +1,15 @@
+# av1-retune (2026-11-23): AV1 slow's reference structure, key, transform and intra
+# parameters, tuned jointly on 600-frame windows at both key shares with k = the rung's
+# front slope (0.0677). About ten terms and no RD-split gates: the 19-term slow space of
+# tune-slow (2026-11-23) lost 5-18 % J on nearly every trial.
+# Format (nceval.tune_pool): name [low high] [int|log]
+structure.unified 0 1 int
+layers.propagation 0.5 1
+planner.key_rd_margin 1.0 1.6
+quant.trellis_lambda_scale 0.4 0.9
+av1.transform_rd_gain_scale 0.8 1.4
+av1.pre_tx_skip_score 40 110
+av1.inter_tx_split_energy 0.1 0.6 log
+decision.intra_gate_variance 32 128 log
+rate.key_level_finer 1.5 5
+rate.key_level_finer_ln_interval -1.5 1.5

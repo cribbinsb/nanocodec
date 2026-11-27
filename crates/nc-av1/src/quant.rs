@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn quantize_then_dequantize_is_close() {
-        let q = QuantSteps { dc: 40, ac: 50 }.quantizer(TxSize::Tx4x4, 48);
+        let q = QuantSteps { dc: 40, ac: 50 }.quantizer(TxSize::TX_4X4, 48);
         let mut levels = [400, -230, 24, -26, 0, 51];
         Dsp::new().av1_quantize(&mut levels, &q);
         assert_eq!(levels, [10, -4, 0, 0, 0, 1]);

@@ -31,6 +31,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .sealing import check_read
+
 # Never test a clip above this fraction of its source bitrate (eval/README.md "Methodology").
 MAX_FRACTION_OF_SOURCE_BITRATE = 0.5
 
@@ -108,8 +110,14 @@ class ClipSet:
         return ClipSet(name=self.name, clips=chosen)
 
 
-def load_clipset(path: Path, data_root: Path) -> ClipSet:
+def load_clipset(path: Path, data_root: Path, *, exclusion_only: bool = False) -> ClipSet:
+    """A clip set file's clips. A release-only set (nceval.sealing) is refused outside a
+    release measurement, unless the load is `exclusion_only`: read only to keep its
+    families out of the pool and the learned-search data (tools/ci/check_sealed_sets.py
+    allows that in those two places alone)."""
     raw = json.loads(Path(path).read_text())
+    if not exclusion_only:
+        check_read(raw["name"], path)
     clips = tuple(_parse_clip(entry, data_root) for entry in raw["clips"])
     names = [c.name for c in clips]
     if len(names) != len(set(names)):

@@ -220,9 +220,9 @@ pub(super) unsafe fn convolve(
 /// AV1/HEVC/VVC, widened to 16 outputs per row for 16/32/64-wide blocks.
 /// The VP9 vertical pass reads byte-clipped horizontal rows and runs 16-wide
 /// widening byte products (`filter16`).
-struct Dotprod;
+struct Dotprod<const I8MM: bool>;
 
-impl RowKernel for Dotprod {
+impl<const I8MM: bool> RowKernel for Dotprod<I8MM> {
     type Filters = (DotFilter, [uint8x16_t; 8]);
     type Row = uint8x16_t;
     const LANES: usize = 16;
@@ -271,10 +271,40 @@ impl RowKernel for Dotprod {
         // SAFETY: forwarded from the driver.
         unsafe { Neon::vertical::<N, LAYOUT>(rows, &filters.1) }
     }
+
+    #[inline(always)]
+    unsafe fn column<const N: usize, const LAYOUT: u8, const AVG: bool>(
+        src: *const u8,
+        ss: usize,
+        dst: (*mut u8, usize),
+        h: usize,
+        filters: &Self::Filters,
+    ) {
+        // SAFETY: dispatch admits only nonempty 8/16-wide strips in complete
+        // four-row batches for the I8MM column. All windows are checked.
+        unsafe {
+            if I8MM && N >= 8 {
+                let taps = filters.0.coefficients();
+                super::vertical_i8mm::strip::<AVG>(src, ss, dst.0, dst.1, h, taps);
+                if N == 16 {
+                    super::vertical_i8mm::strip::<AVG>(
+                        src.add(8),
+                        ss,
+                        dst.0.add(8),
+                        dst.1,
+                        h,
+                        taps,
+                    );
+                }
+            } else {
+                driver::column_rows::<Self, N, LAYOUT, AVG>(src, ss, dst, h, filters);
+            }
+        }
+    }
 }
 
 #[target_feature(enable = "neon,dotprod")]
-pub(super) unsafe fn convolve_dotprod(
+pub(super) unsafe fn convolve_dotprod<const I8MM: bool>(
     kind: Vp9Filter,
     src: &[u8],
     stride: usize,
@@ -298,7 +328,7 @@ pub(super) unsafe fn convolve_dotprod(
         }
         macro_rules! filter {
             ($n:expr, $layout:expr, $avg:expr) => {
-                driver::convolve::<Dotprod, $n, $layout, $avg>(
+                driver::convolve::<Dotprod<I8MM>, $n, $layout, $avg>(
                     kind, src, stride, phase, size, dst, dst_stride,
                 )
             };
@@ -317,8 +347,46 @@ pub(super) unsafe fn convolve_dotprod(
             at_width!(16);
         } else if size.0.is_multiple_of(8) {
             at_width!(8);
-        } else {
+        } else if !I8MM {
             at_width!(4);
+        } else {
+            unreachable!("I8MM covers only eight-column strips");
+        }
+    }
+}
+
+// The four-row I8MM schedule handles vertical-only and byte-clipped two-axis
+// interpolation. Use the same horizontal pass in both SIMD tiers.
+pub(super) unsafe fn convolve_i8mm(
+    kind: Vp9Filter,
+    src: &[u8],
+    stride: usize,
+    phase: (usize, usize),
+    size: (usize, usize),
+    dst: &mut [u8],
+    dst_stride: usize,
+    average: bool,
+) {
+    // SAFETY: the dispatch selected I8MM and DOTPROD and validated the
+    // windows. Noninteger positions of the eight-tap tables fit i8.
+    unsafe {
+        if phase.1 != 0
+            && kind != Vp9Filter::Bilinear
+            && size.0 >= 8
+            && size.0.is_multiple_of(8)
+            && size.1 >= 4
+            && size.1.is_multiple_of(4)
+        {
+            let taps = &kind.kernel()[phase.1];
+            if phase.0 != 0 {
+                convolve_dotprod::<true>(kind, src, stride, phase, size, dst, dst_stride, average);
+            } else if average {
+                super::vertical_i8mm::filter::<true>(src, stride, size, dst, dst_stride, taps);
+            } else {
+                super::vertical_i8mm::filter::<false>(src, stride, size, dst, dst_stride, taps);
+            }
+        } else {
+            convolve_dotprod::<false>(kind, src, stride, phase, size, dst, dst_stride, average);
         }
     }
 }

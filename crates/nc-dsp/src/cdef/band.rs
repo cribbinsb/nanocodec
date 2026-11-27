@@ -625,18 +625,74 @@ fn filter_block_u16(
         unsafe { (fns.interior[idx])(src.samples(), src.width(), origin, args, out, stride) };
         return;
     }
-    let side = size + 2 * CDEF_PADDING;
-    let window = src.padded_window(x, y, size);
-    // SAFETY: `fns` matches this CPU; `window` covers `side`x`side` padded words.
+    if idx == 0
+        && let Some(border) = fns.border4
+    {
+        // SAFETY: dispatch selects this ISA and checks the block footprint.
+        unsafe { border(src, (x, y), args, out, stride) };
+        return;
+    }
+    if size == LUMA_SIZE {
+        filter_edge_u16::<12, 144>(fns.edge[1], src, (x, y), args, out, stride);
+    } else {
+        filter_edge_u16::<8, 64>(fns.edge[0], src, (x, y), args, out, stride);
+    }
+}
+
+#[inline]
+fn filter_edge_u16<const SIDE: usize, const SAMPLES: usize>(
+    filter: super::CdefEdge16Fn,
+    src: &CdefSource<u16>,
+    (x, y): (usize, usize),
+    args: &CdefArgs,
+    out: &mut [u16],
+    stride: usize,
+) {
+    let width = src.width();
+    let first_x = x.saturating_sub(CDEF_PADDING);
+    let first_y = y.saturating_sub(CDEF_PADDING);
+    let left = CDEF_PADDING.saturating_sub(x);
+    let top = CDEF_PADDING.saturating_sub(y);
+    let columns = (SIDE - left).min(width - first_x);
+    let rows = (SIDE - top).min(src.height() - first_y);
+    let start = src.index(first_x, first_y);
+    let pixels = &src.samples()[start..][..(rows - 1) * width + columns];
+    let mut halo = [super::CDEF_UNAVAILABLE as u16; SAMPLES];
+    let active = &mut halo[top * SIDE..][..rows * SIDE];
+    match columns {
+        6 => copy_edge_rows::<6, SIDE>(pixels, width, active, left, columns),
+        8 => copy_edge_rows::<8, SIDE>(pixels, width, active, left, columns),
+        10 => copy_edge_rows::<10, SIDE>(pixels, width, active, left, columns),
+        12 => copy_edge_rows::<12, SIDE>(pixels, width, active, left, columns),
+        _ => copy_edge_rows::<0, SIDE>(pixels, width, active, left, columns),
+    }
+    // SAFETY: i16 and u16 have the same layout, valid samples fit i16,
+    // and the sentinel retains its bit pattern. The selected kernel
+    // supports the current ISA, and both footprints are checked.
     unsafe {
-        (fns.edge[idx])(
-            &window,
-            side,
-            CDEF_PADDING * side + CDEF_PADDING,
+        let halo = core::slice::from_raw_parts(halo.as_ptr().cast::<i16>(), SAMPLES);
+        filter(
+            halo,
+            SIDE,
+            CDEF_PADDING * SIDE + CDEF_PADDING,
             args,
             out,
             stride,
         );
+    }
+}
+
+#[inline]
+fn copy_edge_rows<const COLUMNS: usize, const SIDE: usize>(
+    input: &[u16],
+    width: usize,
+    halo: &mut [u16],
+    left: usize,
+    columns: usize,
+) {
+    let columns = if COLUMNS == 0 { columns } else { COLUMNS };
+    for (src, dst) in input.chunks(width).zip(halo.as_chunks_mut::<SIDE>().0) {
+        dst[left..][..columns].copy_from_slice(&src[..columns]);
     }
 }
 

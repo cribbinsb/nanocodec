@@ -6,6 +6,10 @@
 //! (`--discard 1`: decode every frame and write nothing, to time the decoder
 //! alone as reference decoders do with `vpxdec --noblit` or `dav1d --muxer
 //! null`).
+//! `--bench N` times that decode in process instead: the stream is read into
+//! memory once and decoded N times, each pass timed alone and written as one
+//! JSON line, so no pass pays process start-up or file input (the same span
+//! `tools/anchors/libavcodec_bench.c` times for the `FFmpeg` decoders).
 //!
 //! Container framing (`framing.rs`) is bounded independently of the codec
 //! parsers.
@@ -13,6 +17,7 @@ use std::borrow::Cow;
 use std::io::{BufRead, IoSlice, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use nc_common::{
     DecodedPicture, OutputPicture, Picture, PlaneIndex, PlaneView, Sample, ShownFrame,
@@ -33,6 +38,7 @@ struct DecodeArgs {
     film_grain: FilmGrain,
     operating_point: Option<u8>,
     all_layers: bool,
+    bench: Option<u32>,
 }
 
 /// Parse an AV1 `--operating-point` argument in `0..=MAX_OPERATING_POINT`.
@@ -69,6 +75,7 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
     let mut operating_point = None;
     let mut all_layers = None;
     let mut discard = None;
+    let mut bench = None;
     let (pairs, remainder) = args.as_chunks::<2>();
     for pair in pairs {
         let value = pair[1].clone();
@@ -111,6 +118,15 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
                     _ => return Err(format!("--discard takes 0 or 1, not '{value}'")),
                 });
             }
+            "--bench" if bench.is_none() => {
+                bench = Some(
+                    value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|&passes| passes > 0)
+                        .ok_or(format!("--bench takes a pass count, not '{value}'"))?,
+                );
+            }
             flag => return Err(format!("unknown or repeated decode option '{flag}'")),
         }
     }
@@ -118,6 +134,9 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
         return Err("decode options require a value".into());
     }
     let codec = codec.ok_or("missing --codec")?;
+    if bench.is_some() && (output.is_some() || frame_md5.is_some()) {
+        return Err("--bench writes no frames: drop --output and --frame-md5".into());
+    }
     if film_grain.is_some() && codec != Codec::Av1 {
         return Err("--film-grain applies to AV1 only".into());
     }
@@ -130,8 +149,12 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
     Ok(DecodeArgs {
         codec,
         input: input.ok_or("missing --input")?,
-        output: if output.is_none() && frame_md5.is_none() && discard != Some(true) {
-            return Err("missing --output, --frame-md5 or --discard 1".into());
+        output: if output.is_none()
+            && frame_md5.is_none()
+            && discard != Some(true)
+            && bench.is_none()
+        {
+            return Err("missing --output, --frame-md5, --discard 1 or --bench N".into());
         } else {
             output
         },
@@ -139,11 +162,15 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
         film_grain: film_grain.unwrap_or(FilmGrain::Apply),
         operating_point,
         all_layers: all_layers.unwrap_or(false),
+        bench,
     })
 }
 
 pub(super) fn run(args: &[String]) -> Result<(), String> {
     let args = parse(args)?;
+    if let Some(passes) = args.bench {
+        return bench(&args, passes);
+    }
     let create = |path: &PathBuf| -> Result<stdio::Output, String> {
         if let (Ok(input), Ok(output)) = (args.input.canonicalize(), path.canonicalize())
             && input == output
@@ -176,6 +203,30 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     )?;
     for output in yuv_output.iter_mut().chain(md5_output.iter_mut()) {
         output.flush().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// `--bench N`: decode the in-memory stream `passes` times, each pass with a
+/// fresh decoder, shown frames discarded; one JSON line per pass on stdout
+/// (`repeat`, `frames`, `seconds`). A pass covers the decoder's construction
+/// and the container framing over memory (IVF headers, Annex-B start codes)
+/// along with the decode: it shares the one decode path rather than
+/// pre-splitting packets on a second one.
+fn bench(args: &DecodeArgs, passes: u32) -> Result<(), String> {
+    let stream = std::fs::read(&args.input).map_err(|error| error.to_string())?;
+    for repeat in 0..passes {
+        let start = Instant::now();
+        let frames = decode_stream_with_op(
+            args.codec,
+            args.film_grain,
+            args.operating_point,
+            args.all_layers,
+            &mut std::io::Cursor::new(stream.as_slice()),
+            &mut |_: &Shown| Ok(()),
+        )?;
+        let seconds = start.elapsed().as_secs_f64();
+        println!("{{\"repeat\": {repeat}, \"frames\": {frames}, \"seconds\": {seconds:.9}}}");
     }
     Ok(())
 }
@@ -807,6 +858,8 @@ mod tests {
         assert_eq!(parse(&args).unwrap().film_grain, FilmGrain::Apply);
         let skip = [&args[..], &strings(&["--film-grain", "0"])].concat();
         assert_eq!(parse(&skip).unwrap().film_grain, FilmGrain::Skip);
+        let bench = strings(&["--codec", "h264", "--input", "a", "--bench", "3"]);
+        assert_eq!(parse(&bench).unwrap().bench, Some(3));
         for bad in [
             vec![],
             strings(&["--codec", "vp9"]),
@@ -814,6 +867,8 @@ mod tests {
             strings(&["--input", "a", "--input", "b"]),
             strings(&["--unknown", "a"]),
             [&args[..], &strings(&["--film-grain", "2"])].concat(),
+            [&args[..], &strings(&["--bench", "3"])].concat(),
+            strings(&["--codec", "h264", "--input", "a", "--bench", "0"]),
             [
                 &strings(&["--codec", "vp9"]),
                 &args[2..],

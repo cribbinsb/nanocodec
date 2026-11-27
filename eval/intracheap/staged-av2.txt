@@ -1,0 +1,10 @@
+# staged-md: the staged intra cut (decision.intra_stage_keep / intra_stage_band) on av2 medium keys; one-frame fixed-QP ab
+null: planner.intra_bias=1050
+k1: decision.intra_stage_keep=1
+k2: decision.intra_stage_keep=2
+k3: decision.intra_stage_keep=3
+k4: decision.intra_stage_keep=4
+b100: decision.intra_stage_band=100
+b200: decision.intra_stage_band=200
+b300: decision.intra_stage_band=300
+k4b200: decision.intra_stage_keep=4 decision.intra_stage_band=200

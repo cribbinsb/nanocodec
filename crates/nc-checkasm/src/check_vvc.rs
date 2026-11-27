@@ -82,7 +82,7 @@ fn quant(candidate: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     }
 }
 fn intra(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
-    for side in [4, 8, 16, 32] {
+    for side in [4, 8, 16, 32, 64] {
         for pattern in 0..32 {
             let mut sample = || match pattern {
                 0 => 0,
@@ -96,8 +96,9 @@ fn intra(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckRepo
                 }
                 _ => i32::from(rng.byte()),
             };
-            let top: Vec<_> = (0..=side).map(|_| sample()).collect();
-            let left: Vec<_> = (0..=side).map(|_| sample()).collect();
+            let edge_len = if side == 64 { 2 * side } else { side + 1 };
+            let top: Vec<_> = (0..edge_len).map(|_| sample()).collect();
+            let left: Vec<_> = (0..edge_len).map(|_| sample()).collect();
             let corner = sample();
             for mode in [
                 VvcIntraMode::Planar,
@@ -108,8 +109,20 @@ fn intra(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckRepo
                 // Guard bytes catch writes past the requested block.
                 let mut expected = vec![93; side * side + 3];
                 let mut actual = expected.clone();
-                reference.vvc_intra_predict(side, mode, &top, &left, corner, &mut expected[1..]);
-                candidate.vvc_intra_predict(side, mode, &top, &left, corner, &mut actual[1..]);
+                for (dsp, output) in [(reference, &mut expected), (candidate, &mut actual)] {
+                    if side == 64 {
+                        dsp.vvc_intra_predict_rect(
+                            (side, side),
+                            mode,
+                            &top,
+                            &left,
+                            corner,
+                            &mut output[1..],
+                        );
+                    } else {
+                        dsp.vvc_intra_predict(side, mode, &top, &left, corner, &mut output[1..]);
+                    }
+                }
                 report.cases += 1;
                 if actual != expected {
                     report.failures.push(format!(

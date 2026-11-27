@@ -71,6 +71,10 @@ def main() -> int:
     parser.add_argument("sets", nargs="+")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
+    parser.add_argument("--workers", type=int, default=PARALLEL, help="clips graded at once")
+    parser.add_argument("--no-sheets", action="store_true",
+                        help="no crops or contact sheets (a sealed set's frames stay unseen; "
+                             "the pool's sheets are not replaced)")
     args = parser.parse_args()
     inventory = {r["path"]: r for r in json.loads(args.inventory.read_text())["clips"]}
     crops: dict[str, list[Path]] = {}
@@ -78,11 +82,11 @@ def main() -> int:
         path = args.data_root / "clips" / f"{name}.json"
         clipset = json.loads(path.read_text())
         entries = [e for e in clipset["clips"] if not e.get("clean_reference")]
-        with ThreadPoolExecutor(PARALLEL) as pool:
+        with ThreadPoolExecutor(args.workers) as pool:
             grades = list(pool.map(lambda e: grade(e, inventory, args.data_root), entries))
         for entry, fields in zip(entries, grades):
             entry.update(fields)
-            if accepted(entry):
+            if accepted(entry) and not args.no_sheets:
                 crop = crop_png(entry, args.data_root)
                 if crop:
                     crops.setdefault(entry["content_class"], []).append(crop)

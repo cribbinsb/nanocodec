@@ -25,6 +25,7 @@ which `base_constraint` turns into the SVC base-layer guard.
 from __future__ import annotations
 
 import math
+from typing import Callable
 
 import numpy as np
 
@@ -45,22 +46,28 @@ def assign_rungs(clips: list[Clip], offset: int = 0) -> dict[str, int]:
             for i, c in enumerate(clips)}
 
 
+def rung_ladder(rungs: dict[str, int]) -> Callable[[Clip], list[int]]:
+    """Runner.measure's `ladder` for single points: each clip's assigned rung."""
+    return lambda clip: [clip_targets(clip, realuse.LADDER_KBPS)[rungs[clip.name]]]
+
+
 def single_points(runner: realuse.Runner, anchor: Family, test: Family, clips: list[Clip],
                   rungs: dict[str, int], frames: int = FRAMES,
-                  budgeted: bool = False, key_seconds: float | None = None) -> dict[str, dict]:
+                  budgeted: bool = False, key_seconds: float | None = None,
+                  key_frames: int | None = None) -> dict[str, dict]:
     """Per clip {"class", "rung", "quality" (= "quality_low", the clip's J for
     nceval.interval), "noncompliant", "base_quality" (two-layer settings; else
     None)}: the test's one rung against the anchor's
     full (cached) curve, plus both arms' ceiling terms at that rung
 (jreal.ceiling_terms). A clip without a measured point (other than one our
     encoder refused) raises: the set is incomplete, so no estimate is made.
-    `budgeted` splits a long run into parts (Runner.measure); `key_seconds` sets a
-    key period (default one key)."""
+    `budgeted` splits a long run into parts (Runner.measure); `key_frames` (frames)
+    or `key_seconds` sets a key period (default one key)."""
     curves = runner.measure(f"{anchor.name} curves", [anchor], clips, frames, None,
-                            key_seconds, budgeted=budgeted)
-    target = lambda c: [clip_targets(c, realuse.LADDER_KBPS)[rungs[c.name]]]
+                            key_seconds, budgeted=budgeted, key_frames=key_frames)
     tests = runner.measure(f"{test.name} single points", [test], clips, frames, None,
-                           key_seconds, budgeted=budgeted, ladder=target)
+                           key_seconds, budgeted=budgeted, ladder=rung_ladder(rungs),
+                           key_frames=key_frames)
     refused = {entry.split("@")[0] for entry in runner.refused.get(test.name, ())}
     rows, missing = {}, []
     for clip in clips:

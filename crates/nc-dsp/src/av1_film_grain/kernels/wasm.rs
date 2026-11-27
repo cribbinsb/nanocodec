@@ -6,6 +6,7 @@ pub(super) const KERNELS: Kernels = Kernels {
     luma,
     chroma,
     blend,
+    luma_plane: None,
 };
 #[target_feature(enable = "simd128")]
 unsafe fn luma(

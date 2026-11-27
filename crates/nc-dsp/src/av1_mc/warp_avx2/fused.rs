@@ -53,24 +53,6 @@ static FILTERS: AlignedFilters = AlignedFilters({
 });
 /// Horizontal half-sum weights (two copies of 2^13) and upper-word rounding.
 static HORIZONTAL_CONSTANTS: [i32; 2] = [0x2000_2000, 1 << 15];
-/// Affine extrema occur at rectangle corners. i64 checks also prevent any
-/// i32 phase arithmetic overflow before unchecked table addressing. Outside
-/// this range the original clamped AVX2 kernel retains its behavior.
-fn valid(phases: &WarpPhases) -> bool {
-    let bound = |start: i32, dx: i32, dy: i32, first: i64, last: i64| {
-        let base = i64::from(start) + i64::from(PHASE_ROUND);
-        [first, last].into_iter().all(|r| {
-            [0, 7].into_iter().all(|c| {
-                let phase = base + i64::from(dx) * c + i64::from(dy) * r;
-                (0..(FILTER_COUNT as i64) << PHASE_SHIFT).contains(&phase)
-            })
-        })
-    };
-    let (x, a, b) = phases.x;
-    let (y, g, d) = phases.y;
-    bound(x, a, b, -3, 11) && bound(y, g, d, 0, 7)
-}
-
 /// The assembly reads these fixed repr(C) offsets. The scalar state is kept
 /// in registers while processing rows; only final rounding is reloaded.
 #[repr(C)]
@@ -83,7 +65,9 @@ struct Config {
     y: i32,
     shift: i32,
     round: i32,
-    end: *mut i32,
+    end: *mut u8,
+    stride: usize,
+    store: u8,
 }
 // Keep the assembly state layout checked at compile time.
 const _: () = {
@@ -96,11 +80,9 @@ const _: () = {
     assert!(core::mem::offset_of!(Config, shift) == 24);
     assert!(core::mem::offset_of!(Config, round) == 28);
     assert!(core::mem::offset_of!(Config, end) == 32);
+    assert!(core::mem::offset_of!(Config, stride) == 40);
+    assert!(core::mem::offset_of!(Config, store) == 48);
 };
-#[allow(
-    clippy::too_many_lines,
-    reason = "one assembly block keeps the full row-pair register schedule intact"
-)]
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn warp8x8(
     (src, stride): (&[u8], usize),
@@ -113,11 +95,75 @@ pub(crate) unsafe fn warp8x8(
         .and_then(|n| n.checked_add(WINDOW_STRIDE))
         .expect("warp window extent");
     assert!(src.len() >= span, "warp window too short");
-    if !valid(phases) {
-        // SAFETY: AVX2 enabled; the original fallback checks its source and clamps taps.
-        unsafe { super::clamped((src, stride), phases, round1, out) };
-        return;
+    // SAFETY: AVX2 enabled and the padded table satisfies the byte bounds.
+    unsafe {
+        if !try_warp8x8(
+            (src, stride),
+            phases,
+            round1,
+            Target::Raw(out),
+            &FILTERS.0,
+            PHASE_ROUND,
+        ) {
+            super::clamped((src, stride), phases, round1, out);
+        }
     }
+}
+
+/// The 8×8 result of the shared register schedule.
+pub(crate) enum Target<'a> {
+    Raw(&'a mut WarpOut),
+    Pixels(&'a mut [u8], usize),
+    Compound(&'a mut [i16], usize),
+}
+
+impl Target<'_> {
+    fn storage(self) -> Option<(*mut u8, usize, u8)> {
+        let (ptr, length, stride, size, store) = match self {
+            Self::Raw(raw) => return Some((raw.as_mut_ptr().cast(), 8 * 4, 0)),
+            Self::Pixels(pixels, stride) => (pixels.as_mut_ptr(), pixels.len(), stride, 1, 1),
+            Self::Compound(prep, stride) => (prep.as_mut_ptr().cast(), prep.len(), stride, 2, 2),
+        };
+        if stride >= 8 && stride.checked_mul(7)?.checked_add(8)? <= length {
+            Some((ptr, stride.checked_mul(size)?, store))
+        } else {
+            None
+        }
+    }
+}
+
+/// The shared 8-bit affine kernel for a codec's padded, paired tap table.
+///
+/// # Safety
+///
+/// AVX2 must be enabled. The last table row is readable padding. Each
+/// actual row sums to 128, has total absolute weight at most 222 and
+/// has no more than 128 positive weight in either alternating tap group.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one assembly block keeps the full row-pair register schedule intact"
+)]
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn try_warp8x8(
+    (src, stride): (&[u8], usize),
+    phases: &WarpPhases,
+    round1: u32,
+    out: Target<'_>,
+    filters: &[[i8; 8]],
+    phase_round: i32,
+) -> bool {
+    let span = stride
+        .checked_mul(WINDOW_SIDE - 1)
+        .and_then(|n| n.checked_add(WINDOW_STRIDE));
+    if span.is_none_or(|n| n > src.len())
+        || !phases.in_table(phase_round, PHASE_SHIFT, filters.len() - 1)
+    {
+        return false;
+    }
+    assert!((1..=11).contains(&round1));
+    let Some((dst, dst_stride, store)) = out.storage() else {
+        return false;
+    };
     let (x, a, b) = phases.x;
     let (y, g, d) = phases.y;
     let config = Config {
@@ -125,16 +171,18 @@ pub(crate) unsafe fn warp8x8(
         beta: b - 3 * a,
         gamma: g,
         delta: d - 3 * g,
-        x: x + PHASE_ROUND - 3 * b,
-        y: y + PHASE_ROUND,
+        x: x + phase_round - 3 * b,
+        y: y + phase_round,
         shift: (round1 + 8) as i32,
         round: 1 << (round1 + 7),
-        end: out.as_mut_ptr().wrapping_add(64),
+        end: dst.wrapping_add(dst_stride.wrapping_mul(8)),
+        stride: dst_stride,
+        store,
     };
     // SAFETY: AVX2 is enabled. The checked span covers all fifteen 16-byte
-    // source loads; the i64 corner proof bounds every table index. FILTERS
+    // source loads; the i64 corner proof bounds every table index. The table
     // includes the extra eight bytes needed by its final 16-byte load. Four
-    // iterations write exactly eight i32 outputs twice into the 64-value out.
+    // iterations each write two complete rows, whose extent was checked.
     // All modified GPRs/YMMs are declared; rsi/r14/r15 remain unchanged.
     // Local calls push/pop only their return address and restore rsp before
     // exit. Without nostack the compiler reserves its red zone against these
@@ -267,9 +315,28 @@ pub(crate) unsafe fn warp8x8(
             "vpaddd ymm0, ymm0, ymm9",
             "vpsrad ymm7, ymm7, xmm8",
             "vpsrad ymm0, ymm0, xmm8",
+            "mov rax, qword ptr [rsi+40]",
+            "movzx ecx, byte ptr [rsi+48]",
+            "test ecx, ecx",
+            "jnz 31f",
             "vmovdqu ymmword ptr [rdi], ymm7",
             "vmovdqu ymmword ptr [rdi+32], ymm0",
-            "add rdi, 64",
+            "jmp 34f",
+            "31:",
+            "vpackssdw ymm7, ymm7, ymm0",
+            "vpermq ymm7, ymm7, 0xd8",
+            "cmp ecx, 1",
+            "jne 32f",
+            "vextracti128 xmm0, ymm7, 1",
+            "vpackuswb xmm7, xmm7, xmm0",
+            "vmovq qword ptr [rdi], xmm7",
+            "vmovhps qword ptr [rdi+rax], xmm7",
+            "jmp 34f",
+            "32:",
+            "vmovdqu xmmword ptr [rdi], xmm7",
+            "vextracti128 xmmword ptr [rdi+rax], ymm7, 1",
+            "34:",
+            "lea rdi, [rdi+rax*2]",
             "cmp rdi, qword ptr [rsi+32]",
             "jne 30b",
             "jmp 99f",
@@ -317,8 +384,8 @@ pub(crate) unsafe fn warp8x8(
             "vzeroupper",
             phase_shift=const PHASE_SHIFT,
             sa=sym SHUFFLE_A,sb=sym SHUFFLE_B,hc=sym HORIZONTAL_CONSTANTS,
-            in("rsi") &raw const config,inout("rdx") src.as_ptr()=>_,inout("rdi") out.as_mut_ptr()=>_,
-            in("r14") FILTERS.0.as_ptr(),in("r15") stride,
+            in("rsi") &raw const config,inout("rdx") src.as_ptr()=>_,inout("rdi") dst=>_,
+            in("r14") filters.as_ptr(),in("r15") stride,
             out("rax") _,out("rcx") _,out("r8") _,out("r9") _,out("r10") _,out("r11") _,out("r12") _,out("r13") _,
             out("ymm0") _,
             out("ymm1") _,
@@ -338,4 +405,5 @@ pub(crate) unsafe fn warp8x8(
             out("ymm15") _,
         );
     }
+    true
 }

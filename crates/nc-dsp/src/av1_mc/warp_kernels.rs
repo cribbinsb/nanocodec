@@ -65,6 +65,26 @@ impl WarpPhases {
         let (start, gamma, delta) = self.y;
         start + gamma * c as i32 + delta * r as i32
     }
+
+    /// All affine phases lie between their rectangle's minimum and maximum.
+    /// Use i64 to validate the phases before unchecked table indexing.
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
+    pub(crate) fn in_table(&self, phase_round: i32, shift: u32, count: usize) -> bool {
+        let limit = (count as i64) << shift;
+        let bound = |(start, dx, dy): (i32, i32, i32), first: i64, last: i64| {
+            let base = i64::from(start) + i64::from(phase_round);
+            let columns = 7 * i64::from(dx);
+            let (first, last) = (first * i64::from(dy), last * i64::from(dy));
+            let lowest = base + columns.min(0) + first.min(last);
+            let highest = base + columns.max(0) + first.max(last);
+            lowest >= 0 && highest < limit
+        };
+        bound(self.x, -3, 11) && bound(self.y, 0, 7)
+    }
 }
 
 /// The 64 outputs of one block, row by row.
@@ -149,10 +169,11 @@ pub(crate) fn warp8x8_scalar_at<T: Sample>(
 unsafe fn dot4<'a, V: I16x8Shuffles>(
     samples: impl Fn(usize) -> &'a [i16],
     phase: impl Fn(usize) -> i32,
+    filter: impl Fn(i32) -> &'static [i16; TAPS],
     bits: u32,
 ) -> [i32; 4] {
     let products: [V::Wide; 4] =
-        core::array::from_fn(|q| V::load(samples(q)).madd(V::load(warp_taps_i16(phase(q)))));
+        core::array::from_fn(|q| V::load(samples(q)).madd(V::load(filter(phase(q)))));
     let mut sums = [0; 4];
     V::sum_lanes4(products).round_shift(bits).store(&mut sums);
     sums
@@ -170,6 +191,7 @@ unsafe fn warp8x8_lanes<V: I16x8Shuffles>(
     phases: &WarpPhases,
     round1: u32,
     out: &mut WarpOut,
+    filter: impl Fn(i32) -> &'static [i16; TAPS] + Copy,
 ) {
     // The horizontal pass, stored by column: `columns[c][i]` is output
     // column `c` of window row `i` (row 15 is padding).
@@ -185,6 +207,7 @@ unsafe fn warp8x8_lanes<V: I16x8Shuffles>(
                 dot4::<V>(
                     |q| &row[half + q..],
                     |q| phases.horizontal(i, half + q),
+                    filter,
                     INTER_ROUND0,
                 )
             };
@@ -201,6 +224,7 @@ unsafe fn warp8x8_lanes<V: I16x8Shuffles>(
                 dot4::<V>(
                     |q| &column[half + q..],
                     |q| phases.vertical(half + q, c),
+                    filter,
                     round1,
                 )
             };
@@ -219,7 +243,25 @@ unsafe fn warp8x8_simd128(
     out: &mut WarpOut,
 ) {
     // SAFETY: SIMD128 is enabled for the whole module in this build.
-    unsafe { warp8x8_lanes::<crate::simd::simd128::I16x8>(window, phases, round1, out) }
+    unsafe {
+        warp8x8_lanes::<crate::simd::simd128::I16x8>(window, phases, round1, out, warp_taps_i16)
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub(crate) unsafe fn warp8x8_av2_simd128(
+    window: (&[u8], usize),
+    phases: &WarpPhases,
+    round1: u32,
+    out: &mut WarpOut,
+) {
+    // SAFETY: SIMD128 is enabled for the module and AV2 supplies the
+    // same eight-bit source window and phase rounding.
+    unsafe {
+        warp8x8_lanes::<crate::simd::simd128::I16x8>(window, phases, round1, out, |phase| {
+            crate::av2_dec::warp::taps_i16_unchecked(phase)
+        })
+    }
 }
 
 #[cfg(test)]

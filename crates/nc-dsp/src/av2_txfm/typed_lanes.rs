@@ -1,10 +1,12 @@
 //! The typed AV2 transforms of [`super::typed`] (the scalar reference) on
 //! vector lanes: the same passes, shifts and clamps, with each 1-D pass a
-//! dense matrix product on `V::LANES` lines at once and register tile
-//! transposes between passes (as [`super::generic`]). Matrix entries are
-//! broadcast from the kernel's table; the identity is one multiply by its
-//! gain. Products and sums are those of the reference in the same `i32`
-//! arithmetic, so the results are identical.
+//! matrix product on `V::LANES` lines at once. DCT axes at eight points and
+//! above use the shared butterfly. At sixteen and thirty-two points NEON
+//! uses lane multiply-accumulates for the AVM ADST matrices. Like the AV1
+//! and VP9 forward family, the driver transposes register tiles between
+//! passes when both directions mix samples.
+//! Large NEON horizontal identity applies its gain directly in raster order. All
+//! products and sums use the reference's exact `i32` arithmetic.
 //!
 //! The functions are `unsafe` only because `V`'s instructions need its ISA
 //! (see the `simd` module docs).
@@ -15,7 +17,9 @@
 use core::mem::MaybeUninit;
 
 use super::Av2TxSize;
-use super::typed::{self, Av2TxType, Matrix};
+use super::generic::Av2Basis;
+use super::typed::{self, Av2Kernel, Av2TxType, Matrix};
+use crate::codec_txfm::butterfly::{dot, forward_dct, inverse_dct};
 use crate::codec_txfm::generic::{as_uninit, written};
 use crate::simd::I32Lanes;
 use crate::txfm::generic::{store_pass, store_pass_sat16};
@@ -41,18 +45,36 @@ pub(crate) struct Av2TypedFns {
     pub inverse: [Av2InverseTypedFn; TYPED_SIZES],
 }
 
+const fn use_large_neon<const N: usize>() -> bool {
+    cfg!(target_arch = "aarch64") && N >= 16
+}
+
 /// `y[k] = Σ_j M[k][j] · x[j]` for every `k` (identity: `gain · x[k]`).
 #[inline(always)]
-fn forward_1d<V: I32Lanes, const N: usize>(matrix: Matrix, x: &[V; N], y: &mut [V; N]) {
+fn forward_1d<V: I32Lanes, const N: usize>(
+    kernel: Av2Kernel,
+    matrix: Matrix,
+    x: &[V; N],
+    y: &mut [V; N],
+) {
+    if N >= 8 && kernel == Av2Kernel::Dct {
+        // SAFETY: the dispatcher enabled this backend, and this line holds N vectors.
+        unsafe { run_dct_line::<V, N, false>(x, y) };
+        return;
+    }
     match matrix {
         Matrix::Dense(m) => {
             let m: &[[i32; N]; N] = m.as_chunks().0.try_into().expect("N-point kernel");
             for (out, row) in y.iter_mut().zip(m) {
-                let mut acc = x[0].mul_scalar(row[0]);
-                for j in 1..N {
-                    acc = acc.add(x[j].mul_scalar(row[j]));
+                if use_large_neon::<N>() {
+                    *out = dot(x, row);
+                } else {
+                    let mut acc = x[0].mul_scalar(row[0]);
+                    for j in 1..N {
+                        acc = acc.add(x[j].mul_scalar(row[j]));
+                    }
+                    *out = acc;
                 }
-                *out = acc;
             }
         }
         Matrix::Gain(gain) => {
@@ -63,9 +85,64 @@ fn forward_1d<V: I32Lanes, const N: usize>(matrix: Matrix, x: &[V; N], y: &mut [
     }
 }
 
+/// Use the shared DCT basis for each DCT axis of a mixed transform.
+#[inline(always)]
+unsafe fn run_dct_line<V: I32Lanes, const N: usize, const INVERSE: bool>(
+    x: &[V; N],
+    y: &mut [V; N],
+) {
+    // SAFETY: the lane type comes from an ISA-specific table. On x86
+    // sixteen lanes are installed only on Ice Lake.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        if V::LANES == 16 {
+            dct_line_icl::<V, N, INVERSE>(x, y);
+            return;
+        }
+        dct_line::<V, N, INVERSE>(x, y);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+#[inline(never)]
+unsafe fn dct_line_icl<V: I32Lanes, const N: usize, const INVERSE: bool>(
+    x: &[V; N],
+    y: &mut [V; N],
+) {
+    dct::<V, N, INVERSE>(x, y);
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "aarch64", target_feature(enable = "neon"))]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+unsafe fn dct_line<V: I32Lanes, const N: usize, const INVERSE: bool>(x: &[V; N], y: &mut [V; N]) {
+    dct::<V, N, INVERSE>(x, y);
+}
+
+#[inline(always)]
+fn dct<V: I32Lanes, const N: usize, const INVERSE: bool>(x: &[V; N], y: &mut [V; N]) {
+    if INVERSE {
+        inverse_dct::<Av2Basis, V, N>(x, N, y);
+    } else {
+        forward_dct::<Av2Basis, V, N>(x, y, N);
+    }
+}
+
 /// `y[j] = Σ_k M[k][j] · c[k]` for every `j` (identity: `gain · c[j]`).
 #[inline(always)]
-fn inverse_1d<V: I32Lanes, const N: usize>(matrix: Matrix, c: &[V; N], y: &mut [V; N]) {
+fn inverse_1d<V: I32Lanes, const N: usize>(
+    kernel: Av2Kernel,
+    matrix: Matrix,
+    c: &[V; N],
+    y: &mut [V; N],
+) {
+    if N >= 8 && kernel == Av2Kernel::Dct {
+        // SAFETY: the dispatcher enabled this backend and both lines contain N vectors.
+        unsafe { run_dct_line::<V, N, true>(c, y) };
+        return;
+    }
     match matrix {
         Matrix::Dense(m) => {
             let m: &[[i32; N]; N] = m.as_chunks().0.try_into().expect("N-point kernel");
@@ -103,6 +180,10 @@ pub(crate) unsafe fn forward<V: I32Lanes, const N: usize>(
         Matrix::of(tx_type.vertical, size),
         Matrix::of(tx_type.horizontal, size),
     );
+    let horizontal_gain = match horizontal {
+        Matrix::Gain(gain) if use_large_neon::<N>() => Some(gain),
+        _ => None,
+    };
     let (first, second) = size.forward_shifts();
     let lanes = V::LANES;
     let mut x = [V::splat(0); N];
@@ -113,20 +194,34 @@ pub(crate) unsafe fn forward<V: I32Lanes, const N: usize>(
         for (r, lane) in x.iter_mut().enumerate() {
             *lane = V::load_i16(&residual[r * stride + x0..]);
         }
-        forward_1d(vertical, &x, &mut y);
+        forward_1d(tx_type.vertical, vertical, &x, &mut y);
+        if let Some(gain) = horizontal_gain {
+            for (row, &value) in y.iter().enumerate() {
+                value
+                    .round_shift(first)
+                    .mul_scalar(gain)
+                    .round_shift(second)
+                    .store(&mut out[row * N + x0..]);
+            }
+            continue;
+        }
         for lane in &mut y {
             *lane = lane.round_shift(first);
         }
         store_pass::<V>(&y, x0, N, &mut g);
     }
-    // SAFETY: rows x0..x0 + LANES of `g` were written for every x0.
+    if horizontal_gain.is_some() {
+        return;
+    }
+    // SAFETY: with a mixing horizontal transform, every column tile wrote
+    // its entries to g; identity returned after writing directly to out.
     let g = unsafe { written(&g, N * N) };
     let out = as_uninit(&mut out[..N * N]);
     for v0 in (0..N).step_by(lanes) {
         for (column, lane) in x.iter_mut().enumerate() {
             *lane = V::load(&g[column * N + v0..]);
         }
-        forward_1d(horizontal, &x, &mut y);
+        forward_1d(tx_type.horizontal, horizontal, &x, &mut y);
         for lane in &mut y {
             *lane = lane.round_shift(second);
         }
@@ -173,7 +268,7 @@ pub(crate) unsafe fn inverse<V: I32Lanes, const N: usize>(
         for (k, lane) in x.iter_mut().enumerate() {
             *lane = V::load_i16(&t[k * N + r0..]);
         }
-        inverse_1d(horizontal, &x, &mut y);
+        inverse_1d(tx_type.horizontal, horizontal, &x, &mut y);
         for lane in &mut y {
             *lane = lane.round_shift(first);
         }
@@ -186,7 +281,7 @@ pub(crate) unsafe fn inverse<V: I32Lanes, const N: usize>(
         for (r, lane) in x.iter_mut().enumerate() {
             *lane = V::load_i16(&m[r * N + x0..]);
         }
-        inverse_1d(vertical, &x, &mut y);
+        inverse_1d(tx_type.vertical, vertical, &x, &mut y);
         for (r, lane) in y.iter().enumerate() {
             lane.round_shift(second)
                 .max(low)

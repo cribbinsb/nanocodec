@@ -44,6 +44,7 @@ use crate::delta_q::SuperblockQindex;
 use crate::entropy::{SymbolRun, Writer};
 use crate::partition::SavedPartitions;
 use nc_common::{Picture, PlaneIndex};
+use nc_encoder::trial_pixels::TrialPixels;
 
 /// A square node: top-left luma sample and side.
 type Node = ((usize, usize), usize);
@@ -52,7 +53,7 @@ type Node = ((usize, usize), usize);
 #[derive(Debug, Default)]
 struct Snapshot {
     node: Option<Node>,
-    planes: [Vec<u8>; 3],
+    pixels: TrialPixels,
     square: SavedSquare,
     partitions: SavedPartitions,
     superblock_qindex: SuperblockQindex,
@@ -87,6 +88,9 @@ struct NodeTrial {
     /// The models before the trial, then the first candidate's models
     /// after swapping the original models back for the second candidate.
     other_cdfs: Option<Box<TileCdfs>>,
+    /// Whether the trial was undone once: the swap restores the starting
+    /// models only at the first undo (module docs), so a second is refused.
+    undone: bool,
 }
 
 /// The open node trials, innermost last.
@@ -129,15 +133,10 @@ fn start_mark(writer: &mut Writer) -> usize {
 impl BlockCoder {
     /// Note the coded state of `node` in `snapshot` (the marks aside).
     fn save_node(&self, node: Node, recon: &Picture, snapshot: &mut Snapshot, edge_mark: usize) {
-        for (plane, saved) in PlaneIndex::ALL.into_iter().zip(&mut snapshot.planes) {
-            let (x, y, n) = plane_square(plane, node);
-            let view = recon.plane(plane).view();
-            saved.clear();
-            for row in 0..n {
-                saved.extend_from_slice(&view.row(y + row)[x..x + n]);
-            }
-        }
         let ((x, y), size) = node;
+        snapshot
+            .pixels
+            .save(&self.quantizer.dsp, recon, (x, y, size, size));
         self.state
             .save_square((x, y), size, edge_mark, &mut snapshot.square);
         self.partitions
@@ -150,15 +149,10 @@ impl BlockCoder {
 
     /// Put back the coded state `snapshot` noted.
     fn restore_node(&mut self, recon: &mut Picture, snapshot: &Snapshot) {
-        let node = snapshot.node();
-        for (plane, saved) in PlaneIndex::ALL.into_iter().zip(&snapshot.planes) {
-            let (x, y, n) = plane_square(plane, node);
-            let mut view = recon.plane_mut(plane).view_mut();
-            for (row, samples) in saved.chunks_exact(n).enumerate() {
-                view.row_mut(y + row)[x..x + n].copy_from_slice(samples);
-            }
-        }
-        let ((x, y), size) = node;
+        let ((x, y), size) = snapshot.node();
+        snapshot
+            .pixels
+            .restore(&self.quantizer.dsp, recon, (x, y, size, size));
         self.state.restore_square((x, y), size, &snapshot.square);
         self.partitions
             .restore_square((x, y), size, &snapshot.partitions);
@@ -184,6 +178,7 @@ impl BlockCoder {
         let mut trials = std::mem::take(&mut self.node_trials);
         let trial = trials.push();
         trial.other_cdfs.clone_from(self.writer.models_box());
+        trial.undone = false;
         let before = &mut trial.before;
         let edge_mark = self.state.edges.mark();
         self.save_node(node, recon, before, edge_mark);
@@ -208,6 +203,27 @@ impl BlockCoder {
     /// `CodecBackend::node_trial_cost`: the price of the innermost trial's
     /// node as coded since it began.
     pub fn node_trial_cost(&mut self, source: &Picture, recon: &Picture) -> f32 {
+        let (distortion, bits, lambda) = self.node_trial_terms(source, recon);
+        (distortion + lambda * bits) as f32
+    }
+
+    /// `CodecBackend::node_trial_parts` (the cost is summed in f64 and
+    /// rounded once, so its parts are rounded separately here).
+    pub fn node_trial_parts(
+        &mut self,
+        source: &Picture,
+        recon: &Picture,
+    ) -> nc_encoder::NodeTrialParts {
+        let (distortion, bits, lambda) = self.node_trial_terms(source, recon);
+        nc_encoder::NodeTrialParts {
+            distortion: distortion as f32,
+            bits: bits as f32,
+            lambda: lambda as f32,
+        }
+    }
+
+    /// The innermost trial's weighted distortion, bits and λ.
+    fn node_trial_terms(&mut self, source: &Picture, recon: &Picture) -> (f64, f64, f64) {
         let before = &self.node_trials.innermost().before;
         let (node, mark) = (before.node(), before.mark);
         let [luma, cb, cr] = PlaneIndex::ALL.map(|plane| {
@@ -219,7 +235,11 @@ impl BlockCoder {
             ) as f64
         });
         let bits = f64::from(self.writer.bits_since(mark));
-        (luma + self.chroma_weight * (cb + cr) + self.lambda_at(self.qindex) * bits) as f32
+        (
+            luma + self.chroma_weight * (cb + cr),
+            bits,
+            self.lambda_at(self.qindex),
+        )
     }
 
     /// `CodecBackend::undo_node_trial`: put the innermost trial's state
@@ -227,6 +247,10 @@ impl BlockCoder {
     pub fn undo_node_trial(&mut self, recon: &mut Picture) {
         let mut trials = std::mem::take(&mut self.node_trials);
         let trial = trials.innermost();
+        debug_assert!(
+            !std::mem::replace(&mut trial.undone, true),
+            "one undo per AV2 node trial: a second would restore the first candidate's CDFs"
+        );
         std::mem::swap(self.writer.models_box(), &mut trial.other_cdfs);
         self.restore_node(recon, &trial.before);
         self.node_trials = trials;

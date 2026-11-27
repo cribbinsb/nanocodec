@@ -1,0 +1,58 @@
+{
+ "x264_cabac_8x8_jvtcqm_wp": {
+  "bytes": 10368000,
+  "error": "",
+  "md5": "0ad68ffab5d6435cdb37edd9ab3fb933",
+  "seconds": 0.1,
+  "status": "pass"
+ },
+ "x264_cabac_constrained_intra": {
+  "bytes": 10368000,
+  "error": "",
+  "md5": "560381f2fd9123a67ddcf775052aa894",
+  "seconds": 0.09,
+  "status": "pass"
+ },
+ "x264_cabac_crop_l41_vui": {
+  "bytes": 92772720,
+  "error": "",
+  "md5": "fed86b415a8aace26d05d08eca04abb1",
+  "seconds": 0.61,
+  "status": "pass"
+ },
+ "x264_cabac_mono": {
+  "bytes": 10368000,
+  "error": "",
+  "md5": "bc96946c5073ef73d397a544f92027c8",
+  "seconds": 0.09,
+  "status": "pass"
+ },
+ "x264_cavlc_8x8_customcqm": {
+  "bytes": 10368000,
+  "error": "",
+  "md5": "d08980fec05a5f5209da3a31008beedc",
+  "seconds": 0.09,
+  "status": "pass"
+ },
+ "x264_cavlc_constrained_intra": {
+  "bytes": 10368000,
+  "error": "",
+  "md5": "ca3cae0700f62df825577683fecbd413",
+  "seconds": 0.09,
+  "status": "pass"
+ },
+ "x264_cavlc_crop_l41": {
+  "bytes": 92772720,
+  "error": "",
+  "md5": "41d1064c6a75c7f34d56e29d04968eb4",
+  "seconds": 0.6,
+  "status": "pass"
+ },
+ "x264_cavlc_mono_customcqm": {
+  "bytes": 10368000,
+  "error": "",
+  "md5": "af0330098640592fb309f66a958b5fa6",
+  "seconds": 0.09,
+  "status": "pass"
+ }
+}

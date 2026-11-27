@@ -6,8 +6,9 @@ encoder and decoder share prediction code, so a bug on a rarely chosen path
 (e.g. AV1's MV-reference scan next to 8x8 inter blocks) agrees with itself
 and passes our own checks. This test encodes small clips with
 `debug.random_decisions=<seed>` (random partitions down to the minimum
-block, intra/inter mix, cheap/random/far/sub-sample vectors, block QP
-offsets) combined with the real-use features of nceval.stress_matrix
+block, intra/inter mix, cheap/random/far/sub-sample vectors, vectors as far
+as the picture's size on either side (the 1884-wide strip passes the
+±2048-sample difference AV1 and VP9 can code), block QP offsets) combined with the real-use features of nceval.stress_matrix
 (temporal layers, LTR with a reported loss, intra refresh, CBR, AV1 loop
 filter), and requires every stream to decode bit-exactly, by per-frame
 hash, with both standard decoders and our own decoder, matching the

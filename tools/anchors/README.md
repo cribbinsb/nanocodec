@@ -23,7 +23,10 @@ Pinned builds of the external tools used by the evaluation suite
 ## Where
 
 `$HOME/nanocodec-data/anchors/<platform>/` with platform `x86_64` (PC) or
-`aarch64` (Jetson):
+`aarch64` (Jetson). The timed reference encoders are a second build,
+`build_anchors.sh --opt` (LTO and PGO where each project offers them), in
+`anchors/x86_64-opt` and `anchors/aarch64-graviton-opt`; their exact flags are in
+`build-flags.json` here (docs/PROCEDURES.md "Reference builds"):
 
 ```
 src/<tool>-<ref>/      pristine shallow git checkouts

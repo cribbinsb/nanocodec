@@ -34,8 +34,10 @@ not lose it; files move as tar streams over SSH.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import fcntl
+import itertools
 import json
 import os
 import re
@@ -47,6 +49,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Callable
 
 WORK_DIR = Path.home() / "nanocodec-data/work/aws"
 LEDGER = WORK_DIR / "ledger.md"
@@ -60,6 +63,8 @@ SSH_USER = "ubuntu"
 #: Max spot price we bid, relative to the current lowest AZ price: high enough
 #: not to be outbid within a session, low enough to bound the cost.
 MAX_PRICE_FACTOR = 1.5
+#: A zone priced above this share of the session's bid is tried after the cheaper ones.
+NEAR_BID_SHARE = 0.8
 #: The AWS Pricing API's endpoint region (it serves every region's prices).
 PRICING_REGION = "us-east-1"
 #: The account's spot quota is full (EC2 error code): instances still shutting down count.
@@ -83,10 +88,11 @@ BUILD_BOX_REGION = "eu-north-1"
 #: home region is full launches in the next of these that has room instead of waiting
 #: (coordinator, 2026-11-21); it waits only when every one is full.
 SPILL_REGIONS = {"eu-north-1": ("eu-west-1", "eu-central-1")}
+#: Set to 1 to let sessions spill when the home region is full (a result needed now).
+SPILL_ENV = "NC_AWS_SPILL"
 #: How often a waiting session re-reads the usage, and how long it waits in all before
 #: it fails loudly (no silent fallback).
 QUOTA_POLL_S = 30
-QUOTA_QUEUE_MINUTES = 90
 #: One launch at a time from this machine per region: a waiting session holds its
 #: region's lock from its check until its instance is running, so two cannot both count
 #: the same free room. Per region because the quota is (2026-11-21: a c6g.large in
@@ -105,13 +111,13 @@ def launch_lock_path(region: str) -> Path:
 #: the next type, is tried.
 NO_CAPACITY = ("InsufficientInstanceCapacity", "SpotMaxPriceTooLow", "Unsupported",
                "InsufficientCapacity")
-#: Large x86 machines for throughput jobs (encoding, scoring: any many-core x86 does), in
-#: the order a session falls back through them when the one asked for has no spot
-#: capacity in any zone or the quota refuses it (2026-11-20: no c7a.metal-48xl or
-#: c7a.48xlarge in any eu-north-1 zone for two hours; a c7a.24xlarge launched at once).
-#: Same Zen 4 first, the smaller one before the other vendors' (same AVX-512 tier).
-THROUGHPUT_X86_TYPES = ("c7a.metal-48xl", "c7a.48xlarge", "c7a.24xlarge", "c7i.48xlarge",
-                        "m7a.48xlarge")
+#: Large x86 machines for throughput jobs (packed encodes, CPU scoring), in the order a
+#: session falls back through them when the one asked for has no spot capacity in any
+#: zone or the quota refuses it (docs/aws-cost-guide.md, measured 2026-11-24 in
+#: eu-north-1 spot: c7i.24xlarge 165k packed encodes and 13.0k scored points per dollar,
+#: c6i.24xlarge 179-216k and 11.7-14.1k by zone price). No c7a (owner: its AVX-512 is
+#: double-pumped) and no 48xlarge or m-family size: 1.6-2.3x the price per vCPU that day.
+THROUGHPUT_X86_TYPES = ("c7i.24xlarge", "c6i.24xlarge")
 #: Running costs beside the instance (eu-north-1 list prices, USD).
 GP3_USD_PER_GB_MONTH = 0.0836
 PUBLIC_IPV4_USD_PER_HOUR = 0.005
@@ -120,6 +126,17 @@ EGRESS_USD_PER_GB = 0.09
 HOURS_PER_MONTH = 730
 #: How often a detached remote job is polled, and SSH connection settings.
 POLL_SECONDS = 20
+#: How often `Session.pulling` brings a running job's finished files back.
+PULL_SECONDS = 60
+#: How often `Session.pulling` looks for the spot interruption notice (AWS gives two
+#: minutes): on a notice it pulls at once, so a reclaim loses no finished file.
+NOTICE_POLL_SECONDS = 15
+#: The box's own view of a pending spot interruption (IMDSv2; empty when none is set).
+SPOT_NOTICE_COMMAND = (
+    "t=$(curl -s -m 2 -X PUT http://169.254.169.254/latest/api/token "
+    "-H 'X-aws-ec2-metadata-token-ttl-seconds: 60') && "
+    "curl -s -f -m 2 -H \"X-aws-ec2-metadata-token: $t\" "
+    "http://169.254.169.254/latest/meta-data/spot/instance-action || true")
 #: A remote job that prints nothing new this long is taken as stuck (fail fast:
 #: the instance's hard lifetime is only the last-resort net).
 STALL_MINUTES = 5
@@ -131,6 +148,8 @@ SSH_READY_TIMEOUT_SECONDS = 15 * 60
 SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30",
                "-o", "ServerAliveCountMax=6")
 PUBLIC_IP_URL = "https://checkip.amazonaws.com"
+#: Seconds between checks that this host's public address may still reach a box.
+ACCESS_RECHECK_S = 60.0
 
 
 @dataclass
@@ -153,8 +172,36 @@ class SessionSpec:
     #: Types tried in order after `instance_type` (no capacity, quota full), each within
     #: `budget_usd`. Empty for timing: there the type is what is measured.
     fallback_types: tuple[str, ...] = ()
-    #: Whether a spot session may launch in SPILL_REGIONS when its region is full.
-    spill: bool = True
+    #: Whether a spot session may launch in SPILL_REGIONS when its region is full. Off
+    #: unless the caller asks or `NC_AWS_SPILL=1` says a result is needed now: spill boxes
+    #: cost 2.8-3.6x home (docs/aws-cost-guide.md rule 3), and on 2026-11-24 a quick
+    #: screen started a $1.67/h box in eu-central-1 when eu-north-1 was briefly full.
+    spill: bool = field(default_factory=lambda: os.environ.get(SPILL_ENV) == "1")
+    #: At most this many vCPU of live instances with this session's purpose, in its region
+    #: (None: no cap beyond the quota).
+    purpose_vcpu_cap: int | None = None
+    #: A spot bid of at least this many USD/h whatever the region's cheapest zone (None: the
+    #: cheapest zone x MAX_PRICE_FACTOR only); the benchmark's metal machines bid it so a
+    #: scarce type is taken in any zone up to it (owner 2026-11-26: "of course we will pay more").
+    spot_cap_usd: float | None = None
+    #: The purpose whose instances (it and its `-*` plans) count against that cap; None: this
+    #: session's own. A benchmark plan (bench-history) shares the benchmark's one cap with
+    #: the other plans running beside it (bench-remeasure).
+    cap_purpose: str | None = None
+    #: The zone tried first (a fleet spreads its boxes over zones: BP-3.11); the others
+    #: follow, cheapest first.
+    preferred_zone: str | None = None
+    #: Zones never used (a fleet's measured reclaim rate there was too high).
+    excluded_zones: tuple[str, ...] = ()
+    #: How long a spot launch waits for quota room before it fails loudly (NoCapacity).
+    #: A fleet's small sessions (heldout_fleet.py) wait about a minute and are relaunched
+    #: by their driver, never left waiting silently (2026-11-21: sessions sat
+    #: "WAITING for spot quota" in eu-central-1 until noticed by hand).
+    launch_wait_minutes: float = 90.0
+    #: Launch from our own image with these tags (newest available, owned by this account)
+    #: when the region has one; else the stock Ubuntu image (measure_image: the baked
+    #: measurement image).
+    image_tags: dict[str, str] = field(default_factory=dict)
 
 
 def fallbacks_after(instance_type: str, ladder: tuple[str, ...] = THROUGHPUT_X86_TYPES
@@ -204,16 +251,23 @@ def public_ip() -> str:
 class Session:
     """One spot instance and its key pair and security group (see the module doc)."""
 
-    def __init__(self, spec: SessionSpec):
+    def __init__(self, spec: SessionSpec, stop: threading.Event | None = None,
+                 clients: "SharedClients | None" = None):
+        """A driver that runs many sessions as threads of one process passes `stop` (only
+        its main thread gets signals; a set event fails the session's waits, so its cleanup
+        runs) and `clients` (one set of boto3 clients for all its sessions)."""
         import boto3  # here: the instance side of a session imports `say` without boto3
 
-        self.spec = spec
-        self._client = lambda service, region: boto3.client(service, region_name=region)
+        self.spec, self.stop = spec, stop
+        self._client = clients or (lambda service, region: boto3.client(service,
+                                                                        region_name=region))
         self.ec2 = self._client("ec2", spec.region)
         self.ssm = self._client("ssm", spec.region)
         # The pid too: two sessions of one purpose started in the same second (the
         # held-out chart's score parts, 2026-11-15) collided on the key pair name.
-        self.name = f"nanocodec-{spec.purpose}-{utc_now():%Y%m%d-%H%M%S}-{os.getpid()}"
+        # and a per-process count: threads of one driver start sessions in the same second
+        self.name = (f"nanocodec-{spec.purpose}-{utc_now():%Y%m%d-%H%M%S}-{os.getpid()}"
+                     f"-{next(_SESSION_COUNT)}")
         self.key_path = WORK_DIR / f"{self.name}.pem"
         self.known_hosts = WORK_DIR / f"{self.name}.known_hosts"
         self.key_name: str | None = None
@@ -232,7 +286,8 @@ class Session:
 
     def __enter__(self) -> "Session":
         self._previous_handlers = {sig: signal.signal(sig, _raise_exit)
-                                   for sig in (signal.SIGTERM, signal.SIGHUP)}
+                                   for sig in (signal.SIGTERM, signal.SIGHUP)} \
+            if _main_thread() else {}
         try:
             candidates = self.candidates() if self.spec.on_demand else self.claim_room()
             self.create_access()
@@ -249,13 +304,15 @@ class Session:
         return self
 
     def __exit__(self, *exc) -> None:
-        # A second Ctrl-C must not interrupt the cleanup.
-        previous_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        # A second Ctrl-C must not interrupt the cleanup (a driver thread's main thread
+        # holds its signals).
+        previous_int = signal.signal(signal.SIGINT, signal.SIG_IGN) if _main_thread() else None
         release_launch_lock(getattr(self, "_launch_lock", None))
         try:
             self.cleanup()
         finally:
-            signal.signal(signal.SIGINT, previous_int)
+            if previous_int is not None:
+                signal.signal(signal.SIGINT, previous_int)
             for sig, handler in getattr(self, "_previous_handlers", {}).items():
                 signal.signal(sig, handler)
 
@@ -290,13 +347,54 @@ class Session:
             Path(record["known_hosts"])
         session.launched = datetime.datetime.fromisoformat(record["launched"].replace(
             "Z", "+00:00")) if record.get("launched") else None
+        session.allow_this_host()
         return session
+
+    def recheck_access(self) -> None:
+        """`allow_this_host` at most every ACCESS_RECHECK_S while the box is used: the
+        address changed twice within half an hour on 2026-11-24 (after the reboot, and
+        again mid-job), so a check at attach alone left a running job polling a box that
+        no longer let it in. A failed check is logged; the SSH call then reports itself."""
+        now = time.monotonic()
+        if now - getattr(self, "_access_checked_at", -ACCESS_RECHECK_S) < ACCESS_RECHECK_S:
+            return
+        self._access_checked_at = now
+        try:
+            self.allow_this_host()
+        except Exception as error:  # noqa: BLE001 - never stop a job over the check itself
+            say(f"security group {self.group_id}: address check failed: {error}")
+
+    def allow_this_host(self) -> None:
+        """Let this host's current public address reach the box over SSH. A box outlives
+        its process (`detach`), and this host's address can change meanwhile (a reboot,
+        a new DHCP lease): 2026-11-24, after a reboot moved the PC from 51.179.192.42 to
+        51.179.200.228, every job on the warm box and the build box timed out on SSH."""
+        if not self.group_id:
+            return
+        source = f"{public_ip()}/32"
+        groups = self.ec2.describe_security_groups(GroupIds=[self.group_id])["SecurityGroups"]
+        allowed = {r["CidrIp"] for g in groups for p in g.get("IpPermissions", [])
+                   for r in p.get("IpRanges", [])}
+        if source in allowed:
+            return
+        self.ec2.authorize_security_group_ingress(
+            GroupId=self.group_id, IpPermissions=[{
+                "IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+                "IpRanges": [{"CidrIp": source, "Description": "this host"}]}])
+        say(f"security group {self.group_id}: SSH from this host's new address {source}")
 
     def tags(self, resource: str) -> list[dict]:
         tags = {"Project": PROJECT_TAG, "Owner": OWNER_TAG, "Purpose": self.spec.purpose,
                 "ExpectedEnd": iso(self.expected_end), "Name": self.name, **self.spec.tags}
         return [{"ResourceType": resource,
                  "Tags": [{"Key": k, "Value": v} for k, v in tags.items()]}]
+
+    def pause(self, seconds: float, waiting_for: str) -> None:
+        """Sleep while waiting; a driver's stop ends the wait (and the launch) at once."""
+        if self.stop is None:
+            time.sleep(seconds)
+        elif self.stop.wait(seconds):
+            raise NoCapacity(f"stopped by the driver while waiting for {waiting_for}")
 
     def candidates(self) -> list[Candidate]:
         """The type asked for, then its fallbacks, each priced; a type without a price
@@ -311,6 +409,8 @@ class Session:
                 skipped.append(str(error))
                 continue
             max_price = min(zones.values()) * (1 if self.spec.on_demand else MAX_PRICE_FACTOR)
+            if self.spec.spot_cap_usd and not self.spec.on_demand:
+                max_price = self.spec.spot_cap_usd  # a flat bid: any zone up to the cap
             cap = self.cost(max_price, self.spec.lifetime_minutes / 60)
             market = "on demand" if self.spec.on_demand else "spot"
             say(f"{instance_type} in {self.spec.region}: {market} from "
@@ -384,11 +484,43 @@ class Session:
                 "IpRanges": [{"CidrIp": source, "Description": "this host"}]}])
         say(f"key pair {self.key_name}, security group {self.group_id} (SSH from {source})")
 
+    def follow_host_address(self) -> None:
+        """Let SSH in from this host's current public address when it has changed (an ISP
+        change on 2026-11-24 cut every running session off: the stall watch then stopped 70
+        boxes). A failed poll is the trigger; the old address's rule is left in place."""
+        try:
+            source = f"{public_ip()}/32"
+            rules = self.ec2.describe_security_groups(GroupIds=[self.group_id])[
+                "SecurityGroups"][0]["IpPermissions"]
+            if any(r.get("CidrIp") == source for p in rules for r in p.get("IpRanges", [])):
+                return
+            self.ec2.authorize_security_group_ingress(
+                GroupId=self.group_id, IpPermissions=[{
+                    "IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+                    "IpRanges": [{"CidrIp": source, "Description": "this host (address changed)"}]}])
+            say(f"this host's address changed: SSH now also from {source}")
+        except Exception as e:  # noqa: BLE001  never fatal: the poll retries anyway
+            say(f"could not follow the host address: {e}")
+
     def ami(self) -> tuple[str, str]:
+        baked = self.baked_image()
+        if baked is not None:
+            say(f"image {baked['ImageId']} (baked: {baked.get('Name')})")
+            return baked["ImageId"], baked["RootDeviceName"]
         name = AMI_PARAMETER.format(release=UBUNTU_RELEASE, arch=self.spec.arch)
         image_id = self.ssm.get_parameter(Name=name)["Parameter"]["Value"]
         image = self.ec2.describe_images(ImageIds=[image_id])["Images"][0]
         return image_id, image["RootDeviceName"]
+
+    def baked_image(self) -> dict | None:
+        """The newest available image of ours with `spec.image_tags` in this region."""
+        if not self.spec.image_tags:
+            return None
+        filters = [{"Name": "state", "Values": ["available"]},
+                   {"Name": "tag:Project", "Values": [PROJECT_TAG]},
+                   *[{"Name": f"tag:{k}", "Values": [v]} for k, v in self.spec.image_tags.items()]]
+        images = self.ec2.describe_images(Owners=["self"], Filters=filters)["Images"]
+        return max(images, key=lambda i: i["CreationDate"]) if images else None
 
     def use_region(self, region: str) -> None:
         if region != self.spec.region:
@@ -409,8 +541,17 @@ class Session:
         # 96-vCPU replacement could not start beside measurement boxes at 512/512).
         reserve = BUILD_BOX_VCPUS if self.spec.region == BUILD_BOX_REGION else 0
         free = limit - used - reserve
-        return free, (f"{self.spec.region}: {free} vCPU free of {limit} ({used} in use"
-                      + (f", {reserve} kept for the build box" if reserve else "") + ")")
+        note = (f"{self.spec.region}: {free} vCPU free of {limit} ({used} in use"
+                + (f", {reserve} kept for the build box" if reserve else "") + ")")
+        if self.spec.purpose_vcpu_cap is not None:
+            # a purpose's share of the quota (2026-11-24: the benchmark fleets held 1000 of
+            # 1200 vCPU and starved the dev screens); checked under the launch lock, so this
+            # machine's launches cannot overshoot it together
+            capped = self.spec.cap_purpose or self.spec.purpose
+            mine = purpose_vcpus(self.ec2, capped)
+            free = min(free, self.spec.purpose_vcpu_cap - mine)
+            note += f"; {capped} holds {mine} of its {self.spec.purpose_vcpu_cap} cap"
+        return free, note
 
     def claim_room(self) -> list[Candidate]:
         """The region to launch in and its priced candidates (cheapest per vCPU first),
@@ -418,12 +559,19 @@ class Session:
         whose quota has room for a candidate, the one whose cheapest fitting candidate
         costs least per vCPU (2026-11-21: the first region that fitted was taken, and six
         spilled boxes started at 2.5x eu-north-1's price per vCPU); when none has room,
-        wait and look again, failing loudly after QUOTA_QUEUE_MINUTES."""
+        wait and look again, failing loudly after `spec.launch_wait_minutes` (time spent
+        waiting for this machine's own launch lock does not count). No region with any
+        type within the budget fails at once: waiting cannot fix a price (2026-11-21:
+        $3 sessions waited in eu-central-1, where nothing cost under $3.28)."""
         home, priced = self.spec.region, {}
-        deadline = time.monotonic() + QUOTA_QUEUE_MINUTES * 60
+        # once, at home: the loop moves the session's region as it looks (2026-11-21: a
+        # second pass after waiting for this machine's own launch looked from the last
+        # region looked at, saw only it, and launched there at 2.5x the price per vCPU)
+        regions = self.regions()
+        deadline = time.monotonic() + self.spec.launch_wait_minutes * 60
         while True:
             notes, options, home_busy = [], [], False
-            for region in self.regions():
+            for region in regions:
                 self.use_region(region)
                 if region not in priced:
                     try:
@@ -434,7 +582,7 @@ class Session:
                 if not priced[region]:
                     notes.append(f"{region}: no type within budget")
                     continue
-                handle = try_launch_lock(region)
+                handle = try_launch_lock(region, priced[region][0].instance_type.split(".")[0])
                 if handle is None:
                     notes.append(f"{region}: another launch from this machine")
                     home_busy |= region == home
@@ -449,6 +597,11 @@ class Session:
                 else:
                     release_launch_lock(handle)
                 notes.append(note)
+            if not any(priced.values()):
+                self.use_region(home)
+                raise BudgetExceeded("no type within the session budget "
+                                     f"${self.spec.budget_usd:.2f} in any region: "
+                                     + "; ".join(notes))
             if home_busy and time.monotonic() < deadline:
                 # this machine's other launch holds the home region's lock for seconds:
                 # wait for it rather than spill (2026-11-21: two scoring sessions started
@@ -457,7 +610,8 @@ class Session:
                     release_launch_lock(other)
                 say(f"{home}: waiting for this machine's other launch there "
                     f"({LAUNCH_LOCK_POLL_S} s)")
-                time.sleep(LAUNCH_LOCK_POLL_S)
+                self.pause(LAUNCH_LOCK_POLL_S, "the launch lock")
+                deadline += LAUNCH_LOCK_POLL_S
                 continue
             if options:
                 options.sort(key=lambda option: option[0])
@@ -472,11 +626,11 @@ class Session:
                 return fitting
             self.use_region(home)
             if time.monotonic() > deadline:
-                raise NoCapacity(f"waited {QUOTA_QUEUE_MINUTES} min for spot quota: "
+                raise NoCapacity(f"waited {self.spec.launch_wait_minutes:g} min for spot quota: "
                                  + "; ".join(notes))
             say("WAITING for spot quota in every region: " + "; ".join(notes)
                 + f"; re-checking in {QUOTA_POLL_S} s")
-            time.sleep(QUOTA_POLL_S)
+            self.pause(QUOTA_POLL_S, "spot quota")
 
     def launch(self, candidates: list[Candidate]) -> None:
         """Launch the first candidate type with capacity in any zone. A type without
@@ -484,6 +638,7 @@ class Session:
         only the quota refused, the whole list is tried again after QUOTA_WAIT_S (the
         quota counts instances still shutting down)."""
         image_id, root_device = self.ami()
+        say(f"image {image_id}")  # the machine image, for the report's provenance
         # The hard lifetime comes first: it holds even if this process dies.
         user_data = f"#!/bin/bash\nshutdown -h +{self.spec.lifetime_minutes}\n"
         for attempt in range(QUOTA_RETRIES + 1):
@@ -491,6 +646,10 @@ class Session:
             for index, candidate in enumerate(candidates):
                 outcome = self.try_zones(candidate, image_id, root_device, user_data)
                 if outcome == LAUNCHED:
+                    # the quota now counts the pending instance: the next launch from this
+                    # machine need not wait for this one to run (2026-11-24: 100 fleet slots
+                    # queued for the lock about 15 s each)
+                    release_launch_lock(getattr(self, "_launch_lock", None))
                     if candidate.instance_type != self.spec.instance_type:
                         say(f"fell back from {self.spec.instance_type} to "
                             f"{candidate.instance_type}")
@@ -533,7 +692,13 @@ class Session:
         """Launch `candidate` in its cheapest zone with capacity: LAUNCHED, NO_ROOM (no
         zone had capacity) or QUOTA (the account's spot quota is full)."""
         from botocore.exceptions import ClientError
-        for zone in candidate.zones:  # cheapest first; a zone without capacity is skipped
+        # the preferred zone first, then cheapest first, a zone priced near the bid last (it is
+        # reclaimed as soon as the price passes the bid); a zone without capacity is skipped
+        def order(z: str) -> tuple:
+            near_bid = candidate.zones[z] > NEAR_BID_SHARE * candidate.max_price
+            return (z != self.spec.preferred_zone, near_bid, candidate.zones[z])
+        for zone in sorted((z for z in candidate.zones if z not in self.spec.excluded_zones),
+                           key=order):
             subnets = self.ec2.describe_subnets(Filters=[
                 {"Name": "availability-zone", "Values": [zone]},
                 {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
@@ -659,6 +824,7 @@ class Session:
     # --- remote work -----------------------------------------------------------------
 
     def ssh_base(self) -> list[str]:
+        self.recheck_access()
         return ["ssh", "-i", str(self.key_path), *SSH_OPTIONS,
                 "-o", f"UserKnownHostsFile={self.known_hosts}",
                 "-o", "StrictHostKeyChecking=accept-new", f"{SSH_USER}@{self.host}"]
@@ -722,6 +888,58 @@ class Session:
         self.egress_bytes += moved
         return moved
 
+    @contextlib.contextmanager
+    def pulling(self, remote_dir: str, local_dir: Path, marker: str,
+                on_files: Callable[[list[Path]], None] | None = None,
+                every_s: float = PULL_SECONDS):
+        """While the block runs, what `remote_dir` gained since the last pull comes back
+        every `every_s` (download_new), each batch handed to `on_files` as it lands; one
+        last pull on the way out. Finished work leaves the box as it finishes, so a lost
+        box costs only the minutes since the last pull (2026-11-21: a spot reclaim took a
+        whole 13-minute round, then its "checkpoint download failed" took the rest). A
+        failed pull is logged, never raised: the next one sends its files again, and what
+        came back earlier stays."""
+        lock, stop = threading.Lock(), threading.Event()
+        noticed = False
+
+        def pull(final: bool) -> None:
+            with lock:
+                files: list[Path] = []
+                try:
+                    self.download_new(remote_dir, local_dir, marker, files)
+                except (RuntimeError, OSError) as error:
+                    say(f"pull of {remote_dir} failed{' (the last)' if final else ''}: {error}")
+                if files and on_files:
+                    on_files(files)
+
+        def loop() -> None:
+            nonlocal noticed
+            last = time.monotonic()
+            while not stop.wait(min(NOTICE_POLL_SECONDS, every_s)):
+                if not noticed and self.spot_notice():
+                    noticed = True
+                    say("spot interruption notice: pulling the finished files now")
+                elif time.monotonic() - last < every_s:
+                    continue
+                pull(final=False)
+                last = time.monotonic()
+        puller = threading.Thread(target=loop, daemon=True)
+        puller.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            puller.join()
+            pull(final=True)
+
+    def spot_notice(self) -> bool:
+        """Whether the box has a spot interruption notice (never on demand; a failed
+        look counts as none)."""
+        if self.spec.on_demand:
+            return False
+        probe = self.ssh(SPOT_NOTICE_COMMAND, check=False, quiet=True)
+        return probe.returncode == 0 and "action" in probe.stdout
+
     def run_detached(self, command: str, log: str, timeout_minutes: float,
                      stall_minutes: float = STALL_MINUTES, max_errors: int = 0) -> None:
         """Run `command` on the instance under nohup and wait for it, failing fast.
@@ -730,10 +948,7 @@ class Session:
         Raises (with the log's tail) when the job fails, prints nothing new for
         `stall_minutes`, prints more than `max_errors` lines with ERROR_MARK, or
         runs past `timeout_minutes`."""
-        job = shlex.quote(f"{command}; echo $? > {log}.status")
-        # its own process group (setsid), so a failure stops all of it before any download
-        self.ssh(f"rm -f {log}.status; setsid nohup bash -c {job} > {log} 2>&1 < /dev/null & "
-                 f"echo $! > {log}.pid")
+        self.start_detached(command, log)
         try:
             self._watch(log, timeout_minutes, stall_minutes, max_errors)
         except BaseException:
@@ -741,12 +956,27 @@ class Session:
                      f"kill -KILL -- -$(cat {log}.pid) 2>/dev/null; true", check=False)
             raise
 
+    def start_detached(self, command: str, log: str) -> None:
+        """Start `command` on the instance under nohup; its exit status lands in `log`.status."""
+        # a subshell, so a command that sets -e and fails still reaches the status line
+        # (2026-11-23: a failed build left no status and was waited on until its stall)
+        job = shlex.quote(f"( {command} ); echo $? > {log}.status")
+        # its own process group (setsid), so a failure stops all of it before any download
+        self.ssh(f"rm -f {log}.status; setsid nohup bash -c {job} > {log} 2>&1 < /dev/null & "
+                 f"echo $! > {log}.pid")
+
+    def state(self) -> str:
+        """The instance's state ("gone" once it is no longer listed)."""
+        return (self.describe() or {}).get("State", {}).get("Name", "gone")
+
     def _watch(self, log: str, timeout_minutes: float, stall_minutes: float,
                max_errors: int) -> None:
         deadline = time.monotonic() + timeout_minutes * 60
         shown, errors, last_news = 0, 0, time.monotonic()
         tail: list[str] = []
         while True:
+            if self.stop is not None and self.stop.is_set():
+                raise RemoteFailure("stopped by the driver", tail)
             if time.monotonic() > deadline:
                 raise RemoteFailure(f"no result in {timeout_minutes} min", tail)
             if time.monotonic() - last_news > stall_minutes * 60:
@@ -762,6 +992,7 @@ class Session:
                     # (2026-11-15: 3 min of retries until stopped by hand)
                     reason = instance.get("StateReason", {}).get("Message", "")
                     raise RemoteFailure(f"the instance is {state}: {reason}", tail)
+                self.follow_host_address()
                 say("poll failed (retrying)")
                 continue
             status, _, new = probe.stdout.partition("---\n")
@@ -797,9 +1028,12 @@ def checkpoint_command(remote_dir: str, marker: str) -> str:
             f" | tar --ignore-failed-read -cf - -T - 2>/dev/null && mv {marker}.next {marker}")
 
 
-def try_launch_lock(region: str):
-    """This machine's launch lock of `region` if free now (an open handle), else None."""
-    path = launch_lock_path(region)
+def try_launch_lock(region: str, family: str = ""):
+    """This machine's launch lock of `region` (per instance family when given) if free now (an
+    open handle), else None. Per family, so drivers hunting different chips do not queue behind
+    each other (2026-11-26: 12 hunting runs let c8i try each zone only every ~7 min); the
+    region's spot quota is far above two metal machines, so the race the lock guards is moot."""
+    path = launch_lock_path(f"{region}-{family}" if family else region)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("w")
     if _try_lock(handle):
@@ -844,6 +1078,21 @@ def instance_vcpus(ec2, instance_type: str) -> int:
     return _VCPUS[instance_type]
 
 
+def purpose_vcpus(ec2, purpose: str) -> int:
+    """vCPUs of this project's live instances tagged with `purpose` (every live state)."""
+    used = 0
+    pages = ec2.get_paginator("describe_instances").paginate(Filters=[
+        {"Name": "tag:Purpose", "Values": [purpose, f"{purpose}-*"]},  # and its plans
+        {"Name": "instance-state-name",
+         "Values": ["pending", "running", "stopping", "shutting-down"]}])
+    for page in pages:
+        for reservation in page["Reservations"]:
+            for instance in reservation["Instances"]:
+                cpu = instance.get("CpuOptions") or {}
+                used += cpu.get("CoreCount", 0) * cpu.get("ThreadsPerCore", 1)
+    return used
+
+
 def spot_usage(ec2) -> tuple[int, bool]:
     """(vCPUs the account's standard-family spot instances hold, whether the build box
     is among them): every live state counts, as the quota counts them."""
@@ -871,6 +1120,31 @@ class RemoteFailure(RuntimeError):
         super().__init__(reason + "\n  remote log tail:\n" + "\n".join(f"    {t}" for t in tail))
 
 
+class SharedClients:
+    """boto3 clients shared by the sessions of one process: a client pair costs about 30 MB,
+    and botocore clients are safe to use from many threads once made (making them is not,
+    hence the lock)."""
+
+    def __init__(self) -> None:
+        import boto3
+
+        self._boto, self._lock, self._made = boto3.session.Session(), threading.Lock(), {}
+
+    def __call__(self, service: str, region: str):
+        with self._lock:
+            if (service, region) not in self._made:
+                self._made[service, region] = self._boto.client(service, region_name=region)
+            return self._made[service, region]
+
+
+_SESSION_COUNT = itertools.count()
+
+
+def _main_thread() -> bool:
+    """Signal handlers can be set only from the main thread."""
+    return threading.current_thread() is threading.main_thread()
+
+
 def _raise_exit(signum, _frame) -> None:
     raise SystemExit(f"signal {signum}")
 
@@ -895,3 +1169,72 @@ def _ledger_row_locked(resources: str, event: str, start: str, end: str, cost: s
     total = float(marker.group(1)) + (spent or 0.0)
     body = text[:marker.start()].rstrip("\n")
     LEDGER.write_text(f"{body}\n{row}\n\n**Spent so far: ${total:.2f} of ${marker.group(2)}.**\n")
+
+
+# --- the ledger by purpose (`python3 tools/dev/aws_session.py ledger`) ---------------------
+
+#: A ledger row's cells: logged, resources, type / region, purpose (event), start, end, cost.
+LEDGER_ROW = re.compile(r"^\| (\S+) \| (.*?) \| (.*?) \| (.*?) \| (.*?) \| (.*?) \| (.*?) \|$")
+#: How `ledger --by` groups rows (RCA action R6: spend by purpose for a time window).
+LEDGER_GROUPS = ("purpose", "kind", "type", "region")
+
+
+@dataclass(frozen=True)
+class Charge:
+    """One ledger row that books money: its end, cost and what it was for."""
+    ended: str
+    cost: float
+    purpose: str
+    instance_type: str
+    region: str
+
+    def group(self, by: str) -> str:
+        if by == "kind":  # the purpose's first word: an agent's or a tool's runs together
+            return re.split(r"[-_ ]", self.purpose, maxsplit=1)[0]
+        return {"purpose": self.purpose, "type": self.instance_type,
+                "region": self.region}[by]
+
+
+def ledger_charges(text: str) -> list[Charge]:
+    """The rows that book a cost (a session's end, a box's end, an image removed)."""
+    charges = []
+    for line in text.splitlines():
+        row = LEDGER_ROW.match(line)
+        if row is None or not row.group(7).startswith("$"):
+            continue
+        kind, _, region = row.group(3).partition(" / ")
+        purpose = re.sub(r"\s*\(.*\)$", "", row.group(4))
+        end = row.group(6) if row.group(6) not in ("—", "") else row.group(1)
+        charges.append(Charge(end, float(row.group(7)[1:]), purpose, kind, region))
+    return charges
+
+
+def ledger_summary(charges: list[Charge], since: str, until: str | None, by: str) -> str:
+    """Spend per group for the rows that ended in [since, until), largest first."""
+    totals: dict[str, float] = {}
+    for charge in charges:
+        if charge.ended >= since and (until is None or charge.ended < until):
+            totals[charge.group(by)] = totals.get(charge.group(by), 0.0) + charge.cost
+    lines = [f"spend by {by}, rows ended from {since}" + (f" to {until}" if until else "")]
+    lines += [f"  ${cost:8.2f}  {name}" for name, cost in
+              sorted(totals.items(), key=lambda item: -item[1])]
+    lines.append(f"  ${sum(totals.values()):8.2f}  total")
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="the AWS ledger's spend, grouped")
+    commands = parser.add_subparsers(dest="command", required=True)
+    ledger = commands.add_parser("ledger", help="spend by purpose (or kind, type, region)")
+    ledger.add_argument("--since", required=True,
+                        help="UTC start, e.g. 2026-11-24T06:54 (ISO; compared as text)")
+    ledger.add_argument("--until", help="UTC end (default: now)")
+    ledger.add_argument("--by", choices=LEDGER_GROUPS, default="purpose")
+    args = parser.parse_args(argv)
+    print(ledger_summary(ledger_charges(LEDGER.read_text()), args.since, args.until, args.by))
+
+
+if __name__ == "__main__":
+    import sys
+    main(sys.argv[1:])

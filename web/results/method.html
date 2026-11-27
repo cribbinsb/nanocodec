@@ -8,6 +8,7 @@
   <title>nanocodec method</title>
   <link rel="stylesheet" href="../site-header.css">
   <link rel="stylesheet" href="site.css">
+  <script src="../page-views.js" defer></script>
 </head>
 <body>
 <header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./">Results</a><a href="method.html" aria-current="page">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
@@ -35,15 +36,29 @@
       <li><strong>BD-rate</strong> (Bjøntegaard) on each encoder's achieved-rate curve against the zero line's, for
         the same quality: negative is fewer bits. Curves are interpolated (PCHIP) and only their reliable overlap
         counts; nothing is extrapolated.</li>
-      <li><strong>J</strong> is PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds, averaged over the full curve and its
-        lower-rate half, and over content classes. PSNR-YUV and VMAF v1 alone are shown too; MS-SSIM alone only
-        where the run recorded it. VMAF is libvmaf's v1 model, scored on every frame.</li>
+      <li><strong>J</strong> is PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds, averaged over content classes. In
+        charts rendered before 2026-11-23 (release 0.6.0's) it is also the mean of the full curve and its
+        lower-rate half, so low rates count twice; charts rendered since use the whole overlap and show the BD
+        by rate regime beside it. PSNR-YUV and VMAF v1 alone are shown too; MS-SSIM alone only
+        where the run recorded it. PSNR-YUV weights Y:U:V 6:1:1. VMAF is libvmaf's model <code>vmaf_v1.0.16_3d0h</code> (the model file of Netflix/vmaf <span class="version">v3.2.1</span>), scored on every frame at each clip's own size (no rescaling to 1080p) and averaged
+        over frames. The model is calibrated for a 1080p display, so these values are relative and are not
+        comparable with published 1080p-protocol VMAF. Points scored on our PC use VMAFx, a GPU (CUDA) build of
+        libvmaf; points scored on rented machines use libvmaf <span class="version">3.2.1</span> on the CPU. On 143 stored chart points
+        (240p to 720p, 12 encoders) the two gave identical per-frame VMAF at libvmaf's six printed decimals and
+        identical BD-VMAF on 9 encoder pairs; MS-SSIM agreed within 2.1e-5 per frame
+        (<a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/metric-validation-2026-11-23.md">validation</a>).
+        PSNR is computed per plane and per frame from exact squared-error sums, capped at 60 dB, averaged over
+        frames.</li>
       <li>No subjective test was run. x264 and x265 default to psychovisual tuning these metrics cannot judge,
         so the headline zero line is x264's own metric tuning (<code>--tune zerolatency,psnr</code>), and the
         default-tuned x264 is shown beside it. Our presets were tuned on this metric mix.</li>
-      <li>Our streams are scored on the encoder's reconstruction, the references' on their standard-decoded
-        output. Every build behind these numbers passed the landing conformance check: short streams of every
-        shipped preset decoded bit-exactly by two standard decoders per format and by ours.</li>
+      <li>The reference encoders' points are always scored on a standard decoder's output. Ours scored on rented
+        machines (the held-out and VC-1K charts and, since 2026-11-21, the chart refreshes) are scored on the
+        first standard decoder's output, checked equal to the encoder's reconstruction frame by frame; ours scored
+        on our PC are scored on the encoder's reconstruction, with PSNR from the encoder's own squared-error log
+        (on 65 re-encoded points it matched libvmaf's PSNR within 5e-7 dB per plane per frame). Every build behind
+        these numbers also passed the landing conformance check: short purpose-made streams of every shipped
+        preset decoded bit-exactly by two standard decoders per format and by ours.</li>
     </ul>
     <h2 id="clips">Clips and rates</h2>
     <ul class="clipsets"></ul>
@@ -54,14 +69,26 @@
       (<a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/rate-control-audit-2026-11-13.md#5-rate-ladder-the-low-rungs-favour-everyone-against-x264-higher-rates-shrink-every-gap">rate-control audit</a>).</p>
     <h2 id="buffer">Rate control and the buffer</h2>
     <p class="buffer-text"></p>
+    <p>Each encoder's buffer use on every chart, measured at the target and at its own rate, and the buffer we keep:
+      <a href="buffer.html">Rate control and the buffer</a>.</p>
     <h2 id="settings">Settings</h2>
     <ul>
-      <li><strong>Low delay, real time:</strong> every encoder in its own real-time rate control at the same
+      <li><strong>Low delay:</strong> every encoder in its own real-time rate control at the same
         targets, forward prediction only (no B-frames, no lookahead), one key frame, one thread, <span class="buffer"></span>.</li>
       <li><strong>openh264</strong> runs through our harness (<code>tools/openh264-harness</code>, a small C
         program over its API, as its own command-line tool cannot set every parameter): Constrained Baseline with
         CAVLC, medium complexity, camera real-time usage, adaptive quantization off, scene-change detection off,
-        frame skipping off, one thread.</li>
+        frame skipping off, one thread. With CABAC on it needed fewer bits on every clip of a five-clip probe; a CABAC, high-complexity openh264 row
+        is not yet measured on these charts.</li>
+      <li><strong>libvpx and libaom</strong> run real-time CBR without cyclic-refresh AQ (their default,
+        <code>--aq-mode=0</code>); cyclic refresh, their usual real-time setting, needed fewer bits on average in a
+        five-clip probe, with mixed signs by clip
+        (<a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/analysis/results-audit-2026-11-23.md#3-reference-settings">audit</a>).</li>
+      <li><strong>x265</strong> runs at its default AVX2 dispatch (AVX-512 off by its own default):
+        <code>--asm avx512</code> changes its stream on AVX-512 machines, so the same command would code different
+        streams on the quality and timing machines.</li>
+      <li><strong>Builds:</strong> ours is a PGO, LTO build for <code>x86-64-v3</code>; the references are their
+        projects' stock release builds.</li>
       <li><strong>8-bit 4:2:0 only.</strong> No 10-bit, no other chroma formats.</li>
       <li><strong>Ours do not code repeated frames</strong> that would not change the picture (holds); the
         references code every frame. Holds are rare on these clips.</li>
@@ -73,8 +100,10 @@
     <ul class="machines"></ul>
     <p>Speed is measured at a fixed quantizer near the middle rung on three development clips, which a CBR
       encode costs our encoders slightly more than. The x86 machine is a rented AMD EPYC 9R45 (Zen 5; its SIMD extensions are listed under Machines),
-      timing one encode pair at a time on a core of its own (its repeatability is in the
-      <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/README.md">results notes</a>).</p>
+      timing one encode pair at a time on a core of its own. Our times there are scaled per clip to an earlier
+      session's x264 medium time (the raw times are kept in the timing file), and the references keep their own
+      earlier sessions' times, so points from different sessions share one axis. The timing clips are not the
+      clips the quality is measured on.</p>
     <h2 id="versions">Builds and versions</h2>
     <div class="versions"></div>
     <h2 id="commands">Command lines</h2>

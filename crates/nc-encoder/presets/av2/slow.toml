@@ -12,6 +12,19 @@
 planner.rd_split = 1
 planner.rd_split_context = 1
 
-# Layer propagation (the codec Default's flat-stream form, docs/handoff/temporal-lambda.md)
-# stays off here: the quick gain was below the probe bar (L1 -0.17 %, probe -0.11 %); not queued.
-layers.propagation = 0
+# Inherits layers.propagation = 1 (flat-stream form) from AV2 Default
+# (draw 2026-11-27, L1 n=24 J -1.14% [-2.47, +0.06], formal L3 n=98 J -0.28%
+# [-0.65, +0.08], unweighted -0.33%, 46/98 worse, 0 guards, periodic-key pulse
+# 2 s -0.02 dB / 10 s -0.05 dB; ~0% extra CPU).
+# Slow takes the Default's key search and key trellis (2026-11-22, see the AV2
+# backend's DEFAULT_PARAMS).
+# The key-frame searches medium had (2026-11-22) stay on this rung, which
+# screened them in its own window; medium reverted them (chart-timing cost).
+planner.key_rd_split = 1
+planner.key_rd_margin = 1.2
+planner.key_rd_deeper = 1
+planner.key_rd_shallower = 1
+# Periodic keys at rate.key_cap_buffer 1.0 (the engine default), the first key at 0.8:
+# nceval.train at both key shares (base 764c45048, front k), L3 byte-identical (one-key
+# streams), final check BETTER at 1/150 and 1/300 (-0.84 / -0.38 %).
+rate.key_cap_buffer_first = 0.8

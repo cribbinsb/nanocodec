@@ -6,11 +6,11 @@ use super::avx2::{OFFSET, OFFSET_UNITS};
 use super::driver::{self, ROUND, RowKernel, SHIFT, layout};
 use crate::Vp9Filter;
 use crate::mc::av1_avx512::{
-    byte_pairs, column_32, gather_vectors, pack_32, row_32, spread_32, vertical_32,
+    byte_pairs, column_32, gather_vectors, row_32, spread_32, vertical_32,
 };
 use core::arch::x86_64::{
     __m256i, __m512i, _mm256_avg_epu8, _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16,
-    _mm512_set1_epi16, _mm512_srli_epi16, _mm512_subs_epu16,
+    _mm512_cvtusepi16_epi8, _mm512_set1_epi16, _mm512_srli_epi16, _mm512_subs_epu16,
 };
 
 struct Avx512;
@@ -22,13 +22,14 @@ struct Filters {
     centre_gather: [__m512i; 1],
 }
 
-/// Undo the offset after the rounding shift, saturating below zero.
+/// Undo the offset after the rounding shift. The unsigned subtract
+/// clamps below zero, and the unsigned narrow clips to 255 in lane order.
 #[inline(always)]
 unsafe fn finish(sum: __m512i) -> __m256i {
     // SAFETY: the caller enables the AVX-512 tier.
     unsafe {
         let biased = _mm512_add_epi16(sum, _mm512_set1_epi16(ROUND + OFFSET));
-        pack_32(_mm512_subs_epu16(
+        _mm512_cvtusepi16_epi8(_mm512_subs_epu16(
             _mm512_srli_epi16::<SHIFT>(biased),
             _mm512_set1_epi16(OFFSET_UNITS),
         ))

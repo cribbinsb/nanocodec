@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Each live view's "Still-camera noise handling" toggle reaches its encoder.
 
-The toggle is in each live view's Advanced section, on by default, with its
-explanation as the tooltip. For the toggles on (the default) and off, two live
-views (`?views=live`) run until FRAMES_BEFORE_PAUSE frames, pause and save the
-debug report. Checks:
+The toggle is in each live view's Advanced section, with its explanation as the
+tooltip. It defaults on for the webcam only: off on the sample clip the page opens
+with, on after switching to the (fake) webcam, off again back on a clip, and a
+toggle the visitor set keeps its state across source switches. For the toggles on
+and off (set by hand on a clip), two live views (`?views=live`) run until
+FRAMES_BEFORE_PAUSE frames, pause and save the debug report. Checks:
 
+- each view's rate line shows the state ("still-camera on" / "off");
 - every live view's configuration in the report carries its toggle's state, and
-  the view's CLI command has `--still-camera` exactly when on;
+  the view's CLI command has `--still-camera` exactly when on, and the coded colour (`--colour`);
 - each encode worker was created with that state (its init message);
 - the report replays natively with zero mismatches (tools/web/replay-debug-report.py
   passes `--still-camera` when the view had it), so the WASM streams are the
@@ -64,7 +67,8 @@ def report(page, path: Path) -> dict:
 
 def run(port, on: bool, directory: Path) -> dict:
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--autoplay-policy=no-user-gesture-required'])
+        browser = p.chromium.launch(headless=True, args=['--autoplay-policy=no-user-gesture-required',
+                                                           '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'])
         page = browser.new_page()
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
@@ -73,22 +77,32 @@ def run(port, on: bool, directory: Path) -> dict:
         for summary in page.locator('details.advanced > summary').all():
             summary.click()
         toggles = page.locator('.still-camera').all()
-        assert len(toggles) == 2 and all(t.is_checked() for t in toggles), 'the toggles are on by default'
+        assert len(toggles) == 2 and not any(t.is_checked() for t in toggles), 'the toggles are off on a clip'
         assert all('sensor noise' in t.locator('xpath=..').get_attribute('title') for t in toggles)
-        if not on:
-            page.wait_for_function(f'{COMPARED} >= 1', timeout=120000)
-            for toggle in toggles:
-                toggle.set_checked(False)
-            page.wait_for_timeout(500)
+        page.locator('[data-source=camera]').click()
+        assert all(t.is_checked() for t in toggles), 'the toggles are on for the webcam'
+        page.locator('[data-source=clip]').click()
+        assert not any(t.is_checked() for t in toggles), 'the toggles are off again on a clip'
+        page.wait_for_function(f'{COMPARED} >= 1', timeout=120000)
+        for toggle in toggles:
+            toggle.set_checked(on)
+        page.locator('[data-source=scene]').click()
+        page.locator('[data-source=clip]').click()
+        assert all(t.is_checked() is on for t in toggles), 'a toggle set by hand keeps its state'
+        page.wait_for_timeout(500)
         state = report(page, directory / f'still-camera-{"on" if on else "off"}.md')
         page.wait_for_function("[...document.querySelectorAll('.reproduce .cli')].every(c => c.textContent)", timeout=10000)
         commands = page.locator('.reproduce .cli').all_text_contents()
+        rate_lines = page.locator('.rate-status').all_text_contents()
         inits = page.evaluate('window.__encoderInits')
         browser.close()
     assert not errors, errors
     live = [view for view in state['views'] if view['config']['source'] == 'live']
     assert live and all(view['config']['stillCamera'] is on for view in live), [v['config'] for v in state['views']]
     assert all(('--still-camera' in command) is on for command in commands), commands
+    # The line signals the coded colour as the browser encoder does (options.js cliColour).
+    assert all(' --colour bt' in command for command in commands if '--codec av2' not in command), commands
+    assert all(f'still-camera {"on" if on else "off"}' in line for line in rate_lines), rate_lines
     # The last encoder of each view was created with the toggle's state.
     assert inits[-len(live):] == [on] * len(live), inits
     return {'views': len(live), 'encoder_inits': inits}

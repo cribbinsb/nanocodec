@@ -54,27 +54,37 @@ impl VvcBackend {
     ) -> (f32, f32) {
         let mut screened = std::mem::take(&mut self.final_screen);
         let side = block.size();
-        for prediction in &mut screened.modes {
-            prediction.resize(side * side, 0);
-        }
-        let mut units = std::mem::take(&mut screened.units);
-        for tu in transform_tree::units(block, self.tools.max_tb_log2()) {
+        let max_tb = self.tools.max_tb_log2();
+        if transform_tree::splits(block, max_tb) {
+            for prediction in &mut screened.modes {
+                prediction.resize(side * side, 0);
+            }
+            for tu in transform_tree::units(block, max_tb) {
+                intra::predictions_into(
+                    &self.dsp,
+                    recon,
+                    Some(&self.motion),
+                    (&tu, block),
+                    &SCREENED_MODES,
+                    &mut screened.units,
+                );
+                let (w, dx, dy) = (tu.width(), tu.x - block.x, tu.y - block.y);
+                for (unit, prediction) in screened.units.iter().zip(&mut screened.modes) {
+                    for (row, samples) in unit.chunks_exact(w).enumerate() {
+                        prediction[(dy + row) * side + dx..][..w].copy_from_slice(samples);
+                    }
+                }
+            }
+        } else {
             intra::predictions_into(
                 &self.dsp,
                 recon,
                 Some(&self.motion),
-                (&tu, block),
+                (block, block),
                 &SCREENED_MODES,
-                &mut units,
+                &mut screened.modes,
             );
-            let (w, dx, dy) = (tu.width(), tu.x - block.x, tu.y - block.y);
-            for (unit, prediction) in units.iter().zip(&mut screened.modes) {
-                for (row, samples) in unit.chunks_exact(w).enumerate() {
-                    prediction[(dy + row) * side + dx..][..w].copy_from_slice(samples);
-                }
-            }
         }
-        screened.units = units;
         let (best, sse) = screened
             .modes
             .iter()
@@ -98,17 +108,20 @@ impl VvcBackend {
         candidate: FinalCandidate,
     ) -> Option<f32> {
         let quant = self.quantizers().plane(PlaneIndex::Y, false);
-        let mut contexts = self.contexts.coeff.clone();
         let mut scratch = self.planning_scratch.borrow_mut();
         let max_tb = self.tools.max_tb_log2();
         let (sse, coefficient_bits, mode_bits) = match candidate {
             FinalCandidate::Inter(mv) => {
+                // As with HEVC final pricing, leave a matching exact
+                // prediction in the cache for the eventual CU coding.
+                let cached = (self.cached_luma == Some((*block, mv, self.active_ref)))
+                    .then_some(self.cached_luma_samples.as_slice());
                 let (sse, bits) = inter_cost::luma_cost(
                     &self.dsp,
                     source,
                     reference,
-                    (block, mv),
-                    &mut contexts,
+                    (block, mv, cached),
+                    &self.contexts.coeff,
                     (quant, max_tb),
                     &mut scratch,
                 );
@@ -124,7 +137,7 @@ impl VvcBackend {
                     source,
                     block,
                     &self.final_screen.modes[self.final_screen.best],
-                    &mut contexts,
+                    &self.contexts.coeff,
                     (quant, max_tb),
                     &mut scratch,
                 );

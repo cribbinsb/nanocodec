@@ -1,7 +1,7 @@
 //! AVX2 SAO edge-offset kernels: the generic kernels on I16x16.
 
 use super::{Rect, SaoFns, SaoStats, generic};
-use crate::simd::avx2::I16x16;
+use crate::simd::avx2::{I16x8, I16x16};
 
 /// The AVX2 table.
 ///
@@ -35,11 +35,39 @@ unsafe fn apply(
     offsets: [i8; 4],
     rect: Rect,
 ) {
-    // SAFETY: AVX2 is enabled for this function (dispatch contract).
+    use super::avx2_bytes::Lanes;
+    let width = rect.x1 - rect.x0;
+    let rest = width % 32;
+    // SAFETY: the dispatcher checked both source neighbours and all stores.
+    // Splitting into disjoint column ranges retains the checked extents.
     unsafe {
-        super::bytes::edge::<super::avx2_bytes::Lanes, I16x16>(
-            input, in_stride, out, out_stride, offs, offsets, rect,
-        );
+        if rest >= 16 || width < 32 {
+            let middle = rect.x1 - rest;
+            if middle != rect.x0 {
+                super::bytes::edge::<Lanes<32>, I16x16>(
+                    input,
+                    in_stride,
+                    out,
+                    out_stride,
+                    offs,
+                    offsets,
+                    Rect { x1: middle, ..rect },
+                );
+            }
+            super::bytes::edge::<Lanes<16>, I16x8>(
+                input,
+                in_stride,
+                out,
+                out_stride,
+                offs,
+                offsets,
+                Rect { x0: middle, ..rect },
+            );
+        } else {
+            super::bytes::edge::<Lanes<32>, I16x8>(
+                input, in_stride, out, out_stride, offs, offsets, rect,
+            );
+        }
     }
 }
 

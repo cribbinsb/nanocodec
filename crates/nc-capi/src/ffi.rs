@@ -107,6 +107,8 @@ pub struct NcEncoderConfig {
     pub buffer_ms: u32,
     /// Non-zero: drop frames rather than overflow the buffer.
     pub frame_drop: u8,
+    /// Non-zero: never pass one buffer (re-code at 1.0 buffers, a hard VBV).
+    pub strict_buffer: u8,
     /// Colour primaries, transfer, matrix code points (ISO/IEC 23091-2);
     /// all zero = unsignalled.
     pub colour: [u8; 3],
@@ -314,6 +316,7 @@ pub unsafe extern "C" fn nc_encoder_config_default(
         peak_kbps: 0,
         buffer_ms: 0,
         frame_drop: 0,
+        strict_buffer: 0,
         colour: [0; 3],
         full_range: 0,
         timing: 0,
@@ -989,6 +992,7 @@ fn session_config(config: &NcEncoderConfig, params: &[NcParam]) -> Option<Sessio
         peak_kbps: config.peak_kbps,
         buffer_ms: config.buffer_ms,
         frame_drop: config.frame_drop != 0,
+        strict_buffer: config.strict_buffer != 0,
         signal: StreamSignal {
             colour: colour_info(config.colour, config.full_range != 0),
             timing: timing_signal(config.timing)?,
@@ -1188,6 +1192,7 @@ mod tests {
             peak_kbps: 0,
             buffer_ms: 0,
             frame_drop: 0,
+            strict_buffer: 0,
             colour: [0; 3],
             full_range: 0,
             timing: 0,
@@ -1324,6 +1329,7 @@ mod tests {
             peak_kbps: 0,
             buffer_ms: 0,
             frame_drop: 0,
+            strict_buffer: 0,
             colour: [0; 3],
             full_range: 0,
             timing: 0,
@@ -1415,6 +1421,7 @@ mod tests {
             peak_kbps: 0,
             buffer_ms: 0,
             frame_drop: 0,
+            strict_buffer: 0,
             colour: [0; 3],
             full_range: 0,
             timing: 0,
@@ -1546,6 +1553,7 @@ mod tests {
             peak_kbps: 0,
             buffer_ms: 0,
             frame_drop: 0,
+            strict_buffer: 0,
             colour: [0; 3],
             full_range: 0,
             timing: 0,

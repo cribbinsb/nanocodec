@@ -46,6 +46,8 @@ def check_page(page, base: str, name: str, viewport: str, reference: dict, probl
         problems.append(f"{where}: console errors {errors}")
     if page.evaluate("document.documentElement.scrollWidth > window.innerWidth + 1"):
         problems.append(f"{where}: scrolls horizontally")
+    if page.locator("footer .page-views-note").count() != 1:
+        problems.append(f"{where}: no page-view notice in the footer (page-views.js)")
     if name == "cli.html":
         expected = sum(len(g["options"]) for c in reference["commands"] for g in c["groups"])
         shown = page.locator("#options table.options tr td:first-child").count()

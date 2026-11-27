@@ -61,7 +61,19 @@ pub(crate) fn add_kernels(isa: Isa) -> [InverseAdd16Fn; 5] {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx512 => avx512::ADD_KERNELS,
         #[cfg(target_arch = "aarch64")]
-        Isa::Neon => neon::ADD_KERNELS,
+        Isa::Neon => {
+            let mut table = neon::ADD_KERNELS;
+            table[crate::HevcTransform::Dst4 as usize] =
+                crate::codec_txfm::neon_inverse4::add_u16::<true>;
+            table[crate::HevcTransform::Dct4 as usize] =
+                crate::codec_txfm::neon_inverse4::add_u16::<false>;
+            table[crate::HevcTransform::Dct8 as usize] = crate::codec_txfm::neon_inverse8::add_u16;
+            table[crate::HevcTransform::Dct16 as usize] =
+                crate::codec_txfm::neon_inverse16::add_u16;
+            table[crate::HevcTransform::Dct32 as usize] =
+                crate::codec_txfm::neon_inverse32::add_u16;
+            table
+        }
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         Isa::Simd128 => simd128::ADD_KERNELS,
         _ => SCALAR_ADD,

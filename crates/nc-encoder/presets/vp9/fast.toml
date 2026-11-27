@@ -80,8 +80,13 @@ nonbase.vp9.inter_intra_dc_only = 1
 rate.period_ceiling = 0
 # Pinned before VP9 Default's key still boost (2026-11-14).
 rate.key_still_boost = 0
-# Pinned before VP9 Default's unified reference plan (2026-11-15).
-structure.unified = 0
+# The Default's unified reference plan (the second reference on high-quality frames),
+# unpinned 2026-11-24 (docs/analysis/second-reference-consistency-2026-11-24.md): nceval.train
+# at k 0.1709, CPU on its own encodes, L3 J -0.95 % [-1.31, -0.33] at +1.5 %, final check
+# J -0.31 % [-0.46, -0.04] at +2.8 / +2.3 %; its long-window pulse guard (one clip,
+# long_static_chirla_s024c2: keys -0.66 dB, the P frames before them +0.37 dB, the clip's
+# J -1.6 %) taken as a modest key loss inside a win (see the commit).
+structure.unified = 1
 # Pinned before VP9 Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
 persist.reuse_level_price = 0
@@ -150,3 +155,36 @@ planner.split_selector = 0
 # J -2.0 % at +11-16 % cycles; this rule -1.1 %.
 quant.rd_trim = 1
 quant.rd_trim_key = 1
+# Medium's key RD search and finer periodic keys (2026-11-21) were screened on medium only.
+planner.key_rd_split = 0
+rate.key_level_finer = 0
+
+# The zero-vector gates' superblock average (analysis.zero_gate_cell, engine
+# default 0 since the 2026-11-22 bundle): not screened on this rung.
+analysis.zero_gate_cell = 64
+# Pinned before medium's fixed-QP cadence (period 8, base boost 4, no
+# start-up cadence; 2026-11-22): screened on medium, slow and slower only.
+rate.cadence_period = 4
+rate.cadence_base_boost = 3
+rate.cadence_startup_period = 8
+# Fixed QP only (`fixed_qp.`): medium's fixed-QP cadence, period 8, base boost 4,
+# no start-up cadence. nceval.fixedqp ab, 600 f, draw fixedqp-2026-11-24, n=24, vs
+# the pins above at period 4: J -1.57% [-1.86, -0.92] (PSNR-YUV -1.66%,
+# VMAF -1.06%, MS-SSIM -1.87%); 150 f -0.43% [-0.55, -0.27].
+fixed_qp.rate.cadence_period = 8
+fixed_qp.rate.cadence_base_boost = 4
+fixed_qp.rate.cadence_startup_period = 0
+# The first key at rate.key_cap_buffer 1.0 too, over VP9's first-key 0.8 (backend
+# DEFAULT_PARAMS): nceval.train at both key shares (base df1506a5, k front slope), L3 J
+# -0.25 % [-0.66, +0.17] BETTER, final check -1.14 % [-1.38, -0.96] BETTER
+# (docs/handoff/rate-control.md "Key distance").
+rate.key_cap_buffer_first = 1.0
+
+# Fixed QP only (`fixed_qp.`, 2026-11-24, Brief 19 Step 4; docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# coarser moving keys (`rate.fixed_qp_moving_key = 6`) and fine-quantizer depth-removal floor
+# on light frames (`light.planner.depth_removal_min_quantizer = 0.86`), on top of the period-8
+# fixed-QP cadence above. nceval.fixedqp ab (draw fixedqp-2026-11-24, n=24): 150 f J -1.7%
+# [-2.3, -0.7], 600 f J -2.1% [-2.6, -1.2]; fixed-QP CPU (aws_cpu_ab, c8i / c8g):
+# +5.61% / +4.77% (mean +5.19%; -0.40% J / 1% CPU vs front slope -0.160). CBR streams are byte-identical.
+fixed_qp.rate.fixed_qp_moving_key = 6
+fixed_qp.light.planner.depth_removal_min_quantizer = 0.86

@@ -10,11 +10,11 @@
 
 use super::{GRID_SMALL_BLOCKS, GridBest, GridCosts, PixelFns};
 use core::arch::x86_64::{
-    _mm_loadu_si128, _mm_storeu_si128, _mm256_cmplt_epu16_mask, _mm256_loadu_si256,
-    _mm256_mask_storeu_epi16, _mm512_add_epi64, _mm512_broadcast_i32x4, _mm512_cvtepi64_epi16,
-    _mm512_inserti32x4, _mm512_loadu_si512, _mm512_mask_storeu_epi32, _mm512_reduce_add_epi64,
-    _mm512_sad_epu8, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_storeu_si512,
-    _mm512_zextsi128_si512,
+    _mm_storeu_si128, _mm256_cmplt_epu16_mask, _mm256_loadu_si256, _mm256_mask_storeu_epi16,
+    _mm256_min_epu16, _mm512_add_epi64, _mm512_broadcast_i32x4, _mm512_cvtepi64_epi16,
+    _mm512_inserti32x4, _mm512_loadu_si512, _mm512_mask_mov_epi32, _mm512_mask_storeu_epi32,
+    _mm512_reduce_add_epi64, _mm512_sad_epu8, _mm512_set1_epi32, _mm512_setzero_si512,
+    _mm512_storeu_si512, _mm512_zextsi128_si512,
 };
 
 /// Override only implemented kernels, retaining AVX2 for narrower shapes.
@@ -28,7 +28,8 @@ pub(crate) fn install(table: &mut PixelFns) {
     table.sad_grid_best_64x64 = [grid::<1>, grid::<2>];
     table.sad_grid_best_x4 = Some([grid_x4::<1>, grid_x4::<2>]);
     // Keep AVX2 quads: measured AVX-512 speedup was only 0.55x.
-    table.sad_scan_16x16_even_rows = scan;
+    table.sad_scan_16x16_even_rows = super::avx2::sad_scan_16x16_even_rows_icl;
+    table.sad_scan_bounded = Some(super::avx2::sad_scan_bounded_icl);
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -130,15 +131,43 @@ unsafe fn grid_x4<const STEP: usize>(
     tags: [u32; 4],
 ) {
     // SAFETY: the dispatcher validates all grids and this ISA.
-    let costs = unsafe { grids::<STEP, 4>(src, ss, refs, rs) };
-    // Fold in exactly the single-candidate order. No winner selection is
-    // reordered across candidates; lowest index wins equal costs.
-    for (grid, tag) in costs.iter().zip(tags) {
-        keep_min(
-            best,
-            &super::grid_costs::<super::avx2::Pairs>(grid, visible, STEP as u16),
-            tag,
-        );
+    let grids = unsafe { grids::<STEP, 4>(src, ss, refs, rs) };
+    let mut storage = core::mem::MaybeUninit::uninit();
+    let costs =
+        super::grid_costs_x4::<super::avx2::Pairs>(&mut storage, &grids, visible, STEP as u16);
+    keep_min_x4(best, costs, tags);
+}
+
+/// Fold four candidates into one masked write per tile group. Equal costs
+/// keep the first minimum, including the persistent result from before this call.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+fn keep_min_x4(best: &mut GridBest, costs: &[GridCosts; 4], tags: [u32; 4]) {
+    let tag_vectors = [
+        _mm512_set1_epi32(tags[0] as i32),
+        _mm512_set1_epi32(tags[1] as i32),
+        _mm512_set1_epi32(tags[2] as i32),
+        _mm512_set1_epi32(tags[3] as i32),
+    ];
+    for i in (0..GRID_SMALL_BLOCKS).step_by(16) {
+        // SAFETY: i..i + 16 stays within the small blocks and their tags.
+        unsafe {
+            let dst = best.small.as_mut_ptr().add(i);
+            let old = _mm256_loadu_si256(dst.cast());
+            let mut values = old;
+            let mut winners = _mm512_setzero_si512();
+            for (cost, tag) in costs.iter().zip(tag_vectors) {
+                let candidate = _mm256_loadu_si256(cost.small.as_ptr().add(i).cast());
+                let lower = _mm256_cmplt_epu16_mask(candidate, values);
+                values = _mm256_min_epu16(values, candidate);
+                winners = _mm512_mask_mov_epi32(winners, lower, tag);
+            }
+            let lower = _mm256_cmplt_epu16_mask(values, old);
+            _mm256_mask_storeu_epi16(dst.cast(), lower, values);
+            _mm512_mask_storeu_epi32(best.tag.as_mut_ptr().add(i).cast(), lower, winners);
+        }
+    }
+    for (cost, tag) in costs.iter().zip(tags) {
+        super::scalar::keep_min_large(best, cost, tag);
     }
 }
 
@@ -161,46 +190,6 @@ fn keep_min(best: &mut GridBest, cost: &GridCosts, tag: u32) {
         }
     }
     super::scalar::keep_min_large(best, cost, tag);
-}
-
-/// Four adjacent 16x16 candidates occupy the four 128-bit sublanes.
-/// The source row is broadcast once, then shared by all candidates.
-#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn scan(src: &[u8], ss: usize, rf: &[u8], rs: usize, out: &mut [u32]) {
-    let mut source = [_mm512_setzero_si512(); 8];
-    for (y, a) in source.iter_mut().enumerate() {
-        // SAFETY: row 2y contains 16 source pixels.
-        *a =
-            unsafe { _mm512_broadcast_i32x4(_mm_loadu_si128(src.as_ptr().add(2 * y * ss).cast())) };
-    }
-    for (batch, dst) in out.chunks_mut(4).enumerate() {
-        let mut sum = _mm512_setzero_si512();
-        for (y, &a) in source.iter().enumerate() {
-            // SAFETY: candidate zero always exists in a nonempty chunk;
-            // other row loads are guarded by that chunk's length.
-            let b = unsafe {
-                let p = rf.as_ptr().add(2 * y * rs + 4 * batch);
-                let mut b = _mm512_zextsi128_si512(_mm_loadu_si128(p.cast()));
-                if dst.len() > 1 {
-                    b = _mm512_inserti32x4::<1>(b, _mm_loadu_si128(p.add(1).cast()));
-                }
-                if dst.len() > 2 {
-                    b = _mm512_inserti32x4::<2>(b, _mm_loadu_si128(p.add(2).cast()));
-                }
-                if dst.len() > 3 {
-                    b = _mm512_inserti32x4::<3>(b, _mm_loadu_si128(p.add(3).cast()));
-                }
-                b
-            };
-            sum = _mm512_add_epi64(sum, _mm512_sad_epu8(a, b));
-        }
-        let mut lanes = [0u64; 8];
-        // SAFETY: lanes contains 64 writable bytes.
-        unsafe { _mm512_storeu_si512(lanes.as_mut_ptr().cast(), sum) };
-        for (i, value) in dst.iter_mut().enumerate() {
-            *value = (lanes[2 * i] + lanes[2 * i + 1]) as u32;
-        }
-    }
 }
 
 /// Four narrow candidates occupy independent 128-bit sublanes. Masked

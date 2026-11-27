@@ -1,0 +1,20 @@
+# fast-front (2026-11-25): an AV1 rung beyond veryfast ("superfast"), aimed at SVT-AV1 M13's
+# speed (252 Mpx/CPU-s on the c8i "ours" CBR view, veryfast 217.5). The levers of the
+# single-lever ablation (sf-av1-veryfast-sens.txt, tuning/sens-av1-veryfast-2026-11-25) that
+# lose at most about 1 % J per 1 % CPU, each between veryfast's value and its cheap end; the
+# search maximises J at x86 CPU <= 0.84x veryfast (--cpu-max 0.84), k 1.0 (the chord from
+# AV1 veryfast to the next front point, H.264 faster, is 1.07).
+# Format (nceval.tune_pool): name [low high] [int|log]
+analysis.window_half_width 1 4 int
+analysis.window_half_height 0 1 int
+analysis.hme_level1 0 1 int
+analysis.window_exit_sad_per_pixel 0 4
+analysis.skip_hme_sad_per_pixel 2 5
+decision.codec_subpel_seed_lambdas 0.1 0.6 log
+decision.static_zero_vector 0 1 int
+decision.max_cheap_vectors 2 16 int
+decision.codec_fullpel_probe 0 1 int
+av1.near_count 1 3 int
+planner.inter_min_log2 4 5 int
+planner.intra_plan 1 2 int
+planner.depth_removal_th_32_16 25 100

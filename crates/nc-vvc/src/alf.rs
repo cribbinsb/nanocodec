@@ -140,13 +140,6 @@ pub(crate) type CtbAlf = Option<CtbFilter>;
 /// was chosen for.
 const SIGNALLED_ROUNDS: usize = 2;
 
-/// A 4x4 block's class (0..25) and transpose index (0..4).
-#[derive(Debug, Clone, Copy, Default)]
-struct Class {
-    index: u8,
-    transpose: u8,
-}
-
 /// Samples beyond each picture edge that classification (three before a
 /// block, six after) and the filter (three) read, replicated from the edge
 /// (§8.8.5.2 clamps sample positions to the picture).
@@ -405,12 +398,6 @@ impl<'a, T: Pixel> Analysis<'a, T> {
 }
 
 impl<T: Pixel> Analysis<'_, T> {
-    fn class(&self, x: usize, y: usize) -> Class {
-        let (x, y) = (x - self.origin.0, y - self.origin.1);
-        let [index, transpose] = self.classes[y / BLOCK * self.block_columns + x / BLOCK];
-        Class { index, transpose }
-    }
-
     /// How far row `y`'s taps may reach vertically: rows across the virtual
     /// boundary are not read (a tap's pair is mirrored at the nearer edge).
     fn reach(&self, y: usize) -> isize {
@@ -775,6 +762,45 @@ impl Analysis<'_> {
         }
     }
 
+    /// Count the samples of each 4x4 classification cell. The sampling
+    /// stride is one cell, so every sampled row contributes once per
+    /// complete cell, regardless of its stagger. Only a partial cell at
+    /// the picture's right edge depends on the row's stagger.
+    fn count_class_samples(
+        &self,
+        (x0, y0, w, h): Ctb,
+        row_step: usize,
+        stats: &mut [ClassStatistics; CLASSES],
+    ) {
+        const _: () = assert!(STATS_COLUMN_STEP == BLOCK);
+        debug_assert!((x0 - self.origin.0).is_multiple_of(BLOCK));
+        debug_assert!((y0 - self.origin.1).is_multiple_of(BLOCK));
+        let full_columns = w / BLOCK;
+        let tail = w % BLOCK;
+        let first_column = (x0 - self.origin.0) / BLOCK;
+        for top in (0..h).step_by(BLOCK) {
+            let first = top.div_ceil(row_step);
+            let last = (top + BLOCK).min(h).div_ceil(row_step);
+            if first == last {
+                continue;
+            }
+            let count = (last - first) as u32;
+            let row = (y0 + top - self.origin.1) / BLOCK;
+            let classes = &self.classes[row * self.block_columns + first_column..];
+            for &[class, _] in &classes[..full_columns] {
+                stats[usize::from(class)].count += count;
+            }
+            if tail != 0 {
+                let count = (first..last)
+                    .filter(|&row| {
+                        sampled_columns(x0, tail, y0 + row * row_step, row_step).start < x0 + tail
+                    })
+                    .count() as u32;
+                stats[usize::from(classes[full_columns][0])].count += count;
+            }
+        }
+    }
+
     /// Per-class tap-sum statistics of CTB `ctb` against `original` into
     /// `stats` (the Gram matrix only of classes with samples): the sampled
     /// tap sums and errors are written into per-class runs of `samples`
@@ -791,12 +817,7 @@ impl Analysis<'_> {
         for stats in stats.iter_mut() {
             stats.count = 0;
         }
-        let rows = (y0..y0 + h).step_by(row_step);
-        for y in rows.clone() {
-            for x in sampled_columns(x0, w, y, row_step).step_by(STATS_COLUMN_STEP) {
-                stats[usize::from(self.class(x, y).index)].count += 1;
-            }
-        }
+        self.count_class_samples((x0, y0, w, h), row_step, stats);
         // Each class a run of samples padded with zeros to whole kernel steps.
         let mut starts = [0; CLASSES + 1];
         for class in 0..CLASSES {
@@ -811,31 +832,30 @@ impl Analysis<'_> {
         }
         let mut next = starts;
         let mut sums = [[0; VVC_ALF_SAMPLE_LANES]; VVC_ALF_SAMPLES];
-        for y in rows {
+        for y in (y0..y0 + h).step_by(row_step) {
             let (taps, _) = self.tap_rows(y);
             let source = original.row(y);
+            let row = (y - self.origin.1) / BLOCK;
+            let class_row = &self.classes[row * self.block_columns..][..self.block_columns];
             // Runs of up to `VVC_ALF_SAMPLES` sampled columns per kernel call.
             let sampled = sampled_columns(x0, w, y, row_step);
             for start in sampled.clone().step_by(STATS_COLUMN_STEP * VVC_ALF_SAMPLES) {
                 let count = (sampled.end - start)
                     .div_ceil(STATS_COLUMN_STEP)
                     .min(VVC_ALF_SAMPLES);
-                let classes: [Class; VVC_ALF_SAMPLES] = std::array::from_fn(|i| {
-                    // Past `count` any class does: those samples are unused.
-                    self.class(start + i.min(count - 1) * STATS_COLUMN_STEP, y)
-                });
+                let first = (start - self.origin.0) / BLOCK;
+                let classes = &class_row[first..][..count];
+                let mut transposes = [0; VVC_ALF_SAMPLES];
+                for (transpose, &[_, class_transpose]) in transposes.iter_mut().zip(classes) {
+                    *transpose = class_transpose;
+                }
                 let windows = taps.map(|row| &row[self.column(start, VVC_ALF_REACH)..]);
                 // Tap sums (at most 510) in the order of the untransposed
                 // coefficients, then the error.
-                self.dsp.vvc_alf_samples(
-                    &windows,
-                    &source[start..],
-                    &classes.map(|class| class.transpose),
-                    count,
-                    &mut sums,
-                );
-                for (class, sample) in classes.iter().zip(&sums).take(count) {
-                    let at = &mut next[usize::from(class.index)];
+                self.dsp
+                    .vvc_alf_samples(&windows, &source[start..], &transposes, count, &mut sums);
+                for (&[class, _], sample) in classes.iter().zip(&sums) {
+                    let at = &mut next[usize::from(class)];
                     samples[*at] = *sample;
                     *at += 1;
                 }
@@ -1396,3 +1416,35 @@ const ENERGY_BLOCK: usize = 8;
 
 /// The largest block side of the SSE kernels.
 const MAX_SSE_BLOCK: usize = 64;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn class_sample_counts_match_sampled_pixels() {
+        let dsp = Dsp::new();
+        let picture = Picture::new(128, 128, 0).expect("test picture");
+        let mut analysis = Analysis::new((&dsp, BitDepth::EIGHT), &picture, 64, |_| false);
+        for (i, class) in analysis.classes.iter_mut().enumerate() {
+            class[0] = (i % CLASSES) as u8;
+        }
+        for (x0, y0) in [(0, 0), (64, 64)] {
+            for (w, h) in [(64, 64), (1, 1), (2, 3), (13, 21), (63, 62)] {
+                for row_step in 1..=8 {
+                    let mut want = [0; CLASSES];
+                    for y in (y0..y0 + h).step_by(row_step) {
+                        for x in sampled_columns(x0, w, y, row_step).step_by(STATS_COLUMN_STEP) {
+                            let class =
+                                analysis.classes[y / BLOCK * analysis.block_columns + x / BLOCK][0];
+                            want[usize::from(class)] += 1;
+                        }
+                    }
+                    let mut stats = [ClassStatistics::default(); CLASSES];
+                    analysis.count_class_samples((x0, y0, w, h), row_step, &mut stats);
+                    assert_eq!(stats.map(|s| s.count), want, "{x0},{y0} {w}x{h}/{row_step}");
+                }
+            }
+        }
+    }
+}

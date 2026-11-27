@@ -22,9 +22,9 @@ unsafe fn planar(edges: &PlanarEdges<'_>, n: usize, out: &mut [u8]) {
     // SAFETY: as for `angular`.
     unsafe {
         match n {
-            4 => lanes::planar::<I16x4>(edges, n, out),
-            8 => lanes::planar::<I16x8>(edges, n, out),
-            _ => lanes::planar::<I16x16>(edges, n, out),
+            4 => lanes::planar::<I16x4, { super::MAX_SIDE }>(edges, n, out),
+            8 => lanes::planar::<I16x8, { super::MAX_SIDE }>(edges, n, out),
+            _ => lanes::planar::<I16x16, { super::MAX_SIDE }>(edges, n, out),
         }
     }
 }

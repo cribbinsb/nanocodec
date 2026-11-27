@@ -1,0 +1,24 @@
+[
+ {
+  "planner.rd_split_stop_bias": 0.570114,
+  "planner.rd_split_stop_cost": 0.160562,
+  "planner.rd_split_stop_bits": -0.469711,
+  "planner.rd_split_stop_distortion": 0.145212,
+  "planner.rd_split_stop_skip": -1.570399,
+  "planner.rd_split_stop_nonzero": 0.427942,
+  "planner.rd_split_stop_planned_split": -1.723533,
+  "planner.rd_split_stop_size": -0.325607,
+  "planner.rd_split_stop_margin": 0.200127,
+  "planner.rd_split_stop_neighbours": -0.213851,
+  "planner.rd_split_stop_co_located": 0.546321,
+  "planner.rd_split_stop_net_weight": 0.0,
+  "planner.rd_split_stop_net_h0": 0.0,
+  "planner.rd_split_stop_net_h1": 0.0,
+  "planner.rd_split_stop_net_h2": 0.0,
+  "planner.rd_split_stop_net_h3": 0.0,
+  "planner.rd_split_stop_net_h4": 0.0,
+  "planner.rd_split_stop_net_h5": 0.0,
+  "planner.rd_split_stop_net_h6": 0.0,
+  "planner.rd_split_stop_net_h7": 0.0
+ }
+]

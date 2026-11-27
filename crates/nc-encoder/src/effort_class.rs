@@ -199,10 +199,17 @@ impl Classifier<'_> {
     /// light (module docs).
     pub fn light_map(&self, sb_log2: u8) -> Vec<bool> {
         let size = 1usize << sb_log2;
+        // Each motion-search cell's proxy once: a codec superblock smaller
+        // than the search's (an H.264 macroblock) reads its cell's.
+        let grid = &self.motion.sb;
+        let cells: Vec<f32> = (0..grid.rows())
+            .flat_map(|row| (0..grid.cols()).map(move |col| (col, row)))
+            .map(|(col, row)| self.cell_proxy(col, row))
+            .collect();
         let proxies: Vec<f32> = (0..self.height)
             .step_by(size)
             .flat_map(|y| (0..self.width).step_by(size).map(move |x| (x, y)))
-            .map(|(x, y)| self.proxy(&Block::square(x, y, sb_log2)))
+            .map(|(x, y)| self.proxy(&Block::square(x, y, sb_log2), &cells))
             .collect();
         let budget = Budget {
             fraction: self.effort.regular_fraction,
@@ -225,8 +232,11 @@ impl Classifier<'_> {
 
     /// The benefit proxy of superblock `sb`: the highest of the motion
     /// search's superblocks it covers (or the one that contains it).
-    fn proxy(&self, sb: &Block) -> f32 {
+    /// `cells`: [`Self::cell_proxy`] of every cell of the search's grid,
+    /// raster order.
+    fn proxy(&self, sb: &Block, cells: &[f32]) -> f32 {
         let size = nc_analysis::motion::SB;
+        let cols = self.motion.sb.cols();
         let first = (sb.x / size, sb.y / size);
         let last = (
             (sb.x + sb.width()).min(self.width).saturating_sub(1) / size,
@@ -234,7 +244,16 @@ impl Classifier<'_> {
         );
         (first.1..=last.1)
             .flat_map(|row| (first.0..=last.0).map(move |col| (col, row)))
-            .map(|(col, row)| self.cell_proxy(col, row))
+            .map(|(col, row)| {
+                if col < cols {
+                    cells
+                        .get(row * cols + col)
+                        .copied()
+                        .unwrap_or(f32::INFINITY)
+                } else {
+                    f32::INFINITY
+                }
+            })
             .fold(0.0, f32::max)
     }
 

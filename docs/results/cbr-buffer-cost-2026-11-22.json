@@ -1,0 +1,524 @@
+{
+ "about": "The quality cost of 0.6.1's buffer settings against 0.6.0's, and the buffer peaks of each arm (transcribed from docs/handoff/rate-control.md, 'Default 1.15 buffers, strict 1.0 as an option'; raw results ~/nanocodec-data/work/buffer-061/ceil150-*.json and ceil600-*.json; ledger idea buffer-as-a-hard-bound-0-6-1-default). BD-J in percent: PSNR-YUV, VMAF v1 and MS-SSIM in thirds, class-balanced; positive costs bits. Peaks in buffers: p95 / max / points over one buffer.",
+ "date": "2026-11-22",
+ "build": "21ed52fa",
+ "preset": "medium",
+ "draw": "2026-11-22",
+ "tool": "nceval.rc_oracle live arms",
+ "windows": {
+  "150": "the pool's quick level, 24 clips x 4 rungs, one key frame",
+  "600": "6 clips, one per class (static, lowlight, bodycam, drone, crowd, pan), 4 rungs, a key frame every 10 s"
+ },
+ "arms": {
+  "before": "0.6.0: re-code ceiling 1.4 buffers, no key cap (AV2 also rate.recode_overflow_inter 1.1)",
+  "ceiling": "0.6.1 default: re-code ceiling 1.15 buffers, key cap 0.8 of a buffer",
+  "strict": "--strict-buffer: ceiling 1.0 buffer for every frame"
+ },
+ "runs": "One run per arm, no confidence interval; medium presets only",
+ "rows": [
+  {
+   "codec": "av1",
+   "frames": 150,
+   "j_ceiling": 0.94,
+   "j_strict": 1.92,
+   "j_ceiling_vs_strict": -1.08,
+   "points": 95,
+   "at_target": {
+    "before": {
+     "p95": 1.38,
+     "max": 1.4,
+     "points_over_one": 20
+    },
+    "ceiling": {
+     "p95": 1.14,
+     "max": 1.15,
+     "points_over_one": 19
+    },
+    "strict": {
+     "p95": 0.99,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.41,
+     "max": 1.6,
+     "points_over_one": 21
+    },
+    "ceiling": {
+     "p95": 1.16,
+     "max": 1.31,
+     "points_over_one": 17
+    },
+    "strict": {
+     "p95": 1.02,
+     "max": 1.1,
+     "points_over_one": 11
+    }
+   }
+  },
+  {
+   "codec": "av1",
+   "frames": 600,
+   "j_ceiling": 1.42,
+   "j_strict": 1.96,
+   "j_ceiling_vs_strict": -0.64,
+   "points": 22,
+   "at_target": {
+    "before": {
+     "p95": 1.38,
+     "max": 1.39,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.15,
+     "max": 1.15,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.65,
+     "max": 1.67,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.45,
+     "max": 1.71,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.42,
+     "max": 1.45,
+     "points_over_one": 7
+    }
+   }
+  },
+  {
+   "codec": "hevc",
+   "frames": 150,
+   "j_ceiling": 0.64,
+   "j_strict": 1.52,
+   "j_ceiling_vs_strict": -1.03,
+   "points": 95,
+   "at_target": {
+    "before": {
+     "p95": 1.39,
+     "max": 1.4,
+     "points_over_one": 21
+    },
+    "ceiling": {
+     "p95": 1.13,
+     "max": 1.15,
+     "points_over_one": 15
+    },
+    "strict": {
+     "p95": 0.98,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.41,
+     "max": 1.45,
+     "points_over_one": 20
+    },
+    "ceiling": {
+     "p95": 1.15,
+     "max": 1.19,
+     "points_over_one": 15
+    },
+    "strict": {
+     "p95": 1.02,
+     "max": 1.11,
+     "points_over_one": 10
+    }
+   }
+  },
+  {
+   "codec": "hevc",
+   "frames": 600,
+   "j_ceiling": 2.24,
+   "j_strict": 2.71,
+   "j_ceiling_vs_strict": -0.61,
+   "points": 22,
+   "at_target": {
+    "before": {
+     "p95": 1.38,
+     "max": 1.4,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.15,
+     "max": 1.15,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.89,
+     "max": 2.06,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.67,
+     "max": 1.87,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.79,
+     "max": 2.18,
+     "points_over_one": 7
+    }
+   }
+  },
+  {
+   "codec": "vvc",
+   "frames": 150,
+   "j_ceiling": 0.99,
+   "j_strict": 1.45,
+   "j_ceiling_vs_strict": -0.49,
+   "points": 95,
+   "at_target": {
+    "before": {
+     "p95": 1.39,
+     "max": 1.4,
+     "points_over_one": 19
+    },
+    "ceiling": {
+     "p95": 1.13,
+     "max": 1.15,
+     "points_over_one": 17
+    },
+    "strict": {
+     "p95": 0.99,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.42,
+     "max": 1.45,
+     "points_over_one": 20
+    },
+    "ceiling": {
+     "p95": 1.18,
+     "max": 1.3,
+     "points_over_one": 17
+    },
+    "strict": {
+     "p95": 1.02,
+     "max": 1.65,
+     "points_over_one": 9
+    }
+   }
+  },
+  {
+   "codec": "vvc",
+   "frames": 600,
+   "j_ceiling": 2.0,
+   "j_strict": 2.45,
+   "j_ceiling_vs_strict": -0.62,
+   "points": 22,
+   "at_target": {
+    "before": {
+     "p95": 1.39,
+     "max": 1.4,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.14,
+     "max": 1.15,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.79,
+     "max": 1.81,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.6,
+     "max": 1.86,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.69,
+     "max": 2.11,
+     "points_over_one": 7
+    }
+   }
+  },
+  {
+   "codec": "vp9",
+   "frames": 150,
+   "j_ceiling": 0.89,
+   "j_strict": 1.74,
+   "j_ceiling_vs_strict": -0.96,
+   "points": 95,
+   "at_target": {
+    "before": {
+     "p95": 1.34,
+     "max": 1.4,
+     "points_over_one": 20
+    },
+    "ceiling": {
+     "p95": 1.11,
+     "max": 1.15,
+     "points_over_one": 18
+    },
+    "strict": {
+     "p95": 0.96,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.4,
+     "max": 1.42,
+     "points_over_one": 20
+    },
+    "ceiling": {
+     "p95": 1.11,
+     "max": 1.23,
+     "points_over_one": 17
+    },
+    "strict": {
+     "p95": 0.98,
+     "max": 1.1,
+     "points_over_one": 4
+    }
+   }
+  },
+  {
+   "codec": "vp9",
+   "frames": 600,
+   "j_ceiling": 1.93,
+   "j_strict": 2.72,
+   "j_ceiling_vs_strict": -0.95,
+   "points": 22,
+   "at_target": {
+    "before": {
+     "p95": 1.37,
+     "max": 1.4,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.16,
+     "max": 1.17,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.02,
+     "points_over_one": 1
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.65,
+     "max": 1.74,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.52,
+     "max": 1.52,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.47,
+     "max": 1.47,
+     "points_over_one": 6
+    }
+   }
+  },
+  {
+   "codec": "av2",
+   "frames": 150,
+   "j_ceiling": 0.49,
+   "j_strict": 1.84,
+   "j_ceiling_vs_strict": -1.39,
+   "points": 95,
+   "at_target": {
+    "before": {
+     "p95": 1.27,
+     "max": 1.37,
+     "points_over_one": 21
+    },
+    "ceiling": {
+     "p95": 1.14,
+     "max": 1.15,
+     "points_over_one": 18
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.28,
+     "max": 1.37,
+     "points_over_one": 21
+    },
+    "ceiling": {
+     "p95": 1.14,
+     "max": 1.37,
+     "points_over_one": 20
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.1,
+     "points_over_one": 4
+    }
+   }
+  },
+  {
+   "codec": "av2",
+   "frames": 600,
+   "j_ceiling": -0.04,
+   "j_strict": 1.59,
+   "j_ceiling_vs_strict": -1.64,
+   "points": 22,
+   "at_target": {
+    "before": {
+     "p95": 1.38,
+     "max": 1.4,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.14,
+     "max": 1.15,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.54,
+     "max": 1.72,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.55,
+     "max": 1.66,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.31,
+     "max": 1.33,
+     "points_over_one": 7
+    }
+   }
+  },
+  {
+   "codec": "h264",
+   "frames": 150,
+   "j_ceiling": 0.59,
+   "j_strict": 1.23,
+   "j_ceiling_vs_strict": -0.7,
+   "points": 95,
+   "at_target": {
+    "before": {
+     "p95": 1.39,
+     "max": 1.42,
+     "points_over_one": 21
+    },
+    "ceiling": {
+     "p95": 1.14,
+     "max": 1.15,
+     "points_over_one": 19
+    },
+    "strict": {
+     "p95": 0.99,
+     "max": 1.01,
+     "points_over_one": 1
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.42,
+     "max": 1.48,
+     "points_over_one": 21
+    },
+    "ceiling": {
+     "p95": 1.18,
+     "max": 1.43,
+     "points_over_one": 17
+    },
+    "strict": {
+     "p95": 1.05,
+     "max": 1.31,
+     "points_over_one": 10
+    }
+   }
+  },
+  {
+   "codec": "h264",
+   "frames": 600,
+   "j_ceiling": 2.05,
+   "j_strict": 2.17,
+   "j_ceiling_vs_strict": -0.26,
+   "points": 22,
+   "at_target": {
+    "before": {
+     "p95": 1.4,
+     "max": 1.4,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.15,
+     "max": 1.15,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.0,
+     "max": 1.0,
+     "points_over_one": 0
+    }
+   },
+   "at_own_rate": {
+    "before": {
+     "p95": 1.73,
+     "max": 1.75,
+     "points_over_one": 7
+    },
+    "ceiling": {
+     "p95": 1.6,
+     "max": 1.68,
+     "points_over_one": 7
+    },
+    "strict": {
+     "p95": 1.41,
+     "max": 1.49,
+     "points_over_one": 7
+    }
+   }
+  }
+ ]
+}

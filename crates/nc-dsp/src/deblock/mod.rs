@@ -10,11 +10,10 @@
 //! per-lane mask, and each output takes its new value only where its mask is
 //! set, so lanes that are not filtered are written back unchanged.
 //!
-//! HEVC decides per 4-line luma segment from its first and last line; the
-//! kernels compute the inputs of those decisions in every lane, take the
-//! two lines' values out to decide, and spread the segment's decisions back
-//! over its lanes (`hevc` module). They hold 8 lines per vector: a vertical
-//! edge's lines are rows, transposed into lanes with vector shuffles.
+//! HEVC decides per 4-line luma segment from its first and last line.
+//! The SIMD entries share the endpoint masks and short luma filter with
+//! the ordered-run kernel. A vertical edge's rows are transposed into
+//! lanes with vector shuffles.
 //!
 //! # Kernel contract
 //!

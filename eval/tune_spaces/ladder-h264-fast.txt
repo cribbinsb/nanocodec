@@ -1,0 +1,15 @@
+# h264-ladder (2026-11-23): H.264 fast at equal speed (--cpu-max 1.02, k 0.2128). As
+# ladder-h264-faster: the final decision stage must pay for itself, here from fast's
+# extras over faster (trellis, integer probes, cheap-vector refinement, all Intra_4x4
+# modes, Intra_8x8) and the motion search.
+# Format (nceval.tune_pool): name [low high] [int|log]
+decision.final_stage 0 1 int
+decision.final_margin_lambdas 0 0.1
+quant.trellis 0 1 int
+decision.codec_fullpel_probe 0 1 int
+decision.refine_cheap_vector 0 1 int
+h264.intra4x4_all_modes 0 1 int
+h264.intra8x8 1 2 int
+analysis.window_half_width 2 3 int
+analysis.mixed_motion 0 1 int
+h264.split_gate_satd 33 96

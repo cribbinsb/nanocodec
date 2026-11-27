@@ -98,6 +98,13 @@ pub trait BinSink {
     }
     /// A bypass bin (`EncodeBypass`, §9.3.4.4).
     fn encode_bypass(&mut self, bin: bool);
+    /// Code the bottom `count <= 32` bypass bits, most significant first.
+    #[inline]
+    fn encode_bypass_bits(&mut self, bits: u32, count: u32) {
+        for shift in (0..count).rev() {
+            self.encode_bypass((bits >> shift) & 1 != 0);
+        }
+    }
     /// The terminate bin (`EncodeTerminate`, §9.3.4.5).
     fn encode_terminate(&mut self, bin: bool);
     /// The bins that follow belong to `part` (only counters care).
@@ -113,6 +120,26 @@ pub trait BinSink {
     {
         run.code(self)
     }
+}
+
+/// The bypass suffix and sign of a signed UEG value. The callers subtract
+/// the truncated-unary prefix and use the H.264 orders 0 and 3. With a
+/// halfword magnitude the packed suffix and sign fit in one word.
+pub(crate) fn encode_signed_ueg_suffix(
+    sink: &mut impl BinSink,
+    value: u16,
+    order: u32,
+    negative: bool,
+) {
+    let code = u32::from(value) + (1 << order);
+    let suffix_bits = code.ilog2();
+    let prefix_bits = suffix_bits - order;
+    let prefix = ((1 << prefix_bits) - 1) << (suffix_bits + 2);
+    let suffix = (code - (1 << suffix_bits)) << 1;
+    sink.encode_bypass_bits(
+        prefix | suffix | u32::from(negative),
+        prefix_bits + suffix_bits + 2,
+    );
 }
 
 /// A run of bins written to whatever sink [`BinSink::code_run`] hands it.
@@ -311,6 +338,13 @@ impl CabacEncoder {
         }
     }
 
+    /// Bits of slice data written so far: the finished bytes, the `0xff`
+    /// bytes held for a carry and the code bits waiting in `low`.
+    pub fn coded_bits(&self) -> f64 {
+        let pending = (self.registers.queue + QUEUE_START_OFFSET).max(0);
+        ((self.out.bytes.len() + self.out.outstanding as usize) * 8) as f64 + f64::from(pending)
+    }
+
     /// A [`BitCounter`] pricing bins with the current context states.
     pub fn bit_counter<'a>(&'a self, costs: &'a BinCosts) -> BitCounter<'a> {
         BitCounter::new(&self.contexts, costs)
@@ -414,6 +448,24 @@ impl BinSink for CabacWriter<'_> {
         r.queue += 1;
         if r.queue >= 0 {
             (r.low, r.queue) = self.out.put_byte(r.low, r.queue);
+        }
+    }
+
+    /// Accumulate a group up to the next output byte. In bypass mode
+    /// range is constant, so n shifts/adds are one shift and multiply.
+    /// This follows libavc's `ih264e_cabac_encode_bypass_bins`.
+    #[inline]
+    fn encode_bypass_bits(&mut self, bits: u32, mut count: u32) {
+        let r = &mut self.registers;
+        while count != 0 {
+            let take = count.min((-r.queue) as u32);
+            count -= take;
+            let group = (bits >> count) & ((1 << take) - 1);
+            r.low = (r.low << take) + r.range * group;
+            r.queue += take as i32;
+            if r.queue >= 0 {
+                (r.low, r.queue) = self.out.put_byte(r.low, r.queue);
+            }
         }
     }
 

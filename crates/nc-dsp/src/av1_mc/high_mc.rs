@@ -97,6 +97,8 @@ impl HighAv1McFns {
             Isa::Avx512 => x86::AVX512_FNS,
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => neon::NEON_FNS,
+            #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+            Isa::Sve2 => neon::SVE2_FNS,
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
             Isa::Simd128 => simd128::SIMD128_FNS,
             _ => Self::SCALAR,
@@ -321,6 +323,15 @@ unsafe fn h_convolve_lanes<V: I16Pairs, const PAIRS: usize>(
     round: i32,
     shift: u32,
 ) -> V {
+    if PAIRS == 4 {
+        let taps = [
+            fx[0].0, fx[0].1, fx[1].0, fx[1].1, fx[2].0, fx[2].1, fx[3].0, fx[3].1,
+        ];
+        // SAFETY: the caller validated this horizontal row and enables V's ISA.
+        if let Some(out) = unsafe { V::horizontal_dot_8tap(row.cast(), taps, round, shift) } {
+            return out;
+        }
+    }
     if !V::FAST_PAIR_DOT {
         // SAFETY: `row` covers `V::LANES + 7` words inside the validated window.
         let acc = unsafe { h_dot_lanes::<V, PAIRS>(row, fx) };
@@ -706,7 +717,7 @@ unsafe fn hv_pass_lanes<V: I16Pairs, S: McSink<V>, const W: usize, const R0: u32
 
 /// Unscaled `put` (`u16` output, clipped to `depth`) over `V: I16Pairs` (`W >= V::LANES`).
 #[inline(always)]
-pub(crate) unsafe fn unscaled_put_lanes<V: I16Pairs, const W: usize>(
+pub(crate) unsafe fn unscaled_put_lanes<V: I16Pairs, const W: usize, const ICL: bool>(
     (src, ss): (&[u16], usize),
     (dst, ds): (&mut [u16], usize),
     h: usize,
@@ -732,6 +743,18 @@ pub(crate) unsafe fn unscaled_put_lanes<V: I16Pairs, const W: usize>(
                 unsafe { store_u16(load_i16::<V>(row.add(c0)), dst_p.add(r * ds + c0)) };
             }
         }
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if ICL
+        // SAFETY: the entry validated the padded source and output.
+        && unsafe {
+            try_icl::<W, true>(
+                (src_p, ss), (dst_p.cast(), ds), h, (fx, fy), (hx_id, vy_id), depth,
+            )
+        }
+    {
         return;
     }
     let (zero, max_v) = (V::splat(0), V::splat(depth.max() as i16));
@@ -767,6 +790,7 @@ pub(crate) unsafe fn unscaled_put_lanes<V: I16Pairs, const W: usize>(
         unsafe { v_pass_lanes::<V, _, _, W>(DirectRow { src_p, ss }, sink, fy, h) };
         return;
     }
+
     // SAFETY: window and destination validated above.
     unsafe {
         if depth.bits() == 12 {
@@ -812,7 +836,7 @@ unsafe fn h_dispatch_lanes<V: I16Pairs, S: McSink<V>, const W: usize>(
 
 /// Unscaled `prep` (`i16` compound output less bias) over `V: I16Pairs` (`W >= V::LANES`).
 #[inline(always)]
-pub(crate) unsafe fn unscaled_prep_lanes<V: I16Pairs, const W: usize>(
+pub(crate) unsafe fn unscaled_prep_lanes<V: I16Pairs, const W: usize, const ICL: bool>(
     (src, ss): (&[u16], usize),
     (dst, ds): (&mut [i16], usize),
     h: usize,
@@ -846,6 +870,18 @@ pub(crate) unsafe fn unscaled_prep_lanes<V: I16Pairs, const W: usize>(
         }
         return;
     }
+
+    #[cfg(target_arch = "x86_64")]
+    if ICL
+        // SAFETY: the entry validated the padded source and output.
+        && unsafe {
+            try_icl::<W, false>(
+                (src_p, ss), (dst_p.cast(), ds), h, (fx, fy), (hx_id, vy_id), depth,
+            )
+        }
+    {
+        return;
+    }
     let r0 = inter_round0(depth);
     let round = (1 << (r0 - 1)) - (bias << r0);
     if vy_id {
@@ -872,6 +908,7 @@ pub(crate) unsafe fn unscaled_prep_lanes<V: I16Pairs, const W: usize>(
         }
         return;
     }
+
     let sink_2d = PrepSink::<INTER_ROUND1_COMPOUND> {
         dst_p,
         ds,
@@ -1225,7 +1262,11 @@ unsafe fn hv_pass_halves<V: I16FilterLanes + I16Pairs, S: McHalvesSink<V>, const
 
 /// Unscaled `put` over `V: I16FilterLanes + I16Pairs` packing two rows per vector (`2 * W == V::LANES`).
 #[inline(always)]
-pub(crate) unsafe fn unscaled_put_halves<V: I16FilterLanes + I16Pairs, const W: usize>(
+pub(crate) unsafe fn unscaled_put_halves<
+    V: I16FilterLanes + I16Pairs,
+    const W: usize,
+    const ICL: bool,
+>(
     (src, ss): (&[u16], usize),
     (dst, ds): (&mut [u16], usize),
     h: usize,
@@ -1261,6 +1302,18 @@ pub(crate) unsafe fn unscaled_put_halves<V: I16FilterLanes + I16Pairs, const W: 
         }
         return;
     }
+
+    #[cfg(target_arch = "x86_64")]
+    if ICL
+        // SAFETY: the entry validated the padded source and output.
+        && unsafe {
+            try_icl::<W, true>(
+                (src_p, ss), (dst_p.cast(), ds), h, (fx, fy), (hx_id, vy_id), depth,
+            )
+        }
+    {
+        return;
+    }
     let (zero, max_v) = (V::splat(0), V::splat(depth.max() as i16));
     let r0 = inter_round0(depth);
     if vy_id {
@@ -1294,6 +1347,7 @@ pub(crate) unsafe fn unscaled_put_halves<V: I16FilterLanes + I16Pairs, const W: 
         unsafe { v_pass_halves::<V, _, _>(DirectPairRow { src_p, ss }, sink, fy, h) };
         return;
     }
+
     // SAFETY: window and even height `h` validated above.
     unsafe {
         if depth.bits() == 12 {
@@ -1339,7 +1393,11 @@ unsafe fn h_dispatch_halves<V: I16FilterLanes + I16Pairs, S: McHalvesSink<V>>(
 
 /// Unscaled `prep` over `V: I16FilterLanes + I16Pairs` packing two rows per vector (`2 * W == V::LANES`).
 #[inline(always)]
-pub(crate) unsafe fn unscaled_prep_halves<V: I16FilterLanes + I16Pairs, const W: usize>(
+pub(crate) unsafe fn unscaled_prep_halves<
+    V: I16FilterLanes + I16Pairs,
+    const W: usize,
+    const ICL: bool,
+>(
     (src, ss): (&[u16], usize),
     (dst, ds): (&mut [i16], usize),
     h: usize,
@@ -1380,6 +1438,18 @@ pub(crate) unsafe fn unscaled_prep_halves<V: I16FilterLanes + I16Pairs, const W:
         }
         return;
     }
+
+    #[cfg(target_arch = "x86_64")]
+    if ICL
+        // SAFETY: the entry validated the padded source and output.
+        && unsafe {
+            try_icl::<W, false>(
+                (src_p, ss), (dst_p.cast(), ds), h, (fx, fy), (hx_id, vy_id), depth,
+            )
+        }
+    {
+        return;
+    }
     let r0 = inter_round0(depth);
     let round = (1 << (r0 - 1)) - (bias << r0);
     if vy_id {
@@ -1408,6 +1478,7 @@ pub(crate) unsafe fn unscaled_prep_halves<V: I16FilterLanes + I16Pairs, const W:
         }
         return;
     }
+
     let sink_2d = PrepHalvesSink::<W, INTER_ROUND1_COMPOUND> {
         dst_p,
         ds,
@@ -1730,6 +1801,39 @@ pub(crate) unsafe fn warp8x8_u16_lanes<V: I16x8Shuffles>(
 // ------------------------------------------------------ ISA Instantiations --
 
 #[cfg(target_arch = "x86_64")]
+mod horizontal_icl;
+
+#[cfg(target_arch = "x86_64")]
+mod separable_icl;
+
+#[cfg(target_arch = "x86_64")]
+mod vertical_icl;
+
+/// Use the dedicated Ice Lake pass for the active axes where available.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn try_icl<const W: usize, const PUT: bool>(
+    src: (*const u16, usize),
+    dst: (*mut u16, usize),
+    height: usize,
+    (fx, fy): Av1Taps<'_>,
+    (horizontal_identity, vertical_identity): (bool, bool),
+    depth: BitDepth,
+) -> bool {
+    // SAFETY: the caller checked both spans and selected the complete tier.
+    unsafe {
+        match (horizontal_identity, vertical_identity) {
+            (false, true) => horizontal_icl::try_filter::<W, PUT>(src, dst, height, fx, depth),
+            (true, false) => vertical_icl::try_filter::<W, PUT>(src, dst, height, fy, depth),
+            (false, false) => {
+                separable_icl::try_filter::<W, PUT>(src, dst, height, (fx, fy), depth)
+            }
+            (true, true) => false,
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 mod x86 {
     use super::{
         Av1Filters, Av1McAxis, Av1Taps, BitDepth, HighAv1McFns, PlaneView, PlaneViewMut, WarpOut,
@@ -1751,7 +1855,7 @@ mod x86 {
                 depth: BitDepth,
             ) {
                 // SAFETY: AVX2 is enabled by this wrapper.
-                unsafe { unscaled_put_halves::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_put_halves::<$v, $w, false>(src, dst, h, taps, depth) }
             }
             #[target_feature(enable = "avx2")]
             unsafe fn $prep(
@@ -1762,7 +1866,7 @@ mod x86 {
                 depth: BitDepth,
             ) {
                 // SAFETY: AVX2 is enabled by this wrapper.
-                unsafe { unscaled_prep_halves::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_prep_halves::<$v, $w, false>(src, dst, h, taps, depth) }
             }
         };
     }
@@ -1778,7 +1882,7 @@ mod x86 {
                 depth: BitDepth,
             ) {
                 // SAFETY: AVX2 is enabled by this wrapper.
-                unsafe { unscaled_put_lanes::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_put_lanes::<$v, $w, false>(src, dst, h, taps, depth) }
             }
             #[target_feature(enable = "avx2")]
             unsafe fn $prep(
@@ -1789,7 +1893,7 @@ mod x86 {
                 depth: BitDepth,
             ) {
                 // SAFETY: AVX2 is enabled by this wrapper.
-                unsafe { unscaled_prep_lanes::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_prep_lanes::<$v, $w, false>(src, dst, h, taps, depth) }
             }
         };
     }
@@ -1800,6 +1904,30 @@ mod x86 {
     avx2_unscaled!(put_w32, prep_w32, I16x16, 32);
     avx2_unscaled!(put_w64, prep_w64, I16x16, 64);
 
+    #[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+    unsafe fn put_w8_512(
+        src: (&[u16], usize),
+        dst: (&mut [u16], usize),
+        h: usize,
+        taps: Av1Taps<'_>,
+        depth: BitDepth,
+    ) {
+        // SAFETY: this entry uses the complete Ice Lake feature set.
+        unsafe { unscaled_put_halves::<I16x16, 8, true>(src, dst, h, taps, depth) }
+    }
+
+    #[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+    unsafe fn prep_w4_512(
+        src: (&[u16], usize),
+        dst: (&mut [i16], usize),
+        h: usize,
+        taps: Av1Taps<'_>,
+        depth: BitDepth,
+    ) {
+        // SAFETY: this entry uses the complete Ice Lake feature set.
+        unsafe { unscaled_prep_halves::<I16x8, 4, true>(src, dst, h, taps, depth) }
+    }
+
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
     unsafe fn put_w16_512(
         src: (&[u16], usize),
@@ -1809,7 +1937,7 @@ mod x86 {
         depth: BitDepth,
     ) {
         // SAFETY: AVX-512F/BW/VL is enabled by this wrapper.
-        unsafe { unscaled_put_halves::<I16x32, 16>(src, dst, h, taps, depth) }
+        unsafe { unscaled_put_halves::<I16x32, 16, true>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -1821,7 +1949,7 @@ mod x86 {
         depth: BitDepth,
     ) {
         // SAFETY: AVX-512F/BW/VL is enabled by this wrapper.
-        unsafe { unscaled_put_lanes::<I16x32, 32>(src, dst, h, taps, depth) }
+        unsafe { unscaled_put_lanes::<I16x32, 32, true>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -1833,7 +1961,7 @@ mod x86 {
         depth: BitDepth,
     ) {
         // SAFETY: AVX-512F/BW/VL is enabled by this wrapper.
-        unsafe { unscaled_put_lanes::<I16x32, 64>(src, dst, h, taps, depth) }
+        unsafe { unscaled_put_lanes::<I16x32, 64, true>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -1845,7 +1973,7 @@ mod x86 {
         depth: BitDepth,
     ) {
         // SAFETY: AVX-512F/BW/VL is enabled by this wrapper.
-        unsafe { unscaled_prep_halves::<I16x32, 16>(src, dst, h, taps, depth) }
+        unsafe { unscaled_prep_halves::<I16x32, 16, true>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -1857,7 +1985,7 @@ mod x86 {
         depth: BitDepth,
     ) {
         // SAFETY: AVX-512F/BW/VL is enabled by this wrapper.
-        unsafe { unscaled_prep_lanes::<I16x32, 32>(src, dst, h, taps, depth) }
+        unsafe { unscaled_prep_lanes::<I16x32, 32, true>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -1869,7 +1997,7 @@ mod x86 {
         depth: BitDepth,
     ) {
         // SAFETY: AVX-512F/BW/VL is enabled by this wrapper.
-        unsafe { unscaled_prep_lanes::<I16x32, 64>(src, dst, h, taps, depth) }
+        unsafe { unscaled_prep_lanes::<I16x32, 64, true>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "avx2")]
@@ -1953,8 +2081,14 @@ mod x86 {
     };
 
     pub(super) const AVX512_FNS: HighAv1McFns = HighAv1McFns {
-        put: [put_w4, put_w8, put_w16_512, put_w32_512, put_w64_512],
-        prep: [prep_w4, prep_w8, prep_w16_512, prep_w32_512, prep_w64_512],
+        put: [put_w4, put_w8_512, put_w16_512, put_w32_512, put_w64_512],
+        prep: [
+            prep_w4_512,
+            prep_w8,
+            prep_w16_512,
+            prep_w32_512,
+            prep_w64_512,
+        ],
         scaled_put: scaled_put_avx512,
         scaled_prep: scaled_prep_avx512,
         warp8x8: warp8x8_avx2,
@@ -1970,6 +2104,8 @@ mod neon {
         unscaled_put_halves, unscaled_put_lanes, warp8x8_u16_lanes,
     };
     use crate::av1_mc::high_blend::neon::NEON_BLENDS;
+    #[cfg(target_os = "linux")]
+    use crate::simd::neon::I16x8Sve2;
     use crate::simd::neon::{I16x4, I16x8};
 
     #[target_feature(enable = "neon")]
@@ -1981,7 +2117,7 @@ mod neon {
         depth: BitDepth,
     ) {
         // SAFETY: NEON is enabled by this wrapper.
-        unsafe { unscaled_put_halves::<I16x8, 4>(src, dst, h, taps, depth) }
+        unsafe { unscaled_put_halves::<I16x8, 4, false>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "neon")]
@@ -1993,11 +2129,11 @@ mod neon {
         depth: BitDepth,
     ) {
         // SAFETY: NEON is enabled by this wrapper.
-        unsafe { unscaled_prep_halves::<I16x8, 4>(src, dst, h, taps, depth) }
+        unsafe { unscaled_prep_halves::<I16x8, 4, false>(src, dst, h, taps, depth) }
     }
 
     macro_rules! neon_unscaled {
-        ($put:ident, $prep:ident, $v:ty, $w:literal) => {
+        ($put:ident, $prep:ident, $w:literal) => {
             #[target_feature(enable = "neon")]
             unsafe fn $put(
                 src: (&[u16], usize),
@@ -2007,8 +2143,9 @@ mod neon {
                 depth: BitDepth,
             ) {
                 // SAFETY: NEON is enabled by this wrapper.
-                unsafe { unscaled_put_lanes::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_put_lanes::<I16x8, $w, false>(src, dst, h, taps, depth) }
             }
+
             #[target_feature(enable = "neon")]
             unsafe fn $prep(
                 src: (&[u16], usize),
@@ -2018,15 +2155,93 @@ mod neon {
                 depth: BitDepth,
             ) {
                 // SAFETY: NEON is enabled by this wrapper.
-                unsafe { unscaled_prep_lanes::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_prep_lanes::<I16x8, $w, false>(src, dst, h, taps, depth) }
             }
         };
     }
 
-    neon_unscaled!(put_w8, prep_w8, I16x8, 8);
-    neon_unscaled!(put_w16, prep_w16, I16x8, 16);
-    neon_unscaled!(put_w32, prep_w32, I16x8, 32);
-    neon_unscaled!(put_w64, prep_w64, I16x8, 64);
+    neon_unscaled!(put_w8, prep_w8, 8);
+    neon_unscaled!(put_w16, prep_w16, 16);
+    neon_unscaled!(put_w32, prep_w32, 32);
+    neon_unscaled!(put_w64, prep_w64, 64);
+
+    // Keep the SVE2 loop's stack frame out of the width entry point so the
+    // common short filters branch straight to the existing NEON functions.
+    #[cfg(target_os = "linux")]
+    #[inline(never)]
+    #[target_feature(enable = "neon")]
+    unsafe fn put_full_taps_sve2<const W: usize>(
+        src: (&[u16], usize),
+        dst: (&mut [u16], usize),
+        h: usize,
+        taps: Av1Taps<'_>,
+        depth: BitDepth,
+    ) {
+        // SAFETY: these functions are only reached from the SVE2 table.
+        unsafe { unscaled_put_lanes::<I16x8Sve2, W, false>(src, dst, h, taps, depth) }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline(never)]
+    #[target_feature(enable = "neon")]
+    unsafe fn prep_full_taps_sve2<const W: usize>(
+        src: (&[u16], usize),
+        dst: (&mut [i16], usize),
+        h: usize,
+        taps: Av1Taps<'_>,
+        depth: BitDepth,
+    ) {
+        // SAFETY: these functions are only reached from the SVE2 table.
+        unsafe { unscaled_prep_lanes::<I16x8Sve2, W, false>(src, dst, h, taps, depth) }
+    }
+
+    #[cfg(target_os = "linux")]
+    macro_rules! neon_sve2_unscaled {
+        ($put:ident, $prep:ident, $w:literal, $neon_put:ident, $neon_prep:ident) => {
+            unsafe fn $put(
+                src: (&[u16], usize),
+                dst: (&mut [u16], usize),
+                h: usize,
+                taps: Av1Taps<'_>,
+                depth: BitDepth,
+            ) {
+                // SAFETY: the SVE2 table also requires NEON.
+                unsafe {
+                    if taps.0[0] == 0 && taps.0[7] == 0 {
+                        $neon_put(src, dst, h, taps, depth)
+                    } else {
+                        put_full_taps_sve2::<$w>(src, dst, h, taps, depth)
+                    }
+                }
+            }
+
+            unsafe fn $prep(
+                src: (&[u16], usize),
+                dst: (&mut [i16], usize),
+                h: usize,
+                taps: Av1Taps<'_>,
+                depth: BitDepth,
+            ) {
+                // SAFETY: the SVE2 table also requires NEON.
+                unsafe {
+                    if taps.0[0] == 0 && taps.0[7] == 0 {
+                        $neon_prep(src, dst, h, taps, depth)
+                    } else {
+                        prep_full_taps_sve2::<$w>(src, dst, h, taps, depth)
+                    }
+                }
+            }
+        };
+    }
+
+    #[cfg(target_os = "linux")]
+    neon_sve2_unscaled!(put_sve2_w8, prep_sve2_w8, 8, put_w8, prep_w8);
+    #[cfg(target_os = "linux")]
+    neon_sve2_unscaled!(put_sve2_w16, prep_sve2_w16, 16, put_w16, prep_w16);
+    #[cfg(target_os = "linux")]
+    neon_sve2_unscaled!(put_sve2_w32, prep_sve2_w32, 32, put_w32, prep_w32);
+    #[cfg(target_os = "linux")]
+    neon_sve2_unscaled!(put_sve2_w64, prep_sve2_w64, 64, put_w64, prep_w64);
 
     #[target_feature(enable = "neon")]
     unsafe fn scaled_put_neon(
@@ -2073,6 +2288,25 @@ mod neon {
         warp8x8: warp8x8_neon,
         blend: NEON_BLENDS,
     };
+
+    #[cfg(target_os = "linux")]
+    pub(super) const SVE2_FNS: HighAv1McFns = HighAv1McFns {
+        put: [
+            put_w4,
+            put_sve2_w8,
+            put_sve2_w16,
+            put_sve2_w32,
+            put_sve2_w64,
+        ],
+        prep: [
+            prep_w4,
+            prep_sve2_w8,
+            prep_sve2_w16,
+            prep_sve2_w32,
+            prep_sve2_w64,
+        ],
+        ..NEON_FNS
+    };
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -2094,7 +2328,7 @@ mod simd128 {
         depth: BitDepth,
     ) {
         // SAFETY: SIMD128 is enabled by this wrapper.
-        unsafe { unscaled_put_halves::<I16x8, 4>(src, dst, h, taps, depth) }
+        unsafe { unscaled_put_halves::<I16x8, 4, false>(src, dst, h, taps, depth) }
     }
 
     #[target_feature(enable = "simd128")]
@@ -2106,7 +2340,7 @@ mod simd128 {
         depth: BitDepth,
     ) {
         // SAFETY: SIMD128 is enabled by this wrapper.
-        unsafe { unscaled_prep_halves::<I16x8, 4>(src, dst, h, taps, depth) }
+        unsafe { unscaled_prep_halves::<I16x8, 4, false>(src, dst, h, taps, depth) }
     }
 
     macro_rules! simd128_unscaled {
@@ -2120,7 +2354,7 @@ mod simd128 {
                 depth: BitDepth,
             ) {
                 // SAFETY: SIMD128 is enabled by this wrapper.
-                unsafe { unscaled_put_lanes::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_put_lanes::<$v, $w, false>(src, dst, h, taps, depth) }
             }
             #[target_feature(enable = "simd128")]
             unsafe fn $prep(
@@ -2131,7 +2365,7 @@ mod simd128 {
                 depth: BitDepth,
             ) {
                 // SAFETY: SIMD128 is enabled by this wrapper.
-                unsafe { unscaled_prep_lanes::<$v, $w>(src, dst, h, taps, depth) }
+                unsafe { unscaled_prep_lanes::<$v, $w, false>(src, dst, h, taps, depth) }
             }
         };
     }

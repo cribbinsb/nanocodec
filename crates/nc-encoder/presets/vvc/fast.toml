@@ -33,7 +33,7 @@ vvc.chroma_qp_offset = -1
 decision.lambda_scale = 0.8
 vvc.inter_rounding = 95
 vvc.unit_zero_rd = 0
-rate.fixed_qp_profile = 0
+# VVC Default's fixed-QP profile is unpinned (2026-11-24, Brief 19 Step 4; CBR stays byte-identical).
 planner.depth_removal_th_32_16 = 25
 planner.depth_removal_th_16_8 = 50
 adapt.subpel = 1
@@ -67,3 +67,40 @@ filter.usage_quiet_share = 0.75
 # stays off here: its k 0.6 charge on +3-4 % CPU (VVC faster, measured) outweighs the quick gain
 # (L1 +0.29 %, probe -0.47 %).
 layers.propagation = 0
+# Medium's key RD search (2026-11-21) was screened on medium only. Medium's finer periodic
+# keys (rate.key_level_finer 3) are not pinned since keys are capped at 1.0 buffers here
+# (e84ef02c7): under the 0.8 cap periodic keys sat at the cap and the finer level could not
+# reach them (fast-end, 2026-11-22; docs/handoff/rate-control.md "The fast end under the
+# bound").
+planner.key_rd_split = 0
+
+# G2 motion / sub-pel exit shifts: VVC medium's (DEFAULT_PARAMS, 2026-11-23)
+# pinned off here, not screened on this rung.
+analysis.window_exit_shift_bias = 0
+analysis.window_exit_shift_lambda = 0
+analysis.window_exit_shift_noise = 0
+analysis.window_exit_shift_nonbase = 0
+analysis.zero_gate_shift_bias = 0
+analysis.zero_gate_shift_lambda = 0
+analysis.zero_gate_shift_neighbour_mv = 0
+analysis.zero_gate_shift_noise = 0
+analysis.zero_gate_shift_nonbase = 0
+decision.skip_no_refine_shift_bias = 0
+decision.skip_no_refine_shift_lambda = 0
+decision.skip_no_refine_shift_noise = 0
+decision.skip_no_refine_shift_nonbase = 0
+decision.subpel_seed_shift_bias = 0
+decision.subpel_seed_shift_lambda = 0
+decision.subpel_seed_shift_noise = 0
+decision.subpel_seed_shift_nonbase = 0
+decision.subpel_seed_shift_size = 0
+decision.subpel_seed_shift_zero_mv = 0
+
+# Fixed QP only (`fixed_qp.`, 2026-11-24, Brief 19 Step 4; docs/analysis/fixed-qp-fast-rungs-2026-11-24.md):
+# unpinning `rate.fixed_qp_profile` (`cadence_static_scaling = 0`) and coarser moving keys
+# (`rate.fixed_qp_moving_key = 6`). nceval.fixedqp ab (draw fixedqp-2026-11-24, n=24):
+# 150 f J -1.6% [-3.0, -0.3], 600 f J -1.7% [-2.7, -1.0]; fixed-QP CPU (aws_cpu_ab, c8i / c8g):
+# +1.07% / +0.94% (mean +1.01%; -1.69% J / 1% CPU vs front slope -0.290). CBR streams are byte-identical.
+fixed_qp.refs.second_full = 0
+fixed_qp.rate.cadence_static_scaling = 0
+fixed_qp.rate.fixed_qp_moving_key = 6

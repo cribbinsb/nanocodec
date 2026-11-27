@@ -956,7 +956,7 @@ fn superblock_quantizer_deltas_roundtrip() {
         encoder.filter_frame(&input, &mut expected);
         let packet = encoder.end_frame();
         encoder.commit_frame();
-        assert_eq!(decoder.peek_header(&packet).delta_q_res, Some(0));
+        assert_eq!(decoder.peek_header(&packet).delta_q_res, Some(2));
         let decoded = decoder.decode(&packet).unwrap();
         assert_picture(&decoded, &expected);
         expected.extend_borders();

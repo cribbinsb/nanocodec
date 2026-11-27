@@ -43,7 +43,7 @@ function facts(chart, root) {
       const p = chart.points[f];
       return el('details', {}, el('summary', {}, p.label),
         el('code', { class: 'command' }, p.cbr_command),
-        p.timing ? el('p', { class: 'note' }, `Timed at fixed QP${p.timing_is_twin ? ' (as its default-tuned twin)' : ''}:`) : null,
+        p.timing ? el('p', { class: 'note' }, `Timed in the same CBR mode${p.timing_is_twin ? ' (as its default-tuned twin)' : ''}:`) : null,
         p.timing ? el('code', { class: 'command' }, p.timing.command) : null);
     }),
     sources(['docs/results/bd-vs-speed-plan.json', 'eval/nceval/cbr.py']));

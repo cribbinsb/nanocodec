@@ -368,7 +368,7 @@ impl<C: Collect> Scan<'_, C> {
                 (mi_col + col_offset + i) as usize,
             );
             let cand = *self.grid.at(r, c);
-            let cand_size = cand.size_mi() as i32;
+            let cand_size = cand.width_mi() as i32;
             let mut len = size.min(cand_size);
             if use_step_16 {
                 len = len.max(MI_16X16);
@@ -412,7 +412,7 @@ impl<C: Collect> Scan<'_, C> {
                 (mi_col + col_offset) as usize,
             );
             let cand = *self.grid.at(r, c);
-            let cand_size = cand.size_mi() as i32;
+            let cand_size = cand.height_mi() as i32;
             let mut len = size.min(cand_size);
             if use_step_16 {
                 len = len.max(MI_16X16);
@@ -576,14 +576,14 @@ fn extend_single<C: Collect>(
         let (r, c) = ((mi_row - 1) as usize, (mi_col + idx) as usize);
         let cand = *grid.at(r, c);
         push((r, c), cand, stack);
-        idx += cand.size_mi() as i32;
+        idx += cand.width_mi() as i32;
     }
     let mut idx = 0;
     while max_col_offset.abs() >= 1 && idx < mi_size && stack.count < MAX_MV_REF_CANDIDATES {
         let (r, c) = ((mi_row + idx) as usize, (mi_col - 1) as usize);
         let cand = *grid.at(r, c);
         push((r, c), cand, stack);
-        idx += cand.size_mi() as i32;
+        idx += cand.height_mi() as i32;
     }
 }
 
@@ -738,7 +738,7 @@ fn extend_compound(
             &mut other,
             &mut other_count,
         );
-        idx += cand.size_mi() as i32;
+        idx += cand.width_mi() as i32;
     }
     let mut idx = 0;
     while max_col_offset.abs() >= 1 && idx < mi_size {
@@ -752,7 +752,7 @@ fn extend_compound(
             &mut other,
             &mut other_count,
         );
-        idx += cand.size_mi() as i32;
+        idx += cand.height_mi() as i32;
     }
     let mut combined = [[Av1Mv::ZERO; 2]; MAX_MV_REF_CANDIDATES];
     for target_list in 0..2 {
@@ -815,10 +815,11 @@ fn clamp_mv_ref(mv: Av1Mv, target: Target, grid: &ModeInfoGrid) -> Av1Mv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modeinfo::Log2Dims;
 
     fn inter(size_log2_mi: u8, row: i16, col: i16, new_mv: bool) -> ModeInfo {
         ModeInfo {
-            size_log2_mi,
+            size_mi: Log2Dims::square(size_log2_mi),
             skip: false,
             mode_detail: InterRefs::Last.code(),
             mode: if new_mv {
@@ -827,7 +828,7 @@ mod tests {
                 BlockMode::Nearest
             },
             mv: Av1Mv { row, col },
-            tx_log2: size_log2_mi + MI_LOG2 as u8,
+            tx: Log2Dims::square(size_log2_mi + MI_LOG2 as u8),
         }
     }
 

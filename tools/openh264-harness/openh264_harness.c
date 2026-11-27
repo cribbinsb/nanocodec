@@ -7,8 +7,12 @@
  * maps command-line flags one-to-one onto SEncParamExt.
  *
  * Input: raw I420 YUV. Output: an Annex-B H.264 elementary stream.
- * Every input frame must produce an output frame (frame skip is off); a
- * skipped frame is an error, because metrics compare frame by frame.
+ * With frame skip off (the benchmark's main rows) every input frame must
+ * produce an output frame, and a skipped frame is an error. With frame skip on
+ * (the labelled '+drop' row, openh264's own default) a skipped frame writes
+ * nothing; Annex B carries no timestamps, so --coded-frames then names a file
+ * that receives, one per line, the input frame index of each coded picture in
+ * stream order, from which the scorer places them (procedure task T16).
  *
  * openh264 is BSD-2 (Cisco). This file only uses its public API.
  */
@@ -43,6 +47,7 @@ typedef struct HarnessOptions {
     bool long_term_reference;
     bool frame_skip;
     int threads;
+    const char *coded_frames_path; /* required with --frame-skip 1 */
 } HarnessOptions;
 
 static void usage_and_exit(const char *message)
@@ -56,7 +61,7 @@ static void usage_and_exit(const char *message)
             "  [--usage camera-realtime] [--complexity low|medium|high] [--cabac 0|1]\n"
             "  [--temporal-layers 1-4] [--adaptive-quant 0|1] [--scene-change 0|1]\n"
             "  [--background-detection 0|1] [--denoise 0|1] [--ltr 0|1]\n"
-            "  [--frame-skip 0|1] [--threads N]\n");
+            "  [--frame-skip 0|1 [--coded-frames list.txt]] [--threads N]\n");
     exit(2);
 }
 
@@ -134,6 +139,7 @@ static HarnessOptions parse_options(int argc, char **argv)
         else if (!strcmp(flag, "--ltr"))                  o.long_term_reference = parse_bool(flag, v);
         else if (!strcmp(flag, "--frame-skip"))           o.frame_skip = parse_bool(flag, v);
         else if (!strcmp(flag, "--threads"))              o.threads = parse_int(flag, v, 1, 64);
+        else if (!strcmp(flag, "--coded-frames"))         o.coded_frames_path = v;
         else {
             fprintf(stderr, "openh264-harness: unknown flag %s\n", flag);
             usage_and_exit(NULL);
@@ -142,6 +148,8 @@ static HarnessOptions parse_options(int argc, char **argv)
     if (!o.input_path || !o.output_path || !o.width || !o.height || o.fps <= 0.0f ||
         !o.frames || (o.qp < 0) == (o.bitrate_kbps == 0) || !o.intra_period)
         usage_and_exit("missing required option");
+    if (o.frame_skip != (o.coded_frames_path != NULL))
+        usage_and_exit("--coded-frames is required with --frame-skip 1 and only then");
     if (o.width % 2 || o.height % 2)
         usage_and_exit("width and height must be even (I420)");
     return o;
@@ -217,7 +225,8 @@ int main(int argc, char **argv)
 
     FILE *in = fopen(o.input_path, "rb");
     FILE *out = fopen(o.output_path, "wb");
-    if (!in || !out) {
+    FILE *coded = o.coded_frames_path ? fopen(o.coded_frames_path, "w") : NULL;
+    if (!in || !out || (o.coded_frames_path && !coded)) {
         perror("openh264-harness: open");
         return 1;
     }
@@ -267,19 +276,23 @@ int main(int argc, char **argv)
             break;
         }
         if (info.eFrameType == videoFrameTypeSkip) {
+            if (o.frame_skip)
+                continue; /* the '+drop' row: nothing coded for this input frame */
             fprintf(stderr, "openh264-harness: frame %d was skipped; every frame must be "
                             "coded for frame-by-frame metrics\n", i);
             status = 1;
             break;
         }
         write_frame(out, &info);
+        if (coded)
+            fprintf(coded, "%d\n", i);
     }
 
     (*encoder)->Uninitialize(encoder);
     WelsDestroySVCEncoder(encoder);
     free(frame);
     fclose(in);
-    if (fclose(out) != 0) {
+    if (fclose(out) != 0 || (coded && fclose(coded) != 0)) {
         perror("openh264-harness: close output");
         status = 1;
     }

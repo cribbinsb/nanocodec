@@ -28,19 +28,21 @@ commit's `presets/`) and on the Jetson (`nanocodec`, release), each with a
                binary on both machines and only takes COMMIT's presets.
   verify       for --retime families: their streams at COMMIT must equal their
                recorded build's (tools/dev/stream_check.py: the timing plan's
-               fixed-QP streams and a 600 kbps CBR stream on each timing clip, by
-               SHA-256); they keep their quality points and are timed on COMMIT's
+               CBR timing encodes, by SHA-256); they keep their quality points and are timed on COMMIT's
                build (`timed_on` in bd-vs-speed-builds.json).
   delete       the replaced build's cached chart points of each refreshed family
                (VAL ladder and low rungs, by exact identity: cbr.Bench.result_path),
                so each curve keeps one result version.
-  scan         the timing plan's quantizers of the refreshed and retimed families
-               (our encoders by `--preset NAME`, so each build applies its own preset)
-               (anchor_chart_timing.py scan) in docs/results/bd-vs-speed-plan.json.
-  measure      the refreshed families' points (ladder and low rungs), encoded and scored
-               on rented machines (tools/dev/aws_heldout_chart.py `run`, `score-cloud`,
-               the main chart's VAL clips as a clip-set file with the chart's
-               references and zero lines beside them), the results into this PC's
+  plan         the timing plan of the refreshed and retimed families (anchor_chart_timing.py
+               plan --all-encodes, on the build box): every one of their CBR quality
+               encodes (nceval.chart_timing.every_job: all clips and rungs, the low rungs on
+               --low-clips), into the chart's plan (docs/results/bd-vs-speed-plan.json;
+               bd-vs-speed-<set>-plan.json on a clip set).
+  measure      every point the render reads (ladder and low rungs of every family of
+               the record, the references, both zero lines, the metric-tuned side
+               points; cached ones cost nothing), encoded and scored on rented machines
+               in small sessions side by side (tools/dev/heldout_fleet.py; the main
+               chart's VAL clips as a clip-set file), the results into this PC's
                point cache under the same identities a local measure gives them;
                `--local`: nceval.chart measure here, in parts that fit the 30-minute
                budget, the last part adding the low rungs.
@@ -75,9 +77,11 @@ independent_fresh_2026-11-13.json) the same steps refresh a chart on that clip s
 whose families and builds are recorded apart (docs/results/bd-vs-speed-<set>-builds.json;
 `--seed` starts the record with every family on COMMIT's build). Its points are too many
 for this PC: measure encodes and scores them on rented machines (tools/dev/
-aws_heldout_chart.py `run`, then `score-cloud`, checkpointed; `--cloud-regions`,
-`--cloud-budget`; one scoring session per CLOUD_SESSION_STREAM_GB of streams, at least
-one per region), and render reads them from those streams; `delete` removes a replaced
+heldout_fleet.py: lanes of ~10 box-minutes, `--cloud-boxes` side by side, each
+aws_heldout_chart.py `run` then `score-cloud` on its own clips, a lost session relaunched
+on its lane's remaining work; `--cloud-budget` caps each session), every point the render
+reads (ours, the references, both zero lines, the metric-tuned side points), and render
+only reads the store (it fails listing any point missing); `delete` removes a replaced
 build's streams with its points. The speed axis stays the main chart's: timed on
 its timing clips, said so under the chart. A build that any record still uses is never
 removed.
@@ -86,9 +90,9 @@ Independent steps overlap, so the wall time is the measure (or the Jetson's
 lock wait), not the sum:
 
   x86 scoring build -> delete -> measure ---------------------.
-                              `-> scan -> time-x86 ---------|-> render
+                              `-> plan -> time-x86 ---------|-> render
   x86 release build (background) -----'                     |
-  Jetson build (background) -> (after scan) time-jetson ----'   render -> check
+  Jetson build (background) -> (after plan) time-jetson ----'   render -> check
 
 time-x86 runs beside measure: it times on a rented machine, so this PC's load does
 not reach it (on the PC it had to wait for measure). time-jetson times only the
@@ -117,6 +121,7 @@ import math
 import os
 import shlex
 import shutil
+import statistics
 import subprocess
 import sys
 import threading
@@ -138,7 +143,7 @@ BUILDS_ROOT = "nanocodec-data/charts/builds"
 #: x86 build trees and target directories: the timed `release` build (fat LTO) and
 #: the scoring `gate` build (Cargo.toml: no LTO, incremental; LTO and unit
 #: splitting change no stream, so its points are the release build's, and both
-#: timing steps check every timed stream against the scan's bytes).
+#: timing steps check every timed stream against the plan's bytes).
 BUILD_TREE = DATA / "worktrees" / "chart-build"
 BUILD_TARGET = DATA / "targets" / "chart-build"
 SCORING_TREE = DATA / "worktrees" / "chart-build-gate"
@@ -147,7 +152,7 @@ SCORING_TARGET = DATA / "targets" / "chart-build-gate"
 #: build, so it is copied instead of building one (7 min in a cold tree).
 GATE_DONORS = (DATA / "targets" / "verifier" / "gate" / "nanocodec",)
 SCORING_PROFILE = "gate"
-#: A build directory's binaries: the scoring build (scan, measure, render) and
+#: A build directory's binaries: the scoring build (plan, measure, render) and
 #: the timed plain release build (time-x86), what users build. It was a
 #: profile-guided build until 2026-11-15 (`nanocodec-timed-pgo`: 1.4-3.2 % less
 #: CPU, ~25 min a refresh); the new name keeps a build without it from lending
@@ -166,10 +171,14 @@ CLIPSET_BUILDS = RESULTS + "/bd-vs-speed-{stem}-builds.json"
 #: The held-out chart's rented sessions: streams (bitstreams, logs) under the data root,
 #: scoring sessions side by side and each one's limit (aws_heldout_chart.py).
 CLIPSET_STREAMS = DATA / "work" / "heldout-chart" / "streams-{stem}"
-#: The remote build box (scan) and its scans side by side (each 3 encodes at a time:
-#: anchor_chart_timing.SCAN_PROBES; the box has 96 vCPU among its job slots).
+#: The remote build box (plan) and the plan's encodes side by side there (the box has
+#: 96 vCPU among its job slots).
 NC_REMOTE = DATA / "bin" / "nc-remote"
-BOX_SCAN_WORKERS = 12
+BOX_PLAN_WORKERS = 24
+#: The encoders a plan's streams are sized with, synced to the build box (vpxenc is a
+#: link into the vp9-av2 anchors; the chart's openh264 harness is the rate-control one).
+PLAN_TOOLS = (DATA / "work/ratecontrol/bin", DATA / "anchors/x86_64/bin",
+              DATA / "anchors/vp9-av2/bin")
 #: The main chart's clips as a clip-set file for the rented machines (under WORK).
 MAIN_CLIPSET = "main-val.json"
 #: The charts on other clip sets than the main chart's are the results site's chart
@@ -179,24 +188,21 @@ MAIN_CLIPSET = "main-val.json"
 HELDOUT_TUNED_ANCHOR = "x264-medium~psnr"
 #: Families whose streams are compared at once (each check encodes on one CPU).
 STREAM_CHECK_WORKERS = 3
-#: A clip-set refresh's scoring sessions side by side, one per region listed
-#: (--cloud-regions): each region's spot quota (512 vCPU) holds two c7a.metal-48xl,
-#: and both regions have launched them (2026-11-18; eu-west-1 had no capacity that day).
-CLOUD_REGIONS = ("eu-north-1", "eu-central-1")
-#: The USD cap of each rented session (the encode and each scoring session). A session
-#: refuses to start unless its worst case (1.5x the spot price over its 90-minute
-#: lifetime) fits: eu-central-1's c7a.metal-48xl was $3.01/h on 2026-11-18, a $6.77
-#: worst case (eu-north-1 $1.05/h). Spend is the time used, not the cap.
-CLOUD_SESSION_BUDGET = 8.0
-CLOUD_SCORE_MINUTES = 120
-#: The most stream data one scoring session takes up (each gets a root volume sized to
-#: its share, aws_heldout_chart.root_gb; 2026-11-20: 209 clips' ~17 GB in one session
-#: took 5.6 min to upload and filled a 24 GB root): more data means more sessions, run
-#: one per region at a time.
-CLOUD_SESSION_STREAM_GB = 8
+#: The USD cap of each rented session (heldout_fleet.py: a c7a.24xlarge for ~10 minutes,
+#: $0.57/h spot in eu-north-1 on 2026-11-21, so its 45-minute worst case is ~$0.65; the
+#: cap leaves room for the throughput ladder's larger fallbacks). Spend is the time used.
+CLOUD_SESSION_BUDGET = 3.0
+#: Lanes side by side per chart (heldout_fleet.BOXES): with a release's other chains,
+#: within eu-north-1's 1,200 spot vCPU.
+CLOUD_BOXES = 5
+#: The fleet's status lines, echoed from its log into this refresh's own output.
+FLEET_MARK = "[fleet]"
 PLAN_FILE = f"{RESULTS}/bd-vs-speed-plan.json"
 TIMING_FILE = f"{RESULTS}/bd-vs-speed-timing.json"
 TIMING_X86_FILE = f"{RESULTS}/bd-vs-speed-timing-x86.json"
+#: A chart on another clip set times its own clips: its plan and timing records beside its
+#: build record (each chart's speed axis times the encodes its quality axis scores).
+CLIPSET_RESULT = RESULTS + "/bd-vs-speed-{stem}-{kind}.json"
 #: The hardware encoders' (NVENC) wall-clock fps (tools/dev/nvenc_timing.py); render
 #: adds them, measured on this PC's GPU, beside the chart.
 TIMING_HARDWARE_FILE = f"{RESULTS}/bd-vs-speed-timing-nvenc.json"
@@ -217,13 +223,15 @@ COMPLETE_MARKER = "COMMIT"
 #: x86 timing machines side by side (aws_timing.TIMING_MACHINE, one pair at a time on
 #: each): a whole-chart re-time takes about 10 min instead of 40.
 X86_SESSIONS = 4
-STEPS = ("build", "verify", "delete", "scan", "measure", "time-x86", "time-jetson", "render",
+STEPS = ("build", "verify", "delete", "plan", "measure", "time-x86", "time-jetson", "render",
          "check")
 MEMORY_SCOPE = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=8G",
                 "-p", "MemorySwapMax=0"]
 ANCHOR = "x264-medium"
 #: The stored Jetson anchor timing, in `anchor_chart_timing.py time --anchor-from` form.
 STORED_ANCHOR = "t-stored-anchor.json"
+#: The full timing plan as the Jetson's timing reads it (nceval.chart_timing.load_plan).
+JETSON_PLAN = "plan.json"
 #: Times a quiet-board timing slot is retried before giving up (jetson-timed.sh
 #: refuses after 5 minutes of load).
 JETSON_ATTEMPTS = 6
@@ -241,6 +249,8 @@ class Refresh:
         self.commit = git("rev-parse", "--short=8", f"{args.commit}^{{commit}}")
         self.families = family_list(args.families)
         self.builds_file = REPO / builds_file(args.clipset)
+        self.plan_file, self.timing_file, self.timing_x86_file = (
+            REPO / chart_result(args.clipset, kind) for kind in ("plan", "timing", "timing-x86"))
         if self.builds_file.exists():
             self.record = json.loads(self.builds_file.read_text())
         elif args.seed:  # written with the first step that saves the record
@@ -274,7 +284,7 @@ class Refresh:
             raise SystemExit(f"--retime: not chart families, or also in --families: "
                              f"{', '.join(clash)}")
         #: Every family timed on this commit's build.
-        #: Reference encoders to scan and time on COMMIT's session (--time-anchors):
+        #: Reference encoders to plan and time on COMMIT's session (--time-anchors):
         #: new zero-line neighbours (the fixed-QP chart's slower settings).
         self.anchors = [a for a in getattr(args, "time_anchors", "").split(",") if a]
         self.timed = self.targets + self.retimed + self.anchors
@@ -291,16 +301,24 @@ class Refresh:
             print(line, flush=True)
 
     def run(self, cmd: list[str], log: str, cwd: Path = REPO, scope: bool = False,
-            env: dict[str, str] | None = None) -> None:
+            env: dict[str, str] | None = None, echo: str | None = None) -> None:
+        """`cmd` with its output in `log`; lines containing `echo` also go to this
+        refresh's own output (a fleet's status, so a stall shows in the top-level log)."""
         cmd = (MEMORY_SCOPE + cmd) if scope else cmd
         self.say(f"  $ {shlex.join(cmd)}  [{self.work / 'logs' / log}]")
         if self.args.dry_run:
             return
         (self.work / "logs").mkdir(exist_ok=True)
         with (self.work / "logs" / log).open("a") as out:
-            status = subprocess.run(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL,
-                                    env={**os.environ, **(env or {})}).returncode
+            process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                       text=True, env={**os.environ, **(env or {})})
+            for line in process.stdout:
+                out.write(line)
+                out.flush()
+                if echo and echo in line:
+                    self.say(f"  {line.rstrip()}")
+            status = process.wait()
         if status:
             raise SystemExit(f"failed ({status}); see {self.work / 'logs' / log}")
 
@@ -581,7 +599,7 @@ class Refresh:
             self.say(f"  {family}: streams of {old.name} vs {self.commit}")
             if not self.args.dry_run and not stream_check.identical(
                     family, (old / SCORING_BINARY, old / "presets"),
-                    (new / SCORING_BINARY, new / "presets"), REPO / PLAN_FILE):
+                    (new / SCORING_BINARY, new / "presets"), self.plan_file):
                 changed.append(family)
         if changed:
             raise SystemExit(f"streams changed, give them in --families: {','.join(changed)}")
@@ -598,7 +616,7 @@ class Refresh:
             return (not self.args.dry_run and (old / SCORING_BINARY).is_file()
                     and stream_check.identical(family, (old / SCORING_BINARY, old / "presets"),
                                                (new / SCORING_BINARY, new / "presets"),
-                                               REPO / PLAN_FILE))
+                                               self.plan_file))
         # Side by side: one at a time the checks of 18 families took 10 min.
         recorded = [f for f in self.stale if f not in self.new]  # a new family has no old build
         with ThreadPoolExecutor(STREAM_CHECK_WORKERS) as pool:
@@ -632,39 +650,61 @@ class Refresh:
                 shutil.rmtree(self.build_dir(build), ignore_errors=True)
                 ssh(f"rm -rf ~/{BUILDS_ROOT}/{build}")
 
-    def scan(self) -> None:
+    def plan(self) -> None:
         if not self.timed:
             return
         build = self.build_dir(self.commit)
+        clipset = ["--clipset", str(Path(self.args.clipset).resolve())] if self.args.clipset else []
         if self.args.local:
-            self.run(["python3", "../tools/dev/anchor_chart_timing.py", "scan",
+            self.run(["python3", "../tools/dev/anchor_chart_timing.py", "plan",
                       "--binary", str(build / SCORING_BINARY), "--presets-dir",
-                      str(build / "presets"), "--plan", str(REPO / PLAN_FILE),
-                      "--points", ",".join(self.timed)],
-                     "scan.log", REPO / "eval", scope=True, env={"PYTHONPATH": "."})
+                      str(build / "presets"), "--plan", str(self.plan_file), *clipset,
+                      *self.encode_set(), "--points", ",".join(self.timed)],
+                     "plan.log", REPO / "eval", scope=True, env={"PYTHONPATH": "."})
             return
         # On the build box (nc-remote: this tree synced, the build and the timing clips
-        # up, the plan back): its quantizers are sizes of our streams, which are
-        # bit-exact across machines, and its keys hash our binary and the clip files.
-        self.run(self.box_scan_command(build), "scan.log")
+        # up, the plan back): our streams are bit-exact across machines, and each entry's
+        # key hashes the tool and the clip file.
+        self.run(self.box_plan_command(build), "plan.log")
 
-    def box_scan_command(self, build: Path) -> list[str]:
+    def low_clips(self) -> str:
+        """The chart's low-rung clips: --low-clips, else the stored plan's."""
+        if self.args.low_clips is not None:
+            return self.args.low_clips
+        stored = json.loads(self.plan_file.read_text()) if self.plan_file.is_file() else {}
+        return ",".join(stored.get("low_clips", []))
+
+    def encode_set(self) -> list[str]:
+        """anchor_chart_timing plan's options for every quality encode of the chart."""
+        low = self.low_clips()
+        return ["--all-encodes", *(["--low-clips", low] if low else [])]
+
+    def box_plan_command(self, build: Path) -> list[str]:
         sys.path.insert(0, str(REPO / "eval"))
-        from anchor_chart_timing import CLIPS
+        from nceval.chart import chart_clips
+        from nceval.chart_timing import PLAN_STORE
         from nceval.config import load_paths
-        from nceval.realuse import main_clips
-        paths = load_paths()
-        clips = main_clips(paths)
+        timed = chart_clips(self.args.clipset)
+        clip_file = (Path(self.args.clipset).resolve() if self.args.clipset
+                     else load_paths().clips / "main.json")
         on_box = f"~/{BUILDS_ROOT}/{build.name}"
-        scan = shlex.join(["python3", "../tools/dev/anchor_chart_timing.py", "scan",
-                           "--plan", f"../{PLAN_FILE}", "--points", ",".join(self.timed),
-                           "--workers", str(BOX_SCAN_WORKERS)])
+        plan_path = self.plan_file.relative_to(REPO)
+        plan = shlex.join(["python3", "../tools/dev/anchor_chart_timing.py", "plan",
+                           "--plan", f"../{plan_path}", "--points", ",".join(self.timed),
+                           *(["--clipset", str(clip_file)] if self.args.clipset else []),
+                           *self.encode_set(), "--workers", str(BOX_PLAN_WORKERS)])
+        # the full plans go up and come back (a refresh of some families keeps the others'
+        # entries); the repository keeps the plan's record
+        PLAN_STORE.mkdir(parents=True, exist_ok=True)
+        store = f"~/{PLAN_STORE.relative_to(Path.home())}"
         return [str(NC_REMOTE), "run", "--worktree", str(REPO), "--name",
-                f"chart-scan-{self.commit}", "--sync", str(build),
-                *(a for name in CLIPS for a in ("--clip", str(clips[name].yuv))),
-                "--clip", str(paths.clips / "main.json"), "--fetch", PLAN_FILE, "--",
-                f"cd eval && PYTHONPATH=. {scan} --binary {on_box}/{SCORING_BINARY} "
-                f"--presets-dir {on_box}/presets"]
+                f"chart-plan-{self.commit}", "--sync", str(build), "--data", store,
+                "--fetch", store,
+                *(a for tools in PLAN_TOOLS for a in ("--sync", str(tools))),
+                *(a for clip in timed for a in ("--clip", str(clip.yuv))),
+                "--clip", str(clip_file), "--fetch", str(plan_path), "--",
+                f"cd eval && PYTHONPATH=. {plan} --binary {on_box}/{SCORING_BINARY} "
+                f"--presets-dir {on_box}/presets --store {store}"]
 
     def measured(self) -> list[str] | None:
         """The families measure takes: every chart point (None) on --rescore."""
@@ -698,41 +738,34 @@ class Refresh:
                 job.result()
 
     def cloud_measure(self) -> None:
-        """The refreshed families on --clipset: encoded on one rented machine, scored on
-        one more per --cloud-regions region side by side (aws_heldout_chart.py), every
-        point's result
-        brought back into this PC's point cache. The sessions judge the low rungs on the
-        refreshed families (`--build`, not `--record`: the remote reads a record from the
-        repository's HEAD, and this refresh's record is not committed yet); a clip that
-        the whole chart puts on low rungs beyond those is scored by the render here."""
+        """Every point the render reads, encoded and scored on rented machines by
+        tools/dev/heldout_fleet.py (small sessions side by side, a lost one relaunched
+        on its own clips, results back in this PC's point cache as they finish): every
+        family of the chart's record on its build (`--record`, so the low rungs are
+        judged on the whole chart, as the render judges them; unchanged families' points
+        are cached and cost nothing), the references and both zero lines, and the
+        metric-tuned side points (cached from the last release where their tools did not
+        change: 0.6.0's render coded 15,878 of them on this PC)."""
         if self.args.rescore:
             raise SystemExit("--rescore on --clipset: give the families instead")
-        common = ["--clipset", str(self.cloud_clipset()), "--streams",
-                  str(self.streams()), "--build", str(self.build_dir(self.commit)),
-                  "--families", ",".join(self.targets)]
-        if not self.args.clipset:
-            # the main chart's references and both zero lines ride along (cached ones cost
-            # nothing), so its low rungs are judged on the whole chart as a local measure
-            # judges them, and render finds every point of the chart cached
-            common += ["--references", ",".join(main_references())]
-        regions = self.args.cloud_regions.split(",")
-        budget = self.args.cloud_budget
-        self.run(["python3", "tools/dev/aws_heldout_chart.py", "run", *common,
-                  "--budget", f"{budget:.2f}", "--purpose", "chart-refresh-encode"],
-                 "cloud-encode.log")
-        sessions = score_sessions(regions, 0 if self.args.dry_run
-                                  else directory_bytes(self.streams()))
-        # one session per region at a time (each region's spot quota), the rest queued
-        with ThreadPoolExecutor(len(regions)) as pool:
-            jobs = [pool.submit(self.run, [
-                "python3", "tools/dev/aws_heldout_chart.py", "score-cloud", *common,
-                "--session", f"{index}/{len(sessions)}", "--region", region,
-                "--minutes", str(CLOUD_SCORE_MINUTES), "--budget", f"{budget:.2f}",
-                "--purpose", "chart-refresh-score"],
-                f"cloud-score-{index}-{len(sessions)}.log")
-                for index, region in enumerate(sessions, 1)]
-            for job in jobs:
-                job.result()
+        families = [*self.record["families"], *main_references(), *self.side_families()]
+        common = ["--clipset", str(self.cloud_clipset()), "--streams", str(self.streams()),
+                  "--record", str(self.builds_file),
+                  "--families", ",".join(dict.fromkeys(families))]
+        self.run(["python3", "tools/dev/heldout_fleet.py", "measure",
+                  "--state", str(self.work / "logs" / "fleet.json"),
+                  "--boxes", str(self.args.cloud_boxes),
+                  "--budget", f"{self.args.cloud_budget:.2f}", "--purpose", "chart-refresh",
+                  *(["--dry-run"] if self.args.dry_run else []), "--", *common],
+                 "cloud-fleet.log", echo=FLEET_MARK)
+
+    def side_families(self) -> list[str]:
+        """The metric-tuned references the render draws as side points: the clip-set
+        view's `tuned` list, else every one (nceval.chart.TUNED)."""
+        sys.path.insert(0, str(REPO / "eval"))
+        from nceval.chart import TUNED
+        view = clipset_view(self.args.clipset) if self.args.clipset else None
+        return view.tuned.split(",") if view and view.tuned else [n for n, _ in TUNED]
 
     def on_boxes(self) -> bool:
         """Whether measure encodes and scores on rented machines: a clip set always, the
@@ -796,13 +829,14 @@ class Refresh:
             for job in [pool.submit(self.run, [
                     "python3", "tools/dev/aws_timing.py", "--points", ",".join(part),
                     "--binary", str(self.timed_binary()), "--repeats", "1",
+                    "--plan", str(self.plan_file),
                     "--rounds", str(self.args.x86_rounds),
                     "--purpose", "chart-refresh-x86-timing", "--out", str(out)],
                     f"time-x86-{out.name.rsplit('-', 1)[1]}.log")
                     for part, out in zip([p for p in parts if p], outs)]:
                 job.result()
         if not self.args.dry_run:
-            merge_timing(REPO / TIMING_X86_FILE,
+            merge_timing(self.timing_x86_file,
                          sorted(r for out in outs for r in (out / "repeat-1").glob("t-*.json")),
                          rescale=True, build=self.commit)
             for out in outs:
@@ -816,9 +850,28 @@ class Refresh:
         local = WORK / f"jetson-{self.commit}"
         self.jetson_records(local)
         if not self.args.dry_run:
-            merge_timing(REPO / TIMING_FILE, sorted(local.glob("t-*.json")), rescale=False,
+            merge_timing(self.timing_file, sorted(local.glob("t-*.json")), rescale=False,
                          build=self.commit)
             shutil.rmtree(local)
+
+    def jetson_clips(self) -> None:
+        """The plan's timing clips on the Jetson (anchor_chart_timing.JETSON_CLIP_DIR), each
+        the plan's frames, copied as aws_timing stages them where the board lacks them."""
+        sys.path.insert(0, str(REPO / "eval"))
+        from anchor_chart_timing import JETSON_CLIP_DIR, input_frames, plan_clips, plan_input
+        from aws_timing import clip_archive
+        from nceval.chart import chart_clips
+        plan = json.loads(self.plan_file.read_text())  # the record: its header suffices
+        clips = {c.name: c for c in chart_clips(plan["clipset"])}
+        remote = JETSON_CLIP_DIR.relative_to(Path.home())
+        for name in sorted({plan_input(plan, key) for key in plan_clips(plan)}):
+            target = f"{remote}/{name}.yuv"
+            if subprocess.run(["ssh", "-o", "BatchMode=yes", jetson(), f"test -f {target}"]
+                              ).returncode == 0:
+                continue
+            archive = clip_archive(clips[name], input_frames(plan, name))
+            scp([str(archive)], f"{jetson()}:{remote}/")
+            ssh(f"zstd -d -q --rm {remote}/{archive.name} -o {target}")
 
     def jetson_records(self, local: Path) -> None:
         """Time every timed family on the Jetson; its records (`t-FAMILY.json`) into `local`
@@ -830,18 +883,23 @@ class Refresh:
             # stands in for a paired one: each lock window times only the point (about a
             # quarter of the window the pair took).
             anchor = WORK / STORED_ANCHOR
-            stored = json.loads((REPO / TIMING_FILE).read_text())["points"][ANCHOR]
+            stored = json.loads(self.timing_file.read_text())["points"][ANCHOR]
             anchor.write_text(json.dumps({"clips": {
                 clip: {"ms_per_frame": {"anchor": ms}}
                 for clip, ms in stored["ms_per_frame"].items()}}) + "\n")
             ssh(f"rm -rf {JETSON_WORK}/timing && mkdir -p {JETSON_WORK}/timing")
-            scp([str(REPO / PLAN_FILE), str(REPO / "tools/dev/anchor_chart_timing.py"),
+            self.jetson_clips()
+            from nceval.chart_timing import load_plan
+            full = WORK / JETSON_PLAN
+            full.write_text(json.dumps(load_plan(self.plan_file)) + "\n")
+            scp([str(full), str(REPO / "tools/dev/anchor_chart_timing.py"),
                  str(anchor)], f"{jetson()}:{JETSON_WORK}/timing/")
             anchor.unlink()
+            full.unlink()
         for family in self.timed:
             command = (f"cd {JETSON_WORK}/timing && for attempt in $(seq {JETSON_ATTEMPTS}); "
                        f"do ~/nanocodec-data/jetson-timed.sh python3 anchor_chart_timing.py time "
-                       f"--plan bd-vs-speed-plan.json --point {shlex.quote(family)} "
+                       f"--plan {JETSON_PLAN} --point {shlex.quote(family)} "
                        f"--nanocodec {binary} --out t-{shlex.quote(family)}.json "
                        f"--anchor-from {STORED_ANCHOR} && exit 0; sleep 60; done; exit 1")
             self.run(["ssh", "-o", "BatchMode=yes", jetson(), command], "time-jetson.log")
@@ -872,15 +930,18 @@ class Refresh:
                 anchor += ["--title", title + (f", zero line {zero}" if zero else "")]
                 anchor += ["--tuned", view.tuned] if view.tuned else []
             self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(), *clipset,
-                      *anchor, "--timing", str(REPO / TIMING_FILE),
-                      "--timing-x86", str(REPO / TIMING_X86_FILE),
+                      *anchor, "--timing", str(self.timing_file),
+                      "--timing-x86", str(self.timing_x86_file),
                       # NVENC runs only on this PC's GPU: never on a rented clip set's streams
                       *([] if self.args.clipset else
                         ["--timing-hardware", str(REPO / TIMING_HARDWARE_FILE)]),
                       "--meta", str(meta), "--out", str(REPO / RESULTS),
+                      # a local chart's render measures what its measure left (the PC
+                      # carries no compute otherwise: render reads the store only)
+                      *([] if self.on_boxes() else ["--measure-missing"]),
                       "--workers", str(self.args.workers)], "render.log", REPO / "eval",
                      scope=True)
-        # The results site's data and the README's headline facts follow the new charts.
+        # The results site's data follows the new charts.
         self.run(["python3", "-m", "nceval.site"], "site.log", REPO / "eval")
 
     def check(self) -> None:
@@ -903,7 +964,7 @@ class Refresh:
         """Every step from `start` on, each as soon as the steps it needs are done."""
         wanted = set(STEPS[STEPS.index(start):])
         if self.args.metrics_only:
-            wanted -= {"scan", "time-x86", "time-jetson"}
+            wanted -= {"plan", "time-x86", "time-jetson"}
         if "verify" not in wanted and self.stale:
             # A resume past verify must still know which stale families' streams did
             # not change, or it measures them again on the new build (2026-11-15: a
@@ -922,14 +983,14 @@ class Refresh:
             verify = launch("verify", x86_build)
             delete = launch("delete", verify)
             measure = launch("measure", delete)
-            scan = launch("scan", delete)
-            time_x86 = launch("time-x86", scan, timed_build)
-            time_jetson = launch("time-jetson", scan, jetson_build)
+            plan = launch("plan", delete)
+            time_x86 = launch("time-x86", plan, timed_build)
+            time_jetson = launch("time-jetson", plan, jetson_build)
             render = launch("render", measure, time_x86, time_jetson)
             check = launch("check", render)
             steps = {"build": x86_build, "verify": verify, "build-jetson": jetson_build,
                      "build-timed": timed_build, "delete": delete,
-                     "measure": measure, "scan": scan, "time-x86": time_x86,
+                     "measure": measure, "plan": plan, "time-x86": time_x86,
                      "time-jetson": time_jetson, "render": render, "check": check}
             failed = [name for name, job in steps.items() if job.exception() is not None]
         if failed:
@@ -982,19 +1043,6 @@ def main_references() -> list[str]:
     return list(dict.fromkeys([ANCHOR, HELDOUT_TUNED_ANCHOR, *(n for n, _ in REFERENCES)]))
 
 
-def score_sessions(regions: list[str], stream_bytes: int) -> list[str]:
-    """Each scoring session's region: one per region listed, more when the streams pass
-    CLOUD_SESSION_STREAM_GB a session (the regions taken in turn)."""
-    needed = math.ceil(stream_bytes / (CLOUD_SESSION_STREAM_GB * (1 << 30)))
-    return [regions[i % len(regions)] for i in range(max(len(regions), needed))]
-
-
-def directory_bytes(root: Path) -> int:
-    sys.path.insert(0, str(REPO / "eval"))
-    from nceval.diskguard import directory_bytes as walk
-    return walk(root) if root.is_dir() else 0
-
-
 def clipset_views() -> list:
     """The results site's chart views on clip sets of their own (nceval.site.CHART_VIEWS),
     one per clip set: every chart a release refreshes besides the main one."""
@@ -1033,6 +1081,14 @@ def clipset_chains(views: list | None = None) -> list[list[Path]]:
         else:
             group.append(path)
     return groups
+
+
+def chart_result(clipset: str | None, kind: str) -> str:
+    """The chart's `kind` record (plan, timing, timing-x86) on `clipset` (the main chart's
+    without one)."""
+    if clipset:
+        return CLIPSET_RESULT.format(stem=Path(clipset).stem, kind=kind)
+    return {"plan": PLAN_FILE, "timing": TIMING_FILE, "timing-x86": TIMING_X86_FILE}[kind]
 
 
 def builds_file(clipset: str | None) -> str:
@@ -1152,21 +1208,57 @@ def scp(sources: list[str], destination: str) -> None:
     subprocess.run(["scp", "-q", *sources, destination], check=True, stdin=subprocess.DEVNULL)
 
 
+def stream_mismatches(records: list[dict]) -> list[str]:
+    """`point entry` for every timed encode whose stream is not the plan's (the quality
+    stream: anchor_chart_timing records planned_bytes / planned_sha256 on a mismatch)."""
+    return [f"{r['point']} {entry}" for r in records for entry, v in r["clips"].items()
+            if "planned_bytes" in v.get("streams", {}).get("point", {})]
+
+
+def combined_records(records: list[dict]) -> list[dict]:
+    """One record a point: the records of a point timed in several sessions, each on its
+    own clips (aws_timing --inputs), joined. An entry timed twice is an error."""
+    by_point: dict[str, dict] = {}
+    for record in records:
+        joined = by_point.setdefault(record["point"], {**record, "clips": {}})
+        twice = joined["clips"].keys() & record["clips"].keys()
+        if twice:
+            raise SystemExit(f"{record['point']}: entries timed twice: {sorted(twice)[:3]}")
+        joined["clips"].update(record["clips"])
+    return list(by_point.values())
+
+
 def merge_timing(stored_path: Path, records: list[Path], rescale: bool, build: str) -> None:
     """Replace the timed points' entries in a stored timing file, each naming the `build`
     it was timed on (the site's captions say which builds a machine's speeds come from).
 
     `rescale` (x86) puts each per-clip time on the stored session's footing: the
     point's median per-round time ratio to the anchor times the stored anchor time.
-    The raw median times and the same-session ratio to the second anchor are kept.
+    The raw median times and the same-session ratio to the second anchor are kept. A
+    stored file of another rate mode or other clips is replaced by a new record.
     """
-    stored = json.loads(stored_path.read_text())
+    loaded = combined_records([json.loads(path.read_text()) for path in records])
+    refused = stream_mismatches(loaded)
+    if refused:
+        raise SystemExit("timed streams that are not the scored ones (owner 2026-11-23: one "
+                         "binary per point for quality and timing): " + "; ".join(refused))
+    settings = {k: loaded[0][k] for k in ("rate_mode", "frames")}
+    # every record's entries (a point timed on part of the plan, e.g. a failed pair, adds
+    # what it has)
+    settings["clips"] = {c: v["kbps"] for r in loaded for c, v in r["clips"].items()}
+    stored = json.loads(stored_path.read_text()) if stored_path.is_file() else {}
+    if any(stored.get(k) != v for k, v in settings.items()):
+        # another rate mode or clips (a record from before 2026-11-23 timed fixed QP):
+        # a new record, its anchor time this session's (the median over the records)
+        stored = {**settings, "anchor": ANCHOR, "platform": loaded[0].get("platform"), "points": {
+            ANCHOR: {"ms_per_frame": {c: statistics.median(
+                r["clips"][c]["ms_per_frame"]["anchor"] for r in loaded if c in r["clips"])
+                for c in settings["clips"]}, "build": build}}}
     reference = stored["points"][ANCHOR]["ms_per_frame"]
-    for path in records:
-        record = json.loads(path.read_text())
+    for record in loaded:
         clips = record["clips"]
         raw = {c: v["ms_per_frame"]["point"] for c, v in clips.items()}
-        entry = {"budget_fraction": {c: v["budget_fraction"] for c, v in clips.items()},
+        entry = {"rate_fraction": {c: v["rate_fraction"] for c, v in clips.items()},
                  "build": build}
         if rescale:
             entry.update(ms_per_frame={c: v["time_ratio"][ANCHOR] * reference[c]
@@ -1192,7 +1284,7 @@ def refresh_heldout(args: argparse.Namespace) -> None:
     for clipset in [path for chain in clipset_chains() for path in chain]:
         common = [sys.executable, str(Path(__file__).resolve()), args.commit,
                   "--clipset", str(clipset), "--cloud-budget", str(args.cloud_budget),
-                  "--cloud-regions", args.cloud_regions,
+                  "--cloud-boxes", str(args.cloud_boxes),
                   *(["--dry-run"] if args.dry_run else [])]
         print(f"== held-out chart {clipset.stem}", flush=True)
         subprocess.run([*common, "--families", families, "--metrics-only"], check=True)
@@ -1213,9 +1305,11 @@ def main() -> None:
                         "points stay")
     p.add_argument("--time-anchors", default="",
                    help="comma-separated reference encoders (cbr.preset_anchor names, e.g. "
-                        "x264-veryslow) also scanned and timed on both machines")
+                        "x264-veryslow) also planned and timed on both machines")
+    p.add_argument("--low-clips", help="comma-separated clips with the chart's low rungs, "
+                   "for the timing plan (default: the stored plan's)")
     p.add_argument("--metrics-only", action="store_true",
-                   help="no scan and no timing (nor the release and Jetson builds they need): "
+                   help="no plan and no timing (nor the release and Jetson builds they need): "
                         "quality only, the stored timings stay")
     p.add_argument("--part-jobs", type=int, default=1,
                    help="measure parts run side by side (each its own process and slot share)")
@@ -1236,13 +1330,12 @@ def main() -> None:
                    help="with --clipset: start its build record (every family on COMMIT)")
     p.add_argument("--cloud-budget", type=float, default=CLOUD_SESSION_BUDGET,
                    help="with --clipset: USD cap of each rented session")
-    p.add_argument("--cloud-regions", default=",".join(CLOUD_REGIONS),
-                   help="with --clipset: one scoring session side by side in each region "
-                        "listed (a region may repeat)")
+    p.add_argument("--cloud-boxes", type=int, default=CLOUD_BOXES,
+                   help="rented sessions side by side (heldout_fleet.py --boxes)")
     p.add_argument("--heldout", action="store_true",
                    help="after the main chart, refresh the clip-set charts (clipset_chains) "
-                        "for the same families, incrementally, so the README's headline "
-                        "facts follow")
+                        "for the same families, incrementally, so the site data "
+                        "follows")
     p.add_argument("--pgo", action="store_true",
                    help="a release's refresh: time the release's PGO builds of COMMIT (x86 and "
                         "Jetson), placed by tools/release/release.py; never builds them")

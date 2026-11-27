@@ -48,11 +48,11 @@ use super::{
 
 /// Eight `i32` lanes (AVX2).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I32x8(__m256i);
+pub(crate) struct I32x8(pub(crate) __m256i);
 
 /// Four `i32` lanes (SSE4.1).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I32x4(__m128i);
+pub(crate) struct I32x4(pub(crate) __m128i);
 
 /// Eight lanes of two `i16` each: the low 16 bits of two [`I32x8`] vectors,
 /// interleaved for `vpmaddwd` dot products.
@@ -88,11 +88,11 @@ impl WordPairs8 {
 
 /// Sixteen `i16` lanes (AVX2).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I16x16(__m256i);
+pub(crate) struct I16x16(pub(crate) __m256i);
 
 /// Eight `i16` lanes (SSE4.1).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct I16x8(__m128i);
+pub(crate) struct I16x8(pub(crate) __m128i);
 
 /// Four `i16` lanes in the low half of an SSE register; the high half
 /// stays zero.
@@ -111,6 +111,11 @@ fn count(bits: u32) -> __m128i {
 
 impl WordPairLanes for I32x8 {
     type Pairs = WordPairs8;
+
+    #[inline(always)]
+    fn transpose_registers(rows: &[Self], columns: &mut [Self]) {
+        columns.copy_from_slice(&transpose_i32x8(rows));
+    }
 
     #[inline(always)]
     fn word_pairs(self, high: Self) -> WordPairs8 {
@@ -769,7 +774,7 @@ impl I32Lanes for I32x4 {
 
 /// Sum the eight `i32` lanes of `v` into an `i64`.
 #[inline(always)]
-fn sum_i32x8(v: __m256i) -> i64 {
+pub(crate) fn sum_i32x8(v: __m256i) -> i64 {
     let mut lanes = [0i32; 8];
     I32x8(v).store(&mut lanes);
     lanes.iter().map(|&x| i64::from(x)).sum()
@@ -2212,6 +2217,44 @@ impl I16FilterLanes for I16x8 {
         // SAFETY: AVX2 kernels only (module docs).
         unsafe { _mm_testz_si128(self.0, self.0) == 0 }
     }
+
+    #[inline(always)]
+    fn transpose_groups8(rows: [Self; 8]) -> [Self; 8] {
+        // SAFETY: AVX2 kernels only; in-lane unpacks transpose the 8x8 tile.
+        unsafe {
+            let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
+            let (p0, p1) = (
+                _mm_unpacklo_epi16(r0.0, r1.0),
+                _mm_unpackhi_epi16(r0.0, r1.0),
+            );
+            let (p2, p3) = (
+                _mm_unpacklo_epi16(r2.0, r3.0),
+                _mm_unpackhi_epi16(r2.0, r3.0),
+            );
+            let (p4, p5) = (
+                _mm_unpacklo_epi16(r4.0, r5.0),
+                _mm_unpackhi_epi16(r4.0, r5.0),
+            );
+            let (p6, p7) = (
+                _mm_unpacklo_epi16(r6.0, r7.0),
+                _mm_unpackhi_epi16(r6.0, r7.0),
+            );
+            let (q0, q1) = (_mm_unpacklo_epi32(p0, p2), _mm_unpackhi_epi32(p0, p2));
+            let (q2, q3) = (_mm_unpacklo_epi32(p1, p3), _mm_unpackhi_epi32(p1, p3));
+            let (q4, q5) = (_mm_unpacklo_epi32(p4, p6), _mm_unpackhi_epi32(p4, p6));
+            let (q6, q7) = (_mm_unpacklo_epi32(p5, p7), _mm_unpackhi_epi32(p5, p7));
+            [
+                Self(_mm_unpacklo_epi64(q0, q4)),
+                Self(_mm_unpackhi_epi64(q0, q4)),
+                Self(_mm_unpacklo_epi64(q1, q5)),
+                Self(_mm_unpackhi_epi64(q1, q5)),
+                Self(_mm_unpacklo_epi64(q2, q6)),
+                Self(_mm_unpackhi_epi64(q2, q6)),
+                Self(_mm_unpacklo_epi64(q3, q7)),
+                Self(_mm_unpackhi_epi64(q3, q7)),
+            ]
+        }
+    }
 }
 
 impl I16Pairs for I16x16 {
@@ -2328,7 +2371,7 @@ impl I16x8Shuffles for I16x8 {
 
 /// Register transpose shared by residual stores and fused reconstruction.
 #[inline(always)]
-fn transpose_i32x8(rows: &[I32x8]) -> [I32x8; 8] {
+pub(crate) fn transpose_i32x8(rows: &[I32x8]) -> [I32x8; 8] {
     // SAFETY: called only by this module's ISA-enabled kernels.
     unsafe {
         let r = [
@@ -2369,7 +2412,7 @@ fn transpose_i32x8(rows: &[I32x8]) -> [I32x8; 8] {
 
 /// Register transpose shared by residual stores and fused reconstruction.
 #[inline(always)]
-fn transpose_i32x4(rows: &[I32x4]) -> [I32x4; 4] {
+pub(crate) fn transpose_i32x4(rows: &[I32x4]) -> [I32x4; 4] {
     // SAFETY: called only by this module's ISA-enabled kernels.
     unsafe {
         let r = [rows[0].0, rows[1].0, rows[2].0, rows[3].0];
@@ -2460,6 +2503,36 @@ impl super::I16x8Tiles for I16x16 {
                 b.as_mut_ptr().cast(),
                 _mm256_extracti128_si256::<1>(clamped),
             );
+        }
+    }
+}
+
+impl crate::sao::high_simd::SaoWordLanes for I16x16 {
+    #[inline(always)]
+    fn offset_table(offsets: [i16; 4]) -> Self {
+        use core::arch::x86_64::{_mm_loadu_si128, _mm256_broadcastsi128_si256};
+        let table = crate::sao::high_simd::offset_words(offsets);
+        // SAFETY: the table is eight readable words, in the AVX2 SAO entry.
+        unsafe {
+            Self(_mm256_broadcastsi128_si256(_mm_loadu_si128(
+                table.as_ptr().cast(),
+            )))
+        }
+    }
+
+    #[inline(always)]
+    fn select_offset(self, table: Self) -> Self {
+        use core::arch::x86_64::{
+            _mm256_add_epi16, _mm256_mullo_epi16, _mm256_set1_epi16, _mm256_shuffle_epi8,
+        };
+        // SAFETY: called from AVX2 SAO. The two byte indices within each
+        // word select the full signed offset, even outside the i8 range.
+        unsafe {
+            let index = _mm256_add_epi16(
+                _mm256_mullo_epi16(self.0, _mm256_set1_epi16(0x0202)),
+                _mm256_set1_epi16(0x0504),
+            );
+            Self(_mm256_shuffle_epi8(table.0, index))
         }
     }
 }

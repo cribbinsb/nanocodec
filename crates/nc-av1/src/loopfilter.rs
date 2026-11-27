@@ -184,20 +184,29 @@ fn transform_starts(
     grid: &ModeInfoGrid,
     ss: usize,
     (width, height): (usize, usize),
-) -> Vec<(usize, usize, usize)> {
+) -> Vec<TransformStart> {
     let (plane_width, plane_height) = ((width + ss) >> ss, (height + ss) >> ss);
     let mut starts = Vec::new();
     for y in (0..plane_height).step_by(EDGE_STEP) {
         let mut x = 0;
         while x < plane_width {
-            let side = transform_side(block_at(grid, x, y, ss), ss);
-            if y % side == 0 {
-                starts.push((x, y, side));
+            let (w, h) = transform_dims(block_at(grid, x, y, ss), ss);
+            if y % h == 0 {
+                starts.push(TransformStart { x, y, w, h });
             }
-            x += side;
+            x += w;
         }
     }
     starts
+}
+
+/// A transform of a plane: its top-left sample and its width and height.
+#[derive(Debug, Clone, Copy)]
+struct TransformStart {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
 }
 
 /// One pass (all vertical or all horizontal edges) over one plane: the
@@ -211,7 +220,7 @@ fn filter_plane_edges(
     params: LoopFilterParams,
     plane: PlaneIndex,
     vertical: bool,
-    starts: &[(usize, usize, usize)],
+    starts: &[TransformStart],
     (width, height): (usize, usize),
     scratch: &mut FilterScratch,
 ) {
@@ -223,24 +232,27 @@ fn filter_plane_edges(
     }
     let mut view = recon.plane_mut(plane).view_mut_to_end();
     scratch.runs.clear();
-    for &(x, y, side) in starts {
+    for &TransformStart { x, y, w, h } in starts {
         let on_edge = if vertical { x > 0 } else { y > 0 };
         if !on_edge {
             continue;
         }
-        let (start, end) = if vertical {
-            (y, (y + side).min(plane_height))
+        // The span along the edge, and this transform's side across it.
+        let (start, end, across) = if vertical {
+            (y, (y + h).min(plane_height), w)
         } else {
-            (x, (x + side).min(plane_width))
+            (x, (x + w).min(plane_width), h)
         };
-        // The transform side across the edge at position `along`.
-        let previous_side = |along: usize| {
+        // The neighbouring transform at position `along`: its side across
+        // the edge and its extent along it.
+        let neighbour = |along: usize| {
             let previous = if vertical {
                 block_at(grid, x - 1, along, ss)
             } else {
                 block_at(grid, along, y - 1, ss)
             };
-            transform_side(previous, ss)
+            let (pw, ph) = transform_dims(previous, ss);
+            if vertical { (pw, ph) } else { (ph, pw) }
         };
         let mut filter_run = |run_start: usize, run_end: usize, length| {
             let origin = if vertical {
@@ -255,7 +267,7 @@ fn filter_plane_edges(
                 filter: params.thresholds(level, length),
             });
         };
-        for_each_run(start..end, side, plane, previous_side, &mut filter_run);
+        for_each_run(start..end, across, plane, neighbour, &mut filter_run);
     }
     dsp.av1_loop_filter_runs(&mut view, vertical, &scratch.runs, &mut scratch.lanes);
 }
@@ -267,23 +279,23 @@ fn filter_plane_edges(
 /// neighbour ends: one lookup per neighbouring transform, not per 4 lines.
 fn for_each_run(
     span: core::ops::Range<usize>,
-    side: usize,
+    across: usize,
     plane: PlaneIndex,
-    previous_side: impl Fn(usize) -> usize,
+    neighbour: impl Fn(usize) -> (usize, usize),
     filter_run: &mut impl FnMut(usize, usize, Av1FilterLength),
 ) {
-    let length_of = |previous: usize| filter_length(plane, side.min(previous));
-    let mut previous = previous_side(span.start);
+    let length_of = |previous: usize| filter_length(plane, across.min(previous));
+    let (mut previous, mut extent) = neighbour(span.start);
     let (mut run_start, mut run_length) = (span.start, length_of(previous));
     let mut along = span.start;
     loop {
         // The end of the neighbouring transform covering `along`.
-        let next = ((along / previous + 1) * previous).min(span.end);
+        let next = ((along / extent + 1) * extent).min(span.end);
         if next == span.end {
             filter_run(run_start, span.end, run_length);
             return;
         }
-        previous = previous_side(next);
+        (previous, extent) = neighbour(next);
         let length = length_of(previous);
         if length != run_length {
             filter_run(run_start, next, run_length);
@@ -301,19 +313,15 @@ fn block_at(grid: &ModeInfoGrid, x: usize, y: usize, ss: usize) -> &ModeInfo {
     grid.at(mi_row.min(grid.mi_rows - 1), mi_col.min(grid.mi_cols - 1))
 }
 
-/// Side of the block in plane samples.
-fn block_side(info: &ModeInfo, ss: usize) -> usize {
-    (info.size_mi() << MI_LOG2) >> ss
-}
-
-/// Transform side in plane samples: the cell's luma transform (the block,
-/// or a leaf of its inter transform tree), and for 4:2:0 chroma half the
-/// block (`get_max_uv_txsize`), never below 4.
-fn transform_side(info: &ModeInfo, ss: usize) -> usize {
+/// Transform width and height in plane samples: the cell's luma transform
+/// (the block, or a leaf of its inter transform tree), and for 4:2:0
+/// chroma half the block (`get_max_uv_txsize`), never below 4.
+fn transform_dims(info: &ModeInfo, ss: usize) -> (usize, usize) {
     if ss == 0 {
-        1 << info.tx_log2
+        (1 << info.tx.width(), 1 << info.tx.height())
     } else {
-        block_side(info, ss).max(EDGE_STEP)
+        let side = |mi: usize| ((mi << MI_LOG2) >> ss).max(EDGE_STEP);
+        (side(info.width_mi()), side(info.height_mi()))
     }
 }
 

@@ -1,0 +1,15 @@
+# h264-ladder (2026-11-23): H.264 veryfast with the neighbour skip (decision.neighbour_skip s:
+# 0 off, s > 0 offers the static skip to macroblocks whose left, top and top-right are
+# P_Skip, with its SAD bounds the static-skip scales times s), the static-skip scales and
+# the light-macroblock pass (effort.regular_fraction < 1, light.* settings), at the rung's
+# front k. s = 1 alone measured quality +2.88 % (veryfast) / +0.84 % (faster) L1 for
+# -6..-8 % cycles: on or off the front, so the strictness is searched.
+# Format (nceval.tune_pool): name [low high] [int|log]
+decision.neighbour_skip 0 1
+h264.static_skip_luma_scale 0.5 1.5
+h264.static_skip_chroma_scale 0.75 2
+effort.regular_fraction 0.5 1
+effort.light_nonbase_only 0 1 int
+light.h264.inter_intra_dc_only 0 1 int
+light.h264.subpel_skip_variance 24 64
+light.decision.skip_no_refine_lambdas 0.105 0.4

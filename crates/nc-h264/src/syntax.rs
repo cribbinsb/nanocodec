@@ -11,7 +11,7 @@
 use nc_dsp::Dsp;
 use nc_encoder::Mv;
 
-use crate::cabac::{BinSink, MbPart, SliceKind};
+use crate::cabac::{BinSink, MbPart, SliceKind, encode_signed_ueg_suffix};
 use crate::intra4x4::block_position;
 use crate::intra8x8::modes_per_4x4;
 use crate::macroblock::{
@@ -608,26 +608,15 @@ fn write_mvd(cabac: &mut impl BinSink, mvd: Mv, abs_a: [u16; 2], abs_b: [u16; 2]
             cabac.encode_decision(ctx, bin_idx < prefix);
         }
         if abs >= MVD_PREFIX_MAX {
-            write_exp_golomb_bypass(cabac, abs - MVD_PREFIX_MAX, MVD_SUFFIX_ORDER);
-        }
-        if value != 0 {
+            encode_signed_ueg_suffix(
+                cabac,
+                (abs - MVD_PREFIX_MAX) as u16,
+                MVD_SUFFIX_ORDER,
+                value < 0,
+            );
+        } else if value != 0 {
             cabac.encode_bypass(value < 0);
         }
-    }
-}
-
-/// k-th order Exp-Golomb suffix in bypass bins (§9.3.2.3).
-fn write_exp_golomb_bypass(cabac: &mut impl BinSink, value: u32, order: u32) {
-    let mut remaining = value;
-    let mut k = order;
-    while remaining >= (1 << k) {
-        cabac.encode_bypass(true);
-        remaining -= 1 << k;
-        k += 1;
-    }
-    cabac.encode_bypass(false);
-    for bit in (0..k).rev() {
-        cabac.encode_bypass((remaining >> bit) & 1 != 0);
     }
 }
 

@@ -19,57 +19,91 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .budget import MAX_MINUTES
+
 ON_BOX_ENV = "NC_ON_BOX"
 LOCAL_FLAG = "--local"
 AWS_MEASURE = Path(__file__).resolve().parents[2] / "tools" / "dev" / "aws_measure.py"
+#: aws_measure's run cap (--run-minutes): the project's 30-minute run budget plus a
+#: margin for the last points. A run past it is stopped and keeps only the points it
+#: finished (pulled back as they land).
+RUN_CAP_MINUTES = MAX_MINUTES + 5
 
 
-#: The integration branch, and the cloud tools whose copy in a lagging worktree has
-#: run stale (2026-11-21: agents' trees predated fixes to --batch and the quota queue).
+#: The integration branch: where the current measurement protocol is defined.
 INTEGRATION = "variance-integration"
-FRESH_FILES = ("tools/dev/aws_measure.py", "tools/dev/aws_session.py",
-               "tools/dev/aws_warm.py", "eval/nceval/cloud.py", "eval/nceval/quick.py",
-               "eval/nceval/train.py", "eval/nceval/checkrun.py")
+#: The measurement protocol: what a cloud job's results are comparable on (clip draws,
+#: ladder and rates, metrics and their pooling, the screens' estimators and guards, the
+#: CPU charge). Bump it ON PURPOSE in the commit that makes results incomparable with
+#: earlier ones; a job from a tree at an older protocol is then refused. Any other tools
+#: commit leaves running and queued jobs alone: each runs on its own pinned tree
+#: (`pinned_tree`; 2026-11-24, a check on every commit to seven tool files refused every
+#: agent's queued jobs at each tools landing).
+MEASUREMENT_PROTOCOL = 1
+PROTOCOL_LINE = "MEASUREMENT_PROTOCOL = "
 STALE_ENV = "NC_ALLOW_STALE_TOOLS"
-#: The tool version a job or study started with (tools_version), passed down to its
-#: later slices: those are not checked again while they run this same tree at that
-#: version (2026-11-21: five tooling landings in an hour failed every running study
-#: at its next slice).
+#: The protocol a job or study started with (tools_version), passed down to its later
+#: slices: those are not checked again (2026-11-21: five tooling landings in an hour
+#: failed every running study at its next slice).
 PINNED_ENV = "NC_TOOLS_PINNED"
 REPO = Path(__file__).resolve().parents[2]
 
 
 def tools_version() -> str:
-    """This tree and the contents of its cloud tools, as one digest."""
-    import hashlib
-    digest = hashlib.sha256(str(REPO).encode())
-    for name in FRESH_FILES:
-        path = REPO / name
-        digest.update(path.read_bytes() if path.exists() else b"")
-    return digest.hexdigest()[:16]
+    """The measurement protocol this tree's tools follow (MEASUREMENT_PROTOCOL)."""
+    return f"protocol-{MEASUREMENT_PROTOCOL}"
+
+
+def integration_protocol() -> int | None:
+    """MEASUREMENT_PROTOCOL on the integration branch, None when it cannot be read."""
+    shown = subprocess.run(["git", "-C", str(REPO), "show",
+                            f"{INTEGRATION}:eval/nceval/cloud.py"],
+                           capture_output=True, text=True)
+    if shown.returncode != 0:
+        return None
+    lines = [line for line in shown.stdout.splitlines() if line.startswith(PROTOCOL_LINE)]
+    return int(lines[0].removeprefix(PROTOCOL_LINE)) if lines else None
 
 
 def check_fresh() -> None:
-    """Refuse to start when the integration branch has commits to the cloud tools that
-    this tree lacks (its own unlanded changes to them are fine), with the fix. The
-    check applies when a job or study starts: once passed, the version is pinned in
-    PINNED_ENV, so the commands it starts later (its slices) run unchecked as long as
-    the tree's tools are unchanged; a resume, or a changed tree, is checked again."""
+    """Refuse to start a job when the integration branch has moved to another measurement
+    protocol than this tree's (MEASUREMENT_PROTOCOL), with the fix: its results would not
+    be comparable with the others'. A tools commit that keeps the protocol refuses
+    nothing. Once passed, the version is pinned in PINNED_ENV for the job's slices."""
     if os.environ.get(ON_BOX_ENV) or os.environ.get(STALE_ENV) or not (REPO / ".git").exists():
         return
     version = tools_version()
     if os.environ.get(PINNED_ENV) == version:
         return
-    found = subprocess.run(["git", "-C", str(REPO), "log", "--format=%h %s",
-                            f"HEAD..{INTEGRATION}", "--", *FRESH_FILES],
-                           capture_output=True, text=True)
-    commits = found.stdout.strip().splitlines() if found.returncode == 0 else []
-    if not commits:
+    current = integration_protocol()
+    if current is None or current == MEASUREMENT_PROTOCOL:
         os.environ[PINNED_ENV] = version  # inherited by the slices this process starts
         return
-    raise SystemExit(f"!!! this tree's cloud tools are behind {INTEGRATION} by {len(commits)} "
-                     f"commit(s) (latest: {commits[0]}).\n    fix: git -C {REPO} rebase "
-                     f"{INTEGRATION}    ({STALE_ENV}=1 runs the stale copy anyway)")
+    raise SystemExit(f"!!! this tree measures by protocol {MEASUREMENT_PROTOCOL}; "
+                     f"{INTEGRATION} is at protocol {current}: results would not be "
+                     f"comparable.\n    fix: git -C {REPO} rebase {INTEGRATION}    "
+                     f"({STALE_ENV}=1 runs the old protocol anyway)")
+
+
+#: What a box runs of this tree (aws_measure stages it from git): an uncommitted change
+#: there is not what the box would run.
+TREE_PATHS = ("eval", "tools", "crates/nc-encoder/presets")
+
+
+def pinned_tree() -> str:
+    """The commit a cloud job's boxes run: HEAD, refused at once (before anything is
+    measured or rented) when eval/, tools/ or the presets have uncommitted changes.
+    A long job (`nceval.train run`) pins it at its start and hands it to every box it
+    launches, so later edits to the tree cannot fail its retries (2026-11-24: two
+    trains lost their boxes to a tree edited while they ran)."""
+    dirty = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain", "--",
+                            *TREE_PATHS], capture_output=True, text=True,
+                           check=True).stdout.strip()
+    if dirty:
+        raise SystemExit(f"commit eval/, tools/ and the presets first: the boxes run this "
+                         f"tree's HEAD ({dirty.splitlines()[0]} ...)")
+    return subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True).stdout.strip()
 
 
 #: Set in every nc-remote job (the build box has no AWS credentials to offload with).

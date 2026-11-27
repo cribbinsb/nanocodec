@@ -56,7 +56,7 @@ sys.path.insert(0, str(REPO / "eval"))
 from nceval.cbr import BUFFER_MS, Family, preset_anchor  # noqa: E402
 from nceval.clips import Clip  # noqa: E402
 from nceval.codecs import Codec  # noqa: E402
-from nceval.config import load_paths  # noqa: E402
+from nceval.config import OPENH264_HARNESS, load_paths  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from source_frames import split_i420, view_frame  # noqa: E402
@@ -65,8 +65,8 @@ WEB = REPO / "web"
 OUT = WEB / "streams-ref"
 DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
 ANCHORS = DATA / "anchors/x86_64/bin"
-# The openh264 driver with bitrate control (eval/nceval/cbr.py --openh264-harness).
-OPENH264_RC_HARNESS = DATA / "work/ratecontrol/bin/openh264-harness"
+# The openh264 driver with bitrate control (nceval.config.OPENH264_HARNESS).
+OPENH264_RC_HARNESS = DATA / OPENH264_HARNESS
 VERSIONS_ENV = REPO / "tools/anchors/versions.env"
 TABLE = REPO / "docs/results/reference-streams.md"
 
@@ -76,7 +76,10 @@ SOURCE_FPS = 30
 # a view of height h reads the smallest at least h tall (clips.js clipUrl, `clip_file`).
 VARIANT_HEIGHTS = tuple(int(h) for h in re.search(r"const VARIANT_HEIGHTS = \[([\d, ]+)\]",
                                                   (WEB / "clips.js").read_text()).group(1).split(","))
-# The chart's key interval (eval/nceval/cbr.py DEFAULT_INTRA_PERIOD): 10 s.
+# The chart's key interval (eval/nceval/cbr.py DEFAULT_INTRA_PERIOD): 10 s. A stream is
+# one loop of its clip (8-11 s) and the page replays it from its first frame, so a
+# pre-encoded view shows a key at every loop start whatever this is (web/reference.js
+# `keyCadence`, shown in the view's rate line); only a stream over 10 s has a second key.
 KEY_INTERVAL_SECONDS = 10
 IVF_HEADER = struct.Struct("<4sHH4sHHIII4x")
 IVF_FRAME = struct.Struct("<IQ")

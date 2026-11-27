@@ -1,4 +1,4 @@
-"""The results site's data and the README's headline facts are generated (by land.sh) and figure-checked.
+"""The results site's data is generated (by land.sh) and figure-checked.
 
 The browser side (every figure a rendered page shows is in that page's data) is
 web/tests/results-pages.py; these are the checks that need no browser.
@@ -10,46 +10,14 @@ import re
 from nceval import site
 
 FIGURE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:%|fps\b|kbps\b|×)")
-NUMBER = re.compile(r"(?<![\w.])\d+(?:\.\d+)?")
 # Method constants the pages' prose may name: the ladder's reference frame rate
 # and the confidence level of the bootstrap intervals.
 METHOD_CONSTANTS = {"30 fps", "95%"}
-# Names in the README block whose digits are not figures.
-NAMES = re.compile(r"Ryzen 9 5950X|x264|H\.264|AV1|VP9|AV2|720p")
 
 
 def test_the_generated_files_are_regenerated_only_when_an_input_changed():
     assert site.inputs_changed("HEAD") is False
     assert site.INPUTS and all(not p.startswith("/") for p in site.INPUTS)
-
-
-def test_readme_figures_are_only_in_the_generated_block():
-    text = site.README.read_text()
-    begin, end = text.index(site.README_BEGIN), text.index(site.README_END)
-    outside = text[:begin] + text[end:]
-    assert not FIGURE.findall(outside)
-
-
-def test_readme_block_figures_are_in_the_data():
-    text = site.README.read_text()
-    block = text[text.index(site.README_BEGIN) + len(site.README_BEGIN):text.index(site.README_END)]
-    # the buffer statement is a fixed measured text (nceval.buffer_note), not chart data
-    block = block.replace(site.buffer_note.STATEMENT, "")
-    chart = json.loads((site.SITE_DATA / "chart.json").read_text())
-    allowed = set()
-    for view in chart["views"]:
-        if view.get("clips"):
-            allowed.add(str(view["clips"]))
-        allowed.update(str(v) for v in view.get("tools", {}).values())
-        for values in view["values"].values():
-            for x in [values["j"], *values["fps"].values()]:
-                if x is not None:
-                    allowed.update({f"{abs(x):.0f}", f"{abs(x):.1f}"})
-    allowed.add(str(sum(1 for p in chart["points"].values()
-                        if p["ours"] and p["preset"] == site.DEFAULT_PRESET)))
-    figures = NUMBER.findall(NAMES.sub(" ", block))
-    assert figures and all(f in allowed for f in figures), \
-        [f for f in figures if f not in allowed]
 
 
 def test_pages_type_no_figures():
@@ -156,3 +124,18 @@ def test_unpublished_datasets_are_nowhere_on_the_site():
                                         *site.DEV_ONLY_FILES]
     for name in clips["sets"]:
         assert "vc1k_dev" not in name  # development clips are never on the site
+
+
+def test_every_published_page_loads_the_page_view_counter_once():
+    # Every page web/ publishes (tools/web/publish.sh copies web/ but tests/) loads
+    # web/page-views.js, the one place the counter is set up; the docs' example
+    # sources are shown as code, not site pages.
+    web = site.REPO / "web"
+    pages = [p for p in web.rglob("*.html")
+             if not p.is_relative_to(web / "tests") and not p.is_relative_to(site.DOCS_EXAMPLES)
+             and "node_modules" not in p.parts and "pkg" not in p.parts]
+    assert len(pages) > 10
+    for page in pages:
+        text = page.read_text()
+        assert text.count("page-views.js") == 1, page
+        assert "goatcounter" not in text.lower(), f"{page}: counter settings belong in page-views.js"

@@ -24,12 +24,12 @@
 //! for 0.2-0.3 points of J): the coder still runs them on the candidate
 //! that wins.
 
-use nc_common::{Picture, PlaneIndex, PlaneView};
+use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::BlockSize;
-use nc_encoder::{Block, CodecBackend, FinalCandidate, Mv, PredictionMode};
+use nc_encoder::{Block, CodecBackend, FinalCandidate, Mv, PredictionMode, ReferenceChoice};
 
-use super::{HevcBackend, cost, transform_units};
-use crate::inter::predict_luma;
+use super::{HevcBackend, bi_motion, cost, transform_units};
+use crate::inter::{predict_bi_into, predict_luma, predict_samples};
 use crate::mvpred::Motion;
 use crate::predict::{self, ModeCode};
 use crate::transform::MAX_COEFFS;
@@ -68,7 +68,7 @@ impl HevcBackend {
     /// See `nc_encoder::CodecBackend::skip_vector`: merge candidate 0's
     /// vector where it predicts from the reference being decided.
     pub(super) fn merge_skip_vector(&mut self, block: &Block) -> Option<Mv> {
-        let first = self.predictors(block).merge.get(0);
+        let first = self.predictors(block).merge.get(0).as_uni()?;
         (first.ref_idx == self.active_ref).then_some(first.mv)
     }
 
@@ -184,10 +184,7 @@ impl HevcBackend {
 
     /// The coded luma cost of inter `block` at `mv`.
     fn price_inter(&mut self, source: &Picture, reference: &Picture, block: &Block, mv: Mv) -> f32 {
-        let motion = Motion {
-            mv,
-            ref_idx: self.active_ref,
-        };
+        let motion = Motion::uni(mv, self.active_ref);
         let side = block.size();
         // The ranking's winner is already predicted (`cache_exact_luma`);
         // any other vector is predicted into the stage's own scratch, so
@@ -217,8 +214,70 @@ impl HevcBackend {
         } else {
             &scratch
         };
+        let residual = self.luma_residual(source, block, prediction);
+        self.final_scratch.prediction = scratch;
+        let merged = self.predictors(block).merge.predicting(motion).is_some();
+        let mode_bits = self.mode_bits(block, &PredictionMode::Inter(mv));
+        self.coded_inter_cost(residual, merged, mode_bits)
+    }
+
+    /// The coded luma cost of `block` bi-predicted by the engine's `pair`
+    /// (first half `first_mv` into `references[0]`, the second into
+    /// `references[1]`), as [`Self::price_inter`] prices one vector.
+    pub(super) fn price_pair(
+        &mut self,
+        source: &Picture,
+        references: [&Picture; 2],
+        block: &Block,
+        (first_mv, pair): (Mv, ReferenceChoice),
+    ) -> Option<f32> {
+        let second = match pair {
+            ReferenceChoice::PrimaryPair { second_mv } => (second_mv, 0),
+            ReferenceChoice::Compound { secondary_mv } => (secondary_mv, 1),
+            ReferenceChoice::Primary | ReferenceChoice::Secondary => return None,
+        };
+        let motion = bi_motion(first_mv, second);
+        let side = block.size();
+        let mut scratch = std::mem::take(&mut self.final_scratch.prediction);
+        scratch.resize(side * side, 0);
+        let kernels = self.dsp.at(nc_common::BitDepth::EIGHT);
+        predict_samples(
+            kernels,
+            references[0].plane(PlaneIndex::Y),
+            (block.x, block.y),
+            (side, side),
+            first_mv,
+            false,
+            &mut self.bi_first,
+        );
+        let mut view = PlaneViewMut::new(&mut scratch, side, side, side).expect("CU prediction");
+        predict_bi_into(
+            kernels,
+            references[1].plane(PlaneIndex::Y),
+            (block.x, block.y),
+            second.0,
+            false,
+            &self.bi_first[..side * side],
+            &mut view,
+        );
+        let residual = self.luma_residual(source, block, &scratch);
+        self.final_scratch.prediction = scratch;
+        let merged = self
+            .predictors_for(block, 0)
+            .merge
+            .predicting(motion)
+            .is_some();
+        let mode_bits = self.bi_mode_bits(block, motion);
+        Some(self.coded_inter_cost(residual, merged, mode_bits))
+    }
+
+    /// The luma residual of inter `block` against `prediction` (the CU's
+    /// samples, row-major): distortion, bits and whether any coefficient is
+    /// coded, over its transform units.
+    fn luma_residual(&self, source: &Picture, block: &Block, prediction: &[u8]) -> InterResidual {
+        let side = block.size();
         let plane = source.plane(PlaneIndex::Y).view();
-        let (mut distortion, mut residual_bits, mut coded) = (0u64, 0.0, false);
+        let mut residual = InterResidual::default();
         for &(x, y, log2) in transform_units(block, self.info.max_transform_log2).as_slice() {
             let n = 1usize << log2;
             let src = plane
@@ -228,22 +287,33 @@ impl HevcBackend {
             let pred = PlaneView::new(&prediction[start..], side, n, n)
                 .expect("prediction covers the block");
             let cost = self.luma_residual_cost(&src, &pred, None);
-            distortion += cost.distortion;
-            residual_bits += cost.bits;
-            coded |= cost.coded;
+            residual.distortion += cost.distortion;
+            residual.bits += cost.bits;
+            residual.coded |= cost.coded;
         }
-        self.final_scratch.prediction = scratch;
-        let merged = self.predictors(block).merge.index_of(motion).is_some();
-        let mode_bits = self.mode_bits(block, &PredictionMode::Inter(mv));
-        let bits = match (merged, coded) {
+        residual
+    }
+
+    /// Distortion plus λ times the bits of an inter CU with `residual`,
+    /// merged or not, whose prediction signals in `mode_bits`.
+    fn coded_inter_cost(&self, residual: InterResidual, merged: bool, mode_bits: f32) -> f32 {
+        let bits = match (merged, residual.coded) {
             // A skip: no residual syntax at all.
             (true, false) => mode_bits,
             // Merge with residual: the prediction mode, partition and merge
             // flag a skip leaves out.
-            (true, true) => mode_bits + cost::MODE_AND_PART + cost::FLAG + residual_bits,
+            (true, true) => mode_bits + cost::MODE_AND_PART + cost::FLAG + residual.bits,
             // `rqt_root_cbf`.
-            (false, _) => mode_bits + cost::FLAG + residual_bits,
+            (false, _) => mode_bits + cost::FLAG + residual.bits,
         };
-        distortion as f32 + self.rd_lambda() * bits
+        residual.distortion as f32 + self.rd_lambda() * bits
     }
+}
+
+/// The luma residual of one inter prediction of a CU.
+#[derive(Debug, Clone, Copy, Default)]
+struct InterResidual {
+    distortion: u64,
+    bits: f32,
+    coded: bool,
 }
