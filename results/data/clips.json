@@ -5553,6 +5553,11 @@
      "view_clips": 42,
      "common_clips": 42,
      "lost": {}
+    },
+    "jetson-a78ae": {
+     "view_clips": 42,
+     "common_clips": 42,
+     "lost": {}
     }
    }
   }
