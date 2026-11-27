@@ -1,0 +1,7274 @@
+{
+ "about": {
+  "release": "0.7.0",
+  "commit": "ce89975ea",
+  "build": "the 0.7.0 PGO release build: the binaries of the GitHub release assets nanocodec-0.7.0-x86_64-linux and -aarch64-linux (commit ce89975ea; tools/dev/pgo_build.sh: profile-guided, trained by encoding public clips with every shipped preset and decoding the streams; fat LTO, one codegen unit, x86-64-v3 code generation on x86); the decoders' SIMD kernels are chosen at run time (AVX-512 on Granite Rapids, NEON and SVE2 on Graviton 4)",
+  "browser_build": "the v0.7.0 browser module (tools/web/build.sh, its relaxed-SIMD build: SIMD128 plus relaxed SIMD)",
+  "method": "Each process reads its stream into memory, then decodes it 3 times, each pass with a fresh one-thread decoder and frames discarded; neither side is charged process start-up, probing, demuxing or output. 5 interleaved rounds (order reversed every other round): 15 passes per decoder and stream; the figure is the median pass.",
+  "harnesses": "ours: nanocodec decode --bench; FFmpeg and dav1d: libavcodec-bench (tools/anchors/libavcodec_bench.c, packets demuxed by libavformat before timing); libvpx, VVdeC, AVM and dav2d: vpx-bench, vvdec-bench, avm-bench, dav2d-bench (tools/anchors/*_bench.c), each against its pinned static library, units split in memory before timing.",
+  "browser_method": "tools/web/ffmpeg_wasm_yardstick.py under node (V8), one process per run, 7 interleaved rounds: ours the BrowserDecoder.decode calls (the display hand-off, I420 to RGBA, is not included), ffmpeg.wasm the sum of its decode_video calls as -benchmark_all logs them; neither is charged module start-up, probing or demuxing. The browser runs come from the first session on each machine (2026-11-27, before the PGO re-time); the native column beside them is the PGO build's, from the later session.",
+  "ffmpeg_wasm": "@ffmpeg/core 0.12.10, the official single-thread build: FFmpeg 5.1.4 under emscripten with --disable-asm and -O3 -msimd128 (compiler-generated SIMD128 only, FFmpeg's hand-written SIMD kernels off); it has no AV1, VVC or AV2 decoder",
+  "streams": "Two stream sets. Benchmark streams: 7 clips of the BP-4 \"ours\" held-out set (one per content class; 960x540 to 1280x720, 600 frames, the 1200 kbps rung), each coded by our six encoders at Medium and by x264 medium, x265 medium, libvpx VP9 rt 7, SVT-AV1 M10 and libaom rt 8 (the benchmark's streams). Earlier yardstick streams (2026-11-23): 720p to 4K, among them camera recordings (Axis, Hanwha, a Novatek bodycam) and streams from x264, x265, openh264, SVT-AV1, libaom and libvpx. Our streams come from development builds; only the decoders are 0.7.0's.",
+  "plain_build": "Beside it, in the same rounds: the plain release build of the same commit (no PGO, as crates.io builds it), the page's secondary column"
+ },
+ "machines": {
+  "c8i": {
+   "label": "x86 (Intel Granite Rapids)",
+   "name": "c8i.2xlarge (Intel Granite Rapids)",
+   "type": "c8i.2xlarge",
+   "anchors": "Each built from its pinned source without -march, keeping its own run-time ISA dispatch (AVX2 and AVX-512 kernels where it has them)."
+  },
+  "c8g": {
+   "label": "Arm (Graviton 4)",
+   "name": "c8g.2xlarge (Graviton 4)",
+   "type": "c8g.2xlarge",
+   "anchors": "Each built from its pinned source for generic aarch64 (on the project's Jetson, without -march), with its NEON assembly and its own run-time dispatch; none was built with Graviton 4 specific options."
+  }
+ },
+ "missing": [],
+ "references": {
+  "ffmpeg": "FFmpeg n8.0.1 (libavcodec)",
+  "dav1d": "dav1d 1.5.4 (through libavcodec)",
+  "vpxdec": "libvpx v1.16.0 (vpxdec's library)",
+  "vvdec": "VVdeC d261469",
+  "dav2d": "dav2d 237229e (with its assembly)",
+  "avmdec": "AVM v1.0.0 (avmdec's library, the AV2 research reference)"
+ },
+ "short": {
+  "ffmpeg": "FFmpeg",
+  "dav1d": "dav1d",
+  "vpxdec": "libvpx",
+  "vvdec": "VVdeC",
+  "dav2d": "dav2d",
+  "avmdec": "AVM"
+ },
+ "codec_order": [
+  "h264",
+  "hevc",
+  "vvc",
+  "av1",
+  "vp9",
+  "av2"
+ ],
+ "record": "docs/results/decoder-speed-2026-11-27",
+ "views": {
+  "c8i": {
+   "native": [
+    {
+     "stream": "bp4-crowd.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6882000066666665,
+       "lo": 1.673932313333333,
+       "hi": 1.7070518133333332,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6522355599999998,
+       "lo": 1.64124974,
+       "hi": 1.6713386599999998,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.3167165533333334,
+       "lo": 1.29300274,
+       "hi": 1.3304705066666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.3197536466666668,
+       "lo": 1.3064395066666667,
+       "hi": 1.3305569800000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2985089133333332,
+       "lo": 1.2866904133333332,
+       "hi": 1.3082594066666666,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.1004713133333333,
+       "lo": 1.0877058866666667,
+       "hi": 1.1037746,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0962337066666668,
+       "lo": 1.0850151733333333,
+       "hi": 1.1184589466666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0807014066666667,
+       "lo": 1.0716851866666668,
+       "hi": 1.0870462733333335,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 0.8582552600000001,
+       "lo": 0.8505905533333333,
+       "hi": 0.8630360399999999,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7486270733333333,
+       "lo": 1.7402771733333335,
+       "hi": 1.8024393533333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7016424066666664,
+       "lo": 1.6866920533333334,
+       "hi": 1.7219839733333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.41267076,
+       "lo": 1.39421448,
+       "hi": 1.4280032666666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.4727968,
+       "lo": 1.4646010333333335,
+       "hi": 1.4829853066666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.4372777799999998,
+       "lo": 1.4290654666666667,
+       "hi": 1.4625586466666667,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.2368732133333336,
+       "lo": 1.2252246466666665,
+       "hi": 1.2529739666666668,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.3009704533333333,
+       "lo": 1.2863401866666668,
+       "hi": 1.3109515666666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2752633000000002,
+       "lo": 1.2660552533333334,
+       "hi": 1.3027023533333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.0309535933333334,
+       "lo": 1.0193947133333332,
+       "hi": 1.0374591933333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.6286860316666665,
+       "lo": 1.6214441916666666,
+       "hi": 1.6354751166666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.589222795,
+       "lo": 1.5794074016666668,
+       "hi": 1.5984658999999999,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.3286722866666667,
+       "lo": 1.3193373816666667,
+       "hi": 1.3358227616666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.499838735,
+       "lo": 1.4849957116666666,
+       "hi": 1.50715502,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.4728568016666668,
+       "lo": 1.4632196516666667,
+       "hi": 1.4778055966666666,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.2456025933333332,
+       "lo": 1.237793805,
+       "hi": 1.2536963300000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.1160011383333333,
+       "lo": 1.1112623733333333,
+       "hi": 1.1235639833333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0997474033333334,
+       "lo": 1.0929719949999999,
+       "hi": 1.1057113399999998,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 0.8935802433333333,
+       "lo": 0.8816044383333334,
+       "hi": 0.8980374466666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.8006075266666663,
+       "lo": 1.7872616799999999,
+       "hi": 1.8165528666666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7595248866666668,
+       "lo": 1.7464978933333335,
+       "hi": 1.7769570133333337,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.4378136466666667,
+       "lo": 1.4229841133333334,
+       "hi": 1.4567931133333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6092117533333334,
+       "lo": 1.5944203600000002,
+       "hi": 1.6213475466666665,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.5828123866666668,
+       "lo": 1.5698164466666666,
+       "hi": 1.59597966,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.3403593266666667,
+       "lo": 1.3311496999999999,
+       "hi": 1.34719972,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.36460058,
+       "lo": 1.3551889400000001,
+       "hi": 1.3750873133333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3522295800000002,
+       "lo": 1.3381217200000002,
+       "hi": 1.3737193533333332,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.0787767133333332,
+       "lo": 1.0708163933333332,
+       "hi": 1.0854271400000002,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 1080,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0117239733333332,
+       "lo": 1.00774842,
+       "hi": 1.0223116866666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9789941133333334,
+       "lo": 0.9726641866666668,
+       "hi": 0.9856267866666667,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 0.8855881533333333,
+       "lo": 0.87249602,
+       "hi": 0.9028404400000002,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0170975933333333,
+       "lo": 1.0119603866666667,
+       "hi": 1.0222250800000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9772681666666667,
+       "lo": 0.97232026,
+       "hi": 0.9829902799999999,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 0.9017696933333333,
+       "lo": 0.8914265066666667,
+       "hi": 0.9129976200000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 1080,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.6889895066666666,
+       "lo": 0.68531852,
+       "hi": 0.6988607066666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.6687571133333333,
+       "lo": 0.6629340266666667,
+       "hi": 0.6749645066666667,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 0.5558760733333333,
+       "lo": 0.55093766,
+       "hi": 0.56276516,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "aom720_good4_1000k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 40,
+     "decoders": {
+      "ours": {
+       "ms": 3.3629162999999997,
+       "lo": 3.2997976,
+       "hi": 3.4661953750000003,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.2953459499999993,
+       "lo": 3.216915025,
+       "hi": 3.3714115250000005,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.3003494499999997,
+       "lo": 2.25302165,
+       "hi": 2.3615746250000003,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.71824938,
+       "lo": 2.683828893333333,
+       "hi": 2.7351946199999997,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.66174168,
+       "lo": 2.61873888,
+       "hi": 2.7034074733333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.110115866666667,
+       "lo": 2.061209793333333,
+       "hi": 2.1341243866666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.36912018,
+       "lo": 2.3476893866666666,
+       "hi": 2.380921086666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.332717306666667,
+       "lo": 2.3115229733333336,
+       "hi": 2.3590437533333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.9413990266666667,
+       "lo": 1.90073934,
+       "hi": 1.9813991800000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.8915078666666667,
+       "lo": 1.87588228,
+       "hi": 1.9097989800000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.8669461866666666,
+       "lo": 1.8530884733333335,
+       "hi": 1.8860810866666669,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.4424701866666667,
+       "lo": 1.4279518133333333,
+       "hi": 1.4549891733333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.7600031933333335,
+       "lo": 3.7511786199999997,
+       "hi": 3.7993933,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.7031752999999994,
+       "lo": 3.66969288,
+       "hi": 3.722489613333334,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.7503811,
+       "lo": 2.7172505866666667,
+       "hi": 2.7898565066666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.0513731200000005,
+       "lo": 3.0314588066666666,
+       "hi": 3.0652168066666663,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.073546653333333,
+       "lo": 3.054968873333333,
+       "hi": 3.1241954733333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.4300396400000004,
+       "lo": 2.3869757666666667,
+       "hi": 2.5042346,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.5862611733333334,
+       "lo": 2.55675824,
+       "hi": 2.6916597133333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.6142877666666666,
+       "lo": 2.585198633333333,
+       "hi": 2.6924104,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.9387102066666666,
+       "lo": 1.9084435266666666,
+       "hi": 1.9624317800000002,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6816495733333332,
+       "lo": 1.66350136,
+       "hi": 1.70011812,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6572900133333333,
+       "lo": 1.64609468,
+       "hi": 1.6700809,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.4193697266666665,
+       "lo": 1.4089736333333334,
+       "hi": 1.43669398,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "svt720_p8_1000k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.1284765599999997,
+       "lo": 2.1055471666666663,
+       "hi": 2.1774445000000004,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.101020253333333,
+       "lo": 2.07943394,
+       "hi": 2.1456809266666665,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.6001936866666666,
+       "lo": 1.56616872,
+       "hi": 1.63692566,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av1.ivf",
+     "codec": "av1",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 5.636157353333333,
+       "lo": 5.56085614,
+       "hi": 5.734029013333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 5.500567833333334,
+       "lo": 5.443957673333333,
+       "hi": 5.536874046666667,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 4.580420473333333,
+       "lo": 4.523564326666667,
+       "hi": 4.62138402,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.svt.av1.ivf",
+     "codec": "av1",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.2960256733333337,
+       "lo": 3.2028965266666667,
+       "hi": 3.4694800133333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.24234688,
+       "lo": 3.1436715399999997,
+       "hi": 3.3394354066666665,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.5886622933333334,
+       "lo": 2.5288288600000004,
+       "hi": 2.68385846,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7796940000000003,
+       "lo": 1.7636876266666668,
+       "hi": 1.7919844666666664,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7211592133333335,
+       "lo": 1.7042903133333334,
+       "hi": 1.7653863200000002,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 4.583854086666667,
+       "lo": 4.438995886666667,
+       "hi": 4.62490714,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 1.2714459266666667,
+       "lo": 1.2672612666666667,
+       "hi": 1.28516008,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.041242366666667,
+       "lo": 2.0255314866666665,
+       "hi": 2.081113633333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9680252599999999,
+       "lo": 1.952405806666667,
+       "hi": 1.9795656333333334,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 5.4364758066666665,
+       "lo": 5.29128244,
+       "hi": 5.682131460000001,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 1.5043175666666668,
+       "lo": 1.5003843466666666,
+       "hi": 1.8342849333333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.9244417650000003,
+       "lo": 1.9196024316666667,
+       "hi": 1.940255525,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.8617958433333335,
+       "lo": 1.8529692999999998,
+       "hi": 1.8725084716666667,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 4.724222506666667,
+       "lo": 4.680807686666667,
+       "hi": 4.765832568333334,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 1.40673451,
+       "lo": 1.4016499866666667,
+       "hi": 1.4092722583333332,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.1421022066666664,
+       "lo": 2.124882653333333,
+       "hi": 2.1572172666666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.03284096,
+       "lo": 2.014129973333333,
+       "hi": 2.1051999466666667,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 5.114111146666667,
+       "lo": 4.997562599999999,
+       "hi": 5.24519828,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 1.54539928,
+       "lo": 1.53851392,
+       "hi": 1.5516598066666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.4883245066666668,
+       "lo": 1.48444378,
+       "hi": 1.49761512,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3970147266666666,
+       "lo": 1.3932107733333334,
+       "hi": 1.40120446,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 4.0402564666666665,
+       "lo": 3.970707186666667,
+       "hi": 4.1668149733333335,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 1.1589014399999997,
+       "lo": 1.15347082,
+       "hi": 1.1722307533333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.2349115533333332,
+       "lo": 3.187020433333333,
+       "hi": 3.33497298,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.122022346666667,
+       "lo": 3.0840928866666664,
+       "hi": 3.221725446666667,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 8.189716886666666,
+       "lo": 8.08204344,
+       "hi": 8.30042098,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 2.33788412,
+       "lo": 2.3317015133333334,
+       "hi": 2.36598318,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.141687133333333,
+       "lo": 4.091965213333333,
+       "hi": 4.351158313333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.0505119,
+       "lo": 3.9952234599999996,
+       "hi": 4.20076896,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 8.895700526666667,
+       "lo": 8.754210033333333,
+       "hi": 9.043334106666668,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 2.853504713333333,
+       "lo": 2.8262130733333333,
+       "hi": 2.87830616,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.1940870599999998,
+       "lo": 2.1678172333333334,
+       "hi": 2.3042786466666665,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.1129609400000002,
+       "lo": 2.08288566,
+       "hi": 2.22952428,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 5.4448492,
+       "lo": 5.3074058399999995,
+       "hi": 5.566829266666666,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 1.5827680733333334,
+       "lo": 1.5690747066666666,
+       "hi": 1.6049141733333332,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av2.ivf",
+     "codec": "av2",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 7.05544082,
+       "lo": 6.890837526666667,
+       "hi": 7.112560566666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 6.272301886666667,
+       "lo": 6.214726740000001,
+       "hi": 6.3493070933333335,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 14.881969439999999,
+       "lo": 14.745452493333332,
+       "hi": 15.42525764,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 4.800580953333333,
+       "lo": 4.78895688,
+       "hi": 4.8268787133333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.8286920466666667,
+       "lo": 0.8243820533333334,
+       "hi": 0.8354731066666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.7803861266666666,
+       "lo": 0.7751255533333333,
+       "hi": 0.7838624666666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.6562388866666666,
+       "lo": 0.6517416266666666,
+       "hi": 0.6610600066666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0005607533333334,
+       "lo": 0.99480474,
+       "hi": 1.01208168,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9448309133333331,
+       "lo": 0.9405795800000001,
+       "hi": 0.9520392066666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.81951426,
+       "lo": 0.8109745400000001,
+       "hi": 0.8270667533333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.8490816933333334,
+       "lo": 0.84473256,
+       "hi": 0.85576856,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.80828322,
+       "lo": 0.8047949200000001,
+       "hi": 0.8113866933333332,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.7195579933333333,
+       "lo": 0.71652828,
+       "hi": 0.7240314600000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0917491666666665,
+       "lo": 1.0857609333333333,
+       "hi": 1.0969528866666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0349348933333333,
+       "lo": 1.0301273133333333,
+       "hi": 1.0414158866666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.9314505666666668,
+       "lo": 0.9250898733333333,
+       "hi": 0.9365758066666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 0.8041805583333334,
+       "lo": 0.79974019,
+       "hi": 0.8117453466666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.76404663,
+       "lo": 0.7615115083333334,
+       "hi": 0.7704957383333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.6700196683333334,
+       "lo": 0.6660927600000001,
+       "hi": 0.6736973716666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.0672356,
+       "lo": 1.060192493333333,
+       "hi": 1.0879187350000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.00629232,
+       "lo": 1.0012910650000002,
+       "hi": 1.0622744916666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.8747410516666667,
+       "lo": 0.8664754050000001,
+       "hi": 0.8892250733333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.87210316,
+       "lo": 0.8651361866666666,
+       "hi": 0.8858495066666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.8214767333333334,
+       "lo": 0.8153980933333334,
+       "hi": 0.8316925866666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.7148937333333333,
+       "lo": 0.71051016,
+       "hi": 0.7196869333333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0828473133333334,
+       "lo": 1.0752795333333334,
+       "hi": 1.1035960133333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0252870333333335,
+       "lo": 1.0174853133333333,
+       "hi": 1.0353781466666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.9078186199999999,
+       "lo": 0.9007505200000001,
+       "hi": 0.9146913933333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.68730994,
+       "lo": 0.6823818866666667,
+       "hi": 0.72223908,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.6533890533333333,
+       "lo": 0.6476328866666667,
+       "hi": 0.68442224,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.5758555133333333,
+       "lo": 0.5705502733333333,
+       "hi": 0.5804250933333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.x264-medium.264",
+     "codec": "h264",
+     "width": 1080,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.7947677266666666,
+       "lo": 0.7872582866666666,
+       "hi": 0.8278198800000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.75474796,
+       "lo": 0.7474681466666667,
+       "hi": 0.7635201733333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.6393082533333333,
+       "lo": 0.6350358,
+       "hi": 0.6502361,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.4521585799999999,
+       "lo": 1.4354880533333334,
+       "hi": 1.45805692,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.36695832,
+       "lo": 1.3585479,
+       "hi": 1.37217712,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1746245066666665,
+       "lo": 1.16998316,
+       "hi": 1.1805582000000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.x264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6905794733333335,
+       "lo": 1.6827568800000001,
+       "hi": 1.7020152133333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.587281,
+       "lo": 1.5762508866666667,
+       "hi": 1.6078399666666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.37289254,
+       "lo": 1.3604548066666666,
+       "hi": 1.40513516,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7857718800000002,
+       "lo": 1.7708199466666668,
+       "hi": 1.86532098,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6115230466666668,
+       "lo": 1.5981725933333333,
+       "hi": 1.6886343666666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.3011218666666666,
+       "lo": 1.2873823866666667,
+       "hi": 1.31862814,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.x264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.9493531,
+       "lo": 1.9363402133333334,
+       "hi": 2.01868686,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7904195933333336,
+       "lo": 1.7773923666666667,
+       "hi": 1.8756082600000001,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.5305778599999997,
+       "lo": 1.516529866666667,
+       "hi": 1.5480494666666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.h264.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.9964793,
+       "lo": 0.9907845666666666,
+       "hi": 1.0046490266666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9340052866666667,
+       "lo": 0.9263329466666667,
+       "hi": 0.9398381,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.7670448066666666,
+       "lo": 0.7616615199999999,
+       "hi": 0.77218252,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.h264.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.1029167400000004,
+       "lo": 3.088945273333333,
+       "hi": 3.1250819733333337,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.954934226666667,
+       "lo": 2.9328679466666667,
+       "hi": 2.9842714133333335,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.57889524,
+       "lo": 2.560025486666667,
+       "hi": 2.5930722666666663,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.x264.h264.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.631975246666667,
+       "lo": 3.6154110599999996,
+       "hi": 3.6542047199999996,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.4377109800000003,
+       "lo": 3.423782760000001,
+       "hi": 3.4606220666666663,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.8805915533333333,
+       "lo": 2.868422333333333,
+       "hi": 2.8872416133333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "openh264_cabac_1080p.3000k.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "openh264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.285326393333333,
+       "lo": 3.26898328,
+       "hi": 3.3196732466666665,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.1015011333333335,
+       "lo": 3.0777850666666664,
+       "hi": 3.12144206,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.62761284,
+       "lo": 2.6071155733333335,
+       "hi": 2.638997853333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.9456203666666666,
+       "lo": 0.9362986266666666,
+       "hi": 0.95232724,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9142022799999999,
+       "lo": 0.9048866066666666,
+       "hi": 0.9245101333333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.0865537866666666,
+       "lo": 1.08326818,
+       "hi": 1.0937323266666668,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.449775,
+       "lo": 1.43719084,
+       "hi": 1.4710462333333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3616942733333333,
+       "lo": 1.3472517333333334,
+       "hi": 1.36782336,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.47047186,
+       "lo": 1.4587273466666666,
+       "hi": 1.4893290266666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.93391974,
+       "lo": 0.9233737466666667,
+       "hi": 0.9461548733333335,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9157371133333334,
+       "lo": 0.9051410000000001,
+       "hi": 0.9230571666666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1365414466666666,
+       "lo": 1.124372,
+       "hi": 1.1401647266666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7186624333333336,
+       "lo": 1.7072180533333332,
+       "hi": 1.7991650933333332,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6134576133333334,
+       "lo": 1.5989058,
+       "hi": 1.62963992,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.70527906,
+       "lo": 1.69899688,
+       "hi": 1.7212602733333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 0.9354909149999999,
+       "lo": 0.9294191716666668,
+       "hi": 0.9623058566666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.90911362,
+       "lo": 0.9029331833333333,
+       "hi": 0.9194398866666665,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1045865166666666,
+       "lo": 1.1006590816666666,
+       "hi": 1.1109674383333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.45936151,
+       "lo": 1.4401009550000001,
+       "hi": 1.4762896716666665,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3674494066666667,
+       "lo": 1.3501340000000002,
+       "hi": 1.3891991116666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.4977878116666667,
+       "lo": 1.4854520216666667,
+       "hi": 1.5037942266666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.9942078733333333,
+       "lo": 0.98341762,
+       "hi": 1.0162891933333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9606163200000001,
+       "lo": 0.9523887133333333,
+       "hi": 0.9736963466666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1772026066666665,
+       "lo": 1.1664920666666667,
+       "hi": 1.1902374933333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.4998477066666667,
+       "lo": 1.47777114,
+       "hi": 1.52825386,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3919235666666667,
+       "lo": 1.3830759133333332,
+       "hi": 1.40902564,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.6167368066666667,
+       "lo": 1.6010604533333332,
+       "hi": 1.6248333933333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.7255505866666666,
+       "lo": 0.71416114,
+       "hi": 0.7346790133333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.6977700066666667,
+       "lo": 0.6889107800000001,
+       "hi": 0.71413266,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.9298287733333332,
+       "lo": 0.92416014,
+       "hi": 0.94163568,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 1080,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.9644619,
+       "lo": 0.9539736533333333,
+       "hi": 0.9748046666666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9213359066666668,
+       "lo": 0.9129191933333334,
+       "hi": 0.9360857933333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1603967133333333,
+       "lo": 1.1519479400000001,
+       "hi": 1.1766550733333332,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.5239705933333332,
+       "lo": 1.50612962,
+       "hi": 1.5420603266666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.4783918,
+       "lo": 1.4659233733333334,
+       "hi": 1.4906651533333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.8249969200000002,
+       "lo": 1.8169927866666664,
+       "hi": 1.8304807666666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.3060706,
+       "lo": 2.2788407066666667,
+       "hi": 2.3164080933333335,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.16038828,
+       "lo": 2.1455963799999997,
+       "hi": 2.192637353333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.44717568,
+       "lo": 2.4394853666666667,
+       "hi": 2.4648780466666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0127347799999997,
+       "lo": 1.9930710733333334,
+       "hi": 2.0309923800000003,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.8843011533333334,
+       "lo": 1.8668192466666669,
+       "hi": 1.9019547,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.3084394,
+       "lo": 2.294967666666667,
+       "hi": 2.3320723733333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.417300733333333,
+       "lo": 2.3960812666666667,
+       "hi": 2.4755825933333337,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.2973639,
+       "lo": 2.2818200933333332,
+       "hi": 2.338567226666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.7992557799999997,
+       "lo": 2.78202386,
+       "hi": 2.819400333333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.axis-m5074-720p.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "Axis camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.08918242,
+       "lo": 1.08214378,
+       "hi": 1.1196200533333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0676020466666667,
+       "lo": 1.0529434533333333,
+       "hi": 1.0980125066666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.2196107733333335,
+       "lo": 1.2050223333333334,
+       "hi": 1.23198202,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.hevc.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1474203266666665,
+       "lo": 1.1386792866666666,
+       "hi": 1.17042596,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1060170666666667,
+       "lo": 1.0938443666666666,
+       "hi": 1.1169557133333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.3581220266666667,
+       "lo": 1.3495006666666667,
+       "hi": 1.3652968933333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.axis-p1375e-1080p.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "Axis camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.4254926666666665,
+       "lo": 2.4086931600000003,
+       "hi": 2.504073673333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.379523246666667,
+       "lo": 2.3594665333333333,
+       "hi": 2.44063444,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.8624356466666665,
+       "lo": 2.8481059666666666,
+       "hi": 2.880535773333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.hevc.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.9599729933333334,
+       "lo": 3.926395433333333,
+       "hi": 4.0192226,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.879347846666667,
+       "lo": 3.858731386666667,
+       "hi": 3.919185073333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 4.62264196,
+       "lo": 4.579746013333334,
+       "hi": 4.69209566,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "x265-1080p-b.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 5.018840766666666,
+       "lo": 4.956324406666666,
+       "hi": 5.114744053333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.7456568599999995,
+       "lo": 4.678778286666667,
+       "hi": 4.887520460000001,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.067274953333333,
+       "lo": 5.04547254,
+       "hi": 5.304213079999999,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "novatek-bodycam-2460x1848-1s.hevc",
+     "codec": "hevc",
+     "width": 2460,
+     "height": 1848,
+     "encoder": "Novatek bodycam",
+     "own": false,
+     "frames": 25,
+     "decoders": {
+      "ours": {
+       "ms": 6.01359616,
+       "lo": 5.922676279999999,
+       "hi": 6.24675212,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 5.642651079999999,
+       "lo": 5.61225144,
+       "hi": 5.737446200000001,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 6.44063972,
+       "lo": 6.3389944400000005,
+       "hi": 6.56457368,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.axis-p3267lv-5mp.hevc",
+     "codec": "hevc",
+     "width": 2592,
+     "height": 1944,
+     "encoder": "Axis camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 5.0359828533333335,
+       "lo": 4.9937379533333335,
+       "hi": 5.06774344,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.93968088,
+       "lo": 4.883325526666667,
+       "hi": 4.971990286666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.977300359999999,
+       "lo": 5.945719873333333,
+       "hi": 6.03514524,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.hanwha-qnvc9011r-4k.hevc",
+     "codec": "hevc",
+     "width": 3840,
+     "height": 2160,
+     "encoder": "Hanwha camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 8.412598093333335,
+       "lo": 8.252214519999999,
+       "hi": 8.607670160000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 8.192583593333334,
+       "lo": 8.1279364,
+       "hi": 8.27415208,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 10.088941033333334,
+       "lo": 9.905568286666666,
+       "hi": 10.696345186666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "x265-4k-b.hevc",
+     "codec": "hevc",
+     "width": 3840,
+     "height": 2160,
+     "encoder": "x265",
+     "own": false,
+     "frames": 120,
+     "decoders": {
+      "ours": {
+       "ms": 7.708622175,
+       "lo": 6.73894915,
+       "hi": 8.308681066666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 7.778653916666667,
+       "lo": 6.730545558333333,
+       "hi": 9.359151749999999,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 11.28925795,
+       "lo": 9.957045041666667,
+       "hi": 12.211392408333332,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.2017791533333333,
+       "lo": 1.1969539800000002,
+       "hi": 1.2230201333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2006832866666668,
+       "lo": 1.1959649933333332,
+       "hi": 1.2463742733333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1768862533333333,
+       "lo": 1.1700331466666667,
+       "hi": 1.1801104666666666,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.0531760333333333,
+       "lo": 1.0465347466666666,
+       "hi": 1.0699808733333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.9200387600000001,
+       "lo": 0.9112594466666667,
+       "hi": 0.9394137733333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9076893266666667,
+       "lo": 0.9011558133333334,
+       "hi": 0.91376576,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.9596386733333334,
+       "lo": 0.9471804266666667,
+       "hi": 0.9639393666666666,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 0.8518341799999999,
+       "lo": 0.8430927400000001,
+       "hi": 0.8686307066666668,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1653266066666668,
+       "lo": 1.1602039533333335,
+       "hi": 1.1810778466666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1651347333333335,
+       "lo": 1.1599729066666666,
+       "hi": 1.1908975533333332,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.2397197466666667,
+       "lo": 1.2340023533333333,
+       "hi": 1.2415912333333332,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.0834144533333334,
+       "lo": 1.0768129666666666,
+       "hi": 1.09229518,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0850406266666666,
+       "lo": 1.08022186,
+       "hi": 1.0884075333333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0752918533333333,
+       "lo": 1.0686002866666666,
+       "hi": 1.0847055466666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1666632333333335,
+       "lo": 1.1585990733333333,
+       "hi": 1.1886966333333333,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.0161572666666665,
+       "lo": 1.0125603733333333,
+       "hi": 1.0257339666666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.2083764833333333,
+       "lo": 1.2009614883333335,
+       "hi": 1.2181040616666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2103290549999999,
+       "lo": 1.2014869433333333,
+       "hi": 1.2240562099999999,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.2248924033333335,
+       "lo": 1.22030112,
+       "hi": 1.2326775033333333,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.08673997,
+       "lo": 1.0779445600000002,
+       "hi": 1.095920965,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 0.9969846566666667,
+       "lo": 0.9900603483333333,
+       "hi": 1.0072854150000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9819804983333333,
+       "lo": 0.9750999449999999,
+       "hi": 0.9854269333333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.0423966550000001,
+       "lo": 1.0274716116666667,
+       "hi": 1.0479680999999998,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 0.9129518483333334,
+       "lo": 0.9056460799999998,
+       "hi": 0.9233540199999999,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1784670666666666,
+       "lo": 1.1707095533333334,
+       "hi": 1.22427694,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1746179533333334,
+       "lo": 1.1682660466666666,
+       "hi": 1.2112099866666668,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.23451968,
+       "lo": 1.2253360533333333,
+       "hi": 1.2415008466666666,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.0816806666666667,
+       "lo": 1.0758492666666668,
+       "hi": 1.09714158,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0070832666666667,
+       "lo": 1.00091756,
+       "hi": 1.0274632666666665,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9908485866666666,
+       "lo": 0.9846417533333333,
+       "hi": 0.9986165466666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.0673253800000002,
+       "lo": 1.0558894266666665,
+       "hi": 1.07568968,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 0.9362788666666666,
+       "lo": 0.9301318466666667,
+       "hi": 0.9451346199999998,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 1080,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.7425417,
+       "lo": 0.7397919133333334,
+       "hi": 0.74872654,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.7281859933333333,
+       "lo": 0.7228240066666666,
+       "hi": 0.7325635266666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.7767360933333334,
+       "lo": 0.7730291066666667,
+       "hi": 0.7787024066666666,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 0.69637094,
+       "lo": 0.6925292533333334,
+       "hi": 0.6994455466666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.7873830733333333,
+       "lo": 0.7839022999999999,
+       "hi": 0.7938850666666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.7774089666666667,
+       "lo": 0.7713356066666667,
+       "hi": 0.7824442933333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.8045295933333333,
+       "lo": 0.7977206,
+       "hi": 0.81309772,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 0.7390618466666667,
+       "lo": 0.7360098733333332,
+       "hi": 0.7536022933333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.9510330466666665,
+       "lo": 1.93589608,
+       "hi": 1.9713964200000003,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9398063733333333,
+       "lo": 1.9335043200000004,
+       "hi": 1.9607328733333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.9527684533333336,
+       "lo": 1.9453475000000002,
+       "hi": 1.97359154,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.7049014399999998,
+       "lo": 1.6979981666666666,
+       "hi": 1.7085854599999997,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6061347266666666,
+       "lo": 1.6034351266666669,
+       "hi": 1.6419551333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.58960694,
+       "lo": 1.5840039933333332,
+       "hi": 1.6097285066666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.68098852,
+       "lo": 1.6521948199999998,
+       "hi": 1.70359878,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.4673998133333332,
+       "lo": 1.4614510133333334,
+       "hi": 1.4779735133333332,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.038361473333333,
+       "lo": 2.0286030133333335,
+       "hi": 2.0496487533333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.0069575066666667,
+       "lo": 1.9956135000000002,
+       "hi": 2.01625338,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.9511404,
+       "lo": 1.9425916533333332,
+       "hi": 1.9769813266666665,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.6668686666666666,
+       "lo": 1.6533821266666666,
+       "hi": 1.7243904866666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6195457733333332,
+       "lo": 1.60995044,
+       "hi": 1.6383312,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.5635691200000001,
+       "lo": 1.5551418133333335,
+       "hi": 1.57248056,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.5590768199999998,
+       "lo": 1.5443207799999998,
+       "hi": 1.5728749533333335,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.4458373066666668,
+       "lo": 1.4387304333333335,
+       "hi": 1.45721428,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1487169933333332,
+       "lo": 1.14422858,
+       "hi": 1.1782279333333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1193804399999998,
+       "lo": 1.1124468066666666,
+       "hi": 1.1339132333333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.16776974,
+       "lo": 1.1597182400000001,
+       "hi": 1.20125138,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.0395783600000001,
+       "lo": 1.0231384866666666,
+       "hi": 1.0587196066666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.vp9.ivf",
+     "codec": "vp9",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.9324656733333336,
+       "lo": 3.9019242999999997,
+       "hi": 4.082286760000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.838099953333333,
+       "lo": 3.8101446400000003,
+       "hi": 3.86243836,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 4.081443139999999,
+       "lo": 4.0470476799999995,
+       "hi": 4.119136653333333,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 3.5251914333333327,
+       "lo": 3.498128106666667,
+       "hi": 3.5578431,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.vpxenc.vp9.ivf",
+     "codec": "vp9",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.9429685466666666,
+       "lo": 3.9194243466666663,
+       "hi": 4.015169426666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.8857005133333336,
+       "lo": 3.8597104466666665,
+       "hi": 3.910805626666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.9017370200000006,
+       "lo": 3.8767505400000006,
+       "hi": 3.93162028,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 3.4718711466666665,
+       "lo": 3.4405210866666667,
+       "hi": 3.53106328,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6539593066666667,
+       "lo": 1.63696516,
+       "hi": 1.6830503933333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.5926590799999998,
+       "lo": 1.58345564,
+       "hi": 1.60290982,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.452358446666666,
+       "lo": 3.4267864733333333,
+       "hi": 3.497447766666667,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 2.50129314,
+       "lo": 2.4693219666666666,
+       "hi": 2.5274334066666664,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6934934466666667,
+       "lo": 1.6751354733333335,
+       "hi": 1.7403744733333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6511228666666666,
+       "lo": 1.6293483133333333,
+       "hi": 1.7129025666666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.5487623533333332,
+       "lo": 3.5198072199999992,
+       "hi": 3.5750689333333336,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 2.578338686666666,
+       "lo": 2.535589246666667,
+       "hi": 2.6100297466666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.6555400083333331,
+       "lo": 1.6337386966666667,
+       "hi": 1.6903906716666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.5979430433333335,
+       "lo": 1.572703005,
+       "hi": 1.6285263683333335,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.4974525133333327,
+       "lo": 3.486836525,
+       "hi": 3.5119749133333333,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 2.5215428516666667,
+       "lo": 2.5041972883333337,
+       "hi": 2.5695128433333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.828904073333333,
+       "lo": 1.8163314333333331,
+       "hi": 1.83348594,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.74938158,
+       "lo": 1.734691,
+       "hi": 1.767674193333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.8766674933333327,
+       "lo": 3.8442708266666665,
+       "hi": 3.902752986666667,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 2.7319324000000003,
+       "lo": 2.6891311399999998,
+       "hi": 2.7913626266666665,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.2493607733333334,
+       "lo": 1.23974856,
+       "hi": 1.2647031533333335,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2070473733333333,
+       "lo": 1.2018663266666665,
+       "hi": 1.2248423466666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.81272298,
+       "lo": 2.7864022733333336,
+       "hi": 2.852367966666667,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 1.9317187533333333,
+       "lo": 1.8736473266666667,
+       "hi": 1.9818075133333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.7867092866666665,
+       "lo": 2.7551739266666666,
+       "hi": 2.8180920400000002,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.697238,
+       "lo": 2.677505666666667,
+       "hi": 2.7212755866666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.765567906666667,
+       "lo": 5.70920106,
+       "hi": 5.823995813333333,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 4.068495913333334,
+       "lo": 3.96191552,
+       "hi": 4.327804459999999,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.435037866666667,
+       "lo": 4.386258933333334,
+       "hi": 4.508087253333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.152384793333333,
+       "lo": 4.1237157133333335,
+       "hi": 4.2154598666666665,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 8.935998513333335,
+       "lo": 8.81620314,
+       "hi": 9.025430433333332,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 5.433016933333334,
+       "lo": 5.298003513333334,
+       "hi": 5.690278146666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vvc.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7398176800000003,
+       "lo": 1.72224904,
+       "hi": 1.7605877066666669,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.72247146,
+       "lo": 1.7033246,
+       "hi": 1.7428270799999999,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 4.135816706666667,
+       "lo": 4.110737046666666,
+       "hi": 4.179043999999999,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 2.796056386666667,
+       "lo": 2.6893157933333334,
+       "hi": 2.9608470466666663,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.vvc.vvc",
+     "codec": "vvc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 7.057684373333333,
+       "lo": 6.937556513333334,
+       "hi": 7.12608262,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 6.835510266666667,
+       "lo": 6.740423046666667,
+       "hi": 6.9756895466666675,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 14.296745520000002,
+       "lo": 14.228075859999999,
+       "hi": 14.64849264,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 11.328931713333333,
+       "lo": 10.410260166666667,
+       "hi": 12.566979173333333,
+       "passes": 15
+      }
+     }
+    }
+   ],
+   "summary": [
+    {
+     "codec": "av1",
+     "reference": "dav1d",
+     "streams": 26,
+     "ratio_plain": 1.2301660410421766,
+     "own_streams": 9,
+     "other_streams": 17,
+     "ratio": 1.252498699345428,
+     "ratio_own": 1.2010739621738786,
+     "ratio_other": 1.2806090448935685,
+     "ours_mpx_s": 394.0411492476525,
+     "ref_mpx_s": 493.5360269212625
+    },
+    {
+     "codec": "av2",
+     "reference": "dav2d",
+     "streams": 9,
+     "ratio_plain": 1.3214657059975663,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 1.3864190975870903,
+     "ratio_own": 1.3864190975870903,
+     "ratio_other": null,
+     "ours_mpx_s": 290.6200125600713,
+     "ref_mpx_s": 402.92113555428324
+    },
+    {
+     "codec": "av2",
+     "reference": "avmdec",
+     "streams": 9,
+     "ratio_plain": 0.39006167244537787,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 0.4092341931089266,
+     "ratio_own": 0.4092341931089266,
+     "ratio_other": null,
+     "ours_mpx_s": 290.6200125600713,
+     "ref_mpx_s": 118.93164634132692
+    },
+    {
+     "codec": "h264",
+     "reference": "ffmpeg",
+     "streams": 18,
+     "ratio_plain": 1.1621405231784805,
+     "own_streams": 9,
+     "other_streams": 9,
+     "ratio": 1.2342876110659664,
+     "ratio_own": 1.2395109562781876,
+     "ratio_other": 1.2290862772244942,
+     "ours_mpx_s": 598.8148056361948,
+     "ref_mpx_s": 739.1096959196308
+    },
+    {
+     "codec": "hevc",
+     "reference": "ffmpeg",
+     "streams": 23,
+     "ratio_plain": 0.8374092081884972,
+     "own_streams": 9,
+     "other_streams": 14,
+     "ratio": 0.8720432973283397,
+     "ratio_own": 0.8409407623714649,
+     "ratio_other": 0.8926425923353002,
+     "ours_mpx_s": 569.8056484355072,
+     "ref_mpx_s": 496.8951964980124
+    },
+    {
+     "codec": "vp9",
+     "reference": "ffmpeg",
+     "streams": 17,
+     "ratio_plain": 0.9645713325205718,
+     "own_streams": 9,
+     "other_streams": 8,
+     "ratio": 0.9771676265451372,
+     "ratio_own": 0.9672173946429327,
+     "ratio_other": 0.9884840453412821,
+     "ours_mpx_s": 534.2740955512403,
+     "ref_mpx_s": 522.0753498743555
+    },
+    {
+     "codec": "vp9",
+     "reference": "vpxdec",
+     "streams": 17,
+     "ratio_plain": 1.09118227426983,
+     "own_streams": 9,
+     "other_streams": 8,
+     "ratio": 1.1054319749375656,
+     "ratio_own": 1.0905157691842355,
+     "ratio_other": 1.1224567194013484,
+     "ours_mpx_s": 534.2740955512403,
+     "ref_mpx_s": 590.6036686031895
+    },
+    {
+     "codec": "vvc",
+     "reference": "ffmpeg",
+     "streams": 9,
+     "ratio_plain": 0.4541621485472659,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 0.4704917358666269,
+     "ratio_own": 0.4704917358666269,
+     "ratio_other": null,
+     "ours_mpx_s": 326.80080723346,
+     "ref_mpx_s": 153.75707907788546
+    },
+    {
+     "codec": "vvc",
+     "reference": "vvdec",
+     "streams": 9,
+     "ratio_plain": 0.6455580365388025,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 0.6687693419307104,
+     "ratio_own": 0.6687693419307104,
+     "ratio_other": null,
+     "ours_mpx_s": 326.80080723346,
+     "ref_mpx_s": 218.55436079594602
+    }
+   ],
+   "browser": [
+    {
+     "stream": "crowd_mot17_09.600k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 4.293,
+      "lo": 4.133,
+      "hi": 4.396,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 1.6816495733333332,
+      "lo": 1.66350136,
+      "hi": 1.70011812,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av1.ivf",
+     "codec": "av1",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 10.295,
+      "lo": 10.251,
+      "hi": 10.316,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 5.636157353333333,
+      "lo": 5.56085614,
+      "hi": 5.734029013333334,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 4.45,
+      "lo": 4.406,
+      "hi": 4.467,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 2.1940870599999998,
+      "lo": 2.1678172333333334,
+      "hi": 2.3042786466666665,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av2.ivf",
+     "codec": "av2",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 10.845,
+      "lo": 10.805,
+      "hi": 10.923,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 7.05544082,
+      "lo": 6.890837526666667,
+      "hi": 7.112560566666668,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.h264.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 1.895,
+      "lo": 1.8409999999999997,
+      "hi": 1.907,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 2.1650133333333335,
+      "lo": 2.1592866666666666,
+      "hi": 2.17558,
+      "passes": 7
+     },
+     "native": {
+      "ms": 0.9964793,
+      "lo": 0.9907845666666666,
+      "hi": 1.0046490266666668,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.x264.h264.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "x264",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 6.037,
+      "lo": 6.017,
+      "hi": 6.128,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 8.248906666666667,
+      "lo": 8.185373333333333,
+      "hi": 8.270973333333332,
+      "passes": 7
+     },
+     "native": {
+      "ms": 3.631975246666667,
+      "lo": 3.6154110599999996,
+      "hi": 3.6542047199999996,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "cam150.axis-m5074-720p.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "Axis camera",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 2.329,
+      "lo": 2.306,
+      "hi": 2.375,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 2.5317600000000002,
+      "lo": 2.505266666666667,
+      "hi": 2.5519066666666665,
+      "passes": 7
+     },
+     "native": {
+      "ms": 1.08918242,
+      "lo": 1.08214378,
+      "hi": 1.1196200533333334,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.hevc.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 2.484,
+      "lo": 2.401,
+      "hi": 2.552,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 3.9524533333333336,
+      "lo": 3.940233333333333,
+      "hi": 3.9806133333333333,
+      "passes": 7
+     },
+     "native": {
+      "ms": 1.1474203266666665,
+      "lo": 1.1386792866666666,
+      "hi": 1.17042596,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.hevc.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 7.054000000000001,
+      "lo": 6.998,
+      "hi": 7.095,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 15.1027,
+      "lo": 15.063093333333333,
+      "hi": 15.135926666666668,
+      "passes": 7
+     },
+     "native": {
+      "ms": 3.9599729933333334,
+      "lo": 3.926395433333333,
+      "hi": 4.0192226,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 2.339,
+      "lo": 2.243,
+      "hi": 2.361,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 5.674673333333334,
+      "lo": 5.634073333333333,
+      "hi": 5.734853333333333,
+      "passes": 7
+     },
+     "native": {
+      "ms": 1.1487169933333332,
+      "lo": 1.14422858,
+      "hi": 1.1782279333333334,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.vpxenc.vp9.ivf",
+     "codec": "vp9",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "libvpx",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 6.739999999999999,
+      "lo": 6.733,
+      "hi": 6.769,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 17.395646666666668,
+      "lo": 17.32614,
+      "hi": 17.4996,
+      "passes": 7
+     },
+     "native": {
+      "ms": 3.9429685466666666,
+      "lo": 3.9194243466666663,
+      "hi": 4.015169426666667,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vvc.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 3.749,
+      "lo": 3.7120000000000006,
+      "hi": 3.7970000000000006,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 1.7398176800000003,
+      "lo": 1.72224904,
+      "hi": 1.7605877066666669,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.vvc.vvc",
+     "codec": "vvc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 13.168,
+      "lo": 13.155,
+      "hi": 13.179,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 7.057684373333333,
+      "lo": 6.937556513333334,
+      "hi": 7.12608262,
+      "passes": 15
+     }
+    }
+   ],
+   "platform": {
+    "cpu": "Intel(R) Xeon(R) 6975P-C",
+    "nanocodec": "nanocodec 0.7.0 ce89975ea47060eb5cb63f432e53411545c90e09",
+    "pinning": "one thread pinned to one physical core",
+    "node": "v22.21.1",
+    "ffmpeg_core": "0.12.10",
+    "date": "2026-11-27"
+   }
+  },
+  "c8g": {
+   "native": [
+    {
+     "stream": "bp4-crowd.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.9009440933333333,
+       "lo": 1.85825798,
+       "hi": 1.94904958,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.86145234,
+       "lo": 1.81273352,
+       "hi": 1.9006248133333334,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.76849124,
+       "lo": 1.7303213333333334,
+       "hi": 1.8244464866666665,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.5744788333333335,
+       "lo": 1.5584311533333335,
+       "hi": 1.5933215866666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.5552404,
+       "lo": 1.5424327266666666,
+       "hi": 1.5697032133333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.5883244533333334,
+       "lo": 1.5767131866666666,
+       "hi": 1.611836,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.3927091533333333,
+       "lo": 1.3614357533333334,
+       "hi": 1.4255799533333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3859464933333334,
+       "lo": 1.3603107266666665,
+       "hi": 1.41467114,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.3645165066666665,
+       "lo": 1.3596764666666667,
+       "hi": 1.38023142,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0721679066666665,
+       "lo": 2.009898853333333,
+       "hi": 2.10050752,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.0382380933333333,
+       "lo": 1.9706138200000003,
+       "hi": 2.0648858266666665,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.9015179266666666,
+       "lo": 1.8567520066666665,
+       "hi": 1.9131438999999997,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.8206192799999996,
+       "lo": 1.8054235133333334,
+       "hi": 1.83883646,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7991712199999998,
+       "lo": 1.7852921266666666,
+       "hi": 1.8250511133333331,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.7538825333333334,
+       "lo": 1.7458095266666664,
+       "hi": 1.7735388733333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.6838639466666667,
+       "lo": 1.6509110933333333,
+       "hi": 1.7337994133333332,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6608151533333333,
+       "lo": 1.6449402,
+       "hi": 1.68675366,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.5464462933333334,
+       "lo": 1.5369517266666668,
+       "hi": 1.56475242,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.9134043933333331,
+       "lo": 1.874340145,
+       "hi": 1.9310472466666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.8700623316666667,
+       "lo": 1.8470610016666669,
+       "hi": 1.883857218333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.7779659666666665,
+       "lo": 1.752154575,
+       "hi": 1.7905187199999997,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.8449778599999997,
+       "lo": 1.8285216116666667,
+       "hi": 1.8707673616666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.8261713350000002,
+       "lo": 1.8022086449999999,
+       "hi": 1.8531923066666665,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.8591448833333333,
+       "lo": 1.8479789549999999,
+       "hi": 1.8699380583333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.4591723633333333,
+       "lo": 1.4549197716666666,
+       "hi": 1.4907438683333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.4606191149999999,
+       "lo": 1.4548988566666665,
+       "hi": 1.4852686066666667,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.4067157000000001,
+       "lo": 1.4013999366666667,
+       "hi": 1.4159432416666669,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.060201826666667,
+       "lo": 2.0388132866666666,
+       "hi": 2.12883382,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.0185677133333333,
+       "lo": 1.9991174533333333,
+       "hi": 2.0833909,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.9411316066666666,
+       "lo": 1.9272616200000001,
+       "hi": 2.002433153333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0116929666666667,
+       "lo": 1.9963966466666667,
+       "hi": 2.0631874866666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9900239066666665,
+       "lo": 1.9705855266666668,
+       "hi": 2.0155418933333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.0519536666666665,
+       "lo": 2.0447034933333335,
+       "hi": 2.0606092133333336,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 960,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7824861733333335,
+       "lo": 1.76839266,
+       "hi": 1.84572276,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7787847599999997,
+       "lo": 1.762793353333333,
+       "hi": 1.85635806,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.8085415533333333,
+       "lo": 1.7978537333333335,
+       "hi": 1.8464064466666665,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 1080,
+     "height": 540,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1507709733333333,
+       "lo": 1.1092868266666667,
+       "hi": 1.1884949066666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.124202293333333,
+       "lo": 1.0883539066666665,
+       "hi": 1.1716987600000002,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.0639809599999999,
+       "lo": 1.0254370933333332,
+       "hi": 1.0931056266666668,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.13644656,
+       "lo": 1.1156721066666668,
+       "hi": 1.1529978866666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.11143754,
+       "lo": 1.0928473333333333,
+       "hi": 1.1335737733333333,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 1.0730617599999999,
+       "lo": 1.0603855533333335,
+       "hi": 1.0927414800000002,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 1080,
+     "height": 540,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.8222997333333333,
+       "lo": 0.8147282266666667,
+       "hi": 0.84203494,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.8157770400000001,
+       "lo": 0.80447916,
+       "hi": 0.8328487466666666,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 0.73916802,
+       "lo": 0.7333564,
+       "hi": 0.74561524,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "aom720_good4_1000k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 40,
+     "decoders": {
+      "ours": {
+       "ms": 3.812106075,
+       "lo": 3.73357355,
+       "hi": 3.993068875,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.74803815,
+       "lo": 3.692446825,
+       "hi": 3.9389157500000005,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 3.2253509,
+       "lo": 3.2114301249999997,
+       "hi": 3.271283725,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.2054594733333333,
+       "lo": 3.1787847866666668,
+       "hi": 3.252771113333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.1452793,
+       "lo": 3.09908552,
+       "hi": 3.2016454000000003,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.999034413333333,
+       "lo": 2.9857962733333334,
+       "hi": 3.051001846666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.9190596733333334,
+       "lo": 2.8845694666666666,
+       "hi": 2.994168073333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.888986633333333,
+       "lo": 2.837022446666667,
+       "hi": 2.9299232466666663,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.9153135933333334,
+       "lo": 2.88547086,
+       "hi": 2.9404312133333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.405141,
+       "lo": 2.3590431533333334,
+       "hi": 2.4506002999999996,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.3922104733333334,
+       "lo": 2.3490475600000003,
+       "hi": 2.4326258066666666,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.3250204666666665,
+       "lo": 2.2986210799999998,
+       "hi": 2.3472025,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.libaom-av1-cpu8.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libaom",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.422367826666667,
+       "lo": 4.28855854,
+       "hi": 4.53729252,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.290693866666667,
+       "lo": 4.19958054,
+       "hi": 4.352831206666666,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 4.350571033333333,
+       "lo": 4.232156740000001,
+       "hi": 4.38827424,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-av1-medium.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.18330362,
+       "lo": 4.086531093333334,
+       "hi": 4.21887996,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.122128513333334,
+       "lo": 4.027351546666666,
+       "hi": 4.16880198,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 4.705299453333334,
+       "lo": 4.63181122,
+       "hi": 4.731989526666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.svtav1-m10.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.4935229799999994,
+       "lo": 3.374672873333333,
+       "hi": 3.5531605333333336,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.426767093333333,
+       "lo": 3.3338620399999996,
+       "hi": 3.5354447933333337,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 3.8356481999999996,
+       "lo": 3.798053406666667,
+       "hi": 3.8866378866666675,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.9685462066666666,
+       "lo": 1.9439507266666665,
+       "hi": 2.03560238,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9167116799999997,
+       "lo": 1.9114819066666666,
+       "hi": 2.00031002,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.0903865666666666,
+       "lo": 2.083969853333333,
+       "hi": 2.126080873333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "svt720_p8_1000k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.3847300533333335,
+       "lo": 2.358118693333333,
+       "hi": 2.435731486666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.344914633333333,
+       "lo": 2.3057882800000002,
+       "hi": 2.3981820133333334,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 2.2194769733333337,
+       "lo": 2.188402426666667,
+       "hi": 2.2315548466666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av1.ivf",
+     "codec": "av1",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 6.761922366666666,
+       "lo": 6.506476653333333,
+       "hi": 6.961464933333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 6.63716358,
+       "lo": 6.398344173333333,
+       "hi": 6.89766506,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 6.6054956533333335,
+       "lo": 6.324980806666667,
+       "hi": 6.67091458,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.svt.av1.ivf",
+     "codec": "av1",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "SVT-AV1",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.404405746666666,
+       "lo": 4.221189133333334,
+       "hi": 4.499247993333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.362654093333334,
+       "lo": 4.25445282,
+       "hi": 4.47325294,
+       "passes": 15
+      },
+      "dav1d": {
+       "ms": 3.9059582866666664,
+       "lo": 3.8139429333333337,
+       "hi": 3.9838196,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0218169866666664,
+       "lo": 2.0085184066666666,
+       "hi": 2.0667924,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9318082933333331,
+       "lo": 1.9116111933333335,
+       "hi": 1.9781571066666668,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 6.884285386666667,
+       "lo": 6.660800213333333,
+       "hi": 7.035331599999999,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 2.5343851733333334,
+       "lo": 2.51824988,
+       "hi": 2.558333173333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.30268688,
+       "lo": 2.2881244733333332,
+       "hi": 2.3395084799999997,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.217145593333333,
+       "lo": 2.1924409866666665,
+       "hi": 2.2643265466666667,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 8.731969193333335,
+       "lo": 8.53324232,
+       "hi": 8.900904333333333,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 2.8002866066666665,
+       "lo": 2.7716925866666666,
+       "hi": 2.8268350866666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 2.209857358333333,
+       "lo": 2.1931297733333333,
+       "hi": 2.2485057866666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.117942558333333,
+       "lo": 2.1009628316666666,
+       "hi": 2.127370728333333,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 7.69712739,
+       "lo": 7.542082923333332,
+       "hi": 7.860889215,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 2.6519658899999996,
+       "lo": 2.636877296666667,
+       "hi": 2.6750346433333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.4809501866666666,
+       "lo": 2.471815993333333,
+       "hi": 2.52767098,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.3499562933333333,
+       "lo": 2.33869442,
+       "hi": 2.3648626200000002,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 8.133764406666668,
+       "lo": 7.996879786666667,
+       "hi": 8.499515226666666,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 2.8526885533333335,
+       "lo": 2.8341201733333334,
+       "hi": 2.8890097666666668,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.5961064933333333,
+       "lo": 1.5796756733333335,
+       "hi": 1.6188683866666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.4854947333333333,
+       "lo": 1.4676337000000002,
+       "hi": 1.5170265066666666,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 4.158558386666666,
+       "lo": 3.9680608599999996,
+       "hi": 4.33196888,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 1.9864110400000001,
+       "lo": 1.9494935733333334,
+       "hi": 2.0017488533333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.724023626666667,
+       "lo": 3.6626956333333336,
+       "hi": 3.7867836333333336,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.5515255066666667,
+       "lo": 3.4761964933333327,
+       "hi": 3.6472709333333335,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 13.277987733333335,
+       "lo": 13.049631380000001,
+       "hi": 13.397180193333332,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 4.462259466666666,
+       "lo": 4.422838613333333,
+       "hi": 4.5060519333333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-av2-medium.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 5.358974473333333,
+       "lo": 5.2124024066666665,
+       "hi": 5.415131933333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 5.02524886,
+       "lo": 4.890026066666667,
+       "hi": 5.08200578,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 15.586995553333333,
+       "lo": 14.936190973333332,
+       "hi": 15.695305186666667,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 6.172062473333334,
+       "lo": 6.021843353333333,
+       "hi": 6.276251433333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.4673330000000004,
+       "lo": 2.42214628,
+       "hi": 2.537394773333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.3248390333333333,
+       "lo": 2.3091431266666667,
+       "hi": 2.4401468666666664,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 7.722197773333334,
+       "lo": 7.486087546666668,
+       "hi": 7.826543793333333,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 3.5974669133333337,
+       "lo": 3.5705821133333333,
+       "hi": 3.6588144466666663,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av2.ivf",
+     "codec": "av2",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 7.929390500000001,
+       "lo": 7.60133764,
+       "hi": 8.008755240000001,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 7.3777354,
+       "lo": 7.028097446666666,
+       "hi": 7.477281873333334,
+       "passes": 15
+      },
+      "avmdec": {
+       "ms": 25.041096293333332,
+       "lo": 24.564783633333334,
+       "hi": 25.23277270666667,
+       "passes": 15
+      },
+      "dav2d": {
+       "ms": 9.191548553333334,
+       "lo": 9.05855852,
+       "hi": 9.285968053333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.8396772800000001,
+       "lo": 0.8255068333333333,
+       "hi": 0.8557787533333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.79484778,
+       "lo": 0.78306298,
+       "hi": 0.8131752999999999,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.81575854,
+       "lo": 0.8116753,
+       "hi": 0.8185718533333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0078325466666667,
+       "lo": 0.9807394533333333,
+       "hi": 1.0437710199999999,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9687977933333334,
+       "lo": 0.9395192733333333,
+       "hi": 1.0014466466666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.0228642200000002,
+       "lo": 1.0152562533333331,
+       "hi": 1.0286023866666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.8919522266666666,
+       "lo": 0.8765731066666668,
+       "hi": 0.9087661466666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.8548095000000001,
+       "lo": 0.8434828,
+       "hi": 0.8836106133333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.9217743333333334,
+       "lo": 0.9150079666666666,
+       "hi": 0.9328209000000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1374165200000002,
+       "lo": 1.1048470266666668,
+       "hi": 1.1642282066666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.07489176,
+       "lo": 1.0605219933333334,
+       "hi": 1.1203103733333335,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1827648133333333,
+       "lo": 1.1791531666666666,
+       "hi": 1.2004696400000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 0.8296088866666667,
+       "lo": 0.8169274366666667,
+       "hi": 0.8552823416666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.7916789066666666,
+       "lo": 0.7837287683333333,
+       "hi": 0.8003850083333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.8509889833333334,
+       "lo": 0.8474920616666666,
+       "hi": 0.8539274433333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.0973603266666667,
+       "lo": 1.0857335466666667,
+       "hi": 1.1287715516666665,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.045149495,
+       "lo": 1.030772165,
+       "hi": 1.1036706033333332,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1060058499999998,
+       "lo": 1.0970749766666668,
+       "hi": 1.1150560333333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.8994791733333333,
+       "lo": 0.8834703399999999,
+       "hi": 0.9171517333333332,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.8611205133333332,
+       "lo": 0.84474414,
+       "hi": 0.8764962533333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.9162371866666666,
+       "lo": 0.9064091266666666,
+       "hi": 0.9197030466666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.x264-medium.264",
+     "codec": "h264",
+     "width": 960,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1066666200000002,
+       "lo": 1.0827365533333333,
+       "hi": 1.1579857266666669,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0713525,
+       "lo": 1.0358463333333334,
+       "hi": 1.0965837866666668,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.15314992,
+       "lo": 1.1456683266666667,
+       "hi": 1.1646362133333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.6916991933333333,
+       "lo": 0.67743178,
+       "hi": 0.70761164,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.6604310600000001,
+       "lo": 0.6464117266666667,
+       "hi": 0.6814095066666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.7231398866666667,
+       "lo": 0.7193119733333334,
+       "hi": 0.7267457266666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.x264-medium.264",
+     "codec": "h264",
+     "width": 1080,
+     "height": 540,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.7939691266666667,
+       "lo": 0.77254864,
+       "hi": 0.8270791866666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.7599404066666667,
+       "lo": 0.7375501933333333,
+       "hi": 0.7854030066666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.8414911666666668,
+       "lo": 0.8349864533333332,
+       "hi": 0.8465984200000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.4764442466666665,
+       "lo": 1.4729589866666666,
+       "hi": 1.5128804533333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.4177205666666666,
+       "lo": 1.4008205266666667,
+       "hi": 1.4496400600000001,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.5211586466666667,
+       "lo": 1.5170088933333332,
+       "hi": 1.53396864,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.x264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7281117266666668,
+       "lo": 1.6871108266666668,
+       "hi": 1.7750504533333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6519989333333334,
+       "lo": 1.6093469400000002,
+       "hi": 1.6964228133333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.76478746,
+       "lo": 1.7513863266666665,
+       "hi": 1.7970889266666665,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-h264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.8449293533333333,
+       "lo": 1.8056496600000003,
+       "hi": 1.88438894,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7058629733333333,
+       "lo": 1.6859007866666669,
+       "hi": 1.7486220599999998,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.6397124933333334,
+       "lo": 1.6348254066666668,
+       "hi": 1.6570993266666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.x264-medium.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0558501466666668,
+       "lo": 1.9510626733333334,
+       "hi": 2.165797206666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9352481333333333,
+       "lo": 1.8329384466666667,
+       "hi": 2.0447109733333337,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.9861400466666668,
+       "lo": 1.9350361666666667,
+       "hi": 2.032442086666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.h264.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.9745412866666665,
+       "lo": 0.9673448266666665,
+       "hi": 1.00361436,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.9320799933333332,
+       "lo": 0.9168143866666668,
+       "hi": 0.9754356800000001,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.99116432,
+       "lo": 0.9890611600000002,
+       "hi": 0.9978009800000001,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.h264.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.227340273333333,
+       "lo": 3.1833505533333333,
+       "hi": 3.325305353333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.0954488066666666,
+       "lo": 3.005519693333333,
+       "hi": 3.1964501333333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.2959604866666665,
+       "lo": 3.2539672533333337,
+       "hi": 3.3115519133333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.x264.h264.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "x264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.734898013333334,
+       "lo": 3.643183713333334,
+       "hi": 3.848383666666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.556562813333333,
+       "lo": 3.4667264666666666,
+       "hi": 3.6417501333333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.6566585333333332,
+       "lo": 3.636672266666667,
+       "hi": 3.715876046666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "openh264_cabac_1080p.3000k.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "openh264",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.4020050533333333,
+       "lo": 3.345951606666667,
+       "hi": 3.5567363400000005,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.2811584733333334,
+       "lo": 3.1989787733333332,
+       "hi": 3.3540820466666665,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.3597517599999995,
+       "lo": 3.3559645399999996,
+       "hi": 3.4062329,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.07232028,
+       "lo": 1.0640571200000002,
+       "hi": 1.0854184933333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0509320066666668,
+       "lo": 1.0367443066666668,
+       "hi": 1.0610566466666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.26443768,
+       "lo": 1.2431179133333332,
+       "hi": 1.29747,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.5628363200000002,
+       "lo": 1.5403845533333336,
+       "hi": 1.6324950333333335,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.5223242266666668,
+       "lo": 1.4993456666666667,
+       "hi": 1.5925764066666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.5936833066666667,
+       "lo": 1.5502633000000001,
+       "hi": 1.6334259666666668,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1828467933333333,
+       "lo": 1.1683080133333332,
+       "hi": 1.2061398333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1654241266666667,
+       "lo": 1.1496733399999999,
+       "hi": 1.19125574,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.3172811133333335,
+       "lo": 1.2953405,
+       "hi": 1.344806306666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.01419638,
+       "lo": 1.91731342,
+       "hi": 2.0431218533333335,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9520965933333336,
+       "lo": 1.8743556533333336,
+       "hi": 1.96648672,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.0164019533333333,
+       "lo": 1.9748661666666665,
+       "hi": 2.05236636,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.1272321616666667,
+       "lo": 1.1134533883333333,
+       "hi": 1.1367878283333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1073298933333333,
+       "lo": 1.0931297833333333,
+       "hi": 1.1251078833333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.2675999983333335,
+       "lo": 1.2538034033333334,
+       "hi": 1.2860605066666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.6291545083333334,
+       "lo": 1.6117206066666667,
+       "hi": 1.7069525466666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.5983727716666665,
+       "lo": 1.5881624733333333,
+       "hi": 1.6625320899999998,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.6411636433333334,
+       "lo": 1.62086781,
+       "hi": 1.7041573633333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.21394564,
+       "lo": 1.1926759599999999,
+       "hi": 1.2330733533333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1954514733333335,
+       "lo": 1.1693550466666667,
+       "hi": 1.2059450533333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.4222617133333333,
+       "lo": 1.4056986533333335,
+       "hi": 1.43825986,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 960,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.732731053333333,
+       "lo": 1.6970864933333334,
+       "hi": 1.8079659733333335,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.6818309533333335,
+       "lo": 1.6532237933333334,
+       "hi": 1.7490074600000003,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.95540178,
+       "lo": 1.919968406666667,
+       "hi": 1.9820142933333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.7295334066666667,
+       "lo": 0.7188742333333332,
+       "hi": 0.7425266466666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.7062215066666667,
+       "lo": 0.6981506399999999,
+       "hi": 0.7193718533333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.95654308,
+       "lo": 0.9340450866666666,
+       "hi": 0.96613534,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 1080,
+     "height": 540,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.113997006666667,
+       "lo": 1.0953290533333335,
+       "hi": 1.1281221333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0738207599999998,
+       "lo": 1.0610135133333334,
+       "hi": 1.0904735733333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.2737969400000002,
+       "lo": 1.23173128,
+       "hi": 1.28274994,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.8676846333333332,
+       "lo": 1.8376429866666664,
+       "hi": 1.9454294933333336,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.8149400466666665,
+       "lo": 1.7800338266666669,
+       "hi": 1.8750040933333332,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.155020793333333,
+       "lo": 2.116967246666667,
+       "hi": 2.16728936,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.7597072733333334,
+       "lo": 2.6599285333333333,
+       "hi": 2.810314266666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.6524959066666667,
+       "lo": 2.490539973333333,
+       "hi": 2.7415422333333335,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.8672285466666665,
+       "lo": 2.763514993333333,
+       "hi": 2.9049313,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-hevc-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.2611657533333336,
+       "lo": 2.1885358666666663,
+       "hi": 2.348009793333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.1812289933333333,
+       "lo": 2.1186602333333333,
+       "hi": 2.2222293133333335,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.1822288666666663,
+       "lo": 3.08062454,
+       "hi": 3.21606236,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.x265-medium.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.7444167066666667,
+       "lo": 2.576920926666667,
+       "hi": 2.855701553333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.6905622466666665,
+       "lo": 2.5212759200000003,
+       "hi": 2.7732807533333332,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.5185095066666667,
+       "lo": 3.3797731066666667,
+       "hi": 3.563873493333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.axis-m5074-720p.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "Axis camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.0582675533333334,
+       "lo": 1.0501370933333334,
+       "hi": 1.0764101666666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.02367886,
+       "lo": 1.0131108599999998,
+       "hi": 1.0548948733333332,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1490910666666667,
+       "lo": 1.13066604,
+       "hi": 1.1752579066666669,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.hevc.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.19142866,
+       "lo": 1.18061706,
+       "hi": 1.2014033599999998,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.1495041266666668,
+       "lo": 1.1384744666666669,
+       "hi": 1.1712104533333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.42887222,
+       "lo": 1.4189360666666668,
+       "hi": 1.4797879133333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.axis-p1375e-1080p.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "Axis camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.3860137333333333,
+       "lo": 2.3138340800000003,
+       "hi": 2.485205013333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.2912192866666667,
+       "lo": 2.2299650533333333,
+       "hi": 2.416389226666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.64078096,
+       "lo": 2.5347498066666665,
+       "hi": 2.690135273333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.hevc.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.883484233333333,
+       "lo": 4.43998896,
+       "hi": 5.05577286,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.605796906666667,
+       "lo": 4.352280526666667,
+       "hi": 5.013929453333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.558779013333334,
+       "lo": 5.368532953333333,
+       "hi": 5.728508613333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "x265-1080p-b.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "x265",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 6.325540746666667,
+       "lo": 5.8022686,
+       "hi": 6.51740234,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 6.24852426,
+       "lo": 5.64038912,
+       "hi": 6.463188519999999,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 6.027728526666667,
+       "lo": 5.669273973333333,
+       "hi": 6.135304593333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "novatek-bodycam-2460x1848-1s.hevc",
+     "codec": "hevc",
+     "width": 2460,
+     "height": 1848,
+     "encoder": "Novatek bodycam",
+     "own": false,
+     "frames": 25,
+     "decoders": {
+      "ours": {
+       "ms": 6.740053799999999,
+       "lo": 6.4063472,
+       "hi": 7.1232022,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 6.3998430399999995,
+       "lo": 5.94433588,
+       "hi": 6.83710516,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 6.79512792,
+       "lo": 6.4900928,
+       "hi": 6.89096056,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.axis-p3267lv-5mp.hevc",
+     "codec": "hevc",
+     "width": 2592,
+     "height": 1944,
+     "encoder": "Axis camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 5.4164153200000005,
+       "lo": 5.32805668,
+       "hi": 5.545679306666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 5.2287981,
+       "lo": 5.1159180399999995,
+       "hi": 5.344771726666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.63019454,
+       "lo": 5.601738453333334,
+       "hi": 5.777951419999999,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "cam150.hanwha-qnvc9011r-4k.hevc",
+     "codec": "hevc",
+     "width": 3840,
+     "height": 2160,
+     "encoder": "Hanwha camera",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 9.07536052,
+       "lo": 8.982701266666666,
+       "hi": 9.368328866666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 8.778965266666665,
+       "lo": 8.677926393333333,
+       "hi": 9.031866266666668,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 10.15707394,
+       "lo": 10.119933426666666,
+       "hi": 10.207628926666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "x265-4k-b.hevc",
+     "codec": "hevc",
+     "width": 3840,
+     "height": 2160,
+     "encoder": "x265",
+     "own": false,
+     "frames": 120,
+     "decoders": {
+      "ours": {
+       "ms": 8.105184133333333,
+       "lo": 7.6131658416666665,
+       "hi": 8.340585383333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 7.968356783333333,
+       "lo": 7.54886395,
+       "hi": 8.144087158333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 8.737515016666666,
+       "lo": 8.529671058333333,
+       "hi": 8.860736375,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.4053683866666666,
+       "lo": 1.3934228400000002,
+       "hi": 1.4353446333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3646915133333335,
+       "lo": 1.3526346133333333,
+       "hi": 1.3943964466666665,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.2062452866666669,
+       "lo": 1.2032099066666666,
+       "hi": 1.2154333533333332,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.23454522,
+       "lo": 1.2297022066666667,
+       "hi": 1.2610658133333335,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.1129955466666666,
+       "lo": 1.0980645466666665,
+       "hi": 1.1414056466666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.0900384933333334,
+       "lo": 1.0780877733333334,
+       "hi": 1.1026637533333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.9937222266666665,
+       "lo": 0.9896703333333333,
+       "hi": 0.9974886066666666,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.01862954,
+       "lo": 1.0135296266666667,
+       "hi": 1.0308889333333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.4373315333333332,
+       "lo": 1.4236071399999999,
+       "hi": 1.4734674066666666,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.40311174,
+       "lo": 1.3895471400000001,
+       "hi": 1.4193493066666665,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.3617724533333333,
+       "lo": 1.3555804733333334,
+       "hi": 1.3695578066666667,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.343215906666667,
+       "lo": 1.3358626133333333,
+       "hi": 1.3540048000000002,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.3590370333333333,
+       "lo": 1.3386046866666665,
+       "hi": 1.3861067133333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3369923466666667,
+       "lo": 1.3152174,
+       "hi": 1.3572445666666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.26188222,
+       "lo": 1.2565995866666666,
+       "hi": 1.2689993733333333,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.2654712733333333,
+       "lo": 1.25256052,
+       "hi": 1.2780869666666665,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.4668955083333333,
+       "lo": 1.4564277833333334,
+       "hi": 1.4859773966666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.4264192883333333,
+       "lo": 1.4177752750000001,
+       "hi": 1.4448218066666665,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.30195389,
+       "lo": 1.2988276,
+       "hi": 1.3086756533333332,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.3018776483333332,
+       "lo": 1.2991857516666665,
+       "hi": 1.3135029733333332,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.2090556733333333,
+       "lo": 1.19520169,
+       "hi": 1.23405054,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.18043029,
+       "lo": 1.1665314100000002,
+       "hi": 1.1912315816666668,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.09706561,
+       "lo": 1.09372545,
+       "hi": 1.102420875,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.1016888833333334,
+       "lo": 1.096272285,
+       "hi": 1.1128258333333334,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.42266136,
+       "lo": 1.4137058266666669,
+       "hi": 1.4505497333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.3867191666666667,
+       "lo": 1.3708060866666667,
+       "hi": 1.4093088599999999,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.3116463066666668,
+       "lo": 1.3056192,
+       "hi": 1.3202986399999999,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.31585148,
+       "lo": 1.30751676,
+       "hi": 1.34303292,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.2520455666666668,
+       "lo": 1.2304433466666667,
+       "hi": 1.2716045533333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2308003733333335,
+       "lo": 1.21456044,
+       "hi": 1.2505326466666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.1686374266666666,
+       "lo": 1.1609708066666666,
+       "hi": 1.1758356399999998,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.1541025066666666,
+       "lo": 1.1398851333333335,
+       "hi": 1.16885106,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 1080,
+     "height": 540,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.79888708,
+       "lo": 0.7944053066666666,
+       "hi": 0.8205137333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.7751939733333333,
+       "lo": 0.76729036,
+       "hi": 0.7937831399999999,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.7341772133333333,
+       "lo": 0.7323123066666667,
+       "hi": 0.7371453933333333,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 0.7569370066666667,
+       "lo": 0.7534226866666667,
+       "hi": 0.7665295333333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 0.8560966866666668,
+       "lo": 0.8465257466666666,
+       "hi": 0.8749451666666668,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 0.8289176933333333,
+       "lo": 0.8187622733333333,
+       "hi": 0.8494036266666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 0.7251619133333334,
+       "lo": 0.7181114333333334,
+       "hi": 0.7318800533333334,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 0.7901112866666667,
+       "lo": 0.7804834066666667,
+       "hi": 0.7980270066666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.2867969133333332,
+       "lo": 2.2442153533333338,
+       "hi": 2.324288393333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.2094773533333334,
+       "lo": 2.1821045866666666,
+       "hi": 2.24039474,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 2.0925815533333334,
+       "lo": 2.0737948933333334,
+       "hi": 2.120997926666667,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 2.0689115599999996,
+       "lo": 2.055087053333333,
+       "hi": 2.12081992,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0065584666666667,
+       "lo": 1.9601337799999998,
+       "hi": 2.0449121333333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9601132066666667,
+       "lo": 1.9119585933333334,
+       "hi": 2.017339853333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.82345672,
+       "lo": 1.8075614333333336,
+       "hi": 1.8614693733333332,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.81768098,
+       "lo": 1.7865574266666666,
+       "hi": 1.8362707,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.libvpx-vp9-cpu7.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.3476502066666667,
+       "lo": 2.27560278,
+       "hi": 2.4645619533333334,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.233006593333333,
+       "lo": 2.183650306666667,
+       "hi": 2.3725106533333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.9805105866666664,
+       "lo": 1.9545858533333333,
+       "hi": 2.0083524933333337,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 2.1021747,
+       "lo": 2.043259226666667,
+       "hi": 2.182289986666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-vp9-medium.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0585087266666666,
+       "lo": 1.99244416,
+       "hi": 2.1171692999999996,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9800570866666665,
+       "lo": 1.9409065933333334,
+       "hi": 2.0188787666666665,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.7400507733333332,
+       "lo": 1.7293324399999999,
+       "hi": 1.7556367666666666,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.7637693466666666,
+       "lo": 1.73901444,
+       "hi": 1.7972294866666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.2467250266666667,
+       "lo": 1.2237744066666667,
+       "hi": 1.27723514,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2034283133333332,
+       "lo": 1.19797766,
+       "hi": 1.23457094,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 1.12904568,
+       "lo": 1.1249472533333336,
+       "hi": 1.14983936,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 1.1428609600000001,
+       "lo": 1.1381114466666666,
+       "hi": 1.1563144800000003,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.vp9.ivf",
+     "codec": "vp9",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.841083786666666,
+       "lo": 4.53879688,
+       "hi": 4.97013576,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.617040426666667,
+       "lo": 4.419549186666667,
+       "hi": 4.75408628,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 4.419647433333334,
+       "lo": 4.30193616,
+       "hi": 4.516554706666667,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 4.485261513333334,
+       "lo": 4.306785953333333,
+       "hi": 4.6308112800000005,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.vpxenc.vp9.ivf",
+     "codec": "vp9",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "libvpx",
+     "own": false,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 4.908727946666667,
+       "lo": 4.568157586666667,
+       "hi": 5.165380466666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.935986026666667,
+       "lo": 4.576679286666667,
+       "hi": 5.14398248,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 4.673092573333333,
+       "lo": 4.359559453333333,
+       "hi": 4.741636706666666,
+       "passes": 15
+      },
+      "vpxdec": {
+       "ms": 4.520273686666666,
+       "lo": 4.15274862,
+       "hi": 4.610510746666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-crowd.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.8815477399999998,
+       "lo": 1.83128622,
+       "hi": 1.958436926666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.76796288,
+       "lo": 1.7259480466666666,
+       "hi": 1.8029361333333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.3352655066666665,
+       "lo": 5.1631217,
+       "hi": 5.451657773333333,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 2.8627299333333336,
+       "lo": 2.6410216,
+       "hi": 2.967925113333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-drone.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.0415509866666666,
+       "lo": 1.9848241600000003,
+       "hi": 2.0862772266666667,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.9649206866666664,
+       "lo": 1.9172906733333333,
+       "hi": 2.0106084533333335,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 6.346684440000001,
+       "lo": 6.16909664,
+       "hi": 6.41568962,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 3.1968205266666665,
+       "lo": 3.0212450333333334,
+       "hi": 3.338759113333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-lowlight.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 600,
+     "decoders": {
+      "ours": {
+       "ms": 1.9435616900000001,
+       "lo": 1.9182201866666666,
+       "hi": 1.9943353199999998,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.854376996666667,
+       "lo": 1.81658975,
+       "hi": 1.907565245,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.915974491666667,
+       "lo": 5.825677115,
+       "hi": 6.083618938333333,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 3.06144717,
+       "lo": 2.876959916666667,
+       "hi": 3.132457265,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-static.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 960,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 2.2196354733333337,
+       "lo": 2.172402646666667,
+       "hi": 2.271577833333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 2.0695176733333334,
+       "lo": 2.0178331000000003,
+       "hi": 2.1227902866666666,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 6.533395726666667,
+       "lo": 6.415351373333333,
+       "hi": 6.6684406733333335,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 3.29415498,
+       "lo": 3.11461116,
+       "hi": 3.466831706666667,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-texture.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 1080,
+     "height": 540,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.2272858266666666,
+       "lo": 1.1957466266666668,
+       "hi": 1.2524179933333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.2001579333333332,
+       "lo": 1.1671087866666667,
+       "hi": 1.2225103266666668,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 3.1516633,
+       "lo": 2.9896398000000004,
+       "hi": 3.23211292,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 2.01575926,
+       "lo": 1.8450819266666667,
+       "hi": 2.1502043,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-bodycam.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 3.2639687866666667,
+       "lo": 3.2165623866666664,
+       "hi": 3.3341202599999997,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 3.088889773333334,
+       "lo": 3.0391797733333332,
+       "hi": 3.1331202333333334,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 9.905148613333335,
+       "lo": 9.773932786666666,
+       "hi": 9.978727066666666,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 5.016861386666667,
+       "lo": 4.907342113333334,
+       "hi": 5.152906173333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "bp4-videocall.nanocodec-vvc-medium.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 5.21865454,
+       "lo": 5.147127853333333,
+       "hi": 5.299513073333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 4.637810486666667,
+       "lo": 4.600274313333332,
+       "hi": 4.708767946666667,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 14.326288733333334,
+       "lo": 14.243805846666667,
+       "hi": 14.406055839999999,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 6.763142406666667,
+       "lo": 6.622904233333333,
+       "hi": 6.868224306666666,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vvc.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 1.7766740133333334,
+       "lo": 1.7700333999999998,
+       "hi": 1.8027690733333335,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 1.7569613599999998,
+       "lo": 1.741721786666667,
+       "hi": 1.799352293333333,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 5.1850024066666665,
+       "lo": 5.059301026666666,
+       "hi": 5.414546913333334,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 3.0437425399999998,
+       "lo": 2.85921446,
+       "hi": 3.3266308933333333,
+       "passes": 15
+      }
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.vvc.vvc",
+     "codec": "vvc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "own": true,
+     "frames": 150,
+     "decoders": {
+      "ours": {
+       "ms": 8.316829433333334,
+       "lo": 8.19508624,
+       "hi": 8.417539193333333,
+       "passes": 15
+      },
+      "ours-plain": {
+       "ms": 7.876971833333334,
+       "lo": 7.593282933333334,
+       "hi": 8.04139834,
+       "passes": 15
+      },
+      "ffmpeg": {
+       "ms": 24.59065514,
+       "lo": 24.03435458666667,
+       "hi": 24.698231366666665,
+       "passes": 15
+      },
+      "vvdec": {
+       "ms": 12.653567800000001,
+       "lo": 12.152160346666667,
+       "hi": 12.831838093333333,
+       "passes": 15
+      }
+     }
+    }
+   ],
+   "summary": [
+    {
+     "codec": "av1",
+     "reference": "dav1d",
+     "streams": 26,
+     "ratio_plain": 1.01960750613243,
+     "own_streams": 9,
+     "other_streams": 17,
+     "ratio": 1.034894803312413,
+     "ratio_own": 0.9895617754195104,
+     "ratio_other": 1.059729464206056,
+     "ours_mpx_s": 323.69276339862233,
+     "ref_mpx_s": 334.9879587110689
+    },
+    {
+     "codec": "av2",
+     "reference": "dav2d",
+     "streams": 9,
+     "ratio_plain": 0.7740962457093811,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 0.8178881879410302,
+     "ratio_own": 0.8178881879410302,
+     "ratio_other": null,
+     "ours_mpx_s": 253.33438742605884,
+     "ref_mpx_s": 207.19920307505026
+    },
+    {
+     "codec": "av2",
+     "reference": "avmdec",
+     "streams": 9,
+     "ratio_plain": 0.2920913850959676,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 0.3086154919281395,
+     "ratio_own": 0.3086154919281395,
+     "ratio_other": null,
+     "ours_mpx_s": 253.33438742605884,
+     "ref_mpx_s": 78.18291659780702
+    },
+    {
+     "codec": "h264",
+     "reference": "ffmpeg",
+     "streams": 18,
+     "ratio_plain": 0.9455939616694862,
+     "own_streams": 9,
+     "other_streams": 9,
+     "ratio": 0.9913668205289002,
+     "ratio_own": 0.9953206891380805,
+     "ratio_other": 0.9874286584926358,
+     "ours_mpx_s": 584.6188101557708,
+     "ref_mpx_s": 579.5716910455158
+    },
+    {
+     "codec": "hevc",
+     "reference": "ffmpeg",
+     "streams": 23,
+     "ratio_plain": 0.8685840686113514,
+     "own_streams": 9,
+     "other_streams": 14,
+     "ratio": 0.8948642258779871,
+     "ratio_own": 0.8357199086707287,
+     "ratio_other": 0.9350776752100843,
+     "ours_mpx_s": 505.40475334939146,
+     "ref_mpx_s": 452.2686333610582
+    },
+    {
+     "codec": "vp9",
+     "reference": "ffmpeg",
+     "streams": 17,
+     "ratio_plain": 1.079586146488464,
+     "own_streams": 9,
+     "other_streams": 8,
+     "ratio": 1.109954783650141,
+     "ratio_own": 1.114250076384115,
+     "ratio_other": 1.1051423678985677,
+     "ours_mpx_s": 447.76923698187454,
+     "ref_mpx_s": 497.00360655940534
+    },
+    {
+     "codec": "vp9",
+     "reference": "vpxdec",
+     "streams": 17,
+     "ratio_plain": 1.066930377812245,
+     "own_streams": 9,
+     "other_streams": 8,
+     "ratio": 1.0969430096211483,
+     "ratio_own": 1.0967674512732029,
+     "ratio_other": 1.0971405463528014,
+     "ours_mpx_s": 447.76923698187454,
+     "ref_mpx_s": 491.1773344306624
+    },
+    {
+     "codec": "vvc",
+     "reference": "ffmpeg",
+     "streams": 9,
+     "ratio_plain": 0.3267916766754574,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 0.34463632878203704,
+     "ratio_own": 0.34463632878203704,
+     "ratio_other": null,
+     "ours_mpx_s": 287.34689666142356,
+     "ref_mpx_s": 99.03017955230447
+    },
+    {
+     "codec": "vvc",
+     "reference": "vvdec",
+     "streams": 9,
+     "ratio_plain": 0.6174713036363044,
+     "own_streams": 9,
+     "other_streams": 0,
+     "ratio": 0.6511886880913829,
+     "ratio_own": 0.6511886880913829,
+     "ratio_other": null,
+     "ours_mpx_s": 287.34689666142356,
+     "ref_mpx_s": 187.11704866408283
+    }
+   ],
+   "browser": [
+    {
+     "stream": "crowd_mot17_09.600k.av1.ivf",
+     "codec": "av1",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 5.885,
+      "lo": 5.759,
+      "hi": 6.281,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 1.9685462066666666,
+      "lo": 1.9439507266666665,
+      "hi": 2.03560238,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av1.ivf",
+     "codec": "av1",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 14.286000000000001,
+      "lo": 14.136000000000001,
+      "hi": 14.943,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 6.761922366666666,
+      "lo": 6.506476653333333,
+      "hi": 6.961464933333334,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.av2.ivf",
+     "codec": "av2",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 5.674,
+      "lo": 5.652,
+      "hi": 5.971,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 2.4673330000000004,
+      "lo": 2.42214628,
+      "hi": 2.537394773333333,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.av2.ivf",
+     "codec": "av2",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 14.276,
+      "lo": 14.111,
+      "hi": 14.752999999999998,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 7.929390500000001,
+      "lo": 7.60133764,
+      "hi": 8.008755240000001,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.h264.264",
+     "codec": "h264",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 2.473,
+      "lo": 2.405,
+      "hi": 2.504,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 3.05234,
+      "lo": 3.0067933333333334,
+      "hi": 3.131073333333333,
+      "passes": 7
+     },
+     "native": {
+      "ms": 0.9745412866666665,
+      "lo": 0.9673448266666665,
+      "hi": 1.00361436,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.x264.h264.264",
+     "codec": "h264",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "x264",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 7.995,
+      "lo": 7.673,
+      "hi": 8.06,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 10.221173333333333,
+      "lo": 10.0479,
+      "hi": 10.27698,
+      "passes": 7
+     },
+     "native": {
+      "ms": 3.734898013333334,
+      "lo": 3.643183713333334,
+      "hi": 3.848383666666667,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "cam150.axis-m5074-720p.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "Axis camera",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 2.94,
+      "lo": 2.88,
+      "hi": 3.048,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 3.2195266666666664,
+      "lo": 3.14508,
+      "hi": 3.25348,
+      "passes": 7
+     },
+     "native": {
+      "ms": 1.0582675533333334,
+      "lo": 1.0501370933333334,
+      "hi": 1.0764101666666666,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.hevc.hevc",
+     "codec": "hevc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 3.318,
+      "lo": 3.216,
+      "hi": 3.464,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 4.892926666666667,
+      "lo": 4.7588799999999996,
+      "hi": 4.961553333333333,
+      "passes": 7
+     },
+     "native": {
+      "ms": 1.19142866,
+      "lo": 1.18061706,
+      "hi": 1.2014033599999998,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.hevc.hevc",
+     "codec": "hevc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 10.063,
+      "lo": 9.454,
+      "hi": 10.213,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 17.542066666666667,
+      "lo": 17.377266666666667,
+      "hi": 17.69826,
+      "passes": 7
+     },
+     "native": {
+      "ms": 4.883484233333333,
+      "lo": 4.43998896,
+      "hi": 5.05577286,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vp9.ivf",
+     "codec": "vp9",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 3.125,
+      "lo": 3.052,
+      "hi": 3.31,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 6.831406666666667,
+      "lo": 6.770079999999999,
+      "hi": 7.3650400000000005,
+      "passes": 7
+     },
+     "native": {
+      "ms": 1.2467250266666667,
+      "lo": 1.2237744066666667,
+      "hi": 1.27723514,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.vpxenc.vp9.ivf",
+     "codec": "vp9",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "libvpx",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 9.956,
+      "lo": 9.581,
+      "hi": 10.23,
+      "passes": 7
+     },
+     "ffmpeg.wasm": {
+      "ms": 22.5247,
+      "lo": 22.307280000000002,
+      "hi": 22.860106666666667,
+      "passes": 7
+     },
+     "native": {
+      "ms": 4.908727946666667,
+      "lo": 4.568157586666667,
+      "hi": 5.165380466666667,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd_mot17_09.600k.vvc.vvc",
+     "codec": "vvc",
+     "width": 1280,
+     "height": 720,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 4.582,
+      "lo": 4.527,
+      "hi": 4.811,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 1.7766740133333334,
+      "lo": 1.7700333999999998,
+      "hi": 1.8027690733333335,
+      "passes": 15
+     }
+    },
+    {
+     "stream": "crowd1080.3000k.ours.vvc.vvc",
+     "codec": "vvc",
+     "width": 1920,
+     "height": 1080,
+     "encoder": "nanocodec",
+     "frames": 150,
+     "ours-wasm": {
+      "ms": 16.761,
+      "lo": 16.405,
+      "hi": 17.277,
+      "passes": 7
+     },
+     "ffmpeg.wasm": null,
+     "native": {
+      "ms": 8.316829433333334,
+      "lo": 8.19508624,
+      "hi": 8.417539193333333,
+      "passes": 15
+     }
+    }
+   ],
+   "platform": {
+    "cpu": "Neoverse-V2",
+    "nanocodec": "nanocodec 0.7.0 ce89975ea47060eb5cb63f432e53411545c90e09",
+    "pinning": "one thread pinned to one physical core",
+    "node": "v22.21.1",
+    "ffmpeg_core": "0.12.10",
+    "date": "2026-11-27"
+   }
+  }
+ }
+}

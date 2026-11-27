@@ -246,9 +246,8 @@ export class Panel {
     this.reference = entry;
     this.streamPicker.value = entry.id;
     if (this.codec.value !== entry.codec) { this.codec.value = entry.codec; this.updateCodec(); }
-    const configuration = entry.chartConfiguration ? 'the chart configuration' : 'not a chart configuration';
     const facts = {
-      Encoder: `${entry.label} · ${configuration}`,
+      Encoder: `${entry.label} · benchmark family ${entry.family}`,
       Clip: this.clipTitle(entry.clip), Size: `${entry.width} × ${entry.height}`, 'Frame rate': `${entry.fps} fps`,
       Bitrate: `target ${entry.targetKbps} kbps · actual ${entry.actualKbps} kbps`,
       ...(entry.rateControl ? { 'Rate control': entry.rateControl } : {}),
@@ -257,7 +256,7 @@ export class Panel {
       ...(entry.notice ? { Licence: entry.notice } : {}),
     };
     const $ = selector => this.element.querySelector(selector);
-    $('.reference-label').textContent = 'Encoded offline by this third-party encoder at the real-time settings our charts use (one thread, low delay); its other settings may give better results. Decoded here by nanocodec’s WASM decoder.';
+    $('.reference-label').textContent = 'Encoded offline by this third-party encoder with the BP-4 benchmark’s exact CBR command for this family and the benchmark’s own x86_64 build (one thread, low delay, every frame coded); its other settings may give better results. Decoded here by nanocodec’s WASM decoder.';
     $('.reference-facts').innerHTML = Object.entries(facts).map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`).join('');
     const { version, source, gpu } = entry.version;
     $('.reference-version').textContent = `Version: ${version}${source?.commit ? ` · source ${source.ref} ${source.commit.slice(0, 12)}` : ''}${gpu ? ` · GPU ${gpu}` : ''}`;

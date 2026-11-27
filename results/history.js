@@ -200,6 +200,34 @@ function animate(root, data) {
   return { stop, refresh };
 }
 
+const points = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
+
+/** The mean offset of our families (ours) or of the references. */
+function meanOf(offsets, ours) {
+  const values = Object.entries(offsets).filter(([f]) => f.startsWith('nanocodec-') === ours).map(([, o]) => o);
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+/** Why a machine's graph is withdrawn: the tracking check (V17) it failed, with its numbers. */
+function withdrawal(check) {
+  const outside = Object.entries(check.outside);
+  return [
+    el('strong', {}, 'Withdrawn. '),
+    `The history graph fails the procedure's tracking check (V17, section 14), and the procedure withdraws the graph until the owner decides. `
+    + `On the current build, each family's BD-J on the history common set (${check.subset_clips} clip-windows) minus its BD-J on the full "ours" set (${check.full_clips}) must lie within ${check.limit} point of the median offset (${points(check.median_offset)} points); `
+    + `${outside.length} of ${check.families} families lie outside it${check.front_same ? '' : ', and the front differs'}. `
+    + `Mean offset: our families ${points(meanOf(check.offsets, true))}, the references ${points(meanOf(check.offsets, false))} (positive: the subset reads the family worse). `,
+    el('details', {}, el('summary', {}, 'Every family\'s offset (points of BD-J, subset minus full set)'),
+      table([
+        { label: 'Family', cell: ([f]) => f },
+        { label: 'Offset', num: true, cell: ([, o]) => points(o) },
+        { label: 'From the median', num: true, cell: ([, o]) => points(o - check.median_offset) },
+        { label: 'Within the limit', cell: ([f]) => (f in check.outside ? 'no' : 'yes') },
+      ], Object.entries(check.offsets))),
+    el('p', { class: 'note' }, `Data: ${check.source}`),
+  ];
+}
+
 async function main() {
   const root = document.getElementById('history');
   try {
@@ -215,7 +243,8 @@ async function main() {
       const shown = Boolean(data.views[machine]);
       root.hidden = !shown;
       absent.hidden = shown;
-      absent.textContent = shown ? '' : `No history report for ${data.machines[machine].name} yet; this page fills in when it arrives.`;
+      const out = data.withdrawn?.[machine];
+      absent.replaceChildren(...(shown ? [] : out ? withdrawal(out) : [`No history report for ${data.machines[machine].name} yet; this page fills in when it arrives.`]));
       if (!shown) animation?.stop();
       else if (animation) animation.refresh();
       else animation = animate(root, data);

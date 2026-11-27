@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec decoder speed</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+  <style>.results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; } .headline-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0 18px; } .headline-figures div { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--surface); } .headline-figures strong { display: block; font-size: 1.35rem; font-variant-numeric: tabular-nums; } .headline-figures span { color: var(--muted); font-size: 0.85rem; } details.stream-detail { margin: 6px 0; } .not-recorded { color: #c62828; }</style>
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="history.html">History</a>
+    <a href="compliance.html">Rate control</a>
+    <a href="svc.html">SVC</a>
+    <a href="clips.html">Clips</a>
+    <a href="decoders.html" aria-current="page">Decoders</a>
+    <a href="method.html">Method</a>
+  </nav>
+  <div class="machine-picker"></div>
+</div>
+<main id="decoders">
+  <h1>Decoder speed</h1>
+  <p class="lede">Our six decoders against the established decoder of each format, on one core of an x86 and an Arm
+    server, and our browser (WebAssembly) decoders against ffmpeg.wasm. Below 1, ours took less time than the
+    reference on the same streams.</p>
+  <div class="disclaimer results-banner" role="note"></div>
+  <div class="controls"></div>
+  <section aria-label="Native decode speed">
+    <h2>Native: ours against each format's reference decoder</h2>
+    <div class="headline-figures"></div>
+    <div class="chart-card">
+      <p class="chart-title">Decode time, ours ÷ the reference's, geometric mean over streams</p>
+      <p class="chart-sub native-sub"></p>
+      <div class="chart native-chart"></div>
+    </div>
+    <p class="note native-note"></p>
+    <details class="table-view" open>
+      <summary>As a table, with throughput</summary>
+      <div class="table-wrap native-table"></div>
+    </details>
+    <details class="table-view">
+      <summary>Every stream</summary>
+      <div class="native-streams"></div>
+    </details>
+  </section>
+  <section aria-label="Browser decode speed">
+    <h2>Browser (WebAssembly): ours against ffmpeg.wasm</h2>
+    <div class="chart-card">
+      <p class="chart-title">Browser decode time, our module ÷ ffmpeg.wasm, per stream</p>
+      <p class="chart-sub browser-sub"></p>
+      <div class="chart browser-chart"></div>
+    </div>
+    <p class="note browser-note"></p>
+    <details class="table-view" open>
+      <summary>Every browser stream, with our native decoder beside it</summary>
+      <div class="table-wrap browser-table"></div>
+    </details>
+  </section>
+  <section aria-label="How this was measured">
+    <h2>How this was measured</h2>
+    <div class="prose method-detail"></div>
+  </section>
+</main>
+<footer>
+  <p>The reference decoders are FFmpeg, dav1d, libvpx, VVdeC, dav2d and AVM, and ffmpeg.wasm in the browser:
+    their implementations are the bar these numbers are held to. With thanks to all of them.</p>
+</footer>
+<script type="module" src="decoders.js"></script>
+</body>
+</html>

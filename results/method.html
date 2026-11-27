@@ -17,7 +17,10 @@
     <a href="./">Overview</a>
     <a href="codecs.html">By codec</a>
     <a href="history.html">History</a>
-    <a href="compliance.html">Rate compliance</a>
+    <a href="compliance.html">Rate control</a>
+    <a href="svc.html">SVC</a>
+    <a href="clips.html">Clips</a>
+    <a href="decoders.html">Decoders</a>
     <a href="method.html" aria-current="page">Method</a>
   </nav>
   <div class="machine-picker"></div>
@@ -27,22 +30,29 @@
   <p class="lede">The provenance each benchmark report carries. The procedure itself is docs/benchmark-procedure.md in the repository.</p>
   <div class="disclaimer results-banner" role="note"></div>
   <div id="method"></div>
-  <h2>Not carried over from the earlier results pages</h2>
+  <h2>How streams are decoded for scoring</h2>
+  <ul class="prose">
+    <li>Every scored stream is decoded; no score is taken from an encoder's own reconstruction.</li>
+    <li>Our own decoder (the frozen 23c962d8b build) decoded the streams of every family, the references' included. Where it exited with an error, the codec's standard decoder decoded the stream instead (the pinned FFmpeg 8.0.1, with dav1d for AV1; avmdec for AV2), and the score record names it; AV1 streams whose frames change size were decoded by aomdec. A silent difference would not be caught by this fallback, so its identity with the standard decoders was checked separately.</li>
+    <li>Identity evidence: a sample of the series' real streams (26 AV1, 6 AV2, 36 H.264, 24 HEVC and 12 VP9; bench/decode-identity-2026-11-26.md) decoded identically by ours and the standard decoders. That sample had no x265 stream, one SVT-AV1 preset and no VVC stream, so the benchmark integrity audit of 2026-11-27 decoded 13 more reference streams (x265 ultrafast, superfast, veryfast, faster and medium; SVT-AV1 M8, M12 and M13; openh264 CABAC; x264 ultrafast and faster; Kvazaar veryfast; libaom cpu10): every one bit-identical to the pinned FFmpeg 8.0.1. Every VVC stream of the series is ours, and the landing check proves ours bit-exact against VVdeC and FFmpeg on every shipped preset.</li>
+    <li>Metrics for every family alike: VMAF v1 (vmaf_v1.0.16_3d0h), MS-SSIM and PSNR-YUV (6:1:1), on every frame, at the clip's own size.</li>
+  </ul>
+  <h2>Not shown here</h2>
   <ul class="prose">
     <li>The earlier pages' figures (an older measurement procedure) are withdrawn and are not shown here.</li>
-    <li>Speed on other machines (Jetson, Zen, Graviton), the browser build and hardware encoders: these reports time one machine.</li>
+    <li>Speed on other machines (Jetson, AMD Zen), the browser build and hardware encoders: these reports time two machines, x86 (c8i) and Arm (c8g).</li>
     <li>Frames per second: the reports give megapixels per CPU-second over each dataset's own clip sizes.</li>
     <li>XPSNR, luma-only PSNR, the AOM CTC weighted PSNR and the per-rate-regime BD-J: not in the reports.</li>
-    <li>The Fixed QP standards lens (HM, VTM, the three fixed-QP columns), spatial scalability, history, yardsticks, decoder speed, buffer use and the cost of rate control: not measured by these reports.</li>
-    <li>Per-clip tables, per-class means and AOM-CTC's separate A2 table: the report JSON carries set means only.</li>
-    <li>Command lines per encoder, tool versions and the demo links: the reports carry binaries' hashes; the commands are in the procedure document.</li>
-    <li>Our re-coded share (CBR): not in the report JSON.</li>
+    <li>Fixed QP: removed from the procedure (BP-4 measures CBR only). Buffer use is on the Rate control page; the history of the front is on the History page, which is withdrawn while it fails its tracking check; spatial scalability is measured separately (the SVC page states its own conditions).</li>
+    <li>Per-clip tables and per-class means: the report JSON carries set means only.</li>
+    <li>Command lines per encoder: the procedure document's fairness record (section 17) lists each flag with its reason.</li>
+    <li>Our re-coded share (CBR): ours holds the buffer by re-coding a frame that would overflow it (--strict-buffer), so its compliance is "compliant by re-coding"; the BP-4 runs do not record how many frames were re-coded.</li>
   </ul>
 </main>
 <footer>
   <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
-    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264,
-    Kvazaar and VVenC are its comparison points here. With thanks to all of them.</p>
+    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264
+    and Kvazaar are its comparison points here (VVenC is not charted: it has no real-time CBR mode). With thanks to all of them.</p>
 </footer>
 <script type="module" src="method.js"></script>
 </body>

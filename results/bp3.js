@@ -121,7 +121,11 @@ export function statement(data, view) {
   const quality = view.quality_series === view.timing_series ? ''
     : ` Quality is scored from the ${view.quality_series} series' streams, which the timed streams equal byte for byte.`;
   return `Procedure ${view.procedure}, CBR, ${d.name}: ${d.about}. `
-    + `View: ${view.view_clips} clips where the zero line's curves are well formed; common set: ${view.common_clips} of them, where every family but the +drop rows has well-formed curves. Every BD is over the common set (a +drop row's over its own clips); each family's own anchor-valid clip count is in the table. `
+    + (view.common_clips > view.distinct_clips
+      ? `View: ${view.view_clips} clip-windows (each clip's 150-frame window, and its 600-frame window where the source allows) where the zero line's curves are well formed; common set: ${view.common_clips} of them, on ${view.distinct_clips} clips, where every family but the +drop rows has well-formed curves; each clip counts once, its windows averaged. `
+      : `View: ${view.view_clips} clips where the zero line's curves are well formed; common set: ${view.common_clips} of them, where every family but the +drop rows has well-formed curves. `)
+    + (Object.keys(view.excluded_clips || {}).length ? `Left out of every family: the ${Object.keys(view.excluded_clips).length} clips a tuning set of ours used (in-sample). ` : '')
+    + 'Every BD is over the common set (a +drop row\'s over its own clips); each family\'s own anchor-valid clip count is in the table. '
     + `Zero line: ${zeros}. Speed: ${SPEED_NAME}, megapixels per CPU-second, geometric mean over clips, on ${data.machines[view.machine].about} (series ${view.timing_series}).${quality} `
     + `Phase: ${view.phase_name}.`;
 }

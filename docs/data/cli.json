@@ -65,11 +65,11 @@
     {"flag": "--partition-replay", "value": "FILE", "help": "Code a --partition-record log's partitions in place of the plan, without the RD partition search (an oracle: the partition transplant)."},
     {"flag": "--analysis-log", "value": "FILE", "help": "Every frame's analysis per 8x8 luma cell (binary: variance, motion SAD and vector)."},
     {"flag": "--simulate-loss", "value": "FRAME[:LAYER]", "help": "Report frame FRAME (or spatial layer LAYER of it) lost; every other frame is acknowledged."}]}]},
-  {"name": "decode", "about": "Decode one of our streams with our own subset decoder.", "groups": [
+  {"name": "decode", "about": "Decode a stream, ours or another encoder's, within the supported profiles (gaps: docs/FAQ.md#conformance).", "groups": [
    {"title": "Options", "options": [
     {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format. Required."},
     {"flag": "--input", "value": "PATH", "help": "The stream (IVF or Annex-B); `-` reads stdin."},
-    {"flag": "--output", "value": "PATH", "help": "Decoded frames as raw I420; `-` writes stdout."},
+    {"flag": "--output", "value": "PATH", "help": "Decoded frames as raw I420 (16-bit little-endian above 8 bits); `-` writes stdout."},
     {"flag": "--frame-md5", "value": "FILE", "help": "One MD5 line per shown frame."},
     {"flag": "--discard", "value": "0|1", "help": "1: decode every frame and write nothing (for timing)."},
     {"flag": "--bench", "value": "N", "help": "Time N in-process decodes of the stream in memory (JSON lines)."},

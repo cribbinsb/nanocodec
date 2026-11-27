@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec spatial SVC</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+  <style>.build-identity { margin-top: 8px; } .build-identity .dim { color: var(--muted); } .not-recorded { color: #c62828; } .results-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 18px; } .machine-picker .control { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; } .svc-banner { margin-bottom: 10px; }</style>
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="history.html">History</a>
+    <a href="compliance.html">Rate control</a>
+    <a href="svc.html" aria-current="page">SVC</a>
+    <a href="clips.html">Clips</a>
+    <a href="method.html">Method</a>
+  </nav>
+  <div class="machine-picker"></div>
+</div>
+<main>
+  <h1>Spatial scalability (SVC)</h1>
+  <p class="lede">One AV1 or VP9 stream carrying the 720p picture and lower-resolution layers under it (360p, and 180p with three layers), so a relay can forward a smaller view without a second encode. Rate is the whole stream, every layer; quality is the 720p output, as BD-rate against single-layer x264 medium. Beside them: the same codec coding 720p alone, simulcast (independent streams per size), and the SVC modes of libaom's and libvpx's real-time example encoders.</p>
+  <div class="disclaimer svc-banner" role="note"></div>
+  <div id="svc">
+    <ul class="prose svc-findings"></ul>
+    <div class="controls"></div>
+    <div class="chart-card">
+      <p class="chart-title">Bits saved at 720p against encode speed</p>
+      <p class="chart-sub">BD-J of the 720p output at the total stream rate, against single-layer x264 medium · lower is fewer bits, right is faster</p>
+      <div class="chart"></div>
+      <div class="tooltip" role="tooltip" hidden></div>
+    </div>
+    <div class="legend-note note"></div>
+    <h2>Every point</h2>
+    <p class="note">Lower operating points: each view a receiver can take, as BD-J against the same codec coding that view alone (the simulcast streams of that size), at that view's own rate. The 720p receiver view counts only the bits a 720p receiver downloads (in K-SVC modes, <code>_KEY</code>, the lower layers only on key frames) against the codec's single-layer 720p.</p>
+    <div class="svc-table"></div>
+    <h2>Conditions</h2>
+    <ul class="prose svc-conditions"></ul>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, SVT-AV1, libaom, libvpx, openh264
+    and Kvazaar are its comparison points here (VVenC is not charted: it has no real-time CBR mode). With thanks to all of them.</p>
+</footer>
+<script type="module" src="svc.js"></script>
+</body>
+</html>
