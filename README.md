@@ -55,8 +55,9 @@ Ours is development build 23c962d8b, measured before 0.7.0's last encoder change
   decodes our H.264, AV1 (including two-layer SVC) and VP9 packets over a real WebRTC session, bit-exact. VP9
   spatial layers are not carried yet ([details](docs/handoff/rtp.md)).
 - **Built for loss.** Temporal layers and key frames on request (all six formats), long-term references with
-  loss feedback (H.264, HEVC, VVC, AV1, VP9, AV2) and intra refresh (H.264, HEVC, VVC, AV1). Recovery from a lost
-  frame is tested with the standard decoders for H.264, HEVC, AV1 and AV2.
+  loss feedback (all six) and intra refresh (H.264, HEVC, VVC, AV1), combinable with each other and with
+  temporal layers. Recovery from a lost frame is tested with the standard decoders for all six formats
+  ([which tool on which codec](docs/FAQ.md)).
 - **Fast on x86, Arm and the web.** Hand-written SIMD for AVX2, AVX-512, NEON and WebAssembly.
 - **Built by AI.** About 4,000 commits and half a million lines of Rust written by AI coding agents
   (mostly Anthropic's Claude) in its first fifteen days, directed by one person ([how it's checked](docs/FAQ.md#ai-authorship)).
