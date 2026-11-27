@@ -208,12 +208,12 @@ function meanOf(offsets, ours) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-/** Why a machine's graph is withdrawn: the tracking check (V17) it failed, with its numbers. */
-function withdrawal(check) {
+/** The warning beside a graph that fails the tracking check (V17), with its numbers. */
+function trackingWarning(check) {
   const outside = Object.entries(check.outside);
   return [
-    el('strong', {}, 'Withdrawn. '),
-    `The history graph fails the procedure's tracking check (V17, section 14), and the procedure withdraws the graph until the owner decides. `
+    el('strong', {}, 'Read this graph for the trend across days, not the level. '),
+    `It fails the procedure's tracking check (V17, section 14): the history clips do not reproduce the full benchmark's level, and the cause is not yet established. `
     + `On the current build, each family's BD-J on the history common set (${check.subset_clips} clip-windows) minus its BD-J on the full "ours" set (${check.full_clips}) must lie within ${check.limit} point of the median offset (${points(check.median_offset)} points); `
     + `${outside.length} of ${check.families} families lie outside it${check.front_same ? '' : ', and the front differs'}. `
     + `Mean offset: our families ${points(meanOf(check.offsets, true))}, the references ${points(meanOf(check.offsets, false))} (positive: the subset reads the family worse). `,
@@ -241,10 +241,12 @@ async function main() {
     const pick = (machine) => {
       state.machine = machine;
       const shown = Boolean(data.views[machine]);
+      const check = shown ? data.views[machine].tracking_check : null;
+      const warn = Boolean(check && !check.passed);
       root.hidden = !shown;
-      absent.hidden = shown;
-      const out = data.withdrawn?.[machine];
-      absent.replaceChildren(...(shown ? [] : out ? withdrawal(out) : [`No history report for ${data.machines[machine].name} yet; this page fills in when it arrives.`]));
+      absent.hidden = shown && !warn;
+      absent.replaceChildren(...(!shown ? [`No history report for ${data.machines[machine].name} yet; this page fills in when it arrives.`]
+        : warn ? trackingWarning({ ...check, source: data.views[machine].source }) : []));
       if (!shown) animation?.stop();
       else if (animation) animation.refresh();
       else animation = animate(root, data);
